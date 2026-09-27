@@ -1,11 +1,16 @@
 """¿La salida que TexGen acaba de generar es visible donde DynDOLOD va a leer?
 
-Sky-Claw corre **standalone**: no hereda la USVFS de Mod Organizer 2 y lanza
-DynDOLOD con ``create_subprocess_exec`` contra el ``-d:<Data>`` FÍSICO
-(``docs/operations/deployment_standalone_usvfs.md``). Empaquetar la salida de
-TexGen como un mod bajo ``<mo2>/mods`` es **entrega**, no despliegue: ese árbol
-es invisible para un proceso externo salvo que el operador lo haya materializado
-en el ``Data`` real.
+Este validador es el gate de visibilidad FÍSICA del backend standalone: Sky-Claw
+spawnea DynDOLOD con ``create_subprocess_exec`` contra el ``-d:<Data>`` físico
+(``docs/operations/deployment_standalone_usvfs.md``) y esa es la verdad que acá
+se mide. El backend brokered MO2/USVFS tiene su propio gate mode-aware
+(``sky_claw/local/mo2/brokered_dyndolod.py``), porque ahí la visibilidad vive en
+el overlay del perfil, no en el filesystem del host: la pregunta es la misma —
+*¿DynDOLOD verá exactamente el TexGen Output autorizado?*— y cambia el dominio
+donde se responde (PR-586D). Empaquetar la salida de TexGen como un mod bajo
+``<mo2>/mods`` es **entrega**, no despliegue: ese árbol es invisible para un
+proceso externo salvo que el operador lo haya materializado en el ``Data``
+real.
 
 Sin este gate la etapa 9 tenía un falso verde entero: DynDOLOD corría 30+ min
 generando LODs contra texturas que nunca vio, salía con código 0 y el pipeline

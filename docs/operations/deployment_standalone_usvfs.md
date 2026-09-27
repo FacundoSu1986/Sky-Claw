@@ -1,31 +1,53 @@
-# Sky-Claw corre standalone y no hereda la USVFS de MO2
+# Sky-Claw standalone y la USVFS de MO2: dos backends, dos dominios de verdad
 
 > **Audiencia:** operadores que instalan y corren Sky-Claw contra una instancia
 > de Mod Organizer 2.
 >
-> **Estado:** Implementado. La invariante es de deployment: describe cómo se
-> lanza Sky-Claw hoy, no una configuración a elegir.
+> **Estado:** Implementado. Describe cómo se lanzan las herramientas hoy, no una
+> configuración a elegir.
 >
 > **Fuentes canónicas:** `sky_claw/local/tools/output_targets.py`,
 > `sky_claw/local/tools/_process.py`, `sky_claw/local/mo2/vfs.py`,
 > `sky_claw/local/mo2/brokered_loot.py`,
+> `sky_claw/local/mo2/brokered_dyndolod.py`,
+> `sky_claw/local/mo2/mod_effectivity.py`,
 > `sky_claw/local/validators/vfs_visibility.py`,
 > `sky_claw/local/validators/texgen_visibility.py`.
 >
-> **Última verificación:** 2026-07-28 sobre `origin/main` `9e5232c`.
+> **Última verificación:** 2026-09-26 (bifurcación standalone/brokered, PR-586D)
+> sobre `origin/main` `b985404`.
 
-## La invariante, en una frase
+## La bifurcación, en una frase
 
-Sky-Claw **no se lanza desde Mod Organizer 2**. Corre como su propio proceso, y
-las herramientas del pipeline (LOOT, xEdit, Wrye Bash, Pandora, BodySlide,
-Synthesis, DynDOLOD/TexGen) las spawnea **directo**. Por lo tanto **ninguna
-hereda la USVFS de MO2**: leen y escriben en el filesystem **físico**, no en el
-árbol virtual que ves en la interfaz de MO2.
+Sky-Claw tiene DOS backends de lanzamiento y cada uno vive en un namespace
+distinto:
 
-El mecanismo es visible en el código, no una convención: los runners lanzan sus
-subprocesos con `asyncio.create_subprocess_exec` a través de
-`sky_claw/local/tools/_process.py`. El único proceso que Sky-Claw sí lanza a
-través del proxy `ModOrganizer.exe` es **el juego** (`sky_claw/local/mo2/vfs.py`).
+- **Backend standalone (histórico):** las herramientas del pipeline (LOOT,
+  xEdit, Wrye Bash, Pandora, BodySlide, Synthesis, DynDOLOD/TexGen) se spawnean
+  **directo**, con `asyncio.create_subprocess_exec` a través de
+  `sky_claw/local/tools/_process.py`. **Ninguna hereda la USVFS de MO2**: leen y
+  escriben en el filesystem **físico**, no en el árbol virtual que ves en la
+  interfaz de MO2. El único proceso que Sky-Claw lanza a través del proxy
+  `ModOrganizer.exe` es **el juego** (`sky_claw/local/mo2/vfs.py`).
+- **Backend brokered MO2/USVFS (PR-586):** TexGen/DynDOLOD pueden lanzarse como
+  jobs del broker (`sky_claw/local/mo2/vfs_broker.py` + bridge
+  `skyclaw_bridge`), y entonces el proceso y sus descendientes **sí** ven el
+  overlay virtual del perfil activo. La atestación (worker + proceso nieto)
+  prueba esa visibilidad antes de ejecutar nada.
+
+Todo lo demás de esta página describe el backend standalone y sigue siendo
+válido para él. La única zona donde los dos backends se cruzan es **el gate de
+TexGen → DynDOLOD**, que desde PR-586D es *mode-aware*: la pregunta —¿DynDOLOD
+va a ver exactamente el TexGen Output autorizado?— se responde **en el dominio
+donde la verdad existe** para cada backend:
+
+```text
+standalone → visibilidad byte-exact en el Data físico
+brokered   → perfil MO2 + mod habilitado/efectivo + evidencia runtime USVFS
+```
+
+Los dos gates fallan cerrado. La bifurcación NO elimina la invariante: cambia
+la forma de demostrarla.
 
 ## Por qué te importa: el modo de falla silencioso
 
@@ -66,23 +88,48 @@ no te va a avisar.
 El sensor de arriba mide el modlist antes del ritual. La etapa 9 tiene una
 segunda frontera, **dentro** de la corrida, y es de otra naturaleza: lo que
 DynDOLOD necesita ver no es un mod que ya estaba, sino la salida que TexGen
-**acaba de generar en esta misma corrida**.
+**acaba de generar en esta misma corrida**. Empaquetarla en
+`<mo2>/mods/TexGen Output` es entrega, no despliegue.
 
-Empaquetarla en `<mo2>/mods/TexGen Output` es entrega, no despliegue. Como
-DynDOLOD se lanza directo contra el `-d:<Data>` físico, ese mod le es invisible
-salvo que lo hayas materializado. Antes de spawnear DynDOLOD, Sky-Claw recorre el
-staging de TexGen **completo** y exige que cada archivo aparezca bajo
-`<Data>/textures` con los **mismos bytes** — no le alcanza con que exista ni con
-que tenga el mismo tamaño, porque un despliegue de una corrida anterior cumple
-las dos cosas. Si no puede demostrarlo, **DynDOLOD no se lanza** y la etapa sale
-en rojo antes de gastar los 30+ minutos.
+Ese gate es **mode-aware** desde PR-586D y demuestra el handoff en el dominio
+del backend que va a consumir el artifact:
 
-Acá el criterio NO es el conservador del sensor de modlist: ahí una
-materialización parcial pasa en verde porque el universo medido es heterogéneo y
-frenar un setup que funciona sería peor. Este árbol, en cambio, salió entero de
-una sola corrida, así que "parcial" no es ambiguo — o desplegaste esta salida o
-no. **Sky-Claw no materializa nada por su cuenta:** no copia a `Data`, no edita
-el modlist y no lanza `ModOrganizer.exe`. Sólo se niega a seguir sin evidencia.
+- **Standalone:** DynDOLOD se lanza directo contra el `-d:<Data>` físico, así
+  que el mod le es invisible salvo que lo hayas materializado. Antes de
+  spawnear, Sky-Claw recorre el staging de TexGen **completo** y exige que cada
+  archivo aparezca bajo `<Data>/textures` con los **mismos bytes** — no le
+  alcanza con que exista ni con que tenga el mismo tamaño, porque un despliegue
+  de una corrida anterior cumple las dos cosas
+  (`sky_claw/local/validators/texgen_visibility.py`).
+- **Brokered:** DynDOLOD se lanza bajo la USVFS del perfil activo, donde el
+  Data físico vacío NO es un fallo. El gate exige entonces perfil idéntico al
+  del job, `+TexGen Output` habilitado en ese perfil, identidad del artifact,
+  **efectividad byte-exact** sobre el overlay completo (sin mod de mayor
+  prioridad ni `overwrite` entregando bytes distintos) y una **evidencia
+  runtime USVFS** (probe `health` atestiguado por worker + nieto sobre un
+  canary del propio mod) (`sky_claw/local/mo2/brokered_dyndolod.py`,
+  `sky_claw/local/mo2/mod_effectivity.py`). El reparto de la evidencia es
+  exactamente éste: los **1.448 archivos** del artifact se prueban con
+  **identidad + efectividad exhaustivas host-side** (recorrido completo, byte a
+  byte, contra el overlay), y la **prueba runtime USVFS** cubre **canary(s)
+  representativos** del propio mod — un archivo representativo no certifica
+  1.448 rutas, y el recorrido host-side no prueba que el mapping se aplique.
+  Ninguna de las dos evidencias reemplaza a la otra.
+
+  Y el pase del gate queda **ligado al spawn** (cierre de la ventana TOCTOU):
+  el estado exacto aprobado —perfil + fingerprint, identidad del artifact,
+  enablement, efectividad y canary— se revalida completo en el boundary del
+  spawn de DynDOLOD; si algo cambió entre la prueba y el spawn, DynDOLOD no
+  arranca.
+
+En los dos modos, si el gate no puede demostrarlo, **DynDOLOD no se lanza** y
+la etapa sale en rojo antes de gastar los 30+ minutos. Acá el criterio NO es el
+conservador del sensor de modlist: ahí una materialización parcial pasa en verde
+porque el universo medido es heterogéneo y frenar un setup que funciona sería
+peor. Este árbol, en cambio, salió entero de una sola corrida, así que "parcial"
+no es ambiguo — o desplegaste esta salida o no. **Sky-Claw no materializa nada
+por su cuenta:** no copia a `Data`, no edita el modlist y no lanza
+`ModOrganizer.exe`. Sólo se niega a seguir sin evidencia.
 
 ### Cuando ese gate corta, la salida de TexGen te queda esperando
 
@@ -101,7 +148,7 @@ La transacción queda **PENDIENTE**, no marcada como revertida, y el registro
 nombra el directorio preservado: hay una mutación viva en disco y el journal lo
 dice. `rolled_back` en el resultado es `False` por la misma razón.
 
-El ciclo completo, entonces:
+El ciclo completo, entonces (backend standalone):
 
 ```text
 TexGen corre  →  TexGen Output empaquetado  →  gate de visibilidad FALLA
@@ -118,13 +165,21 @@ TexGen corre  →  TexGen Output empaquetado  →  gate de visibilidad FALLA
                                 DynDOLOD arranca
 ```
 
+En el backend brokered el ciclo es análogo y la acción humana cambia: el primer
+corte —`TexGen Output` existe pero todavía no está habilitado en el perfil—
+llega con `needs_deployment=True` y `handoff_action="profile_enablement"`. Lo
+que hacés es **habilitar `+TexGen Output` en MO2** (Sky-Claw jamás edita
+`modlist.txt`) y reanudar con TexGen desactivado; el gate reevalúa perfil,
+enablement, efectividad y la evidencia runtime USVFS antes de lanzar DynDOLOD.
+
 Correr la continuación **sin** TexGen es lo correcto y no un atajo: la autoridad
-es el artefacto que ya se generó y desplegaste, no una regeneración que podría
-producir bytes distintos. Esa continuación tiene su propio gate — si el mod
-empaquetado existe, DynDOLOD no se lanza hasta que el `Data` lo espeje
-exactamente; que el archivo *exista* con el tamaño correcto no alcanza. Y si
-nunca empaquetaste un `TexGen Output` con Sky-Claw, el uso de siempre —DynDOLOD
-solo, porque tus texturas ya están— sigue funcionando igual.
+es el artefacto que ya se generó y desplegaste (o habilitaste), no una
+regeneración que podría producir bytes distintos. Esa continuación tiene su
+propio gate — si el mod empaquetado existe, DynDOLOD no se lanza hasta que el
+dominio del backend lo demuestre byte a byte; que el archivo *exista* con el
+tamaño correcto no alcanza. Y si nunca empaquetaste un `TexGen Output` con
+Sky-Claw, el uso de siempre —DynDOLOD solo, porque tus texturas ya están— sigue
+funcionando igual.
 
 ## Qué tenés que hacer
 

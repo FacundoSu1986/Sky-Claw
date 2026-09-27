@@ -157,7 +157,24 @@ def _sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
+def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
+    """Mods HABILITADOS del ``modlist.txt`` del perfil, en orden de prioridad creciente.
+
+    Primitive PÚBLICA (una sola semántica, dos consumidores): la construcción de
+    canaries de este módulo y el gate de efectividad del handoff TexGen → DynDOLOD
+    (``sky_claw/local/mo2/mod_effectivity.py``) necesitan exactamente la misma
+    lectura, y duplicarla garantiza que las dos interpreten un ``modlist.txt``
+    distinto. El contrato del formato está congelado acá:
+
+    * ``+Nombre`` — mod habilitado; el orden del archivo crece de menor a mayor
+      prioridad (la última línea habilitada es la de mayor prioridad).
+    * ``-Nombre`` / ``#comentario`` / ``*separador`` — no habilitado o no-mod.
+    * cualquier otra forma es un archivo malformado ⇒ falla cerrado.
+
+    Raises:
+        VfsAttestationError: archivo ilegible o línea inválida. "No pude leer el
+            perfil" jamás colapsa en "perfil vacío".
+    """
     try:
         lines = modlist_path.read_text(encoding="utf-8-sig", errors="strict").splitlines()
     except (OSError, UnicodeError) as exc:
@@ -421,40 +438,58 @@ def _profile_fingerprint(
     return digest.hexdigest()
 
 
-def build_attestation_challenge(
+def _construir_challenge(
     *,
-    mo2_root: pathlib.Path | None = None,
-    data_root: pathlib.Path | None = None,
-    mods_dir: pathlib.Path | None = None,
-    profile: str,
-    physical_data_dir: pathlib.Path,
+    data_resolved: pathlib.Path,
+    mods_resolved: pathlib.Path,
+    profile_dir: pathlib.Path,
+    profile_name: str,
+    data: pathlib.Path,
+    always_active: frozenset[str],
+    source_mod: str | None,
 ) -> VfsAttestationChallenge:
-    """Elige un archivo efectivo de mod que el ``Data`` físico no contiene.
+    """Walk común de selección de canary (libre o restringido a un mod).
 
-    El conjunto de plugins que el motor carga siempre (``primaryPlugins()``) se
-    deriva del game root de ``physical_data_dir``; el worker deriva el mismo
-    conjunto del game root de su ``virtual_data_dir``. En producción ambos son
-    el mismo ``<juego>/Data`` (USVFS expone la misma ruta que lee el preview).
+    Un canary elegible es un archivo propio de un mod habilitado que (a) el
+    ``Data`` físico NO contiene —así la vista virtual es distinguible de la
+    física— y (b) ningún root de mayor prioridad (``overwrite`` o un mod más
+    alto en el ``modlist``) reemplaza. Con ``source_mod`` el walk se restringe a
+    ESE mod y los roots de mayor prioridad se calculan respecto de su posición;
+    sin él se recorren todos los mods habilitados como candidatos.
+
+    Elegibilidad = "este archivo llega efectivo al namespace virtual", que es la
+    mitad estructural de lo que el runtime prueba después. NO reemplaza al
+    digest del artifact completo: un canary es UN archivo representativo.
     """
-    profile_name = _validated_profile(profile)
-    root = data_root or mo2_root
-    if root is None:
-        raise VfsAttestationError("se requiere data_root o mo2_root")
-    data_resolved = root.resolve()
-    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
-    data = physical_data_dir.resolve()
-    always_active = _always_active_plugins(data)
-    profile_dir = data_resolved / "profiles" / profile_name
-    enabled = _enabled_mods(profile_dir / "modlist.txt")
-    if not enabled:
-        raise VfsAttestationError("el perfil no tiene mods habilitados para construir un canary elegible")
+    profile_modlist = profile_dir / "modlist.txt"
+    enabled = read_enabled_mods(profile_modlist)
+    if source_mod is not None:
+        safe_source = _validated_profile(source_mod)
+        if enabled.count(source_mod) > 1:
+            raise VfsAttestationError(f"el modlist repite el mod {source_mod!r}: la prioridad es ambigua")
+        if source_mod not in enabled:
+            raise VfsAttestationError(f"el mod {source_mod!r} no está habilitado en el perfil {profile_name!r}")
+        indice = enabled.index(source_mod)
+        candidatos: tuple[str, ...] = (source_mod,)
+        # modlist.txt crece de menor a mayor prioridad. Al bajar desde el final
+        # hasta el mod fuente, se acumulan exactamente los roots que lo eclipsan.
+        roots_eclipsantes: list[pathlib.Path] = [data_resolved / "overwrite"]
+        for superior in reversed(enabled[indice + 1 :]):
+            safe_superior = _validated_profile(superior)
+            root_superior = mods_resolved / safe_superior
+            if not root_superior.is_dir():
+                raise VfsAttestationError(f"el mod habilitado {superior!r} no existe en {mods_resolved}")
+            roots_eclipsantes.append(root_superior)
+    else:
+        safe_source = None
+        if not enabled:
+            raise VfsAttestationError("el perfil no tiene mods habilitados para construir un canary elegible")
+        candidatos = tuple(reversed(enabled))
+        roots_eclipsantes = []
 
-    # modlist.txt crece de menor a mayor prioridad en el contrato vigente del
-    # proyecto. Al bajar desde el final, descartamos archivos reemplazados por
-    # overwrite o por un mod de prioridad mayor.
-    higher_roots: list[pathlib.Path] = [data_resolved / "overwrite"]
-    for mod_name in reversed(enabled):
-        safe_mod = _validated_profile(mod_name)
+    higher_roots: list[pathlib.Path] = list(roots_eclipsantes)
+    for mod_name in candidatos:
+        safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
         mod_root = mods_resolved / safe_mod
         if not mod_root.is_dir():
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
@@ -480,10 +515,104 @@ def build_attestation_challenge(
                 sha256=sha256,
                 profile_fingerprint=fingerprint,
             )
-        higher_roots.append(mod_root)
+        if safe_source is None:
+            higher_roots.append(mod_root)
 
+    if source_mod is not None:
+        raise VfsAttestationError(
+            f"no existe un canary elegible dentro de {source_mod!r}: todo su archivo está en el Data "
+            "físico o queda eclipsado por overwrite/mods de mayor prioridad"
+        )
     raise VfsAttestationError(
         "no existe un canary elegible: todo archivo de mod también está en Data físico o queda sobrescrito"
+    )
+
+
+def _raices_del_overlay(
+    *,
+    mo2_root: pathlib.Path | None,
+    data_root: pathlib.Path | None,
+    mods_dir: pathlib.Path | None,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Resolución ÚNICA de ``(data_resolved, mods_resolved)`` del overlay MO2.
+
+    ``<data_root>/mods`` es el mismo concepto "directorio de mods de la
+    instancia activa" que ``get_mo2_mods_path()`` centraliza en el resolver
+    (ver el ancla de constructores manuales de
+    ``tests/test_path_resolution_service.py``): este helper existe para que
+    ningún builder de challenge lo reconstruya a mano.
+    """
+    root = data_root or mo2_root
+    if root is None:
+        raise VfsAttestationError("se requiere data_root o mo2_root")
+    data_resolved = root.resolve()
+    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    return data_resolved, mods_resolved
+
+
+def build_attestation_challenge(
+    *,
+    mo2_root: pathlib.Path | None = None,
+    data_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
+    profile: str,
+    physical_data_dir: pathlib.Path,
+) -> VfsAttestationChallenge:
+    """Elige un archivo efectivo de mod que el ``Data`` físico no contiene.
+
+    El conjunto de plugins que el motor carga siempre (``primaryPlugins()``) se
+    deriva del game root de ``physical_data_dir``; el worker deriva el mismo
+    conjunto del game root de su ``virtual_data_dir``. En producción ambos son
+    el mismo ``<juego>/Data`` (USVFS expone la misma ruta que lee el preview).
+    """
+    profile_name = _validated_profile(profile)
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
+    data = physical_data_dir.resolve()
+    return _construir_challenge(
+        data_resolved=data_resolved,
+        mods_resolved=mods_resolved,
+        profile_dir=data_resolved / "profiles" / profile_name,
+        profile_name=profile_name,
+        data=data,
+        always_active=_always_active_plugins(data),
+        source_mod=None,
+    )
+
+
+def build_attestation_challenge_for_source(
+    *,
+    source_mod: str,
+    mo2_root: pathlib.Path | None = None,
+    data_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
+    profile: str,
+    physical_data_dir: pathlib.Path,
+) -> VfsAttestationChallenge:
+    """Canary elegible perteneciente a UN mod concreto (p. ej. ``TexGen Output``).
+
+    Es la primitive que el gate del handoff TexGen → DynDOLOD usa para elegir
+    evidencia runtime que le pertenece al artifact: el ``source_mod`` del
+    challenge devuelto es EXACTAMENTE el mod pedido, nunca un mod vecino que
+    resultara conveniente. Igual que la variante libre, exige que el archivo
+    esté ausente del ``Data`` físico y no eclipsado —sin esas dos condiciones el
+    probe runtime no distinguiría la vista USVFS de la física— y falla cerrado
+    si ese mod no aporta ningún canary elegible.
+
+    El nombre del mod se valida como componente de path seguro; la firma NO
+    acepta rutas.
+    """
+    safe_mod = _validated_profile(source_mod)
+    profile_name = _validated_profile(profile)
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
+    data = physical_data_dir.resolve()
+    return _construir_challenge(
+        data_resolved=data_resolved,
+        mods_resolved=mods_resolved,
+        profile_dir=data_resolved / "profiles" / profile_name,
+        profile_name=profile_name,
+        data=data,
+        always_active=_always_active_plugins(data),
+        source_mod=safe_mod,
     )
 
 
@@ -506,11 +635,7 @@ def verify_vfs_attestation(
     profile_name = _validated_profile(profile)
     if profile_name != challenge.profile:
         raise VfsAttestationError(f"perfil incorrecto: worker={profile_name!r}, challenge={challenge.profile!r}")
-    root = data_root or mo2_root
-    if root is None:
-        raise VfsAttestationError("se requiere data_root o mo2_root")
-    data_resolved = root.resolve()
-    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
     relative = pathlib.Path(*challenge.relative_path.parts)
     source = mods_resolved / _validated_profile(challenge.source_mod) / relative
     current_source_sha = _sha256_file(source)

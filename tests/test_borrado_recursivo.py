@@ -265,6 +265,17 @@ MECANISMO_DE_MEDICION: dict[str, str] = {
     # mod (crear el digest con una política y el rollback con otra es cómo la
     # identidad y el efecto divergen).
     "sky_claw/local/tools/artifact_digest.py": "link-aware",
+    # PR-586D: la efectividad del artifact en el overlay del perfil —cada path
+    # del mod gana byte-exact contra mods de mayor prioridad y `overwrite`— se
+    # mide con `iter_archivos_propios` (link-aware) sobre el artifact Y con
+    # `link_kind_and_identity_or_raise` sobre los ganadores eclipsantes. Mide
+    # link-aware porque la medición ES el gate: si el recorrido entrara por un
+    # junction a un árbol ajeno certificaría como efectivos archivos que el
+    # artifact no porta, y si un ganador se leyera a través de un enlace
+    # firmaría bytes que el overlay no entrega. Su contraparte que borra es el
+    # DirectoryRollback sobre el mismo mod empaquetado (medir con una política
+    # y borrar con otra es cómo la cuenta y el efecto divergen).
+    "sky_claw/local/mo2/mod_effectivity.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
     "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }

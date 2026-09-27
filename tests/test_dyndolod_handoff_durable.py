@@ -3642,3 +3642,100 @@ def test_los_callers_del_reconciler_de_orphan_estan_congelados() -> None:
             f"{clave}:{nombre} reconcilia orphans sin nombrar DynDOLODRunner.TEXGEN_MOD_NAME "
             "en su cadena de callers: decidí la cardinalidad receipt→artifact"
         )
+
+
+# =============================================================================
+# PR-586D — R1: el corte por habilitación de perfil preserva y certifica
+# =============================================================================
+
+
+class _GateQueBloquea:
+    """Spawn strategy doble: el gate devuelve el veredicto dado y no ejecuta nada."""
+
+    def __init__(self, veredicto: object) -> None:
+        self.veredicto = veredicto
+        self.requests: list[object] = []
+
+    async def verify_texgen_handoff(self, request: object) -> object:
+        self.requests.append(request)
+        return self.veredicto
+
+    async def spawn(self, **kwargs: object) -> object:
+        raise AssertionError("el pipeline no debe spawnear con el gate bloqueado")
+
+
+@pytest.mark.asyncio
+async def test_needs_deployment_por_habilitacion_de_perfil_preserva_certifica_y_publica_la_accion(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R1/R2-brokered (PR-586D): primera corrida con el mod todavia deshabilitado.
+
+    El gate brokered corta con ``profile_enablement``: el artifact NO se
+    destruye, la transaccion queda COMMITTED con un handoff
+    ``AWAITING_DEPLOYMENT`` certificado bajo lease, y el payload publica la
+    accion CONCRETA — la GUI no puede traducir ``needs_deployment`` a
+    "materializa en el Data fisico" cuando lo que falta es habilitar el mod en
+    MO2.
+    """
+    from sky_claw.local.tools.texgen_handoff import TexGenHandoffResult
+
+    journal, _db_path = journal_tmp
+    config, runner_base = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_layout is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    staging = config.texgen_root / runner_base.TEXGEN_OUTPUT_NAME
+    mod_texgen = config.mo2_mods_path / runner_base.TEXGEN_MOD_NAME
+
+    gate = _GateQueBloquea(
+        TexGenHandoffResult.bloqueado(
+            "falta habilitar el mod en el perfil",
+            pending_action="profile_enablement",
+        )
+    )
+    runner = DynDOLODRunner(
+        config,
+        readiness=ReadinessMode.DISABLED_FOR_TEST,
+        spawn_strategy=gate,  # type: ignore[arg-type]
+    )
+    svc = _svc(journal, runner=runner)
+
+    with (
+        patch.object(runner, "_execute_process", _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging))),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    # el corte es accionable: flag + accion concreta
+    assert result["success"] is False
+    assert result["needs_deployment"] is True
+    assert result["handoff_action"] == "profile_enablement"
+    # R1: el artifact que el operador tiene que habilitar SOBREVIVE al rollback
+    assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"CURRENT!"
+    assert (mod_texgen / "textures" / "sub" / "b.dds").read_bytes() == b"CURRENT-SUB"
+    # el gate brokered nunca necesito Data fisico: el corte nombra el perfil
+    assert any("perfil" in str(e).lower() for e in result.get("errors", []))
+
+    # handoff durable certificado bajo lease, con la accion nombrada
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT
+    assert activo.expected_profile == "Perfil-A"
+    esperado = digest_arbol(mod_texgen / "textures")
+    assert (activo.expected_digest, activo.expected_files, activo.expected_bytes) == (
+        esperado.digest,
+        esperado.files,
+        esperado.bytes,
+    )
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT status, description FROM transactions WHERE transaction_id = ?", (activo.source_tx_id,)
+    )
+    fila = await cur.fetchone()
+    assert fila is not None and fila[0] == TransactionStatus.COMMITTED.value
+    assert "esperando deployment del perfil" in fila[1]
+
+    # R2: el resume con el mismo perfil + artifact re-evalua el gate sin regenerar
+    consulta = await svc._consultar_resume(runner)  # noqa: SLF001
+    from sky_claw.app.db.handoffs import DeploymentHandoff
+
+    assert isinstance(consulta, DeploymentHandoff)
+    assert consulta.handoff_id == activo.handoff_id
