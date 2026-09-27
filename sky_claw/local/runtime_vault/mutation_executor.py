@@ -315,6 +315,20 @@ def node_depth(relative_path: str) -> int:
     return relative_path.count("/") + 1
 
 
+#: Estados que NUNCA puede reportar un apply cuyo rollback falló. Afirmar
+#: ``APPLYING``/``ROLLBACK_REQUIRED``/``ROLLING_BACK``/``ROLLED_BACK`` tras un
+#: fallo de restauración invitaría a S4-C a reintentar el apply sobre un Golden
+#: potencialmente mutado; §20 sólo admite ``ROLLBACK_FAILED`` o ``INDETERMINATE``.
+_ESTADOS_PROHIBIDOS_TRAS_FALLO_DE_ROLLBACK = frozenset(
+    {
+        ProtectionTransactionState.APPLYING,
+        ProtectionTransactionState.ROLLBACK_REQUIRED,
+        ProtectionTransactionState.ROLLING_BACK,
+        ProtectionTransactionState.ROLLED_BACK,
+    }
+)
+
+
 def _nodes_of(plan: AuthorizedPlan | DurableAuthorizedPlan) -> tuple[NodeSecurityBackup, ...]:
     """Nodos autorizados, tanto desde el plan puro como desde el plan durable."""
     if isinstance(plan, DurableAuthorizedPlan):
@@ -727,8 +741,15 @@ def apply_authorized_plan(
         outcomes=outcomes,
     )
     estado = journal.transaction_state
-    if rollback_error is not None and estado is ProtectionTransactionState.ROLLING_BACK:
-        estado = _intentar_transicion(journal, ProtectionTransactionState.ROLLBACK_FAILED)
+    if rollback_error is not None:
+        if estado is ProtectionTransactionState.ROLLING_BACK:
+            estado = _intentar_transicion(journal, ProtectionTransactionState.ROLLBACK_FAILED)
+        if estado in _ESTADOS_PROHIBIDOS_TRAS_FALLO_DE_ROLLBACK:
+            # El journal no pudo anexar (envenenado por un fallo de durabilidad
+            # previo) y por tanto sigue reportando un estado de apply en curso.
+            # El reporte NO puede afirmar un estado que invite a reintentar el
+            # apply: §20 exige ROLLBACK_FAILED o INDETERMINATE.
+            estado = ProtectionTransactionState.ROLLBACK_FAILED
 
     reporte = ApplyReport(
         operation_id=plan.operation_id,

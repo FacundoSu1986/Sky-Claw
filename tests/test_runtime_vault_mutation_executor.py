@@ -1202,6 +1202,53 @@ class TestRollbackExacto:
         assert reporte.apply_error is not None
         assert reporte.rollback_error is not None
 
+    def test_l_journal_envenenado_nunca_reporta_estado_de_apply(self, tmp_path: pathlib.Path, monkeypatch: Any) -> None:
+        """Un fallo de rollback con el journal inhabilitado para anexar NO puede
+        reportar ``APPLYING``/``ROLLBACK_REQUIRED``/``ROLLING_BACK``.
+
+        Sin el journal no hay transición posible, de modo que el estado observado
+        sigue siendo el de apply en curso. Reportarlo invitaría a S4-C a reintentar
+        el apply sobre un Golden potencialmente mutado: §20 sólo admite
+        ``ROLLBACK_FAILED`` o ``INDETERMINATE``.
+        """
+        raiz = _raiz(tmp_path)
+        durable = _plan_durable(raiz)
+        kernel = FakeKernel()
+        journal = create_protection_journal(durable, programdata_resolver=_resolver(raiz), kernel=kernel)
+
+        def _transition_inhabilitada(destino: ProtectionTransactionState) -> ProtectionTransactionState:
+            raise OSError("journal envenenado: no puede anexar")
+
+        # Se parchea la CLASE, no la instancia: `DurableProtectionJournal` usa
+        # __slots__ y el método no es asignable por instancia. `monkeypatch`
+        # deshace el parche al terminar el test.
+        monkeypatch.setattr(type(journal), "transition_to", _transition_inhabilitada)
+
+        port = _FakePort(durable.plan, timeline=kernel.eventos)
+        port.apply_falla.add("Data")
+        port.restore_falla.add("Data/Scripts/deep.pex")
+
+        with pytest.raises(MutationRollbackError) as excinfo:
+            apply_authorized_plan(
+                plan=durable,
+                journal=journal,
+                session=_session(),
+                port=port,
+                probe=_probe_recorder(port),
+            )
+        reporte = excinfo.value.report
+        assert reporte is not None
+        assert reporte.transaction_state is ProtectionTransactionState.ROLLBACK_FAILED
+        assert reporte.transaction_state not in {
+            ProtectionTransactionState.APPLYING,
+            ProtectionTransactionState.ROLLBACK_REQUIRED,
+            ProtectionTransactionState.ROLLING_BACK,
+            ProtectionTransactionState.ROLLED_BACK,
+        }
+        # Ambas causas se conservan (§35).
+        assert reporte.apply_error is not None
+        assert reporte.rollback_error is not None
+
     def test_l_preserva_apply_error_y_rollback_error(self, tmp_path: pathlib.Path) -> None:
         port = _FakePort(_plan())
         port.apply_falla.add("Data")
