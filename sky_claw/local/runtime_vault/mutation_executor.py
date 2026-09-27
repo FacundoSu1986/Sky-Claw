@@ -63,7 +63,7 @@ import pathlib
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.local.runtime_vault.authorization_context import PrivilegedBoundarySession
 from sky_claw.local.runtime_vault.authorized_plan import AuthorizedPlan
@@ -78,6 +78,9 @@ from sky_claw.local.runtime_vault.protection_journal_store import (
     DurableProtectionJournal,
     WalMutationPermit,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - sólo anotaciones; el ABI vive en target_dacl
+    from sky_claw.local.runtime_vault.target_dacl import TargetDaclVerificationResult
 
 # ============================================================================
 # Jerarquía de excepciones
@@ -214,7 +217,15 @@ class NodeMutationPort(Protocol):
         """SetSecurityInfo REAL sobre el handle (§7)."""
         ...
 
-    def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None: ...
+    def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> object:
+        """Verifica la Target DACL POST sobre el handle (§12.2 paso 6).
+
+        El adaptador productivo devuelve el ``TargetDaclVerificationResult``
+        estructurado (evidencia auditable del POST); los puertos de prueba pueden
+        devolver ``None``. El orquestador ignora el valor: lo normativo es que la
+        verificación EXIJA, y ante cualquier divergencia lance.
+        """
+        ...
 
     def restore_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
         """SetSecurityInfo de restauración sobre el handle (§12.2 rollback)."""
@@ -266,10 +277,10 @@ class HandleBoundTargetDaclPort:
         self._setsecurityinfo_calls += 1
         target_dacl.apply_target_dacl_by_handle(handle, node)
 
-    def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None:
+    def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> TargetDaclVerificationResult:
         from sky_claw.local.runtime_vault import target_dacl
 
-        target_dacl.verify_target_dacl_by_handle(handle, node)
+        return target_dacl.verify_target_dacl_by_handle(handle, node)
 
     def restore_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
         from sky_claw.local.runtime_vault import target_dacl
@@ -302,6 +313,20 @@ def node_depth(relative_path: str) -> int:
     if relative_path == ".":
         return 0
     return relative_path.count("/") + 1
+
+
+#: Estados que NUNCA puede reportar un apply cuyo rollback falló. Afirmar
+#: ``APPLYING``/``ROLLBACK_REQUIRED``/``ROLLING_BACK``/``ROLLED_BACK`` tras un
+#: fallo de restauración invitaría a S4-C a reintentar el apply sobre un Golden
+#: potencialmente mutado; §20 sólo admite ``ROLLBACK_FAILED`` o ``INDETERMINATE``.
+_ESTADOS_PROHIBIDOS_TRAS_FALLO_DE_ROLLBACK = frozenset(
+    {
+        ProtectionTransactionState.APPLYING,
+        ProtectionTransactionState.ROLLBACK_REQUIRED,
+        ProtectionTransactionState.ROLLING_BACK,
+        ProtectionTransactionState.ROLLED_BACK,
+    }
+)
 
 
 def _nodes_of(plan: AuthorizedPlan | DurableAuthorizedPlan) -> tuple[NodeSecurityBackup, ...]:
@@ -502,6 +527,7 @@ def _apply_node(
     relative_path = node.relative_path
     outcome = NodeMutationOutcome(relative_path=relative_path, node_kind=node.node_kind)
     path = derive_node_path(plan, relative_path)
+    handle = 0
 
     try:
         # 2-3. Probe de quiescencia: handle TRANSITORIO distinto del de mutación.
@@ -549,9 +575,11 @@ def _apply_node(
     except Exception as exc:  # noqa: BLE001 — boundary deliberada: el desenlace se clasifica, no se adivina
         return _NodeResult(outcome, MutationApplyError(f"Fallo de apply en '{relative_path}': {exc}"))
     finally:
-        # 21. Cerrar el handle exactamente una vez.
-        with contextlib.suppress(Exception):  # el cierre no debe enmascarar el desenlace del nodo
-            port.close(handle)
+        # 21. Cerrar el handle exactamente una vez. Si la apertura falló no hay
+        # nada que cerrar: ``handle`` quedó en 0 y el puerto no registró handles.
+        if handle:
+            with contextlib.suppress(Exception):  # el cierre no debe enmascarar el desenlace del nodo
+                port.close(handle)
 
 
 # ============================================================================
@@ -567,8 +595,9 @@ def _restore_node(
 ) -> None:
     """Restaura el PRE autorizado de UN nodo y verifica la restauración."""
     path = derive_node_path(plan, node.relative_path)
-    handle = port.open(path, node.node_kind)
+    handle = 0
     try:
+        handle = port.open(path, node.node_kind)
         observed = port.read_identity(handle)
         if observed.volume_serial_number != node.volume_serial_number or observed.file_id != node.file_id:
             raise MutationRollbackError(
@@ -582,8 +611,9 @@ def _restore_node(
         port.restore_pre_sd(handle, node)
         port.verify_restored_pre_sd(handle, node)
     finally:
-        with contextlib.suppress(Exception):  # el cierre no debe enmascarar el fallo de restauración
-            port.close(handle)
+        if handle:
+            with contextlib.suppress(Exception):  # el cierre no debe enmascarar el fallo de restauración
+                port.close(handle)
 
 
 def _intentar_transicion(
@@ -711,8 +741,15 @@ def apply_authorized_plan(
         outcomes=outcomes,
     )
     estado = journal.transaction_state
-    if rollback_error is not None and estado is ProtectionTransactionState.ROLLING_BACK:
-        estado = _intentar_transicion(journal, ProtectionTransactionState.ROLLBACK_FAILED)
+    if rollback_error is not None:
+        if estado is ProtectionTransactionState.ROLLING_BACK:
+            estado = _intentar_transicion(journal, ProtectionTransactionState.ROLLBACK_FAILED)
+        if estado in _ESTADOS_PROHIBIDOS_TRAS_FALLO_DE_ROLLBACK:
+            # El journal no pudo anexar (envenenado por un fallo de durabilidad
+            # previo) y por tanto sigue reportando un estado de apply en curso.
+            # El reporte NO puede afirmar un estado que invite a reintentar el
+            # apply: §20 exige ROLLBACK_FAILED o INDETERMINATE.
+            estado = ProtectionTransactionState.ROLLBACK_FAILED
 
     reporte = ApplyReport(
         operation_id=plan.operation_id,
