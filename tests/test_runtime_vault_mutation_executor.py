@@ -1807,6 +1807,73 @@ class TestPuntoCiegoWindows:
         modulo = pathlib.Path("sky_claw/local/runtime_vault/mutation_executor.py").read_text(encoding="utf-8")
         assert {n for n in re.findall(r"\b(set[a-zA-Z_]*calls)\b", modulo)} == {"setsecurityinfo_calls"}
 
+    def test_el_espia_solo_delega_en_atributos_reales_del_puerto(self) -> None:
+        """Comprobación EN TIEMPO DE EJECUCIÓN, no por AST.
+
+        El RIG envuelve al puerto productivo. Si delega en un atributo que el
+        puerto real no tiene, el fallo es un ``AttributeError`` que sólo se ve en
+        Windows. Aquí se instancia el puerto real (su ``__init__`` no toca Win32)
+        y se comprueba que existe cada atributo delegado.
+        """
+        from sky_claw.local.runtime_vault.mutation_executor import HandleBoundTargetDaclPort
+
+        real = HandleBoundTargetDaclPort()
+        espia = _PuertoEspia(real)
+        for nombre in (
+            "open",
+            "close",
+            "read_identity",
+            "read_live_pre_sd_sha256",
+            "apply_target_dacl",
+            "verify_target_dacl",
+            "restore_pre_sd",
+            "verify_restored_pre_sd",
+            "setsecurityinfo_calls",
+        ):
+            assert hasattr(real, nombre), f"el puerto productivo no expone '{nombre}'"
+            assert hasattr(espia, nombre), f"el puerto espía no expone '{nombre}'"
+
+    def test_el_espia_propaga_la_evidencia_del_post(self) -> None:
+        """El espía debe registrar lo que el puerto devuelve, jamás ``None``.
+
+        Con un puerto interno de pega que devuelve un centinela, el espía tiene
+        que capturarlo. Si el adaptador productivo descartase el resultado, el
+        RIG fallaría con ``AttributeError`` sobre ``None`` sólo en Windows.
+        """
+
+        class _InternoConEvidencia:
+            setsecurityinfo_calls = 7
+
+            def open(self, path: pathlib.Path, node_kind: GoldenProtectionNodeKind) -> int:
+                return 1
+
+            def close(self, handle: int) -> None: ...
+
+            def read_identity(self, handle: int) -> NodeIdentity:
+                raise AssertionError("no usado")
+
+            def read_live_pre_sd_sha256(self, handle: int) -> str:
+                return "0" * 64
+
+            def apply_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None: ...
+
+            def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> object:
+                return "CENTINELA-POST"
+
+            def restore_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None: ...
+
+            def verify_restored_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
+                self.restauradas = getattr(self, "restauradas", []) + [node.relative_path]
+
+        interno = _InternoConEvidencia()
+        espia = _PuertoEspia(interno)
+        nodo = _node("Data/quest.esp", 4242)
+        assert espia.verify_target_dacl(1, nodo) is None
+        assert espia.verificaciones == ["CENTINELA-POST"], espia.verificaciones
+        assert espia.setsecurityinfo_calls == 7
+        espia.verify_restored_pre_sd(1, nodo)
+        assert espia.restauraciones_verificadas == ["Data/quest.esp"]
+
     def test_el_puerto_productivo_devuelve_la_evidencia_del_post(self) -> None:
         """``verify_target_dacl`` debe DEVOLVER el resultado, no descartarlo.
 
