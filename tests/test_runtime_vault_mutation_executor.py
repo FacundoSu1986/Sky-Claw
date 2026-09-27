@@ -19,10 +19,13 @@ Steam, MO2, el runtime ni el Golden real.
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import pathlib
+import re
 import sys
+import tempfile
 import uuid
 from typing import Any
 
@@ -70,6 +73,11 @@ from sky_claw.local.runtime_vault.protection_journal_store import (
     DurableProtectionJournal,
     create_protection_journal,
     derive_protection_journal_path,
+)
+from sky_claw.local.runtime_vault.target_dacl import (
+    DIR_TARGET_MASK_OWNER_RIGHTS,
+    FILE_TARGET_MASK_OWNER_RIGHTS,
+    TargetDaclVerificationResult,
 )
 
 _OPERATION_ID = "3f6b0be2-1c2a-4d3e-8f4a-9b7c6d5e4f3a"
@@ -1194,6 +1202,53 @@ class TestRollbackExacto:
         assert reporte.apply_error is not None
         assert reporte.rollback_error is not None
 
+    def test_l_journal_envenenado_nunca_reporta_estado_de_apply(self, tmp_path: pathlib.Path, monkeypatch: Any) -> None:
+        """Un fallo de rollback con el journal inhabilitado para anexar NO puede
+        reportar ``APPLYING``/``ROLLBACK_REQUIRED``/``ROLLING_BACK``.
+
+        Sin el journal no hay transición posible, de modo que el estado observado
+        sigue siendo el de apply en curso. Reportarlo invitaría a S4-C a reintentar
+        el apply sobre un Golden potencialmente mutado: §20 sólo admite
+        ``ROLLBACK_FAILED`` o ``INDETERMINATE``.
+        """
+        raiz = _raiz(tmp_path)
+        durable = _plan_durable(raiz)
+        kernel = FakeKernel()
+        journal = create_protection_journal(durable, programdata_resolver=_resolver(raiz), kernel=kernel)
+
+        def _transition_inhabilitada(destino: ProtectionTransactionState) -> ProtectionTransactionState:
+            raise OSError("journal envenenado: no puede anexar")
+
+        # Se parchea la CLASE, no la instancia: `DurableProtectionJournal` usa
+        # __slots__ y el método no es asignable por instancia. `monkeypatch`
+        # deshace el parche al terminar el test.
+        monkeypatch.setattr(type(journal), "transition_to", _transition_inhabilitada)
+
+        port = _FakePort(durable.plan, timeline=kernel.eventos)
+        port.apply_falla.add("Data")
+        port.restore_falla.add("Data/Scripts/deep.pex")
+
+        with pytest.raises(MutationRollbackError) as excinfo:
+            apply_authorized_plan(
+                plan=durable,
+                journal=journal,
+                session=_session(),
+                port=port,
+                probe=_probe_recorder(port),
+            )
+        reporte = excinfo.value.report
+        assert reporte is not None
+        assert reporte.transaction_state is ProtectionTransactionState.ROLLBACK_FAILED
+        assert reporte.transaction_state not in {
+            ProtectionTransactionState.APPLYING,
+            ProtectionTransactionState.ROLLBACK_REQUIRED,
+            ProtectionTransactionState.ROLLING_BACK,
+            ProtectionTransactionState.ROLLED_BACK,
+        }
+        # Ambas causas se conservan (§35).
+        assert reporte.apply_error is not None
+        assert reporte.rollback_error is not None
+
     def test_l_preserva_apply_error_y_rollback_error(self, tmp_path: pathlib.Path) -> None:
         port = _FakePort(_plan())
         port.apply_falla.add("Data")
@@ -1509,17 +1564,74 @@ class TestModelo:
 # ============================================================================
 
 
+class _PuertoEspia:
+    """Envuelve al puerto productivo y registra los resultados de verificación.
+
+    Existe para que el RIG nativo pueda afirmar el contrato POST (§12.2 paso 6)
+    sin reabrir un nodo cuya DACL recién mutada ya no concede WRITE_DAC al owner
+    (así lo exige ADR §7: la ACE de Owner Rights es deliberadamente restringida).
+    """
+
+    def __init__(self, interno: HandleBoundTargetDaclPort) -> None:
+        self._interno = interno
+        self.verificaciones: list[TargetDaclVerificationResult] = []
+        self.restauraciones_verificadas: list[str] = []
+
+    def open(self, path: pathlib.Path, node_kind: GoldenProtectionNodeKind) -> int:
+        return self._interno.open(path, node_kind)
+
+    def close(self, handle: int) -> None:
+        self._interno.close(handle)
+
+    def read_identity(self, handle: int) -> NodeIdentity:
+        return self._interno.read_identity(handle)
+
+    def read_live_pre_sd_sha256(self, handle: int) -> str:
+        return self._interno.read_live_pre_sd_sha256(handle)
+
+    def apply_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None:
+        self._interno.apply_target_dacl(handle, node)
+
+    def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None:
+        self.verificaciones.append(self._interno.verify_target_dacl(handle, node))
+
+    def restore_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
+        self._interno.restore_pre_sd(handle, node)
+
+    def verify_restored_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
+        self._interno.verify_restored_pre_sd(handle, node)
+        self.restauraciones_verificadas.append(node.relative_path)
+
+    @property
+    def setsecurityinfo_calls(self) -> int:
+        return self._interno.setsecurityinfo_calls
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Pruebas nativas Win32 solo en Windows")
 class TestRigRealSobreArbolDescartable:
     """crear -> mutar -> verificar -> rollback -> verificar PRE -> borrar.
 
     El árbol lo crea el propio test bajo ``%TEMP%\\SkyClaw-S4B-RIG-<uuid>``.
     NUNCA toca Skyrim, Steam, MO2, el runtime ni el Golden real.
+
+    La verificación POST y la verificación de la restauración se hacen por HANDLE
+    DIRECTO sobre cada nodo, no re-probando el árbol entero: tras aplicar una DACL
+    PROTECTED con sólo 4 ACEs, un recorrido completo del árbol puede quedar sin
+    acceso de lectura y el test fallaría por una razón que no es la que pretende
+    probar. El handle propio siempre conserva READ_CONTROL.
+
+    Regla 2, igual de vinculante: NO se exige igualdad byte a byte entre el SD
+    restaurado y el PRE autorizado. ``SetSecurityInfo`` reserializa el descriptor
+    y limpia ``SE_DACL_AUTO_INHERITED``, de modo que el SD restaurado es
+    semánticamente idéntico pero byte a byte diferente. La fidelidad de la
+    restauración la garantiza --y la verifica--
+    ``verify_restored_security_descriptor_by_handle``, que compara OWNER, GROUP,
+    DACL ACE a ACE en orden canónico y el flag ``SE_DACL_PROTECTED``. Exigir
+    igualdad de hash sería exigirle al contrato productivo más de lo que el
+    contrato productivo promete.
     """
 
     def _arbol(self, tmp_path: pathlib.Path) -> pathlib.Path:
-        import tempfile
-
         base = pathlib.Path(tempfile.gettempdir()) / f"SkyClaw-S4B-RIG-{uuid.uuid4().hex}"
         (base / "Data" / "Scripts").mkdir(parents=True)
         (base / "Data" / "Skyrim.esm").write_bytes(b"esm-descartable-s4b")
@@ -1528,9 +1640,18 @@ class TestRigRealSobreArbolDescartable:
         return base
 
     def _plan_real(self, base: pathlib.Path, raiz: pathlib.Path) -> DurableAuthorizedPlan:
-        from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
+        from sky_claw.local.runtime_vault.node_evidence import (
+            NativeEvidenceUnsupportedError,
+            probe_node_evidence,
+        )
 
-        evidencias = probe_node_evidence(base)
+        try:
+            evidencias = probe_node_evidence(base)
+        except NativeEvidenceUnsupportedError as exc:
+            # El RIG exige NTFS con ACLs persistentes sobre volumen fijo. Fuera de
+            # eso corresponde un SKIP nativo, no un fallo: es la disciplina de
+            # plataforma del slice, no un defecto del apply.
+            pytest.skip(f"entorno sin las garantías NTFS que el RIG requiere: {exc}")
         nodos = tuple(e.backup for e in evidencias)
         raiz_nodo = next(n for n in nodos if n.relative_path == ".")
         plan = AuthorizedPlan(
@@ -1552,7 +1673,39 @@ class TestRigRealSobreArbolDescartable:
         destino.write_bytes(serialize_authorized_plan(plan))
         return DurableAuthorizedPlan(plan, destino, _proof=_MINT_PROOF)
 
-    def test_apply_real_verifica_y_rollback_restaura_el_pre(self, tmp_path: pathlib.Path) -> None:
+    def _pre_vivo(self, plan: DurableAuthorizedPlan, relative_path: str) -> str:
+        """SHA-256 del SD vivo sobre un handle propio del nodo.
+
+        SÓLO para diagnóstico. El RIG NO puede exigir igualdad byte a byte entre
+        el SD restaurado y el PRE autorizado: ``SetSecurityInfo`` reserializa el
+        descriptor y limpia ``SE_DACL_AUTO_INHERITED``, de modo que el SD
+        restaurado es semánticamente idéntico pero byte a byte diferente. La
+        fidelidad de la restauración la garantiza --y la verifica--
+        ``verify_restored_security_descriptor_by_handle``, que compara OWNER,
+        GROUP, DACL ACE a ACE en orden canónico y el flag ``SE_DACL_PROTECTED``.
+        """
+        from sky_claw.local.runtime_vault.target_dacl import (
+            close_security_handle,
+            open_node_security_handle,
+            read_live_pre_sd_sha256_by_handle,
+        )
+
+        handle = open_node_security_handle(derive_node_path(plan, relative_path))
+        try:
+            return read_live_pre_sd_sha256_by_handle(handle)
+        finally:
+            close_security_handle(handle)
+
+    def test_apply_real_muta_y_verifica_todos_los_nodos(self, tmp_path: pathlib.Path) -> None:
+        """SetSecurityInfo REAL sobre cada nodo, con POST verificado sobre EL MISMO handle.
+
+        La prueba de que la mutación aterrizó es el resultado de
+        ``verify_target_dacl_by_handle`` leído sobre el handle de mutación: valida
+        los 4 ACEs canónicos, su orden y sus máscaras, y ``SE_DACL_PROTECTED``.
+        NO se reabre el nodo después de mutar: la Target DACL no concede
+        WRITE_DAC/WRITE_OWNER al owner (por diseño, ADR §7), de modo que una
+        reapertura podría fallar por una razón ajena a lo que se quiere probar.
+        """
         import shutil
 
         base = self._arbol(tmp_path)
@@ -1564,31 +1717,32 @@ class TestRigRealSobreArbolDescartable:
                 volume_serial_number=durable.volume_serial_number,
                 root_file_id=durable.root_file_id,
             )
-            port = HandleBoundTargetDaclPort()
+            espia = _PuertoEspia(HandleBoundTargetDaclPort())
 
-            pre_por_nodo = {n.relative_path: n.pre_sd_sha256 for n in durable.plan.nodes}
             reporte = apply_authorized_plan(
                 plan=durable,
                 journal=journal,
                 session=sesion,
-                port=port,
+                port=espia,
                 probe=None,
             )
             assert reporte.ok is True, str(reporte.apply_error)
             assert reporte.nodes_with_confirmed_wal == tuple(n.relative_path for n in apply_order(durable.plan))
-            assert port.setsecurityinfo_calls == len(durable.plan.nodes)
+            assert espia.setsecurityinfo_calls == len(durable.plan.nodes)
             assert reporte.transaction_state is ProtectionTransactionState.APPLYING
+
+            # Un POST por nodo, todos válidos y todos con la DACL protegida.
+            assert len(espia.verificaciones) == len(durable.plan.nodes)
+            for verif in espia.verificaciones:
+                assert verif.dacl_protected is True
+                assert verif.owner_rights_present is True
+                assert verif.owner_rights_mask in {FILE_TARGET_MASK_OWNER_RIGHTS, DIR_TARGET_MASK_OWNER_RIGHTS}
             sesion.close()
-
-            # El PRE autorizado sigue siendo el que manda tras el apply.
-            from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
-
-            post = {n.relative_path: n.pre_sd_sha256 for n in probe_node_evidence(base)}
-            assert post != pre_por_nodo  # la Target DACL cambió el SD real
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
     def test_apply_real_con_fallo_dispara_rollback_exacto(self, tmp_path: pathlib.Path) -> None:
+        """Un nodo ausente rompe el apply: los mutados vuelven EXACTOS al PRE."""
         import shutil
 
         base = self._arbol(tmp_path)
@@ -1600,40 +1754,209 @@ class TestRigRealSobreArbolDescartable:
                 volume_serial_number=durable.volume_serial_number,
                 root_file_id=durable.root_file_id,
             )
-            port = HandleBoundTargetDaclPort()
-            pre_por_nodo = {n.relative_path: n.pre_sd_sha256 for n in durable.plan.nodes}
+            espia = _PuertoEspia(HandleBoundTargetDaclPort())
 
-            # Un nodo inexistente en el disco provoca el fallo del apply tras haber
-            # mutado nodos reales: el rollback debe restaurarlos EXACTAMENTE.
-            victima = next(n for n in durable.plan.nodes if n.relative_path == "Data/quest.esp")
-            victima_path = derive_node_path(durable, victima.relative_path)
+            victima_path = derive_node_path(durable, "Data/quest.esp")
             victima_path.unlink()
 
             reporte = apply_authorized_plan(
                 plan=durable,
                 journal=journal,
                 session=sesion,
-                port=port,
+                port=espia,
                 probe=None,
             )
             assert reporte.apply_error is not None
             assert reporte.rolled_back_nodes
+            assert "Data/quest.esp" not in reporte.rolled_back_nodes
             assert reporte.transaction_state is ProtectionTransactionState.ROLLED_BACK
+
+            # Exactitud semántica del rollback sobre EL MISMO handle de
+            # restauración: ``verify_restored_pre_sd`` compara OWNER, GROUP, DACL
+            # ACE a ACE en orden canónico y SE_DACL_PROTECTED contra el PRE
+            # autorizado por DurableAuthorizedPlan, y lanza si divergen.
+            assert set(espia.restauraciones_verificadas) == set(reporte.rolled_back_nodes)
+            assert "Data/quest.esp" not in espia.restauraciones_verificadas
+            # SetSecurityInfo reales: un apply y un restore por nodo alcanzado.
+            assert espia.setsecurityinfo_calls == len(reporte.rolled_back_nodes) * 2
             sesion.close()
-
-            from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
-
-            post = {n.relative_path: n.pre_sd_sha256 for n in probe_node_evidence(base)}
-            for rel in reporte.rolled_back_nodes:
-                assert post[rel] == pre_por_nodo[rel]
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
     def test_rig_nunca_toca_el_golden_real(self) -> None:
         """El RIG sólo opera bajo %TEMP% con un uuid propio."""
-        import tempfile
-
         base = pathlib.Path(tempfile.gettempdir()) / f"SkyClaw-S4B-RIG-{uuid.uuid4().hex}"
         assert str(base).lower().startswith(tempfile.gettempdir().lower())
         for prohibido in ("skyrim", "steam", "mod organizer", "mo2", "program files"):
             assert prohibido not in str(base).lower()
+
+
+# ============================================================================
+# 15. Guardas del punto ciego Windows (corren en POSIX)
+# ============================================================================
+
+
+class TestPuntoCiegoWindows:
+    """El mini-RIG sólo corre en Windows; estas guardas hacen observable en POSIX
+    todo lo que el RIG podría romper sin que el CI de POSIX lo note.
+
+    Historial: dos fallos reales del job ``windows-latest`` pasaron inadvertidos
+    por el CI POSIX porque el RIG es ``skipif(win32)`` --un identificador mal
+    escrito y una exigencia de igualdad byte a byte sobre el SD restaurado--.
+    Ambas clases de error quedan aquí bajo observación permanente.
+    """
+
+    def _fuente_propia(self) -> str:
+        return pathlib.Path(__file__).read_text(encoding="utf-8")
+
+    def _clase_rig(self, arbol: ast.Module) -> ast.ClassDef:
+        for nodo in arbol.body:
+            if isinstance(nodo, ast.ClassDef) and nodo.name == "TestRigRealSobreArbolDescartable":
+                return nodo
+        raise AssertionError("no se encontró la clase del mini-RIG nativo")
+
+    def _metodos_de_prueba(self, clase: ast.ClassDef) -> list[ast.FunctionDef]:
+        return [n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+
+    def test_el_puerto_espia_cubre_el_contrato_completo(self) -> None:
+        """Si el espía no implementa todo el Protocol, el RIG falla sólo en Windows."""
+        arbol = ast.parse(self._fuente_propia())
+        espia = next(n for n in arbol.body if isinstance(n, ast.ClassDef) and n.name == "_PuertoEspia")
+        implementado = {n.name for n in espia.body if isinstance(n, (ast.FunctionDef,)) and not n.name.startswith("_")}
+        propiedades = {
+            next(iter(d.id for d in n.decorator_list if isinstance(d, ast.Name) and d.id == "property"), None)
+            for n in espia.body
+            if isinstance(n, ast.FunctionDef)
+            and any(isinstance(d, ast.Name) and d.id == "property" for d in n.decorator_list)
+        }
+        contrato = {
+            "open",
+            "close",
+            "read_identity",
+            "read_live_pre_sd_sha256",
+            "apply_target_dacl",
+            "verify_target_dacl",
+            "restore_pre_sd",
+            "verify_restored_pre_sd",
+            "setsecurityinfo_calls",
+        }
+        assert contrato <= (implementado | {p for p in propiedades if p}), (
+            f"el puerto espía no cubre el contrato NodeMutationPort: {sorted(contrato - (implementado | propiedades))}"
+        )
+
+    def test_el_contador_del_puerto_tiene_una_sola_ortografia(self) -> None:
+        """Un identificador mal escrito es invisible en grep y en el traceback."""
+        fuente = self._fuente_propia()
+        encontrados = {n for n in re.findall(r"\b(set[a-zA-Z_]*calls)\b", fuente)}
+        assert encontrados == {"setsecurityinfo_calls"}, (
+            f"ortografías del contador en el fichero de tests: {sorted(encontrados)}"
+        )
+        modulo = pathlib.Path("sky_claw/local/runtime_vault/mutation_executor.py").read_text(encoding="utf-8")
+        assert {n for n in re.findall(r"\b(set[a-zA-Z_]*calls)\b", modulo)} == {"setsecurityinfo_calls"}
+
+    def test_el_espia_solo_delega_en_atributos_reales_del_puerto(self) -> None:
+        """Comprobación EN TIEMPO DE EJECUCIÓN, no por AST.
+
+        El RIG envuelve al puerto productivo. Si delega en un atributo que el
+        puerto real no tiene, el fallo es un ``AttributeError`` que sólo se ve en
+        Windows. Aquí se instancia el puerto real (su ``__init__`` no toca Win32)
+        y se comprueba que existe cada atributo delegado.
+        """
+        from sky_claw.local.runtime_vault.mutation_executor import HandleBoundTargetDaclPort
+
+        real = HandleBoundTargetDaclPort()
+        espia = _PuertoEspia(real)
+        for nombre in (
+            "open",
+            "close",
+            "read_identity",
+            "read_live_pre_sd_sha256",
+            "apply_target_dacl",
+            "verify_target_dacl",
+            "restore_pre_sd",
+            "verify_restored_pre_sd",
+            "setsecurityinfo_calls",
+        ):
+            assert hasattr(real, nombre), f"el puerto productivo no expone '{nombre}'"
+            assert hasattr(espia, nombre), f"el puerto espía no expone '{nombre}'"
+
+    def test_el_espia_propaga_la_evidencia_del_post(self) -> None:
+        """El espía debe registrar lo que el puerto devuelve, jamás ``None``.
+
+        Con un puerto interno de pega que devuelve un centinela, el espía tiene
+        que capturarlo. Si el adaptador productivo descartase el resultado, el
+        RIG fallaría con ``AttributeError`` sobre ``None`` sólo en Windows.
+        """
+
+        class _InternoConEvidencia:
+            setsecurityinfo_calls = 7
+
+            def open(self, path: pathlib.Path, node_kind: GoldenProtectionNodeKind) -> int:
+                return 1
+
+            def close(self, handle: int) -> None: ...
+
+            def read_identity(self, handle: int) -> NodeIdentity:
+                raise AssertionError("no usado")
+
+            def read_live_pre_sd_sha256(self, handle: int) -> str:
+                return "0" * 64
+
+            def apply_target_dacl(self, handle: int, node: NodeSecurityBackup) -> None: ...
+
+            def verify_target_dacl(self, handle: int, node: NodeSecurityBackup) -> object:
+                return "CENTINELA-POST"
+
+            def restore_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None: ...
+
+            def verify_restored_pre_sd(self, handle: int, node: NodeSecurityBackup) -> None:
+                self.restauradas = getattr(self, "restauradas", []) + [node.relative_path]
+
+        interno = _InternoConEvidencia()
+        espia = _PuertoEspia(interno)
+        nodo = _node("Data/quest.esp", 4242)
+        assert espia.verify_target_dacl(1, nodo) is None
+        assert espia.verificaciones == ["CENTINELA-POST"], espia.verificaciones
+        assert espia.setsecurityinfo_calls == 7
+        espia.verify_restored_pre_sd(1, nodo)
+        assert espia.restauraciones_verificadas == ["Data/quest.esp"]
+
+    def test_el_puerto_productivo_devuelve_la_evidencia_del_post(self) -> None:
+        """``verify_target_dacl`` debe DEVOLVER el resultado, no descartarlo.
+
+        El RIG afirma el contrato POST con ese resultado; si el adaptador lo
+        descartase, el RIG fallaría con ``AttributeError`` sólo en Windows.
+        """
+        fuente = pathlib.Path("sky_claw/local/runtime_vault/mutation_executor.py").read_text(encoding="utf-8")
+        arbol = ast.parse(fuente)
+        adaptador = next(n for n in arbol.body if isinstance(n, ast.ClassDef) and n.name == "HandleBoundTargetDaclPort")
+        metodo = next(n for n in adaptador.body if isinstance(n, ast.FunctionDef) and n.name == "verify_target_dacl")
+        assert metodo.returns is not None, "verify_target_dacl debe declarar tipo de retorno"
+        assert "TargetDaclVerificationResult" in ast.unparse(metodo.returns)
+        assert any(isinstance(n, ast.Return) and n.value is not None for n in ast.walk(metodo)), (
+            "el adaptador productivo descarta el resultado de verify_target_dacl_by_handle"
+        )
+
+    def test_el_rig_no_reabre_ni_reprueba_el_arbol_tras_mutar(self) -> None:
+        """Ni ``probe_node_evidence`` ni hashes byte a byte tras el rollback."""
+        fuente = self._fuente_propia()
+        arbol = ast.parse(fuente)
+        rig = self._clase_rig(arbol)
+        for metodo in self._metodos_de_prueba(rig):
+            cuerpo = ast.unparse(metodo)
+            assert "probe_node_evidence" not in cuerpo, f"{metodo.name}: el RIG no debe re-probar el árbol tras mutar"
+            assert "pre_sd_sha256" not in cuerpo, (
+                f"{metodo.name}: el RIG no debe comparar hashes de SD tras restaurar "
+                "(SetSecurityInfo reserializa y limpia SE_DACL_AUTO_INHERITED)"
+            )
+
+    def test_el_rig_exige_verificacion_semantica_de_la_restauracion(self) -> None:
+        """La fidelidad del rollback se afirma con ``verify_restored_pre_sd``."""
+        fuente = self._fuente_propia()
+        arbol = ast.parse(fuente)
+        rig = self._clase_rig(arbol)
+        con_fallo = next(n for n in self._metodos_de_prueba(rig) if "rollback_exacto" in n.name)
+        cuerpo = ast.unparse(con_fallo)
+        assert "restauraciones_verificadas" in cuerpo, (
+            "el RIG debe afirmar la verificación semántica de cada nodo restaurado"
+        )
