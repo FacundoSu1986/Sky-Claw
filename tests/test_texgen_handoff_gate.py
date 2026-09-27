@@ -811,6 +811,14 @@ def test_las_dos_estrategias_exponen_la_capability() -> None:
     assert callable(getattr(BrokeredDynDOLODSpawnStrategy, "verify_texgen_handoff", None))
 
 
+def test_las_dos_estrategias_declaran_el_dominio_de_visibilidad() -> None:
+    """Ancla de contrato (PR-586F): las DOS strategies declaran la capability
+    ``data_visibility_domain`` del Protocol — un backend que no la declare es un
+    error de configuración fail-closed, nunca un default silencioso."""
+    assert isinstance(getattr(StandaloneDynDOLODSpawnStrategy, "data_visibility_domain", None), property)
+    assert isinstance(getattr(BrokeredDynDOLODSpawnStrategy, "data_visibility_domain", None), property)
+
+
 # =============================================================================
 # Primitives: canary por source y efectividad del overlay
 # =============================================================================

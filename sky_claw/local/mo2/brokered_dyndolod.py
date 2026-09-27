@@ -62,7 +62,7 @@ from sky_claw.local.tools.texgen_handoff import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.local.tools.dyndolod_runner import DynDOLODProcess
+    from sky_claw.local.tools.dyndolod_runner import DataVisibilityDomain, DynDOLODProcess
 
 logger = logging.getLogger("SkyClaw.BrokeredDynDOLOD")
 
@@ -227,7 +227,18 @@ def _veredicto_de_evidencia_runtime(
 
 
 class BrokeredDynDOLODSpawnStrategy:
-    """Construye un challenge/job nuevo y abre una sesión por herramienta."""
+    """Construye un challenge/job nuevo y abre una sesión por herramienta.
+
+    ``data_visibility_domain`` es ``"virtual_usvfs"``: el proceso corre DENTRO
+    de la USVFS del perfil y lee el overlay virtual, no el ``Data`` físico —
+    medir visibilidad física para este backend es un rojo falso (PR-586F). La
+    visibilidad la demuestra su gate de handoff (:meth:`verify_texgen_handoff`)
+    y la atestación runtime de la sesión, en el dominio que el tool consumirá.
+    """
+
+    @property
+    def data_visibility_domain(self) -> DataVisibilityDomain:
+        return "virtual_usvfs"
 
     def __init__(
         self,

@@ -43,6 +43,7 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
+    DataVisibilityDomain,
     DynDOLODConfig,
     DynDOLODExecutionError,
     DynDOLODPipelineResult,
@@ -50,6 +51,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     ReadinessMode,
+    resolve_data_visibility_domain,
 )
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import (
@@ -239,9 +241,12 @@ class DynDOLODPipelineService:
     #: Default a nivel de CLASE para dobles construidos con ``__new__`` (tests de
     #: contrato): el atributo existe aunque `__init__` no haya corrido. Mismo
     #: idioma que el `getattr(self, "_mo2_profile", None)` del gate de perfil.
+    #: ``"physical"`` es además el default HISTÓRICO y fail-closed para el gate
+    #: U-01: un doble sin configuración conserva el sensor físico activo.
     _workspace: WorkspaceResuelto | None = None
     _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
     _spawn_strategy: DynDOLODSpawnStrategy | None = None
+    _data_visibility_domain: DataVisibilityDomain = "physical"
 
     def __init__(
         self,
@@ -297,6 +302,16 @@ class DynDOLODPipelineService:
         # Seam explícito del backend: None conserva standalone histórico; una
         # strategy inyectada no tiene fallback si su apertura brokered falla.
         self._spawn_strategy = spawn_strategy
+        # PR-586F: el dominio de visibilidad de Data se resuelve UNA vez acá — la
+        # capability del strategy es CONFIGURACIÓN, no estado mutable. `None` →
+        # "physical" (default histórico: U-01 sigue activo); una strategy que no
+        # declara un dominio conocido lanza `DataVisibilityDomainError` (fail-
+        # closed: lo indeterminado no se asume brokered ni apaga el gate). Que
+        # ambos atributos se fijen SOLO en el constructor es la premisa del cache
+        # de `_ensure_preflight`: la policy del sensor no puede quedar congelada
+        # para un dominio y usarse con otro. Ancla:
+        # `tests/test_vfs_visibility_wiring.py::test_el_dominio_y_la_estrategia_se_fijan_en_el_constructor`.
+        self._data_visibility_domain = resolve_data_visibility_domain(spawn_strategy)
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -568,6 +583,33 @@ class DynDOLODPipelineService:
         (T-16d/T-16c·3); no toca los otros servicios. Sensores no resolubles →
         ``None`` (omitidos con ``omit_unconfigured``). Sin game/MO2 → ``None``
         (sin gate, mismo criterio que loot/Synthesis).
+
+        **El sensor de visibilidad (U-01) es mode-aware (PR-586F).** Mide el
+        ``Data`` FÍSICO, y esa medición sólo significa algo cuando el backend que
+        ejecutará esta corrida lee ese ``Data`` — el dominio que declara la
+        capability ``data_visibility_domain`` del strategy (resuelto en el
+        constructor; ``None``/standalone → ``"physical"``):
+
+        * dominio físico → el sensor se cablea, como siempre (U-01 protegido);
+        * dominio virtual MO2/USVFS → el sensor NO APLICA: medir el ``Data``
+          físico ahí es un ROJO FALSO (los mods del perfil jamás se materializan
+          a disco; fue el bloqueo ``PreflightBlocked`` del incidente PR-586E).
+          La visibilidad la demuestra el contrato VFS del backend brokered (gate
+          de handoff, efectividad full-tree, canary runtime, revalidación en el
+          spawn) — que sigue siendo autoridad y bloquea igual. Con
+          ``omit_unconfigured`` el checkpoint queda honestamente OMITIDO (no se
+          midió, no se afirma un verde).
+
+        Defecto hermano conocido (NO cubierto acá): el camino legacy "DynDOLOD
+        solo" (``run_texgen=False`` SIN ``TexGen Output`` preservado) bajo
+        brokered spawnea con fingerprint de perfil + canary + atestación runtime,
+        pero sin una prueba de visibilidad del load order completo — el sensor
+        físico ya no lo cubre ahí por diseño. Follow-up abierto con evidencia.
+
+        El cache de ``self._preflight`` es seguro bajo la premisa —anclada en
+        tests— de que ``_spawn_strategy``/``_data_visibility_domain`` se fijan
+        SOLO en el constructor: la policy del dominio no puede congelarse para un
+        backend y consumirse con otro.
         """
         if self._preflight is not None:
             return self._preflight
@@ -625,9 +667,20 @@ class DynDOLODPipelineService:
         # invertido invalida 30+ min de generación de LODs.
         order_check = build_master_order_sensor(resolver) if resolver is not None else None
 
-        # U-01: DynDOLOD lee TODO el load order; si la USVFS no se heredó,
-        # generaría LODs del juego base durante 30+ min y reportaría éxito.
-        visibility_check = build_vfs_visibility_sensor(game=game, sources_resolver=resolver)
+        # U-01 (mode-aware, PR-586F): DynDOLOD lee TODO el load order; en el
+        # dominio FÍSICO, si la USVFS no se heredó, generaría LODs del juego base
+        # durante 30+ min y reportaría éxito — el sensor mide exactamente eso.
+        # En el dominio virtual MO2/USVFS el sensor NO APLICA: medir el Data
+        # físico ahí es un rojo falso (incidente PR-586E). La seguridad de
+        # visibilidad brokered vive en su contrato VFS (handoff/effectivity/
+        # canary/revalidación), no en esta medición. `self._data_visibility_domain`
+        # se resolvió en el constructor desde la capability del strategy — este
+        # método jamás pregunta la clase del backend.
+        visibility_check = (
+            build_vfs_visibility_sensor(game=game, sources_resolver=resolver)
+            if self._data_visibility_domain == "physical"
+            else None
+        )
 
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,

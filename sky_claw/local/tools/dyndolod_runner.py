@@ -587,6 +587,18 @@ class DynDOLODReadinessProtocolError(DynDOLODExecutionError):
         self.razon = razon
 
 
+class DataVisibilityDomainError(RuntimeError):
+    """La strategy de spawn no declara un dominio de visibilidad de Data válido.
+
+    Fail-closed de configuración (PR-586F): sin saber en qué namespace se
+    ejecuta la corrida, el gate físico U-01 no puede decidir si su medición
+    significa algo. Lo indeterminado NO se resuelve asumiendo brokered (un
+    default permisivo apagaría U-01) ni fingiendo un dominio: la corrida no
+    procede hasta que la strategy declare la capability
+    ``data_visibility_domain`` con un valor conocido.
+    """
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -1060,10 +1072,59 @@ class DynDOLODProcess(Protocol):
     async def captured_output(self) -> tuple[str, str] | None: ...
 
 
+#: Namespace de ``Data`` que el backend de spawn REALMENTE consumirá en la
+#: corrida (PR-586F). La pregunta no es "¿hay un broker configurado?" sino
+#: "¿el proceso que va a ejecutar ESTA corrida lee el ``Data`` físico?":
+#:
+#: * ``"physical"`` — standalone histórico: el tool abre ``<game>/Data`` del
+#:   disco. Los gates que miden ``Data`` físico (U-01, handoff standalone)
+#:   significan exactamente lo que dicen.
+#: * ``"virtual_usvfs"`` — brokered MO2/USVFS: el tool lee el overlay del
+#:   perfil. Medir el ``Data`` físico ahí es un ROJO FALSO (los mods viven en
+#:   ``mods/`` y jamás se materializan a disco); la visibilidad se demuestra
+#:   con el contrato VFS específico del backend.
+DataVisibilityDomain = Literal["physical", "virtual_usvfs"]
+
+#: Únicos dominios admitidos. Cualquier otro valor —capacidad ausente, un mock
+#: fabricando atributos, un dominio inventado— es INDETERMINADO.
+_DOMINIOS_DE_VISIBILIDAD: frozenset[str] = frozenset({"physical", "virtual_usvfs"})
+
+
+def resolve_data_visibility_domain(spawn_strategy: DynDOLODSpawnStrategy | None) -> DataVisibilityDomain:
+    """Resuelve el namespace que el backend de *spawn_strategy* consumirá.
+
+    ``None`` conserva el default histórico standalone — ``"physical"`` — y con
+    él U-01 activo (backwards compatibility). Una strategy inyectada DEBE
+    declarar la capability ``data_visibility_domain`` con un valor conocido;
+    lo indeterminado lanza :class:`DataVisibilityDomainError` (fail-closed):
+    desconocido nunca desactiva el gate físico ni se asume brokered.
+
+    La validación es por VALOR, no por clase: el servicio jamás pregunta
+    ``isinstance`` (prohibido por la arquitectura del runner) y un
+    ``MagicMock`` —que fabrica cualquier atributo— fabrica un valor que no es
+    un dominio conocido y falla cerrado en vez de producir un falso virtual.
+    Un wrapper/decorator delega la propiedad por el contrato normal y resuelve
+    igual que la strategy real.
+    """
+    if spawn_strategy is None:
+        return "physical"
+    dominio = getattr(spawn_strategy, "data_visibility_domain", None)
+    if dominio == "physical":
+        return "physical"
+    if dominio == "virtual_usvfs":
+        return "virtual_usvfs"
+    raise DataVisibilityDomainError(
+        f"la strategy de spawn {type(spawn_strategy).__name__} no declara una capability "
+        "data_visibility_domain válida ('physical' | 'virtual_usvfs'): sin el namespace que "
+        "consumirá el backend no se puede decidir si la medición física de visibilidad (U-01) "
+        "aplica. Lo indeterminado falla cerrado: declará la capability en el contrato del strategy."
+    )
+
+
 class DynDOLODSpawnStrategy(Protocol):
     """Única frontera de backend; el resto del runner es backend-agnóstico.
 
-    Dos capabilities, una por pregunta distinta:
+    Tres capabilities, una por pregunta distinta:
 
     * ``spawn`` — cómo nace el proceso (subprocess local vs sesión USVFS).
     * ``verify_texgen_handoff`` — en qué namespace debe demostrarse la
@@ -1071,6 +1132,12 @@ class DynDOLODSpawnStrategy(Protocol):
       Standalone responde sobre el ``Data`` físico; brokered sobre el perfil
       MO2 + USVFS. La invariante NO cambia — sin handoff demostrado no hay
       spawn—; cambia el dominio donde la verdad existe.
+    * ``data_visibility_domain`` — qué namespace leerá ESTA corrida
+      (:data:`DataVisibilityDomain`). Es la precondición de todo gate que mida
+      ``Data`` físico (el sensor de visibilidad de mods U-01 del preflight):
+      sólo es semánticamente válido cuando el proceso consume ese ``Data``.
+      Resuelta por :func:`resolve_data_visibility_domain` — ``None`` (sin
+      strategy) conserva ``"physical"``; lo indeterminado falla cerrado.
 
     **Binding gate→spawn (anti-TOCTOU):** cuando el gate aprobó, ``spawn``
     recibe por parámetro explícito el ``TexGenHandoffApproval`` —el estado
@@ -1099,6 +1166,9 @@ class DynDOLODSpawnStrategy(Protocol):
     ) -> DynDOLODProcess: ...
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult: ...
+
+    @property
+    def data_visibility_domain(self) -> DataVisibilityDomain: ...
 
 
 class _StandaloneDynDOLODProcess:
@@ -1151,7 +1221,15 @@ class StandaloneDynDOLODSpawnStrategy:
     contra el ``-d:<Data>`` que DynDOLOD va a abrir. Se invoca como nombre de
     módulo —no como referencia capturada— para que el monkeypatch de los tests
     de provenance siga interceptándola.
+
+    ``data_visibility_domain`` es ``"physical"``: este backend abre el
+    ``<game>/Data`` del disco, así que los gates que miden ``Data`` físico
+    (U-01 incluido) significan exactamente lo que dicen.
     """
+
+    @property
+    def data_visibility_domain(self) -> DataVisibilityDomain:
+        return "physical"
 
     async def spawn(
         self,
@@ -4100,10 +4178,13 @@ class DynDOLODRunner:
 
 
 __all__ = [
+    "DataVisibilityDomain",
+    "DataVisibilityDomainError",
     "DynDOLODConfig",
     "DynDOLODExecutionError",
     "DynDOLODNotFoundError",
     "DynDOLODPipelineResult",
     "DynDOLODRunner",
     "DynDOLODTimeoutError",
+    "resolve_data_visibility_domain",
 ]
