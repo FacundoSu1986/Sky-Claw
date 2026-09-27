@@ -81,7 +81,7 @@ Para escapar de la "Regla del Uno", se utilizan dos herramientas que **no deben 
 
 ### Capa 3: Gestión de Assets Físicos (Archivos Sueltos y BSAs)
 Los conflictos gráficos (ej. dos texturas para el mismo ladrillo) se resuelven **en runtime** manipulando la jerarquía de prioridad en el panel izquierdo del Mod Organizer 2 (VFS).
-- En `modlist.txt`, el mod listado **AL FINAL** (más abajo en el panel) tiene la **mayor prioridad** de archivos sueltos (se lee de abajo hacia arriba).
+- En el archivo en disco de MO2 (``modlist.txt``), las líneas se escriben en orden de prioridad **descendente** (la primera línea habilitada es la de mayor prioridad). La primitiva interna ``read_enabled_mods()`` de Sky-Claw normaliza esta lectura a orden de prioridad **creciente** (donde el último elemento es el de mayor prioridad / "último gana").
 - No existe fusión a nivel de registros para assets.
 - **Recomendación:** Usar Cathedral Assets Optimizer (CAO) para comprimir archivos sueltos en `.bsa`. Esto previene lecturas de disco innecesarias. Cargas con archivos sueltos sin comprimir son un defecto de rendimiento.
 

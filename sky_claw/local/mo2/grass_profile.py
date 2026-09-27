@@ -322,8 +322,7 @@ class GrassProfileManager:
         await asyncio.to_thread(self._scaffold_mod_sync, mod_dir)
         await self._write_grasscontrol(mod_dir, grass_values)
         await self._write_ssedisplaytweaks(mod_dir)
-        # Máxima prioridad VFS: add_mod_to_modlist hace append, y en modlist.txt
-        # la última línea es el mod de mayor prioridad.
+        # Registrar y habilitar el mod de configuración en el perfil clonado.
         await self._controller.add_mod_to_modlist(self._config_mod_name, profile=self._clone_profile)
         logger.info("Mod de config '%s' creado en %s y habilitado en el clon", self._config_mod_name, mod_dir)
         return mod_dir
