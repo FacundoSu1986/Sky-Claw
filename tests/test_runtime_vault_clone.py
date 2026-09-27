@@ -532,6 +532,14 @@ class TestLockingAndConcurrency:
         # se nombran ``record_node_mutation_intent`` / ``record_node_mutation_completed``
         # justamente para no colarse como "mutador" por nombre, y porque escriben
         # SOLO ``protection_journal.json`` (nunca el Golden, nunca una ACL).
+        # GP2-S4B añade ``mutation_executor`` (apply ACL real + rollback), cuyo
+        # entry point productivo es ``apply_authorized_plan``: NO contiene la
+        # substring "mutate"/"clone", igual que los escritores de S4-A. El ancla
+        # por nombre no lo ve, y por eso la frontera de S4-B se prueba aparte en
+        # ``test_runtime_vault_s4a_safety_boundary.py`` (SetSecurityInfo confinado
+        # a target_dacl, API sin ``(path, backup)``, permiso WAL obligatorio). Los
+        # accesores de sólo lectura del reporte se nombran sin "mutate" por la
+        # misma razón.
         expected_mutators = [
             "clone.create_runtime_clone",
             "trusted_registry_lock._mutate_trusted_registry_core",
@@ -1080,6 +1088,8 @@ class TestRuntimeCloneSuiteCanonico:
         # authorized_plan_store (promoción durable create-once),
         # protection_journal (FSM + WAL puro) y protection_journal_store
         # (durabilidad Win32 del journal): todos cableados vía __init__.__all__.
+        # GP2-S4B agrega mutation_executor (orquestador de apply ACL real con
+        # rollback exacto): compone las primitivas auditadas, no las duplica.
         expected_modules = {
             "__init__",
             "authorization_context",
@@ -1097,6 +1107,7 @@ class TestRuntimeCloneSuiteCanonico:
             "inventory",
             "locking",
             "models",
+            "mutation_executor",
             "node_evidence",
             "operator_token",
             "operator_verifier_bridge",
