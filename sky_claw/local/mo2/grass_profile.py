@@ -276,8 +276,8 @@ class GrassProfileManager:
         ``Only-pregenerate-world-spaces`` con los worldspaces de Fase A entre
         comillas dobles, separados por ``;``), ``SKSE/Plugins/SSEDisplayTweaks.ini``
         (resolución marginal) y ``meta.ini``; luego agrega el mod al ``modlist.txt`` del
-        clon — en MO2 la última línea es la de mayor prioridad, así que el
-        ``GrassControl.ini`` del mod gana los conflictos.
+        clon con máxima prioridad física (primera entrada de mods) para que su
+        ``GrassControl.ini`` gane cualquier conflicto de archivos.
 
         Args:
             worldspaces: EditorIDs de los worldspaces con pasto (Fase A).
@@ -322,8 +322,14 @@ class GrassProfileManager:
         await asyncio.to_thread(self._scaffold_mod_sync, mod_dir)
         await self._write_grasscontrol(mod_dir, grass_values)
         await self._write_ssedisplaytweaks(mod_dir)
-        # Registrar y habilitar el mod de configuración en el perfil clonado.
-        await self._controller.add_mod_to_modlist(self._config_mod_name, profile=self._clone_profile)
+        # Registrar y habilitar el mod de configuración en el perfil clonado con
+        # máxima prioridad física (primera posición en modlist.txt) para que
+        # sus configuraciones generadas prevalezcan en el VFS.
+        await self._controller.add_mod_to_modlist(
+            self._config_mod_name,
+            profile=self._clone_profile,
+            highest_priority=True,
+        )
         logger.info("Mod de config '%s' creado en %s y habilitado en el clon", self._config_mod_name, mod_dir)
         return mod_dir
 

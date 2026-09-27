@@ -221,19 +221,33 @@ class MO2Controller:
         self,
         mod_name: str,
         profile: str = "Default",
+        *,
+        highest_priority: bool = False,
+        priority: str | None = None,
     ) -> None:
-        """Append *mod_name* as enabled (``+``) to the profile modlist.
+        """Add *mod_name* as enabled (``+``) to the profile modlist.
 
-        Skips if the mod is already present (enabled or disabled).
+        If *highest_priority* is True (or *priority* == "highest"), the mod is
+        inserted at the top of the mod list (highest priority in MO2's physical
+        order, right after any leading comments/header). If the mod is already
+        present in the modlist (enabled or disabled), it is moved cleanly to
+        highest priority without duplication.
+
+        If *highest_priority* is False (default), the mod is appended to the
+        bottom of the modlist (lowest priority) and skipped if already present.
 
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
             profile: MO2 profile name.
+            highest_priority: Whether to insert at the top of the modlist (highest priority).
+            priority: Optional string priority specifier (e.g. ``"highest"`` or ``"lowest"``).
         """
         assert_safe_component(mod_name, field="mod_name")
         assert_safe_component(profile, field="profile")
         modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
+
+        is_highest = highest_priority or (priority == "highest")
 
         async with self._modlist_lock:
             # Read the existing entries (and their order) so the atomic rewrite
@@ -245,24 +259,52 @@ class MO2Controller:
             try:
                 async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
                     async for raw_line in fh:
-                        lines.append(raw_line)
                         stripped = raw_line.strip()
+                        # Si es highest_priority, filtramos cualquier ocurrencia previa
+                        # del mod (habilitado o deshabilitado) para moverlo limpiamente.
+                        if is_highest and stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
+                            continue
+                        lines.append(raw_line)
                         if stripped and stripped[0] in ("+", "-"):
                             existing_names.add(stripped[1:].strip())
             except FileNotFoundError:
                 pass
 
-            if mod_name in existing_names:
-                logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
-                return
+            if not is_highest:
+                if mod_name in existing_names:
+                    logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
+                    return
+                lines.append(f"+{mod_name}\n")
+            else:
+                # Posición de inserción para máxima prioridad: inmediatamente después
+                # de comentarios iniciales ('#') o líneas en blanco de header.
+                insert_idx = 0
+                while insert_idx < len(lines):
+                    line_str = lines[insert_idx].strip()
+                    if line_str and not line_str.startswith("#"):
+                        break
+                    insert_idx += 1
+                lines.insert(insert_idx, f"+{mod_name}\n")
 
             # Atomic tmp->rename rewrite (with BOM), consistent with
             # remove/toggle — a non-atomic append could expose a partial line to
             # an external reader (watcher / MO2.exe) and omit the BOM (obs #192).
-            lines.append(f"+{mod_name}\n")
             await _write_modlist_atomic(validated, lines)
 
-            logger.info("Added +%s to modlist for profile %r", mod_name, profile)
+            logger.info(
+                "Added +%s to modlist for profile %r (highest_priority=%s)",
+                mod_name,
+                profile,
+                is_highest,
+            )
+
+    async def add_mod_to_modlist_highest_priority(
+        self,
+        mod_name: str,
+        profile: str = "Default",
+    ) -> None:
+        """Add *mod_name* as enabled (``+``) with highest priority in the profile modlist."""
+        await self.add_mod_to_modlist(mod_name, profile=profile, highest_priority=True)
 
     async def remove_mod_from_modlist(
         self,

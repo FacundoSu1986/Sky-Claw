@@ -11,8 +11,8 @@ jamás se toca.**
 Anclas del contrato:
 - Clonado byte-fiel (BOM UTF-8 + CRLF, como los escribe MO2): mismo estándar que
   ``ProfileSandbox`` y ``IniEditor``.
-- El mod de config nace con ``meta.ini`` válido y **máxima prioridad VFS** (última
-  línea del ``modlist.txt`` en MO2) para que su ``GrassControl.ini`` gane.
+- El mod de config nace con ``meta.ini`` válido y **máxima prioridad VFS** (primera
+  línea de mods del ``modlist.txt`` en MO2) para que su ``GrassControl.ini`` gane.
 - Aislamiento demostrable: toggles y config solo tocan el clon; el modlist real y
   los INIs reales quedan byte-idénticos.
 - ``teardown`` idempotente (borra clon + mod; un segundo llamado no falla).
@@ -150,11 +150,11 @@ async def test_mod_de_config_meta_ini_y_maxima_prioridad(mo2_root: pathlib.Path,
     meta.read(mod_dir / "meta.ini", encoding="utf-8")
     assert meta["General"]["name"] == "SkyClaw - Grass Precache Config"
 
-    # El mod queda con máxima prioridad VFS: en MO2 la ÚLTIMA línea del
-    # modlist.txt es la de mayor prioridad (gana conflictos de archivos).
+    # El mod queda con máxima prioridad VFS: en MO2 la PRIMERA línea de
+    # mods del modlist.txt es la de mayor prioridad (gana conflictos de archivos).
     clon_modlist = (mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt").read_text(encoding="utf-8-sig")
-    lineas = [ln.strip() for ln in clon_modlist.splitlines() if ln.strip()]
-    assert lineas[-1] == "+SkyClaw - Grass Precache Config"
+    lineas = [ln.strip() for ln in clon_modlist.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    assert lineas[0] == "+SkyClaw - Grass Precache Config"
 
 
 async def test_grasscontrol_ini_worldspaces_y_flags(manager: GrassProfileManager) -> None:

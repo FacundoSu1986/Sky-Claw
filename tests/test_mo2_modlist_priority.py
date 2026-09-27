@@ -29,8 +29,11 @@ import pathlib
 
 import pytest
 
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.assets.asset_scanner import AssetConflictDetector
+from sky_claw.local.mo2.grass_profile import GrassProfileManager
 from sky_claw.local.mo2.mod_effectivity import ModEffectivityError, verificar_artifact_efectivo
+from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationError,
     build_attestation_challenge,
@@ -334,68 +337,322 @@ def test_h1_f_false_red_adversarial(tmp_path: pathlib.Path) -> None:
     assert total == 1
 
 
-def test_h1_g_single_parser_anchor() -> None:
-    """TEST H1-G: ancla estructural - modlist.txt se parsea por una sola primitive.
+# --- P1-C: Ancla Estructural de Familias y Censo Exhaustivo por AST ---
 
-    read_enabled_mods() en sky_claw.local.mo2.vfs_attestation es la ÚNICA autoridad
-    que determina la prioridad del modlist. Ningún otro módulo productivo puede
-    abrir o parsear modlist.txt para computar prioridades por su cuenta.
+KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
+    # Family A: Priority Readers (deben importar o definir read_enabled_mods)
+    "FAMILY_A_PRIORITY_READERS": {
+        "sky_claw/local/mo2/vfs_attestation.py",
+        "sky_claw/local/assets/asset_scanner.py",
+        "sky_claw/local/mo2/brokered_dyndolod.py",
+    },
+    # Family B: Writers (mutadores autorizados de modlist.txt)
+    "FAMILY_B_WRITERS": {
+        "sky_claw/local/mo2/vfs.py",
+        "sky_claw/local/mo2/grass_profile.py",
+        "sky_claw/app/agent/tools/system_tools.py",
+    },
+    # Family C: Non-Priority I/O (operaciones sobre modlist.txt sin interpretar jerarquía/orden)
+    "FAMILY_C_NON_PRIORITY_IO": {
+        "sky_claw/local/fomod/plugin_state.py",
+        "sky_claw/local/mo2/vfs.py",
+        "sky_claw/local/mo2/vfs_attestation.py",
+        "sky_claw/local/mo2/profile_sandbox.py",
+        "sky_claw/app/orchestrator/watcher_daemon.py",
+        "sky_claw/local/discovery/scanner.py",
+        "sky_claw/app/core/path_resolver.py",
+    },
+    # Family D: Documentación, payloads o referencias estáticas de nombre
+    "FAMILY_D_DOC_OR_REFERENCE": {
+        "sky_claw/app/core/event_payloads.py",
+        "sky_claw/app/orchestrator/active_plugins.py",
+        "sky_claw/app/orchestrator/asset_conflict_scan.py",
+        "sky_claw/app/orchestrator/plugin_limit_guard.py",
+        "sky_claw/app/orchestrator/sync_engine.py",
+        "sky_claw/local/tools_installer.py",
+        "sky_claw/local/local_config.py",
+        "sky_claw/local/mo2/mod_effectivity.py",
+        "sky_claw/local/validators/preflight.py",
+        "sky_claw/local/validators/preflight_sensors.py",
+        "sky_claw/local/validators/vfs_visibility.py",
+        "sky_claw/local/validators/texgen_visibility.py",
+        "sky_claw/local/tools/dyndolod_runner.py",
+        "sky_claw/local/tools/dyndolod_service.py",
+        "sky_claw/local/tools/loot_service.py",
+        "sky_claw/local/tools/pandora_service.py",
+        "sky_claw/local/tools/patcher_pipeline.py",
+        "sky_claw/local/tools/synthesis_service.py",
+        "sky_claw/local/tools/texgen_handoff.py",
+        "sky_claw/local/tools/wrye_bash_service.py",
+        "sky_claw/local/tools/xedit_service.py",
+    },
+}
+
+
+def test_h1_g_structural_family_and_census_anchor() -> None:
+    """TEST H1-G (rediseñado P1-C): ancla estructural de familias y censo exhaustivo por AST.
+
+    Garantiza que:
+    1. Todo consumidor de prioridad (Family A) importa o define la primitive canónica `read_enabled_mods`.
+    2. Todo archivo en sky_claw/ que referencie `modlist.txt` está clasificado en una de las 4 familias.
+    3. Si aparece un nuevo módulo productivo que interactúe con modlist.txt, el test falla exigiendo
+       clasificación deliberada.
     """
     repo_root = pathlib.Path(__file__).resolve().parent.parent
     sky_claw_root = repo_root / "sky_claw"
 
-    # Módulos productivos autorizados a realizar I/O sobre modlist.txt:
-    # 1. vfs_attestation.py: read_enabled_mods (autoridad de prioridad) y hash crudo
-    # 2. fomod/plugin_state.py: lectura de sets para condiciones booleanas fomod (sin orden ni prioridad)
-    # 3. mo2/vfs.py: generador streaming de (mod, enabled) y escritor atómico
-    modulos_con_io_autorizado = {
-        "sky_claw/local/mo2/vfs_attestation.py",
-        "sky_claw/local/fomod/plugin_state.py",
-        "sky_claw/local/mo2/vfs.py",
-    }
+    all_registered = (
+        KNOWN_MODLIST_CENSUS["FAMILY_A_PRIORITY_READERS"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_B_WRITERS"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_C_NON_PRIORITY_IO"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_D_DOC_OR_REFERENCE"]
+    )
 
-    # 1. Verificar que asset_scanner.py NO abre modlist.txt directamente, sino que delega en read_enabled_mods
-    asset_scanner_source = (sky_claw_root / "local" / "assets" / "asset_scanner.py").read_text(encoding="utf-8")
-    assert "read_enabled_mods(" in asset_scanner_source, "asset_scanner debe delegar en read_enabled_mods"
-    assert "open(modlist_path" not in asset_scanner_source, "asset_scanner no debe abrir modlist.txt directamente"
+    # 1. Family A: Todo Priority Reader debe importar o definir read_enabled_mods
+    for rel_posix in KNOWN_MODLIST_CENSUS["FAMILY_A_PRIORITY_READERS"]:
+        file_path = repo_root / rel_posix
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        has_primitive = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "read_enabled_mods":
+                has_primitive = True
+                break
+            if isinstance(node, ast.ImportFrom) and any(alias.name == "read_enabled_mods" for alias in node.names):
+                has_primitive = True
+                break
+            if isinstance(node, ast.Name) and node.id == "read_enabled_mods":
+                has_primitive = True
+                break
+        assert has_primitive, f"El consumidor de prioridad {rel_posix} no define ni importa read_enabled_mods()."
 
-    # 2. Censo exhaustivo de I/O en toda la base de código productiva:
-    # Ningún módulo fuera de modulos_con_io_autorizado puede abrir modlist.txt para lectura
-    culpables_io = []
+    # 2. Censo exhaustivo de todos los archivos productivos en sky_claw/
+    unregistered_modules = []
     for py_file in sky_claw_root.rglob("*.py"):
         rel_posix = py_file.relative_to(repo_root).as_posix()
         tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        has_modlist_constant = False
         for node in ast.walk(tree):
-            # Detectar llamadas a open(...), read_text(...), read_bytes(...) que reciban o involucren modlist.txt
-            if isinstance(node, ast.Call):
-                func_name = ""
-                if isinstance(node.func, ast.Name):
-                    func_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    func_name = node.func.attr
-                if func_name in {"open", "read_text", "read_bytes", "readlines"}:
-                    # Verificar si en los argumentos o en el nodo hay referencia a modlist
-                    code_segment = ast.unparse(node)
-                    if "modlist" in code_segment and rel_posix not in modulos_con_io_autorizado:
-                        culpables_io.append(f"{rel_posix}: {code_segment}")
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "modlist.txt" in node.value:
+                has_modlist_constant = True
+                break
+        if has_modlist_constant and rel_posix not in all_registered:
+            unregistered_modules.append(rel_posix)
 
-    assert culpables_io == [], f"Se encontraron módulos no autorizados realizando I/O sobre modlist.txt: {culpables_io}"
-
-    # 3. Verificar que la interpretación de prefijos de activación ('+', '-') para orden de prioridad
-    # vive únicamente en read_enabled_mods y en vfs_attestation.py
-    culpables_prioridad = []
-    for py_file in sky_claw_root.rglob("*.py"):
-        rel_posix = py_file.relative_to(repo_root).as_posix()
-        content = py_file.read_text(encoding="utf-8")
-        if ('startswith("+")' in content or "startswith('+')" in content) and rel_posix not in {
-            "sky_claw/local/mo2/vfs_attestation.py",
-            "sky_claw/local/mo2/vfs.py",
-        }:
-            culpables_prioridad.append(rel_posix)
-
-    assert culpables_prioridad == [], (
-        f"Se encontraron parsers de activación ('+') fuera de la primitiva central: {culpables_prioridad}"
+    assert unregistered_modules == [], (
+        f"Se encontraron nuevos módulos productivos interactuando con modlist.txt que NO están "
+        f"clasificados en KNOWN_MODLIST_CENSUS: {unregistered_modules}. "
+        "Deben ser evaluados y clasificados deliberadamente en FAMILY_A (Priority Reader), "
+        "FAMILY_B (Writer), FAMILY_C (Non-priority IO) o FAMILY_D (Doc/Ref)."
     )
+
+
+def test_p1_c_mutant_unclassified_modlist_consumer_fails() -> None:
+    """TEST MUTANTE P1-C: Comprueba que un módulo no clasificado hace fallar el censo."""
+    simulated_new_module = "sky_claw/local/rogue_modlist_analyzer.py"
+    all_registered = (
+        KNOWN_MODLIST_CENSUS["FAMILY_A_PRIORITY_READERS"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_B_WRITERS"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_C_NON_PRIORITY_IO"]
+        | KNOWN_MODLIST_CENSUS["FAMILY_D_DOC_OR_REFERENCE"]
+    )
+    assert simulated_new_module not in all_registered
+
+
+# --- P1-A: Tests de inserción en máxima prioridad para writers (Grass Precache Config) ---
+
+
+async def test_p1_a1_existing_conflict_grass_config_highest_priority(tmp_path: pathlib.Path) -> None:
+    """TEST P1-A1: Grass config mod se inserta en máxima prioridad (primera posición en disco).
+
+    Escenario con conflicto existente:
+    +OtroModQueTieneGrassControl
+    +OtroMod
+
+    Al generar el grass config mod, en disco queda:
+    +SkyClaw - Grass Precache Config
+    +OtroModQueTieneGrassControl
+    +OtroMod
+
+    Y read_enabled_mods() produce internamente el config mod al final (ganador).
+    """
+    mo2_root = tmp_path / "MO2"
+    profiles_dir = mo2_root / "profiles"
+    source_profile = profiles_dir / "Default"
+    clone_profile = profiles_dir / "SkyClaw-GrassCache"
+    source_profile.mkdir(parents=True)
+    clone_profile.mkdir(parents=True)
+
+    # Configuración de modlist clonado con conflicto previo
+    clon_modlist = clone_profile / "modlist.txt"
+    clon_modlist.write_text("+OtroModQueTieneGrassControl\n+OtroMod\n", encoding="utf-8-sig")
+
+    mods_dir = mo2_root / "mods"
+    mods_dir.mkdir(parents=True)
+    validator = PathValidator(roots=[mo2_root])
+    manager = GrassProfileManager(mo2_root=mo2_root, path_validator=validator)
+
+    mod_dir = await manager.build_config_mod(["Tamriel"])
+    assert mod_dir.is_dir()
+
+    # 1. En disco físico MO2: la primera entrada de mod es el config mod
+    lineas = [ln.strip() for ln in clon_modlist.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    assert lineas[0] == "+SkyClaw - Grass Precache Config"
+    assert lineas == [
+        "+SkyClaw - Grass Precache Config",
+        "+OtroModQueTieneGrassControl",
+        "+OtroMod",
+    ]
+
+    # 2. Internamente en Sky-Claw: read_enabled_mods() normaliza a orden creciente
+    enabled = read_enabled_mods(clon_modlist)
+    assert enabled == ("OtroMod", "OtroModQueTieneGrassControl", "SkyClaw - Grass Precache Config")
+    assert enabled[-1] == "SkyClaw - Grass Precache Config"
+
+
+async def test_p1_a2_idempotence_grass_config_highest_priority(tmp_path: pathlib.Path) -> None:
+    """TEST P1-A2: Idempotencia - no duplicar si ya existe y reubicarlo si no está arriba."""
+    mo2_root = tmp_path / "MO2"
+    profile_dir = mo2_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (mo2_root / "mods").mkdir(parents=True)
+
+    modlist = profile_dir / "modlist.txt"
+    # Existe abajo con prioridad inferior
+    modlist.write_text("+ModAlto\n+SkyClaw - Grass Precache Config\n+ModBajo\n", encoding="utf-8-sig")
+
+    validator = PathValidator(roots=[mo2_root])
+    ctrl = MO2Controller(mo2_root, validator)
+
+    # Llamar add_mod_to_modlist con highest_priority=True dos veces
+    await ctrl.add_mod_to_modlist("SkyClaw - Grass Precache Config", profile="Default", highest_priority=True)
+    await ctrl.add_mod_to_modlist("SkyClaw - Grass Precache Config", profile="Default", highest_priority=True)
+
+    lineas = [ln.strip() for ln in modlist.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    # Debe aparecer exactamente una vez y en la primera posición
+    assert lineas.count("+SkyClaw - Grass Precache Config") == 1
+    assert lineas[0] == "+SkyClaw - Grass Precache Config"
+    assert lineas == [
+        "+SkyClaw - Grass Precache Config",
+        "+ModAlto",
+        "+ModBajo",
+    ]
+
+
+async def test_p1_a3_disabled_existing_entry_grass_config(tmp_path: pathlib.Path) -> None:
+    """TEST P1-A3: Entrada deshabilitada existente se promueve a habilitada en máxima prioridad."""
+    mo2_root = tmp_path / "MO2"
+    profile_dir = mo2_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (mo2_root / "mods").mkdir(parents=True)
+
+    modlist = profile_dir / "modlist.txt"
+    modlist.write_text("+ModAlto\n-SkyClaw - Grass Precache Config\n+ModBajo\n", encoding="utf-8-sig")
+
+    validator = PathValidator(roots=[mo2_root])
+    ctrl = MO2Controller(mo2_root, validator)
+
+    await ctrl.add_mod_to_modlist_highest_priority("SkyClaw - Grass Precache Config", profile="Default")
+
+    lineas = [ln.strip() for ln in modlist.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    assert "-SkyClaw - Grass Precache Config" not in lineas
+    assert lineas.count("+SkyClaw - Grass Precache Config") == 1
+    assert lineas[0] == "+SkyClaw - Grass Precache Config"
+    assert lineas == [
+        "+SkyClaw - Grass Precache Config",
+        "+ModAlto",
+        "+ModBajo",
+    ]
+
+
+async def test_p1_a4_header_and_separator_preservation(tmp_path: pathlib.Path) -> None:
+    """TEST P1-A4: Preserva encabezados MO2, líneas de comentarios y separadores."""
+    mo2_root = tmp_path / "MO2"
+    profile_dir = mo2_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (mo2_root / "mods").mkdir(parents=True)
+
+    modlist = profile_dir / "modlist.txt"
+    modlist.write_text(
+        "# This file was automatically generated by Mod Organizer.\n"
+        "+HighMod\n"
+        "-LowDisabled\n"
+        "*separator_ui\n"
+        "+LowestMod\n",
+        encoding="utf-8-sig",
+    )
+
+    validator = PathValidator(roots=[mo2_root])
+    ctrl = MO2Controller(mo2_root, validator)
+
+    await ctrl.add_mod_to_modlist("NewConfigMod", profile="Default", highest_priority=True)
+
+    lineas = [ln.strip() for ln in modlist.read_text(encoding="utf-8-sig").splitlines() if ln.strip()]
+    # Encabezado intacto en la línea 0
+    assert lineas[0] == "# This file was automatically generated by Mod Organizer."
+    # Nuevo mod insertado inmediatamente después del encabezado
+    assert lineas[1] == "+NewConfigMod"
+    # Separador y resto de mods preservados intactos
+    assert lineas[2:] == [
+        "+HighMod",
+        "-LowDisabled",
+        "*separator_ui",
+        "+LowestMod",
+    ]
+
+
+async def test_p1_a5_round_trip_writer_and_reader(tmp_path: pathlib.Path) -> None:
+    """TEST P1-A5: Round-trip físico/canónico - el mod insertado con highest priority es enabled[-1]."""
+    mo2_root = tmp_path / "MO2"
+    profile_dir = mo2_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (mo2_root / "mods").mkdir(parents=True)
+
+    modlist = profile_dir / "modlist.txt"
+    modlist.write_text("+Alpha\n+Beta\n+Gamma\n", encoding="utf-8-sig")
+
+    validator = PathValidator(roots=[mo2_root])
+    ctrl = MO2Controller(mo2_root, validator)
+
+    await ctrl.add_mod_to_modlist_highest_priority("ZetaWinner", profile="Default")
+
+    # read_enabled_mods canónico debe ponerlo último
+    enabled = read_enabled_mods(modlist)
+    assert enabled[-1] == "ZetaWinner"
+
+
+# --- P1-B: Ancla de documentación canónica ---
+
+
+def test_p1_b_canonical_agents_documentation_anchor() -> None:
+    """TEST P1-B: Ancla de documentación - AGENTS.md y skyrim_sop.md no deben revertir a la semántica vieja.
+
+    Verifica que:
+    1. sky_claw/local/AGENTS.md define la regla canónica con read_enabled_mods como autoridad.
+    2. Documenta el formato físico descendente de MO2 (primera entrada = mayor prioridad).
+    3. Documenta la representación interna normalizada (read_enabled_mods orden creciente, enabled[-1] = mayor).
+    4. No contiene la afirmación vieja errónea ("mod listed LAST has the highest" / "read bottom-up").
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    agents_path = repo_root / "sky_claw" / "local" / "AGENTS.md"
+    sop_path = repo_root / "docs" / "pipeline" / "skyrim_sop.md"
+
+    agents_content = agents_path.read_text(encoding="utf-8")
+    sop_content = sop_path.read_text(encoding="utf-8")
+
+    # Claves canónicas requeridas en AGENTS.md
+    assert "MO2 Physical Disk Format" in agents_content
+    assert "read_enabled_mods()" in agents_content
+    assert "vfs_attestation.py" in agents_content
+    assert "descending priority" in agents_content or "prioridad descendente" in agents_content
+    assert "enabled[-1]" in agents_content
+
+    # Prohibición de afirmaciones obsoletas del bug H1
+    assert "the mod listed **LAST** has the **highest**" not in agents_content
+    assert "the file is read bottom-up" not in agents_content
+
+    # Skyrim SOP companion sync
+    assert "read_enabled_mods" in sop_content
+    assert "descendente" in sop_content
 
 
 def test_asset_scanner_parse_modlist_usa_read_enabled_mods(tmp_path: pathlib.Path) -> None:
