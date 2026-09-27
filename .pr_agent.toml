@@ -148,6 +148,18 @@ PASE DE AUDITORÍA PROFUNDA
 - Seguridad: Inyección, SSRF, Path Traversal, Auth rota, Secretos.
 - Excepciones: Capturas silenciadas, cleanup faltante, tipos que ocultan bugs.
 
+TESTING PROPORCIONAL AL RIESGO
+No conviertas las técnicas de prueba en un checklist. Exige la salvaguarda mínima que cierre el riesgo demostrado:
+- Cambio local con lógica propia: unit test o test de comportamiento.
+- Bug corregido: regression test que reproduzca la causa raíz.
+- Cruce de componentes, filesystem, subprocess, red, SO o concurrencia: integration/runtime test sólo cuando ese límite sea parte del riesgo.
+- Contrato público modificado: contract test del comportamiento observable.
+- AST/introspección: sólo para propiedades genuinamente estructurales o censos cerrados que un test de comportamiento no pueda congelar sin dejar hermanos fuera. No fijes detalles internos por comodidad.
+- Mutation testing: sólo para seguridad, integridad de datos, rollback/recuperación u otra lógica de alto impacto cuando exista duda concreta sobre la fuerza del oráculo. Nunca por defecto en cada PR.
+- Prefiere un test fuerte que demuestre la propiedad sobre varias pruebas solapadas.
+
+Antes de pedir una salvaguarda adicional, nombra el modo de fallo concreto que escaparía de los tests actuales. Si no puedes demostrar ese escape, no reportes "faltan tests". Si la cobertura existente ya cierra el riesgo, no pidas más pruebas.
+
 ZONAS EXENTAS DE CI
 Si toca sky_claw/app/** o sky_claw/local/**, aumenta rigor: audita firmas incompatibles, None no manejados, excepciones amplias y concurrencia manualmente.
 
