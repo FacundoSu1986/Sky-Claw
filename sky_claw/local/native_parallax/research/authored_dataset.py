@@ -222,12 +222,16 @@ def decode_height_image(path: Path) -> NDArray[np.float64]:
 
 
 def resize_height(h: NDArray[np.float64], size: int) -> NDArray[np.float64]:
-    """Downsample height: interpolación lineal escalar (§13)."""
+    """Resize scalar heights bilinearly, preserving float/16-bit height information.
+
+    On resize, values are clipped to [0,1] and passed through Pillow mode F
+    (float32), avoiding uint8 quantization. The result is returned as float64.
+    """
     if h.shape[0] == size and h.shape[1] == size:
         return np.asarray(h, dtype=np.float64)
-    im = Image.fromarray((np.clip(h, 0.0, 1.0) * 255.0).astype(np.uint8), mode="L")
+    im = Image.fromarray(np.asarray(np.clip(h, 0.0, 1.0), dtype=np.float32))
     out = im.resize((size, size), Image.Resampling.BILINEAR)
-    return np.asarray(np.asarray(out, dtype=np.float64) / 255.0, dtype=np.float64)
+    return np.asarray(out, dtype=np.float64)
 
 
 def resize_normal(n: NDArray[np.float64], size: int) -> NDArray[np.float64]:
