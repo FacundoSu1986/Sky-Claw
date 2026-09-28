@@ -75,11 +75,81 @@ _SIMBOLO_POR_MODULO = {
     "protection_journal_store": "DurableProtectionJournal",
 }
 
+# ============================================================================
+# Frontera de S4-B: SetSecurityInfo pasa a permitirse, PERO SÓLO en target_dacl
+# ============================================================================
+
+#: Único módulo del paquete al que S4-B concede el permiso nuevo de mutación.
+_MODULO_MUTADOR_AUTORIZADO_S4B = "target_dacl.py"
+
+#: Único otro portador PREEXISTENTE de la primitiva: el bootstrap del namespace
+#: propio de Sky-Claw (``trusted_goldens.json`` y sus ancestros). No es la capa de
+#: mutación ACL del Golden: es de S1, queda fuera del alcance de S4-B y S4-B no la
+#: toca. ``SB-09`` es lo que impide que se sume un TERCER portador.
+_MODULOS_MUTADORES_PREEXISTENTES = frozenset({"trusted_namespace.py"})
+
+#: Primitivas Win32 cuyo uso productivo queda confinado a los módulos autorizados.
+_PRIMITIVAS_MUTADORAS = frozenset(
+    {
+        "SetSecurityInfo",
+        "SetNamedSecurityInfoW",
+        "SetFileSecurityW",
+        "SetFileSecurity",
+    }
+)
+
+#: Capas donde ``SetSecurityInfo`` sigue PROHIBIDO en S4-B (§41 del ADR).
+_CAPAS_SIN_MUTACION = (
+    # planner / staging
+    "golden_protection_plan.py",
+    "planning_orchestrator.py",
+    "clone.py",
+    "ppsc.py",
+    # TGR: el registro, su lock y la admisión (NO el bootstrap del namespace)
+    "trusted_registry.py",
+    "trusted_registry_lock.py",
+    "golden_admission.py",
+    "golden_admission_service.py",
+    "golden_admission_store.py",
+    # store del plan autoritativo
+    "authorized_plan.py",
+    "authorized_plan_store.py",
+    # modelo y store del journal
+    "protection_journal.py",
+    "protection_journal_store.py",
+    # frontera / GUI / LLM
+    "privileged_boundary.py",
+    "authorization_context.py",
+    "operator_verifier_bridge.py",
+    "coordinator_identity.py",
+    # orquestador de apply: COMPONE, no construye
+    "mutation_executor.py",
+)
+
+#: Símbolos que delatarían un segundo builder/WAL/lock dentro del orquestador.
+_SIMBOLOS_DUPLICADOS_S4B = frozenset(
+    {
+        "build_native_target_dacl",
+        "build_target_dacl_spec",
+        "TargetDaclSpec",
+        "CreateHardLinkW",
+        "AdjustTokenPrivileges",
+        "SeDebugPrivilege",
+        "SeSecurityPrivilege",
+        "_MINT_PROOF",
+        "FlushFileBuffers",
+    }
+)
+
 
 def _arbol(modulo: str) -> ast.AST:
     ruta = _PAQUETE / modulo
     assert ruta.is_file(), f"no existe el módulo esperado del slice: {ruta}"
     return ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+
+
+def _modulos_del_paquete() -> tuple[str, ...]:
+    return tuple(p.name for p in sorted(_PAQUETE.glob("*.py")) if p.name != "__init__.py")
 
 
 def _simbolos_referenciados(arbol: ast.AST) -> set[str]:
@@ -157,3 +227,96 @@ class TestFronteraDeSeguridad:
             assert spec is not None
         assert trusted_namespace.AUTHORIZED_PLAN_OBJECT == "authorized_plan.json"
         assert trusted_namespace.PROTECTION_JOURNAL_OBJECT == "protection_journal.json"
+
+
+class TestFronteraDeMutacionS4B:
+    """S4-B habilita ``SetSecurityInfo``: la frontera se vuelve selectiva.
+
+    ``SB-09``/``SB-10`` confinan la primitiva a ``target_dacl.py``. ``SB-11``
+    exige que el orquestador COMPONGA en vez de duplicar. ``SB-12`` verifica que
+    la API productiva no acepte ``(path, backup)``. ``SB-13`` verifica que S4-B
+    nunca escriba ``trusted_goldens.json``.
+    """
+
+    def test_sb09_primitivas_mutadoras_solo_en_modulos_autorizados(self) -> None:
+        """S4-B sólo concede el permiso NUEVO a ``target_dacl.py`` (§41).
+
+        El conjunto de portadores es CERRADO: ``target_dacl`` (capa auditada de
+        mutación ACL del Golden, habilitada por S4-B) más ``trusted_namespace``
+        (bootstrap preexistente del namespace de Sky-Claw, fuera de alcance). Si
+        aparece un tercer portador, el commit está prohibido.
+        """
+        portadores: dict[str, set[str]] = {}
+        for modulo in _modulos_del_paquete():
+            prohibidos = _simbolos_referenciados(_arbol(modulo)) & _PRIMITIVAS_MUTADORAS
+            if prohibidos:
+                portadores[modulo] = prohibidos
+        esperado = {_MODULO_MUTADOR_AUTORIZADO_S4B, *_MODULOS_MUTADORES_PREEXISTENTES}
+        assert set(portadores) == esperado, (
+            "los portadores de SetSecurityInfo deben ser exactamente "
+            f"{sorted(esperado)}; detectados: {sorted(portadores)}"
+        )
+
+    def test_sb09_el_permiso_nuevo_es_solo_target_dacl(self) -> None:
+        """``target_dacl`` es el módulo que S4-B habilita; el resto ya existía."""
+        arbol = _arbol(_MODULO_MUTADOR_AUTORIZADO_S4B)
+        assert "SetSecurityInfo" in _simbolos_referenciados(arbol)
+        for modulo in _MODULOS_MUTADORES_PREEXISTENTES:
+            assert "SetSecurityInfo" in _simbolos_referenciados(_arbol(modulo))
+
+    @pytest.mark.parametrize("modulo", _CAPAS_SIN_MUTACION)
+    def test_sb10_capas_no_mutadoras_sin_primitivas_de_seguridad(self, modulo: str) -> None:
+        arbol = _arbol(modulo)
+        prohibidos = _simbolos_referenciados(arbol) & _PRIMITIVAS_MUTADORAS
+        assert prohibidos == set(), f"{modulo} referencia primitivas mutadoras prohibidas: {sorted(prohibidos)}"
+
+    def test_sb11_el_orquestador_compone_no_duplica(self) -> None:
+        arbol = _arbol("mutation_executor.py")
+        duplicados = _simbolos_referenciados(arbol) & _SIMBOLOS_DUPLICADOS_S4B
+        assert duplicados == set(), (
+            f"mutation_executor debe componer las primitivas auditadas, no reimplementarlas: {sorted(duplicados)}"
+        )
+
+    def test_sb11_el_orquestador_usa_las_primitivas_auditadas(self) -> None:
+        arbol = _arbol("mutation_executor.py")
+        usados = _simbolos_referenciados(arbol)
+        for primitiva in (
+            "open_node_security_handle",
+            "close_security_handle",
+            "apply_target_dacl_by_handle",
+            "verify_target_dacl_by_handle",
+            "restore_security_descriptor_by_handle",
+            "verify_restored_security_descriptor_by_handle",
+            "record_node_mutation_intent",
+            "record_node_mutation_completed",
+            "mark_consumed",
+        ):
+            assert primitiva in usados, f"mutation_executor no compone '{primitiva}'"
+
+    def test_sb12_la_api_productiva_no_acepta_path_ni_backup(self) -> None:
+        """Hard-to-misuse: la entrada productiva NO es ``(path, backup)``."""
+        import inspect
+
+        from sky_claw.local.runtime_vault import mutation_executor
+
+        firma = inspect.signature(mutation_executor.apply_authorized_plan)
+        parametros = list(firma.parameters.values())
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parametros), (
+            "apply_authorized_plan debe ser keyword-only para que nadie pase un path posicional"
+        )
+        nombres = {p.name for p in parametros}
+        assert {"plan", "journal", "session"} <= nombres
+        assert "path" not in nombres and "backup" not in nombres and "node" not in nombres
+
+    def test_sb13_s4b_nunca_escribe_trusted_goldens(self) -> None:
+        """El contador de escrituras del TGR debe seguir en 0 durante el apply."""
+        arbol = _arbol("mutation_executor.py")
+        referidos = _simbolos_referenciados(arbol)
+        assert "trusted_goldens" not in referidos
+        assert "refresh_trusted_registry" not in referidos
+
+    def test_sb13_el_paquete_sigue_exportando_el_orquestador(self) -> None:
+        import sky_claw.local.runtime_vault as pkg
+
+        assert hasattr(pkg, "apply_authorized_plan")
+        assert "apply_authorized_plan" in pkg.__all__

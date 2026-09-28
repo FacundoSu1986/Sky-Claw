@@ -18,11 +18,12 @@ responden la pregunta del gate: *¿DynDOLOD va a ver exactamente el TexGen
 Output autorizado?*
 
 Contrato de prioridad, unificado con ``vfs_attestation`` (misma fuente):
-``modlist.txt`` crece de menor a mayor prioridad; ``overwrite`` está por encima
-de todo mod; el game data físico es la capa más baja y un mod siempre lo gana.
-Los mods de prioridad Estrictamente mayor que el mod auditable pueden eclipsar
-sus paths; los de prioridad menor no. Ocultar un archivo (``*.mohidden``) lo
-quita del overlay — mismo criterio que ``vfs_attestation._iter_mod_files``.
+``read_enabled_mods`` normaliza ``modlist.txt`` a orden de prioridad creciente
+(menor a mayor); ``overwrite`` está por encima de todo mod; el game data físico es
+la capa más baja y un mod siempre lo gana. Los mods de prioridad estrictamente mayor
+que el mod auditable pueden eclipsar sus paths; los de prioridad menor no.
+Ocultar un archivo (``*.mohidden``) lo quita del overlay — mismo criterio que
+``vfs_attestation._iter_mod_files``.
 
 **Lo que este módulo NO hace:** editar el modlist, resolver conflictos,
 materializar nada, ni ejecutar probes runtime. Mide y falla cerrado.

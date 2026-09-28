@@ -27,6 +27,10 @@ from sky_claw.app.security.path_validator import (
     PathViolationError,
     assert_safe_component,
 )
+from sky_claw.local.mo2.vfs_attestation import (
+    VfsAttestationError,
+    read_enabled_mods,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +155,10 @@ class AssetConflictDetector:
         """
         Parsea el archivo modlist.txt del perfil activo.
 
-        MO2 usa un formato donde:
-        - Líneas que empiezan con '+' están habilitadas
-        - Líneas que empiezan con '-' están deshabilitadas
-        - El orden es de abajo hacia arriba (último = mayor prioridad)
+        Delega en :func:`~sky_claw.local.mo2.vfs_attestation.read_enabled_mods`
+        como autoridad central de lectura de ``modlist.txt``, invirtiendo su
+        orden de prioridad creciente para retornar la lista en orden de
+        prioridad descendente (mayor a menor).
 
         Returns:
             Lista de nombres de mods en orden de prioridad (mayor a menor)
@@ -168,8 +172,6 @@ class AssetConflictDetector:
             logger.error(f"modlist.txt no encontrado: {modlist_path}")
             raise FileNotFoundError(f"modlist.txt no encontrado: {modlist_path}")
 
-        enabled_mods: list[str] = []
-
         try:
             # S2-FIX: Validate modlist_path before opening.
             if self._path_validator is not None:
@@ -178,40 +180,33 @@ class AssetConflictDetector:
                 except PathViolationError:
                     logger.error("Path traversal blocked for modlist: %s", modlist_path)
                     raise
-            with open(modlist_path, encoding="utf-8") as f:
-                lines = f.readlines()
-
-            # MO2 guarda los mods en orden inverso de prioridad
-            # El último mod en la lista tiene la mayor prioridad
-            # Invertimos para que el primero sea el de mayor prioridad
-            for line in reversed(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("+"):
-                    mod_name = line[1:]  # Remover el prefijo '+'
-                    # L-3: validar el nombre antes de usarlo como componente de path.
-                    # scan_mod_directory hace ``self._mo2_mods_path / mod_name`` y
-                    # ``rglob("*")``; un entry como ``+..\..\Windows\System32`` recorría
-                    # fuera del sandbox de MO2 y enumeraba archivos ajenos. Se rechaza
-                    # (skip) cualquier nombre con separadores o traversal.
-                    try:
-                        assert_safe_component(mod_name, field="mod_name")
-                    except PathViolationError:
-                        logger.warning("modlist: nombre de mod inseguro ignorado: %r", mod_name)
-                        continue
-                    enabled_mods.append(mod_name)
-                    logger.debug(f"Mod habilitado encontrado: {mod_name}")
-                elif line.startswith("-"):
-                    # Mod deshabilitado, lo ignoramos
-                    logger.debug(f"Mod deshabilitado ignorado: {line[1:]}")
-
-            logger.info(f"Parseados {len(enabled_mods)} mods habilitados desde modlist.txt")
-            return enabled_mods
-
+            raw_enabled = read_enabled_mods(modlist_path)
+        except VfsAttestationError as e:
+            logger.error(f"Error leyendo modlist.txt: {e}")
+            raise OSError(str(e)) from e
         except OSError as e:
             logger.error(f"Error leyendo modlist.txt: {e}")
             raise
+
+        # read_enabled_mods devuelve orden creciente (menor a mayor).
+        # Invertimos para que el primero sea el de mayor prioridad.
+        enabled_mods: list[str] = []
+        for mod_name in reversed(raw_enabled):
+            # L-3: validar el nombre antes de usarlo como componente de path.
+            # scan_mod_directory hace ``self._mo2_mods_path / mod_name`` y
+            # ``rglob("*")``; un entry como ``+..\..\Windows\System32`` recorría
+            # fuera del sandbox de MO2 y enumeraba archivos ajenos. Se rechaza
+            # (skip) cualquier nombre con separadores o traversal.
+            try:
+                assert_safe_component(mod_name, field="mod_name")
+            except PathViolationError:
+                logger.warning("modlist: nombre de mod inseguro ignorado: %r", mod_name)
+                continue
+            enabled_mods.append(mod_name)
+            logger.debug(f"Mod habilitado encontrado: {mod_name}")
+
+        logger.info(f"Parseados {len(enabled_mods)} mods habilitados desde modlist.txt")
+        return enabled_mods
 
     def get_asset_type(self, file_path: Path) -> AssetType:
         """

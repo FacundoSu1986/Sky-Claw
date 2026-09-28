@@ -305,7 +305,13 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 **Scope:** Graphical conflicts (e.g. two mods overwriting the same brick texture).
 
-**Rule:** Resolved EXCLUSIVELY by manipulating the priority hierarchy of the mod manager's left-panel VFS. In MO2's `modlist.txt`, the mod listed **LAST** has the **highest** loose-file priority (the file is read bottom-up; see `sky_claw/local/assets/asset_scanner.py::parse_modlist` which reverses the file). In MO2's left-pane UI, that means the mod **lower** in the list (towards the bottom of the pane) wins. There is no record-level merge for assets.
+**Rule:** Resolved EXCLUSIVELY by manipulating the priority hierarchy of the mod manager's left-panel VFS:
+
+- **MO2 Physical Disk Format (`modlist.txt`):** Written in descending priority order (`Profile::doWriteModlist` iterates `m_ModIndexByPriority.crbegin()` to `crend()`). The **first** enabled mod line has the **highest regular-mod** loose-file priority on disk, and the last line has the lowest. This does not make it the absolute overlay winner: `overwrite` remains above regular mods, and physical `Data` remains below them.
+- **Sky-Claw Internal Representation:** Canonical authority is `read_enabled_mods()` in `sky_claw/local/mo2/vfs_attestation.py`. It normalizes the physical disk order to **ascending priority** (`tuple(reversed(enabled))`), where `enabled[0]` is the lowest priority mod and `enabled[-1]` is the highest priority mod ("last element wins" internal convention). Other modules (e.g. `sky_claw/local/assets/asset_scanner.py`) are consumers/delegators that must use `read_enabled_mods()`.
+- **MO2 Left-Pane GUI:** In the default priority-ascending UI view, higher priority mods have higher numerical priority indices (displayed lower in the visual list). Do not confuse the visual UI position with the physical `modlist.txt` disk file format.
+
+There is no record-level merge for assets.
 
 **Coherence rule:** Use CAO to compress loose files into `.bsa` archives. This prevents unnecessary disk reads and ensures spatial coherence. Uncompressed loose-file loads are a performance defect.
 

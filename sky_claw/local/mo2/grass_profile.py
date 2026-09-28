@@ -8,7 +8,8 @@ ritual opera sobre esa copia:
 
 * el **mod de configuración** (``GrassControl.ini`` con los worldspaces de Fase A
   + ``SSEDisplayTweaks.ini`` con resolución marginal), habilitado **solo** en el
-  clon con máxima prioridad VFS;
+  clon con máxima prioridad entre mods regulares; antes de habilitarlo se valida
+  que ``overwrite`` no imponga bytes distintos (``overwrite`` permanece por encima);
 * los **toggles** de mods conflictivos (ENB/Community Shaders/etc.), **solo** en
   el clon.
 
@@ -30,11 +31,18 @@ from __future__ import annotations
 import asyncio
 import configparser
 import logging
+import os
 import pathlib
 import shutil
+import stat
 from typing import TYPE_CHECKING
 
-from sky_claw.app.security.links import link_kind_or_raise_with_retry
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise_with_retry,
+    link_kind_or_raise_with_retry,
+    reject_unclassified_reparse_point,
+    same_file_identity,
+)
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.ini_editor import IniEditor
 from sky_claw.local.mo2.profile_sandbox import (
@@ -98,6 +106,135 @@ _DEFAULT_SSEDISPLAYTWEAKS: dict[str, dict[str, str]] = {
 
 class GrassProfileError(Exception):
     """Error de la gestión del perfil/mod de grass (precondición o colisión)."""
+
+
+def _reject_link_or_reparse(
+    path: pathlib.Path,
+    link_kind: str | None,
+    info: os.stat_result,
+) -> None:
+    """Rechaza enlaces conocidos y cualquier reparse tag no clasificado."""
+    if link_kind is not None:
+        raise OSError(f"el componente '{path}' es un {link_kind}")
+    reject_unclassified_reparse_point(path, info)
+
+
+def _inspect_real_directory_chain(root: pathlib.Path) -> list[tuple[pathlib.Path, os.stat_result]]:
+    """Captura cada directorio de *root* con lstat, sin cruzar enlaces/reparse points."""
+    if not root.is_absolute() or ".." in root.parts:
+        raise OSError(f"la raíz '{root}' no es una ruta absoluta segura")
+
+    current = pathlib.Path(root.anchor)
+    captured: list[tuple[pathlib.Path, os.stat_result]] = []
+    for component in ("", *root.parts[1:]):
+        if component:
+            current = current / component
+        link_kind, info = link_kind_and_identity_or_raise_with_retry(current)
+        if info is None:
+            raise FileNotFoundError(f"el directorio '{current}' no existe")
+        _reject_link_or_reparse(current, link_kind, info)
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError(f"el componente '{current}' no es un directorio")
+        captured.append((current, info))
+    return captured
+
+
+def _revalidate_real_directories(captured: list[tuple[pathlib.Path, os.stat_result]]) -> None:
+    """Confirma que los directorios capturados siguen siendo los mismos y reales."""
+    for path, before in reversed(captured):
+        link_kind, after = link_kind_and_identity_or_raise_with_retry(path)
+        if after is None:
+            raise OSError(f"el directorio '{path}' desapareció durante la inspección")
+        _reject_link_or_reparse(path, link_kind, after)
+        if not stat.S_ISDIR(after.st_mode) or not same_file_identity(before, after):
+            raise OSError(f"la identidad del directorio '{path}' cambió durante la inspección")
+
+
+def _read_file_bytes_link_safe(path: pathlib.Path, expected: os.stat_result) -> bytes:
+    """Lee un archivo regular y confirma la identidad del handle frente a lstat."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not same_file_identity(expected, opened):
+            raise OSError(f"el archivo '{path}' cambió entre lstat y open")
+
+        content = bytearray()
+        while chunk := os.read(descriptor, 64 * 1024):
+            content.extend(chunk)
+
+        after_read = os.fstat(descriptor)
+        if (
+            not same_file_identity(opened, after_read)
+            or opened.st_size != after_read.st_size
+            or opened.st_mtime_ns != after_read.st_mtime_ns
+            or opened.st_ctime_ns != after_read.st_ctime_ns
+        ):
+            # El metadata sólo detecta una mutación concurrente durante la
+            # lectura; la identidad de contenido siempre se decide por bytes.
+            raise OSError(f"el contenido del archivo '{path}' cambió durante la lectura")
+        return bytes(content)
+    finally:
+        os.close(descriptor)
+
+
+def _read_regular_file_beneath(
+    root: pathlib.Path,
+    relative_path: pathlib.PurePosixPath,
+    *,
+    allow_missing: bool,
+    expected_size: int | None = None,
+) -> bytes | None:
+    """Lee un archivo bajo *root* tras inspeccionar y revalidar toda la cadena física.
+
+    ``None`` significa exclusivamente que falta algún componente del path. Errores
+    de permisos, I/O, enlaces, reparse points y tipos inesperados se propagan. Si
+    se pasa ``expected_size``, un tamaño distinto se rechaza antes de leer; un
+    tamaño igual nunca sustituye la comparación byte-exact del caller.
+    """
+    if relative_path.is_absolute() or not relative_path.parts or ".." in relative_path.parts:
+        raise OSError(f"ruta relativa insegura: {relative_path}")
+
+    captured_dirs = _inspect_real_directory_chain(root)
+    current = root
+    for index, component in enumerate(relative_path.parts):
+        path = current / component
+        link_kind, info = link_kind_and_identity_or_raise_with_retry(path)
+        if info is None:
+            if not allow_missing:
+                raise FileNotFoundError(f"falta el archivo generado '{path}'")
+            _revalidate_real_directories(captured_dirs)
+            # Re-chequea ausencia: un error transitorio de I/O no se convierte en
+            # "no existe", y la segunda lectura detecta creación durante el gate.
+            _link_kind, appeared = link_kind_and_identity_or_raise_with_retry(path)
+            if appeared is not None:
+                raise OSError(f"el path '{path}' apareció durante la inspección")
+            _revalidate_real_directories(captured_dirs)
+            return None
+
+        _reject_link_or_reparse(path, link_kind, info)
+        is_file = index == len(relative_path.parts) - 1
+        if is_file:
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(f"el archivo esperado '{path}' no es un archivo regular")
+            if expected_size is not None and info.st_size != expected_size:
+                raise OSError(f"tamaño distinto al generado: overwrite={info.st_size}, configuración={expected_size}")
+            content = _read_file_bytes_link_safe(path, info)
+            final_kind, final_info = link_kind_and_identity_or_raise_with_retry(path)
+            if final_info is None:
+                raise OSError(f"el archivo '{path}' desapareció durante la lectura")
+            _reject_link_or_reparse(path, final_kind, final_info)
+            if not stat.S_ISREG(final_info.st_mode) or not same_file_identity(info, final_info):
+                raise OSError(f"la identidad del archivo '{path}' cambió durante la lectura")
+            _revalidate_real_directories(captured_dirs)
+            return content
+
+        if not stat.S_ISDIR(info.st_mode):
+            raise OSError(f"el componente intermedio '{path}' no es un directorio")
+        captured_dirs.append((path, info))
+        current = path
+
+    raise OSError(f"la ruta relativa '{relative_path}' no identifica un archivo")
 
 
 class GrassProfileManager:
@@ -270,14 +407,20 @@ class GrassProfileManager:
         *,
         params: Mapping[str, str] | None = None,
     ) -> pathlib.Path:
-        """Crea el mod de config y lo habilita en el clon con máxima prioridad.
+        """Crea el mod de config y lo habilita con máxima prioridad entre mods regulares.
 
         Escribe ``SKSE/Plugins/GrassControl.ini`` (flags de generación +
         ``Only-pregenerate-world-spaces`` con los worldspaces de Fase A entre
         comillas dobles, separados por ``;``), ``SKSE/Plugins/SSEDisplayTweaks.ini``
-        (resolución marginal) y ``meta.ini``; luego agrega el mod al ``modlist.txt`` del
-        clon — en MO2 la última línea es la de mayor prioridad, así que el
-        ``GrassControl.ini`` del mod gana los conflictos.
+        (resolución marginal) y ``meta.ini``. Antes de tocar ``modlist.txt``, verifica
+        que ``overwrite`` no contenga versiones diferentes de ninguno de los dos
+        archivos: en MO2, ``overwrite`` está por encima de todos los mods regulares.
+        Ausencia o igualdad byte-exacta se acepta; conflictos, paths ilegibles o
+        enlaces/reparse points bloquean fail-closed. Solo entonces inserta el mod
+        como primera entrada física (máxima prioridad ENTRE mods regulares).
+
+        Si el gate falla, el directorio generado puede quedar como staging local,
+        pero el modlist del clon no se modifica.
 
         Args:
             worldspaces: EditorIDs de los worldspaces con pasto (Fase A).
@@ -288,7 +431,10 @@ class GrassProfileManager:
             Ruta del directorio del mod creado.
 
         Raises:
-            GrassProfileError: Si el clon todavía no existe (fail-closed).
+            GrassProfileError: Si el clon todavía no existe, overwrite contiene
+                bytes distintos o no se puede inspeccionar con seguridad. Ante un
+                fallo del gate, la carpeta del mod puede quedar staged localmente,
+                pero nunca se agrega ni reordena en ``modlist.txt``.
         """
         clon = self._data_root / "profiles" / self._clone_profile
         if not clon.is_dir():
@@ -322,9 +468,18 @@ class GrassProfileManager:
         await asyncio.to_thread(self._scaffold_mod_sync, mod_dir)
         await self._write_grasscontrol(mod_dir, grass_values)
         await self._write_ssedisplaytweaks(mod_dir)
-        # Máxima prioridad VFS: add_mod_to_modlist hace append, y en modlist.txt
-        # la última línea es el mod de mayor prioridad.
-        await self._controller.add_mod_to_modlist(self._config_mod_name, profile=self._clone_profile)
+        # ``overwrite`` está por encima de los mods regulares. Validar ambos
+        # outputs antes del writer: un conflicto nunca debe dejar el config mod
+        # agregado o reordenado en ``modlist.txt``.
+        await asyncio.to_thread(self._verify_overwrite_compatibility, mod_dir)
+        # Registrar y habilitar el mod de configuración con máxima prioridad
+        # ENTRE mods regulares. No es una garantía absoluta del overlay: el gate
+        # previo demuestra que ``overwrite`` está ausente o entrega bytes iguales.
+        await self._controller.add_mod_to_modlist(
+            self._config_mod_name,
+            profile=self._clone_profile,
+            highest_priority=True,
+        )
         logger.info("Mod de config '%s' creado en %s y habilitado en el clon", self._config_mod_name, mod_dir)
         return mod_dir
 
@@ -358,6 +513,43 @@ class GrassProfileManager:
         for section, entries in _DEFAULT_SSEDISPLAYTWEAKS.items():
             for key, value in entries.items():
                 await self._ini.set(path, key, value, section=section)
+
+    def _verify_overwrite_compatibility(self, mod_dir: pathlib.Path) -> None:
+        """Exige que overwrite esté ausente o byte-idéntico para cada output generado."""
+        for relative_path in (_GRASSCONTROL_REL, _SSEDISPLAYTWEAKS_REL):
+            relative_name = relative_path.as_posix()
+            generated_path = mod_dir.joinpath(*relative_path.parts)
+            try:
+                generated_bytes = _read_regular_file_beneath(mod_dir, relative_path, allow_missing=False)
+            except (OSError, ValueError) as exc:
+                raise GrassProfileError(
+                    f"No se pudo inspeccionar el archivo generado {relative_name} en {generated_path}: {exc}"
+                ) from exc
+            if generated_bytes is None:
+                raise GrassProfileError(
+                    f"No se pudo inspeccionar el archivo generado {relative_name} en {generated_path}: falta el archivo."
+                )
+
+            overwrite_relative = pathlib.PurePosixPath("overwrite").joinpath(relative_path)
+            overwrite_path = self._data_root.joinpath(*overwrite_relative.parts)
+            try:
+                overwrite_bytes = _read_regular_file_beneath(
+                    self._data_root,
+                    overwrite_relative,
+                    allow_missing=True,
+                    expected_size=len(generated_bytes),
+                )
+            except (OSError, ValueError) as exc:
+                raise GrassProfileError(
+                    f"No se pudo demostrar que el archivo generado {relative_name} será efectivo: "
+                    f"no se pudo inspeccionar overwrite en {overwrite_path}: {exc}"
+                ) from exc
+
+            if overwrite_bytes is not None and overwrite_bytes != generated_bytes:
+                raise GrassProfileError(
+                    f"El archivo generado {relative_name} no será efectivo: "
+                    f"overwrite contiene bytes diferentes en {overwrite_path}."
+                )
 
     # ------------------------------------------------------------------
     # disable_conflicting_mods

@@ -579,7 +579,7 @@ def test_binding_de_source_mod_con_el_mismo_archivo_y_los_mismos_bytes(tmp_path:
     `source_mod`, un challenge emitido para un mod reutilizaría el fingerprint
     de otro.
     """
-    perfil = _crear_perfil(tmp_path, plugins=_PLUGINS_BASE, modlist="+CanaryMod\n+ZebraMod\n")
+    perfil = _crear_perfil(tmp_path, plugins=_PLUGINS_BASE, modlist="+ZebraMod\n+CanaryMod\n")
     original = perfil.challenge()
     assert original.source_mod == "ZebraMod"
 
