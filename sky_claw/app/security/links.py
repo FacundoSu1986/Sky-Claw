@@ -65,6 +65,21 @@ def reparse_tag_or_zero(st: os.stat_result | None) -> int:
     return getattr(st, "st_reparse_tag", 0)
 
 
+def reject_unclassified_reparse_point(path: pathlib.Path, st: os.stat_result) -> None:
+    """Falla cerrado si un caller sensible encuentra un reparse tag no clasificado.
+
+    ``link_kind`` sólo considera symlinks y ``IO_REPARSE_TAG_MOUNT_POINT`` como
+    enlaces conocidos; otros tags (p. ej. Cloud Files) no se deben tratar como
+    junction de forma global. Un caller que no puede tolerar ninguna forma de
+    reparse point puede llamar esta primitiva DESPUÉS de comprobar que
+    ``link_kind`` devolvió ``None``. Así la inspección del tag sigue centralizada
+    en este módulo sin cambiar la semántica global de clasificación/eliminación.
+    """
+    tag = reparse_tag_or_zero(st)
+    if tag:
+        raise OSError(f"'{path}' contiene un reparse tag no clasificado (0x{tag:08X})")
+
+
 def link_kind_and_identity_or_raise(
     path: pathlib.Path,
 ) -> tuple[str | None, os.stat_result | None]:

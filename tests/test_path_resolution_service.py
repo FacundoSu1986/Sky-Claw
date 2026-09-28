@@ -1468,7 +1468,9 @@ class TestAnclaConstructoresManualesDeMods:
         # (los dos builders + verify_vfs_attestation) colapsaron en el helper
         # único `_raices_del_overlay` — la única construcción de `<base>/mods`
         # del módulo, que es el concepto "directorio de mods de la instancia".
-        "sky_claw/local/mo2/vfs_attestation.py": (549,),
+        # H1 (#650: normalización de prioridad canónica en boundary de parser)
+        # expandió `read_enabled_mods` moviendo la línea (549 → 558).
+        "sky_claw/local/mo2/vfs_attestation.py": (558,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323 y sus
         # follow-ups de revisión a la ~339) y VfsWorkerManifest: única
