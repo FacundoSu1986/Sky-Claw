@@ -235,9 +235,8 @@ async def test_overwrite_gate_usa_data_root_de_la_instancia(tmp_path: pathlib.Pa
     modlist_before = modlist.read_bytes()
     data_conflict = data_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
     data_conflict.parent.mkdir(parents=True)
-    generated_grasscontrol = (config_mod / "SKSE" / "Plugins" / "GrassControl.ini").read_bytes()
-    data_conflict.write_bytes(generated_grasscontrol[:-1] + b"!")
-    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*bytes diferentes"):
+    data_conflict.write_bytes(b"different instance-data bytes")
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*tamaño distinto"):
         await manager.build_config_mod(["Tamriel"])
     assert modlist.read_bytes() == modlist_before
 
