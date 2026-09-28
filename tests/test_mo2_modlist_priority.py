@@ -6,8 +6,9 @@ y la representación interna normalizada de Sky-Claw:
 1. FORMATO FÍSICO EN DISCO (MO2):
    ``Profile::doWriteModlist`` recorre ``m_ModIndexByPriority`` en reversa
    (``crbegin()`` a ``crend()``), por lo que en disco:
-   - Primera línea habilitada (``+Nombre``) = MAYOR prioridad.
-   - Última línea habilitada = MENOR prioridad.
+   - Primera línea habilitada (``+Nombre``) = MAYOR prioridad entre mods regulares.
+   - Última línea habilitada = MENOR prioridad entre mods regulares.
+   - El overlay de ``overwrite`` permanece por encima de los mods regulares.
 
 2. NORMALIZACIÓN CENTRAL EN EL BOUNDARY (read_enabled_mods):
    ``read_enabled_mods()`` invierte ese orden al leer (``tuple(reversed(enabled))``)
@@ -473,7 +474,8 @@ async def test_p1_a1_existing_conflict_grass_config_highest_priority(tmp_path: p
     +OtroModQueTieneGrassControl
     +OtroMod
 
-    Y read_enabled_mods() produce internamente el config mod al final (ganador).
+    Y read_enabled_mods() produce internamente el config mod al final (mayor prioridad regular).
+    Este caso no tiene overwrite; el overlay se valida por separado en grass_profile.
     """
     mo2_root = tmp_path / "MO2"
     profiles_dir = mo2_root / "profiles"
@@ -644,6 +646,8 @@ def test_p1_b_canonical_agents_documentation_anchor() -> None:
     assert "read_enabled_mods()" in agents_content
     assert "vfs_attestation.py" in agents_content
     assert "descending priority" in agents_content or "prioridad descendente" in agents_content
+    assert "highest regular-mod" in agents_content
+    assert "overwrite` remains above regular mods" in agents_content
     assert "enabled[-1]" in agents_content
 
     # Prohibición de afirmaciones obsoletas del bug H1

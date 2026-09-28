@@ -307,7 +307,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 **Rule:** Resolved EXCLUSIVELY by manipulating the priority hierarchy of the mod manager's left-panel VFS:
 
-- **MO2 Physical Disk Format (`modlist.txt`):** Written in descending priority order (`Profile::doWriteModlist` iterates `m_ModIndexByPriority.crbegin()` to `crend()`). The **first** enabled mod line has the **highest** loose-file priority on disk, and the last line has the lowest.
+- **MO2 Physical Disk Format (`modlist.txt`):** Written in descending priority order (`Profile::doWriteModlist` iterates `m_ModIndexByPriority.crbegin()` to `crend()`). The **first** enabled mod line has the **highest regular-mod** loose-file priority on disk, and the last line has the lowest. This does not make it the absolute overlay winner: `overwrite` remains above regular mods, and physical `Data` remains below them.
 - **Sky-Claw Internal Representation:** Canonical authority is `read_enabled_mods()` in `sky_claw/local/mo2/vfs_attestation.py`. It normalizes the physical disk order to **ascending priority** (`tuple(reversed(enabled))`), where `enabled[0]` is the lowest priority mod and `enabled[-1]` is the highest priority mod ("last element wins" internal convention). Other modules (e.g. `sky_claw/local/assets/asset_scanner.py`) are consumers/delegators that must use `read_enabled_mods()`.
 - **MO2 Left-Pane GUI:** In the default priority-ascending UI view, higher priority mods have higher numerical priority indices (displayed lower in the visual list). Do not confuse the visual UI position with the physical `modlist.txt` disk file format.
 

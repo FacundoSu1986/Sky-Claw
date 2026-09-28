@@ -11,8 +11,9 @@ jamás se toca.**
 Anclas del contrato:
 - Clonado byte-fiel (BOM UTF-8 + CRLF, como los escribe MO2): mismo estándar que
   ``ProfileSandbox`` y ``IniEditor``.
-- El mod de config nace con ``meta.ini`` válido y **máxima prioridad VFS** (primera
-  línea de mods del ``modlist.txt`` en MO2) para que su ``GrassControl.ini`` gane.
+- El mod de config nace con ``meta.ini`` válido y **máxima prioridad entre mods
+  regulares** (primera línea de mods del ``modlist.txt``); ``overwrite`` sigue por
+  encima y se valida para que no imponga bytes distintos en los dos INIs.
 - Aislamiento demostrable: toggles y config solo tocan el clon; el modlist real y
   los INIs reales quedan byte-idénticos.
 - ``teardown`` idempotente (borra clon + mod; un segundo llamado no falla).
@@ -25,6 +26,7 @@ import configparser
 import pathlib
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,6 +92,25 @@ def _leer(path: pathlib.Path) -> bytes:
     return path.read_bytes()
 
 
+async def _capturar_configs_generadas(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> tuple[dict[str, bytes], bytes, pathlib.Path]:
+    """Genera una referencia de bytes y restaura el modlist inicial del clon."""
+    await manager.create_clone_profile()
+    modlist = mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt"
+    modlist_before = modlist.read_bytes()
+    mod_dir = await manager.build_config_mod(["Tamriel"])
+    generated = {
+        "SKSE/Plugins/GrassControl.ini": (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_bytes(),
+        "SKSE/Plugins/SSEDisplayTweaks.ini": (mod_dir / "SKSE" / "Plugins" / "SSEDisplayTweaks.ini").read_bytes(),
+    }
+    # El test empieza el escenario del gate desde el mismo estado de modlist,
+    # sin la inserción de la generación de referencia.
+    modlist.write_bytes(modlist_before)
+    return generated, modlist_before, modlist
+
+
 # ---------------------------------------------------------------------------
 # create_clone_profile
 # ---------------------------------------------------------------------------
@@ -150,11 +171,268 @@ async def test_mod_de_config_meta_ini_y_maxima_prioridad(mo2_root: pathlib.Path,
     meta.read(mod_dir / "meta.ini", encoding="utf-8")
     assert meta["General"]["name"] == "SkyClaw - Grass Precache Config"
 
-    # El mod queda con máxima prioridad VFS: en MO2 la PRIMERA línea de
-    # mods del modlist.txt es la de mayor prioridad (gana conflictos de archivos).
+    # El mod queda con máxima prioridad ENTRE mods regulares: en MO2 la PRIMERA
+    # línea de mods del modlist.txt es la de mayor prioridad regular. overwrite
+    # permanece por encima y su compatibilidad se comprueba antes del writer.
     clon_modlist = (mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt").read_text(encoding="utf-8-sig")
     lineas = [ln.strip() for ln in clon_modlist.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     assert lineas[0] == "+SkyClaw - Grass Precache Config"
+
+
+async def test_build_config_mod_sin_directorio_overwrite(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> None:
+    """Un overwrite ausente no impide construir y habilitar el mod de config."""
+    (mo2_root / "overwrite").rmdir()
+    await manager.create_clone_profile()
+
+    mod_dir = await manager.build_config_mod(["Tamriel"])
+
+    assert (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").is_file()
+    modlist = (mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt").read_text(encoding="utf-8-sig")
+    assert modlist.splitlines()[0] == "+SkyClaw - Grass Precache Config"
+
+
+async def test_overwrite_gate_usa_data_root_de_la_instancia(tmp_path: pathlib.Path) -> None:
+    """El gate sigue data_root de MO2, no install_root ni mods_dir configurables."""
+    install_root = tmp_path / "MO2_Install"
+    data_root = tmp_path / "MO2_Instance_Data"
+    mods_dir = tmp_path / "Custom_Mods"
+    for directory in (install_root, data_root, mods_dir):
+        directory.mkdir()
+    (install_root / "ModOrganizer.exe").write_bytes(b"fake-exe")
+    profile = data_root / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+
+    # Una trampa en INSTALL_ROOT no representa el overwrite de esta instancia.
+    install_decoy = install_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    install_decoy.parent.mkdir(parents=True)
+    install_decoy.write_bytes(b"different install-root bytes")
+
+    validator = PathValidator(roots=[tmp_path])
+    controller = MO2Controller(
+        install_root=install_root,
+        data_root=data_root,
+        mods_dir=mods_dir,
+        path_validator=validator,
+    )
+    manager = GrassProfileManager(
+        install_root=install_root,
+        data_root=data_root,
+        mods_dir=mods_dir,
+        path_validator=validator,
+        controller=controller,
+    )
+    await manager.create_clone_profile()
+
+    config_mod = await manager.build_config_mod(["Tamriel"])
+    assert config_mod == mods_dir / "SkyClaw - Grass Precache Config"
+    assert install_decoy.read_bytes() == b"different install-root bytes"
+
+    modlist = data_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt"
+    modlist_before = modlist.read_bytes()
+    data_conflict = data_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    data_conflict.parent.mkdir(parents=True)
+    generated_grasscontrol = (config_mod / "SKSE" / "Plugins" / "GrassControl.ini").read_bytes()
+    data_conflict.write_bytes(generated_grasscontrol[:-1] + b"!")
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*bytes diferentes"):
+        await manager.build_config_mod(["Tamriel"])
+    assert modlist.read_bytes() == modlist_before
+
+
+async def test_overwrite_byte_identico_aceptado_para_ambos_configs(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> None:
+    """Los dos outputs exactos en overwrite equivalen al overlay generado y pasan."""
+    generated, _modlist_before, modlist = await _capturar_configs_generadas(manager, mo2_root)
+    overwrite = mo2_root / "overwrite"
+    for relative, content in generated.items():
+        path = overwrite.joinpath(*pathlib.PurePosixPath(relative).parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    mod_dir = await manager.build_config_mod(["Tamriel"])
+
+    assert (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_bytes() == generated[
+        "SKSE/Plugins/GrassControl.ini"
+    ]
+    assert (mod_dir / "SKSE" / "Plugins" / "SSEDisplayTweaks.ini").read_bytes() == generated[
+        "SKSE/Plugins/SSEDisplayTweaks.ini"
+    ]
+    assert modlist.read_bytes() != _modlist_before
+    assert modlist.read_text(encoding="utf-8-sig").splitlines()[0] == "+SkyClaw - Grass Precache Config"
+
+
+async def test_overwrite_grasscontrol_diferente_bloquea_sin_mutar_modlist(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> None:
+    """GrassControl conflictivo falla con error de dominio y conserva modlist byte a byte."""
+    generated, modlist_before, modlist = await _capturar_configs_generadas(manager, mo2_root)
+    relative = "SKSE/Plugins/GrassControl.ini"
+    conflicting = generated[relative].replace(b"Use-grass-cache=True", b"Use-grass-cache=Fake", 1)
+    assert len(conflicting) == len(generated[relative]) and conflicting != generated[relative]
+    path = mo2_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(conflicting)
+
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*bytes diferentes"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert modlist.read_bytes() == modlist_before
+    assert "+SkyClaw - Grass Precache Config" not in modlist.read_text(encoding="utf-8-sig")
+
+
+async def test_overwrite_ssedisplaytweaks_diferente_bloquea_sin_mutar_modlist(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> None:
+    """SSEDisplayTweaks también queda cubierto; el caso usa bytes distintos del mismo tamaño."""
+    generated, modlist_before, modlist = await _capturar_configs_generadas(manager, mo2_root)
+    relative = "SKSE/Plugins/SSEDisplayTweaks.ini"
+    conflicting = generated[relative].replace(b"Resolution=800x400", b"Resolution=800x401", 1)
+    assert len(conflicting) == len(generated[relative]) and conflicting != generated[relative]
+    path = mo2_root / "overwrite" / "SKSE" / "Plugins" / "SSEDisplayTweaks.ini"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(conflicting)
+
+    with pytest.raises(GrassProfileError, match=r"SSEDisplayTweaks\.ini.*overwrite.*bytes diferentes"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert modlist.read_bytes() == modlist_before
+
+
+async def test_overwrite_igual_y_distinto_bloquea_universalmente(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+) -> None:
+    """Un output idéntico no oculta un conflicto del segundo output generado."""
+    generated, modlist_before, modlist = await _capturar_configs_generadas(manager, mo2_root)
+    overwrite = mo2_root / "overwrite" / "SKSE" / "Plugins"
+    overwrite.mkdir(parents=True)
+    (overwrite / "GrassControl.ini").write_bytes(generated["SKSE/Plugins/GrassControl.ini"])
+    (overwrite / "SSEDisplayTweaks.ini").write_bytes(
+        generated["SKSE/Plugins/SSEDisplayTweaks.ini"].replace(b"Resolution=800x400", b"Resolution=800x401", 1)
+    )
+
+    with pytest.raises(GrassProfileError, match=r"SSEDisplayTweaks\.ini.*overwrite.*bytes diferentes"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert modlist.read_bytes() == modlist_before
+
+
+async def test_overwrite_ilegible_bloquea_fail_closed(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un error de lectura no se interpreta como ausencia de overlay."""
+    import sky_claw.local.mo2.grass_profile as grass_profile
+
+    generated, modlist_before, modlist = await _capturar_configs_generadas(manager, mo2_root)
+    overwrite_file = mo2_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    overwrite_file.parent.mkdir(parents=True)
+    overwrite_file.write_bytes(generated["SKSE/Plugins/GrassControl.ini"])
+    read_real = grass_profile._read_file_bytes_link_safe
+
+    def _read_with_permission_error(path: pathlib.Path, expected: object) -> bytes:
+        if path == overwrite_file:
+            raise PermissionError("synthetic unreadable overwrite")
+        return read_real(path, expected)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(grass_profile, "_read_file_bytes_link_safe", _read_with_permission_error)
+
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*synthetic unreadable"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert modlist.read_bytes() == modlist_before
+
+
+@_symlink_guard
+async def test_overwrite_symlink_bloquea_sin_seguir_target(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un archivo de overwrite enlazado se bloquea antes de leer su target."""
+    await manager.create_clone_profile()
+    modlist = mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt"
+    modlist_before = modlist.read_bytes()
+    target = tmp_path / "external.ini"
+    target.write_bytes(b"external bytes")
+    overwrite_file = mo2_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    overwrite_file.parent.mkdir(parents=True)
+    overwrite_file.symlink_to(target)
+
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*symlink"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert target.read_bytes() == b"external bytes"
+    assert overwrite_file.is_symlink()
+    assert modlist.read_bytes() == modlist_before
+
+
+async def test_overwrite_reparse_tag_no_clasificado_bloquea(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un reparse tag no clasificado también bloquea mediante el seam portable."""
+    import sky_claw.local.mo2.grass_profile as grass_profile
+
+    await manager.create_clone_profile()
+    modlist = mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt"
+    modlist_before = modlist.read_bytes()
+    overwrite_file = mo2_root / "overwrite" / "SKSE" / "Plugins" / "GrassControl.ini"
+    overwrite_file.parent.mkdir(parents=True)
+    overwrite_file.write_bytes(b"present but not trusted")
+    inspect_real = grass_profile.link_kind_and_identity_or_raise_with_retry
+
+    def _inspect_with_unknown_reparse(path: pathlib.Path) -> tuple[str | None, object | None]:
+        link_kind, info = inspect_real(path)
+        if path == overwrite_file and info is not None:
+            return link_kind, SimpleNamespace(
+                st_mode=info.st_mode,
+                st_dev=info.st_dev,
+                st_ino=info.st_ino,
+                st_reparse_tag=0x9000001A,
+            )
+        return link_kind, info
+
+    monkeypatch.setattr(grass_profile, "link_kind_and_identity_or_raise_with_retry", _inspect_with_unknown_reparse)
+
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*reparse tag"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert overwrite_file.read_bytes() == b"present but not trusted"
+    assert modlist.read_bytes() == modlist_before
+
+
+@junction_guard
+async def test_overwrite_junction_bloquea(
+    manager: GrassProfileManager,
+    mo2_root: pathlib.Path,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un junction en un componente del overwrite se rechaza en Windows."""
+    await manager.create_clone_profile()
+    modlist = mo2_root / "profiles" / "SkyClaw-GrassCache" / "modlist.txt"
+    modlist_before = modlist.read_bytes()
+    target = tmp_path / "external-overwrite"
+    (target / "Plugins").mkdir(parents=True)
+    (target / "Plugins" / "GrassControl.ini").write_bytes(b"external bytes")
+    overwrite_skse = mo2_root / "overwrite" / "SKSE"
+    motivo = crear_junction(overwrite_skse, target)
+    assert motivo is None, motivo
+
+    with pytest.raises(GrassProfileError, match=r"GrassControl\.ini.*overwrite.*junction"):
+        await manager.build_config_mod(["Tamriel"])
+
+    assert (target / "Plugins" / "GrassControl.ini").read_bytes() == b"external bytes"
+    assert modlist.read_bytes() == modlist_before
 
 
 async def test_grasscontrol_ini_worldspaces_y_flags(manager: GrassProfileManager) -> None:
