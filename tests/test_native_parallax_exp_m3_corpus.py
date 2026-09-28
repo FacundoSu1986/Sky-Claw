@@ -19,6 +19,7 @@ from PIL import Image
 from sky_claw.local.native_parallax.research.authored_dataset import (
     DatasetInvalidError,
     decode_height_image,
+    resize_height,
 )
 from sky_claw.local.native_parallax.research.fetch_exp_m3_primary_corpus import (
     CorpusAcquisitionError,
@@ -198,6 +199,52 @@ def test_decode_height_8bit_sin_cambios(tmp_path: Path) -> None:
     decoded = decode_height_image(path)
     assert decoded.max() == pytest.approx(1.0)
     assert decoded.min() == pytest.approx(0.0)
+
+
+def test_resize_height_16bit_relieve_sutil_sobrevive_al_downsample(tmp_path: Path) -> None:
+    """Una variación 16-bit menor que un nivel uint8 no debe colapsar al redimensionar."""
+    profile = np.linspace(32700, 32800, 64, dtype=np.uint16)
+    source = np.tile(profile, (64, 1))
+    path = tmp_path / "height_subtle_16bit.png"
+    Image.fromarray(source).save(path)
+
+    decoded = decode_height_image(path)
+    assert float(np.ptp(decoded)) < 1.0 / 255.0
+
+    resized = resize_height(decoded, 16)
+    assert float(resized.std()) > 1e-4
+    assert float(np.ptp(resized)) > 5e-4
+
+
+def test_resize_height_ramp_1024_a_512_no_se_limita_a_256_niveles() -> None:
+    """Un ramp float redimensionado conserva más de los 256 niveles de uint8."""
+    profile = np.linspace(0.0, 1.0, 1024, dtype=np.float64)
+    source = np.broadcast_to(profile, (1024, 1024)).copy()
+
+    resized = resize_height(source, 512)
+    effective_levels = np.unique(np.round(resized[256], decimals=7)).size
+    assert effective_levels > 256
+
+
+def test_resize_height_invariantes_de_dtype_shape_rango_y_constancia() -> None:
+    constant = np.full((64, 64), 0.375, dtype=np.float64)
+    resized = resize_height(constant, 32)
+
+    assert resized.dtype == np.float64
+    assert resized.shape == (32, 32)
+    assert np.isfinite(resized).all()
+    assert float(resized.min()) >= 0.0
+    assert float(resized.max()) <= 1.0
+    np.testing.assert_allclose(resized, resized[0, 0], rtol=0.0, atol=1e-7)
+
+    native_resolution = resize_height(constant, 64)
+    assert native_resolution.dtype == np.float64
+    np.testing.assert_array_equal(native_resolution, constant)
+
+    below_range = resize_height(np.full((64, 64), -0.5, dtype=np.float64), 32)
+    above_range = resize_height(np.full((64, 64), 1.5, dtype=np.float64), 32)
+    np.testing.assert_array_equal(below_range, np.zeros((32, 32), dtype=np.float64))
+    np.testing.assert_array_equal(above_range, np.ones((32, 32), dtype=np.float64))
 
 
 # ---------------------------------------------------------------- F1: height modo F
