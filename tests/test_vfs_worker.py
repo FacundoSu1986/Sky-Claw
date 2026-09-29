@@ -168,9 +168,7 @@ async def test_worker_bloquea_load_order_incompleto_antes_del_handler(tmp_path: 
         called = True
         return VfsToolExecution.ok()
 
-    result = await execute_worker_manifest(
-        manifest, handlers={"health": handler}, grandchild_probe=probe
-    )
+    result = await execute_worker_manifest(manifest, handlers={"health": handler}, grandchild_probe=probe)
 
     assert result.success is False
     assert "MiMod.esp" in result.message
@@ -190,13 +188,12 @@ async def test_worker_acepta_load_order_completo_y_reporta_evidencia(tmp_path: p
     async def handler(_manifest: VfsWorkerManifest) -> VfsToolExecution:
         return VfsToolExecution.ok()
 
-    result = await execute_worker_manifest(
-        manifest, handlers={"health": handler}, grandchild_probe=probe
-    )
+    result = await execute_worker_manifest(manifest, handlers={"health": handler}, grandchild_probe=probe)
 
     assert result.success is True
     assert result.tool_result["missing_plugins"] == []
     assert result.tool_result["visible_plugins"] == ["Skyrim.esm", "MiMod.esp"]
+
 
 def test_descriptor_rechaza_host_no_loopback(tmp_path: pathlib.Path) -> None:
     descriptor = tmp_path / "descriptor.json"
