@@ -4,6 +4,10 @@
 **Branch**: `research/native-parallax-m3-m4-height-resize-revalidation`
 **Base**: `1a52c3ea` (origin/main, incluye fix #653)
 **Commit de artefactos**: `dd5fba95` — sólo añade los 4 artefactos de validación; sin cambios de código `native_parallax`
+**Anotación de protocolo**: commit posterior en el mismo PR
+(`docs(validation): annotate M4 artifact with protocol_status metadata`) — añade la clave
+`protocol_status` al JSON de M4 y esta sección. Sin cambios de código, sin retuneo, sin
+rerun, sin freeze retroactivo. Sigue siendo el mismo conjunto de **4 archivos**.
 
 > **Nota terminológica**: para 512 el resultado es *decision-equivalent / materialmente
 > estable* (deltas en el 3.º–5.º decimal respecto del histórico). Sólo el control
@@ -69,6 +73,23 @@
 ```
 
 **Results file**: `docs/validation/native-parallax-revalidation-20260928/exp_m4_results.json`
+— **NO es una copia byte-idéntica del raw.** El archivo publicado es el raw con **una clave
+top-level añadida post-run**, `protocol_status`, que expone la desviación de protocolo de
+forma machine-readable (ver "Protocol deviation" más abajo). La anotación es
+exclusivamente de metadatos de protocolo: `rows`, `summary` (incluido `summary.decision`),
+`thresholds`, `dataset` y `environment` son deep-equal al raw, verificado programáticamente.
+`environment.frozen_ack` **no** fue tocado.
+
+| Archivo | SHA256 | Bytes | Relación con el raw |
+|---|---|---:|---|
+| raw `m4\exp_m4_results.json` | `8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557` | 83233 | — (raw original de la corrida) |
+| publicado `exp_m4_results.json` | `de172bc59ae4cdba755333c585913245b301c7fa0fc4514a8c30639e807577d9` | 85377 | raw + clave `protocol_status` |
+| `exp_m3_results.json` | `047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19` | 243752 | byte-idéntico al raw |
+| `calibration.json` | `ccd9bb700761c18800acb2f35330d685834a2c3a07402b40a4476bd8123fa384` | 41194 | byte-idéntico al raw |
+
+El `raw_sha256` de la tabla también queda registrado dentro del propio JSON, en
+`protocol_status.annotation.raw_sha256`, para que un consumidor machine-readable pueda
+verificar la correspondencia sin depender de este documento.
 
 **Decision**: `EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT` — decision-equivalent vs histórico.
 **Reglas**: `C1_self_good=true` y `C2_auth_worse=true` en ambas corridas (histórica y nueva).
@@ -130,6 +151,29 @@ procedural, no científica.
 
 **Decisión tomada**: NO crear un commit de freeze retroactivo — no probaría que existió
 antes de mirar held-out y sería peor científicamente que documentar la desviación.
+
+### Metadatos machine-readable de la desviación (`protocol_status`)
+
+Documentar la desviación sólo en prosa no alcanza: un consumidor machine-readable que leyera
+`summary.decision` + `environment.frozen_ack` concluiría que la corrida es confirmatoria y
+protocol-compliant. Por eso el JSON publicado lleva una clave top-level `protocol_status`
+**añadida post-run, sólo de protocolo**, que declara:
+
+| Campo | Valor | Significado |
+|---|---|---|
+| `status` | `UNDER_REVIEW_PROTOCOL_DEVIATION` | la corrida está en revisión, no cerrada |
+| `confirmatory_final` | `false` | no es un resultado confirmatorio final |
+| `observed_runner_decision` | `EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT` | el valor observado, preservado |
+| `observed_runner_decision_is_confirmatory` | `false` | no es una decisión confirmatoria nueva |
+| `execution_freeze_post_calibration.performed` | `false` | no hubo freeze post-calibration conforme al preregistro §8.3 |
+| `execution_freeze_post_calibration.retroactive_freeze_created` | `false` | no se fabricó uno a posteriori |
+| `annotation.scope` | `protocol_metadata_only` | la anotación no toca la ciencia |
+| `annotation.raw_sha256` | `8b018150…` | hash del raw original, verificable |
+
+`summary.decision` conserva intacto el valor observado por el runner
+(`EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT`): la metadata **aclara su status**, no lo reescribe.
+Un consumidor debe leer `protocol_status.status` / `protocol_status.confirmatory_final` para
+no tratar esta revalidación como confirmatoria.
 
 ## Environment
 

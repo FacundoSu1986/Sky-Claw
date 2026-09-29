@@ -1999,5 +1999,39 @@
     "abs_corr_auth_median": 0.7715445879086522
    }
   ]
+ },
+ "protocol_status": {
+  "status": "UNDER_REVIEW_PROTOCOL_DEVIATION",
+  "confirmatory_final": false,
+  "observed_runner_decision": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+  "observed_runner_decision_is_confirmatory": false,
+  "observed_runner_decision_note": "Valor observado por el runner en la corrida, preservado sin modificar. NO es una nueva decision confirmatoria protocol-compliant: el preregistro §8.4 obliga a pasar el estado a revision cuando held-out se observa sin execution-freeze posterior a calibration.",
+  "execution_freeze_post_calibration": {
+   "performed": false,
+   "frozen_ack": "freeze-1a52c3ea5d2259f3b05bfdef1fdbe781608c610f",
+   "frozen_ack_references_dedicated_execution_freeze_commit": false,
+   "retroactive_freeze_created": false,
+   "prereg_reference": "exp-m4-solver-vs-pair-coherence.md §8.3-8.4",
+   "deviation": "No se creo commit de execution-freeze entre calibration y full. El --frozen-ack apunta al checkout base (origin/main con #653), no a un freeze dedicado posterior a calibration. El runner no valida el SHA (§ Limitación verificada del runner).",
+   "effect_on_validity": "Deviacion procedural, no cientifica: thresholds, solver, corpus, manifest, split y reglas ya estaban congelados y no se retunearon. Ver checkpoint docs/validation/native-parallax-revalidation-checkpoint.md."
+  },
+  "annotation": {
+   "annotated_post_run": true,
+   "scope": "protocol_metadata_only",
+   "scientific_payload_unchanged": true,
+   "unchanged_top_level_keys": [
+    "experiment",
+    "phase",
+    "environment",
+    "thresholds",
+    "dataset",
+    "rows",
+    "summary"
+   ],
+   "raw_source_path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\revalidation-height-resize-20260928\\m4\\exp_m4_results.json",
+   "raw_sha256": "8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557",
+   "raw_bytes": 83233,
+   "note": "El unico delta contra el raw es la clave protocol_status. El archivo publicado YA NO es byte-identico al raw: los valores de rows, summary (incluido summary.decision), thresholds, dataset y environment son los del raw sin alteracion."
+  }
  }
 }
