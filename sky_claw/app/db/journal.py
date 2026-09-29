@@ -1298,6 +1298,90 @@ class OperationJournal:
                         with contextlib.suppress(sqlite3.Error):
                             await db.rollback()
 
+    async def registrar_resolucion_de_restauracion_de_artifact(
+        self,
+        *,
+        transaction_id: int,
+        artifact_path: str,
+    ) -> None:
+        """Registra la resolución durable ``restored_byte_exact`` para la pareja
+        ``(transaction_id, artifact_path)`` (Issue #655, H2 de #592).
+
+        Semántica: la mutación de ESTE artifact de ESTA transacción fue
+        restaurada byte-exact por el propio ``DirectoryRollback`` de la
+        corrida, con las leases intactas y sin preservación deliberada. El
+        caller DEBE tener la prueba de la restauración (``rollback_completed``
+        del protector de ese target) y las leases vigentes en el momento de
+        la llamada; sin esa prueba no se invoca (fail-closed: lo seguro es
+        dejar la evidencia viva, nunca afirmar una restauración que no se
+        probó).
+
+        Diferencias deliberadas con ``resolver_evidencia_como_no_artifact``:
+
+        - NO filtra ``_filtrar_resolubles_historicas_en_conn``: esta resolución
+          aplica a una TX ``PENDING`` VIVA — el diseño D4 de la relación es
+          precisamente no tocar el lifecycle de la TX (live-safe por
+          construcción); el oracle deja de readmitir la pareja PARA ESTE
+          artifact y la TX sigue existiendo como evidencia de sus demás
+          targets;
+        - ``handoff_id`` SIEMPRE ``NULL``: la provenance es el rollback del
+          pipeline, no un handoff (la CHECK de provenance lo exige);
+        - una TX ``COMMITTED``/``ROLLED_BACK`` no es candidata al oracle en
+          esta forma, pero el writer no lo valida: escribir sobre una pareja
+          inerte es inofensivo (el oracle simplemente no la lee), y validar el
+          estado abriría una carrera con el lifecycle.
+
+        Idempotencia y conflicto: delega en
+        :func:`_registrar_resoluciones_de_artifact_en_conn` (único helper de
+        escritura de la tabla) — reescritura exacta = éxito silencioso;
+        provenance distinta = ``JournalTransactionError`` (nunca se
+        sobrescribe una resolución existente).
+
+        Args:
+            transaction_id: La TX cuya mutación de este artifact se restauró.
+            artifact_path: Ruta del artifact (se canonicaliza con
+                :func:`_canonica_y_prefijo`, la MISMA identidad física del
+                oracle).
+
+        Raises:
+            JournalTransactionError: Fallo del boundary SQLite o conflicto de
+                provenance semántica sobre la pareja.
+        """
+        ids = sorted({int(transaction_id)})
+        objetivo_fisico, _ = _canonica_y_prefijo(artifact_path)
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await _registrar_resoluciones_de_artifact_en_conn(
+                        conn,
+                        transaction_ids=ids,
+                        artifact_path=objetivo_fisico,
+                        resolution_kind=ArtifactResolutionKind.RESTORED_BYTE_EXACT,
+                        handoff_id=None,
+                    )
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to record restored_byte_exact resolution: {e}") from e
+        else:
+            async with self._lock:
+                commit_exitoso = False
+                try:
+                    await _registrar_resoluciones_de_artifact_en_conn(
+                        db,
+                        transaction_ids=ids,
+                        artifact_path=objetivo_fisico,
+                        resolution_kind=ArtifactResolutionKind.RESTORED_BYTE_EXACT,
+                        handoff_id=None,
+                    )
+                    await db.commit()
+                    commit_exitoso = True
+                except sqlite3.Error as e:
+                    raise JournalTransactionError(f"Failed to record restored_byte_exact resolution: {e}") from e
+                finally:
+                    if not commit_exitoso:
+                        with contextlib.suppress(sqlite3.Error):
+                            await db.rollback()
+
     async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
         """Cierra receipts UNRESOLVED como NO_ARTIFACT (Principio 4).
 
@@ -3072,6 +3156,14 @@ class NoOpJournal(OperationJournal):
     async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
         return None
 
+    async def registrar_resolucion_de_restauracion_de_artifact(
+        self,
+        *,
+        transaction_id: int,
+        artifact_path: str,
+    ) -> None:
+        return None
+
 
 class StagingJournal(OperationJournal):
     """Journal que difiere el commit de la transacción en el journal real
@@ -3174,6 +3266,13 @@ class StagingJournal(OperationJournal):
 
     async def cerrar_receipts_como_no_artifact(self, *args: Any, **kwargs: Any) -> None:
         await self._real_journal.cerrar_receipts_como_no_artifact(*args, **kwargs)
+
+    async def registrar_resolucion_de_restauracion_de_artifact(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await self._real_journal.registrar_resolucion_de_restauracion_de_artifact(*args, **kwargs)
 
     async def commit_staged(self) -> None:
         """Confirma la transacción diferida en el journal real."""

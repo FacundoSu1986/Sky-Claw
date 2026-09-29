@@ -179,7 +179,8 @@ CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
         resolution_kind IN (
             'absorbed_by_handoff',
             'superseded_by_run',
-            'no_artifact_demonstrated'
+            'no_artifact_demonstrated',
+            'restored_byte_exact'
         )
     ),
     CONSTRAINT uq_resolution_tx_artifact
@@ -194,7 +195,10 @@ CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
         )
         OR
         (
-            resolution_kind = 'no_artifact_demonstrated'
+            resolution_kind IN (
+                'no_artifact_demonstrated',
+                'restored_byte_exact'
+            )
             AND handoff_id IS NULL
         )
     )
@@ -210,11 +214,24 @@ CREATE INDEX IF NOT EXISTS idx_artifact_resolutions_path_tx
 
 
 class ArtifactResolutionKind(StrEnum):
-    """Tipos de resolución durable de evidencia orphan para un artifact físico."""
+    """Tipos de resolución durable de evidencia orphan para un artifact físico.
+
+    ``RESTORED_BYTE_EXACT`` (#655/H2): la mutación de ESE artifact de ESA
+    transacción fue restaurada byte-exact por el propio ``DirectoryRollback``
+    de la corrida, con las leases intactas y sin preservación deliberada. Es la
+    única resolución que aplica a una TX ``PENDING`` VIVA por trabajo del
+    pipeline (las demás nacen del reconciler de orphans o del boundary de
+    reemplazo): consume la evidencia de la pareja ``(transaction_id,
+    artifact_path)`` SIN tocar el lifecycle de la TX — que puede seguir
+    ``PENDING`` legítimamente porque otras superficies mutables (Logs/INI/temp
+    del ejecutable) no están inventariadas por el rollback. Provenance
+    pipeline: ``handoff_id`` siempre ``NULL``.
+    """
 
     ABSORBED_BY_HANDOFF = "absorbed_by_handoff"
     SUPERSEDED_BY_RUN = "superseded_by_run"
     NO_ARTIFACT_DEMONSTRATED = "no_artifact_demonstrated"
+    RESTORED_BYTE_EXACT = "restored_byte_exact"
 
 
 class HandoffState(StrEnum):

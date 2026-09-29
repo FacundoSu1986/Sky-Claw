@@ -1708,6 +1708,79 @@ class DynDOLODPipelineService:
                             )
                         handoff_en_supersede = activo
 
+                # #655/H2: resolución durable per-artifact de la restauración del
+                # ``TexGen Output``. Se registra en el stack (orden LIFO) DESPUÉS
+                # del lock y ANTES de los DirectoryRollback, así que corre en el
+                # unwind DESPUÉS de cada ``__aexit__`` de los protectores
+                # (``rollback_completed`` ya refleja el restore REAL) y ANTES de
+                # soltar ``tx_lock``/ritual/workspace (las leases siguen VIGENTES):
+                # no existe la ventana en la que otro actor con la misma lease
+                # pueda re-mutar el artifact entre "restore probado" y
+                # "resolución persistida". La TX global NO se toca (permanece
+                # PENDING mientras ``mutation_coverage_complete`` no se demuestre:
+                # Logs/INI/temp del ejecutable no están inventariados); sólo se
+                # resuelve la pareja ``(tx_id, TexGen Output)``, y únicamente con
+                # la prueba de que EL protector de ese artifact confirmó
+                # restauración byte-exact bajo lease intacta y sin preservación
+                # deliberada. Fail-closed: cualquier anomalía (sin move-aside —
+                # ``create_snapshot=False``/``run_texgen=False``—, restore no
+                # confirmado, lease perdida, journal roto) deja la evidencia
+                # VIVA, que es la dirección segura: en el peor caso el resume
+                # bloquea igual que antes, jamás al revés.
+                async def _sellar_restauracion_de_texgen() -> None:
+                    if tx_id is None or journal_committed or not mutation_started:
+                        # Sin TX, pipeline ya exitoso, o mutación nunca
+                        # iniciada: nada que afirmar.
+                        return
+                    if preservado_para_deployment is not None:
+                        # Preservación deliberada es evidencia VIVA: el artifact
+                        # no se restauró (se confirmó a propósito); jamás se
+                        # marca RESTORED.
+                        return
+                    try:
+                        if not _conserva_las_leases():
+                            # La lease murió entre el restore y la persistencia:
+                            # otro dueño pudo re-mutar; no se afirma nada.
+                            return
+                    except Exception:  # noqa: BLE001 — veto fallido = restore fallido
+                        # (mismo criterio fail-closed de ``_veto_permite_restaurar``).
+                        return
+                    objetivo_texgen = mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+                    protector = next(
+                        (dr for dr in dir_rollbacks if dr.target == objetivo_texgen),
+                        None,
+                    )
+                    if protector is None or not protector.rollback_completed:
+                        # Sin move-aside de este artifact (el operador renunció al
+                        # snapshot del mod) o sin restore CONFIRMADO: no se
+                        # fabrica resolución.
+                        return
+                    try:
+                        await self._journal.registrar_resolucion_de_restauracion_de_artifact(
+                            transaction_id=tx_id,
+                            artifact_path=str(protector.target),
+                        )
+                    except Exception as journal_exc:  # noqa: BLE001 — boundary del journal
+                        logger.critical(
+                            "DynDOLOD (stage 9): no se pudo registrar la resolución durable de la "
+                            "restauración de '%s' (TX %d): %s — la evidencia queda VIVA (fail-closed).",
+                            objetivo_texgen,
+                            tx_id,
+                            journal_exc,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                        )
+                    else:
+                        logger.info(
+                            "DynDOLOD (stage 9): '%s' restaurado byte-exact bajo lease intacta: "
+                            "evidencia (TX %d, artifact) resuelta como restored_byte_exact. La TX global "
+                            "sigue PENDING (Logs/INI/temp no inventariados por el rollback).",
+                            objetivo_texgen.name,
+                            tx_id,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                        )
+
+                tx_stack.push_async_callback(_sellar_restauracion_de_texgen)
+
                 # Move-aside de los outputs regenerados (primera mutación de FS).
                 # El veto de lease alinea este context con el lock que lo envuelve:
                 # el lock saltea su rollback tras perder la lease para no pisar a un
