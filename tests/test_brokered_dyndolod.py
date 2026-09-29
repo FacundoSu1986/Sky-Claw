@@ -143,6 +143,10 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
     cwd.mkdir()
     output_texgen = tmp_path / "work" / "TexGen"
     output_dyndolod = tmp_path / "work" / "DynDOLOD"
+    data_root = tmp_path / "MO2"
+    profile_dir = data_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "plugins.txt").write_text("*MiMod.esp\n", encoding="utf-8")
     broker = _FakeBroker(_FakeSession())
     monkeypatch.setattr(
         "sky_claw.local.mo2.brokered_dyndolod.build_attestation_challenge",
@@ -152,7 +156,7 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
         broker=broker,
         instance_id="portable-main",
         profile="Default",
-        data_root=tmp_path / "MO2",
+        data_root=data_root,
         mods_dir=tmp_path / "MO2" / "mods",
         install_root=tmp_path / "MO2",
         physical_data_dir=tmp_path / "Skyrim" / "Data",
@@ -178,6 +182,11 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
     assert [job.tool_id for job in broker.jobs] == ["texgen", "dyndolod"]
     assert broker.jobs[0].payload["argv"] != broker.jobs[1].payload["argv"]
     assert broker.jobs[0].profile == broker.jobs[1].profile == "Default"
+    for job in broker.jobs:
+        expected_plugins = job.payload["expected_plugins"]
+        assert isinstance(expected_plugins, list)
+        assert "skyrim.esm" in expected_plugins
+        assert "mimod.esp" in expected_plugins
     assert broker.challenges[0] is not broker.challenges[1]
 
 
@@ -252,6 +261,28 @@ def test_payload_brokered_es_cerrado_y_no_acepta_exec_arbitrario(tmp_path: pathl
             payload={"executable": str(tmp_path / "DynDOLODx64.exe"), "argv": ["-sse", 3], "cwd": str(cwd)},
             **common,
         )
+    with pytest.raises(VfsProtocolError, match="expected_plugins"):
+        VfsJob.create(
+            tool_id="dyndolod",
+            payload={
+                "executable": str(tmp_path / "DynDOLODx64.exe"),
+                "argv": [],
+                "cwd": str(cwd),
+                "expected_plugins": ["../escape.esp"],
+            },
+            **common,
+        )
+    valid_expected = VfsJob.create(
+        tool_id="dyndolod",
+        payload={
+            "executable": str(tmp_path / "DynDOLODx64.exe"),
+            "argv": [],
+            "cwd": str(cwd),
+            "expected_plugins": ["Skyrim.esm", "MiMod.esp"],
+        },
+        **common,
+    )
+    assert valid_expected.payload["expected_plugins"] == ["Skyrim.esm", "MiMod.esp"]
     literal = VfsJob.create(
         tool_id="texgen",
         payload={

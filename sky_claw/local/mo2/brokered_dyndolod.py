@@ -46,6 +46,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     build_attestation_challenge,
     build_attestation_challenge_for_source,
     read_enabled_mods,
+    read_enabled_plugins,
 )
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_TOOL_EXECUTABLE_NAMES,
@@ -304,6 +305,15 @@ class BrokeredDynDOLODSpawnStrategy:
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
             )
+        # P1 Codex: el sensor físico no aplica bajo USVFS, así que el job
+        # brokered porta el conjunto COMPLETO de plugins activos esperado. El
+        # worker lo verifica dentro del mismo Data virtual justo antes del
+        # dispatch; el fingerprint liga esta lista al estado semántico del perfil.
+        expected_plugins = await asyncio.to_thread(
+            read_enabled_plugins,
+            self._data_root / "profiles" / self._profile / "plugins.txt",
+            game_data_dir=self._physical_data_dir,
+        )
         job = VfsJob.create(
             instance_id=self._instance_id,
             profile=self._profile,
@@ -312,6 +322,7 @@ class BrokeredDynDOLODSpawnStrategy:
                 "executable": str(validated_executable),
                 "argv": list(args),
                 "cwd": str(resolved_cwd),
+                "expected_plugins": list(expected_plugins),
             },
             timeout_seconds=float(timeout),
             expected_fingerprint=challenge.profile_fingerprint,

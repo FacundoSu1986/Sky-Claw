@@ -211,6 +211,7 @@ def _failure(
     message: str,
     *,
     attestation: dict[str, JsonValue] | None = None,
+    tool_result: dict[str, JsonValue] | None = None,
 ) -> VfsJobResult:
     return VfsJobResult(
         protocol_version=VFS_PROTOCOL_VERSION,
@@ -223,8 +224,34 @@ def _failure(
         outputs=(),
         rollback_state="not_started",
         attestation=attestation,
-        tool_result={},
+        tool_result=tool_result or {},
     )
+
+
+def _expected_plugins_visibility(manifest: VfsWorkerManifest) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Comprueba el conjunto completo esperado dentro del Data virtual.
+
+    La lista viene validada y firmada dentro del VfsJob. Se vuelve a tratar
+    fail-closed en el worker: cualquier forma inesperada o error de enumeración
+    impide el dispatch de la herramienta.
+    """
+    raw = manifest.job.payload.get("expected_plugins")
+    if raw is None:
+        return (), ()
+    if not isinstance(raw, list) or any(not isinstance(item, str) or not item for item in raw):
+        raise ValueError("payload.expected_plugins inválido en worker")
+    try:
+        visible_keys = {
+            entry.name.lower()
+            for entry in manifest.virtual_data_dir.iterdir()
+            if not entry.is_symlink() and entry.is_file()
+        }
+    except OSError as exc:
+        raise OSError(f"no se pudo enumerar el Data virtual para verificar plugins: {exc}") from exc
+    expected = tuple(raw)
+    visible = tuple(name for name in expected if name.lower() in visible_keys)
+    missing = tuple(name for name in expected if name.lower() not in visible_keys)
+    return visible, missing
 
 
 async def execute_worker_manifest(
@@ -276,6 +303,29 @@ async def execute_worker_manifest(
             attestation=attestation,
         )
     attestation["grandchild_sha256"] = child_sha
+
+    visibility_evidence: dict[str, JsonValue] = {}
+    try:
+        visible_plugins, missing_plugins = _expected_plugins_visibility(manifest)
+    except (OSError, ValueError) as exc:
+        return _failure(
+            manifest,
+            f"no se pudo demostrar la visibilidad completa del load order bajo USVFS: {exc}",
+            attestation=attestation,
+        )
+    if "expected_plugins" in manifest.job.payload:
+        visibility_evidence = {
+            "visible_plugins": list(visible_plugins),
+            "missing_plugins": list(missing_plugins),
+        }
+        if missing_plugins:
+            return _failure(
+                manifest,
+                "load order incompleto bajo USVFS: faltan plugin(s) activos en el Data virtual: "
+                + ", ".join(missing_plugins),
+                attestation=attestation,
+                tool_result=visibility_evidence,
+            )
 
     tool_id = manifest.job.tool_id
     seleccionados_sesion = dict(session_handlers) if session_handlers is not None else _default_session_handlers()
@@ -331,7 +381,7 @@ async def execute_worker_manifest(
         outputs=tuple(path.resolve() for path in execution.outputs),
         rollback_state="not_required" if execution.success else "pending",
         attestation=attestation,
-        tool_result=execution.tool_result,
+        tool_result={**execution.tool_result, **visibility_evidence},
     )
 
 

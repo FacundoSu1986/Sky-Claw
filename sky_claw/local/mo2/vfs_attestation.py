@@ -380,6 +380,24 @@ def _canonical_plugins_state(data: bytes | None, *, always_active: frozenset[str
     return b"\x00".join(enabled)
 
 
+def read_enabled_plugins(
+    plugins_path: pathlib.Path,
+    *,
+    game_data_dir: pathlib.Path,
+) -> tuple[str, ...]:
+    """Plugins activos esperados en Data, con la misma semántica del fingerprint.
+
+    Incluye los primary plugins (masters oficiales + Creation Club declarado)
+    y los plugins no primarios marcados con `*` en plugins.txt. Los nombres se
+    expresan mediante su identidad case-insensitive canónica; el orden sólo es
+    determinista y no representa prioridad.
+    """
+    always_active = _always_active_plugins(game_data_dir)
+    state = _canonical_plugins_state(_read_profile_file(plugins_path), always_active=always_active)
+    enabled = () if not state else tuple(part.decode("latin-1") for part in state.split(b"\x00"))
+    return tuple(sorted(always_active)) + enabled
+
+
 def _state_section(label: str, payload: bytes) -> bytes:
     """Sección con largo explícito: el contenido no puede reencuadrar el digest.
 
