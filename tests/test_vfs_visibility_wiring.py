@@ -212,6 +212,7 @@ class _WrapperFalseyDeStrategy(_WrapperDeStrategy):
     def __bool__(self) -> bool:
         return False
 
+
 class _EstrategiaIncompleta:
     """Sólo ``spawn``: NO implementa ``data_visibility_domain``.
 
@@ -637,6 +638,7 @@ def test_p2_strategy_falsey_conserva_mismo_backend_en_servicio_y_runner(tmp_path
     )
     assert runner._spawn_strategy is wrapper
     assert runner._spawn_strategy.data_visibility_domain == "virtual_usvfs"
+
 
 def test_d7_strategy_sin_capability_es_fail_closed() -> None:
     """D7: una strategy inyectada que NO declara ``data_visibility_domain`` es
