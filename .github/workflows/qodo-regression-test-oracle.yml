@@ -130,6 +130,30 @@ jobs:
             suposiciones. Marca "no verificado" cuando un dato secundario no pueda comprobarse.
             </evidence_gate>
 
+            <test_strategy>
+            TESTING PROPORCIONAL AL RIESGO:
+            - No trates unit, regression, integration/runtime, contract, AST y mutation como
+              un checklist acumulativo.
+            - Empieza por la prueba de comportamiento más pequeña que cierre el riesgo.
+            - Si el PR corrige un bug, exige una regresión que falle con la implementación
+              defectuosa y pase con la corrección.
+            - Pide integration/runtime sólo cuando el defecto depende realmente de un límite
+              entre componentes, filesystem, subprocess, red, SO, concurrencia o timing.
+            - Pide contract tests sólo cuando cambie o se dependa de un contrato observable.
+            - Pide AST/introspección sólo para propiedades estructurales, censos cerrados o
+              familias de hermanos donde una prueba de ejemplos pueda dejar rutas nuevas fuera.
+              No ancles detalles de implementación por comodidad.
+            - Pide mutation testing sólo para seguridad, integridad de datos, rollback/recovery
+              u otra lógica de alto impacto cuando haya una duda concreta sobre si el oráculo
+              detectaría una implementación rota. Nunca por defecto.
+            - Prefiere una prueba fuerte que demuestre la propiedad a varias salvaguardas
+              redundantes.
+
+            Para recomendar cualquier prueba adicional debes identificar el modo de fallo
+            específico que los tests actuales dejarían escapar. Si no puedes demostrar ese
+            escape, no reportes falta de cobertura.
+            </test_strategy>
+
             <test_oracle_checks>
             Cuando el PR modifica o agrega tests, comprueba especialmente:
             - que el test falle realmente con la implementación anterior/defectuosa;

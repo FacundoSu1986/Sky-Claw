@@ -92,7 +92,7 @@ def _escenario(tmp_path: pathlib.Path) -> _Escenario:
     profile_dir = data_root / "profiles" / _PERFIL
     profile_dir.mkdir(parents=True)
     (profile_dir / "plugins.txt").write_text("", encoding="utf-8")
-    (profile_dir / "modlist.txt").write_text(f"+OtroMod\n+{_MOD}\n", encoding="utf-8")
+    (profile_dir / "modlist.txt").write_text(f"+{_MOD}\n+OtroMod\n", encoding="utf-8")
     (mods_dir / "OtroMod").mkdir(parents=True)
     (mods_dir / _MOD / "meta.ini").parent.mkdir(parents=True)
     (mods_dir / _MOD / "meta.ini").write_text("[General]\n", encoding="utf-8")
@@ -446,7 +446,7 @@ async def test_b6_drift_de_perfil_entre_challenge_y_probe_bloquea(tmp_path: path
     esc.montar_vista_virtual()
 
     def _drift() -> None:
-        esc.modlist(f"+{_MOD}\n+OtroMod\n")  # cambia la prioridad después del challenge
+        esc.modlist(f"+OtroMod\n+{_MOD}\n")  # cambia la prioridad después del challenge
 
     bridge = _BridgeFalso(esc, antes_de_verificar=_drift)
 
@@ -502,7 +502,7 @@ async def test_b9_override_de_mayor_prioridad_con_bytes_distintos_bloquea(tmp_pa
     alto = esc.mods_dir / "ModAlto" / "textures"
     alto.mkdir(parents=True)
     (alto / "a.dds").write_bytes(b"BYTES-AJENOS!")
-    esc.modlist(f"+OtroMod\n+{_MOD}\n+ModAlto\n")
+    esc.modlist(f"+ModAlto\n+{_MOD}\n+OtroMod\n")
 
     resultado = await _strategy(esc).verify_texgen_handoff(_request(esc))
 
@@ -519,7 +519,7 @@ async def test_b9b_override_con_bytes_identicos_no_bloquea_por_efectividad(tmp_p
     alto = esc.mods_dir / "ModAlto" / "textures"
     alto.mkdir(parents=True)
     (alto / "a.dds").write_bytes(b"CURRENT!")  # mismos bytes que el artifact
-    esc.modlist(f"+OtroMod\n+{_MOD}\n+ModAlto\n")
+    esc.modlist(f"+ModAlto\n+{_MOD}\n+OtroMod\n")
 
     resultado = await _strategy(esc).verify_texgen_handoff(_request(esc))
 
@@ -580,7 +580,7 @@ async def test_b12_lo_indeterminado_bloquea(tmp_path: pathlib.Path) -> None:
     assert resultado.verified is False
 
     # (b) probe sin atestación estructurada
-    esc.modlist(f"+OtroMod\n+{_MOD}\n")
+    esc.modlist(f"+{_MOD}\n+OtroMod\n")
     resultado = await _strategy(esc, _BridgeFalso(esc, modo="sin_atestacion")).verify_texgen_handoff(_request(esc))
     assert resultado.verified is False
 
@@ -811,6 +811,14 @@ def test_las_dos_estrategias_exponen_la_capability() -> None:
     assert callable(getattr(BrokeredDynDOLODSpawnStrategy, "verify_texgen_handoff", None))
 
 
+def test_las_dos_estrategias_declaran_el_dominio_de_visibilidad() -> None:
+    """Ancla de contrato (PR-586F): las DOS strategies declaran la capability
+    ``data_visibility_domain`` del Protocol — un backend que no la declare es un
+    error de configuración fail-closed, nunca un default silencioso."""
+    assert isinstance(getattr(StandaloneDynDOLODSpawnStrategy, "data_visibility_domain", None), property)
+    assert isinstance(getattr(BrokeredDynDOLODSpawnStrategy, "data_visibility_domain", None), property)
+
+
 # =============================================================================
 # Primitives: canary por source y efectividad del overlay
 # =============================================================================
@@ -821,7 +829,7 @@ def test_canary_for_source_pertenece_al_mod_pedido(tmp_path: pathlib.Path) -> No
     otro = esc.mods_dir / "OtroMod" / "skse"
     otro.mkdir(parents=True)
     (otro / "otro.txt").write_bytes(b"otro")
-    (esc.data_root / "profiles" / _PERFIL / "modlist.txt").write_text(f"+OtroMod\n+{_MOD}\n", encoding="utf-8")
+    (esc.data_root / "profiles" / _PERFIL / "modlist.txt").write_text(f"+{_MOD}\n+OtroMod\n", encoding="utf-8")
 
     challenge = build_attestation_challenge_for_source(
         source_mod=_MOD,
@@ -863,7 +871,9 @@ def test_canary_for_source_rechaza_nombre_con_path(tmp_path: pathlib.Path) -> No
 
 def test_read_enabled_mods_es_orden_de_prioridad_y_falla_cerrado(tmp_path: pathlib.Path) -> None:
     modlist = tmp_path / "modlist.txt"
-    modlist.write_text("# comentario\n*---------\n-Bajo\n+Medio\n+Alto\n", encoding="utf-8")
+    # Formato real MO2: prioridad descendente en disco (Alto primero, Medio después).
+    # read_enabled_mods normaliza a orden creciente ("Medio", "Alto").
+    modlist.write_text("# comentario\n*---------\n-Bajo\n+Alto\n+Medio\n", encoding="utf-8")
     assert read_enabled_mods(modlist) == ("Medio", "Alto")
     modlist.write_text("+Ok\nlinea rota\n", encoding="utf-8")
     with pytest.raises(VfsAttestationError):

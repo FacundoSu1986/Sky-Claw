@@ -14,8 +14,9 @@
 > `sky_claw/local/validators/vfs_visibility.py`,
 > `sky_claw/local/validators/texgen_visibility.py`.
 >
-> **Última verificación:** 2026-09-26 (bifurcación standalone/brokered, PR-586D)
-> sobre `origin/main` `b985404`.
+> **Última verificación:** 2026-09-27 (sensor de visibilidad mode-aware,
+> PR-586F) sobre `origin/main` `52cb312`. Verificación anterior: 2026-09-26
+> (bifurcación standalone/brokered, PR-586D) sobre `b985404`.
 
 ## La bifurcación, en una frase
 
@@ -72,6 +73,18 @@ resultado no sirve.
 Antes de cada ritual mutante, el preflight corre un **sensor de visibilidad de
 mods** (`sky_claw/local/validators/vfs_visibility.py`). Compara los plugins que
 el perfil activa contra los que son visibles en el `Data` que el tool va a leer.
+
+**Este sensor mide el `Data` FÍSICO — el namespace del backend standalone — y
+por eso sólo aplica cuando el backend que ejecutará la corrida lee ese `Data`
+(PR-586F).** En el backend brokered MO2/USVFS el sensor **no aplica**: los mods
+del perfil jamás se materializan a disco (que es lo esperado) y medirlos ahí
+produce un rojo falso que bloqueaba el ritual antes de nacer. La visibilidad en
+ese dominio la demuestra el contrato VFS del propio broker — el gate de handoff
+descrito más abajo, la efectividad del overlay, el canary runtime y la
+revalidación en el spawn —, que no se afloja en absoluto. La decisión de
+cablear el sensor o no la hace cada servicio según el dominio que declara su
+backend (capability `data_visibility_domain`); el sensor mismo no se convierte
+en un medidor USVFS.
 
 El criterio es **deliberadamente conservador**: corta en ROJO solo ante el caso
 inequívoco — el perfil activa N plugins de mods y **ninguno** es visible. Eso

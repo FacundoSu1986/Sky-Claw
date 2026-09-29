@@ -30,6 +30,7 @@ from sky_claw.app.orchestrator.orchestration_composition import (
 )
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
+from sky_claw.local.tools.dyndolod_runner import DataVisibilityDomainError
 
 
 @pytest.fixture
@@ -192,7 +193,7 @@ def test_supervisor_init_delega_en_build_orchestration_composition() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_composicion_con_dobles() -> OrchestrationComposition:
+def _build_composicion_con_dobles(*, dyndolod_spawn_strategy: object | None = None) -> OrchestrationComposition:
     """Construye la composition real pasando dobles para la infraestructura."""
     return build_orchestration_composition(
         scraper=MagicMock(),
@@ -211,7 +212,18 @@ def _build_composicion_con_dobles() -> OrchestrationComposition:
         plugin_limit_guard=MagicMock(),
         scan_asset_conflicts=MagicMock(),
         scan_asset_conflicts_json=MagicMock(),
+        dyndolod_spawn_strategy=dyndolod_spawn_strategy,  # type: ignore[arg-type]
     )
+
+
+class _StrategySinDominio:
+    """Doble deliberadamente inválido: no declara data_visibility_domain."""
+
+
+def test_h11_strategy_invalida_falla_en_composition_y_nombra_dyndolod() -> None:
+    """H11: el error es fail-fast y diagnosticable en el composition root."""
+    with pytest.raises(DataVisibilityDomainError, match="DynDOLOD"):
+        _build_composicion_con_dobles(dyndolod_spawn_strategy=_StrategySinDominio())
 
 
 # ---------------------------------------------------------------------------

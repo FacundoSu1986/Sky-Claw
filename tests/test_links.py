@@ -244,6 +244,10 @@ class TestLinkKind:
         assert links.reparse_tag_or_zero(None) == 0
         # Objeto sin el atributo ``st_reparse_tag``: el fallback a 0 del getattr debe cubrirse.
         assert links.reparse_tag_or_zero(SimpleNamespace()) == 0
+        # Callers estrictos pueden rechazar ese tag sin que link_kind lo
+        # misclasifique globalmente como junction.
+        with pytest.raises(OSError, match="reparse tag no clasificado"):
+            links.reject_unclassified_reparse_point(real, _LstatConTagAjeno())
 
 
 class TestPathPresent:

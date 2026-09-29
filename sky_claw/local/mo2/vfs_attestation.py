@@ -160,14 +160,21 @@ def _sha256_file(path: pathlib.Path) -> str:
 def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
     """Mods HABILITADOS del ``modlist.txt`` del perfil, en orden de prioridad creciente.
 
-    Primitive PÚBLICA (una sola semántica, dos consumidores): la construcción de
-    canaries de este módulo y el gate de efectividad del handoff TexGen → DynDOLOD
-    (``sky_claw/local/mo2/mod_effectivity.py``) necesitan exactamente la misma
-    lectura, y duplicarla garantiza que las dos interpreten un ``modlist.txt``
-    distinto. El contrato del formato está congelado acá:
+    Primitive PÚBLICA (una sola semántica, todos los consumidores): la construcción de
+    canaries de este módulo, el gate de efectividad del handoff TexGen → DynDOLOD
+    (``sky_claw/local/mo2/mod_effectivity.py``) y los analizadores de assets
+    (``sky_claw/local/assets/asset_scanner.py``) comparten esta única lectura.
+    El contrato del formato y su normalización están centralizados acá:
 
-    * ``+Nombre`` — mod habilitado; el orden del archivo crece de menor a mayor
-      prioridad (la última línea habilitada es la de mayor prioridad).
+    * **Formato físico MO2:** En el archivo en disco (``modlist.txt``), Mod Organizer 2
+      escribe los mods en orden de prioridad **DESCENDENTE** (``Profile::doWriteModlist``
+      itera ``m_ModIndexByPriority.crbegin()`` a ``crend()``), de modo que la primera
+      línea habilitada es la de mayor prioridad y la última es la de menor prioridad.
+    * **Normalización en el boundary:** Esta función invierte ese orden al leer
+      (``tuple(reversed(enabled))``) para que la representación interna de Sky-Claw
+      sea estrictamente de **prioridad CRECIENTE** (índice 0 = menor prioridad,
+      último índice = mayor prioridad / convención "último gana").
+    * ``+Nombre`` — mod habilitado.
     * ``-Nombre`` / ``#comentario`` / ``*separador`` — no habilitado o no-mod.
     * cualquier otra forma es un archivo malformado ⇒ falla cerrado.
 
@@ -187,7 +194,7 @@ def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
         if not line.startswith("+") or not line[1:].strip():
             raise VfsAttestationError(f"línea inválida en modlist.txt: {line!r}")
         enabled.append(line[1:].strip())
-    return tuple(enabled)
+    return tuple(reversed(enabled))
 
 
 def _iter_mod_files(mod_root: pathlib.Path) -> Iterator[tuple[pathlib.Path, pathlib.Path]]:
@@ -373,6 +380,24 @@ def _canonical_plugins_state(data: bytes | None, *, always_active: frozenset[str
     return b"\x00".join(enabled)
 
 
+def read_enabled_plugins(
+    plugins_path: pathlib.Path,
+    *,
+    game_data_dir: pathlib.Path,
+) -> tuple[str, ...]:
+    """Plugins activos esperados en Data, con la misma semántica del fingerprint.
+
+    Incluye los primary plugins (masters oficiales + Creation Club declarado)
+    y los plugins no primarios marcados con `*` en plugins.txt. Los nombres se
+    expresan mediante su identidad case-insensitive canónica; el orden sólo es
+    determinista y no representa prioridad.
+    """
+    always_active = _always_active_plugins(game_data_dir)
+    state = _canonical_plugins_state(_read_profile_file(plugins_path), always_active=always_active)
+    enabled = () if not state else tuple(part.decode("latin-1") for part in state.split(b"\x00"))
+    return tuple(sorted(always_active)) + enabled
+
+
 def _state_section(label: str, payload: bytes) -> bytes:
     """Sección con largo explícito: el contenido no puede reencuadrar el digest.
 
@@ -485,7 +510,9 @@ def _construir_challenge(
         if not enabled:
             raise VfsAttestationError("el perfil no tiene mods habilitados para construir un canary elegible")
         candidatos = tuple(reversed(enabled))
-        roots_eclipsantes = []
+        # En la selección libre de canary, overwrite también tiene precedencia máxima
+        # sobre cualquier mod normal (H1 - Fase 4).
+        roots_eclipsantes = [data_resolved / "overwrite"]
 
     higher_roots: list[pathlib.Path] = list(roots_eclipsantes)
     for mod_name in candidatos:

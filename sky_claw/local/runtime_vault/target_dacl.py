@@ -624,6 +624,41 @@ def _read_reparse_tag_by_handle(handle: int) -> int:
     return int(tag_info.ReparseTag)
 
 
+def read_live_pre_sd_sha256_by_handle(handle: int) -> str:
+    """Lee el SD vivo (OWNER|GROUP|DACL) sobre un HANDLE y devuelve su SHA-256.
+
+    Helper de SOLO LECTURA: no invoca ``SetSecurityInfo`` ni muta nada. Existe para
+    que el orquestador de apply (``mutation_executor``) pueda ejecutar el gate
+    normativo de ADR 0010 §12.2 paso 3 —comparar el PRE vivo contra el PRE
+    autorizado por el plan— ANTES de escribir ``MUTATING(K)`` en el journal, sin
+    duplicar la declaración del ABI de ``GetSecurityInfo`` ni la disciplina de
+    ``LocalFree`` que ya vive en este módulo.
+    """
+    _ensure_windows()
+    live_sd_p = wintypes.LPVOID()
+    ret_get = _advapi32.GetSecurityInfo(
+        handle,
+        _SE_FILE_OBJECT,
+        _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        None,
+        None,
+        ctypes.byref(live_sd_p),
+    )
+    if ret_get != _ERROR_SUCCESS:
+        raise TargetDaclError(f"GetSecurityInfo falló al leer el SD vivo sobre el handle: código {ret_get}")
+    try:
+        live_len = _advapi32.GetSecurityDescriptorLength(live_sd_p)
+        if live_len <= 0:
+            raise TargetDaclError("GetSecurityDescriptorLength devolvió longitud inválida para el SD vivo")
+        live_bytes = ctypes.string_at(live_sd_p, live_len)
+        return hashlib.sha256(live_bytes).hexdigest()
+    finally:
+        if ctypes.cast(live_sd_p, ctypes.c_void_p).value:
+            _kernel32.LocalFree(live_sd_p)
+
+
 def _extract_sd_components(
     sd_ptr: Any,
 ) -> tuple[str, str, bool, bool, list[tuple[str, int, int, int]], bool]:

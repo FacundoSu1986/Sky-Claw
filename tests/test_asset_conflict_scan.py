@@ -262,7 +262,8 @@ def test_parse_modlist_funciona_cuando_el_validator_acepta(tmp_path: pathlib.Pat
     mods.mkdir(parents=True)
     profiles = mo2 / "profiles" / "Sesion"
     profiles.mkdir(parents=True)
-    (profiles / "modlist.txt").write_text("+ModBajo\n-ModDeshabilitado\n+ModAlto\n", encoding="utf-8")
+    # Formato real MO2: mayor prioridad al inicio del archivo.
+    (profiles / "modlist.txt").write_text("+ModAlto\n-ModDeshabilitado\n+ModBajo\n", encoding="utf-8")
 
     validator = PathValidator(roots=[mo2])
     scanner, _ = _scanner_con_resolver(mods, path_validator=validator)
