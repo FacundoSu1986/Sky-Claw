@@ -71,6 +71,19 @@ class GoldenLockOrphanedError(GoldenLockError):
     """Lock huérfano por crash (dueño muerto o PID reutilizado): exige Crash Recovery §20."""
 
 
+class GoldenLockOrphanedOperationMismatchError(GoldenLockError):
+    """El lock huérfano pertenece a OTRA operación: recovery de X no puede robarlo.
+
+    La toma de control de un lock huérfano sólo es legítima para la MISMA
+    operación que lo dejó huérfano: primero se resuelve esa operación (crash
+    recovery §20) y recién después la nueva operación puede adquirir el lock.
+    """
+
+    def __init__(self, *args: Any, orphaned_operation_id: str | None = None) -> None:
+        super().__init__(*args)
+        self.orphaned_operation_id = orphaned_operation_id
+
+
 class GoldenLockMetadataError(GoldenLockError):
     """La metadata del lock es ilegible o no cumple el esquema cerrado: fail-closed."""
 
@@ -474,6 +487,23 @@ class GoldenLockIdentity:
             raise GoldenLockModelError("lock_key no coincide con (volume_serial_number, root_file_id)")
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryLockAcquisition:
+    """Evidencia de una adquisición orientada a recovery (GP2-S4C).
+
+    ``previous_metadata`` es la metadata PREEXISTENTE observada (nunca la
+    fresca que este proceso acaba de escribir): el reporte forense la usa para
+    documentar de quién era el lock huérfano. El adquirente NORMAL
+    (``acquire_golden_mutation_lock``) no la necesita y devuelve sólo el handle;
+    el participant de recovery sí, porque la clasificación de stale-lock forma
+    parte de su evidencia.
+    """
+
+    handle: GoldenMutationLockHandle
+    preexisting_disposition: PreexistingLockDisposition
+    previous_metadata: GoldenLockMetadata | None
+
+
 # ============================================================================
 # Kernel del Lock (seam) — nativo Win32 y fake POSIX-testable
 # ============================================================================
@@ -771,6 +801,22 @@ class GoldenMutationLockHandle:
             self._kernel.close_handle(self._handle)
         return True
 
+    def retain_for_inspection(self) -> bool:
+        """Cierra el handle SIN escribir ``phase=RELEASED`` (§20 C4b/C9).
+
+        «Retener el lock para inspección» no puede significar conservar el handle
+        más allá del proceso: el kernel lo cierra al morir. El efecto durable
+        correcto es NO escribir RELEASED, de modo que la próxima adquisición
+        clasifique la metadata como ORPHANED (proceso muerto) o BUSY (proceso
+        vivo) — jamás como residual limpio — y el estado no se certifique por
+        accidente. Cierra exactamente una vez; True si esta llamada retuvo.
+        """
+        if self._closed:
+            return False
+        self._closed = True
+        self._kernel.close_handle(self._handle)
+        return True
+
     def __enter__(self) -> GoldenMutationLockHandle:
         return self
 
@@ -790,8 +836,18 @@ def _acquire_lock_core(
     root_file_id: int,
     operation_id: str,
     kernel: GoldenLockKernel,
-) -> GoldenMutationLockHandle:
-    """Núcleo de adquisición (abierto, validado, clasificado, metadata escrita y flusheada)."""
+    *,
+    allow_orphaned_takeover: bool = False,
+) -> RecoveryLockAcquisition:
+    """Núcleo de adquisición (abierto, validado, clasificado, metadata escrita y flusheada).
+
+    ``allow_orphaned_takeover`` es exclusivo del participant de crash recovery
+    (§19.1.5/§20 C10): un lock huérfano — dueño muerto o PID reutilizado,
+    demostrado por pid+creation-time — puede ser tomado por el MISMO
+    ``operation_id`` que quedó huérfano. Un huérfano de OTRA operación se
+    rechaza tipado: se resuelve primero esa operación. El adquirente normal no
+    puede habilitar esta ruta.
+    """
     handle = kernel.open_lock_file(lock_path)
     success = False
     try:
@@ -826,10 +882,17 @@ def _acquire_lock_core(
                 "No se pudo demostrar muerte del dueño del lock (ambigüedad): fail-closed, nunca se roba"
             )
         if disposition is PreexistingLockDisposition.ORPHANED_LOCK:
-            raise GoldenLockOrphanedError(
-                "Lock huérfano por crash (dueño muerto o PID reutilizado): requiere el procedimiento de "
-                "crash recovery de §20 (fuera de este slice)"
-            )
+            if not allow_orphaned_takeover:
+                raise GoldenLockOrphanedError(
+                    "Lock huérfano por crash (dueño muerto o PID reutilizado): requiere el procedimiento de "
+                    "crash recovery de §20 (fuera de este slice)"
+                )
+            if metadata is None or metadata.operation_id != operation_id:
+                raise GoldenLockOrphanedOperationMismatchError(
+                    "El lock huérfano pertenece a otra operación: primero debe resolverse esa operación "
+                    "(crash recovery §20); el takeover sólo aplica para el MISMO operation_id",
+                    orphaned_operation_id=None if metadata is None else metadata.operation_id,
+                )
 
         owner_pid, creation_time, session_id = kernel.current_process_identity()
         created_at = kernel.current_epoch_seconds()
@@ -888,7 +951,7 @@ def _acquire_lock_core(
 
         lock_handle = GoldenMutationLockHandle(handle, identity, kernel, _proof=_MINT_PROOF)
         success = True
-        return lock_handle
+        return RecoveryLockAcquisition(lock_handle, disposition, metadata)
     finally:
         if not success:
             kernel.close_handle(handle)
@@ -920,7 +983,40 @@ def acquire_golden_mutation_lock(
         active_kernel = kernel
     lock_path = derive_golden_lock_path(serial, file_id, programdata_resolver=programdata_resolver)
     key = derive_golden_lock_key(serial, file_id)
-    return _acquire_lock_core(lock_path, key, serial, file_id, op_id, active_kernel)
+    return _acquire_lock_core(lock_path, key, serial, file_id, op_id, active_kernel).handle
+
+
+def acquire_golden_mutation_lock_for_recovery(
+    volume_serial_number: int,
+    root_file_id: int,
+    operation_id: str | uuid.UUID,
+    *,
+    kernel: GoldenLockKernel | None = None,
+    programdata_resolver: Any = None,
+) -> RecoveryLockAcquisition:
+    """Adquiere el lock para un participant de crash recovery (§20 C10).
+
+    Idéntico al contrato del adquirente normal EXCEPTO en el tratamiento del
+    huérfano: aquí un lock con dueño muerto/PID reutilizado puede ser tomado por
+    el mismo ``operation_id`` (la única operación autorizada a resolverlo), y
+    cualquier otro caso sigue siendo fail-closed (dueño vivo o ilegible ->
+    ``GoldenLockBusyError``; huérfano ajeno -> ``GoldenLockOrphanedOperationMismatchError``).
+
+    Devuelve además la evidencia preexistente (disposición + metadata previa):
+    es parte del reporte forense del recovery y no una comodidad.
+    """
+    serial = _validate_uint(volume_serial_number, "volume_serial_number", max_value=_MAX_UINT64)
+    file_id = _validate_uint(root_file_id, "root_file_id", max_value=_MAX_UINT128)
+    op_id = _validate_canonical_operation_id(str(operation_id))
+    active_kernel: GoldenLockKernel
+    if kernel is None:
+        _ensure_windows()
+        active_kernel = _Win32GoldenLockKernel()
+    else:
+        active_kernel = kernel
+    lock_path = derive_golden_lock_path(serial, file_id, programdata_resolver=programdata_resolver)
+    key = derive_golden_lock_key(serial, file_id)
+    return _acquire_lock_core(lock_path, key, serial, file_id, op_id, active_kernel, allow_orphaned_takeover=True)
 
 
 def _acquire_golden_mutation_lock_at(
@@ -950,7 +1046,7 @@ def _acquire_golden_mutation_lock_at(
         active_kernel = _Win32GoldenLockKernel()
     else:
         active_kernel = kernel
-    return _acquire_lock_core(lock_path, key, serial, file_id, op_id, active_kernel)
+    return _acquire_lock_core(lock_path, key, serial, file_id, op_id, active_kernel).handle
 
 
 __all__ = [
@@ -970,11 +1066,14 @@ __all__ = [
     "GoldenLockMetadataError",
     "GoldenLockModelError",
     "GoldenLockOrphanedError",
+    "GoldenLockOrphanedOperationMismatchError",
     "GoldenLockOwnershipError",
     "GoldenLockPhase",
     "GoldenMutationLockHandle",
     "PreexistingLockDisposition",
+    "RecoveryLockAcquisition",
     "acquire_golden_mutation_lock",
+    "acquire_golden_mutation_lock_for_recovery",
     "classify_preexisting_lock",
     "derive_golden_lock_key",
     "derive_golden_lock_path",

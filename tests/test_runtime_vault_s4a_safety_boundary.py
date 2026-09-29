@@ -124,6 +124,8 @@ _CAPAS_SIN_MUTACION = (
     "coordinator_identity.py",
     # orquestador de apply: COMPONE, no construye
     "mutation_executor.py",
+    # orquestador de recovery: COMPONE, no construye ni muta por path
+    "recovery_orchestrator.py",
 )
 
 #: Símbolos que delatarían un segundo builder/WAL/lock dentro del orquestador.
@@ -320,3 +322,128 @@ class TestFronteraDeMutacionS4B:
 
         assert hasattr(pkg, "apply_authorized_plan")
         assert "apply_authorized_plan" in pkg.__all__
+
+
+#: Símbolos que el recovery JAMÁS puede referenciar: reescribir el WAL de nodos,
+#: crear journals, leer staging, escribir el TGR, comitear o habilitar
+#: privilegios. El recovery RECONCILIA; no amplía el estado autoritativo.
+_SIMBOLOS_PROHIBIDOS_S4C = frozenset(
+    {
+        # WAL de nodos y creación de journals: el recovery sólo transiciona FSM.
+        "record_node_mutation_intent",
+        "record_node_mutation_completed",
+        "create_protection_journal",
+        # Staging: NUNCA fuente de recuperación (§41/§46 del encargo).
+        "read_candidate_manifest_bytes",
+        "derive_candidate_manifest_path",
+        "CANDIDATE_MANIFEST_FILE_NAME",
+        "candidate_manifest",
+        # TGR: TGR_WRITES = 0 (§34).
+        "trusted_goldens",
+        "refresh_trusted_registry",
+        "load_trusted_golden_registry",
+        "RegisterOrRefreshTrustedGoldenRequest",
+        # COMMITTED pertenece a S4-D (§43).
+        "COMMITTED",
+        # Privilegios: jamás (SeDebug jamás, §35).
+        "SeDebugPrivilege",
+        "SeRestorePrivilege",
+        "SeBackupPrivilege",
+        "AdjustTokenPrivileges",
+        # El recovery no construye Target DACLs ni aplica el endurecimiento.
+        "build_native_target_dacl",
+        "build_target_dacl_spec",
+        "TargetDaclSpec",
+        "apply_target_dacl_by_handle",
+    }
+)
+
+#: Primitivas que el recovery DEBE componer (cableado, no muestreo).
+_PRIMITIVAS_COMPUESTAS_S4C = (
+    "open_protection_journal",
+    "classify_protection_journal",
+    "classify_durable_authorized_plan",
+    "load_durable_authorized_plan",
+    "acquire_golden_mutation_lock_for_recovery",
+    "rollback_order",
+    "transition_to",
+)
+
+
+class TestFronteraDeRecoveryS4C:
+    """S4-C: el recovery reconcilia con autoridad durable; no amplía autoridad."""
+
+    def test_sb14_recovery_sin_simbolos_prohibidos(self) -> None:
+        arbol = _arbol("recovery_orchestrator.py")
+        prohibidos = _simbolos_referenciados(arbol) & _SIMBOLOS_PROHIBIDOS_S4C
+        assert prohibidos == set(), f"recovery_orchestrator referencia símbolos prohibidos: {sorted(prohibidos)}"
+
+    def test_sb15_recovery_no_reescribe_el_wal_de_nodos(self) -> None:
+        """El schema por nodo (None->MUTATING->MUTATED) está congelado: el
+        recovery no inventa RESTORING/RESTORED ni re-registra nodos."""
+        arbol = _arbol("recovery_orchestrator.py")
+        referidos = _simbolos_referenciados(arbol)
+        assert "RESTORING" not in referidos and "RESTORED" not in referidos
+        assert "WalMutationPermit" not in referidos
+
+    def test_sb16_recovery_compone_las_primitivas_auditadas(self) -> None:
+        arbol = _arbol("recovery_orchestrator.py")
+        usados = _simbolos_referenciados(arbol)
+        faltantes = [p for p in _PRIMITIVAS_COMPUESTAS_S4C if p not in usados]
+        assert faltantes == [], f"recovery_orchestrator no compone: {faltantes}"
+
+    def test_sb17_api_de_recovery_sin_paths_ni_raiz(self) -> None:
+        """Hard-to-misuse: la entrada es ``operation_id``; nada de
+        ``path``/``canonical_root``/``pre_sd``/``journal_path`` (§45/§46)."""
+        import inspect
+
+        from sky_claw.local.runtime_vault import recovery_orchestrator
+
+        firma = inspect.signature(recovery_orchestrator.recover_interrupted_protection)
+        parametros = list(firma.parameters.values())
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parametros)
+        nombres = {p.name for p in parametros}
+        assert "operation_id" in nombres
+        for prohibido in ("path", "root", "canonical_root", "pre_sd", "sd_bytes", "journal_path", "backup"):
+            assert prohibido not in nombres, f"la API de recovery no acepta '{prohibido}'"
+
+    def test_sb18_el_paquete_exporta_el_recovery(self) -> None:
+        import sky_claw.local.runtime_vault as pkg
+
+        for simbolo in (
+            "recover_interrupted_protection",
+            "RecoveryDisposition",
+            "RecoveryForensicReport",
+            "acquire_golden_mutation_lock_for_recovery",
+            "RecoveryLockAcquisition",
+            "GoldenLockOrphanedOperationMismatchError",
+        ):
+            assert hasattr(pkg, simbolo), f"{simbolo} no está exportado por el paquete"
+            assert simbolo in pkg.__all__, f"{simbolo} no está en __init__.__all__"
+
+    def test_sb19_takeover_solo_desde_la_funcion_de_recovery(self) -> None:
+        """``allow_orphaned_takeover`` se enumera por call-site, no se muestrea.
+
+        El adquirente NORMAL (``acquire_golden_mutation_lock``) llama al núcleo
+        SIN habilitar el takeover; sólo ``acquire_golden_mutation_lock_for_recovery``
+        pasa ``True``. Un tercer call-site con takeover rompe el ancla.
+        """
+        arbol = _arbol("golden_mutation_lock.py")
+        llamadas: dict[str, dict[str, str]] = {}
+        for funcion in (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef)):
+            for nodo in ast.walk(funcion):
+                if (
+                    isinstance(nodo, ast.Call)
+                    and isinstance(nodo.func, ast.Name)
+                    and nodo.func.id == "_acquire_lock_core"
+                ):
+                    valores = {kw.arg: ast.unparse(kw.value) for kw in nodo.keywords}
+                    llamadas[funcion.name] = valores
+        assert set(llamadas) == {
+            "acquire_golden_mutation_lock",
+            "acquire_golden_mutation_lock_for_recovery",
+            "_acquire_golden_mutation_lock_at",
+        }, f"call-sites de _acquire_lock_core cambiaron: {sorted(llamadas)}"
+        assert "allow_orphaned_takeover" not in llamadas["acquire_golden_mutation_lock"]
+        assert "allow_orphaned_takeover" not in llamadas["_acquire_golden_mutation_lock_at"]
+        assert llamadas["acquire_golden_mutation_lock_for_recovery"].get("allow_orphaned_takeover") == "True"
