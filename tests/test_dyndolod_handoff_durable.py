@@ -1904,18 +1904,18 @@ async def test_regen_desde_indeterminate_falla_y_old_sigue_indeterminate(
     assert activo is not None and activo.state is HandoffState.INDETERMINATE
     assert activo.handoff_id == viejo.handoff_id, "la regeneración fallida reemplazó al old"
     assert activo.expected_digest is None, "se inventó identidad esperada en un fallo"
-    # La TX de la regeneración fallida queda PENDING (la corrida ya había
-    # empezado a mutar): es la evidencia vigente que sostiene el fail-closed
-    # del próximo arranque. En el bug pre-fix, el CHECK la tiraba al handler
-    # genérico con mutation_started=False y quedaba ROLLED_BACK — historia.
+    # H2 (#655): esta regeneración falló, pero todos sus move-aside fueron
+    # restaurados bajo snapshot+layout administrado. Su TX propia debe cerrar
+    # ROLLED_BACK; el fail-closed del próximo arranque NO depende de inventar una
+    # PENDING, sino del handoff viejo que sigue legítimamente INDETERMINATE.
     corridas = [
         t
         for t in await journal.list_recent_transactions(limit=10)
         if t.description == "DynDOLOD pipeline (preset=Medium, texgen=True)"
     ]
     assert corridas, "no se encontró la TX de la regeneración fallida"
-    assert corridas[0].status is TransactionStatus.PENDING, (
-        "la TX de una regeneración fallida post-mutación quedó ROLLED_BACK: pierde la evidencia vigente del fail-closed"
+    assert corridas[0].status is TransactionStatus.ROLLED_BACK, (
+        "un rollback byte-exacto quedó PENDING y volvió a convertirse en evidencia orphan espuria"
     )
 
     run_dyndolod = AsyncMock()
