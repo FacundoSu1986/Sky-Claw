@@ -42,7 +42,11 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
-from sky_claw.local.tools.dyndolod_runner import DynDOLODSpawnStrategy
+from sky_claw.local.tools.dyndolod_runner import (
+    DataVisibilityDomainError,
+    DynDOLODSpawnStrategy,
+    resolve_data_visibility_domain,
+)
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGatePorHelper
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
@@ -162,6 +166,15 @@ def build_orchestration_composition(
     todos los servicios usan construcción perezosa de runners.
     **NO** invoca los seams residuales (grass, plugin-limit, asset scan).
     """
+
+    # H11 (audit PR #649): validar el contrato de backend ANTES de construir
+    # recursos del grafo. Una strategy inyectada sin dominio conocido es un
+    # error de composición y falla cerrado, pero el diagnóstico debe nombrar
+    # explícitamente a DynDOLOD.
+    try:
+        resolve_data_visibility_domain(dyndolod_spawn_strategy)
+    except DataVisibilityDomainError as exc:
+        raise DataVisibilityDomainError(f"Configuración de DynDOLOD inválida en el composition root: {exc}") from exc
 
     # P0.2 (ADR 0011): la coordinación de etapa 9 vive en estado durable POR
     # USUARIO, no bajo `_BACKUP_STAGING_DIR` — que es relativo al cwd, y por eso

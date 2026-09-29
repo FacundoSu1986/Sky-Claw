@@ -1,11 +1,24 @@
 """Sensor de visibilidad de mods: ¿el tool va a ver el modlist? (U-01).
 
-Sky-Claw corre **standalone**, no lanzado desde MO2 (invariante de deployment
-confirmada por el mantenedor). Todos los tools externos se spawnean directo —
-solo el juego pasa por el proxy ``ModOrganizer.exe`` (``mo2/vfs.py``) — así que
-**ninguno hereda la USVFS de MO2**. Con una instancia MO2 en USVFS estándar (el
-default), los tools leen el ``Data`` del juego base, sin un solo mod, y todo el
-pipeline reporta verde desde el Stage 1 sobre un árbol vacío.
+**Este sensor mide EXCLUSIVAMENTE visibilidad en el ``Data`` físico.** Sólo es
+semánticamente válido cuando el backend del tool que ejecutará la corrida
+consume ese namespace (el lanzamiento standalone). Los backends brokered
+MO2/USVFS (PR-586) corren DENTRO del overlay virtual del perfil y demuestran
+visibilidad mediante su contrato VFS específico (gate de handoff, efectividad
+full-tree, canary runtime), NO con este sensor: medir el ``Data`` físico ahí
+produce un ROJO FALSO —los mods del perfil jamás se materializan a disco, que
+es exactamente lo esperado— (incidente PR-586F). La decisión de cablearlo o no
+es de cada servicio según el dominio que declara su backend (capability
+``data_visibility_domain``); este módulo no se convierte en un sensor USVFS:
+mide una sola cosa, y la mide bien.
+
+Contexto histórico: en el deployment original Sky-Claw corre **standalone**, no
+lanzado desde MO2 (invariante confirmada por el mantenedor). Todos los tools
+externos se spawnean directo — solo el juego pasa por el proxy
+``ModOrganizer.exe`` (``mo2/vfs.py``) — así que **ninguno hereda la USVFS de
+MO2**. Con una instancia MO2 en USVFS estándar (el default), los tools leen el
+``Data`` del juego base, sin un solo mod, y todo el pipeline reporta verde desde
+el Stage 1 sobre un árbol vacío.
 
 **Por qué hacía falta un sensor nuevo.** Ninguno de los existentes cubre esto:
 
@@ -53,10 +66,12 @@ _CREATION_CLUB_PREFIX = "cc"
 
 _REMEDIATION = (
     "El perfil MO2 activa mods que NO son visibles en el Data del juego. "
-    "Sky-Claw corre standalone (fuera de MO2), así que no hereda la "
-    "virtualización USVFS: los tools leerían el juego base y el resultado no "
-    "reflejaría tu modlist. Desplegá los mods a disco para este perfil o "
-    "ejecutá el Ritual a través del broker de MO2."
+    "Este sensor mide el Data FÍSICO — el dominio del lanzamiento standalone "
+    "(fuera de MO2, sin heredar la virtualización USVFS): los tools leerían el "
+    "juego base y el resultado no reflejaría tu modlist. Desplegá los mods a "
+    "disco para este perfil o ejecutá el Ritual a través del broker de MO2 "
+    "(en ese dominio este sensor no aplica y la visibilidad la demuestra el "
+    "contrato VFS del broker)."
 )
 
 

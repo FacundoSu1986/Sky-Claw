@@ -98,14 +98,17 @@ def _validate_session_tool_payload(tool_id: str, payload: dict[str, JsonValue]) 
     La comprobación de existencia, symlink y pertenencia a las raíces se repite
     dentro del worker, después de leer el manifiesto firmado. Esta primera capa
     evita que un payload mal formado cruce el IPC y, sobre todo, congela que los
-    handlers de sesión sólo aceptan ``executable``, ``argv`` y ``cwd``.
+    handlers de sesión exigen ``executable``, ``argv`` y ``cwd`` y sólo admiten ``expected_plugins`` como evidencia opcional de load order.
     """
     if tool_id not in ALLOWED_VFS_SESSION_TOOL_IDS:
         return
     expected_name = VFS_TOOL_EXECUTABLE_NAMES[tool_id]
-    allowed = {"executable", "argv", "cwd"}
-    if set(payload) != allowed:
-        raise VfsProtocolError(f"payload de {tool_id} debe contener exactamente {sorted(allowed)}")
+    required = {"executable", "argv", "cwd"}
+    allowed = required | {"expected_plugins"}
+    if not required.issubset(payload) or set(payload) - allowed:
+        raise VfsProtocolError(
+            f"payload de {tool_id} debe contener {sorted(required)} y sólo admite opcionalmente expected_plugins"
+        )
     executable = payload["executable"]
     if not isinstance(executable, str) or not executable:
         raise VfsProtocolError(f"payload.{tool_id}.executable debe ser string")
@@ -122,6 +125,19 @@ def _validate_session_tool_payload(tool_id: str, payload: dict[str, JsonValue]) 
         raise VfsProtocolError("payload.cwd debe ser un string no vacío")
     if not pathlib.Path(cwd).is_absolute():
         raise VfsProtocolError("payload.cwd debe ser una ruta absoluta")
+    expected_plugins = payload.get("expected_plugins")
+    if expected_plugins is not None:
+        if not isinstance(expected_plugins, list):
+            raise VfsProtocolError("payload.expected_plugins debe ser una lista de nombres de plugin")
+        seen_plugins: set[str] = set()
+        for raw_plugin in expected_plugins:
+            plugin = _safe_component(raw_plugin, field="expected_plugins[]")
+            if not plugin.lower().endswith((".esp", ".esm", ".esl")):
+                raise VfsProtocolError(f"payload.expected_plugins contiene un nombre no-plugin: {plugin!r}")
+            key = plugin.lower()
+            if key in seen_plugins:
+                raise VfsProtocolError(f"payload.expected_plugins repite el plugin {plugin!r}")
+            seen_plugins.add(key)
 
 
 def _absolute_paths(value: object, *, field: str) -> tuple[pathlib.Path, ...]:

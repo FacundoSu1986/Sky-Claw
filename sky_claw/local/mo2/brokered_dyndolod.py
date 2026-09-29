@@ -46,6 +46,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     build_attestation_challenge,
     build_attestation_challenge_for_source,
     read_enabled_mods,
+    read_enabled_plugins,
 )
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_TOOL_EXECUTABLE_NAMES,
@@ -62,7 +63,7 @@ from sky_claw.local.tools.texgen_handoff import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.local.tools.dyndolod_runner import DynDOLODProcess
+    from sky_claw.local.tools.dyndolod_runner import DataVisibilityDomain, DynDOLODProcess
 
 logger = logging.getLogger("SkyClaw.BrokeredDynDOLOD")
 
@@ -227,7 +228,18 @@ def _veredicto_de_evidencia_runtime(
 
 
 class BrokeredDynDOLODSpawnStrategy:
-    """Construye un challenge/job nuevo y abre una sesión por herramienta."""
+    """Construye un challenge/job nuevo y abre una sesión por herramienta.
+
+    ``data_visibility_domain`` es ``"virtual_usvfs"``: el proceso corre DENTRO
+    de la USVFS del perfil y lee el overlay virtual, no el ``Data`` físico —
+    medir visibilidad física para este backend es un rojo falso (PR-586F). La
+    visibilidad la demuestra su gate de handoff (:meth:`verify_texgen_handoff`)
+    y la atestación runtime de la sesión, en el dominio que el tool consumirá.
+    """
+
+    @property
+    def data_visibility_domain(self) -> DataVisibilityDomain:
+        return "virtual_usvfs"
 
     def __init__(
         self,
@@ -293,6 +305,15 @@ class BrokeredDynDOLODSpawnStrategy:
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
             )
+        # P1 Codex: el sensor físico no aplica bajo USVFS, así que el job
+        # brokered porta el conjunto COMPLETO de plugins activos esperado. El
+        # worker lo verifica dentro del mismo Data virtual justo antes del
+        # dispatch; el fingerprint liga esta lista al estado semántico del perfil.
+        expected_plugins = await asyncio.to_thread(
+            read_enabled_plugins,
+            self._data_root / "profiles" / self._profile / "plugins.txt",
+            game_data_dir=self._physical_data_dir,
+        )
         job = VfsJob.create(
             instance_id=self._instance_id,
             profile=self._profile,
@@ -301,6 +322,7 @@ class BrokeredDynDOLODSpawnStrategy:
                 "executable": str(validated_executable),
                 "argv": list(args),
                 "cwd": str(resolved_cwd),
+                "expected_plugins": list(expected_plugins),
             },
             timeout_seconds=float(timeout),
             expected_fingerprint=challenge.profile_fingerprint,

@@ -266,6 +266,13 @@ def build_vfs_visibility_sensor(
     ella, un run standalone (sin heredar la USVFS de MO2) procesa el juego base
     y reporta verde — el falso verde de U-01.
 
+    **Precondición del llamador (PR-586F):** este sensor mide el ``Data``
+    FÍSICO — sólo cablearlo cuando el backend que ejecutará la corrida consume
+    ese namespace (dominio ``physical``). Los backends brokered MO2/USVFS leen
+    el overlay del perfil y demuestran visibilidad con su contrato VFS
+    específico; medir el Data físico ahí es un rojo falso. La decisión vive en
+    cada servicio según la capability ``data_visibility_domain`` de su backend.
+
     ``sources_resolver`` es el mismo closure que alimenta a
     ``build_modlist_sensors``: se reusa para no volver a parsear el load order
     del perfil. Sin ``game``, sin resolver o con la fuente de activación

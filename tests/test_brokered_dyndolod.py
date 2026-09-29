@@ -1,10 +1,16 @@
-"""PR-586B: launch brokered de DynDOLOD/TexGen y contratos adversariales."""
+"""PR-586B: launch brokered de DynDOLOD/TexGen y contratos adversariales.
+
+PR-586F agrega el contrato del **dominio de visibilidad de Data** (capability
+``data_visibility_domain``): el sensor físico U-01 sólo aplica cuando el backend
+que ejecuta la corrida lee el ``Data`` físico — y el handoff/VFS brokered sigue
+siendo la autoridad de visibilidad cuando no aplica (D4).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import pathlib
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,10 +26,15 @@ from sky_claw.local.mo2.vfs_worker import (
     _validate_session_launch,
 )
 from sky_claw.local.tools.dyndolod_runner import (
+    DataVisibilityDomainError,
     DynDOLODProcess,
     DynDOLODRunner,
     ReadinessMode,
+    StandaloneDynDOLODSpawnStrategy,
+    ToolExecutionResult,
+    resolve_data_visibility_domain,
 )
+from sky_claw.local.tools.texgen_handoff import TexGenHandoffRequest, TexGenHandoffResult
 
 
 class _FakeSession:
@@ -132,6 +143,10 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
     cwd.mkdir()
     output_texgen = tmp_path / "work" / "TexGen"
     output_dyndolod = tmp_path / "work" / "DynDOLOD"
+    data_root = tmp_path / "MO2"
+    profile_dir = data_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "plugins.txt").write_text("*MiMod.esp\n", encoding="utf-8")
     broker = _FakeBroker(_FakeSession())
     monkeypatch.setattr(
         "sky_claw.local.mo2.brokered_dyndolod.build_attestation_challenge",
@@ -141,7 +156,7 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
         broker=broker,
         instance_id="portable-main",
         profile="Default",
-        data_root=tmp_path / "MO2",
+        data_root=data_root,
         mods_dir=tmp_path / "MO2" / "mods",
         install_root=tmp_path / "MO2",
         physical_data_dir=tmp_path / "Skyrim" / "Data",
@@ -167,6 +182,11 @@ async def test_strategy_separa_texgen_y_dyndolod_y_abre_session(monkeypatch, tmp
     assert [job.tool_id for job in broker.jobs] == ["texgen", "dyndolod"]
     assert broker.jobs[0].payload["argv"] != broker.jobs[1].payload["argv"]
     assert broker.jobs[0].profile == broker.jobs[1].profile == "Default"
+    for job in broker.jobs:
+        expected_plugins = job.payload["expected_plugins"]
+        assert isinstance(expected_plugins, list)
+        assert "skyrim.esm" in expected_plugins
+        assert "mimod.esp" in expected_plugins
     assert broker.challenges[0] is not broker.challenges[1]
 
 
@@ -241,6 +261,28 @@ def test_payload_brokered_es_cerrado_y_no_acepta_exec_arbitrario(tmp_path: pathl
             payload={"executable": str(tmp_path / "DynDOLODx64.exe"), "argv": ["-sse", 3], "cwd": str(cwd)},
             **common,
         )
+    with pytest.raises(VfsProtocolError, match="expected_plugins"):
+        VfsJob.create(
+            tool_id="dyndolod",
+            payload={
+                "executable": str(tmp_path / "DynDOLODx64.exe"),
+                "argv": [],
+                "cwd": str(cwd),
+                "expected_plugins": ["../escape.esp"],
+            },
+            **common,
+        )
+    valid_expected = VfsJob.create(
+        tool_id="dyndolod",
+        payload={
+            "executable": str(tmp_path / "DynDOLODx64.exe"),
+            "argv": [],
+            "cwd": str(cwd),
+            "expected_plugins": ["Skyrim.esm", "MiMod.esp"],
+        },
+        **common,
+    )
+    assert valid_expected.payload["expected_plugins"] == ["Skyrim.esm", "MiMod.esp"]
     literal = VfsJob.create(
         tool_id="texgen",
         payload={
@@ -367,3 +409,176 @@ async def test_broker_failure_no_hace_fallback_a_create_subprocess(monkeypatch) 
     with pytest.raises(RuntimeError, match="bridge unavailable"):
         await runner._execute_process(pathlib.Path("TexGenx64.exe"), [], "TexGen", cwd=pathlib.Path.cwd())
     local_spawn.assert_not_called()
+
+
+# =============================================================================
+# PR-586F — capability `data_visibility_domain`: el namespace que el backend
+# REALMENTE consumirá decide si la medición física significa algo
+# =============================================================================
+
+
+def _strategy_brokered(tmp_path: pathlib.Path) -> BrokeredDynDOLODSpawnStrategy:
+    return BrokeredDynDOLODSpawnStrategy(
+        broker=_FakeBroker(_FakeSession()),
+        instance_id="portable-main",
+        profile="Default",
+        data_root=tmp_path / "MO2",
+        mods_dir=tmp_path / "MO2" / "mods",
+        install_root=tmp_path / "MO2",
+        physical_data_dir=tmp_path / "Skyrim" / "Data",
+        virtual_data_dir=tmp_path / "Skyrim" / "Data",
+        output_roots={"texgen": tmp_path / "work" / "TexGen", "dyndolod": tmp_path / "work" / "DynDOLOD"},
+    )
+
+
+def test_las_estrategias_declaran_su_dominio_de_visibilidad(tmp_path: pathlib.Path) -> None:
+    """La capability es parte del contrato normal del strategy:
+
+    * ``StandaloneDynDOLODSpawnStrategy`` → ``"physical"`` (lee el Data físico);
+    * ``BrokeredDynDOLODSpawnStrategy`` → ``"virtual_usvfs"`` (lee el overlay).
+    """
+    assert StandaloneDynDOLODSpawnStrategy().data_visibility_domain == "physical"
+    assert _strategy_brokered(tmp_path).data_visibility_domain == "virtual_usvfs"
+
+
+@pytest.mark.asyncio
+async def test_la_strategy_brokered_real_apaga_el_sensor_fisico_en_el_servicio(tmp_path: pathlib.Path) -> None:
+    """La strategy brokered REAL —no un doble— atraviesa el service y el sensor
+    físico no aplica. Es la pregunta adversarial "¿una strategy brokered real lo
+    desactiva?" respondida con la clase de producción completa."""
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=_resolver_de_preflight(tmp_path),
+        event_bus=MagicMock(),
+        spawn_strategy=_strategy_brokered(tmp_path),  # type: ignore[arg-type]
+    )
+
+    reporte = await svc._ensure_preflight().run()
+
+    assert all(c.name != "vfs_visibility" for c in reporte.checks)
+    assert reporte.blocks_mutations is False
+
+
+def test_none_conserva_el_default_historico_fisico() -> None:
+    """``spawn_strategy=None`` sigue equivaliendo a standalone → Data físico.
+    Backwards compatibility: U-01 no puede apagarse accidentalmente."""
+    assert resolve_data_visibility_domain(None) == "physical"
+
+
+def test_capability_ausente_o_fabricada_es_fail_closed() -> None:
+    """Lo INDETERMINADO falla cerrado — nunca se asume brokered (un default
+    permisivo apagaría U-01 para cualquier strategy incompleta) ni se finge un
+    dominio: una strategy sin la capability es un error de configuración."""
+
+    class _SinDominio:
+        """Objeto cualquiera sin la capability."""
+
+    with pytest.raises(DataVisibilityDomainError):
+        resolve_data_visibility_domain(_FakeStrategy(_Process()))  # type: ignore[arg-type]
+    with pytest.raises(DataVisibilityDomainError):
+        resolve_data_visibility_domain(_SinDominio())  # type: ignore[arg-type]
+    with pytest.raises(DataVisibilityDomainError):
+        resolve_data_visibility_domain(MagicMock())
+
+
+class _EstrategiaVirtualRota:
+    """Strategy brokered (dominio virtual) cuyo handoff está ROTO.
+
+    Es el cuadrante D4: el sensor físico NO aplica, pero eso NO reemplaza el
+    gate por nada — el handoff brokered sigue siendo la autoridad y bloquea.
+    """
+
+    data_visibility_domain = "virtual_usvfs"
+
+    def __init__(self) -> None:
+        self.spawn_calls: list[dict[str, object]] = []
+
+    async def verify_texgen_handoff(self, _request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        return TexGenHandoffResult.bloqueado("handoff brokered inválido: el artifact no está efectivo en el overlay")
+
+    async def spawn(self, **kwargs: object) -> object:
+        self.spawn_calls.append(kwargs)
+        raise AssertionError("DynDOLOD no debe spawnear con el handoff roto")
+
+
+def _resolver_de_preflight(tmp_path: pathlib.Path) -> MagicMock:
+    """Resolver mínimo para que el preflight del servicio se construya de verdad."""
+    skyrim = tmp_path / "Skyrim"
+    (skyrim / "Data").mkdir(parents=True)
+    (skyrim / "Data" / "Skyrim.esm").write_bytes(b"TES4")
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods" / "MiMod").mkdir(parents=True)
+    (mo2 / "mods" / "MiMod" / "MiMod.esp").write_bytes(b"TES4")
+    (mo2 / "overwrite").mkdir()
+    perfil = mo2 / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    (perfil / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n*MiMod.esp\r\n")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path_raw = MagicMock(return_value=skyrim)
+    resolver.get_skyrim_path = MagicMock(return_value=skyrim)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
+    resolver.get_active_profile = MagicMock(return_value="Default")
+    return resolver
+
+
+@pytest.mark.asyncio
+async def test_d4_handoff_roto_bloquea_el_spawn_aunque_el_sensor_fisico_no_aplique(
+    tmp_path: pathlib.Path,
+) -> None:
+    """D4 — seguridad preservada en dominio brokered.
+
+    (a) El preflight del servicio en dominio virtual NO aplica el sensor físico
+        (MiMod.esp invisible en el Data físico no bloquea).
+    (b) PERO el handoff brokered roto SÍ bloquea: pipeline en error y DynDOLOD
+        NO nace. Desactivar la medición inválida no es desactivar seguridad.
+    """
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+    estrategia = _EstrategiaVirtualRota()
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=_resolver_de_preflight(tmp_path),
+        event_bus=MagicMock(),
+        spawn_strategy=estrategia,  # type: ignore[arg-type]
+    )
+
+    # (a) el sensor físico NO aplica en el dominio virtual
+    reporte = await svc._ensure_preflight().run()
+    assert all(c.name != "vfs_visibility" for c in reporte.checks)
+    assert reporte.blocks_mutations is False
+
+    # (b) el handoff roto bloquea el pipeline completo y no hay spawn
+    config = MagicMock()
+    config.data_dir = pathlib.Path("/data")
+    config.mo2_mods_path = pathlib.Path("/mods")
+    config.timeout_seconds = 10
+    config.heartbeat_interval = 60
+    config.fence_ownership = None
+    config.ini_primaria_requerida = None
+    config.game_mode = "sse"
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST, spawn_strategy=estrategia)
+    staging = pathlib.Path("/salida/textures")
+
+    async def _texgen(**_kw: object) -> ToolExecutionResult:
+        return ToolExecutionResult(True, "TexGen", 0, "", "", output_path=staging)
+
+    run_dyndolod = AsyncMock()
+    runner.run_texgen = AsyncMock(side_effect=_texgen)  # type: ignore[method-assign]
+    runner._package_output_as_mod = AsyncMock(return_value=pathlib.Path("/mods/TexGen Output"))  # type: ignore[method-assign]
+    runner.run_dyndolod = run_dyndolod  # type: ignore[method-assign]
+
+    resultado = await runner.run_full_pipeline(run_texgen=True)
+
+    assert resultado.success is False
+    run_dyndolod.assert_not_awaited()
+    assert estrategia.spawn_calls == [], "DynDOLOD NO debe spawnear con el handoff roto"

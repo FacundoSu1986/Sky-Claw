@@ -37,7 +37,12 @@ from sky_claw.local.mo2.vfs_worker import (
 )
 
 
-def _manifest(tmp_path: pathlib.Path, *, virtual: bool) -> tuple[VfsWorkerManifest, pathlib.Path]:
+def _manifest(
+    tmp_path: pathlib.Path,
+    *,
+    virtual: bool,
+    expected_plugins: list[str] | None = None,
+) -> tuple[VfsWorkerManifest, pathlib.Path]:
     mo2 = tmp_path / "MO2"
     profile = mo2 / "profiles" / "Default"
     mod = mo2 / "mods" / "CanaryMod"
@@ -60,7 +65,7 @@ def _manifest(tmp_path: pathlib.Path, *, virtual: bool) -> tuple[VfsWorkerManife
         instance_id="portable-main",
         profile="Default",
         tool_id="health",
-        payload={},
+        payload={} if expected_plugins is None else {"expected_plugins": expected_plugins},
         timeout_seconds=10,
         expected_fingerprint=challenge.profile_fingerprint,
         mutation_targets=(),
@@ -147,6 +152,47 @@ async def test_worker_falla_cerrado_si_el_nieto_no_ve_el_canary(tmp_path: pathli
     assert result.success is False
     assert "proceso nieto" in result.message
     assert result.exit_code is None
+
+
+async def test_worker_bloquea_load_order_incompleto_antes_del_handler(tmp_path: pathlib.Path) -> None:
+    """P1: un plugin activo ausente del Data virtual bloquea el dispatch."""
+    manifest, _canary = _manifest(tmp_path, virtual=True, expected_plugins=["Skyrim.esm", "MiMod.esp"])
+    (manifest.virtual_data_dir / "Skyrim.esm").write_bytes(b"TES4")
+    called = False
+
+    async def probe(_path: pathlib.Path, sha256: str, _timeout: float) -> str:
+        return sha256
+
+    async def handler(_manifest: VfsWorkerManifest) -> VfsToolExecution:
+        nonlocal called
+        called = True
+        return VfsToolExecution.ok()
+
+    result = await execute_worker_manifest(manifest, handlers={"health": handler}, grandchild_probe=probe)
+
+    assert result.success is False
+    assert "MiMod.esp" in result.message
+    assert result.tool_result["missing_plugins"] == ["MiMod.esp"]
+    assert called is False
+
+
+async def test_worker_acepta_load_order_completo_y_reporta_evidencia(tmp_path: pathlib.Path) -> None:
+    """P1 contracara: todos los plugins esperados visibles permiten dispatch."""
+    manifest, _canary = _manifest(tmp_path, virtual=True, expected_plugins=["Skyrim.esm", "MiMod.esp"])
+    (manifest.virtual_data_dir / "Skyrim.esm").write_bytes(b"TES4")
+    (manifest.virtual_data_dir / "MiMod.esp").write_bytes(b"TES4")
+
+    async def probe(_path: pathlib.Path, sha256: str, _timeout: float) -> str:
+        return sha256
+
+    async def handler(_manifest: VfsWorkerManifest) -> VfsToolExecution:
+        return VfsToolExecution.ok()
+
+    result = await execute_worker_manifest(manifest, handlers={"health": handler}, grandchild_probe=probe)
+
+    assert result.success is True
+    assert result.tool_result["missing_plugins"] == []
+    assert result.tool_result["visible_plugins"] == ["Skyrim.esm", "MiMod.esp"]
 
 
 def test_descriptor_rechaza_host_no_loopback(tmp_path: pathlib.Path) -> None:
