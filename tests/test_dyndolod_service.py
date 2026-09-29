@@ -6556,6 +6556,11 @@ async def test_el_rollback_local_ocurre_antes_de_soltar_la_exclusion(
     assert orden.index("restore_termino") < orden.index("lock_liberado"), (
         "el lock se liberó antes de terminar el rollback: otro proceso puede entrar y el restore le pisaría la salida"
     )
+    # H2 (#655): con layout administrado + snapshot y todos los restores
+    # confirmados, no sobrevive ninguna mutación declarada. La TX debe cerrar
+    # ROLLED_BACK en vez de quedar PENDING por una cobertura hardcodeada.
+    assert result["rolled_back"] is True
+    service._journal.mark_transaction_rolled_back.assert_awaited_once_with(42)
 
 
 @pytest.mark.asyncio
