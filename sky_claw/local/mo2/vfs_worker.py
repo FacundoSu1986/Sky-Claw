@@ -248,7 +248,7 @@ def _expected_plugins_visibility(manifest: VfsWorkerManifest) -> tuple[tuple[str
         }
     except OSError as exc:
         raise OSError(f"no se pudo enumerar el Data virtual para verificar plugins: {exc}") from exc
-    expected = tuple(raw)
+    expected = tuple(item for item in raw if isinstance(item, str))
     visible = tuple(name for name in expected if name.lower() in visible_keys)
     missing = tuple(name for name in expected if name.lower() not in visible_keys)
     return visible, missing
