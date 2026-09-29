@@ -193,9 +193,7 @@ def test_supervisor_init_delega_en_build_orchestration_composition() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_composicion_con_dobles(
-    *, dyndolod_spawn_strategy: object | None = None
-) -> OrchestrationComposition:
+def _build_composicion_con_dobles(*, dyndolod_spawn_strategy: object | None = None) -> OrchestrationComposition:
     """Construye la composition real pasando dobles para la infraestructura."""
     return build_orchestration_composition(
         scraper=MagicMock(),

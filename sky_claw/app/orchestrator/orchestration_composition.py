@@ -174,9 +174,7 @@ def build_orchestration_composition(
     try:
         resolve_data_visibility_domain(dyndolod_spawn_strategy)
     except DataVisibilityDomainError as exc:
-        raise DataVisibilityDomainError(
-            f"Configuración de DynDOLOD inválida en el composition root: {exc}"
-        ) from exc
+        raise DataVisibilityDomainError(f"Configuración de DynDOLOD inválida en el composition root: {exc}") from exc
 
     # P0.2 (ADR 0011): la coordinación de etapa 9 vive en estado durable POR
     # USUARIO, no bajo `_BACKUP_STAGING_DIR` — que es relativo al cwd, y por eso
