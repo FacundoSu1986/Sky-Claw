@@ -1136,6 +1136,7 @@ def normalize_dyndolod_spawn_strategy(
         return StandaloneDynDOLODSpawnStrategy()
     return spawn_strategy
 
+
 class DynDOLODSpawnStrategy(Protocol):
     """Única frontera de backend; el resto del runner es backend-agnóstico.
 
