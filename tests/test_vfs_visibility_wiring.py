@@ -203,6 +203,15 @@ class _WrapperDeStrategy:
         return await self._inner.verify_texgen_handoff(request)
 
 
+class _WrapperFalseyDeStrategy(_WrapperDeStrategy):
+    """Wrapper válido que deliberadamente evalúa a False.
+
+    Reproduce el blocker P2 de Codex: truthiness no puede decidir el backend.
+    """
+
+    def __bool__(self) -> bool:
+        return False
+
 class _EstrategiaIncompleta:
     """Sólo ``spawn``: NO implementa ``data_visibility_domain``.
 
@@ -582,6 +591,52 @@ async def test_d6_wrapper_que_delega_el_dominio_se_reconoce_como_virtual(tmp_pat
     assert _visibilidad_de(reporte) is None, "el dominio virtual debe reconocerse a través del wrapper"
     assert reporte.blocks_mutations is False
 
+
+def test_p2_strategy_falsey_conserva_mismo_backend_en_servicio_y_runner(tmp_path: pathlib.Path) -> None:
+    """P2 Codex: una strategy válida falsey no puede degradar a standalone.
+
+    Servicio y runner deben conservar EXACTAMENTE el mismo objeto efectivo y el
+    dominio virtual resuelto de ese objeto.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+    wrapper = _WrapperFalseyDeStrategy(_EstrategiaVirtualDePrueba())
+    assert bool(wrapper) is False
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=MagicMock(),
+        event_bus=MagicMock(),
+        spawn_strategy=wrapper,  # type: ignore[arg-type]
+    )
+    assert svc._spawn_strategy is wrapper
+    assert svc._data_visibility_domain == "virtual_usvfs"
+
+    game = tmp_path / "Game"
+    game.mkdir()
+    mo2 = tmp_path / "MO2"
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+    exe = tmp_path / "DynDOLODx64.exe"
+    exe.write_bytes(b"MZ")
+    work = tmp_path / "work"
+    work.mkdir()
+    runner = DynDOLODRunner(
+        DynDOLODConfig(
+            game_path=game,
+            mo2_path=mo2,
+            mo2_mods_path=mods,
+            dyndolod_exe=exe,
+            external_work_root=work,
+        ),
+        readiness=ReadinessMode.DISABLED_FOR_TEST,
+        spawn_strategy=wrapper,  # type: ignore[arg-type]
+    )
+    assert runner._spawn_strategy is wrapper
+    assert runner._spawn_strategy.data_visibility_domain == "virtual_usvfs"
 
 def test_d7_strategy_sin_capability_es_fail_closed() -> None:
     """D7: una strategy inyectada que NO declara ``data_visibility_domain`` es

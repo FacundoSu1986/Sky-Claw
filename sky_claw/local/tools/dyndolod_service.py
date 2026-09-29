@@ -51,6 +51,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     ReadinessMode,
+    normalize_dyndolod_spawn_strategy,
     resolve_data_visibility_domain,
 )
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
@@ -301,7 +302,9 @@ class DynDOLODPipelineService:
         self._readiness = readiness
         # Seam explícito del backend: None conserva standalone histórico; una
         # strategy inyectada no tiene fallback si su apertura brokered falla.
-        self._spawn_strategy = spawn_strategy
+        # P2 Codex: normalizar por identidad, nunca por truthiness. El mismo
+        # objeto efectivo viaja al runner y alimenta la capability de dominio.
+        self._spawn_strategy = normalize_dyndolod_spawn_strategy(spawn_strategy)
         # PR-586F: el dominio de visibilidad de Data se resuelve UNA vez acá — la
         # capability del strategy es CONFIGURACIÓN, no estado mutable. `None` →
         # "physical" (default histórico: U-01 sigue activo); una strategy que no
@@ -311,7 +314,7 @@ class DynDOLODPipelineService:
         # de `_ensure_preflight`: la policy del sensor no puede quedar congelada
         # para un dominio y usarse con otro. Ancla:
         # `tests/test_vfs_visibility_wiring.py::test_el_dominio_y_la_estrategia_se_fijan_en_el_constructor`.
-        self._data_visibility_domain = resolve_data_visibility_domain(spawn_strategy)
+        self._data_visibility_domain = resolve_data_visibility_domain(self._spawn_strategy)
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None

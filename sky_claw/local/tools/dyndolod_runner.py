@@ -1121,6 +1121,21 @@ def resolve_data_visibility_domain(spawn_strategy: DynDOLODSpawnStrategy | None)
     )
 
 
+def normalize_dyndolod_spawn_strategy(
+    spawn_strategy: DynDOLODSpawnStrategy | None,
+) -> DynDOLODSpawnStrategy:
+    """Devuelve la strategy EFECTIVA sin interpretar truthiness.
+
+    None es el único valor que significa usar standalone. Un wrapper o
+    strategy válida puede implementar __bool__/__len__ y resultar falsey;
+    tratarla con `or` cambiaría silenciosamente el backend después de haber
+    resuelto su data_visibility_domain. La identidad del objeto efectivo se
+    preserva para que servicio, runner y preflight describan la misma ejecución.
+    """
+    if spawn_strategy is None:
+        return StandaloneDynDOLODSpawnStrategy()
+    return spawn_strategy
+
 class DynDOLODSpawnStrategy(Protocol):
     """Única frontera de backend; el resto del runner es backend-agnóstico.
 
@@ -1407,7 +1422,7 @@ class DynDOLODRunner:
         # La selección de backend ocurre una sola vez en el seam de composición.
         # Un broker configurado no puede caer silenciosamente a este default:
         # callers brokered inyectan su strategy explícita.
-        self._spawn_strategy = spawn_strategy or StandaloneDynDOLODSpawnStrategy()
+        self._spawn_strategy = normalize_dyndolod_spawn_strategy(spawn_strategy)
         logger.info(
             "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds, readiness_uia=%s, spawn=%s",
             config.dyndolod_exe,
