@@ -167,7 +167,11 @@ CREATE INDEX IF NOT EXISTS idx_orphan_absorptions_artifact_tx
 # artifact A (RUN 1, replacement, INDETERMINATE, NO_ARTIFACT) jamás muta el
 # receipt global de la transacción ni destruye evidencia de otro artifact B.
 
-ARTIFACT_RESOLUTIONS_SCHEMA_SQL = """
+#: DDL de la TABLA de resoluciones (statement único, separado del índice para
+#: que la migración de esquema #655 pueda recrear la tabla con EXACTAMENTE el
+#: DDL de producción — una sola fuente de verdad, sin copia manual que se
+#: desaligne).
+ARTIFACT_RESOLUTIONS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
     resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
     transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
@@ -203,10 +207,21 @@ CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
         )
     )
 );
-
-CREATE INDEX IF NOT EXISTS idx_artifact_resolutions_path_tx
-    ON artifact_evidence_resolutions(artifact_path, transaction_id);
 """
+
+#: Nombre del índice — declarado como constante (no solo dentro del DDL) para
+#: que la migración de esquema #655 lo retire de la tabla histórica tras el
+#: RENAME (el índice viaja con la tabla renombrada y, si no se retira, el
+#: ``CREATE INDEX IF NOT EXISTS`` de la tabla nueva hace nada por colisión de
+#: nombre, dejando la tabla nueva SIN índice tras el DROP de la histórica).
+ARTIFACT_RESOLUTIONS_INDEX_NAME = "idx_artifact_resolutions_path_tx"
+
+ARTIFACT_RESOLUTIONS_INDEX_DDL = (
+    f"CREATE INDEX IF NOT EXISTS {ARTIFACT_RESOLUTIONS_INDEX_NAME}\n"
+    "    ON artifact_evidence_resolutions(artifact_path, transaction_id);"
+)
+
+ARTIFACT_RESOLUTIONS_SCHEMA_SQL = ARTIFACT_RESOLUTIONS_TABLE_DDL + ARTIFACT_RESOLUTIONS_INDEX_DDL
 
 # =============================================================================
 # ESTADOS

@@ -29,7 +29,10 @@ from sky_claw.app.core.db_lifecycle import (
 from sky_claw.app.db.handoffs import (
     _INSERT_HANDOFF_SQL,
     _SELECT_HANDOFF_ACTIVO_SQL,
+    ARTIFACT_RESOLUTIONS_INDEX_DDL,
+    ARTIFACT_RESOLUTIONS_INDEX_NAME,
     ARTIFACT_RESOLUTIONS_SCHEMA_SQL,
+    ARTIFACT_RESOLUTIONS_TABLE_DDL,
     HANDOFFS_SCHEMA_SQL,
     ORPHAN_ABSORPTIONS_SCHEMA_SQL,
     SWEEP_RECEIPTS_SCHEMA_SQL,
@@ -396,6 +399,149 @@ async def _migrar_resoluciones_legacy_en_conn(conn: aiosqlite.Connection) -> Non
         raise JournalTransactionError(
             f"Corrupción detectada durante backfill de resoluciones: discrepancia en {discrepancias}"
         )
+
+
+# =============================================================================
+# MIGRACIÓN DE ESQUEMA #655 — artifact_evidence_resolutions 3 kinds → 4 kinds
+# =============================================================================
+#
+# ``CREATE TABLE IF NOT EXISTS`` NO altera una tabla existente (demostrado por
+# test_d1_create_if_not_exists_no_altera_tabla_existente): una DB creada por el
+# schema inmediatamente anterior a este PR tiene la tabla con la CHECK
+# histórica de 3 kinds y el writer de ``restored_byte_exact`` falla cerrado
+# (IntegrityError → JournalTransactionError). Funciona, pero deja al usuario de
+# upgrade con el bug #655 activo: la evidencia restaurada sigue viva y sigue
+# fabricando INDETERMINATE falso.
+#
+# Esta migración reconstruye la tabla dentro del boundary del caller
+# (transaccional: el DDL de SQLite es transaccional y cualquier fallo —copia,
+# validación, swap— deja el rollback al boundary, que restaura la DB a su
+# estado pre-open). Idempotente: si el DDL vigente ya admite
+# ``restored_byte_exact`` es un no-op, así que el close/reopen posterior no la
+# re-ejecuta.
+
+#: Nombre temporal de la tabla histórica durante el swap.
+_MIG655_TABLA_LEGACY = "artifact_evidence_resolutions_legacy_655"
+
+#: Forma estructural esperada de la tabla histórica —
+#: ``(nombre, tipo, notnull, pk)`` por columna, en orden. Cubre las dos
+#: variantes históricas conocidas (con o sin FK/provenance en ``handoff_id``):
+#: ambas comparten esta forma.
+_MIG655_COLUMNAS_ESPERADAS: tuple[tuple[str, str, int, int], ...] = (
+    ("resolution_id", "INTEGER", 0, 1),
+    ("transaction_id", "INTEGER", 1, 0),
+    ("artifact_path", "TEXT", 1, 0),
+    ("resolution_kind", "TEXT", 1, 0),
+    ("handoff_id", "INTEGER", 0, 0),
+    ("resolved_at", "TEXT", 1, 0),
+)
+
+
+async def _migrar_esquema_resoluciones_655_en_conn(conn: aiosqlite.Connection) -> None:
+    """Migra el esquema de ``artifact_evidence_resolutions`` al DDL vigente
+    (que admite ``restored_byte_exact``) de forma transaccional e idempotente
+    (Issue #655, H2 de #592).
+
+    ASUME el boundary del caller (transacción ya abierta; el caller commitea
+    o revierte TODO el DDL). Reglas:
+
+    - tabla inexistente o DDL vigente que ya admite el kind nuevo → no-op;
+    - tabla con la forma estructural histórica y la CHECK de 3 kinds →
+      reconstrucción: ``RENAME`` a ``_MIG655_TABLA_LEGACY``, crear la tabla
+      nueva con el DDL de PRODUCCIÓN mismo (:data:`ARTIFACT_RESOLUTIONS_TABLE_DDL`
+      + :data:`ARTIFACT_RESOLUTIONS_INDEX_DDL` — una sola fuente de verdad),
+      copiar CADA fila preservando ``resolution_id``, ``transaction_id``,
+      ``artifact_path``, ``resolution_kind``, ``handoff_id`` y ``resolved_at``,
+      validar equivalencia (conteo + fila a fila, con ``IS`` para el NULL de
+      ``handoff_id``) y recién entonces ``DROP`` de la histórica;
+    - forma estructural desconocida (ni histórica ni vigente) →
+      ``JournalTransactionError``: fallar cerrado sobre un schema que no se
+      puede razonar es lo seguro — jamás reconstruir encima de lo desconocido.
+
+    La copia corre con ``foreign_keys=ON`` (pragma del journal), así que una
+    fila histórica con referencia colgada (corrupción) aborta la copia y el
+    rollback deja la DB intacta: la migración no "repara" nada que la CHECK/FK
+    no pueda demostrar. El AUTOINCREMENT sigue de donde quedó: la copia con
+    ``resolution_id`` explícitos actualiza ``sqlite_sequence`` y el próximo
+    INSERT continúa monótono sin colisionar.
+    """
+    async with conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact_evidence_resolutions'"
+    ) as cur:
+        fila = await cur.fetchone()
+    if fila is None:
+        return  # DB nueva: el executescript del open ya creó la tabla vigente
+    ddl_vigente = str(fila[0])
+    if "restored_byte_exact" in ddl_vigente:
+        return  # ya vigente: no-op idempotente (reopen, second open concurrente)
+
+    async with conn.execute("PRAGMA table_info(artifact_evidence_resolutions)") as cur:
+        columnas = await cur.fetchall()
+    forma = tuple((str(c[1]), str(c[2]), int(c[3]), int(c[5])) for c in columnas)
+    if forma != _MIG655_COLUMNAS_ESPERADAS:
+        raise JournalTransactionError(
+            f"artifact_evidence_resolutions con forma estructural desconocida "
+            f"({forma}): migración #655 falla cerrado (no se reconstruye sobre un "
+            "schema que no se puede razonar)"
+        )
+    if "no_artifact_demonstrated" not in ddl_vigente:
+        raise JournalTransactionError(
+            "artifact_evidence_resolutions sin la CHECK histórica de kinds: "
+            "no es una variante migrable conocida — migración #655 falla cerrado"
+        )
+
+    # 1. El DDL es transaccional: todo lo que sigue se revierte junto si
+    #    cualquier paso posterior (copia, validación, drop) falla.
+    await conn.execute(f"ALTER TABLE artifact_evidence_resolutions RENAME TO {_MIG655_TABLA_LEGACY}")
+    # El índice histórico VIAJA con el RENAME: si no se retira, ocupa el
+    # nombre y el ``CREATE INDEX IF NOT EXISTS`` de la tabla nueva hace nada,
+    # dejando la tabla nueva SIN índice tras el DROP de la histórica.
+    await conn.execute(f"DROP INDEX IF EXISTS {ARTIFACT_RESOLUTIONS_INDEX_NAME}")
+    await conn.execute(ARTIFACT_RESOLUTIONS_TABLE_DDL)
+    await conn.execute(ARTIFACT_RESOLUTIONS_INDEX_DDL)
+
+    # 2. Copia completa, columna a columna (resolución_id y resolved_at incluidos).
+    await conn.execute(
+        "INSERT INTO artifact_evidence_resolutions "
+        "(resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at) "
+        "SELECT resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
+        f"FROM {_MIG655_TABLA_LEGACY}"
+    )
+
+    # 3. Validación de equivalencia ANTES de considerar el swap exitoso.
+    async with conn.execute(f"SELECT COUNT(*) FROM {_MIG655_TABLA_LEGACY}") as cur:
+        (antes,) = await cur.fetchone()
+    async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
+        (despues,) = await cur.fetchone()
+    if antes != despues:
+        raise JournalTransactionError(
+            f"Copia de la migración #655 no equivalente: {antes} filas históricas vs {despues} copiadas"
+        )
+    async with conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM {_MIG655_TABLA_LEGACY} o
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM artifact_evidence_resolutions n
+            WHERE n.resolution_id = o.resolution_id
+              AND n.transaction_id = o.transaction_id
+              AND n.artifact_path = o.artifact_path
+              AND n.resolution_kind = o.resolution_kind
+              AND n.handoff_id IS o.handoff_id
+              AND n.resolved_at = o.resolved_at
+        )
+        """
+    ) as cur:
+        (discrepancias,) = await cur.fetchone()
+    if discrepancias:
+        raise JournalTransactionError(
+            f"Copia de la migración #655 no equivalente: {discrepancias} fila(s) histórica(s) "
+            "sin réplica exacta en la tabla nueva"
+        )
+
+    # 4. Swap irreversible dentro de la transacción: la histórica se retira.
+    await conn.execute(f"DROP TABLE {_MIG655_TABLA_LEGACY}")
 
 
 # =============================================================================
@@ -805,12 +951,35 @@ class OperationJournal:
             # Phase 2 (F-02): Migration/backfill boundary con commit durable propio.
             # No depende del commit del sweep posterior: la migración validada queda
             # persistida y confirmada antes de iniciar el mantenimiento best-effort.
+            #
+            # #655: la migración de ESQUEMA (3→4 kinds de
+            # artifact_evidence_resolutions) corre PRIMERO dentro del MISMO
+            # boundary: si el backfill legacy falla, el rollback revierte también
+            # la reconstrucción de esquema — la DB queda en su estado pre-open
+            # (upgrade fallido = sin upgrade, nunca a medias). Con el esquema
+            # vigente el backfill se valida contra la tabla final.
+            #
+            # ``BEGIN IMMEDIATE`` EXPLÍCITO en los dos paths: el modo legacy de
+            # Python sqlite3 auto-BEGINA solo ante DML, y el DDL de la
+            # migración (ALTER/CREATE/DROP) correría en autocommit — cada
+            # statement commitado a mitad de camino, con la DB "a medias" si la
+            # copia o la validación fallan. Con el BEGIN explícito TODO el
+            # boundary (DDL + backfill) es una transacción atómica real;
+            # IMMEDIATE además fija el punto de serialización de la escritura
+            # (un segundo open concurrente espera el commit del primero y luego
+            # detecta el esquema vigente → no-op). El boundary lo abre cuando
+            # no hay transacción pendiente (post-executescript, que commitea),
+            # así que el BEGIN no puede colisionar.
             if self._lifecycle is not None:
                 async with self._lifecycle.transaction(self._db_path) as conn:
+                    await conn.execute("BEGIN IMMEDIATE")
+                    await _migrar_esquema_resoluciones_655_en_conn(conn)
                     await _migrar_resoluciones_legacy_en_conn(conn)
             else:
                 commit_exitoso = False
                 try:
+                    await self._db.execute("BEGIN IMMEDIATE")
+                    await _migrar_esquema_resoluciones_655_en_conn(self._db)
                     await _migrar_resoluciones_legacy_en_conn(self._db)
                     await self._db.commit()
                     commit_exitoso = True

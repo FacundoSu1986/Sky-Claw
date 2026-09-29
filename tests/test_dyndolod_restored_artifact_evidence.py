@@ -64,6 +64,7 @@ from tests.test_dyndolod_handoff_durable import (
     _svc,
     _texgen_que_genera,
 )
+from tests.test_orphan_receipt_migration import _crear_db_655_histórica
 
 
 @pytest.fixture
@@ -662,77 +663,124 @@ async def test_esquema_admite_restored_byte_exact_con_handoff_nulo(journal_tmp) 
 
 
 @pytest.mark.asyncio
-async def test_db_antigua_con_check_viejo_falla_cerrado(tmp_path: pathlib.Path) -> None:
-    """DB pre-fix: la tabla ya existe con la CHECK viega (3 kinds). El open no
-    reescribe la tabla (CREATE IF NOT EXISTS) y la escritura del kind nuevo
-    debe FALJAR CERRADO (JournalTransactionError): sin capacidad durable no se
-    afirma nada — la evidencia simplemente sigue viva (sin regreen, sin
-    regredir el bug)."""
+async def test_db_antigua_migra_y_admite_restored_byte_exact(tmp_path: pathlib.Path) -> None:
+    """Upgrade durable (transformación del test fail-closed original): una DB
+    creada por el schema inmediatamente anterior a este PR (CHECK histórica de
+    3 kinds + filas previas) se MIGRA en el open() y la escritura del kind
+    nuevo pasa a funcionar — el objetivo funcional de #655 para upgrades: la
+    evidencia restaurada deja de ser fabricadora de INDETERMINATE. Las filas
+    históricas no se tocan y no queda remanente de la reconstrucción.
+
+    (El comportamiento fail-closed original —DB histórica sin migración— quedó
+    cubierto por los tests MIG655 de test_orphan_receipt_migration.py: forma
+    desconocida y kinds desconocidos siguen fallando cerrado.)
+    """
     db_file = tmp_path / "vieja.db"
-    # Tablas base con el DDL REAL (para que el executescript del open no choque
-    # en los índices) + tabla de resoluciones con la CHECK HISTÓRICA de 3 kinds.
-    async with aiosqlite.connect(str(db_file)) as conn:
-        await conn.executescript(
-            """
-            CREATE TABLE transactions (
-                transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                mod_id INTEGER,
-                description TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                committed_at TEXT,
-                rolled_back_at TEXT
-            );
-            CREATE TABLE journal_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transaction_id INTEGER NOT NULL REFERENCES transactions(transaction_id) ON DELETE CASCADE,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-                agent_id TEXT NOT NULL,
-                operation_type TEXT NOT NULL,
-                target_path TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'started',
-                snapshot_path TEXT,
-                checksum TEXT,
-                metadata TEXT,
-                rolled_back INTEGER DEFAULT 0
-            );
-            CREATE TABLE artifact_evidence_resolutions (
-                resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-                transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
-                artifact_path   TEXT NOT NULL,
-                resolution_kind TEXT NOT NULL,
-                handoff_id      INTEGER,
-                resolved_at     TEXT NOT NULL DEFAULT (datetime('now')),
-                CONSTRAINT chk_resolution_kind CHECK (
-                    resolution_kind IN (
-                        'absorbed_by_handoff',
-                        'superseded_by_run',
-                        'no_artifact_demonstrated'
-                    )
-                ),
-                CONSTRAINT uq_resolution_tx_artifact
-                    UNIQUE (transaction_id, artifact_path)
-            );
-            """
-        )
-        await conn.commit()
+    # DB real de la release anterior: schema completo + tabla con la CHECK
+    # histórica de 3 kinds y dos filas previas (provenance históricas).
+    await _crear_db_655_histórica(
+        db_file,
+        filas=[
+            (3, "C:/MO2/mods/Antiguo", "absorbed_by_handoff", 31, "2026-01-01 10:00:00"),
+            (5, "C:/MO2/mods/Otro", "no_artifact_demonstrated", None, "2026-02-01 11:30:00"),
+        ],
+    )
 
     j = OperationJournal(db_file)
     await j.open()
     try:
         tx = await j.begin_transaction("db vieja", agent_id="test")
-        with pytest.raises(JournalTransactionError):
-            await j.registrar_resolucion_de_restauracion_de_artifact(
-                transaction_id=tx, artifact_path="X:/MO2/mods/TexGen Output"
-            )
-        # Y la DB no quedó corrupta: nada se escribió.
+        await j.registrar_resolucion_de_restauracion_de_artifact(
+            transaction_id=tx, artifact_path="X:/MO2/mods/TexGen Output"
+        )
+        # La escritura nueva convivió con la historia sin corromperla.
         async with (
             aiosqlite.connect(str(db_file)) as conn,
-            conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
+            conn.execute(
+                "SELECT resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
+                "FROM artifact_evidence_resolutions ORDER BY resolution_id"
+            ) as cur,
         ):
-            assert (await cur.fetchone())[0] == 0
+            filas = [tuple(f) async for f in cur]
+        assert filas[:2] == [
+            (3, 3, "C:/MO2/mods/Antiguo", "absorbed_by_handoff", 31, "2026-01-01 10:00:00"),
+            (5, 5, "C:/MO2/mods/Otro", "no_artifact_demonstrated", None, "2026-02-01 11:30:00"),
+        ], "la migración mutó la historia durable"
+        assert len(filas) == 3
+        assert filas[2][3] == "restored_byte_exact" and filas[2][4] is None
+        # El kind nuevo sigue siendo único por pareja (UNIQUE sobreviviente).
+        # El path va canonicalizado: el writer guardó la pareja con la misma
+        # identidad física del oracle (F-002), no el literal del caller.
+        clave_nueva = clave_de_artifact(pathlib.Path("X:/MO2/mods/TexGen Output"))
+        async with aiosqlite.connect(str(db_file)) as conn:
+            with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+                await conn.execute(
+                    "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind) "
+                    "VALUES (?, ?, 'no_artifact_demonstrated')",
+                    (tx, clave_nueva),
+                )
     finally:
         await j.close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_db_vieja_scenario_655_completo(tmp_path: pathlib.Path) -> None:
+    """Upgrade + escenario #655 completo: sobre una DB de la release anterior,
+    una corrida canónica que restaura ``TexGen Output`` byte-exact deja la
+    resolución durable en la DB MIGRADA; tras close/reopen real el oracle deja
+    de ver a la TX y el resume NO recibe HandoffIndeterminate fabricado — sin
+    que el usuario tenga que borrar su journal."""
+    db_file = tmp_path / "upgrade.db"
+    await _crear_db_655_histórica(
+        db_file,
+        filas=[(11, "C:/MO2/mods/Historico", "superseded_by_run", 101, "2025-06-01 00:00:00")],
+    )
+    config, _runner_base = _runner_real(tmp_path)
+    runner = _runner_con_gate_verificado(config)
+
+    j = OperationJournal(db_file)
+    await j.open()  # ← aquí corre la migración del esquema #655
+    try:
+        result, svc, mod_texgen, _r = await _correr_fallo_con_restauracion(tmp_path, j, runner=runner)
+        assert result["success"] is False, "la corrida falla (DynDOLOD roto)"
+        # La DB trae historia (TX 11): la TX de la corrida es la más nueva.
+        tx_id = max(await _txs_de(db_file))
+        assert await _estado_de_tx(j, tx_id) is TransactionStatus.PENDING, (
+            "tras el upgrade la TX global sigue PENDING (I1)"
+        )
+        assert await _resolucion_de(j, tx_id, mod_texgen) == ("restored_byte_exact", None), (
+            "la corrida post-upgrade debe dejar la resolución durable del restore"
+        )
+    finally:
+        await j.close()
+
+    # Restart real sobre la DB migrada: la resolución sobrevive, el oracle la
+    # excluye y el resume no fabrica INDETERMINATE.
+    j2 = OperationJournal(db_file)
+    await j2.open()
+    try:
+        assert await j2.transacciones_que_nombran(_clave_texgen(mod_texgen)) == [], (
+            "post-restart la pareja resuelta debe seguir excluida del oracle"
+        )
+        # La historia pre-upgrade también sigue viva e íntegra (fila durable).
+        async with (
+            aiosqlite.connect(str(db_file)) as conn,
+            conn.execute(
+                "SELECT resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
+                "FROM artifact_evidence_resolutions WHERE transaction_id = 11"
+            ) as cur,
+        ):
+            filas_historicas = [tuple(f) async for f in cur]
+        assert filas_historicas == [
+            (11, 11, "C:/MO2/mods/Historico", "superseded_by_run", 101, "2025-06-01 00:00:00")
+        ], "la migración del upgrade mutó la historia durable"
+        svc2 = _svc(j2, runner=runner)
+        consulta = await svc2._consultar_resume(runner)  # noqa: SLF001
+        assert consulta is None, (
+            f"el resume post-upgrade/restart no debe bloquearse por la evidencia ya resuelta; obtuvo: {consulta!r}"
+        )
+    finally:
+        await j2.close()
 
 
 # =============================================================================
