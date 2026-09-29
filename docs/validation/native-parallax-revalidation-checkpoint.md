@@ -80,16 +80,31 @@ exclusivamente de metadatos de protocolo: `rows`, `summary` (incluido `summary.d
 `thresholds`, `dataset` y `environment` son deep-equal al raw, verificado programáticamente.
 `environment.frozen_ack` **no** fue tocado.
 
-| Archivo | SHA256 | Bytes | Relación con el raw |
-|---|---|---:|---|
-| raw `m4\exp_m4_results.json` | `8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557` | 83233 | — (raw original de la corrida) |
-| publicado `exp_m4_results.json` | `de172bc59ae4cdba755333c585913245b301c7fa0fc4514a8c30639e807577d9` | 85377 | raw + clave `protocol_status` |
-| `exp_m3_results.json` | `047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19` | 243752 | byte-idéntico al raw |
-| `calibration.json` | `ccd9bb700761c18800acb2f35330d685834a2c3a07402b40a4476bd8123fa384` | 41194 | byte-idéntico al raw |
+**Hashes canónicos.** La columna es el **blob commiteado** (fin de línea LF), que es lo que
+verifica un consumidor tras clonar. No es el hash del working tree en Windows: con
+`core.autocrlf=true` (y `.gitattributes` fijando LF sólo para `*.py`, no para `*.json`), el
+checkout en Windows reintroduce CRLF y recalcular el hash da otro valor. Verificable con:
 
-El `raw_sha256` de la tabla también queda registrado dentro del propio JSON, en
-`protocol_status.annotation.raw_sha256`, para que un consumidor machine-readable pueda
-verificar la correspondencia sin depender de este documento.
+```bash
+git cat-file blob HEAD:docs/validation/native-parallax-revalidation-20260928/<archivo> | sha256sum
+```
+
+| Archivo | SHA256 commiteado (LF) | Bytes | Relación con el raw |
+|---|---|---:|---|
+| raw `m4\exp_m4_results.json` (externo, en disco) | `8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557` | 83233 | salida del runner (CRLF en disco) |
+| `exp_m4_results.json` | `7ecb3f243409699d9bf650814af21246fb0e06502d334c0f68978e5d821bf5bd` | 83341 | raw + clave `protocol_status` |
+| `exp_m3_results.json` | `02f6d1ac5a679081359b43a173f8e849fa9819e0d1c4e60830266a337b2335da` | 237549 | normalización LF del raw |
+| `calibration.json` | `7157105ec45383bfd736539524406cd2e2c42445e34821e20d67c3084f7f70b4` | 40194 | normalización LF del raw |
+
+En disco (Windows, CRLF) `exp_m3_results.json` y `calibration.json` **sí** son byte-idénticos
+a sus raw (`047769fd…` / 243752 y `ccd9bb70…` / 41194); la diferencia con la tabla es
+exclusivamente la normalización de fin de línea al commitear. `exp_m4_results.json` en disco
+es `de172bc5…` / 85377: difiere del raw por la clave `protocol_status` **y** por EOL.
+
+El `raw_sha256` que quedó dentro del propio JSON, en
+`protocol_status.annotation.raw_sha256` (`8b018150…`, `raw_bytes: 83233`), es
+**deliberadamente el del raw en disco**, no el del blob: el raw es un archivo externo que no
+vive en git, y es el hash que quien posea la corrida va a recalcular sobre su copia.
 
 **Decision**: `EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT` — decision-equivalent vs histórico.
 **Reglas**: `C1_self_good=true` y `C2_auth_worse=true` en ambas corridas (histórica y nueva).
