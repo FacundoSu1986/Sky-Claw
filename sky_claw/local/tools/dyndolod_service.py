@@ -1575,12 +1575,14 @@ class DynDOLODPipelineService:
                     layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
                 ]
 
-        # Cobertura honesta: DynDOLOD/TexGen también escriben staging crudo. Esas
-        # ubicaciones pueden ser compartidas y todavía no están bajo move-aside;
-        # no se amplía el rollback sin evidencia de propiedad exclusiva. Por tanto,
-        # una vez que el runner empieza, no hay rollback TOTAL demostrable aunque
-        # los outputs administrados sí vuelvan byte-a-byte.
-        mutation_coverage_complete = False
+        # H2 (#655): desde P2.2 cada root crudo por herramienta es EXCLUSIVO y
+        # entra siempre al DirectoryRollback. Con create_snapshot=True también se
+        # protegen los mods empaquetados (DynDOLOD Output / TexGen Output), por lo
+        # que todas las superficies persistentes declaradas en manifest_targets
+        # quedan cubiertas por move-aside. Sólo entonces un unwind byte-exacto
+        # puede cerrar la TX como ROLLED_BACK. Sin snapshot o sin layout resuelto,
+        # la cobertura sigue indeterminada y falla cerrado como PENDING.
+        mutation_coverage_complete = create_snapshot and layout is not None
 
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los
