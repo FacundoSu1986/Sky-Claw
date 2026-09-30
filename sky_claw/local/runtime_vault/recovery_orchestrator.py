@@ -41,9 +41,13 @@ no un estado del FSM): el apply físico quedó completo y la post-verificación
 El lock se re-adquiere SIEMPRE antes de tocar ACLs (§9): un lock huérfano
 (dueño muerto o PID reutilizado, demostrado por pid+creation-time) sólo puede
 ser tomado por el mismo ``operation_id``; un dueño vivo o ilegible produce
-``LOCK_BUSY`` sin robo. Para ``INDETERMINATE`` el lock queda RETENIDO para
-inspección (no se escribe ``phase=RELEASED``), preservando el estado para el
-operador.
+``LOCK_BUSY`` sin robo. El lock queda RETENIDO (no se escribe
+``phase=RELEASED``) en ``INDETERMINATE`` — para inspección — y en
+``POST_VERIFICATION_REQUIRED``: §47 exige no liberarlo antes de la transición
+durable terminal, que en el handoff pertenece a S4-D. Retenerlo también
+serializa el Golden: mientras la operación no tenga transición terminal, una
+operación nueva cae en la ruta de huérfano -> recovery en vez de pisar el
+estado a medias; la continuación de S4-D re-toma el MISMO ``operation_id``.
 
 Este módulo COMPONE: no construye Target DACLs, no implementa otro WAL, no
 duplica el lock y no invoca ``SetSecurityInfo`` directamente — muta a través
@@ -585,14 +589,20 @@ def _dispatch_fsm(
         relpaths_plan = frozenset(n.relative_path for n in plan.plan.nodes)
         if not mutating and frozenset(mutated) == relpaths_plan:
             # C5: apply físico completo => handoff a la post-verificación de
-            # S4-D. S4-C NO escribe VERIFYING_GP1 ni COMMITTED.
+            # S4-D. S4-C NO escribe VERIFYING_GP1 ni COMMITTED. El lock se
+            # RETIENE (§47: no se libera antes de la transición durable
+            # terminal, que pertenece a S4-D): mientras X no termine, una
+            # operación nueva sobre el mismo Golden queda serializada por la
+            # ruta de huérfano -> recovery, y la continuación de S4-D re-toma
+            # el lock con el MISMO operation_id.
             return _Resultado(
                 disposition=RecoveryDisposition.POST_VERIFICATION_REQUIRED,
-                retener_lock=False,
+                retener_lock=True,
                 operator=False,
                 detail=(
                     "todos los nodos del plan tienen MUTATED durable: el apply físico quedó completo; "
-                    "GP1/RV-2/NodeSet/archivado y COMMITTED pertenecen a S4-D"
+                    "GP1/RV-2/NodeSet/archivado y COMMITTED pertenecen a S4-D; lock retenido hasta esa "
+                    "transición terminal"
                 ),
             )
         return _flujo_rollback(
@@ -613,12 +623,16 @@ def _dispatch_fsm(
         ProtectionTransactionState.ARCHIVING_BACKUP,
     ):
         # C6/C7: las verificaciones y el archivado son de S4-D. S4-C clasifica
-        # y entrega; no ejecuta verificaciones ficticias ni comitea.
+        # y entrega; no ejecuta verificaciones ficticias ni comitea. El lock se
+        # retiene por la misma razón que en C5: X sigue sin transición terminal.
         return _Resultado(
             disposition=RecoveryDisposition.POST_VERIFICATION_REQUIRED,
-            retener_lock=False,
+            retener_lock=True,
             operator=False,
-            detail=f"estado durable '{estado.value}': la post-verificación/archivado pertenecen a S4-D",
+            detail=(
+                f"estado durable '{estado.value}': la post-verificación/archivado pertenecen a S4-D; "
+                "lock retenido hasta la transición terminal"
+            ),
         )
 
     if estado in TERMINAL_TRANSACTION_STATES:
@@ -693,6 +707,24 @@ def _dispatch_bajo_lock(
             operator=True,
             reason=f"el plan autoritativo dejó de ser cargable bajo lock: {exc}",
             detail="evidencia contradictoria entre clasificación y exclusividad",
+        )
+
+    # El plan con el que se DERIVÓ la identidad física del lock debe ser el
+    # mismo que el que decide el recovery: una sustitución entre clasificación
+    # y exclusividad dejaría al lock ligado a un Golden y al dispatch actuando
+    # sobre otro. La ligadura journal<->plan cubre el caso del journal VALID,
+    # pero esta comparación cierra también la ventana del journal ausente.
+    if (
+        plan_fresco.digest != durable_plan.digest
+        or plan_fresco.physical_identity != durable_plan.physical_identity
+        or plan_fresco.canonical_root != durable_plan.canonical_root
+    ):
+        return _Resultado(
+            disposition=RecoveryDisposition.INDETERMINATE,
+            retener_lock=True,
+            operator=True,
+            reason="el plan autoritativo cambió entre la clasificación y la exclusividad",
+            detail="sustitución de evidencia dura: fail-closed con lock retenido para inspección",
         )
 
     if journal_ahora.classification is ProtectionJournalClassification.ABSENT:

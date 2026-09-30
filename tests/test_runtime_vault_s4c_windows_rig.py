@@ -58,6 +58,7 @@ _CODIGO_CRASH_BEFORE_SDSI = 0x51
 _CODIGO_CRASH_AFTER_SDSI = 0x52
 _CODIGO_CRASH_ALL_MUTATED = 0x53
 _CODIGO_CRASH_RESTORED_1 = 0x54
+_CODIGO_CRASH_AFTER_TWO_SDSI = 0x55
 
 _SKIP_POR_PLATAFORMA = pytest.mark.skipif(
     sys.platform != "win32", reason="RIG nativo Win32 (procesos reales + NTFS) sólo en Windows"
@@ -466,7 +467,9 @@ class TestW03TodosMutated:
                 "S4-C no escribe VERIFYING_GP1 ni ningún registro nuevo en C5"
             )
             _, fase_lock = _estado_lock(rig)
-            assert fase_lock == GoldenLockPhase.RELEASED.value
+            assert fase_lock != GoldenLockPhase.RELEASED.value, (
+                "§47: el lock queda retenido hasta la transición terminal de S4-D"
+            )
         finally:
             _limpiar(rig)
 
@@ -479,12 +482,21 @@ class TestW03TodosMutated:
 @_SKIP_POR_PLATAFORMA
 class TestW04DobleCrash:
     def test_w04_process_c_reanuda_sin_memoria_de_process_b(self, tmp_path: pathlib.Path) -> None:
+        """A muta DOS nodos y muere (MUTATED(n1) + MUTATING(n2) durables).
+
+        Ojo: NO se usa el estado "todo MUTATED" — ese es C5 (handoff sin
+        rollback). Con MUTATING(n2) durable el camino correcto es el rollback
+        y B alcanza a restaurar el primer nodo antes de morir.
+        """
         if not _es_elevado():
             _skip_sin_elevacion("W04")
         rig = _rig_root()
         try:
-            proc_a = _correr_worker(rig, "w03_crash_all_mutated")
-            assert proc_a.returncode == _CODIGO_CRASH_ALL_MUTATED, proc_a.stderr
+            proc_a = _correr_worker(rig, "w04a_crash_after_two_sdsi")
+            assert proc_a.returncode == _CODIGO_CRASH_AFTER_TWO_SDSI, proc_a.stderr
+            assert _nodos_en_estado(rig, NodeWalState.MUTATED) == {"Data/Skyrim.esm"}
+            assert _nodos_en_estado(rig, NodeWalState.MUTATING) == {"Data"}
+            assert _estado_journal(rig) == "applying"
 
             proc_b = _correr_worker(rig, "recover_crash_restored1")
             assert proc_b.returncode == _CODIGO_CRASH_RESTORED_1, proc_b.stderr
@@ -492,6 +504,7 @@ class TestW04DobleCrash:
             assert any(e.startswith("restore:") for e in eventos_b), eventos_b
             assert not any(e.startswith("recover-done:") for e in eventos_b), "B debe morir ANTES de cerrar el recovery"
             primer_restaurado = next(e.split(":", 1)[1] for e in eventos_b if e.startswith("restore:"))
+            assert primer_restaurado == "Data", "rollback top-down: 'Data' precede a su hijo"
             assert _estado_journal(rig) == "rolling_back", "el rollback de B quedó durable a medias"
 
             events_tras_b = list(eventos_b)
@@ -505,6 +518,7 @@ class TestW04DobleCrash:
             assert primer_restaurado not in reporte["nodes_restored"], (
                 "re-escribir un nodo ya restaurado delataría comparación raw de bytes"
             )
+            assert reporte["nodes_restored"] == ["Data/Skyrim.esm"]
             assert _estado_journal(rig) == "rolled_back"
             _, fase_lock = _estado_lock(rig)
             assert fase_lock == GoldenLockPhase.RELEASED.value

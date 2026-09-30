@@ -14,6 +14,7 @@ Fases (el controller orquesta; ``os._exit`` mata SÓLO a este proceso hijo):
     w01_crash_before_sdsi    journal real: MUTATING(K) durable -> muere antes de SetSecurityInfo
     w02_crash_after_sdsi     MUTATING(K) durable -> SetSecurityInfo REAL -> muere sin MUTATED
     w03_crash_all_mutated    apply completo (todos MUTATED) -> muere antes de post-verificación
+    w04a_crash_after_two_sdsi  MUTATED(n1) + MUTATING(n2) durables -> muere tras el 2º SetSecurityInfo
     w06_hold_lock            lock real + MUTATING durable + duerme (el controller lo mata)
     recover                  recovery completo; escribe report.json y sale 0
     recover_crash_restored1  recovery que muere tras la PRIMERA restauración real (C8)
@@ -38,6 +39,7 @@ _CODIGO_CRASH_BEFORE_SDSI = 0x51
 _CODIGO_CRASH_AFTER_SDSI = 0x52
 _CODIGO_CRASH_ALL_MUTATED = 0x53
 _CODIGO_CRASH_RESTORED_1 = 0x54
+_CODIGO_CRASH_AFTER_TWO_SDSI = 0x55
 
 
 def _abortar_si_raiz_peligrosa(rig_root: pathlib.Path) -> None:
@@ -236,6 +238,7 @@ class _PuertoConCrash:
         self._interno = interno
         self._modo = modo
         self._breadcrumbs = breadcrumbs
+        self._aplicados = 0
 
     def open(self, path: pathlib.Path, node_kind: Any) -> int:
         return self._interno.open(path, node_kind)
@@ -260,6 +263,13 @@ class _PuertoConCrash:
         if self._modo == "after_sdsi":
             self._breadcrumbs.marcar(f"post-sdsi:{node.relative_path}")
             os._exit(_CODIGO_CRASH_AFTER_SDSI)
+        if self._modo == "after_two_sdsi":
+            self._aplicados += 1
+            self._breadcrumbs.marcar(f"post-sdsi:{node.relative_path}")
+            if self._aplicados >= 2:
+                # Evidencia durable esperada: MUTATED(nodo 1) + MUTATING(nodo 2),
+                # estado APPLYING => el recovery debe ROLLBACK, no post-verificar.
+                os._exit(_CODIGO_CRASH_AFTER_TWO_SDSI)
 
     def verify_target_dacl(self, handle: int, node: Any) -> Any:
         return self._interno.verify_target_dacl(handle, node)
@@ -387,6 +397,7 @@ def _main() -> None:
             "w01_crash_before_sdsi",
             "w02_crash_after_sdsi",
             "w03_crash_all_mutated",
+            "w04a_crash_after_two_sdsi",
             "w06_hold_lock",
             "recover",
             "recover_crash_restored1",
@@ -402,6 +413,8 @@ def _main() -> None:
         _fase_apply_crash(rig_root, args.operation_id, "after_sdsi")
     elif args.phase == "w03_crash_all_mutated":
         _fase_apply_crash(rig_root, args.operation_id, "all_mutated")
+    elif args.phase == "w04a_crash_after_two_sdsi":
+        _fase_apply_crash(rig_root, args.operation_id, "after_two_sdsi")
     elif args.phase == "w06_hold_lock":
         _fase_hold_lock(rig_root, args.operation_id)
     elif args.phase == "recover":

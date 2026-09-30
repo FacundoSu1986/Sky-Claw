@@ -286,6 +286,7 @@ class _KernelLock:
         self.close_calls: list[int] = []
         self.flush_calls: list[str] = []
         self.escrituras: list[tuple[str, bytes]] = []
+        self.on_open: Any = None
         self._siguiente = 700
 
     def seed(self, path: pathlib.PurePath, metadata: GoldenLockMetadata) -> None:
@@ -297,6 +298,8 @@ class _KernelLock:
             from sky_claw.local.runtime_vault.golden_mutation_lock import GoldenLockBusyError
 
             raise GoldenLockBusyError("ocupado", win32_error=32)
+        if self.on_open is not None:
+            self.on_open()
         self._siguiente += 1
         self.open_handles[self._siguiente] = path_str
         self.busy_paths.add(path_str)
@@ -863,7 +866,10 @@ class TestC5Handoff:
         assert reporte.setsecurityinfo_calls == 0
         # El FSM durable NO gana NINGÚN registro: VERIFYING_GP1 pertenece a S4-D.
         assert _journal_path(raiz).read_bytes() == bytes_antes
-        assert reporte.lock_outcome is RecoveryLockOutcome.ACQUIRED_RELEASED
+        # §47: el lock NO se libera antes de la transición durable terminal (S4-D).
+        assert reporte.lock_outcome is RecoveryLockOutcome.ACQUIRED_RETAINED
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None and metadata.phase != GoldenLockPhase.RELEASED.value
         assert reporte.stale_lock_takeover is False
         assert reporte.node_wal_summary == tuple(
             NodeWalSummary(relative_path=n.relative_path, wal_state=NodeWalState.MUTATED.value)
@@ -1132,6 +1138,40 @@ class TestLockBusyEngine:
         assert reporte.stale_lock_takeover is True
         assert reporte.nodes_restored == ("Data/Skyrim.esm",)
         assert lock_kernel.metadata_de(_lock_path(raiz)).phase == GoldenLockPhase.RELEASED.value
+
+    def test_plan_sustituido_entre_clasificacion_y_lock_es_indeterminate(self, tmp_path: pathlib.Path) -> None:
+        """El plan que DERIVÓ la identidad del lock debe ser el que decide.
+
+        Una sustitución del plan autoritativo entre la clasificación y la
+        exclusividad dejaría al lock ligado a un Golden y al dispatch actuando
+        sobre otro: la comparación de digest + identidad física lo corta antes
+        de abrir el journal, con cero aperturas de nodo.
+        """
+        import dataclasses
+
+        raiz = _raiz(tmp_path)
+        durable = _plan_durable(raiz)
+        kernel = _KernelDiario()
+        journal = _crear_journal(raiz, durable, kernel)
+        journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+        journal.close()
+
+        def _sustituir() -> None:
+            hostil = dataclasses.replace(durable.plan, staging_digest="e" * 64)
+            _plan_path(raiz).write_bytes(serialize_authorized_plan(hostil))
+
+        lock_kernel = _KernelLock()
+        lock_kernel.on_open = _sustituir
+        port = _PuertoRecuperacion(durable.plan)
+
+        reporte = _recover(raiz, journal_kernel=kernel, lock_kernel=lock_kernel, port=port)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.operator_intervention_required is True
+        assert port.abiertos == []
+        assert reporte.setsecurityinfo_calls == 0
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None and metadata.phase != GoldenLockPhase.RELEASED.value
 
 
 # ============================================================================
