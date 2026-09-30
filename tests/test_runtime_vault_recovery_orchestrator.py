@@ -1524,9 +1524,7 @@ class TestPrePlanLockHuerfano:
         self._binding_durable(raiz)
         _plan_path(raiz).write_bytes(b"\x00\xff plan truncado a mitad de publicacion")
         lock_kernel = _KernelLock()
-        lock_kernel.seed(
-            _lock_path(raiz), self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value)
-        )
+        lock_kernel.seed(_lock_path(raiz), self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value))
         lock_kernel.owner_alive = False
 
         reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
