@@ -54,36 +54,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-# =============================================================================
-# DIAGNÓSTICO TEMPORAL (bisect CI Windows #658) — REVERTIR tras la corrida.
-# Ciclo 3 acotó el fallo al GRUPO A (6 tests). Ciclo 4: el job py3.11 corre
-# A1 (A, G, B) y el job py3.12 corre A2 (C, D, E); el Grupo B de ciclo 3
-# sigue deseleccionado en ambos. El job que falle identifica el trío culpable.
-# =============================================================================
-_DIAG_658_FILE = "test_dyndolod_restored_artifact_evidence.py"
-_DIAG_658_A1 = {
-    "test_restauracion_byte_exacto_resuelve_evidencia_y_deja_tx_pendiente",
-    "test_evidencia_hermana_sigue_viva_en_el_mismo_tx",
-    "test_resolucion_durable_sobrevive_a_restart_real",
-}
-_DIAG_658_A2 = {
-    "test_restore_fallido_no_resuelve_evidencia",
-    "test_lease_perdida_no_resuelve_evidencia",
-    "test_artifact_preservado_no_recibe_resolucion",
-}
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    _permitidos = _DIAG_658_A1 if sys.version_info.minor == 11 else _DIAG_658_A2
-    _ids = set()
-    for item in items:
-        if pathlib.Path(str(item.fspath)).name == _DIAG_658_FILE and item.name not in _permitidos:
-            _ids.add(item.nodeid)
-    if _ids:
-        config.hook.pytest_deselected(items=[i for i in items if i.nodeid in _ids])
-        items[:] = [i for i in items if i.nodeid not in _ids]
-
-
 @pytest.fixture(autouse=True)
 def _gc_al_cerrar_cada_test(request: pytest.FixtureRequest) -> Iterator[None]:
     """Corre el GC cíclico en el teardown, para que el warning acuse al culpable.
