@@ -678,6 +678,7 @@ def _dispatch_bajo_lock(
     *,
     durable_plan: DurableAuthorizedPlan | None,
     identity_source: RecoveryIdentitySource,
+    plan_previo: DurableWriteOutcome,
     journal_previo: ProtectionJournalClassification,
     journal_kernel: JournalDurabilityKernel | None,
     programdata_resolver: Callable[[], object] | None,
@@ -690,6 +691,20 @@ def _dispatch_bajo_lock(
 
     if durable_plan is None:
         if identity_source is RecoveryIdentitySource.OPERATION_LOCK_BINDING:
+            # Un plan PRESENTE pero no utilizable (crash durante su publicación:
+            # §12.2 7c/7e) es evidencia contradictoria, no un pre-plan limpio: se
+            # rehusa con el lock RETENIDO en vez de normalizarlo.
+            if plan_previo is not DurableWriteOutcome.NOT_DURABLE:
+                return _Resultado(
+                    disposition=RecoveryDisposition.INDETERMINATE,
+                    retener_lock=True,
+                    operator=True,
+                    reason=(
+                        "hay un authorized_plan.json presente pero no utilizable "
+                        f"(evidencia={plan_previo.value}) sin journal: evidencia contradictoria"
+                    ),
+                    detail="no se normaliza el lock ante evidencia contradictoria: intervención del operador",
+                )
             # PRE-PLAN: el lock huérfano se normaliza SIN tocar el Golden. Sin
             # plan no hay PRE autoritativo, luego NUNCA hay rollback ACL.
             evidencia = classify_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
@@ -1066,6 +1081,7 @@ def recover_interrupted_protection(
             operation_id,
             durable_plan=durable_plan,
             identity_source=fuente,
+            plan_previo=plan_classification,
             journal_previo=journal_previo,
             journal_kernel=journal_kernel,
             programdata_resolver=programdata_resolver,

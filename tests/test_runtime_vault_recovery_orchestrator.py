@@ -1493,6 +1493,50 @@ class TestPrePlanLockHuerfano:
         metadata = lock_kernel.metadata_de(_lock_path(raiz))
         assert metadata is not None and metadata.phase == GoldenLockPhase.RELEASED.value
 
+    def test_r21i_binding_sin_lock_nunca_llegado_a_adquirirse(self, tmp_path: pathlib.Path) -> None:
+        """Caso B: crash DESPUÉS del binding pero ANTES del lock.
+
+        No hay lock huérfano que normalizar, pero el recovery debe resolver la
+        identidad, tomar el lock (limpio), comprobar que no hay plan ni journal y
+        devolver la misma clasificación sin escribir nada.
+        """
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        port = _PuertoRecuperacion(_plan())
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=port)
+
+        assert reporte.disposition is RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED
+        assert reporte.stale_lock_takeover is False, "no había lock: nada que tomar"
+        assert reporte.lock_outcome is RecoveryLockOutcome.ACQUIRED_RELEASED
+        assert port.abiertos == [] and reporte.setsecurityinfo_calls == 0
+
+    def test_r21j_plan_corrupto_sin_journal_no_normaliza_el_lock(self, tmp_path: pathlib.Path) -> None:
+        """Caso D: crash durante la publicación del plan (presente, no utilizable).
+
+        §12.2 7c/7e tratan el flush fallido como fail-closed: sin journal no hubo
+        mutación posible, pero un plan presente e ilegible es evidencia
+        contradictoria. Se rehusa con el lock RETENIDO para el operador, en vez de
+        normalizarlo como si fuera un pre-plan limpio.
+        """
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        _plan_path(raiz).write_bytes(b"\x00\xff plan truncado a mitad de publicacion")
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(
+            _lock_path(raiz), self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value)
+        )
+        lock_kernel.owner_alive = False
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.operator_intervention_required is True
+        assert reporte.lock_outcome is RecoveryLockOutcome.ACQUIRED_RETAINED
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None and metadata.phase != GoldenLockPhase.RELEASED.value
+
     def test_r21c_lock_de_otra_operacion_no_se_roba(self, tmp_path: pathlib.Path) -> None:
         raiz = _raiz(tmp_path)
         self._binding_durable(raiz)
