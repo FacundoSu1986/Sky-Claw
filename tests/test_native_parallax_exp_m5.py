@@ -18,6 +18,7 @@ N=256 garantiza que todos los tonos de prueba (<=150 ciclos/tile) están bajo Ny
 
 from __future__ import annotations
 
+import contextlib
 import math
 from pathlib import Path
 
@@ -392,9 +393,95 @@ def test_calibration_environment_records_prereg_and_base_main() -> None:
     assert block["base_main_sha"] == _BASE_MAIN
     assert block["m5_prereg_freeze_sha"] == _SHA40
     assert block["m5_execution_freeze_sha"] is None
-    # git_sha sigue siendo independiente: lo calcula el runner, no lo sobreescribe el input.
-    assert block["git_sha"] != _SHA40 or True  # documenta que git_sha NO es un alias
     assert "frozen_ack" in block
+
+
+def test_git_sha_keeps_the_git_value_and_is_not_aliased_to_provenance() -> None:
+    """``git_sha`` conserva el valor que produce el environment de Git y NO es un alias.
+
+    Reemplaza un ``assert ... or True`` previo que no podia fallar nunca. ``git_sha`` lo
+    calcula el bloque heredado de M4 (subprocess a git); los tres ``*_sha`` de provenance
+    vienen de los flags del operador. Si ``git_sha`` se aliaseara a cualquiera de ellos, el
+    artefacto mentiria sobre que commit se ejecuto, que es justo el defecto que §16 previene.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    real = run_exp_m5._m4_environment_block
+    captured: dict[str, object] = {}
+
+    def _fake_env(manifest_path, resolution, phase, frozen_ack):  # noqa: ANN001, ANN202
+        # Reproduce el bloque real con un git_sha distintivo y verificable.
+        block = dict(real(manifest_path, resolution, phase, frozen_ack))
+        block["git_sha"] = "0123456789abcdef0123456789abcdef01234567"
+        captured["original"] = block["git_sha"]
+        return block
+
+    run_exp_m5._m4_environment_block = _fake_env
+    try:
+        block = _env_block(
+            phase="calibration",
+            frozen_ack=None,
+            base_main_sha=_BASE_MAIN,
+            m5_prereg_freeze_sha=_SHA40,
+            m5_execution_freeze_sha=None,
+        )
+    finally:
+        run_exp_m5._m4_environment_block = real
+
+    # 1) git_sha conserva el valor del environment de Git, no el de ningun flag.
+    assert block["git_sha"] == "0123456789abcdef0123456789abcdef01234567"
+    assert block["git_sha"] != block["m5_prereg_freeze_sha"]
+    assert block["git_sha"] != block["base_main_sha"]
+    assert block["m5_execution_freeze_sha"] is None
+
+    # 2) Y en FULL tampoco puede aliasearse al execution freeze.
+    run_exp_m5._m4_environment_block = _fake_env
+    try:
+        full = _env_block(
+            phase="full",
+            frozen_ack=f"freeze-{_EXEC_FREEZE}",
+            base_main_sha=_BASE_MAIN,
+            m5_prereg_freeze_sha=_SHA40,
+            m5_execution_freeze_sha=_EXEC_FREEZE,
+        )
+    finally:
+        run_exp_m5._m4_environment_block = real
+    assert full["git_sha"] != full["m5_execution_freeze_sha"]
+    assert full["git_sha"] != full["m5_prereg_freeze_sha"]
+    assert full["git_sha"] != full["base_main_sha"]
+
+
+def test_provenance_flags_do_not_move_git_sha(tmp_path: Path) -> None:
+    """Cambiar los flags de provenance NO puede mover ``git_sha``.
+
+    Ancla la independencia en el otro sentido: mismo manifest y misma corrida de git,
+    distinto prereg/base => mismo ``git_sha`` y provenance distinto.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    manifest = tmp_path / "exp-m3-clean-authored-manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    a = run_exp_m5.environment_block(
+        manifest,
+        512,
+        "calibration",
+        None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    b = run_exp_m5.environment_block(
+        manifest,
+        512,
+        "calibration",
+        None,
+        base_main_sha="1111111111111111111111111111111111111111",
+        m5_prereg_freeze_sha="2222222222222222222222222222222222222222",
+        m5_execution_freeze_sha=None,
+    )
+    assert a["git_sha"] == b["git_sha"]
+    assert a["m5_prereg_freeze_sha"] != b["m5_prereg_freeze_sha"]
+    assert a["base_main_sha"] != b["base_main_sha"]
 
 
 def test_full_environment_records_all_three_freeze_shas() -> None:
@@ -545,3 +632,137 @@ def test_provenance_fix_does_not_touch_scientific_payload() -> None:
     # provenance NO se filtra dentro de thresholds/métricas
     assert "m5_prereg_freeze_sha" not in block["thresholds"]
     assert "base_main_sha" not in block["thresholds"]
+
+
+# =============================== ABORTAR ANTES DE LEER COHORT A (post-incidente) ==========
+# El incidente: `--frozen-ack foo` pasó la validación y ejecutó un FULL de 31 assets,
+# observando los 16 de LEGACY_HELDOUT antes del execution freeze. El origen no fue la
+# validación floja, sino que la validación ---o su ausencia--- ocurre DESPUÉS de que el
+# runner empiece a leer el corpus. Estos tests anclan el ORDEN: provenance inválido aborta
+# con SystemExit(2) y ``prepare_entries`` NO se llama nunca.
+def _correr_main(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invoca ``main()`` en proceso, con un ``prepare_entries`` que delata cualquier acceso."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    llamadas: list[str] = []
+
+    def _boom(*args: object, **kwargs: object):
+        raise AssertionError("prepare_entries fue llamado: el corpus se leyo antes de validar")
+
+    monkeypatch.setattr(run_exp_m5, "prepare_entries", _boom)
+    monkeypatch.setattr(run_exp_m5.sys, "argv", ["run_exp_m5", *argv])
+    with pytest.raises(SystemExit) as exc:
+        run_exp_m5.main()
+    assert exc.value.code == 2, f"se esperaba parser.error() (code 2), vino {exc.value.code}"
+    assert not llamadas
+
+
+_BASE_ARGS = [
+    "--corpus-root",
+    "C:/no-debe-leerse",
+    "--out",
+    "C:/no-debe-escribirse.json",
+    "--prereg-freeze-sha",
+    _SHA40,
+    "--base-main-sha",
+    _BASE_MAIN,
+]
+
+
+@pytest.mark.parametrize(
+    ("phase", "extra"),
+    [
+        ("full", ["--frozen-ack", "foo"]),
+        ("full", ["--frozen-ack", "freeze-deadbeef"]),
+        ("full", ["--frozen-ack", f"FREEZE-{_EXEC_FREEZE}"]),
+        ("full", []),
+        ("calibration", ["--frozen-ack", f"freeze-{_EXEC_FREEZE}"]),
+    ],
+)
+def test_invalid_provenance_aborts_before_reading_cohort_a(
+    phase: str, extra: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance invalido aborta ANTES de ``prepare_entries`` (Cohort A intacta)."""
+    _correr_main([*_BASE_ARGS, "--phase", phase, *extra], monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("flag", "bad"),
+    [
+        ("--prereg-freeze-sha", "abc"),
+        ("--prereg-freeze-sha", "deadbeef"),
+        ("--prereg-freeze-sha", _SHA40[:-1]),
+        ("--prereg-freeze-sha", _SHA40.upper()),
+        ("--base-main-sha", "invalid"),
+        ("--base-main-sha", "1"),
+        ("--base-main-sha", "9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5a"),
+    ],
+)
+def test_malformed_sha_aborts_before_reading_cohort_a(flag: str, bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un SHA mal formado (truncado, mayusculas, no-hex) aborta antes de leer el corpus."""
+    argv = [x for x in _BASE_ARGS if x not in (flag, _SHA40, _BASE_MAIN)]
+    _correr_main([*argv, flag, bad, "--phase", "calibration"], monkeypatch)
+
+
+def test_missing_provenance_flags_abort_before_reading_cohort_a(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin --prereg-freeze-sha o sin --base-main-sha se aborta antes de leer el corpus."""
+    sin_prereg = [
+        "--corpus-root",
+        "C:/no-debe-leerse",
+        "--out",
+        "C:/no-debe-escribirse.json",
+        "--base-main-sha",
+        _BASE_MAIN,
+    ]
+    _correr_main([*sin_prereg, "--phase", "calibration"], monkeypatch)
+
+    sin_base = [
+        "--corpus-root",
+        "C:/no-debe-leerse",
+        "--out",
+        "C:/no-debe-escribirse.json",
+        "--prereg-freeze-sha",
+        _SHA40,
+    ]
+    _correr_main([*sin_base, "--phase", "calibration"], monkeypatch)
+
+
+def test_valid_provenance_reaches_prepare_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control negativo: con provenance VALIDA, ``prepare_entries`` SI se invoca.
+
+    Sin esto, los tests anteriores pasaríaían también si el runner abortara siempre; este
+    ancla que el abort es selectivo y no una falla general del harness.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    llamados: list[int] = []
+
+    def _fake_prepare(manifest, corpus_root):  # noqa: ANN001, ANN202
+        llamados.append(1)
+        return ([], [{"asset": "x", "family": "brick", "provider": "p"}])
+
+    monkeypatch.setattr(run_exp_m5, "prepare_entries", _fake_prepare)
+    monkeypatch.setattr(
+        run_exp_m5.sys,
+        "argv",
+        [
+            "run_exp_m5",
+            "--corpus-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "out.json"),
+            "--prereg-freeze-sha",
+            _SHA40,
+            "--base-main-sha",
+            _BASE_MAIN,
+            "--phase",
+            "calibration",
+        ],
+    )
+    # El corpus vacío cae en la rama EXP_M5_DATA_REQUIRED y sale con SystemExit(2); lo que
+    # importa es que prepare_entries se haya llamado ANTES de eso.
+    with contextlib.suppress(SystemExit):
+        run_exp_m5.main()
+    assert llamados, "prepare_entries no se llamo pese a provenance valido"

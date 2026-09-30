@@ -327,7 +327,6 @@ supuso, en lugar de inferirlo de un `frozen_ack` opaco.
 > cutoff, ENERGY_GATE, seed, splits y métricas quedan idénticos byte a byte.
 
 ## 17. Limitaciones y adversaria preregistrada (§30/§33/§39)
-
 - **Seams/periodicidad:** la FFT asume periodicidad; puede haber spectral leakage. Se reportan
   `seam_height`/`seam_gradient` (M4). Windowing/apodización, si se usa, es **secondary
   preregistrado**, nunca para “mejorar” el resultado primario.
@@ -340,3 +339,54 @@ supuso, en lugar de inferirlo de un `frozen_ack` opaco.
   mismatch? ¿SELF muestra el mismo patrón? ¿Q8 explica HIGH? ¿1024 contradice 512? ¿seams
   ensucian el espectro? ¿una familia/proveedor domina? ¿LOWMID parece bueno sólo por scaling
   global? ¿Parseval cierra y las máscaras son exhaustivas? ¿LEGACY_HELDOUT descrito honestamente?
+
+## 18. Desviación de protocolo registrada: exposición prematura de LEGACY_HELDOUT
+
+Esta sección se escribe **antes** de cualquier corrida posterior y no se borra. Es un
+registro honesto de un incidente ocurrido durante el hardening de provenance, no una
+justificación.
+
+### Qué pasó
+
+Al reproducir el defecto de provenance (falta de `base_main_sha` /
+`m5_prereg_freeze_sha` / `m5_execution_freeze_sha`, y `--frozen-ack` que aceptaba strings
+arbitrarios), se descubrió que `--frozen-ack foo` no sólo pasaba la validación: **ejecutó
+una pasada FULL sobre los 31 assets de Cohort A**, produciendo las 16 filas de
+`LEGACY_HELDOUT` y emitiendo `EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED`, con una
+provenance ficticia. Eso ocurrió **antes** de cualquier execution freeze. Los JSON
+resultantes se eliminaron y no se conservaron como evidencia, y el `calibration.json` de la
+primera calibration (SHA256 `388bfcdf…`) quedó intacto.
+
+### Qué se perdió y qué no
+
+Borrar los JSON **no restaura la ceguera experimental**: los 16 `LEGACY_HELDOUT` fueron
+observados por M5 antes del freeze. No se puede afirmar que la réplica `LEGACY_HELDOUT`
+permaneció oculta hasta el execution freeze.
+
+Lo que **sí** se sostiene, y por qué M5 sigue siendo interpretable bajo las reglas
+preregistradas:
+
+- las reglas, umbrales, bandas, cutoff, ENERGY_GATE, seed y formulas estaban congelados
+  **antes** del incidente (commit de prereg `d3745089…` / el freeze vigente);
+- el fix posterior modifica **sólo provenance** (campos de `environment` + validación de CLI);
+  `rows` pre/post fix son bit-idénticos (SHA `7f37b264…` en ambos);
+- la exposición no cambió ningún valor científico: la única decisión observada provino del
+  runner aplicando los umbrales ya congelados, y su output fue eliminado, no usado.
+
+Por tanto, M5 puede continuar bajo las reglas preregistradas, pero **cualquier resultado
+final debe declarar explícitamente esta desviación**. Para una validación verdaderamente
+ciega hará falta un conjunto de assets que M5 nunca haya observado.
+
+### Estado de protocolo (para registrar en cada JSON M5 relevante)
+
+Estos campos se registran de forma machine-readable en el bloque `environment` de la corrida
+que produzca el resultado final, sin reemplazar la decisión del runner:
+
+```text
+protocol_status = UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze = false
+scientific_rules_changed_after_exposure = false
+```
+
+Esto se suma a la desviación de freeze ya registrada en el informe de calibration; la decisión
+científica del runner (`summary.decision`) permanece intacta y se reporta tal cual.
