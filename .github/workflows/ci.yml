@@ -198,7 +198,7 @@ jobs:
             exit 1
           fi
 
-  # ── Gate 5: Build ────────────────────────────────
+  # ── Gate 5: Build ────────────────────────────────────
   build:
     name: "📦 Build"
     needs: [lint-summary, typecheck-summary, test-summary, security]
