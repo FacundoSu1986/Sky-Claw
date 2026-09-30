@@ -267,6 +267,65 @@ ENERGY_GATE, thresholds, resolución, seed, timestamp UTC, Python/NumPy/Pillow, 
 `json.dump(..., allow_nan=False)`. Fail-fast ante NaN/Inf, split mismatch, manifest mismatch,
 partición de bandas imposible.
 
+### 16.1 Provenance explícita (fail-closed)
+
+Los tres SHAs de congelamiento son **inputs del operador**, nunca heurísticas de runtime:
+`origin/main` puede haber avanzado después del freeze, así que leerlo en runtime mentiría
+sobre la base contra la que el experimento quedó congelado. El bloque `environment` los expone
+como campos separados y explícitos:
+
+| Campo | Calibration | Full |
+|---|---|---|
+| `git_sha` | checkout real de la corrida | checkout real de la corrida |
+| `base_main_sha` | `--base-main-sha` | `--base-main-sha` |
+| `m5_prereg_freeze_sha` | `--prereg-freeze-sha` (= `M5_PREREG_FREEZE_SHA`) | `--prereg-freeze-sha` |
+| `m5_execution_freeze_sha` | `null` (no existe todavía) | derivado de `--frozen-ack` |
+| `frozen_ack` | `null` | `freeze-<40hex>` (se conserva) |
+
+Formato exigido: **exactamente 40 hex minúsculos** (`^[0-9a-f]{40}$`). No se normaliza nada —
+un SHA truncado, en mayúsculas o con whitespace es un error, porque "arreglarlo" en silencio
+dejaría un artefacto cuyo provenance no corresponde al commit que corrió, que es justo lo que
+esta sección existe para impedir. `--frozen-ack` exige `freeze-<40hex>`: un string arbitrario o
+un SHA truncado **no** es un execution freeze válido.
+
+**Calibration:**
+
+```bat
+python -m sky_claw.local.native_parallax.research.run_exp_m5 ^
+  --m3-manifest docs\design\research\native-parallax\data\exp-m3-clean-authored-manifest.json ^
+  --corpus-root C:\SkyClawResearch\NativeParallax\EXP-M3 ^
+  --resolution 512 ^
+  --phase calibration ^
+  --prereg-freeze-sha <M5_PREREG_FREEZE_SHA> ^
+  --base-main-sha <BASE_MAIN_SHA> ^
+  --out C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\calibration.json
+```
+
+En calibration `--frozen-ack` se **rechaza**: la calibración es el smoke test previo al
+execution-freeze, declararlo sería provenance fiction.
+
+**Full:**
+
+```bat
+python -m sky_claw.local.native_parallax.research.run_exp_m5 ^
+  --m3-manifest docs\design\research\native-parallax\data\exp-m3-clean-authored-manifest.json ^
+  --corpus-root C:\SkyClawResearch\NativeParallax\EXP-M3 ^
+  --resolution 512 ^
+  --phase full ^
+  --prereg-freeze-sha <M5_PREREG_FREEZE_SHA> ^
+  --base-main-sha <BASE_MAIN_SHA> ^
+  --frozen-ack freeze-<M5_EXECUTION_FREEZE_SHA> ^
+  --out C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\exp_m5_results.json
+```
+
+En FULL `git_sha` coincide con `m5_execution_freeze_sha` y `m5_prereg_freeze_sha` apunta al
+freeze **anterior**: un consumidor puede verificar que la corrida salió del freeze que se
+supuso, en lugar de inferirlo de un `frozen_ack` opaco.
+
+> Nota de alcance: el fix de provenance **no** amplía el formato científico. Calibration sigue
+> emitiendo `summary.decision = PENDING_FREEZE` sin medianas de cohorte; los umbrales, bandas,
+> cutoff, ENERGY_GATE, seed, splits y métricas quedan idénticos byte a byte.
+
 ## 17. Limitaciones y adversaria preregistrada (§30/§33/§39)
 
 - **Seams/periodicidad:** la FFT asume periodicidad; puede haber spectral leakage. Se reportan

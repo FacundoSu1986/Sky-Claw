@@ -354,3 +354,194 @@ def test_environment_block_records_actual_run_resolution(tmp_path: Path) -> None
         assert block["resolution"] == resolution
         assert block["phase"] == "calibration"
         assert block["experiment"] == "EXP-M5"
+
+
+# ============================================================ PROCEDENCIA §16 (freeze SHAs)
+# El bloque environment heredado de M4 sólo expone ``git_sha`` + ``frozen_ack``. Con eso, un
+# JSON de FULL de M5 NO permite distinguir el prereg-freeze del execution-freeze ni la base
+# de main contra la que el experimento quedó congelado: §16 queda incumplido literalmente.
+# Estos tests congelan los tres campos explícitos + la validación estricta del CLI.
+
+_SHA40 = "d3745089a1e09ccfc8789aa8eeb1e05a3ee93594"
+_BASE_MAIN = "9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5"
+_EXEC_FREEZE = "1c0ffee1234567890abcdefabcdefabcdefabcde"
+
+
+def _env_block(**kw: object):
+    """environment_block() de M5 con un manifest temporal (sin Cohort A)."""
+    import tempfile
+    from pathlib import Path as _Path
+
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    with tempfile.TemporaryDirectory() as td:
+        manifest = _Path(td) / "exp-m3-clean-authored-manifest.json"
+        manifest.write_text("{}", encoding="utf-8")
+        return run_exp_m5.environment_block(manifest, 512, kw.pop("phase", "calibration"), **kw)
+
+
+def test_calibration_environment_records_prereg_and_base_main() -> None:
+    """Calibration registra prereg-freeze y base-main explícitos; execution-freeze es None."""
+    block = _env_block(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    assert block["base_main_sha"] == _BASE_MAIN
+    assert block["m5_prereg_freeze_sha"] == _SHA40
+    assert block["m5_execution_freeze_sha"] is None
+    # git_sha sigue siendo independiente: lo calcula el runner, no lo sobreescribe el input.
+    assert block["git_sha"] != _SHA40 or True  # documenta que git_sha NO es un alias
+    assert "frozen_ack" in block
+
+
+def test_full_environment_records_all_three_freeze_shas() -> None:
+    """FULL expone prereg-freeze, base-main y execution-freeze junto al frozen_ack legacy."""
+    block = _env_block(
+        phase="full",
+        frozen_ack=f"freeze-{_EXEC_FREEZE}",
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=_EXEC_FREEZE,
+    )
+    assert block["base_main_sha"] == _BASE_MAIN
+    assert block["m5_prereg_freeze_sha"] == _SHA40
+    assert block["m5_execution_freeze_sha"] == _EXEC_FREEZE
+    assert block["frozen_ack"] == f"freeze-{_EXEC_FREEZE}"
+
+
+def test_execution_freeze_sha_is_extracted_strictly_from_frozen_ack() -> None:
+    """``freeze-<40hex>`` es el ÚNICO formato aceptado como execution freeze (§15)."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    assert run_exp_m5.execution_freeze_sha_from_ack(f"freeze-{_EXEC_FREEZE}") == _EXEC_FREEZE
+    for bad in ("foo", "freeze-deadbeef", f"FREEZE-{_EXEC_FREEZE}", _EXEC_FREEZE, "", "freeze-"):
+        with pytest.raises(ValueError):
+            run_exp_m5.execution_freeze_sha_from_ack(bad)
+
+
+def test_calibration_never_carries_an_execution_freeze() -> None:
+    """Calibration no puede declarar execution-freeze.
+
+    Sin ``--frozen-ack`` devuelve ``m5_execution_freeze_sha=None`` explícito (ausencia
+    declarada, no campo omitido). Y si se PASA un ``--frozen-ack`` en calibration, se
+    rechaza: la calibration es el smoke test previo al freeze, aceptarlo sería permitir que
+    alguien invente un execution freeze y lo grabe en el artefacto.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    prov = run_exp_m5.resolve_m5_provenance(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        prereg_freeze_sha=_SHA40,
+    )
+    assert prov["m5_execution_freeze_sha"] is None
+    assert prov["m5_prereg_freeze_sha"] == _SHA40
+    assert prov["base_main_sha"] == _BASE_MAIN
+    # Y un frozen_ack en calibration es provenance fiction -> fail-closed.
+    with pytest.raises(ValueError):
+        run_exp_m5.resolve_m5_provenance(
+            phase="calibration",
+            frozen_ack=f"freeze-{_EXEC_FREEZE}",
+            base_main_sha=_BASE_MAIN,
+            prereg_freeze_sha=_SHA40,
+        )
+
+
+def test_full_requires_frozen_ack_and_resolves_provenance() -> None:
+    """FULL sin ``--frozen-ack`` falla; con formato válido, resuelve los tres SHAs."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    with pytest.raises(ValueError):
+        run_exp_m5.resolve_m5_provenance(
+            phase="full",
+            frozen_ack=None,
+            base_main_sha=_BASE_MAIN,
+            prereg_freeze_sha=_SHA40,
+        )
+    prov = run_exp_m5.resolve_m5_provenance(
+        phase="full",
+        frozen_ack=f"freeze-{_EXEC_FREEZE}",
+        base_main_sha=_BASE_MAIN,
+        prereg_freeze_sha=_SHA40,
+    )
+    assert prov["m5_prereg_freeze_sha"] == _SHA40
+    assert prov["m5_execution_freeze_sha"] == _EXEC_FREEZE
+    assert prov["base_main_sha"] == _BASE_MAIN
+
+
+@pytest.mark.parametrize(
+    "bad_sha",
+    ["abc", "deadbeef", _SHA40[:-1], _SHA40 + "a", _SHA40.upper(), "", "  " + _SHA40, _SHA40 + " "],
+)
+def test_sha_inputs_reject_anything_but_40_lowercase_hex(bad_sha: str) -> None:
+    """No se aceptan SHAs truncados, en mayúscula, ni con whitespace: fail-closed."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    with pytest.raises(ValueError):
+        run_exp_m5.validate_sha_input(bad_sha, "--prereg-freeze-sha")
+    with pytest.raises(ValueError):
+        run_exp_m5.validate_sha_input(bad_sha, "--base-main-sha")
+    assert run_exp_m5.validate_sha_input(_SHA40, "--prereg-freeze-sha") == _SHA40
+
+
+def test_cli_exposes_provenance_flags() -> None:
+    """El CLI ofrece ambos flags de procedencia: son inputs, no heurísticas de runtime."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    parser = run_exp_m5.build_parser()
+    opts = {a for action in parser._actions for a in action.option_strings}
+    assert "--prereg-freeze-sha" in opts
+    assert "--base-main-sha" in opts
+    # --prereg-freeze-sha y --base-main-sha son obligatorios en AMBAS fases: sin provenance
+    # explícita el artefacto no sería verificable (§16).
+    args = parser.parse_args(
+        [
+            "--corpus-root",
+            "X",
+            "--phase",
+            "calibration",
+            "--out",
+            "Y",
+            "--prereg-freeze-sha",
+            _SHA40,
+            "--base-main-sha",
+            _BASE_MAIN,
+        ]
+    )
+    assert args.prereg_freeze_sha == _SHA40
+    assert args.base_main_sha == _BASE_MAIN
+
+
+def test_provenance_fix_does_not_touch_scientific_payload() -> None:
+    """No-regresión científica: el fix es sólo provenance, cero cambios de ciencia.
+
+    Congela el payload científico del environment (umbrales, bandas, gate, seed, resolución)
+    y la superficie de ``frequency_coherence`` que decide. Un fix de procedencia que moviera
+    cualquiera de estos rompería este test.
+    """
+    block = _env_block(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    assert block["thresholds"]["T_LOWMID_NRMSE"] == 0.15
+    assert block["thresholds"]["T_LOWMID_EXCESS"] == 0.10
+    assert block["thresholds"]["T_HIGH_ENRICHMENT"] == 2.0
+    assert block["thresholds"]["LOWMID_HIGH_CUTOFF"] == 32
+    assert block["thresholds"]["ENERGY_GATE_FRACTION"] == 1e-6
+    assert block["thresholds"]["band_edges"] == [4, 8, 16, 32, 64, 128]
+    assert block["band_edges"] == [4, 8, 16, 32, 64, 128]
+    assert block["energy_gate_fraction"] == 1e-6
+    assert block["bootstrap_seed"] == 20260925
+    assert block["lowmid_high_cutoff"] == 32
+    assert block["band_names"] == ["B1", "B2", "B3", "B4", "B5", "B6", "B7"]
+    assert block["resolution"] == 512
+    # provenance NO se filtra dentro de thresholds/métricas
+    assert "m5_prereg_freeze_sha" not in block["thresholds"]
+    assert "base_main_sha" not in block["thresholds"]

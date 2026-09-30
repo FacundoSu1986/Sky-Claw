@@ -24,6 +24,7 @@ import contextlib
 import io
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,87 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
 from sky_claw.local.native_parallax.research.trust_proxies import OracleOnly
 
 RESOLUTION = 512  # primary §9 (continuidad M4)
+
+# --------------------------------------------------------------------------- procedencia §16
+# El bloque environment heredado de M4 sólo expone ``git_sha`` + ``frozen_ack``. Eso NO
+# permite distinguir, en un JSON de FULL, el prereg-freeze del execution-freeze, ni la base
+# de main contra la que el experimento quedó congelado. §16 exige los tres explícitos.
+#
+# Los SHAs son INPUTS del operador, nunca heurísticas de runtime: ``origin/main`` puede haber
+# avanzado después del freeze, así que leerlo en runtime mentiría sobre la base. Se validan
+# fail-closed contra el formato real del repo (40 hex minúsculos) y se derivan de forma
+# estricta del ``--frozen-ack`` ya existente. Esto NO toca ninguna constante científica.
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+_FROZEN_ACK_RE = re.compile(r"^freeze-([0-9a-f]{40})$")
+
+
+def validate_sha_input(value: str | None, flag: str) -> str:
+    """Valida un SHA de procedencia: exactamente 40 hex minúsculos (``^[0-9a-f]{40}$``).
+
+    Fail-closed: un SHA truncado, en mayúsculas o con whitespace es un error, no algo que se
+    "normalice". Normalizar en silencio dejaría un artefacto cuyo provenance no corresponde al
+    commit que realmente corrió, que es justo lo que §16 existe para impedir.
+    """
+    if value is None:
+        raise ValueError(f"{flag} es obligatorio (procedencia §16)")
+    if not _SHA40_RE.match(value):
+        raise ValueError(
+            f"{flag} inválido: {value!r}. Formato requerido: 40 caracteres hex minúsculos "
+            f"(^[0-9a-f]{{40}}$), p.ej. d3745089a1e09ccfc8789aa8eeb1e05a3ee93594"
+        )
+    return value
+
+
+def execution_freeze_sha_from_ack(frozen_ack: str | None) -> str:
+    """Extrae el execution-freeze SHA de ``--frozen-ack``, exigiendo ``freeze-<40hex>``.
+
+    Único formato aceptado. Un string arbitrario (``foo``) o un SHA truncado
+    (``freeze-deadbeef``) NO es un execution freeze válido: aceptarlos fue el defecto
+    reproducido (permitía una corrida FULL con provenance fiction).
+    """
+    if frozen_ack is None:
+        raise ValueError("--frozen-ack es obligatorio con --phase full (protocolo freeze §15)")
+    m = _FROZEN_ACK_RE.match(frozen_ack)
+    if m is None:
+        raise ValueError(
+            f"--frozen-ack inválido: {frozen_ack!r}. Formato requerido: freeze-<40 hex "
+            f"minúsculos>, p.ej. freeze-d3745089a1e09ccfc8789aa8eeb1e05a3ee93594"
+        )
+    return m.group(1)
+
+
+def resolve_m5_provenance(
+    *,
+    phase: str,
+    frozen_ack: str | None,
+    base_main_sha: str | None,
+    prereg_freeze_sha: str | None,
+) -> dict[str, Any]:
+    """Resuelve y valida la procedencia M5 para el bloque ``environment`` (§16).
+
+    Calibration: ``m5_execution_freeze_sha`` es SIEMPRE ``None`` y un ``--frozen-ack`` se
+    rechaza — la calibration es el smoke test previo al freeze, no puede declarar uno.
+    Full: exige ``--frozen-ack`` y deriva el execution-freeze SHA de él, de forma estricta.
+    """
+    prereg = validate_sha_input(prereg_freeze_sha, "--prereg-freeze-sha")
+    base = validate_sha_input(base_main_sha, "--base-main-sha")
+    if phase == "calibration":
+        if frozen_ack is not None:
+            raise ValueError(
+                "--frozen-ack no se acepta con --phase calibration: la calibración es el smoke "
+                "test PREVIO al execution-freeze, declararlo sería provenance fiction (§16)"
+            )
+        return {
+            "base_main_sha": base,
+            "m5_prereg_freeze_sha": prereg,
+            "m5_execution_freeze_sha": None,
+        }
+    execution = execution_freeze_sha_from_ack(frozen_ack)
+    return {
+        "base_main_sha": base,
+        "m5_prereg_freeze_sha": prereg,
+        "m5_execution_freeze_sha": execution,
+    }
 
 
 def _json_safe(obj: Any) -> Any:
@@ -115,12 +197,26 @@ def run_asset_m5(entry: dict[str, Any], resolution: int) -> dict[str, Any]:
     return summary
 
 
-def environment_block(manifest_path: Path, resolution: int, phase: str, frozen_ack: str | None) -> dict[str, Any]:
+def environment_block(
+    manifest_path: Path,
+    resolution: int,
+    phase: str,
+    frozen_ack: str | None,
+    *,
+    base_main_sha: str | None = None,
+    m5_prereg_freeze_sha: str | None = None,
+    m5_execution_freeze_sha: str | None = None,
+) -> dict[str, Any]:
     """Reproducibilidad §16 (hereda el bloque M4 y añade los campos espectrales de M5).
 
     ``resolution`` es la resolución REAL de la corrida (``args.resolution``): primaria 512 o
     secundaria 1024 nativa/no-resize. Se registra tal cual para que el bloque de
     reproducibilidad NO etiquete falsamente una corrida 1024 como 512.
+
+    Los tres ``*_sha`` de provenance son explícitos y opcionales en la firma (el bloque se
+    construye igual para el camino ``EXP_M5_DATA_REQUIRED``), pero ``main`` los pasa siempre ya
+    validados por :func:`resolve_m5_provenance`: un artefacto real de M5 nunca sale sin ellos.
+    ``git_sha`` se conserva como M4 y sigue siendo independiente de los tres.
     """
     base = _m4_environment_block(manifest_path, resolution, phase, frozen_ack)
     here = Path(__file__).with_name("frequency_coherence.py")
@@ -137,6 +233,16 @@ def environment_block(manifest_path: Path, resolution: int, phase: str, frozen_a
             "fft_backend": "numpy.fft",
         }
     )
+    # Procedencia §16: prereg-freeze, base-main y execution-freeze, explícitos y separados.
+    # Se añaden SIEMPRE (aunque sean None) para que un consumidor no tenga que distinguir
+    # "campo ausente" de "campo explícitamente vacío" — que son cosas distintas.
+    base.update(
+        {
+            "base_main_sha": base_main_sha,
+            "m5_prereg_freeze_sha": m5_prereg_freeze_sha,
+            "m5_execution_freeze_sha": m5_execution_freeze_sha,
+        }
+    )
     return base
 
 
@@ -148,12 +254,8 @@ def _cohort_block(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return med
 
 
-def main() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            with contextlib.suppress(AttributeError, io.UnsupportedOperation, ValueError):
-                stream.reconfigure(encoding="utf-8", errors="replace")
-
+def build_parser() -> argparse.ArgumentParser:
+    """Parser del CLI. Los flags de procedencia son obligatorios en AMBAS fases (§16)."""
     parser = argparse.ArgumentParser(description="EXP-M5 — frequency-band coherence (research-only)")
     parser.add_argument(
         "--m3-manifest",
@@ -170,10 +272,59 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--resolution", type=int, default=RESOLUTION)
     parser.add_argument("--phase", choices=("calibration", "full"), required=True)
-    parser.add_argument("--frozen-ack", type=str, default=None, help="obligatorio con --phase full")
+    parser.add_argument(
+        "--frozen-ack",
+        type=str,
+        default=None,
+        help="obligatorio con --phase full; formato estricto freeze-<40 hex>",
+    )
+    parser.add_argument(
+        "--prereg-freeze-sha",
+        type=str,
+        default=None,
+        help="SHA (40 hex) del commit donde quedó congelada la preregistración M5 (§16)",
+    )
+    parser.add_argument(
+        "--base-main-sha",
+        type=str,
+        default=None,
+        help="SHA (40 hex) de la base de main contra la que el experimento está congelado (§16)",
+    )
+    return parser
+
+
+def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            with contextlib.suppress(AttributeError, io.UnsupportedOperation, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
+    parser = build_parser()
     args = parser.parse_args()
     if args.phase == "full" and not args.frozen_ack:
         parser.error("--phase full exige --frozen-ack (protocolo freeze §15)")
+    # Procedencia §16: fail-closed antes de tocar el corpus. Un artefacto sin los tres SHAs
+    # explícitos no es verificable, así que abortamos acá y no después de procesar Cohort A.
+    try:
+        provenance = resolve_m5_provenance(
+            phase=args.phase,
+            frozen_ack=args.frozen_ack,
+            base_main_sha=args.base_main_sha,
+            prereg_freeze_sha=args.prereg_freeze_sha,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    def _env() -> dict[str, Any]:
+        return environment_block(
+            args.m3_manifest,
+            args.resolution,
+            args.phase,
+            args.frozen_ack,
+            base_main_sha=provenance["base_main_sha"],
+            m5_prereg_freeze_sha=provenance["m5_prereg_freeze_sha"],
+            m5_execution_freeze_sha=provenance["m5_execution_freeze_sha"],
+        )
 
     prepared, exclusions = prepare_entries(args.m3_manifest, args.corpus_root)
     if args.phase == "calibration":
@@ -184,7 +335,7 @@ def main() -> None:
             "phase": args.phase,
             "state": "EXP_M5_DATA_REQUIRED",
             "decision": "EXP_M5_DATA_INSUFFICIENT",
-            "environment": environment_block(args.m3_manifest, args.resolution, args.phase, args.frozen_ack),
+            "environment": _env(),
             "exclusions": exclusions,
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +361,7 @@ def main() -> None:
     report: dict[str, Any] = {
         "experiment": "EXP-M5",
         "phase": args.phase,
-        "environment": environment_block(args.m3_manifest, args.resolution, args.phase, args.frozen_ack),
+        "environment": _env(),
         "dataset": {
             "n_prepared": len(prepared),
             "n_rows": len(rows),
