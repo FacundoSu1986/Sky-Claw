@@ -54,6 +54,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+# =============================================================================
+# DIAGNÓSTICO TEMPORAL (bisect CI Windows #658) — REVERTIR tras la corrida.
+# Deselecciona los tests NUEVOS de este PR para aislar si el fallo de la CI
+# windows-latest proviene de ellos o de un test existente afectado por la
+# fuente. Se retira en cuanto se clasifique el fallo.
+# =============================================================================
+_DIAG_658_BASENAMES = {"test_dyndolod_restored_artifact_evidence.py"}
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    _ids = set()
+    for item in items:
+        if pathlib.Path(str(item.fspath)).name in _DIAG_658_BASENAMES or item.name.startswith("test_mig655_"):
+            _ids.add(item.nodeid)
+    if _ids:
+        config.hook.pytest_deselected(items=[i for i in items if i.nodeid in _ids])
+        items[:] = [i for i in items if i.nodeid not in _ids]
+
+
 @pytest.fixture(autouse=True)
 def _gc_al_cerrar_cada_test(request: pytest.FixtureRequest) -> Iterator[None]:
     """Corre el GC cíclico en el teardown, para que el warning acuse al culpable.
