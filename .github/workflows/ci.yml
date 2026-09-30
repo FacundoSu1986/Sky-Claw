@@ -83,33 +83,18 @@ jobs:
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
       - name: Run tests with coverage
-        # [DIAGNOSTICO TEMPORAL #658] Tee del output a un archivo para el paso
-        # de extracción de fallos que sigue. SE REVIERTA al resolver el fallo
-        # de la suite Windows de este PR.
+        # [DIAGNOSTICO TEMPORAL #658] Redirige el output a un archivo (y lo
+        # re-emite al log) para el paso de extracción de fallos que sigue.
+        # SE REVIERTA al resolver el fallo de la suite Windows de este PR.
         run: |
-          pytest --cov=sky_claw --cov-report=xml --cov-fail-under=60 tests/ 2>&1 | Tee-Object -FilePath ci-test-output.txt
-          exit $LASTEXITCODE
+          pytest --cov=sky_claw --cov-report=xml --cov-fail-under=60 tests/ > ci-test-output.txt 2>&1
+          $code = $LASTEXITCODE
+          Get-Content ci-test-output.txt
+          exit $code
       - name: "[DIAGNOSTICO TEMPORAL #658] Publicar fallos al summary"
         # SE REVIERTA al resolver el fallo de la suite Windows de este PR.
         if: always()
-        run: |
-          if (Test-Path ci-test-output.txt) {
-            $f = Get-Content ci-test-output.txt
-            $fallas = $f | Select-String -Pattern '^(FAILED|ERROR) ' | Select-Object -First 40
-            $sb = New-Object System.Text.StringBuilder
-            [void]$sb.AppendLine("## [DIAG 658] Faltantes del run")
-            if ($fallas) {
-              foreach ($l in $fallas) { [void]$sb.AppendLine("- $($_.Line)") }
-            } else {
-              [void]$sb.AppendLine("- (sin lineas FAILED/ERROR capturadas)")
-            }
-            [void]$sb.AppendLine("")
-            [void]$sb.AppendLine("### Cola del output pytest (ultimas 80 lineas)")
-            [void]$sb.AppendLine("```")
-            foreach ($l in ($f | Select-Object -Last 80)) { [void]$sb.AppendLine($l) }
-            [void]$sb.AppendLine("```")
-            [System.IO.File]::WriteAllText($env:GITHUB_STEP_SUMMARY, $sb.ToString())
-          }
+        run: python .github/diag658_extract.py
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
