@@ -501,15 +501,21 @@ async def _migrar_esquema_resoluciones_655_en_conn(conn: aiosqlite.Connection) -
     await conn.execute(ARTIFACT_RESOLUTIONS_INDEX_DDL)
 
     # 2. Copia completa, columna a columna (resolución_id y resolved_at incluidos).
+    #    Las tres sentencias SQL de esta migración interpolan ÚNICAMENTE
+    #    ``_MIG655_TABLA_LEGACY``: constante de módulo (allowlist cerrada de
+    #    literales, sin input en runtime) — ``# nosec B608`` localizado,
+    #    mismo criterio que el SET parametrizado de transición de handoffs.
     await conn.execute(
         "INSERT INTO artifact_evidence_resolutions "
         "(resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at) "
         "SELECT resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
-        f"FROM {_MIG655_TABLA_LEGACY}"
+        f"FROM {_MIG655_TABLA_LEGACY}"  # nosec B608 — constante de módulo
     )
 
     # 3. Validación de equivalencia ANTES de considerar el swap exitoso.
-    async with conn.execute(f"SELECT COUNT(*) FROM {_MIG655_TABLA_LEGACY}") as cur:
+    async with conn.execute(
+        f"SELECT COUNT(*) FROM {_MIG655_TABLA_LEGACY}"  # nosec B608 — constante de módulo
+    ) as cur:
         (antes,) = await cur.fetchone()
     async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
         (despues,) = await cur.fetchone()
@@ -517,21 +523,22 @@ async def _migrar_esquema_resoluciones_655_en_conn(conn: aiosqlite.Connection) -
         raise JournalTransactionError(
             f"Copia de la migración #655 no equivalente: {antes} filas históricas vs {despues} copiadas"
         )
+    # La comparación es columna a columna entre la tabla legacy y la nueva.
+    # (Concatenado de literales para que el fragmento interpolado —única
+    # constante de módulo, allowlist cerrada— lleve su nosec B608 localizado.)
     async with conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM {_MIG655_TABLA_LEGACY} o
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM artifact_evidence_resolutions n
-            WHERE n.resolution_id = o.resolution_id
-              AND n.transaction_id = o.transaction_id
-              AND n.artifact_path = o.artifact_path
-              AND n.resolution_kind = o.resolution_kind
-              AND n.handoff_id IS o.handoff_id
-              AND n.resolved_at = o.resolved_at
-        )
-        """
+        "SELECT COUNT(*)\n"
+        f"FROM {_MIG655_TABLA_LEGACY} o\n"  # nosec B608 — constante de módulo
+        "WHERE NOT EXISTS (\n"
+        "    SELECT 1\n"
+        "    FROM artifact_evidence_resolutions n\n"
+        "    WHERE n.resolution_id = o.resolution_id\n"
+        "      AND n.transaction_id = o.transaction_id\n"
+        "      AND n.artifact_path = o.artifact_path\n"
+        "      AND n.resolution_kind = o.resolution_kind\n"
+        "      AND n.handoff_id IS o.handoff_id\n"
+        "      AND n.resolved_at = o.resolved_at\n"
+        ")\n"
     ) as cur:
         (discrepancias,) = await cur.fetchone()
     if discrepancias:
