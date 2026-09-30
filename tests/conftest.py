@@ -56,34 +56,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 # =============================================================================
 # DIAGNÓSTICO TEMPORAL (bisect CI Windows #658) — REVERTIR tras la corrida.
-# Ciclos 1-2 ya acotaron el fallo a los 13 tests de
-# test_dyndolod_restored_artifact_evidence.py (6/6 jobs Windows rojos,
-# deterministicos). Ciclo 3: el job py3.11 corre el GRUPO A (6 tests) y el
-# job py3.12 corre el GRUPO B (7 tests) — el job que falle identifica la
-# mitad culpable; si ambos fallan, la causa es compartida (fixture).
+# Ciclo 3 acotó el fallo al GRUPO A (6 tests). Ciclo 4: el job py3.11 corre
+# A1 (A, G, B) y el job py3.12 corre A2 (C, D, E); el Grupo B de ciclo 3
+# sigue deseleccionado en ambos. El job que falle identifica el trío culpable.
 # =============================================================================
 _DIAG_658_FILE = "test_dyndolod_restored_artifact_evidence.py"
-_DIAG_658_GRUPO_A = {
+_DIAG_658_A1 = {
     "test_restauracion_byte_exacto_resuelve_evidencia_y_deja_tx_pendiente",
     "test_evidencia_hermana_sigue_viva_en_el_mismo_tx",
     "test_resolucion_durable_sobrevive_a_restart_real",
+}
+_DIAG_658_A2 = {
     "test_restore_fallido_no_resuelve_evidencia",
     "test_lease_perdida_no_resuelve_evidencia",
     "test_artifact_preservado_no_recibe_resolucion",
 }
-_DIAG_658_GRUPO_B = {
-    "test_create_snapshot_false_no_fabrica_resolucion",
-    "test_indeterminate_legitimo_anterior_sigue_bloqueando",
-    "test_idempotencia_y_conflicto_de_resolucion",
-    "test_esquema_admite_restored_byte_exact_con_handoff_nulo",
-    "test_db_antigua_migra_y_admite_restored_byte_exact",
-    "test_upgrade_db_vieja_scenario_655_completo",
-    "test_run_texgen_false_no_resuelve_ni_nombrea_el_mod",
-}
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    _permitidos = _DIAG_658_GRUPO_A if sys.version_info.minor == 11 else _DIAG_658_GRUPO_B
+    _permitidos = _DIAG_658_A1 if sys.version_info.minor == 11 else _DIAG_658_A2
     _ids = set()
     for item in items:
         if pathlib.Path(str(item.fspath)).name == _DIAG_658_FILE and item.name not in _permitidos:
