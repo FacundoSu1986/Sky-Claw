@@ -1090,6 +1090,13 @@ class TestRuntimeCloneSuiteCanonico:
         # (durabilidad Win32 del journal): todos cableados vía __init__.__all__.
         # GP2-S4B agrega mutation_executor (orquestador de apply ACL real con
         # rollback exacto): compone las primitivas auditadas, no las duplica.
+        # GP2-S4C agrega recovery_orchestrator (recovery de transacciones
+        # interrumpidas tras crash): clasifica evidencia durable, re-toma el
+        # lock huérfano y ejecuta rollback idempotente; también compone, no
+        # duplica primitivas. El mismo slice agrega
+        # operation_lock_binding (evidencia durable PRE-plan que liga
+        # operation_id con la identidad física del Golden para poder localizar
+        # un lock huérfano cuando aún no hay plan ni journal).
         expected_modules = {
             "__init__",
             "authorization_context",
@@ -1109,6 +1116,7 @@ class TestRuntimeCloneSuiteCanonico:
             "models",
             "mutation_executor",
             "node_evidence",
+            "operation_lock_binding",
             "operator_token",
             "operator_verifier_bridge",
             "physical_root",
@@ -1119,6 +1127,7 @@ class TestRuntimeCloneSuiteCanonico:
             "privileged_boundary",
             "protection",
             "quiescence",
+            "recovery_orchestrator",
             "runtime_observation",
             "target_dacl",
             "trusted_namespace",

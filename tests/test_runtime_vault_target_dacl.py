@@ -1446,6 +1446,117 @@ class TestTargetDaclOraclesAndMutations:
                 close_security_handle(h)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_restore_hardlink_creado_entre_lecturas_aborta_sin_setsecurityinfo(self) -> None:
+        """P1#2: un hardlink que APARECE entre la lectura inicial y la final aborta el restore.
+
+        No es un archivo que ya tenga 2 enlaces (eso lo cubre otro test): se abre
+        con NumberOfLinks == 1, se atraviesan TODAS las validaciones previas
+        (identidad física, sha256 del PRE, IsValidSecurityDescriptor,
+        GetSecurityDescriptorControl y parseo de ACEs) y justo antes de la
+        barrera final se crea un hardlink REAL. La relectura sobre el MISMO
+        handle debe observarlo y abortar con cero SetSecurityInfo.
+        """
+        import sky_claw.local.runtime_vault.target_dacl as target_dacl
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = pathlib.Path(tmpdir) / "toctou_restore.txt"
+            file_path.write_text("data")
+            link_path = pathlib.Path(tmpdir) / "toctou_restore_externo.txt"
+            evidencias = probe_node_evidence(tmpdir)
+            pre = [e.backup for e in evidencias if e.backup.relative_path != "."][0]
+
+            lectura_real = target_dacl._read_file_standard_info_by_handle
+            lecturas: list[int] = []
+
+            def _lectura_con_ventana(handle: int) -> tuple[int, bool]:
+                lecturas.append(1)
+                _links, _is_dir = lectura_real(handle)
+                if len(lecturas) == 2:
+                    # El atacante crea el hardlink externo DESPUÉS de la lectura
+                    # inicial y ANTES de la barrera final pre-SetSecurityInfo.
+                    os.link(file_path, link_path)
+                return lectura_real(handle)  # relectura real: ya observa 2 enlaces
+
+            h = open_node_security_handle(file_path)
+            try:
+                with (
+                    patch.object(target_dacl, "_read_file_standard_info_by_handle", side_effect=_lectura_con_ventana),
+                    patch("sky_claw.local.runtime_vault.target_dacl._advapi32.SetSecurityInfo") as mock_set,
+                    pytest.raises(
+                        TargetDaclRestoreError,
+                        match="Hardlink externo detectado en revalidación pre-restore",
+                    ),
+                ):
+                    restore_security_descriptor_by_handle(h, pre)
+                mock_set.assert_not_called()
+                assert len(lecturas) >= 2, "el restore debe releer NumberOfLinks antes de mutar (barrera final)"
+            finally:
+                close_security_handle(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_restore_archivo_con_hardlink_existente_aborta_en_verificacion_inicial(self) -> None:
+        """P1#2: un archivo que YA tiene hardlink externo aborta en la verificación inicial.
+
+        El enlace se crea FUERA del árbol observado por ``probe_node_evidence``
+        (el inventario rechaza FileId duplicados por diseño, igual que el
+        planner), de modo que lo único bajo prueba es la barrera del restore.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raiz = pathlib.Path(tmpdir)
+            datos = raiz / "datos"
+            datos.mkdir()
+            externo = raiz / "externo"
+            externo.mkdir()
+            file_path = datos / "restore_hardlink_pre.txt"
+            file_path.write_text("data")
+            evidencias = probe_node_evidence(datos)
+            pre = [e.backup for e in evidencias if e.backup.relative_path != "."][0]
+            os.link(file_path, externo / "enlace_externo.txt")
+
+            h = open_node_security_handle(file_path)
+            try:
+                with (
+                    patch("sky_claw.local.runtime_vault.target_dacl._advapi32.SetSecurityInfo") as mock_set,
+                    pytest.raises(TargetDaclRestoreError, match="Hardlink externo detectado"),
+                ):
+                    restore_security_descriptor_by_handle(h, pre)
+                mock_set.assert_not_called()
+            finally:
+                close_security_handle(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_restore_de_directorio_no_inventa_semantica_de_hardlink(self) -> None:
+        """P1#2: el requisito de unicidad de enlaces es EXCLUSIVO de archivos regulares.
+
+        ADR 0010 §12.2 paso 5 acota la comprobación anti-hardlink a archivos
+        regulares; un directorio con >1 enlace no es un escape del Golden. Este
+        test fija la rama: con ``(links > 1, is_dir=True)`` el restore de un
+        directorio NO puede rehusar, mientras el MISMO valor en un archivo sí
+        rehusa (test anterior). No depende de qué reporte NTFS para directorios.
+        """
+        import sky_claw.local.runtime_vault.target_dacl as target_dacl
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub = pathlib.Path(tmpdir) / "sub"
+            sub.mkdir()
+            (sub / "dato.txt").write_text("x")
+            dir_path = pathlib.Path(tmpdir)
+            evidencias = probe_node_evidence(tmpdir)
+            raiz = [ev.backup for ev in evidencias if ev.backup.relative_path == "."][0]
+
+            h = open_node_security_handle(dir_path)
+            try:
+                with patch.object(
+                    target_dacl,
+                    "_read_file_standard_info_by_handle",
+                    return_value=(7, True),  # muchos enlaces + es directorio
+                ):
+                    restore_security_descriptor_by_handle(h, raiz)
+                    verify_restored_security_descriptor_by_handle(h, raiz)
+            finally:
+                close_security_handle(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
     def test_reparse_point_rechazado_fail_closed(self) -> None:
         """Si un nodo es un reparse point / symlink (ReparseTag != 0), apply_target_dacl_by_handle rechaza fail-closed."""
         with tempfile.TemporaryDirectory() as tmpdir:

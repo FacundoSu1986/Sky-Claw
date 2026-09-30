@@ -446,7 +446,15 @@ def _canonical_file_readable_by_aces() -> list[NamespaceAceSpec]:
 #: un cambio futuro en la DACL de uno no arrastre en silencio la del otro.
 AUTHORIZED_PLAN_OBJECT = "authorized_plan.json"
 PROTECTION_JOURNAL_OBJECT = "protection_journal.json"
-_AUTHORIZED_OPERATIONS_FILE_OBJECTS = frozenset({AUTHORIZED_PLAN_OBJECT, PROTECTION_JOURNAL_OBJECT})
+#: GP2-S4C: binding PRE-plan ``operation_id`` ↔ identidad física del Golden. Se
+#: publica ANTES de adquirir el GoldenMutationLock (ADR 0010 §12.2 paso 6) para
+#: que un crash en esa ventana deje evidencia durable que permita localizar y
+#: normalizar el lock huérfano. Comparte el contrato de archivo protegido, pero
+#: NO es plan, journal, staging ni TGR: no autoriza ninguna mutación.
+OPERATION_LOCK_BINDING_OBJECT = "operation_lock_binding.json"
+_AUTHORIZED_OPERATIONS_FILE_OBJECTS = frozenset(
+    {AUTHORIZED_PLAN_OBJECT, PROTECTION_JOURNAL_OBJECT, OPERATION_LOCK_BINDING_OBJECT}
+)
 
 
 def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:

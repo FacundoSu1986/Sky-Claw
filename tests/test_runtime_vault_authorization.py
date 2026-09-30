@@ -473,6 +473,16 @@ class TestAuthorizationContextModel:
 # ============================================================================
 
 
+def _binding_publisher_falso(order: list[str] | None = None) -> Any:
+    """Publicador fake del binding pre-plan (nunca toca %ProgramData% real)."""
+
+    def _publish(**_kwargs: Any) -> None:
+        if order is not None:
+            order.append("binding")
+
+    return _publish
+
+
 class TestEstablishmentOrchestration:
     def test_orden_canonico_declarado(self) -> None:
         assert AUTHORIZATION_ESTABLISHMENT_ORDER == (
@@ -480,8 +490,12 @@ class TestEstablishmentOrchestration:
             "operator_token_strategy",
             "operator_token_acquisition",
             "ppsc_confirmation",
+            "operation_lock_binding_publication",
             "golden_mutation_lock",
         )
+        assert AUTHORIZATION_ESTABLISHMENT_ORDER.index("operation_lock_binding_publication") < (
+            AUTHORIZATION_ESTABLISHMENT_ORDER.index("golden_mutation_lock")
+        ), "el binding pre-plan debe preceder al lock (§12.2 paso 6→7)"
 
     def test_pure_input_binding_validation_precede_sin_efectos_laterales(self) -> None:
         # Finding AUTHORIZATION_ESTABLISHMENT_ORDER resuelto: la validación
@@ -534,6 +548,9 @@ class TestEstablishmentOrchestration:
             "ppsc_payload": _ppsc_payload(),
             "volume_serial_number": _VOLUME_SERIAL,
             "root_file_id": _ROOT_FILE_ID,
+            # Por defecto el binding se publica contra un writer falso: ningún
+            # test debe tocar el namespace protegido real.
+            "binding_publisher": _binding_publisher_falso(),
         }
         kwargs.update(overrides)
         return establish_privileged_authorization(**kwargs)
@@ -557,9 +574,15 @@ class TestEstablishmentOrchestration:
             return acquire_golden_mutation_lock(vol, fid, op, kernel=kernel, programdata_resolver=_fake_programdata)
 
         ctx, session = self._establish(
-            token_acquirer=token_acquirer, ppsc_provider=_OrderedPpsc(), lock_acquirer=lock_acquirer
+            token_acquirer=token_acquirer,
+            ppsc_provider=_OrderedPpsc(),
+            lock_acquirer=lock_acquirer,
+            binding_publisher=_binding_publisher_falso(order),
         )
-        assert order == ["token", "ppsc", "lock"]
+        # El binding PRE-plan se publica DESPUÉS de la PPSC y ANTES del lock:
+        # es la única evidencia durable que sobrevive a un crash entre §12.2
+        # paso 6 y paso 7.
+        assert order == ["token", "ppsc", "binding", "lock"]
         assert ctx.operator_identity.operator_sid.startswith("S-1-")
         assert ctx.lock_identity.operation_id == ctx.operation_id
         assert session.close() is True

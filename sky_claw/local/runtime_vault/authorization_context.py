@@ -47,6 +47,9 @@ from sky_claw.local.runtime_vault.golden_mutation_lock import (
     acquire_golden_mutation_lock,
 )
 from sky_claw.local.runtime_vault.models import RuntimeVaultError, TreeDigest
+from sky_claw.local.runtime_vault.operation_lock_binding import (
+    OperationLockBindingAlreadyExistsError,
+)
 from sky_claw.local.runtime_vault.operator_token import (
     OperatorPrimaryToken,
     OperatorTokenEvidence,
@@ -259,15 +262,18 @@ class PrivilegedBoundarySession:
 
 TokenAcquirerFn = Callable[[CoordinatorProcessIdentity], OperatorPrimaryToken]
 LockAcquirerFn = Callable[[int, int, str], GoldenMutationLockHandle]
+OperationLockBindingPublisherFn = Callable[..., Any]
 
-#: Orden normativo verificado por tests (PPSC antes del lock, ADR 0010 §12.2 pasos 4 y 6).
-#: Representa los cinco stages de autoridad/recursos; NO es una FSM y no tiene
-#: un sexto stage.
+#: Orden normativo verificado por tests (PPSC antes del lock, ADR 0010 §12.2 pasos 4 y 6;
+#: el binding pre-plan antes que el lock, para que un crash en esa ventana deje
+#: evidencia durable localizable — GP2-S4C). Representa los stages de
+#: autoridad/recursos; NO es una FSM y no tiene un sexto stage.
 AUTHORIZATION_ESTABLISHMENT_ORDER: tuple[str, ...] = (
     "coordinator_identity_binding",
     "operator_token_strategy",
     "operator_token_acquisition",
     "ppsc_confirmation",
+    "operation_lock_binding_publication",
     "golden_mutation_lock",
 )
 
@@ -291,6 +297,52 @@ def _default_lock_acquirer(volume_serial_number: int, root_file_id: int, operati
     return acquire_golden_mutation_lock(volume_serial_number, root_file_id, operation_id)
 
 
+def _default_binding_publisher(**kwargs: Any) -> Any:
+    from sky_claw.local.runtime_vault.operation_lock_binding import promote_operation_lock_binding
+
+    return promote_operation_lock_binding(**kwargs)
+
+
+def _publish_or_verify_operation_lock_binding(
+    *,
+    operation_id: str,
+    volume_serial_number: int,
+    root_file_id: int,
+    binding_publisher: OperationLockBindingPublisherFn | None,
+    programdata_resolver: Any = None,
+) -> None:
+    """Publica (o re-valida en replay) el binding PRE-plan de la operación.
+
+    Va DESPUÉS de la PPSC CONFIRMADA y ANTES de adquirir el lock: es lo único
+    que sobrevive a un crash en esa ventana y lo que permite al recovery
+    localizar el Golden por ``operation_id`` (§12.2 paso 6→7).
+
+    Create-once: si el binding ya existe (replay del mismo ``operation_id``) se
+    revalida en vez de sustituirse; si existe y apunta a OTRA identidad, se
+    rehusa (fail-closed, sin lock).
+    """
+    publisher = _default_binding_publisher if binding_publisher is None else binding_publisher
+    try:
+        publisher(
+            operation_id=operation_id,
+            volume_serial_number=volume_serial_number,
+            root_file_id=root_file_id,
+            programdata_resolver=programdata_resolver,
+        )
+        return
+    except OperationLockBindingAlreadyExistsError:
+        pass
+
+    from sky_claw.local.runtime_vault.operation_lock_binding import load_operation_lock_binding
+
+    existente = load_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
+    if existente.physical_identity != (volume_serial_number, root_file_id):
+        raise PlanAuthorizationError(
+            "Ya existe un operation_lock_binding.json para esta operación con OTRA identidad física: "
+            "replay inconsistente, REFUSE_TO_PLAN (sin lock)"
+        )
+
+
 def establish_privileged_authorization(
     *,
     launch_request: PrivilegedHelperLaunchRequest,
@@ -304,6 +356,7 @@ def establish_privileged_authorization(
     service_token_provider: PrivilegedServiceTokenProvider | None = None,
     token_acquirer: TokenAcquirerFn | None = None,
     lock_acquirer: LockAcquirerFn | None = None,
+    binding_publisher: OperationLockBindingPublisherFn | None = None,
 ) -> tuple[PrivilegedAuthorizationContext, PrivilegedBoundarySession]:
     """Establece la frontera privilegiada y devuelve (contexto, sesión).
 
@@ -316,6 +369,8 @@ def establish_privileged_authorization(
        tocar token, PPSC o lock.
     3. Adquisición del token primario del operador.
     4. PPSC (exige CONFIRMED explícito; UAC nunca sustituye este paso).
+    4b. Publicación (o revalidación create-once) del binding durable que liga
+       ``operation_id`` con la identidad física (GP2-S4C).
     5. GoldenMutationLock (un solo intento; contención/huérfano tipado).
 
     Un plan confirmado para la identidad física A NUNCA puede encadenarse con
@@ -378,6 +433,15 @@ def establish_privileged_authorization(
 
         # Paso 4: PPSC (CONFIRMED explícito o REFUSE_TO_PLAN; NUNCA defaults).
         receipt = require_ppsc_outcome(ppsc_provider, ppsc_payload)
+
+        # Paso 4b: binding PRE-plan durable. Debe existir ANTES del lock para
+        # que un crash entre el paso 6 y el 7 deje evidencia localizable.
+        _publish_or_verify_operation_lock_binding(
+            operation_id=launch_request.operation_id_str,
+            volume_serial_number=volume_serial_number,
+            root_file_id=root_file_id,
+            binding_publisher=binding_publisher,
+        )
 
         # Paso 5: GoldenMutationLock sobre la identidad física confirmada.
         lock_fn = _default_lock_acquirer if lock_acquirer is None else lock_acquirer
