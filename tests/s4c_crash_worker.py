@@ -31,6 +31,10 @@ import sys
 import time
 from typing import Any
 
+from sky_claw.local.runtime_vault.operation_lock_binding import (
+    OperationLockBindingAlreadyExistsError,
+)
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:  # ejecución directa (no -m)
     sys.path.insert(0, str(_REPO_ROOT))
@@ -40,6 +44,7 @@ _CODIGO_CRASH_AFTER_SDSI = 0x52
 _CODIGO_CRASH_ALL_MUTATED = 0x53
 _CODIGO_CRASH_RESTORED_1 = 0x54
 _CODIGO_CRASH_AFTER_TWO_SDSI = 0x55
+_CODIGO_CRASH_PRE_PLAN = 0x56
 
 
 def _abortar_si_raiz_peligrosa(rig_root: pathlib.Path) -> None:
@@ -298,6 +303,179 @@ def _marcar_mutating(journal: Any, relative_path: str, breadcrumbs: _Breadcrumbs
 # ============================================================================
 
 
+class _FixtureBindingWriter:
+    """Writer create-once de TEST con ACL ordinarias (namespace de rig descartable).
+
+    Publica EXACTAMENTE los bytes canónicos que produciría la primitiva real
+    (``serialize_operation_lock_binding``), con la misma semántica create-once
+    (falla si el destino existe), pero sin la SD canónica que exige elevación.
+    Permite ejecutar el RIG de crash pre-plan en contextos no elevados; la
+    publicación con la primitiva real del namespace se cubre aparte, gateada por
+    ``TokenElevation``.
+    """
+
+    def __init__(self) -> None:
+        self.publicaciones: list[bytes] = []
+
+    def write_create_once(self, dest: pathlib.Path, payload: bytes, object_name: str) -> None:
+        destino = pathlib.Path(str(dest))
+        if destino.exists():
+            raise OperationLockBindingAlreadyExistsError(f"ya existe: '{destino}'")
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(payload)
+        self.publicaciones.append(payload)
+
+
+def _publicar_binding(
+    rig_root: pathlib.Path,
+    operation_id: str,
+    breadcrumbs: _Breadcrumbs,
+    writer_mode: str = "namespace",
+) -> Any:
+    """Publica el binding PRE-plan (primitiva real, o fixture en modo no elevado)."""
+    from sky_claw.local.runtime_vault.operation_lock_binding import (
+        derive_operation_lock_binding_path,
+        promote_operation_lock_binding,
+    )
+
+    vol, fid = _identidad_raiz(rig_root)
+    # El directorio de operaciones debe existir antes de publicar (en producción
+    # lo aprovisiona el namespace protegido; en el rig lo crea el worker).
+    destino = derive_operation_lock_binding_path(operation_id, programdata_resolver=_resolver(rig_root))
+    pathlib.Path(str(destino.parent)).mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {}
+    if writer_mode == "fixture":
+        kwargs["binding_writer"] = _FixtureBindingWriter()
+    durable = promote_operation_lock_binding(
+        operation_id=operation_id,
+        volume_serial_number=vol,
+        root_file_id=fid,
+        created_at="2026-09-30T12:00:00.000Z",
+        programdata_resolver=_resolver(rig_root),
+        **kwargs,
+    )
+    breadcrumbs.marcar(f"binding-publicado:{destino.name}")
+    assert durable.physical_identity == (vol, fid)
+    return durable
+
+
+def _identidad_raiz(rig_root: pathlib.Path) -> tuple[int, int]:
+    """(VolumeSerialNumber, root_file_id) del árbol descartable del rig."""
+    from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
+
+    raiz = rig_root / "golden"
+    for evidencia in probe_node_evidence(raiz):
+        if evidencia.backup.relative_path == ".":
+            return (evidencia.backup.volume_serial_number, evidencia.backup.file_id)
+    raise SystemExit("el rig no tiene nodo raíz")
+
+
+def _lock_path_real(rig_root: pathlib.Path, vol: int, fid: int) -> pathlib.Path:
+    from sky_claw.local.runtime_vault.golden_mutation_lock import derive_golden_lock_path
+
+    return pathlib.Path(str(derive_golden_lock_path(vol, fid, programdata_resolver=_resolver(rig_root))))
+
+
+def _fase_binding_lock_crash(rig_root: pathlib.Path, operation_id: str, writer_mode: str) -> None:
+    """P1#1: binding durable + lock REAL adquirido, y MUERE antes del plan."""
+    breadcrumbs = _Breadcrumbs(rig_root)
+    _crear_arbol(rig_root)
+    _publicar_binding(rig_root, operation_id, breadcrumbs, writer_mode)
+    vol, fid = _identidad_raiz(rig_root)
+    _lock_path_real(rig_root, vol, fid).parent.mkdir(parents=True, exist_ok=True)
+    from sky_claw.local.runtime_vault.golden_mutation_lock import acquire_golden_mutation_lock
+
+    handle = acquire_golden_mutation_lock(vol, fid, operation_id, programdata_resolver=_resolver(rig_root))
+    assert handle.identity.operation_id == operation_id
+    breadcrumbs.marcar("lock-adquired")
+    # Evidencia causal: el lock está vivo y aún NO existe plan ni journal.
+    breadcrumbs.marcar("pre-plan-crash")
+    os._exit(_CODIGO_CRASH_PRE_PLAN)
+
+
+def _fase_setup_variant(rig_root: pathlib.Path, operation_id: str, variant: str, writer_mode: str) -> None:
+    """Prepara los escenarios NEGATIVOS de P1#1 (sin crash)."""
+    from sky_claw.local.runtime_vault.golden_mutation_lock import (
+        GoldenLockMetadata,
+        GoldenLockPhase,
+        acquire_golden_mutation_lock,
+        derive_golden_lock_key,
+        deserialize_golden_lock_metadata,
+        serialize_golden_lock_metadata,
+    )
+    from sky_claw.local.runtime_vault.operation_lock_binding import (
+        derive_operation_lock_binding_path,
+        load_operation_lock_binding,
+    )
+
+    breadcrumbs = _Breadcrumbs(rig_root)
+    _crear_arbol(rig_root)
+    vol, fid = _identidad_raiz(rig_root)
+    lock_path = _lock_path_real(rig_root, vol, fid)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if variant == "absent":
+        # Sin binding, sin plan, sin journal: nada durable existe.
+        breadcrumbs.marcar("variant:absent")
+        return
+
+    _publicar_binding(rig_root, operation_id, breadcrumbs, writer_mode)
+    handle = acquire_golden_mutation_lock(vol, fid, operation_id, programdata_resolver=_resolver(rig_root))
+    handle.retain_for_inspection()  # deja la metadata NO-RELEASED (lock huérfano)
+
+    if variant == "other_op":
+        metadata = deserialize_golden_lock_metadata(lock_path.read_bytes())
+        lock_path.write_bytes(
+            serialize_golden_lock_metadata(
+                GoldenLockMetadata(
+                    lock_key=metadata.lock_key,
+                    owner_pid=metadata.owner_pid,
+                    owner_process_creation_time=metadata.owner_process_creation_time,
+                    session_id=metadata.session_id,
+                    operation_id="b2c3d4e5-6f70-4811-9a2b-3c4d5e6f7081",
+                    phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                    created_at=metadata.created_at,
+                )
+            )
+        )
+        breadcrumbs.marcar("variant:other_op")
+    elif variant == "incoherent_lock_key":
+        lock_path.write_bytes(
+            serialize_golden_lock_metadata(
+                GoldenLockMetadata(
+                    lock_key=derive_golden_lock_key(vol, fid + 1),
+                    owner_pid=777,
+                    owner_process_creation_time=555,
+                    session_id=2,
+                    operation_id=load_operation_lock_binding(
+                        operation_id, programdata_resolver=_resolver(rig_root)
+                    ).operation_id,
+                    phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                    created_at=1_758_400_000,
+                )
+            )
+        )
+        breadcrumbs.marcar("variant:incoherent_lock_key")
+    elif variant == "corrupt_binding":
+        path = derive_operation_lock_binding_path(operation_id, programdata_resolver=_resolver(rig_root))
+        path.write_bytes(b"\x00\xff binding corrupto a proposito")
+        breadcrumbs.marcar("variant:corrupt_binding")
+    else:  # pragma: no cover - argparse acota las variantes
+        raise SystemExit(f"variante desconocida: {variant}")
+
+
+def _fase_adquirir_lock_normal(rig_root: pathlib.Path, operation_id: str) -> None:
+    """Process C: una NUEVA operación adquiere el mismo GoldenMutationLock."""
+    breadcrumbs = _Breadcrumbs(rig_root)
+    vol, fid = _identidad_raiz(rig_root)
+    from sky_claw.local.runtime_vault.golden_mutation_lock import acquire_golden_mutation_lock
+
+    handle = acquire_golden_mutation_lock(vol, fid, operation_id, programdata_resolver=_resolver(rig_root))
+    breadcrumbs.marcar("nueva-operacion-lock-adquirido")
+    assert handle.release() is True
+    breadcrumbs.marcar("nueva-operacion-lock-liberado")
+
+
 def _fase_apply_crash(rig_root: pathlib.Path, operation_id: str, modo: str) -> None:
     from sky_claw.local.runtime_vault.mutation_executor import (
         HandleBoundTargetDaclPort,
@@ -399,8 +577,25 @@ def _main() -> None:
             "w03_crash_all_mutated",
             "w04a_crash_after_two_sdsi",
             "w06_hold_lock",
+            "w09_binding_then_lock_crash",
+            "w09_setup_variant",
+            "w09c_acquire_normal",
             "recover",
             "recover_crash_restored1",
+        ),
+    )
+    parser.add_argument(
+        "--variant",
+        default="",
+        help="Variante para la fase w09_setup_variant: other_op | incoherent_lock_key | corrupt_binding | absent",
+    )
+    parser.add_argument(
+        "--binding-writer",
+        default="namespace",
+        choices=("namespace", "fixture"),
+        help=(
+            "namespace = publicación con la primitiva real del namespace protegido (exige elevación); "
+            "fixture = bytes canónicos con ACL ordinarias en el namespace de rig descartable"
         ),
     )
     args = parser.parse_args()
@@ -415,6 +610,12 @@ def _main() -> None:
         _fase_apply_crash(rig_root, args.operation_id, "all_mutated")
     elif args.phase == "w04a_crash_after_two_sdsi":
         _fase_apply_crash(rig_root, args.operation_id, "after_two_sdsi")
+    elif args.phase == "w09_binding_then_lock_crash":
+        _fase_binding_lock_crash(rig_root, args.operation_id, args.binding_writer)
+    elif args.phase == "w09_setup_variant":
+        _fase_setup_variant(rig_root, args.operation_id, args.variant, args.binding_writer)
+    elif args.phase == "w09c_acquire_normal":
+        _fase_adquirir_lock_normal(rig_root, args.operation_id)
     elif args.phase == "w06_hold_lock":
         _fase_hold_lock(rig_root, args.operation_id)
     elif args.phase == "recover":

@@ -92,6 +92,11 @@ from sky_claw.local.runtime_vault.mutation_executor import (
     derive_node_path,
     rollback_order,
 )
+from sky_claw.local.runtime_vault.operation_lock_binding import (
+    OperationLockBindingEvidence,
+    classify_operation_lock_binding,
+    load_operation_lock_binding,
+)
 from sky_claw.local.runtime_vault.protection_journal import (
     TERMINAL_TRANSACTION_STATES,
     NodeWalState,
@@ -137,6 +142,7 @@ class RecoveryDisposition(StrEnum):
     NO_TRANSACTION = "no_transaction"
     ROLLED_BACK = "rolled_back"
     POST_VERIFICATION_REQUIRED = "post_verification_required"
+    PRE_PLAN_LOCK_RECOVERED = "pre_plan_lock_recovered"
     INDETERMINATE = "indeterminate"
     LOCK_BUSY = "lock_busy"
     TERMINAL = "terminal"
@@ -157,6 +163,7 @@ class RecoveryIdentitySource(StrEnum):
 
     AUTHORIZED_PLAN = "authorized_plan"
     PROTECTION_JOURNAL = "protection_journal"
+    OPERATION_LOCK_BINDING = "operation_lock_binding"
     NONE = "none"
 
 
@@ -670,6 +677,7 @@ def _dispatch_bajo_lock(
     operation_id: str,
     *,
     durable_plan: DurableAuthorizedPlan | None,
+    identity_source: RecoveryIdentitySource,
     journal_previo: ProtectionJournalClassification,
     journal_kernel: JournalDurabilityKernel | None,
     programdata_resolver: Callable[[], object] | None,
@@ -681,6 +689,59 @@ def _dispatch_bajo_lock(
     )
 
     if durable_plan is None:
+        if identity_source is RecoveryIdentitySource.OPERATION_LOCK_BINDING:
+            # PRE-PLAN: el lock huérfano se normaliza SIN tocar el Golden. Sin
+            # plan no hay PRE autoritativo, luego NUNCA hay rollback ACL.
+            evidencia = classify_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
+            if evidencia is not OperationLockBindingEvidence.DURABLE:
+                return _Resultado(
+                    disposition=RecoveryDisposition.INDETERMINATE,
+                    retener_lock=True,
+                    operator=True,
+                    reason=(
+                        f"el binding de operación dejó de ser válido bajo exclusividad (evidencia={evidencia.value})"
+                    ),
+                    detail="evidencia contradictoria: el lock queda retenido para inspección",
+                )
+            try:
+                binding = load_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
+            except Exception as exc:  # noqa: BLE001 — boundary deliberada
+                return _Resultado(
+                    disposition=RecoveryDisposition.INDETERMINATE,
+                    retener_lock=True,
+                    operator=True,
+                    reason=f"el binding de operación no pudo re-leerse bajo lock: {exc}",
+                    detail="evidencia contradictoria: el lock queda retenido para inspección",
+                )
+            if binding.operation_id != operation_id:
+                return _Resultado(
+                    disposition=RecoveryDisposition.INDETERMINATE,
+                    retener_lock=True,
+                    operator=True,
+                    reason="el binding de operación pertenece a otra operación",
+                    detail="divergencia de identidad: fail-closed con lock retenido",
+                )
+            if journal_ahora.classification is not ProtectionJournalClassification.ABSENT:
+                return _Resultado(
+                    disposition=RecoveryDisposition.INDETERMINATE,
+                    retener_lock=True,
+                    operator=True,
+                    reason=(
+                        "apareció evidencia transaccional "
+                        f"(journal={journal_ahora.classification.value}) donde el binding declara pre-plan"
+                    ),
+                    detail="evidencia contradictoria entre binding y journal: fail-closed",
+                )
+            return _Resultado(
+                disposition=RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED,
+                retener_lock=False,
+                operator=False,
+                physical_completed=False,
+                detail=(
+                    "lock huérfano PRE-plan normalizado (binding durable + journal ausente): la operación "
+                    "nunca alcanzó el publish del plan, no hubo MUTATING posible y NO se tocó ninguna ACL"
+                ),
+            )
         # C4c: la identidad física se resolvió desde el journal, pero el plan
         # autoritativo no es demostrablemente recuperable: NO hay rollback
         # automático (sin PRE autoritativo), NO hay staging fallback.
@@ -838,6 +899,18 @@ def recover_interrupted_protection(
         )
         fuente = RecoveryIdentitySource.PROTECTION_JOURNAL
 
+    # Evidencia PRE-plan: única fuente posible de identidad cuando NO hay plan ni
+    # journal (crash entre adquirir el lock y publicar el plan, §12.2 paso 6->7).
+    binding_evidence = classify_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
+    if identity is None and binding_evidence is OperationLockBindingEvidence.DURABLE:
+        try:
+            binding = load_operation_lock_binding(operation_id, programdata_resolver=programdata_resolver)
+        except Exception:  # noqa: BLE001 — carrera entre clasificar y cargar: fail-closed
+            binding_evidence = OperationLockBindingEvidence.INDETERMINATE
+        else:
+            identity = binding.physical_identity
+            fuente = RecoveryIdentitySource.OPERATION_LOCK_BINDING
+
     resumen: tuple[NodeWalSummary, ...] = ()
     if journal_valido is not None:
         resumen = (
@@ -868,6 +941,39 @@ def recover_interrupted_protection(
         if plan_classification is DurableWriteOutcome.NOT_DURABLE and (
             journal_previo is ProtectionJournalClassification.ABSENT
         ):
+            if binding_evidence is OperationLockBindingEvidence.INDETERMINATE:
+                # Binding presente pero ilegible/corrupto: sin identidad no se
+                # puede ni localizar el lock. Fail-closed, cero escrituras.
+                return _reporte(
+                    **_base(),
+                    lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
+                    stale_takeover=False,
+                    resultado=_Resultado(
+                        disposition=RecoveryDisposition.INDETERMINATE,
+                        retener_lock=False,
+                        operator=True,
+                        reason="operation_lock_binding.json presente pero ilegible o incoherente",
+                        detail=(
+                            "no se deriva identidad de un binding no validable: no se toca el lock ni el "
+                            "Golden; intervención del operador requerida"
+                        ),
+                    ),
+                )
+            if binding_evidence is OperationLockBindingEvidence.DURABLE:
+                # El binding quedó durable pero no se pudo derivar identidad (no
+                # debería ocurrir: el binding la contiene y se valida al cargar).
+                return _reporte(
+                    **_base(),
+                    lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
+                    stale_takeover=False,
+                    resultado=_Resultado(
+                        disposition=RecoveryDisposition.INDETERMINATE,
+                        retener_lock=False,
+                        operator=True,
+                        reason="binding de operación durable sin identidad física derivable",
+                        detail="evidencia contradictoria: intervención del operador requerida",
+                    ),
+                )
             return _reporte(
                 **_base(),
                 lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
@@ -876,7 +982,7 @@ def recover_interrupted_protection(
                     disposition=RecoveryDisposition.NO_TRANSACTION,
                     retener_lock=False,
                     operator=False,
-                    detail="sin plan ni journal: no existe evidencia durable de transacción alguna",
+                    detail="sin plan, journal ni binding de operación: no existe evidencia durable de transacción alguna",
                 ),
             )
         return _reporte(
@@ -959,6 +1065,7 @@ def recover_interrupted_protection(
         resultado = _dispatch_bajo_lock(
             operation_id,
             durable_plan=durable_plan,
+            identity_source=fuente,
             journal_previo=journal_previo,
             journal_kernel=journal_kernel,
             programdata_resolver=programdata_resolver,

@@ -45,6 +45,7 @@ from sky_claw.local.runtime_vault.golden_mutation_lock import (
     derive_golden_lock_path,
     deserialize_golden_lock_metadata,
 )
+from sky_claw.local.runtime_vault.operation_lock_binding import deserialize_operation_lock_binding
 from sky_claw.local.runtime_vault.protection_journal import NodeWalState, parse_journal_bytes
 from sky_claw.local.runtime_vault.protection_journal_store import derive_protection_journal_path
 from sky_claw.local.runtime_vault.target_dacl import TargetDaclVerificationError
@@ -59,6 +60,7 @@ _CODIGO_CRASH_AFTER_SDSI = 0x52
 _CODIGO_CRASH_ALL_MUTATED = 0x53
 _CODIGO_CRASH_RESTORED_1 = 0x54
 _CODIGO_CRASH_AFTER_TWO_SDSI = 0x55
+_CODIGO_CRASH_PRE_PLAN = 0x56
 
 _SKIP_POR_PLATAFORMA = pytest.mark.skipif(
     sys.platform != "win32", reason="RIG nativo Win32 (procesos reales + NTFS) sólo en Windows"
@@ -87,7 +89,12 @@ def _limpiar(rig: pathlib.Path) -> None:
     shutil.rmtree(rig, ignore_errors=True)
 
 
-def _correr_worker(rig: pathlib.Path, fase: str, timeout: int = 90) -> subprocess.CompletedProcess[str]:
+def _correr_worker(
+    rig: pathlib.Path,
+    fase: str,
+    timeout: int = 90,
+    extra: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -99,6 +106,7 @@ def _correr_worker(rig: pathlib.Path, fase: str, timeout: int = 90) -> subproces
             _OPERACION,
             "--phase",
             fase,
+            *extra,
         ],
         cwd=_REPO_ROOT,
         capture_output=True,
@@ -106,6 +114,56 @@ def _correr_worker(rig: pathlib.Path, fase: str, timeout: int = 90) -> subproces
         timeout=timeout,
         check=False,
     )
+
+
+def _binding_path(rig: pathlib.Path) -> pathlib.Path:
+    from sky_claw.local.runtime_vault.operation_lock_binding import derive_operation_lock_binding_path
+
+    return pathlib.Path(str(derive_operation_lock_binding_path(_OPERACION, programdata_resolver=_resolver(rig))))
+
+
+def _lock_path_por_binding(rig: pathlib.Path) -> pathlib.Path:
+    """Lock path derivado del BINDING: en pre-plan no existe plan del que tomarlo."""
+    binding = deserialize_operation_lock_binding(_binding_path(rig).read_bytes())
+    return pathlib.Path(
+        str(
+            derive_golden_lock_path(
+                binding.volume_serial_number,
+                binding.root_file_id,
+                programdata_resolver=_resolver(rig),
+            )
+        )
+    )
+
+
+def _lock_path_por_arbol(rig: pathlib.Path) -> pathlib.Path:
+    """Lock path derivado del árbol físico del Golden.
+
+    En pre-plan no existe ``authorized_plan.json`` (del que lo derivaba
+    ``_lock_path``) y en los escenarios de binding corrupto tampoco puede
+    derivarse del binding: se usa la identidad observada en el árbol, que es
+    exactamente lo que puede hacer un operador.
+    """
+    from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
+
+    for evidencia in probe_node_evidence(rig / "golden"):
+        if evidencia.backup.relative_path == ".":
+            return pathlib.Path(
+                str(
+                    derive_golden_lock_path(
+                        evidencia.backup.volume_serial_number,
+                        evidencia.backup.file_id,
+                        programdata_resolver=_resolver(rig),
+                    )
+                )
+            )
+    raise AssertionError("el rig no tiene nodo raíz")
+
+
+def _plan_path_exists(rig: pathlib.Path) -> bool:
+    from sky_claw.local.runtime_vault.authorized_plan_store import derive_authorized_plan_path
+
+    return pathlib.Path(str(derive_authorized_plan_path(_OPERACION, programdata_resolver=_resolver(rig)))).exists()
 
 
 def _lanzar_worker(rig: pathlib.Path, fase: str) -> subprocess.Popen[str]:
@@ -534,6 +592,166 @@ class TestW04DobleCrash:
 # ============================================================================
 # W05/W06 — lock huérfano: dueño vivo => BUSY; dueño muerto => takeover real
 # ============================================================================
+
+
+@_SKIP_POR_PLATAFORMA
+class TestW09CrashPrePlanDejaLockHuerfano:
+    """P1#1: crash entre adquirir el lock (§12.2 paso 6) y publicar el plan (paso 7).
+
+    Sin el binding PRE-plan esta evidencia no existía: el lock huérfano quedaba
+    con clave ``vol+file_id`` y ninguna forma durable de derivar la identidad
+    desde ``operation_id`` — el Golden quedaba bloqueado para siempre.
+    """
+
+    def test_w09_recovery_normaliza_el_lock_y_una_nueva_operacion_puede_adquirirlo(self) -> None:
+        rig = _rig_root()
+        try:
+            # --- Process A: binding durable + lock REAL, muere antes del plan ---
+            proc_a = _correr_worker(rig, "w09_binding_then_lock_crash", extra=("--binding-writer", "fixture"))
+            assert proc_a.returncode == _CODIGO_CRASH_PRE_PLAN, proc_a.stderr
+            eventos_a = _eventos(rig)
+            assert any(e.startswith("binding-publicado:") for e in eventos_a), eventos_a
+            assert "lock-adquired" in eventos_a, "evidencia causal: el lock quedó adquirido"
+            assert "pre-plan-crash" in eventos_a
+
+            binding_path = _binding_path(rig)
+            assert binding_path.exists(), "el binding PRE-plan debe quedar durable"
+            binding = deserialize_operation_lock_binding(binding_path.read_bytes())
+            assert binding.operation_id == _OPERACION
+            assert not _plan_path_exists(rig), "no debe existir authorized_plan.json"
+            assert not _journal_path(rig).exists(), "no debe existir protection_journal.json"
+            lock_pre = _lock_path_por_arbol(rig)
+            metadata = deserialize_golden_lock_metadata(lock_pre.read_bytes())
+            assert metadata.phase != GoldenLockPhase.RELEASED.value, "el lock quedó huérfano"
+
+            # --- Process B: recovery sólo con operation_id ---
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "pre_plan_lock_recovered", reporte
+            assert reporte["physical_identity_source"] == "operation_lock_binding"
+            assert reporte["stale_lock_takeover"] is True
+            assert reporte["lock_outcome"] == "acquired_released"
+            assert reporte["operator_intervention_required"] is False
+            assert reporte["setsecurityinfo_calls"] == 0, "CERO escrituras ACL"
+            assert reporte["nodes_restored"] == []
+            metadata = deserialize_golden_lock_metadata(lock_pre.read_bytes())
+            assert metadata.phase == GoldenLockPhase.RELEASED.value, "lock normalizado"
+
+            # --- Process C: una nueva operación adquiere el mismo Golden ---
+            proc_c = _correr_worker(rig, "w09c_acquire_normal")
+            assert proc_c.returncode == 0, proc_c.stderr
+            eventos_c = _eventos(rig)
+            assert "nueva-operacion-lock-adquirido" in eventos_c, eventos_c
+            assert "nueva-operacion-lock-liberado" in eventos_c
+        finally:
+            _limpiar(rig)
+
+    def test_w09_publicacion_con_la_primitiva_real_del_namespace(self) -> None:
+        """El binding se publica con ``write_secured_file_create_once_at`` real.
+
+        La SD canónica de AUTHORIZED_OPERATIONS exige un contexto elevado
+        (ERROR_ELEVATION_REQUIRED sin él, igual que restaurar un nodo
+        endurecido). Sin elevación se SKIP honesto; CI windows-latest lo ejecuta.
+        """
+        if not _es_elevado():
+            _skip_sin_elevacion("W09-publicación real del binding")
+        rig = _rig_root()
+        try:
+            proc_a = _correr_worker(rig, "w09_binding_then_lock_crash")
+            assert proc_a.returncode == _CODIGO_CRASH_PRE_PLAN, proc_a.stderr
+            binding = deserialize_operation_lock_binding(_binding_path(rig).read_bytes())
+            assert binding.operation_id == _OPERACION
+            assert not _plan_path_exists(rig)
+
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "pre_plan_lock_recovered", reporte
+            assert reporte["setsecurityinfo_calls"] == 0
+        finally:
+            _limpiar(rig)
+
+    def test_w09_lock_huerfano_de_otra_operacion_no_se_roba(self) -> None:
+        rig = _rig_root()
+        try:
+            proc = _correr_worker(
+                rig,
+                "w09_setup_variant",
+                extra=("--variant", "other_op", "--binding-writer", "fixture"),
+            )
+            assert proc.returncode == 0, proc.stderr
+            lock_pre = _lock_path_por_arbol(rig)
+            metadata_antes = deserialize_golden_lock_metadata(lock_pre.read_bytes())
+
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "indeterminate", reporte
+            assert reporte["operator_intervention_required"] is True
+            assert reporte["setsecurityinfo_calls"] == 0
+            metadata_despues = deserialize_golden_lock_metadata(lock_pre.read_bytes())
+            assert metadata_despues.operation_id == metadata_antes.operation_id, "no hubo robo"
+            assert metadata_despues.phase != GoldenLockPhase.RELEASED.value
+        finally:
+            _limpiar(rig)
+
+    def test_w09_binding_corrupto_no_permite_tocar_el_lock(self) -> None:
+        rig = _rig_root()
+        try:
+            proc = _correr_worker(
+                rig,
+                "w09_setup_variant",
+                extra=("--variant", "corrupt_binding", "--binding-writer", "fixture"),
+            )
+            assert proc.returncode == 0, proc.stderr
+            lock_pre = _lock_path_por_arbol(rig)
+            metadata_antes = deserialize_golden_lock_metadata(lock_pre.read_bytes())
+
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "indeterminate", reporte
+            assert reporte["lock_outcome"] == "not_attempted"
+            assert reporte["setsecurityinfo_calls"] == 0
+            assert deserialize_golden_lock_metadata(lock_pre.read_bytes()) == metadata_antes
+        finally:
+            _limpiar(rig)
+
+    def test_w09_lock_key_incoherente_es_indeterminate(self) -> None:
+        rig = _rig_root()
+        try:
+            proc = _correr_worker(
+                rig,
+                "w09_setup_variant",
+                extra=("--variant", "incoherent_lock_key", "--binding-writer", "fixture"),
+            )
+            assert proc.returncode == 0, proc.stderr
+
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "indeterminate", reporte
+            assert reporte["lock_outcome"] == "refused"
+            assert reporte["setsecurityinfo_calls"] == 0
+        finally:
+            _limpiar(rig)
+
+    def test_w09_sin_binding_plan_ni_journal_es_no_transaction(self) -> None:
+        rig = _rig_root()
+        try:
+            proc = _correr_worker(rig, "w09_setup_variant", extra=("--variant", "absent"))
+            assert proc.returncode == 0, proc.stderr
+            assert not _binding_path(rig).exists()
+
+            proc_b = _correr_worker(rig, "recover")
+            assert proc_b.returncode == 0, proc_b.stderr
+            reporte = _tomar_reporte(rig)
+            assert reporte["disposition"] == "no_transaction", reporte
+            assert reporte["physical_identity_source"] == "none"
+            assert reporte["setsecurityinfo_calls"] == 0
+        finally:
+            _limpiar(rig)
 
 
 @_SKIP_POR_PLATAFORMA

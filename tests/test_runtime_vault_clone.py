@@ -1093,7 +1093,10 @@ class TestRuntimeCloneSuiteCanonico:
         # GP2-S4C agrega recovery_orchestrator (recovery de transacciones
         # interrumpidas tras crash): clasifica evidencia durable, re-toma el
         # lock huérfano y ejecuta rollback idempotente; también compone, no
-        # duplica primitivas.
+        # duplica primitivas. El mismo slice agrega
+        # operation_lock_binding (evidencia durable PRE-plan que liga
+        # operation_id con la identidad física del Golden para poder localizar
+        # un lock huérfano cuando aún no hay plan ni journal).
         expected_modules = {
             "__init__",
             "authorization_context",
@@ -1113,6 +1116,7 @@ class TestRuntimeCloneSuiteCanonico:
             "models",
             "mutation_executor",
             "node_evidence",
+            "operation_lock_binding",
             "operator_token",
             "operator_verifier_bridge",
             "physical_root",

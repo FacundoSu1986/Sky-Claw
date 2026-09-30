@@ -126,6 +126,8 @@ _CAPAS_SIN_MUTACION = (
     "mutation_executor.py",
     # orquestador de recovery: COMPONE, no construye ni muta por path
     "recovery_orchestrator.py",
+    # binding PRE-plan: escribe SÓLO su propio JSON protegido; nunca ACLs
+    "operation_lock_binding.py",
 )
 
 #: Símbolos que delatarían un segundo builder/WAL/lock dentro del orquestador.
@@ -447,3 +449,87 @@ class TestFronteraDeRecoveryS4C:
         assert "allow_orphaned_takeover" not in llamadas["acquire_golden_mutation_lock"]
         assert "allow_orphaned_takeover" not in llamadas["_acquire_golden_mutation_lock_at"]
         assert llamadas["acquire_golden_mutation_lock_for_recovery"].get("allow_orphaned_takeover") == "True"
+
+    def test_sb20_objetos_protegidos_de_operations_congelados(self) -> None:
+        """La enumeración de objetos planos protegidos es un conjunto CERRADO.
+
+        Cada miembro tiene verificador por handle y DACL canónica
+        (``_verificador_de_archivo_protegido`` falla cerrado sin registro). Un
+        objeto nuevo fuera de este conjunto se escribiría sin comprobar su
+        contrato; uno que salga de él pierde su protección.
+        """
+        from sky_claw.local.runtime_vault import trusted_namespace
+
+        assert (
+            frozenset(
+                {
+                    "authorized_plan.json",
+                    "protection_journal.json",
+                    "operation_lock_binding.json",
+                }
+            )
+            == trusted_namespace._AUTHORIZED_OPERATIONS_FILE_OBJECTS
+        )
+        for objeto in sorted(trusted_namespace._AUTHORIZED_OPERATIONS_FILE_OBJECTS):
+            assert callable(trusted_namespace._verificador_de_archivo_protegido(objeto))
+            spec = trusted_namespace.build_namespace_dacl_spec(objeto)
+            assert spec is not None
+
+    def test_sb21_el_binding_se_publica_antes_del_lock(self) -> None:
+        """AST: en ``establish_privileged_authorization``, el binding precede al lock.
+
+        Es la propiedad que cierra la ventana de §12.2 paso 6→7: si el lock se
+        adquiriera antes, un crash entre ambos volvería a dejar un lock huérfano
+        sin evidencia durable localizable. Se ancla sobre la función exacta, no
+        sobre un fuzzy match de nombres en el módulo.
+        """
+        arbol = _arbol("authorization_context.py")
+        objetivo = next(
+            n
+            for n in ast.walk(arbol)
+            if isinstance(n, ast.FunctionDef) and n.name == "establish_privileged_authorization"
+        )
+        llamadas: list[tuple[str, int]] = []
+        for nodo in ast.walk(objetivo):
+            if isinstance(nodo, ast.Call):
+                llamadas.append((ast.unparse(nodo.func), nodo.lineno))
+        publicacion = [lin for nombre, lin in llamadas if nombre == "_publish_or_verify_operation_lock_binding"]
+        lock = [lin for nombre, lin in llamadas if nombre == "lock_fn"]
+        assert publicacion, "el establecimiento debe publicar el binding pre-plan"
+        assert lock, "el establecimiento debe adquirir el GoldenMutationLock"
+        assert min(publicacion) < min(lock), "el binding debe publicarse ANTES de adquirir el lock"
+
+    def test_sb22_recovery_consume_el_binding_pero_no_lo_publica(self) -> None:
+        """El recovery LEE el binding para derivar identidad; NUNCA lo crea.
+
+        Publicarlo es autoridad de la frontera privilegiada
+        (``establish_privileged_authorization``), no del recovery.
+        """
+        arbol = _arbol("recovery_orchestrator.py")
+        usados = _simbolos_referenciados(arbol)
+        assert "classify_operation_lock_binding" in usados
+        assert "load_operation_lock_binding" in usados
+        assert "promote_operation_lock_binding" not in usados, (
+            "el recovery no puede publicar evidencia de identidad: eso es de la frontera privilegiada"
+        )
+
+    def test_sb23_el_binding_no_es_autoridad_de_mutacion(self) -> None:
+        """El binding liga identidad; no autoriza ACLs, plan, journal ni TGR."""
+        arbol = _arbol("operation_lock_binding.py")
+        usados = _simbolos_referenciados(arbol)
+        for prohibido in (
+            "SetSecurityInfo",
+            "restore_security_descriptor_by_handle",
+            "apply_target_dacl_by_handle",
+            "build_target_dacl_spec",
+            "promote_durable_authorized_plan",
+            "create_protection_journal",
+            "open_protection_journal",
+            "read_candidate_manifest_bytes",
+            "derive_candidate_manifest_path",
+            "refresh_trusted_registry",
+            "probe_node_evidence",
+        ):
+            assert prohibido not in usados, f"el binding no puede referenciar '{prohibido}'"
+        # Y tampoco puede tomar el lock por su cuenta (el lock tiene su contrato).
+        assert "acquire_golden_mutation_lock" not in usados

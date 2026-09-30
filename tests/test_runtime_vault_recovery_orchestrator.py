@@ -55,6 +55,11 @@ from sky_claw.local.runtime_vault.golden_protection_plan import (
 )
 from sky_claw.local.runtime_vault.models import TreeDigest
 from sky_claw.local.runtime_vault.mutation_executor import NodeIdentity, rollback_order
+from sky_claw.local.runtime_vault.operation_lock_binding import (
+    build_operation_lock_binding,
+    derive_operation_lock_binding_path,
+    serialize_operation_lock_binding,
+)
 from sky_claw.local.runtime_vault.protection_journal import (
     NodeWalState,
     ProtectionTransactionState,
@@ -1407,6 +1412,185 @@ class TestFronterasDuras:
 # ============================================================================
 
 
+class TestPrePlanLockHuerfano:
+    """P1#1: crash entre adquirir el lock (§12.2 paso 6) y publicar el plan (paso 7).
+
+    Sin binding, el recovery no tenía de dónde derivar la identidad física (la
+    clave del lock es ``vol+file_id``, no ``operation_id``) y devolvía
+    ``NO_TRANSACTION`` sin tocar el lock: el Golden quedaba bloqueado para
+    siempre (toda nueva operación recibía ``GoldenLockOrphanedError``). El
+    binding PRE-plan cierra esa ventana.
+    """
+
+    def _binding_durable(self, raiz: pathlib.Path, *, operation_id: str = _OPERACION) -> None:
+        binding = build_operation_lock_binding(
+            operation_id=operation_id,
+            volume_serial_number=_VOLUME_SERIAL,
+            root_file_id=_ROOT_FILE_ID,
+            created_at="2026-09-30T12:00:00.000Z",
+        )
+        destino = derive_operation_lock_binding_path(operation_id, programdata_resolver=_resolver(raiz))
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(serialize_operation_lock_binding(binding))
+
+    def _metadata_lock(
+        self,
+        *,
+        phase: str,
+        operation_id: str = _OPERACION,
+        owner_pid: int = _PID_DUENO_MUERTO,
+        lock_key: str | None = None,
+    ) -> GoldenLockMetadata:
+        return GoldenLockMetadata(
+            lock_key=lock_key or derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID),
+            owner_pid=owner_pid,
+            owner_process_creation_time=555,
+            session_id=2,
+            operation_id=operation_id,
+            phase=phase,
+            created_at=1_758_400_000,
+        )
+
+    def test_r21_binding_durable_normaliza_el_lock_huerfano_sin_tocar_acl(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(_lock_path(raiz), self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value))
+        lock_kernel.owner_alive = False
+        port = _PuertoRecuperacion(_plan())
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=port)
+
+        assert reporte.disposition is RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED
+        assert reporte.physical_identity_source is RecoveryIdentitySource.OPERATION_LOCK_BINDING
+        assert reporte.stale_lock_takeover is True
+        assert reporte.lock_outcome is RecoveryLockOutcome.ACQUIRED_RELEASED
+        assert reporte.operator_intervention_required is False
+        # CERO escrituras sobre el Golden: sin plan no hay PRE y no hay rollback.
+        assert port.abiertos == []
+        assert reporte.setsecurityinfo_calls == 0
+        assert reporte.nodes_restored == ()
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None
+        assert metadata.phase == GoldenLockPhase.RELEASED.value
+        assert metadata.owner_pid == _PID_ACTUAL
+
+    def test_r21b_pre_plan_es_idempotente(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(_lock_path(raiz), self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value))
+        lock_kernel.owner_alive = False
+        primera = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+        assert primera.disposition is RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED
+
+        # Segundo proceso, misma evidencia: el lock quedó RELEASED (residual) y
+        # la clasificación se repite sin tocar nada.
+        segunda = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert segunda.disposition is RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED
+        assert segunda.stale_lock_takeover is False
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None and metadata.phase == GoldenLockPhase.RELEASED.value
+
+    def test_r21c_lock_de_otra_operacion_no_se_roba(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(
+            _lock_path(raiz),
+            self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value, operation_id=_OTRA_OPERACION),
+        )
+        lock_kernel.owner_alive = False
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.operator_intervention_required is True
+        assert reporte.setsecurityinfo_calls == 0
+        metadata = lock_kernel.metadata_de(_lock_path(raiz))
+        assert metadata is not None and metadata.operation_id == _OTRA_OPERACION, "no hubo robo"
+
+    def test_r21d_dueno_vivo_no_se_roba_en_pre_plan(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(
+            _lock_path(raiz),
+            self._metadata_lock(phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value, owner_pid=_PID_DUENO_VIVO),
+        )
+        lock_kernel.owner_alive = True
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.LOCK_BUSY
+        assert reporte.setsecurityinfo_calls == 0
+
+    def test_r21e_binding_corrupto_es_indeterminate_sin_tocar_lock(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        destino = derive_operation_lock_binding_path(_OPERACION, programdata_resolver=_resolver(raiz))
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(b"\x00\xff binding corrupto")
+        lock_kernel = _KernelLock()
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.operator_intervention_required is True
+        assert reporte.lock_outcome is RecoveryLockOutcome.NOT_ATTEMPTED
+        assert lock_kernel.open_handles == {}, "sin identidad válida no se ni abre el lock"
+
+    def test_r21f_binding_con_lock_key_incoherente_es_indeterminate(self, tmp_path: pathlib.Path) -> None:
+        """Metadata del lock cuyo ``lock_key`` no corresponde a su ruta = sustitución."""
+        raiz = _raiz(tmp_path)
+        self._binding_durable(raiz)
+        lock_kernel = _KernelLock()
+        lock_kernel.seed(
+            _lock_path(raiz),
+            self._metadata_lock(
+                phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                lock_key=derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID + 1),
+            ),
+        )
+        lock_kernel.owner_alive = False
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.lock_outcome is RecoveryLockOutcome.REFUSED
+        assert reporte.operator_intervention_required is True
+
+    def test_r21g_sin_binding_plan_ni_journal_es_no_transaction(self, tmp_path: pathlib.Path) -> None:
+        raiz = _raiz(tmp_path)
+        lock_kernel = _KernelLock()
+
+        reporte = _recover(raiz, journal_kernel=_KernelDiario(), lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.NO_TRANSACTION
+        assert reporte.physical_identity_source is RecoveryIdentitySource.NONE
+        assert lock_kernel.open_handles == {}
+
+    def test_r21h_binding_no_puede_habilitar_rollback(self, tmp_path: pathlib.Path) -> None:
+        """El binding NO es PRE: con journal presente la evidencia es contradictoria."""
+        raiz = _raiz(tmp_path)
+        durable = _plan_durable(raiz)
+        self._binding_durable(raiz)
+        kernel = _KernelDiario()
+        journal = _crear_journal(raiz, durable, kernel)
+        journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+        journal.close()
+        # El plan se borra: la identidad podría venir del binding, pero hay
+        # journal => evidencia transaccional contradictoria con "pre-plan".
+        _plan_path(raiz).unlink()
+        lock_kernel = _KernelLock()
+
+        reporte = _recover(raiz, journal_kernel=kernel, lock_kernel=lock_kernel, port=None)
+
+        assert reporte.disposition is RecoveryDisposition.INDETERMINATE
+        assert reporte.operator_intervention_required is True
+        assert reporte.setsecurityinfo_calls == 0
+
+
 class TestReporteForense:
     def test_el_reporte_no_lleva_bytes_de_sd_ni_campos_de_autoridad(self) -> None:
         import dataclasses
@@ -1425,6 +1609,7 @@ class TestReporteForense:
             "no_transaction",
             "rolled_back",
             "post_verification_required",
+            "pre_plan_lock_recovered",
             "indeterminate",
             "lock_busy",
             "terminal",
@@ -1439,6 +1624,7 @@ class TestReporteForense:
         assert {s.value for s in RecoveryIdentitySource} == {
             "authorized_plan",
             "protection_journal",
+            "operation_lock_binding",
             "none",
         }
 
