@@ -56,9 +56,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 # =============================================================================
 # DIAGNÓSTICO TEMPORAL (bisect CI Windows #658) — REVERTIR tras la corrida.
-# Deselecciona los tests NUEVOS de este PR para aislar si el fallo de la CI
-# windows-latest proviene de ellos o de un test existente afectado por la
-# fuente. Se retira en cuanto se clasifique el fallo.
+# Ciclo 2: los test_mig655_* (SQL puro) ya corren; sigue deseleccionado solo
+# el file nuevo con flujo real del service (13 tests) para aislar la causa.
 # =============================================================================
 _DIAG_658_BASENAMES = {"test_dyndolod_restored_artifact_evidence.py"}
 
@@ -66,7 +65,7 @@ _DIAG_658_BASENAMES = {"test_dyndolod_restored_artifact_evidence.py"}
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     _ids = set()
     for item in items:
-        if pathlib.Path(str(item.fspath)).name in _DIAG_658_BASENAMES or item.name.startswith("test_mig655_"):
+        if pathlib.Path(str(item.fspath)).name in _DIAG_658_BASENAMES:
             _ids.add(item.nodeid)
     if _ids:
         config.hook.pytest_deselected(items=[i for i in items if i.nodeid in _ids])
