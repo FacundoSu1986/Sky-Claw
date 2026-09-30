@@ -1507,6 +1507,11 @@ _HELPERS_DE_MODULO_QUE_EMITEN_SQL = frozenset(
         "_obsoletar_receipts_de_artifact",
         "_registrar_resoluciones_de_artifact_en_conn",
         "_migrar_resoluciones_legacy_en_conn",
+        # #655: reconstrucción transaccional del esquema de
+        # artifact_evidence_resolutions (3→4 kinds). Su único caller es
+        # ``open()`` (exención explícita del ancla de callers: corre dentro
+        # del boundary de migración con ``BEGIN IMMEDIATE`` en ambas ramas).
+        "_migrar_esquema_resoluciones_655_en_conn",
     }
 )
 _BOUNDARIES_DEL_LIFECYCLE = frozenset({"transaction", "operation"})

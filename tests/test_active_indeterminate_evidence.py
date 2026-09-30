@@ -260,6 +260,32 @@ async def _absorciones(db: pathlib.Path) -> list[tuple[int, str, int]]:
         return [(int(r[0]), str(r[1]), int(r[2])) for r in await cur.fetchall()]
 
 
+async def _resolucion_de(db: pathlib.Path, tx_id: int, clave: str) -> tuple[str, int | None] | None:
+    """Resolución durable vigente para la pareja ``(tx_id, clave)``, sea del
+    kind que sea (``restored_byte_exact``, ``absorbed_by_handoff``, ...).
+
+    Refinamiento #655/H2: en estos escenarios la regen fallida restaura el mod
+    byte-exact (TexGen rojo + ``create_snapshot=True``), así que la pareja
+    ``(tx_fail, A)`` queda resuelta EN EL MOMENTO DEL FALLO con la provenance
+    del propio rollback (``restored_byte_exact``, ``handoff_id NULL``) y el
+    boundary de reemplazo/resume ya no la re-absorbe: la evidencia fue
+    consumida antes, con más evidencia a favor. Los asserts de MECANISMO
+    (fila de absorción) se reescribieron contra el ESTADO DURABLE de la pareja
+    —la invariante de resultado (el oracle deja de verla, sin re-fabricar
+    INDETERMINATE) queda anclada igual.
+    """
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute(
+            "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions "
+            "WHERE transaction_id = ? AND artifact_path = ?",
+            (tx_id, clave),
+        ) as cur,
+    ):
+        fila = await cur.fetchone()
+    return None if fila is None else (str(fila[0]), int(fila[1]) if fila[1] is not None else None)
+
+
 async def _receipt(journal: OperationJournal, tx_id: int) -> str | None:
     async with journal._db.execute(  # noqa: SLF001
         "SELECT state FROM stale_pending_sweep_receipts WHERE transaction_id = ?",
@@ -298,15 +324,23 @@ async def _max_tx_id(journal: OperationJournal) -> int:
     return max(t.transaction_id for t in corridas)
 
 
-async def _regen_fallida(journal: OperationJournal, runner: DynDOLODRunner) -> int:
+async def _regen_fallida(journal: OperationJournal, runner: DynDOLODRunner, *, create_snapshot: bool = True) -> int:
     """run_texgen=True que falla DESPUÉS de TX+ActionManifest (fault injection
-    única: proceso TexGen rc=1). Devuelve el id de la TX_FAIL quedada PENDING."""
+    única: proceso TexGen rc=1). Devuelve el id de la TX_FAIL quedada PENDING.
+
+    ``create_snapshot=True`` (default) move-asidea el mod y el fallo lo
+    restaura byte-exact: con #655/H2 esa pareja ``(tx_fail, A)`` queda resuelta
+    DURABLE en el momento del fallo (``restored_byte_exact``). Con
+    ``create_snapshot=False`` el mod nunca entró al inventario de rollback y la
+    evidencia sigue VIVA — el caso que ejercita la absorción en el boundary
+    heredado (reemplazo / resume completado).
+    """
     svc = _svc(journal, runner)
     with (
         patch.object(runner, "_execute_process", _ProcesoFalso(return_code=1)),
         patch.object(runner, "run_dyndolod", _dyn_falla()),
     ):
-        res = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+        res = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=create_snapshot)
     assert res["success"] is False
     assert res.get("needs_deployment") is not True
     return await _ultima_tx_de_pipeline(journal, solo_pending=True)
@@ -418,18 +452,31 @@ async def test_regen_fallida_durante_indeterminate_no_reaparece_tras_reemplazo_e
 
 
 async def test_la_absorcion_del_reemplazo_referencia_el_viejo_handoff(tmp_path: pathlib.Path) -> None:
-    """§9 provenance: absorption(TX_FAIL, artifact).handoff_id == viejo.handoff_id;
-    la fila sobrevive a H1 SUPERSEDED y H2 COMPLETED (FK sin ON DELETE)."""
+    """§9 provenance (refinada por #655/H2):
+
+    - la pareja ``(tx_fail, A)`` de esta corrida quedó resuelta EN EL MOMENTO
+      DEL FALLO —el mod fue restaurado byte-exact por su propio
+      ``DirectoryRollback``— con la provenance del pipeline
+      (``restored_byte_exact``, ``handoff_id NULL``); el reemplazo ya no la ve
+      como candidata y no la re-absorbe;
+    - la absorción que SÍ escribe un boundary (la del reconciler de H1 sobre la
+      evidencia original ``tx_init``) sigue referenciando al owner del recovery
+      context (h1), no al AWAITING/COMPLETED que lo reemplazó;
+    - la fila sobrevive a H1 SUPERSEDED y H2 COMPLETED (FK sin ON DELETE).
+    """
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal, db_path, clave = ctx["journal"], ctx["db_path"], ctx["clave"]
     tx_fail = ctx["tx_fails"][0]
 
-    filas = [a for a in await _absorciones(db_path) if a[0] == tx_fail]
-    assert filas, "la TX_FAIL histórica quedó sin absorción en el reemplazo"
-    assert filas[0][1] == clave
-    assert filas[0][2] == ctx["h1"].handoff_id, (
-        "la absorción debe referenciar al viejo INDETERMINATE (dueño del recovery context "
-        "cuando la evidencia se acumuló), no al AWAITING/COMPLETED que lo reemplazó"
+    assert await _resolucion_de(db_path, tx_fail, clave) == ("restored_byte_exact", None), (
+        "la TX_FAIL restauró su mod byte-exact: su pareja debe estar resuelta con la "
+        "provenance del rollback (pipeline), no re-absorbida por el reemplazo"
+    )
+    filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
+    assert (ctx["tx_init"], ctx["h1"].handoff_id) in filas, (
+        "la absorción del reconciler de H1 debe referenciar al viejo INDETERMINATE "
+        "(dueño del recovery context cuando la evidencia se acumuló), no al "
+        "AWAITING/COMPLETED que lo reemplazó"
     )
     # La fila permanece después de que ambos handoffs sean historia terminal.
     async with journal._db.execute(  # noqa: SLF001
@@ -523,25 +570,31 @@ async def test_startup_no_refabrica_con_tx_fail_stale_rolled_back(tmp_path: path
 
 
 async def test_dos_regens_fallidas_quedan_absorbidas_en_el_reemplazo(tmp_path: pathlib.Path) -> None:
-    """§6: ambas TX_FAIL reciben absorption(TX_FAIL_n, artifact, viejo) y el
-    oracle no devuelve ninguna. Una solución basada sólo en source_tx_id es
-    insuficiente."""
+    """§6 (refinado por #655/H2): ambas TX_FAIL restauraron su mod byte-exact,
+    así que CADA una de sus parejas quedó resuelta durable (restored_byte_exact)
+    en el momento de su fallo, y el oracle no devuelve ninguna — una solución
+    basada sólo en source_tx_id seguiría siendo insuficiente."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=2)
     journal, db_path, clave = ctx["journal"], ctx["db_path"], ctx["clave"]
     f1, f2 = ctx["tx_fails"]
 
-    filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
-    assert (f1, ctx["h1"].handoff_id) in filas, f"TX_FAIL_1={f1} sin absorción"
-    assert (f2, ctx["h1"].handoff_id) in filas, f"TX_FAIL_2={f2} sin absorción"
+    assert await _resolucion_de(db_path, f1, clave) == ("restored_byte_exact", None), (
+        f"TX_FAIL_1={f1} sin resolución durable de su pareja"
+    )
+    assert await _resolucion_de(db_path, f2, clave) == ("restored_byte_exact", None), (
+        f"TX_FAIL_2={f2} sin resolución durable de su pareja"
+    )
 
     candidatas = await journal.transacciones_que_nombran(clave)
     assert f1 not in candidatas and f2 not in candidatas, candidatas
 
 
 async def test_la_absorcion_del_reemplazo_es_per_artifact(tmp_path: pathlib.Path) -> None:
-    """§7: la TX_FAIL nombra A (TexGen Output) y B (DynDOLOD Output); el
-    reemplazo del handoff de A absorbe SOLO (TX_FAIL, A): oracle(A) la excluye y
-    oracle(B) sigue pudiendo devolverla. Prohibida la absorción global por tx."""
+    """§7 (refinado por #655/H2): la TX_FAIL nombra A (TexGen Output) y B
+    (DynDOLOD Output); la pareja (TX_FAIL, A) quedó resuelta en el momento del
+    fallo (restored_byte_exact del propio rollback): oracle(A) la excluye y
+    oracle(B) sigue pudiendo devolverla. Prohibida la resolución global por tx:
+    (TX_FAIL, B) NO recibió resolución de ninguna."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal, db_path, clave_a = ctx["journal"], ctx["db_path"], ctx["clave"]
     cfg = ctx["config"]
@@ -553,12 +606,16 @@ async def test_la_absorcion_del_reemplazo_es_per_artifact(tmp_path: pathlib.Path
         "el escenario requiere una TX_FAIL cuyo manifest nombre también el artifact B"
     )
 
-    absorbidas_a = {a[0] for a in await _absorciones(db_path) if a[1] == clave_a}
-    assert tx_fail in absorbidas_a
+    assert await _resolucion_de(db_path, tx_fail, clave_a) == ("restored_byte_exact", None), (
+        "la pareja (tx_fail, A) restaurada byte-exact debe estar resuelta durable"
+    )
+    assert await _resolucion_de(db_path, tx_fail, clave_b) is None, (
+        "resolver (tx_fail, A) no puede resolver (tx_fail, B)"
+    )
 
     assert tx_fail not in await journal.transacciones_que_nombran(clave_a), "oracle(A) debe excluirla"
     assert tx_fail in await journal.transacciones_que_nombran(clave_b), (
-        "absorber A NO debe silenciar la evidencia legítima de B (prohibido absorber por tx global)"
+        "resolver A NO debe silenciar la evidencia legítima de B (prohibido resolver por tx global)"
     )
 
 
@@ -651,9 +708,14 @@ async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_pa
     h2 = await journal.consultar_handoff_activo(clave)
     assert h2 is not None and h2.state is HandoffState.AWAITING_DEPLOYMENT and h2.handoff_id != h1_id
 
-    filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
-    assert (tx_fail, h1_id) in filas, "el reemplazo de un AWAITING dejó la TX_FAIL sin absorber"
-    assert tx_ok not in {a[0] for a in filas}, "CURRENT_GENERATION_SELF_ABSORPTION"
+    # #655/H2: la pareja (tx_fail, clave) quedó resuelta en el momento del fallo
+    # (restore byte-exact del mod): el reemplazo de un AWAITING no la re-absorbe
+    # porque ya no es candidata — la evidencia se consumió antes.
+    assert await _resolucion_de(db_path, tx_fail, clave) == ("restored_byte_exact", None), (
+        "la TX_FAIL restauró su mod byte-exact: su pareja debe estar resuelta durable"
+    )
+    filas = {a[0] for a in await _absorciones(db_path) if a[1] == clave}
+    assert tx_ok not in filas, "CURRENT_GENERATION_SELF_ABSORPTION"
     assert tx_fail not in await journal.transacciones_que_nombran(clave)
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
 
@@ -711,7 +773,13 @@ async def test_resume_que_completa_el_handoff_tambien_absorbe_la_evidencia(tmp_p
     h1_id = await journal.crear_handoff_de_deployment(tx1, descripcion=None, registro=registro, viejo=None)
 
     # Regen fallida bajo el owner activo: TX_FAIL queda PENDING sin absorber.
-    tx_fail = await _regen_fallida(journal, runner)
+    # #655/H2: con ``create_snapshot=False`` el mod NO entró al inventario de
+    # rollback (no hay restore byte-exact → no hay ``restored_byte_exact``): la
+    # evidencia sigue VIVA y es el boundary del resume completado el que la
+    # sella — el camino heredado que este test ejercita. (Con snapshot el
+    # rollback restauraría el mod y el sello ocurriría en el momento del fallo,
+    # lo que cubren los tests de ``restored_byte_exact``.)
+    tx_fail = await _regen_fallida(journal, runner, create_snapshot=False)
     assert tx_fail in await journal.transacciones_que_nombran(clave), (
         "precondición: la TX_FAIL es evidencia vigente mientras el owner está activo"
     )

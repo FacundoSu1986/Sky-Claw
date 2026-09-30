@@ -3371,6 +3371,17 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         "DynDOLODExecutionError",
         "DynDOLODExecutionError, DynDOLODTimeoutError",
         "Exception",
+        # #655/H2: el callback `_sellar_restauracion_de_texgen` (registro en el
+        # AsyncExitStack, corre en el unwind entre los DirectoryRollback y el
+        # lock) lleva DOS guards fail-closed, ambos `except Exception` por
+        # diseño: (1) la re-evaluación del veto de leases — un veto que no se
+        # puede evaluar no autoriza afirmar restauración (mismo criterio de
+        # `_veto_permite_restaurar`); (2) el boundary del journal — un fallo de
+        # escritura deja la evidencia VIVA, que es la dirección segura. Ninguno
+        # de los dos propaga: el callback no puede enmascarar la excepción del
+        # unwind ni romper el cierre.
+        "Exception",
+        "Exception",
         "JournalTransactionError, LockLeaseLostError, OSError",
         "LockAcquisitionError",
         "_ActionManifestError",
