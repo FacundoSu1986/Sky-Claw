@@ -983,3 +983,416 @@ async def test_f506_mig3_migration_conflict_standalone_rollback(tmp_path: pathli
         ) as cur:
             fila = await cur.fetchone()
         assert fila is None, "tx1 no debe existir tras rollback"
+
+
+# =============================================================================
+# TESTS DE MIGRACIÓN DE ESQUEMA #655 (MIG655) — artifact_evidence_resolutions
+# 3 kinds históricos → 4 kinds (agregación de ``restored_byte_exact``)
+# =============================================================================
+#
+# El DDL histórico es el de la release inmediatamente anterior a este PR
+# (commit 719ef74): la MISMA tabla con la CHECK de 3 kinds. ``CREATE TABLE IF
+# NOT EXISTS`` no la altera (test_d1_), así que el upgrade corre la migración
+# transaccional e idempotente de ``OperationJournal.open()``.
+
+#: DDL de la tabla de resoluciones en el schema inmediatamente anterior a
+#: este PR (3 kinds, con FK y CHECK de provenance históricas).
+RESOLUTIONS_TABLE_DDL_HISTORICO = """
+CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
+    resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
+    artifact_path   TEXT NOT NULL,
+    resolution_kind TEXT NOT NULL,
+    handoff_id      INTEGER REFERENCES deployment_handoffs(handoff_id),
+    resolved_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    CONSTRAINT chk_resolution_kind CHECK (
+        resolution_kind IN (
+            'absorbed_by_handoff',
+            'superseded_by_run',
+            'no_artifact_demonstrated'
+        )
+    ),
+    CONSTRAINT uq_resolution_tx_artifact
+        UNIQUE (transaction_id, artifact_path),
+    CONSTRAINT chk_resolution_provenance CHECK (
+        (
+            resolution_kind IN (
+                'absorbed_by_handoff',
+                'superseded_by_run'
+            )
+            AND handoff_id IS NOT NULL
+        )
+        OR
+        (
+            resolution_kind = 'no_artifact_demonstrated'
+            AND handoff_id IS NULL
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_resolutions_path_tx
+    ON artifact_evidence_resolutions(artifact_path, transaction_id);
+"""
+
+#: Schema COMPLETO de una DB creada por la release anterior a este PR.
+SCHEMA_655_HISTORICO_SQL = LEGACY_SCHEMA_SQL + "\n" + RESOLUTIONS_TABLE_DDL_HISTORICO
+
+
+async def _crear_db_655_histórica(
+    db_file: pathlib.Path,
+    *,
+    filas: list[tuple[int, str, str, int | None, str]] = (),
+    fk_on: bool = True,
+    handoffs: bool = True,
+) -> None:
+    """Crea una DB con el schema inmediatamente anterior a este PR.
+
+    ``filas``: ``(resolution_id, artifact_path, resolution_kind, handoff_id,
+    resolved_at)`` con ``transaction_id = resolution_id`` (1:1), respaldada por
+    su propia TX y (si aplica) su handoff. Con ``handoffs=False`` los
+    ``handoff_id`` se insertan SIN crear el handoff referenciado — corrupción
+    de referencia colgada, solo posible con ``fk_on=False``.
+    """
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.execute(f"PRAGMA foreign_keys={'ON' if fk_on else 'OFF'}")
+        await conn.executescript(SCHEMA_655_HISTORICO_SQL)
+        for rid, art, kind, h_id, res_at in filas:
+            await conn.execute(
+                "INSERT INTO transactions (transaction_id, description) VALUES (?, ?)",
+                (rid, f"tx-{rid}"),
+            )
+            if h_id is not None and handoffs:
+                await conn.execute(
+                    "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
+                    "VALUES (?, ?, 'superseded', ?, 'g', 'm', 'd', 'p')",
+                    (h_id, rid, art),
+                )
+            await conn.execute(
+                "INSERT INTO artifact_evidence_resolutions (resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (rid, rid, art, kind, h_id, res_at),
+            )
+        await conn.commit()
+
+
+async def _ddl_de_resoluciones(db_file: pathlib.Path) -> str:
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact_evidence_resolutions'"
+        ) as cur,
+    ):
+        (ddl,) = (await cur.fetchone())[0:1]
+    return ddl
+
+
+async def _filas_de_resoluciones(db_file: pathlib.Path) -> list[tuple]:
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
+            "SELECT resolution_id, transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
+            "FROM artifact_evidence_resolutions ORDER BY resolution_id"
+        ) as cur,
+    ):
+        return [tuple(f) for f in await cur.fetchall()]
+
+
+@pytest.mark.asyncio
+async def test_mig655_01_db_histórica_vacia_migra_y_admite_restored_byte_exact(tmp_path: pathlib.Path) -> None:
+    """MIG655-01: DB histórica (CHECK de 3 kinds) vacía → open() migra el
+    esquema y el writer de ``restored_byte_exact`` pasa a funcionar."""
+    db = tmp_path / "vacia.db"
+    await _crear_db_655_histórica(db)
+    assert "restored_byte_exact" not in await _ddl_de_resoluciones(db)
+
+    j = OperationJournal(db)
+    await j.open()
+    try:
+        assert "restored_byte_exact" in await _ddl_de_resoluciones(db)
+        tx = await j.begin_transaction("post-mig", agent_id="test")
+        await j.registrar_resolucion_de_restauracion_de_artifact(
+            transaction_id=tx, artifact_path="X:/MO2/mods/TexGen Output"
+        )
+        filas = await _filas_de_resoluciones(db)
+        assert len(filas) == 1
+        assert filas[0][3] == "restored_byte_exact"
+        assert filas[0][4] is None
+    finally:
+        await j.close()
+
+    # Sin remanente de la reconstrucción (tabla temporal retirada).
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%legacy_655%'") as cur,
+    ):
+        assert await cur.fetchone() is None
+
+
+@pytest.mark.asyncio
+async def test_mig655_02_tres_kinds_historicos_filas_identicas(tmp_path: pathlib.Path) -> None:
+    """MIG655-02: DB histórica con los 3 kinds previos (provenance correcta)
+    → después del open las filas son IDÉNTICAS (columna a columna)."""
+    filas = [
+        (3, "C:/MO2/mods/A", "absorbed_by_handoff", 31, "2026-01-01 10:00:00"),
+        (5, "C:/MO2/mods/B", "superseded_by_run", 52, "2026-02-01 11:30:00"),
+        (9, "C:/MO2/mods/C", "no_artifact_demonstrated", None, "2026-03-01 09:15:00"),
+    ]
+    db = tmp_path / "tres_kinds.db"
+    await _crear_db_655_histórica(db, filas=filas)
+    espera = [(rid, rid, art, kind, h, res) for rid, art, kind, h, res in filas]
+    assert await _filas_de_resoluciones(db) == espera
+
+    j = OperationJournal(db)
+    await j.open()
+    await j.close()
+
+    assert await _filas_de_resoluciones(db) == espera, (
+        f"la migración no es transparente: mutó filas históricas (esperaba {espera})"
+    )
+    assert "restored_byte_exact" in await _ddl_de_resoluciones(db)
+
+
+@pytest.mark.asyncio
+async def test_mig655_03_resolution_id_y_resolved_at_preservados(tmp_path: pathlib.Path) -> None:
+    """MIG655-03: ``resolution_id`` (valores explícitos no contiguos) y
+    ``resolved_at`` históricos se preservan, y el AUTOINCREMENT sigue de donde
+    quedó (el próximo id > máximo histórico, sin colisión)."""
+    filas = [(17, "C:/MO2/mods/A", "absorbed_by_handoff", 101, "2025-12-31 23:59:59")]
+    db = tmp_path / "ids.db"
+    await _crear_db_655_histórica(db, filas=filas)
+
+    j = OperationJournal(db)
+    await j.open()
+    try:
+        assert await _filas_de_resoluciones(db) == [
+            (17, 17, "C:/MO2/mods/A", "absorbed_by_handoff", 101, "2025-12-31 23:59:59")
+        ]
+        tx = await j.begin_transaction("post", agent_id="test")
+        await j.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx, artifact_path="C:/MO2/mods/B")
+        nuevo = [f for f in await _filas_de_resoluciones(db) if f[3] == "restored_byte_exact"]
+        assert len(nuevo) == 1
+        assert nuevo[0][0] > 17, f"el AUTOINCREMENT no siguió del máximo histórico (17): {nuevo[0][0]}"
+    finally:
+        await j.close()
+
+
+@pytest.mark.asyncio
+async def test_mig655_04_close_reopen_idempotente(tmp_path: pathlib.Path) -> None:
+    """MIG655-04: close/reopen (varias veces) sobre una DB ya migrada es un
+    no-op: ni filas ni DDL cambian."""
+    filas = [(4, "C:/MO2/mods/A", "no_artifact_demonstrated", None, "2026-04-01 08:00:00")]
+    db = tmp_path / "idempotente.db"
+    await _crear_db_655_histórica(db, filas=filas)
+
+    j1 = OperationJournal(db)
+    await j1.open()
+    ddl_migrado = await _ddl_de_resoluciones(db)
+    await j1.close()
+
+    for _ in range(2):
+        j2 = OperationJournal(db)
+        await j2.open()
+        await j2.close()
+
+    assert await _filas_de_resoluciones(db) == [
+        (4, 4, "C:/MO2/mods/A", "no_artifact_demonstrated", None, "2026-04-01 08:00:00")
+    ]
+    assert await _ddl_de_resoluciones(db) == ddl_migrado
+
+
+@pytest.mark.asyncio
+async def test_mig655_05_db_ya_nueva_sin_cambio_semantico(tmp_path: pathlib.Path) -> None:
+    """MIG655-05: DB creada con el schema vigente → la migración es no-op:
+    DDL estable entre opens y las filas con el kind nuevo no se tocan."""
+    db = tmp_path / "nueva.db"
+    j = OperationJournal(db)
+    await j.open()
+    try:
+        ddl_nuevo = await _ddl_de_resoluciones(db)
+        tx = await j.begin_transaction("pre", agent_id="test")
+        await j.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx, artifact_path="C:/MO2/mods/A")
+        filas_previas = await _filas_de_resoluciones(db)
+    finally:
+        await j.close()
+
+    j2 = OperationJournal(db)
+    await j2.open()
+    try:
+        assert await _ddl_de_resoluciones(db) == ddl_nuevo
+        assert await _filas_de_resoluciones(db) == filas_previas
+        assert len(filas_previas) == 1 and filas_previas[0][3] == "restored_byte_exact"
+    finally:
+        await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_mig655_06_fallo_durante_copy_rollback_sin_pérdida(tmp_path: pathlib.Path) -> None:
+    """MIG655-06: copia que viola FK (fila histórica con ``handoff_id``
+    colgada, DB creada con FK OFF — corrupción legítima de campo) → open()
+    falla cerrado y el rollback deja la DB INTACTA: DDL histórico, filas
+    originales, sin remanente de la reconstrucción."""
+    filas = [(21, "C:/MO2/mods/A", "absorbed_by_handoff", 999, "2026-05-05 05:05:05")]
+    db = tmp_path / "copy_fallo.db"
+    # fk_on=False + handoffs=False: handoff_id=999 SIN el handoff referenciado
+    # (corrupción legítima de campo: la DB vieja la toleró, la copia con FK ON
+    # no puede).
+    await _crear_db_655_histórica(db, filas=filas, fk_on=False, handoffs=False)
+    ddl_antes = await _ddl_de_resoluciones(db)
+
+    j = OperationJournal(db)
+    with pytest.raises(JournalConnectionError):
+        await j.open()
+
+    assert "restored_byte_exact" not in await _ddl_de_resoluciones(db), (
+        "la migración fallida no debe dejar el DDL a medias"
+    )
+    assert await _ddl_de_resoluciones(db) == ddl_antes
+    assert await _filas_de_resoluciones(db) == [
+        (21, 21, "C:/MO2/mods/A", "absorbed_by_handoff", 999, "2026-05-05 05:05:05")
+    ]
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%legacy_655%'") as cur,
+    ):
+        assert await cur.fetchone() is None, "remanente de la reconstrucción tras el rollback"
+
+
+@pytest.mark.asyncio
+async def test_mig655_07_lifecycle_migra(tmp_path: pathlib.Path) -> None:
+    """MIG655-07 (lifecycle): bajo ``DatabaseLifecycleManager`` la migración
+    corre en el boundary de open(), preserva filas y habilita el kind nuevo."""
+    filas = [(7, "C:/MO2/mods/A", "absorbed_by_handoff", 71, "2026-06-01 00:00:00")]
+    db = tmp_path / "lifecycle.db"
+    await _crear_db_655_histórica(db, filas=filas)
+
+    clave_b = clave_de_artifact(pathlib.Path("C:/MO2/mods/B"))
+    mgr = DatabaseLifecycleManager()
+    j = OperationJournal(db, lifecycle=mgr)
+    try:
+        await j.open()
+        tx = await j.begin_transaction("post", agent_id="test")
+        await j.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx, artifact_path="C:/MO2/mods/B")
+        filas_nuevas = await _filas_de_resoluciones(db)
+        assert (7, 7, "C:/MO2/mods/A", "absorbed_by_handoff", 71, "2026-06-01 00:00:00") in filas_nuevas
+        # El writer canonicaliza el path (misma identidad física del oracle).
+        assert any(f[3] == "restored_byte_exact" and f[2] == clave_b for f in filas_nuevas)
+    finally:
+        await mgr.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_mig655_07b_standalone_migra(tmp_path: pathlib.Path) -> None:
+    """MIG655-07b (standalone): el mismo upgrade en el path backwards-compat
+    (conexión propia, boundary try/commit/rollback)."""
+    filas = [(7, "C:/MO2/mods/A", "superseded_by_run", 71, "2026-06-01 00:00:00")]
+    db = tmp_path / "standalone.db"
+    await _crear_db_655_histórica(db, filas=filas)
+
+    clave_b = clave_de_artifact(pathlib.Path("C:/MO2/mods/B"))
+    j = OperationJournal(db)
+    await j.open()
+    try:
+        tx = await j.begin_transaction("post", agent_id="test")
+        await j.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx, artifact_path="C:/MO2/mods/B")
+        filas_nuevas = await _filas_de_resoluciones(db)
+        assert (7, 7, "C:/MO2/mods/A", "superseded_by_run", 71, "2026-06-01 00:00:00") in filas_nuevas
+        # El writer canonicaliza el path (misma identidad física del oracle).
+        assert any(f[3] == "restored_byte_exact" and f[2] == clave_b for f in filas_nuevas)
+    finally:
+        await j.close()
+
+
+@pytest.mark.asyncio
+async def test_mig655_08_apertura_concurrente_dos_managers(tmp_path: pathlib.Path) -> None:
+    """MIG655-08 (patrón MIG506-11): dos managers independientes abriendo
+    concurrentemente una DB HISTÓRICA → una migra, la otra detecta el DDL
+    vigente (no-op), sin corrupción; ambos pueden escribir el kind nuevo."""
+    filas = [(3, "C:/MO2/mods/A", "no_artifact_demonstrated", None, "2026-07-07 07:07:07")]
+    db = tmp_path / "concurrente.db"
+    await _crear_db_655_histórica(db, filas=filas)
+
+    mgr1, mgr2 = DatabaseLifecycleManager(), DatabaseLifecycleManager()
+    j1, j2 = OperationJournal(db, lifecycle=mgr1), OperationJournal(db, lifecycle=mgr2)
+    try:
+        await asyncio.gather(j1.open(), j2.open())
+        assert await _filas_de_resoluciones(db) == [
+            (3, 3, "C:/MO2/mods/A", "no_artifact_demonstrated", None, "2026-07-07 07:07:07")
+        ]
+        clave_x = clave_de_artifact(pathlib.Path("C:/MO2/mods/X"))
+        clave_y = clave_de_artifact(pathlib.Path("C:/MO2/mods/Y"))
+        tx1 = await j1.begin_transaction("uno", agent_id="test")
+        tx2 = await j2.begin_transaction("dos", agent_id="test")
+        await j1.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx1, artifact_path="C:/MO2/mods/X")
+        await j2.registrar_resolucion_de_restauracion_de_artifact(transaction_id=tx2, artifact_path="C:/MO2/mods/Y")
+        filas_nuevas = await _filas_de_resoluciones(db)
+        assert len(filas_nuevas) == 3
+        # Las dos escrituras nuevas usan el path canonicalizado del writer; la
+        # histórica conserva su valor literal (la migración no reescribe).
+        assert {f[2] for f in filas_nuevas} == {"C:/MO2/mods/A", clave_x, clave_y}
+    finally:
+        await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
+
+
+@pytest.mark.asyncio
+async def test_mig655_09_forma_desconocida_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """MIG655-09: tabla con una columna extra (forma no razonable) → la
+    migración falla cerrado sin tocar la tabla: no se reconstruye sobre un
+    schema que no se puede razonar."""
+    db = tmp_path / "desconocido.db"
+    async with aiosqlite.connect(str(db)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.executescript(
+            """
+            CREATE TABLE artifact_evidence_resolutions (
+                resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id  INTEGER NOT NULL,
+                artifact_path   TEXT NOT NULL,
+                resolution_kind TEXT NOT NULL,
+                handoff_id      INTEGER,
+                resolved_at     TEXT NOT NULL,
+                extra_col       TEXT
+            );
+            """
+        )
+        await conn.commit()
+
+    j = OperationJournal(db)
+    with pytest.raises(JournalConnectionError, match="forma estructural desconocida"):
+        await j.open()
+
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute("PRAGMA table_info(artifact_evidence_resolutions)") as cur,
+    ):
+        cols = [fila[1] async for fila in cur]
+    assert cols[-1] == "extra_col", "no se tocó la tabla de forma desconocida"
+    assert "restored_byte_exact" not in await _ddl_de_resoluciones(db)
+
+
+@pytest.mark.asyncio
+async def test_mig655_10_kinds_desconocidos_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """MIG655-10: forma estructural esperada pero una CHECK de kinds que no es
+    ni la histórica ni la vigente → fail-closed (la migración solo razona sobre
+    las variantes conocidas)."""
+    db = tmp_path / "kinds_desconocidos.db"
+    async with aiosqlite.connect(str(db)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.executescript(
+            """
+            CREATE TABLE artifact_evidence_resolutions (
+                resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
+                artifact_path   TEXT NOT NULL,
+                resolution_kind TEXT NOT NULL CHECK (
+                    resolution_kind IN ('absorbed_by_handoff', 'superseded_by_run')
+                ),
+                handoff_id      INTEGER REFERENCES deployment_handoffs(handoff_id),
+                resolved_at     TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """
+        )
+        await conn.commit()
+
+    j = OperationJournal(db)
+    with pytest.raises(JournalConnectionError, match="sin la CHECK histórica"):
+        await j.open()

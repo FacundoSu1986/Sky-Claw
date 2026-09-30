@@ -864,13 +864,20 @@ def test_ast_resume_no_obsoleta_receipts_globales() -> None:
 
 
 def test_ast_callers_de_registrar_resoluciones_en_journal() -> None:
-    """Ancla estructural: congelar todos los callers de _registrar_resoluciones_de_artifact_en_conn."""
+    """Ancla estructural: congelar todos los callers de _registrar_resoluciones_de_artifact_en_conn.
+
+    ``registrar_resolucion_de_restauracion_de_artifact`` (#655/H2) es el cuarto
+    y último writer productivo: resuelve la pareja ``(tx, artifact)`` de una TX
+    PENDING VIVA cuando el propio ``DirectoryRollback`` de la corrida confirma
+    restauración byte-exact — sin tocar el lifecycle de la TX.
+    """
     j_path = _sky_claw_journal_path()
     llamadores = _funciones_que_llaman_ast(j_path, "_registrar_resoluciones_de_artifact_en_conn")
     assert llamadores == {
         "_sellar_evidencia_de_artifact",
         "_escribir_handoff_indeterminado",
         "resolver_evidencia_como_no_artifact",
+        "registrar_resolucion_de_restauracion_de_artifact",
     }
 
 
