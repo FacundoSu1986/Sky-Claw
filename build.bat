@@ -92,7 +92,7 @@ if errorlevel 1 (
 
 if exist "dist\SkyClawApp.exe" (
     echo  ============================
-    echo   Build complete!
+    echo   Build complete.
     echo   dist\SkyClawApp.exe
     echo  ============================
     echo.

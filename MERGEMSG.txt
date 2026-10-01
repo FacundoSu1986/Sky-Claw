@@ -1,0 +1,9 @@
+Merge de origin/main en feat/runtime-vault-s4d-finalization
+
+Incorpora f91f3d24 (launcher, CLI, DynDOLOD y sus tests) para que S4-D se
+evalúe contra el main actual.
+
+Sin conflictos y sin solapamiento: main no tocó ningún archivo de
+sky_claw/local/runtime_vault/ ni los tests de runtime_vault, así que el merge
+no alteró nada de Runtime Vault. Los únicos archivos que S4-D modifica siguen
+suyos.
