@@ -26,7 +26,9 @@ RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
 
-PINNED_ACTION_REF_ESPERADA = "f3b385ea2927247ddcff2fe252472380b9c8f5fc"
+# SHA inmutable de Codium-ai/pr-agent v0.46.0; mantener sincronizado con
+# Dependabot cuando actualice los workflows de Qodo.
+PINNED_ACTION_REF_ESPERADA = "1d01f24f455bb879c1d9c557ad7de3d72dcc7975"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
