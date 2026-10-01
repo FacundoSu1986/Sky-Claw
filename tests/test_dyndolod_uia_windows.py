@@ -37,6 +37,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
 )
 from sky_claw.local.tools.dyndolod_uia_windows import (
     NOMBRES_DE_CONTROL_TYPE,
+    PROPIEDADES_DE_DESCRIPCION_UIA,
     ObservadorUIAWindows,
     construir_observador_windows,
     describir_tolerando_fallos,
@@ -73,6 +74,9 @@ def _modulo_uia_falso():
         UIA_TextPatternId="UIA_TextPatternId",
         TreeScope_Children="Children",
         TreeScope_Descendants="Descendants",
+        TreeScope_Element="Element",
+        AutomationElementMode_Full="Full",
+        AutomationElementMode_None="None",
         IUIAutomation="IUIAutomation",
         IUIAutomationValuePattern="IUIAutomationValuePattern",
         IUIAutomationTextPattern="IUIAutomationTextPattern",
@@ -83,19 +87,38 @@ class ElementoFalso:
     """Un ``IUIAutomationElement`` con propiedades y patrones programables."""
 
     lecturas_current: list[object] = []
+    lecturas_cache: list[object] = []
 
     def __init__(self, propiedades=None, patrones=None, error=None):
         self._propiedades = dict(propiedades or {})
         self._patrones = dict(patrones or {})
         self._error = error
+        self._cache: dict[object, object] | None = None
+        self._referencia_completa = True
+
+    def aplicar_cache(self, nombres, referencia_completa: bool) -> None:
+        self._cache = {nombre: self._propiedades.get(nombre) for nombre in nombres}
+        self._referencia_completa = referencia_completa
 
     def GetCurrentPropertyValue(self, identificador):  # noqa: N802 -- espeja el nombre COM real
         if self._error is not None:
             raise self._error
+        if not self._referencia_completa:
+            raise FalsoCOMError("AutomationElementMode_None")
         ElementoFalso.lecturas_current.append(identificador)
         return self._propiedades.get(identificador)
 
+    def GetCachedPropertyValue(self, identificador):  # noqa: N802 -- espeja el nombre COM real
+        if self._error is not None:
+            raise self._error
+        if self._cache is None or identificador not in self._cache:
+            raise FalsoCOMError(f"propiedad no cacheada: {identificador}")
+        ElementoFalso.lecturas_cache.append(identificador)
+        return self._cache[identificador]
+
     def GetCurrentPattern(self, identificador):  # noqa: N802 -- espeja el nombre COM real
+        if not self._referencia_completa:
+            raise FalsoCOMError("AutomationElementMode_None")
         return self._patrones.get(identificador)
 
 
@@ -146,11 +169,24 @@ class RaizFalsa:
         return ColeccionFalsa(self._ventanas)
 
 
+class CacheRequestFalsa:
+    """``IUIAutomationCacheRequest`` mínimo: propiedades, scope y modo."""
+
+    def __init__(self):
+        self.propiedades: list[object] = []
+        self.TreeScope = None
+        self.AutomationElementMode = None
+
+    def AddProperty(self, propiedad):  # noqa: N802 -- espeja el nombre COM real
+        self.propiedades.append(propiedad)
+
+
 class UIAFalso:
     """El objeto ``CUIAutomation``: raíz + constructores de condiciones."""
 
     def __init__(self, raiz):
         self._raiz = raiz
+        self.cache_requests: list[CacheRequestFalsa] = []
 
     def GetRootElement(self):  # noqa: N802 -- espeja el nombre COM real
         return self._raiz
@@ -161,14 +197,27 @@ class UIAFalso:
     def CreateTrueCondition(self):  # noqa: N802 -- espeja el nombre COM real
         return ("verdadera",)
 
+    def CreateCacheRequest(self):  # noqa: N802 -- espeja el nombre COM real
+        solicitud = CacheRequestFalsa()
+        self.cache_requests.append(solicitud)
+        return solicitud
+
 
 class VentanaHandleFalso:
     def __init__(self, controles):
         self._controles = list(controles)
         self.búsquedas = []
+        self.búsquedas_cache = []
 
     def FindAll(self, alcance, condicion):  # noqa: N802 -- espeja el nombre COM real
         self.búsquedas.append((alcance, condicion))
+        return ColeccionFalsa(self._controles)
+
+    def FindAllBuildCache(self, alcance, condicion, cache_request):  # noqa: N802 -- espeja el nombre COM real
+        self.búsquedas_cache.append((alcance, condicion, cache_request))
+        referencia_completa = cache_request.AutomationElementMode == "Full"
+        for elemento in self._controles:
+            elemento.aplicar_cache(cache_request.propiedades, referencia_completa)
         return ColeccionFalsa(self._controles)
 
 
@@ -361,26 +410,33 @@ def test_controles_de_ventana_enumera_descendientes(monkeypatch):
     ventana = VentanaObservada(pid=ventana.pid, titulo=ventana.titulo, class_name=ventana.class_name, handle=handle)
     (control,) = observador.controles_de_ventana(ventana)
     assert (control.tipo_de_control, control.class_name) == ("Edit", "TEdit")
-    assert handle.búsquedas and handle.búsquedas[0][0] == "Descendants"
+    assert handle.búsquedas == [], "los controles ya no se descubren con FindAll suelto"
+    assert handle.búsquedas_cache and handle.búsquedas_cache[0][0] == "Descendants"
+    assert handle.búsquedas_cache[0][1] == ("verdadera",)
 
 
-_PROPIEDADES_DESCRIPTIVAS = (
-    "UIA_ProcessIdPropertyId",
-    "UIA_AutomationIdPropertyId",
-    "UIA_NamePropertyId",
-    "UIA_ControlTypePropertyId",
-    "UIA_ClassNamePropertyId",
-)
+def test_cache_request_contiene_exactamente_las_propiedades_de_describir(monkeypatch):
+    handle = VentanaHandleFalso([_elemento_output(TEXGEN_ROOT)])
+    montaje = MontajeCOM(monkeypatch)
+    observador = montaje.construir()
+    ventana = VentanaObservada(pid=4242, titulo="TexGen 3.00", class_name="TMainForm", handle=handle)
+    observador.controles_de_ventana(ventana)
+    assert len(montaje.cliente._uia.cache_requests) == 1
+    solicitud = montaje.cliente._uia.cache_requests[0]
+    assert tuple(solicitud.propiedades) == PROPIEDADES_DE_DESCRIPCION_UIA
+    assert solicitud.TreeScope == "Element"
+    assert solicitud.AutomationElementMode == "Full"
 
 
-def test_coste_cliente_de_descripcion_es_lineal_en_current_property(monkeypatch):
+def test_coste_cliente_de_descripcion_sale_del_cache(monkeypatch):
     """DERIVADO POR LECTURA / MODELO DE COSTE, no RPC COM medidas.
 
-    Antes de H3-A, ``controles_de_ventana`` materializa el árbol y después
-    lee las cinco propiedades de ``_describir`` con ``GetCurrentPropertyValue``
-    una vez por control. El fake cuenta esas lecturas cliente: 5N.
+    H3-A: las cinco propiedades de ``_describir`` salen de
+    ``GetCachedPropertyValue``. ``GetCurrentPropertyValue`` de esas cinco no
+    crece con N. El fake no simula el transporte COM.
     """
     ElementoFalso.lecturas_current = []
+    ElementoFalso.lecturas_cache = []
     cantidad = 4
     handle = VentanaHandleFalso([_elemento_output(TEXGEN_ROOT, pid=4242) for _ in range(cantidad)])
     montaje = MontajeCOM(monkeypatch, ventanas=[_elemento_ventana()])
@@ -388,8 +444,15 @@ def test_coste_cliente_de_descripcion_es_lineal_en_current_property(monkeypatch)
     ventana = VentanaObservada(pid=4242, titulo="TexGen 3.00", class_name="TMainForm", handle=handle)
     controles = observador.controles_de_ventana(ventana)
     assert len(controles) == cantidad
-    descriptivas = [lectura for lectura in ElementoFalso.lecturas_current if lectura in _PROPIEDADES_DESCRIPTIVAS]
-    assert len(descriptivas) == 5 * cantidad
+    descriptivas_current = [
+        lectura for lectura in ElementoFalso.lecturas_current if lectura in PROPIEDADES_DE_DESCRIPCION_UIA
+    ]
+    descriptivas_cache = [
+        lectura for lectura in ElementoFalso.lecturas_cache if lectura in PROPIEDADES_DE_DESCRIPCION_UIA
+    ]
+    assert descriptivas_current == []
+    assert len(descriptivas_cache) == 5 * cantidad
+    assert handle.búsquedas_cache and handle.búsquedas == []
 
 
 def test_control_type_desconocido_se_reporta_como_id_crudo(monkeypatch):

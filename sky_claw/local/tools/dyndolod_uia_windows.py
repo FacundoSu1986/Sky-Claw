@@ -8,14 +8,15 @@ diagnóstico" y otra "productiva" divergiendo — la probe importa de acá.
 
 **Read-only, como propiedad y no como recordatorio.** Cada llamada COM de este
 módulo es una consulta: obtener la raíz, construir una condición, ``FindAll``
-acotado, leer una propiedad, leer el valor de un patrón de lectura. No hay
-ninguna que modifique el estado de la GUI — ni ``SetValue``, ni Invoke, ni
-input sintético. El ancla por AST de ``tests/test_dyndolod_uia_preflight.py``
-cubre ESTE archivo igual que al módulo de decisión: no puede siquiera nombrar
-una primitiva mutante (ni ``getattr``/``setattr``/``eval``/``exec``, que son el
-despacho dinámico que dejaría llegar a una sin que su nombre aparezca en el
-árbol). Por eso el lookup de ids de propiedad es ``self._uia_mod.__dict__[...]``
-y no ``getattr``.
+acotado sobre las ventanas top-level, ``FindAllBuildCache`` para los controles
+de una ventana, leer una propiedad (actual o cacheada), leer el valor de un
+patrón de lectura. No hay ninguna que modifique el estado de la GUI — ni
+``SetValue``, ni Invoke, ni input sintético. El ancla por AST de
+``tests/test_dyndolod_uia_preflight.py`` cubre ESTE archivo igual que al módulo
+de decisión: no puede siquiera nombrar una primitiva mutante (ni
+``getattr``/``setattr``/``eval``/``exec``, que son el despacho dinámico que
+dejaría llegar a una sin que su nombre aparezca en el árbol). Por eso el lookup
+de ids de propiedad es ``self._uia_mod.__dict__[...]`` y no ``getattr``.
 
 **Import-safe en cualquier plataforma, por construcción.** El módulo se importa
 en el CI de Ubuntu: nada de ``comtypes``/``ctypes`` a nivel de módulo. La
@@ -85,6 +86,41 @@ NOMBRES_DE_CONTROL_TYPE = {
     50032: "Window",
     50033: "Pane",
 }
+
+#: Propiedades que ``_describir`` materializa. H3-A las pide en bloque con
+#: ``IUIAutomationCacheRequest.AddProperty``; no se agregan "por si acaso".
+#: Fuente: el cuerpo de ``_describir`` en este módulo. Congelado por igualdad
+#: contra el ``CacheRequest`` que arma el adaptador.
+PROPIEDADES_DE_DESCRIPCION_UIA: tuple[str, ...] = (
+    "UIA_ProcessIdPropertyId",
+    "UIA_AutomationIdPropertyId",
+    "UIA_NamePropertyId",
+    "UIA_ControlTypePropertyId",
+    "UIA_ClassNamePropertyId",
+)
+
+
+def _como_texto(valor: object) -> str:
+    return "" if valor is None else str(valor)
+
+
+def _como_control_type(crudo: object) -> str:
+    try:
+        # ``crudo`` es un ``VARIANT`` de COM: suele venir como ``int``, pero
+        # puede venir como string u otro tipo si el proveedor se lo da mal
+        # al adaptador. ``isinstance(..., int)`` es la conversión más
+        # razonable y la que no defiende dos veces errónea.
+        numero = int(crudo) if isinstance(crudo, int) else int(str(crudo))
+    except (TypeError, ValueError):
+        return str(crudo)
+    return NOMBRES_DE_CONTROL_TYPE.get(numero, str(numero))
+
+
+def _como_pid(crudo: object) -> int:
+    try:
+        return int(crudo) if isinstance(crudo, int) else int(str(crudo))
+    except (TypeError, ValueError):
+        return PID_ILEGIBLE
 
 
 def primer_texto_no_vacio(lecturas: Iterable[Callable[[], str | None]]) -> str | None:
@@ -220,28 +256,27 @@ class ObservadorUIAWindows:
         identificador = self._uia_mod.__dict__[nombre_de_id]
         return elemento.GetCurrentPropertyValue(identificador)  # type: ignore[attr-defined]
 
+    def _propiedad_cacheada(self, elemento: object, nombre_de_id: str) -> object:
+        identificador = self._uia_mod.__dict__[nombre_de_id]
+        return elemento.GetCachedPropertyValue(identificador)  # type: ignore[attr-defined]
+
     def _texto(self, elemento: object, nombre_de_id: str) -> str:
-        valor = self._propiedad(elemento, nombre_de_id)
-        return "" if valor is None else str(valor)
+        return _como_texto(self._propiedad(elemento, nombre_de_id))
+
+    def _texto_cacheado(self, elemento: object, nombre_de_id: str) -> str:
+        return _como_texto(self._propiedad_cacheada(elemento, nombre_de_id))
 
     def _control_type(self, elemento: object) -> str:
-        crudo = self._propiedad(elemento, "UIA_ControlTypePropertyId")
-        try:
-            # ``crudo`` es un ``VARIANT`` de COM: suele venir como ``int``, pero
-            # puede venir como string u otro tipo si el proveedor se lo da mal
-            # al adaptador. ``isinstance(..., int)`` es la conversión más
-            # razonable y la que no defiende dos veces errónea.
-            numero = int(crudo) if isinstance(crudo, int) else int(str(crudo))
-        except (TypeError, ValueError):
-            return str(crudo)
-        return NOMBRES_DE_CONTROL_TYPE.get(numero, str(numero))
+        return _como_control_type(self._propiedad(elemento, "UIA_ControlTypePropertyId"))
+
+    def _control_type_cacheado(self, elemento: object) -> str:
+        return _como_control_type(self._propiedad_cacheada(elemento, "UIA_ControlTypePropertyId"))
 
     def _pid(self, elemento: object) -> int:
-        crudo = self._propiedad(elemento, "UIA_ProcessIdPropertyId")
-        try:
-            return int(crudo) if isinstance(crudo, int) else int(str(crudo))
-        except (TypeError, ValueError):
-            return PID_ILEGIBLE
+        return _como_pid(self._propiedad(elemento, "UIA_ProcessIdPropertyId"))
+
+    def _pid_cacheado(self, elemento: object) -> int:
+        return _como_pid(self._propiedad_cacheada(elemento, "UIA_ProcessIdPropertyId"))
 
     def _elementos(self, coleccion: object) -> list[object]:
         """Materializa la colección ENTERA, o no materializa nada.
@@ -261,17 +296,43 @@ class ObservadorUIAWindows:
         mostrados = min(total, TOPE_DE_ELEMENTOS_UIA)
         return [coleccion.GetElement(indice) for indice in range(mostrados)], total  # type: ignore[attr-defined]
 
+    def crear_cache_request_para_descripcion(self) -> object:
+        """CacheRequest de las propiedades de ``_describir``. Read-only.
+
+        ``AutomationElementMode_Full`` es obligatorio. ``AutomationElementMode_None``
+        no deja referencia al UI subyacente: ``GetCurrentPropertyValue`` y
+        ``GetCurrentPattern`` fallan (MSDN ``AutomationElementMode``: None = sólo
+        información cacheada, sin referencia; Full = referencia completa, default).
+        El candidato elegido sigue leyendo ``ValuePattern`` / ``TextPattern`` por
+        ``GetCurrentPattern`` después del discovery.
+
+        ``TreeScope_Element`` cachea el elemento devuelto por ``FindAllBuildCache``,
+        no re-expande el subárbol (el scope de búsqueda sigue siendo Descendants
+        de la ventana, no del Desktop).
+        """
+        solicitud = self._uia.CreateCacheRequest()
+        for nombre in PROPIEDADES_DE_DESCRIPCION_UIA:
+            solicitud.AddProperty(self._uia_mod.__dict__[nombre])
+        solicitud.TreeScope = self._uia_mod.__dict__["TreeScope_Element"]
+        solicitud.AutomationElementMode = self._uia_mod.__dict__["AutomationElementMode_Full"]
+        return solicitud
+
     def _coleccion_de_controles(self, ventana: VentanaObservada) -> object:
         condicion = self._uia.CreateTrueCondition()
-        return ventana.handle.FindAll(self._uia_mod.TreeScope_Descendants, condicion)  # type: ignore[attr-defined]
+        cache = self.crear_cache_request_para_descripcion()
+        return ventana.handle.FindAllBuildCache(  # type: ignore[attr-defined]
+            self._uia_mod.__dict__["TreeScope_Descendants"],
+            condicion,
+            cache,
+        )
 
     def _describir(self, elemento: object) -> ControlObservado:
         return ControlObservado(
-            pid=self._pid(elemento),
-            automation_id=self._texto(elemento, "UIA_AutomationIdPropertyId"),
-            nombre=self._texto(elemento, "UIA_NamePropertyId"),
-            tipo_de_control=self._control_type(elemento),
-            class_name=self._texto(elemento, "UIA_ClassNamePropertyId"),
+            pid=self._pid_cacheado(elemento),
+            automation_id=self._texto_cacheado(elemento, "UIA_AutomationIdPropertyId"),
+            nombre=self._texto_cacheado(elemento, "UIA_NamePropertyId"),
+            tipo_de_control=self._control_type_cacheado(elemento),
+            class_name=self._texto_cacheado(elemento, "UIA_ClassNamePropertyId"),
             handle=elemento,
         )
 
