@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **El launcher `SkyClawApp.bat` no encontraba el entorno del repo y avisaba por
+  el puerto equivocado.** Buscaba `venv\Scripts\python.exe` (el repo usa `.venv`,
+  el que crean `build.bat`/`uv`) y caía al Python del sistema, que no tiene
+  `sky_claw` instalado → `ModuleNotFoundError`; ahora usa `.venv\`, el mismo
+  criterio que el ancla de `build.bat` en `tests/test_pyinstaller.py`. El chequeo
+  de puerto miraba 8888, que no lo bindea nadie: la GUI usa 8080 (NiceGUI) y
+  8765 (API `/api/chat`), así que el `WinError 10048` real al reabrir pasaba sin
+  aviso. De paso, los mensajes `echo [!]` del launcher (y el `Build complete!`
+  de `build.bat`) perdían el `!` al imprimirse —con `enabledelayedexpansion` el
+  parser lo toma como inicio de variable y lo descarta, así que el aviso salía
+  `[] ALERTA`—; ahora usan tags sin `!`. Ancla:
+  `tests/test_launcher_usuario.py` (los puertos avisados se comparan contra los
+  que bindean `gui_mode.py`/`_bootloader.py`, y TODOS los `echo` de ambos `.bat`
+  se recorren buscando `!` sueltos).
+- **La CLI anunciaba `exit`/`quit` pero no los implementaba.** El REPL sólo salía
+  con EOF (`Ctrl+D`) o `Ctrl+C`, así que `exit` viajaba al LLM como un mensaje
+  más. Ahora cierra con `exit`, `quit` o `salir` (con `/` inicial opcional y sin
+  distinguir mayúsculas), el banner se deriva de la misma constante y la familia
+  se congela en `tests/test_cli_repl_comandos.py`.
 - **GUI — pulido visual del shell Forja del Dovahkiin.** El sidebar, el toggle
   «Confirmar», las filas del Orden de Carga, las tarjetas de ritual y las
   filas de Disputas se renderizaban desarmados (ícono arriba, etiqueta abajo)
