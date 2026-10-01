@@ -85,11 +85,23 @@ class ProtectionJournalTransitionError(ProtectionJournalSchemaError):
 
 
 class PrematureCommitError(ProtectionJournalError):
-    """Intento de declarar ``COMMITTED`` sin los gates de S4-B/C (§32).
+    """Intento de declarar ``COMMITTED`` sin la evidencia que el ADR le exige.
 
-    ``COMMITTED`` exige GP1 ``HARDENED``, RV-2 ``VERIFIED``, igualdad literal del
-    NodeSet y ``ARCHIVING_BACKUP`` flushado. Ninguno de esos gates existe en S4-A,
-    de modo que la API productiva de este slice lo rechaza siempre.
+    Se rechaza en DOS niveles, y la diferencia es el sentido de la garantía:
+
+    * **S4-A/S4-C** — ``transition_to(COMMITTED)`` se rechaza siempre: esos
+      slices no tienen los gates, así que no pueden afirmar el commit. La lista
+      ``S4A_PERMITTED_TRANSITION_TARGETS`` congela el slice entero, y el ancla
+      ``SB-04`` verifica que esta clase siga referenciada en el store.
+    * **S4-D** — ``commit_finalized`` sí alcanza el estado, PERO exige un
+      ``DurableGoldenBackupArchive`` real (create-once + ``FlushFileBuffers`` +
+      relectura byte a byte) que liga con el plan por identidad y por digest, y
+      exige que el estado durable sea ``ARCHIVING_BACKUP``. El commit dejó de ser
+      un target alcanzable por aritmética de FSM y pasó a ser una consecuencia de
+      evidencia.
+
+    En los dos casos el mensaje es el mismo: un ``COMMITTED`` sin respaldo durable
+    es una mentira, y una mentira transaccional no se corrige con un reintento.
     """
 
 
