@@ -82,6 +82,8 @@ def _modulo_uia_falso():
 class ElementoFalso:
     """Un ``IUIAutomationElement`` con propiedades y patrones programables."""
 
+    lecturas_current: list[object] = []
+
     def __init__(self, propiedades=None, patrones=None, error=None):
         self._propiedades = dict(propiedades or {})
         self._patrones = dict(patrones or {})
@@ -90,6 +92,7 @@ class ElementoFalso:
     def GetCurrentPropertyValue(self, identificador):  # noqa: N802 -- espeja el nombre COM real
         if self._error is not None:
             raise self._error
+        ElementoFalso.lecturas_current.append(identificador)
         return self._propiedades.get(identificador)
 
     def GetCurrentPattern(self, identificador):  # noqa: N802 -- espeja el nombre COM real
@@ -359,6 +362,34 @@ def test_controles_de_ventana_enumera_descendientes(monkeypatch):
     (control,) = observador.controles_de_ventana(ventana)
     assert (control.tipo_de_control, control.class_name) == ("Edit", "TEdit")
     assert handle.búsquedas and handle.búsquedas[0][0] == "Descendants"
+
+
+_PROPIEDADES_DESCRIPTIVAS = (
+    "UIA_ProcessIdPropertyId",
+    "UIA_AutomationIdPropertyId",
+    "UIA_NamePropertyId",
+    "UIA_ControlTypePropertyId",
+    "UIA_ClassNamePropertyId",
+)
+
+
+def test_coste_cliente_de_descripcion_es_lineal_en_current_property(monkeypatch):
+    """DERIVADO POR LECTURA / MODELO DE COSTE, no RPC COM medidas.
+
+    Antes de H3-A, ``controles_de_ventana`` materializa el árbol y después
+    lee las cinco propiedades de ``_describir`` con ``GetCurrentPropertyValue``
+    una vez por control. El fake cuenta esas lecturas cliente: 5N.
+    """
+    ElementoFalso.lecturas_current = []
+    cantidad = 4
+    handle = VentanaHandleFalso([_elemento_output(TEXGEN_ROOT, pid=4242) for _ in range(cantidad)])
+    montaje = MontajeCOM(monkeypatch, ventanas=[_elemento_ventana()])
+    observador = montaje.construir()
+    ventana = VentanaObservada(pid=4242, titulo="TexGen 3.00", class_name="TMainForm", handle=handle)
+    controles = observador.controles_de_ventana(ventana)
+    assert len(controles) == cantidad
+    descriptivas = [lectura for lectura in ElementoFalso.lecturas_current if lectura in _PROPIEDADES_DESCRIPTIVAS]
+    assert len(descriptivas) == 5 * cantidad
 
 
 def test_control_type_desconocido_se_reporta_como_id_crudo(monkeypatch):
