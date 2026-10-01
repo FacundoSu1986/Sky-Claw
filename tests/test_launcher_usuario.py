@@ -18,6 +18,8 @@ hermano en ``build.bat`` (CHANGELOG 0.2.1: "apuntaba a ``venv\\`` en vez del
 
 Los anclajes enumeran, no muestrean:
 
+- la familia de ``.bat`` de raíz queda congelada por igualdad contra el filesystem:
+  si aparece un hermano nuevo, CI obliga a clasificarlo explícitamente;
 - el venv se verifica sobre TODOS los ``.bat`` de arranque del repo, con el
   mismo criterio que ``tests/test_pyinstaller.py::test_build_bat_uses_dot_venv``;
 - los puertos del aviso se comparan por igualdad contra los que bindean
@@ -36,12 +38,20 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 
-#: Familia de lanzadores bat del repo: el launcher de usuario y el build.
-BATS_DE_ARRANQUE = ["SkyClawApp.bat", "build.bat"]
+#: Familia explícitamente aceptada de lanzadores .bat en la raíz del repo.
+BATS_DE_ARRANQUE = ("SkyClawApp.bat", "build.bat")
 
 
 def _leer_bat(nombre: str) -> str:
     return (REPO_ROOT / nombre).read_text(encoding="utf-8")
+
+
+def test_la_familia_de_bats_de_raiz_esta_congelada() -> None:
+    """Un .bat nuevo exige clasificar explícitamente si pertenece a esta familia."""
+    encontrados = {ruta.name for ruta in REPO_ROOT.glob("*.bat")}
+    assert encontrados == set(BATS_DE_ARRANQUE), (
+        f"Familia .bat cambió: esperados={sorted(BATS_DE_ARRANQUE)}, encontrados={sorted(encontrados)}"
+    )
 
 
 @pytest.mark.parametrize("nombre", BATS_DE_ARRANQUE)
