@@ -63,13 +63,21 @@ import hashlib
 import logging
 import os
 import pathlib
-from typing import Any
+from typing import Any, Final
 
 from sky_claw.local.runtime_vault.finalization_orchestrator import (
     FinalizationUnsupportedError,
     GateVerdict,
 )
-from sky_claw.local.runtime_vault.models import RuntimeVaultError, TreeDigest, VerificationState
+from sky_claw.local.runtime_vault.golden_protection_plan import (
+    DuplicateFileIdError,
+)
+from sky_claw.local.runtime_vault.models import (
+    InventoryError,
+    RuntimeVaultError,
+    TreeDigest,
+    VerificationState,
+)
 from sky_claw.local.runtime_vault.node_evidence import (
     NativeEvidenceError,
     probe_node_evidence,
@@ -93,6 +101,30 @@ def _digest(detalle: str) -> str:
 
 def _verdict(gate: str, passed: bool, detalle: str) -> GateVerdict:
     return GateVerdict(gate=gate, passed=passed, detail=detalle, evidence_digest=_digest(f"{gate}:{detalle}"))
+
+
+#: Errores de DOMINIO que ``probe_node_evidence`` puede levantar y que NO
+#: derivan de ``NativeEvidenceError``.
+#:
+#: Se enumeran a propósito, y con la comprobación de que cada uno realmente
+#: escapa del ``except NativeEvidenceError`` que el adapter tenía antes. Un
+#: ``except (NativeEvidenceError,)`` dejaba pasar:
+#:
+#: * ``InventoryLinkError`` (reparse point / junction dentro del árbol) —
+#:   deriva de ``InventoryError``, no de ``NativeEvidenceError``. Un reparse
+#:   inesperado es exactamente el caso I de la matriz adversarial, y se
+#:   escapaba al caller en vez de volverse veredicto FAIL.
+#: * ``DuplicateFileIdError`` (hardlink o identidad física duplicada) — deriva
+#:   de ``GoldenProtectionPlanError``. Es el caso M, y también se escapaba.
+#:
+#: Ninguno de los dos puede "colarse como veredicto favorable": el adapter
+#: devuelve ``passed=False`` con el motivo, y el orquestador traduce eso a
+#: ROLLBACK_REQUIRED. Un gate que no puede observar es un gate que no pasa.
+_ERRORES_DE_EVIDENCIA: Final[tuple[type[Exception], ...]] = (
+    NativeEvidenceError,
+    InventoryError,
+    DuplicateFileIdError,
+)
 
 
 class Win32FinalizationVerificationPort:
@@ -145,17 +177,21 @@ class Win32FinalizationVerificationPort:
         """NodeSet fresco: el conjunto FÍSICO de nodos es el autorizado (§23.1).
 
         La comparación es por IDENTIDAD, no por path: ``relative_path`` +
-        ``node_kind`` + ``VolumeSerialNumber`` + ``FileId``. Un path igual no
-        implica el mismo objeto: un archivo sustituido conserva su nombre y
-        cambia su FileId, y ése es el caso I de la matriz adversarial.
+                ``node_kind`` + ``VolumeSerialNumber`` + ``FileId``. Un path igual no
+                implica el mismo objeto: un archivo sustituido conserva su nombre y
+                cambia su FileId, y ése es el caso I de la matriz adversarial.
 
-        LaIgualdad es de CONJUNTO en las dos direcciones. Un subconjunto
-        verificado no es el conjunto verificado, y un nodo extra es un nodo que
-        nadie autorizó.
+                La igualdad es de CONJUNTO en las dos direcciones. Un subconjunto
+                verificado no es el conjunto verificado, y un nodo extra es un nodo que
+                nadie autorizó.
         """
         try:
             evidencia = probe_node_evidence(raiz)
-        except NativeEvidenceError as exc:
+        except _ERRORES_DE_EVIDENCIA as exc:
+            # Todo error de dominio de la evidencia se vuelve veredicto FAIL, no
+            # excepción al caller. La enumeración de `_ERRORES_DE_EVIDENCIA`
+            # incluye las clases que NO derivan de `NativeEvidenceError`
+            # (reparse, hardlink) — ver su comentario.
             return _verdict("node_set", False, f"el probe de nodos falló fail-closed: {type(exc).__name__}: {exc}")
 
         observado = {

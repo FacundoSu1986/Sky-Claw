@@ -135,7 +135,7 @@ def _crear_golden(rig: pathlib.Path) -> pathlib.Path:
     return golden
 
 
-def _argv(rig: pathlib.Path, fase: str, extra: tuple[str, ...] = ()) -> list[str]:
+def _argv(rig: pathlib.Path, fase: str, extra: tuple[str, ...] = (), ciclo: str = "") -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -146,15 +146,17 @@ def _argv(rig: pathlib.Path, fase: str, extra: tuple[str, ...] = ()) -> list[str
         _OPERACION,
         "--phase",
         fase,
+        "--ciclo",
+        ciclo or uuid.uuid4().hex[:8],
         *extra,
     ]
 
 
 def _correr(
-    rig: pathlib.Path, fase: str, timeout: int = 180, extra: tuple[str, ...] = ()
+    rig: pathlib.Path, fase: str, timeout: int = 180, extra: tuple[str, ...] = (), ciclo: str = ""
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        _argv(rig, fase, extra),
+        _argv(rig, fase, extra, ciclo),
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
@@ -163,9 +165,9 @@ def _correr(
     )
 
 
-def _lanzar(rig: pathlib.Path, fase: str, extra: tuple[str, ...] = ()) -> subprocess.Popen[str]:
+def _lanzar(rig: pathlib.Path, fase: str, extra: tuple[str, ...] = (), ciclo: str = "") -> subprocess.Popen[str]:
     return subprocess.Popen(
-        _argv(rig, fase, extra),
+        _argv(rig, fase, extra, ciclo),
         cwd=_REPO_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -190,41 +192,60 @@ def _matar_arbol(proc: subprocess.Popen[str]) -> None:
             stream.close()
 
 
-def _esperar_y_matar(rig: pathlib.Path, destino: str, *, publicar_backup: bool = False) -> None:
+def _esperar_y_matar(rig: pathlib.Path, destino: str, *, publicar_backup: bool = False) -> tuple[int, str]:
     """Siembra un estado durable y mata al worker MIENTRAS está vivo.
 
     La espera por el breadcrumb es lo que hace que el test sea causal y no una
     carrera: matar antes de que el proceso escriba probaría el estado durable
-    ANTERIOR, que es otra escenario. Y matar en vez de dejar que el worker salga
+    ANTERIOR, que es otro escenario. Y matar en vez de dejar que el worker salga
     solo es lo que lo convierte en un crash real y no en un ``os._exit``.
+
+    Devuelve ``(pid_real_del_worker, ciclo)``: el PID es la evidencia de que
+    cada ciclo del RIG multi-crash fue un proceso DISTINTO.
     """
+    ciclo = uuid.uuid4().hex[:8]
     extra = ["--destino", destino]
     if publicar_backup:
         extra.append("--publicar-backup")
-    proc = _lanzar(rig, "semilla", tuple(extra))
+    proc = _lanzar(rig, "semilla", tuple(extra), ciclo)
     try:
-        _esperar_breadcrumb(rig, "vivo:esperando_taskkill", proc=proc)
+        _esperar_breadcrumb(rig, "vivo:esperando_taskkill", ciclo=ciclo, proc=proc)
         assert _proceso_vivo(proc), "el worker se salió solo: no hay crash que demostrar"
         _matar_arbol(proc)
     finally:
         if proc.poll() is None:
             _matar_arbol(proc)
-    assert f"semilla:{destino}" in _eventos(rig)
+    # El breadcrumb tiene que ser de ESTA corrida, no de una anterior.
+    assert f"semilla:{destino}" in _eventos(rig, ciclo=ciclo), (
+        f"la corrida {ciclo} no sembró '{destino}'; su log es {_eventos(rig, ciclo=ciclo)}"
+    )
+    pids = _pids_de(rig, ciclo)
+    assert pids, f"la corrida {ciclo} no dejó breadcrumbs"
+    return pids[0], ciclo
 
 
-def _esperar_breadcrumb(rig: pathlib.Path, evento: str, *, proc: subprocess.Popen[str], timeout: float = 60.0) -> None:
-    """Espera a que el breadcrumb exista, o que el proceso muera (y falla)."""
+def _esperar_breadcrumb(
+    rig: pathlib.Path, evento: str, *, ciclo: str, proc: subprocess.Popen[str], timeout: float = 60.0
+) -> None:
+    """Espera a que ESTA corrida emita el breadcrumb, no a que exista en el log.
+
+    Filtrar por la corrida es lo que hace que esto sea una espera y no una
+    carrera: el log es acumulativo y las líneas de un worker anterior son
+    indistinguibles de las del nuevo si no se mira quién las escribió.
+    """
     limite = time.monotonic() + timeout
     while time.monotonic() < limite:
-        if evento in _eventos(rig):
+        if evento in _eventos(rig, ciclo=ciclo):
             return
         if proc.poll() is not None:
             pytest.fail(
-                f"el worker terminó con código {proc.returncode} antes de emitir '{evento}'; "
-                f"stderr={proc.stderr.read() if proc.stderr else ''}"
+                f"el worker (ciclo={ciclo}, pid={proc.pid}) terminó con código {proc.returncode} antes "
+                f"de emitir '{evento}'; stderr={proc.stderr.read() if proc.stderr else ''}"
             )
         time.sleep(0.05)
-    pytest.fail(f"el worker nunca emitió el breadcrumb '{evento}' (eventos vistos: {_eventos(rig)})")
+    pytest.fail(
+        f"el worker (ciclo={ciclo}) nunca emitió '{evento}'; eventos de ESA corrida: {_eventos(rig, ciclo=ciclo)}"
+    )
 
 
 def _proceso_vivo(proc: subprocess.Popen[str]) -> bool:
@@ -238,8 +259,42 @@ def _breadcrumbs(rig: pathlib.Path) -> list[str]:
     return [linea.strip() for linea in ruta.read_text(encoding="utf-8").splitlines() if linea.strip()]
 
 
-def _eventos(rig: pathlib.Path) -> list[str]:
-    return [linea.split(" ", 1)[1] for linea in _breadcrumbs(rig) if " " in linea]
+def _lineas(rig: pathlib.Path) -> list[tuple[int, str, str]]:
+    """``(pid, ciclo, evento)`` de cada breadcrumb del log."""
+    filas: list[tuple[int, str, str]] = []
+    for linea in _breadcrumbs(rig):
+        partes = linea.split(" ", 1)
+        if len(partes) != 2:
+            continue
+        pid_texto, resto = partes
+        ciclo, _, evento = resto.partition(":")
+        try:
+            filas.append((int(pid_texto), ciclo, evento))
+        except ValueError:
+            continue
+    return filas
+
+
+def _eventos(rig: pathlib.Path, *, ciclo: str | None = None) -> list[str]:
+    """Eventos del log, opcionalmente de UNA SOLA corrida.
+
+    El filtro por corrida no es cosmético: sin él, el segundo worker de un RIG
+    multi-crash encuentra el breadcrumb que escribió el primero y el controller lo
+    mata antes de que llegue al punto objetivo. El test "tres reinicios" pasaba
+    sin ejercer ni un crash real en los ciclos 2 y 3.
+
+    Se usa el nonce de corrida y no el PID del launcher: en Windows
+    ``sys.executable`` crea el intérprete real como proceso HIJO, así que el
+    ``pid`` del controller no es el ``os.getpid()`` del worker.
+    """
+    filas = _lineas(rig)
+    if ciclo is None:
+        return [evento for _, _, evento in filas]
+    return [evento for _, ciclo_texto, evento in filas if ciclo_texto == ciclo]
+
+
+def _pids_de(rig: pathlib.Path, ciclo: str) -> list[int]:
+    return [pid for pid, ciclo_texto, _ in _lineas(rig) if ciclo_texto == ciclo]
 
 
 def _journal_path(rig: pathlib.Path) -> pathlib.Path:
@@ -388,6 +443,80 @@ def test_w_d03_crash_tras_un_gp1_observado_no_hay_bandera_que_recordar() -> None
 
         proc_b = _correr(rig, "completa")
         assert proc_b.returncode == 0, f"el proceso B no comiteó: {proc_b.stdout}\n{proc_b.stderr}"
+        assert _estado_durable(rig) is ProtectionTransactionState.COMMITTED
+    finally:
+        _limpiar(rig)
+
+
+@_SKIP_POR_PLATAFORMA
+def test_w_d04b_crash_en_verifying_node_set_el_proceso_b_retoma() -> None:
+    """W-D04b: crash con ``VERIFYING_NODE_SET`` durable → B retoma y comitea.
+
+    Es el escenario del P1 bloqueante. Antes del fix, reanudar desde esta fase
+    pedía la arista ilegal ``VERIFYING_NODE_SET -> VERIFYING_RV2`` y terminaba en
+    INDETERMINATE con cero gates. Ahora B avanza hacia adelante desde NodeSet.
+
+    Y el breadcrumb se espera POR PID: si el controller aceptara el breadcrumb de
+    un proceso anterior, mataría a B antes de que llegara al punto.
+    """
+    rig = _rig_root()
+    try:
+        _preparar(rig)
+        pid_a, _ciclo = _esperar_y_matar(rig, "verifying_node_set")
+
+        assert _estado_durable(rig) is ProtectionTransactionState.VERIFYING_NODE_SET
+
+        proc_b = _correr(rig, "completa")
+        desenlace, liberado, _ = _desenlace(proc_b.stdout)
+        assert desenlace == "committed", f"el proceso B no comiteó: {proc_b.stdout}\n{proc_b.stderr}"
+        assert liberado is True
+        assert _estado_durable(rig) is ProtectionTransactionState.COMMITTED
+        assert _fase_del_lock(rig) == GoldenLockPhase.RELEASED.value
+
+        # B no ejecutó GP1 ni el RV-2 ANTERIOR a NodeSet: no hay forma de
+        # re-ejecutar un gate que está por debajo del punto de reanudación.
+        eventos_b = [evento for evento in _eventos(rig) if evento.startswith("gate:")]
+        assert "gate:gp1" not in eventos_b, f"reanudar desde VERIFYING_NODE_SET no debe re-ejecutar GP1: {eventos_b}"
+        assert eventos_b == [
+            "gate:node_set",
+            "gate:quiescence",
+            "gate:rv2",
+            "gate:rv2",
+        ], f"secuencia de gates inesperada al reanudar desde NodeSet: {eventos_b}"
+        assert isinstance(pid_a, int)
+    finally:
+        _limpiar(rig)
+
+
+@_SKIP_POR_PLATAFORMA
+def test_w_d04c_crash_repetido_en_verifying_node_set_es_idempotente() -> None:
+    """W-D04c: dos crashes seguidos en la MISMA fase, sobre el mismo journal.
+
+    El worker de semilla es reentrante: el segundo lanzamiento reabre el journal
+    ya avanzado y tiene que reconocer que la fase destino ya está alcanzada, sin
+    pedir una arista hacia atrás. Es la regresión directa del defecto del worker.
+    """
+    rig = _rig_root()
+    try:
+        _preparar(rig)
+        ciclos = [_esperar_y_matar(rig, "verifying_node_set") for _ in range(2)]
+        pid_a, ciclo_a = ciclos[0]
+        pid_b, ciclo_b = ciclos[1]
+
+        assert pid_a != pid_b, f"dos lanzamientos deben ser dos procesos distintos; fueron {ciclos}"
+        assert ciclo_a != ciclo_b
+        assert _estado_durable(rig) is ProtectionTransactionState.VERIFYING_NODE_SET
+        # Cada corrida sembró UNA sola vez: el worker es idempotente y no
+        # reescribió la fase que ya estaba alcanzada.
+        for _pid, ciclo in ciclos:
+            sembradas = [evento for evento in _eventos(rig, ciclo=ciclo) if evento.startswith("semilla:")]
+            assert sembradas == ["semilla:verifying_node_set"], (
+                f"la corrida {ciclo} sembró {sembradas}; se esperaba exactamente una"
+            )
+
+        proc_c = _correr(rig, "completa")
+        desenlace, _, _ = _desenlace(proc_c.stdout)
+        assert desenlace == "committed"
         assert _estado_durable(rig) is ProtectionTransactionState.COMMITTED
     finally:
         _limpiar(rig)
@@ -711,17 +840,27 @@ def test_w_d09_sustitucion_de_fileid_con_el_mismo_contenido_no_comitea() -> None
 def test_v_reiniciar_tres_veces_en_la_misma_fase_no_altera_el_desenlace() -> None:
     """V: el recovery es idempotente aunque se reinicie muchas veces.
 
-    Se siembra la misma fase tres veces y se corre el recovery tres veces. La
-    primera termina en COMMITTED; las otras dos son replays terminales. Si el
-    recoveryDepends de "que sea la primera vez" o de cuántas veces se lo llamó,
-    esto lo rompería.
+    Se siembra la misma fase **tres veces, en tres procesos distintos**, y se
+    corre el recovery tres veces: la primera termina en COMMITTED y las otras dos
+    son replays terminales. Si el recovery dependiera de "que sea la primera vez"
+    o de cuántas veces se lo llamó, esto lo rompería.
+
+    Lo que hace el test CAUSAL es exigir que cada ciclo sea un proceso
+    distinto y que su breadcrumb sea propio: sin eso, el segundo y el tercer
+    lanzamiento podían morir por un breadcrumb del primero sin haber caído
+    nunca, y el test pasaba sin ejercitar ningún crash.
     """
     rig = _rig_root()
     try:
         _preparar(rig)
-        for _ in range(3):
-            _esperar_y_matar(rig, "verifying_rv2")
-            assert _estado_durable(rig) is ProtectionTransactionState.VERIFYING_RV2
+        ciclos = [_esperar_y_matar(rig, "verifying_rv2") for _ in range(3)]
+        assert len({ciclo for _, ciclo in ciclos}) == 3, f"los tres ciclos deben ser corridas distintas: {ciclos}"
+        assert len({pid for pid, _ in ciclos}) == 3, f"los tres ciclos deben ser procesos distintos: {ciclos}"
+        for pid, ciclo in ciclos:
+            assert "semilla:verifying_rv2" in _eventos(rig, ciclo=ciclo), (
+                f"la corrida {ciclo} (pid={pid}) no dejó su propio breadcrumb de siembra"
+            )
+        assert _estado_durable(rig) is ProtectionTransactionState.VERIFYING_RV2
 
         for intento in range(3):
             proc = _correr(rig, "completa")
@@ -730,7 +869,9 @@ def test_v_reiniciar_tres_veces_en_la_misma_fase_no_altera_el_desenlace() -> Non
                 assert _estado_durable(rig) is ProtectionTransactionState.COMMITTED
             else:
                 desenlace, _, _ = _desenlace(proc.stdout)
-                assert desenlace == "already_committed"
+                assert desenlace == "already_committed", (
+                    f"el recovery #{intento} no fue un replay idempotente: {proc.stdout}"
+                )
 
         assert _fase_del_lock(rig) == GoldenLockPhase.RELEASED.value
     finally:

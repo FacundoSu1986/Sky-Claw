@@ -83,29 +83,42 @@ _EPOCH_FICTICIO = 1_758_499_100
 _PREPARAR = "preparar"
 _COMPLETA = "completa"
 _SEMILLA = "semilla"
-#: Semillas por estado durable al que se debe dejar el journal antes de morir.
-_SEMILLAS = {
-    "verifying_gp1": ProtectionTransactionState.VERIFYING_GP1,
-    "verifying_rv2": ProtectionTransactionState.VERIFYING_RV2,
-    "verifying_node_set": ProtectionTransactionState.VERIFYING_NODE_SET,
-    "archiving_backup": ProtectionTransactionState.ARCHIVING_BACKUP,
-}
-#: Estados previos a una semilla, en orden de arista.
-_TRAMO_SEMILLA = {
-    "verifying_gp1": (),
-    "verifying_rv2": (ProtectionTransactionState.VERIFYING_GP1,),
+#: Ruta de fases que lleva a cada destino, INCLUYENDO el destino. Es la única
+#: fuente del orden de la siembra: se avanza por ella desde el estado durable
+#: real, no desde cero.
+_TRAMO_SEMILLA: dict[str, tuple[ProtectionTransactionState, ...]] = {
+    "verifying_gp1": (ProtectionTransactionState.VERIFYING_GP1,),
+    "verifying_rv2": (
+        ProtectionTransactionState.VERIFYING_GP1,
+        ProtectionTransactionState.VERIFYING_RV2,
+    ),
     "verifying_node_set": (
         ProtectionTransactionState.VERIFYING_GP1,
         ProtectionTransactionState.VERIFYING_RV2,
+        ProtectionTransactionState.VERIFYING_NODE_SET,
     ),
     "archiving_backup": (
         ProtectionTransactionState.VERIFYING_GP1,
         ProtectionTransactionState.VERIFYING_RV2,
         ProtectionTransactionState.VERIFYING_NODE_SET,
+        ProtectionTransactionState.ARCHIVING_BACKUP,
     ),
 }
 
 _CODIGO_MUERTE = 60
+
+#: Nonce del ciclo, inyectado por el controller. TODOS los breadcrumbs de esta
+#: corrida lo llevan.
+#:
+#: Por qué no basta el PID: en Windows ``sys.executable`` es el launcher del venv
+#: que a su vez crea el intérprete real como proceso HIJO, así que el ``pid`` que
+#: el controller tiene en la mano NO es el ``os.getpid()`` del worker. Filtrar el
+#: log por el PID del launcher no encuentra nada — o encuentra la línea de otro
+#: proceso, que es exactamente el falso positivo que había.
+#:
+#: El nonce identifica la CORRIDA, no el proceso, y es immune a esa indirección:
+#: un breadcrumb de una corrida anterior no puede satisfacer la espera de otra.
+_CICLO = "-"
 
 
 def _resolver(rig: pathlib.Path) -> Any:
@@ -113,9 +126,13 @@ def _resolver(rig: pathlib.Path) -> Any:
 
 
 def _log(rig: pathlib.Path, evento: str) -> None:
-    """Breadcrumb con PID: el controller lo usa para muerto-vivo y causalidad."""
+    """Breadcrumb con PID real y nonce de ciclo: ``<pid> <ciclo>:<evento>``.
+
+    El PID se conserva porque es la evidencia forense de "proceso distinto"; el
+    nonce es lo que el controller usa para esperar.
+    """
     with (rig / "breadcrumbs.log").open("a", encoding="utf-8") as fh:
-        fh.write(f"{os.getpid()} {evento}\n")
+        fh.write(f"{os.getpid()} {_CICLO}:{evento}\n")
         fh.flush()
         os.fsync(fh.fileno())
 
@@ -515,6 +532,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=[_PREPARAR, _COMPLETA, _SEMILLA, "quiescence_bloqueada"],
     )
     parser.add_argument(
+        "--ciclo",
+        default="",
+        help="Nonce de la corrida: lo antepone a todos sus breadcrumbs para que el controller "
+        "pueda distinguir esta corrida de las anteriores",
+    )
+    parser.add_argument(
         "--destino",
         default="",
         help="Estado durable objetivo cuando --phase=semilla (ver TRAMO_SEMILLA)",
@@ -522,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publicar-backup", action="store_true", help="Publica el backup antes de morir")
     args = parser.parse_args(argv)
 
+    global _CICLO
+    _CICLO = args.ciclo or "-"
     rig = pathlib.Path(args.rig_root)
     operation_id = args.operation_id
     programdata = _resolver(rig)
@@ -563,9 +588,30 @@ def main(argv: list[str] | None = None) -> int:
     # máquina.
     # ------------------------------------------------------------------
     if args.phase == _SEMILLA:
-        for fase in _TRAMO_SEMILLA[args.destino]:
+        # Avance MONOTÓNICO desde el estado durable real, sin repetir ni
+        # retroceder. El worker es reentrante a propósito —el RIG lo relanza
+        # sobre la MISMA operación para encadenar varios crashes— y recorrer la
+        # ruta completa desde el principio pedía aristas que el FSM no admite en
+        # cuanto el journal ya había avanzado.
+        ruta = _TRAMO_SEMILLA[args.destino]
+        actual = journal.transaction_state
+        pos_actual = -1
+        if actual is ProtectionTransactionState.APPLYING:
+            actual = None  # antes del tramo: hay que entrar por la primera fase
+        elif actual is not None:
+            if actual not in ruta:
+                raise SystemExit(
+                    f"el journal ya está en '{actual.value}', que no pertenece a la ruta de "
+                    f"'{args.destino}'; sembrarlo exigiría retroceder el FSM"
+                )
+            pos_actual = ruta.index(actual)
+        # Se entran SÓLO las fases POSTERIORES a la alcanzada. Con la posición
+        # en el último elemento (ya estamos en el destino) el slice queda vacío
+        # y la siembra es idempotente: no reescribe la fase ya escrita.
+        for fase in ruta[pos_actual + 1 :]:
             journal.enter_finalization_phase(fase)
-        journal.enter_finalization_phase(_SEMILLAS[args.destino])
+        if journal.transaction_state is not ruta[-1]:
+            raise SystemExit(f"la siembra no llegó a '{args.destino}': quedó en '{journal.transaction_state.value}'")
         if args.publicar_backup:
             escritura = archive_golden_backup(plan, programdata_resolver=programdata, writer=_WriterRIG())
             _log(rig, f"backup_publicado:{escritura.durable.archive_digest[:16]}")

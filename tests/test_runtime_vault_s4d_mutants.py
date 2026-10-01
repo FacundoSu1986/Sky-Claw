@@ -796,3 +796,42 @@ def test_m_d11_un_journal_de_otra_operacion_no_puede_recibir_las_transiciones(
     assert h2.puerto.llamadas == []
     assert h.journal_estado() is ProtectionTransactionState.APPLYING
     assert h2.journal_estado() is ProtectionTransactionState.APPLYING
+
+
+def test_todo_lo_exportado_por_runtime_vault_existe_de_verdad() -> None:
+    """``__all__`` no puede nombrar un símbolo inexistente.
+
+    Es la mitad mecánica de un contrato de API. ``from sky_claw.local.runtime_vault
+    import *`` falla con un símbolo inexistente en la lista, y un
+    ``getattr(modulo, nombre)`` que devuelve ``None`` convierte un typo en un
+    error diferido en el call-site del consumidor en vez de en el que se
+    escribió.
+
+    La comprobación es TOTAL y por getattr, no por una lista de casos: un
+    ``__all__`` con un nombre roto se detecta sin que nadie escriba el test para
+    ese nombre.
+    """
+    import sky_claw.local.runtime_vault as rv
+
+    faltantes = [nombre for nombre in rv.__all__ if not hasattr(rv, nombre)]
+    assert not faltantes, f"runtime_vault.__all__ declara símbolos que el paquete no expone: {faltantes}"
+
+
+def test_todas_las_excepciones_del_manifest_de_backup_heredan_del_base() -> None:
+    """El store de backup tiene UN árbol de errores tipado.
+
+    Si una excepción del backup no hereda de ``GoldenBackupError``, el
+    ``except GoldenBackupError`` del orquestador no la alcanza y el llamador
+    recibe un tipo que el contrato del módulo no describe.
+    """
+    import sky_claw.local.runtime_vault.golden_backup_archive as mod
+
+    for nombre in dir(mod):
+        objeto = getattr(mod, nombre)
+        if not (isinstance(objeto, type) and objeto.__module__ == mod.__name__):
+            continue
+        if not issubclass(objeto, Exception) or objeto is mod.GoldenBackupError:
+            continue
+        assert issubclass(objeto, mod.GoldenBackupError), (
+            f"{nombre} no hereda de GoldenBackupError: escapa del manejo tipado del store"
+        )

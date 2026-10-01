@@ -77,6 +77,14 @@ GOLDEN_BACKUP_SCHEMA_VERSION: Final[str] = "gp2-golden-backup-v1"
 #: compitan por el mismo objeto.
 GOLDEN_BACKUP_FILE_SUFFIX: Final[str] = "_manifest.json"
 
+#: Límites del contrato uint de Win32, idénticos a los de ``AuthorizedPlan``.
+#: El VolSerialNumber es un UINT32 y el FileId tiene 128 bits; se replican los
+#: límites del plan para que todo manifiesto que valida el plan valide también
+#: acá. Replicar el CONTRATO, no la constante: los ``_MAX_UINT*`` del plan son
+#: privados a propósito.
+_MAX_UINT64: Final[int] = (1 << 64) - 1
+_MAX_UINT128: Final[int] = (1 << 128) - 1
+
 #: Escala del nombre de archivo dentro de ``golden_backups/``. El ADR lo escribe
 #: como ``<vol_serial>_<root_file_id>``; la escala se fija acá de forma cerrada
 #: porque un nombre ambiguo (dos enteros separados por ``_``) sería parseable de
@@ -179,14 +187,12 @@ class GoldenBackupArchive:
             raise GoldenBackupSchemaError("operation_id debe ser un string no vacío")
         if not isinstance(self.canonical_root, str) or not self.canonical_root.strip():
             raise GoldenBackupSchemaError("canonical_root debe ser un string no vacío")
-        for nombre, valor in (
-            ("volume_serial_number", self.volume_serial_number),
-            ("root_file_id", self.root_file_id),
-        ):
-            if not isinstance(valor, int) or isinstance(valor, bool) or valor <= 0:
-                raise GoldenBackupSchemaError(f"{nombre} debe ser un entero positivo")
+        _validate_uint(self.volume_serial_number, "volume_serial_number", _MAX_UINT64)
+        _validate_uint(self.root_file_id, "root_file_id", _MAX_UINT128)
         if not isinstance(self.tree_digest, TreeDigest):
             raise GoldenBackupSchemaError("tree_digest debe ser TreeDigest")
+        _validate_uint(self.tree_digest.files, "tree_digest.files", _MAX_UINT64)
+        _validate_uint(self.tree_digest.bytes, "tree_digest.bytes", _MAX_UINT64)
         if not isinstance(self.policy_version, str) or not self.policy_version.strip():
             raise GoldenBackupSchemaError("policy_version debe ser un string no vacío")
         if not isinstance(self.authorized_plan_digest, str) or len(self.authorized_plan_digest) != 64:
@@ -288,9 +294,23 @@ def _validate_sha256(digest: str, field_name: str) -> str:
     return digest
 
 
-def _validate_uint(value: object, field_name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-        raise GoldenBackupSchemaError(f"{field_name} debe ser un entero positivo")
+def _validate_uint(value: object, field_name: str, max_value: int) -> int:
+    """Entero NO NEGATIVO dentro de rango — el MISMO contrato que upstream.
+
+    No es un detalle: ``AuthorizedPlan`` valida ``volume_serial_number`` en
+    ``[0, 2**64-1]``, ``root_file_id`` en ``[0, 2**128-1]`` y las dimensiones del
+    ``TreeDigest`` (``files``, ``bytes``) como ``>= 0``. Un validador local que
+    exigiera ``> 0`` rechazaría planes legítimos — un Golden sin archivos tiene
+    ``files == 0``— y produciría un ``INDETERMINATE`` sobre evidencia válida.
+
+    El rango se replica en vez de importarse porque ``authorized_plan`` guarda
+    sus límites como ``_MAX_UINT*`` privados; lo que S4-D copia es el
+    CONTRATO (``uint`` de Win32 no negativo), no la constante.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GoldenBackupSchemaError(f"{field_name} debe ser un entero")
+    if not 0 <= value <= max_value:
+        raise GoldenBackupSchemaError(f"{field_name} debe estar en el rango [0, {max_value}]")
     return value
 
 
@@ -334,12 +354,12 @@ def deserialize_golden_backup_archive(raw: bytes) -> GoldenBackupArchive:
     archive = GoldenBackupArchive(
         operation_id=str(cuerpo["operation_id"]),
         canonical_root=str(cuerpo["canonical_root"]),
-        volume_serial_number=_validate_uint(cuerpo["volume_serial_number"], "volume_serial_number"),
-        root_file_id=_validate_uint(cuerpo["root_file_id"], "root_file_id"),
+        volume_serial_number=_validate_uint(cuerpo["volume_serial_number"], "volume_serial_number", _MAX_UINT64),
+        root_file_id=_validate_uint(cuerpo["root_file_id"], "root_file_id", _MAX_UINT128),
         tree_digest=TreeDigest(
             digest=_validate_sha256(str(tree_raw["digest"]), "tree_digest.digest"),
-            files=_validate_uint(tree_raw["files"], "tree_digest.files"),
-            bytes=_validate_uint(tree_raw["bytes"], "tree_digest.bytes"),
+            files=_validate_uint(tree_raw["files"], "tree_digest.files", _MAX_UINT64),
+            bytes=_validate_uint(tree_raw["bytes"], "tree_digest.bytes", _MAX_UINT64),
         ),
         policy_version=str(cuerpo["policy_version"]),
         authorized_plan_digest=_validate_sha256(str(cuerpo["authorized_plan_digest"]), "authorized_plan_digest"),
@@ -391,8 +411,8 @@ def derive_golden_backup_dir(
     NUNCA pasa una ruta: un ``path`` de backup controlable por el caller sería
     una vía de_stage: escribiría evidencia autoritativa donde el atacante elija.
     """
-    _validate_uint(volume_serial_number, "volume_serial_number")
-    _validate_uint(root_file_id, "root_file_id")
+    _validate_uint(volume_serial_number, "volume_serial_number", _MAX_UINT64)
+    _validate_uint(root_file_id, "root_file_id", _MAX_UINT128)
     if not isinstance(policy_version, str) or not policy_version.strip():
         raise GoldenBackupSchemaError("policy_version debe ser un string no vacío")
     from sky_claw.local.runtime_vault.trusted_registry_lock import _resolve_runtime_vault_dir
@@ -446,22 +466,46 @@ class _NamespaceGoldenBackupWriter:
     ``CreateHardLinkW``, no ``os.replace``), nace con SD canónico, flushea con
     ``FILE_FLAG_WRITE_THROUGH``, verifica por handle y relee byte a byte. S4-D no
     necesita una segunda versión de esa secuencia y no debe tener una.
+
+    La traducción de errores NO es cosmética: ``write_secured_file_create_once_at``
+    levanta ``TrustedNamespaceError`` (y sus subtipos) directamente, porque sus
+    ``error_factory`` por defecto son los del namespace. Sin esta traducción, un
+    reparse en el padre del destino —un ``TrustedNamespaceReparseError``— escapaba
+    del contrato ``GoldenBackupError`` y llegaba al llamador como un tipo que el
+    store no describe. El caller del S4-D clasifica POR TIPO: lo que no es
+    ``GoldenBackupError`` no cae en la rama de INDETERMINATE y se pierde.
     """
 
     def write_create_once(self, dest: pathlib.Path, payload: bytes, object_name: str) -> None:
-        from sky_claw.local.runtime_vault.trusted_namespace import write_secured_file_create_once_at
-
-        write_secured_file_create_once_at(
-            dest,
-            payload,
-            object_name,
-            error_factory=GoldenBackupWriteError,
-            already_exists_error_factory=GoldenBackupAlreadyExistsError,
-            parent_error_message=(
-                f"El directorio de backup '{dest.parent}' no existe: "
-                "el namespace debe aprovisionar golden_backups/<scope>/<policy_version>/ antes de archivar"
-            ),
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            TrustedNamespaceError,
+            write_secured_file_create_once_at,
         )
+
+        try:
+            write_secured_file_create_once_at(
+                dest,
+                payload,
+                object_name,
+                error_factory=GoldenBackupWriteError,
+                already_exists_error_factory=GoldenBackupAlreadyExistsError,
+                parent_error_message=(
+                    f"El directorio de backup '{dest.parent}' no existe: "
+                    "el namespace debe aprovisionar golden_backups/<scope>/<policy_version>/ antes de archivar"
+                ),
+            )
+        except GoldenBackupAlreadyExistsError:
+            # El contrato de create-once: el que existe pasa por
+            # `already_exists_error_factory` y el store lo revalida. No se
+            # reescribe en otro tipo.
+            raise
+        except GoldenBackupError:
+            # Ya tipado por el store (durability/write). Se preserva la causalidad.
+            raise
+        except TrustedNamespaceError as exc:
+            raise GoldenBackupWriteError(
+                f"El namespace de confianza rechazó publicar el backup en '{dest}': {type(exc).__name__}: {exc}"
+            ) from exc
 
 
 def _resolve_backup_writer(writer: GoldenBackupDurableWriter | None) -> GoldenBackupDurableWriter:

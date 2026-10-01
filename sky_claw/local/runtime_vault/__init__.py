@@ -1075,7 +1075,6 @@ __all__ = [
     "FinalizationLockOutcome",
     "FinalizationPhase",
     "FinalizationPreconditionError",
-    "FinalizationRollbackPort",
     "FinalizationUnsupportedError",
     "FinalizationVerificationPort",
     "GOLDEN_BACKUP_SCHEMA_VERSION",

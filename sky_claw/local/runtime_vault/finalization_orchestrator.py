@@ -18,9 +18,27 @@ La property que gobierna todo el módulo
 puede escribirse sin que exista un :class:`DurableGoldenBackupArchive` en mano
 — es decir, sin un archivo create-once, flusheado, re-leído y verificado byte a
 byte. Eso no es disciplina del caller: es la única firma que acepta
-:meth:`DurableProtectionJournal.commit_finalized`, y el digest del backup queda
-escrito DENTRO del propio registro COMMITTED del journal. Un mutant que mueva
-``COMMITTED`` antes del archive no compila contra esta API.
+:meth:`DurableProtectionJournal.commit_finalized`, y esa firma exige el backup.
+Un mutant que mueva ``COMMITTED`` antes del archive no compila contra esta API.
+
+Lo que el backup ata, y CÓMO
+-----------------------------
+La afirmación de commit se apoya en estas tres cosas, y **ninguna** de ellas es
+un campo del registro ``COMMITTED``:
+
+1. el backup existe en una RUTA DERIVADA de la identidad del plan
+   (``golden_backups/<vol>_<fid>/<policy_version>/<op_id>_manifest.json``), así
+   que no hace falta que el journal lo nombre para poder Hallarlo;
+2. su contenido lleva ``operation_id`` y ``authorized_plan_digest``, y
+   ``commit_finalized`` exige que atan con el plan y con el header del journal;
+3. es create-once, así que un backup ya publicado no puede haber cambiado bajo el
+   commit.
+
+El registro ``COMMITTED`` del journal **no** almacena el digest del archivo. Se
+dice explícitamente porque una garantía inventada en un comentario es peor que
+ninguna: un operador que leyera "el digest está en el journal" buscaría un campo
+que no existe. El binding es recuperable desde el disco y por eso
+``_normalizar_commit_ya_durable`` relee el backup antes de liberar el lock.
 
 Orden obligatorio (ADR 0010 §12.2)
 -----------------------------------
@@ -55,6 +73,7 @@ se normaliza.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -207,6 +226,13 @@ class FinalizationForensicReport:
     OBSERVÓ de lo que se AFIRMÓ, y lleva la evidencia durable que sostiene la
     afirmación de commit (digest del plan y digest del backup) para que el
     commit sea auditable sin depender de este proceso, que puede no existir.
+
+    ``rollback_executed`` es SIEMPRE ``False`` desde S4-D, y está explícito en el
+    DTO para que el campo no dependa de que el lector recuerde el contrato. Un
+    ``disposition=ROLLBACK_REQUIRED`` significa "el estado durable pide rollback
+    y el motor de S4-C tiene que correr", NO "el rollback corrió". La distinción
+    importa: un operador que leyera ``ROLLBACK_REQUIRED`` como "restaurado"
+    cerraría un incidente sobre un Golden que sigue endurecido.
     """
 
     operation_id: str
@@ -218,6 +244,7 @@ class FinalizationForensicReport:
     archive_digest: str | None
     authorized_plan_digest: str
     fail_closed_reason: str = ""
+    rollback_executed: bool = False
 
     @property
     def committed(self) -> bool:
@@ -286,21 +313,26 @@ class FinalizationVerificationPort(Protocol):
 
 
 #: Callback que S4-D invoca al dejar ``ROLLBACK_REQUIRED`` durable. NO es el
-#: motor de rollback: es el punto de observación para que el caller encadene el
-#: motor de S4-C.
+#: motor de rollback: es un aviso.
 #:
 #: El seam es una llamada y no un ``Protocol`` con un método, y eso es
 #: deliberado. S4-D no implementa restauración física ni toca ACLs; lo único que
-#: necesita del rollback es **no hacerlo**, y un puerto con método sugeriría que
-#: S4-D tiene un rollback propio que delegar. ``_desenrollar_rollback`` deja el
-#: estado durable escrito y avisa; ejecutar la restauración es de S4-C.
+#: necesita del rollback es **no hacerlo**, y un puerto con un método tipo
+#: ``ejecutar_rollback`` sugeriría que S4-D tiene un rollback propio que
+#: delegar. ``_desenrollar_rollback`` deja el estado durable escrito y avisa;
+#: ejecutar la restauración es de S4-C.
+#:
+#: Quien reciba este callback NO puede inferir de que fue invocado que el Golden
+#: quedó restaurado: en el momento de la llamada no lo está. Para que eso no
+#: dependa de leer el docstring, :class:`FinalizationForensicReport` expone
+#: ``rollback_executed``, que S4-D pone SIEMPRE en ``False``.
 RollbackNotifier = Callable[[str], None]
 
 
-#: Rollback simulado por defecto: registra la intención y no muta nada. Existe
-#: para que el camino de producción de S4-D sea "no hacer rollback aquí" y los
-#: tests puedan distinguir "no lo hizo" de "no se puede saber".
-def _sin_rollback(operation_id: str) -> None:
+#: Aviso por defecto: registra que el rollback quedó pendiente y no muta nada.
+#: El nombre viejo ("sin rollback") sugería ausencia de una acción; éste dice
+#: lo que hace, que es NOTIFICAR.
+def _solo_aviso_de_rollback(operation_id: str) -> None:
     logger.info(
         "S4D rollback requerido para operation_id=%s: lo ejecuta el motor de S4-C, no S4-D",
         operation_id,
@@ -322,6 +354,23 @@ _FASES_ADMISIBLES: Final[frozenset[ProtectionTransactionState]] = frozenset(
         ProtectionTransactionState.VERIFYING_NODE_SET,
         ProtectionTransactionState.ARCHIVING_BACKUP,
     }
+)
+
+#: ORDEN NORMATIVO del tramo de finalización de §19.2, en el sentido en que el
+#: FSM lo admite. La reanudación avanza por índice sobre esta tupla.
+#:
+#: Es la única fuente del orden en el código, y existe para que la monotonía sea
+#: una propiedad ESTRUCTURAL: sólo se entra a ``_TRAMO_S4D[i + 1]`` cuando el
+#: estado durable es exactamente ``_TRAMO_S4D[i]``. Con un
+#: ``if estado is not FASE: entrar(FASE)`` por fase, una reanudación desde
+#: ``VERIFYING_NODE_SET`` pedía ``VERIFYING_RV2`` — una arista que el FSM no
+#: admite — y terminaba en INDETERMINATE sin ejecutar un solo gate. Ese
+#: defecto era invisible en los tests porque todos arrancaban desde APPLYING.
+_TRAMO_S4D: Final[tuple[ProtectionTransactionState, ...]] = (
+    ProtectionTransactionState.VERIFYING_GP1,
+    ProtectionTransactionState.VERIFYING_RV2,
+    ProtectionTransactionState.VERIFYING_NODE_SET,
+    ProtectionTransactionState.ARCHIVING_BACKUP,
 )
 
 
@@ -492,11 +541,15 @@ def finalize_protection_transaction(
         archive_writer: seam de publicación create-once del backup.
         lock_kernel: seam del lock (tests).
         session: sesión de frontera con lock VIVO, para continuidad de sesión.
-        rollback_notifier: punto de observacion de que S4-D NO hace rollback.
+        rollback_notifier: AVISO de que el rollback quedó PENDIENTE. S4-D no lo ejecuta.
+        El motor de S4-C es el único que restaura ACLs; invocar este callback NO
+        significa que el Golden esté restaurado (mira ``rollback_executed``).
     """
     _exigir_operacion_coincidente(operation_id, plan, journal)
     plan_real: AuthorizedPlan = plan.plan
-    notificar_rollback: RollbackNotifier = rollback_notifier if rollback_notifier is not None else _sin_rollback
+    notificar_rollback: RollbackNotifier = (
+        rollback_notifier if rollback_notifier is not None else _solo_aviso_de_rollback
+    )
 
     # ------------------------------------------------------------------
     # 0. Estado durable REAL, releído del archivo protegido.
@@ -621,177 +674,141 @@ def finalize_protection_transaction(
 
     try:
         # ------------------------------------------------------------------
-        # 2. VERIFYING_GP1 (durable) → GP1 fresco.
+        # 2..5. La cadena de fases se recorre HACIA ADELANTE, sin retroceder.
         #
-        # Se avanza HACIA ADELANTE desde el estado durable: el FSM de §19.2 es
-        # lineal y no admite retrocesos, así que una reanudación tiene que
-        # empezar en la fase en la que el proceso anterior murió y recorrer lo
-        # que falta. Lo que NO hace S4-D es confiar en que esa fase "ya pasó":
-        # cada gate en el que se entra se VUELVE a observar.
+        # El FSM de §19.2 es lineal, así que la reanudación tiene que empezar en
+        # la fase durable en la que murió el proceso anterior y recorrer lo que
+        # falta. Lo que NO se hace es confiar en que esa fase "ya pasó": cada
+        # gate en el que se entra se VUELVE a observar.
         #
-        # La alternativa —saltarse lo verificado porque el journal lo dice—
-        # exige que el journal registre "pasó", y ese registro es justo lo que
-        # el ADR no declara. Re-observar cuesta CPU y no cuesta confianza.
+        # La monotonía se hace ESTRUCTURAL y no por remembering: se declara el
+        # orden normativo una vez y se avanza por índice. Un `if estado is not
+        # X: entrar(X)` repetido por fase puede pedir una arista que el FSM no
+        # admite —desde VERIFYING_NODE_SET se pedía VERIFYING_RV2— y el
+        # resultado era INDETERMINATE con cero gates ejecutados. Con el índice
+        # eso no es expresable: sólo se entra a la fase N+1 cuando el estado
+        # durable es exactamente la N.
         # ------------------------------------------------------------------
-        if estado_durable is ProtectionTransactionState.APPLYING:
-            journal.enter_finalization_phase(ProtectionTransactionState.VERIFYING_GP1)
-            estado_durable = ProtectionTransactionState.VERIFYING_GP1
-        if estado_durable is ProtectionTransactionState.VERIFYING_GP1:
-            veredicto = _evaluar(port.observar_gp1(raiz=plan_real.canonical_root, esperado="hardened"))
-            veredictos.append(veredicto)
-            _log_gate(operation_id, veredicto)
-            if not veredicto.passed:
-                return _desenrollar_rollback(
-                    operation_id=operation_id,
-                    plan=plan,
-                    journal=journal,
-                    lock=lock,
-                    veredictos=veredictos,
-                    estado=ProtectionTransactionState.VERIFYING_GP1,
-                    reason=f"GP1 final no PASÓ: {veredicto.detail}",
-                    verdict_rollback=notificar_rollback,
-                )
-
-        # --------------------------------------------------------------
-        # 3. VERIFYING_RV2 → 4. VERIFYING_NODE_SET → 5. ARCHIVING_BACKUP.
-        #
-        # Todo este tramo queda atrás si el estado durable ya es
-        # ARCHIVING_BACKUP: el FSM de §19.2 es lineal y no admite retrocesos,
-        # así que una reanudación empieza en la fase en la que murió el proceso
-        # anterior y recorre lo que falta. Lo que NO hace S4-D es confiar en que
-        # esa fase "ya pasó": cada gate en el que entra se VUELVE a observar.
-        # ------------------------------------------------------------------
-        if estado_durable is not ProtectionTransactionState.ARCHIVING_BACKUP:
-            # --------------------------------------------------
-            # 3a. VERIFYING_RV2 (durable) → RV-2 fresco.
-            # --------------------------------------------------
-            if estado_durable is not ProtectionTransactionState.VERIFYING_RV2:
-                journal.enter_finalization_phase(ProtectionTransactionState.VERIFYING_RV2)
-                estado_durable = ProtectionTransactionState.VERIFYING_RV2
-
-            veredicto = _evaluar(
-                port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest)
-            )
-            veredictos.append(veredicto)
-            _log_gate(operation_id, veredicto)
-            if not veredicto.passed:
-                return _desenrollar_rollback(
-                    operation_id=operation_id,
-                    plan=plan,
-                    journal=journal,
-                    lock=lock,
-                    veredictos=veredictos,
-                    estado=ProtectionTransactionState.VERIFYING_RV2,
-                    reason=f"RV-2 final no PASÓ: {veredicto.detail}",
-                    verdict_rollback=notificar_rollback,
-                )
-
-            # --------------------------------------------------
-            # 4. VERIFYING_NODE_SET (durable) → NodeSet fresco +
-            #    rerun de quiescence + RV-2 final fresco.
-            #
-            # Los tres van DENTRO de la arista VERIFYING_NODE_SET ->
-            # ARCHIVING_BACKUP, que es como §19.2 y §12.2 los describen.
-            # --------------------------------------------------
-            journal.enter_finalization_phase(ProtectionTransactionState.VERIFYING_NODE_SET)
-            estado_durable = ProtectionTransactionState.VERIFYING_NODE_SET
-
-            veredicto = _evaluar(
-                port.observar_node_set(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes)
-            )
-            veredictos.append(veredicto)
-            _log_gate(operation_id, veredicto)
-            if not veredicto.passed:
-                return _desenrollar_rollback(
-                    operation_id=operation_id,
-                    plan=plan,
-                    journal=journal,
-                    lock=lock,
-                    veredictos=veredictos,
-                    estado=ProtectionTransactionState.VERIFYING_NODE_SET,
-                    reason=f"NodeSet final no PASÓ: {veredicto.detail}",
-                    verdict_rollback=notificar_rollback,
-                )
-
-            # Rerun de quiescence con la MISMA primitiva y la MISMA política de
-            # reintentos del ADR: no una variante informal.
-            veredicto = _evaluar(
-                port.observar_quiescence(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes)
-            )
-            veredictos.append(veredicto)
-            _log_gate(operation_id, veredicto)
-            if not veredicto.passed:
-                return _desenrollar_rollback(
-                    operation_id=operation_id,
-                    plan=plan,
-                    journal=journal,
-                    lock=lock,
-                    veredictos=veredictos,
-                    estado=ProtectionTransactionState.VERIFYING_NODE_SET,
-                    reason=f"quiescence final no PASÓ: {veredicto.detail}",
-                    verdict_rollback=notificar_rollback,
-                )
-
-            # SEGUNDO RV-2, después del probe: cierra la ventana en la que un
-            # escritor habría podido cambiar contenido entre la verificación de
-            # contenido y el archivado.
-            veredicto = _evaluar(
-                port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest)
-            )
-            veredictos.append(veredicto)
-            _log_gate(operation_id, veredicto)
-            if not veredicto.passed:
-                return _desenrollar_rollback(
-                    operation_id=operation_id,
-                    plan=plan,
-                    journal=journal,
-                    lock=lock,
-                    veredictos=veredictos,
-                    estado=ProtectionTransactionState.VERIFYING_NODE_SET,
-                    reason=f"RV-2 final (post-quiescence) no PASÓ: {veredicto.detail}",
-                    verdict_rollback=notificar_rollback,
-                )
-
-        # --------------------------------------------------------------
-        # 6. ARCHIVING_BACKUP (durable).
-        # --------------------------------------------------------------
-        if estado_durable is not ProtectionTransactionState.ARCHIVING_BACKUP:
-            journal.enter_finalization_phase(ProtectionTransactionState.ARCHIVING_BACKUP)
-            estado_durable = ProtectionTransactionState.ARCHIVING_BACKUP
-
-        # --------------------------------------------------------------
-        # 6b. Re-observación del contenido justo antes de archivar.
-        #
-        # Si S4-D entra acá por REANUDACIÓN (el proceso anterior murió durante el
-        # archivado), el FSM no permite volver a VERIFYING_NODE_SET — y no
-        # debería: §20 C8 dice que desde ARCHIVING_BACKUP el recovery continúa
-        # el archivado. Pero el contenido pudo cambiar mientras el proceso
-        # estaba muerto, y un COMMITTED sobre contenido alterado desde el crash
-        # sería una afirmación falsa.
-        #
-        # La salida no es inventar una arista de retroceso: es RE-OBSERVAR sin
-        # escribir transición. El estado durable sigue siendo ARCHIVING_BACKUP y
-        # el gate se ejecuta igual.
-        # --------------------------------------------------------------
-        veredicto = _evaluar(
-            port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest)
-        )
-        veredictos.append(veredicto)
-        _log_gate(operation_id, veredicto)
-        if not veredicto.passed:
+        def _fallar(fase: ProtectionTransactionState, motivo: str) -> FinalizationForensicReport:
             return _desenrollar_rollback(
                 operation_id=operation_id,
                 plan=plan,
                 journal=journal,
                 lock=lock,
                 veredictos=veredictos,
-                estado=ProtectionTransactionState.ARCHIVING_BACKUP,
-                reason=f"RV-2 previo al archivado no PASÓ: {veredicto.detail}",
+                estado=fase,
+                reason=motivo,
                 verdict_rollback=notificar_rollback,
             )
 
+        def _observar(
+            veredicto: GateVerdict, fase: ProtectionTransactionState, motivo: str
+        ) -> FinalizationForensicReport | None:
+            veredictos.append(veredicto)
+            _log_gate(operation_id, veredicto)
+            return None if veredicto.passed else _fallar(fase, f"{motivo}: {veredicto.detail}")
+
+        # Órdenes absolutos: re-observar un gate que se acaba de observar es
+        # correcto; saltarse uno por "que ya lo hizo otro proceso" es exactamente
+        # el defecto que las verificaciones re-observadas evitan.
+        # Índice de la fase durable: -1 significa "todavía antes del tramo", que
+        # es exactamente lo que representa APPLYING (S4-C dejó el apply cerrado
+        # y S4-D arranca el tramo de verificación).
+        _indice_inicial = _TRAMO_S4D.index(estado_durable) if estado_durable in _TRAMO_S4D else -1
+        if _indice_inicial < 0 and estado_durable is not ProtectionTransactionState.APPLYING:
+            # `_FASES_ADMISIBLES` ya lo filtró; es una defensa explícita para que
+            # agregar un estado admisible sin agregarlo a `_TRAMO_S4D` no se
+            # convierta en un ValueError opaco en medio del protocolo.
+            raise FinalizationError(
+                f"el estado durable '{estado_durable.value}' no tiene posición en el tramo normativo "
+                f"{[estado.value for estado in _TRAMO_S4D]}: fail-closed antes de ejecutar ningún gate"
+            )
+
+        for _fase in _TRAMO_S4D:
+            _pos = _TRAMO_S4D.index(_fase)
+            if _pos < _indice_inicial:
+                continue  # ya superado: no se retrocede ni se reescribe
+            if _pos > _indice_inicial:
+                journal.enter_finalization_phase(_fase)
+                estado_durable = _fase
+
+            if _fase is ProtectionTransactionState.VERIFYING_GP1:
+                fallo = _observar(
+                    _evaluar("gp1", port.observar_gp1(raiz=plan_real.canonical_root, esperado="hardened")),
+                    _fase,
+                    "GP1 final no PASÓ",
+                )
+            elif _fase is ProtectionTransactionState.VERIFYING_RV2:
+                fallo = _observar(
+                    _evaluar(
+                        "rv2",
+                        port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest),
+                    ),
+                    _fase,
+                    "RV-2 final no PASÓ",
+                )
+            elif _fase is ProtectionTransactionState.VERIFYING_NODE_SET:
+                # Los tres van DENTRO de la arista VERIFYING_NODE_SET ->
+                # ARCHIVING_BACKUP, que es como §19.2 y §12.2 los describen.
+                fallo = _observar(
+                    _evaluar(
+                        "node_set",
+                        port.observar_node_set(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes),
+                    ),
+                    _fase,
+                    "NodeSet final no PASÓ",
+                )
+                if fallo is None:
+                    # Rerun de quiescence con la MISMA primitiva y la MISMA
+                    # política de reintentos del ADR: no una variante informal.
+                    fallo = _observar(
+                        _evaluar(
+                            "quiescence",
+                            port.observar_quiescence(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes),
+                        ),
+                        _fase,
+                        "quiescence final no PASÓ",
+                    )
+                if fallo is None:
+                    # SEGUNDO RV-2, después del probe: cierra la ventana en la
+                    # que un escritor habría podido cambiar contenido entre la
+                    # verificación de contenido y el archivado.
+                    fallo = _observar(
+                        _evaluar(
+                            "rv2",
+                            port.observar_rv2(
+                                raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest
+                            ),
+                        ),
+                        _fase,
+                        "RV-2 final (post-quiescence) no PASÓ",
+                    )
+            else:  # ARCHIVING_BACKUP
+                # Re-observación del contenido justo antes de archivar.
+                #
+                # Si S4-D entra acá por REANUDACIÓN (el proceso anterior murió
+                # durante el archivado), el FSM no permite volver a
+                # VERIFYING_NODE_SET — y no debería: §20 C8 dice que desde
+                # ARCHIVING_BACKUP el recovery continúa el archivado. Pero el
+                # contenido pudo cambiar mientras el proceso estaba muerto, y un
+                # COMMITTED sobre contenido alterado desde el crash sería una
+                # afirmación falsa.
+                #
+                # La salida no es inventar una arista de retroceso: es
+                # RE-OBSERVAR sin escribir transición.
+                fallo = _observar(
+                    _evaluar(
+                        "rv2",
+                        port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest),
+                    ),
+                    _fase,
+                    "RV-2 previo al archivado no PASÓ",
+                )
+            if fallo is not None:
+                return fallo
+
         # --------------------------------------------------------------
-        # 7. Backup durable create-once + flush + relectura + verificación.
+        # 6. Backup durable create-once + flush + relectura + verificación.
         #
         # ``archive_golden_backup`` es create-once y, si el objeto ya existe,
         # sólo lo ACEPTA si sus bytes canónicos coinciden y todos los bindings
@@ -1045,7 +1062,16 @@ def _normalizar_commit_ya_durable(
     detalle_lock = "lock huérfano de la MISMA operación normalizado a phase=RELEASED"
     try:
         lock.release()
-    except GoldenLockIoError as exc:
+    except (GoldenLockIoError, OSError) as exc:
+        # Igual que el camino principal: `release()` propaga `OSError` cuando la
+        # escritura de `phase=RELEASED` falla a nivel de sistema (disco lleno,
+        # sharing violation, handle cerrado por otro proceso). Sin `OSError` en
+        # la tupla, esa excepción escapaba al caller CON un COMMITTED durable ya
+        # escrito: el llamador recibía una excepción por una normalización de
+        # lock y podía interpretar que el commit se había deshecho.
+        #
+        # El commit NO se deshace. Lo pendiente es la normalización del lock, y
+        # eso se refleja en `released=False` + `retained_as_orphan=True`.
         normalizado = False
         detalle_lock = (
             f"COMMITTED durable pero phase=RELEASED no se pudo escribir ({exc}); "
@@ -1203,26 +1229,48 @@ def _reporte_indeterminate(
 # ============================================================================
 
 
-def _evaluar(observacion: Any) -> GateVerdict:
+def _evaluar(gate: str, observacion: Any) -> GateVerdict:
     """Normaliza la observación del puerto a un :class:`GateVerdict` inmutable.
 
-    Acepta tanto un ``GateVerdict`` ya construido como el par
-    ``(passed, detail)`` de un puerto simple. Lo que NO acepta es un ``bool``
-    pelado: un veredicto sin detalle no es auditable, y sin auditabilidad un
-    INDETERMINATE no se puede distingir de un fallo real.
+    Acepta dos formas, y las dos conservan la identidad del gate:
+
+    * un ``GateVerdict`` ya construido, que pasa tal cual (el gate tiene que
+      coincidir con el que pide el orquestador: si no, es un puerto con un
+      typo, y aceptarlo produciría un reporte donde ``verdict_for("rv2")``
+      devuelve ``None`` sobre un reporte que sí contiene un veredicto de RV-2);
+    * el par ``(passed, detail)`` de un puerto simple.
+
+    Lo que NO acepta es un ``bool`` pelado: un veredicto sin detalle no es
+    auditable, y sin auditabilidad un INDETERMINATE no se puede distinguir de un
+    fallo real.
+
+    El nombre del gate es un PARÁMETRO y no una etiqueta fija (``"observacion"``)
+    porque el nombre es la única forma que tiene el reporte forense de localizar
+    un veredicto concreto.
     """
     if isinstance(observacion, GateVerdict):
+        if observacion.gate != gate:
+            raise FinalizationError(
+                f"el puerto devolvió un veredicto del gate '{observacion.gate}' donde se esperaba "
+                f"'{gate}': el reporte forense quedaría inconsistente con los gates ejecutados"
+            )
         return observacion
     if isinstance(observacion, tuple) and len(observacion) == 2:
         passed, detail = observacion
-        import hashlib
-
+        if not isinstance(detail, str):
+            raise FinalizationError(
+                f"el detalle del gate '{gate}' debe ser string para ser auditable; recibido {type(detail).__name__}"
+            )
         return GateVerdict(
-            gate="observacion",
+            gate=gate,
             passed=bool(passed),
-            detail=str(detail),
-            evidence_digest=hashlib.sha256(str(detail).encode("utf-8")).hexdigest(),
+            detail=detail,
+            evidence_digest=hashlib.sha256(f"{gate}:{detail}".encode()).hexdigest(),
         )
+    raise FinalizationError(
+        f"el puerto de verificación debe devolver GateVerdict o (passed, detail) para el gate "
+        f"'{gate}'; recibido {type(observacion).__name__}"
+    )
     raise FinalizationError(
         f"el puerto de verificación debe devolver GateVerdict o (passed, detail); recibido {type(observacion).__name__}"
     )
