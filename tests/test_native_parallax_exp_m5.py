@@ -766,3 +766,165 @@ def test_valid_provenance_reaches_prepare_entries(tmp_path: Path, monkeypatch: p
     with contextlib.suppress(SystemExit):
         run_exp_m5.main()
     assert llamados, "prepare_entries no se llamo pese a provenance valido"
+
+
+# ================== §18 EXPOSICION PREMATURA DE LEGACY_HELDOUT (machine-readable) =======
+# El prereg §18 exige que el artefacto declare la desviacion de protocolo. Documentarla en
+# prosa no alcanza: sin estos campos, un consumidor machine-readable no puede distinguir una
+# corrida con ceguera de held-out de una que ya lo observo. Estos tests congelan los TRES
+# campos y, sobre todo, que NO toquen ni sustituyan ``summary.decision``.
+
+#: Valores exigidos por el prereg §18. Se comparan contra el runner, no contra una copia.
+_EXPECTED_PROTOCOL_STATUS = "UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE"
+
+
+def test_environment_declares_premature_legacy_heldout_exposure() -> None:
+    """Los tres campos de §18 estan presentes con los valores que exige el preregistro."""
+    block = _env_block(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    assert block["protocol_status"] == _EXPECTED_PROTOCOL_STATUS
+    assert block["legacy_heldout_blind_until_execution_freeze"] is False
+    assert block["scientific_rules_changed_after_exposure"] is False
+
+
+def test_protocol_status_present_in_full_too() -> None:
+    """FULL tambien los declara: la desviacion no es propia de la fase de calibracion."""
+    block = _env_block(
+        phase="full",
+        frozen_ack=f"freeze-{_EXEC_FREEZE}",
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=_EXEC_FREEZE,
+    )
+    assert block["protocol_status"] == _EXPECTED_PROTOCOL_STATUS
+    assert block["legacy_heldout_blind_until_execution_freeze"] is False
+    assert block["scientific_rules_changed_after_exposure"] is False
+
+
+def test_protocol_status_lives_in_environment_and_never_overrides_decision() -> None:
+    """Los campos van en ``environment`` y NO pueden sustituir niallicar ``summary.decision``.
+
+    Este es el ancla critica: una desviacion de protocolo que "corrigiera" la decision
+    cientifica seria fraude. ``summary.decision`` se deriva de ``decide(rules)`` sobre las
+    filas, y debe quedar intacto pase lo que pase con la metadata.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    # El protocolo no se inyecta en el payload de summary en ninguna parte del modulo.
+    src = (Path(run_exp_m5.__file__)).read_text(encoding="utf-8")
+    # La decision se sigue deriving de rules, no del estado de protocolo.
+    assert 'report["summary"]["decision"] = decide(rules)' in src or '"decision": decide(rules)' in src
+    # Y el estado de protocolo no aparece dentro del diccionario de summary.
+    summary_block = src.split('report["summary"] = {', 1)[-1]
+    assert "protocol_status" not in summary_block, (
+        "protocol_status no debe entrar en summary: la decision cientifica es independiente"
+    )
+
+
+def test_protocol_deviation_does_not_touch_scientific_constants() -> None:
+    """Declarar la desviacion NO puede mover ningun valor del contrato cientifico."""
+    block = _env_block(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    assert block["thresholds"]["T_LOWMID_NRMSE"] == 0.15
+    assert block["thresholds"]["T_LOWMID_EXCESS"] == 0.10
+    assert block["thresholds"]["T_HIGH_ENRICHMENT"] == 2.0
+    assert block["thresholds"]["LOWMID_HIGH_CUTOFF"] == 32
+    assert block["thresholds"]["ENERGY_GATE_FRACTION"] == 1e-6
+    assert block["thresholds"]["band_edges"] == [4, 8, 16, 32, 64, 128]
+    assert block["bootstrap_seed"] == 20260925
+    assert block["lowmid_high_cutoff"] == 32
+    assert block["energy_gate_fraction"] == 1e-6
+    assert block["resolution"] == 512
+    # La metadata de protocolo no se filtra dentro de thresholds ni de las bandas.
+    assert "protocol_status" not in block["thresholds"]
+    assert "legacy_heldout_blind_until_execution_freeze" not in block["thresholds"]
+
+
+def test_protocol_status_is_derived_not_operator_supplied() -> None:
+    """Los valores de §18 NO son un flag CLI: se derivan, no los elige el operador.
+
+    Un operador que pudiera escribir ``--protocol-status CLEAN`` borraria el registro de la
+    desviacion desde la linea de comandos. El estado de protocolo es una propiedad del
+    experimento, no un parametro de la corrida.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    opts = {a for action in run_exp_m5.build_parser()._actions for a in action.option_strings}
+    assert "--protocol-status" not in opts
+    assert "--legacy-heldout-blind" not in opts
+    assert "--scientific-rules-changed" not in opts
+
+
+def test_protocol_status_has_no_dynamic_override_lookup() -> None:
+    """El bloque que emite §18 lee constantes directas, sin lookup por nombre.
+
+    Cierra el hueco de "hagámoslo configurable": un ``globals().get("PROTOCOL_STATUS_OVERRIDE",
+    PROTOCOL_STATUS)`` permite degradar el estado desde fuera sin exponer un flag, y ningun
+    test de valores lo detectaria (el valor por defecto sigue siendo correcto). Se ancla por
+    inspeccion del fuente, el mismo instrumento que los censos del repo.
+    """
+    import ast
+
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    src = Path(run_exp_m5.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "environment_block")
+    emitted: dict[str, ast.expr] = {}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Dict) and node.keys and all(isinstance(k, ast.Constant) for k in node.keys):
+            for k, v in zip(node.keys, node.values, strict=True):
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    emitted[k.value] = v
+    for field in (
+        "protocol_status",
+        "legacy_heldout_blind_until_execution_freeze",
+        "scientific_rules_changed_after_exposure",
+    ):
+        assert field in emitted, f"{field} no se emite en environment_block"
+        value = emitted[field]
+        # Debe ser un nombre directo (la constante) o un Constant. Nada de subscripts,
+        # llamadas, .get(), globals() ni comprehensions: eso abriria la puerta al override.
+        assert isinstance(value, (ast.Name, ast.Constant)), (
+            f"{field} se emite como {type(value).__name__}; debe ser la constante directa "
+            f"del módulo, no una expresión que pueda degradarse en runtime"
+        )
+        if isinstance(value, ast.Name):
+            assert not value.id.endswith("_OVERRIDE"), f"{field} lee de un nombre tipo override ({value.id})"
+
+
+def test_protocol_status_cannot_be_silently_downgraded() -> None:
+    """El estado de protocolo se emite siempre completo, con los tres valores congelados.
+
+    Ancla que los tres campos salen presentes y exactos: un downgrade (degradar el estado a
+    "limpio", o emitir solo una parte) deja de pasar aqui.
+    """
+    block = _env_block(
+        phase="calibration",
+        frozen_ack=None,
+        base_main_sha=_BASE_MAIN,
+        m5_prereg_freeze_sha=_SHA40,
+        m5_execution_freeze_sha=None,
+    )
+    # Los tres presentes y con los valores exactos del prereg, sin hoyos ni alias.
+    assert set(
+        ("protocol_status", "legacy_heldout_blind_until_execution_freeze", "scientific_rules_changed_after_exposure")
+    ) <= set(block)
+    assert block["protocol_status"] == _EXPECTED_PROTOCOL_STATUS
+    assert block["legacy_heldout_blind_until_execution_freeze"] is False
+    assert block["scientific_rules_changed_after_exposure"] is False
+    # Y no son aliases entre si (un bug aqui haria que tocar uno tocara el otro).
+    assert (
+        block["legacy_heldout_blind_until_execution_freeze"] is not (block["scientific_rules_changed_after_exposure"])
+        or block["legacy_heldout_blind_until_execution_freeze"] == (block["scientific_rules_changed_after_exposure"])
+    )

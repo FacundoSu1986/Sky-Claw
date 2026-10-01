@@ -66,6 +66,21 @@ from sky_claw.local.native_parallax.research.trust_proxies import OracleOnly
 
 RESOLUTION = 512  # primary §9 (continuidad M4)
 
+# ------------------------------------- desviacion de protocolo §18 (congelada, one-time)
+# Durante la reproduccion del bug de provenance, `--frozen-ack foo` paso la validacion y
+# ejecuto una pasada FULL de 31 assets, produciendo las 16 filas de LEGACY_HELDOUT y una
+# decision confirmatoria con provenance ficticia, ANTES de cualquier execution freeze. Los
+# JSON se eliminaron, pero borrar artefactos NO restaura la ceguera experimental.
+#
+# Estos valores se emiten en TODOS los JSON de M5 para que un consumidor machine-readable no
+# pueda confundir esta corrida con una de ceguera intacta. No son un flag CLI: son una
+# propiedad del experimento, y un operador no debe poder borrarlos desde la linea de
+# comandos. NO sustituyen ni corrigen `summary.decision`, que sigue viniendo de
+# `decide(rules)` sobre las filas.
+PROTOCOL_STATUS = "UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE"
+LEGACY_HELDOUT_BLIND_UNTIL_EXECUTION_FREEZE = False
+SCIENTIFIC_RULES_CHANGED_AFTER_EXPOSURE = False
+
 # --------------------------------------------------------------------------- procedencia §16
 # El bloque environment heredado de M4 sólo expone ``git_sha`` + ``frozen_ack``. Eso NO
 # permite distinguir, en un JSON de FULL, el prereg-freeze del execution-freeze, ni la base
@@ -241,6 +256,14 @@ def environment_block(
             "base_main_sha": base_main_sha,
             "m5_prereg_freeze_sha": m5_prereg_freeze_sha,
             "m5_execution_freeze_sha": m5_execution_freeze_sha,
+        }
+    )
+    # Desviacion de protocolo §18, siempre presente y siempre con el valor congelado.
+    base.update(
+        {
+            "protocol_status": PROTOCOL_STATUS,
+            "legacy_heldout_blind_until_execution_freeze": (LEGACY_HELDOUT_BLIND_UNTIL_EXECUTION_FREEZE),
+            "scientific_rules_changed_after_exposure": SCIENTIFIC_RULES_CHANGED_AFTER_EXPOSURE,
         }
     )
     return base
