@@ -637,6 +637,12 @@ def test_f01b_el_orden_de_los_gates_es_exactamente_el_normativo(harness: _Harnes
         "node_set",
         "quiescence",
         "rv2",
+        # ARCHIVING_BACKUP: la re-observación completa previa al archivado
+        # (GP1, NodeSet, quiescence, RV-2). El FSM no permite retroceder, así que
+        # esa puerta se cubre re-observando sin escribir transición.
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
     ]
 
@@ -730,9 +736,14 @@ def test_f05_falla_la_escritura_del_backup_no_hay_committed(harness: _Harness) -
 
     reporte = _finalize(harness)
 
-    assert reporte.disposition is FinalizationDisposition.INDETERMINATE
+    # ADR §19.2: un fallo de PUBLICACIÓN es transitorio, así que se reintenta
+    # MAX_ARCHIVE_RETRIES veces dentro de ARCHIVING_BACKUP y, agotados los
+    # intentos, el desenlace es ROLLBACK_REQUIRED (no INDETERMINATE, que es para
+    # evidencia ambigua).
+    assert reporte.disposition is FinalizationDisposition.ROLLBACK_REQUIRED
+    assert "reintentos" in reporte.fail_closed_reason
     assert not harness.backup_path().exists()
-    assert harness.journal_estado() is not ProtectionTransactionState.COMMITTED
+    assert harness.journal_estado() is ProtectionTransactionState.ROLLBACK_REQUIRED
     assert reporte.lock.retained_as_orphan is True
 
 
@@ -745,9 +756,12 @@ def test_f06_falla_el_flush_del_backup_no_hay_committed(harness: _Harness) -> No
 
     reporte = _finalize(harness)
 
-    assert reporte.disposition is FinalizationDisposition.INDETERMINATE
+    # El flush no confirmado cuenta como intento fallido dentro de
+    # MAX_ARCHIVE_RETRIES (§19.2): agotado, ROLLBACK_REQUIRED.
+    assert reporte.disposition is FinalizationDisposition.ROLLBACK_REQUIRED
+    assert "reintentos" in reporte.fail_closed_reason
     assert not harness.backup_path().exists()
-    assert harness.journal_estado() is not ProtectionTransactionState.COMMITTED
+    assert harness.journal_estado() is ProtectionTransactionState.ROLLBACK_REQUIRED
 
 
 def test_f07_falla_el_flush_de_committed_no_se_reporta_commit_durable(harness: _Harness) -> None:
@@ -1076,7 +1090,7 @@ def test_otro_proceso_no_puede_mutar_entre_el_ultimo_mutated_y_committed(
     reporte = _finalize(harness)
 
     assert reporte.disposition is FinalizationDisposition.COMMITTED
-    assert intrusos == ["gp1", "rv2", "node_set", "quiescence", "rv2", "rv2"]
+    assert intrusos == ["gp1", "rv2", "node_set", "quiescence", "rv2", "gp1", "node_set", "quiescence", "rv2"]
 
 
 def test_rollback_required_retiene_el_lock(harness: _Harness) -> None:

@@ -30,7 +30,7 @@ from sky_claw.local.runtime_vault.finalization_verification import (
 )
 from sky_claw.local.runtime_vault.golden_backup_archive import (
     GoldenBackupArchive,
-    GoldenBackupWriteError,
+    GoldenBackupNamespaceError,
     deserialize_golden_backup_archive,
 )
 from sky_claw.local.runtime_vault.golden_protection_plan import DuplicateFileIdError
@@ -177,7 +177,7 @@ def test_los_errores_de_dominio_del_nodeset_llegan_al_orchestrator_como_rollback
 
 
 def test_el_writer_productivo_traduce_trusted_namespace_error(tmp_path: pathlib.Path) -> None:
-    """``TrustedNamespaceError`` del namespace se vuelve ``GoldenBackupWriteError``.
+    """``TrustedNamespaceError`` del namespace se vuelve ``GoldenBackupNamespaceError``.
 
     ``write_secured_file_create_once_at`` usa los ``error_factory`` POR DEFECTO
     del namespace, así que levanta ``TrustedNamespaceError`` y sus subtipos
@@ -201,7 +201,7 @@ def test_el_writer_productivo_traduce_trusted_namespace_error(tmp_path: pathlib.
     original = modulo.write_secured_file_create_once_at
     modulo.write_secured_file_create_once_at = _PrimitivaRebelde().write_secured_file_create_once_at
     try:
-        with pytest.raises(GoldenBackupWriteError) as excinfo:
+        with pytest.raises(GoldenBackupNamespaceError) as excinfo:
             _NamespaceGoldenBackupWriter().write_create_once(destino, b"{}", "golden_backup_manifest.json")
     finally:
         modulo.write_secured_file_create_once_at = original

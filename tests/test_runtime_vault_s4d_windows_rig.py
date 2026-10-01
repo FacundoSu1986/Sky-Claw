@@ -415,9 +415,21 @@ def test_w_d02_crash_antes_de_gp1_el_proceso_b_retoma() -> None:
         assert liberado is True
         assert _estado_durable(rig) is ProtectionTransactionState.COMMITTED
 
-        # Y B ejecutó TODOS los gates: re-observó, no(약)recordó.
+        # Y B ejecutó TODOS los gates: re-observó, no recordó. La segunda mitad de la
+        # lista es la re-observación previa al archivado, que corre sin escribir
+        # transición.
         gates = [evento for evento in _eventos(rig) if evento.startswith("gate:")]
-        assert gates == ["gate:gp1", "gate:rv2", "gate:node_set", "gate:quiescence", "gate:rv2", "gate:rv2"]
+        assert gates == [
+            "gate:gp1",
+            "gate:rv2",
+            "gate:node_set",
+            "gate:quiescence",
+            "gate:rv2",
+            "gate:gp1",
+            "gate:node_set",
+            "gate:quiescence",
+            "gate:rv2",
+        ], f"secuencia de gates inesperada en el proceso B: {gates}"
     finally:
         _limpiar(rig)
 
@@ -474,13 +486,17 @@ def test_w_d04b_crash_en_verifying_node_set_el_proceso_b_retoma() -> None:
         assert _fase_del_lock(rig) == GoldenLockPhase.RELEASED.value
 
         # B no ejecutó GP1 ni el RV-2 ANTERIOR a NodeSet: no hay forma de
-        # re-ejecutar un gate que está por debajo del punto de reanudación.
+        # re-ejecutar un gate que está por debajo del punto de reanudación. Los
+        # gp1/node_set/quiescence que SÍ aparecen son los de la re-observación
+        # previa al archivado, que corre sin escribir transición.
         eventos_b = [evento for evento in _eventos(rig) if evento.startswith("gate:")]
-        assert "gate:gp1" not in eventos_b, f"reanudar desde VERIFYING_NODE_SET no debe re-ejecutar GP1: {eventos_b}"
         assert eventos_b == [
             "gate:node_set",
             "gate:quiescence",
             "gate:rv2",
+            "gate:gp1",
+            "gate:node_set",
+            "gate:quiescence",
             "gate:rv2",
         ], f"secuencia de gates inesperada al reanudar desde NodeSet: {eventos_b}"
         assert isinstance(pid_a, int)

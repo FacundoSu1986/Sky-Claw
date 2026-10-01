@@ -51,13 +51,18 @@ _TRAMO: tuple[ProtectionTransactionState, ...] = (
 #: corresponde a esa fase. Se escribe completa y literal para que una
 #: reordenación —que a veces es correcta— obligue a passingar por acá.
 _ESPERADO: dict[ProtectionTransactionState, tuple[str, ...]] = {
-    # Desde el principio: la cadena completa.
+    # Desde el principio: la cadena completa, incluida la re-observación previa
+    # al archivado (GP1, NodeSet, quiescence, RV-2) que corre SIN escribir
+    # transición.
     ProtectionTransactionState.APPLYING: (
         "gp1",
         "rv2",
         "node_set",
         "quiescence",
         "rv2",
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
         "archive",
     ),
@@ -67,6 +72,9 @@ _ESPERADO: dict[ProtectionTransactionState, tuple[str, ...]] = {
         "node_set",
         "quiescence",
         "rv2",
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
         "archive",
     ),
@@ -75,22 +83,33 @@ _ESPERADO: dict[ProtectionTransactionState, tuple[str, ...]] = {
         "node_set",
         "quiescence",
         "rv2",
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
         "archive",
     ),
-    # >>> El caso del P1. NO aparece ``gp1`` ni el ``rv2`` anterior: reanudar
-    # desde aquí no puede retroceder el FSM para volver a verificarlos.
+    # >>> El caso del P1. NO aparece ``gp1`` ni el ``rv2`` ANTERIOR a NodeSet:
+    # reanudar desde aquí no puede retroceder el FSM para volver a verificarlos.
+    # Los ``gp1``/``node_set`` que sí aparecen son los de la re-observación
+    # previa al archivado, que no escribe transición.
     ProtectionTransactionState.VERIFYING_NODE_SET: (
         "node_set",
         "quiescence",
         "rv2",
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
         "archive",
     ),
-    # Desde ARCHIVING_BACKUP §20 C8 dice "continúa el archivado". Lo único que se
-    # re-observa es el contenido justo antes de archivar (el contenido pudo
-    # cambiar mientras el proceso estuvo muerto).
+    # Desde ARCHIVING_BACKUP §20 C8 dice "continúa el archivado". La re-observación
+    # es completa porque un DACL debilitado o un archivo sustituido por otro de
+    # igual contenido NO los ve RV-2, y el proceso estuvo muerto.
     ProtectionTransactionState.ARCHIVING_BACKUP: (
+        "gp1",
+        "node_set",
+        "quiescence",
         "rv2",
         "archive",
     ),

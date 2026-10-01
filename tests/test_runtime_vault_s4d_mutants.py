@@ -457,10 +457,10 @@ def test_m_d5_no_se_puede_saltar_el_nodeset(tmp_path: pathlib.Path) -> None:
     desde ahí, y el NodeSet se ejecuta.
 
     Y el otro lado de la misma moneda: al reanudar desde ``ARCHIVING_BACKUP``
-    el FSM de §19.2 no permite retroceder a VERIFYING_NODE_SET —y por eso no se
-    re-observa el NodeSet, sino que se re-observa el RV-2 previo al
-    archivado. Que esa sea la puerta correcta en vez de un hueco es lo que
-    comprueba la segunda mitad de este test.
+    el FSM de §19.2 no permite retroceder a VERIFYING_NODE_SET, así que la
+    puerta se cubre RE-OBSERVANDO sin escribir transición (GP1, NodeSet,
+    quiescence y RV-2). Que esa sea la puerta correcta en vez de un hueco es lo
+    que comprueba la segunda mitad de este test.
     """
     h = _Harness(tmp_path)
     h.journal.enter_finalization_phase(ProtectionTransactionState.VERIFYING_GP1)
@@ -473,7 +473,8 @@ def test_m_d5_no_se_puede_saltar_el_nodeset(tmp_path: pathlib.Path) -> None:
     assert h.puerto.llamadas == ["rv2", "node_set"], "el NodeSet no se puede saltar"
     assert h.journal_estado() is ProtectionTransactionState.ROLLBACK_REQUIRED
 
-    # Y desde ARCHIVING_BACKUP la puerta es el RV-2 previo al archivo.
+    # Y desde ARCHIVING_BACKUP la puerta es la re-observación COMPLETA, sin
+    # escribir transición: GP1, NodeSet, quiescence y el RV-2 final.
     h2 = _Harness(tmp_path / "desde_archiving")
     for fase in (
         ProtectionTransactionState.VERIFYING_GP1,
@@ -487,7 +488,12 @@ def test_m_d5_no_se_puede_saltar_el_nodeset(tmp_path: pathlib.Path) -> None:
     reporte2 = _finalize(h2)
 
     assert reporte2.disposition is FinalizationDisposition.ROLLBACK_REQUIRED
-    assert h2.puerto.llamadas == ["rv2"]
+    # El RV-2 falla al final, pero GP1 y NodeSet corrieron ANTES: sin ellos, un
+    # DACL debilitado o un archivo sustituido por otro de igual contenido
+    # habrían pasado. La ausencia de transición nueva es lo que hace que la
+    # monotonía del FSM se conserve.
+    assert h2.puerto.llamadas == ["gp1", "node_set", "quiescence", "rv2"]
+    assert h2.journal.journal.transaction_state is ProtectionTransactionState.ROLLBACK_REQUIRED
     assert not h2.backup_path().exists(), "sin RV-2 fresco no se archiva"
 
 

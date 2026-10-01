@@ -52,13 +52,14 @@ import hashlib
 import json
 import pathlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
 from sky_claw.local.runtime_vault.authorized_plan import AuthorizedPlan
 from sky_claw.local.runtime_vault.authorized_plan_store import DurableAuthorizedPlan, DurableWriteOutcome
 from sky_claw.local.runtime_vault.golden_protection_plan import (
+    SecurityBackupIntegrityError,
     node_security_backup_from_dict,
     node_security_backup_to_dict,
 )
@@ -148,7 +149,30 @@ class GoldenBackupAlreadyExistsError(GoldenBackupError):
 
 
 class GoldenBackupWriteError(GoldenBackupError):
-    """Fallo de I/O al publicar el manifiesto (no se acuña autoridad)."""
+    """Fallo de I/O al publicar el manifiesto (no se acuña autoridad).
+
+    Es REINTENTABLE: ADR §19.2 cuenta los fallos transitorios de publicación
+    —espacio en disco, antivirus, un sharing violation pasajero— como intentos
+    dentro de ``MAX_ARCHIVE_RETRIES``.
+    """
+
+
+class GoldenBackupNamespaceError(GoldenBackupError):
+    """El namespace de confianza RECHAZÓ publicar el backup.
+
+    NO es reintentable, y por eso es una clase aparte de
+    :class:`GoldenBackupWriteError` aunque las dos signifiquen "no se publicó":
+    un reparse point en el padre del destino, un owner inesperado o una DACL
+    floja no se arreglan solos entre intento e intento. Reintentar tres veces
+    contra una condición estructural es trabajo perdido, y —más importante— el
+    desenlace correcto para una condición estructural es ``INDETERMINATE`` con
+    intervención del operador, no ``ROLLBACK_REQUIRED``: el Golden está bien y
+    lo que falla es el destino del backup.
+
+    Sin esta distinción, «no pude escribir por I/O» y «el namespace no me deja»
+    colapsaban en el mismo tipo y la política de reintentos se aplicaba a las
+    dos.
+    """
 
 
 class GoldenBackupDurabilityError(GoldenBackupError):
@@ -156,7 +180,27 @@ class GoldenBackupDurabilityError(GoldenBackupError):
 
     Equivalente al contrato del plan (§24) y del journal: sin flush verificado
     no existe backup, y sin backup no hay ``COMMITTED``.
+
+    Es REINTENTABLE: ADR §19.2 cuenta el flush fallido como un intento de
+    archivo más dentro de ``MAX_ARCHIVE_RETRIES``.
     """
+
+
+#: Errores de publicación que ADR §19.2 considera TRANSITORIOS dentro de la
+#: fase ``ARCHIVING_BACKUP``: espacio en disco, antivirus, un flush que no se
+#: confirma. Reintentables hasta ``MAX_ARCHIVE_RETRIES`` y, agotados,
+#: ``ROLLBACK_REQUIRED``.
+#:
+#: Deliberadamente EXCLUIDOS:
+#:
+#: * :class:`GoldenBackupIndeterminateError` — "ya hay evidencia en el destino
+#:   que no es nuestra": reintentar no la cambia. Operador.
+#: * :class:`GoldenBackupNamespaceError` — el namespace rechazó publicar por una
+#:   condición estructural. Reintentar no la cambia. Operador.
+ERRORES_DE_ARCHIVO_REINTENTABLES: Final[tuple[type[GoldenBackupError], ...]] = (
+    GoldenBackupWriteError,
+    GoldenBackupDurabilityError,
+)
 
 
 # ============================================================================
@@ -249,9 +293,23 @@ class GoldenBackupArchive:
     def binds_to(self, plan: AuthorizedPlan) -> bool:
         """¿Este manifiesto demuestra ser el backup de ESTE plan?
 
-        Comparación por IDENTIDAD, no por path: ``operation_id`` + raíz canónica +
-        identidad física + ``TreeDigest`` + ``policy_version`` + digest del plan.
-        Un archivo con la misma forma pero otra operación no pasa.
+        La identidad (operation_id + raíz canónica + identidad física +
+        TreeDigest + policy_version + digest del plan) NO alcanza. Falta lo que
+        de verdad importa: **igualdad exacta de la tabla completa de nodos**.
+
+        Comparar sólo ``node_count`` dejaba pasar un manifiesto que copiaba el
+        ``authorized_plan_digest`` del plan y sustituía la tabla por otra
+        internamente válida de la MISMA longitud — con PRE Security Descriptors
+        distintos. Ese manifiesto pasaba como durable, autorizaba ``COMMITTED``
+        y dejaba un GP3 futuro restaurando los SD que el atacante eligió. El
+        digest del plan es un campo del archivo: probarlo no dice nada del
+        contenido.
+
+        Por eso se comparan los nodos por su orden CANÓNICO y no por el orden de
+        inserción: el manifiesto los guarda ordenados por ``relative_path``
+        mientras el plan conserva el orden en que los produjo el planner. Dos
+        tablas con los mismos datos en distinto orden son la MISMA tabla; dos que
+        difieren en un byte de un SD no lo son.
         """
         return (
             self.operation_id == plan.operation_id
@@ -261,8 +319,19 @@ class GoldenBackupArchive:
             and self.tree_digest == plan.tree_digest
             and self.policy_version == plan.policy_version
             and self.authorized_plan_digest == plan.plan_digest
-            and self.node_count == plan.node_count
+            and self.nodes == _orden_canonico(plan.nodes)
         )
+
+
+def _orden_canonico(nodos: Sequence[Any]) -> tuple[Any, ...]:
+    """Orden canónico de la tabla de nodos: por ``relative_path``.
+
+    Es la ÚNICA definición del orden, usada tanto al construir el manifiesto como
+    al compararlo. Si cada lado ordenara por su cuenta, una divergencia de
+    criterio haría fallar un binding legítimo —y, peor, un cambio de criterio en
+    un solo lado pasaría inadvertido.
+    """
+    return tuple(sorted(nodos, key=lambda node: node.relative_path))
 
 
 def build_golden_backup_archive(plan: AuthorizedPlan) -> GoldenBackupArchive:
@@ -282,7 +351,7 @@ def build_golden_backup_archive(plan: AuthorizedPlan) -> GoldenBackupArchive:
         tree_digest=plan.tree_digest,
         policy_version=plan.policy_version,
         authorized_plan_digest=plan.plan_digest,
-        nodes=tuple(sorted(plan.nodes, key=lambda node: node.relative_path)),
+        nodes=_orden_canonico(plan.nodes),
     )
 
 
@@ -349,7 +418,16 @@ def deserialize_golden_backup_archive(raw: bytes) -> GoldenBackupArchive:
     if not isinstance(nodes_raw, list) or not nodes_raw:
         raise GoldenBackupSchemaError("nodes debe ser una lista no vacía")
 
-    nodes = tuple(node_security_backup_from_dict(entry) for entry in nodes_raw)
+    # `node_security_backup_from_dict` valida el modelo de nodo y lanza
+    # `SecurityBackupIntegrityError` (del módulo de plan), que NO hereda de
+    # `GoldenBackupError`. Sin traducirlo acá, un manifiesto con JSON válido pero
+    # un SID o un digest de PRE inválido escapaba de las dos rutas de
+    # corrupción → INDETERMINATE y el llamador recibía una excepción en vez de un
+    # reporte fail-closed.
+    try:
+        nodes = tuple(node_security_backup_from_dict(entry) for entry in nodes_raw)
+    except SecurityBackupIntegrityError as exc:
+        raise GoldenBackupSchemaError(f"registro de nodo inválido en el manifiesto de backup: {exc}") from exc
 
     archive = GoldenBackupArchive(
         operation_id=str(cuerpo["operation_id"]),
@@ -503,7 +581,7 @@ class _NamespaceGoldenBackupWriter:
             # Ya tipado por el store (durability/write). Se preserva la causalidad.
             raise
         except TrustedNamespaceError as exc:
-            raise GoldenBackupWriteError(
+            raise GoldenBackupNamespaceError(
                 f"El namespace de confianza rechazó publicar el backup en '{dest}': {type(exc).__name__}: {exc}"
             ) from exc
 
@@ -629,10 +707,30 @@ def load_durable_golden_backup(
     """Carga el backup desde disco y lo acuña COMO autoridad durable.
 
     Re-lee los bytes, los re-serializa, exige que los canónicos coincidan y
-    exige que todos los bindings contra el plan cuadren. Un backup que existe
-    pero no ata con el plan no es un backup: es ``INDETERMINATE``.
+    exige que todos los bindings contra el plan cuadren, **incluida la tabla
+    completa de nodos**. Un backup que existe pero no ata con el plan no es un
+    backup: es ``INDETERMINATE``.
+
+    ``path`` existe sólo para los tests que necesitan apuntar a un archivo ya
+    escrito dentro de la transacción (el replay de W-D05 y W-D06). NO es una
+    vía de autoridad: si se provee, tiene que ser EXACTAMENTE la ruta derivada.
+    Aceptar una ruta arbitraria dejaría que un caller metiera bytes canónicos en
+    un archivo escribible por el usuario, lo cargara por ahí y le pasara la
+    autoridad a ``commit_finalized`` — produciendo ``COMMITTED`` con el backup
+    real ausente del store protegido.
     """
-    destino = derive_golden_backup_path(plan, programdata_resolver=programdata_resolver) if path is None else path
+    derivado = derive_golden_backup_path(plan, programdata_resolver=programdata_resolver)
+    if path is None:
+        destino = derivado
+    else:
+        if not isinstance(path, pathlib.Path):
+            raise GoldenBackupSchemaError("path debe ser pathlib.Path")
+        if path.resolve() != derivado.resolve():
+            raise GoldenBackupSchemaError(
+                f"el backup durable se lee SIEMPRE de su ruta derivada '{derivado}'; "
+                f"'{path}' no es esa ruta y no puede acuñar autoridad"
+            )
+        destino = path
     try:
         raw = destino.read_bytes()
     except FileNotFoundError as exc:
@@ -727,6 +825,13 @@ def archive_golden_backup(
         resolved_writer.write_create_once(dest, payload, GOLDEN_BACKUP_MANIFEST_OBJECT)
     except GoldenBackupDurabilityError:
         raise
+    except GoldenBackupNamespaceError:
+        # Ya tipado y NO retryable por el adaptador productivo. Envolverlo en
+        # `GoldenBackupWriteError` —que sí es retryable— borraría la distinción
+        # entre "falló la escritura" y "el namespace no me deja escribir", y la
+        # política de reintentos de §19.2 se aplicaría a una condición
+        # estructural. Se preserva con su tipo y su causa.
+        raise
     except GoldenBackupAlreadyExistsError:
         # Carrera single-winner: otro publicador ganó entre el classify y el
         # write. Reclasificar es la respuesta correcta — no "reintentar con
@@ -765,6 +870,7 @@ __all__ = [
     "GoldenBackupDurabilityError",
     "GoldenBackupError",
     "GoldenBackupIndeterminateError",
+    "GoldenBackupNamespaceError",
     "GoldenBackupNotFoundError",
     "GoldenBackupSchemaError",
     "GoldenBackupUnsupportedError",

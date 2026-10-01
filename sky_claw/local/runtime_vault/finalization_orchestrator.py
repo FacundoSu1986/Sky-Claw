@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -83,6 +84,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 from sky_claw.local.runtime_vault.authorized_plan import AuthorizedPlan
 from sky_claw.local.runtime_vault.authorized_plan_store import DurableAuthorizedPlan
 from sky_claw.local.runtime_vault.golden_backup_archive import (
+    ERRORES_DE_ARCHIVO_REINTENTABLES,
     GoldenBackupError,
     archive_golden_backup,
     load_durable_golden_backup,
@@ -342,6 +344,15 @@ def _solo_aviso_de_rollback(operation_id: str) -> None:
 # ============================================================================
 # Verificaciones de autoridad
 # ============================================================================
+
+#: Intentos de archivado antes de abandonar (ADR §19.2, ``MAX_ARCHIVE_RETRIES``).
+#: Acotado a propósito: un reintento infinito sobre un destino que no se puede
+#: publicar dejaría la transacción colgada con el lock tomado.
+MAX_ARCHIVE_RETRIES: Final[int] = 3
+
+#: Base del backoff entre intentos, en segundos. Lineal y proporcional al número
+#: de intento, como el backoff de ``probe_tree_quiescence``.
+ARCHIVE_RETRY_BACKOFF_SECONDS: Final[float] = 0.5
 
 #: Fases en las que S4-D puede ENTRAR. ``APPLYING`` con todos los nodos
 #: MUTATED es la precondición de S4-C; las ``VERIFYING_*`` y ``ARCHIVING_BACKUP``
@@ -659,14 +670,24 @@ def finalize_protection_transaction(
             fail_closed_reason=f"otra operación mutadora tiene el GoldenMutationLock: {exc}",
         )
     except GoldenLockOrphanedOperationMismatchError as exc:
-        return _reporte_indeterminate(
+        return _adquisicion_rechazada(
             operation_id=operation_id,
             plan=plan,
-            journal=journal,
             estado=estado_durable,
-            phase=FinalizationPhase.ENTRY,
-            verdicts=(),
             reason=f"el lock huérfano pertenece a otra operación: {exc}",
+        )
+    except GoldenLockError as exc:
+        # Cualquier otro fallo de adquisición —registro de lock truncado o
+        # corrupto, reparse point, error de I/O— ocurre ANTES de que exista un
+        # handle. Sin esta rama la excepción escapaba en vez de producir un
+        # reporte, y el llamador no podía distinguir "S4-D no empezó" de "S4-D
+        # empezó y falló". Es el mismo borde genérico que ya tiene
+        # `recovery_orchestrator` para su adquisición.
+        return _adquisicion_rechazada(
+            operation_id=operation_id,
+            plan=plan,
+            estado=estado_durable,
+            reason=f"el GoldenMutationLock no se pudo adquirir: {type(exc).__name__}: {exc}",
         )
 
     lock_tomado = True
@@ -784,26 +805,61 @@ def finalize_protection_transaction(
                         "RV-2 final (post-quiescence) no PASÓ",
                     )
             else:  # ARCHIVING_BACKUP
-                # Re-observación del contenido justo antes de archivar.
+                # Re-observación COMPLETA antes de archivar, sin escribir transición.
                 #
                 # Si S4-D entra acá por REANUDACIÓN (el proceso anterior murió
                 # durante el archivado), el FSM no permite volver a
                 # VERIFYING_NODE_SET — y no debería: §20 C8 dice que desde
                 # ARCHIVING_BACKUP el recovery continúa el archivado. Pero el
-                # contenido pudo cambiar mientras el proceso estaba muerto, y un
-                # COMMITTED sobre contenido alterado desde el crash sería una
-                # afirmación falsa.
+                # Golden pudo cambiar mientras el proceso estuvo muerto, y no
+                # todo cambio lo detecta RV-2:
                 #
-                # La salida no es inventar una arista de retroceso: es
-                # RE-OBSERVAR sin escribir transición.
+                # * los BYTES pueden quedar idénticos mientras el DACL se
+                #   debilita;
+                # * un archivo puede ser sustituido por otro con el MISMO
+                #   contenido y distinto FileId: RV-2 pasa porque mira contenido,
+                #   y sólo NodeSet lo distingue;
+                # * un handle tomado no lo ve RV-2 en absoluto.
+                #
+                # Por eso se re-observan GP1, NodeSet, quiescence y el RV-2 final,
+                # todos SIN escribir transición: el estado durable sigue siendo
+                # ARCHIVING_BACKUP y la autoridad del journal no cambia. Es la
+                # misma técnica que permite re-observar sin inventar una arista
+                # de retroceso.
                 fallo = _observar(
-                    _evaluar(
-                        "rv2",
-                        port.observar_rv2(raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest),
-                    ),
+                    _evaluar("gp1", port.observar_gp1(raiz=plan_real.canonical_root, esperado="hardened")),
                     _fase,
-                    "RV-2 previo al archivado no PASÓ",
+                    "GP1 de reanudación no PASÓ",
                 )
+                if fallo is None:
+                    fallo = _observar(
+                        _evaluar(
+                            "node_set",
+                            port.observar_node_set(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes),
+                        ),
+                        _fase,
+                        "NodeSet de reanudación no PASÓ",
+                    )
+                if fallo is None:
+                    fallo = _observar(
+                        _evaluar(
+                            "quiescence",
+                            port.observar_quiescence(raiz=plan_real.canonical_root, nodos_autorizados=plan_real.nodes),
+                        ),
+                        _fase,
+                        "quiescence de reanudación no PASÓ",
+                    )
+                if fallo is None:
+                    fallo = _observar(
+                        _evaluar(
+                            "rv2",
+                            port.observar_rv2(
+                                raiz=plan_real.canonical_root, tree_digest_esperado=plan_real.tree_digest
+                            ),
+                        ),
+                        _fase,
+                        "RV-2 previo al archivado no PASÓ",
+                    )
             if fallo is not None:
                 return fallo
 
@@ -815,22 +871,75 @@ def finalize_protection_transaction(
         # atan con el plan. Un backup de otra operación o corrupto es
         # INDETERMINATE: nunca se sobrescribe evidencia existente.
         # --------------------------------------------------------------
-        try:
-            escritura = archive_golden_backup(
-                plan,
-                programdata_resolver=programdata_resolver,
-                writer=archive_writer,
-            )
-        except GoldenBackupError as exc:
-            return _reporte_indeterminate(
-                operation_id=operation_id,
-                plan=plan,
-                journal=journal,
-                estado=estado_durable,
-                phase=FinalizationPhase.ARCHIVING_BACKUP,
-                verdicts=tuple(veredictos),
-                reason=f"el backup durable no se pudo probar: {exc}",
-            )
+        # --------------------------------------------------------------
+        # 7. Backup durable con reintentos ACOTADOS (ADR §19.2).
+        #
+        # §19.2 distingue dos familias y les asigna desenlaces distintos:
+        #
+        # * fallos TRANSITORIOS de publicación o durabilidad (espacio en disco,
+        #   antivirus, ``FlushFileBuffers`` que retorna FALSE): cuentan como
+        #   intento fallido y se reintentan DENTRO de ``ARCHIVING_BACKUP`` con el
+        #   lock mantenido. Agotados los reintentos -> ``ROLLBACK_REQUIRED``.
+        # * evidencia preexistente CORRUPTA o AJENA: no es transitorio y
+        #   reintentar no la cambia. -> ``INDETERMINATE`` y operador.
+        #
+        # La distinción no es cosmética: con un solo `except` que devuelve
+        # INDETERMINATE, un disco lleno dejaba la operación esperando intervención
+        # humana cuando el ADR exige agotar los reintentos y deshacer.
+        # --------------------------------------------------------------
+        intentos = 0
+        while True:
+            intentos += 1
+            try:
+                escritura = archive_golden_backup(
+                    plan,
+                    programdata_resolver=programdata_resolver,
+                    writer=archive_writer,
+                )
+                break
+            except ERRORES_DE_ARCHIVO_REINTENTABLES as exc:
+                if intentos >= MAX_ARCHIVE_RETRIES:
+                    logger.warning(
+                        "S4D archivado agotado tras %d intentos para operation_id=%s: %s",
+                        intentos,
+                        operation_id,
+                        exc,
+                    )
+                    return _desenrollar_rollback(
+                        operation_id=operation_id,
+                        plan=plan,
+                        journal=journal,
+                        lock=lock,
+                        veredictos=veredictos,
+                        estado=ProtectionTransactionState.ARCHIVING_BACKUP,
+                        reason=(
+                            f"el backup durable falló {intentos} veces (último: {exc}); "
+                            "reintentos de ARCHIVING_BACKUP agotados"
+                        ),
+                        verdict_rollback=notificar_rollback,
+                    )
+                logger.info(
+                    "S4D intento de archivado %d/%d falló para operation_id=%s: %s",
+                    intentos,
+                    MAX_ARCHIVE_RETRIES,
+                    operation_id,
+                    exc,
+                )
+                # Backoff lineal, la misma forma de esperar que usa
+                # `probe_tree_quiescence`. La función es síncrona por contrato
+                # (la invoca un helper elevado, no el event loop), así que no se
+                # introduce `async` sólo por un reintento.
+                time.sleep(ARCHIVE_RETRY_BACKOFF_SECONDS * intentos)
+            except GoldenBackupError as exc:
+                return _reporte_indeterminate(
+                    operation_id=operation_id,
+                    plan=plan,
+                    journal=journal,
+                    estado=estado_durable,
+                    phase=FinalizationPhase.ARCHIVING_BACKUP,
+                    verdicts=tuple(veredictos),
+                    reason=f"el backup durable no se pudo probar: {exc}",
+                )
         veredictos.append(
             GateVerdict(
                 gate="archive",
@@ -1049,6 +1158,28 @@ def _normalizar_commit_ya_durable(
             authorized_plan_digest=plan.digest,
             fail_closed_reason=f"COMMITTED durable pero el lock sigue tomado: {exc}",
         )
+    except GoldenLockError as exc:
+        # Fallo de adquisición que no es busy ni de operación ajena: registro
+        # truncado, reparse point, I/O. Ocurrió antes de que hubiera handle, así
+        # que el lock —ajeno o propio— quedó donde estaba.
+        logger.error("S4D no se pudo adquirir el lock huérfano para operation_id=%s: %s", operation_id, exc)
+        return FinalizationForensicReport(
+            operation_id=operation_id,
+            disposition=FinalizationDisposition.INDETERMINATE,
+            phase_reached=FinalizationPhase.TERMINAL,
+            verdicts=(),
+            lock=FinalizationLockOutcome(
+                acquired=False,
+                released=False,
+                retained_as_orphan=False,
+                operation_id=operation_id,
+                detail=f"adquisición rechazada: {type(exc).__name__}",
+            ),
+            journal_state=ProtectionTransactionState.COMMITTED,
+            archive_digest=backup.archive_digest,
+            authorized_plan_digest=plan.digest,
+            fail_closed_reason=f"COMMITTED durable pero el lock huérfano no se pudo tomar: {exc}",
+        )
 
     # F14/§20 Q: el COMMITTED YA ES durable. Un fallo al escribir
     # `phase=RELEASED` NO puede reescribir ese hecho — el commit ocurrió y no se
@@ -1193,6 +1324,43 @@ def _reporte_no_aplicable(
     )
 
 
+def _adquisicion_rechazada(
+    *,
+    operation_id: str,
+    plan: DurableAuthorizedPlan,
+    estado: ProtectionTransactionState,
+    reason: str,
+) -> FinalizationForensicReport:
+    """La adquisición del lock falló ANTES de que existiera un handle.
+
+    El reporte dice ``acquired=False`` y ``retained_as_orphan=False`` porque las
+    dos cosas son verdad: esta transacción no tomó el lock y, en el caso del lock
+    ajeno, tampoco lo retuvo — lo observó y lo dejó intacto.
+
+    Delegar esto en ``_reporte_indeterminate`` (que asume exclusión ya adquirida)
+    le diría al operador que esta operación tiene protección sobre el Golden,
+    cuando lo que hay es un lock ajeno sobre el Golden.
+    """
+    logger.error("S4D adquisición de lock rechazada para operation_id=%s: %s", operation_id, reason)
+    return FinalizationForensicReport(
+        operation_id=operation_id,
+        disposition=FinalizationDisposition.INDETERMINATE,
+        phase_reached=FinalizationPhase.ENTRY,
+        verdicts=(),
+        lock=FinalizationLockOutcome(
+            acquired=False,
+            released=False,
+            retained_as_orphan=False,
+            operation_id=operation_id,
+            detail="adquisición rechazada: nunca hubo handle de esta operación",
+        ),
+        journal_state=estado,
+        archive_digest=None,
+        authorized_plan_digest=plan.digest,
+        fail_closed_reason=reason,
+    )
+
+
 def _reporte_indeterminate(
     *,
     operation_id: str,
@@ -1257,13 +1425,23 @@ def _evaluar(gate: str, observacion: Any) -> GateVerdict:
         return observacion
     if isinstance(observacion, tuple) and len(observacion) == 2:
         passed, detail = observacion
+        if not isinstance(passed, bool):
+            # ``bool("false")`` es ``True`` en Python. Un adapter que devolviera
+            # el resultado serializado de una observación —``"false"``, ``0``,
+            # ``"0"``— haría pasar un gate que falló, y de ahí en adelante se
+            # autorizarían los gates siguientes y el COMMITTED. Se rechaza en vez
+            # de coercionar.
+            raise FinalizationError(
+                f"el gate '{gate}' devolvió {type(passed).__name__} en vez de bool: un valor no "
+                "booleano no se puede interpretar como PASS ni como FAIL sin ambigüedad"
+            )
         if not isinstance(detail, str):
             raise FinalizationError(
                 f"el detalle del gate '{gate}' debe ser string para ser auditable; recibido {type(detail).__name__}"
             )
         return GateVerdict(
             gate=gate,
-            passed=bool(passed),
+            passed=passed,
             detail=detail,
             evidence_digest=hashlib.sha256(f"{gate}:{detail}".encode()).hexdigest(),
         )
