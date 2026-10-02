@@ -390,3 +390,197 @@ scientific_rules_changed_after_exposure = false
 
 Esto se suma a la desviación de freeze ya registrada en el informe de calibration; la decisión
 científica del runner (`summary.decision`) permanece intacta y se reporta tal cual.
+
+---
+
+## 19. Execution freeze post-calibration
+
+Estado: la fase **CALIBRATION** (15 assets, sin retunear) fue ejecutada, verificada y
+**aceptada**. Este commit congela EXP-M5 y es el `M5_EXECUTION_FREEZE_SHA`. El SHA del freeze
+es, **por definición, el commit que introduce esta sección**: no se embebe aquí (un SHA
+auto-referencial en el propio archivo no puede ser correcto, y escribirlo "a mano" o "después"
+produciría provenance fiction — el mismo defecto que §16.1 existe para impedir). Se obtiene
+con `git rev-parse HEAD` sobre este commit.
+
+No existe un segundo commit vacío encima de este.
+
+### 19.1 Identificadores congelados
+
+```text
+CALIBRATION_STATUS=CALIBRATION_OK
+
+M5_PREREG_FREEZE_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
+BASE_MAIN_SHA=9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5
+CALIBRATION_RUN_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
+
+CALIBRATION_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\calibration-d33f81ca.json
+CALIBRATION_OUTPUT_SHA256=b8f667b5d78b8eaf26be86626d9630e682fb25d36c7b22fd639fd8ba829833db
+CALIBRATION_OUTPUT_BYTES=94914
+
+CALIBRATION_ROWS=15
+LEGACY_HELDOUT_ROWS=0
+EXCLUSIONS=0
+```
+
+**Qué es y qué no es `CALIBRATION_OK`.** Es el **veredicto de aceptación del operador** sobre
+esta corrida, no un campo emitido por el runner: la cadena `CALIBRATION_OK` **no aparece** en
+el JSON de calibration, cuyo propio campo es `summary.decision = PENDING_FREEZE` (§16.1:
+calibration no emite medianas de cohorte, por diseño). Los valores de acceptance —
+15 filas, 0 `LEGACY_HELDOUT`, 0 exclusiones, y los identificadores de arriba — sí son
+**verificables directamente contra el artefacto**, y lo fueron:
+
+| Campo | Valor en el artefacto | Verificado |
+|---|---|---|
+| `environment.git_sha` | `d33f81ca…` | = `CALIBRATION_RUN_SHA` |
+| `environment.base_main_sha` | `9f6fa0c2…` | = `BASE_MAIN_SHA` |
+| `environment.m5_prereg_freeze_sha` | `d33f81ca…` | = `M5_PREREG_FREEZE_SHA` |
+| `environment.m5_execution_freeze_sha` | `null` | correcto en calibration |
+| `dataset.n_rows` | `15` | = `CALIBRATION_ROWS` |
+| `dataset.split_counts` | `{"CALIBRATION":15,"LEGACY_HELDOUT":0}` | = `LEGACY_HELDOUT_ROWS=0` |
+| `dataset.exclusions` | `[]` | = `EXCLUSIONS=0` |
+| `environment.solver` | `reconstruct_from_normal(normal, "RAW", 0.0, 0.0)` | camino M2/M3 sin cambios |
+
+### 19.2 Contrato científico congelado
+
+Sin cambios respecto de §14. El artefacto de calibration los re-emite y coincide con el
+prereg:
+
+```text
+LOWMID_HIGH_CUTOFF=32
+BAND_EDGES=(4,8,16,32,64,128)
+ENERGY_GATE_FRACTION=1e-6
+T_LOWMID_NRMSE=0.15
+T_LOWMID_EXCESS=0.10
+T_HIGH_ENRICHMENT=2.0
+M5_BOOTSTRAP_SEED=20260925
+```
+
+```text
+METRICS_FROZEN=YES
+THRESHOLDS_FROZEN=YES
+PREPROCESSING_FROZEN=YES
+TRANSFORMS_FROZEN=YES
+EXCLUSIONS_FROZEN=YES
+DECISION_RULES_FROZEN=YES
+```
+
+Comprobado contra la calibration aceptada, y confirmado por lectura del código:
+
+```text
+THRESHOLDS_CHANGED=NO
+SCIENTIFIC_LOGIC_CHANGED=NO
+CODE_CHANGED=NO
+PRE_FIX_ROWS_BIT_IDENTICAL=YES
+RERUN_ROWS_BIT_IDENTICAL=YES
+```
+
+Este freeze es **docs-only**: `run_exp_m5.py`, `frequency_coherence.py`,
+`solver_coherence.py`, `authored_dataset.py`, `run_exp_m2.py`, `run_exp_m3.py` y
+`run_exp_m4.py` quedan sin tocar.
+
+### 19.3 Desviación de protocolo — se preserva, no se cierra
+
+Lo registrado en §18 sigue vigente **sin modificación**. Este freeze **no** lo revierte:
+
+```text
+protocol_status=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
+Borrar los outputs contaminados **no restauró la ceguera**: los 16 `LEGACY_HELDOUT` fueron
+observados por M5 antes de este freeze. En consecuencia, `LEGACY_HELDOUT` **no** debe
+presentarse —ni en el informe de FULL ni en ninguna comunicación— como *fresh heldout* ni
+como *independent validation*. Es un split histórico reutilizado de M3/M4, con exposición
+previa (§3 y §18). El estado **no** se convierte en `CLEAN` en este documento ni en el
+runner.
+
+### 19.4 Incidente operativo: contaminación de imports cross-worktree
+
+Durante el preflight de la calibration se detectó que el intérprete resolvía módulos de
+`sky_claw` **hacia otro checkout**, por entradas `.pth` del venv, que anteponen rutas ajenas
+al worktree en `sys.path`:
+
+```text
+E:\Skyclaw_Main_Sync\.venv\Lib\site-packages\00_worktree_skyclaw.pth        → C:\Worktrees\Sky-Claw-586c
+E:\Skyclaw_Main_Sync\.venv\Lib\site-packages\_editable_impl_sky_claw.pth   → E:\Skyclaw_Main_Sync
+```
+
+El worktree de M5 **no tiene venv propio**: usa el venv del checkout principal, que inyecta
+esas dos rutas. Una ejecución por script externo (`python <ruta>\script.py`) resuelve entonces
+`sky_claw` contra `C:\Worktrees\Sky-Claw-586c` o `E:\Skyclaw_Main_Sync`, es decir código de
+**otra** revisión, sin ningún error visible: el proceso corre y devuelve números plausibles de
+otro tree.
+
+Qué se hizo y qué queda:
+
+- la ejecución contaminada **se abortó antes de aceptar resultados**;
+- la calibration **válida** (§19.1) se ejecutó después vía `python -m`, con los módulos
+  relevantes verificados contra el worktree del prereg freeze;
+- esto **no invalida** la calibration aceptada — su provenance (§19.1) lo corrobora —
+  pero es un riesgo operativo **real y recurrente**;
+- **NO está corregido.** No se tocaron los `.pth`, ni el venv, ni el packaging, ni
+  `pyproject.toml`/`uv.lock`. Se trata fuera de EXP-M5, en issue/PR propio.
+
+### 19.5 Gate obligatorio antes de FULL (integridad operativa, no científica)
+
+Por §19.4, la corrida FULL **debe** repetir el chequeo de origen de imports antes de leer un
+solo asset. Para cada módulo M5 relevante, `<módulo>.__file__` debe resolver **dentro del
+worktree exacto** del `M5_EXECUTION_FREEZE_SHA`:
+
+```text
+run_exp_m5.__file__
+frequency_coherence.__file__
+solver_coherence.__file__
+authored_dataset.__file__
+run_exp_m2.__file__
+run_exp_m3.__file__
+run_exp_m4.__file__
+trust_proxies.__file__
+```
+
+y además `alignment`, `metrics`, `normal_fft_periodic`, `normal_from_height`, `nz_policies`,
+`synthetic_height` (los módulos reales de `sky_claw/local/native_parallax/research/`).
+
+La ejecución FULL debe invocar el runner **como módulo**:
+
+```bat
+python -m sky_claw.local.native_parallax.research.run_exp_m5
+```
+
+**Prohibido** `python <ruta>\externa\script.py`. Si algún módulo resuelve a otro checkout:
+
+```text
+STOP
+CROSS_CHECKOUT_IMPORT_CONTAMINATION=YES
+FULL_RUN_EXECUTED=NO
+```
+
+Esto es un gate de **integridad operativa**, no un cambio científico: no altera umbrales,
+bandas, cutoff, ENERGY_GATE, seed, métricas, máscaras, split ni reglas de exclusión.
+
+### 19.6 Calibrations históricas (raw)
+
+Se conservan ambas, sin ambigüedad sobre cuál gobierna:
+
+```text
+# Pre-fix — histórica, superseded for execution-freeze purposes
+calibration.json  bytes=94561
+SHA256=388bfcdf0b7344b793ccffc92772dd1290a458ab3ed3fa0b3aaf5c37fe224c20
+
+# Vigente — la que sostiene este freeze
+calibration-d33f81ca.json  bytes=94914
+SHA256=b8f667b5d78b8eaf26be86626d9630e682fb25d36c7b22fd639fd8ba829833db
+```
+
+Los JSON viven **fuera del repositorio** (`C:\SkyClawResearch\…`) y el protocolo vigente no
+exige versionarlos: lo que se congela aquí son sus hashes, su tamaño y su conteo de filas.
+
+### 19.7 Alcance de este freeze
+
+Este freeze **no** autoriza por sí solo la corrida FULL. Además del gate de §19.5, FULL
+requiere: CI verde sobre el SHA exacto de este commit, `--frozen-ack
+freeze-<M5_EXECUTION_FREEZE_SHA>`, y la confirmación de que la desviación de §19.3 sigue
+declarada en el informe de resultados. No se arreglan aquí #667 ni #663, no se corrigen los
+`.pth`, no se cambian dependencias, no se restackea contra `main` (el restack es posterior a
+FULL y a la revisión científica) y no se toca la aserción tautológica residual de tests.
