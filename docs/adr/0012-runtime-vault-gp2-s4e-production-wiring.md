@@ -141,6 +141,66 @@ Ambas son la clase de defecto que el repo declara dominante, y ninguna era
 visible leyendo el reporte de un test: aparecieron porque el RIG de Windows y
 el camino de arranque se ejercitaron con procesos y discos reales.
 
+## Defecto abierto que S4-E **expone** pero no puede cerrar: el handoff S4-C → S4-D
+
+**Este es el hallazgo más importante del slice, y fue el CI de Windows el que lo
+vio.** Localmente el caso E03 pasaba por suerte de timing (ver abajo); en
+`windows-latest` falló en py3.11 y py3.12, y la causa no era el test.
+
+La cadena, con evidencia:
+
+1. El proceso A muere por `os._exit` después de que `apply_authorized_plan`
+   volvió, con los tres nodos `MUTATED` y su WAL durable flushed.
+2. El proceso B corre el router de S4-E. `APPLYING` → **S4-C**, que clasifica el
+   apply como completo y devuelve `POST_VERIFICATION_REQUIRED` **con el lock
+   retenido** (`ACQUIRED_RETAINED`). S4-E encadena **S4-D**. Hasta acá todo
+   correcto: el handoff que este ADR describe S4-C documentando en prosa
+   funciona.
+3. **S4-D falla.** Sin `session=`, `_adquirir_lock_para_finalizacion`
+   (`finalization_orchestrator.py:493`) re-adquiere por el camino de recovery,
+   que sólo acepta un lock **huérfano**. El lock está retenido por **este mismo
+   proceso**, con `pid + creation-time` coincidentes → `GoldenLockBusyError` →
+   `LOCK_BUSY`, **cero gates ejecutados**.
+
+El detalle que lo vuelve un defecto y no una decisión: la propia docstring de
+`_adquirir_lock_para_finalizacion` (`finalization_orchestrator.py:481-484`)
+anticipa exactamente este caso — *"S4-D siguiendo inmediatamente a S4-C en el
+mismo proceso"* → reusar `session.lock`, sin soltar ni re-tomar. **S4-D ya fue
+diseñado para este handoff. Lo que falta es que S4-C pueda entregárselo.**
+
+`recover_interrupted_protection` devuelve un `RecoveryForensicReport` con un
+`RecoveryLockOutcome` (un enum), **no** el handle retenido ni una sesión. El
+caller no tiene con qué construir el `session=` que S4-D espera.
+
+Dos maneras de cerrarlo, ambas fuera del diff de S4-E:
+
+* **Extender S4-C** para que su reporte (o un nuevo return) exponga el handle
+  retenido / la sesión, de modo que S4-E pueda pasárselo a S4-D.
+* **Hacer reentrante la re-adquisición de S4-D** para un lock poseído por el
+  mismo proceso **y** la misma `operation_id` (con su `creation-time`
+  verificado, para no abrir una vía de stealing).
+
+S4-E compone y no reimplementa (§26/§27/§28): no puede tocar esos contratos por
+su cuenta, y hacerlo en silencio sería exactamente el patrón que este repo
+prohíbe. Queda **abierto y declarado**.
+
+Ancla: `test_e03_crash_todos_mutados_pre_finalizacion_reenruta`, marcado
+`xfail(strict=True)` con el diagnóstico completo en el `reason`. `strict=True`
+importa: cuando alguien cierre el defecto, el `xpass` se vuelve rojo y obliga a
+quitar el marker — el test no puede quedarse verde por la vía del marcador.
+
+### El mismo caso también exige el borde de crash del propio RIG
+
+La primera versión de E03 pedía la muerte desde dentro del puerto, al volver del
+segundo `SetSecurityInfo`. Eso está mal por una razón que conviene escribir:
+**en ese instante el nodo todavía no tiene su registro `MUTATED` en el WAL** — lo
+escribe el engine después, con su flush. Matar ahí deja el apply incompleto, y
+el router hace rollback. La misma corrida daba `committed` en una máquina y
+`rolled_back` en otra, según si ese flush había ocurrido: un test verde por
+suerte de timing, que es lo peor que puede hacer un crash test. El borde
+determinista es **después** de que `apply_authorized_plan` volvió, que es la
+única prueba de que cada nodo cerró su WAL.
+
 ## Lo que NO cubre S4-E
 
 * **GP3, unprotect, GUI, y el cableado de tool del LLM.** El coordinator es un

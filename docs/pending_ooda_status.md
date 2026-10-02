@@ -316,6 +316,27 @@
 > discovery **y** a resume en el barrido de arranque (si sólo llegaba al
 > primero, el resume leía `%ProgramData%` productivo). Ver ADR
 > [0012](adr/0012-runtime-vault-gp2-s4e-production-wiring.md).
+>
+> **DEFECTO ABIERTO que S4-E expone y NO puede cerrar — handoff S4-C → S4-D.**
+> Es el hallazgo más importante del slice y lo encontró el CI de Windows
+> (falló en py3.11 y py3.12), no la lectura del código. El router de S4-E hace
+> lo correcto: S4-C clasifica el apply como completo, devuelve
+> `POST_VERIFICATION_REQUIRED` **con el lock retenido**, y S4-E encadena S4-D.
+> **S4-D falla ahí**: sin `session=`, `_adquirir_lock_para_finalizacion`
+> (`finalization_orchestrator.py:493`) re-adquiere por el camino de recovery, que
+> sólo acepta un lock **huérfano**, y el lock lo retiene este mismo proceso →
+> `GoldenLockBusyError` → `LOCK_BUSY` con cero gates ejecutados. La docstring de
+> esa misma función (`:481-484`) anticipa el caso —"S4-D siguiendo inmediatamente
+> a S4-C en el mismo proceso" → reusar `session.lock`—, pero
+> `recover_interrupted_protection` devuelve un `RecoveryLockOutcome` (enum) y
+> **no** el handle retenido: el caller no puede construir el `session=` que S4-D
+> espera. Cerrarlo exige cambiar el contrato de S4-C (exponer el handle) o el de
+> S4-D (re-adquisición reentrante para lock del mismo proceso + misma
+> `operation_id`, con `creation-time` verificado); ambos fuera del diff de S4-E.
+> Ancla: `test_e03_crash_todos_mutados_pre_finalizacion_reenruta`, `xfail(strict=True)`
+> con el diagnóstico en el `reason` — el `strict` hace que el `xpass` al cerrar
+> el defecto vuelva a rojo y obligue a quitar el marker. **El pipeline S4-E no
+> está listo para merge hasta que esto se cierre.**
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de

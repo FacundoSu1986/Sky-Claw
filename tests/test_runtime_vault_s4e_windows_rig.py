@@ -320,21 +320,71 @@ def test_e02_crash_durante_apply_revierte_el_golden(rig: pathlib.Path) -> None:
     assert b["route"] in ("s4c_rollback", "operator_required"), b["route"]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEFECTO ABIERTO DE CONTRATO S4-C <-> S4-D, NO de S4-E. "
+        "El router de S4-E hace lo correcto: S4-C clasifica el apply como completo y "
+        "devuelve POST_VERIFICATION_REQUIRED con el lock RETENIDO, y S4-E encadena S4-D. "
+        "Ahí se rompe: S4-D con session=None re-adquiere por el camino de recovery, que "
+        "sólo acepta un lock HUERFANO, y el lock está retenido por este MISMO proceso con "
+        "pid+creation-time coincidentes -> GoldenLockBusyError -> LOCK_BUSY, cero gates. "
+        "La propia docstring de S4-D anticipa el caso ('S4-D siguiendo inmediatamente a S4-C "
+        "en el mismo proceso' -> reusar session.lock), pero recover_interrupted_protection "
+        "NO devuelve la sesión ni el handle retenido, así que el caller no puede "
+        "construirla. Cerrarlo exige cambiar el contrato de S4-C (exponer el handle) o el "
+        "de S4-D (re-adquisición reentrante para lock del mismo proceso+misma operación): "
+        "ambos fuera del diff de S4-E, que compone y no reimplementa. "
+        "strict=True: cuando alguien lo cierre, el xpass vuelve a rojo y obliga a quitar "
+        "este marker."
+    ),
+)
 def test_e03_crash_todos_mutados_pre_finalizacion_reenruta(rig: pathlib.Path) -> None:
-    """E03: apply completo durable, muerte antes de S4-D → el router encadena S4-C → S4-D."""
+    """E03: apply COMPLETO durable, muerte antes de S4-D → S4-E encadena S4-C → S4-D.
+
+    El borde de crash es determinista por construcción: el worker muere DESPUÉS
+    de que ``apply_authorized_plan`` volvió, que es la única prueba de que cada
+    nodo cerró su WAL. Una versión anterior de este test pedía el crash desde
+    dentro del puerto, al volver del segundo ``SetSecurityInfo``: ahí el nodo
+    todavía no tenía su ``MUTATED`` en el WAL, así que el apply quedaba
+    incompleto y el router hacía rollback. Pasaba en esta máquina y fallaba en
+    CI según si ese flush había ocurrido — un test verde por suerte de timing,
+    que es lo peor que puede hacer un crash test.
+
+    Hoy está ``xfail(strict=True)`` por el defecto de contrato S4-C/S4-D
+    documentado en el ``reason`` del marker, no por una ambigüedad del test.
+    """
     r = _correr(rig, "apply_then_finalize", crash_en="all_mutated")
     assert r["returncode"] != 0, "el worker debía morir, no terminar"
+
+    # El apply terminó y los SetSecurityInfo realmente ocurrieron: este es el
+    # breadcrumb que prueba el orden "WAL cerrado antes de la muerte".
+    eventos = _eventos(rig)
+    assert any(e.startswith("apply-fin:True:") for e in eventos), eventos
+    assert any(e.startswith("all-mutated:") for e in eventos), eventos
+    assert any(e.startswith("sdsi:") for e in eventos), "el apply no llegó a mutar"
 
     r = _correr(rig, "resume")
     assert r["returncode"] == 0, r["stderr"]
     b = _leer(rig, "s4e-result-b.json")
 
-    assert b["disposition"] in ("committed", "already_committed", "rollback_required", "indeterminate"), b
-    # La parte no negociable: el resume salió de S4-C o de S4-D, nunca del vacío.
-    assert b["source_orchestrator"].startswith(("recovery_orchestrator", "finalization_orchestrator")), b[
-        "source_orchestrator"
-    ]
-    assert b["fail_closed_reason"] or b["committed"]
+    # Apply completo ⇒ el router NO puede revertir: tiene que cerrar la
+    # transacción. Un `rolled_back` aquí significaría que el router℃
+    # reescribió evidencia durable.
+    assert b["disposition"] in ("committed", "already_committed", "rollback_required"), b
+    assert b["journal_state"] in (
+        "verifying_gp1",
+        "verifying_rv2",
+        "verifying_node_set",
+        "archiving_backup",
+        "committed",
+    ), b
+    # La propiedad de S4-E: el handoff ocurrió y salió por S4-D.
+    assert b["source_orchestrator"].startswith("finalization_orchestrator"), b["source_orchestrator"]
+    # Y CERO re-apply: el conteo global de SetSecurityInfo no crece.
+    assert sum(1 for e in _eventos(rig) if e.startswith("pre-sdsi:")) == 3, (
+        "la reanudación volvió a aplicar: un COMMITTED sobre un apply ya durable re-muta el Golden"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -183,12 +183,25 @@ class _PuertoDelegado:
 
 
 class _PuertoConCrash(_PuertoDelegado):
-    """S4-B real + muerte dura en el punto durable pedido."""
+    """S4-B real + muerte dura en el punto durable pedido.
+
+    Sólo hay UN punto de muerte dentro del puerto, y es ``mid_apply``: dispara
+    ANTES del primer ``SetSecurityInfo``, con el ``MUTATING`` ya durable. Es
+    determinista por construcción.
+
+    El borde "todos los nodos MUTATED" **no** se puede pedir desde acá, y esa
+    es una lección medida: al volver de ``apply_target_dacl`` el nodo todavía
+    no tiene su registro ``MUTATED`` en el WAL — ése lo escribe el engine
+    después, con su flush—, así que matar ahí deja el apply incompleto y el
+    router hace rollback. El mismo crash, en una máquina, daba ``committed`` y
+    en otra daba ``rolled_back``: dependía de si el flush del nodo alcanzado
+    había ocurrido. Es exactamente el punto que el borde real, ya FUERA del
+    puerto, sí fija: matar después de que ``apply_authorized_plan`` volvió.
+    """
 
     def __init__(self, interno: Any, modo: str | None, miga: _Miga) -> None:
         super().__init__(interno, miga)
         self._modo = modo
-        self._aplicados = 0
 
     def apply_target_dacl(self, handle: int, node: Any) -> None:
         self._miga.marcar(f"pre-sdsi:{node.relative_path}")
@@ -198,10 +211,6 @@ class _PuertoConCrash(_PuertoDelegado):
             _crash(CRASH_EXIT["mid_apply"])
         self._interno.apply_target_dacl(handle, node)
         self._miga.marcar(f"sdsi:{node.relative_path}")
-        self._aplicados += 1
-        if self._modo == "all_mutated" and self._aplicados >= 2:
-            # Evidencia durable: MUTATING del último nodo, estado APPLYING.
-            _crash(CRASH_EXIT["all_mutated"])
 
 
 def _puerto_mutacion(miga: _Miga, crash_en: str | None) -> Any:
@@ -443,7 +452,12 @@ def _fase_apply_then_finalize(rig_root: pathlib.Path, crash_en: str | None) -> N
     )
     miga.marcar(f"apply-fin:{reporte.ok}:{reporte.transaction_state.value}")
 
+    # E03: TODOS los nodos quedaron MUTATED con su WAL durable y la muerte cae
+    # ANTES de S4-D. Que el crash sea acá y no dentro del puerto es lo que hace
+    # este borde determinista: volver de `apply_authorized_plan` es la única
+    # prueba de que cada nodo cerró su WAL.
     if crash_en == "all_mutated":
+        miga.marcar(f"all-mutated:{reporte.setsecurityinfo_calls}")
         _crash(CRASH_EXIT["all_mutated"])
 
     final = finalize_protection_transaction(
