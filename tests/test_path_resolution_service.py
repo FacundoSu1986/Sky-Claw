@@ -1510,7 +1510,11 @@ class TestAnclaConstructoresManualesDeMods:
         # P2.3 fenced mueve la línea (autoridad temporal + veredicto tipado +
         # cleanup de cancelación).
         # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
-        "sky_claw/app_context.py": (1409,),
+        # GP2-S4E movió la línea (1409 → 1428): el cableado del coordinator de
+        # Runtime Vault y su barrido de arranque se insertaron ANTES de este
+        # constructor. El conjunto de constructores no cambió —el ancla sigue
+        # detectando un `expr / "mods"` nuevo—, sólo se desplazó la posición.
+        "sky_claw/app_context.py": (1428,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA.
         "sky_claw/__main__.py": (271,),

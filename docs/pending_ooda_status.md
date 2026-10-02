@@ -265,6 +265,58 @@
 > al backup, y S4-D produjo un manifiesto JSON canónico y no un contenedor
 > binario.
 
+> **GP2-S4E (production wiring de la transacción) — slice implementado sobre
+> `main` `0103ee4f`:** agrega UN módulo nuevo,
+> `sky_claw/local/runtime_vault/protection_service.py`, y cablea el barrido en
+> `AppContext._start_full_inner`. Antes de S4-E los siete orquestadores de la
+> transacción tenían **0 call-sites `[PROD]`** y el handoff S4-C → S4-D que
+> `recovery_orchestrator` describía en prosa no lo ejecutaba nadie.
+>
+> **Lo que S4-E NO cubre — leelo antes de asumir que sí:**
+> - **GP3, unprotect, GUI y el cableado de tool del LLM NO están
+>   implementados.** El coordinator es un domain service y
+>   deliberadamente NO se expone como tool del `tool_dispatcher` ni del
+>   `AsyncToolRegistry`; el ancla `GP2-T27` que anticipa ADR 0010 §974 queda
+>   para ese slice.
+> - **`POWER LOSS = NOT CLAIMED`.** Los RIG matan procesos (`os._exit` y
+>   `taskkill /T /F`); eso no demuestra durabilidad ante corte de luz.
+> - **REAL USER GOLDEN = NO.** Los RIG corren sobre
+>   `%TEMP%\SkyClaw-S4E-RIG-<uuid>` con guard duro contra Skyrim, Steam, MO2 y
+>   `%ProgramData%` productivo.
+> - **GP1 / quiescence / RV-2 están DEGRADADOS en el RIG**: el puerto de
+>   verificación aprueba los gates en vez de observarlos, y la frontera de S4-A
+>   (elevación + PPSC) no corre porque el RIG no está elevado. Un fake port no
+>   es validación nativa.
+> - **E04–E07 (crash dentro de cada gate de S4-D y dentro de `ARCHIVING_BACKUP`)
+>   no tienen test propio.** El RIG sabe matar el proceso en la frontera de
+>   apply y tras el `COMMITTED` durable, pero no tiene un punto de muerte
+>   inyectado entre gates. Es follow-up.
+>
+> **Riesgos heredados reconciliados en S4-E0 (NO reparados acá):**
+> - **RV-3** `clone._capture_directory_structure` no revalida identidad tras
+>   `os.scandir` (`clone.py:139-160`) al contrario que `inventory_tree`
+>   (`inventory.py:264-276`). Confirmado, follow-up: S4-E no depende de
+>   `create_runtime_clone`.
+> - **RV-1** `R2_NTFS_REPRO = NOT_OBSERVED`: 50 iteraciones causales
+>   deterministas + 400 iteraciones con 1666 intentos de reemplazo sobre NTFS
+>   real, **0 sellos falsos**, `st_ino` cambió en 50/50 y se reutilizó 0/50. La
+>   cifra "55 símbolos faltantes" de la revisión independiente **no se
+>   reproduce**: el censo da 0.
+> - `st_ctime_ns` **descartado como fix** con medición: en Windows CPython es
+>   *creation time* (escribir no lo cambia) y NO detecta el
+>   unlink→recreate, ni inmediato ni con 50 ms de delay.
+> - `_sumar_microsegundo` (UTC helper) y la validación duplicada de
+>   `verify_critical_files`/`verify_golden_master` quedan como follow-up de
+>   hardening; S4-E no depende de ninguna de las dos.
+>
+> **Dos invariantes discovered por este slice y ya congeladas con test:**
+> `ROLLED_BACK` es `settled` y NO `committed` (medir la invariante de
+> `fail_closed_reason` contra el conjunto "endurecido" rechazaba todo rollback
+> correcto con `ValueError`), y el resolver de ProgramData tiene que llegar a
+> discovery **y** a resume en el barrido de arranque (si sólo llegaba al
+> primero, el resume leía `%ProgramData%` productivo). Ver ADR
+> [0012](adr/0012-runtime-vault-gp2-s4e-production-wiring.md).
+
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
 2026](audits/2026-07_historial_ooda.md). Antes de iniciar un ítem, volver a

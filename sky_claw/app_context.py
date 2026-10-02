@@ -65,6 +65,9 @@ from sky_claw.local.mo2.brokered_loot import (
 )
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
+from sky_claw.local.runtime_vault.protection_service import (
+    RuntimeVaultProtectionCoordinator,
+)
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
@@ -389,6 +392,18 @@ class AppContext:
         self.vfs_broker: VfsExecutionBroker | None = None
         self.vfs_instance_id: str | None = None
         self.vfs_loot_runner: BrokeredLootRunner | VfsRequiredLootRunner | None = None
+        # GP2-S4E: coordinator de la transacción de protección del Golden.
+        #
+        # Se declara AQUÍ y no en `_sanitize_full_references`, a diferencia de
+        # `stage9_coordination`/`dyndolod_workspace`: esos dos se publican tarde y
+        # tocarlos antes de `_start_full_inner` lanza AttributeError. Acá la
+        # propiedad que importa es la inversa — que el arranque siempre pueda
+        # publicar y sanear sin depender del orden — y declararlo desde el inicio
+        # la garantiza sin coste.
+        #
+        # NO expone tool al LLM ni al tool_dispatcher: el cableado de tool del
+        # Runtime Vault es trabajo posterior, con su propio security review.
+        self.runtime_vault_protection: RuntimeVaultProtectionCoordinator | None = None
 
         self.hitl: HITLGuard | None = None
         # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
@@ -778,6 +793,10 @@ class AppContext:
         #: NO CONFIGURADO (estado normal y honesto: el resto de Sky-Claw
         #: funciona igual, sin fallback silencioso a ninguna raíz derivada).
         self.dyndolod_workspace = None
+        # GP2-S4E: el coordinator del Golden no sobrevive a un arranque fallido.
+        # Sanearlo aquí evita que un consumidorpubálise un coordinator de un
+        # arranque que se revirtió (mismo motivo que los dos atributos anteriores).
+        self.runtime_vault_protection = None
 
     @staticmethod
     def _sonda_de_transaccion_pendiente(journal):
@@ -2011,6 +2030,29 @@ class AppContext:
             except Exception:
                 logger.warning(
                     "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
+            # GP2-S4E: reconciliar operaciones Golden interrumpidas por una
+            # muerte dura (SIGKILL/OOM/corte de luz).
+            #
+            # Mismo contrato best-effort que U-03 y U-08: un fallo acá NO bloquea
+            # el arranque. El coordinator se publica ANTES de barrer, para que un
+            # consumidor del runtime lo encuentre vivo aunque el barrido de una
+            # operación individual falle: un fallo por operación no puede dejar el
+            # coordinator sin publicar.
+            #
+            # La única fuente de la decisión es la evidencia durable: el journal
+            # de cada operación, clasificado desde disco. Nunca memoria del proceso
+            # anterior, ni UI, ni staging, ni un archivo paralelo.
+            self.runtime_vault_protection = RuntimeVaultProtectionCoordinator(
+                reconciliar_al_arrancar=True,
+            )
+            try:
+                await self._await_startup(self.runtime_vault_protection.reconciliar_arranque_pendiente())
+            except Exception:
+                logger.warning(
+                    "Reconciliación de operaciones Golden pendientes falló (no bloquea el arranque)",
                     exc_info=True,
                 )
 

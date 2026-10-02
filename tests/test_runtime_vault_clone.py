@@ -1097,6 +1097,11 @@ class TestRuntimeCloneSuiteCanonico:
         # operation_lock_binding (evidencia durable PRE-plan que liga
         # operation_id con la identidad física del Golden para poder localizar
         # un lock huérfano cuando aún no hay plan ni journal).
+        # GP2-S4E agrega protection_service (coordinator de la transaccion: router
+        # de restart + camino feliz + discovery), cableado vía __init__.__all__.
+        # Sigue siendo composicion: el ancla que importa para el es de
+        # test_runtime_vault_s4e_wiring.py, que congela que S4-E no reimplementa
+        # ninguna de las piezas que lista.
         expected_modules = {
             "__init__",
             "authorization_context",
@@ -1122,6 +1127,7 @@ class TestRuntimeCloneSuiteCanonico:
             "operation_lock_binding",
             "operator_token",
             "operator_verifier_bridge",
+            "protection_service",
             "physical_root",
             "planning_orchestrator",
             "ppsc",
