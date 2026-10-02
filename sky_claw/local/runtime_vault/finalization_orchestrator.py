@@ -1449,9 +1449,6 @@ def _evaluar(gate: str, observacion: Any) -> GateVerdict:
         f"el puerto de verificación debe devolver GateVerdict o (passed, detail) para el gate "
         f"'{gate}'; recibido {type(observacion).__name__}"
     )
-    raise FinalizationError(
-        f"el puerto de verificación debe devolver GateVerdict o (passed, detail); recibido {type(observacion).__name__}"
-    )
 
 
 def _log_gate(operation_id: str, veredicto: GateVerdict) -> None:
