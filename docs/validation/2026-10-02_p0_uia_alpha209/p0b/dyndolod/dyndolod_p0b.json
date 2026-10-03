@@ -1,0 +1,442 @@
+{
+  "tool": "dynodlod",
+  "mode": "P0_B_PROBE",
+  "started_at": "2026-10-02T21:26:19",
+  "output_root": {
+    "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD",
+    "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD",
+    "exists": true,
+    "born_empty": true,
+    "ancestros_reparse": [
+      {
+        "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local\\Temp",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "C:\\Users",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "C:\\",
+        "is_reparse": false,
+        "reparse_tag": null
+      }
+    ],
+    "sin_reparse_en_cadena": true
+  },
+  "exe_sha256": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0",
+  "preset_antes": {
+    "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+      "exists": true,
+      "size": 24061,
+      "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+    }
+  },
+  "argv": [
+    "C:\\Modding\\DynDOLOD RigTest\\DynDOLODx64.exe",
+    "-sse",
+    "-o:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD\\",
+    "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\",
+    "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\",
+    "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt",
+    "-t:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\temp\\"
+  ],
+  "advanced_fingerprint": {
+    "control_type": "Button",
+    "class_name": "TButton",
+    "automation_id": "7210916",
+    "name": "Advanced >>>",
+    "native_hwnd": 7210916,
+    "runtime_id": [
+      42,
+      7210916
+    ]
+  },
+  "advanced_reloaded_output_from_preset": "YES",
+  "output_antes_de_advanced": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD",
+  "output_despues_de_advanced": "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD",
+  "reconvergencia": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\\DynDOLOD",
+  "begin_fingerprint": {
+    "control_type": "Button",
+    "class_name": "TButton",
+    "automation_id": "2623612",
+    "name": "OK",
+    "native_hwnd": 2623612,
+    "runtime_id": [
+      42,
+      2623612
+    ],
+    "is_enabled": true
+  },
+  "begin_signals": {
+    "output_growth": true,
+    "log_growth": false,
+    "ui_change": true,
+    "process_alive": true,
+    "confirmado": true
+  },
+  "generation": {
+    "polls": 32,
+    "modal_durante_generacion": []
+  },
+  "completion_fingerprint": {
+    "class_name": "#32770",
+    "name": "DynDOLOD",
+    "hwnd": 723158,
+    "instruccion": "Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log?",
+    "botones": [
+      {
+        "name": "Save and Exit",
+        "automation_id": "CommandButton_6"
+      },
+      {
+        "name": "Save, Zip and Exit",
+        "automation_id": "CommandButton_11"
+      },
+      {
+        "name": "Exit DynDOLOD",
+        "automation_id": "CommandButton_7"
+      },
+      {
+        "name": "Check log",
+        "automation_id": "CommandButton_2"
+      },
+      {
+        "name": "Cerrar",
+        "automation_id": ""
+      },
+      {
+        "name": "Línea arriba",
+        "automation_id": "UpButton"
+      }
+    ],
+    "phase": "dialogo",
+    "captured_at": "21:30:46"
+  },
+  "log_markers": {
+    "encontrados": {},
+    "using_output_path": null,
+    "using_data_path": null
+  },
+  "botones_terminal": [
+    "Save and Exit",
+    "Save, Zip and Exit",
+    "Exit DynDOLOD",
+    "Check log",
+    "Cerrar",
+    "Línea arriba",
+    "Re Pág",
+    "Línea abajo",
+    "Columna a la izquierda",
+    "Página a la derecha",
+    "Columna a la derecha",
+    "Minimizar",
+    "Maximizar",
+    "Cerrar"
+  ],
+  "save_exit_fingerprint": {
+    "control_type": "Button",
+    "class_name": "CCPushButton",
+    "automation_id": "CommandButton_6",
+    "name": "Save and Exit",
+    "native_hwnd": 7472246,
+    "runtime_id": [
+      42,
+      7472246
+    ]
+  },
+  "exit_code": 0,
+  "ledger": [
+    {
+      "action_id": "dyndolod_advanced",
+      "tool": "dynodlod",
+      "build_sha256": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0",
+      "pid": 9720,
+      "control_fingerprint": {
+        "control_type": "Button",
+        "class_name": "TButton",
+        "automation_id": "7210916",
+        "name": "Advanced >>>",
+        "native_hwnd": 7210916,
+        "runtime_id": [
+          42,
+          7210916
+        ],
+        "is_enabled": true
+      },
+      "timestamp_before": "2026-10-02T21:26:37",
+      "invoke_attempted": true,
+      "invoke_result": "S_OK",
+      "postcondition": "postcondition: rediscover + re-read Output"
+    },
+    {
+      "action_id": "dyndolod_begin_ok",
+      "tool": "dynodlod",
+      "build_sha256": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0",
+      "pid": 9720,
+      "control_fingerprint": {
+        "control_type": "Button",
+        "class_name": "TButton",
+        "automation_id": "2623612",
+        "name": "OK",
+        "native_hwnd": 2623612,
+        "runtime_id": [
+          42,
+          2623612
+        ],
+        "is_enabled": true
+      },
+      "timestamp_before": "2026-10-02T21:26:42",
+      "invoke_attempted": true,
+      "invoke_result": "S_OK",
+      "postcondition": "postcondition: confirmar señales de Begin"
+    },
+    {
+      "action_id": "dyndolod_save_exit",
+      "tool": "dynodlod",
+      "build_sha256": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0",
+      "pid": 9720,
+      "control_fingerprint": {
+        "control_type": "Button",
+        "class_name": "CCPushButton",
+        "automation_id": "CommandButton_6",
+        "name": "Save and Exit",
+        "native_hwnd": 7472246,
+        "runtime_id": [
+          42,
+          7472246
+        ],
+        "is_enabled": true
+      },
+      "timestamp_before": "2026-10-02T21:30:55",
+      "invoke_attempted": true,
+      "invoke_result": "S_OK",
+      "postcondition": "postcondition: process exit + guardado"
+    }
+  ],
+  "modales": [
+    {
+      "class_name": "#32770",
+      "name": "DynDOLOD",
+      "hwnd": 723158,
+      "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:26:28"
+    },
+    {
+      "class_name": "#32770",
+      "name": "DynDOLOD",
+      "hwnd": 723158,
+      "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:26:30"
+    },
+    {
+      "class_name": "#32770",
+      "name": "DynDOLOD",
+      "hwnd": 723158,
+      "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:26:32"
+    },
+    {
+      "class_name": "#32770",
+      "name": "DynDOLOD",
+      "hwnd": 723158,
+      "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:26:34"
+    },
+    {
+      "class_name": "#32770",
+      "name": "DynDOLOD",
+      "hwnd": 723158,
+      "instruccion": "Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log?",
+      "botones": [
+        {
+          "name": "Save and Exit",
+          "automation_id": "CommandButton_6"
+        },
+        {
+          "name": "Save, Zip and Exit",
+          "automation_id": "CommandButton_11"
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "automation_id": "CommandButton_7"
+        },
+        {
+          "name": "Check log",
+          "automation_id": "CommandButton_2"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        }
+      ],
+      "phase": "dialogo",
+      "captured_at": "21:30:46"
+    }
+  ],
+  "marcas_segundos": {
+    "launch": 0.2,
+    "wizard_disponible": 17.3,
+    "output_set": 17.5,
+    "dyndolod_advanced_before": 17.7,
+    "advanced_invoke": 17.8,
+    "dyndolod_begin_ok_before": 22.5,
+    "begin_invoke": 22.5,
+    "terminal_dialog": 267.0,
+    "dyndolod_save_exit_before": 275.8,
+    "terminal_invoke": 275.8,
+    "process_exit": 281.2
+  },
+  "metricas": {
+    "stdout_bytes": 0,
+    "stderr_bytes": 0
+  },
+  "preset_final": {
+    "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+      "exists": true,
+      "size": 24107,
+      "sha256": "ac5d0bfde4c29eb2f100d31a2f11cb4fb5d050b516f11b19b3209ea74ed12751"
+    }
+  },
+  "residual_processes": [],
+  "finished_at": "2026-10-02T21:31:02"
+}

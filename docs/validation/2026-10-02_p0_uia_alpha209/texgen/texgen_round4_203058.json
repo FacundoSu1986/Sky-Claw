@@ -1,0 +1,4032 @@
+{
+  "tool": "texgen",
+  "exe": "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+  "round": 4,
+  "session": "2389da69",
+  "started_at": "2026-10-02T20:30:58",
+  "temp_roots": {
+    "output_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\TexGen",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\TexGen",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\TexGen",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    },
+    "temp_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\temp",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\temp",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    }
+  },
+  "preset_hashes": {
+    "antes_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    },
+    "despues_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    },
+    "despues_de_mutaciones": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    },
+    "final": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    }
+  },
+  "steps": [
+    {
+      "etapa": "temp_roots",
+      "t": 1790983858.5491142,
+      "output_test_will_be": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\OutputTest"
+    },
+    {
+      "etapa": "spawn",
+      "t": 1790983858.6945713,
+      "pid": 15072
+    },
+    {
+      "etapa": "output_selector",
+      "t": 1790983871.5066216,
+      "candidatos": 1,
+      "estado": "OK"
+    },
+    {
+      "etapa": "output_lectura_original",
+      "t": 1790983871.6147478,
+      "value_pattern_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+      "value_is_readonly": true,
+      "legacy_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+      "text_pattern": null
+    }
+  ],
+  "pre_existing_processes": [],
+  "preset_outputpath_antes": {
+    "texgen_preset": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+    "dyndolod_preset": "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD"
+  },
+  "argv": [
+    "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+    "-sse",
+    "-o:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\TexGen\\",
+    "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\",
+    "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\",
+    "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt",
+    "-t:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\temp\\"
+  ],
+  "pid": 15072,
+  "window_wait_seconds": 1.3,
+  "modales_durante_espera": [
+    {
+      "captured_at": "20:31:04",
+      "hwnd": 5768564,
+      "name": "TexGen",
+      "class_name": "#32770",
+      "botones": [
+        {
+          "name": "Ignore",
+          "class_name": "CCPushButton",
+          "automation_id": "CommandButton_5",
+          "is_enabled": true
+        },
+        {
+          "name": "Exit TexGen",
+          "class_name": "CCPushButton",
+          "automation_id": "CommandButton_3",
+          "is_enabled": true
+        },
+        {
+          "name": "Cerrar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Línea arriba",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Re Pág",
+          "class_name": "",
+          "automation_id": "UpPageButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Av Pág",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Línea abajo",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Columna a la izquierda",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Página a la derecha",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Columna a la derecha",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Minimizar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Maximizar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Cerrar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        }
+      ],
+      "texto_visible": [
+        "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+        "It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.\r\n\r\nClick on this link for additional explanations and help for this message\r\nhttps://dyndolod.info/Messages/TexGen-Output\r\n\r\nFor qualified help and advice or to report a problem, make a post on the official DynDOLOD support forum.",
+        "Online Help | Support Forum | Copy message to clipboard",
+        "Posición"
+      ]
+    }
+  ],
+  "contractual_window_wait_seconds": 11.1,
+  "ventanas_con_tedit": [
+    {
+      "hwnd": 1639910,
+      "name": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+      "class_name": "TfrmMain"
+    }
+  ],
+  "restore_failed": false,
+  "action_controls_inventory": [
+    {
+      "control_type": "Button",
+      "class_name": "TButton",
+      "automation_id": "1050386",
+      "name": "Start",
+      "native_hwnd": 1050386,
+      "runtime_id": [
+        42,
+        1050386
+      ],
+      "is_enabled": true,
+      "patterns": [
+        "Invoke",
+        "Value",
+        "Text",
+        "LegacyIAccessible",
+        "Selection",
+        "SelectionItem",
+        "Toggle",
+        "ExpandCollapse",
+        "Window",
+        "RangeValue"
+      ]
+    }
+  ],
+  "todos_los_botones": [
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "12060690",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "12912570",
+      "is_enabled": true
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "329602",
+      "is_enabled": true
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "1771370",
+      "is_enabled": true
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "1050464",
+      "is_enabled": false
+    },
+    {
+      "name": "Preview",
+      "class_name": "TButton",
+      "automation_id": "5506902",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "Abrir",
+      "class_name": "",
+      "automation_id": "DropDown",
+      "is_enabled": true
+    },
+    {
+      "name": "...",
+      "class_name": "TButton",
+      "automation_id": "1181484",
+      "is_enabled": true
+    },
+    {
+      "name": "Help",
+      "class_name": "TButton",
+      "automation_id": "3016472",
+      "is_enabled": true
+    },
+    {
+      "name": "Cancel",
+      "class_name": "TButton",
+      "automation_id": "1705748",
+      "is_enabled": true
+    },
+    {
+      "name": "Start",
+      "class_name": "TButton",
+      "automation_id": "1050386",
+      "is_enabled": true
+    },
+    {
+      "name": "Cerrar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea arriba",
+      "class_name": "",
+      "automation_id": "UpButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Re Pág",
+      "class_name": "",
+      "automation_id": "UpPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Av Pág",
+      "class_name": "",
+      "automation_id": "DownPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea abajo",
+      "class_name": "",
+      "automation_id": "DownButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Columna a la izquierda",
+      "class_name": "",
+      "automation_id": "UpButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Página a la derecha",
+      "class_name": "",
+      "automation_id": "DownPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Columna a la derecha",
+      "class_name": "",
+      "automation_id": "DownButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Minimizar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Maximizar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Cerrar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    }
+  ],
+  "texto_visible": [],
+  "modales_capturados": [],
+  "ventanas": [
+    {
+      "pid": 15072,
+      "hwnd": 1639910,
+      "name": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+      "class_name": "TfrmMain",
+      "control_type": "Window",
+      "automation_id": "",
+      "framework_id": "Win32",
+      "is_enabled": true,
+      "is_offscreen": false,
+      "owner_hwnd": null,
+      "window_is_modal": false,
+      "window_can_maximize": true,
+      "controles": [
+        {
+          "runtime_id": [
+            42,
+            2884726
+          ],
+          "control_type": "Window",
+          "class_name": "TfrmTexGen",
+          "automation_id": "",
+          "name": "TexGen Options",
+          "native_hwnd": 2884726,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2031764
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "2031764",
+          "name": "",
+          "native_hwnd": 2031764,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2031764,
+            4,
+            -2147483647,
+            2031764,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2031764,
+            4,
+            -2147483647,
+            2031764,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3473826
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "3473826",
+          "name": "",
+          "native_hwnd": 3473826,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3473826,
+            4,
+            -2147483647,
+            3473826,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3473826,
+            4,
+            -2147483647,
+            3473826,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246144
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1246144",
+          "name": "",
+          "native_hwnd": 1246144,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246144,
+            4,
+            -2147483647,
+            1246144,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246144,
+            4,
+            -2147483647,
+            1246144,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1770378
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1770378",
+          "name": "",
+          "native_hwnd": 1770378,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1770378,
+            4,
+            -2147483647,
+            1770378,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1770378,
+            4,
+            -2147483647,
+            1770378,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            8061764
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TGroupBox",
+          "automation_id": "8061764",
+          "name": "",
+          "native_hwnd": 8061764,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12060690
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "12060690",
+          "name": "Preview",
+          "native_hwnd": 12060690,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1443382
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1443382",
+          "name": "",
+          "native_hwnd": 1443382,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1443382,
+            4,
+            -2147483647,
+            1443382,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1443382,
+            4,
+            -2147483647,
+            1443382,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3737610
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "3737610",
+          "name": "Rendered Object LOD Textures",
+          "native_hwnd": 3737610,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2819066
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TGroupBox",
+          "automation_id": "2819066",
+          "name": "",
+          "native_hwnd": 2819066,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12912570
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "12912570",
+          "name": "Preview",
+          "native_hwnd": 12912570,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            329602
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "329602",
+          "name": "Preview",
+          "native_hwnd": 329602,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1771370
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1771370",
+          "name": "Preview",
+          "native_hwnd": 1771370,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1050464
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1050464",
+          "name": "Preview",
+          "native_hwnd": 1050464,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            5506902
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "5506902",
+          "name": "Preview",
+          "native_hwnd": 5506902,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            591696
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "591696",
+          "name": "Tree",
+          "native_hwnd": 591696,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115982
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "1115982",
+          "name": "HD Grass",
+          "native_hwnd": 1115982,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1377938
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "1377938",
+          "name": "Grass",
+          "native_hwnd": 1377938,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1574728
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "1574728",
+          "name": "HD Tree",
+          "native_hwnd": 1574728,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1312574
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "1312574",
+          "name": "Rendered",
+          "native_hwnd": 1312574,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2361082
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "2361082",
+          "name": "",
+          "native_hwnd": 2361082,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2361082,
+            4,
+            -2147483647,
+            2361082,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2361082,
+            4,
+            -2147483647,
+            2361082,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            788134
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "788134",
+          "name": "",
+          "native_hwnd": 788134,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            788134,
+            4,
+            -2147483647,
+            788134,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            788134,
+            4,
+            -2147483647,
+            788134,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            525982
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "525982",
+          "name": "",
+          "native_hwnd": 525982,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            525982,
+            4,
+            -2147483647,
+            525982,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            525982,
+            4,
+            -2147483647,
+            525982,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246954
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1246954",
+          "name": "",
+          "native_hwnd": 1246954,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246954,
+            4,
+            -2147483647,
+            1246954,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246954,
+            4,
+            -2147483647,
+            1246954,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2492080
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "2492080",
+          "name": "",
+          "native_hwnd": 2492080,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2492080,
+            4,
+            -2147483647,
+            2492080,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2492080,
+            4,
+            -2147483647,
+            2492080,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3016334
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "3016334",
+          "name": "",
+          "native_hwnd": 3016334,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3016334,
+            4,
+            -2147483647,
+            3016334,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3016334,
+            4,
+            -2147483647,
+            3016334,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1640066
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1640066",
+          "name": "",
+          "native_hwnd": 1640066,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1640066,
+            4,
+            -2147483647,
+            1640066,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1640066,
+            4,
+            -2147483647,
+            1640066,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1312380
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1312380",
+          "name": "",
+          "native_hwnd": 1312380,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1312380,
+            4,
+            -2147483647,
+            1312380,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1312380,
+            4,
+            -2147483647,
+            1312380,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            919120
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "919120",
+          "name": "",
+          "native_hwnd": 919120,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            919120,
+            4,
+            -2147483647,
+            919120,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            919120,
+            4,
+            -2147483647,
+            919120,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246806
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1246806",
+          "name": "",
+          "native_hwnd": 1246806,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246806,
+            4,
+            -2147483647,
+            1246806,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246806,
+            4,
+            -2147483647,
+            1246806,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            8324480
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "8324480",
+          "name": "",
+          "native_hwnd": 8324480,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            8324480,
+            4,
+            -2147483647,
+            8324480,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            8324480,
+            4,
+            -2147483647,
+            8324480,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246790
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1246790",
+          "name": "",
+          "native_hwnd": 1246790,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246790,
+            4,
+            -2147483647,
+            1246790,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1246790,
+            4,
+            -2147483647,
+            1246790,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1050222
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1050222",
+          "name": "",
+          "native_hwnd": 1050222,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1050222,
+            4,
+            -2147483647,
+            1050222,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1050222,
+            4,
+            -2147483647,
+            1050222,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            11797418
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "11797418",
+          "name": "",
+          "native_hwnd": 11797418,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            11797418,
+            4,
+            -2147483647,
+            11797418,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            11797418,
+            4,
+            -2147483647,
+            11797418,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            853554
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "853554",
+          "name": "",
+          "native_hwnd": 853554,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            853554,
+            4,
+            -2147483647,
+            853554,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            853554,
+            4,
+            -2147483647,
+            853554,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3802656
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "3802656",
+          "name": "",
+          "native_hwnd": 3802656,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3802656,
+            4,
+            -2147483647,
+            3802656,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3802656,
+            4,
+            -2147483647,
+            3802656,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1836858
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "1836858",
+          "name": "Tree/Grass LOD Billboards",
+          "native_hwnd": 1836858,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2164536
+          ],
+          "control_type": "CheckBox",
+          "class_name": "TCheckBox",
+          "automation_id": "2164536",
+          "name": "Stitched Object LOD Textures",
+          "native_hwnd": 2164536,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            6030906
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TGroupBox",
+          "automation_id": "6030906",
+          "name": "",
+          "native_hwnd": 6030906,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1508888
+          ],
+          "control_type": "ComboBox",
+          "class_name": "TComboBox",
+          "automation_id": "1508888",
+          "name": "",
+          "native_hwnd": 1508888,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1508888,
+            4,
+            -2147483647,
+            1508888,
+            -4,
+            1
+          ],
+          "control_type": "Text",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1508888,
+            4,
+            -2147483647,
+            1508888,
+            -4,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DropDown",
+          "name": "Abrir",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1181484
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1181484",
+          "name": "...",
+          "native_hwnd": 1181484,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            984868
+          ],
+          "control_type": "Edit",
+          "class_name": "TEdit",
+          "automation_id": "984868",
+          "name": "",
+          "native_hwnd": 984868,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2098956
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "2098956",
+          "name": "",
+          "native_hwnd": 2098956,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3016472
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "3016472",
+          "name": "Help",
+          "native_hwnd": 3016472,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1705748
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1705748",
+          "name": "Cancel",
+          "native_hwnd": 1705748,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1050386
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1050386",
+          "name": "Start",
+          "native_hwnd": 1050386,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2884726,
+            3,
+            -2147483647,
+            2884726,
+            -2,
+            0
+          ],
+          "control_type": "50037",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2884726,
+            3,
+            -2147483646,
+            15072,
+            55445355,
+            0
+          ],
+          "control_type": "MenuBar",
+          "class_name": "",
+          "automation_id": "MenuBar",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2884726,
+            3,
+            -2147483646,
+            15072,
+            55445355,
+            1
+          ],
+          "control_type": "MenuItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2884726,
+            3,
+            -2147483647,
+            2884726,
+            -2,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Cerrar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726
+          ],
+          "control_type": "Edit",
+          "class_name": "TMemo",
+          "automation_id": "1115726",
+          "name": "",
+          "native_hwnd": 1115726,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientVerticalScrollBar",
+          "name": "Vertical",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Línea arriba",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpPageButton",
+          "name": "Re Pág",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            3
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "ScrollbarThumb",
+          "name": "Posición",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            4
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "name": "Av Pág",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -5,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Línea abajo",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -6,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientHorizontalScrollBar",
+          "name": "Horizontal",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -6,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Columna a la izquierda",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -6,
+            3
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "ScrollbarThumb",
+          "name": "Posición",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -6,
+            4
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "name": "Página a la derecha",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -6,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Columna a la derecha",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1115726,
+            3,
+            -2147483647,
+            1115726,
+            -7,
+            0
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3409356
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TTopFrame",
+          "automation_id": "3409356",
+          "name": "",
+          "native_hwnd": 3409356,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1377898
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "1377898",
+          "name": "",
+          "native_hwnd": 1377898,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2098592
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "2098592",
+          "name": "",
+          "native_hwnd": 2098592,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483647,
+            1639910,
+            -2,
+            0
+          ],
+          "control_type": "50037",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483646,
+            15072,
+            143394745,
+            0
+          ],
+          "control_type": "MenuBar",
+          "class_name": "",
+          "automation_id": "MenuBar",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483646,
+            15072,
+            143394745,
+            1
+          ],
+          "control_type": "MenuItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483647,
+            1639910,
+            -2,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Minimizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483647,
+            1639910,
+            -2,
+            3
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Maximizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1639910,
+            3,
+            -2147483647,
+            1639910,
+            -2,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Cerrar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        }
+      ],
+      "controles_total": 116,
+      "controles_ilegibles": 0
+    }
+  ],
+  "output_seleccion": {
+    "candidatos": 1,
+    "estado": "OK",
+    "candidato": {
+      "runtime_id": [
+        42,
+        984868
+      ],
+      "control_type": "Edit",
+      "class_name": "TEdit",
+      "automation_id": "984868",
+      "name": "",
+      "native_hwnd": 984868,
+      "is_enabled": true,
+      "is_offscreen": false,
+      "is_keyboard_focusable": true,
+      "patterns": [
+        "Invoke",
+        "Value",
+        "Text",
+        "LegacyIAccessible",
+        "Selection",
+        "SelectionItem",
+        "Toggle",
+        "ExpandCollapse",
+        "Window",
+        "RangeValue"
+      ]
+    }
+  },
+  "experimentos": {
+    "value_pattern": {
+      "mechanism": "ValuePattern",
+      "hresult": "-0x7feceaf7",
+      "exception_type": "COMError",
+      "exception_repr": "COMError(-2146233079, None, (None, None, None, 0, None))",
+      "readback": {
+        "value_pattern_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+        "legacy_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\"
+      },
+      "changed": false
+    },
+    "value_pattern_restore": {
+      "mechanism": "ValuePattern",
+      "hresult": "-0x7feceaf7",
+      "exception_type": "COMError",
+      "exception_repr": "COMError(-2146233079, None, (None, None, None, 0, None))",
+      "readback": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\"
+    },
+    "legacy_iaccessible": {
+      "mechanism": "LegacyIAccessible",
+      "hresult": "S_OK",
+      "readback": {
+        "value_pattern_value": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\OutputTest",
+        "legacy_value": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-2389da69\\OutputTest"
+      },
+      "changed": true
+    },
+    "legacy_iaccessible_restore": {
+      "mechanism": "LegacyIAccessible",
+      "hresult": "S_OK",
+      "readback": {
+        "value_pattern_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+        "legacy_value": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\"
+      },
+      "restored_ok": true
+    }
+  },
+  "stale_observations": {
+    "uia_elementnotavailable_count": 0,
+    "otros_com_errors_count": 0,
+    "stale_observed": false
+  },
+  "residual_processes": [],
+  "exit_code": 1,
+  "finished_at": "2026-10-02T20:31:12"
+}

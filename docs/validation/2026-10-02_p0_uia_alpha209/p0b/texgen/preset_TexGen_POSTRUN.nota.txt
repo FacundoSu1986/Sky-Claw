@@ -1,0 +1,20 @@
+PRESET POSTRUN — nota de sanitizacion
+=====================================
+Archivo: DynDOLOD_SSE_TexGen.ini tal como quedo tras la corrida P0-B de TexGen
+(la herramienta reescribio OutputPath al iniciar la corrida).
+
+sha256 crudo (antes de sanitizar): 138e878380b832bbeb4ed2dca76e5f393dbcddfffd026e53833ad6bd1287d97d
+bytes crudos: 1737
+sha256 final de esta copia: 2a56598ddd957b8d9196cdf3aabb88162376177c87108bafb32171d97573de9c
+bytes finales: 1738
+
+Sanitizacion aplicada (unico cambio de contenido):
+  C:\Users\<nombre-de-usuario-local>  ->  C:\Users\<USER>
+  (reemplazo de 5 -> 6 caracteres; explica 1737 -> 1738 bytes)
+Codificacion: UTF-8 sin BOM.
+
+Trazabilidad:
+  - El sha256 CRUDO (138e8783...) coincide con preset_final de texgen_p0b.json,
+    que es el drift medido de esta corrida.
+  - El valor OutputPath apunta al root gestionado de P0-B
+    (%TEMP%\SkyClaw-P0B-6a0d956a-...\TexGen), que es la evidencia del reemplazo.
