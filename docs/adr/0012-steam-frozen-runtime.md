@@ -3,6 +3,11 @@
 **Fecha:** 2026-10-03
 **Estado:** Propuesta (P0: diseño y censo; prohibida la implementación de código de
 producción en este ADR). No cambia contratos existentes; sólo decide arquitectura.
+**Enmienda P0.1 (2026-10-03):** endurecimiento de la promoción — `SourceSnapshotEvidence`
+(anti-self-verification, SFR-15), separación Desired Active Generation / Effective
+Runtime (anti split-brain, SFR-16) y ciclo de vida de Generation con estado
+`DRIFTED` (SFR-17). Alcance: design/contract only; no habilita implementación
+productiva ni decide la primitiva concreta de binding (P5).
 **Contexto de origen:** `origin/main` `0103ee4f6de15207032d25c254ede5cf2c01bff9`
 (merge de RV-GP2/S4D, PR #666).
 **Relación con GP2-S4E:** el workstream archivado (rama
@@ -78,7 +83,7 @@ No se implementan trucos de ese tipo (SFR-11).
 | Threat model | Admin filtrado, handles de control preexistentes, power-loss | Actualización de Steam, promoción equivocada, candidate corrupto |
 
 El threat model de GP2-S4E **no se hereda**. Este ADR protege contra las fallas de
-§14 (F1–F7), no contra un administrador malicioso, atacante de kernel, tampering
+§14 (F1–F10), no contra un administrador malicioso, atacante de kernel, tampering
 con `SeDebugPrivilege`, crash durante `SetSecurityInfo` ni rollback transaccional
 de ACL.
 
@@ -98,6 +103,16 @@ de ACL.
 12. `SFR-12` No depender de ACL mutation para proteger el runtime activo.
 13. `SFR-13` No utilizar GP2-S4E como dependencia necesaria.
 14. `SFR-14` La solución debe ser comprensible y mantenible por un proyecto pequeño.
+15. `SFR-15` Un Candidate jamás puede establecer la evidencia esperada contra la
+    que él mismo se aprueba (anti-self-verification; ver §9.1 y §10).
+16. `SFR-16` La promoción no está completa hasta que **Desired Active Generation** y
+    **Effective Runtime** están probadamente coherentes. Un cambio exitoso de
+    `state/active.json` por sí solo NO es promoción exitosa (§11).
+17. `SFR-17` La identidad de una Generation es **lógicamente inmutable** aunque el
+    filesystem siga siendo escribible. Sky-Claw no muta una Generation promocionada
+    in-place; una Generation cuyo árbol ya no coincide con su identidad registrada
+    está `DRIFTED` y no es un target válido de rollback/reactivación sin
+    re-verificación previa (§12).
 
 ## 5. No-objetivos (Non-goals)
 
@@ -108,12 +123,16 @@ de ACL.
   promoción (SFR-10; §23). La retención/limpieza futura será otro slice con
   confirmación explícita.
 - **No hay ACL hardening** del Frozen Runtime. "Frozen" significa **versión
-  congelada**, no filesystem read-only (§15). Se prefiere aislamiento
+  congelada**, no filesystem read-only (SFR-17: la inmutabilidad de la Generation
+  es **lógica**, no impuesta por ACL). Se prefiere aislamiento
   arquitectónico a bloqueo.
 - **No hay helper privilegiado, UAC, `WRITE_DAC`, WAL ni journal de protección**
   (§21). Si en el futuro se propone reutilizar algo de esa lista, debe justificarse
   por qué el problema no se resuelve con `copia a nueva generación → verificar →
   actualizar puntero`.
+- **No se decide la primitiva de binding** de la Effective Runtime (repuntar
+  `gamePath`/`SKYRIM_PATH` vs alias estable vs otra) en P0. Se fija la invariante
+  (SFR-16) y la semántica de falla (§11); la primitiva se decide en P5.
 - **No hay resolución automática de compatibilidad de mods.** Sólo se diseña el
   gate `RUNTIME_COMPATIBILITY ∈ {UNKNOWN, COMPATIBLE, INCOMPATIBLE}` con
   `UNKNOWN != COMPATIBLE` por defecto (§20/§13).
@@ -127,12 +146,15 @@ de ACL.
 | Término | Definición |
 |---|---|
 | **Steam Source** | Instalación de Skyrim administrada por Steam (`steamapps/common/...`). Mutable. Fuente válida para crear Candidate. No es Golden. |
+| **SourceSnapshotEvidence** | Observación sellada de una Steam Source **estabilizada**: `RuntimeIdentity` + `TreeDigest` + critical file evidence + metadata de build de Steam opcional. No es Golden ni autoridad GP2; es la evidencia de la fuente concreta que se pretendía copiar (§9.1). |
 | **Frozen Runtime** | Árbol de directorios independiente, fuera del árbol de juego administrado por Steam. Contiene la versión que MO2/SKSE/juego usan. |
-| **Candidate** | Copia candidata derivada de Steam Source, aún no promocionada. Debe verificarse antes de promocionar. |
-| **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). |
-| **Active Generation** | Generation referenciada por el puntero activo (`state/active.json`); la que MO2/SKSE/juego deben usar. |
-| **Promotion** | Acto explícito y autorizado de cambiar Active Generation a un Candidate verificado, sin sobreescribir la generación activa anterior. |
-| **Rollback** | Cambiar Active Generation a una Generation anterior retenida. No reconstruye archivos. |
+| **Candidate** | Copia candidata derivada de Steam Source, aún no promocionada. Debe verificarse **contra `SourceSnapshotEvidence`** antes de promocionar. Nunca genera la evidencia contra la que se aprueba (SFR-15). |
+| **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). |
+| **Desired Active Generation** | Estado persistente de Sky-Claw (`state/active.json`): qué Generation pretende ser la activa. |
+| **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo). Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
+| **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != READY` y `DRIFTED != target de rollback` sin re-verificación (§12). |
+| **Promotion** | Acto explícito y autorizado de hacer que Desired Active Generation y Effective Runtime pasen a ser, **probadamente coherentes**, un Candidate verificado; sin sobreescribir la generación activa anterior (SFR-09/16). |
+| **Rollback** | Hacer que Desired Active Generation y Effective Runtime pasen a ser, probadamente coherentes, una Generation anterior retenida y re-verificada. No reconstruye archivos (SFR-10). |
 
 `Golden Master` sigue existiendo como concepto de Runtime Vault (RV-2); **no** es
 sinónimo de Frozen Runtime.
@@ -151,7 +173,8 @@ sinónimo de Frozen Runtime.
 ┌──────────────────────────────────────┐
 │ CANDIDATE  (aislado, no activo)      │
 │ <FrozenRuntimeRoot>/candidates/<id>/ │
-│ identidad + verificación (SFR-06/07) │
+│ verificación contra SourceSnapshot-  │
+│ Evidence (SFR-06/07/15)              │
 └───────────────┬──────────────────────┘
                 │  PROMOCIÓN (SFR-08: aprobación explícita)
                 │  NO copia sobre la activa (SFR-09)
@@ -163,19 +186,27 @@ sinónimo de Frozen Runtime.
 │ MO2/SKSE/juego la usan (SFR-03)      │
 └──────────────────────────────────────┘
                 ▲
-                │ puntero: state/active.json  (única parte mutable)
-                │ rollback = repuntar a <gen-anterior> (SFR-10)
+                │ Desired Active Generation: state/active.json   (intención persistente)
+                │ Effective Runtime: game path que MO2/SKSE ejecutan
+                │ promoción/rollback completos ⇔ desired == effective (SFR-16)
 ```
 
 Flujo de promoción (contrato de producto, no UI):
 
 ```text
-Steam Source
-    ↓   crear Candidate
-    ↓   verificar (RV-1/RV-3)
+Steam Source (estabilizada)
+    ↓   capture SourceSnapshotEvidence PRE      (§9.1)
+    ↓   crear Candidate desde Steam Source
+    ↓   verificar Candidate CONTRA SourceSnapshotEvidence (SFR-15)
+    ↓   reobserve Steam Source POST
+    ↓   POST == PRE  (si no: Candidate = INVALID / SOURCE_CHANGED)
   READY
     ↓   USER APPROVES   (SFR-08)
-  activar Candidate = actualizar puntero + repuntar MO2/SKYRIM_PATH
+    ↓   bind Effective Runtime → B
+    ↓   verificar effective path/identity == B
+    ↓   persist Desired Active Generation = B
+    ↓   POST verify desired/effective coherentes   (SFR-16)
+  SUCCESS
 ```
 
 ## 8. Fronteras de confianza (Trust boundaries)
@@ -183,9 +214,11 @@ Steam Source
 | Superficie | Confianza | Regla |
 |---|---|---|
 | **Steam Source** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. Steam escribe libremente (SFR-01). |
-| **Candidate** | Derivada, no confiable hasta verificar | Debe inventariarse/verificarse (RV-1) antes de promocionar. Estado `building → ready → invalid` (SFR-06/07). |
-| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime si hace falta. La identidad de versión se valida antes de activar. |
-| **Active pointer (`state/active.json`)** | Autoridad de activación | Única pieza mutable del estado. Escritura atómica (temp + `os.replace`). |
+| **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Steam Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
+| **Candidate** | Derivada, no confiable hasta verificar | Se inventaría/verifica **contra `SourceSnapshotEvidence`**, nunca contra su propia medición (SFR-15). Estados `building → ready → invalid` (SFR-06/07). |
+| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). |
+| **Desired Active Generation (`state/active.json`)** | Intención persistente de Sky-Claw | Escritura atómica (temp + `os.replace`). Por sí sola **no** declara promoción exitosa (SFR-16). |
+| **Effective Runtime** (game path que MO2/SKSE ejecutan) | Autoridad de hecho | La promoción sólo es exitosa cuando Effective Runtime está probadamente apuntando a la misma Generation que Desired (SFR-16). |
 
 ## 9. Identidad de versión (Version identity)
 
@@ -213,56 +246,131 @@ critical[exe]   : CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_dige
 - `generation-id` propuesto: `"<display_version>__<tree_digest[:12]>"` (legible y
   libre de colisiones por contenido). Decisión final de esquema en P2.
 
+### 9.1 SourceSnapshotEvidence (evidencia de fuente, no autoridad)
+
+El Candidate **no puede** generar la evidencia esperada contra la que él mismo se
+aprueba (SFR-15). La evidencia esperada proviene de una observación sellada de la
+Steam Source **estabilizada** (§18), capturada **antes** de crear el Candidate:
+
+```text
+SourceSnapshotEvidence = {
+    runtime_identity:  RuntimeIdentity(game_key, game_version)   # observe_runtime_identity_from_root
+    tree_digest:       TreeDigest(digest, files, bytes)          # inventory_tree + tree_digest_from_files
+    critical:          [CriticalFileEvidence("SkyrimSE.exe", sha256, size), ...]
+    steam_metadata:    optional { appid, buildid, library_path } # advisory, no identidad
+}
+```
+
+Reglas:
+
+- `SourceSnapshotEvidence` **no se llama Golden** y **no tiene autoridad GP2**. Es
+  simplemente evidencia de la fuente concreta que se pretendía copiar.
+- Se captura **PRE** (antes de copiar) y se re-observa **POST** (después de
+  verificar el Candidate). Si POST != PRE, el Candidate es `INVALID / SOURCE_CHANGED`
+  aunque internamente sea consistente (§10).
+- El inventario del Candidate se compara **contra** `SourceSnapshotEvidence`
+  (identity + digest + critical). La auto-medición del Candidate nunca es la
+  expectativa.
+
 ## 10. Ciclo de vida del Candidate
 
-Estados: `none → building → ready → promoted` o `building → invalid`.
+Estados: `none → building → ready → promoted` o `building → invalid`. El estado
+`invalid` lleva motivo: `INCOMPLETE`, `CORRUPT` o `SOURCE_CHANGED`.
 
-1. **Detección**: se observa Steam Source (identidad fresca + estabilización, §13).
-2. **Creación**: copia a `candidates/<candidate-id>/` (staging + publicación
-   atómica no-clobber; ver reuso de RV-3 en §15).
-3. **Verificación**: inventario completo + `tree_digest` == esperado + archivos
-   críticos + independencia física. Cualquier discrepancia ⇒ `invalid` (F2/F3).
-4. **READY**: el Candidate queda disponible para promoción; la activa no cambia.
-5. **No promover automáticamente** (SFR-05/SFR-08).
+Flujo requerido (SFR-15):
 
-Un Candidate incompleto o corrupto **nunca** puede convertirse en Active
-Generation (F2/F3).
+```text
+stabilize Steam Source                          (§18)
+→ capture SourceSnapshotEvidence PRE           (§9.1)
+→ create Candidate from Steam Source            (staging + publish atómico no-clobber, §15)
+→ inventory Candidate                           (RV-1, fail-closed)
+→ Candidate TreeDigest MUST equal SourceSnapshotEvidence.tree_digest
+→ Candidate RuntimeIdentity MUST equal SourceSnapshotEvidence.runtime_identity
+→ Candidate critical evidence MUST equal SourceSnapshotEvidence critical evidence
+→ reobserve Steam Source POST                   (§9.1)
+→ POST source evidence MUST equal PRE source evidence
+→ only then Candidate = READY
+```
+
+1. La evidencia esperada es SIEMPRE `SourceSnapshotEvidence`, nunca el resultado de
+   inventariar el Candidate (SFR-15).
+2. Cualquier discrepancia Candidate-vs-evidencia ⇒ `invalid` (`INCOMPLETE`/
+   `CORRUPT`; F2/F3).
+3. Si la Steam Source cambió entre PRE y POST ⇒ `invalid / SOURCE_CHANGED`, **aunque
+   el Candidate sea internamente consistente** (F8). No se promueve lo que ya no
+   representa a la fuente observada.
+4. `READY` no cambia nada de la activa; **no hay auto-promoción** (SFR-05/SFR-08).
+
+Un Candidate incompleto, corrupto o con fuente cambiada **nunca** puede convertirse
+en la Generation activa (F2/F3/F8).
 
 ## 11. Ciclo de vida de Promotion
 
-Secuencia exacta:
+Promotion es **completa** sólo cuando Desired Active Generation y Effective Runtime
+están **probadamente coherentes** (SFR-16). Un `state/active.json` reescrito con
+éxito, con MO2/SKSE ejecutando todavía otra Generation, es un **estado ambiguo, no
+un éxito**.
 
-1. Operador solicita promover el Candidate `C` (aprobación explícita; SFR-08).
-2. **Re-verificación fresca de C**: `observe_runtime_identity_from_root(C)` +
-   `verify_tree(C, expected=C.tree_digest)` + archivos críticos. Confirmar que el
-   árbol de `C` está estable y completo.
-3. Publicar `C` como `versions/<gen>` si aún no está publicado (rename atómico
-   dentro del mismo volumen; no hay copia sobre la activa).
-4. **Actualizar el puntero** `state/active.json` (temp + `os.replace`), agregando
-   la nueva Generation sin eliminar la anterior (SFR-09/SFR-10).
-5. (P5) Repuntar MO2/SKYRIM_PATH a `versions/<gen>` (§13).
-6. Post-check: la identidad observada de la Active Generation coincide con la
-   esperada; si no, se revierte el puntero a la anterior (F5).
+Modelo (la primitiva concreta de binding se decide en P5; acá se fija la
+invariante):
 
-La activación **no copia encima** de la versión activa: se prefieren generaciones
-versionadas + puntero chico.
+```text
+previous = A
+prepare B                    # publish C → versions/B (sin tocar A; SFR-09)
+verify B                     # identidad + tree_digest + críticos (fresco)
+user approves                # SFR-08
+bind Effective Runtime → B   # primitiva P5 (repuntar gamePath/SKYRIM_PATH, o alias)
+verify effective path/identity == B
+persist Desired Active Generation = B   # state/active.json, temp + os.replace
+POST verify desired/effective coherentes  # SFR-16
+SUCCESS
+```
+
+Reglas:
+
+1. **Re-verificación fresca de `B`** antes de tocar cualquier binding
+   (`observe_runtime_identity_from_root` + `verify_tree` contra su `tree_digest`
+   registrado + archivos críticos). Un `B` `DRIFTED` no se promueve (SFR-17).
+2. **Sin copia sobre la activa** (SFR-09): `versions/B` es una Generation nueva; `A`
+   no se borra (SFR-10).
+3. **Falla parcial de binding ⇒ no hay éxito ambiguo ⇒ el runtime anterior es
+   recuperable.** La promoción devuelve `SUCCESS` sólo con desired == effective ==
+   `B` **demostrado**; cualquier otro desenlace es un estado explícito distinto
+   (`PENDING`/`FAILED`) con su ruta de recuperación (re-verificar `A`, volver a
+   bindear `A` si hizo falta). Nunca se reporta "promocionado" sobre un
+   desired/effective divergente (SFR-16).
+4. **Honestidad de la ventana**: bind-effective y persist-desired son dos pasos y
+   entre ellos existe una ventana real (effective ya es `B`, desired todavía `A`).
+   No se maquilla: la mitigación es que el estado persistente **registre la
+   operación en curso** (o se ejecute y verifique en el orden que P5 elija), y que
+   el desenlace sea `SUCCESS` sólo tras el POST-verify de coherencia. Si P5 elige
+   persistir `desired` **antes** de bindear, el diseño debe incluir **rollback
+   causal** explícito (revertir `desired` a `A` si el bind falla) — se documentará
+   en P5, no se supone.
+5. **POST verify**: observar de nuevo la Effective Runtime y confirmar identidad
+   == `B` y coherencia con `desired`. Si no, se revierte a `A` (F5/F9).
 
 ## 12. Rollback
 
 ```text
-active = previous_generation
+desired = effective = previous_generation   (probado, SFR-16)
 ```
 
 Secuencia exacta:
 
 1. Operador elige una Generation retenida `G_prev`.
-2. Re-verificar `G_prev` (identidad + `tree_digest`).
-3. Actualizar el puntero a `G_prev` (atómico).
-4. (P5) Repuntar MO2/SKYRIM_PATH.
-5. Post-check de identidad.
+2. **Re-verificar `G_prev`** (identidad fresca + `tree_digest` registrado +
+   archivos críticos). Si `G_prev` está `DRIFTED`, **no es un target de rollback
+   válido**: falla cerrado o se elige otra Generation retenida verificada
+   (SFR-17; F10).
+3. Bind Effective Runtime → `G_prev` (primitiva P5, misma que promotion).
+4. Verificar effective path/identity == `G_prev`.
+5. Persistir Desired Active Generation = `G_prev` (atómico).
+6. POST verify de coherencia desired/effective (SFR-16).
 
-No se reconstruyen archivos destruidos. Si `G_prev` no está retenida, el rollback
-falla cerrado (por eso MVP **no** borra generaciones).
+No se reconstruyen archivos destruidos. Si `G_prev` no está retenida o está
+`DRIFTED`, el rollback falla cerrado (por eso MVP **no** borra generaciones y
+**re-verifica** antes de reactivar).
 
 ## 13. Integración MO2 / SKSE
 
@@ -289,9 +397,10 @@ Preguntas a resolver y hallazgos del censo:
   (`skse_dll_game_version`, `skyrim_version_matches`). Esto alimenta el gate
   `RUNTIME_COMPATIBILITY`.
 - **¿Qué configuración cambiaría al promover?** Sólo el puntero del Frozen Runtime
-  + el game path de MO2/SKYRIM_PATH, una sola vez por promoción. **P0 no modifica**
-  nada de esto; sólo lo documenta (F6: si es incompatible, no hay migración
-  forzada).
+  (Desired Active Generation) + el game path de MO2/SKYRIM_PATH (Effective Runtime),
+  una sola vez por promoción; ambos deben quedar **probadamente coherentes**
+  (SFR-16). **P0 no modifica** nada de esto; sólo lo documenta (F6: si es
+  incompatible, no hay migración forzada).
 
 Gate futuro:
 
@@ -300,17 +409,20 @@ RUNTIME_COMPATIBILITY: UNKNOWN | COMPATIBLE | INCOMPATIBLE
 UNKNOWN != COMPATIBLE     # por defecto
 ```
 
-## 14. Matriz de fallas (F1–F7)
+## 14. Matriz de fallas (F1–F10)
 
 | # | Escenario | Esperado | Mecanismo |
 |---|---|---|---|
 | **F1** | Steam actualiza mientras el usuario juega el Frozen Runtime | Frozen unaffected | Aislamiento físico: árboles disjuntos (SFR-02/04). |
 | **F2** | La copia del Candidate falla a mitad | active unaffected; candidate INVALID/INCOMPLETE | Staging temporal + publicación atómica no-clobber; el Candidate no se publica hasta verificar. |
-| **F3** | El Candidate valida mal | no promotion | Gate de verificación RV-1/RV-3 (identidad completa). |
+| **F3** | El Candidate valida mal | no promotion | Verificación contra `SourceSnapshotEvidence` (SFR-15); identidad completa. |
 | **F4** | El usuario no autoriza | active unchanged indefinitely | No hay auto-promoción (SFR-08). |
 | **F5** | La promoción falla | previous active remains usable | Puntero atómico + reversión a la generación anterior; nunca se borra la activa. |
 | **F6** | Nueva versión incompatible con SKSE/mods | no forced migration | Gate `RUNTIME_COMPATIBILITY`; `UNKNOWN != COMPATIBLE`. |
 | **F7** | El usuario decide volver atrás | activate previous generation | Rollback = repuntar (SFR-10). |
+| **F8** | Steam Source cambia entre PRE y POST de la captura | candidate `INVALID / SOURCE_CHANGED`, aunque sea internamente consistente | Re-observación POST vs `SourceSnapshotEvidence` PRE (SFR-15; §10). |
+| **F9** | Split-brain: `desired` y `effective` divergen tras una promoción | **no hay éxito ambiguo**; estado explícito (`PENDING`/`FAILED`) + recuperación a `A` | SFR-16: `SUCCESS` sólo con coherencia probada; POST verify; rollback causal si P5 elige persist-desired primero (§11). |
+| **F10** | Generation `DRIFTED` al momento de rollback/reactivación | fail-closed; no se reactiva en silencio | Re-verificación obligatoria de identidad antes de rollback/reactivación (SFR-17; §12). |
 
 ## 15. Reuso de RV-1 / RV-2 / RV-3
 
@@ -436,6 +548,11 @@ Estado persistente mínimo (JSON, ~1 archivo):
     "runtime_identity": null,
     "tree_digest": null
   },
+  "effective_runtime": {
+    "path": null,
+    "verified_generation": null,
+    "coherent": false
+  },
   "update_available": false,
   "promotion_required": false
 }
@@ -446,6 +563,12 @@ Estado persistente mínimo (JSON, ~1 archivo):
   `FrozenRuntimeRoot` para que el `os.replace` sea atómico en el mismo volumen y
   para no mezclar estado de runtime grande con config de usuario.
 - No crear base de datos. Un JSON canónico basta.
+- El Candidate registra además la referencia a su `SourceSnapshotEvidence` (PRE y
+  POST) para que su verificación sea auditable (SFR-15); el campo
+  `effective_runtime` es **provisional**: la forma de observar el Effective
+  Runtime y la primitiva de binding se deciden en P5, pero el estado persistente
+  ya distingue `desired` de `effective` y no declara `coherent` sin demostración
+  (SFR-16).
 
 ## 20. Layout de filesystem (propuesta)
 
@@ -485,10 +608,10 @@ DELETES_PREVIOUS_GENERATION=NO
 | Slice | Contenido | Gate de salida |
 |---|---|---|
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
-| **P1** | Steam Source discovery + Runtime Identity + **estabilización** | `STABLE(SteamSource)` demostrado o bloqueo fail-closed. |
-| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; regular atómico; rechazo de destino dentro de Steam. |
-| **P3** | Candidate creation + verification | Candidate `ready`/`invalid`; F2/F3 cubiertos. |
-| **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7 cubiertos. |
+| **P1** | Steam Source discovery + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(SteamSource)` demostrado o bloqueo fail-closed. |
+| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). |
+| **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
+| **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
 | **P5** | MO2/SKSE integration (binding del game path + gate de compatibilidad) | F6; juego arranca desde Frozen Runtime. |
 | **P6** | Update detection / user-facing status | Contrato de producto (§7). |
 | **P7** | Windows real rig | Evidencia de F1/F7 en rig. |
@@ -509,6 +632,7 @@ P0 es **docs-only**:
 ```powershell
 git diff --check
 git status
+git diff origin/main...HEAD --stat
 ```
 
 No se ejecuta la suite completa porque no cambia código. Si por accidente apareciera
@@ -519,25 +643,28 @@ enumerativas):
 
 | Slice | Tests |
 |---|---|
-| P1 | Estabilización: manifest idle vs update-in-progress; ausencia de `.part`; dos inventories idénticos ⇒ STABLE; mutación concurrente ⇒ fail-closed. |
-| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal). |
-| P3 | Candidate completo ⇒ ready; corrupción/truncamiento ⇒ invalid; fallo a mitad ⇒ activa intacta (F2/F3). |
-| P4 | Promoción no borra previa; fallo de promoción revierte puntero (F5); sin aprobación no promueve (F4); rollback repunta (F7). |
-| P5 | SKSE compatible/incompatible/unknown; game path repuntado; MO2 arranca desde Generation activa. |
+| P1 | Estabilización: manifest idle vs update-in-progress; ausencia de `.part`; dos inventories idénticos ⇒ STABLE; mutación concurrente ⇒ fail-closed; captura de `SourceSnapshotEvidence` sellada. |
+| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. |
+| P3 | Candidate completo y fuente estable ⇒ ready; corrupción/truncamiento ⇒ invalid; fuente cambiada PRE/POST ⇒ `invalid / SOURCE_CHANGED` aunque el Candidate sea consistente (SFR-15); fallo a mitad ⇒ activa intacta (F2/F3/F8). |
+| P4 | Promoción no borra previa; sin coherencia desired/effective no hay `SUCCESS` (F9); fallo de promoción revierte y `A` queda usable (F5); sin aprobación no promueve (F4); rollback repunta (F7); rollback sobre Generation `DRIFTED` falla cerrado (F10). |
+| P5 | SKSE compatible/incompatible/unknown; game path repuntado y observado; MO2 arranca desde Generation activa; coherencia desired/effective verificable desde el rig. |
 | P7 | Rig: Steam actualiza (F1) sin tocar Frozen; rollback real (F7). |
 
 ## 25. Definition of Done (del proyecto, no de P0)
 
 1. Steam puede actualizar su instalación sin tocar el Frozen Runtime (F1).
-2. Toda versión nueva entra como Candidate y se verifica antes de promocionar
-   (SFR-06/07).
-3. Promoción sólo con aprobación explícita (SFR-08) y sin destruir la anterior
-   (SFR-09).
-4. Rollback = repuntar (SFR-10).
+2. Toda versión nueva entra como Candidate y se verifica contra
+   `SourceSnapshotEvidence` antes de promocionar (SFR-06/07/15).
+3. Promoción sólo con aprobación explícita (SFR-08), sin destruir la anterior
+   (SFR-09) y con coherencia desired/effective **probada** antes de declarar
+   éxito (SFR-16).
+4. Rollback = repuntar, previa re-verificación de la Generation destino (SFR-10/17).
 5. MO2/SKSE arrancan desde el Frozen Runtime (SFR-03).
 6. Sin ACL mutation, sin helper privilegiado, sin GP2 (SFR-12/13).
 7. `USES_ACL_MUTATION/FROZEN... = NO` (verificación de complejidad).
 8. Documentación sincronizada y evidencia de rig registrada.
+9. Ninguna Generation `DRIFTED` se reactiva ni se usa como target de rollback sin
+   re-verificación exitosa (SFR-17).
 
 ## 26. Preguntas abiertas (Open questions)
 
@@ -546,10 +673,11 @@ inventan soluciones.
 
 1. **Estabilización de Steam**: ¿(a)–(c) de §18 alcanzan para demostrar
    `STABLE(SteamSource)` en el rig real? Gate P1.
-2. **Binding de la Active Generation a MO2/SKSE**: ¿repuntar el `gamePath` de MO2
+2. **Binding de la Effective Runtime a MO2/SKSE**: ¿repuntar el `gamePath` de MO2
    (Qt `@ByteArray`) y `SKYRIM_PATH`, o un alias estable (`active` → generation) que
    MO2/SKSE/USVFS resuelvan? La auditoría probó un Stock externo, no el mecanismo de
-   conmutación. Gate P5.
+   conmutación. Cualquiera sea la primitiva, debe permitir **demostrar** coherencia
+   desired/effective (SFR-16). Gate P5.
 3. **Decodificación/edición del `gamePath` de MO2**: el repo hoy no decodifica
    `@ByteArray`; ¿lo hace Sky-Claw o es una acción manual documentada? Gate P5.
 4. **Adaptación de RV-3**: ¿adaptador de autoridad de fuente, o rutina de copia
@@ -569,6 +697,13 @@ inventan soluciones.
     Gate P2.
 11. **Downgrade/promoción hacia atrás**: ¿promover una versión menor que la activa
     es un caso soportado o se fuerza a usar rollback? Gate P4.
+12. **Observación del Effective Runtime**: ¿cómo demuestra Sky-Claw qué ruta
+    ejecutan realmente MO2/SKSE (lectura del game path efectivo, attestation de
+    lanzamiento, canary)? Sin esa observación no hay `SUCCESS` de promoción
+    (SFR-16). Gate P5.
+13. **Orden causal bind/persist**: P5 decide si persiste `desired` antes o después
+    de bindear `effective`; si persiste antes, debe documentar el **rollback causal**
+    y sus tests (§11, regla 4). Gate P5.
 
 ## 27. Revisión adversarial (auto-cuestionamiento)
 
@@ -579,6 +714,9 @@ inventan soluciones.
 | ¿Promotion puede destruir la activa antes de tener reemplazo válido? | No: re-verificación previa + publicación de nueva Generation + puntero atómico; nunca copia sobre la activa (SFR-09). |
 | ¿Rollback depende de reconstrucción? | No: repunta a una Generation retenida (SFR-10). |
 | ¿Candidate puede convertirse en activo sin aprobación? | No (SFR-08). |
+| ¿El Candidate puede generar la evidencia esperada contra la que él mismo se aprueba? | No (SFR-15): la expectativa es `SourceSnapshotEvidence` (PRE/POST) de la Steam Source; la auto-medición del Candidate nunca es autoridad. |
+| ¿Un `state/active.json` reescrito basta para declarar promoción exitosa? | No (SFR-16): se exige coherencia desired/effective probada; un split-brain es `PENDING`/`FAILED`, jamás `SUCCESS`. |
+| ¿Una Generation `DRIFTED` puede reactivarse en silencio? | No (SFR-17): re-verificación de identidad obligatoria antes de rollback/reactivación; si no verifica, falla cerrado. |
 | ¿Duplicamos RV-1/RV-2/RV-3? | RV-1 se reusa tal cual; RV-2 y RV-3 se reusan parcialmente por su contrato de autoridad de fuente (no por duplicación). |
 | ¿Arrastramos GP2 por costumbre? | No: §16 excluye toda dependencia GP2. |
 | ¿MO2/SKSE pueden quedar apuntando a una generación borrada? | No: MVP no borra generaciones. |
