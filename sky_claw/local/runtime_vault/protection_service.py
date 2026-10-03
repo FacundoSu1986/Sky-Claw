@@ -75,7 +75,9 @@ from sky_claw.local.runtime_vault.authorization_context import (
 )
 from sky_claw.local.runtime_vault.authorized_plan_store import (
     AuthorizedPlanDurableWriter,
+    DurableWriteOutcome,
     TrustedRegistryProvider,
+    classify_durable_authorized_plan,
     derive_authorized_plan_dir,
     load_durable_authorized_plan,
     promote_durable_authorized_plan,
@@ -126,6 +128,7 @@ from sky_claw.local.runtime_vault.protection_journal import ProtectionTransactio
 from sky_claw.local.runtime_vault.protection_journal_store import (
     DurableProtectionJournal,
     JournalDurabilityKernel,
+    ProtectionJournalClassification,
     classify_protection_journal,
     create_protection_journal,
     open_protection_journal,
@@ -265,6 +268,52 @@ RESTART_ROUTES: Final[dict[ProtectionTransactionState, RestartRoute]] = {
     ProtectionTransactionState.ROLLED_BACK: RestartRoute.TERMINAL,
     ProtectionTransactionState.ROLLBACK_FAILED: RestartRoute.OPERATOR_REQUIRED,
     ProtectionTransactionState.INDETERMINATE: RestartRoute.OPERATOR_REQUIRED,
+}
+
+
+#: Rutas PRE-JOURNAL: todavía no hay journal, y la evidencia durable mínima
+#: para decidir está en el binding.
+#:
+#: Existe una ventana legítima en el protocolo:
+#:
+#:     operation_lock_binding durable
+#:       -> GoldenMutationLock adquirido
+#:       -> crash
+#:       -> NO hay authorized_plan, NO hay journal
+#:
+#: Es REAL y S4-C la soporta (``RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED``).
+#: Antes de P3 el router de S4-E exigía journal válido antes de tiempo y
+#: devolvía INDETERMINATE, lo que hacía ese contrato inalcanzable desde el
+#: camino productivo.
+#:
+#: Se congela por igualdad literal porque la distinción que importa es
+#: ABSENT vs. NO-INTERPRETABLE: un journal ausente con binding durable es un
+#: pre-plan limpio; un journal INDETERMINATE es evidencia contradictoria y se
+#: queda fail-closed. Confundir los dos convertiría un crash limpio en un
+#: incidente que exige operador.
+PRE_JOURNAL_ROUTES: Final[
+    dict[
+        tuple[DurableWriteOutcome, OperationLockBindingEvidence],
+        RestartRoute,
+    ]
+] = {
+    # plan ausente (la pre-condicion del router) × evidencia del binding:
+    (DurableWriteOutcome.NOT_DURABLE, OperationLockBindingEvidence.DURABLE): RestartRoute.S4C_ROLLBACK,
+    (DurableWriteOutcome.NOT_DURABLE, OperationLockBindingEvidence.ABSENT): RestartRoute.TERMINAL,
+    (DurableWriteOutcome.NOT_DURABLE, OperationLockBindingEvidence.INDETERMINATE): (RestartRoute.OPERATOR_REQUIRED),
+    # Un plan presente-pero-no-utilizable NO es un pre-plan: es evidencia
+    # contradictoria (S4-C lo trata así en recovery_orchestrator.py:715). Se
+    # enruta igual a S4-C porque es quien tiene el detalle fino, pero la fila
+    # existe para que el anchor detects si alguien cambia esa intención.
+    (DurableWriteOutcome.INDETERMINATE, OperationLockBindingEvidence.DURABLE): RestartRoute.OPERATOR_REQUIRED,
+    (DurableWriteOutcome.INDETERMINATE, OperationLockBindingEvidence.ABSENT): RestartRoute.OPERATOR_REQUIRED,
+    (DurableWriteOutcome.INDETERMINATE, OperationLockBindingEvidence.INDETERMINATE): (RestartRoute.OPERATOR_REQUIRED),
+    # DURABLE + journal ausente: el plan afirma autoridad pero el journal no
+    # está. No hay ventana de pre-plan que Normalizar; es evidencia
+    # contradictoria y S4-C debe decidir bajo lock retenido.
+    (DurableWriteOutcome.DURABLE, OperationLockBindingEvidence.DURABLE): RestartRoute.S4C_ROLLBACK,
+    (DurableWriteOutcome.DURABLE, OperationLockBindingEvidence.ABSENT): RestartRoute.OPERATOR_REQUIRED,
+    (DurableWriteOutcome.DURABLE, OperationLockBindingEvidence.INDETERMINATE): (RestartRoute.OPERATOR_REQUIRED),
 }
 
 
@@ -553,29 +602,76 @@ def _proyeccion_de_finalizacion(
     )
 
 
+#: S4-C disposition -> disposicion de S4-E. Congelada por igualdad literal.
+#:
+#: `PRE_PLAN_LOCK_RECOVERED` es el caso que motiva la fila: S4-C normalizó el
+#: lock huérfano de una operación que nunca alcanzó el publish del plan, así
+#: que NO hubo MUTATING, NO hubo rollback y NO hubo nada que revertir. Es un
+#: desenlace CERRADO y limpio: `NOT_APPLICABLE` (settled, no committed).
+#: Proyectarlo como INDETERMINATE decía "no se puede demostrar qué pasó" de
+#: algo que S4-C ya demostró y normalizó.
+#:
+#: El default es INDETERMINATE a propósito: un disposition nuevo de S4-C cae
+#: en fail-closed hasta que alguien lo clasifique aquí.
+_DISPOSICION_POR_DESENECHO_DE_S4C: Final[dict[RecoveryDisposition, ProtectionDisposition]] = {
+    RecoveryDisposition.ROLLED_BACK: ProtectionDisposition.ROLLED_BACK,
+    RecoveryDisposition.POST_VERIFICATION_REQUIRED: ProtectionDisposition.ROLLBACK_REQUIRED,
+    RecoveryDisposition.PRE_PLAN_LOCK_RECOVERED: ProtectionDisposition.NOT_APPLICABLE,
+    RecoveryDisposition.LOCK_BUSY: ProtectionDisposition.LOCK_BUSY,
+    RecoveryDisposition.NO_TRANSACTION: ProtectionDisposition.NOT_APPLICABLE,
+    RecoveryDisposition.INDETERMINATE: ProtectionDisposition.INDETERMINATE,
+    # TERMINAL se decide por el estado durable; se incluye para que el default
+    # del .get() no lo toque por accidente.
+    RecoveryDisposition.TERMINAL: ProtectionDisposition.REFUSED,
+}
+
+#: Estado durable terminal -> disposición, cuando S4-C dice TERMINAL.
+#:
+#: Se congela por igualdad literal sobre los estados REALES: un terminal nuevo
+#: en el enum del journal tiene que romper esta tabla (y con ella el anchor
+#: de exhaustividad), no caer en un default que afirme un rollback.
+_DISPOSICION_POR_ESTADO_TERMINAL: Final[dict[ProtectionTransactionState, ProtectionDisposition]] = {
+    ProtectionTransactionState.COMMITTED: ProtectionDisposition.ALREADY_COMMITTED,
+    ProtectionTransactionState.ROLLED_BACK: ProtectionDisposition.ROLLED_BACK,
+    # Los cuatro siguientes NO implican restauración física: la operación se
+    # cerró antes de mutar nada, o porque el operador no aprobó.
+    ProtectionTransactionState.CANCELLED: ProtectionDisposition.NOT_APPLICABLE,
+    ProtectionTransactionState.ELEVATION_REJECTED: ProtectionDisposition.REFUSED,
+    ProtectionTransactionState.REFUSE_TO_PLAN: ProtectionDisposition.REFUSED,
+    ProtectionTransactionState.REFUSE_TO_APPLY: ProtectionDisposition.REFUSED,
+    # Los dos fail-closed NO son terminales limpios: exigen operador.
+    ProtectionTransactionState.INDETERMINATE: ProtectionDisposition.INDETERMINATE,
+    ProtectionTransactionState.ROLLBACK_FAILED: ProtectionDisposition.INDETERMINATE,
+}
+
+
 def _proyeccion_de_recovery(
     reporte: RecoveryForensicReport,
     *,
     ruta: RestartRoute | None = None,
 ) -> ProtectionOutcome:
-    """Proyecta el ``RecoveryForensicReport`` de S4-C."""
-    if reporte.disposition is RecoveryDisposition.ROLLED_BACK:
-        disposition = ProtectionDisposition.ROLLED_BACK
-    elif reporte.disposition is RecoveryDisposition.POST_VERIFICATION_REQUIRED:
-        disposition = ProtectionDisposition.ROLLBACK_REQUIRED
-    elif reporte.disposition is RecoveryDisposition.LOCK_BUSY:
-        disposition = ProtectionDisposition.LOCK_BUSY
-    elif reporte.disposition is RecoveryDisposition.NO_TRANSACTION:
-        disposition = ProtectionDisposition.NOT_APPLICABLE
-    elif reporte.disposition is RecoveryDisposition.TERMINAL:
-        # S4-C returns TERMINAL for already-terminal states. Whether they mean
-        # "hardened" or "not hardened" is decided below from the durable state.
-        if reporte.observed_transaction_state is ProtectionTransactionState.COMMITTED:
-            disposition = ProtectionDisposition.ALREADY_COMMITTED
-        else:
-            disposition = ProtectionDisposition.ROLLED_BACK
-    else:
-        disposition = ProtectionDisposition.INDETERMINATE
+    """Proyecta el ``RecoveryForensicReport`` de S4-C.
+
+    GP2-S4E / P5 — cada terminal tiene su PROPIA disposición. Antes, todo
+    terminal que no fuera COMMITTED caía en ``ROLLED_BACK``, que es una
+    afirmación forense falsa: ``CANCELLED``, ``ELEVATION_REJECTED``,
+    ``REFUSE_TO_PLAN`` y ``REFUSE_TO_APPLY`` significan que NO se ocurrió
+    restauración física. Afirmar un rollback que no pasó es exactamente el
+    tipo de mentira que este paquete no puede permitirse.
+    """
+    disposition = _DISPOSICION_POR_DESENECHO_DE_S4C.get(
+        reporte.disposition,
+        ProtectionDisposition.INDETERMINATE,
+    )
+    if reporte.disposition is RecoveryDisposition.TERMINAL:
+        # TERMINAL sin estado durable observable NO es terminal limpio: es
+        # evidencia incompleta. Fail-closed, no un default silencioso.
+        estado = reporte.observed_transaction_state
+        disposition = (
+            _DISPOSICION_POR_ESTADO_TERMINAL.get(estado, ProtectionDisposition.INDETERMINATE)
+            if estado is not None
+            else ProtectionDisposition.INDETERMINATE
+        )
     return ProtectionOutcome(
         operation_id=reporte.operation_id,
         disposition=disposition,
@@ -830,6 +926,20 @@ def resume_golden_protection(
         kernel=frontend.journal_kernel,
     )
     journal = clasificacion.journal
+
+    # GP2-S4E / P3 — PRE-JOURNAL.
+    #
+    # Un journal ABSENT no es evidencia rota: hay una ventana legítima del
+    # protocolo donde el binding es durable y el lock está tomado, pero el
+    # plan y el journal todavía no existen. Confundir ABSENT con
+    # INDETERMINATE hacía inalcanzable `PRE_PLAN_LOCK_RECOVERED` de S4-C.
+    #
+    # `classify_protection_journal` ya clasificó; acá sólo se decide a qué
+    # suborquestador le toca. Staging NO participa: la autoridad de esta
+    # decisión es el binding durable y el filesystem.
+    if clasificacion.classification is ProtectionJournalClassification.ABSENT:
+        return _resolver_pre_journal(operation_id, frontend)
+
     if not clasificacion.is_valid or journal is None:
         return _resultado(
             operation_id=operation_id,
@@ -887,6 +997,62 @@ def resume_golden_protection(
             return _reanudar_por_s4d(operation_id, frontend, ruta=ruta)
         case _:  # pragma: no cover — la tabla es exhaustiva y el anchor lo congela
             raise AssertionError(f"Ruta de restart sin despacho: {ruta!r}")
+
+
+def _resolver_pre_journal(operation_id: str, frontend: _Frontend) -> ProtectionOutcome:
+    """Decide el camino cuando NO hay journal, leyendo el binding durable.
+
+    Tres desenlaces, y sólo uno muta:
+
+    * binding DURABLE + plan ausente → S4-C, que toma el lock huérfano de la
+      MISMA ``operation_id`` y devuelve ``PRE_PLAN_LOCK_RECOVERED``. Es la
+      ventana real del protocolo.
+    * binding ABSENT + plan ausente → no hay transacción: cero escrituras.
+    * cualquier otro caso (binding ilegible, plan presente-pero-no-utilizable)
+      → fail-closed con operador requerido.
+    """
+    plan = classify_durable_authorized_plan(operation_id, programdata_resolver=frontend.programdata_resolver)
+    binding = classify_operation_lock_binding(operation_id, programdata_resolver=frontend.programdata_resolver)
+    ruta = PRE_JOURNAL_ROUTES[(plan, binding)]
+    _registrar(
+        f"pre-journal: plan={plan.value} binding={binding.value} -> ruta '{ruta.value}'",
+        operation_id,
+        stage=ProtectionStage.ROUTING,
+        extra={"route": ruta.value, "plan": plan.value, "binding": binding.value},
+    )
+
+    match ruta:
+        case RestartRoute.S4C_ROLLBACK:
+            # S4-C normaliza el lock huérfano. Cero ACLs: en pre-plan no hay
+            # apply que deshacer, y el report de S4-C lo afirma.
+            return _reanudar_por_s4c(operation_id, frontend, ruta=ruta)
+        case RestartRoute.TERMINAL:
+            return _resultado(
+                operation_id=operation_id,
+                disposition=ProtectionDisposition.NOT_APPLICABLE,
+                stage=ProtectionStage.ROUTING,
+                source_orchestrator="protection_service.resume_golden_protection",
+                route=ruta,
+                detail="no hay evidencia durable de transaccion: ni plan, ni journal, ni binding",
+                fail_closed_reason="",
+            )
+        case _:
+            return _resultado(
+                operation_id=operation_id,
+                disposition=ProtectionDisposition.INDETERMINATE,
+                stage=ProtectionStage.ROUTING,
+                source_orchestrator="protection_service.resume_golden_protection",
+                route=ruta,
+                detail=(
+                    f"evidencia durable contradictoria pre-journal "
+                    f"(plan={plan.value}, binding={binding.value}): cero gates, cero escrituras"
+                ),
+                fail_closed_reason=(
+                    f"plan={plan.value} + binding={binding.value}: no se puede decidir el camino sin inventar evidencia"
+                ),
+                lock_retained=True,
+                operator_intervention_required=True,
+            )
 
 
 def _reanudar_por_s4c(
@@ -1336,6 +1502,7 @@ __all__ = [
     "ProtectionDisposition",
     "ProtectionOutcome",
     "ProtectionStage",
+    "PRE_JOURNAL_ROUTES",
     "RESTART_ROUTES",
     "RestartRoute",
     "RuntimeVaultProtectionCoordinator",

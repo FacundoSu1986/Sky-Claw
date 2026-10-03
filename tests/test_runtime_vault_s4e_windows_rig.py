@@ -579,3 +579,141 @@ def test_e12_e13_staging_nunca_es_autoridad(rig: pathlib.Path, modo: str) -> Non
     assert b["disposition"] == "already_committed", b
     assert b["archive_digest"] == baseline["archive_digest"], b
     assert b["journal_state"] == baseline["journal_state"], b
+
+
+# --------------------------------------------------------------------------
+# E16 — binding-only PRE-PLAN crash
+# --------------------------------------------------------------------------
+
+
+def test_e16_pre_plan_crash_se_normaliza_sin_tocar_acl(rig: pathlib.Path) -> None:
+    """E16: binding durable + lock tomado + crash → S4-C normaliza el lock.
+
+    La ventana legítima del protocolo: el binding PRE-plan ya es durable y el
+    ``GoldenMutationLock`` está tomado, pero la muerte ocurre ANTES del publish
+    del ``authorized_plan`` y antes de crear el journal. No hay apply que
+    deshacer y no hay nada que revertir.
+
+    Todo con primitives PRODUCTIVAS —``promote_operation_lock_binding`` y
+    ``acquire_golden_mutation_lock``— y muerte de proceso por ``os._exit``
+    (sin ``finally``, sin ``atexit``, sin flush pendiente). No se presenta como
+    muerte externa: ese escenario es E15, que sí usa ``taskkill /T /F``.
+
+    La evidencia pre-crash se verifica en un JSON escrito ANTES de morir, para
+    que el test no dependa de que "no se crean" por accidente.
+    """
+    r = _correr(rig, "pre_plan_lock")
+    assert r["returncode"] == 41, r["stderr"]
+
+    pre = _leer(rig, "s4e-preplan.json")
+    assert pre["plan_classification"] == "not_durable", pre
+    assert pre["journal_classification"] == "absent", pre
+
+    eventos = _eventos(rig)
+    assert any(e.startswith("binding-durable:") for e in eventos), eventos
+    assert any(e.startswith("lock-tomado:") for e in eventos), eventos
+
+    # --- Proceso B: el router tiene que LLEGAR a S4-C ---
+    r = _correr(rig, "resume")
+    assert r["returncode"] == 0, r["stderr"]
+    b = _leer(rig, "s4e-result-b.json")
+
+    assert b["route"] == "s4c_rollback", b
+    assert b["source_orchestrator"].startswith("recovery_orchestrator"), b["source_orchestrator"]
+
+    # S4-C normalizó el lock huérfano: acquired_released, no retained.
+    assert b["lock_outcome"] == "acquired_released", b
+    assert b["lock_retained"] is False, b
+
+    # Desenlace CERRADO y limpio, no un fail-closed.
+    assert b["committed"] is False, b
+    assert b["settled"] is True, b
+    assert b["operator_intervention_required"] is False, b
+
+    # No hubo MUTATING, no hubo gates de S4-D, no hubo rollback, no hubo backup.
+    assert b["rollback_executed"] is False, b
+    assert b["archive_digest"] is None, "un pre-plan no archiva nada"
+    assert b["journal_state"] is None, "un pre-plan no tiene estado de journal"
+
+    # El reason dice lo que S4-C demostró, no un INDETERMINATE genérico.
+    assert "pre-plan" in b["fail_closed_reason"].lower(), b
+    assert "NO se toc" in b["fail_closed_reason"], b
+
+    # Cero mutación: ni SetSecurityInfo, ni restore, ni gates.
+    todos = _eventos(rig)
+    assert not any(e.startswith("pre-sdsi:") for e in todos), "un pre-plan no aplica ACLs"
+    assert not any(e.startswith("restore:") for e in todos), "un pre-plan no revierte nada"
+    assert not any(e.startswith("gate:") for e in todos), "un pre-plan no ejecuta gates de S4-D"
+
+
+def test_e16_tras_la_normalizacion_el_golden_queda_disponible(rig: pathlib.Path) -> None:
+    """E16 (cont.): una operación nueva puede adquirir el Golden.
+
+    Demuestra que el lock huérfano quedó NORMALIZADO y no retenido. Si S4-C
+    hubiera devuelto `retain` en vez de liberar, esta adquisición daría
+    ``GoldenLockBusyError`` — que es exactamente la regresión que hay que cazar.
+
+    La identidad se toma del BINDING DURABLE, que es la autoridad de esta
+    ventana. No del plan (no existe) ni de staging.
+    """
+    assert _correr(rig, "pre_plan_lock")["returncode"] == 41
+    assert _correr(rig, "resume")["returncode"] == 0
+
+    from sky_claw.local.runtime_vault.golden_mutation_lock import (
+        acquire_golden_mutation_lock,
+        derive_golden_lock_path,
+    )
+    from sky_claw.local.runtime_vault.operation_lock_binding import (
+        load_durable_operation_lock_binding,
+    )
+
+    operation_id = (rig / "operation-id.txt").read_text(encoding="utf-8").strip()
+    binding = load_durable_operation_lock_binding(operation_id, programdata_resolver=lambda: rig / "programdata")
+    assert binding is not None, "el binding durable es la autoridad de esta ventana"
+
+    pathlib.Path(
+        str(
+            derive_golden_lock_path(
+                binding.volume_serial_number,
+                binding.root_file_id,
+                programdata_resolver=lambda: rig / "programdata",
+            )
+        )
+    ).parent.mkdir(parents=True, exist_ok=True)
+
+    nuevo_lock = acquire_golden_mutation_lock(
+        binding.volume_serial_number,
+        binding.root_file_id,
+        operation_id,
+        programdata_resolver=lambda: rig / "programdata",
+    )
+    try:
+        assert not nuevo_lock.closed, "el lock normalizado tiene que poder volver a adquirirse"
+    finally:
+        nuevo_lock.release()
+
+
+def test_e16_pre_plan_no_toca_staging(rig: pathlib.Path) -> None:
+    """E16 (cont.): el camino pre-plan no reconstruye autoridad desde staging.
+
+    Staging puede tener cualquier cosa —incluso un manifest completo— y el
+    desenlace tiene que ser el mismo. Es la congelación operativa de
+    ``STAGING != AUTHORITY`` para la ventana donde NO hay plan ni journal, que
+    es donde la tentación de leerlo es máxima.
+    """
+    assert _correr(rig, "pre_plan_lock")["returncode"] == 41
+
+    staging = rig / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "candidate_manifest.json").write_text(
+        '{"operation_id":"attacker","nodos":[{"relative_path":"..\\..\\evil"}]}',
+        encoding="utf-8",
+    )
+    (staging / "PRE.b64").write_text("SD falso del atacante", encoding="utf-8")
+
+    assert _correr(rig, "resume")["returncode"] == 0
+    b = _leer(rig, "s4e-result-b.json")
+    assert b["committed"] is False, b
+    assert b["settled"] is True, b
+    assert b["archive_digest"] is None, b
+    assert not any(e.startswith("gate:") for e in _eventos(rig))

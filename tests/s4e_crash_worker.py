@@ -43,6 +43,7 @@ CRASH_EXIT: dict[str, int] = {
     "mid_apply": 43,
     "all_mutated": 44,
     "post_committed_pre_release": 49,
+    "pre_plan": 41,
 }
 
 
@@ -517,6 +518,109 @@ def _fase_hold_lock(rig_root: pathlib.Path) -> None:
     sesion.close()
 
 
+class _EscritorBindingRIG:
+    """``OperationLockBindingWriter`` del RIG: create-once + flush + relectura.
+
+    DEGRADADO y declarado como tal. El writer de namespace usa el SD canonico
+    del vault protegido, que exige un SID propietario que no resuelve sin el
+    bootstrap privilegiado — el mismo limite que arrastran los RIG de S4-C y
+    S4-D. Lo que NO se cambia es la politica: ``promote_operation_lock_binding``
+    sigue siendo la primitive que construye, serializa, valida digest e
+    identidad y acuña la autoridad; lo unico inyectado es la escritura.
+
+    Es el mismo puerto que el paquete ya expone para tests
+    (``operation_lock_binding.binding_writer``), asi que E16 ejercita el
+    protocolo real de promocion y no un atajo.
+    """
+
+    def write_create_once(self, dest: pathlib.Path, payload: bytes, object_name: str) -> None:
+        if dest.exists():
+            raise FileExistsError(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f".tmp_{uuid.uuid4().hex}.{dest.name}")
+        with open(tmp, "xb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.link(tmp, dest)
+        tmp.unlink(missing_ok=True)
+
+
+def _fase_pre_plan_lock(rig_root: pathlib.Path) -> None:
+    """E16 — publica el binding durable, toma el lock REAL y MUERE.
+
+    Reproduce la ventana legitima del protocolo:
+
+        operation_lock_binding durable
+          -> GoldenMutationLock adquirido
+          -> CRASH
+          -> NO hay authorized_plan
+          -> NO hay protection_journal
+
+    Todo con primitives PRODUCTIVAS: ``promote_operation_lock_binding`` y
+    ``acquire_golden_mutation_lock``. No se escribe ningun JSON a mano, porque
+    un fixture fabricado probaria el test y no el protocolo.
+
+    La muerte es ``os._exit``: muerte de PROCESO, sin ``finally``, sin
+    ``atexit``, sin flush pendiente. No se presenta como muerte externa; el
+    escenario de taskkill externo esta cubierto por E15, que si usa un
+    proceso que espera de verdad.
+    """
+    from sky_claw.local.runtime_vault.golden_mutation_lock import (
+        acquire_golden_mutation_lock,
+        derive_golden_lock_path,
+    )
+    from sky_claw.local.runtime_vault.operation_lock_binding import (
+        promote_operation_lock_binding,
+    )
+
+    miga = _Miga(rig_root)
+    operation_id = _operation_id(rig_root)
+    serial, file_id = _volumen(rig_root)
+
+    # 1. Binding durable por la primitive real de S4-A.
+    promote_operation_lock_binding(
+        operation_id=operation_id,
+        volume_serial_number=serial,
+        root_file_id=file_id,
+        programdata_resolver=_resolver(rig_root),
+        binding_writer=_EscritorBindingRIG(),
+    )
+    miga.marcar(f"binding-durable:{operation_id}")
+
+    # 2. Lock REAL tomado con la primitive de produccion.
+    pathlib.Path(str(derive_golden_lock_path(serial, file_id, programdata_resolver=_resolver(rig_root)))).parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    lock = acquire_golden_mutation_lock(serial, file_id, operation_id, programdata_resolver=_resolver(rig_root))
+    miga.marcar(f"lock-tomado:{lock.identity.operation_id}")
+
+    # 3. Ni plan ni journal: se verifican ausentes ANTES de morir, para que el
+    #    test no dependa de que "no se crean" por accidente.
+    from sky_claw.local.runtime_vault.authorized_plan_store import (
+        classify_durable_authorized_plan,
+    )
+    from sky_claw.local.runtime_vault.protection_journal_store import (
+        classify_protection_journal,
+    )
+
+    plan = classify_durable_authorized_plan(operation_id, programdata_resolver=_resolver(rig_root))
+    journal = classify_protection_journal(operation_id, programdata_resolver=_resolver(rig_root))
+    miga.marcar(f"plan:{plan.value}:journal:{journal.classification.value}")
+    _escribir_resultado(
+        rig_root,
+        "s4e-preplan.json",
+        {
+            "plan_classification": plan.value,
+            "journal_classification": journal.classification.value,
+            "owner_pid": lock.identity.owner_pid,
+        },
+    )
+
+    # 4. Muerte dura con el lock TOMADO y la metadata sin RELEASED.
+    _crash(CRASH_EXIT["pre_plan"])
+
+
 def _fase_resume(rig_root: pathlib.Path) -> None:
     """Proceso B: el router de S4-E reanuda desde evidencia durable."""
     from sky_claw.local.runtime_vault import protection_service as svc
@@ -549,6 +653,8 @@ def _fase_resume(rig_root: pathlib.Path) -> None:
             "lock_retained": resultado.lock_retained,
             "rollback_executed": resultado.rollback_executed,
             "committed": resultado.committed,
+            "settled": resultado.settled,
+            "operator_intervention_required": resultado.operator_intervention_required,
             "fail_closed_reason": resultado.fail_closed_reason,
             "source_orchestrator": resultado.source_orchestrator,
         },
@@ -656,6 +762,7 @@ def _main() -> None:
     fases = {
         "preparar": lambda: _fase_preparar(rig_root),
         "apply_then_finalize": lambda: _fase_apply_then_finalize(rig_root, args.crash_en),
+        "pre_plan_lock": lambda: _fase_pre_plan_lock(rig_root),
         "resume": lambda: _fase_resume(rig_root),
         "hold_lock": lambda: _fase_hold_lock(rig_root),
         "discovery": lambda: _fase_discovery(rig_root),

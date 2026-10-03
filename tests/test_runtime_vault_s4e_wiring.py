@@ -1081,6 +1081,10 @@ def test_un_journal_ilegible_produce_indeterminate_sin_tocar_nada(
     llamadas: list[str] = []
 
     class _Clasif:
+        # El router de S4-E distingue ABSENT (pre-plan) de NO-INTERPRETABLE, asi
+        # que el fake tiene que exponer classification. Sin ella el test
+        # fallaba con AttributeError y no estaba probando el contrato.
+        classification = ProtectionJournalClassification.INDETERMINATE
         is_valid = False
         detail = "torn tail"
         journal = None
