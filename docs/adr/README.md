@@ -5,10 +5,10 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0011 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0012 en este directorio.
 >
-> **Última verificación:** 2026-09-10; ADR 0011 aceptado tras el merge de #570
-> y actualizado con el cierre del launch gate T5-v2 en #571.
+> **Última verificación:** 2026-10-03; ADR 0012 (Steam Frozen Runtime) agregado en
+> estado Propuesta sobre `origin/main` `0103ee4f` (P0: diseño y censo).
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
@@ -21,6 +21,7 @@
 - [0009 — RV-GP1: Golden Protection Status](0009-runtime-vault-golden-protection-status.md)
 - [0010 — RV-GP2: Protect Golden / Golden Protection Apply](0010-runtime-vault-golden-protection-apply.md)
 - [0011 — DynDOLOD PR-2: external_work_root y binding de propiedad](0011-dyndolod-external-work-root.md)
+- [0012 — Steam Frozen Runtime: promoción de versiones aislada](0012-steam-frozen-runtime.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
