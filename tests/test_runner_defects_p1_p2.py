@@ -84,9 +84,7 @@ async def test_r1_cancelacion_to_thread_no_mata_al_worker(tmp_path, monkeypatch)
 
     # DEFECTO: tras el cancel el task murió, pero el thread NUNCA fue notificado.
     assert arranque.is_set()
-    assert not terminado.is_set(), (
-        "el hilo worker continuó corriendo tras el cancel: nada lo interrumpe."
-    )
+    assert not terminado.is_set(), "el hilo worker continuó corriendo tras el cancel: nada lo interrumpe."
 
     permitir.set()
     await asyncio.wait_for(asyncio.to_thread(terminado.wait, True), timeout=2)
@@ -111,18 +109,16 @@ def test_r1_ancla_ast_el_to_thread_empaquetar_esta_sin_proteccion():
     objetivos = [
         c
         for c in await_calls
-        if c.value.args
-        and isinstance(c.value.args[0], ast.Name)
-        and c.value.args[0].id == "_empaquetar_sincrono"
+        if c.value.args and isinstance(c.value.args[0], ast.Name) and c.value.args[0].id == "_empaquetar_sincrono"
     ]
     assert len(objetivos) == 1, "debe haber exactamente un to_thread(_empaquetar_sincrono)"
     # La propiedad del defecto: NO está envuelto en asyncio.shield.
     call = objetivos[0].value
     assert call.func.attr == "to_thread"
     # Si un fix introduce shield, este assert se rompe: consciente y deliberado.
-    assert not (
-        isinstance(call.func.value, ast.Attribute) and call.func.value.attr == "shield"
-    ), "si el fix llega, este punto de la forma actual deja de valer"
+    assert not (isinstance(call.func.value, ast.Attribute) and call.func.value.attr == "shield"), (
+        "si el fix llega, este punto de la forma actual deja de valer"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,18 +161,12 @@ async def test_r2_copytree_atraviesa_junction_mientras_medidor_no(tmp_path, monk
 
     # DEFECTO 1: el destino recibió el contenido del junction (su destino externo)
     destino = dst / "nested"
-    assert (destino / "evil.bin").exists(), (
-        "copytree siguió el junction y arrastró archivos externos al paquete"
-    )
+    assert (destino / "evil.bin").exists(), "copytree siguió el junction y arrastró archivos externos al paquete"
     assert (destino / "evil.bin").read_bytes() == b"e" * 64
 
     # DEFECTO 2: el presupuesto no cuenta los bytes recibidos del exterior
-    copiado_bytes = sum(
-        p.stat().st_size for p in dst.rglob("*") if p.is_file()
-    )
-    assert medido == (src / "real.txt").stat().st_size, (
-        "_bytes_del_arbol correctamente NO cuenta los junctions"
-    )
+    copiado_bytes = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
+    assert medido == (src / "real.txt").stat().st_size, "_bytes_del_arbol correctamente NO cuenta los junctions"
     assert copiado_bytes == medido + (externo / "evil.bin").stat().st_size, (
         "el destino tiene MÁS bytes de los medidos: el presupuesto sub-cuenta"
     )
@@ -228,12 +218,20 @@ async def test_r3_segunda_cancelacion_interrumpe_la_limpieza():
     """
 
     close_job_llamado = 0
-    task_interna_completada = threading.Event()
+
+    # Sincronización explícita (no timing sleeps): cada fase del handler y del
+    # cleanup se confirma por evento, así que la segunda cancelación se envía
+    # en un punto DETERMINISTA del flujo (reap entrado y bloqueado), no "cuando
+    # el timing lo dicte".
+    handler_entered = asyncio.Event()
+    reap_entered = asyncio.Event()
+    allow_reap_to_finish = asyncio.Event()
+    gather_entered = asyncio.Event()
 
     async def _kill_and_reap(_proc: object) -> None:
-        # simula reap lento: observable del exterior
-        await asyncio.sleep(0.05)
-        task_interna_completada.set()
+        reap_entered.set()
+        # el reap queda bloqueado en un checkpoint conocido del test
+        await asyncio.wait_for(allow_reap_to_finish.wait(), timeout=10)
 
     async def _heartbeat() -> None:
         while True:
@@ -253,27 +251,36 @@ async def test_r3_segunda_cancelacion_interrumpe_la_limpieza():
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
+            handler_entered.set()
             await _kill_and_reap(job_obj)
             heartbeat.cancel()
             drain_out.cancel()
             drain_err.cancel()
+            gather_entered.set()
             await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
             close_job_llamado += 1
             raise
 
     t = asyncio.create_task(_execute_process_fake(object()))
-    await asyncio.sleep(0.01)  # entrar en la corrida
-    t.cancel()
-    await asyncio.sleep(0.01)  # llegar al handler; según timing, a mitad de kill/reap
-    t.cancel()
+    await asyncio.sleep(0)  # ceder el control: la task ENTRA en su await (60s) antes del cancel
+    t.cancel()  # cancel #1 → la rama CancelledError corre en este ciclo
+    await handler_entered.wait()  # confirmar entrada en la rama (determinista)
+    await reap_entered.wait()  # kill_and_reap entró y está bloqueado (determinista)
+    allow_reap_to_finish.set()  # liberar el reap: la task avanza hacia el gather
+    await gather_entered.wait()  # la task llegó al gather (evento seteado antes del await)
+    await asyncio.sleep(0)  # la task se suspende DE VERDAD en el await gather
+    t.cancel()  # cancel #2 DURANTE un punto de suspensión real del cleanup
     with contextlib.suppress(asyncio.CancelledError):
         await t
-    # DEFECTO: si una segunda cancelación llega durante el cleanup, close_job no corre.
-    # En la forma actual el test ASI falla: close_job_llamado == 0.
-    # La propiedad exigida por PR-R3: close_job SIEMPRE corre exactamente una vez.
+    # DEFECTO: la segunda cancelación llegó durante el `await gather` del cleanup
+    # (punto de suspensión real) y en la forma actual interrumpe el flujo antes de
+    # close_job. Nota de propiedad del runtime medida acá: una cancelación PENDIENTE
+    # no procesada (_must_cancel=True) absorbe los cancel() subsiguientes sin
+    # interrumpir el await en curso — por eso el cancel #2 se envía en el gather,
+    # no con el reap aún bloqueado.
+    # La propiedad exigida por PR-R3 (futuro): close_job SIEMPRE corre exactamente una vez.
     assert close_job_llamado == 0, (
-        "en la forma actual el test DEBE fallar: la segunda cancelación "
-        "interrumpe el cleanup antes de close_job"
+        "en la forma actual el test DEBE fallar: la segunda cancelación interrumpe el cleanup antes de close_job"
     )
 
 
@@ -283,14 +290,10 @@ def test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled():
     `await asyncio.gather(...)`."""
     arbol = ast.parse(RUNNER_SRC.read_text(encoding="utf-8"))
     metodo = next(
-        nodo
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_execute_process"
+        nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_execute_process"
     )
     rama_cancel = [
-        nodo
-        for nodo in ast.walk(metodo)
-        if isinstance(nodo, ast.ExceptHandler) and _es_cancelled(nodo.type)
+        nodo for nodo in ast.walk(metodo) if isinstance(nodo, ast.ExceptHandler) and _es_cancelled(nodo.type)
     ]
     assert rama_cancel, "'except asyncio.CancelledError' debe existir en _execute_process"
     rama = rama_cancel[0]
@@ -309,10 +312,14 @@ def test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled():
                     ):
                         hay_suppress_cancelled = True
     assert not hay_suppress_cancelled, (
-        "esto cambio al agregar suppress(CancelledError) al gather: "
-        "el test ancla deja de ser rojo cuando el fix llegue"
+        "esto cambio al agregar suppress(CancelledError) al gather: el test ancla deja de ser rojo cuando el fix llegue"
     )
 
 
 def _es_cancelled(expr: ast.AST) -> bool:
-    return isinstance(expr, ast.Attribute) and expr.attr == "CancelledError" and isinstance(expr.value, ast.Name) and expr.value.id == "asyncio"
+    return (
+        isinstance(expr, ast.Attribute)
+        and expr.attr == "CancelledError"
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "asyncio"
+    )

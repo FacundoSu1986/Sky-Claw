@@ -44,13 +44,13 @@ Ambos readbacks exactos al root temporal gestionado. En DynDOLOD hubo **reconver
 |---|---|
 | Modal arranque | `#32770`/`TexGen` — *"Found stitched object LOD textures…"* · `Ignore`/`CommandButton_5` + `Exit TexGen`/`CommandButton_3` ⇒ **fingerprint MATCH** contra P0-A; `Ignore` = **HUMAN**, `automation_policy=NOT_AUTHORIZED` |
 | Output | `LegacyIAccessible.SetValue` → `S_OK`; readback = root temporal exacto |
-| **Start** | `TButton`, enabled, RuntimeId `[42,1050446]`, `InvokePattern` ⇒ **Invoke exactly-once → S_OK** |
+| **Start** | `TButton`, enabled, RuntimeId `[42,3016382]`, `InvokePattern` ⇒ **Invoke exactly-once → S_OK** |
 | Confirmación Begin | 3 señales independientes: `output_growth=True`, `ui_change=True`, `process_alive=True` ⇒ **confirmado** |
 | Generación | 1 → 1362 archivos, ~102 s; **cero mutación UI** durante toda la fase |
 | Completion | diálogo `#32770` *"Exit TexGen, zip and exit, check log or restart?"* — botones `Exit TexGen`/`CommandButton_7`, `Zip and Exit`/`CommandButton_11`, `Check log`/`CommandButton_2`, `Restart`/`CommandButton_4` |
 | **Exit TexGen** | `Exit TexGen` **exacto y único** (variante Zip presente pero NO usada) ⇒ **Invoke exactly-once → S_OK** |
 | Proceso | `exit_code=0`; residuos = 0 |
-| Log (§23) | `Using Output Path: %TEMP%\SkyClaw-P0B-6a0d956a…\TexGen\`; `[01:32] TexGen completed successfully` |
+| Log (§23) | `C:\Modding\DynDOLOD RigTest\Logs\TexGen_SSE_log.txt` (log de ESTA corrida, mtime 21:20:15): `Using Output Path: C:\Users\<USER>\AppData\Local\Temp\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\TexGen\` + `[01:32] TexGen completed successfully`. Nota: `log_markers` de `texgen_p0b.json` quedó vacío por un límite de la sonda (busca logs bajo el dir del exe, no en `Logs\`); la corroboración §23 se hizo manualmente contra el archivo real citado arriba |
 
 Timings (s): launch 0.1 · wizard 13.2 · output_set 14.1 · begin 15.1 · terminal 117.0 · exit_invoke 130.3 · process_exit 131.7.
 
@@ -68,7 +68,7 @@ Timings (s): launch 0.1 · wizard 13.2 · output_set 14.1 · begin 15.1 · termi
 | Completion | diálogo *"Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log?"* — botones `Save and Exit`, `Save, Zip and Exit`, `Exit DynDOLOD`, `Check log` |
 | **Save and Exit** | `CCPushButton`/`CommandButton_6` exacto y único (variantes Zip/Exit NO usadas) ⇒ **Invoke exactly-once → S_OK** |
 | Proceso | `exit_code=0`; residuos = 0 |
-| Log (§23) | `Using Output Path: %TEMP%\SkyClaw-P0B-0af6f451…\DynDOLOD\`; `[03:59] DynDOLOD plugins generated successfully`; `[04:13] User says "Save and Exit"` + `Saving …esm/.esp/Occlusion.esp` **dentro del root gestionado** |
+| Log (§23) | `C:\Modding\DynDOLOD RigTest\Logs\DynDOLOD_SSE_log.txt` (log de ESTA corrida, mtime 21:30:58): `Using Output Path: C:\Users\<USER>\AppData\Local\Temp\SkyClaw-P0B-0af6f451-cd59-457d-8168-eddc6979c178\DynDOLOD\` + `[03:59] DynDOLOD plugins generated successfully` + `[03:59] Occlusion.esp completed successfully` + `[04:13] User says "Save and Exit"` + `Saving …DynDOLOD.esm/.esp/Occlusion.esp` **dentro del root gestionado**. Mismo límite de sonda que TexGen; corroboración manual contra el archivo real |
 
 Timings (s): launch 0.2 · wizard 17.3 · output_set 17.5 · advanced 17.8 · begin 22.5 · terminal 267.0 · save_exit 275.8 · process_exit 281.2.
 

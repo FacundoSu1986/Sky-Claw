@@ -422,6 +422,10 @@ class RunnerP0B:
     def cadena_texgen(self, output_root: pathlib.Path) -> dict:
         registro: dict[str, object] = {}
         hallazgo = self.ventana_con_tedit()
+        if hallazgo is None:
+            raise FalloP0Error(
+                "P0_BLOCKED_BY_UNSTABLE_IDENTITY", "ventana contractual con TEdit único no encontrada antes de Start"
+            )
         w, controles, _tedit = hallazgo
         starts = [c for c in controles if c.get("control_type") == "Button" and c.get("name") == "Start"]
         if len(starts) != 1 or not starts[0].get("is_enabled"):
@@ -484,6 +488,10 @@ class RunnerP0B:
     def cadena_dyndolod(self, output_root: pathlib.Path) -> dict:
         registro: dict[str, object] = {}
         hallazgo = self.ventana_con_tedit()
+        if hallazgo is None:
+            raise FalloP0Error(
+                "P0_BLOCKED_BY_UNSTABLE_IDENTITY", "ventana contractual con TEdit único no encontrada antes de Advanced"
+            )
         w, controles, _tedit = hallazgo
         advanced = [c for c in controles if c.get("control_type") == "Button" and c.get("name") == "Advanced >>>"]
         if len(advanced) != 1 or not advanced[0].get("is_enabled"):
@@ -503,6 +511,10 @@ class RunnerP0B:
             raise FalloP0Error("P0_BLOCKED_BY_UNSTABLE_IDENTITY", "sin TEdit tras Advanced")
         w2, controles2, tedit2 = hallazgo2
         el2 = self.elemento_por_runtime_id(w2, tedit2["runtime_id"])
+        if el2 is None:
+            raise FalloP0Error(
+                "P0_BLOCKED_BY_UNSTABLE_IDENTITY", "TEdit stale tras Advanced (la ventana se reconstruyó)"
+            )
         rb2 = self.adapter.lectura_output(el2)
         output_despues = rb2.get("value_pattern_value") or rb2.get("legacy_value")
         if output_despues == output_antes:
@@ -515,6 +527,8 @@ class RunnerP0B:
             self.config_output = self.escritura_output(str(output_root))
             registro["reconvergencia"] = self.config_output["readback"]
             hallazgo2 = self.ventana_con_tedit()
+            if hallazgo2 is None:
+                raise FalloP0Error("P0_BLOCKED_BY_UNSTABLE_IDENTITY", "sin TEdit tras la reconvergencia del Output")
             w2, controles2, tedit2 = hallazgo2
             w, controles = w2, controles2
 

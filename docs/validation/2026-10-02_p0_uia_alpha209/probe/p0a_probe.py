@@ -137,6 +137,14 @@ class UiAdapter:
         import comtypes.client
 
         self._ct = comtypes
+        # Los fallos que ESTE adaptador puede tener sin ser un bug suyo.
+        # Se define UNA vez en __init__ (antes de cualquier polling que lo
+        # consulte): un `except` que evaluara este atributo sin haberlo
+        # definido lanzaría AttributeError DESDE el handler y abortaría el
+        # polling loop, que es justo lo que la sonda debe sobrevivir.
+        # Espejo del `ObservadorUIAWindows._errores_del_rig` del backend
+        # productivo (misma enumeración: COMError + OSError).
+        self._errores_del_rig: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
         comtypes.CoInitialize()
         try:
             self._mod = comtypes.client.GetModule("UIAutomationCore.dll")
