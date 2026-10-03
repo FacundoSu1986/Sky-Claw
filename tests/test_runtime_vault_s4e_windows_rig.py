@@ -789,9 +789,19 @@ def test_e02_mid_apply_crash_revierte_fisicamente_el_golden(rig: pathlib.Path) -
     assert restores == [f"restore:{mutado}"], eventos_b
 
     # --- POST-RECOVERY == PRE, re-observado físicamente en TODOS los nodos.
+    #
+    # La evidencia final es la verificación SEMÁNTICA por handle
+    # (``verify_restored_security_descriptor_by_handle``, ADR 0010 §12.2):
+    # owner, group, DACL (ACEs y orden canónico) y SE_DACL_PROTECTED contra el
+    # PRE autorizado. NO se exige igualdad raw del SD serializado: Windows
+    # puede reserializar con layout/padding equivalente entre
+    # SetSecurityInfo/GetSecurityInfo, así que un sha256 de los bytes vivos
+    # contra ``pre_sd_sha256`` NO es el contrato de restauración del repo
+    # (``target_dacl.py``:1697-1703). El raw-hash SÍ se usa en la
+    # PRECONDICIÓN (arriba), donde lo que hay que demostrar es que la ACL
+    # dejó de ser PRE — para eso basta la desigualdad.
     for nodo in plan.plan.nodes:
         _verificar_sd_igual_a_pre(plan, nodo.relative_path)
-        assert _sha_sd_live(plan, nodo.relative_path) == nodo.pre_sd_sha256
 
     # --- WAL FINAL durable: ROLLED_BACK, leído de la evidencia y no de la
     # proyección del servicio.

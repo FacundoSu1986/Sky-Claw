@@ -181,6 +181,84 @@ def test_e02_los_breadcrumbs_se_aislan_por_nonce_de_corrida() -> None:
     assert eventos == ["resume:begin", "resume:fin:indeterminate"], eventos
 
 
+def test_e02_post_restore_verifica_semantica_no_identidad_raw_del_sd() -> None:
+    """P6.1: E02 valida el restore SEMÁNTICAMENTE, nunca por SHA raw de bytes.
+
+    El contrato de restauración del repo es ``verify_restored_security_descriptor_by_handle``
+    (ADR 0010 §12.2; ``target_dacl.py``:1697-1703): owner, group, DACL semántica
+    exhaustiva y ``SE_DACL_PROTECTED`` — y explícitamente NO
+    ``POST_RESTORE_SD_BYTES == PRE_SD_BYTES``, porque Windows puede reserializar
+    el descriptor con layout/padding equivalente (observado en CI de
+    ``af3d414f``: restore semántico PASS, raw SHA distinto en py3.11 y py3.12).
+
+    La precondición opuesta SÍ queda congelada: antes del crash,
+    ``_sha_sd_live(mutado) != pre_sd_sha256`` es lo que demuestra que había
+    algo real que restaurar. El anchor chequea ambas mitades por AST.
+    """
+    funcion = _funcion_del_rig(_E02_FISICO)
+
+    def _es_llamada_sha_vivo(expr: ast.expr) -> bool:
+        return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "_sha_sd_live"
+
+    def _es_pre_sd_hash(expr: ast.expr) -> bool:
+        return isinstance(expr, ast.Attribute) and expr.attr == "pre_sd_sha256"
+
+    # La frontera causal es la corrida del resume: toda comparación raw con
+    # ``==`` ANTES abarca nodos nunca escritos (sin SetSecurityInfo no hay
+    # reserialización, así que la igualdad cruda es correcta en la
+    # precondición); DESPUÉS del resume cualquier ``== _sha_sd_live(...)
+    # == pre_sd_sha256`` exige identidad de bytes que Windows no garantiza.
+    resume_linea: int | None = None
+    for nodo in ast.walk(funcion):
+        if (
+            isinstance(nodo, ast.Assign)
+            and isinstance(nodo.value, ast.Call)
+            and isinstance(nodo.value.func, ast.Name)
+            and nodo.value.func.id == "_leer"
+            and any(isinstance(arg, ast.Constant) and arg.value == "s4e-result-b.json" for arg in nodo.value.args)
+        ):
+            resume_linea = nodo.lineno
+    assert resume_linea is not None, "E02 físico perdió la llamada al resume del proceso B"
+
+    raw_post_restore: list[str] = []
+    usa_semantica = False
+    precondicion_raw = False
+    for nodo in ast.walk(funcion):
+        if isinstance(nodo, ast.Assert) and isinstance(nodo.test, ast.Compare):
+            comparacion = nodo.test
+            if (
+                comparacion.ops
+                and isinstance(comparacion.left, ast.Call)
+                and _es_llamada_sha_vivo(comparacion.left)
+                and comparacion.comparators
+                and _es_pre_sd_hash(comparacion.comparators[0])
+            ):
+                op = comparacion.ops[0]
+                if isinstance(op, ast.Eq) and nodo.lineno > resume_linea:
+                    raw_post_restore.append(ast.unparse(comparacion))
+                elif isinstance(op, ast.NotEq) and nodo.lineno < resume_linea:
+                    precondicion_raw = True
+        if isinstance(nodo, ast.Expr) and isinstance(nodo.value, ast.Call):
+            llamada = nodo.value
+            if (
+                isinstance(llamada.func, ast.Name)
+                and llamada.func.id == "_verificar_sd_igual_a_pre"
+                and nodo.lineno > resume_linea
+            ):
+                usa_semantica = True
+
+    assert not raw_post_restore, (
+        "E02 volvió a exigir igualdad RAW del SD serializado tras el restore: "
+        f"{raw_post_restore}. El contrato es semántico (owner/group/DACL/"
+        "SE_DACL_PROTECTED); Windows reserializa los bytes con layout equivalente."
+    )
+    assert usa_semantica, "E02 perdió la verificación semántica post-restore (_verificar_sd_igual_a_pre)"
+    assert precondicion_raw, (
+        "E02 perdió la precondición física: antes del crash el nodo MUTATED debe "
+        "diferir del PRE (sha vivo != pre_sd_sha256); sin ella no hay nada que restaurar"
+    )
+
+
 def test_e02_contractual_existe_y_es_fail_closed_sin_elevacion() -> None:
     """El hermano contractual del E02 físico no desaparece en silencio."""
     funcion = _funcion_del_rig(_E02_CONTRACTUAL)
