@@ -1,0 +1,53 @@
+{
+  "comparison": "COMPLETA — 2 rondas por herramienta con la cadena UIA contractual plena (tras intervencion humana de Ignore en los modales de arranque)",
+  "interaction_record": {
+    "texgen_modal_ignore": { "interaction_source": "HUMAN", "automation_policy": "NOT_AUTHORIZED", "rounds": [3, 4] },
+    "dyndolod_modal_ignore": { "interaction_source": "HUMAN", "automation_policy": "NOT_AUTHORIZED", "rounds": [1, 2] },
+    "nota": "El Ignore humano de los modales de arranque NO autoriza su automatizacion unattended. Los fingerprints son evidencia contractual candidata para #661/H19; ninguna allowlist productiva se deriva de esta corrida."
+  },
+  "texgen": {
+    "rounds": ["round3_202901.json", "round4_203058.json"],
+    "rounds_early": ["round1_195510.json (TfrmMain temprano)", "round2_195829.json (modal capturado, sin Ignore)"],
+    "ventana_contractual": { "class": "TfrmMain", "framework_id": "Win32", "controls": 116, "title": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)" },
+    "modal_arranque": {
+      "class_name": "#32770",
+      "instruccion": "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+      "botones": [{ "name": "Ignore", "automation_id": "CommandButton_5" }, { "name": "Exit TexGen", "automation_id": "CommandButton_3" }],
+      "fingerprint_round2_vs_3_vs_4": "MATCH (3/3)"
+    },
+    "output_selector": { "estado": "OK", "candidatos": 1, "control": "TEdit (ControlType Edit)", "unico_en_ventana": true },
+    "value_pattern": { "resultado": "FAIL", "hresult": "-0x7feceaf7 (COMError -2146233079)", "readback": "valor original intacto", "identico_en_rondas": true },
+    "legacy_iaccessible": { "resultado": "PASS", "hresult": "S_OK", "readback": "root temporal OutputTest exacto", "changed": true },
+    "restore": { "mecanismo": "LegacyIAccessible (mismo mecanismo)", "hresult": "S_OK", "readback_restaurado": "valor original exacto", "restored_ok": true },
+    "start": { "control_type": "Button", "class_name": "TButton", "name": "Start", "is_enabled": true, "patterns": ["Invoke", "..."], "invocado": false },
+    "exit_texgen": "no existe como boton del wizard; observado solo en modales (arranque capturado; dialogo terminal post-generacion pendiente de P0-B)",
+    "preset_drift": "NINGUNO en las 4 fases de ambas rondas (SHA 394e5044.../e728f1f3...)",
+    "stale_count": 0,
+    "residual_processes": 0,
+    "stability": "STABLE"
+  },
+  "dynodlod": {
+    "rounds": ["round1_203232.json", "round2_203416.json"],
+    "ventana_contractual": { "class": "TfrmMain", "framework_id": "Win32", "controls": 52, "title": "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)" },
+    "modal_arranque": {
+      "class_name": "#32770",
+      "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+      "botones": [{ "name": "Ignore", "automation_id": "CommandButton_5" }, { "name": "Exit DynDOLOD", "automation_id": "CommandButton_3" }],
+      "fingerprint_round1_vs_2": "MATCH (2/2)"
+    },
+    "output_selector": { "estado": "OK", "candidatos": 1, "control": "TEdit (ControlType Edit)" },
+    "valor_original_output": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\ (OutputPath del preset Default precargado en el wizard simple; observacion, sin atribucion causal)",
+    "value_pattern": { "resultado": "FAIL", "hresult": "-0x7feceaf7 (COMError -2146233079)", "identico_en_rondas": true },
+    "legacy_iaccessible": { "resultado": "PASS", "hresult": "S_OK", "changed": true },
+    "restore": { "mecanismo": "LegacyIAccessible", "hresult": "S_OK", "restored_ok": true },
+    "advanced": { "name": "Advanced >>>", "class_name": "TButton", "is_enabled": true, "invocado": false },
+    "ok_begin": "no presente en el wizard simple (aparece tras Advanced; invocacion prohibida en P0-A)",
+    "save_and_exit": "no presente en el wizard simple (dialogo terminal post-generacion; pendiente de P0-B)",
+    "preset_drift": "NINGUNO en las 4 fases de ambas rondas",
+    "stale_count": 0,
+    "residual_processes": 0,
+    "stability": "STABLE"
+  },
+  "identity_stability": "STABLE: ClassName/ControlType/FrameworkId/patterns/estructura reproducibles; AutomationId y HWND varian por proceso (identidad contractual = clase+nombre+patterns, no numeros de instancia)",
+  "stability_verdict": "STABLE (lo medido); determinismo del ciclo Begin->generacion->terminal = PENDIENTE de P0-B"
+}

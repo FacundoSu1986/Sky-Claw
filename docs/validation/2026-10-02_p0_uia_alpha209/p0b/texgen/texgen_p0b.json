@@ -1,0 +1,322 @@
+{
+  "tool": "texgen",
+  "mode": "P0_B_PROBE",
+  "started_at": "2026-10-02T21:18:05",
+  "output_root": {
+    "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\\TexGen",
+    "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\\TexGen",
+    "exists": true,
+    "born_empty": true,
+    "ancestros_reparse": [
+      {
+        "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\\TexGen",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local\\Temp",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData\\Local",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>\\AppData",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "<USER>",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "C:\\Users",
+        "is_reparse": false,
+        "reparse_tag": null
+      },
+      {
+        "path": "C:\\",
+        "is_reparse": false,
+        "reparse_tag": null
+      }
+    ],
+    "sin_reparse_en_cadena": true
+  },
+  "exe_sha256": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+  "preset_antes": {
+    "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+      "exists": true,
+      "size": 1749,
+      "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+    }
+  },
+  "argv": [
+    "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+    "-sse",
+    "-o:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\\TexGen\\",
+    "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\",
+    "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\",
+    "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt",
+    "-t:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0B-6a0d956a-9f3d-46c2-bc59-dec41c7ff406\\temp\\"
+  ],
+  "start_fingerprint": {
+    "control_type": "Button",
+    "class_name": "TButton",
+    "automation_id": "3016382",
+    "name": "Start",
+    "native_hwnd": 3016382,
+    "runtime_id": [
+      42,
+      3016382
+    ],
+    "is_enabled": true
+  },
+  "begin_signals": {
+    "output_growth": true,
+    "log_growth": false,
+    "ui_change": true,
+    "process_alive": true,
+    "confirmado": true
+  },
+  "generation": {
+    "polls": 14,
+    "modal_durante_generacion": []
+  },
+  "completion_fingerprint": {
+    "class_name": "#32770",
+    "name": "TexGen",
+    "hwnd": 656498,
+    "instruccion": "Exit TexGen, zip and exit, check log or restart?",
+    "botones": [
+      {
+        "name": "Exit TexGen",
+        "automation_id": "CommandButton_7"
+      },
+      {
+        "name": "Zip and Exit",
+        "automation_id": "CommandButton_11"
+      },
+      {
+        "name": "Check log",
+        "automation_id": "CommandButton_2"
+      },
+      {
+        "name": "Restart",
+        "automation_id": "CommandButton_4"
+      },
+      {
+        "name": "Cerrar",
+        "automation_id": ""
+      },
+      {
+        "name": "Línea arriba",
+        "automation_id": "UpButton"
+      }
+    ],
+    "phase": "dialogo",
+    "captured_at": "21:20:02"
+  },
+  "log_markers": {
+    "encontrados": {},
+    "using_output_path": null,
+    "using_data_path": null
+  },
+  "zip_variants_presentes": [
+    "Zip and Exit"
+  ],
+  "exit_fingerprint": {
+    "control_type": "Button",
+    "class_name": "CCPushButton",
+    "automation_id": "CommandButton_7",
+    "name": "Exit TexGen",
+    "native_hwnd": 3147874,
+    "runtime_id": [
+      42,
+      3147874
+    ]
+  },
+  "exit_code": 0,
+  "ledger": [
+    {
+      "action_id": "texgen_start",
+      "tool": "texgen",
+      "build_sha256": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+      "pid": 24392,
+      "control_fingerprint": {
+        "control_type": "Button",
+        "class_name": "TButton",
+        "automation_id": "3016382",
+        "name": "Start",
+        "native_hwnd": 3016382,
+        "runtime_id": [
+          42,
+          3016382
+        ],
+        "is_enabled": true
+      },
+      "timestamp_before": "2026-10-02T21:18:20",
+      "invoke_attempted": true,
+      "invoke_result": "S_OK",
+      "postcondition": "postcondition: confirmar señales de Begin"
+    },
+    {
+      "action_id": "texgen_exit",
+      "tool": "texgen",
+      "build_sha256": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+      "pid": 24392,
+      "control_fingerprint": {
+        "control_type": "Button",
+        "class_name": "CCPushButton",
+        "automation_id": "CommandButton_7",
+        "name": "Exit TexGen",
+        "native_hwnd": 3147874,
+        "runtime_id": [
+          42,
+          3147874
+        ],
+        "is_enabled": true
+      },
+      "timestamp_before": "2026-10-02T21:20:15",
+      "invoke_attempted": true,
+      "invoke_result": "S_OK",
+      "postcondition": "postcondition: process exit"
+    }
+  ],
+  "modales": [
+    {
+      "class_name": "#32770",
+      "name": "TexGen",
+      "hwnd": 656498,
+      "instruccion": "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit TexGen",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:18:11"
+    },
+    {
+      "class_name": "#32770",
+      "name": "TexGen",
+      "hwnd": 656498,
+      "instruccion": "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+      "botones": [
+        {
+          "name": "Ignore",
+          "automation_id": "CommandButton_5"
+        },
+        {
+          "name": "Exit TexGen",
+          "automation_id": "CommandButton_3"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        },
+        {
+          "name": "Re Pág",
+          "automation_id": "UpPageButton"
+        },
+        {
+          "name": "Av Pág",
+          "automation_id": "DownPageButton"
+        }
+      ],
+      "phase": "startup",
+      "captured_at": "21:18:13"
+    },
+    {
+      "class_name": "#32770",
+      "name": "TexGen",
+      "hwnd": 656498,
+      "instruccion": "Exit TexGen, zip and exit, check log or restart?",
+      "botones": [
+        {
+          "name": "Exit TexGen",
+          "automation_id": "CommandButton_7"
+        },
+        {
+          "name": "Zip and Exit",
+          "automation_id": "CommandButton_11"
+        },
+        {
+          "name": "Check log",
+          "automation_id": "CommandButton_2"
+        },
+        {
+          "name": "Restart",
+          "automation_id": "CommandButton_4"
+        },
+        {
+          "name": "Cerrar",
+          "automation_id": ""
+        },
+        {
+          "name": "Línea arriba",
+          "automation_id": "UpButton"
+        }
+      ],
+      "phase": "dialogo",
+      "captured_at": "21:20:02"
+    }
+  ],
+  "marcas_segundos": {
+    "launch": 0.1,
+    "wizard_disponible": 13.2,
+    "output_set": 14.1,
+    "texgen_start_before": 15.1,
+    "begin_invoke": 15.1,
+    "terminal_dialog": 117.0,
+    "texgen_exit_before": 130.3,
+    "terminal_invoke": 130.3,
+    "process_exit": 131.7
+  },
+  "metricas": {
+    "stdout_bytes": 0,
+    "stderr_bytes": 0
+  },
+  "preset_final": {
+    "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+      "exists": true,
+      "size": 1737,
+      "sha256": "138e878380b832bbeb4ed2dca76e5f393dbcddfffd026e53833ad6bd1287d97d"
+    }
+  },
+  "residual_processes": [],
+  "finished_at": "2026-10-02T21:20:18"
+}

@@ -1,0 +1,80 @@
+{
+  "task": "#661 P0 diagnostico real Windows — TexGen + DynDOLOD Alpha-209 (UIA)",
+  "date": "2026-10-02",
+  "state": "P0_PASS",
+  "state_history": [
+    {
+      "state": "P0_BLOCKED_BY_ENVIRONMENT",
+      "at": "2026-10-02 sesion 1 (P0-A abortado por decision del usuario ante modal inicial)",
+      "nota": "campo dejado en el valor del momento; reconciliado al completar P0-B el 2026-10-03 sin tocar ningun dato medido"
+    },
+    {
+      "state": "P0_A_COMPLETE_NEEDS_P0_B",
+      "at": "2026-10-02 sesion 2 (P0-A completado con autorizacion humana de Ignore en modales)"
+    },
+    {
+      "state": "P0_PASS",
+      "at": "2026-10-02/03 sesion 3 (P0-B-PROBE autorizado; ambas cadenas completas)"
+    }
+  ],
+  "p0_verdicts": {
+    "P0_A": "P0_A_COMPLETE_NEEDS_P0_B (completado)",
+    "P0_B_PROBE": "P0_PASS",
+    "P0_B_PRODUCT_PIPELINE": "P0_B_PRODUCT_PIPELINE_BLOCKED"
+  },
+  "main_sha": "0103ee4f6de15207032d25c254ede5cf2c01bff9",
+  "probe_branch": "research/dyndolod-p0-alpha209-uia",
+  "probe_head": "0103ee4f6de15207032d25c254ede5cf2c01bff9",
+  "primary_worktree_preserved": {
+    "answer": "YES",
+    "path": "E:\\Skyclaw_Main_Sync",
+    "branch": "feat/runtime-vault-s4e-production-wiring",
+    "head": "0103ee4f6de15207032d25c254ede5cf2c01bff9",
+    "modified": 3,
+    "untracked": 8
+  },
+  "probe_worktree": {
+    "path": "C:\\Worktrees\\Sky-Claw-p0-alpha209-uia",
+    "created_from": "origin/main",
+    "dirty": false
+  },
+  "windows": "10.0.19045 (Windows 10 Pro 22H2, AMD64)",
+  "python": "3.11.9 (repo venv, comtypes 1.4.16, psutil 7.2.2)",
+  "builds": {
+    "TexGenx64.exe": {
+      "path": "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+      "sha256": "0939BC8F8CBAE2E1B38F17D56FECD1B7A941DADE0554E944886BD7F5C4807A62",
+      "size": 35794432,
+      "file_version": "3.0.0.209",
+      "product_version": "3.0.0.0",
+      "architecture": "x64",
+      "ui_language_observable": "titulo en ingles; controles de sistema localizados al espanol (locale es)"
+    },
+    "DynDOLODx64.exe": {
+      "path": "C:\\Modding\\DynDOLOD RigTest\\DynDOLODx64.exe",
+      "sha256": "B67625EB7815111BA9AC232C626FF88B07BB64FF30FF5183C5A04B5F045C3BD0",
+      "size": 35794432,
+      "file_version": "3.0.0.209",
+      "product_version": "3.0.0.0",
+      "architecture": "x64",
+      "ui_language_observable": "titulo en ingles; controles de sistema localizados al espanol (locale es), medido en P0-A rondas 1-2 y P0-B"
+    }
+  },
+  "base_contains": {
+    "664_H3A": true,
+    "662": true,
+    "666": true
+  },
+  "runner_defects_gate": {
+    "RUNNER_P1_PACKAGING_CANCEL": "OPEN",
+    "RUNNER_P1_REPARSE_COPY": "OPEN",
+    "RUNNER_P2_DOUBLE_CANCEL": "OPEN",
+    "method": "revalidacion por lectura de codigo sobre 0103ee4f; sin commits que toquen las areas desde la auditoria; P0_B_PRODUCT_PIPELINE_BLOCKED"
+  },
+  "temp_roots": "%TEMP%\\SkyClaw-P0-<uuid>\\{TexGen,DynDOLOD,temp} — born-empty, cadena completa sin reparse points (verificado por lanzamiento)",
+  "data_path_note": "-d: reutiliza el Data del rig 2026-09-10/09-15 (junction preexistente, NO creada por esta tarea); es la fuente del modal de salida TexGen previa",
+  "preset_hashes_initial": {
+    "DynDOLOD_SSE_TexGen.ini": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2",
+    "DynDOLOD_SSE_Default.ini": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+  }
+}
