@@ -1,84 +1,53 @@
-# CHECKPOINT â€” #661 P0 evidence + runner R1/R2/R3 prep (pausa)
+# CHECKPOINT — #661 P0 evidence + runner R1/R2/R3 prep (cerrado)
 
-> **Fecha de pausa:** 2026-10-03 Â· **Estado global: `P0_EVIDENCE_READY` (parcial) â€” pausado a pedido del usuario.**
-> Este archivo es un punto de guardado para reanudar. NO es una afirmaciÃ³n de cierre.
+> **Estado: `P0_EVIDENCE_PUBLISHED` + `RUNNER_FIXES_READY_FOR_IMPLEMENTATION`.**
+> Documento de cierre de la investigación. El punto de guardado ya aplicó.
 
-## Estado de Git (verificado al pausar)
+## Estado de Git (final)
 
 ```text
 origin/main                      0103ee4f6de15207032d25c254ede5cf2c01bff9  (sin drift)
 primary worktree                 E:\Skyclaw_Main_Sync
-primary branch                   feat/runtime-vault-s4e-production-wiring  (dirty â€” Runtime Vault S4E ACTIVO)
-primary HEAD                     bd2575b9â€¦  (avanza bajo el otro agente; NO TOCAR)
+primary branch                   feat/runtime-vault-s4e-production-wiring  (dirty — Runtime Vault S4E preservado, NO tocado)
 P0 worktree                      C:\Worktrees\Sky-Claw-p0-alpha209-uia
 P0 branch                        research/dyndolod-p0-alpha209-uia
-P0 HEAD                          0103ee4f = base = origin/main
-P0 commits locales               ninguno (solo untracked)
-P0 untracked                     docs/validation/2026-10-02_p0_uia_alpha209/
-procesos residuales              TexGen/DynDOLOD/LODGen = 0
+P0 commits locales               c8edec9e · 962f1835 · c285123f
+Evidencias commiteadas           docs/validation/2026-10-02_p0_uia_alpha209/  + tests
+PR                               https://github.com/FacundoSu1986/Sky-Claw/pull/670
 ```
 
-**Regla vigente:** no reset/clean/stash/checkout destructivo sobre el principal; no tocar el checkout de Runtime Vault.
-Ninguna correcciÃ³n de runner fue commiteada. NingÃºn fix de P1â€“P9 implementado.
+## FASE A — evidencia P0 (cerrada)
 
-## FASE A â€” evidencia P0 (en curso, no publicada)
+- Inventario y auditoría de JSON ↔ reporte: **sostenida** (5 acciones, 5 invokes, 0 reintentos, 0 ambigüedades, 0 residuos, presets restaurados).
+- Estado de `environment.json` reconciliado a `P0_PASS` y confirmado.
+- Sanitización: username y secreto revisados. `CHECKPOINT-handoff.md` corrompido por un paso intermedio de UTF-8/ANSI — reescrito a limpio.
+- Tests del probe: `tests/test_p0_probe_alpha209.py` (18 tests) en `tests/` para que el gate de CI lo vea.
+- PR: **#670** creado y pusheado.
+- #661 actualizado por comentario con `P0_PASS` + runner blockers. **No cerrado**.
 
-### Hecho
-- Inventario de evidencia completo y coherente:
-  - `final-report.md` (P0-A â†’ `P0_A_COMPLETE_NEEDS_P0_B`), `comparison.json`, `environment.json`
-  - P0-A JSON: `texgen/round1..4`, `dynodlod/round1..2`
-  - P0-B JSON: `p0b/texgen/texgen_p0b.json`, `p0b/dyndolod/dyndolod_p0b.json`, `p0b/final-report-p0b.md`
-  - Sondas: `probe/p0a_probe.py`, `probe/p0b_probe.py`
-  - Snapshots de presets: `p0b/texgen/preset_TexGen_ORIGINAL_restorado.bin`, `preset_TexGen_POSTRUN.ini`, `p0b/dyndolod/PRE_Default.ini`, `PRE_TexGen.ini`
-- **AuditorÃ­a JSON â†” P0_PASS: SOSTENIDA.**
-  - 5 acciones (texgen_start, texgen_exit, dyndolod_advanced, dyndolod_begin_ok, dyndolod_save_exit)
-  - 5 `invoke_attempted=True`, 5 `invoke_result=S_OK`, 0 reintentos, 0 ambigÃ¼edades
-  - `exit_code=0` en ambas; 0 procesos residuales en ambas
-  - P0-A: `value_pattern.hresult=-0x7feceaf7 changed=False`; `legacy.hresult=S_OK changed=True`; restore `S_OK restored_ok=True`; selector `OK` candidatos=1; stale=0 â€” idÃ©ntico en ambas herramientas
-  - Presets: TexGen `394e5044â†’138e8783`; DynDOLOD `e728f1f3â†’ac5d0bfd` (drift esperado; restaurados byte-exacto en la corrida)
+## FASE B — runner R1/R2/R3 (cerrada)
 
-### PENDIENTE / hallazgo a resolver al reanudar
-1. **`environment.json` tiene `state: P0_BLOCKED_BY_ENVIRONMENT`** (escrito en la primera sesiÃ³n abortada). Es **stale** respecto de los reportes y de los JSON de P0-B, que sostienen `P0_PASS`. Reconciliar el campo de estado a `P0_PASS` **sin** tocar los datos medidos (no es falsear un match: es completar un estado intermedio). Dejar constancia del cambio.
-2. **SanitizaciÃ³n (Â§5):** verificar que no queden username/home paths innecesarios. Los JSON ya pasaron por `sanitizar()` (marca `<USER>`), pero revisar `p0b` JSONs y reportes; el principal muestra `C:\Users\<USER>\â€¦` â†’ debe salir como `<USER>`.
-3. **Tests del probe (Â§6):** no existen todavÃ­a. Agregar sÃ³lo: serialization, redaction, fingerprint stability, exactly-once ledger, P0-A mutation gate, P0-B authorization gate, no-WM_SETTEXT/BM_CLICK/keyboard/mouse. No convertir el probe en runtime.
-4. **`__pycache__`** dentro de `probe/` â€” excluir del commit.
-5. Renombrar/confirmar nombres: existe `dynodlod_*.json` ya normalizado a `dyndolod_p0b.json`; verificar no queden otros typos.
+| defecto | status | reproducción | invariante | plan |
+|---|---|---|---|---|
+| R1 | REPRODUCED | `test_r1_cancelacion_to_thread_no_mata_al_worker` + anchor AST | `worker's must terminate before rollback begins` | shield + handoff en to_thread del packaging |
+| R2 | REPRODUCED | `test_r2_copytree_atraviesa_junction_mientras_medidor_no` + admission real | `inventory == copyable` + tree ownership | gate pre-copia reject_unclassified_reparse_point |
+| R3 | REPRODUCED | `test_r3_segunda_cancelacion_interrumpe_la_limpieza` + anchor AST | `EVERY EXIT PATH MUST TERMINATE ALL OWNED RESOURCES` | unificar cleanup con suppress(CancelledError) |
 
-### No hecho
-- PR P0 **no creado**.
-- #661 **no comentado**.
-- Nada commiteado.
+`tests/test_runner_defects_p1_p2.py`, 6 tests. Ningún fix productivo incluido.
 
-## FASE B â€” runner R1/R2/R3 (NO iniciada)
+## Links
+
+- PR: `https://github.com/FacundoSu1986/Sky-Claw/pull/670`
+- Issue: `https://github.com/FacundoSu1986/Sky-Claw/issues/661`
+- Rig comparativo previo: `docs/validation/2026-09-15_uia_gate_v2_rig.md`
+
+## Cierre limpio
 
 ```text
-R1 cancellation-safe packaging      -> investigaciÃ³n pendiente
-R2 reparse-safe packaging (copy)    -> investigaciÃ³n pendiente (solapa #592 finding 3)
-R3 cancellation-safe process cleanup -> investigaciÃ³n pendiente
+RUNNER_P1_PACKAGING_CANCEL = REPRODUCED
+RUNNER_P1_REPARSE_COPY     = REPRODUCED
+RUNNER_P2_DOUBLE_CANCEL    = REPRODUCED
+→ RUNNER_FIXES_READY_FOR_IMPLEMENTATION
 ```
 
-Puntos de partida ya localizados (sÃ³lo lectura, sin cambios):
-- `sky_claw/local/tools/dyndolod_runner.py:2488` `await asyncio.to_thread(_empaquetar_sincrono)` â†’ R1
-- `sky_claw/local/tools/dyndolod_runner.py:2481` `shutil.copytree(src, dst)` pelado â†’ R2
-- `sky_claw/local/tools/dyndolod_runner.py:1890-1896` handler `CancelledError` sin `suppress` en el gather â†’ R3
-- Familia link-aware existente: `sky_claw/app/security/links.py` (+ `tests/_symlink_guard.crear_junction`) â†’ R2
-- `sky_claw/local/tools/_dir_rollback.py` `DirectoryRollback` â†’ R1 ordering
-
-## Gate de runner (sin cambios)
-
-```text
-RUNNER_P1_PACKAGING_CANCEL = OPEN
-RUNNER_P1_REPARSE_COPY     = OPEN
-RUNNER_P2_DOUBLE_CANCEL    = OPEN
-â†’ P0_B_PRODUCT_PIPELINE_BLOCKED
-```
-
-## Al reanudar â€” orden sugerido
-
-1. Reconciliar `environment.json` â†’ `P0_PASS` (dejando constancia).
-2. Sanitizar y excluir `__pycache__`.
-3. Escribir tests del probe (Â§6).
-4. Correr ruff + pytest del probe.
-5. Commit + push de la rama `research/dyndolod-p0-alpha209-uia` y abrir el PR P0.
-6. Comentar #661 (sin cerrarlo) con P0_PASS + `P0_B_PRODUCT_PIPELINE_BLOCKED`.
-7. ReciÃ©n entonces FASE B: reproducir R1, R2, R3 por separado, con test rojo e invariante, y planes de implementaciÃ³n + collision matrix.
+(`RUNNER_P1_PACKAGING_CANCEL`/`R2`/`R3` lectura `OPEN` queda en `environment.json` y en este documento hasta que los PRs dedicados los cierren.)
