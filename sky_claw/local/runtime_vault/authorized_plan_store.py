@@ -382,19 +382,59 @@ def publish_candidate_manifest(
         writer.write_create_once(dest, manifest_bytes, CANDIDATE_MANIFEST_FILE_NAME)
     except CandidateManifestPublishError:
         raise
+    except FileExistsError:
+        # Perdió el create-once. NO es un fallo de escritura: el destino ya
+        # existe. Se reconcilia ABAJO — no se asume éxito ni se sustituye.
+        pass
     except OSError as exc:
         raise CandidateManifestPublishError(f"no se pudo publicar el candidate manifest en '{dest}': {exc}") from exc
+    else:
+        # Ganador: confirmar que lo publicado es lo releíble. Es la misma
+        # disciplina que la re-lectura del plan durable (paso 6 del §12.2 7e).
+        releido = _releer_o_fallar(operation_id, dest, programdata_resolver, "post-publicación")
+        if releido != manifest_bytes:
+            raise CandidateManifestPublishError(
+                f"re-lectura del candidate manifest no coincide en '{dest}': "
+                "no se publica autoridad sobre bytes que nadie puede releer"
+            )
+        return dest
 
-    # Re-lectura byte a byte: la promocion de S4-A relee del disco, asi que lo
-    # que hay que confirmar es que lo publicado ES lo que se lee ahora. Es la
-    # misma disciplina que la relectura del plan durable (paso 6 del §12.2 7e).
-    releido = dest.read_bytes()
+    # Perdió el create-once: el destino ya existe. NO se asume éxito ni se
+    # sustituye — se relee y se RECONCILIA.
+    #
+    # Esto es lo que evita que un crash entre la publicación y la autorización
+    # convierta la operación en un bloqueo permanente: el retry con la MISMA
+    # operation_id y el MISMO plan republica los mismos bytes y sigue. Un retry
+    # con bytes DIFERENTES es un conflicto real y falla cerrado, porque
+    # sustituir un manifest ya publicado dejaría que una segunda planificación
+    # se aprobara sobre el nombre de la primera.
+    releido = _releer_o_fallar(operation_id, dest, programdata_resolver, "reconciliación de replay")
     if releido != manifest_bytes:
         raise CandidateManifestPublishError(
-            f"re-lectura del candidate manifest no coincide en '{dest}': "
-            "no se publica autoridad sobre bytes que nadie puede releer"
+            f"candidate manifest ya publicado en '{dest}' no coincide con los bytes canónicos "
+            "de esta operación: conflicto fail-closed, no se sustituye"
         )
     return dest
+
+
+def _releer_o_fallar(
+    operation_id: str,
+    dest: pathlib.Path,
+    programdata_resolver: Callable[[], object] | None,
+    momento: str,
+) -> bytes:
+    """Re-llee los bytes publicados y falla cerrado si no se puede.
+
+    Una publicación que nadie puede releer no es evidencia: S4-A relee del
+    disco, así que confirmar la re-lectura es parte del contrato, no una
+    comprobación opcional.
+    """
+    try:
+        return read_candidate_manifest_bytes(operation_id, programdata_resolver=programdata_resolver)
+    except Exception as exc:  # noqa: BLE001 — el fallo de re-lectura ES el dato
+        raise CandidateManifestPublishError(
+            f"candidate manifest publicado pero no releíble en {momento} ('{dest}'): {exc}"
+        ) from exc
 
 
 def _default_staging_writer() -> Any:

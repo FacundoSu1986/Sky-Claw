@@ -42,22 +42,47 @@ class StagingCreateOnceWriter:
     define para la zona UNTRUSTED y presupondría que el SID propietario existe
     — que es justo lo que todavía no está provisionado para el helper. Aquí se
     replica el mecanismo de publicación, no el SD.
+
+    **Lo que este writer NO afirma** (y `trusted_namespace` sí):
+
+    * No usa ``CreateFileW`` con SD canónico, ni verifica el contenido por
+      handle Win32, ni comprueba el retorno de ``FlushFileBuffers``.
+    * El flush es ``os.fsync`` sobre un file handle respaldado por el SO, con
+      su retorno comprobado. Es "content flush solicitado y comprobado por el
+      handle del SO", **no** "``FlushFileBuffers == TRUE`` verificado".
+    * No hay re-verificación por handle ni re-lectura byte a byte *dentro* del
+      writer: la re-lectura la hace el llamador (`publish_candidate_manifest`),
+      que es quien sabe qué comparación hacer.
+
+    Mecanismo de publicación **compartido** con el namespace: single-winner
+    tipo ``CREATE_NEW``/``O_EXCL`` vía link duro. Garantía de flush
+    **distinta y más débil** que la Win32 handle-bound.
     """
 
     def write_create_once(self, dest: pathlib.Path, payload: bytes, object_name: str) -> None:
-        dest = pathlib.Path(dest)
-        if dest.exists():
-            raise FileExistsError(f"el destino ya existe (create-once, sin sustitución): {dest}")
+        """Intenta la publicación create-once. Levanta ``FileExistsError`` si perdió.
 
+        **El árbitro es la operación atómica, NO un ``dest.exists()`` previo.**
+        Un fast-path ``if dest.exists(): raise`` es check-then-act: abre una
+        ventana entre el check y el write en la que un adversario crea el
+        destino. `os.link` no tiene esa ventana — falla con ``FileExistsError``
+        en la syscall de publicación si el destino ya existía o apareció.
+
+        El contrato hacia arriba es **no** traducir el error: el llamador tiene
+        que poder reconciliar un replay idéntico con un conflicto de contenido
+        (ver `publish_candidate_manifest`). Traducir `FileExistsError` a otro
+        tipo acá volvería esa reconciliación imposible.
+        """
+
+        dest = pathlib.Path(dest)
         provisional = dest.with_name(f".staging-{uuid.uuid4().hex}.{dest.name}")
         try:
             with open(provisional, "xb") as fh:  # noqa: PTH123 — modo binario explícito
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
-            # Single-winner sin ventana check-then-write: `os.link` falla si
-            # `dest` existe. No hay fallback a reemplazo — un fallback
-            # convertiría la política create-once en overwrite.
+            # Single-winner sin ventana check-then-write. No hay fallback a
+            # reemplazo: un fallback convertiría create-once en overwrite.
             os.link(provisional, dest)
         except OSError:
             provisional.unlink(missing_ok=True)

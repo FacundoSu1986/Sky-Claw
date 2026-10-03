@@ -147,6 +147,100 @@ def _reporte_finalizacion(
     )
 
 
+def test_candidate_manifest_replay_identico_es_idempotente(tmp_path: pathlib.Path) -> None:
+    """Replay con los MISMOS bytes → éxito idempotente, sin reescribir.
+
+    Es lo que evita que un crash entre la publicación y la autorización
+    convierta la operación en un bloqueo permanente: el retry con la misma
+    `operation_id` y el mismo plan republica los mismos bytes y sigue.
+
+    El arbitraje NO es ``dest.exists()``: es el create-once atómico. Si
+    ganamos, se escribe; si perdemos, se relee y se compara. Este test no
+    puede distinguir esos dos caminos por sí solo —lo que congela el arbitraje
+    es `test_el_arbitro_es_la_publicacion_atomica`— pero sí congela el
+    resultado observable.
+    """
+    payload = b'{"operation_id":"' + _OP.encode() + b'","nodos":[]}'
+    first = publish_candidate_manifest(_OP, payload, programdata_resolver=_resolver(tmp_path))
+    segundo = publish_candidate_manifest(_OP, payload, programdata_resolver=_resolver(tmp_path))
+
+    assert first == segundo
+    assert read_candidate_manifest_bytes(_OP, programdata_resolver=_resolver(tmp_path)) == payload
+
+
+def test_candidate_manifest_replay_distinto_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Replay con bytes DIFERENTES → conflicto fail-closed, y NO se sustituye.
+
+    Sustituir un manifest ya publicado dejaría que una segunda planificación se
+    aprobara sobre el nombre de la primera. El contenido original tiene que
+    quedar intacto.
+    """
+    publish_candidate_manifest(_OP, b"manifest-A", programdata_resolver=_resolver(tmp_path))
+
+    with pytest.raises(CandidateManifestPublishError):
+        publish_candidate_manifest(_OP, b"manifest-B", programdata_resolver=_resolver(tmp_path))
+
+    assert read_candidate_manifest_bytes(_OP, programdata_resolver=_resolver(tmp_path)) == b"manifest-A"
+
+
+def test_el_arbitro_es_la_publicacion_atomica(tmp_path: pathlib.Path) -> None:
+    """El writer NO consulta ``dest.exists()`` antes de publicar.
+
+    Congela el arbitraje por comportamiento observable, no por lectura de
+    fuente: se pasa un writer cuyo destino aparece ENTRE la derivación y la
+    publicación, y se verifica que el resultado es el de la reconciliación
+    (bytes ajenos → conflicto), no el de un fast-path que hubiera devuelto
+    éxito sin mirar.
+    """
+    from sky_claw.local.runtime_vault.staging_writer import StagingCreateOnceWriter
+
+    intruso = b"escrito-por-otro-proceso"
+    dest_preparado = derive_candidate_manifest_path(_OP, programdata_resolver=_resolver(tmp_path))
+    dest_preparado.parent.mkdir(parents=True, exist_ok=True)
+    dest_preparado.write_bytes(intruso)
+
+    writer = StagingCreateOnceWriter()
+    with pytest.raises(FileExistsError):
+        writer.write_create_once(dest_preparado, b"mio", CANDIDATE_MANIFEST_FILE_NAME)
+
+    # El fast-path `dest.exists()` habría raising FileExistsError IGUAL, así
+    # que este test separa la otra mitad: el arbitraje de la reconciliación.
+    with pytest.raises(CandidateManifestPublishError):
+        publish_candidate_manifest(_OP, b"mio", programdata_resolver=_resolver(tmp_path))
+    assert dest_preparado.read_bytes() == intruso
+
+
+def test_el_replay_idempotente_no_depende_de_un_fast_path_de_existencia(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con un writer stub que SIEMPRE pierde, el replay idéntico igual prospera.
+
+    Si la idempotencia dependiera de ``dest.exists()``, un writer que nunca
+    escribe (y por lo tanto nunca "gana") haría fallar el replay. Con la
+    reconciliación por re-lectura, el resultado depende sólo de los bytes.
+    """
+    from sky_claw.local.runtime_vault.authorized_plan_store import _default_staging_writer  # noqa: F401
+
+    payload = b"estables"
+    publish_candidate_manifest(_OP, payload, programdata_resolver=_resolver(tmp_path))
+
+    class _WriterQueSiemprePierde:
+        def write_create_once(self, dest, data, name):  # noqa: ANN001, ANN201, ARG002
+            raise FileExistsError(dest)
+
+    # Idempotente: el segundo叫ayi con los mismos bytes reconcilia.
+    publish_candidate_manifest(
+        _OP, payload, programdata_resolver=_resolver(tmp_path), staging_writer=_WriterQueSiemprePierde()
+    )
+    assert read_candidate_manifest_bytes(_OP, programdata_resolver=_resolver(tmp_path)) == payload
+
+    # Y con bytes distintos falla cerrado, también sin ganar nunca.
+    with pytest.raises(CandidateManifestPublishError):
+        publish_candidate_manifest(
+            _OP, b"otro", programdata_resolver=_resolver(tmp_path), staging_writer=_WriterQueSiemprePierde()
+        )
+
+
 def _resolver(tmp_path: pathlib.Path) -> Any:
     return lambda: tmp_path / "programdata"
 
