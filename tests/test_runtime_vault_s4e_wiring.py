@@ -845,10 +845,14 @@ class _HandleFalso:
 
 
 class _TokenFalso:
+    """Contrato observable del token: cierre contado, para cazar double-close."""
+
     def __init__(self) -> None:
         self.cerrado = False
+        self.cierres = 0
 
     def close(self) -> bool:
+        self.cierres += 1
         self.cerrado = True
         return True
 
@@ -861,16 +865,36 @@ class _SesionFalsa:
     ``finalize_protection_transaction`` están monkeypatcheados en el test, así
     que ninguno la valida — y para esta propiedad esa validación sería
     irrelevante: lo que importa es que el mismo objeto llegue a los dos.
+
+    Modela el contrato REAL de la sesión tras P5: el lifecycle del lock y del
+    token lo decide la sesión, no el llamador. Un fake con un ``close()`` que
+    sólo tocaba el lock dejaba pasar la vuelta del anti-pattern que P5 cerró.
     """
 
     def __init__(self) -> None:
         self.lock = _HandleFalso()
         self.operator_token = _TokenFalso()
-        self.closed = False
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def close(self) -> bool:
-        self.closed = True
+        """Terminal limpio: RELEASED + token cerrado, exactly once."""
+        if self._closed:
+            return False
+        self._closed = True
         self.lock.release()
+        self.operator_token.close()
+        return True
+
+    def close_retaining_lock(self) -> bool:
+        """Fail-closed: metadata sin RELEASED, token cerrado, exactly once."""
+        if self._closed:
+            return False
+        self._closed = True
+        self.lock.retain_for_inspection()
         self.operator_token.close()
         return True
 
@@ -1015,17 +1039,35 @@ def test_un_desenlace_no_terminal_retiene_el_lock(monkeypatch: pytest.MonkeyPatc
 
 
 def test_cerrar_la_frontera_es_idempotente() -> None:
-    """``_cerrar_frontera`` dos veces no suelta el lock dos veces."""
+    """``_cerrar_frontera`` dos veces no cierra dos veces.
+
+    Se usa la API real de la sesión: ``closed`` es una property de lectura, así
+    que el patrón viejo del test —asignarle ``True`` a mano— ya no es posible.
+    Eso es parte del arreglo, no un obstáculo: el estado de cierre sólo lo
+    escribe la sesión, y por eso no puede quedar incoherente con sus recursos.
+
+    El segundo cierre es un no-op porque la sesión ya está cerrada, y el
+    ``False`` que devuelve ``_cerrar_frontera`` significa "no quedó retenido"
+    — correcto para una sesión que ya no tiene lock que retener.
+    """
     sesion = _SesionFalsa()
-    svc._cerrar_frontera(sesion, retener_lock=False)
-    sesion.closed = True
-    svc._cerrar_frontera(sesion, retener_lock=False)
+
+    assert svc._cerrar_frontera(sesion, retener_lock=False) is False
     assert sesion.lock.eventos == ["release"]
 
+    # Segunda llamada: la sesión ya está cerrada, no se toca nada más.
+    assert svc._cerrar_frontera(sesion, retener_lock=False) is False
+    assert sesion.lock.eventos == ["release"], "double-close del lock"
+    assert sesion.operator_token.cierres == 1, "double-close del token"
 
-# ============================================================================
-# Proyecciones (§29, §30, §40)
-# ============================================================================
+    # Y la variante que retiene tampoco reabre nada.
+    otra = _SesionFalsa()
+    assert svc._cerrar_frontera(otra, retener_lock=True) is True
+    assert otra.lock.eventos == ["retain"]
+    assert svc._cerrar_frontera(otra, retener_lock=True) is False, (
+        "una sesión ya cerrada no retiene nada: no hay lock que retener"
+    )
+    assert otra.lock.eventos == ["retain"], "double-close en el camino de retención"
 
 
 def test_un_desenlace_no_terminal_siempre_explica_por_que() -> None:

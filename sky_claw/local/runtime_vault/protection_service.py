@@ -63,7 +63,7 @@ import logging
 import os
 import pathlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Final
 
@@ -466,43 +466,41 @@ _DEFAULT_FRONTEND: Final[_Frontend] = _Frontend()
 # --------------------------------------------------------------------------
 
 
-def _cerrar_frontera(session: PrivilegedBoundarySession, *, retener_lock: bool) -> None:
-    """Cierra la sesión privileged decidiendo explícitamente el destino del lock.
+def _cerrar_frontera(session: PrivilegedBoundarySession, *, retener_lock: bool) -> bool:
+    """Cierra la sesión privileged y DEVUELVE si el lock quedó retenido.
 
-    ``PrivilegedBoundarySession.close()`` LIERA el lock sin condición. Eso es
-    correcto para el camino feliz —S4-D ya lo liberó tras el COMMITTED durable
-    y el segundo ``release()`` es un no-op idempotente— pero es incorrecto para
-    un desenlace no terminal: liberar ahí abriría una ventana en la que otra
-    mutadora entra sobre un Golden que todavía puede terminar en
-    ``ROLLBACK_REQUIRED`` (el mismo argumento que S4-D documenta en
-    ``finalization_orchestrator.py:996``).
+    Antes esta función hacía el cierre a mano, llamando a los metodos de
+    `operator_token` y `lock` por fuera y sin tocar `_closed`. El
+    resultado era una sesion con los recursos fisicamente cerrados pero
+    `closed == False`: `session.lock` seguia devolviendo el handle sin
+    avisar, y un `session.close()` posterior intentaba cerrarlo otra vez.
 
-    Por eso el servicio elige: ``release()`` en terminal,
-    ``retain_for_inspection()`` en cualquier otro caso, de modo que la
-    siguiente adquisición clasifique ``ORPHANED`` y el recovery pueda retomar
-    el MISMO ``operation_id``.
+    Ahora la sesion es la UNICA duena de su lifecycle y aca solo se elige la
+    politica:
 
-    Idempotente: si la sesión ya cerró, no hace nada.
+    * `close()` desenlace cerrado. Es correcto en el camino feliz aunque
+      S4-D ya haya liberado el lock tras el COMMITTED durable, porque
+      `release()` sobre un handle cerrado es un no-op idempotente.
+    * `close_retaining_lock()` cualquier otro desenlace. Escribir RELEASED
+      sobre un Golden que todavia puede terminar en ROLLBACK_REQUIRED abriria
+      la ventana que S4-D declara prohibida.
+
+    Devuelve `True` si el lock quedo RETENIDO para inspeccion (metadata sin
+    RELEASED) y `False` si quedo LIBERADO.
+
+    No se puede inferir despues: una vez cerrada, `session.lock` lanza
+    `AuthorizationSessionError` —que es exactamente la propiedad que el
+    anti-pattern rompia—, asi que el estado fisico tiene que salir de quien
+    ejecuto el cierre. Preguntarselo a la sesion DESPUES de cerrarla seria
+    volver a depender de un estado que ya no es observable.
     """
     if session.closed:
-        return
-    primer_error: BaseException | None = None
-    try:
-        lock = session.lock
-        if not lock.closed:
-            if retener_lock:
-                lock.retain_for_inspection()
-            else:
-                lock.release()
-    except BaseException as exc:  # noqa: BLE001 — boundary: se colecta y se relanza tras cerrar el token
-        primer_error = exc
-    try:
-        session.operator_token.close()
-    except BaseException as exc:  # noqa: BLE001 — el fallo del lock nunca impide cerrar el token
-        if primer_error is None:
-            primer_error = exc
-    if primer_error is not None:
-        raise primer_error
+        return False
+    if retener_lock:
+        session.close_retaining_lock()
+        return True
+    session.close()
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -818,24 +816,27 @@ def protect_golden_root(
                 port=frontend.mutation_port,
             )
             if reporte_apply.rollback_error is not None or reporte_apply.apply_error is not None:
+                # El apply no llegó a completarse: S4-D NO tiene nada que
+                # finalizar. Es un if/else y no un `return` porque el
+                # resultado se devuelve DESPUÉS del cierre de frontera (P5-C),
+                # y un `return` acá se saltaría tanto el cierre como la
+                # reconciliación del estado forense del lock.
                 desenlace = _proyeccion_de_apply(reporte_apply)
-                return desenlace
-
-            puerto = frontend.verification_port
-            if puerto is None:
-                puerto = build_default_verification_port()
-            reporte_final = finalize_protection_transaction(
-                operation_id=operation_id,
-                plan=plan,
-                journal=journal,
-                port=puerto,
-                programdata_resolver=frontend.programdata_resolver,
-                archive_writer=frontend.archive_writer,
-                lock_kernel=frontend.lock_kernel,
-                session=session,
-            )
-            desenlace = _proyeccion_de_finalizacion(reporte_final)
-            return desenlace
+            else:
+                puerto = frontend.verification_port
+                if puerto is None:
+                    puerto = build_default_verification_port()
+                reporte_final = finalize_protection_transaction(
+                    operation_id=operation_id,
+                    plan=plan,
+                    journal=journal,
+                    port=puerto,
+                    programdata_resolver=frontend.programdata_resolver,
+                    archive_writer=frontend.archive_writer,
+                    lock_kernel=frontend.lock_kernel,
+                    session=session,
+                )
+                desenlace = _proyeccion_de_finalizacion(reporte_final)
         finally:
             # El journal es un HANDLE de Win32 con share mode exclusivo: sin
             # cerrarlo, la re-apertura posterior del mismo journal en el mismo
@@ -856,27 +857,61 @@ def protect_golden_root(
             source_orchestrator="protection_service.protect_golden_root",
             detail="error de dominio o bug inesperado en el tramo mutador; el lock queda retenido",
             fail_closed_reason=f"{type(exc).__name__}: {exc}",
-            lock_retained=True,
             operator_intervention_required=True,
         )
+
+    # GP2-S4E / P5-C — el lock se cierra ANTES de construir el resultado
+    # definitivo.
+    #
+    # Antes el desenlace se construía dentro del try y el `finally` cerraba la
+    # frontera después, con lo que `lock_retained` describía una INTENCIÓN y no
+    # un estado: un rollback exitoso reportaba `lock_retained=True` mientras la
+    # sesión ya había liberado el lock. `resource state == forensic report
+    # state` es una propiedad, no una aspiración, así que la proyección se
+    # corrige contra el estado físico una vez cerrado.
+    #
+    # Liberar-vs-retener se decide por el DESENLACE, nunca por un default:
+    # soltar el lock sobre un Golden que puede terminar en ROLLBACK_REQUIRED
+    # abre la ventana que S4-D declara prohibida. Si ni siquiera se pudo
+    # calcular un desenlace, se retiene.
+    desenlace = desenlace or _resultado(
+        operation_id=operation_id,
+        disposition=ProtectionDisposition.INDETERMINATE,
+        stage=ProtectionStage.AUTHORIZATION,
+        source_orchestrator="protection_service.protect_golden_root",
+        detail="la frontera no llegó a producir desenlace",
+        fail_closed_reason="sin desenlace calculado: se retiene el lock por defecto",
+        operator_intervention_required=True,
+    )
+    if session is None:
         return desenlace
-    finally:
-        # Liberar-vs-retener se decide por el DESENLACE, nunca por un default:
-        # soltar el lock sobre un Golden que puede terminar en
-        # ROLLBACK_REQUIRED abre la ventana que S4-D ya declara prohibida.
-        # Si ni siquiera se pudo calcular el desenlace, se retiene.
-        desenlace = desenlace or _resultado(
-            operation_id=operation_id,
-            disposition=ProtectionDisposition.INDETERMINATE,
-            stage=ProtectionStage.AUTHORIZATION,
-            source_orchestrator="protection_service.protect_golden_root",
-            detail="la frontera no llegó a producir desenlace",
-            fail_closed_reason="sin desenlace calculado: se retiene el lock por defecto",
-            lock_retained=True,
-            operator_intervention_required=True,
-        )
-        if session is not None:
-            _cerrar_frontera(session, retener_lock=not desenlace.settled)
+    lock_retained_fisico = _cerrar_frontera(session, retener_lock=not desenlace.settled)
+    return _reconciliar_lock_reportado(desenlace, lock_retained_fisico=lock_retained_fisico)
+
+
+def _reconciliar_lock_reportado(
+    desenlace: ProtectionOutcome,
+    *,
+    lock_retained_fisico: bool,
+) -> ProtectionOutcome:
+    """Alinea ``lock_retained`` con el estado FÍSICO del lock ya cerrado.
+
+    La proyección de cada suborquestador se escribe cuando ese suborquestador
+    termina, antes de que la frontera decida el destino del lock. Para un
+    desenlace cerrado eso es incorrecto: un ``ROLLED_BACK`` con
+    ``lock_retained=True`` describe un lock retenido que la sesión acaba de
+    liberar.
+
+    El dato viene de quien EJECUTÓ el cierre, no de una segunda predicción, y
+    no de inspeccionar la sesión ya cerrada (imposible: ``session.lock``
+    lanza una vez que ``_closed`` es ``True``).
+
+    Sólo baja el flag, nunca lo sube: un ``lock_retained=True`` que el cierre
+    realmente retuvo es correcto, y bajarlo sería mentir en el otro sentido.
+    """
+    if lock_retained_fisico or not desenlace.lock_retained:
+        return desenlace
+    return replace(desenlace, lock_retained=False)
 
 
 def _rechazo_de_planning(planificacion: GP2Result, operation_id: str) -> ProtectionOutcome:

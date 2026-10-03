@@ -232,12 +232,44 @@ class PrivilegedBoundarySession:
 
     def close(self) -> bool:
         """Cierra la sesión exactamente una vez (lock luego token)."""
+        return self._cerrar(retaining_lock=False)
+
+    def close_retaining_lock(self) -> bool:
+        """Cierra la sesión RETENIENDO el lock para inspección.
+
+        Es el cierre fail-closed: el kernel handle del ``GoldenMutationLock``
+        se cierra, pero la metadata durable queda **sin** ``RELEASED`` para
+        que la siguiente adquisición la clasifique ``ORPHANED`` y el recovery
+        pueda retomar la MISMA ``operation_id``.
+
+        Es distinto de ``close()`` por una razón de seguridad concreta:
+        ``release()`` escribe ``RELEASED``, y hacerlo sobre un Golden cuyo
+        estado todavía no se verificó abre una ventana en la que otra
+        mutadora entra sobre un árbol a medio endurecer.
+
+        Igual que ``close()``, es idempotente, marca la sesión cerrada, cierra
+        el token aunque el lock falle, y relanza el primer error.
+        """
+        return self._cerrar(retaining_lock=True)
+
+    def _cerrar(self, *, retaining_lock: bool) -> bool:
+        """ÚNICO dueño del cierre de los dos recursos de la sesión.
+
+        Centraliza lo que antes estaba duplicado fuera de la clase: los
+        llamadores veían ``operator_token`` y ``lock`` sueltos y los cerraban
+        por su cuenta, con lo que ``_closed`` quedaba en ``False`` y la
+        sesión se.logicamente cerrada. Ahora es imposible observar un estado
+        en el que los recursos están cerrados y la sesión no.
+        """
         if self._closed:
             return False
         self._closed = True
         first_error: BaseException | None = None
         try:
-            self._lock.release()
+            if retaining_lock:
+                self._lock.retain_for_inspection()
+            else:
+                self._lock.release()
         except BaseException as exc:  # noqa: BLE001 — boundary deliberada: se colecta y se re-lanza tras cerrar todo
             first_error = exc
         try:
