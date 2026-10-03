@@ -126,6 +126,25 @@ def test_e02_fisico_observa_restore_pre_restablecido_y_lock_liberado() -> None:
     assert "_sha_sd_live" in fuente, "E02 físico no compara el SD vivo contra el PRE"
     assert "acquire_golden_mutation_lock" in fuente, "E02 físico no prueba que el lock quedó liberado"
 
+    # P6.1 — el ancla anterior sólo buscaba la SUBSTRING que arma la lista de
+    # restores. Eso la deja satisfecha con la lista construida y la aserción
+    # borrada: el mutante M4 (sustituir ``assert restores == [...]`` por una
+    # expresión inerte) pasaba con 35 verde. La garantía que hay que congelar es
+    # que el breadcrumb se EXIGE, no que se menciona.
+    exige_restore = any(
+        isinstance(nodo, ast.Assert)
+        and isinstance(nodo.test, ast.Compare)
+        and isinstance(nodo.test.left, ast.Name)
+        and nodo.test.left.id == "restores"
+        and any(isinstance(op, ast.Eq) for op in nodo.test.ops)
+        for nodo in ast.walk(funcion)
+    )
+    assert exige_restore, (
+        "E02 físico debe EXIGIR el breadcrumb de restore con una aserción "
+        "(`assert restores == [...]`), no sólo construir la lista: mencionar el "
+        "breadcrumb no prueba que S4-C restauró nada"
+    )
+
 
 def test_e02_el_seam_de_crash_es_causal_no_temporal() -> None:
     """§6: el crash de E02 NO depende de ``time.sleep`` ni de sondeo por tiempo.
