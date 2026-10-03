@@ -1520,6 +1520,16 @@ def restore_security_descriptor_by_handle(
        - Si PRE era protegido -> PROTECTED_DACL_SECURITY_INFORMATION.
        - Si PRE no era protegido -> UNPROTECTED_DACL_SECURITY_INFORMATION.
     7. Nunca incluye SACL.
+
+    Confinamiento del root (simétrico a apply_target_dacl_by_handle):
+    1b. Exige NumberOfLinks == 1 para ARCHIVOS REGULARES en la verificación
+        inicial (un segundo enlace fuera del Golden haría que SetSecurityInfo
+        mutara también el objeto externo).
+    8b. Revalida NumberOfLinks == 1 OTRA VEZ, sobre EL MISMO handle e
+        inmediatamente antes de SetSecurityInfo, para cerrar la ventana TOCTOU
+        abierta por el decode/hash/parseo del descriptor PRE. Para
+        DIRECTORIOS no se exige unicidad: no hay semántica de hardlink que
+        aplicar (ADR 0010 §12.2 paso 5 acota el requisito a archivos).
     """
     _ensure_windows()
 
@@ -1533,11 +1543,17 @@ def restore_security_descriptor_by_handle(
         if file_id != backup.file_id:
             raise TargetDaclRestoreError(f"Drift de FileId en restore: esperado={backup.file_id}, observado={file_id}")
 
-        links, is_dir = _read_file_standard_info_by_handle(handle)
+        links_initial, is_dir = _read_file_standard_info_by_handle(handle)
         if backup.node_kind is GoldenProtectionNodeKind.FILE and is_dir:
             raise TargetDaclRestoreError("Tipo de nodo discordante en restore: esperado FILE pero es directorio")
         if backup.node_kind is GoldenProtectionNodeKind.DIR and not is_dir:
             raise TargetDaclRestoreError("Tipo de nodo discordante en restore: esperado DIR pero es archivo")
+        # 1b. Confinamiento del root: un hardlink externo hace que SetSecurityInfo
+        # sobre este handle mute también el objeto alcanzable fuera del Golden.
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and links_initial != 1:
+            raise TargetDaclRestoreError(
+                f"Hardlink externo detectado en verificación inicial: NumberOfLinks={links_initial} != 1"
+            )
 
         # 2. Revalidar enlace criptográfico de bytes PRE
         try:
@@ -1636,7 +1652,20 @@ def restore_security_descriptor_by_handle(
         else:
             sec_info |= _UNPROTECTED_DACL_SECURITY_INFORMATION
 
-        # 7. Aplicar SetSecurityInfo para restauración
+        # 7. Barrera final de confinamiento, lo más cerca posible de SetSecurityInfo.
+        #    Entre la verificación inicial y esta llamada corrieron decode,
+        #    sha256, IsValidSecurityDescriptor y el parseo de ACEs: un atacante
+        #    pudo crear un hardlink externo en esa ventana. La relectura es
+        #    sobre EL MISMO handle, que es la única autoridad física válida.
+        links_final, is_dir_final = _read_file_standard_info_by_handle(handle)
+        if is_dir_final != is_dir:
+            raise TargetDaclRestoreError("El tipo de nodo mutó antes de SetSecurityInfo de restauración")
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and links_final != 1:
+            raise TargetDaclRestoreError(
+                f"Hardlink externo detectado en revalidación pre-restore: NumberOfLinks={links_final} != 1"
+            )
+
+        # 8. Aplicar SetSecurityInfo para restauración
         ret = _advapi32.SetSecurityInfo(
             handle,
             _SE_FILE_OBJECT,

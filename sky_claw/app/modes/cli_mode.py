@@ -17,10 +17,25 @@ logger = logging.getLogger(__name__)
 # 300 s is the documented ceiling for any single chat turn.
 _CHAT_TIMEOUT_SECONDS: float = 300.0
 
+#: Comandos que cierran el REPL. El banner se deriva de ESTA constante y el
+#: matcher compara por igualdad exacta sobre el texto recortado (con ``/``
+#: inicial opcional): ``exit`` sale, ``exit please`` es una frase para el agente.
+_COMANDOS_DE_SALIDA: frozenset[str] = frozenset({"exit", "quit", "salir"})
+
+
+def _es_comando_de_salida(texto: str) -> bool:
+    normalizado = texto.strip().lower()
+    if normalizado.startswith("/"):
+        normalizado = normalizado[1:].strip()
+    return normalizado in _COMANDOS_DE_SALIDA
+
 
 async def _run_cli(ctx: AppContext) -> None:
     assert ctx.router and ctx.session
-    logger.info("Sky-Claw interactive mode. Type 'exit' or 'quit' to leave.")
+    logger.info(
+        "Sky-Claw interactive mode. Type %s (or Ctrl-D) to leave.",
+        ", ".join(f"'{comando}'" for comando in sorted(_COMANDOS_DE_SALIDA)),
+    )
     chat_id = "cli-session"
     while True:
         try:
@@ -32,6 +47,9 @@ async def _run_cli(ctx: AppContext) -> None:
         text = user_input.strip()
         if not text:
             continue
+        if _es_comando_de_salida(text):
+            logger.info("Bye!")
+            break
         correlation_id_var.set(str(uuid.uuid4()))
         try:
             response = await asyncio.wait_for(

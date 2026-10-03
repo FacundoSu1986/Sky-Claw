@@ -1,4 +1,4 @@
-# OODA — inventario vivo de pendientes
+﻿# OODA — inventario vivo de pendientes
 
 > **Audiencia:** maintainers, reviewers y agentes.
 >
@@ -225,6 +225,45 @@
 > la ancla contra el reset real del paquete nicegui instalado, enumerando todas las
 > hojas de estilo del GUI. `T-24` sigue **Parcial**: el inventario de labels y
 > formularios no entra. **No** es una reverificación integral del resto de la tabla.
+
+> **GP2-S4D (finalización de la transacción de protección del Golden) — slice
+> implementado sobre `main` `6c7ff0c9` (#660):** cubre exclusivamente S4-D —
+> post-verificación fresca → backup durable → `COMMITTED` → liberación del lock.
+> El estado autoritativo sigue siendo el journal durable y las verificaciones se
+> **re-observan** tras cada crash, en vez de recordarse con flags.
+>
+> **Lo que S4-D NO cubre, y hay que leer antes de assuming que sí:**
+>
+> - **GP1 y quiescence final NO están probados de verdad por el RIG.** Endurecer
+>   un árbol o abrirle handles de escritura exige elevación y un Golden real, y
+>   el RIG de S4-D usa un árbol descartable en `%TEMP%` que deja intacto. El RIG
+>   los reporta como PASS **degradado**, y queda escrito en el `detail` del
+>   veredicto y en el body del PR. RV-2 y NodeSet sí se ejercitan de verdad
+>   sobre el árbol físico.
+> - **POWER LOSS no está probado.** Lo demostrado es `PROCESS_CRASH_RECOVERY`:
+>   `taskkill /T /F` sobre procesos reales, no corte de energía.
+>   `FlushFileBuffers` sobre el handle del archivo no demuestra la durabilidad de
+>   la entrada de directorio frente a power-loss.
+> - **El backup no declara el directorio donde vive.** El store falla cerrado si
+>   el padre no existe, y crearlo es jurisdicción del namespace de confianza, no
+>   de la finalización. Aprovisionar `golden_backups/<scope>/<policy_version>/`
+>   queda para el bootstrap.
+> - **GP3 no está implementado.** S4-D sólo garantiza que el manifiesto de backup
+>   contiene la evidencia que una restauración necesitaría (PRE SD por nodo,
+>   identidad física, `policy_version`, `TreeDigest`), y que su esquema es
+>   cerrado y versionado para que GP3 pueda rechazar lo que no conozca.
+> - **El eje de identidad de runtime de RV-2 no se verifica.** El plan
+>   autoritativo (S4-A) no tiene campo de runtime, así que GP2 sólo compara el
+>   eje de contenido. Fabricar un `expected_runtime` copiando el observado sería
+>   el tautología que el ADR prohíbe; degradar el `UNKNOWN` a `VERIFIED`, peor.
+>
+> **Discrepancias ADR ↔ código registradas durante S4-D:** (1) §19.2/§22
+> presuponen un `expected_runtime` en el plan que el esquema S4-A no tiene; (2)
+> §19.1.5 dibuja fases en la metadata del lock (`APPLYING`, `COMMITTED`) que
+> `GoldenLockMetadata` deliberadamente no declara —la fase autoritativa es el
+> journal—, y S4-D respetó la decisión del código; (3) §23.2 llama "manifiesto"
+> al backup, y S4-D produjo un manifiesto JSON canónico y no un contenedor
+> binario.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de

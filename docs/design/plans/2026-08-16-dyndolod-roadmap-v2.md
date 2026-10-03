@@ -426,6 +426,21 @@ preflight.
 no tenía: automatizar la GUI con presets persistentes **antes** de resolver
 `OutputPath` es automatizar precisamente el comportamiento incorrecto.
 
+**H3-A — bulk cache UIA read-only (2026-10-01, no es T8).** Optimización del
+discovery de controles: `CacheRequest` + `FindAllBuildCache` +
+`GetCachedPropertyValue` para ProcessId, AutomationId, Name, ControlType y
+ClassName. `AutomationElementMode_Full` para que `GetCurrentPattern` siga
+pudiendo leer ValuePattern/TextPattern. No cambia selector, gate, runner, HITL,
+timeouts ni el veredicto MATCH/MISMATCH/UNKNOWN. No incluye filtro server-side,
+rediscovery de `UIA_E_ELEMENTNOTAVAILABLE`, detección de modales ni UIA activa.
+
+Follow-ups, no implementados aquí:
+
+- H3-B: filtrar candidatos en el servidor (`ProcessId` AND `ControlType=Edit` AND `ClassName=TEdit`).
+- H3-C: rediscovery acotado específico de `UIA_E_ELEMENTNOTAVAILABLE`.
+- H19 / #661 P1: preflight de modales (expected window / unexpected modal → FAIL_CLOSED). No bot genérico.
+- #661 P0 (rig Windows, no gate de H3-A): TexGen/DynDOLOD Alpha-209, SHA-256 del exe, PID, WindowClass, FrameworkId, ControlType, ClassName, AutomationId, patterns, HRESULT de `ValuePattern.SetValue` y `LegacyIAccessiblePattern.SetValue` (medición, no implementación), Start/OK/Advanced, Exit TexGen, Save and Exit, y fingerprint de `#32770`.
+
 ## Ordenamiento
 
 ```text

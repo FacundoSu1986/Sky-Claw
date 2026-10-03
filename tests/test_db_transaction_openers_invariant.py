@@ -53,6 +53,15 @@ ABRIDORES_ESPERADOS: Counter[tuple[str, str, str]] = Counter(
     {
         ("sky_claw/app/core/database.py", "init_db", "BEGIN IMMEDIATE"): 1,
         ("sky_claw/app/core/dlq_manager.py", "_ensure_schema", "BEGIN IMMEDIATE"): 1,
+        # #655: el boundary de migración del open() (reconstrucción de esquema
+        # de artifact_evidence_resolutions + backfill legacy) declara su cuerpo
+        # como escritura — igual criterio que init_db/_ensure_schema. Además es
+        # la única forma de que el DDL sea atómico: el modo legacy de Python
+        # sqlite3 auto-BEGINA solo ante DML, y sin BEGIN explícito cada
+        # statement DDL de la migración correría en autocommit (DB "a medias"
+        # si la copia/validación falla). Dos porque el boundary tiene las dos
+        # ramas (lifecycle y standalone), que comparten la misma decisión.
+        ("sky_claw/app/db/journal.py", "open", "BEGIN IMMEDIATE"): 2,
     }
 )
 

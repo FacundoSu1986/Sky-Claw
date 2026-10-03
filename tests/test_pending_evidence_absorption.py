@@ -370,12 +370,19 @@ def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
 
     Un tercer escritor —segunda conexión, post-commit, path paralelo— rompe el
     ancla a propósito: la ventana 'evidencia sin boundary durable' resucitaría
-    la evidencia o la consumiría sin handoff detrás."""
+    la evidencia o la consumiría sin handoff detrás.
+
+    #655/H2: se añade el cuarto escritor legítimo —
+    ``registrar_resolucion_de_restauracion_de_artifact`` (kind
+    ``restored_byte_exact``), que sella la pareja (tx, artifact) EN EL MOMENTO
+    del restore byte-exact, bajo el lease intacto de la propia corrida, y con
+    handoff_id NULL por construcción (no pertenece a ningún handoff)."""
     modulo = pathlib.Path(sky_claw_app_db_journal_path())
     assert _funciones_que_mencionan(modulo, "_registrar_resoluciones_de_artifact_en_conn") == {
         "_escribir_handoff_indeterminado",
         "_sellar_evidencia_de_artifact",
         "resolver_evidencia_como_no_artifact",
+        "registrar_resolucion_de_restauracion_de_artifact",
         "_registrar_resoluciones_de_artifact_en_conn",
     }
     # Las dos ramas del boundary indeterminado delegan en el MISMO helper

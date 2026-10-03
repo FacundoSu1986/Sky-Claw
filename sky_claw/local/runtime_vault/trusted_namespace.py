@@ -446,7 +446,31 @@ def _canonical_file_readable_by_aces() -> list[NamespaceAceSpec]:
 #: un cambio futuro en la DACL de uno no arrastre en silencio la del otro.
 AUTHORIZED_PLAN_OBJECT = "authorized_plan.json"
 PROTECTION_JOURNAL_OBJECT = "protection_journal.json"
-_AUTHORIZED_OPERATIONS_FILE_OBJECTS = frozenset({AUTHORIZED_PLAN_OBJECT, PROTECTION_JOURNAL_OBJECT})
+#: GP2-S4C: binding PRE-plan ``operation_id`` ↔ identidad física del Golden. Se
+#: publica ANTES de adquirir el GoldenMutationLock (ADR 0010 §12.2 paso 6) para
+#: que un crash en esa ventana deje evidencia durable que permita localizar y
+#: normalizar el lock huérfano. Comparte el contrato de archivo protegido, pero
+#: NO es plan, journal, staging ni TGR: no autoriza ninguna mutación.
+OPERATION_LOCK_BINDING_OBJECT = "operation_lock_binding.json"
+_AUTHORIZED_OPERATIONS_FILE_OBJECTS = frozenset(
+    {AUTHORIZED_PLAN_OBJECT, PROTECTION_JOURNAL_OBJECT, OPERATION_LOCK_BINDING_OBJECT}
+)
+
+#: GP2-S4D: manifiesto de backup durable del Golden, en
+#: ``golden_backups/<vol_serial>_<root_file_id>/<policy_version>/<op_id>_manifest.json``
+#: (ADR 0010 §23.2). Es un objeto DISTINTO de los tres de ``operations/<op_id>/``:
+#: vive en otro subárbol del namespace, así que una futura modificación de su
+#: DACL no arrastra en silencio la del plan o la del journal (el mismo motivo por
+#: el que S4C_no_agregó_ el binding a aquel conjunto). Comparte el contrato de
+#: archivo protegido — Admins/SYSTEM full, Authenticated Users read-only, sin
+#: escritura para no elevados — porque es evidencia de la misma clase: autoridad
+#: que un Actor D no puede modificar.
+GOLDEN_BACKUP_MANIFEST_OBJECT = "golden_backup_manifest.json"
+#: Objetos planos de ``golden_backups/``. Conjunto CERRADO y separado de
+#: :data:`_AUTHORIZED_OPERATIONS_FILE_OBJECTS` para que el ancla ``SB-20`` de
+#: S4-C (que congela aquel conjunto en tres miembros) siga siendo válida: S4-D
+#: amplía la frontera sin reescribir la de su hermano.
+_GOLDEN_BACKUPS_FILE_OBJECTS = frozenset({GOLDEN_BACKUP_MANIFEST_OBJECT})
 
 
 def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
@@ -563,6 +587,12 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
         # Authenticated Users: FILE_GENERIC_READ (0x00120089), flags 0x00
         # Sin derecho de escritura ni borrado para no elevados: la autoridad de
         # la transacción no es modificable por Actor D.
+        aces = _canonical_file_readable_by_aces()
+    elif object_name in _GOLDEN_BACKUPS_FILE_OBJECTS:
+        # golden_backup_manifest.json (ADR 0010 §23.2, S4-D): mismo contrato de
+        # archivo protegido que los objetos de operations/<op_id>/ — el backup es
+        # evidencia de rollback y NO puede ser reescrito por un Actor D, ni
+        # siquiera para "corregir" un manifiesto que no le gusta.
         aces = _canonical_file_readable_by_aces()
     elif object_name == "golden_admission_record.json":
         # Registro protegido de operación de Golden Admission (§11.4): mismo
@@ -1068,7 +1098,24 @@ def _verificador_de_archivo_protegido(object_name: str) -> Callable[[pathlib.Pat
         return verify_golden_admission_record_by_handle
     if object_name in _AUTHORIZED_OPERATIONS_FILE_OBJECTS:
         return _verify_authorized_operations_file_by_handle_factory(object_name)
+    if object_name in _GOLDEN_BACKUPS_FILE_OBJECTS:
+        return _verify_golden_backups_file_by_handle_factory(object_name)
     raise TrustedNamespaceError(f"No existe verificador por handle para el objeto '{object_name}'")
+
+
+def _verify_golden_backups_file_by_handle_factory(object_name: str) -> Callable[[pathlib.Path], None]:
+    """Verificador por handle del manifiesto de backup de S4-D (§23.2).
+
+    Anclado a su PROPIA spec (``build_namespace_dacl_spec("golden_backup_manifest.json")``)
+    y no a un contrato compartido: el backup es la evidencia que GP3 va a leer
+    para restaurar, así que una DACL aflojada tiene que romper SU verificación y
+    no pasar inadvertida contra la spec de un hermano.
+    """
+
+    def _verify(path: pathlib.Path) -> None:
+        _verify_secured_file_contract(path, object_name)
+
+    return _verify
 
 
 def _verify_authorized_operations_file_by_handle_factory(object_name: str) -> Callable[[pathlib.Path], None]:
@@ -1999,6 +2046,7 @@ from sky_claw.local.runtime_vault.trusted_registry import (  # noqa: E402
 __all__ = [
     "AUTHENTICATED_USERS_SID",
     "AUTHORIZED_PLAN_OBJECT",
+    "GOLDEN_BACKUP_MANIFEST_OBJECT",
     "PROTECTION_JOURNAL_OBJECT",
     "AncestorProvisioningError",
     "BUILTIN_ADMINISTRATORS_SID",

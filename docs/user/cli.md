@@ -6,7 +6,7 @@
 >
 > **Fuente canónica:** `sky_claw/__main__.py`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e` más este cambio.
 
 ## Modos principales
 
@@ -35,6 +35,12 @@ documentados en [CLI de referencia](../api/cli_ref.md) y
 [validación real](../operations/real_rig_validation.md).
 
 ## Salida y diagnóstico
+
+En el REPL (`--mode cli`), escribir `exit`, `quit` o `salir` cierra la sesión;
+`Ctrl+C` y `Ctrl+D` también terminan el loop. Los comandos se comparan por
+igualdad exacta sobre el texto recortado (con `/` inicial opcional y sin
+distinguir mayúsculas), así que una frase como `salir del juego` se envía al
+agente en vez de cortar la sesión.
 
 La CLI configura logging antes de ejecutar el modo. Usar `Ctrl+C` para que
 `AppContext.stop()` tenga oportunidad de cerrar recursos. Si una ejecución

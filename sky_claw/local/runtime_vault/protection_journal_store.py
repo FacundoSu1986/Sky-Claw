@@ -30,7 +30,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.local.runtime_vault.authorized_plan import AuthorizedPlan
 from sky_claw.local.runtime_vault.authorized_plan_store import (
@@ -102,6 +102,53 @@ class ProtectionJournalPlanBindingError(ProtectionJournalStoreError):
 
 class ProtectionJournalAppendError(ProtectionJournalStoreError):
     """Fallo de I/O al anexar un registro al journal."""
+
+
+class FinalizationPhaseNotAdmittedError(ProtectionJournalStoreError):
+    """La fase de finalización pedida no es una arista normativa del FSM.
+
+    Existe para que ``enter_finalization_phase`` no sea un ``transition_to``
+    disfrazado: sólo se admiten los estados de S4-D que el diagrama de
+    ADR 0010 §19.2 declara, y sólo desde su predecesor exacto.
+    """
+
+
+if TYPE_CHECKING:
+    from sky_claw.local.runtime_vault.golden_backup_archive import DurableGoldenBackupArchive
+
+
+# ============================================================================
+# Arities normativas de S4-D (ADR 0010 §19.2)
+# ============================================================================
+#
+# `TRANSACTION_TRANSITIONS` (§19.2) dice qué aristas son legales para el FSM
+# entero. Estas tablas dicen cuáles de esas aristas le corresponde RECORRER a
+# S4-D, y desde dónde. La diferencia importa: la tabla grande permite, por
+# ejemplo, `APPLYING -> VERIFYING_RV2` (porque el diagrama la dibuja como
+# arista válida en general), pero S4-D jamás debe tomarla — saltarse el GP1 es
+# exactamente el mutant M-D4. Congelar el camino exacto convierte un error de
+# orden en un `FinalizationPhaseNotAdmittedError` en vez de un COMMITTED con un
+# hueco.
+_S4D_FINALIZATION_TARGETS: frozenset[ProtectionTransactionState] = frozenset(
+    {
+        ProtectionTransactionState.VERIFYING_GP1,
+        ProtectionTransactionState.VERIFYING_RV2,
+        ProtectionTransactionState.VERIFYING_NODE_SET,
+        ProtectionTransactionState.ARCHIVING_BACKUP,
+    }
+)
+
+_S4D_FINALIZATION_ENTRY_POINTS: dict[ProtectionTransactionState, frozenset[ProtectionTransactionState]] = {
+    ProtectionTransactionState.VERIFYING_GP1: frozenset(
+        {
+            ProtectionTransactionState.APPLYING,
+            ProtectionTransactionState.VERIFYING_GP1,
+        }
+    ),
+    ProtectionTransactionState.VERIFYING_RV2: frozenset({ProtectionTransactionState.VERIFYING_GP1}),
+    ProtectionTransactionState.VERIFYING_NODE_SET: frozenset({ProtectionTransactionState.VERIFYING_RV2}),
+    ProtectionTransactionState.ARCHIVING_BACKUP: frozenset({ProtectionTransactionState.VERIFYING_NODE_SET}),
+}
 
 
 # ============================================================================
@@ -970,6 +1017,104 @@ class DurableProtectionJournal:
             )
         assert_transaction_transition(self.transaction_state, target)
         self._append_record(JournalTransactionRecord(sequence=self._journal.sequence + 1, state=target))
+
+    # -- S4-D: fases de finalización y commit --------------------------------
+    #
+    # Estas tres API son SEPARADAS de `transition_to` a propósito. `transition_to`
+    # es la puerta de S4-A/S4-C: admite la rama de falla y NUNCA el camino de
+    # éxito. Las de abajo son la puerta de S4-D, y su admission no depende de que
+    # el llamador "sepia" escribir un target: depende de que EXISTA la evidencia
+    # que el ADR exige para ese target. En particular, COMMITTED no es un target
+    # alcanzable por aritmética de FSM: es una consecuencia de un backup durable.
+
+    def enter_finalization_phase(self, target: ProtectionTransactionState) -> None:
+        """Asienta durablemente una fase de S4-D (``VERIFYING_*`` / ``ARCHIVING_BACKUP``).
+
+        Se admiten sólo las aristas que el diagrama de ADR 0010 §19.2 declara, y
+        sólo desde su predecesor exacto. La comprobación es doble a propósito:
+        ``assert_transaction_transition`` valida la arista contra la tabla, y
+        ``_S4D_FINALIZATION_ENTRY_POINTS`` valida que la arista sea una de las que
+        S4-D debe recorrer. Un ``VERIFYING_RV2`` pedido desde ``APPLYING`` falla
+        en la segunda, aunque la tabla lo permita: la tabla dice qué es legal, no
+        qué tiene sentido.
+        """
+        self._require_live_handle()
+        if not isinstance(target, ProtectionTransactionState):
+            raise ProtectionJournalSchemaError("target debe ser un miembro de ProtectionTransactionState")
+        if target not in _S4D_FINALIZATION_TARGETS:
+            raise FinalizationPhaseNotAdmittedError(
+                f"'{target.value}' no es una fase de finalización de S4-D "
+                f"(admitidas: {sorted(state.value for state in _S4D_FINALIZATION_TARGETS)})"
+            )
+        if self.transaction_state not in _S4D_FINALIZATION_ENTRY_POINTS.get(target, frozenset()):
+            raise FinalizationPhaseNotAdmittedError(
+                f"transición '{self.transaction_state.value} -> {target.value}' no es una arista de "
+                "finalización declarada en ADR 0010 §19.2"
+            )
+        assert_transaction_transition(self.transaction_state, target)
+        self._append_record(JournalTransactionRecord(sequence=self._journal.sequence + 1, state=target))
+
+    def commit_finalized(
+        self,
+        *,
+        archive: DurableGoldenBackupArchive,
+        plan: DurableAuthorizedPlan,
+    ) -> None:
+        """Escribe ``COMMITTED`` durable. La ÚNICA firma que puede producirlo.
+
+        Las precondiciones son estructurales, no de disciplina:
+
+        * el estado durable tiene que ser ``ARCHIVING_BACKUP`` (el backup ya está
+          escrito y verificado);
+        * ``archive`` tiene que ser un :class:`DurableGoldenBackupArchive`, que
+          sólo se acuña tras create-once + flush + relectura byte a byte;
+        * el backup tiene que ligar con ESTE plan por identidad y por digest, y su
+          ``authorized_plan_digest`` tiene que ser el que el journal tiene en su
+          header.
+
+        Por qué el digest del backup NO viaja dentro del registro ``COMMITTED``:
+        el esquema de ``transaction_state`` tiene sus tres claves congeladas por
+        el ancla de S4-A, y ampliarlo por comodidad sería cambiar el contrato de
+        un hermano para gains que la evidencia ya da. El binding es
+        recuperable y comprobable sin tocar el esquema: el backup está en una
+        RUTA DERIVADA de la identidad del plan, es create-once, y lleva dentro
+        su ``operation_id`` y su ``authorized_plan_digest``. O sea:
+
+            journal dice COMMITTED  ⟹  existe un backup válido y ata a ESTE plan
+
+        y el ancla ``test_..._s4d_...::test_el_commit_es_autocertificado`` lo
+        verifica leyendo el disco después del commit, sin confiar en el proceso
+        que lo escribió.
+        """
+        self._require_live_handle()
+        from sky_claw.local.runtime_vault.golden_backup_archive import DurableGoldenBackupArchive
+
+        if not isinstance(archive, DurableGoldenBackupArchive):
+            raise PrematureCommitError(
+                "COMMITTED exige un DurableGoldenBackupArchive (create-once + flush + relectura): "
+                "un objeto en memoria o un backup no verificado no autorizan el commit"
+            )
+        if self.transaction_state is not ProtectionTransactionState.ARCHIVING_BACKUP:
+            raise PrematureCommitError(
+                f"COMMITTED sólo es alcanzable desde ARCHIVING_BACKUP; el estado durable es "
+                f"'{self.transaction_state.value}'"
+            )
+        if not archive.archive.binds_to(plan.plan):
+            raise PrematureCommitError(
+                "el backup durable no liga con el plan autoritativo de esta operación: "
+                "COMMITTED sobre evidencia ajena queda prohibido"
+            )
+        if archive.archive.authorized_plan_digest != self.authorized_plan_digest:
+            raise PrematureCommitError(
+                "el backup durable referencia otro authorized_plan_digest que el journal: fail-closed"
+            )
+        assert_transaction_transition(self.transaction_state, ProtectionTransactionState.COMMITTED)
+        self._append_record(
+            JournalTransactionRecord(
+                sequence=self._journal.sequence + 1,
+                state=ProtectionTransactionState.COMMITTED,
+            )
+        )
 
     # -- infraestructura ---------------------------------------------------
 
