@@ -29,6 +29,7 @@ Lo que el RIG NO toca jamás: Skyrim real, Steam, MO2, el Golden del usuario ni
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import pathlib
@@ -287,19 +288,160 @@ def test_e14_replay_es_idempotente_dos_veces(rig: pathlib.Path) -> None:
 # --------------------------------------------------------------------------
 
 
+def test_la_produccion_no_consume_breadcrumbs_del_rig() -> None:
+    """P6 (cont.): los breadcrumbs del RIG son evidencia de TEST, no autoridad.
+
+    El RIG sabe MUCHO más que la producción: en E02 conoce ``pre-sdsi`` sin
+    ``sdsi``, o sea que la muerte ocurrió ANTES del ``SetSecurityInfo``. El
+    proceso B real no tiene esa información, y el contrato de §20 C8 existe
+    justamente para no depender de ella: la evidencia durable dice ``MUTATING`` y
+    la reconciliación decide con una sonda semántica.
+
+    Si el código productivo llegara a leer los breadcrumbs, el recovery
+    determinista dejaría de ser determinista en producción y pasaría a depender
+    de un artefacto de test — el peor modo de fallo posible, porque el RIG lo
+    seguiría dando verde. Este ancla congela la frontera.
+    """
+    from sky_claw.local.runtime_vault import protection_service as svc
+
+    raiz = pathlib.Path(svc.__file__).resolve().parents[3]
+    marcas_test_only = (
+        "s4e-events.log",
+        "s4e_crash_worker",
+        "s4e-boot.json",
+        "s4e-result-b.json",
+        "SkyClaw-S4E-RIG",
+    )
+    assert raiz.name == "Sky-Claw" or (raiz / "sky_claw").is_dir(), f"raíz inesperada: {raiz}"
+
+    referencias: list[str] = []
+    for modulo in (raiz / "sky_claw").rglob("*.py"):
+        arbol = ast.parse(modulo.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+                for marca in marcas_test_only:
+                    if marca in nodo.value:
+                        referencias.append(f"{modulo.relative_to(raiz)}:{nodo.lineno} menciona {marca!r}")
+
+    assert not referencias, (
+        "producción consumió evidencia del RIG: el recovery pasó a depender de un "
+        f"artefacto de test y sólo el RIG lo seguiría dando verde: {referencias}"
+    )
+
+
+def test_e02_no_puede_volver_a_un_contrato_permisivo() -> None:
+    """P6 (cont.): el contrato E02 exacto queda congelado POR FORMA, no por valor.
+
+    Derivar el contrato correcto no alcanza si nada impide que el test vuelva a
+    ser laxo: sustituir ``== "rolled_back"`` por ``in ("rolled_back",
+    "indeterminate")`` deja el test VERDE, porque la producción es determinista y
+    siempre devuelve ``rolled_back``. Ese es el agujero real que dejaron los
+    mutantes M1/M2: un contrato permisivo no se detecta por sí mismo.
+
+    Este ancla mira la FORMA del test E02 por AST y exige igualdad exacta sobre
+    ``disposition`` y ``route``, y que no exista pertenencia a conjunto sobre
+    esos dos campos. Así el weaken que sobrevivió a los mutantes queda muerto,
+    y borrar la evidencia física también.
+    """
+    fuente = pathlib.Path(__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+
+    def _test(nombre: str) -> ast.FunctionDef:
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+                return nodo
+        raise AssertionError(f"no se encontró el test {nombre}")
+
+    e02 = _test("test_e02_crash_durante_apply_revierte_el_golden")
+
+    exactos: set[tuple[str, str]] = set()
+    permisivos: list[str] = []
+    tiene_evidencia_fisica = False
+
+    def _campo(izq: ast.expr) -> str | None:
+        """Nombre del campo en ``b["campo"]``, sea cual sea el tipo de comilla.
+
+        Se toma del nodo ``Subscript`` y no de ``unparse``: el texto normaliza
+        las comillas y haría fallar el ancla por estilo, no por contrato.
+        """
+        if isinstance(izq, ast.Subscript) and isinstance(izq.slice, ast.Constant):
+            valor = izq.slice.value
+            if isinstance(valor, str):
+                return valor
+        return None
+
+    for nodo in ast.walk(e02):
+        if not isinstance(nodo, ast.Assert):
+            continue
+        texto = ast.unparse(nodo.test)
+        # Normalizar comillas y paréntesis: ``unparse`` unifica ambos estilos y
+        # el ancla no debe depender de la forma en que quedó escrito el texto.
+        norm = texto.replace("'", "").replace('"', "").replace("(", "").replace(")", "").replace(" ", "")
+        if "notanye.startswithsdsi:foreineventos_b" in norm:
+            tiene_evidencia_fisica = True
+        if not isinstance(nodo.test, ast.Compare) or len(nodo.test.ops) != 1:
+            continue
+        op = nodo.test.ops[0]
+        campo = _campo(nodo.test.left)
+        if campo is not None and isinstance(op, ast.Eq) and isinstance(nodo.test.comparators[0], ast.Constant):
+            valor = nodo.test.comparators[0].value
+            if isinstance(valor, str):
+                exactos.add((campo, valor))
+        if campo in {"disposition", "route"} and isinstance(op, (ast.In, ast.NotIn)):
+            permisivos.append(texto)
+
+    for campo, valor in (("disposition", "rolled_back"), ("route", "s4c_rollback")):
+        assert (campo, valor) in exactos, (
+            f'E02 debe afirmar exactamente b["{campo}"] == "{valor}": el contrato se derivó '
+            f"del código y no admite un conjunto permisivo. Asserts exactos hallados: {exactos}"
+        )
+
+    assert not permisivos, (
+        "E02 volvió a aceptar un conjunto de desenlaces; un contrato permisivo no se "
+        f"detecta por sí mismo porque la producción siempre devuelve el valor bueno: {permisivos}"
+    )
+
+    assert tiene_evidencia_fisica, (
+        "E02 perdió la evidencia física (que la reconciliación no escribió ninguna SD): "
+        "sin ella, un 'rolled_back' correcto en el DTO no probaría nada sobre el Golden"
+    )
+
+
 def test_e02_crash_durante_apply_revierte_el_golden(rig: pathlib.Path) -> None:
-    """E02: el proceso A MUERE DURANTE el apply -> B hace rollback.
+    """E02 ESTRICTO: crash mid-apply ⇒ desenlace único, derivado del protocolo.
 
-    La muerte es de PROCESO: el worker llama ``os._exit(43)`` con el
-    journal ya durable en ``MUTATING`` y un nodo sin ``MUTATED``. No hay
-    excepcion, ni ``finally``, ni flush pendiente: es el mismo mecanismo
-    que usa el RIG de S4-C.
+    Por que ``taskkill`` no aca: la transaccion completa del RIG dura menos que
+    el intervalo de polling, asi que un ``taskkill`` por sondeo llega cuando la
+    transaccion ya comiteo y el test probaria una idempotencia en lugar de un
+    crash. La muerte EXTERNA por ``taskkill /T /F`` si se ejercita en E15.
 
-    Por que no ``taskkill`` aca: la transaccion completa del RIG dura menos
-    que el intervalo de polling, asi que un ``taskkill`` por sondeo llega
-    cuando la transaccion ya comiteo y el test probaria una idempotencia en
-    lugar de un crash. La muerte EXTERNA por ``taskkill /T /F`` si se
-    ejercita en E15, donde el proceso A espera de verdad.
+    P6 — este test era LAX y ahora es un contrato exacto. Antes aceptaba
+    ``disposition in (rolled_back, rollback_required, indeterminate)`` y
+    ``route in (s4c_rollback, operator_required)``: tres desenlaces para un
+    escenario que tiene uno. El permiso estaba en el commit que introdujo E02
+    (``bc92cdf6``), sin ``xfail``, sin workaround de plataforma o elevación que
+    lo justificara — un placeholder que nadie endureció cuando el comportamento
+    se volvió determinista.
+
+    El contrato sale del CÓDIGO, no de la intuición:
+
+    * Orden WAL (§6): ``record_node_mutation_intent`` durable → ``SetSecurityInfo``
+      → ``record_node_mutation_completed`` durable. Un crash entre el primero y
+      el segundo deja ``MUTATING`` sin ``MUTATED``.
+    * ``MUTATING(K)`` significa que K PUEDE estar mutado (§20 C4). La
+      evidencia durable NO distingue "murió antes del SetSecurityInfo" de
+      "murió después": por eso el rollback es IDEMPOTENTE y se decide con una
+      SONDA SEMÁNTICA contra el PRE autorizado (§20 C8), no con memoria de qué
+      nodos se mutaron.
+    * En E02 el ``SetSecurityInfo`` nunca corrió (``pre-sdsi`` sin ``sdsi``), así
+      que la sonda encuentra el nodo ``en_pre``: se SKIPEA sin escribir, no hay
+      nada que restaurar, y la transacción cierra ``ROLLED_BACK`` con el lock
+      LIBERADO.
+
+    ``rollback_executed`` NO significa "se escribió una SD": es
+    ``physical_restoration_completed``, la reconciliación física verificada. En
+    E02 vale True con CERO escrituras, que es el contrato §20 C8 funcionando, no
+    una restauración que no ocurrió (§15).
     """
     r = _correr(rig, "apply_then_finalize", crash_en="mid_apply")
     assert r["returncode"] == 43, r["stderr"]
@@ -314,10 +456,98 @@ def test_e02_crash_durante_apply_revierte_el_golden(rig: pathlib.Path) -> None:
     assert r["returncode"] == 0, r["stderr"]
     b = _leer(rig, "s4e-result-b.json")
 
-    assert b["disposition"] in ("rolled_back", "rollback_required", "indeterminate"), b
-    assert b["committed"] is False
-    # El apply quedo incompleto, asi que el router tiene que haber ido a S4-C.
-    assert b["route"] in ("s4c_rollback", "operator_required"), b["route"]
+    # --- Contrato exacto: un desenlace, no un conjunto -------------------
+    assert b["disposition"] == "rolled_back", b
+    assert b["route"] == "s4c_rollback", b["route"]
+    assert b["committed"] is False, b
+    assert b["settled"] is True, b
+    assert b["operator_intervention_required"] is False, b
+    assert b["rollback_executed"] is True, b
+    assert b["lock_retained"] is False, b
+    assert b["lock_outcome"] == "acquired_released", b
+    assert b["archive_digest"] is None, "una transacción revertida no archiva backup"
+    assert b["fail_closed_reason"] == "", b
+
+    # --- Evidencia FÍSICA: ni una escritura de SD en la reconciliación ---
+    # No había nada que restaurar porque el nodo nunca salió de PRE. Un
+    # ``rolled_back`` con escrituras sería otro escenario (A de §5) y exigiría
+    # su propio contrato; aquí cero escrituras es lo que la sonda verificó.
+    eventos_b = _eventos(rig)
+    assert not any(e.startswith("sdsi:") for e in eventos_b), (
+        f"la reconciliación escribió una SD sin haber mutagenizado nada: {eventos_b}"
+    )
+    assert not [e for e in eventos_b if "restore" in e.lower()], eventos_b
+
+    # --- Evidencia DURABLE: el asiento terminal existe en el journal ------
+    from sky_claw.local.runtime_vault.protection_journal import ProtectionTransactionState
+    from sky_claw.local.runtime_vault.protection_journal_store import (
+        ProtectionJournalClassification,
+        classify_protection_journal,
+    )
+
+    operation_id = (rig / "operation-id.txt").read_text(encoding="utf-8").strip()
+    clasificacion = classify_protection_journal(
+        operation_id,
+        programdata_resolver=lambda: rig / "programdata",
+    )
+    assert clasificacion.classification is ProtectionJournalClassification.VALID, clasificacion.detail
+    assert clasificacion.journal is not None
+    assert clasificacion.journal.transaction_state is ProtectionTransactionState.ROLLED_BACK, (
+        "el journal durable debe quedar en ROLLED_BACK: el asiento terminal es la "
+        "evidencia que distingue un desenlace real de un DTO bien formado"
+    )
+
+
+def test_e02_deja_el_golden_readquirible(rig: pathlib.Path) -> None:
+    """E02 (cont.): tras el desenlace settled, una operación nueva toma el Golden.
+
+    Si S4-C hubiera devuelto ``retain`` en vez de liberar, esta adquisición
+    real daría ``GoldenLockBusyError`` — que es exactamente la regresión que hay
+    que cazar. Es el mismo contrato que E16 ya congeló, aplicado al camino de
+    rollback para que las dos mitades queden ancladas juntas.
+
+    La identidad sale del PLAN DURABLE y no del binding: en este escenario el
+    apply alcanzó a promotion, así que ``authorized_plan.json`` es la autoridad
+    (E16 usa el binding porque en la ventana pre-plan el plan todavía no existe;
+    usar la fuente equivocada ahí sería el mismo error en espejo).
+    """
+    assert _correr(rig, "apply_then_finalize", crash_en="mid_apply")["returncode"] == 43
+    assert _correr(rig, "resume")["returncode"] == 0
+    b = _leer(rig, "s4e-result-b.json")
+    assert b["lock_retained"] is False, b
+
+    from sky_claw.local.runtime_vault.authorized_plan_store import (
+        load_durable_authorized_plan,
+    )
+    from sky_claw.local.runtime_vault.golden_mutation_lock import (
+        acquire_golden_mutation_lock,
+        derive_golden_lock_path,
+    )
+
+    operation_id = (rig / "operation-id.txt").read_text(encoding="utf-8").strip()
+    durable = load_durable_authorized_plan(operation_id, programdata_resolver=lambda: rig / "programdata")
+    assert durable is not None, "el plan durable es la autoridad de identidad en este escenario"
+
+    pathlib.Path(
+        str(
+            derive_golden_lock_path(
+                durable.volume_serial_number,
+                durable.root_file_id,
+                programdata_resolver=lambda: rig / "programdata",
+            )
+        )
+    ).parent.mkdir(parents=True, exist_ok=True)
+
+    nuevo_lock = acquire_golden_mutation_lock(
+        durable.volume_serial_number,
+        durable.root_file_id,
+        operation_id,
+        programdata_resolver=lambda: rig / "programdata",
+    )
+    try:
+        assert not nuevo_lock.closed, "un Golden revertido tiene que poder volver a adquirirse"
+    finally:
+        nuevo_lock.release()
 
 
 def test_e03_crash_todos_mutados_pre_finalizacion_reenruta(rig: pathlib.Path) -> None:
