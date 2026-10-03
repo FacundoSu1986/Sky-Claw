@@ -314,15 +314,142 @@ def test_el_arranque_no_registra_recovery_como_reconciliador_de_rollback() -> No
     ritual, lock ni base durable con DynDOLOD. Este test documenta que los dos
     mecanismos siguen separados, que es lo que permite que uno falle sin
     arrastrar al otro.
+
+    P4 — este ancla era FALSO-VERDE. Buscaba ``"reconciliar_arranque_pendiente("``
+    con ``str.index``, pero ese método ya no existe en el código productivo y la
+    única coincidencia era la línea 2061 de ``app_context.py``: un comentario
+    histórico que dice "antes este bloque llamaba a ...". El ancla comparaba
+    posiciones de TEXTO, así que un comentario satisfacía la evidencia de
+    wiring y la comparación de orden no probaba nada sobre el orden real.
+
+    Ahora la evidencia son nodos ``Call``: se exige que exista una llamada
+    productiva al diagnóstico read-only, que venga después de la de U-08, y que
+    el mutante no pueda volver ni como llamada ni por texto.
+    """
+    pos_u08 = _call_sites_en_app_context("reconcile_orphan_rollback_backups")
+    pos_s4e = _call_sites_en_app_context("diagnosticar_arranque")
+
+    assert pos_u08, (
+        "AppContext ya no llama a reconcile_orphan_rollback_backups: el barrido de U-08 "
+        "desapareció y este ancla perdió su segundo término"
+    )
+    assert pos_s4e, (
+        "el arranque de S4-E no llama a diagnosticar_arranque: el cableado se "
+        "deshizo, y sin él el barrido queda inalcanzable (la clase de fallo "
+        "#240/#252/#362)"
+    )
+    assert min(pos_u08) < min(pos_s4e), (
+        f"el barrido de S4-E se movió antes del de U-08: {pos_s4e} vs {pos_u08}. "
+        "Los dos son independientes y el orden del existente no es negociable"
+    )
+
+    # La mitad que el ancla viejo NO tenía: el mutante no puede volver.
+    assert _call_sites_en_app_context("reconciliar_arranque_pendiente") == [], (
+        "volvió una llamada a reconciliar_arranque_pendiente en el arranque: eso ejecuta "
+        "S4-C/S4-D desde un thread normal, que no es la frontera privilegiada"
+    )
+
+
+def _censo_de_llamadas_productivas(nombres: frozenset[str]) -> dict[str, list[str]]:
+    """Censo de llamadas REALES a *nombres* en todo ``sky_claw/``.
+
+    Recorre cada módulo y sólo cuenta nodos ``ast.Call`` cuyo ``func`` resuelva
+    a uno de los nombres, por acceso de atributo (``x.resume_golden_protection()``)
+    o por nombre desnudo (``resume_golden_protection()``). Todo lo demás queda
+    fuera por construcción: definiciones (``FunctionDef``/``AsyncFunctionDef``),
+    exports en ``__all__``, imports, cadenas, comentarios y docstrings no son
+    nodos ``Call`` y no pueden sumar nada.
+
+    LIMITACIONES DOCUMENTADAS del análisis por AST —las que un censo por texto no
+    tiene y conviene conocer:
+
+    * ``import *`` no se resuelve: si un módulo hace ``from x import *`` y llama
+      al nombre sin calificar, el censo lo ve como ``ast.Name`` y lo cuenta sólo
+      si el nombre calza literalmente. El repo no usa ``import *`` en
+      ``sky_claw/`` y el ancla de estilo lo prohíbe.
+    * Un alias rebinding (``f = resume_golden_protection``) seguido de ``f()`` no
+      se resuelve: el ``func`` es un ``ast.Name`` con otro identificador. Detectar
+      eso requiere análisis de flujo de datos, que no es lo que este ancla
+      pretende.
+    * ``getattr(mod, "resume_golden_protection")(...)`` es invisible para el censo.
+    * Un módulo que no parsea NO se omite en silencio: el censo falla, para que
+      una omisión sea visible en vez de disfrazarse de "cero call-sites".
+
+    A la luz de estas cuatro limitaciones la propiedad que el ancla sostiene es
+    "ninguna llamada PRODUCTIVA con nombre propio", que es exactamente el
+    contrato de P4. No pretende ser un verificador de alcanzabilidad.
+    """
+    # ``_PAQUETE`` es <repo>/sky_claw/local/runtime_vault: parents[2] es <repo>.
+    raiz = _PAQUETE.parents[2]
+    censo: dict[str, list[str]] = {nombre: [] for nombre in sorted(nombres)}
+    for archivo in sorted((raiz / "sky_claw").rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            pytest.fail(
+                f"módulo productivo no parseable, el censo lo omitiría en silencio: {archivo.relative_to(raiz)}: {exc}"
+            )
+        relativo = str(archivo.relative_to(raiz)).replace("\\", "/")
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            func = nodo.func
+            nombre = func.attr if isinstance(func, ast.Attribute) else (func.id if isinstance(func, ast.Name) else "")
+            if nombre in censo:
+                censo[nombre].append(f"{relativo}:{nodo.lineno}")
+    return censo
+
+
+def test_ninguna_ruta_productiva_alcanza_la_reconciliacion_mutante() -> None:
+    """P4 — la entrada MUTANTE es inalcanzable desde producción, y se enumera.
+
+    El contrato de P4 es ``PRODUCTIVE_RESUME_CALLS = ∅`` mientras
+    ``PACKAGED_HELPER_PROVISIONING_STATUS == "UNRESOLVED"``: sin helper
+    provisionado no hay frontera privilegiada real, así que nada en el producto
+    puede despachar la reconciliación que muta el Golden y sus SDs.
+
+    Se enumera por AST sobre ``sky_claw/`` entero, no sobre un archivo. El
+    ancla de cableado congela UN call-site (``AppContext``); ésa no ve una
+    llamada que aparezca en el cableado de tool, en un recovery, o en cualquier
+    superficie futura, que es exactamente la clase de fallo que P4 cerró. La
+    diferencia entre atajar la clase y mostrar una instancia está en el recorrido
+    del censo, no en la forma de la aserción.
+
+    Cuando el helper se provisioned y exista la frontera real, este ancla hay
+    que reescribirlo para exigir la sesión privilegiada en vez de su ausencia.
+    """
+    from sky_claw.local.runtime_vault.privileged_boundary import (
+        PACKAGED_HELPER_PROVISIONING_STATUS,
+    )
+
+    entradas_mutantes = frozenset({"resume_golden_protection", "reconciliar_arranque_pendiente"})
+    censo = _censo_de_llamadas_productivas(entradas_mutantes)
+
+    productive = {nombre: sitios for nombre, sitios in censo.items() if sitios}
+    assert not productive, (
+        "la reconciliación mutante volvió a ser alcanzable desde producción con la "
+        f"frontera privilegiada todavía {PACKAGED_HELPER_PROVISIONING_STATUS}: {productive}"
+    )
+
+
+def _call_sites_en_app_context(nombre: str) -> list[int]:
+    """Líneas con llamadas REALES a *nombre* en ``app_context.py``.
+
+    AST, y sólo nodos ``Call``: una mención en un comentario, un docstring o una
+    cadena no cuenta como wiring. Es la diferencia entre "el arranque lo
+    invoca" y "el arranque lo nombró alguna vez".
     """
     import sky_claw.app_context as app_ctx
 
-    fuente = pathlib.Path(app_ctx.__file__).read_text(encoding="utf-8")
-    pos_u08 = fuente.index("reconcile_orphan_rollback_backups(")
-    pos_s4e = fuente.index("reconciliar_arranque_pendiente(")
-    assert pos_u08 < pos_s4e, (
-        "el barrido de S4-E se movió antes del de U-08: los dos son independientes y el "
-        "orden del existente no es negociable"
+    arbol = ast.parse(pathlib.Path(app_ctx.__file__).read_text(encoding="utf-8"))
+    return sorted(
+        nodo.lineno
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        and (
+            (isinstance(nodo.func, ast.Attribute) and nodo.func.attr == nombre)
+            or (isinstance(nodo.func, ast.Name) and nodo.func.id == nombre)
+        )
     )
 
 
