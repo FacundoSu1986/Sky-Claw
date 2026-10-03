@@ -215,13 +215,24 @@ def test_s4e_no_abre_la_frontera_privilegiada_por_importacion() -> None:
 
 
 def test_el_coordinator_esta_cableado_en_el_arranque_real() -> None:
-    """El barrido de arranque EXISTE y está dentro del lifecycle real.
+    """GP2-S4E / P4 — el arranque llama al DIAGNOSTICO, y NO al mutante.
 
     Se afirma sobre el AST de ``app_context.py``, no sobre un grep: un import
-    huérfano o una mención en un comentario NO cuentan como cableado. Es el
+    huerfano o una mencion en un comentario NO cuentan como cableado. Es el
     mismo mecanismo que ``test_los_reconciliadores_estan_invocados_en_el_arranque``
     (U-03/U-08) aplicado a S4-E, y cierra la clase de fallo que la ausencia de
     wiring sea un no-op silencioso con la suite verde.
+
+    El anchor afirmaba antes `reconciliar_arranque_pendiente`, que ejecutaba
+    S4-C y S4-D — restauracion de SDs, gates, archivado — desde
+    `asyncio.to_thread` en el proceso normal. Un thread no cambia el token de
+    seguridad, asi que ese cableado afirmaba una garantia de privilegios que no
+    existe, y `PACKAGED_HELPER_PROVISIONING_STATUS = UNRESOLVED` impide
+    levantarla de verdad desde ahi.
+
+    Ahora el arranque llama `diagnosticar_arranque` (read-only) y NO llama al
+    mutante. Las DOS mitades quedan congeladas: si alguien reconecta el metodo
+    mutante, este test se pone rojo.
     """
     import sky_claw.app_context as app_ctx
 
@@ -231,17 +242,69 @@ def test_el_coordinator_esta_cableado_en_el_arranque_real() -> None:
         for nodo in ast.walk(arbol)
         if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute)
     }
-    assert "reconciliar_arranque_pendiente" in llamadas, (
-        "S4-E no está cableado en el arranque: existe un reconciliador que nadie invoca "
+
+    assert "diagnosticar_arranque" in llamadas, (
+        "S4-E no esta cableado en el arranque: existe un reconciliador que nadie invoca "
         "(la clase de fallo #240/#252/#362)."
+    )
+    assert "reconciliar_arranque_pendiente" not in llamadas, (
+        "el arranque volvio a ejecutar recovery/finalizacion en el proceso normal: "
+        "asyncio.to_thread no cambia el token de seguridad, y el helper empaquetado sigue "
+        "UNRESOLVED. La reconciliacion mutante pertenece a la frontera privilegiada."
     )
     # Y el coordinator se publica en el AppContext, que es el registro real
     # de capacidades del producto.
-    assert hasattr(app_ctx.AppContext, "__init__")
-    cuerpo_init = ast.dump(ast.parse(pathlib.Path(app_ctx.__file__).read_text(encoding="utf-8")))
+    cuerpo_init = ast.dump(arbol)
     assert "runtime_vault_protection" in cuerpo_init, (
         "AppContext no publica runtime_vault_protection: el coordinator queda inalcanzable desde el producto."
     )
+
+
+def test_el_arranque_publica_el_diagnostico_y_no_lo_descarta() -> None:
+    """P4 — los outcomes del arranque quedan OBSERVABLES, no se tiran.
+
+    Un barrido que calcula y descarta el resultado no le sirve a nada: el
+    operador no tiene forma de enterarse de que hay una operacion pendiente.
+    Este anchor congela que el estado se guarda en el AppContext y que el
+    warning estructurado se emite.
+    """
+    import sky_claw.app_context as app_ctx
+
+    fuente = pathlib.Path(app_ctx.__file__).read_text(encoding="utf-8")
+
+    assert "runtime_vault_startup_attention" in fuente, (
+        "el diagnostico de arranque no se guarda en ningun estado consultable"
+    )
+    assert "STARTUP_CONTINUES_WITH_RUNTIME_VAULT_INTERVENTION_REQUIRED" in fuente, (
+        "un arranque que continua sin dejar rastro de la intervencion pendiente es un "
+        "best-effort que se confunde con exito silencioso"
+    )
+
+
+def test_el_coordinator_no_puede_mutar_desde_un_thread_normal() -> None:
+    """P4 — `diagnosticar_arranque` es sincrono y no muta.
+
+    Es read-only por construccion: no es `async`, asi que no hay
+    `asyncio.to_thread` que lo convierta en una mutacion disfrazada de
+    consulta. Y devuelve `StartupDiagnosis`, que no lleva ningun handle vivo ni
+    ninguna disposicion que afirme exito.
+    """
+    import inspect
+
+    metodo = svc.RuntimeVaultProtectionCoordinator.diagnosticar_arranque
+    assert not inspect.iscoroutinefunction(metodo), (
+        "diagnosticar_arranque no debe ser async: un await invite al patron to_thread que este slice acaba de eliminar"
+    )
+    campos = set(svc.StartupDiagnosis.__dataclass_fields__)
+    assert campos == {
+        "operation_id",
+        "route",
+        "journal_state",
+        "binding_evidence",
+        "requiere_privilegios",
+        "motivo",
+    }
+    assert not any("lock" in campo or "handle" in campo for campo in campos)
 
 
 def test_el_arranque_no_registra_recovery_como_reconciliador_de_rollback() -> None:
@@ -263,28 +326,24 @@ def test_el_arranque_no_registra_recovery_como_reconciliador_de_rollback() -> No
     )
 
 
-def test_el_resolver_de_programdata_llega_al_barrido_y_al_resume() -> None:
-    """El resolver del namespace se propaga a AMBAS mitades del barrido.
+def test_el_resolver_de_programdata_llega_al_discovery_y_al_diagnostico() -> None:
+    """El resolver del namespace tiene que llegar a AMBAS mitades del barrido.
 
     Ancla de una clase de fallo real, ya encontrada y corregida durante este
-    slice: `reconciliar_arranque_pendiente` pasaba el resolver al
-    `discover_pending_operations` pero no al `resume_golden_protection`.
-    El barrido enumeraba el namespace del RIG y el resume leia
-    `%ProgramData%` PRODUCTIVO. En producción no se manifiesta (ambos
-    default al mismo lugar), que es exactamente por lo que las dos mitades
-    tienen que estar ancladas juntas.
+    slice: el barrido pasaba el resolver a `discover_pending_operations` pero no
+    a la segunda mitad. El barrido enumeraba el namespace del RIG y la segunda
+    mitad leia `%ProgramData%` PRODUCTIVO. En produccion no se manifiesta
+    —ambos default al mismo lugar—, que es exactamente por lo que las dos
+    mitades tienen que estar ancladas juntas.
 
-    Es el mismo mecanismo que el repo ya exige para los pares lock/journal:
-    no alcanza con cubrir la mitad que se vio.
+    Es el mismo mecanismo que el repo ya exige para los pares lock/journal: no
+    alcanza con cubrir la mitad que se vio.
+
+    P4 consolido las dos superficies de arranque en UNA
+    (`diagnosticar_arranque`), asi que el par congelado ahora es
+    discovery -> diagnostico.
     """
-    import asyncio  # noqa: PLC0415
-
     vistos: list[object] = []
-
-    class _Clasif:
-        is_valid = True
-        detail = ""
-        journal = type("_J", (), {"transaction_state": ProtectionTransactionState.COMMITTED})()
 
     def _fake_discover(*, programdata_resolver=None, **kwargs):
         vistos.append(("discover", programdata_resolver))
@@ -297,32 +356,20 @@ def test_el_resolver_de_programdata_llega_al_barrido_y_al_resume() -> None:
             ),
         )
 
-    def _fake_resume(*, operation_id, frontend=svc._DEFAULT_FRONTEND):
-        vistos.append(("resume", frontend.programdata_resolver))
-        return svc.ProtectionOutcome(
-            operation_id=operation_id,
-            disposition=svc.ProtectionDisposition.ALREADY_COMMITTED,
-            stage=svc.ProtectionStage.FINALIZATION,
-            source_orchestrator="fake",
-        )
+    def resolver() -> str:  # noqa: ANN202 — el seam espera un callable sin argumentos
+        return "/rig/programdata"
 
-    resolver = lambda: "/rig/programdata"  # noqa: E731
     monkey = pytest.MonkeyPatch()
     monkey.setattr(svc, "discover_pending_operations", _fake_discover)
-    monkey.setattr(svc, "resume_golden_protection", _fake_resume)
     try:
-        asyncio.run(
-            svc.RuntimeVaultProtectionCoordinator().reconciliar_arranque_pendiente(programdata_resolver=resolver)
-        )
+        diagnostico = svc.RuntimeVaultProtectionCoordinator().diagnosticar_arranque(programdata_resolver=resolver)
     finally:
         monkey.undo()
 
-    assert vistos == [("discover", resolver), ("resume", resolver)], vistos
-
-
-# ============================================================================
-# Routing exhaustivo (§23, M-E11)
-# ============================================================================
+    assert vistos == [("discover", resolver)], vistos
+    # Y el diagnostico se produjo con ESA evidencia: el resolver no se perdio.
+    assert len(diagnostico) == 1
+    assert diagnostico[0].operation_id == _OPERATION_ID
 
 
 def test_todo_estado_del_fsm_tiene_una_ruta() -> None:

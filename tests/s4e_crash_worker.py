@@ -662,9 +662,14 @@ def _fase_resume(rig_root: pathlib.Path) -> None:
 
 
 def _fase_discovery(rig_root: pathlib.Path) -> None:
-    """El barrido de arranque enumera y reconcilia lo pendiente."""
-    import asyncio  # noqa: PLC0415
+    """El arranque clasifica read-only y NO muta.
 
+    GP2-S4E / P4: con ``PACKAGED_HELPER_PROVISIONING_STATUS = UNRESOLVED`` no
+    hay forma honesta de levantar la frontera privilegiada desde el proceso
+    normal, asi que el arranque clasifica y reporta. Ejecutar S4-C/S4-D en un
+    ``asyncio.to_thread`` seria la misma cosa con otro nombre: un thread no
+    cambia el token de seguridad.
+    """
     from sky_claw.local.runtime_vault.protection_service import (
         RuntimeVaultProtectionCoordinator,
         discover_pending_operations,
@@ -685,20 +690,23 @@ def _fase_discovery(rig_root: pathlib.Path) -> None:
             for d in pendientes
         ],
     )
+
     coordinador = RuntimeVaultProtectionCoordinator(reconciliar_al_arrancar=True)
-    resultados = asyncio.run(coordinador.reconciliar_arranque_pendiente(programdata_resolver=resolver))
+    diagnostico = coordinador.diagnosticar_arranque(programdata_resolver=resolver)
     _escribir_resultado(
         rig_root,
         "s4e-boot.json",
         [
             {
-                "operation_id": r.operation_id,
-                "disposition": r.disposition.value,
-                "route": r.route.value if r.route else None,
-                "operator": r.operator_intervention_required,
-                "fail_closed_reason": r.fail_closed_reason,
+                "operation_id": d.operation_id,
+                "route": d.route.value,
+                "journal_state": d.journal_state.value if d.journal_state else None,
+                "binding": d.binding_evidence.value,
+                "requiere_privilegios": d.requiere_privilegios,
+                "bloquea_operador": d.bloquea_operador,
+                "motivo": d.motivo,
             }
-            for r in resultados
+            for d in diagnostico
         ],
     )
 

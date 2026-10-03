@@ -396,24 +396,62 @@ def test_discovery_solo_acepta_entradas_del_namespace(rig: pathlib.Path) -> None
     assert pendientes[0].journal_state is not None
 
 
-def test_el_arranque_reconcilia_y_es_idempotente(rig: pathlib.Path) -> None:
-    """El coordinator de arranque reanuda lo pendiente y repetirlo no cambia nada.
+def test_el_arranque_clasifica_sin_mutar_y_es_idempotente(rig: pathlib.Path) -> None:
+    """GP2-S4E / P4 - el arranque clasifica read-only y NO reconcilia.
 
-    Es el punto del lifecycle (AppContext._start_full_inner) ejecutado como
-    proceso real: enumera, clasifica por evidencia durable y reanuda.
+    La premisa de este test cambio a proposito. Antes decia "el arranque
+    reconcilia"; eso era el blocker: ejecutaba S4-C y S4-D desde
+    ``asyncio.to_thread`` en el proceso normal, y un thread no cambia el token
+    de seguridad. Con ``PACKAGED_HELPER_PROVISIONING_STATUS = UNRESOLVED`` no
+    hay forma honesta de levantar la frontera privilegiada desde ahi, asi que
+    el arranque clasifica y reporta.
+
+    Lo que se verifica aca:
+
+    - el barrido ENCUENTRA la operacion pendiente;
+    - clasifica su ruta y su binding sin escribir nada;
+    - marca que el cierre requiere privilegios, porque hay un COMMITTED que
+      S4-D tiene que normalizar y S4-D es mutante;
+    - no ejecuto gates ni SetSecurityInfo;
+    - repetirlo da el MISMO resultado.
     """
     assert _correr(rig, "apply_then_finalize")["returncode"] == 0
+
+    # Los breadcrumbs son globales a la corrida del worker, asi que el happy
+    # path de A YA dejo gates de S4-D legítimos. Lo que hay que afirmar es que
+    # el sweep NO AGREGA ninguno: se toma una foto antes y se compara.
+    eventos_antes = _eventos(rig)
+    gates_antes = sum(1 for e in eventos_antes if e.startswith("gate:"))
+    sdsi_antes = sum(1 for e in eventos_antes if e.startswith("pre-sdsi:"))
+
     for _ in range(2):
         r = _correr(rig, "discovery")
         assert r["returncode"] == 0, r["stderr"]
-        boot = _leer(rig, "s4e-boot.json")
-        assert boot and boot[0]["disposition"] == "already_committed", boot
-        assert boot[0]["operator"] is False
 
+        descubrimiento = _leer(rig, "s4e-discovery.json")
+        assert len(descubrimiento) == 1, descubrimiento
+        assert descubrimiento[0]["journal_state"] == "committed", descubrimiento
 
-# --------------------------------------------------------------------------
-# E11 — lock ajeno
-# --------------------------------------------------------------------------
+        arranque = _leer(rig, "s4e-boot.json")
+        assert len(arranque) == 1, arranque
+        assert arranque[0]["route"] == "s4d_normalize", arranque
+        # El cierre de un COMMITTED huerfano es mutante: necesita la frontera.
+        assert arranque[0]["requiere_privilegios"] is True, arranque
+        assert arranque[0]["bloquea_operador"] is True, arranque
+        assert "UNRESOLVED" in arranque[0]["motivo"], arranque
+
+    # Y el arranque NO toco nada: los conteos de gates y de SetSecurityInfo no
+    # cambiaron respecto de antes del sweep.
+    eventos_despues = _eventos(rig)
+    gates_despues = sum(1 for e in eventos_despues if e.startswith("gate:"))
+    sdsi_despues = sum(1 for e in eventos_despues if e.startswith("pre-sdsi:"))
+
+    assert gates_despues == gates_antes, (
+        f"el arranque ejecuto {gates_despues - gates_antes} gates de S4-D: eso es "
+        "reconciliacion mutante desde un thread normal"
+    )
+    assert sdsi_despues == sdsi_antes, f"el arranque re-aplico {sdsi_despues - sdsi_antes} nodos con SetSecurityInfo"
+    assert sdsi_despues == 3, "los 3 nodos del RIG deben llevar SetSecurityInfo, y solo del apply"
 
 
 def test_e11_lock_externo_no_se_toca(rig: pathlib.Path) -> None:

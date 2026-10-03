@@ -63,7 +63,7 @@ import logging
 import os
 import pathlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
@@ -1353,6 +1353,46 @@ def discover_pending_operations(
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class StartupDiagnosis:
+    """Diagnóstico READ-ONLY de una operación pendiente al arranque.
+
+    No muta nada, no abre frontera y no ejecuta gates. Clasifica la evidencia
+    durable y dice **qué haría falta** para cerrarla.
+
+    Es la respuesta honesta a un helper no provisionado: el arranque normal
+    SÍ puede leer y clasificar (no necesita `WRITE_DAC` para eso), pero NO
+    puede deshacer un apply ni cerrar un `COMMITTED` sin la frontera
+    privilegiada. Inventar esa frontera —lanzar `python.exe` elevado, un
+    `runas` improvisado, o correr la mutation en un `asyncio.to_thread` que no
+    cambia el token de seguridad— sería afirmar una garantía que no existe.
+    """
+
+    operation_id: str
+    route: RestartRoute
+    journal_state: ProtectionTransactionState | None
+    binding_evidence: OperationLockBindingEvidence
+    #: ``True`` cuando cerrarla requiere la frontera privilegiada.
+    requiere_privilegios: bool
+    #: Por qué, en prosa: esto es lo que el operador va a leer.
+    motivo: str
+
+    @property
+    def bloquea_operador(self) -> bool:
+        """Si el arranque debe dejar constancia visible de esta operación."""
+        return self.requiere_privilegios
+
+
+#: Rutas que NO necesitan la frontera privilegiada para cerrarse.
+#:
+#: `PRE_PLAN_LOCK_RECOVERED` es el ejemplo importante: S4-C toma el lock
+#: huérfano y lo NORMALIZA sin tocar una sola ACL. El arranque puede resolverlo
+#: sin privilegios — SIEMPRE que el lock esté tomado por un proceso muerto,
+#: que es exactamente la condición de la ventana pre-plan.
+#: Cualquier otra cosa muta el Golden o sus SDs.
+_RUTAS_SIN_PRIVILEGIOS: Final[frozenset[RestartRoute]] = frozenset({RestartRoute.TERMINAL})
+
+
 class RuntimeVaultProtectionCoordinator:
     """Handle del servicio para el lifecycle de arranque del producto.
 
@@ -1378,79 +1418,52 @@ class RuntimeVaultProtectionCoordinator:
         """Si el arranque debe barrer operaciones pendientes. Sólo lectura."""
         return self._reconciliar_al_arrancar
 
-    async def reconciliar_arranque_pendiente(
+    def diagnosticar_arranque(
         self,
         *,
         programdata_resolver: Callable[[], object] | None = None,
-        frontend: _Frontend = _DEFAULT_FRONTEND,
-    ) -> tuple[ProtectionOutcome, ...]:
-        """Reanuda todas las operaciones Golden pendientes que la evidencia durable muestra.
+    ) -> tuple[StartupDiagnosis, ...]:
+        """Clasifica read-only las operaciones pendientes. NO muta nada.
 
-        Read-only sobre el namespace y Best-effort por operación: una
-        operación que falla NO impide reconciliar las demás, y su resultado
-        queda en el ``tuple`` devuelto con su ``fail_closed_reason``.
+        Es el único trabajo de arranque que hace falta sin frontera
+        privilegiada: leer la evidencia durable y decidir qué falta. Se puede
+        hacer en el proceso normal porque no escribe ni pide `WRITE_DAC`.
 
-        ``frontend`` existe para que el camino de arranque sea testeable con
-        los mismos seams que el resto del paquete (es el mismo patrón
-        ``Protocol`` que usa ``establish_privileged_authorization`` con su
-        ``lock_acquirer``). Producción lo deja vacío y por lo tanto corre con
-        las primitivas productivas: sin el bootstrap del namespace, un backup
-        que no se puede publicar con SD canónico devuelve ``INDETERMINATE``,
-        que es la respuesta correcta, no un bug.
+        Lo que NO hace —y es deliberado— es ejecutar el recovery. Con
+        ``PACKAGED_HELPER_PROVISIONING_STATUS == "UNRESOLVED"`` no existe una
+        forma honesta de levantar la frontera privilegiada desde acá, así que
+        el arranque clasifica y reporta en vez de fingir que reconcilió.
 
-        La autoridad es exclusivamente la evidencia durable — el journal de
-        cada operación, clasificado desde disco. Una entrada inesperada en el
-        namespace nunca se convierte en permiso: :func:`discover_pending_operations`
-        la descarta, y :func:`resume_golden_protection` la vuelve a validar.
+        Importa distinguir esto de "no hacer nada": una operación que SÍ puede
+        cerrarse sin privilegios (el pre-plan) queda marcada como tal, y el
+        operador puede ejecutarla; una que NO puede queda marcada
+        ``requiere_privilegios=True`` y el arranque lo publica.
         """
-        import asyncio  # noqa: PLC0415 — import diferido: el paquete no exige event loop al importarse
-
         pendientes = discover_pending_operations(programdata_resolver=programdata_resolver)
-        if not pendientes:
-            return ()
-
-        # El resolver de ProgramData tiene que viajar al resume TAMBIÉN. Si sólo
-        # lo pasáramos al discovery, el barrido enumeraría un namespace y el
-        # resume leería otro: el más grave, `%ProgramData%` PRODUCTIVO. El
-        # resolver nunca se toma del default de `resume_golden_protection`
-        # cuando el caller ya loexpreso.
-        efectivo = frontend
-        if frontend.programdata_resolver is None and programdata_resolver is not None:
-            efectivo = replace(frontend, programdata_resolver=programdata_resolver)
-
-        resultados: list[ProtectionOutcome] = []
+        diagnostico: list[StartupDiagnosis] = []
         for entrada in pendientes:
-            try:
-                resultados.append(
-                    await asyncio.to_thread(
-                        resume_golden_protection,
-                        operation_id=entrada.operation_id,
-                        frontend=efectivo,
-                    )
+            ruta = entrada.route
+            requiere = ruta not in _RUTAS_SIN_PRIVILEGIOS
+            motivo = (
+                "no requiere la frontera privilegiada: S4-C normaliza el lock sin tocar ACLs"
+                if not requiere
+                else (
+                    "cierre mutante (rollback de SDs, gates o archivado): requiere la frontera "
+                    f"privilegiada, y PACKAGED_HELPER_PROVISIONING_STATUS=UNRESOLVED "
+                    f"(ruta '{ruta.value}')"
                 )
-            except Exception as exc:  # noqa: BLE001 — una operación rota no impide las demás
-                logger.exception(
-                    "Reconciliación de operación Golden pendiente falló; se continúa con las demás",
-                    extra={"operation_id": entrada.operation_id},
+            )
+            diagnostico.append(
+                StartupDiagnosis(
+                    operation_id=entrada.operation_id,
+                    route=ruta,
+                    journal_state=entrada.journal_state,
+                    binding_evidence=entrada.binding_evidence,
+                    requiere_privilegios=requiere,
+                    motivo=motivo,
                 )
-                resultados.append(
-                    _resultado(
-                        operation_id=entrada.operation_id,
-                        disposition=ProtectionDisposition.INDETERMINATE,
-                        stage=ProtectionStage.ROUTING,
-                        source_orchestrator="protection_service.RuntimeVaultProtectionCoordinator",
-                        detail="la reconciliación de esta operación falló",
-                        fail_closed_reason=f"{type(exc).__name__}: {exc}",
-                        lock_retained=True,
-                        operator_intervention_required=True,
-                    )
-                )
-        return tuple(resultados)
-
-
-# --------------------------------------------------------------------------
-# Utilidades internas
-# --------------------------------------------------------------------------
+            )
+        return tuple(diagnostico)
 
 
 def _resultado(
@@ -1506,6 +1519,7 @@ __all__ = [
     "RESTART_ROUTES",
     "RestartRoute",
     "RuntimeVaultProtectionCoordinator",
+    "StartupDiagnosis",
     "ROLLED_BACK_DISPOSITIONS",
     "SETTLED_DISPOSITIONS",
     "TERMINAL_DISPOSITIONS",

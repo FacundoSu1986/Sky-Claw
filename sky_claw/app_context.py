@@ -67,6 +67,7 @@ from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
 from sky_claw.local.runtime_vault.protection_service import (
     RuntimeVaultProtectionCoordinator,
+    StartupDiagnosis,
 )
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
@@ -404,6 +405,11 @@ class AppContext:
         # NO expone tool al LLM ni al tool_dispatcher: el cableado de tool del
         # Runtime Vault es trabajo posterior, con su propio security review.
         self.runtime_vault_protection: RuntimeVaultProtectionCoordinator | None = None
+        # GP2-S4E / P4: diagnostico de arranque del Golden. NO se descarta.
+        # Un barrido que calcula y tira el resultado es un barrido que no
+        # existe para el operador: `runtime_vault_startup_attention` es la
+        # superficie que consultan el resto del producto y los tests.
+        self.runtime_vault_startup_attention: tuple[StartupDiagnosis, ...] = ()
 
         self.hitl: HITLGuard | None = None
         # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
@@ -797,6 +803,7 @@ class AppContext:
         # Sanearlo aquí evita que un consumidorpubálise un coordinator de un
         # arranque que se revirtió (mismo motivo que los dos atributos anteriores).
         self.runtime_vault_protection = None
+        self.runtime_vault_startup_attention = ()
 
     @staticmethod
     def _sonda_de_transaccion_pendiente(journal):
@@ -2048,13 +2055,52 @@ class AppContext:
             self.runtime_vault_protection = RuntimeVaultProtectionCoordinator(
                 reconciliar_al_arrancar=True,
             )
+            #
+            # GP2-S4E / P4 — el arranque SÍ clasifica, pero NO reconcilia.
+            #
+            # Antes este bloque llamaba a `reconciliar_arranque_pendiente()`, que
+            # ejecuta S4-C y S4-D — restauracion de SDs, gates, archivado —
+            # desde `asyncio.to_thread` en el proceso normal. Un thread no
+            # cambia el token de seguridad: eso no es la frontera privilegiada,
+            # es la misma con otro nombre. Ejecutarlo asi era afirmar una garantia
+            # que no existe.
+            #
+            # Y no se puede levantar la frontera de verdad: `privileged_boundary`
+            # declara `PACKAGED_HELPER_PROVISIONING_STATUS = "UNRESOLVED"`. La
+            # respuesta correcta es fail-closed explicito: clasificar en
+            # read-only, NO mutar, y publicar que hace falta operador.
+            #
+            # Los outcomes NO se descartan: quedan en
+            # `runtime_vault_startup_attention` y cada uno que requiere
+            # privilegios genera un warning estructurado. Un barrido que calcula
+            # y tira el resultado no le sirve a nadie.
+            #
+            # Esto NO bloquea el arranque — el precedente es U-03/U-08 — pero
+            # deja `STARTUP_CONTINUES_WITH_RUNTIME_VAULT_INTERVENTION_REQUIRED`
+            # observable en el log y en el estado.
             try:
-                await self._await_startup(self.runtime_vault_protection.reconciliar_arranque_pendiente())
+                diagnostico = self.runtime_vault_protection.diagnosticar_arranque()
+                self.runtime_vault_startup_attention = tuple(diagnostico)
             except Exception:
                 logger.warning(
-                    "Reconciliación de operaciones Golden pendientes falló (no bloquea el arranque)",
+                    "Diagnóstico de operaciones Golden pendientes falló (no bloquea el arranque)",
                     exc_info=True,
                 )
+            else:
+                for entrada in self.runtime_vault_startup_attention:
+                    if entrada.bloquea_operador:
+                        logger.warning(
+                            "STARTUP_CONTINUES_WITH_RUNTIME_VAULT_INTERVENTION_REQUIRED: "
+                            "operación Golden pendiente requiere la frontera privilegiada y el "
+                            "helper empaquetado no está provisionado; el arranque NO la muta",
+                            extra={
+                                "operation_id": entrada.operation_id,
+                                "route": entrada.route.value,
+                                "journal_state": (entrada.journal_state.value if entrada.journal_state else None),
+                                "binding": entrada.binding_evidence.value,
+                                "requiere_privilegios": True,
+                            },
+                        )
 
             # P0 de ADR 0011 — propiedad del `external_work_root`.
             #
