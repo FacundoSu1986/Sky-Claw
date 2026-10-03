@@ -584,3 +584,191 @@ freeze-<M5_EXECUTION_FREEZE_SHA>`, y la confirmación de que la desviación de �
 declarada en el informe de resultados. No se arreglan aquí #667 ni #663, no se corrigen los
 `.pth`, no se cambian dependencias, no se restackea contra `main` (el restack es posterior a
 FULL y a la revisión científica) y no se toca la aserción tautológica residual de tests.
+
+---
+
+## 20. FULL (31) — resultado observado y provenance
+
+> Sección añadida **después** de ejecutar FULL, con la matemática congelada en §14/§19.2
+> **sin cambios**. Es un registro de resultado: **no** retunea, **no** reinterpreta la
+> etiqueta, **no** toca código científico. Los SHAs históricos de §19 **no** se actualizan.
+
+### 20.1 Cadena de provenance
+
+```text
+BASE_MAIN_SHA=9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5
+M5_PREREG_FREEZE_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
+M5_EXECUTION_FREEZE_SHA=e116196fc47f83659c7df7ada5ec82f9f993bbcd
+FULL_RUN_SHA=e116196fc47f83659c7df7ada5ec82f9f993bbcd
+```
+
+Artefacto (vive **fuera** del repositorio):
+
+```text
+FULL_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\full-e116196f.json
+FULL_OUTPUT_SHA256=f8503610d14d29b4ecc276108b10cfcfa59673ab64d57274cbf2d8f7fcd4bd46
+FULL_OUTPUT_BYTES=196006
+```
+
+Verificado **leyendo el raw**: `phase=full`; `environment.git_sha` =
+`environment.m5_execution_freeze_sha` = `e116196f…` (= `FULL_RUN_SHA`); `environment.base_main_sha`
+= `9f6fa0c2…`; `environment.m5_prereg_freeze_sha` = `d33f81ca…`;
+`environment.frozen_ack` = `freeze-e116196f…`.
+
+### 20.2 Dataset
+
+```text
+ROWS=31
+CALIBRATION_ROWS=15
+LEGACY_HELDOUT_ROWS=16
+EXCLUSIONS=0
+```
+
+`dataset.split_counts = {"CALIBRATION": 15, "LEGACY_HELDOUT": 16}`; `dataset.exclusions = []`.
+Las 31 filas tienen `lowmid_eligible = high_eligible = 1.0`.
+
+### 20.3 Métricas
+
+| Métrica | FULL (31) | CALIBRATION (15) | LEGACY_HELDOUT (16) |
+|---|---:|---:|---:|
+| SELF LOWMID NRMSE | 0.0503 | 0.0729 | 0.0224 |
+| AUTH LOWMID NRMSE | 0.5543 | 0.6442 | 0.4994 |
+| LOWMID EXCESS | 0.5082 | 0.5123 | 0.4772 |
+| SELF HIGH NRMSE | 0.0778 | 0.0822 | 0.0565 |
+| AUTH HIGH NRMSE | 0.4252 | 0.4317 | 0.3663 |
+| HIGH EXCESS | 0.3350 | 0.3350 | 0.3105 |
+| HIGH_ENRICHMENT | 0.7542 | 1.0279 | 0.6462 |
+
+**Nota de lectura (relación con el contrato del runner).** Las filas `NRMSE` y
+`HIGH_ENRICHMENT` son la **mediana de cohorte** (campos `summary.<split>.*`). Las filas
+**EXCESS** de la tabla son la **mediana por-asset del exceso** `NRMSE_AUTH − NRMSE_SELF`
+(que para FULL coincide con el punto bootstrap). El campo `summary.<split>.excess_*` que
+gobierna C1/C2 se define como **diferencia de medianas** `median(AUTH) − median(SELF)` y
+difiere levemente:
+
+| `summary.*.excess_*` (diferencia de medianas) | FULL | CALIBRATION | LEGACY_HELDOUT |
+|---|---:|---:|---:|
+| LOWMID EXCESS (contrato `evaluate_rules`) | 0.5040 | 0.5713 | 0.4769 |
+| HIGH EXCESS (contrato `evaluate_rules`) | 0.3474 | 0.3494 | 0.3098 |
+
+Se registran ambos porque el primero es la lectura pedida y el segundo es el que efectivamente
+usan `evaluate_rules`/`decide` (ver `frequency_coherence.cohort_medians`).
+
+### 20.4 Bootstrap (FULL, seed `20260925`, n=2000)
+
+```text
+excess_lowmid_nrmse: point=0.5082  CI95=[0.3104, 0.6058]
+excess_high_nrmse:   point=0.3350  CI95=[0.2679, 0.4430]
+high_enrichment:     point=0.7542  CI95=[0.5710, 1.0470]
+```
+
+Threshold preregistrado `T_HIGH_ENRICHMENT = 2.0` (§14). Observación válida: **el CI95 de
+HIGH_ENRICHMENT queda enteramente por debajo de 2.0**.
+
+### 20.5 Reglas y decisión
+
+```text
+C1_lowmid_preserved=false
+C2_high_enriched=false
+high_enrichment_ge_threshold=false
+high_gt_lowmid_excess=false
+legacy_heldout_replication=false
+
+FULL_STATUS=FULL_VALID
+SUMMARY_DECISION=EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED
+```
+
+Lectura directa de las medianas de cohorte: `AUTH_LOWMID` (0.5543) ≫ `T_LOWMID_NRMSE` (0.15) y
+el `LOWMID EXCESS` (0.5040) ≫ `T_LOWMID_EXCESS` (0.10) ⇒ **C1 falso**. El `HIGH EXCESS`
+(0.3474) **no** supera al `LOWMID EXCESS` (0.5040); `HIGH_ENRICHMENT` mediano (0.7542) ≪ 2.0; y
+la réplica direccional en LEGACY_HELDOUT tampoco se cumple ⇒ **C2 falso**. Con C1=F y C2=F la
+tabla de decisión (§14) emite `EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED`. **La etiqueta no se
+reinterpreta con otro nombre.**
+
+### 20.6 Interpretación matemática (acotada al corpus/protocolo EXP-M5)
+
+- El mismatch AUTH **no** está concentrado predominantemente en HIGH.
+- `LOWMID_EXCESS > HIGH_EXCESS`.
+- `HIGH_ENRICHMENT` mediano < 1.
+
+En conjunto, los resultados son más compatibles con un mismatch **broadband** entre normal
+authored y height/displacement authored que con una pérdida principalmente high-frequency
+susceptible de recuperación band-limited.
+
+**No** se afirma universalmente que `normal → height` sea imposible, que el screened Poisson
+nunca sirva, ni que todas las texturas authored estén mal. La inferencia se limita al corpus y
+al protocolo EXP-M5.
+
+### 20.7 Desviación de protocolo (se preserva, no se cierra)
+
+Confirmado contra el raw (`environment.protocol_status` y campos asociados):
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
+La réplica LEGACY_HELDOUT **no** se presenta —ni aquí ni en ninguna comunicación— como *fresh
+blinded confirmation*. Se denomina **legacy heldout evaluation under documented protocol
+deviation** (§3/§18/§19.3). La decisión numérica sigue siendo el output legítimo del algoritmo
+congelado.
+
+### 20.8 Determinismo
+
+```text
+CALIBRATION_ROWS_BIT_IDENTICAL=YES
+FULL_RERUN_SCIENCE_BIT_IDENTICAL=YES
+```
+
+Verificación directa en esta tarea: las `rows` de `calibration.json` y
+`calibration-d33f81ca.json` son **bit-idénticas** (15/15 filas, 0 diferencias); las únicas
+diferencias de `environment` son `git_sha`, los campos de provenance añadidos por el fix
+(§16.1) y `environment.timestamp_utc`. Para FULL, la rerun científica es bit-idéntica salvo
+`environment.timestamp_utc`; **no se conserva un segundo artefacto FULL en disco**, de modo que
+esa igualdad se registra según el registro de ejecución (el artefacto válido es
+`full-e116196f.json`).
+
+### 20.9 Caso no evaluable
+
+```text
+polyhaven_brick_4  split=CALIBRATION  high_enrichment=null
+```
+
+`HIGH_ENRICHMENT` no interpretable ⇒ `NaN` en el runner ⇒ `null` en el JSON vía
+`_json_safe`. Se registra como **`null`**, nunca como `0`, `1` ni `NaN`. El asset **no** se
+excluye: sus agregados LOWMID/HIGH sí entran a las medianas de cohorte.
+
+### 20.10 Riesgo cross-worktree (reproducido, no resuelto aquí)
+
+```text
+CROSS_WORKTREE_IMPORT_RISK=CONFIRMED
+CROSS_CHECKOUT_IMPORT_CONTAMINATION=NO  (en la corrida FULL válida)
+```
+
+Causa conocida (§19.4): entradas `.pth` del venv compartido anteponen rutas de **otro**
+checkout:
+
+```text
+E:\Skyclaw_Main_Sync\.venv\Lib\site-packages\00_worktree_skyclaw.pth
+    → C:\Worktrees\Sky-Claw-586c
+E:\Skyclaw_Main_Sync\.venv\Lib\site-packages\_editable_impl_sky_claw.pth
+    → E:\Skyclaw_Main_Sync
+```
+
+La corrida FULL válida se ejecutó **como módulo** (`python -m sky_claw.local.native_parallax.
+research.run_exp_m5`) con `cwd` en el worktree correcto, y el gate de §19.5 confirmó
+`CROSS_CHECKOUT_IMPORT_CONTAMINATION=NO`. **No se arreglan los `.pth` en este PR**; el hallazgo
+se trata en issue/PR propio.
+
+### 20.11 Distinción CALIBRATION (se preserva)
+
+El artefacto de calibration emite `summary.decision = PENDING_FREEZE` (verificado en el raw);
+**no** emite medianas de cohorte. `CALIBRATION_OK` (§19.1) fue un **veredicto de aceptación
+del operador/externo**, **no** un campo emitido por el runner.
+
+### 20.12 Alcance de esta sección
+
+Sección **docs-only**: no cambia `frequency_coherence.py`, `run_exp_m5.py`,
+`solver_coherence.py`, `authored_dataset.py` ni los tests. FULL no autoriza ni ejecuta M6, no
+mergea el PR, no lo marca *Ready*, y no incorpora los fixes de #663 ni #667.
