@@ -11,7 +11,7 @@ Al cerrar [GP2-S4D](0010-runtime-vault-golden-protection-apply.md) el Runtime
 Vault tenía las siete piezas de la transacción de protección del Golden
 auditadas, tipadas y con sus propias suites — y **ninguna cableada
 productivamente**. El censo de call-sites sobre `origin/main`
-(`0103ee4f6de15207032d25c254ede5cf2c01bff9`) lo midió, no lochoolsupuso:
+(`0103ee4f6de15207032d25c254ede5cf2c01bff9`) lo midió, no lo dio por supuesto:
 
 | Orquestador | Call-sites `[PROD]` |
 |---|---|
@@ -36,8 +36,8 @@ que aterriza en un camino y deja intacto a su gemelo):
    módulo lo realizaba**. S4-C retenía el lock para que alguien pudiera
    continuar, y ese alguien no existía.
 2. **No había un camino productivo de descubrimiento/recovery.** Tras una
-   muerte dura el único recovery posible era el que un test写的 otro proceso
-  Supplier con un `operation_id` de su propia invención.
+   muerte dura el único recovery posible era el que un test soltaba en otro proceso
+  con un `operation_id` de su propia invención.
 
 ## Decisión
 
@@ -140,6 +140,72 @@ ni de lock, ni el SD del PRE, ni un ejecutable arbitrario.
 Ambas son la clase de defecto que el repo declara dominante, y ninguna era
 visible leyendo el reporte de un test: aparecieron porque el RIG de Windows y
 el camino de arranque se ejercitaron con procesos y discos reales.
+
+## El handoff S4-C → S4-D — cerrado con transferencia de handle vivo
+
+El defecto descrito abajo **quedó cerrado** en el mismo PR, por la vía que
+recomienda el principio HANDLE > pathname: **transferencia de ownership del
+handle de Win32**, no re-adquisición reentrante del mismo proceso.
+
+`
+S4-C toma el lock huérfano de la MISMA operation_id
+  → clasifica: apply físico COMPLETO (todos los nodos MUTATED durable)
+  → POST_VERIFICATION_REQUIRED
+  → NO retain_for_inspection(): NO cierra el handle, lo TRANSFIERE
+  → RecoveryContinuation { report, lock }        ← DTO separado, no forense
+  → S4-E = owner TEMPORAL
+  → S4-D recibe continuation_lock=  → reusa ESE MISMO handle
+  → COMMITTED → release
+`
+
+Nadie cierra el handle de Win32 y nadie lo reabre: la exclusión sobre el
+Golden es continua a través de la frontera. La alternativa —re-adquisición
+reentrante para un lock del mismo proceso— habría exigido cerrar y reabrir,
+o sea un gap de filesystem con una tercera mutadora able de entrar sobre un
+Golden a medio endurecer.
+
+Piezas:
+
+* RecoveryContinuation (
+ecovery_orchestrator.py) — DTO **separado** de
+  RecoveryForensicReport, con invariantes constructivas: la disposición tiene
+  que ser POST_VERIFICATION_REQUIRED, el handle tiene que estar vivo y la
+  operation_id del handle tiene que coincidir con la del reporte. Un handle
+  del Golden equivocado, aunque sea del tipo correcto y esté vivo, no se
+  convierte en autoridad para otra operación.
+* 
+ecover_interrupted_protection_for_continuation(...) — segundo entrypoint
+  público de S4-C, con política de cierre **distinta** a la del forense.
+  
+ecover_interrupted_protection conserva su contrato exacto: cierra el
+  handle siempre. La clasificación se comparte vía _recover_impl, así que no
+  hay dos implementaciones del dispatch.
+* inalize_protection_transaction(..., continuation_lock=...) — extensión
+  mínima del contrato de S4-D. Tres caminos excluyentes (sesión /
+  continuación / recovery), session y continuation_lock mutuamente
+  excluyentes con fail-closed, y el handle se valida con el MISMO
+  _exigir_lock_coherente que ya usaba el camino de sesión: operación,
+  VolumeSerialNumber y Root FileId.
+* protection_service._proyectar_continuacion — S4-E es owner temporal y tiene
+  exception-safety explícita: si S4-D lanza **antes** de asumir el ownership,
+  S4-E hace 
+etain_for_inspection() y devuelve INDETERMINATE con
+  operator_intervention_required. Nunca 
+elease() sobre un Golden que S4-D
+  todavía no verificó.
+
+**Deliberadamente NO** se fabrica una PrivilegedBoundarySession ficticia para
+satisfacer la firma de S4-D: el lock del Golden y el token del operador son
+recursos distintos y no se mezclan.
+
+Ancla: 	est_e03_crash_todos_mutados_pre_finalizacion_reenruta volvió de
+xfail(strict=True) a test real, y XPASS(strict) fue lo que obligó a quitar
+el marker. Sus aserciones —disposition == committed, committed == true,
+source_orchestrator de S4-D, cero re-apply, y el breadcrumb
+ll-mutated:<n> que prueba que el crash cayó fuera de pply_target_dacl—
+no se suavizaron.
+
+---
 
 ## Defecto abierto que S4-E **expone** pero no puede cerrar: el handoff S4-C → S4-D
 

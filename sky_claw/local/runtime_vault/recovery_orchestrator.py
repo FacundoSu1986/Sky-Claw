@@ -264,6 +264,22 @@ class _Resultado:
     reason: str = ""
     detail: str = ""
     setsecurityinfo_calls: int = 0
+    #: S4-C ENTREGA el handle vivo en vez de cerrarlo. Sólo válido en
+    #: ``POST_VERIFICATION_REQUIRED``.
+    #:
+    #: Existe porque ``retain_for_inspection()`` deja la metadata sin
+    #: ``RELEASED`` pero con ``owner_pid`` del proceso ACTUAL: la re-adquisición
+    #: de S4-D en ``session=None`` la clasifica ``BUSY_OWNER_ALIVE`` —el dueño
+    #: está vivo, es este proceso— y devuelve LOCK_BUSY sin ejecutar un gate.
+    #: Es un self-DoS del handoff. Transferir el handle no abre ventana: nadie
+    #: cierra el handle de Win32 y nadie lo reabre.
+    transfers_lock: bool = False
+
+    def __post_init__(self) -> None:
+        if self.transfers_lock and self.disposition is not RecoveryDisposition.POST_VERIFICATION_REQUIRED:
+            raise ValueError(
+                f"transfers_lock sólo aplica a POST_VERIFICATION_REQUIRED; recibido {self.disposition.value!r}"
+            )
 
 
 def _reporte(
@@ -605,6 +621,7 @@ def _dispatch_fsm(
             return _Resultado(
                 disposition=RecoveryDisposition.POST_VERIFICATION_REQUIRED,
                 retener_lock=True,
+                transfers_lock=True,
                 operator=False,
                 detail=(
                     "todos los nodos del plan tienen MUTATED durable: el apply físico quedó completo; "
@@ -636,6 +653,7 @@ def _dispatch_fsm(
             disposition=RecoveryDisposition.POST_VERIFICATION_REQUIRED,
             retener_lock=True,
             operator=False,
+            transfers_lock=True,
             detail=(
                 f"estado durable '{estado.value}': la post-verificación/archivado pertenecen a S4-D; "
                 "lock retenido hasta la transición terminal"
@@ -863,6 +881,45 @@ def _dispatch_bajo_lock(
 # ============================================================================
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryContinuation:
+    """Carrier de OWNERSHIP del ``GoldenMutationLock`` entre S4-C y S4-D.
+
+    Deliberadamente **separado** de :class:`RecoveryForensicReport`: el
+    reporte forense es un DTO inmutable y razonablemente serializable, y
+    meterle un handle de Win32 lo volvería imposible de testear, comparar ni
+    loguear. El handle viaja en este objeto y en ningún otro.
+
+    Invariantes constructivas:
+
+    * la disposición tiene que ser ``POST_VERIFICATION_REQUIRED`` — para
+      cualquier otra no hay continuación que hacer y el handle ya se cerró;
+    * el handle tiene que estar abierto;
+    * la ``operation_id`` del handle tiene que coincidir con la del reporte.
+
+    La última es la que importa para seguridad: un handle del Golden
+    equivocado, aunque sea del tipo correcto y esté vivo, no puede convertirse
+    en autoridad para otra operación.
+    """
+
+    report: RecoveryForensicReport
+    lock: GoldenMutationLockHandle
+
+    def __post_init__(self) -> None:
+        if self.report.disposition is not RecoveryDisposition.POST_VERIFICATION_REQUIRED:
+            raise ValueError(
+                "RecoveryContinuation sólo existe para POST_VERIFICATION_REQUIRED; "
+                f"recibido {self.report.disposition.value!r}"
+            )
+        if self.lock.closed:
+            raise ValueError("RecoveryContinuation exige un handle VIVO: el lock ya fue cerrado")
+        if self.lock.identity.operation_id != self.report.operation_id:
+            raise ValueError(
+                "operation_id del handle y del reporte no coinciden: "
+                f"{self.lock.identity.operation_id!r} != {self.report.operation_id!r}"
+            )
+
+
 def recover_interrupted_protection(
     *,
     operation_id: str,
@@ -871,6 +928,110 @@ def recover_interrupted_protection(
     lock_kernel: GoldenLockKernel | None = None,
     port: NodeRecoveryPort | None = None,
 ) -> RecoveryForensicReport:
+    """Recupera una operación de protección interrumpida usando SOLO autoridad durable.
+
+    Entrada: ``operation_id`` a secas. Ni root, ni paths, ni bytes de SD, ni
+    ``--file``/``--journal-path`` salen del caller: la raíz canónica, los paths
+    de los nodos, el PRE y la identidad física se derivan de
+    ``authorized_plan.json`` / el journal protegido.
+
+    Secuencia (§9 del encargo):
+
+        1. clasificar evidencia durable (plan + journal), sin tocar nada;
+        2. re-adquirir exclusividad: ``GoldenMutationLock`` con takeover de
+           huérfano sólo para el MISMO operation_id (dueño vivo => LOCK_BUSY);
+        3. bajo lock, re-leer y ligar la evidencia fresca;
+        4. decidir por el FSM autoritativo: rollback idempotente, handoff
+           S4-D o INDETERMINATE (lock retenido, operador alertado).
+
+    Contrato INALTERADO respecto de las slices previas: el handle se cierra
+    acá (retenido para inspección en ``INDETERMINATE``, liberado en el resto).
+    Quien necesite continuar hacia S4-D en el MISMO proceso debe usar
+    :func:`recover_interrupted_protection_for_continuation`, que TRANSFIERE el
+    handle vivo en vez de cerrarlo.
+    """
+    reporte, _handle = _recover_impl(
+        operation_id=operation_id,
+        programdata_resolver=programdata_resolver,
+        journal_kernel=journal_kernel,
+        lock_kernel=lock_kernel,
+        port=port,
+        transferir_lock=False,
+    )
+    return reporte
+
+
+def recover_interrupted_protection_for_continuation(
+    *,
+    operation_id: str,
+    programdata_resolver: Callable[[], object] | None = None,
+    journal_kernel: JournalDurabilityKernel | None = None,
+    lock_kernel: GoldenLockKernel | None = None,
+    port: NodeRecoveryPort | None = None,
+) -> tuple[RecoveryForensicReport, RecoveryContinuation | None]:
+    """Recupera y TRANSFIERE el handle vivo del lock cuando S4-D debe continuar.
+
+    Devuelve SIEMPRE el reporte forense, y un ``RecoveryContinuation`` sólo
+    cuando la clasificación pide continuar: rollback completo,
+    ``INDETERMINATE``, ``LOCK_BUSY``, ``NO_TRANSACTION`` y los terminales
+    cierran el handle según la política de S4-C y devuelven ``(reporte, None)``.
+
+    Devolver el reporte SIEMPRE —en vez de ``None``— es lo que evita que el
+    caller tenga que invocar la recovery por segunda vez para conocer el
+    veredicto: re-ejecutarla clasificaría dos veces y podría restaurar dos
+    veces sobre el mismo Golden.
+
+    Devuelve :class:`RecoveryContinuation` únicamente con
+    ``POST_VERIFICATION_REQUIRED``, y entonces el ownership del handle pasa a
+    QUIEN LLAMA, que queda obligado a cerrarlo exactamente una vez. Si no
+    llega a S4-D, el owner temporal debe hacer ``retain_for_inspection()`` y
+    NO ``release()``: soltarlo abriría la ventana que S4-C existe para evitar.
+
+    Por qué esto y no una re-adquisición reentrante del mismo proceso: esa
+    segunda opción implica cerrar el handle de Win32 y reabrirlo, o sea un
+    gap de filesystem en el que una tercera mutadora puede entrar sobre un
+    Golden a medio endurecer. Transferir el handle no cierra nada.
+    """
+    reporte, handle = _recover_impl(
+        operation_id=operation_id,
+        programdata_resolver=programdata_resolver,
+        journal_kernel=journal_kernel,
+        lock_kernel=lock_kernel,
+        port=port,
+        transferir_lock=True,
+    )
+    if handle is None:
+        return reporte, None
+    return reporte, RecoveryContinuation(report=reporte, lock=handle)
+
+
+def _reporte_con_lock(**kwargs: Any) -> tuple[RecoveryForensicReport, GoldenMutationLockHandle | None]:
+    """Envoltura de los retornos tempranos: construyen el reporte, sin handle.
+
+    Los caminos que cortan ANTES de adquirir el lock no tienen nada que
+    transferir, asi que devuelven la tupla con `None` y el entrypoint publico
+    los traduce a "sin continuacion".
+    """
+    return _reporte(**kwargs), None
+
+
+def _recover_impl(
+    *,
+    operation_id: str,
+    programdata_resolver: Callable[[], object] | None = None,
+    journal_kernel: JournalDurabilityKernel | None = None,
+    lock_kernel: GoldenLockKernel | None = None,
+    port: NodeRecoveryPort | None = None,
+    transferir_lock: bool,
+) -> tuple[RecoveryForensicReport, GoldenMutationLockHandle | None]:
+    """Implementación compartida. Ver los dos entrypoints públicos.
+
+    El handle NUNCA viaja dentro del reporte: ``RecoveryForensicReport``
+    sigue siendo un DTO inmutable y serializable. Cuando
+    ``transferir_lock`` es True y la clasificación es
+    ``POST_VERIFICATION_REQUIRED``, el handle vuelve ABIERTO y el
+    ownership pasa a quien llama.
+    """
     """Recupera una operación de protección interrumpida usando SOLO autoridad durable.
 
     Entrada: ``operation_id`` a secas. Ni root, ni paths, ni bytes de SD, ni
@@ -959,7 +1120,7 @@ def recover_interrupted_protection(
             if binding_evidence is OperationLockBindingEvidence.INDETERMINATE:
                 # Binding presente pero ilegible/corrupto: sin identidad no se
                 # puede ni localizar el lock. Fail-closed, cero escrituras.
-                return _reporte(
+                return _reporte_con_lock(
                     **_base(),
                     lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
                     stale_takeover=False,
@@ -977,7 +1138,7 @@ def recover_interrupted_protection(
             if binding_evidence is OperationLockBindingEvidence.DURABLE:
                 # El binding quedó durable pero no se pudo derivar identidad (no
                 # debería ocurrir: el binding la contiene y se valida al cargar).
-                return _reporte(
+                return _reporte_con_lock(
                     **_base(),
                     lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
                     stale_takeover=False,
@@ -989,7 +1150,7 @@ def recover_interrupted_protection(
                         detail="evidencia contradictoria: intervención del operador requerida",
                     ),
                 )
-            return _reporte(
+            return _reporte_con_lock(
                 **_base(),
                 lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
                 stale_takeover=False,
@@ -1000,7 +1161,7 @@ def recover_interrupted_protection(
                     detail="sin plan, journal ni binding de operación: no existe evidencia durable de transacción alguna",
                 ),
             )
-        return _reporte(
+        return _reporte_con_lock(
             **_base(),
             lock_outcome=RecoveryLockOutcome.NOT_ATTEMPTED,
             stale_takeover=False,
@@ -1028,7 +1189,7 @@ def recover_interrupted_protection(
             programdata_resolver=programdata_resolver,
         )
     except GoldenLockBusyError as exc:
-        return _reporte(
+        return _reporte_con_lock(
             **_base(),
             lock_outcome=RecoveryLockOutcome.BUSY,
             stale_takeover=False,
@@ -1040,7 +1201,7 @@ def recover_interrupted_protection(
             ),
         )
     except GoldenLockOrphanedOperationMismatchError as exc:
-        return _reporte(
+        return _reporte_con_lock(
             **_base(),
             lock_outcome=RecoveryLockOutcome.REFUSED,
             stale_takeover=False,
@@ -1053,7 +1214,7 @@ def recover_interrupted_protection(
             ),
         )
     except GoldenLockError as exc:
-        return _reporte(
+        return _reporte_con_lock(
             **_base(),
             lock_outcome=RecoveryLockOutcome.REFUSED,
             stale_takeover=False,
@@ -1068,6 +1229,7 @@ def recover_interrupted_protection(
 
     stale_takeover = adquisicion.preexisting_disposition is PreexistingLockDisposition.ORPHANED_LOCK
     handle: GoldenMutationLockHandle = adquisicion.handle
+    handle_transferido: GoldenMutationLockHandle | None = None
 
     resultado = _Resultado(
         disposition=RecoveryDisposition.INDETERMINATE,
@@ -1097,8 +1259,18 @@ def recover_interrupted_protection(
         )
     finally:
         lock_outcome = RecoveryLockOutcome.ACQUIRED_RELEASED
+        # La transferencia S4-C -> S4-E -> S4-D NO cierra el handle. Nadie
+        # suelta y nadie reabre: la exclusion sobre el Golden es continua a
+        # traves de la frontera. S4-E queda como owner TEMPORAL y S4-D asume
+        # el ownership al empezar; si S4-E falla antes de pasarselo, hace
+        # retain_for_inspection() (NO release), porque soltarlo abriria la
+        # ventana que S4-C existe para evitar.
+        transferir = transferir_lock and resultado.transfers_lock
         try:
-            if resultado.retener_lock:
+            if transferir:
+                handle_transferido = handle
+                lock_outcome = RecoveryLockOutcome.ACQUIRED_RETAINED
+            elif resultado.retener_lock:
                 handle.retain_for_inspection()
                 lock_outcome = RecoveryLockOutcome.ACQUIRED_RETAINED
             else:
@@ -1126,13 +1298,15 @@ def recover_interrupted_protection(
             operation_id,
             reporte.indeterminate_reason or reporte.detail,
         )
-    return reporte
+    return reporte, handle_transferido
 
 
 __all__ = [
     "NodeRecoveryPort",
     "NodeWalSummary",
     "RecoveryDisposition",
+    "RecoveryContinuation",
+    "recover_interrupted_protection_for_continuation",
     "RecoveryForensicReport",
     "RecoveryIdentitySource",
     "RecoveryLockOutcome",

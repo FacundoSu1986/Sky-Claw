@@ -294,6 +294,10 @@ def test_s4d_no_acepta_una_raiz_arbitraria_del_caller() -> None:
         "archive_writer",
         "lock_kernel",
         "session",
+        # GP2-S4E: handle VIVO transferido por S4-C en este mismo proceso.
+        # NO es una raíz ni una ruta — es el lock ya adquirido, y S4-D lo
+        # valida con el mismo `_exigir_lock_coherente` que el camino de sesión.
+        "continuation_lock",
         "rollback_notifier",
     ]
     for prohibido in ("golden_root", "root", "canonical_root", "path", "candidates"):

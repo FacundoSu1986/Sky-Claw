@@ -92,7 +92,10 @@ from sky_claw.local.runtime_vault.finalization_orchestrator import (
 )
 from sky_claw.local.runtime_vault.finalization_verification import build_default_verification_port
 from sky_claw.local.runtime_vault.golden_backup_archive import GoldenBackupDurableWriter
-from sky_claw.local.runtime_vault.golden_mutation_lock import GoldenLockKernel
+from sky_claw.local.runtime_vault.golden_mutation_lock import (
+    GoldenLockKernel,
+    GoldenMutationLockHandle,
+)
 from sky_claw.local.runtime_vault.models import (
     CriticalFileExpectation,
     RuntimeIdentity,
@@ -128,10 +131,11 @@ from sky_claw.local.runtime_vault.protection_journal_store import (
 )
 from sky_claw.local.runtime_vault.recovery_orchestrator import (
     NodeRecoveryPort,
+    RecoveryContinuation,
     RecoveryDisposition,
     RecoveryForensicReport,
     RecoveryLockOutcome,
-    recover_interrupted_protection,
+    recover_interrupted_protection_for_continuation,
 )
 from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenRegistry
 
@@ -850,13 +854,28 @@ def _reanudar_por_s4c(
 ) -> ProtectionOutcome:
     """S4-C decide; si declara el apply completo, S4-E encadena S4-D.
 
-    El encadenamiento es la pieza que S4-C documentaba en prosa
-    (``recovery_orchestrator.py:46``) y que ningún módulo ejecutaba. S4-D
-    re-toma el lock huérfano de la MISMA ``operation_id``, que es exactamente
-    para lo que S4-C lo retuvo con ``retain_for_inspection()``.
+    Este es el handoff que ``recovery_orchestrator`` describía en prosa y que
+    ningún módulo ejecutaba. La pieza notrivial es la CONTINUIDAD FÍSICA:
+
+    S4-C toma el lock huérfano de la MISMA ``operation_id`` con
+    ``acquire_golden_mutation_lock_for_recovery``. Si devolviera el handle con
+    ``retain_for_inspection()``, la metadata quedaría sin ``RELEASED`` pero con
+    ``owner_pid`` de ESTE proceso — y S4-D, sin sesión, re-intentaría tomarlo
+    por el camino de recovery, que sólo acepta locks huérfanos: lo vería como
+    ``BUSY_OWNER_ALIVE`` porque el dueño está vivo (es el propio S4-E), y
+    devolvería LOCK_BUSY sin ejecutar un solo gate.
+
+    Por eso se usa ``recover_interrupted_protection_for_continuation``, que
+    **transfiere el handle vivo** en vez de cerrarlo, y S4-D lo recibe con
+    ``continuation_lock=``. Nadie cierra el handle de Win32 y nadie lo reabre:
+    la exclusión sobre el Golden es continua a través de la frontera.
+
+    Y deliberadamente NO se fabrica una ``PrivilegedBoundarySession`` ficticia
+    para satisfacer la firma de S4-D: el lock del Golden y el token del
+    operador son recursos distintos.
     """
     try:
-        reporte = recover_interrupted_protection(
+        reporte, continuation = recover_interrupted_protection_for_continuation(
             operation_id=operation_id,
             programdata_resolver=frontend.programdata_resolver,
             journal_kernel=frontend.journal_kernel,
@@ -868,16 +887,72 @@ def _reanudar_por_s4c(
             operation_id=operation_id,
             disposition=ProtectionDisposition.INDETERMINATE,
             stage=ProtectionStage.RECOVERY,
-            source_orchestrator="recovery_orchestrator.recover_interrupted_protection",
+            source_orchestrator="recovery_orchestrator.recover_interrupted_protection_for_continuation",
             detail="S4-C lanzó; la evidencia durable queda sin resolver",
             fail_closed_reason=f"{type(exc).__name__}: {exc}",
             lock_retained=True,
             operator_intervention_required=True,
         )
 
-    if reporte.disposition is not RecoveryDisposition.POST_VERIFICATION_REQUIRED:
+    if continuation is None:
+        # S4-C cerró el handle según su política: no hay nada que continuar.
+        # Se proyecta el reporte que YA volvió, sin re-ejecutar la recovery.
         return _proyeccion_de_recovery(reporte, ruta=ruta)
-    return _reanudar_por_s4d(operation_id, frontend, ruta=ruta)
+
+    return _proyectar_continuacion(continuation, frontend, ruta=ruta)
+
+
+def _proyectar_continuacion(
+    continuation: RecoveryContinuation,
+    frontend: _Frontend,
+    *,
+    ruta: RestartRoute | None = None,
+) -> ProtectionOutcome:
+    """S4-E es owner TEMPORAL del handle transferido y se lo pasa a S4-D.
+
+    Exception safety: si S4-D lanza ANTES de asumir el ownership —al cargar el
+    plan, al abrir el journal o al construir el puerto— S4-E sigue siendo el
+    owner y hace ``retain_for_inspection()``, NO ``release()``: soltarlo
+    escribiría ``RELEASED`` sobre un Golden que S4-D todavía no verificó,
+    abriendo la ventana que todo este diseño existe para cerrar.
+
+    Si S4-D ya tomó ownership (o sea, entró al ``try``), no se vuelve a tocar
+    el handle: ``release()`` y ``retain_for_inspection()`` son idempotentes y
+    `closed` lo vuelve un no-op, pero el contrato queda explícito en el código.
+    """
+    handle = continuation.lock
+    s4d_tomo_ownership = False
+    try:
+        desenlace = _reanudar_por_s4d(
+            continuation.report.operation_id,
+            frontend,
+            ruta=ruta,
+            continuation_lock=handle,
+        )
+        s4d_tomo_ownership = True
+        return desenlace
+    except Exception as exc:  # noqa: BLE001 — boundary: INDETERMINATE, nunca éxito
+        logger.exception(
+            "Fallo en el handoff S4-C -> S4-D; el handle transferido queda retenido",
+            extra={
+                "operation_id": continuation.report.operation_id,
+                "route": (ruta or RestartRoute.S4D_FINALIZE).value,
+            },
+        )
+        return _resultado(
+            operation_id=continuation.report.operation_id,
+            disposition=ProtectionDisposition.INDETERMINATE,
+            stage=ProtectionStage.FINALIZATION,
+            source_orchestrator="protection_service._proyectar_continuacion",
+            detail="S4-D no llegó a asumir el lock transferido; S4-E lo retiene",
+            fail_closed_reason=f"{type(exc).__name__}: {exc}",
+            route=ruta,
+            lock_retained=True,
+            operator_intervention_required=True,
+        )
+    finally:
+        if not s4d_tomo_ownership and not handle.closed:
+            handle.retain_for_inspection()
 
 
 def _reanudar_por_s4d(
@@ -885,6 +960,7 @@ def _reanudar_por_s4d(
     frontend: _Frontend,
     *,
     ruta: RestartRoute | None = None,
+    continuation_lock: GoldenMutationLockHandle | None = None,
 ) -> ProtectionOutcome:
     """S4-D reanuda (o normaliza) leyendo su autoridad del namespace."""
     try:
@@ -921,6 +997,7 @@ def _reanudar_por_s4d(
         programdata_resolver=frontend.programdata_resolver,
         archive_writer=frontend.archive_writer,
         lock_kernel=frontend.lock_kernel,
+        continuation_lock=continuation_lock,
     )
     return _proyeccion_de_finalizacion(reporte, ruta=ruta)
 

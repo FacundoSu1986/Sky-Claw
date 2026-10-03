@@ -185,7 +185,7 @@ def test_s4e_no_abre_la_frontera_privilegiada_por_importacion() -> None:
         "promote_durable_authorized_plan",
         "create_protection_journal",
         "apply_authorized_plan",
-        "recover_interrupted_protection",
+        "recover_interrupted_protection_for_continuation",
         "finalize_protection_transaction",
     ):
         assert prohibido in called, (
@@ -906,7 +906,7 @@ def test_un_journal_ilegible_produce_indeterminate_sin_tocar_nada(
         journal = None
 
     for nombre in (
-        "recover_interrupted_protection",
+        "recover_interrupted_protection_for_continuation",
         "finalize_protection_transaction",
         "apply_authorized_plan",
         "load_durable_authorized_plan",
@@ -953,8 +953,8 @@ def test_un_estado_operador_requerido_no_se_reintenta_solo(
     monkeypatch.setattr(svc, "classify_protection_journal", lambda *a, **k: _Clasif())
     monkeypatch.setattr(
         svc,
-        "recover_interrupted_protection",
-        lambda *a, **k: llamadas.append("s4c") or object(),
+        "recover_interrupted_protection_for_continuation",
+        lambda *a, **k: llamadas.append("s4c") or (object(), None),
     )
     monkeypatch.setattr(
         svc,

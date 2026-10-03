@@ -471,25 +471,45 @@ def _adquirir_lock_para_finalizacion(
     *,
     plan: DurableAuthorizedPlan,
     session: Any,
+    continuation_lock: GoldenMutationLockHandle | None = None,
     programdata_resolver: Callable[[], object] | None,
     lock_kernel: GoldenLockKernel | None,
 ) -> GoldenMutationLockHandle:
     """Obtiene un ``GoldenMutationLock`` VIVO para ESTA ``operation_id``.
 
-    Dos caminos, UNA sola semántica:
+    TRES caminos excluyentes, UNA sola semántica:
 
     * **Continuidad de sesión**: si el caller trae una sesión de frontera con el
-      lock vivo (S4-D siguiendo inmediatamente a S4-C en el mismo proceso), se
-      reusa ese MISMO handle. No se suelta ni se re-toma: una ventana de
-      re-adquisición sería exactamente la ventana que S4-D existe para cerrar.
-    * **Reanudación tras crash**: si no hay sesión, se re-adquiere por el camino
-      de recovery, que sólo permite tomar un lock huérfano de la MISMA
+      lock vivo (S4-D siguiendo inmediatamente a S4-C en el mismo proceso con la
+      frontera privileged de origen), se reusa ese MISMO handle. No se suelta ni
+      se re-toma: una ventana de re-adquisición sería exactamente la ventana que
+      S4-D existe para cerrar.
+    * **Continuidad por handoff** (``continuation_lock``): S4-Cuckeró el lock
+      huérfano en ESTE proceso, decidió ``POST_VERIFICATION_REQUIRED`` y
+      transfirió el handle (``RecoveryContinuation``). Se reusa ESE MISMO handle.
+      Es el mismo camino físico que el anterior —nadie cierra, nadie reabre—
+      pero sin el token de operador, que no es propiedad de la continuación.
+      Deliberadamente NO se fabrica una ``PrivilegedBoundarySession`` ficticia
+      para satisfacer la firma: el lock del Golden y el token del operador son
+      recursos distintos y no se mezclan.
+    * **Reanudación tras crash**: sin sesión ni continuación, se re-adquiere por
+      el camino de recovery, que sólo permite tomar un lock huérfano de la MISMA
       ``operation_id`` y jamás uno con dueño vivo.
 
-    En ambos casos el resultado es un handle vivo ligado a la identidad del
-    plan, y la exclusión sobre el Golden es continua desde el último
-    ``MUTATED`` durable hasta ``COMMITTED`` o el estado terminal de fallo.
+    ``session`` y ``continuation_lock`` juntos es un error de contrato y falla
+    cerrado: son dos owners del mismo handle, y la propiedad de "quién libera"
+    quedaría ambigua.
     """
+    if session is not None and continuation_lock is not None:
+        raise FinalizationAuthorityError(
+            "session y continuation_lock son mutuamente excluyentes: "
+            "ambos serían owners del mismo handle y la discharging quedaría ambigua"
+        )
+    if continuation_lock is not None:
+        if continuation_lock.closed:
+            raise FinalizationAuthorityError("el handle de continuación llegó cerrado: no hay lock vivo para finalizar")
+        _exigir_lock_coherente(continuation_lock.identity, plan)
+        return continuation_lock
     if session is not None:
         if getattr(session, "closed", True):
             raise FinalizationAuthorityError("la sesión de frontera está cerrada: no hay lock vivo")
@@ -534,6 +554,7 @@ def finalize_protection_transaction(
     archive_writer: Any = None,
     lock_kernel: GoldenLockKernel | None = None,
     session: Any = None,
+    continuation_lock: GoldenMutationLockHandle | None = None,
     rollback_notifier: RollbackNotifier | None = None,
 ) -> FinalizationForensicReport:
     """Ejecuta S4-D de punta a punta y devuelve el reporte forense.
@@ -552,6 +573,9 @@ def finalize_protection_transaction(
         archive_writer: seam de publicación create-once del backup.
         lock_kernel: seam del lock (tests).
         session: sesión de frontera con lock VIVO, para continuidad de sesión.
+        continuation_lock: handle VIVO transferido por S4-C en este mismo
+            proceso (``RecoveryContinuation``). Mutuamente excluyente con
+            ``session``; ambos a None ⇒ re-adquisición por recovery.
         rollback_notifier: AVISO de que el rollback quedó PENDIENTE. S4-D no lo ejecuta.
         El motor de S4-C es el único que restaura ACLs; invocar este callback NO
         significa que el Golden esté restaurado (mira ``rollback_executed``).
@@ -645,6 +669,7 @@ def finalize_protection_transaction(
         lock = _adquirir_lock_para_finalizacion(
             plan=plan,
             session=session,
+            continuation_lock=continuation_lock,
             programdata_resolver=programdata_resolver,
             lock_kernel=lock_kernel,
         )
