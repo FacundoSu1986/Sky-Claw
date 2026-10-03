@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import ctypes
 import json
 import pathlib
 import shutil
@@ -38,6 +39,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from ctypes import wintypes
 from typing import Any
 
 import pytest
@@ -57,6 +59,61 @@ _PATHS_PROHIBIDOS = (
     "program files",
     "programdata",
 )
+
+
+# --------------------------------------------------------------------------
+# Elevación: la restauración física de un nodo YA endurecido la exige
+# --------------------------------------------------------------------------
+
+
+def _es_elevado() -> bool:
+    """Probe READ-ONLY de elevación del proceso (nunca toca UAC)."""
+    if sys.platform != "win32":
+        return False
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+
+    class _TokenElevation(ctypes.Structure):
+        _fields_ = [("TokenIsElevated", wintypes.DWORD)]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        return False
+    try:
+        elevacion = _TokenElevation()
+        devuelto = wintypes.DWORD(0)
+        ok = advapi32.GetTokenInformation(
+            token,
+            20,  # TokenElevation
+            ctypes.byref(elevacion),
+            ctypes.sizeof(elevacion),
+            ctypes.byref(devuelto),
+        )
+        return bool(ok) and bool(elevacion.TokenIsElevated)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _skip_sin_elevacion(escenario: str) -> None:
+    pytest.skip(
+        f"{escenario}: S4-C restaura un nodo YA endurecido con WRITE_DAC, y la Target DACL "
+        "lo reserva a Administrators/SYSTEM — probe TokenElevation=False. "
+        "CI windows-latest (elevado) lo ejecuta; una corrida local no elevada NO cuenta "
+        "como ejecución de E02 (no hay rollback físico que observar)."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -140,6 +197,70 @@ def _eventos(rig: pathlib.Path) -> list[str]:
     if not ruta.exists():
         return []
     return [linea.split("|", 1)[-1] for linea in ruta.read_text(encoding="utf-8").splitlines()]
+
+
+def _eventos_de(rig: pathlib.Path, marca_inicio: str) -> list[str]:
+    """Eventos (sin nonce) de la ÚLTIMA corrida del worker que marcó `marca_inicio`.
+
+    Cada proceso del RIG abre con un nonce nuevo y lo antepone a cada línea:
+    agrupar por el nonce de la marca aisla la corrida y hace imposible que un
+    evento histórico (otro worker, otro test sobre el mismo rig) satisfaga una
+    espera del ciclo actual.
+    """
+    ruta = rig / "s4e-events.log"
+    if not ruta.exists():
+        return []
+    nonce: str | None = None
+    eventos: list[str] = []
+    for linea in ruta.read_text(encoding="utf-8").splitlines():
+        n, _, evento = linea.partition("|")
+        if evento == marca_inicio:
+            nonce = n
+            eventos = [evento]
+        elif nonce is not None and n == nonce:
+            eventos.append(evento)
+    return eventos
+
+
+def _plan_del_rig(rig: pathlib.Path) -> Any:
+    from sky_claw.local.runtime_vault.authorized_plan_store import load_durable_authorized_plan
+
+    operation_id = (rig / "operation-id.txt").read_text(encoding="utf-8").strip()
+    return load_durable_authorized_plan(operation_id, programdata_resolver=lambda: rig / "programdata")
+
+
+def _sha_sd_live(plan: Any, relative_path: str) -> str:
+    """SHA-256 del SD VIVO del nodo, leído por handle con la primitiva canónica."""
+    from sky_claw.local.runtime_vault.mutation_executor import derive_node_path
+    from sky_claw.local.runtime_vault.target_dacl import (
+        close_security_handle,
+        open_node_security_handle,
+        read_live_pre_sd_sha256_by_handle,
+    )
+
+    handle = open_node_security_handle(derive_node_path(plan, relative_path))
+    try:
+        return read_live_pre_sd_sha256_by_handle(handle)
+    finally:
+        close_security_handle(handle)
+
+
+def _verificar_sd_igual_a_pre(plan: Any, relative_path: str) -> None:
+    """Verificación SEMÁNTICA del nodo contra el PRE autorizado (la primitiva de #644)."""
+    from sky_claw.local.runtime_vault.mutation_executor import derive_node_path
+    from sky_claw.local.runtime_vault.target_dacl import (
+        close_security_handle,
+        open_node_security_handle,
+        verify_restored_security_descriptor_by_handle,
+    )
+
+    nodo = plan.node_for(relative_path)
+    assert nodo is not None
+    handle = open_node_security_handle(derive_node_path(plan, relative_path))
+    try:
+        verify_restored_security_descriptor_by_handle(handle, nodo)
+    finally:
+        close_security_handle(handle)
 
 
 def _crash_externo_por_evento(rig: pathlib.Path, fase: str, prefijo: str, timeout: float = 120.0) -> None:
@@ -548,6 +669,225 @@ def test_e02_deja_el_golden_readquirible(rig: pathlib.Path) -> None:
         assert not nuevo_lock.closed, "un Golden revertido tiene que poder volver a adquirirse"
     finally:
         nuevo_lock.release()
+
+
+def test_e02_mid_apply_crash_revierte_fisicamente_el_golden(rig: pathlib.Path) -> None:
+    """E02: crash REAL a mitad del apply -> S4-C REVIERTE físicamente el Golden.
+
+    El escenario es el que define P6, no el camino vacío:
+
+        Proceso A  lock real -> journal APPLYING -> nodo 1 con
+                   ``SetSecurityInfo`` real, POST verificado y ``MUTATED(K)``
+                   durable (flush) -> CRASH antes del nodo 2.
+                   Evidencia durable al morir: 1 ``MUTATED`` y `(total-1)`
+                   nodos todavía sin registro.
+
+        Proceso B  ``resume_golden_protection`` -> S4-C -> rollback físico
+                   (``SetSecurityInfo`` de restauración + verificación
+                   semántica) -> ``ROLLED_BACK`` durable -> lock liberado.
+
+    El crash es determinista por construcción: el seam es el ``probe`` del
+    nodo K+1, el primer punto del flujo donde "K nodos MUTATED durable" está
+    GARANTIZADO (el engine escribe ``MUTATED(K)`` con flush verificado antes
+    de abrir el nodo siguiente). Nada de ``sleep`` ni sondeo por tiempo: el
+    breadcrumb ``mid-apply-mutated:<n>:<rel>`` es la evidencia causal.
+
+    La muerte es ``os._exit(45)`` desde el worker: muerte de proceso
+    determinista, sin ``finally`` ni flush pendiente. NO se presenta como
+    muerte externa: el ``taskkill /T /F`` real sobre un proceso que espera de
+    verdad se ejercita en E15 — usar el sondeo acá haría el borde dependiente
+    del timing, que es exactamente lo que este test existe para descartar.
+
+    El RIG sólo OBSERVA: la restauración la ejecuta S4-C
+    (``recover_interrupted_protection``) en el proceso B; este test jamás
+    llama a ``restore_security_descriptor_by_handle`` para "preparar" el
+    resultado. ``disposition == "rolled_back"`` es la ÚNICA aceptada:
+    ``rollback_required`` / ``indeterminate`` / ``operator_required`` son
+    fail-closed válidos en OTROS escenarios, pero significan que E02 no
+    demostró rollback automático.
+
+    El escenario exige ELEVACIÓN: restaurar un nodo ya endurecido requiere
+    ``WRITE_DAC`` de Administrators/SYSTEM (misma clase de límite que los
+    escenarios de restauración del RIG de S4-C). Sin elevación el RIG no
+    puede observar ni el ACL mutado ni su restauración, y este test se
+    salta DECLARÁNDOLO — no es una ejecución de E02.
+
+    El caso C3 (crash ANTES de cualquier ``SetSecurityInfo``, cero
+    ``MUTATED``) queda cubierto por su propio contrato estricto en
+    ``test_e02_crash_durante_apply_revierte_el_golden``: son escenarios
+    distintos y cada uno tiene su prueba.
+    """
+    if not _es_elevado():
+        _skip_sin_elevacion("E02")
+
+    # --- Proceso A: apply real, 1 nodo MUTATED durable, crash antes del nodo 2.
+    r = _correr(rig, "apply_then_finalize", crash_en="mid_apply_after_mutated")
+    assert r["returncode"] == 45, r["stderr"]
+
+    # Evidencia del crash (sólo la corrida de A, por nonce). Un ``restore:``
+    # ANTES del resume sería evidencia cruzada de otra corrida: no puede haberlo.
+    eventos_a = _eventos_de(rig, "lock-adquirido")
+    assert any(e.startswith("mid-apply-mutated:1:") for e in eventos_a), eventos_a
+    assert not any(e.startswith("apply-fin:") for e in eventos_a), eventos_a
+    assert not any(e.startswith("restore:") for e in eventos_a), eventos_a
+    # Exactamente UN SetSecurityInfo real ocurrió antes de morir.
+    assert sum(1 for e in eventos_a if e.startswith("pre-sdsi:")) == 1, eventos_a
+    assert sum(1 for e in eventos_a if e.startswith("sdsi:")) == 1, eventos_a
+    mutado = next(e.split(":", 2)[2] for e in eventos_a if e.startswith("mid-apply-mutated:"))
+
+    from sky_claw.local.runtime_vault.protection_journal import NodeWalState, ProtectionTransactionState
+    from sky_claw.local.runtime_vault.protection_journal_store import classify_protection_journal
+
+    resolver = lambda: rig / "programdata"  # noqa: E731
+    plan = _plan_del_rig(rig)
+    total = len(plan.plan.nodes)
+    assert total > 1, "E02 exige un plan multi-nodo: con 1 nodo no hay apply INCOMPLETO"
+
+    # --- Estado durable PRE-recovery: APPLYING con exactamente 1 MUTATED.
+    clasificacion = classify_protection_journal(operation_id=plan.operation_id, programdata_resolver=resolver)
+    assert clasificacion.journal is not None
+    assert clasificacion.journal.transaction_state is ProtectionTransactionState.APPLYING
+    mutados = [n.relative_path for n in clasificacion.journal.nodes_in_state(NodeWalState.MUTATED)]
+    assert mutados == [mutado], (mutados, mutado)
+
+    # --- Evidencia FÍSICA pre-crash: el nodo MUTATED ya difiere del PRE
+    # autorizado y los nodos pendientes siguen en PRE. Si el ACL no difiriera,
+    # el "rollback" del paso siguiente no tendría nada que demostrar.
+    nodo_mutado = plan.node_for(mutado)
+    assert nodo_mutado is not None
+    assert _sha_sd_live(plan, mutado) != nodo_mutado.pre_sd_sha256, (
+        f"el nodo '{mutado}' figura MUTATED en el WAL pero su ACL física sigue en PRE: "
+        "la mutación no fue durable; el escenario no es E02"
+    )
+    for nodo in plan.plan.nodes:
+        if nodo.relative_path != mutado:
+            assert _sha_sd_live(plan, nodo.relative_path) == nodo.pre_sd_sha256, (
+                f"el nodo pendiente '{nodo.relative_path}' ya difiere del PRE antes del crash"
+            )
+
+    # --- Proceso B: el router de S4-E -> S4-C ejecuta el rollback.
+    r = _correr(rig, "resume")
+    assert r["returncode"] == 0, r["stderr"]
+    b = _leer(rig, "s4e-result-b.json")
+
+    # Assertions duras del desenlace (contrato E02; no se admite otro).
+    assert b["disposition"] == "rolled_back", b
+    assert b["route"] == "s4c_rollback", b
+    assert b["source_orchestrator"].startswith("recovery_orchestrator"), b["source_orchestrator"]
+    assert b["committed"] is False
+    assert b["rollback_executed"] is True, b
+    assert b["operator_intervention_required"] is False, b
+    assert b["lock_retained"] is False, b
+    assert b["lock_outcome"] == "acquired_released", b
+    assert b["archive_digest"] is None, "una transacción revertida no archiva backup"
+
+    # --- Evidencia de RESTORE físico: S4-C restauró EXACTAMENTE los nodos que
+    # quedaron MUTATED durable en A (breadcrumb ``restore:`` del resume actual,
+    # aislado por nonce para que un restore histórico no cuente).
+    eventos_b = _eventos_de(rig, "resume:begin")
+    restores = [e for e in eventos_b if e.startswith("restore:")]
+    assert restores == [f"restore:{mutado}"], eventos_b
+
+    # --- POST-RECOVERY == PRE, re-observado físicamente en TODOS los nodos.
+    for nodo in plan.plan.nodes:
+        _verificar_sd_igual_a_pre(plan, nodo.relative_path)
+        assert _sha_sd_live(plan, nodo.relative_path) == nodo.pre_sd_sha256
+
+    # --- WAL FINAL durable: ROLLED_BACK, leído de la evidencia y no de la
+    # proyección del servicio.
+    post = classify_protection_journal(operation_id=plan.operation_id, programdata_resolver=resolver)
+    assert post.journal is not None
+    assert post.journal.transaction_state is ProtectionTransactionState.ROLLED_BACK, post.journal.transaction_state
+
+    # --- LOCK liberado: una operación nueva puede adquirir el Golden. Si S4-C
+    # hubiera retenido el lock tras el rollback completo, esta adquisición
+    # caería en la ruta de huérfano/busy — la regresión exacta que hay que cazar.
+    from sky_claw.local.runtime_vault.golden_mutation_lock import acquire_golden_mutation_lock
+
+    nuevo_lock = acquire_golden_mutation_lock(
+        plan.volume_serial_number,
+        plan.root_file_id,
+        plan.operation_id,
+        programdata_resolver=resolver,
+    )
+    try:
+        assert not nuevo_lock.closed
+    finally:
+        nuevo_lock.release()
+
+
+def test_e02_estado_durable_y_fail_closed_sin_elevacion(rig: pathlib.Path) -> None:
+    """E02 (contractual): la pre-condición durable del crash y el fail-closed.
+
+    Este test corre en CUALQUIER host porque no exige restaurar un nodo
+    endurecido. NO es la prueba física de rollback — esa es
+    ``test_e02_mid_apply_crash_revierte_fisicamente_el_golden``, gateada por
+    ``TokenElevation``— y no la sustituye: lo que congela acá es que
+
+    1. el seam de crash produce EXACTAMENTE la evidencia del escenario
+       (APPLYING, 1 ``MUTATED`` durable, el resto sin registro), en cualquier
+       entorno;
+    2. en un host SIN elevación, donde la restauración física no puede
+       ejecutarse, el resume NUNCA reporta ``rolled_back``: devuelve un
+       fail-closed con el lock retenido y cero breadcrumbs ``restore:``.
+       Un ``rolled_back`` acá sería un rollback afirmado sin evidencia física —
+       el mutante M6-3 (< ROLLED_BACK > sin restaurar) más peligroso — y este
+       test lo mata en los runners que no pueden ejecutar el test físico.
+    """
+    r = _correr(rig, "apply_then_finalize", crash_en="mid_apply_after_mutated")
+    assert r["returncode"] == 45, r["stderr"]
+
+    eventos_a = _eventos_de(rig, "lock-adquirido")
+    assert any(e.startswith("mid-apply-mutated:1:") for e in eventos_a), eventos_a
+    mutado = next(e.split(":", 2)[2] for e in eventos_a if e.startswith("mid-apply-mutated:"))
+
+    from sky_claw.local.runtime_vault.protection_journal import NodeWalState, ProtectionTransactionState
+    from sky_claw.local.runtime_vault.protection_journal_store import classify_protection_journal
+
+    resolver = lambda: rig / "programdata"  # noqa: E731
+    plan = _plan_del_rig(rig)
+    assert len(plan.plan.nodes) > 1, "E02 exige un plan multi-nodo"
+
+    clasificacion = classify_protection_journal(operation_id=plan.operation_id, programdata_resolver=resolver)
+    assert clasificacion.journal is not None
+    assert clasificacion.journal.transaction_state is ProtectionTransactionState.APPLYING
+    assert [n.relative_path for n in clasificacion.journal.nodes_in_state(NodeWalState.MUTATED)] == [mutado]
+
+    # El router sí va a S4-C en cualquier host: eso no necesita privilegios
+    # para decidirse.
+    r = _correr(rig, "resume")
+    assert r["returncode"] == 0, r["stderr"]
+    b = _leer(rig, "s4e-result-b.json")
+    assert b["route"] == "s4c_rollback", b
+
+    if _es_elevado():
+        # El runner elevado ejecuta el test físico; acá se congela que el
+        # desenlace reportado y el WAL DURABLE cuentan la MISMA historia en
+        # ambos sentidos (un ``rolled_back`` sin ``ROLLED_BACK`` durable, o un
+        # ``ROLLED_BACK`` durable reportado como otra cosa, son mutantes
+        # distintos y ambos letales).
+        post = classify_protection_journal(operation_id=plan.operation_id, programdata_resolver=resolver)
+        assert post.journal is not None
+        if b["disposition"] == "rolled_back":
+            assert post.journal.transaction_state is ProtectionTransactionState.ROLLED_BACK, (
+                "el servicio afirmó rolled_back sin ROLLED_BACK durable"
+            )
+        else:
+            assert post.journal.transaction_state is not ProtectionTransactionState.ROLLED_BACK, (
+                f"ROLLED_BACK durable reportado como '{b['disposition']}'"
+            )
+        return
+
+    # Sin elevación: S4-C NO pudo restaurar (WRITE_DAC reservado), así que un
+    # ``rolled_back`` sería una afirmación falsa. El fail-closed es el
+    # comportamiento correcto y queda congelado.
+    assert b["disposition"] != "rolled_back", b
+    assert b["rollback_executed"] is False, b
+    assert b["committed"] is False
+    assert b["operator_intervention_required"] is True, b
+    assert b["lock_retained"] is True, b
+    eventos_b = _eventos_de(rig, "resume:begin")
+    assert not any(e.startswith("restore:") for e in eventos_b), eventos_b
 
 
 def test_e03_crash_todos_mutados_pre_finalizacion_reenruta(rig: pathlib.Path) -> None:

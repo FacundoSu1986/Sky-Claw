@@ -42,9 +42,14 @@ CRASH_EXIT: dict[str, int] = {
     "pre_journal": 42,
     "mid_apply": 43,
     "all_mutated": 44,
+    "mid_apply_after_mutated": 45,
     "post_committed_pre_release": 49,
     "pre_plan": 41,
 }
+
+#: Cuántos nodos deben quedar con ``MUTATED`` durable antes del crash de E02.
+#: El borde exige 1 <= objetivo < total de nodos del plan (es E02, no E03).
+_MUTADOS_OBJETIVO_E02 = 1
 
 
 def _abortar_si_raiz_peligrosa(rig_root: pathlib.Path) -> None:
@@ -218,6 +223,51 @@ def _puerto_mutacion(miga: _Miga, crash_en: str | None) -> Any:
     from sky_claw.local.runtime_vault.mutation_executor import HandleBoundTargetDaclPort
 
     return _PuertoConCrash(HandleBoundTargetDaclPort(), crash_en, miga)
+
+
+def _probe_con_crash_mid_apply(miga: _Miga, journal: Any, total_nodos: int) -> Any:
+    """Probe de quiescencia REAL + muerte dura tras N ``MUTATED`` durables (E02).
+
+    El seam correcto para "apply incompleto" NO está dentro del puerto: al
+    volver de ``verify_target_dacl`` el nodo todavía no tiene su ``MUTATED(K)``
+    en el WAL — lo escribe el engine después, con flush verificado (pasos
+    19-20 del §12.2). El ``probe`` del nodo K+1 corre SÓLO cuando los K nodos
+    previos cerraron toda su secuencia durable, así que es el primer punto del
+    flujo donde "N nodos MUTATED durable y el resto pendiente" es una
+    PROPIEDAD y no una carrera.
+
+    Antes de morir el worker DEMUESTRA la pre-condición de E02 desde el
+    journal (cuyo estado en memoria es post-flush por construcción del store):
+    exactamente ``_MUTADOS_OBJETIVO_E02`` nodos ``MUTATED`` y al menos un nodo
+    todavía sin registro. Si eso no se cumple, el proceso NO se suicida: no
+    hay crash que valga sobre un estado que no es el del escenario.
+
+    La muerte es ``os._exit``: muerte de proceso determinista, sin finally ni
+    flush pendiente. NO se presenta como muerte externa — el ``taskkill /T
+    /F`` real sobre un proceso queda en E15; usar el sondeo acá convertiría el
+    borde en timing-dependiente (la transacción dura menos que el intervalo de
+    polling).
+    """
+    from sky_claw.local.runtime_vault.protection_journal import NodeWalState
+    from sky_claw.local.runtime_vault.quiescence import probe_node_quiescence
+
+    estado = {"probes": 0}
+
+    def probe(path: pathlib.Path, node_kind: Any) -> None:
+        # El probe REAL corre siempre: el seam no desactiva la quiescencia.
+        probe_node_quiescence(path, node_kind)
+        if estado["probes"] == _MUTADOS_OBJETIVO_E02:
+            mutados = journal.journal.nodes_in_state(NodeWalState.MUTATED)
+            if len(mutados) != _MUTADOS_OBJETIVO_E02 or len(mutados) >= total_nodos:
+                raise RuntimeError(
+                    "el seam de E02 no alcanzó su pre-condición durable: "
+                    f"mutados={[r.relative_path for r in mutados]}, total={total_nodos}"
+                )
+            miga.marcar(f"mid-apply-mutated:{len(mutados)}:{mutados[0].relative_path}")
+            _crash(CRASH_EXIT["mid_apply_after_mutated"])
+        estado["probes"] += 1
+
+    return probe
 
 
 def _puerto_recovery(miga: _Miga) -> Any:
@@ -445,11 +495,18 @@ def _fase_apply_then_finalize(rig_root: pathlib.Path, crash_en: str | None) -> N
         )
     ).mkdir(parents=True, exist_ok=True)
 
+    # E02: el crash va en el PROBE (post-MUTATED durable del nodo previo), no
+    # en el puerto. Ver ``_probe_con_crash_mid_apply``.
+    kwargs_apply: dict[str, Any] = {}
+    if crash_en == "mid_apply_after_mutated":
+        kwargs_apply["probe"] = _probe_con_crash_mid_apply(miga, journal, len(durable.plan.nodes))
+
     reporte = apply_authorized_plan(
         plan=durable,
         journal=journal,
         session=sesion,
         port=_puerto_mutacion(miga, crash_en),
+        **kwargs_apply,
     )
     miga.marcar(f"apply-fin:{reporte.ok}:{reporte.transaction_state.value}")
 
