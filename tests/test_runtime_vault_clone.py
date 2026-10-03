@@ -1128,6 +1128,7 @@ class TestRuntimeCloneSuiteCanonico:
             "operator_token",
             "operator_verifier_bridge",
             "protection_service",
+            "staging_writer",
             "physical_root",
             "planning_orchestrator",
             "ppsc",

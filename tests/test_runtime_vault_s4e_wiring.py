@@ -23,11 +23,13 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from sky_claw.local.runtime_vault import protection_service as svc
+from sky_claw.local.runtime_vault.authorized_plan_store import DurableWriteOutcome
 from sky_claw.local.runtime_vault.finalization_orchestrator import (
     FinalizationDisposition,
     FinalizationLockOutcome,
@@ -39,6 +41,7 @@ from sky_claw.local.runtime_vault.protection_journal import (
     TERMINAL_TRANSACTION_STATES,
     ProtectionTransactionState,
 )
+from sky_claw.local.runtime_vault.protection_journal_store import ProtectionJournalClassification
 
 _PAQUETE = pathlib.Path(svc.__file__).resolve().parent
 _MODULO = _PAQUETE / "protection_service.py"
@@ -481,6 +484,162 @@ def test_todos_los_parametros_de_s4e_son_keyword_only() -> None:
         assert not posicionales, f"{fn.__name__} acepta posicionales: {posicionales}"
 
 
+def _handle_que_registra() -> Any:
+    """Handle con el contrato de ``GoldenMutationLockHandle`` que S4-E usa.
+
+    Registra CADA evento de cierre en orden, para poder distinguir
+    ``retain_for_inspection()`` (cierra el kernel handle, NO escribe RELEASED)
+    de ``release()`` (cierra y escribe RELEASED).
+    """
+
+    class _Handle:
+        def __init__(self, operation_id: str = _OPERATION_ID) -> None:
+            self.closed = False
+            self.eventos: list[str] = []
+            # La invariante constructiva de RecoveryContinuation lee
+            # `lock.identity.operation_id`: el handle tiene que端口 la
+            # identidad, no solo el comportamiento de cerrar. Un handle sin identidad no
+            # puede convertirse en autoridad para ninguna operacion.
+            self.identity = SimpleNamespace(operation_id=operation_id)
+
+        def retain_for_inspection(self) -> bool:
+            if self.closed:
+                return False
+            self.closed = True
+            self.eventos.append("retain")
+            return True
+
+        def release(self) -> bool:
+            if self.closed:
+                return False
+            self.closed = True
+            self.eventos.append("release")
+            return True
+
+    return _Handle()
+
+
+def _continuacion(handle: Any) -> Any:
+    """``RecoveryContinuation`` REAL, con un ``RecoveryForensicReport`` real.
+
+    Se construye el reporte con su constructor real —invariantes incluidas— en
+    vez de un objeto fabricated: si el contrato de S4-C cambia, el test falla al
+    construir y dice por qué, en vez de ejercitar un shape que ya nadie produce.
+    """
+    from sky_claw.local.runtime_vault.recovery_orchestrator import (
+        RecoveryContinuation,
+        RecoveryDisposition,
+        RecoveryForensicReport,
+        RecoveryIdentitySource,
+        RecoveryLockOutcome,
+    )
+
+    reporte = RecoveryForensicReport(
+        operation_id=_OPERATION_ID,
+        plan_classification=DurableWriteOutcome.DURABLE,
+        journal_classification=ProtectionJournalClassification.VALID,
+        observed_transaction_state=ProtectionTransactionState.APPLYING,
+        node_wal_summary=(),
+        physical_identity_source=RecoveryIdentitySource.AUTHORIZED_PLAN,
+        lock_outcome=RecoveryLockOutcome.ACQUIRED_RETAINED,
+        stale_lock_takeover=True,
+        disposition=RecoveryDisposition.POST_VERIFICATION_REQUIRED,
+        nodes_restored=(),
+        nodes_skipped=(),
+        nodes_pending=(),
+        physical_restoration_completed=False,
+        operator_intervention_required=False,
+        indeterminate_reason="",
+        detail="apply físico completo; el handoff pertenece a S4-D",
+        setsecurityinfo_calls=0,
+    )
+    return RecoveryContinuation(report=reporte, lock=handle)
+
+
+def test_s4e_cierra_el_handle_si_s4d_retorna_temprano(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1 CAUSAL: un retorno temprano de S4-D NO transfiere el ownership.
+
+    El defecto: S4-E marcaba ``ownership tomado`` con cualquier retorno normal
+    de S4-D. Pero ``_reanudar_por_s4d`` puede volver ANTES de
+    ``_adquirir_lock_para_finalizacion`` — plan ilegible, journal ausente,
+    digest incoherente, estado no admisible, normalización COMMITTED. En esos
+    casos el handle queda ABIERTO y el flag hacía que el ``finally`` no lo
+    cerrara: HANDLE LEAK silencioso.
+
+    El contrato correcto es causal, no inferencial: la evidencia es
+    ``handle.closed``. Si S4-D consumió el handle, el kernel handle está
+    cerrado; si retornó antes, sigue abierto y el owner sigue siendo S4-E.
+    """
+    handle = _handle_que_registra()
+    assert not handle.closed, "precondición: el handle transferido está VIVO"
+
+    called: list[str] = []
+
+    def _s4d_retorna_temprano(*args: Any, **kwargs: Any) -> Any:
+        # Retorna NORMALMENTE sin tocar el handle: es el caso early-return.
+        called.append("s4d")
+        return svc.ProtectionOutcome(
+            operation_id=_OPERATION_ID,
+            disposition=svc.ProtectionDisposition.NOT_APPLICABLE,
+            stage=svc.ProtectionStage.FINALIZATION,
+            source_orchestrator="finalization_orchestrator.finalize_protection_transaction",
+        )
+
+    monkeypatch.setattr(svc, "_reanudar_por_s4d", _s4d_retorna_temprano)
+
+    resultado = svc._proyectar_continuacion(_continuacion(handle), svc._DEFAULT_FRONTEND)
+
+    assert called == ["s4d"]
+    # El contrato causal: cerrado, y por RETENCIÓN (no RELEASED).
+    assert handle.closed is True, "handle leak: S4-E no cerró el handle que S4-D no consumió"
+    assert handle.eventos == ["retain"], (
+        f"se esperaba retain_for_inspection() (no RELEASED), no release(): {handle.eventos}. "
+        "Escribir RELEASED sobre un Golden que S4-D no verificó abre la ventana que todo "
+        "este diseño existe para cerrar."
+    )
+    assert resultado is not None
+
+
+def test_s4d_no_toca_el_handle_ya_cerrado_por_s4d(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simétrico: si S4-D liberó el handle, S4-E NO lo vuelve a tocar.
+
+    Es el otro lado del contrato causal: si S4-E hiciera ``retain`` sobre un
+    handle que S4-D ya liberó, dejaría evidencia de una retención que nadie
+    pidió, y el ``release`` de S4-D ya había escrito RELEASED.
+    """
+    handle = _handle_que_registra()
+
+    def _s4d_consume_y_libera(*args: Any, **kwargs: Any) -> Any:
+        kwargs["continuation_lock"].release()
+        return svc.ProtectionOutcome(
+            operation_id=_OPERATION_ID,
+            disposition=svc.ProtectionDisposition.COMMITTED,
+            stage=svc.ProtectionStage.FINALIZATION,
+            source_orchestrator="finalization_orchestrator.finalize_protection_transaction",
+        )
+
+    monkeypatch.setattr(svc, "_reanudar_por_s4d", _s4d_consume_y_libera)
+
+    resultado = svc._proyectar_continuacion(_continuacion(handle), svc._DEFAULT_FRONTEND)
+
+    assert handle.eventos == ["release"], handle.eventos
+    assert resultado.disposition is svc.ProtectionDisposition.COMMITTED
+
+
+def test_la_retencion_del_fallback_es_idempotente() -> None:
+    """``retain_for_inspection`` sobre un handle ya cerrado es no-op.
+
+    S4-E llama a la retencion desde un ``finally``, que puede ejecutarse
+    despues de que S4-D ya cerro el handle. Que sea no-op es lo que hace
+    segura la combinacion, asi que el comportamiento se congela.
+    """
+    handle = _handle_que_registra()
+    assert handle.retain_for_inspection() is True
+    assert handle.retain_for_inspection() is False
+    assert handle.retain_for_inspection() is False
+    assert handle.eventos == ["retain"], handle.eventos
+
+
 # ============================================================================
 # Continuidad del GoldenMutationLock (§21, M-E1)
 # ============================================================================
@@ -542,6 +701,23 @@ class _SesionFalsa:
         return True
 
 
+def _parchar_publicacion(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Sustituye la publicación en disco por un recorder.
+
+    Los tests de COMPOSICION no proban la escritura a disco — eso vive en
+    `test_runtime_vault_s4e_windows_rig.py` y en el anchor dedicado de
+    `publish_candidate_manifest`. Aquí importa que S4-E publica los bytes
+    canónicos ANTES de abrir la frontera, y eso sí se registra.
+    """
+    publicados: list[bytes] = []
+
+    def _fake_publish(operation_id: str, manifest_bytes: bytes, **kwargs: Any) -> None:
+        publicados.append(manifest_bytes)
+
+    monkeypatch.setattr(svc, "publish_candidate_manifest", _fake_publish)
+    return publicados
+
+
 def test_la_sesion_que_llega_a_apply_es_la_misma_que_llega_a_finalize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -562,7 +738,7 @@ def test_la_sesion_que_llega_a_apply_es_la_misma_que_llega_a_finalize(
         return object()
 
     def _fake_journal(*args: Any, **kwargs: Any) -> Any:
-        return object()
+        return _JournalFalso()
 
     def _fake_apply(*, journal: Any, session: Any, **kwargs: Any) -> Any:
         vistos.append(("apply", id(session), sesion.lock.closed))
@@ -573,6 +749,7 @@ def test_la_sesion_que_llega_a_apply_es_la_misma_que_llega_a_finalize(
         return _ReporteFinalizacionFalso()
 
     monkeypatch.setattr(svc, "orchestrate_golden_protection_planning", _planning_exitoso)
+    _parchar_publicacion(monkeypatch)
     monkeypatch.setattr(svc, "establish_privileged_authorization", _fake_auth)
     monkeypatch.setattr(svc, "promote_durable_authorized_plan", _fake_promote)
     monkeypatch.setattr(svc, "create_protection_journal", _fake_journal)
@@ -617,9 +794,10 @@ def test_el_lock_se_libera_solo_tras_el_desenlace_terminal(
     sesion.lock.release = lambda: (orden.append("release"), True)[1]  # type: ignore[method-assign]
 
     monkeypatch.setattr(svc, "orchestrate_golden_protection_planning", _planning_exitoso)
+    _parchar_publicacion(monkeypatch)
     monkeypatch.setattr(svc, "establish_privileged_authorization", lambda **k: (object(), sesion))
     monkeypatch.setattr(svc, "promote_durable_authorized_plan", lambda **k: object())
-    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: object())
+    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: _JournalFalso())
     monkeypatch.setattr(svc, "apply_authorized_plan", lambda **k: _ReporteApplyFalso())
     monkeypatch.setattr(svc, "finalize_protection_transaction", _fake_finalize)
 
@@ -645,9 +823,10 @@ def test_un_desenlace_no_terminal_retiene_el_lock(monkeypatch: pytest.MonkeyPatc
         return _ReporteFinalizacionFalso(disposition=FinalizationDisposition.INDETERMINATE)
 
     monkeypatch.setattr(svc, "orchestrate_golden_protection_planning", _planning_exitoso)
+    _parchar_publicacion(monkeypatch)
     monkeypatch.setattr(svc, "establish_privileged_authorization", lambda **k: (object(), sesion))
     monkeypatch.setattr(svc, "promote_durable_authorized_plan", lambda **k: object())
-    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: object())
+    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: _JournalFalso())
     monkeypatch.setattr(svc, "apply_authorized_plan", lambda **k: _ReporteApplyFalso())
     monkeypatch.setattr(svc, "finalize_protection_transaction", _fake_finalize)
 
@@ -762,9 +941,10 @@ def test_la_frontera_libera_tras_un_rollback_cerrado(monkeypatch: pytest.MonkeyP
     """
     sesion = _SesionFalsa()
     monkeypatch.setattr(svc, "orchestrate_golden_protection_planning", _planning_exitoso)
+    _parchar_publicacion(monkeypatch)
     monkeypatch.setattr(svc, "establish_privileged_authorization", lambda **k: (object(), sesion))
     monkeypatch.setattr(svc, "promote_durable_authorized_plan", lambda **k: object())
-    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: object())
+    monkeypatch.setattr(svc, "create_protection_journal", lambda *a, **k: _JournalFalso())
     monkeypatch.setattr(
         svc,
         "apply_authorized_plan",
@@ -881,7 +1061,7 @@ def test_el_routing_ignora_la_memoria_del_proceso_anterior(
 
     monkeypatch.setattr(svc, "classify_protection_journal", lambda *a, **k: _Clasif())
     monkeypatch.setattr(svc, "load_durable_authorized_plan", lambda *a, **k: object())
-    monkeypatch.setattr(svc, "open_protection_journal", lambda *a, **k: object())
+    monkeypatch.setattr(svc, "open_protection_journal", lambda *a, **k: _JournalFalso())
     monkeypatch.setattr(svc, "build_default_verification_port", lambda: object())
     monkeypatch.setattr(svc, "finalize_protection_transaction", _fake_finalize)
 
@@ -1017,11 +1197,24 @@ def _planning_exitoso(*args: Any, **kwargs: Any) -> Any:
 
     from sky_claw.local.runtime_vault.planning_orchestrator import GP2PlanningDisposition
 
+    class _PlanSellado:
+        """Lo mínimo que S4-E lee del plan sellado.
+
+        Antes de P2 el fresh path no tocaba ``sealed_plan``, así que el fake
+        era ``object()``. Con la publicación del candidate manifest, S4-E lee
+        ``candidate_manifest_bytes`` — y seguir mintiendo acá habría dejado el
+        camino fresco entero sin ejercitar.
+        """
+
+        def __init__(self) -> None:
+            self.candidate_manifest_bytes = b'{"operation_id":"fake","nodos":[]}'
+            self.staging_digest = "0" * 64
+
     return SimpleNamespace(
         disposition=GP2PlanningDisposition.PREPARED,
         success=True,
         message="",
-        sealed_plan=object(),
+        sealed_plan=_PlanSellado(),
     )
 
 
@@ -1046,6 +1239,28 @@ def test_el_coordinador_solo_usa_el_seam_de_planning() -> None:
         "S4-E lee mas campos de GP2Result de los previstos: revisa si sigue siendo un cableador "
         "o si se convertio en una segunda capa de planificacion."
     )
+
+
+class _JournalFalso:
+    """Journal con el CONTRATO REAL de `DurableProtectionJournal`.
+
+    S4-E ahora cierra el journal en `finally` (es un handle de Win32 con
+    share mode exclusivo), así que el fake tiene que exponer `is_closed` y
+    `close()` de verdad. Un `object()` genérico dejaba que el test pasara
+    mientras el código de producción fallaba con AttributeError.
+    """
+
+    def __init__(self) -> None:
+        self._cerrado = False
+        self.cierres = 0
+
+    @property
+    def is_closed(self) -> bool:
+        return self._cerrado
+
+    def close(self) -> None:
+        self.cierres += 1
+        self._cerrado = True
 
 
 class _ReporteApplyFalso:

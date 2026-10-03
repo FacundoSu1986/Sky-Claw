@@ -301,6 +301,120 @@ def derive_candidate_manifest_path(
     )
 
 
+class CandidateManifestPublishError(AuthorizedPlanError):
+    """La publicacion del candidate manifest en staging no pudo confirmarse."""
+
+
+class CandidateManifestReparseError(CandidateManifestPublishError):
+    """La ruta de staging es o contiene un enlace: fail-closed sin publicar."""
+
+
+def publish_candidate_manifest(
+    operation_id: str,
+    manifest_bytes: bytes,
+    *,
+    programdata_resolver: Callable[[], object] | None = None,
+    staging_writer: Any = None,
+) -> pathlib.Path:
+    """Publica los bytes CANONICOS del candidate manifest en UNTRUSTED_STAGING.
+
+    Es la pieza que faltaba entre planning y S4-A:
+
+    ``planning`` calcula ``SealedGoldenProtectionPlan.candidate_manifest_bytes``
+    (serializacion canonica, digest ya ligado) y esta primitive lo deja en
+    disco para que ``promote_durable_authorized_plan`` pueda RELEERLO y
+    verificarlo. El digest no se pasa por parametro ni se recalcula aca: S4-A
+    lo comprueba contra los bytes que relee, que es la propiedad que importa —
+    si alguien sustituye el manifest entre la publicacion y la promocion, el
+    digest no coincide y la promocion falla cerrada.
+
+    Contrato:
+
+    * **La ruta se deriva internamente** de ``operation_id`` +
+      ``programdata_resolver`` (nunca del caller), reusando la MISMA
+      derivacion que usa la lectura. Publicar y leer no pueden divergir.
+    * **Create-once**: si el manifest ya existe, NO se sustituye. Un replay
+      con el mismo contenido es un no-op; un replay con contenido distinto
+      falla cerrado en vez de pisar evidencia.
+    * **Reparse rechazado**: la ruta de staging y su directorio padre no
+      pueden ser symlink ni junction. Staging es UNTRUSTED, pero "untrusted"
+      no significa "cualquiera puede redirigir la escritura".
+    * **Durabilidad declarada honestamente**: se exige ``FlushFileBuffers``
+      verificado y se declara la misma limitacion que el resto del modulo
+      (``POWER_LOSS_DIRECTORY_ENTRY_DURABILITY_LIMITATION``): Win32 no
+      documenta un equivalente a ``fsync(parent_directory)``.
+
+    Staging sigue siendo UNTRUSTED: esto no lo convierte en autoridad. El
+    recovery NUNCA lee de aca (ver los anchors AST de
+    ``test_runtime_vault_s4e_wiring.py``); sólo la promocion de S4-A relee el
+    manifest, y lo revalida contra el digest del plan y los gates de esquema,
+    PPSC, TGR y PRE.
+    """
+    if not isinstance(manifest_bytes, bytes) or not manifest_bytes:
+        raise CandidateManifestPublishError("manifest_bytes debe ser bytes no vacío")
+    # La derivación valida el operation_id y devuelve la ruta canónica: el
+    # caller no puede influir en dónde se escribe.
+    dest = derive_candidate_manifest_path(operation_id, programdata_resolver=programdata_resolver)
+    parent = dest.parent
+
+    # Reparse: ni el directorio de la operación ni `staging/` pueden ser un
+    # enlace. Sin esto, un junction en staging redirigiria la escritura fuera
+    # del namespace — y staging es justo la zona que no es de confianza.
+    from sky_claw.app.security.links import link_kind_and_identity_or_raise
+
+    try:
+        for candidato in (parent, parent.parent):
+            if not candidato.exists():
+                continue
+            kind, _identity = link_kind_and_identity_or_raise(candidato)
+            if kind is not None:
+                raise CandidateManifestReparseError(
+                    f"la ruta de staging es un enlace ({kind}): fail-closed sin publicar"
+                )
+    except CandidateManifestPublishError:
+        raise
+    except OSError as exc:
+        raise CandidateManifestPublishError(f"no se pudo verificar la ruta de staging '{parent}': {exc}") from exc
+
+    writer = staging_writer or _default_staging_writer()
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        writer.write_create_once(dest, manifest_bytes, CANDIDATE_MANIFEST_FILE_NAME)
+    except CandidateManifestPublishError:
+        raise
+    except OSError as exc:
+        raise CandidateManifestPublishError(f"no se pudo publicar el candidate manifest en '{dest}': {exc}") from exc
+
+    # Re-lectura byte a byte: la promocion de S4-A relee del disco, asi que lo
+    # que hay que confirmar es que lo publicado ES lo que se lee ahora. Es la
+    # misma disciplina que la relectura del plan durable (paso 6 del §12.2 7e).
+    releido = dest.read_bytes()
+    if releido != manifest_bytes:
+        raise CandidateManifestPublishError(
+            f"re-lectura del candidate manifest no coincide en '{dest}': "
+            "no se publica autoridad sobre bytes que nadie puede releer"
+        )
+    return dest
+
+
+def _default_staging_writer() -> Any:
+    """Writer de staging: create-once + flush verificado, sin SD canónico.
+
+    Deliberadamente DISTINTO del writer del plan. El candidate manifest vive en
+    UNTRUSTED_STAGING y NO lleva el SD canónico del namespace protegido: aplicarselo
+    seria afirmar una proteccion que el contrato no define para staging, y
+    presupondria que el SID propietario existe en la maquina — que es
+    justamente lo que todavia no esta provisionado para el helper.
+
+    Lo que si exige: create-once real (fallo si ya existe), contenido escrito
+    a un hermano provisional y renombrado —publicacion no-reemplazante— y
+    ``FlushFileBuffers`` verificado a traves del Handle o ``os.fsync``.
+    """
+    from sky_claw.local.runtime_vault.staging_writer import StagingCreateOnceWriter
+
+    return StagingCreateOnceWriter()
+
+
 def _validate_operation_id(value: object) -> str:
     if not isinstance(value, str):
         raise AuthorizedPlanSchemaError("operation_id debe ser string")
@@ -602,6 +716,8 @@ __all__ = [
     "AuthorizedPlanDurableWriter",
     "AuthorizedPlanLockBindingError",
     "AuthorizedPlanUnsupportedError",
+    "CandidateManifestPublishError",
+    "CandidateManifestReparseError",
     "CandidateManifestUnavailableError",
     "DurableAuthorizedPlan",
     "DurableAuthorizedPlanWriteError",
@@ -614,5 +730,6 @@ __all__ = [
     "load_authorized_plan",
     "load_durable_authorized_plan",
     "promote_durable_authorized_plan",
+    "publish_candidate_manifest",
     "read_candidate_manifest_bytes",
 ]

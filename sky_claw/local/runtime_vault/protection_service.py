@@ -79,6 +79,7 @@ from sky_claw.local.runtime_vault.authorized_plan_store import (
     derive_authorized_plan_dir,
     load_durable_authorized_plan,
     promote_durable_authorized_plan,
+    publish_candidate_manifest,
 )
 from sky_claw.local.runtime_vault.coordinator_identity import (
     CoordinatorIdentityProbeProvider,
@@ -641,6 +642,38 @@ def protect_golden_root(
     if not planificacion.success or planificacion.sealed_plan is None:
         return _rechazo_de_planning(planificacion, operation_id)
 
+    # GP2-S4E / P2: publicar el candidate manifest ANTES de abrir la frontera.
+    #
+    # Sin esto, `promote_durable_authorized_plan` (authorized_plan_store.py)
+    # falla con `CandidateManifestUnavailableError`: relee
+    # `staging/<op>/candidate_manifest.json` y nada lo escribía. El gap estaba
+    # entre planning y S4-A, no dentro de ninguno de los dos.
+    #
+    # El orden importa: los bytes canónicos salen de planning con el digest ya
+    # ligado; S4-A los RELEE y revalida. Publicar antes de la frontera
+    # privileged evita abrirla para una promoción que va a fallar, y deja el
+    # manifest en disco para que el digest de S4-A sea el que decide.
+    #
+    # Staging sigue siendo UNTRUSTED: esto no lo convierte en autoridad. El
+    # recovery nunca lee de acá; los anchors AST de
+    # `test_runtime_vault_s4e_wiring.py` lo prohíben por import y por llamada.
+    try:
+        publish_candidate_manifest(
+            operation_id,
+            planificacion.sealed_plan.candidate_manifest_bytes,
+            programdata_resolver=frontend.programdata_resolver,
+        )
+    except Exception as exc:  # noqa: BLE001 — no se abre frontera para una promoción que va a fallar
+        return _resultado(
+            operation_id=operation_id,
+            disposition=ProtectionDisposition.INDETERMINATE,
+            stage=ProtectionStage.PLANNING,
+            source_orchestrator="authorized_plan_store.publish_candidate_manifest",
+            detail="no se pudo publicar el candidate manifest en staging; no se abrió frontera",
+            fail_closed_reason=f"{type(exc).__name__}: {exc}",
+            operator_intervention_required=True,
+        )
+
     session: PrivilegedBoundarySession | None = None
     try:
         if frontend.authorization_establisher is not None:
@@ -675,36 +708,46 @@ def protect_golden_root(
             programdata_resolver=frontend.programdata_resolver,
             plan_writer=frontend.plan_writer,
         )
-        journal: DurableProtectionJournal = create_protection_journal(
-            plan,
-            programdata_resolver=frontend.programdata_resolver,
-            kernel=frontend.journal_kernel,
-        )
-        reporte_apply = apply_authorized_plan(
-            plan=plan,
-            journal=journal,
-            session=session,
-            port=frontend.mutation_port,
-        )
-        if reporte_apply.rollback_error is not None or reporte_apply.apply_error is not None:
-            desenlace = _proyeccion_de_apply(reporte_apply)
-            return desenlace
+        journal: DurableProtectionJournal | None = None
+        try:
+            journal = create_protection_journal(
+                plan,
+                programdata_resolver=frontend.programdata_resolver,
+                kernel=frontend.journal_kernel,
+            )
+            reporte_apply = apply_authorized_plan(
+                plan=plan,
+                journal=journal,
+                session=session,
+                port=frontend.mutation_port,
+            )
+            if reporte_apply.rollback_error is not None or reporte_apply.apply_error is not None:
+                desenlace = _proyeccion_de_apply(reporte_apply)
+                return desenlace
 
-        puerto = frontend.verification_port
-        if puerto is None:
-            puerto = build_default_verification_port()
-        reporte_final = finalize_protection_transaction(
-            operation_id=operation_id,
-            plan=plan,
-            journal=journal,
-            port=puerto,
-            programdata_resolver=frontend.programdata_resolver,
-            archive_writer=frontend.archive_writer,
-            lock_kernel=frontend.lock_kernel,
-            session=session,
-        )
-        desenlace = _proyeccion_de_finalizacion(reporte_final)
-        return desenlace
+            puerto = frontend.verification_port
+            if puerto is None:
+                puerto = build_default_verification_port()
+            reporte_final = finalize_protection_transaction(
+                operation_id=operation_id,
+                plan=plan,
+                journal=journal,
+                port=puerto,
+                programdata_resolver=frontend.programdata_resolver,
+                archive_writer=frontend.archive_writer,
+                lock_kernel=frontend.lock_kernel,
+                session=session,
+            )
+            desenlace = _proyeccion_de_finalizacion(reporte_final)
+            return desenlace
+        finally:
+            # El journal es un HANDLE de Win32 con share mode exclusivo: sin
+            # cerrarlo, la re-apertura posterior del mismo journal en el mismo
+            # proceso falla con sharing violation, y el RIG lo comprueba.
+            # Se cierra DESPUÉS de que S4-B y S4-D terminaron de usarlo — cerrarlo
+            # antes los dejaría escribiendo sobre un handle cerrado.
+            if journal is not None and not journal.is_closed:
+                journal.close()
     except Exception as exc:  # noqa: BLE001 — boundary: INDETERMINATE, nunca éxito
         logger.exception(
             "Fallo inesperado en la transacción de protección; fail-closed con evidencia preservada",
@@ -921,16 +964,13 @@ def _proyectar_continuacion(
     `closed` lo vuelve un no-op, pero el contrato queda explícito en el código.
     """
     handle = continuation.lock
-    s4d_tomo_ownership = False
     try:
-        desenlace = _reanudar_por_s4d(
+        return _reanudar_por_s4d(
             continuation.report.operation_id,
             frontend,
             ruta=ruta,
             continuation_lock=handle,
         )
-        s4d_tomo_ownership = True
-        return desenlace
     except Exception as exc:  # noqa: BLE001 — boundary: INDETERMINATE, nunca éxito
         logger.exception(
             "Fallo en el handoff S4-C -> S4-D; el handle transferido queda retenido",
@@ -951,7 +991,23 @@ def _proyectar_continuacion(
             operator_intervention_required=True,
         )
     finally:
-        if not s4d_tomo_ownership and not handle.closed:
+        # Contrato CAUSAL, no inferencia. Un retorno normal de S4-D NO prueba
+        # que consumió el handle: `_reanudar_por_s4d` puede volver temprano
+        # (plan ilegible, journal ausente, digest incoherente, estado no
+        # admisible, normalización COMMITTED) sin haber llegado jamás a
+        # `_adquirir_lock_para_finalizacion`. Inferir ownership desde el retorno
+        # producía un HANDLE LEAK silencioso.
+        #
+        # La evidencia es `handle.closed`: si S4-D consumió y liberó/retenió el
+        # handle, el kernel handle está cerrado; si retornó antes de consumirlo,
+        # sigue abierto y el owner sigue siendo S4-E.
+        #
+        # Se usa `retain_for_inspection()` y NUNCA `release()`: cerrar el
+        # kernel handle sin escribir `RELEASED` deja la evidencia durable no
+        # terminal y permite que el recovery futuro re-tome la MISMA
+        # operación. Escribir `RELEASED` sobre un Golden que S4-D no verificó
+        # abriría la ventana que todo este diseño existe para evitar.
+        if not handle.closed:
             handle.retain_for_inspection()
 
 
@@ -987,18 +1043,55 @@ def _reanudar_por_s4d(
         )
 
     puerto = frontend.verification_port
-    if puerto is None:
-        puerto = build_default_verification_port()
-    reporte = finalize_protection_transaction(
-        operation_id=operation_id,
-        plan=plan,
-        journal=journal,
-        port=puerto,
-        programdata_resolver=frontend.programdata_resolver,
-        archive_writer=frontend.archive_writer,
-        lock_kernel=frontend.lock_kernel,
-        continuation_lock=continuation_lock,
-    )
+    try:
+        if puerto is None:
+            puerto = build_default_verification_port()
+        reporte = finalize_protection_transaction(
+            operation_id=operation_id,
+            plan=plan,
+            journal=journal,
+            port=puerto,
+            programdata_resolver=frontend.programdata_resolver,
+            archive_writer=frontend.archive_writer,
+            lock_kernel=frontend.lock_kernel,
+            continuation_lock=continuation_lock,
+        )
+    except Exception as exc:  # noqa: BLE001 — el servicio promete ProtectionOutcome; nada escapa
+        #
+        # Frontera de dominio de S4-D: construcción del puerto de verificación
+        # (plataforma no soportada, WAL inválido, puerto mal formado), el
+        # finalizador mismo y la validación del lock. Todo eso se traduce a
+        # INDETERMINATE con la cadena causal, NUNCA a un desenlace que afirme
+        # éxito.
+        #
+        # `lock_retained=True` es la opción honesta: si el error ocurrió con el
+        # handle en manos de S4-D, ya lo retuvo él; si ocurrió antes, el
+        # `finally` de `_proyectar_continuacion` (o el cierre de la frontera en
+        # el camino fresh) lo retiene. En ninguno de los dos casos corresponde
+        # afirmar que el lock quedó libre.
+        logger.exception(
+            "Fallo de dominio en S4-D; fail-closed con evidencia preservada",
+            extra={"operation_id": operation_id, "stage": ProtectionStage.FINALIZATION.value},
+        )
+        return _resultado(
+            operation_id=operation_id,
+            disposition=ProtectionDisposition.INDETERMINATE,
+            stage=ProtectionStage.FINALIZATION,
+            source_orchestrator="finalization_orchestrator.finalize_protection_transaction",
+            detail="S4-D no pudo completarse; la evidencia durable queda sin resolver",
+            fail_closed_reason=f"{type(exc).__name__}: {exc}",
+            route=ruta,
+            lock_retained=True,
+            operator_intervention_required=True,
+        )
+    finally:
+        # El journal abierto es un HANDLE de Win32. Sin cerrarlo, la
+        # re-apertura posterior del mismo journal en el mismo proceso falla con
+        # sharing violation. Se cierra exactamente una vez, después de que S4-D
+        # terminó de usarlo — nunca antes, porque S4-D lee y escribe en él.
+        if not journal.is_closed:
+            journal.close()
+
     return _proyeccion_de_finalizacion(reporte, ruta=ruta)
 
 
