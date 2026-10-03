@@ -11,7 +11,6 @@ from sky_claw.local.runtime_vault import protection_service as svc
 from sky_claw.local.runtime_vault.authorized_plan_store import (
     CANDIDATE_MANIFEST_FILE_NAME,
     CandidateManifestPublishError,
-    CandidateManifestReparseError,
     derive_candidate_manifest_path,
     publish_candidate_manifest,
     read_candidate_manifest_bytes,
@@ -303,28 +302,30 @@ def test_rechaza_reparse_en_la_ruta_de_staging(tmp_path: pathlib.Path) -> None:
     """M-CM3: un enlace en la ruta de staging falla cerrado sin publicar.
 
     Staging es UNTRUSTED, pero "untrusted" no significa "cualquiera puede
-    redirigir la escritura": un junction en `staging/<op>` mandaría el manifest
+    redirigir la escritura": un enlace en `staging/<op>` mandaría el manifest
     fuera del namespace.
-    """
-    staging = tmp_path / "programdata" / "runtime_vault" / "staging"
-    staging.mkdir(parents=True)
-    destino = staging / _OP
-    destino.mkdir()
-    # Junction hacia fuera del namespace.
-    fuera = tmp_path / "fuera"
-    fuera.mkdir()
-    proceso = pathlib.Path(".")
 
-    if not hasattr(proceso, "symlink_to"):  # pragma: no cover - plataforma sin symlinks
-        pytest.skip("la plataforma no permite crear symlinks/junctions para el anchor")
+    **La ruta se DERIVA, no se supone.** Una versión anterior de este test
+    construía el enlace a mano en `<programdata>/runtime_vault/staging/<op>`,
+    pero la ruta real lleva un segmento `Sky-Claw/` más:
+    `<programdata>/Sky-Claw/runtime_vault/staging/<op>`. El enlace quedaba en
+    un directorio que la primitive nunca mira. Localmente eso no se notó porque
+    crear el symlink exige privilegio y el test se saltaba ANTES de validar
+    nada — o sea, el anchor llevaba un tiempo sin ejercitarse. En el runner de
+    CI el symlink sí se crea, y el fallo se-manifestó como "DID NOT RAISE".
+    """
+    fuera = tmp_path / "fuera-del-namespace"
+    fuera.mkdir()
+    padre_real = derive_candidate_manifest_path(_OP, programdata_resolver=_resolver(tmp_path)).parent
+    padre_real.mkdir(parents=True)
 
     try:
-        destino.rmdir()
-        destino.symlink_to(fuera, target_is_directory=True)
+        padre_real.rmdir()
+        padre_real.symlink_to(fuera, target_is_directory=True)
     except OSError as exc:  # pragma: no cover - sin privilegio de symlink
-        pytest.skip(f"no se pudo crear el enlace de prueba: {exc}")
+        pytest.skip(f"la plataforma no permite crear el enlace de prueba: {exc}")
 
-    with pytest.raises(CandidateManifestReparseError):
+    with pytest.raises(CandidateManifestPublishError):
         publish_candidate_manifest(_OP, b"x", programdata_resolver=_resolver(tmp_path))
 
     assert list(fuera.iterdir()) == [], "no se publicó nada fuera del namespace"
