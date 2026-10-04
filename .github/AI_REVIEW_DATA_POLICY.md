@@ -70,10 +70,17 @@ La siguiente sección auditable delimita los modelos exactos aprobados exclusiva
   * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
   * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
 
-* `openrouter/minimax/minimax-m3:free`
-  * Proveedor / Familia: MiniMax (MiniMax-M3) vía OpenRouter
-  * Fecha de revisión: 2026-08-29
-  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
-  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
-  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
+<!-- 2026-10-04: RETIRADO `openrouter/minimax/minimax-m3:free`. El slug dejo de existir en
+     OpenRouter (404 "This model is unavailable for free"), por lo que quedaba como modelo
+     muerto en el allowlist y como fallback invalido. Tras el cambio ningun workflow lo referencia. -->
 <!-- approved-models:end -->
+
+> **Limitacion operativa conocida (2026-10-04, ver issue #678).** Los endpoints `:free`
+> comparten un limite diario **por cuenta** de 50 requests (`X-RateLimit-Limit: 50`,
+> `X-RateLimit-Remaining: 0` al agotarse). Con dos revisiones por push
+> (`handle_push_trigger` + `/review` en dos workflows distintos), ese techo es
+> estructuralmente insuficiente en dias de alta actividad y ambos workflows fallan en
+> cascada con HTTP 429. **No es un problema de configuracion de modelos** — resolverlo exige
+> creditos en OpenRouter (10 creditos habilitan 1000 req/dia) o consolidar la revision en un
+> unico workflow. Retirar el slug muerto corrige el 404, pero no el 429: hasta que la cuota
+> se resetee o se carguen creditos, estos checks seguiran en rojo.
