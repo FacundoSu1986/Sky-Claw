@@ -54,11 +54,22 @@ _SEP: Final[bytes] = b"\x00"
 _DOMAIN: Final[bytes] = b"frozen-runtime:directory-membership:v1\x00"
 
 
-class DirectoryMembershipError(FrozenRuntimeError):
+class SourceObservationError(FrozenRuntimeError):
+    """Base de fallos al observar (archivos + membership + identidad) un arbol.
+
+    Existe para que un caller que quiere convertir CUALQUIER fallo de observacion
+    en un resultado tipado no tenga que enumerar los hermanos: antes
+    ``TreeObservationCoherenceError`` era hermano de ``DirectoryMembershipError``
+    (no subclase), asi que un handler que atrapaba sólo el segundo dejaba pasar
+    la incoherencia como excepcion en vez de fail-closed (Codex sobre #682).
+    """
+
+
+class DirectoryMembershipError(SourceObservationError):
     """No se pudo capturar una membership de directorios fiable (fail-closed)."""
 
 
-class TreeObservationCoherenceError(FrozenRuntimeError):
+class TreeObservationCoherenceError(SourceObservationError):
     """Las dos mitades de la observacion no describen el mismo instante.
 
     La garantia que se pierde al aceptarla: la membership del ``TreeDigest`` y

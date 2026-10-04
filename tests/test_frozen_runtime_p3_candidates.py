@@ -402,7 +402,6 @@ def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:
     assert "copia fallo" in (resultado.metadata.failure_reason or "")
 
 
-@junction_guard
 def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:
     """CodeRabbit #2: un `*.json` con nombre no conforme se REGISTRA, no lanza.
 
@@ -418,8 +417,112 @@ def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:
 
     inventario = descubrir_candidates(root)
     estados = {r.candidate_id: r.state for r in inventario.records}
-    assert estados[resultado.candidate_id] is GenerationVerificationState.VALID
+    # El inventario clasifica, no verifica: el READY persistido es UNKNOWN hasta
+    # que corra la verificacion fresca, y el nombre no confiable tambien.
+    assert estados[resultado.candidate_id] is GenerationVerificationState.UNKNOWN
     assert estados[None] is GenerationVerificationState.UNKNOWN
+
+
+def test_codex_el_inventario_no_reporta_ready_como_valid(rig) -> None:
+    """Codex #904 / P1: el inventario NO es verificacion fresca.
+
+    Tras borrar el payload de un Candidate READY, `descubrir_candidates` no puede
+    seguir diciendo VALID sólo por la metadata persistida: un caller lo tomaria
+    como promovible. Se reporta UNKNOWN hasta que corra la verificacion fresca.
+    """
+    source, root = rig
+    resultado = _crear(source, root)
+    assert resultado.state is GenerationVerificationState.VALID
+
+    # El payload desaparece: la metadata sigue diciendo READY.
+    shutil.rmtree(payload_dir(candidate_dir(root, resultado.candidate_id or "")))
+
+    registros = descubrir_candidates(root).records
+    assert len(registros) == 1
+    assert registros[0].state is GenerationVerificationState.UNKNOWN
+    # Y la verificacion fresca sí lo declara INVALID.
+    assert verificar_candidate(root, resultado.candidate_id or "").state is (GenerationVerificationState.INVALID)
+
+
+def test_codex_la_metadata_esta_atada_a_su_nombre_de_archivo(rig) -> None:
+    """Codex #434 / P2: la metadata de B no puede hacerse pasar por A.
+
+    Sin este binding, copiar el JSON de B sobre el de A (misma fuente: caso
+    normal) haria que `verificar_candidate(A)` devolviera VALID con la identidad
+    de B.
+    """
+    source, root = rig
+    a = _crear(source, root, cid="cand_" + "1" * 32)
+    b = _crear(source, root, cid="cand_" + "2" * 32)
+    assert a.state is b.state is GenerationVerificationState.VALID
+
+    shutil.copyfile(
+        candidate_metadata_path(root, "cand_" + "2" * 32),
+        candidate_metadata_path(root, "cand_" + "1" * 32),
+    )
+
+    veredicto = verificar_candidate(root, "cand_" + "1" * 32)
+    assert veredicto.state is GenerationVerificationState.UNKNOWN
+    assert "identidad ambigua" in veredicto.message
+
+
+def test_codex_la_procedencia_se_compara_en_la_triada(rig) -> None:
+    """Codex #469 / P2: un POST re-bound a otro appid no puede re-verificar VALID."""
+    import json
+
+    source, root = rig
+    resultado = _crear(source, root)
+    ruta_meta = candidate_metadata_path(root, resultado.candidate_id or "")
+    datos = json.loads(ruta_meta.read_text(encoding="utf-8"))
+    datos["post_source_evidence"]["appid"] = "999999"
+    datos["post_source_evidence"]["provider_metadata"]["appid"] = "999999"
+    ruta_meta.write_text(json.dumps(datos, indent=2), encoding="utf-8")
+
+    veredicto = verificar_candidate(root, resultado.candidate_id or "")
+    assert veredicto.state is GenerationVerificationState.INVALID
+    assert "procedencia" in veredicto.message
+
+
+def test_codex_la_ventana_de_estabilizacion_conserva_el_default_de_p1() -> None:
+    """Codex #643 / P1: el default productivo es el de P1, no cero."""
+    import inspect
+
+    from sky_claw.local.frozen_runtime.stabilization import DEFAULT_QUIET_WINDOW_SECONDS
+
+    default = inspect.signature(crear_candidate).parameters["quiet_window_seconds"].default
+    assert default == DEFAULT_QUIET_WINDOW_SECONDS
+    assert default > 0.0
+
+
+def test_codex_un_root_dentro_de_la_fuente_es_rechazado(rig) -> None:
+    """Codex #665 / P1: el storage no puede estar dentro de la Managed Source.
+
+    Persistir BUILDING y copiar el payload dentro del arbol que Steam administra
+    violaria MANAGED_SOURCE_WRITES=NO. La admision de storage acepta
+    `managed_source_root` OPCIONAL, asi que un root elegido sin esa referencia
+    debe re-admitirse contra la fuente CONCRETA antes de tocar nada.
+    """
+    source, root = rig
+    dentro = source.root / "skyclaw-storage-candidate"
+
+    resultado = crear_candidate(source, root=dentro, quiet_window_seconds=0.0, sleep=lambda _s: None)
+
+    assert resultado.state is GenerationVerificationState.INDETERMINATE
+    assert "admisible" in resultado.message
+    # Lo esencial: NADA se escribio dentro de la Managed Source.
+    assert not dentro.exists()
+
+
+def test_codex_un_root_que_contiene_la_fuente_es_rechazado(rig, tmp_path) -> None:
+    """Codex #665 (el otro sentido): el storage no puede CONTENER la fuente."""
+    source, root = rig
+    contenedor = source.root.parent  # contiene a la Managed Source
+
+    resultado = crear_candidate(source, root=contenedor, quiet_window_seconds=0.0, sleep=lambda _s: None)
+
+    assert resultado.state is GenerationVerificationState.INDETERMINATE
+    assert "admisible" in resultado.message
+    assert not (contenedor / "candidates").exists()
 
 
 @junction_guard

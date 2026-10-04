@@ -87,8 +87,16 @@ def _modulos_del_paquete() -> tuple[pathlib.Path, ...]:
 def _es_mutador(nodo: ast.Attribute) -> bool:
     if nodo.attr not in MUTADORES_FILESYSTEM:
         return False
-    if nodo.attr in ("replace", "rename"):
-        # `str.replace()` NO es mutación de filesystem; `Path.replace()` SÍ lo es
+    if nodo.attr == "rename":
+        # `.rename` NO existe en `str`/`bytes`: todo `X.rename(...)` es del
+        # filesystem (`os.rename`, `Path.rename`). Tratarlo como ambiguo, como
+        # se hacia con `replace`, dejaba pasar `ruta.rename(destino)` -- la forma
+        # ordinaria cuando `ruta` ya es un `Path` -- y un mutador no-atomico podia
+        # entrar mientras el ancla seguia verde (Codex sobre #682).
+        return True
+    if nodo.attr == "replace":
+        # SOLO `replace` es ambiguo (existe `str.replace`); `rename` no tiene
+        # equivalente en texto y se trata aparte arriba.
         # y es la forma que un mutador usaría para hacer un swap no-atómico.
         #
         # La regla que las separa sin análisis de tipos: una variable de texto es
@@ -178,6 +186,18 @@ def test_el_oracle_distingue_str_replace_de_path_replace() -> None:
     assert _mutadores_de_fuente(texto) == set()
     assert _mutadores_de_fuente(pathlib_) == {"replace"}
     assert _mutadores_de_fuente(os_) == {"replace"}
+
+
+def test_el_oracle_detecta_rename_sobre_una_variable_path() -> None:
+    """`ruta.rename(...)` es mutación aunque el receptor sea un `Name` (Codex #682).
+
+    `str`/`bytes` no tienen `.rename`, así que sólo `replace` es ambiguo. Antes
+    se aplicaba a `rename` la misma regla de receptor que a `replace`, y la forma
+    ORDINARIA de renombrar un Path ya construido quedaba invisible.
+    """
+    assert _mutadores_de_fuente("def f(ruta, destino):\n    ruta.rename(destino)\n") == {"rename"}
+    assert _mutadores_de_fuente("def f():\n    os.rename(a, b)\n") == {"rename"}
+    assert _mutadores_de_fuente("def f(p):\n    pathlib.Path(p).rename(d)\n") == {"rename"}
 
 
 def _mutadores_de_fuente(fuente: str) -> set[str]:

@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable
 
 from sky_claw.local.frozen_runtime.candidate_id import (
+    CANDIDATE_ID_PREFIX,
     default_candidate_id_factory,
     nuevo_candidate_id,
     validar_candidate_id,
@@ -49,9 +50,9 @@ from sky_claw.local.frozen_runtime.independence import (
     verify_generation_physical_integrity,
 )
 from sky_claw.local.frozen_runtime.membership import (
-    DirectoryMembershipError,
     DirectoryMembershipEvidence,
     SealedTreeObservation,
+    SourceObservationError,
     observar_arbol_sellado,
 )
 from sky_claw.local.frozen_runtime.models import (
@@ -61,10 +62,14 @@ from sky_claw.local.frozen_runtime.models import (
     ProviderMetadataObservation,
     SourceSnapshotEvidence,
 )
-from sky_claw.local.frozen_runtime.stabilization import obtain_stable_source_snapshot
+from sky_claw.local.frozen_runtime.stabilization import (
+    DEFAULT_QUIET_WINDOW_SECONDS,
+    obtain_stable_source_snapshot,
+)
 from sky_claw.local.frozen_runtime.state import write_json_atomic
 from sky_claw.local.frozen_runtime.storage import (
     admitir_directorio_storage,
+    admitir_storage_root,
     candidates_dir,
     state_dir,
 )
@@ -109,11 +114,19 @@ def candidate_metadata_path(root: pathlib.Path, candidate_id: str) -> pathlib.Pa
 def _exigir_candidates_state_dir(root: pathlib.Path) -> pathlib.Path:
     """Admite fail-closed el directorio de metadata antes de escribir en el."""
     directorio = candidates_state_dir(root)
+    # El namespace del ANCESTRO se verifica ANTES del mkdir: si `state/` fue
+    # reemplazado por un junction y `state/candidates/` todavia no existe,
+    # `admitir_directorio_storage` veria solo la hoja ausente como admisible y
+    # `mkdir(parents=True)` crearia el directorio en el destino EXTERNO. El
+    # `exigir_namespace_escribible` posterior lo rechazaria, pero ya habria
+    # mutado fuera del root (Codex sobre #682).
+    exigir_namespace_escribible(state_dir(root))
     admision = admitir_directorio_storage(directorio)
     if not admision.success:
         raise FrozenRuntimeStorageError(f"el directorio de metadata de Candidates fue rechazado: {admision.message}")
     if not directorio.exists():
         directorio.mkdir(parents=True, exist_ok=True)
+    exigir_namespace_escribible(directorio)
     return directorio
 
 
@@ -153,7 +166,7 @@ def _observar_fuente_estable(
     snapshot: SourceSnapshotEvidence = estable.snapshot
     try:
         sellado = observar_arbol_sellado(source.root, game_key=source.game_key)
-    except DirectoryMembershipError as exc:
+    except SourceObservationError as exc:
         raise CandidateVerificationError(f"no se pudo sellar la Managed Source: {exc}") from exc
 
     if sellado.tree_digest != snapshot.tree_digest:
@@ -271,7 +284,7 @@ def _membership_desde_dict(bruto: object, *, etiqueta: str) -> DirectoryMembersh
             directory_count=conteo,
             directories=tuple(directorios),
         )
-    except DirectoryMembershipError as exc:
+    except SourceObservationError as exc:
         raise CandidateCorruptMetadataError(f"{etiqueta}: membership inconsistente: {exc}") from exc
 
 
@@ -449,6 +462,17 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
     # Un READY persistido sin las TRES evidencias es metadata invalida por
     # construccion: se rechaza al LEER, no solo al escribir.
     metadata.exigir_listo_para_persistencia()
+    # La identidad del Candidate tiene que estar atada a su nombre: si la metadata
+    # de B se copia sobre el JSON de A (misma fuente, caso normal), sin esto
+    # `verificar_candidate(A)` devolveria VALID llevando la identidad de B y la
+    # promocion futura actuaria sobre un Candidate ambiguo (Codex sobre #682).
+    if ruta.stem.startswith(CANDIDATE_ID_PREFIX):
+        nombre_id = validar_candidate_id(ruta.stem)
+        if metadata.candidate_id != nombre_id:
+            raise CandidateCorruptMetadataError(
+                f"{ruta}: el candidate_id embebido ({metadata.candidate_id}) no coincide "
+                f"con el nombre del archivo ({nombre_id}): identidad ambigua (fail-closed)"
+            )
     return metadata
 
 
@@ -482,6 +506,16 @@ def _diferencias_triada(
         diferencias.append("RuntimeIdentity PRE != Candidate")
     if candidato.runtime_identity != post.runtime_identity:
         diferencias.append("RuntimeIdentity Candidate != POST")
+    # Procedencia: la evidencia de POST debe venir de la MISMA Managed Source
+    # concreta. Sin esto, metadata cuyo POST fue re-bound a otro appid/juego
+    # podria re-verificar VALID si la identidad del payload coincide (Codex #682).
+    for etiqueta_par, a, b in (
+        ("PRE/Candidate", pre, candidato),
+        ("Candidate/POST", candidato, post),
+        ("PRE/POST", pre, post),
+    ):
+        if (a.provider, a.appid, a.game_key) != (b.provider, b.appid, b.game_key):
+            diferencias.append(f"procedencia {etiqueta_par} distinta (provider/appid/game_key)")
     if pre.critical_files != candidato.critical_files:
         diferencias.append("critical evidence PRE != Candidate")
     if candidato.critical_files != post.critical_files:
@@ -553,7 +587,7 @@ def _observar_candidate(
     """
     try:
         sellado: SealedTreeObservation = observar_arbol_sellado(payload, game_key=game_key)
-    except DirectoryMembershipError as exc:
+    except SourceObservationError as exc:
         raise CandidateVerificationError(f"no se pudo observar el Candidate: {exc}") from exc
     return CandidateSourceEvidence(
         provider=provider,
@@ -638,7 +672,7 @@ def crear_candidate(
     source: ManagedSource,
     root: pathlib.Path,
     *,
-    quiet_window_seconds: float = 0.0,
+    quiet_window_seconds: float = DEFAULT_QUIET_WINDOW_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     id_factory: Callable[[], str] = default_candidate_id_factory,
 ) -> CandidateResult:
@@ -661,6 +695,17 @@ def crear_candidate(
     """
     raiz = pathlib.Path(root)
     ahora = time.time_ns()
+    # MANAGED_SOURCE_WRITES=NO se defiende ACA, no en el caller: si el root de
+    # storage esta dentro de la Managed Source (o la contiene), persistir
+    # BUILDING y copiar el payload mutaria el arbol que Steam administra. El
+    # init acepta `managed_source_root` opcional, asi que un root inicializado
+    # sin el pasaria la admision de storage y solo se detectaria aca.
+    admision = admitir_storage_root(raiz, managed_source_root=source.root)
+    if not admision.success:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"el root de storage no es admisible contra esta Managed Source: {admision.message}",
+        )
     try:
         pre = _observar_fuente_estable(source, quiet_window_seconds=quiet_window_seconds, sleep=sleep)
     except FrozenRuntimeError as exc:
@@ -701,7 +746,7 @@ def crear_candidate(
             pre.archivos,
             pre.directory_membership.directories,
         )
-    except (CandidateCopyError, FrozenRuntimeStorageError, DirectoryMembershipError) as exc:
+    except (CandidateCopyError, FrozenRuntimeStorageError, SourceObservationError) as exc:
         return _marcar_invalid(raiz, metadata, f"la copia fallo: {exc}", pre=pre)
 
     try:
@@ -711,7 +756,7 @@ def crear_candidate(
             appid=pre.appid,
             provider=pre.provider,
         )
-    except (CandidateVerificationError, DirectoryMembershipError) as exc:
+    except (CandidateVerificationError, SourceObservationError) as exc:
         return _marcar_invalid(raiz, metadata, f"el Candidate no se pudo observar: {exc}", pre=pre)
 
     estado_fisico, mensaje_fisico = _verificar_integridad_fisica(destino)
@@ -823,7 +868,7 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
             appid=metadata.pre_source_evidence.appid,
             provider=metadata.pre_source_evidence.provider,
         )
-    except (CandidateVerificationError, DirectoryMembershipError) as exc:
+    except (CandidateVerificationError, SourceObservationError) as exc:
         return CandidateResult(
             state=GenerationVerificationState.INVALID,
             message=f"no se pudo observar el Candidate persistido: {exc}",
@@ -899,7 +944,12 @@ def descubrir_candidates(root: pathlib.Path) -> CandidateInventory:
                 directory=directorio,
                 metadata=metadata,
                 state=(
-                    GenerationVerificationState.VALID
+                    # El inventario NO es verificacion: una metadata READY
+                    # persistida no prueba que el payload siga intacto (pudo
+                    # borrarse, truncarse o volverse un hardlink). Igual que el
+                    # inventario hermano de Generations, se reporta UNKNOWN hasta
+                    # que `verificar_candidate` corra la verificacion fresca.
+                    GenerationVerificationState.UNKNOWN
                     if metadata.state is CandidateState.READY
                     else GenerationVerificationState.INVALID
                 ),
