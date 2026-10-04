@@ -35,6 +35,13 @@ PRESETS_DIR = r"C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Presets"
 PRESET_TEXGEN = PRESETS_DIR + r"\DynDOLOD_SSE_TexGen.ini"
 PRESET_DYNDOLOD = PRESETS_DIR + r"\DynDOLOD_SSE_Default.ini"
 
+#: Contrato de build medido (mismo valor que P0-B): la evidencia rotulada
+#: Alpha-209 no se genera con otro binario; un build nuevo es un acto explícito.
+BUILD_SHA = {
+    "texgen": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+    "dynodlod": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0",
+}
+
 VENTANA_WAIT_SEG = 90
 CAP_CONTROLES = 600
 UIA_E_ELEMENTNOTAVAILABLE = 0x80040201
@@ -518,6 +525,14 @@ def main() -> int:
     imagen = pathlib.Path(exe).name
     preset = PRESET_TEXGEN if args.tool == "texgen" else PRESET_DYNDOLOD
 
+    # Gate de build (espejo de P0-B): la evidencia rotulada Alpha-209 no puede
+    # generarse con otro binario. Un build nuevo exige actualizar el contrato
+    # de forma explícita — no se mezclan rondas de builds distintos.
+    sha = (sha256_de(exe) or "").lower()
+    if sha != BUILD_SHA[args.tool]:
+        print(f"BUILD_DRIFT: sha {sha} != {BUILD_SHA[args.tool]} — STOP")
+        return 3
+
     sesion = uuid.uuid4().hex[:8]
     base = pathlib.Path(os.environ["TEMP"]) / f"SkyClaw-P0-{sesion}"
     root_out = base / ("TexGen" if args.tool == "texgen" else "DynDOLOD")
@@ -532,6 +547,7 @@ def main() -> int:
     registro: dict[str, object] = {
         "tool": args.tool,
         "exe": exe,
+        "exe_sha256": sha,
         "round": args.round,
         "session": sesion,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

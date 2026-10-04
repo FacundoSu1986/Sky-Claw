@@ -22,8 +22,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import pathlib
 import sys
+
+import pytest
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
 PROBE_DIR = RAIZ / "docs" / "validation" / "2026-10-02_p0_uia_alpha209" / "probe"
@@ -101,9 +104,9 @@ def _modal_observado(name: str, instruccion: str, botones: list[tuple[str, str]]
     }
 
 
-def _modal_esperado(name: str, botones: list[tuple[str, str]]) -> dict:
-    """Formato del contrato esperado (P0-B): pares (name, automation_id)."""
-    return {"name": name, "buttons": botones}
+def _modal_esperado(name: str, botones: list[tuple[str, str]], instruction: str = "") -> dict:
+    """Formato del contrato esperado (P0-B): name + instruction + botones."""
+    return {"name": name, "instruction": instruction, "buttons": botones}
 
 
 def test_fingerprint_de_modal_es_estable_entre_llamadas():
@@ -128,6 +131,7 @@ def test_botones_de_scroll_no_rompen_la_equivalencia_del_modal():
     esperado = _modal_esperado(
         "TexGen",
         [("Ignore", "CommandButton_5"), ("Exit TexGen", "CommandButton_3")],
+        "Found stitched object LOD textures",
     )
     observado = _modal_observado(
         "TexGen",
@@ -147,12 +151,30 @@ def test_modal_distinto_no_es_equivalente():
     esperado = _modal_esperado(
         "TexGen",
         [("Ignore", "CommandButton_5"), ("Exit TexGen", "CommandButton_3")],
+        "Found stitched object LOD textures",
     )
     otro = _modal_observado("Otra cosa", "Otro mensaje", [("OK", "CommandButton_1")])
     assert not p0b_probe.modal_coincide(otro, esperado)
     # mismo nombre pero sin los botones contractuales tampoco alcanza
     parcial = _modal_observado("TexGen", "Found stitched object LOD textures", [("Exit TexGen", "CommandButton_3")])
     assert not p0b_probe.modal_coincide(parcial, esperado)
+
+
+def test_modal_mismo_nombre_y_botones_pero_otra_instruccion_no_coincide():
+    """Fingerprint COMPLETO: un warning distinto con el mismo título y botones
+    de sistema NO puede pasar por el medido (evita invitar a 'Ignorar' algo
+    desconocido)."""
+    esperado = _modal_esperado(
+        "TexGen",
+        [("Ignore", "CommandButton_5"), ("Exit TexGen", "CommandButton_3")],
+        "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+    )
+    variante = _modal_observado(
+        "TexGen",
+        "Otra advertencia totalmente distinta con los mismos botones",
+        [("Ignore", "CommandButton_5"), ("Exit TexGen", "CommandButton_3")],
+    )
+    assert not p0b_probe.modal_coincide(variante, esperado)
 
 
 # ---------------------------------------------------------------------------
@@ -524,3 +546,151 @@ def test_cr1_cierre_tiene_relectura_post_exit():
     texto = _fuente(P0B_SRC)
     assert "log_corroboration_post_exit" in texto
     assert '"post_exit"' in texto
+
+
+# ---------------------------------------------------------------------------
+# Fixes de la revisión adversarial sobre 154d0dae (clasificador, exit, roots,
+# fuentes del escaneo, gate de build de P0-A, árbol de procesos)
+# ---------------------------------------------------------------------------
+
+
+def test_clasificador_startup_con_exit_texgen_no_es_terminal():
+    """El warning inicial comparte `Exit TexGen` con el terminal: un botón
+    compartido NO alcanza para declarar completion (P1 de la revisión)."""
+    startup = _modal_observado(
+        "TexGen",
+        "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+        [("Ignore", "CommandButton_5"), ("Exit TexGen", "CommandButton_3"), ("Cerrar", "")],
+    )
+    assert p0b_probe.clasificar_dialogo_de_generacion(startup, "texgen") == "indeterminado"
+
+
+def test_clasificador_terminal_requiere_primario_y_secundario():
+    terminal_texgen = _modal_observado(
+        "TexGen",
+        "Exit TexGen, zip and exit, check log or restart?",
+        [
+            ("Exit TexGen", "CommandButton_7"),
+            ("Zip and Exit", "CommandButton_11"),
+            ("Check log", "CommandButton_2"),
+            ("Restart", "CommandButton_4"),
+        ],
+    )
+    assert p0b_probe.clasificar_dialogo_de_generacion(terminal_texgen, "texgen") == "terminal"
+
+    startup_dyn = _modal_observado(
+        "DynDOLOD",
+        "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        [("Ignore", "CommandButton_5"), ("Exit DynDOLOD", "CommandButton_3")],
+    )
+    assert p0b_probe.clasificar_dialogo_de_generacion(startup_dyn, "dynodlod") == "indeterminado"
+
+    terminal_dyn = _modal_observado(
+        "DynDOLOD",
+        "Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log?",
+        [
+            ("Save and Exit", "CommandButton_6"),
+            ("Save, Zip and Exit", "CommandButton_8"),
+            ("Exit DynDOLOD", "CommandButton_9"),
+            ("Check log", "CommandButton_10"),
+        ],
+    )
+    assert p0b_probe.clasificar_dialogo_de_generacion(terminal_dyn, "dynodlod") == "terminal"
+
+
+def test_observar_generacion_clasifica_startup_antes_de_terminal():
+    """Ancla de orden: el fingerprint de startup se evalúa ANTES del
+    clasificador de terminal en `observar_generacion`."""
+    texto = _fuente(P0B_SRC)
+    assert texto.index("modal_coincide(fp, esperado_startup)") < texto.index(
+        "clasificar_dialogo_de_generacion(fp, self.tool)"
+    )
+
+
+def test_exigir_exit_cero_fail_closed():
+    p0b_probe.exigir_exit_cero(0, "test ok")
+    with pytest.raises(p0b_probe.FalloP0Error) as exc:
+        p0b_probe.exigir_exit_cero(3, "Save & Exit")
+    assert exc.value.estado == "P0_BLOCKED_BY_TERMINAL_ACTION"
+
+
+def test_validar_roots_aislados(tmp_path):
+    info_out = {"canonical": str(tmp_path / "out"), "born_empty": True, "sin_reparse_en_cadena": True}
+    info_temp_ok = {"canonical": str(tmp_path / "temp"), "born_empty": True, "sin_reparse_en_cadena": True}
+    assert p0b_probe.validar_roots_aislados(info_out, info_temp_ok) == []
+
+    identicos = dict(info_out)
+    assert p0b_probe.validar_roots_aislados(info_out, identicos) != []
+
+    anidado = {
+        "canonical": str(tmp_path / "out" / "temp"),
+        "born_empty": True,
+        "sin_reparse_en_cadena": True,
+    }
+    assert p0b_probe.validar_roots_aislados(info_out, anidado) != []
+
+    no_vacio = {"canonical": str(tmp_path / "temp2"), "born_empty": False, "sin_reparse_en_cadena": True}
+    assert p0b_probe.validar_roots_aislados(info_out, no_vacio) != []
+
+
+def test_priorizar_fuentes_deduplica_y_prioriza(tmp_path):
+    """El corte no puede descartar el log real ni el stderr; los duplicados y
+    los archivos que el tool reescribe no desplazan al log."""
+    stderr = tmp_path / "tool_stderr.txt"
+    logs_dir = tmp_path / "Logs"
+    logs_dir.mkdir()
+    log_viejo = logs_dir / "viejo.log"
+    log_viejo.write_text("a")
+    os.utime(log_viejo, (10_000_000, 10_000_000))
+    log_nuevo = logs_dir / "nuevo.log"
+    log_nuevo.write_text("b")
+    presets_dir = tmp_path / "Presets"
+    presets_dir.mkdir()
+    preset_ini = presets_dir / "DynDOLOD_SSE_Default.ini"
+    preset_ini.write_text("c")
+
+    # sin corte: orden puro (stderr primero, logs por mtime desc, no-logs al final)
+    fuentes = [log_viejo, preset_ini, log_viejo, log_nuevo]
+    elegidas, descartadas = p0b_probe.priorizar_fuentes(stderr, fuentes, maximo=12)
+    assert elegidas[0] == stderr, "stderr siempre primero"
+    assert elegidas.count(log_viejo) == 1, "dedupe por path canónico"
+    assert elegidas.index(log_nuevo) < elegidas.index(log_viejo), "logs por mtime desc"
+    assert elegidas.index(log_viejo) < elegidas.index(preset_ini), "logs antes que no-logs"
+    assert descartadas == 0
+
+
+def test_priorizar_fuentes_registra_el_recorte(tmp_path):
+    """Con más candidatos que el cupo, el recorte queda registrado y el stderr
+    y los logs siguen adentro."""
+    stderr = tmp_path / "tool_stderr.txt"
+    logs_dir = tmp_path / "Logs"
+    logs_dir.mkdir()
+    log = logs_dir / "real.log"
+    log.write_text("a")
+    relleno = []
+    for i in range(15):
+        p = tmp_path / f"relleno_{i}.bin"
+        p.write_text("d")
+        relleno.append(p)
+
+    elegidas, descartadas = p0b_probe.priorizar_fuentes(stderr, [log, *relleno], maximo=6)
+    assert len(elegidas) == 6
+    assert stderr in elegidas and log in elegidas
+    assert descartadas == len(relleno) - (6 - 2), "el recorte queda registrado"
+
+
+def test_p0a_gate_de_build_espejo_de_p0b():
+    """P0-A no puede generar evidencia rotulada Alpha-209 con otro binario."""
+    assert p0a_probe.BUILD_SHA == p0b_probe.BUILD_SHA
+    texto = _fuente(P0A_SRC)
+    assert "BUILD_DRIFT" in texto
+    assert '"exe_sha256": sha' in texto
+
+
+def test_cierre_termina_el_arbol_de_procesos():
+    """Los hijos LODGen no mueren con el padre en Windows: el cierre usa
+    taskkill /T sobre el PID propio y registra las imágenes hijas."""
+    texto = _fuente(P0B_SRC)
+    assert "taskkill" in texto
+    assert '"/T"' in texto
+    assert "IMAGENES_HIJAS" in texto

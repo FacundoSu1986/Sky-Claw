@@ -23,6 +23,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import pathlib
@@ -65,16 +66,18 @@ EXPECTED_STARTUP_MODAL = {
     },
 }
 
-TERMINAL_BUTTON = {
-    "texgen": "Exit TexGen",
-    "dynodlod": "Save & Exit",  # también "Save and Exit"; NUNCA variantes con Zip
+#: Familia del diálogo terminal MEDIDO por herramienta: (primarios, secundarios).
+#: El terminal real exige al menos un primario Y al menos un secundario — un
+#: botón compartido con otro diálogo (p.ej. `Exit TexGen` del warning inicial)
+#: NO alcanza para clasificarlo terminal.
+TERMINAL_FAMILY: dict[str, tuple[set[str], set[str]]] = {
+    "texgen": ({"Exit TexGen"}, {"Zip and Exit", "Check log", "Restart"}),
+    "dynodlod": ({"Save & Exit", "Save and Exit"}, {"Save, Zip and Exit", "Exit DynDOLOD", "Check log"}),
 }
 
-#: Aceptación del diálogo terminal por herramienta (detección, no identidad final).
-TERMINAL_NAMES = {
-    "texgen": {"Exit TexGen"},
-    "dynodlod": {"Save & Exit", "Save and Exit"},
-}
+#: Imágenes de los workers hijos que el tool puede lanzar (LODGen). Sólo se
+#: REGISTRAN como residuo; nunca se matan procesos que el probe no lanzó.
+IMAGENES_HIJAS = ("LODGenx64.exe", "LODGenx64Win7.exe", "LODGen.exe")
 
 
 def log(msg: str) -> None:
@@ -139,9 +142,98 @@ def fingerprint_de_ventana(adapter: UiAdapter, el: object, controles: list[dict]
 
 
 def modal_coincide(obs: dict, esperado: dict) -> bool:
+    """Fingerprint COMPLETO: nombre + instrucción + botones del contrato.
+
+    La instrucción es la que desambigua dos diálogos con el mismo título y los
+    mismos botones de sistema (p.ej. dos warnings distintos de TexGen): sin
+    compararla, un warning distinto pasaría por el medido y el probe invitaría
+    al humano a ignorarlo en vez de fallar cerrado.
+    """
     botones = [(b.get("name"), b.get("automation_id")) for b in (obs.get("botones") or [])]
     faltan = [b for b in esperado["buttons"] if b not in botones]
-    return obs.get("name") == esperado["name"] and not faltan
+    return obs.get("name") == esperado["name"] and obs.get("instruccion") == esperado.get("instruction") and not faltan
+
+
+def clasificar_dialogo_de_generacion(fp: dict, tool: str) -> str:
+    """Clasifica un diálogo observado DURANTE la generación (fail-closed).
+
+    `terminal` exige un botón primario Y al menos un secundario de la familia
+    medida: el warning inicial comparte `Exit TexGen`/`Exit DynDOLOD` con el
+    terminal, así que un botón suelto se clasifica `indeterminado` (que el
+    llamador trata como desconocido → fail-closed).
+    """
+    primarios, secundarios = TERMINAL_FAMILY[tool]
+    nombres = {b.get("name") for b in (fp.get("botones") or [])}
+    if nombres & primarios and nombres & secundarios:
+        return "terminal"
+    return "indeterminado"
+
+
+def exigir_exit_cero(returncode: int | None, contexto: str) -> None:
+    """Fail-closed del cierre: un exit code distinto de 0 NO es una cadena OK."""
+    if returncode != 0:
+        raise FalloP0Error(
+            "P0_BLOCKED_BY_TERMINAL_ACTION",
+            f"{contexto}: exit code {returncode!r} != 0 — el tool reportó fallo",
+        )
+
+
+def validar_roots_aislados(info_output: dict, info_temp: dict) -> list[str]:
+    """Validaciones cruzadas de los DOS roots temporales (output y temp).
+
+    Devuelve la lista de violaciones (vacía = ok). Cubre lo que la validación
+    de un solo root no ve: temp no born-empty / con reparse, roots idénticos o
+    anidados (el tool escribiría temp data dentro del workspace admitido).
+    """
+    problemas: list[str] = []
+    if not info_temp.get("born_empty"):
+        problemas.append("temp_dir no está born-empty")
+    if not info_temp.get("sin_reparse_en_cadena"):
+        problemas.append("temp_dir tiene reparse point en su cadena")
+    co, ct = info_output.get("canonical"), info_temp.get("canonical")
+    if co and ct:
+        po, pt = pathlib.Path(co), pathlib.Path(ct)
+        if po == pt:
+            problemas.append("output_root y temp_dir son el mismo path")
+        elif po.is_relative_to(pt) or pt.is_relative_to(po):
+            problemas.append("output_root y temp_dir están anidados")
+    return problemas
+
+
+def priorizar_fuentes(
+    stderr_f: pathlib.Path, fuentes: list[pathlib.Path], maximo: int = 12
+) -> tuple[list[pathlib.Path], int]:
+    """Ordena y depura los candidatos del escaneo de logs (CR-1).
+
+    - dedupe por path canónico (el barrido recorre `Logs/` y su padre: cada
+      log aparecía dos veces y desplazaba candidatos reales del corte de 12);
+    - `stderr` SIEMPRE primero (no puede quedar fuera del corte);
+    - logs (`.log`/`.txt` o bajo un dir `Logs`) antes que el resto, por mtime
+      descendente (presets reescritos por el tool no desplazan al log real);
+    - devuelve también cuántos candidatos quedaron fuera del corte, para que
+      el registro no oculte el recorte.
+    """
+    vistos: dict[str, pathlib.Path] = {}
+    for p in [stderr_f, *fuentes]:
+        clave = str(p.resolve()) if p.exists() else str(p)
+        vistos.setdefault(clave, p)
+    unicas = list(vistos.values())
+
+    def mtime_de(p: pathlib.Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def es_log(p: pathlib.Path) -> bool:
+        return p.suffix.lower() in (".log", ".txt") or any(part.lower() == "logs" for part in p.parts)
+
+    resto = [p for p in unicas if p != stderr_f]
+    resto.sort(key=lambda p: (0 if es_log(p) else 1, -mtime_de(p)))
+    cupo = max(0, maximo - 1)
+    elegidas = [stderr_f, *resto[:cupo]]
+    descartadas = max(0, len(resto) - cupo)
+    return elegidas, descartadas
 
 
 def evaluar_confirmacion_de_begin(señales: dict) -> bool:
@@ -447,6 +539,17 @@ class RunnerP0B:
             raise FalloP0Error("P0_BLOCKED_BY_ENVIRONMENT", f"root temporal inválido: {info_root}")
         registro["output_root"] = info_root
 
+        # El temp_dir es un argumento EXTERNO igual que el output: se valida con
+        # las mismas reglas y ADEMÁS debe ser distinto y no-anidado del output
+        # (sin esto el tool podía escribir temp data fuera del workspace o
+        # mezclarla con la evidencia).
+        temp_root = pathlib.Path(self.args.temp_dir)
+        info_temp = verificar_root_temporal(temp_root)
+        problemas = validar_roots_aislados(info_root, info_temp)
+        if problemas:
+            raise FalloP0Error("P0_BLOCKED_BY_ENVIRONMENT", f"temp_dir inválido: {problemas}")
+        registro["temp_root"] = info_temp
+
         sha = (sha256_de(self.exe) or "").lower()
         if sha != BUILD_SHA[tool]:
             raise FalloP0Error("P0_BLOCKED_BY_ENVIRONMENT", f"BUILD_DRIFT: sha {sha} != {BUILD_SHA[tool]}")
@@ -557,6 +660,7 @@ class RunnerP0B:
             raise FalloP0Error("P0_BLOCKED_BY_TERMINAL_ACTION", "el proceso no salió tras Exit TexGen") from e
         self.marca("process_exit")
         registro["exit_code"] = self.proceso.returncode
+        exigir_exit_cero(self.proceso.returncode, "Exit TexGen")
         return registro
 
     # -- DynDOLOD ---------------------------------------------------------------
@@ -668,6 +772,7 @@ class RunnerP0B:
             raise FalloP0Error("P0_BLOCKED_BY_TERMINAL_ACTION", "el proceso no salió tras Save & Exit") from e
         self.marca("process_exit")
         registro["exit_code"] = self.proceso.returncode
+        exigir_exit_cero(self.proceso.returncode, "Save & Exit")
         return registro
 
     # -- señales de Begin / observación -------------------------------------
@@ -749,11 +854,18 @@ class RunnerP0B:
                 if hay_tedit:
                     continue
                 nombres = [c.get("name") for c in controles if c.get("control_type") == "Button" and c.get("name")]
-                # el wizard de TexGen mantiene su TEdit detrás del diálogo: la
-                # señal de contrato es el botón terminal, no la ausencia de TEdit
-                if any(
-                    c.get("name") in TERMINAL_NAMES[self.tool] for c in controles if c.get("control_type") == "Button"
-                ):
+                # 1) startup conocido PRIMERO: el warning inicial de TexGen
+                #    comparte `Exit TexGen` con el diálogo terminal — si se
+                #    clasificara por botón terminal, un arranque repetido se
+                #    tomaría por completion y se invocaría Exit.
+                if modal_coincide(fp, esperado_startup):
+                    log("HUMAN_ACTION_NEEDED (generation): modal conocido reapareció — el HUMANO decide")
+                    fp["human_interaction"] = "requested"
+                    time.sleep(5.0)
+                    continue
+                # 2) terminal contractual: primario + secundario de la familia
+                #    medida (un botón compartido no alcanza)
+                if clasificar_dialogo_de_generacion(fp, self.tool) == "terminal":
                     self.marca("terminal_dialog")
                     log(f"TERMINAL_DIALOG detectado: {nombres}")
                     return {
@@ -764,15 +876,6 @@ class RunnerP0B:
                         "generation": generation,
                         "log_markers": self.buscar_markers([marker], "terminal_dialog"),
                     }
-                if modal_coincide(fp, esperado_startup):
-                    log("HUMAN_ACTION_NEEDED (generation): modal conocido reapareció — el HUMANO decide")
-                    fp["human_interaction"] = "requested"
-                    time.sleep(5.0)
-                    continue
-                if any(b["name"] in TERMINAL_NAMES["texgen"] for b in fp["botones"]) and any(
-                    "zip" in (n or "").lower() for n in nombres
-                ):
-                    continue  # diálogo de progreso/verificación, no terminal aún
                 # modal desconocido durante generación → fail-closed
                 fp["blocking"] = True
                 generation["modal_durante_generacion"].append(fp)
@@ -792,11 +895,16 @@ class RunnerP0B:
     def buscar_markers(self, markers: list[str], fase: str) -> dict:
         """§23/§27: corroboración por logs del tool dir + stderr, con CANDIDATOS.
 
-        Delega en `escanear_logs` (función pura, testeable sin COM ni proceso).
+        La lista se deduplica y prioriza (`priorizar_fuentes`): el corte de 12
+        no puede descartar el log real ni el stderr, y el recorte queda
+        registrado (`descartados_por_corte`).
         """
-        fuentes: list[str] = list(self.archivos_de_log_crecidos())
-        fuentes.append(str(self.evi / f"{self.tool}_stderr.txt"))
-        return escanear_logs([pathlib.Path(f) for f in fuentes[:12]], markers, fase)
+        stderr_f = self.evi / f"{self.tool}_stderr.txt"
+        fuentes = [pathlib.Path(f) for f in self.archivos_de_log_crecidos()]
+        elegidas, descartadas = priorizar_fuentes(stderr_f, fuentes)
+        out = escanear_logs(elegidas, markers, fase)
+        out["descartados_por_corte"] = descartadas
+        return out
 
     # -- cierre ---------------------------------------------------------------
 
@@ -804,21 +912,35 @@ class RunnerP0B:
         try:
             if self.proceso.poll() is None:
                 # fail-closed: el probe no deja generación huérfana
-                log("CLEANUP: proceso vivo al cerrar el probe → terminate (propio, no ajeno)")
-                self.proceso.terminate()
-                try:
+                log("CLEANUP: proceso vivo al cerrar el probe → terminate del ÁRBOL (propio, no ajeno)")
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                    self.proceso.terminate()
                     self.proceso.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    self.proceso.kill()
+                if self.proceso.poll() is None:
+                    with contextlib.suppress(OSError):
+                        self.proceso.kill()
+                # Windows NO termina a los descendientes con el padre: los
+                # workers LODGen de DynDOLOD seguirían escribiendo. taskkill /T
+                # cierra SOLO el árbol del PID propio (jamás procesos ajenos).
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                    subprocess.run(
+                        ["taskkill", "/T", "/F", "/PID", str(self.proceso.pid)],
+                        capture_output=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    registro["cleanup_tree_kill"] = self.proceso.pid
             registro["ledger"] = self.ledger.entries
             registro["modales"] = self.modal_encontrados
             registro["marcas_segundos"] = {k: round(v, 1) for k, v in self.marcas.items()}
             registro["metricas"] = self.metricas_de_archivos()
             registro["preset_final"] = estado_archivos([self.preset])
             time.sleep(1.5)
-            registro["residual_processes"] = [
-                {"pid": p, "exe": e} for p, e in pids_de_imagen(pathlib.Path(self.exe).name)
-            ]
+            residuales = [{"pid": p, "exe": e} for p, e in pids_de_imagen(pathlib.Path(self.exe).name)]
+            # los workers hijos (LODGen) se REGISTRAN — no se matan ajenos
+            for imagen_hija in IMAGENES_HIJAS:
+                residuales += [{"pid": p, "exe": e, "imagen": imagen_hija} for p, e in pids_de_imagen(imagen_hija)]
+            registro["residual_processes"] = residuales
             # CR-1 — relectura de logs DESPUÉS de que el proceso terminó: los
             # buffers de log del tool se vacían al salir; re-leer aquí captura
             # los markers finales que la observación en vivo pudo perder.
