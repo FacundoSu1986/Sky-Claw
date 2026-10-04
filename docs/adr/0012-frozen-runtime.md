@@ -1,4 +1,4 @@
-# ADR 0012 — Steam Frozen Runtime: promoción de versiones aislada
+# ADR 0012 — Frozen Runtime: promoción aislada de versiones
 
 **Fecha:** 2026-10-03
 **Estado:** Propuesta (P0: diseño y censo; prohibida la implementación de código de
@@ -8,6 +8,11 @@ producción en este ADR). No cambia contratos existentes; sólo decide arquitect
 Runtime (anti split-brain, SFR-16) y ciclo de vida de Generation con estado
 `DRIFTED` (SFR-17). Alcance: design/contract only; no habilita implementación
 productiva ni decide la primitiva concreta de binding (P5).
+**Enmienda P0.3 (2026-10-04):** rename de branding — el nombre de feature pasa a ser
+**Frozen Runtime** (sin "Steam"); el término genérico de arquitectura pasa a ser
+**Managed Source** (proveedor inicial: Steam). "Steam" se conserva sólo como
+referencia técnica al proveedor. IDs `SFR-01..17` intactos; prefijo reinterpretado
+como `SFR = Sky-Claw Frozen Runtime`.
 **Contexto de origen:** `origin/main` `0103ee4f6de15207032d25c254ede5cf2c01bff9`
 (merge de RV-GP2/S4D, PR #666).
 **Relación con GP2-S4E:** el workstream archivado (rama
@@ -17,6 +22,13 @@ Se lo referencia únicamente como contexto histórico del enfoque anterior.
 **Invariante de alcance:** el único lugar de trabajo es
 `E:\Skyclaw_Steam_Frozen_Runtime` en la rama `feat/steam-frozen-runtime`. `main` sólo
 se lee.
+**Deuda de naming (no funcional, registrada en P0.3):** la rama conserva el nombre
+histórico `feat/steam-frozen-runtime` y el worktree conserva su path físico: el
+rename de la rama remota **cierra el PR #673** (comprobado empíricamente el
+2026-10-04 vía `POST /branches/{branch}/rename`, que no actualiza el head ref del PR
+y lo dejó `CLOSED`; se revirtió y se reabrió). La rama/worktree se renombrarán sólo
+si en el futuro un mecanismo que preserve el PR esté probado. Un path local no es
+branding público.
 
 ---
 
@@ -74,7 +86,7 @@ No se implementan trucos de ese tipo (SFR-11).
 
 ## 3. Enfoque anterior y distinción con GP2-S4E archivado
 
-| Eje | GP2-S4E (archivado) | Steam Frozen Runtime (este ADR) |
+| Eje | GP2-S4E (archivado) | Frozen Runtime (este ADR) |
 |---|---|---|
 | Mecanismo | ACL mutation transaccional del Golden (`SetSecurityInfo`, WAL, helper elevado) | Aislamiento físico: la copia jugable vive fuera del árbol de Steam |
 | Relación con Steam | Bloquear/negar la escritura de Steam sobre el Golden | Steam escribe libremente sobre su propia instalación |
@@ -89,11 +101,14 @@ de ACL.
 
 ## 4. Objetivos (Goals)
 
+Nota canónica (P0.3): `SFR` = **Sky-Claw Frozen Runtime**. El prefijo se conserva
+para no migrar IDs ya documentados (`SFR-01..17`) en docs, tests e issues.
+
 1. `SFR-01` Steam puede actualizar su propia instalación.
 2. `SFR-02` Steam nunca administra el Frozen Runtime.
 3. `SFR-03` MO2/SKSE/juego activo utilizan el Frozen Runtime.
 4. `SFR-04` Una actualización de Steam no modifica el Frozen Runtime activo.
-5. `SFR-05` Steam Source nunca se convierte automáticamente en runtime activo.
+5. `SFR-05` La Managed Source nunca se convierte automáticamente en runtime activo.
 6. `SFR-06` Toda nueva versión entra primero como Candidate.
 7. `SFR-07` Candidate debe verificarse antes de poder promocionarse.
 8. `SFR-08` Promotion requiere autorización explícita del usuario.
@@ -145,10 +160,10 @@ de ACL.
 
 | Término | Definición |
 |---|---|
-| **Steam Source** | Instalación de Skyrim administrada por Steam (`steamapps/common/...`). Mutable. Fuente válida para crear Candidate. No es Golden. |
-| **SourceSnapshotEvidence** | Observación sellada de una Steam Source **estabilizada**: `RuntimeIdentity` + `TreeDigest` + critical file evidence + metadata de build de Steam opcional. No es Golden ni autoridad GP2; es la evidencia de la fuente concreta que se pretendía copiar (§9.1). |
-| **Frozen Runtime** | Árbol de directorios independiente, fuera del árbol de juego administrado por Steam. Contiene la versión que MO2/SKSE/juego usan. |
-| **Candidate** | Copia candidata derivada de Steam Source, aún no promocionada. Debe verificarse **contra `SourceSnapshotEvidence`** antes de promocionar. Nunca genera la evidencia contra la que se aprueba (SFR-15). |
+| **Managed Source** | Instalación mutable del juego administrada por una plataforma externa. **Proveedor inicial: Steam** (path típico `steamapps/common/...`). Fuente válida para crear Candidate. No es Golden. `Managed Source != Frozen Runtime` y `Managed Source != Golden Master`. |
+| **SourceSnapshotEvidence** | Observación sellada de una Managed Source **estabilizada**: `RuntimeIdentity` + `TreeDigest` + critical file evidence + `provider_metadata` opcional (para Steam: `appid`, `buildid`, `library_path`). No es Golden ni autoridad GP2; es la evidencia de la fuente concreta que se pretendía copiar (§9.1). |
+| **Frozen Runtime** | Feature de Sky-Claw: árbol de directorios independiente, fuera del árbol de juego administrado por la Managed Source. Contiene la versión que MO2/SKSE/juego usan. |
+| **Candidate** | Copia candidata derivada de la Managed Source, aún no promocionada. Debe verificarse **contra `SourceSnapshotEvidence`** antes de promocionar. Nunca genera la evidencia contra la que se aprueba (SFR-15). |
 | **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). |
 | **Desired Active Generation** | Estado persistente de Sky-Claw (`state/active.json`): qué Generation pretende ser la activa. |
 | **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo). Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
@@ -163,7 +178,7 @@ sinónimo de Frozen Runtime.
 
 ```text
 ┌──────────────────────────────────────┐
-│ STEAM SOURCE  (mutable)              │
+│ MANAGED SOURCE  (provider: Steam)    │
 │ <library>/steamapps/common/          │
 │   Skyrim Special Edition/            │
 │ Steam actualiza libremente (SFR-01)  │
@@ -194,11 +209,11 @@ sinónimo de Frozen Runtime.
 Flujo de promoción (contrato de producto, no UI):
 
 ```text
-Steam Source (estabilizada)
+Managed Source (estabilizada; provider: Steam)
     ↓   capture SourceSnapshotEvidence PRE      (§9.1)
-    ↓   crear Candidate desde Steam Source
+    ↓   crear Candidate desde la Managed Source
     ↓   verificar Candidate CONTRA SourceSnapshotEvidence (SFR-15)
-    ↓   reobserve Steam Source POST
+    ↓   reobserve Managed Source POST
     ↓   POST == PRE  (si no: Candidate = INVALID / SOURCE_CHANGED)
   READY
     ↓   USER APPROVES   (SFR-08)
@@ -213,8 +228,8 @@ Steam Source (estabilizada)
 
 | Superficie | Confianza | Regla |
 |---|---|---|
-| **Steam Source** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. Steam escribe libremente (SFR-01). |
-| **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Steam Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
+| **Managed Source (provider: Steam)** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. El proveedor escribe libremente en ella (SFR-01). |
+| **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Managed Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
 | **Candidate** | Derivada, no confiable hasta verificar | Se inventaría/verifica **contra `SourceSnapshotEvidence`**, nunca contra su propia medición (SFR-15). Estados `building → ready → invalid` (SFR-06/07). |
 | **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). |
 | **Desired Active Generation (`state/active.json`)** | Intención persistente de Sky-Claw | Escritura atómica (temp + `os.replace`). Por sí sola **no** declara promoción exitosa (SFR-16). |
@@ -240,9 +255,11 @@ critical[exe]   : CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_dige
   `(relpath, size, sha256)` por archivo, agregado e independiente del root físico.
 - El `critical[exe]` ata la versión al **contenido** del ejecutable, no sólo a su
   string.
-- Evidencia **auxiliar, no identidad**: `buildid` del appmanifest de Steam, ruta
-  de la library, estado de compatibilidad SKSE (§13). No se usa la ruta dentro de
-  Steam ni la presencia del manifest como autoridad (coincide con ADR 0010 §11.4).
+- Evidencia **auxiliar, no identidad**: `provider_metadata` (para el proveedor
+  Steam: `provider="steam"`, `appid="489830"`, `buildid`, `library_path`) y estado
+  de compatibilidad SKSE (§13). El `buildid` no define por sí solo una Generation.
+  No se usa la ruta dentro de Steam ni la presencia del manifest como autoridad
+  (coincide con ADR 0010 §11.4).
 - `generation-id` propuesto: `"<display_version>__<tree_digest[:12]>"` (legible y
   libre de colisiones por contenido). Decisión final de esquema en P2.
 
@@ -250,21 +267,23 @@ critical[exe]   : CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_dige
 
 El Candidate **no puede** generar la evidencia esperada contra la que él mismo se
 aprueba (SFR-15). La evidencia esperada proviene de una observación sellada de la
-Steam Source **estabilizada** (§18), capturada **antes** de crear el Candidate:
+Managed Source **estabilizada** (§18), capturada **antes** de crear el Candidate:
 
 ```text
 SourceSnapshotEvidence = {
+    provider:          "steam"                                # proveedor de la Managed Source observada
     runtime_identity:  RuntimeIdentity(game_key, game_version)   # observe_runtime_identity_from_root
     tree_digest:       TreeDigest(digest, files, bytes)          # inventory_tree + tree_digest_from_files
-    critical:          [CriticalFileEvidence("SkyrimSE.exe", sha256, size), ...]
-    steam_metadata:    optional { appid, buildid, library_path } # advisory, no identidad
+    critical_evidence: [CriticalFileEvidence("SkyrimSE.exe", sha256, size), ...]
+    provider_metadata: optional { appid, buildid, library_path } # advisory, no identidad
 }
 ```
 
 Reglas:
 
 - `SourceSnapshotEvidence` **no se llama Golden** y **no tiene autoridad GP2**. Es
-  simplemente evidencia de la fuente concreta que se pretendía copiar.
+  simplemente evidencia de la fuente concreta que se pretendía copiar. El modelo
+  concreto de campos se define en P1/P2; acá se fija la forma.
 - Se captura **PRE** (antes de copiar) y se re-observa **POST** (después de
   verificar el Candidate). Si POST != PRE, el Candidate es `INVALID / SOURCE_CHANGED`
   aunque internamente sea consistente (§10).
@@ -280,14 +299,14 @@ Estados: `none → building → ready → promoted` o `building → invalid`. El
 Flujo requerido (SFR-15):
 
 ```text
-stabilize Steam Source                          (§18)
+stabilize Managed Source                       (§18)
 → capture SourceSnapshotEvidence PRE           (§9.1)
-→ create Candidate from Steam Source            (staging + publish atómico no-clobber, §15)
+→ create Candidate from Managed Source          (staging + publish atómico no-clobber, §15)
 → inventory Candidate                           (RV-1, fail-closed)
 → Candidate TreeDigest MUST equal SourceSnapshotEvidence.tree_digest
 → Candidate RuntimeIdentity MUST equal SourceSnapshotEvidence.runtime_identity
 → Candidate critical evidence MUST equal SourceSnapshotEvidence critical evidence
-→ reobserve Steam Source POST                   (§9.1)
+→ reobserve Managed Source POST                 (§9.1)
 → POST source evidence MUST equal PRE source evidence
 → only then Candidate = READY
 ```
@@ -296,7 +315,7 @@ stabilize Steam Source                          (§18)
    inventariar el Candidate (SFR-15).
 2. Cualquier discrepancia Candidate-vs-evidencia ⇒ `invalid` (`INCOMPLETE`/
    `CORRUPT`; F2/F3).
-3. Si la Steam Source cambió entre PRE y POST ⇒ `invalid / SOURCE_CHANGED`, **aunque
+3. Si la Managed Source cambió entre PRE y POST ⇒ `invalid / SOURCE_CHANGED`, **aunque
    el Candidate sea internamente consistente** (F8). No se promueve lo que ya no
    representa a la fuente observada.
 4. `READY` no cambia nada de la activa; **no hay auto-promoción** (SFR-05/SFR-08).
@@ -420,7 +439,7 @@ UNKNOWN != COMPATIBLE     # por defecto
 | **F5** | La promoción falla | previous active remains usable | Puntero atómico + reversión a la generación anterior; nunca se borra la activa. |
 | **F6** | Nueva versión incompatible con SKSE/mods | no forced migration | Gate `RUNTIME_COMPATIBILITY`; `UNKNOWN != COMPATIBLE`. |
 | **F7** | El usuario decide volver atrás | activate previous generation | Rollback = repuntar (SFR-10). |
-| **F8** | Steam Source cambia entre PRE y POST de la captura | candidate `INVALID / SOURCE_CHANGED`, aunque sea internamente consistente | Re-observación POST vs `SourceSnapshotEvidence` PRE (SFR-15; §10). |
+| **F8** | La Managed Source cambia entre PRE y POST de la captura | candidate `INVALID / SOURCE_CHANGED`, aunque sea internamente consistente | Re-observación POST vs `SourceSnapshotEvidence` PRE (SFR-15; §10). |
 | **F9** | Split-brain: `desired` y `effective` divergen tras una promoción | **no hay éxito ambiguo**; estado explícito (`PENDING`/`FAILED`) + recuperación a `A` | SFR-16: `SUCCESS` sólo con coherencia probada; POST verify; rollback causal si P5 elige persist-desired primero (§11). |
 | **F10** | Generation `DRIFTED` al momento de rollback/reactivación | fail-closed; no se reactiva en silencio | Re-verificación obligatoria de identidad antes de rollback/reactivación (SFR-17; §12). |
 
@@ -433,8 +452,8 @@ Verificado leyendo el código de `sky_claw/local/runtime_vault/` sobre
 |---|---|---|---|
 | **RV-1** | `inventory.py`, `verification.py`, `models.py` | Inventario completo sellado (falla ante mutación concurrente y enlaces), `TreeDigest` independiente del root, `verify_tree`, `verify_runtime_identity`. Sin dependencias de GP2. | **REUSE tal cual.** |
 | **RV-1b** | `runtime_observation.py` | Observación fresca de identidad de runtime desde un root (fail-closed, anti-ambigüedad). Sin dependencias de GP2. | **REUSE tal cual.** |
-| **RV-2** | `golden.py` | `verify_golden_master` exige **evidencia independiente** (`expected_tree`, `expected_runtime`); `HASHING_A_FOLDER_DOES_NOT_MAKE_IT_A_GOLDEN_MASTER`. | **ADAPT/PARTIAL.** No usar `verify_golden_master` para admitir Steam Source (no hay expectativa independiente; sería auto-confianza). Reusar sus bloques: `verify_critical_files`, `verify_runtime_identity`, `inventory_tree`, `tree_digest_from_files`. |
-| **RV-3** | `clone.py` | `create_runtime_clone(golden_source: GoldenMasterVerificationResult, ...)` exige fuente **VERIFIED** con `descriptor.role == "reference_only"`; `RuntimeCloneResult` exige `source_golden` no nulo y `descriptor.runtime_identity == source_golden.runtime_identity`. Copia real, staging hermano, publish atómico no-clobber, independencia física. Sin dependencias de GP2. | **ADAPT.** El *motor de copia+verificación+publicación* es reutilizable, pero el contrato de autoridad de fuente no acepta un Steam Source. Opciones a decidir en P3: **(a)** adaptador fino que produzca un descriptor equivalente para el snapshot de Steam; **(b)** rutina de copia mínima que reuse las primitivas RV-1 y las garantías de staging/publicación de RV-3. No se decide el mecanismo en P0. |
+| **RV-2** | `golden.py` | `verify_golden_master` exige **evidencia independiente** (`expected_tree`, `expected_runtime`); `HASHING_A_FOLDER_DOES_NOT_MAKE_IT_A_GOLDEN_MASTER`. | **ADAPT/PARTIAL.** No usar `verify_golden_master` para admitir la Managed Source (no hay expectativa independiente; sería auto-confianza). Reusar sus bloques: `verify_critical_files`, `verify_runtime_identity`, `inventory_tree`, `tree_digest_from_files`. |
+| **RV-3** | `clone.py` | `create_runtime_clone(golden_source: GoldenMasterVerificationResult, ...)` exige fuente **VERIFIED** con `descriptor.role == "reference_only"`; `RuntimeCloneResult` exige `source_golden` no nulo y `descriptor.runtime_identity == source_golden.runtime_identity`. Copia real, staging hermano, publish atómico no-clobber, independencia física. Sin dependencias de GP2. | **ADAPT.** El *motor de copia+verificación+publicación* es reutilizable, pero el contrato de autoridad de fuente no acepta una Managed Source. Opciones a decidir en P3: **(a)** adaptador fino que produzca un descriptor equivalente para el snapshot de la Managed Source; **(b)** rutina de copia mínima que reuse las primitivas RV-1 y las garantías de staging/publicación de RV-3. No se decide el mecanismo en P0. |
 
 `RV-3` responde las preguntas de §9 del pedido: crea copia física real, preserva
 archivos, maneja directorios vacíos (`_capture_directory_structure`), rechaza
@@ -487,28 +506,34 @@ Riesgos y mitigaciones:
 
 | Riesgo | Mitigación |
 |---|---|
-| Copiar un Steam Source en plena escritura | Gate de estabilización (§18) + `inventory_tree` falla cerrado ante mutación concurrente. |
+| Copiar una Managed Source en plena escritura | Gate de estabilización (§18) + `inventory_tree` falla cerrado ante mutación concurrente. |
 | Capturar una actualización parcial como Candidate válido | Estabilización + verificación de identidad completa (conteo de archivos + `tree_digest`). |
 | MO2/SKSE apuntando a una Generation borrada | MVP no borra generaciones (SFR-10); el puntero siempre referencia una Generation retenida. |
 | Destination dentro de Steam (romper SFR-02) | Admisión de rutas falla cerrada. |
 | Espacio en disco durante la copia | Pendiente declarado (P2); la copia necesita ~espacio de un juego completo. |
 
-## 18. Estabilización de Steam ("¿Steam terminó?")
+## 18. Estabilización de la Managed Source ("¿el proveedor terminó?")
 
 **No se asume** `appmanifest cambió = actualización terminada`. Estado actual del
 censo: no existe en el repo un parser del contenido de `appmanifest_489830.acf`
 (sólo se chequea su **existencia** en `scanner._detect_store`), ni detección de
 `steamapps/downloading`, ni de archivos `.part`.
 
+Regla de naming y de diseño: **observaciones específicas del proveedor** (las
+señales de Steam) sobre un **contrato de estabilidad independiente del proveedor**
+(dos inventories sellados idénticos). P1 demuestra el algoritmo inicialmente con
+Steam y sus señales (`appmanifest`, `downloading/<appid>`, archivos parciales,
+inventory estable); el contrato no nombra a Steam.
+
 Estrategia propuesta (gate explícito de **P1**, no demostrada en P0):
 
 ```text
-STABLE(SteamSource) ⇔
+STABLE(ManagedSource) ⇔
   (a) appmanifest_489830.acf en estado idle (no "Update Queued/Required/App Running"),
       leído como evidencia advisory; Y
   (b) ausencia de artefactos en-progreso (p. ej. steamapps/downloading/<appid>,
       archivos .part) ; Y
-  (c) dos inventories sellados completos de Steam Source, separados por una ventana
+  (c) dos inventories sellados completos de la Managed Source, separados por una ventana
       silenciosa, producen el MISMO TreeDigest (y sin cambios de membresía).
 ```
 
@@ -532,11 +557,12 @@ Estado persistente mínimo (JSON, ~1 archivo):
       "runtime_identity": { "game_key": "skyrimse", "game_version": "1.6.1170.0" },
       "tree_digest": { "digest": "…", "files": 0, "bytes": 0 },
       "critical": [ { "rel_path": "SkyrimSE.exe", "expected_digest": "…", "expected_size": 0 } ],
-      "source": { "kind": "steam", "appid": "489830", "buildid": "…", "path": "…" },
+      "source": { "provider": "steam", "appid": "489830", "buildid": "…", "path": "…" },
       "created_at": "2026-10-03T00:00:00Z"
     }
   ],
-  "steam_source": {
+  "managed_source": {
+    "provider": "steam",
     "path": "…",
     "appid": "489830",
     "observed_version": "1.7.xxxx",
@@ -608,7 +634,7 @@ DELETES_PREVIOUS_GENERATION=NO
 | Slice | Contenido | Gate de salida |
 |---|---|---|
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
-| **P1** | Steam Source discovery + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(SteamSource)` demostrado o bloqueo fail-closed. |
+| **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. |
 | **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). |
 | **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
 | **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
@@ -671,8 +697,8 @@ enumerativas):
 Sin resolver en P0; varias quedan como **gates explícitos** de P1/P2/P3/P5. No se
 inventan soluciones.
 
-1. **Estabilización de Steam**: ¿(a)–(c) de §18 alcanzan para demostrar
-   `STABLE(SteamSource)` en el rig real? Gate P1.
+1. **Estabilización de la Managed Source**: ¿(a)–(c) de §18 alcanzan para demostrar
+   `STABLE(ManagedSource)` en el rig real (proveedor Steam)? Gate P1.
 2. **Binding de la Effective Runtime a MO2/SKSE**: ¿repuntar el `gamePath` de MO2
    (Qt `@ByteArray`) y `SKYRIM_PATH`, o un alias estable (`active` → generation) que
    MO2/SKSE/USVFS resuelvan? La auditoría probó un Stock externo, no el mecanismo de
@@ -687,7 +713,7 @@ inventan soluciones.
 6. **Esquema de `generation-id`**: ¿`<display_version>__<digest12>` u otro? Gate P2.
 7. **Espacio en disco**: la copia requiere ~el tamaño completo del juego por
    generación; ¿se admite multivolumen? Gate P2.
-8. **Completitud de la captura**: ¿el conjunto de archivos de Steam Source
+8. **Completitud de la captura**: ¿el conjunto de archivos de la Managed Source
    (incluyendo Creation Club/BSAs) alcanza para un runtime jugable sin Steam? La
    auditoría observó payload de Creation Club escrito por el juego; verificar en P7.
 9. **Compatibilidad SKSE**: mapear `find_skse_installation` + `skse_dll_game_version`
@@ -714,7 +740,7 @@ inventan soluciones.
 | ¿Promotion puede destruir la activa antes de tener reemplazo válido? | No: re-verificación previa + publicación de nueva Generation + puntero atómico; nunca copia sobre la activa (SFR-09). |
 | ¿Rollback depende de reconstrucción? | No: repunta a una Generation retenida (SFR-10). |
 | ¿Candidate puede convertirse en activo sin aprobación? | No (SFR-08). |
-| ¿El Candidate puede generar la evidencia esperada contra la que él mismo se aprueba? | No (SFR-15): la expectativa es `SourceSnapshotEvidence` (PRE/POST) de la Steam Source; la auto-medición del Candidate nunca es autoridad. |
+| ¿El Candidate puede generar la evidencia esperada contra la que él mismo se aprueba? | No (SFR-15): la expectativa es `SourceSnapshotEvidence` (PRE/POST) de la Managed Source; la auto-medición del Candidate nunca es autoridad. |
 | ¿Un `state/active.json` reescrito basta para declarar promoción exitosa? | No (SFR-16): se exige coherencia desired/effective probada; un split-brain es `PENDING`/`FAILED`, jamás `SUCCESS`. |
 | ¿Una Generation `DRIFTED` puede reactivarse en silencio? | No (SFR-17): re-verificación de identidad obligatoria antes de rollback/reactivación; si no verifica, falla cerrado. |
 | ¿Duplicamos RV-1/RV-2/RV-3? | RV-1 se reusa tal cual; RV-2 y RV-3 se reusan parcialmente por su contrato de autoridad de fuente (no por duplicación). |
