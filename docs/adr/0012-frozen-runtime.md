@@ -16,6 +16,13 @@ como `SFR = Sky-Claw Frozen Runtime`.
 **Enmienda P0.2 (2026-10-04):** cierre de la revisión adversarial de P0 — se agrega
 `SFR-18` (independencia física de Generation respecto de la Managed Source) y se
 explicita que el rollback no depende de la Managed Source.
+**Enmienda P2.1 (2026-10-04):** hardening del storage — admisión fail-closed de
+cada componente persistente (P2-B1: un junction en `state/` no puede redirigir
+escrituras fuera del root); `steamapps/common` exacto rechazado (P2-M1); SFR-18
+pasa a ser propiedad **on-demand** de la Generation (`st_nlink==1`, sin requerir
+la Managed Source): `VALID` exige integridad física fresca (P2-B2). Veredictos:
+violación física conocida ⇒ `INVALID`; identidad física inobservable ⇒
+`INDETERMINATE`; nunca `VALID`.
 **Contexto de origen:** `origin/main` `0103ee4f6de15207032d25c254ede5cf2c01bff9`
 (merge de RV-GP2/S4D, PR #666).
 **Relación con GP2-S4E:** el workstream archivado (rama
@@ -239,7 +246,7 @@ Managed Source (estabilizada; provider: Steam)
 | **Managed Source (provider: Steam)** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. El proveedor escribe libremente en ella (SFR-01). |
 | **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Managed Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
 | **Candidate** | Derivada, no confiable hasta verificar | Se inventaría/verifica **contra `SourceSnapshotEvidence`**, nunca contra su propia medición (SFR-15). Estados `building → ready → invalid` (SFR-06/07). |
-| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). No comparte objetos de filesystem mutables con la Managed Source (SFR-18). |
+| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). No comparte objetos de filesystem mutables con la Managed Source (SFR-18). `VALID` exige **integridad física fresca** (sin reparse, `st_nlink==1`): un hardlink insertado después de publicar no cambia el digest pero nunca es `VALID` (P2-B2). |
 | **Desired Active Generation (`state/active.json`)** | Intención persistente de Sky-Claw | Escritura atómica (temp + `os.replace`). Por sí sola **no** declara promoción exitosa (SFR-16). |
 | **Effective Runtime** (game path que MO2/SKSE ejecutan) | Autoridad de hecho | La promoción sólo es exitosa cuando Effective Runtime está probadamente apuntando a la misma Generation que Desired (SFR-16). |
 
@@ -402,9 +409,11 @@ Secuencia exacta:
 
 No se reconstruyen archivos destruidos. El rollback **no depende de la Managed
 Source**: se repunta a una Generation retenida y re-verificada, nunca se reconstruye
-desde la fuente. Si `G_prev` no está retenida o está `DRIFTED`, el rollback falla
-cerrado (por eso MVP **no** borra generaciones y **re-verifica** antes de
-reactivar).
+desde la fuente. La re-verificación incluye la **integridad física fresca** de la
+Generation (SFR-18 on-demand, P2-B2), así que no hace falta que la Managed Source
+exista para verificar: si `G_prev` no está retenida, está `DRIFTED` o viola su
+integridad física, el rollback falla cerrado (por eso MVP **no** borra
+generaciones y **re-verifica** antes de reactivar).
 
 ## 13. Integración MO2 / SKSE
 
@@ -514,7 +523,11 @@ Controles:
    léxica/física, anidamiento, traversal). La independencia física entre Generation
    y Managed Source se verifica por inodo al crear (RV-3), la copia no crea
    hardlinks (`shutil.copy2`), y los links hacia/desde la Managed Source se
-   rechazan (SFR-18).
+   rechazan (SFR-18). **Cada componente persistente** (`versions/`, `candidates/`,
+   `state/`, `state/generations/`) se admite fail-closed ANTES de crear o
+   escribir (P2-B1): un junction/symlink existente ⇒ rechazo, sin seguir el
+   target ni tocar el árbol externo (test con sentinel). El chequeo de
+   `steamapps/common` incluye la ruta misma, no sólo sus ancestros (P2-M1).
 3. **Sin ACL mutation** (SFR-12): no `WRITE_DAC`, no helper privilegiado, no UAC.
 4. **Puntero atómico:** `temp + os.replace` en el mismo directorio (patrón del
    repo); un fallo a mitad no puede truncar el estado.
@@ -685,7 +698,7 @@ DELETES_PREVIOUS_GENERATION=NO
 |---|---|---|
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
 | **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. **Implementado en PR #673** (`sky_claw/local/frozen_runtime/`; Q-04 cerrado en el alcance demostrado de la ventana observada). |
-| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). **Implementado en PR #673** (`storage.py`/`state.py`/`generations.py`/`independence.py`/`generation_id.py`; Q5/Q6/Q10 resueltas; SFR-18 ejecutable con hardlink/junction/reparse; drift on-demand). |
+| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). **Implementado en PR #673** (`storage.py`/`state.py`/`generations.py`/`independence.py`/`generation_id.py`; Q5/Q6/Q10 resueltas; SFR-18 ejecutable con hardlink/junction/reparse; drift on-demand). **Hardening P2.1**: admisión fail-closed de cada componente del layout (junction/symlink ⇒ rechazo, árbol externo intacto), integridad física on-demand de la Generation (`st_nlink==1`, sin Managed Source), `steamapps/common` exacto rechazado. |
 | **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
 | **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
 | **P5** | MO2/SKSE integration (binding del game path + gate de compatibilidad) | F6; juego arranca desde Frozen Runtime. |
@@ -720,7 +733,7 @@ enumerativas):
 | Slice | Tests |
 |---|---|
 | P1 | Estabilización: manifest idle vs update-in-progress; ausencia de `.part`; dos inventories idénticos ⇒ STABLE; mutación concurrente ⇒ fail-closed; captura de `SourceSnapshotEvidence` sellada. |
-| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. **Implementado**: L01–L10 (layout/admisión), ST01–ST10 (estado), G01–G08 (generation-id), DR01–DR11 (drift), PI01–PI09 (SFR-18 con hardlink/junction reales) + ancla AST del boundary de escritura. |
+| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. **Implementado**: L01–L10+c (layout/admisión, incluye `steamapps/common` exacto), SR01–SR08 (namespace de storage con junction/symlink y sentinel: el árbol externo jamás se toca), ST01–ST10 (estado), G01–G08 (generation-id), DR01–DR11 (drift), PI01–PI09 (SFR-18 contra la fuente con hardlink/junction reales), PI10–PI15 (integridad física on-demand: hardlink post-publicación con mismo digest ⇒ `INVALID`, sin Managed Source) + ancla AST del boundary de escritura. |
 | P3 | Candidate completo y fuente estable ⇒ ready; corrupción/truncamiento ⇒ invalid; fuente cambiada PRE/POST ⇒ `invalid / SOURCE_CHANGED` aunque el Candidate sea consistente (SFR-15); fallo a mitad ⇒ activa intacta (F2/F3/F8). Caso negativo anti-self-verification: Candidate **internamente consistente pero distinto** del `SourceSnapshotEvidence` ⇒ rechazado (el test prueba el camino de comparación, no sólo el resultado). |
 | P4 | Promoción no borra previa; sin coherencia desired/effective no hay `SUCCESS` (F9); fallo de promoción revierte y `A` queda usable (F5); sin aprobación no promueve (F4); rollback repunta (F7); rollback sobre Generation `DRIFTED` falla cerrado (F10). |
 | P5 | SKSE compatible/incompatible/unknown; game path repuntado y observado; MO2 arranca desde Generation activa; coherencia desired/effective verificable desde el rig. |
@@ -793,6 +806,24 @@ inventan soluciones.
 13. **Orden causal bind/persist**: P5 decide si persiste `desired` antes o después
     de bindear `effective`; si persiste antes, debe documentar el **rollback causal**
     y sus tests (§11, regla 4). Gate P5.
+14. **P3 BLOCKER — directory membership evidence**: `TreeDigest` sella archivos,
+    pero no la membresía de directorios (incluidos vacíos); dos árboles con los
+    mismos archivos y directorios distintos comparten digest. P3 **no puede
+    declarar un Candidate `READY` sólo con `TreeDigest`**: debe sellar/comparar
+    directorio-membership PRE/Candidate/POST (reutilizar `_capture_directory_structure`
+    de RV-3 o extraer una primitive reusable). No se implementa en P2 por diseño.
+15. **P4 BLOCKERS registrados (no implementados en P2)**: (a) **serialización
+    cross-process**: todos los mutadores de Frozen Runtime deben participar de un
+    único contrato de serialización (test enumerativo por introspección, patrón
+    `AGENTS.md`); (b) **transición durable**: la intención debe persistirse ANTES
+    de mutar el Effective Runtime (sin WAL nuevo: el estado v1 no finge
+    resolverlo); (c) **approval scope**: la aprobación se liga al
+    Candidate/Generation exacto (digest/evidencia/operación/single-use/expiry);
+    (d) **reverify-after-approval**: `approval → verify_generation(B) fresco →
+    gate de compatibilidad → mutación`; (e) **P4 no puede promover sin el gate de
+    compatibilidad disponible** (`UNKNOWN != COMPATIBLE`, implementación P5).
+16. **P5 — Effective Runtime oracle**: cómo se demuestra qué ruta ejecutan
+    MO2/SKSE (Q12) y el binding de dos superficies (Q2/Q13). Gate P5.
 
 ## 27. Revisión adversarial (auto-cuestionamiento)
 
