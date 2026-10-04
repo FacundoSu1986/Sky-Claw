@@ -19,6 +19,10 @@
 .PARAMETER List
     Solo lista los refs que contiene el bundle.
 
+.PARAMETER Force
+    Permite sobrescribir una rama local que ya existe (el refspec se fuerza con
+    +). Sin este switch, -Branch aborta si la rama ya existe.
+
 .EXAMPLE
     ./restore.ps1 -List
 .EXAMPLE
@@ -31,7 +35,8 @@ param(
     [string]$Bundle,
     [string]$Branch,
     [switch]$All,
-    [switch]$List
+    [switch]$List,
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,9 +46,16 @@ $ErrorActionPreference = 'Stop'
 # sin esto, un fetch rechazado imprime "Restaurada: X" (fail-open).
 function Invoke-Git {
     param([Parameter(Mandatory)][string[]]$GitArgs)
-    & git @GitArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($GitArgs -join ' ') fallo con exit code $LASTEXITCODE"
+    # git escribe en stderr incluso en EXITO (p.ej. el progreso de fetch). Con
+    # $ErrorActionPreference='Stop' eso se convierte en error terminante y un
+    # fetch correcto abortaria. Se relaja solo dentro de la funcion y el exito
+    # real se decide por el exit code.
+    $ErrorActionPreference = 'Continue'
+    $out = & git @GitArgs 2>&1
+    $code = $LASTEXITCODE
+    foreach ($line in $out) { Write-Host $line }
+    if ($code -ne 0) {
+        throw "git $($GitArgs -join ' ') fallo con exit code $code"
     }
 }
 
@@ -96,5 +108,13 @@ if (-not $match) {
 }
 
 $dest = "refs/heads/$Branch"
+# El refspec va forzado con +, asi que sin esta guarda -Branch pisaria en
+# silencio una rama local existente.
+git show-ref --verify --quiet $dest
+$alreadyExists = ($LASTEXITCODE -eq 0)
+if ($alreadyExists -and -not $Force) {
+    throw "La rama local '$Branch' ya existe. Usa -Force para sobreescribirla."
+}
+if ($alreadyExists) { Write-Host "AVISO: sobreescribiendo la rama local existente '$Branch' (-Force)." }
 Invoke-Git -GitArgs @('fetch', '--no-tags', $Bundle, "+${match}:$dest")
 Write-Host "Restaurada: $match -> $dest"

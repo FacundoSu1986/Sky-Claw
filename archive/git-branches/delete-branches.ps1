@@ -50,6 +50,19 @@ $ErrorActionPreference = 'Stop'
 
 function Fail { param([string]$Message) throw $Message }
 
+# Ejecuta un comando nativo devolviendo su exit code y su salida, sin que el
+# stderr se convierta en error terminante. Necesario porque las guardas criticas
+# decides por exit code, y porque git/gh escriben en stderr incluso en exito.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(Mandatory)][string[]]$NativeArgs
+    )
+    $ErrorActionPreference = 'Continue'
+    $out = & $Exe @NativeArgs 2>&1
+    [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
+}
+
 if (-not $Manifest) { $Manifest = Join-Path $PSScriptRoot 'MANIFEST.tsv' }
 if (-not $Bundle) {
     $c = Get-ChildItem -Path $PSScriptRoot -Filter 'obsolete-branches-*.bundle' |
@@ -70,50 +83,70 @@ foreach ($h in (git bundle list-heads $Bundle)) {
 if ($archived.Count -eq 0) { Fail "El bundle no contiene refs: $Bundle" }
 
 # --- PRs abiertos AHORA (no el snapshot) ---
+# FAIL-CLOSED: si gh falla no se puede saber si hay PRs abiertos, y seguir con
+# $openPR vacio desactivaria la guarda critica en silencio. $ErrorActionPreference
+# no cubre el exit code de comandos nativos, asi que hay que mirarlo a mano.
 $openPR = @{}
-$openJson = gh pr list --state open --limit 500 --json headRefName | ConvertFrom-Json
+$ghRes = Invoke-Native 'gh' @('pr', 'list', '--state', 'open', '--limit', '500', '--json', 'headRefName')
+if ($ghRes.Code -ne 0) {
+    Fail "gh pr list fallo (exit $($ghRes.Code)): no se pueden verificar los PRs abiertos. Aborto sin borrar nada (fail-closed)."
+}
+$openJson = (@($ghRes.Out) -join "`n") | ConvertFrom-Json
 foreach ($pr in @($openJson)) {
     if ($pr -and $pr.headRefName) { $openPR[[string]$pr.headRefName] = $true }
 }
 
 # --- Ramas checked-out en algun worktree ---
 $checkedOut = @{}
-foreach ($line in (git worktree list --porcelain)) {
-    if ($line -match '^branch refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
+$wtRes = Invoke-Native 'git' @('worktree', 'list', '--porcelain')
+if ($wtRes.Code -ne 0) {
+    Fail "git worktree list fallo (exit $($wtRes.Code)): no se pueden verificar las ramas checked-out. Aborto (fail-closed)."
 }
-$current = (git rev-parse --abbrev-ref HEAD)
-if ($LASTEXITCODE -ne 0) { Fail 'No se pudo resolver la rama actual' }
+foreach ($line in @($wtRes.Out)) {
+    if ("$line" -match '^branch refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
+}
+$curRes = Invoke-Native 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
+if ($curRes.Code -ne 0) { Fail 'No se pudo resolver la rama actual' }
+$current = (@($curRes.Out) -join '').Trim()
 
-# --- Candidatas del manifiesto (MERGED/CLOSED, locales, archivadas) ---
+# --- Candidatas del manifiesto (MERGED/CLOSED, archivadas) ---
+# Se incluyen las filas 'remote' a proposito: hay 23 refs que existen SOLO en el
+# remoto (sin rama local), y mirando solo 'local' -IncludeRemote nunca las cubria.
 $rows = Get-Content $Manifest | Where-Object { $_ -and $_.Trim() -ne '' -and $_ -notmatch '^#' }
-$candidatas = @()
+$candidatas = @{}
 foreach ($r in $rows) {
     $c = $r -split [char]9
     if ($c.Count -lt 6) { continue }
-    if ($c[1] -ne 'local') { continue }
     if ($c[2] -notin @('MERGED', 'CLOSED')) { continue }
     if (-not $archived.ContainsKey($c[5])) { continue }
-    $candidatas += $c[5]
+    $candidatas[$c[5]] = $true
 }
-$candidatas = $candidatas | Sort-Object -Unique
+$candidatas = @($candidatas.Keys | Sort-Object)
+
+# --- Ramas locales hoy (para no intentar borrar lo que ya no existe) ---
+$localBranches = @{}
+$brRes = Invoke-Native 'git' @('branch', '--format=%(refname:short)')
+if ($brRes.Code -ne 0) { Fail "git branch fallo (exit $($brRes.Code)). Aborto (fail-closed)." }
+foreach ($b in @($brRes.Out)) { if ("$b") { $localBranches[[string]$b] = $true } }
 
 Write-Host "Bundle:      $Bundle"
 Write-Host "Manifiesto:  $Manifest"
-Write-Host "Candidatas (MERGED/CLOSED, locales, archivadas): $($candidatas.Count)"
+Write-Host "Candidatas (MERGED/CLOSED, archivadas): $($candidatas.Count)"
 Write-Host "PRs abiertos hoy: $($openPR.Count) | checked-out: $($checkedOut.Count) | actual: $current"
 Write-Host ''
 
 # --- Resolver owner/repo para el borrado remoto ---
 $owner = $null; $repo = $null
 if ($IncludeRemote) {
-    $url = (git remote get-url origin)
-    if ($LASTEXITCODE -ne 0) { Fail 'No hay remoto origin' }
+    $urlRes = Invoke-Native 'git' @('remote', 'get-url', 'origin')
+    if ($urlRes.Code -ne 0) { Fail 'No hay remoto origin' }
+    $url = (@($urlRes.Out) -join '').Trim()
     $path = ($url -replace '^.*github\.com[:/]', '') -replace '\.git$', ''
     if ($path -match '^(.+?)/(.+)$') { $owner = $Matches[1]; $repo = $Matches[2] }
     if (-not $owner) { Fail "No pude parsear owner/repo de: $url" }
 }
 
-$borradas = 0; $omitidas = 0; $fallidas = 0
+$borradas = 0; $omitidas = 0; $fallidas = 0; $wouldDelete = 0
 foreach ($name in $candidatas) {
     $razon = $null
     if ($name -eq 'main') { $razon = 'es main' }
@@ -127,31 +160,48 @@ foreach ($name in $candidatas) {
         continue
     }
 
+    $tieneLocal = $localBranches.ContainsKey($name)
+    $tieneRemota = $false
+    if ($IncludeRemote) {
+        $lsRes = Invoke-Native 'git' @('ls-remote', '--heads', 'origin', $name)
+        if ($lsRes.Code -ne 0) {
+            Write-Host ("  FALLO   {0,-58} (ls-remote origin)" -f $name)
+            $fallidas++
+            continue
+        }
+        $tieneRemota = (@($lsRes.Out) | Where-Object { "$_" }).Count -gt 0
+    }
+
     if (-not $Execute) {
-        Write-Host "  [dry-run] borraria $name"
-        $borradas++
+        $que = @()
+        if ($tieneLocal) { $que += 'local' }
+        if ($tieneRemota) { $que += 'origin' }
+        $algo = ($que.Count -gt 0)
+        if (-not $algo) { $que += 'nada que borrar' }
+        $verbo = 'omitida'
+        if ($algo) { $verbo = 'borraria'; $wouldDelete++ } else { $omitidas++ }
+        Write-Host ("  [dry-run] {0,-9} {1,-46} ({2})" -f $verbo, $name, ($que -join '+'))
         continue
     }
 
-    & git branch -D $name
-    if ($LASTEXITCODE -ne 0) { Write-Host "  FALLO   $name"; $fallidas++; continue }
-    Write-Host "  BORRADA $name"
-    $borradas++
-
-    if ($IncludeRemote) {
-        $exists = (git ls-remote --heads origin $name)
-        if ($LASTEXITCODE -eq 0 -and $exists) {
-            gh api -X DELETE "repos/$owner/$repo/git/refs/heads/$name" | Out-Null
-            if ($LASTEXITCODE -ne 0) { Write-Host "    FALLO remota origin/$name"; $fallidas++ }
-            else { Write-Host "    BORRADA remota origin/$name" }
-        }
+    if ($tieneLocal) {
+        $delRes = Invoke-Native 'git' @('branch', '-D', $name)
+        if ($delRes.Code -ne 0) { Write-Host ("  FALLO   {0,-58} (local)" -f $name); $fallidas++; continue }
+        Write-Host ("  BORRADA {0,-58} (local)" -f $name)
+        $borradas++
+    }
+    if ($tieneRemota) {
+        $apiRes = Invoke-Native 'gh' @('api', '-X', 'DELETE', "repos/$owner/$repo/git/refs/heads/$name")
+        if ($apiRes.Code -ne 0) { Write-Host ("    FALLO {0,-56} (origin)" -f $name); $fallidas++ }
+        else { Write-Host ("    BORRADA {0,-56} (origin)" -f $name); $borradas++ }
     }
 }
 
 Write-Host ''
 if ($Execute) {
     Write-Host "Borradas: $borradas | Omitidas por guarda: $omitidas | Fallidas: $fallidas"
+    if ($fallidas -gt 0) { exit 1 }
 } else {
-    Write-Host "Dry-run: $borradas corresponden a borrado | $omitidas omitidas por guarda."
+    Write-Host "Dry-run: $wouldDelete a borrar | $omitidas omitidas por guarda."
     Write-Host 'Correlo con -Execute para aplicar.'
 }

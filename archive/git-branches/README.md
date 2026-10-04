@@ -25,7 +25,7 @@ el manifiesto `MANIFEST.tsv` y el script `restore.ps1`.
 
 | Archivo | ¿Versionado? | Descripción |
 |---|---|---|
-| `obsolete-branches-20261004.bundle` | no (gitignored) | 78 refs autocontenidas: 77 obsoletas + `main` como base |
+| `obsolete-branches-20261004.bundle` | no (gitignored) | 78 refs autocontenidas: 77 archivadas + `main` como base |
 | `MANIFEST.tsv` | sí | una fila por ref: nombre, tipo, estado de PR, nº de PR, fecha, SHA, subject |
 | `restore.ps1` | sí | restaura una rama o todas desde el bundle (incluye refs remotas) |
 | `delete-branches.ps1` | sí | borra ramas con guardas fail-closed (recomputa PRs abiertos y worktrees en runtime); dry-run por defecto |
@@ -43,13 +43,21 @@ The bundle records a complete history.
 - Restauración probada contra un repo temporal: los SHA de las ramas restauradas
   coinciden byte a byte con los originales.
 
-## Resumen (77 refs obsoletas)
+## Resumen (77 refs: 76 obsoletas + 1 con PR abierto)
 
-| `kind` | MERGED | CLOSED | NO_PR | total |
-|---|---:|---:|---:|---:|
-| `local` (refs/heads) | 23 | 3 | 24 | **50** |
-| `remote` (refs/remotes/origin) | 8 | 10 | 9 | **27** |
-| **total** | **31** | **13** | **33** | **77** |
+| `kind` | MERGED | CLOSED | NO_PR | OPEN | total |
+|---|---:|---:|---:|---:|---:|
+| `local` (refs/heads) | 23 | 3 | 23 | 1 | **50** |
+| `remote` (refs/remotes/origin) | 8 | 10 | 9 | 0 | **27** |
+| **total** | **31** | **13** | **32** | **1** | **77** |
+
+La única fila `OPEN` es `research/native-parallax-exp-m6-pair-mismatch-decomposition`
+(**PR #675**): se archivó cuando figuraba `NO_PR` y quedó obsoleta mientras se
+armaba el archivo. Figura en el manifiesto por completitud, pero **no es
+obsoleta** y `delete-branches.ps1` la excluye por guarda.
+
+Además, **23 de las 27 refs remotas existen solo en el remoto** (sin rama local):
+`-IncludeRemote` las cubre vía la API de GitHub.
 
 Criterio de obsolescencia: la rama tiene un PR **mergeado** o **cerrado** en GitHub,
 o nunca tuvo PR y no aporta trabajo vivo. La detección NO se apoya solo en ancestros
@@ -89,6 +97,9 @@ CLOSED), `feat/skse-autoinstall` (PR #422 CLOSED) y los `backup/*`, `codex/*`,
 # Restaurar una rama puntual (con su nombre original)
 ./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix'
 
+# Si la rama local ya existe, -Branch aborta; con -Force la sobreescribe
+./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix' -Force
+
 # Restaurar todas: locales -> refs/heads/restored/*; remotas -> refs/heads/restored/origin/*
 # (incluye 'restored/main', el ref base del bundle)
 ./archive/git-branches/restore.ps1 -All
@@ -122,6 +133,13 @@ runtime). Corre en **dry-run** por defecto:
 ./archive/git-branches/delete-branches.ps1                          # dry-run
 ./archive/git-branches/delete-branches.ps1 -Execute                # borra locales seguras
 ./archive/git-branches/delete-branches.ps1 -Execute -IncludeRemote # + remotas (origin)
+```
+
+`-IncludeRemote` cubre **también las 23 refs que solo existen en el remoto** (sin
+rama local): se borran con la API de GitHub aunque no haya nada local. Sin el,
+el script **aborta** si `gh pr list`, `git worktree list` o `git branch` fallan
+(fail-closed: nunca sigue con una guarda vacía) y sale con exit 1 si algún borrado
+queda pendiente.
 ```
 
 Omite toda rama con PR abierto, checked-out en un worktree, la rama actual o

@@ -53,9 +53,9 @@ Todos sobre ramas obsoletas (ya archivadas en el bundle) o `detached HEAD` viejo
 
 | Path | Rama / estado |
 |---|---|
-| `C:/Users/Facu2/AppData/Local/Temp/kilo/m5-final` | detached |
-| `C:/Users/Facu2/AppData/Local/Temp/kilo/m5-full` | detached |
-| `C:/Users/Facu2/AppData/Local/Temp/kilo/m5-provfix` | `research/native-parallax-exp-m5-frequency-coherence` |
+| `%TEMP%/kilo/m5-final` | detached |
+| `%TEMP%/kilo/m5-full` | detached |
+| `%TEMP%/kilo/m5-provfix` | `research/native-parallax-exp-m5-frequency-coherence` |
 | `C:/Worktrees/pristine-main` | detached |
 | `C:/Worktrees/Sky-Claw-exp-m3-corpus` | `research/native-parallax-exp-m3-clean-authored-trust` |
 | `C:/Worktrees/Sky-Claw-parallaxr-a0` | `feat/parallaxr-assisted-external-mode` |
@@ -102,7 +102,7 @@ borrar sin permisos de administrador. **No** están registrados como worktrees
 
 ```powershell
 takeown /f .worktrees\.task3-* /r
-icacls .worktrees\.task3-* /grant "$env:USERNAME:(F)" /t
+icacls .worktrees\.task3-* /grant "${env:USERNAME}:(F)" /t
 Remove-Item .worktrees\.task3-* -Recurse -Force
 ```
 
