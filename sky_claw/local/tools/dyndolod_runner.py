@@ -325,6 +325,100 @@ def _espacio_libre_en(destino: pathlib.Path) -> int:
     return shutil.disk_usage(probe).free
 
 
+async def _esperar_terminalidad_del_worker_mutante(worker: asyncio.Task[None]) -> None:
+    """Retiene al caller hasta que el worker mutante de packaging es terminal.
+
+    R1 — ``RUNNER_P1_PACKAGING_CANCEL``. Un hilo ya despachado por
+    ``asyncio.to_thread`` no se puede interrumpir de forma segura: cancelar el
+    ``await`` suelta al caller mientras el thread sigue mutando disco (borra el
+    mod previo, copia el árbol, escribe ``meta.ini``) y el caller podría empezar
+    rollback/cleanup o liberar la lease contra bytes todavía vivos. Este helper
+    NO cancela el thread — espera su terminalidad y recién entonces deja
+    propagar la cancelación. Invariante::
+
+        worker_terminal < rollback_started < lease_released
+
+    Mecanismo: cada vuelta espera ``asyncio.shield(worker)`` — protegido desde
+    el PRIMER await, la cancelación externa jamás se transfiere a la Task del
+    worker (la dejaría ``done()`` sin que el hilo haya terminado: un handle
+    mentiroso) — y el loop absorbe cancelaciones REPETIDAS registrando la
+    intención. ``shield`` por sí sólo no alcanza: el await externo sigue
+    recibiendo ``CancelledError``; éste loop es la fase explícita de
+    *terminal handoff*.
+
+    Precedencia de desenlaces (verificada en 3.11 y 3.12): sin cancelación, el
+    éxito y las excepciones del worker se propagan tal cual — el camino normal
+    de packaging no cambia. Con cancelación pendiente, el resultado externo es
+    ``CancelledError`` (manda la semántica de cancelación del caller) y una
+    excepción del worker se registra con ``exc_info`` y se encadena como
+    ``__cause__``: nunca se pierde silenciosamente ni deja
+    ``Task exception was never retrieved``.
+    """
+    intencion: asyncio.CancelledError | None = None
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as exc:
+            if worker.cancelled():
+                # El worker mismo fue cancelado por un tercero — el código
+                # productivo jamás lo hace (la Task es privada de este helper).
+                # Su desenlace se mira abajo; ya no hay espera posible.
+                break
+            if intencion is None:
+                intencion = exc
+            logger.warning(
+                "cancelación durante el packaging: el caller queda retenido hasta que "
+                "el worker mutante llegue a terminal; ninguna cancelación lo libera antes",
+                extra={
+                    "operation_type": "dyndolod_packaging_cancel_handoff",
+                    "pipeline_stage": _ETAPA_DYNDOLOD,
+                    "tx_id": _tx_id(),
+                },
+            )
+        except Exception:  # noqa: BLE001 — el desenlace exacto se recupera abajo vía worker.exception()
+            # El worker ya es terminal (done con excepción): la espera terminó.
+            # No se propaga acá para aplicar abajo la precedencia cancel vs falla.
+            break
+
+    if worker.cancelled() and intencion is None:
+        # Rama defensiva: nadie cancela este worker desde código productivo. Si
+        # llega a pasar, el handle dejó de representar al hilo y sólo queda
+        # propagar el desenlace del worker.
+        worker.result()  # siempre CancelledError; nunca retorna
+    falla = None if worker.cancelled() else worker.exception()
+
+    if intencion is None:
+        # Camino normal intacto: éxito retorna; la excepción del worker se
+        # propaga tal cual para que `_package_output_as_mod` la traduzca.
+        if falla is not None:
+            raise falla
+        return
+
+    if falla is not None:
+        logger.error(
+            "el worker de packaging terminó con excepción mientras el caller estaba "
+            "cancelado: la cancelación gana como resultado externo y la falla queda "
+            "registrada y encadenada",
+            exc_info=(type(falla), falla, falla.__traceback__),
+            extra={
+                "operation_type": "dyndolod_packaging_worker_falla_en_handoff",
+                "pipeline_stage": _ETAPA_DYNDOLOD,
+                "tx_id": _tx_id(),
+            },
+        )
+    logger.info(
+        "worker de packaging terminal; se libera al caller cancelado",
+        extra={
+            "operation_type": "dyndolod_packaging_cancel_terminal",
+            "pipeline_stage": _ETAPA_DYNDOLOD,
+            "tx_id": _tx_id(),
+        },
+    )
+    if falla is not None:
+        raise intencion from falla
+    raise intencion
+
+
 # =============================================================================
 # TAXONOMÍA DEL LOG (etapa 9)
 # =============================================================================
@@ -2485,7 +2579,13 @@ class DynDOLODRunner:
                 # Generar meta.ini
                 self._generate_meta_ini(mod_path, mod_name)
 
-            await asyncio.to_thread(_empaquetar_sincrono)
+            # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
+            # y su hilo nativo NO se puede cancelar cancelando el await. Task
+            # propia + handoff de terminalidad: ninguna cancelación (ni repetida)
+            # suelta al caller antes de que el worker sea terminal — recién
+            # entonces puede empezar rollback/cleanup/lease release.
+            worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
+            await _esperar_terminalidad_del_worker_mutante(worker_mutante)
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path

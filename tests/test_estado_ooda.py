@@ -105,6 +105,11 @@ _ITEMS = frozenset(
         # interrumpe el cleanup de `_execute_process` antes de `close_job`— tiene
         # fila propia con dos dimensiones separadas en `Qué falta`
         # (resolution_status/evidence_status/evidence_kind). Reproducción dinámica
+        # R1 cerró con su PR dedicado: el worker mutante de packaging se espera
+        # a terminalidad antes de que la cancelación libere al caller. La fila
+        # existe para que el estado R1 sea legible desde el inventario y no sólo
+        # desde el plan canónico; R2 sigue sin fila propia (abierto, sin fix).
+        "Runner P1 — cancelación del packaging libera al caller con el writer vivo (`RUNNER_P1_PACKAGING_CANCEL`)",
         # determinista sobre flujo simulado (`test_runner_defects_p1_p2.py`) +
         # contraste AST contra el handler productivo; el plan canónico vive en
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
