@@ -87,6 +87,47 @@ el revisor lo revirtió igual.
 > un comando o rompen un test. Si agregás una regla acá, traé con qué se verifica
 > — o va a envejecer como las demás.
 
+## Una sesión, un worktree
+
+Este repo se trabaja desde **varias sesiones a la vez** (Claude Code, Codex, Kilo,
+Cline…). Compartir el worktree principal no falla de forma visible: la sesión
+siguiente hace `checkout` de otra rama y la anterior commitea sobre la rama que no
+tocaba. Ya pasó acá: un `HEAD` movido bajo los pies, con dos commits colocados en
+la rama equivocada y un directorio de trabajo untracked borrado de un plumazo.
+
+**La propiedad:** *toda sesión trabaja en su propio worktree bajo
+`<repo>/.worktrees/<nombre>`; el worktree principal queda reservado para integrar.*
+El nombre lo elige la sesión; la raíz no se negocia.
+
+```bash
+git worktree add .worktrees/mi-sesion -b feat/mi-cambio main
+# ... trabajar ...
+git worktree remove .worktrees/mi-sesion        # al cerrar la sesión
+git worktree move <ruta> .worktrees/<nombre>    # migrar uno que nació fuera
+```
+
+`.worktrees/` ya está en `.gitignore`: es el **único** lugar donde puede vivir un
+worktree de agente. Nada de `%TEMP%` (allí el registro de git queda colgado cuando
+el SO limpia el directorio), ni raíces de unidad sueltas (`E:\`), ni un directorio
+por herramienta. La dispersión en seis rutas distintas es lo que volvió
+inmanejable el inventario.
+
+**Anclas** (`tests/test_worktree_convention_invariant.py`, enumeran la familia):
+- `test_los_worktrees_no_principales_viven_bajo_la_convencion` — lee el registro
+  real (`git worktree list --porcelain`) y falla si alguno se sale de `.worktrees/`.
+  Distingue el principal por su `.git` como **directorio** (en un worktree
+  enlazado `.git` es un archivo), así que el test da igual corrido desde el
+  principal o desde un worktree de agente.
+- `test_la_convencion_esta_documentada_en_agents_md` — la regla no se borra en
+  silencio: si desaparece el texto, el test falla.
+- `test_el_ignorar_cubre_el_directorio_de_worktrees` — ningún worktree de agente
+  puede entrar a un PR.
+
+*Historia: la primera auditoría encontró 25 worktrees en `%TEMP%\kilo`,
+`C:\Worktrees`, `E:\`, `E:\Sectores\...`, `.claude/worktrees` y `.kilo/worktrees`.
+El registro de git era consistente, pero no había forma de auditarlo. Sin ancla,
+esto vuelve.*
+
 ## Antes de tocar el pipeline de modding
 
 Leer [`sky_claw/local/AGENTS.md`](sky_claw/local/AGENTS.md) — **SOP del pipeline de
