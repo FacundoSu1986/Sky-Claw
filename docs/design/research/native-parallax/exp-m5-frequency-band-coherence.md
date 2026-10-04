@@ -910,6 +910,15 @@ real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión par
 corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
 primary/secondary queda como follow-up explícito.
 
+### 22.5 Nota post-freeze: hardening operativo sin cambio científico
+
+Con posterioridad a este freeze aterrizó `ce0965b2` (el chequeo de checkout corre `git` en el
+directorio del **módulo**, no en el cwd del proceso) junto con su test. Es integridad
+operativa, no ciencia: los blobs de `frequency_coherence.py` (`836fb62e…`) y
+`solver_coherence.py` (`1d665f64…`) son **idénticos** al freeze, y el análisis por asset y la
+agregación no cambiaron. El corrective FULL (§23) sigue siendo el resultado válido de esta
+implementación.
+
 ---
 
 ## 23. Corrective FULL — resultado y equivalencia de decisión
