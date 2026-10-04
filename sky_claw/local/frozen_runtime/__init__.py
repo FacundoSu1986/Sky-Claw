@@ -46,6 +46,7 @@ from sky_claw.local.frozen_runtime.models import (
     ManagedSourceProvider,
     ProviderActivitySignals,
     ProviderMetadataObservation,
+    ProviderObservationState,
     SourceMeasurement,
     SourceSnapshotEvidence,
     SourceStabilityResult,
@@ -53,6 +54,7 @@ from sky_claw.local.frozen_runtime.models import (
     StableSourceObservation,
 )
 from sky_claw.local.frozen_runtime.observation import observe_source_snapshot
+from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation
 from sky_claw.local.frozen_runtime.stabilization import (
     DEFAULT_QUIET_WINDOW_SECONDS,
     assess_managed_source_stability,
@@ -105,6 +107,7 @@ __all__ = [
     "ProviderActivitySignals",
     "ProviderEvidenceError",
     "ProviderMetadataObservation",
+    "ProviderObservationState",
     "SharedObjectEvidence",
     "SourceMeasurement",
     "SourceSnapshotEvidence",
@@ -124,6 +127,7 @@ __all__ = [
     "descubrir_generations",
     "discover_managed_source",
     "default_storage_root",
+    "evaluate_provider_observation",
     "generacion_id_desde_evidencia",
     "initialize_frozen_runtime_storage",
     "leer_generation_metadata",

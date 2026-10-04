@@ -28,9 +28,17 @@ from sky_claw.local.frozen_runtime import (
     obtain_stable_source_snapshot,
 )
 from sky_claw.local.frozen_runtime import observation as observation_module
+from sky_claw.local.frozen_runtime import stabilization as stabilization_module
 from sky_claw.local.frozen_runtime._vdf import parse_vdf_text
 from sky_claw.local.frozen_runtime.errors import MalformedVdfError
-from sky_claw.local.frozen_runtime.provider_signals import manifest_path_for
+from sky_claw.local.frozen_runtime.models import (
+    ProviderActivitySignals,
+    ProviderMetadataObservation,
+    ProviderObservationState,
+    SourceMeasurement,
+)
+from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation, manifest_path_for
+from sky_claw.local.runtime_vault.models import RuntimeIdentity, TreeDigest
 from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation, UnreadableRuntimeVersionError
 
 MANIFEST_IDLE = (
@@ -559,6 +567,163 @@ class TestEstabilizacion:
         assert _parece_ruta_absoluta("D:\\SteamLibrary")
         assert _parece_ruta_absoluta("\\\\server\\share")
         assert not _parece_ruta_absoluta("relativa/library")
+
+
+# ── Ventana de estabilidad: metadata interna de las mediciones (P2.1c) ────
+
+
+def _senal(**overrides: object) -> ProviderActivitySignals:
+    base: dict[str, object] = {
+        "provider": ManagedSourceProvider.STEAM,
+        "manifest_readable": True,
+        "manifest_parse_error": None,
+        "state_flags": "4",
+        "bytes_to_download": None,
+        "bytes_downloaded": None,
+        "update_result": None,
+        "buildid": "1234567",
+        "downloading_dir_nonempty": False,
+        "temp_dir_nonempty": False,
+        "observed_at_ns": 1,
+    }
+    base.update(overrides)
+    return ProviderActivitySignals(**base)  # type: ignore[arg-type]
+
+
+def _metadata(**overrides: object) -> ProviderMetadataObservation:
+    base: dict[str, object] = {
+        "provider": ManagedSourceProvider.STEAM,
+        "appid": "489830",
+        "buildid": "1234567",
+        "state_flags": "4",
+        "manifest_readable": True,
+        "observed_at_ns": 1,
+    }
+    base.update(overrides)
+    return ProviderMetadataObservation(**base)  # type: ignore[arg-type]
+
+
+def _medicion(metadata: ProviderMetadataObservation | None = None) -> SourceMeasurement:
+    return SourceMeasurement(
+        runtime_identity=RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
+        files=(),
+        tree_digest=TreeDigest(digest="a" * 64, files=0, bytes=0),
+        provider_metadata=metadata if metadata is not None else _metadata(),
+        observed_at_ns=1,
+    )
+
+
+def _source_sintetica_vacia(tmp_path: pathlib.Path) -> ManagedSource:
+    common = tmp_path / "lib" / "steamapps" / "common" / "Skyrim Special Edition"
+    common.mkdir(parents=True)
+    steamapps = common.parent.parent
+    return _source(steamapps, common)
+
+
+def _parchear_ventana(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    senales: list[ProviderActivitySignals],
+    mediciones: list[SourceMeasurement],
+) -> None:
+    iter_senales = iter(senales)
+    iter_mediciones = iter(mediciones)
+    monkeypatch.setattr(stabilization_module, "observe_provider_activity", lambda source, **kw: next(iter_senales))
+    monkeypatch.setattr(stabilization_module, "medir_fuente", lambda source, **kw: next(iter_mediciones))
+
+
+class TestVentanaProviderMetadata:
+    """P2.1c: la metadata DENTRO de cada medición también decide la ventana."""
+
+    def test_s17_medicion_pre_activa_unstable(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # IDLE externo → ACTIVE interno (PRE) → IDLE: el "sándwich idle" no puede dar STABLE.
+        source = _source_sintetica_vacia(tmp_path)
+        _parchear_ventana(
+            monkeypatch,
+            senales=[_senal(), _senal()],
+            mediciones=[_medicion(_metadata(state_flags="6")), _medicion()],
+        )
+        resultado = assess_managed_source_stability(source, quiet_window_seconds=0.0, sleep=_no_op)
+        assert resultado.state is StabilityState.UNSTABLE
+        assert "PRE" in resultado.message
+
+    def test_s18_medicion_post_activa_unstable(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = _source_sintetica_vacia(tmp_path)
+        _parchear_ventana(
+            monkeypatch,
+            senales=[_senal(), _senal()],
+            mediciones=[_medicion(), _medicion(_metadata(state_flags="6"))],
+        )
+        resultado = assess_managed_source_stability(source, quiet_window_seconds=0.0, sleep=_no_op)
+        assert resultado.state is StabilityState.UNSTABLE
+        assert "POST" in resultado.message
+
+    def test_s19_medicion_sin_stateflags_indeterminate(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = _source_sintetica_vacia(tmp_path)
+        _parchear_ventana(
+            monkeypatch,
+            senales=[_senal(), _senal()],
+            mediciones=[_medicion(_metadata(state_flags=None)), _medicion(_metadata(state_flags=None))],
+        )
+        resultado = assess_managed_source_stability(source, quiet_window_seconds=0.0, sleep=_no_op)
+        assert resultado.state is StabilityState.INDETERMINATE
+
+    def test_s20_buildid_contradictorio_unstable(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Contradicción entre buildid externo e interno observable ⇒ fail-closed.
+        source = _source_sintetica_vacia(tmp_path)
+        _parchear_ventana(
+            monkeypatch,
+            senales=[_senal(buildid="111"), _senal(buildid="111")],
+            mediciones=[_medicion(_metadata(buildid="222")), _medicion(_metadata(buildid="222"))],
+        )
+        resultado = assess_managed_source_stability(source, quiet_window_seconds=0.0, sleep=_no_op)
+        assert resultado.state is StabilityState.UNSTABLE
+        assert "buildid" in resultado.message
+
+    def test_s20b_buildid_ausente_no_es_contradiccion(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Un buildid no observable no genera falso positivo (§13).
+        source = _source_sintetica_vacia(tmp_path)
+        _parchear_ventana(
+            monkeypatch,
+            senales=[_senal(buildid=None), _senal(buildid=None)],
+            mediciones=[_medicion(_metadata(buildid=None)), _medicion(_metadata(buildid=None))],
+        )
+        resultado = assess_managed_source_stability(source, quiet_window_seconds=0.0, sleep=_no_op)
+        assert resultado.state is StabilityState.STABLE
+
+
+class TestEvaluadorProvider:
+    """Ancla del evaluador único: una sola semántica para todas las superficies."""
+
+    @pytest.mark.parametrize(
+        ("overrides", "esperado"),
+        [
+            ({"manifest_readable": False}, ProviderObservationState.INDETERMINATE),
+            ({"state_flags": None}, ProviderObservationState.INDETERMINATE),
+            ({"state_flags": "   "}, ProviderObservationState.INDETERMINATE),
+            ({"state_flags": "4"}, ProviderObservationState.IDLE),
+            ({"state_flags": "6"}, ProviderObservationState.ACTIVE),
+            ({"bytes_to_download": 10, "bytes_downloaded": 0}, ProviderObservationState.ACTIVE),
+            ({"update_result": "1"}, ProviderObservationState.ACTIVE),
+        ],
+    )
+    def test_evaluador_metadata(self, overrides: dict[str, object], esperado: ProviderObservationState) -> None:
+        assert evaluate_provider_observation(_metadata(**overrides)) is esperado
+
+    def test_evaluador_senales_staging_activo(self) -> None:
+        assert evaluate_provider_observation(_senal(downloading_dir_nonempty=True)) is ProviderObservationState.ACTIVE
+        assert evaluate_provider_observation(_senal(temp_dir_nonempty=True)) is ProviderObservationState.ACTIVE
+
+    def test_evaluador_actividad_conocida_no_se_degrada(self) -> None:
+        # ACTIVE gana a cualquier otra carencia: la actividad conocida no se degrada.
+        assert (
+            evaluate_provider_observation(_senal(state_flags=None, temp_dir_nonempty=True))
+            is ProviderObservationState.ACTIVE
+        )
 
     def test_s16_vdf_llave_extra_en_raiz_falla(self) -> None:
         with pytest.raises(MalformedVdfError):

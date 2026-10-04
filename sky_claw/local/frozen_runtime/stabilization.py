@@ -34,13 +34,14 @@ from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError, FrozenRunti
 from sky_claw.local.frozen_runtime.models import (
     ManagedSource,
     ProviderActivitySignals,
+    ProviderObservationState,
     SourceMeasurement,
     SourceStabilityResult,
     StabilityState,
     StableSourceObservation,
 )
 from sky_claw.local.frozen_runtime.observation import medir_fuente, snapshot_from_measurement
-from sky_claw.local.frozen_runtime.provider_signals import observe_provider_activity
+from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation, observe_provider_activity
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def _indeterminate(
     message: str,
     *,
     pre: SourceMeasurement | None = None,
+    post: SourceMeasurement | None = None,
     pre_provider: ProviderActivitySignals | None = None,
     post_provider: ProviderActivitySignals | None = None,
 ) -> SourceStabilityResult:
@@ -58,7 +60,9 @@ def _indeterminate(
         state=StabilityState.INDETERMINATE,
         message=message,
         pre_tree_digest=pre.tree_digest if pre is not None else None,
+        post_tree_digest=post.tree_digest if post is not None else None,
         pre_runtime_identity=pre.runtime_identity if pre is not None else None,
+        post_runtime_identity=post.runtime_identity if post is not None else None,
         pre_provider=pre_provider,
         post_provider=post_provider,
         observed_at_ns=time.time_ns(),
@@ -95,6 +99,16 @@ def _artefactos_parciales(med: SourceMeasurement) -> list[str]:
     return [f.rel_path for f in med.files if f.rel_path.casefold().endswith(".part")][:5]
 
 
+def _contradiccion_buildid(*valores: str | None) -> bool:
+    """True si hay ≥2 buildids OBSERVABLES distintos entre las superficies.
+
+    Sólo cuenta valores reales (None/vacío no participan): la ausencia de un
+    buildid en una superficie no es una contradicción, pero dos valores
+    observados distintos dentro de la misma ventana sí lo son (§13).
+    """
+    return len({v for v in valores if v}) > 1
+
+
 def _run_window(
     source: ManagedSource,
     *,
@@ -103,47 +117,66 @@ def _run_window(
 ) -> tuple[SourceStabilityResult, SourceMeasurement | None]:
     inicio = time.perf_counter()
 
+    # Superficie 1: observación externa PRE.
     pre_provider = observe_provider_activity(source)
-    if not pre_provider.manifest_readable:
+    estado_pre_outer = evaluate_provider_observation(pre_provider)
+    if estado_pre_outer is ProviderObservationState.INDETERMINATE:
         return (
             _indeterminate(
-                f"manifest del proveedor ilegible o ausente en el pre-check: {pre_provider.manifest_parse_error}",
+                "manifest ilegible o sin StateFlags observable (pre-check): no se puede demostrar reposo "
+                f"({pre_provider.manifest_parse_error or 'sin detalle'})",
                 pre_provider=pre_provider,
             ),
             None,
         )
-    if pre_provider.update_in_progress:
+    if estado_pre_outer is ProviderObservationState.ACTIVE:
         return _unstable("el proveedor reporta actividad de actualización (pre-check)", pre_provider=pre_provider), None
-    if not pre_provider.state_flags or not pre_provider.state_flags.strip():
-        # Condición (a) del gate: un manifest legible SIN StateFlags legible no
-        # demuestra reposo del proveedor ⇒ no se puede afirmar estabilidad.
-        return (
-            _indeterminate(
-                "manifest legible sin StateFlags observable (pre-check): no se puede demostrar reposo",
-                pre_provider=pre_provider,
-            ),
-            None,
-        )
 
     try:
         pre = medir_fuente(source)
     except FrozenRuntimeObservationError as exc:
         return _indeterminate(f"no se pudo medir la fuente (PRE): {exc}", pre_provider=pre_provider), None
 
-    sleep(quiet_window_seconds)
-
-    post_provider = observe_provider_activity(source)
-    if not post_provider.manifest_readable:
+    # Superficie 2: metadata capturada DENTRO de la medición PRE (la ventana
+    # IDLE→ACTIVE→IDLE queda cerrada acá: si la medición observó actividad,
+    # el árbol puede coincidir y aun así la ventana NO es estable).
+    estado_pre_medicion = evaluate_provider_observation(pre.provider_metadata)
+    if estado_pre_medicion is ProviderObservationState.ACTIVE:
+        return (
+            _unstable(
+                "la medición PRE observó actividad del proveedor (metadata interna de la ventana)",
+                pre=pre,
+                pre_provider=pre_provider,
+            ),
+            None,
+        )
+    if estado_pre_medicion is ProviderObservationState.INDETERMINATE:
         return (
             _indeterminate(
-                f"manifest del proveedor ilegible o ausente en el post-check: {post_provider.manifest_parse_error}",
+                "la medición PRE no pudo demostrar reposo del proveedor (metadata interna de la ventana)",
+                pre=pre,
+                pre_provider=pre_provider,
+            ),
+            None,
+        )
+
+    sleep(quiet_window_seconds)
+
+    # Superficie 3: observación externa POST.
+    post_provider = observe_provider_activity(source)
+    estado_post_outer = evaluate_provider_observation(post_provider)
+    if estado_post_outer is ProviderObservationState.INDETERMINATE:
+        return (
+            _indeterminate(
+                "manifest ilegible o sin StateFlags observable (post-check): no se puede demostrar reposo "
+                f"({post_provider.manifest_parse_error or 'sin detalle'})",
                 pre=pre,
                 pre_provider=pre_provider,
                 post_provider=post_provider,
             ),
             None,
         )
-    if post_provider.update_in_progress:
+    if estado_post_outer is ProviderObservationState.ACTIVE:
         return (
             _unstable(
                 "el proveedor reporta actividad de actualización (post-check); el árbol no es la única señal (S11)",
@@ -153,20 +186,11 @@ def _run_window(
             ),
             None,
         )
-    if post_provider.buildid != pre_provider.buildid:
+    if _contradiccion_buildid(pre_provider.buildid, pre.provider_metadata.buildid, post_provider.buildid):
         return (
             _unstable(
-                f"el buildid del proveedor cambió durante la ventana ({pre_provider.buildid!r} → {post_provider.buildid!r})",
-                pre=pre,
-                pre_provider=pre_provider,
-                post_provider=post_provider,
-            ),
-            None,
-        )
-    if not post_provider.state_flags or not post_provider.state_flags.strip():
-        return (
-            _indeterminate(
-                "manifest legible sin StateFlags observable (post-check): no se puede demostrar reposo",
+                "el buildid observable del proveedor cambió durante la ventana "
+                f"({pre_provider.buildid!r}/{pre.provider_metadata.buildid!r} → {post_provider.buildid!r})",
                 pre=pre,
                 pre_provider=pre_provider,
                 post_provider=post_provider,
@@ -181,6 +205,49 @@ def _run_window(
             _indeterminate(
                 f"no se pudo medir la fuente (POST): {exc}",
                 pre=pre,
+                pre_provider=pre_provider,
+                post_provider=post_provider,
+            ),
+            None,
+        )
+
+    # Superficie 4: metadata capturada DENTRO de la medición POST.
+    estado_post_medicion = evaluate_provider_observation(post.provider_metadata)
+    if estado_post_medicion is ProviderObservationState.ACTIVE:
+        return (
+            _unstable(
+                "la medición POST observó actividad del proveedor (metadata interna de la ventana)",
+                pre=pre,
+                post=post,
+                pre_provider=pre_provider,
+                post_provider=post_provider,
+            ),
+            None,
+        )
+    if estado_post_medicion is ProviderObservationState.INDETERMINATE:
+        return (
+            _indeterminate(
+                "la medición POST no pudo demostrar reposo del proveedor (metadata interna de la ventana)",
+                pre=pre,
+                post=post,
+                pre_provider=pre_provider,
+                post_provider=post_provider,
+            ),
+            None,
+        )
+    if _contradiccion_buildid(
+        pre_provider.buildid,
+        pre.provider_metadata.buildid,
+        post_provider.buildid,
+        post.provider_metadata.buildid,
+    ):
+        return (
+            _unstable(
+                "buildid observable contradictorio entre las superficies de la ventana "
+                f"({pre_provider.buildid!r}/{pre.provider_metadata.buildid!r} → "
+                f"{post_provider.buildid!r}/{post.provider_metadata.buildid!r})",
+                pre=pre,
+                post=post,
                 pre_provider=pre_provider,
                 post_provider=post_provider,
             ),

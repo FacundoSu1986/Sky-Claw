@@ -31,9 +31,49 @@ from sky_claw.local.frozen_runtime.models import (
     ManagedSource,
     ProviderActivitySignals,
     ProviderMetadataObservation,
+    ProviderObservationState,
 )
 
 _IDLE_STATE_FLAGS = "4"
+
+
+def evaluate_provider_observation(
+    observation: ProviderMetadataObservation | ProviderActivitySignals,
+) -> ProviderObservationState:
+    """Autoridad semántica ÚNICA del estado del proveedor (P2.1c).
+
+    Evalúa por igual la observación externa (`ProviderActivitySignals`) y la
+    metadata capturada DENTRO de cada medición (`ProviderMetadataObservation`),
+    de modo que las cuatro superficies de evidencia de la ventana hablan el
+    mismo idioma y no pueden divergir.
+
+    Prioridad (§12): una actividad CONOCIDA nunca se degrada a INDETERMINATE.
+
+    1. Cualquier indicador de actividad observado ⇒ ``ACTIVE``.
+    2. Sin actividad conocida pero sin poder demostrar reposo (manifest
+       ilegible, StateFlags ausente/blank) ⇒ ``INDETERMINATE``.
+    3. Reposo demostrable ⇒ ``IDLE``.
+    """
+    if (
+        observation.bytes_to_download is not None
+        and observation.bytes_downloaded is not None
+        and observation.bytes_to_download > observation.bytes_downloaded
+    ):
+        return ProviderObservationState.ACTIVE
+    if observation.update_result is not None and observation.update_result.strip() not in ("", "0"):
+        return ProviderObservationState.ACTIVE
+    state_flags = observation.state_flags
+    if state_flags is not None and state_flags.strip() and state_flags.strip() != _IDLE_STATE_FLAGS:
+        return ProviderObservationState.ACTIVE
+    if isinstance(observation, ProviderActivitySignals) and (
+        observation.downloading_dir_nonempty or observation.temp_dir_nonempty
+    ):
+        return ProviderObservationState.ACTIVE
+    if not observation.manifest_readable:
+        return ProviderObservationState.INDETERMINATE
+    if not state_flags or not state_flags.strip():
+        return ProviderObservationState.INDETERMINATE
+    return ProviderObservationState.IDLE
 
 
 def manifest_path_for(source: ManagedSource) -> pathlib.Path:

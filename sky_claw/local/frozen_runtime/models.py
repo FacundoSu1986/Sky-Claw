@@ -50,6 +50,22 @@ class StabilityState(StrEnum):
     INDETERMINATE = "indeterminate"
 
 
+class ProviderObservationState(StrEnum):
+    """Estado semántico ÚNICO de una observación del proveedor (P2.1c).
+
+    Una sola autoridad para evaluar observaciones externas y metadata interna
+    de medición (evita tablas divergentes entre modelos hermanos):
+
+    - ``ACTIVE``: hay evidencia CONOCIDA de actividad (nunca se degrada).
+    - ``INDETERMINATE``: sin actividad conocida pero sin poder demostrar reposo.
+    - ``IDLE``: reposo demostrable en la observación.
+    """
+
+    IDLE = "idle"
+    ACTIVE = "active"
+    INDETERMINATE = "indeterminate"
+
+
 @dataclass(frozen=True, slots=True)
 class ManagedSource:
     """Instalación mutable del juego administrada por un proveedor externo.
@@ -140,25 +156,9 @@ class ProviderActivitySignals:
     temp_dir_nonempty: bool
     observed_at_ns: int
 
-    @property
-    def update_in_progress(self) -> bool:
-        """True si CUALQUIER señal advisory indica actualización activa.
-
-        Heurísticas documentadas en ``provider_signals.py``; la ausencia de
-        manifest legible no se trata acá (la decide el caller como
-        INDETERMINATE).
-        """
-        if self.state_flags is not None and self.state_flags.strip() not in ("", "4"):
-            return True
-        if (
-            self.bytes_to_download is not None
-            and self.bytes_downloaded is not None
-            and self.bytes_to_download > self.bytes_downloaded
-        ):
-            return True
-        if self.update_result is not None and self.update_result.strip() not in ("", "0"):
-            return True
-        return self.downloading_dir_nonempty or self.temp_dir_nonempty
+    # El estado semántico (IDLE/ACTIVE/INDETERMINATE) NO se evalúa acá: la
+    # autoridad única es ``provider_signals.evaluate_provider_observation``
+    # (evita tablas divergentes entre observación externa y metadata interna).
 
 
 @dataclass(frozen=True, slots=True)
