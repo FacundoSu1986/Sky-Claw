@@ -200,6 +200,13 @@ LANZADORES_ESPERADOS = {
     # herramienta de modding — no va en LANZADORES_DE_HERRAMIENTA ni en
     # PROCEDENCIA_DE_FLAGS.
     "sky_claw/local/native_parallax/research/run_exp_m4.py": 1,
+    # EXP-M5 (research-only): un único `subprocess.run(["git", "rev-parse", "HEAD"])`
+    # para atar el checkout del FULL al execution freeze declarado por `--frozen-ack`
+    # (fail-closed antes de leer Cohort A). Mismo comando y misma naturaleza que la
+    # entrada de run_exp_m4.py: infra de metadatos del propio repo, argv fijo sin
+    # flags de ninguna herramienta de modding — no va en LANZADORES_DE_HERRAMIENTA
+    # ni en PROCEDENCIA_DE_FLAGS.
+    "sky_claw/local/native_parallax/research/run_exp_m5.py": 1,
     # Lanzadores de herramienta: cada uno debe tener entrada en PROCEDENCIA_DE_FLAGS.
     "sky_claw/local/loot/cli.py": 1,
     "sky_claw/local/loot/version.py": 1,
