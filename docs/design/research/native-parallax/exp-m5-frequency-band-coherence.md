@@ -558,6 +558,75 @@ real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión par
 corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
 primary/secondary queda como follow-up explícito.
 
+---
+
+## 23. Corrective FULL — resultado y equivalencia de decisión
+
+> Primer FULL ejecutado desde el corrective freeze (§22), con la implementación corregida.
+> Docs-only: registra lo observado; no retunea nada.
+
+### 23.1 Artefacto
+
+```text
+CORRECTED_FULL_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\full-corrected-e3dbda51.json
+CORRECTED_FULL_SHA256=57b22b1d6138622ba31c4a76934b5b9f35ba8bdaff5c174e638150a1d60a6480
+CORRECTED_FULL_BYTES=196006
+CORRECTED_FULL_SHA=e3dbda517782cb71d9647acad607ea3846629952
+CORRECTED_FULL_RESOLUTION=512
+```
+
+Verificado contra el raw: `git_sha` = `m5_execution_freeze_sha` = `frozen_ack` =
+`e3dbda51…`; `base_main_sha = 9f6fa0c2…`; `m5_prereg_freeze_sha = d33f81ca…`;
+`protocol_status` y flags de §18 intactos; thresholds/cutoff/band_edges/ENERGY_GATE/seed
+idénticos (§22.2). El artefacto histórico `full-e116196f.json` **no** se sobrescribió.
+
+### 23.2 Rows por asset
+
+```text
+HISTORICAL_ROWS_VS_CORRECTED=BIT_IDENTICAL
+```
+
+31/31 filas científicas bit-idénticas entre el FULL histórico y el correctivo: el fix es de
+agregación de cohorte, y el análisis por asset no cambió.
+
+### 23.3 Summary (medianas apareadas) y decisión
+
+| `summary.*.excess_*` | CORRECTED (apareada) | HISTORICAL (diferencia de medianas) |
+|---|---:|---:|
+| FULL LOWMID EXCESS | 0.5082 | 0.5040 |
+| FULL HIGH EXCESS | 0.3350 | 0.3474 |
+| CALIBRATION LOWMID EXCESS | 0.5123 | 0.5713 |
+| CALIBRATION HIGH EXCESS | 0.3350 | 0.3494 |
+| LEGACY_HELDOUT LOWMID EXCESS | 0.4772 | 0.4769 |
+| LEGACY_HELDOUT HIGH EXCESS | 0.3105 | 0.3098 |
+
+```text
+CORRECTED_RULES:
+C1_lowmid_preserved=false
+C2_high_enriched=false
+high_enrichment_ge_threshold=false
+high_gt_lowmid_excess=false
+legacy_heldout_replication=false
+
+CORRECTED_SUMMARY_DECISION=EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED
+HISTORICAL_TO_CORRECTED_DECISION_EQUIVALENT=YES
+```
+
+El bootstrap es idéntico al histórico (ya usaba valores por asset): LOWMID point 0.5082
+CI95 [0.3104, 0.6058]; HIGH 0.3350 [0.2679, 0.4430]; HIGH_ENRICHMENT 0.7542 [0.5710, 1.0470].
+El caso no evaluable `polyhaven_brick_4` sigue en `null`.
+
+### 23.4 Caveat de protocolo (se preserva)
+
+El corrective rerun ocurre **después** de que todo el dataset ya había sido observado (FULL
+histórico + incidente §18): **no** es una confirmación blinded y no se presenta como tal.
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
 Borrar los outputs contaminados **no restauró la ceguera**: los 16 `LEGACY_HELDOUT` fueron
 observados por M5 antes de este freeze. En consecuencia, `LEGACY_HELDOUT` **no** debe
 presentarse —ni en el informe de FULL ni en ninguna comunicación— como *fresh heldout* ni
