@@ -418,3 +418,19 @@ class TestNamespaceReparse:
         assert (externo / "sentinel.txt").read_text(encoding="utf-8") == "intacto"
         assert not (externo / "active.json").exists()
         assert not (externo / "generations").exists()
+
+    def test_sr10_namespace_redirigido_lectura_rechazada(self, tmp_path: pathlib.Path) -> None:
+        # Read-side: con `state/` redirigido a un árbol externo CON estado
+        # válido, el loader no debe aceptar el JSON ajeno como propio.
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        (externo / "active.json").write_text(
+            json.dumps({"schema_version": 1, "desired_active_generation": GID_VALIDO, "updated_at_ns": 9}),
+            encoding="utf-8",
+        )
+        (root / "state").rename(root / "state_real")
+        _enlace_directorio(externo, root / "state")
+        with pytest.raises(StateCorruptError):
+            load_frozen_runtime_state(root / "state" / "active.json")

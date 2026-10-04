@@ -39,7 +39,7 @@ from sky_claw.local.frozen_runtime.errors import (
     StateSchemaError,
 )
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
-from sky_claw.local.frozen_runtime.independence import exigir_namespace_escribible
+from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace, exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState, FrozenRuntimeStateLoadResult
 
 SCHEMA_VERSION = 1
@@ -92,6 +92,13 @@ def load_frozen_runtime_state(path: pathlib.Path) -> FrozenRuntimeStateLoadResul
         raise StateCorruptError(f"{ruta}: no se pudo inspeccionar el estado: {exc}") from exc
     if kind is not None:
         raise StateCorruptError(f"{ruta}: el estado es un enlace/reparse ({kind}): fail-closed")
+    # Namespace read-side: si `state/` (o un ancestro) fue redirigido, leer a
+    # través del enlace aceptaría estado externo o reportaría arranque limpio
+    # cuando en el target no hay archivo. Un directorio ausente sí es válido
+    # (pre-init ⇒ arranque limpio); un enlace no.
+    motivo_padre = descripcion_de_enlace(ruta.parent)
+    if motivo_padre is not None:
+        raise StateCorruptError(f"{ruta}: namespace del estado redirigido: {motivo_padre}")
     if not ruta.exists():
         return FrozenRuntimeStateLoadResult(
             found=False, state=None, message="estado ausente: arranque limpio (sin Generation activa)"

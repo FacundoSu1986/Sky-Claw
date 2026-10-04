@@ -267,6 +267,10 @@ def assess_managed_source_stability(
     ``sleep`` y ``quiet_window_seconds`` son inyectables: los tests usan
     hooks/clock controlados y ventana cero; la política de timing productiva
     (default 2 s) está separada del contrato del algoritmo.
+
+    **SÍNCRONO a propósito** (I/O de disco intensivo: dos inventarios + lecturas
+    de manifest + espera): un caller en event loop (GUI/agente async) DEBE
+    off-loadear con ``asyncio.to_thread`` — no se provee variante async en P1/P2.
     """
     if quiet_window_seconds < 0:
         raise FrozenRuntimeError("quiet_window_seconds no puede ser negativo")

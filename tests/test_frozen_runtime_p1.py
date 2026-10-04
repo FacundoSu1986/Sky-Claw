@@ -552,6 +552,14 @@ class TestEstabilizacion:
         with pytest.raises(MalformedVdfError):
             parse_vdf_text('"AppState" {\n\t"StateFlags" "4"\n', source_label="test")
 
+    def test_d15_parece_ruta_absoluta_posix(self) -> None:
+        from sky_claw.local.frozen_runtime.discovery import _parece_ruta_absoluta
+
+        assert _parece_ruta_absoluta("/home/user/SteamLibrary")
+        assert _parece_ruta_absoluta("D:\\SteamLibrary")
+        assert _parece_ruta_absoluta("\\\\server\\share")
+        assert not _parece_ruta_absoluta("relativa/library")
+
     def test_s16_vdf_llave_extra_en_raiz_falla(self) -> None:
         with pytest.raises(MalformedVdfError):
             parse_vdf_text('"A" "1"\n}\n', source_label="test")

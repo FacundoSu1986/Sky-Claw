@@ -95,6 +95,12 @@ def _archivos_fisicos(root: pathlib.Path, *, etiqueta: str) -> list[tuple[str, o
     (:class:`PhysicalReparseError`), entradas que no sean archivo regular ni
     directorio, e identidad física no disponible (st_dev/st_ino <= 0 ⇒ no se
     puede afirmar nada). Sin links en el root tampoco hay árbol que afirmar.
+
+    Limitación declarada: hay filesystems (ReFS, unidades de red, ciertos
+    archivos comprimidos) donde Windows no reporta file index (st_ino=0). En
+    ellos la verificación devuelve INDETERMINATE: es la dirección segura
+    (nunca un falso INDEPENDENT), pero puede bloquear operaciones legítimas;
+    se registrará en el rig P7 con evidencia real.
     """
     motivo_raiz = descripcion_de_enlace(root)
     if motivo_raiz is not None:

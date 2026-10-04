@@ -212,12 +212,13 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     destino = generations_state_dir(root) / f"{generation_id}.json"
     if destino.exists():
         existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
-        # Identidad COMPLETA (digest + files + bytes), no sólo el digest: una
-        # metadata con conteos alterados no es "el mismo" registro.
+        # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
+        # dependencia de orden: inventory_tree no promete orden estable de
+        # archivos, así que la idempotencia no puede depender del orden.
         if (
             existente.tree_digest == metadata.tree_digest
             and existente.runtime_identity == metadata.runtime_identity
-            and existente.critical_files == metadata.critical_files
+            and _mismos_criticos(existente.critical_files, metadata.critical_files)
         ):
             return existente
         raise GenerationCollisionError(
@@ -226,6 +227,15 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
         )
     write_json_atomic(destino, _payload_de_metadata(metadata))
     return metadata
+
+
+def _mismos_criticos(a: tuple[FileIdentity, ...], b: tuple[FileIdentity, ...]) -> bool:
+    """Igualdad de evidencia crítica sin depender del orden de la tupla."""
+
+    def clave(c: FileIdentity) -> tuple[str, int, str]:
+        return (c.rel_path.casefold(), c.size, c.digest)
+
+    return sorted(map(clave, a)) == sorted(map(clave, b))
 
 
 def _criticos_coinciden(registrados: tuple[FileIdentity, ...], observados: tuple[FileIdentity, ...]) -> bool:
@@ -379,6 +389,11 @@ def verificar_generation(root: pathlib.Path, generation_id: str) -> GenerationVe
     metadata registrada. ``VALID`` sólo si digest, identidad y evidencia
     crítica coinciden; ``DRIFTED`` ante cualquier diferencia; ``INDETERMINATE``
     si algo es inobservable. Sin auto-repair; sin mutar metadata.
+
+    Costo aceptado (P2): recorre el árbol DOS veces (integridad física +
+    inventario). Para una instalación completa esto son segundos por corrida
+    on-demand; la optimización (un solo walk que alimente ambos) queda para
+    P3/P4 con números del rig real, sin debilitar la frescura de la evidencia.
     """
     ident = validar_generation_id(generation_id)
     directorio = generation_dir(root, ident)

@@ -126,6 +126,13 @@ def _library_paths_from_vdf_data(data: dict[str, object]) -> list[str]:
 
 
 def _parece_ruta_absoluta(value: str) -> bool:
+    """Heurística de ruta absoluta para el VDF (Windows: unidad o UNC; POSIX: /).
+
+    El discovery productivo de P1 está acotado a Windows (rig P7), pero el
+    parser vive en código compartido y no debe descartar entradas POSIX válidas.
+    """
+    if value.startswith("/"):
+        return True
     return len(value) >= 2 and (value[1] == ":" or value.startswith("\\\\"))
 
 

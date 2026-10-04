@@ -163,6 +163,19 @@ class TestGenerationId:
         with pytest.raises(InvalidGenerationIdError):
             construir_generation_id("1.6.1170 beta", TreeDigest(digest="a" * 64, files=1, bytes=1))
 
+    def test_g10_idempotencia_independiente_del_orden_de_criticos(self, tmp_path: pathlib.Path) -> None:
+        # inventory_tree no promete orden estable: la idempotencia no puede
+        # depender del orden de critical_files (falso GenerationCollisionError).
+        import dataclasses
+
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gid = _publicar_generacion(root, tmp_path)
+        evidencia = _construir_evidencia(generation_dir(root, gid))
+        revertida = dataclasses.replace(evidencia, critical_files=tuple(reversed(evidencia.critical_files)))
+        resultado = registrar_generation_metadata(root, revertida)
+        assert resultado.generation_id == gid
+
 
 # ── Drift verification ───────────────────────────────────────────────────
 

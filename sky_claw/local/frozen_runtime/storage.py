@@ -268,6 +268,9 @@ def same_volume(a: pathlib.Path, b: pathlib.Path) -> bool:
     FrozenRuntimeRoot. Falta alguna ruta ⇒ fail-closed con error tipado. La
     Managed Source PUEDE vivir en otro volumen (la copia cross-volume la
     maneja P3).
+
+    **Precondición del caller (P3/P4):** ambas rutas deben existir; creá el
+    staging/los directorios ANTES de consultar. La primitive no crea nada.
     """
     try:
         dev_a = os.stat(a).st_dev
