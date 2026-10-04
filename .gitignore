@@ -157,3 +157,7 @@ AUDIT_PANEL_REPORT.md
 # Archivo de ramas git obsoletas (bundles binarios pesados: NO versionar;
 # el manifiesto y la documentacion SI se versionan). Ver archive/git-branches/README.md
 /archive/git-branches/*.bundle
+
+# Cuarentena de artefactos untracked recuperados de worktrees removidos
+# (evidencia de validacion local; no versionar). Ver archive/WORKTREES.md
+/archive/worktree-quarantine/
