@@ -14,7 +14,19 @@ M5_STATUS=CLOSED_AND_MERGED
 M5_MERGE_SHA=ee4a67ec2f0635f02dea794c71eb0f5d06781ada
 BASE_MAIN_SHA=ee4a67ec2f0635f02dea794c71eb0f5d06781ada
 NATIVE_PARALLAX_BASE_MOVED_MATERIALLY=NO
+
+M6_A1_CORRECTION_OF=319fb02fbb84d8e246aba8331887a747ec601db5
+DOCS_ONLY=YES
+NO_RUNNER=YES
+NO_PREREG_FREEZE=YES
+NO_THRESHOLD_TUNING=YES
 ```
+
+> **M6-A.1 — reconciliación con la auditoría matemática (docs-only).**
+> Este slice **no** implementa, **no** ejecuta el corpus, **no** crea el prereg freeze
+> y **no** ajusta ningún threshold. Corrige el documento a la luz de defectos
+> confirmados en la base histórica (issue #667) y de errores del propio texto M6-A.
+> **Bloquea la implementación** hasta que PR-MATH-A/B mergeen.
 
 ---
 
@@ -175,21 +187,101 @@ E(·)                                  energía de Parseval no-DC (§7.1)
 
 ## 5. Campo gradiente desde la normal authored
 
-**Usando exactamente la convención aprobada por M4/M5**
-(`run_exp_m3.SOLVER_NORMAL_CONVENTION = "DIRECTX"`, `sx = sy = 1`):
+### 5.1 ⚠️ CONTRATO CANÓNICO (corregido en M6-A.1)
+
+El M6-A original heredaba textualmente `p = −sx·nx/nz`. **Eso sólo coincide con el
+contrato correcto cuando `sx² = sy² = 1`.** La relación canónica se deriva de la
+definición del forward:
 
 ```text
-p = −sx · nx / max(nz, nz_floor)          nz_floor = 1e-30 en el camino RAW de M2
-q = −sy · ny / max(nz, nz_floor)
+N = normalize((−sx·p, −sy·q, 1))
 ```
 
-Idéntico a `normal_from_height.gradients_from_normal` y al `decode_gradients_policy`
-que consume `integrate_periodic`. **M6 no redefine esta primitiva.**
+de donde `nx/nz = −sx·p` y `ny/nz = −sy·q`, es decir:
 
-**Sobre el DC de `g_N` (decisión de diseño):** el solver fija `ĥ[0,0]=0`, es decir
-**descarta la pendiente constante** (tilt global) sin contarla como error. Por tanto
-la energía DC de `g_N` es energía *no reconstruible pero no rotacional*. Confundirla
-con "no-integrabilidad" sobreestimaría H1.
+```text
+p = −nx / (sx · max(nz, nz_floor))
+q = −ny / (sy · max(nz, nz_floor))
+```
+
+**Ésta es la relación general que M6 documenta.** La forma `−sx·nx/nz` de la base
+histórica es equivalente sólo si `sx = ±1`.
+
+Verificado numéricamente (campo sintético, round-trip forward→inverse):
+
+| `sx`, `sy` | error con contrato **canónico** | error con la **implementación histórica** |
+|---|---|---|
+| `+1, +1` | 4.44e−16 | 4.44e−16 |
+| `+0.5, +2` | 4.44e−16 | **1.36e+01** |
+| `−1, +1` | 4.44e−16 | 4.44e−16 |
+| `+3, +0.25` | 4.44e−16 | **3.35e+01** |
+
+El contrato canónico es exacto para **toda** `(sx, sy)`; la implementación histórica
+sólo acierta cuando `sx² = sy² = 1`.
+
+### 5.2 Guards conceptuales
+
+```text
+sx ≠ 0   y   sy ≠ 0        (si sx=0, la normal no porta información sobre p)
+nz_floor > 0               (política de singularidad; NO se rediseña aquí)
+```
+
+En el camino primario de M4/M5 se cumple `sx = sy = 1`, así que los guards son
+inertes; se documentan para que M6 no herede la restricción por accidente.
+
+**No se diseña aquí una nueva política de `nz`.** Eso pertenece al PR-MATH-A.
+
+### 5.3 Efecto sobre M4/M5
+
+```text
+M4_M5_PRIMARY_SX=1
+M4_M5_PRIMARY_SY=1
+
+CANONICAL_ALGEBRA_INVALIDATES_M4_M5_PRIMARY = NO
+```
+
+La corrección algebraica **no invalida por sí sola** los resultados primarios de M4
+ni de M5, porque ambos usaron `sx = sy = 1`, donde la forma antigua y la canónica
+coinciden bit a bit (verificado: 4.44e−16 en ambos). **No se declara ningún
+resultado histórico inválido.**
+
+Pero lo inverso tampoco se afirma: "no invalidado" **no** es "revalidado". Los
+defectos de §5.4 afectan a funciones proxy cuyo uso en M2/M3 sí requiere revisión
+explícita (§18.2).
+
+### 5.4 Dependencia de implementación (blocker)
+
+```text
+HODGE_IMPLEMENTATION_DEPENDENCY = CANONICAL_NORMAL_GRADIENT_FIX
+MATH_FOUNDATION_STATUS          = REQUIRES_FIX_BEFORE_M6_IMPLEMENTATION
+ISSUE_667_BLOCKING_DEPENDENCY   = YES
+```
+
+La construcción `g_N = (p, q)` **debe** derivarse del contrato canónico de §5.1, y
+**no** puede delegar ciegamente en `gradients_from_normal()` ni en
+`decode_gradients_policy()` hasta que el PR-MATH-A esté mergeado: ambas implementan
+la forma `−sx·nx/nz`, que es incorrecta para `sx ≠ ±1`.
+
+El **diseño** Fourier/Hodge (§6) permanece válido e independiente de esta
+dependencia: la proyección se define sobre cualquier campo, sea cual sea su
+procedencia.
+
+Defectos confirmados en la base histórica (se corrigen en PR-MATH-A/B, **no aquí**):
+
+| Símbolo | Defecto | Alcance |
+|---|---|---|
+| `normal_from_height.gradients_from_normal` | `−sx·nx/nz` en vez de `−nx/(sx·nz)` | coincide sólo si `sx²=1` |
+| `nz_policies.decode_gradients_policy` | misma forma en 4 ramas | ídem |
+| `trust_proxies.curl_proxy` | **índices cruzados** (§7.5) | no computa curl |
+| `trust_proxies.projection_residual` | `sx=sy=1` implícitos, no parametrizados | sin generalidad |
+| `OracleOnly.normal_height_residual_oracle` | sin `sx/sy`; `nz=sqrt(1−p²−q²)` | sin generalidad |
+| `metrics._ranks` / `spearman` | ranks sin promedio de empates | sólo secundaria |
+
+### 5.5 DC de `g_N` (decisión de diseño, sin cambios)
+
+El solver fija `ĥ[0,0]=0`, es decir **descarta la pendiente constante** (tilt global)
+sin contarla como error. La energía DC de `g_N` es energía *no reconstruible pero no
+rotacional*: confundirla con "no-integrabilidad" sobreestimaría H1.
 
 > **Decisión:** la energía DC se **excluye** de `E_∥` y `E_⚥`, y se reporta por
 > separado como `DC_SLOPE_FRACTION` (diagnóstico).
@@ -257,22 +349,79 @@ energías totales** `E_rot/E_grad`, que un α de amplitud no fija.
 > `c = sqrt( f·E_grad / ((1−f)·E_rot) )`. Verificado: `target=0.40` →
 > `medido = 0.400000000000`.
 
-### 7.4 Relación con el curl (no duplica `trust_proxies.curl_proxy`)
+### 7.4 Relación con el curl (identidad teórica, no implementada)
 
 En 2D el curl aplica un giro de 90° a la componente rotacional, de modo que
-`Σ|curl|² = Σ|k|²·|ĝ_⚥|²`, mientras que `E_⚥ = Σ|ĝ_⚥|²` **no** pondera. Verificado:
+
+```text
+Σ|curl|² = Σ|k|²·|ĝ_⊥|²        (identidad)
+mientras  E_⊥ = Σ|ĝ_⊥|²         (no pondera)
+```
+
+Verificado numéricamente contra la **definición canónica** de curl:
 
 ```text
 E_perp (plano)            = 1.997987e+07
-sum|curl|²                = 7.465679e+11
+sum|curl_canon|²          = 7.465679e+11
 sum|k|²|g_perp|²           = 7.465679e+11     (dif rel 3.270e-16 → identidad)
 ```
 
-`E_⚥` y `||curl||²` **no** son la misma cantidad ni difieren por un factor
-constante (la ponderación es `|k|²`, que varía por modo). Además
-`trust_proxies.curl_proxy` reporta medianas/MAD/p95 de `|curl|` — una estadística
-de magnitud robusta, no una fracción de energía adimensional. **M6 no duplica una
-métrica existente**; la relación queda declarada, no resuelta por unexplación.
+`E_⊥` y `||curl||²` **no** son la misma cantidad ni difieren por un factor constante
+(la ponderación es `|k|²`, que varía por modo). La identidad es **teórica y se
+verifica con la definición canónica**, no con la implementación histórica.
+
+### 7.5 `curl_proxy` histórico: NO computa curl (hallazgo M6-A.1)
+
+```text
+HISTORICAL_CURL_PROXY_IMPLEMENTATION = KNOWN_INCORRECT_PENDING_ISSUE_667
+HISTORICAL_CURL_PROXY_BLOCKED_FOR_M6 = YES
+```
+
+El repo es autoridad, y su fuente dice:
+
+```text
+def curl_proxy(p, q):
+    """A: residual de integrabilidad curl = ∂p/∂y − ∂q/∂x con estadísticas robustas."""
+    curl = spectral_gradients(p)[0] - spectral_gradients(q)[1]
+```
+
+El **docstring** describe `∂p/∂y − ∂q/∂x`, pero el **código** computa
+`spectral_gradients(p)[0] − spectral_gradients(q)[1]` = `∂p/∂x − ∂q/∂y`: **los índices
+están cruzados respecto de lo que la propia función declara.**
+
+Verificado sobre un campo gradiente **exacto**, donde el curl canónico debe anularse:
+
+```text
+curl canónico (∂q/∂x − ∂p/∂y) sobre gradiente exacto : max = 1.137e-13   (≈0, correcto)
+lo que computa el código  (∂p/∂x − ∂q/∂y)             : max = 3.266e+02   (NO ≈0)
+
+max|docstring − curl_canónico| = 2.274e-13   → el docstring SÍ es el curl correcto
+```
+
+Lo que el código computa **no** es el curl, **no** es la divergencia
+(`∂p/∂x + ∂q/∂y`) y **no** es el laplaciano (`∂p/∂x + ∂q/∂y = h_xx + h_yy`): es
+`h_xx − h_yy`, una segunda derivada anisótropa. **Consecuencia:** el proxy no puede
+discriminar un campo integrable de uno no integrable, porque da una señal distinta de
+cero sobre un gradiente puro.
+
+**Definición canónica que M6 documentará** (para `p = h_x`, `q = h_y`):
+
+```text
+curl_z = ∂q/∂x − ∂p/∂y
+```
+
+equivalente a `∂p/∂y − ∂q/∂x` salvo el signo global. Como M6 consume `|curl|²`, el
+signo global **no afecta la energía**; aun así se fija **una sola** convención
+documentada, y cualquier test ancla debe referenciarla explícitamente.
+
+**M6 no usa `curl_proxy` como implementación de referencia.** La identidad de §7.4 se
+verifica con la definición canónica y la implementación de M6 será propia. El fix de
+`curl_proxy` ocurre en PR-MATH-A, **no aquí**.
+
+> Nota de alcance: este defecto no altera la métrica primaria de M6
+> (`NONINTEGRABLE_FRACTION` se calcula por proyección espectral directa, no vía
+> `curl_proxy`). Afecta a los *proxies* de M2/M3 y por eso exige revalidación (§40),
+> pero no invalida el diseño Hodge.
 
 ---
 
@@ -577,6 +726,33 @@ Cuando `REGISTRATION_AMBIGUOUS` es verdadero:
 > la ambigüedad afecta a la **dirección** de `δ`, no a la **magnitud** del recovery.
 > M6 reporta ambas cosas por separado.
 
+### 13.1 El registro es un oráculo explicativo, y S4 lo acota
+
+```text
+REGISTRATION_IS_EXPLANATORY_ORACLE = YES
+```
+
+El registro maximiza correlación **contra el height authored**: sin `H` no hay
+`δ*`. Es el mismo carácter que §23 declara para el fitting en general, y por eso
+`δ*` nunca se presenta como un estimable en producción.
+
+**El riesgo concreto:** un argmax exhaustivo sobre el toro completo es un oráculo
+potente. Si el registro "reconciliase" geometrías genuinamente distintas, M2/M4
+inflarían `RECOVERY_FRACTION` sin explicar nada, y la hipótesis H2 sería un
+artefacto del buscador.
+
+**El control que acota ese riesgo es S4** (`DIFFERENT GEOMETRY BROADBAND`, §20.2):
+dos superficies sin relación, donde el registro **no debe** recuperar fracción
+material. Si S4 no se clasifica como "no explicado", el mecanismo no está
+explicando geometría:
+
+```text
+Si S4 falla  →  STOP_M6_DESIGN
+```
+
+Esto se mantiene sin cambios respecto del M6-A: el diseño del bound y el estado de
+ambigüedad **no** se tocan en esta corrección.
+
 ---
 
 ## 14. Familia de transferencia espectral simple
@@ -609,18 +785,30 @@ Verificado numéricamente:
 
 ```text
 G_β(ρ_ref) = 1.000000000000000      para β ∈ {+2, 0, −2}   (anchor EXACTO)
-G_β(0⁺)    = 2^{−β/2}              finito y acotado (0.5 … 2)
+G_β(0⁺)    = 2^(+β/2)              finito y acotado (0.5 … 2)
 G(β=0)     = identidad: max|G_0(h) − h| = 1.041e-17
 DC         = 1 por construcción (bin nulo forzado a ganancia 1); media preservada
 ```
 
+> ⚠️ **Corrección M6-A.1 (error de signo textual):** el M6-A original escribió
+> `G_β(0⁺) = 2^{−β/2}`. Es **`2^(+β/2)`**. Con `β = +2`, el límite low es **2**
+> (no 0.5); con `β = −2` es **0.5** (no 2). Verificado numéricamente para
+> `β ∈ {−2,−1,0,+1,+2}`: los valores medidos coinciden exactamente con `2^(β/2)`.
+
 ### 14.3 Interpretación y signo
 
+La polaridad es **relativa al anchor** `G(ρ_ref) = 1`, no un ganho global:
+
 ```text
-β > 0  →  atenuación relativa de alta frecuencia (low-pass relativo)
-β < 0  →  realce relativo de alta frecuencia
+β > 0  →  baja frecuencia AMPLIFICADA respecto del anchor (G(0⁺) = 2^(β/2) > 1)
+          y alta frecuencia ATENUADA respecto del anchor
+β < 0  →  tilt relativo inverso: baja atenuada, alta realzada
 β = 0  →  identidad exacta
 ```
+
+El hecho de que `G(ρ_ref) = 1` para todo `β` es justamente lo que impide confundir
+esta familia con una ganancia global: no existe ningún `β` que multiplique toda la
+ banda por un factor único.
 
 La polaridad queda **anclada** en `ρ_ref`, que es el corte LOWMID/HIGH de M5.
 
@@ -640,7 +828,10 @@ Criterios, todos evaluables sin corpus:
 
 1. `β = ±2` da `G(corner Nyquist) ∈ [1.55e−2, 6.45e+1]` (≈36 dB de rango dinámico):
    suficiente para ser distinguible, acotado para no degenerar en un filtro libre.
-2. `G_β(0⁺) ∈ [0.5, 2]` — el bajo ni se infla ni se colapsa.
+2. `G_β(0⁺) = 2^(β/2) ∈ [0.5, 2]` para `β ∈ [−2, +2]` — el bajo ni se infla ni se
+   colapsa. **Este intervalo sigue siendo correcto** tras la corrección de signo de
+   §14.2: sólo cambia la derivación y la polaridad, no el conjunto de valores
+   alcanzados. Verificado: `β=−2 → 0.5000000000`, `β=+2 → 2.0000000000`.
 3. La **identificabilidad** (§25) se verifica en S3/S5: si `β` no es recuperable en
    todo el rango, el rango se **estrecha** (nunca se amplía).
 
@@ -771,12 +962,26 @@ partida; `E_MODEL_j` es el valor tras aplicar el modelo `j`.
 ### 17.3 Exceso del par y recovery
 
 ```text
-PAIR_EXCESS_ENERGY  := E_AUTH − E_SELF                (≥ 0 por construcción)
+PAIR_EXCESS_ENERGY  := E_AUTH − E_SELF
 RECOVERED_ENERGY_j  := E_AUTH − E_MODEL_j
 RECOVERY_FRACTION_j := RECOVERED_ENERGY_j / PAIR_EXCESS_ENERGY
 ```
 
-**Interpretación (adimensional, en energía):**
+> ⚠️ **Corrección M6-A.1:** el M6-A original afirmaba
+> `PAIR_EXCESS_ENERGY ≥ 0 por construcción`. **Eso es falso.** `E_AUTH ≥ E_SELF` no
+> está garantizado por ningún contrato: SELF y AUTH son dos caminos **independientes**
+> sobre el mismo `H`, y SELF es un *ceiling experimental*, no una restricción
+> algebraica sobre AUTH. Si el par authored casualmente alinea **mejor** que el
+> round-trip Q8+solver, entonces `E_AUTH < E_SELF`.
+>
+> Se **elimina** la aserción de no-negatividad y se **preserva el signo real**
+> (sin `abs()`, sin truncar a cero). La asimetría `E_AUTH ≤ E_SELF` es en sí misma un
+> resultado interpretable: significa que la noción de "recovery hacia el techo SELF"
+> **no es aplicable** con esa parametrización, y se reporta como tal (§18.1).
+
+`RECOVERY_FRACTION_j` **sólo** se calcula cuando el denominador supera el gate
+positivo de §18. Bajo esa condición, los cuatro regímenes son resultados
+permitidos:
 
 ```text
 R_j = 1     el modelo alcanza el techo SELF
@@ -796,38 +1001,71 @@ R_j > 1     el modelo supera el techo SELF     (NO se clampa)
 
 ## 18. Gate del denominador (`PAIR_EXCESS_ENERGY_GATE`)
 
-Si `PAIR_EXCESS_ENERGY` es pequeño, `R_j` es numéricamente inestable: una variación
-mínúsima de `E_MODEL_j` se divide por un número cercano a cero y hasta el **signo** de
-`R_j` pasa a ser ruido. Un `R` negativo por error numérico se leería como "el modelo
-empeora", que es una afirmación científica falsa.
+### 18.1 Estados del denominador (tres, explícitos)
 
-**Regla preregistrada:**
+El denominador admite tres regímenes y **cada uno se nombra**, en vez de colapsarlos
+en un único threshold:
+
+| Estado | Condición | Significado |
+|---|---|---|
+| `NON_POSITIVE_PAIR_EXCESS` | `E_AUTH − E_SELF ≤ 0` | el "techo SELF" no es un ceiling para este asset; recovery hacia SELF no interpretable |
+| `TOO_SMALL_PAIR_EXCESS` | `0 < (E_AUTH − E_SELF) ≤ gate` | positivo pero indistinguible del ruido numérico |
+| `EVALUABLE` | `(E_AUTH − E_SELF) > gate` | `RECOVERY_FRACTION` se calcula |
+
+En los dos primeros, el asset recibe:
+
+```text
+RECOVERY_FRACTION_NOT_EVALUABLE
+reason = NON_POSITIVE_PAIR_EXCESS  |  TOO_SMALL_PAIR_EXCESS
+```
+
+**Prohibido** convertir negativos a cero, usar `abs()`, o sumar `epsilon` silencioso.
+
+### 18.2 Por qué un gate relativo solo NO basta
+
+Un gate puramente relativo `G · E_SELF` **se degenera** cuando `E_SELF ≈ 0` (target
+casi plano o round-trip numéricamente perfecto): el umbral tiende a cero y deja de
+proteger nada. Verificado: con campo plano `E_SELF = 0` → `G · E_SELF = 0`, gate
+inútil.
+
+Por eso el gate tiene **dos componentes conceptuales**:
+
+```text
+PAIR_EXCESS_ENERGY > max( G · E_SELF ,  NUMERICAL_ENERGY_FLOOR )
+   ↑ efecto relativo            ↑ piso absoluto de precisión numérica
+```
+
+Ambos se derivan **exclusivamente** de teoría, controles sintéticos y mediciones de
+error en punto flotante. **Ninguno se deriva de Cohort A.** No se fijan valores en
+este documento; se congelan en ETAPA D.
+
+Se registra además, para que un lector no tenga que inferir nada:
+
+```text
+PAIR_EXCESS_ENERGY_GATE_KIND = MAX_RELATIVE_AND_ABSOLUTE
+PAIR_EXCESS_ENERGY_GATE_RELATIVE_VALUE = G
+PAIR_EXCESS_ENERGY_GATE_ABSOLUTE_VALUE = NUMERICAL_ENERGY_FLOOR
+```
+
+### 18.3 Reglas de preregistación
 
 1. El gate se deriva de **precisión numérica + controles sintéticos**, nunca de
    Cohort A.
-2. Si `PAIR_EXCESS_ENERGY` no supera el gate, el asset recibe
-   `RECOVERY_FRACTION_NOT_EVALUABLE` y su `R_j` **no entra** a las medianas de la
-   cohorte. El asset **no** se excluye del resto de métricas — mismo tratamiento que
-   `ENERGY_GATE` de M5, que marca la métrica y no el asset.
+2. Si el denominador no supera el gate, el asset recibe
+   `RECOVERY_FRACTION_NOT_EVALUABLE` **con su razón explícita**, y su `R_j` **no
+   entra** a las medianas de la cohorte. El asset **no** se excluye del resto de
+   métricas — mismo tratamiento que `ENERGY_GATE` de M5, que marca la métrica y no el
+   asset.
 3. **Prohibido** `denominator += epsilon` silencioso. Si se usa cualquier
    regularización, debe estar **declarada** en el JSON con su valor, y no alimenta la
    métrica primaria.
+4. El conteo de assets en cada estado se reporta, para que un lector vea si el gate
+   está descartando una fracción material del corpus.
 
-**Derivación propuesta (a confirmar/ajustar en ETAPA B con S6 y A3):**
-
-```text
-PAIR_EXCESS_ENERGY_GATE := G · E_SELF        (gate RELATIVO al piso del contrato)
-con G congelado en ETAPA B
-```
-
-Justificación: `E_SELF` es el piso conocido del contrato M4 (Q8 + solver). Exigir
-que el exceso lo supere por un factor fijo `G` es una afirmación sobre la
-**magnitud del efecto**, no sobre los datos observados. Se registra además
-`PAIR_EXCESS_ENERGY_GATE_KIND` (`RELATIVE_TO_SELF`) para que un lector no tenga que
-inferirlo, y `PAIR_EXCESS_ENERGY_GATE_VALUE` con el valor congelado.
-
-`G` **no se fija en este documento**: hacerlo aquí sin S6 executed sería elegir un
-threshold sin derivarlo, exactamente lo que el brief prohíbe. Se congela en ETAPA B.
+> Nota sobre el estado `NON_POSITIVE_PAIR_EXCESS`: es un **hallazgo potencial**, no
+> ruido. Si apareciera sistemáticamente en Cohort A, la lectura correcta no sería
+> "el par es bueno" sino "la parametrización *recovery hacia el techo SELF* no aplica
+> a este corpus". Eso es una decisión de diseño pendiente, no un valor para clampear.
 
 ---
 
@@ -1382,15 +1620,25 @@ Se emite `STOP_M6_DESIGN` si ocurre cualquiera de:
 
 | # | Condición | Estado tras el diseño |
 |---|---|---|
-| 1 | Hodge redundante sin alternativa | **EVITADA** — Hodge se degrada a eje diagnóstico; H1 sigue siendo medible y no-redundante frente a `curl_proxy` (§7.4) |
+| 1 | Hodge redundante sin alternativa | **EVITADA** — Hodge se degrada a eje diagnóstico; H1 sigue siendo medible (§8) |
 | 2 | Bound de registro requiere Cohort A | **EVITADA** — se adoptó el toro completo, que no requiere criterio externo (§12.4) |
 | 3 | Espectro necesita muchos DOF | **EVITADA** — 1 DOF radial anclada, parsimonia demostrada (§15) |
-| 4 | Sintéticos no distinguen | **ABIERTA** — se cierra en ETAPA C/D; el diseño ya incluye asimetrías que la hacen falsable (S7, S4) |
-| 5 | Recovery inestable | **PARCIAL** — el gate está diseñado (§18) pero `G` se congela en ETAPA D |
+| 4 | Sintéticos no distinguen | **ABIERTA** — se cierra en ETAPA C/D; el diseño incluye asimetrías falsables (S7, S4) |
+| 5 | Recovery inestable | **PARCIAL** — gate de dos componentes definido (§18.2); `G` y `NUMERICAL_ENERGY_FLOOR` se congelan en ETAPA D |
 | 6 | Requiere alterar solver M4 | **EVITADA** — shift post-solver, conmutación demostrada (§11.5) |
 | 7 | Threshold requiere datos authored | **CUMPLIDO** — todos los thresholds derivan de teoría+sintéticos |
-| 8 | #667 cambia una primitiva | **ABIERTA** — collision review pendiente, slice propio |
+| 8 | #667 cambia una primitiva | **DISPARADA** — los defectos de §5.4/§7.5 confirmados; la implementación queda **bloqueada** hasta PR-MATH-A/B |
 | 9 | Ejecución antes del freeze | **CUMPLIDO** — este slice no toca el corpus |
+
+> La condición 8 pasó de "ABIERTA" a **DISPARADA** en M6-A.1. Eso **no** invalida el
+> diseño: el diseño Fourier/Hodge y las demás hipótesis siguen en pie. Lo que cambia
+> es que la implementación **no puede** enlazarse a las primitivas actuales.
+
+**Condición adicional (M6-A.1):**
+
+```text
+10. M6 se implementa antes de que PR-MATH-A/B mergeen  →  STOP_M6_IMPLEMENTATION
+```
 
 **`STOP_M6_EXECUTION`** adicional, si en la corrida aparece cualquiera de:
 
@@ -1491,6 +1739,42 @@ usando `frequency_coherence.rho_grid` y la rejilla completa. **No se modifica
 `normal_fft_periodic.py`**: es la base congelada de M0–M5, y tocarla invalidaría
 M4/M5. Se documenta como restricción, con test de mutación.
 
+### 37.3 Ataques adicionales de M6-A.1 (auditoría externa)
+
+La reconciliación con la auditoría matemática volvió a atacar el diseño. Los cinco
+ataques pedidos, más los que surgieron:
+
+| Ataque | Veredicto | Qué cambió |
+|---|---|---|
+| **Álgebra canónica sx/sy** | **PROSPERÓ** | `p = −sx·nx/nz` no es el inverso de `N = normalize((−sx·p,−sy·q,1))` salvo `sx²=1`. Documentado el contrato canónico `p = −nx/(sx·nz)` (§5.1), con verificación numérica para `sx≠1`. |
+| **Signo del límite low espectral** | **PROSPERÓ** | El texto decía `2^(−β/2)`; es `2^(+β/2)`. Con `β=+2` el límite low es **2**, no 0.5. Corregido en §14.2/§14.3; el rango `[0.5, 2]` **sigue siendo válido**. |
+| **No-negatividad de `PAIR_EXCESS_ENERGY`** | **PROSPERÓ** | `E_AUTH ≥ E_SELF` **no** está garantizado: SELF es un ceiling experimental, no una restricción algebraica. Aserción eliminada; se preserva el signo real (§17.3). |
+| **Gate degenerado con `E_SELF ≈ 0`** | **PROSPERÓ** | Un gate sólo relativo se anula cuando `E_SELF → 0` (target plano). Se añade un piso absoluto: `max(G·E_SELF, NUMERICAL_ENERGY_FLOOR)` (§18.2). |
+| **Dependencia de Hodge del helper curl histórico** | **PROSPERÓ (y más grave de lo esperado)** | `curl_proxy` **no computa curl**: usa los índices cruzados (`∂p/∂x − ∂q/∂y`) frente a los que su propio docstring declara (`∂p/∂y − ∂q/∂x`). Bloqueado para M6 (§7.5). |
+
+**Error material adicional, no listado en el brief:** el hallazgo de `curl_proxy` es
+más fuerte que "convención a documentar". La función **contradice su propio
+docstring**, y lo que calcula (`h_xx − h_yy`) no es ni el curl, ni la divergencia,
+ni el laplaciano. Por eso §5.4 declara blocker de implementación, no una nota.
+
+### 37.4 Lo que NO cambió (validado contra el repo)
+
+```text
+HODGE_AS_RECONSTRUCTION = NO          (solver(g) == solver(Π∇g): 1.388e−17, re-verificado)
+HODGE_AS_DIAGNOSTIC     = YES
+REGISTRATION_PRIMARY    = YES
+FULL_INTEGER_TORUS_EXHAUSTIVE        (sin cambios; §13)
+REGISTRATION_AMBIGUOUS                (sin cambios; §13)
+SPECTRAL_TRANSFER_PRIMARY = YES
+SPECTRAL_TRANSFER_DOF    = 1
+TOTAL_PRIMARY_FREE_PARAMETERS = 3
+PRIMARY_RESOLUTION = 512 / SECONDARY_1024 = DEFERRED
+```
+
+El diseño Fourier/Hodge **no depende** de las primitivas defectuosas: la proyección
+se define sobre cualquier campo. Lo bloqueado es la construcción de `g_N` y cualquier
+uso de `curl_proxy` como referencia.
+
 ---
 
 ## 38. Write-set futuro (ETAPA B, aún NO en este commit)
@@ -1539,23 +1823,84 @@ real.
 
 ---
 
-## 40. Estado de este documento
+## 40. Resultados históricos (no se modifican)
+
+Este slice **no** toca ni reescribe M2/M3/M4/M5. Registra únicamente el estado
+relevante para la decisión de implementación de M6:
 
 ```text
-M6_DESIGN_SHA           = (el commit que introduce este documento)
-M6_PREREG_FREEZE_SHA    = NO  (viene después de ETAPA B/C/D)
+M4_PRIMARY_INVALIDATED_BY_CURRENT_EVIDENCE = NO
+M5_PRIMARY_INVALIDATED_BY_CURRENT_EVIDENCE = NO
+M2_M3_PROXY_REVALIDATION_REQUIRED          = YES
+```
+
+**Por qué las primarias de M4/M5 no quedan invalidadas:** ambas usaron `sx = sy = 1`
+(§5.3), donde la forma histórica y la canónica coinciden bit a bit (verificado:
+4.44e−16). Su resultado primario no depende de `curl_proxy`.
+
+**Por qué M2/M3 sí exigen revalidación de proxies:** los *proxies* de trust
+(`curl_proxy`, `projection_residual`, `normal_height_residual_oracle`) son
+normal-only y son justamente los afectados por los defectos de §5.4/§7.5. Sus
+conclusiones pueden cambiar aunque la primaria no lo haga; eso se decide en su
+propio slice, después de PR-MATH-A/B.
+
+> **"No invalidado" NO significa "revalidado".** No se afirma que los resultados
+> históricos queden automáticamente validados; se afirma que la evidencia actual no
+> los invalida por sí sola.
+
+---
+
+## 41. Estado de este documento
+
+```text
+M6_DESIGN_SHA           = 319fb02fbb84d8e246aba8331887a747ec601db5   (M6-A, este doc)
+M6_A1_SHA               = (el commit de esta corrección docs-only)
+M6_PREREG_FREEZE_SHA    = NO  (viene después de la secuencia revisada, §41.1)
 M6_EXECUTION_FREEZE_SHA = NO
 M6_REAL_RUN_EXECUTED    = NO
 ```
 
-Este documento es **ETAPA A**. Los valores numéricos que faltan
-(`T_N`, `T_R`, `G`, `T_AMBIG`, tolerancias de identabilidad, seed de bootstrap) **no**
-se completan aquí: se derivan y congelan en ETAPA D (§32), y su ausencia es
-deliberada, no una omisión.
+Este documento es **ETAPA A + A.1 (corrección)**. Los valores numéricos que faltan
+(`T_N`, `T_R`, `G`, `NUMERICAL_ENERGY_FLOOR`, `T_AMBIG`, tolerancias de
+identibilidad, seed de bootstrap) **no** se completan aquí: se derivan y congelan en
+ETAPA D, y su ausencia es deliberada, no una omisión.
 
 ---
 
-## 41. Resumen ejecutivo del diseño
+### 41.1 Secuencia correcta hasta el freeze (revisada en M6-A.1)
+
+```text
+M6-A design                     (319fb02f)
+M6-A.1 correction               (este commit)
+PR-MATH-A                       fix de primitivas matemáticas (#667)
+PR-MATH-B                       fix complementario / tests de regresión
+M2/M3 revalidation              (proxies afectados por §5.4/§7.5)
+M6 design reconciliation        (revisar el doc contra las primitivas ya arregladas)
+synthetic implementation        (ETAPA B/C: S0–S7, A0–A14)
+threshold derivation            (ETAPA D: T_N, T_R, G, floors, T_AMBIG, seed)
+prereg freeze                   → M6_PREREG_FREEZE_SHA
+```
+
+**La implementación de M6 no puede empezar antes de PR-MATH-A/B.** La condición 8 de
+§35 (`#667 cambia una primitiva científica usada por M6`) está **DISPARADA**.
+
+### 41.2 Gate de entrega (corregido en M6-A.1)
+
+```text
+M6_DESIGN_COMPLETE                          = YES
+M6_IMPLEMENTATION_BLOCKED_BY_MATH_FOUNDATION = YES
+READY_FOR_M6_SYNTHETIC_IMPLEMENTATION_REVIEW = NO
+```
+
+**Rationale:** el diseño está completo **para revisión**, pero la implementación no
+debe enlazarse a las primitivas `normal↔gradient` / `curl` / `projection` actualmente
+incorrectas (§5.4, §7.5). La entrega M6-A declaraba
+`READY_FOR_M6_SYNTHETIC_IMPLEMENTATION_REVIEW=YES`; con la evidencia nueva eso ya no
+es correcto.
+
+---
+
+## 42. Resumen ejecutivo del diseño
 
 ```text
 1. Hodge NO es un mecanismo de reconciliación: el solver M4 ya ES la proyección
@@ -1576,8 +1921,31 @@ deliberada, no una omisión.
    (verificado: ajuste conjunto (β, s) devuelve β̓ = β, s = 1.000000).
 
 5. La recovery fraction es en ENERGÍA, no RMSE; no se clampea; tiene gate de
-   denominador; y la unidad estadística es el ASSET con agregación apareada.
+   denominador de DOS componentes (relativo + piso absoluto); y la unidad estadística
+   es el ASSET con agregación apareada. El denominador NO se asume no-negativo:
+   `E_AUTH ≤ E_SELF` es un estado con nombre propio, no un valor a truncar.
 
 6. M6 es un estudio EXPLICATIVO sobre un corpus YA OBSERVADO. No es validación ciega,
    no es un estimador desplegable, y no autoriza ninguna decisión de producto.
+
+7. (M6-A.1) La implementación está BLOQUEADA por la fundación matemática: el
+   contrato canónico normal↔gradiente es `p = −nx/(sx·nz)`, y `curl_proxy` no
+   computa curl. El diseño Fourier/Hodge sobrevive; el enlace a las primitivas
+   actuales, no.
 ```
+
+### 42.1 Fuera de scope: #676 (preview productivo)
+
+El preview productivo de Native Parallax está separado en el issue **#676**. M6 no
+incorpora ni se apoya en:
+
+```text
+CLI · DDS · BC4 · BC5 · pipeline · manifest · product preview · comparación ParallaxR
+```
+
+```text
+ISSUE_676_MIXED_IN = NO
+```
+
+La separación es deliberada: #676 es camino de producto y M6 es diseño explicativo
+sobre un oráculo. Mezclarlos reintroduciría exactamente el riesgo que §23 prohíbe.
