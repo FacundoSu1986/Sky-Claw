@@ -582,78 +582,88 @@ señales reales de Steam queda en P7. **Q-04 se cierra sólo en el alcance
 demostrado** (contrato de ventana observada); la detección absoluta de
 actualizaciones de Steam permanece NO demostrada y declarada como gate de P7.
 
-## 19. Modelo de datos
+## 19. Modelo de datos (decidido e implementado en P2)
 
-Estado persistente mínimo (JSON, ~1 archivo):
+Dos piezas mínimas, ambas versionadas (``schema_version`` v1):
+
+**a) Estado de intención** — `state/active.json` (SFR-16: registra sólo el
+**Desired Active Generation**; NO registra Effective Runtime y jamás afirma por
+sí solo promoción exitosa):
 
 ```json
 {
   "schema_version": 1,
-  "active_generation": "1.6.1170__a1b2c3d4e5f6",
-  "generations": [
-    {
-      "id": "1.6.1170__a1b2c3d4e5f6",
-      "display_version": "1.6.1170",
-      "runtime_identity": { "game_key": "skyrimse", "game_version": "1.6.1170.0" },
-      "tree_digest": { "digest": "…", "files": 0, "bytes": 0 },
-      "critical": [ { "rel_path": "SkyrimSE.exe", "expected_digest": "…", "expected_size": 0 } ],
-      "source": { "provider": "steam", "appid": "489830", "buildid": "…", "path": "…" },
-      "created_at": "2026-10-03T00:00:00Z"
-    }
-  ],
-  "managed_source": {
-    "provider": "steam",
-    "path": "…",
-    "appid": "489830",
-    "observed_version": "1.7.xxxx",
-    "observed_buildid": "…"
-  },
-  "candidate": {
-    "id": null,
-    "state": "none",
-    "runtime_identity": null,
-    "tree_digest": null
-  },
-  "effective_runtime": {
-    "path": null,
-    "verified_generation": null,
-    "coherent": false
-  },
-  "update_available": false,
-  "promotion_required": false
+  "desired_active_generation": "1.6.1170__a1b2c3d4e5f6",
+  "updated_at_ns": 1789000000000000000
 }
 ```
 
-- Persistir con `temp + os.replace` (patrón del repo).
-- No meter esto en `Config`/`config.toml`: el puntero vive junto al
-  `FrozenRuntimeRoot` para que el `os.replace` sea atómico en el mismo volumen y
-  para no mezclar estado de runtime grande con config de usuario.
-- No crear base de datos. Un JSON canónico basta.
-- El Candidate registra además la referencia a su `SourceSnapshotEvidence` (PRE y
-  POST) para que su verificación sea auditable (SFR-15); el campo
-  `effective_runtime` es **provisional**: la forma de observar el Effective
-  Runtime y la primitiva de binding se deciden en P5, pero el estado persistente
-  ya distingue `desired` de `effective` y no declara `coherent` sin demostración
-  (SFR-16).
+- `desired_active_generation: null` = arranque limpio (sin Generation activa).
+- Reader fail-closed: **ausente** = limpio; **presente pero corrupto**
+  (JSON malformado/truncado, UTF-8 inválido, schema desconocido, campo ausente
+  o con tipo incorrecto, generation-id con traversal) LANZA — nunca se
+  interpreta como ausente.
+- Escritura atómica: `mkstemp` en el MISMO directorio → `fsync` del archivo →
+  `os.replace` → cleanup del temporal ante fallo (patrón del repo en
+  `local_config.py`). El temporal nunca vive en `%TEMP%` global.
+- **POWER_LOSS_GUARANTEE = NOT_CLAIMED**: reemplazo atómico del namespace bajo
+  semántica normal de proceso/filesystem local; no hay WAL ni GP2.
 
-## 20. Layout de filesystem (propuesta)
+**b) Metadata por Generation** — `state/generations/<generation-id>.json`
+(fuera del árbol de la Generation: el árbol queda byte-idéntico al snapshot y
+el digest no cambia al publicar):
+
+```json
+{
+  "schema_version": 1,
+  "generation_id": "1.6.1170__a1b2c3d4e5f6",
+  "display_version": "1.6.1170",
+  "runtime_identity": { "game_key": "skyrimse", "game_version": "1.6.1170.0" },
+  "tree_digest": { "digest": "<sha256 completo de 64 hex>", "files": 0, "bytes": 0 },
+  "critical_files": [ { "rel_path": "SkyrimSE.exe", "size": 0, "digest": "…" } ],
+  "provider": "steam",
+  "provider_appid": "489830",
+  "provider_buildid": "…",
+  "created_at_ns": 0
+}
+```
+
+- El id legible usa un prefijo de 12 hex, pero la metadata conserva el digest
+  **completo** (el buildid del proveedor es auxiliar y jamás define identidad).
+- La metadata NO auto-autoriza (SFR-15 conceptual): `VALID` sólo sale de
+  comparar un inventario sellado fresco contra el digest registrado.
+- Colisión: mismo id con identidad completa distinta ⇒ fail-closed
+  (`GenerationCollisionError`); nunca se sobreescribe en silencio.
+- No se persisten flags mutables de estado (VALID/DRIFTED se derivan on-demand
+  de evidencia fresca; sin flags que envejezcan).
+
+No hay base de datos; JSON canónico mínimo basta.
+
+## 20. Layout de filesystem (decidido e implementado en P2)
 
 ```text
 <FrozenRuntimeRoot>/                 # configurable; NUNCA dentro de steamapps/common
 ├── versions/
-│   ├── 1.6.1170__<digest12>/        # Generation completa, versión congelada
+│   ├── 1.6.1170__<digest12>/        # Generation completa, versión congelada (SFR-17)
 │   └── 1.7.xxxx__<digest12>/
-├── candidates/
-│   └── <candidate-id>/              # copy-to-verify; publicado como versión al promover
+├── candidates/                      # namespace reservado (P3 crea Candidates)
 └── state/
-    └── active.json                  # puntero + registro
-    └── active.json.<rand>.tmp       # temporal de escritura atómica
+    ├── active.json                  # Desired Active Generation (SFR-16)
+    ├── .active.json.<rand>.tmp      # temporal de escritura atómica (mismo dir)
+    └── generations/
+        └── <generation-id>.json     # metadata inmutable por Generation
 ```
 
-Ruta por defecto: **a decidir** (Open Question). Candidato: un root hermano en la
-misma unidad que la library de Steam (para que la publicación sea barata), o
-`Config.modding_root()/FrozenRuntime`. Restricción dura: fuera del árbol
-administrado por Steam.
+**Ruta por defecto (resuelve Q5):** `~/.sky_claw/frozen-runtime`, **per-user**
+(operación de usuario normal, sin helper privilegiado; MO2 es user-level;
+ownership/lifecycle simple; sin servicio global). Es hermano de
+`Config.DEFAULT_CONFIG_DIR` (`~/.sky_claw`) y de `Config.runtime_state_dir()`
+por el mismo motivo que ellos: no depende de desde dónde se lanzó el proceso.
+Configurable: las generaciones pueden pesar decenas de GB y el root puede
+apuntarse a otra unidad; la copia cross-volume la maneja P3, y los renames
+atómicos ocurren dentro del volumen del root (primitive `same_volume`).
+Restricción dura: fuera del árbol administrado por Steam (admisión de rutas
+rechaza solapamiento con la Managed Source y contención en `steamapps/common`).
 
 ## 21. Invariantes de complejidad (presupuesto MVP)
 
@@ -675,7 +685,7 @@ DELETES_PREVIOUS_GENERATION=NO
 |---|---|---|
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
 | **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. **Implementado en PR #673** (`sky_claw/local/frozen_runtime/`; Q-04 cerrado en el alcance demostrado de la ventana observada). |
-| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). |
+| **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). **Implementado en PR #673** (`storage.py`/`state.py`/`generations.py`/`independence.py`/`generation_id.py`; Q5/Q6/Q10 resueltas; SFR-18 ejecutable con hardlink/junction/reparse; drift on-demand). |
 | **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
 | **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
 | **P5** | MO2/SKSE integration (binding del game path + gate de compatibilidad) | F6; juego arranca desde Frozen Runtime. |
@@ -710,7 +720,7 @@ enumerativas):
 | Slice | Tests |
 |---|---|
 | P1 | Estabilización: manifest idle vs update-in-progress; ausencia de `.part`; dos inventories idénticos ⇒ STABLE; mutación concurrente ⇒ fail-closed; captura de `SourceSnapshotEvidence` sellada. |
-| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. |
+| P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. **Implementado**: L01–L10 (layout/admisión), ST01–ST10 (estado), G01–G08 (generation-id), DR01–DR11 (drift), PI01–PI09 (SFR-18 con hardlink/junction reales) + ancla AST del boundary de escritura. |
 | P3 | Candidate completo y fuente estable ⇒ ready; corrupción/truncamiento ⇒ invalid; fuente cambiada PRE/POST ⇒ `invalid / SOURCE_CHANGED` aunque el Candidate sea consistente (SFR-15); fallo a mitad ⇒ activa intacta (F2/F3/F8). Caso negativo anti-self-verification: Candidate **internamente consistente pero distinto** del `SourceSnapshotEvidence` ⇒ rechazado (el test prueba el camino de comparación, no sólo el resultado). |
 | P4 | Promoción no borra previa; sin coherencia desired/effective no hay `SUCCESS` (F9); fallo de promoción revierte y `A` queda usable (F5); sin aprobación no promueve (F4); rollback repunta (F7); rollback sobre Generation `DRIFTED` falla cerrado (F10). |
 | P5 | SKSE compatible/incompatible/unknown; game path repuntado y observado; MO2 arranca desde Generation activa; coherencia desired/effective verificable desde el rig. |
@@ -752,19 +762,28 @@ inventan soluciones.
    `@ByteArray`; ¿lo hace Sky-Claw o es una acción manual documentada? Gate P5.
 4. **Adaptación de RV-3**: ¿adaptador de autoridad de fuente, o rutina de copia
    mínima sobre primitivas RV-1? Gate P3.
-5. **Ruta por defecto del `FrozenRuntimeRoot`**: ¿misma unidad que la library de
-   Steam, `Config.modding_root()`, o elección del usuario? Gate P2.
-6. **Esquema de `generation-id`**: ¿`<display_version>__<digest12>` u otro? Gate P2.
+5. **Ruta por defecto del `FrozenRuntimeRoot`**: **RESUELTA en P2** —
+   `~/.sky_claw/frozen-runtime`, per-user, configurable (§20; convención
+   `~/.sky_claw` del repo; sin servicio global).
+6. **Esquema de `generation-id`**: **RESUELTA en P2** —
+   `<display_version>__<digest12>` con charset `[a-z0-9._-]`, validación
+   fail-closed de traversal/reservados, digest completo retenido en metadata,
+   colisiones fail-closed (§10/§19).
 7. **Espacio en disco**: la copia requiere ~el tamaño completo del juego por
-   generación; ¿se admite multivolumen? Gate P2.
+   generación. **Parcial en P2**: `same_volume` verifica el boundary de rename
+   atómico; la Managed Source PUEDE estar en otro volumen (copia cross-volume
+   en P3). El dimensionamiento operativo (cuánto espacio, cuántas generaciones)
+   sigue abierto para P3/P4.
 8. **Completitud de la captura**: ¿el conjunto de archivos de la Managed Source
    (incluyendo Creation Club/BSAs) alcanza para un runtime jugable sin Steam? La
    auditoría observó payload de Creation Club escrito por el juego; verificar en P7.
 9. **Compatibilidad SKSE**: mapear `find_skse_installation` + `skse_dll_game_version`
    a `RUNTIME_COMPATIBILITY`; definir el alcance de "COMPATIBLE" (sólo SKSE core o
    también Address Library / DLL plugins). Gate P5.
-10. **Per-user vs per-machine**: ¿el Frozen Runtime es por usuario o compartido?
-    Gate P2.
+10. **Per-user vs per-machine**: **RESUELTA en P2** — per-user (usuario normal,
+    sin helper privilegiado; MO2 es user-level; ownership/lifecycle simple). El
+    default `~/.sky_claw/frozen-runtime` es per-user y configurable; no hay
+    servicio global.
 11. **Downgrade/promoción hacia atrás**: ¿promover una versión menor que la activa
     es un caso soportado o se fuerza a usar rollback? Gate P4.
 12. **Observación del Effective Runtime**: ¿cómo demuestra Sky-Claw qué ruta
