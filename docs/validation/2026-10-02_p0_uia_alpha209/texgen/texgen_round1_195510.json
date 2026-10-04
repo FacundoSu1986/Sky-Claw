@@ -1,0 +1,725 @@
+{
+  "tool": "texgen",
+  "exe": "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+  "round": 1,
+  "session": "f7a246c5",
+  "started_at": "2026-10-02T19:55:10",
+  "temp_roots": {
+    "output_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\TexGen",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\TexGen",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\TexGen",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    },
+    "temp_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\temp",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\temp",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    }
+  },
+  "preset_hashes": {
+    "antes_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    },
+    "despues_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    },
+    "final": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      }
+    }
+  },
+  "steps": [
+    {
+      "etapa": "temp_roots",
+      "t": 1790981710.5894291,
+      "output_test_will_be": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\OutputTest"
+    },
+    {
+      "etapa": "spawn",
+      "t": 1790981710.8020837,
+      "pid": 21916
+    },
+    {
+      "etapa": "output_selector",
+      "t": 1790981712.4200308,
+      "candidatos": 0,
+      "estado": "OUTPUT_SELECTOR_AMBIGUOUS"
+    }
+  ],
+  "pre_existing_processes": [],
+  "preset_outputpath_antes": {
+    "texgen_preset": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+    "dyndolod_preset": "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD"
+  },
+  "argv": [
+    "C:\\Modding\\DynDOLOD RigTest\\TexGenx64.exe",
+    "-sse",
+    "-o:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\TexGen\\",
+    "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\",
+    "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\",
+    "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt",
+    "-t:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-f7a246c5\\temp\\"
+  ],
+  "pid": 21916,
+  "window_wait_seconds": 1.5,
+  "ventanas_con_tedit": [],
+  "action_controls_inventory": [],
+  "todos_los_botones": [],
+  "texto_visible": [],
+  "modales_capturados": [],
+  "ventanas": [
+    {
+      "pid": 21916,
+      "hwnd": 657286,
+      "name": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+      "class_name": "TfrmMain",
+      "control_type": "Window",
+      "automation_id": "",
+      "framework_id": "Win32",
+      "is_enabled": true,
+      "is_offscreen": false,
+      "owner_hwnd": null,
+      "window_is_modal": false,
+      "window_can_maximize": true,
+      "controles": [
+        {
+          "runtime_id": [
+            42,
+            3606160
+          ],
+          "control_type": "Edit",
+          "class_name": "TMemo",
+          "automation_id": "3606160",
+          "name": "",
+          "native_hwnd": 3606160,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -5,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientVerticalScrollBar",
+          "name": "Vertical",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -5,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Línea arriba",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -5,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Línea abajo",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -6,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientHorizontalScrollBar",
+          "name": "Horizontal",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -6,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Columna a la izquierda",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -6,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Columna a la derecha",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3606160,
+            3,
+            -2147483647,
+            3606160,
+            -7,
+            0
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            395306
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TTopFrame",
+          "automation_id": "395306",
+          "name": "",
+          "native_hwnd": 395306,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4261384
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "4261384",
+          "name": "",
+          "native_hwnd": 4261384,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1181772
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "1181772",
+          "name": "",
+          "native_hwnd": 1181772,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483647,
+            657286,
+            -2,
+            0
+          ],
+          "control_type": "50037",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483646,
+            21916,
+            275777523,
+            0
+          ],
+          "control_type": "MenuBar",
+          "class_name": "",
+          "automation_id": "MenuBar",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483646,
+            21916,
+            275777523,
+            1
+          ],
+          "control_type": "MenuItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483647,
+            657286,
+            -2,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Minimizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483647,
+            657286,
+            -2,
+            3
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Maximizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            657286,
+            3,
+            -2147483647,
+            657286,
+            -2,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Cerrar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        }
+      ],
+      "controles_total": 17,
+      "controles_ilegibles": 0
+    }
+  ],
+  "output_seleccion": {
+    "candidatos": 0,
+    "estado": "OUTPUT_SELECTOR_AMBIGUOUS",
+    "candidato": null
+  },
+  "experimentos": {},
+  "stale_observations": {
+    "uia_elementnotavailable_count": 0,
+    "otros_com_errors_count": 0,
+    "stale_observed": false
+  },
+  "residual_processes": [],
+  "exit_code": 1,
+  "finished_at": "2026-10-02T19:55:13"
+}

@@ -1,0 +1,2054 @@
+{
+  "tool": "dynodlod",
+  "exe": "C:\\Modding\\DynDOLOD RigTest\\DynDOLODx64.exe",
+  "round": 2,
+  "session": "40fb00c2",
+  "started_at": "2026-10-02T20:34:16",
+  "temp_roots": {
+    "output_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\DynDOLOD",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\DynDOLOD",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\DynDOLOD",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    },
+    "temp_root": {
+      "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\temp",
+      "canonical": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\temp",
+      "exists": true,
+      "born_empty": true,
+      "ancestros_reparse": [
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local\\Temp",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData\\Local",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>\\AppData",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "<USER>",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\Users",
+          "is_reparse": false,
+          "reparse_tag": null
+        },
+        {
+          "path": "C:\\",
+          "is_reparse": false,
+          "reparse_tag": null
+        }
+      ],
+      "sin_reparse_en_cadena": true
+    }
+  },
+  "preset_hashes": {
+    "antes_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      }
+    },
+    "despues_de_launch": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      }
+    },
+    "despues_de_mutaciones": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      }
+    },
+    "final": {
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini": {
+        "exists": true,
+        "size": 24061,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4"
+      },
+      "C:\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini": {
+        "exists": true,
+        "size": 1749,
+        "sha256": "394e504497da8db789f347494d073661453b5fd93341f3bc9de873c2e3b734e2"
+      }
+    }
+  },
+  "steps": [
+    {
+      "etapa": "temp_roots",
+      "t": 1790984056.4523368,
+      "output_test_will_be": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\OutputTest"
+    },
+    {
+      "etapa": "spawn",
+      "t": 1790984056.6049747,
+      "pid": 14220
+    },
+    {
+      "etapa": "output_selector",
+      "t": 1790984066.7015638,
+      "candidatos": 1,
+      "estado": "OK"
+    },
+    {
+      "etapa": "output_lectura_original",
+      "t": 1790984066.7415123,
+      "value_pattern_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\",
+      "value_is_readonly": true,
+      "legacy_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\",
+      "text_pattern": null
+    }
+  ],
+  "pre_existing_processes": [],
+  "preset_outputpath_antes": {
+    "texgen_preset": "E:\\Sectores\\Sector_Juegos_y_Modding\\Sky-Claw\\Trabajo_actual\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\TexGen\\",
+    "dyndolod_preset": "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD"
+  },
+  "argv": [
+    "C:\\Modding\\DynDOLOD RigTest\\DynDOLODx64.exe",
+    "-sse",
+    "-o:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\DynDOLOD\\",
+    "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\",
+    "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\",
+    "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt",
+    "-t:<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\temp\\"
+  ],
+  "pid": 14220,
+  "window_wait_seconds": 1.3,
+  "modales_durante_espera": [
+    {
+      "captured_at": "20:34:24",
+      "hwnd": 4589066,
+      "name": "DynDOLOD",
+      "class_name": "#32770",
+      "botones": [
+        {
+          "name": "Ignore",
+          "class_name": "CCPushButton",
+          "automation_id": "CommandButton_5",
+          "is_enabled": true
+        },
+        {
+          "name": "Exit DynDOLOD",
+          "class_name": "CCPushButton",
+          "automation_id": "CommandButton_3",
+          "is_enabled": true
+        },
+        {
+          "name": "Cerrar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Línea arriba",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Re Pág",
+          "class_name": "",
+          "automation_id": "UpPageButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Av Pág",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Línea abajo",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "is_enabled": true
+        },
+        {
+          "name": "Columna a la izquierda",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "is_enabled": false
+        },
+        {
+          "name": "Columna a la derecha",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "is_enabled": false
+        },
+        {
+          "name": "Minimizar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Maximizar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        },
+        {
+          "name": "Cerrar",
+          "class_name": "",
+          "automation_id": "",
+          "is_enabled": true
+        }
+      ],
+      "texto_visible": [
+        "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "Dynamic LOD can not be generated. There will be large reference bugs.\r\n\r\nVerify correct installation of the DynDOLOD.DLL from DynDOLOD DLL NG and Scripts.\r\n\r\nClick on this link for additional explanations and help for this message\r\nhttps://dyndolod.info/Help/DynDOLOD-DLL\r\n\r\nFor qualified help and advice or to report a problem, make a post on the official DynDOLOD support forum.",
+        "Online Help | Support Forum | Copy message to clipboard",
+        "Posición"
+      ]
+    }
+  ],
+  "contractual_window_wait_seconds": 8.6,
+  "ventanas_con_tedit": [
+    {
+      "hwnd": 12059562,
+      "name": "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+      "class_name": "TfrmMain"
+    }
+  ],
+  "restore_failed": false,
+  "action_controls_inventory": [],
+  "todos_los_botones": [
+    {
+      "name": "High",
+      "class_name": "TButton",
+      "automation_id": "2753876",
+      "is_enabled": true
+    },
+    {
+      "name": "Medium",
+      "class_name": "TButton",
+      "automation_id": "3212762",
+      "is_enabled": true
+    },
+    {
+      "name": "Low",
+      "class_name": "TButton",
+      "automation_id": "6227316",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea arriba",
+      "class_name": "",
+      "automation_id": "UpButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Av Pág",
+      "class_name": "",
+      "automation_id": "DownPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea abajo",
+      "class_name": "",
+      "automation_id": "DownButton",
+      "is_enabled": true
+    },
+    {
+      "name": "...",
+      "class_name": "TButton",
+      "automation_id": "1967460",
+      "is_enabled": true
+    },
+    {
+      "name": "Help",
+      "class_name": "TButton",
+      "automation_id": "3671500",
+      "is_enabled": true
+    },
+    {
+      "name": "Cancel",
+      "class_name": "TButton",
+      "automation_id": "2098566",
+      "is_enabled": true
+    },
+    {
+      "name": "Advanced >>>",
+      "class_name": "TButton",
+      "automation_id": "1574454",
+      "is_enabled": true
+    },
+    {
+      "name": "Cerrar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea arriba",
+      "class_name": "",
+      "automation_id": "UpButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Re Pág",
+      "class_name": "",
+      "automation_id": "UpPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Av Pág",
+      "class_name": "",
+      "automation_id": "DownPageButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Línea abajo",
+      "class_name": "",
+      "automation_id": "DownButton",
+      "is_enabled": true
+    },
+    {
+      "name": "Columna a la izquierda",
+      "class_name": "",
+      "automation_id": "UpButton",
+      "is_enabled": false
+    },
+    {
+      "name": "Columna a la derecha",
+      "class_name": "",
+      "automation_id": "DownButton",
+      "is_enabled": false
+    },
+    {
+      "name": "Minimizar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Maximizar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    },
+    {
+      "name": "Cerrar",
+      "class_name": "",
+      "automation_id": "",
+      "is_enabled": true
+    }
+  ],
+  "texto_visible": [],
+  "modales_capturados": [],
+  "ventanas": [
+    {
+      "pid": 14220,
+      "hwnd": 12059562,
+      "name": "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+      "class_name": "TfrmMain",
+      "control_type": "Window",
+      "automation_id": "",
+      "framework_id": "Win32",
+      "is_enabled": true,
+      "is_offscreen": false,
+      "owner_hwnd": null,
+      "window_is_modal": false,
+      "window_can_maximize": true,
+      "controles": [
+        {
+          "runtime_id": [
+            42,
+            4654602
+          ],
+          "control_type": "Window",
+          "class_name": "TfrmDynDOLOD",
+          "automation_id": "",
+          "name": "DynDOLOD Wizard",
+          "native_hwnd": 4654602,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2753876
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "2753876",
+          "name": "High",
+          "native_hwnd": 2753876,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3212762
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "3212762",
+          "name": "Medium",
+          "native_hwnd": 3212762,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            6227316
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "6227316",
+          "name": "Low",
+          "native_hwnd": 6227316,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424
+          ],
+          "control_type": "List",
+          "class_name": "TCheckListBox",
+          "automation_id": "2557424",
+          "name": "",
+          "native_hwnd": 2557424,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            3,
+            -2147483647,
+            2557424,
+            -5,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientVerticalScrollBar",
+          "name": "Vertical",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            3,
+            -2147483647,
+            2557424,
+            -5,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Línea arriba",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            3,
+            -2147483647,
+            2557424,
+            -5,
+            3
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "ScrollbarThumb",
+          "name": "Posición",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            3,
+            -2147483647,
+            2557424,
+            -5,
+            4
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "name": "Av Pág",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            3,
+            -2147483647,
+            2557424,
+            -5,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Línea abajo",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            1
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Blackreach (Blackreach) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            2
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DeepwoodRedoubtWorld (Deepwood Vale) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            3
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DLC01FalmerValley (Forgotten Vale) - Dawnguard.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            4
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DLC01SoulCairn (Soul Cairn) - Dawnguard.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            5
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DLC1HunterHQWorld (Dayspring Canyon) - Dawnguard.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            6
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DLC2ApocryphaWorld (Apocrypha) - Dragonborn.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            7
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "DLC2SolstheimWorld (Solstheim) - Dragonborn.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            8
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "JaphetsFollyWorld (Japhet's Folly) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            9
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "MarkarthWorld (Markarth) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            10
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "SkuldafnWorld (Skuldafn) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            11
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sovngarde (Sovngarde) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2557424,
+            4,
+            -2147483647,
+            2557424,
+            -4,
+            12
+          ],
+          "control_type": "ListItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Tamriel (Skyrim) - Skyrim.esm",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": true,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1967460
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1967460",
+          "name": "...",
+          "native_hwnd": 1967460,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2426342
+          ],
+          "control_type": "Edit",
+          "class_name": "TEdit",
+          "automation_id": "2426342",
+          "name": "",
+          "native_hwnd": 2426342,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4982242
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "4982242",
+          "name": "",
+          "native_hwnd": 4982242,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3671500
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "3671500",
+          "name": "Help",
+          "native_hwnd": 3671500,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2098566
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "2098566",
+          "name": "Cancel",
+          "native_hwnd": 2098566,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1574454
+          ],
+          "control_type": "Button",
+          "class_name": "TButton",
+          "automation_id": "1574454",
+          "name": "Advanced >>>",
+          "native_hwnd": 1574454,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4654602,
+            3,
+            -2147483647,
+            4654602,
+            -2,
+            0
+          ],
+          "control_type": "50037",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4654602,
+            3,
+            -2147483646,
+            14220,
+            1021445729,
+            0
+          ],
+          "control_type": "MenuBar",
+          "class_name": "",
+          "automation_id": "MenuBar",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4654602,
+            3,
+            -2147483646,
+            14220,
+            1021445729,
+            1
+          ],
+          "control_type": "MenuItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4654602,
+            3,
+            -2147483647,
+            4654602,
+            -2,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Cerrar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890
+          ],
+          "control_type": "Edit",
+          "class_name": "TMemo",
+          "automation_id": "3408890",
+          "name": "",
+          "native_hwnd": 3408890,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientVerticalScrollBar",
+          "name": "Vertical",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Línea arriba",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpPageButton",
+          "name": "Re Pág",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            3
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "ScrollbarThumb",
+          "name": "Posición",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            4
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownPageButton",
+          "name": "Av Pág",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -5,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Línea abajo",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -6,
+            0
+          ],
+          "control_type": "ScrollBar",
+          "class_name": "",
+          "automation_id": "NonClientHorizontalScrollBar",
+          "name": "Horizontal",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -6,
+            1
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "UpButton",
+          "name": "Columna a la izquierda",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -6,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "DownButton",
+          "name": "Columna a la derecha",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            3408890,
+            3,
+            -2147483647,
+            3408890,
+            -7,
+            0
+          ],
+          "control_type": "Custom",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": false,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            4064800
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TTopFrame",
+          "automation_id": "4064800",
+          "name": "",
+          "native_hwnd": 4064800,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            1442752
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "1442752",
+          "name": "",
+          "native_hwnd": 1442752,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            2033188
+          ],
+          "control_type": "Pane2Fallback",
+          "class_name": "TPanel",
+          "automation_id": "2033188",
+          "name": "",
+          "native_hwnd": 2033188,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483647,
+            12059562,
+            -2,
+            0
+          ],
+          "control_type": "50037",
+          "class_name": "",
+          "automation_id": "",
+          "name": "",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483646,
+            14220,
+            356057725,
+            0
+          ],
+          "control_type": "MenuBar",
+          "class_name": "",
+          "automation_id": "MenuBar",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483646,
+            14220,
+            356057725,
+            1
+          ],
+          "control_type": "MenuItem",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Sistema",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": true,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483647,
+            12059562,
+            -2,
+            2
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Minimizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483647,
+            12059562,
+            -2,
+            3
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Maximizar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        },
+        {
+          "runtime_id": [
+            42,
+            12059562,
+            3,
+            -2147483647,
+            12059562,
+            -2,
+            5
+          ],
+          "control_type": "Button",
+          "class_name": "",
+          "automation_id": "",
+          "name": "Cerrar",
+          "native_hwnd": 0,
+          "is_enabled": true,
+          "is_offscreen": false,
+          "is_keyboard_focusable": false,
+          "patterns": [
+            "Invoke",
+            "Value",
+            "Text",
+            "LegacyIAccessible",
+            "Selection",
+            "SelectionItem",
+            "Toggle",
+            "ExpandCollapse",
+            "Window",
+            "RangeValue"
+          ]
+        }
+      ],
+      "controles_total": 52,
+      "controles_ilegibles": 0
+    }
+  ],
+  "output_seleccion": {
+    "candidatos": 1,
+    "estado": "OK",
+    "candidato": {
+      "runtime_id": [
+        42,
+        2426342
+      ],
+      "control_type": "Edit",
+      "class_name": "TEdit",
+      "automation_id": "2426342",
+      "name": "",
+      "native_hwnd": 2426342,
+      "is_enabled": true,
+      "is_offscreen": false,
+      "is_keyboard_focusable": true,
+      "patterns": [
+        "Invoke",
+        "Value",
+        "Text",
+        "LegacyIAccessible",
+        "Selection",
+        "SelectionItem",
+        "Toggle",
+        "ExpandCollapse",
+        "Window",
+        "RangeValue"
+      ]
+    }
+  },
+  "experimentos": {
+    "value_pattern": {
+      "mechanism": "ValuePattern",
+      "hresult": "-0x7feceaf7",
+      "exception_type": "COMError",
+      "exception_repr": "COMError(-2146233079, None, (None, None, None, 0, None))",
+      "readback": {
+        "value_pattern_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\",
+        "legacy_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\"
+      },
+      "changed": false
+    },
+    "value_pattern_restore": {
+      "mechanism": "ValuePattern",
+      "hresult": "-0x7feceaf7",
+      "exception_type": "COMError",
+      "exception_repr": "COMError(-2146233079, None, (None, None, None, 0, None))",
+      "readback": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\"
+    },
+    "legacy_iaccessible": {
+      "mechanism": "LegacyIAccessible",
+      "hresult": "S_OK",
+      "readback": {
+        "value_pattern_value": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\OutputTest",
+        "legacy_value": "<USER>\\AppData\\Local\\Temp\\SkyClaw-P0-40fb00c2\\OutputTest"
+      },
+      "changed": true
+    },
+    "legacy_iaccessible_restore": {
+      "mechanism": "LegacyIAccessible",
+      "hresult": "S_OK",
+      "readback": {
+        "value_pattern_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\",
+        "legacy_value": "C:\\Modding\\DynDOLOD RigTest\\DynDOLOD_Output\\"
+      },
+      "restored_ok": true
+    }
+  },
+  "stale_observations": {
+    "uia_elementnotavailable_count": 0,
+    "otros_com_errors_count": 0,
+    "stale_observed": false
+  },
+  "residual_processes": [],
+  "exit_code": 1,
+  "finished_at": "2026-10-02T20:34:27"
+}
