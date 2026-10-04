@@ -35,3 +35,36 @@ class AmbiguousManagedSourceError(FrozenRuntimeError):
 
 class FrozenRuntimeObservationError(FrozenRuntimeError):
     """No se pudo observar (identidad/inventario/metadata) la Managed Source."""
+
+
+# ============================================================================
+# Storage (P2)
+# ============================================================================
+
+
+class FrozenRuntimeStorageError(FrozenRuntimeError):
+    """Base de errores de storage de Frozen Runtime (P2)."""
+
+
+class StateCorruptError(FrozenRuntimeStorageError):
+    """Estado persistente malformado, truncado o ilegible (fail-closed).
+
+    Distingue ``state absent`` (arranque limpio) de ``state present but
+    corrupt`` (jamás se cae silenciosamente a "sin active generation").
+    """
+
+
+class StateSchemaError(FrozenRuntimeStorageError):
+    """Estado con schema desconocido o campos inválidos (fail-closed)."""
+
+
+class InvalidGenerationIdError(FrozenRuntimeStorageError):
+    """generation-id con caracteres, formato, traversal o forma reservada inválida."""
+
+
+class GenerationCollisionError(FrozenRuntimeStorageError):
+    """generation-id existente cuya identidad completa difiere (fail-closed).
+
+    La idempotencia exige que full tree digest + runtime identity + critical
+    evidence coincidan; si no, nunca se sobreescribe en silencio.
+    """

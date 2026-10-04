@@ -22,10 +22,10 @@ from __future__ import annotations
 import os
 import pathlib
 
-from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.config import SKYRIM_SE_APPID, STEAM_DEFAULT_PATHS
 from sky_claw.local.frozen_runtime._vdf import parse_vdf_file
 from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError, MalformedVdfError
+from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
 from sky_claw.local.frozen_runtime.models import (
     CRITICAL_EXE_BY_GAME,
     GAME_DIR_NAME_BY_KEY,
@@ -39,26 +39,6 @@ from sky_claw.local.frozen_runtime.models import (
 
 def _normcase_abspath(path: pathlib.Path) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
-
-
-def _sin_links(ruta: pathlib.Path) -> str | None:
-    """None si ningún componente (hasta la raíz del volumen) es enlace/reparse.
-
-    Devuelve una descripción legible del primer componente enlazado, o del
-    OSError que impidió inspeccionarlo (fail-closed).
-    """
-    actual = pathlib.Path(ruta)
-    while True:
-        try:
-            kind = link_kind_or_raise(actual)
-        except OSError as exc:
-            return f"no se pudo inspeccionar '{actual}': {exc}"
-        if kind is not None:
-            return f"'{actual}' es un enlace ({kind})"
-        if actual.anchor == str(actual):
-            break
-        actual = actual.parent
-    return None
 
 
 def _exe_presente(root: pathlib.Path, exe_name: str) -> bool:
@@ -80,7 +60,7 @@ def _manifest_presente(library_steamapps: pathlib.Path, appid: str) -> bool:
 
 def _candidato_valido(root: pathlib.Path, game_key: str, appid: str, *, motivos: list[str]) -> ManagedSource | None:
     exe_name = CRITICAL_EXE_BY_GAME[game_key]
-    motivo_links = _sin_links(root)
+    motivo_links = descripcion_de_enlace(root)
     if motivo_links is not None:
         motivos.append(f"'{root}': {motivo_links}")
         return None
