@@ -353,3 +353,174 @@ def test_p0b_build_sha_congelado():
     assert set(p0b_probe.BUILD_SHA) == {"texgen", "dynodlod"}
     texto = _fuente(P0B_SRC)
     assert "BUILD_DRIFT" in texto
+
+
+# ---------------------------------------------------------------------------
+# CR-9 — STOP sanitizado (ancla del path REAL de escritura)
+# ---------------------------------------------------------------------------
+
+
+def test_cr9_stop_se_escribe_sanitizado(tmp_path, monkeypatch):
+    """El archivo de STOP no puede filtrar el username, ni siquiera si llega
+    dentro del detalle del error (readback de Output, fingerprint, etc.)."""
+    monkeypatch.setattr(p0a_probe, "_usuario", "OperadorX")
+    destino = p0b_probe.escribir_stop(
+        tmp_path,
+        "texgen",
+        "P0_BLOCKED_BY_ENVIRONMENT",
+        "readback C:\\Users\\OperadorX\\Temp\\SkyClaw-P0B\\TexGen != expected",
+    )
+    contenido = destino.read_text(encoding="utf-8")
+    assert "OperadorX" not in contenido
+    assert "<USER>" in contenido
+    assert "P0_BLOCKED_BY_ENVIRONMENT" in contenido
+
+
+def test_cr9_main_usa_escribir_stop():
+    """Ancla de fuente: `main()` no vuelve a escribir el STOP a mano."""
+    texto = _fuente(P0B_SRC)
+    assert "escribir_stop(pathlib.Path(args.evidence)" in texto
+    assert 'f"{args.tool}_STOP.txt"' not in texto
+
+
+# ---------------------------------------------------------------------------
+# CR-2 — Begin: `ui_change` derivado NO cuenta como señal independiente
+# ---------------------------------------------------------------------------
+
+
+def test_cr2_ui_change_derivado_solo_no_confirma_begin():
+    """Sin ninguna señal real de progreso, el derivado no puede confirmar."""
+    assert not p0b_probe.evaluar_confirmacion_de_begin(
+        {"process_alive": True, "output_growth": False, "log_growth": False, "ui_change_inferred": True}
+    )
+
+
+def test_cr2_begin_confirmado_requiere_liveness_y_progreso():
+    assert p0b_probe.evaluar_confirmacion_de_begin({"process_alive": True, "output_growth": True})
+    assert p0b_probe.evaluar_confirmacion_de_begin({"process_alive": True, "log_growth": True})
+    # sin liveness no hay confirmación aunque haya crecimiento
+    assert not p0b_probe.evaluar_confirmacion_de_begin({"process_alive": False, "output_growth": True})
+    # sin progreso no hay confirmación aunque el proceso viva
+    assert not p0b_probe.evaluar_confirmacion_de_begin({"process_alive": True})
+
+
+def test_cr2_confirmar_begin_no_incluye_ui_change_como_senal():
+    """Ancla de fuente: el veredicto sale del helper puro, y el derivado se
+    llama `ui_change_inferred` (nombre que delata su naturaleza)."""
+    texto = _fuente(P0B_SRC)
+    assert "evaluar_confirmacion_de_begin(señales)" in texto
+    assert '"ui_change_inferred"' in texto
+
+
+# ---------------------------------------------------------------------------
+# CR-3 — journal pre-mutación y restore desde finally
+# ---------------------------------------------------------------------------
+
+
+def test_cr3_journal_persiste_antes_de_mutar(tmp_path, monkeypatch):
+    """El journal RESTORE_PENDING queda durable con original + intended,
+    sanitizado, ANTES de que la mutación ocurra."""
+    monkeypatch.setattr(p0a_probe, "_usuario", "OperadorX")
+    ruta = p0a_probe.journal_de_restore(
+        tmp_path,
+        "texgen",
+        pid=4321,
+        exe_sha="0939bc8f" * 8,
+        fingerprint={"runtime_id": [42, 1], "control_type": "Edit", "name": "Output"},
+        original_value="C:\\Users\\OperadorX\\viejo",
+        intended_value="%TEMP%\\SkyClaw-P0\\OutputTest",
+        estado="RESTORE_PENDING",
+    )
+    dato = json.loads(ruta.read_text(encoding="utf-8"))
+    assert dato["state"] == "RESTORE_PENDING"
+    assert dato["intended_temporary_value"].endswith("OutputTest")
+    assert "OperadorX" not in ruta.read_text(encoding="utf-8")
+    assert dato["tool"] == "texgen" and dato["pid"] == 4321
+
+
+def test_cr3_restore_corre_desde_finally_con_journal(tmp_path):
+    """Ancla AST: el try de mutación tiene un `finally` que (a) restaura vía
+    `set_value` y (b) re-persiste el journal (RESTORED/RESTORE_FAILED)."""
+    arbol = ast.parse(_fuente(P0A_SRC))
+    candidatos = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Try) or not nodo.finalbody:
+            continue
+        body_txt = ast.dump(ast.Module(body=nodo.body, type_ignores=[]))
+        final_txt = ast.dump(ast.Module(body=nodo.finalbody, type_ignores=[]))
+        restaura_en_final = "set_value" in final_txt
+        journal_en_final = "journal_de_restore" in final_txt
+        muta_en_body = "root_test" in body_txt or "str(root_test)" in body_txt
+        if restaura_en_final or journal_en_final:
+            candidatos.append((muta_en_body, restaura_en_final, journal_en_final))
+    assert any(muta and restaura and journal for muta, restaura, journal in candidatos), (
+        "debe existir un try de mutación cuyo finally restaure y persista el journal"
+    )
+
+
+def test_cr3_restore_failed_queda_durable(tmp_path, monkeypatch):
+    """Si el restore falla, el journal persiste RESTORE_FAILED + errores."""
+    monkeypatch.setattr(p0a_probe, "_usuario", "OperadorX")
+    ruta = p0a_probe.journal_de_restore(
+        tmp_path,
+        "texgen",
+        pid=99,
+        exe_sha="0939bc8f" * 8,
+        fingerprint={"runtime_id": [42, 2], "name": "Output"},
+        original_value="orig",
+        intended_value="tmp",
+        estado="RESTORE_FAILED",
+        errores={"mutation_error": "COMError temporal"},
+    )
+    dato = json.loads(ruta.read_text(encoding="utf-8"))
+    assert dato["state"] == "RESTORE_FAILED"
+    assert dato["errores"]["mutation_error"] == "COMError temporal"
+
+
+# ---------------------------------------------------------------------------
+# CR-1 — escáner de logs: candidatos, errores y relectura post-exit
+# ---------------------------------------------------------------------------
+
+
+def test_cr1_escaner_registra_candidatos_y_errores(tmp_path):
+    existe_con_marker = tmp_path / "log_ok.txt"
+    existe_con_marker.write_text("hola\nTexGen completed successfully\n", encoding="utf-8")
+    existe_sin_marker = tmp_path / "log_vacio.txt"
+    existe_sin_marker.write_text("nada util\n", encoding="utf-8")
+    inexistente = tmp_path / "no_existe.txt"
+    directorio = tmp_path / "es_directorio"
+    directorio.mkdir()
+
+    salida = p0b_probe.escanear_logs(
+        [inexistente, directorio, existe_sin_marker, existe_con_marker],
+        ["TexGen completed successfully"],
+        "test",
+    )
+    por_path = {c["path"]: c for c in salida["candidatos"]}
+    assert por_path[str(inexistente)]["error"] == "NOT_FOUND"
+    assert por_path[str(directorio)]["read_attempted"] is True
+    assert str(por_path[str(directorio)]["error"]).startswith("READ_FAILED")
+    assert por_path[str(existe_sin_marker)]["error"] == "NO_MARKERS"
+    assert por_path[str(existe_con_marker)]["error"] == "MARKERS_FOUND"
+    assert salida["encontrados"] == {"TexGen completed successfully": str(existe_con_marker)}
+
+
+def test_cr1_escaner_relee_despues_del_exit(tmp_path):
+    """El escáner lee SIEMPRE desde disco: una segunda pasada (post-exit)
+    ve el contenido que se agregó después de la primera."""
+    log = tmp_path / "late.log"
+    log.write_text("inicio\n", encoding="utf-8")
+    primera = p0b_probe.escanear_logs([log], ["completed successfully"], "en_vivo")
+    assert primera["candidatos"][0]["error"] == "NO_MARKERS"
+    assert not primera["encontrados"]
+    # el proceso terminó y volcó su buffer al log
+    log.write_text("inicio\nTexGen completed successfully\n", encoding="utf-8")
+    segunda = p0b_probe.escanear_logs([log], ["completed successfully"], "post_exit")
+    assert segunda["candidatos"][0]["error"] == "MARKERS_FOUND"
+    assert segunda["fase"] == "post_exit"
+
+
+def test_cr1_cierre_tiene_relectura_post_exit():
+    texto = _fuente(P0B_SRC)
+    assert "log_corroboration_post_exit" in texto
+    assert '"post_exit"' in texto

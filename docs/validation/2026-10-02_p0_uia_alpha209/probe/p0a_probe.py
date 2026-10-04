@@ -391,6 +391,55 @@ class UiAdapter:
         return resultado
 
 
+def journal_de_restore(
+    evi: pathlib.Path,
+    tool: str,
+    *,
+    pid: int,
+    exe_sha: str,
+    fingerprint: dict,
+    original_value: object,
+    intended_value: str,
+    estado: str,
+    errores: dict | None = None,
+) -> pathlib.Path:
+    """CR-3: journal durable del estado del Output ANTES de cualquier mutación.
+
+    Se persiste ANTES de mutar (RESTORE_PENDING) y se re-persiste al final
+    (RESTORED / RESTORE_FAILED): si el probe muere a mitad de la mutación, el
+    journal queda en disco con el valor original y el intended, de modo que el
+    wizard mutado es recuperable y la pérdida no es silenciosa.
+    """
+    registro = {
+        "tool": tool,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "pid": pid,
+        "exe_sha256": exe_sha,
+        "control_fingerprint": {
+            k: fingerprint.get(k)
+            for k in (
+                "runtime_id",
+                "control_type",
+                "class_name",
+                "automation_id",
+                "name",
+                "native_hwnd",
+            )
+        },
+        "original_output_value": original_value,
+        "intended_temporary_value": intended_value,
+        "state": estado,
+    }
+    if errores:
+        registro["errores"] = errores
+    destino = evi / f"{tool}_output_restore_journal.json"
+    destino.write_text(
+        json.dumps(sanitizar(registro), indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    return destino
+
+
 def _comerr(e: Exception) -> dict:
     return {
         "hresult": hex(getattr(e, "hresult", -1)),
@@ -693,48 +742,85 @@ def main() -> int:
                 else:
                     original = adaptador.lectura_output(el)
                     paso("output_lectura_original", original)
-
-                    # -- §13: experimento ValuePattern -------------------------
-                    vp = adaptador.set_value(el, "ValuePattern", str(root_test))
-                    rb = adaptador.lectura_output(el)
-                    vp["readback"] = {
-                        "value_pattern_value": rb.get("value_pattern_value"),
-                        "legacy_value": rb.get("legacy_value"),
-                    }
-                    vp["changed"] = vp.get("hresult") == "S_OK" and rb.get("value_pattern_value") == str(root_test)
-                    experimentos["value_pattern"] = vp
-
                     orig_val = original.get("value_pattern_value")
                     if orig_val is None:
                         orig_val = original.get("legacy_value") or ""
-                    restaurar = adaptador.set_value(el, "ValuePattern", str(orig_val))
-                    rb2 = adaptador.lectura_output(el)
-                    restaurar["readback"] = rb2.get("value_pattern_value")
-                    experimentos["value_pattern_restore"] = restaurar
 
-                    # -- §14: experimento LegacyIAccessible (independiente) ----
-                    lg = adaptador.set_value(el, "LegacyIAccessible", str(root_test))
-                    rb3 = adaptador.lectura_output(el)
-                    lg["readback"] = {
-                        "value_pattern_value": rb3.get("value_pattern_value"),
-                        "legacy_value": rb3.get("legacy_value"),
-                    }
-                    lg["changed"] = lg.get("hresult") == "S_OK" and (
-                        rb3.get("value_pattern_value") == str(root_test) or rb3.get("legacy_value") == str(root_test)
+                    # -- CR-3: journal durable ANTES de cualquier mutación -----
+                    sha_exe = sha256_de(exe) or "desconocido"
+                    journal = journal_de_restore(
+                        evi,
+                        args.tool,
+                        pid=proc.pid,
+                        exe_sha=sha_exe,
+                        fingerprint=candidatos[0],
+                        original_value=orig_val,
+                        intended_value=str(root_test),
+                        estado="RESTORE_PENDING",
                     )
-                    experimentos["legacy_iaccessible"] = lg
+                    paso("restore_journal_persistido", {"archivo": str(journal), "estado": "RESTORE_PENDING"})
 
-                    restaurar_l = adaptador.set_value(el, "LegacyIAccessible", str(orig_val))
-                    rb4 = adaptador.lectura_output(el)
-                    restaurar_l["readback"] = {
-                        "value_pattern_value": rb4.get("value_pattern_value"),
-                        "legacy_value": rb4.get("legacy_value"),
-                    }
-                    restaurar_l["restored_ok"] = (
-                        rb4.get("value_pattern_value") == orig_val or rb4.get("legacy_value") == orig_val
-                    )
-                    experimentos["legacy_iaccessible_restore"] = restaurar_l
-                    registro["restore_failed"] = not restaurar_l.get("restored_ok", False)
+                    errores_experimento: dict[str, object] = {}
+                    try:
+                        # -- §13: experimento ValuePattern ---------------------
+                        vp = adaptador.set_value(el, "ValuePattern", str(root_test))
+                        rb = adaptador.lectura_output(el)
+                        vp["readback"] = {
+                            "value_pattern_value": rb.get("value_pattern_value"),
+                            "legacy_value": rb.get("legacy_value"),
+                        }
+                        vp["changed"] = vp.get("hresult") == "S_OK" and rb.get("value_pattern_value") == str(root_test)
+                        experimentos["value_pattern"] = vp
+
+                        # -- §14: experimento LegacyIAccessible (independiente) ----
+                        lg = adaptador.set_value(el, "LegacyIAccessible", str(root_test))
+                        rb3 = adaptador.lectura_output(el)
+                        lg["readback"] = {
+                            "value_pattern_value": rb3.get("value_pattern_value"),
+                            "legacy_value": rb3.get("legacy_value"),
+                        }
+                        lg["changed"] = lg.get("hresult") == "S_OK" and (
+                            rb3.get("value_pattern_value") == str(root_test)
+                            or rb3.get("legacy_value") == str(root_test)
+                        )
+                        experimentos["legacy_iaccessible"] = lg
+                    except adaptador._errores_del_rig + (ValueError, AttributeError) as exc_mut:
+                        # fallo DURANTE la mutación: se registra, y el finally de
+                        # abajo intenta el restore igual — el wizard no queda mutado.
+                        errores_experimento["mutation_error"] = repr(exc_mut)
+                        print(f"ERROR_DURANTE_MUTACION: {exc_mut!r}")
+                    finally:
+                        # -- restore crash-safe: corre SIEMPRE, incluso si la
+                        # mutación o el probe murieron a mitad. Sin fallback
+                        # dinámico: el restore usa el mecanismo MEDIDO de este
+                        # build (LegacyIAccessible) — el único que escribe en
+                        # estos binarios; si falla, RESTORE_FAILED queda durable.
+                        restaurar = adaptador.set_value(el, "LegacyIAccessible", str(orig_val))
+                        rb2 = adaptador.lectura_output(el)
+                        restaurar["readback"] = {
+                            "value_pattern_value": rb2.get("value_pattern_value"),
+                            "legacy_value": rb2.get("legacy_value"),
+                        }
+                        restaurado_ok = (
+                            rb2.get("value_pattern_value") == orig_val or rb2.get("legacy_value") == orig_val
+                        )
+                        restaurar["restored_ok"] = restaurado_ok
+                        experimentos["restore"] = restaurar
+                        # CR-3: el estado final del journal se persiste SIEMPRE
+                        journal_de_restore(
+                            evi,
+                            args.tool,
+                            pid=proc.pid,
+                            exe_sha=sha_exe,
+                            fingerprint=candidatos[0],
+                            original_value=orig_val,
+                            intended_value=str(root_test),
+                            estado="RESTORED" if restaurado_ok else "RESTORE_FAILED",
+                            errores=errores_experimento or None,
+                        )
+                        if not restaurado_ok:
+                            registro["restore_failed"] = True
+                            print("OUTPUT_RESTORE_FAILED — wizard mutado, journal persistido")
 
                     registro["preset_hashes"]["despues_de_mutaciones"] = estado_archivos(
                         [preset, PRESET_TEXGEN, PRESET_DYNDOLOD]

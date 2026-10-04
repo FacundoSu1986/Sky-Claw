@@ -30,7 +30,7 @@ import subprocess
 import sys
 import time
 
-from p0a_probe import (  # noqa: E402
+from p0a_probe import (
     EXE_DYNDOLOD,
     EXE_TEXGEN,
     PRESET_DYNDOLOD,
@@ -142,6 +142,82 @@ def modal_coincide(obs: dict, esperado: dict) -> bool:
     botones = [(b.get("name"), b.get("automation_id")) for b in (obs.get("botones") or [])]
     faltan = [b for b in esperado["buttons"] if b not in botones]
     return obs.get("name") == esperado["name"] and not faltan
+
+
+def evaluar_confirmacion_de_begin(señales: dict) -> bool:
+    """CR-2: Begin confirmado = liveness AND progreso observable.
+
+    `ui_change_inferred` es DERIVADO de (output_growth OR log_growth): no es
+    una señal independiente y NO participa del veredicto.
+    """
+    progreso = bool(señales.get("output_growth") or señales.get("log_growth"))
+    return bool(señales.get("process_alive")) and progreso
+
+
+def escanear_logs(fuentes: list[pathlib.Path], markers: list[str], fase: str) -> dict:
+    """CR-1: escaneo de logs con CANDIDATOS y resultados tipados.
+
+    Lee SIEMPRE desde disco (sin caché), así que puede re-ejecutarse después
+    del exit del proceso. Jamás traga un OSError sin evidencia:
+      NOT_FOUND     el archivo no existe
+      READ_FAILED   existe pero la lectura falló (error persistido)
+      NO_MARKERS    se leyó y no contiene ninguno de los markers
+      MARKERS_FOUND se leyó y contiene al menos un marker
+    """
+    out: dict[str, object] = {
+        "fase": fase,
+        "encontrados": {},
+        "candidatos": [],
+        "using_output_path": None,
+        "using_data_path": None,
+    }
+    for ruta in fuentes:
+        candidato: dict[str, object] = {
+            "path": str(ruta),
+            "exists": ruta.exists(),
+            "size": None,
+            "mtime": None,
+            "read_attempted": False,
+            "read_ok": False,
+            "error": None,
+            "markers_encontrados": [],
+        }
+        out["candidatos"].append(candidato)
+        if not ruta.exists():
+            candidato["error"] = "NOT_FOUND"
+            continue
+        try:
+            st = ruta.stat()
+            candidato["size"] = st.st_size
+            candidato["mtime"] = time.strftime("%H:%M:%S", time.localtime(st.st_mtime))
+        except OSError as e:
+            candidato["error"] = f"STAT_FAILED: {e!r}"
+        candidato["read_attempted"] = True
+        try:
+            texto = ruta.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            candidato["error"] = f"READ_FAILED: {e!r}"
+            continue
+        candidato["read_ok"] = True
+        for m in markers:
+            if m in texto and m not in out["encontrados"]:
+                out["encontrados"][m] = str(ruta)
+                candidato["markers_encontrados"].append(m)
+        candidato["error"] = "MARKERS_FOUND" if candidato["markers_encontrados"] else "NO_MARKERS"
+        for linea in texto.splitlines():
+            if out["using_output_path"] is None and linea.strip().startswith("Using Output Path:"):
+                out["using_output_path"] = linea.strip()
+            if out["using_data_path"] is None and " Data Path: " in linea and linea.strip().startswith("Using"):
+                out["using_data_path"] = linea.strip()
+    return out
+
+
+def escribir_stop(evidencia: pathlib.Path, tool: str, estado: str, detalle: str) -> pathlib.Path:
+    """CR-9: el STOP se persiste SANITIZADO — el detalle puede contener paths
+    personales (readback de un Output con username, fingerprint de modal)."""
+    destino = evidencia / f"{tool}_STOP.txt"
+    destino.write_text(sanitizar(f"{estado}\n{detalle}\n"), encoding="utf-8")
+    return destino
 
 
 class RunnerP0B:
@@ -603,14 +679,24 @@ class RunnerP0B:
         return n
 
     def confirmar_begin(self, output_root: pathlib.Path) -> dict:
-        """§9: ≥2 señales independientes de que la generación comenzó."""
+        """§9 (CR-2): Begin confirmado = liveness + una señal observable de progreso.
+
+        Contrato de ESTA sonda — las señales REALES son:
+          process_alive   el proceso sigue vivo (liveness)
+          output_growth   crecieron archivos del root gestionado (progreso)
+          log_growth      creció la evidencia de log (progreso)
+
+        `ui_change` es DERIVADO de (output_growth OR log_growth): NO es una
+        señal independiente y NO entra al contador — se conserva renombrado
+        como `ui_change_inferred` sólo como estado descriptivo.
+        """
         base_out = self.conteo_output(output_root)
         base_err = self.metricas_de_archivos().get("stderr_bytes") or 0
-        señales: dict[str, bool] = {
+        señales: dict[str, object] = {
+            "process_alive": False,
             "output_growth": False,
             "log_growth": False,
-            "ui_change": False,
-            "process_alive": False,
+            "ui_change_inferred": False,
         }
         deadline = time.time() + 180
         while time.time() < deadline:
@@ -621,11 +707,14 @@ class RunnerP0B:
             err_now = self.metricas_de_archivos().get("stderr_bytes") or 0
             if err_now > base_err + 4096:
                 señales["log_growth"] = True
-            if señales["output_growth"] or señales["log_growth"]:
-                señales["ui_change"] = True  # la ventana cambió (Start/OK ya no bloquea)
+            progreso = bool(señales["output_growth"] or señales["log_growth"])
+            if progreso:
+                señales["ui_change_inferred"] = True  # DERIVADO, no independiente
                 break
             time.sleep(3.0)
-        señales["confirmado"] = sum(1 for v in señales.values() if v) >= 2
+        progreso = bool(señales["output_growth"] or señales["log_growth"])
+        señales["progress_signal"] = progreso
+        señales["confirmado"] = evaluar_confirmacion_de_begin(señales)
         log(f"BEGIN_SIGNALS: {señales}")
         return señales
 
@@ -673,7 +762,7 @@ class RunnerP0B:
                         "fingerprint": fp,
                         "controles_terminal": controles,
                         "generation": generation,
-                        "log_markers": self.buscar_markers([marker]),
+                        "log_markers": self.buscar_markers([marker], "terminal_dialog"),
                     }
                 if modal_coincide(fp, esperado_startup):
                     log("HUMAN_ACTION_NEEDED (generation): modal conocido reapareció — el HUMANO decide")
@@ -690,7 +779,7 @@ class RunnerP0B:
                 raise FalloP0Error("P0_BLOCKED", f"MODAL_DESCONOCIDO_DURANTE_GENERACION: {fp['instruccion']!r}")
             if not vivo:
                 self.marca("process_exit_sin_dialogo")
-                markers = self.buscar_markers([marker])
+                markers = self.buscar_markers([marker], "process_exit_sin_dialogo")
                 return {
                     "estado": "PROCESS_EXIT",
                     "generation": generation,
@@ -700,27 +789,14 @@ class RunnerP0B:
             time.sleep(3.0)
         raise FalloP0Error("P0_BLOCKED_BY_COMPLETION_AMBIGUITY", "generation_timeout sin estado terminal")
 
-    def buscar_markers(self, markers: list[str]) -> dict:
-        """§23/§27: corroboración por logs crecidos del tool dir + stderr."""
-        out: dict[str, object] = {"encontrados": {}, "using_output_path": None, "using_data_path": None}
+    def buscar_markers(self, markers: list[str], fase: str) -> dict:
+        """§23/§27: corroboración por logs del tool dir + stderr, con CANDIDATOS.
+
+        Delega en `escanear_logs` (función pura, testeable sin COM ni proceso).
+        """
         fuentes: list[str] = list(self.archivos_de_log_crecidos())
-        err_f = self.evi / f"{self.tool}_stderr.txt"
-        if err_f.exists():
-            fuentes.append(str(err_f))
-        for fuente in fuentes[:12]:
-            try:
-                texto = pathlib.Path(fuente).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for m in markers:
-                if m in texto and m not in out["encontrados"]:
-                    out["encontrados"][m] = fuente
-            for linea in texto.splitlines():
-                if out["using_output_path"] is None and linea.strip().startswith("Using Output Path:"):
-                    out["using_output_path"] = linea.strip()
-                if out["using_data_path"] is None and " Data Path: " in linea and linea.strip().startswith("Using"):
-                    out["using_data_path"] = linea.strip()
-        return out
+        fuentes.append(str(self.evi / f"{self.tool}_stderr.txt"))
+        return escanear_logs([pathlib.Path(f) for f in fuentes[:12]], markers, fase)
 
     # -- cierre ---------------------------------------------------------------
 
@@ -743,6 +819,13 @@ class RunnerP0B:
             registro["residual_processes"] = [
                 {"pid": p, "exe": e} for p, e in pids_de_imagen(pathlib.Path(self.exe).name)
             ]
+            # CR-1 — relectura de logs DESPUÉS de que el proceso terminó: los
+            # buffers de log del tool se vacían al salir; re-leer aquí captura
+            # los markers finales que la observación en vivo pudo perder.
+            registro["log_corroboration_post_exit"] = self.buscar_markers(
+                ["completed successfully", "plugins generated successfully", "User says"],
+                "post_exit",
+            )
             registro["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             destino = self.evi / f"{self.tool}_p0b.json"
             destino.write_text(
@@ -778,9 +861,8 @@ def main() -> int:
         registro = RunnerP0B(args.tool, args).correr()
     except FalloP0Error as e:
         log(f"STOP {e.estado}: {e.detalle}")
-        (pathlib.Path(args.evidence) / f"{args.tool}_STOP.txt").write_text(
-            f"{e.estado}\n{e.detalle}\n", encoding="utf-8"
-        )
+        # CR-9: STOP sanitizado (ver `escribir_stop`)
+        escribir_stop(pathlib.Path(args.evidence), args.tool, e.estado, e.detalle)
         return 2
     log(
         f"CHAIN_OK: {args.tool} — exit_code={registro.get('exit_code')} "

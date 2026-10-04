@@ -14,7 +14,8 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| Status | REPRODUCED |
+| resolution_status | **OPEN** (sin fix en el código) |
+| evidence_status | **REPRODUCED** |
 | Reproducción | `tests/test_runner_defects_p1_p2.py::test_r1_cancelacion_to_thread_no_mata_al_worker` (6/6 passed — demuestra el defecto) + `test_r1_ancla_ast_el_to_thread_empaquetar_esta_sin_proteccion` (anchor sobre `_package_output_as_mod`) |
 | Invariante | `mutating packaging worker terminal BEFORE rollback begins BEFORE lease can be released` — las TRES en orden, no sólo la primera |
 | Path | `dyndolod_runner.py:2488` — `await asyncio.to_thread(_empaquetar_sincrono)` sin protección |
@@ -27,7 +28,8 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| Status | REPRODUCED |
+| resolution_status | **OPEN** (sin fix en el código) |
+| evidence_status | **REPRODUCED** |
 | Reproducción | `test_r2_copytree_atraviesa_junction_mientras_medidor_no` (misionero: bytes copiados > presupuesto + archivos externos llegan al destino) + `test_r2_package_output_as_mod_admite_copia_de_junction` (método real admite la copia) |
 | Invariante | `EVERY BYTE COPIED MUST BELONG TO THE ADMITTED WORKSPACE TREE` + `inventory set == copyable set` |
 | Path | `sky_claw/local/tools/dyndolod_runner.py:2481` `shutil.copytree(src, dst)` pelado; `mod_path.mkdir` + `for item in items`. El guard de coordinación (`_exigir_fuente_del_subroot`) valida la cadena ancestro, **no descendientes del origen** |
@@ -40,7 +42,8 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| Status | REPRODUCED |
+| resolution_status | **OPEN** (sin fix en el código) |
+| evidence_status | **REPRODUCED** |
 | Reproducción | `test_r3_segunda_cancelacion_interrumpe_la_limpieza` (multi-step cleanup sin protección) + `test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled` (branch flaky por no capturar `CancelledError`) |
 | Invariante | `ONE cancellation-resistant cleanup operation` que garantice EN ORDEN: `kill_and_reap(proc)` → cancel helpers → gather/drain helpers to terminal → `close_job(job)` — y la unidad completa termina antes del `raise` final |
 | Path | `dyndolod_runner.py:1890-1896` — `except asyncio.CancelledError:` llama `kill_and_reap / heartbeat.cancel / drain.cancel / gather / close_job` sin `contextlib.suppress(asyncio.CancelledError)` |
@@ -68,11 +71,23 @@ HEAD:        962f1835
 - Ningún fix. Solo reproducción, invariants y plan.
 - No se intentaron P1-P9 de #661 (regla de no meltzura).
 
-## Runner gates — válidos
+## Runner gates — válidos (dos dimensiones, CR-11)
 
 ```text
-RUNNER_P1_PACKAGING_CANCEL = REPRODUCED
-RUNNER_P1_REPARSE_COPY     = REPRODUCED
-RUNNER_P2_DOUBLE_CANCEL    = REPRODUCED
+RUNNER_P1_PACKAGING_CANCEL  resolution_status=OPEN  evidence_status=REPRODUCED
+RUNNER_P1_REPARSE_COPY      resolution_status=OPEN  evidence_status=REPRODUCED
+RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN  evidence_status=REPRODUCED
 → RUNNER_FIXES_READY_FOR_IMPLEMENTATION
+```
+
+## Follow-ups explícitos (NO implementados en este PR)
+
+```text
+CR-5  convertir reproducciones R1/R2/R3 a xfail            → PRs R1/R3 dedicados
+CR-6  reemplazar fake R3 por _execute_process real          → PR R3 dedicado
+CR-7  rediseñar identidad futura de modales                 → #661 P1/P3
+CR-8  rediseñar fingerprint cap                             → #661 P1/P3
+CR-10 arquitectura completa de evidencia parcial            → #661 P3
+CR-14 ampliar CI global a todo docs/validation              → CI/tooling follow-up
+CR-15 refactor/nits generales                               → hygiene follow-up
 ```
