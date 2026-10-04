@@ -35,7 +35,10 @@ from sky_claw.local.frozen_runtime.generations import (
     registrar_generation_metadata,
     verificar_generation,
 )
-from sky_claw.local.frozen_runtime.independence import verify_generation_independence
+from sky_claw.local.frozen_runtime.independence import (
+    verify_generation_independence,
+    verify_generation_physical_integrity,
+)
 from sky_claw.local.frozen_runtime.models import (
     DiscoveryState,
     ManagedSource,
@@ -57,6 +60,7 @@ from sky_claw.local.frozen_runtime.stabilization import (
 )
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state, save_frozen_runtime_state
 from sky_claw.local.frozen_runtime.storage import (
+    admitir_directorio_storage,
     default_storage_root,
     initialize_frozen_runtime_storage,
     same_volume,
@@ -114,6 +118,7 @@ __all__ = [
     "StorageInitResult",
     "FrozenRuntimeState",
     "FrozenRuntimeStateLoadResult",
+    "admitir_directorio_storage",
     "assess_managed_source_stability",
     "construir_generation_id",
     "descubrir_generations",
@@ -130,5 +135,6 @@ __all__ = [
     "save_frozen_runtime_state",
     "validar_generation_id",
     "verify_generation_independence",
+    "verify_generation_physical_integrity",
     "verificar_generation",
 ]

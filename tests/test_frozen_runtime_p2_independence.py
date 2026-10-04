@@ -14,7 +14,11 @@ import subprocess
 
 import pytest
 
-from sky_claw.local.frozen_runtime import IndependenceState, verify_generation_independence
+from sky_claw.local.frozen_runtime import (
+    IndependenceState,
+    verify_generation_independence,
+    verify_generation_physical_integrity,
+)
 
 
 def _arbol_generacion(base: pathlib.Path, *, contenido: bytes = b"contenido-independiente") -> pathlib.Path:
@@ -126,3 +130,48 @@ class TestIndependenciaFisica:
         resultado = verify_generation_independence(gen, fuente)
         assert resultado.state is IndependenceState.INDETERMINATE
         assert "reparse" in resultado.message or "enlace" in resultado.message
+
+
+class TestIntegridadFisicaPropia:
+    """SFR-18 on-demand de la Generation, sin requerir la Managed Source (P2-B2)."""
+
+    def test_pi10_generation_independiente_pasa(self, tmp_path: pathlib.Path) -> None:
+        gen = _arbol_generacion(tmp_path / "gen")
+        assert verify_generation_physical_integrity(gen).state is IndependenceState.INDEPENDENT
+
+    def test_pi13_copia_normal_nlink_uno(self, tmp_path: pathlib.Path) -> None:
+        gen = _arbol_generacion(tmp_path / "gen")
+        resultado = verify_generation_physical_integrity(gen)
+        assert resultado.state is IndependenceState.INDEPENDENT
+        assert os.stat(gen / "SkyrimSE.exe").st_nlink == 1
+
+    def test_pi14_sin_managed_source_la_integridad_se_demuestra(self, tmp_path: pathlib.Path) -> None:
+        # La primitive no recibe ni requiere una Managed Source: rollback futuro
+        # no puede depender de Steam.
+        gen = _arbol_generacion(tmp_path / "gen")
+        resultado = verify_generation_physical_integrity(gen)
+        assert resultado.state is IndependenceState.INDEPENDENT
+
+    def test_pi10b_reparse_dentro_violacion(self, tmp_path: pathlib.Path) -> None:
+        gen = _arbol_generacion(tmp_path / "gen")
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        _enlace_directorio(externo, gen / "Data" / "enlace")
+        resultado = verify_generation_physical_integrity(gen)
+        assert resultado.state is IndependenceState.VIOLATED
+
+    def test_pi10c_hardlink_dentro_violacion_sin_fuente(self, tmp_path: pathlib.Path) -> None:
+        gen = _arbol_generacion(tmp_path / "gen")
+        objetivo = gen / "Data" / "Skyrim.esm"
+        bytes_originales = objetivo.read_bytes()
+        externo = tmp_path / "externo.esm"
+        externo.write_bytes(bytes_originales)
+        objetivo.unlink()
+        _hardlink(externo, objetivo)
+        resultado = verify_generation_physical_integrity(gen)
+        assert resultado.state is IndependenceState.VIOLATED
+        assert "multi-link" in resultado.message or "hardlink" in resultado.message
+
+    def test_pi10d_generation_ausente_indeterminate(self, tmp_path: pathlib.Path) -> None:
+        resultado = verify_generation_physical_integrity(tmp_path / "no_existe")
+        assert resultado.state is IndependenceState.INDETERMINATE

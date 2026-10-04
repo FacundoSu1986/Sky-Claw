@@ -7,6 +7,7 @@ que copiar no lo cambia.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 
@@ -265,3 +266,75 @@ class TestDrift:
         assert por_nombre["carpeta_ajena"].state is GenerationVerificationState.UNKNOWN
         assert por_nombre["carpeta_ajena"].metadata is None
         assert por_nombre["archivo_suelto.txt"].state is GenerationVerificationState.INVALID
+
+
+def _enlace_directorio(destino: pathlib.Path, enlace: pathlib.Path) -> None:
+    """Enlace de directorio: junction en Windows, symlink en POSIX."""
+    if os.name == "nt":
+        import subprocess
+
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(destino)], check=True, capture_output=True)
+    else:
+        enlace.symlink_to(destino, target_is_directory=True)
+
+
+def _hardlink(objetivo: pathlib.Path, enlace: pathlib.Path) -> None:
+    try:
+        os.link(objetivo, enlace)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hardlinks no disponibles en este filesystem: {exc}")
+
+
+class TestIntegridadFisicaPostPublicacion:
+    """SFR-18 on-demand en ``verificar_generation`` (P2-B2): mismo digest ≠ VALID."""
+
+    @pytest.fixture(autouse=True)
+    def _identidad_sintetica(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _parchear_identidad(monkeypatch)
+
+    def _publicada(self, tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gid = _publicar_generacion(root, tmp_path)
+        return root, gid
+
+    def _digest_actual(self, generacion: pathlib.Path) -> str:
+        return tree_digest_from_files(inventory_tree(generacion)).digest
+
+    def test_pi11_hardlink_post_publicacion_mismo_digest_no_valid(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        gen = generation_dir(root, gid)
+        objetivo = gen / "Data" / "Skyrim.esm"
+        externo = tmp_path / "externo.esm"
+        externo.write_bytes(objetivo.read_bytes())
+        objetivo.unlink()
+        _hardlink(externo, objetivo)  # mismo file object, mismos bytes
+        assert self._digest_actual(gen) == leer_generation_metadata(root, gid).tree_digest.digest
+        resultado = verificar_generation(root, gid)
+        assert resultado.state is GenerationVerificationState.INVALID
+
+    def test_pi12_skyrimse_hardlink_no_valid(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        gen = generation_dir(root, gid)
+        objetivo = gen / "SkyrimSE.exe"
+        externo = tmp_path / "externo.exe"
+        externo.write_bytes(objetivo.read_bytes())
+        objetivo.unlink()
+        _hardlink(externo, objetivo)
+        assert self._digest_actual(gen) == leer_generation_metadata(root, gid).tree_digest.digest
+        assert verificar_generation(root, gid).state is GenerationVerificationState.INVALID
+
+    def test_pi14_sin_managed_source_verificacion_valida(self, tmp_path: pathlib.Path) -> None:
+        # No existe ninguna Managed Source en el escenario: la verificación de la
+        # Generation no la necesita (rollback futuro sin Steam).
+        root, gid = self._publicada(tmp_path)
+        assert verificar_generation(root, gid).state is GenerationVerificationState.VALID
+
+    def test_pi15_reparse_post_publicacion_no_valid(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        gen = generation_dir(root, gid)
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        _enlace_directorio(externo, gen / "Data" / "enlace")
+        resultado = verificar_generation(root, gid)
+        assert resultado.state is GenerationVerificationState.INVALID

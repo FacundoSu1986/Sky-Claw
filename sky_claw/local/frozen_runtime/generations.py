@@ -32,6 +32,7 @@ from sky_claw.local.frozen_runtime.generation_id import (
     generation_id_desde_version,
     validar_generation_id,
 )
+from sky_claw.local.frozen_runtime.independence import verify_generation_physical_integrity
 from sky_claw.local.frozen_runtime.models import SourceSnapshotEvidence
 from sky_claw.local.frozen_runtime.state import write_json_atomic
 from sky_claw.local.frozen_runtime.storage import generation_dir, generations_state_dir, versions_dir
@@ -41,6 +42,7 @@ from sky_claw.local.frozen_runtime.storage_models import (
     GenerationRecord,
     GenerationVerificationResult,
     GenerationVerificationState,
+    IndependenceState,
 )
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.models import FileIdentity, InventoryError, RuntimeIdentity, TreeDigest
@@ -362,6 +364,22 @@ def verificar_generation(root: pathlib.Path, generation_id: str) -> GenerationVe
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=f"metadata con generation_id distinto ({metadata.generation_id!r} != {ident!r})",
+            recorded=metadata,
+        )
+    # SFR-18 on-demand (P2-B2): VALID exige integridad física FRESCA, no sólo
+    # digest+identidad. Un hardlink o un reparse insertado después de publicar
+    # no cambia el digest pero viola el contrato físico: nunca VALID.
+    integridad = verify_generation_physical_integrity(directorio)
+    if integridad.state is IndependenceState.VIOLATED:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INVALID,
+            message=f"integridad física violada para '{ident}' (SFR-18): {integridad.message}",
+            recorded=metadata,
+        )
+    if integridad.state is IndependenceState.INDETERMINATE:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"integridad física no demostrable para '{ident}': {integridad.message}",
             recorded=metadata,
         )
     try:

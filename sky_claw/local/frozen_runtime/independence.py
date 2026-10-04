@@ -70,19 +70,20 @@ def _contenida(interior: pathlib.Path, contenedor: pathlib.Path) -> bool:
     return i.startswith(c.rstrip(os.sep) + os.sep)
 
 
-def _indice_fisico(root: pathlib.Path, *, etiqueta: str) -> dict[tuple[int, int], str]:
-    """Índice ``(st_dev, st_ino) → relpath`` de los archivos propios del árbol.
+def _archivos_fisicos(root: pathlib.Path, *, etiqueta: str) -> list[tuple[str, os.stat_result]]:
+    """Recorre el árbol y devuelve ``(relpath, lstat)`` de sus archivos regulares.
 
-    Rechaza fail-closed los reparse points dentro del árbol (no se sigue ni se
-    ignora: el árbol deja de ser un objeto físico controlable). Sin links en
-    el root tampoco hay índice que afirmar.
+    Rechaza fail-closed: reparse/symlink dentro del árbol
+    (:class:`PhysicalReparseError`), entradas que no sean archivo regular ni
+    directorio, e identidad física no disponible (st_dev/st_ino <= 0 ⇒ no se
+    puede afirmar nada). Sin links en el root tampoco hay árbol que afirmar.
     """
     motivo_raiz = descripcion_de_enlace(root)
     if motivo_raiz is not None:
         raise FrozenRuntimeStorageError(f"{etiqueta}: {motivo_raiz}")
     if not root.is_dir():
         raise FrozenRuntimeStorageError(f"{etiqueta}: '{root}' no es un directorio")
-    indice: dict[tuple[int, int], str] = {}
+    archivos: list[tuple[str, os.stat_result]] = []
     pendientes: list[pathlib.Path] = [root]
     while pendientes:
         actual = pendientes.pop()
@@ -117,13 +118,14 @@ def _indice_fisico(root: pathlib.Path, *, etiqueta: str) -> dict[tuple[int, int]
                             f"{etiqueta}: identidad física no disponible (st_dev={st.st_dev}, st_ino={st.st_ino}) "
                             f"en '{entrada}': no se puede afirmar independencia (fail-closed)"
                         )
-                    rel = entrada.relative_to(root).as_posix()
-                    indice[(st.st_dev, st.st_ino)] = rel
+                    archivos.append((entrada.relative_to(root).as_posix(), st))
         except OSError as exc:
-            if isinstance(exc, FrozenRuntimeStorageError):
-                raise
             raise FrozenRuntimeStorageError(f"{etiqueta}: no se pudo recorrer '{actual}': {exc}") from exc
-    return indice
+    return archivos
+
+
+def _mencion_multilink(archivos: list[tuple[str, os.stat_result]], *, limite: int = 5) -> list[str]:
+    return [f"{rel} (nlink={st.st_nlink})" for rel, st in archivos if st.st_nlink > 1][:limite]
 
 
 def verify_generation_independence(
@@ -158,8 +160,8 @@ def verify_generation_independence(
             state=IndependenceState.VIOLATED, message=f"root de Generation redirigido: {motivo}"
         )
     try:
-        indice_gen = _indice_fisico(gen, etiqueta="generation")
-        indice_fuente = _indice_fisico(fuente, etiqueta="managed source")
+        archivos_gen = _archivos_fisicos(gen, etiqueta="generation")
+        archivos_fuente = _archivos_fisicos(fuente, etiqueta="managed source")
     except PhysicalReparseError as exc:
         # Un reparse DENTRO de la Generation es una violación del contrato
         # SFR-18 (nuestro árbol debe ser físico y plano); en la Managed Source
@@ -168,6 +170,9 @@ def verify_generation_independence(
         return PhysicalIndependenceResult(state=estado, message=str(exc))
     except FrozenRuntimeStorageError as exc:
         return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+    multlink = _mencion_multilink(archivos_gen)
+    indice_gen = {(st.st_dev, st.st_ino): rel for rel, st in archivos_gen}
+    indice_fuente = {(st.st_dev, st.st_ino): rel for rel, st in archivos_fuente}
     compartidos: list[SharedObjectEvidence] = []
     for clave, rel_gen in indice_gen.items():
         rel_fuente = indice_fuente.get(clave)
@@ -190,7 +195,59 @@ def verify_generation_independence(
             ),
             shared_objects=tuple(sorted(compartidos, key=lambda e: (e.rel_path_generation, e.rel_path_source))),
         )
+    # Multi-link sin par en la fuente: el archivo comparte file object con OTRO
+    # árbol (otra Generation u objeto externo) — violación por sí misma.
+    if multlink:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED,
+            message=f"archivo(s) multi-link (hardlink) en la Generation: {', '.join(multlink)} (SFR-18)",
+        )
     return PhysicalIndependenceResult(
         state=IndependenceState.INDEPENDENT,
         message="sin aliasing, sin contención, sin reparse y sin objetos de archivo compartidos",
+    )
+
+
+def verify_generation_physical_integrity(generation_root: pathlib.Path) -> PhysicalIndependenceResult:
+    """SFR-18 como propiedad on-demand de una Generation, SIN Managed Source.
+
+    Una Generation no es segura sólo porque su ``TreeDigest`` coincida: debe
+    demostrarse fresca la integridad física de sus archivos —
+    sin reparse/symlink/junction dentro del árbol y con ``st_nlink == 1`` en
+    todo archivo regular (nlink>1 ⇒ comparte file object con la Managed
+    Source, otra Generation u otro árbol externo). No requiere que la Managed
+    Source exista: el rollback/la verificación futura no dependen de Steam.
+
+    Veredictos: ``VIOLATED`` (reparse o multi-link observado), ``INDETERMINATE``
+    (identidad física no observable/inseccionable), ``INDEPENDENT``. Nunca se
+    promueve a válido por metadata: la evidencia es fresca.
+    """
+    gen = pathlib.Path(generation_root)
+    motivo = descripcion_de_enlace(gen)
+    if motivo is not None:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED, message=f"root de Generation redirigido: {motivo}"
+        )
+    if not gen.is_dir():
+        return PhysicalIndependenceResult(
+            state=IndependenceState.INDETERMINATE, message=f"la Generation '{gen}' no existe o no es un directorio"
+        )
+    try:
+        archivos = _archivos_fisicos(gen, etiqueta="generation")
+    except PhysicalReparseError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.VIOLATED, message=str(exc))
+    except FrozenRuntimeStorageError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+    multlink = _mencion_multilink(archivos)
+    if multlink:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED,
+            message=(
+                f"archivo(s) multi-link (hardlink) dentro de la Generation: {', '.join(multlink)} "
+                "(SFR-18: la Generation debe ser físicamente independiente)"
+            ),
+        )
+    return PhysicalIndependenceResult(
+        state=IndependenceState.INDEPENDENT,
+        message=f"sin reparse y st_nlink==1 en {len(archivos)} archivo(s): integridad física de la Generation",
     )
