@@ -175,7 +175,7 @@ para no migrar IDs ya documentados (`SFR-01..18`) en docs, tests e issues.
 | **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). |
 | **Desired Active Generation** | Estado persistente de Sky-Claw (`state/active.json`): qué Generation pretende ser la activa. |
 | **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo). Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
-| **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != READY` y `DRIFTED != target de rollback` sin re-verificación (§12). |
+| **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != READY` y `DRIFTED != target de rollback` sin re-verificación (§12). La detección es **on-demand**: re-verificación de identidad antes de rollback/reactivación; no se promete monitoreo continuo (la Generation activa es escribible y puede derivar durante el uso normal). |
 | **Promotion** | Acto explícito y autorizado de hacer que Desired Active Generation y Effective Runtime pasen a ser, **probadamente coherentes**, un Candidate verificado; sin sobreescribir la generación activa anterior (SFR-09/16). |
 | **Rollback** | Hacer que Desired Active Generation y Effective Runtime pasen a ser, probadamente coherentes, una Generation anterior retenida y re-verificada. No reconstruye archivos (SFR-10). |
 
@@ -376,6 +376,11 @@ Reglas:
    en P5, no se supone.
 5. **POST verify**: observar de nuevo la Effective Runtime y confirmar identidad
    == `B` y coherencia con `desired`. Si no, se revierte a `A` (F5/F9).
+6. **Fail-closed sin observación**: hasta que P5 entregue la primitiva de
+   observación del Effective Runtime (pregunta abierta Q12), la promoción **no
+   puede declarar `SUCCESS`**. P4 no debe sustituir el paso de verificación de
+   coherencia por un supuesto: sin observación, el desenlace es `FAILED`/
+   `PENDING`, nunca éxito asumido (SFR-16).
 
 ## 12. Rollback
 
@@ -428,7 +433,10 @@ Preguntas a resolver y hallazgos del censo:
 - **¿Qué configuración cambiaría al promover?** Sólo el puntero del Frozen Runtime
   (Desired Active Generation) + el game path de MO2/SKYRIM_PATH (Effective Runtime),
   una sola vez por promoción; ambos deben quedar **probadamente coherentes**
-  (SFR-16). **P0 no modifica** nada de esto; sólo lo documenta (F6: si es
+  (SFR-16). La primitiva de binding de P5 debe cubrir **ambas superficies** (el
+  `gamePath` de MO2 y `SKYRIM_PATH`) o demostrar que una deriva de la otra;
+  actualizar una sola viola SFR-16 (patrón "dos superficies, un recurso" de
+  `AGENTS.md`). **P0 no modifica** nada de esto; sólo lo documenta (F6: si es
   incompatible, no hay migración forzada).
 
 Gate futuro:
@@ -555,6 +563,12 @@ STABLE(ManagedSource) ⇔
 árbol ya falla cerrado ante mutación concurrente, así que un árbol en escritura no
 produce un digest válido. Si P1 no puede demostrar (a)–(c) en el rig real, la
 creación de Candidate se **bloquea**, no se adivina.
+
+**Residuo declarado:** una actualización parcial que **ya terminó** y dejó el árbol
+estable antes de la ventana silenciosa no es distinguible por inventario (el sello
+sólo detecta mutación **durante** el inventario). Las señales del proveedor
+(a)/(b) y el rig de P1 deben cerrar o **declarar** ese residuo; nunca se lo asume
+cerrado por omisión.
 
 ## 19. Modelo de datos
 
@@ -685,7 +699,7 @@ enumerativas):
 |---|---|
 | P1 | Estabilización: manifest idle vs update-in-progress; ausencia de `.part`; dos inventories idénticos ⇒ STABLE; mutación concurrente ⇒ fail-closed; captura de `SourceSnapshotEvidence` sellada. |
 | P2 | Admisión de rutas (destino dentro de Steam ⇒ rechazo; symlink/junction ⇒ rechazo); puntero atómico; registro enumerado (igualdad literal); detección de Generation `DRIFTED` contra su identidad registrada. |
-| P3 | Candidate completo y fuente estable ⇒ ready; corrupción/truncamiento ⇒ invalid; fuente cambiada PRE/POST ⇒ `invalid / SOURCE_CHANGED` aunque el Candidate sea consistente (SFR-15); fallo a mitad ⇒ activa intacta (F2/F3/F8). |
+| P3 | Candidate completo y fuente estable ⇒ ready; corrupción/truncamiento ⇒ invalid; fuente cambiada PRE/POST ⇒ `invalid / SOURCE_CHANGED` aunque el Candidate sea consistente (SFR-15); fallo a mitad ⇒ activa intacta (F2/F3/F8). Caso negativo anti-self-verification: Candidate **internamente consistente pero distinto** del `SourceSnapshotEvidence` ⇒ rechazado (el test prueba el camino de comparación, no sólo el resultado). |
 | P4 | Promoción no borra previa; sin coherencia desired/effective no hay `SUCCESS` (F9); fallo de promoción revierte y `A` queda usable (F5); sin aprobación no promueve (F4); rollback repunta (F7); rollback sobre Generation `DRIFTED` falla cerrado (F10). |
 | P5 | SKSE compatible/incompatible/unknown; game path repuntado y observado; MO2 arranca desde Generation activa; coherencia desired/effective verificable desde el rig. |
 | P7 | Rig: Steam actualiza (F1) sin tocar Frozen; rollback real (F7). |
