@@ -232,7 +232,8 @@ def bootstrap_block(values: list[Any]) -> dict[str, float | None]:
             finite.append(f)
     if not finite:
         return {"point": None, "ci95_low": None, "ci95_high": None}
-    return bootstrap_median_ci(finite)
+    ci = bootstrap_median_ci(finite)
+    return {"point": ci["point"], "ci95_low": ci["ci95_low"], "ci95_high": ci["ci95_high"]}
 
 
 def _json_safe(obj: Any) -> Any:
