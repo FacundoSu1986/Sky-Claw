@@ -111,7 +111,7 @@ def _replicate(record: dict, times: int = 15) -> list[dict]:
 
 
 # ============================================================ INVARIANTES MATEMÁTICAS (§13)
-def test_rho_is_cycles_per_tile_and_even() -> None:
+def test_rho_es_ciclos_por_tile_y_par() -> None:
     rho = rho_grid(N, N)
     assert rho.shape == (N, N)
     assert rho[0, 0] == 0.0
@@ -120,7 +120,7 @@ def test_rho_is_cycles_per_tile_and_even() -> None:
     assert np.allclose(rho, flipped)  # paridad => máscaras conjugado-simétricas
 
 
-def test_band_partition_disjoint_and_exhaustive_except_dc() -> None:
+def test_particion_de_bandas_disjunta_y_exhaustiva_salvo_dc() -> None:
     union = np.zeros((N, N), dtype=int)
     for name in BAND_NAMES:
         union += MASKS[name].astype(int)
@@ -130,14 +130,14 @@ def test_band_partition_disjoint_and_exhaustive_except_dc() -> None:
         assert not (MASKS[name] & MASKS["DC"]).any()
 
 
-def test_reconstruct_sum_of_bands_equals_original() -> None:
+def test_reconstruccion_suma_de_bandas_igual_al_original() -> None:
     field = _target()
     parts = reconstruct_bands(field, MASKS)
     rebuilt = sum(parts[n] for n in (*BAND_NAMES, "DC"))
     assert np.allclose(rebuilt, field, atol=1e-9)
 
 
-def test_parseval_energy_conservation() -> None:
+def test_parseval_conservacion_de_energia() -> None:
     rng = np.random.default_rng(20260925)
     field = rng.standard_normal((N, N))
     spec = np.fft.fft2(field)
@@ -147,7 +147,7 @@ def test_parseval_energy_conservation() -> None:
     assert total == pytest.approx(N * N * float(np.sum(field**2)), rel=1e-9)
 
 
-def test_masks_preserve_hermitian_ifft_is_real() -> None:
+def test_mascaras_preservan_hermitian_ifft_real() -> None:
     field = _target()
     spec = np.fft.fft2(field)
     for name in (*BAND_NAMES, "LOWMID", "HIGH"):
@@ -155,7 +155,7 @@ def test_masks_preserve_hermitian_ifft_is_real() -> None:
         assert float(np.max(np.abs(imag))) < 1e-8, name
 
 
-def test_single_frequency_lands_in_exact_band() -> None:
+def test_frecuencia_unica_cae_en_banda_exacta() -> None:
     cases = {
         (2, 0): "B1",
         (6, 0): "B2",
@@ -174,7 +174,7 @@ def test_single_frequency_lands_in_exact_band() -> None:
                 assert energies[n] == pytest.approx(0.0, abs=1e-3), (cx, cy, n)
 
 
-def test_band_boundaries_exact_membership() -> None:
+def test_bordes_de_banda_pertenencia_exacta() -> None:
     # Bordes 4/8/16/32/64/128: convención [lo,hi) — el borde inferior pertenece a la banda.
     rho = rho_grid(N, N)
     ky = np.fft.fftfreq(N) * N  # incluye -128 (Nyquist) en N=256
@@ -188,7 +188,7 @@ def test_band_boundaries_exact_membership() -> None:
         assert not bool(MASKS[prev][i, 0]), (edge, prev)
 
 
-def test_resolution_invariance_same_cycles_per_tile() -> None:
+def test_invarianza_de_resolucion_mismos_ciclos_por_tile() -> None:
     for n in (64, 128, 256):
         masks = band_masks(n, n)
         spec = np.fft.fft2(_sinusoid(n, 6, 0, 0.0, 1.0))
@@ -196,7 +196,7 @@ def test_resolution_invariance_same_cycles_per_tile() -> None:
         assert all(band_energy(spec, masks[b]) == pytest.approx(0.0, abs=1e-6) for b in BAND_NAMES if b != "B2")
 
 
-def test_dc_excluded_from_bands() -> None:
+def test_dc_excluido_de_las_bandas() -> None:
     const = np.full((N, N), 7.0)  # 100% DC
     spec = np.fft.fft2(const)
     assert band_energy(spec, MASKS["DC"]) > 0.0
@@ -205,7 +205,7 @@ def test_dc_excluded_from_bands() -> None:
 
 
 # ============================================================ ENERGY_GATE (§15)
-def test_tiny_energy_band_not_evaluable_but_asset_kept() -> None:
+def test_banda_de_energia_minima_no_evaluable_pero_asset_conservado() -> None:
     low_only = _lowmid_tones(N, amp=3.0)
     m = analyze_path(low_only, low_only.copy(), MASKS)
     assert m["HIGH"]["eligible"] == 0.0  # LOW_ENERGY, no interpretable
@@ -215,7 +215,7 @@ def test_tiny_energy_band_not_evaluable_but_asset_kept() -> None:
     assert rec["high_eligible"] == 0.0 and rec["lowmid_eligible"] == 1.0
 
 
-def test_zero_energy_band_nrmse_is_nan() -> None:
+def test_banda_de_energia_cero_nrmse_es_nan() -> None:
     const = np.full((N, N), 5.0)
     m = analyze_path(const, const.copy(), MASKS)
     assert m["HIGH"]["eligible"] == 0.0
@@ -223,7 +223,7 @@ def test_zero_energy_band_nrmse_is_nan() -> None:
 
 
 # ============================================================ ALINEAMIENTO (§8)
-def test_global_scale_is_flat_across_bands_no_per_band_fit() -> None:
+def test_escala_global_plana_entre_bandas_sin_fit_por_banda() -> None:
     target = _target()
     c = 1.3
     m = analyze_path(target, c * target, MASKS)
@@ -232,7 +232,7 @@ def test_global_scale_is_flat_across_bands_no_per_band_fit() -> None:
     assert m["LOWMID"]["coherence"] == pytest.approx(1.0, abs=1e-9)
 
 
-def test_analyze_path_deterministic_and_fails_fast_on_nonfinite() -> None:
+def test_analyze_path_determinista_y_falla_rapido_ante_no_finito() -> None:
     target = _target()
     a = analyze_path(target, _mismatch(target, region="HIGH", strength=0.5), MASKS)
     b = analyze_path(target, _mismatch(target, region="HIGH", strength=0.5), MASKS)
@@ -243,7 +243,7 @@ def test_analyze_path_deterministic_and_fails_fast_on_nonfinite() -> None:
         analyze_path(target, bad, MASKS)
 
 
-def test_perfect_pair_is_coherent_everywhere() -> None:
+def test_par_perfecto_es_coherente_en_todas_las_bandas() -> None:
     target = _target()
     m = analyze_path(target, target.copy(), MASKS)
     for b in ("LOWMID", "HIGH"):
@@ -252,14 +252,14 @@ def test_perfect_pair_is_coherent_everywhere() -> None:
 
 
 # ============================================================ CONTROLES SINTÉTICOS S0..S5 (§19)
-def test_s0_fully_coherent_has_no_excess() -> None:
+def test_s0_totalmente_coherente_sin_exceso() -> None:
     target = _target()
     rec = asset_summary(target, target.copy(), target.copy(), MASKS)
     assert rec["excess_lowmid_nrmse"] == pytest.approx(0.0, abs=1e-9)
     assert rec["excess_high_nrmse"] == pytest.approx(0.0, abs=1e-9)
 
 
-def test_s1_high_only_mismatch_is_high_concentrated() -> None:
+def test_s1_mismatch_solo_high_es_high_concentrated() -> None:
     """FALSACIÓN §27 (positivo): mismatch SÓLO HIGH => SUPPORTED, lowmid preservado."""
     target = _target()
     auth = _mismatch(target, region="HIGH", strength=0.6)
@@ -270,7 +270,7 @@ def test_s1_high_only_mismatch_is_high_concentrated() -> None:
     assert decide(rules) == EXP_BANDLIMITED_SUPPORTED
 
 
-def test_s2_low_only_mismatch_is_not_high_concentrated() -> None:
+def test_s2_mismatch_solo_low_no_es_high_concentrated() -> None:
     """FALSACIÓN §27 (negativo): mismatch SÓLO LOW => NO high-concentrated."""
     target = _target()
     auth = _mismatch(target, region="LOWMID", strength=0.6)
@@ -281,7 +281,7 @@ def test_s2_low_only_mismatch_is_not_high_concentrated() -> None:
     assert decide(rules) == EXP_BANDLIMITED_NOT_SUPPORTED
 
 
-def test_s3_broadband_mismatch_is_not_supported() -> None:
+def test_s3_mismatch_broadband_no_soportado() -> None:
     target = _target()
     auth = _mismatch(target, region="BOTH", strength=0.5)
     cohort = cohort_medians(_replicate(asset_summary(target, target.copy(), auth, MASKS)))
@@ -290,7 +290,7 @@ def test_s3_broadband_mismatch_is_not_supported() -> None:
     assert decide(rules) == EXP_BANDLIMITED_NOT_SUPPORTED
 
 
-def test_s4_amplitude_only_and_s5_phase_only_high_detected() -> None:
+def test_s4_solo_amplitud_y_s5_solo_fase_high_detectados() -> None:
     """Amplitud-only y phase-only en HIGH siguen localizándose como HIGH (§19 S4/S5)."""
     target = _target()
     parts = reconstruct_bands(target, MASKS)
@@ -316,11 +316,11 @@ def test_s4_amplitude_only_and_s5_phase_only_high_detected() -> None:
         (False, True, "EXP_M5_MIXED"),
     ],
 )
-def test_decision_table(c1: bool, c2: bool, expected: str) -> None:
+def test_tabla_de_decision(c1: bool, c2: bool, expected: str) -> None:
     assert decide({"C1_lowmid_preserved": c1, "C2_high_enriched": c2}) == expected
 
 
-def test_legacy_heldout_replication_gate() -> None:
+def test_gate_de_replica_legacy_heldout() -> None:
     """C2 exige réplica direccional en LEGACY_HELDOUT: sin ella, C2 es falso."""
     target = _target()
     auth = _mismatch(target, region="HIGH", strength=0.6)
@@ -409,13 +409,13 @@ def test_bootstrap_y_decision_resumen_la_misma_definicion_apareada() -> None:
     assert cohort["auth_lowmid_nrmse"] - cohort["self_lowmid_nrmse"] == pytest.approx(0.0)
 
 
-def test_thresholds_and_cutoff_are_frozen_constants() -> None:
+def test_thresholds_y_cutoff_son_constantes_congeladas() -> None:
     assert BAND_EDGES == (4, 8, 16, 32, 64, 128)
     assert T_HIGH_ENRICHMENT > 1.0
     assert ENERGY_GATE_FRACTION > 0.0
 
 
-def test_environment_block_records_actual_run_resolution(tmp_path: Path) -> None:
+def test_environment_block_registra_la_resolucion_real_de_la_corrida(tmp_path: Path) -> None:
     """Provenance §16: ``environment.resolution`` refleja la resolución REAL de la corrida
     (primaria 512 o secundaria 1024 nativa), NO el default 512 hardcodeado.
 
@@ -458,7 +458,7 @@ def _env_block(**kw: object):
         return run_exp_m5.environment_block(manifest, 512, kw.pop("phase", "calibration"), **kw)
 
 
-def test_calibration_environment_records_prereg_and_base_main() -> None:
+def test_environment_de_calibration_registra_prereg_y_base_main() -> None:
     """Calibration registra prereg-freeze y base-main explícitos; execution-freeze es None."""
     block = _env_block(
         phase="calibration",
@@ -473,7 +473,7 @@ def test_calibration_environment_records_prereg_and_base_main() -> None:
     assert "frozen_ack" in block
 
 
-def test_git_sha_keeps_the_git_value_and_is_not_aliased_to_provenance() -> None:
+def test_git_sha_conserva_el_valor_de_git_y_no_es_alias_de_provenance() -> None:
     """``git_sha`` conserva el valor que produce el environment de Git y NO es un alias.
 
     Reemplaza un ``assert ... or True`` previo que no podia fallar nunca. ``git_sha`` lo
@@ -528,7 +528,7 @@ def test_git_sha_keeps_the_git_value_and_is_not_aliased_to_provenance() -> None:
     assert full["git_sha"] != full["base_main_sha"]
 
 
-def test_provenance_flags_do_not_move_git_sha(tmp_path: Path) -> None:
+def test_flags_de_provenance_no_mueven_git_sha(tmp_path: Path) -> None:
     """Cambiar los flags de provenance NO puede mover ``git_sha``.
 
     Ancla la independencia en el otro sentido: mismo manifest y misma corrida de git,
@@ -561,7 +561,7 @@ def test_provenance_flags_do_not_move_git_sha(tmp_path: Path) -> None:
     assert a["base_main_sha"] != b["base_main_sha"]
 
 
-def test_full_environment_records_all_three_freeze_shas() -> None:
+def test_environment_full_registra_los_tres_freeze_shas() -> None:
     """FULL expone prereg-freeze, base-main y execution-freeze junto al frozen_ack legacy."""
     block = _env_block(
         phase="full",
@@ -576,7 +576,7 @@ def test_full_environment_records_all_three_freeze_shas() -> None:
     assert block["frozen_ack"] == f"freeze-{_EXEC_FREEZE}"
 
 
-def test_execution_freeze_sha_is_extracted_strictly_from_frozen_ack() -> None:
+def test_execution_freeze_sha_se_extrae_estrictamente_del_frozen_ack() -> None:
     """``freeze-<40hex>`` es el ÚNICO formato aceptado como execution freeze (§15)."""
     from sky_claw.local.native_parallax.research import run_exp_m5
 
@@ -586,7 +586,7 @@ def test_execution_freeze_sha_is_extracted_strictly_from_frozen_ack() -> None:
             run_exp_m5.execution_freeze_sha_from_ack(bad)
 
 
-def test_calibration_never_carries_an_execution_freeze() -> None:
+def test_calibration_nunca_lleva_execution_freeze() -> None:
     """Calibration no puede declarar execution-freeze.
 
     Sin ``--frozen-ack`` devuelve ``m5_execution_freeze_sha=None`` explícito (ausencia
@@ -615,7 +615,7 @@ def test_calibration_never_carries_an_execution_freeze() -> None:
         )
 
 
-def test_full_requires_frozen_ack_and_resolves_provenance() -> None:
+def test_full_exige_frozen_ack_y_resuelve_provenance() -> None:
     """FULL sin ``--frozen-ack`` falla; con formato válido, resuelve los tres SHAs."""
     from sky_claw.local.native_parallax.research import run_exp_m5
 
@@ -641,7 +641,7 @@ def test_full_requires_frozen_ack_and_resolves_provenance() -> None:
     "bad_sha",
     ["abc", "deadbeef", _SHA40[:-1], _SHA40 + "a", _SHA40.upper(), "", "  " + _SHA40, _SHA40 + " "],
 )
-def test_sha_inputs_reject_anything_but_40_lowercase_hex(bad_sha: str) -> None:
+def test_shas_rechazan_todo_salvo_40_hex_minusculas(bad_sha: str) -> None:
     """No se aceptan SHAs truncados, en mayúscula, ni con whitespace: fail-closed."""
     from sky_claw.local.native_parallax.research import run_exp_m5
 
@@ -652,7 +652,7 @@ def test_sha_inputs_reject_anything_but_40_lowercase_hex(bad_sha: str) -> None:
     assert run_exp_m5.validate_sha_input(_SHA40, "--prereg-freeze-sha") == _SHA40
 
 
-def test_cli_exposes_provenance_flags() -> None:
+def test_cli_expone_los_flags_de_provenance() -> None:
     """El CLI ofrece ambos flags de procedencia: son inputs, no heurísticas de runtime."""
     from sky_claw.local.native_parallax.research import run_exp_m5
 
@@ -680,7 +680,7 @@ def test_cli_exposes_provenance_flags() -> None:
     assert args.base_main_sha == _BASE_MAIN
 
 
-def test_provenance_fix_does_not_touch_scientific_payload() -> None:
+def test_fix_de_provenance_no_toca_el_payload_cientifico() -> None:
     """No-regresión científica: el fix es sólo provenance, cero cambios de ciencia.
 
     Congela el payload científico del environment (umbrales, bandas, gate, seed, resolución)
@@ -756,7 +756,7 @@ _BASE_ARGS = [
         ("calibration", ["--frozen-ack", f"freeze-{_EXEC_FREEZE}"]),
     ],
 )
-def test_invalid_provenance_aborts_before_reading_cohort_a(
+def test_provenance_invalido_aborta_antes_de_leer_cohort_a(
     phase: str, extra: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Provenance invalido aborta ANTES de ``prepare_entries`` (Cohort A intacta)."""
@@ -775,13 +775,13 @@ def test_invalid_provenance_aborts_before_reading_cohort_a(
         ("--base-main-sha", "9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5a"),
     ],
 )
-def test_malformed_sha_aborts_before_reading_cohort_a(flag: str, bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sha_mal_formado_aborta_antes_de_leer_cohort_a(flag: str, bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Un SHA mal formado (truncado, mayusculas, no-hex) aborta antes de leer el corpus."""
     argv = [x for x in _BASE_ARGS if x not in (flag, _SHA40, _BASE_MAIN)]
     _correr_main([*argv, flag, bad, "--phase", "calibration"], monkeypatch)
 
 
-def test_missing_provenance_flags_abort_before_reading_cohort_a(
+def test_flags_de_provenance_faltantes_abortan_antes_de_leer_cohort_a(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sin --prereg-freeze-sha o sin --base-main-sha se aborta antes de leer el corpus."""
@@ -806,7 +806,7 @@ def test_missing_provenance_flags_abort_before_reading_cohort_a(
     _correr_main([*sin_base, "--phase", "calibration"], monkeypatch)
 
 
-def test_valid_provenance_reaches_prepare_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provenance_valido_alcanza_prepare_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Control negativo: con provenance VALIDA, ``prepare_entries`` SI se invoca.
 
     Sin esto, los tests anteriores pasaríaían también si el runner abortara siempre; este
@@ -855,7 +855,7 @@ def test_valid_provenance_reaches_prepare_entries(tmp_path: Path, monkeypatch: p
 _EXPECTED_PROTOCOL_STATUS = "UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE"
 
 
-def test_environment_declares_premature_legacy_heldout_exposure() -> None:
+def test_environment_declara_la_exposicion_prematura_de_legacy_heldout() -> None:
     """Los tres campos de §18 estan presentes con los valores que exige el preregistro."""
     block = _env_block(
         phase="calibration",
@@ -869,7 +869,7 @@ def test_environment_declares_premature_legacy_heldout_exposure() -> None:
     assert block["scientific_rules_changed_after_exposure"] is False
 
 
-def test_protocol_status_present_in_full_too() -> None:
+def test_protocol_status_presente_tambien_en_full() -> None:
     """FULL tambien los declara: la desviacion no es propia de la fase de calibracion."""
     block = _env_block(
         phase="full",
@@ -883,7 +883,7 @@ def test_protocol_status_present_in_full_too() -> None:
     assert block["scientific_rules_changed_after_exposure"] is False
 
 
-def test_protocol_status_lives_in_environment_and_never_overrides_decision() -> None:
+def test_protocol_status_vive_en_environment_y_nunca_pisa_la_decision() -> None:
     """Los campos van en ``environment`` y NO pueden sustituir niallicar ``summary.decision``.
 
     Este es el ancla critica: una desviacion de protocolo que "corrigiera" la decision
@@ -903,7 +903,7 @@ def test_protocol_status_lives_in_environment_and_never_overrides_decision() -> 
     )
 
 
-def test_protocol_deviation_does_not_touch_scientific_constants() -> None:
+def test_desviacion_de_protocolo_no_toca_las_constantes_cientificas() -> None:
     """Declarar la desviacion NO puede mover ningun valor del contrato cientifico."""
     block = _env_block(
         phase="calibration",
@@ -927,7 +927,7 @@ def test_protocol_deviation_does_not_touch_scientific_constants() -> None:
     assert "legacy_heldout_blind_until_execution_freeze" not in block["thresholds"]
 
 
-def test_protocol_status_is_derived_not_operator_supplied() -> None:
+def test_protocol_status_es_derivado_no_suministrado_por_el_operador() -> None:
     """Los valores de §18 NO son un flag CLI: se derivan, no los elige el operador.
 
     Un operador que pudiera escribir ``--protocol-status CLEAN`` borraria el registro de la
@@ -942,7 +942,7 @@ def test_protocol_status_is_derived_not_operator_supplied() -> None:
     assert "--scientific-rules-changed" not in opts
 
 
-def test_protocol_status_has_no_dynamic_override_lookup() -> None:
+def test_protocol_status_sin_lookup_dinamico_de_override() -> None:
     """El bloque que emite §18 lee constantes directas, sin lookup por nombre.
 
     Cierra el hueco de "hagámoslo configurable": un ``globals().get("PROTOCOL_STATUS_OVERRIDE",
@@ -980,7 +980,7 @@ def test_protocol_status_has_no_dynamic_override_lookup() -> None:
             assert not value.id.endswith("_OVERRIDE"), f"{field} lee de un nombre tipo override ({value.id})"
 
 
-def test_protocol_status_cannot_be_silently_downgraded() -> None:
+def test_protocol_status_no_puede_degradarse_en_silencio() -> None:
     """El estado de protocolo se emite siempre completo, con los tres valores congelados.
 
     Ancla que los tres campos salen presentes y exactos: un downgrade (degradar el estado a

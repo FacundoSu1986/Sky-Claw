@@ -111,8 +111,8 @@ kx = fftfreq(W)·W ,  ky = fftfreq(H)·H ,  rho = sqrt(kx² + ky²)   # ciclos p
 
 | Agregado | Rango |
 |---|---|
-| `LOWMID` | `0 < rho < 32` (= B1|B2|B3|B4) |
-| `HIGH`   | `rho >= 32` (= B5|B6|B7) |
+| `LOWMID` | `0 < rho < 32` (= B1 ∪ B2 ∪ B3 ∪ B4) |
+| `HIGH`   | `rho >= 32` (= B5 ∪ B6 ∪ B7) |
 
 **Bandas diagnósticas octave-like disjuntas (§11), convención de borde `[lo, hi)`:**
 
