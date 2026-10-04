@@ -25,6 +25,7 @@ import io
 import json
 import math
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,10 @@ SCIENTIFIC_RULES_CHANGED_AFTER_EXPOSURE = False
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 _FROZEN_ACK_RE = re.compile(r"^freeze-([0-9a-f]{40})$")
 
+# Resoluciones admisibles para el corpus real (§9): 512 primary y 1024 secondary
+# native/no-resize. 64/128 son synthetic-only y nunca llegan al corpus real.
+REAL_CORPUS_RESOLUTIONS: tuple[int, ...] = (512, 1024)
+
 
 def validate_sha_input(value: str | None, flag: str) -> str:
     """Valida un SHA de procedencia: exactamente 40 hex minúsculos (``^[0-9a-f]{40}$``).
@@ -103,7 +108,10 @@ def validate_sha_input(value: str | None, flag: str) -> str:
     """
     if value is None:
         raise ValueError(f"{flag} es obligatorio (procedencia §16)")
-    if not _SHA40_RE.match(value):
+    # ``fullmatch`` (no ``match``): ``$`` acepta un "\n" final, así que un SHA con newline
+    # pasaría la validación y se grabaría malformado en el artefacto. La provenance debe ser
+    # exacta: 40 hex minúsculos y NADA más (ni espacios, ni tabs, ni saltos de línea).
+    if not _SHA40_RE.fullmatch(value):
         raise ValueError(
             f"{flag} inválido: {value!r}. Formato requerido: 40 caracteres hex minúsculos "
             f"(^[0-9a-f]{{40}}$), p.ej. d3745089a1e09ccfc8789aa8eeb1e05a3ee93594"
@@ -120,7 +128,7 @@ def execution_freeze_sha_from_ack(frozen_ack: str | None) -> str:
     """
     if frozen_ack is None:
         raise ValueError("--frozen-ack es obligatorio con --phase full (protocolo freeze §15)")
-    m = _FROZEN_ACK_RE.match(frozen_ack)
+    m = _FROZEN_ACK_RE.fullmatch(frozen_ack)
     if m is None:
         raise ValueError(
             f"--frozen-ack inválido: {frozen_ack!r}. Formato requerido: freeze-<40 hex "
@@ -161,6 +169,70 @@ def resolve_m5_provenance(
         "m5_prereg_freeze_sha": prereg,
         "m5_execution_freeze_sha": execution,
     }
+
+
+def current_git_sha() -> str | None:
+    """SHA del commit del checkout actual, o ``None`` si git no está disponible.
+
+    Es el valor REAL contra el que se compara el execution freeze; nunca un flag.
+    """
+    try:
+        proc = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - fuera de un checkout
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
+
+
+def bind_execution_freeze_to_checkout(execution_freeze_sha: str, actual_git_sha: str | None) -> None:
+    """Fail-closed: un FULL sólo puede correr desde el commit del execution freeze.
+
+    Validar el formato de ``--frozen-ack`` no demuestra que el checkout actual sea el freeze:
+    un SHA sintácticamente válido pero equivocado, o un FULL lanzado desde otro checkout,
+    produciría una decisión de código no congelado declarando un freeze distinto. Comparar
+    contra el ``git HEAD`` real es lo que cierra el contrato de provenance §16.
+    """
+    if actual_git_sha != execution_freeze_sha:
+        raise ValueError(
+            "FULL exige ejecutarse desde el execution freeze: git HEAD="
+            f"{actual_git_sha!r} != m5_execution_freeze_sha={execution_freeze_sha!r} "
+            "(fail-closed: no se lee el corpus)"
+        )
+
+
+def validate_real_corpus_resolution(resolution: int) -> None:
+    """El corpus real sólo admite las resoluciones preregistradas (§9): 512 y 1024.
+
+    64/128 son synthetic-only; valores arbitrarios (256, 768, ...) no pueden producir una
+    corrida M5 real ordinaria ni una decisión definitiva.
+    """
+    if resolution not in REAL_CORPUS_RESOLUTIONS:
+        raise ValueError(
+            f"--resolution {resolution} inválido para el corpus real: permitidos "
+            f"{list(REAL_CORPUS_RESOLUTIONS)} (prereg §9; 64/128 son synthetic-only)"
+        )
+
+
+def bootstrap_block(values: list[Any]) -> dict[str, float | None]:
+    """CI bootstrap de la mediana, o una representación NO-EVALUABLE explícita.
+
+    Si no hay ningún valor finito (p. ej. ninguna cohorte con ``high_enrichment``
+    interpretable), NO se fabrica 0/1/2 ni se crashea: se emiten los tres campos en ``None``,
+    compatible con ``_json_safe`` y con el schema existente.
+    """
+    finite: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f):
+            finite.append(f)
+    if not finite:
+        return {"point": None, "ci95_low": None, "ci95_high": None}
+    return bootstrap_median_ci(finite)
 
 
 def _json_safe(obj: Any) -> Any:
@@ -326,6 +398,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.phase == "full" and not args.frozen_ack:
         parser.error("--phase full exige --frozen-ack (protocolo freeze §15)")
+    # §9: el corpus real sólo admite 512/1024; un typo como 256 no puede producir una
+    # corrida M5 real ordinaria. Fail-closed ANTES de tocar el corpus.
+    try:
+        validate_real_corpus_resolution(args.resolution)
+    except ValueError as exc:
+        parser.error(str(exc))
     # Procedencia §16: fail-closed antes de tocar el corpus. Un artefacto sin los tres SHAs
     # explícitos no es verificable, así que abortamos acá y no después de procesar Cohort A.
     try:
@@ -337,6 +415,15 @@ def main() -> None:
         )
     except ValueError as exc:
         parser.error(str(exc))
+
+    # §16 + hallazgo de revisión: validar el formato del frozen-ack no demuestra que el
+    # checkout actual sea el execution freeze. Un FULL debe correr desde ese commit; si no,
+    # abortamos antes de leer el corpus (fail-closed).
+    if args.phase == "full":
+        try:
+            bind_execution_freeze_to_checkout(provenance["m5_execution_freeze_sha"], current_git_sha())
+        except ValueError as exc:
+            parser.error(str(exc))
 
     def _env() -> dict[str, Any]:
         return environment_block(
@@ -365,6 +452,31 @@ def main() -> None:
         with args.out.open("w", encoding="utf-8") as fh:
             json.dump(_json_safe(data_required), fh, indent=1, allow_nan=False)
         print(json.dumps({"decision": "EXP_M5_DATA_INSUFFICIENT", "n_exclusions": len(exclusions)}, indent=2))
+        print(f"JSON -> {args.out}")
+        sys.exit(2)
+
+    # Capa B (fail-closed): un FULL sin ningún HELD_OUT utilizable no puede producir una
+    # decisión. C2 exige réplica direccional; sin held-out el resultado es DATA_INSUFFICIENT
+    # (mismo mecanismo DATA_REQUIRED), nunca SUPPORTED ni un default silencioso.
+    if args.phase == "full" and not [e for e in prepared if split_of(str(e["family"])) == "HELD_OUT"]:
+        data_required = {
+            "experiment": "EXP-M5",
+            "phase": args.phase,
+            "state": "EXP_M5_DATA_REQUIRED",
+            "decision": "EXP_M5_DATA_INSUFFICIENT",
+            "reason": "no_usable_legacy_heldout_rows",
+            "environment": _env(),
+            "exclusions": exclusions,
+        }
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8") as fh:
+            json.dump(_json_safe(data_required), fh, indent=1, allow_nan=False)
+        print(
+            json.dumps(
+                {"decision": "EXP_M5_DATA_INSUFFICIENT", "reason": "no_usable_legacy_heldout_rows"},
+                indent=2,
+            )
+        )
         print(f"JSON -> {args.out}")
         sys.exit(2)
 
@@ -408,15 +520,13 @@ def main() -> None:
             "rules": rules,
             "decision": decide(rules),
             "bootstrap": {
-                "excess_lowmid_nrmse": bootstrap_median_ci(
+                "excess_lowmid_nrmse": bootstrap_block(
                     [r["excess_lowmid_nrmse"] for r in rows if r["lowmid_eligible"] >= 1.0]
                 ),
-                "excess_high_nrmse": bootstrap_median_ci(
+                "excess_high_nrmse": bootstrap_block(
                     [r["excess_high_nrmse"] for r in rows if r["high_eligible"] >= 1.0]
                 ),
-                "high_enrichment": bootstrap_median_ci(
-                    [r["high_enrichment"] for r in rows if r["high_enrichment"] == r["high_enrichment"]]
-                ),
+                "high_enrichment": bootstrap_block([r["high_enrichment"] for r in rows]),
             },
         }
         report["summary"]["decision"] = decide(rules)

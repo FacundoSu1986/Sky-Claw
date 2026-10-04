@@ -224,14 +224,47 @@ def _median(values: list[float]) -> float:
     return float(np.median(finite)) if finite else float("nan")
 
 
+def _finite_number(value: Any) -> float | None:
+    """Valor como float finito, o None si no es un numero finito (NaN/Inf/None/no numerico)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _le_threshold(value: Any, threshold: float) -> bool:
+    f = _finite_number(value)
+    return f is not None and f <= threshold
+
+
+def _ge_threshold(value: Any, threshold: float) -> bool:
+    f = _finite_number(value)
+    return f is not None and f >= threshold
+
+
+def _gt(left: Any, right: Any) -> bool:
+    a, b = _finite_number(left), _finite_number(right)
+    return a is not None and b is not None and a > b
+
+
 def evaluate_rules(cohort: dict[str, Any], legacy_heldout: dict[str, Any] | None) -> dict[str, Any]:
-    """C1_LOWMID_PRESERVED y C2_HIGH_ENRICHED (§21) sobre medianas ya calculadas."""
-    c1 = bool(cohort["auth_lowmid_nrmse"] <= T_LOWMID_NRMSE and cohort["excess_lowmid_nrmse"] <= T_LOWMID_EXCESS)
-    contrast = bool(cohort["excess_high_nrmse"] > cohort["excess_lowmid_nrmse"])
-    enriched = bool(cohort["high_enrichment"] >= T_HIGH_ENRICHMENT)
-    replication = True
+    """C1_LOWMID_PRESERVED y C2_HIGH_ENRICHED (§21) sobre medianas ya calculadas.
+
+    Fail-closed en dos frentes: un valor no finito (NaN/None) nunca satisface una comparacion,
+    y una cohorte LEGACY_HELDOUT ausente hace ``legacy_heldout_replication=false``. C2 exige
+    replica direccional explicita: ``None`` NO es una replica exitosa.
+    """
+    c1 = _le_threshold(cohort.get("auth_lowmid_nrmse"), T_LOWMID_NRMSE) and _le_threshold(
+        cohort.get("excess_lowmid_nrmse"), T_LOWMID_EXCESS
+    )
+    contrast = _gt(cohort.get("excess_high_nrmse"), cohort.get("excess_lowmid_nrmse"))
+    enriched = _ge_threshold(cohort.get("high_enrichment"), T_HIGH_ENRICHMENT)
+    replication = False
     if legacy_heldout is not None:
-        replication = bool(legacy_heldout["excess_high_nrmse"] > legacy_heldout["excess_lowmid_nrmse"])
+        replication = _gt(legacy_heldout.get("excess_high_nrmse"), legacy_heldout.get("excess_lowmid_nrmse"))
     return {
         "C1_lowmid_preserved": c1,
         "C2_high_enriched": bool(contrast and enriched and replication),

@@ -19,6 +19,7 @@ N=256 garantiza que todos los tonos de prueba (<=150 ciclos/tile) están bajo Ny
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 from pathlib import Path
 
@@ -263,7 +264,7 @@ def test_s1_high_only_mismatch_is_high_concentrated() -> None:
     target = _target()
     auth = _mismatch(target, region="HIGH", strength=0.6)
     cohort = cohort_medians(_replicate(asset_summary(target, target.copy(), auth, MASKS)))
-    rules = evaluate_rules(cohort, legacy_heldout=None)
+    rules = evaluate_rules(cohort, legacy_heldout=cohort)
     assert rules["C1_lowmid_preserved"] is True
     assert rules["C2_high_enriched"] is True
     assert decide(rules) == EXP_BANDLIMITED_SUPPORTED
@@ -1004,3 +1005,172 @@ def test_protocol_status_cannot_be_silently_downgraded() -> None:
         block["legacy_heldout_blind_until_execution_freeze"] is not (block["scientific_rules_changed_after_exposure"])
         or block["legacy_heldout_blind_until_execution_freeze"] == (block["scientific_rules_changed_after_exposure"])
     )
+
+
+# ============ HARDENING POST-REVIEW: gates de validez del FULL (fail-closed) =============
+# Findings de revisión: held-out ausente tratado como réplica exitosa; checkout no atado al
+# freeze; SHAs con newline aceptados por ``$``; resoluciones arbitrarias; bootstrap sin
+# valores finitos. Todos son gates de validez/fail-closed: NO cambian thresholds ni reglas.
+
+
+def test_heldout_ausente_no_es_replica_exitosa() -> None:
+    """Capa A: ``legacy_heldout=None`` => replication=false y C2=false, nunca default True."""
+    target = _target()
+    auth = _mismatch(target, region="HIGH", strength=0.6)
+    cohort = cohort_medians(_replicate(asset_summary(target, target.copy(), auth, MASKS)))
+    rules = evaluate_rules(cohort, legacy_heldout=None)
+    assert rules["legacy_heldout_replication"] is False
+    assert rules["C2_high_enriched"] is False
+    assert decide(rules) != EXP_BANDLIMITED_SUPPORTED
+
+
+def test_full_con_checkout_distinto_al_freeze_aborta_antes_del_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M3: un FULL desde otro checkout muere ANTES de ``prepare_entries``."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    monkeypatch.setattr(run_exp_m5, "current_git_sha", lambda: "0" * 40)
+    _correr_main([*_BASE_ARGS, "--phase", "full", "--frozen-ack", f"freeze-{_EXEC_FREEZE}"], monkeypatch)
+
+
+def test_full_desde_el_freeze_exacto_alcanza_prepare_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control positivo: ``git HEAD == execution freeze`` => el corpus se alcanza."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    llamados: list[int] = []
+
+    def _fake_prepare(manifest, corpus_root):  # noqa: ANN001, ANN202
+        llamados.append(1)
+        return ([], [])
+
+    monkeypatch.setattr(run_exp_m5, "prepare_entries", _fake_prepare)
+    monkeypatch.setattr(run_exp_m5, "current_git_sha", lambda: _EXEC_FREEZE)
+    monkeypatch.setattr(
+        run_exp_m5.sys,
+        "argv",
+        [
+            "run_exp_m5",
+            "--corpus-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "out.json"),
+            "--prereg-freeze-sha",
+            _SHA40,
+            "--base-main-sha",
+            _BASE_MAIN,
+            "--phase",
+            "full",
+            "--frozen-ack",
+            f"freeze-{_EXEC_FREEZE}",
+        ],
+    )
+    with contextlib.suppress(SystemExit):
+        run_exp_m5.main()
+    assert llamados, "prepare_entries no se llamó pese a checkout == freeze"
+
+
+@pytest.mark.parametrize(
+    "bad_sha",
+    [_SHA40 + "\n", _SHA40 + "\r\n", " " + _SHA40, _SHA40 + " ", "\t" + _SHA40, _SHA40 + "\t"],
+)
+def test_sha_con_newline_o_whitespace_es_rechazado(bad_sha: str) -> None:
+    """M4: la provenance es exacta; ``$`` aceptaba un newline final y eso se cierra."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    for flag in ("--prereg-freeze-sha", "--base-main-sha"):
+        with pytest.raises(ValueError):
+            run_exp_m5.validate_sha_input(bad_sha, flag)
+    with pytest.raises(ValueError):
+        run_exp_m5.execution_freeze_sha_from_ack(f"freeze-{bad_sha}")
+
+
+@pytest.mark.parametrize("bad_resolution", [64, 128, 256, 768, 1023])
+def test_resolucion_no_preregistrada_aborta_antes_del_corpus(
+    bad_resolution: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M5: el corpus real sólo admite 512/1024; 256 no produce una corrida ordinaria."""
+    _correr_main(
+        [*_BASE_ARGS, "--phase", "calibration", "--resolution", str(bad_resolution)],
+        monkeypatch,
+    )
+
+
+@pytest.mark.parametrize("resolution", [512, 1024])
+def test_resolucion_preregistrada_es_valida(resolution: int) -> None:
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    run_exp_m5.validate_real_corpus_resolution(resolution)  # no levanta
+
+
+def test_cohorte_sin_enrichment_finito_no_crashea_ni_habilita_c2() -> None:
+    """M6: sin ningún ``high_enrichment`` finito no se fabrica evidencia ni se crashea."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    filas = [
+        {
+            "self_lowmid_nrmse": 0.10,
+            "auth_lowmid_nrmse": 0.10,
+            "excess_lowmid_nrmse": 0.0,
+            "lowmid_eligible": 1.0,
+            "self_high_nrmse": 0.10,
+            "auth_high_nrmse": 0.10,
+            "excess_high_nrmse": 0.0,
+            "high_eligible": 1.0,
+            "high_enrichment": float("nan"),
+        }
+    ] * 3
+    cohort = cohort_medians(filas)
+    assert math.isnan(cohort["high_enrichment"])
+    rules = evaluate_rules(cohort, legacy_heldout=None)
+    assert rules["high_enrichment_ge_threshold"] is False
+    assert rules["C2_high_enriched"] is False
+    block = run_exp_m5.bootstrap_block([float("nan"), None, float("inf"), "-"])
+    assert block == {"point": None, "ci95_low": None, "ci95_high": None}
+    ok = run_exp_m5.bootstrap_block([1.0, 2.0, 3.0])
+    assert ok["point"] == pytest.approx(2.0)
+
+
+def test_full_sin_heldout_utilizable_emite_data_insufficient(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Capa B: FULL sin HELD_OUT utilizable => EXP_M5_DATA_INSUFFICIENT, sin correr assets."""
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    monkeypatch.setattr(
+        run_exp_m5,
+        "prepare_entries",
+        lambda manifest, corpus_root: ([{"asset": "a", "family": "f", "provider": "p"}], []),
+    )
+    monkeypatch.setattr(run_exp_m5, "split_of", lambda family: "CALIBRATION")
+    monkeypatch.setattr(run_exp_m5, "current_git_sha", lambda: _EXEC_FREEZE)
+
+    def _boom(*args: object, **kwargs: object):
+        raise AssertionError("no se debe analizar ningún asset sin HELD_OUT utilizable")
+
+    monkeypatch.setattr(run_exp_m5, "run_asset_m5", _boom)
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(
+        run_exp_m5.sys,
+        "argv",
+        [
+            "run_exp_m5",
+            "--corpus-root",
+            str(tmp_path),
+            "--out",
+            str(out),
+            "--prereg-freeze-sha",
+            _SHA40,
+            "--base-main-sha",
+            _BASE_MAIN,
+            "--phase",
+            "full",
+            "--frozen-ack",
+            f"freeze-{_EXEC_FREEZE}",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        run_exp_m5.main()
+    assert exc.value.code == 2
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["state"] == "EXP_M5_DATA_REQUIRED"
+    assert payload["decision"] == "EXP_M5_DATA_INSUFFICIENT"
+    assert payload["reason"] == "no_usable_legacy_heldout_rows"
