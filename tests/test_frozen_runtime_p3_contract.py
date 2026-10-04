@@ -17,8 +17,13 @@ from sky_claw.local.frozen_runtime.candidates import (
     CandidateMetadata,
     CandidateSourceEvidence,
     CandidateState,
+    serializar_metadata_candidate,
 )
-from sky_claw.local.frozen_runtime.errors import InvalidCandidateIdError
+from sky_claw.local.frozen_runtime.errors import (
+    CandidateCorruptMetadataError,
+    CandidateVerificationError,
+    InvalidCandidateIdError,
+)
 
 
 def test_red_p3_no_existia_estructura_de_evidencia_pre_post() -> None:
@@ -43,19 +48,14 @@ def test_red_p3_no_existia_estructura_de_evidencia_pre_post() -> None:
 
 
 def test_un_candidate_ready_exige_pre_y_post_persistidos() -> None:
-    """El modelo NO permite marcar READY sin las tres evidencias."""
-    evidencia = CandidateSourceEvidence(
-        provider="steam",
-        appid="489830",
-        game_key="skyrimse",
-        runtime_identity=None,  # type: ignore[arg-type]
-        tree_digest=None,  # type: ignore[arg-type]
-        directory_membership=None,  # type: ignore[arg-type]
-        critical_files=(),
-        provider_metadata=None,  # type: ignore[arg-type]
-        observed_at_ns=1,
-    )
-    metadata = CandidateMetadata(
+    """READY sin evidencia de Candidate NO puede persistirse (SFR-15).
+
+    El guard vive en ``exigir_listo_para_persistencia``, que es lo que invocan
+    serializar y leer. Por eso el test tiene que LLAMARLO: si solo afirmara que
+    el estado es READY, pasaria igual con el guard eliminado.
+    """
+    evidencia = _evidencia_minima()
+    sin_candidato = CandidateMetadata(
         schema_version=1,
         candidate_id="cand_" + "0" * 32,
         state=CandidateState.READY,
@@ -68,9 +68,105 @@ def test_un_candidate_ready_exige_pre_y_post_persistidos() -> None:
         post_source_evidence=evidencia,
         failure_reason=None,
     )
-    # READY sin evidencia de Candidate debe fallar al construir: es un estado
-    # privilegiado y no se alcanza "por defecto".
-    assert metadata.state is CandidateState.READY
+    with pytest.raises(CandidateVerificationError, match="candidate_evidence"):
+        sin_candidato.exigir_listo_para_persistencia()
+    with pytest.raises(CandidateVerificationError):
+        serializar_metadata_candidate(sin_candidato)
+
+    completo = CandidateMetadata(
+        schema_version=1,
+        candidate_id="cand_" + "0" * 32,
+        state=CandidateState.READY,
+        created_at_ns=1,
+        updated_at_ns=2,
+        source_provider="steam",
+        source_appid="489830",
+        pre_source_evidence=evidencia,
+        candidate_evidence=evidencia,
+        post_source_evidence=evidencia,
+        failure_reason=None,
+    )
+    completo.exigir_listo_para_persistencia()
+    assert "pre_source_evidence" in serializar_metadata_candidate(completo)
+
+
+def _evidencia_minima() -> CandidateSourceEvidence:
+    """Evidencia de fuente minima pero bien formada para los tests de contrato."""
+    from sky_claw.local.frozen_runtime.membership import construir_evidencia_membership
+    from sky_claw.local.frozen_runtime.models import ManagedSourceProvider, ProviderMetadataObservation
+    from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, TreeDigest
+
+    critico = (FileIdentity(rel_path="SkyrimSE.exe", size=1, digest="a" * 64),)
+    return CandidateSourceEvidence(
+        provider="steam",
+        appid="489830",
+        game_key="skyrimse",
+        runtime_identity=RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
+        tree_digest=TreeDigest(digest="b" * 64, files=1, bytes=1),
+        directory_membership=construir_evidencia_membership(("Data",)),
+        critical_files=critico,
+        provider_metadata=ProviderMetadataObservation(provider=ManagedSourceProvider.STEAM, appid="489830"),
+        observed_at_ns=1,
+        files=critico,
+    )
+
+
+def test_la_evidencia_persistida_conserva_la_enumeracion_sellada() -> None:
+    """La enumeracion sellada PRE sobrevive al round-trip (CodeRabbit #1).
+
+    Sin esto, tras un restart ``archivos`` volveria vacio y la evidencia
+    persistida prometeria una cobertura que ya no tiene.
+    """
+    from sky_claw.local.frozen_runtime.candidates import _evidencia_desde_dict
+
+    original = _evidencia_minima()
+    recargada = _evidencia_desde_dict(
+        serializar_metadata_candidate(
+            CandidateMetadata(
+                schema_version=1,
+                candidate_id="cand_" + "0" * 32,
+                state=CandidateState.BUILDING,
+                created_at_ns=1,
+                updated_at_ns=1,
+                source_provider="steam",
+                source_appid="489830",
+                pre_source_evidence=original,
+                candidate_evidence=None,
+                post_source_evidence=None,
+            )
+        )["pre_source_evidence"],
+        etiqueta="test",
+    )
+
+    assert recargada.archivos == original.archivos
+    assert recargada.critical_files == original.critical_files
+    assert recargada.directory_membership == original.directory_membership
+
+
+def test_una_entrada_malformada_en_la_evidencia_falla_cerrado() -> None:
+    """Una identidad de archivo corrupta LANZA: no se filtra en silencio."""
+    from sky_claw.local.frozen_runtime.candidates import _evidencia_desde_dict
+
+    payload = dict(
+        serializar_metadata_candidate(
+            CandidateMetadata(
+                schema_version=1,
+                candidate_id="cand_" + "0" * 32,
+                state=CandidateState.BUILDING,
+                created_at_ns=1,
+                updated_at_ns=1,
+                source_provider="steam",
+                source_appid="489830",
+                pre_source_evidence=_evidencia_minima(),
+                candidate_evidence=None,
+                post_source_evidence=None,
+            )
+        )["pre_source_evidence"]
+    )
+    payload["critical_files"] = [{"rel_path": "roto"}]
+
+    with pytest.raises(CandidateCorruptMetadataError):
+        _evidencia_desde_dict(payload, etiqueta="test")
 
 
 # ── Candidate ID: path-safe, interno, no criptografico (contrato) ──────────

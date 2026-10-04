@@ -24,6 +24,7 @@ from sky_claw.local.frozen_runtime.candidates import (
     candidate_dir,
     candidate_metadata_path,
     candidates_dir,
+    candidates_state_dir,
     crear_candidate,
     descubrir_candidates,
     leer_metadata_candidate,
@@ -399,6 +400,26 @@ def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:
     assert resultado.metadata is not None
     assert resultado.metadata.state is CandidateState.INVALID
     assert "copia fallo" in (resultado.metadata.failure_reason or "")
+
+
+@junction_guard
+def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:
+    """CodeRabbit #2: un `*.json` con nombre no conforme se REGISTRA, no lanza.
+
+    Un archivo suelto en ``state/candidates/`` no puede abortar la funcion entera:
+    eso esconderia TODOS los Candidates reales detras de un `notes.json`.
+    """
+    source, root = rig
+    resultado = crear_candidate(source, root, quiet_window_seconds=0.0, sleep=lambda _s: None)
+    assert resultado.state is GenerationVerificationState.VALID
+
+    candidates_state_dir(root).mkdir(parents=True, exist_ok=True)
+    (candidates_state_dir(root) / "notes.json").write_text("{}", encoding="utf-8")
+
+    inventario = descubrir_candidates(root)
+    estados = {r.candidate_id: r.state for r in inventario.records}
+    assert estados[resultado.candidate_id] is GenerationVerificationState.VALID
+    assert estados[None] is GenerationVerificationState.UNKNOWN
 
 
 @junction_guard

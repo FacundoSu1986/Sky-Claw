@@ -42,6 +42,7 @@ from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeError,
     FrozenRuntimeObservationError,
     FrozenRuntimeStorageError,
+    InvalidCandidateIdError,
 )
 from sky_claw.local.frozen_runtime.independence import (
     exigir_namespace_escribible,
@@ -274,10 +275,36 @@ def _membership_desde_dict(bruto: object, *, etiqueta: str) -> DirectoryMembersh
         raise CandidateCorruptMetadataError(f"{etiqueta}: membership inconsistente: {exc}") from exc
 
 
+def _identidades(bruto: object, *, campo: str, etiqueta: str) -> tuple[FileIdentity, ...]:
+    """Deserializa una lista de identidades de archivo, fail-closed.
+
+    Una entrada malformada LANZA en vez de filtrarse en silencio: descartarla
+    dejaria una evidencia "completa" que en realidad enumera menos archivos de
+    los que dice, y esa evidencia es la que se compara contra el Candidate.
+    """
+    if bruto is None:
+        return ()
+    if not isinstance(bruto, list):
+        raise CandidateCorruptMetadataError(f"{etiqueta}: {campo} debe ser una lista")
+    salida: list[FileIdentity] = []
+    for indice, entrada in enumerate(bruto):
+        if not isinstance(entrada, dict) or not {"rel_path", "size", "digest"} <= set(entrada):
+            raise CandidateCorruptMetadataError(f"{etiqueta}: {campo}[{indice}] no tiene rel_path/size/digest")
+        try:
+            salida.append(
+                FileIdentity(
+                    rel_path=str(entrada["rel_path"]),
+                    size=int(entrada["size"]),
+                    digest=str(entrada["digest"]),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise CandidateCorruptMetadataError(f"{etiqueta}: {campo}[{indice}] tiene tipos invalidos: {exc}") from exc
+    return tuple(salida)
+
+
 def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvidence:
     """Deserializa evidencia de fuente; fail-closed ante cualquier ausencia."""
-    from sky_claw.local.runtime_vault.models import FileIdentity
-
     if not isinstance(bruto, dict):
         raise CandidateCorruptMetadataError(f"{etiqueta}: la evidencia debe ser un objeto JSON")
     faltan = [
@@ -331,11 +358,8 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
                 bytes=int(digest["bytes"]),
             ),
             directory_membership=_membership_desde_dict(bruto["directory_membership"], etiqueta=etiqueta),
-            critical_files=tuple(
-                FileIdentity(rel_path=str(c["rel_path"]), size=int(c["size"]), digest=str(c["digest"]))
-                for c in criticos
-                if isinstance(c, dict) and {"rel_path", "size", "digest"} <= set(c)
-            ),
+            critical_files=_identidades(criticos, campo="critical_files", etiqueta=etiqueta),
+            files=_identidades(bruto.get("files"), campo="files", etiqueta=etiqueta),
             provider_metadata=ProviderMetadataObservation(
                 provider=ManagedSourceProvider(proveedor),
                 appid=str(bruto["appid"]),
@@ -839,13 +863,29 @@ def descubrir_candidates(root: pathlib.Path) -> CandidateInventory:
     if not base.is_dir():
         return CandidateInventory(root=raiz, records=())
     for archivo in sorted(base.glob("*.json"), key=lambda p: p.name):
-        directorio = candidate_dir(raiz, archivo.stem)
+        # Un archivo con nombre no conforme se REGISTRA como UNKNOWN; no puede
+        # abortar el descubrimiento entero, porque un `notes.json` suelto
+        # hidingria todos los Candidates reales.
+        try:
+            directorio = candidate_dir(raiz, archivo.stem)
+            cid = validar_candidate_id(archivo.stem)
+        except InvalidCandidateIdError as exc:
+            registros.append(
+                CandidateRecord(
+                    candidate_id=None,
+                    directory=pathlib.Path(archivo),
+                    metadata=None,
+                    state=GenerationVerificationState.UNKNOWN,
+                    message=f"metadata de Candidate con nombre no confiable: {exc}",
+                )
+            )
+            continue
         try:
             metadata = leer_metadata_candidate(archivo)
         except CandidateCorruptMetadataError as exc:
             registros.append(
                 CandidateRecord(
-                    candidate_id=archivo.stem,
+                    candidate_id=cid,
                     directory=directorio,
                     metadata=None,
                     state=GenerationVerificationState.UNKNOWN,
