@@ -68,3 +68,38 @@ class GenerationCollisionError(FrozenRuntimeStorageError):
     La idempotencia exige que full tree digest + runtime identity + critical
     evidence coincidan; si no, nunca se sobreescribe en silencio.
     """
+
+
+# ============================================================================
+# Candidates (P3)
+# ============================================================================
+
+
+class InvalidCandidateIdError(FrozenRuntimeStorageError):
+    """candidate-id con formato, traversal o forma reservada invalido."""
+
+
+class CandidateError(FrozenRuntimeError):
+    """Base de fallos del ciclo de vida de un Candidate (P3).
+
+    Se materializan como excepcion o como estado INVALID persistido con su
+    motivo: nunca como un ``False`` ambiguo que el caller pueda interpretar
+    como "copia ok".
+    """
+
+
+class CandidateCopyError(CandidateError):
+    """La copia fisica independiente fallo (no se produjo un Candidate usable)."""
+
+
+class CandidateVerificationError(CandidateError):
+    """Un Candidate no supera la verificacion fresca contra PRE/POST."""
+
+
+class CandidateCorruptMetadataError(FrozenRuntimeStorageError):
+    """Metadata de Candidate ausente en el payload, corrupta o de schema desconocido.
+
+    Fail-closed en el sentido fuerte: nunca se interpreta como "sin Candidate"
+    ni como "Candidate valido". Un Candidate sin metadata legible es UNKNOWN y
+    jamas READY.
+    """
