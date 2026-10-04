@@ -153,3 +153,7 @@ AUDIT_PANEL_REPORT.md
 /.pytest-*/
 /pytest_tmp*/
 /test_tools_dir/
+
+# Archivo de ramas git obsoletas (bundles binarios pesados: NO versionar;
+# el manifiesto y la documentacion SI se versionan). Ver archive/git-branches/README.md
+/archive/git-branches/*.bundle
