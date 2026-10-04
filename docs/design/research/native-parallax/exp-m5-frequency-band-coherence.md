@@ -483,10 +483,80 @@ Este freeze es **docs-only**: `run_exp_m5.py`, `frequency_coherence.py`,
 Lo registrado en §18 sigue vigente **sin modificación**. Este freeze **no** lo revierte:
 
 ```text
-protocol_status=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
 legacy_heldout_blind_until_execution_freeze=false
 scientific_rules_changed_after_exposure=false
 ```
+
+---
+
+## 22. Corrective execution freeze (implementación corregida)
+
+> Docs-only. **NO** es un nuevo prereg: el prereg original sigue siendo
+> `M5_PREREG_FREEZE_SHA=d33f81ca…`. Congela la implementación **corregida** para conformarla
+> al prereg congelado, sin retuneo de thresholds ni reglas.
+
+### 22.1 Identificador
+
+```text
+M5_CORRECTIVE_EXECUTION_FREEZE_SHA=<este commit>
+BASE_MAIN_SHA=9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5
+M5_PREREG_FREEZE_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
+HISTORICAL_M5_EXECUTION_FREEZE_SHA=e116196fc47f83659c7df7ada5ec82f9f993bbcd
+```
+
+Razón: *post-FULL implementation correction to conform to frozen prereg, with no
+threshold/rule retuning*. El SHA es, por definición, el commit que introduce esta sección
+(`git rev-parse HEAD`); no se embebe para no escribir provenance fiction (§19).
+
+### 22.2 Qué corrige y qué NO toca
+
+Correcciones (detalle en §21 y en los findings de revisión):
+
+- `cohort_medians`: `EXCESS = median(NRMSE_AUTH − NRMSE_SELF)` por asset (prereg §10/§14).
+- `evaluate_rules`: fail-closed ante held-out ausente y ante valores no finitos.
+- Runner: checkout atado al execution freeze, SHAs exactos (`fullmatch`), bootstrap
+  no-evaluable sin crash, resoluciones del corpus real en `{512, 1024}`, y FULL sin
+  `HELD_OUT` utilizable ⇒ `EXP_M5_DATA_INSUFFICIENT` (no `SUPPORTED`).
+
+Sin cambios:
+
+```text
+THRESHOLDS_CHANGED=NO
+BANDS_CHANGED=NO
+CUTOFF_CHANGED=NO
+ENERGY_GATE_CHANGED=NO
+SEED_CHANGED=NO
+SPLITS_CHANGED=NO
+```
+
+El análisis por asset (`asset_summary`/`analyze_path`) queda intacto: el fix es de
+agregación de cohorte, no de métricas por asset.
+
+### 22.3 Desviación de protocolo — se preserva
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
+La **regla no cambió**; se corrigió su **implementación**. El corrective FULL ocurre
+**después** de que los datos ya fueron observados: no es una confirmación blinded y no se
+presenta como tal.
+
+### 22.4 Ambigüedad de scope primary/secondary (1024)
+
+```text
+SECONDARY_SCOPE_AMBIGUITY=CONFIRMED
+```
+
+El prereg §9 define 512 como *primary* y 1024 como *secondary* nativa/no-resize, pero **no
+existe** un contrato machine-readable que distinga `PRIMARY_DECISION` de `SECONDARY_CONTROL`
+en el artefacto (solo se registra `environment.resolution`). Este slice valida que el corpus
+real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión para 1024. La
+corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
+primary/secondary queda como follow-up explícito.
 
 Borrar los outputs contaminados **no restauró la ceguera**: los 16 `LEGACY_HELDOUT` fueron
 observados por M5 antes de este freeze. En consecuencia, `LEGACY_HELDOUT` **no** debe
