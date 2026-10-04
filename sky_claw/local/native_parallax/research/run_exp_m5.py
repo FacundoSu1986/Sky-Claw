@@ -98,6 +98,32 @@ _FROZEN_ACK_RE = re.compile(r"^freeze-([0-9a-f]{40})$")
 # native/no-resize. 64/128 son synthetic-only y nunca llegan al corpus real.
 REAL_CORPUS_RESOLUTIONS: tuple[int, ...] = (512, 1024)
 
+#: Resolución **decision-bearing** de FULL (§9). El prereg define 512 como primary y 1024 como
+#: secondary native/no-resize, pero no existe un contrato machine-readable que marque una
+#: corrida 1024 como control no-decisional. Fail-closed: hasta que exista ese contrato, un
+#: FULL decision-bearing sólo se emite a 512. La ejecución secondary 1024 queda diferida a un
+#: slice con contrato propio; acá sólo se rechaza para no emitir una decisión ambigua.
+PRIMARY_DECISION_RESOLUTION: int = 512
+
+
+def validate_decision_scope(phase: str, resolution: int) -> None:
+    """Un FULL sólo es decision-bearing a resolución **primary** (512).
+
+    El prereg §9 define 512 como primary y 1024 como secondary native/no-resize, y prohíbe
+    reinterpretar el secondary como primary. Como no existe todavía una superficie
+    machine-readable que distinga una corrida secondary (control) de una primary (decisión),
+    este gate **falla cerrado**: rechaza ``--phase full --resolution 1024`` ANTES de leer
+    Cohort A en lugar de emitir un ``summary.decision`` cuyo alcance sería ambiguo. No es un
+    retuneo: no cambia thresholds ni la matemática; sólo cierra el scope de decisión.
+    """
+    if phase == "full" and resolution != PRIMARY_DECISION_RESOLUTION:
+        raise ValueError(
+            f"--phase full exige --resolution {PRIMARY_DECISION_RESOLUTION} (primary) para ser "
+            f"decision-bearing; recibido {resolution} (secondary). La resolución 1024 "
+            "(native/no-resize) es un control secondary sin contrato machine-readable de "
+            "decisión y queda diferida; no puede producir summary.decision (prereg §9)."
+        )
+
 
 def validate_sha_input(value: str | None, flag: str) -> str:
     """Valida un SHA de procedencia: exactamente 40 hex minúsculos (``^[0-9a-f]{40}$``).
@@ -412,6 +438,12 @@ def main() -> None:
     # corrida M5 real ordinaria. Fail-closed ANTES de tocar el corpus.
     try:
         validate_real_corpus_resolution(args.resolution)
+    except ValueError as exc:
+        parser.error(str(exc))
+    # §9: un FULL sólo es decision-bearing a resolución primary (512). El secondary 1024
+    # falla cerrado ANTES de leer Cohort A (mismo mecanismo fail-closed que arriba).
+    try:
+        validate_decision_scope(args.phase, args.resolution)
     except ValueError as exc:
         parser.error(str(exc))
     # Procedencia §16: fail-closed antes de tocar el corpus. Un artefacto sin los tres SHAs

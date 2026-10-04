@@ -897,18 +897,40 @@ La **regla no cambió**; se corrigió su **implementación**. El corrective FULL
 **después** de que los datos ya fueron observados: no es una confirmación blinded y no se
 presenta como tal.
 
-### 22.4 Ambigüedad de scope primary/secondary (1024)
+### 22.4 Scope de decisión: sólo 512 es decision-bearing
 
 ```text
-SECONDARY_SCOPE_AMBIGUITY=CONFIRMED
+SECONDARY_SCOPE_AMBIGUITY=RESOLVED_FAIL_CLOSED
+
+PRIMARY_DECISION_RESOLUTION=512
+SECONDARY_1024_EXECUTION_SUPPORT=DEFERRED
+
+SECONDARY_FULL_FAILS_CLOSED=YES
+SCIENTIFIC_RERUN_REQUIRED=NO
 ```
 
-El prereg §9 define 512 como *primary* y 1024 como *secondary* nativa/no-resize, pero **no
-existe** un contrato machine-readable que distinga `PRIMARY_DECISION` de `SECONDARY_CONTROL`
-en el artefacto (solo se registra `environment.resolution`). Este slice valida que el corpus
-real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión para 1024. La
-corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
-primary/secondary queda como follow-up explícito.
+El prereg §9 define **512 como primary** y **1024 como secondary** native/no-resize, y
+prohíbe reinterpretar el secondary como primary. El problema era que el runner no tenía una
+superficie machine-readable que distinguiera "control secondary" de "decisión primary": un
+`--phase full --resolution 1024` emitía un `summary.decision` ordinario cuyo alcance era
+ambiguo.
+
+Este PR **no inventa** un formato de resultado para el secondary ni un vocabulario de
+decisión post hoc. En su lugar **falla cerrado** (`validate_decision_scope`):
+
+```text
+phase=full + resolution=512  → permitido  → puede emitir summary.decision
+phase=full + resolution=1024 → rechazado ANTES del corpus → NO summary.decision
+resolution fuera de {512,1024} → rechazado ANTES del corpus
+```
+
+El control 1024 sigue perteneciendo al prereg, pero su ejecución queda **diferida** a un
+slice con contrato machine-readable propio; hasta entonces el runner se niega a producir un
+FULL decisionable en 1024. Esto es más seguro que emitir una decisión ambigua.
+
+**No afecta el corrected FULL**: `full-corrected-e3dbda51.json` se ejecutó a `resolution=512`
+(SHA256 `57b22b1d…`), que es exactamente el scope que este gate permite; por eso
+`SCIENTIFIC_RERUN_REQUIRED=NO` (§22.5: los blobs científicos no cambian).
 
 ### 22.5 Nota post-freeze: hardening operativo sin cambio científico
 

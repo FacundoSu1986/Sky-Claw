@@ -1198,3 +1198,81 @@ def test_full_sin_heldout_utilizable_emite_data_insufficient(tmp_path: Path, mon
     assert payload["state"] == "EXP_M5_DATA_REQUIRED"
     assert payload["decision"] == "EXP_M5_DATA_INSUFFICIENT"
     assert payload["reason"] == "no_usable_legacy_heldout_rows"
+
+
+def test_full_secondary_1024_aborta_antes_del_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SECONDARY_FULL: un FULL a resolución secondary (1024) no alcanza el corpus.
+
+    El prereg §9 marca 1024 como secondary native/no-resize y prohíbe reinterpretarlo como
+    primary. Sin un contrato machine-readable que lo distinga, el runner debe **fallar
+    cerrado** ANTES de leer Cohort A en vez de emitir una decisión ambigua. Este test es RED
+    contra la implementación previa: allí 1024 pasaba el filtro de resolución y llegaba al
+    camino de decisión.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    monkeypatch.setattr(run_exp_m5, "current_git_sha", lambda: _EXEC_FREEZE)
+    _correr_main(
+        [*_BASE_ARGS, "--phase", "full", "--frozen-ack", f"freeze-{_EXEC_FREEZE}", "--resolution", "1024"],
+        monkeypatch,
+    )
+
+
+def test_primary_512_es_el_unico_scope_decisional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PRIMARY_512_SCOPE_ACCEPTED: el camino 512 preexistente sigue llegando al corpus.
+
+    No-op explícito del gate de scope: `phase=full` + `resolution=512` se comporta EXACTAMENTE
+    como antes (el corpus se alcanza), y `--resolution` por defecto sigue siendo 512.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    # T4: sin --resolution, el default es 512.
+    parser = run_exp_m5.build_parser()
+    base = ["--corpus-root", "X", "--out", "Y", "--phase", "full", "--frozen-ack", f"freeze-{_EXEC_FREEZE}"]
+    assert parser.parse_args([*base, "--prereg-freeze-sha", _SHA40, "--base-main-sha", _BASE_MAIN]).resolution == 512
+
+    llamados: list[int] = []
+
+    def _fake_prepare(manifest, corpus_root):  # noqa: ANN001, ANN202
+        llamados.append(1)
+        return ([], [])
+
+    monkeypatch.setattr(run_exp_m5, "prepare_entries", _fake_prepare)
+    monkeypatch.setattr(run_exp_m5, "current_git_sha", lambda: _EXEC_FREEZE)
+    monkeypatch.setattr(
+        run_exp_m5.sys,
+        "argv",
+        [
+            "run_exp_m5",
+            "--corpus-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "out.json"),
+            "--prereg-freeze-sha",
+            _SHA40,
+            "--base-main-sha",
+            _BASE_MAIN,
+            "--phase",
+            "full",
+            "--frozen-ack",
+            f"freeze-{_EXEC_FREEZE}",
+            "--resolution",
+            "512",
+        ],
+    )
+    with contextlib.suppress(SystemExit):
+        run_exp_m5.main()
+    assert llamados, "el camino primary 512 debe seguir alcanzando el corpus (no-op del gate)"
+
+
+def test_scope_gate_no_muta_el_contrato_cientifico() -> None:
+    """T5: el gate de scope no toca thresholds, bandas, cutoff, gate ni seed."""
+    from sky_claw.local.native_parallax.research import frequency_coherence as fc
+
+    assert fc.T_LOWMID_NRMSE == 0.15
+    assert fc.T_LOWMID_EXCESS == 0.10
+    assert fc.T_HIGH_ENRICHMENT == 2.0
+    assert fc.LOWMID_HIGH_CUTOFF == 32
+    assert fc.BAND_EDGES == (4, 8, 16, 32, 64, 128)
+    assert fc.ENERGY_GATE_FRACTION == 1e-6
+    assert fc.M5_BOOTSTRAP_SEED == 20260925
