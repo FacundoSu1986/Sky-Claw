@@ -19,6 +19,7 @@ from sky_claw.local.frozen_runtime import (
     StateCorruptError,
     StateSchemaError,
     StorageAdmissionState,
+    StorageInitResult,
     default_storage_root,
     initialize_frozen_runtime_storage,
     load_frozen_runtime_state,
@@ -27,13 +28,43 @@ from sky_claw.local.frozen_runtime import (
 )
 from sky_claw.local.frozen_runtime.storage import (
     active_state_path,
+    admitir_directorio_storage,
     admitir_storage_root,
     candidates_dir,
+    generations_state_dir,
     state_dir,
     versions_dir,
 )
 
 GID_VALIDO = "1.6.1170__a1b2c3d4e5f6"
+
+
+def _enlace_directorio(destino: pathlib.Path, enlace: pathlib.Path) -> None:
+    """Crea un enlace de directorio: junction en Windows, symlink en POSIX."""
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(destino)], check=True, capture_output=True)
+    else:
+        enlace.symlink_to(destino, target_is_directory=True)
+
+
+def _escenario_reparse(
+    tmp_path: pathlib.Path, componente: str, *, tipo: str = "junction"
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Root con un componente persistente enlazado a un árbol externo con sentinel."""
+    root = tmp_path / "frozen"
+    (root / "state").mkdir(parents=True) if componente == "state/generations" else root.mkdir()
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    (externo / "sentinel.txt").write_text("intacto", encoding="utf-8")
+    enlace = root / componente
+    if tipo == "symlink" and os.name == "nt":
+        try:
+            enlace.symlink_to(externo, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink no disponible en este Windows (dev mode): {exc}")
+    else:
+        _enlace_directorio(externo, enlace)
+    return root, externo
 
 
 def _fuente_sintetica(base: pathlib.Path) -> pathlib.Path:
@@ -120,6 +151,25 @@ class TestLayout:
         temp = pathlib.Path(os.environ.get("TEMP", ""))
         if str(temp):
             assert not str(default).casefold().startswith(str(temp).casefold())
+
+    def test_l08a_root_igual_a_steamapps_common_rechazado(self, tmp_path: pathlib.Path) -> None:
+        common = tmp_path / "steamapps" / "common"
+        common.mkdir(parents=True)
+        resultado = admitir_storage_root(common)
+        assert resultado.state is StorageAdmissionState.REJECTED
+        assert "Steam" in resultado.message
+
+    def test_l08b_root_debajo_de_steamapps_common_rechazado(self, tmp_path: pathlib.Path) -> None:
+        root = tmp_path / "steamapps" / "common" / "cualquier_cosa" / "storage"
+        root.mkdir(parents=True)
+        resultado = admitir_storage_root(root)
+        assert resultado.state is StorageAdmissionState.REJECTED
+
+    def test_l08c_hermano_de_steamapps_common_admitido(self, tmp_path: pathlib.Path) -> None:
+        root = tmp_path / "steamapps" / "otro" / "frozen"
+        root.mkdir(parents=True)
+        resultado = admitir_storage_root(root)
+        assert resultado.state is StorageAdmissionState.ADMITTED
 
     def test_l10_same_volume(self, tmp_path: pathlib.Path) -> None:
         a = tmp_path / "a"
@@ -228,3 +278,80 @@ class TestEstado:
         path.write_text("", encoding="utf-8")
         with pytest.raises(StateCorruptError):
             load_frozen_runtime_state(path)
+
+
+# ── Namespace de storage: reparse/junction en subdirectorios (P2-B1) ─────
+
+
+class TestNamespaceReparse:
+    """Un componente enlazado no puede redirigir escrituras fuera del root."""
+
+    def _assert_rechazo_sin_escritura(
+        self, root: pathlib.Path, externo: pathlib.Path, resultado: StorageInitResult
+    ) -> None:
+        assert not resultado.success
+        # El árbol externo NO fue mutado: sentinel intacto y sin active.json.
+        assert (externo / "sentinel.txt").read_text(encoding="utf-8") == "intacto"
+        assert not (externo / "active.json").exists()
+
+    def test_sr01_versions_junction_falla(self, tmp_path: pathlib.Path) -> None:
+        root, externo = _escenario_reparse(tmp_path, "versions")
+        resultado = initialize_frozen_runtime_storage(root)
+        self._assert_rechazo_sin_escritura(root, externo, resultado)
+
+    def test_sr02_candidates_junction_falla(self, tmp_path: pathlib.Path) -> None:
+        root, externo = _escenario_reparse(tmp_path, "candidates")
+        resultado = initialize_frozen_runtime_storage(root)
+        self._assert_rechazo_sin_escritura(root, externo, resultado)
+
+    def test_sr03_state_junction_falla_sin_escribir_afuera(self, tmp_path: pathlib.Path) -> None:
+        root, externo = _escenario_reparse(tmp_path, "state")
+        resultado = initialize_frozen_runtime_storage(root)
+        self._assert_rechazo_sin_escritura(root, externo, resultado)
+        # El caso crítico: active.json habría ido a parar a 'externo'.
+        assert not (root / "state" / "active.json").exists()
+
+    def test_sr04_state_generations_junction_falla(self, tmp_path: pathlib.Path) -> None:
+        root, externo = _escenario_reparse(tmp_path, "state/generations")
+        resultado = initialize_frozen_runtime_storage(root)
+        self._assert_rechazo_sin_escritura(root, externo, resultado)
+        assert not (root / "state" / "active.json").exists()  # init abortó antes de escribir estado
+
+    def test_sr05_symlink_subdir_falla(self, tmp_path: pathlib.Path) -> None:
+        root, externo = _escenario_reparse(tmp_path, "state", tipo="symlink")
+        resultado = initialize_frozen_runtime_storage(root)
+        self._assert_rechazo_sin_escritura(root, externo, resultado)
+
+    def test_sr06_error_de_inspeccion_rechazado(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        componente = tmp_path / "componente"
+        componente.mkdir()
+
+        def lstat_roto(path: object) -> str | None:
+            raise OSError("inspección imposible inyectada")
+
+        monkeypatch.setattr("sky_claw.local.frozen_runtime.storage.link_kind_or_raise", lstat_roto)
+        resultado = admitir_directorio_storage(componente)
+        assert resultado.state is StorageAdmissionState.REJECTED
+        assert "inspeccionar" in resultado.message
+
+    def test_sr07_directorios_reales_idempotente(self, tmp_path: pathlib.Path) -> None:
+        root = tmp_path / "frozen"
+        for directorio in (
+            root,
+            versions_dir(root),
+            candidates_dir(root),
+            state_dir(root),
+            generations_state_dir(root),
+        ):
+            directorio.mkdir(parents=True, exist_ok=True)
+        (root / "state" / "ajeno.txt").write_text("no borrar", encoding="utf-8")
+        resultado = initialize_frozen_runtime_storage(root)
+        assert resultado.success
+        assert (root / "state" / "ajeno.txt").read_text(encoding="utf-8") == "no borrar"
+
+    def test_sr08_admitir_directorio_archivo_rechazado(self, tmp_path: pathlib.Path) -> None:
+        archivo = tmp_path / "un_archivo"
+        archivo.write_text("x", encoding="utf-8")
+        resultado = admitir_directorio_storage(archivo)
+        assert resultado.state is StorageAdmissionState.REJECTED
+        assert "archivo" in resultado.message

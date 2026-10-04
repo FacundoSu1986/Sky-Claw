@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import pathlib
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
 from sky_claw.local.frozen_runtime.state import STATE_FILE_NAME, write_json_atomic
@@ -145,14 +146,56 @@ def admitir_storage_root(
                 message=f"la Managed Source está dentro del root de storage: '{fuente}'",
                 root=ruta,
             )
-    for ancestro in ruta.parents:
-        if ancestro.name.casefold() == "common" and ancestro.parent.name.casefold() == "steamapps":
+    # El chequeo incluye la ruta MISMA y sus ancestros: `steamapps/common`
+    # exacto (sin <game>) también es área administrada por Steam (P2-M1).
+    for componente in (ruta, *ruta.parents):
+        if componente.name.casefold() == "common" and componente.parent.name.casefold() == "steamapps":
             return StorageAdmissionResult(
                 state=StorageAdmissionState.REJECTED,
-                message=f"el root de storage está dentro de un área administrada por Steam: '{ancestro}'",
+                message=f"el root de storage está dentro de un área administrada por Steam: '{componente}'",
                 root=ruta,
             )
     return StorageAdmissionResult(state=StorageAdmissionState.ADMITTED, message="root de storage admitido", root=ruta)
+
+
+def admitir_directorio_storage(path: pathlib.Path) -> StorageAdmissionResult:
+    """Admisión fail-closed de un componente persistente del storage.
+
+    Distingue: ausente ⇒ ADMITTED (puede crearse); directorio real ⇒ ADMITTED;
+    archivo ⇒ REJECTED; symlink/junction/reparse ⇒ REJECTED (namespace
+    redirigido: no se sigue el target ni se escribe en él); no inspeccionable
+    ⇒ REJECTED. Primitive común para root/versions/candidates/state/
+    state/generations (P2-B1): ninguna escritura de Frozen Runtime puede
+    escapar del FrozenRuntimeRoot por un link inyectado.
+    """
+    ruta = pathlib.Path(path)
+    try:
+        kind = link_kind_or_raise(ruta)
+    except OSError as exc:
+        return StorageAdmissionResult(
+            state=StorageAdmissionState.REJECTED,
+            message=f"no se pudo inspeccionar '{ruta}': {exc} (fail-closed)",
+            root=ruta,
+        )
+    if kind is not None:
+        return StorageAdmissionResult(
+            state=StorageAdmissionState.REJECTED,
+            message=f"'{ruta}' es un enlace/reparse ({kind}): namespace redirigido (fail-closed)",
+            root=ruta,
+        )
+    if not ruta.exists():
+        return StorageAdmissionResult(
+            state=StorageAdmissionState.ADMITTED, message=f"'{ruta}' no existe: puede crearse", root=ruta
+        )
+    if not ruta.is_dir():
+        return StorageAdmissionResult(
+            state=StorageAdmissionState.REJECTED,
+            message=f"existe un archivo donde se esperaba el directorio '{ruta}'",
+            root=ruta,
+        )
+    return StorageAdmissionResult(
+        state=StorageAdmissionState.ADMITTED, message=f"'{ruta}' es un directorio real", root=ruta
+    )
 
 
 def initialize_frozen_runtime_storage(
@@ -172,25 +215,22 @@ def initialize_frozen_runtime_storage(
     if not admission.success:
         return StorageInitResult(admission=admission, root=ruta)
 
+    # Cada componente persistente se admite fail-closed ANTES de crear/escribir
+    # (P2-B1): un junction/symlink en `state/` o `state/generations/` no puede
+    # redirigir escrituras fuera del FrozenRuntimeRoot.
+    componentes: tuple[pathlib.Path, ...] = (
+        ruta,
+        versions_dir(ruta),
+        candidates_dir(ruta),
+        state_dir(ruta),
+        generations_state_dir(ruta),
+    )
     creados: list[pathlib.Path] = []
     try:
-        for directorio in (
-            ruta,
-            versions_dir(ruta),
-            candidates_dir(ruta),
-            state_dir(ruta),
-            generations_state_dir(ruta),
-        ):
-            if directorio.exists() and not directorio.is_dir():
-                return StorageInitResult(
-                    admission=StorageAdmissionResult(
-                        state=StorageAdmissionState.REJECTED,
-                        message=f"existe un archivo donde se esperaba el directorio '{directorio}'",
-                        root=ruta,
-                    ),
-                    root=ruta,
-                    created_dirs=tuple(creados),
-                )
+        for directorio in componentes:
+            admision_dir = admitir_directorio_storage(directorio)
+            if not admision_dir.success:
+                return StorageInitResult(admission=admision_dir, root=ruta, created_dirs=tuple(creados))
             if not directorio.exists():
                 directorio.mkdir(parents=True, exist_ok=True)
                 creados.append(directorio)
