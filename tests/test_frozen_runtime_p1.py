@@ -7,6 +7,7 @@ del ADR 0012 §24.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import pathlib
@@ -27,6 +28,8 @@ from sky_claw.local.frozen_runtime import (
     obtain_stable_source_snapshot,
 )
 from sky_claw.local.frozen_runtime import observation as observation_module
+from sky_claw.local.frozen_runtime._vdf import parse_vdf_text
+from sky_claw.local.frozen_runtime.errors import MalformedVdfError
 from sky_claw.local.frozen_runtime.provider_signals import manifest_path_for
 from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation, UnreadableRuntimeVersionError
 
@@ -45,6 +48,8 @@ MANIFEST_IDLE = (
 )
 
 MANIFEST_UPDATE_ACTIVE = MANIFEST_IDLE.replace('"StateFlags"\t\t"4"', '"StateFlags"\t\t"6"')
+MANIFEST_SIN_STATEFLAGS = MANIFEST_IDLE.replace('\t"StateFlags"\t\t"4"\n', "")
+MANIFEST_TRUNCADO = '"AppState"\n{\n\t"StateFlags"\t\t"4"\n'  # scope anidado sin '}' de cierre
 MANIFEST_MALFORMED = '"AppState" {\n"StateFlags" "4" this is garbage'
 
 
@@ -188,6 +193,55 @@ class TestDiscovery:
         resultado = discover_managed_source(steam_roots=(str(steam),))
         assert resultado.state is DiscoveryState.NOT_FOUND
 
+    def test_d12_symlink_relativo_rechazado(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # resolve() seguía el enlace ANTES del chequeo: con path relativo se
+        # validaba el target y el bypass pasaba. abspath no sigue enlaces.
+        real = tmp_path / "lib"
+        _construir_library(real)
+        enlace = tmp_path / "enlace"
+        try:
+            enlace.symlink_to(real / "steamapps" / "common" / "Skyrim Special Edition", target_is_directory=True)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EPERM) or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+            raise
+        monkeypatch.chdir(tmp_path)
+        resultado = discover_managed_source(explicit_root=pathlib.Path("enlace"))
+        assert resultado.state is DiscoveryState.INVALID
+        assert "enlace" in resultado.message
+
+    def test_d13_vdf_legacy_entradas_numericas_escalares(self, tmp_path: pathlib.Path) -> None:
+        # Formato intermedio: "1" "D:\\SteamLibrary" DENTRO del wrapper.
+        steam = tmp_path / "steam"
+        lib2 = tmp_path / "lib2"
+        steam.mkdir(parents=True)
+        (steam / "steamapps").mkdir()
+        vdf = (
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"'
+            + str(steam).replace("\\", "\\\\")
+            + '"\n\t}\n\t"1"\t\t"'
+            + str(lib2).replace("\\", "\\\\")
+            + '"\n}\n'
+        )
+        (steam / "steamapps" / "libraryfolders.vdf").write_text(vdf, encoding="utf-8")
+        _construir_library(lib2)
+        resultado = discover_managed_source(steam_roots=(str(steam),))
+        assert resultado.state is DiscoveryState.FOUND
+        assert resultado.source is not None
+        assert resultado.source.library_root == lib2
+
+    def test_d14_layout_no_canonico_rechazado(self, tmp_path: pathlib.Path) -> None:
+        # Una copia manual en <library>/steamapps/backups/copy NO es la
+        # Managed Source: el layout completo es evidencia de proveedor.
+        library = tmp_path / "lib"
+        backup = library / "steamapps" / "backups" / "copy"
+        backup.mkdir(parents=True)
+        _escribir_juego(backup)
+        (library / "steamapps" / "appmanifest_489830.acf").write_text(MANIFEST_IDLE, encoding="utf-8")
+        resultado = discover_managed_source(explicit_root=backup)
+        assert resultado.state is DiscoveryState.INVALID
+        assert "common" in resultado.message
+
     def test_d10_symlink_en_root_rechazado(self, tmp_path: pathlib.Path) -> None:
         # una fuente redirigida no produce evidencia falsa (fail-closed)
         real = tmp_path / "lib"
@@ -195,8 +249,10 @@ class TestDiscovery:
         enlace = tmp_path / "enlace"
         try:
             enlace.symlink_to(real / "steamapps" / "common" / "Skyrim Special Edition", target_is_directory=True)
-        except (OSError, NotImplementedError):
-            pytest.skip("symlinks no disponibles en este entorno")
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EPERM) or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+            raise
         resultado = discover_managed_source(explicit_root=enlace)
         assert resultado.state is DiscoveryState.INVALID
         assert "enlace" in resultado.message
@@ -463,6 +519,42 @@ class TestEstabilizacion:
         _parchear_identidad(monkeypatch)
         with pytest.raises(FrozenRuntimeError):
             assess_managed_source_stability(source, quiet_window_seconds=-1.0)
+
+    def test_s12_artefacto_part_unstable(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        steamapps, common = _construir_library(tmp_path / "lib")
+        (common / "Data" / "Skyrim.esm.part").write_bytes(b"descarga-parcial")
+        source = _source(steamapps, common)
+        _parchear_identidad(monkeypatch)
+        resultado = self._assess(source, _no_op)
+        assert resultado.state is StabilityState.UNSTABLE
+        assert ".part" in resultado.message
+
+    def test_s13_stateflags_ausente_indeterminate(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Manifest legible SIN StateFlags: no se puede demostrar reposo del
+        # proveedor ⇒ nunca STABLE (fail-closed, no "sin señal = quieto").
+        steamapps, common = _construir_library(tmp_path / "lib", manifest_text=MANIFEST_SIN_STATEFLAGS)
+        source = _source(steamapps, common)
+        _parchear_identidad(monkeypatch)
+        resultado = self._assess(source, _no_op)
+        assert resultado.state is StabilityState.INDETERMINATE
+
+    def test_s14_manifest_truncado_indeterminate(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Scope anidado sin '}' (Steam reescribiendo el archivo): jamás legible.
+        steamapps, common = _construir_library(tmp_path / "lib", manifest_text=MANIFEST_TRUNCADO)
+        source = _source(steamapps, common)
+        _parchear_identidad(monkeypatch)
+        resultado = self._assess(source, _no_op)
+        assert resultado.state is StabilityState.INDETERMINATE
+
+    def test_s15_vdf_scope_anidado_sin_cerrar_falla(self) -> None:
+        with pytest.raises(MalformedVdfError):
+            parse_vdf_text('"AppState" {\n\t"StateFlags" "4"\n', source_label="test")
+
+    def test_s16_vdf_llave_extra_en_raiz_falla(self) -> None:
+        with pytest.raises(MalformedVdfError):
+            parse_vdf_text('"A" "1"\n}\n', source_label="test")
 
 
 # ── SFR-15 / autoridad ───────────────────────────────────────────────────

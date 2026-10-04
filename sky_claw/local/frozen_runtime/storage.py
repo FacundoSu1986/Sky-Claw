@@ -113,7 +113,9 @@ def admitir_storage_root(
     """
     ruta = pathlib.Path(root)
     if not ruta.is_absolute():
-        ruta = ruta.resolve()
+        # abspath (NO resolve): no sigue symlinks/junctions; el chequeo de
+        # enlaces debe ver la ruta ORIGINAL configurada, no su target.
+        ruta = pathlib.Path(os.path.abspath(os.fspath(ruta)))
     motivo = descripcion_de_enlace(ruta)
     if motivo is not None:
         return StorageAdmissionResult(

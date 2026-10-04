@@ -53,7 +53,10 @@ def construir_generation_id(display_version: str, tree_digest: TreeDigest) -> st
     """Construye el id legible y ligado a contenido desde versión + digest."""
     if not isinstance(display_version, str) or not display_version.strip():
         raise InvalidGenerationIdError("display_version no puede ser vacía")
-    display = display_version.strip().casefold().replace(" ", "-")
+    # Sin sustituciones silenciosas: un display con espacios u otros caracteres
+    # fuera del charset debe fallar con su nombre real en el mensaje (el
+    # replace(" ", "-") producía un id inválido que el regex rechazaba igual).
+    display = display_version.strip().casefold()
     if not re.fullmatch(r"[a-z0-9]+(?:\.[a-z0-9]+)*", display):
         raise InvalidGenerationIdError(
             f"display_version con formato inválido para el id: '{display_version}' (esperado p. ej. '1.6.1170')"

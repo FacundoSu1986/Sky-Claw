@@ -86,6 +86,15 @@ def _unstable(
     )
 
 
+def _artefactos_parciales(med: SourceMeasurement) -> list[str]:
+    """Nombres de archivos ``*.part`` observados en el inventario sellado.
+
+    Señal del proveedor dentro del propio árbol: una descarga parcial estable
+    (manifest idle, staging vacío) no debe producir evidencia de snapshot.
+    """
+    return [f.rel_path for f in med.files if f.rel_path.casefold().endswith(".part")][:5]
+
+
 def _run_window(
     source: ManagedSource,
     *,
@@ -105,6 +114,16 @@ def _run_window(
         )
     if pre_provider.update_in_progress:
         return _unstable("el proveedor reporta actividad de actualización (pre-check)", pre_provider=pre_provider), None
+    if not pre_provider.state_flags or not pre_provider.state_flags.strip():
+        # Condición (a) del gate: un manifest legible SIN StateFlags legible no
+        # demuestra reposo del proveedor ⇒ no se puede afirmar estabilidad.
+        return (
+            _indeterminate(
+                "manifest legible sin StateFlags observable (pre-check): no se puede demostrar reposo",
+                pre_provider=pre_provider,
+            ),
+            None,
+        )
 
     try:
         pre = medir_fuente(source)
@@ -144,6 +163,16 @@ def _run_window(
             ),
             None,
         )
+    if not post_provider.state_flags or not post_provider.state_flags.strip():
+        return (
+            _indeterminate(
+                "manifest legible sin StateFlags observable (post-check): no se puede demostrar reposo",
+                pre=pre,
+                pre_provider=pre_provider,
+                post_provider=post_provider,
+            ),
+            None,
+        )
 
     try:
         post = medir_fuente(source)
@@ -158,6 +187,19 @@ def _run_window(
             None,
         )
 
+    parciales = _artefactos_parciales(pre) + _artefactos_parciales(post)
+    if parciales:
+        return (
+            _unstable(
+                "artefacto(s) de descarga parcial presentes en el árbol "
+                f"({', '.join(sorted(set(parciales)))}): el proveedor no está en reposo",
+                pre=pre,
+                post=post,
+                pre_provider=pre_provider,
+                post_provider=post_provider,
+            ),
+            None,
+        )
     if post.tree_digest.digest != pre.tree_digest.digest:
         return (
             _unstable(

@@ -52,10 +52,28 @@ def descripcion_de_enlace(ruta: pathlib.Path) -> str | None:
             return f"no se pudo inspeccionar '{actual}': {exc}"
         if kind is not None:
             return f"'{actual}' es un enlace ({kind})"
-        if actual.anchor == str(actual):
+        # Fin de la cadena: raíz del volumen (anchor) o path relativo que
+        # llegó a '.' (cuyo parent es él mismo: sin este corte, loop infinito).
+        if actual.anchor == str(actual) or actual.parent == actual:
             break
         actual = actual.parent
     return None
+
+
+def exigir_namespace_escribible(path: pathlib.Path) -> None:
+    """Fail-closed antes de ESCRIBIR: el directorio y sus ancestros sin enlaces.
+
+    Re-admisión on-demand del namespace (P2-B1 extendido): si `state/` o el
+    FrozenRuntimeRoot fueron reemplazados por un junction/symlink DESPUÉS de la
+    inicialización, una escritura (mkstemp/os.replace) seguiría el link y
+    escaparía del root. Los writer deben llamar esto justo antes de mutar.
+    """
+    ruta = pathlib.Path(path)
+    motivo = descripcion_de_enlace(ruta)
+    if motivo is not None:
+        raise FrozenRuntimeStorageError(f"namespace de escritura redirigido: {motivo}")
+    if not ruta.is_dir():
+        raise FrozenRuntimeStorageError(f"namespace de escritura inválido: '{ruta}' no es un directorio")
 
 
 def _normcase_abspath(path: pathlib.Path) -> str:

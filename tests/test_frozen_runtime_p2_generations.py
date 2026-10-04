@@ -7,6 +7,7 @@ que copiar no lo cambia.
 
 from __future__ import annotations
 
+import errno
 import os
 import pathlib
 import shutil
@@ -158,6 +159,10 @@ class TestGenerationId:
         assert metadata.provider == "steam"
         assert metadata.provider_buildid == "1234567"  # auxiliar, no identidad
 
+    def test_g09_display_con_espacios_rechazado_sin_sustitucion(self) -> None:
+        with pytest.raises(InvalidGenerationIdError):
+            construir_generation_id("1.6.1170 beta", TreeDigest(digest="a" * 64, files=1, bytes=1))
+
 
 # ── Drift verification ───────────────────────────────────────────────────
 
@@ -267,15 +272,75 @@ class TestDrift:
         assert por_nombre["carpeta_ajena"].metadata is None
         assert por_nombre["archivo_suelto.txt"].state is GenerationVerificationState.INVALID
 
+    def test_dr12_metadata_conteos_alterados_no_valid(self, tmp_path: pathlib.Path) -> None:
+        # Identidad de árbol completa: mismo digest pero files/bytes alterados
+        # en la metadata ⇒ no puede dar VALID.
+        root, gid = self._publicada(tmp_path)
+        metadata = leer_generation_metadata(root, gid)
+        payload = _payload_metadata(metadata)
+        payload["tree_digest"]["files"] = metadata.tree_digest.files + 1  # type: ignore[index]
+        write_json_atomic(generations_state_dir(root) / f"{gid}.json", payload)
+        resultado = verificar_generation(root, gid)
+        assert resultado.state is GenerationVerificationState.DRIFTED
+
+    def test_dr13_metadata_criticos_alterados_no_valid(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        metadata = leer_generation_metadata(root, gid)
+        payload = _payload_metadata(metadata)
+        payload["critical_files"][0]["digest"] = "0" * 64  # type: ignore[index]
+        write_json_atomic(generations_state_dir(root) / f"{gid}.json", payload)
+        resultado = verificar_generation(root, gid)
+        assert resultado.state is GenerationVerificationState.DRIFTED
+
+    def test_dr14_metadata_id_vs_directorio_incoherente(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        impostor = "1.6.1170__aaaaaaaaaaaa"
+        shutil.copytree(generation_dir(root, gid), versions_dir(root) / impostor)
+        metadata = leer_generation_metadata(root, gid)
+        payload = _payload_metadata(metadata)  # declara generation_id = gid
+        write_json_atomic(generations_state_dir(root) / f"{impostor}.json", payload)
+        inventario = descubrir_generations(root)
+        por_nombre = {r.directory.name: r for r in inventario.records}
+        assert por_nombre[impostor].state is GenerationVerificationState.INVALID
+
+    def test_dr15_junction_bajo_versions_invalid(self, tmp_path: pathlib.Path) -> None:
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        _enlace_directorio(externo, versions_dir(root) / "1.6.1170__aaaaaaaaaaaa")
+        inventario = descubrir_generations(root)
+        assert inventario.records
+        assert all(r.state is GenerationVerificationState.INVALID for r in inventario.records)
+
+    def test_dr16_metadata_con_id_invalido_indeterminate(self, tmp_path: pathlib.Path) -> None:
+        root, gid = self._publicada(tmp_path)
+        metadata = leer_generation_metadata(root, gid)
+        payload = _payload_metadata(metadata)
+        payload["generation_id"] = "../evil__aaaaaaaaaaaa"
+        write_json_atomic(generations_state_dir(root) / f"{gid}.json", payload)
+        resultado = verificar_generation(root, gid)
+        assert resultado.state is GenerationVerificationState.INDETERMINATE
+
 
 def _enlace_directorio(destino: pathlib.Path, enlace: pathlib.Path) -> None:
-    """Enlace de directorio: junction en Windows, symlink en POSIX."""
+    """Enlace de directorio: junction en Windows, symlink en POSIX.
+
+    Sólo salta por falta de CAPACIDAD de la plataforma; cualquier otro fallo
+    (incluido mklink /J) es un error del test y se propaga.
+    """
     if os.name == "nt":
         import subprocess
 
         subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(destino)], check=True, capture_output=True)
     else:
-        enlace.symlink_to(destino, target_is_directory=True)
+        try:
+            enlace.symlink_to(destino, target_is_directory=True)
+        except OSError as exc:
+            sin_soporte = (errno.EACCES, errno.EPERM, getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1))
+            if exc.errno in sin_soporte or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+            raise
 
 
 def _hardlink(objetivo: pathlib.Path, enlace: pathlib.Path) -> None:
@@ -283,6 +348,31 @@ def _hardlink(objetivo: pathlib.Path, enlace: pathlib.Path) -> None:
         os.link(objetivo, enlace)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"hardlinks no disponibles en este filesystem: {exc}")
+
+
+def _payload_metadata(metadata):  # noqa: ANN001, ANN201 -- helper de tests
+    """Reconstruye el payload v1 de una metadata (para manipulaciones adversarias)."""
+    return {
+        "schema_version": 1,
+        "generation_id": metadata.generation_id,
+        "display_version": metadata.display_version,
+        "runtime_identity": {
+            "game_key": metadata.runtime_identity.game_key,
+            "game_version": metadata.runtime_identity.game_version,
+        },
+        "tree_digest": {
+            "digest": metadata.tree_digest.digest,
+            "files": metadata.tree_digest.files,
+            "bytes": metadata.tree_digest.bytes,
+        },
+        "critical_files": [
+            {"rel_path": c.rel_path, "size": c.size, "digest": c.digest} for c in metadata.critical_files
+        ],
+        "provider": metadata.provider,
+        "provider_appid": metadata.provider_appid,
+        "provider_buildid": metadata.provider_buildid,
+        "created_at_ns": metadata.created_at_ns,
+    }
 
 
 class TestIntegridadFisicaPostPublicacion:

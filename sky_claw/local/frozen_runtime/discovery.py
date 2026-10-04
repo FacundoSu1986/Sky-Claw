@@ -74,6 +74,16 @@ def _candidato_valido(root: pathlib.Path, game_key: str, appid: str, *, motivos:
     if library_steamapps.name.casefold() != "steamapps":
         motivos.append(f"'{root}' no está bajo un directorio steamapps")
         return None
+    # Layout canónico completo: <library>/steamapps/common/<game dir>. Sin
+    # esto, una copia manual en <library>/steamapps/backups/<x> se aceptaría
+    # con el manifest de otra install (evidencia de proveedor falsa).
+    if root.parent.name.casefold() != "common":
+        motivos.append(f"'{root}' no está bajo <library>/steamapps/common")
+        return None
+    nombre_canonico = GAME_DIR_NAME_BY_KEY[game_key]
+    if root.name.casefold() != nombre_canonico.casefold():
+        motivos.append(f"'{root}' no tiene el nombre de instalación canónico '{nombre_canonico}'")
+        return None
     if not _manifest_presente(library_steamapps, appid):
         motivos.append(f"sin evidencia de proveedor: falta appmanifest_{appid}.acf en '{library_steamapps}'")
         return None
@@ -97,11 +107,15 @@ def _library_paths_from_vdf_data(data: dict[str, object]) -> list[str]:
     paths: list[str] = []
     for key, value in data.items():
         if key.casefold() == "libraryfolders" and isinstance(value, dict):
-            for entry in value.values():
+            for entry_key, entry in value.items():
                 if isinstance(entry, dict):
                     entry_path = entry.get("path")
                     if isinstance(entry_path, str) and entry_path:
                         paths.append(entry_path)
+                elif isinstance(entry, str) and entry and entry_key.isdigit() and _parece_ruta_absoluta(entry):
+                    # Formato intermedio: entradas numéricas escalares DENTRO
+                    # del wrapper "libraryfolders" (no sólo en el root).
+                    paths.append(entry)
         elif (
             isinstance(value, str)
             and value
@@ -171,7 +185,9 @@ def discover_managed_source(
     if explicit_root is not None:
         root = pathlib.Path(explicit_root)
         if not root.is_absolute():
-            root = root.resolve()
+            # abspath (NO resolve): normaliza sin seguir symlinks/junctions, así
+            # la validación de enlaces inspecciona la ruta ORIGINAL del usuario.
+            root = pathlib.Path(os.path.abspath(os.fspath(root)))
         candidato = _candidato_valido(root, game_key, appid, motivos=motivos)
         if candidato is not None:
             return ManagedSourceDiscoveryResult(

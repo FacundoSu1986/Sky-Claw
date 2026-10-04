@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import pathlib
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeStorageError,
     GenerationCollisionError,
@@ -211,8 +212,10 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     destino = generations_state_dir(root) / f"{generation_id}.json"
     if destino.exists():
         existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
+        # Identidad COMPLETA (digest + files + bytes), no sólo el digest: una
+        # metadata con conteos alterados no es "el mismo" registro.
         if (
-            existente.tree_digest.digest == metadata.tree_digest.digest
+            existente.tree_digest == metadata.tree_digest
             and existente.runtime_identity == metadata.runtime_identity
             and existente.critical_files == metadata.critical_files
         ):
@@ -223,6 +226,28 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
         )
     write_json_atomic(destino, _payload_de_metadata(metadata))
     return metadata
+
+
+def _criticos_coinciden(registrados: tuple[FileIdentity, ...], observados: tuple[FileIdentity, ...]) -> bool:
+    indice = {f.rel_path.casefold(): f for f in observados}
+    for critico in registrados:
+        observado = indice.get(critico.rel_path.casefold())
+        if observado is None or observado.digest != critico.digest or observado.size != critico.size:
+            return False
+    return True
+
+
+def _link_o_none(path: pathlib.Path) -> str | None:
+    """Descripción del enlace si *path* es symlink/junction/reparse; None si no.
+
+    ``Path.is_symlink()`` no detecta junctions en Windows: la primitive
+    canónica sí. Un OSError de inspección se reporta como no inspeccionable
+    (fail-closed para los consumidores).
+    """
+    try:
+        return link_kind_or_raise(path)
+    except OSError as exc:
+        return f"no inspeccionable: {exc}"
 
 
 def _leer_json(path: pathlib.Path) -> dict[str, object]:
@@ -265,14 +290,15 @@ def descubrir_generations(root: pathlib.Path) -> GenerationInventory:
     if not raiz.is_dir():
         return GenerationInventory(root=raiz, records=())
     for entrada in sorted(raiz.iterdir(), key=lambda p: p.name):
-        if entrada.is_symlink():
+        link = _link_o_none(entrada)
+        if link is not None:
             records.append(
                 GenerationRecord(
                     generation_id=None,
                     directory=entrada,
                     metadata=None,
                     state=GenerationVerificationState.INVALID,
-                    message="enlace/reparse bajo versions/ (fail-closed)",
+                    message=f"enlace/reparse bajo versions/: {link} (fail-closed)",
                 )
             )
             continue
@@ -301,7 +327,7 @@ def descubrir_generations(root: pathlib.Path) -> GenerationInventory:
             continue
         try:
             metadata = _metadata_de_payload(_leer_json(metadata_path), source_label=str(metadata_path))
-        except (StateCorruptError, StateSchemaError) as exc:
+        except FrozenRuntimeStorageError as exc:
             records.append(
                 GenerationRecord(
                     generation_id=entrada.name if validar_id_seguro(entrada.name) else None,
@@ -309,6 +335,20 @@ def descubrir_generations(root: pathlib.Path) -> GenerationInventory:
                     metadata=None,
                     state=GenerationVerificationState.INDETERMINATE,
                     message=f"metadata ilegible: {exc}",
+                )
+            )
+            continue
+        if metadata.generation_id != entrada.name:
+            records.append(
+                GenerationRecord(
+                    generation_id=None,
+                    directory=entrada,
+                    metadata=metadata,
+                    state=GenerationVerificationState.INVALID,
+                    message=(
+                        f"metadata declara generation_id {metadata.generation_id!r} pero vive en "
+                        f"'{entrada.name}': incoherente (fail-closed)"
+                    ),
                 )
             )
             continue
@@ -355,10 +395,12 @@ def verificar_generation(root: pathlib.Path, generation_id: str) -> GenerationVe
         )
     try:
         metadata = _metadata_de_payload(_leer_json(metadata_path), source_label=str(metadata_path))
-    except (StateCorruptError, StateSchemaError) as exc:
+    except FrozenRuntimeStorageError as exc:
+        # Familia completa (corrupto, schema, id inválido, I/O): nunca escapa
+        # de la API tipada; la verificación devuelve INDETERMINATE fail-closed.
         return GenerationVerificationResult(
             state=GenerationVerificationState.INDETERMINATE,
-            message=f"metadata corrupta para '{ident}': no se puede afirmar nada (fail-closed): {exc}",
+            message=f"metadata corrupta o ilegible para '{ident}': no se puede afirmar nada (fail-closed): {exc}",
         )
     if metadata.generation_id != ident:
         return GenerationVerificationResult(
@@ -391,10 +433,19 @@ def verificar_generation(root: pathlib.Path, generation_id: str) -> GenerationVe
             recorded=metadata,
         )
     observado = tree_digest_from_files(files)
-    if observado.digest != metadata.tree_digest.digest:
+    # Identidad completa: digest + files + bytes (TreeDigest equality), no
+    # sólo el digest — metadata con conteos alterados no debe dar VALID.
+    if observado != metadata.tree_digest:
         return GenerationVerificationResult(
             state=GenerationVerificationState.DRIFTED,
-            message=f"el árbol de '{ident}' difiere del digest registrado (DRIFTED, SFR-17)",
+            message=f"el árbol de '{ident}' difiere de la identidad de árbol registrada (DRIFTED, SFR-17)",
+            recorded=metadata,
+            observed_digest=observado,
+        )
+    if not _criticos_coinciden(metadata.critical_files, files):
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.DRIFTED,
+            message=f"la evidencia crítica registrada de '{ident}' no coincide con el inventario fresco (DRIFTED)",
             recorded=metadata,
             observed_digest=observado,
         )

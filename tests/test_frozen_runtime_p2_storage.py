@@ -5,6 +5,7 @@ Convención: AAA en español, fail-closed en todos los caminos de error.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import pathlib
@@ -26,6 +27,7 @@ from sky_claw.local.frozen_runtime import (
     same_volume,
     save_frozen_runtime_state,
 )
+from sky_claw.local.frozen_runtime.state import write_json_atomic
 from sky_claw.local.frozen_runtime.storage import (
     active_state_path,
     admitir_directorio_storage,
@@ -57,11 +59,13 @@ def _escenario_reparse(
     externo.mkdir()
     (externo / "sentinel.txt").write_text("intacto", encoding="utf-8")
     enlace = root / componente
-    if tipo == "symlink" and os.name == "nt":
+    if tipo == "symlink":
         try:
             enlace.symlink_to(externo, target_is_directory=True)
         except OSError as exc:
-            pytest.skip(f"symlink no disponible en este Windows (dev mode): {exc}")
+            if exc.errno in (errno.EACCES, errno.EPERM) or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlink no disponible en este entorno: {exc}")
+            raise
     else:
         _enlace_directorio(externo, enlace)
     return root, externo
@@ -180,6 +184,20 @@ class TestLayout:
         with pytest.raises(FrozenRuntimeStorageError):
             same_volume(a, tmp_path / "no_existe")
 
+    def test_l11_root_symlink_relativo_rechazado(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real = tmp_path / "real"
+        real.mkdir()
+        enlace = tmp_path / "enlace"
+        try:
+            enlace.symlink_to(real, target_is_directory=True)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EPERM) or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+            raise
+        monkeypatch.chdir(tmp_path)
+        resultado = admitir_storage_root(pathlib.Path("enlace"))
+        assert resultado.state is StorageAdmissionState.REJECTED
+
 
 # ── Estado persistente ───────────────────────────────────────────────────
 
@@ -279,6 +297,33 @@ class TestEstado:
         with pytest.raises(StateCorruptError):
             load_frozen_runtime_state(path)
 
+    def test_st11_campo_obligatorio_ausente_rechazado(self, tmp_path: pathlib.Path) -> None:
+        # Clave ausente != null explícito: un estado incompleto no es arranque limpio.
+        path = tmp_path / "active.json"
+        incompletos = (
+            {"schema_version": 1, "updated_at_ns": 0},
+            {"schema_version": 1, "desired_active_generation": None},
+            {"desired_active_generation": None, "updated_at_ns": 0},
+        )
+        for data in incompletos:
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with pytest.raises(StateSchemaError):
+                load_frozen_runtime_state(path)
+
+    def test_st12_estado_enlazado_rechazado(self, tmp_path: pathlib.Path) -> None:
+        real = tmp_path / "real.json"
+        real.write_text(json.dumps({"schema_version": 1, "desired_active_generation": None, "updated_at_ns": 0}))
+        for destino in (real, tmp_path / "no_existe.json"):
+            enlace = tmp_path / f"active_{destino.stem}.json"
+            try:
+                enlace.symlink_to(destino)
+            except OSError as exc:
+                if exc.errno in (errno.EACCES, errno.EPERM) or getattr(exc, "winerror", None) == 1314:
+                    pytest.skip(f"symlinks de archivo no disponibles en este entorno: {exc}")
+                raise
+            with pytest.raises(StateCorruptError):
+                load_frozen_runtime_state(enlace)
+
 
 # ── Namespace de storage: reparse/junction en subdirectorios (P2-B1) ─────
 
@@ -355,3 +400,21 @@ class TestNamespaceReparse:
         resultado = admitir_directorio_storage(archivo)
         assert resultado.state is StorageAdmissionState.REJECTED
         assert "archivo" in resultado.message
+
+    def test_sr09_namespace_reemplazado_tras_init_bloquea_escritura(self, tmp_path: pathlib.Path) -> None:
+        # Un junction inyectado DESPUÉS del init no puede redirigir escrituras:
+        # los writers re-admiten el namespace antes de mutar.
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        (externo / "sentinel.txt").write_text("intacto", encoding="utf-8")
+        (root / "state").rename(root / "state_real")
+        _enlace_directorio(externo, root / "state")
+        with pytest.raises(FrozenRuntimeStorageError):
+            save_frozen_runtime_state(root / "state" / "active.json", _estado(None))
+        with pytest.raises(FrozenRuntimeStorageError):
+            write_json_atomic(root / "state" / "generations" / "x.json", {"a": 1})
+        assert (externo / "sentinel.txt").read_text(encoding="utf-8") == "intacto"
+        assert not (externo / "active.json").exists()
+        assert not (externo / "generations").exists()

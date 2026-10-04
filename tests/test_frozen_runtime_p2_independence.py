@@ -8,6 +8,7 @@ de prueba jamás se convierte en PASS.
 
 from __future__ import annotations
 
+import errno
 import os
 import pathlib
 import subprocess
@@ -36,11 +37,22 @@ def _arbol_fuente(base: pathlib.Path) -> pathlib.Path:
 
 
 def _enlace_directorio(destino: pathlib.Path, enlace: pathlib.Path) -> None:
-    """Crea un enlace de directorio: junction en Windows, symlink en POSIX."""
+    """Crea un enlace de directorio: junction en Windows, symlink en POSIX.
+
+    Sólo se salta cuando la plataforma no ofrece la CAPACIDAD (errno de
+    permiso/soporte); cualquier otro fallo es un error del test y se propaga.
+    Un fallo de `mklink /J` (junction sin privilegios en NTFS) también falla.
+    """
     if os.name == "nt":
         subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(destino)], check=True, capture_output=True)
     else:
-        enlace.symlink_to(destino, target_is_directory=True)
+        try:
+            enlace.symlink_to(destino, target_is_directory=True)
+        except OSError as exc:
+            sin_soporte = (errno.EACCES, errno.EPERM, getattr(errno, "ENOTSUP", -1), getattr(errno, "EOPNOTSUPP", -1))
+            if exc.errno in sin_soporte or getattr(exc, "winerror", None) == 1314:
+                pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+            raise
 
 
 def _hardlink(objetivo: pathlib.Path, enlace: pathlib.Path) -> None:
@@ -70,7 +82,7 @@ class TestIndependenciaFisica:
     def test_pi03_symlink_alias_rechazado(self, tmp_path: pathlib.Path) -> None:
         real = _arbol_generacion(tmp_path / "gen_real")
         alias = tmp_path / "gen_alias"
-        alias.symlink_to(real, target_is_directory=True)
+        _enlace_directorio(real, alias)
         fuente = _arbol_fuente(tmp_path / "fuente")
         resultado = verify_generation_independence(alias, fuente)
         assert resultado.state is IndependenceState.VIOLATED

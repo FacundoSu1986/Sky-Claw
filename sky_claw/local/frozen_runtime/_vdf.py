@@ -74,14 +74,21 @@ def parse_vdf_text(text: str, *, source_label: str) -> dict[str, object]:
     tokens = _tokenize(text, source_label=source_label)
     pos = 0
 
-    def parse_scope() -> dict[str, object]:
+    def parse_scope(*, root: bool) -> dict[str, object]:
         nonlocal pos
         scope: dict[str, object] = {}
         while True:
             if pos >= len(tokens):
-                return scope
+                # EOF sólo cierra el scope RAÍZ. Un scope anidado sin `}` es
+                # entrada truncada (p. ej. un ACF cortado a mitad de escritura)
+                # y debe fallar cerrado, no aceptarse como legible.
+                if root:
+                    return scope
+                raise MalformedVdfError(f"{source_label}: scope sin cerrar (falta '}}')")
             token = tokens[pos]
             if token == "}":
+                if root:
+                    raise MalformedVdfError(f"{source_label}: '}}' inesperado en el scope raíz")
                 pos += 1
                 return scope
             if token == "{":
@@ -97,7 +104,7 @@ def parse_vdf_text(text: str, *, source_label: str) -> dict[str, object]:
                     raise DuplicateKeyVdfError(
                         f"{source_label}: clave duplicada '{key}' en el mismo scope (fail-closed)"
                     )
-                scope[key] = parse_scope()
+                scope[key] = parse_scope(root=False)
             else:
                 if key in scope:
                     raise DuplicateKeyVdfError(
@@ -105,7 +112,7 @@ def parse_vdf_text(text: str, *, source_label: str) -> dict[str, object]:
                     )
                 scope[key] = value_token
 
-    result = parse_scope()
+    result = parse_scope(root=True)
     if pos != len(tokens):
         raise MalformedVdfError(f"{source_label}: token residual tras el scope raíz")
     return result

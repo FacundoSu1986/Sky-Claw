@@ -32,12 +32,14 @@ import os
 import pathlib
 import tempfile
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeStorageError,
     StateCorruptError,
     StateSchemaError,
 )
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
+from sky_claw.local.frozen_runtime.independence import exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState, FrozenRuntimeStateLoadResult
 
 SCHEMA_VERSION = 1
@@ -51,6 +53,12 @@ def _parsear_estado(raw: str, *, source_label: str) -> FrozenRuntimeState:
         raise StateCorruptError(f"{source_label}: JSON malformado o truncado: {exc}") from exc
     if not isinstance(data, dict):
         raise StateCorruptError(f"{source_label}: el estado debe ser un objeto JSON")
+    # Presencia EXIGIDA de cada campo: `dict.get()` no distingue "clave
+    # ausente" de "null explícito", y un estado incompleto no es un arranque
+    # limpio (ocultaría un split desired/effective tras un crash).
+    for campo in ("schema_version", "desired_active_generation", "updated_at_ns"):
+        if campo not in data:
+            raise StateSchemaError(f"{source_label}: falta el campo obligatorio '{campo}'")
     schema = data.get("schema_version")
     if not isinstance(schema, int) or isinstance(schema, bool):
         raise StateSchemaError(f"{source_label}: schema_version debe ser int")
@@ -71,8 +79,19 @@ def _parsear_estado(raw: str, *, source_label: str) -> FrozenRuntimeState:
 
 
 def load_frozen_runtime_state(path: pathlib.Path) -> FrozenRuntimeStateLoadResult:
-    """Carga tipada del estado; distingue ausente (limpio) de corrupto (fail-closed)."""
+    """Carga tipada del estado; distingue ausente (limpio) de corrupto (fail-closed).
+
+    Un `active.json` redirigido (symlink/junction, incluso colgado) NUNCA es
+    "ausente": se rechaza fail-closed — de lo contrario un restart perdería en
+    silencio el estado deseado o leería un target externo.
+    """
     ruta = pathlib.Path(path)
+    try:
+        kind = link_kind_or_raise(ruta)
+    except OSError as exc:
+        raise StateCorruptError(f"{ruta}: no se pudo inspeccionar el estado: {exc}") from exc
+    if kind is not None:
+        raise StateCorruptError(f"{ruta}: el estado es un enlace/reparse ({kind}): fail-closed")
     if not ruta.exists():
         return FrozenRuntimeStateLoadResult(
             found=False, state=None, message="estado ausente: arranque limpio (sin Generation activa)"
@@ -103,6 +122,10 @@ def save_frozen_runtime_state(path: pathlib.Path, state: FrozenRuntimeState) -> 
         "updated_at_ns": state.updated_at_ns,
     }
     _parsear_estado(json.dumps(payload), source_label=str(ruta))  # valida antes de escribir
+    # Re-admisión del namespace justo antes de escribir: si `state/` (o un
+    # ancestro) fue reemplazado por un enlace DESPUÉS del init, mkstemp/
+    # os.replace escaparían del root.
+    exigir_namespace_escribible(ruta.parent)
     try:
         tmp_fd, tmp_name = tempfile.mkstemp(dir=ruta.parent, prefix=".active.json.", suffix=".tmp")
     except OSError as exc:
@@ -123,9 +146,11 @@ def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> None:
     """Escritura atómica genérica (temporal en el mismo directorio + ``os.replace``).
 
     Reutilizada por la metadata de generations (``state/generations/``) y por
-    la inicialización del estado.
+    la inicialización del estado. Re-admite el namespace antes de escribir
+    (falla cerrado si un ancestro fue redirigido por un enlace).
     """
     ruta = pathlib.Path(path)
+    exigir_namespace_escribible(ruta.parent)
     try:
         tmp_fd, tmp_name = tempfile.mkstemp(dir=ruta.parent, prefix=".sky_claw_", suffix=".tmp")
     except OSError as exc:
