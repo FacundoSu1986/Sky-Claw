@@ -570,6 +570,18 @@ sólo detecta mutación **durante** el inventario). Las señales del proveedor
 (a)/(b) y el rig de P1 deben cerrar o **declarar** ese residuo; nunca se lo asume
 cerrado por omisión.
 
+**Estado de implementación (P1, PR #673):** el contrato multi-señal quedó
+implementado en `sky_claw/local/frozen_runtime/` (discovery → provider pre-check →
+inventory PRE → ventana silenciosa configurable → provider post-check → inventory
+POST → comparación), con veredictos tipados `STABLE/UNSTABLE/INDETERMINATE` y
+`INDETERMINATE != STABLE`. Cobertura de tests S01–S11 + caso adversarial
+"mutación que retorna a la misma versión/buildid superficial" en
+`tests/test_frozen_runtime_p1.py`. El probe READ-ONLY sobre la máquina de
+desarrollo dio `NOT_FOUND` (sin Skyrim de Steam local): la demostración con
+señales reales de Steam queda en P7. **Q-04 se cierra sólo en el alcance
+demostrado** (contrato de ventana observada); la detección absoluta de
+actualizaciones de Steam permanece NO demostrada y declarada como gate de P7.
+
 ## 19. Modelo de datos
 
 Estado persistente mínimo (JSON, ~1 archivo):
@@ -662,7 +674,7 @@ DELETES_PREVIOUS_GENERATION=NO
 | Slice | Contenido | Gate de salida |
 |---|---|---|
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
-| **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. |
+| **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. **Implementado en PR #673** (`sky_claw/local/frozen_runtime/`; Q-04 cerrado en el alcance demostrado de la ventana observada). |
 | **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). |
 | **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
 | **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
@@ -728,7 +740,9 @@ Sin resolver en P0; varias quedan como **gates explícitos** de P1/P2/P3/P5. No 
 inventan soluciones.
 
 1. **Estabilización de la Managed Source**: ¿(a)–(c) de §18 alcanzan para demostrar
-   `STABLE(ManagedSource)` en el rig real (proveedor Steam)? Gate P1.
+   `STABLE(ManagedSource)` en el rig real (proveedor Steam)? Gate P1. **Estado:
+   implementado como contrato de ventana acotada (P1, tests S01–S11); la
+   demostración con Steam real queda para P7.**
 2. **Binding de la Effective Runtime a MO2/SKSE**: ¿repuntar el `gamePath` de MO2
    (Qt `@ByteArray`) y `SKYRIM_PATH`, o un alias estable (`active` → generation) que
    MO2/SKSE/USVFS resuelvan? La auditoría probó un Stock externo, no el mecanismo de
