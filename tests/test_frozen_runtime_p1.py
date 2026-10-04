@@ -8,6 +8,7 @@ del ADR 0012 §24.
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 import time
 
@@ -186,6 +187,35 @@ class TestDiscovery:
         (steamapps / "appmanifest_489830.acf").write_text(MANIFEST_IDLE, encoding="utf-8")
         resultado = discover_managed_source(steam_roots=(str(steam),))
         assert resultado.state is DiscoveryState.NOT_FOUND
+
+    def test_d10_symlink_en_root_rechazado(self, tmp_path: pathlib.Path) -> None:
+        # una fuente redirigida no produce evidencia falsa (fail-closed)
+        real = tmp_path / "lib"
+        _construir_library(real)
+        enlace = tmp_path / "enlace"
+        try:
+            enlace.symlink_to(real / "steamapps" / "common" / "Skyrim Special Edition", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks no disponibles en este entorno")
+        resultado = discover_managed_source(explicit_root=enlace)
+        assert resultado.state is DiscoveryState.INVALID
+        assert "enlace" in resultado.message
+
+    @pytest.mark.skipif(os.name != "nt", reason="junction es Windows-only")
+    def test_d11_junction_en_root_rechazado(self, tmp_path: pathlib.Path) -> None:
+        import subprocess
+
+        real = tmp_path / "lib"
+        _construir_library(real)
+        enlace = tmp_path / "enlace"
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(enlace), str(real / "steamapps" / "common" / "Skyrim Special Edition")],
+            check=True,
+            capture_output=True,
+        )
+        resultado = discover_managed_source(explicit_root=enlace)
+        assert resultado.state is DiscoveryState.INVALID
+        assert "enlace" in resultado.message
 
 
 # ── Identidad / observación ──────────────────────────────────────────────
