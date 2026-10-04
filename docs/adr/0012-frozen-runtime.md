@@ -321,6 +321,9 @@ stabilize Managed Source                       (§18)
 → Candidate TreeDigest MUST equal SourceSnapshotEvidence.tree_digest
 → Candidate RuntimeIdentity MUST equal SourceSnapshotEvidence.runtime_identity
 → Candidate critical evidence MUST equal SourceSnapshotEvidence critical evidence
+→ directory membership PRE/Candidate/POST MUST match   (P3 BLOCKER, §26-14:
+   el TreeDigest no sella directorios vacíos; sin esta comparación un directorio
+   vacío removido/omitido pasa desapercibido)
 → reobserve Managed Source POST                 (§9.1)
 → POST source evidence MUST equal PRE source evidence
 → only then Candidate = READY
@@ -381,6 +384,10 @@ Reglas:
    persistir `desired` **antes** de bindear, el diseño debe incluir **rollback
    causal** explícito (revertir `desired` a `A` si el bind falla) — se documentará
    en P5, no se supone.
+   **P4 es normativo respecto de este bloque**: la intención durable (transición
+   pendiente) se persiste ANTES de mutar el Effective Runtime y el arranque
+   reconcilia el estado intermedio (§26-15b); el orden ilustrativo de arriba se
+   ajustará al implementar P4, no antes (P2 no finge resolverlo).
 5. **POST verify**: observar de nuevo la Effective Runtime y confirmar identidad
    == `B` y coherencia con `desired`. Si no, se revierte a `A` (F5/F9).
 6. **Fail-closed sin observación**: hasta que P5 entregue la primitiva de
@@ -528,6 +535,11 @@ Controles:
    escribir (P2-B1): un junction/symlink existente ⇒ rechazo, sin seguir el
    target ni tocar el árbol externo (test con sentinel). El chequeo de
    `steamapps/common` incluye la ruta misma, no sólo sus ancestros (P2-M1).
+   Las ESCRITURAS re-admiten el namespace justo antes de mutar (un link
+   inyectado DESPUÉS del init tampoco redirige `active.json` ni la metadata);
+   los paths relativos se absolutizan con `abspath` (no `resolve`) para que el
+   chequeo de enlaces vea la ruta original, no el target (cierre de revisión
+   adversarial P2.1).
 3. **Sin ACL mutation** (SFR-12): no `WRITE_DAC`, no helper privilegiado, no UAC.
 4. **Puntero atómico:** `temp + os.replace` en el mismo directorio (patrón del
    repo); un fallo a mitad no puede truncar el estado.
