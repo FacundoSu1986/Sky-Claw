@@ -13,6 +13,9 @@ productiva ni decide la primitiva concreta de binding (P5).
 **Managed Source** (proveedor inicial: Steam). "Steam" se conserva sólo como
 referencia técnica al proveedor. IDs `SFR-01..17` intactos; prefijo reinterpretado
 como `SFR = Sky-Claw Frozen Runtime`.
+**Enmienda P0.2 (2026-10-04):** cierre de la revisión adversarial de P0 — se agrega
+`SFR-18` (independencia física de Generation respecto de la Managed Source) y se
+explicita que el rollback no depende de la Managed Source.
 **Contexto de origen:** `origin/main` `0103ee4f6de15207032d25c254ede5cf2c01bff9`
 (merge de RV-GP2/S4D, PR #666).
 **Relación con GP2-S4E:** el workstream archivado (rama
@@ -102,7 +105,7 @@ de ACL.
 ## 4. Objetivos (Goals)
 
 Nota canónica (P0.3): `SFR` = **Sky-Claw Frozen Runtime**. El prefijo se conserva
-para no migrar IDs ya documentados (`SFR-01..17`) en docs, tests e issues.
+para no migrar IDs ya documentados (`SFR-01..18`) en docs, tests e issues.
 
 1. `SFR-01` Steam puede actualizar su propia instalación.
 2. `SFR-02` Steam nunca administra el Frozen Runtime.
@@ -128,6 +131,11 @@ para no migrar IDs ya documentados (`SFR-01..17`) en docs, tests e issues.
     in-place; una Generation cuyo árbol ya no coincide con su identidad registrada
     está `DRIFTED` y no es un target válido de rollback/reactivación sin
     re-verificación previa (§12).
+18. `SFR-18` Una Generation **no debe compartir objetos de filesystem mutables**
+    con su Managed Source: sin symlink/junction/reparse point que conecten ambos
+    árboles y sin hardlinks hacia archivos de la Managed Source. La independencia
+    física se verifica en la creación (por inodo, RV-3) y la admisión de rutas la
+    preserva (§17).
 
 ## 5. No-objetivos (Non-goals)
 
@@ -231,7 +239,7 @@ Managed Source (estabilizada; provider: Steam)
 | **Managed Source (provider: Steam)** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. El proveedor escribe libremente en ella (SFR-01). |
 | **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Managed Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
 | **Candidate** | Derivada, no confiable hasta verificar | Se inventaría/verifica **contra `SourceSnapshotEvidence`**, nunca contra su propia medición (SFR-15). Estados `building → ready → invalid` (SFR-06/07). |
-| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). |
+| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). No comparte objetos de filesystem mutables con la Managed Source (SFR-18). |
 | **Desired Active Generation (`state/active.json`)** | Intención persistente de Sky-Claw | Escritura atómica (temp + `os.replace`). Por sí sola **no** declara promoción exitosa (SFR-16). |
 | **Effective Runtime** (game path que MO2/SKSE ejecutan) | Autoridad de hecho | La promoción sólo es exitosa cuando Effective Runtime está probadamente apuntando a la misma Generation que Desired (SFR-16). |
 
@@ -387,9 +395,11 @@ Secuencia exacta:
 5. Persistir Desired Active Generation = `G_prev` (atómico).
 6. POST verify de coherencia desired/effective (SFR-16).
 
-No se reconstruyen archivos destruidos. Si `G_prev` no está retenida o está
-`DRIFTED`, el rollback falla cerrado (por eso MVP **no** borra generaciones y
-**re-verifica** antes de reactivar).
+No se reconstruyen archivos destruidos. El rollback **no depende de la Managed
+Source**: se repunta a una Generation retenida y re-verificada, nunca se reconstruye
+desde la fuente. Si `G_prev` no está retenida o está `DRIFTED`, el rollback falla
+cerrado (por eso MVP **no** borra generaciones y **re-verifica** antes de
+reactivar).
 
 ## 13. Integración MO2 / SKSE
 
@@ -489,11 +499,14 @@ Controles:
 
 1. **Aislamiento físico primero.** La protección no es un lock: es que Steam no
    administra el Frozen Runtime (§7, SFR-02/04).
-2. **Admisión de rutas.** El `FrozenRuntimeRoot` y las rutas de Generation se
-   validan: no deben estar dentro de `steamapps/common/<juego>`; se resuelve la
-   ruta física (ancestros incluidos) y se rechazan symlink/junction/reparse
-   (reusar `sky_claw.app.security.links` y las guardas de RV-3: igualdad
-   léxica/física, anidamiento, traversal).
+2. **Admisión de rutas e independencia física.** El `FrozenRuntimeRoot` y las rutas
+   de Generation se validan: no deben estar dentro de `steamapps/common/<juego>`; se
+   resuelve la ruta física (ancestros incluidos) y se rechazan symlink/junction/
+   reparse (reusar `sky_claw.app.security.links` y las guardas de RV-3: igualdad
+   léxica/física, anidamiento, traversal). La independencia física entre Generation
+   y Managed Source se verifica por inodo al crear (RV-3), la copia no crea
+   hardlinks (`shutil.copy2`), y los links hacia/desde la Managed Source se
+   rechazan (SFR-18).
 3. **Sin ACL mutation** (SFR-12): no `WRITE_DAC`, no helper privilegiado, no UAC.
 4. **Puntero atómico:** `temp + os.replace` en el mismo directorio (patrón del
    repo); un fallo a mitad no puede truncar el estado.
@@ -510,6 +523,7 @@ Riesgos y mitigaciones:
 | Capturar una actualización parcial como Candidate válido | Estabilización + verificación de identidad completa (conteo de archivos + `tree_digest`). |
 | MO2/SKSE apuntando a una Generation borrada | MVP no borra generaciones (SFR-10); el puntero siempre referencia una Generation retenida. |
 | Destination dentro de Steam (romper SFR-02) | Admisión de rutas falla cerrada. |
+| Hardlink/symlink/junction entre Managed Source y una Generation (mutación indirecta vía Steam) | SFR-18: rechazo de links + verificación de independencia por inodo en la creación. |
 | Espacio en disco durante la copia | Pendiente declarado (P2); la copia necesita ~espacio de un juego completo. |
 
 ## 18. Estabilización de la Managed Source ("¿el proveedor terminó?")
@@ -691,6 +705,8 @@ enumerativas):
 8. Documentación sincronizada y evidencia de rig registrada.
 9. Ninguna Generation `DRIFTED` se reactiva ni se usa como target de rollback sin
    re-verificación exitosa (SFR-17).
+10. Ninguna Generation comparte objetos de filesystem mutables con la Managed
+    Source (SFR-18).
 
 ## 26. Preguntas abiertas (Open questions)
 
@@ -743,6 +759,7 @@ inventan soluciones.
 | ¿El Candidate puede generar la evidencia esperada contra la que él mismo se aprueba? | No (SFR-15): la expectativa es `SourceSnapshotEvidence` (PRE/POST) de la Managed Source; la auto-medición del Candidate nunca es autoridad. |
 | ¿Un `state/active.json` reescrito basta para declarar promoción exitosa? | No (SFR-16): se exige coherencia desired/effective probada; un split-brain es `PENDING`/`FAILED`, jamás `SUCCESS`. |
 | ¿Una Generation `DRIFTED` puede reactivarse en silencio? | No (SFR-17): re-verificación de identidad obligatoria antes de rollback/reactivación; si no verifica, falla cerrado. |
+| ¿Una Generation puede compartir hardlinks/links con la Managed Source y ser mutada indirectamente por Steam? | No (SFR-18): links rechazados + independencia física verificada por inodo en la creación; la copia no crea hardlinks. |
 | ¿Duplicamos RV-1/RV-2/RV-3? | RV-1 se reusa tal cual; RV-2 y RV-3 se reusan parcialmente por su contrato de autoridad de fuente (no por duplicación). |
 | ¿Arrastramos GP2 por costumbre? | No: §16 excluye toda dependencia GP2. |
 | ¿MO2/SKSE pueden quedar apuntando a una generación borrada? | No: MVP no borra generaciones. |
