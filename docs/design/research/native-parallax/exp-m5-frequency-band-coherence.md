@@ -483,146 +483,7 @@ Este freeze es **docs-only**: `run_exp_m5.py`, `frequency_coherence.py`,
 Lo registrado en §18 sigue vigente **sin modificación**. Este freeze **no** lo revierte:
 
 ```text
-PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
-legacy_heldout_blind_until_execution_freeze=false
-scientific_rules_changed_after_exposure=false
-```
-
----
-
-## 22. Corrective execution freeze (implementación corregida)
-
-> Docs-only. **NO** es un nuevo prereg: el prereg original sigue siendo
-> `M5_PREREG_FREEZE_SHA=d33f81ca…`. Congela la implementación **corregida** para conformarla
-> al prereg congelado, sin retuneo de thresholds ni reglas.
-
-### 22.1 Identificador
-
-```text
-M5_CORRECTIVE_EXECUTION_FREEZE_SHA=<este commit>
-BASE_MAIN_SHA=9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5
-M5_PREREG_FREEZE_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
-HISTORICAL_M5_EXECUTION_FREEZE_SHA=e116196fc47f83659c7df7ada5ec82f9f993bbcd
-```
-
-Razón: *post-FULL implementation correction to conform to frozen prereg, with no
-threshold/rule retuning*. El SHA es, por definición, el commit que introduce esta sección
-(`git rev-parse HEAD`); no se embebe para no escribir provenance fiction (§19).
-
-### 22.2 Qué corrige y qué NO toca
-
-Correcciones (detalle en §21 y en los findings de revisión):
-
-- `cohort_medians`: `EXCESS = median(NRMSE_AUTH − NRMSE_SELF)` por asset (prereg §10/§14).
-- `evaluate_rules`: fail-closed ante held-out ausente y ante valores no finitos.
-- Runner: checkout atado al execution freeze, SHAs exactos (`fullmatch`), bootstrap
-  no-evaluable sin crash, resoluciones del corpus real en `{512, 1024}`, y FULL sin
-  `HELD_OUT` utilizable ⇒ `EXP_M5_DATA_INSUFFICIENT` (no `SUPPORTED`).
-
-Sin cambios:
-
-```text
-THRESHOLDS_CHANGED=NO
-BANDS_CHANGED=NO
-CUTOFF_CHANGED=NO
-ENERGY_GATE_CHANGED=NO
-SEED_CHANGED=NO
-SPLITS_CHANGED=NO
-```
-
-El análisis por asset (`asset_summary`/`analyze_path`) queda intacto: el fix es de
-agregación de cohorte, no de métricas por asset.
-
-### 22.3 Desviación de protocolo — se preserva
-
-```text
-PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
-legacy_heldout_blind_until_execution_freeze=false
-scientific_rules_changed_after_exposure=false
-```
-
-La **regla no cambió**; se corrigió su **implementación**. El corrective FULL ocurre
-**después** de que los datos ya fueron observados: no es una confirmación blinded y no se
-presenta como tal.
-
-### 22.4 Ambigüedad de scope primary/secondary (1024)
-
-```text
-SECONDARY_SCOPE_AMBIGUITY=CONFIRMED
-```
-
-El prereg §9 define 512 como *primary* y 1024 como *secondary* nativa/no-resize, pero **no
-existe** un contrato machine-readable que distinga `PRIMARY_DECISION` de `SECONDARY_CONTROL`
-en el artefacto (solo se registra `environment.resolution`). Este slice valida que el corpus
-real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión para 1024. La
-corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
-primary/secondary queda como follow-up explícito.
-
----
-
-## 23. Corrective FULL — resultado y equivalencia de decisión
-
-> Primer FULL ejecutado desde el corrective freeze (§22), con la implementación corregida.
-> Docs-only: registra lo observado; no retunea nada.
-
-### 23.1 Artefacto
-
-```text
-CORRECTED_FULL_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\full-corrected-e3dbda51.json
-CORRECTED_FULL_SHA256=57b22b1d6138622ba31c4a76934b5b9f35ba8bdaff5c174e638150a1d60a6480
-CORRECTED_FULL_BYTES=196006
-CORRECTED_FULL_SHA=e3dbda517782cb71d9647acad607ea3846629952
-CORRECTED_FULL_RESOLUTION=512
-```
-
-Verificado contra el raw: `git_sha` = `m5_execution_freeze_sha` = `frozen_ack` =
-`e3dbda51…`; `base_main_sha = 9f6fa0c2…`; `m5_prereg_freeze_sha = d33f81ca…`;
-`protocol_status` y flags de §18 intactos; thresholds/cutoff/band_edges/ENERGY_GATE/seed
-idénticos (§22.2). El artefacto histórico `full-e116196f.json` **no** se sobrescribió.
-
-### 23.2 Rows por asset
-
-```text
-HISTORICAL_ROWS_VS_CORRECTED=BIT_IDENTICAL
-```
-
-31/31 filas científicas bit-idénticas entre el FULL histórico y el correctivo: el fix es de
-agregación de cohorte, y el análisis por asset no cambió.
-
-### 23.3 Summary (medianas apareadas) y decisión
-
-| `summary.*.excess_*` | CORRECTED (apareada) | HISTORICAL (diferencia de medianas) |
-|---|---:|---:|
-| FULL LOWMID EXCESS | 0.5082 | 0.5040 |
-| FULL HIGH EXCESS | 0.3350 | 0.3474 |
-| CALIBRATION LOWMID EXCESS | 0.5123 | 0.5713 |
-| CALIBRATION HIGH EXCESS | 0.3350 | 0.3494 |
-| LEGACY_HELDOUT LOWMID EXCESS | 0.4772 | 0.4769 |
-| LEGACY_HELDOUT HIGH EXCESS | 0.3105 | 0.3098 |
-
-```text
-CORRECTED_RULES:
-C1_lowmid_preserved=false
-C2_high_enriched=false
-high_enrichment_ge_threshold=false
-high_gt_lowmid_excess=false
-legacy_heldout_replication=false
-
-CORRECTED_SUMMARY_DECISION=EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED
-HISTORICAL_TO_CORRECTED_DECISION_EQUIVALENT=YES
-```
-
-El bootstrap es idéntico al histórico (ya usaba valores por asset): LOWMID point 0.5082
-CI95 [0.3104, 0.6058]; HIGH 0.3350 [0.2679, 0.4430]; HIGH_ENRICHMENT 0.7542 [0.5710, 1.0470].
-El caso no evaluable `polyhaven_brick_4` sigue en `null`.
-
-### 23.4 Caveat de protocolo (se preserva)
-
-El corrective rerun ocurre **después** de que todo el dataset ya había sido observado (FULL
-histórico + incidente §18): **no** es una confirmación blinded y no se presenta como tal.
-
-```text
-PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+protocol_status=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
 legacy_heldout_blind_until_execution_freeze=false
 scientific_rules_changed_after_exposure=false
 ```
@@ -972,6 +833,145 @@ runner corregido (§22) ejecutado desde el corrective freeze (§22.1).
 No es un bug upstream M0–M4: `EXP_M5_INVALIDATED_BY_UPSTREAM_BUG` está preregistrado para
 bugs que cambien M0–M4 y **no** se reutiliza aquí. Es un defecto de **implementación M5** que
 se corrige para conformar la implementación al prereg congelado, sin retuneo.
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
+---
+
+## 22. Corrective execution freeze (implementación corregida)
+
+> Docs-only. **NO** es un nuevo prereg: el prereg original sigue siendo
+> `M5_PREREG_FREEZE_SHA=d33f81ca…`. Congela la implementación **corregida** para conformarla
+> al prereg congelado, sin retuneo de thresholds ni reglas.
+
+### 22.1 Identificador
+
+```text
+M5_CORRECTIVE_EXECUTION_FREEZE_SHA=<este commit>
+BASE_MAIN_SHA=9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5
+M5_PREREG_FREEZE_SHA=d33f81ca4218d98ab6f445a93db87a76bc19d7ba
+HISTORICAL_M5_EXECUTION_FREEZE_SHA=e116196fc47f83659c7df7ada5ec82f9f993bbcd
+```
+
+Razón: *post-FULL implementation correction to conform to frozen prereg, with no
+threshold/rule retuning*. El SHA es, por definición, el commit que introduce esta sección
+(`git rev-parse HEAD`); no se embebe para no escribir provenance fiction (§19).
+
+### 22.2 Qué corrige y qué NO toca
+
+Correcciones (detalle en §21 y en los findings de revisión):
+
+- `cohort_medians`: `EXCESS = median(NRMSE_AUTH − NRMSE_SELF)` por asset (prereg §10/§14).
+- `evaluate_rules`: fail-closed ante held-out ausente y ante valores no finitos.
+- Runner: checkout atado al execution freeze, SHAs exactos (`fullmatch`), bootstrap
+  no-evaluable sin crash, resoluciones del corpus real en `{512, 1024}`, y FULL sin
+  `HELD_OUT` utilizable ⇒ `EXP_M5_DATA_INSUFFICIENT` (no `SUPPORTED`).
+
+Sin cambios:
+
+```text
+THRESHOLDS_CHANGED=NO
+BANDS_CHANGED=NO
+CUTOFF_CHANGED=NO
+ENERGY_GATE_CHANGED=NO
+SEED_CHANGED=NO
+SPLITS_CHANGED=NO
+```
+
+El análisis por asset (`asset_summary`/`analyze_path`) queda intacto: el fix es de
+agregación de cohorte, no de métricas por asset.
+
+### 22.3 Desviación de protocolo — se preserva
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
+
+La **regla no cambió**; se corrigió su **implementación**. El corrective FULL ocurre
+**después** de que los datos ya fueron observados: no es una confirmación blinded y no se
+presenta como tal.
+
+### 22.4 Ambigüedad de scope primary/secondary (1024)
+
+```text
+SECONDARY_SCOPE_AMBIGUITY=CONFIRMED
+```
+
+El prereg §9 define 512 como *primary* y 1024 como *secondary* nativa/no-resize, pero **no
+existe** un contrato machine-readable que distinga `PRIMARY_DECISION` de `SECONDARY_CONTROL`
+en el artefacto (solo se registra `environment.resolution`). Este slice valida que el corpus
+real sólo admita `{512, 1024}`, pero **no inventa** semántica de decisión para 1024. La
+corrida correctiva que gobierna la decisión es `resolution=512`; la distinción
+primary/secondary queda como follow-up explícito.
+
+---
+
+## 23. Corrective FULL — resultado y equivalencia de decisión
+
+> Primer FULL ejecutado desde el corrective freeze (§22), con la implementación corregida.
+> Docs-only: registra lo observado; no retunea nada.
+
+### 23.1 Artefacto
+
+```text
+CORRECTED_FULL_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\full-corrected-e3dbda51.json
+CORRECTED_FULL_SHA256=57b22b1d6138622ba31c4a76934b5b9f35ba8bdaff5c174e638150a1d60a6480
+CORRECTED_FULL_BYTES=196006
+CORRECTED_FULL_SHA=e3dbda517782cb71d9647acad607ea3846629952
+CORRECTED_FULL_RESOLUTION=512
+```
+
+Verificado contra el raw: `git_sha` = `m5_execution_freeze_sha` = `frozen_ack` =
+`e3dbda51…`; `base_main_sha = 9f6fa0c2…`; `m5_prereg_freeze_sha = d33f81ca…`;
+`protocol_status` y flags de §18 intactos; thresholds/cutoff/band_edges/ENERGY_GATE/seed
+idénticos (§22.2). El artefacto histórico `full-e116196f.json` **no** se sobrescribió.
+
+### 23.2 Rows por asset
+
+```text
+HISTORICAL_ROWS_VS_CORRECTED=BIT_IDENTICAL
+```
+
+31/31 filas científicas bit-idénticas entre el FULL histórico y el correctivo: el fix es de
+agregación de cohorte, y el análisis por asset no cambió.
+
+### 23.3 Summary (medianas apareadas) y decisión
+
+| `summary.*.excess_*` | CORRECTED (apareada) | HISTORICAL (diferencia de medianas) |
+|---|---:|---:|
+| FULL LOWMID EXCESS | 0.5082 | 0.5040 |
+| FULL HIGH EXCESS | 0.3350 | 0.3474 |
+| CALIBRATION LOWMID EXCESS | 0.5123 | 0.5713 |
+| CALIBRATION HIGH EXCESS | 0.3350 | 0.3494 |
+| LEGACY_HELDOUT LOWMID EXCESS | 0.4772 | 0.4769 |
+| LEGACY_HELDOUT HIGH EXCESS | 0.3105 | 0.3098 |
+
+```text
+CORRECTED_RULES:
+C1_lowmid_preserved=false
+C2_high_enriched=false
+high_enrichment_ge_threshold=false
+high_gt_lowmid_excess=false
+legacy_heldout_replication=false
+
+CORRECTED_SUMMARY_DECISION=EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED
+HISTORICAL_TO_CORRECTED_DECISION_EQUIVALENT=YES
+```
+
+El bootstrap es idéntico al histórico (ya usaba valores por asset): LOWMID point 0.5082
+CI95 [0.3104, 0.6058]; HIGH 0.3350 [0.2679, 0.4430]; HIGH_ENRICHMENT 0.7542 [0.5710, 1.0470].
+El caso no evaluable `polyhaven_brick_4` sigue en `null`.
+
+### 23.4 Caveat de protocolo (se preserva)
+
+El corrective rerun ocurre **después** de que todo el dataset ya había sido observado (FULL
+histórico + incidente §18): **no** es una confirmación blinded y no se presenta como tal.
 
 ```text
 PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
