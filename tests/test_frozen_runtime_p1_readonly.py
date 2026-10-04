@@ -1,9 +1,16 @@
-"""Ancla de P1: el paquete Frozen Runtime es READ-ONLY sobre la Managed Source.
+"""Ancla de P1/P2: boundary de escritura del paquete Frozen Runtime.
 
-El discovery/observación/estabilización de P1 no puede escribir, renombrar,
-borrar, linkear, cambiar permisos ni lanzar procesos. Este ancla congela por
-AST el vocabulario de mutación del paquete: cualquier símbolo mutador nuevo
-rompe el test a propósito (misma técnica que tests/test_db_connection_invariant.py).
+P1 (discovery/observation/provider_signals/models/_vdf/stabilization) es
+READ-ONLY sobre disco: sin símbolos de mutación (congelado por AST, misma
+técnica que tests/test_db_connection_invariant.py).
+
+P2 introduce el ÚNICO módulo con escritura permitida (``state.py``: estado
+persistente + metadata de generations, SIEMPRE dentro del FrozenRuntimeRoot
+propio). Su vocabulario de mutación está congelado por igualdad literal: un
+mutador nuevo (rmtree, chmod, rename no-atómico, copy*, symlink_to...) rompe
+el test a propósito. Los lanzadores de procesos están prohibidos en todo el
+paquete. MANAGED_SOURCE_WRITES=NO se mantiene por construcción: ninguna API
+de escritura acepta una Managed Source.
 """
 
 from __future__ import annotations
@@ -32,12 +39,26 @@ MUTADORES_FILESYSTEM: frozenset[str] = frozenset(
         "copy2",
         "copyfile",
         "copytree",
+        "write",
+        "flush",
+        "fsync",
+        "mkstemp",
+        "fdopen",
     }
 )
 
 LANZADORES_PROCESO: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen", "system", "CreateProcess"}
 )
+
+# Vocabulario de mutación congelado por módulo (P2): ÚNICOS módulos con
+# escritura permitida, SIEMPRE dentro del FrozenRuntimeRoot propio.
+# state.py: temporal en el mismo directorio + os.replace + fsync + cleanup.
+# storage.py: creación idempotente del layout (mkdir).
+MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
+    "state.py": frozenset({"fdopen", "flush", "fsync", "mkstemp", "replace", "unlink"}),
+    "storage.py": frozenset({"mkdir"}),
+}
 
 MODOS_ESCRITURA: frozenset[str] = frozenset({"w", "a", "x", "+", "wb", "ab", "xb", "r+", "rb+"})
 
@@ -46,21 +67,48 @@ def _modulos_del_paquete() -> tuple[pathlib.Path, ...]:
     return tuple(sorted(PAQUETE.glob("*.py")))
 
 
-def test_paquete_sin_simbolos_de_mutacion() -> None:
-    """Congela el vocabulario: ningún símbolo mutador puede aparecer en el paquete."""
+def _es_mutador(nodo: ast.Attribute) -> bool:
+    if nodo.attr not in MUTADORES_FILESYSTEM:
+        return False
+    if nodo.attr == "replace":
+        # str.replace no es mutación de filesystem; sólo os.replace lo es.
+        return isinstance(nodo.value, ast.Name) and nodo.value.id == "os"
+    return True
+
+
+def _mutadores_usados(modulo: pathlib.Path) -> set[str]:
+    arbol = ast.parse(modulo.read_text(encoding="utf-8"), filename=str(modulo))
+    return {nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute) and _es_mutador(nodo)}
+
+
+def test_escritura_solo_en_modulos_permitidos() -> None:
+    """Sólo state.py/storage.py mutan, y sólo con su vocabulario congelado."""
+    violaciones: list[str] = []
+    for modulo in _modulos_del_paquete():
+        usados = _mutadores_usados(modulo)
+        permitidos = MODULOS_CON_ESCRITURA_PERMITIDA.get(modulo.name, frozenset())
+        if usados != permitidos:
+            violaciones.append(
+                f"{modulo.name}: usados={sorted(usados)} permitidos={sorted(permitidos)} — "
+                "decidí si el símbolo pertenece al boundary (escritura dentro del FrozenRuntimeRoot propio) "
+                "y congélalo en MODULOS_CON_ESCRITURA_PERMITIDA"
+            )
+    assert not violaciones, f"boundary de escritura violado: {violaciones}"
+
+
+def test_sin_lanzadores_de_proceso() -> None:
+    """Ningún módulo del paquete puede lanzar procesos (ni Steam ni nada)."""
     violaciones: list[str] = []
     for modulo in _modulos_del_paquete():
         arbol = ast.parse(modulo.read_text(encoding="utf-8"), filename=str(modulo))
         for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Attribute) and nodo.attr in MUTADORES_FILESYSTEM:
-                violaciones.append(f"{modulo.name}:{nodo.lineno}: {nodo.attr}")
             if isinstance(nodo, ast.Attribute) and nodo.attr in LANZADORES_PROCESO:
                 violaciones.append(f"{modulo.name}:{nodo.lineno}: {nodo.attr}")
-    assert not violaciones, f"símbolos de mutación en Frozen Runtime P1 (read-only roto): {violaciones}"
+    assert not violaciones, f"lanzadores de proceso en Frozen Runtime: {violaciones}"
 
 
-def test_paquete_sin_open_en_modo_escritura() -> None:
-    """``open()`` sólo puede usarse en modo lectura si aparece."""
+def test_p1_sin_open_en_modo_escritura() -> None:
+    """``open()`` sólo puede usarse en modo lectura (la escritura va por fdopen atómico)."""
     violaciones: list[str] = []
     for modulo in _modulos_del_paquete():
         arbol = ast.parse(modulo.read_text(encoding="utf-8"), filename=str(modulo))
