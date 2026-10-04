@@ -344,6 +344,9 @@ module = [
     "sky_claw.local.tools.skse_catalog",
     # P2 Pre-LOD: registro canónico de herramientas externas (nace estricto)
     "sky_claw.local.discovery.registry",
+    # P1 Frozen Runtime: paquete nuevo (models/discovery/observation/stabilization),
+    # nace estricto por la misma convención que los módulos nuevos de la lista.
+    "sky_claw.local.frozen_runtime.*",
 ]
 strict = true
 ignore_errors = false
