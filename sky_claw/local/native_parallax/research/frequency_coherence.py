@@ -300,6 +300,13 @@ def cohort_medians(per_asset: list[dict[str, Any]]) -> dict[str, float]:
     ``per_asset``: dicts con ``auth_lowmid_nrmse``/``self_lowmid_nrmse`` (flag
     ``lowmid_eligible``), ``auth_high_nrmse``/``self_high_nrmse`` (flag ``high_eligible``)
     y ``high_enrichment``. Una metrica solo promedia los assets elegibles de ese agregado.
+
+    El EXCESS se agrega como ``median(NRMSE_AUTH_b - NRMSE_SELF_b)`` sobre el campo apareado
+    por asset (``excess_lowmid_nrmse``/``excess_high_nrmse``), que es lo que exige el prereg
+    (§10/§14). NO como ``median(AUTH) - median(SELF)``: esas dos cantidades no son
+    equivalentes en general (con assets heterogeneos pueden caer a distinto lado de un
+    threshold o invertir la comparacion HIGH vs LOWMID). Las medianas marginales de AUTH y
+    SELF se conservan por separado, solo para diagnostico.
     """
 
     def elig(flag: str, val: str) -> float:
@@ -307,16 +314,17 @@ def cohort_medians(per_asset: list[dict[str, Any]]) -> dict[str, float]:
 
     auth_low = elig("lowmid_eligible", "auth_lowmid_nrmse")
     self_low = elig("lowmid_eligible", "self_lowmid_nrmse")
+    excess_low = elig("lowmid_eligible", "excess_lowmid_nrmse")
     auth_high = elig("high_eligible", "auth_high_nrmse")
     self_high = elig("high_eligible", "self_high_nrmse")
+    excess_high = elig("high_eligible", "excess_high_nrmse")
     enrich = _median([a["high_enrichment"] for a in per_asset if not math.isnan(a["high_enrichment"])])
-    nan = float("nan")
     return {
         "auth_lowmid_nrmse": auth_low,
         "self_lowmid_nrmse": self_low,
-        "excess_lowmid_nrmse": nan if (math.isnan(auth_low) or math.isnan(self_low)) else auth_low - self_low,
+        "excess_lowmid_nrmse": excess_low,
         "auth_high_nrmse": auth_high,
         "self_high_nrmse": self_high,
-        "excess_high_nrmse": nan if (math.isnan(auth_high) or math.isnan(self_high)) else auth_high - self_high,
+        "excess_high_nrmse": excess_high,
         "high_enrichment": enrich,
     }

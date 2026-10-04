@@ -332,6 +332,82 @@ def test_legacy_heldout_replication_gate() -> None:
     assert rules_bad["C2_high_enriched"] is False
 
 
+def test_cohort_excess_es_mediana_del_exceso_apareado_por_asset() -> None:
+    """C1/C2 consumen ``median(NRMSE_AUTH − NRMSE_SELF)`` por asset, NO diferencia de medianas.
+
+    Contraejemplo mínimo (n=3) donde ``median(AUTH) − median(SELF) = 0.0`` pero
+    ``median(AUTH − SELF) = 0.15``, suficiente para cruzar ``T_LOWMID_EXCESS = 0.10`` y
+    cambiar C1 de verdadero (implementación previa) a falso (prereg §10/§14).
+
+    Ancla PAIRED_EXCESS: el campo apareado ya existía en cada fila; el defecto era no
+    agregarlo. Falla contra la implementación que agregaba por diferencia de medianas.
+    """
+
+    def _fila(auth_low: float, self_low: float, auth_high: float, self_high: float) -> dict:
+        return {
+            "self_lowmid_nrmse": self_low,
+            "auth_lowmid_nrmse": auth_low,
+            "excess_lowmid_nrmse": auth_low - self_low,
+            "lowmid_eligible": 1.0,
+            "self_high_nrmse": self_high,
+            "auth_high_nrmse": auth_high,
+            "excess_high_nrmse": auth_high - self_high,
+            "high_eligible": 1.0,
+            "high_enrichment": 1.0,
+        }
+
+    filas = [
+        _fila(auth_low=0.00, self_low=0.15, auth_high=0.00, self_high=0.10),
+        _fila(auth_low=0.15, self_low=0.00, auth_high=0.10, self_high=0.00),
+        _fila(auth_low=0.30, self_low=0.15, auth_high=0.20, self_high=0.10),
+    ]
+    cohort = cohort_medians(filas)
+
+    # La mediana apareada del exceso es la que manda (prereg §10/§14):
+    assert cohort["excess_lowmid_nrmse"] == pytest.approx(0.15)
+    assert cohort["excess_high_nrmse"] == pytest.approx(0.10)
+    # ... y NO es la diferencia de medianas, que aquí vale 0.0:
+    assert cohort["auth_lowmid_nrmse"] - cohort["self_lowmid_nrmse"] == pytest.approx(0.0)
+    # Diagnóstico: las medianas marginales se conservan por separado.
+    assert cohort["auth_lowmid_nrmse"] == pytest.approx(0.15)
+    assert cohort["self_lowmid_nrmse"] == pytest.approx(0.15)
+
+    rules = evaluate_rules(cohort, legacy_heldout=cohort)
+    assert rules["C1_lowmid_preserved"] is False
+    assert rules["C2_high_enriched"] is False
+    assert decide(rules) == EXP_BANDLIMITED_NOT_SUPPORTED
+
+
+def test_bootstrap_y_decision_resumen_la_misma_definicion_apareada() -> None:
+    """El punto bootstrap y el EXCESS de cohorte son la misma definición apareada.
+
+    Si la decisión agregara por diferencia de medianas mientras el bootstrap usa los valores
+    por-asset, ambos resumirían estadísticos distintos (finding de revisión). Este ancla
+    congela que ambos coinciden sobre el contraejemplo donde las dos definiciones difieren.
+    """
+    from sky_claw.local.native_parallax.research.solver_coherence import bootstrap_median_ci
+
+    def _fila(auth_low: float, self_low: float) -> dict:
+        return {
+            "self_lowmid_nrmse": self_low,
+            "auth_lowmid_nrmse": auth_low,
+            "excess_lowmid_nrmse": auth_low - self_low,
+            "lowmid_eligible": 1.0,
+            "self_high_nrmse": 0.0,
+            "auth_high_nrmse": 0.0,
+            "excess_high_nrmse": 0.0,
+            "high_eligible": 1.0,
+            "high_enrichment": 1.0,
+        }
+
+    filas = [_fila(0.00, 0.15), _fila(0.15, 0.00), _fila(0.30, 0.15)]
+    cohort = cohort_medians(filas)
+    boot = bootstrap_median_ci([f["excess_lowmid_nrmse"] for f in filas if f["lowmid_eligible"] >= 1.0])
+    assert boot["point"] == pytest.approx(cohort["excess_lowmid_nrmse"])
+    # Y ambas definiciones difieren de la diferencia de medianas en este dataset:
+    assert cohort["auth_lowmid_nrmse"] - cohort["self_lowmid_nrmse"] == pytest.approx(0.0)
+
+
 def test_thresholds_and_cutoff_are_frozen_constants() -> None:
     assert BAND_EDGES == (4, 8, 16, 32, 64, 128)
     assert T_HIGH_ENRICHMENT > 1.0
