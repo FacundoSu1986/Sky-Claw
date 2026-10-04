@@ -44,6 +44,11 @@ MUTADORES_FILESYSTEM: frozenset[str] = frozenset(
         "fsync",
         "mkstemp",
         "fdopen",
+        # P3: superficie real de escritura al copiar. `link` (os.link) es el
+        # atajo de hardlink que SFR-18 prohibe y que un digest NO detecta; si
+        # aparece aca, el Candidate dejaria de ser fisicamente independiente.
+        "link",
+        "symlink",
     }
 )
 
@@ -51,16 +56,28 @@ LANZADORES_PROCESO: frozenset[str] = frozenset(
     {"run", "call", "check_call", "check_output", "Popen", "system", "CreateProcess"}
 )
 
-# Vocabulario de mutación congelado por módulo (P2): ÚNICOS módulos con
+# Vocabulario de mutación congelado por módulo (P2/P3): ÚNICOS módulos con
 # escritura permitida, SIEMPRE dentro del FrozenRuntimeRoot propio.
 # state.py: temporal en el mismo directorio + os.replace + fsync + cleanup.
 # storage.py: creación idempotente del layout (mkdir).
+# copying.py: la copia real del Candidate (mkdir + open/xb + fsync/flush).
+# candidates.py: el directorio de metadata (mkdir); la escritura del JSON la
+# hace state.write_json_atomic, no un segundo serializador.
 MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     "state.py": frozenset({"fdopen", "flush", "fsync", "mkstemp", "replace", "unlink"}),
     "storage.py": frozenset({"mkdir"}),
+    "copying.py": frozenset({"flush", "fsync", "mkdir"}),
+    "candidates.py": frozenset({"mkdir"}),
 }
 
 MODOS_ESCRITURA: frozenset[str] = frozenset({"w", "a", "x", "+", "wb", "ab", "xb", "r+", "rb+"})
+
+#: Módulos autorizados a abrir archivos en modo escritura, con el modo EXACTO
+#: que declaran. `xb` es exclusivo de creación: sobreescribir un payload ya
+#: existente sería dejar que dos corridas se pisen en silencio.
+MODULOS_CON_OPEN_ESCRITURA: dict[str, frozenset[str]] = {
+    "copying.py": frozenset({"xb"}),
+}
 
 
 def _modulos_del_paquete() -> tuple[pathlib.Path, ...]:
@@ -70,9 +87,17 @@ def _modulos_del_paquete() -> tuple[pathlib.Path, ...]:
 def _es_mutador(nodo: ast.Attribute) -> bool:
     if nodo.attr not in MUTADORES_FILESYSTEM:
         return False
-    if nodo.attr == "replace":
-        # str.replace no es mutación de filesystem; sólo os.replace lo es.
-        return isinstance(nodo.value, ast.Name) and nodo.value.id == "os"
+    if nodo.attr in ("replace", "rename"):
+        # `str.replace()` NO es mutación de filesystem; `Path.replace()` SÍ lo es
+        # y es la forma que un mutador usaría para hacer un swap no-atómico.
+        #
+        # La regla que las separa sin análisis de tipos: una variable de texto es
+        # un `Name` (`entrada.replace("\\", "/")`), mientras que una expresión que
+        # produce un Path es una LLAMADA (`pathlib.Path(x).replace(y)`,
+        # `candidate_dir(...).rename(...)`). Antes esta función sólo aceptaba
+        # `os.replace`, así que `Path.replace` pasaba inadvertido: desde que P3
+        # copia archivos de verdad, ese hueco dejó de ser teórico.
+        return isinstance(nodo.value, ast.Call) or (isinstance(nodo.value, ast.Name) and nodo.value.id == "os")
     return True
 
 
@@ -107,10 +132,17 @@ def test_sin_lanzadores_de_proceso() -> None:
     assert not violaciones, f"lanzadores de proceso en Frozen Runtime: {violaciones}"
 
 
-def test_p1_sin_open_en_modo_escritura() -> None:
-    """``open()`` sólo puede usarse en modo lectura (la escritura va por fdopen atómico)."""
+def test_open_en_modo_escritura_solo_en_los_modulos_declarados() -> None:
+    """``open()`` en modo escritura requiere declaración explícita por módulo.
+
+    P3 introduce la primera escritura de contenido (``copying.py`` abre el destino
+    con ``xb``). Antes el test asumía que NINGÚN módulo podía hacerlo; ahora la
+    regla es "solo los que lo declaran, y solo con los modos declarados", que
+    sigue cerrando el default y además congela el modo exacto.
+    """
     violaciones: list[str] = []
     for modulo in _modulos_del_paquete():
+        permitidos = MODULOS_CON_OPEN_ESCRITURA.get(modulo.name, frozenset())
         arbol = ast.parse(modulo.read_text(encoding="utf-8"), filename=str(modulo))
         for nodo in ast.walk(arbol):
             if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "open" and nodo.args:
@@ -119,6 +151,47 @@ def test_p1_sin_open_en_modo_escritura() -> None:
                     if len(nodo.args) > 1
                     else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
                 )
-                if isinstance(modo, ast.Constant) and isinstance(modo.value, str) and modo.value in MODOS_ESCRITURA:
-                    violaciones.append(f"{modulo.name}:{nodo.lineno}: open modo '{modo.value}'")
-    assert not violaciones, f"open() en modo escritura dentro de Frozen Runtime P1: {violaciones}"
+                if (
+                    isinstance(modo, ast.Constant)
+                    and isinstance(modo.value, str)
+                    and modo.value in MODOS_ESCRITURA
+                    and modo.value not in permitidos
+                ):
+                    violaciones.append(
+                        f"{modulo.name}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
+                        f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
+                    )
+    assert not violaciones, f"open() en modo escritura no declarado dentro de Frozen Runtime: {violaciones}"
+
+
+def test_el_oracle_distingue_str_replace_de_path_replace() -> None:
+    """El anchor no se debilita por endurecer `replace` (§19).
+
+    Antes sólo `os.replace` contaba como mutación, así que `Path.replace` —la
+    forma de hacer un swap no-atómico— pasaba inadvertido. Este test congela las
+    DOS sides: la de texto se sigue ignorando, la de Path se sigue detectando.
+    """
+    texto = "def f(entrada: str, ruta):\n    entrada.replace('a', 'b')\n"
+    pathlib_ = "def f(ruta):\n    pathlib.Path(ruta).replace(otro)\n"
+    os_ = "def f():\n    os.replace(tmp, ruta)\n"
+
+    assert _mutadores_de_fuente(texto) == set()
+    assert _mutadores_de_fuente(pathlib_) == {"replace"}
+    assert _mutadores_de_fuente(os_) == {"replace"}
+
+
+def _mutadores_de_fuente(fuente: str) -> set[str]:
+    arbol = ast.parse(fuente)
+    return {nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute) and _es_mutador(nodo)}
+
+
+def test_el_oracle_detecta_el_atajo_de_hardlink() -> None:
+    """`os.link` es mutación prohibida en P3 (SFR-18) y debe romper el anchor.
+
+    Un hardlink daría el mismo `TreeDigest` y la misma `DirectoryMembership`, así
+    que el digest no lo detecta: si el motor de copia empezara a "optimizar" con
+    `os.link`, el Candidate perdería independencia física sin que ningún otro
+    test lo notara.
+    """
+    assert _mutadores_de_fuente("def f(a, b):\n    os.link(a, b)\n") == {"link"}
+    assert _mutadores_de_fuente("def f(a, b):\n    shutil.copytree(a, b)\n") == {"copytree"}
