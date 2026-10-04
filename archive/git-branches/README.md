@@ -5,9 +5,11 @@
 > **Repo:** https://github.com/FacundoSu1986/Sky-Claw.git
 > **Base:** `main` @ `ee4a67ec`
 
-> ⚠️ El `.bundle` **vive solo en esta máquina** (gitignored, no publicado en ningún
-> Release). Ningún otro clon puede obtenerlo ni verificar sus hashes: las
-> afirmaciones de "restauración probada" son locales hasta que se publique.
+> 📦 El `.bundle` está **subido como asset de un release en borrador**
+> (`branch-archive-20261004`), tras una auditoría de secretos sobre los 43 tips que
+> nunca se publicaron en ninguna ref remota (sin coincidencias reales). Todavía **no
+> publicado**: por eso las afirmaciones de "restauración probada" son locales hasta
+> que se publique el release.
 
 ## Por qué existe esta carpeta
 
@@ -146,21 +148,37 @@ Omite toda rama con PR abierto, checked-out en un worktree, la rama actual o
 `main`, y toda rama que no esté en el bundle. **No borres a mano guiándote por el
 manifiesto** (ver la advertencia de snapshot más arriba).
 
-## Publicación del bundle (pendiente)
+## Publicación del bundle
 
-El bundle **no está publicado**: solo existe en esta máquina. Para que el respaldo
-sea verificable por terceros y sobreviva a esta máquina, subilo como **asset de un
-Release** (repo público; 17,8 MB ≪ 2 GB) y pegá la URL + el SHA-256 completo acá:
+El bundle está **subido como asset del release `branch-archive-20261004`**, hoy en
+**borrador** (visible solo para quienes tienen acceso de escritura al repo).
+
+- Asset: `obsolete-branches-20261004.bundle` (~17,8 MB)
+- SHA-256: `BD3E2BE405F27434C7C3EE740D3349B48E9083025EF2A855333D90AAFD2CCD04`
+- Release: https://github.com/FacundoSu1986/Sky-Claw/releases/tag/branch-archive-20261004
+
+**Auditoría previa a subirlo.** El bundle contiene **43 tips** de commits que nunca
+estuvieron publicados en ninguna ref remota. Se auditaron esos 43 trees:
+
+| Búsqueda | Resultado |
+|---|---|
+| Patrones fuertes (API keys de OpenAI/OpenRouter/GitHub/AWS/Google/Slack, claves privadas PEM) | **0 coincidencias reales** — la única es la fixture sintética `sk-abc123...` de `tests/test_agent_guardrail.py`, ya pública |
+| Patrón blando (credenciales asignadas a literales) | Solo referencias a *nombres* de variables de config (`llm_api_key`, `telegram_bot_token`, …), sin valores |
+| Archivos sensibles trackeados (`.env`, `.pem`, `.key`, `id_rsa`, `.p12`, `.pfx`, `.netrc`, `.keystore`) | **ninguno** |
+
+Quedó en borrador a propósito: publicar 43 commits de historia es una decisión
+consciente del owner, no un efecto colateral. Para hacerlo público:
 
 ```bash
-gh release create branch-archive-20261004 \
-  --title "Branch archive 2026-10-04" \
-  --notes "Bundle de 77 ramas obsoletas archivadas (git bundle)" \
-  archive/git-branches/obsolete-branches-20261004.bundle
+gh release edit branch-archive-20261004 --draft=false
 ```
 
-> Antes de publicarlo, revisá que los commits del bundle —incluidos los ~14 que NO
-> están en GitHub— no contengan nada que no deba ser público. El repo es público.
+Para verificar el asset una vez descargado:
+
+```powershell
+Get-FileHash obsolete-branches-20261004.bundle -Algorithm SHA256   # debe coincidir arriba
+git bundle verify obsolete-branches-20261004.bundle              # "complete history"
+```
 
 ## Cómo regenerar este archivo
 
