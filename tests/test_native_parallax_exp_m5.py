@@ -1070,6 +1070,30 @@ def test_full_desde_el_freeze_exacto_alcanza_prepare_entries(tmp_path: Path, mon
     assert llamados, "prepare_entries no se llamó pese a checkout == freeze"
 
 
+def test_current_git_sha_consulta_el_checkout_del_modulo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El binding corre git en el checkout del MÓDULO, no en el cwd del proceso.
+
+    Si el venv compartido resolvió ``sky_claw`` hacia otro checkout (§19.4), el chequeo debe
+    mirar el HEAD de ESE checkout: correr git en el cwd del proceso dejaría pasar código de
+    otra revisión declarando el freeze.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m5
+
+    capturado: dict = {}
+
+    class _Resultado:
+        stdout = "a" * 40 + "\n"
+
+    def _fake_run(args, **kwargs):  # noqa: ANN001, ANN202
+        capturado["args"] = args
+        capturado["kwargs"] = kwargs
+        return _Resultado()
+
+    monkeypatch.setattr(run_exp_m5.subprocess, "run", _fake_run)
+    assert run_exp_m5.current_git_sha() == "a" * 40
+    assert capturado["kwargs"]["cwd"] == Path(run_exp_m5.__file__).resolve().parent
+
+
 @pytest.mark.parametrize(
     "bad_sha",
     [_SHA40 + "\n", _SHA40 + "\r\n", " " + _SHA40, _SHA40 + " ", "\t" + _SHA40, _SHA40 + "\t"],

@@ -172,12 +172,21 @@ def resolve_m5_provenance(
 
 
 def current_git_sha() -> str | None:
-    """SHA del commit del checkout actual, o ``None`` si git no está disponible.
+    """SHA del commit del checkout del MÓDULO, o ``None`` si git no está disponible.
 
-    Es el valor REAL contra el que se compara el execution freeze; nunca un flag.
+    El ``cwd`` se fija al directorio de este archivo (no al cwd del proceso): si el venv
+    compartido resolvió ``sky_claw`` hacia OTRO checkout por las entradas ``.pth`` (§19.4),
+    el binding debe mirar el HEAD del checkout cuyo código realmente corre, no el del cwd.
     """
     try:
-        proc = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10)
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+            cwd=Path(__file__).resolve().parent,
+        )
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - fuera de un checkout
         return None
     sha = proc.stdout.strip()
