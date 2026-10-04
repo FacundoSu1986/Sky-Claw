@@ -310,6 +310,24 @@ class TestEstado:
             with pytest.raises(StateSchemaError):
                 load_frozen_runtime_state(path)
 
+    def test_st14_id_mayusculas_se_normaliza_al_cargar(self, tmp_path: pathlib.Path) -> None:
+        # El id se persiste normalizado (casefold): consumers lo comparan
+        # contra directorios/metadata normalizados.
+        path = tmp_path / "active.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "desired_active_generation": "1.6.1170__A1B2C3D4E5F6",
+                    "updated_at_ns": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        carga = load_frozen_runtime_state(path)
+        assert carga.state is not None
+        assert carga.state.desired_active_generation == "1.6.1170__a1b2c3d4e5f6"
+
     def test_st12_estado_enlazado_rechazado(self, tmp_path: pathlib.Path) -> None:
         real = tmp_path / "real.json"
         real.write_text(json.dumps({"schema_version": 1, "desired_active_generation": None, "updated_at_ns": 0}))
@@ -418,6 +436,18 @@ class TestNamespaceReparse:
         assert (externo / "sentinel.txt").read_text(encoding="utf-8") == "intacto"
         assert not (externo / "active.json").exists()
         assert not (externo / "generations").exists()
+
+    def test_sr11_fallo_escribiendo_estado_inicial_no_lanza(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # El init devuelve resultado tipado fail-closed, no una excepción.
+        def escritura_rota(path: object, payload: object) -> None:
+            raise FrozenRuntimeStorageError("fallo inyectado de escritura")
+
+        monkeypatch.setattr("sky_claw.local.frozen_runtime.storage.write_json_atomic", escritura_rota)
+        resultado = initialize_frozen_runtime_storage(tmp_path / "frozen")
+        assert not resultado.success
+        assert "estado inicial" in resultado.admission.message
 
     def test_sr10_namespace_redirigido_lectura_rechazada(self, tmp_path: pathlib.Path) -> None:
         # Read-side: con `state/` redirigido a un árbol externo CON estado

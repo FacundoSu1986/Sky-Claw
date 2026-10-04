@@ -71,7 +71,11 @@ def _parsear_estado(raw: str, *, source_label: str) -> FrozenRuntimeState:
     if deseado is not None:
         if not isinstance(deseado, str):
             raise StateSchemaError(f"{source_label}: desired_active_generation debe ser string o null")
-        validar_generation_id(deseado)
+        # Se PERSISTE el valor normalizado (casefold): un id con mayúsculas
+        # aceptado por la validación no debe quedar crudo en el estado, o los
+        # consumers lo compararían contra directorios/metadata ya normalizados
+        # y en un filesystem case-sensitive no resolvería.
+        deseado = validar_generation_id(deseado)
     actualizado = data.get("updated_at_ns")
     if not isinstance(actualizado, int) or isinstance(actualizado, bool) or actualizado < 0:
         raise StateSchemaError(f"{source_label}: updated_at_ns debe ser un int >= 0")

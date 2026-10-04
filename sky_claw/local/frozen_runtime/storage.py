@@ -249,10 +249,24 @@ def initialize_frozen_runtime_storage(
 
     state_initialized = False
     if not active_state_path(ruta).exists():
-        write_json_atomic(
-            active_state_path(ruta),
-            {"schema_version": 1, "desired_active_generation": None, "updated_at_ns": 0},
-        )
+        try:
+            write_json_atomic(
+                active_state_path(ruta),
+                {"schema_version": 1, "desired_active_generation": None, "updated_at_ns": 0},
+            )
+        except (FrozenRuntimeStorageError, OSError) as exc:
+            # El init documenta resultado tipado fail-closed: un fallo de
+            # escritura del estado inicial no debe escapar como excepción a
+            # callers que sólo miran StorageInitResult.success.
+            return StorageInitResult(
+                admission=StorageAdmissionResult(
+                    state=StorageAdmissionState.REJECTED,
+                    message=f"no se pudo escribir el estado inicial: {exc}",
+                    root=ruta,
+                ),
+                root=ruta,
+                created_dirs=tuple(creados),
+            )
         state_initialized = True
 
     return StorageInitResult(
