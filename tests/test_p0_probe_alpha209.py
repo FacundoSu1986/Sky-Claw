@@ -9,6 +9,8 @@ P0 prometió y que un futuro cambio del probe podría romper en silencio:
 - estabilidad del fingerprint de modales (botones de scroll no lo rompen);
 - ledger exactly-once: una acción intentada no se re-invoca;
 - P0-A: prohibición de primitivas mutantes (WM_SETTEXT/BM_CLICK/mouse/teclado);
+- P0-A: el valor original del Output debe ser OBSERVABLE antes de mutar —
+  `None` (desconocido) omite la mutación y el journal, `""` es un valor real;
 - P0-B: TODO Invoke vive dentro de `invocar_una_vez`, la familia de acciones
   está enumerada por igualdad literal, y los modales iniciales sólo se
   resuelven con intervención HUMANA (`automation_policy=NOT_AUTHORIZED`).
@@ -694,3 +696,185 @@ def test_cierre_termina_el_arbol_de_procesos():
     assert "taskkill" in texto
     assert '"/T"' in texto
     assert "IMAGENES_HIJAS" in texto
+
+
+# ---------------------------------------------------------------------------
+# Original del Output no observable => CERO mutación (UNKNOWN != EMPTY)
+# ---------------------------------------------------------------------------
+
+EVIDENCIA_DIR = PROBE_DIR.parent
+
+#: Rondas ya medidas. Se congelan por igualdad literal porque el fix endurece
+#: la sonda SÓLO para reutilizaciones futuras: reescribir estas evidencias para
+#: que reflejen una conducta que la sonda no tenía en su momento sería fabricar
+#: historia. Una ronda nueva se agrega acá explícitamente.
+_RONDAS_HISTORICAS = (
+    "texgen/texgen_round1_195510.json",
+    "texgen/texgen_round2_195829.json",
+    "texgen/texgen_round3_202901.json",
+    "texgen/texgen_round4_203058.json",
+    "dynodlod/dynodlod_round1_203232.json",
+    "dynodlod/dynodlod_round2_203416.json",
+    "p0b/texgen/texgen_p0b.json",
+    "p0b/dyndolod/dyndolod_p0b.json",
+)
+
+
+class _AdaptadorFalso:
+    """Doble de `UiAdapter` que CUENTA las escrituras: cero llamadas = cero mutación.
+
+    No necesita Windows ni COM — reproduce el contrato que P0-A usa del adaptador
+    (`lectura_output` / `set_value` + `_errores_del_rig`), que es toda la
+    superficie por la que la sonda puede mutar el Output.
+    """
+
+    def __init__(self, lecturas: list[dict]) -> None:
+        self._lecturas = list(lecturas)
+        self.set_value_calls: list[tuple[str, str]] = []
+        self._errores_del_rig: tuple[type[BaseException], ...] = (OSError, RuntimeError)
+
+    def lectura_output(self, el: object) -> dict:
+        return self._lecturas.pop(0)
+
+    def set_value(self, el: object, mecanismo: str, valor: str) -> dict:
+        self.set_value_calls.append((mecanismo, valor))
+        return {"mechanism": mecanismo, "hresult": "S_OK"}
+
+
+def _correr(adaptador, tmp_path, root_test, original, pasos):
+    return p0a_probe.correr_experimentos_de_salida(
+        adaptador,
+        object(),
+        tmp_path,
+        "texgen",
+        root_test,
+        original,
+        lambda etapa, datos: pasos.append((etapa, datos)),
+        pid=1234,
+        exe_sha="0939bc8f" * 8,
+        fingerprint={"runtime_id": [42, 1], "control_type": "Edit", "name": "Output"},
+    )
+
+
+def test_original_observable_de_distingue_desconocido_de_vacio():
+    """`None` = ningún patrón lo expone. `""` = valor real y observable."""
+    assert p0a_probe.original_observable_de({"value_pattern_value": None, "legacy_value": None}) is None
+    assert p0a_probe.original_observable_de({"legacy_value": ""}) == ""
+    assert p0a_probe.original_observable_de({"value_pattern_value": "C:\\out", "legacy_value": ""}) == "C:\\out"
+    assert p0a_probe.original_observable_de({"legacy_error": "COMError"}) is None
+    # sólo el patrón ausente habilita el otro: no hay fallback de escritura
+    assert p0a_probe.original_observable_de({"value_pattern_value": "C:\\out"}) == "C:\\out"
+
+
+def test_original_no_observable_no_muta_y_no_persiste_journal(tmp_path):
+    """AMBIGÜEDAD ELIMINADA: si el original no es observable, ZERO SetValue.
+
+    Un `or ""` convertía "desconocido" en un valor vacío aparentemente
+    restaurable: la sonda publicaba RESTORE_PENDING, mutaba, y terminaba
+    declarando RESTORED sobre un `""` que nunca midió. Ninguna de las tres
+    cosas puede ocurrir cuando no se conoce el valor original.
+    """
+    pasos: list[tuple[str, dict]] = []
+    original = {"value_pattern_value": None, "legacy_value": None}
+    adaptador = _AdaptadorFalso([dict(original)])
+    veredicto = _correr(adaptador, tmp_path, tmp_path / "OutputTest", original, pasos)
+
+    # cero mutaciones: ni ValuePattern.SetValue ni LegacyIAccessible.SetValue
+    assert adaptador.set_value_calls == []
+    assert veredicto["mutation_skipped"] is True
+    assert veredicto["experimentos"] == {}
+    # no hubo mutación, así que no hay nada que recuperar: CERO journal
+    assert veredicto["journal"] is None
+    assert list(tmp_path.glob("*_output_restore_journal.json")) == []
+    assert [etapa for etapa, _ in pasos if etapa == "restore_journal_persistido"] == []
+    assert veredicto["restore_ok"] is None
+    # veredicto tipado, en la misma familia que los demás "Output no usable"
+    assert veredicto["estado"] == "OUTPUT_ORIGINAL_UNREADABLE"
+
+
+def test_original_no_observable_deja_evidencia_de_la_omision(tmp_path):
+    """La evidencia dice QUÉ se intentó leer y POR QUÉ no se mutó."""
+    pasos: list[tuple[str, dict]] = []
+    original = {"value_pattern_value": None, "legacy_value": None}
+    adaptador = _AdaptadorFalso([dict(original)])
+    _correr(adaptador, tmp_path, tmp_path / "OutputTest", original, pasos)
+
+    etapa, datos = pasos[-1]
+    assert etapa == "output_original_no_observable"
+    assert datos["estado"] == "OUTPUT_ORIGINAL_UNREADABLE"
+    assert datos["original_read_attempted"] is True
+    assert datos["value_pattern_value"] is None
+    assert datos["legacy_value"] is None
+    assert datos["original_read"] == original
+    assert datos["mutation_skipped"] is True
+    assert datos["reason"] == "original output unavailable"
+
+
+def test_original_vacio_explicito_es_observable_y_se_puede_restaurar(tmp_path):
+    """CONGELA LA DIFERENCIA SEMÁNTICA: `""` del provider es un valor real.
+
+    Si el caso se tratara como desconocido, el campo Output vacío de un wizard
+    recién lanzado nunca podría experimentarse — y es precisamente el valor más
+    común ahí. Distinguirlo es el objeto del fix.
+    """
+    pasos: list[tuple[str, dict]] = []
+    root_test = tmp_path / "OutputTest"
+    # la lectura ORIGINAL la hace `main` y entra por parámetro; acá van los tres
+    # readbacks que consume el experimento: tras VP, tras Legacy y tras el restore
+    adaptador = _AdaptadorFalso(
+        [
+            {"legacy_value": str(root_test)},
+            {"legacy_value": str(root_test)},
+            {"legacy_value": ""},
+        ]
+    )
+    veredicto = _correr(adaptador, tmp_path, root_test, {"legacy_value": ""}, pasos)
+
+    # los dos experimentos siguen siendo independientes, y el restore va third
+    assert [mecanismo for mecanismo, _ in adaptador.set_value_calls] == [
+        "ValuePattern",
+        "LegacyIAccessible",
+        "LegacyIAccessible",
+    ]
+    # restaura el vacío REAL: no "None", no None
+    assert adaptador.set_value_calls[-1][1] == ""
+    assert veredicto["mutation_skipped"] is False
+    assert veredicto["restore_ok"] is True
+    assert veredicto["experimentos"]["restore"]["restored_ok"] is True
+    assert [etapa for etapa, _ in pasos if etapa == "restore_journal_persistido"]
+
+
+def test_original_vacio_explicito_persista_journal_con_el_valor_real(tmp_path):
+    """Con original observable el journal se persiste ANTES de mutar (CR-3)."""
+    root_test = tmp_path / "OutputTest"
+    adaptador = _AdaptadorFalso(
+        [
+            {"legacy_value": str(root_test)},
+            {"legacy_value": str(root_test)},
+            {"legacy_value": ""},
+        ]
+    )
+    veredicto = _correr(adaptador, tmp_path, root_test, {"legacy_value": ""}, [])
+    assert veredicto["journal"] is not None
+    dato = json.loads(veredicto["journal"].read_text(encoding="utf-8"))
+    assert dato["original_output_value"] == ""
+    assert dato["intended_temporary_value"] == str(root_test)
+    assert dato["state"] == "RESTORED"
+
+
+def test_el_probe_no_inventa_un_original_vacio():
+    """Ancla de fuente: la resolución del original no admite un fallback `or ""`.
+
+    Es el gate exacto del defecto: reintroducir el default exigiría escribir esa
+    forma exacta, y el ancla falla sin necesidad de ejercitar COM.
+    """
+    assert 'legacy_value") or' not in _fuente(P0A_SRC)
+    assert "OUTPUT_ORIGINAL_UNREADABLE" in _fuente(P0A_SRC)
+
+
+def test_la_evidencia_historica_no_se_reescribio():
+    """§7: el fix endurece reutilizaciones futuras; las rondas medidas no se tocan."""
+    for relativa in _RONDAS_HISTORICAS:
+        texto = (EVIDENCIA_DIR / relativa).read_text(encoding="utf-8")
+        assert "OUTPUT_ORIGINAL_UNREADABLE" not in texto, relativa
+        assert "mutation_skipped" not in texto, relativa
