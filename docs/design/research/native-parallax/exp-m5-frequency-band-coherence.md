@@ -592,6 +592,13 @@ FULL y a la revisión científica) y no se toca la aserción tautológica residu
 > Sección añadida **después** de ejecutar FULL, con la matemática congelada en §14/§19.2
 > **sin cambios**. Es un registro de resultado: **no** retunea, **no** reinterpreta la
 > etiqueta, **no** toca código científico. Los SHAs históricos de §19 **no** se actualizan.
+>
+> ⚠️ **Finding post-FULL (ver §21):** la agregación de `EXCESS_NRMSE` que usó el runner en
+> esta corrida **no** era la del prereg (`median(EXCESS por asset)` vs
+> `median(AUTH) − median(SELF)`). El artefacto histórico de esta sección se **preserva** y su
+> provenance real sigue siendo válida, pero **no** se describe como la implementación literal
+> del prereg. `SCIENTIFIC_RERUN_REQUIRED=YES`; la decisión vigente vuelve a emerger solo del
+> runner corregido (§21–§22).
 
 ### 20.1 Cadena de provenance
 
@@ -772,3 +779,63 @@ del operador/externo**, **no** un campo emitido por el runner.
 Sección **docs-only**: no cambia `frequency_coherence.py`, `run_exp_m5.py`,
 `solver_coherence.py`, `authored_dataset.py` ni los tests. FULL no autoriza ni ejecuta M6, no
 mergea el PR, no lo marca *Ready*, y no incorpora los fixes de #663 ni #667.
+
+---
+
+## 21. Finding post-FULL: agregación de EXCESS no coincidía con el prereg
+
+> Registrado **antes** de corregir la implementación, docs-only. No cambia thresholds, bandas,
+> cutoff, ENERGY_GATE, seed, splits ni reglas. No es un nuevo prereg.
+
+### 21.1 Qué exige el prereg y qué implementó el runner
+
+El prereg (§10/§14) define por asset:
+
+```text
+EXCESS_NRMSE_b = NRMSE_AUTH_b − NRMSE_SELF_b
+```
+
+y las reglas C1/C2 consumen `median EXCESS_NRMSE_b` sobre los assets elegibles. Sin embargo,
+`cohort_medians()` (`frequency_coherence.py`) agregaba:
+
+```text
+excess_* = median(NRMSE_AUTH) − median(NRMSE_SELF)
+```
+
+Estas dos cantidades **no son equivalentes en general**: con assets heterogéneos pueden caer a
+distinto lado de `T_LOWMID_EXCESS` o invertir la comparación HIGH vs LOWMID de C2. El valor
+apareado correcto ya existía en `asset_summary()` (`excess_lowmid_nrmse`/`excess_high_nrmse`),
+pero no se agregaba.
+
+```text
+FINDING_EXCESS_AGGREGATION=CONFIRMED
+POST_FULL_REVIEW_FINDING=PAIRED_EXCESS_AGGREGATION_MISMATCH
+```
+
+### 21.2 Artefacto histórico: se preserva, no se reescribe
+
+```text
+HISTORICAL_FULL_ARTIFACT_PRESERVED=YES
+HISTORICAL_FULL_OUTPUT=C:\SkyClawResearch\NativeParallax\EXP-M3\runs\exp-m5\full-e116196f.json
+HISTORICAL_FULL_SHA256=f8503610d14d29b4ecc276108b10cfcfa59673ab64d57274cbf2d8f7fcd4bd46
+HISTORICAL_SUMMARY_DECISION=EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED
+SCIENTIFIC_RERUN_REQUIRED=YES
+```
+
+La provenance real de esa corrida (§20.1) sigue siendo verificable y **no** se borra. Lo que
+cambia es la lectura: ya **no** se presenta como la implementación literal del prereg. Los
+números preliminares (punto bootstrap apareado LOWMID ≈ 0.5082, HIGH ≈ 0.3350) sugieren
+decision-equivalence, pero **no se usan para waive**: la decisión vigente debe emerger del
+runner corregido (§22) ejecutado desde el corrective freeze (§22.1).
+
+### 21.3 Qué no es este hallazgo
+
+No es un bug upstream M0–M4: `EXP_M5_INVALIDATED_BY_UPSTREAM_BUG` está preregistrado para
+bugs que cambien M0–M4 y **no** se reutiliza aquí. Es un defecto de **implementación M5** que
+se corrige para conformar la implementación al prereg congelado, sin retuneo.
+
+```text
+PROTOCOL_STATUS=UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE
+legacy_heldout_blind_until_execution_freeze=false
+scientific_rules_changed_after_exposure=false
+```
