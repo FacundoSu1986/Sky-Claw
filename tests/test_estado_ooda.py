@@ -106,10 +106,14 @@ _ITEMS = frozenset(
         # fila propia con dos dimensiones separadas en `Qué falta`
         # (resolution_status/evidence_status/evidence_kind). Reproducción dinámica
         # R1 cerró con su PR dedicado: el worker mutante de packaging se espera
-        # a terminalidad antes de que la cancelación libere al caller. La fila
-        # existe para que el estado R1 sea legible desde el inventario y no sólo
-        # desde el plan canónico; R2 sigue sin fila propia (abierto, sin fix).
+        # a terminalidad antes de que la cancelación libere al caller. R2 tiene
+        # fila propia mientras su fix probado espera merge; R3 permanece abierto.
         "Runner P1 — cancelación del packaging libera al caller con el writer vivo (`RUNNER_P1_PACKAGING_CANCEL`)",
+        # R2 es el finding 3 exacto de #592; su resolución técnica está FIXED,
+        # pero la fila queda Parcial hasta merge para no adelantar el cierre del
+        # tracker. El plan canónico sigue en
+        # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md`.
+        "Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)",
         # determinista sobre flujo simulado (`test_runner_defects_p1_p2.py`) +
         # contraste AST contra el handler productivo; el plan canónico vive en
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
@@ -535,6 +539,26 @@ def test_dyndolod_fail_stop_registrado_en_ooda() -> None:
     assert fila["Estado"] == "Cerrado"
     assert "test_dyndolod_service.py" in fila["Verificado por"]
     assert "fail-stop" in fila["Verificado por"]
+
+
+def test_runner_r2_reparse_copy_espera_merge_sin_cerrar_592_antes_de_tiempo() -> None:
+    """R2 está técnicamente FIXED, pero el finding 3 de #592 espera el merge."""
+    fila = _tabla()["Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)"]
+    estado = fila["Qué falta"]
+
+    assert fila["Estado"] == "Parcial"
+    assert "#592 finding 3" in fila["Cerrado en"]
+    assert "resolution_status=FIXED" in estado
+    assert "evidence_status=REPRODUCED" in estado
+    assert "antes de `rmtree`, `mkdir` y `copytree`" in estado
+    assert "cancel #1/#2" in estado
+    assert "scan terminal" in estado
+    assert "rollback/liberación de lease" in estado
+    assert "entre pre-scan y `copytree`" in estado
+    assert "no se declara race-proof" in estado
+    assert "no se declara cerrado hasta merge" in estado
+    assert "test_runner_defects_p1_p2.py" in fila["Verificado por"]
+    assert "test_r2_cancel_durante_prescan_espera_terminal_y_no_muta" in fila["Verificado por"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

@@ -2,7 +2,7 @@
 
 > Estado (FASE B): documentado y preparado. **Ningún fix commiteado en esta fase.** PR separado por defecto.
 > Post-FASE-B: **R1 cerró** con su PR dedicado (`fix(dyndolod): make packaging cancellation worker-terminal`);
-> R2 y R3 siguen **OPEN** — ninguna fila de ellos cambió.
+> R2 tiene fix probado en su PR independiente, incluido el handoff terminal del pre-scan contra cancelaciones repetidas; el finding 3 de #592 sigue abierto hasta merge. R3 continúa **OPEN**.
 
 ## Base
 
@@ -16,11 +16,11 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| resolution_status | **FIXED** (PR R1 dedicado: `fix(dyndolod): make packaging cancellation worker-terminal` — Task propia del worker + `_esperar_terminalidad_del_worker_mutante`) |
+| resolution_status | **FIXED** (PR R1 dedicado: `fix(dyndolod): make packaging cancellation worker-terminal` — Task propia del worker + `_esperar_terminalidad_del_worker`) |
 | evidence_status | **REPRODUCED** (la reproducción histórica quedó convertida en regresión/aceptación por el PR R1) |
 | Evidencia (antes: Reproducción) | `tests/test_runner_defects_p1_p2.py`: `test_r1_cancel_durante_el_worker_ret_al_caller_hasta_terminal` (cancel #1 → orden `cancel_1_procesada < worker_terminal < rollback_started < lease_released` congelado por igualdad), `test_r1_cancelaciones_repetidas_no_liberan_al_caller_antes_de_terminal` (cancel #2/#N con checkpoint de HANDOFF_ACTIVE por registro), `test_r1_exito_sin_cancelacion_devuelve_el_mod`, `test_r1_excepcion_del_worker_sin_cancel_se_propaga_como_antes`, `test_r1_excepcion_del_worker_con_cancel_se_consume_y_encadena`, ancla AST `test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal`; la premisa de runtime se conserva en `test_r1_cancelacion_to_thread_no_mata_al_worker` |
 | Invariante | `mutating packaging worker terminal BEFORE rollback begins BEFORE lease can be released` — las TRES en orden, no sólo la primera |
-| Path | `dyndolod_runner.py` — era `await asyncio.to_thread(_empaquetar_sincrono)` sin protección; hoy Task propia + `_esperar_terminalidad_del_worker_mutante` |
+| Path | `dyndolod_runner.py` — era `await asyncio.to_thread(_empaquetar_sincrono)` sin protección; hoy Task propia + `_esperar_terminalidad_del_worker` |
 | Plan propuesto | Secuencia completa del fix (la unidad entera, no sólo shield): crear/conservar el `Task` del worker → llega `CancelledError` → **registrar intención de cancelación** → proteger el worker (`asyncio.shield`) → **continuar esperando aunque lleguen cancelaciones adicionales** (el await externo debe ser resistente a cancelaciones repetidas, no sólo el shield interno: `shield` protege la tarea interna pero una segunda cancelación en el `await shield(...)` externo la interrumpe igual) → worker realmente terminal → recién entonces liberar el caller → rollback/lease chain puede continuar → propagar la cancelación al exterior. `shield` POR SÍ SOLO no resuelve R1 |
 | Test rojo | El actual pasa con código actual (demuestra defecto). Aceptación obligatoria del futuro PR R1 — anclar con sincronización explícita (`threading.Event`/`asyncio.Event`, nunca sleeps como autoridad): **cancel #1** durante el worker bloqueado → **cancel #2** (y opcionalmente **cancel #N**) durante el handoff protegido → la propiedad `terminado.is_set()` debe ocurrir ANTES de `rollback_started` y ANTES de `lease_released` — el orden de los tres eventos se congela por igualdad, no por timing |
 | Collision review | #592-2 (borra antes de medir ENOSPC) parcialmente relacionado, no overlap directo en R1 — sólo cambia el wrapper de cancelación, no el orden |
@@ -30,15 +30,17 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| resolution_status | **OPEN** (sin fix en el código) |
-| evidence_status | **REPRODUCED** |
-| Reproducción | `test_r2_copytree_atraviesa_junction_mientras_medidor_no` (misionero: bytes copiados > presupuesto + archivos externos llegan al destino) + `test_r2_package_output_as_mod_admite_copia_de_junction` (método real admite la copia) |
-| Invariante | `EVERY BYTE COPIED MUST BELONG TO THE ADMITTED WORKSPACE TREE` + `inventory set == copyable set` |
-| Path | `sky_claw/local/tools/dyndolod_runner.py:2481` `shutil.copytree(src, dst)` pelado; `mod_path.mkdir` + `for item in items`. El guard de coordinación (`_exigir_fuente_del_subroot`) valida la cadena ancestro, **no descendientes del origen** |
-| Plan propuesto | Introducir un guard pre-copia (sólo 1-2 líneas) que itere `iter_archivos_propios`/`reject_unclassified_reparse_point` sobre el árbol fuerte (`output_path`) y falle si hay junctions o reparse points desconocidos internos. Si alguno aparece → `DynDOLODValidationError` antes de `copytree`. El `iter_archivos_propios` ya centraliza lo que no se atraviesa: la política del copy debe ser la misma que la del inventario |
-| Test rojo | Los dos actuales juegan con el defecto. El fix riguroso pasa si el assert nuevo es `assert no evil.bin en destino + presupuesto==copiado` |
-| Collision review | #592 finding 3 (`packaging mide link-aware y copia link-following`) — CONFIRMADO en main. Son el MISMO defecto. Nombre equivalente al de #592. No crear issue nuevo: alojarlo como sub-tarea de #592 |
-| Sub-issue | NO — va al tracker de #592 (finding 3). El nombre ligado queda en la PR |
+| resolution_status | **FIXED** (PR #686; protección del contenido y lifecycle del pre-scan probados, aún no mergeada) |
+| evidence_status | **REPRODUCED** (la reproducción histórica quedó convertida en aceptación/regresión) |
+| Reproducción | Histórica: `_bytes_del_arbol` contaba sólo archivos propios mientras `copytree` seguía un junction y copiaba `evil.bin`. Regresión de contenido: `test_r2_junction_descendiente_falla_antes_de_copytree_y_no_copia_evil`, `test_r2_package_rechaza_junction_antes_de_rmtree_y_preserva_mod_previo`, `test_r2_symlink_descendiente_falla_cerrado_sin_seguir_destino`, `test_r2_reparse_no_clasificado_falla_cerrado_antes_de_copytree`, `test_r2_inventario_igual_a_bytes_empaquetados_en_arbol_limpio` y `test_r2_texgen_valido_conserva_prefijo_textures`. Regresión de lifecycle: `test_r2_cancel_durante_prescan_espera_terminal_y_no_muta` |
+| Invariante | `EVERY BYTE COPIED MUST BELONG TO THE ADMITTED WORKSPACE TREE` + `inventory set == copyable set`; además `pre-scan worker terminal < cancellation propagation < rollback begins < lease release`, y cancelar durante el scan impide iniciar el worker mutante |
+| Path | `sky_claw/local/tools/dyndolod_runner.py:_package_output_as_mod` pone el pre-scan `exigir_arbol_copiable_sin_reparse` en una Task propia y lo espera con `_esperar_terminalidad_del_worker`, antes de `exists`/`iterdir`, `rmtree`, `mkdir` y `copytree`. La cancelación espera scan terminal y no entra al worker mutante. El guard `_exigir_fuente_del_subroot` sigue protegiendo otra propiedad: la cadena de ancestros, no los descendientes del origen |
+| Implementación | La primitiva reutilizable vive en `sky_claw/app/security/links.py`: hace `lstat`/clasificación central por entrada; rechaza symlink, junction, reparse tag no clasificado y tipos distintos de directorio real/archivo regular; revalida identidad de los directorios recorridos. El runner traduce el error a `DynDOLODValidationError` con source y entrada problemática. La validación va antes de destruir el mod previo y antes de cualquier copia |
+| Tests | El junction real usa `tests/_symlink_guard.crear_junction` y queda activo en Windows; el symlink cubre plataformas que lo permiten. El fake de tag desconocido entra por `reject_unclassified_reparse_point`. Se instrumenta `copytree` y se exige cero llamadas al rechazar; el mod previo queda byte-exact. El happy path ancla igualdad de archivos/bytes usando `iter_archivos_propios` en fuente y destino; TexGen conserva `textures/`. El test de lifecycle bloquea el pre-scan del método real, prueba cancel #1/#2 y congela por igualdad scan terminal → propagación → rollback → lease; verifica rmtree/mkdir/copytree/copy2/meta.ini en cero y `previous.txt` intacto |
+| Red check | Al desactivar temporalmente el guard, los casos de symlink y reparse no clasificado vuelven rojos. Para lifecycle se restauró temporalmente `await asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path)`: el test nuevo falla con `rollback_started=True`, `lease_released=True` y `scan_terminal=False`; con el handoff restaurado pasa |
+| TOCTOU | La lease de workspace coordina producers de Sky-Claw que la respetan, pero no es un lock del filesystem y no impide que un actor externo reemplace una entrada después del scan. Este PR cierra estrictamente el junction/reparse preexistente; no declara race-proof. Una copia con validación por entrada/handles queda como follow-up independiente |
+| Collision review | R2 es exactamente #592 finding 3 (`packaging mide link-aware y copia link-following`); no crear issue nuevo. No toca #592 finding 2 (borrado previo a ENOSPC), R1, R3 ni P0/P1-P9 de #661 |
+| Sub-issue | NO — el tracker canónico es #592 finding 3; el issue completo y el finding 3 permanecen abiertos hasta merge |
 
 ## R3 — `RUNNER_P2_DOUBLE_CANCEL`
 
@@ -65,7 +67,7 @@ HEAD:        962f1835
 | Defecto | Existe en issue | Nombre de entrada | overlap con P0 de #661 | motivo del PR separado |
 |---|---|---|---|---|
 | R1 packaging cancel | #592 finding 1 (`preservado…`) | **mismo** (`p1-packaging-cancel`) | NO (UIA viability) | para que un future fix tenga un hogar de issue rastreador sin duplicar #661 |
-| R2 copytree traverse | #592 finding 3 (`packaging mide link-aware y copia link-following`) | **mismo exacto** | NO | parte del tracker #792 |
+| R2 copytree traverse | #592 finding 3 (`packaging mide link-aware y copia link-following`) | **mismo exacto** | NO | mismo finding 3 de #592; no crear issue nuevo |
 | R3 double cancel cleanup | ninguno todavía | nuevo hallazgo P2 | NO | vida aparte; sub-issue nuevo notificado en `#592` como hermano, o en `docs/pending_ooda_status.md` |
 
 ## Qué NO hace esta fase
@@ -76,16 +78,16 @@ HEAD:        962f1835
 ## Runner gates — válidos (dos dimensiones, CR-11)
 
 ```text
-RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  (PR R1 dedicado)
-RUNNER_P1_REPARSE_COPY      resolution_status=OPEN  evidence_status=REPRODUCED
-RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN  evidence_status=REPRODUCED
-→ RUNNER_FIXES_READY_FOR_IMPLEMENTATION (R1 cerrado; R2/R3 siguen abiertos)
+RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  (PR R1 dedicado, mergeado)
+RUNNER_P1_REPARSE_COPY      resolution_status=FIXED  evidence_status=REPRODUCED  (PR R2 listo para review; #592 finding 3 espera merge)
+RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN   evidence_status=REPRODUCED  (PR R3 pendiente)
+→ R1/R2 FIXED; R3 sigue abierto. #592 no se cierra con este PR.
 ```
 
 ## Follow-ups explícitos (NO implementados en este PR)
 
 ```text
-CR-5  convertir reproducciones R1/R2/R3 a xfail            → PRs R1/R3 dedicados
+CR-5  convertir R3 de reproducción a aceptación; R1/R2 ya son regresiones → PR R3 dedicado
 CR-6  reemplazar fake R3 por _execute_process real          → PR R3 dedicado
 CR-7  rediseñar identidad futura de modales                 → #661 P1/P3
 CR-8  rediseñar fingerprint cap                             → #661 P1/P3
