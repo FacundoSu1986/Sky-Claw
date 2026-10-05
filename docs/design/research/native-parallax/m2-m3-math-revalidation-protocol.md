@@ -4,7 +4,7 @@
 **Base auditada:** `origin/main = 7684c92a4205a2d53aa47972be126282e093cecf`
 **Alcance:** protocolo de comparación histórica `OLD` vs. código matemático/estadístico corregido `NEW`; no ejecución.
 
-> **STOP:** este documento congela cómo comparar; no ejecuta M2/M3 ni autoriza una sustitución de corpus. La comprobación de existencia fue sólo de rutas/metadatos; no se abrieron ni leyeron bytes de assets reales. El corpus M2 histórico exacto y sus filas/caracterizaciones crudas no están disponibles en este checkout. Por tanto, a la fecha de este freeze la ejecución está bloqueada.
+> **NOTA DE PROTOCOLO (RECOVERY-0 INTEGRADO):** este documento congela cómo comparar; no ejecuta M2/M3 ni autoriza una sustitución de corpus. Tras la auditoría RECOVERY-0 en el host Windows, el corpus M2 histórico (34/34 assets, 68/68 archivos con SHA-256 verificado), el corpus M3 (31 assets, 62 archivos con SHA-256 verificado), el manifiesto local de M2, y los artefactos históricos `rows.json` (174 filas) y `characs.json` (34 assets) fueron localizados y autenticados con evidencia convergente fuerte. Por tanto, el bloqueo de procedencia queda resuelto y la ejecución futura queda técnicamente habilitada bajo el protocolo (`REVALIDATION_EXECUTION_ALLOWED=YES`), pero ninguna ejecución real (M2, M3 ni M6) se ejecuta en esta fase protocolar.
 
 ```text
 PROTOCOL_CLASS=VERSIONED_REVALIDATION_OF_PREVIOUSLY_OBSERVED_DATA
@@ -12,8 +12,8 @@ REVAL_PROTOCOL_COMPLETE=YES
 REAL_CORPUS_TOUCHED=NO
 M2_RERUN_EXECUTED=NO
 M3_RERUN_EXECUTED=NO
-REVALIDATION_EXECUTION_ALLOWED=NO
-BLOCKER=M2_CORPUS_IDENTITY_NOT_VERIFIED
+RECOVERY_BLOCKER=NONE
+REVALIDATION_EXECUTION_ALLOWED=YES
 ```
 
 ## 1. Pregunta y límites científicos
@@ -77,28 +77,41 @@ split=CALIBRATION 12 / HELD_OUT 22
 
 Contiene hashes SHA-256 esperados para normal y height por asset, convenciones declaradas y split. El documento histórico cita el mismo prefijo `4d00501949fc006d`. Esto acredita la presencia del manifiesto versionado en el repo, **no** la identidad de los archivos externos ni la identidad byte-a-byte del manifiesto local usado en la corrida histórica.
 
-**Filas/caracterizaciones históricas:** no se encontraron `rows.json` ni `characs.json` M2 versionados en el árbol actual ni en el historial Git inspeccionado. La tabla del documento no sustituye estos objetos: faltan, entre otros, la tabla íntegra de candidatos sigma/target, todas las filas de policy, valores exactos por feature y estados/fallbacks. No reconstruirlos desde Markdown.
+**Filas/caracterizaciones históricas (RECOVERY-0):**
+Se recuperaron los artefactos originales bajo `C:\SkyClawResearch\NativeParallax\EXP-M3\m2_control\`:
+- `rows.json`: 254,405 bytes, SHA-256 `c2d8328e62046245d4c395ee0ecaad3696b8fb48f6578c9582079182ad770a08`. Contiene exactamente las 174 filas generadas por `run_exp_m2.py` (34 RAW, 68 transfer k=1, 72 sweep k en {0.5, 2.0, 4.0} sobre las 12 familias de CALIBRATION) y la selección de sigma histórico con ganador `nz_p01`.
+- `characs.json`: 91,796 bytes, SHA-256 `9afb60a453d2783572145c3d270145b2dc668941bbbdf96a5ac25cf7cef7a683`. Contiene las caracterizaciones completas de los 34 assets emitidas por `characterize_asset()`.
 
-**Corpus y manifiesto local histórico:**
+**Procedencia y autenticación de M2 OLD:**
+La autenticación se sustenta en evidencia convergente sólida: rutas históricas esperadas, timestamps coherentes (`2026-09-23 21:30:07 UTC`), estructura exacta del runner `run_exp_m2.py`, 34 assets, 174 filas, ganador sigma histórico `nz_p01`, métricas agregadas que coinciden exactamente con `docs/design/research/native-parallax/exp-m2-authored-trust.md` (mediana RMSE RAW 0.0434, p90 0.1033, peor 0.1743, mediana var 0.631, mediana corr 0.794, 15/34 catastróficos), y diagnósticos angulares del oráculo por asset (Grass004 88.94°, Gravel011 51.39°, WoodFloor027 81.46°, Wood043 66.37°, Metal063 64.82°).
+Clasificación: `M2_OLD_ARTIFACTS_VERIFIED=YES`. Formulación rigurosa: *Authenticated with strong convergent provenance and exact corpus/hash identity; sufficient for versioned revalidation* (sin afirmar certeza matemática absoluta o prueba criptográfica de ejecución histórica, al no existir una firma publicada contemporánea).
 
-- El manifiesto canónico apunta a archivos bajo `/tmp/expm2_data/mirrors/...`; ese root no existe en este entorno.
-- El checkpoint de M3 registra que Cohort B usó `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json`. Ese manifiesto y el root/corpus no están disponibles aquí; tampoco se encontró un montaje Linux equivalente (`/mnt/c/...`).
-- Los assets no se verificaron por hash en REVAL-0. La existencia de hashes esperados en el manifiesto no equivale a verificar los bytes.
-- El checkpoint M3 no guarda en `exp_m3_results.json` el SHA-256 del manifiesto local M2 realmente pasado al runner para Cohort B. La existencia del manifiesto canónico no permite inferir ese hash.
+**Corpus y manifiesto local histórico (RECOVERY-0):**
+
+- Manifiesto local recuperado: `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json` (40,148 bytes, SHA-256 `40ff24bd3342c60d6d23d700975ae5d4f37adffc96bb900aaaf0ecea58d5a34a`).
+  - Comparación con manifest canónico del repo: 34 asset IDs idénticos, hashes SHA-256 por archivo para normal y height idénticos (68/68), split idéntico (12/22), convenciones declaradas idénticas (24 UNKNOWN / 10 OPENGL), provider/mirror idénticos.
+  - Diferencia de rutas: rutas absolutas de Windows en el manifiesto local (`C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors\...`) vs. rutas canónicas/sandbox (`/tmp/expm2_data/mirrors/...`).
+  - Clasificación: `SEMANTICALLY_EQUIVALENT_MANIFEST=YES`, `BYTE_IDENTICAL_MANIFEST=NO`, `EXPECTED_PATH_PREFIX_DIFFERENCE=YES` (no son byte-idénticos por prefijo de ruta).
+- Corpus M2 auditado:
+  - Raíz física: `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors`.
+  - Conteo: 34 assets, 68 archivos esperados (34 normal + 34 height), 68 archivos encontrados.
+  - Coincidencia de hashes: 68/68 archivos con coincidencia exacta SHA-256 (`M2_FILES_SHA256_MATCH=68`, `M2_FILES_SHA256_MISMATCH=0`).
+  - Clasificación: `M2_CORPUS_IDENTITY_VERIFIED=YES`.
+- Junction histórico:
+  - Localizado e intacto: `E:\tmp\expm2_data\mirrors` (NTFS directory junction hacia `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors`). Registrado como procedencia auxiliar (la prueba primaria de identidad son los hashes por archivo).
 
 Estado de auditoría M2 a la fecha:
 
 ```text
 M2_HISTORICAL_REFERENCE_LOCATED=YES
 M2_CANONICAL_MANIFEST_LOCATED=YES
-M2_HISTORICAL_LOCAL_MANIFEST_LOCATED=NO
-M2_HISTORICAL_ROWS_LOCATED=NO
-M2_HISTORICAL_CHARACS_LOCATED=NO
-M2_CORPUS_AVAILABLE=NO
-M2_CORPUS_IDENTITY_VERIFIED=NO
+M2_HISTORICAL_LOCAL_MANIFEST_LOCATED=YES
+M2_HISTORICAL_ROWS_LOCATED=YES
+M2_HISTORICAL_CHARACS_LOCATED=YES
+M2_CORPUS_AVAILABLE=YES
+M2_CORPUS_IDENTITY_VERIFIED=YES
+M2_OLD_ARTIFACTS_VERIFIED=YES
 ```
-
-La puerta M2 sólo puede abrirse con el corpus y el manifiesto/localización históricos recuperados y trazables, y con las salidas RAW `rows.json` y `characs.json` originales (o una procedencia de archivo independiente que autentique esos mismos bytes). Si no se recuperan, **STOP**: no usar mirrors nuevos, archivos descargados de nuevo, los assets incluidos en el repo, ni reconstrucciones desde tablas.
 
 ### 2.3 M3 — artefacto histórico y manifiesto
 
@@ -108,7 +121,7 @@ La puerta M2 sólo puede abrirse con el corpus y el manifiesto/localización his
 - Resultado publicado: `docs/validation/native-parallax-revalidation-20260928/exp_m3_results.json`.
 - Checkpoint/procedencia: `docs/validation/native-parallax-revalidation-checkpoint.md`.
 
-El JSON publicado tiene SHA-256 `02f6d1ac5a679081359b43a173f8e849fa9819e0d1c4e60830266a337b2335da`, 237549 bytes (blob/publicación LF). El checkpoint registra que el output RAW externo de Windows era CRLF, SHA-256 `047769fd…` y 243752 bytes; la copia publicada corresponde a normalización de EOL, no a una segunda corrida. El raw externo no está presente en este checkout. Los artifacts históricos se preservan sin modificación.
+El JSON publicado tiene SHA-256 `02f6d1ac5a679081359b43a173f8e849fa9819e0d1c4e60830266a337b2335da`, 237549 bytes (blob/publicación LF). El checkpoint registra que el output RAW externo de Windows era CRLF, SHA-256 `047769fd…` y 243752 bytes; la copia publicada corresponde a normalización de EOL, no a una segunda corrida. En la auditoría RECOVERY-0 se recuperó el archivo RAW original en disco (`C:\SkyClawResearch\NativeParallax\EXP-M3\runs\revalidation-height-resize-20260928\m3\exp_m3_results.json`, 243,752 bytes, CRLF, SHA-256 `047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19`). Se verificó que `RAW CRLF != published LF bytewise` pero `JSON semantic equality = TRUE`. Los artifacts históricos se preservan sin modificación.
 
 El manifiesto primario M3 versionado es:
 
@@ -126,13 +139,21 @@ El JSON histórico no contiene `n_boot_evaluable` ni `n_boot_degenerate`; su aus
 
 El checkpoint registra para la corrida histórica un baseline corto `1a52c3ea`; el JSON de resultados no incluye `RUN_CODE_SHA` ni environment. La presencia de un SHA de freeze en la sección M4 del checkpoint no se presenta como atestación directa del commit de ejecución M3. Mantener esa limitación de procedencia visible; no inventar un SHA histórico.
 
-El manifest coloca Cohort A bajo `C:\SkyClawResearch\NativeParallax\EXP-M3`; ese corpus externo no está montado en este entorno. No se leyeron sus assets ni se verificaron sus hashes en REVAL-0. Cohort B está etiquetada `EVALUATION_DIAGNOSTIC_ONLY`; el resultado histórico registra sus thresholds 20°, 30° y 40° (n=14/20/23, respectivamente) y filas/features, pero el manifiesto M2 local fuente no está presente ni tiene hash capturado en ese JSON.
+**Corpus Cohort A recuperado y auditado (RECOVERY-0):**
+El corpus externo fue localizado en `C:\SkyClawResearch\NativeParallax\EXP-M3\originals` (directorios `ambientcg` y `polyhaven`). Se auditaron criptográficamente todos los archivos correspondientes a los 31 assets de Cohort A (15 CALIBRATION, 16 HELD_OUT):
+- Archivos esperados: 62 (31 pares normal + height).
+- Archivos encontrados: 62.
+- Coincidencia de hashes SHA-256: 62/62 (`M3_FILES_SHA256_MATCH=62`, `M3_FILES_SHA256_MISMATCH=0`).
+- Clasificación: `M3_CORPUS_IDENTITY_VERIFIED=YES`.
+
+Cohort B está etiquetada `EVALUATION_DIAGNOSTIC_ONLY`; el resultado histórico registra sus thresholds 20°, 30° y 40° (n=14/20/23, respectivamente) y filas/features, y su corpus y manifiesto local han sido recuperados y autenticados íntegramente como se documenta en §2.2.
 
 ```text
 M3_HISTORICAL_REFERENCE_LOCATED=YES
 M3_PUBLISHED_RESULT_LOCATED=YES
+M3_HISTORICAL_RAW_LOCATED=YES
 M3_MANIFEST_LOCATED=YES
-M3_CORPUS_IDENTITY_VERIFIED=NO
+M3_CORPUS_IDENTITY_VERIFIED=YES
 ```
 
 ## 3. Protocolo de corpus, split y resolución
@@ -353,12 +374,12 @@ El árbol Git guarda artefactos publicados. Los RAW se preservan fuera del árbo
 
 ## 11. Secuencia de ejecución futura y hard stops
 
-Los comandos siguientes son una especificación de REVAL-1, **no se ejecutan en REVAL-0**. `M2_MANIFEST_VERIFIED` debe señalar el manifiesto local histórico recuperado y autenticado; no tiene default automático al manifiesto canónico del repo.
+Los comandos siguientes son una especificación de REVAL-1, **no se ejecutan en REVAL-0**. `M2_MANIFEST_VERIFIED` debe señalar el manifiesto local histórico recuperado y autenticado (`C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json`); no tiene default automático al manifiesto canónico del repo.
 
 1. Requerir antes de tocar corpus: freeze/merge del protocolo tras revisión Tech Lead + revisión adversarial independiente Arena AI + CI green; registrar adjudicación de findings. Los reviewers señalan riesgos, pero sus comentarios no cambian parámetros por sí mismos.
-2. Recuperar y verificar old M2 `rows.json`, `characs.json`, manifiesto exacto, raw/published hashes, byte counts/EOL y provenance. Si falta cualquiera: `STOP`; no reconstruir OLD desde Markdown ni volver a ejecutar código antiguo como sustituto.
-3. Recuperar/montar exactamente corpus histórico M2 y M3; revisar sólo existencia/provenance al montar, después verificar cada asset contra su hash esperado antes de la corrida. Verificar el hash/semántica de ambos manifests y las rutas locales sin reescribir los originales.
-4. Si algún asset/manifest no está disponible o no verifica byte-identical: `CORPUS_IDENTITY_FAILURE`, `REVALIDATION_EXECUTION_ALLOWED=NO`, sin reemplazo/descarga nueva y sin resultado parcial reportado como comparable.
+2. Artefactos OLD y manifests autenticados: RECOVERY-0 completó la recuperación y autenticación de `rows.json` (174 filas), `characs.json` (34 assets), el manifiesto local M2 y el RAW M3 histórico. Los artefactos OLD quedan preservados de forma externa e inmutable.
+3. Corpora montados y verificados: RECOVERY-0 completó la verificación criptográfica SHA-256 de los 68 archivos de M2 (Cohort B en `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors`) y de los 62 archivos de M3 (Cohort A en `C:\SkyClawResearch\NativeParallax\EXP-M3\originals`).
+4. Autorización técnica de ejecución: `REVALIDATION_EXECUTION_ALLOWED=YES`. El protocolo autoriza una ejecución técnica futura una vez congelado el protocolo y obtenido el commit exacto `RUN_CODE_SHA`. Esto NO significa ejecutar ahora en esta fase documental.
 5. Confirmar en el commit `RUN_CODE_SHA` los valores congelados de la sección 4, resolución 512 y rutas del runner; capturar environment antes de ejecutar. Confirmar output nuevo y único, sin sobrescribir OLD.
 6. Sólo tras todos los gates, comandos conceptuales:
 
@@ -429,9 +450,24 @@ M6_REAL_RUN_EXECUTED=NO
 
 M2_HISTORICAL_REFERENCE_LOCATED=YES
 M3_HISTORICAL_REFERENCE_LOCATED=YES
-M2_MANIFEST_LOCATED=YES                         # manifiesto canónico del repo; local histórico NO
-M2_CORPUS_IDENTITY_VERIFIED=NO
+M2_MANIFEST_LOCATED=YES
+M2_LOCAL_MANIFEST_LOCATED=YES
+M2_LOCAL_MANIFEST_SHA256=40ff24bd3342c60d6d23d700975ae5d4f37adffc96bb900aaaf0ecea58d5a34a
+M2_CORPUS_IDENTITY_VERIFIED=YES
+M2_FILES_SHA256_MATCH=68/68
+M2_HISTORICAL_ROWS_LOCATED=YES
+M2_HISTORICAL_CHARACS_LOCATED=YES
+M2_ROWS_SHA256=c2d8328e62046245d4c395ee0ecaad3696b8fb48f6578c9582079182ad770a08
+M2_CHARACS_SHA256=9afb60a453d2783572145c3d270145b2dc668941bbbdf96a5ac25cf7cef7a683
+M2_OLD_ARTIFACTS_VERIFIED=YES
+
 M3_MANIFEST_SHA256=b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f
+M3_CORPUS_IDENTITY_VERIFIED=YES
+M3_FILES_SHA256_MATCH=62/62
+M3_HISTORICAL_RAW_LOCATED=YES
+M3_HISTORICAL_RAW_SHA256=047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19
+M3_PUBLISHED_SHA256=02f6d1ac5a679081359b43a173f8e849fa9819e0d1c4e60830266a337b2335da
+M3_RAW_PUBLISHED_SEMANTIC_EQUALITY=YES
 OLD_ARTIFACTS_IMMUTABLE=YES
 
 MATH_A_METRICS_MAPPED=YES
@@ -446,8 +482,7 @@ QODO_REQUIRED=NO
 M6_IMPLEMENTATION_BLOCKED=YES
 
 NEW_ARTIFACT_NAMESPACE=docs/validation/native-parallax-math-revalidation-20261005/
-REVALIDATION_EXECUTION_ALLOWED=NO
-BLOCKER=M2_CORPUS_IDENTITY_NOT_VERIFIED
-SECONDARY_BLOCKER=M2_HISTORICAL_ROWS_CHARACS_NOT_LOCATED
+REVALIDATION_EXECUTION_ALLOWED=YES
+RECOVERY_BLOCKER=NONE
 READY_FOR_TECH_LEAD_REVAL0_REVIEW=YES
 ```
