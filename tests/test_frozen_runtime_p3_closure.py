@@ -361,3 +361,35 @@ def test_c32_binding_de_fuente_incoherente_invalida(listo, campo: str) -> None:
 
     veredicto = verificar_candidate(root, cid)
     assert veredicto.state is GenerationVerificationState.INVALID, veredicto.message
+
+
+# ── Codex #682 · la incoherencia de observación es hermana, no sobrina ─────
+
+
+def test_c34_una_incoherencia_de_observacion_no_escapa_cruda(rig) -> None:  # noqa: F811
+    """Ancla del fix estructural: `TreeObservationCoherenceError` NO es un crudo.
+
+    Cuando la membership y el digest de una observacion sellada vienen de instantes
+    distintos, `observar_arbol_sellado` lanza `TreeObservationCoherenceError`. Es
+    "hermano" de `DirectoryMembershipError` solo por nombre: los dos comparten la
+    base `SourceObservationError`, y por eso un handler que atrapa ESA base no deja
+    escapar la incoherencia como excepcion en vez de volverse veredicto (Codex
+    sobre #682). El test falla si alguien vuelve a colgar la coherencia fuera de la
+    familia -- que es exactamente el defecto que se corrigio.
+    """
+    from sky_claw.local.frozen_runtime.membership import TreeObservationCoherenceError
+
+    source, root = rig
+
+    def observacion_incoherente(*_a, **_k):  # noqa: ANN002, ANN003, ANN202
+        raise TreeObservationCoherenceError("simulado: las dos mitades no describen el mismo instante")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(candidates_module, "observar_arbol_sellado", observacion_incoherente)
+    try:
+        resultado = _crear(source, root)
+    finally:
+        monkeypatch.undo()
+
+    assert resultado.state is not GenerationVerificationState.VALID
+    assert isinstance(resultado.state, GenerationVerificationState)
