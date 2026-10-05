@@ -96,6 +96,16 @@ class CandidateVerificationError(CandidateError):
     """Un Candidate no supera la verificacion fresca contra PRE/POST."""
 
 
+class CandidateIdCollisionError(CandidateError):
+    """El ``candidate_id`` ya esta reservado por un Candidate existente.
+
+    Se lanza desde la RESERVA del id, que ocurre ANTES de cualquier escritura de
+    metadata, para que una colision de ids no pueda pisar un Candidate ya
+    construido. Es un `CandidateError` y no un error de verificacion: el
+    candidato que existia sigue siendo valido.
+    """
+
+
 class CandidateCorruptMetadataError(FrozenRuntimeStorageError):
     """Metadata de Candidate ausente en el payload, corrupta o de schema desconocido.
 

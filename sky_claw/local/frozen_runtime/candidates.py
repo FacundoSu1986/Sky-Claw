@@ -29,7 +29,7 @@ import pathlib
 import time
 from collections.abc import Callable
 
-from sky_claw.app.security.links import ContencionFisicaVioladaError, exigir_contencion_fisica
+from sky_claw.app.security.links import ContencionFisicaVioladaError, exigir_contencion_fisica, link_kind_or_raise
 from sky_claw.local.frozen_runtime.candidate_id import (
     CANDIDATE_ID_PREFIX,
     default_candidate_id_factory,
@@ -40,6 +40,7 @@ from sky_claw.local.frozen_runtime.copying import copiar_arbol_independiente, pa
 from sky_claw.local.frozen_runtime.errors import (
     CandidateCopyError,
     CandidateCorruptMetadataError,
+    CandidateIdCollisionError,
     CandidateVerificationError,
     FrozenRuntimeError,
     FrozenRuntimeObservationError,
@@ -47,6 +48,7 @@ from sky_claw.local.frozen_runtime.errors import (
     InvalidCandidateIdError,
 )
 from sky_claw.local.frozen_runtime.independence import (
+    descripcion_de_enlace,
     exigir_namespace_escribible,
     verify_generation_physical_integrity,
 )
@@ -337,6 +339,11 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
             "critical_files",
             "provider_metadata",
             "observed_at_ns",
+            # La enumeracion SELLADA completa es parte de la evidencia P3 (es
+            # lo que la copia transfiere y lo que hace auditable al PRE). Si se
+            # acepta su ausencia, `files` queda en () y la evidencia persistida
+            # prometeria una cobertura que ya no tiene.
+            "files",
         )
         if clave not in bruto
     ]
@@ -377,7 +384,7 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
             ),
             directory_membership=_membership_desde_dict(bruto["directory_membership"], etiqueta=etiqueta),
             critical_files=_identidades(criticos, campo="critical_files", etiqueta=etiqueta),
-            files=_identidades(bruto.get("files"), campo="files", etiqueta=etiqueta),
+            files=_identidades(bruto["files"], campo="files", etiqueta=etiqueta),
             provider_metadata=ProviderMetadataObservation(
                 provider=ManagedSourceProvider(proveedor),
                 appid=str(bruto["appid"]),
@@ -402,13 +409,42 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
         raise CandidateCorruptMetadataError(f"{etiqueta}: evidencia de fuente malformada: {exc}") from exc
 
 
+def _exigir_metadata_no_redirigida(ruta: pathlib.Path) -> None:
+    """Fail-closed: ni el archivo de metadata ni su namespace pueden ser enlaces.
+
+    Se comprueba con ``lstat`` ANTES de cualquier ``exists()``/``read_text()``.
+    El orden importa: ``exists()`` sigue enlaces, asi que un symlink colgante
+    (target inexistente) se leeria como "metadata ausente" y un junction en el
+    namespace haria que la lectura ocurriera FUERA del FrozenRuntimeRoot.
+
+    Misma filosofia que el loader de ``active.json`` de P2, aplicada aqui.
+    """
+    try:
+        kind = link_kind_or_raise(ruta)
+    except OSError as exc:
+        raise CandidateCorruptMetadataError(f"{ruta}: no se pudo inspeccionar la metadata: {exc}") from exc
+    if kind is not None:
+        raise CandidateCorruptMetadataError(
+            f"{ruta}: la metadata es un enlace ({kind}): no se sigue ni se ignora (fail-closed)"
+        )
+    motivo_padre = descripcion_de_enlace(ruta.parent)
+    if motivo_padre is not None:
+        raise CandidateCorruptMetadataError(f"{ruta}: namespace de la metadata redirigido: {motivo_padre}")
+
+
 def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
     """Carga fail-closed la metadata de un Candidate.
 
     Ausente/corrupta/schema desconocido LANZA (:class:`CandidateCorruptMetadataError`):
-    un Candidate sin metadata legible es UNKNOWN, jamas READY.
+    un Candidate sin metadata legible es UNKNOWN, jamas READY. TODA la corrupcion
+    persistida se expresa con esa unica clase -- incluidos los ids invalidos y el
+    READY incompleto -- para que los callers tengan una sola excepcion que
+    convertir en UNKNOWN.
     """
     ruta = pathlib.Path(path)
+    # El chequeo de redireccion va PRIMERO: `exists()` sigue enlaces y trataria
+    # un symlink colgante como "no hay metadata".
+    _exigir_metadata_no_redirigida(ruta)
     if not ruta.exists():
         raise CandidateCorruptMetadataError(f"{ruta}: no hay metadata de Candidate (UNKNOWN, nunca READY)")
     try:
@@ -445,10 +481,25 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
             return None
         return _evidencia_desde_dict(valor, etiqueta=f"{ruta}:{clave}")
 
+    def _candidate_id_desde_datos() -> str:
+        """El candidate_id embebido es parte de la identidad: su fallo es corrupcion.
+
+        `InvalidCandidateIdError` no es corrupcion de metadata por si sola, asi que
+        se convierte explicitamente: de lo contrario escapaba crudo y abortaba el
+        descubrimiento entero en vez de registrar un Candidate UNKNOWN.
+        """
+        bruto_id = data.get("candidate_id")
+        if not isinstance(bruto_id, str):
+            raise CandidateCorruptMetadataError(f"{ruta}: falta el campo obligatorio 'candidate_id' o no es string")
+        try:
+            return validar_candidate_id(bruto_id)
+        except InvalidCandidateIdError as exc:
+            raise CandidateCorruptMetadataError(f"{ruta}: candidate_id invalido en metadata: {exc}") from exc
+
     try:
         metadata = CandidateMetadata(
             schema_version=esquema,
-            candidate_id=validar_candidate_id(str(data.get("candidate_id", ""))),
+            candidate_id=_candidate_id_desde_datos(),
             state=estado,
             created_at_ns=int(data.get("created_at_ns", 0)),
             updated_at_ns=int(data.get("updated_at_ns", 0)),
@@ -464,9 +515,14 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
     except (TypeError, ValueError) as exc:
         raise CandidateCorruptMetadataError(f"{ruta}: metadata con tipos invalidos: {exc}") from exc
 
-    # Un READY persistido sin las TRES evidencias es metadata invalida por
-    # construccion: se rechaza al LEER, no solo al escribir.
-    metadata.exigir_listo_para_persistencia()
+    # Un READY persistido sin las TRES evidencias es metadata CORRUPTA por
+    # construccion: se rechaza al LEER, no solo al escribir. El guard de
+    # verificacion se convierte a corrupcion tipada -- el caller tiene una sola
+    # excepcion que traducir a UNKNOWN, en vez de dos de familias distintas.
+    try:
+        metadata.exigir_listo_para_persistencia()
+    except CandidateVerificationError as exc:
+        raise CandidateCorruptMetadataError(f"{ruta}: metadata READY incompleta: {exc}") from exc
     # La identidad del Candidate tiene que estar atada a su nombre: si la metadata
     # de B se copia sobre el JSON de A (misma fuente, caso normal), sin esto
     # `verificar_candidate(A)` devolveria VALID llevando la identidad de B y la
@@ -578,6 +634,84 @@ def _verificar_integridad_fisica(payload: pathlib.Path) -> tuple[GenerationVerif
     return GenerationVerificationState.INDETERMINATE, resultado.message
 
 
+def _campos_divergentes(esperada: CandidateSourceEvidence, observada: CandidateSourceEvidence) -> list[str]:
+    """Nombra los campos que difieren entre dos evidencias.
+
+    Sin esto el diagnostico seria "algo no coincide" y obligaria a re-derivar a mano
+    cual de las dimensiones se rompio. Es el mismo criterio por campo que usa
+    `_diferencias_triada`, para que ambos mensajes sean comparables.
+    """
+    campos = (
+        ("Provider", "provider"),
+        ("Appid", "appid"),
+        ("GameKey", "game_key"),
+        ("RuntimeIdentity", "runtime_identity"),
+        ("TreeDigest", "tree_digest"),
+        ("DirectoryMembership", "directory_membership"),
+        ("CriticalFiles", "critical_files"),
+        ("Files", "archivos"),
+    )
+    return [etiqueta for etiqueta, atributo in campos if getattr(esperada, atributo) != getattr(observada, atributo)]
+
+
+def _identidad_evidencia(evidencia: CandidateSourceEvidence) -> tuple[object, ...]:
+    """Identidad comparable de una evidencia (sin `observed_at_ns`).
+
+    `observed_at_ns` es el momento de la observacion y SIEMPRE difiere entre la
+    corrida original y una re-observacion posterior; incluirlo haria que toda
+    re-verificacion fuese distinta de si misma.
+    """
+    return (
+        evidencia.provider,
+        evidencia.appid,
+        evidencia.game_key,
+        evidencia.runtime_identity,
+        evidencia.tree_digest,
+        evidencia.directory_membership,
+        evidencia.critical_files,
+        evidencia.archivos,
+    )
+
+
+def _evaluar_coherencia_persistida(metadata: CandidateMetadata) -> tuple[GenerationVerificationState, str]:
+    """La evidencia HISTORICA persistida debe ser coherente consigo misma.
+
+    `verificar_candidate` compara PRE / Candidate-fresco / POST. Eso no alcanza:
+    la metadata tambien afirma "esto es lo que se copio en su momento"
+    (`candidate_evidence`), y si ese registro historico quedo corrupto la
+    re-verificacion del contenido no lo detectaria.
+
+    Ademas exige que el binding de nivel superior de la metadata sea coherente
+    con PRE/POST, para que el header no pueda describir una Managed Source
+    distinta a la de su propia evidencia.
+    """
+    pre, persistida, post = metadata.pre_source_evidence, metadata.candidate_evidence, metadata.post_source_evidence
+    if pre is None or post is None or persistida is None:
+        return (GenerationVerificationState.INVALID, "la metadata persistida no tiene las TRES evidencias")
+    if (metadata.source_provider, metadata.source_appid) != (pre.provider, pre.appid):
+        return (
+            GenerationVerificationState.INVALID,
+            f"el binding de fuente de la metadata ({metadata.source_provider}/{metadata.source_appid}) "
+            f"no coincide con la evidencia PRE ({pre.provider}/{pre.appid})",
+        )
+    if _identidad_evidencia(pre) != _identidad_evidencia(persistida):
+        return (
+            GenerationVerificationState.INVALID,
+            "la evidencia de Candidate persistida no coincide con la evidencia PRE persistida "
+            f"(difieren: {', '.join(_campos_divergentes(pre, persistida))})",
+        )
+    if _identidad_evidencia(persistida) != _identidad_evidencia(post):
+        return (
+            GenerationVerificationState.INVALID,
+            "la evidencia de Candidate persistida no coincide con la evidencia POST persistida "
+            f"(difieren en la procedencia: {', '.join(_campos_divergentes(persistida, post))})",
+        )
+    return (
+        GenerationVerificationState.VALID,
+        "la evidencia persistida PRE/Candidate/POST es coherente consigo misma",
+    )
+
+
 def _observar_candidate(
     payload: pathlib.Path,
     *,
@@ -590,9 +724,14 @@ def _observar_candidate(
     IMPORTANTE (SFR-15): esto es evidencia de si mismo, jamas autoridad. Se
     compara contra PRE y POST de la Managed Source; no puede selo sola.
     """
+    # TODA la construccion de evidencia del Candidate vive dentro de la frontera
+    # tipada. `_archivos_criticos` puede lanzar `FrozenRuntimeObservationError`
+    # (juego valido pero sin catalogo critico correspondiente): si queda fuera, esa
+    # excepcion cruda escapa de `verificar_candidate` en vez de volverse veredicto.
     try:
         sellado: SealedTreeObservation = observar_arbol_sellado(payload, game_key=game_key)
-    except SourceObservationError as exc:
+        criticos = _archivos_criticos(game_key, sellado.files)
+    except (SourceObservationError, FrozenRuntimeObservationError) as exc:
         raise CandidateVerificationError(f"no se pudo observar el Candidate: {exc}") from exc
     return CandidateSourceEvidence(
         provider=provider,
@@ -601,7 +740,7 @@ def _observar_candidate(
         runtime_identity=sellado.runtime_identity,
         tree_digest=sellado.tree_digest,
         directory_membership=sellado.directory_membership,
-        critical_files=_archivos_criticos(game_key, sellado.files),
+        critical_files=criticos,
         provider_metadata=ProviderMetadataObservation(
             provider=ManagedSourceProvider(provider),
             appid=appid,
@@ -611,18 +750,74 @@ def _observar_candidate(
     )
 
 
+def _reservar_candidate_id(root: pathlib.Path, candidate_id: str) -> pathlib.Path:
+    """Reserva el ``candidate_id`` con semantica de NO-CLOBBER.
+
+    La primitiva de single-winner es ``mkdir(exist_ok=False)``: crea el directorio
+    del Candidate o falla con ``FileExistsError``, sin reemplazar jamas lo que ya
+    estaba. No se usa `exists()` seguido de escritura porque eso abre una ventana
+    TOCTOU entre el control y la mutacion -- exactamente la ventana que permite
+    que un ``id_factory`` repetido destruya un Candidate READY antes de que la
+    colision del payload llegue a descubrirse.
+
+    El orden importa: la reserva ocurre ANTES de persistir la metadata BUILDING,
+    asi que un id repetido falla sin haber escrito un solo byte del Candidate
+    anterior.
+
+    Que NO cubre esto: exclusion entre procesos distintos (el lock cross-process
+    global de la corrida es P4, explicitamente fuera de este slice). Lo que si
+    garantiza es la propiedad puntual e independiente de la primitiva -- una
+    colision concreta no destruye un Candidate existente.
+    """
+    raiz = pathlib.Path(root)
+    _exigir_candidates_state_dir(raiz)
+    directorio = candidate_dir(raiz, candidate_id)
+    try:
+        directorio.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise CandidateIdCollisionError(
+            f"el candidate_id '{candidate_id}' ya esta reservado por un Candidate existente: "
+            "no se reemplaza (fail-closed)"
+        ) from exc
+    except OSError as exc:
+        raise FrozenRuntimeStorageError(f"no se pudo reservar el candidate_id '{candidate_id}': {exc}") from exc
+    # La reserva se hace dentro del root verificado: despues de crearla, el
+    # directorio recien nacido tiene que colgar fisicamente del root (misma
+    # disciplina que la copia).
+    try:
+        exigir_contencion_fisica(raiz, directorio, exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise FrozenRuntimeStorageError(
+            f"el directorio reservado '{directorio}' no cuelga fisicamente del root: {exc}"
+        ) from exc
+    return directorio
+
+
 def _persistir_metadata(root: pathlib.Path, metadata: CandidateMetadata) -> None:
     """Persiste la metadata del Candidate FUERA del payload, de forma atomica.
 
     Reusa ``write_json_atomic`` (una sola implementacion de escritura atomica en
     el paquete) y re-admite el namespace justo antes de mutar.
+
+    `write_json_atomic` ya tipa el fallo de su propio `mkstemp`, pero los fallos
+    de `json.dump`, `flush`, `fsync` y `os.replace` salen como `OSError` crudo.
+    Ese error se convierte a la familia de storage para que ningun mutador de
+    metadata pueda filtrar un error de filesystem crudo: el caller decide el
+    veredicto (INDETERMINATE/INVALID), nunca el tipo de excepcion. Solo se
+    captura `OSError` a proposito -- `KeyboardInterrupt`, `SystemExit` y
+    `MemoryError` deben seguir propagarse.
     """
     _exigir_candidates_state_dir(root)
     exigir_namespace_escribible(candidates_state_dir(root))
-    write_json_atomic(
-        candidate_metadata_path(root, metadata.candidate_id),
-        serializar_metadata_candidate(metadata),
-    )
+    try:
+        write_json_atomic(
+            candidate_metadata_path(root, metadata.candidate_id),
+            serializar_metadata_candidate(metadata),
+        )
+    except OSError as exc:
+        raise FrozenRuntimeStorageError(
+            f"no se pudo persistir la metadata del Candidate '{metadata.candidate_id}': {exc}"
+        ) from exc
 
 
 def _marcar_invalid(
@@ -720,6 +915,26 @@ def crear_candidate(
         )
 
     candidate_id = nuevo_candidate_id(id_factory)
+    # RESERVA ANTES DE ESCRIBIR. Sin esto, un `id_factory` que devuelve un id ya
+    # usado persistiria la metadata BUILDING encima de la del Candidate previo
+    # (incluido uno READY) y la colision del payload recien se descubriria --
+    # cuando el dano ya esta hecho.
+    try:
+        _reservar_candidate_id(raiz, candidate_id)
+    except CandidateIdCollisionError as exc:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"el candidate_id ya esta en uso: {exc}",
+            candidate_id=candidate_id,
+            pre_source_evidence=pre,
+        )
+    except FrozenRuntimeStorageError as exc:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"no se pudo reservar el candidate_id: {exc}",
+            candidate_id=candidate_id,
+            pre_source_evidence=pre,
+        )
     metadata = CandidateMetadata(
         schema_version=CANDIDATE_SCHEMA_VERSION,
         candidate_id=candidate_id,
@@ -836,14 +1051,12 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
         )
 
     destino = payload_dir(candidate_dir(raiz, cid))
-    estado_fisico, mensaje_fisico = _verificar_integridad_fisica(destino)
-    if estado_fisico is not GenerationVerificationState.VALID:
-        return CandidateResult(
-            state=GenerationVerificationState.INVALID,
-            message=f"el Candidate persistido no es fisicamente independiente: {mensaje_fisico}",
-            candidate_id=cid,
-            metadata=metadata,
-        )
+
+    # El estado de ciclo de vida PERSISTIDO se resuelve PRIMERO y es decisivo por
+    # si mismo: un BUILDING (crash) o un INVALID ya son un hecho conocido por la
+    # metadata, y no necesitan inspeccion fisica para concluir. Preguntar primero
+    # por la integridad fisica mezclaba los dos planos y degradaba un hecho
+    # deterministico a INDETERMINATE (P3-E).
     if metadata.state is CandidateState.BUILDING:
         # Un crash dejo la copia a medias: BUILDING NUNCA se trata como READY.
         return CandidateResult(
@@ -859,10 +1072,52 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
             candidate_id=cid,
             metadata=metadata,
         )
+
+    # Si el arbol del payload dejo de existir, es un HECHO deterministico (no "no
+    # se pudo inspeccionar"): la metadata afirmo que se copio y persistio ese arbol,
+    # y ya no hay NADA en disco que satisfaga esa evidencia. Degradar esa perdida
+    # concreta a un veredicto ambiguo (INDETERMINATE) permitira que un caller la
+    # trate como "reintentar mas tarde" en vez de como INVALID (P3-E / Codex #904).
+    if not destino.is_dir():
+        return CandidateResult(
+            state=GenerationVerificationState.INVALID,
+            message="el arbol del Candidate ya no existe: la evidencia persistida no tiene payload que la satisfaga",
+            candidate_id=cid,
+            metadata=metadata,
+        )
+
+    estado_fisico, mensaje_fisico = _verificar_integridad_fisica(destino)
+    # Se conserva la distincion epistemologica: `VIOLATED` es una afirmacion de
+    # comparticion/redireccion (INVALID), `INDETERMINATE` es "no se pudo
+    # inspeccionar" y no autoriza a afirmar corrupcion.
+    if estado_fisico is GenerationVerificationState.INDETERMINATE:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"no se pudo determinar la integridad fisica del Candidate: {mensaje_fisico}",
+            candidate_id=cid,
+            metadata=metadata,
+        )
+    if estado_fisico is not GenerationVerificationState.VALID:
+        return CandidateResult(
+            state=GenerationVerificationState.INVALID,
+            message=f"el Candidate persistido no es fisicamente independiente: {mensaje_fisico}",
+            candidate_id=cid,
+            metadata=metadata,
+        )
     if metadata.pre_source_evidence is None or metadata.post_source_evidence is None:
         return CandidateResult(
             state=GenerationVerificationState.INVALID,
             message="el Candidate READY no tiene evidencia PRE/POST persistida completa",
+            candidate_id=cid,
+            metadata=metadata,
+        )
+    # Antes de mirar el disco: la evidencia historica persistida tiene que ser
+    # coherente consigo misma y con el binding de la metadata.
+    veredicto_persistida, mensaje_persistida = _evaluar_coherencia_persistida(metadata)
+    if veredicto_persistida is not GenerationVerificationState.VALID:
+        return CandidateResult(
+            state=veredicto_persistida,
+            message=mensaje_persistida,
             candidate_id=cid,
             metadata=metadata,
         )
@@ -874,10 +1129,33 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
             appid=metadata.pre_source_evidence.appid,
             provider=metadata.pre_source_evidence.provider,
         )
+    except FrozenRuntimeObservationError as exc:
+        return CandidateResult(
+            state=GenerationVerificationState.INVALID,
+            message=f"la evidencia critica del Candidate no pudo construirse: {exc}",
+            candidate_id=cid,
+            metadata=metadata,
+        )
     except (CandidateVerificationError, SourceObservationError) as exc:
         return CandidateResult(
             state=GenerationVerificationState.INVALID,
             message=f"no se pudo observar el Candidate persistido: {exc}",
+            candidate_id=cid,
+            metadata=metadata,
+        )
+
+    # El Candidate en disco tiene que seguir siendo el que la metadata afirma
+    # que se copio, y no solo algo equivalente a PRE/POST.
+    if metadata.candidate_evidence is not None and (
+        _identidad_evidencia(candidato) != _identidad_evidencia(metadata.candidate_evidence)
+    ):
+        divergentes = _campos_divergentes(metadata.candidate_evidence, candidato)
+        return CandidateResult(
+            state=GenerationVerificationState.INVALID,
+            message=(
+                "el Candidate en disco ya no coincide con la evidencia de copia persistida "
+                f"(difieren: {', '.join(divergentes) or 'identidad'})"
+            ),
             candidate_id=cid,
             metadata=metadata,
         )
