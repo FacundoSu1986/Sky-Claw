@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,7 +32,9 @@ def archivo(tmp_path: Path) -> dict[str, Path | str]:
     git(repo, "init", "-b", "main")
     git(repo, "config", "user.name", "Prueba de archivo")
     git(repo, "config", "user.email", "prueba@example.invalid")
-    git(repo, "commit", "--allow-empty", "-m", "Base")
+    (repo / "archivo.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "archivo.txt")
+    git(repo, "commit", "-m", "Base")
     base = git(repo, "rev-parse", "HEAD")
     git(repo, "branch", "archivada-local")
     git(repo, "branch", "archivada-remota")
@@ -243,6 +246,55 @@ def test_conserva_ramas_con_pr_abierto_o_worktree(archivo: dict[str, Path | str]
     assert git(repo, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
 
 
+def test_pack_truncado_aborta_aunque_list_heads_y_verify_pasaran(archivo: dict[str, Path | str]) -> None:
+    """Los headers válidos no prueban que los commits estén preservados."""
+    bundle = Path(archivo["bundle"])
+    contenido = bundle.read_bytes()
+    bundle.write_bytes(contenido[: contenido.index(b"PACK")])
+    repo = Path(archivo["repo"])
+    assert git(repo, "bundle", "list-heads", str(bundle))
+    git(repo, "bundle", "verify", str(bundle))
+    resultado = ejecutar(archivo)
+    assert resultado.returncode != 0
+    assert git(repo, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
+
+
+@pytest.mark.parametrize("operacion", ["rebase-merge", "rebase-apply", "bisect"])
+def test_conserva_rama_activa_aunque_worktree_aparezca_detached(archivo: dict[str, Path | str], operacion: str) -> None:
+    """Enumera las tres operaciones de Git que ocultan la rama en porcelain."""
+    repo = Path(archivo["repo"])
+    checkout = repo.parent / "checkout-activo"
+    git(repo, "worktree", "add", str(checkout), "archivada-local")
+    (checkout / "archivo.txt").write_text("rama\n", encoding="utf-8")
+    git(checkout, "add", "archivo.txt")
+    git(checkout, "commit", "-m", "Trabajo de la rama")
+    if operacion == "bisect":
+        git(checkout, "commit", "--allow-empty", "-m", "Segundo commit de la rama")
+    tip = git(checkout, "rev-parse", "HEAD")
+    git(repo, "bundle", "create", str(archivo["bundle"]), "--branches", "--remotes")
+    if operacion == "bisect":
+        git(checkout, "bisect", "start", tip, str(archivo["base"]))
+    else:
+        (repo / "archivo.txt").write_text("main\n", encoding="utf-8")
+        git(repo, "add", "archivo.txt")
+        git(repo, "commit", "-m", "Cambio conflictivo en main")
+        args = [str(GIT), "rebase", "main"] if operacion == "rebase-merge" else [str(GIT), "rebase", "--apply", "main"]
+        conflicto = subprocess.run(args, cwd=checkout, capture_output=True, text=True, timeout=20, check=False)
+        assert conflicto.returncode != 0
+    assert "detached" in git(repo, "worktree", "list", "--porcelain")
+    resultado = ejecutar(archivo)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert git(repo, "rev-parse", "refs/heads/archivada-local") == tip
+
+
 def test_familia_de_scripts_del_archivo_es_exacta() -> None:
     """Un mutador nuevo debe sumarse a las recetas conductuales de esta familia."""
     assert {p.name for p in (RAIZ / "archive" / "git-branches").glob("*.ps1")} == {"delete-branches.ps1", "restore.ps1"}
+    source = (RAIZ / "archive" / "git-branches" / "delete-branches.ps1").read_text(encoding="utf-8-sig")
+    receta = re.search(r"\$activeOperationFiles = @\(([^)]+)\)", source)
+    assert receta is not None
+    assert set(re.findall(r"'([^']+)'", receta.group(1))) == {
+        "rebase-merge/head-name",
+        "rebase-apply/head-name",
+        "BISECT_START",
+    }

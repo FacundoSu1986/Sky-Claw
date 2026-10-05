@@ -154,6 +154,11 @@ omite. El borrado local usa `git update-ref -d <ref> <SHA>` y el remoto usa
 `git push --force-with-lease=<ref>:<SHA> origin :<ref>`: un escritor que avance el
 tip entre la lectura y el borrado hace que git rechace la operación. Se aborta
 también si la consulta de PRs alcanza el límite de 500, porque puede estar truncada.
+Antes de habilitar un borrado, importa el bundle completo en un repositorio
+temporal vacío con validación de objetos y compara todas las refs restauradas:
+`bundle list-heads` y `bundle verify` por sí solos no detectan un pack truncado.
+Además de HEAD, la guarda de worktrees enumera las ramas retenidas por rebase
+(`rebase-merge` y `rebase-apply`) y bisect, que Git puede mostrar como detached.
 Las regresiones están en `tests/test_git_archive_scripts.py`, sobre repositorios
 temporales y las dos superficies. Estos tests no borran ramas del repo del usuario.
 

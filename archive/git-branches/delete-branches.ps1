@@ -85,6 +85,37 @@ foreach ($h in @($headsRes.Out)) {
 }
 if ($archived.Count -eq 0) { Fail "El bundle no contiene refs: $Bundle" }
 
+# list-heads y bundle verify no leen el pack. Importarlo en una DB de objetos
+# VACIA prueba que el backup es autocontenido y restaurable antes de borrar.
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+$validationRoot = [IO.Path]::GetFullPath((Join-Path $tempRoot ("skyclaw-bundle-check-" + [guid]::NewGuid())))
+if ([IO.Path]::GetDirectoryName($validationRoot) -ne $tempRoot) { Fail 'Directorio de verificacion fuera del temporal' }
+try {
+    $objectFormat = if (@($archived.Values | Where-Object { $_.Length -eq 64 }).Count -gt 0) { 'sha256' } else { 'sha1' }
+    $initRes = Invoke-Native 'git' @('init', '--bare', "--object-format=$objectFormat", $validationRoot)
+    if ($initRes.Code -ne 0) { Fail 'No se pudo crear el repo de verificacion' }
+    $fetchRes = Invoke-Native 'git' @('--git-dir', $validationRoot, '-c', 'fetch.fsckObjects=true', 'fetch', '--no-tags', $Bundle, '+refs/*:refs/checked/*')
+    if ($fetchRes.Code -ne 0) { Fail 'Bundle no restaurable; aborto sin borrar ninguna rama' }
+    $refsRes = Invoke-Native 'git' @('--git-dir', $validationRoot, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/checked')
+    if ($refsRes.Code -ne 0) { Fail 'No se pudieron verificar los tips restaurados' }
+    $restored = @{}
+    foreach ($line in @($refsRes.Out)) {
+        $parts = "$line" -split '\s+'
+        $source = $parts[0] -replace '^refs/checked/', 'refs/'
+        $restored[$source] = $parts[1]
+    }
+    if ($restored.Count -ne $archived.Count) { Fail 'El bundle no restauro todas sus refs' }
+    foreach ($ref in $archived.Keys) {
+        if ($restored[$ref] -ne $archived[$ref]) { Fail "SHA restaurado distinto en $ref" }
+    }
+} finally {
+    # Sólo eliminar el hijo exacto recién creado, tras comprobar su ruta absoluta.
+    if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($validationRoot)) -ne $tempRoot) {
+        Fail 'Limpieza fuera del directorio temporal'
+    }
+    if (Test-Path -LiteralPath $validationRoot) { Remove-Item -LiteralPath $validationRoot -Recurse -Force }
+}
+
 # --- PRs abiertos AHORA (no el snapshot) ---
 # FAIL-CLOSED: si gh falla no se puede saber si hay PRs abiertos, y seguir con
 # $openPR vacio desactivaria la guarda critica en silencio. $ErrorActionPreference
@@ -104,12 +135,29 @@ foreach ($pr in @($openJson)) {
 
 # --- Ramas checked-out en algun worktree ---
 $checkedOut = @{}
-$wtRes = Invoke-Native 'git' @('worktree', 'list', '--porcelain')
+$wtRes = Invoke-Native 'git' @('worktree', 'list', '--porcelain', '-z')
 if ($wtRes.Code -ne 0) {
     Fail "git worktree list fallo (exit $($wtRes.Code)): no se pueden verificar las ramas checked-out. Aborto (fail-closed)."
 }
-foreach ($line in @($wtRes.Out)) {
+$worktreePaths = @()
+foreach ($line in ((@($wtRes.Out) -join "`n") -split [char]0)) {
     if ("$line" -match '^branch refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
+    elseif ("$line" -match '^worktree (.+)$') { $worktreePaths += $Matches[1] }
+}
+# Rebase y bisect pueden aparecer detached en porcelain mientras la rama sigue
+# en uso. Enumerar las mismas tres recetas, en TODOS los worktrees registrados.
+$activeOperationFiles = @('rebase-merge/head-name', 'rebase-apply/head-name', 'BISECT_START')
+foreach ($worktreePath in $worktreePaths) {
+    $dirRes = Invoke-Native 'git' @('-C', $worktreePath, 'rev-parse', '--absolute-git-dir')
+    if ($dirRes.Code -ne 0) { Fail "No se pudo auditar el estado de $worktreePath" }
+    $gitDir = (@($dirRes.Out) -join '').Trim()
+    foreach ($stateFile in $activeOperationFiles) {
+        $statePath = Join-Path $gitDir $stateFile
+        if (Test-Path -LiteralPath $statePath) {
+            $branchInUse = (Get-Content -LiteralPath $statePath -Raw).Trim() -replace '^refs/heads/', ''
+            if ($branchInUse) { $checkedOut[$branchInUse] = $true }
+        }
+    }
 }
 $curRes = Invoke-Native 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
 if ($curRes.Code -ne 0) { Fail 'No se pudo resolver la rama actual' }
