@@ -268,7 +268,13 @@ def compute_all(
         "normal_angle_mean": ang_mean,
         "normal_angle_p95": ang_p95,
         "corr": pearson(rec, ref),
-        "spearman": spearman(rec, ref),
+        # Revisión PR #685: ``spearman`` ahora exige entrada finita (ValueError, bug del
+        # caller). Pero ``compute_all`` se invoca con reconstrucciones divergentes, y el
+        # flag ``finite`` de abajo existe justamente para registrar ese caso. Sin esta
+        # guarda, una sola reconstrucción no finita abortaba la corrida entera en vez de
+        # dejar la fila con ``finite=False`` — que es lo que hacía antes de PR-MATH-B.
+        # ``pearson`` no necesita guarda: devuelve NaN, no lanza.
+        "spearman": spearman(rec, ref) if finite else float("nan"),
         "r2": r2(rec_a, ref),
         "ssim": ssim(rec_a, ref),
         "seam_height": seam_height(rec, ref),

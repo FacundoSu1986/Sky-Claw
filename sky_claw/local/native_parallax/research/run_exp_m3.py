@@ -466,13 +466,22 @@ def build_cohort_a_summary(ev: dict[str, Any], *, sufficient: bool) -> dict[str,
     # orientation = -1 — una orientación fabricada. Sin orientación no hay riesgo
     # orientado, así que no hay trust held-out: se falla CERRADO (el gate §31 no
     # puede pasar con heldout_trust ausente), no se inventa una dirección.
-    if not np.isfinite(rho_cal):
+    #
+    # Revisión PR #685: el cero EXACTO tampoco da dirección (``0 > 0`` es False) y la
+    # corrección de empates lo vuelve alcanzable — proxy 1..6 vs rmse [0,1,2,2,1,0]
+    # daba +0.7 con rango ordinal y da 0.0 con rango medio. Mismo cierre, con estado
+    # propio para que el caso sea auditable y no se confunda con el no evaluable.
+    if not np.isfinite(rho_cal) or rho_cal == 0.0:
         summary["calibration"] = {
             "n": len(cal),
             "proxy": proxy,
-            "spearman": float("nan"),
+            "spearman": rho_cal,
             "orientation": float("nan"),
-            "status": "CALIBRATION_SPEARMAN_NOT_EVALUABLE",
+            "status": (
+                "CALIBRATION_SPEARMAN_ZERO_NO_ORIENTATION"
+                if np.isfinite(rho_cal)
+                else "CALIBRATION_SPEARMAN_NOT_EVALUABLE"
+            ),
         }
         return summary
     orientation = 1.0 if rho_cal > 0 else -1.0

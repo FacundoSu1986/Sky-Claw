@@ -45,6 +45,7 @@ from sky_claw.local.native_parallax.research.run_exp_m3 import (
     spearman_ci,
     trust_gate_passes,
 )
+from sky_claw.local.native_parallax.research.synthetic_height import PERIODIC_CASES
 
 # ---------------------------------------------------------------- A. rangos medios
 
@@ -179,6 +180,26 @@ def test_tamanos_desalineados_es_error_del_caller() -> None:
 
 
 # ---------------------------------------------------------------- E. una sola implementación
+
+
+def test_compute_all_con_reconstruccion_no_finita_no_aborta() -> None:
+    """Regresión PR #685 (CodeRabbit): ``spearman`` exige entrada finita (ValueError).
+
+    ``compute_all`` se llama con reconstrucciones divergentes y ya expone un flag
+    ``finite`` justamente para registrarlas. Sin guarda, una sola reconstrucción no
+    finita abortaba la corrida entera en vez de dejar la fila con ``finite=False``
+    — que es lo que hacía antes de PR-MATH-B.
+    """
+    h = PERIODIC_CASES["S06_multifreq"](64, 64)
+    _h, p, q, n, rec, _info = metrics.reconstruct_case(h)
+    rec_bad = rec.copy()
+    rec_bad[0, 0] = np.nan
+
+    fila = metrics.compute_all(h, rec_bad, p, q, n)
+
+    assert fila["finite"] is False
+    assert math.isnan(fila["spearman"])
+    assert math.isnan(fila["corr"])  # pearson ya devolvía NaN: no lanza
 
 
 def test_ranking_vive_solo_en_average_ranks() -> None:
@@ -321,6 +342,26 @@ def test_orientacion_no_evaluable_no_cae_silenciosamente_en_menos_uno(monkeypatc
 
     assert summary["calibration"]["status"] == "CALIBRATION_SPEARMAN_NOT_EVALUABLE"
     assert not np.isfinite(summary["calibration"]["spearman"])
+    assert summary["heldout_trust"] is None
+    assert trust_gate_passes(summary) is False
+
+
+def test_orientacion_cero_no_cae_silenciosamente_en_menos_uno(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§13/§7 (revisión PR #685): ``rho_cal == 0`` tampoco da dirección.
+
+    ``0 > 0`` es False, así que sin guarda ``orientation`` cae en -1. La corrección
+    de empates vuelve ALCANZABLE el cero exacto: con rango ordinal este mismo par
+    (proxy 1..6 vs rmse [0,1,2,2,1,0]) daba +0.7; con rango medio da 0.0. Una
+    orientación fabricada orienta el riesgo held-out y podría satisfacer el gate §31
+    sin ninguna evidencia direccional — mismo cierre que el caso no finito.
+    """
+    monkeypatch.setattr(m3, "select_proxy_on_calibration", lambda rows, feats: "nz_p01")
+    ev, _ = _summary_rows(cal_rmse=[0.0, 1.0, 2.0, 2.0, 1.0, 0.0], held_rmse=[0.1 * i for i in range(6)])
+    summary = build_cohort_a_summary(ev, sufficient=True)
+
+    assert summary["calibration"]["spearman"] == 0.0
+    assert summary["calibration"]["status"] == "CALIBRATION_SPEARMAN_ZERO_NO_ORIENTATION"
+    assert not np.isfinite(summary["calibration"]["orientation"])
     assert summary["heldout_trust"] is None
     assert trust_gate_passes(summary) is False
 
