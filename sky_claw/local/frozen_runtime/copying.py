@@ -150,27 +150,58 @@ def _canonicalizar_lote(entradas: tuple[str, ...], *, tipo: str) -> tuple[str, .
     return tuple(canonicos)
 
 
-def _exigir_contencion_del_padre_destino(contenedor: pathlib.Path, padre: pathlib.Path) -> None:
-    """Revalida, JUSTO antes de escribir, que el padre del destino siga DENTRO.
+def _exigir_contencion_destino(contenedor: pathlib.Path, ruta: pathlib.Path) -> None:
+    """Revalida que *ruta* siga DENTRO del contenedor y sin enlaces intermedios.
 
     La contencion se verificaba UNA sola vez en la raiz del payload. Un junction
     que reemplace un directorio NIDO (`payload/Data`) despues de ese chequeo hace
-    que `mkdir(exist_ok=True)` acepte el directorio redirigido y que el `open`
-    destino escriba fuera del ``FrozenRuntimeRoot``. Revalidar por archivo acota
-    la ventana al tramo ``lstat -> open``, que es lo maximo que se puede cerrar
-    sin un handle al directorio padre.
+    que cualquier mutacion posterior -- `mkdir`, `open` -- opere fuera del
+    ``FrozenRuntimeRoot``. Se llama antes de cada mutacion y tambien sobre el
+    resultado recien creado.
 
     ``HANDLE_GRADE_DESTINATION = NO``: esto es best-effort fail-closed, no una
     proteccion atomica contra un swap hostil concurrente. El lock cross-process
     es P4.
     """
     try:
-        exigir_contencion_fisica(contenedor, padre, exigir_existencia=True)
+        exigir_contencion_fisica(contenedor, ruta, exigir_existencia=True)
     except ContencionFisicaVioladaError as exc:
         raise CandidateCopyError(
-            f"el padre del destino '{padre}' no cuelga fisicamente de '{contenedor}' "
-            f"(posible redireccion por enlace): {exc}"
+            f"la ruta destino '{ruta}' no cuelga fisicamente de '{contenedor}' (posible redireccion por enlace): {exc}"
         ) from exc
+
+
+def _materializar_directorio_del_destino(
+    contenedor: pathlib.Path,
+    raiz_destino: pathlib.Path,
+    rel_dir: pathlib.PurePosixPath,
+) -> pathlib.Path:
+    """Materializa `rel_dir` componente por componente, revalidando en cada paso.
+
+    El loop de directorios hacia un unico ``mkdir(parents=True, exist_ok=True)``, y
+    eso SIGUE un prefijo ya creado que haya sido reemplazado por un symlink o
+    junction: los niveles siguientes se creaban fuera del ``FrozenRuntimeRoot``. El
+    guard por archivo (P3-P) no cubre ese tramo -- corre DESPUES de toda la
+    materializacion -- y un directorio VACIO sellado (que P3 conserva a proposito)
+    no tiene ningun archivo posterior que lo dispare, asi que el escape quedaba
+    invisible (Codex sobre #682, P3-T).
+
+    Cada paso hace: verificar el parent -> crear el hijo si falta -> verificar el
+    hijo. Un directorio EXISTENTE se revalida antes de usarlo como parent del nivel
+    siguiente, porque pudo ser reemplazado desde la observacion anterior.
+    """
+    actual = pathlib.Path(raiz_destino)
+    for componente in rel_dir.parts:
+        _exigir_contencion_destino(contenedor, actual)
+        hijo = actual / componente
+        if not hijo.is_dir():
+            try:
+                hijo.mkdir()
+            except OSError as exc:
+                raise CandidateCopyError(f"no se pudo crear el directorio '{hijo}': {exc}") from exc
+        _exigir_contencion_destino(contenedor, hijo)
+        actual = hijo
+    return actual
 
 
 def _exigir_ancestros_del_source(raiz_origen: pathlib.Path, archivo: pathlib.Path) -> None:
@@ -215,17 +246,27 @@ def copiar_arbol_independiente(
 
     ``contenedor`` es el ``FrozenRuntimeRoot`` del que el destino NO puede
     escaparse. Se verifica con :func:`exigir_contencion_fisica`, que hace
-    ``lstat`` de cada ancestro -- no ``resolve``, que seguiria el enlace -- antes
-    de crear nada y otra vez DESPUES del ``mkdir`` del payload. La segunda
-    comprobacion es la que cierra la ventana que Qodo senalo sobre #682: entre la
-    validacion del padre y el ``mkdir`` un junction podia reemplazarlo, y sin esa
-    re-verificacion la copia escribia TODOS los bytes fuera del root. Con ella, el
-    caso se detecta antes de escribir un solo byte de contenido.
+    ``lstat`` de cada ancestro -- no ``resolve``, que seguiria el enlace.
+
+    Tres fronteras, todas fail-closed:
+
+    * la raiz del payload, antes y despues de su ``mkdir`` (cierra la ventana que
+      Qodo senalo sobre #682: entre la validacion del padre y el ``mkdir`` un
+      junction podia reemplazarlo);
+    * la MATERIALIZACION de directorios, componente por componente, con la
+      contencion revalidada antes de crear cada nivel y sobre el nivel creado
+      (P3-T: un solo ``mkdir(parents=True)`` seguia un prefijo redirigido y creaba
+      los niveles siguientes fuera del root; un directorio VACIO sellado no tiene
+      ningun archivo posterior que dispare el guard de archivo);
+    * cada ESCRITURA de archivo, con el padre revalidado inmediatamente antes del
+      ``open`` y la cadena de ancestros del source validada (P3-P / P3-R), mas la
+      identidad del source re-verificada despues de abrir.
 
     Garantia honesta (no se afirma mas de lo que hay): esto NO es proteccion
     HANDLE-grade -- no hay un handle al directorio padre que impida el swap
-    atomicamente -- pero la mutacion fuera del root queda acotada a la creacion
-    del directorio del payload y se detecta fail-closed antes del contenido.
+    atomicamente -- la revalidacion es best-effort fail-closed y la ventana
+    residual entre la verificacion y la mutacion la cierra el lock cross-process,
+    que es P4 (``HANDLE_GRADE_DESTINATION = NO``).
     """
     raiz_origen = pathlib.Path(origen)
     raiz_destino = pathlib.Path(destino)
@@ -288,18 +329,21 @@ def copiar_arbol_independiente(
 
     try:
         for directorio in canonicos_directorios:
-            (raiz_destino / pathlib.PurePosixPath(directorio)).mkdir(parents=True, exist_ok=True)
+            # P3-T: componente por componente. Un solo `mkdir(parents=True)` sigue un
+            # prefijo que haya sido reemplazado por un junction y crea los niveles
+            # siguientes fuera del root; un directorio VACIO sellado no tiene ningun
+            # archivo posterior que dispare el guard de P3-P.
+            _materializar_directorio_del_destino(raiz_contenedora, raiz_destino, pathlib.PurePosixPath(directorio))
         copiados = 0
         for _entrada, rel_path in pares:
             # `rel_path` ya es canonico: relativo y sin `..`, unirlo no sale del payload.
             origen_archivo = raiz_origen / pathlib.PurePosixPath(rel_path)
             destino_archivo = raiz_destino / pathlib.PurePosixPath(rel_path)
-            destino_archivo.parent.mkdir(parents=True, exist_ok=True)
-            # P3-P / P3-R: revalidar AMBOS lados justo antes de tocar el disco. La
-            # contencion del payload se chequeo una sola vez, mucho antes de que
-            # este loop llegue a un directorio nido; y el probe de fuente miraba
-            # solo el leaf, ciego a un ancestro redirigido.
-            _exigir_contencion_del_padre_destino(raiz_contenedora, destino_archivo.parent)
+            # P3-T / P3-P / P3-R: materializar el padre con la contencion revalidada en
+            # cada componente (P3-T), y cerrar con la verificacion del parent del
+            # destino inmediatamente antes de la escritura (P3-P) mas la cadena de
+            # ancestros del source (P3-R).
+            _materializar_directorio_del_destino(raiz_contenedora, raiz_destino, pathlib.PurePosixPath(rel_path).parent)
             _exigir_ancestros_del_source(raiz_origen, origen_archivo)
             copiar_archivo(origen_archivo, destino_archivo)
             copiados += 1
