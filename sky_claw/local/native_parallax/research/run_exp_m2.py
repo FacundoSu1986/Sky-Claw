@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -251,6 +252,61 @@ def evaluate_sigma_policies(
     return rows
 
 
+def _json_safe(obj: Any) -> Any:
+    """Sanea recursivamente el artefacto M2 al boundary JSON: no finito → ``None``.
+
+    ``NaN``/``Infinity``/``-Infinity`` no son valores JSON válidos (RFC 8259 §6);
+    ``json.dumps`` los emite por defecto como literales que sólo Python —y
+    ``JSON.parse`` de JavaScript como ``undefined``/``Infinity``— vuelven a leer,
+    dejando un artefacto que ``jq`` o cualquier consumidor estricto rechaza.
+
+    Los no finitos son alcanzables por resultados LEGÍTIMOS de M2, no por bug:
+
+    - ``hf_energy_ratio`` = NaN cuando el height es band-limited (NOT_INFORMATIVE, M7);
+    - ``r_p01_proxy``/``r_p05_proxy``/``r_min_proxy`` = ±inf en la fila RAW, porque
+      σ_eff=0 por definición (``normal_only_features``);
+    - ``spearman`` = NaN cuando ningún candidato de σ_eff es evaluable (MATH-B.1).
+
+    Por eso el saneado es del ARTEFACTO COMPLETO y no de una clave conocida: si
+    mañana otro diagnóstico (``oracle``, ``hf_energy_ratio``, una tabla anidada)
+    devuelve un no finito, ya está cubierto. ``None`` es la única traducción: no
+    0, no ``-1``, no ``"NaN"`` — un valor numérico significaría un dato que la
+    corrida NO midió. ``winner=None`` (NO_EVALUABLE_SIGMA_CANDIDATE) conserva su
+    significado exacto.
+
+    Preserva sin alteración números finitos, ``int``, ``bool``, ``str`` y ``None``;
+    un objeto de tipo desconocido se devuelve tal cual (``json.dumps`` fallará con
+    TypeError en vez de convertirlo en silencio).
+    """
+    if isinstance(obj, bool):  # antes de los números: un bool no se sanea
+        return obj
+    if isinstance(obj, (float, np.floating)):  # np.float64 ya es subclase de float
+        f = float(obj)
+        return f if math.isfinite(f) else None
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):  # el payload los serializa como arrays
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return _json_safe(obj.tolist())
+    return obj
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    """Escribe un artefacto M2 saneado y ESTRICTO (``allow_nan=False``).
+
+    Punto de escritura único de los dos artefactos de ``main`` (``rows.json`` y
+    ``characs.json``): así el contrato no se puede cumplir en uno y olvidar en el
+    otro. ``allow_nan=False`` no es cosmético — convierte un no finito que el
+    saneado dejara pasar en un fallo ruidoso en vez de en un literal no estándar.
+    """
+    path.write_text(json.dumps(_json_safe(payload), indent=1, allow_nan=False), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -297,16 +353,14 @@ def main() -> None:
     rows.extend(evaluate_sigma_policies(specs, characs, sel, args.resolution))
 
     characs_out = {a: {k: v for k, v in c.items() if k != "_normal"} for a, c in characs.items()}
-    (out / "characs.json").write_text(json.dumps(characs_out, indent=1))
-    (out / "rows.json").write_text(
-        json.dumps(
-            {
-                "columns": COLUMNS,
-                "rows": rows,
-                "sigma_selection": {"winner": sel["winner"], "status": sel["status"], "table": sel["table"]},
-            },
-            indent=1,
-        )
+    _write_json(out / "characs.json", characs_out)
+    _write_json(
+        out / "rows.json",
+        {
+            "columns": COLUMNS,
+            "rows": rows,
+            "sigma_selection": {"winner": sel["winner"], "status": sel["status"], "table": sel["table"]},
+        },
     )
     if sel["winner"] is None:
         print(
