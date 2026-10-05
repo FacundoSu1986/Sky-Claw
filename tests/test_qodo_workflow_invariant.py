@@ -26,7 +26,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
 
-PINNED_ACTION_REF_ESPERADA = "f3b385ea2927247ddcff2fe252472380b9c8f5fc"
+PINNED_ACTION_REF_ESPERADA = "8e5a9295973b24af4b70cafd0b660a230811ef9e"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
