@@ -255,10 +255,12 @@ def evaluate_sigma_policies(
 def _json_safe(obj: Any) -> Any:
     """Sanea recursivamente el artefacto M2 al boundary JSON: no finito → ``None``.
 
-    ``NaN``/``Infinity``/``-Infinity`` no son valores JSON válidos (RFC 8259 §6);
-    ``json.dumps`` los emite por defecto como literales que sólo Python —y
-    ``JSON.parse`` de JavaScript como ``undefined``/``Infinity``— vuelven a leer,
-    dejando un artefacto que ``jq`` o cualquier consumidor estricto rechaza.
+    ``NaN``/``Infinity``/``-Infinity`` no pertenecen al JSON estándar (RFC 8259 §6).
+    ``json.dumps`` con ``allow_nan=True`` —su default— los puede EMITIR igual, y el
+    ``json.loads`` de Python los vuelve a leer por extensión propia: el artefacto
+    queda, en los hechos, legible sólo por Python. Esos tokens no existen en el
+    estándar, así que ``JSON.parse`` de JavaScript los RECHAZA (y ``jq`` o cualquier
+    consumidor estricto también), igual que rechazaría un ``undefined``.
 
     Los no finitos son alcanzables por resultados LEGÍTIMOS de M2, no por bug:
 
