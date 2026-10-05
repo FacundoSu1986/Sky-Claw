@@ -13,13 +13,11 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-import time
 
 import pytest
 
 from sky_claw.local.frozen_runtime import candidates as candidates_module
 from sky_claw.local.frozen_runtime import copying as copying_module
-from sky_claw.local.frozen_runtime import observation as observation_module
 from sky_claw.local.frozen_runtime.candidates import (
     candidate_dir,
     candidate_metadata_path,
@@ -31,97 +29,15 @@ from sky_claw.local.frozen_runtime.candidates import (
     payload_dir,
     verificar_candidate,
 )
-from sky_claw.local.frozen_runtime.models import ManagedSource, ManagedSourceProvider
-from sky_claw.local.frozen_runtime.storage import initialize_frozen_runtime_storage
 from sky_claw.local.frozen_runtime.storage_models import CandidateState, GenerationVerificationState
+from tests._p3_rig import crear as _crear
+from tests._p3_rig import parche_identidad, rig  # noqa: F401
 from tests._symlink_guard import crear_junction, junction_guard
-
-MANIFEST_IDLE = (
-    '"AppState"\n'
-    "{\n"
-    '\t"appid"\t\t"489830"\n'
-    '\t"name"\t\t"Skyrim Special Edition"\n'
-    '\t"StateFlags"\t\t"4"\n'
-    '\t"buildid"\t\t"1234567"\n'
-    '\t"BytesToDownload"\t\t"0"\n'
-    '\t"BytesDownloaded"\t\t"0"\n'
-    '\t"UpdateResult"\t\t"0"\n'
-    '\t"installdir"\t\t"Skyrim Special Edition"\n'
-    "}\n"
-)
-
-
-def _sin_op(_segundos: float) -> None:
-    """Dormir no es necesario: los tests son deterministas, no temporizados."""
-    return
-
-
-def _escribir_managed_source(steamapps: pathlib.Path) -> pathlib.Path:
-    common = steamapps / "common" / "Skyrim Special Edition"
-    (common / "Data" / "Meshes" / "Characters").mkdir(parents=True)
-    (common / "Data" / "Textures").mkdir(parents=True)
-    (common / "Data" / "EmptyFolder").mkdir(parents=True)
-    (common / "SkyrimSE.exe").write_bytes(b"fake-skyrimse-payload")
-    (common / "Data" / "Meshes" / "Characters" / "a.nif").write_bytes(b"nif-payload")
-    (common / "Data" / "Skyrim.esm").write_bytes(b"esm-payload")
-    (steamapps / "appmanifest_489830.acf").write_text(MANIFEST_IDLE, encoding="utf-8")
-    return common
-
-
-def _source(steamapps: pathlib.Path) -> ManagedSource:
-    common = steamapps / "common" / "Skyrim Special Edition"
-    return ManagedSource(
-        provider=ManagedSourceProvider.STEAM,
-        game_key="skyrimse",
-        appid="489830",
-        root=common,
-        library_steamapps=steamapps,
-        library_root=steamapps.parent,
-    )
-
-
-@pytest.fixture
-def parche_identidad(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Identidad PE falsa y estable (el exe sintetico no es un PE real).
-
-    Se parchea en LOS DOS modulos que importan la primitive: P1 la usa a traves
-    de ``observation`` y P3 a traves de ``membership`` (que la importa por
-    nombre). Parchear solo uno dejaria al Candidate observando un PE sintetico
-    ilegible.
-    """
-    from sky_claw.local.frozen_runtime import membership as membership_module
-    from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation
-
-    def identidad(root: pathlib.Path, *, expected_game_key: str = "skyrimse") -> FreshRuntimeObservation:
-        return FreshRuntimeObservation(
-            game_key=expected_game_key,
-            game_version="1.6.1170.0",
-            observed_exe_path=str(pathlib.Path(root) / "SkyrimSE.exe"),
-            observed_at_ns=time.time_ns(),
-        )
-
-    monkeypatch.setattr(observation_module, "observe_runtime_identity_from_root", identidad)
-    monkeypatch.setattr(membership_module, "observe_runtime_identity_from_root", identidad)
-
-
-@pytest.fixture
-def rig(tmp_path: pathlib.Path, parche_identidad: None) -> tuple[ManagedSource, pathlib.Path]:
-    steamapps = tmp_path / "library" / "steamapps"
-    steamapps.mkdir(parents=True)
-    _escribir_managed_source(steamapps)
-    root = tmp_path / "frozen-runtime"
-    assert initialize_frozen_runtime_storage(root).success
-    return _source(steamapps), root
-
-
-def _crear(source: ManagedSource, root: pathlib.Path, cid: str = "cand_" + "a" * 32):
-    return crear_candidate(source, root, quiet_window_seconds=0.0, sleep=_sin_op, id_factory=lambda: cid)
-
 
 # ── Camino feliz ──────────────────────────────────────────────────────────
 
 
-def test_c01_un_candidate_recien_creado_empieza_building(rig, monkeypatch) -> None:
+def test_c01_un_candidate_recien_creado_empieza_building(rig, monkeypatch) -> None:  # noqa: F811
     """C01: BUILDING se persiste ANTES de copiar; nunca READY por defecto."""
     source, root = rig
     estados: list[CandidateState] = []
@@ -140,7 +56,7 @@ def test_c01_un_candidate_recien_creado_empieza_building(rig, monkeypatch) -> No
     assert resultado.metadata.state is CandidateState.READY
 
 
-def test_c02_copia_sintetica_exitosa(rig) -> None:
+def test_c02_copia_sintetica_exitosa(rig) -> None:  # noqa: F811
     """C02: la copia crea un arbol real e independiente."""
     source, root = rig
     resultado = _crear(source, root)
@@ -151,7 +67,7 @@ def test_c02_copia_sintetica_exitosa(rig) -> None:
     assert (payload / "Data" / "Skyrim.esm").read_bytes() == b"esm-payload"
 
 
-def test_c03_los_directorios_vacios_se_preservan(rig) -> None:
+def test_c03_los_directorios_vacios_se_preservan(rig) -> None:  # noqa: F811
     """C03: los directorios vacios son parte de la identidad P3."""
     source, root = rig
     resultado = _crear(source, root)
@@ -166,7 +82,7 @@ def test_c03_los_directorios_vacios_se_preservan(rig) -> None:
     )
 
 
-def test_c04_pre_candidate_post_iguales_llevan_a_ready(rig) -> None:
+def test_c04_pre_candidate_post_iguales_llevan_a_ready(rig) -> None:  # noqa: F811
     """C04: solo A==A==A puede terminar en READY."""
     source, root = rig
     resultado = _crear(source, root)
@@ -186,7 +102,7 @@ def _payload_de(resultado, root: pathlib.Path) -> pathlib.Path:
     return payload_dir(candidate_dir(root, resultado.candidate_id or ""))
 
 
-def test_c05_source_muta_durante_la_copia_no_llega_a_ready(rig, monkeypatch) -> None:
+def test_c05_source_muta_durante_la_copia_no_llega_a_ready(rig, monkeypatch) -> None:  # noqa: F811
     """C08/C35: PRE=A, la fuente cambia a B durante la copia => NUNCA READY."""
     source, root = rig
     original = candidates_module.copiar_arbol_independiente
@@ -204,7 +120,7 @@ def test_c05_source_muta_durante_la_copia_no_llega_a_ready(rig, monkeypatch) -> 
     assert resultado.metadata.state is CandidateState.INVALID
 
 
-def test_c09_la_membership_vacia_de_la_fuente_cambia_no_llega_a_ready(rig, monkeypatch) -> None:
+def test_c09_la_membership_vacia_de_la_fuente_cambia_no_llega_a_ready(rig, monkeypatch) -> None:  # noqa: F811
     """C09/C37: test central de ``P3_DIRECTORY_MEMBERSHIP``.
 
     ``Data/EmptyFolder/`` desaparece de la FUENTE entre el PRE y el POST, con
@@ -229,7 +145,7 @@ def test_c09_la_membership_vacia_de_la_fuente_cambia_no_llega_a_ready(rig, monke
     assert resultado.metadata.state is CandidateState.INVALID
 
 
-def test_c06_candidate_mutado_no_llega_a_ready(rig) -> None:
+def test_c06_candidate_mutado_no_llega_a_ready(rig) -> None:  # noqa: F811
     """C10: mutar un archivo del Candidate invalida la triada."""
     source, root = rig
     resultado = _crear(source, root)
@@ -243,7 +159,7 @@ def test_c06_candidate_mutado_no_llega_a_ready(rig) -> None:
     assert "TreeDigest" in verificacion.message
 
 
-def test_c07_candidate_sin_mismo_directorio_vacio_no_llega_a_ready(rig) -> None:
+def test_c07_candidate_sin_mismo_directorio_vacio_no_llega_a_ready(rig) -> None:  # noqa: F811
     """C11: perder el directorio vacio invalida aunque el digest de archivos coincida."""
     source, root = rig
     resultado = _crear(source, root)
@@ -257,7 +173,7 @@ def test_c07_candidate_sin_mismo_directorio_vacio_no_llega_a_ready(rig) -> None:
     assert "DirectoryMembership" in verificacion.message
 
 
-def test_c12_hardlink_inyectado_no_llega_a_ready(rig, tmp_path) -> None:
+def test_c12_hardlink_inyectado_no_llega_a_ready(rig, tmp_path) -> None:  # noqa: F811
     """C12/C40: hardlink con bytes IDENTICOS viola la independencia fisica.
 
     El ``TreeDigest`` no lo ve: el contenido es el mismo. Lo ve ``st_nlink``.
@@ -277,7 +193,7 @@ def test_c12_hardlink_inyectado_no_llega_a_ready(rig, tmp_path) -> None:
 
 
 @junction_guard
-def test_c13_reparse_inyectado_no_llega_a_ready(rig, tmp_path) -> None:
+def test_c13_reparse_inyectado_no_llega_a_ready(rig, tmp_path) -> None:  # noqa: F811
     """C13/C41: un junction en el payload no se sigue y no habilita READY."""
 
     source, root = rig
@@ -301,7 +217,7 @@ def test_c13_reparse_inyectado_no_llega_a_ready(rig, tmp_path) -> None:
     assert verificacion.state is not GenerationVerificationState.VALID
 
 
-def test_c16_el_candidate_no_puede_autorizarse_a_si_mismo(rig, tmp_path) -> None:
+def test_c16_el_candidate_no_puede_autorizarse_a_si_mismo(rig, tmp_path) -> None:  # noqa: F811
     """C16/C42: el test DIRECTO de SFR-15.
 
     Se toma un Candidate REALMENTE creado y verificado (internamente coherente:
@@ -330,7 +246,7 @@ def test_c16_el_candidate_no_puede_autorizarse_a_si_mismo(rig, tmp_path) -> None
     assert "TreeDigest" in verificacion.message
 
 
-def test_c14_la_evidencia_sobrevive_a_un_restart(rig) -> None:
+def test_c14_la_evidencia_sobrevive_a_un_restart(rig) -> None:  # noqa: F811
     """C14: tras 'reiniciar', la metadata persistida demuestra PRE/Candidate/POST."""
     source, root = rig
     resultado = _crear(source, root, cid="cand_" + "f" * 32)
@@ -348,7 +264,7 @@ def test_c14_la_evidencia_sobrevive_a_un_restart(rig) -> None:
     )
 
 
-def test_c15_la_metadata_corrupta_falla_cerrado(rig) -> None:
+def test_c15_la_metadata_corrupta_falla_cerrado(rig) -> None:  # noqa: F811
     """C15: metadata truncada/corrupta => UNKNOWN, nunca READY."""
     source, root = rig
     resultado = _crear(source, root)
@@ -363,7 +279,7 @@ def test_c15_la_metadata_corrupta_falla_cerrado(rig) -> None:
     assert inventario.records[0].state is GenerationVerificationState.UNKNOWN
 
 
-def test_c18_building_tras_un_crash_nunca_es_ready(rig, monkeypatch) -> None:
+def test_c18_building_tras_un_crash_nunca_es_ready(rig, monkeypatch) -> None:  # noqa: F811
     """C18/C31: un crash a mitad de copia deja BUILDING, y BUILDING != READY."""
     source, root = rig
 
@@ -386,7 +302,7 @@ def test_c18_building_tras_un_crash_nunca_es_ready(rig, monkeypatch) -> None:
     assert verificar_candidate(root, registros[0].candidate_id or "").state is GenerationVerificationState.INVALID
 
 
-def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:
+def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:  # noqa: F811
     """C17: un fallo de copia deja INVALID con su motivo, sin borrar contenido."""
     source, root = rig
 
@@ -402,7 +318,7 @@ def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:
     assert "copia fallo" in (resultado.metadata.failure_reason or "")
 
 
-def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:
+def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:  # noqa: F811
     """CodeRabbit #2: un `*.json` con nombre no conforme se REGISTRA, no lanza.
 
     Un archivo suelto en ``state/candidates/`` no puede abortar la funcion entera:
@@ -423,7 +339,7 @@ def test_un_archivo_ajeno_no_hunde_el_descubrimiento(rig) -> None:
     assert estados[None] is GenerationVerificationState.UNKNOWN
 
 
-def test_codex_el_inventario_no_reporta_ready_como_valid(rig) -> None:
+def test_codex_el_inventario_no_reporta_ready_como_valid(rig) -> None:  # noqa: F811
     """Codex #904 / P1: el inventario NO es verificacion fresca.
 
     Tras borrar el payload de un Candidate READY, `descubrir_candidates` no puede
@@ -444,7 +360,7 @@ def test_codex_el_inventario_no_reporta_ready_como_valid(rig) -> None:
     assert verificar_candidate(root, resultado.candidate_id or "").state is (GenerationVerificationState.INVALID)
 
 
-def test_codex_la_metadata_esta_atada_a_su_nombre_de_archivo(rig) -> None:
+def test_codex_la_metadata_esta_atada_a_su_nombre_de_archivo(rig) -> None:  # noqa: F811
     """Codex #434 / P2: la metadata de B no puede hacerse pasar por A.
 
     Sin este binding, copiar el JSON de B sobre el de A (misma fuente: caso
@@ -466,7 +382,7 @@ def test_codex_la_metadata_esta_atada_a_su_nombre_de_archivo(rig) -> None:
     assert "identidad ambigua" in veredicto.message
 
 
-def test_codex_la_procedencia_se_compara_en_la_triada(rig) -> None:
+def test_codex_la_procedencia_se_compara_en_la_triada(rig) -> None:  # noqa: F811
     """Codex #469 / P2: un POST re-bound a otro appid no puede re-verificar VALID."""
     import json
 
@@ -494,7 +410,7 @@ def test_codex_la_ventana_de_estabilizacion_conserva_el_default_de_p1() -> None:
     assert default > 0.0
 
 
-def test_codex_un_root_dentro_de_la_fuente_es_rechazado(rig) -> None:
+def test_codex_un_root_dentro_de_la_fuente_es_rechazado(rig) -> None:  # noqa: F811
     """Codex #665 / P1: el storage no puede estar dentro de la Managed Source.
 
     Persistir BUILDING y copiar el payload dentro del arbol que Steam administra
@@ -513,7 +429,7 @@ def test_codex_un_root_dentro_de_la_fuente_es_rechazado(rig) -> None:
     assert not dentro.exists()
 
 
-def test_codex_un_root_que_contiene_la_fuente_es_rechazado(rig, tmp_path) -> None:
+def test_codex_un_root_que_contiene_la_fuente_es_rechazado(rig, tmp_path) -> None:  # noqa: F811
     """Codex #665 (el otro sentido): el storage no puede CONTENER la fuente."""
     source, root = rig
     contenedor = source.root.parent  # contiene a la Managed Source
@@ -526,7 +442,7 @@ def test_codex_un_root_que_contiene_la_fuente_es_rechazado(rig, tmp_path) -> Non
 
 
 @junction_guard
-def test_c19_un_junction_no_puede_redirigir_la_escritura(rig, tmp_path) -> None:
+def test_c19_un_junction_no_puede_redirigir_la_escritura(rig, tmp_path) -> None:  # noqa: F811
     """C19: ``candidates/<id>`` como junction => NO se escribe fuera del root."""
     source, root = rig
     fuera = tmp_path / "fuera-del-frozen-runtime-root"
@@ -544,7 +460,7 @@ def test_c19_un_junction_no_puede_redirigir_la_escritura(rig, tmp_path) -> None:
 
 
 @junction_guard
-def test_qodo_una_redireccion_del_padre_no_escribe_fuera_del_root(rig, tmp_path) -> None:
+def test_qodo_una_redireccion_del_padre_no_escribe_fuera_del_root(rig, tmp_path) -> None:  # noqa: F811
     """Qodo sobre #682: la re-verificacion fisica cierra la ventana del mkdir.
 
     La ventana entre validar el padre y crear el payload no se puede eliminar
@@ -570,7 +486,7 @@ def test_qodo_una_redireccion_del_padre_no_escribe_fuera_del_root(rig, tmp_path)
     assert list(fuera.iterdir()) == []
 
 
-def test_c20_el_contrato_de_copia_soporta_otros_volumenes(rig) -> None:
+def test_c20_el_contrato_de_copia_soporta_otros_volumenes(rig) -> None:  # noqa: F811
     """C20: la copia es cross-volume por construccion (no asume mismo volumen).
 
     Se afirma sobre el MECANISMO: la copia transfiere contenido con
