@@ -35,15 +35,20 @@ jobs:
 
     steps:
       - name: "Ejecutar segunda revisión Qodo"
-        uses: Codium-ai/pr-agent@f3b385ea2927247ddcff2fe252472380b9c8f5fc # v0.45.0
+        uses: Codium-ai/pr-agent@8e5a9295973b24af4b70cafd0b660a230811ef9e # v0.47.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          CONFIG.MODEL: "openrouter/minimax/minimax-m3:free"
+          # 2026-10-04: el slug `minimax/minimax-m3:free` dejo de existir en OpenRouter
+          # (404 "This model is unavailable for free"). Era el MODELO PRIMARIO de este
+          # workflow, asi que fallaba siempre. Se unifica con el modelo ya aprobado del
+          # workflow adversarial; ambos siguen dentro del allowlist de §6 de
+          # AI_REVIEW_DATA_POLICY.md (sin cambiar de proveedor ni de alcance).
+          CONFIG.MODEL: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "200000"
-          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter/nvidia/nemotron-3-super-120b-a12b:free"]'
+          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]'
           LITELLM.DROP_PARAMS: "true"
 
           # La configuración base (modelo, fallback, contexto del repo, idioma,

@@ -244,6 +244,24 @@ def thresholds_block() -> dict[str, Any]:
     }
 
 
+def coherence_diagnostic(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Diagnóstico de coherencia (§5): ángulo del par vs Δrmse. NO es trust proxy.
+
+    El reporte M4 se serializa con ``allow_nan=False``, así que un Spearman no
+    evaluable (Δrmse o ángulo constantes ⇒ varianza de rangos cero) se reporta como
+    ``None`` con estado explícito, en vez de abortar la corrida entera por un campo
+    que por contrato no participa de la decisión primaria (§16 del brief MATH-B).
+    """
+    rho = spearman([r["coherence_agreement_deg"] for r in rows], [r["delta_rmse"] for r in rows])
+    evaluable = bool(np.isfinite(rho))
+    return {
+        "median_agreement_deg": float(np.median([r["coherence_agreement_deg"] for r in rows])),
+        "spearman_deg_vs_delta_rmse": float(rho) if evaluable else None,
+        "status": "COHERENCE_SPEARMAN_EVALUABLE" if evaluable else "COHERENCE_SPEARMAN_NOT_EVALUABLE",
+        "note": "diagnóstico de coherencia (§5); NO es trust proxy ni criterio de exclusión",
+    }
+
+
 def group_diagnostics(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     """Medianas por familia/provider — DIAGNÓSTICO suggestivo (n=3..5, §11)."""
     out: list[dict[str, Any]] = []
@@ -370,13 +388,7 @@ def main() -> None:
             "delta_rmse_full": bootstrap_median_ci([r["delta_rmse"] for r in rows]),
             "delta_rmse_heldout": bootstrap_median_ci([r["delta_rmse"] for r in held_rows]),
         }
-        report["summary"]["coherence_diagnostic"] = {
-            "median_agreement_deg": float(np.median([r["coherence_agreement_deg"] for r in rows])),
-            "spearman_deg_vs_delta_rmse": spearman(
-                [r["coherence_agreement_deg"] for r in rows], [r["delta_rmse"] for r in rows]
-            ),
-            "note": "diagnóstico de coherencia (§5); NO es trust proxy ni criterio de exclusión",
-        }
+        report["summary"]["coherence_diagnostic"] = coherence_diagnostic(rows)
     else:
         report["summary"]["decision"] = "PENDING_FREEZE" if args.phase == "calibration" else None
 
