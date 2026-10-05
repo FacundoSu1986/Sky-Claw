@@ -137,6 +137,28 @@ def _exigir_candidates_state_dir(root: pathlib.Path) -> pathlib.Path:
     return directorio
 
 
+def _exigir_candidates_payload_dir(root: pathlib.Path) -> pathlib.Path:
+    """Admite el namespace de PAYLOAD (`candidates/`) antes de crear dentro de el.
+
+    Hermano exacto de `_exigir_candidates_state_dir`, y por el mismo motivo: si
+    `candidates/` fue reemplazado por un symlink/junction despues del init, el
+    `mkdir` de la reserva SIGUE al padre redirigido y crea el directorio del
+    Candidate FUERA del root. El `exigir_contencion_fisica` posterior lo
+    rechazaria, pero ya habria mutado el arbol externo -- y "cero mutacion fuera
+    del root" es la propiedad que la copia si defiende antes de crear. Arreglar
+    el namespace de metadata y no el de payload era dejar el gemelo abierto
+    (Codex/CodeRabbit sobre #682).
+    """
+    raiz = pathlib.Path(root)
+    directorio = candidates_dir(raiz)
+    try:
+        exigir_contencion_fisica(raiz, directorio, exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise FrozenRuntimeStorageError(f"el namespace de payload no cuelga fisicamente de '{raiz}': {exc}") from exc
+    exigir_namespace_escribible(directorio)
+    return directorio
+
+
 def _archivos_criticos(game_key: str, files: tuple[FileIdentity, ...]) -> tuple[FileIdentity, ...]:
     """Filtra la evidencia critica desde el inventario ya sellado."""
     esperado = CRITICAL_EXE_BY_GAME.get(game_key)
@@ -771,6 +793,7 @@ def _reservar_candidate_id(root: pathlib.Path, candidate_id: str) -> pathlib.Pat
     """
     raiz = pathlib.Path(root)
     _exigir_candidates_state_dir(raiz)
+    _exigir_candidates_payload_dir(raiz)
     directorio = candidate_dir(raiz, candidate_id)
     try:
         directorio.mkdir(parents=False, exist_ok=False)
@@ -1131,14 +1154,20 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
         )
     except FrozenRuntimeObservationError as exc:
         return CandidateResult(
-            state=GenerationVerificationState.INVALID,
+            state=GenerationVerificationState.INDETERMINATE,
             message=f"la evidencia critica del Candidate no pudo construirse: {exc}",
             candidate_id=cid,
             metadata=metadata,
         )
     except (CandidateVerificationError, SourceObservationError) as exc:
+        # No se pudo OBTENER evidencia fresca (payload ilegible/transitorio, o
+        # incoherencia entre las dos mitades del scan). Eso NO afirma que el
+        # Candidate persistido difiera del que se copio: es "no se pudo
+        # inspeccionar", y afirmar INVALID seria degradar un INDETERMINATE a una
+        # acusacion de corrupcion (misma distincion epistemologica que P3-E, y la
+        # que el verificador hermano de Generations ya respeta).
         return CandidateResult(
-            state=GenerationVerificationState.INVALID,
+            state=GenerationVerificationState.INDETERMINATE,
             message=f"no se pudo observar el Candidate persistido: {exc}",
             candidate_id=cid,
             metadata=metadata,
@@ -1174,6 +1203,28 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
     )
 
 
+def _reservas_sin_metadata(root: pathlib.Path, ids_con_metadata: set[str]) -> list[str]:
+    """IDs RESERVADOS (directorio creado) que no tienen metadata persistida.
+
+    Devuelve el complemento de `candidates/` respecto de `state/candidates/*.json`.
+    Un nombre de directorio que no sea un candidate_id valido no es una reserva de
+    P3 (no pudo crearla `_reservar_candidate_id`), asi que se ignora en vez de
+    abortar el inventario.
+    """
+    directorio = candidates_dir(root)
+    if not directorio.is_dir():
+        return []
+    reservas: list[str] = []
+    for entrada in sorted(directorio.iterdir(), key=lambda p: p.name):
+        if not entrada.is_dir() or entrada.name in ids_con_metadata:
+            continue
+        try:
+            reservas.append(validar_candidate_id(entrada.name))
+        except InvalidCandidateIdError:
+            continue
+    return reservas
+
+
 def descubrir_candidates(root: pathlib.Path) -> CandidateInventory:
     """Lista los Candidates registrados en ``state/candidates/`` sin promover nada.
 
@@ -1189,9 +1240,16 @@ def descubrir_candidates(root: pathlib.Path) -> CandidateInventory:
     raiz = pathlib.Path(root)
     base = candidates_state_dir(raiz)
     registros: list[CandidateRecord] = []
-    if not base.is_dir():
-        return CandidateInventory(root=raiz, records=())
+    # `state/candidates/` se crea de forma PEREZOSA, asi que su ausencia no
+    # implica "no hay Candidates": puede haber reservas huerfanas aunque el
+    # namespace de metadata nunca se haya materializado. Antes habia un
+    # early-return aca que las volvia invisibles por construccion.
+    ids_con_metadata: set[str] = set()
     for archivo in sorted(base.glob("*.json"), key=lambda p: p.name):
+        # El stem cuenta como "con metadata" aunque su contenido sea ilegible: el
+        # registro ya se emite abajo como UNKNOWN, y duplicarlo como reserva
+        # huerfana seria un segundo registro para el mismo id.
+        ids_con_metadata.add(archivo.stem)
         # Un archivo con nombre no conforme se REGISTRA como UNKNOWN; no puede
         # abortar el descubrimiento entero, porque un `notes.json` suelto
         # hidingria todos los Candidates reales.
@@ -1238,6 +1296,26 @@ def descubrir_candidates(root: pathlib.Path) -> CandidateInventory:
                     else GenerationVerificationState.INVALID
                 ),
                 message=metadata.failure_reason or f"estado persistido: {metadata.state.value}",
+            )
+        )
+    # El inventario enumera la UNION de registros y reservas. La reserva del id
+    # crea `candidates/<id>/` ANTES de persistir la metadata y P3 no limpia por
+    # diseno: un crash en esa ventana -- o el fallo del primer
+    # `_persistir_metadata` -- deja un directorio reservado SIN registro que un
+    # scan metadata-only no puede ver. Ese huerfano bloquea el id para siempre
+    # (la reserva es no-clobber) y no es diagnosticable (Codex sobre #682).
+    # Va DESPUES de los registros con metadata para no alterar su orden.
+    for reserva in _reservas_sin_metadata(raiz, ids_con_metadata):
+        registros.append(
+            CandidateRecord(
+                candidate_id=reserva,
+                directory=candidate_dir(raiz, reserva),
+                metadata=None,
+                state=GenerationVerificationState.UNKNOWN,
+                message=(
+                    "reserva de candidate_id sin metadata persistida: el proceso murio (o fallo la "
+                    "persistencia) entre la reserva y el BUILDING -- nunca READY"
+                ),
             )
         )
     return CandidateInventory(root=raiz, records=tuple(registros))
