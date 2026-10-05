@@ -99,6 +99,9 @@ CLOSED), `feat/skse-autoinstall` (PR #422 CLOSED) y los `backup/*`, `codex/*`,
 # Restaurar una rama puntual (con su nombre original)
 ./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix'
 
+# Si el mismo nombre tiene tips local y remoto, elegir su ref completo
+./archive/git-branches/restore.ps1 -Branch 'refs/remotes/origin/wip/pr503-provenance-fix'
+
 # Si la rama local ya existe, -Branch aborta; con -Force la sobreescribe
 ./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix' -Force
 
@@ -119,7 +122,7 @@ git fetch archive/git-branches/obsolete-branches-20261004.bundle \
 Para restaurar en un repo **vacío** (bundle autocontenido):
 
 ```bash
-git clone archive/git-branches/obsolete-branches-20261004.bundle mi-repo-restaurado
+git clone --branch main archive/git-branches/obsolete-branches-20261004.bundle mi-repo-restaurado
 ```
 
 > `-Branch <nombre>` resuelve el ref real contra el bundle, así que también
@@ -137,6 +140,12 @@ runtime). Corre en **dry-run** por defecto:
 ./archive/git-branches/delete-branches.ps1 -Execute                # borra locales seguras
 ./archive/git-branches/delete-branches.ps1 -Execute -IncludeRemote # + remotas (origin)
 ```
+
+El clon objetivo es el que contiene el script; `-Repository <ruta>` permite elegir
+otro clon explícitamente. Valida que las URLs efectivas de lectura y push de
+`origin` correspondan a `github.com/FacundoSu1986/Sky-Claw`, con un único destino
+de push. La consulta de PRs fija host y repositorio, sin depender del default de
+`gh`. Aborta si hereda variables locales de Git que puedan redirigir refs u objetos.
 
 `-IncludeRemote` cubre **también las 23 refs que solo existen en el remoto** (sin
 rama local). Sin él, sólo se consideran ramas locales.
@@ -196,22 +205,11 @@ Get-FileHash obsolete-branches-20261004.bundle -Algorithm SHA256   # debe coinci
 git bundle verify obsolete-branches-20261004.bundle              # "complete history"
 ```
 
-## Cómo regenerar este archivo
+## Crear un archivo posterior
 
-```powershell
-# 1) bundle autocontenido con todas las ramas obsoletas + main
-$dir = 'archive/git-branches'
-$refs = git for-each-ref --format='%(refname)' refs/heads refs/remotes/origin |
-        Where-Object { $_ -notin @(
-          'refs/heads/main',
-          'refs/heads/feat/steam-frozen-runtime',
-          'refs/heads/research/dyndolod-p0-alpha209-uia',
-          'refs/remotes/origin/HEAD',
-          'refs/remotes/origin/main',
-          'refs/remotes/origin/feat/steam-frozen-runtime',
-          'refs/remotes/origin/research/dyndolod-p0-alpha209-uia',
-          'refs/remotes/origin/dependabot/github_actions/github-actions-minor-patch-220bed8b0f'
-        ) }
-git bundle create "$dir/obsolete-branches-$(Get-Date -Format yyyyMMdd).bundle" $refs refs/heads/main
-git bundle verify "$dir/obsolete-branches-$(Get-Date -Format yyyyMMdd).bundle"
-```
+Este bundle y su manifiesto son un snapshot **inmutable**. No regenerarlo desde
+las refs que sobreviven a la poda ni sobrescribir el archivo existente: puede ser
+la única copia de commits sin publicar. Antes de una nueva poda, seleccionar y
+auditar un conjunto explícito de refs, generar otro bundle con nombre único y
+su propio manifiesto, y probar su restauración en un repositorio vacío. Conservar
+el snapshot anterior; la fecha por sí sola no evita una colisión de nombres.

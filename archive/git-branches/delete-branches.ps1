@@ -32,6 +32,10 @@
 .PARAMETER Execute
     Sin este switch es dry-run (no borra nada).
 
+.PARAMETER Repository
+    Clon a auditar. Por defecto, el clon que contiene este script.
+    Su origin (lectura y único destino de push) debe ser FacundoSu1986/Sky-Claw.
+
 .EXAMPLE
     ./delete-branches.ps1
 .EXAMPLE
@@ -43,6 +47,7 @@
 param(
     [string]$Manifest,
     [string]$Bundle,
+    [string]$Repository,
     [switch]$IncludeRemote,
     [switch]$Execute
 )
@@ -73,6 +78,35 @@ if (-not $Bundle) {
 }
 if (-not (Test-Path $Manifest)) { Fail "No existe el manifiesto: $Manifest" }
 if (-not (Test-Path $Bundle)) { Fail "No existe el bundle: $Bundle" }
+$Manifest = (Resolve-Path -LiteralPath $Manifest).Path
+$Bundle = (Resolve-Path -LiteralPath $Bundle).Path
+
+# -C y --git-dir no neutralizan todos los overrides locales heredados. El mismo
+# censo oficial de Git protege el clon, sus refs y la DB vacía de verificación.
+$envRes = Invoke-Native 'git' @('rev-parse', '--local-env-vars')
+if ($envRes.Code -ne 0) { Fail 'No se pudo auditar el entorno local de Git' }
+foreach ($localEnv in @($envRes.Out)) {
+    if ([Environment]::GetEnvironmentVariable("$localEnv")) { Fail "Entorno local de Git heredado: $localEnv" }
+}
+
+# Las rutas de entrada se resuelven antes de cambiar cwd. Todas las guardas y
+# mutaciones siguientes operan sobre el mismo clon, nunca sobre el cwd ajeno.
+$repoStart = if ($Repository) { (Resolve-Path -LiteralPath $Repository).Path } else { $PSScriptRoot }
+$rootRes = Invoke-Native 'git' @('-C', $repoStart, 'rev-parse', '--show-toplevel')
+if ($rootRes.Code -ne 0) { Fail 'No se pudo resolver el clon del archivo' }
+$repoRoot = (@($rootRes.Out) -join '').Trim()
+Push-Location -LiteralPath $repoRoot
+try {
+    $archiveRepository = 'FacundoSu1986/Sky-Claw'
+    foreach ($urlArgs in @(@('remote', 'get-url', 'origin'), @('remote', 'get-url', '--push', '--all', 'origin'))) {
+        $urlRes = Invoke-Native 'git' $urlArgs
+        $urls = @($urlRes.Out)
+        if ($urlRes.Code -ne 0 -or $urls.Count -ne 1) { Fail 'origin debe tener un único destino verificable' }
+        if ("$($urls[0])" -notmatch '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?$' -or
+            $Matches[1] -ne $archiveRepository) {
+            Fail "origin no corresponde al repositorio del archivo: $archiveRepository"
+        }
+    }
 
 # --- Fuente de verdad: ref COMPLETO y SHA; local y origin pueden diferir ---
 $archived = @{}
@@ -121,7 +155,7 @@ try {
 # $openPR vacio desactivaria la guarda critica en silencio. $ErrorActionPreference
 # no cubre el exit code de comandos nativos, asi que hay que mirarlo a mano.
 $openPR = @{}
-$ghRes = Invoke-Native 'gh' @('pr', 'list', '--state', 'open', '--limit', '500', '--json', 'headRefName')
+$ghRes = Invoke-Native 'gh' @('pr', 'list', '--repo', "github.com/$archiveRepository", '--state', 'open', '--limit', '500', '--json', 'headRefName')
 if ($ghRes.Code -ne 0) {
     Fail "gh pr list fallo (exit $($ghRes.Code)): no se pueden verificar los PRs abiertos. Aborto sin borrar nada (fail-closed)."
 }
@@ -287,4 +321,7 @@ if ($Execute) {
 } else {
     Write-Host "Dry-run: $wouldDelete a borrar | $omitidas omitidas por guarda."
     Write-Host 'Correlo con -Execute para aplicar.'
+}
+} finally {
+    Pop-Location
 }

@@ -55,17 +55,18 @@ def archivo(tmp_path: Path) -> dict[str, Path | str]:
         encoding="utf-8",
     )
     # El script reconoce GitHub, pero git redirige TODO el tráfico al bare temporal.
-    git(repo, "config", f"url.{remoto.as_uri()}.insteadOf", "https://github.com/prueba/archivo.git")
-    git(repo, "remote", "set-url", "origin", "https://github.com/prueba/archivo.git")
+    git(repo, "config", f"url.{remoto.as_uri()}.insteadOf", "https://github.com/FacundoSu1986/Sky-Claw.git")
+    git(repo, "remote", "set-url", "origin", "https://github.com/FacundoSu1986/Sky-Claw.git")
     wrapper = tmp_path / "ejecutar.ps1"
     wrapper.write_text(
         r"""param([string]$Script, [string]$Bundle, [string]$Manifest,
-    [switch]$Execute, [switch]$IncludeRemote, [switch]$All)
+    [switch]$Execute, [switch]$IncludeRemote, [switch]$All, [string]$Branch)
 $ErrorActionPreference = 'Stop'
 function git {
     if ($args[0] -eq 'remote' -and $args[1] -eq 'get-url') {
         $global:LASTEXITCODE = 0
-        return 'https://github.com/prueba/archivo.git'
+        if ($env:ARCHIVE_FALLO -eq 'origin-ajeno') { return 'https://github.com/otro/archivo.git' }
+        return 'https://github.com/FacundoSu1986/Sky-Claw.git'
     }
     $salida = & $env:ARCHIVE_GIT @args 2>&1
     $codigo = $LASTEXITCODE
@@ -94,6 +95,10 @@ function git {
 function gh {
     $global:LASTEXITCODE = 0
     if ($args[0] -eq 'pr') {
+        if ($env:ARCHIVE_FALLO -eq 'repo-default' -and
+            ($args -notcontains '--repo' -or $args -notcontains 'github.com/FacundoSu1986/Sky-Claw')) {
+            $global:LASTEXITCODE = 9; return
+        }
         if ($env:ARCHIVE_FALLO -eq 'pr') { $global:LASTEXITCODE = 9; return }
         if ($env:ARCHIVE_FALLO -eq 'abierto') { return '[{"headRefName":"archivada-local"}]' }
         if ($env:ARCHIVE_FALLO -eq 'limite') {
@@ -106,7 +111,8 @@ function gh {
     & $env:ARCHIVE_GIT push origin ":refs/heads/$nombre" 2>&1
 }
 try {
-    if ($All) { & $Script -Bundle $Bundle -All }
+    if ($Branch) { & $Script -Bundle $Bundle -Branch $Branch }
+    elseif ($All) { & $Script -Bundle $Bundle -All }
     else { & $Script -Bundle $Bundle -Manifest $Manifest -Execute:$Execute -IncludeRemote:$IncludeRemote }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     exit 0
@@ -132,21 +138,27 @@ def ejecutar(
     carrera: str = "",
     nuevo: str = "",
     restaurar: bool = False,
+    rama: str = "",
+    cwd: Path | None = None,
+    git_dir: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Ejercita el script productivo con guardas y refs reales en disco."""
     script = "restore.ps1" if restaurar else "delete-branches.ps1"
+    script_temporal = Path(archivo["repo"]) / "archive" / "git-branches" / script
+    script_temporal.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(RAIZ / "archive" / "git-branches" / script, script_temporal)
     args = [
         str(POWERSHELL),
         "-NoProfile",
         "-File",
         str(archivo["wrapper"]),
         "-Script",
-        str(RAIZ / "archive" / "git-branches" / script),
+        str(script_temporal),
         "-Bundle",
         str(archivo["bundle"]),
     ]
     if restaurar:
-        args += ["-All"]
+        args += ["-Branch", rama] if rama else ["-All"]
     else:
         args += ["-Manifest", str(archivo["manifest"]), "-Execute"]
         if remoto:
@@ -159,9 +171,11 @@ def ejecutar(
         ARCHIVE_NUEVO=nuevo,
         ARCHIVE_LATE_DIR=str(Path(archivo["repo"]).parent / "checkout-tardio"),
     )
+    if git_dir:
+        env["GIT_DIR"] = git_dir
     return subprocess.run(
         args,
-        cwd=archivo["repo"],
+        cwd=cwd or archivo["repo"],
         env=env,
         capture_output=True,
         text=True,
@@ -234,6 +248,53 @@ def test_restaurar_todas_no_pisa_un_destino_modificado(archivo: dict[str, Path |
     resultado = ejecutar(archivo, restaurar=True)
     assert resultado.returncode != 0
     assert git(repo, "rev-parse", "refs/heads/restored/archivada-local") == nuevo
+
+
+@pytest.mark.parametrize(
+    "ref", ["refs/heads/archivada-remota", "refs/remotes/origin/archivada-remota", "archivada-remota"]
+)
+def test_restauracion_individual_distingue_refs_del_mismo_nombre(archivo: dict[str, Path | str], ref: str) -> None:
+    """Los dos tips son seleccionables; un nombre corto ambiguo requiere aclaración."""
+    repo = Path(archivo["repo"])
+    git(repo, "branch", "-D", "archivada-remota")
+    resultado = ejecutar(archivo, restaurar=True, rama=ref)
+    if ref == "archivada-remota":
+        assert resultado.returncode != 0
+    else:
+        assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+        esperado = archivo["base"] if ref.startswith("refs/heads/") else archivo["remoto_sha"]
+        assert git(repo, "rev-parse", "refs/heads/archivada-remota") == esperado
+
+
+def test_borrado_se_ancla_al_clon_del_script_y_al_repo_explicito_de_github(archivo: dict[str, Path | str]) -> None:
+    """Otro cwd y el default de gh no cambian el repositorio auditado y mutado."""
+    repo = Path(archivo["repo"])
+    ajeno = repo.parent / "clon-ajeno"
+    git(repo, "clone", "--branch", "main", str(archivo["bundle"]), str(ajeno))
+    git(ajeno, "branch", "archivada-local", str(archivo["base"]))
+    resultado = ejecutar(archivo, cwd=ajeno, fallo="repo-default")
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert git(ajeno, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
+    assert git(repo, "branch", "--format=%(refname:short)") == "main"
+
+
+def test_origin_de_otro_repo_aborta_sin_borrar(archivo: dict[str, Path | str]) -> None:
+    """El archivo de Sky-Claw no autoriza borrar un fork u otro repositorio."""
+    resultado = ejecutar(archivo, remoto=True, fallo="origin-ajeno")
+    assert resultado.returncode != 0
+    assert git(Path(archivo["repo"]), "rev-parse", "refs/heads/archivada-local") == archivo["base"]
+
+
+def test_git_dir_heredado_no_redirige_el_borrado_a_otro_clon(archivo: dict[str, Path | str]) -> None:
+    """-C no neutraliza GIT_DIR: un entorno local heredado debe abortar primero."""
+    repo = Path(archivo["repo"])
+    ajeno = repo.parent / "clon-env-ajeno"
+    git(repo, "clone", "--branch", "main", str(archivo["bundle"]), str(ajeno))
+    git(ajeno, "branch", "archivada-local", str(archivo["base"]))
+    resultado = ejecutar(archivo, git_dir=str(ajeno / ".git"))
+    assert resultado.returncode != 0
+    assert git(ajeno, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
+    assert git(repo, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
 
 
 def test_nombre_remoto_completo_no_colisiona_con_sufijos(archivo: dict[str, Path | str]) -> None:

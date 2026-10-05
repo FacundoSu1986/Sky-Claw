@@ -124,6 +124,6 @@ git worktree add .worktrees/<nombre> <rama>
 # Si la rama ya no existe, restaurarla primero desde el bundle:
 # Obtener el asset del release branch-archive-20261004 (todavía en borrador).
 # Ver git-branches/README.md para acceso e integridad; un clon no trae el bundle.
-git fetch archive/git-branches/obsolete-branches-20261004.bundle \
-    'refs/heads/<rama>:refs/heads/<rama>'
+pwsh -File archive/git-branches/restore.ps1 -Branch '<rama-o-ref-completo>'
+# Un nombre corto ambiguo requiere refs/heads/<rama> o refs/remotes/origin/<rama>.
 ```

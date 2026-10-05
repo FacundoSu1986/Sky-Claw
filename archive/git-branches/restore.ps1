@@ -11,7 +11,7 @@
     Ruta al archivo .bundle. Si se omite, usa el .bundle mas nuevo de la carpeta.
 
 .PARAMETER Branch
-    Nombre de la rama a restaurar (tal cual figura en MANIFEST.tsv).
+    Nombre corto no ambiguo o ref completo (refs/heads/* o refs/remotes/origin/*).
 
 .PARAMETER All
     Restaura todas las ramas bajo refs/heads/restored/*.
@@ -111,19 +111,21 @@ if (-not $Branch) {
     throw 'Indica -Branch <nombre>, -All o -List'
 }
 
-# Resolver el ref REAL por nombre corto contra los heads del bundle: asi
-# funciona tambien para refs que existen solo como refs/remotes/origin/*.
-$match = $null
+# Un nombre corto ambiguo no elige el primer tip en silencio: pedir ref completo.
+$branchRefs = @()
 foreach ($h in $heads) {
     $ref = ($h -split '\s+')[1]
     $short = $ref -replace '^refs/heads/', '' -replace '^refs/remotes/origin/', ''
-    if ($short -eq $Branch) { $match = $ref; break }
+    if ($ref -eq $Branch -or ($short -eq $Branch -and $Branch -notlike 'refs/*')) { $branchRefs += $ref }
 }
-if (-not $match) {
+if ($branchRefs.Count -eq 0) {
     throw "El bundle no contiene la rama '$Branch'. Usa -List para ver los refs disponibles."
 }
+if ($branchRefs.Count -gt 1) { throw "Nombre ambiguo '$Branch'; indica uno de estos refs completos: $($branchRefs -join ', ')" }
+$match = $branchRefs[0]
+$branchName = $match -replace '^refs/heads/', '' -replace '^refs/remotes/origin/', ''
 
-$dest = "refs/heads/$Branch"
+$dest = "refs/heads/$branchName"
 # El refspec va forzado con +, asi que sin esta guarda -Branch pisaria en
 # silencio una rama local existente.
 git show-ref --verify --quiet $dest
