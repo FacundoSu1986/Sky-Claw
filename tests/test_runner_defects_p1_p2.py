@@ -1,29 +1,32 @@
-"""Reproducción de los tres defectos del runner DynDOLOD (R1/R2/R3) — `#661` FASE B.
+"""Contratos de los tres defectos del runner DynDOLOD (R1/R2/R3) — `#661` FASE B.
 
-Cada test es un test ROJO que documenta el defecto real en `origin/main`
-`0103ee4f6de15207032d25c254ede5cf2c01bff9`. Ninguno corrige el defecto; son la
-reproducción determinista que un fix futuro debe hacer pasar.
+Estado de cada defecto — los tests de este archivo tienen contratos DISTINTOS
+según el estado del defecto que cubren:
 
-- **R1** — `await asyncio.to_thread(_empaquetar_sincrono)` cancelable: el task
-  asyncio recibe `CancelledError` pero el thread worker NATIVO sigue
-  ejecutando la copia; el código posterior (rollback/cleanup) avanza sin
-  esperar al writer. Violación del invariante:
-  *"ROLLBACK/CLEANUP MUST NOT BEGIN UNTIL MUTATING PACKAGING WORKER IS
-  EFFECTIVELY TERMINAL"*.
-- **R2** — `shutil.copytree(src, dst)` sigue junctions que `_bytes_del_arbol`
-  (vía `iter_archivos_propios`, link-aware) no cuenta. Violación del
-  invariante: *"EVERY BYTE COPIED MUST BELONG TO THE ADMITTED WORKSPACE TREE"
-  y "inventory set == copyable set"*.
-- **R3** — en la rama `except asyncio.CancelledError` de `_execute_process`,
-  una segunda cancelación interrumpe el `await asyncio.gather(...)` **antes**
-  de `close_job(job)`: el Job Object queda abierto y los nietos sobreviven.
-  Violación del invariante: *"EVERY EXIT PATH MUST TERMINATE ALL OWNED
-  PROCESS/HELPER RESOURCES"*.
+- **R1** — `RUNNER_P1_PACKAGING_CANCEL` — **FIXED / regression invariant**: el
+  `to_thread(_empaquetar_sincrono)` corre en una Task propia y espera por
+  `_esperar_terminalidad_del_worker_mutante`; cancelar el caller NO lo libera
+  (ni con cancelaciones repetidas) hasta que el worker mutante es terminal.
+  Sus tests congelan el invariante de aceptación
+  *worker_terminal < rollback_started < lease_released* en orden causal, con
+  sincronización explícita (`threading.Event` / registros de handoff) — nunca
+  sleeps como autoridad temporal.
+- **R2** — `RUNNER_P1_REPARSE_COPY` — **REPRODUCED / OPEN**: `shutil.copytree(src, dst)`
+  sigue junctions que `_bytes_del_arbol` (vía `iter_archivos_propios`, link-aware)
+  no cuenta. Violación del invariante: *"EVERY BYTE COPIED MUST BELONG TO THE
+  ADMITTED WORKSPACE TREE" y "inventory set == copyable set"*. Sus tests
+  reproducen el defecto vigente y deben seguir pasando hasta su PR dedicado.
+- **R3** — `RUNNER_P2_DOUBLE_CANCEL` — **REPRODUCED / OPEN**: en la rama
+  `except asyncio.CancelledError` de `_execute_process`, una segunda cancelación
+  interrumpe el `await asyncio.gather(...)` **antes** de `close_job(job)`: el
+  Job Object queda abierto y los nietos sobreviven. Violación del invariante:
+  *"EVERY EXIT PATH MUST TERMINATE ALL OWNED PROCESS/HELPER RESOURCES"*. Su
+  test reproduce el defecto vigente y debe seguir pasando hasta su PR dedicado.
 
-Cada test está verificado por:
-  (a) la aserción del defecto (LO QUE PASA HOY), y
-  (b) una ancla AST sobre el código real que falla si la forma vulnerable
-      cambia antes de arreglarse.
+Cada test R2/R3 se verifica por: (a) la aserción del defecto (LO QUE PASA HOY),
+y (b) un ancla AST sobre el código real que falla si la forma vulnerable cambia.
+Los tests R1 verifican lo inverso: la aceptación del fix, más un ancla AST que
+falla si la forma fixeada se revierte.
 
 Referencias: `docs/pending_ooda_status.md`, `#592`, rig P0 de #661.
 """
@@ -33,6 +36,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import logging
 import pathlib
 import shutil
 import threading
@@ -58,15 +62,135 @@ def _runner_stub(tmp_path: pathlib.Path):
 
 
 # ---------------------------------------------------------------------------
-# R1 — to_thread(_empaquetar_sincrono) cancelable
+# R1 — FIXED: la cancelación del packaging espera la terminalidad del worker
 # ---------------------------------------------------------------------------
+#
+# Invariante de aceptación (antes reproducción del defecto, ahora regresión):
+#     worker_terminal < rollback_started < lease_released
+# Congelado por igualdad de la secuencia causal en los tests de abajo.
+
+_OPERACION_HANDOFF = "dyndolod_packaging_cancel_handoff"
+_OPERACION_TERMINAL = "dyndolod_packaging_cancel_terminal"
+_OPERACION_FALLA_EN_HANDOFF = "dyndolod_packaging_worker_falla_en_handoff"
+
+
+class _ObservadorDeCancelacion(logging.Handler):
+    """Congela en UNA lista el orden causal handoff → terminal → rollback/lease.
+
+    El helper productivo emite estos registros desde el event loop, en el mismo
+    hilo que el harness del test: el orden de la lista es orden causal real,
+    no timing. ``handoffs`` cuenta cancelaciones ABSORBIDAS — cada cancelación
+    procesada por el handoff emite exactamente un registro, así que el contador
+    prueba que esa cancelación ya se PROCESÓ (no está sólo pendiente): el
+    checkpoint de HANDOFF_ACTIVE que exige R1 antes de mandar la siguiente.
+    """
+
+    def __init__(self, orden: list[str]) -> None:
+        super().__init__(level=logging.INFO)
+        self.orden = orden
+        self.handoffs = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        operacion = getattr(record, "operation_type", None)
+        if operacion == _OPERACION_HANDOFF:
+            self.handoffs += 1
+            self.orden.append(f"cancel_{self.handoffs}_procesada")
+        elif operacion == _OPERACION_TERMINAL:
+            self.orden.append("worker_terminal")
+
+
+@contextlib.contextmanager
+def _observar_cancelaciones(orden: list[str]):
+    """Instala el observador sobre el logger del runner (baja a INFO el gate)."""
+    logger_del_runner = logging.getLogger(runner_mod.__name__)
+    nivel_previo = logger_del_runner.level
+    observador = _ObservadorDeCancelacion(orden)
+    logger_del_runner.addHandler(observador)
+    logger_del_runner.setLevel(logging.INFO)
+    try:
+        yield observador
+    finally:
+        logger_del_runner.removeHandler(observador)
+        logger_del_runner.setLevel(nivel_previo)
+
+
+async def _esperar_handoffs(observador: _ObservadorDeCancelacion, esperados: int) -> None:
+    """Espera a que el handoff haya procesado ``esperados`` cancelaciones.
+
+    La autoridad es el CONTADOR de registros (checkpoint de HANDOFF_ACTIVE),
+    nunca el tiempo: ``sleep(0)`` sólo cede scheduling; el ``wait_for`` es una
+    red de seguridad contra el hang, no la prueba.
+    """
+    with contextlib.suppress(TimeoutError):
+
+        async def _girar() -> None:
+            while observador.handoffs < esperados:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(_girar(), timeout=5)
+    assert observador.handoffs >= esperados, (
+        f"se esperaban {esperados} cancelaciones procesadas por el handoff y hubo "
+        f"{observador.handoffs}; orden hasta acá = {observador.orden}"
+    )
+
+
+class _CopytreeBloqueado:
+    """Proxy de ``shutil`` SÓLO para el runner: copytree se bloquea en checkpoint.
+
+    Deja al worker mutante deterministamente dentro de una operación de disco
+    (el ``copytree`` del packaging), que es exactamente el punto donde R1 exige
+    que ninguna cancelación pueda liberar al caller. Los demás atributos de
+    ``shutil`` se reenvían al módulo real (``copy2``, ``disk_usage``, …).
+    """
+
+    def __init__(
+        self,
+        arranque: threading.Event,
+        permitir: threading.Event,
+        falla: BaseException | None = None,
+    ) -> None:
+        self._arranque = arranque
+        self._permitir = permitir
+        self._falla = falla
+
+    def copytree(self, *args, **kwargs):
+        self._arranque.set()
+        assert self._permitir.wait(timeout=30), "el test no liberó el copytree del worker"
+        if self._falla is not None:
+            raise self._falla
+        return shutil.copytree(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(shutil, name)
+
+
+def _preparar_packaging_bloqueado(tmp_path, monkeypatch, *, falla_en_copia=None):
+    """Runner stub + fuente real + copytree bloqueable: el escenario base de R1."""
+    runner = _runner_stub(tmp_path)
+    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda p: None)
+    arranque = threading.Event()
+    permitir = threading.Event()
+    monkeypatch.setattr(runner_mod, "shutil", _CopytreeBloqueado(arranque, permitir, falla_en_copia))
+    # Un directorio + un archivo: los directorios pasan por `copytree` (el
+    # punto de bloqueo) y los archivos por `copy2`.
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "hola.txt").write_bytes(b"hola")
+    (src / "suelto.txt").write_bytes(b"suelto")
+    return runner, src, arranque, permitir
 
 
 @pytest.mark.asyncio
 async def test_r1_cancelacion_to_thread_no_mata_al_worker(tmp_path, monkeypatch):
-    """Cancelar `await asyncio.to_thread(empaquetar)` libera el task con
-    `CancelledError` pero el thread subyacente SIGUE corriendo la copia —
-    exactamente el defecto P1-A del packaging del runner."""
+    """Premisa de R1 (propiedad del runtime): cancelar ``asyncio.to_thread`` NO
+    detiene el hilo nativo.
+
+    Es el PRIMER eslabón de la cadena causal que el fix de R1 contiene: como el
+    thread sobrevive al cancel, el caller no puede liberarse hasta observar la
+    terminalidad del worker. El invariante de aceptación (caller retenido hasta
+    terminal, orden congelado) viven en
+    ``test_r1_cancel_durante_el_worker_ret_al_caller_hasta_terminal`` y hermanos.
+    """
     arranque = threading.Event()
     permitir = threading.Event()
     terminado = threading.Event()
@@ -90,35 +214,267 @@ async def test_r1_cancelacion_to_thread_no_mata_al_worker(tmp_path, monkeypatch)
     await asyncio.wait_for(asyncio.to_thread(terminado.wait, True), timeout=2)
 
 
-def test_r1_ancla_ast_el_to_thread_empaquetar_esta_sin_proteccion():
-    """La invocación exacta del defecto en `dyndolod_runner.py`, congelada por AST."""
+def test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal():
+    """Ancla de la FORMA FIXEADA de R1: si vuelve el `to_thread` pelado, ésta falla.
+
+    Congela las cuatro propiedades del mecanismo sobre el código real:
+    (1) no existe `await asyncio.to_thread(_empaquetar_sincrono)` directo,
+    (2) el worker vive en una Task propia (handle confiable de terminalidad),
+    (3) esa Task se espera por el helper de terminal handoff,
+    (4) el helper espera con `asyncio.shield` dentro de un loop condicionado a
+    `worker.done()` que absorbe `CancelledError`.
+    """
     arbol = ast.parse(RUNNER_SRC.read_text(encoding="utf-8"))
     metodo = next(
         nodo
         for nodo in ast.walk(arbol)
         if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_package_output_as_mod"
     )
-    await_calls = [
+    padres = {hijo: padre for padre in ast.walk(arbol) for hijo in ast.iter_child_nodes(padre)}
+
+    llamadas = [
+        nodo
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "to_thread"
+        and nodo.args
+        and isinstance(nodo.args[0], ast.Name)
+        and nodo.args[0].id == "_empaquetar_sincrono"
+    ]
+    assert len(llamadas) == 1, "debe haber exactamente un to_thread(_empaquetar_sincrono)"
+    llamada = llamadas[0]
+
+    # (1) la forma vulnerable —await DIRECTO del to_thread— no existe más.
+    directos = [nodo for nodo in ast.walk(metodo) if isinstance(nodo, ast.Await) and nodo.value is llamada]
+    assert not directos, "el to_thread del worker ya no puede esperarse directamente: ese await es R1 abierto"
+
+    # (2) queda envuelto en una Task propia — done() significa terminal real.
+    envoltorio = padres.get(llamada)
+    assert isinstance(envoltorio, ast.Call), "el to_thread del worker debe estar dentro de una Task"
+    assert isinstance(envoltorio.func, ast.Attribute)
+    assert envoltorio.func.attr in {"create_task", "ensure_future"}, (
+        "el worker debe vivir en una Task propia para que done() sea un handle confiable"
+    )
+
+    # (3) esa espera pasa por el helper de terminal handoff.
+    esperas_helper = [
         nodo
         for nodo in ast.walk(metodo)
         if isinstance(nodo, ast.Await)
         and isinstance(nodo.value, ast.Call)
-        and isinstance(nodo.value.func, ast.Attribute)
-        and nodo.value.func.attr == "to_thread"
+        and isinstance(nodo.value.func, ast.Name)
+        and nodo.value.func.id == "_esperar_terminalidad_del_worker_mutante"
     ]
-    objetivos = [
-        c
-        for c in await_calls
-        if c.value.args and isinstance(c.value.args[0], ast.Name) and c.value.args[0].id == "_empaquetar_sincrono"
-    ]
-    assert len(objetivos) == 1, "debe haber exactamente un to_thread(_empaquetar_sincrono)"
-    # La propiedad del defecto: NO está envuelto en asyncio.shield.
-    call = objetivos[0].value
-    assert call.func.attr == "to_thread"
-    # Si un fix introduce shield, este assert se rompe: consciente y deliberado.
-    assert not (isinstance(call.func.value, ast.Attribute) and call.func.value.attr == "shield"), (
-        "si el fix llega, este punto de la forma actual deja de valer"
+    assert len(esperas_helper) == 1, "el worker debe esperarse por _esperar_terminalidad_del_worker_mutante"
+
+    # (4) el helper implementa el mecanismo: loop sobre worker.done() con shield
+    # y rama que absorbe CancelledError.
+    helper = next(
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_esperar_terminalidad_del_worker_mutante"
     )
+    bucles = [nodo for nodo in ast.walk(helper) if isinstance(nodo, ast.While)]
+    assert bucles, "el helper debe esperar en un loop hasta terminal"
+    assert any(
+        isinstance(nodo, ast.Await)
+        and isinstance(nodo.value, ast.Call)
+        and isinstance(nodo.value.func, ast.Attribute)
+        and nodo.value.func.attr == "shield"
+        for bucle in bucles
+        for nodo in ast.walk(bucle)
+    ), "la espera del worker debe ser con asyncio.shield desde el primer await"
+    assert any(
+        isinstance(nodo, ast.While)
+        and any(isinstance(hijo, ast.Attribute) and hijo.attr == "done" for hijo in ast.walk(nodo.test))
+        for nodo in ast.walk(helper)
+    ), "el loop del helper debe condicionarse a worker.done()"
+    assert any(isinstance(nodo, ast.ExceptHandler) and _es_cancelled(nodo.type) for nodo in ast.walk(helper)), (
+        "el helper debe absorber CancelledError: esa rama es el handoff de terminalidad"
+    )
+
+
+@pytest.mark.asyncio
+async def test_r1_cancel_durante_el_worker_ret_al_caller_hasta_terminal(tmp_path, monkeypatch):
+    """Cancel #1 DURANTE la mutación: el caller no avanza a rollback ni libera la
+    lease hasta que el worker no es terminal, y recién entonces se propaga.
+
+    Secuencia congelada por IGUALDAD (no por timing):
+        cancel_1_procesada < worker_terminal < rollback_started < lease_released
+    """
+    runner, src, arranque, permitir = _preparar_packaging_bloqueado(tmp_path, monkeypatch)
+    orden: list[str] = []
+
+    async def _caller_con_rollback_y_lease() -> None:
+        # Superficie representativa del caller real: su cleanup post-cancelación
+        # hace rollback y libera la lease — R1 exige probar el orden aunque
+        # `_package_output_as_mod` no implemente ambos por su cuenta.
+        try:
+            await runner._package_output_as_mod(src, "TestMod")
+        finally:
+            orden.append("rollback_started")
+            orden.append("lease_released")
+
+    caller = asyncio.create_task(_caller_con_rollback_y_lease())
+    try:
+        with _observar_cancelaciones(orden) as observador:
+            assert await asyncio.to_thread(arranque.wait, 5), "el worker no entró al copytree"
+            caller.cancel()  # cancel #1, con el worker mutando disco
+            await _esperar_handoffs(observador, 1)
+            # HANDOFF_ACTIVE: la cancelación #1 ya se PROCESÓ (registro emitido),
+            # no está sólo pendiente — y el caller sigue retenido:
+            assert orden == ["cancel_1_procesada"], orden
+            assert not caller.done(), "el caller fue liberado antes de la terminalidad del worker"
+            assert "rollback_started" not in orden and "lease_released" not in orden, (
+                "rollback/lease avanzaron con el worker todavía mutando"
+            )
+            permitir.set()  # el worker termina recién ahora
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+    finally:
+        permitir.set()  # el hilo nunca queda bloqueado aunque el test falle
+
+    assert orden == [
+        "cancel_1_procesada",
+        "worker_terminal",
+        "rollback_started",
+        "lease_released",
+    ], orden
+
+
+@pytest.mark.asyncio
+async def test_r1_cancelaciones_repetidas_no_liberan_al_caller_antes_de_terminal(tmp_path, monkeypatch):
+    """Cancel #2 y #N DURANTE el handoff activo: ninguna libera al caller antes
+    de `worker.done()`.
+
+    Cada cancelación se envía sólo DESPUÉS del checkpoint de que la anterior ya
+    se procesó (contador de registros de handoff == HANDOFF_ACTIVE), nunca por
+    timing: el `sleep(0)` sólo cede scheduling.
+    """
+    runner, src, arranque, permitir = _preparar_packaging_bloqueado(tmp_path, monkeypatch)
+    orden: list[str] = []
+
+    async def _caller_con_rollback_y_lease() -> None:
+        try:
+            await runner._package_output_as_mod(src, "TestMod")
+        finally:
+            orden.append("rollback_started")
+            orden.append("lease_released")
+
+    caller = asyncio.create_task(_caller_con_rollback_y_lease())
+    try:
+        with _observar_cancelaciones(orden) as observador:
+            assert await asyncio.to_thread(arranque.wait, 5), "el worker no entró al copytree"
+            caller.cancel()  # cancel #1
+            await _esperar_handoffs(observador, 1)  # checkpoint: handoff activo
+            caller.cancel()  # cancel #2, con el handoff comprobado activo
+            await _esperar_handoffs(observador, 2)
+            assert not caller.done()
+            for numero in (3, 4):  # cancel #N
+                caller.cancel()
+                await _esperar_handoffs(observador, numero)
+                assert not caller.done(), f"cancel #{numero} liberó al caller antes de terminal"
+                assert "rollback_started" not in orden, f"cancel #{numero} dejó avanzar el rollback"
+                assert "lease_released" not in orden, f"cancel #{numero} liberó la lease"
+            assert orden == [f"cancel_{n}_procesada" for n in (1, 2, 3, 4)], orden
+            permitir.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+    finally:
+        permitir.set()
+
+    assert orden == [
+        "cancel_1_procesada",
+        "cancel_2_procesada",
+        "cancel_3_procesada",
+        "cancel_4_procesada",
+        "worker_terminal",
+        "rollback_started",
+        "lease_released",
+    ], orden
+
+
+@pytest.mark.asyncio
+async def test_r1_exito_sin_cancelacion_devuelve_el_mod(tmp_path, monkeypatch):
+    """Sin cancelación el wrapper no toca el camino normal (A1):
+    packaging completo → `mod_path` con el contenido copiado."""
+    runner = _runner_stub(tmp_path)
+    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda p: None)
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "hola.txt").write_bytes(b"hola")
+
+    mod_path = await runner._package_output_as_mod(src, "TestMod")
+
+    assert mod_path == tmp_path / "mods" / "TestMod"
+    assert (mod_path / "sub" / "hola.txt").read_bytes() == b"hola"
+
+
+@pytest.mark.asyncio
+async def test_r1_excepcion_del_worker_sin_cancel_se_propaga_como_antes(tmp_path, monkeypatch):
+    """Worker terminal con excepción y SIN cancelación: la excepción de dominio
+    no cambia — `PermissionError` del worker sigue traduciéndose a
+    `DynDOLODValidationError` con el mismo mensaje (§8 / A7)."""
+    runner, src, arranque, permitir = _preparar_packaging_bloqueado(
+        tmp_path, monkeypatch, falla_en_copia=PermissionError("denegado")
+    )
+    tarea = asyncio.create_task(runner._package_output_as_mod(src, "TestMod"))
+    try:
+        assert await asyncio.to_thread(arranque.wait, 5), "el worker no entró al copytree"
+        permitir.set()
+        with pytest.raises(runner_mod.DynDOLODValidationError, match="Permission denied creating mod"):
+            await tarea
+    finally:
+        permitir.set()
+
+
+@pytest.mark.asyncio
+async def test_r1_excepcion_del_worker_con_cancel_se_consume_y_encadena(tmp_path, monkeypatch, caplog):
+    """Worker terminal con excepción DESPUÉS de cancel #1: el resultado externo
+    es `CancelledError` (manda la semántica de cancelación del caller), pero la
+    falla del worker queda encadenada (`__cause__`), registrada con `exc_info`
+    y consumida — nunca silenciada ni ``Task exception was never retrieved``."""
+    runner, src, arranque, permitir = _preparar_packaging_bloqueado(
+        tmp_path, monkeypatch, falla_en_copia=PermissionError("boom")
+    )
+    orden: list[str] = []
+
+    async def _caller_con_rollback_y_lease() -> None:
+        try:
+            await runner._package_output_as_mod(src, "TestMod")
+        finally:
+            orden.append("rollback_started")
+            orden.append("lease_released")
+
+    caller = asyncio.create_task(_caller_con_rollback_y_lease())
+    try:
+        with _observar_cancelaciones(orden) as observador:
+            assert await asyncio.to_thread(arranque.wait, 5), "el worker no entró al copytree"
+            caller.cancel()  # cancel #1 mientras el worker muta
+            await _esperar_handoffs(observador, 1)
+            assert not caller.done()
+            permitir.set()  # el worker termina CON excepción
+            with pytest.raises(asyncio.CancelledError) as excinfo:
+                await caller
+    finally:
+        permitir.set()
+
+    # la cancelación gana como resultado externo…
+    assert isinstance(excinfo.value.__cause__, PermissionError), (
+        f"la falla del worker debe quedar encadenada, no perdida: causa={excinfo.value.__cause__!r}"
+    )
+    # …y queda observable además de encadenada:
+    assert any(getattr(r, "operation_type", None) == _OPERACION_FALLA_EN_HANDOFF for r in caplog.records), (
+        "la falla del worker durante el handoff no se registró con exc_info"
+    )
+    # el orden causal completo se conserva:
+    assert orden == [
+        "cancel_1_procesada",
+        "worker_terminal",
+        "rollback_started",
+        "lease_released",
+    ], orden
 
 
 # ---------------------------------------------------------------------------
