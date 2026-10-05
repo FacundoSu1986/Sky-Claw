@@ -95,9 +95,11 @@ siguiente hace `checkout` de otra rama y la anterior commitea sobre la rama que 
 tocaba. Ya pasó acá: un `HEAD` movido bajo los pies, con dos commits colocados en
 la rama equivocada y un directorio de trabajo untracked borrado de un plumazo.
 
-**La propiedad:** *toda sesión trabaja en su propio worktree bajo
-`<repo>/.worktrees/<nombre>`; el worktree principal queda reservado para integrar.*
-El nombre lo elige la sesión; la raíz no se negocia.
+**La propiedad:** *toda sesión de agente trabaja en su propio worktree registrado;
+el worktree principal queda reservado para integración y CI.* Los worktrees
+manuales se crean bajo `<repo>/.worktrees/<nombre>`. Codex puede usar su raíz
+gestionada `$CODEX_HOME/worktrees/` (por defecto `~/.codex/worktrees/`): crear,
+adjuntar y archivar esos checkouts con las herramientas de la app.
 
 ```bash
 git worktree add .worktrees/mi-sesion -b feat/mi-cambio main
@@ -106,18 +108,41 @@ git worktree remove .worktrees/mi-sesion        # al cerrar la sesión
 git worktree move <ruta> .worktrees/<nombre>    # migrar uno que nació fuera
 ```
 
-`.worktrees/` ya está en `.gitignore`: es el **único** lugar donde puede vivir un
-worktree de agente. Nada de `%TEMP%` (allí el registro de git queda colgado cuando
-el SO limpia el directorio), ni raíces de unidad sueltas (`E:\`), ni un directorio
-por herramienta. La dispersión en seis rutas distintas es lo que volvió
-inmanejable el inventario.
+`.worktrees/` ya está en `.gitignore`; la raíz gestionada de Codex está fuera del
+checkout. No crear nuevos worktrees manuales en `%TEMP%`, raíces de unidad ni
+directorios dispersos por herramienta. Un test corrido desde el principal debe
+declarar su rol: CI usa `GITHUB_ACTIONS=true`; una integración local explícita
+usa `SKYCLAW_WORKTREE_ROLE=integracion`. Sin esa declaración se considera sesión
+de agente y el gate rechaza el principal. El gate valida el estado al correr
+pytest; no intercepta comandos git ni impide una sesión que no lo ejecute.
+
+**Transición de los existentes (snapshot 2026-10-05).** Se conservan sólo estos
+bindings exactos de ruta y rama hasta que termine cada sesión. No mover ni borrar
+checkouts ajenos durante otra tarea. Al cerrar una sesión, su responsable migra
+el worktree o lo retira conservando su trabajo, y quita el binding de esta tabla y
+de `LEGADOS` en el test. Una ruta nueva o una rama distinta no hereda la exención.
+
+<!-- worktree-legacy:start -->
+| Ruta existente | Rama |
+|---|---|
+| `C:/Worktrees/Sky-Claw-math-a` | `fix-native-parallax-math-foundation` |
+| `C:/Worktrees/Sky-Claw-math-b` | `fix-native-parallax-spearman-ties` |
+| `C:/Worktrees/Sky-Claw-p0-alpha209-uia` | `research/dyndolod-p0-alpha209-uia` |
+| `C:/Worktrees/Sky-Claw-r1-packaging-cancel` | `fix/dyndolod-r1-packaging-cancel` |
+| `E:/Skyclaw_Frozen_Runtime_P3` | `feat/frozen-runtime-p3-candidate` |
+| `E:/Skyclaw_Steam_Frozen_Runtime` | `feat/steam-frozen-runtime` |
+| `C:/Users/Facu2/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082` | `workbuddy/main-d17cd082` |
+| `E:/Skyclaw_Main_Sync/.kilo/worktrees/broadleaf-professor` | `DETACHED` |
+<!-- worktree-legacy:end -->
 
 **Anclas** (`tests/test_worktree_convention_invariant.py`, enumeran la familia):
 - `test_los_worktrees_no_principales_viven_bajo_la_convencion` — lee el registro
-  real (`git worktree list --porcelain`) y falla si alguno se sale de `.worktrees/`.
-  Distingue el principal por su `.git` como **directorio** (en un worktree
-  enlazado `.git` es un archivo), así que el test da igual corrido desde el
-  principal o desde un worktree de agente.
+  real (`git worktree list --porcelain -z`), verifica ambas raíces, los bindings
+  de transición y el rol actual. Errores de git o directorios ausentes fallan
+  cerrados; una distribución sin `.git` declara un skip explícito.
+- Casos sintéticos enumeran agente/integración/CI, ambas raíces, cada legado y
+  rutas/ramos no admitidos; `test_transicion_documentada_coincide_con_bindings`
+  congela por igualdad literal la tabla de transición y la receta del gate.
 - `test_la_convencion_esta_documentada_en_agents_md` — la regla no se borra en
   silencio: si desaparece el texto, el test falla.
 - `test_el_ignorar_cubre_el_directorio_de_worktrees` — ningún worktree de agente
