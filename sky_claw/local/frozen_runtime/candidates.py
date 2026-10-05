@@ -29,6 +29,7 @@ import pathlib
 import time
 from collections.abc import Callable
 
+from sky_claw.app.security.links import ContencionFisicaVioladaError, exigir_contencion_fisica
 from sky_claw.local.frozen_runtime.candidate_id import (
     CANDIDATE_ID_PREFIX,
     default_candidate_id_factory,
@@ -120,6 +121,10 @@ def _exigir_candidates_state_dir(root: pathlib.Path) -> pathlib.Path:
     # `mkdir(parents=True)` crearia el directorio en el destino EXTERNO. El
     # `exigir_namespace_escribible` posterior lo rechazaria, pero ya habria
     # mutado fuera del root (Codex sobre #682).
+    try:
+        exigir_contencion_fisica(pathlib.Path(root), state_dir(root), exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise FrozenRuntimeStorageError(f"el namespace de metadata no cuelga fisicamente de '{root}': {exc}") from exc
     exigir_namespace_escribible(state_dir(root))
     admision = admitir_directorio_storage(directorio)
     if not admision.success:
@@ -745,6 +750,7 @@ def crear_candidate(
             destino,
             pre.archivos,
             pre.directory_membership.directories,
+            contenedor=raiz,
         )
     except (CandidateCopyError, FrozenRuntimeStorageError, SourceObservationError) as exc:
         return _marcar_invalid(raiz, metadata, f"la copia fallo: {exc}", pre=pre)

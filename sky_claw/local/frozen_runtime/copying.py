@@ -37,7 +37,11 @@ import pathlib
 import shutil
 from typing import Final
 
-from sky_claw.app.security.links import link_kind_and_identity_or_raise
+from sky_claw.app.security.links import (
+    ContencionFisicaVioladaError,
+    exigir_contencion_fisica,
+    link_kind_and_identity_or_raise,
+)
 from sky_claw.local.frozen_runtime.errors import CandidateCopyError, FrozenRuntimeStorageError
 from sky_claw.local.frozen_runtime.independence import exigir_namespace_escribible
 from sky_claw.local.runtime_vault.models import FileIdentity
@@ -101,31 +105,68 @@ def copiar_arbol_independiente(
     destino: pathlib.Path,
     files: tuple[FileIdentity, ...],
     directories: tuple[str, ...],
+    *,
+    contenedor: pathlib.Path,
 ) -> int:
     """Copia el arbol SELLADO de la Managed Source a un Candidate.
 
     Crea primero toda la estructura de directorios (incluidos los vacios, que
     son parte de la identidad P3) y despues los archivos, en orden determinista.
     Devuelve la cantidad de archivos copiados.
+
+    ``contenedor`` es el ``FrozenRuntimeRoot`` del que el destino NO puede
+    escaparse. Se verifica con :func:`exigir_contencion_fisica`, que hace
+    ``lstat`` de cada ancestro -- no ``resolve``, que seguiria el enlace -- antes
+    de crear nada y otra vez DESPUES del ``mkdir`` del payload. La segunda
+    comprobacion es la que cierra la ventana que Qodo senalo sobre #682: entre la
+    validacion del padre y el ``mkdir`` un junction podia reemplazarlo, y sin esa
+    re-verificacion la copia escribia TODOS los bytes fuera del root. Con ella, el
+    caso se detecta antes de escribir un solo byte de contenido.
+
+    Garantia honesta (no se afirma mas de lo que hay): esto NO es proteccion
+    HANDLE-grade -- no hay un handle al directorio padre que impida el swap
+    atomicamente -- pero la mutacion fuera del root queda acotada a la creacion
+    del directorio del payload y se detecta fail-closed antes del contenido.
     """
     raiz_origen = pathlib.Path(origen)
     raiz_destino = pathlib.Path(destino)
+    raiz_contenedora = pathlib.Path(contenedor)
 
-    # Re-admision del namespace justo antes de mutar: un ancestor del destino
-    # redirigido por junction entre la preparacion y ahora haria que mkdir y la
-    # copia escribieran FUERA del FrozenRuntimeRoot. Se admiten UNO POR UNO en
-    # vez de confiar en `parents=True`: un ancestro podria ser un enlace y
-    # `parents=True` lo seguiria en silencio al crear.
+    # 1) ANTES de crear nada: el padre debe colgar fisicamente del root.
     padre = raiz_destino.parent
     if not padre.exists():
+        try:
+            exigir_contencion_fisica(raiz_contenedora, padre.parent, permitir_raiz=True)
+        except ContencionFisicaVioladaError as exc:
+            raise CandidateCopyError(
+                f"el ancestro del destino '{padre.parent}' no cuelga fisicamente de '{raiz_contenedora}': {exc}"
+            ) from exc
         exigir_namespace_escribible(padre.parent)
-        padre.mkdir(parents=False, exist_ok=False)
+        try:
+            padre.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            raise CandidateCopyError(f"no se pudo crear el directorio del Candidate '{padre}': {exc}") from exc
     exigir_namespace_escribible(padre)
     exigir_payload_vacio(raiz_destino)
     _rechazar_si_es_enlace(raiz_origen)
 
     try:
         raiz_destino.mkdir(parents=False, exist_ok=False)
+    except OSError as exc:
+        raise CandidateCopyError(f"no se pudo crear el payload '{raiz_destino}': {exc}") from exc
+
+    # 2) DESPUES del mkdir y ANTES de escribir contenido: re-verificar que el
+    #    arbol recien creado cuelga fisicamente del root. Si `padre` fue
+    #    reemplazado por un junction en la ventana, esto lo detecta aca.
+    try:
+        exigir_contencion_fisica(raiz_contenedora, raiz_destino, exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise CandidateCopyError(
+            f"el payload '{raiz_destino}' no cuelga fisicamente de '{raiz_contenedora}' "
+            f"(posible redireccion por enlace): {exc}"
+        ) from exc
+
+    try:
         for directorio in directories:
             (raiz_destino / pathlib.PurePosixPath(directorio)).mkdir(parents=True, exist_ok=True)
         copiados = 0

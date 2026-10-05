@@ -191,10 +191,10 @@ def test_c05_source_muta_durante_la_copia_no_llega_a_ready(rig, monkeypatch) -> 
     source, root = rig
     original = candidates_module.copiar_arbol_independiente
 
-    def copia_con_mutacion(origen, destino, files, directories):
+    def copia_con_mutacion(origen, destino, files, directories, **kwargs):
         # La fuente muta DESPUES de que PRE se sello y antes de terminar la copia.
         (pathlib.Path(origen) / "Data" / "Skyrim.esm").write_bytes(b"esm-MUTADO-POR-STEAM")
-        return original(origen, destino, files, directories)
+        return original(origen, destino, files, directories, **kwargs)
 
     monkeypatch.setattr(candidates_module, "copiar_arbol_independiente", copia_con_mutacion)
     resultado = _crear(source, root)
@@ -215,10 +215,10 @@ def test_c09_la_membership_vacia_de_la_fuente_cambia_no_llega_a_ready(rig, monke
     source, root = rig
     original = candidates_module.copiar_arbol_independiente
 
-    def copia_con_perdida_de_vacio(origen, destino, files, directories):
+    def copia_con_perdida_de_vacio(origen, destino, files, directories, **kwargs):
         # El directorio vacio desaparece de la fuente DESPUES del PRE.
         (pathlib.Path(origen) / "Data" / "EmptyFolder").rmdir()
-        return original(origen, destino, files, directories)
+        return original(origen, destino, files, directories, **kwargs)
 
     monkeypatch.setattr(candidates_module, "copiar_arbol_independiente", copia_con_perdida_de_vacio)
     resultado = _crear(source, root)
@@ -370,7 +370,7 @@ def test_c18_building_tras_un_crash_nunca_es_ready(rig, monkeypatch) -> None:
     class _CrashSimuladoError(RuntimeError):
         pass
 
-    def copia_que_revienta(origen, destino, files, directories):
+    def copia_que_revienta(origen, destino, files, directories, **kwargs):
         raise _CrashSimuladoError("proceso muerto a mitad de la copia")
 
     monkeypatch.setattr(candidates_module, "copiar_arbol_independiente", copia_que_revienta)
@@ -390,7 +390,7 @@ def test_c17_una_copia_fallida_nunca_queda_ready(rig, monkeypatch) -> None:
     """C17: un fallo de copia deja INVALID con su motivo, sin borrar contenido."""
     source, root = rig
 
-    def copia_que_falla(origen, destino, files, directories):
+    def copia_que_falla(origen, destino, files, directories, **kwargs):
         raise candidates_module.CandidateCopyError("disco lleno (simulado)")
 
     monkeypatch.setattr(candidates_module, "copiar_arbol_independiente", copia_que_falla)
@@ -540,6 +540,33 @@ def test_c19_un_junction_no_puede_redirigir_la_escritura(rig, tmp_path) -> None:
     resultado = _crear(source, root, cid="cand_" + "9" * 32)
     assert resultado.state is not GenerationVerificationState.VALID
     # Nada se escribio FUERA del FrozenRuntimeRoot.
+    assert list(fuera.iterdir()) == []
+
+
+@junction_guard
+def test_qodo_una_redireccion_del_padre_no_escribe_fuera_del_root(rig, tmp_path) -> None:
+    """Qodo sobre #682: la re-verificacion fisica cierra la ventana del mkdir.
+
+    La ventana entre validar el padre y crear el payload no se puede eliminar
+    sin handles, pero SI se puede detectar antes de escribir un solo byte. Se
+    simula el swap reemplazando el directorio del Candidate por un junction a un
+    destino externo y se exige fail-closed con CERO contenido escrito afuera.
+    """
+    source, root = rig
+    fuera = tmp_path / "fuera-del-root"
+    fuera.mkdir()
+
+    # El directorio del Candidate se crea como junction ANTES de la copia: la
+    # verificacion fisica del payload debe rechazarlo.
+    objetivo = candidate_dir(root, "cand_" + "8" * 32)
+    candidates_dir(root).mkdir(parents=True, exist_ok=True)
+    if (motivo := crear_junction(objetivo, fuera)) is not None:
+        pytest.skip(f"no se pudo crear junction: {motivo}")
+
+    resultado = _crear(source, root, cid="cand_" + "8" * 32)
+
+    assert resultado.state is not GenerationVerificationState.VALID
+    # Lo esencial: NINGUN byte de contenido llego al destino externo.
     assert list(fuera.iterdir()) == []
 
 

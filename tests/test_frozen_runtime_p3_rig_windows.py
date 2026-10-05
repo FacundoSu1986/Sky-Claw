@@ -84,7 +84,7 @@ def test_rig_preserva_directorios_vacios(tmp_path: pathlib.Path) -> None:
     from sky_claw.local.runtime_vault.inventory import inventory_tree
 
     membership = capturar_membership_directorios(origen)
-    copiar_arbol_independiente(origen, destino, inventory_tree(origen), membership.directories)
+    copiar_arbol_independiente(origen, destino, inventory_tree(origen), membership.directories, contenedor=tmp_path)
 
     assert (destino / "Data" / "Vacio").is_dir()
     assert list((destino / "Data" / "Vacio").iterdir()) == []
