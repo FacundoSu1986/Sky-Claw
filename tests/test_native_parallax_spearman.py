@@ -161,6 +161,18 @@ def test_n_menor_a_dos_es_no_evaluable() -> None:
     assert math.isnan(metrics.spearman([1.0], [2.0]))
 
 
+def test_n_cero_es_no_evaluable() -> None:
+    """Frontera n=0 (Regression Oracle PR #685): sin pares no hay correlación."""
+    assert math.isnan(metrics.spearman([], []))
+
+
+def test_n_dos_con_empates_es_no_evaluable() -> None:
+    """Frontera n=2 (Regression Oracle PR #685): pasa la guarda de tamaño, pero un
+    empate deja la varianza de rangos en cero — y eso es NOT_EVALUABLE, no 0.0/1.0."""
+    assert math.isnan(metrics.spearman([1.0, 1.0], [2.0, 3.0]))
+    assert math.isnan(metrics.spearman([1.0, 2.0], [3.0, 3.0]))
+
+
 def test_tamanos_desalineados_es_error_del_caller() -> None:
     with pytest.raises(ValueError, match="tama"):
         metrics.spearman([1.0, 2.0], [1.0, 2.0, 3.0])
@@ -176,8 +188,14 @@ def test_ranking_vive_solo_en_average_ranks() -> None:
     implementación vieja rompe el ancla, aunque nadie lo recuerde.
     """
     patron = re.compile(r"np\.argsort\(\s*np\.argsort")
-    raiz = Path(metrics.__file__).resolve().parent
-    ofensores = sorted(p.name for p in raiz.glob("*.py") if patron.search(p.read_text(encoding="utf-8")))
+    # Revisión adversarial PR #685: ``glob("*.py")`` enumeraba UN directorio mientras
+    # el docstring prometía "el paquete entero". ``rglob`` desde la raíz del paquete
+    # cubre subpaquetes futuros y el propio ``__init__.py``; sin esto, un
+    # ``research/submod/x.py`` reintroducía el doble argsort sin romper el ancla.
+    raiz = Path(metrics.__file__).resolve().parent.parent
+    ofensores = sorted(
+        str(p.relative_to(raiz)) for p in raiz.rglob("*.py") if patron.search(p.read_text(encoding="utf-8"))
+    )
     assert ofensores == []
 
 
