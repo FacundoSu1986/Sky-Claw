@@ -16,9 +16,16 @@ Convenciones:
   medible — el experimento lo registra, no lo esconde.
 - Normal: ``N = normalize((-sx·p, -sy·q, 1))`` con signos parametrizables
   (``sx``, ``sy``). NP-M0 NO fija "verdad Skyrim" (§12 del brief): estudia la matemática.
-- La inversa ``p = -sx·nx / max(nz, nz_floor)`` es invariante a la escala de N
-  (nx/nz no cambia si N se multiplica por escalar); el floor solo actúa cuando
-  ``nz < nz_floor`` y se **cuenta** (§13 del brief: no esconder la singularidad).
+- La inversa es ``p = -nx / (sx·max(nz, nz_floor))`` (PR-MATH-A §8) y es invariante a la
+  escala de N (nx/nz no cambia si N se multiplica por escalar); el floor solo actúa
+  cuando ``nz < nz_floor`` y se **cuenta** (§13 del brief: no esconder la singularidad).
+
+  **PR-MATH-A (§8, corrección).** La forma histórica ``p = -sx·nx/nz`` NO es la inversa
+  de ``normals_from_gradients``: desarrollando el forward queda ``nx/nz = -sx·p``, de
+  donde ``p = -(nx/nz)/sx``. La forma histórica sólo coincide cuando ``sx² = 1`` — de
+  ahí que el error fuera invisible en M0/M1/M2/M3 (todos usan ``sx = sy = 1``) y sólo
+  aparezca al introducir anisotropía real. Anclado en
+  ``tests/test_native_parallax_proxy_math.py``.
 """
 
 from __future__ import annotations
@@ -55,16 +62,28 @@ def gradients_from_normal(
     sy: float = 1.0,
     nz_floor: float = NZ_FLOOR_DEFAULT,
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """Inversa ``p = -sx·nx/max(nz,nz_floor)``; devuelve ``(p, q, floor_hits)``.
+    """Inversa exacta de ``normals_from_gradients``; devuelve ``(p, q, floor_hits)``.
+
+    Derivación (PR-MATH-A §8). El forward es ``nx = -sx·p/‖·‖`` y ``nz = 1/‖·‖``, así
+    que ``nx/nz = -sx·p``. Despejando:
+
+        p = -nx / (sx · nz)          q = -ny / (sy · nz)
+
+    La forma histórica ``p = -sx·nx/nz`` sólo coincide con ésta cuando ``sx² = 1``.
 
     ``floor_hits`` = píxeles donde ``nz < nz_floor`` (la singularidad NO se esconde:
-    se cuantifica, §13/§23 del brief).
+    se cuantifica, §13/§23 del brief). El floor regulariza ``1/nz``; NO cubre ``sx = 0``
+    ni ``sy = 0``, que se rechazan explícitamente (§9) en vez de inventar un epsilon.
     """
+    if sx == 0.0:
+        raise ValueError(f"sx no puede ser 0: la inversa p = -nx/(sx*nz) es indefinida (sx={sx})")
+    if sy == 0.0:
+        raise ValueError(f"sy no puede ser 0: la inversa q = -ny/(sy*nz) es indefinida (sy={sy})")
     nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
     nz_eff = np.maximum(nz, nz_floor)
     hits = int(np.count_nonzero(nz < nz_floor))
-    p = -sx * nx / nz_eff
-    q = -sy * ny / nz_eff
+    p = -nx / (sx * nz_eff)
+    q = -ny / (sy * nz_eff)
     return p, q, hits
 
 

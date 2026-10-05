@@ -5,12 +5,19 @@ normal)? Este módulo implementa las políticas P0–P3 como transformaciones ex
 normal → gradiente, con estadística de activación y de riesgo. NO es weighted-Poisson,
 NO es producción, NO fija constantes (ver invariantes en los tests).
 
-Derivación de sensibilidad (§7 del brief), no aceptada a ciegas:
-
-    p(nx, nz) = -nx / nz
+Derivación de sensibilidad (§7 del brief), no aceptada a ciegas. Para la convención
+``sx = sy = 1`` (la de EXP-M1) la inversa es ``p(nx, nz) = -nx / nz``:
 
     ∂p/∂nx = -1/nz
     ∂p/∂nz = d/dnz(-nx·nz⁻¹) = +nx·nz⁻² = nx/nz²
+
+**PR-MATH-A §13 (corrección del factor geométrico).** Con ``sx``/``sy`` generales la
+inversa es ``p = -(nx/sx)·(1/nz)``, ``q = -(ny/sy)·(1/nz)``: el factor anisotrópico
+**divide** (nunca multiplica). La derivación de sensibilidad de arriba queda expresada
+en la variable ``nx/sx`` (que es la que entra al inverso), así que las policies que
+aproximan o regulan ``1/nz`` — FLOOR_CLAMP, FLOOR_ZERO, SOFT_TIKHONOV — aplican esa
+regularización a ``nx/sx`` y ``ny/sy``, y NO vuelven a multiplicar por ``sx``/``sy``.
+Anclado en ``tests/test_native_parallax_proxy_math.py``.
 
 Con perturbaciones iid (δnx, δnz) ~ (0, σ):
 
@@ -95,36 +102,44 @@ def decode_gradients_policy(
     promoverse con una constante absoluta escondida). Para RAW, ``lam`` se ignora pero
     debe pasarse explícitamente (por ejemplo 0.0) — así el caller nunca olvida que hay
     una decisión de política en juego.
+
+    El factor geométrico ``sx``/``sy`` DIVIDE siempre (§13): ``p = -(nx/sx)·reg(1/nz)``.
+    ``sx == 0`` o ``sy == 0`` es ``ValueError`` (§9): es la única singularidad que el
+    floor de ``nz`` no cubre, y no se disimula con un epsilon.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy desconocida: {policy} (válidas: {POLICIES})")
+    if sx == 0.0:
+        raise ValueError(f"sx no puede ser 0: la inversa p = -nx/(sx*nz) es indefinida (sx={sx})")
+    if sy == 0.0:
+        raise ValueError(f"sy no puede ser 0: la inversa q = -ny/(sy*nz) es indefinida (sy={sy})")
     nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
     negative_nz_fraction = float(np.count_nonzero(nz <= 0.0)) / nz.size
     low_trust_fraction = float(np.count_nonzero(nz < sigma)) / nz.size if sigma > 0.0 else 0.0
 
     if policy == "RAW":
         nz_guard = np.where(np.abs(nz) < NZ_EPS_RAW, NZ_EPS_RAW, nz)
-        p = -sx * nx / nz_guard
-        q = -sy * ny / nz_guard
+        p = -nx / (sx * nz_guard)
+        q = -ny / (sy * nz_guard)
         activation = 0.0
     elif policy == "FLOOR_CLAMP":
         # Variante A: nz_eff = max(nz, λ). Los nz<=0 quedan en λ (su signo se pierde:
         # el clamp NO usa abs(), pero sí oculta el signo negativo — se cuenta en stats).
         nz_eff = np.maximum(nz, lam)
-        p = -sx * nx / nz_eff
-        q = -sy * ny / nz_eff
+        p = -nx / (sx * nz_eff)
+        q = -ny / (sy * nz_eff)
         activation = float(np.count_nonzero(nz < lam)) / nz.size
     elif policy == "FLOOR_ZERO":
         # Variante B: nz<=0 → contribución cero (rechazo por píxel); nz>0 crudo.
         valid = nz > 0.0
         safe = np.where(valid, nz, 1.0)
-        p = np.where(valid, -sx * nx / safe, 0.0)
-        q = np.where(valid, -sy * ny / safe, 0.0)
+        p = np.where(valid, -nx / (sx * safe), 0.0)
+        q = np.where(valid, -ny / (sy * safe), 0.0)
         activation = float(np.count_nonzero(~valid)) / nz.size
     else:  # SOFT_TIKHONOV
         inv_reg = nz / (nz * nz + lam * lam)
-        p = -sx * nx * inv_reg
-        q = -sy * ny * inv_reg
+        p = -nx * inv_reg / sx
+        q = -ny * inv_reg / sy
         activation = float(np.count_nonzero(nz < lam)) / nz.size
 
     grad_mag = np.sqrt(p * p + q * q)
