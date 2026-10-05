@@ -134,31 +134,43 @@ foreach ($pr in @($openJson)) {
 }
 
 # --- Ramas checked-out en algun worktree ---
-$checkedOut = @{}
-$wtRes = Invoke-Native 'git' @('worktree', 'list', '--porcelain', '-z')
-if ($wtRes.Code -ne 0) {
-    Fail "git worktree list fallo (exit $($wtRes.Code)): no se pueden verificar las ramas checked-out. Aborto (fail-closed)."
-}
-$worktreePaths = @()
-foreach ($line in ((@($wtRes.Out) -join "`n") -split [char]0)) {
-    if ("$line" -match '^branch refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
-    elseif ("$line" -match '^worktree (.+)$') { $worktreePaths += $Matches[1] }
-}
-# Rebase y bisect pueden aparecer detached en porcelain mientras la rama sigue
-# en uso. Enumerar las mismas tres recetas, en TODOS los worktrees registrados.
-$activeOperationFiles = @('rebase-merge/head-name', 'rebase-apply/head-name', 'BISECT_START')
-foreach ($worktreePath in $worktreePaths) {
-    $dirRes = Invoke-Native 'git' @('-C', $worktreePath, 'rev-parse', '--absolute-git-dir')
-    if ($dirRes.Code -ne 0) { Fail "No se pudo auditar el estado de $worktreePath" }
-    $gitDir = (@($dirRes.Out) -join '').Trim()
-    foreach ($stateFile in $activeOperationFiles) {
-        $statePath = Join-Path $gitDir $stateFile
-        if (Test-Path -LiteralPath $statePath) {
-            $branchInUse = (Get-Content -LiteralPath $statePath -Raw).Trim() -replace '^refs/heads/', ''
-            if ($branchInUse) { $checkedOut[$branchInUse] = $true }
+function Get-ProtectedBranches {
+    $checkedOut = @{}
+    $wtRes = Invoke-Native 'git' @('worktree', 'list', '--porcelain', '-z')
+    if ($wtRes.Code -ne 0) {
+        Fail "git worktree list fallo (exit $($wtRes.Code)): no se pueden verificar las ramas checked-out. Aborto (fail-closed)."
+    }
+    $worktreePaths = @()
+    foreach ($line in ((@($wtRes.Out) -join "`n") -split [char]0)) {
+        if ("$line" -match '^branch refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
+        elseif ("$line" -match '^worktree (.+)$') { $worktreePaths += $Matches[1] }
+    }
+    # Rebase y bisect pueden aparecer detached mientras la rama y sus hermanas
+    # siguen en uso. Enumerar las cuatro recetas en TODOS los worktrees.
+    $activeOperationFiles = @('rebase-merge/head-name', 'rebase-merge/update-refs', 'rebase-apply/head-name', 'BISECT_START')
+    foreach ($worktreePath in $worktreePaths) {
+        $dirRes = Invoke-Native 'git' @('-C', $worktreePath, 'rev-parse', '--absolute-git-dir')
+        if ($dirRes.Code -ne 0) { Fail "No se pudo auditar el estado de $worktreePath" }
+        $gitDir = (@($dirRes.Out) -join '').Trim()
+        foreach ($stateFile in $activeOperationFiles) {
+            $statePath = Join-Path $gitDir $stateFile
+            if (Test-Path -LiteralPath $statePath) {
+                if ($stateFile -eq 'rebase-merge/update-refs') {
+                    # Cada reserva tiene ref, SHA anterior y SHA nuevo. Sólo
+                    # las líneas de refs nombran ramas; los SHA nunca son nombres.
+                    foreach ($reservedRef in (Get-Content -LiteralPath $statePath)) {
+                        if ($reservedRef -match '^refs/heads/(.+)$') { $checkedOut[$Matches[1]] = $true }
+                    }
+                } else {
+                    $branchInUse = (Get-Content -LiteralPath $statePath -Raw).Trim() -replace '^refs/heads/', ''
+                    if ($branchInUse) { $checkedOut[$branchInUse] = $true }
+                }
+            }
         }
     }
+    return $checkedOut
 }
+$checkedOut = Get-ProtectedBranches
 $curRes = Invoke-Native 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
 if ($curRes.Code -ne 0) { Fail 'No se pudo resolver la rama actual' }
 $current = (@($curRes.Out) -join '').Trim()
@@ -240,6 +252,17 @@ foreach ($name in $candidatas) {
         continue
     }
 
+    if ($tieneLocal -or $tieneRemota) {
+        # El inventario inicial puede envejecer durante consultas remotas. El
+        # censo fresco veta AMBOS borrados si ahora hay una rama local en uso,
+        # aunque no existiera al construir el inventario de ramas locales.
+        $checkedOutNow = Get-ProtectedBranches
+        if ($checkedOutNow.ContainsKey($name)) {
+            Write-Host ("  OMITE   {0,-58} (rama ahora en uso en un worktree)" -f $name)
+            $omitidas++
+            continue
+        }
+    }
     if ($tieneLocal) {
         # Compare-and-delete: si otro escritor avanzo el tip desde la lectura,
         # update-ref rechaza el borrado bajo el lock de la ref.

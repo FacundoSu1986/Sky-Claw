@@ -158,7 +158,9 @@ Antes de habilitar un borrado, importa el bundle completo en un repositorio
 temporal vacío con validación de objetos y compara todas las refs restauradas:
 `bundle list-heads` y `bundle verify` por sí solos no detectan un pack truncado.
 Además de HEAD, la guarda de worktrees enumera las ramas retenidas por rebase
-(`rebase-merge` y `rebase-apply`) y bisect, que Git puede mostrar como detached.
+(`rebase-merge`, sus reservas hermanas de `--update-refs` y `rebase-apply`) y
+bisect, que Git puede mostrar como detached. Refresca ese censo antes de borrar
+cualquiera de las dos superficies para detectar worktrees activados durante la ejecución.
 Las regresiones están en `tests/test_git_archive_scripts.py`, sobre repositorios
 temporales y las dos superficies. Estos tests no borran ramas del repo del usuario.
 

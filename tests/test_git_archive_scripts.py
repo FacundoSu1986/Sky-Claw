@@ -69,6 +69,12 @@ function git {
     }
     $salida = & $env:ARCHIVE_GIT @args 2>&1
     $codigo = $LASTEXITCODE
+    if ($env:ARCHIVE_CARRERA -eq 'checkout' -and $args[0] -eq 'branch') {
+        & $env:ARCHIVE_GIT worktree add $env:ARCHIVE_LATE_DIR archivada-local 2>&1 | Out-Null
+    }
+    if ($env:ARCHIVE_CARRERA -eq 'checkout-remoto' -and $args[0] -eq 'branch') {
+        & $env:ARCHIVE_GIT worktree add -b archivada-remota $env:ARCHIVE_LATE_DIR refs/remotes/origin/archivada-remota 2>&1 | Out-Null
+    }
     if ($env:ARCHIVE_FALLO -eq 'bundle' -and $args[0] -eq 'bundle' -and $args[1] -eq 'list-heads') {
         $codigo = 9
     }
@@ -145,7 +151,14 @@ def ejecutar(
         args += ["-Manifest", str(archivo["manifest"]), "-Execute"]
         if remoto:
             args += ["-IncludeRemote"]
-    env = dict(os.environ, ARCHIVE_GIT=str(GIT), ARCHIVE_FALLO=fallo, ARCHIVE_CARRERA=carrera, ARCHIVE_NUEVO=nuevo)
+    env = dict(
+        os.environ,
+        ARCHIVE_GIT=str(GIT),
+        ARCHIVE_FALLO=fallo,
+        ARCHIVE_CARRERA=carrera,
+        ARCHIVE_NUEVO=nuevo,
+        ARCHIVE_LATE_DIR=str(Path(archivo["repo"]).parent / "checkout-tardio"),
+    )
     return subprocess.run(
         args,
         cwd=archivo["repo"],
@@ -235,15 +248,27 @@ def test_nombre_remoto_completo_no_colisiona_con_sufijos(archivo: dict[str, Path
     )
 
 
-@pytest.mark.parametrize("guarda", ["abierto", "worktree"])
+@pytest.mark.parametrize("guarda", ["abierto", "worktree", "worktree-tardio"])
 def test_conserva_ramas_con_pr_abierto_o_worktree(archivo: dict[str, Path | str], guarda: str) -> None:
     """El compare-and-delete mantiene las guardas que protegen sesiones activas."""
     repo = Path(archivo["repo"])
     if guarda == "worktree":
         git(repo, "worktree", "add", str(repo.parent / "checkout"), "archivada-local")
-    resultado = ejecutar(archivo, fallo=guarda)
+    resultado = ejecutar(archivo, fallo=guarda, carrera="checkout" if guarda == "worktree-tardio" else "")
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
     assert git(repo, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
+
+
+def test_checkout_tardio_de_rama_solo_remota_protege_ambas_superficies(archivo: dict[str, Path | str]) -> None:
+    """Una rama local nueva en uso veta también el borrado de su hermano remoto."""
+    repo = Path(archivo["repo"])
+    git(repo, "branch", "-D", "archivada-remota")
+    resultado = ejecutar(archivo, remoto=True, carrera="checkout-remoto")
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert git(repo, "rev-parse", "refs/heads/archivada-remota") == archivo["remoto_sha"]
+    assert (
+        git(repo, "ls-remote", "--heads", "origin", "refs/heads/archivada-remota").split()[0] == archivo["remoto_sha"]
+    )
 
 
 def test_pack_truncado_aborta_aunque_list_heads_y_verify_pasaran(archivo: dict[str, Path | str]) -> None:
@@ -259,15 +284,19 @@ def test_pack_truncado_aborta_aunque_list_heads_y_verify_pasaran(archivo: dict[s
     assert git(repo, "rev-parse", "refs/heads/archivada-local") == archivo["base"]
 
 
-@pytest.mark.parametrize("operacion", ["rebase-merge", "rebase-apply", "bisect"])
+@pytest.mark.parametrize("operacion", ["rebase-merge", "rebase-apply", "rebase-update-refs", "bisect"])
 def test_conserva_rama_activa_aunque_worktree_aparezca_detached(archivo: dict[str, Path | str], operacion: str) -> None:
-    """Enumera las tres operaciones de Git que ocultan la rama en porcelain."""
+    """Enumera operaciones de Git que ocultan la rama y sus hermanas en porcelain."""
     repo = Path(archivo["repo"])
     checkout = repo.parent / "checkout-activo"
     git(repo, "worktree", "add", str(checkout), "archivada-local")
     (checkout / "archivo.txt").write_text("rama\n", encoding="utf-8")
     git(checkout, "add", "archivo.txt")
     git(checkout, "commit", "-m", "Trabajo de la rama")
+    hermana = git(checkout, "rev-parse", "HEAD")
+    if operacion == "rebase-update-refs":
+        git(checkout, "branch", "-f", "archivada-remota", hermana)
+        git(checkout, "commit", "--allow-empty", "-m", "Commit después de la rama hermana")
     if operacion == "bisect":
         git(checkout, "commit", "--allow-empty", "-m", "Segundo commit de la rama")
     tip = git(checkout, "rev-parse", "HEAD")
@@ -278,13 +307,21 @@ def test_conserva_rama_activa_aunque_worktree_aparezca_detached(archivo: dict[st
         (repo / "archivo.txt").write_text("main\n", encoding="utf-8")
         git(repo, "add", "archivo.txt")
         git(repo, "commit", "-m", "Cambio conflictivo en main")
-        args = [str(GIT), "rebase", "main"] if operacion == "rebase-merge" else [str(GIT), "rebase", "--apply", "main"]
+        opcion = {"rebase-merge": "--merge", "rebase-apply": "--apply", "rebase-update-refs": "--update-refs"}[
+            operacion
+        ]
+        args = [str(GIT), "rebase", opcion, "main"]
         conflicto = subprocess.run(args, cwd=checkout, capture_output=True, text=True, timeout=20, check=False)
         assert conflicto.returncode != 0
+        if operacion == "rebase-update-refs":
+            git_dir = Path(git(checkout, "rev-parse", "--absolute-git-dir"))
+            assert "refs/heads/archivada-remota" in (git_dir / "rebase-merge/update-refs").read_text()
     assert "detached" in git(repo, "worktree", "list", "--porcelain")
     resultado = ejecutar(archivo)
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
     assert git(repo, "rev-parse", "refs/heads/archivada-local") == tip
+    if operacion == "rebase-update-refs":
+        assert git(repo, "rev-parse", "refs/heads/archivada-remota") == hermana
 
 
 def test_familia_de_scripts_del_archivo_es_exacta() -> None:
@@ -295,6 +332,7 @@ def test_familia_de_scripts_del_archivo_es_exacta() -> None:
     assert receta is not None
     assert set(re.findall(r"'([^']+)'", receta.group(1))) == {
         "rebase-merge/head-name",
+        "rebase-merge/update-refs",
         "rebase-apply/head-name",
         "BISECT_START",
     }

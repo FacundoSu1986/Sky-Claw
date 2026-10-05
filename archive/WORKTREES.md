@@ -10,7 +10,11 @@ qué. Complementa `archive/git-branches/README.md` (archivo de ramas obsoletas).
 **No se borró ninguna rama**: solo se removieron worktrees (copias de trabajo); las
 ramas siguen existiendo y están archivadas en el bundle.
 
-## Convención recomendada
+## Convención recomendada en el snapshot del 2026-10-04
+
+Esta sección conserva el contexto de la poda. La política vigente de aislamiento,
+las raíces administradas por herramientas y la transición de checkouts existentes
+se definen en [`AGENTS.md`](../AGENTS.md), no en este inventario histórico.
 
 Un único lugar para worktrees, co-locado y ya en `.gitignore`:
 
