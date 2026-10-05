@@ -6,6 +6,7 @@
     No confia en el snapshot MANIFEST.tsv: recomputa el estado EN RUNTIME.
     Una rama SOLO se borra si cumple TODAS estas condiciones:
       - figura en el bundle (esta archivada),
+      - cada tip a borrar coincide con el SHA archivado de esa superficie,
       - el manifiesto la clasifica como MERGED o CLOSED (no NO_PR),
       - NO tiene un PR abierto HOY (gh pr list --state open),
       - NO esta checked-out en ningun worktree (git worktree list),
@@ -73,12 +74,14 @@ if (-not $Bundle) {
 if (-not (Test-Path $Manifest)) { Fail "No existe el manifiesto: $Manifest" }
 if (-not (Test-Path $Bundle)) { Fail "No existe el bundle: $Bundle" }
 
-# --- Fuente de verdad de "esta archivada": los refs del bundle ---
+# --- Fuente de verdad: ref COMPLETO y SHA; local y origin pueden diferir ---
 $archived = @{}
-foreach ($h in (git bundle list-heads $Bundle)) {
-    $ref = ($h -split '\s+')[1]
-    $short = $ref -replace '^refs/heads/', '' -replace '^refs/remotes/origin/', ''
-    $archived[$short] = $true
+$headsRes = Invoke-Native 'git' @('bundle', 'list-heads', $Bundle)
+if ($headsRes.Code -ne 0) { Fail "No se pudo leer el bundle: $Bundle" }
+foreach ($h in @($headsRes.Out)) {
+    $parts = "$h" -split '\s+'
+    if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9a-f]{40,64}$') { Fail 'Ref invalida en el bundle' }
+    $archived[$parts[1]] = $parts[0]
 }
 if ($archived.Count -eq 0) { Fail "El bundle no contiene refs: $Bundle" }
 
@@ -91,7 +94,10 @@ $ghRes = Invoke-Native 'gh' @('pr', 'list', '--state', 'open', '--limit', '500',
 if ($ghRes.Code -ne 0) {
     Fail "gh pr list fallo (exit $($ghRes.Code)): no se pueden verificar los PRs abiertos. Aborto sin borrar nada (fail-closed)."
 }
-$openJson = (@($ghRes.Out) -join "`n") | ConvertFrom-Json
+$openRaw = (@($ghRes.Out) -join "`n").Trim()
+if (-not $openRaw.StartsWith('[')) { Fail 'gh pr list no devolvio una lista valida' }
+$openJson = $openRaw | ConvertFrom-Json
+if (@($openJson).Count -ge 500) { Fail 'Lista de PRs posiblemente truncada; aborto sin borrar' }
 foreach ($pr in @($openJson)) {
     if ($pr -and $pr.headRefName) { $openPR[[string]$pr.headRefName] = $true }
 }
@@ -118,33 +124,25 @@ foreach ($r in $rows) {
     $c = $r -split [char]9
     if ($c.Count -lt 6) { continue }
     if ($c[2] -notin @('MERGED', 'CLOSED')) { continue }
-    if (-not $archived.ContainsKey($c[5])) { continue }
+    if (-not $archived.ContainsKey("refs/heads/$($c[5])") -and
+        -not $archived.ContainsKey("refs/remotes/origin/$($c[5])")) { continue }
     $candidatas[$c[5]] = $true
 }
 $candidatas = @($candidatas.Keys | Sort-Object)
 
 # --- Ramas locales hoy (para no intentar borrar lo que ya no existe) ---
 $localBranches = @{}
-$brRes = Invoke-Native 'git' @('branch', '--format=%(refname:short)')
+$brRes = Invoke-Native 'git' @('branch', '--format=%(refname:short) %(objectname)')
 if ($brRes.Code -ne 0) { Fail "git branch fallo (exit $($brRes.Code)). Aborto (fail-closed)." }
-foreach ($b in @($brRes.Out)) { if ("$b") { $localBranches[[string]$b] = $true } }
+foreach ($b in @($brRes.Out)) {
+    if ("$b") { $parts = "$b" -split '\s+'; $localBranches[$parts[0]] = $parts[1] }
+}
 
 Write-Host "Bundle:      $Bundle"
 Write-Host "Manifiesto:  $Manifest"
 Write-Host "Candidatas (MERGED/CLOSED, archivadas): $($candidatas.Count)"
 Write-Host "PRs abiertos hoy: $($openPR.Count) | checked-out: $($checkedOut.Count) | actual: $current"
 Write-Host ''
-
-# --- Resolver owner/repo para el borrado remoto ---
-$owner = $null; $repo = $null
-if ($IncludeRemote) {
-    $urlRes = Invoke-Native 'git' @('remote', 'get-url', 'origin')
-    if ($urlRes.Code -ne 0) { Fail 'No hay remoto origin' }
-    $url = (@($urlRes.Out) -join '').Trim()
-    $path = ($url -replace '^.*github\.com[:/]', '') -replace '\.git$', ''
-    if ($path -match '^(.+?)/(.+)$') { $owner = $Matches[1]; $repo = $Matches[2] }
-    if (-not $owner) { Fail "No pude parsear owner/repo de: $url" }
-}
 
 $borradas = 0; $omitidas = 0; $fallidas = 0; $wouldDelete = 0
 foreach ($name in $candidatas) {
@@ -162,14 +160,24 @@ foreach ($name in $candidatas) {
 
     $tieneLocal = $localBranches.ContainsKey($name)
     $tieneRemota = $false
+    $remoteSha = $null
     if ($IncludeRemote) {
-        $lsRes = Invoke-Native 'git' @('ls-remote', '--heads', 'origin', $name)
+        $lsRes = Invoke-Native 'git' @('ls-remote', '--heads', 'origin', "refs/heads/$name")
         if ($lsRes.Code -ne 0) {
             Write-Host ("  FALLO   {0,-58} (ls-remote origin)" -f $name)
             $fallidas++
             continue
         }
-        $tieneRemota = (@($lsRes.Out) | Where-Object { "$_" }).Count -gt 0
+        $remoteLines = @($lsRes.Out | Where-Object { "$_" -match "\s$([regex]::Escape("refs/heads/$name"))$" })
+        $tieneRemota = $remoteLines.Count -gt 0
+        if ($tieneRemota) { $remoteSha = ("$($remoteLines[0])" -split '\s+')[0] }
+    }
+
+    if (($tieneLocal -and $localBranches[$name] -ne $archived["refs/heads/$name"]) -or
+        ($tieneRemota -and $remoteSha -ne $archived["refs/remotes/origin/$name"])) {
+        Write-Host ("  OMITE   {0,-58} (tip cambio tras el archivo o superficie no archivada)" -f $name)
+        $omitidas++
+        continue
     }
 
     if (-not $Execute) {
@@ -185,13 +193,17 @@ foreach ($name in $candidatas) {
     }
 
     if ($tieneLocal) {
-        $delRes = Invoke-Native 'git' @('branch', '-D', $name)
+        # Compare-and-delete: si otro escritor avanzo el tip desde la lectura,
+        # update-ref rechaza el borrado bajo el lock de la ref.
+        $delRes = Invoke-Native 'git' @('update-ref', '-d', "refs/heads/$name", $localBranches[$name])
         if ($delRes.Code -ne 0) { Write-Host ("  FALLO   {0,-58} (local)" -f $name); $fallidas++; continue }
         Write-Host ("  BORRADA {0,-58} (local)" -f $name)
         $borradas++
     }
     if ($tieneRemota) {
-        $apiRes = Invoke-Native 'gh' @('api', '-X', 'DELETE', "repos/$owner/$repo/git/refs/heads/$name")
+        # La API DELETE no acepta SHA esperado. La lease explicita del protocolo
+        # git conserva tambien los pushes concurrentes posteriores a ls-remote.
+        $apiRes = Invoke-Native 'git' @('push', "--force-with-lease=refs/heads/${name}:$remoteSha", 'origin', ":refs/heads/$name")
         if ($apiRes.Code -ne 0) { Write-Host ("    FALLO {0,-56} (origin)" -f $name); $fallidas++ }
         else { Write-Host ("    BORRADA {0,-56} (origin)" -f $name); $borradas++ }
     }

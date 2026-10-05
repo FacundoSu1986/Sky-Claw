@@ -59,7 +59,7 @@ armaba el archivo. Figura en el manifiesto por completitud, pero **no es
 obsoleta** y `delete-branches.ps1` la excluye por guarda.
 
 Además, **23 de las 27 refs remotas existen solo en el remoto** (sin rama local):
-`-IncludeRemote` las cubre vía la API de GitHub.
+`-IncludeRemote` las cubre vía git con una lease explícita sobre el SHA archivado.
 
 Criterio de obsolescencia: la rama tiene un PR **mergeado** o **cerrado** en GitHub,
 o nunca tuvo PR y no aporta trabajo vivo. La detección NO se apoya solo en ancestros
@@ -102,7 +102,8 @@ CLOSED), `feat/skse-autoinstall` (PR #422 CLOSED) y los `backup/*`, `codex/*`,
 # Si la rama local ya existe, -Branch aborta; con -Force la sobreescribe
 ./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix' -Force
 
-# Restaurar todas: locales -> refs/heads/restored/*; remotas -> refs/heads/restored/origin/*
+# Restaurar todas sin pisar destinos modificados (-Force permite sobrescribir explícitamente)
+# locales -> refs/heads/restored/*; remotas -> refs/heads/restored/origin/*
 # (incluye 'restored/main', el ref base del bundle)
 ./archive/git-branches/restore.ps1 -All
 ```
@@ -138,15 +139,23 @@ runtime). Corre en **dry-run** por defecto:
 ```
 
 `-IncludeRemote` cubre **también las 23 refs que solo existen en el remoto** (sin
-rama local): se borran con la API de GitHub aunque no haya nada local. Sin el,
-el script **aborta** si `gh pr list`, `git worktree list` o `git branch` fallan
+rama local). Sin él, sólo se consideran ramas locales.
+El script **aborta** si `gh pr list`, `git worktree list`, `git bundle list-heads` o `git branch` fallan
 (fail-closed: nunca sigue con una guarda vacía) y sale con exit 1 si algún borrado
 queda pendiente.
-```
 
 Omite toda rama con PR abierto, checked-out en un worktree, la rama actual o
 `main`, y toda rama que no esté en el bundle. **No borres a mano guiándote por el
 manifiesto** (ver la advertencia de snapshot más arriba).
+
+Una ref sólo se borra si su tip coincide con el SHA del bundle para esa superficie:
+`refs/heads/*` y `refs/remotes/origin/*` se comparan por separado. Un tip nuevo se
+omite. El borrado local usa `git update-ref -d <ref> <SHA>` y el remoto usa
+`git push --force-with-lease=<ref>:<SHA> origin :<ref>`: un escritor que avance el
+tip entre la lectura y el borrado hace que git rechace la operación. Se aborta
+también si la consulta de PRs alcanza el límite de 500, porque puede estar truncada.
+Las regresiones están en `tests/test_git_archive_scripts.py`, sobre repositorios
+temporales y las dos superficies. Estos tests no borran ramas del repo del usuario.
 
 ## Publicación del bundle
 

@@ -97,13 +97,20 @@ Algunos worktrees tenían archivos **sin trackear** (evidencia de validación,
 Cinco directorios **vacíos** bajo `.worktrees/` (`.task3-focused-…`,
 `.task3-green-…`, `.task3-red-…`, `.task3-review-config-…`,
 `.task3-review-focused-…`) tienen una ACL que deniega el acceso; no se pudieron
-borrar sin permisos de administrador. **No** están registrados como worktrees
-(no afectan a git). Borrado en PowerShell **como Administrador**:
+borrar sin permisos de administrador. **No** estaban registrados como worktrees
+en el snapshot. Antes de limpiar uno, verificar otra vez el registro y elegir su
+nombre completo; no usar comodines para una operación recursiva. Ejemplo en
+PowerShell **como Administrador**, sustituyendo el nombre exacto del directorio:
 
 ```powershell
-takeown /f .worktrees\.task3-* /r
-icacls .worktrees\.task3-* /grant "${env:USERNAME}:(F)" /t
-Remove-Item .worktrees\.task3-* -Recurse -Force
+$raiz = (Resolve-Path -LiteralPath .worktrees).Path
+$objetivo = [IO.Path]::GetFullPath((Join-Path $raiz 'NOMBRE-EXACTO-VERIFICADO'))
+if ([IO.Path]::GetDirectoryName($objetivo) -ne $raiz) { throw 'Objetivo fuera de .worktrees' }
+# Revisar que el objetivo no aparezca en este registro antes de continuar.
+git worktree list --porcelain
+takeown /f "$objetivo" /r
+icacls "$objetivo" /grant "${env:USERNAME}:(F)" /t
+Remove-Item -LiteralPath $objetivo -Recurse -Force
 ```
 
 ## Recrear un worktree
@@ -111,6 +118,8 @@ Remove-Item .worktrees\.task3-* -Recurse -Force
 ```bash
 git worktree add .worktrees/<nombre> <rama>
 # Si la rama ya no existe, restaurarla primero desde el bundle:
+# Obtener el asset del release branch-archive-20261004 (todavía en borrador).
+# Ver git-branches/README.md para acceso e integridad; un clon no trae el bundle.
 git fetch archive/git-branches/obsolete-branches-20261004.bundle \
     'refs/heads/<rama>:refs/heads/<rama>'
 ```

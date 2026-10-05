@@ -20,8 +20,8 @@
     Solo lista los refs que contiene el bundle.
 
 .PARAMETER Force
-    Permite sobrescribir una rama local que ya existe (el refspec se fuerza con
-    +). Sin este switch, -Branch aborta si la rama ya existe.
+    Permite sobrescribir destinos existentes (el refspec se fuerza con +).
+    Sin este switch, -Branch aborta si la rama ya existe y -All si un destino difiere.
 
 .EXAMPLE
     ./restore.ps1 -List
@@ -81,11 +81,27 @@ if ($List -and -not $All -and -not $Branch) { return }
 if ($All) {
     # Restaura TANTO refs/heads/* como refs/remotes/origin/* (estos ultimos a
     # refs/heads/restored/origin/* para no colisionar con los locales).
-    $refspecs = @('+refs/heads/*:refs/heads/restored/*')
-    if ($heads | Where-Object { $_ -match '\srefs/remotes/' }) {
-        $refspecs += '+refs/remotes/origin/*:refs/heads/restored/origin/*'
+    $refspecs = @()
+    $destinos = @{}
+    foreach ($h in $heads) {
+        $parts = $h -split '\s+'
+        $source = $parts[1]
+        if ($source -match '^refs/heads/(.+)$') { $dest = "refs/heads/restored/$($Matches[1])" }
+        elseif ($source -match '^refs/remotes/origin/(.+)$') { $dest = "refs/heads/restored/origin/$($Matches[1])" }
+        else { continue }
+        if ($destinos.ContainsKey($dest) -and $destinos[$dest] -ne $parts[0]) {
+            throw "Dos refs del bundle colisionan en $dest"
+        }
+        $destinos[$dest] = $parts[0]
+        $existing = git rev-parse --verify --quiet $dest 2>$null
+        if ($LASTEXITCODE -notin @(0, 1)) { throw "No se pudo comprobar $dest" }
+        if ($existing -and $existing -ne $parts[0] -and -not $Force) {
+            throw "El destino '$dest' tiene otro tip; usa -Force solo si queres sobreescribirlo."
+        }
+        $prefix = if ($Force) { '+' } else { '' }
+        $refspecs += "${prefix}${source}:$dest"
     }
-    Invoke-Git -GitArgs (@('fetch', '--no-tags', $Bundle) + $refspecs)
+    Invoke-Git -GitArgs (@('fetch', '--atomic', '--no-tags', $Bundle) + $refspecs)
     Write-Host 'Restauradas: refs/heads/restored/* (locales) y, si aplica, refs/heads/restored/origin/* (remotas).'
     Write-Host "Incluye 'restored/main' (ref base del bundle)."
     return
@@ -111,10 +127,12 @@ $dest = "refs/heads/$Branch"
 # El refspec va forzado con +, asi que sin esta guarda -Branch pisaria en
 # silencio una rama local existente.
 git show-ref --verify --quiet $dest
+if ($LASTEXITCODE -notin @(0, 1)) { throw "No se pudo comprobar $dest" }
 $alreadyExists = ($LASTEXITCODE -eq 0)
 if ($alreadyExists -and -not $Force) {
     throw "La rama local '$Branch' ya existe. Usa -Force para sobreescribirla."
 }
 if ($alreadyExists) { Write-Host "AVISO: sobreescribiendo la rama local existente '$Branch' (-Force)." }
-Invoke-Git -GitArgs @('fetch', '--no-tags', $Bundle, "+${match}:$dest")
+$prefix = if ($Force) { '+' } else { '' }
+Invoke-Git -GitArgs @('fetch', '--no-tags', $Bundle, "${prefix}${match}:$dest")
 Write-Host "Restaurada: $match -> $dest"
