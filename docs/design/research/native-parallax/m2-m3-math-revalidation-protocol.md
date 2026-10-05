@@ -1,7 +1,7 @@
 # REVAL-0 — Protocolo congelado de revalidación matemática M2/M3
 
 **Versión:** REVAL-0 · **Fecha del freeze documental:** 2026-10-05 (UTC)
-**Base auditada:** `origin/main = 7684c92a4205a2d53aa47972be126282e093cecf`
+**Base auditada:** `origin/main = 0c2c5414605c2892b646f02cd31a8930748f9e8a`
 **Alcance:** protocolo de comparación histórica `OLD` vs. código matemático/estadístico corregido `NEW`; no ejecución.
 
 > **NOTA DE PROTOCOLO (RECOVERY-0 INTEGRADO):** este documento congela cómo comparar; no ejecuta M2/M3 ni autoriza una sustitución de corpus. Tras la auditoría RECOVERY-0 en el host Windows, el corpus M2 histórico (34/34 assets, 68/68 archivos con SHA-256 verificado), el corpus M3 (31 assets, 62 archivos con SHA-256 verificado), el manifiesto local de M2, y los artefactos históricos `rows.json` (174 filas) y `characs.json` (34 assets) fueron localizados y autenticados con evidencia convergente fuerte. Por tanto, el bloqueo de procedencia queda resuelto y la ejecución futura queda técnicamente habilitada bajo el protocolo (`REVALIDATION_EXECUTION_ALLOWED=YES`), pero ninguna ejecución real (M2, M3 ni M6) se ejecuta en esta fase protocolar.
@@ -44,7 +44,7 @@ M6_REAL_RUN_EXECUTED=NO
 
 ### 2.1 Baseline del repositorio
 
-Antes de trabajar se ejecutó `git fetch origin --prune`, se comprobó `git rev-parse origin/main` y `git status --short`. `origin/main` no había avanzado respecto al SHA indicado en el brief. Se auditó el estado presente de:
+Antes de trabajar se ejecutó `git fetch origin --prune`, se comprobó `git rev-parse origin/main` y `git status --short`. Se auditó la sincronización con `origin/main = 0c2c5414605c2892b646f02cd31a8930748f9e8a` (incorporando PR #688 en documentación externa sin conflicto). Se auditó el estado presente de:
 
 ```text
 sky_claw/local/native_parallax/**
@@ -53,7 +53,7 @@ docs/design/research/native-parallax/**
 docs/validation/**
 ```
 
-No se detectó movimiento de base que requiriera detener el trabajo por `NATIVE_PARALLAX_BASE_MOVED_MATERIALLY=YES`.
+No se detectó colisión ni movimiento en el dominio de Native Parallax (`NATIVE_PARALLAX_BASE_OVERLAP=NO`, `NATIVE_PARALLAX_BASE_MOVED_MATERIALLY=NO`).
 
 ### 2.2 M2 — resultado/documento, manifiesto, filas y corpus
 
@@ -63,7 +63,17 @@ No se detectó movimiento de base que requiriera detener el trabajo por `NATIVE_
 - Enum histórico declarado: `EXP_M2_CONDITIONAL`.
 - El documento fija el baseline M2 principal en 512²; documenta además un subset de sensibilidad 1024², que no pasa a ser resultado principal.
 - El documento contiene tablas históricas —incluida una tabla RAW por asset— y resultados agregados. Son referencias `OLD`; no se copiarán como resultados `NEW` ni se reconstruirán los artefactos faltantes a partir de prosa/tablas.
-- El documento indica `MAIN_SHA=607ff21` (prefijo, no atestación completa del SHA de ejecución), Python 3.11.2, NumPy 2.4.6, Pillow 12.3.0 y Linux 6.1. No se localizó en Git el `rows.json`/`characs.json` crudo de esa corrida ni una atestación completa del SHA exacto del runner histórico.
+- El documento indica `MAIN_SHA=607ff21`. No existe atestación 40-hex demostrada ni verificada en Git o en los artefactos de ese execution SHA (`OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`). Queda prohibido expandir o inferir `607ff21` a un SHA completo de 40 hex. El comparador y sidecar de metadatos NEW debe registrar literalmente una semántica equivalente a:
+  ```json
+  {
+    "old_execution_commit": {
+      "value": "607ff21",
+      "kind": "historical_7_hex_prefix",
+      "full_40_hex_verified": false
+    }
+  }
+  ```
+  La ejecución NEW sí debe registrar obligatoriamente `RUN_CODE_SHA=<40 hex exacto>`. Se documentan además en el histórico Python 3.11.2, NumPy 2.4.6, Pillow 12.3.0 y Linux 6.1.
 
 **Manifiesto canónico localizado en Git:**
 
@@ -294,6 +304,17 @@ Contrato numérico:
 - Si uno es cero, `rel_delta=null` con razón; si un valor es no finito/null/missing/categórico, delta relativo no aplica. Conservar el token no finito OLD como tal al parsear JSON histórico no estricto; no normalizar el archivo OLD.
 - Reportar **todo** delta numérico, aunque sea pequeño. No fijar umbral `abs(delta)<X` ni declarar cambios “irrelevantes” por tamaño. La magnitud se presenta; la clasificación depende del camino causal y del estado de evaluabilidad.
 - Arrays se emparejan por claves de dominio; unmatched IDs/campos son explícitos, no ocultos por diff textual ni descartados.
+- Metadatos de procedencia del comparador/sidecar: registrar explícitamente el commit de ejecución de cada lado. Para M2 OLD, registrar `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21` bajo la estructura:
+  ```json
+  {
+    "old_execution_commit": {
+      "value": "607ff21",
+      "kind": "historical_7_hex_prefix",
+      "full_40_hex_verified": false
+    }
+  }
+  ```
+  mientras que para la corrida NEW se exige `RUN_CODE_SHA=<40 hex exacto>`.
 
 Clasificaciones permitidas, no mutuamente intercambiables:
 
@@ -305,11 +326,21 @@ MATH_B_TIE_CORRECTION
 MATH_B_DOWNSTREAM_SELECTION_OR_ORIENTATION
 HISTORICAL_VALUE_WAS_NOT_STATISTICALLY_EVALUABLE
 NEW_DIAGNOSTIC_ADDED_BY_MATH_B
+POTENTIAL_TOOLCHAIN_FLOATING_NOISE
 SERIALIZATION_ONLY_NONFINITE
 EXPECTED_DIAGNOSTIC_COHORT_MEMBERSHIP_CHANGE
 CORPUS_IDENTITY_FAILURE
 UNEXPECTED_CHANGE_INVESTIGATE_BEFORE_INTERPRETATION
 ```
+
+**Reglas de la clasificación `POTENTIAL_TOOLCHAIN_FLOATING_NOISE`:**
+Esta clasificación separa divergencias microscópicas atribuibles a variaciones de toolchain o bibliotecas matemáticas en coma flotante (p. ej. rutinas BLAS/LAPACK o implementaciones FFT entre plataformas y versiones de NumPy/Python).
+- **Prohibición estricta de tolerancia relajada:** NO introduce una tolerancia numérica que declare equivalentes los resultados científicos. NO modifica umbrales ni thresholds de decisión. NO redondea valores antes de comparar. Se deben registrar SIEMPRE `old_value`, `new_value`, `delta`, `abs_delta`, `rel_delta` y `bit_identical=false`.
+- **Condiciones concurrentes obligatorias:** Sólo puede aplicarse cuando se satisfacen simultáneamente tres criterios:
+  1. La magnitud del delta se ubica rigurosamente en la escala de precisión de máquina (`abs(delta) ~ 1e-16` o variación mínima del LSB IEEE-754).
+  2. NINGÚN estado categórico, estado de decisión, corte de umbral, selección de proxy/sigma ni dirección familiar se altera como consecuencia del delta.
+  3. NINGUNA ruta matemática o estadística corregida por MATH-A o MATH-B explica causalmente la discrepancia.
+- **Auditoría obligatoria de entorno:** No se califica automáticamente cualquier diferencia pequeña (`~1e-16`) como toolchain sin verificar las tres condiciones e incluir en el reporte de comparación los metadatos completos de entorno (`OS`, `Python`, `NumPy`, `Pillow`, `FFT backend`).
 
 `DECISION_EQUIVALENT=YES` sólo cuando `OLD.decision == NEW.decision` como enum literal exacto. Si difiere, `DECISION_EQUIVALENT=NO`; reportar cada condición del enum que cambió y su camino causal. No concluir equivalencia por medianas, dirección general o parecido narrativo.
 
@@ -340,6 +371,7 @@ Un tie group es un valor repetido al menos dos veces, contado después de docume
 Antes del run futuro REVAL-1, después de los gates de review y freeze:
 
 - Ejecutar desde el commit exacto de `origin/main` aprobado para el run, con árbol limpio; registrar `RUN_CODE_SHA=<40-hex exacto>` en README/comparison metadata y junto a cada raw/published output. No vale `main`, `latest` ni sólo un branch/tag. No usar el SHA de esta rama como sustituto si el run no se ejecuta allí.
+- Para los artefactos históricos OLD, registrar su commit de ejecución de procedencia exacto: para M2 se documenta `MAIN_SHA=607ff21` únicamente como prefijo histórico (`OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`), prohibiendo su inferencia o extrapolación a un SHA completo de 40 hex; para M3 se documenta el baseline histórico citado en checkpoint (`1a52c3ea`) sin inventar un SHA completo. El comparador y sidecars registrarán explícitamente `old_execution_commit` con tipo `historical_7_hex_prefix` y `full_40_hex_verified: false`.
 - Registrar `OS`, `Python`, `NumPy`, `Pillow`, implementación/backend FFT (`numpy.fft` y configuración/versiones pertinentes), repo SHA, hash/bytes de cada manifiesto usado y hashes de assets verificados.
 - Por cada artefacto guardar: raw execution artifact, SHA-256 raw, byte count raw, EOL del raw; published Git artifact, SHA-256 del blob Git, byte count published, y nota exacta de normalización EOL. Validar igualdad semántica/JSON tras la normalización. No introducir anotaciones post-run en el JSON de resultados; cualquier metadato de protocolo vive fuera o se declara como transformación con hash y diff.
 - Mantener los OLD artifacts inmutables, en particular `docs/validation/native-parallax-revalidation-20260928/**`, el histórico M2 y `data/exp-m4-results.json` / `data/exp-m4-calibration.json`. No editar tablas, JSON ni manifiestos históricos.
@@ -379,9 +411,29 @@ Los comandos siguientes son una especificación de REVAL-1, **no se ejecutan en 
 1. Requerir antes de tocar corpus: freeze/merge del protocolo tras revisión Tech Lead + revisión adversarial independiente Arena AI + CI green; registrar adjudicación de findings. Los reviewers señalan riesgos, pero sus comentarios no cambian parámetros por sí mismos.
 2. Artefactos OLD y manifests autenticados: RECOVERY-0 completó la recuperación y autenticación de `rows.json` (174 filas), `characs.json` (34 assets), el manifiesto local M2 y el RAW M3 histórico. Los artefactos OLD quedan preservados de forma externa e inmutable.
 3. Corpora montados y verificados: RECOVERY-0 completó la verificación criptográfica SHA-256 de los 68 archivos de M2 (Cohort B en `C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors`) y de los 62 archivos de M3 (Cohort A en `C:\SkyClawResearch\NativeParallax\EXP-M3\originals`).
-4. Autorización técnica de ejecución: `REVALIDATION_EXECUTION_ALLOWED=YES`. El protocolo autoriza una ejecución técnica futura una vez congelado el protocolo y obtenido el commit exacto `RUN_CODE_SHA`. Esto NO significa ejecutar ahora en esta fase documental.
-5. Confirmar en el commit `RUN_CODE_SHA` los valores congelados de la sección 4, resolución 512 y rutas del runner; capturar environment antes de ejecutar. Confirmar output nuevo y único, sin sobrescribir OLD.
-6. Sólo tras todos los gates, comandos conceptuales:
+4. Pre-flight obligatorio de resolución de rutas (`PATH_PREFLIGHT_REQUIRED=YES`):
+   Antes de invocar cualquier runner científico en REVAL-1, se debe realizar un pre-flight obligatorio que resuelva y verifique:
+   - M2 manifest path
+   - M2 corpus root (`C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b_mirrors`)
+   - M3 manifest path
+   - M3 corpus root (`C:\SkyClawResearch\NativeParallax\EXP-M3\originals`)
+   Para cada entidad registrar:
+   ```text
+   absolute resolved path
+   exists
+   file/directory type
+   ```
+   Para manifiestos con rutas relativas/internas hacia assets: resolverlos bajo las mismas reglas deterministas del runner y verificar la existencia física de cada asset antes de iniciar la corrida.
+   Si cualquier ruta esperada no existe o falla la resolución:
+   ```text
+   STOP
+   REVALIDATION_EXECUTION_ALLOWED=NO
+   BLOCKER=CORPUS_PATH_PREFLIGHT_FAILED
+   ```
+   Prohibición absoluta: NO crear rutas, NO recrear junctions y NO descargar assets durante o para eludir el pre-flight.
+5. Autorización técnica de ejecución: `REVALIDATION_EXECUTION_ALLOWED=YES` condicionado a la aprobación de todos los gates y superación del pre-flight de rutas, una vez congelado el protocolo y obtenido el commit exacto `RUN_CODE_SHA`. Esto NO significa ejecutar ahora en esta fase documental.
+6. Confirmar en el commit `RUN_CODE_SHA` los valores congelados de la sección 4, resolución 512 y rutas del runner; capturar environment antes de ejecutar. Confirmar output nuevo y único, sin sobrescribir OLD.
+7. Sólo tras todos los gates, comandos conceptuales:
 
 ```bash
 python -m sky_claw.local.native_parallax.research.run_exp_m2 \
@@ -396,8 +448,8 @@ python -m sky_claw.local.native_parallax.research.run_exp_m3 \
   --out "$RAW_RUN_ROOT/m3"
 ```
 
-7. Si M2 falla identidad/provenance, **no ejecutar M2 ni M3**: Cohort B M3 depende del corpus/manifest M2 y la pregunta conjunta queda bloqueada. No ejecutar sólo una parte para presentarla como comparación completa.
-8. Calcular/preservar hashes raw y published, generar comparación estructurada y tie diagnostics; investigar toda variación no esperada antes de cualquier interpretación.
+8. Si M2 falla identidad/provenance o pre-flight de rutas, **no ejecutar M2 ni M3**: Cohort B M3 depende del corpus/manifest M2 y la pregunta conjunta queda bloqueada. No ejecutar sólo una parte para presentarla como comparación completa.
+9. Calcular/preservar hashes raw y published, generar comparación estructurada y tie diagnostics; investigar toda variación no esperada antes de cualquier interpretación.
 
 ## 12. Cambios esperados y no esperados
 
@@ -438,6 +490,25 @@ Cualquier cambio no esperado detiene la interpretación. No se explica como “r
 - La PR de este documento se abre Draft, no se mergea desde este turno. El run real requiere review aprobada, CI green y protocolo mergeado/freezeado. Sólo entonces puede comenzar REVAL-1.
 - #675 queda fuera de alcance, sin cambios: abierto, Draft, `M6_IMPLEMENTATION_BLOCKED=YES`.
 
+### 13.1 Adjudicación y codificación formal de findings de Arena AI
+
+Auditoría adversarial externa completada por Arena AI:
+```text
+ARENA_AI_REVIEW_STATUS=PASS_WITH_FINDINGS
+ARENA_FINDINGS_ENCODED=YES
+```
+
+Adjudicación exhaustiva de findings incorporados en este documento:
+1. **Finding-01 (Path Preflight — Resolución determinista de rutas antes de ejecución):**
+   - *Estado:* ACEPTADO / codificado en el protocolo (§11).
+   - *Detalle:* Contrato `PATH_PREFLIGHT_REQUIRED=YES`. Previo a invocar cualquier runner científico, resolver y verificar la existencia física de rutas para M2 manifest, M2 corpus root, M3 manifest, M3 corpus root y assets internos. Cualquier fallo genera `CORPUS_PATH_PREFLIGHT_FAILED` y detiene la ejecución inmediatamente. Prohibición estricta de crear rutas intermedias, recrear junctions o descargar sustitutos.
+2. **Finding-02 (SHA histórico M2 — Prefijo `607ff21` sin atestación 40-hex completa):**
+   - *Estado:* ACEPTADO / codificado en el protocolo (§2.2, §7 y §9).
+   - *Detalle:* Contrato `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`. Prohibida la extrapolación o inferencia a 40 hex. El sidecar y comparador NEW registran el objeto `{ "old_execution_commit": { "value": "607ff21", "kind": "historical_7_hex_prefix", "full_40_hex_verified": false } }`. La ejecución NEW sí exige `RUN_CODE_SHA=<40 hex exacto>`.
+3. **Finding-03 (Toolchain Epsilon — Clasificación estricta de divergencias por precisión floating):**
+   - *Estado:* ACEPTADO / codificado en el protocolo (§7).
+   - *Detalle:* Clasificación `POTENTIAL_TOOLCHAIN_FLOATING_NOISE`. No relaja la comparación ni autoriza tolerancias numéricas para declarar equivalencia científica, ni modifica umbrales ni redondea deltas. Requiere delta a nivel de precisión de máquina (~1e-16 / LSB IEEE-754), cero cambio de estado de decisión o categórico, y ausencia de explicaciones causales MATH-A/MATH-B, registrando exhaustivamente metadatos de entorno (OS, Python, NumPy, Pillow, FFT backend).
+
 ## 14. Estado final REVAL-0
 
 ```text
@@ -475,9 +546,16 @@ MATH_B_METRICS_MAPPED=YES
 REPRO_A_CLASSIFIED_SERIALIZATION_ONLY=YES
 SPEARMAN_TIE_DIAGNOSTICS_PREDEFINED=YES
 DECISION_EQUIVALENCE_PREDEFINED=YES
+TOOLCHAIN_FLOATING_CLASSIFICATION_PREDEFINED=YES
 NO_RETUNING=YES
 
+PATH_PREFLIGHT_REQUIRED=YES
+OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO
+OLD_M2_EXECUTION_SHA_PREFIX=607ff21
+
 ARENA_AI_REVIEW_REQUIRED=YES
+ARENA_REVIEW_STATUS=PASS_WITH_FINDINGS
+ARENA_FINDINGS_ENCODED=YES
 QODO_REQUIRED=NO
 M6_IMPLEMENTATION_BLOCKED=YES
 
