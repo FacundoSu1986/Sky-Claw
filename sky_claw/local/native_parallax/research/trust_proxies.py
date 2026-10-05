@@ -18,10 +18,20 @@ from numpy.typing import NDArray
 
 from sky_claw.local.native_parallax.research import metrics as np_m0_metrics
 from sky_claw.local.native_parallax.research.normal_fft_periodic import integrate_periodic
-from sky_claw.local.native_parallax.research.normal_from_height import spectral_gradients
+from sky_claw.local.native_parallax.research.normal_from_height import (
+    gradients_from_normal,
+    normals_from_gradients,
+    spectral_gradients,
+)
 from sky_claw.local.native_parallax.research.nz_policies import _band_energy, anti_flatten_metrics
 
 NOT_INFORMATIVE = "NOT_INFORMATIVE"
+
+# Piso numérico del camino del PROXY (PR-MATH-A §17). Históricamente la ruta usaba
+# ``np.maximum(normal[..., 2], 1e-30)``; ``gradients_from_normal`` tiene otro default
+# (``NZ_FLOOR_DEFAULT = 1e-6``). Se fija acá y se pasa EXPLÍCITAMENTE para que la
+# corrección geométrica no cambie de refilón la política numérica del proxy.
+PROXY_NZ_FLOOR = 1e-30
 
 FEATURE_FUNCS: tuple[Callable[..., Any], ...] = ()  # poblado al final del módulo
 
@@ -41,9 +51,36 @@ def nz_statistics(nz: NDArray[np.float64]) -> dict[str, float]:
     }
 
 
+def curl_field(p: NDArray[np.float64], q: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Campo de curl canónico ``curl_z = ∂q/∂x − ∂p/∂y`` (PR-MATH-A §4).
+
+    **Fuente única de la convención de signo.** Las estadísticas de ``curl_proxy``
+    (``median_abs``/``mad``/``p95_abs``) son todas invariantes al signo, así que un test
+    apoyado sólo en ellas NO distingue ``dq/dx − dp/dy`` de su negativo (§29-M2). Exponer
+    el campo firmado es lo que hace la convención observable y verificable punto a punto.
+
+    ``np.asarray`` fija el dtype explícitamente: ``spectral_gradients`` está anotada con
+    ``np.ndarray`` sin parámetros, así que sin esto el retorno se tipa ``Any`` y el gate
+    de mypy lo marca como ``no-any-return``.
+    """
+    return np.asarray(spectral_gradients(q)[0] - spectral_gradients(p)[1], dtype=np.float64)
+
+
 def curl_proxy(p: NDArray[np.float64], q: NDArray[np.float64]) -> dict[str, float]:
-    """A: residual de integrabilidad curl = ∂p/∂y − ∂q/∂x con estadísticas robustas."""
-    curl = spectral_gradients(p)[0] - spectral_gradients(q)[1]
+    """A: residual de integrabilidad, ``curl_z = ∂q/∂x − ∂p/∂y`` (PR-MATH-A §4).
+
+    Convención canónica única: ``curl_z := dq/dx − dp/dy`` (ver ``curl_field``). El
+    negativo global ``dp/dy − dq/dx`` sería equivalente sólo para métricas cuadráticas
+    (energía), por eso la convención se congela con un test FIRMADO sobre el campo.
+
+    **PR-MATH-A (§3, corrección).** La implementación histórica calculaba
+    ``spectral_gradients(p)[0] − spectral_gradients(q)[1] = ∂p/∂x − ∂q/∂y``; para
+    ``p = ∂h/∂x``, ``q = ∂h/∂y`` eso es ``h_xx − h_yy``, que no es curl, ni divergencia,
+    ni laplaciano — y contradice el docstring histórico. Sobre un campo integrable daba
+    ~2.9e+02 donde el piso de float64 es ~5.8e-13 (15 órdenes); sobre el fixture
+    no-integrable de los tests daba exactamente 0.
+    """
+    curl = curl_field(p, q)
     med = float(np.median(np.abs(curl)))
     mad = float(np.median(np.abs(np.abs(curl) - med)))
     return {
@@ -56,15 +93,24 @@ def curl_proxy(p: NDArray[np.float64], q: NDArray[np.float64]) -> dict[str, floa
 def projection_residual(normal: NDArray[np.float64], sx: float, sy: float) -> dict[str, float]:
     """B: residuo de proyección integrable — usa SOLO la normal (§20 permite correr el solver).
 
-    normal → p,q → integración periódica → normales reproyectadas → error angular.
+    Pipeline canónico (PR-MATH-A §16), extremo a extremo en la convención ``sx``/``sy``:
+
+        normal → gradients_from_normal(·, sx, sy, PROXY_NZ_FLOOR)
+               → integrate_periodic → spectral_gradients(h_rec)
+               → normals_from_gradients(·, sx, sy) → residual angular vs normal de entrada
+
+    Se reutilizan las primitivas canónicas: la conversión NO se duplica a mano.
+
+    **PR-MATH-A (§15, corrección).** La ruta histórica reconstruía la normal reproyectada
+    con ``nz = sqrt(max(0, 1 − p² − q²))`` y ``normal = (p, q, nz)`` — geométricamente
+    incorrecto (además del signo XY invertido respecto de ``normals_from_gradients``).
+    Medido sobre S06: mediana 169.95 deg (``sx=sy=1``) / 157.46 deg (1.7/0.6) contra
+    0.0 deg de la ruta canónica.
     """
-    p = -normal[..., 0] / np.maximum(normal[..., 2], 1e-30)
-    q = -normal[..., 1] / np.maximum(normal[..., 2], 1e-30)
+    p, q, _hits = gradients_from_normal(normal, sx=sx, sy=sy, nz_floor=PROXY_NZ_FLOOR)
     h_rec, _info = integrate_periodic(p, q)
     p2, q2 = spectral_gradients(h_rec)
-    nz2 = np.sqrt(np.maximum(0.0, 1.0 - p2**2 - q2**2))
-    n2 = np.stack([p2, q2, nz2], axis=-1)
-    n2 = n2 / np.maximum(np.linalg.norm(n2, axis=-1, keepdims=True), 1e-12)
+    n2 = normals_from_gradients(p2, q2, sx=sx, sy=sy)
     dot = np.clip(np.sum(normal * n2, axis=-1), -1.0, 1.0)
     ang = np.degrees(np.arccos(dot))
     return {
@@ -226,19 +272,32 @@ class OracleOnly:
         h_authored: NDArray[np.float64],
         *,
         strength_grid: int = 25,
+        sx: float = 1.0,
+        sy: float = 1.0,
     ) -> dict[str, float]:
         """Mismatch normal↔height: deriva normal del height bajo UNA escala global
         (barrido determinista de strength) y mide error angular contra la normal authored.
-        Elevado ⇒ NORMAL_HEIGHT_MISMATCH (hallazgo del dataset, §38)."""
+        Elevado ⇒ NORMAL_HEIGHT_MISMATCH (hallazgo del dataset, §38).
+
+        La normal derivada usa ``normals_from_gradients(p, q, sx, sy)`` — la MISMA
+        primitiva canónica del resto de la cadena (PR-MATH-A §19). ``sx``/``sy`` son
+        keyword-only con default 1.0 para no alterar a los callers existentes (M3/M4),
+        que trabajan en la convención isótropa.
+
+        **PR-MATH-A (§19, corrección).** La ruta histórica reconstruía la normal con
+        ``nz = sqrt(max(0, 1 − p² − q²))`` y componentes ``(+p, +q, nz)`` — signo XY
+        invertido respecto del contrato forward ``(-sx·p, -sy·q, 1)``. El oráculo lo
+        compensaba invirtiendo la superficie entera: medido sobre S06, el mejor strength
+        histórico era ``-0.20`` con 9.42 deg, contra ``+1.00`` con 0.0 deg de la ruta
+        canónica. La rejilla de strength NO se retunea (§20): es la misma de antes.
+        """
         best_ang = float("inf")
         best_strength = 0.0
         grid = np.concatenate([np.linspace(0.05, 5.0, strength_grid), -np.linspace(0.05, 5.0, strength_grid)])
         for s in grid:
             h = (h_authored - h_authored.mean()) * float(s)
             p, q = spectral_gradients(h)
-            nz = np.sqrt(np.maximum(0.0, 1.0 - p**2 - q**2))
-            n2 = np.stack([p, q, nz], axis=-1)
-            n2 = n2 / np.maximum(np.linalg.norm(n2, axis=-1, keepdims=True), 1e-12)
+            n2 = normals_from_gradients(p, q, sx=sx, sy=sy)
             dot = np.clip(np.sum(normal * n2, axis=-1), -1.0, 1.0)
             ang = float(np.median(np.degrees(np.arccos(dot))))
             if ang < best_ang:
