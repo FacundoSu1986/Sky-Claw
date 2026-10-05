@@ -26,10 +26,16 @@ import contextlib
 import json
 import logging
 import pathlib
+import stat
 import time
 from collections.abc import Callable
 
-from sky_claw.app.security.links import ContencionFisicaVioladaError, exigir_contencion_fisica, link_kind_or_raise
+from sky_claw.app.security.links import (
+    ContencionFisicaVioladaError,
+    exigir_contencion_fisica,
+    link_kind_and_identity_or_raise,
+    link_kind_or_raise,
+)
 from sky_claw.local.frozen_runtime.candidate_id import (
     CANDIDATE_ID_PREFIX,
     default_candidate_id_factory,
@@ -292,6 +298,36 @@ def serializar_metadata_candidate(metadata: CandidateMetadata) -> dict[str, obje
     }
 
 
+def _entero_json(valor: object, *, campo: str, etiqueta: str) -> int:
+    """Exige un entero JSON REAL: no float, no bool, no string numerica.
+
+    ``int(valor)`` como mecanismo de validacion normaliza en silencio
+    ``3.9 -> 3`` y ``true -> 1``, asi que metadata CORRUPTA se reconstruye como
+    valida y puede volver a compararse con exito contra la evidencia fresca
+    (Codex sobre #682). ``bool`` es subclase de ``int``, asi que el chequeo tiene
+    que excluirlo explicitamente antes de aceptar el valor.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        raise CandidateCorruptMetadataError(
+            f"{etiqueta}: {campo} debe ser un entero JSON (no float/bool/string): {valor!r}"
+        )
+    return valor
+
+
+def _entero_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: int) -> int:
+    """Entero estricto con default para claves AUSENTES; `null` NO es ausencia."""
+    if clave not in datos:
+        return defecto
+    return _entero_json(datos[clave], campo=clave, etiqueta=etiqueta)
+
+
+def _entero_json_o_none(valor: object, *, campo: str, etiqueta: str) -> int | None:
+    """Entero estricto para campos OPCIONALES: ``None`` sigue siendo legitimo."""
+    if valor is None:
+        return None
+    return _entero_json(valor, campo=campo, etiqueta=etiqueta)
+
+
 def _membership_desde_dict(bruto: object, *, etiqueta: str) -> DirectoryMembershipEvidence:
     if not isinstance(bruto, dict):
         raise CandidateCorruptMetadataError(f"{etiqueta}: directory_membership debe ser un objeto")
@@ -336,7 +372,7 @@ def _identidades(bruto: object, *, campo: str, etiqueta: str) -> tuple[FileIdent
             salida.append(
                 FileIdentity(
                     rel_path=str(entrada["rel_path"]),
-                    size=int(entrada["size"]),
+                    size=_entero_json(entrada["size"], campo=f"{campo}[{indice}].size", etiqueta=etiqueta),
                     digest=str(entrada["digest"]),
                 )
             )
@@ -401,8 +437,8 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
             ),
             tree_digest=TreeDigest(
                 digest=str(digest["digest"]),
-                files=int(digest["files"]),
-                bytes=int(digest["bytes"]),
+                files=_entero_json(digest["files"], campo="tree_digest.files", etiqueta=etiqueta),
+                bytes=_entero_json(digest["bytes"], campo="tree_digest.bytes", etiqueta=etiqueta),
             ),
             directory_membership=_membership_desde_dict(bruto["directory_membership"], etiqueta=etiqueta),
             critical_files=_identidades(criticos, campo="critical_files", etiqueta=etiqueta),
@@ -412,11 +448,11 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
                 appid=str(bruto["appid"]),
                 buildid=metadatos.get("buildid") if isinstance(metadatos.get("buildid"), str) else None,
                 state_flags=(metadatos.get("state_flags") if isinstance(metadatos.get("state_flags"), str) else None),
-                bytes_to_download=(
-                    metadatos.get("bytes_to_download") if isinstance(metadatos.get("bytes_to_download"), int) else None
+                bytes_to_download=_entero_json_o_none(
+                    metadatos.get("bytes_to_download"), campo="bytes_to_download", etiqueta=etiqueta
                 ),
-                bytes_downloaded=(
-                    metadatos.get("bytes_downloaded") if isinstance(metadatos.get("bytes_downloaded"), int) else None
+                bytes_downloaded=_entero_json_o_none(
+                    metadatos.get("bytes_downloaded"), campo="bytes_downloaded", etiqueta=etiqueta
                 ),
                 update_result=(
                     metadatos.get("update_result") if isinstance(metadatos.get("update_result"), str) else None
@@ -523,8 +559,8 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
             schema_version=esquema,
             candidate_id=_candidate_id_desde_datos(),
             state=estado,
-            created_at_ns=int(data.get("created_at_ns", 0)),
-            updated_at_ns=int(data.get("updated_at_ns", 0)),
+            created_at_ns=_entero_json_opcional(data, "created_at_ns", etiqueta=str(ruta), defecto=0),
+            updated_at_ns=_entero_json_opcional(data, "updated_at_ns", etiqueta=str(ruta), defecto=0),
             source_provider=str(data.get("source_provider", "")),
             source_appid=str(data.get("source_appid", "")),
             pre_source_evidence=_evidencia("pre_source_evidence"),
@@ -640,6 +676,36 @@ def _evaluar_triada(
         GenerationVerificationState.VALID,
         "PRE == Candidate == POST en TreeDigest, RuntimeIdentity, evidencia critica y DirectoryMembership",
     )
+
+
+def _clasificar_arbol_del_payload(destino: pathlib.Path) -> tuple[GenerationVerificationState, str]:
+    """Clasifica el arbol del payload: presente / ausente / NO inspeccionable.
+
+    ``Path.is_dir()`` no sirve como oraculo semantico aca: ante un fallo
+    transitorio de inspeccion (ACL, sharing, volumen desconectado) colapsa "no se
+    pudo inspeccionar" con "no existe" en el mismo ``False``, y afirmar perdida
+    cuando la inspeccion fallo es una acusacion de corrupcion no demostrada. La
+    primitive tipada separa las dos: ``FileNotFoundError`` => ausencia DEFINIDA
+    (INVALID), cualquier otro ``OSError`` => inspeccion imposible
+    (INDETERMINATE). Un enlace en la RAIZ no se decide aca: lo resuelve el
+    verificador fisico (VIOLATED => INVALID), que es quien sabe nombrarlo
+    (Codex sobre #682).
+    """
+    try:
+        tipo, st = link_kind_and_identity_or_raise(destino)
+    except OSError as exc:
+        return GenerationVerificationState.INDETERMINATE, f"no se pudo inspeccionar el arbol del Candidate: {exc}"
+    if st is None:
+        return (
+            GenerationVerificationState.INVALID,
+            "el arbol del Candidate ya no existe: la evidencia persistida no tiene payload que la satisfaga",
+        )
+    if tipo is None and not stat.S_ISDIR(st.st_mode):
+        return (
+            GenerationVerificationState.INVALID,
+            "el arbol del Candidate no es un directorio: la evidencia persistida no tiene payload que la satisfaga",
+        )
+    return GenerationVerificationState.VALID, ""
 
 
 def _verificar_integridad_fisica(payload: pathlib.Path) -> tuple[GenerationVerificationState, str]:
@@ -1101,10 +1167,13 @@ def verificar_candidate(root: pathlib.Path, candidate_id: str) -> CandidateResul
     # y ya no hay NADA en disco que satisfaga esa evidencia. Degradar esa perdida
     # concreta a un veredicto ambiguo (INDETERMINATE) permitira que un caller la
     # trate como "reintentar mas tarde" en vez de como INVALID (P3-E / Codex #904).
-    if not destino.is_dir():
+    # La inspeccion es TIPADA (P3-Q): un `OSError` transitorio se distingue de la
+    # ausencia definida en vez de colapsar ambos en un `Path.is_dir() == False`.
+    estado_arbol, mensaje_arbol = _clasificar_arbol_del_payload(destino)
+    if estado_arbol is not GenerationVerificationState.VALID:
         return CandidateResult(
-            state=GenerationVerificationState.INVALID,
-            message="el arbol del Candidate ya no existe: la evidencia persistida no tiene payload que la satisfaga",
+            state=estado_arbol,
+            message=mensaje_arbol,
             candidate_id=cid,
             metadata=metadata,
         )
