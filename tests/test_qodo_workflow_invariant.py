@@ -26,7 +26,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
 
-PINNED_ACTION_REF_ESPERADA = "f3b385ea2927247ddcff2fe252472380b9c8f5fc"
+PINNED_ACTION_REF_ESPERADA = "8e5a9295973b24af4b70cafd0b660a230811ef9e"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
@@ -43,16 +43,16 @@ RECETA_ADVERSARIAL: dict[str, str] = {
     "OPENROUTER__KEY": "${{ secrets.OPENROUTER_API_KEY }}",
     "CONFIG.MODEL": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
     "CONFIG.CUSTOM_MODEL_MAX_TOKENS": "200000",
-    "CONFIG.FALLBACK_MODELS": '["openrouter/minimax/minimax-m3:free", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]',
+    "CONFIG.FALLBACK_MODELS": '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]',
     "LITELLM.DROP_PARAMS": "true",
 }
 
 RECETA_ORACLE: dict[str, str] = {
     "OPENROUTER_API_KEY": "${{ secrets.OPENROUTER_API_KEY }}",
     "OPENROUTER__KEY": "${{ secrets.OPENROUTER_API_KEY }}",
-    "CONFIG.MODEL": "openrouter/minimax/minimax-m3:free",
+    "CONFIG.MODEL": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
     "CONFIG.CUSTOM_MODEL_MAX_TOKENS": "200000",
-    "CONFIG.FALLBACK_MODELS": '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter/nvidia/nemotron-3-super-120b-a12b:free"]',
+    "CONFIG.FALLBACK_MODELS": '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]',
     "LITELLM.DROP_PARAMS": "true",
 }
 

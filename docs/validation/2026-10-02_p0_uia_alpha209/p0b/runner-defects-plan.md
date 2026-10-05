@@ -1,6 +1,8 @@
 # FASE B — reproducción + plan de los 3 defectos del runner (#661)
 
-> Estado: documentado y preparado. **Ningún fix commiteado.** PR separado por defecto.
+> Estado (FASE B): documentado y preparado. **Ningún fix commiteado en esta fase.** PR separado por defecto.
+> Post-FASE-B: **R1 cerró** con su PR dedicado (`fix(dyndolod): make packaging cancellation worker-terminal`);
+> R2 y R3 siguen **OPEN** — ninguna fila de ellos cambió.
 
 ## Base
 
@@ -14,11 +16,11 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| resolution_status | **OPEN** (sin fix en el código) |
-| evidence_status | **REPRODUCED** |
-| Reproducción | `tests/test_runner_defects_p1_p2.py::test_r1_cancelacion_to_thread_no_mata_al_worker` (6/6 passed — demuestra el defecto) + `test_r1_ancla_ast_el_to_thread_empaquetar_esta_sin_proteccion` (anchor sobre `_package_output_as_mod`) |
+| resolution_status | **FIXED** (PR R1 dedicado: `fix(dyndolod): make packaging cancellation worker-terminal` — Task propia del worker + `_esperar_terminalidad_del_worker_mutante`) |
+| evidence_status | **REPRODUCED** (la reproducción histórica quedó convertida en regresión/aceptación por el PR R1) |
+| Evidencia (antes: Reproducción) | `tests/test_runner_defects_p1_p2.py`: `test_r1_cancel_durante_el_worker_ret_al_caller_hasta_terminal` (cancel #1 → orden `cancel_1_procesada < worker_terminal < rollback_started < lease_released` congelado por igualdad), `test_r1_cancelaciones_repetidas_no_liberan_al_caller_antes_de_terminal` (cancel #2/#N con checkpoint de HANDOFF_ACTIVE por registro), `test_r1_exito_sin_cancelacion_devuelve_el_mod`, `test_r1_excepcion_del_worker_sin_cancel_se_propaga_como_antes`, `test_r1_excepcion_del_worker_con_cancel_se_consume_y_encadena`, ancla AST `test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal`; la premisa de runtime se conserva en `test_r1_cancelacion_to_thread_no_mata_al_worker` |
 | Invariante | `mutating packaging worker terminal BEFORE rollback begins BEFORE lease can be released` — las TRES en orden, no sólo la primera |
-| Path | `dyndolod_runner.py:2488` — `await asyncio.to_thread(_empaquetar_sincrono)` sin protección |
+| Path | `dyndolod_runner.py` — era `await asyncio.to_thread(_empaquetar_sincrono)` sin protección; hoy Task propia + `_esperar_terminalidad_del_worker_mutante` |
 | Plan propuesto | Secuencia completa del fix (la unidad entera, no sólo shield): crear/conservar el `Task` del worker → llega `CancelledError` → **registrar intención de cancelación** → proteger el worker (`asyncio.shield`) → **continuar esperando aunque lleguen cancelaciones adicionales** (el await externo debe ser resistente a cancelaciones repetidas, no sólo el shield interno: `shield` protege la tarea interna pero una segunda cancelación en el `await shield(...)` externo la interrumpe igual) → worker realmente terminal → recién entonces liberar el caller → rollback/lease chain puede continuar → propagar la cancelación al exterior. `shield` POR SÍ SOLO no resuelve R1 |
 | Test rojo | El actual pasa con código actual (demuestra defecto). Aceptación obligatoria del futuro PR R1 — anclar con sincronización explícita (`threading.Event`/`asyncio.Event`, nunca sleeps como autoridad): **cancel #1** durante el worker bloqueado → **cancel #2** (y opcionalmente **cancel #N**) durante el handoff protegido → la propiedad `terminado.is_set()` debe ocurrir ANTES de `rollback_started` y ANTES de `lease_released` — el orden de los tres eventos se congela por igualdad, no por timing |
 | Collision review | #592-2 (borra antes de medir ENOSPC) parcialmente relacionado, no overlap directo en R1 — sólo cambia el wrapper de cancelación, no el orden |
@@ -74,10 +76,10 @@ HEAD:        962f1835
 ## Runner gates — válidos (dos dimensiones, CR-11)
 
 ```text
-RUNNER_P1_PACKAGING_CANCEL  resolution_status=OPEN  evidence_status=REPRODUCED
+RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  (PR R1 dedicado)
 RUNNER_P1_REPARSE_COPY      resolution_status=OPEN  evidence_status=REPRODUCED
 RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN  evidence_status=REPRODUCED
-→ RUNNER_FIXES_READY_FOR_IMPLEMENTATION
+→ RUNNER_FIXES_READY_FOR_IMPLEMENTATION (R1 cerrado; R2/R3 siguen abiertos)
 ```
 
 ## Follow-ups explícitos (NO implementados en este PR)

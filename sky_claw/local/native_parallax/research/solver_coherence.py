@@ -101,7 +101,12 @@ def fd_forward(height: np.ndarray, *, bits: int | None = 8, sx: float = 1.0, sy:
 
 
 def solve_normal(normal: np.ndarray) -> tuple[np.ndarray, Any]:
-    """El solver M2/M3 EXACTO (RAW: p=-sx·nx/nz con guard 1e-30 + integrate_periodic)."""
+    """El solver M2/M3 EXACTO (RAW: p=-nx/(sx·nz) con guard 1e-30 + integrate_periodic).
+
+    ``reconstruct_from_normal`` fija ``sx = sy = 1.0``, así que acá la inversa canónica
+    de PR-MATH-A coincide con la histórica; el docstring se actualizó a la forma general
+    para no dejar una fórmula que ya no existe en el código.
+    """
     n = np.asarray(normal, dtype=np.float64)
     if n.ndim != 3 or n.shape[-1] != 3:
         raise ValueError(f"solve_normal: normal debe ser (H, W, 3), recibí {n.shape}")
