@@ -30,6 +30,7 @@ from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, Protocol
 
 from sky_claw.app.security.links import (
+    exigir_arbol_copiable_sin_reparse,
     exigir_contencion_fisica,
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
@@ -2493,6 +2494,25 @@ class DynDOLODRunner:
             # un enlace que resuelve afuera es fail-closed.
             await self._exigir_fuente_del_subroot(output_path, mod_name)
 
+            # R2 — RUNNER_P1_REPARSE_COPY: el guard del subroot cubre la cadena
+            # root→source, no los descendientes. Recorrer el árbol ANTES de
+            # `exists`/`iterdir` (que seguirían una raíz redirigida), y antes de
+            # cualquier mutación del mod previo. La clasificación central mira
+            # cada entrada sin seguirla; no se autoriza `copytree` con un árbol
+            # que el inventario link-aware omitiría.
+            try:
+                await asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path)
+            except FileNotFoundError as exc:
+                raise DynDOLODValidationError(
+                    f"Output directory does not exist: {output_path}",
+                    output_path=output_path,
+                ) from exc
+            except OSError as exc:
+                raise DynDOLODValidationError(
+                    f"No se puede empaquetar la fuente '{output_path}' para '{mod_name}': {exc}",
+                    output_path=output_path,
+                ) from exc
+
             # Verificar que el directorio de salida existe
             if not output_path.exists():
                 raise DynDOLODValidationError(
@@ -2535,6 +2555,7 @@ class DynDOLODRunner:
                 # sus fases de borrado/copia (`_limpiar`, `_calc_dir_size_and_remove`).
                 # Correrlo en el hilo del event loop congelaba la UI de
                 # NiceGUI y desconectaba WebSockets durante el empaquetado.
+
                 if mod_path.exists():
                     logger.debug("Limpiando directorio existente: %s", mod_path)
                     # `limpiar_readonly`: el árbol es la salida de una corrida

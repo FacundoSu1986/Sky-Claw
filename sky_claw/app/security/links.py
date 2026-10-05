@@ -595,6 +595,81 @@ def iter_archivos_propios(ruta: pathlib.Path) -> Iterator[tuple[pathlib.Path, os
             continue
 
 
+def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
+    """Exige que *raiz* sea un árbol propio formado sólo por dirs/archivos reales.
+
+    ``iter_archivos_propios`` es correcto para MEDIR: clasifica y omite symlinks
+    y junctions sin entrar a sus destinos. No alcanza como autorización para una
+    copia que sigue enlaces, porque precisamente no avisa que esas entradas
+    existen. Este recorrido visita cada entrada con ``lstat`` a través de
+    :func:`link_kind_and_identity_or_raise`, rechaza cualquier redirección y
+    desciende sólo en directorios reales.
+
+    Symlinks, junctions y reparse tags no clasificados fallan cerrado. Los
+    archivos permitidos son regulares; sockets, FIFO, dispositivos y cualquier
+    tipo que ``copytree`` no trate como un archivo ordinario también se rechazan.
+    Un directorio se revalida después de abrirlo y tras enumerarlo, antes de
+    confiar en sus hijos.
+
+    **Límite de concurrencia:** esto demuestra la forma del árbol observado en
+    el scan; no convierte un scan seguido de ``shutil.copytree`` en una copia
+    atómica ni bloquea a un escritor externo que cambie una entrada entre ambos.
+    El caller que necesita eliminar esa ventana requiere coordinación/copia
+    basada en handles; no debe presentar este pre-scan como race-proof.
+    """
+    tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise(raiz)
+    if identidad_raiz is None:
+        raise FileNotFoundError(f"La raíz fuente '{raiz}' no existe o no se pudo inspeccionar")
+
+    def _clasificar_entrada(path: pathlib.Path, tipo: str | None, identidad: os.stat_result) -> bool:
+        """Devuelve si la entrada es directorio real; lo demás debe ser archivo regular."""
+        if tipo is not None:
+            raise OSError(f"'{path}' contiene {tipo}; no se admite atravesar una redirección al empaquetar la fuente")
+        # No se confunde un tag desconocido con un junction a nivel global, pero
+        # este caller de ownership no puede aceptar semánticas de reparse opacas.
+        reject_unclassified_reparse_point(path, identidad)
+        if stat.S_ISDIR(identidad.st_mode):
+            return True
+        if stat.S_ISREG(identidad.st_mode):
+            return False
+        raise OSError(
+            f"'{path}' no es directorio real ni archivo regular (tipo observado: {stat.filemode(identidad.st_mode)})"
+        )
+
+    if not _clasificar_entrada(raiz, tipo_raiz, identidad_raiz):
+        raise OSError(f"La raíz fuente '{raiz}' no es un directorio real")
+
+    pendientes: list[tuple[pathlib.Path, os.stat_result]] = [(raiz, identidad_raiz)]
+    while pendientes:
+        directorio, identidad_capturada = pendientes.pop()
+        try:
+            with os.scandir(directorio) as entradas:
+                tipo_abierto, identidad_abierta = link_kind_and_identity_or_raise(directorio)
+                if (
+                    identidad_abierta is None
+                    or tipo_abierto is not None
+                    or not same_file_identity(identidad_capturada, identidad_abierta)
+                ):
+                    raise OSError(f"'{directorio}' cambió al abrirlo durante la validación del árbol fuente")
+                hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+                tipo_final, identidad_final = link_kind_and_identity_or_raise(directorio)
+                if (
+                    identidad_final is None
+                    or tipo_final is not None
+                    or not same_file_identity(identidad_capturada, identidad_final)
+                ):
+                    raise OSError(f"'{directorio}' cambió durante la enumeración del árbol fuente")
+        except FileNotFoundError as exc:
+            raise OSError(f"No se pudo recorrer el directorio fuente real '{directorio}': {exc}") from exc
+
+        for hijo in hijos:
+            tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise(hijo)
+            if identidad_hijo is None:
+                raise OSError(f"La entrada '{hijo}' desapareció durante la validación del árbol fuente")
+            if _clasificar_entrada(hijo, tipo_hijo, identidad_hijo):
+                pendientes.append((hijo, identidad_hijo))
+
+
 def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> int:
     """Borra *ruta* recursivamente SIN atravesar enlaces, ni siquiera anidados.
 
