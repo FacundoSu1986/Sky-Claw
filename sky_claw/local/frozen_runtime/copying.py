@@ -76,8 +76,23 @@ def exigir_payload_vacio(destino: pathlib.Path) -> None:
         raise FrozenRuntimeStorageError(f"el padre del destino '{padre}' no existe o no es un directorio")
 
 
+def _clasificar_enlace(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+    """Clasifica un enlace traduciendo el fallo de INSPECCION a la familia tipada.
+
+    ``link_kind_and_identity_or_raise`` solo traduce ``FileNotFoundError``: un
+    ``OSError`` transitorio (permiso, sharing, volumen desconectado) salia crudo
+    de ``copiar_arbol_independiente`` -- fuera de sus handlers -- y llegaba hasta
+    ``crear_candidate`` dejando metadata BUILDING huerfana en vez de un resultado
+    tipado. La traduccion vive aca, no en cada caller (Codex sobre #682).
+    """
+    try:
+        return link_kind_and_identity_or_raise(ruta)
+    except OSError as exc:
+        raise CandidateCopyError(f"no se pudo inspeccionar '{ruta}': {exc}") from exc
+
+
 def _rechazar_si_es_enlace(ruta: pathlib.Path) -> None:
-    tipo, _st = link_kind_and_identity_or_raise(ruta)
+    tipo, _st = _clasificar_enlace(ruta)
     if tipo is not None:
         raise CandidateCopyError(f"'{ruta}' es un enlace ({tipo}) en el source o el destino: no se sigue ni se ignora")
 
@@ -89,7 +104,7 @@ def copiar_archivo(origen: pathlib.Path, destino: pathlib.Path) -> int:
     # La fuente se valida justo antes de abrir: un symlink/junction inyectado
     # despues del inventario no debe poder redirigir la lectura fuera de la
     # Managed Source.
-    tipo, st = link_kind_and_identity_or_raise(origen)
+    tipo, st = _clasificar_enlace(origen)
     if tipo is not None:
         raise CandidateCopyError(f"el origen '{origen}' es un enlace ({tipo}) en el momento de copiar")
     if st is None:

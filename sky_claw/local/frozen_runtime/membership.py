@@ -105,6 +105,21 @@ class DirectoryMembershipEvidence:
             raise DirectoryMembershipError("la lista de directorios tiene duplicados")
 
 
+def _clasificar_enlace(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+    """Clasifica un enlace traduciendo el fallo de INSPECCION a la familia tipada.
+
+    ``link_kind_and_identity_or_raise`` solo traduce ``FileNotFoundError``: un
+    ``OSError`` transitorio (permiso, sharing, volumen desconectado) salia crudo y
+    escapaba de ``crear_candidate``/``verificar_candidate`` en vez de volverse
+    veredicto fail-closed. La traduccion vive aca, no en cada caller, para que
+    ninguna sonda nueva quede sin traducir (Codex sobre #682).
+    """
+    try:
+        return link_kind_and_identity_or_raise(ruta)
+    except OSError as exc:
+        raise DirectoryMembershipError(f"no se pudo inspeccionar '{ruta}': {exc}") from exc
+
+
 def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
     """Lleva un relpath de ambito (archivo o directorio) a SU UNICA forma canonica.
 
@@ -134,8 +149,9 @@ def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
     if ":" in entrada:
         raise DirectoryMembershipError(f"entrada de {tipo} ambigua (letra de unidad o ADS): '{entrada}'")
     crudo = entrada.replace("\\", "/")
+    componentes = crudo.split("/")
     partes: list[str] = []
-    for parte in crudo.split("/"):
+    for parte in componentes:
         if parte in ("", "."):
             continue
         if parte == ".." or ":" in parte:
@@ -143,8 +159,14 @@ def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
         partes.append(parte)
     if not partes:
         raise DirectoryMembershipError(f"entrada de {tipo} degenerada: '{entrada}'")
-    if tipo == "archivo" and partes[-1] in (".", ".."):
-        raise DirectoryMembershipError(f"entrada de archivo degenerada: '{entrada}'")
+    # Un ARCHIVO nombra un archivo: `Data/`, `Data//` y `Data/.` describen un
+    # directorio. La comprobacion que habia sobre `partes[-1]` era codigo MUERTO
+    # (el filtro de arriba ya descarta "" y "."), asi que aceptaba `Data/` como
+    # archivo y convertia una entrada de `mkdir` en una de `open` (CodeRabbit
+    # sobre #682). La señal hay que leerla en los componentes CRUDOS, antes del
+    # filtro.
+    if tipo == "archivo" and componentes[-1] in ("", "."):
+        raise DirectoryMembershipError(f"entrada de archivo que nombra un directorio: '{entrada}'")
     canonico = "/".join(partes)
     return canonico
 
@@ -158,12 +180,12 @@ def canonicalizar_archivo(entrada: str) -> str:
     """Canonicaliza un `rel_path` de archivo (delega en la primitive unica).
 
     Un archivo tiene que NOMBRAR un archivo: `Data/` describe un directorio, y
-    aceptarlo convertiria un archivo en una entrada de `mkdir`.
+    aceptarlo convertiria un archivo en una entrada de `mkdir`. El rechazo vive en
+    la primitive (sobre los componentes CRUDOS) para que valga para todo caller;
+    aca no queda ninguna comprobacion post-normalizacion porque `canonico` ya no
+    puede terminar en `/`.
     """
-    canonico = canonicalizar_relpath_de_scope(entrada, tipo="archivo")
-    if canonico.endswith("/"):
-        raise DirectoryMembershipError(f"entrada de archivo degenerada: '{entrada}'")
-    return canonico
+    return canonicalizar_relpath_de_scope(entrada, tipo="archivo")
 
 
 def construir_evidencia_membership(directorios: tuple[str, ...]) -> DirectoryMembershipEvidence:
@@ -193,7 +215,7 @@ def capturar_membership_directorios(root: pathlib.Path) -> DirectoryMembershipEv
     deteccion es la primitive canonica del repo, no una reimplementacion.
     """
     raiz = pathlib.Path(root)
-    tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise(raiz)
+    tipo_raiz, identidad_raiz = _clasificar_enlace(raiz)
     if identidad_raiz is None:
         raise DirectoryMembershipError(f"la raiz '{raiz}' no existe: no hay membership que afirmar")
     if tipo_raiz is not None:
@@ -205,7 +227,7 @@ def capturar_membership_directorios(root: pathlib.Path) -> DirectoryMembershipEv
     pendientes: list[pathlib.Path] = [raiz]
     while pendientes:
         actual = pendientes.pop()
-        tipo, identidad = link_kind_and_identity_or_raise(actual)
+        tipo, identidad = _clasificar_enlace(actual)
         if identidad is None:
             raise DirectoryMembershipError(f"'{actual}' desaparecio durante el recorrido de membership")
         if tipo is not None:
@@ -228,7 +250,7 @@ def capturar_membership_directorios(root: pathlib.Path) -> DirectoryMembershipEv
         # Revalidar DESPUES de abrir: un directorio reemplazado por un enlace
         # entre su lstat y el scandir no debe meterse en la membership. Misma
         # defensa que aplica `inventory_tree`.
-        tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+        tipo_despues, identidad_despues = _clasificar_enlace(actual)
         if identidad_despues is None:
             raise DirectoryMembershipError(f"'{actual}' desaparecio mientras se abria")
         if tipo_despues is not None:
