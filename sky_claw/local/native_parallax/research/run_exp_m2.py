@@ -205,8 +205,50 @@ def select_sigma_eff(characs: dict[str, dict[str, Any]], assets: dict[str, Mater
         (t for t in table if t["target"] == "aligned_rmse" and np.isfinite(t["spearman"])),
         key=lambda t: -t["spearman"],
     )
-    winner = ranked[0]["candidate"] if ranked else "nz_p01"
-    return {"table": table, "winner": winner, "per_asset": None}
+    # §2 MATH-B.1 — fail-closed: sin NINGÚN candidato evaluable no hay ganador. El
+    # fallback histórico a "nz_p01" no era fail-closed: elegía un σ_eff sin respaldo
+    # estadístico y M2-E/F corrían igual, así que un corpus donde la selección no es
+    # medible producía resultados presentables como si lo fuera.
+    if not ranked:
+        return {"table": table, "winner": None, "status": "NO_EVALUABLE_SIGMA_CANDIDATE", "per_asset": None}
+    return {"table": table, "winner": ranked[0]["candidate"], "status": "EVALUABLE", "per_asset": None}
+
+
+def evaluate_sigma_policies(
+    specs: list[MaterialSpec],
+    characs: dict[str, dict[str, Any]],
+    sel: dict[str, Any],
+    resolution: int,
+) -> list[dict[str, Any]]:
+    """M2-E (transfer, k=1) + M2-F (sweep de k) — SOLO con un σ_eff elegido válidamente.
+
+    Fail-closed (§3 MATH-B.1): sin ganador no hay σ_eff, y sin σ_eff no se fabrica
+    política. Devuelve la lista vacía y no toca ``sel["per_asset"]``; el llamador
+    conserva las filas RAW ya calculadas como evidencia. ``NO_WINNER`` ⇒
+    ``NO_TRANSFER_POLICY_EXECUTION``, anclado por test.
+    """
+    if sel["winner"] is None:
+        return []
+    sigma_fn = SIGMA_EFF_CANDIDATES[sel["winner"]]
+    sigma_eff: dict[str, float] = {
+        a: max(float(sigma_fn(c["_normal"], c["features"])), 1e-6) for a, c in characs.items()
+    }
+    sel["per_asset"] = sigma_eff
+
+    rows: list[dict[str, Any]] = []
+    for spec in specs:
+        split = split_of(spec.family)
+        mat = load_asset(spec, resolution)
+        s = sigma_eff[spec.asset_id]
+        raw_row = characs[spec.asset_id]["raw_eval"]
+        refs = {"scale_ref": raw_row["affine_scale"], "sign_ref": raw_row["oracle_best_sign"]}
+        rows.append(run_policy(mat, spec, split, "SOFT_TIKHONOV", K_TRANSFER, s, **refs))
+        rows.append(run_policy(mat, spec, split, "FLOOR_CLAMP", K_TRANSFER, s, **refs))
+        if split == "CALIBRATION":
+            for k in K_SWEEP:
+                rows.append(run_policy(mat, spec, split, "SOFT_TIKHONOV", k, s, **refs))
+                rows.append(run_policy(mat, spec, split, "FLOOR_CLAMP", k, s, **refs))
+    return rows
 
 
 def main() -> None:
@@ -250,35 +292,29 @@ def main() -> None:
         )
 
     sel = select_sigma_eff(characs, assets)
-    sigma_fn = SIGMA_EFF_CANDIDATES[sel["winner"]]
-    sigma_eff: dict[str, float] = {
-        a: max(float(sigma_fn(c["_normal"], c["features"])), 1e-6) for a, c in characs.items()
-    }
-    sel["per_asset"] = sigma_eff
-
-    # M2-E transfer: k=1 fijo, TODOS los assets, sin retuning; M2-F sweep k sólo calibración.
-    for spec in specs:
-        split = split_of(spec.family)
-        mat = load_asset(spec, args.resolution)
-        s = sigma_eff[spec.asset_id]
-        raw_row = characs[spec.asset_id]["raw_eval"]
-        refs = {"scale_ref": raw_row["affine_scale"], "sign_ref": raw_row["oracle_best_sign"]}
-        rows.append(run_policy(mat, spec, split, "SOFT_TIKHONOV", K_TRANSFER, s, **refs))
-        rows.append(run_policy(mat, spec, split, "FLOOR_CLAMP", K_TRANSFER, s, **refs))
-        if split == "CALIBRATION":
-            for k in K_SWEEP:
-                rows.append(run_policy(mat, spec, split, "SOFT_TIKHONOV", k, s, **refs))
-                rows.append(run_policy(mat, spec, split, "FLOOR_CLAMP", k, s, **refs))
+    # M2-E transfer: k=1 fijo, TODOS los assets, sin retuning; M2-F sweep k sólo
+    # calibración. Sin winner no se ejecuta nada de esto (§3 MATH-B.1).
+    rows.extend(evaluate_sigma_policies(specs, characs, sel, args.resolution))
 
     characs_out = {a: {k: v for k, v in c.items() if k != "_normal"} for a, c in characs.items()}
     (out / "characs.json").write_text(json.dumps(characs_out, indent=1))
     (out / "rows.json").write_text(
         json.dumps(
-            {"columns": COLUMNS, "rows": rows, "sigma_selection": {"winner": sel["winner"], "table": sel["table"]}},
+            {
+                "columns": COLUMNS,
+                "rows": rows,
+                "sigma_selection": {"winner": sel["winner"], "status": sel["status"], "table": sel["table"]},
+            },
             indent=1,
         )
     )
-    print(f"\nrows={len(rows)} sigma_eff_winner={sel['winner']} → {out / 'rows.json'}")
+    if sel["winner"] is None:
+        print(
+            f"\nSIGMA_SELECTION_STATUS={sel['status']}: ningún candidato de σ_eff es evaluable sobre "
+            f"CALIBRATION — no se ejecutan las policies dependientes de σ_eff (M2-E/F). "
+            f"Se conservan las {len(rows)} filas RAW ya calculadas."
+        )
+    print(f"\nrows={len(rows)} sigma_eff_winner={sel['winner']} status={sel['status']} → {out / 'rows.json'}")
 
 
 if __name__ == "__main__":

@@ -356,10 +356,17 @@ def test_sigma_eff_ignora_candidatos_no_evaluables(monkeypatch: pytest.MonkeyPat
     assert not np.isfinite(por_candidato["cand_const"])
     assert np.isfinite(por_candidato["cand_var"])
     assert sel["winner"] == "cand_var"
+    assert sel["status"] == "EVALUABLE"
 
 
-def test_sigma_eff_sin_candidatos_evaluables_usa_el_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Con calibración de 2 assets el Spearman histórico ya era NaN para todos."""
+def test_sigma_eff_sin_candidatos_evaluables_es_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MATH-B.1: sin NINGÚN candidato evaluable no hay ganador — no hay fallback.
+
+    El fallback histórico a ``nz_p01`` no era fail-closed: elegía un σ_eff sin
+    respaldo estadístico y las policies M2-E/F corrían igual, con lo que un corpus
+    donde la selección no es medible producía resultados presentables como si lo
+    fuera. El estado correcto es explícito y sin ganador.
+    """
     monkeypatch.setattr(m2, "SIGMA_EFF_CANDIDATES", {"cand_a": lambda _n, _f: 1.0, "cand_b": lambda _n, _f: 2.0})
     monkeypatch.setattr(m2, "split_of", lambda _family: "CALIBRATION")
     characs = {
@@ -368,7 +375,10 @@ def test_sigma_eff_sin_candidatos_evaluables_usa_el_fallback(monkeypatch: pytest
     }
     assets = {a: SimpleNamespace(family="f") for a in characs}
     sel = m2.select_sigma_eff(characs, assets)
-    assert sel["winner"] == "nz_p01"
+
+    assert sel["winner"] is None
+    assert sel["status"] == "NO_EVALUABLE_SIGMA_CANDIDATE"
+    assert sel["per_asset"] is None
     assert all(not np.isfinite(t["spearman"]) for t in sel["table"])
 
 
@@ -390,6 +400,81 @@ def test_sigma_eff_sigue_eligiendo_el_mejor_cuando_hay_evaluables(monkeypatch: p
     assets = {a: SimpleNamespace(family="f") for a in characs}
     sel = m2.select_sigma_eff(characs, assets)
     assert sel["winner"] == "bueno"
+    assert sel["status"] == "EVALUABLE"
+
+
+# ------------------------------------------- I. M2: sin winner no hay ejecución de policies
+
+
+def _specs_y_characs() -> tuple[list[Any], dict[str, dict[str, Any]]]:
+    specs = [SimpleNamespace(asset_id="A1", family="stone")]
+    characs = {
+        "A1": {
+            "_normal": None,
+            "features": {"sig": 1.0},
+            "raw_eval": {"affine_scale": 1.0, "oracle_best_sign": 1.0, "aligned_rmse": 0.1, "gradient_rmse": 0.2},
+        }
+    }
+    return specs, characs
+
+
+def test_m2_sin_winner_no_ejecuta_policies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ancla §6 end-to-end: NO_WINNER ⇒ NO_TRANSFER_POLICY_EXECUTION.
+
+    Encadena la selección REAL (calibración de 2 assets ⇒ todos los rho NaN) con la
+    ejecución. Si la selección no es evaluable, ninguna policy dependiente de σ_eff
+    (SOFT_TIKHONOV / FLOOR_CLAMP, transfer M2-E y sweep M2-F) puede correr: se hace
+    explotar ``run_policy`` para que cualquier ejecución sea un fallo, no un dato.
+    """
+
+    def _no_debe_correr(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("run_policy ejecutado sin σ_eff elegido válidamente")
+
+    monkeypatch.setattr(m2, "SIGMA_EFF_CANDIDATES", {"cand_a": lambda _n, _f: 1.0, "cand_b": lambda _n, _f: 2.0})
+    monkeypatch.setattr(m2, "split_of", lambda _family: "CALIBRATION")
+    monkeypatch.setattr(m2, "run_policy", _no_debe_correr)
+    monkeypatch.setattr(m2, "load_asset", lambda _spec, _res: SimpleNamespace())
+
+    characs = {
+        "A1": {"_normal": None, "features": {}, "raw_eval": {"aligned_rmse": 0.1, "gradient_rmse": 0.2}},
+        "A2": {"_normal": None, "features": {}, "raw_eval": {"aligned_rmse": 0.3, "gradient_rmse": 0.4}},
+    }
+    assets = {a: SimpleNamespace(family="f") for a in characs}
+    specs = [SimpleNamespace(asset_id=a, family="f") for a in characs]
+
+    sel = m2.select_sigma_eff(characs, assets)
+    assert sel["winner"] is None
+    filas = m2.evaluate_sigma_policies(specs, characs, sel, 64)
+
+    assert filas == []
+    assert sel["per_asset"] is None
+
+
+def test_m2_con_winner_si_ejecuta_policies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control del ancla anterior: con winner válido el transfer/sweep SÍ corre.
+
+    Sin este control, ``evaluate_sigma_policies`` podría devolver siempre [] y el
+    test de arriba pasaría por la razón equivocada.
+    """
+    llamadas: list[tuple[Any, ...]] = []
+
+    def _registrar(*args: Any, **_kwargs: Any) -> dict[str, Any]:
+        llamadas.append(args)
+        return {"policy": args[3]}
+
+    monkeypatch.setattr(m2, "run_policy", _registrar)
+    monkeypatch.setattr(m2, "load_asset", lambda _spec, _res: SimpleNamespace())
+    monkeypatch.setattr(m2, "split_of", lambda _family: "CALIBRATION")
+    monkeypatch.setattr(m2, "SIGMA_EFF_CANDIDATES", {"cand": lambda _n, _f: 1.0})
+    specs, characs = _specs_y_characs()
+    sel = {"winner": "cand", "status": "EVALUABLE", "table": [], "per_asset": None}
+
+    filas = m2.evaluate_sigma_policies(specs, characs, sel, 64)
+
+    # transfer (2 policies) + sweep M2-F (2 policies × len(K_SWEEP)) sobre 1 asset CALIBRATION
+    assert len(llamadas) == 2 + 2 * len(m2.K_SWEEP)
+    assert len(filas) == len(llamadas)
+    assert sel["per_asset"] == {"A1": 1.0}
 
 
 # ---------------------------------------------------------------- I. M4 diagnóstico §16
