@@ -41,6 +41,7 @@ from sky_claw.app.security.links import (
     ContencionFisicaVioladaError,
     exigir_contencion_fisica,
     link_kind_and_identity_or_raise,
+    same_file_identity,
 )
 from sky_claw.local.frozen_runtime.errors import CandidateCopyError, FrozenRuntimeStorageError
 from sky_claw.local.frozen_runtime.independence import exigir_namespace_escribible
@@ -110,10 +111,20 @@ def copiar_archivo(origen: pathlib.Path, destino: pathlib.Path) -> int:
     if st is None:
         raise CandidateCopyError(f"el origen '{origen}' desaparecio antes de copiar")
     try:
-        with open(origen, "rb") as origen_fh, open(destino, "xb") as destino_fh:
-            shutil.copyfileobj(origen_fh, destino_fh, _CHUNK)
-            destino_fh.flush()
-            os.fsync(destino_fh.fileno())
+        with open(origen, "rb") as origen_fh:
+            # Identidad DESPUES de abrir (P3-R): si un ANCESTRO del source fue
+            # redirigido entre el `lstat` de arriba y el `open`, el handle apunta
+            # a un archivo distinto -- posiblemente fuera de la Managed Source --
+            # y esto lo detecta ANTES de copiar un solo byte. Cierra el tramo
+            # inspeccion->apertura, que es lo maximo sin open relativo a handle.
+            if not same_file_identity(st, os.fstat(origen_fh.fileno())):
+                raise CandidateCopyError(
+                    f"la identidad de '{origen}' cambio entre la inspeccion y la apertura: no se copia"
+                )
+            with open(destino, "xb") as destino_fh:
+                shutil.copyfileobj(origen_fh, destino_fh, _CHUNK)
+                destino_fh.flush()
+                os.fsync(destino_fh.fileno())
     except OSError as exc:
         raise CandidateCopyError(f"no se pudo copiar '{origen}' -> '{destino}': {exc}") from exc
     return st.st_size
@@ -137,6 +148,55 @@ def _canonicalizar_lote(entradas: tuple[str, ...], *, tipo: str) -> tuple[str, .
         except DirectoryMembershipError as exc:
             raise CandidateCopyError(f"relpath de {tipo} rechazado antes de copiar: {exc} (fail-closed)") from exc
     return tuple(canonicos)
+
+
+def _exigir_contencion_del_padre_destino(contenedor: pathlib.Path, padre: pathlib.Path) -> None:
+    """Revalida, JUSTO antes de escribir, que el padre del destino siga DENTRO.
+
+    La contencion se verificaba UNA sola vez en la raiz del payload. Un junction
+    que reemplace un directorio NIDO (`payload/Data`) despues de ese chequeo hace
+    que `mkdir(exist_ok=True)` acepte el directorio redirigido y que el `open`
+    destino escriba fuera del ``FrozenRuntimeRoot``. Revalidar por archivo acota
+    la ventana al tramo ``lstat -> open``, que es lo maximo que se puede cerrar
+    sin un handle al directorio padre.
+
+    ``HANDLE_GRADE_DESTINATION = NO``: esto es best-effort fail-closed, no una
+    proteccion atomica contra un swap hostil concurrente. El lock cross-process
+    es P4.
+    """
+    try:
+        exigir_contencion_fisica(contenedor, padre, exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise CandidateCopyError(
+            f"el padre del destino '{padre}' no cuelga fisicamente de '{contenedor}' "
+            f"(posible redireccion por enlace): {exc}"
+        ) from exc
+
+
+def _exigir_ancestros_del_source(raiz_origen: pathlib.Path, archivo: pathlib.Path) -> None:
+    """Revalida la cadena de ANCESTROS del source antes de leer el archivo.
+
+    El probe de fuente miraba SOLO el ultimo componente: ``lstat`` no sigue al
+    leaf, pero SI sigue a los ancestros, asi que con ``Source/Data`` reemplazado
+    por un junction a ``External/`` el probe veia ``External/a.bin`` como un
+    archivo REGULAR de la Managed Source y copiaba bytes externos al payload.
+
+    ``HANDLE_GRADE_SOURCE_TRAVERSAL = NO``: no hay ``open`` relativo a handle, asi
+    que la garantia es la cadena validada + la identidad re-verificada DESPUES de
+    abrir (ver :func:`copiar_archivo`).
+
+    ``permitir_raiz=True`` porque un archivo en la RAIZ del source (``SkyrimSE.exe``)
+    tiene como padre al propio root administrado, que es la frontera legitima y no
+    un escape: la cadena a demostrar es "root -> ... -> padre", y el root ya es
+    parte de ella.
+    """
+    try:
+        exigir_contencion_fisica(raiz_origen, archivo.parent, permitir_raiz=True, exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise CandidateCopyError(
+            f"un ancestro del origen '{archivo}' no cuelga fisicamente de '{raiz_origen}' "
+            f"(posible redireccion por enlace): {exc}"
+        ) from exc
 
 
 def copiar_arbol_independiente(
@@ -235,6 +295,12 @@ def copiar_arbol_independiente(
             origen_archivo = raiz_origen / pathlib.PurePosixPath(rel_path)
             destino_archivo = raiz_destino / pathlib.PurePosixPath(rel_path)
             destino_archivo.parent.mkdir(parents=True, exist_ok=True)
+            # P3-P / P3-R: revalidar AMBOS lados justo antes de tocar el disco. La
+            # contencion del payload se chequeo una sola vez, mucho antes de que
+            # este loop llegue a un directorio nido; y el probe de fuente miraba
+            # solo el leaf, ciego a un ancestro redirigido.
+            _exigir_contencion_del_padre_destino(raiz_contenedora, destino_archivo.parent)
+            _exigir_ancestros_del_source(raiz_origen, origen_archivo)
             copiar_archivo(origen_archivo, destino_archivo)
             copiados += 1
     except CandidateCopyError:
