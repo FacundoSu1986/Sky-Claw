@@ -1,8 +1,10 @@
 # FASE B — reproducción + plan de los 3 defectos del runner (#661)
 
 > Estado (FASE B): documentado y preparado. **Ningún fix commiteado en esta fase.** PR separado por defecto.
-> Post-FASE-B: **R1 cerró** con su PR dedicado (`fix(dyndolod): make packaging cancellation worker-terminal`);
-> R2 tiene fix probado en su PR independiente, incluido el handoff terminal del pre-scan contra cancelaciones repetidas; el finding 3 de #592 sigue abierto hasta merge. R3 continúa **OPEN**.
+> Post-FASE-B: **R1 cerró** con su PR dedicado (`fix(dyndolod): make packaging cancellation worker-terminal`), mergeado.
+> **R2 cerró y se mergeó en #686** (merge commit `7684c92a4205a2d53aa47972be126282e093cecf`), incluido el handoff terminal
+> del pre-scan contra cancelaciones repetidas; ese merge resolvió el **finding 3 de #592**. R3 continúa **OPEN**.
+> #592 permanece **abierto** por sus demás findings.
 
 ## Base
 
@@ -30,7 +32,7 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| resolution_status | **FIXED** (PR #686; protección del contenido y lifecycle del pre-scan probados, aún no mergeada) |
+| resolution_status | **FIXED / MERGED** (PR #686, merge commit `7684c92a4205a2d53aa47972be126282e093cecf`; protección del contenido y lifecycle del pre-scan probados y mergeados) |
 | evidence_status | **REPRODUCED** (la reproducción histórica quedó convertida en aceptación/regresión) |
 | Reproducción | Histórica: `_bytes_del_arbol` contaba sólo archivos propios mientras `copytree` seguía un junction y copiaba `evil.bin`. Regresión de contenido: `test_r2_junction_descendiente_falla_antes_de_copytree_y_no_copia_evil`, `test_r2_package_rechaza_junction_antes_de_rmtree_y_preserva_mod_previo`, `test_r2_symlink_descendiente_falla_cerrado_sin_seguir_destino`, `test_r2_reparse_no_clasificado_falla_cerrado_antes_de_copytree`, `test_r2_inventario_igual_a_bytes_empaquetados_en_arbol_limpio` y `test_r2_texgen_valido_conserva_prefijo_textures`. Regresión de lifecycle: `test_r2_cancel_durante_prescan_espera_terminal_y_no_muta` |
 | Invariante | `EVERY BYTE COPIED MUST BELONG TO THE ADMITTED WORKSPACE TREE` + `inventory set == copyable set`; además `pre-scan worker terminal < cancellation propagation < rollback begins < lease release`, y cancelar durante el scan impide iniciar el worker mutante |
@@ -38,9 +40,10 @@ HEAD:        962f1835
 | Implementación | La primitiva reutilizable vive en `sky_claw/app/security/links.py`: hace `lstat`/clasificación central por entrada; rechaza symlink, junction, reparse tag no clasificado y tipos distintos de directorio real/archivo regular; revalida identidad de los directorios recorridos. El runner traduce el error a `DynDOLODValidationError` con source y entrada problemática. La validación va antes de destruir el mod previo y antes de cualquier copia |
 | Tests | El junction real usa `tests/_symlink_guard.crear_junction` y queda activo en Windows; el symlink cubre plataformas que lo permiten. El fake de tag desconocido entra por `reject_unclassified_reparse_point`. Se instrumenta `copytree` y se exige cero llamadas al rechazar; el mod previo queda byte-exact. El happy path ancla igualdad de archivos/bytes usando `iter_archivos_propios` en fuente y destino; TexGen conserva `textures/`. El test de lifecycle bloquea el pre-scan del método real, prueba cancel #1/#2 y congela por igualdad scan terminal → propagación → rollback → lease; verifica rmtree/mkdir/copytree/copy2/meta.ini en cero y `previous.txt` intacto |
 | Red check | Al desactivar temporalmente el guard, los casos de symlink y reparse no clasificado vuelven rojos. Para lifecycle se restauró temporalmente `await asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path)`: el test nuevo falla con `rollback_started=True`, `lease_released=True` y `scan_terminal=False`; con el handoff restaurado pasa |
+| Post-merge (`7684c92a`) | El merge de #686 sumó dos mejoras focales sobre la base anterior. **F1**: el pre-scan dejó de abortar por un lock transitorio de AV/indexer — las cuatro inspecciones (`raíz`, revalidación tras `scandir`, revalidación tras enumerar, descendientes) usan `link_kind_and_identity_or_raise_with_retry` y la apertura de directorio usa `_scandir_con_reintento` (5 intentos, backoff lineal; `FileNotFoundError` no se reintenta: no es transitorio). Un bloqueo persistente sigue fallando cerrado. **F2**: `tests/test_links.py` incorporó `TestExigirArbolCopiableSinReparse` con tests directos del primitivo (árbol limpio; raíz inexistente/archivo/symlink/junction; descendiente symlink/junction; reparse no clasificado; tipo especial; entrada desaparecida; cambio de identidad al abrir y al enumerar; `PermissionError` transitorio que pasa tras retry y persistente que falla cerrado). La trazabilidad del defecto se conserva: reproducción `inventory != copyable` → pre-scan no-follow → handoff terminal del scan → F1/F2 → merge |
 | TOCTOU | La lease de workspace coordina producers de Sky-Claw que la respetan, pero no es un lock del filesystem y no impide que un actor externo reemplace una entrada después del scan. Este PR cierra estrictamente el junction/reparse preexistente; no declara race-proof. Una copia con validación por entrada/handles queda como follow-up independiente |
 | Collision review | R2 es exactamente #592 finding 3 (`packaging mide link-aware y copia link-following`); no crear issue nuevo. No toca #592 finding 2 (borrado previo a ENOSPC), R1, R3 ni P0/P1-P9 de #661 |
-| Sub-issue | NO — el tracker canónico es #592 finding 3; el issue completo y el finding 3 permanecen abiertos hasta merge |
+| Sub-issue | NO — el tracker canónico era #592 finding 3, **resuelto por #686** (merge `7684c92a`). #592 sigue **abierto** por sus otros findings; no se crea issue nuevo |
 
 ## R3 — `RUNNER_P2_DOUBLE_CANCEL`
 
@@ -78,10 +81,10 @@ HEAD:        962f1835
 ## Runner gates — válidos (dos dimensiones, CR-11)
 
 ```text
-RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  (PR R1 dedicado, mergeado)
-RUNNER_P1_REPARSE_COPY      resolution_status=FIXED  evidence_status=REPRODUCED  (PR R2 listo para review; #592 finding 3 espera merge)
+RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED  (PR R1 dedicado)
+RUNNER_P1_REPARSE_COPY      resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED  (PR #686, merge 7684c92a; #592 finding 3 resuelto)
 RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN   evidence_status=REPRODUCED  (PR R3 pendiente)
-→ R1/R2 FIXED; R3 sigue abierto. #592 no se cierra con este PR.
+→ R1/R2 FIXED y mergeados; R3 sigue abierto y es el próximo slice del runner. #592 permanece OPEN por sus otros findings.
 ```
 
 ## Follow-ups explícitos (NO implementados en este PR)
