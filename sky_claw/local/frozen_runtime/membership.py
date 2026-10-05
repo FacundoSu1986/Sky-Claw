@@ -105,8 +105,14 @@ class DirectoryMembershipEvidence:
             raise DirectoryMembershipError("la lista de directorios tiene duplicados")
 
 
-def canonicalizar_directorio(entrada: str) -> str:
-    """Lleva una entrada de directorio a SU UNICA forma canonica.
+def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
+    """Lleva un relpath de ambito (archivo o directorio) a SU UNICA forma canonica.
+
+    Es la UNICA primitive de canonicalizacion de relpaths del paquete, y la
+    comparten la evidencia de membership y la copia del Candidate. Que sea una sola
+    no es cosmetico: si la copia repitiera estas reglas, un patron aceptado por la
+    evidencia seria rechazado por la copia (o al reves) y la diferencia seria
+    exactamente el hueco por donde pasaria un traversal.
 
     NORMALIZA lo que es inequivoco (separador ``\\`` a ``/``, ``//`` colapsado,
     ``.`` eliminado) y RECHAZA lo que es un ataque o una ambiguedad (``..``,
@@ -116,24 +122,47 @@ def canonicalizar_directorio(entrada: str) -> str:
     mismo directorio y deben producir la misma identidad; ``Data/../../etc`` no
     describe un directorio dentro del arbol, y canonicalizarlo "limpiandolo"
     convertiria un intento de traversal en un path legitimo.
+
+    Un relpath ya canonico es relativo y sin `..`, asi que unirlo a una raiz no
+    puede salir de ella: sobre Windows, ademas, no puede cambiar de unidad ni
+    abrir un ADS.
     """
     if not isinstance(entrada, str) or not entrada:
-        raise DirectoryMembershipError("una entrada de directorio no puede ser vacia")
+        raise DirectoryMembershipError(f"una entrada de {tipo} no puede ser vacia")
     if entrada.startswith(("/", "\\")):
-        raise DirectoryMembershipError(f"una entrada de directorio no puede ser absoluta: '{entrada}'")
+        raise DirectoryMembershipError(f"una entrada de {tipo} no puede ser absoluta: '{entrada}'")
     if ":" in entrada:
-        raise DirectoryMembershipError(f"entrada de directorio ambigua (letra de unidad o ADS): '{entrada}'")
+        raise DirectoryMembershipError(f"entrada de {tipo} ambigua (letra de unidad o ADS): '{entrada}'")
     crudo = entrada.replace("\\", "/")
     partes: list[str] = []
     for parte in crudo.split("/"):
         if parte in ("", "."):
             continue
         if parte == ".." or ":" in parte:
-            raise DirectoryMembershipError(f"entrada de directorio con componente no canonico: '{entrada}'")
+            raise DirectoryMembershipError(f"entrada de {tipo} con componente no canonico: '{entrada}'")
         partes.append(parte)
     if not partes:
-        raise DirectoryMembershipError(f"entrada de directorio degenerada: '{entrada}'")
+        raise DirectoryMembershipError(f"entrada de {tipo} degenerada: '{entrada}'")
+    if tipo == "archivo" and partes[-1] in (".", ".."):
+        raise DirectoryMembershipError(f"entrada de archivo degenerada: '{entrada}'")
     canonico = "/".join(partes)
+    return canonico
+
+
+def canonicalizar_directorio(entrada: str) -> str:
+    """Canonicaliza una entrada de directorio (delega en la primitive unica)."""
+    return canonicalizar_relpath_de_scope(entrada, tipo="directorio")
+
+
+def canonicalizar_archivo(entrada: str) -> str:
+    """Canonicaliza un `rel_path` de archivo (delega en la primitive unica).
+
+    Un archivo tiene que NOMBRAR un archivo: `Data/` describe un directorio, y
+    aceptarlo convertiria un archivo en una entrada de `mkdir`.
+    """
+    canonico = canonicalizar_relpath_de_scope(entrada, tipo="archivo")
+    if canonico.endswith("/"):
+        raise DirectoryMembershipError(f"entrada de archivo degenerada: '{entrada}'")
     return canonico
 
 

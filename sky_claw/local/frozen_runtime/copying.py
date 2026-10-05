@@ -44,6 +44,10 @@ from sky_claw.app.security.links import (
 )
 from sky_claw.local.frozen_runtime.errors import CandidateCopyError, FrozenRuntimeStorageError
 from sky_claw.local.frozen_runtime.independence import exigir_namespace_escribible
+from sky_claw.local.frozen_runtime.membership import (
+    DirectoryMembershipError,
+    canonicalizar_relpath_de_scope,
+)
 from sky_claw.local.runtime_vault.models import FileIdentity
 
 #: Chunk de copia (los arboles verificados llegan a decenas de GB).
@@ -100,6 +104,26 @@ def copiar_archivo(origen: pathlib.Path, destino: pathlib.Path) -> int:
     return st.st_size
 
 
+def _canonicalizar_lote(entradas: tuple[str, ...], *, tipo: str) -> tuple[str, ...]:
+    """Canonicaliza el LOTE completo de relpaths de una vez.
+
+    Se usa la MISMA primitive que la evidencia de membership de P3
+    (``canonicalizar_relpath_de_scope``): si la copia repitiera estas reglas por su
+    cuenta, un patron aceptado por la evidencia seria rechazado por la copia (o al
+    reves), y esa diferencia seria justamente el hueco del traversal.
+
+    Al hacerlo por lotes y antes de mutar, una entrada hostil hace fallar la
+    operacion completa sin escritura parcial previa.
+    """
+    canonicos: list[str] = []
+    for entrada in entradas:
+        try:
+            canonicos.append(canonicalizar_relpath_de_scope(entrada, tipo=tipo))
+        except DirectoryMembershipError as exc:
+            raise CandidateCopyError(f"relpath de {tipo} rechazado antes de copiar: {exc} (fail-closed)") from exc
+    return tuple(canonicos)
+
+
 def copiar_arbol_independiente(
     origen: pathlib.Path,
     destino: pathlib.Path,
@@ -131,6 +155,27 @@ def copiar_arbol_independiente(
     raiz_origen = pathlib.Path(origen)
     raiz_destino = pathlib.Path(destino)
     raiz_contenedora = pathlib.Path(contenedor)
+
+    # Orden determinista ANTES de canonicalizar, para que cada `FileIdentity` quede
+    # emparejada con SU relpath canonico: canonicalizar y ordenar por separado
+    # desalinearia el par y escribiria un archivo con la ruta de otro.
+    archivos_ordenados = sorted(files, key=lambda f: f.rel_path)
+
+    # ── 0) VALIDAR TODO EL LOTE ANTES DE LA PRIMERA MUTACION ──────────────
+    # `copiar_arbol_independiente` es una primitive reusable: no puede asumir que
+    # la evidencia que recibe sea perfecta, y unir un `rel_path` crudo a una raiz
+    # es peligroso de tres formas en Windows: `../../x` sale del payload,
+    # `C:/x` RESETEA LA UNIDAD y `/x` reinicia en la raiz del volumen.
+    #
+    # La validacion es de LOTO y ocurre antes de crear un solo directorio: si se
+    # canonicalizara entrada por entrada mientras se copia, una entrada hostil que
+    # llegue al final dejaria las sanas ya escritas en disco (mutacion parcial).
+    canonicos_directorios = _canonicalizar_lote(directories, tipo="directorio")
+    canonicos_archivos = _canonicalizar_lote(
+        tuple(entrada.rel_path for entrada in archivos_ordenados),
+        tipo="archivo",
+    )
+    pares = tuple(zip(archivos_ordenados, canonicos_archivos, strict=True))
 
     # 1) ANTES de crear nada: el padre debe colgar fisicamente del root.
     padre = raiz_destino.parent
@@ -167,12 +212,13 @@ def copiar_arbol_independiente(
         ) from exc
 
     try:
-        for directorio in directories:
+        for directorio in canonicos_directorios:
             (raiz_destino / pathlib.PurePosixPath(directorio)).mkdir(parents=True, exist_ok=True)
         copiados = 0
-        for entrada in sorted(files, key=lambda f: f.rel_path):
-            origen_archivo = raiz_origen / pathlib.PurePosixPath(entrada.rel_path)
-            destino_archivo = raiz_destino / pathlib.PurePosixPath(entrada.rel_path)
+        for _entrada, rel_path in pares:
+            # `rel_path` ya es canonico: relativo y sin `..`, unirlo no sale del payload.
+            origen_archivo = raiz_origen / pathlib.PurePosixPath(rel_path)
+            destino_archivo = raiz_destino / pathlib.PurePosixPath(rel_path)
             destino_archivo.parent.mkdir(parents=True, exist_ok=True)
             copiar_archivo(origen_archivo, destino_archivo)
             copiados += 1
