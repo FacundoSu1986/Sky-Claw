@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from sky_claw.local.native_parallax.research import metrics as np_m0_metrics
 from sky_claw.local.native_parallax.research.authored_dataset import (
     AuthoredMaterial,
     MaterialSpec,
@@ -164,12 +165,16 @@ def characterize_asset(mat: AuthoredMaterial) -> dict[str, Any]:
 
 
 def spearman(x: list[float], y: list[float]) -> float:
-    """Pearson sobre rangos (misma definición de metrics.py; sin scipy)."""
+    """Wrapper delgado sobre la primitiva canónica ``metrics.spearman`` (sin scipy).
+
+    Conserva la API histórica de M2 (guarda ``n < 3`` ⇒ ``nan``) pero NO reimplementa
+    el ranking: la corrección de empates (rango medio del grupo) vive en un solo lugar.
+    Antes esto era un segundo doble ``argsort`` independiente, que asignaba rangos
+    ordinales distintos a valores iguales.
+    """
     if len(x) < 3:
         return float("nan")
-    rx = np.argsort(np.argsort(np.asarray(x, dtype=np.float64)))
-    ry = np.argsort(np.argsort(np.asarray(y, dtype=np.float64)))
-    return float(np.corrcoef(rx, ry)[0, 1])
+    return np_m0_metrics.spearman(np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64))
 
 
 def select_sigma_eff(characs: dict[str, dict[str, Any]], assets: dict[str, MaterialSpec]) -> dict[str, Any]:
@@ -194,7 +199,12 @@ def select_sigma_eff(characs: dict[str, dict[str, Any]], assets: dict[str, Mater
                 }
             )
     # score principal: spearman vs aligned_rmse (riesgo ⇒ σ_eff alta ⇒ r bajo ⇒ error alto)
-    ranked = sorted((t for t in table if t["target"] == "aligned_rmse"), key=lambda t: -t["spearman"])
+    # §14: un rho no evaluable (NaN, p.ej. calibración < 3 assets o candidato degenerado)
+    # NO puede entrar al ordenamiento — `sorted` con claves NaN elige por accidente.
+    ranked = sorted(
+        (t for t in table if t["target"] == "aligned_rmse" and np.isfinite(t["spearman"])),
+        key=lambda t: -t["spearman"],
+    )
     winner = ranked[0]["candidate"] if ranked else "nz_p01"
     return {"table": table, "winner": winner, "per_asset": None}
 

@@ -8,11 +8,15 @@ Tres familias para evitar que el alineamiento afín "arregle de más" (§35):
 3. De contrato: ``seam_height``, ``seam_gradient`` (comportamiento en el wrap del toro),
    bandas LOW/MID/HIGH (dónde vive el error), ``ssim`` (ventana uniforme 7, sin deps).
 
-Sin scipy: Pearson es ``np.corrcoef``; Spearman es Pearson sobre rangos ordinales
-(dobles argsort; datos continuos → sin empates relevantes; documentado).
+Sin scipy: Pearson es ``np.corrcoef``; Spearman es Pearson sobre **rangos medios**
+(``average_ranks``; los empates comparten el rango promedio de su grupo). Es la
+ÚNICA implementación canónica de rank/tie handling del paquete — ``run_exp_m2``
+delega acá en vez de mantener un segundo algoritmo.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -50,13 +54,77 @@ def pearson(rec: np.ndarray, ref: np.ndarray) -> float:
     return float(np.dot(r, f) / (sr * sf))
 
 
-def _ranks(a: np.ndarray) -> np.ndarray:
-    return np.argsort(np.argsort(a, axis=None), axis=None).reshape(a.shape)
+def average_ranks(values: np.ndarray | Sequence[float]) -> np.ndarray:
+    """Rango MEDIO (base 1) de cada elemento, promediando los grupos empatados.
+
+    Spearman estándar exige que todos los valores iguales reciban el MISMO rango: el
+    promedio de las posiciones que el grupo ocuparía, ``(r_start + r_end) / 2``. Un
+    doble ``argsort`` (rango ordinal) rompe empates por posición incidental y fabrica
+    monotonía donde no la hay: ``[10, 10, 20]`` no puede producir ``[0, 1, 2]``.
+
+    La base (0 o 1) es irrelevante para Pearson porque se aplica uniformemente; acá es 1.
+
+    Implementación ``O(n log n)``, solo NumPy y determinista: sort ESTABLE, detección
+    de corridas de valores iguales, promedio de posiciones por grupo y dispersión de
+    vuelta al orden original. No depende del orden incidental de ``argsort``.
+
+    La entrada no finita (NaN/Inf) es un error del caller: el rango no está definido y
+    cualquier orden asignado sería arbitrario. Un campo CONSTANTE no es un error acá
+    (todos los rangos son iguales); la degeneración la decide ``spearman``.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("average_ranks: entrada no finita (NaN/Inf) — el rango no está definido")
+    if arr.size == 0:
+        return arr.copy()
+
+    plano = arr.reshape(-1)
+    orden = np.argsort(plano, kind="stable")
+    ordenados = plano[orden]
+
+    # Frontera de cada corrida de valores iguales (el ordenado comparado consigo mismo).
+    nuevo_grupo = np.empty(ordenados.size, dtype=bool)
+    nuevo_grupo[0] = True
+    np.not_equal(ordenados[1:], ordenados[:-1], out=nuevo_grupo[1:])
+    grupo = np.cumsum(nuevo_grupo) - 1
+
+    posiciones = np.arange(1.0, plano.size + 1.0)
+    rango_medio = np.bincount(grupo, weights=posiciones) / np.bincount(grupo)
+
+    rangos = np.empty(plano.size, dtype=np.float64)
+    rangos[orden] = rango_medio[grupo]
+    return rangos.reshape(arr.shape)
 
 
-def spearman(rec: np.ndarray, ref: np.ndarray) -> float:
-    """Spearman vía rangos ordinales (datos continuos; sin corrección de empates)."""
-    return pearson(_ranks(rec), _ranks(ref))
+def spearman(x: np.ndarray | Sequence[float], y: np.ndarray | Sequence[float]) -> float:
+    """Spearman = Pearson sobre rangos MEDIOS (con corrección de empates).
+
+    **Contrato de entrada degenerada**: si alguna de las dos series tiene varianza de
+    rangos CERO (todos sus valores iguales) Spearman es matemáticamente indefinido y
+    se devuelve ``nan`` — no evaluable. NO se hereda la convención de campo plano de
+    ``pearson()`` (1.0/0.0): fabricar una correlación informativa donde no hay orden
+    es un falso positivo, y los consumidores (M2/M3/M4) distinguen ``nan`` de un valor.
+
+    Entrada no finita o tamaños desalineados ⇒ ``ValueError`` (bug del caller, no un
+    resultado). Mismo criterio para ``n < 2``: un único valor es constante.
+    """
+    a = np.asarray(x, dtype=np.float64)
+    b = np.asarray(y, dtype=np.float64)
+    if a.size != b.size:
+        raise ValueError(f"spearman: tamaños desalineados ({a.size} vs {b.size})")
+
+    ra = average_ranks(a).reshape(-1)
+    rb = average_ranks(b).reshape(-1)
+    if ra.size < 2:
+        return float("nan")
+
+    da = ra - ra.mean()
+    db = rb - rb.mean()
+    na = float(np.sqrt(np.dot(da, da)))
+    nb = float(np.sqrt(np.dot(db, db)))
+    if na == 0.0 or nb == 0.0:
+        return float("nan")  # varianza de rangos nula ⇒ NOT_EVALUABLE
+    return float(np.dot(da, db) / (na * nb))
 
 
 def r2(rec: np.ndarray, ref: np.ndarray) -> float:
