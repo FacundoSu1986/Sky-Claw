@@ -4,18 +4,22 @@ Estado de cada defecto — los tests de este archivo tienen contratos DISTINTOS
 según el estado del defecto que cubren:
 
 - **R1** — `RUNNER_P1_PACKAGING_CANCEL` — **FIXED / regression invariant**: el
-  `to_thread(_empaquetar_sincrono)` corre en una Task propia y espera por
-  `_esperar_terminalidad_del_worker_mutante`; cancelar el caller NO lo libera
-  (ni con cancelaciones repetidas) hasta que el worker mutante es terminal.
-  Sus tests congelan el invariante de aceptación
-  *worker_terminal < rollback_started < lease_released* en orden causal, con
-  sincronización explícita (`threading.Event` / registros de handoff) — nunca
-  sleeps como autoridad temporal.
-- **R2** — `RUNNER_P1_REPARSE_COPY` — **REPRODUCED / OPEN**: `shutil.copytree(src, dst)`
-  sigue junctions que `_bytes_del_arbol` (vía `iter_archivos_propios`, link-aware)
-  no cuenta. Violación del invariante: *"EVERY BYTE COPIED MUST BELONG TO THE
-  ADMITTED WORKSPACE TREE" y "inventory set == copyable set"*. Sus tests
-  reproducen el defecto vigente y deben seguir pasando hasta su PR dedicado.
+  `to_thread(_empaquetar_sincrono)` corre en una Task propia y espera por la
+  primitiva común `_esperar_terminalidad_del_worker`; cancelar el caller NO lo
+  libera (ni con cancelaciones repetidas) hasta que el worker es terminal. Sus
+  tests congelan el invariante *worker_terminal < rollback_started <
+  lease_released* en orden causal, con sincronización explícita
+  (`threading.Event` / registros de handoff) — nunca sleeps como autoridad
+  temporal.
+- **R2** — `RUNNER_P1_REPARSE_COPY` — **FIXED / regression invariant**: antes de
+  cualquier `rmtree`, `mkdir` o `copytree`, el packaging recorre el árbol con la
+  primitiva central `exigir_arbol_copiable_sin_reparse`, en una Task propia
+  protegida por el mismo terminal handoff. Si hay cancelación durante el scan,
+  éste termina antes de propagarla y el worker mutante no empieza. Symlinks,
+  junctions y reparse tags no clasificados se rechazan; sobre un árbol admitido,
+  inventario y conjunto copiable contienen los mismos archivos. El pre-scan
+  cierra el defecto reproducido, pero no se declara race-proof frente a un swap
+  concurrente.
 - **R3** — `RUNNER_P2_DOUBLE_CANCEL` — **REPRODUCED / OPEN**: en la rama
   `except asyncio.CancelledError` de `_execute_process`, una segunda cancelación
   interrumpe el `await asyncio.gather(...)` **antes** de `close_job(job)`: el
@@ -23,10 +27,10 @@ según el estado del defecto que cubren:
   *"EVERY EXIT PATH MUST TERMINATE ALL OWNED PROCESS/HELPER RESOURCES"*. Su
   test reproduce el defecto vigente y debe seguir pasando hasta su PR dedicado.
 
-Cada test R2/R3 se verifica por: (a) la aserción del defecto (LO QUE PASA HOY),
-y (b) un ancla AST sobre el código real que falla si la forma vulnerable cambia.
-Los tests R1 verifican lo inverso: la aceptación del fix, más un ancla AST que
-falla si la forma fixeada se revierte.
+Los tests R2 verifican aceptación (rechazo antes de copiar y preservar el destino
+previo, tags desconocidos, igualdad del inventario y la semántica TexGen); el test
+R3 sigue siendo una reproducción abierta. Los tests R1 verifican la aceptación
+del fix y el handoff terminal.
 
 Referencias: `docs/pending_ooda_status.md`, `#592`, rig P0 de #661.
 """
@@ -39,14 +43,16 @@ import contextlib
 import logging
 import pathlib
 import shutil
+import stat
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+import sky_claw.app.security.links as links_mod
 from sky_claw.local.tools import dyndolod_runner as runner_mod
-from tests._symlink_guard import crear_junction, junction_guard
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 RUNNER_SRC = pathlib.Path(runner_mod.__file__).resolve()
 
@@ -85,26 +91,30 @@ class _ObservadorDeCancelacion(logging.Handler):
     checkpoint de HANDOFF_ACTIVE que exige R1 antes de mandar la siguiente.
     """
 
-    def __init__(self, orden: list[str]) -> None:
+    def __init__(self, orden: list[str], eventos: asyncio.Queue[str] | None = None) -> None:
         super().__init__(level=logging.INFO)
         self.orden = orden
+        self.eventos = eventos
         self.handoffs = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         operacion = getattr(record, "operation_type", None)
         if operacion == _OPERACION_HANDOFF:
             self.handoffs += 1
-            self.orden.append(f"cancel_{self.handoffs}_procesada")
+            evento = f"cancel_{self.handoffs}_procesada"
+            self.orden.append(evento)
+            if self.eventos is not None:
+                self.eventos.put_nowait(evento)
         elif operacion == _OPERACION_TERMINAL:
             self.orden.append("worker_terminal")
 
 
 @contextlib.contextmanager
-def _observar_cancelaciones(orden: list[str]):
+def _observar_cancelaciones(orden: list[str], eventos: asyncio.Queue[str] | None = None):
     """Instala el observador sobre el logger del runner (baja a INFO el gate)."""
     logger_del_runner = logging.getLogger(runner_mod.__name__)
     nivel_previo = logger_del_runner.level
-    observador = _ObservadorDeCancelacion(orden)
+    observador = _ObservadorDeCancelacion(orden, eventos)
     logger_del_runner.addHandler(observador)
     logger_del_runner.setLevel(logging.INFO)
     try:
@@ -264,16 +274,22 @@ def test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal():
         if isinstance(nodo, ast.Await)
         and isinstance(nodo.value, ast.Call)
         and isinstance(nodo.value.func, ast.Name)
-        and nodo.value.func.id == "_esperar_terminalidad_del_worker_mutante"
+        and nodo.value.func.id == "_esperar_terminalidad_del_worker"
     ]
-    assert len(esperas_helper) == 1, "el worker debe esperarse por _esperar_terminalidad_del_worker_mutante"
+    assert len(esperas_helper) == 2, (
+        "el pre-scan y el worker mutante deben usar la primitiva común _esperar_terminalidad_del_worker"
+    )
+    assert any(
+        espera.value.args and isinstance(espera.value.args[0], ast.Name) and espera.value.args[0].id == "worker_mutante"
+        for espera in esperas_helper
+    ), "R1 debe seguir pasando el worker mutante por el terminal handoff"
 
     # (4) el helper implementa el mecanismo: loop sobre worker.done() con shield
     # y rama que absorbe CancelledError.
     helper = next(
         nodo
         for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_esperar_terminalidad_del_worker_mutante"
+        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_esperar_terminalidad_del_worker"
     )
     bucles = [nodo for nodo in ast.walk(helper) if isinstance(nodo, ast.While)]
     assert bucles, "el helper debe esperar en un loop hasta terminal"
@@ -478,78 +494,357 @@ async def test_r1_excepcion_del_worker_con_cancel_se_consume_y_encadena(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# R2 — copytree pelado atraviesa junctions; presupuesto link-aware no los cuenta
+# R2 — FIXED: sólo se empaqueta un árbol validado como propio y sin reparse
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-@junction_guard
-async def test_r2_copytree_atraviesa_junction_mientras_medidor_no(tmp_path, monkeypatch):
-    """Con un junction DENTRO del árbol fuente, el inventory (bytes a medir) no
-    incurre en esos bytes, pero `copytree` los COPIA igual — el defecto #592-3.
+def _crear_arbol_con_junction(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """Fuente con un archivo propio y un junction anidado a un árbol externo."""
+    import os
 
-    En main actual: `esl bytes copiados > presupuesto de bytes`, y el modeo destino
-    recibe archivos del exterior de la cadena admitida.
-    """
-
-    # estructura: src con archivo real + junction "externo" a una carpeta separada
     src = tmp_path / "src"
     src.mkdir()
     (src / "real.txt").write_bytes(b"r")
     externo = tmp_path / "externo"
     externo.mkdir()
     (externo / "evil.bin").write_bytes(b"e" * 64)
-    motivo = crear_junction(src / "nested", externo)
+    junction = src / "nested"
+    motivo = crear_junction(junction, externo)
     assert motivo is None, f"no se pudo crear junction: {motivo}"
-    # verificar la identidad: junction real, q `os.path.islink` NO lo detecta
-    import os
+    # Ancla que evita sustituir accidentalmente el junction por un symlink.
+    assert os.path.islink(junction) is False
+    assert getattr(junction.lstat(), "st_reparse_tag", 0) != 0
+    return src, externo
 
-    assert os.path.islink(src / "nested") is False
-    assert getattr((src / "nested").lstat(), "st_reparse_tag", 0) != 0
 
-    dst = tmp_path / "dst"
+def _espiar_copytree(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Registra la frontera de copia del runner y conserva su comportamiento real."""
+    llamadas: list[object] = []
+    copytree_original = runner_mod.shutil.copytree
 
-    # Medición: la primitiva del runner (link-aware, iter_archivos_propios)
-    medido = runner_mod._bytes_del_arbol(src)
+    def _copytree(*args, **kwargs):
+        llamadas.append((args, kwargs))
+        return copytree_original(*args, **kwargs)
 
-    # Cómo copia el runner HOY: shutil.copytree(src, dst)
-    shutil.copytree(src, dst)
-
-    # DEFECTO 1: el destino recibió el contenido del junction (su destino externo)
-    destino = dst / "nested"
-    assert (destino / "evil.bin").exists(), "copytree siguió el junction y arrastró archivos externos al paquete"
-    assert (destino / "evil.bin").read_bytes() == b"e" * 64
-
-    # DEFECTO 2: el presupuesto no cuenta los bytes recibidos del exterior
-    copiado_bytes = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
-    assert medido == (src / "real.txt").stat().st_size, "_bytes_del_arbol correctamente NO cuenta los junctions"
-    assert copiado_bytes == medido + (externo / "evil.bin").stat().st_size, (
-        "el destino tiene MÁS bytes de los medidos: el presupuesto sub-cuenta"
-    )
+    monkeypatch.setattr(runner_mod.shutil, "copytree", _copytree)
+    return llamadas
 
 
 @pytest.mark.asyncio
 @junction_guard
-async def test_r2_package_output_as_mod_admite_copia_de_junction(tmp_path, monkeypatch):
-    """El defecto atraviesa el packaging real: `_package_output_as_mod` con una
-    fuente que es un junction realiza la copia y no rechaza."""
+async def test_r2_junction_descendiente_falla_antes_de_copytree_y_no_copia_evil(tmp_path, monkeypatch):
+    """Un junction preexistente dentro de ``src`` se rechaza antes de copiar.
 
+    El medidor link-aware sigue reportando sólo ``real.txt``; a diferencia de
+    la reproducción histórica, la copia productiva no alcanza ``evil.bin``.
+    """
+    src, externo = _crear_arbol_con_junction(tmp_path)
+    runner = _runner_stub(tmp_path)
+    copytree_calls = _espiar_copytree(monkeypatch)
+    medido = runner_mod._bytes_del_arbol(src)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError) as excinfo:
+        await runner._package_output_as_mod(src, "TestMod")
+
+    mod_path = tmp_path / "mods" / "TestMod"
+    assert "junction" in str(excinfo.value).lower()
+    assert str(src) in str(excinfo.value)
+    assert str(src / "nested") in str(excinfo.value)
+    assert medido == len(b"r")
+    assert copytree_calls == [], "la fuente inadmisible no debe llegar a shutil.copytree"
+    assert not mod_path.exists()
+    assert not (mod_path / "nested" / "evil.bin").exists()
+    assert (externo / "evil.bin").read_bytes() == b"e" * 64
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_r2_package_rechaza_junction_antes_de_rmtree_y_preserva_mod_previo(tmp_path, monkeypatch):
+    """Una fuente con junction no destruye el mod anterior ni inicia ninguna copia."""
+    src, externo = _crear_arbol_con_junction(tmp_path)
+    runner = _runner_stub(tmp_path)
+    mod_path = tmp_path / "mods" / "TestMod"
+    mod_path.mkdir(parents=True)
+    previo = mod_path / "previous.txt"
+    previo.write_bytes(b"keep the prior mod")
+
+    copytree_calls = _espiar_copytree(monkeypatch)
+    rmtree_calls: list[pathlib.Path] = []
+    rmtree_original = runner_mod.rmtree_link_aware
+
+    def _rmtree(path: pathlib.Path, **kwargs):
+        rmtree_calls.append(path)
+        return rmtree_original(path, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "rmtree_link_aware", _rmtree)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError, match="junction"):
+        await runner._package_output_as_mod(src, "TestMod")
+
+    assert rmtree_calls == [], "el gate R2 debe ejecutarse antes de borrar el mod previo"
+    assert copytree_calls == [], "el gate R2 debe ejecutarse antes de copiar cualquier directorio"
+    assert previo.read_bytes() == b"keep the prior mod"
+    assert not (mod_path / "nested" / "evil.bin").exists()
+    assert (externo / "evil.bin").read_bytes() == b"e" * 64
+
+
+@pytest.mark.asyncio
+@symlink_guard
+async def test_r2_symlink_descendiente_falla_cerrado_sin_seguir_destino(tmp_path, monkeypatch):
+    """Un symlink interno tiene la misma política fail-closed que un junction."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "real.txt").write_bytes(b"r")
     externo = tmp_path / "externo"
     externo.mkdir()
-    (externo / "evil.bin").write_bytes(b"e" * 8)
-    motivo = crear_junction(src / "nested", externo)
-    assert motivo is None
-    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda p: None)
+    (externo / "evil.bin").write_bytes(b"external bytes")
+    (src / "nested").symlink_to(externo, target_is_directory=True)
     runner = _runner_stub(tmp_path)
+    copytree_calls = _espiar_copytree(monkeypatch)
 
-    mod_path = await runner._package_output_as_mod(src, "TestMod")
+    with pytest.raises(runner_mod.DynDOLODValidationError) as excinfo:
+        await runner._package_output_as_mod(src, "TestMod")
 
-    # el defecto se reproduce: el packaging completo fue exitoso y el destino
-    # recibió el archivo externo a través del junction.
-    assert (mod_path / "nested" / "evil.bin").exists()
+    mod_path = tmp_path / "mods" / "TestMod"
+    assert "symlink" in str(excinfo.value).lower()
+    assert str(src / "nested") in str(excinfo.value)
+    assert copytree_calls == []
+    assert not (mod_path / "nested" / "evil.bin").exists()
+    assert (externo / "evil.bin").read_bytes() == b"external bytes"
+
+
+@pytest.mark.asyncio
+async def test_r2_reparse_no_clasificado_falla_cerrado_antes_de_copytree(tmp_path, monkeypatch):
+    """Un tag ajeno a symlink/junction se rechaza mediante la política central."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "real.txt").write_bytes(b"owned")
+    sospechoso = src / "opaque-reparse.bin"
+    sospechoso.write_bytes(b"placeholder for a reparse entry")
+    tamano_sospechoso = sospechoso.stat().st_size
+    clasificador_real = links_mod.link_kind_and_identity_or_raise
+    tag_no_clasificado = 0x9000001A
+
+    def _clasificar_con_tag_ajeno(path: pathlib.Path):
+        if path == sospechoso:
+            return None, SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o644,
+                st_reparse_tag=tag_no_clasificado,
+                st_size=tamano_sospechoso,
+            )
+        return clasificador_real(path)
+
+    monkeypatch.setattr(links_mod, "link_kind_and_identity_or_raise", _clasificar_con_tag_ajeno)
+    runner = _runner_stub(tmp_path)
+    copytree_calls = _espiar_copytree(monkeypatch)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError) as excinfo:
+        await runner._package_output_as_mod(src, "TestMod")
+
+    mensaje = str(excinfo.value)
+    assert "reparse tag no clasificado" in mensaje
+    assert f"0x{tag_no_clasificado:08X}" in mensaje
+    assert str(src) in mensaje
+    assert str(sospechoso) in mensaje
+    assert "junction" not in mensaje.lower()
+    assert copytree_calls == []
+
+
+@pytest.mark.asyncio
+async def test_r2_inventario_igual_a_bytes_empaquetados_en_arbol_limpio(tmp_path):
+    """Para un árbol admitido, todo archivo propio se copia byte-exactamente."""
+    runner = _runner_stub(tmp_path)
+    src = tmp_path / "src"
+    (src / "meshes" / "lod").mkdir(parents=True)
+    (src / "DynDOLOD.esp").write_bytes(b"plugin bytes")
+    (src / "meshes" / "lod" / "tree.nif").write_bytes(b"mesh bytes" * 7)
+
+    inventario = list(runner_mod.iter_archivos_propios(src))
+    bytes_inventariados = runner_mod._bytes_del_arbol(src)
+    esperado = {path.relative_to(src): path.read_bytes() for path, _identidad in inventario}
+
+    mod_path = await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    empaquetado = list(runner_mod.iter_archivos_propios(mod_path))
+    observado = {path.relative_to(mod_path): path.read_bytes() for path, _identidad in empaquetado}
+    bytes_empaquetados = sum(identidad.st_size for _path, identidad in empaquetado)
+    assert observado == esperado, "el conjunto y el contenido del paquete deben ser byte-exactos"
+    assert bytes_inventariados == bytes_empaquetados
+    assert bytes_inventariados == sum(len(contenido) for contenido in esperado.values())
+
+
+@pytest.mark.asyncio
+async def test_r2_texgen_valido_conserva_prefijo_textures(tmp_path):
+    """El guard no aplana el root ``textures/`` Data-relative de TexGen."""
+    runner = _runner_stub(tmp_path)
+    src = tmp_path / "staging" / "textures"
+    (src / "terrain" / "lod").mkdir(parents=True)
+    esperado = b"texgen texture bytes"
+    (src / "terrain" / "lod" / "mountain.dds").write_bytes(esperado)
+
+    mod_path = await runner._package_output_as_mod(src, "TexGen Output", preservar_directorio_raiz=True)
+
+    assert (mod_path / "textures" / "terrain" / "lod" / "mountain.dds").read_bytes() == esperado
+    assert not (mod_path / "terrain").exists(), "TexGen debe conservar textures/ como prefijo del mod"
+
+
+@pytest.mark.asyncio
+async def test_r2_cancel_durante_prescan_espera_terminal_y_no_muta(tmp_path, monkeypatch):
+    """El scan real de packaging hereda R1: cancel #1/#2 no liberan al caller.
+
+    El test ejecuta ``_package_output_as_mod`` real y bloquea únicamente su
+    primitive de scan dentro del thread. Hasta que ``scan_terminal`` se señala,
+    el caller no propaga cancelación ni puede empezar rollback/liberar la lease;
+    el worker mutante no arranca (ningún rmtree/mkdir/copytree/meta.ini).
+    """
+    runner = _runner_stub(tmp_path)
+    src = tmp_path / "src"
+    (src / "meshes").mkdir(parents=True)
+    (src / "meshes" / "tree.nif").write_bytes(b"fresh output")
+
+    mod_path = tmp_path / "mods" / "TestMod"
+    mod_path.mkdir(parents=True)
+    previous = mod_path / "previous.txt"
+    previous.write_bytes(b"previous mod must survive")
+
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    scan_terminal = threading.Event()
+    rollback_started = threading.Event()
+    lease_released = threading.Event()
+    scan_paths: list[pathlib.Path] = []
+    orden: list[str] = []
+    eventos: asyncio.Queue[str] = asyncio.Queue()
+
+    def _scan_bloqueado(path: pathlib.Path) -> None:
+        scan_paths.append(path)
+        scan_started.set()
+        assert release_scan.wait(timeout=30), "el test no liberó el scan del preflight"
+        orden.append("scan_terminal")
+        scan_terminal.set()
+
+    monkeypatch.setattr(runner_mod, "exigir_arbol_copiable_sin_reparse", _scan_bloqueado)
+    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda _path: None)
+
+    rmtree_calls: list[pathlib.Path] = []
+    rmtree_original = runner_mod.rmtree_link_aware
+
+    def _rmtree(path: pathlib.Path, **kwargs):
+        rmtree_calls.append(path)
+        return rmtree_original(path, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "rmtree_link_aware", _rmtree)
+    copytree_calls = _espiar_copytree(monkeypatch)
+
+    copy2_calls: list[object] = []
+    copy2_original = runner_mod.shutil.copy2
+
+    def _copy2(*args, **kwargs):
+        copy2_calls.append((args, kwargs))
+        return copy2_original(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.shutil, "copy2", _copy2)
+
+    mkdir_calls: list[pathlib.Path] = []
+    mkdir_original = pathlib.Path.mkdir
+
+    def _mkdir(path: pathlib.Path, *args, **kwargs):
+        if path == mod_path:
+            mkdir_calls.append(path)
+        return mkdir_original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _mkdir)
+
+    meta_calls: list[tuple[pathlib.Path, str]] = []
+
+    def _write_meta(path: pathlib.Path, name: str) -> None:
+        meta_calls.append((path, name))
+        (path / "meta.ini").write_text("[General]\ngameName=Skyrim Special Edition\n", encoding="utf-8")
+
+    runner._generate_meta_ini = _write_meta
+
+    async def _caller_con_rollback_y_lease() -> None:
+        try:
+            await runner._package_output_as_mod(src, "TestMod")
+        except asyncio.CancelledError:
+            orden.append("package_cancel_propagated")
+            eventos.put_nowait("package_cancel_propagated")
+            raise
+        finally:
+            orden.append("rollback_started")
+            rollback_started.set()
+            orden.append("lease_released")
+            lease_released.set()
+
+    caller = asyncio.create_task(_caller_con_rollback_y_lease())
+
+    def _assert_sin_mutacion() -> None:
+        assert rmtree_calls == [], "el worker mutante no debe borrar el mod previo"
+        assert mkdir_calls == [], "el worker mutante no debe iniciar mkdir del mod"
+        assert copytree_calls == [], "el worker mutante no debe iniciar copytree"
+        assert copy2_calls == [], "el worker mutante no debe iniciar copy2"
+        assert meta_calls == [], "el worker mutante no debe escribir meta.ini"
+        assert previous.read_bytes() == b"previous mod must survive"
+        assert not (mod_path / "meta.ini").exists()
+
+    try:
+        with _observar_cancelaciones(orden, eventos):
+            assert await asyncio.to_thread(scan_started.wait, 5), "el pre-scan no arrancó en su thread"
+            assert scan_paths == [src]
+
+            caller.cancel()  # cancel #1 durante el pre-scan
+            primer_evento = await asyncio.wait_for(eventos.get(), timeout=5)
+            assert primer_evento == "cancel_1_procesada", (
+                "el caller propagó cancelación mientras el scan seguía vivo; "
+                f"rollback_started={rollback_started.is_set()}, "
+                f"lease_released={lease_released.is_set()}, "
+                f"scan_terminal={scan_terminal.is_set()}, orden={orden}"
+            )
+            assert not caller.done(), "cancel #1 liberó al caller antes de scan_terminal"
+            assert not rollback_started.is_set(), "rollback empezó mientras el scan seguía vivo"
+            assert not lease_released.is_set(), "la lease se liberó mientras el scan seguía vivo"
+            assert not scan_terminal.is_set(), "el scan debe seguir bloqueado hasta que el test lo libere"
+            _assert_sin_mutacion()
+            assert orden == ["cancel_1_procesada"], orden
+
+            caller.cancel()  # cancel #2 durante el mismo handoff
+            segundo_evento = await asyncio.wait_for(eventos.get(), timeout=5)
+            assert segundo_evento == "cancel_2_procesada", (
+                f"cancel #2 no fue absorbida por el handoff: evento={segundo_evento!r}, orden={orden}"
+            )
+            assert not caller.done(), "cancel #2 liberó al caller mientras el scan seguía vivo"
+            assert not rollback_started.is_set(), "cancel #2 dejó avanzar el rollback"
+            assert not lease_released.is_set(), "cancel #2 liberó la lease"
+            _assert_sin_mutacion()
+            assert orden == ["cancel_1_procesada", "cancel_2_procesada"], orden
+
+            release_scan.set()
+            assert await asyncio.to_thread(scan_terminal.wait, 5), "el thread del scan no llegó a terminal"
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+    finally:
+        # También en una aserción roja, nunca dejar vivo el thread bloqueado ni
+        # una excepción pendiente en la Task del caller.
+        release_scan.set()
+        if scan_started.is_set():
+            assert await asyncio.to_thread(scan_terminal.wait, 5), "el thread del scan quedó vivo al limpiar el test"
+        if not caller.done():
+            caller.cancel()
+        with contextlib.suppress(BaseException):
+            await caller
+
+    _assert_sin_mutacion()
+    assert orden == [
+        "cancel_1_procesada",
+        "cancel_2_procesada",
+        "scan_terminal",
+        "worker_terminal",
+        "package_cancel_propagated",
+        "rollback_started",
+        "lease_released",
+    ], orden
+    assert rollback_started.is_set()
+    assert lease_released.is_set()
 
 
 # ---------------------------------------------------------------------------

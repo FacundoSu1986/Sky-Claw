@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -849,3 +850,264 @@ class TestContencionFisica:
 
         with pytest.raises(links.ContencionFisicaVioladaError):
             links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD" / ".." / ".." / "Outside")
+
+
+class TestExigirArbolCopiableSinReparse:
+    """``exigir_arbol_copiable_sin_reparse``: autorización de copia, no medición.
+
+    Cierra R2 de #592 finding 3 (PR #686): el inventario link-aware
+    (``iter_archivos_propios``) omite enlaces, pero ``shutil.copytree`` los
+    atraviesa y arrastra bytes ajenos al workspace. Esta primitiva rechaza el
+    árbol ANTES de que el packaging borre el mod previo o copie un byte.
+    """
+
+    def test_arbol_limpio_pasa(self, tmp_path: pathlib.Path) -> None:
+        """Directorios reales y archivos regulares en cualquier profundidad: se admite."""
+        src = tmp_path / "src"
+        (src / "meshes" / "lod").mkdir(parents=True)
+        (src / "DynDOLOD.esp").write_bytes(b"plugin")
+        (src / "meshes" / "lod" / "tree.nif").write_bytes(b"mesh")
+
+        links.exigir_arbol_copiable_sin_reparse(src)  # no lanza
+
+    def test_raiz_inexistente_falla_con_file_not_found(self, tmp_path: pathlib.Path) -> None:
+        """La rama que el runner traduce a ``Output directory does not exist``."""
+        with pytest.raises(FileNotFoundError, match="no existe o no se pudo inspeccionar"):
+            links.exigir_arbol_copiable_sin_reparse(tmp_path / "no-existe")
+
+    def test_raiz_archivo_regular_no_es_directorio(self, tmp_path: pathlib.Path) -> None:
+        """La fuente del packaging tiene que ser un directorio REAL, no un archivo."""
+        archivo = tmp_path / "salida.bin"
+        archivo.write_bytes(b"x")
+
+        with pytest.raises(OSError, match="no es un directorio real"):
+            links.exigir_arbol_copiable_sin_reparse(archivo)
+
+    @symlink_guard
+    def test_raiz_symlink_se_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """Un symlink EN la raíz no se puede autorizar ni aunque su destino sea un árbol real."""
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "archivo.txt").write_bytes(b"x")
+        enlace = tmp_path / "enlace"
+        enlace.symlink_to(real, target_is_directory=True)
+
+        with pytest.raises(OSError, match="symlink"):
+            links.exigir_arbol_copiable_sin_reparse(enlace)
+
+    @junction_guard
+    def test_raiz_junction_se_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """Un junction en la raíz cae por la misma política que el symlink."""
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "archivo.txt").write_bytes(b"x")
+        enlace = tmp_path / "enlace"
+        motivo = crear_junction(enlace, real)
+        assert motivo is None, f"no se pudo crear junction: {motivo}"
+
+        with pytest.raises(OSError, match="junction"):
+            links.exigir_arbol_copiable_sin_reparse(enlace)
+
+    @symlink_guard
+    def test_descendiente_symlink_se_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """Un symlink ANIDADO es el caso del finding 3: el inventario lo omite y copytree lo sigue."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "real.txt").write_bytes(b"r")
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        (externo / "evil.bin").write_bytes(b"e" * 64)
+        (src / "nested").symlink_to(externo, target_is_directory=True)
+
+        with pytest.raises(OSError, match="symlink"):
+            links.exigir_arbol_copiable_sin_reparse(src)
+
+    @junction_guard
+    def test_descendiente_junction_se_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """El descendiente junction es el modo de falla más grave (os.path.islink lo niega)."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "real.txt").write_bytes(b"r")
+        externo = tmp_path / "externo"
+        externo.mkdir()
+        (externo / "evil.bin").write_bytes(b"e" * 64)
+        motivo = crear_junction(src / "nested", externo)
+        assert motivo is None, f"no se pudo crear junction: {motivo}"
+
+        with pytest.raises(OSError, match="junction"):
+            links.exigir_arbol_copiable_sin_reparse(src)
+
+    def test_reparse_no_clasificado_falla_cerrado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un tag que no es symlink ni MOUNT_POINT no se puede autorizar: semántica opaca."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "real.txt").write_bytes(b"owned")
+        sospechoso = src / "opaque-reparse.bin"
+        sospechoso.write_bytes(b"placeholder")
+        tamano = sospechoso.stat().st_size
+        real = links.link_kind_and_identity_or_raise
+        tag_ajeno = 0x9000001A  # IO_REPARSE_TAG_CLOUD (OneDrive), no MOUNT_POINT
+
+        def _con_tag_ajeno(ruta: pathlib.Path):
+            if pathlib.Path(ruta) == sospechoso:
+                return None, SimpleNamespace(
+                    st_mode=stat.S_IFREG | 0o644,
+                    st_reparse_tag=tag_ajeno,
+                    st_size=tamano,
+                )
+            return real(ruta)
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _con_tag_ajeno)
+
+        with pytest.raises(OSError, match="reparse tag no clasificado"):
+            links.exigir_arbol_copiable_sin_reparse(src)
+
+    def test_entrada_de_tipo_especial_se_rechaza(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FIFO/socket/dispositivo: ``copytree`` no los trata como archivo regular.
+
+        Se simula el modo (portable) en vez de crear el nodo: ``os.mkfifo`` no
+        existe en Windows, que es la plataforma de entrega.
+        """
+        src = tmp_path / "src"
+        src.mkdir()
+        tuberia = src / "tuberia"
+        tuberia.write_bytes(b"")
+        real = links.link_kind_and_identity_or_raise
+
+        def _como_fifo(ruta: pathlib.Path):
+            tipo, identidad = real(ruta)
+            if pathlib.Path(ruta) == tuberia:
+                return None, SimpleNamespace(
+                    st_mode=stat.S_IFIFO | 0o644,
+                    st_size=0,
+                    st_reparse_tag=0,
+                )
+            return tipo, identidad
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _como_fifo)
+
+        with pytest.raises(OSError, match="no es directorio real ni archivo regular"):
+            links.exigir_arbol_copiable_sin_reparse(src)
+
+    def test_entrada_que_desaparece_falla_cerrado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un hijo enumerado que ya no está al inspeccionarlo invalida el veredicto."""
+        src = tmp_path / "src"
+        src.mkdir()
+        fantasma = src / "fantasma.txt"
+        fantasma.write_bytes(b"exists during scandir")
+        real = links.link_kind_and_identity_or_raise
+
+        def _desaparece(ruta: pathlib.Path):
+            if pathlib.Path(ruta) == fantasma:
+                return None, None
+            return real(ruta)
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _desaparece)
+
+        with pytest.raises(OSError, match="desapareció"):
+            links.exigir_arbol_copiable_sin_reparse(src)
+
+    def test_directorio_que_cambia_al_abrirlo_falla_cerrado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Revalidación tras ``os.scandir``: si la identidad cambió, el recorrido no confía en sus hijos."""
+        raiz = tmp_path / "src"
+        raiz.mkdir()
+        (raiz / "real.txt").write_bytes(b"r")
+        real = links.link_kind_and_identity_or_raise
+        vistas = 0
+
+        def _identidad_distinta(ruta: pathlib.Path):
+            nonlocal vistas
+            tipo, identidad = real(ruta)
+            if pathlib.Path(ruta) == raiz and identidad is not None:
+                vistas += 1
+                if vistas >= 2:  # primera revalidación, dentro del scandir
+                    return tipo, SimpleNamespace(
+                        st_mode=identidad.st_mode,
+                        st_dev=identidad.st_dev,
+                        st_ino=identidad.st_ino + 1,
+                        st_reparse_tag=getattr(identidad, "st_reparse_tag", 0),
+                    )
+            return tipo, identidad
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _identidad_distinta)
+
+        with pytest.raises(OSError, match="cambió al abrirlo"):
+            links.exigir_arbol_copiable_sin_reparse(raiz)
+
+    def test_directorio_que_cambia_al_enumerar_falla_cerrado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Segunda revalidación (tras enumerar): un reemplazo durante el listado también se rechaza."""
+        raiz = tmp_path / "src"
+        raiz.mkdir()
+        (raiz / "real.txt").write_bytes(b"r")
+        real = links.link_kind_and_identity_or_raise
+        vistas = 0
+
+        def _identidad_distinta_al_final(ruta: pathlib.Path):
+            nonlocal vistas
+            tipo, identidad = real(ruta)
+            if pathlib.Path(ruta) == raiz and identidad is not None:
+                vistas += 1
+                if vistas >= 3:  # revalidación posterior a la enumeración
+                    return tipo, SimpleNamespace(
+                        st_mode=identidad.st_mode,
+                        st_dev=identidad.st_dev,
+                        st_ino=identidad.st_ino + 1,
+                        st_reparse_tag=getattr(identidad, "st_reparse_tag", 0),
+                    )
+            return tipo, identidad
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _identidad_distinta_al_final)
+
+        with pytest.raises(OSError, match="cambió durante la enumeración"):
+            links.exigir_arbol_copiable_sin_reparse(raiz)
+
+    def test_bloqueo_transitorio_se_reintenta_y_pasa(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F1: un ``PermissionError`` transitorio (AV/indexer) NO aborta el packaging.
+
+        Un output de DynDOLOD tiene decenas de miles de entradas: un lock de
+        milisegundos sobre UNA de ellas no puede producir un error de
+        "validación" donde no hay ninguna redirección. La variante con retry del
+        propio módulo es la que ya usan Pandora y grass_profile.
+        """
+        src = tmp_path / "src"
+        (src / "meshes").mkdir(parents=True)
+        objetivo = src / "meshes" / "lod.nif"
+        objetivo.write_bytes(b"mesh")
+        real = links.link_kind_and_identity_or_raise
+        intentos = 0
+
+        def _bloqueo_transitorio(ruta: pathlib.Path):
+            nonlocal intentos
+            if pathlib.Path(ruta) == objetivo and intentos == 0:
+                intentos += 1
+                raise PermissionError(13, "Access is denied (bloqueo transitorio de AV/indexer)")
+            return real(ruta)
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _bloqueo_transitorio)
+
+        links.exigir_arbol_copiable_sin_reparse(src)  # no lanza: el retry lo absorbe
+        assert intentos == 1, "el retry debió reintentar la inspección bloqueada"
+
+    def test_bloqueo_persistente_falla_cerrado(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """F1 (contracara): si el bloqueo persiste, el gate NO autoriza el árbol."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "real.txt").write_bytes(b"r")
+
+        def _bloqueo_persistente(ruta: pathlib.Path):
+            raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _bloqueo_persistente)
+
+        with pytest.raises(PermissionError):
+            links.exigir_arbol_copiable_sin_reparse(src)

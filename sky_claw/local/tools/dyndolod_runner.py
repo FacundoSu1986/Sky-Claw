@@ -30,6 +30,7 @@ from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, Protocol
 
 from sky_claw.app.security.links import (
+    exigir_arbol_copiable_sin_reparse,
     exigir_contencion_fisica,
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
@@ -325,16 +326,17 @@ def _espacio_libre_en(destino: pathlib.Path) -> int:
     return shutil.disk_usage(probe).free
 
 
-async def _esperar_terminalidad_del_worker_mutante(worker: asyncio.Task[None]) -> None:
-    """Retiene al caller hasta que el worker mutante de packaging es terminal.
+async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
+    """Retiene al caller hasta que un worker ``to_thread`` de packaging es terminal.
 
-    R1 — ``RUNNER_P1_PACKAGING_CANCEL``. Un hilo ya despachado por
-    ``asyncio.to_thread`` no se puede interrumpir de forma segura: cancelar el
-    ``await`` suelta al caller mientras el thread sigue mutando disco (borra el
-    mod previo, copia el árbol, escribe ``meta.ini``) y el caller podría empezar
-    rollback/cleanup o liberar la lease contra bytes todavía vivos. Este helper
-    NO cancela el thread — espera su terminalidad y recién entonces deja
-    propagar la cancelación. Invariante::
+    R1/R2 — ``RUNNER_P1_PACKAGING_CANCEL`` / ``RUNNER_P1_REPARSE_COPY``. Un hilo
+    ya despachado por ``asyncio.to_thread`` no se puede interrumpir de forma
+    segura: cancelar el ``await`` suelta al caller mientras el thread sigue
+    observando el árbol fuente (pre-scan) o mutando disco (borra el mod previo,
+    copia el árbol, escribe ``meta.ini``). El caller podría empezar
+    rollback/cleanup o liberar la lease mientras ese worker todavía usa el
+    workspace. Este helper NO cancela el thread — espera su terminalidad y
+    recién entonces deja propagar la cancelación. Invariante::
 
         worker_terminal < rollback_started < lease_released
 
@@ -368,7 +370,7 @@ async def _esperar_terminalidad_del_worker_mutante(worker: asyncio.Task[None]) -
                 intencion = exc
             logger.warning(
                 "cancelación durante el packaging: el caller queda retenido hasta que "
-                "el worker mutante llegue a terminal; ninguna cancelación lo libera antes",
+                "el worker bloqueante llegue a terminal; ninguna cancelación lo libera antes",
                 extra={
                     "operation_type": "dyndolod_packaging_cancel_handoff",
                     "pipeline_stage": _ETAPA_DYNDOLOD,
@@ -2493,6 +2495,32 @@ class DynDOLODRunner:
             # un enlace que resuelve afuera es fail-closed.
             await self._exigir_fuente_del_subroot(output_path, mod_name)
 
+            # R2 — RUNNER_P1_REPARSE_COPY: el guard del subroot cubre la cadena
+            # root→source, no los descendientes. Recorrer el árbol ANTES de
+            # `exists`/`iterdir` (que seguirían una raíz redirigida), y antes de
+            # cualquier mutación del mod previo. La clasificación central mira
+            # cada entrada sin seguirla; no se autoriza `copytree` con un árbol
+            # que el inventario link-aware omitiría.
+            #
+            # El scan también corre en una Task privada con terminal handoff:
+            # cancelar `to_thread` sólo cancelaría el await, no el hilo que puede
+            # conservar handles del workspace. Esperar el mismo handoff de R1
+            # impide que rollback/lease avancen, y propaga CancelledError antes
+            # de entrar al worker mutante de abajo.
+            try:
+                worker_scan = asyncio.create_task(asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path))
+                await _esperar_terminalidad_del_worker(worker_scan)
+            except FileNotFoundError as exc:
+                raise DynDOLODValidationError(
+                    f"Output directory does not exist: {output_path}",
+                    output_path=output_path,
+                ) from exc
+            except OSError as exc:
+                raise DynDOLODValidationError(
+                    f"No se puede empaquetar la fuente '{output_path}' para '{mod_name}': {exc}",
+                    output_path=output_path,
+                ) from exc
+
             # Verificar que el directorio de salida existe
             if not output_path.exists():
                 raise DynDOLODValidationError(
@@ -2535,6 +2563,7 @@ class DynDOLODRunner:
                 # sus fases de borrado/copia (`_limpiar`, `_calc_dir_size_and_remove`).
                 # Correrlo en el hilo del event loop congelaba la UI de
                 # NiceGUI y desconectaba WebSockets durante el empaquetado.
+
                 if mod_path.exists():
                     logger.debug("Limpiando directorio existente: %s", mod_path)
                     # `limpiar_readonly`: el árbol es la salida de una corrida
@@ -2581,11 +2610,11 @@ class DynDOLODRunner:
 
             # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
             # y su hilo nativo NO se puede cancelar cancelando el await. Task
-            # propia + handoff de terminalidad: ninguna cancelación (ni repetida)
+            # propia + terminal handoff común: ninguna cancelación (ni repetida)
             # suelta al caller antes de que el worker sea terminal — recién
             # entonces puede empezar rollback/cleanup/lease release.
             worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
-            await _esperar_terminalidad_del_worker_mutante(worker_mutante)
+            await _esperar_terminalidad_del_worker(worker_mutante)
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path
