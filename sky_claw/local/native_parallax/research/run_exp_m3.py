@@ -220,26 +220,54 @@ def manifest_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def spearman_ci(x: list[float], y: list[float], *, n_boot: int = 1000, seed: int = 20260922) -> dict[str, float]:
-    """Spearman puntual + intervalo bootstrap (§29: honestidad con N pequeño)."""
+def spearman_ci(x: list[float], y: list[float], *, n_boot: int = 1000, seed: int = 20260922) -> dict[str, Any]:
+    """Spearman puntual + intervalo bootstrap (§29: honestidad con N pequeño).
+
+    Réplicas degeneradas (§11): un resample con reemplazo puede quedar constante en x
+    o en y aunque el dataset original no lo sea, y ahí Spearman es indefinido. Esas
+    réplicas se OMITEN del percentil y se CONTABILIZAN — nunca se convierten en un
+    valor arbitrario ni desaparecen en silencio. Si no queda ninguna evaluable, el
+    intervalo es NOT_EVALUABLE (``ci_low``/``ci_high`` = NaN) y ``ci_status`` lo dice.
+
+    ``n_boot``/``seed`` NO cambian en PR-MATH-B: la única causa de cambio de estos
+    números debe ser la corrección de empates/degeneración.
+    """
     from sky_claw.local.native_parallax.research.run_exp_m2 import spearman
 
     point = spearman(x, y)
     rng = np.random.default_rng(seed)
     n = len(x)
     if n < 4:
-        return {"spearman": point, "ci_low": float("nan"), "ci_high": float("nan"), "n": float(n)}
+        return {
+            "spearman": point,
+            "ci_low": float("nan"),
+            "ci_high": float("nan"),
+            "n": float(n),
+            "n_boot_evaluable": 0.0,
+            "n_boot_degenerate": 0.0,
+            "ci_status": "N_TOO_SMALL",
+        }
     boots = []
     for _ in range(n_boot):
         idx = rng.integers(0, n, n)
         boots.append(spearman([x[i] for i in idx], [y[i] for i in idx]))
     boots_arr = np.asarray(boots, dtype=np.float64)
-    boots_arr = boots_arr[np.isfinite(boots_arr)]
+    evaluables = boots_arr[np.isfinite(boots_arr)]
+    n_degenerate = float(n_boot - evaluables.size)
+    if evaluables.size == 0:
+        ci_status = "NOT_EVALUABLE"
+    elif n_degenerate > 0.0:
+        ci_status = "PARTIAL"
+    else:
+        ci_status = "EVALUABLE"
     return {
         "spearman": point,
-        "ci_low": float(np.percentile(boots_arr, 2.5)) if boots_arr.size else float("nan"),
-        "ci_high": float(np.percentile(boots_arr, 97.5)) if boots_arr.size else float("nan"),
+        "ci_low": float(np.percentile(evaluables, 2.5)) if evaluables.size else float("nan"),
+        "ci_high": float(np.percentile(evaluables, 97.5)) if evaluables.size else float("nan"),
         "n": float(n),
+        "n_boot_evaluable": float(evaluables.size),
+        "n_boot_degenerate": n_degenerate,
+        "ci_status": ci_status,
     }
 
 
@@ -434,10 +462,45 @@ def build_cohort_a_summary(ev: dict[str, Any], *, sufficient: bool) -> dict[str,
     if proxy is None or not cal or not held:
         return summary
     rho_cal = float(spearman([feats[r["asset"]][proxy] for r in cal], [r["aligned_rmse"] for r in cal]))
+    # §13: ``nan > 0`` es False, así que sin guarda un rho_cal no evaluable cae en
+    # orientation = -1 — una orientación fabricada. Sin orientación no hay riesgo
+    # orientado, así que no hay trust held-out: se falla CERRADO (el gate §31 no
+    # puede pasar con heldout_trust ausente), no se inventa una dirección.
+    #
+    # Revisión PR #685: el cero EXACTO tampoco da dirección (``0 > 0`` es False) y la
+    # corrección de empates lo vuelve alcanzable — proxy 1..6 vs rmse [0,1,2,2,1,0]
+    # daba +0.7 con rango ordinal y da 0.0 con rango medio. Mismo cierre, con estado
+    # propio para que el caso sea auditable y no se confunda con el no evaluable.
+    if not np.isfinite(rho_cal) or rho_cal == 0.0:
+        summary["calibration"] = {
+            "n": len(cal),
+            "proxy": proxy,
+            "spearman": rho_cal,
+            "orientation": float("nan"),
+            "status": (
+                "CALIBRATION_SPEARMAN_ZERO_NO_ORIENTATION"
+                if np.isfinite(rho_cal)
+                else "CALIBRATION_SPEARMAN_NOT_EVALUABLE"
+            ),
+        }
+        return summary
     orientation = 1.0 if rho_cal > 0 else -1.0
-    summary["calibration"] = {"n": len(cal), "proxy": proxy, "spearman": rho_cal, "orientation": orientation}
+    summary["calibration"] = {
+        "n": len(cal),
+        "proxy": proxy,
+        "spearman": rho_cal,
+        "orientation": orientation,
+        "status": "EVALUABLE",
+    }
     risk = {r["asset"]: {"risk_score": orientation * feats[r["asset"]][proxy]} for r in held}
     ci = spearman_ci([risk[r["asset"]]["risk_score"] for r in held], [r["aligned_rmse"] for r in held])
+    # §11: si NINGUNA réplica bootstrap fue evaluable (riesgo held-out constante), no
+    # hay intervalo que reportar. Se falla cerrado dejando `heldout_trust` ausente —el
+    # gate §31 lo lee como "sin evidencia" y NO_GO— en vez de propagar un CI NaN hasta
+    # el guard de `trust_gate_passes` (que es contractual, para summaries mal formados).
+    if ci["ci_status"] == "NOT_EVALUABLE":
+        summary["heldout_trust_not_evaluable"] = ci
+        return summary
     summary["heldout_trust"] = {
         **ci,
         "auc_catastrophic": auc(
@@ -771,16 +834,21 @@ def main() -> None:
             vals = {mid["features"][r["asset"]][name] for r in mid["rows"]}
             return len(vals) <= 1
 
-        best = max(
-            (p for p in mid["proxies"] if np.isfinite(p["spearman"]) and not _degenerate(p["proxy"])),
-            key=lambda p: abs(p["spearman"]),
-        )
-        results["rates_sweep@30deg"] = rates_sweep(mid["rows"], ev_features(mid), best["proxy"])
-        results["rates_sweep_proxy"] = best["proxy"]
-        sigma_tests = [
-            band_test_independent_sigma(mid["rows"], ev_features(mid), s) for s in INDEPENDENT_SIGMA_CANDIDATES
-        ]
-        results["bands_independent_sigma"] = sigma_tests
+        # §14: con la corrección de empates un proxy puede quedar NO EVALUABLE
+        # (rho = NaN). El filtro ya excluía no finitos, pero `max` sobre un generador
+        # vacío revienta: "no hay candidato" es un estado, no un crash.
+        candidatos = [p for p in mid["proxies"] if np.isfinite(p["spearman"]) and not _degenerate(p["proxy"])]
+        if candidatos:
+            best = max(candidatos, key=lambda p: abs(p["spearman"]))
+            results["rates_sweep@30deg"] = rates_sweep(mid["rows"], ev_features(mid), best["proxy"])
+            results["rates_sweep_proxy"] = best["proxy"]
+            sigma_tests = [
+                band_test_independent_sigma(mid["rows"], ev_features(mid), s) for s in INDEPENDENT_SIGMA_CANDIDATES
+            ]
+            results["bands_independent_sigma"] = sigma_tests
+        else:
+            results["rates_sweep_proxy"] = None
+            results["rates_sweep_status"] = "NO_EVALUABLE_PROXY_AT_30DEG"
     (args.out / "exp_m3_results.json").write_text(json.dumps(_json_safe(results), indent=1, allow_nan=False))
     print(f"\nresultados -> {args.out / 'exp_m3_results.json'}")
 
