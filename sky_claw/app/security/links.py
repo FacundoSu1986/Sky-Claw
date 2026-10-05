@@ -35,6 +35,7 @@ borre árboles y exige que declare con qué mecanismo.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pathlib
@@ -595,6 +596,37 @@ def iter_archivos_propios(ruta: pathlib.Path) -> Iterator[tuple[pathlib.Path, os
             continue
 
 
+def _scandir_con_reintento(
+    directorio: pathlib.Path,
+) -> contextlib.AbstractContextManager[Iterator[os.DirEntry[str]]]:
+    """Abre *directorio* tolerando bloqueos transitorios del filesystem.
+
+    ``os.scandir`` no tiene variante con reintentos en la stdlib, y el recorrido
+    de autorización del packaging no puede convertir un lock de milisegundos
+    (AV/indexer — el mismo ``WinError 5/32`` que las mutaciones ya toleran vía
+    ``_fs_op_with_retry``) en un aborto con mensaje de seguridad. Mismo
+    presupuesto de cinco intentos con backoff lineal que
+    :func:`link_kind_and_identity_or_raise_with_retry`.
+
+    ``FileNotFoundError`` NO se reintenta: la desaparición de una entrada no es
+    transitoria (reintentarla no la cambia) y el caller la traduce con su propio
+    mensaje —``No se pudo recorrer el directorio fuente real``—. Si el bloqueo
+    persiste, se propaga el último error y el caller falla cerrado.
+    """
+    ultimo_error: OSError | None = None
+    for intento in range(_LINK_INSPECTION_RETRIES):
+        try:
+            return os.scandir(directorio)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            ultimo_error = exc
+            if intento < _LINK_INSPECTION_RETRIES - 1:
+                time.sleep(_LINK_INSPECTION_BACKOFF_SECONDS * (intento + 1))
+    assert ultimo_error is not None
+    raise ultimo_error
+
+
 def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
     """Exige que *raiz* sea un árbol propio formado sólo por dirs/archivos reales.
 
@@ -604,6 +636,13 @@ def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
     existen. Este recorrido visita cada entrada con ``lstat`` a través de
     :func:`link_kind_and_identity_or_raise`, rechaza cualquier redirección y
     desciende sólo en directorios reales.
+
+    Las inspecciones usan la variante CON reintentos
+    (:func:`link_kind_and_identity_or_raise_with_retry`, y
+    :func:`_scandir_con_reintento` para la apertura de cada directorio): un
+    bloqueo transitorio de AV/indexer sobre UNA entrada de un output de decenas
+    de miles no debe abortar el packaging con un mensaje de seguridad donde no
+    hay ninguna redirección. Un fallo persistente igualmente falla cerrado.
 
     Symlinks, junctions y reparse tags no clasificados fallan cerrado. Los
     archivos permitidos son regulares; sockets, FIFO, dispositivos y cualquier
@@ -617,7 +656,7 @@ def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
     El caller que necesita eliminar esa ventana requiere coordinación/copia
     basada en handles; no debe presentar este pre-scan como race-proof.
     """
-    tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise(raiz)
+    tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise_with_retry(raiz)
     if identidad_raiz is None:
         raise FileNotFoundError(f"La raíz fuente '{raiz}' no existe o no se pudo inspeccionar")
 
@@ -643,8 +682,8 @@ def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
     while pendientes:
         directorio, identidad_capturada = pendientes.pop()
         try:
-            with os.scandir(directorio) as entradas:
-                tipo_abierto, identidad_abierta = link_kind_and_identity_or_raise(directorio)
+            with _scandir_con_reintento(directorio) as entradas:
+                tipo_abierto, identidad_abierta = link_kind_and_identity_or_raise_with_retry(directorio)
                 if (
                     identidad_abierta is None
                     or tipo_abierto is not None
@@ -652,7 +691,7 @@ def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
                 ):
                     raise OSError(f"'{directorio}' cambió al abrirlo durante la validación del árbol fuente")
                 hijos = [pathlib.Path(entrada.path) for entrada in entradas]
-                tipo_final, identidad_final = link_kind_and_identity_or_raise(directorio)
+                tipo_final, identidad_final = link_kind_and_identity_or_raise_with_retry(directorio)
                 if (
                     identidad_final is None
                     or tipo_final is not None
@@ -663,7 +702,7 @@ def exigir_arbol_copiable_sin_reparse(raiz: pathlib.Path) -> None:
             raise OSError(f"No se pudo recorrer el directorio fuente real '{directorio}': {exc}") from exc
 
         for hijo in hijos:
-            tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise(hijo)
+            tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise_with_retry(hijo)
             if identidad_hijo is None:
                 raise OSError(f"La entrada '{hijo}' desapareció durante la validación del árbol fuente")
             if _clasificar_entrada(hijo, tipo_hijo, identidad_hijo):
