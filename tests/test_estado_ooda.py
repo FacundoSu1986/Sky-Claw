@@ -551,10 +551,14 @@ def test_runner_r2_reparse_copy_espera_merge_sin_cerrar_592_antes_de_tiempo() ->
     assert "resolution_status=FIXED" in estado
     assert "evidence_status=REPRODUCED" in estado
     assert "antes de `rmtree`, `mkdir` y `copytree`" in estado
+    assert "cancel #1/#2" in estado
+    assert "scan terminal" in estado
+    assert "rollback/liberación de lease" in estado
     assert "entre pre-scan y `copytree`" in estado
     assert "no se declara race-proof" in estado
     assert "no se declara cerrado hasta merge" in estado
     assert "test_runner_defects_p1_p2.py" in fila["Verificado por"]
+    assert "test_r2_cancel_durante_prescan_espera_terminal_y_no_muta" in fila["Verificado por"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

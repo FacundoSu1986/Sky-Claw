@@ -4,19 +4,22 @@ Estado de cada defecto — los tests de este archivo tienen contratos DISTINTOS
 según el estado del defecto que cubren:
 
 - **R1** — `RUNNER_P1_PACKAGING_CANCEL` — **FIXED / regression invariant**: el
-  `to_thread(_empaquetar_sincrono)` corre en una Task propia y espera por
-  `_esperar_terminalidad_del_worker_mutante`; cancelar el caller NO lo libera
-  (ni con cancelaciones repetidas) hasta que el worker mutante es terminal.
-  Sus tests congelan el invariante de aceptación
-  *worker_terminal < rollback_started < lease_released* en orden causal, con
-  sincronización explícita (`threading.Event` / registros de handoff) — nunca
-  sleeps como autoridad temporal.
+  `to_thread(_empaquetar_sincrono)` corre en una Task propia y espera por la
+  primitiva común `_esperar_terminalidad_del_worker`; cancelar el caller NO lo
+  libera (ni con cancelaciones repetidas) hasta que el worker es terminal. Sus
+  tests congelan el invariante *worker_terminal < rollback_started <
+  lease_released* en orden causal, con sincronización explícita
+  (`threading.Event` / registros de handoff) — nunca sleeps como autoridad
+  temporal.
 - **R2** — `RUNNER_P1_REPARSE_COPY` — **FIXED / regression invariant**: antes de
   cualquier `rmtree`, `mkdir` o `copytree`, el packaging recorre el árbol con la
-  primitiva central `exigir_arbol_copiable_sin_reparse`. Symlinks, junctions y
-  reparse tags no clasificados se rechazan; sobre un árbol admitido, inventario y
-  conjunto copiable contienen los mismos archivos. El pre-scan cierra el defecto
-  reproducido, pero no se declara race-proof frente a un swap concurrente.
+  primitiva central `exigir_arbol_copiable_sin_reparse`, en una Task propia
+  protegida por el mismo terminal handoff. Si hay cancelación durante el scan,
+  éste termina antes de propagarla y el worker mutante no empieza. Symlinks,
+  junctions y reparse tags no clasificados se rechazan; sobre un árbol admitido,
+  inventario y conjunto copiable contienen los mismos archivos. El pre-scan
+  cierra el defecto reproducido, pero no se declara race-proof frente a un swap
+  concurrente.
 - **R3** — `RUNNER_P2_DOUBLE_CANCEL` — **REPRODUCED / OPEN**: en la rama
   `except asyncio.CancelledError` de `_execute_process`, una segunda cancelación
   interrumpe el `await asyncio.gather(...)` **antes** de `close_job(job)`: el
@@ -88,26 +91,30 @@ class _ObservadorDeCancelacion(logging.Handler):
     checkpoint de HANDOFF_ACTIVE que exige R1 antes de mandar la siguiente.
     """
 
-    def __init__(self, orden: list[str]) -> None:
+    def __init__(self, orden: list[str], eventos: asyncio.Queue[str] | None = None) -> None:
         super().__init__(level=logging.INFO)
         self.orden = orden
+        self.eventos = eventos
         self.handoffs = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         operacion = getattr(record, "operation_type", None)
         if operacion == _OPERACION_HANDOFF:
             self.handoffs += 1
-            self.orden.append(f"cancel_{self.handoffs}_procesada")
+            evento = f"cancel_{self.handoffs}_procesada"
+            self.orden.append(evento)
+            if self.eventos is not None:
+                self.eventos.put_nowait(evento)
         elif operacion == _OPERACION_TERMINAL:
             self.orden.append("worker_terminal")
 
 
 @contextlib.contextmanager
-def _observar_cancelaciones(orden: list[str]):
+def _observar_cancelaciones(orden: list[str], eventos: asyncio.Queue[str] | None = None):
     """Instala el observador sobre el logger del runner (baja a INFO el gate)."""
     logger_del_runner = logging.getLogger(runner_mod.__name__)
     nivel_previo = logger_del_runner.level
-    observador = _ObservadorDeCancelacion(orden)
+    observador = _ObservadorDeCancelacion(orden, eventos)
     logger_del_runner.addHandler(observador)
     logger_del_runner.setLevel(logging.INFO)
     try:
@@ -267,16 +274,22 @@ def test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal():
         if isinstance(nodo, ast.Await)
         and isinstance(nodo.value, ast.Call)
         and isinstance(nodo.value.func, ast.Name)
-        and nodo.value.func.id == "_esperar_terminalidad_del_worker_mutante"
+        and nodo.value.func.id == "_esperar_terminalidad_del_worker"
     ]
-    assert len(esperas_helper) == 1, "el worker debe esperarse por _esperar_terminalidad_del_worker_mutante"
+    assert len(esperas_helper) == 2, (
+        "el pre-scan y el worker mutante deben usar la primitiva común _esperar_terminalidad_del_worker"
+    )
+    assert any(
+        espera.value.args and isinstance(espera.value.args[0], ast.Name) and espera.value.args[0].id == "worker_mutante"
+        for espera in esperas_helper
+    ), "R1 debe seguir pasando el worker mutante por el terminal handoff"
 
     # (4) el helper implementa el mecanismo: loop sobre worker.done() con shield
     # y rama que absorbe CancelledError.
     helper = next(
         nodo
         for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_esperar_terminalidad_del_worker_mutante"
+        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_esperar_terminalidad_del_worker"
     )
     bucles = [nodo for nodo in ast.walk(helper) if isinstance(nodo, ast.While)]
     assert bucles, "el helper debe esperar en un loop hasta terminal"
@@ -673,6 +686,165 @@ async def test_r2_texgen_valido_conserva_prefijo_textures(tmp_path):
 
     assert (mod_path / "textures" / "terrain" / "lod" / "mountain.dds").read_bytes() == esperado
     assert not (mod_path / "terrain").exists(), "TexGen debe conservar textures/ como prefijo del mod"
+
+
+@pytest.mark.asyncio
+async def test_r2_cancel_durante_prescan_espera_terminal_y_no_muta(tmp_path, monkeypatch):
+    """El scan real de packaging hereda R1: cancel #1/#2 no liberan al caller.
+
+    El test ejecuta ``_package_output_as_mod`` real y bloquea únicamente su
+    primitive de scan dentro del thread. Hasta que ``scan_terminal`` se señala,
+    el caller no propaga cancelación ni puede empezar rollback/liberar la lease;
+    el worker mutante no arranca (ningún rmtree/mkdir/copytree/meta.ini).
+    """
+    runner = _runner_stub(tmp_path)
+    src = tmp_path / "src"
+    (src / "meshes").mkdir(parents=True)
+    (src / "meshes" / "tree.nif").write_bytes(b"fresh output")
+
+    mod_path = tmp_path / "mods" / "TestMod"
+    mod_path.mkdir(parents=True)
+    previous = mod_path / "previous.txt"
+    previous.write_bytes(b"previous mod must survive")
+
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    scan_terminal = threading.Event()
+    rollback_started = threading.Event()
+    lease_released = threading.Event()
+    scan_paths: list[pathlib.Path] = []
+    orden: list[str] = []
+    eventos: asyncio.Queue[str] = asyncio.Queue()
+
+    def _scan_bloqueado(path: pathlib.Path) -> None:
+        scan_paths.append(path)
+        scan_started.set()
+        assert release_scan.wait(timeout=30), "el test no liberó el scan del preflight"
+        orden.append("scan_terminal")
+        scan_terminal.set()
+
+    monkeypatch.setattr(runner_mod, "exigir_arbol_copiable_sin_reparse", _scan_bloqueado)
+    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda _path: None)
+
+    rmtree_calls: list[pathlib.Path] = []
+    rmtree_original = runner_mod.rmtree_link_aware
+
+    def _rmtree(path: pathlib.Path, **kwargs):
+        rmtree_calls.append(path)
+        return rmtree_original(path, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "rmtree_link_aware", _rmtree)
+    copytree_calls = _espiar_copytree(monkeypatch)
+
+    copy2_calls: list[object] = []
+    copy2_original = runner_mod.shutil.copy2
+
+    def _copy2(*args, **kwargs):
+        copy2_calls.append((args, kwargs))
+        return copy2_original(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.shutil, "copy2", _copy2)
+
+    mkdir_calls: list[pathlib.Path] = []
+    mkdir_original = pathlib.Path.mkdir
+
+    def _mkdir(path: pathlib.Path, *args, **kwargs):
+        if path == mod_path:
+            mkdir_calls.append(path)
+        return mkdir_original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _mkdir)
+
+    meta_calls: list[tuple[pathlib.Path, str]] = []
+
+    def _write_meta(path: pathlib.Path, name: str) -> None:
+        meta_calls.append((path, name))
+        (path / "meta.ini").write_text("[General]\ngameName=Skyrim Special Edition\n", encoding="utf-8")
+
+    runner._generate_meta_ini = _write_meta
+
+    async def _caller_con_rollback_y_lease() -> None:
+        try:
+            await runner._package_output_as_mod(src, "TestMod")
+        except asyncio.CancelledError:
+            orden.append("package_cancel_propagated")
+            eventos.put_nowait("package_cancel_propagated")
+            raise
+        finally:
+            orden.append("rollback_started")
+            rollback_started.set()
+            orden.append("lease_released")
+            lease_released.set()
+
+    caller = asyncio.create_task(_caller_con_rollback_y_lease())
+
+    def _assert_sin_mutacion() -> None:
+        assert rmtree_calls == [], "el worker mutante no debe borrar el mod previo"
+        assert mkdir_calls == [], "el worker mutante no debe iniciar mkdir del mod"
+        assert copytree_calls == [], "el worker mutante no debe iniciar copytree"
+        assert copy2_calls == [], "el worker mutante no debe iniciar copy2"
+        assert meta_calls == [], "el worker mutante no debe escribir meta.ini"
+        assert previous.read_bytes() == b"previous mod must survive"
+        assert not (mod_path / "meta.ini").exists()
+
+    try:
+        with _observar_cancelaciones(orden, eventos):
+            assert await asyncio.to_thread(scan_started.wait, 5), "el pre-scan no arrancó en su thread"
+            assert scan_paths == [src]
+
+            caller.cancel()  # cancel #1 durante el pre-scan
+            primer_evento = await asyncio.wait_for(eventos.get(), timeout=5)
+            assert primer_evento == "cancel_1_procesada", (
+                "el caller propagó cancelación mientras el scan seguía vivo; "
+                f"rollback_started={rollback_started.is_set()}, "
+                f"lease_released={lease_released.is_set()}, "
+                f"scan_terminal={scan_terminal.is_set()}, orden={orden}"
+            )
+            assert not caller.done(), "cancel #1 liberó al caller antes de scan_terminal"
+            assert not rollback_started.is_set(), "rollback empezó mientras el scan seguía vivo"
+            assert not lease_released.is_set(), "la lease se liberó mientras el scan seguía vivo"
+            assert not scan_terminal.is_set(), "el scan debe seguir bloqueado hasta que el test lo libere"
+            _assert_sin_mutacion()
+            assert orden == ["cancel_1_procesada"], orden
+
+            caller.cancel()  # cancel #2 durante el mismo handoff
+            segundo_evento = await asyncio.wait_for(eventos.get(), timeout=5)
+            assert segundo_evento == "cancel_2_procesada", (
+                f"cancel #2 no fue absorbida por el handoff: evento={segundo_evento!r}, orden={orden}"
+            )
+            assert not caller.done(), "cancel #2 liberó al caller mientras el scan seguía vivo"
+            assert not rollback_started.is_set(), "cancel #2 dejó avanzar el rollback"
+            assert not lease_released.is_set(), "cancel #2 liberó la lease"
+            _assert_sin_mutacion()
+            assert orden == ["cancel_1_procesada", "cancel_2_procesada"], orden
+
+            release_scan.set()
+            assert await asyncio.to_thread(scan_terminal.wait, 5), "el thread del scan no llegó a terminal"
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+    finally:
+        # También en una aserción roja, nunca dejar vivo el thread bloqueado ni
+        # una excepción pendiente en la Task del caller.
+        release_scan.set()
+        if scan_started.is_set():
+            assert await asyncio.to_thread(scan_terminal.wait, 5), "el thread del scan quedó vivo al limpiar el test"
+        if not caller.done():
+            caller.cancel()
+        with contextlib.suppress(BaseException):
+            await caller
+
+    _assert_sin_mutacion()
+    assert orden == [
+        "cancel_1_procesada",
+        "cancel_2_procesada",
+        "scan_terminal",
+        "worker_terminal",
+        "package_cancel_propagated",
+        "rollback_started",
+        "lease_released",
+    ], orden
+    assert rollback_started.is_set()
+    assert lease_released.is_set()
 
 
 # ---------------------------------------------------------------------------

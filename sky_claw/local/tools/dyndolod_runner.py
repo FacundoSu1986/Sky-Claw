@@ -326,16 +326,17 @@ def _espacio_libre_en(destino: pathlib.Path) -> int:
     return shutil.disk_usage(probe).free
 
 
-async def _esperar_terminalidad_del_worker_mutante(worker: asyncio.Task[None]) -> None:
-    """Retiene al caller hasta que el worker mutante de packaging es terminal.
+async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
+    """Retiene al caller hasta que un worker ``to_thread`` de packaging es terminal.
 
-    R1 — ``RUNNER_P1_PACKAGING_CANCEL``. Un hilo ya despachado por
-    ``asyncio.to_thread`` no se puede interrumpir de forma segura: cancelar el
-    ``await`` suelta al caller mientras el thread sigue mutando disco (borra el
-    mod previo, copia el árbol, escribe ``meta.ini``) y el caller podría empezar
-    rollback/cleanup o liberar la lease contra bytes todavía vivos. Este helper
-    NO cancela el thread — espera su terminalidad y recién entonces deja
-    propagar la cancelación. Invariante::
+    R1/R2 — ``RUNNER_P1_PACKAGING_CANCEL`` / ``RUNNER_P1_REPARSE_COPY``. Un hilo
+    ya despachado por ``asyncio.to_thread`` no se puede interrumpir de forma
+    segura: cancelar el ``await`` suelta al caller mientras el thread sigue
+    observando el árbol fuente (pre-scan) o mutando disco (borra el mod previo,
+    copia el árbol, escribe ``meta.ini``). El caller podría empezar
+    rollback/cleanup o liberar la lease mientras ese worker todavía usa el
+    workspace. Este helper NO cancela el thread — espera su terminalidad y
+    recién entonces deja propagar la cancelación. Invariante::
 
         worker_terminal < rollback_started < lease_released
 
@@ -369,7 +370,7 @@ async def _esperar_terminalidad_del_worker_mutante(worker: asyncio.Task[None]) -
                 intencion = exc
             logger.warning(
                 "cancelación durante el packaging: el caller queda retenido hasta que "
-                "el worker mutante llegue a terminal; ninguna cancelación lo libera antes",
+                "el worker bloqueante llegue a terminal; ninguna cancelación lo libera antes",
                 extra={
                     "operation_type": "dyndolod_packaging_cancel_handoff",
                     "pipeline_stage": _ETAPA_DYNDOLOD,
@@ -2500,8 +2501,15 @@ class DynDOLODRunner:
             # cualquier mutación del mod previo. La clasificación central mira
             # cada entrada sin seguirla; no se autoriza `copytree` con un árbol
             # que el inventario link-aware omitiría.
+            #
+            # El scan también corre en una Task privada con terminal handoff:
+            # cancelar `to_thread` sólo cancelaría el await, no el hilo que puede
+            # conservar handles del workspace. Esperar el mismo handoff de R1
+            # impide que rollback/lease avancen, y propaga CancelledError antes
+            # de entrar al worker mutante de abajo.
             try:
-                await asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path)
+                worker_scan = asyncio.create_task(asyncio.to_thread(exigir_arbol_copiable_sin_reparse, output_path))
+                await _esperar_terminalidad_del_worker(worker_scan)
             except FileNotFoundError as exc:
                 raise DynDOLODValidationError(
                     f"Output directory does not exist: {output_path}",
@@ -2602,11 +2610,11 @@ class DynDOLODRunner:
 
             # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
             # y su hilo nativo NO se puede cancelar cancelando el await. Task
-            # propia + handoff de terminalidad: ninguna cancelación (ni repetida)
+            # propia + terminal handoff común: ninguna cancelación (ni repetida)
             # suelta al caller antes de que el worker sea terminal — recién
             # entonces puede empezar rollback/cleanup/lease release.
             worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
-            await _esperar_terminalidad_del_worker_mutante(worker_mutante)
+            await _esperar_terminalidad_del_worker(worker_mutante)
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path
