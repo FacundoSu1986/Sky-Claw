@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import math
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -477,6 +479,48 @@ def test_m2_con_winner_si_ejecuta_policies(monkeypatch: pytest.MonkeyPatch) -> N
     assert sel["per_asset"] == {"A1": 1.0}
 
 
+def test_m2_main_escribe_el_estado_no_evaluable_y_conserva_raw(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """§3/§9: el artefacto declara el estado y NO inventa filas de policy.
+
+    ``winner: null`` + ``status`` es JSON válido (no depende de un sanitizer) y las
+    filas RAW ya calculadas sobreviven como evidencia.
+    """
+
+    def _solo_raw(*args: Any, **_kwargs: Any) -> dict[str, Any]:
+        if args[3] != "RAW":
+            raise AssertionError("policy dependiente de σ_eff ejecutada sin winner")
+        return {
+            "aligned_rmse": 0.1,
+            "gradient_rmse": 0.2,
+            "variance_ratio": 0.9,
+            "catastrophic": False,
+            "affine_scale": 1.0,
+            "oracle_best_sign": 1.0,
+        }
+
+    monkeypatch.setattr(
+        m2, "load_manifest", lambda _p: [SimpleNamespace(asset_id="A1", family="f", declared_convention="DIRECTX")]
+    )
+    monkeypatch.setattr(m2, "load_asset", lambda _s, _r: SimpleNamespace(normal=None))
+    monkeypatch.setattr(
+        m2, "characterize_asset", lambda _m: {"features": {}, "raw_eval": {}, "oracle_agreement_deg": 10.0}
+    )
+    monkeypatch.setattr(m2, "run_policy", _solo_raw)
+    monkeypatch.setattr(m2, "SIGMA_EFF_CANDIDATES", {"cand_a": lambda _n, _f: 1.0, "cand_b": lambda _n, _f: 2.0})
+    monkeypatch.setattr(m2, "split_of", lambda _f: "CALIBRATION")
+    monkeypatch.setattr(
+        sys, "argv", ["run_exp_m2", "--manifest", str(tmp_path / "m.json"), "--out", str(tmp_path / "out")]
+    )
+
+    m2.main()
+
+    datos = json.loads((tmp_path / "out" / "rows.json").read_text(encoding="utf-8"))
+    assert datos["sigma_selection"]["winner"] is None
+    assert datos["sigma_selection"]["status"] == "NO_EVALUABLE_SIGMA_CANDIDATE"
+    assert len(datos["rows"]) == 1  # sólo la fila RAW del único asset: ninguna policy σ_eff
+    assert (tmp_path / "out" / "characs.json").is_file()
+
+
 # ---------------------------------------------------------------- I. M4 diagnóstico §16
 
 
@@ -486,8 +530,6 @@ def test_coherence_diagnostic_reporta_no_evaluable_sin_romper_json() -> None:
     El campo está documentado como NO trust proxy ni criterio de exclusión, así que
     un resultado no evaluable debe reportarse explícito, no tumbar el reporte.
     """
-    import json
-
     from sky_claw.local.native_parallax.research.run_exp_m4 import coherence_diagnostic
 
     rows = [
