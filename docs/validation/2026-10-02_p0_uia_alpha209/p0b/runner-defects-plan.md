@@ -3,7 +3,8 @@
 > Estado (FASE B): documentado y preparado. **Ningún fix commiteado en esta fase.** PR separado por defecto.
 > Post-FASE-B: **R1 cerró** con su PR dedicado (`fix(dyndolod): make packaging cancellation worker-terminal`), mergeado.
 > **R2 cerró y se mergeó en #686** (merge commit `7684c92a4205a2d53aa47972be126282e093cecf`), incluido el handoff terminal
-> del pre-scan contra cancelaciones repetidas; ese merge resolvió el **finding 3 de #592**. R3 continúa **OPEN**.
+> del pre-scan contra cancelaciones repetidas; ese merge resolvió el **finding 3 de #592**. **R3 tiene su fix
+> en el PR R3 dedicado (tracker #692), pendiente de merge**, verificado sobre el `_execute_process` real.
 > #592 permanece **abierto** por sus demás findings.
 
 ## Base
@@ -49,15 +50,15 @@ HEAD:        962f1835
 
 | campo | valor |
 |---|---|
-| resolution_status | **OPEN** (sin fix en el código) |
+| resolution_status | **FIXED / PR R3 pendiente de merge** (tracker #692; rama `fix/dyndolod-r3-double-cancel`) |
 | evidence_status | **REPRODUCED** |
-| Reproducción | `test_r3_segunda_cancelacion_interrumpe_la_limpieza` (multi-step cleanup sin protección) + `test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled` (branch flaky por no capturar `CancelledError`) |
-| Invariante | `ONE cancellation-resistant cleanup operation` que garantice EN ORDEN: `kill_and_reap(proc)` → cancel helpers → gather/drain helpers to terminal → `close_job(job)` — y la unidad completa termina antes del `raise` final |
-| Path | `dyndolod_runner.py:1890-1896` — `except asyncio.CancelledError:` llama `kill_and_reap / heartbeat.cancel / drain.cancel / gather / close_job` sin `contextlib.suppress(asyncio.CancelledError)` |
-| Plan propuesto | **NO** describirlo como `suppress(CancelledError)` alrededor de awaits independientes — eso permitiría que una cancelación interrumpa UNA etapa de cleanup y simplemente continúe a la siguiente dejando la anterior incompleta. La unidad correcta es UNA operación cancellation-resistant (un `finally`/wrapper único que acumule las etapas y las ejecute todas, tolerando cancelaciones repetidas dentro del cleanup: si llegan cancelaciones adicionales mientras cleanup está activo, cleanup continúa hasta terminal y DESPUÉS se propaga la cancelación). El `raise` final corre recién cuando TODAS las etapas corrieron |
-| Test rojo | La reproducción (`test_r3_segunda_cancelacion_interrumpe_la_limpieza`) usa sincronización explícita (`handler_entered`/`reap_entered`/`allow_reap_to_finish` con `asyncio.Event`), nunca timing sleeps: cancel #1 → confirmar entrada en la rama → reap entra y se bloquea en checkpoint conocido → cancel #2 → observar. PRE-FIX demuestra de forma determinista `close_job_llamado == 0`. **Aceptación obligatoria del futuro PR R3 (documentada acá, NO implementada como test verde hoy)**: tras el fix, `close_job == 1`, readers/heartbeat terminal, proc reaped/bounded — en el MISMO flujo de doble cancelación |
-| Collision review | Sin overlap directo en #592. El defecto es lifecycle/cancellation, no parte de la auditoría de la toolchain |
-| Sub-issue | Sí: como **seguimiento de lifecycle/cancel-robustness** (stripe distinto). Recomiendo abrir un issue pequeño dedicado, o enlazar dentro de `docs/pending_ooda_status.md` si se decide mantenerlo sólo tracker-local |
+| Reproducción | Histórica: `test_r3_segunda_cancelacion_interrumpe_la_limpieza` (flujo simulado determinista) + `test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled`. **Hoy (CR-6)**: la aceptación corre sobre el `_execute_process` REAL — `test_r3_cancelacion_repetida_no_interrumpe_la_limpieza`, `test_r3_cancelaciones_repetidas_n_no_liberan_al_caller`, `test_r3_cierra_el_job_una_vez_cuando_el_handle_es_none`, `test_r3_cancel_durante_la_limpieza_de_otra_rama_tampoco_saltea_el_cierre`, `test_r3_una_falla_real_de_la_limpieza_no_se_traga_y_el_cierre_ocurre`, `test_r3_camino_normal_sin_cancelacion_no_cambia`, `test_r3_la_clasificacion_de_error_no_cambia` |
+| Invariante | `ONE cancellation-resistant cleanup operation` que garantice EN ORDEN: `kill_and_reap(proc)` → cancel helpers → helpers a terminal → `close_job(job)` — y la unidad completa termina antes del `raise` final. Propiedad: `proc_reaped < helpers_cancelled < helpers_terminal < job_closed < cancellation_propagated` |
+| Path | `sky_claw/local/tools/dyndolod_runner.py:_execute_process`. Era `except asyncio.CancelledError:` con la secuencia `kill_and_reap / heartbeat.cancel / drain.cancel / gather / close_job` inline y sin protección. Hoy las CUATRO ramas de excepción comparten una sola unidad (`_cerrar_recursos_del_proceso` → `_limpiar_recursos_del_proceso`) esperada por el terminal handoff común `_handoff_terminal`; `close_job` vive en el `finally` del try del proceso |
+| Implementación | El terminal handoff de R1 se extrajo a un núcleo común, `_handoff_terminal`: loop con `asyncio.shield` que absorbe cancelaciones repetidas y devuelve `(intencion, falla)` para que cada call site aplique su propia precedencia (R1 camina normal; R3 vive dentro de un handler de cancelación). `_cerrar_recursos_del_proceso` crea la Task de limpieza y la espera por ese núcleo; dentro, cada etapa (`kill_and_reap`, cancelación de los tres helpers, `gather` de terminalidad) se intenta aunque la anterior falle — abandono a medias es el defecto que R3 cierra — y la primera falla real se RE-LANZA para viajar como `__cause__` del veredicto. `close_job` se movió al `finally` del try del proceso: así corre en TODA salida (incluido el camino de éxito y la cancelación del propio cleanup) exactamente una vez |
+| Test rojo / Red check | PRE-FIX determinista sobre el `_execute_process` real: `cancel #2 liberó al caller antes de que la limpieza fuera terminal: orden=['job_asignado', 'drain_out_entered', 'drain_err_entered', 'kill'] close_job=0`. POST-FIX: con el reap bloqueado en checkpoint, el caller sigue pendiente, `close_job == 1`, sin helpers vivos al cerrar, y `CancelledError` recién después. Mutation testing: **5/5 mutantes muertos** (quitar el shield; no esperar la terminalidad de los helpers; volver a la limpieza inline; quitar `close_job`; no re-lanzar la falla de limpieza) |
+| Collision review | Sin overlap directo en #592. El defecto es lifecycle/cancellation, no parte de la auditoría de la toolchain. Único archivo fuera del write-set esperado: `tests/test_dyndolod_t5v21_mutation_matrix.py`, cuya ancla M16 exigía el cleanup **inline** en la rama `DynDOLODExecutionError`; se actualizó a la forma compartida conservando su intención y quedando más estricta (exige la delegación + `close_job` una sola vez desde el `finally`) |
+| Sub-issue | **#692** — `fix(dyndolod): make process cleanup resistant to repeated cancellation`. Defecto hermano del rig `#661` FASE B, **no** un finding de #592 |
 
 ## Herramientas seleccionadas
 
@@ -71,7 +72,7 @@ HEAD:        962f1835
 |---|---|---|---|---|
 | R1 packaging cancel | #592 finding 1 (`preservado…`) | **mismo** (`p1-packaging-cancel`) | NO (UIA viability) | para que un future fix tenga un hogar de issue rastreador sin duplicar #661 |
 | R2 copytree traverse | #592 finding 3 (`packaging mide link-aware y copia link-following`) | **mismo exacto** | NO | mismo finding 3 de #592; no crear issue nuevo |
-| R3 double cancel cleanup | ninguno todavía | nuevo hallazgo P2 | NO | vida aparte; sub-issue nuevo notificado en `#592` como hermano, o en `docs/pending_ooda_status.md` |
+| R3 double cancel cleanup | **#692** (`fix(dyndolod): make process cleanup resistant to repeated cancellation`) | nuevo hallazgo P2 | NO | vida aparte; issue dedicado abierto en el PR R3 (hermano del rig, **no** un finding de `#592`) |
 
 ## Qué NO hace esta fase
 
@@ -81,17 +82,17 @@ HEAD:        962f1835
 ## Runner gates — válidos (dos dimensiones, CR-11)
 
 ```text
-RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED  (PR R1 dedicado)
-RUNNER_P1_REPARSE_COPY      resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED  (PR #686, merge 7684c92a; #592 finding 3 resuelto)
-RUNNER_P2_DOUBLE_CANCEL     resolution_status=OPEN   evidence_status=REPRODUCED  (PR R3 pendiente)
-→ R1/R2 FIXED y mergeados; R3 sigue abierto y es el próximo slice del runner. #592 permanece OPEN por sus otros findings.
+RUNNER_P1_PACKAGING_CANCEL  resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED   (PR R1 dedicado)
+RUNNER_P1_REPARSE_COPY      resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=MERGED   (PR #686, merge 7684c92a; #592 finding 3 resuelto)
+RUNNER_P2_DOUBLE_CANCEL     resolution_status=FIXED  evidence_status=REPRODUCED  merge_status=PENDING  (PR R3, tracker #692)
+→ R1/R2 FIXED y mergeados; R3 FIXED y esperando review/merge. #592 permanece OPEN por sus otros findings.
 ```
 
 ## Follow-ups explícitos (NO implementados en este PR)
 
 ```text
-CR-5  convertir R3 de reproducción a aceptación; R1/R2 ya son regresiones → PR R3 dedicado
-CR-6  reemplazar fake R3 por _execute_process real          → PR R3 dedicado
+CR-5  convertir R3 de reproducción a aceptación; R1/R2 ya son regresiones → HECHO en el PR R3 (tracker #692)
+CR-6  reemplazar fake R3 por _execute_process real          → HECHO en el PR R3 (tracker #692)
 CR-7  rediseñar identidad futura de modales                 → #661 P1/P3
 CR-8  rediseñar fingerprint cap                             → #661 P1/P3
 CR-10 arquitectura completa de evidencia parcial            → #661 P3
