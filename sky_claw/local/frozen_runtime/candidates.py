@@ -75,7 +75,7 @@ from sky_claw.local.frozen_runtime.stabilization import (
     DEFAULT_QUIET_WINDOW_SECONDS,
     obtain_stable_source_snapshot,
 )
-from sky_claw.local.frozen_runtime.state import write_json_atomic
+from sky_claw.local.frozen_runtime.state import reservar_ruta_json_exclusiva, write_json_atomic
 from sky_claw.local.frozen_runtime.storage import (
     admitir_directorio_storage,
     admitir_storage_root,
@@ -328,6 +328,44 @@ def _entero_json_o_none(valor: object, *, campo: str, etiqueta: str) -> int | No
     return _entero_json(valor, campo=campo, etiqueta=etiqueta)
 
 
+def _string_json(valor: object, *, campo: str, etiqueta: str) -> str:
+    """Exige un string JSON REAL: no `null`, no numero, no bool, no lista, no objeto.
+
+    ``str(valor)`` como mecanismo de validacion convierte metadata CORRUPTA en un
+    string artificial (``null -> "None"``, ``{} -> "{}"``, ``123 -> "123"``), asi
+    que el registro se reconstruye como valido y la corrupcion persistida pasa como
+    una divergencia de payload en vez de clasificarse como corrompida (Codex sobre
+    #682).
+    """
+    if not isinstance(valor, str):
+        raise CandidateCorruptMetadataError(
+            f"{etiqueta}: {campo} debe ser un string JSON (no null/numero/bool/lista/objeto): {valor!r}"
+        )
+    return valor
+
+
+def _string_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: str) -> str:
+    """String estricto con default para claves AUSENTES; `null` NO es ausencia."""
+    if clave not in datos:
+        return defecto
+    return _string_json(datos[clave], campo=clave, etiqueta=etiqueta)
+
+
+def _bool_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: bool) -> bool:
+    """Booleano estricto con default para claves AUSENTES; `1` NO es `True`.
+
+    ``bool(valor)`` es lossy por el otro lado: ``bool("false")`` es ``True``, asi
+    que una metadata con el string ``"false"`` afirmaba lo contrario de lo que
+    decia (Codex sobre #682).
+    """
+    if clave not in datos:
+        return defecto
+    valor = datos[clave]
+    if not isinstance(valor, bool):
+        raise CandidateCorruptMetadataError(f"{etiqueta}: {clave} debe ser un booleano JSON: {valor!r}")
+    return valor
+
+
 def _membership_desde_dict(bruto: object, *, etiqueta: str) -> DirectoryMembershipEvidence:
     if not isinstance(bruto, dict):
         raise CandidateCorruptMetadataError(f"{etiqueta}: directory_membership debe ser un objeto")
@@ -371,9 +409,9 @@ def _identidades(bruto: object, *, campo: str, etiqueta: str) -> tuple[FileIdent
         try:
             salida.append(
                 FileIdentity(
-                    rel_path=str(entrada["rel_path"]),
+                    rel_path=_string_json(entrada["rel_path"], campo=f"{campo}[{indice}].rel_path", etiqueta=etiqueta),
                     size=_entero_json(entrada["size"], campo=f"{campo}[{indice}].size", etiqueta=etiqueta),
-                    digest=str(entrada["digest"]),
+                    digest=_string_json(entrada["digest"], campo=f"{campo}[{indice}].digest", etiqueta=etiqueta),
                 )
             )
         except (TypeError, ValueError) as exc:
@@ -426,17 +464,21 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
     proveedor = bruto["provider"]
     if not isinstance(proveedor, str):
         raise CandidateCorruptMetadataError(f"{etiqueta}: provider debe ser string")
+    appid = _string_json(bruto["appid"], campo="appid", etiqueta=etiqueta)
 
     try:
         return CandidateSourceEvidence(
             provider=proveedor,
-            appid=str(bruto["appid"]),
-            game_key=str(bruto["game_key"]),
+            appid=appid,
+            game_key=_string_json(bruto["game_key"], campo="game_key", etiqueta=etiqueta),
             runtime_identity=RuntimeIdentity(
-                game_key=str(identidad["game_key"]), game_version=str(identidad["game_version"])
+                game_key=_string_json(identidad["game_key"], campo="runtime_identity.game_key", etiqueta=etiqueta),
+                game_version=_string_json(
+                    identidad["game_version"], campo="runtime_identity.game_version", etiqueta=etiqueta
+                ),
             ),
             tree_digest=TreeDigest(
-                digest=str(digest["digest"]),
+                digest=_string_json(digest["digest"], campo="tree_digest.digest", etiqueta=etiqueta),
                 files=_entero_json(digest["files"], campo="tree_digest.files", etiqueta=etiqueta),
                 bytes=_entero_json(digest["bytes"], campo="tree_digest.bytes", etiqueta=etiqueta),
             ),
@@ -445,7 +487,7 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
             files=_identidades(bruto["files"], campo="files", etiqueta=etiqueta),
             provider_metadata=ProviderMetadataObservation(
                 provider=ManagedSourceProvider(proveedor),
-                appid=str(bruto["appid"]),
+                appid=appid,
                 buildid=metadatos.get("buildid") if isinstance(metadatos.get("buildid"), str) else None,
                 state_flags=(metadatos.get("state_flags") if isinstance(metadatos.get("state_flags"), str) else None),
                 bytes_to_download=_entero_json_o_none(
@@ -458,7 +500,7 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
                     metadatos.get("update_result") if isinstance(metadatos.get("update_result"), str) else None
                 ),
                 install_dir=(metadatos.get("install_dir") if isinstance(metadatos.get("install_dir"), str) else None),
-                manifest_readable=bool(metadatos.get("manifest_readable", True)),
+                manifest_readable=_bool_json_opcional(metadatos, "manifest_readable", etiqueta=etiqueta, defecto=True),
                 observed_at_ns=observado,
             ),
             observed_at_ns=observado,
@@ -561,8 +603,8 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
             state=estado,
             created_at_ns=_entero_json_opcional(data, "created_at_ns", etiqueta=str(ruta), defecto=0),
             updated_at_ns=_entero_json_opcional(data, "updated_at_ns", etiqueta=str(ruta), defecto=0),
-            source_provider=str(data.get("source_provider", "")),
-            source_appid=str(data.get("source_appid", "")),
+            source_provider=_string_json_opcional(data, "source_provider", etiqueta=str(ruta), defecto=""),
+            source_appid=_string_json_opcional(data, "source_appid", etiqueta=str(ruta), defecto=""),
             pre_source_evidence=_evidencia("pre_source_evidence"),
             candidate_evidence=_evidencia("candidate_evidence"),
             post_source_evidence=_evidencia("post_source_evidence"),
@@ -838,6 +880,32 @@ def _observar_candidate(
     )
 
 
+def _exigir_metadata_libre(root: pathlib.Path, candidate_id: str) -> None:
+    """Falla si el candidate_id YA tiene metadata persistida.
+
+    La identidad de un Candidate tiene DOS representaciones persistentes
+    (``candidates/<id>/`` y ``state/candidates/<id>.json``) y el id esta OCUPADO
+    si existe CUALQUIERA. ``mkdir(exist_ok=False)`` solo cubria la primera: con el
+    arbol borrado pero el JSON presente -- un READY cuyo payload se perdio -- la
+    reserva tenia exito y la escritura inicial REEMPLAZABA la evidencia historica
+    con un BUILDING (Codex sobre #682).
+
+    Se inspecciona con la primitive canonica (``lstat``), no con ``exists()``: un
+    enlace colgado en la ruta de metadata cuenta como OCUPADO (``exists()`` lo
+    leeria como libre) y un fallo de inspeccion falla cerrado.
+    """
+    ruta = candidate_metadata_path(root, candidate_id)
+    try:
+        _tipo, st = link_kind_and_identity_or_raise(ruta)
+    except OSError as exc:
+        raise FrozenRuntimeStorageError(f"no se pudo inspeccionar la metadata de '{candidate_id}': {exc}") from exc
+    if st is not None:
+        raise CandidateIdCollisionError(
+            f"el candidate_id '{candidate_id}' ya tiene metadata persistida ('{ruta}'): "
+            "no se reemplaza la evidencia historica (fail-closed)"
+        )
+
+
 def _reservar_candidate_id(root: pathlib.Path, candidate_id: str) -> pathlib.Path:
     """Reserva el ``candidate_id`` con semantica de NO-CLOBBER.
 
@@ -860,6 +928,10 @@ def _reservar_candidate_id(root: pathlib.Path, candidate_id: str) -> pathlib.Pat
     raiz = pathlib.Path(root)
     _exigir_candidates_state_dir(raiz)
     _exigir_candidates_payload_dir(raiz)
+    # El id esta ocupado si existe CUALQUIERA de sus dos representaciones: el
+    # directorio del Candidate o su metadata. `mkdir(exist_ok=False)` cubre solo la
+    # primera, asi que la metadata se comprueba ANTES de crear nada.
+    _exigir_metadata_libre(raiz, candidate_id)
     directorio = candidate_dir(raiz, candidate_id)
     try:
         directorio.mkdir(parents=False, exist_ok=False)
@@ -907,6 +979,43 @@ def _persistir_metadata(root: pathlib.Path, metadata: CandidateMetadata) -> None
         raise FrozenRuntimeStorageError(
             f"no se pudo persistir la metadata del Candidate '{metadata.candidate_id}': {exc}"
         ) from exc
+
+
+def _persistir_metadata_inicial(root: pathlib.Path, metadata: CandidateMetadata) -> None:
+    """Primera escritura (BUILDING): reserva EXCLUSIVA de la ruta + escritura normal.
+
+    ``write_json_atomic`` REEMPLAZA el destino (``os.replace``), que es lo correcto
+    para las transiciones PROPIAS del Candidate (INVALID/READY) pero NO para la
+    primera escritura: si ya hay metadata historica -- el JSON de un READY cuyo
+    arbol fue borrado, o la carrera de dos procesos con el mismo id -- reemplazarla
+    destruye evidencia que no le pertenece (Codex sobre #682).
+
+    La exclusion vive en la RESERVA de la RUTA (``O_CREAT | O_EXCL``,
+    ``reservar_ruta_json_exclusiva``), no en el escritor: quien gana la reserva es
+    el unico dueno de esa ruta, asi que el reemplazo atomico posterior solo puede
+    pisar su PROPIO placeholder. Mantener UN solo escritor de metadata
+    (``_persistir_metadata``) es deliberado: los anclas existentes interceptan ese
+    simbolo para observar el orden BUILDING -> READY, y un camino paralelo los
+    dejaria ciegos.
+
+    No se usa ``os.link`` (rechazado por SFR-18 y por el oraculo de escritura).
+    """
+    _exigir_candidates_state_dir(root)
+    exigir_namespace_escribible(candidates_state_dir(root))
+    ruta = candidate_metadata_path(root, metadata.candidate_id)
+    try:
+        reservar_ruta_json_exclusiva(ruta)
+    except FileExistsError as exc:
+        raise CandidateIdCollisionError(
+            f"el candidate_id '{metadata.candidate_id}' ya tiene metadata persistida ('{ruta}'): "
+            "no se reemplaza la evidencia historica (fail-closed)"
+        ) from exc
+    except OSError as exc:
+        raise FrozenRuntimeStorageError(
+            f"no se pudo reservar la metadata del Candidate '{metadata.candidate_id}': {exc}"
+        ) from exc
+    # Ya somos duenos de la ruta: el reemplazo atomico solo toca nuestro placeholder.
+    _persistir_metadata(root, metadata)
 
 
 def _marcar_invalid(
@@ -1038,7 +1147,17 @@ def crear_candidate(
         failure_reason=None,
     )
     try:
-        _persistir_metadata(raiz, metadata)
+        # NO-CLOBBER: la PRIMERA metadata se crea de forma exclusiva, para que ni
+        # una reutilizacion de id ni una carrera puedan reemplazar la evidencia
+        # historica que ya tuviera ese id (P3-U).
+        _persistir_metadata_inicial(raiz, metadata)
+    except CandidateIdCollisionError as exc:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"el candidate_id ya esta en uso: {exc}",
+            candidate_id=candidate_id,
+            pre_source_evidence=pre,
+        )
     except (FrozenRuntimeStorageError, CandidateVerificationError) as exc:
         return CandidateResult(
             state=GenerationVerificationState.INDETERMINATE,
