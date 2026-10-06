@@ -69,6 +69,9 @@ class _EstadoDeSesion:
     pid: int | None = None
     exit_code: int | None = None
     protocol_error: VfsSessionProtocolError | None = None
+    confirmed_terminal: bool = False
+    terminality_unknown: bool = False
+    teardown_error: BaseException | None = None
 
 
 class VfsProcessSession:
@@ -101,6 +104,16 @@ class VfsProcessSession:
     # ------------------------------------------------------------------
     # Superficie pública
     # ------------------------------------------------------------------
+
+    @property
+    def confirmed_terminal(self) -> bool:
+        """Indica si la finalización del proceso fue demostrada contractualmente."""
+        return self._estado.confirmed_terminal
+
+    @property
+    def terminality_unknown(self) -> bool:
+        """Indica si el teardown falló o la terminalidad no pudo ser verificada."""
+        return self._estado.terminality_unknown
 
     @property
     def job_id(self) -> str:
@@ -163,14 +176,19 @@ class VfsProcessSession:
             raise
         self._drenar_eventos_pendientes()
         self._exigir_coherencia(resultado)
+        self._estado.confirmed_terminal = True
         return resultado
 
     async def cancel(self) -> None:
         """Cancela el job y espera el teardown causal completo (idempotente)."""
         if self._teardown_completo:
+            if self._estado.teardown_error is not None:
+                raise self._estado.teardown_error
             return
         driver = self._driver
         if driver is not None and driver.done() and self._resultado_futuro.done():
+            if self._estado.teardown_error is not None:
+                raise self._estado.teardown_error
             return
         await self._fence_de_teardown()
 
@@ -325,9 +343,12 @@ class VfsProcessSession:
                 exc_info=True,
                 extra={"job_id": self._job_id},
             )
+            self._estado.terminality_unknown = True
+            self._estado.teardown_error = exc
             if not self._resultado_futuro.done():
                 self._resultado_futuro.set_exception(exc)
             return
+        self._estado.confirmed_terminal = True
         if not self._resultado_futuro.done():
             self._resultado_futuro.set_exception(VfsJobCancelledError(f"job {self._job_id} cancelado"))
 
@@ -355,5 +376,7 @@ class VfsProcessSession:
             if not driver.cancelled():
                 driver.exception()  # recuperada: el desenlace va por result()
         self._teardown_completo = True
+        if self._estado.teardown_error is not None:
+            raise self._estado.teardown_error
         if cancelada:
             raise asyncio.CancelledError

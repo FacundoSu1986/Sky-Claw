@@ -60,9 +60,9 @@ _MAX_EVENTOS_DE_SESION = 64
 
 
 async def _cancel_and_join(task: asyncio.Future[Any]) -> None:
-    """Cancela una future auxiliar del fence y absorbe su ``CancelledError``."""
+    """Cancela una future auxiliar del fence y absorbe cualquier desenlace."""
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
+    with contextlib.suppress(BaseException):
         await task
 
 
@@ -75,6 +75,18 @@ def vfs_instance_id(mo2_root: pathlib.Path) -> str:
 
 class VfsBrokerError(RuntimeError):
     """Error de lifecycle o protocolo del broker VFS."""
+
+
+class VfsTeardownError(VfsBrokerError):
+    """Fallo en el teardown del worker; la terminalidad del proceso es indeterminada."""
+
+
+class VfsTeardownDeadlineError(VfsTeardownError):
+    """El teardown del worker no concluyó antes del deadline con el bridge conectado."""
+
+
+class VfsBridgeTerminationError(VfsTeardownError):
+    """El bridge reportó un error al intentar terminar el Job Object del worker."""
 
 
 class VfsBridgeDisconnectedError(VfsBrokerError):
@@ -624,6 +636,8 @@ class VfsExecutionBroker:
             return
         try:
             await self._send_cancel(job_id)
+        except VfsTeardownError:
+            raise
         except VfsBrokerError:
             if job_id in self._worker_exit:
                 raise
@@ -665,15 +679,20 @@ class VfsExecutionBroker:
         exit_future.result()
         return result
 
-    async def _await_worker_exit(self, exit_future: asyncio.Future[int | None]) -> None:
+    async def _await_worker_exit(
+        self,
+        exit_future: asyncio.Future[int | None],
+        *,
+        deadline: float | None = None,
+    ) -> None:
         """Espera el ``worker_exit`` del bridge sin poder colgar para siempre.
 
         Resiste la cancelación externa —rollback no puede empezar antes de la
-        confirmación terminal— pero si el bridge se desconecta y no reconecta
-        dentro de ``_fence_grace`` segundos, resuelve el fence asumiendo el
-        worker muerto. El Job Object es kill-on-close: si MO2 (el bridge) murió,
-        el worker murió con él, así que romper el fence acá evita la inanición
-        indefinida del lock ``load-order`` que sostiene el caller.
+        confirmación terminal— pero si el deadline vence o si el bridge se
+        desconecta y no reconecta dentro de ``_fence_grace`` segundos, resuelve
+        el fence. Si el bridge estaba conectado, vence con error tipado
+        (terminalidad indeterminada); si el bridge murió y no reconectó, se
+        asume el worker muerto por kill-on-close.
 
         La ventana de gracia es un deadline ABSOLUTO fijado antes del loop: una
         ``CancelledError`` absorbida no lo reinicia, así que ni siquiera
@@ -681,10 +700,10 @@ class VfsExecutionBroker:
         (review CodeRabbit PR #352).
         """
         cancelled = False
-        deadline = asyncio.get_running_loop().time() + self._fence_grace
+        limite = deadline if deadline is not None else asyncio.get_running_loop().time() + self._fence_grace
         while not exit_future.done():
             try:
-                await self._await_exit_or_bridge_loss(exit_future, deadline)
+                await self._await_exit_or_bridge_loss(exit_future, limite)
             except asyncio.CancelledError:
                 cancelled = True
         exit_future.result()
@@ -692,25 +711,53 @@ class VfsExecutionBroker:
             raise asyncio.CancelledError
 
     async def _await_exit_or_bridge_loss(self, exit_future: asyncio.Future[int | None], deadline: float) -> None:
-        """Una espera acotada: worker_exit, o pérdida terminal del bridge.
+        """Una espera acotada: worker_exit, error de terminación o pérdida terminal del bridge.
 
         ``deadline`` es el instante absoluto (loop clock) tras el cual, si el
-        bridge sigue caído, se asume el worker muerto. Sólo acota la espera
-        mientras el bridge está desconectado; con el bridge vivo se espera el
-        ``worker_exit`` sin tope.
+        worker no confirmó salida, el fence vence. Si el bridge está vivo,
+        vence con :class:`VfsTeardownDeadlineError` (sin fingir terminalidad);
+        si el bridge está desconectado y expira la gracia, se asume el worker
+        muerto por kill-on-close.
         """
         exit_wait: asyncio.Future[Any] = asyncio.ensure_future(asyncio.shield(exit_future))
         try:
+            remaining = deadline - asyncio.get_running_loop().time()
             if self._bridge_ready.is_set():
-                # Bridge vivo: despertar ante worker_exit o ante su desconexión.
+                # Bridge vivo: acotado al deadline absoluto. Si expira sin worker_exit,
+                # la terminalidad es indeterminada (NUNCA set_result(None)).
+                if remaining <= 0:
+                    if not exit_future.done():
+                        logger.warning(
+                            "El worker VFS no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
+                            "la terminalidad del proceso es indeterminada",
+                            self._fence_grace,
+                        )
+                        exit_future.set_exception(
+                            VfsTeardownDeadlineError(
+                                f"el teardown del worker no confirmó worker_exit en {self._fence_grace:.1f}s con el bridge MO2 conectado"
+                            )
+                        )
+                    return
                 lost_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_lost.wait())
+                grace: asyncio.Future[Any] = asyncio.ensure_future(asyncio.sleep(remaining))
                 try:
-                    await asyncio.wait({exit_wait, lost_wait}, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.wait({exit_wait, lost_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
+                    if grace.done() and not lost_wait.done() and not exit_future.done():
+                        logger.warning(
+                            "El worker VFS no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
+                            "la terminalidad del proceso es indeterminada",
+                            self._fence_grace,
+                        )
+                        exit_future.set_exception(
+                            VfsTeardownDeadlineError(
+                                f"el teardown del worker no confirmó worker_exit en {self._fence_grace:.1f}s con el bridge MO2 conectado"
+                            )
+                        )
                 finally:
                     await _cancel_and_join(lost_wait)
+                    await _cancel_and_join(grace)
                 return
             # Bridge caído: sólo el tiempo que reste hasta el deadline absoluto.
-            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 if not exit_future.done():
                     logger.warning(
@@ -720,7 +767,7 @@ class VfsExecutionBroker:
                     exit_future.set_result(None)
                 return
             ready_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_ready.wait())
-            grace: asyncio.Future[Any] = asyncio.ensure_future(asyncio.sleep(remaining))
+            grace = asyncio.ensure_future(asyncio.sleep(remaining))
             try:
                 await asyncio.wait({exit_wait, ready_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
                 if grace.done() and not ready_wait.done() and not exit_future.done():
@@ -746,8 +793,8 @@ class VfsExecutionBroker:
             try:
                 async with self._write_lock:
                     await write_authenticated_message(worker, message, self._secret)
-                deadline = asyncio.get_running_loop().time() + _COOPERATIVE_CANCEL_GRACE_SECONDS
-                while job_id in self._worker_by_job and asyncio.get_running_loop().time() < deadline:
+                coop_deadline = asyncio.get_running_loop().time() + _COOPERATIVE_CANCEL_GRACE_SECONDS
+                while job_id in self._worker_by_job and asyncio.get_running_loop().time() < coop_deadline:
                     await asyncio.sleep(0.025)
             except (ConnectionError, OSError, VfsFrameError):
                 logger.warning("No se pudo entregar cancel al worker %s", job_id, exc_info=True)
@@ -761,7 +808,7 @@ class VfsExecutionBroker:
             raise VfsBrokerError(f"no existe tracking terminal para job {job_id}")
         # No se permite rollback ni liberación del lock hasta que el monitor del
         # bridge confirme que el Job Object completo dejó de ejecutar — o hasta
-        # que se agote la gracia de reconexión si el bridge murió (fence acotado).
+        # que expire el deadline con fallo tipado o reconexión de bridge caído.
         await self._await_worker_exit(exit_future)
 
     async def _send_bridge(self, message: Mapping[str, object]) -> None:
@@ -892,6 +939,28 @@ class VfsExecutionBroker:
                 future.set_exception(VfsBridgeLaunchError(detail))
                 if not exit_future.done():
                     exit_future.set_result(None)
+            elif event == "bridge_error" and (
+                message.get("command") in ("cancel", "terminate")
+                or (isinstance(message.get("job_id"), str) and message.get("job_id") in self._termination_tasks)
+            ):
+                job_id = message.get("job_id")
+                detail = message.get("message")
+                detail_str = detail if isinstance(detail, str) and detail else "error no especificado del bridge"
+                logger.error(
+                    "MO2 bridge reportó error durante terminación del job %s: %s",
+                    job_id,
+                    detail_str,
+                    extra={"job_id": job_id, "command": message.get("command")},
+                )
+                exit_future = self._worker_exit.get(job_id) if isinstance(job_id, str) else None
+                err = VfsBridgeTerminationError(
+                    f"error del bridge durante la terminación del job {job_id}: {detail_str}"
+                )
+                if exit_future is not None and not exit_future.done():
+                    exit_future.set_exception(err)
+                future = self._pending.get(job_id) if isinstance(job_id, str) else None
+                if future is not None and not future.done():
+                    future.set_exception(err)
             elif event == "worker_exit":
                 job_id = message.get("job_id")
                 exit_future = self._worker_exit.get(job_id) if isinstance(job_id, str) else None
