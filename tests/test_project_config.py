@@ -431,8 +431,6 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
     """
     from packaging.version import Version
 
-    piso_minimo = Version("6.9.1")
-
     # 1. pyproject.toml
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
@@ -451,7 +449,9 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
         f"se esperaba exactamente una entrada de multidict en requirements.lock, hay {matches_req}"
     )
     version_req = Version(matches_req[0])
-    assert version_req >= piso_minimo, f"requirements.lock tiene multidict {version_req} < {piso_minimo}"
+    assert version_req in req.specifier, (
+        f"requirements.lock tiene multidict {version_req} fuera del rango {req.specifier}"
+    )
 
     # 3. uv.lock
     with (REPO_ROOT / "uv.lock").open("rb") as file:
@@ -461,7 +461,7 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
         f"se esperaba exactamente 1 paquete multidict en uv.lock, hay {len(paquetes_multidict)}"
     )
     version_uv = Version(paquetes_multidict[0]["version"])
-    assert version_uv >= piso_minimo, f"uv.lock tiene multidict {version_uv} < {piso_minimo}"
+    assert version_uv in req.specifier, f"uv.lock tiene multidict {version_uv} fuera del rango {req.specifier}"
 
 
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
