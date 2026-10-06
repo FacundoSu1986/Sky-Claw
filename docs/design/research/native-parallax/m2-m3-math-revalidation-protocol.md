@@ -9,9 +9,12 @@
 ```text
 PROTOCOL_CLASS=VERSIONED_REVALIDATION_OF_PREVIOUSLY_OBSERVED_DATA
 REVAL_PROTOCOL_COMPLETE=YES
-REAL_CORPUS_TOUCHED=NO
+REAL_CORPUS_READ_FOR_RECOVERY=YES
+REAL_CORPUS_HASHED_FOR_RECOVERY=YES
+REAL_CORPUS_MUTATED=NO
 M2_RERUN_EXECUTED=NO
 M3_RERUN_EXECUTED=NO
+M6_REAL_RUN_EXECUTED=NO
 RECOVERY_BLOCKER=NONE
 REVALIDATION_EXECUTION_ALLOWED=YES
 ```
@@ -260,13 +263,16 @@ No se permite reemplazar estas tablas por una puntuación compuesta elegida desp
 Comparar, por ID de asset y donde corresponda por policy/k:
 
 1. Conteo de assets de entrada, incluidos, excluidos/rechazados, razón y split; pertenencia de ID y declared convention.
-2. Todas las filas RAW 512 y campos asociados, incluyendo `aligned_rmse`, `raw_centered_rmse`, `gradient_rmse`, `correlation`, `variance_ratio`, `catastrophic`, `activation_fraction`, `negative_nz_fraction`, `low_trust_fraction`, métricas de gradiente, seams, energy ratio, escala/signo del oráculo y runtime (runtime se reporta, no se interpreta como efecto científico sin separar environment).
+2. Todas las filas RAW 512 y campos asociados, incluyendo `aligned_rmse`, `raw_centered_rmse`, `gradient_rmse`, `correlation`, `variance_ratio`, `catastrophic`, `activation_fraction`, `negative_nz_fraction`, `low_trust_fraction`, métricas de gradiente, seams, energy ratio, escala/signo del oráculo y runtime (`runtime_ms` se reporta y compara bajo la clasificación explícita `NON_SCIENTIFIC_RUNTIME_VARIATION`; no se interpreta como efecto científico, no activa hard-stop científico, y nunca se utiliza para decision equivalence).
 3. `characs.json` por asset: features normal-only, estadísticas curl/projection, `oracle_agreement_deg`, `oracle_best_strength`, seam/Q8 y diagnósticos de convención/orientación disponibles.
 4. Tabla sigma completa: cada `candidate × target`, Spearman, sigma median y elegibilidad; ganador, estado de selección, y cualquier policy row generado o no generado.
 5. Todas las filas transfer M2-E y sweep M2-F, policy/k/sigma por asset, incluyendo `aligned_rmse`, `gradient_rmse`, `correlation`, `variance_ratio`, `catastrophic` y `activation_fraction`. Si NEW no tiene winner, registrar ausencia de esas filas como consecuencia fail-closed; no inventarlas.
 6. Si y sólo si se recupera el control M2 1024 histórico, comparar exactamente su subset y separarlo del primary 512.
 
-Las filas se alinean por claves semánticas (asset, policy, k, sigma/candidato y split), nunca por posición del array. Si no se recuperan los OLD raw `rows.json`/`characs.json`, M2 no tiene comparación completa y no se ejecuta.
+Las filas se alinean por claves semánticas estables, nunca por posición del array ni por valores numéricos continuos dependientes de datos:
+- Para M2 RAW: `asset, split, policy, k, sigma_candidate=NONE`.
+- Para M2 transfer/sweep: `asset, split, policy, k, sigma_candidate=<global sigma_selection winner>`.
+`sigma_eff` es un valor métrico comparado, NO parte de la clave de identidad de la fila. Para artefactos OLD, derivar `sigma_candidate` a partir del `sigma_selection.winner` del mismo artefacto y registrar el mapping en el sidecar de comparación (`M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES`). El archivo RAW histórico no se modifica. Si no se recuperan los OLD raw `rows.json`/`characs.json`, M2 no tiene comparación completa y no se ejecuta.
 
 ### 6.2 M3 — `exp_m3_results.json`
 
@@ -276,6 +282,7 @@ Las filas se alinean por claves semánticas (asset, policy, k, sigma/candidato y
 4. CALIBRATION: proxy seleccionado, n, Spearman, orientación y status; tabla completa de proxy/ranking y estado de evaluabilidad.
 5. HELD_OUT: Spearman orientado, IC, n, `ci_status`, `n_boot_evaluable`, `n_boot_degenerate`, catastrophic AUC y n de positivos/negativos. Si OLD no tiene conteos bootstrap, reportar `NOT_RECORDED`; no inferir cero.
 6. Direcciones por familia (n, Spearman, status) y la tabla rates completa (proxy, threshold, coverage, reject, catastrophic false-safe y false-review). Registrar también si el proxy/rates no fue evaluable.
+   - **Identidad estable para la tabla rates de M3:** El runner itera cuantiles fijos `q` en `{0.1, 0.2, 0.3, 0.4, 0.5}`, pero emite sólo el threshold numérico derivado. Si cambia el proxy o sus vectores numéricos, el threshold varía numéricamente y no puede actuar como clave de identidad. En el comparador/sidecar se asigna como clave de identidad estable `rate_quantile_q` con valores `{0.1, 0.2, 0.3, 0.4, 0.5}` (`M3_RATE_Q_STABLE_IDENTITY=YES`). Para artefactos OLD que no serializaron `q` explícito, el mapping se realiza sólo si se verifica formalmente contra el código histórico que el orden de evaluación correspondió exactamente a dicha secuencia (`OLD_RATE_Q_MAPPING_VERIFIED=YES/NO`); si no se puede verificar, clasificar como `UNMATCHED_HISTORICAL_RATE_ROWS` sin inventar asignaciones. El artefacto histórico RAW de M3 permanece inmutable.
 7. Cohort B DIAGNÓSTICA: a cada umbral histórico 20°/30°/40°, IDs incluidos, n, familias, catastróficos, features, filas y proxies; cambios de membresía atribuibles al oracle deben quedar visibles. No usar Cohort B para cambiar la decisión primaria de Cohort A.
 8. `bands_independent_sigma`, `by_threshold`, diagnósticos de convención/oracle y cualquier otro campo preexistente se conserva/compara cuando esté presente. No omitir un campo porque NEW sea `null` o porque OLD no tuviera ese campo.
 
@@ -327,6 +334,10 @@ MATH_B_DOWNSTREAM_SELECTION_OR_ORIENTATION
 HISTORICAL_VALUE_WAS_NOT_STATISTICALLY_EVALUABLE
 NEW_DIAGNOSTIC_ADDED_BY_MATH_B
 POTENTIAL_TOOLCHAIN_FLOATING_NOISE
+NON_SCIENTIFIC_RUNTIME_VARIATION
+ENVIRONMENT_REPLAY_DRIFT
+ENVIRONMENT_CONFOUNDED
+UNMATCHED_HISTORICAL_RATE_ROWS
 SERIALIZATION_ONLY_NONFINITE
 EXPECTED_DIAGNOSTIC_COHORT_MEMBERSHIP_CHANGE
 CORPUS_IDENTITY_FAILURE
@@ -342,6 +353,22 @@ Esta clasificación separa divergencias microscópicas atribuibles a variaciones
   3. NINGUNA ruta matemática o estadística corregida por MATH-A o MATH-B explica causalmente la discrepancia.
 - **Auditoría obligatoria de entorno:** No se califica automáticamente cualquier diferencia pequeña (`~1e-16`) como toolchain sin verificar las tres condiciones e incluir en el reporte de comparación los metadatos completos de entorno (`OS`, `Python`, `NumPy`, `Pillow`, `FFT backend`).
 
+**Reglas de la clasificación `NON_SCIENTIFIC_RUNTIME_VARIATION`:**
+Esta clasificación aplica a `runtime_ms` en las filas de ejecución.
+- Almacena SIEMPRE `old_value`, `new_value`, `delta` y `abs_delta`.
+- NO se atribuye a correcciones matemáticas o estadísticas de MATH-A/MATH-B.
+- NO activa un hard-stop científico ni detiene la interpretación de la revalidación.
+- Conserva el hardware y environment de ejecución como contexto operativo.
+- `runtime_ms` NUNCA se utiliza para evaluar `decision` ni equivalencia científica.
+
+**Reglas de las clasificaciones de entorno y replay (`ENVIRONMENT_REPLAY_DRIFT`, `ENVIRONMENT_CONFOUNDED`):**
+Se emplean en la triangulación experimental entre `HISTORICAL_OLD`, `OLD_CODE_REPLAY_SAME_ENV` y `NEW`:
+- `ENVIRONMENT_REPLAY_DRIFT`: Diferencias observadas entre `HISTORICAL_OLD` y `OLD_CODE_REPLAY_SAME_ENV` que reflejan deriva de plataforma, bibliotecas o toolchain bajo idéntico código fuente.
+- `ENVIRONMENT_CONFOUNDED`: Si el replay histórico no puede ejecutarse en el mismo entorno (`OLD_CODE_REPLAY_STATUS=UNAVAILABLE`), aquellas divergencias entre `HISTORICAL_OLD` y `NEW` potencialmente afectadas por librerías numéricas o entorno que no puedan aislarse experimentalmente deben clasificarse como `ENVIRONMENT_CONFOUNDED`, quedando terminantemente prohibido declararlas como efecto exclusivo de MATH-A o MATH-B sin evidencia causal independiente demostrada.
+
+**Reglas de la clasificación `UNMATCHED_HISTORICAL_RATE_ROWS`:**
+Aplica cuando filas de tasas de la tabla de rates históricas no puedan mapearse de forma verificada e inequívoca a los cuantiles `rate_quantile_q`. Se reportan explícitamente como filas no emparejadas sin imputar ni fabricar mapeos ad-hoc.
+
 `DECISION_EQUIVALENT=YES` sólo cuando `OLD.decision == NEW.decision` como enum literal exacto. Si difiere, `DECISION_EQUIVALENT=NO`; reportar cada condición del enum que cambió y su camino causal. No concluir equivalencia por medianas, dirección general o parecido narrativo.
 
 Un `null` NEW por constante, rho=0 sin orientación, sigma winner=None, bootstrap no evaluable o ausencia de proxy no se llama automáticamente regresión: cuando aplique se clasifica `HISTORICAL_VALUE_WAS_NOT_STATISTICALLY_EVALUABLE`, y se explica el estado. Un null exclusivamente originado por saneamiento JSON se clasifica `SERIALIZATION_ONLY_NONFINITE`.
@@ -353,6 +380,9 @@ Para **cada** Spearman OLD/NEW que no sea bit-identical, guardar un registro de 
 ```text
 path
 n_old, n_new, n_paired
+PAIRED_IDS_IDENTICAL=YES/NO
+INPUT_VECTOR_X_BIT_IDENTICAL=YES/NO
+INPUT_VECTOR_Y_BIT_IDENTICAL=YES/NO
 OLD_RANKING_METHOD=ORDINAL_DOUBLE_ARGSORT | UNKNOWN
 NEW_RANKING_METHOD=AVERAGE_RANK
 TIES_PRESENT_OLD=YES/NO
@@ -364,7 +394,14 @@ max_tie_size_x_new, max_tie_size_y_new
 OLD_RHO, NEW_RHO, DELTA, ABS_DELTA, REL_DELTA, BIT_IDENTICAL
 ```
 
-Un tie group es un valor repetido al menos dos veces, contado después de documentar el mismo filtro de pares válidos usado para ese rho; reportar además los valores/pares excluidos si los hay. La implementación OLD se confirma contra el código histórico disponible; si no se puede verificar, registrar `UNKNOWN`, nunca asumirlo. NEW debe ser average ranks. Si no hay ties en OLD ni NEW, el resultado esperado es OLD==NEW; cualquier diferencia se investiga antes de interpretación, incluso si parece pequeña. No inventar `n`, empates ni grupos a partir del rho agregado.
+Un tie group es un valor repetido al menos dos veces, contado después de documentar el mismo filtro de pares válidos usado para ese rho; reportar además los valores/pares excluidos si los hay. La implementación OLD se confirma contra el código histórico disponible; si no se puede verificar, registrar `UNKNOWN`, nunca asumirlo. NEW debe ser average ranks.
+
+**Regla de adjudicación causal de Spearman (inputs antes que empates — `SPEARMAN_INPUT_IDENTITY_GATE=YES`):**
+Para todo coeficiente de Spearman cuyo valor difiera entre OLD y NEW, se evalúa obligatoriamente la identidad previa de los vectores de entrada y la población de pares evaluados:
+1. **Inputs idénticos sin empates:** Si `PAIRED_IDS_IDENTICAL=YES`, `INPUT_VECTOR_X_BIT_IDENTICAL=YES`, `INPUT_VECTOR_Y_BIT_IDENTICAL=YES`, y `TIES_PRESENT_OLD=NO` y `TIES_PRESENT_NEW=NO`: el resultado matemático esperado es `OLD_RHO == NEW_RHO`. Cualquier discrepancia numérica bajo esta condición representa una divergencia inesperada de implementación o toolchain y detiene la interpretación (`INVESTIGATE_BEFORE_INTERPRETATION`).
+2. **Inputs modificados o población de pares alterada:** Si los vectores de entrada cambiaron (`INPUT_VECTOR_*_BIT_IDENTICAL=NO`) o la población emparejada varió (`PAIRED_IDS_IDENTICAL=NO`) —por ejemplo debido a correcciones MATH-A en features de curl, proyección residual o filtros de pertenencia del oráculo—, el coeficiente de Spearman puede diferir legítimamente incluso en ausencia total de empates. Dicha diferencia NO es una anomalía ni un error de ranking, sino un efecto causal que debe clasificarse y rastrearse como `MATH_A_DOWNSTREAM`.
+3. **Corrección de empates:** La clasificación `MATH_B_TIE_CORRECTION` queda estrictamente reservada para aquellos casos donde la diferencia en rho sea atribuible al método de ranking (sustitución de ordinal double-argsort por average ranks) sobre vectores de entrada que presenten empates sobre inputs comparables.
+No inventar `n`, empates ni grupos a partir del rho agregado.
 
 ## 9. Identidad de código, environment y artefactos
 
@@ -378,6 +415,39 @@ Antes del run futuro REVAL-1, después de los gates de review y freeze:
 - M2 y M3 runners no proporcionan por sí solos toda la provenance de ejecución requerida: acompañar sus outputs con sidecar de comparación/README que registre los campos anteriores y preserve RAW vs. published.
 
 Environment histórico se transcribe como referencia, no como environment NEW: M2 documenta Linux 6.1/Python 3.11.2/NumPy 2.4.6/Pillow 12.3.0; M3 checkpoint/doc registra Windows/Python 3.11.9/NumPy 2.4.6/Pillow 11.3.0. Diferencias de environment se reportan, no se ocultan ni se presentan como efecto matemático.
+
+### 9.1 Las tres superficies de control experimental y triangulación causal (`OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES`)
+
+Para aislar causalmente las correcciones matemáticas y estadísticas (MATH-A y MATH-B) de posibles efectos de plataforma o bibliotecas numéricas (BLAS, NumPy, Pillow, backend FFT), se definen tres superficies experimentales estrictas:
+
+#### A. HISTORICAL_OLD
+- Artefactos originales auténticos recuperados y autenticados: M2 `rows.json`, M2 `characs.json`, M3 `exp_m3_results.json` (RAW histórico).
+- Constituyen la referencia histórica primaria e inmutable.
+- Conserva formalmente `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21` (sin atestación completa de 40 hex contemporánea).
+
+#### B. OLD_CODE_REPLAY_SAME_ENV
+- Ejecución controlada del código histórico correspondiente al prefijo documentado `607ff21`.
+- En el repositorio Git actual, dicho prefijo resuelve unívocamente a:
+  ```text
+  OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6
+  OLD_CODE_REPLAY_SOURCE_RELATION=CURRENT_GIT_RESOLUTION_OF_HISTORICAL_PREFIX
+  ```
+- *Aviso de procedencia:* No se afirma que los artefactos históricos atestiguaran originalmente ese 40-hex; se registra como la resolución reproducible en el grafo actual de Git para propósitos de control causal.
+- Debe ejecutarse bajo las mismas condiciones exactas que NEW: mismo host Windows, mismo entorno Python, idénticas versiones de dependencias, mismos bytes de corpus autenticados (68/68 M2, 62/62 M3), mismos manifiestos y misma resolución primaria 512, en un namespace de salida separado y no-clobber (`RAW_RUN_ROOT/replay_m2`, etc.).
+- Si el código antiguo no puede ejecutarse bajo el mismo entorno moderno (por incompatibilidad de dependencias o API):
+  ```text
+  OLD_CODE_REPLAY_STATUS=UNAVAILABLE
+  ```
+  registrando la causa técnica exacta. En tal caso se mantiene la comparación HISTORICAL_OLD vs NEW, pero las divergencias numéricas que no puedan aislarse de efectos de plataforma deben clasificarse como `ENVIRONMENT_CONFOUNDED` y NO declararse puramente como efectos de MATH-A/MATH-B sin evidencia independiente demostrada.
+
+#### C. NEW
+- Ejecución con el código matemático y estadístico corregido: `RUN_CODE_SHA=<40 hex exacto de main aprobado>`.
+
+#### Triangulación causal:
+1. `HISTORICAL_OLD vs OLD_CODE_REPLAY`: Diagnóstico puro de deriva de entorno/replay (`ENVIRONMENT_REPLAY_DRIFT`).
+2. `OLD_CODE_REPLAY vs NEW`: Delta puro de versión de código bajo el mismo entorno controlado.
+3. `HISTORICAL_OLD vs NEW`: Comparación histórica versionada final.
+No se declara automáticamente todo cambio OLD_REPLAY → NEW como MATH-A/B: continúa exigiéndose el mapeo del camino causal de primitivas (§5).
 
 ## 10. Namespace y layout planeado (no creado en REVAL-0)
 
@@ -396,13 +466,34 @@ m2/
     characs.json
 m3/
     exp_m3_results.json
+replay_m2/
+    rows.json
+    characs.json
 comparison/
     m2-old-vs-new.json
     m3-old-vs-new.json
+    m2-old-vs-replay.json
+    m2-replay-vs-new.json
     impact-report.md
 ```
 
 El árbol Git guarda artefactos publicados. Los RAW se preservan fuera del árbol de assets/repositorio o en el almacenamiento de research establecido, con su hash/bytes/EOL en `README.md` y comparison metadata. REVAL-0 no crea estos directorios ni outputs.
+
+### 10.1 Garantía estricta de no sobrescritura de salidas (`NO_CLOBBER_OUTPUT_REQUIRED=YES`)
+
+Los scripts de ejecución de M2 y M3 (`run_exp_m2.py` y `run_exp_m3.py`) utilizan actualmente `mkdir(parents=True, exist_ok=True)` y escriben nombres de archivo fijos (`rows.json`, `characs.json`, `exp_m3_results.json`). Para garantizar que una ejecución no destruya ni sobrescriba los artefactos de otra:
+1. El harness de ejecución en REVAL-1 debe verificar que el directorio raíz de la corrida NO exista previamente:
+   ```text
+   RAW_RUN_ROOT_MUST_NOT_EXIST=YES
+   ```
+2. La creación del directorio raíz se realiza con semántica atómica fail-if-exists (conceptualmente `Path(RAW_RUN_ROOT).mkdir(parents=True, exist_ok=False)`).
+3. Los subdirectorios de salida (`RAW_RUN_ROOT/m2`, `RAW_RUN_ROOT/m3`, `RAW_RUN_ROOT/replay_m2`, etc.) se crean exclusivamente una única vez.
+4. Si `RAW_RUN_ROOT` o cualquiera de los subdirectorios previstos ya existe en disco:
+   ```text
+   STOP
+   BLOCKER=RAW_OUTPUT_NAMESPACE_ALREADY_EXISTS
+   ```
+   Queda terminantemente prohibido borrar, limpiar, reutilizar o sobreescribir un namespace de salida existente. Esta regla aplica estrictamente tanto a las ejecuciones NEW como a las de OLD_CODE_REPLAY.
 
 ## 11. Secuencia de ejecución futura y hard stops
 
@@ -431,25 +522,44 @@ Los comandos siguientes son una especificación de REVAL-1, **no se ejecutan en 
    BLOCKER=CORPUS_PATH_PREFLIGHT_FAILED
    ```
    Prohibición absoluta: NO crear rutas, NO recrear junctions y NO descargar assets durante o para eludir el pre-flight.
-5. Autorización técnica de ejecución: `REVALIDATION_EXECUTION_ALLOWED=YES` condicionado a la aprobación de todos los gates y superación del pre-flight de rutas, una vez congelado el protocolo y obtenido el commit exacto `RUN_CODE_SHA`. Esto NO significa ejecutar ahora en esta fase documental.
-6. Confirmar en el commit `RUN_CODE_SHA` los valores congelados de la sección 4, resolución 512 y rutas del runner; capturar environment antes de ejecutar. Confirmar output nuevo y único, sin sobrescribir OLD.
-7. Sólo tras todos los gates, comandos conceptuales:
-
-```bash
-python -m sky_claw.local.native_parallax.research.run_exp_m2 \
-  --manifest "$M2_MANIFEST_VERIFIED" \
-  --resolution 512 \
-  --out "$RAW_RUN_ROOT/m2"
-
-python -m sky_claw.local.native_parallax.research.run_exp_m3 \
-  --m3-manifest docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json \
-  --m2-manifest "$M2_MANIFEST_VERIFIED" \
-  --resolution 512 \
-  --out "$RAW_RUN_ROOT/m3"
-```
-
-8. Si M2 falla identidad/provenance o pre-flight de rutas, **no ejecutar M2 ni M3**: Cohort B M3 depende del corpus/manifest M2 y la pregunta conjunta queda bloqueada. No ejecutar sólo una parte para presentarla como comparación completa.
-9. Calcular/preservar hashes raw y published, generar comparación estructurada y tie diagnostics; investigar toda variación no esperada antes de cualquier interpretación.
+5. Pre-flight obligatorio de rehash SHA-256 inmediatamente antes de la ejecución (`PRE_RUN_M2_HASH_GATE=68/68`, `PRE_RUN_M3_HASH_GATE=62/62`):
+   Inmediatamente antes de invocar cualquier runner (tanto para `OLD_CODE_REPLAY` como para `NEW`), realizar el rehash criptográfico completo de todos los assets del corpus en disco y contrastar con los manifiestos:
+   - M2: 68/68 archivos con coincidencia exacta SHA-256 (`PRE_RUN_M2_HASH_MATCH=68/68`).
+   - M3: 62/62 archivos con coincidencia exacta SHA-256 (`PRE_RUN_M3_HASH_MATCH=62/62`).
+   - Registrar obligatoriamente el timestamp UTC exacto del hash preflight.
+   - Si ocurre cualquier mismatch o ausencia de archivo:
+     ```text
+     STOP
+     CORPUS_IDENTITY_FAILURE
+     REVALIDATION_EXECUTION_ALLOWED=NO
+     ```
+   - **Prohibición de exclusión parcial:** Queda terminantemente prohibido permitir que el runner capture este error como exclusión parcial (p. ej. captura de `DatasetInvalidError` en `run_exp_m3.py` que continúa si se alcanza el mínimo de 15 assets y 3 familias); cualquier fallo de hash detiene la corrida de forma cerrada antes de cualquier procesamiento de datos.
+6. Garantía de aislamiento y no sobrescritura de salidas (`NO_CLOBBER_OUTPUT_REQUIRED=YES`, `RAW_RUN_ROOT_MUST_NOT_EXIST=YES`):
+   Verificar que el directorio destino de la corrida no exista previamente y crearlo con semántica atómica fail-if-exists antes de iniciar cualquier runner. Si existe:
+   ```text
+   STOP
+   BLOCKER=RAW_OUTPUT_NAMESPACE_ALREADY_EXISTS
+   ```
+7. Autorización técnica de ejecución: `REVALIDATION_EXECUTION_ALLOWED=YES` condicionado a la aprobación de todos los gates y superación de los pre-flights de ruta, rehash y no-clobber, una vez congelado el protocolo y obtenido el commit exacto `RUN_CODE_SHA`. Esto NO significa ejecutar ahora en esta fase documental.
+8. Confirmar en el commit `RUN_CODE_SHA` los valores congelados de la sección 4, resolución 512 y rutas del runner; capturar environment antes de ejecutar. Confirmar output nuevo y único, sin sobrescribir OLD.
+9. **Secuencia conceptual congelada para REVAL-1 (no ejecutada en REVAL-0):**
+   ```text
+   1. clean exact RUN_CODE_SHA
+   2. environment capture
+   3. path preflight (PATH_PREFLIGHT_REQUIRED=YES)
+   4. SHA-256 preflight 68/68 + 62/62 (PRE_RUN_M2_HASH_MATCH=68/68, PRE_RUN_M3_HASH_MATCH=62/62)
+   5. exclusive/no-clobber run roots (RAW_RUN_ROOT_MUST_NOT_EXIST=YES)
+   6. OLD_CODE_REPLAY_SAME_ENV (OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6)
+   7. NEW run (RUN_CODE_SHA=<exact 40 hex>)
+   8. hash RAW immediately
+   9. historical vs replay comparison (ENVIRONMENT_REPLAY_DRIFT diagnostic)
+   10. replay vs NEW comparison (same-environment code version delta)
+   11. historical vs NEW comparison (final versioned historical comparison)
+   12. tie/input diagnostics (SPEARMAN_INPUT_IDENTITY_GATE=YES)
+   13. causal adjudication (causal-path mapping)
+   ```
+10. Si M2 falla identidad/provenance, pre-flight de rutas o rehash, **no ejecutar M2 ni M3**: Cohort B M3 depende del corpus/manifest M2 y la pregunta conjunta queda bloqueada. No ejecutar sólo una parte para presentarla como comparación completa.
+11. Calcular/preservar hashes raw y published, generar comparación estructurada y tie diagnostics; investigar toda variación no esperada antes de cualquier interpretación.
 
 ## 12. Cambios esperados y no esperados
 
@@ -509,12 +619,47 @@ Adjudicación exhaustiva de findings incorporados en este documento:
    - *Estado:* ACEPTADO / codificado en el protocolo (§7).
    - *Detalle:* Clasificación `POTENTIAL_TOOLCHAIN_FLOATING_NOISE`. No relaja la comparación ni autoriza tolerancias numéricas para declarar equivalencia científica, ni modifica umbrales ni redondea deltas. Requiere delta a nivel de precisión de máquina (~1e-16 / LSB IEEE-754), cero cambio de estado de decisión o categórico, y ausencia de explicaciones causales MATH-A/MATH-B, registrando exhaustivamente metadatos de entorno (OS, Python, NumPy, Pillow, FFT backend).
 
+### 13.2 Adjudicación y resolución de findings de Codex (Ready-Review)
+
+Tras la promoción del PR a Ready for Review, se auditaron y adjudicaron 7 findings técnicos de Codex:
+```text
+CODEX_FINDINGS_TOTAL=7
+CODEX_FINDINGS_ACCEPTED=7
+CODEX_THREADS_RESOLVED=7
+CODEX_THREADS_REMAINING=0
+```
+
+Detalle de adjudicación e incorporación protocolar:
+1. **F1 — Spearman: Evaluación de inputs antes que empates:**
+   - *Estado:* ACEPTADO / codificado en §8 (`SPEARMAN_INPUT_IDENTITY_GATE=YES`).
+   - *Racional:* La presunción de que la ausencia de empates exige igualdad estricta de Spearman es inválida si los vectores de entrada o la población evaluada cambiaron por MATH-A (features de curl, proyección residual, pertenencia de Cohort B). El protocolo exige evaluar previamente `PAIRED_IDS_IDENTICAL`, `INPUT_VECTOR_X_BIT_IDENTICAL` e `INPUT_VECTOR_Y_BIT_IDENTICAL`; si cambiaron, el cambio se clasifica legítimamente como `MATH_A_DOWNSTREAM`. `MATH_B_TIE_CORRECTION` queda reservada a cambios en el método de ranking sobre inputs comparables.
+2. **F2 — Garantía estricta de no sobrescritura de salidas (No-Clobber):**
+   - *Estado:* ACEPTADO / codificado en §10.1 y §11 (`NO_CLOBBER_OUTPUT_REQUIRED=YES`, `RAW_RUN_ROOT_MUST_NOT_EXIST=YES`).
+   - *Racional:* Los runners M2 y M3 utilizaban `exist_ok=True` con nombres fijos. Se introduce el gate fail-closed `RAW_OUTPUT_NAMESPACE_ALREADY_EXISTS` si el root o los subdirectorios existen antes de la corrida, prohibiendo terminantemente la sobrescritura tanto para NEW como para OLD_CODE_REPLAY.
+3. **F3 — Distinción explícita entre lectura/hashing de recuperación y ejecución:**
+   - *Estado:* ACEPTADO / codificado en §0 y §14 (`REAL_CORPUS_READ_FOR_RECOVERY=YES`, `REAL_CORPUS_HASHED_FOR_RECOVERY=YES`, `REAL_CORPUS_MUTATED=NO`).
+   - *Racional:* La bandera `REAL_CORPUS_TOUCHED=NO` era ambigua frente a la auditoría RECOVERY-0 (que leyó y verificó SHA-256 de los 68 archivos M2 y 62 archivos M3). Se reemplazó por estados inequívocos de lectura, hashing y no mutación.
+4. **F4 — Rehash criptográfico completo inmediatamente antes de ejecución:**
+   - *Estado:* ACEPTADO / codificado en §11 y §14 (`PRE_RUN_M2_HASH_GATE=68/68`, `PRE_RUN_M3_HASH_GATE=62/62`).
+   - *Racional:* El preflight de rutas verificaba existencia pero no prevenía que M3 capturara una discrepancia como `DatasetInvalidError` y continuara la ejecución con exclusión parcial. Se exige rehash obligatorio 68/68 M2 y 62/62 M3 con timestamp UTC inmediatamente antes de la corrida, con fallo cerrado (`CORPUS_IDENTITY_FAILURE`).
+5. **F5 — Clasificación de variación de runtime como no científica:**
+   - *Estado:* ACEPTADO / codificado en §6.1, §7 y §14 (`NON_SCIENTIFIC_RUNTIME_VARIATION`, `NON_SCIENTIFIC_RUNTIME_CLASSIFICATION=YES`).
+   - *Racional:* `runtime_ms` en las filas M2 varía normalmente por condiciones de máquina y carecía de clasificación válida sin activar falsamente hard-stops científicos. Se aísla formalmente de los efectos de MATH-A/B y de la equivalencia de decisión.
+6. **F6 — Control causal de código antiguo en el mismo entorno (OLD_CODE_REPLAY):**
+   - *Estado:* ACEPTADO / codificado en §9.1, §10, §11 y §14 (`OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES`, `OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6`).
+   - *Racional:* Aislar efectos de plataforma (Linux histórico vs. Windows actual) ejecutando el código fuente correspondiente al prefijo `607ff21` (resuelto en Git como `607ff21c3dfb521593ce248fdf016636e9e975f6`) bajo el mismo entorno controlado de NEW, diagnosticando `ENVIRONMENT_REPLAY_DRIFT` y clasificando como `ENVIRONMENT_CONFOUNDED` si no está disponible.
+7. **F7 — Identidades estables para filas de barridos derivadas de datos:**
+   - *Estado:* ACEPTADO / codificado en §6.1, §6.2, §7 y §14 (`M3_RATE_Q_STABLE_IDENTITY=YES`, `M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES`).
+   - *Racional:* Prevenir desalineación de filas cuando umbrales numéricos cambian por datos. En M3 rates se adopta el cuantil `rate_quantile_q` `{0.1, 0.2, 0.3, 0.4, 0.5}`, y en M2 policy se utiliza `sigma_candidate` en lugar del valor continuo `sigma_eff`.
+
 ## 14. Estado final REVAL-0
 
 ```text
 REVAL_PROTOCOL_COMPLETE=YES
 DOC_ONLY=YES
-REAL_CORPUS_TOUCHED=NO
+REAL_CORPUS_READ_FOR_RECOVERY=YES
+REAL_CORPUS_HASHED_FOR_RECOVERY=YES
+REAL_CORPUS_MUTATED=NO
 M2_RERUN_EXECUTED=NO
 M3_RERUN_EXECUTED=NO
 M6_REAL_RUN_EXECUTED=NO
@@ -545,17 +690,31 @@ MATH_A_METRICS_MAPPED=YES
 MATH_B_METRICS_MAPPED=YES
 REPRO_A_CLASSIFIED_SERIALIZATION_ONLY=YES
 SPEARMAN_TIE_DIAGNOSTICS_PREDEFINED=YES
+SPEARMAN_INPUT_IDENTITY_GATE=YES
 DECISION_EQUIVALENCE_PREDEFINED=YES
 TOOLCHAIN_FLOATING_CLASSIFICATION_PREDEFINED=YES
+NON_SCIENTIFIC_RUNTIME_CLASSIFICATION=YES
 NO_RETUNING=YES
 
 PATH_PREFLIGHT_REQUIRED=YES
+NO_CLOBBER_OUTPUT_REQUIRED=YES
+PRE_RUN_M2_HASH_GATE=68/68
+PRE_RUN_M3_HASH_GATE=62/62
 OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO
 OLD_M2_EXECUTION_SHA_PREFIX=607ff21
+OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES
+OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6
+OLD_CODE_REPLAY_SOURCE_RELATION=CURRENT_GIT_RESOLUTION_OF_HISTORICAL_PREFIX
+M3_RATE_Q_STABLE_IDENTITY=YES
+M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES
 
 ARENA_AI_REVIEW_REQUIRED=YES
 ARENA_REVIEW_STATUS=PASS_WITH_FINDINGS
 ARENA_FINDINGS_ENCODED=YES
+CODEX_FINDINGS_TOTAL=7
+CODEX_FINDINGS_ACCEPTED=7
+CODEX_THREADS_RESOLVED=7
+CODEX_THREADS_REMAINING=0
 QODO_REQUIRED=NO
 M6_IMPLEMENTATION_BLOCKED=YES
 
