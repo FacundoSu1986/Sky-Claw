@@ -53,6 +53,21 @@ _SEP: Final[bytes] = b"\x00"
 #: como un ``TreeDigest`` de archivos aunque las primitives coincidan.
 _DOMAIN: Final[bytes] = b"frozen-runtime:directory-membership:v1\x00"
 
+#: Caracteres que un componente de relpath NO puede contener, por dos razones
+#: distintas que conviene no mezclar:
+#:
+#: - ``NUL`` (U+0000) y los controles ASCII (U+0001..U+001F) no son un nombre
+#:   valido para el filesystem: Python y el SO los rechazan al MATERIALIZAR el
+#:   path (``ValueError: embedded null character in path`` en ``os.stat``/
+#:   ``os.mkdir``), no al canonicalizarlo.
+#: - ``DEL`` (U+007F) si se puede crear, pero no es portable y no aporta
+#:   ninguna identidad que un nombre imprimible no de. Se rechaza por la misma
+#:   regla que P3 ya aplica a los identificadores (``candidate_id.py``).
+#:
+#: El predicado se escribe con ``<=`` y ``0x7F`` para cubrir los DOS extremos
+#: de un tiron; ``DEL`` queda FUERA de ``< 0x20`` y necesita su propia clausula.
+_CONTROL_O_DEL: Final[str] = "".join(chr(c) for c in (*range(0x20), 0x7F))
+
 
 class SourceObservationError(FrozenRuntimeError):
     """Base de fallos al observar (archivos + membership + identidad) un arbol.
@@ -141,9 +156,39 @@ def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
     Un relpath ya canonico es relativo y sin `..`, asi que unirlo a una raiz no
     puede salir de ella: sobre Windows, ademas, no puede cambiar de unidad ni
     abrir un ADS.
+
+    RECHAZA, ademas, toda entrada que contenga NUL / controles ASCII / DEL, y
+    todo componente terminado en espacio o en punto. Ninguna de las dos cosas
+    se "limpia", y la razon es la MISMA que ya obliga a rechazar `..`: el
+    canonico es la IDENTIDAD de un elemento del arbol sellado, asi que
+    normalizar dos nombres distintos al mismo string no simplifica nada -- hace
+    que la evidencia afirme haber visto algo que no es lo que hay.
+
+    El caso Windows de los sufijos merece precision porque NO es "prohibir
+    espacios": el espacio INTERNO (`Data/My Folder`) es legitimo y se preserva.
+    Lo que el SO recorta es el sufijo, asi que `Foo ` y `Foo.` describen (o
+    dejan de describir, segun el API) el mismo nombre que `Foo`, y aceptarlos
+    dejaria un componente cuya identidad depende de quien lo materialice.
+
+    El espacio LEADING queda deliberadamente FUERA de este rechazo: Windows lo
+    acepta de forma estable y ningun contrato de P3 lo prohibe. La regla de
+    ``candidate_id.py`` (`candidate_id == candidate_id.strip()`) no se traslada
+    porque un relpath de scope nombra un elemento REAL del arbol, donde el
+    espacio inicial es un caracter significativo del nombre.
     """
     if not isinstance(entrada, str) or not entrada:
         raise DirectoryMembershipError(f"una entrada de {tipo} no puede ser vacia")
+    # El chequeo va sobre la ENTRADA COMPLETA y ANTES de normalizar separadores:
+    # un control embebido no es un problema de componentes, es un caracter que
+    # el filesystem no acepta en NINGUNA posicion, y comprobarlo aca cubre de una
+    # sola vez al componente inicial, a los intermedios y al ultimo. Ponerlo
+    # por-componente multiplicaria la misma regla por cada caller y por cada
+    # iteracion del bucle.
+    if any(caracter in _CONTROL_O_DEL for caracter in entrada):
+        raise DirectoryMembershipError(
+            f"entrada de {tipo} con NUL, caracteres de control o DEL: {entrada!r} "
+            "(no es un nombre de filesystem valido: se rechaza antes de materializar cualquier path)"
+        )
     if entrada.startswith(("/", "\\")):
         raise DirectoryMembershipError(f"una entrada de {tipo} no puede ser absoluta: '{entrada}'")
     if ":" in entrada:
@@ -156,6 +201,15 @@ def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
             continue
         if parte == ".." or ":" in parte:
             raise DirectoryMembershipError(f"entrada de {tipo} con componente no canonico: '{entrada}'")
+        # El sufijo ambiguo de Windows se mira DESPUES del filtro estructural:
+        # `Data/./Meshes` normaliza (el componente `.` describe el mismo
+        # directorio), pero `Data/Foo.` es un NOMBRE y se rechaza. Un
+        # componente que llegara aca terminado en `.` no es el estructural.
+        if parte.endswith((" ", ".")):
+            raise DirectoryMembershipError(
+                f"entrada de {tipo} con componente terminado en espacio o punto: '{entrada}' "
+                "(Windows lo recorta, asi que nombraria un elemento ambiguo: se rechaza, no se normaliza)"
+            )
         partes.append(parte)
     if not partes:
         raise DirectoryMembershipError(f"entrada de {tipo} degenerada: '{entrada}'")

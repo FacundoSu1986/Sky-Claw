@@ -209,8 +209,12 @@ def _snapshot(raiz: pathlib.Path) -> dict[str, bytes | None]:
         "Data/\x1fevil.bin",
         "Data/\x7fevil.bin",
         "Data/tab\t.bin",
-        "Data/trailing .bin",
-        "Data/trailing..bin",
+        # Sufijo ambiguo REAL: el componente (el ULTIMO) termina en el espacio o
+        # el punto. `Data/foo .bin` NO sirve como caso: termina en `bin`, y el
+        # punto/espacio interno es legitimo. El sufijo tiene que estar en el
+        # borde del name del componente, no en el medio.
+        "Data/trailing ",
+        "Data/trailing.",
     ],
 )
 def test_p3z_un_lote_hostil_no_muta_nada_antes_de_fallar(tmp_path, hostil: str) -> None:
@@ -257,6 +261,37 @@ def test_p3z_un_directorio_hostil_tambien_corta_el_lote(tmp_path) -> None:
 
     assert not destino.exists(), "se creo el payload antes de validar el lote"
     assert _snapshot(contenedor) == antes_contenedor
+
+
+def test_p3z_el_padre_refusado_no_abre_una_segunda_via_de_entrada(tmp_path) -> None:
+    """Hermano CERRADO: la lista de archivos no puede ser un camino alternativo.
+
+    ``Data/Dir `` se refusa como directorio. La pregunta es si un ARCHIVO que
+    vive dentro de ese directorio refusado puede colarse igual, porque su propia
+    lista lo valida por su cuenta y el nombre del padre no aparece en ella.
+
+    Respuesta verificada: NO. El relpath del archivo es ``Data/Dir /b.bin``, y su
+    componente ambiguo es el PADRE, que viaja dentro del string del archivo; la
+    validacion de archivos lo ve y corta el lote antes de su primer ``mkdir``.
+
+    Se deja como prueba de que la doble validacion no es decorativa y de que la
+    superficie de entrada no tiene una segunda puerta: si alguien reescribe la
+    validacion de archivos para mirar solo el nombre final (``Data/Dir /b.bin`` ->
+    ``b.bin``), este test se rompe.
+    """
+    raiz_origen, contenedor, destino = _armar(tmp_path)
+    antes_contenedor = _snapshot(contenedor)
+
+    archivos = (
+        FileIdentity(rel_path="Data/a.bin", size=3, digest="a" * 64),
+        FileIdentity(rel_path="Data/Dir /b.bin", size=3, digest="b" * 64),
+    )
+
+    with pytest.raises(CandidateCopyError):
+        copiar_arbol_independiente(raiz_origen, destino, archivos, ("Data", "Data/Dir "), contenedor=contenedor)
+
+    assert not destino.exists(), "se creo el payload antes de validar el lote"
+    assert _snapshot(contenedor) == antes_contenedor, "hubo mutacion en el contenedor"
 
 
 def test_p3z_el_limite_canonicalizacion_copia_traduce_la_familia(tmp_path) -> None:
