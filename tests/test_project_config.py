@@ -426,7 +426,8 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
     """multidict debe mantener el piso seguro >=6.9.1 ante CVE-2026-104874.
 
     Previene regresiones donde una actualización o resolución accidental baje
-    multidict a 6.7.1 u otra versión vulnerable en pyproject.toml o requirements.lock.
+    multidict a 6.7.1 u otra versión vulnerable en pyproject.toml, requirements.lock
+    o uv.lock.
     """
     from packaging.version import Version
 
@@ -443,10 +444,24 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert req.specifier == SpecifierSet(">=6.9.1,<7"), f"rango de multidict inesperado: {req.specifier}"
 
     # 2. requirements.lock
-    req_match = re.search(r"(?m)^multidict==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8"))
-    assert req_match is not None, "multidict no encontrado en requirements.lock"
-    version_req = Version(req_match.group(1))
+    matches_req = re.findall(
+        r"(?m)^multidict==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    )
+    assert len(matches_req) == 1, (
+        f"se esperaba exactamente una entrada de multidict en requirements.lock, hay {matches_req}"
+    )
+    version_req = Version(matches_req[0])
     assert version_req >= piso_minimo, f"requirements.lock tiene multidict {version_req} < {piso_minimo}"
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_multidict = [p for p in uv_data.get("package", []) if p.get("name") == "multidict"]
+    assert len(paquetes_multidict) == 1, (
+        f"se esperaba exactamente 1 paquete multidict en uv.lock, hay {len(paquetes_multidict)}"
+    )
+    version_uv = Version(paquetes_multidict[0]["version"])
+    assert version_uv >= piso_minimo, f"uv.lock tiene multidict {version_uv} < {piso_minimo}"
 
 
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
