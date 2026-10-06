@@ -1,8 +1,10 @@
 # REVAL-0 — Protocolo congelado de revalidación matemática M2/M3
 
-**Versión:** REVAL-0 · **Fecha del freeze documental:** 2026-10-05 (UTC)
-**Base auditada:** `origin/main = 0c2c5414605c2892b646f02cd31a8930748f9e8a`
+**Versión:** REVAL-0.1 (erratum de procedencia del replay M2) · **Fecha del freeze documental:** 2026-10-05 (UTC)
+**Base auditada:** `origin/main = 0c2c5414605c2892b646f02cd31a8930748f9e8a` (REVAL-0) · erratum REVAL-0.1 sobre `origin/main = 6037b82621052f714cfa338d89ee2702066dfcd1`
 **Alcance:** protocolo de comparación histórica `OLD` vs. código matemático/estadístico corregido `NEW`; no ejecución.
+
+> **ERRATUM REVAL-0.1 (2026-10-06, docs-only):** la versión REVAL-0 de este protocolo adoptó `607ff21c3dfb521593ce248fdf016636e9e975f6` como `OLD_CODE_REPLAY_SOURCE_SHA`, creyendo que el prefijo histórico `607ff21` "resolvía unívocamente" a ese commit. Eso es **falso**: ese commit es un cambio de runtime-vault (#614) que no contiene el árbol `native_parallax`. El source de replay correcto, reconstruido desde la historia de PR #620 y el timestamp del RAW M2, es `e23bf7ac75bf8ac7b1b80f1944119598f743b7b7` (ver §9.2). Se corrigieron §2.2, §7, §9, §9.1, §11, §13.1 y §14. Ningún otro contrato del freeze cambió. No se ejecutó corpus.
 
 > **NOTA DE PROTOCOLO (RECOVERY-0 INTEGRADO):** este documento congela cómo comparar; no ejecuta M2/M3 ni autoriza una sustitución de corpus. Tras la auditoría RECOVERY-0 en el host Windows, el corpus M2 histórico (34/34 assets, 68/68 archivos con SHA-256 verificado), el corpus M3 (31 assets, 62 archivos con SHA-256 verificado), el manifiesto local de M2, y los artefactos históricos `rows.json` (174 filas) y `characs.json` (34 assets) fueron localizados y autenticados con evidencia convergente fuerte. Por tanto, el bloqueo de procedencia queda resuelto y la ejecución futura queda técnicamente habilitada bajo el protocolo (`REVALIDATION_EXECUTION_ALLOWED=YES`), pero ninguna ejecución real (M2, M3 ni M6) se ejecuta en esta fase protocolar.
 
@@ -66,17 +68,26 @@ No se detectó colisión ni movimiento en el dominio de Native Parallax (`NATIVE
 - Enum histórico declarado: `EXP_M2_CONDITIONAL`.
 - El documento fija el baseline M2 principal en 512²; documenta además un subset de sensibilidad 1024², que no pasa a ser resultado principal.
 - El documento contiene tablas históricas —incluida una tabla RAW por asset— y resultados agregados. Son referencias `OLD`; no se copiarán como resultados `NEW` ni se reconstruirán los artefactos faltantes a partir de prosa/tablas.
-- El documento indica `MAIN_SHA=607ff21`. No existe atestación 40-hex demostrada ni verificada en Git o en los artefactos de ese execution SHA (`OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`). Queda prohibido expandir o inferir `607ff21` a un SHA completo de 40 hex. El comparador y sidecar de metadatos NEW debe registrar literalmente una semántica equivalente a:
-  ```json
-  {
-    "old_execution_commit": {
-      "value": "607ff21",
-      "kind": "historical_7_hex_prefix",
-      "full_40_hex_verified": false
+- El documento indica `MAIN_SHA=607ff21`. **Ese valor es el `main` del repositorio al momento de escribirse la documentación, NO el source de ejecución de EXP-M2.** El propio documento aclara que EXP-M2 estaba apilado sobre la rama de #618 y no sobre `main`, de modo que `607ff21` no puede ser el código que corrió el experimento.
+  - **Erratum REVAL-0.1 (corrección de un error de interpretación del freeze REVAL-0):** REVAL-0 afirmó que el prefijo `607ff21` "resolvía unívocamente en Git" a `607ff21c3dfb521593ce248fdf016636e9e975f6` y lo adoptó como `OLD_CODE_REPLAY_SOURCE_SHA`. Esa afirmación es **falsa**. Un prefijo de 7 hex coincide por construcción con alguna cadena de 40 hex, de modo que `git rev-parse` siempre "resuelve" un prefijo corto sin que eso establezca procedencia alguna. El commit `607ff21c3dfb521593ce248fdf016636e9e975f6` es `feat(runtime-vault): establish trusted namespace and golden registry foundation (GP2-S3a) (#614)`, fechado 2026-09-21, un cambio de runtime-vault **que no contiene el árbol `sky_claw/local/native_parallax/` en absoluto**. Verificado: `git ls-tree 607ff21c -- sky_claw/local/native_parallax/` devuelve vacío y `git cat-file -e 607ff21c:sky_claw/local/native_parallax/research/run_exp_m2.py` falla.
+  - No existe atestación 40-hex contemporánea del execution SHA de M2. Mantener `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`. Queda prohibido expandir o inferir `607ff21` a un SHA completo de 40 hex.
+  - El comparador y sidecar de metadatos NEW debe registrar literalmente una semántica equivalente a:
+    ```json
+    {
+      "old_execution_commit": {
+        "value": "607ff21",
+        "kind": "historical_document_main_sha",
+        "is_execution_source": false,
+        "full_40_hex_verified": false
+      },
+      "old_replay_source": {
+        "sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
+        "relation": "BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
+        "is_exact_historical_sha_attestation": false
+      }
     }
-  }
-  ```
-  La ejecución NEW sí debe registrar obligatoriamente `RUN_CODE_SHA=<40 hex exacto>`. Se documentan además en el histórico Python 3.11.2, NumPy 2.4.6, Pillow 12.3.0 y Linux 6.1.
+    ```
+  - La ejecución NEW sí debe registrar obligatoriamente `RUN_CODE_SHA=<40 hex exacto>`. Se documentan además en el histórico Python 3.11.2, NumPy 2.4.6, Pillow 12.3.0 y Linux 6.1.
 
 **Manifiesto canónico localizado en Git:**
 
@@ -311,13 +322,20 @@ Contrato numérico:
 - Si uno es cero, `rel_delta=null` con razón; si un valor es no finito/null/missing/categórico, delta relativo no aplica. Conservar el token no finito OLD como tal al parsear JSON histórico no estricto; no normalizar el archivo OLD.
 - Reportar **todo** delta numérico, aunque sea pequeño. No fijar umbral `abs(delta)<X` ni declarar cambios “irrelevantes” por tamaño. La magnitud se presenta; la clasificación depende del camino causal y del estado de evaluabilidad.
 - Arrays se emparejan por claves de dominio; unmatched IDs/campos son explícitos, no ocultos por diff textual ni descartados.
-- Metadatos de procedencia del comparador/sidecar: registrar explícitamente el commit de ejecución de cada lado. Para M2 OLD, registrar `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21` bajo la estructura:
+- Metadatos de procedencia del comparador/sidecar: registrar explícitamente el commit de ejecución de cada lado. Para M2 OLD registrar `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21` y `HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO` bajo la estructura:
   ```json
   {
     "old_execution_commit": {
       "value": "607ff21",
-      "kind": "historical_7_hex_prefix",
+      "kind": "historical_document_main_sha",
+      "is_execution_source": false,
       "full_40_hex_verified": false
+    },
+    "old_replay_source": {
+      "sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
+      "relation": "BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
+      "is_exact_historical_sha_attestation": false,
+      "scientific_code_origin": "f69275107b546b23fb481fd662ecbf9827831ab4"
     }
   }
   ```
@@ -408,7 +426,7 @@ No inventar `n`, empates ni grupos a partir del rho agregado.
 Antes del run futuro REVAL-1, después de los gates de review y freeze:
 
 - Ejecutar desde el commit exacto de `origin/main` aprobado para el run, con árbol limpio; registrar `RUN_CODE_SHA=<40-hex exacto>` en README/comparison metadata y junto a cada raw/published output. No vale `main`, `latest` ni sólo un branch/tag. No usar el SHA de esta rama como sustituto si el run no se ejecuta allí.
-- Para los artefactos históricos OLD, registrar su commit de ejecución de procedencia exacto: para M2 se documenta `MAIN_SHA=607ff21` únicamente como prefijo histórico (`OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`), prohibiendo su inferencia o extrapolación a un SHA completo de 40 hex; para M3 se documenta el baseline histórico citado en checkpoint (`1a52c3ea`) sin inventar un SHA completo. El comparador y sidecars registrarán explícitamente `old_execution_commit` con tipo `historical_7_hex_prefix` y `full_40_hex_verified: false`.
+- Para los artefactos históricos OLD, registrar su procedencia de forma explícita y sin sobreafirmar: para M2, `HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21` se conserva únicamente como el `main` del repositorio al momento de documentar (`HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO`), prohibiendo su inferencia o extrapolación a un SHA completo de 40 hex; el código científico M2 se introdujo en `OLD_M2_RUNNER_INTRODUCED_SHA=f69275107b546b23fb481fd662ecbf9827831ab4` y el replay SAME-ENV debe correr desde `e23bf7ac75bf8ac7b1b80f1944119598f743b7b7` (ver §2.2 y §9.2); para M3 se documenta el baseline histórico citado en checkpoint (`1a52c3ea`) sin inventar un SHA completo. El comparador y sidecars registrarán explícitamente `old_execution_commit` con tipo `historical_document_main_sha` e `is_execution_source: false`, junto con `old_replay_source` de tipo `best_supported_branch_head_at_run_window`.
 - Registrar `OS`, `Python`, `NumPy`, `Pillow`, implementación/backend FFT (`numpy.fft` y configuración/versiones pertinentes), repo SHA, hash/bytes de cada manifiesto usado y hashes de assets verificados.
 - Por cada artefacto guardar: raw execution artifact, SHA-256 raw, byte count raw, EOL del raw; published Git artifact, SHA-256 del blob Git, byte count published, y nota exacta de normalización EOL. Validar igualdad semántica/JSON tras la normalización. No introducir anotaciones post-run en el JSON de resultados; cualquier metadato de protocolo vive fuera o se declara como transformación con hash y diff.
 - Mantener los OLD artifacts inmutables, en particular `docs/validation/native-parallax-revalidation-20260928/**`, el histórico M2 y `data/exp-m4-results.json` / `data/exp-m4-calibration.json`. No editar tablas, JSON ni manifiestos históricos.
@@ -423,16 +441,18 @@ Para aislar causalmente las correcciones matemáticas y estadísticas (MATH-A y 
 #### A. HISTORICAL_OLD
 - Artefactos originales auténticos recuperados y autenticados: M2 `rows.json`, M2 `characs.json`, M3 `exp_m3_results.json` (RAW histórico).
 - Constituyen la referencia histórica primaria e inmutable.
-- Conserva formalmente `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21` (sin atestación completa de 40 hex contemporánea).
+- Conserva formalmente `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21` con `HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO` (sin atestación completa de 40 hex contemporánea).
 
 #### B. OLD_CODE_REPLAY_SAME_ENV (M2-only)
-- Ejecución controlada del código histórico correspondiente al prefijo documentado `607ff21` (aplicable exclusivamente a M2; M3 no cuenta con control de replay de código histórico verificado).
-- En el repositorio Git actual, dicho prefijo resuelve unívocamente a:
+- Ejecución controlada del código histórico de EXP-M2 (ver §9.2), aplicable exclusivamente a M2; M3 no cuenta con control de replay de código histórico verificado.
+- El source para el replay es:
   ```text
-  OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6
-  OLD_CODE_REPLAY_SOURCE_RELATION=CURRENT_GIT_RESOLUTION_OF_HISTORICAL_PREFIX
+  OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+  OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+  OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
+  OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
   ```
-- *Aviso de procedencia:* No se afirma que los artefactos históricos atestiguaran originalmente ese 40-hex; se registra como la resolución reproducible en el grafo actual de Git para propósitos de control causal de M2.
+- **El replay es un CONTROL_REPLAY, no una ejecución histórica criptográficamente probada.** La superficie primaria OLD sigue siendo `HISTORICAL_OLD` con los RAW autenticados (`rows.json`, `characs.json`). El replay sirve para separar deriva de entorno de delta de versión de código; no reemplaza ni reescribe los RAW históricos.
 - Debe ejecutarse bajo las mismas condiciones exactas que NEW: mismo host Windows, mismo entorno Python, idénticas versiones de dependencias, mismos bytes de corpus M2 autenticados (68/68 M2), mismo manifiesto local M2 y misma resolución primaria 512, en un namespace de salida separado y no-clobber (`RAW_RUN_ROOT/replay_m2`). M3 no dispone de control de replay histórico; por consiguiente, cualquier diferencia en M3 sensible a plataforma en la comparación HISTORICAL_OLD vs NEW debe clasificarse como `ENVIRONMENT_CONFOUNDED` a menos que evidencia independiente demuestre su aislamiento.
 - Si el código antiguo de M2 no puede ejecutarse bajo el mismo entorno moderno (por incompatibilidad de dependencias o API):
   ```text
@@ -448,6 +468,62 @@ Para aislar causalmente las correcciones matemáticas y estadísticas (MATH-A y 
 2. `OLD_CODE_REPLAY vs NEW`: Delta puro de versión de código bajo el mismo entorno controlado.
 3. `HISTORICAL_OLD vs NEW`: Comparación histórica versionada final.
 No se declara automáticamente todo cambio OLD_REPLAY → NEW como MATH-A/B: continúa exigiéndose el mapeo del camino causal de primitivas (§5).
+
+### 9.2 Reconstrucción del SHA de replay M2 histórico (erratum REVAL-0.1)
+
+El artefacto histórico M2 no preservó un SHA de 40 hex contemporáneo de ejecución. El prefijo `607ff21` que aparece en `exp-m2-authored-trust.md` es el `main` del repositorio al momento de documentar, no el source de la corrida apilada. La siguiente reconstrucción identifica el mejor HEAD de rama sustentado por la historia de PR y por el timestamp del RAW:
+
+```text
+PR #620 stack
+    ↓
+f69275107b546b23fb481fd662ecbf9827831ab4  = research(parallax): evaluate authored normal reconstruction
+                                              (introduce el código científico EXP-M2: run_exp_m2.py,
+                                               authored_dataset.py, maquinaria de trust/proxy, tests y docs)
+    ↓
+e23bf7ac75bf8ac7b1b80f1944119598f743b7b7  = docs(parallax): address exp-m2 adversarial review
+                                              (follow-up docs-only, 2026-09-22)
+    ↓
+M2 RAW mtime = 2026-09-23 21:30:07 UTC  (rows.json / characs.json)
+    ↓
+siguiente commit de la rama = 2026-09-24  (2541fa91…, normalización/merge del stack)
+    ↓
+mejor HEAD de rama sustentado en la ventana de ejecución = e23bf7ac
+```
+
+Verificación ejecutada:
+
+```bash
+git cat-file -e e23bf7ac75bf8ac7b1b80f1944119598f743b7b7:sky_claw/local/native_parallax/research/run_exp_m2.py   # EXISTE
+git cat-file -e f69275107b546b23fb481fd662ecbf9827831ab4:sky_claw/local/native_parallax/research/run_exp_m2.py   # EXISTE
+git diff --name-only f69275107b546b23fb481fd662ecbf9827831ab4 e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+# → docs/design/research/native-parallax/exp-m2-authored-trust.md   (único archivo)
+```
+
+`git diff f692751..e23bf7ac` sólo modifica documentación (+70/−13 en `exp-m2-authored-trust.md`); el diff acotado a `sky_claw/` y `tests/` es **vacío**. Por tanto:
+
+```text
+OLD_M2_SCIENTIFIC_CODE_IDENTICAL_F692_TO_E23=YES
+```
+
+Contratos de procedencia resultantes (no confundir los cuatro conceptos):
+
+```text
+OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO
+
+HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21
+HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO
+
+OLD_M2_RUNNER_INTRODUCED_SHA=f69275107b546b23fb481fd662ecbf9827831ab4
+
+OLD_M2_BRANCH_HEAD_AT_RUN_WINDOW=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
+
+OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
+```
+
+`OLD_CODE_REPLAY_SOURCE_SHA` es el HEAD de rama mejor sustentado, **no** un SHA de ejecución atestiguado. Cualquier atribución que dependa de una correspondencia exacta entre el código replayed y el binario que produjo el RAW histórico debe declararse `ENVIRONMENT_CONFOUNDED` cuando no pueda separarse.
 
 ## 10. Namespace y layout planeado (no creado en REVAL-0)
 
@@ -549,7 +625,7 @@ Los comandos siguientes son una especificación de REVAL-1, **no se ejecutan en 
    3. path preflight (PATH_PREFLIGHT_REQUIRED=YES)
    4. SHA-256 preflight 68/68 + 62/62 (PRE_RUN_M2_HASH_MATCH=68/68, PRE_RUN_M3_HASH_MATCH=62/62)
    5. exclusive/no-clobber run roots (RAW_RUN_ROOT_MUST_NOT_EXIST=YES)
-   6. OLD_CODE_REPLAY_SAME_ENV (OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6)
+   6. OLD_CODE_REPLAY_SAME_ENV (OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7)
    7. NEW run (RUN_CODE_SHA=<exact 40 hex>)
    8. hash RAW immediately
    9. historical vs replay comparison (ENVIRONMENT_REPLAY_DRIFT diagnostic)
@@ -613,8 +689,8 @@ Adjudicación exhaustiva de findings incorporados en este documento:
    - *Estado:* ACEPTADO / codificado en el protocolo (§11).
    - *Detalle:* Contrato `PATH_PREFLIGHT_REQUIRED=YES`. Previo a invocar cualquier runner científico, resolver y verificar la existencia física de rutas para M2 manifest, M2 corpus root, M3 manifest, M3 corpus root y assets internos. Cualquier fallo genera `CORPUS_PATH_PREFLIGHT_FAILED` y detiene la ejecución inmediatamente. Prohibición estricta de crear rutas intermedias, recrear junctions o descargar sustitutos.
 2. **Finding-02 (SHA histórico M2 — Prefijo `607ff21` sin atestación 40-hex completa):**
-   - *Estado:* ACEPTADO / codificado en el protocolo (§2.2, §7 y §9).
-   - *Detalle:* Contrato `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21`. Prohibida la extrapolación o inferencia a 40 hex. El sidecar y comparador NEW registran el objeto `{ "old_execution_commit": { "value": "607ff21", "kind": "historical_7_hex_prefix", "full_40_hex_verified": false } }`. La ejecución NEW sí exige `RUN_CODE_SHA=<40 hex exacto>`.
+   - *Estado:* ACEPTADO / codificado en el protocolo (§2.2, §7, §9, §9.2 y §14). **Corregido por erratum REVAL-0.1:** el freeze REVAL-0 interpretó además que `607ff21` resolvía al source de ejecución, lo cual es falso (ver §9.2).
+   - *Detalle:* Contrato `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO`, `HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21` y `HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO`. Prohibida la extrapolación o inferencia a 40 hex. El sidecar y comparador NEW registran el objeto `{ "old_execution_commit": { "value": "607ff21", "kind": "historical_document_main_sha", "is_execution_source": false, "full_40_hex_verified": false } }` junto con `old_replay_source.sha=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7`. La ejecución NEW sí exige `RUN_CODE_SHA=<40 hex exacto>`.
 3. **Finding-03 (Toolchain Epsilon — Clasificación estricta de divergencias por precisión floating):**
    - *Estado:* ACEPTADO / codificado en el protocolo (§7).
    - *Detalle:* Clasificación `POTENTIAL_TOOLCHAIN_FLOATING_NOISE`. No relaja la comparación ni autoriza tolerancias numéricas para declarar equivalencia científica, ni modifica umbrales ni redondea deltas. Requiere delta a nivel de precisión de máquina (~1e-16 / LSB IEEE-754), cero cambio de estado de decisión o categórico, y ausencia de explicaciones causales MATH-A/MATH-B, registrando exhaustivamente metadatos de entorno (OS, Python, NumPy, Pillow, FFT backend).
@@ -646,8 +722,9 @@ Detalle de adjudicación e incorporación protocolar:
    - *Estado:* ACEPTADO / codificado en §6.1, §7 y §14 (`NON_SCIENTIFIC_RUNTIME_VARIATION`, `NON_SCIENTIFIC_RUNTIME_CLASSIFICATION=YES`).
    - *Racional:* `runtime_ms` en las filas M2 varía normalmente por condiciones de máquina y carecía de clasificación válida sin activar falsamente hard-stops científicos. Se aísla formalmente de los efectos de MATH-A/B y de la equivalencia de decisión.
 6. **F6 — Control causal de código antiguo en el mismo entorno (OLD_CODE_REPLAY):**
-   - *Estado:* ACEPTADO / codificado en §9.1, §10, §11 y §14 (`OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES`, `OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6`).
-   - *Racional:* Aislar efectos de plataforma (Linux histórico vs. Windows actual) ejecutando el código fuente correspondiente al prefijo `607ff21` (resuelto en Git como `607ff21c3dfb521593ce248fdf016636e9e975f6`) bajo el mismo entorno controlado de NEW, diagnosticando `ENVIRONMENT_REPLAY_DRIFT` y clasificando como `ENVIRONMENT_CONFOUNDED` si no está disponible.
+   - *Estado:* ACEPTADO / codificado en §9.1, §9.2, §10, §11 y §14 (`OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES`, `OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7`).
+   - *Racional:* Aislar efectos de plataforma (Linux histórico vs. Windows actual) ejecutando el código fuente de EXP-M2 bajo el mismo entorno controlado de NEW, diagnosticando `ENVIRONMENT_REPLAY_DRIFT` y clasificando como `ENVIRONMENT_CONFOUNDED` si no está disponible.
+   - *Corrección REVAL-0.1:* el freeze original adoptó `607ff21c3dfb521593ce248fdf016636e9e975f6` como source, que es un commit de runtime-vault sin árbol `native_parallax`. El source correcto se reconstruye en §9.2 a partir de la historia de PR #620 y el timestamp del RAW M2.
 7. **F7 — Identidades estables para filas de barridos derivadas de datos:**
    - *Estado:* ACEPTADO / codificado en §6.1, §6.2, §7 y §14 (`M3_RATE_Q_STABLE_IDENTITY=YES`, `M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES`).
    - *Racional:* Prevenir desalineación de filas cuando umbrales numéricos cambian por datos. En M3 rates se adopta el cuantil `rate_quantile_q` `{0.1, 0.2, 0.3, 0.4, 0.5}`, y en M2 policy se utiliza `sigma_candidate` en lugar del valor continuo `sigma_eff`.
@@ -701,10 +778,18 @@ NO_CLOBBER_OUTPUT_REQUIRED=YES
 PRE_RUN_M2_HASH_GATE=68/68
 PRE_RUN_M3_HASH_GATE=62/62
 OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO
-OLD_M2_EXECUTION_SHA_PREFIX=607ff21
+HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21
+HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO
+OLD_M2_RUNNER_INTRODUCED_SHA=f69275107b546b23fb481fd662ecbf9827831ab4
+OLD_M2_BRANCH_HEAD_AT_RUN_WINDOW=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
+OLD_M2_SCIENTIFIC_CODE_IDENTICAL_F692_TO_E23=YES
 OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES
-OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6
-OLD_CODE_REPLAY_SOURCE_RELATION=CURRENT_GIT_RESOLUTION_OF_HISTORICAL_PREFIX
+OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
+OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
+PROTOCOL_ERROR_607FF21_CORRECTED=YES
 M3_RATE_Q_STABLE_IDENTITY=YES
 M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES
 
@@ -722,4 +807,47 @@ NEW_ARTIFACT_NAMESPACE=docs/validation/native-parallax-math-revalidation-2026100
 REVALIDATION_EXECUTION_ALLOWED=YES
 RECOVERY_BLOCKER=NONE
 READY_FOR_TECH_LEAD_REVAL0_REVIEW=YES
+```
+
+## 15. Estado final REVAL-0.1 (erratum docs-only)
+
+```text
+REVAL01_STATUS=COMPLETE
+DOC_ONLY=YES
+REAL_CORPUS_READ_THIS_SLICE=NO
+REAL_CORPUS_MUTATED=NO
+OLD_CODE_REPLAY_EXECUTED=NO
+M2_RERUN_EXECUTED=NO
+M3_RERUN_EXECUTED=NO
+M6_REAL_RUN_EXECUTED=NO
+
+BASE_MAIN_SHA=6037b82621052f714cfa338d89ee2702066dfcd1
+
+HISTORICAL_DOCUMENT_MAIN_SHA_PREFIX=607ff21
+HISTORICAL_DOCUMENT_MAIN_SHA_IS_EXECUTION_SOURCE=NO
+
+OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO
+
+OLD_M2_RUNNER_INTRODUCED_SHA=f69275107b546b23fb481fd662ecbf9827831ab4
+OLD_M2_BRANCH_HEAD_AT_RUN_WINDOW=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
+OLD_M2_SCIENTIFIC_CODE_IDENTICAL_F692_TO_E23=YES
+
+OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
+OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
+
+PROTOCOL_ERROR_607FF21_CORRECTED=YES
+
+PATH_PREFLIGHT_REQUIRED=YES
+NO_CLOBBER_OUTPUT_REQUIRED=YES
+PRE_RUN_M2_HASH_GATE=68/68
+PRE_RUN_M3_HASH_GATE=62/62
+SPEARMAN_INPUT_IDENTITY_GATE=YES
+NO_RETUNING=YES
+M3_RATE_Q_STABLE_IDENTITY=YES
+M2_SIGMA_CANDIDATE_STABLE_IDENTITY=YES
+
+READY_FOR_TECH_LEAD_REVAL01_REVIEW=YES
 ```
