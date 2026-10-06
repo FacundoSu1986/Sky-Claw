@@ -422,6 +422,48 @@ def test_anyio_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert version_uv >= piso_minimo, f"uv.lock tiene anyio {version_uv} < {piso_minimo}"
 
 
+def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """multidict debe mantener el piso seguro >=6.9.1 ante CVE-2026-104874.
+
+    Previene regresiones donde una actualización o resolución accidental baje
+    multidict a 6.7.1 u otra versión vulnerable en pyproject.toml, requirements.lock
+    o uv.lock.
+    """
+    from packaging.version import Version
+
+    # 1. pyproject.toml
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "multidict"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un multidict en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert req.specifier == SpecifierSet(">=6.9.1,<7"), f"rango de multidict inesperado: {req.specifier}"
+
+    # 2. requirements.lock
+    matches_req = re.findall(
+        r"(?m)^multidict==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    )
+    assert len(matches_req) == 1, (
+        f"se esperaba exactamente una entrada de multidict en requirements.lock, hay {matches_req}"
+    )
+    version_req = Version(matches_req[0])
+    assert version_req in req.specifier, (
+        f"requirements.lock tiene multidict {version_req} fuera del rango {req.specifier}"
+    )
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_multidict = [p for p in uv_data.get("package", []) if p.get("name") == "multidict"]
+    assert len(paquetes_multidict) == 1, (
+        f"se esperaba exactamente 1 paquete multidict en uv.lock, hay {len(paquetes_multidict)}"
+    )
+    version_uv = Version(paquetes_multidict[0]["version"])
+    assert version_uv in req.specifier, f"uv.lock tiene multidict {version_uv} fuera del rango {req.specifier}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 
