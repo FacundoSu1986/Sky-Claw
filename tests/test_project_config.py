@@ -422,6 +422,33 @@ def test_anyio_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert version_uv >= piso_minimo, f"uv.lock tiene anyio {version_uv} < {piso_minimo}"
 
 
+def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """multidict debe mantener el piso seguro >=6.9.1 ante CVE-2026-104874.
+
+    Previene regresiones donde una actualización o resolución accidental baje
+    multidict a 6.7.1 u otra versión vulnerable en pyproject.toml o requirements.lock.
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("6.9.1")
+
+    # 1. pyproject.toml
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "multidict"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un multidict en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert req.specifier == SpecifierSet(">=6.9.1,<7"), f"rango de multidict inesperado: {req.specifier}"
+
+    # 2. requirements.lock
+    req_match = re.search(r"(?m)^multidict==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8"))
+    assert req_match is not None, "multidict no encontrado en requirements.lock"
+    version_req = Version(req_match.group(1))
+    assert version_req >= piso_minimo, f"requirements.lock tiene multidict {version_req} < {piso_minimo}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 
