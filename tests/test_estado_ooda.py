@@ -106,12 +106,13 @@ _ITEMS = frozenset(
         # fila propia con dos dimensiones separadas en `Qué falta`
         # (resolution_status/evidence_status/evidence_kind). Reproducción dinámica
         # R1 cerró con su PR dedicado: el worker mutante de packaging se espera
-        # a terminalidad antes de que la cancelación libere al caller. R2 tiene
-        # fila propia mientras su fix probado espera merge; R3 permanece abierto.
+        # a terminalidad antes de que la cancelación libere al caller. R2 cerró y
+        # se mergeó en #686 (merge commit 7684c92a), que resolvió el finding 3 de
+        # #592; R3 permanece abierto.
         "Runner P1 — cancelación del packaging libera al caller con el writer vivo (`RUNNER_P1_PACKAGING_CANCEL`)",
-        # R2 es el finding 3 exacto de #592; su resolución técnica está FIXED,
-        # pero la fila queda Parcial hasta merge para no adelantar el cierre del
-        # tracker. El plan canónico sigue en
+        # R2 es el finding 3 exacto de #592: FIXED por #686 y MERGED (merge commit
+        # 7684c92a), así que la fila pasó de Parcial a Cerrado. #592 sigue OPEN
+        # por sus otros findings. El plan canónico vive en
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md`.
         "Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)",
         # determinista sobre flujo simulado (`test_runner_defects_p1_p2.py`) +
@@ -541,24 +542,56 @@ def test_dyndolod_fail_stop_registrado_en_ooda() -> None:
     assert "fail-stop" in fila["Verificado por"]
 
 
-def test_runner_r2_reparse_copy_espera_merge_sin_cerrar_592_antes_de_tiempo() -> None:
-    """R2 está técnicamente FIXED, pero el finding 3 de #592 espera el merge."""
+def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
+    """R2 quedó FIXED y MERGED por #686 (`7684c92a`), y el finding 3 de #592 resuelto.
+
+    Contrato post-merge: la fila deja de ser ``Parcial``, cita el merge commit y no
+    puede volver a declarar el estado pre-merge. Además el tracking conserva lo que
+    NO se cerró: #592 sigue abierto por sus otros findings y R3 sigue OPEN.
+    """
     fila = _tabla()["Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)"]
     estado = fila["Qué falta"]
 
-    assert fila["Estado"] == "Parcial"
+    assert fila["Estado"] == "Cerrado"
+    assert "#686" in fila["Cerrado en"]
+    assert "7684c92a4205a2d53aa47972be126282e093cecf" in fila["Cerrado en"], (
+        "la fila debe citar el merge commit, no sólo el número de PR"
+    )
     assert "#592 finding 3" in fila["Cerrado en"]
     assert "resolution_status=FIXED" in estado
     assert "evidence_status=REPRODUCED" in estado
+    assert "merge_status=MERGED" in estado
     assert "antes de `rmtree`, `mkdir` y `copytree`" in estado
     assert "cancel #1/#2" in estado
     assert "scan terminal" in estado
     assert "rollback/liberación de lease" in estado
-    assert "entre pre-scan y `copytree`" in estado
+    # La trazabilidad post-merge incluye las dos mejoras focales del merge.
+    assert "retry" in estado, "F1: el retry acotado de inspecciones transitorias debe quedar registrado"
+    assert "test_links.py" in estado, "F2: los tests directos del primitivo deben quedar registrados"
+    # El límite sigue declarado: el pre-scan no es race-proof.
     assert "no se declara race-proof" in estado
-    assert "no se declara cerrado hasta merge" in estado
+    assert "entre pre-scan y `copytree`" in estado
+    # #592 permanece OPEN por los demás findings (acá, su finding 2 sin tocar).
+    assert "#592 sigue" in estado or "#592 permanece" in estado
+    assert "finding 2" in estado
     assert "test_runner_defects_p1_p2.py" in fila["Verificado por"]
     assert "test_r2_cancel_durante_prescan_espera_terminal_y_no_muta" in fila["Verificado por"]
+
+    # El contrato pre-merge no puede reaparecer para R2.
+    for frase_obsoleta in (
+        "pendiente de merge",
+        "espera merge",
+        "no se declara cerrado hasta merge",
+        "listo para review",
+    ):
+        assert frase_obsoleta not in estado, f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
+        assert frase_obsoleta not in fila["Cerrado en"], f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
+
+    # R3 sigue abierto: el bookkeeping de R2 no lo adelanta.
+    fila_r3 = _tabla()["Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)"]
+    assert fila_r3["Estado"] == "Abierto"
+    assert "resolution_status=OPEN" in fila_r3["Qué falta"]
+    assert "evidence_status=REPRODUCED" in fila_r3["Qué falta"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:
