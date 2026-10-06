@@ -29,6 +29,7 @@ import pathlib
 import stat
 import time
 from collections.abc import Callable
+from typing import Final
 
 from sky_claw.app.security.links import (
     ContencionFisicaVioladaError,
@@ -96,6 +97,37 @@ from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, T
 
 CANDIDATE_SCHEMA_VERSION = 1
 CANDIDATE_METADATA_SUBDIR = "candidates"
+
+#: Campos que `serializar_metadata_candidate` emite SIEMPRE para schema v1
+#: (P3-X). La ausencia de CUALQUIERA de ellos en disco es metadata truncada o
+#: tampered, y se clasifica como corrupcion tipada — NUNCA se reconstruye con
+#: un default. El serializer no tiene ningun camino que los omita: los
+#: defaults dispersos del loader ("ausente => 0"/"ausente => ''"/"ausente =>
+#: None") fabricaban registros supuestamente completos desde JSON truncados, y
+#: como los timestamps no participan en ninguna comparacion de evidencia, un
+#: READY podia re-verificarse VALID sin ellos.
+#:
+#: Decision de schema-auditoria (§15 del encargo): solo las claves que el
+#: serializer escribe SIEMPRE pertenecen al header. Los sub-objetos tienen sus
+#: propias reglas de validacion (ver ``_evidencia_desde_dict`` y P3-Y):
+#: dentro de ``provider_metadata`` el contrato del campo sigue siendo
+#: null-ausencia => None para la familia string-or-none, porque el manifest
+#: legitimo puede no exponerlos.
+CAMPOS_OBLIGATORIOS_SCHEMA_V1: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "candidate_id",
+        "state",
+        "created_at_ns",
+        "updated_at_ns",
+        "source_provider",
+        "source_appid",
+        "pre_source_evidence",
+        "candidate_evidence",
+        "post_source_evidence",
+        "failure_reason",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,11 +346,22 @@ def _entero_json(valor: object, *, campo: str, etiqueta: str) -> int:
     return valor
 
 
-def _entero_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: int) -> int:
-    """Entero estricto con default para claves AUSENTES; `null` NO es ausencia."""
-    if clave not in datos:
-        return defecto
-    return _entero_json(datos[clave], campo=clave, etiqueta=etiqueta)
+def _entero_json_no_negativo(valor: object, *, campo: str, etiqueta: str) -> int:
+    """Entero JSON REAL y no negativo (P3-X): los timestamps son obligatorios.
+
+    Reemplaza al patron "ausente => 0" (``_entero_json_opcional``): la ausencia
+    la decide el chequeo de ``CAMPOS_OBLIGATORIOS_SCHEMA_V1`` en el loader, no
+    un default local — un timestamp de 0 fabricado reconstruye como "completo"
+    un registro truncado que nunca se observo.
+
+    Ademas un timestamp negativo no corresponde a ningun reloj real (P3-X solo
+    exige obligatorio + no negativo: NO se exige
+    ``updated_at_ns >= created_at_ns`` porque ningun contrato lo declara).
+    """
+    entero = _entero_json(valor, campo=campo, etiqueta=etiqueta)
+    if entero < 0:
+        raise CandidateCorruptMetadataError(f"{etiqueta}: {campo} no puede ser negativo: {entero}")
+    return entero
 
 
 def _entero_json_o_none(valor: object, *, campo: str, etiqueta: str) -> int | None:
@@ -344,11 +387,18 @@ def _string_json(valor: object, *, campo: str, etiqueta: str) -> str:
     return valor
 
 
-def _string_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: str) -> str:
-    """String estricto con default para claves AUSENTES; `null` NO es ausencia."""
-    if clave not in datos:
-        return defecto
-    return _string_json(datos[clave], campo=clave, etiqueta=etiqueta)
+def _string_o_nulo_json(valor: object, *, campo: str, etiqueta: str) -> str | None:
+    """Contrato string-or-none estricto (P3-Y): ``null`` => None; string => str; cualquier otro tipo => corrupcion.
+
+    Reemplaza el patron ``value if isinstance(value, str) else None``, que
+    normalizaba metadata CORRUPTA (``{}``, ``123``, ``false``, ``[]``) como
+    "no observado". ``None`` significa "el manifest no lo expone": un valor
+    malformado convertido a ``None`` se volvia invisible para
+    ``_buildid_contradictoire`` y para la triada (fail-open).
+    """
+    if valor is None:
+        return None
+    return _string_json(valor, campo=campo, etiqueta=etiqueta)
 
 
 def _bool_json_opcional(datos: dict[str, object], clave: str, *, etiqueta: str, defecto: bool) -> bool:
@@ -465,6 +515,28 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
     if not isinstance(proveedor, str):
         raise CandidateCorruptMetadataError(f"{etiqueta}: provider debe ser string")
     appid = _string_json(bruto["appid"], campo="appid", etiqueta=etiqueta)
+    # P3-Y: provider/appid persistidos DENTRO de provider_metadata se
+    # reconstruyen y se exige su coherencia con la evidencia madre. P1 y la
+    # observacion del Candidate los construyen IGUALES a los de la evidencia
+    # por construccion; un JSON que los contradice es tampering/corrupcion.
+    # Antes el loader ni siquiera los leia: usaba los del nivel superior e
+    # ignoraba los del bloque (silenciaba la contradiccion persistida).
+    faltan_metadatos = [clave for clave in ("provider", "appid") if clave not in metadatos]
+    if faltan_metadatos:
+        raise CandidateCorruptMetadataError(
+            f"{etiqueta}: provider_metadata sin {faltan_metadatos} (el serializer siempre los emite)"
+        )
+    pm_proveedor = _string_json(metadatos["provider"], campo="provider_metadata.provider", etiqueta=etiqueta)
+    pm_appid = _string_json(metadatos["appid"], campo="provider_metadata.appid", etiqueta=etiqueta)
+    if pm_proveedor != proveedor:
+        raise CandidateCorruptMetadataError(
+            f"{etiqueta}: provider_metadata.provider ({pm_proveedor!r}) contradice "
+            f"al provider de la evidencia ({proveedor!r})"
+        )
+    if pm_appid != appid:
+        raise CandidateCorruptMetadataError(
+            f"{etiqueta}: provider_metadata.appid ({pm_appid!r}) contradice al appid de la evidencia ({appid!r})"
+        )
 
     try:
         return CandidateSourceEvidence(
@@ -488,19 +560,30 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
             provider_metadata=ProviderMetadataObservation(
                 provider=ManagedSourceProvider(proveedor),
                 appid=appid,
-                buildid=metadatos.get("buildid") if isinstance(metadatos.get("buildid"), str) else None,
-                state_flags=(metadatos.get("state_flags") if isinstance(metadatos.get("state_flags"), str) else None),
+                buildid=_string_o_nulo_json(
+                    metadatos.get("buildid"), campo="provider_metadata.buildid", etiqueta=etiqueta
+                ),
+                state_flags=_string_o_nulo_json(
+                    metadatos.get("state_flags"), campo="provider_metadata.state_flags", etiqueta=etiqueta
+                ),
                 bytes_to_download=_entero_json_o_none(
                     metadatos.get("bytes_to_download"), campo="bytes_to_download", etiqueta=etiqueta
                 ),
                 bytes_downloaded=_entero_json_o_none(
                     metadatos.get("bytes_downloaded"), campo="bytes_downloaded", etiqueta=etiqueta
                 ),
-                update_result=(
-                    metadatos.get("update_result") if isinstance(metadatos.get("update_result"), str) else None
+                update_result=_string_o_nulo_json(
+                    metadatos.get("update_result"), campo="provider_metadata.update_result", etiqueta=etiqueta
                 ),
-                install_dir=(metadatos.get("install_dir") if isinstance(metadatos.get("install_dir"), str) else None),
+                install_dir=_string_o_nulo_json(
+                    metadatos.get("install_dir"), campo="provider_metadata.install_dir", etiqueta=etiqueta
+                ),
                 manifest_readable=_bool_json_opcional(metadatos, "manifest_readable", etiqueta=etiqueta, defecto=True),
+                manifest_parse_error=_string_o_nulo_json(
+                    metadatos.get("manifest_parse_error"),
+                    campo="provider_metadata.manifest_parse_error",
+                    etiqueta=etiqueta,
+                ),
                 observed_at_ns=observado,
             ),
             observed_at_ns=observado,
@@ -560,6 +643,18 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
     if not isinstance(data, dict):
         raise CandidateCorruptMetadataError(f"{ruta}: la metadata debe ser un objeto JSON")
 
+    # ── P3-X) HEADER OBLIGATORIO DE SCHEMA-v1 ───────────────────────────────
+    # `serializar_metadata_candidate` emite SIEMPRE estas 11 claves para schema
+    # v1; su ausencia es corrupcion/tampering, no una variante tolerada. El
+    # loader no puede reconstruirlas con defaults: hacia que un JSON truncado
+    # (ej. sin timestamps, que no participan en ninguna comparacion de
+    # evidencia) re-verificara VALID como si el registro estuviera completo.
+    faltantes = sorted(CAMPOS_OBLIGATORIOS_SCHEMA_V1 - data.keys())
+    if faltantes:
+        raise CandidateCorruptMetadataError(
+            f"{ruta}: metadata schema v1 incompleta, faltan campos obligatorios: {faltantes}"
+        )
+
     esquema = data.get("schema_version")
     if not isinstance(esquema, int) or isinstance(esquema, bool):
         raise CandidateCorruptMetadataError(f"{ruta}: schema_version debe ser int")
@@ -601,14 +696,14 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
             schema_version=esquema,
             candidate_id=_candidate_id_desde_datos(),
             state=estado,
-            created_at_ns=_entero_json_opcional(data, "created_at_ns", etiqueta=str(ruta), defecto=0),
-            updated_at_ns=_entero_json_opcional(data, "updated_at_ns", etiqueta=str(ruta), defecto=0),
-            source_provider=_string_json_opcional(data, "source_provider", etiqueta=str(ruta), defecto=""),
-            source_appid=_string_json_opcional(data, "source_appid", etiqueta=str(ruta), defecto=""),
+            created_at_ns=_entero_json_no_negativo(data["created_at_ns"], campo="created_at_ns", etiqueta=str(ruta)),
+            updated_at_ns=_entero_json_no_negativo(data["updated_at_ns"], campo="updated_at_ns", etiqueta=str(ruta)),
+            source_provider=_string_json(data["source_provider"], campo="source_provider", etiqueta=str(ruta)),
+            source_appid=_string_json(data["source_appid"], campo="source_appid", etiqueta=str(ruta)),
             pre_source_evidence=_evidencia("pre_source_evidence"),
             candidate_evidence=_evidencia("candidate_evidence"),
             post_source_evidence=_evidencia("post_source_evidence"),
-            failure_reason=(str(data["failure_reason"]) if isinstance(data.get("failure_reason"), str) else None),
+            failure_reason=_string_o_nulo_json(data["failure_reason"], campo="failure_reason", etiqueta=str(ruta)),
         )
     except CandidateCorruptMetadataError:
         raise

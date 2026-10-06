@@ -230,6 +230,51 @@ def _exigir_ancestros_del_source(raiz_origen: pathlib.Path, archivo: pathlib.Pat
         ) from exc
 
 
+def _rechazar_solapamiento_origen_destino(raiz_origen: pathlib.Path, raiz_destino: pathlib.Path) -> None:
+    """P3-W: source tree ∩ destination tree = ∅, ANTES de la primera mutacion.
+
+    ``copiar_arbol_independiente`` es una primitive PUBLICA y reutilizable: la
+    frontera no puede vivir en ``crear_candidate`` (que ya valida la suya),
+    porque un caller directo puede pasar origen = contenedor = Managed Source
+    con destino = ``<source>/candidates/<id>/payload``. Los guards actuales
+    exigen ``destino ∈ contenedor`` y eso PASA, asi que la copia ejecutaba
+    ``mkdir``/``open("xb")`` DENTRO de la Managed Source (MANAGED_SOURCE_WRITES=NO).
+
+    Se decide con :func:`exigir_contencion_fisica` en AMBAS direcciones con
+    ``permitir_raiz=True``: es la primitive canonica de contencion del repo
+    (``lstat`` componente a componente, NUNCA ``resolve`` — que seguiria un
+    enlace antes de clasificarlo), asi que no se crea un detector paralelo.
+
+    * Si ``destino`` cuelga del ``origen`` (o es el ``origen``), hay solape.
+    * Si ``origen`` cuelga del ``destino`` (o es el ``destino``), tambien: un
+      arbol copiado hacia un ancestro suyo es self-copy que muta el namespace
+      del source mientras lo lee.
+    * ``ContencionFisicaVioladaError`` en una direccion significa "no cuelga"
+      — o "la cadena contiene un enlace", que los guards de contencion de la
+      copia rechazan despues de todas formas — y se pasa a la otra direccion.
+
+    Igualdad y contencion en cualquier direccion se rechazan AQUI, sin haber
+    creado un solo directorio ni abierto un solo archivo.
+    """
+    try:
+        exigir_contencion_fisica(raiz_origen, raiz_destino, permitir_raiz=True)
+    except ContencionFisicaVioladaError:
+        pass  # el destino NO cuelga del origen: sin solape en esta direccion
+    else:
+        raise CandidateCopyError(
+            f"el destino '{raiz_destino}' esta dentro del origen '{raiz_origen}' (o es el origen): "
+            "la copia exige arboles disjuntos (MANAGED_SOURCE_WRITES=NO)"
+        ) from None
+    try:
+        exigir_contencion_fisica(raiz_destino, raiz_origen, permitir_raiz=True)
+    except ContencionFisicaVioladaError:
+        return  # el origen tampoco cuelga del destino: arboles disjuntos
+    raise CandidateCopyError(
+        f"el origen '{raiz_origen}' esta dentro del destino '{raiz_destino}' (o es el destino): "
+        "la copia exige arboles disjuntos (MANAGED_SOURCE_WRITES=NO)"
+    ) from None
+
+
 def copiar_arbol_independiente(
     origen: pathlib.Path,
     destino: pathlib.Path,
@@ -248,8 +293,13 @@ def copiar_arbol_independiente(
     escaparse. Se verifica con :func:`exigir_contencion_fisica`, que hace
     ``lstat`` de cada ancestro -- no ``resolve``, que seguiria el enlace.
 
-    Tres fronteras, todas fail-closed:
+    Cuatro fronteras, todas fail-closed:
 
+    0. el SOLAPE origen/destino (P3-W): un caller directo de esta primitive
+       PUBLICA puede pasar origen = contenedor = Managed Source con el destino
+       dentro de el; como los guards exigen ``destino ∈ contenedor`` y eso
+       PASA, sin este guard la copia ejecutaria ``mkdir``/``open("xb")``
+       DENTRO de la Managed Source. Se decide ANTES de la primera mutacion.
     * la raiz del payload, antes y despues de su ``mkdir`` (cierra la ventana que
       Qodo senalo sobre #682: entre la validacion del padre y el ``mkdir`` un
       junction podia reemplazarlo);
@@ -271,6 +321,13 @@ def copiar_arbol_independiente(
     raiz_origen = pathlib.Path(origen)
     raiz_destino = pathlib.Path(destino)
     raiz_contenedora = pathlib.Path(contenedor)
+
+    # ── P3-W) SOLAPE ORIGEN/DESTINO, ANTES DE LA PRIMERA MUTACION ──────────
+    # La frontera source ∩ destination = ∅ vive DENTRO de la primitive, no en
+    # el caller: un guard de `crear_candidate` no protege a los callers
+    # directos de esta primitive PUBLICA (el ataque del finding usaba
+    # contenedor == Managed Source y destino dentro de el).
+    _rechazar_solapamiento_origen_destino(raiz_origen, raiz_destino)
 
     # Orden determinista ANTES de canonicalizar, para que cada `FileIdentity` quede
     # emparejada con SU relpath canonico: canonicalizar y ordenar por separado
