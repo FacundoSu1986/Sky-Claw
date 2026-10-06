@@ -77,6 +77,11 @@ MODOS_ESCRITURA: frozenset[str] = frozenset({"w", "a", "x", "+", "wb", "ab", "xb
 #: existente sería dejar que dos corridas se pisen en silencio.
 MODULOS_CON_OPEN_ESCRITURA: dict[str, frozenset[str]] = {
     "copying.py": frozenset({"xb"}),
+    # `x` = creacion EXCLUSIVA sin contenido: la reserva de la ruta de metadata del
+    # Candidate (P3-U). Es el single-winner hermano de `mkdir(exist_ok=False)`: el
+    # placeholder vacio deja al ganador como unico dueno de la ruta, y el escritor
+    # atomico despues lo reemplaza sin poder tocar la evidencia de otro.
+    "state.py": frozenset({"x"}),
 }
 
 
