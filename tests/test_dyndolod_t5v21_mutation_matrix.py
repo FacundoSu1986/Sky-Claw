@@ -192,6 +192,12 @@ def test_m16_el_rechazo_del_protocolo_limpia_proceso_y_job() -> None:
 
     Sin ella, un deny/timeout/mismatch dejaría la GUI abierta y los drains
     corriendo: es exactamente la mutación M16.
+
+    Desde R3 el cleanup NO está inline en la rama: las CUATRO ramas de excepción
+    comparten UNA sola unidad (``_cerrar_recursos_del_proceso`` →
+    ``_limpiar_recursos_del_proceso``), precisamente para que arreglar un camino
+    no deje al gemelo roto. El ancla exige el MISMO trabajo, ahora en su único
+    dueño, y además que la rama lo invoque — que es lo que la mutación rompería.
     """
     ejecutar = _metodo("_execute_process")
     maneja = [
@@ -203,15 +209,27 @@ def test_m16_el_rechazo_del_protocolo_limpia_proceso_y_job() -> None:
     ]
     assert maneja, "desapareció la rama que limpia el rechazo del protocolo"
     cuerpo = ast.unparse(maneja[0])
-    for obligatorio in (
-        "kill_and_reap",
-        "close_job",
-        "heartbeat.cancel",
-        "drain_out.cancel",
-        "drain_err.cancel",
-        "raise",
-    ):
-        assert obligatorio in cuerpo, f"el cleanup del rechazo no hace {obligatorio}"
+    assert "_cerrar_recursos_del_proceso" in cuerpo, (
+        "el cleanup del rechazo debe delegar en la unidad compartida (R3), no volver a inlinearse"
+    )
+    assert "raise" in cuerpo, "el cleanup del rechazo no re-lanza el veredicto"
+
+    # El trabajo de la unidad compartida: matar+reapear el árbol, cancelar los
+    # tres helpers y ESPERAR su terminalidad real (`gather`, no sólo `.cancel()`).
+    limpieza = ast.unparse(_metodo("_limpiar_recursos_del_proceso"))
+    for obligatorio in ("kill_and_reap", "heartbeat.cancel", "drain_out.cancel", "drain_err.cancel", "gather"):
+        assert obligatorio in limpieza, f"la unidad de limpieza no hace {obligatorio}"
+
+    # El cierre del Job Object: en TODA salida y exactamente una vez (R3), desde
+    # el `finally` del try del proceso — no desde una rama que se pueda saltear.
+    cierres = _llamadas(ejecutar, "close_job")
+    assert len(cierres) == 1, (
+        f"`close_job` debe aparecer exactamente una vez en `_execute_process` (hay {len(cierres)})"
+    )
+    assert any(
+        isinstance(nodo, ast.Try) and any(n is cierres[0] for sentencia in nodo.finalbody for n in ast.walk(sentencia))
+        for nodo in ast.walk(ejecutar)
+    ), "`close_job` debe vivir en el `finally`: es lo que lo hace correr en TODA salida"
 
 
 # ---------------------------------------------------------------------------
