@@ -399,7 +399,7 @@ Un tie group es un valor repetido al menos dos veces, contado después de docume
 **Regla de adjudicación causal de Spearman (inputs antes que empates — `SPEARMAN_INPUT_IDENTITY_GATE=YES`):**
 Para todo coeficiente de Spearman cuyo valor difiera entre OLD y NEW, se evalúa obligatoriamente la identidad previa de los vectores de entrada y la población de pares evaluados:
 1. **Inputs idénticos sin empates:** Si `PAIRED_IDS_IDENTICAL=YES`, `INPUT_VECTOR_X_BIT_IDENTICAL=YES`, `INPUT_VECTOR_Y_BIT_IDENTICAL=YES`, y `TIES_PRESENT_OLD=NO` y `TIES_PRESENT_NEW=NO`: el resultado matemático esperado es `OLD_RHO == NEW_RHO`. Cualquier discrepancia numérica bajo esta condición representa una divergencia inesperada de implementación o toolchain y detiene la interpretación (`INVESTIGATE_BEFORE_INTERPRETATION`).
-2. **Inputs modificados o población de pares alterada:** Si los vectores de entrada cambiaron (`INPUT_VECTOR_*_BIT_IDENTICAL=NO`) o la población emparejada varió (`PAIRED_IDS_IDENTICAL=NO`) —por ejemplo debido a correcciones MATH-A en features de curl, proyección residual o filtros de pertenencia del oráculo—, el coeficiente de Spearman puede diferir legítimamente incluso en ausencia total de empates. Dicha diferencia NO es una anomalía ni un error de ranking, sino un efecto causal que debe clasificarse y rastrearse como `MATH_A_DOWNSTREAM`.
+2. **Inputs modificados o población de pares alterada:** Si los vectores de entrada cambiaron (`INPUT_VECTOR_*_BIT_IDENTICAL=NO`) o la población emparejada varió (`PAIRED_IDS_IDENTICAL=NO`) —por ejemplo debido a correcciones MATH-A en features de curl, proyección residual o filtros de pertenencia del oráculo—, el coeficiente de Spearman puede diferir legítimamente incluso en ausencia total de empates. Para clasificar dicha diferencia como `MATH_A_DOWNSTREAM` se exige una traza causal demostrada que vincule los vectores o la población modificados a MATH-A bajo controles de corpus y entorno; en caso contrario, clasificar como `ENVIRONMENT_CONFOUNDED` (si intervienen variaciones de plataforma) o detener para investigación como divergencia inesperada (`INVESTIGATE_BEFORE_INTERPRETATION`).
 3. **Corrección de empates:** La clasificación `MATH_B_TIE_CORRECTION` queda estrictamente reservada para aquellos casos donde la diferencia en rho sea atribuible al método de ranking (sustitución de ordinal double-argsort por average ranks) sobre vectores de entrada que presenten empates sobre inputs comparables.
 No inventar `n`, empates ni grupos a partir del rho agregado.
 
@@ -425,20 +425,20 @@ Para aislar causalmente las correcciones matemáticas y estadísticas (MATH-A y 
 - Constituyen la referencia histórica primaria e inmutable.
 - Conserva formalmente `OLD_M2_EXECUTION_SHA_FULL_VERIFIED=NO` y `OLD_M2_EXECUTION_SHA_PREFIX=607ff21` (sin atestación completa de 40 hex contemporánea).
 
-#### B. OLD_CODE_REPLAY_SAME_ENV
-- Ejecución controlada del código histórico correspondiente al prefijo documentado `607ff21`.
+#### B. OLD_CODE_REPLAY_SAME_ENV (M2-only)
+- Ejecución controlada del código histórico correspondiente al prefijo documentado `607ff21` (aplicable exclusivamente a M2; M3 no cuenta con control de replay de código histórico verificado).
 - En el repositorio Git actual, dicho prefijo resuelve unívocamente a:
   ```text
   OLD_CODE_REPLAY_SOURCE_SHA=607ff21c3dfb521593ce248fdf016636e9e975f6
   OLD_CODE_REPLAY_SOURCE_RELATION=CURRENT_GIT_RESOLUTION_OF_HISTORICAL_PREFIX
   ```
-- *Aviso de procedencia:* No se afirma que los artefactos históricos atestiguaran originalmente ese 40-hex; se registra como la resolución reproducible en el grafo actual de Git para propósitos de control causal.
-- Debe ejecutarse bajo las mismas condiciones exactas que NEW: mismo host Windows, mismo entorno Python, idénticas versiones de dependencias, mismos bytes de corpus autenticados (68/68 M2, 62/62 M3), mismos manifiestos y misma resolución primaria 512, en un namespace de salida separado y no-clobber (`RAW_RUN_ROOT/replay_m2`, etc.).
-- Si el código antiguo no puede ejecutarse bajo el mismo entorno moderno (por incompatibilidad de dependencias o API):
+- *Aviso de procedencia:* No se afirma que los artefactos históricos atestiguaran originalmente ese 40-hex; se registra como la resolución reproducible en el grafo actual de Git para propósitos de control causal de M2.
+- Debe ejecutarse bajo las mismas condiciones exactas que NEW: mismo host Windows, mismo entorno Python, idénticas versiones de dependencias, mismos bytes de corpus M2 autenticados (68/68 M2), mismo manifiesto local M2 y misma resolución primaria 512, en un namespace de salida separado y no-clobber (`RAW_RUN_ROOT/replay_m2`). M3 no dispone de control de replay histórico; por consiguiente, cualquier diferencia en M3 sensible a plataforma en la comparación HISTORICAL_OLD vs NEW debe clasificarse como `ENVIRONMENT_CONFOUNDED` a menos que evidencia independiente demuestre su aislamiento.
+- Si el código antiguo de M2 no puede ejecutarse bajo el mismo entorno moderno (por incompatibilidad de dependencias o API):
   ```text
   OLD_CODE_REPLAY_STATUS=UNAVAILABLE
   ```
-  registrando la causa técnica exacta. En tal caso se mantiene la comparación HISTORICAL_OLD vs NEW, pero las divergencias numéricas que no puedan aislarse de efectos de plataforma deben clasificarse como `ENVIRONMENT_CONFOUNDED` y NO declararse puramente como efectos de MATH-A/MATH-B sin evidencia independiente demostrada.
+  registrando la causa técnica exacta. En tal caso se mantiene la comparación HISTORICAL_OLD vs NEW para M2, pero las divergencias numéricas que no puedan aislarse de efectos de plataforma deben clasificarse como `ENVIRONMENT_CONFOUNDED` y NO declararse puramente como efectos de MATH-A/MATH-B sin evidencia independiente demostrada.
 
 #### C. NEW
 - Ejecución con el código matemático y estadístico corregido: `RUN_CODE_SHA=<40 hex exacto de main aprobado>`.
