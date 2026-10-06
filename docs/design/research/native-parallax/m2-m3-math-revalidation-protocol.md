@@ -5,6 +5,8 @@
 **Alcance:** protocolo de comparación histórica `OLD` vs. código matemático/estadístico corregido `NEW`; no ejecución.
 
 > **ERRATUM REVAL-0.1 (2026-10-06, docs-only):** la versión REVAL-0 de este protocolo adoptó `607ff21c3dfb521593ce248fdf016636e9e975f6` como `OLD_CODE_REPLAY_SOURCE_SHA`, creyendo que el prefijo histórico `607ff21` "resolvía unívocamente" a ese commit. Eso es **falso**: ese commit es un cambio de runtime-vault (#614) que no contiene el árbol `native_parallax`. El source de replay correcto, reconstruido desde la historia de PR #620 y el timestamp del RAW M2, es `e23bf7ac75bf8ac7b1b80f1944119598f743b7b7` (ver §9.2). Se corrigieron §2.2, §7, §9, §9.1, §11, §13.1 y §14. Ningún otro contrato del freeze cambió. No se ejecutó corpus.
+>
+> **ADJUDICACIÓN DE REVIEW (2026-10-06):** un finding de la revisión adversarial propuso reemplazar el replay source por `345db80856c931fb249f542a91852e40895bb566`. Fue adjudicado `REJECTED_FALSE_POSITIVE`: ese commit pertenece a la rama hija M3 / PR #621, no a la rama M2 / PR #620, y es además posterior al RAW M2. Ver §9.2. `ARENA_REVIEW=PASS_WITH_FALSE_POSITIVE_ADJUDICATED`.
 
 > **NOTA DE PROTOCOLO (RECOVERY-0 INTEGRADO):** este documento congela cómo comparar; no ejecuta M2/M3 ni autoriza una sustitución de corpus. Tras la auditoría RECOVERY-0 en el host Windows, el corpus M2 histórico (34/34 assets, 68/68 archivos con SHA-256 verificado), el corpus M3 (31 assets, 62 archivos con SHA-256 verificado), el manifiesto local de M2, y los artefactos históricos `rows.json` (174 filas) y `characs.json` (34 assets) fueron localizados y autenticados con evidencia convergente fuerte. Por tanto, el bloqueo de procedencia queda resuelto y la ejecución futura queda técnicamente habilitada bajo el protocolo (`REVALIDATION_EXECUTION_ALLOWED=YES`), pero ninguna ejecución real (M2, M3 ni M6) se ejecuta en esta fase protocolar.
 
@@ -82,7 +84,7 @@ No se detectó colisión ni movimiento en el dominio de Native Parallax (`NATIVE
       },
       "old_replay_source": {
         "sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
-        "relation": "BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
+        "relation": "BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
         "is_exact_historical_sha_attestation": false
       }
     }
@@ -333,7 +335,7 @@ Contrato numérico:
     },
     "old_replay_source": {
       "sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
-      "relation": "BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
+      "relation": "BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW",
       "is_exact_historical_sha_attestation": false,
       "scientific_code_origin": "f69275107b546b23fb481fd662ecbf9827831ab4"
     }
@@ -448,7 +450,7 @@ Para aislar causalmente las correcciones matemáticas y estadísticas (MATH-A y 
 - El source para el replay es:
   ```text
   OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
-  OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+  OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
   OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
   OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
   ```
@@ -474,21 +476,38 @@ No se declara automáticamente todo cambio OLD_REPLAY → NEW como MATH-A/B: con
 El artefacto histórico M2 no preservó un SHA de 40 hex contemporáneo de ejecución. El prefijo `607ff21` que aparece en `exp-m2-authored-trust.md` es el `main` del repositorio al momento de documentar, no el source de la corrida apilada. La siguiente reconstrucción identifica el mejor HEAD de rama sustentado por la historia de PR y por el timestamp del RAW:
 
 ```text
-PR #620 stack
+PR #620 stack  (HEAD_REF=research/native-parallax-exp-m2-authored-trust)
     ↓
 f69275107b546b23fb481fd662ecbf9827831ab4  = research(parallax): evaluate authored normal reconstruction
-                                              (introduce el código científico EXP-M2: run_exp_m2.py,
-                                               authored_dataset.py, maquinaria de trust/proxy, tests y docs)
+                                              (2026-09-22T00:51:38Z; introduce el código científico
+                                               EXP-M2: run_exp_m2.py, authored_dataset.py,
+                                               maquinaria de trust/proxy, tests y docs)
     ↓
 e23bf7ac75bf8ac7b1b80f1944119598f743b7b7  = docs(parallax): address exp-m2 adversarial review
-                                              (follow-up docs-only, 2026-09-22)
+                                              (2026-09-22T08:18:46Z; follow-up docs-only)
     ↓
 M2 RAW mtime = 2026-09-23 21:30:07 UTC  (rows.json / characs.json)
     ↓
-siguiente commit de la rama = 2026-09-24  (2541fa91…, normalización/merge del stack)
+siguiente commit registrado en la rama M2 / PR #620 = 2026-09-24
+    (2541fa91dfeec4db5a304147e5e526f43d942b32, normalización/merge del stack)
     ↓
-mejor HEAD de rama sustentado en la ventana de ejecución = e23bf7ac
+mejor HEAD de rama M2 sustentado en la ventana de ejecución = e23bf7ac
 ```
+
+**Nota sobre commits del stack apilado.** Los commits `80d26a7adfb911a6bc8594e2f74d975f8b7cab67`,
+`8da4f8335a7a4832bd49f5aadae75f7622a27c9f` y `345db80856c931fb249f542a91852e40895bb566`
+pertenecen a la rama hija M3 / PR #621 (`HEAD_REF=research/native-parallax-exp-m3-clean-authored-trust`).
+Aunque son descendientes de `e23bf7ac` en el grafo Git —porque #621 estaba apilado sobre #620—,
+**no representan avances del HEAD de la rama M2 / PR #620** y no se usan para seleccionar el
+replay source de M2. La distinción es:
+
+```text
+PARENT_CHAIN_CONTINUATION != M2_BRANCH_HEAD_CONTINUATION
+```
+
+En cronología UTC, `8da4f833` (21:45:17Z) y `345db808` (21:59:54Z) son además **posteriores** al
+RAW M2 (21:30:07Z), por lo que no podrían ser el HEAD vigente durante la corrida M2 en ningún caso.
+El replay source de M2 se selecciona por la historia de la rama M2, no por descendencia en el grafo.
 
 Verificación ejecutada:
 
@@ -497,6 +516,16 @@ git cat-file -e e23bf7ac75bf8ac7b1b80f1944119598f743b7b7:sky_claw/local/native_p
 git cat-file -e f69275107b546b23fb481fd662ecbf9827831ab4:sky_claw/local/native_parallax/research/run_exp_m2.py   # EXISTE
 git diff --name-only f69275107b546b23fb481fd662ecbf9827831ab4 e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
 # → docs/design/research/native-parallax/exp-m2-authored-trust.md   (único archivo)
+```
+
+Pertenencia a ramas verificada contra la API de GitHub (no por descendencia en el grafo local):
+
+```bash
+gh api --paginate repos/FacundoSu1986/Sky-Claw/pulls/620/commits   # rama M2
+# → ... f6927510, e23bf7ac, 2541fa91, 0eac225d
+
+gh api --paginate repos/FacundoSu1986/Sky-Claw/pulls/621/commits   # rama hija M3
+# → ... f6927510, e23bf7ac, 80d26a7a, 8da4f833, 345db808, cb377590, ...
 ```
 
 `git diff f692751..e23bf7ac` sólo modifica documentación (+70/−13 en `exp-m2-authored-trust.md`); el diff acotado a `sky_claw/` y `tests/` es **vacío**. Por tanto:
@@ -519,7 +548,7 @@ OLD_M2_BRANCH_HEAD_AT_RUN_WINDOW=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
 OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
 
 OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
-OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
 OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
 ```
 
@@ -786,7 +815,7 @@ OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
 OLD_M2_SCIENTIFIC_CODE_IDENTICAL_F692_TO_E23=YES
 OLD_CODE_REPLAY_SAME_ENV_REQUIRED=YES
 OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
-OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
 OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
 OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
 PROTOCOL_ERROR_607FF21_CORRECTED=YES
@@ -834,11 +863,20 @@ OLD_M2_BRANCH_HEAD_PROVENANCE=BEST_SUPPORTED_BY_PR_HISTORY_AND_RUN_TIMESTAMP
 OLD_M2_SCIENTIFIC_CODE_IDENTICAL_F692_TO_E23=YES
 
 OLD_CODE_REPLAY_SOURCE_SHA=e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
-OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
+OLD_CODE_REPLAY_SOURCE_RELATION=BEST_SUPPORTED_M2_BRANCH_HEAD_AT_HISTORICAL_RUN_WINDOW
 OLD_CODE_REPLAY_SCIENTIFIC_CODE_ORIGIN=f69275107b546b23fb481fd662ecbf9827831ab4
 OLD_CODE_REPLAY_IS_EXACT_HISTORICAL_SHA_ATTESTATION=NO
 
 PROTOCOL_ERROR_607FF21_CORRECTED=YES
+
+PR620_M2_BRANCH_HEAD_REF=research/native-parallax-exp-m2-authored-trust
+PR621_M3_BRANCH_HEAD_REF=research/native-parallax-exp-m3-clean-authored-trust
+PARENT_CHAIN_CONTINUATION_IS_M2_BRANCH_CONTINUATION=NO
+STACKED_CHILD_BRANCH_COMMITS_EXCLUDED_FROM_M2_REPLAY_SOURCE=YES
+
+MATERIAL_1_ADJUDICATION=REJECTED_FALSE_POSITIVE
+MATERIAL_1_REASON=STACKED_CHILD_BRANCH_CONFUSED_WITH_M2_BRANCH_HISTORY
+ARENA_REVIEW=PASS_WITH_FALSE_POSITIVE_ADJUDICATED
 
 PATH_PREFLIGHT_REQUIRED=YES
 NO_CLOBBER_OUTPUT_REQUIRED=YES
