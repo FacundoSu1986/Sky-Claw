@@ -148,6 +148,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GUI/LLM y sin cambios a la CLI pública del helper (contrato §11.4).
 
 ### Security
+- **`multidict` 6.7.1 → 6.9.1 (CVE-2026-104874)** — aviso que
+  `pip-audit --strict --skip-editable -r requirements.lock` empezó a marcar
+  en el gate "Security Scan". Dependencia transitiva vía `aiohttp`/`yarl`;
+  se sube floor directo en `pyproject.toml` (`multidict>=6.9.1,<7`, mismo patrón de pin
+  transitivo que `starlette`/`anyio`) y se regeneran `requirements.lock` **y**
+  `uv.lock`. Sin cambios de código propio.
 - **`anyio` 4.13.0 → 4.14.2 (CVE-2026-63374, CVE-2026-64847)** — avisos que
   `pip-audit --strict --skip-editable -r requirements.lock` empezó a marcar
   en el gate "Security Scan". Dependencia transitiva vía `starlette`/`httpx`/`watchfiles`;

@@ -60,6 +60,9 @@ dependencies = [
     # >=4.14.2,<5 para corregir CVE-2026-63374 y CVE-2026-64847 (4.13.0
     # reportada por pip-audit).
     "anyio>=4.14.2,<5",
+    # Transitive (via aiohttp/yarl); floor at >=6.9.1,<7 to fix CVE-2026-104874
+    # (>=6.9.1 fixes CVE-2026-104874; 6.7.1 flagged by pip-audit).
+    "multidict>=6.9.1,<7",
     # T5-v2: backend real de UI Automation puro-Python/COM para el rig Windows.
     # MIT. NO se carga en CIs Linux (import perezoso en
     # ``dyndolod_uia_windows.construir_observador_windows``); esto es
