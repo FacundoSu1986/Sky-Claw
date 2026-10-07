@@ -138,6 +138,10 @@ def test_f1_los_motivos_de_rechazo_siguen_siendo_los_tres_de_siempre() -> None:
         # `Data/Foo/Bar` porque '.' (0x2E) < '/' (0x2F). El barrido por bisect no
         # depende de la adyacencia; comparar solo con el siguiente lo perderia.
         (("Data/Foo/Bar",), ("Data/Foo", "Data/Foo.bin"), "ancestro"),
+        # El mismo vocabulario con AMBOS descendientes en la lista de ARCHIVOS:
+        # `Data/Foo.bin` queda entre `Data/Foo` y `Data/Foo/z.bin`, asi que
+        # "solo el vecino inmediato" no llega a ver el descendiente real.
+        ((), ("Data/Foo", "Data/Foo.bin", "Data/Foo/z.bin"), "ancestro"),
         # Jerarquia legitima: el directorio ancestro de un archivo NO es conflicto.
         (("Data", "Data/Meshes"), ("Data/Meshes/a.nif",), None),
         (("Data",), ("Data/a.bin", "Data/b.bin"), None),
@@ -149,6 +153,29 @@ def test_f1_los_motivos_de_rechazo_siguen_siendo_los_tres_de_siempre() -> None:
         else:
             assert motivo is not None, f"{directorios} {archivos} deberia rechazarse por '{fragmento}'"
             assert fragmento in motivo, f"se esperaba '{fragmento}' en: {motivo}"
+
+
+def test_f1_el_tipo_de_conflicto_conserva_la_precedencia_archivo_antes_que_directorio() -> None:
+    """Con descendientes de ambos tipos, gana el motivo `archivo ancestro de archivo`.
+
+    La referencia cuadratica escaneaba primero TODOS los archivos y despues los
+    directorios, asi que ante un mismo `a` con descendiente archivo Y descendiente
+    directorio reportaba archivo-ancestro-de-archivo. Consultar una lista combinada
+    elegia el primero en orden lexicografico —aca `Data/Foo/0`, un directorio,
+    porque `'0' < 'z'`— y cambiaba el motivo reportado (CodeRabbit sobre #698).
+    """
+    directorios = ("Data/Foo/0",)
+    archivos = ("Data/Foo", "Data/Foo/z.bin")
+
+    assert _referencia_cuadratica(directorios, archivos) == "archivo ancestro de archivo"
+    motivo = _veredicto(directorios, archivos)
+    assert motivo is not None
+    assert "ancestro del archivo" in motivo, motivo
+
+    # Espejo: sin descendiente archivo, el unico motivo posible es el directorio.
+    motivo_solo_dir = _veredicto(("Data/Foo/0",), ("Data/Foo",))
+    assert motivo_solo_dir is not None
+    assert "ancestro del directorio" in motivo_solo_dir, motivo_solo_dir
 
 
 class _CanonicoObservado(str):

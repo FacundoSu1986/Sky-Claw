@@ -323,8 +323,10 @@ def _validar_coherencia_del_lote(
     El veredicto es IDENTICO, pero el chequeo de ancestro pasa a apoyarse en una
     propiedad del orden lexicografico: los strings que comparten un prefijo son
     CONTIGUOS, asi que el primer elemento ``>= f + "/"`` (``bisect_left``) es el
-    primero con ese prefijo si es que existe alguno. Queda
-    ``O((N+D) log (N+D))`` en vez de cuadratico, sin trie ni estructura nueva.
+    primero con ese prefijo si es que existe alguno. Se consultan las listas de
+    archivos y de directorios por separado, en ese orden, para conservar tambien
+    la precedencia del motivo reportado. Queda ``O((N+D) log (N+D))`` en vez de
+    cuadratico, sin trie ni estructura nueva.
     """
     vistos_archivos_cf: set[str] = set()
     for a in archivos:
@@ -348,31 +350,37 @@ def _validar_coherencia_del_lote(
 
     # Un ARCHIVO no puede contener nada: si su ruta canonica es prefijo de otra
     # (con separador), el lote es incoherente. Se conserva el texto original de
-    # cada ruta para el mensaje, y se distingue archivo-ancestro-de-archivo de
-    # archivo-ancestro-de-directorio consultando a que conjunto pertenece el
-    # elemento encontrado.
+    # cada ruta para el mensaje.
+    #
+    # Las dos listas se consultan por separado, y SIEMPRE primero la de archivos:
+    # la version cuadratica escaneaba todos los archivos y recien despues todos
+    # los directorios, asi que ante un mismo `a` con descendientes de ambos tipos
+    # el conflicto reportado era archivo-ancestro-de-archivo. Consultar la lista
+    # combinada elegia el primero en orden lexicografico y podia cambiar el tipo
+    # reportado (CodeRabbit sobre #698). El veredicto nunca dependio de esto;
+    # separar las listas conserva ademas la precedencia del mensaje.
     originales: dict[str, str] = {}
     for a in archivos:
         originales.setdefault(a.casefold(), a)
     for d in directorios:
         originales.setdefault(d.casefold(), d)
 
-    todos_ordenados = sorted(vistos_archivos_cf | vistos_dirs_cf)
+    archivos_ordenados = sorted(vistos_archivos_cf)
+    dirs_ordenados = sorted(vistos_dirs_cf)
     for a in archivos:
         prefijo = a.casefold() + "/"
-        indice = bisect.bisect_left(todos_ordenados, prefijo)
-        if indice >= len(todos_ordenados):
-            continue
-        canonico = todos_ordenados[indice]
-        if not canonico.startswith(prefijo):
-            continue
-        if canonico in vistos_archivos_cf:
+        indice = bisect.bisect_left(archivos_ordenados, prefijo)
+        if indice < len(archivos_ordenados) and archivos_ordenados[indice].startswith(prefijo):
             raise CandidateCopyError(
-                f"el archivo '{a}' no puede ser ancestro del archivo '{originales[canonico]}' (fail-closed)"
+                f"el archivo '{a}' no puede ser ancestro del archivo "
+                f"'{originales[archivos_ordenados[indice]]}' (fail-closed)"
             )
-        raise CandidateCopyError(
-            f"el archivo '{a}' no puede ser ancestro del directorio '{originales[canonico]}' (fail-closed)"
-        )
+        indice = bisect.bisect_left(dirs_ordenados, prefijo)
+        if indice < len(dirs_ordenados) and dirs_ordenados[indice].startswith(prefijo):
+            raise CandidateCopyError(
+                f"el archivo '{a}' no puede ser ancestro del directorio "
+                f"'{originales[dirs_ordenados[indice]]}' (fail-closed)"
+            )
 
 
 def copiar_arbol_independiente(
