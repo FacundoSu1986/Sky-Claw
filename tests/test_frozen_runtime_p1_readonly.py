@@ -145,6 +145,22 @@ def test_sin_lanzadores_de_proceso() -> None:
     assert not violaciones, f"lanzadores de proceso en Frozen Runtime: {violaciones}"
 
 
+def _modo_de_open(nodo: ast.Call, *, posicional: int) -> ast.expr | None:
+    """Modo de un ``open(...)``: el posicional si está, si no ``mode=``.
+
+    ``posicional`` es el índice del modo cuando se pasa sin nombre: ``0`` para
+    ``Path.open`` (el receptor es el ``self``) y ``1`` para el ``open`` builtin
+    (el ``file`` va primero). ``mode=`` funciona en ambos y es la ÚNICA forma
+    cuando la llamada no tiene posicionales.
+    """
+    if len(nodo.args) > posicional:
+        return nodo.args[posicional]
+    for kw in nodo.keywords:
+        if kw.arg == "mode":
+            return kw.value
+    return None
+
+
 def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
     permitidos = MODULOS_CON_OPEN_ESCRITURA.get(nombre_modulo, frozenset())
     arbol = ast.parse(fuente, filename=nombre_modulo)
@@ -154,36 +170,24 @@ def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
             continue
         es_open_bare = isinstance(nodo.func, ast.Name) and nodo.func.id == "open"
         es_open_attr = isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "open"
-        if (es_open_bare or es_open_attr) and nodo.args:
-            if (
-                isinstance(nodo.func, ast.Attribute)
-                and isinstance(nodo.func.value, ast.Name)
-                and nodo.func.value.id == "os"
-            ):
-                violaciones.append(f"{nombre_modulo}:{nodo.lineno}: os.open() no permitido en Frozen Runtime")
-                continue
-            if es_open_attr:
-                modo = (
-                    nodo.args[0]
-                    if nodo.args
-                    else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
-                )
-            else:
-                modo = (
-                    nodo.args[1]
-                    if len(nodo.args) > 1
-                    else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
-                )
-            if (
-                isinstance(modo, ast.Constant)
-                and isinstance(modo.value, str)
-                and modo.value in MODOS_ESCRITURA
-                and modo.value not in permitidos
-            ):
-                violaciones.append(
-                    f"{nombre_modulo}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
-                    f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
-                )
+        # El chequeo del modo NO puede exigir posicionales: `ruta.open(mode="w")`
+        # no tiene ninguno y era la forma que se escapaba (finding post-merge #682).
+        if not (es_open_bare or es_open_attr):
+            continue
+        if es_open_attr and isinstance(nodo.func.value, ast.Name) and nodo.func.value.id == "os":
+            violaciones.append(f"{nombre_modulo}:{nodo.lineno}: os.open() no permitido en Frozen Runtime")
+            continue
+        modo = _modo_de_open(nodo, posicional=0 if es_open_attr else 1)
+        if (
+            isinstance(modo, ast.Constant)
+            and isinstance(modo.value, str)
+            and modo.value in MODOS_ESCRITURA
+            and modo.value not in permitidos
+        ):
+            violaciones.append(
+                f"{nombre_modulo}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
+                f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
+            )
     return violaciones
 
 
