@@ -1241,3 +1241,161 @@ async def test_quarantine_persistence_failure_mantiene_instancia_fail_closed(
         if broker_b.quarantine_reason is None:
             # Si inició sin razón de cuarentena, violó fail-closed
             raise AssertionError("Broker B inició sin detectar cuarentena tras falla de persistencia!")
+
+
+@pytest.mark.asyncio
+async def test_release_quarantine_tras_falla_de_persistencia_reconcilia_lock_y_permite_rearranque(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocker A: Si la cuarentena entró por falla de persistencia (poison lock),
+
+    un release_quarantine autorizado con evidencia debe:
+    1. Reconciliar el payload del file lock en disco (quitar quarantined=True).
+    2. Limpiar _quarantine_persistence_failed y _quarantine_reason.
+    3. Permitir que close() libere el file lock.
+    4. Permitir que un segundo broker pueda iniciar limpiamente sin cuarentena.
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker_a = VfsExecutionBroker(instance_id="inst-poison-rel", state_dir=state_dir)
+    await broker_a.start()
+
+    import os
+
+    real_replace = os.replace
+
+    def _failing_replace(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("Fallo simulado de E/S en disco al reemplazar cuarentena")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _failing_replace)
+    broker_a._quarantine_instance("job-p1", "falla de persistencia")
+    assert broker_a._quarantine_persistence_failed is True
+    assert broker_a.quarantine_reason is not None
+
+    # Restaurar replace normal
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    # Operador autoriza levantamiento con evidencia
+    await broker_a.release_quarantine(evidence="verificado por operador que job-p1 murio")
+
+    assert broker_a.quarantine_reason is None
+    assert broker_a._quarantine_persistence_failed is False
+    assert broker_a._quarantined_job_id is None
+
+    await broker_a.close()
+
+    # Segundo broker debe poder iniciar y NO estar en cuarentena
+    broker_b = VfsExecutionBroker(instance_id="inst-poison-rel", state_dir=state_dir)
+    await broker_b.start()
+    try:
+        assert broker_b.quarantine_reason is None
+    finally:
+        await broker_b.close()
+
+
+@pytest.mark.asyncio
+async def test_release_quarantine_falla_closed_si_cleanup_de_disco_falla(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocker A (variante fail-closed): Si durante release_quarantine la
+
+    reconciliación en disco falla (p.ej. OSError al escribir el lock reconciliado),
+    release_quarantine DEBE propagar el error y mantener la instancia fail-closed
+    (_quarantine_persistence_failed sigue True, razón sigue activa).
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker = VfsExecutionBroker(instance_id="inst-poison-fail-cleanup", state_dir=state_dir)
+    await broker.start()
+
+    import os
+
+    real_replace = os.replace
+
+    def _failing_replace(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("Fallo simulado de E/S")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _failing_replace)
+    broker._quarantine_instance("job-p2", "falla de persistencia")
+    assert broker._quarantine_persistence_failed is True
+
+    # Restaurar replace normal pero provocar error al reconciliar el file lock en disco
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    real_write_bytes = pathlib.Path.write_bytes
+
+    def _failing_write_bytes(path_obj: pathlib.Path, data: bytes) -> int:
+        if path_obj.name == broker._instance_lock_path.name:
+            raise OSError("Fallo de E/S al escribir el lock reconciliado")
+        return real_write_bytes(path_obj, data)
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", _failing_write_bytes)
+
+    with pytest.raises(OSError, match="Fallo de E/S al escribir el lock"):
+        await broker.release_quarantine(evidence="evidencia valida pero disco falla")
+
+    # Debe mantenerse fail-closed
+    assert broker._quarantine_persistence_failed is True
+    assert broker.quarantine_reason is not None
+
+    # Al cerrar, el lock debe retenerse fail-closed
+    monkeypatch.undo()
+    await broker.close()
+    assert broker._instance_lock_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_worker_exit_de_otro_job_no_libera_cuarentena_sin_marcador(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocker B: Si la persistencia del marcador falló (poison lock activo),
+
+    un worker_exit para un job distinto (job-B) NO debe liberar la cuarentena
+    del job original (job-A). Solo el worker_exit del job-A puede liberarla,
+    y al hacerlo debe reconciliar el lock en disco.
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker = VfsExecutionBroker(instance_id="inst-wrong-job", state_dir=state_dir)
+    await broker.start()
+
+    import os
+
+    real_replace = os.replace
+
+    def _failing_replace(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("Fallo simulado de E/S")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _failing_replace)
+    broker._quarantine_instance("job-A", "terminalidad indeterminada job-A")
+    assert broker.quarantine_reason is not None
+    assert broker._quarantine_persistence_failed is True
+
+    # 1. Llega worker_exit para un job-B ajeno:
+    broker._liberar_cuarentena_por_worker_exit("job-B")
+    # DEBE seguir en cuarentena!
+    assert broker.quarantine_reason is not None
+    assert broker._quarantined_job_id == "job-A"
+    assert broker._quarantine_persistence_failed is True
+
+    # 2. Llega worker_exit para el job-A correcto:
+    broker._liberar_cuarentena_por_worker_exit("job-A")
+    assert broker.quarantine_reason is None
+    assert broker._quarantined_job_id is None
+    assert broker._quarantine_persistence_failed is False
+
+    await broker.close()
+
+    # Y tras close, broker_b puede iniciar limpiamente porque job-A reconcilió el lock:
+    broker_b = VfsExecutionBroker(instance_id="inst-wrong-job", state_dir=state_dir)
+    await broker_b.start()
+    try:
+        assert broker_b.quarantine_reason is None
+    finally:
+        await broker_b.close()

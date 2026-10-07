@@ -170,6 +170,8 @@ class VfsExecutionBroker:
         self._fence_grace = fence_grace_seconds
         self._connected_worker_exit_deadline = connected_worker_exit_deadline_seconds
         self._quarantine_reason: str | None = None
+        self._quarantined_job_id: str | None = None
+        self._quarantine_persistence_failed: bool = False
         self._session_id = str(uuid.uuid4())
         self._server: asyncio.AbstractServer | None = None
         self._bridge_writer: asyncio.StreamWriter | None = None
@@ -212,8 +214,10 @@ class VfsExecutionBroker:
                 raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
                 reason = raw.get("reason", "terminalidad indeterminada previa")
                 self._quarantine_reason = str(reason)
+                self._quarantined_job_id = raw.get("job_id")
             except Exception:
                 self._quarantine_reason = "marcador de cuarentena presente pero ilegible (fail-closed)"
+                self._quarantined_job_id = None
             return
 
         if self._instance_lock_path.exists():
@@ -221,11 +225,15 @@ class VfsExecutionBroker:
                 raw_lock = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
                 if isinstance(raw_lock, dict) and raw_lock.get("quarantined"):
                     self._quarantine_reason = str(raw_lock.get("quarantine_reason", "envenenamiento fail-closed"))
+                    self._quarantined_job_id = raw_lock.get("job_id")
+                    self._quarantine_persistence_failed = True
                     return
             except Exception:
                 pass
 
         self._quarantine_reason = None
+        self._quarantined_job_id = None
+        self._quarantine_persistence_failed = False
 
     def _quarantine_instance(
         self,
@@ -235,6 +243,7 @@ class VfsExecutionBroker:
         exc: BaseException | None = None,
     ) -> None:
         self._quarantine_reason = reason
+        self._quarantined_job_id = job_id
         payload = {
             "job_id": job_id,
             "session_id": self._session_id,
@@ -267,6 +276,7 @@ class VfsExecutionBroker:
                         "session_id": self._session_id,
                         "quarantined": True,
                         "quarantine_reason": f"emergencia fail-closed por falla de persistencia: {reason}",
+                        "job_id": job_id,
                     },
                     sort_keys=True,
                 ).encode("utf-8")
@@ -274,23 +284,59 @@ class VfsExecutionBroker:
             except Exception:
                 pass
 
+    def _reconciliar_lock_de_instancia_limpio(self) -> None:
+        """Reconcilia el lock de instancia en disco eliminando marcas de cuarentena si el broker es el dueño."""
+        if not self._owns_instance_file_lock or not self._instance_lock_path.exists():
+            return
+        clean_payload = json.dumps(
+            {
+                "pid": os.getpid(),
+                "session_id": self._session_id,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        self._instance_lock_path.write_bytes(clean_payload)
+
     def _liberar_cuarentena_por_worker_exit(self, job_id: str) -> None:
         if self._quarantine_path.exists():
             try:
                 raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
                 if raw.get("job_id") == job_id:
                     logger.info("Worker exit tardío confirmó salida para job %s; liberando cuarentena", job_id)
-                    self._quarantine_reason = None
                     self._quarantine_path.unlink(missing_ok=True)
+                    try:
+                        self._reconciliar_lock_de_instancia_limpio()
+                    except Exception:
+                        logger.warning(
+                            "No se pudo reconciliar lock de instancia tras worker exit tardío", exc_info=True
+                        )
+                    self._quarantine_reason = None
+                    self._quarantined_job_id = None
+                    self._quarantine_persistence_failed = False
             except Exception:
                 pass
-        elif self._quarantine_reason is not None:
+        elif self._quarantine_reason is not None and self._quarantined_job_id == job_id:
+            logger.info(
+                "Worker exit tardío confirmó salida para job %s (sin marcador persistido); liberando cuarentena", job_id
+            )
+            try:
+                self._reconciliar_lock_de_instancia_limpio()
+            except Exception:
+                logger.warning("No se pudo reconciliar lock de instancia tras worker exit tardío", exc_info=True)
             self._quarantine_reason = None
+            self._quarantined_job_id = None
+            self._quarantine_persistence_failed = False
 
     async def release_quarantine(self, *, evidence: str) -> None:
         """Libera la cuarentena de la instancia tras constatación del operador."""
         if not isinstance(evidence, str) or not evidence.strip():
             raise VfsBrokerError("se requiere evidencia explícita para levantar la cuarentena")
+
+        # Operaciones en disco primero (fail-closed si fallan)
+        await asyncio.to_thread(self._quarantine_path.unlink, missing_ok=True)
+        if self._owns_instance_file_lock and self._instance_lock_path.exists():
+            await asyncio.to_thread(self._reconciliar_lock_de_instancia_limpio)
+
         logger.critical(
             "Cuarentena de la instancia %s liberada por operador: %s",
             self._instance_id,
@@ -298,7 +344,8 @@ class VfsExecutionBroker:
             extra={"instance_id": self._instance_id, "evidence": evidence},
         )
         self._quarantine_reason = None
-        await asyncio.to_thread(self._quarantine_path.unlink, missing_ok=True)
+        self._quarantined_job_id = None
+        self._quarantine_persistence_failed = False
 
     async def start(self) -> None:
         """Publica una sesión nueva; es idempotente mientras siga activa."""
@@ -407,7 +454,7 @@ class VfsExecutionBroker:
     def _release_instance_file_lock(self) -> None:
         if not self._owns_instance_file_lock:
             return
-        if getattr(self, "_quarantine_persistence_failed", False):
+        if self._quarantine_persistence_failed:
             logger.critical(
                 "Reteniendo lock de instancia %s fail-closed debido a falla previa de persistencia de cuarentena",
                 self._instance_id,

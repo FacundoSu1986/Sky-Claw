@@ -89,9 +89,13 @@ queda indeterminada (`terminality_unknown = True`). En este escenario:
    automáticos y nuevas operaciones mutantes son vetados (`VfsInstanceQuarantinedError`).
 2. **Marcador persistente:** El broker crea un archivo atómico en disco:
    `<runtime_state_dir>/.<instance_id>.quarantine`
-   que contiene metadatos JSON (`instance_id`, `job_id`, `reason`, `quarantined_at`, `details`).
+   que contiene metadatos JSON auditables (`job_id`, `session_id`, `pid`, `reason`, `error_type`, `detail`, `timestamp`).
+   En caso de fallo de E/S al escribir dicho marcador, el broker activa el camino fail-closed de emergencia
+   envenenando el descriptor de file lock `<runtime_state_dir>/.<instance_id>.lock` con `"quarantined": true`
+   y retiene el lock al cerrarse.
 3. **Persistencia entre reinicios:** Nuevas aperturas de sesión VFS (`open_session`,
-   `submit`) sobre la misma instancia serán rechazadas mientras el archivo de cuarentena exista.
+   `submit`) sobre la misma instancia serán rechazadas mientras el archivo de cuarentena
+   o el envenenamiento del lock existan.
 
 ### Procedimiento del operador
 
@@ -104,14 +108,23 @@ Si se detecta `VfsInstanceQuarantinedError`:
    Get-Process -Name "*DynDOLOD*", "*xEdit*", "*LOOT*", "*usvfs*" -ErrorAction SilentlyContinue
    ```
 2. **Recuperación automática tardía:**
-   Si el broker o bridge sigue en ejecución y el worker finalmente sale, el evento tardío
-   `worker_exit` levantará la cuarentena de forma automática (`release_quarantine(evidence='late_worker_exit')`).
+   Si el broker o bridge sigue en ejecución y el worker del job cuarentenado finalmente sale, el evento
+   tardío `worker_exit` para ese `job_id` coincidente ejecuta una reconciliación interna de cuarentena
+   (`_liberar_cuarentena_por_worker_exit`), removiendo el marcador y saneando el lock en disco.
+   Eventos `worker_exit` de jobs ajenos no alteran la cuarentena.
 3. **Recuperación manual del operador:**
    Si se confirma documental y operativamente que el árbol de procesos está 100% muerto
    (por ejemplo, tras terminación forzada y verificación de handles liberados):
-   - Vía API: llamar a `broker.release_quarantine(evidence="verificacion_operador_procesos_muertos")`.
-   - Vía disco: eliminar el archivo de marcador `.<instance_id>.quarantine` sólo una vez verificado
-     que no quedan handles ni procesos residuales mutando el staging o VFS.
+   - **Broker en ejecución:** Usar la operación autorizada de API:
+     `await broker.release_quarantine(evidence="verificacion_operador_procesos_muertos")`.
+     Esta operación es transaccional y fail-closed: valida evidencia no vacía, elimina el marcador
+     en disco, reconcilia el payload del lock de instancia y limpia el estado en memoria. Si el disco
+     falla al sanearse, la operación falla y mantiene la instancia en cuarentena.
+   - **Intervención manual en disco (broker detenido):** Sólo cuando el proceso del broker ya finalizó,
+     se puede remover manualmente el archivo de marcador `.<instance_id>.quarantine` y verificar que el
+     archivo `.<instance_id>.lock` no contenga `"quarantined": true` antes de reiniciar el broker.
+     (Si el broker continúa en ejecución, borrar únicamente el archivo en disco no desactiva la cuarentena
+     en memoria del proceso activo; debe usarse la API).
 
 ## Cierre de incidente
 
