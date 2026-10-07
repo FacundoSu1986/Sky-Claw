@@ -188,9 +188,9 @@ class VfsProcessSession:
         driver = self._driver
         if driver is not None and driver.done():
             driver_exc = driver.exception() if not driver.cancelled() else None
-            from sky_claw.local.mo2.vfs_broker import VfsTeardownError
+            from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 
-            if isinstance(driver_exc, VfsTeardownError):
+            if driver_exc is not None and exception_forbids_rollback(driver_exc):
                 self._estado.teardown_error = driver_exc
                 self._estado.terminality_unknown = True
                 self._estado.confirmed_terminal = False
@@ -389,9 +389,13 @@ class VfsProcessSession:
         driver = self._driver
         if driver is not None and driver.done() and not driver.cancelled():
             driver_exc = driver.exception()
-            from sky_claw.local.mo2.vfs_broker import VfsTeardownError
+            from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 
-            if isinstance(driver_exc, VfsTeardownError) and self._estado.teardown_error is None:
+            if (
+                driver_exc is not None
+                and exception_forbids_rollback(driver_exc)
+                and self._estado.teardown_error is None
+            ):
                 self._estado.teardown_error = driver_exc
                 self._estado.terminality_unknown = True
                 self._estado.confirmed_terminal = False

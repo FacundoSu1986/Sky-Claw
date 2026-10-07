@@ -31,6 +31,10 @@ class BridgeJobUnknownError(BridgeCommandError):
     """El job solicitado no está activo o ya terminó en el bridge."""
 
 
+class BridgeTerminationError(BridgeCommandError):
+    """Falla al terminar el Job Object o proceso del worker."""
+
+
 def bridge_error_event(
     *,
     command: object,
@@ -41,10 +45,12 @@ def bridge_error_event(
     """Construye un evento bridge_error con clasificación estructurada (kind)."""
     resolved_kind = kind
     if resolved_kind is None:
-        if isinstance(exc, BridgeJobUnknownError) or "desconocido" in str(exc).lower():
+        if isinstance(exc, BridgeJobUnknownError):
             resolved_kind = "job_unknown"
-        elif "termination" in str(exc).lower() or "terminate" in str(exc).lower():
+        elif isinstance(exc, BridgeTerminationError):
             resolved_kind = "termination_failed"
+        elif isinstance(exc, BridgeCommandError):
+            resolved_kind = "rejected"
         else:
             resolved_kind = "rejected"
     return {
@@ -464,7 +470,7 @@ class Win32JobObject:
 
     def terminate(self) -> None:
         if self._handle is not None and not self._kernel32.TerminateJobObject(self._handle, 1):
-            raise BridgeCommandError(f"TerminateJobObject falló: {ctypes.get_last_error()}")
+            raise BridgeTerminationError(f"TerminateJobObject falló: {ctypes.get_last_error()}")
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)

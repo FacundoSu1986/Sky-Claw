@@ -549,9 +549,20 @@ async def test_cancelacion_despues_del_resultado_preserva_confirmacion_terminal(
         entro_a_esperar_worker_exit = asyncio.Event()
         await_original = broker._await_exit_or_bridge_loss
 
-        async def _instrumentado(exit_future, deadline):
+        async def _instrumentado(
+            exit_future: asyncio.Future[int | None],
+            deadline: float,
+            *,
+            job_id: str | None = None,
+            bridge_loss_deadline: float | None = None,
+        ) -> None:
             entro_a_esperar_worker_exit.set()
-            await await_original(exit_future, deadline)
+            await await_original(
+                exit_future,
+                deadline,
+                job_id=job_id,
+                bridge_loss_deadline=bridge_loss_deadline,
+            )
 
         monkeypatch.setattr(broker, "_await_exit_or_bridge_loss", _instrumentado)
 

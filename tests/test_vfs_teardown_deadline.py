@@ -27,6 +27,7 @@ import inspect
 import json
 import pathlib
 import threading
+from typing import Any
 
 import pytest
 
@@ -969,3 +970,274 @@ async def test_cancel_and_join_no_traga_base_exception() -> None:
     # (o la función solo suprime CancelledError)
     with pytest.raises(RuntimeError):
         await vfs_broker._cancel_and_join(fut)
+
+
+# ==============================================================================
+# F1: _await_worker_exit propaga TypeError interno sin reintento con firma vieja
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_await_worker_exit_propaga_type_error_interno_sin_reintento(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1: Si ocurre un TypeError DENTRO de _await_exit_or_bridge_loss, debe propagarse.
+
+    Pre-fix: la llamada estaba envuelta en `except TypeError:` que reintentaba con 2 argumentos,
+    confundiendo un error de lógica interno con drift de firma.
+    """
+    broker = VfsExecutionBroker(instance_id="inst-f1", state_dir=tmp_path)
+    loop = asyncio.get_running_loop()
+    exit_future: asyncio.Future[int | None] = loop.create_future()
+
+    llamadas = 0
+
+    async def _failing_exit(*args: Any, **kwargs: Any) -> None:
+        nonlocal llamadas
+        llamadas += 1
+        raise TypeError("type error interno de logica")
+
+    monkeypatch.setattr(broker, "_await_exit_or_bridge_loss", _failing_exit)
+
+    with pytest.raises(TypeError, match="type error interno de logica"):
+        await broker._await_worker_exit(exit_future, job_id="job-1", deadline=loop.time() + 5.0)
+
+    assert llamadas == 1, f"Se esperaba exactamente 1 llamada, pero hubo {llamadas} (indica reintento)"
+
+
+# ==============================================================================
+# F2: Completed driver con error tipado de timeout y terminalidad desconocida
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_session_cancel_con_driver_terminado_con_timeout_marcado_unknown_falla_tipado() -> None:
+    """F2: Si el driver terminó con VfsJobTimeoutError marcado terminality_unknown,
+
+    session.cancel() debe propagar el error tipado y marcar la sesión con terminalidad desconocida,
+    en lugar de retornar silenciosamente si _resultado_futuro está done.
+    """
+    from sky_claw.app.db.rollback_veto import mark_unknown_terminality
+    from sky_claw.local.mo2.vfs_contracts import VfsJobResult
+    from sky_claw.local.mo2.vfs_session import VfsProcessSession
+
+    loop = asyncio.get_running_loop()
+    resultado_fut: asyncio.Future[VfsJobResult] = loop.create_future()
+    # Simular que el resultado ya fue recibido antes de la cancelación
+    res_fake = VfsJobResult.from_dict(
+        {
+            "protocol_version": 1,
+            "job_id": "job-timeout",
+            "success": True,
+            "message": "",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "outputs": [],
+            "rollback_state": "not_required",
+            "attestation": None,
+            "tool_result": {},
+        }
+    )
+    resultado_fut.set_result(res_fake)
+
+    event_q: asyncio.Queue[Any] = asyncio.Queue()
+
+    async def _dummy_cancel() -> None:
+        pass
+
+    sesion = VfsProcessSession(
+        job_id="job-timeout",
+        result_future=resultado_fut,
+        event_queue=event_q,
+        cancelar=_dummy_cancel,
+    )
+
+    # Crear driver que falló con VfsJobTimeoutError marcado con terminality_unknown
+    exc_timeout = VfsJobTimeoutError("timeout de espera del worker")
+    mark_unknown_terminality(exc_timeout)
+
+    driver_task: asyncio.Task[VfsJobResult] = loop.create_task(asyncio.sleep(0))
+    await driver_task
+    # Convertir driver en done con la excepción
+    driver_fut: asyncio.Future[VfsJobResult] = loop.create_future()
+    driver_fut.set_exception(exc_timeout)
+    sesion._vincular_driver(driver_fut)  # type: ignore[arg-type]
+
+    # Pre-fix: cancel() retorna None silenciosamente porque VfsJobTimeoutError no es VfsTeardownError
+    # Post-fix: debe levantar VfsJobTimeoutError, marcar terminality_unknown=True y confirmed_terminal=False
+    with pytest.raises(VfsJobTimeoutError, match="timeout de espera del worker"):
+        await sesion.cancel()
+
+    assert sesion.terminality_unknown is True
+    assert sesion.confirmed_terminal is False
+
+
+# ==============================================================================
+# F3: Clasificación estructurada sin inferencia por substring matching
+# ==============================================================================
+
+
+def test_bridge_error_classification_tipada_sin_substring_matching() -> None:
+    """F3: bridge_error_event no debe hacer inferencia por strings en exc.
+
+    - Un error ordinario con la palabra 'termination' NO debe clasificarse como termination_failed.
+    - Un BridgeTerminationError tipado SIN la palabra 'termination' SÍ debe clasificarse como termination_failed.
+    """
+    from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
+        BridgeCommandError,
+        BridgeJobUnknownError,
+        BridgeTerminationError,
+        bridge_error_event,
+    )
+
+    # 1. Error ordinario que contiene 'termination' en el mensaje
+    err_ordinario = BridgeCommandError("argumento termination_mode no soportado")
+    event_ord = bridge_error_event(command="cancel", job_id="job-1", exc=err_ordinario)
+    assert event_ord["kind"] == "rejected", f"Se esperaba 'rejected', pero dio {event_ord['kind']}"
+
+    # 2. Error tipado de terminación sin la palabra termination en el mensaje
+    err_term = BridgeTerminationError("el proceso no cerro en Win32")
+    event_term = bridge_error_event(command="cancel", job_id="job-1", exc=err_term)
+    assert event_term["kind"] == "termination_failed", (
+        f"Se esperaba 'termination_failed', pero dio {event_term['kind']}"
+    )
+
+    # 3. Error tipado de job desconocido
+    err_unknown = BridgeJobUnknownError("el identificador expiro")
+    event_unk = bridge_error_event(command="cancel", job_id="job-1", exc=err_unknown)
+    assert event_unk["kind"] == "job_unknown", f"Se esperaba 'job_unknown', pero dio {event_unk['kind']}"
+
+
+# ==============================================================================
+# F4: Carrera bridge_ready / bridge_lost ante deadline
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_race_bridge_ready_desconexion_aplica_contrato_bridge_loss_no_deadline_error(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F4: Si el bridge estaba ready, pero se desconecta antes/durante el deadline,
+
+    debe aplicarse el contrato de pérdida de bridge (bridge-loss contract) y NO
+    emitirse incorrectamente VfsTeardownDeadlineError.
+    """
+    broker = VfsExecutionBroker(instance_id="inst-f4", state_dir=tmp_path, fence_grace_seconds=0.1)
+    loop = asyncio.get_running_loop()
+    exit_future: asyncio.Future[int | None] = loop.create_future()
+
+    # Bridge inicialmente ready
+    broker._bridge_ready.set()
+    broker._bridge_lost.clear()
+
+    # En el checkpoint, el bridge se cae
+    now = loop.time()
+    deadline = now + 0.05
+
+    async def _desconectar_en_checkpoint() -> None:
+        await asyncio.sleep(0.01)
+        broker._bridge_ready.clear()
+        broker._bridge_lost.set()
+
+    task_desc = asyncio.create_task(_desconectar_en_checkpoint())
+    try:
+        # Ejecutar _await_worker_exit
+        await broker._await_worker_exit(
+            exit_future,
+            job_id="job-race",
+            deadline=deadline,
+        )
+        # Si sigue el contrato de pérdida de bridge: al expirar la gracia sin reconexión,
+        # exit_future debe completarse con None (asume muerto por kill-on-close)
+        assert exit_future.done()
+        assert exit_future.result() is None
+    finally:
+        task_desc.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task_desc
+
+
+# ==============================================================================
+# Cross-Process Quarantine & Persistence Failure Tests
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_quarantine_cross_process_file_lock_serializa_brokers(tmp_path: pathlib.Path) -> None:
+    """Verifica que el file lock interproceso serialice Broker A y Broker B.
+
+    Demuestra que Broker B no puede pasar start() ni leer estado inconsistente
+    mientras Broker A retiene el lock. Al liberar A, B adquiere el lock y
+    observa la cuarentena de forma determinista.
+    """
+    state_dir = tmp_path / "vfs_state"
+
+    broker_a = VfsExecutionBroker(instance_id="inst-cross", state_dir=state_dir)
+    broker_b = VfsExecutionBroker(instance_id="inst-cross", state_dir=state_dir)
+
+    await broker_a.start()
+
+    # Broker B intenta start() mientras A tiene el lock
+    with pytest.raises(VfsBrokerError, match="ya esta poseida por otro broker"):
+        await broker_b.start()
+
+    # Broker A pone la instancia en cuarentena
+    broker_a._quarantine_instance("job-123", "terminalidad desconocida demostrada")
+
+    # Broker A se cierra
+    await broker_a.close()
+
+    # Ahora Broker B sí puede iniciar, y DEBE cargar la cuarentena
+    await broker_b.start()
+    try:
+        assert broker_b.quarantine_reason is not None
+        assert "terminalidad desconocida demostrada" in broker_b.quarantine_reason
+    finally:
+        await broker_b.close()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_persistence_failure_mantiene_instancia_fail_closed(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si la persistencia del marcador de cuarentena falla en disco,
+
+    el broker NO debe liberar el lock limpiamente permitiendo que otro broker
+    inicie y mutee sin saber que hubo terminalidad desconocida. Debe ser fail-closed.
+    """
+    state_dir = tmp_path / "vfs_state"
+
+    broker_a = VfsExecutionBroker(instance_id="inst-fail-io", state_dir=state_dir)
+    broker_b = VfsExecutionBroker(instance_id="inst-fail-io", state_dir=state_dir)
+
+    await broker_a.start()
+
+    import os
+
+    real_replace = os.replace
+
+    # Inyectar fallo al escribir el archivo de cuarentena
+    def _failing_replace(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("Fallo simulado de E/S en disco al reemplazar cuarentena")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _failing_replace)
+
+    broker_a._quarantine_instance("job-failed-io", "terminalidad indeterminada con error de disco")
+
+    # Cerrar broker A
+    await broker_a.close()
+
+    from sky_claw.local.mo2.vfs_broker import VfsInstanceQuarantinedError
+
+    # Broker B intenta iniciar: debe fallar o detectar cuarentena fail-closed,
+    # NUNCA iniciar como si nada hubiera pasado con quarantine_reason == None
+    with pytest.raises((VfsBrokerError, VfsInstanceQuarantinedError)):
+        await broker_b.start()
+        if broker_b.quarantine_reason is None:
+            # Si inició sin razón de cuarentena, violó fail-closed
+            raise AssertionError("Broker B inició sin detectar cuarentena tras falla de persistencia!")

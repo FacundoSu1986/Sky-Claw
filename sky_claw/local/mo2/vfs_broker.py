@@ -207,15 +207,25 @@ class VfsExecutionBroker:
         return self._quarantine_reason
 
     def _load_quarantine(self) -> None:
-        if not self._quarantine_path.exists():
-            self._quarantine_reason = None
+        if self._quarantine_path.exists():
+            try:
+                raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
+                reason = raw.get("reason", "terminalidad indeterminada previa")
+                self._quarantine_reason = str(reason)
+            except Exception:
+                self._quarantine_reason = "marcador de cuarentena presente pero ilegible (fail-closed)"
             return
-        try:
-            raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
-            reason = raw.get("reason", "terminalidad indeterminada previa")
-            self._quarantine_reason = str(reason)
-        except Exception:
-            self._quarantine_reason = "marcador de cuarentena presente pero ilegible (fail-closed)"
+
+        if self._instance_lock_path.exists():
+            try:
+                raw_lock = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
+                if isinstance(raw_lock, dict) and raw_lock.get("quarantined"):
+                    self._quarantine_reason = str(raw_lock.get("quarantine_reason", "envenenamiento fail-closed"))
+                    return
+            except Exception:
+                pass
+
+        self._quarantine_reason = None
 
     def _quarantine_instance(
         self,
@@ -248,7 +258,21 @@ class VfsExecutionBroker:
             )
         except Exception:
             tmp.unlink(missing_ok=True)
+            self._quarantine_persistence_failed = True
             logger.critical("No se pudo persistir el marcador de cuarentena para %s", self._instance_id, exc_info=True)
+            try:
+                poison_payload = json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "session_id": self._session_id,
+                        "quarantined": True,
+                        "quarantine_reason": f"emergencia fail-closed por falla de persistencia: {reason}",
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+                self._instance_lock_path.write_bytes(poison_payload)
+            except Exception:
+                pass
 
     def _liberar_cuarentena_por_worker_exit(self, job_id: str) -> None:
         if self._quarantine_path.exists():
@@ -309,6 +333,15 @@ class VfsExecutionBroker:
                 )
             except FileExistsError as exc:
                 if self._instance_lock_owner_alive():
+                    try:
+                        raw_existing = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
+                        if isinstance(raw_existing, dict) and raw_existing.get("quarantined"):
+                            reason = str(raw_existing.get("quarantine_reason", "cuarentena persistida en lock"))
+                            raise VfsInstanceQuarantinedError(
+                                f"la instancia {self._instance_id} está en cuarentena fail-closed: {reason}"
+                            ) from exc
+                    except (OSError, UnicodeError, json.JSONDecodeError):
+                        pass
                     raise VfsBrokerError(f"la instancia {self._instance_id} ya esta poseida por otro broker") from exc
                 with contextlib.suppress(FileNotFoundError):
                     self._instance_lock_path.unlink()
@@ -345,6 +378,9 @@ class VfsExecutionBroker:
             raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return True
+        if isinstance(raw, dict) and raw.get("quarantined"):
+            # Si el lock está envenenado por cuarentena fail-closed, nunca se considera huérfano ni libre
+            return True
         pid = raw.get("pid") if isinstance(raw, dict) else None
         if type(pid) is not int or pid <= 0:
             return True
@@ -370,6 +406,12 @@ class VfsExecutionBroker:
 
     def _release_instance_file_lock(self) -> None:
         if not self._owns_instance_file_lock:
+            return
+        if getattr(self, "_quarantine_persistence_failed", False):
+            logger.critical(
+                "Reteniendo lock de instancia %s fail-closed debido a falla previa de persistencia de cuarentena",
+                self._instance_id,
+            )
             return
         try:
             raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
@@ -836,10 +878,7 @@ class VfsExecutionBroker:
         result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
         deadline = asyncio.get_running_loop().time() + self._connected_worker_exit_deadline
         while not exit_future.done():
-            try:
-                await self._await_exit_or_bridge_loss(exit_future, deadline, job_id=job_id)
-            except TypeError:
-                await self._await_exit_or_bridge_loss(exit_future, deadline)
+            await self._await_exit_or_bridge_loss(exit_future, deadline, job_id=job_id)
         exit_future.result()
         return result
 
@@ -877,15 +916,12 @@ class VfsExecutionBroker:
                     break
         while not exit_future.done():
             try:
-                try:
-                    await self._await_exit_or_bridge_loss(
-                        exit_future,
-                        connected_limite,
-                        job_id=resolved_job_id,
-                        bridge_loss_deadline=bridge_loss_limite,
-                    )
-                except TypeError:
-                    await self._await_exit_or_bridge_loss(exit_future, connected_limite)
+                await self._await_exit_or_bridge_loss(
+                    exit_future,
+                    connected_limite,
+                    job_id=resolved_job_id,
+                    bridge_loss_deadline=bridge_loss_limite,
+                )
             except asyncio.CancelledError:
                 cancelled = True
         exit_future.result()
@@ -916,54 +952,64 @@ class VfsExecutionBroker:
                     if f is exit_future:
                         resolved_job_id = j_id
                         break
-            remaining = deadline - asyncio.get_running_loop().time()
-            if self._bridge_ready.is_set():
+            now = asyncio.get_running_loop().time()
+            remaining = deadline - now
+            bridge_connected = self._bridge_ready.is_set() and not self._bridge_lost.is_set()
+            if bridge_connected:
                 # Bridge vivo: acotado al deadline absoluto. Si expira sin worker_exit,
                 # la terminalidad es indeterminada (NUNCA set_result(None)).
                 if remaining <= 0:
-                    if not exit_future.done():
-                        logger.warning(
-                            "El worker VFS %s no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
-                            "la terminalidad del proceso es indeterminada",
-                            resolved_job_id or "desconocido",
-                            self._connected_worker_exit_deadline,
-                        )
-                        if resolved_job_id is not None:
-                            self._quarantine_instance(
-                                resolved_job_id,
-                                f"teardown sin confirmación de worker_exit tras {self._connected_worker_exit_deadline:.1f}s con bridge conectado",
+                    if self._bridge_ready.is_set() and not self._bridge_lost.is_set():
+                        if not exit_future.done():
+                            logger.warning(
+                                "El worker VFS %s no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
+                                "la terminalidad del proceso es indeterminada",
+                                resolved_job_id or "desconocido",
+                                self._connected_worker_exit_deadline,
                             )
-                        exit_future.set_exception(
-                            VfsTeardownDeadlineError(
-                                f"el teardown del worker no confirmó worker_exit en {self._connected_worker_exit_deadline:.1f}s con el bridge MO2 conectado"
+                            if resolved_job_id is not None:
+                                self._quarantine_instance(
+                                    resolved_job_id,
+                                    f"teardown sin confirmación de worker_exit tras {self._connected_worker_exit_deadline:.1f}s con bridge conectado",
+                                )
+                            exit_future.set_exception(
+                                VfsTeardownDeadlineError(
+                                    f"el teardown del worker no confirmó worker_exit en {self._connected_worker_exit_deadline:.1f}s con el bridge MO2 conectado"
+                                )
                             )
-                        )
+                        return
+                else:
+                    lost_wait: asyncio.Task[Any] = asyncio.create_task(self._bridge_lost.wait())
+                    grace: asyncio.Task[Any] = asyncio.create_task(asyncio.sleep(remaining))
+                    try:
+                        await asyncio.wait({exit_wait, lost_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
+                        if (
+                            grace.done()
+                            and not lost_wait.done()
+                            and not self._bridge_lost.is_set()
+                            and self._bridge_ready.is_set()
+                            and not exit_future.done()
+                        ):
+                            logger.warning(
+                                "El worker VFS %s no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
+                                "la terminalidad del proceso es indeterminada",
+                                resolved_job_id or "desconocido",
+                                self._connected_worker_exit_deadline,
+                            )
+                            if resolved_job_id is not None:
+                                self._quarantine_instance(
+                                    resolved_job_id,
+                                    f"teardown sin confirmación de worker_exit tras {self._connected_worker_exit_deadline:.1f}s con bridge conectado",
+                                )
+                            exit_future.set_exception(
+                                VfsTeardownDeadlineError(
+                                    f"el teardown del worker no confirmó worker_exit en {self._connected_worker_exit_deadline:.1f}s con el bridge MO2 conectado"
+                                )
+                            )
+                    finally:
+                        await _cancel_and_join(lost_wait)
+                        await _cancel_and_join(grace)
                     return
-                lost_wait: asyncio.Task[Any] = asyncio.create_task(self._bridge_lost.wait())
-                grace: asyncio.Task[Any] = asyncio.create_task(asyncio.sleep(remaining))
-                try:
-                    await asyncio.wait({exit_wait, lost_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
-                    if grace.done() and not lost_wait.done() and not exit_future.done():
-                        logger.warning(
-                            "El worker VFS %s no confirmó worker_exit en %.1fs con el bridge MO2 conectado; "
-                            "la terminalidad del proceso es indeterminada",
-                            resolved_job_id or "desconocido",
-                            self._connected_worker_exit_deadline,
-                        )
-                        if resolved_job_id is not None:
-                            self._quarantine_instance(
-                                resolved_job_id,
-                                f"teardown sin confirmación de worker_exit tras {self._connected_worker_exit_deadline:.1f}s con bridge conectado",
-                            )
-                        exit_future.set_exception(
-                            VfsTeardownDeadlineError(
-                                f"el teardown del worker no confirmó worker_exit en {self._connected_worker_exit_deadline:.1f}s con el bridge MO2 conectado"
-                            )
-                        )
-                finally:
-                    await _cancel_and_join(lost_wait)
-                    await _cancel_and_join(grace)
-                return
             # Bridge caído: sólo el tiempo que reste hasta el deadline de pérdida de bridge.
             effective_loss_deadline = (
                 bridge_loss_deadline
