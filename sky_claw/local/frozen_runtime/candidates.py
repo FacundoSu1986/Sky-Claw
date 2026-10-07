@@ -513,9 +513,12 @@ def _evidencia_desde_dict(bruto: object, *, etiqueta: str) -> CandidateSourceEvi
     metadatos = bruto["provider_metadata"]
     if not isinstance(metadatos, dict):
         raise CandidateCorruptMetadataError(f"{etiqueta}: provider_metadata debe ser un objeto")
-    observado = bruto["observed_at_ns"]
-    if not isinstance(observado, int) or isinstance(observado, bool):
-        raise CandidateCorruptMetadataError(f"{etiqueta}: observed_at_ns debe ser int")
+    # Finding post-merge (F2): este campo solo exigia `int` y excluir `bool`,
+    # mientras su hermano `created_at_ns`/`updated_at_ns` ya pasaba por
+    # `_entero_json_no_negativo`. Un `observed_at_ns: -1` persistido se
+    # reconstruia como evidencia VALIDA. Un timestamp negativo no corresponde a
+    # ningun reloj real: es corrupcion, y no se normaliza (`abs`/`max(0)`/`int`).
+    observado = _entero_json_no_negativo(bruto["observed_at_ns"], campo="observed_at_ns", etiqueta=etiqueta)
     proveedor = bruto["provider"]
     if not isinstance(proveedor, str):
         raise CandidateCorruptMetadataError(f"{etiqueta}: provider debe ser string")
@@ -728,7 +731,15 @@ def leer_metadata_candidate(path: pathlib.Path) -> CandidateMetadata:
     # `verificar_candidate(A)` devolveria VALID llevando la identidad de B y la
     # promocion futura actuaria sobre un Candidate ambiguo (Codex sobre #682).
     if ruta.stem.startswith(CANDIDATE_ID_PREFIX):
-        nombre_id = validar_candidate_id(ruta.stem)
+        # Mismo contrato que el id EMBEBIDO (`_candidate_id_desde_datos`): un id
+        # invalido derivado del NOMBRE es corrupcion de metadata, no un
+        # `InvalidCandidateIdError` suelto (finding post-merge F4). Sin esta
+        # traduccion el error escapaba crudo y abortaba el descubrimiento entero
+        # en vez de registrar un Candidate UNKNOWN.
+        try:
+            nombre_id = validar_candidate_id(ruta.stem)
+        except InvalidCandidateIdError as exc:
+            raise CandidateCorruptMetadataError(f"{ruta}: nombre de archivo con candidate_id invalido: {exc}") from exc
         if metadata.candidate_id != nombre_id:
             raise CandidateCorruptMetadataError(
                 f"{ruta}: el candidate_id embebido ({metadata.candidate_id}) no coincide "
