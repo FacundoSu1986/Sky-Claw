@@ -103,6 +103,7 @@ se reproducen acá.
 Runners (`RAW_RUN_ROOT` = `C:\SkyClawResearch\NativeParallax\EXP-M3\runs\math-revalidation-20261006T223304Z-fc87b7e5`):
 
 ```bash
+REVAL_PYTHON="E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe"
 RAW_RUN_ROOT='C:\SkyClawResearch\NativeParallax\EXP-M3\runs\math-revalidation-20261006T223304Z-fc87b7e5'
 
 # OLD replay M2 — cwd = E:\SkyClaw_REVAL1_OLD_e23bf7ac
