@@ -234,7 +234,13 @@ def _exigir_ancestros_del_source(raiz_origen: pathlib.Path, archivo: pathlib.Pat
     tiene como padre al propio root administrado, que es la frontera legitima y no
     un escape: la cadena a demostrar es "root -> ... -> padre", y el root ya es
     parte de ella.
+
+    P3-AB: ``exigir_contencion_fisica`` con ``permitir_raiz=True`` retorna por
+    igualdad cuando ``archivo.parent == raiz_origen`` sin inspeccionar el root.
+    Revalidar fisicamente ``raiz_origen`` aqui garantiza que un junction que
+    reemplace el root de la fuente no escape a la comprobacion de ancestros.
     """
+    _rechazar_si_es_enlace(raiz_origen)
     try:
         exigir_contencion_fisica(raiz_origen, archivo.parent, permitir_raiz=True, exigir_existencia=True)
     except ContencionFisicaVioladaError as exc:
@@ -287,6 +293,61 @@ def _rechazar_solapamiento_origen_destino(raiz_origen: pathlib.Path, raiz_destin
         f"el origen '{raiz_origen}' esta dentro del destino '{raiz_destino}' (o es el destino): "
         "la copia exige arboles disjuntos (MANAGED_SOURCE_WRITES=NO)"
     ) from None
+
+
+def _validar_coherencia_del_lote(
+    directorios: tuple[str, ...],
+    archivos: tuple[str, ...],
+) -> None:
+    """P3-AE: Valida la coherencia estructural de todo el lote antes de mutar.
+
+    Rechaza ANTES de crear un solo directorio o archivo:
+    - Duplicados canonicos entre archivos (ej. 'Data/a.bin' y 'Data/./a.bin').
+    - Duplicados canonicos entre directorios (ej. 'Data/Meshes' y 'Data/./Meshes').
+    - Colision exacta entre un archivo y un directorio con la misma ruta.
+    - Un archivo que sea ancestro de otro archivo o de un directorio
+      (ej. archivo 'Data/Foo' y archivo 'Data/Foo/bar.bin', o directorio 'Data/Foo/Bar').
+
+    Acepta:
+    - Jerarquias legitimas de directorios ('Data', 'Data/Meshes', 'Data/Meshes/Armor').
+    - Archivos hermanos en el mismo directorio.
+    """
+    vistos_archivos: set[str] = set()
+    vistos_archivos_cf: set[str] = set()
+    for a in archivos:
+        cf = a.casefold()
+        if cf in vistos_archivos_cf:
+            raise CandidateCopyError(f"lote con archivos canonicos duplicados: '{a}' (fail-closed)")
+        vistos_archivos.add(a)
+        vistos_archivos_cf.add(cf)
+
+    vistos_dirs: set[str] = set()
+    vistos_dirs_cf: set[str] = set()
+    for d in directorios:
+        cf = d.casefold()
+        if cf in vistos_dirs_cf:
+            raise CandidateCopyError(f"lote con directorios canonicos duplicados: '{d}' (fail-closed)")
+        vistos_dirs.add(d)
+        vistos_dirs_cf.add(cf)
+
+    colisiones = vistos_archivos_cf & vistos_dirs_cf
+    if colisiones:
+        raise CandidateCopyError(
+            f"colision entre archivo y directorio con la misma ruta canonica: {sorted(colisiones)} (fail-closed)"
+        )
+
+    for a in archivos:
+        prefijo = a.casefold() + "/"
+        for otro_a in archivos:
+            if otro_a.casefold().startswith(prefijo):
+                raise CandidateCopyError(
+                    f"el archivo '{a}' no puede ser ancestro del archivo '{otro_a}' (fail-closed)"
+                )
+        for d in directorios:
+            if d.casefold().startswith(prefijo):
+                raise CandidateCopyError(
+                    f"el archivo '{a}' no puede ser ancestro del directorio '{d}' (fail-closed)"
+                )
 
 
 def copiar_arbol_independiente(
@@ -362,22 +423,38 @@ def copiar_arbol_independiente(
         tuple(entrada.rel_path for entrada in archivos_ordenados),
         tipo="archivo",
     )
+    # P3-AE: Validar la coherencia estructural de todo el lote antes de mutar
+    _validar_coherencia_del_lote(canonicos_directorios, canonicos_archivos)
     pares = tuple(zip(archivos_ordenados, canonicos_archivos, strict=True))
 
-    # 1) ANTES de crear nada: el padre debe colgar fisicamente del root.
+    # 1) ANTES de crear nada: el padre debe colgar fisicamente del root, exista o no.
+    # P3-AD: si el padre ya existe fuera del contenedor, debe rechazarse antes de
+    # crear el payload; no asumir contencion por el hecho de que ya exista.
     padre = raiz_destino.parent
+    try:
+        exigir_contencion_fisica(
+            raiz_contenedora,
+            padre,
+            permitir_raiz=True,
+            exigir_existencia=padre.exists(),
+        )
+    except ContencionFisicaVioladaError as exc:
+        raise CandidateCopyError(
+            f"el padre del destino '{padre}' no cuelga fisicamente de '{raiz_contenedora}': {exc}"
+        ) from exc
+
     if not padre.exists():
-        try:
-            exigir_contencion_fisica(raiz_contenedora, padre.parent, permitir_raiz=True)
-        except ContencionFisicaVioladaError as exc:
-            raise CandidateCopyError(
-                f"el ancestro del destino '{padre.parent}' no cuelga fisicamente de '{raiz_contenedora}': {exc}"
-            ) from exc
         exigir_namespace_escribible(padre.parent)
         try:
             padre.mkdir(parents=False, exist_ok=False)
         except OSError as exc:
             raise CandidateCopyError(f"no se pudo crear el directorio del Candidate '{padre}': {exc}") from exc
+        try:
+            exigir_contencion_fisica(raiz_contenedora, padre, permitir_raiz=True, exigir_existencia=True)
+        except ContencionFisicaVioladaError as exc:
+            raise CandidateCopyError(
+                f"el directorio del Candidate recien creado '{padre}' no cuelga fisicamente de '{raiz_contenedora}': {exc}"
+            ) from exc
     exigir_namespace_escribible(padre)
     exigir_payload_vacio(raiz_destino)
     _rechazar_si_es_enlace(raiz_origen)

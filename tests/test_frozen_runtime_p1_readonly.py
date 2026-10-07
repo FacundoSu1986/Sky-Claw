@@ -153,28 +153,68 @@ def test_open_en_modo_escritura_solo_en_los_modulos_declarados() -> None:
     regla es "solo los que lo declaran, y solo con los modos declarados", que
     sigue cerrando el default y además congela el modo exacto.
     """
+def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
+    permitidos = MODULOS_CON_OPEN_ESCRITURA.get(nombre_modulo, frozenset())
+    arbol = ast.parse(fuente, filename=nombre_modulo)
     violaciones: list[str] = []
-    for modulo in _modulos_del_paquete():
-        permitidos = MODULOS_CON_OPEN_ESCRITURA.get(modulo.name, frozenset())
-        arbol = ast.parse(modulo.read_text(encoding="utf-8"), filename=str(modulo))
-        for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "open" and nodo.args:
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        es_open_bare = isinstance(nodo.func, ast.Name) and nodo.func.id == "open"
+        es_open_attr = isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "open"
+        if (es_open_bare or es_open_attr) and nodo.args:
+            if (
+                isinstance(nodo.func, ast.Attribute)
+                and isinstance(nodo.func.value, ast.Name)
+                and nodo.func.value.id == "os"
+            ):
+                violaciones.append(f"{nombre_modulo}:{nodo.lineno}: os.open() no permitido en Frozen Runtime")
+                continue
+            if es_open_attr:
+                modo = (
+                    nodo.args[0]
+                    if nodo.args
+                    else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
+                )
+            else:
                 modo = (
                     nodo.args[1]
                     if len(nodo.args) > 1
                     else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
                 )
-                if (
-                    isinstance(modo, ast.Constant)
-                    and isinstance(modo.value, str)
-                    and modo.value in MODOS_ESCRITURA
-                    and modo.value not in permitidos
-                ):
-                    violaciones.append(
-                        f"{modulo.name}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
-                        f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
-                    )
+            if (
+                isinstance(modo, ast.Constant)
+                and isinstance(modo.value, str)
+                and modo.value in MODOS_ESCRITURA
+                and modo.value not in permitidos
+            ):
+                violaciones.append(
+                    f"{nombre_modulo}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
+                    f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
+                )
+    return violaciones
+
+
+def test_open_en_modo_escritura_solo_en_los_modulos_declarados() -> None:
+    """``open()`` en modo escritura requiere declaración explícita por módulo.
+
+    P3 introduce la primera escritura de contenido (``copying.py`` abre el destino
+    con ``xb``). Antes el test asumía que NINGÚN módulo podía hacerlo; ahora la
+    regla es "solo los que lo declaran, y solo con los modos declarados", que
+    sigue cerrando el default y además congela el modo exacto.
+    """
+    violaciones: list[str] = []
+    for modulo in _modulos_del_paquete():
+        violaciones.extend(_detectar_open_no_declarado(modulo.read_text(encoding="utf-8"), modulo.name))
     assert not violaciones, f"open() en modo escritura no declarado dentro de Frozen Runtime: {violaciones}"
+
+
+def test_el_oracle_detecta_path_open_en_modo_escritura() -> None:
+    """Detecta Path.open('w') y os.open(...) fuera de los módulos declarados (Codex #682)."""
+    codigo_path_open = "def f(ruta):\n    with ruta.open('w') as fh:\n        pass\n"
+    codigo_os_open = "def f(ruta):\n    os.open(ruta, 0)\n"
+    assert len(_detectar_open_no_declarado(codigo_path_open, "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado(codigo_os_open, "no_declarado.py")) == 1
 
 
 def test_el_oracle_distingue_str_replace_de_path_replace() -> None:

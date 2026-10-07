@@ -70,6 +70,24 @@ _DOMAIN: Final[bytes] = b"frozen-runtime:directory-membership:v1\x00"
 #: sobre la entrada completa sea una sola expresion.
 _CONTROL_O_DEL: Final[str] = "".join(chr(c) for c in (*range(0x20), 0x7F))
 
+#: Caracteres prohibidos en nombres de componentes en Windows (NTFS/FAT).
+#: Separadores / y \ son estructurales y se tratan aparte; : es unidad/ADS.
+_WINDOWS_INVALID_CHARS: Final[frozenset[str]] = frozenset('<>"|?*')
+
+#: Nombres de dispositivos DOS/Windows reservados (case-insensitive).
+#: Aplica al stem antes de la primera extensión (CON, CON.txt, aux.nif, etc.).
+_WINDOWS_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        "clock$",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
+
 
 class SourceObservationError(FrozenRuntimeError):
     """Base de fallos al observar (archivos + membership + identidad) un arbol.
@@ -211,6 +229,15 @@ def canonicalizar_relpath_de_scope(entrada: object, *, tipo: str) -> str:
             raise DirectoryMembershipError(
                 f"entrada de {tipo} con componente terminado en espacio o punto: '{entrada}' "
                 "(Windows lo recorta, asi que nombraria un elemento ambiguo: se rechaza, no se normaliza)"
+            )
+        if any(char in _WINDOWS_INVALID_CHARS for char in parte):
+            raise DirectoryMembershipError(
+                f"entrada de {tipo} con caracteres no permitidos en Windows (< > \" | ? *): '{entrada}'"
+            )
+        stem = parte.split(".", 1)[0].casefold()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            raise DirectoryMembershipError(
+                f"entrada de {tipo} con nombre de dispositivo reservado en Windows ({stem!r}): '{entrada}'"
             )
         partes.append(parte)
     if not partes:

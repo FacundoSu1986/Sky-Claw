@@ -48,6 +48,8 @@ from sky_claw.local.frozen_runtime.models import (
 )
 from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
 from sky_claw.local.runtime_vault.models import FileIdentity
+from tests._p3_rig import crear as _crear
+from tests._p3_rig import parche_identidad, rig  # noqa: F401
 from tests._symlink_guard import crear_junction, is_junction_real, junction_guard
 
 
@@ -526,13 +528,13 @@ class TestStorageMatrixP3AF:
             with pytest.raises(FrozenRuntimeStorageError, match="no se pudo crear el directorio de metadata"):
                 _exigir_candidates_state_dir(tmp_path)
 
-    def test_p3af_crear_candidate_devuelve_indeterminate_ante_fallo_de_state_dir(self, tmp_path: pathlib.Path) -> None:
+    def test_p3af_crear_candidate_devuelve_indeterminate_ante_fallo_de_state_dir(
+        self,
+        rig: tuple[ManagedSource, pathlib.Path],  # noqa: F811
+        parche_identidad: object,  # noqa: F811
+    ) -> None:
         """P3-AF: la operación pública crear_candidate no deja escapar OSError crudo y produce INDETERMINATE."""
-        source_dir = tmp_path / "source"
-        source = _crear_fuente_minima(source_dir)
-
-        root = tmp_path / "frozen"
-        storage.initialize_frozen_runtime_storage(root)
+        source, root = rig
         state_cand = candidates.candidates_state_dir(root)
         if state_cand.exists():
             state_cand.rmdir()
@@ -545,7 +547,7 @@ class TestStorageMatrixP3AF:
             orig_mkdir(self, *args, **kwargs)
 
         with patch.object(pathlib.Path, "mkdir", new=fake_mkdir):
-            resultado = crear_candidate(source, root=root)
+            resultado = _crear(source, root)
 
         assert isinstance(resultado, CandidateResult)
         assert resultado.state is GenerationVerificationState.INDETERMINATE

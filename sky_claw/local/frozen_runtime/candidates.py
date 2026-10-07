@@ -170,7 +170,12 @@ def _exigir_candidates_state_dir(root: pathlib.Path) -> pathlib.Path:
     if not admision.success:
         raise FrozenRuntimeStorageError(f"el directorio de metadata de Candidates fue rechazado: {admision.message}")
     if not directorio.exists():
-        directorio.mkdir(parents=True, exist_ok=True)
+        try:
+            directorio.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FrozenRuntimeStorageError(
+                f"no se pudo crear el directorio de metadata de Candidates '{directorio}': {exc}"
+            ) from exc
     exigir_namespace_escribible(directorio)
     return directorio
 
