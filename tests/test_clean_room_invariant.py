@@ -209,6 +209,8 @@ CLAUSULAS_DE_LA_POLITICA: dict[str, tuple[str, ...]] = {
     "## Anclas": (
         ESTE_ARCHIVO,
         "huellas",
+        "exentos solo de este chequeo de tramos",
+        "siguen prohibidas también ahí",
         "no puede detectar",
     ),
 }
@@ -317,26 +319,42 @@ def _en_zona_limpia(ruta: str) -> bool:
 # --------------------------------------------------------------------------- secciones y huellas
 
 _ENCABEZADO_MD = re.compile(r"^(#{1,6}) ")
+_CERCO_MD = re.compile(r"^(`{3,}|~{3,})(.*)$")
+
+
+def _cerco_de(linea: str) -> tuple[str, str] | None:
+    """``(marca, resto)`` si la línea es un cerco de bloque de código (tres o más ` o ~), si no ``None``.
+
+    La sangría no cuenta: un bloque cercado dentro de un ítem de lista lleva más de tres espacios y sus
+    ``# comentarios`` tampoco son encabezados.
+    """
+    coincide = _CERCO_MD.match(linea.lstrip())
+    return (coincide.group(1), coincide.group(2)) if coincide else None
 
 
 def _rango_de_seccion(lineas: Sequence[str], prefijo: str) -> tuple[int, int]:
     """``[inicio, fin)`` (índices base 0) de la sección cuyo encabezado empieza con ``prefijo``.
 
     Termina en el próximo encabezado de nivel igual o menor. Las líneas dentro de un bloque cercado
-    (``` o ~~~) nunca son encabezados: el ``# comentario`` de un script no corta la sección (en el P0 v3
-    eso recortaba el §2.4 y dejaba su cola, que es contenido en cuarentena, sin rango).
+    nunca son encabezados: el ``# comentario`` de un script no corta la sección (en el P0 v3 eso
+    recortaba el §2.4 y dejaba su cola, que es contenido en cuarentena, sin rango). Un cerco cierra solo
+    si es del mismo tipo, igual o más largo y no lleva texto (CommonMark): un ```` ```bash ```` anidado
+    dentro de un bloque de cuatro comillas no lo cierra.
     """
     cercado: str | None = None
     inicio: int | None = None
     nivel = 0
     for indice, linea in enumerate(lineas):
-        marca = linea.lstrip()[:3]
-        if marca in ("```", "~~~"):
+        cerco = _cerco_de(linea)
+        if cerco is not None:
+            marca, resto = cerco
             if cercado is None:
-                cercado = marca
-            elif marca == cercado:
+                if not (marca[0] == "`" and "`" in resto):  # el texto de un cerco de ` no lleva `
+                    cercado = marca
+                    continue
+            elif marca[0] == cercado[0] and len(marca) >= len(cercado) and not resto.strip():
                 cercado = None
-            continue
+                continue
         if cercado is not None:
             continue
         encabezado = _ENCABEZADO_MD.match(linea)
@@ -660,6 +678,29 @@ def test_el_rango_de_seccion_ignora_los_encabezados_dentro_de_bloques_cercados()
     assert _rango_de_seccion(lineas, "### 2.2 ") == (14, len(lineas))
     with pytest.raises(AssertionError, match="no encuentro el encabezado"):
         _rango_de_seccion(lineas, "### 2.1 ")  # solo existe dentro de un bloque cercado
+
+
+def test_el_rango_de_seccion_respeta_el_largo_y_el_tipo_del_cerco() -> None:
+    """Reglas de CommonMark que importan acá: un cerco cierra solo si es del mismo tipo, igual o más largo y sin texto."""
+    lineas = [
+        "### 1 Sección",  # 0
+        "````markdown",  # 1: abre con cuatro comillas
+        "```bash",  # 2: un cerco más corto NO cierra el bloque
+        "# comentario dentro del bloque anidado",  # 3
+        "```",  # 4: tampoco cierra
+        "## encabezado falso dentro del bloque",  # 5
+        "````",  # 6: cierra (mismo tipo y largo)
+        "texto después del bloque",  # 7
+        "~~~",  # 8: abre un cerco de tildes
+        "```",  # 9: otro tipo de cerco: no cierra
+        "# comentario",  # 10
+        "~~~ con texto",  # 11: un cierre no lleva texto: no cierra
+        "## sigue dentro del bloque",  # 12
+        "~~~~",  # 13: cierra (mismo tipo, más largo)
+        "```con ``` comillas en el texto",  # 14: comillas en el texto de info: no es un cerco
+        "## Siguiente",  # 15
+    ]
+    assert _rango_de_seccion(lineas, "### 1 ") == (0, 15)
 
 
 def test_las_huellas_omiten_avisos_separadores_y_lineas_cortas() -> None:

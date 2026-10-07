@@ -175,7 +175,8 @@ trackeados sin descartar ninguno por tamaño, codificación ni formato):
   herramientas cerradas viven **solo** en las secciones señalizadas del P0 (plan v3 §2.2/§2.4 y evidencia
   §6.2), y ninguna línea de esas secciones puede reaparecer en otro lugar (huellas normalizadas: un script
   copiado sin etiquetas, re-cortado, incrustado o en un tramo de al menos 79 caracteres también rompe el
-  test). Un archivo nuevo con ese contenido rompe el test, y agregarlo a la lista no es la salida.
+  test; los contratos de integración se eximen solo del chequeo de tramos, nunca de las líneas completas).
+  Un archivo nuevo con ese contenido rompe el test, y agregarlo a la lista no es la salida.
 - *la zona limpia no tiene ni una marca*: toda ruta que nombre el generador (por patrón, no por lista) no
   contiene citas, nombres de ejecutables internos ni hashes de artefactos de esas herramientas; sus
   binarios están congelados por enumeración y el repo no versiona ejecutables (se miran por cabecera).

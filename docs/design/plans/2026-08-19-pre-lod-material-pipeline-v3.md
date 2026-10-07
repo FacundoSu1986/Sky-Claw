@@ -1724,8 +1724,8 @@ LODGen); cero trabajo legítimo vs. fallo; **los dos logs presentes y frescos** 
 **Complejidad: Media** (hereda el molde y la etapa compartida).
 
 #### PR-C — VRAMr a `AUTO_NEXUS`
-**Bloqueado por** la autorización de B1: la lectura de permisos se cerró el 2026-10-07 sin autorizar
-`AUTO_NEXUS` (rige `MANUAL_ONLY`). **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
+**Bloqueado por** una autorización explícita para `AUTO_NEXUS`: B1 (la lectura de permisos) se cerró el
+2026-10-07 sin otorgarla y rige `MANUAL_ONLY`. **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
 `_ensure_nexus_mod` + pin en `_PINNED_SHA256`. La UX de fallback manual no cambia.
 **Complejidad: Baja.**
 

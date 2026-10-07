@@ -53,11 +53,12 @@
 
 - `tests/test_clean_room_invariant.py` falla si aparece contenido derivado (una marca, o el texto de una
   línea de una sección en cuarentena aunque se la re-corte, se la incruste en otro texto o se copie un
-  tramo de al menos 79 caracteres) fuera de su sección, si
-  la zona limpia (toda ruta con
+  tramo de al menos 79 caracteres) fuera de su sección, si la zona limpia (toda ruta con
   `native-parallax` o `native_parallax`) recibe una marca o un binario no admitido, si se versiona un
   ejecutable, si se quita un aviso de cuarentena, si la política pierde una cláusula o sus referencias, o
-  si el registro B1 y `B6_L` divergen (vocabulario cerrado: solo `AUTORIZADA` levanta el bloqueo).
+  si el registro B1 y `B6_L` divergen (vocabulario cerrado: solo `AUTORIZADA` levanta el bloqueo). Los
+  contratos de integración (`PERIMETRO_DE_IDENTIDAD`) se eximen solo del chequeo de tramos: las copias de
+  línea completa siguen prohibidas también ahí.
 - El barrido lee todos los archivos trackeados en cada corrida: unos 30 MB hoy, sin descartar ninguno por
   tamaño, codificación o formato. Fuera de CI sin `.git` se saltea de forma explícita; en CI falla.
 - Sumar un documento que nombre ejecutables internos o hashes de artefactos exige decidir si es un

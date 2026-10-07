@@ -120,9 +120,10 @@ tamaño, por codificación ni por ser binario, y verifica:
 - *el contenido en cuarentena no sale de su sección*: las marcas de contenido (citas de scripts,
   etiquetas de evidencia T2) solo valen dentro de las secciones de la tabla de arriba, y ninguna línea de
   esas secciones puede reaparecer en otro lugar (huellas normalizadas: re-cortarla, cambiar las
-  mayúsculas o incrustarla en otro texto no la esconde; un tramo de al menos 79 caracteres tampoco, salvo
-  en los contratos de integración), así que un fragmento de script copiado sin etiquetas también rompe
-  el test;
+  mayúsculas o incrustarla en otro texto no la esconde, y un tramo de al menos 79 caracteres tampoco),
+  así que un fragmento de script copiado sin etiquetas también rompe el test. Los contratos de
+  integración (`PERIMETRO_DE_IDENTIDAD`) quedan exentos solo de este chequeo de tramos: las copias de
+  línea completa siguen prohibidas también ahí;
 - *la identidad no se propaga*: nombres de ejecutables internos y hashes de artefactos solo en contratos
   de integración y evidencia;
 - *la zona limpia no tiene ni una marca*: toda ruta que nombre el generador nativo (por patrón, no por
