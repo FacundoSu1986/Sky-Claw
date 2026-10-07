@@ -209,6 +209,46 @@ def test_el_oracle_detecta_path_open_en_modo_escritura() -> None:
     assert len(_detectar_open_no_declarado(codigo_os_open, "no_declarado.py")) == 1
 
 
+def test_el_oracle_detecta_el_modo_de_escritura_pasado_por_keyword() -> None:
+    """`ruta.open(mode="w")` también es escritura (finding post-merge de #682).
+
+    La rama exigía `nodo.args` ANTES de inspeccionar el modo, así que una llamada
+    SIN posicionales —la forma keyword, que es la idiomática cuando sólo se pasa
+    `mode`— nunca entraba al análisis: el boundary quedaba ciego justo para la
+    variante que un escritor nuevo escribiría. El modo se busca ahora en
+    posicional y en `mode=`, y el default read-only sigue sin marcarse.
+    """
+    # Escritura por keyword: el hueco del finding.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='xb')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='a')\n", "no_declarado.py")) == 1
+    # `open` bare con `file=`/`mode=`: misma familia, sin receptor.
+    assert len(_detectar_open_no_declarado("def f(p):\n    open(file=p, mode='w')\n", "no_declarado.py")) == 1
+    # Posicional: no se puede perder al arreglar el keyword.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open('w')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open('x')\n", "no_declarado.py")) == 1
+    # Read-only explícito e implícito: sin falsos positivos.
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open('r')\n", "no_declarado.py") == []
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='rb')\n", "no_declarado.py") == []
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open()\n", "no_declarado.py") == []
+    assert (
+        _detectar_open_no_declarado("def f(ruta):\n    with ruta.open(mode='r') as fh:\n        fh.read()\n", "no.py")
+        == []
+    )
+    # El modo variable no se adivina (mismo criterio que antes: sólo constantes).
+    assert _detectar_open_no_declarado("def f(ruta, m):\n    ruta.open(mode=m)\n", "no_declarado.py") == []
+
+
+def test_el_oracle_de_open_conserva_los_modos_declarados_por_modulo() -> None:
+    """La declaración por módulo sigue mandando: `copying.py` puede `xb`, no `w`."""
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='xb')\n", "copying.py") == []
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "copying.py")) == 1
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='x')\n", "state.py") == []
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "state.py")) == 1
+    # Un módulo sin declaración sigue cerrado por default.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='x')\n", "membership.py")) == 1
+
+
 def test_el_oracle_distingue_str_replace_de_path_replace() -> None:
     """El anchor no se debilita por endurecer `replace` (§19).
 
