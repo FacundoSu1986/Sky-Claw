@@ -145,14 +145,6 @@ def test_sin_lanzadores_de_proceso() -> None:
     assert not violaciones, f"lanzadores de proceso en Frozen Runtime: {violaciones}"
 
 
-def test_open_en_modo_escritura_solo_en_los_modulos_declarados() -> None:
-    """``open()`` en modo escritura requiere declaración explícita por módulo.
-
-    P3 introduce la primera escritura de contenido (``copying.py`` abre el destino
-    con ``xb``). Antes el test asumía que NINGÚN módulo podía hacerlo; ahora la
-    regla es "solo los que lo declaran, y solo con los modos declarados", que
-    sigue cerrando el default y además congela el modo exacto.
-    """
 def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
     permitidos = MODULOS_CON_OPEN_ESCRITURA.get(nombre_modulo, frozenset())
     arbol = ast.parse(fuente, filename=nombre_modulo)

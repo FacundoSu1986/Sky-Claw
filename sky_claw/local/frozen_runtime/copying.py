@@ -340,14 +340,10 @@ def _validar_coherencia_del_lote(
         prefijo = a.casefold() + "/"
         for otro_a in archivos:
             if otro_a.casefold().startswith(prefijo):
-                raise CandidateCopyError(
-                    f"el archivo '{a}' no puede ser ancestro del archivo '{otro_a}' (fail-closed)"
-                )
+                raise CandidateCopyError(f"el archivo '{a}' no puede ser ancestro del archivo '{otro_a}' (fail-closed)")
         for d in directorios:
             if d.casefold().startswith(prefijo):
-                raise CandidateCopyError(
-                    f"el archivo '{a}' no puede ser ancestro del directorio '{d}' (fail-closed)"
-                )
+                raise CandidateCopyError(f"el archivo '{a}' no puede ser ancestro del directorio '{d}' (fail-closed)")
 
 
 def copiar_arbol_independiente(

@@ -12,60 +12,37 @@ Más las matrices completas de seguridad de SOURCE, DESTINATION, PATH y STORAGE.
 
 from __future__ import annotations
 
-import os
 import pathlib
-import shutil
-import stat
 from unittest.mock import patch
 
 import pytest
 
-from sky_claw.app.security.links import link_kind_and_identity_or_raise
-from sky_claw.local.frozen_runtime import candidates, copying, membership, storage
+from sky_claw.local.frozen_runtime import candidates, storage
 from sky_claw.local.frozen_runtime.candidates import (
     CandidateResult,
     _exigir_candidates_state_dir,
-    _reservar_candidate_id,
-    crear_candidate,
 )
 from sky_claw.local.frozen_runtime.copying import (
     _exigir_ancestros_del_source,
-    copiar_archivo,
     copiar_arbol_independiente,
+    copiar_archivo,
 )
 from sky_claw.local.frozen_runtime.errors import (
     CandidateCopyError,
-    CandidateIdCollisionError,
     FrozenRuntimeStorageError,
 )
 from sky_claw.local.frozen_runtime.membership import (
     DirectoryMembershipError,
     canonicalizar_relpath_de_scope,
 )
-from sky_claw.local.frozen_runtime.models import (
-    ManagedSource,
-    ManagedSourceProvider,
-)
+from sky_claw.local.frozen_runtime.models import ManagedSource
 from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
 from sky_claw.local.runtime_vault.models import FileIdentity
 from tests._p3_rig import crear as _crear
 from tests._p3_rig import parche_identidad, rig  # noqa: F401
-from tests._symlink_guard import crear_junction, is_junction_real, junction_guard
-
+from tests._symlink_guard import crear_junction, junction_guard
 
 # ── Helpers de armado ─────────────────────────────────────────────────────────
-
-
-def _crear_fuente_minima(root: pathlib.Path) -> ManagedSource:
-    root.mkdir(parents=True, exist_ok=True)
-    exe = root / "SkyrimSE.exe"
-    exe.write_bytes(b"MZ-SKYRIM-TEST")
-    return ManagedSource(
-        provider=ManagedSourceProvider.STEAM,
-        game_key="skyrimse",
-        appid=489830,
-        root=root,
-    )
 
 
 def _file_id(rel_path: str, content: bytes = b"test") -> FileIdentity:
@@ -81,7 +58,9 @@ class TestSourceMatrixP3AB:
     """Matriz de seguridad de la fuente: root, ancestros, hoja e identidad."""
 
     @junction_guard
-    def test_p3ab_source_root_reemplazado_por_junction_rechazado_para_archivo_raiz(self, tmp_path: pathlib.Path) -> None:
+    def test_p3ab_source_root_reemplazado_por_junction_rechazado_para_archivo_raiz(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """P3-AB: si el source root es reemplazado por un junction, el archivo en la raíz debe rechazarse.
 
         Pre-fix: `_exigir_ancestros_del_source` terminaba por igualdad en
@@ -142,7 +121,9 @@ class TestSourceMatrixP3AB:
         assert (destino / "SkyrimSE.exe").read_bytes() == b"EXE_BYTES"
         assert (destino / "Data" / "mesh.nif").read_bytes() == b"MESH_BYTES"
 
-    def test_source_identidad_cambia_entre_inspeccion_y_apertura_rechazado(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_source_identidad_cambia_entre_inspeccion_y_apertura_rechazado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """P3-R: cambio de identidad del origen entre lstat y open se rechaza."""
         source = tmp_path / "source"
         source.mkdir()
@@ -152,6 +133,7 @@ class TestSourceMatrixP3AB:
         dest = tmp_path / "dest.bin"
 
         from sky_claw.local.frozen_runtime import copying as copying_mod
+
         monkeypatch.setattr(copying_mod, "same_file_identity", lambda _st, _fstat: False)
 
         with pytest.raises(CandidateCopyError, match="identidad.*cambio"):
@@ -181,7 +163,7 @@ class TestPathMatrixP3AC:
     )
     def test_p3ac_caracteres_invalidos_windows_rechazados_en_membership(self, invalido: str) -> None:
         """Caracteres Windows prohibidos (< > " | ? *) deben rechazarse en membership."""
-        with pytest.raises(DirectoryMembershipError, match="Windows|< > \" \\| \\? \\*|caracteres no permitidos"):
+        with pytest.raises(DirectoryMembershipError, match='Windows|< > " \\| \\? \\*|caracteres no permitidos'):
             canonicalizar_relpath_de_scope(invalido, tipo="archivo")
 
     @pytest.mark.parametrize(
@@ -405,7 +387,9 @@ class TestBatchMatrixP3AE:
 
         assert not destino.exists(), "el payload no debe crearse si hay directorios duplicados"
 
-    def test_p3ae_colision_archivo_y_directorio_misma_ruta_rechazada_antes_de_mutar(self, tmp_path: pathlib.Path) -> None:
+    def test_p3ae_colision_archivo_y_directorio_misma_ruta_rechazada_antes_de_mutar(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """P3-AE: un archivo y un directorio con la misma ruta canónica fallan antes de mutar."""
         source = tmp_path / "source"
         source.mkdir()
@@ -524,9 +508,11 @@ class TestStorageMatrixP3AF:
                 raise OSError("Disk full / Permission denied")
             orig_mkdir(self, *args, **kwargs)
 
-        with patch.object(pathlib.Path, "mkdir", new=fake_mkdir):
-            with pytest.raises(FrozenRuntimeStorageError, match="no se pudo crear el directorio de metadata"):
-                _exigir_candidates_state_dir(tmp_path)
+        with (
+            patch.object(pathlib.Path, "mkdir", new=fake_mkdir),
+            pytest.raises(FrozenRuntimeStorageError, match="no se pudo crear el directorio de metadata"),
+        ):
+            _exigir_candidates_state_dir(tmp_path)
 
     def test_p3af_crear_candidate_devuelve_indeterminate_ante_fallo_de_state_dir(
         self,
