@@ -160,6 +160,31 @@ modding de Skyrim** (orden de stages, reglas por tool, failure modes) — antes 
 modificar `sky_claw/local/tools/`, `sky_claw/local/xedit/` o
 `sky_claw/app/orchestrator/tool_strategies/`.
 
+## Clean-room: generador nativo de parallax
+
+`sky_claw/local/native_parallax/` se desarrolla **clean-room** respecto de ParallaxR y de cualquier
+herramienta cerrada de su categoría. La política vigente es [CLEAN_ROOM.md](CLEAN_ROOM.md)
+([ADR 0013](docs/adr/0013-clean-room-native-parallax.md)); leela antes de tocar ese paquete o sus docs
+de diseño (`docs/design/research/**native-parallax**`). El puntero local es
+[`sky_claw/local/native_parallax/AGENTS.md`](sky_claw/local/native_parallax/AGENTS.md).
+
+Tres propiedades, con su ancla (`tests/test_clean_room_invariant.py`, que enumera por contenido todos
+los archivos trackeados):
+
+- *el perímetro de cuarentena no crece*: las citas de scripts y los strings de binarios de herramientas
+  cerradas viven **solo** en las secciones señalizadas del P0 (plan v3 §2.2/§2.4 y evidencia §6.2); un
+  archivo nuevo con ese contenido rompe el test, y agregarlo a la lista no es la salida.
+- *la zona limpia no tiene ni una marca*: `native_parallax/` y sus docs de diseño no contienen citas,
+  nombres de ejecutables internos ni hashes de artefactos de esas herramientas.
+- *la evidencia legal y el contrato coinciden*: el registro de permisos (B1,
+  `docs/audits/2026-10-07_b1_permisos_r_suite.md`) declara abierta la invocación directa de helpers
+  exactamente donde `MATERIAL_PIPELINE` tiene `B6_L`; levantar uno sin el otro rompe el test.
+
+**Agentes:** al trabajar en `native_parallax/` **no leas** las secciones en cuarentena; los contratos de
+integración que necesites están en `parallaxr_assisted.py`, `material_contract.py` y el registro B1. Usar
+la **salida** de una herramienta cerrada como etiqueta de entrenamiento o para ajustar umbrales está
+prohibido; compararla a ciegas como evaluación (#676) está permitido.
+
 ## Contratos vigentes
 
 **Resultado de tools.** Todo tool nuevo emite `success: bool` + `message: str` (canónico,
