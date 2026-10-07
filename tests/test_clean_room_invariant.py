@@ -261,15 +261,28 @@ def _lineas(ruta: str) -> list[str]:
     return _texto_requerido(ruta).splitlines()
 
 
+BOMS_UTF32 = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")  # LE, BE: se miran ANTES que los de UTF-16
+BOMS_UTF16 = (b"\xff\xfe", b"\xfe\xff")
+
+
 def _vista_de_barrido(datos: bytes) -> str:
     """Texto sobre el que se buscan marcas, para CUALQUIER contenido (nunca se descarta un archivo).
 
-    Con BOM UTF-16 (o UTF-32 LE, que empieza igual) se decodifica como tal: el BOM suelto pegado a la
-    primera palabra le quitaría el límite de palabra a una marca que abra el archivo. Sin BOM pero con
-    NUL se descartan los NUL y se decodifica latin-1, de modo que un UTF-16 sin BOM o un binario exponen
-    su texto ASCII. Sin NUL: UTF-8 con reemplazo, así un cp1252 sigue mostrando sus marcas ASCII.
+    Con BOM se decodifica como tal, en este orden: UTF-32 LE, UTF-32 BE (BOM de 4 bytes, antes que el de
+    UTF-16: ``ff fe 00 00`` empieza igual) y UTF-16 LE/BE. El BOM suelto pegado a la primera palabra le
+    quitaría el límite de palabra a una marca que abra el archivo. Un BOM de UTF-32 con cuerpo que no es
+    UTF-32 válido (p. ej. UTF-16 LE con un U+0000 inicial) se trata como NUL-intercalado, sin el BOM. Sin
+    BOM pero con NUL se descartan los NUL y se decodifica latin-1, de modo que un UTF-16 sin BOM o un
+    binario exponen su texto ASCII. Sin NUL: UTF-8 con reemplazo, así un cp1252 sigue mostrando sus marcas
+    ASCII. La propiedad que se garantiza es la de las marcas ASCII, no la fidelidad de todo Unicode.
     """
-    if datos[:2] in (b"\xff\xfe", b"\xfe\xff"):
+    for bom in BOMS_UTF32:
+        if datos.startswith(bom):
+            try:
+                return datos.decode("utf-32").replace("\0", "")
+            except UnicodeDecodeError:
+                return datos[len(bom) :].replace(b"\0", b"").decode("latin-1")
+    if datos[:2] in BOMS_UTF16:
         return datos.decode("utf-16", errors="replace").replace("\0", "")
     if b"\0" in datos:
         return datos.replace(b"\0", b"").decode("latin-1")
@@ -319,16 +332,19 @@ def _en_zona_limpia(ruta: str) -> bool:
 # --------------------------------------------------------------------------- secciones y huellas
 
 _ENCABEZADO_MD = re.compile(r"^(#{1,6}) ")
-_CERCO_MD = re.compile(r"^(`{3,}|~{3,})(.*)$")
+_CERCO_MD = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 def _cerco_de(linea: str) -> tuple[str, str] | None:
     """``(marca, resto)`` si la línea es un cerco de bloque de código (tres o más ` o ~), si no ``None``.
 
-    La sangría no cuenta: un bloque cercado dentro de un ítem de lista lleva más de tres espacios y sus
-    ``# comentarios`` tampoco son encabezados.
+    Regla explícita (CommonMark, nivel documento): de 0 a 3 espacios de sangría es un candidato a cerco;
+    4 o más (o un tabulador, que cuenta como cuatro) es código indentado y NO abre ni cierra nada. Límite
+    declarado: no se modelan contenedores. Un cerco anidado en una lista con 4+ espacios no se reconoce, el
+    rango de la sección se acorta y el ancla falla (cierra en falso positivo); nunca extiende la cuarentena.
+    Las secciones reales no tienen ninguno (``test_las_secciones_en_cuarentena_no_usan_cercos_...``).
     """
-    coincide = _CERCO_MD.match(linea.lstrip())
+    coincide = _CERCO_MD.match(linea)
     return (coincide.group(1), coincide.group(2)) if coincide else None
 
 
@@ -989,3 +1005,95 @@ def test_la_auditoria_externa_declara_su_estado_historico_y_la_adjudicacion_post
     assert cabecera < texto.index("## 0. Reencuadre del encargo")
     rotulo = "PROPUESTA HISTÓRICA / NO ES EL PLAN DE IMPLEMENTACIÓN VIGENTE"
     assert texto.index("## 5. Plan de remediación") < texto.index(rotulo) < texto.index("### S1 ")
+
+
+def _con_bom(texto: str, codec: str) -> bytes:
+    """``texto`` codificado con el BOM explícito del ``codec`` (``utf-32-le`` y ``utf-32-be`` incluidos)."""
+    boms = {
+        "utf-32-le": b"\xff\xfe\x00\x00",
+        "utf-32-be": b"\x00\x00\xfe\xff",
+        "utf-16-le": b"\xff\xfe",
+        "utf-16-be": b"\xfe\xff",
+    }
+    return boms[codec] + texto.encode(codec)
+
+
+PREFIJOS_UNICODE = ("", "acción ", "ñ ", "Ω ", "😀 ")  # la marca ASCII abre el archivo o va tras texto no ASCII
+
+
+@pytest.mark.parametrize("prefijo", PREFIJOS_UNICODE, ids=repr)
+@pytest.mark.parametrize("codec", ("utf-32-le", "utf-32-be", "utf-16-le", "utf-16-be"))
+def test_la_vista_de_barrido_ve_la_marca_en_cada_unicode_con_bom(codec: str, prefijo: str) -> None:
+    """La propiedad que importa: las marcas ASCII prohibidas se ven; no que todo Unicode se represente perfecto."""
+    datos = _con_bom(f"{prefijo}PxR 123", codec)
+    vista = _vista_de_barrido(datos)
+    assert MARCAS_DE_CONTENIDO["cita_de_script"].search(vista), f"{codec} {prefijo!r}: {datos[:8].hex(' ')} → {vista!r}"
+
+
+@pytest.mark.parametrize("prefijo", PREFIJOS_UNICODE, ids=repr)
+@pytest.mark.parametrize("codec", ("utf-32-le", "utf-32-be", "utf-16-le", "utf-16-be"))
+def test_la_vista_de_barrido_ve_la_marca_en_cada_unicode_sin_bom(codec: str, prefijo: str) -> None:
+    vista = _vista_de_barrido(f"{prefijo}PxR 123".encode(codec))
+    assert MARCAS_DE_CONTENIDO["cita_de_script"].search(vista), f"{codec} {prefijo!r}: {vista!r}"
+
+
+def test_un_bom_utf32_le_ambiguo_con_utf16_no_esconde_la_marca() -> None:
+    """``ff fe 00 00`` es el BOM de UTF-32 LE, pero también UTF-16 LE con un U+0000 inicial: se ven ambos."""
+    datos = b"\xff\xfe\x00\x00" + "PxR 123".encode("utf-16-le")
+    assert MARCAS_DE_CONTENIDO["cita_de_script"].search(_vista_de_barrido(datos))
+
+
+CASOS_DE_CERCO = {
+    "tres_comillas_en_columna_0": ("```", ("```", "")),
+    "con_lenguaje": ("```bash", ("```", "bash")),
+    "cuatro_comillas": ("````markdown", ("````", "markdown")),
+    "tildes": ("~~~", ("~~~", "")),
+    "tres_espacios_valido": ("   ```", ("```", "")),
+    "tres_espacios_con_lenguaje": ("   ```python", ("```", "python")),
+    "cuatro_espacios_es_codigo_indentado": ("    ```", None),
+    "ocho_espacios_es_codigo_indentado": ("        ```", None),
+    "cuatro_espacios_con_tildes": ("    ~~~", None),
+    "tabulador_cuenta_como_cuatro": ("\t```", None),
+    "dos_comillas_no_es_cerco": ("``", None),
+    "texto_comun": ("texto ``` en medio", None),
+}
+
+
+@pytest.mark.parametrize("linea, esperado", CASOS_DE_CERCO.values(), ids=CASOS_DE_CERCO)
+def test_cerco_de_aplica_la_regla_de_sangria_de_commonmark(linea: str, esperado: tuple[str, str] | None) -> None:
+    """Regla explícita (CommonMark, nivel documento): 0 a 3 espacios = candidato a cerco; 4 o más = código indentado."""
+    assert _cerco_de(linea) == esperado
+
+
+def test_un_cerco_con_sangria_de_codigo_no_extiende_el_rango_de_la_seccion() -> None:
+    lineas = [
+        "### 1 Sección",  # 0
+        "    ```",  # 1: código indentado, NO abre un cerco
+        "texto",  # 2
+        "## Siguiente",  # 3: este encabezado SÍ cierra la sección
+    ]
+    assert _rango_de_seccion(lineas, "### 1 ") == (0, 3)
+    con_cerco_valido = ["### 1 Sección", "   ```", "## dentro del bloque", "   ```", "## Siguiente"]
+    assert _rango_de_seccion(con_cerco_valido, "### 1 ") == (0, 4)
+    assert _rango_de_seccion(["### 1 S", "    ~~~", "## Siguiente"], "### 1 ") == (0, 2)
+
+
+def test_las_secciones_en_cuarentena_no_usan_cercos_con_sangria_de_codigo() -> None:
+    """Hoy ninguna sección en cuarentena anida un cerco con 4+ espacios (p. ej. dentro de una lista).
+
+    Si apareciera uno, ``_cerco_de`` no lo reconocería y el rango se acortaría: el ancla fallaría (cierra en
+    falso positivo) en vez de extender la cuarentena. Este test obliga a decidir el tratamiento.
+    """
+    marca = re.compile(r"^( *)(`{3,}|~{3,})")
+    for ruta, rangos in _rangos_en_cuarentena().items():
+        lineas = _lineas(ruta)
+        for inicio, fin in rangos:
+            sangrias = [len(m.group(1)) for linea in lineas[inicio:fin] if (m := marca.match(linea))]
+            assert max(sangrias, default=0) <= 3, f"{ruta}: cerco con sangría de código en la sección ({inicio}, {fin})"
+
+
+@pytest.mark.parametrize("codec", ("utf-32-le", "utf-32-be", "utf-16-le", "utf-16-be"))
+def test_la_vista_de_barrido_decodifica_cada_bom_unicode_con_fidelidad(codec: str) -> None:
+    """Fija el orden UTF-32 LE, UTF-32 BE, UTF-16 LE, UTF-16 BE: el BOM de 4 bytes se mira antes que el de 2."""
+    texto = "acción Ω 😀 PxR 123"
+    assert _vista_de_barrido(_con_bom(texto, codec)) == texto
