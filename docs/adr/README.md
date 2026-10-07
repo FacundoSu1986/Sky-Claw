@@ -9,9 +9,12 @@
 >
 > **Última verificación:** 2026-10-07; ADR 0012 (Frozen Runtime) **enmendado en
 > P0.4** sobre `origin/main` `5039997a` (cierre de P3 en #682 y hardening
-> post-merge #698): la Generation pasa a ser referencia no ejecutada y el Runtime
-> Clone el Effective Runtime; la autoridad de rollback es la Generation. Sigue en
-> estado Propuesta.
+> post-merge #698). Ronda 1 (§29): la Generation pasa a ser referencia no ejecutada
+> y el Runtime Clone el Effective Runtime. Ronda 2 (§30): el rollback tiene dos
+> autoridades (Generation = versión, `RuntimeSetupManifest` = setup operativo),
+> SFR-16 exige el par Generation+Clone, SFR-19 se acota a las superficies
+> controladas por Sky-Claw, y la aprobación se liga a un `ApprovalScope` exacto.
+> Sigue en estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
