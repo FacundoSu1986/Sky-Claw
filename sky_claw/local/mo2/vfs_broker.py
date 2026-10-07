@@ -172,6 +172,7 @@ class VfsExecutionBroker:
         self._quarantine_reason: str | None = None
         self._quarantined_job_id: str | None = None
         self._quarantine_persistence_failed: bool = False
+        self._reclaimed_orphan_lock: bool = False
         self._session_id = str(uuid.uuid4())
         self._server: asyncio.AbstractServer | None = None
         self._bridge_writer: asyncio.StreamWriter | None = None
@@ -230,6 +231,24 @@ class VfsExecutionBroker:
                     return
             except Exception:
                 pass
+
+        if getattr(self, "_reclaimed_orphan_lock", False):
+            reason = "reclamación de lock huérfano tras salida no limpia de broker previo"
+            self._quarantine_reason = reason
+            self._quarantined_job_id = None
+            payload = {
+                "job_id": None,
+                "session_id": self._session_id,
+                "pid": os.getpid(),
+                "reason": reason,
+                "timestamp": time.time(),
+            }
+            try:
+                self._quarantine_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                self._hardener(self._quarantine_path)
+            except Exception:
+                self._quarantine_persistence_failed = True
+            return
 
         self._quarantine_reason = None
         self._quarantined_job_id = None
@@ -301,20 +320,29 @@ class VfsExecutionBroker:
         if self._quarantine_path.exists():
             try:
                 raw = json.loads(self._quarantine_path.read_text(encoding="utf-8"))
-                if raw.get("job_id") == job_id:
-                    logger.info("Worker exit tardío confirmó salida para job %s; liberando cuarentena", job_id)
-                    self._quarantine_path.unlink(missing_ok=True)
-                    try:
-                        self._reconciliar_lock_de_instancia_limpio()
-                    except Exception:
-                        logger.warning(
-                            "No se pudo reconciliar lock de instancia tras worker exit tardío", exc_info=True
-                        )
-                    self._quarantine_reason = None
-                    self._quarantined_job_id = None
-                    self._quarantine_persistence_failed = False
             except Exception:
-                pass
+                logger.warning(
+                    "Fallo de filesystem al leer marcador de cuarentena para job %s; la cuarentena permanece activa",
+                    job_id,
+                    exc_info=True,
+                )
+                return
+            if raw.get("job_id") == job_id:
+                logger.info("Worker exit tardío confirmó salida para job %s; liberando cuarentena", job_id)
+                try:
+                    self._quarantine_path.unlink(missing_ok=True)
+                    self._reconciliar_lock_de_instancia_limpio()
+                except Exception:
+                    logger.warning(
+                        "Fallo de filesystem al liberar cuarentena para job %s; la cuarentena permanece activa",
+                        job_id,
+                        exc_info=True,
+                    )
+                    return
+                self._quarantine_reason = None
+                self._quarantined_job_id = None
+                self._quarantine_persistence_failed = False
+                self._reclaimed_orphan_lock = False
         elif self._quarantine_reason is not None and self._quarantined_job_id == job_id:
             logger.info(
                 "Worker exit tardío confirmó salida para job %s (sin marcador persistido); liberando cuarentena", job_id
@@ -322,10 +350,16 @@ class VfsExecutionBroker:
             try:
                 self._reconciliar_lock_de_instancia_limpio()
             except Exception:
-                logger.warning("No se pudo reconciliar lock de instancia tras worker exit tardío", exc_info=True)
+                logger.warning(
+                    "Fallo de filesystem al liberar cuarentena para job %s; la cuarentena permanece activa",
+                    job_id,
+                    exc_info=True,
+                )
+                return
             self._quarantine_reason = None
             self._quarantined_job_id = None
             self._quarantine_persistence_failed = False
+            self._reclaimed_orphan_lock = False
 
     async def release_quarantine(self, *, evidence: str) -> None:
         """Libera la cuarentena de la instancia tras constatación del operador."""
@@ -346,6 +380,7 @@ class VfsExecutionBroker:
         self._quarantine_reason = None
         self._quarantined_job_id = None
         self._quarantine_persistence_failed = False
+        self._reclaimed_orphan_lock = False
 
     async def start(self) -> None:
         """Publica una sesión nueva; es idempotente mientras siga activa."""
@@ -390,6 +425,7 @@ class VfsExecutionBroker:
                     except (OSError, UnicodeError, json.JSONDecodeError):
                         pass
                     raise VfsBrokerError(f"la instancia {self._instance_id} ya esta poseida por otro broker") from exc
+                self._reclaimed_orphan_lock = True
                 with contextlib.suppress(FileNotFoundError):
                     self._instance_lock_path.unlink()
                 continue
@@ -459,6 +495,20 @@ class VfsExecutionBroker:
                 "Reteniendo lock de instancia %s fail-closed debido a falla previa de persistencia de cuarentena",
                 self._instance_id,
             )
+            try:
+                poison_payload = json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "session_id": self._session_id,
+                        "quarantined": True,
+                        "quarantine_reason": f"emergencia fail-closed retenida: {self._quarantine_reason}",
+                        "job_id": self._quarantined_job_id,
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+                self._instance_lock_path.write_bytes(poison_payload)
+            except Exception:
+                pass
             return
         try:
             raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))

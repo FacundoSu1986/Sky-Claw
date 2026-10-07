@@ -162,10 +162,31 @@ class VfsProcessSession:
             raise VfsSessionError(f"la sesión {self._job_id} no tiene driver")
         try:
             resultado = await asyncio.shield(driver)
-        except asyncio.CancelledError:
-            with contextlib.suppress(asyncio.CancelledError):
+        except asyncio.CancelledError as caller_canc:
+            teardown_exc: BaseException | None = None
+            try:
                 await self._fence_de_teardown()
-            raise
+            except BaseException as exc:
+                teardown_exc = exc
+
+            teardown_error = (
+                getattr(teardown_exc, "teardown_error", None)
+                or self._estado.teardown_error
+                or (teardown_exc if isinstance(teardown_exc, Exception) else None)
+            )
+            is_unknown = (
+                self._estado.terminality_unknown
+                or getattr(teardown_exc, "terminality_unknown", False)
+                or teardown_error is not None
+            )
+
+            if is_unknown or teardown_error is not None:
+                from sky_claw.app.db.rollback_veto import mark_unknown_terminality
+
+                mark_unknown_terminality(caller_canc, teardown_error=teardown_error)
+            if teardown_error is not None:
+                caller_canc.__cause__ = teardown_error
+            raise caller_canc
         except BaseException:
             # Un desenlace fallido no puede tapar una violación de stream que ya
             # esté encolada: se drena antes de decidir qué causa se propaga. La

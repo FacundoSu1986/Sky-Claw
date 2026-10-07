@@ -571,7 +571,10 @@ async def test_benign_cancel_race_with_real_bridge_launch_controller(tmp_path: p
 
         # El proceso termina en el bridge: monitor ejecuta pop() y queda frenado en worker_exit_gate
         process_unblock.set()
-        await asyncio.sleep(0.05)
+        deadline_pop = asyncio.get_running_loop().time() + 1.0
+        while job.job_id in controller._jobs and asyncio.get_running_loop().time() < deadline_pop:
+            await asyncio.sleep(0.005)
+        assert job.job_id not in controller._jobs, "El monitor del bridge no realizó pop(job) dentro del plazo"
 
         # Ahora llega un cancel desde el broker/sesión:
         cancel_task = asyncio.create_task(sesion.cancel())
@@ -1399,3 +1402,231 @@ async def test_worker_exit_de_otro_job_no_libera_cuarentena_sin_marcador(
         assert broker_b.quarantine_reason is None
     finally:
         await broker_b.close()
+
+
+@pytest.mark.asyncio
+async def test_result_cancel_caller_preserva_cancelled_error_y_anota_teardown_deadline(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Blocker A: Si el caller cancela result() mientras espera el driver, y luego el
+
+    teardown fence falla con VfsTeardownDeadlineError (terminalidad desconocida),
+    result() DEBE propagar CancelledError (la cancelación del caller gana),
+    pero anotado con terminality_unknown=True, teardown_error y __cause__ preservada.
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=8888)
+
+        # El caller espera result()
+        result_task = asyncio.create_task(sesion.result())
+        await asyncio.sleep(0.05)
+
+        # El caller cancela su tarea
+        result_task.cancel()
+
+        # Teardown fence arranca; el bridge recibe cancel pero worker_exit NO llega
+        cancel_req = await bridge.recv()
+        assert cancel_req["type"] == "cancel"
+
+        # Esperamos a que la tarea termine
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await result_task
+
+        err = exc_info.value
+        assert getattr(err, "terminality_unknown", False) is True
+        assert isinstance(getattr(err, "teardown_error", None), VfsTeardownDeadlineError)
+        assert isinstance(err.__cause__, VfsTeardownDeadlineError)
+        assert not sesion.confirmed_terminal
+        assert sesion.terminality_unknown is True
+    finally:
+        if worker is not None:
+            await worker.cerrar()
+        await bridge.cerrar()
+        with contextlib.suppress(Exception):
+            await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_result_cancel_caller_con_fence_limpio_propaga_cancelled_error_puro(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Blocker A (variante limpia): Si el caller cancela result() y el teardown
+
+    confirma salida con worker_exit, se propaga CancelledError puro sin
+    atributos de terminalidad desconocida ni cause.
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=2.0)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=8889)
+
+        result_task = asyncio.create_task(sesion.result())
+        await asyncio.sleep(0.05)
+
+        result_task.cancel()
+
+        cancel_req = await bridge.recv()
+        assert cancel_req["type"] == "cancel"
+
+        # Worker sale normalmente
+        await bridge.worker_exit(job.job_id, exit_code=0)
+
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await result_task
+
+        err = exc_info.value
+        assert getattr(err, "terminality_unknown", False) is False
+        assert getattr(err, "teardown_error", None) is None
+        assert err.__cause__ is None
+        assert sesion.confirmed_terminal is True
+        assert sesion.terminality_unknown is False
+    finally:
+        if worker is not None:
+            await worker.cerrar()
+        await bridge.cerrar()
+        with contextlib.suppress(Exception):
+            await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_late_worker_exit_reconciliation_failure_retiene_cuarentena_y_emite_log(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Hardening: Si llega un worker_exit tardío pero la reconciliación en disco
+
+    falla (p.ej. unlink del marcador o reescritura del lock lanza OSError),
+    la cuarentena DEBE permanecer activa (fail-closed) y emitirse un log de warning.
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker = VfsExecutionBroker(instance_id="inst-late-fail", state_dir=state_dir)
+    await broker.start()
+
+    broker._quarantine_instance("job-late-1", "terminalidad desconocida previa")
+    assert broker.quarantine_reason is not None
+    assert broker._quarantined_job_id == "job-late-1"
+
+    # Provocar fallo en el unlink del archivo de cuarentena
+    real_unlink = pathlib.Path.unlink
+
+    def _failing_unlink(path_obj: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        if path_obj.name == broker._quarantine_path.name:
+            raise OSError("Fallo simulado de disco al hacer unlink del marcador")
+        real_unlink(path_obj, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _failing_unlink)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        broker._liberar_cuarentena_por_worker_exit("job-late-1")
+
+    # Cuarentena DEBE permanecer activa
+    assert broker.quarantine_reason is not None
+    assert broker._quarantined_job_id == "job-late-1"
+    # Log visible emitido
+    assert any(
+        "la cuarentena permanece activa" in rec.message or "Fallo de filesystem" in rec.message
+        for rec in caplog.records
+    )
+
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_doble_falla_de_persistencia_de_cuarentena_impide_admision_tras_rearranque(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocker B: Si falla TANTO la persistencia del marcador de cuarentena (.quarantine)
+
+    COMO la persistencia del envenenamiento del lock de instancia (.lock),
+    un nuevo broker que inicie sobre el mismo state_dir tras la terminación del anterior
+    NO debe admitir silenciosamente mutaciones ni nuevas sesiones.
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker_a = VfsExecutionBroker(instance_id="portable-main", state_dir=state_dir)
+    await broker_a.start()
+
+    import os
+
+    real_replace = os.replace
+
+    # 1. Inyectar fallo al escribir marcador de cuarentena
+    def _failing_replace(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("Fallo simulado al reemplazar marcador de cuarentena")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _failing_replace)
+
+    real_write_bytes = pathlib.Path.write_bytes
+
+    # 2. Inyectar fallo al envenenar el lock de instancia
+    def _failing_write_bytes(path_obj: pathlib.Path, data: bytes) -> int:
+        if path_obj.name == broker_a._instance_lock_path.name:
+            raise OSError("Fallo simulado al escribir lock de instancia")
+        return real_write_bytes(path_obj, data)
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", _failing_write_bytes)
+
+    # broker_a entra en cuarentena por terminalidad indeterminada
+    broker_a._quarantine_instance("job-double-fail", "terminalidad indeterminada con doble falla de disco")
+    assert broker_a._quarantine_persistence_failed is True
+    assert broker_a.quarantine_reason is not None
+
+    # Cerrar broker_a (retiene el lock en disco fail-closed)
+    await broker_a.close()
+
+    # Restaurar operaciones normales de disco para el nuevo broker
+    monkeypatch.undo()
+
+    # Simular que el PID del broker_a pertenecía a un proceso previo que murió
+    raw_lock = json.loads(broker_a._instance_lock_path.read_text(encoding="utf-8"))
+    raw_lock["pid"] = os.getpid() + 10000
+    broker_a._instance_lock_path.write_text(json.dumps(raw_lock), encoding="utf-8")
+
+    # Simular que el PID del broker_a ya no existe (stale PID)
+    import psutil
+
+    real_process = psutil.Process
+
+    class _DeadProcessMock:
+        def __init__(self, pid: int) -> None:
+            if pid == os.getpid():
+                self._real = real_process(pid)
+            else:
+                raise psutil.NoSuchProcess(pid)
+
+        def create_time(self) -> float:
+            return self._real.create_time()
+
+    monkeypatch.setattr(psutil, "Process", _DeadProcessMock)
+
+    # Iniciar broker_b sobre el mismo state_dir
+    broker_b = VfsExecutionBroker(instance_id="portable-main", state_dir=state_dir)
+    from sky_claw.local.mo2.vfs_broker import VfsInstanceQuarantinedError
+
+    # El arranque o la admisión DEBE detectar que la instancia no es segura para mutar:
+    # No puede admitir silenciosamente mutaciones con quarantine_reason == None
+    mo2, data, challenge, job = _entorno(tmp_path)
+
+    try:
+        await broker_b.start()
+        # Si start() no levantó excepción, la admisión DEBE fallar con VfsInstanceQuarantinedError
+        with pytest.raises(VfsInstanceQuarantinedError):
+            await broker_b.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+    except VfsInstanceQuarantinedError:
+        pass  # VfsInstanceQuarantinedError en start() es igualmente fail-closed válido
+    finally:
+        with contextlib.suppress(Exception):
+            await broker_b.close()
