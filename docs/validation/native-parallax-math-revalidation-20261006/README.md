@@ -154,11 +154,32 @@ M3 corpus: 62/62 archivos contra el manifest  (31 assets × 2)
 
 ## 7. RAW vs PUBLISHED
 
-Los archivos publicados se copiaron **byte a byte** desde el RAW (`TRANSFORMATION=none`).
-`SEMANTIC_EQUALITY=identical`. Los hashes de los publicados coinciden con los de los RAW
-salvo que `git` aplique normalización de fin de línea al commitear; para dirimir eso se
-registran por separado `GIT_BLOB_SHA256` y `WORKTREE_SHA256` (regla CRLF/Git blob). Los
-archivos del corpus **no** se publican.
+Los archivos publicados se copiaron **byte a byte** desde el RAW (`TRANSFORMATION=COPY_NO_MODIFICATION`).
+`worktree_sha256 == raw_sha256` en los 5 archivos. `SEMANTIC_EQUALITY=IDENTICAL`.
+
+**Regla CRLF / git blob (§11).** El repo tiene `core.autocrlf=true`, así que el **blob**
+versionado normaliza CRLF→LF mientras el **worktree** conserva el RAW:
+
+| archivo | `RAW_SHA256` (= worktree) | EOL | `GIT_BLOB_SHA256` | EOL |
+|---|---|---|---|---|
+| `new/m2/rows.json` | `b2bbea3f…` | CRLF | `433ba09e…` | LF |
+| `new/m2/characs.json` | `402c3f6f…` | CRLF | `c16b02a7…` | LF |
+| `new/m3/exp_m3_results.json` | `4364d1c9…` | CRLF | `c30957a4…` | LF |
+| `old-replay/m2/rows.json` | `25fd6124…` | CRLF | `668f46d8…` | LF |
+| `old-replay/m2/characs.json` | `df65d866…` | CRLF | `f3119bdc…` | LF |
+
+La diferencia es **exclusivamente** de fin de línea y **no** indica corrupción
+(`blob_equals_raw_normalized=true` en los 5). Detalle completo, con bytes y EOL por archivo,
+en `comparison/raw-vs-published.json`. Los archivos del **corpus no se publican**; para ellos
+el SHA de bytes físicos bajo `C:\SkyClawResearch\` es el gate (§6).
+
+## 7b. Nota sobre el OLD replay y JSON no estándar
+
+`old-replay/m2/{rows,characs}.json` **contienen** `Infinity`/`NaN` crudos: son la salida del
+código OLD, que no sanea el boundary JSON. Eso es el **comportamiento histórico** y se
+preserva tal cual — es precisamente lo que REPRO-A corrige en NEW. El requisito
+`STRICT_JSON=PASS` aplica sólo a los outputs NEW (`new/**`), y se verifica que esos tres no
+contienen ningún token no estándar.
 
 ## 8. Metodología de comparación
 
@@ -220,5 +241,6 @@ comparison/m2-historical-vs-new.json     superficie C
 comparison/m3-historical-vs-new.json     M3
 comparison/spearman-diagnostics.json     gate de identidad + factorial de rho
 comparison/taxonomy-summary.json         conteos por categoría
+comparison/raw-vs-published.json         RAW/WORKTREE/GIT_BLOB sha256 + EOL por archivo
 comparison/impact-report.md              informe causal + Arena review
 ```
