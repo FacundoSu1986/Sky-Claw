@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineCompletedPayload,
+    DynDOLODPipelineProgressPayload,
     DynDOLODPipelineStartedPayload,
 )
 from sky_claw.app.core.path_resolver import PathResolutionService
@@ -42,6 +43,12 @@ from sky_claw.app.security.links import exigir_contencion_fisica, link_kind_or_r
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
+from sky_claw.local.tools.dyndolod_actividad import (
+    AvisoDeActividad,
+    ConfiguracionDeObservacion,
+    RastreadorDeActividad,
+    tomar_muestra,
+)
 from sky_claw.local.tools.dyndolod_runner import (
     DataVisibilityDomain,
     DynDOLODConfig,
@@ -243,6 +250,11 @@ class DynDOLODPipelineService:
             (`tests/test_dyndolod_workspace.py::test_censo_de_constructores_del_servicio_dyndolod`)
             lo exige. El path productivo sale de ``workspace.root``: no hay
             segunda fuente ni fallback al root legacy.
+        observacion: Cada cuánto observar el log de la herramienta mientras corre y
+            cuándo avisar progreso/estancamiento (``pipeline.dyndolod.progress``).
+            ``None`` (default) = apagado: el preview dry-run y los dobles de test no
+            observan nada. Sólo el composition root la enciende. Es de SOLO LECTURA:
+            nunca decide un veredicto ni cancela la corrida.
     """
 
     #: Default a nivel de CLASE para dobles construidos con ``__new__`` (tests de
@@ -254,6 +266,8 @@ class DynDOLODPipelineService:
     _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
     _spawn_strategy: DynDOLODSpawnStrategy | None = None
     _data_visibility_domain: DataVisibilityDomain = "physical"
+    #: Observación de actividad del log: APAGADA salvo que el composition root la active.
+    _observacion: ConfiguracionDeObservacion | None = None
 
     def __init__(
         self,
@@ -269,6 +283,7 @@ class DynDOLODPipelineService:
         workspace: WorkspaceResuelto | None = None,
         readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None,
         spawn_strategy: DynDOLODSpawnStrategy | None = None,
+        observacion: ConfiguracionDeObservacion | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -321,6 +336,9 @@ class DynDOLODPipelineService:
         # para un dominio y usarse con otro. Ancla:
         # `tests/test_vfs_visibility_wiring.py::test_el_dominio_y_la_estrategia_se_fijan_en_el_constructor`.
         self._data_visibility_domain = resolve_data_visibility_domain(self._spawn_strategy)
+
+        # Observación de SOLO LECTURA del log mientras corre el runner. `None` = apagada.
+        self._observacion = observacion
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -1868,14 +1886,24 @@ class DynDOLODPipelineService:
                         and handoff_resume.expected_bytes is not None
                         else None
                     )
-                    result = await runner.run_full_pipeline(
-                        run_texgen=run_texgen,
-                        preset=preset,
-                        texgen_args=texgen_args,
-                        dyndolod_args=dyndolod_args,
-                        expected_profile=self._mo2_profile,
-                        authorized_identity=authorized_identity,
+                    # El observador de actividad (solo lectura, apagado por defecto) corre
+                    # mientras el runner trabaja y se detiene en el `finally`: éxito, fallo
+                    # y cancelación salen por el MISMO mecanismo, así que ningún camino
+                    # puede dejarlo vivo publicando avisos de una corrida que ya terminó.
+                    observador = self._iniciar_observador(
+                        runner, run_texgen=run_texgen, desde_epoch=start_epoch, tx_id=tx_id
                     )
+                    try:
+                        result = await runner.run_full_pipeline(
+                            run_texgen=run_texgen,
+                            preset=preset,
+                            texgen_args=texgen_args,
+                            dyndolod_args=dyndolod_args,
+                            expected_profile=self._mo2_profile,
+                            authorized_identity=authorized_identity,
+                        )
+                    finally:
+                        await self._detener_observador(observador)
 
                     # Validar salida de DynDOLOD si fue exitoso
                     if result.success:
@@ -2729,6 +2757,101 @@ class DynDOLODPipelineService:
             if info.st_size > 0 and info.st_mtime >= desde_epoch - _HOLGURA_DE_MTIME_SEGUNDOS:
                 rutas.append(str(ruta))
         return tuple(rutas)
+
+    # ------------------------------------------------------------------
+    # Observación de actividad (solo lectura)
+    # ------------------------------------------------------------------
+
+    def _iniciar_observador(
+        self,
+        runner: DynDOLODRunner,
+        *,
+        run_texgen: bool,
+        desde_epoch: float,
+        tx_id: int | None,
+    ) -> asyncio.Task[None] | None:
+        """Arranca el observador de actividad del log, o devuelve ``None`` si no está configurado."""
+        config = self._observacion
+        if config is None:
+            return None
+        return asyncio.create_task(
+            self._observar_actividad(
+                runner, config=config, run_texgen=run_texgen, desde_epoch=desde_epoch, tx_id=tx_id
+            ),
+            name="dyndolod-observador-de-actividad",
+        )
+
+    @staticmethod
+    async def _detener_observador(observador: asyncio.Task[None] | None) -> None:
+        """Cancela y espera al observador. Va en el ``finally`` alrededor de la llamada al runner.
+
+        ``gather(..., return_exceptions=True)`` y no ``suppress(CancelledError)``: si una cancelación llega
+        durante esta espera es la del CALLER y tiene que seguir subiendo. La del observador ya se pidió y
+        termina sola: es de solo lectura y no deja ningún recurso que filtrar.
+        """
+        if observador is None:
+            return
+        observador.cancel()
+        await asyncio.gather(observador, return_exceptions=True)
+
+    async def _observar_actividad(
+        self,
+        runner: DynDOLODRunner,
+        *,
+        config: ConfiguracionDeObservacion,
+        run_texgen: bool,
+        desde_epoch: float,
+        tx_id: int | None,
+    ) -> None:
+        """Sondea el log activo y publica ``pipeline.dyndolod.progress`` cuando toca. Nunca toca la corrida.
+
+        AUXILIAR y de solo lectura: un error propio (el bus detenido, un filesystem raro) se registra y el
+        observador termina; la corrida sigue sin él. No decide veredictos ni cancela nada: un estancamiento se
+        INFORMA, porque la etapa es asistida y el log también calla mientras el operador configura la ventana.
+
+        Corre MIENTRAS el runner trabaja y consulta ``runner._ruta_del_log`` desde un hilo (vía
+        ``_rutas_de_log_de_esta_corrida``). Es seguro porque ese método sólo LEE la ``DynDOLODConfig`` del
+        runner, que es ``frozen`` y se asigna una única vez en su constructor: no toca estado que el runner mute.
+        """
+        rastreador = RastreadorDeActividad(config, inicio=time.monotonic())
+        try:
+            while True:
+                await asyncio.sleep(config.intervalo_de_sondeo_s)
+                rutas = await self._rutas_de_log_de_esta_corrida(runner, run_texgen=run_texgen, desde_epoch=desde_epoch)
+                muestra = (
+                    await asyncio.to_thread(tomar_muestra, pathlib.Path(rutas[-1]), config.max_bytes_de_cola)
+                    if rutas
+                    else None
+                )
+                aviso = rastreador.observar(muestra, ahora=time.monotonic())
+                if aviso is not None:
+                    await self._publish_actividad(aviso)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — auxiliar de solo lectura: nada de lo que le pase puede tocar la corrida
+            logger.warning(
+                "DynDOLOD: el observador de actividad terminó por un error propio; la corrida sigue sin él",
+                exc_info=True,
+                extra={"operation_type": "dyndolod_observador_fallido", "tx_id": tx_id},
+            )
+
+    async def _publish_actividad(self, aviso: AvisoDeActividad) -> None:
+        """Publica un aviso de actividad. El contrato del evento es el payload tipado, no un dict suelto."""
+        payload = DynDOLODPipelineProgressPayload(
+            kind=aviso.tipo.value,  # type: ignore[arg-type]  # el StrEnum y el Literal comparten valores (anclado en tests)
+            log=aviso.log,
+            elapsed_seconds=aviso.segundos_en_curso,
+            idle_seconds=aviso.segundos_sin_actividad,
+            log_size_bytes=aviso.tamano_del_log,
+            last_line=aviso.ultima_linea,
+        )
+        await self._event_bus.publish(
+            Event(
+                topic="pipeline.dyndolod.progress",
+                payload=payload.to_log_dict(),
+                source="dyndolod-pipeline-service",
+            )
+        )
 
     # ------------------------------------------------------------------
     # Journal helpers

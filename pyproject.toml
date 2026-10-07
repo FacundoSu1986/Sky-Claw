@@ -357,6 +357,9 @@ module = [
     # al operador cuando una corrida falla.
     "sky_claw.app.orchestrator.dyndolod_operator_notifier",
     "sky_claw.app.comms.telegram_operator_channel",
+    # Observación de actividad del log de la etapa 9: módulo nuevo bajo `sky_claw.local.tools.*`,
+    # que está en `ignore_errors` y tiene BLE001 activo — sin este opt-in sale sin type-check.
+    "sky_claw.local.tools.dyndolod_actividad",
 ]
 strict = true
 ignore_errors = false

@@ -10,6 +10,7 @@ Parte del Sprint 1.5: Strangler Fig — desacoplamiento de ``supervisor.py``.
 from __future__ import annotations
 
 import time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -236,6 +237,46 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
     log_paths: tuple[str, ...] = ()
     cancelled: bool = False
     completed_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+class DynDOLODPipelineProgressPayload(BaseModel):
+    """Payload inmutable para el evento ``pipeline.dyndolod.progress``.
+
+    Publicado por :class:`DynDOLODPipelineService` MIENTRAS corre la etapa 9, desde un
+    observador de solo lectura del log de la herramienta (``dyndolod_actividad``). Sólo
+    describe hechos observables del archivo: no es un veredicto ni una fase inferida.
+
+    Attributes:
+        kind: ``"progress"`` (sigue en curso), ``"stalled"`` (el log lleva demasiado sin
+            cambios: puede estar esperando una acción en la ventana de la herramienta) o
+            ``"resumed"`` (volvió a escribir tras un estancamiento).
+        log: Nombre del archivo de log observado; ``""`` si todavía no hay uno de ESTA
+            corrida.
+        elapsed_seconds: Segundos desde que empezó la corrida.
+        idle_seconds: Segundos sin actividad en el log (sin cambio de archivo, tamaño ni
+            mtime).
+        log_size_bytes: Tamaño del log; ``0`` si todavía no hay uno.
+        last_line: Última línea no vacía del log, recortada. Es TEXTO DE TERCEROS (lo
+            escribe la herramienta): quien lo muestre en un formato con marcado, lo escapa.
+            Puede incluir rutas locales de la máquina del operador (p. ej. una línea
+            ``Saving E:\\...``): el consumidor que la saque del proceso, como el notificador
+            de Telegram, la manda al chat del operador y sólo es correcto si ese chat es privado.
+        emitted_at: Timestamp de emisión (epoch float, autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    kind: Literal["progress", "stalled", "resumed"]
+    log: str
+    elapsed_seconds: float
+    idle_seconds: float
+    log_size_bytes: int
+    last_line: str
+    emitted_at: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:
         """Serialización compatible con el sistema de logging estructurado."""

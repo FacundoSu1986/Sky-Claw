@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from sky_claw.app.core.event_bus import Event
 from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineCompletedPayload,
+    DynDOLODPipelineProgressPayload,
     DynDOLODPipelineStartedPayload,
 )
 from sky_claw.app.orchestrator import dyndolod_operator_notifier as mod
@@ -88,6 +89,19 @@ def _evento_completed(**cambios: Any) -> Event:
     }
     base.update(cambios)
     return Event(topic="pipeline.dyndolod.completed", payload=DynDOLODPipelineCompletedPayload(**base).to_log_dict())
+
+
+def _evento_progreso(**cambios: Any) -> Event:
+    base: dict[str, Any] = {
+        "kind": "progress",
+        "log": "DynDOLOD_SSE_log.txt",
+        "elapsed_seconds": 1384.0,
+        "idle_seconds": 0.0,
+        "log_size_bytes": 4_300_000,
+        "last_line": "[04:12] Generating LOD for Tamriel",
+    }
+    base.update(cambios)
+    return Event(topic="pipeline.dyndolod.progress", payload=DynDOLODPipelineProgressPayload(**base).to_log_dict())
 
 
 async def _esperar(condicion: Any, *, descripcion: str) -> None:
@@ -300,6 +314,104 @@ class TestMensajes:
 
 
 # ---------------------------------------------------------------------------
+# Avisos de actividad del log (progreso, estancamiento, reanudación)
+# ---------------------------------------------------------------------------
+
+
+class TestAvisosDeActividad:
+    async def test_el_progreso_informa_el_log_su_tamano_y_la_ultima_linea(self) -> None:
+        canal = CanalFalso()
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(_evento_progreso())
+            await _barrera(notificador, canal)
+
+        [aviso] = canal.avisos
+        assert aviso.startswith("⏳")
+        assert "23m 4s" in aviso
+        assert "<code>DynDOLOD_SSE_log.txt</code>" in aviso
+        assert "4.1 MiB" in aviso
+        assert "<pre>[04:12] Generating LOD for Tamriel</pre>" in aviso
+        assert "Último cambio" not in aviso, "un log que acaba de cambiar no necesita aclarar cuándo cambió"
+        assert canal.adjuntos == [], "un aviso de actividad no adjunta logs: sólo un fallo de herramienta lo hace"
+
+    async def test_el_progreso_de_un_log_quieto_dice_hace_cuanto_cambio(self) -> None:
+        canal = CanalFalso()
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(_evento_progreso(idle_seconds=125.0))
+            await _barrera(notificador, canal)
+
+        assert "Último cambio del log hace 2m 5s" in canal.avisos[0]
+
+    async def test_el_estancamiento_avisa_que_puede_estar_esperando_una_accion(self) -> None:
+        canal = CanalFalso()
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(
+                _evento_progreso(kind="stalled", idle_seconds=900.0, last_line="Exit TexGen, zip and exit?")
+            )
+            await _barrera(notificador, canal)
+
+        [aviso] = canal.avisos
+        assert aviso.startswith("⚠")
+        assert "sin actividad" in aviso
+        assert "15m 0s" in aviso
+        assert "esperando una acción" in aviso, (
+            "la etapa es asistida: el operador remoto tiene que ver la causa probable"
+        )
+        assert "<pre>Exit TexGen, zip and exit?</pre>" in aviso
+
+    async def test_la_reanudacion_cierra_el_episodio_y_dice_cuanto_duro(self) -> None:
+        canal = CanalFalso()
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(_evento_progreso(kind="resumed", idle_seconds=723.0))
+            await _barrera(notificador, canal)
+
+        [aviso] = canal.avisos
+        assert aviso.startswith("▶")
+        assert "reanudada" in aviso
+        assert "Volvió a escribir tras 12m 3s sin cambios" in aviso, "la reanudación dice cuánto estuvo callado"
+        assert "Último cambio" not in aviso
+
+    async def test_sin_log_de_esta_corrida_no_inventa_un_archivo(self) -> None:
+        canal = CanalFalso()
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(
+                _evento_progreso(kind="stalled", log="", log_size_bytes=0, last_line="", idle_seconds=900.0)
+            )
+            await _barrera(notificador, canal)
+
+        [aviso] = canal.avisos
+        assert "Todavía no hay un log de esta corrida" in aviso
+        assert "<code>" not in aviso and "<pre>" not in aviso
+
+    async def test_la_ultima_linea_se_escapa_y_el_peor_caso_entra_en_un_mensaje(self) -> None:
+        canal = CanalFalso()
+        linea = "<Error: Unresolved FormID [0207B5B9]> & " + "&" * 5000
+        async with _notificador(canal) as notificador:
+            await notificador.on_event(_evento_progreso(kind="stalled", idle_seconds=900.0, last_line=linea))
+            await _barrera(notificador, canal)
+
+        [aviso] = canal.avisos
+        assert "&lt;Error: Unresolved FormID" in aviso
+        assert "<Error:" not in aviso, "una línea de log sin escapar rompe el parseo HTML de Telegram"
+        assert len(aviso) < 4096, "el sender partiría el mensaje en medio de una etiqueta HTML"
+        assert aviso.count("<pre>") == aviso.count("</pre>")
+
+    @pytest.mark.parametrize(
+        ("bytes_", "esperado"),
+        [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KiB"),
+            (4_300_000, "4.1 MiB"),
+            (5 * 1024**3, "5.0 GiB"),
+            (-5, "0 B"),
+        ],
+    )
+    def test_el_tamano_se_lee_como_un_humano(self, bytes_: int, esperado: str) -> None:
+        assert mod._tamano_legible(bytes_) == esperado
+
+
+# ---------------------------------------------------------------------------
 # Adjunto del log
 # ---------------------------------------------------------------------------
 
@@ -499,10 +611,21 @@ class TestDesacopleYRobustez:
             Event(topic="pipeline.dyndolod.completed", payload={"success": "no es un bool"}),
             Event(topic="pipeline.dyndolod.started", payload={"preset": 123}),
             Event(topic="pipeline.dyndolod.completed", payload={"errors": "no es tupla", "success": False}),
+            Event(topic="pipeline.dyndolod.progress", payload={}),
+            Event(topic="pipeline.dyndolod.progress", payload={"kind": "otro"}),
             Event(topic="pipeline.dyndolod.desconocido", payload={"x": 1}),
             Event(topic="otro.topic", payload={}),
         ],
-        ids=["vacio", "tipo_invalido", "started_invalido", "errors_invalido", "topic_desconocido", "otro_topic"],
+        ids=[
+            "vacio",
+            "tipo_invalido",
+            "started_invalido",
+            "errors_invalido",
+            "progreso_vacio",
+            "progreso_kind_invalido",
+            "topic_desconocido",
+            "otro_topic",
+        ],
     )
     async def test_un_evento_malformado_o_ajeno_se_ignora_sin_lanzar(self, evento: Event) -> None:
         canal = CanalFalso()
@@ -583,7 +706,7 @@ class TestDesacopleYRobustez:
             for n in ast.walk(ast.parse(fuente))
             if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.startswith("pipeline.dyndolod.")
         }
-        assert {mod.TOPIC_INICIO, mod.TOPIC_FIN} <= publicados
+        assert {mod.TOPIC_INICIO, mod.TOPIC_FIN, mod.TOPIC_PROGRESO} <= publicados
         assert mod.PATRON_DE_SUSCRIPCION == "pipeline.dyndolod.*"
 
 
@@ -612,12 +735,29 @@ def _campos_de_texto(modelo: type[BaseModel]) -> list[str]:
     return [nombre for nombre, campo in modelo.model_fields.items() if campo.annotation in (str, tuple[str, ...])]
 
 
-_CASOS_DE_ESCAPE: list[tuple[type[BaseModel], dict[str, Any], str]] = [
-    (DynDOLODPipelineStartedPayload, _BASE_STARTED, campo) for campo in _campos_de_texto(DynDOLODPipelineStartedPayload)
-] + [
-    (DynDOLODPipelineCompletedPayload, _BASE_COMPLETED_FALLO, campo)
-    for campo in _campos_de_texto(DynDOLODPipelineCompletedPayload)
-]
+_BASE_PROGRESO: dict[str, Any] = {
+    "kind": "stalled",
+    "log": "DynDOLOD_SSE_log.txt",
+    "elapsed_seconds": 10.0,
+    "idle_seconds": 900.0,
+    "log_size_bytes": 100,
+    "last_line": "x",
+}
+
+_CASOS_DE_ESCAPE: list[tuple[type[BaseModel], dict[str, Any], str]] = (
+    [
+        (DynDOLODPipelineStartedPayload, _BASE_STARTED, campo)
+        for campo in _campos_de_texto(DynDOLODPipelineStartedPayload)
+    ]
+    + [
+        (DynDOLODPipelineCompletedPayload, _BASE_COMPLETED_FALLO, campo)
+        for campo in _campos_de_texto(DynDOLODPipelineCompletedPayload)
+    ]
+    + [
+        (DynDOLODPipelineProgressPayload, _BASE_PROGRESO, campo)
+        for campo in _campos_de_texto(DynDOLODPipelineProgressPayload)
+    ]
+)
 
 
 def _mensaje_con_el_campo_hostil(modelo: type[BaseModel], base: dict[str, Any], campo: str) -> str:
@@ -625,6 +765,8 @@ def _mensaje_con_el_campo_hostil(modelo: type[BaseModel], base: dict[str, Any], 
     payload = modelo(**{**base, campo: _HOSTIL if es_texto_plano else (_HOSTIL,)})
     if isinstance(payload, DynDOLODPipelineStartedPayload):
         return mod._formatear_inicio(payload)
+    if isinstance(payload, DynDOLODPipelineProgressPayload):
+        return mod._formatear_progreso(payload)
     assert isinstance(payload, DynDOLODPipelineCompletedPayload)
     return mod._formatear_fin(payload)
 
@@ -660,4 +802,6 @@ class TestEscapeDeTextoDinamico:
             ("DynDOLODPipelineStartedPayload", "preset"),
             ("DynDOLODPipelineStartedPayload", "operator_instructions"),
             ("DynDOLODPipelineCompletedPayload", "errors"),
+            ("DynDOLODPipelineProgressPayload", "log"),
+            ("DynDOLODPipelineProgressPayload", "last_line"),
         }

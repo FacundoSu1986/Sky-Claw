@@ -30,6 +30,7 @@ from sky_claw.app.db.locks import (
     LockLeaseLostError,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+from sky_claw.local.tools.dyndolod_actividad import ConfiguracionDeObservacion
 from sky_claw.local.tools.dyndolod_runner import (
     MARCADORES_DE_COMPLETITUD,
     DynDOLODConfig,
@@ -3315,6 +3316,18 @@ _REGISTROS_EXENTOS_DE_ETAPA = {
             "dos veces el mismo incidente en un COUNT agrupado por pipeline_stage. Mismo "
             "criterio que dyndolod_flight_report_persist_failed; vive en un helper propio "
             "(no en `execute`), así que su ancla de ubicación es la fuerte."
+        ),
+    },
+    "dyndolod_observador_fallido": {
+        "metodo": "_observar_actividad",
+        "motivo": (
+            "_observar_actividad es un auxiliar de SOLO LECTURA que corre mientras el runner "
+            "trabaja: si muere (el bus detenido, un filesystem raro) la corrida sigue sin él y su "
+            "veredicto no cambia. Que el observador falle es un fallo de la infraestructura de "
+            "notificación, NO de la etapa 9: etiquetarlo con la etapa contaría como un fallo de la "
+            "etapa un incidente que no lo es, en cualquier alerta agrupando por pipeline_stage. "
+            "Mismo criterio que dyndolod_completed_no_publicado; vive en un helper propio (no en "
+            "`execute`), así que su ancla de ubicación es la fuerte."
         ),
     },
 }
@@ -7861,3 +7874,403 @@ async def test_un_fallo_real_del_servicio_llega_al_operador_por_el_bus_real_con_
     assert (chat, nombre) == (42, "DynDOLOD_SSE_log.txt")
     assert contenido == b"[00:10] Fatal: Can not create path <D:\\Skyrim\\Data>\n"
     assert bus.events_lost == 0
+
+
+# =============================================================================
+# Observación de actividad: avisos MIENTRAS corre la etapa 9
+# =============================================================================
+#
+# El único pulso de la corrida era un `heartbeat` que iba al log local: un
+# operador remoto no podía distinguir una herramienta que trabaja de una que
+# espera una acción o está colgada. El servicio arranca un observador de SOLO
+# LECTURA alrededor de la llamada al runner (`dyndolod_actividad`): no toca el
+# veredicto, no cancela nada y está apagado salvo que el composition root lo active.
+
+#: Tiempos chicos para que el test sea rápido y márgenes grandes: el silencio del log (0.4 s) es ~2.7x el umbral
+#: (0.15 s). Se afirma el ORDEN y la presencia de los avisos, no su cantidad: la cuenta depende del planificador.
+_OBSERVACION_RAPIDA = ConfiguracionDeObservacion(
+    intervalo_de_sondeo_s=0.01,
+    intervalo_de_progreso_s=0.05,
+    umbral_de_estancamiento_s=0.15,
+    max_bytes_de_cola=4096,
+)
+
+_NOMBRE_DE_LA_TAREA_OBSERVADORA = "dyndolod-observador-de-actividad"
+
+
+def _avisos_de_actividad(bus: AsyncMock) -> list[dict[str, object]]:
+    return [payload for topic, payload in _eventos_publicados(bus) if topic == "pipeline.dyndolod.progress"]
+
+
+def _tareas_del_observador() -> list[asyncio.Task[object]]:
+    return [
+        tarea
+        for tarea in asyncio.all_tasks()
+        if tarea.get_name() == _NOMBRE_DE_LA_TAREA_OBSERVADORA and not tarea.done()
+    ]
+
+
+async def _ejecutar_con_plazo(service: DynDOLODPipelineService) -> dict[str, object]:
+    """``execute`` con plazo: un observador que no se cancelara colgaría la espera; con plazo, el test FALLA."""
+    return await asyncio.wait_for(service.execute(preset="Medium", run_texgen=False, create_snapshot=True), timeout=15)
+
+
+def _agregar_al_log(log: pathlib.Path, linea: str) -> None:
+    with log.open("a", encoding="utf-8") as archivo:
+        archivo.write(linea + "\n")
+
+
+def _corrida_observable(
+    service: DynDOLODPipelineService, tmp_path: pathlib.Path
+) -> tuple[AsyncMock, pathlib.Path, pathlib.Path]:
+    """Cablea un runner mock con un log real y deja el servicio con la observación rápida activa."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    log = tmp_path / "Logs" / "DynDOLOD_SSE_log.txt"
+    log.parent.mkdir()
+    runner = _mock_runner_with_output(mods)
+    runner._ruta_del_log = MagicMock(return_value=log)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+    service._observacion = _OBSERVACION_RAPIDA
+    return runner, output_dir, log
+
+
+def _resultado_exitoso(output_dir: pathlib.Path) -> DynDOLODPipelineResult:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+    return _make_success_result(run_texgen=False)
+
+
+@pytest.mark.asyncio
+async def test_la_corrida_publica_el_estancamiento_y_la_reanudacion_del_log_mientras_corre(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    runner, output_dir, log = _corrida_observable(service, tmp_path)
+
+    async def _pipeline_que_calla(**_kwargs: object) -> DynDOLODPipelineResult:
+        for i in range(3):  # el log crece...
+            _agregar_al_log(log, f"[00:0{i}] linea {i}")
+            await asyncio.sleep(0.03)
+        await asyncio.sleep(0.4)  # ...queda callado bastante más que el umbral...
+        _agregar_al_log(log, "[00:09] Saving Occlusion.esp")  # ...y vuelve a escribir
+        await asyncio.sleep(0.05)
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_calla)
+
+    resultado = await _ejecutar_con_plazo(service)
+
+    assert resultado["success"] is True
+    eventos = _eventos_publicados(mock_event_bus)
+    topics = [topic for topic, _ in eventos]
+    assert topics[0] == "pipeline.dyndolod.started"
+    assert topics[-1] == "pipeline.dyndolod.completed"
+    assert set(topics[1:-1]) == {"pipeline.dyndolod.progress"}, (
+        "ningún aviso de actividad llega después del `completed`"
+    )
+    avisos = _avisos_de_actividad(mock_event_bus)
+    tipos = [aviso["kind"] for aviso in avisos]
+    assert tipos.count("stalled") == 1, "un episodio de estancamiento se avisa UNA vez"
+    assert tipos.count("resumed") == 1
+    assert tipos.index("stalled") < tipos.index("resumed")
+    estancado = avisos[tipos.index("stalled")]
+    assert estancado["log"] == "DynDOLOD_SSE_log.txt"
+    assert estancado["last_line"] == "[00:02] linea 2"
+    assert estancado["idle_seconds"] >= 0.15  # type: ignore[operator]
+    assert avisos[tipos.index("resumed")]["last_line"] == "[00:09] Saving Occlusion.esp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("desenlace", ["exito", "fallo_de_dominio", "error_inesperado", "cancelacion"])
+async def test_el_observador_vive_durante_la_corrida_y_no_la_sobrevive(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    desenlace: str,
+) -> None:
+    """Todos los desenlaces limpian la tarea: una huérfana publicaría avisos de una corrida que ya terminó."""
+    runner, output_dir, _log = _corrida_observable(service, tmp_path)
+    durante_la_corrida: list[int] = []
+
+    async def _pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        await asyncio.sleep(0.05)  # que el observador alcance a arrancar
+        durante_la_corrida.append(len(_tareas_del_observador()))
+        if desenlace == "fallo_de_dominio":
+            raise DynDOLODExecutionError("boom")
+        if desenlace == "error_inesperado":
+            raise ValueError("estado inesperado")
+        if desenlace == "cancelacion":
+            raise asyncio.CancelledError
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline)
+
+    if desenlace == "cancelacion":
+        with pytest.raises(asyncio.CancelledError):
+            await _ejecutar_con_plazo(service)
+    else:
+        await _ejecutar_con_plazo(service)
+
+    assert durante_la_corrida == [1], "mientras corre el runner hay UN observador"
+    assert _tareas_del_observador() == [], "ningún camino de salida deja al observador vivo"
+
+
+@pytest.mark.asyncio
+async def test_un_fallo_del_observador_no_altera_el_resultado_y_deja_un_registro(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner, output_dir, _log = _corrida_observable(service, tmp_path)
+    service._rutas_de_log_de_esta_corrida = AsyncMock(side_effect=RuntimeError("el observador se rompió"))  # type: ignore[method-assign]
+
+    async def _pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        await asyncio.sleep(0.1)  # varios sondeos: el observador falla en el primero y sale
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline)
+
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
+        resultado = await _ejecutar_con_plazo(service)
+
+    assert resultado["success"] is True, "un observador roto no puede cambiar el veredicto de la corrida"
+    registros = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_observador_fallido"]
+    assert len(registros) == 1
+    assert registros[0].tx_id == 42
+    assert getattr(registros[0], "pipeline_stage", None) is None, "no es un fallo de la etapa 9: la corrida siguió"
+    assert _tareas_del_observador() == []
+
+
+@pytest.mark.asyncio
+async def test_un_bus_que_rechaza_los_avisos_no_rompe_la_corrida(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runner, output_dir, log = _corrida_observable(service, tmp_path)
+
+    async def _publicar(evento: object) -> None:
+        if getattr(evento, "topic", "") == "pipeline.dyndolod.progress":
+            raise RuntimeError("el bus se detuvo")
+
+    mock_event_bus.publish = AsyncMock(side_effect=_publicar)
+
+    async def _pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        for i in range(8):  # el log crece: el intervalo de progreso (0.05 s) vence y hay un aviso para publicar
+            _agregar_al_log(log, f"[00:0{i}] linea {i}")
+            await asyncio.sleep(0.02)
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline)
+
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
+        resultado = await _ejecutar_con_plazo(service)
+
+    assert resultado["success"] is True
+    topics = [topic for topic, _ in _eventos_publicados(mock_event_bus)]
+    assert topics[0] == "pipeline.dyndolod.started" and topics[-1] == "pipeline.dyndolod.completed"
+    assert any(getattr(r, "operation_type", None) == "dyndolod_observador_fallido" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_sin_observacion_configurada_no_hay_tarea_ni_avisos(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El default es APAGADO: los servicios construidos sin `observacion` (el preview, los dobles) no cambian."""
+    runner, output_dir, _log = _corrida_observable(service, tmp_path)
+    service._observacion = None
+    durante_la_corrida: list[int] = []
+
+    async def _pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        await asyncio.sleep(0.05)
+        durante_la_corrida.append(len(_tareas_del_observador()))
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline)
+
+    await _ejecutar_con_plazo(service)
+
+    assert durante_la_corrida == [0]
+    assert [topic for topic, _ in _eventos_publicados(mock_event_bus)] == [
+        "pipeline.dyndolod.started",
+        "pipeline.dyndolod.completed",
+    ]
+
+
+def test_el_servicio_arranca_el_observador_y_lo_detiene_en_el_finally_de_la_llamada_al_runner() -> None:
+    """Ancla: la ÚNICA llamada productiva a `run_full_pipeline` está envuelta por el ciclo del observador.
+
+    Un `try/finally` alrededor de esa llamada cubre éxito, fallo y cancelación con un solo mecanismo; limpiar sólo
+    en algunos handlers dejaría la tarea viva en los demás (el defecto del hermano sin cablear).
+    """
+    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    [servicio] = [n for n in ast.walk(arbol) if isinstance(n, ast.ClassDef) and n.name == "DynDOLODPipelineService"]
+    [execute] = [n for n in servicio.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "execute"]
+
+    llamadas = [
+        n for n in ast.walk(execute) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "run_full_pipeline"
+    ]
+    assert len(llamadas) == 1
+    [llamada] = llamadas
+
+    def _llama(nodos: list[ast.stmt], nombre: str) -> bool:
+        return any(
+            isinstance(n, ast.Call) and getattr(n.func, "attr", "") == nombre for s in nodos for n in ast.walk(s)
+        )
+
+    envolventes = [
+        t
+        for t in ast.walk(execute)
+        if isinstance(t, ast.Try) and any(llamada is n for s in t.body for n in ast.walk(s))
+    ]
+    assert envolventes, "la llamada al runner no está dentro de ningún try"
+    assert any(_llama(t.finalbody, "_detener_observador") for t in envolventes), (
+        "el finally que envuelve la llamada al runner tiene que detener al observador"
+    )
+    iniciadores = [
+        n for n in ast.walk(execute) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "_iniciar_observador"
+    ]
+    assert len(iniciadores) == 1
+    assert iniciadores[0].lineno < llamada.lineno, "el observador se arranca ANTES de lanzar el runner"
+
+
+def test_el_payload_de_progreso_es_estricto_y_cerrado_en_su_tipo() -> None:
+    from pydantic import ValidationError
+
+    from sky_claw.app.core.event_payloads import DynDOLODPipelineProgressPayload
+
+    base: dict[str, object] = {
+        "kind": "stalled",
+        "log": "DynDOLOD_SSE_log.txt",
+        "elapsed_seconds": 12.5,
+        "idle_seconds": 3.0,
+        "log_size_bytes": 10,
+        "last_line": "x",
+    }
+
+    payload = DynDOLODPipelineProgressPayload(**base)  # type: ignore[arg-type]
+
+    assert payload.to_log_dict()["kind"] == "stalled"
+    assert isinstance(payload.emitted_at, float)
+    for roto in ({"kind": "otro"}, {"log_size_bytes": "10"}, {"elapsed_seconds": "1"}, {"last_line": None}):
+        with pytest.raises(ValidationError):
+            DynDOLODPipelineProgressPayload(**{**base, **roto})  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        payload.log = "otro"  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_con_texgen_el_observador_sigue_primero_a_texgen_y_despues_al_log_de_dyndolod(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con dos logs de esta corrida el activo es el ÚLTIMO (DynDOLOD sigue a TexGen), y TexGen cuenta si corre."""
+    _runner, _output_dir, log_dyndolod = _corrida_observable(service, tmp_path)
+    log_texgen = log_dyndolod.parent / "TexGen_SSE_log.txt"
+    runner = service._runner
+    assert runner is not None
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: {"TexGen": log_texgen, "DynDOLOD": log_dyndolod}[tool])
+
+    observador = service._iniciar_observador(runner, run_texgen=True, desde_epoch=time.time() - 1, tx_id=7)
+    try:
+        _agregar_al_log(log_texgen, "[00:01] TexGen trabajando")  # fase TexGen: sólo existe su log
+        await asyncio.sleep(0.4)  # silencio > umbral: el estancamiento nombra a TexGen
+        _agregar_al_log(log_dyndolod, "[00:01] DynDOLOD trabajando")  # arranca DynDOLOD: actividad en OTRO archivo
+        await asyncio.sleep(0.1)
+    finally:
+        await asyncio.wait_for(service._detener_observador(observador), timeout=5)
+
+    avisos = _avisos_de_actividad(mock_event_bus)
+    estancado = next(a for a in avisos if a["kind"] == "stalled")
+    reanudado = next(a for a in avisos if a["kind"] == "resumed")
+    assert estancado["log"] == "TexGen_SSE_log.txt"
+    assert estancado["last_line"] == "[00:01] TexGen trabajando"
+    assert reanudado["log"] == "DynDOLOD_SSE_log.txt", "el observador pasó al log de la herramienta que sigue"
+
+
+@pytest.mark.asyncio
+async def test_un_log_de_una_corrida_anterior_no_se_observa(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un log con mtime de hace una hora es evidencia de OTRO día: el aviso de estancamiento no puede nombrarlo."""
+    import os
+
+    _runner, _output_dir, log = _corrida_observable(service, tmp_path)
+    runner = service._runner
+    assert runner is not None
+    _agregar_al_log(log, "[00:47] TexGen completed successfully (de ayer)")
+    hace_una_hora = time.time() - 3600
+    os.utime(log, (hace_una_hora, hace_una_hora))
+
+    observador = service._iniciar_observador(runner, run_texgen=False, desde_epoch=time.time(), tx_id=7)
+    try:
+        await asyncio.sleep(0.4)
+    finally:
+        await asyncio.wait_for(service._detener_observador(observador), timeout=5)
+
+    [estancado, *_] = [a for a in _avisos_de_actividad(mock_event_bus) if a["kind"] == "stalled"]
+    assert estancado["log"] == "", "todavía no hay un log de ESTA corrida que nombrar"
+    assert estancado["last_line"] == ""
+
+
+@pytest.mark.asyncio
+async def test_la_corrida_no_observa_un_log_de_una_corrida_anterior(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El observador recibe el inicio de ESTA corrida: el log de ayer no puede presentarse como el actual."""
+    import os
+
+    runner, output_dir, log = _corrida_observable(service, tmp_path)
+    _agregar_al_log(log, "[00:47] TexGen completed successfully (de ayer)")
+    hace_una_hora = time.time() - 3600
+    os.utime(log, (hace_una_hora, hace_una_hora))
+
+    async def _pipeline_que_no_escribe(**_kwargs: object) -> DynDOLODPipelineResult:
+        await asyncio.sleep(0.4)  # más que el umbral de estancamiento, sin tocar el log
+        return _resultado_exitoso(output_dir)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_no_escribe)
+
+    await _ejecutar_con_plazo(service)
+
+    estancados = [a for a in _avisos_de_actividad(mock_event_bus) if a["kind"] == "stalled"]
+    assert estancados, "la corrida estuvo callada más que el umbral"
+    assert estancados[0]["log"] == "", "no hay un log de ESTA corrida: el de hace una hora no cuenta"
+
+
+@pytest.mark.asyncio
+async def test_execute_con_texgen_observa_el_log_de_texgen(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """``execute`` le dice al observador si la corrida incluye TexGen: sin eso, su fase quedaría sin pulso."""
+    runner, _output_dir, log_dyndolod = _corrida_observable(service, tmp_path)
+    log_texgen = log_dyndolod.parent / "TexGen_SSE_log.txt"
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: {"TexGen": log_texgen, "DynDOLOD": log_dyndolod}[tool])
+
+    async def _pipeline_que_falla_tras_callar(**_kwargs: object) -> DynDOLODPipelineResult:
+        _agregar_al_log(log_texgen, "[00:01] TexGen trabajando")
+        await asyncio.sleep(0.4)  # más que el umbral: el estancamiento tiene que nombrar a TexGen
+        raise DynDOLODExecutionError("boom")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_falla_tras_callar)
+
+    await asyncio.wait_for(service.execute(preset="Medium", run_texgen=True, create_snapshot=True), timeout=15)
+
+    estancados = [a for a in _avisos_de_actividad(mock_event_bus) if a["kind"] == "stalled"]
+    assert estancados, "la corrida estuvo callada más que el umbral"
+    assert estancados[0]["log"] == "TexGen_SSE_log.txt"
+    assert estancados[0]["last_line"] == "[00:01] TexGen trabajando"

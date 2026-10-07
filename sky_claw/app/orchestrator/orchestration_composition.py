@@ -42,6 +42,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
+from sky_claw.local.tools.dyndolod_actividad import ConfiguracionDeObservacion
 from sky_claw.local.tools.dyndolod_runner import (
     DataVisibilityDomainError,
     DynDOLODSpawnStrategy,
@@ -232,6 +233,10 @@ def build_orchestration_composition(
         workspace=dyndolod_workspace,
         readiness=dyndolod_readiness,
         spawn_strategy=dyndolod_spawn_strategy,
+        # Etapa 9 asistida y de 30+ min: avisos de progreso/estancamiento del log mientras
+        # corre (solo lectura; el notificador de operador los lleva a Telegram). El preview
+        # NO la enciende: solo hace dry_run y no lanza ninguna herramienta.
+        observacion=ConfiguracionDeObservacion(),
     )
 
     xedit_service = XEditPipelineService(

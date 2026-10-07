@@ -6,6 +6,10 @@ la corrida desde el teléfono no recibía el aviso de fallo ni el log que lo
 explica. Este módulo es el suscriptor que faltaba. No toca el pipeline ni sus
 transacciones: sólo LEE eventos del bus y escribe al operador.
 
+Además del inicio y el fin, avisa la ACTIVIDAD del log mientras la etapa corre
+(``pipeline.dyndolod.progress``: sigue en curso, sin actividad, reanudada): una etapa asistida
+de decenas de minutos no puede quedar muda para quien la sigue desde el teléfono.
+
 **Tres propiedades que lo hacen seguro de enchufar a un bus compartido:**
 
 1. *El callback no espera al canal y nunca lanza.* El bus despacha UNA tarea por
@@ -46,6 +50,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineCompletedPayload,
+    DynDOLODPipelineProgressPayload,
     DynDOLODPipelineStartedPayload,
 )
 from sky_claw.app.security import links
@@ -60,6 +65,7 @@ logger = logging.getLogger(__name__)
 #: módulo no puede quedar sordo en silencio).
 TOPIC_INICIO = "pipeline.dyndolod.started"
 TOPIC_FIN = "pipeline.dyndolod.completed"
+TOPIC_PROGRESO = "pipeline.dyndolod.progress"
 PATRON_DE_SUSCRIPCION = "pipeline.dyndolod.*"
 
 #: Cuántos errores se muestran y cuánto de cada uno. El producto, con el peor
@@ -176,6 +182,46 @@ def _formatear_fin(payload: DynDOLODPipelineCompletedPayload) -> str:
     return "\n".join(lineas)
 
 
+_UNIDADES_DE_TAMANO = ("B", "KiB", "MiB", "GiB")
+
+_ENCABEZADO_DE_ACTIVIDAD = {
+    "progress": "⏳ <b>DynDOLOD · etapa 9 en curso</b>",
+    "stalled": "⚠️ <b>DynDOLOD · sin actividad en el log</b>",
+    "resumed": "▶️ <b>DynDOLOD · actividad reanudada</b>",
+}
+
+
+def _tamano_legible(tamano: int) -> str:
+    """``4300000`` -> ``4.1 MiB``. Un tamaño negativo (no debería existir) se lee como ``0 B``."""
+    valor = float(max(tamano, 0))
+    indice = 0
+    while valor >= 1024 and indice < len(_UNIDADES_DE_TAMANO) - 1:
+        valor /= 1024
+        indice += 1
+    return f"{int(valor)} B" if indice == 0 else f"{valor:.1f} {_UNIDADES_DE_TAMANO[indice]}"
+
+
+def _formatear_progreso(payload: DynDOLODPipelineProgressPayload) -> str:
+    lineas = [f"{_ENCABEZADO_DE_ACTIVIDAD[payload.kind]} ({_duracion_legible(payload.elapsed_seconds)})"]
+    if payload.log:
+        lineas.append(f"Log: <code>{_esc(payload.log)}</code> · {_tamano_legible(payload.log_size_bytes)}")
+    else:
+        lineas.append("Todavía no hay un log de esta corrida.")
+    if payload.kind == "stalled":
+        lineas.append(
+            f"Sin cambios hace {_duracion_legible(payload.idle_seconds)}: "
+            "la herramienta puede estar esperando una acción en su ventana."
+        )
+    elif payload.kind == "resumed":
+        lineas.append(f"Volvió a escribir tras {_duracion_legible(payload.idle_seconds)} sin cambios.")
+    elif payload.idle_seconds >= 1:
+        lineas.append(f"Último cambio del log hace {_duracion_legible(payload.idle_seconds)}.")
+    if payload.last_line:
+        lineas.append("Última línea:")
+        lineas.append(f"<pre>{_esc(_recortar(payload.last_line, _MAX_CARACTERES_POR_ERROR))}</pre>")
+    return "\n".join(lineas)
+
+
 def _leer_cola_de_log(ruta: pathlib.Path, max_bytes: int) -> bytes:
     """Los últimos ``max_bytes`` de ``ruta``, sin la primera línea si quedó cortada."""
     with ruta.open("rb") as archivo:
@@ -283,6 +329,9 @@ class DynDOLODOperatorNotifier:
                 texto_html=_formatear_fin(fin),
                 logs=tuple(pathlib.Path(ruta) for ruta in fin.log_paths) if adjuntar else (),
             )
+        if event.topic == TOPIC_PROGRESO:
+            progreso = DynDOLODPipelineProgressPayload.model_validate(event.payload, strict=False)
+            return _Notificacion(clave=f"actividad:{progreso.kind}", texto_html=_formatear_progreso(progreso))
         return None
 
     def _encolar(self, notificacion: _Notificacion) -> None:

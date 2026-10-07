@@ -120,7 +120,7 @@ _ITEMS = frozenset(
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
         # R1/R2 son hermanos en #592.
         "Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)",
-        "Notificación al operador de la etapa 9 por Telegram (inicio, fin y log del fallo)",
+        "Notificación al operador de la etapa 9 por Telegram (inicio, fin, log del fallo y actividad del log)",
     }
 )
 
@@ -642,7 +642,7 @@ def test_notificacion_al_operador_de_la_etapa_9_registrada_como_parcial_sin_smok
     nombrando los límites (sin drenaje en shutdown, sin comandos de bot) en vez de dejar que el lector los suponga.
     """
     filas = _tabla()
-    fila = filas["Notificación al operador de la etapa 9 por Telegram (inicio, fin y log del fallo)"]
+    fila = filas["Notificación al operador de la etapa 9 por Telegram (inicio, fin, log del fallo y actividad del log)"]
     que_falta = fila["Qué falta"]
 
     assert fila["Estado"] == "Parcial"
@@ -651,6 +651,11 @@ def test_notificacion_al_operador_de_la_etapa_9_registrada_como_parcial_sin_smok
     assert "NO se cierra con esto" in que_falta, "el smoke real de Telegram sigue bloqueado"
     assert "sin drenaje" in que_falta, "el límite de entrega ante un shutdown inmediato debe seguir declarado"
     assert "NO existen comandos de bot" in que_falta, "no se afirma un control remoto que no existe"
+    assert "sólo INFORMA" in que_falta, "el observador no cancela nada: el límite tiene que seguir declarado"
+    assert "NO una calibración" in que_falta, "los umbrales salen de UNA corrida: no se venden como calibrados"
+    assert "pipeline.dyndolod.progress" in que_falta
+    assert "test_dyndolod_actividad.py" in fila["Verificado por"]
+    assert "test_dyndolod_observacion_wiring.py" in fila["Verificado por"]
     assert "DEFAULT_TOOL_ROUND_TIMEOUT" in que_falta
     assert "test_dyndolod_operator_notifier_wiring.py" in fila["Verificado por"]
     assert "test_app_context_publicacion_simetrica.py" in fila["Verificado por"]
