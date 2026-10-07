@@ -1,0 +1,1813 @@
+{
+ "decision_old": "EXP_M3_RECONSTRUCTION_CONDITIONAL",
+ "decision_new": "EXP_M3_RECONSTRUCTION_CONDITIONAL",
+ "decision_equivalent": true,
+ "cohort_a_usable_old": 31,
+ "cohort_a_usable_new": 31,
+ "manifest_sha256_old": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+ "manifest_sha256_new": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+ "summary_field_classes": {
+  "by_split": "COMPLEX_COMPARED_SEPARATELY",
+  "calibration": "COMPLEX_COMPARED_SEPARATELY",
+  "catastrophic_rule": "COMPLEX_COMPARED_SEPARATELY",
+  "decision_rules": "COMPLEX_COMPARED_SEPARATELY",
+  "families": "COMPLEX_COMPARED_SEPARATELY",
+  "heldout_family_directions": "COMPLEX_COMPARED_SEPARATELY",
+  "heldout_rates": "COMPLEX_COMPARED_SEPARATELY",
+  "heldout_trust": "COMPLEX_COMPARED_SEPARATELY",
+  "n": "UNCHANGED_BIT_IDENTICAL",
+  "raw": "COMPLEX_COMPARED_SEPARATELY",
+  "selected_proxy": "MATERIAL_DELTA",
+  "solver_normal_convention": "UNCHANGED_BIT_IDENTICAL",
+  "sufficient": "UNCHANGED_BIT_IDENTICAL"
+ },
+ "rates_sweep_30deg": {
+  "n_old": 5,
+  "n_new": 5,
+  "proxy_old": "projection_residual_median_deg",
+  "proxy_new": "projection_residual_p95_deg",
+  "proxy_equal": false,
+  "coverage_equal_all": false,
+  "comparable": false,
+  "note": "las curvas NO son comparables punto a punto si el proxy o la cobertura difieren; threshold es una funcion del proxy y no es identidad (§25)",
+  "pairs": [
+   {
+    "q_ordinal": 0,
+    "q_label": 0.1,
+    "proxy_old": "projection_residual_median_deg",
+    "proxy_new": "projection_residual_p95_deg",
+    "coverage_old": 0.1,
+    "coverage_new": 0.125,
+    "coverage_equal": false,
+    "threshold_old": 1.2672489052003004,
+    "threshold_new": 0.8087087436774103,
+    "false_safe_old": 0.14285714285714285,
+    "false_safe_new": 0.1111111111111111,
+    "false_review_old": 0.6666666666666667,
+    "false_review_new": 0.6190476190476191
+   },
+   {
+    "q_ordinal": 1,
+    "q_label": 0.2,
+    "proxy_old": "projection_residual_median_deg",
+    "proxy_new": "projection_residual_p95_deg",
+    "coverage_old": 0.2,
+    "coverage_new": 0.20833333333333334,
+    "coverage_equal": false,
+    "threshold_old": 2.991085316549714,
+    "threshold_new": 1.1047543255868184,
+    "false_safe_old": 0.42857142857142855,
+    "false_safe_new": 0.1111111111111111,
+    "false_review_old": 0.75,
+    "false_review_new": 0.5789473684210527
+   },
+   {
+    "q_ordinal": 2,
+    "q_label": 0.3,
+    "proxy_old": "projection_residual_median_deg",
+    "proxy_new": "projection_residual_p95_deg",
+    "coverage_old": 0.3,
+    "coverage_new": 0.2916666666666667,
+    "coverage_equal": false,
+    "threshold_old": 7.547982306199884,
+    "threshold_new": 1.8303069430996923,
+    "false_safe_old": 0.5714285714285714,
+    "false_safe_new": 0.1111111111111111,
+    "false_review_old": 0.7857142857142857,
+    "false_review_new": 0.5294117647058824
+   },
+   {
+    "q_ordinal": 3,
+    "q_label": 0.4,
+    "proxy_old": "projection_residual_median_deg",
+    "proxy_new": "projection_residual_p95_deg",
+    "coverage_old": 0.4,
+    "coverage_new": 0.4166666666666667,
+    "coverage_equal": false,
+    "threshold_old": 9.811581217543987,
+    "threshold_new": 2.1775492654276296,
+    "false_safe_old": 0.5714285714285714,
+    "false_safe_new": 0.2222222222222222,
+    "false_review_old": 0.75,
+    "false_review_new": 0.5
+   },
+   {
+    "q_ordinal": 4,
+    "q_label": 0.5,
+    "proxy_old": "projection_residual_median_deg",
+    "proxy_new": "projection_residual_p95_deg",
+    "coverage_old": 0.5,
+    "coverage_new": 0.5,
+    "coverage_equal": true,
+    "threshold_old": 12.752189941965808,
+    "threshold_new": 2.6524908751165204,
+    "false_safe_old": 0.7142857142857143,
+    "false_safe_new": 0.3333333333333333,
+    "false_review_old": 0.8,
+    "false_review_new": 0.5
+   }
+  ]
+ },
+ "rates_sweep_proxy_old": "projection_residual_median_deg",
+ "rates_sweep_proxy_new": "projection_residual_p95_deg",
+ "by_threshold_cohort": {
+  "by_threshold": [
+   {
+    "threshold_deg": "20.0",
+    "n_old": 14,
+    "n_new": 16,
+    "delta": 2
+   },
+   {
+    "threshold_deg": "30.0",
+    "n_old": 20,
+    "n_new": 24,
+    "delta": 4
+   },
+   {
+    "threshold_deg": "40.0",
+    "n_old": 23,
+    "n_new": 28,
+    "delta": 5
+   }
+  ],
+  "cohort_membership_changed": true,
+  "classification": "EXPECTED_DIAGNOSTIC_COHORT_MEMBERSHIP_CHANGE"
+ },
+ "heldout_rates_old_len": 5,
+ "heldout_rates_new_len": 5,
+ "raw_rows": {
+  "n_paired": 31,
+  "only_old": [],
+  "only_new": [],
+  "field_stats": {
+   "FLOOR_CLAMP@sigma=curl_mad:aligned_rmse": {
+    "UNCHANGED_BIT_IDENTICAL": 19,
+    "MACHINE_PRECISION_DELTA": 11,
+    "MATERIAL_DELTA": 1
+   },
+   "FLOOR_CLAMP@sigma=curl_mad:variance_ratio": {
+    "MATERIAL_DELTA": 31
+   },
+   "FLOOR_CLAMP@sigma=projection_median:aligned_rmse": {
+    "MATERIAL_DELTA": 16,
+    "UNCHANGED_BIT_IDENTICAL": 14,
+    "MACHINE_PRECISION_DELTA": 1
+   },
+   "FLOOR_CLAMP@sigma=projection_median:variance_ratio": {
+    "MATERIAL_DELTA": 30,
+    "UNCHANGED_BIT_IDENTICAL": 1
+   },
+   "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse": {
+    "MATERIAL_DELTA": 29,
+    "UNCHANGED_BIT_IDENTICAL": 2
+   },
+   "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio": {
+    "MATERIAL_DELTA": 31
+   },
+   "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse": {
+    "MATERIAL_DELTA": 31
+   },
+   "SOFT_TIKHONOV@sigma=projection_median:variance_ratio": {
+    "MATERIAL_DELTA": 31
+   },
+   "aligned_rmse": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "best_sign": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "catastrophic": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "correlation": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "gradient_energy_ratio": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "gradient_rmse": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "height_bit_depth": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "normal_convention": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "nz_min": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "nz_p01": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "nz_p05": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "oracle_agreement_deg": {
+    "MATERIAL_DELTA": 31
+   },
+   "oracle_best_strength": {
+    "MATERIAL_DELTA": 31
+   },
+   "provenance_status": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "provider": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "raw_centered_rmse": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "seam_gradient": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "seam_height": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "split": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "tested_convention": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   },
+   "variance_ratio": {
+    "UNCHANGED_BIT_IDENTICAL": 31
+   }
+  },
+  "material_deltas": [
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00030687503054808275,
+    "new": 0.008987189671234228
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.0262802943621843,
+    "new": 0.019238205968073744
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.009629948016948314,
+    "new": 0.9037408294725285
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03442050991595944,
+    "new": 0.034306730940614746
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.1134287196294607e-07,
+    "new": 9.347350765853902e-05
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03429836572509828,
+    "new": 0.025443249681847874
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0001071530188163827,
+    "new": 0.32106561296484687
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "oracle_agreement_deg",
+    "old": 5.191516894438661,
+    "new": 5.07004649892558
+   },
+   {
+    "asset": "ambientcg_Bricks051",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0007020468841736229,
+    "new": 0.008221964840225367
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.038568174572163015,
+    "new": 0.037984619181007054
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.02408239730313354,
+    "new": 0.6739869368716876
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.039132778280201556,
+    "new": 0.039121131903393246
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 7.308967529157042e-07,
+    "new": 9.80434295517279e-05
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.039097332257569804,
+    "new": 0.0384081576469123
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0008032422550208993,
+    "new": 0.28640433244008745
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "oracle_agreement_deg",
+    "old": 20.12243864678954,
+    "new": 18.597738705976127
+   },
+   {
+    "asset": "ambientcg_Concrete028",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0005708302185908728,
+    "new": 0.008088213177613074
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.0065415059697206185,
+    "new": 0.005390092184973329
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0012576095017190706,
+    "new": 0.9972861023793537
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.008924889540632527,
+    "new": 0.008886902673564208
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 3.2824743577571527e-07,
+    "new": 6.49079975067294e-05
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.008921393021460944,
+    "new": 0.0060873022088369436
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 1.591015751874688e-06,
+    "new": 0.4056936841399147
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "oracle_agreement_deg",
+    "old": 13.102326754437376,
+    "new": 10.708549536549764
+   },
+   {
+    "asset": "ambientcg_Ground054",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0008108031397818724,
+    "new": 0.008089880437553041
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.04060183129402649,
+    "new": 0.039210970503690816
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.013025606199872943,
+    "new": 0.8906511015260603
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.04207240275553706,
+    "new": 0.04205066073604407
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 7.406179515038862e-07,
+    "new": 7.252917872687138e-05
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.04203610516790694,
+    "new": 0.04010360780005282
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.00018596021946438776,
+    "new": 0.4372926221548941
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "oracle_agreement_deg",
+    "old": 26.824179882880838,
+    "new": 23.144419780605805
+   },
+   {
+    "asset": "ambientcg_PavingStones131",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0009312862754599751,
+    "new": 0.04154198203841136
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.012950829252105531,
+    "new": 0.010437218443693152
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.030664092967455602,
+    "new": 0.9305034444003272
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.01604314753425443,
+    "new": 0.015800119391722937
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 9.780702224449972e-07,
+    "new": 0.0017740959682702134
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.01586343779177051,
+    "new": 0.011007144980343785
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0009904599253258723,
+    "new": 0.6817685362911448
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "oracle_agreement_deg",
+    "old": 4.694979679286371,
+    "new": 4.635423855882459
+   },
+   {
+    "asset": "ambientcg_Planks021",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00015098536213706935,
+    "new": 0.003257842484295451
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.001404101058891425,
+    "new": 0.3767824986076202
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.0393439732055037,
+    "new": 0.039281330339952375
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 2.99415582674896e-08,
+    "new": 1.3815555024816751e-05
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03931866456425612,
+    "new": 0.03363612124965105
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 2.580045603398107e-06,
+    "new": 0.07997301678167205
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "oracle_agreement_deg",
+    "old": 4.587963922796217,
+    "new": 4.6946266547225814
+   },
+   {
+    "asset": "ambientcg_Rock023",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00019229564405487255,
+    "new": 0.011723351941426598
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.06278156553489116,
+    "new": 0.0464915516734342
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.010408756317522076,
+    "new": 0.8233913959897476
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.07472019265673299,
+    "new": 0.07451208056686844
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 4.721406824989144e-08,
+    "new": 0.00017048936890219757
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.07453566508356531,
+    "new": 0.05865876467294184
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.00013483787330424585,
+    "new": 0.40351032132699743
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "oracle_agreement_deg",
+    "old": 33.09800826143237,
+    "new": 27.107081944821346
+   },
+   {
+    "asset": "ambientcg_Tiles049",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:aligned_rmse",
+    "old": 0.17668441152146078,
+    "new": 0.17668189925570327
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.09910080603044641,
+    "new": 0.15819297193192838
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.17668499176678787,
+    "new": 0.1766818992559836
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 0.02346836345532553,
+    "new": 0.15819295430615665
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.17668240252330167,
+    "new": 0.17668236266223988
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.1281318678836022,
+    "new": 0.1303976012812302
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "oracle_agreement_deg",
+    "old": 22.189494761981024,
+    "new": 20.687554135946694
+   },
+   {
+    "asset": "ambientcg_Tiles075",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0006939754483682565,
+    "new": 0.014218071844001746
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.014293896849519316,
+    "new": 0.47690130832339395
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.05925084466032961,
+    "new": 0.059176188644015824
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 6.180387060531883e-07,
+    "new": 0.00025044376370819487
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.05917577884343887,
+    "new": 0.05774744019304859
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0002530725971287078,
+    "new": 0.11136943499673409
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "oracle_agreement_deg",
+    "old": 8.699679951841128,
+    "new": 8.436606548642498
+   },
+   {
+    "asset": "polyhaven_blue_floor_tiles_01",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00024066300893133932,
+    "new": 0.004201114525590224
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.04057395703238485,
+    "new": 0.03702887610039475
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.01050039362408645,
+    "new": 0.9221041196172157
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.05022189720508769,
+    "new": 0.050133478115453205
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 6.090343509069477e-08,
+    "new": 1.840070851665615e-05
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.04999459789136302,
+    "new": 0.04039731556546661
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0001134067005728711,
+    "new": 0.25646292546712185
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "oracle_agreement_deg",
+    "old": 36.52217465104853,
+    "new": 29.191838752116162
+   },
+   {
+    "asset": "polyhaven_brick_4",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 5.878515765116543e-05,
+    "new": 0.0013326205936754689
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.000818546372607718,
+    "new": 0.05215950763522481
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.0782181575470272,
+    "new": 0.07820164047555223
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 6.0310263304538144e-09,
+    "new": 3.0844620548094997e-06
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.07820829862284619,
+    "new": 0.0775899361486802
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 1.1659918096290748e-06,
+    "new": 0.003939653947802485
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "oracle_agreement_deg",
+    "old": 6.565958919106534,
+    "new": 5.0654337938258
+   },
+   {
+    "asset": "polyhaven_brick_wall_005",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0161493370692087,
+    "new": 0.15304691579880844
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.003608120467789458,
+    "new": 0.003607923263013403
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.5499216392278609,
+    "new": 0.7412809321046862
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.0036167962441561985,
+    "new": 0.003613419704501819
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 0.00033774417306528466,
+    "new": 0.021734721355607806
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.0036092467823103155,
+    "new": 0.0036074026414085205
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.13445263248004435,
+    "new": 0.6329378939141344
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "oracle_agreement_deg",
+    "old": 0.5978386624189131,
+    "new": 0.5948379122478805
+   },
+   {
+    "asset": "polyhaven_brown_floor_tiles",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 2.6620098929402474e-05,
+    "new": 0.0006093656529756065
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.05448663111076584,
+    "new": 0.054362499802484865
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0024722625470695986,
+    "new": 0.01866219320016414
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.05478709248163668,
+    "new": 0.054767175002731185
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 3.59221353171222e-08,
+    "new": 1.7628680527201954e-05
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.05470823631745097,
+    "new": 0.054385013461537124
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.00023859653791404473,
+    "new": 0.004825175656695052
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "oracle_agreement_deg",
+    "old": 4.140754316509366,
+    "new": 4.122296692286843
+   },
+   {
+    "asset": "polyhaven_brown_planks_03",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0007513097421536865,
+    "new": 0.014709576825615996
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.048209123159119266,
+    "new": 0.05579047147350681
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.1400199435758652,
+    "new": 0.13964334824169275
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.0754529127393475e-06,
+    "new": 0.000390323571158413
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.13881415578089792,
+    "new": 0.13863970089212352
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0037007057918687298,
+    "new": 0.00482366964837746
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "oracle_agreement_deg",
+    "old": 7.96624163688646,
+    "new": 7.858813348836193
+   },
+   {
+    "asset": "polyhaven_brown_planks_05",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 2.3919960867906915e-07,
+    "new": 8.799385946726241e-06
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 1.1688910181362392e-05,
+    "new": 0.0010209077906292259
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03668517787292069,
+    "new": 0.03668516987579195
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 3.554832060112985e-11,
+    "new": 4.759768322104275e-08
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03668516719671391,
+    "new": 0.03668460813728098
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 8.36905019816206e-08,
+    "new": 0.00024234348938978627
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "oracle_agreement_deg",
+    "old": 64.16535251947782,
+    "new": 41.39658850752644
+   },
+   {
+    "asset": "polyhaven_brushed_concrete_03",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 5.529226458030576e-05,
+    "new": 0.0016035971249840357
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0005867963687073522,
+    "new": 0.002219146428126192
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03927147685741029,
+    "new": 0.03926221633702274
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 6.162923544608894e-09,
+    "new": 5.149232417824667e-06
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03926828917391306,
+    "new": 0.03925855610735797
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 6.92522704388925e-07,
+    "new": 9.834937177350375e-06
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "oracle_agreement_deg",
+    "old": 13.122800441801317,
+    "new": 13.013961691360567
+   },
+   {
+    "asset": "polyhaven_castle_brick_07",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0005064309196230804,
+    "new": 0.016452554957606433
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.028875110939876332,
+    "new": 0.028169789735837728
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.014210455336624872,
+    "new": 0.884264377784948
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.029690698368539565,
+    "new": 0.029661321530850382
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 2.9052037804362683e-07,
+    "new": 0.00029580683665389316
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.029665385574227893,
+    "new": 0.028438894291702165
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0002217855372041162,
+    "new": 0.5709546988263517
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "oracle_agreement_deg",
+    "old": 42.69926392112263,
+    "new": 32.27914025954465
+   },
+   {
+    "asset": "polyhaven_chipped_concrete",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 9.546624503986798e-05,
+    "new": 0.0014861894365895479
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0003300069999709867,
+    "new": 0.015154991594278742
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.0753227331265514,
+    "new": 0.07531638436161546
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.6249461166738174e-08,
+    "new": 3.917836756304147e-06
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.07532166067319478,
+    "new": 0.07525529070644425
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 1.9400242544327513e-07,
+    "new": 0.0003875335072247513
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "oracle_agreement_deg",
+    "old": 12.882185473406286,
+    "new": 12.980611497164176
+   },
+   {
+    "asset": "polyhaven_cliff_side",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0009245870645594476,
+    "new": 0.02273710079878299
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.0838175790369107,
+    "new": 0.08089874604646183
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0035428195341433363,
+    "new": 0.7123284785307034
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.09080872956452483,
+    "new": 0.09052893120640894
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.1625857404332288e-06,
+    "new": 0.0006610339446673829
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.09077450719890279,
+    "new": 0.08438317976086546
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 1.69420317264569e-05,
+    "new": 0.22248689195199048
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "oracle_agreement_deg",
+    "old": 13.199832626243271,
+    "new": 12.03274694734188
+   },
+   {
+    "asset": "polyhaven_cobblestone_01",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00013181088035031093,
+    "new": 0.002561032511726433
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.001893057052055584,
+    "new": 0.22849212448677594
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.07056218455982192,
+    "new": 0.07054874061012871
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 2.973151411162809e-08,
+    "new": 1.1130474861263299e-05
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.07055242715631044,
+    "new": 0.06962888582661658
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 6.0954785634729575e-06,
+    "new": 0.046061575325421926
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "oracle_agreement_deg",
+    "old": 39.014000751048556,
+    "new": 28.08877985485619
+   },
+   {
+    "asset": "polyhaven_cobblestone_03",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 3.175982260072041e-26,
+    "new": 1.1776010779641169e-25
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 7.352444519213805e-05,
+    "new": 7.353063808243136e-05
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.4375535734834444e-51,
+    "new": 1.9763519736207646e-50
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.07885533496884752,
+    "new": 0.0788553349402683
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 7.702593811053326e-09,
+    "new": 7.703891288140785e-09
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "oracle_agreement_deg",
+    "old": 7.226291119028353,
+    "new": 6.92352170276884
+   },
+   {
+    "asset": "polyhaven_cobblestone_05",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00032131091135797666,
+    "new": 0.006207998122986265
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.03008890375269588,
+    "new": 0.02975766470920956
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0026173331575494014,
+    "new": 0.8880794125917097
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03062364251718747,
+    "new": 0.030615963425867247
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.1682165585847998e-07,
+    "new": 4.302932646097593e-05
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03062063314138745,
+    "new": 0.03002265552645216
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 7.711150995216149e-06,
+    "new": 0.30860931964733296
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "oracle_agreement_deg",
+    "old": 22.615377827728416,
+    "new": 18.834628857676215
+   },
+   {
+    "asset": "polyhaven_cracked_red_ground",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0011780604613441448,
+    "new": 0.021913886496382547
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.03340299798144309,
+    "new": 0.0334031952029221
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.04801890609562058,
+    "new": 0.4990083601800643
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03394029545303668,
+    "new": 0.03390728923913047
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 2.957519679745814e-06,
+    "new": 0.0009403855947158759
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.033868404553394335,
+    "new": 0.033475546463644826
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.0040785094408290435,
+    "new": 0.12705505078890136
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "oracle_agreement_deg",
+    "old": 3.2255888365388756,
+    "new": 3.206805540708301
+   },
+   {
+    "asset": "polyhaven_dark_wooden_planks",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0013894341623881038,
+    "new": 0.009793414793041466
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.011534958922957507,
+    "new": 0.011453763168874255
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.021414351104459578,
+    "new": 0.9729938187711572
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.011618651233872295,
+    "new": 0.011617812670079695
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 1.9809652144749483e-06,
+    "new": 9.673661667398627e-05
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.01161666813309236,
+    "new": 0.011524345327562038
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.00045174849853506476,
+    "new": 0.4605686378543738
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "oracle_agreement_deg",
+    "old": 6.162980389429954,
+    "new": 6.040422677498658
+   },
+   {
+    "asset": "polyhaven_dry_ground_01",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 1.3824315079138561e-05,
+    "new": 9.452958315620448e-05
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 5.132688767764746e-05,
+    "new": 0.001920835905167418
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.10189536048492899,
+    "new": 0.10189352969444646
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 6.804468131998006e-10,
+    "new": 3.1795151664136054e-08
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.10189450963268154,
+    "new": 0.10185233592298176
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 9.377044253038296e-09,
+    "new": 1.2937929798546299e-05
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "oracle_agreement_deg",
+    "old": 21.167435703582136,
+    "new": 20.181179980928395
+   },
+   {
+    "asset": "polyhaven_gray_rocks",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0004959247984468837,
+    "new": 0.0065174404194413916
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.02905663812174327,
+    "new": 0.029011841530856026
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.005998372847835828,
+    "new": 0.11517342396044393
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.02909830811269764,
+    "new": 0.029094493707666737
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 2.1180533037445837e-06,
+    "new": 0.00033047913946660656
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.029094809155517518,
+    "new": 0.02902815864776027
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 0.00028234009212739454,
+    "new": 0.07938537854229014
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "oracle_agreement_deg",
+    "old": 5.373481423872551,
+    "new": 5.315874151388549
+   },
+   {
+    "asset": "polyhaven_precast_stone_paving",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00019785915491602496,
+    "new": 0.003886926430397734
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.004598587848297048,
+    "new": 0.016332499509708817
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.10520970769460278,
+    "new": 0.10515279683278193
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 7.083334332041048e-08,
+    "new": 2.697157279350537e-05
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.10514188135669698,
+    "new": 0.10496479542948857
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 3.7654962373700434e-05,
+    "new": 0.0004554254054552975
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "oracle_agreement_deg",
+    "old": 14.079619454781112,
+    "new": 13.392864367416378
+   },
+   {
+    "asset": "polyhaven_red_brick_03",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.0002865682468533489,
+    "new": 0.00532248571971036
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0023932697954275914,
+    "new": 0.5358379959763424
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.03706317070419252,
+    "new": 0.03704198575467513
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 8.706184213038684e-08,
+    "new": 2.9713986113949444e-05
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.03705428719401662,
+    "new": 0.03548261340169371
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 6.045204560530236e-06,
+    "new": 0.12368736585140884
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "oracle_agreement_deg",
+    "old": 5.139132722923598,
+    "new": 4.6326692788687875
+   },
+   {
+    "asset": "polyhaven_rock_face",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00018497963153569385,
+    "new": 0.003655959650443608
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.0014820133670224354,
+    "new": 0.15038086763665792
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.09806669409096956,
+    "new": 0.09801497070553743
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 5.4315757347286116e-08,
+    "new": 2.0987332363294395e-05
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.09804733885655634,
+    "new": 0.09601656230152311
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 3.4722746783405653e-06,
+    "new": 0.02352217483832821
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "oracle_agreement_deg",
+    "old": 2.9836478814640706,
+    "new": 2.465291177152382
+   },
+   {
+    "asset": "polyhaven_rocky_terrain",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 0.00011088123944268654,
+    "new": 0.0038537741350893
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "FLOOR_CLAMP@sigma=projection_median:aligned_rmse",
+    "old": 0.053993740895651926,
+    "new": 0.05357095956844951
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 0.002810173323526382,
+    "new": 0.2995755871458697
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:aligned_rmse",
+    "old": 0.05442991072969047,
+    "new": 0.05441863352862198
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 4.133927349101252e-08,
+    "new": 4.8690284978898616e-05
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.054421748408474954,
+    "new": 0.05383352265960241
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 2.6072480034440082e-05,
+    "new": 0.13716205289232516
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "oracle_agreement_deg",
+    "old": 19.80811090835272,
+    "new": 18.091391541365525
+   },
+   {
+    "asset": "polyhaven_square_brick_paving",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "FLOOR_CLAMP@sigma=curl_mad:variance_ratio",
+    "old": 2.0603659191467974e-32,
+    "new": 7.057681564142544e-32
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "FLOOR_CLAMP@sigma=projection_median:variance_ratio",
+    "old": 1.410148549826938e-06,
+    "new": 1.4026119781991054e-06
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "SOFT_TIKHONOV@sigma=curl_mad:variance_ratio",
+    "old": 4.1500142119043445e-62,
+    "new": 4.869506926710468e-61
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:aligned_rmse",
+    "old": 0.058227192028730265,
+    "new": 0.05822719261509654
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "SOFT_TIKHONOV@sigma=projection_median:variance_ratio",
+    "old": 1.9434220417298069e-10,
+    "new": 1.922707146537672e-10
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "oracle_agreement_deg",
+    "old": 8.56451790223199,
+    "new": 8.440513244401158
+   },
+   {
+    "asset": "polyhaven_weathered_planks",
+    "field": "oracle_best_strength",
+    "old": -0.05,
+    "new": 0.05
+   }
+  ]
+ }
+}
