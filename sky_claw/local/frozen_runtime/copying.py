@@ -32,6 +32,7 @@ Decisiones y su razon:
 
 from __future__ import annotations
 
+import bisect
 import os
 import pathlib
 import shutil
@@ -311,23 +312,32 @@ def _validar_coherencia_del_lote(
     Acepta:
     - Jerarquias legitimas de directorios ('Data', 'Data/Meshes', 'Data/Meshes/Armor').
     - Archivos hermanos en el mismo directorio.
+
+    Costo (finding post-merge F1). La version original comparaba cada archivo
+    contra TODOS los demas archivos y contra todos los directorios:
+    ``N² + N×D`` comparaciones de prefijo. El scan corre ANTES de la primera
+    mutacion, asi que en un arbol de modding real (decenas de miles de archivos)
+    el preflight dominaba el costo de la operacion entera: medido con entradas
+    sinteticas, 20k archivos / 2k directorios tardaban ~21.7 s.
+
+    El veredicto es IDENTICO, pero el chequeo de ancestro pasa a apoyarse en una
+    propiedad del orden lexicografico: los strings que comparten un prefijo son
+    CONTIGUOS, asi que el primer elemento ``>= f + "/"`` (``bisect_left``) es el
+    primero con ese prefijo si es que existe alguno. Queda
+    ``O((N+D) log (N+D))`` en vez de cuadratico, sin trie ni estructura nueva.
     """
-    vistos_archivos: set[str] = set()
     vistos_archivos_cf: set[str] = set()
     for a in archivos:
         cf = a.casefold()
         if cf in vistos_archivos_cf:
             raise CandidateCopyError(f"lote con archivos canonicos duplicados: '{a}' (fail-closed)")
-        vistos_archivos.add(a)
         vistos_archivos_cf.add(cf)
 
-    vistos_dirs: set[str] = set()
     vistos_dirs_cf: set[str] = set()
     for d in directorios:
         cf = d.casefold()
         if cf in vistos_dirs_cf:
             raise CandidateCopyError(f"lote con directorios canonicos duplicados: '{d}' (fail-closed)")
-        vistos_dirs.add(d)
         vistos_dirs_cf.add(cf)
 
     colisiones = vistos_archivos_cf & vistos_dirs_cf
@@ -336,14 +346,33 @@ def _validar_coherencia_del_lote(
             f"colision entre archivo y directorio con la misma ruta canonica: {sorted(colisiones)} (fail-closed)"
         )
 
+    # Un ARCHIVO no puede contener nada: si su ruta canonica es prefijo de otra
+    # (con separador), el lote es incoherente. Se conserva el texto original de
+    # cada ruta para el mensaje, y se distingue archivo-ancestro-de-archivo de
+    # archivo-ancestro-de-directorio consultando a que conjunto pertenece el
+    # elemento encontrado.
+    originales: dict[str, str] = {}
+    for a in archivos:
+        originales.setdefault(a.casefold(), a)
+    for d in directorios:
+        originales.setdefault(d.casefold(), d)
+
+    todos_ordenados = sorted(vistos_archivos_cf | vistos_dirs_cf)
     for a in archivos:
         prefijo = a.casefold() + "/"
-        for otro_a in archivos:
-            if otro_a.casefold().startswith(prefijo):
-                raise CandidateCopyError(f"el archivo '{a}' no puede ser ancestro del archivo '{otro_a}' (fail-closed)")
-        for d in directorios:
-            if d.casefold().startswith(prefijo):
-                raise CandidateCopyError(f"el archivo '{a}' no puede ser ancestro del directorio '{d}' (fail-closed)")
+        indice = bisect.bisect_left(todos_ordenados, prefijo)
+        if indice >= len(todos_ordenados):
+            continue
+        canonico = todos_ordenados[indice]
+        if not canonico.startswith(prefijo):
+            continue
+        if canonico in vistos_archivos_cf:
+            raise CandidateCopyError(
+                f"el archivo '{a}' no puede ser ancestro del archivo '{originales[canonico]}' (fail-closed)"
+            )
+        raise CandidateCopyError(
+            f"el archivo '{a}' no puede ser ancestro del directorio '{originales[canonico]}' (fail-closed)"
+        )
 
 
 def copiar_arbol_independiente(
