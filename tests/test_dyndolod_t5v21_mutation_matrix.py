@@ -192,6 +192,14 @@ def test_m16_el_rechazo_del_protocolo_limpia_proceso_y_job() -> None:
 
     Sin ella, un deny/timeout/mismatch dejaría la GUI abierta y los drains
     corriendo: es exactamente la mutación M16.
+
+    R3 (``RUNNER_P2_DOUBLE_CANCEL``): la limpieza ya no se copia en cada handler,
+    vive en UNA operación (``_liberar_proceso_hasta_terminal``) que usan TODOS los
+    caminos de salida. El ancla verifica las dos mitades que M16 podría romper: el
+    handler invoca la operación y re-lanza, y la operación mata el proceso,
+    cancela heartbeat y drains —la tupla ``auxiliares`` los nombra a los tres— y
+    cierra el job. La enumeración de TODOS los handlers vive en
+    ``test_runner_defects_p1_p2.py::test_r3_ancla_ast_todos_los_caminos_de_salida_pasan_por_la_limpieza_unica``.
     """
     ejecutar = _metodo("_execute_process")
     maneja = [
@@ -203,15 +211,22 @@ def test_m16_el_rechazo_del_protocolo_limpia_proceso_y_job() -> None:
     ]
     assert maneja, "desapareció la rama que limpia el rechazo del protocolo"
     cuerpo = ast.unparse(maneja[0])
-    for obligatorio in (
-        "kill_and_reap",
-        "close_job",
-        "heartbeat.cancel",
-        "drain_out.cancel",
-        "drain_err.cancel",
-        "raise",
-    ):
+    for obligatorio in ("_liberar_proceso_hasta_terminal", "raise"):
         assert obligatorio in cuerpo, f"el cleanup del rechazo no hace {obligatorio}"
+
+    # La operación única hace lo que la mutación M16 omitiría.
+    operacion = ast.unparse(_metodo("_liberar_proceso_hasta_terminal"))
+    for obligatorio in ("kill_and_reap", "close_job", ".cancel()", "gather"):
+        assert obligatorio in operacion, f"la limpieza única no hace {obligatorio}"
+
+    # `auxiliares` nombra a los TRES: heartbeat y los dos drains.
+    asignaciones = [
+        nodo
+        for nodo in ast.walk(ejecutar)
+        if isinstance(nodo, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "auxiliares" for t in nodo.targets)
+    ]
+    assert len(asignaciones) == 1, "debe existir UNA sola tupla de auxiliares"
+    assert ast.unparse(asignaciones[0].value) == "(heartbeat, drain_out, drain_err)"
 
 
 # ---------------------------------------------------------------------------

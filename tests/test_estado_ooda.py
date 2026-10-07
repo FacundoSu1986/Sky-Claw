@@ -108,15 +108,15 @@ _ITEMS = frozenset(
         # R1 cerró con su PR dedicado: el worker mutante de packaging se espera
         # a terminalidad antes de que la cancelación libere al caller. R2 cerró y
         # se mergeó en #686 (merge commit 7684c92a), que resolvió el finding 3 de
-        # #592; R3 permanece abierto.
+        # #592; R3 tiene su fix en la rama (Parcial: sin merge, sin rig Windows).
         "Runner P1 — cancelación del packaging libera al caller con el writer vivo (`RUNNER_P1_PACKAGING_CANCEL`)",
         # R2 es el finding 3 exacto de #592: FIXED por #686 y MERGED (merge commit
         # 7684c92a), así que la fila pasó de Parcial a Cerrado. #592 sigue OPEN
         # por sus otros findings. El plan canónico vive en
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md`.
         "Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)",
-        # determinista sobre flujo simulado (`test_runner_defects_p1_p2.py`) +
-        # contraste AST contra el handler productivo; el plan canónico vive en
+        # R3 (CR-5/CR-6): los tests ejercen el `_execute_process` REAL y un ancla AST
+        # enumera los caminos de salida; el plan canónico vive en
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
         # R1/R2 son hermanos en #592.
         "Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)",
@@ -547,7 +547,7 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
 
     Contrato post-merge: la fila deja de ser ``Parcial``, cita el merge commit y no
     puede volver a declarar el estado pre-merge. Además el tracking conserva lo que
-    NO se cerró: #592 sigue abierto por sus otros findings y R3 sigue OPEN.
+    NO se cerró: #592 sigue abierto por sus otros findings (R3 tiene su propia fila).
     """
     fila = _tabla()["Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)"]
     estado = fila["Qué falta"]
@@ -587,11 +587,34 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
         assert frase_obsoleta not in estado, f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
         assert frase_obsoleta not in fila["Cerrado en"], f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
 
-    # R3 sigue abierto: el bookkeeping de R2 no lo adelanta.
-    fila_r3 = _tabla()["Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)"]
-    assert fila_r3["Estado"] == "Abierto"
-    assert "resolution_status=OPEN" in fila_r3["Qué falta"]
-    assert "evidence_status=REPRODUCED" in fila_r3["Qué falta"]
+    # R3 tiene su propia fila y su propio contrato: ver
+    # `test_runner_r3_double_cancel_registrado_como_parcial_sin_merge`.
+    assert "Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)" in _tabla()
+
+
+def test_runner_r3_double_cancel_registrado_como_parcial_sin_merge() -> None:
+    """R3 tiene el fix en la rama pero NO se declara Cerrado.
+
+    Cerrado exige merge (R1 y R2 lo tienen) y la limpieza toca el Job Object de
+    Windows, que esta rama sólo ejercitó a través de su seam en Linux. La fila no
+    puede decir ``Abierto`` con ``resolution_status=OPEN`` —el defecto ya no
+    existe en el código— ni ``Cerrado`` sin merge: es la dirección honesta de
+    "arreglado, sin verificar en rig, sin integrar". Cada test que cita tiene que
+    existir (el guard de arriba lo comprueba), y el cambio de contrato de los
+    handlers de timeout/error queda declarado en la fila y no sólo en el diff.
+    """
+    fila = _tabla()["Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)"]
+    que_falta = fila["Qué falta"]
+
+    assert fila["Estado"] == "Parcial"
+    assert "resolution_status=FIXED" in que_falta
+    assert "merge_status=UNMERGED" in que_falta
+    assert "resolution_status=OPEN" not in que_falta, "el defecto ya no existe en el código"
+    assert "_liberar_proceso_hasta_terminal" in que_falta
+    assert "suppress(CancelledError)" in que_falta, "el cambio de contrato de timeout/error debe estar declarado"
+    assert "rig Windows" in que_falta, "el límite de verificación (Job Object real) debe seguir declarado"
+    assert "test_r3_ancla_ast_todos_los_caminos_de_salida_pasan_por_la_limpieza_unica" in fila["Verificado por"]
+    assert "test_m16_el_rechazo_del_protocolo_limpia_proceso_y_job" in fila["Verificado por"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

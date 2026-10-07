@@ -20,17 +20,23 @@ según el estado del defecto que cubren:
   inventario y conjunto copiable contienen los mismos archivos. El pre-scan
   cierra el defecto reproducido, pero no se declara race-proof frente a un swap
   concurrente.
-- **R3** — `RUNNER_P2_DOUBLE_CANCEL` — **REPRODUCED / OPEN**: en la rama
-  `except asyncio.CancelledError` de `_execute_process`, una segunda cancelación
-  interrumpe el `await asyncio.gather(...)` **antes** de `close_job(job)`: el
-  Job Object queda abierto y los nietos sobreviven. Violación del invariante:
-  *"EVERY EXIT PATH MUST TERMINATE ALL OWNED PROCESS/HELPER RESOURCES"*. Su
-  test reproduce el defecto vigente y debe seguir pasando hasta su PR dedicado.
+- **R3** — `RUNNER_P2_DOUBLE_CANCEL` — **FIXED / regression invariant**: la
+  limpieza de `_execute_process` (matar y reapear el proceso, cancelar los
+  auxiliares, esperarlos a terminal y cerrar el Job Object) es UNA operación
+  resistente a cancelación, `_liberar_proceso_hasta_terminal`, que corre en una
+  Task propia y se espera por el mismo terminal handoff que R1. Una segunda
+  cancelación durante la limpieza queda absorbida hasta el terminal y recién
+  entonces se propaga; antes interrumpía el `await asyncio.gather(...)` **antes**
+  de `close_job(job)` y el Job Object quedaba abierto con los nietos vivos.
+  Invariante: *"EVERY EXIT PATH MUST TERMINATE ALL OWNED PROCESS/HELPER
+  RESOURCES"*. Sus tests ejercen el `_execute_process` REAL (no un fake) y un
+  ancla AST ENUMERA los caminos de salida del método.
 
 Los tests R2 verifican aceptación (rechazo antes de copiar y preservar el destino
-previo, tags desconocidos, igualdad del inventario y la semántica TexGen); el test
-R3 sigue siendo una reproducción abierta. Los tests R1 verifican la aceptación
-del fix y el handoff terminal.
+previo, tags desconocidos, igualdad del inventario y la semántica TexGen); los
+tests R3 verifican la aceptación de la limpieza resistente a cancelación sobre el
+`_execute_process` real. Los tests R1 verifican la aceptación del fix y el
+handoff terminal.
 
 Referencias: `docs/pending_ooda_status.md`, `#592`, rig P0 de #661.
 """
@@ -46,7 +52,7 @@ import shutil
 import stat
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -848,122 +854,463 @@ async def test_r2_cancel_durante_prescan_espera_terminal_y_no_muta(tmp_path, mon
 
 
 # ---------------------------------------------------------------------------
-# R3 — segunda cancelación interrumpe el cleanup antes de close_job
+# R3 — FIXED: la limpieza del proceso es UNA operación resistente a cancelación
 # ---------------------------------------------------------------------------
+#
+# Invariante de aceptación, ejercido sobre el `_execute_process` REAL:
+#
+#     kill_and_reap(proc) -> cancelar auxiliares -> auxiliares terminales -> close_job(job)
+#
+# y la unidad completa termina ANTES de que se propague la cancelación. Una
+# segunda cancelación que llega DURANTE la limpieza no la interrumpe: queda
+# absorbida hasta el terminal (el mismo handoff de R1) y recién entonces se
+# propaga. Cada fase se sincroniza por eventos, nunca por sleeps como autoridad.
+
+_JOB = 4242
+_EXE = pathlib.Path("DynDOLODx64.exe")
+
+
+class _LectorDeStream:
+    """StreamReader falso: bloquea hasta ser cancelado y registra su terminalidad.
+
+    ``demora_terminal`` modela un auxiliar lento en llegar a terminal tras la
+    cancelación (el drain real espera a que el pipe devuelva el control), que es
+    exactamente la ventana donde una segunda cancelación rompía la limpieza.
+    """
+
+    def __init__(
+        self,
+        orden: list[str],
+        nombre: str,
+        *,
+        demora_terminal: asyncio.Event | None = None,
+    ) -> None:
+        self._orden = orden
+        self._nombre = nombre
+        self._demora = demora_terminal
+        self.arranco = asyncio.Event()
+        self.cancelado = asyncio.Event()
+        self.terminal = asyncio.Event()
+
+    async def read(self, _n: int) -> bytes:
+        self.arranco.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelado.set()
+            self._orden.append(f"{self._nombre}_cancelado")
+            if self._demora is not None:
+                await self._demora.wait()
+            raise
+        finally:
+            self.terminal.set()
+        return b""  # pragma: no cover
+
+
+class _StreamEOF:
+    async def read(self, _n: int) -> bytes:
+        return b""
+
+
+def _runner_directo(*, timeout_seconds: float = 3600) -> runner_mod.DynDOLODRunner:
+    """Runner directo (sin servicio ni fence): el seam de los tests de `_execute_process`."""
+    config = MagicMock(timeout_seconds=timeout_seconds, heartbeat_interval=60)
+    config.fence_ownership = None
+    return runner_mod.DynDOLODRunner(config, readiness=runner_mod.ReadinessMode.DISABLED_FOR_TEST)
+
+
+def _proceso_que_no_termina(stdout: object, stderr: object, wait_iniciado: asyncio.Event) -> MagicMock:
+    """Proceso falso cuyo ``wait()`` bloquea hasta ser cancelado."""
+    proc = MagicMock()
+    proc.pid = None
+    proc.returncode = None
+    proc.stdout = stdout
+    proc.stderr = stderr
+
+    async def _wait() -> int:
+        wait_iniciado.set()
+        await asyncio.Event().wait()
+        return 0  # pragma: no cover
+
+    proc.wait = _wait
+    return proc
+
+
+@contextlib.contextmanager
+def _entorno_de_proceso(proc: MagicMock, reap, close_spy: MagicMock):
+    """Inyecta el proceso falso y espía los dos helpers que el invariante ordena."""
+    with (
+        patch.object(runner_mod.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+        patch.object(runner_mod, "assign_kill_on_close_job", MagicMock(return_value=_JOB)),
+        patch.object(runner_mod, "close_job", close_spy),
+        patch.object(runner_mod, "kill_and_reap", reap),
+    ):
+        yield
+
+
+async def _ceder(veces: int = 5) -> None:
+    """Cede scheduling para que una cancelación pendiente se procese (no es la prueba)."""
+    for _ in range(veces):
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
-async def test_r3_segunda_cancelacion_interrumpe_la_limpieza():
-    """Estructura exacta del handler actual: multi-step cleanup sin protección.
+async def test_r3_doble_cancelacion_durante_el_reap_no_interrumpe_la_limpieza():
+    """Cancel #2 llega con el reap bloqueado: el caller sigue retenido, el job se
+    cierra UNA vez y recién entonces se propaga la cancelación."""
+    orden: list[str] = []
+    wait_iniciado = asyncio.Event()
+    reap_entro = asyncio.Event()
+    liberar_reap = asyncio.Event()
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = _proceso_que_no_termina(stdout, stderr, wait_iniciado)
 
-    Secuencia del defecto en `_execute_process` (branch `except asyncio.CancelledError`):
-        await kill_and_reap(proc)
-        heartbeat.cancel(); drain_out.cancel(); drain_err.cancel()
-        await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-        close_job(job)
-        raise
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+        reap_entro.set()
+        await liberar_reap.wait()
 
-    Una segunda cancelación puede llegar durante el `await kill_and_reap` o el
-    `await gather`, y el `close_job(job)` nunca se ejecuta. En main actual, quo
-    opener queda resource-leaked.
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap, close_spy):
+        tarea = asyncio.create_task(runner._execute_process(_EXE, [], "DynDOLOD"))
+        await asyncio.wait_for(wait_iniciado.wait(), timeout=5)
+        tarea.cancel()  # cancel #1
+        await asyncio.wait_for(reap_entro.wait(), timeout=5)
+        tarea.cancel()  # cancel #2, con el reap en vuelo
+        await _ceder()
+
+        assert not tarea.done(), "la segunda cancelación liberó al caller antes de que la limpieza fuera terminal"
+        close_spy.assert_not_called()
+
+        liberar_reap.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+    close_spy.assert_called_once_with(_JOB)
+    assert stdout.terminal.is_set()
+    assert stderr.terminal.is_set()
+    assert orden[0] == "reap"
+    assert orden[-1] == "close_job"
+    assert {"stdout_cancelado", "stderr_cancelado"} <= set(orden), orden
+
+
+@pytest.mark.asyncio
+async def test_r3_doble_cancelacion_con_auxiliar_lento_cierra_el_job_al_final():
+    """Cancel #2 llega mientras un auxiliar tarda en llegar a terminal (la ventana
+    del `gather` que el defecto original dejaba sin proteger)."""
+    orden: list[str] = []
+    wait_iniciado = asyncio.Event()
+    liberar_auxiliar = asyncio.Event()
+    stdout = _LectorDeStream(orden, "stdout", demora_terminal=liberar_auxiliar)
+    stderr = _LectorDeStream(orden, "stderr")
+    proc = _proceso_que_no_termina(stdout, stderr, wait_iniciado)
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap, close_spy):
+        tarea = asyncio.create_task(runner._execute_process(_EXE, [], "DynDOLOD"))
+        await asyncio.wait_for(wait_iniciado.wait(), timeout=5)
+        tarea.cancel()  # cancel #1
+        await asyncio.wait_for(stdout.cancelado.wait(), timeout=5)
+        tarea.cancel()  # cancel #2, con el auxiliar todavía sin terminar
+        await _ceder()
+
+        assert not tarea.done(), "la segunda cancelación liberó al caller con un auxiliar vivo"
+        close_spy.assert_not_called()
+
+        liberar_auxiliar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+    close_spy.assert_called_once_with(_JOB)
+    assert stdout.terminal.is_set()
+    assert orden[-1] == "close_job"
+
+
+@pytest.mark.asyncio
+async def test_r3_cancelacion_durante_la_limpieza_de_un_timeout_gana_como_cancelacion():
+    """El hermano del handler de cancelación: el de ``TimeoutError`` tampoco puede
+    tragarse una cancelación externa (antes la envolvía en `suppress` y devolvía
+    ``DynDOLODTimeoutError``, o sea, convertía un shutdown en un fallo de herramienta)."""
+    orden: list[str] = []
+    wait_iniciado = asyncio.Event()
+    reap_entro = asyncio.Event()
+    liberar_reap = asyncio.Event()
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = _proceso_que_no_termina(stdout, stderr, wait_iniciado)
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+        reap_entro.set()
+        await liberar_reap.wait()
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo(timeout_seconds=0.05)
+
+    with _entorno_de_proceso(proc, _reap, close_spy):
+        tarea = asyncio.create_task(runner._execute_process(_EXE, [], "DynDOLOD"))
+        await asyncio.wait_for(reap_entro.wait(), timeout=5)  # el timeout disparó y la limpieza arrancó
+        tarea.cancel()
+        await _ceder()
+        assert not tarea.done()
+        close_spy.assert_not_called()
+
+        liberar_reap.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+    close_spy.assert_called_once_with(_JOB)
+    assert orden[-1] == "close_job"
+
+
+@pytest.mark.asyncio
+async def test_r3_timeout_sin_cancelacion_sigue_siendo_timeout_error_y_limpia_una_vez():
+    """Contraparte: sin cancelación, el contrato histórico del timeout no cambia."""
+    orden: list[str] = []
+    wait_iniciado = asyncio.Event()
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = _proceso_que_no_termina(stdout, stderr, wait_iniciado)
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo(timeout_seconds=0.05)
+
+    with _entorno_de_proceso(proc, _reap, close_spy), pytest.raises(runner_mod.DynDOLODTimeoutError):
+        await runner._execute_process(_EXE, [], "DynDOLOD")
+
+    close_spy.assert_called_once_with(_JOB)
+    assert orden.count("reap") == 1
+    assert orden[0] == "reap"
+    assert orden[-1] == "close_job"
+    assert stdout.terminal.is_set()
+    assert stderr.terminal.is_set()
+
+
+@pytest.mark.asyncio
+async def test_r3_error_inesperado_limpia_una_vez_y_conserva_la_excepcion_tipada():
+    """El cuarto handler (`except Exception`): misma limpieza, mismo contrato."""
+    orden: list[str] = []
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = MagicMock()
+    proc.pid = None
+    proc.returncode = None
+    proc.stdout = stdout
+    proc.stderr = stderr
+
+    async def _wait_que_falla() -> int:
+        raise RuntimeError("pipe roto")
+
+    proc.wait = _wait_que_falla
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap, close_spy), pytest.raises(runner_mod.DynDOLODExecutionError) as exc_info:
+        await runner._execute_process(_EXE, [], "DynDOLOD")
+
+    assert "pipe roto" in str(exc_info.value)
+    close_spy.assert_called_once_with(_JOB)
+    assert orden[0] == "reap"
+    assert orden[-1] == "close_job"
+
+
+@pytest.mark.asyncio
+async def test_r3_si_el_reap_falla_los_auxiliares_y_el_job_se_liberan_igual():
+    """Cada etapa vive en su propio ``try/finally``: un ``kill_and_reap`` que lanza
+    (``taskkill`` ausente, un backend brokered caído) no puede dejar el Job Object
+    abierto ni los auxiliares vivos. La excepción del reap se propaga, no se traga."""
+    orden: list[str] = []
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = MagicMock()
+    proc.pid = None
+    proc.returncode = None
+    proc.stdout = stdout
+    proc.stderr = stderr
+
+    async def _wait_que_falla() -> int:
+        await asyncio.wait_for(stdout.arranco.wait(), timeout=5)  # los auxiliares ya están vivos
+        raise RuntimeError("pipe roto")
+
+    proc.wait = _wait_que_falla
+
+    async def _reap_que_falla(_proc: object) -> None:
+        orden.append("reap")
+        raise OSError("taskkill no disponible")
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap_que_falla, close_spy), pytest.raises(OSError, match="taskkill"):
+        await runner._execute_process(_EXE, [], "DynDOLOD")
+
+    close_spy.assert_called_once_with(_JOB)
+    assert stdout.terminal.is_set()
+    assert stderr.terminal.is_set()
+    assert orden[0] == "reap"
+    assert orden[-1] == "close_job"
+
+
+@pytest.mark.asyncio
+async def test_r3_cancelacion_durante_el_drenaje_post_salida_cierra_el_job():
+    """El HERMANO de R3 en la salida normal: el proceso ya terminó y la cancelación
+    llega mientras se espera el drenaje con gracia. Antes la excepción escapaba de
+    la rama ``else`` sin pasar por ``close_job`` y el Job Object (que aniquila al
+    nieto que heredó el pipe) quedaba abierto."""
+    orden: list[str] = []
+    stdout = _StreamEOF()
+    stderr = _LectorDeStream(orden, "stderr")  # nieto con el pipe heredado: nunca da EOF
+    proc = MagicMock()
+    proc.pid = None
+    proc.returncode = 0
+    proc.stdout = stdout
+    proc.stderr = stderr
+    proc.wait = AsyncMock(return_value=0)
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")  # la salida normal NO mata un proceso que ya salió
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap, close_spy), patch.object(runner_mod, "_DRAIN_GRACE_SECONDS", 30.0):
+        tarea = asyncio.create_task(runner._execute_process(_EXE, [], "DynDOLOD"))
+        await asyncio.wait_for(stderr.arranco.wait(), timeout=5)
+        await _ceder()  # la tarea queda esperando el drenaje con gracia
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tarea, timeout=5)
+
+    close_spy.assert_called_once_with(_JOB)
+    assert stderr.terminal.is_set()
+    assert "reap" not in orden, "la limpieza del post-salida no debe matar un proceso que ya terminó"
+    assert orden[-1] == "close_job"
+
+
+@pytest.mark.asyncio
+async def test_r3_orden_de_la_limpieza_con_una_sola_cancelacion():
+    """El orden del invariante en el caso base: reap -> auxiliares -> close_job."""
+    orden: list[str] = []
+    wait_iniciado = asyncio.Event()
+    stdout, stderr = _LectorDeStream(orden, "stdout"), _LectorDeStream(orden, "stderr")
+    proc = _proceso_que_no_termina(stdout, stderr, wait_iniciado)
+
+    async def _reap(_proc: object) -> None:
+        orden.append("reap")
+
+    close_spy = MagicMock(side_effect=lambda _job: orden.append("close_job"))
+    runner = _runner_directo()
+
+    with _entorno_de_proceso(proc, _reap, close_spy):
+        tarea = asyncio.create_task(runner._execute_process(_EXE, [], "DynDOLOD"))
+        await asyncio.wait_for(wait_iniciado.wait(), timeout=5)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tarea, timeout=5)
+
+    assert orden[0] == "reap"
+    assert orden[-1] == "close_job"
+    assert orden.index("reap") < orden.index("stdout_cancelado") < orden.index("close_job")
+    assert orden.index("reap") < orden.index("stderr_cancelado") < orden.index("close_job")
+
+
+def _llamadas_por_nombre(nodo: ast.AST, nombre: str) -> list[ast.Call]:
+    """Llamadas a ``nombre`` (como función suelta o atributo) dentro de ``nodo``."""
+    return [
+        llamada
+        for llamada in ast.walk(nodo)
+        if isinstance(llamada, ast.Call)
+        and (
+            (isinstance(llamada.func, ast.Name) and llamada.func.id == nombre)
+            or (isinstance(llamada.func, ast.Attribute) and llamada.func.attr == nombre)
+        )
+    ]
+
+
+def test_r3_ancla_ast_todos_los_caminos_de_salida_pasan_por_la_limpieza_unica():
+    """ENUMERA los caminos de salida de `_execute_process`; no muestrea.
+
+    El defecto original era UNA secuencia de limpieza copiada en cuatro handlers
+    (y una quinta variante en la rama ``else``) que sólo uno protegía mal: el
+    hermano-en-el-mismo-archivo del `AGENTS.md`. La propiedad del mecanismo es
+    que existe UNA operación de limpieza y TODO camino de salida la usa:
+
+    - los cuatro handlers (`CancelledError`, `DynDOLODExecutionError`,
+      `TimeoutError`, `Exception`) llaman a `_liberar_proceso_hasta_terminal` y
+      NINGUNO toca `kill_and_reap`/`close_job`/`gather` por su cuenta;
+    - la rama ``else`` (salida normal) también la usa ante cualquier salida
+      anormal del drenaje, y su único `close_job` directo es el del camino feliz;
+    - `kill_and_reap` sólo se invoca desde la operación única.
     """
-
-    close_job_llamado = 0
-
-    # Sincronización explícita (no timing sleeps): cada fase del handler y del
-    # cleanup se confirma por evento, así que la segunda cancelación se envía
-    # en un punto DETERMINISTA del flujo (reap entrado y bloqueado), no "cuando
-    # el timing lo dicte".
-    handler_entered = asyncio.Event()
-    reap_entered = asyncio.Event()
-    allow_reap_to_finish = asyncio.Event()
-    gather_entered = asyncio.Event()
-
-    async def _kill_and_reap(_proc: object) -> None:
-        reap_entered.set()
-        # el reap queda bloqueado en un checkpoint conocido del test
-        await asyncio.wait_for(allow_reap_to_finish.wait(), timeout=10)
-
-    async def _heartbeat() -> None:
-        while True:
-            await asyncio.sleep(60)
-
-    async def _drain() -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            raise  # imita drenaje: puede cancelarse mas no hacer nada
-
-    async def _execute_process_fake(job: object) -> None:
-        heartbeat = asyncio.create_task(_heartbeat())
-        drain_out = asyncio.create_task(_drain())
-        drain_err = asyncio.create_task(_drain())
-        job_obj = job
-        nonlocal close_job_llamado
-
-        try:
-            await asyncio.sleep(60)
-        except asyncio.CancelledError:
-            handler_entered.set()
-            await _kill_and_reap(job_obj)
-            heartbeat.cancel()
-            drain_out.cancel()
-            drain_err.cancel()
-            gather_entered.set()
-            await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-            close_job_llamado += 1
-            raise
-
-    t = asyncio.create_task(_execute_process_fake(object()))
-    await asyncio.sleep(0)  # ceder el control: la task ENTRA en su await (60s) antes del cancel
-    t.cancel()  # cancel #1 → la rama CancelledError corre en este ciclo
-    await handler_entered.wait()  # confirmar entrada en la rama (determinista)
-    await reap_entered.wait()  # kill_and_reap entró y está bloqueado (determinista)
-    allow_reap_to_finish.set()  # liberar el reap: la task avanza hacia el gather
-    await gather_entered.wait()  # la task llegó al gather (evento seteado antes del await)
-    await asyncio.sleep(0)  # la task se suspende DE VERDAD en el await gather
-    t.cancel()  # cancel #2 DURANTE un punto de suspensión real del cleanup
-    with contextlib.suppress(asyncio.CancelledError):
-        await t
-    # DEFECTO: la segunda cancelación llegó durante el `await gather` del cleanup
-    # (punto de suspensión real) y en la forma actual interrumpe el flujo antes de
-    # close_job. Nota de propiedad del runtime medida acá: una cancelación PENDIENTE
-    # no procesada (_must_cancel=True) absorbe los cancel() subsiguientes sin
-    # interrumpir el await en curso — por eso el cancel #2 se envía en el gather,
-    # no con el reap aún bloqueado.
-    # La propiedad exigida por PR-R3 (futuro): close_job SIEMPRE corre exactamente una vez.
-    assert close_job_llamado == 0, (
-        "en la forma actual el test DEBE fallar: la segunda cancelación interrumpe el cleanup antes de close_job"
-    )
-
-
-def test_r3_ancla_ast_gather_sin_suppress_en_rama_cancelled():
-    """El defecto de la rama `except asyncio.CancelledError` en `_execute_process`,
-    congelada por AST: falta un `suppress(asyncio.CancelledError)` alrededor del
-    `await asyncio.gather(...)`."""
     arbol = ast.parse(RUNNER_SRC.read_text(encoding="utf-8"))
     metodo = next(
         nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_execute_process"
     )
-    rama_cancel = [
-        nodo for nodo in ast.walk(metodo) if isinstance(nodo, ast.ExceptHandler) and _es_cancelled(nodo.type)
+    # El try de la CORRIDA es el que atrapa CancelledError (el otro de primer nivel
+    # es el del spawn, que no posee todavía ni job ni auxiliares).
+    tryes = [
+        nodo
+        for nodo in metodo.body
+        if isinstance(nodo, ast.Try) and any(h.type is not None and _es_cancelled(h.type) for h in nodo.handlers)
     ]
-    assert rama_cancel, "'except asyncio.CancelledError' debe existir en _execute_process"
-    rama = rama_cancel[0]
-    hay_suppress_cancelled = False
-    for nodo in ast.walk(rama):
-        if isinstance(nodo, ast.With):
-            for item in nodo.items:
-                ctx = item.context_expr
-                if isinstance(ctx, ast.Call):
-                    fn = ctx.func
-                    if (
-                        isinstance(fn, ast.Attribute)
-                        and fn.attr == "suppress"
-                        and ctx.args
-                        and _es_cancelled(ctx.args[0])
-                    ):
-                        hay_suppress_cancelled = True
-    assert not hay_suppress_cancelled, (
-        "esto cambio al agregar suppress(CancelledError) al gather: el test ancla deja de ser rojo cuando el fix llegue"
+    assert len(tryes) == 1, "_execute_process debe tener exactamente UN try de corrida (el que atrapa CancelledError)"
+    principal = tryes[0]
+
+    tipos = sorted(ast.unparse(h.type) for h in principal.handlers if h.type is not None)
+    assert tipos == sorted(
+        [
+            "DynDOLODExecutionError",
+            "Exception",
+            "TimeoutError",
+            "asyncio.CancelledError",
+        ]
+    ), f"el conjunto de handlers de la corrida cambió: {tipos}"
+
+    for handler in principal.handlers:
+        etiqueta = ast.unparse(handler.type) if handler.type is not None else "<bare>"
+        assert len(_llamadas_por_nombre(handler, "_liberar_proceso_hasta_terminal")) == 1, (
+            f"el handler {etiqueta} debe liberar el proceso por la operación única"
+        )
+        for prohibido in ("kill_and_reap", "close_job", "gather"):
+            assert not _llamadas_por_nombre(handler, prohibido), (
+                f"el handler {etiqueta} duplica la limpieza ({prohibido}): vuelve el defecto hermano de R3"
+            )
+
+    # Rama else (salida normal): usa la operación única ante salida anormal y
+    # conserva UN solo close_job directo —el del camino feliz—.
+    rama_else = ast.Module(body=principal.orelse, type_ignores=[])
+    assert len(_llamadas_por_nombre(rama_else, "_liberar_proceso_hasta_terminal")) == 1, (
+        "la rama else debe liberar por la operación única ante cualquier salida anormal del drenaje"
+    )
+    assert len(_llamadas_por_nombre(rama_else, "close_job")) == 1, "la salida normal cierra el job exactamente una vez"
+    assert not _llamadas_por_nombre(rama_else, "kill_and_reap"), "un proceso que ya salió no se mata en la rama else"
+
+    # kill_and_reap SÓLO existe dentro de la operación única.
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef)) and nodo.name == "_execute_process":
+            assert not _llamadas_por_nombre(nodo, "kill_and_reap"), (
+                "kill_and_reap debe vivir sólo en la operación única"
+            )
+
+    # La operación única corre en una Task propia y se espera por el handoff terminal.
+    operacion = next(
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_liberar_proceso_hasta_terminal"
+    )
+    assert _llamadas_por_nombre(operacion, "create_task"), "la limpieza debe vivir en una Task propia"
+    assert _llamadas_por_nombre(operacion, "_esperar_terminalidad_del_worker"), (
+        "la limpieza debe esperarse por la primitiva común de terminal handoff"
     )
 
 
