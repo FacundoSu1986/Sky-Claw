@@ -70,7 +70,21 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     "candidates.py": frozenset({"mkdir"}),
 }
 
-MODOS_ESCRITURA: frozenset[str] = frozenset({"w", "a", "x", "+", "wb", "ab", "xb", "r+", "rb+"})
+
+def _es_modo_de_escritura(modo: str) -> bool:
+    """Un modo de ``open()`` habilita escritura si pide w/a/x o update (``+``).
+
+    Sigue la semantica documentada de ``open``: ``w`` (truncar), ``a`` (anexar),
+    ``x`` (crear en exclusiva) y ``+`` (update, lectura+escritura) son las cuatro
+    marcas que habilitan escritura; sin ninguna de ellas (``r``, ``rb``, ``rt``)
+    el modo es lectura pura. Enumerar las combinaciones a mano dejaba afuera
+    variantes validas —``wt``, ``w+``, ``w+b``, ``a+``, ``x+``— por las que un
+    modulo NO declarado podia abrir escritura sin que el oracle lo viera
+    (CodeRabbit sobre #698). El chequeo es sobre el modo, no sobre el fuente: no
+    hay marcado por substring de la llamada.
+    """
+    return any(marca in modo for marca in ("w", "a", "x", "+"))
+
 
 #: Módulos autorizados a abrir archivos en modo escritura, con el modo EXACTO
 #: que declaran. `xb` es exclusivo de creación: sobreescribir un payload ya
@@ -181,7 +195,7 @@ def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
         if (
             isinstance(modo, ast.Constant)
             and isinstance(modo.value, str)
-            and modo.value in MODOS_ESCRITURA
+            and _es_modo_de_escritura(modo.value)
             and modo.value not in permitidos
         ):
             violaciones.append(
@@ -241,6 +255,28 @@ def test_el_oracle_detecta_el_modo_de_escritura_pasado_por_keyword() -> None:
     )
     # El modo variable no se adivina (mismo criterio que antes: sólo constantes).
     assert _detectar_open_no_declarado("def f(ruta, m):\n    ruta.open(mode=m)\n", "no_declarado.py") == []
+
+
+def test_el_oracle_clasifica_todas_las_variantes_de_escritura() -> None:
+    """Ninguna variante constante con capacidad de escritura puede escapar (CodeRabbit #698).
+
+    La lista enumerada original omitia combinaciones validas (`wt`, `w+`, `w+b`,
+    `a+`, `x+`): un modulo no declarado podia abrir escritura sin que el oracle lo
+    viera. La clasificacion sigue ahora la semantica de `open` (marcas w/a/x/+),
+    asi que las variantes con marca se detectan y las de lectura pura no.
+    """
+    # Keyword: variantes que la enumeracion dejaba afuera.
+    for modo in ("wt", "w+", "w+b", "wb+", "a+", "at", "x+", "xt", "r+", "r+b", "rb+"):
+        codigo = f"def f(ruta):\n    ruta.open(mode={modo!r})\n"
+        assert len(_detectar_open_no_declarado(codigo, "no_declarado.py")) == 1, modo
+    # Posicional: misma clasificacion.
+    for modo in ("w", "x", "a", "wb", "xb"):
+        codigo = f"def f(ruta):\n    ruta.open({modo!r})\n"
+        assert len(_detectar_open_no_declarado(codigo, "no_declarado.py")) == 1, modo
+    # Lectura pura (sin marca de escritura): sin falso positivo.
+    for modo in ("r", "rb", "rt", "tr"):
+        codigo = f"def f(ruta):\n    ruta.open(mode={modo!r})\n"
+        assert _detectar_open_no_declarado(codigo, "no_declarado.py") == [], modo
 
 
 def test_el_oracle_de_open_conserva_los_modos_declarados_por_modulo() -> None:
