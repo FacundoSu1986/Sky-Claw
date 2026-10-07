@@ -26,6 +26,20 @@
 - **Reserva.** La transcripción es de segunda mano (documento del repo → este registro). No
   reemplaza el texto verbatim de las tres páginas: ver "Cómo mejorar la evidencia".
 
+## Estados de la invocación directa de helpers
+
+El campo `invocacion_directa_de_helpers` del registro tiene un vocabulario cerrado que ancla
+`tests/test_clean_room_invariant.py`:
+
+| Estado | Significado | `B6_L` en `MATERIAL_PIPELINE` |
+|---|---|---|
+| `ABIERTA` | Sin autorización del autor (hoy, las tres herramientas). | puesto |
+| `DENEGADA` | El autor lo negó por escrito. | puesto |
+| `AUTORIZADA` | Permiso escrito y fechado del autor (R-LIC-1). | levantado |
+
+Solo `AUTORIZADA` levanta el bloqueo. Un valor fuera de la tabla (un typo, por ejemplo) rompe el test y
+deja el bloqueo en pie; también lo rompe cualquier paso del contrato con `B6_L` que el registro no cubra.
+
 ## Permisos registrados
 
 | | ParallaxR | BENDr | VRAMr |
@@ -55,6 +69,7 @@ Notas del autor, tal como las registró el P0:
 |---|---|
 | ¿Ejecutar la copia instalada por el usuario (modo asistido)? | Sí: no se invocan helpers ni se redistribuye nada. |
 | ¿Invocar sus helpers directamente? | No, hasta tener permiso explícito (B6-L). |
+| ¿Descargar VRAMr automáticamente desde Nexus (`AUTO_NEXUS`)? | No, por ahora: la nota del autor permite preparar salidas para Collections o Wabbajack y exige consentimiento escrito para cualquier otra actividad. Rige `MANUAL_ONLY`. |
 | ¿Bundlear o redistribuir archivos de la herramienta, incluidos sus assets y su configuración? | No: no se autoriza subirlos a otros sitios y el uso de assets requiere permiso. |
 | ¿Copiar sus constantes, listas de exclusión o presets al generador nativo? | No: lo prohíbe la política clean-room y el uso de assets requiere permiso. |
 | ¿Compartir salidas generadas por la herramienta? | La nota del autor dice que debería estar bien. No cubre entrenar modelos con ellas: criterio conservador, no. |

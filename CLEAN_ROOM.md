@@ -3,8 +3,9 @@
 > **Estado:** VIGENTE desde 2026-10-07 (decisión del operador; [ADR 0013](docs/adr/0013-clean-room-native-parallax.md)).
 > Antes era la propuesta NP-R0 de `docs/design/research/2026-09-21-native-parallax-battle/`.
 >
-> **Alcance:** `sky_claw/local/native_parallax/**`, sus docs de diseño e investigación
-> (`docs/design/research/**native-parallax**`) y cualquier productor futuro de height/parallax maps.
+> **Alcance:** toda ruta trackeada cuyo path contenga `native-parallax` o `native_parallax` (el paquete
+> `sky_claw/local/native_parallax/`, sus tests y sus docs de diseño, investigación y validación) y cualquier
+> productor futuro de height/parallax maps.
 >
 > **Audiencia:** operador, desarrolladores y agentes.
 
@@ -113,12 +114,27 @@ herramientas; no es asesoramiento legal ni decide la reimplementación independi
 
 ## Anclas
 
-`tests/test_clean_room_invariant.py` enumera por contenido todos los archivos trackeados:
+`tests/test_clean_room_invariant.py` recorre **todos** los archivos trackeados, sin descartar ninguno por
+tamaño, por codificación ni por ser binario, y verifica:
 
-- *el perímetro de cuarentena no crece*: contenido derivado solo en el P0 v3; identidad (nombres de
-  ejecutables internos, hashes) solo en contratos de integración y evidencia;
-- *la zona limpia no tiene ni una marca*: `native_parallax/` y sus docs de diseño;
+- *el contenido en cuarentena no sale de su sección*: las marcas de contenido (citas de scripts,
+  etiquetas de evidencia T2) solo valen dentro de las secciones de la tabla de arriba, y ninguna línea de
+  esas secciones puede reaparecer en otro lugar (huellas normalizadas: re-cortarla, cambiar las
+  mayúsculas o incrustarla en otro texto no la esconde; un tramo de al menos 79 caracteres tampoco, salvo
+  en los contratos de integración), así que un fragmento de script copiado sin etiquetas también rompe
+  el test;
+- *la identidad no se propaga*: nombres de ejecutables internos y hashes de artefactos solo en contratos
+  de integración y evidencia;
+- *la zona limpia no tiene ni una marca*: toda ruta que nombre el generador nativo (por patrón, no por
+  lista), con sus binarios congelados por enumeración y sin ejecutables en el repo (por cabecera, no solo
+  por extensión);
 - *las secciones en cuarentena están señalizadas* con el aviso `CUARENTENA CLEAN-ROOM`;
-- *la política no se borra en silencio*: encabezados congelados por igualdad literal; `AGENTS.md` y el
+- *la política no se borra en silencio*: encabezados y cláusulas congelados por frase; `AGENTS.md` y el
   puntero local la referencian;
-- *la evidencia legal y el contrato coinciden*: el registro B1 y `B6_L` de `MATERIAL_PIPELINE`.
+- *la evidencia legal y el contrato coinciden*: el registro B1 y `B6_L` de `MATERIAL_PIPELINE`, con
+  vocabulario cerrado de estados (solo `AUTORIZADA` levanta el bloqueo).
+
+**Límite declarado.** El ancla no puede detectar contenido derivado que no esté en este repo: un script
+reescrito con otras palabras, salidas de la herramienta convertidas a otro formato y copias parciales de
+menos de 79 caracteres (según dónde caigan) pasan. Eso depende de la revisión humana y del procedimiento
+de «Si se detecta contaminación». Las cláusulas se congelan por frase, no por significado.

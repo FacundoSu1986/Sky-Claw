@@ -33,8 +33,10 @@ vive en este repo. La traducción de cada pregunta:
   el DC, el guard de los 4 bins nulos, Nyquist, la inversa corregida por PR-MATH-A, Tikhonov y
   el Spearman con empates `[LEÍDO + EJECUTADO: 371 tests verdes]`.
 - Los defectos están en **los instrumentos de medición** y en las **convenciones de unidades
-  entre hermanos**: 6 hallazgos ejecutados. Dos son críticos para la validez de la evidencia
-  (H1, H2) y uno es crítico para cualquier uso productivo futuro (H2).
+  entre hermanos**: 8 hallazgos reproducidos por ejecución (sobre datos sintéticos, salvo donde se
+  indica). Uno es crítico para la validez de la evidencia (H1). H2 es una convención de aspecto que
+  nadie declara: severidad alta para cualquier entrada no cuadrada, no crítica, porque el corpus
+  primario de M3 es cuadrado por construcción.
 - **Veredicto:** adoptar A (= Síntesis C, D3 con la instrumentación de D4). Antes de EXP-001b/012
   y de cualquier experimento de B hay que reparar los instrumentos (P0/P1), porque los criterios
   de habilitación de B se miden con esos mismos instrumentos.
@@ -113,9 +115,9 @@ y más capas en ángulo rasante (ver §5, S6).
 | # | Hallazgo | Severidad | Evidencia |
 |---|---|---|---|
 | **H1** | `OracleOnly.normal_height_residual_oracle` busca la strength en una rejilla **lineal** ±`linspace(0.05, 5, 25)` (paso 0.206). En pares **perfectamente coherentes** reporta 9–15° de desacuerdo cuando la strength real cae entre puntos o bajo 0.05: s=0.1 → 13.44°, s=0.02 → 9.35°, s=0.005 → 14.27°, s=0.001 → 15.57°. M2 documenta que la escala authored varía entre 2e-4 y 2.5e+3, siete órdenes de magnitud. | **Crítica (validez)** | `[EJECUTADO]`. Afecta la mediana de 13.40° del diagnóstico §5 de M4 (numéricamente indistinguible del artefacto) y la pertenencia a la Cohort B de M3 (filtros 20/30/40°). **No** afecta C1/C2 de M4, que usan un fit afín cerrado. |
-| **H2** | El solver asume `x = j/W`, `y = i/H`, es decir que **todo tile es un cuadrado físico**. Un normal map real codifica la pendiente por texel isotrópico. En texturas no cuadradas la proyección L2 queda sesgada de forma anisotrópica: con 2:1 y normal float sin ruido da corr 0.977–0.980 y RMSE alineado de 21–24 % de σ. La versión isotrópica es exacta. El corpus M2 contiene 3/34 assets no cuadrados (Concrete035 2048×1024, WoodFloor043 2048×1024, PavingStones054 1365×2048), aplastados además a 512² por `load_asset`. | **Crítica (producción)**, media (histórica) | `[EJECUTADO]` + manifest `[LEÍDO]`. M3+ rechaza no cuadradas, así que M4/M5 no quedan afectados. El test `h_rect` de M4 usa un campo nulo y no ejercita la anisotropía. |
+| **H2** | El solver fija una convención de aspecto **sin declararla**: `x = j/W`, `y = i/H`, es decir que **el tile es un cuadrado físico** (equivale a un texel de aspecto `H/W`). Un normal map no dice qué convención usó su autor: si pintó la pendiente por texel cuadrado, v1 reconstruye con anisotropía; si la verdad es «tile cuadrado», la corrección «texel cuadrado» sesga igual. El defecto es el parámetro oculto, no una de las dos convenciones. Medido con normal float sin ruido, la convención equivocada da corr 0.966–0.996 y RMSE alineado de 9–26 % de σ según el aspecto (en 2:1, 0.966 y 26 % con verdad «texel cuadrado» resuelta por v1, y 0.975 y 22 % en el sentido inverso); la acertada da 1.0000 (error ≤ 1e-15). La matriz completa está en §6. El corpus M2 contiene 3/34 assets no cuadrados (Concrete035 2048×1024, WoodFloor043 2048×1024, PavingStones054 1365×2048), aplastados además a 512² por `load_asset`. | **Alta** para cualquier entrada no cuadrada; media (histórica) | `[EJECUTADO]` + manifest `[LEÍDO]`. Solo el fetch del corpus primario de M3 rechaza no cuadradas (`fetch_exp_m3_primary_corpus.py:447-452`); `load_cohort_a` y `load_asset` no lo verifican. M4/M5 quedan fuera de H2 porque ese corpus es cuadrado por construcción, no porque el loader lo compruebe. El test `h_rect` de M4 usa un campo nulo y no ejercita la anisotropía. Qué convención usó el autor de cada asset M2 no consta en el repo `[NO VERIFICADO]`. |
 | **H3** | El techo **SELF-Q8** de M4 (`self_forward`) depende de una escala de pendiente arbitraria. Mismo height, Q8, distintas intensidades `c`: S07 va de 7e-5 a 3.6e-2 de RMSE (≈500×) y S09 de 4.5e-4 a 1.7e-2 (no monótono). La conclusión de M4 "cuantización Q8 descartada (+0.0037)" vale solo para `c = 1`, que es mucho más empinada que un normal authored típico. | Alta (validez) | `[EJECUTADO]` sintético. Impacto sobre las medianas reales de M4: `[NO VERIFICADO]` (el corpus no está en el repo). |
-| **H4** | `resize_normal` re-cuantiza a uint8 con `astype(np.uint8)`, que **trunca**, y vuelve a cuantizar en el resize de Pillow modo L. Es el hermano que el fix #653 (`resize_height` → float) dejó intacto. Produce un sesgo de −0.5 LSB: la normal (0,0,1) sale con nx = −0.0039. En contenido suave (S07/S15, 1024→512) el RMSE es 5–21× mayor que con resize float, y llega a 0.023 absoluto, del orden de `T_DELTA_RMSE = 0.02`. Solo el camino AUTH pasa por acá (SELF se arma desde el height float), así que **infla DELTA de forma asimétrica a 512**. | Alta (validez) | `[EJECUTADO]`. M4 atribuye ~0.009 de delta al resize. Que H4 sea parte de ese número es plausible pero `[NO VERIFICADO]`. |
+| **H4** | `resize_normal` re-cuantiza a uint8 con `astype(np.uint8)`, que **trunca**, y vuelve a cuantizar en el resize de Pillow modo L. Es el hermano que el fix #653 (`resize_height` → float) dejó intacto. Produce un sesgo de −0.5 LSB: la normal (0,0,1) sale con nx = −0.0039. En los sintéticos periódicos 1024→512 con pendiente suave (c = 0.05 y 0.01), el RMSE del camino AUTH es 5.3× y 21.5× mayor que con resize float en S07, 1.7× y 10.2× en S15, y no cambia en S09 (0.9–1.0×); el máximo absoluto, 0.023 (S07, c = 0.01), es del orden de `T_DELTA_RMSE = 0.02`. Solo el camino AUTH pasa por acá (SELF se arma desde el height float), así que **infla DELTA de forma asimétrica a 512**. | Alta (validez) | `[EJECUTADO]` sobre sintéticos de pendiente muy suave; el corpus real no se usó en esta medición. M4 atribuye ~0.009 de delta al resize. Que H4 sea parte de ese número es plausible pero `[NO VERIFICADO]`. |
 | **H5** | `fd_forward` (control FD de M4) deriva por **muestra** y el solver por **unidad UV**, así que las normales FD son W× más planas. En Q8 el RMSE resulta 8× peor (0.00387 frente a 0.00047 con FD en unidades UV), y en float las dos versiones son idénticas (0.00041). El control FD-Q8 mide un cambio de régimen de cuantización, no la discretización FD. | Media | `[EJECUTADO]`. La conclusión "FD tolerable" sigue en pie, pero por otra razón. |
 | **H6** | No conmutatividad entre resize y forward: en contenido con creases (S09), el normal reescalado no es igual al normal del height reescalado, y deja RMSE ≈ 0.04 aun con resize float. A 512 el par AUTH tiene un piso estructural que SELF no tiene. | Media | `[EJECUTADO]`. El secundario nativo 1024 de M4 lo controla, así que la mitigación ya existe. |
 | **H7** | Costo: `integrate_periodic` v1 (complex128) tarda 0.85–1.9 s en 2048² y 8.7–9.0 s en 4096², en 4 cores. El diseño A §J estimaba "<1 s/2K total". Con `rfft2` la misma solución en cuadradas tarda 0.41 s en 2K y 0.88 s en 4K, con diferencia ≤ 1e-17. | Media | `[EJECUTADO]` (contenedor de 4 cores; el tiempo varía entre corridas). |
@@ -160,8 +162,8 @@ hace falta un híbrido nuevo, la Síntesis C ya lo es.
 | Prioridad | Acción | Ancla de test (enumera, no muestrea) |
 |---|---|---|
 | P0 | **H1**: oráculo de strength en forma cerrada (S2) | Parametrizar `s_true ∈ {2, 0.3, 0.1, 0.02, 0.003, −0.05}` × {float, Q8}: ángulo < 1e-6° en float y < 0.5° en Q8, signo correcto. Enumerar los 4 callers (M2/M3×2/M4) |
-| P0 | **H2**: `normal_fft_periodic_v2` (S1) sin editar v1; gate de cuadradas también en el loader M2; marcar los 3 assets M2 como desvío de protocolo | v2 ≡ v1 en cuadradas (≤1e-12); exactitud en `(64,128)`, `(128,64)`, `(96,160)`, `(63,65)`; corr v2 > 0.999999 y corr v1 < 0.99 con pendiente por texel en 2:1 |
-| P1 | **H4**: `resize_normal` en float (S3) | Normal plana → `|mean(nx)| < 1e-7`; RMSE AUTH ≤ float + ε |
+| P1 | **H2**: `texel_aspect` explícito en `normal_fft_periodic_v2` (S1), sin editar v1; en no cuadradas sin convención declarada falla cerrado; gate de cuadradas en `load_asset` y `load_cohort_a` (hoy solo lo tiene el fetch del corpus M3); marcar los 3 assets M2 como desvío de protocolo | v2 ≡ v1 (≤1e-12) en cuadradas y, con `texel_aspect = H/W`, en no cuadradas; round-trip exacto por convención en `(64,128)`, `(128,64)`, `(96,160)`, `(63,65)`; matriz verdad × solver 2×2 (diagonal exacta, fuera de la diagonal sesgada); `None` en no cuadrada → `ValueError` |
+| P1 | **H4**: `resize_normal` en float (S3) | Normal plana → `abs(mean(nx)) < 1e-7`; RMSE AUTH ≤ float + ε |
 | P1 | **H3**: SELF a la strength fitada del par (S4) | SELF-Q8 debe ser invariante (±10 %) a `c ∈ {1, 0.1, 0.01}` tras calibrar |
 | P1 | **H5**: `fd_forward` en las unidades del solver (S5) | FD-Q8 ≈ spectral-Q8 (≤ 2×) en contenido band-limited |
 | P2 | Ancla AST de unidades: el conjunto de módulos que llaman `np.fft.fftfreq`/`rfftfreq` o derivan con `np.roll` se congela por igualdad literal `{módulo: unidad_declarada}` | Un módulo nuevo con su propia convención rompe el test |
@@ -172,48 +174,79 @@ hace falta un híbrido nuevo, la Síntesis C ya lo es.
 Las corridas históricas (M2–M5) **no se reescriben**: van a una revalidación versionada, con
 el mismo criterio que `m2-m3-math-revalidation-protocol.md`.
 
-### S1 — `normal_fft_periodic_v2` (isotropía por texel + rFFT) `[EJECUTADO en tests de esta sesión]`
+### S1 — `normal_fft_periodic_v2` (`texel_aspect` explícito + rFFT) `[EJECUTADO: el bloque se extrajo de este archivo y se corrió, ver §6]`
+
+La convención de aspecto es un **parámetro de entrada**, no una propiedad que se pueda inferir del
+normal map. Hay dos convenciones legítimas y ninguna es universal: `1.0` (texel cuadrado, la pendiente
+que pinta el autor es por texel) y `n_rows / n_cols` (tile físicamente cuadrado, `x = j/W`,
+`y = i/H`: es lo que hace v1 sin decirlo).
 
 ```python
 ALGORITHM_ID = "normal_fft_periodic_v2"
 _NYQ_ATOL = 1e-12
 
 
-def freq_axes_v2(n_rows: int, n_cols: int) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """``(wy (H,1), wx (1, W//2+1))`` en rad por unidad isotrópica ``S = max(H, W)`` texels.
+def resolve_texel_aspect(n_rows: int, n_cols: int, texel_aspect: float | None) -> float:
+    """Convención de aspecto, siempre explícita: ancho físico del texel / alto físico del texel.
 
-    En cuadradas coincide bit a bit con v1 (``S = W = H``). En no cuadradas, ``x = j/S``
-    e ``y = i/S`` respetan el texel cuadrado que asume un normal map real.
+    ``1.0``: texel cuadrado. ``n_rows / n_cols``: tile físicamente cuadrado (la convención de v1).
+    ``None`` solo vale en grillas cuadradas, donde las dos coinciden; en no cuadradas falla cerrado
+    en vez de elegir una por quien llama.
     """
     if n_rows < 2 or n_cols < 2:
         raise ValueError(f"grid demasiado chico: {(n_rows, n_cols)}")
-    s = float(max(n_rows, n_cols))
+    if texel_aspect is None:
+        if n_rows != n_cols:
+            raise ValueError(
+                f"grilla no cuadrada {(n_rows, n_cols)}: declarar texel_aspect "
+                "(1.0 = texel cuadrado; n_rows/n_cols = tile cuadrado, la convención de v1)"
+            )
+        return 1.0
+    if not (np.isfinite(texel_aspect) and texel_aspect > 0.0):
+        raise ValueError(f"texel_aspect debe ser finito y > 0: {texel_aspect!r}")
+    return float(texel_aspect)
+
+
+def freq_axes_v2(
+    n_rows: int, n_cols: int, texel_aspect: float | None = None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``(wy (H,1), wx (1, W//2+1))`` en rad por unidad de ALTO de tile (``y = i/H``).
+
+    ``wy = 2π·H·fy`` y ``wx = 2π·H·fx / texel_aspect``. Con ``texel_aspect = H/W`` reproduce v1
+    (``x = j/W``); en cuadradas v1 y v2 coinciden numéricamente (≤ 1e-12, no bit a bit: v1 usa
+    ``fft2`` complejo y v2 ``rfft2``).
+    """
+    aspect = resolve_texel_aspect(n_rows, n_cols, texel_aspect)
     fy = np.fft.fftfreq(n_rows)
     fx = np.fft.rfftfreq(n_cols)
-    wy = 2.0 * np.pi * s * fy
-    wx = 2.0 * np.pi * s * fx
+    wy = 2.0 * np.pi * n_rows * fy
+    wx = 2.0 * np.pi * n_rows * fx / aspect
     wy[np.abs(np.abs(fy) - 0.5) < _NYQ_ATOL] = 0.0  # derivada nula en Nyquist (convención v1)
     wx[np.abs(fx - 0.5) < _NYQ_ATOL] = 0.0
     return wy.reshape(n_rows, 1), wx.reshape(1, fx.size)
 
 
-def spectral_gradients_v2(h: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Forward coherente con ``integrate_periodic_v2`` (mismas unidades)."""
+def spectral_gradients_v2(
+    h: NDArray[np.float64], texel_aspect: float | None = None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Forward coherente con ``integrate_periodic_v2`` (mismas unidades y misma convención)."""
     n_rows, n_cols = h.shape
-    wy, wx = freq_axes_v2(n_rows, n_cols)
+    wy, wx = freq_axes_v2(n_rows, n_cols, texel_aspect)
     h_hat = np.fft.rfft2(h)
     shape = (n_rows, n_cols)
     return np.fft.irfft2(1j * wx * h_hat, s=shape), np.fft.irfft2(1j * wy * h_hat, s=shape)
 
 
-def integrate_periodic_v2(p: NDArray[np.float64], q: NDArray[np.float64]) -> NDArray[np.float64]:
+def integrate_periodic_v2(
+    p: NDArray[np.float64], q: NDArray[np.float64], texel_aspect: float | None = None
+) -> NDArray[np.float64]:
     """Poisson periódico (Frankot–Chellappa) → ``h`` de media cero, float64."""
     if p.ndim != 2 or p.shape != q.shape:
         raise ValueError(f"p y q deben ser 2D y del mismo shape: {p.shape} vs {q.shape}")
     if not (np.all(np.isfinite(p)) and np.all(np.isfinite(q))):
         raise ValueError("p/q no finitos: fail-closed antes de contaminar el espectro")
     n_rows, n_cols = p.shape
-    wy, wx = freq_axes_v2(n_rows, n_cols)
+    wy, wx = freq_axes_v2(n_rows, n_cols, texel_aspect)
     denom = wx * wx + wy * wy
     nulo = denom == 0.0  # DC + Nyquist autoparejados: el numerador también es 0
     denom[nulo] = 1.0
@@ -297,13 +330,23 @@ s_star = oracle_strength(auth_normal, height, spectral_gradients)["oracle_best_s
 n_self = self_forward(height * s_star, bits=8)  # SELF y AUTH comparten régimen nz
 ```
 
-### S5 — `fd_forward` en las unidades del solver (H5) `[EJECUTADO como variante]`
+### S5 — `fd_forward` en las unidades del solver (H5) `[EJECUTADO como variante, ver §6]`
 
 ```python
-s = float(max(h.shape))  # misma unidad que freq_axes_v2; con v1 cuadrado, s = W
-px = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * (0.5 * s)
-qy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * (0.5 * s)
+def fd_forward_v2(
+    h: NDArray[np.float64], texel_aspect: float | None = None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Diferencias centradas por UNIDAD de alto de tile: misma unidad y convención que ``freq_axes_v2``."""
+    n_rows, n_cols = h.shape
+    aspect = resolve_texel_aspect(n_rows, n_cols, texel_aspect)
+    px = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * (0.5 * n_rows / aspect)
+    qy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * (0.5 * n_rows)
+    return px, qy
 ```
+
+Medido sobre un campo band-limited (≤ 12 ciclos por tile) en 128², 128×256 y 256×128: con estas
+unidades el FD difiere del derivado espectral en un 2–3 % (error relativo RMS); por muestra, sin la
+conversión, el desajuste es del 99 %. Es la misma clase de defecto que H5, ahora también por eje.
 
 ### S6 — Referencia POM para el preview offline NP-V0 (GLSL 3.30) `[NO EJECUTADO]`
 
@@ -355,16 +398,57 @@ OracleOnly.normal_height_residual_oracle(normals_from_gradients(p, q), h)
 # → agreement ≈ 13.44°, best_strength = 0.05 (par perfectamente coherente)
 ```
 
-Reproducción mínima de H2:
+Reproducción mínima de H2, en las dos direcciones. Corr y RMSE alineado no dependen de la escala
+global, así que la normal se arma con pendientes ÷ `R`. Usa `spectral_gradients_v2` e
+`integrate_periodic_v2` de S1, y `best_affine`, `pearson`, `normals_from_gradients` y
+`gradients_from_normal` del paquete research:
 
 ```python
-R, C = 128, 256  # pendiente física por texel isotrópico → normal → v1
-# v1: corr ≈ 0.977–0.980; isotrópico (v2): corr = 1.0 (≤1e-15)
+R, C = 128, 256
+rng = np.random.default_rng(0)
+i, j = np.mgrid[0:R, 0:C].astype(float)
+h = np.zeros((R, C))
+for _ in range(40):
+    kx = int(rng.integers(-12, 13))
+    ky = int(rng.integers(-12, 13))
+    if kx == 0 and ky == 0:
+        continue
+    h += rng.uniform(0.2, 1) / np.hypot(kx, ky) * np.sin(2 * np.pi * (kx * j / C + ky * i / R) + rng.uniform(0, 6.28))
+h *= 3.0
+for verdad in (1.0, R / C):  # texel cuadrado | tile cuadrado (la convención de v1)
+    p, q = spectral_gradients_v2(h, verdad)  # la pendiente «verdadera» bajo esa convención
+    pp, qq, _ = gradients_from_normal(normals_from_gradients(p / R, q / R))
+    for solver in (1.0, R / C):
+        rec = integrate_periodic_v2(pp, qq, solver)
+        print(f"verdad={verdad:.2f} solver={solver:.2f} corr={pearson(rec, h):.4f} "
+              f"rmse/sigma={best_affine(rec, h)['rmse'] / h.std():.4f}")
 ```
+
+Resultado `[EJECUTADO: el bloque se extrajo de este archivo y se corrió]`. `integrate_periodic` de v1 da
+lo mismo que `solver = H/W` (diferencia de corr < 1e-9 en todos los casos):
+
+| Forma | Verdad | Solver `aspect = 1.0` | Solver `aspect = H/W` (= v1) |
+|---|---|---|---|
+| 128×256 (2:1) | texel cuadrado (`1.0`) | corr 1.0000, rmse/σ 0.0000 | corr 0.9657, rmse/σ 0.2598 |
+| 128×256 (2:1) | tile cuadrado (`H/W`) | corr 0.9750, rmse/σ 0.2223 | corr 1.0000, rmse/σ 0.0000 |
+| 256×128 (1:2) | texel cuadrado (`1.0`) | corr 1.0000, rmse/σ 0.0000 | corr 0.9827, rmse/σ 0.1854 |
+| 256×128 (1:2) | tile cuadrado (`H/W`) | corr 0.9670, rmse/σ 0.2547 | corr 1.0000, rmse/σ 0.0000 |
+| 192×256 (4:3) | texel cuadrado (`1.0`) | corr 1.0000, rmse/σ 0.0000 | corr 0.9948, rmse/σ 0.1023 |
+| 192×256 (4:3) | tile cuadrado (`H/W`) | corr 0.9957, rmse/σ 0.0927 | corr 1.0000, rmse/σ 0.0000 |
+
+La diagonal es exacta (error ≤ 1e-15) y fuera de ella el sesgo corre en ambos sentidos. Por eso la
+corrección es declarar la convención, no cambiar la de v1 por la otra. Las otras formas del cuadro salen
+de cambiar `R, C` en el mismo bloque. En la misma corrida, sobre los bloques S1 y S5 extraídos de este
+archivo: equivalencia con v1 ≤ 1e-12 en cuadradas (32², 64², 512²) y, con `texel_aspect = H/W`, en
+`(64,128)`, `(128,64)`, `(96,160)` y `(63,65)`; round-trip exacto (error < 1e-9) con `texel_aspect` en
+`{1.0, H/W, 0.5, 2.0}` sobre esas cuatro formas; y `ValueError` con `None` en no cuadradas o con un
+aspecto no positivo o no finito.
 
 ## 7. No verificado / riesgos residuales
 
 - Impacto de H3/H4 sobre las medianas reales de M4/M5: requiere el corpus (fuera del repo).
+- Qué convención de aspecto usó el autor de cada normal map no cuadrado del corpus M2: no se infiere
+  del archivo y no consta en el repo (H2).
 - Profundidad de bits de los PNG normales del corpus M3, que pueden truncarse en `convert("RGB")`.
 - Determinismo FFT entre plataformas.
 - Semántica exacta de altura en `_p`/CM por stack (CS vs ENB): `REAL_RIG_REQUIRED`.

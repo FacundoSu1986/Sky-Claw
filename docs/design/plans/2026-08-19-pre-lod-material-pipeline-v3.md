@@ -654,7 +654,7 @@ Tres ejes **ortogonales**. Confundirlos fue el error de v1.
 | Eje | Pregunta | Cómo se responde | Estado |
 |---|---|---|---|
 | **T — Técnico** | ¿Existe una interfaz invocable sin GUI? | Inspección del artefacto | **CERRADO** para ParallaxR/BENDr (los BAT demuestran CLI invocable, §2.2) y para los helpers de VRAMr (§2.5). **Abierto** para el pipeline completo de VRAMr (B3) y para PGPatcher (B4) |
-| **L — Legal** | ¿Los permisos permiten invocar los helpers, redistribuirlos, descargarlos automáticamente? | Leer permisos del autor / licencia | **ABIERTO** para ParallaxR/BENDr/VRAMr (B1, B6-L). **CERRADO** para PGPatcher (GPL-3) |
+| **L — Legal** | ¿Los permisos permiten invocar los helpers, redistribuirlos, descargarlos automáticamente? | Leer permisos del autor / licencia | **B1 CERRADO** (lectura de permisos de ParallaxR/BENDr/VRAMr, 2026-10-07: [registro](../../audits/2026-10-07_b1_permisos_r_suite.md)); **B6-L ABIERTO** (invocación directa de helpers: `MATERIAL_PIPELINE` los mantiene `BLOCKED`). **CERRADO** para PGPatcher (GPL-3) |
 | **S — Seguridad** | ¿El artefacto hace cosas que Sky-Claw no puede replicar? | Inspección del artefacto | **CERRADO y caracterizado** (H2). Se evita **no replicándolo**; no se hereda |
 
 **Que S esté cerrado no desbloquea nada por sí solo** — solo elimina un riesgo. Y que T esté
@@ -949,8 +949,8 @@ camino `TOOL`. Eso es P4, y beneficia también a LOOT/xEdit/Pandora/BodySlide.
 | Herramienta | `install_kind` | Primer corte | Segundo corte |
 |---|---|---|---|
 | **PGPatcher** | TOOL | `AUTO_GITHUB` vía `_ensure_github_mod` sobre el camino TOOL atómico de P4 | — |
-| **VRAMr** | TOOL | **`MANUAL_ONLY`** — se detecta y valida, no se descarga | `AUTO_NEXUS` (PR-C) cuando B1 cierre |
-| **ParallaxR** | TOOL | Nodo declarado, sin adapter | Según B1/B6-L |
+| **VRAMr** | TOOL | **`MANUAL_ONLY`** — se detecta y valida, no se descarga | `AUTO_NEXUS` (PR-C) solo con autorización explícita: B1 se cerró el 2026-10-07 sin autorizarlo y rige `MANUAL_ONLY` |
+| **ParallaxR** | TOOL | Nodo declarado, sin adapter | Según B6-L (B1 cerrado el 2026-10-07) |
 | **BENDr** | TOOL | Nodo declarado, sin adapter | ídem |
 | **Auto Parallax** | **RUNTIME_PLUGIN** | **No es una herramienta del pipeline.** Plugin SKSE (DLL/INI/PDB, §2.7). Solo se *detecta* como contexto; nunca se instala ni se quita automáticamente | — |
 
@@ -1724,7 +1724,8 @@ LODGen); cero trabajo legítimo vs. fallo; **los dos logs presentes y frescos** 
 **Complejidad: Media** (hereda el molde y la etapa compartida).
 
 #### PR-C — VRAMr a `AUTO_NEXUS`
-**Bloqueado por** B1. **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
+**Bloqueado por** la autorización de B1: la lectura de permisos se cerró el 2026-10-07 sin autorizar
+`AUTO_NEXUS` (rige `MANUAL_ONLY`). **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
 `_ensure_nexus_mod` + pin en `_PINNED_SHA256`. La UX de fallback manual no cambia.
 **Complejidad: Baja.**
 

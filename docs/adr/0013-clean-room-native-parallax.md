@@ -27,7 +27,8 @@
    que allí se listan; la ruta de la propuesta queda como puntero.
 2. El material anterior que contiene contenido derivado se **conserva y se pone en cuarentena**: se
    señaliza en el sitio, no se lee para trabajar en `native_parallax/` y su perímetro no crece (test
-   ancla enumerativo). No se reescribe la historia de git.
+   ancla que recorre todos los archivos trackeados: marcas solo dentro de sus secciones y huellas de
+   las líneas en cuarentena). No se reescribe la historia de git.
 3. Se distingue **evaluación** de **destilación**: comparar a ciegas contra la salida de una
    herramienta cerrada es válido como evaluación (sin retroalimentar el diseño ni commitear sus
    salidas); usar esa salida como etiqueta de entrenamiento, objetivo de ajuste o fuente de umbrales
@@ -50,9 +51,15 @@
 
 ## 4. Consecuencias
 
-- `tests/test_clean_room_invariant.py` falla si aparece contenido derivado fuera del perímetro, si la
-  zona limpia recibe una marca, si se quita un aviso de cuarentena, si la política o sus referencias
-  se borran, o si el registro B1 y `B6_L` divergen.
+- `tests/test_clean_room_invariant.py` falla si aparece contenido derivado (una marca, o el texto de una
+  línea de una sección en cuarentena aunque se la re-corte, se la incruste en otro texto o se copie un
+  tramo de al menos 79 caracteres) fuera de su sección, si
+  la zona limpia (toda ruta con
+  `native-parallax` o `native_parallax`) recibe una marca o un binario no admitido, si se versiona un
+  ejecutable, si se quita un aviso de cuarentena, si la política pierde una cláusula o sus referencias, o
+  si el registro B1 y `B6_L` divergen (vocabulario cerrado: solo `AUTORIZADA` levanta el bloqueo).
+- El barrido lee todos los archivos trackeados en cada corrida: unos 30 MB hoy, sin descartar ninguno por
+  tamaño, codificación o formato. Fuera de CI sin `.git` se saltea de forma explícita; en CI falla.
 - Sumar un documento que nombre ejecutables internos o hashes de artefactos exige decidir si es un
   contrato de integración (entra al perímetro de identidad) o contenido derivado (no entra).
 - La cuarentena no deshace la exposición previa: la acota y la vuelve auditable.
@@ -62,6 +69,10 @@
 
 - No es asesoramiento legal ni decide si la reimplementación independiente es admisible: eso es del
   operador.
+- No detecta contenido derivado que no esté en este repo: un script reescrito con otras palabras, salidas
+  de la herramienta convertidas a otro formato o copias parciales de menos de 79 caracteres pasan el
+  ancla. Ahí manda la revisión humana y el procedimiento de contaminación de `CLEAN_ROOM.md`; las
+  cláusulas se congelan por frase, no por significado.
 - No decide B6-L ni cambia `MaterialStepId.PARALLAXR`, `BENDR` ni `VRAMR` (siguen `BLOCKED`).
 - No toca el código de investigación ni los resultados congelados de M0–M5.
 - No re-verifica los permisos contra Nexus (egress bloqueado el 2026-10-07): ver el nivel de evidencia
