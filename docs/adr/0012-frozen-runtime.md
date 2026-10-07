@@ -23,15 +23,28 @@ pasa a ser propiedad **on-demand** de la Generation (`st_nlink==1`, sin requerir
 la Managed Source): `VALID` exige integridad física fresca (P2-B2). Veredictos:
 violación física conocida ⇒ `INVALID`; identidad física inobservable ⇒
 `INDETERMINATE`; nunca `VALID`.
+**Enmienda P0.4 (2026-10-07):** reconciliación posterior al cierre de P3 (PR #682)
+y al hardening post-merge (#698, `origin/main` `5039997a`). **Separa los dos roles
+que el ADR original confundía**: la **Generation** pasa a ser la *referencia*
+—lógicamente inmutable y **nunca ejecutada** (SFR-19)— y lo que MO2/SKSE/Sky-Claw
+ejecutan es un **Runtime Clone** derivado de ella (SFR-20). Se agrega SFR-21 (sin
+pasos manuales repetidos por arranque) y el slice **P3b**. **La autoridad de
+rollback es la Generation**, no un Clone retenido (§12). Alcance: design/contract
+only; no cambia lo ya mergeado en P1–P3, no habilita implementación productiva y
+**no** decide el mecanismo de P3b (depende de evidencia de rig). Registro de la
+adjudicación: §29.
 **Contexto de origen:** `origin/main` `0103ee4f6de15207032d25c254ede5cf2c01bff9`
 (merge de RV-GP2/S4D, PR #666).
 **Relación con GP2-S4E:** el workstream archivado (rama
 `feat/runtime-vault-s4e-production-wiring`, PR #669, issue #671) queda **pausado y
 diferido**; este ADR **no** lo reanuda, **no** lo modifica y **no** depende de él.
 Se lo referencia únicamente como contexto histórico del enfoque anterior.
-**Invariante de alcance:** el único lugar de trabajo es
-`E:\Skyclaw_Steam_Frozen_Runtime` en la rama `feat/steam-frozen-runtime`. `main` sólo
-se lee.
+**Invariante de alcance (histórico, P0):** el único lugar de trabajo era
+`E:\Skyclaw_Steam_Frozen_Runtime` en la rama `feat/steam-frozen-runtime`; `main` sólo
+se leía. **Superado por P0.4:** la reconciliación se hizo en un worktree propio bajo
+`<repo>/.worktrees/` con rama nueva (convención vigente de `AGENTS.md`), y el
+resultado se propone por PR en estado Draft. La regla que sobrevive es la de fondo:
+`main` sólo se lee.
 **Deuda de naming (no funcional, registrada en P0.3):** la rama conserva el nombre
 histórico `feat/steam-frozen-runtime` y el worktree conserva su path físico: el
 rename de la rama remota **cierra el PR #673** (comprobado empíricamente el
@@ -116,7 +129,8 @@ para no migrar IDs ya documentados (`SFR-01..18`) en docs, tests e issues.
 
 1. `SFR-01` Steam puede actualizar su propia instalación.
 2. `SFR-02` Steam nunca administra el Frozen Runtime.
-3. `SFR-03` MO2/SKSE/juego activo utilizan el Frozen Runtime.
+3. `SFR-03` MO2/SKSE/juego activo utilizan el **Runtime Clone** de la Generation
+   activa (no la Generation misma; ver SFR-19/20).
 4. `SFR-04` Una actualización de Steam no modifica el Frozen Runtime activo.
 5. `SFR-05` La Managed Source nunca se convierte automáticamente en runtime activo.
 6. `SFR-06` Toda nueva versión entra primero como Candidate.
@@ -143,6 +157,23 @@ para no migrar IDs ya documentados (`SFR-01..18`) en docs, tests e issues.
     árboles y sin hardlinks hacia archivos de la Managed Source. La independencia
     física se verifica en la creación (por inodo, RV-3) y la admisión de rutas la
     preserva (§17).
+19. `SFR-19` La Generation es **referencia**: **nunca se ejecuta**, nunca recibe
+    instalaciones de herramientas ni es el Effective Runtime. Es una propiedad
+    del mecanismo, no un recordatorio de proceso: el gate de activación (§11) sólo
+    acepta como Effective Runtime una ruta bajo `clones/`, y una Generation
+    ejecutada por error deriva y queda `DRIFTED` (SFR-17), sin convertirse en
+    fuente de clonación (§29.3).
+20. `SFR-20` Lo que MO2/SKSE/Sky-Claw ejecutan es un **Runtime Clone**: copia
+    operativa creada desde una Generation `VALID` con RV-2 → RV-3, físicamente
+    independiente de la Generation y de la Managed Source. Su deriva es
+    **esperada** (juego, SKSE, ENB, Creation Club): se **reporta**, y sólo bloquea
+    si un archivo **crítico** cambió o si aparece un objeto de filesystem
+    compartido (§29.3).
+21. `SFR-21` (requisito de producto) Tras la captura inicial, ni arrancar el juego
+    ni que Steam actualice su propia copia exigen una **acción manual repetida**
+    del usuario (sin solo-lectura sobre el manifest, sin restaurar nada, sin
+    desconectar red, sin bloqueos). Criterio de aceptación de P7, **no demostrado
+    todavía** (§29.7).
 
 ## 5. No-objetivos (Non-goals)
 
@@ -177,14 +208,15 @@ para no migrar IDs ya documentados (`SFR-01..18`) en docs, tests e issues.
 |---|---|
 | **Managed Source** | Instalación mutable del juego administrada por una plataforma externa. **Proveedor inicial: Steam** (path típico `steamapps/common/...`). Fuente válida para crear Candidate. No es Golden. `Managed Source != Frozen Runtime` y `Managed Source != Golden Master`. |
 | **SourceSnapshotEvidence** | Observación sellada de una Managed Source **estabilizada**: `RuntimeIdentity` + `TreeDigest` + critical file evidence + `provider_metadata` opcional (para Steam: `appid`, `buildid`, `library_path`). No es Golden ni autoridad GP2; es la evidencia de la fuente concreta que se pretendía copiar (§9.1). |
-| **Frozen Runtime** | Feature de Sky-Claw: árbol de directorios independiente, fuera del árbol de juego administrado por la Managed Source. Contiene la versión que MO2/SKSE/juego usan. |
+| **Frozen Runtime** | Feature de Sky-Claw: árbol de directorios independiente, fuera del árbol de juego administrado por la Managed Source. Contiene las **Generations** (referencias) y los **Runtime Clones** (copias operativas) que MO2/SKSE/juego ejecutan. |
 | **Candidate** | Copia candidata derivada de la Managed Source, aún no promocionada. Debe verificarse **contra `SourceSnapshotEvidence`** antes de promocionar. Nunca genera la evidencia contra la que se aprueba (SFR-15). |
-| **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). |
-| **Desired Active Generation** | Estado persistente de Sky-Claw (`state/active.json`): qué Generation pretende ser la activa. |
-| **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo). Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
-| **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != READY` y `DRIFTED != target de rollback` sin re-verificación (§12). La detección es **on-demand**: re-verificación de identidad antes de rollback/reactivación; no se promete monitoreo continuo (la Generation activa es escribible y puede derivar durante el uso normal). |
+| **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). Es la **referencia**: no se ejecuta (SFR-19) y es la **autoridad de recuperación** (§12). |
+| **Runtime Clone** | Copia operativa derivada de una Generation `VALID` (`clones/<clone-id>/`), creada con RV-2 → RV-3. **Es el Effective Runtime**: lo que MO2/SKSE/Sky-Claw ejecutan (SFR-20). **Mutable**: su deriva es esperada y se reporta. No es una Generation. |
+| **Desired Active Generation** | Estado persistente de Sky-Claw (`state/active.json`): qué Generation pretende ser la activa. Por el linaje del Clone, identifica indirectamente el Effective Runtime. |
+| **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo): desde P0.4, la ruta de un **Runtime Clone**. Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
+| **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != VALID` y `DRIFTED` **no es fuente de clonación** (SFR-17; F10). La detección es **on-demand**: re-verificación de identidad antes de clonar o reparar; no se promete monitoreo continuo. Desde P0.4 la deriva por **uso normal** no debería ocurrir (la Generation no se ejecuta, SFR-19); si ocurre, es una violación de SFR-19 o una mutación externa, y se trata igual: fail-closed. |
 | **Promotion** | Acto explícito y autorizado de hacer que Desired Active Generation y Effective Runtime pasen a ser, **probadamente coherentes**, un Candidate verificado; sin sobreescribir la generación activa anterior (SFR-09/16). |
-| **Rollback** | Hacer que Desired Active Generation y Effective Runtime pasen a ser, probadamente coherentes, una Generation anterior retenida y re-verificada. No reconstruye archivos (SFR-10). |
+| **Rollback** | Hacer que Desired Active Generation y Effective Runtime pasen a ser, probadamente coherentes, una **Generation anterior retenida y re-verificada**, materializada en un Runtime Clone. La **autoridad es la Generation**; un Clone retenido es una vía rápida opcional, nunca la única autoridad (§12). No reconstruye archivos "a mano": re-clona desde la Generation (SFR-10). |
 
 `Golden Master` sigue existiendo como concepto de Runtime Vault (RV-2); **no** es
 sinónimo de Frozen Runtime.
@@ -210,14 +242,22 @@ sinónimo de Frozen Runtime.
                 │  NO copia sobre la activa (SFR-09)
                 ▼
 ┌──────────────────────────────────────┐
-│ FROZEN RUNTIME  (versión congelada)  │
-│ <FrozenRuntimeRoot>/versions/<gen>/  │
-│ Steam NO la administra (SFR-02)      │
-│ MO2/SKSE/juego la usan (SFR-03)      │
+│ FROZEN RUNTIME                       │
+│                                      │
+│ GENERATION  versions/<gen>/          │
+│   referencia inmutable (SFR-17)      │
+│   Steam NO la administra (SFR-02)    │
+│   NO se ejecuta (SFR-19)             │
+│             │ RV-2 verify            │
+│             │ RV-3 create clone      │
+│             ▼                        │
+│ RUNTIME CLONE  clones/<clone-id>/    │
+│   copia operativa (SFR-20)           │
+│ MO2/SKSE/juego ejecutan ACÁ (SFR-03) │
 └──────────────────────────────────────┘
                 ▲
                 │ Desired Active Generation: state/active.json   (intención persistente)
-                │ Effective Runtime: game path que MO2/SKSE ejecutan
+                │ Effective Runtime: ruta del Runtime Clone que MO2/SKSE ejecutan
                 │ promoción/rollback completos ⇔ desired == effective (SFR-16)
 ```
 
@@ -232,8 +272,11 @@ Managed Source (estabilizada; provider: Steam)
     ↓   POST == PRE  (si no: Candidate = INVALID / SOURCE_CHANGED)
   READY
     ↓   USER APPROVES   (SFR-08)
-    ↓   bind Effective Runtime → B
-    ↓   verificar effective path/identity == B
+    ↓   publicar Generation B   (versions/B; sin tocar A; SFR-09)
+    ↓   instanciar Runtime Clone C desde B   (RV-2 → RV-3)
+    ↓   gate de activación de C   (§29.3)
+    ↓   bind Effective Runtime → C
+    ↓   verificar effective path/identity == C
     ↓   persist Desired Active Generation = B
     ↓   POST verify desired/effective coherentes   (SFR-16)
   SUCCESS
@@ -246,9 +289,10 @@ Managed Source (estabilizada; provider: Steam)
 | **Managed Source (provider: Steam)** | MUTABLE / *untrusted as active runtime* | Fuente válida para Candidate. Nunca `reference_only`. Nunca Golden. El proveedor escribe libremente en ella (SFR-01). |
 | **SourceSnapshotEvidence** | Observación de la fuente, **no autoridad** | Evidencia sellada de la Managed Source estabilizada que se pretendía copiar. No es Golden, no tiene autoridad GP2 (SFR-15; §9.1). |
 | **Candidate** | Derivada, no confiable hasta verificar | Se inventaría/verifica **contra `SourceSnapshotEvidence`**, nunca contra su propia medición (SFR-15). Estados `building → ready → invalid` (SFR-06/07). |
-| **Frozen Runtime (Generation)** | Confiable tras verificación; **writable** | La versión está congelada; el árbol puede seguir siendo escribible por MO2/SKSE/runtime. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, la Generation está `DRIFTED` (SFR-17). No comparte objetos de filesystem mutables con la Managed Source (SFR-18). `VALID` exige **integridad física fresca** (sin reparse, `st_nlink==1`): un hardlink insertado después de publicar no cambia el digest pero nunca es `VALID` (P2-B2). |
+| **Frozen Runtime (Generation)** | Confiable tras verificación; **referencia** | La versión está congelada y **nadie la ejecuta** (SFR-19): es la referencia contra la que se clona y la autoridad de recuperación. Sky-Claw **no muta una Generation promocionada in-place**; si su árbol ya no coincide con su identidad registrada, está `DRIFTED` (SFR-17) y no se clona desde ella. No comparte objetos de filesystem mutables con la Managed Source (SFR-18). `VALID` exige **integridad física fresca** (sin reparse, `st_nlink==1`): un hardlink insertado después de publicar no cambia el digest pero nunca es `VALID` (P2-B2). |
+| **Runtime Clone** | Derivado de una Generation `VALID`; **mutable** | Creado con RV-2 → RV-3; físicamente independiente de la Generation y de la Managed Source (SFR-18). Su deriva por uso normal es **esperada** y se reporta (SFR-20). Lo bloquean: archivo **crítico** alterado, objeto de filesystem compartido, o fallo de identidad de runtime (§29.3). |
 | **Desired Active Generation (`state/active.json`)** | Intención persistente de Sky-Claw | Escritura atómica (temp + `os.replace`). Por sí sola **no** declara promoción exitosa (SFR-16). |
-| **Effective Runtime** (game path que MO2/SKSE ejecutan) | Autoridad de hecho | La promoción sólo es exitosa cuando Effective Runtime está probadamente apuntando a la misma Generation que Desired (SFR-16). |
+| **Effective Runtime** (game path que MO2/SKSE ejecutan) | Autoridad de hecho | La promoción sólo es exitosa cuando Effective Runtime está probadamente apuntando al **Runtime Clone** del Desired (SFR-16). Sin oráculo de observación (P5) no se declara `SUCCESS`. |
 
 ## 9. Identidad de versión (Version identity)
 
@@ -352,12 +396,14 @@ Modelo (la primitiva concreta de binding se decide en P5; acá se fija la
 invariante):
 
 ```text
-previous = A
-prepare B                    # publish C → versions/B (sin tocar A; SFR-09)
-verify B                     # identidad + tree_digest + críticos (fresco)
+previous = A (Generation) → Clone Ca (Effective Runtime)
+prepare B                    # publish Generation → versions/B (sin tocar A; SFR-09)
+verify B                     # identidad + tree_digest + críticos + integridad física (fresco)
+instantiate Cb               # Runtime Clone desde B (RV-2 → RV-3); SFR-20
+gate Cb                      # activación: §29.3
 user approves                # SFR-08
-bind Effective Runtime → B   # primitiva P5 (repuntar gamePath/SKYRIM_PATH, o alias)
-verify effective path/identity == B
+bind Effective Runtime → Cb  # primitiva P5 (repuntar gamePath/SKYRIM_PATH, o alias)
+verify effective path/identity == Cb
 persist Desired Active Generation = B   # state/active.json, temp + os.replace
 POST verify desired/effective coherentes  # SFR-16
 SUCCESS
@@ -365,9 +411,11 @@ SUCCESS
 
 Reglas:
 
-1. **Re-verificación fresca de `B`** antes de tocar cualquier binding
-   (`observe_runtime_identity_from_root` + `verify_tree` contra su `tree_digest`
-   registrado + archivos críticos). Un `B` `DRIFTED` no se promueve (SFR-17).
+1. **Re-verificación fresca de `B`** antes de clonar y de tocar cualquier binding
+   (`verificar_generation` + `observe_runtime_identity_from_root` + `verify_tree`
+   contra su `tree_digest` registrado + archivos críticos). Una `B` `DRIFTED` no
+   se clona (SFR-17; F10). El Clone `Cb` pasa además el gate de activación de
+   §29.3 antes de ser el Effective Runtime.
 2. **Sin copia sobre la activa** (SFR-09): `versions/B` es una Generation nueva; `A`
    no se borra (SFR-10).
 3. **Falla parcial de binding ⇒ no hay éxito ambiguo ⇒ el runtime anterior es
@@ -399,28 +447,53 @@ Reglas:
 ## 12. Rollback
 
 ```text
-desired = effective = previous_generation   (probado, SFR-16)
+desired = G_prev   (Generation, referencia)
+effective = Runtime Clone derivado de G_prev
+                (probado, SFR-16)
 ```
 
-Secuencia exacta:
+**Autoridad de rollback = la Generation.** Un Runtime Clone es mutable por
+definición (juego, SKSE, DLLs, ENB, Creation Club, residuos de herramientas,
+borrados accidentales): aceptarlo como *única* autoridad de recuperación haría
+que la posibilidad de volver atrás dependiera de la copia que más se movió. La
+Generation no se ejecuta (SFR-19), así que es la referencia estable desde la que
+se puede **re-materializar** el runtime.
+
+Secuencia exacta (vía de integridad, la canónica):
 
 1. Operador elige una Generation retenida `G_prev`.
 2. **Re-verificar `G_prev`** (identidad fresca + `tree_digest` registrado +
-   archivos críticos). Si `G_prev` está `DRIFTED`, **no es un target de rollback
-   válido**: falla cerrado o se elige otra Generation retenida verificada
-   (SFR-17; F10).
-3. Bind Effective Runtime → `G_prev` (primitiva P5, misma que promotion).
-4. Verificar effective path/identity == `G_prev`.
-5. Persistir Desired Active Generation = `G_prev` (atómico).
-6. POST verify de coherencia desired/effective (SFR-16).
+   archivos críticos + integridad física, P2-B2). Si `G_prev` está `DRIFTED` o
+   `INVALID`, **no es fuente de clonación**: falla cerrado o se elige otra
+   Generation retenida verificada (SFR-17; F10).
+3. **Instanciar un Runtime Clone nuevo** `C_prev` desde `G_prev` (RV-2 → RV-3) y
+   aplicarle el gate de activación de §29.3.
+4. Bind Effective Runtime → `C_prev` (primitiva P5, misma que promotion).
+5. Verificar effective path/identity == `C_prev`.
+6. Persistir Desired Active Generation = `G_prev` (atómico).
+7. POST verify de coherencia desired/effective (SFR-16).
 
-No se reconstruyen archivos destruidos. El rollback **no depende de la Managed
-Source**: se repunta a una Generation retenida y re-verificada, nunca se reconstruye
-desde la fuente. La re-verificación incluye la **integridad física fresca** de la
-Generation (SFR-18 on-demand, P2-B2), así que no hace falta que la Managed Source
-exista para verificar: si `G_prev` no está retenida, está `DRIFTED` o viola su
-integridad física, el rollback falla cerrado (por eso MVP **no** borra
-generaciones y **re-verifica** antes de reactivar).
+**Vía rápida opcional (no autoridad).** Reactivar un Runtime Clone anterior
+**retenido** `C_prev_old` —con el setup del usuario (SKSE, ENB) intacto— es más
+barato que re-clonar, y es legítimo **sólo** si: (a) pasa el gate de §29.3 con la
+evidencia crítica **registrada en la metadata de su Generation de origen** (no con
+su propia medición), y (b) su Generation de origen sigue `VALID`, de modo que la
+reparación por re-clonado siga disponible. Si (b) no se cumple, la activación es
+posible pero debe **declarar** que la ruta de reparación no está disponible: nunca
+se reporta como equivalente a la vía canónica. **Un Clone retenido no reemplaza a
+la Generation como autoridad recuperable.**
+
+No se reconstruyen archivos destruidos "a mano". El rollback **no depende de la
+Managed Source**: se materializa desde una Generation retenida y re-verificada,
+nunca desde la fuente. La re-verificación incluye la **integridad física fresca**
+de la Generation (SFR-18 on-demand, P2-B2), así que no hace falta que la Managed
+Source exista para verificar: si `G_prev` no está retenida, está `DRIFTED` o viola
+su integridad física, el rollback falla cerrado (por eso MVP **no** borra
+generaciones y **re-verifica** antes de materializar).
+
+**Trade-off de almacenamiento (declarado, no resuelto).** La vía canónica cuesta
+≈1 árbol completo por rollback (§29.9). La retención/GC de Clones y Generations
+sigue fuera del MVP (§23). Prioridad explícita: **integridad > velocidad**.
 
 ## 13. Integración MO2 / SKSE
 
@@ -446,14 +519,26 @@ Preguntas a resolver y hallazgos del censo:
   ya valida loader + `skse*.dll` compatibles con la versión exacta
   (`skse_dll_game_version`, `skyrim_version_matches`). Esto alimenta el gate
   `RUNTIME_COMPATIBILITY`.
-- **¿Qué configuración cambiaría al promover?** Sólo el puntero del Frozen Runtime
-  (Desired Active Generation) + el game path de MO2/SKYRIM_PATH (Effective Runtime),
-  una sola vez por promoción; ambos deben quedar **probadamente coherentes**
-  (SFR-16). La primitiva de binding de P5 debe cubrir **ambas superficies** (el
-  `gamePath` de MO2 y `SKYRIM_PATH`) o demostrar que una deriva de la otra;
-  actualizar una sola viola SFR-16 (patrón "dos superficies, un recurso" de
-  `AGENTS.md`). **P0 no modifica** nada de esto; sólo lo documenta (F6: si es
-  incompatible, no hay migración forzada).
+- **¿Qué configuración cambiaría al promover?** El puntero del Frozen Runtime
+  (Desired Active Generation) + las superficies del game path que determinan la
+  Effective Runtime, una sola vez por promoción; todas deben quedar
+  **probadamente coherentes** (SFR-16). El censo de P0.4 (§29.4) encontró **seis**
+  superficies, no dos: `skyrim_path` persistido, `SKYRIM_PATH` en el entorno,
+  raíces del sandbox de `PathValidator`, snapshot del `EnvironmentScanner` (con su
+  paridad con `AutoDetector`), el `gamePath` de MO2 y los ejecutables de MO2 con
+  ruta absoluta / `moshortcut://SKSE`. La primitiva de binding de P5 debe moverlas
+  **como una unidad** o demostrar que derivan entre sí; mover una sola viola SFR-16
+  (patrón "dos superficies, un recurso" de `AGENTS.md`). **P0 no modifica** nada de
+  esto; sólo lo documenta (F6: si es incompatible, no hay migración forzada).
+- **¿Quién ESCRIBE en el árbol del juego?** Pregunta distinta de la anterior y
+  relevante para SFR-19/20: no alcanza con resolver bien el game path, hay que
+  saber quién muta lo que ese path apunta. El censo de P0.4 (§29.4) refuta la
+  afirmación de que `ensure_skse` es el único mutador: `grass_cache_runner` escribe
+  `PrecacheGrass.txt` en el root del juego, y `output_targets.py` enumera varios
+  destinos administrados bajo el game dir (`Pandora_Output`, `BodySlide_Output`,
+  `Data/Bashed Patch, 0.ESP` de Wrye Bash, y el `<game>/Sky-Claw/DynDOLOD` legacy
+  de sólo-recovery). **Todos deben apuntar al Runtime Clone, nunca a la
+  Generation**, y el conjunto debe congelarse con un ancla enumerativa en P5.
 
 Gate futuro:
 
@@ -486,14 +571,16 @@ Verificado leyendo el código de `sky_claw/local/runtime_vault/` sobre
 |---|---|---|---|
 | **RV-1** | `inventory.py`, `verification.py`, `models.py` | Inventario completo sellado (falla ante mutación concurrente y enlaces), `TreeDigest` independiente del root, `verify_tree`, `verify_runtime_identity`. Sin dependencias de GP2. | **REUSE tal cual.** |
 | **RV-1b** | `runtime_observation.py` | Observación fresca de identidad de runtime desde un root (fail-closed, anti-ambigüedad). Sin dependencias de GP2. | **REUSE tal cual.** |
-| **RV-2** | `golden.py` | `verify_golden_master` exige **evidencia independiente** (`expected_tree`, `expected_runtime`); `HASHING_A_FOLDER_DOES_NOT_MAKE_IT_A_GOLDEN_MASTER`. | **ADAPT/PARTIAL.** No usar `verify_golden_master` para admitir la Managed Source (no hay expectativa independiente; sería auto-confianza). Reusar sus bloques: `verify_critical_files`, `verify_runtime_identity`, `inventory_tree`, `tree_digest_from_files`. |
-| **RV-3** | `clone.py` | `create_runtime_clone(golden_source: GoldenMasterVerificationResult, ...)` exige fuente **VERIFIED** con `descriptor.role == "reference_only"`; `RuntimeCloneResult` exige `source_golden` no nulo y `descriptor.runtime_identity == source_golden.runtime_identity`. Copia real, staging hermano, publish atómico no-clobber, independencia física. Sin dependencias de GP2. | **ADAPT.** El *motor de copia+verificación+publicación* es reutilizable, pero el contrato de autoridad de fuente no acepta una Managed Source. Opciones a decidir en P3: **(a)** adaptador fino que produzca un descriptor equivalente para el snapshot de la Managed Source; **(b)** rutina de copia mínima que reuse las primitivas RV-1 y las garantías de staging/publicación de RV-3. No se decide el mecanismo en P0. |
+| **RV-2** | `golden.py` | `verify_golden_master` exige **evidencia independiente** (`expected_tree`, `expected_runtime`, `critical_expectations`) y devuelve un `GoldenMasterDescriptor` con `role="reference_only"`; `HASHING_A_FOLDER_DOES_NOT_MAKE_IT_A_GOLDEN_MASTER`. | **ADAPT** para Managed Source → Candidate (no hay expectativa independiente; sería auto-confianza). **ADAPT fino** para Generation → Clone: la expectativa independiente **existe** (la metadata registrada de la Generation, nacida de `SourceSnapshotEvidence`), pero hay que (a) convertir `GenerationMetadata.critical_files` (`FileIdentity`: `rel_path`/`size`/`digest`) a `CriticalFileExpectation` (`rel_path`/`expected_digest`/`expected_size`), y (b) precederlo con `verificar_generation`, porque `verify_golden_master` **no** verifica la integridad física (`st_nlink==1`) que SFR-18/P2-B2 exigen. |
+| **RV-3** | `clone.py` | `create_runtime_clone(golden_source: GoldenMasterVerificationResult, ...)` exige fuente **VERIFIED** con `descriptor.role == "reference_only"`; `RuntimeCloneResult` exige `source_golden` no nulo y `descriptor.runtime_identity == source_golden.runtime_identity`. Copia real, staging hermano, publish atómico no-clobber, independencia física, **re-validación del origen PRE y POST**. Sin dependencias de GP2. | **REUSE** para Generation → Clone: es el uso para el que fue diseñado, y la re-validación PRE/POST del origen ya convierte "Generation derivada" en fallo fail-closed por sí sola (verificado). **No reusar** su `destination_lock` como lock de P4: su lockfile vive en `tempfile.gettempdir()` y su clave es la ruta destino, así que dos operaciones sobre el mismo root con destinos distintos **no** se excluyen (`P4_CROSS_PROCESS_LOCK`, §29.8). |
+| **P3 (`copying.py`)** | `frozen_runtime/copying.py` | Copia **cross-volume** por enumeración sellada de PRE, sin hardlink, con re-admisión del destino. | **NO reusar** para Generation → Clone: su contrato asume una fuente *no confiable* (se enumeró PRE) y no ofrece staging hermano + publish atómico; para Generation → Clone el motor correcto es RV-3. |
 
 `RV-3` responde las preguntas de §9 del pedido: crea copia física real, preserva
 archivos, maneja directorios vacíos (`_capture_directory_structure`), rechaza
 links/reparse (fail-closed), verifica independencia física por inodo, y **no**
-requiere GP2. Su limitación es la **autoridad de fuente** (Golden verificado), no la
-copia.
+requiere GP2. Su limitación era la **autoridad de fuente** (Golden verificado), no la
+copia — y esa limitación **desaparece** en el paso Generation → Clone, donde la
+Generation es exactamente un "Golden verificado" con rol `reference_only`.
 
 ## 16. Dependencias GP2 excluidas explícitamente
 
@@ -669,15 +756,27 @@ No hay base de datos; JSON canónico mínimo basta.
 ```text
 <FrozenRuntimeRoot>/                 # configurable; NUNCA dentro de steamapps/common
 ├── versions/
-│   ├── 1.6.1170__<digest12>/        # Generation completa, versión congelada (SFR-17)
+│   ├── 1.6.1170__<digest12>/        # Generation: referencia, NO se ejecuta (SFR-17/19)
 │   └── 1.7.xxxx__<digest12>/
+├── clones/                          # Runtime Clones: copias operativas (P0.4, SFR-20)
+│   └── <clone-id>/                  # Effective Runtime; mutable por uso normal
 ├── candidates/                      # namespace reservado (P3 crea Candidates)
 └── state/
     ├── active.json                  # Desired Active Generation (SFR-16)
     ├── .active.json.<rand>.tmp      # temporal de escritura atómica (mismo dir)
-    └── generations/
-        └── <generation-id>.json     # metadata inmutable por Generation
+    ├── generations/
+    │   └── <generation-id>.json     # metadata inmutable por Generation
+    └── clones/                      # (P0.4) linaje + identidad por Clone
+        └── <clone-id>.json
 ```
+
+`clones/` es un namespace **nuevo** (P0.4): el layout de P2 sólo tenía
+`versions/`, `candidates/` y `state/` (verificado en `storage.py`:
+`VERSIONS_DIR_NAME`/`CANDIDATES_DIR_NAME`/`STATE_DIR_NAME`). El esquema exacto de
+`active.json` v2 y de la metadata del Clone se decide en P4; `active.json` v1 debe
+seguir leyéndose fail-closed. La admisión de rutas de §17 aplica también a
+`clones/` (fuera de `steamapps/common`, sin enlaces, sin solapar la Managed Source
+ni la Generation).
 
 **Ruta por defecto (resuelve Q5):** `~/.sky_claw/frozen-runtime`, **per-user**
 (operación de usuario normal, sin helper privilegiado; MO2 es user-level;
@@ -711,11 +810,12 @@ DELETES_PREVIOUS_GENERATION=NO
 | **P0** | Arquitectura / ADR / censo / roadmap (este documento) | ADR mergeado; veredicto P0. |
 | **P1** | Managed Source discovery (provider: Steam) + Runtime Identity + **estabilización** + captura de `SourceSnapshotEvidence` | `STABLE(ManagedSource)` demostrado o bloqueo fail-closed. **Implementado en PR #673** (`sky_claw/local/frozen_runtime/`; Q-04 cerrado en el alcance demostrado de la ventana observada). |
 | **P2** | Frozen Runtime storage + modelo de Generation + admisión de rutas | Crear/listar generations; registro atómico; rechazo de destino dentro de Steam; identidad registrada por Generation (base de `DRIFTED`). **Implementado en PR #673** (`storage.py`/`state.py`/`generations.py`/`independence.py`/`generation_id.py`; Q5/Q6/Q10 resueltas; SFR-18 ejecutable con hardlink/junction/reparse; drift on-demand). **Hardening P2.1**: admisión fail-closed de cada componente del layout (junction/symlink ⇒ rechazo, árbol externo intacto), integridad física on-demand de la Generation (`st_nlink==1`, sin Managed Source), `steamapps/common` exacto rechazado. |
-| **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). |
-| **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). |
-| **P5** | MO2/SKSE integration (binding del game path + gate de compatibilidad) | F6; juego arranca desde Frozen Runtime. |
-| **P6** | Update detection / user-facing status | Contrato de producto (§7). |
-| **P7** | Windows real rig | Evidencia de F1/F7 en rig. |
+| **P3** | Candidate creation + verification | Candidate `ready`/`invalid` contra `SourceSnapshotEvidence`; F2/F3/F8 cubiertos (SFR-15). **Implementado en PR #682** (`candidates.py`/`copying.py`/`membership.py`; blockers P3_DIRECTORY_MEMBERSHIP y P3_CANDIDATE_SOURCE_EVIDENCE cerrados) + **hardening post-merge en #698**. |
+| **P3b** (P0.4) | Captura con update pendiente / adopción de un runtime existente | Que la versión **actual** pueda sellarse aunque Steam ya la haya marcado para actualizar, sin romper SFR-11 ni SFR-15. **Requerido antes de que la fuente vieja desaparezca, pero su implementación está diferida**: la semántica de `StateFlags` no está verificada (§29.5). Gate `P3B_UPDATE_PENDING_CAPTURE`. |
+| **P4** | Explicit Promotion + Rollback | Sin copia sobre activa; F4/F5/F7/F9/F10 cubiertos; coherencia desired/effective probada (SFR-16) y re-verificación anti-DRIFTED (SFR-17). Con P0.4: publica la Generation, **instancia el Runtime Clone** (RV-2 → RV-3), aplica el gate de activación (§29.3) y hace rollback con la **Generation como autoridad** (§12). |
+| **P5** | MO2/SKSE integration (binding del game path + gate de compatibilidad) | F6; juego arranca desde Frozen Runtime. Con P0.4: el binding mueve las **seis** superficies de §29.4 hacia el Runtime Clone, más los escritores del game dir, y aporta el oráculo de Effective Runtime (SFR-16). |
+| **P6** | Update detection / user-facing status | Contrato de producto (§7). Con P0.4: un aviso al propietario cuando el buildid de Steam difiera del de la referencia, y estado informativo del manifest (solo-lectura / update pendiente), sin modificarlo (SFR-11). |
+| **P7** | Windows real rig | Evidencia de F1/F7 en rig. Con P0.4: SFR-21 (arranques repetidos sin pasos manuales), la semántica real de `StateFlags` (§29.5) y la instanciación del Clone en Windows real (antivirus, handles sobre `os.replace` de directorios). |
 | **P8** | Final integration / documentación | Cierre y sincronización de docs. |
 
 División sujeta al código vivo de P1; se evita superar ~8 slices.
@@ -835,7 +935,23 @@ inventan soluciones.
     gate de compatibilidad → mutación`; (e) **P4 no puede promover sin el gate de
     compatibilidad disponible** (`UNKNOWN != COMPATIBLE`, implementación P5).
 16. **P5 — Effective Runtime oracle**: cómo se demuestra qué ruta ejecutan
-    MO2/SKSE (Q12) y el binding de dos superficies (Q2/Q13). Gate P5.
+    MO2/SKSE (Q12) y el binding de las superficies (Q2/Q13). Gate P5.
+17. **(P0.4) Mecanismo de P3b**: ¿captura con update pendiente, adopción de un
+    runtime existente, o ambas? ¿Cuál es el criterio de bits de `StateFlags`, y
+    con qué evidencia de rig se fija? Gate `P3B_UPDATE_PENDING_CAPTURE` (§29.5).
+    **Sin respuesta hoy: `STATEFLAGS_6/518_SEMANTICS = UNVERIFIED`.**
+18. **(P0.4) Ubicación del Runtime Clone**: ¿bajo el `FrozenRuntimeRoot` o en la
+    unidad de modding (MO2/USVFS, rutas largas, `same_volume`)? Gate P4.
+19. **(P0.4) Catálogo de archivos críticos del Clone**: hoy
+    `CRITICAL_EXE_BY_GAME` sólo tiene `SkyrimSE.exe` (`models.py`); el audit del
+    rig verifica además `SkyrimSELauncher.exe` y `bink2w64.dll`. Incluye el
+    **re-baseline** cuando el propietario modifica un crítico a propósito. Gate P4.
+20. **(P0.4) Retención/GC de Clones y Generations**: política de disco y
+    confirmación explícita (§23; §29.9). Gate posterior a P4.
+21. **(P0.4) Integridad de la metadata de la Generation**: es la raíz de confianza
+    de `VALID` y de la autoridad de rollback, y hoy **no tiene protección de
+    integridad** (§29.10-19). ¿Se acepta como límite declarado, o P4 le agrega un
+    digest propio / firma? Decisión de P4.
 
 ## 27. Revisión adversarial (auto-cuestionamiento)
 
@@ -855,6 +971,10 @@ inventan soluciones.
 | ¿MO2/SKSE pueden quedar apuntando a una generación borrada? | No: MVP no borra generaciones. |
 | ¿Una actualización parcial de Steam puede ser capturada como candidate válido? | Gate de estabilización (§18) + verificación de identidad completa; si no se demuestra, se bloquea. |
 | ¿Cómo sabemos que Steam terminó de actualizar? | §18; gate explícito P1, no demostrado en P0. |
+| (P0.4) ¿Ejecutar el juego puede hacer derivar la referencia que necesito para el rollback? | No: la Generation no se ejecuta (SFR-19) y lo que se juega es el Runtime Clone (§7). La contradicción original entre SFR-03 y SFR-17 desaparece. |
+| (P0.4) ¿Una Generation `DRIFTED` puede producir un Clone? | No: `verificar_generation` la marca `DRIFTED` y, aun con un descriptor viejo, la re-validación PRE-copia de `create_runtime_clone` compara el digest fresco contra `golden_desc.tree_digest` y falla (verificado en código). |
+| (P0.4) ¿Un Runtime Clone retenido puede convertirse en la única autoridad de rollback? | No: la autoridad es la Generation (§12). El Clone retenido es vía rápida opcional, y sólo si su Generation de origen sigue `VALID`. |
+| (P0.4) ¿El usuario debe repetir una operación manual (solo-lectura del manifest) al iniciar el juego? | No (SFR-21): Sky-Claw no toca el manifest (SFR-11). Es un **criterio de aceptación de P7**, no una propiedad demostrada todavía. |
 
 ## 28. Referencias
 
@@ -869,3 +989,321 @@ inventan soluciones.
 - `docs/audits/2026-08-22_runtime_vault_mo2_stock_launch_audit.md` (evidencia del rig).
 - Issue #494 (Steam-managed mirror / detached pinned runtime), #624 (Golden Admission).
 - GP2-S4E archivado: PR #669, issue #671 (contexto histórico; no dependencia).
+- Enmienda P0.4 (§29): tracker #672; `sky_claw/local/runtime_vault/`
+  (`golden.py`, `clone.py`, `locking.py`, `models.py`); `sky_claw/local/frozen_runtime/`
+  (`provider_signals.py`, `generations.py`, `storage.py`, `storage_models.py`,
+  `candidates.py`, `copying.py`, `independence.py`); `sky_claw/local/tools_installer.py`;
+  `sky_claw/local/tools/output_targets.py`; `sky_claw/local/tools/grass_cache_runner.py`;
+  `sky_claw/app_context.py`; `sky_claw/local/auto_detect.py`;
+  `sky_claw/app/gui/_bootloader.py`; `sky_claw/local/discovery/scanner.py`;
+  `sky_claw/app/core/path_resolver.py`; `sky_claw/local/mo2/vfs.py`; ADR 0007.
+
+---
+
+## 29. Enmienda P0.4 — adjudicación: Generation como referencia, Runtime Clone como Effective Runtime (2026-10-07)
+
+**Estado:** Propuesta, igual que el resto del ADR (design/contract only; sin código de
+producción). **Verificada sobre `origin/main` `5039997a5d5b4290a8957ab8b7d02ddaa0f1f224`**
+(2026-10-07), el merge de #698 — no sobre `97dcc7ab`, que es la base de la propuesta
+previa. No reabre P1–P3: lo mergeado sigue vigente tal cual.
+
+**Origen:** la propuesta previa (rama `claude/zen-davinci-3yuv0u`, commit
+`8b58e6a3fa1358fbb2f7f564e9f124cea5576537`) introdujo la separación
+referencia/copia. Esta enmienda la **reconcilia** en el cuerpo del ADR en vez de
+anexarle punteros, y adjudica cada decisión contra el código vivo. Se trata la
+propuesta previa como **design input, no autoridad**: varias de sus afirmaciones no
+sobrevivieron a la verificación (§29.9).
+
+**En una línea:** la versión que Steam actualiza, la referencia sellada y la copia que
+se juega dejan de ser la misma carpeta; la referencia **no se ejecuta**, y por eso el
+rollback deja de depender de una copia que derivó por uso normal.
+
+### 29.1 Hipótesis y veredicto
+
+```text
+GENERATION_IS_REFERENCE      = YES   (SFR-19)
+GENERATION_EXECUTED          = NO    (SFR-19)
+RUNTIME_CLONE_IS_PLAYABLE    = YES   (SFR-20)
+RUNTIME_CLONE_IS_EFFECTIVE   = YES   (SFR-20)
+GENERATION_IS_ROLLBACK_AUTHORITY = YES   (§12)
+RETAINED_CLONE_FAST_ROLLBACK = OPTIONAL / NOT_AUTHORITY   (§12)
+AUTO_PROMOTION               = NO
+```
+
+La hipótesis ("la Generation no debería ejecutarse porque ejecutar escribe el árbol")
+**queda confirmada**, pero no por el argumento de estilo con que la propuesta la
+presentaba, sino por una contradicción interna que el ADR original no podía resolver:
+SFR-03 y §7 hacían que MO2/SKSE ejecutaran la Generation, mientras SFR-17/§12/F10
+vedaban reactivar una Generation `DRIFTED`. Ejecutar **es** derivar, así que el
+rollback quedaba bloqueado justo por el uso normal. Separar referencia de copia
+operativa elimina la contradicción en lugar de administrarla con una política de
+"deriva benigna" (que sería un catálogo abierto y frágil).
+
+**Lo que NO cambia:** P1–P3 (código y contratos), SFR-01..18 salvo la lectura de
+SFR-03/16/17, la exclusión de GP2 (§16), la ausencia de ACL mutation y de
+auto-promoción, y la prohibición de tocar el estado interno de Steam (SFR-11).
+
+### 29.2 Evidencia verificada (código, no intención)
+
+| # | Afirmación | Dónde se verifica | Resultado |
+|---|---|---|---|
+| E1 | Ejecutar escribe el árbol ejecutado | audit del rig §7/§9 (`GOLDEN_EXECUTION_CAN_CAUSE_WRITES = PROVEN`) + §29.4 (escritores del game dir) | **CONFIRMADO** |
+| E2 | `verificar_generation` no tolera deriva | `frozen_runtime/generations.py::verificar_generation` compara `TreeDigest` completo + críticos + identidad fresca + integridad física | **CONFIRMADO** |
+| E3 | `create_runtime_clone` exige una fuente `VERIFIED` con rol `reference_only` | `runtime_vault/clone.py:210-228` | **CONFIRMADO** |
+| E4 | `verify_golden_master` **produce** ese descriptor | `runtime_vault/golden.py:257-262` (`role="reference_only"`) | **CONFIRMADO** |
+| E5 | Clonar desde una Generation derivada falla por sí solo | `clone.py:289-294`: `src_digest != golden_desc.tree_digest` ⇒ `RuntimeCloneError`; y `clone.py:391-396` re-verifica el origen POST | **CONFIRMADO** |
+| E6 | El motor de RV-3 da copia real, staging hermano, publish no-clobber e independencia física | `clone.py:300-358` + `verify_physical_independence` (`st_dev`/`st_ino`) | **CONFIRMADO** |
+| E7 | `destination_lock` no sirve como lock de P4 | `locking.py:70` (clave = ruta destino) y `:85` (`tempfile.gettempdir()`) | **CONFIRMADO** |
+| E8 | `verify_golden_master` **no** verifica integridad física (`st_nlink==1`) | `golden.py` no la consulta; vive en `independence.py::verify_generation_physical_integrity` | **CONFIRMADO** |
+| E9 | `frozen_runtime` es 100 % síncrono, sin cancelación ni progreso | `candidates.py::crear_candidate` es `def` y usa `time.sleep` | **CONFIRMADO** |
+| E10 | No existe namespace `clones/` | `storage.py:39-41`: sólo `versions/`, `candidates/`, `state/` | **CONFIRMADO** |
+| E11 | El catálogo de críticos tiene una sola entrada | `frozen_runtime/models.py:22`: `CRITICAL_EXE_BY_GAME = {"skyrimse": "SkyrimSE.exe"}` | **CONFIRMADO** |
+| E12 | `StateFlags != "4"` ⇒ `ACTIVE`; `6 & 4 == 4` y `518 & 4 == 4` | `provider_signals.py:37,66` + aritmética + `tests/test_frozen_runtime_p1.py` (`MANIFEST_UPDATE_ACTIVE`, test S06 ⇒ `UNSTABLE`) | **CONFIRMADO (observación)**; la semántica de los bits es **UNVERIFIED** |
+| E13 | El repo trata las señales del proveedor como **advisory** | docstring de `provider_signals.py`: "Heurísticas documentadas (advisory; no es un contrato de Valve)" | **CONFIRMADO** |
+| E14 | La quiescencia de RV no es reutilizable | `runtime_vault/quiescence.py`: primitiva de ADR 0010/GP2, "reservada para el helper privilegiado"; importa `golden_protection_plan` ⇒ violaría §16 | **CONFIRMADO** |
+
+### 29.3 Gate de activación del Runtime Clone (promoción y rollback; todo fail-closed)
+
+1. **Identidad de runtime fresca** (`observe_runtime_identity_from_root`) igual a la
+   registrada en la metadata de la Generation de origen.
+2. **Archivos críticos** iguales a la evidencia crítica registrada en la metadata de
+   la Generation (hoy sólo `SkyrimSE.exe`; catálogo en Q19).
+3. **Independencia física** respecto de la Generation **y** de la Managed Source
+   (`verify_physical_independence` de RV-3 y/o `verify_generation_independence`),
+   sin objetos de filesystem compartidos.
+4. **Quiescencia**: ningún proceso ejecuta desde el Clone entrante ni el saliente, y
+   MO2 está cerrado durante el binding (`P5_QUIESCENCE`, §29.8).
+
+**No se exige igualdad de `TreeDigest` con la Generation**: el Clone **debe** derivar
+(el juego escribe logs, SKSE, ENB, Creation Club). La deriva se **reporta**
+(archivos agregados / cambiados / quitados, agrupados para diagnóstico). Un archivo
+**crítico** alterado **bloquea**, y el propietario puede re-baselinar con aprobación
+explícita (Q19).
+
+**Por qué el gate no usa `verify_golden_master` sobre el Clone:** ese contrato exige
+`expected == observed` del árbol completo, que un Clone jugado nunca cumple por
+diseño. Usarlo para *admitir* el Clone sería el error simétrico al de admitir la
+Managed Source.
+
+### 29.4 Superficies del game path (6) y escritores del game dir (>1)
+
+**Superficies que determinan la Effective Runtime — censo verificado (6):**
+
+| # | Superficie | Dónde |
+|---|---|---|
+| 1 | `skyrim_path` persistido (zero-config) | `local/auto_detect.py::AutoDetector._find_skyrim_inner`, `app_context.py::start_full` (`escribir_campo(local_cfg, "skyrim_path", …)`) |
+| 2 | `SKYRIM_PATH` en el entorno | `app/gui/_bootloader.py::_hydrate_tool_env_from_snapshot` (`os.environ.setdefault`, un valor del operador gana); `path_resolver.py::get_skyrim_path` lo lee |
+| 3 | Raíces del sandbox de `PathValidator` | `app_context.py::_construir_raices_sandbox` |
+| 4 | Snapshot del `EnvironmentScanner` y su paridad con `AutoDetector` | `local/discovery/scanner.py` (la ruta configurada gana si contiene el ejecutable) + `tests/test_paridad_deteccion_skyrim.py` |
+| 5 | `gamePath` de MO2 | `ModOrganizer.ini` como `@ByteArray` de Qt; `path_resolver.py` documenta explícitamente que **no** lo decodifica |
+| 6 | Ejecutables de MO2 con ruta absoluta y `moshortcut://SKSE` | `local/mo2/vfs.py::MO2Controller.launch_game` (`moshortcut://SKSE`) |
+
+```text
+GAME_PATH_SURFACES_COUNT   = 6
+P5_BINDING_SCOPE_VERIFIED  = NO   (el censo está verificado; el binding no existe)
+```
+
+**Escritores en el árbol del juego — la propuesta previa los subestimó.** Afirmaba
+que "el único verificado hoy es `ensure_skse`". Es **falso**; hay al menos:
+
+| Escritor | Qué escribe | Dónde |
+|---|---|---|
+| `tools_installer.ensure_skse` | SKSE (loader + DLLs) en el game dir | `tools_installer.py::_copy_skse_files`, `_cleanup_orphaned_skse_dlls` |
+| `grass_cache_runner` | `PrecacheGrass.txt` **en el root del juego** (`config.game_path / "PrecacheGrass.txt"`, `write_text`/`unlink`) | `local/tools/grass_cache_runner.py:56,212,249,700` |
+| Wrye Bash | `Data/Bashed Patch, 0.ESP` (corre con `cwd=game_path` y sin ruta de salida en el comando) | `local/tools/output_targets.py::bashed_patch_target` |
+| Pandora | `<game>/Pandora_Output` | `output_targets.py::pandora_output_target` |
+| BodySlide | `<game>/BodySlide_Output/<grupo>` | `output_targets.py::bodyslide_output_root` |
+| DynDOLOD legacy | `<game>/Sky-Claw/DynDOLOD` — **sólo recovery**; ningún productor nuevo lo usa | `output_targets.py::dyndolod_legacy_recovery_target` |
+
+La familia de destinos ya tiene un ancla enumerativa
+(`tests/test_output_targets.py::test_la_enumeracion_cubre_toda_la_familia`); **P5 debe
+extenderla** a "toda superficie que resuelva o escriba el game path", con igualdad
+literal, y **P4/P5 deben garantizar que todos apunten al Clone** — nunca a la
+Generation (SFR-19).
+
+> **Nota de alcance:** ADR 0011 §1.1 todavía describe `<game>/Sky-Claw/DynDOLOD` como
+> la salida **actual** y cita el símbolo `output_targets.dyndolod_output_target`, que
+> ya no existe (renombrado a `dyndolod_legacy_recovery_target`). El código y los tests
+> ya lo tratan como legacy de sólo-recovery; el texto del ADR 0011 quedó atrás.
+> `DOCUMENTATION_DRIFT = POSSIBLE`, `OUT_OF_SCOPE = YES` para este PR: se registra
+> aquí y se corrige aparte.
+
+### 29.5 Slice P3b — captura con update pendiente (diseño listo; implementación NO)
+
+**Observación (verificada).** `evaluate_provider_observation` compara `StateFlags`
+contra el literal `"4"`. Con `"6"` y con `"518"` el resultado es `ACTIVE` (ambos
+tienen el bit `4` encendido), así que la estabilidad da `UNSTABLE`/`INDETERMINATE` y
+la versión **actual** no puede sellarse una vez que Steam la marcó para actualizar.
+`tests/test_frozen_runtime_p1.py` congela ese comportamiento (S06).
+
+**Conclusión semántica (NO verificada).** Que `6` signifique "update pendiente y
+árbol quieto" y `518` "update pendiente" **no está demostrado**. El propio módulo
+declara sus heurísticas como advisory y no como contrato de Valve. Por lo tanto:
+
+```text
+STATEFLAGS_6_SEMANTICS   = UNVERIFIED
+STATEFLAGS_518_SEMANTICS = UNVERIFIED
+```
+
+**Regla de diseño (adoptada):** separar **observación** de **conclusión semántica**.
+El árbol y las observaciones físicas tienen más autoridad que una interpretación no
+documentada de un bitfield. **Prohibido** hardcodear `6`/`518` como "capturable".
+
+**La pregunta correcta** no es "¿qué número de `StateFlags` corresponde a update
+pendiente?" sino "¿podemos demostrar que el árbol está quieto aunque Steam tenga una
+actualización anunciada?". El contrato de §18 ya tiene los instrumentos:
+`PRE_TREE == CANDIDATE_TREE == POST_TREE`, `PRE_RUNTIME == POST_RUNTIME`, ausencia de
+`steamapps/downloading/<appid>` y de staging temporal, y `inventory_tree` sellado que
+falla cerrado ante mutación concurrente. P3b es, entonces, una **captura autorizada y
+fuertemente verificada** cuando las señales de actividad **no** están presentes pero
+`StateFlags` no es `idle` — con confirmación explícita del operador y `provider_state`
+marcado en la metadata. Alternativa registrada (no excluyente): **adoptar** un runtime
+existente verificado contra evidencia independiente.
+
+**Invariantes que P3b no puede romper:** `MANAGED_SOURCE_WRITES = NO` (SFR-11);
+`INDETERMINATE != STABLE` por defecto (el override es explícito, auditado y por
+captura, nunca un flag global); sin `PRE == Candidate == POST` no hay `READY`
+(SFR-15); `Steam` nunca se modifica ni se engaña.
+
+**Orden operativo (crítico para el producto):** sellar **antes** de que Steam
+actualice. Después, la referencia de la versión vieja pierde su fuente en Steam.
+
+```text
+P3B_REQUIRED_BEFORE_P4 = DEFERRED_PENDING_RIG
+P3B_DESIGN_READY       = YES
+P3B_IMPLEMENTATION     = NO
+```
+
+**Lectura de `DEFERRED_PENDING_RIG`:** la *necesidad* está demostrada (con
+`StateFlags != 4` la captura se bloquea hoy, y tras la actualización de Steam la
+versión vieja es irrecuperable desde la fuente); lo que **no** se puede fijar sin rig
+es (i) qué significan realmente `6`/`518` y (ii) si una captura autorizada en ese
+estado es segura. Por eso el **diseño** queda congelado acá y la **decisión del gate**
+se difiere a evidencia de rig. Consecuencia para el roadmap: P4 puede **diseñarse** en
+paralelo, pero **no** puede darse por implementable ni validarse end-to-end en el rig
+real hasta que P3b exista, porque en la máquina del propietario la fuente estará
+marcada para actualizar.
+
+### 29.6 Layout (enmienda de §20)
+
+Ver §20: se agrega `clones/<clone-id>/` y `state/clones/<clone-id>.json`. El esquema
+v2 de `active.json` y la metadata del Clone se deciden en P4. Invariante: el Desired
+Active apunta a un Clone y, por su linaje, a una Generation; v1 sigue leyéndose
+fail-closed.
+
+### 29.7 Regla de arranque y SFR-21
+
+- **R-ARRANQUE (hipótesis operativa; validar en P7):** el juego se arranca por MO2
+  (loader de SKSE o `SkyrimSE.exe`) desde el Runtime Clone, nunca por el Play de Steam
+  ni por `SkyrimSELauncher.exe`. Evidencia parcial: el audit §3 registró
+  `steam://run/489830//` en la corrida con launcher; la corrida con `SkyrimSE.exe`
+  directo arrancó desde el árbol externo. La causalidad del prompt de Steam **no está
+  probada** y el audit no cubre el loader de SKSE.
+- **Sky-Claw no toca el manifest** (SFR-11): no fija ni limpia solo-lectura. Sí puede
+  **observarlo** (lectura) e informarlo en P6.
+- **SFR-21** se formaliza como criterio de aceptación de P7: arrancar N veces por MO2
+  con la Managed Source en actualización pendiente y luego ya actualizada, **sin
+  ninguna acción manual** sobre Steam entre arranques. **No está demostrado.**
+
+### 29.8 Requisitos registrados (el diseño se hace en cada slice)
+
+| Blocker | Slice | Requisito |
+|---|---|---|
+| `P4_CROSS_PROCESS_LOCK` (ampliado) | P4 | Una clave **por `FrozenRuntimeRoot`**, no por destino; base del lockfile derivada del root (p. ej. dentro de `state/`), no de `tempfile.gettempdir()`. `destination_lock` de RV-3 **no sirve** (E7). Los instaladores toman un lock por `game_dir`, cuya clave **cambia** al repuntar la ruta: la promoción debe tomar ambas o usar una clave lógica. Participantes congelados por introspección/AST. |
+| `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un estado explícito (`INVALID`/`CANCELLED`), nunca en un `BUILDING` huérfano. **No se refactoriza a asyncio en P0.4.** |
+| `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding. |
+| `P4_APPROVAL_SCOPE` (ampliado) | P4 | La aprobación se liga al Candidate/Generation exacto (digest, identidad del propietario, nonce, expiración, un solo uso). "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño. |
+| `P4_CLONE_ACTIVATION_GATE` (nuevo) | P4 | Implementar §29.3, incluyendo el catálogo de críticos (Q19) y el **reporte** de deriva (no sólo el veredicto). Además: (a) las expectativas críticas deben **pasarse explícitamente** desde la metadata —nunca quedar en el default `()` de RV-2/RV-3, que desactiva el chequeo en silencio (§29.10-20)—; (b) el gate debe rechazar reparse points que **escapen** del Clone, no sólo comparar inodos contra el origen (§29.10-21). |
+| `P5_EFFECTIVE_RUNTIME_ORACLE` (ampliado) | P5 | El bridge MO2 no expone hoy ninguna información de ruta (la operación `health` sólo emite `bridge_health`). Una extensión de **sólo lectura** es la candidata; la API de MO2 no está verificada. Sin oráculo, la promoción queda `PENDING` (SFR-16). El plugin no gana operaciones mutantes (ADR 0007). |
+| `P5_PATH_SURFACES_UNIT` (nuevo) | P5 | Binder transaccional de las 6 superficies de §29.4 **más** los escritores del game dir, con rollback, con MO2 cerrado, y ancla de igualdad literal del inventario. |
+| `P5_QUIESCENCE` (nuevo) | P5 | Antes del binding: ningún proceso ejecuta desde el Clone saliente ni entrante, y MO2 está cerrado. El repo sólo trackea los PID que él lanzó; hace falta un sensor a nivel sistema (precedente: `psutil.process_iter`) y el lock de instancia MO2 del broker (ADR 0007). **No reutilizar** `runtime_vault/quiescence.py` (E14). |
+| `P6_STEAM_STATUS_NOTICE` (nuevo) | P6 | Un aviso cuando el buildid de Steam difiera del de la referencia; estado informativo del manifest, de sólo lectura. |
+
+### 29.9 Adjudicación de la propuesta previa (`8b58e6a3`)
+
+| # | Decisión de la propuesta | Adjudicación | Evidencia / consecuencia |
+|---|---|---|---|
+| **D1** | Generation nunca ejecutada | **ACCEPT** | E1/E2 + la contradicción SFR-03↔SFR-17. Debe ser propiedad del mecanismo: gate de activación (§29.3) + ancla enumerativa en P5, no un recordatorio de proceso. |
+| **D2** | Runtime Clone como Effective Runtime | **ACCEPT** | Consecuencia directa de D1; E6 la hace materializable. |
+| **D3** | Reutilizar RV-2/RV-3 (Generation → Clone) | **ACCEPT_WITH_CHANGES** | E3/E4/E5/E6: los contratos encajan. Cambios: adaptador `FileIdentity` → `CriticalFileExpectation` (E8: `verify_golden_master` no cubre integridad física ⇒ preceder con `verificar_generation`) y E7: `destination_lock` **no** es el lock de P4. |
+| **D4** | Rollback **entre Runtime Clones** | **ACCEPT_WITH_CHANGES** | La propuesta dejaba la autoridad en el Clone (mutable). Se adopta `ROLLBACK_AUTHORITY = GENERATION`: el Clone retenido es vía rápida opcional, y sólo con su Generation de origen `VALID` (§12). |
+| **D5** | Generation como autoridad de recuperación | **ACCEPT** | E5 + `create_runtime_clone` reconstruye sin la Managed Source; el MVP no borra generaciones (SFR-10). |
+| **D6** | P3b antes de P4 | **DEFER** | `P3B_REQUIRED_BEFORE_P4 = DEFERRED_PENDING_RIG` (§29.5). Diseño listo; implementación no autorizada sin evidencia de rig. |
+| **D7** | `StateFlags 6` = update pendiente | **UNVERIFIED** | E12/E13: observación confirmada (`ACTIVE`), semántica no. No hardcodear. |
+| **D8** | `StateFlags 518` = update pendiente | **UNVERIFIED** | Ídem D7 (`518 & 4 == 4`). |
+| **D9** | Seis superficies del game path | **ACCEPT_WITH_CHANGES** | Las 6 existen (§29.4). Se **rechaza** la afirmación acompañante de que `ensure_skse` es el único mutador del game dir: hay al menos 5 más, una de ellas (`grass_cache_runner`) con evidencia directa en código. |
+| **D10** | SFR-21 sin pasos manuales repetidos | **ACCEPT_WITH_CHANGES** | Se acepta como **requisito de producto** (SFR-21) y criterio de P7; **no** se declara demostrado (§29.7). |
+| **D11** | Catálogo de archivos críticos | **ACCEPT_WITH_CHANGES** | E11: hoy sólo `SkyrimSE.exe`. Extender + re-baseline con aprobación explícita (Q19, `P4_CLONE_ACTIVATION_GATE`). |
+| **D12** | Quiescencia antes del binding | **ACCEPT** | E14: no hay primitiva reutilizable; el sensor es nuevo y es de P5 (`P5_QUIESCENCE`). |
+| **D13** | Cancelación/progreso para operaciones largas | **ACCEPT** | E9: 100 % síncrono. Asignado a P4 (`P4_LONG_RUNNING_CANCELLATION`); **no** se refactoriza acá. |
+
+### 29.10 Revisión adversarial propia
+
+Cada pregunta cierra en un estado explícito. Los `UNKNOWN` no se ocultan.
+
+| # | Pregunta | Estado | Fundamento |
+|---|---|---|---|
+| 1 | ¿Puede Steam modificar el Runtime Clone? | **ANSWERED** | El Clone vive fuera de `steamapps/common`; la admisión de rutas y la independencia física (E6) lo impiden. La admisión de `clones/` es requisito de P4. |
+| 2 | ¿Puede jugar Skyrim modificar la Generation? | **ANSWERED** (diseño) / enforcement en P4–P5 | Sólo si algo la ejecuta. SFR-19 lo prohíbe y el gate de activación sólo admite rutas bajo `clones/`; hoy no hay mecanismo que lo *impida*, sólo que lo *detecte*. |
+| 3 | ¿Puede SKSE instalarse accidentalmente en la Generation? | **ANSWERED** | `ensure_skse` escribe en el game dir resuelto: si P5 apunta al Clone, no. Si alguien lo corre contra la Generation, ésta queda `DRIFTED` y deja de ser fuente de clonación (E5). Detectado, no prevenido. |
+| 4 | ¿Una actualización de Steam cambia el runtime jugable? | **ANSWERED** | Aislamiento físico (§7, SFR-02/04). |
+| 5 | ¿Un Candidate puede autoautorizarse? | **ANSWERED** | SFR-15: la evidencia esperada es `SourceSnapshotEvidence` PRE/POST, nunca la auto-medición del Candidate. |
+| 6 | ¿Una Generation `DRIFTED` puede generar un Clone? | **ANSWERED** | E2 + E5: doble barrera (verificación previa y re-validación PRE-copia). |
+| 7 | ¿Un Clone corrupto puede convertirse en autoridad de rollback? | **ANSWERED** con riesgo residual | Con `ROLLBACK_AUTHORITY = GENERATION`, no es la autoridad. Residual: un Clone retenido corrompido **más allá de los críticos** (una DLL, un mod) puede pasar el gate de §29.3, que sólo mira identidad, críticos e independencia. **DEFERRED_WITH_BLOCKER** (`P4_CLONE_ACTIVATION_GATE`: definir la fuerza del gate). |
+| 8 | ¿Se puede reconstruir una versión anterior desde su Generation? | **ANSWERED** | D5/E5: re-clonado desde la Generation `VALID`, sin la Managed Source. |
+| 9 | ¿Puede `active.json` declarar éxito cuando MO2 ejecuta otra ruta? | **ANSWERED** (fail-closed) | `active.json` sólo registra Desired; sin oráculo de Effective Runtime (P5) la promoción **no** puede declarar `SUCCESS` (§11 regla 6). |
+| 10 | ¿Qué ocurre si P4 muere entre crear el Clone y cambiar el binding? | **DEFERRED_WITH_BLOCKER** | `P4_DURABLE_TRANSITION`: persistir la intención **antes** de mutar el Effective Runtime + reconciliación al arranque. |
+| 11 | ¿Qué ocurre si MO2 está abierto? | **DEFERRED_WITH_BLOCKER** | `P5_QUIESCENCE`: MO2 puede reescribir su ini al salir; el binding exige MO2 cerrado. |
+| 12 | ¿Qué ocurre si Steam está actualizando **realmente** durante la captura? | **ANSWERED** | `UNSTABLE`: actividad observable (`downloading/<appid>`, staging, `BytesToDownload > BytesDownloaded`) y `inventory_tree` falla cerrado ante mutación concurrente. No hay Candidate. |
+| 13 | ¿Qué ocurre si Steam **sólo anuncia** una actualización? | **UNKNOWN** | Hoy se bloquea la captura y no hay forma de distinguir "anunciada" de "en curso" con la evidencia actual. Es exactamente el problema de P3b (`DEFERRED_WITH_BLOCKER`, §29.5). |
+| 14 | ¿Qué conocimiento real tenemos sobre `StateFlags`? | **UNVERIFIED** | Sólo: bit `4` encendido en `4`/`6`/`518`, y `"4"` ⇒ idle **por heurística del repo**. Nada sobre semántica de Valve (E13). |
+| 15 | ¿El diseño obliga al usuario a repetir pasos manuales? | **ANSWERED** (requisito) / no demostrado | SFR-11 ya prohíbe tocar el manifest, así que el diseño no lo exige; SFR-21 se valida en P7. |
+| 16 | ¿Hay objetos de filesystem compartidos (hardlinks/junctions)? | **ANSWERED** | `verify_generation_independence` (Generation↔Managed Source), `verify_physical_independence` (Clone↔Generation), `copying.py` copia contenido (nunca `os.link`) y verifica `st_nlink == 1`. |
+| 17 | ¿Cuál es la autoridad final de rollback? | **ANSWERED** | **La Generation** (§12). Un Clone retenido no la reemplaza. |
+| 18 | ¿Un Clone anterior con DLLs incompatibles o malware accidental puede pasar un gate débil? | **DEFERRED_WITH_BLOCKER** | Sí, si el gate se limita a identidad + críticos + independencia. Mitigación adoptada: la autoridad es la Generation; el gate de compatibilidad (`RUNTIME_COMPATIBILITY`) aplica a la Generation. La **fuerza** del gate de activación se define en P4. |
+| 19 | ¿La metadata de la Generation —que ahora es la autoridad de rollback— está protegida contra manipulación? | **UNKNOWN** / **DEFERRED_WITH_BLOCKER** | **Hallazgo nuevo.** `state/generations/<id>.json` es la raíz de confianza (`VALID` = inventario fresco == digest **registrado**) y **no tiene protección de integridad**: no hay firma, HMAC ni digest del propio archivo (verificado: `frozen_runtime/` no contiene ninguna primitiva de ese tipo). P0.4 **eleva la apuesta** al convertir la Generation en autoridad de rollback: quien edite ese JSON y el árbol en consecuencia obtiene `VALID`. Fuera del threat model declarado (§17), pero debe declararse como límite y decidirse en P4. |
+| 20 | ¿El gate puede degradarse en silencio por un default? | **ANSWERED** (footgun registrado) | **Hallazgo nuevo.** `critical_expectations` es `()` por defecto **en RV-2 y RV-3** (`golden.py`, `clone.py`) y `all(...)` sobre vacío es `True`: un caller que omita las expectativas de la metadata obtiene `VERIFIED` **sin verificar ningún crítico**. La reutilización de RV-2/RV-3 es tan fuerte como el adaptador que le pasa la metadata; ese adaptador debe ser parte del contrato congelado, no un parámetro opcional. Requisito para `P4_CLONE_ACTIVATION_GATE`. |
+| 21 | ¿Un enlace creado **dentro del Clone después de activarlo** puede redirigir escrituras hacia la Generation? | **DEFERRED_WITH_BLOCKER** | `verify_physical_independence` compara los archivos del inventario **del origen**; un directorio nuevo en el Clone apuntando a la Generation no lo activa. SFR-18 se verifica en la creación y en la activación, no de forma continua. Si ocurriera, la Generation derivaría y `verificar_generation` la marcaría `DRIFTED` (detectado, pero ya perdida la referencia). Requisito: el gate de activación debe recorrer el árbol del Clone rechazando reparse points que **escapen** del Clone, no sólo comparar inodos contra el origen. Fuera del threat model declarado (§17); se registra como hardening. |
+
+### 29.11 Presupuesto de complejidad y trade-offs
+
+```text
+USES_ACL_MUTATION=NO
+USES_PRIVILEGED_HELPER=NO
+USES_GP2=NO
+AUTO_PROMOTION=NO
+DELETES_PREVIOUS_GENERATION=NO
+STEAM_MANIFEST_MUTATION=NO
+STEAM_UPDATE_BLOCKING=NO
+ACL_UPDATE_GUARD=NO
+GENERATION_IS_EXECUTED=NO          # nuevo (SFR-19)
+CLONE_ENGINE=RV-2+RV-3             # nuevo: sin reimplementar la copia
+```
+
+- **Disco:** ≈2 árboles completos por versión retenida (referencia + copia operativa)
+  más la Managed Source. La retención/GC queda fuera del MVP (§23; Q20). Prioridad
+  declarada: **integridad > velocidad**.
+- **Más estados que coordinar** (Desired/Effective ahora sobre el Clone): lo mitigan
+  `P4_DURABLE_TRANSITION` y el oráculo de P5.
+- **Menos política frágil:** desaparece la necesidad de definir qué deriva es
+  "benigna" sobre el `TreeDigest`; la deriva vive en el Clone, donde es esperada.
+- **Tiempo de adopción:** la vía canónica suma la creación del Candidate, la
+  instanciación del Clone y (en rollback) otro clonado completo. La optimización
+  (reusar inventarios sellados sin debilitar la frescura) queda para P4 con números
+  del rig.
+
+### 29.12 Límites y no-verificado
+
+**Verificado en esta sesión sobre `5039997a`:** E1–E14 de §29.2, por **lectura de
+símbolos y contratos** más **sondas puntuales ejecutadas** (imports reales,
+`inspect.signature` de `verify_golden_master`/`create_runtime_clone`, aritmética de
+`StateFlags` y evaluación de `all()` sobre un iterable vacío) y la lectura de los tests
+citados. **No** se ejecutó ningún prototipo sobre un árbol de juego real ni sobre
+NTFS: no hay smoke de clonado en esta sesión. No se agregó ni modificó código de
+producción (`PRODUCT_CODE_CHANGED = NO`).
+
+**No verificado (smokes de rig pendientes, P7):** NTFS, junctions, antivirus y `st_ino`
+reales; Steam real (semántica de `StateFlags` más allá de la aritmética de bits, y si
+el prompt de Steam aparece al arrancar el loader de SKSE desde el Clone con la
+actualización pendiente); la API de MO2 para el oráculo y la reescritura de su ini al
+salir; tiempos y consumo de disco reales.

@@ -7,9 +7,11 @@
 >
 > **Fuentes canónicas:** ADR 0001–0012 en este directorio.
 >
-> **Última verificación:** 2026-10-04; ADR 0012 (Frozen Runtime) agregado en
-> estado Propuesta sobre `origin/main` `0103ee4f` (P0: diseño y censo; rename de
-> branding P0.3).
+> **Última verificación:** 2026-10-07; ADR 0012 (Frozen Runtime) **enmendado en
+> P0.4** sobre `origin/main` `5039997a` (cierre de P3 en #682 y hardening
+> post-merge #698): la Generation pasa a ser referencia no ejecutada y el Runtime
+> Clone el Effective Runtime; la autoridad de rollback es la Generation. Sigue en
+> estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
