@@ -3304,6 +3304,19 @@ _REGISTROS_EXENTOS_DE_ETAPA = {
             "ÚNICO registro del módulo con ese operation_type."
         ),
     },
+    "dyndolod_completed_no_publicado": {
+        "metodo": "_publish_completed_best_effort",
+        "motivo": (
+            "_publish_completed_best_effort publica el evento terminal desde el handler de "
+            "CancelledError, donde el bus puede estar deteniéndose justo porque es un "
+            "shutdown. Que el evento no se publique es un fallo de la infraestructura de "
+            "notificación, NO de la etapa 9: la etapa se canceló (o ya había comiteado) por "
+            "su propio camino, que ya emitió su registro. Etiquetarlo con la etapa contaría "
+            "dos veces el mismo incidente en un COUNT agrupado por pipeline_stage. Mismo "
+            "criterio que dyndolod_flight_report_persist_failed; vive en un helper propio "
+            "(no en `execute`), así que su ancla de ubicación es la fuerte."
+        ),
+    },
 }
 
 
@@ -7425,3 +7438,351 @@ async def test_execute_no_lanza_sin_plugins_txt_del_perfil(
     assert svc._runner._config.plugins_file == plugins_file.resolve(), (
         "la fuente declarada es la del perfil activo (y su ausencia es la que bloquea)"
     )
+
+
+# =============================================================================
+# Ciclo de vida: todo `started` tiene su `completed` — y el fallo lleva el log
+# =============================================================================
+#
+# La auditoría de la etapa 9 midió que `execute()` publicaba
+# `pipeline.dyndolod.started` y luego `pipeline.dyndolod.completed` por TODOS sus
+# caminos de salida salvo uno: la rama `except asyncio.CancelledError`. Un
+# consumidor del bus (la GUI, el notificador de operador) veía "corriendo" para
+# siempre tras una cancelación o un shutdown. Y el payload de fallo sólo llevaba
+# el texto de las líneas terminales: ninguna pista de DÓNDE estaba el log que las
+# produjo, así que un consumidor no podía adjuntarlo.
+
+
+def _eventos_publicados(bus: AsyncMock) -> list[tuple[str, dict[str, object]]]:
+    """``(topic, payload)`` de cada ``publish`` esperado, en orden."""
+    return [(llamada.args[0].topic, llamada.args[0].payload) for llamada in bus.publish.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_la_cancelacion_antes_del_commit_publica_completed_fallido(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock(side_effect=asyncio.CancelledError)
+    service._runner = runner
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    eventos = _eventos_publicados(mock_event_bus)
+    assert [topic for topic, _ in eventos] == ["pipeline.dyndolod.started", "pipeline.dyndolod.completed"]
+    completed = eventos[-1][1]
+    assert completed["success"] is False
+    assert completed["dyndolod_success"] is False
+    assert completed["errors"], "la cancelación debe quedar nombrada en el evento terminal"
+    assert "cancel" in str(completed["errors"][0]).lower()  # type: ignore[index]
+    assert completed["log_paths"] == (), "una cancelación no adjunta logs: no hay un fallo de herramienta que explicar"
+
+
+@pytest.mark.asyncio
+async def test_la_cancelacion_post_commit_publica_completed_exitoso(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Tras el commit la etapa YA tuvo éxito: el evento terminal lo dice, no inventa un fallo."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=False)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    with (
+        patch.object(service, "_emit_flight_report", AsyncMock(side_effect=asyncio.CancelledError)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    eventos = _eventos_publicados(mock_event_bus)
+    assert [topic for topic, _ in eventos] == ["pipeline.dyndolod.started", "pipeline.dyndolod.completed"]
+    completed = eventos[-1][1]
+    assert completed["success"] is True
+    assert completed["dyndolod_success"] is True
+    assert completed["errors"] == ()
+
+
+@pytest.mark.asyncio
+async def test_un_bus_caido_no_enmascara_la_cancelacion_y_deja_un_registro_identificable(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock(side_effect=asyncio.CancelledError)
+    service._runner = runner
+    # `started` entra; el `completed` de la cancelación encuentra el bus detenido.
+    mock_event_bus.publish = AsyncMock(side_effect=[None, RuntimeError("el bus se detuvo")])
+
+    with (
+        caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    registros = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_completed_no_publicado"]
+    assert len(registros) == 1
+    assert registros[0].tx_id == 42
+    assert getattr(registros[0], "pipeline_stage", None) is None, (
+        "no publicar el evento terminal no es un fallo de la etapa 9: no debe contarse como tal"
+    )
+
+
+def _logs_de_prueba(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """``(log_viejo_de_texgen, log_de_dyndolod_a_escribir)`` bajo un ``Logs/`` común."""
+    logs = tmp_path / "tool" / "Logs"
+    logs.mkdir(parents=True)
+    viejo = logs / "TexGen_SSE_log.txt"
+    viejo.write_text("[00:47] TexGen completed successfully\n", encoding="utf-8")
+    hace_una_hora = time.time() - 3600
+    import os
+
+    os.utime(viejo, (hace_una_hora, hace_una_hora))
+    return viejo, logs / "DynDOLOD_SSE_log.txt"
+
+
+@pytest.mark.asyncio
+async def test_el_completed_fallido_lleva_solo_los_logs_de_esta_corrida(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un log de una corrida ANTERIOR no se adjunta como si explicara este fallo."""
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    log_viejo, log_nuevo = _logs_de_prueba(tmp_path)
+    runner = _mock_runner_with_output(mods)
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: {"TexGen": log_viejo, "DynDOLOD": log_nuevo}[tool])
+
+    async def _pipeline_que_falla(**_kwargs: object) -> DynDOLODPipelineResult:
+        log_nuevo.write_text("[00:10] Fatal: Can not create path\n", encoding="utf-8")  # lo escribe ESTA corrida
+        raise DynDOLODExecutionError("boom")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_falla)
+    service._runner = runner
+
+    resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert resultado["success"] is False
+    completed = _eventos_publicados(mock_event_bus)[-1][1]
+    assert completed["log_paths"] == (str(log_nuevo),)
+
+
+@pytest.mark.asyncio
+async def test_el_error_inesperado_tambien_lleva_los_logs_de_esta_corrida(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El hermano: el handler de `Exception` arma su `completed` igual que el de dominio."""
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    _log_viejo, log_nuevo = _logs_de_prueba(tmp_path)
+    runner = _mock_runner_with_output(mods)
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: log_nuevo if tool == "DynDOLOD" else _log_viejo)
+
+    async def _pipeline_que_explota(**_kwargs: object) -> DynDOLODPipelineResult:
+        log_nuevo.write_text("[00:10] algo salió mal\n", encoding="utf-8")
+        raise ValueError("estado inesperado")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_explota)
+    service._runner = runner
+
+    await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    completed = _eventos_publicados(mock_event_bus)[-1][1]
+    assert completed["log_paths"] == (str(log_nuevo),)
+
+
+@pytest.mark.asyncio
+async def test_el_completed_exitoso_no_adjunta_logs(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=False)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert resultado["success"] is True
+    assert _eventos_publicados(mock_event_bus)[-1][1]["log_paths"] == ()
+
+
+@pytest.mark.asyncio
+async def test_las_rutas_de_log_ignoran_dobles_sin_ruta_real_y_logs_ausentes_o_vacios(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Defensa del helper: un doble (``MagicMock``), un log ausente o uno vacío no son evidencia."""
+    runner = MagicMock()  # `_ruta_del_log` devuelve un MagicMock, no un Path
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0) == ()
+
+    ausente = tmp_path / "no_existe_log.txt"
+    vacio = tmp_path / "vacio_log.txt"
+    vacio.write_bytes(b"")
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: ausente if tool == "TexGen" else vacio)
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0) == ()
+
+
+@pytest.mark.asyncio
+async def test_las_rutas_de_log_sin_texgen_no_consideran_el_log_de_texgen(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con ``run_texgen=False`` el log de TexGen no es de esta corrida aunque esté fresco."""
+    texgen = tmp_path / "TexGen_SSE_log.txt"
+    texgen.write_text("[00:47] TexGen completed successfully\n", encoding="utf-8")
+    dyndolod = tmp_path / "DynDOLOD_SSE_log.txt"
+    dyndolod.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
+    runner = MagicMock()
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: texgen if tool == "TexGen" else dyndolod)
+
+    sin = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, desde_epoch=0.0)
+    con = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0)
+
+    assert sin == (str(dyndolod),)
+    assert con == (str(texgen), str(dyndolod)), "orden estable: TexGen primero, DynDOLOD después"
+
+
+def test_el_payload_completed_declara_log_paths_como_tupla_estricta() -> None:
+    from pydantic import ValidationError
+
+    from sky_claw.app.core.event_payloads import DynDOLODPipelineCompletedPayload
+
+    base: dict[str, object] = {
+        "preset": "Medium",
+        "run_texgen": False,
+        "success": False,
+        "texgen_success": False,
+        "dyndolod_success": False,
+        "errors": ("boom",),
+        "duration_seconds": 1.0,
+        "rolled_back": False,
+    }
+    assert DynDOLODPipelineCompletedPayload(**base).log_paths == ()  # type: ignore[arg-type]
+    con_logs = DynDOLODPipelineCompletedPayload(**base, log_paths=("a.txt",))  # type: ignore[arg-type]
+    assert con_logs.to_log_dict()["log_paths"] == ("a.txt",)
+    with pytest.raises(ValidationError):
+        DynDOLODPipelineCompletedPayload(**base, log_paths=["a.txt"])  # type: ignore[arg-type]
+
+
+def test_todo_handler_terminal_de_execute_publica_el_evento_completed() -> None:
+    """ENUMERA los handlers del `try` externo de `execute`; no muestrea.
+
+    Es el `try` cuyo cuerpo sostiene el `AsyncExitStack` del pipeline: sus
+    `except` son los caminos de salida terminales (los otros handlers de
+    `execute` viven en callbacks internos y no cierran el ciclo de vida). La
+    propiedad es *todo `started` tiene su `completed`*: la rama
+    `CancelledError` era la única que no cumplía, y quedaba invisible porque
+    ningún ancla ENUMERABA los handlers por esta propiedad.
+    """
+    ejecutar = _metodo_execute_ast()
+    externos = [
+        nodo
+        for nodo in ejecutar.body
+        if isinstance(nodo, ast.Try)
+        and any(
+            isinstance(hijo, ast.AsyncWith) and any("AsyncExitStack" in ast.unparse(i.context_expr) for i in hijo.items)
+            for hijo in ast.walk(ast.Module(body=nodo.body, type_ignores=[]))
+        )
+    ]
+    assert len(externos) == 1, "debe existir exactamente UN try externo con el AsyncExitStack del pipeline"
+
+    nombres = sorted(_nombre_de_excepcion(h) for h in externos[0].handlers)
+    assert nombres == [
+        "DynDOLODExecutionError, DynDOLODTimeoutError",
+        "Exception",
+        "LockAcquisitionError",
+        "_ActionManifestError",
+        "_CertificacionPreservadaError",
+        "asyncio.CancelledError",
+    ], f"el conjunto de caminos terminales cambió: {nombres}"
+
+    publicadores = {"_publish_completed", "_publish_completed_best_effort"}
+    sin_evento = [
+        _nombre_de_excepcion(handler)
+        for handler in externos[0].handlers
+        if not any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in publicadores
+            for n in ast.walk(handler)
+        )
+    ]
+    assert sin_evento == [], f"handlers terminales que dejan `started` sin `completed`: {sin_evento}"
+
+
+@pytest.mark.asyncio
+async def test_las_rutas_de_log_excluyen_un_log_anterior_a_esta_corrida(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El filtro por ``mtime`` es lo que impide adjuntar evidencia de otro día.
+
+    Los dos logs son de herramientas que ESTA corrida sí consideraba
+    (``run_texgen=True``): sólo el de DynDOLOD se escribió después del inicio.
+    """
+    log_viejo, log_nuevo = _logs_de_prueba(tmp_path)  # el de TexGen tiene mtime de hace una hora
+    log_nuevo.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
+    runner = MagicMock()
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: log_viejo if tool == "TexGen" else log_nuevo)
+
+    rutas = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=time.time() - 60)
+
+    assert rutas == (str(log_nuevo),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("antes_del_inicio", "incluido"),
+    [(0.0, True), (1.0, True), (5.0, False)],
+    ids=["justo_al_inicio", "dentro_de_la_holgura", "fuera_de_la_holgura"],
+)
+async def test_las_rutas_de_log_respetan_la_holgura_de_mtime(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    antes_del_inicio: float,
+    incluido: bool,
+) -> None:
+    """La holgura absorbe el redondeo del sistema de archivos (FAT: 2 s), no más."""
+    import os
+
+    inicio = time.time()
+    log = tmp_path / "DynDOLOD_SSE_log.txt"
+    log.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
+    os.utime(log, (inicio - antes_del_inicio, inicio - antes_del_inicio))
+    runner = MagicMock()
+    runner._ruta_del_log = MagicMock(return_value=log)
+
+    rutas = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, desde_epoch=inicio)
+
+    assert rutas == ((str(log),) if incluido else ())
