@@ -7480,6 +7480,7 @@ async def test_la_cancelacion_antes_del_commit_publica_completed_fallido(
     assert completed["dyndolod_success"] is False
     assert completed["errors"], "la cancelación debe quedar nombrada en el evento terminal"
     assert "cancel" in str(completed["errors"][0]).lower()  # type: ignore[index]
+    assert completed["cancelled"] is True, "un consumidor distingue cancelada de fallida por el campo tipado"
     assert completed["log_paths"] == (), "una cancelación no adjunta logs: no hay un fallo de herramienta que explicar"
 
 
@@ -7516,6 +7517,7 @@ async def test_la_cancelacion_post_commit_publica_completed_exitoso(
     assert completed["success"] is True
     assert completed["dyndolod_success"] is True
     assert completed["errors"] == ()
+    assert completed["cancelled"] is True, "la etapa tuvo éxito y lo cancelado fue el post-proceso: ambos hechos viajan"
 
 
 @pytest.mark.asyncio
@@ -7585,6 +7587,7 @@ async def test_el_completed_fallido_lleva_solo_los_logs_de_esta_corrida(
     assert resultado["success"] is False
     completed = _eventos_publicados(mock_event_bus)[-1][1]
     assert completed["log_paths"] == (str(log_nuevo),)
+    assert completed["cancelled"] is False, "un fallo de herramienta no es una cancelación"
 
 
 @pytest.mark.asyncio
@@ -7691,6 +7694,7 @@ def test_el_payload_completed_declara_log_paths_como_tupla_estricta() -> None:
         "rolled_back": False,
     }
     assert DynDOLODPipelineCompletedPayload(**base).log_paths == ()  # type: ignore[arg-type]
+    assert DynDOLODPipelineCompletedPayload(**base).cancelled is False  # type: ignore[arg-type]
     con_logs = DynDOLODPipelineCompletedPayload(**base, log_paths=("a.txt",))  # type: ignore[arg-type]
     assert con_logs.to_log_dict()["log_paths"] == ("a.txt",)
     with pytest.raises(ValidationError):
@@ -7786,3 +7790,74 @@ async def test_las_rutas_de_log_respetan_la_holgura_de_mtime(
     rutas = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, desde_epoch=inicio)
 
     assert rutas == ((str(log),) if incluido else ())
+
+
+# =============================================================================
+# Integración: servicio real -> CoreEventBus real -> notificador -> Telegram
+# =============================================================================
+#
+# Los tests de arriba fijan la mitad servicio->bus (con un bus doble) y
+# `test_dyndolod_operator_notifier*.py` fijan la mitad bus->operador (con payloads
+# construidos a mano). Este cierra el recorrido en UN solo test: nada entre el
+# `execute()` que falla y el `send_document` que recibe el log está simulado salvo
+# el proceso externo y el sender de Telegram (la red).
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [DynDOLODExecutionError("boom"), ValueError("estado inesperado")],
+    ids=["error_de_dominio", "error_inesperado"],  # los dos handlers de fallo publican su propio `completed`
+)
+async def test_un_fallo_real_del_servicio_llega_al_operador_por_el_bus_real_con_el_log_de_esa_corrida(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    error: Exception,
+) -> None:
+    from sky_claw.app.comms.telegram_operator_channel import TelegramCanalDeOperador
+    from sky_claw.app.orchestrator.dyndolod_operator_notifier import instalar_notificador_de_dyndolod
+
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    log_viejo, log_nuevo = _logs_de_prueba(tmp_path)
+    runner = _mock_runner_with_output(mods)
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: {"TexGen": log_viejo, "DynDOLOD": log_nuevo}[tool])
+
+    async def _pipeline_que_falla(**_kwargs: object) -> DynDOLODPipelineResult:
+        log_nuevo.write_text("[00:10] Fatal: Can not create path <D:\\Skyrim\\Data>\n", encoding="utf-8")
+        raise error
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_falla)
+    service._runner = runner
+
+    sender = MagicMock()
+    sender.send = AsyncMock()
+    sender.send_document = AsyncMock()
+    bus = CoreEventBus()
+    service._event_bus = bus
+    notificador = instalar_notificador_de_dyndolod(
+        event_bus=bus, canal=TelegramCanalDeOperador(sender=lambda: sender, chat_id=lambda: 42)
+    )
+    await bus.start()
+    worker = asyncio.create_task(notificador.run())
+    try:
+        resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+        for _ in range(500):  # el bus y el worker son concurrentes: se espera el efecto, no un tiempo
+            if sender.send_document.await_count:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await bus.stop()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    assert resultado["success"] is False
+    avisos = [llamada.args[1] for llamada in sender.send.await_args_list]
+    assert any(aviso.startswith("🛠") for aviso in avisos), "el operador se entera del inicio"
+    [fallo] = [aviso for aviso in avisos if aviso.startswith("❌")]
+    assert "Rollback" in fallo
+    sender.send_document.assert_awaited_once()
+    chat, contenido, nombre = sender.send_document.await_args.args
+    assert (chat, nombre) == (42, "DynDOLOD_SSE_log.txt")
+    assert contenido == b"[00:10] Fatal: Can not create path <D:\\Skyrim\\Data>\n"
+    assert bus.events_lost == 0

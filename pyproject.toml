@@ -350,6 +350,13 @@ module = [
     # P1 Frozen Runtime: paquete nuevo (models/discovery/observation/stabilization),
     # nace estricto por la misma convención que los módulos nuevos de la lista.
     "sky_claw.local.frozen_runtime.*",
+    # Notificador de operador de la etapa 9: los dos módulos nuevos viven en
+    # `sky_claw.app.orchestrator.*` y `sky_claw.app.comms.*`, ambos en la lista
+    # `ignore_errors` de arriba (y `sky_claw/app/**` tiene BLE001 exento) — sin este
+    # opt-in saldrían a producción sin type-check, y este es el código que le habla
+    # al operador cuando una corrida falla.
+    "sky_claw.app.orchestrator.dyndolod_operator_notifier",
+    "sky_claw.app.comms.telegram_operator_channel",
 ]
 strict = true
 ignore_errors = false

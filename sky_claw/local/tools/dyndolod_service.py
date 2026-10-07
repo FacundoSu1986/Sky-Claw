@@ -2486,6 +2486,7 @@ class DynDOLODPipelineService:
                     errors=(),
                     duration_seconds=duration,
                     rolled_back=False,
+                    cancelled=True,
                 )
             else:
                 await self._publish_completed_best_effort(
@@ -2498,6 +2499,7 @@ class DynDOLODPipelineService:
                     errors=("Pipeline cancelado antes de completarse.",),
                     duration_seconds=duration,
                     rolled_back=rolled_back,
+                    cancelled=True,
                 )
             raise
 
@@ -2640,6 +2642,7 @@ class DynDOLODPipelineService:
         duration_seconds: float,
         rolled_back: bool,
         log_paths: tuple[str, ...] = (),
+        cancelled: bool = False,
     ) -> None:
         """Publica evento de finalización del pipeline."""
         payload = DynDOLODPipelineCompletedPayload(
@@ -2652,6 +2655,7 @@ class DynDOLODPipelineService:
             duration_seconds=duration_seconds,
             rolled_back=rolled_back,
             log_paths=log_paths,
+            cancelled=cancelled,
         )
         await self._event_bus.publish(
             Event(

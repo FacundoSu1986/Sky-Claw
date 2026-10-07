@@ -589,6 +589,81 @@ class TestAppContextWiring:
             await ctx.stop()
 
 
+class TestOperatorChatIdPublicado:
+    """``operator_chat_id`` se publica con ``sender`` y se limpia con él.
+
+    Es una variable LOCAL de ``start_full`` que lo consumían solo los closures del
+    HITL. El notificador de operador de DynDOLOD se instala FUERA de ``start_full``
+    (en el bootloader de la GUI), así que lo lee de ``AppContext`` en cada envío:
+    un valor que no se publicara lo dejaría sin canal; uno que no se limpiara al
+    parar le hablaría a un chat de una sesión ya cerrada.
+    """
+
+    @staticmethod
+    async def _arrancar(
+        tmp_path: pathlib.Path, *, chat_en_args: int | None, toml: str = "", con_token: bool = True
+    ) -> Any:
+        import argparse
+
+        from sky_claw.__main__ import AppContext
+
+        args = argparse.Namespace(
+            db_path=tmp_path / "test.db",
+            mo2_root=tmp_path,
+            loot_exe=pathlib.Path("loot.exe"),
+            operator_chat_id=chat_en_args,
+            staging_dir=tmp_path / "staging",
+            provider=None,
+            xedit_exe=None,
+            install_dir=tmp_path / "tools",
+        )
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text(toml)
+        keyring_store = {"telegram_bot_token": "123:TOKEN"} if con_token else {}
+
+        with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
+            patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
+            patch("keyring.set_password"),
+            patch("sky_claw.app.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
+        ):
+            ctx = AppContext(args)
+            await ctx.start_minimal()
+            await ctx.start_full()
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_se_publica_el_chat_de_los_args_y_se_limpia_al_parar(self, tmp_path: pathlib.Path) -> None:
+        ctx = await self._arrancar(tmp_path, chat_en_args=424242)
+
+        try:
+            assert ctx.sender is not None
+            assert ctx.operator_chat_id == 424242
+        finally:
+            await ctx.stop()
+        assert ctx.operator_chat_id is None
+
+    @pytest.mark.asyncio
+    async def test_se_publica_el_chat_resuelto_y_no_el_de_los_args(self, tmp_path: pathlib.Path) -> None:
+        """La config tiene precedencia sobre ``--operator-chat-id``: se publica el valor RESUELTO,
+        el mismo que usan los closures del HITL (un solo operador, un solo chat)."""
+        ctx = await self._arrancar(tmp_path, chat_en_args=111, toml='[telegram]\nchat_id = "999"\n')
+
+        try:
+            assert ctx.operator_chat_id == 999
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_sin_chat_configurado_no_se_publica_ninguno(self, tmp_path: pathlib.Path) -> None:
+        ctx = await self._arrancar(tmp_path, chat_en_args=None)
+
+        try:
+            assert ctx.operator_chat_id is None
+        finally:
+            await ctx.stop()
+
+
 # ---------------------------------------------------------------------------
 # AppContext _hitl_notify — category routing (fail-closed for tool execution)
 # ---------------------------------------------------------------------------

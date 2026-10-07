@@ -120,6 +120,7 @@ _ITEMS = frozenset(
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
         # R1/R2 son hermanos en #592.
         "Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)",
+        "Notificación al operador de la etapa 9 por Telegram (inicio, fin y log del fallo)",
     }
 )
 
@@ -631,3 +632,26 @@ def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None
     assert "1801a1ba" in fila["Cerrado en"]
     assert "test_rollback_reconciler.py" in fila["Verificado por"]
     assert "test_dyndolod_workspace.py" in fila["Verificado por"]
+
+
+def test_notificacion_al_operador_de_la_etapa_9_registrada_como_parcial_sin_smoke_real() -> None:
+    """La fila declara lo que hay y, sobre todo, lo que NO hay.
+
+    Se verificó con un sender doble y, para ``send_document``, un servidor aiohttp local: NO contra la API real de
+    Telegram. Por eso la fila no puede decir ``Cerrado`` ni tocar la de los smokes reales, y tiene que seguir
+    nombrando los límites (sin drenaje en shutdown, sin comandos de bot) en vez de dejar que el lector los suponga.
+    """
+    filas = _tabla()
+    fila = filas["Notificación al operador de la etapa 9 por Telegram (inicio, fin y log del fallo)"]
+    que_falta = fila["Qué falta"]
+
+    assert fila["Estado"] == "Parcial"
+    assert "merge_status=UNMERGED" in que_falta
+    assert "API REAL de Telegram" in que_falta
+    assert "NO se cierra con esto" in que_falta, "el smoke real de Telegram sigue bloqueado"
+    assert "sin drenaje" in que_falta, "el límite de entrega ante un shutdown inmediato debe seguir declarado"
+    assert "NO existen comandos de bot" in que_falta, "no se afirma un control remoto que no existe"
+    assert "DEFAULT_TOOL_ROUND_TIMEOUT" in que_falta
+    assert "test_dyndolod_operator_notifier_wiring.py" in fila["Verificado por"]
+    assert "test_app_context_publicacion_simetrica.py" in fila["Verificado por"]
+    assert filas["Smokes reales restantes"]["Estado"] == "Bloqueado (rig humano)"

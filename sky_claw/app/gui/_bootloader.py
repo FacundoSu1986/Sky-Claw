@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from sky_claw.app.comms.telegram_operator_channel import TelegramCanalDeOperador
 from sky_claw.app.gui import sky_claw_gui
 from sky_claw.app.gui.gui_event_adapter import EventType, SkyClawEvent
 from sky_claw.app.gui.gui_event_adapter import event_bus as gui_event_bus
@@ -20,6 +21,10 @@ from sky_claw.app.gui.views.forge_dashboard import (
     STORE_KEY_ENV,
     STORE_KEY_GPU,
     STORE_KEY_RAM,
+)
+from sky_claw.app.orchestrator.dyndolod_operator_notifier import (
+    DynDOLODOperatorNotifier,
+    instalar_notificador_de_dyndolod,
 )
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app_context import AppContext, _resolve_config_path_static, start_full
@@ -64,6 +69,29 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
         store.set(STORE_KEY_GPU, payload.get("gpu"))
 
     return _bridge
+
+
+def _install_dyndolod_operator_notifier(ctx: AppContext, supervisor: SupervisorAgent) -> DynDOLODOperatorNotifier:
+    """Avisa al operador remoto (Telegram) del inicio y el fin de la etapa 9, con el log si falla.
+
+    La etapa 9 (TexGen + DynDOLOD) dura 30+ min y es asistida: quien la sigue desde el
+    teléfono necesita enterarse de cuándo terminó y, si falló, de por qué. El servicio
+    publicaba ``pipeline.dyndolod.*`` y no lo escuchaba nadie.
+
+    ``sender`` y el chat se leen de ``ctx`` EN CADA envío (no se capturan acá): ``start_full``
+    ya corrió, pero un ``AppContext`` que republique el sender no debe dejar al notificador
+    hablándole al viejo. Sin Telegram configurado el aviso es un no-op: es informativo y no
+    puede gatear una corrida (a diferencia del HITL, que es fail-closed).
+
+    Instalar sólo suscribe y rastrea el worker como tarea de fondo del ``AppContext``, que el
+    shutdown cancela.
+    """
+    notificador = instalar_notificador_de_dyndolod(
+        event_bus=supervisor.event_bus,
+        canal=TelegramCanalDeOperador(sender=lambda: ctx.sender, chat_id=lambda: ctx.operator_chat_id),
+    )
+    ctx._track_task(notificador.run(), name="dyndolod-operator-notifier")
+    return notificador
 
 
 def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
@@ -609,6 +637,11 @@ def run_nicegui(
         # supervisor.start() boots the bus.
         store = get_store()
         supervisor.event_bus.subscribe("system.telemetry.*", _make_telemetry_store_bridge(store))
+
+        # Etapa 9: el operador remoto (Telegram) recibe el aviso de inicio y de fin, y el
+        # log si falla. Antes de supervisor.start(), por la misma razón que el bridge de
+        # telemetría de arriba: subscribe() sólo agrega a la lista del bus.
+        _install_dyndolod_operator_notifier(ctx, supervisor)
 
         # Fase 2: route destructive-tool (Ritual) approvals to the GUI so the
         # "Modo local" toggle / Aprobar-Denegar modal can satisfy the HITL gate.

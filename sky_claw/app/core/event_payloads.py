@@ -214,6 +214,12 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
             pueda adjuntar el log que explica el fallo: sin esto el evento sólo
             llevaba el texto de las líneas terminales. Es un hecho de filesystem
             leído por el servicio, nunca un dato del tool.
+        cancelled: La corrida terminó porque se la CANCELÓ (el operador, un
+            shutdown), no porque la herramienta fallara. Campo tipado y no una
+            comparación de cadenas sobre ``errors``: un consumidor que distingue
+            "cancelada" de "falló" no puede depender del texto exacto de un
+            mensaje de otro módulo. Con la TX ya commiteada puede coincidir con
+            ``success=True``: la etapa tuvo éxito y lo cancelado fue el post-proceso.
         completed_at: Timestamp de finalización (epoch float, autogenerado).
     """
 
@@ -228,6 +234,7 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
     duration_seconds: float
     rolled_back: bool
     log_paths: tuple[str, ...] = ()
+    cancelled: bool = False
     completed_at: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:

@@ -400,6 +400,12 @@ class AppContext:
         # (solo si SKYCLAW_VAULT_MASTER_KEY está configurada).
         self.credential_vault: CredentialVault | None = None
         self.sender: TelegramSender | None = None
+        # Chat del operador, publicado junto a ``sender`` al final de start_full: el
+        # valor RESUELTO (config > ``--operator-chat-id``) que ya usan los closures del
+        # HITL. Se publica para los consumidores que se instalan FUERA de start_full
+        # (el notificador de operador de DynDOLOD, en el bootloader de la GUI), que lo
+        # leen en cada envío en vez de capturarlo.
+        self.operator_chat_id: int | None = None
         self.polling: TelegramPolling | None = None
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
         # de la GUI (detect_pending_updates). None hasta que corra start_full.
@@ -766,6 +772,7 @@ class AppContext:
         self.polling = None
         self.hitl = None
         self.sender = None
+        self.operator_chat_id = None
         self.sync_engine = None
         self.tools_installer = None
         self.mo2 = None
@@ -2172,6 +2179,7 @@ class AppContext:
             # PathResolutionService no re-decida vía MO2_PATH/auto-detección.
             self.mo2_install_dir = mo2_root
             self.sender = sender
+            self.operator_chat_id = operator_chat_id
             self.hitl = hitl
             self.sync_engine = sync_engine
             self.tools_installer = tools_installer

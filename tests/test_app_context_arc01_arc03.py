@@ -76,6 +76,7 @@ class TestAppContextResilience:
             ctx.polling = MagicMock()
             ctx.hitl = MagicMock()
             ctx.sender = MagicMock()
+            ctx.operator_chat_id = 123456
             ctx.sync_engine = MagicMock()
             ctx.tools_installer = MagicMock()
             raise RuntimeError("forced init failure")
@@ -90,6 +91,7 @@ class TestAppContextResilience:
         assert ctx.polling is None
         assert ctx.hitl is None
         assert ctx.sender is None
+        assert ctx.operator_chat_id is None
         assert ctx.sync_engine is None
         assert ctx.tools_installer is None
 
@@ -192,6 +194,7 @@ class TestAppContextLifecycleCoordinator:
         ctx.polling = MagicMock()
         ctx.hitl = MagicMock()
         ctx.sender = MagicMock()
+        ctx.operator_chat_id = 123456
         ctx.sync_engine = MagicMock()
         ctx.tools_installer = MagicMock()
 
@@ -204,6 +207,7 @@ class TestAppContextLifecycleCoordinator:
         assert ctx.polling is None
         assert ctx.hitl is None
         assert ctx.sender is None
+        assert ctx.operator_chat_id is None
         assert ctx.sync_engine is None
         assert ctx.tools_installer is None
 
@@ -586,6 +590,7 @@ class TestAppContextLifecycleCoordinator:
         ctx.sandbox_validator = MagicMock()
         ctx.install_dir = pathlib.Path("tools-previos")
         ctx.sender = MagicMock()
+        ctx.operator_chat_id = 123456
         ctx.hitl = MagicMock()
         ctx.sync_engine = MagicMock()
         ctx.tools_installer = MagicMock()
@@ -598,6 +603,7 @@ class TestAppContextLifecycleCoordinator:
         assert ctx.sandbox_validator is None
         assert ctx.install_dir is None
         assert ctx.sender is None
+        assert ctx.operator_chat_id is None
         assert ctx.hitl is None
         assert ctx.sync_engine is None
         assert ctx.tools_installer is None
