@@ -64,8 +64,10 @@ _DOMAIN: Final[bytes] = b"frozen-runtime:directory-membership:v1\x00"
 #:   ninguna identidad que un nombre imprimible no de. Se rechaza por la misma
 #:   regla que P3 ya aplica a los identificadores (``candidate_id.py``).
 #:
-#: El predicado se escribe con ``<=`` y ``0x7F`` para cubrir los DOS extremos
-#: de un tiron; ``DEL`` queda FUERA de ``< 0x20`` y necesita su propia clausula.
+#: El conjunto cubre ``U+0000..U+001F`` de una sola vez (``range(0x20)``) y agrega
+#: ``0x7F`` APARTE: DEL queda fuera de ese rango, asi que sin su propia clausula
+#: pasaria. Se materializa como string y no como predicado para que el chequeo
+#: sobre la entrada completa sea una sola expresion.
 _CONTROL_O_DEL: Final[str] = "".join(chr(c) for c in (*range(0x20), 0x7F))
 
 

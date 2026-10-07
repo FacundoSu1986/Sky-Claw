@@ -189,8 +189,22 @@ def _materializar_directorio_del_destino(
     Cada paso hace: verificar el parent -> crear el hijo si falta -> verificar el
     hijo. Un directorio EXISTENTE se revalida antes de usarlo como parent del nivel
     siguiente, porque pudo ser reemplazado desde la observacion anterior.
+
+    **La raiz del payload se revalida SIEMPRE, aunque `rel_dir` no tenga
+    componentes.** Esa validacion vivia solo DENTRO del loop, y el padre de un
+    archivo en la raiz del payload es `.` (`PurePosixPath(".").parts == ()`): el
+    loop hacia CERO iteraciones, el guard NUNCA corria y el `open(..., "xb")`
+    siguiente escribia en un payload que podia haber sido reemplazado por un
+    junction -- sin error, y con los bytes FUERA del ``FrozenRuntimeRoot``.
+    Verificacion ausente en un nivel, no una ventana residual (P4): P3-T/P3-P
+    prometen revalidar antes de CADA mutacion, y para la raiz no habia ninguna.
     """
     actual = pathlib.Path(raiz_destino)
+    # Incondicional y ANTES del loop: cubre el caso `parts == ()` y deja el loop
+    # intacto (su revalidacion de `actual` en la primera iteracion queda
+    # redundante a proposito -- un lstat extra por nivel es despreciable frente a
+    # reescribir un loop que P3-P/P3-T ya cubren con sus propios tests).
+    _exigir_contencion_destino(contenedor, actual)
     for componente in rel_dir.parts:
         _exigir_contencion_destino(contenedor, actual)
         hijo = actual / componente

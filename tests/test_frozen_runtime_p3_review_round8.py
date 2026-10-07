@@ -130,9 +130,7 @@ def test_p3aa_la_materializacion_sin_componentes_igual_revalida(tmp_path) -> Non
         pytest.skip(f"no se pudo crear junction: {motivo}")
 
     with pytest.raises(CandidateCopyError):
-        copying_module._materializar_directorio_del_destino(
-            contenedor, destino, pathlib.PurePosixPath(".")
-        )
+        copying_module._materializar_directorio_del_destino(contenedor, destino, pathlib.PurePosixPath("."))
 
     assert list(externo.iterdir()) == [], "la materializacion muto el destino externo"
 
