@@ -40,6 +40,8 @@ histórico **bit a bit** en toda la superficie científica (ver §5).
 ```
 REVAL_PYTHON   = E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe
 PYTHON_VERSION = 3.11.9 (tags/v3.11.9:de54cf5, MSC v.1938 64 bit AMD64)
+PYTEST_VERSION = 8.4.2
+RUFF_VERSION   = 0.15.11
 NUMPY_VERSION  = 2.4.6
 PILLOW_VERSION = 11.3.0
 OS             = Windows-10-10.0.19045-SP0 (AMD64)
@@ -48,6 +50,11 @@ FFT            = numpy.fft (pocketfft)
 ```
 
 Sin cambios de dependencias entre OLD y NEW. Detalle completo en `comparison/environment.json`.
+
+`REVAL_PYTHON` es el intérprete del venv del **repo principal**, y es el único que se
+usó: los worktrees detached **no tienen `.venv` propio**. Los comandos de §4 se corren
+con `cwd` en el worktree correspondiente para que el paquete `sky_claw` se resuelva
+desde ahí, pero el ejecutable siempre es `REVAL_PYTHON`.
 
 ## 3. Worktrees
 
@@ -67,39 +74,49 @@ Preflight y worktrees (desde `E:\Skyclaw_Main_Sync`):
 
 ```bash
 git fetch origin --prune
-git rev-parse origin/main                                   # == fc87b7e5…
-git diff --name-status fc87b7e5…..origin/main -- sky_claw/local/native_parallax tests docs/design/research/native-parallax
+git rev-parse origin/main                                   # == fc87b7e5191e42bd7e38b128b7baeaec7516dadb
+git diff --name-status fc87b7e5...origin/main -- sky_claw/local/native_parallax tests docs/design/research/native-parallax
 git worktree add --detach E:\SkyClaw_REVAL1_NEW_fc87b7e5 fc87b7e5191e42bd7e38b128b7baeaec7516dadb
 git worktree add --detach E:\SkyClaw_REVAL1_OLD_e23bf7ac e23bf7ac75bf8ac7b1b80f1944119598f743b7b7
 ```
 
-Validación del código NEW (desde el worktree NEW):
+Validación del código NEW (cwd = worktree NEW; intérprete = `REVAL_PYTHON`):
 
 ```bash
-.venv/Scripts/python -m pytest -q tests/test_native_parallax_math_spike.py \
+REVAL_PYTHON="E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe"
+
+"$REVAL_PYTHON" -m pytest -q tests/test_native_parallax_math_spike.py \
   tests/test_native_parallax_spearman.py tests/test_native_parallax_proxy_math.py \
   tests/test_native_parallax_exp_m1.py tests/test_native_parallax_exp_m2.py \
   tests/test_native_parallax_m2_json.py tests/test_native_parallax_exp_m3.py \
-  tests/test_native_parallax_exp_m3_corpus.py        # 210 passed
-ruff check sky_claw/local/native_parallax/ ...        # All checks passed!
-ruff format --check sky_claw/local/native_parallax/ ...  # 28 files already formatted
+  tests/test_native_parallax_exp_m3_corpus.py              # 210 passed
+"$REVAL_PYTHON" -m ruff check sky_claw/local/native_parallax/          # All checks passed!
+"$REVAL_PYTHON" -m ruff format --check sky_claw/local/native_parallax/ # 20 files already formatted
 ```
+
+Alcance de ruff: `sky_claw/local/native_parallax/` (20 archivos `.py` en el worktree
+NEW). Es la validación **pre-run del código NEW**, no el gate de CI completo: el gate
+`Lint` de CI exige además `ruff check sky_claw/ tests/` y
+`ruff format --check sky_claw/ tests/` (ver `AGENTS.md`), que corren en el workflow y no
+se reproducen acá.
 
 Runners (`RAW_RUN_ROOT` = `C:\SkyClawResearch\NativeParallax\EXP-M3\runs\math-revalidation-20261006T223304Z-fc87b7e5`):
 
 ```bash
+RAW_RUN_ROOT='C:\SkyClawResearch\NativeParallax\EXP-M3\runs\math-revalidation-20261006T223304Z-fc87b7e5'
+
 # OLD replay M2 — cwd = E:\SkyClaw_REVAL1_OLD_e23bf7ac
-python -m sky_claw.local.native_parallax.research.run_exp_m2 \
+"$REVAL_PYTHON" -m sky_claw.local.native_parallax.research.run_exp_m2 \
   --manifest "C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json" \
   --resolution 512 --out "$RAW_RUN_ROOT/old_replay/m2"
 
 # NEW M2 — cwd = E:\SkyClaw_REVAL1_NEW_fc87b7e5
-python -m sky_claw.local.native_parallax.research.run_exp_m2 \
+"$REVAL_PYTHON" -m sky_claw.local.native_parallax.research.run_exp_m2 \
   --manifest "C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json" \
   --resolution 512 --out "$RAW_RUN_ROOT/new/m2"
 
 # NEW M3 — cwd = E:\SkyClaw_REVAL1_NEW_fc87b7e5
-python -m sky_claw.local.native_parallax.research.run_exp_m3 \
+"$REVAL_PYTHON" -m sky_claw.local.native_parallax.research.run_exp_m3 \
   --m3-manifest "docs\design\research\native-parallax\data\exp-m3-clean-authored-manifest.json" \
   --m2-manifest "C:\SkyClawResearch\NativeParallax\EXP-M3\cohort_b\exp-m2-authored-manifest-local.json" \
   --resolution 512 --out "$RAW_RUN_ROOT/new/m3"
