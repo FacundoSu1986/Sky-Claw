@@ -961,3 +961,31 @@ def test_la_coherencia_b1_enumerada_por_caso(
 ) -> None:
     problemas = _incoherencias_b1(estados, bloqueos)
     assert [problema.split(":")[0] for problema in problemas] == culpables, problemas
+
+
+AUDITORIA_EXTERNA = "docs/audits/2026-10-07_native_parallax_math_architecture_audit.md"
+COMMIT_DE_LA_ADJUDICACION_700 = "aee8a54ab35e5ab8d2e097e66d3126d123418163"
+FRASES_DE_ESTADO_DE_LA_AUDITORIA = (
+    "AUDITORÍA HISTÓRICA / GENERADORA DE HIPÓTESIS",
+    "manda la auditoría posterior",
+    "propuestas, no instrucciones de implementación aprobadas",
+    "no autoriza",
+    "H2_BUG_CLASSIFICATION = NOT_PROVEN",
+    "No es un bug confirmado.",
+    "M4_PRIMARY_STATUS = NOT_INVALIDATED",
+    "abierto en borrador",
+)
+
+
+def test_la_auditoria_externa_declara_su_estado_historico_y_la_adjudicacion_posterior() -> None:
+    """La auditoría no se puede leer como el plan científico vigente: su cabecera y su §5 lo dicen y se congelan."""
+    sin_cita = [linea.lstrip("> ").rstrip() for linea in _lineas(AUDITORIA_EXTERNA)]
+    texto = " ".join(" ".join(sin_cita).replace("**", "").split())
+    for frase in FRASES_DE_ESTADO_DE_LA_AUDITORIA:
+        assert frase in texto, f"la auditoría perdió la cláusula de estado: {frase!r}"
+    assert COMMIT_DE_LA_ADJUDICACION_700 in texto, "falta el commit exacto de la adjudicación posterior (#700)"
+    # La cabecera de estado precede a cualquier sección numerada; la propuesta de remediación está rotulada.
+    cabecera = texto.index("AUDITORÍA HISTÓRICA / GENERADORA DE HIPÓTESIS")
+    assert cabecera < texto.index("## 0. Reencuadre del encargo")
+    rotulo = "PROPUESTA HISTÓRICA / NO ES EL PLAN DE IMPLEMENTACIÓN VIGENTE"
+    assert texto.index("## 5. Plan de remediación") < texto.index(rotulo) < texto.index("### S1 ")

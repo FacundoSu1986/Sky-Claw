@@ -1,5 +1,42 @@
 # Auditoría matemática y arquitectónica — Native Parallax (Enfoque A vs B)
 
+> **ESTADO: AUDITORÍA HISTÓRICA / GENERADORA DE HIPÓTESIS.**
+>
+> Este documento registra la auditoría externa inicial (matemática y arquitectónica) y las hipótesis
+> H1–H8 que generó. Una auditoría posterior, independiente, de falsificación e impacto
+> (PR [#700](https://github.com/FacundoSu1986/Sky-Claw/pull/700), commit
+> `aee8a54ab35e5ab8d2e097e66d3126d123418163`) reprodujo, falsó o refinó esas hipótesis. Para la
+> adjudicación científica vigente de H1–H5 y su impacto sobre M4/M5, **manda la auditoría
+> posterior**, no este documento.
+>
+> Las propuestas de remediación de este documento (§5, S1–S6) son **propuestas, no instrucciones
+> de implementación aprobadas**. En particular este documento **no autoriza**
+> `normal_fft_periodic_v2`, una migración a `ISOTROPIC_TEXEL`, recalibrar SELF a la strength
+> fitada ni re-ejecutar M2–M5: lo que se adopta lo decide la auditoría posterior y el operador.
+>
+> A la fecha de este registro, #700 está **abierto en borrador** (no está mergeado); la
+> adjudicación de abajo se transcribió de su `hypothesis-status.json` en ese commit. Si #700
+> cambia, manda su contenido, no esta copia.
+>
+> No se reescriben los resultados ni los fragmentos originales de este documento: conservan su
+> valor como evidencia fechada y se leen con el estado epistémico de esta cabecera.
+
+## Adjudicación posterior (resumen, no sustituye a #700)
+
+| # | Adjudicación en #700 | Alcance sobre la decisión primaria |
+|---|---|---|
+| H1 | `H1_IMPLEMENTATION_DEFECT = CONFIRMED` (defecto de instrumentación) | `H1_M3_PRIMARY_IMPACT = NONE`; `H1_M4_PRIMARY_IMPACT = NONE` |
+| H2 | `H2_BUG_CLASSIFICATION = NOT_PROVEN` (observación reproducida, pero circular); contrato implementado `H2_UNIT_CONTRACT = UV_NORMALIZED` | `H2_IMPACT_ON_M4_M5 = NONE` (corpus primario cuadrado). **No es un bug confirmado.** |
+| H3 | `H3_MECHANISM = CONFIRMED` | `H3_REAL_CORPUS_IMPACT = NOT_DECISION_CHANGING`, dirección conservadora |
+| H4 | `H4_IMPLEMENTATION_DEFECT = CONFIRMED` | `H4_M4_PRIMARY_IMPACT = NUMERICAL_NOT_DECISIONAL`; `H4_M5_PRIMARY_IMPACT = NUMERICAL_NOT_DECISIONAL` |
+| H5 | `H5_DIAGNOSTIC_DEFECT = CONFIRMED` | `H5_PRIMARY_M4_BLOCKER = NO` |
+
+Estado primario según #700: `M4_PRIMARY_STATUS = NOT_INVALIDATED` y `M5_PRIMARY_STATUS =
+NOT_INVALIDATED`, sin re-ejecución real de M4/M5. Las magnitudes de H4 que cita este documento
+(5.3×–21.5× en sintéticos periódicos de pendiente muy suave) no se reprodujeron en #700: su sonda
+sintética mide un máximo de 1.201× y su contrafactual sobre el corpus real no cambia la decisión
+de M4 ni de M5.
+
 > **Fecha:** 2026-10-07 · **Base:** `97dcc7a` (rama `claude/clever-hopper-a8z4gp`).
 >
 > **Alcance:** `sky_claw/local/native_parallax/research/`, `sky_claw/local/tools/parallaxr_assisted.py`,
@@ -158,6 +195,11 @@ experimentos de habilitación de B (EXP-007/008/009). B queda como instrumentaci
 hace falta un híbrido nuevo, la Síntesis C ya lo es.
 
 ## 5. Plan de remediación
+
+> **PROPUESTA HISTÓRICA / NO ES EL PLAN DE IMPLEMENTACIÓN VIGENTE.** La tabla y los fragmentos S1–S6
+> recogen lo que esta auditoría propuso antes de la adjudicación de #700 (ver la cabecera). No son la
+> hoja de ruta aprobada: no autorizan `normal_fft_periodic_v2`, la migración a `ISOTROPIC_TEXEL`, la
+> recalibración de SELF ni la re-ejecución de M2–M5. Se conservan sin cambios como evidencia fechada.
 
 | Prioridad | Acción | Ancla de test (enumera, no muestrea) |
 |---|---|---|
