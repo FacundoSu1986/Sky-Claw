@@ -186,10 +186,20 @@ class VfsProcessSession:
                 raise self._estado.teardown_error
             return
         driver = self._driver
-        if driver is not None and driver.done() and self._resultado_futuro.done():
-            if self._estado.teardown_error is not None:
-                raise self._estado.teardown_error
-            return
+        if driver is not None and driver.done():
+            driver_exc = driver.exception() if not driver.cancelled() else None
+            from sky_claw.local.mo2.vfs_broker import VfsTeardownError
+
+            if isinstance(driver_exc, VfsTeardownError):
+                self._estado.teardown_error = driver_exc
+                self._estado.terminality_unknown = True
+                self._estado.confirmed_terminal = False
+                self._teardown_completo = True
+                raise driver_exc
+            if self._resultado_futuro.done():
+                if self._estado.teardown_error is not None:
+                    raise self._estado.teardown_error
+                return
         await self._fence_de_teardown()
 
     # ------------------------------------------------------------------
@@ -376,7 +386,24 @@ class VfsProcessSession:
             if not driver.cancelled():
                 driver.exception()  # recuperada: el desenlace va por result()
         self._teardown_completo = True
+        driver = self._driver
+        if driver is not None and driver.done() and not driver.cancelled():
+            driver_exc = driver.exception()
+            from sky_claw.local.mo2.vfs_broker import VfsTeardownError
+
+            if isinstance(driver_exc, VfsTeardownError) and self._estado.teardown_error is None:
+                self._estado.teardown_error = driver_exc
+                self._estado.terminality_unknown = True
+                self._estado.confirmed_terminal = False
+
+        if cancelada:
+            canc = asyncio.CancelledError()
+            if self._estado.terminality_unknown or self._estado.teardown_error is not None:
+                from sky_claw.app.db.rollback_veto import mark_unknown_terminality
+
+                mark_unknown_terminality(canc, teardown_error=self._estado.teardown_error)
+            if self._estado.teardown_error is not None:
+                canc.__cause__ = self._estado.teardown_error
+            raise canc
         if self._estado.teardown_error is not None:
             raise self._estado.teardown_error
-        if cancelada:
-            raise asyncio.CancelledError

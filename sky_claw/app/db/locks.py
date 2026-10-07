@@ -49,14 +49,13 @@ import sqlite3
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiosqlite
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
-
-if TYPE_CHECKING:
-    from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 
 logger = logging.getLogger(__name__)
 
@@ -832,6 +831,7 @@ class SnapshotTransactionLock:
         # consultar rollback_completed (review Codex PR #238).
         self.rollback_attempted: bool = False
         self.rollback_failures: list[str] = []
+        self.rollback_vetoed_unknown_terminality: bool = False
 
     @property
     def lease_lost(self) -> bool:
@@ -1001,7 +1001,15 @@ class SnapshotTransactionLock:
         # we never clobber a concurrent owner's mutations. force_rollback still
         # restores (its no-mutation contract wins).
         lease_loss = self._lease_lost or (exc_type is not None and issubclass(exc_type, LockLeaseLostError))
-        should_rollback = self._force_rollback or (exc_type is not None and not lease_loss)
+        vetoed_unknown = exception_forbids_rollback(exc_val)
+        if vetoed_unknown:
+            logger.critical(
+                "Rollback de snapshots para '%s' VETADO por terminalidad desconocida del worker/proceso.",
+                self._resource_id,
+                extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
+            )
+            self.rollback_vetoed_unknown_terminality = True
+        should_rollback = not vetoed_unknown and (self._force_rollback or (exc_type is not None and not lease_loss))
         self.rollback_attempted = should_rollback
         try:
             if should_rollback:
