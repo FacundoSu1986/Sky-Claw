@@ -87,6 +87,12 @@ logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 #: Si alguna vez se construye, este es el único sitio a cambiar en este servicio.
 _ETAPA_DYNDOLOD = 9
 
+#: Holgura al comparar el ``mtime`` de un log con el inicio de la corrida. Los
+#: sistemas de archivos redondean (FAT guarda de a 2 s) y el reloj de pared puede
+#: retroceder un poco: sin holgura, un log escrito en el primer segundo se
+#: descartaría como "anterior". Un log VIEJO queda lejos de este margen.
+_HOLGURA_DE_MTIME_SEGUNDOS = 2.0
+
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
@@ -1286,6 +1292,15 @@ class DynDOLODPipelineService:
                 )
 
         start_time = time.monotonic()
+        # Reloj de pared para decidir qué logs de herramienta pertenecen a ESTA
+        # corrida (mtime >= inicio). El monotónico mide duraciones y no es
+        # comparable con un mtime.
+        start_epoch = time.time()
+        # Declarado acá —igual que `needs_deployment`— porque el handler de
+        # cancelación lo lee y no puede depender de que la asignación dentro del
+        # `try` haya llegado a existir. Con `journal_committed=True` siempre está
+        # asignado; antes de eso puede ser None.
+        result: DynDOLODPipelineResult | None = None
         rolled_back = False
         journal_committed = False
         mutation_started = False
@@ -2390,6 +2405,9 @@ class DynDOLODPipelineService:
                 errors=(str(exc),),
                 duration_seconds=duration,
                 rolled_back=rolled_back,
+                log_paths=await self._rutas_de_log_de_esta_corrida(
+                    runner, run_texgen=run_texgen, desde_epoch=start_epoch
+                ),
             )
             # F1: el payload distingue "se rompió" de "está listo y falta
             # desplegarlo". `success` sigue en False —DynDOLOD no corrió y no hay
@@ -2441,7 +2459,7 @@ class DynDOLODPipelineService:
                     duration,
                     extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
-            await self._cerrar_tx_tras_rollback(
+            rolled_back = await self._cerrar_tx_tras_rollback(
                 tx_id,
                 dir_rollbacks,
                 journal_committed=journal_committed,
@@ -2450,6 +2468,37 @@ class DynDOLODPipelineService:
                 contexto="cancelación",
                 preservado_para_deployment=preservado_para_deployment,
             )
+            # El ÚNICO camino de salida que no publicaba `completed`: un consumidor
+            # del bus veía `started` y nada más, o sea "corriendo" para siempre tras
+            # una cancelación o un shutdown. Con la TX ya commiteada la etapa SÍ
+            # tuvo éxito (ver el WARNING de arriba) y el evento lo dice; antes del
+            # commit es un fallo cancelado. Best-effort: el bus puede estar
+            # deteniéndose justo porque esto es un shutdown, y publicar no puede
+            # enmascarar la cancelación que se está propagando.
+            if journal_committed and result is not None:
+                await self._publish_completed_best_effort(
+                    tx_id=tx_id,
+                    preset=preset,
+                    run_texgen=run_texgen,
+                    success=True,
+                    texgen_success=bool(result.texgen_result and result.texgen_result.success),
+                    dyndolod_success=bool(result.dyndolod_result and result.dyndolod_result.success),
+                    errors=(),
+                    duration_seconds=duration,
+                    rolled_back=False,
+                )
+            else:
+                await self._publish_completed_best_effort(
+                    tx_id=tx_id,
+                    preset=preset,
+                    run_texgen=run_texgen,
+                    success=False,
+                    texgen_success=False,
+                    dyndolod_success=False,
+                    errors=("Pipeline cancelado antes de completarse.",),
+                    duration_seconds=duration,
+                    rolled_back=rolled_back,
+                )
             raise
 
         except Exception as exc:
@@ -2486,6 +2535,9 @@ class DynDOLODPipelineService:
                 errors=(str(exc),),
                 duration_seconds=duration,
                 rolled_back=rolled_back,
+                log_paths=await self._rutas_de_log_de_esta_corrida(
+                    runner, run_texgen=run_texgen, desde_epoch=start_epoch
+                ),
             )
             return _attach_preflight(
                 {
@@ -2587,6 +2639,7 @@ class DynDOLODPipelineService:
         errors: tuple[str, ...],
         duration_seconds: float,
         rolled_back: bool,
+        log_paths: tuple[str, ...] = (),
     ) -> None:
         """Publica evento de finalización del pipeline."""
         payload = DynDOLODPipelineCompletedPayload(
@@ -2598,6 +2651,7 @@ class DynDOLODPipelineService:
             errors=errors,
             duration_seconds=duration_seconds,
             rolled_back=rolled_back,
+            log_paths=log_paths,
         )
         await self._event_bus.publish(
             Event(
@@ -2606,6 +2660,71 @@ class DynDOLODPipelineService:
                 source="dyndolod-pipeline-service",
             )
         )
+
+    async def _publish_completed_best_effort(self, *, tx_id: int | None, **kwargs: Any) -> None:
+        """``_publish_completed`` que NUNCA enmascara lo que se está propagando.
+
+        Para el handler de cancelación: ahí el bus puede estar deteniéndose
+        precisamente porque es un shutdown, y una excepción del ``publish``
+        reemplazaría a la ``CancelledError`` que tiene que seguir subiendo. Un
+        fallo se loguea con ``operation_type`` propio y ``tx_id`` y NO lleva
+        ``pipeline_stage``: no publicar el evento terminal es un fallo de la
+        infraestructura de notificación, no de la etapa 9 (mismo criterio que
+        ``_emit_flight_report``; la exención está declarada y anclada en
+        ``tests/test_dyndolod_service.py``).
+        """
+        try:
+            await self._publish_completed(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — boundary best-effort del bus de eventos
+            logger.warning(
+                "DynDOLOD: no se pudo publicar pipeline.dyndolod.completed (TX %s)",
+                tx_id,
+                exc_info=True,
+                extra={"operation_type": "dyndolod_completed_no_publicado", "tx_id": tx_id},
+            )
+
+    async def _rutas_de_log_de_esta_corrida(
+        self,
+        runner: DynDOLODRunner,
+        *,
+        run_texgen: bool,
+        desde_epoch: float,
+    ) -> tuple[str, ...]:
+        """Logs de las herramientas que ESCRIBIERON durante esta corrida.
+
+        Un log de una corrida anterior no explica este fallo y adjuntarlo
+        mandaría al operador a leer evidencia de otro día: se exige que el
+        archivo exista, no esté vacío y su ``mtime`` sea de esta corrida. TexGen
+        sólo cuenta si esta corrida lo ejecutó (``run_texgen``). Orden estable:
+        TexGen primero.
+
+        Un doble sin ``Path`` real, un log ausente o ilegible no son evidencia y
+        se omiten sin ruido: esto alimenta un evento best-effort y no decide
+        ningún veredicto (el veredicto es del post-check del runner).
+        """
+        herramientas = ("TexGen", "DynDOLOD") if run_texgen else ("DynDOLOD",)
+        return await asyncio.to_thread(self._rutas_de_log_sincronas, runner, herramientas, desde_epoch)
+
+    @staticmethod
+    def _rutas_de_log_sincronas(
+        runner: DynDOLODRunner,
+        herramientas: tuple[str, ...],
+        desde_epoch: float,
+    ) -> tuple[str, ...]:
+        rutas: list[str] = []
+        for herramienta in herramientas:
+            ruta = runner._ruta_del_log(herramienta)
+            if not isinstance(ruta, pathlib.Path):
+                continue
+            try:
+                info = ruta.stat()
+            except OSError:
+                continue
+            if info.st_size > 0 and info.st_mtime >= desde_epoch - _HOLGURA_DE_MTIME_SEGUNDOS:
+                rutas.append(str(ruta))
+        return tuple(rutas)
 
     # ------------------------------------------------------------------
     # Journal helpers
