@@ -14,7 +14,10 @@
 > autoridades (Generation = versión, `RuntimeSetupManifest` = setup operativo),
 > SFR-16 exige el par Generation+Clone, SFR-19 se acota a las superficies
 > controladas por Sky-Claw, y la aprobación se liga a un `ApprovalScope` exacto.
-> Sigue en estado Propuesta.
+> Ronda 3 (§31): nomenclatura única del schema (sin alias `active.*`), ejecutable ≠
+> activable, diseño cerrado ≠ implementación cerrada, `ApprovalScope`
+> operation-aware y `RUNTIME_SETUP_ARTIFACT_AVAILABILITY = OPEN`. Sigue en estado
+> Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
