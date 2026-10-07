@@ -1,0 +1,55 @@
+{
+ "protocol_sha": "fc87b7e5191e42bd7e38b128b7baeaec7516dadb",
+ "run_code_sha": "fc87b7e5191e42bd7e38b128b7baeaec7516dadb",
+ "old_replay_sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
+ "raw_run_root": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\math-revalidation-20261006T223304Z-fc87b7e5",
+ "python": "E:\\Skyclaw_Main_Sync\\.venv\\Scripts\\python.exe",
+ "environment_probe": "E:\\Skyclaw_Main_Sync\\.venv\\Scripts\\python.exe\n3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]\nnumpy 2.4.6\npillow 11.3.0\nWindows-10-10.0.19045-SP0\n",
+ "numpy_blas": "Build Dependencies:\n  blas:\n    detection method: pkgconfig\n    found: true\n    include directory: C:/Users/runneradmin/AppData/Local/Temp/cibw-run-6ukx7exl/cp311-win_amd64/build/venv/Lib/site-packages/scipy_openblas64/include\n    lib directory: C:/Users/runneradmin/AppData/Local/Temp/cibw-run-6ukx7exl/cp311-win_amd64/build/venv/Lib/site-packages/scipy_openblas64/lib\n    name: scipy-openblas\n    openblas configuration: OpenBLAS 0.3.31.188.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY\n      SkylakeX MAX_THREADS=24\n    pc file directory: D:/a/numpy-release/numpy-release/.openblas\n    version: 0.3.31.188.0\n  lapack:\n    detection method: pkgconfig\n    found: true\n    include directory: C:/Users/runneradmin/AppData/Local/Temp/cibw-run-6ukx7exl/cp311-win_amd64/build/venv/Lib/site-packages/scipy_openblas64/include\n    lib directory: C:/Users/runneradmin/AppData/Local/Temp/cibw-run-6ukx7exl/cp311-win_amd64/build/venv/Lib/site-packages/scipy_openblas64/lib\n    name: scipy-openblas\n    openblas configuration: OpenBLAS 0.3.31.188.0  USE64BITINT DYNAMIC_ARCH NO_AFFINITY\n      SkylakeX MAX_THREADS=24\n    pc file directory: D:/a/numpy-release/numpy-release/.openblas\n    version: 0.3.31.188.0\nCompilers:\n  c:\n    commands: cl\n    linker: link\n    name: msvc\n    version: 19.44.35226\n  c++:\n    commands: cl\n    linker: link\n    name: msvc\n    version: 19.44.35226\n  cython:\n    commands: cython\n    linker: cython\n    name: cython\n    version: 3.2.4\nMachine Information:\n  build:\n    cpu: x86_64\n    endian: little\n    family: x86_64\n    system: windows\n  host:\n    cpu: x86_64\n    endian: little\n    family: x86_64\n    system: windows\nPython Information:\n  path: C:\\Users\\runneradmin\\AppData\\Local\\Temp\\build-env-jxn7bo0g\\Scripts\\python.exe\n  version: '3.11'\nSIMD Extensions:\n  baseline:\n  - X86_V2\n  found:\n  - X86_V3\n\n",
+ "platform": "Windows-10-10.0.19045-SP0",
+ "resolved_paths": {
+  "m2_manifest": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\cohort_b\\exp-m2-authored-manifest-local.json",
+  "m2_corpus_root": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\cohort_b_mirrors",
+  "m2_historical_rows": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\m2_control\\rows.json",
+  "m2_historical_characs": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\m2_control\\characs.json",
+  "m3_manifest": "E:\\SkyClaw_REVAL1_NEW_fc87b7e5\\docs\\design\\research\\native-parallax\\data\\exp-m3-clean-authored-manifest.json",
+  "m3_corpus_root": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\originals",
+  "m3_historical_raw": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\revalidation-height-resize-20260928\\m3\\exp_m3_results.json"
+ },
+ "corpus_hash_audit": {
+  "m2_match": 68,
+  "m2_total": 68,
+  "m3_match": 62,
+  "m3_total": 62
+ },
+ "historical_artifact_hashes": {
+  "m2_manifest": {
+   "status": "MATCH",
+   "expected": "40ff24bd3342c60d6d23d700975ae5d4f37adffc96bb900aaaf0ecea58d5a34a",
+   "got": "40ff24bd3342c60d6d23d700975ae5d4f37adffc96bb900aaaf0ecea58d5a34a",
+   "bytes": 40148,
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\cohort_b\\exp-m2-authored-manifest-local.json"
+  },
+  "m2_rows": {
+   "status": "MATCH",
+   "expected": "c2d8328e62046245d4c395ee0ecaad3696b8fb48f6578c9582079182ad770a08",
+   "got": "c2d8328e62046245d4c395ee0ecaad3696b8fb48f6578c9582079182ad770a08",
+   "bytes": 254405,
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\m2_control\\rows.json"
+  },
+  "m2_characs": {
+   "status": "MATCH",
+   "expected": "9afb60a453d2783572145c3d270145b2dc668941bbbdf96a5ac25cf7cef7a683",
+   "got": "9afb60a453d2783572145c3d270145b2dc668941bbbdf96a5ac25cf7cef7a683",
+   "bytes": 91796,
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\m2_control\\characs.json"
+  },
+  "m3_raw": {
+   "status": "MATCH",
+   "expected": "047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19",
+   "got": "047769fdad05e9af7960feb2c414470af7493d847e0901bac51d7c4a84bc5e19",
+   "bytes": 243752,
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\revalidation-height-resize-20260928\\m3\\exp_m3_results.json"
+  }
+ }
+}

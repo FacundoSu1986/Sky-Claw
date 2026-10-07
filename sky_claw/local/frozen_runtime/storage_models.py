@@ -17,6 +17,9 @@ import pathlib
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sky_claw.local.frozen_runtime.errors import CandidateVerificationError
+from sky_claw.local.frozen_runtime.membership import DirectoryMembershipEvidence
+from sky_claw.local.frozen_runtime.models import ProviderMetadataObservation
 from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, TreeDigest
 
 
@@ -182,3 +185,143 @@ class FrozenRuntimeStateLoadResult:
     found: bool
     state: FrozenRuntimeState | None
     message: str = ""
+
+
+# ============================================================================
+# Candidates (P3)
+# ============================================================================
+
+
+class CandidateState(StrEnum):
+    """Estados de un Candidate (P3).
+
+    ``READY`` es un estado PRIVILEGIADO: se alcanza solo despues de que la copia
+    quedo verificada contra evidencia independiente de la Managed Source en las
+    tres posiciones. Un Candidate recien creado es ``BUILDING`` y nunca ``READY``
+    por defecto.
+    """
+
+    BUILDING = "building"
+    READY = "ready"
+    INVALID = "invalid"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSourceEvidence:
+    """Evidencia de la Managed Source en UNA posicion (PRE o POST).
+
+    Es la unidad de autoridad (SFR-15). Se produce unicamente de una observacion
+    fresca de la Managed Source, jamas de un Candidate. Lleva la membership de
+    directorios porque el ``TreeDigest`` es ciego a los vacios.
+
+    ``buildid`` se conserva como AUXILIAR dentro de ``provider_metadata``: nunca
+    define identidad primaria, y su ausencia (``None``) no genera falso positivo.
+    """
+
+    provider: str
+    appid: str
+    game_key: str
+    runtime_identity: RuntimeIdentity
+    tree_digest: TreeDigest
+    directory_membership: DirectoryMembershipEvidence
+    critical_files: tuple[FileIdentity, ...]
+    provider_metadata: ProviderMetadataObservation
+    observed_at_ns: int
+    files: tuple[FileIdentity, ...] = ()
+
+    @property
+    def buildid(self) -> str | None:
+        """buildid observado (auxiliar); ``None`` si el manifest no lo expone."""
+        return self.provider_metadata.buildid
+
+    @property
+    def archivos(self) -> tuple[FileIdentity, ...]:
+        """Enumeracion SELLADA completa; es lo que la copia debe transferir."""
+        return self.files
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateMetadata:
+    """Metadata persistente de un Candidate (``state/candidates/<id>.json``).
+
+    Vive FUERA de ``payload/`` a proposito: dentro contaminaria el
+    ``TreeDigest`` y la ``DirectoryMembership`` que P3 acaba de sellar.
+
+    La invariante que hace ``READY`` alcanzable solo con evidencia completa:
+    :meth:`exigir_listo_para_persistencia` lanza si se intenta persistir READY
+    sin ``pre_source_evidence``, ``candidate_evidence`` ni
+    ``post_source_evidence``.
+    """
+
+    schema_version: int
+    candidate_id: str
+    state: CandidateState
+    created_at_ns: int
+    updated_at_ns: int
+    source_provider: str
+    source_appid: str
+    pre_source_evidence: CandidateSourceEvidence | None
+    candidate_evidence: CandidateSourceEvidence | None
+    post_source_evidence: CandidateSourceEvidence | None
+    failure_reason: str | None = None
+
+    def exigir_listo_para_persistencia(self) -> None:
+        """Fail-closed: READY exige las TRES evidencias (SFR-15)."""
+        if self.state is not CandidateState.READY:
+            return
+        faltantes = [
+            nombre
+            for nombre, valor in (
+                ("pre_source_evidence", self.pre_source_evidence),
+                ("candidate_evidence", self.candidate_evidence),
+                ("post_source_evidence", self.post_source_evidence),
+            )
+            if valor is None
+        ]
+        if faltantes:
+            raise CandidateVerificationError(
+                "no se puede persistir un Candidate READY sin evidencia independiente completa: "
+                f"faltan {', '.join(faltantes)} (SFR-15: el Candidate no puede autorizarse a si mismo)"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRecord:
+    """Un Candidate descubierto bajo ``candidates/``: clasificado, no promovido."""
+
+    candidate_id: str | None
+    directory: pathlib.Path
+    metadata: CandidateMetadata | None
+    state: GenerationVerificationState
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateInventory:
+    """Listado tipado de ``candidates/`` (sin promover nada)."""
+
+    root: pathlib.Path
+    records: tuple[CandidateRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResult:
+    """Resultado tipado de crear/verificar un Candidate (nunca un bool opaco).
+
+    ``state`` distingue VALID (READY) de INVALID de UNKNOWN de INDETERMINATE; el
+    ``message`` lleva el motivo y la evidencia queda en los campos.
+    """
+
+    state: GenerationVerificationState
+    message: str = ""
+    candidate_id: str | None = None
+    metadata: CandidateMetadata | None = None
+    pre_source_evidence: CandidateSourceEvidence | None = None
+    candidate_evidence: CandidateSourceEvidence | None = None
+    post_source_evidence: CandidateSourceEvidence | None = None
+    observed_digest: TreeDigest | None = None
+    expected_digest: TreeDigest | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.state is GenerationVerificationState.VALID
