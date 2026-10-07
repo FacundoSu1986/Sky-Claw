@@ -650,7 +650,13 @@ def test_notificacion_al_operador_de_la_etapa_9_registrada_como_parcial_sin_smok
     assert "API REAL de Telegram" in que_falta
     assert "NO se cierra con esto" in que_falta, "el smoke real de Telegram sigue bloqueado"
     assert "sin drenaje" in que_falta, "el límite de entrega ante un shutdown inmediato debe seguir declarado"
-    assert "NO existen comandos de bot" in que_falta, "no se afirma un control remoto que no existe"
+    assert "NO existen comandos de bot `/build_lod` ni `/cancel`" in que_falta, (
+        "no se afirma un control remoto que no existe"
+    )
+    assert "`/lod_status`, de SOLO LECTURA" in que_falta, "el único comando existente es de lectura y la fila lo dice"
+    assert "DESDE EL ARRANQUE" in que_falta, (
+        "el estado de /lod_status es en memoria: el límite tiene que seguir declarado"
+    )
     assert "sólo INFORMA" in que_falta, "el observador no cancela nada: el límite tiene que seguir declarado"
     assert "NO una calibración" in que_falta, "los umbrales salen de UNA corrida: no se venden como calibrados"
     assert "pipeline.dyndolod.progress" in que_falta
@@ -659,4 +665,6 @@ def test_notificacion_al_operador_de_la_etapa_9_registrada_como_parcial_sin_smok
     assert "DEFAULT_TOOL_ROUND_TIMEOUT" in que_falta
     assert "test_dyndolod_operator_notifier_wiring.py" in fila["Verificado por"]
     assert "test_app_context_publicacion_simetrica.py" in fila["Verificado por"]
+    assert "test_lod_status_wiring.py" in fila["Verificado por"]
+    assert "test_telegram_lod_status.py" in fila["Verificado por"]
     assert filas["Smokes reales restantes"]["Estado"] == "Bloqueado (rig humano)"

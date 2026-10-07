@@ -726,6 +726,11 @@ class FrontendBridge:
             # tras el hot-reload. _validate_sender falla cerrado si es None y
             # compara contra el user_id (int), por eso se convierte chat_id.
             authorized_user_id = int(chat_id) if chat_id else None
+            # Un solo operador, un solo chat: el MISMO valor autoriza al webhook (HITL y comandos) y recibe los
+            # avisos de la etapa 9, que `TelegramCanalDeOperador` lee de `ctx.operator_chat_id` en cada envío.
+            # Va DESPUÉS de `int()`: con un chat inválido no se publica nada a medias. Sin chat (None) los avisos
+            # quedan sin destino, el mismo criterio fail-closed que `authorized_user_id=None`.
+            self.ctx.operator_chat_id = authorized_user_id
             webhook_handler = TelegramWebhook(
                 router=self.ctx.router,
                 sender=self.ctx.sender,
@@ -733,6 +738,7 @@ class FrontendBridge:
                 hitl=self.ctx.hitl,
                 authorized_user_id=authorized_user_id,
                 hitl_registry=self.ctx.telegram_hitl_registry,
+                lod_status=self.ctx.seguimiento_etapa9.resumen_html,
             )
             self.ctx.polling = TelegramPolling(
                 token=token,

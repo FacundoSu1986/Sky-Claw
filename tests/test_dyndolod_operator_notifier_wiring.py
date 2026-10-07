@@ -46,6 +46,13 @@ BOOTLOADER = PAQUETE / "app" / "gui" / "_bootloader.py"
 #: un sitio nuevo rompe esto hasta que se decida cómo se entera el operador.
 SITIOS_QUE_CONSTRUYEN_EL_SUPERVISOR = {"sky_claw/app/gui/_bootloader.py"}
 
+#: Instaladores de la superficie del operador sobre la etapa 9 (avisos push y consulta ``/lod_status``). Igualdad
+#: literal: uno nuevo rompe los anclas de abajo hasta que se decida si se instala en todo sitio y antes de arrancar.
+INSTALADORES_DE_LA_SUPERFICIE_DEL_OPERADOR = (
+    "_install_dyndolod_operator_notifier",
+    "_install_dyndolod_status_tracking",
+)
+
 
 class _Rastreador:
     """``AppContext._track_task`` mínimo: crea la tarea, la guarda y recuerda su nombre."""
@@ -203,8 +210,9 @@ def test_los_sitios_que_construyen_el_supervisor_estan_congelados() -> None:
     )
 
 
-def test_cada_sitio_que_construye_el_supervisor_instala_el_notificador_de_operador() -> None:
-    sin_notificador = []
+@pytest.mark.parametrize("instalador", INSTALADORES_DE_LA_SUPERFICIE_DEL_OPERADOR)
+def test_cada_sitio_que_construye_el_supervisor_instala_la_superficie_del_operador(instalador: str) -> None:
+    sin_instalar = []
     for clave in sorted(SITIOS_QUE_CONSTRUYEN_EL_SUPERVISOR):
         arbol = ast.parse((RAIZ / clave).read_text(encoding="utf-8"))
         llamadas = {
@@ -212,13 +220,14 @@ def test_cada_sitio_que_construye_el_supervisor_instala_el_notificador_de_operad
             for nodo in ast.walk(arbol)
             if isinstance(nodo, ast.Call)
         }
-        if "_install_dyndolod_operator_notifier" not in llamadas:
-            sin_notificador.append(clave)
+        if instalador not in llamadas:
+            sin_instalar.append(clave)
 
-    assert sin_notificador == []
+    assert sin_instalar == []
 
 
-def test_el_bootstrap_instala_el_notificador_antes_de_arrancar_el_supervisor() -> None:
+@pytest.mark.parametrize("instalador", INSTALADORES_DE_LA_SUPERFICIE_DEL_OPERADOR)
+def test_el_bootstrap_instala_la_superficie_del_operador_antes_de_arrancar_el_supervisor(instalador: str) -> None:
     """Instalar tras ``supervisor.start()`` perdería el ``started`` de una corrida lanzada al arranque."""
     arbol = ast.parse(BOOTLOADER.read_text(encoding="utf-8"))
     [bootstrap] = [
@@ -228,16 +237,28 @@ def test_el_bootstrap_instala_el_notificador_antes_de_arrancar_el_supervisor() -
     for nodo in ast.walk(bootstrap):
         if not isinstance(nodo, ast.Call):
             continue
-        if isinstance(nodo.func, ast.Name) and nodo.func.id == "_install_dyndolod_operator_notifier":
+        if isinstance(nodo.func, ast.Name) and nodo.func.id == instalador:
             lineas.setdefault("instalar", []).append(nodo.lineno)
         if isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "start":
             propietario = nodo.func.value
             if isinstance(propietario, ast.Name) and propietario.id == "supervisor":
                 lineas.setdefault("start", []).append(nodo.lineno)
 
-    assert len(lineas.get("instalar", [])) == 1, "_bootstrap debe instalar el notificador exactamente una vez"
+    assert len(lineas.get("instalar", [])) == 1, f"_bootstrap debe llamar a {instalador} exactamente una vez"
     assert len(lineas.get("start", [])) == 1
     assert lineas["instalar"][0] < lineas["start"][0]
+
+
+def test_los_instaladores_del_bootloader_son_exactamente_los_declarados() -> None:
+    """Enumera por AST las funciones ``_install_dyndolod_*`` del bootloader y las congela."""
+    arbol = ast.parse(BOOTLOADER.read_text(encoding="utf-8"))
+    definidas = {
+        nodo.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.FunctionDef) and nodo.name.startswith("_install_dyndolod_")
+    }
+
+    assert definidas == set(INSTALADORES_DE_LA_SUPERFICIE_DEL_OPERADOR)
 
 
 def test_el_pipeline_de_etapa_9_publica_en_el_bus_del_supervisor() -> None:

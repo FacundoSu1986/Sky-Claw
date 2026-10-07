@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
 import logging
 import os
 import pathlib
@@ -53,6 +52,7 @@ from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineProgressPayload,
     DynDOLODPipelineStartedPayload,
 )
+from sky_claw.app.orchestrator.dyndolod_mensajes import formatear_fin, formatear_inicio, formatear_progreso
 from sky_claw.app.security import links
 
 if TYPE_CHECKING:
@@ -67,12 +67,6 @@ TOPIC_INICIO = "pipeline.dyndolod.started"
 TOPIC_FIN = "pipeline.dyndolod.completed"
 TOPIC_PROGRESO = "pipeline.dyndolod.progress"
 PATRON_DE_SUSCRIPCION = "pipeline.dyndolod.*"
-
-#: Cuántos errores se muestran y cuánto de cada uno. El producto, con el peor
-#: caso de escape (x5), más el resto del mensaje, queda bajo el límite de
-#: Telegram (4096) — ver ``test_el_peor_caso_de_escape_...``.
-_MAX_ERRORES_MOSTRADOS = 2
-_MAX_CARACTERES_POR_ERROR = 300
 
 _MAX_BYTES_DE_ADJUNTO_POR_DEFECTO = 200 * 1024
 _MAX_ADJUNTOS_POR_DEFECTO = 2
@@ -97,129 +91,6 @@ class _Notificacion:
     clave: str
     texto_html: str
     logs: tuple[pathlib.Path, ...] = ()
-
-
-def _esc(texto: str) -> str:
-    """Escapa lo mínimo que exige el modo HTML de Telegram: ``&``, ``<`` y ``>``."""
-    return html.escape(texto, quote=False)
-
-
-def _recortar(texto: str, maximo: int) -> str:
-    """Recorta el texto CRUDO (antes de escapar: cortar un ``&amp;`` a la mitad rompe el HTML)."""
-    return texto if len(texto) <= maximo else texto[: maximo - 1] + "…"
-
-
-def _duracion_legible(segundos: float) -> str:
-    """``272.5`` -> ``4m 32s``. Trunca: una duración no se redondea hacia arriba."""
-    total = max(0, int(segundos))
-    horas, resto = divmod(total, 3600)
-    minutos, seg = divmod(resto, 60)
-    if horas:
-        return f"{horas}h {minutos}m {seg}s"
-    if minutos:
-        return f"{minutos}m {seg}s"
-    return f"{seg}s"
-
-
-def _instruccion_de_cierre(run_texgen: bool) -> str:
-    """Cómo cerrar cada herramienta sin perder su salida.
-
-    Evidencia de rig commiteada: el diálogo final de cada herramienta ofrece variantes
-    «Zip» cuyo PROPIO texto avisa que *"permanently delete everything in the dedicated
-    output folder"* (``docs/validation/2026-09-13_pr580_real_rig/texgen-log.txt`` y
-    ``dyndolod-log.txt``, la línea del diálogo final), y el de DynDOLOD además ofrece
-    «Exit DynDOLOD», que sale *sin guardar*. Qué botón se eligió en esa corrida está en
-    ``final-report.md`` del mismo directorio («Terminación elegida»). La corrida sólo se
-    empaqueta si la carpeta de salida sobrevive.
-    """
-    cierre = "«Exit TexGen» (TexGen) y «Save and Exit» (DynDOLOD)" if run_texgen else "«Save and Exit» (DynDOLOD)"
-    return (
-        f"Al terminar, cerrá con {cierre}. Las opciones «Zip» borran la carpeta de "
-        "salida y Sky-Claw ya no podría empaquetar el resultado; «Exit DynDOLOD» no guarda los plugins."
-    )
-
-
-def _formatear_inicio(payload: DynDOLODPipelineStartedPayload) -> str:
-    return "\n".join(
-        [
-            "🛠️ <b>DynDOLOD · etapa 9 iniciada</b>",
-            f"Preset: <code>{_esc(payload.preset)}</code> · TexGen: {'sí' if payload.run_texgen else 'no'}",
-            _esc(payload.operator_instructions),
-            _instruccion_de_cierre(payload.run_texgen),
-        ]
-    )
-
-
-def _formatear_fin(payload: DynDOLODPipelineCompletedPayload) -> str:
-    if payload.success:
-        encabezado = "✅ <b>DynDOLOD · etapa 9 completada</b>"
-    elif payload.cancelled:
-        encabezado = "⏹️ <b>DynDOLOD · etapa 9 cancelada</b>"
-    else:
-        encabezado = "❌ <b>DynDOLOD · etapa 9 falló</b>"
-    lineas = [f"{encabezado} ({_duracion_legible(payload.duration_seconds)})"]
-
-    if payload.success:
-        texgen = "no se ejecutó" if not payload.run_texgen else ("✓" if payload.texgen_success else "—")
-        lineas.append(f"TexGen: {texgen} · DynDOLOD: {'✓' if payload.dyndolod_success else '—'}")
-        if payload.cancelled:
-            lineas.append("Nota: se canceló el post-proceso; la salida ya estaba confirmada.")
-        return "\n".join(lineas)
-
-    errores = payload.errors[:_MAX_ERRORES_MOSTRADOS]
-    if errores:
-        lineas.extend(f"<pre>{_esc(_recortar(error, _MAX_CARACTERES_POR_ERROR))}</pre>" for error in errores)
-        omitidos = len(payload.errors) - len(errores)
-        if omitidos:
-            lineas.append(f"(+{omitidos} más en el log)")
-    else:
-        lineas.append("Sin detalle: revisá el log de la herramienta.")
-    lineas.append(
-        "Rollback: confirmado"
-        if payload.rolled_back
-        else "Rollback: NO confirmado (la transacción queda pendiente; revisá la GUI)"
-    )
-    return "\n".join(lineas)
-
-
-_UNIDADES_DE_TAMANO = ("B", "KiB", "MiB", "GiB")
-
-_ENCABEZADO_DE_ACTIVIDAD = {
-    "progress": "⏳ <b>DynDOLOD · etapa 9 en curso</b>",
-    "stalled": "⚠️ <b>DynDOLOD · sin actividad en el log</b>",
-    "resumed": "▶️ <b>DynDOLOD · actividad reanudada</b>",
-}
-
-
-def _tamano_legible(tamano: int) -> str:
-    """``4300000`` -> ``4.1 MiB``. Un tamaño negativo (no debería existir) se lee como ``0 B``."""
-    valor = float(max(tamano, 0))
-    indice = 0
-    while valor >= 1024 and indice < len(_UNIDADES_DE_TAMANO) - 1:
-        valor /= 1024
-        indice += 1
-    return f"{int(valor)} B" if indice == 0 else f"{valor:.1f} {_UNIDADES_DE_TAMANO[indice]}"
-
-
-def _formatear_progreso(payload: DynDOLODPipelineProgressPayload) -> str:
-    lineas = [f"{_ENCABEZADO_DE_ACTIVIDAD[payload.kind]} ({_duracion_legible(payload.elapsed_seconds)})"]
-    if payload.log:
-        lineas.append(f"Log: <code>{_esc(payload.log)}</code> · {_tamano_legible(payload.log_size_bytes)}")
-    else:
-        lineas.append("Todavía no hay un log de esta corrida.")
-    if payload.kind == "stalled":
-        lineas.append(
-            f"Sin cambios hace {_duracion_legible(payload.idle_seconds)}: "
-            "la herramienta puede estar esperando una acción en su ventana."
-        )
-    elif payload.kind == "resumed":
-        lineas.append(f"Volvió a escribir tras {_duracion_legible(payload.idle_seconds)} sin cambios.")
-    elif payload.idle_seconds >= 1:
-        lineas.append(f"Último cambio del log hace {_duracion_legible(payload.idle_seconds)}.")
-    if payload.last_line:
-        lineas.append("Última línea:")
-        lineas.append(f"<pre>{_esc(_recortar(payload.last_line, _MAX_CARACTERES_POR_ERROR))}</pre>")
-    return "\n".join(lineas)
 
 
 def _leer_cola_de_log(ruta: pathlib.Path, max_bytes: int) -> bytes:
@@ -320,18 +191,18 @@ class DynDOLODOperatorNotifier:
         # ÚNICA autoridad del contrato, sin una lista de claves paralela.
         if event.topic == TOPIC_INICIO:
             inicio = DynDOLODPipelineStartedPayload.model_validate(event.payload, strict=False)
-            return _Notificacion(clave="inicio", texto_html=_formatear_inicio(inicio))
+            return _Notificacion(clave="inicio", texto_html=formatear_inicio(inicio))
         if event.topic == TOPIC_FIN:
             fin = DynDOLODPipelineCompletedPayload.model_validate(event.payload, strict=False)
             adjuntar = not fin.success and not fin.cancelled
             return _Notificacion(
                 clave="fin",
-                texto_html=_formatear_fin(fin),
+                texto_html=formatear_fin(fin),
                 logs=tuple(pathlib.Path(ruta) for ruta in fin.log_paths) if adjuntar else (),
             )
         if event.topic == TOPIC_PROGRESO:
             progreso = DynDOLODPipelineProgressPayload.model_validate(event.payload, strict=False)
-            return _Notificacion(clave=f"actividad:{progreso.kind}", texto_html=_formatear_progreso(progreso))
+            return _Notificacion(clave=f"actividad:{progreso.kind}", texto_html=formatear_progreso(progreso))
         return None
 
     def _encolar(self, notificacion: _Notificacion) -> None:

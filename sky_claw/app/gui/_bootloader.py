@@ -94,6 +94,19 @@ def _install_dyndolod_operator_notifier(ctx: AppContext, supervisor: SupervisorA
     return notificador
 
 
+def _install_dyndolod_status_tracking(ctx: AppContext, supervisor: SupervisorAgent) -> None:
+    """Conecta al bus del supervisor el seguimiento que responde ``/lod_status`` (solo lectura).
+
+    Es el HERMANO del notificador de arriba: ambos escuchan ``pipeline.dyndolod.*`` para el mismo
+    operador remoto, uno empujando avisos y el otro guardando el último estado para consultarlo.
+    El seguimiento es ``ctx.seguimiento_etapa9`` (el MISMO objeto que los tres sitios que arman el
+    webhook le pasan como proveedor): conectar otra instancia dejaría al comando leyendo un estado
+    que nadie alimenta. ``suscribir`` solo agrega a la lista del bus, así que va antes de
+    ``supervisor.start()``; no crea tareas de fondo.
+    """
+    ctx.seguimiento_etapa9.suscribir(supervisor.event_bus)
+
+
 def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     """Route ``tool_execution`` + ``download`` + ``sandbox_promotion`` + ``dyndolod_configuracion_lista`` HITL approvals to the GUI.
 
@@ -642,6 +655,7 @@ def run_nicegui(
         # log si falla. Antes de supervisor.start(), por la misma razón que el bridge de
         # telemetría de arriba: subscribe() sólo agrega a la lista del bus.
         _install_dyndolod_operator_notifier(ctx, supervisor)
+        _install_dyndolod_status_tracking(ctx, supervisor)
 
         # Fase 2: route destructive-tool (Ritual) approvals to the GUI so the
         # "Modo local" toggle / Aprobar-Denegar modal can satisfy the HITL gate.

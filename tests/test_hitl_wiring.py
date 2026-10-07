@@ -663,6 +663,20 @@ class TestOperatorChatIdPublicado:
         finally:
             await ctx.stop()
 
+    @pytest.mark.asyncio
+    async def test_el_webhook_real_recibe_el_seguimiento_del_contexto_para_lod_status(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Integración: tras ``start_full`` el webhook que alimenta el polling consulta el MISMO
+        seguimiento que el bootloader conecta al bus (no ``None`` ni otra instancia)."""
+        ctx = await self._arrancar(tmp_path, chat_en_args=424242)
+
+        try:
+            assert ctx.polling is not None
+            assert ctx.polling._handler._lod_status == ctx.seguimiento_etapa9.resumen_html
+        finally:
+            await ctx.stop()
+
 
 # ---------------------------------------------------------------------------
 # AppContext _hitl_notify — category routing (fail-closed for tool execution)

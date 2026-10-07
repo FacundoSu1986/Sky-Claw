@@ -477,6 +477,10 @@ class TelegramWebhook:
         hitl: Optional :class:`HITLGuard` instance.  When provided,
             ``/approve <id>`` and ``/deny <id>`` messages are intercepted
             and routed to :meth:`HITLGuard.respond` instead of the LLM.
+        lod_status: Proveedor del texto HTML (YA ESCAPADO) que responde ``/lod_status``: el
+            último estado conocido de la etapa 9. ``None`` = esta instancia no lo tiene (el
+            comando responde que no está disponible, nunca llega al LLM). Es de SOLO LECTURA: el
+            webhook no ejecuta la etapa ni conoce su dominio, sólo transporta la respuesta.
     """
 
     def __init__(
@@ -488,6 +492,7 @@ class TelegramWebhook:
         secret_token: str | None = None,
         authorized_user_id: int | None = None,
         hitl_registry: TelegramHITLMessageRegistry | None = None,
+        lod_status: Callable[[], str] | None = None,
     ) -> None:
         self._router = router
         self._sender = sender
@@ -499,6 +504,7 @@ class TelegramWebhook:
         self._tasks: set[asyncio.Task[None]] = set()
         # Asignamos directamente desde la inyección de dependencias
         self._allowed_user_id = authorized_user_id
+        self._lod_status = lod_status
 
     def _validate_sender(self, message_or_callback: dict[str, Any]) -> bool:
         """Valida que el mensaje no sea reenviado y el usuario esté autorizado.
@@ -679,6 +685,14 @@ class TelegramWebhook:
             task.add_done_callback(self._tasks.discard)
             return
 
+        # Consulta de SOLO LECTURA del estado de la etapa 9. Vive después del gate de arriba: hereda operador
+        # único, chat privado, anti-reenviados y deduplicación. Nunca llega al LLM.
+        if text == "/lod_status":
+            task = asyncio.create_task(self._handle_lod_status_command(chat_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            return
+
         # Procesamiento en segundo plano mediante el LLM.
         task = asyncio.create_task(self._process_bg(chat_id, text, update_id))
         self._tasks.add(task)
@@ -726,6 +740,34 @@ class TelegramWebhook:
 
             logging.getLogger(__name__).exception("Falla en /update_mods: %s", exc)
             await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
+
+    async def _handle_lod_status_command(self, chat_id: int) -> None:
+        """Responde ``/lod_status`` con el último estado conocido de la etapa 9. SOLO LECTURA.
+
+        Sólo puede usar el proveedor de estado y el sender (anclado por AST en
+        ``tests/test_telegram_lod_status.py``): no toca el agente, el guard HITL ni la red. Nada se propaga: es
+        una tarea de fondo y una excepción sin recoger sólo quedaría en el log del loop.
+        """
+        if self._lod_status is None:
+            texto = "ℹ️ /lod_status no está disponible en esta instancia de Sky-Claw."
+            parse_mode: str | None = None
+        else:
+            try:
+                texto = self._lod_status()
+            except Exception:
+                # La causa va al log, no al chat: puede traer rutas o datos del equipo del operador.
+                logger.exception("Falla al leer el estado de la etapa 9 para /lod_status")
+                texto = "❌ No pude leer el estado de la etapa 9."
+                parse_mode = None
+            else:
+                parse_mode = "HTML"
+        try:
+            if parse_mode is None:
+                await self._sender.send(chat_id, texto)
+            else:
+                await self._sender.send(chat_id, texto, parse_mode=parse_mode)
+        except Exception:
+            logger.exception("Falla al responder /lod_status")
 
     async def terminalize_hitl(self, request_id: str, decision: Any) -> bool:
         """Terminaliza el prompt usando el sender owner registrado."""

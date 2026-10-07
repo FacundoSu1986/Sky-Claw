@@ -37,6 +37,9 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         hitl=ctx.hitl,
         authorized_user_id=ctx._args.operator_chat_id,
         hitl_registry=ctx.telegram_hitl_registry,
+        # Sin supervisor este modo no ejecuta la etapa 9: el seguimiento (nunca suscripto) responde eso mismo
+        # a `/lod_status`, en vez de dejar el comando sin responder o caer al LLM.
+        lod_status=ctx.seguimiento_etapa9.resumen_html,
     )
     polling = TelegramPolling(
         token=ctx.sender._token,

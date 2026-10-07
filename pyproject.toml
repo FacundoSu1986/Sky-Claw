@@ -360,6 +360,10 @@ module = [
     # Observación de actividad del log de la etapa 9: módulo nuevo bajo `sky_claw.local.tools.*`,
     # que está en `ignore_errors` y tiene BLE001 activo — sin este opt-in sale sin type-check.
     "sky_claw.local.tools.dyndolod_actividad",
+    # Formato y seguimiento de la etapa 9 para el operador (`/lod_status`): módulos nuevos bajo
+    # `sky_claw.app.orchestrator.*`, que está en `ignore_errors` — sin este opt-in saldrían sin type-check.
+    "sky_claw.app.orchestrator.dyndolod_mensajes",
+    "sky_claw.app.orchestrator.dyndolod_seguimiento",
 ]
 strict = true
 ignore_errors = false

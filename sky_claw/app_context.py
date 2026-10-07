@@ -44,6 +44,7 @@ from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.orchestrator.dyndolod_seguimiento import SeguimientoDeEtapa9
 from sky_claw.app.orchestrator.sync_engine import SyncEngine
 from sky_claw.app.scraper.masterlist import MasterlistClient
 from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -406,6 +407,11 @@ class AppContext:
         # (el notificador de operador de DynDOLOD, en el bootloader de la GUI), que lo
         # leen en cada envío en vez de capturarlo.
         self.operator_chat_id: int | None = None
+        # Último estado conocido de la etapa 9: lo que responde `/lod_status`. Vive con el contexto y NO se publica
+        # en `start_full`: los tres sitios que arman el webhook lo leen de acá y el bootloader de la GUI lo
+        # suscribe al bus del supervisor. Sin suscripción (modo `telegram` sin supervisor) responde que esta
+        # instancia no ejecuta la etapa 9.
+        self.seguimiento_etapa9 = SeguimientoDeEtapa9()
         self.polling: TelegramPolling | None = None
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
         # de la GUI (detect_pending_updates). None hasta que corra start_full.
@@ -2153,6 +2159,7 @@ class AppContext:
                     hitl=hitl,
                     authorized_user_id=operator_chat_id,
                     hitl_registry=self.telegram_hitl_registry,
+                    lod_status=self.seguimiento_etapa9.resumen_html,
                 )
                 polling = TelegramPolling(
                     token=bot_token,

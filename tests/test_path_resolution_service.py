@@ -1511,7 +1511,7 @@ class TestAnclaConstructoresManualesDeMods:
         # cleanup de cancelación).
         # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
         # Notificador de operador: `operator_chat_id` (atributo + su limpieza) movió la línea (1409 → 1416).
-        "sky_claw/app_context.py": (1416,),
+        "sky_claw/app_context.py": (1422,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA.
         "sky_claw/__main__.py": (271,),
