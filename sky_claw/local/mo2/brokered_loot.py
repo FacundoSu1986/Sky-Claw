@@ -333,7 +333,12 @@ class BrokeredLootRunner:
             # attestation), así que en un cuelgue real es el que dispara primero;
             # sin esta traducción el camino productivo reportaría un error
             # genérico donde el directo reporta TIMEOUT.
-            raise LOOTTimeoutError(self._timeout) from exc
+            err = LOOTTimeoutError(self._timeout)
+            if getattr(exc, "terminality_unknown", False):
+                from sky_claw.app.db.rollback_veto import mark_unknown_terminality
+
+                mark_unknown_terminality(err, teardown_error=getattr(exc, "teardown_error", None))
+            raise err from exc
         self._last_result.set(result)
         tool = result.tool_result
         failure_kind = tool.get("loot_failure_kind")
