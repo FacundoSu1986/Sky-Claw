@@ -25,10 +25,12 @@ import base64
 import contextlib
 import inspect
 import json
+import os
 import pathlib
 import threading
 from typing import Any
 
+import psutil
 import pytest
 
 from sky_claw.local.mo2 import vfs_broker
@@ -1630,3 +1632,246 @@ async def test_doble_falla_de_persistencia_de_cuarentena_impide_admision_tras_re
     finally:
         with contextlib.suppress(Exception):
             await broker_b.close()
+
+
+async def test_reconciliar_lock_limpio_preserva_create_time_y_detecta_pid_reusado(tmp_path: pathlib.Path) -> None:
+    """Finding A: _reconciliar_lock_de_instancia_limpio DEBE conservar create_time en el lock.
+
+    Si se omite create_time, un PID reciclado por otro proceso del SO se confunde
+    con el dueño original y el lock huérfano no se puede reclamar tras un crash.
+    """
+
+    state_dir = tmp_path / "vfs_state"
+    broker = VfsExecutionBroker(instance_id="portable-main", state_dir=state_dir)
+    await broker.start()
+    try:
+        raw_lock_inicial = json.loads(broker._instance_lock_path.read_text(encoding="utf-8"))
+        assert "create_time" in raw_lock_inicial
+        expected_create_time = psutil.Process(os.getpid()).create_time()
+        assert raw_lock_inicial["create_time"] == expected_create_time
+
+        # Poner en cuarentena y luego liberar para gatillar la reconciliación del lock
+        broker._quarantine_instance("job-reconcile-test", "terminalidad indeterminada transitoria")
+        broker._liberar_cuarentena_por_worker_exit("job-reconcile-test")
+
+        # Leer lock reconciliado
+        raw_lock_reconciliado = json.loads(broker._instance_lock_path.read_text(encoding="utf-8"))
+        assert "create_time" in raw_lock_reconciliado, "El lock reconciliado perdió create_time (Finding A)"
+        assert raw_lock_reconciliado["create_time"] == expected_create_time
+
+        # Caso de PID reciclado: si otro proceso tiene el mismo PID pero distinto create_time,
+        # _instance_lock_owner_alive() DEBE retornar False para permitir la reclamación del lock huérfano.
+        class _ProcessConOtroCreateTime:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def create_time(self) -> float:
+                return expected_create_time + 1000.0
+
+        with pytest.MonkeyPatch.context() as mp:
+            raw_lock_reconciliado["pid"] = os.getpid() + 99999
+            broker._instance_lock_path.write_text(json.dumps(raw_lock_reconciliado), encoding="utf-8")
+            mp.setattr(psutil, "Process", _ProcessConOtroCreateTime)
+            assert broker._instance_lock_owner_alive() is False
+    finally:
+        await broker.close()
+
+
+async def test_reconnect_after_connected_deadline_grants_bounded_replay_window_and_preserves_result(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Finding B: Bridge reconnection tras vencer el connected deadline otorga replay window.
+
+    Evita falso TERMINALITY_UNKNOWN permitiendo que el frame worker_exit reemitido
+    sea procesado en vez de fallar inmediatamente con VfsTeardownDeadlineError.
+    """
+    state_dir = tmp_path / "vfs_state"
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=state_dir,
+        connected_worker_exit_deadline_seconds=0.1,
+        fence_grace_seconds=5.0,
+    )
+    await broker.start()
+    bridge1 = await _BridgeFalso.conectar(broker)
+
+    submit_task = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+    launch_msg = await bridge1.recv()
+    assert launch_msg["type"] == "launch_worker"
+
+    worker = await _WorkerFalso.conectar(broker, job.job_id)
+    await worker.report_result(success=True, challenge=challenge)
+
+    # Desconectar el bridge antes de que expire el deadline
+    await bridge1.cerrar()
+    await asyncio.sleep(0.02)
+    assert broker._bridge_lost.is_set()
+
+    # Avanzar hasta después del connected deadline (0.1s)
+    await asyncio.sleep(0.15)
+
+    # Reconectar bridge (bridge2)
+    bridge2 = await _BridgeFalso.conectar(broker)
+    assert broker._bridge_ready.is_set()
+    assert not broker._bridge_lost.is_set()
+
+    # CHECKPOINT: bridge2 conectado pero worker_exit todavía no emitido.
+    # PRE-FIX: fallaba inmediatamente con VfsTeardownDeadlineError y cuarentena.
+    # POST-FIX: el fence permanece pendiente durante la replay window.
+    await asyncio.sleep(0.05)
+    assert not submit_task.done(), "El fence venció inmediatamente sin otorgar replay window"
+    assert broker.quarantine_reason is None
+
+    # Liberar worker_exit durante la replay window
+    await bridge2.worker_exit(job.job_id, exit_code=0)
+
+    result = await asyncio.wait_for(submit_task, timeout=2.0)
+    assert result.success is True
+    assert broker.quarantine_reason is None
+    assert not broker._instance_lock.locked()
+
+    await worker.cerrar()
+    await bridge2.cerrar()
+    await broker.close()
+
+
+async def test_reconnect_after_connected_deadline_expires_if_no_worker_exit_replayed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Finding B Negativo (M2/M4): Si la replay window expira sin worker_exit, falla acotado.
+
+    Demuestra que la replay window no espera indefinidamente: produce VfsTeardownDeadlineError
+    y aísla la instancia en cuarentena fail-closed.
+    """
+    state_dir = tmp_path / "vfs_state"
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=state_dir,
+        connected_worker_exit_deadline_seconds=0.1,
+        fence_grace_seconds=5.0,
+        bridge_reconnect_replay_grace_seconds=0.2,
+    )
+    await broker.start()
+    bridge1 = await _BridgeFalso.conectar(broker)
+
+    submit_task = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+    launch_msg = await bridge1.recv()
+    assert launch_msg["type"] == "launch_worker"
+
+    worker = await _WorkerFalso.conectar(broker, job.job_id)
+    await worker.report_result(success=True, challenge=challenge)
+
+    # Desconectar bridge y esperar a que venza el connected deadline original
+    await bridge1.cerrar()
+    await asyncio.sleep(0.15)
+
+    # Reconectar bridge pero NUNCA enviar worker_exit
+    bridge2 = await _BridgeFalso.conectar(broker)
+
+    # Debe vencer acotadamente al expirar la replay window (0.2s)
+    with pytest.raises(VfsTeardownDeadlineError):
+        await asyncio.wait_for(submit_task, timeout=2.0)
+
+    assert broker.quarantine_reason is not None
+    assert "teardown sin confirmación de worker_exit" in broker.quarantine_reason
+
+    await worker.cerrar()
+    await bridge2.cerrar()
+    await broker.close()
+
+
+async def test_reconnect_storm_after_deadline_enforces_bounded_total_ceiling(
+    tmp_path: pathlib.Path,
+) -> None:
+    """M3: Una tormenta de reconexiones no extiende indefinidamente la replay window.
+
+    Múltiples reconexiones sucesivas respetan el techo total fijado en el primer reconnect.
+    """
+    state_dir = tmp_path / "vfs_state"
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=state_dir,
+        connected_worker_exit_deadline_seconds=0.1,
+        fence_grace_seconds=5.0,
+        bridge_reconnect_replay_grace_seconds=0.3,
+    )
+    await broker.start()
+    bridge1 = await _BridgeFalso.conectar(broker)
+
+    submit_task = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+    await bridge1.recv()
+
+    worker = await _WorkerFalso.conectar(broker, job.job_id)
+    await worker.report_result(success=True, challenge=challenge)
+
+    # Desconectar y pasar deadline original
+    await bridge1.cerrar()
+    await asyncio.sleep(0.15)
+
+    # Primer reconnect fija el techo
+    bridge2 = await _BridgeFalso.conectar(broker)
+    await asyncio.sleep(0.05)
+
+    # Tormenta de desconexiones y reconexiones
+    await bridge2.cerrar()
+    await asyncio.sleep(0.05)
+
+    bridge3 = await _BridgeFalso.conectar(broker)
+    await asyncio.sleep(0.05)
+
+    await bridge3.cerrar()
+    await asyncio.sleep(0.05)
+
+    bridge4 = await _BridgeFalso.conectar(broker)
+
+    # A pesar de los repetidos reconnects, debe vencer por el techo original (~0.3s desde bridge2)
+    with pytest.raises(VfsTeardownDeadlineError):
+        await asyncio.wait_for(submit_task, timeout=2.0)
+
+    assert broker.quarantine_reason is not None
+
+    await worker.cerrar()
+    await bridge4.cerrar()
+    await broker.close()
+
+
+async def test_race_bridge_lost_between_snapshot_and_recheck_enters_bridge_loss_contract(
+    tmp_path: pathlib.Path,
+) -> None:
+    """PR-Agent Busy Loop: Comprueba que caer entre snapshot y recheck entra al contrato de bridge-loss.
+
+    Si bridge_connected era True pero cae antes del recheck interno, no retorna prematuramente
+    sin acción ni gira en busy loop: entra al bloque '# Bridge caído:' y espera.
+    """
+    state_dir = tmp_path / "vfs_state"
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=state_dir,
+        fence_grace_seconds=0.2,
+    )
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+
+    exit_future: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
+    broker._worker_exit["race-job"] = exit_future
+
+    # Emular que el bridge cae justo cuando _await_exit_or_bridge_loss evalúa
+    await bridge.cerrar()
+    await asyncio.sleep(0.02)
+    assert broker._bridge_lost.is_set()
+
+    # Si se invoca con remaining <= 0 pero con el bridge caído:
+    # No debe girar en busy loop ni levantar error de bridge conectado:
+    # debe esperar la gracia de pérdida de bridge (0.2s) y resolver exit_future como None (kill-on-close).
+    start_time = asyncio.get_running_loop().time()
+    await broker._await_exit_or_bridge_loss(exit_future, deadline=start_time - 1.0, job_id="race-job")
+    elapsed = asyncio.get_running_loop().time() - start_time
+
+    assert exit_future.done()
+    assert exit_future.result() is None, "Debe asumir worker muerto por kill-on-close sin entrar en busy loop"
+    assert elapsed >= 0.15, "Debió esperar la gracia de pérdida de bridge en vez de un retorno inmediato"
+
+    await broker.close()

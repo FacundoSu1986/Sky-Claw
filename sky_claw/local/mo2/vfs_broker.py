@@ -53,6 +53,9 @@ _BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
 # Deadline hard para la confirmación de worker_exit cuando el bridge MO2 permanece
 # conectado tras solicitar terminación.
 _CONNECTED_WORKER_EXIT_DEADLINE_SECONDS = 30.0
+# Ventana de gracia acotada para permitir el replay de worker_exit si el bridge MO2
+# reconecta tras vencer el deadline conectado original.
+_BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS = 2.0
 # La cola de eventos de lifecycle no tiene consumidor obligatorio; se acota para
 # que no crezca sin límite durante la vida del daemon (drop-oldest).
 _MAX_BUFFERED_EVENTS = 256
@@ -153,6 +156,7 @@ class VfsExecutionBroker:
         descriptor_hardener: Callable[[pathlib.Path], None] = restrict_to_owner,
         fence_grace_seconds: float = _BRIDGE_LOSS_FENCE_GRACE_SECONDS,
         connected_worker_exit_deadline_seconds: float = _CONNECTED_WORKER_EXIT_DEADLINE_SECONDS,
+        bridge_reconnect_replay_grace_seconds: float = _BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS,
     ) -> None:
         try:
             self._instance_id = assert_safe_component(instance_id, field="instance_id")
@@ -169,6 +173,10 @@ class VfsExecutionBroker:
         self._hardener = descriptor_hardener
         self._fence_grace = fence_grace_seconds
         self._connected_worker_exit_deadline = connected_worker_exit_deadline_seconds
+        self._bridge_reconnect_replay_grace = bridge_reconnect_replay_grace_seconds
+        self._bridge_connected_at: float | None = None
+        self._bridge_connect_count: int = 0
+        self._job_replay_deadlines: dict[str, float] = {}
         self._quarantine_reason: str | None = None
         self._quarantined_job_id: str | None = None
         self._quarantine_persistence_failed: bool = False
@@ -303,17 +311,30 @@ class VfsExecutionBroker:
             except Exception:
                 pass
 
+    def _crear_payload_de_identidad(self) -> bytes:
+        """Crea el payload JSON de identidad del proceso dueño del lock (pid, session_id, create_time).
+
+        create_time proporciona identidad estable contra el reciclado de PID del SO,
+        manejando psutil.Error de forma homogénea tanto en adquisición como en reconciliación.
+        """
+        try:
+            own_create_time: float | None = psutil.Process(os.getpid()).create_time()
+        except psutil.Error:
+            own_create_time = None
+        return json.dumps(
+            {
+                "pid": os.getpid(),
+                "session_id": self._session_id,
+                "create_time": own_create_time,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+
     def _reconciliar_lock_de_instancia_limpio(self) -> None:
         """Reconcilia el lock de instancia en disco eliminando marcas de cuarentena si el broker es el dueño."""
         if not self._owns_instance_file_lock or not self._instance_lock_path.exists():
             return
-        clean_payload = json.dumps(
-            {
-                "pid": os.getpid(),
-                "session_id": self._session_id,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+        clean_payload = self._crear_payload_de_identidad()
         self._instance_lock_path.write_bytes(clean_payload)
 
     def _liberar_cuarentena_por_worker_exit(self, job_id: str) -> None:
@@ -430,20 +451,7 @@ class VfsExecutionBroker:
                     self._instance_lock_path.unlink()
                 continue
             try:
-                # create_time del dueño: identidad estable contra reuso de PID del SO,
-                # verificada en _instance_lock_owner_alive (mismo criterio que vfs.py #302).
-                try:
-                    own_create_time: float | None = psutil.Process(os.getpid()).create_time()
-                except psutil.Error:
-                    own_create_time = None
-                payload = json.dumps(
-                    {
-                        "pid": os.getpid(),
-                        "session_id": self._session_id,
-                        "create_time": own_create_time,
-                    },
-                    sort_keys=True,
-                ).encode("utf-8")
+                payload = self._crear_payload_de_identidad()
                 os.write(descriptor, payload)
             finally:
                 os.close(descriptor)
@@ -643,6 +651,7 @@ class VfsExecutionBroker:
         self._pending_context.pop(job_id, None)
         self._worker_exit.pop(job_id, None)
         self._termination_tasks.pop(job_id, None)
+        self._job_replay_deadlines.pop(job_id, None)
         if session is not None:
             await session._detener_recolector()
             self._job_event_queues.pop(job_id, None)
@@ -924,6 +933,7 @@ class VfsExecutionBroker:
         self._pending_context.pop(job_id, None)
         self._worker_exit.pop(job_id, None)
         self._termination_tasks.pop(job_id, None)
+        self._job_replay_deadlines.pop(job_id, None)
         self._job_event_queues.pop(job_id, None)
         self._session_drivers.pop(job_id, None)
         await asyncio.to_thread((self._jobs_dir / f"{job_id}.json").unlink, missing_ok=True)
@@ -1050,11 +1060,26 @@ class VfsExecutionBroker:
                         resolved_job_id = j_id
                         break
             now = asyncio.get_running_loop().time()
-            remaining = deadline - now
             bridge_connected = self._bridge_ready.is_set() and not self._bridge_lost.is_set()
             if bridge_connected:
-                # Bridge vivo: acotado al deadline absoluto. Si expira sin worker_exit,
-                # la terminalidad es indeterminada (NUNCA set_result(None)).
+                # Bridge vivo: acotado al deadline absoluto o a la replay window
+                # acotada si el bridge reconectó tras vencer el deadline conectado original.
+                effective_deadline = deadline
+                key = resolved_job_id if resolved_job_id is not None else str(id(exit_future))
+                is_reconnect = (self._bridge_connect_count > 1) or (
+                    self._bridge_connected_at is not None and self._bridge_connected_at >= deadline
+                )
+                if (
+                    now >= deadline
+                    and is_reconnect
+                    and self._bridge_connected_at is not None
+                    and key not in self._job_replay_deadlines
+                ):
+                    self._job_replay_deadlines[key] = self._bridge_connected_at + self._bridge_reconnect_replay_grace
+                if key in self._job_replay_deadlines:
+                    effective_deadline = self._job_replay_deadlines[key]
+
+                remaining = effective_deadline - now
                 if remaining <= 0:
                     if self._bridge_ready.is_set() and not self._bridge_lost.is_set():
                         if not exit_future.done():
@@ -1216,6 +1241,8 @@ class VfsExecutionBroker:
                 self._secret,
             )
             if role == "bridge":
+                self._bridge_connect_count += 1
+                self._bridge_connected_at = asyncio.get_running_loop().time()
                 self._bridge_ready.set()
                 self._bridge_lost.clear()
                 while not self._closing:
