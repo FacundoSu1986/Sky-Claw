@@ -9,9 +9,10 @@
 >
 > **Última verificación:** 2026-10-08; ADR 0012 (Frozen Runtime) **enmendado en P0.4**.
 > **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
-> post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–32.
+> post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–33.
 > **Revisiones de enmienda** (rondas P0.4 sobre esa base): `f46853b5` (ronda 1, §29),
-> `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31) y la ronda 4 (§32). Ronda 1:
+> `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32) y la ronda 4.1
+> (§33). Ronda 1:
 > la Generation pasa a ser referencia no ejecutada y el Runtime Clone el Effective
 > Runtime. Ronda 2: el rollback tiene dos autoridades (Generation = versión,
 > `RuntimeSetupManifest` = setup operativo), SFR-16 exige el par Generation+Clone,
@@ -22,7 +23,9 @@
 > Ronda 4 (revisión externa de GitHub): exclusión física de la Managed Source,
 > rollback con intención durable previa al binding, aprobación ligada a **contenido**,
 > ciclo de vida de provisionamiento, target histórico de rollback y
-> `RUNTIME_CLONE_RECORD_INTEGRITY = OPEN`. Sigue en estado Propuesta.
+> `RUNTIME_CLONE_RECORD_INTEGRITY = OPEN`. Ronda 4.1: la transición se finaliza **sólo
+> después** del POST-verify (`FINALIZED ⇒ POST passed`) y la vía rápida del Clone
+> retenido exige Generation de origen `VALID`. Sigue en estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)

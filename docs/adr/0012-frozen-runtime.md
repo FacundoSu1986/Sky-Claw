@@ -360,8 +360,9 @@ Managed Source (estabilizada; provider: Steam)
     ↓   verify effective_path == C.root_path  y  linaje C → G
     ↓   persist active.desired_generation_id = G  y  active.desired_clone_id = C
     │   (+ previous_activation_target = saliente)   (R4-F10)
-    ↓   finalizar la transición pendiente   (R4-F3)
     ↓   POST verify de coherencia   (SFR-16)
+    │      si FALLA ⇒ la transición sigue PENDING (recuperable); NO se finaliza
+    ↓   finalizar la transición pendiente   (R4-F3; SÓLO tras POST OK)
   SUCCESS
 ```
 
@@ -498,8 +499,9 @@ FASE 2 — ACTIVACIÓN (muta el Effective Runtime; requiere aprobación)
   verify effective_path == C.root_path  y  linaje C → G
   persist active.desired_generation_id = G  y  active.desired_clone_id = C
                                # + previous_activation_target = saliente (R4-F10)
-  finalize PENDING PROMOTION   # cerrar la transición durable (R4-F3)
   POST verify de coherencia    # SFR-16
+                               # si FALLA ⇒ la transición sigue PENDING; NO se finaliza
+  finalize PENDING PROMOTION   # cerrar la transición durable SÓLO tras POST OK (R4-F3)
   SUCCESS
 ```
 
@@ -582,9 +584,20 @@ Reglas:
    pendiente) se persiste ANTES de mutar el Effective Runtime y el arranque
    reconcilia el estado intermedio (§26-15b); el orden ilustrativo de arriba se
    ajustará al implementar P4, no antes (P2 no finge resolverlo).
-7. **POST verify**: observar de nuevo el Effective Runtime y confirmar
-   `root_path == C.root_path` y coherencia con el par desired. Si no, se revierte
-   (F5/F9).
+7. **POST verify, y sólo entonces FINALIZE** (R4.1-F1). Se observa de nuevo el
+   Effective Runtime y se confirma `root_path == C.root_path` y la coherencia con el
+   par desired. La transición durable se **finaliza después** de que el POST-verify
+   pase; si falla, la transición **sigue `PENDING`** (recuperable) y **no** se
+   finaliza. Si no, se revierte (F5/F9). Invariante:
+
+   ```text
+   FINALIZED ⇒ POST verification already passed
+   ```
+
+   Cerrar la transición antes del POST-verify convierte una falla de verificación en
+   un estado que ya no es recuperable por el arranque —exactamente el split-brain
+   que la transición durable existe para evitar—. Este invariante aplica por igual a
+   **promoción y rollback** (§12).
 8. **Fail-closed sin observación**: hasta que P5 entregue la primitiva de
    observación del Effective Runtime (pregunta abierta Q12), la promoción **no
    puede declarar `SUCCESS`**. P4 no debe sustituir el paso de verificación de
@@ -667,34 +680,53 @@ Secuencia exacta (vía de integridad, la canónica):
 10. **Bind Effective Runtime → `C_prev`** (primitiva P5, misma que promotion).
 11. Verificar `effective_path == C_prev.root_path` y linaje
     `C_prev.source_generation_id == G_prev`.
-12. **Finalizar** el par `desired_generation_id = G_prev` **y**
+12. **Persistir** el par `desired_generation_id = G_prev` **y**
     `desired_clone_id = C_prev` (atómico, `active.json` v2; nombres literales,
-    §31.1) y **cerrar** la transición pendiente.
-13. POST verify de coherencia desired/effective (SFR-16) ⇒ `SUCCESS`.
+    §31.1) con el `previous_activation_target` saliente (R4-F10). **La transición
+    sigue `PENDING`**: no se cierra todavía.
+13. **POST verify** de coherencia desired/effective (SFR-16). Si **pasa**,
+    **finalizar** la transición pendiente y devolver `SUCCESS`. Si **falla**, la
+    transición **sigue `PENDING`** (recuperable) — **no** se finaliza.
 
-**El ordenamiento es normativo (R4-F3).** El binding (paso 10) **nunca** ocurre
-antes de persistir la intención durable (paso 9): un proceso que muera entre ambos
-dejaría `active.json` describiendo el runtime viejo sin transición pendiente, es
-decir el split-brain desired/effective que §11 exige registrar antes de mutar.
+**El ordenamiento es normativo (R4-F3; R4.1-F1).** El binding (paso 10) **nunca**
+ocurre antes de persistir la intención durable (paso 9): un proceso que muera entre
+ambos dejaría `active.json` describiendo el runtime viejo sin transición pendiente,
+es decir el split-brain desired/effective que §11 exige registrar antes de mutar. Y
+la transición **nunca se finaliza antes del POST-verify** (paso 13): la invariante
+`FINALIZED ⇒ POST verification already passed` vale igual para promoción y rollback.
 Promoción y rollback usan **el mismo modelo de transición durable** —no hay una
-ruta "rápida" que saltee la intención previa—; el formato concreto del registro de
-transición es de P4 (`P4_DURABLE_TRANSITION`, §29.8), pero el **ordering** queda
-congelado acá.
+ruta "rápida" que saltee la intención previa **ni** el POST-verify—; el formato
+concreto del registro de transición es de P4 (`P4_DURABLE_TRANSITION`, §29.8), pero
+el **ordering** queda congelado acá.
 
 **Vía rápida opcional (no autoridad).** Reactivar un Runtime Clone anterior
 **retenido** `C_prev_old` —con el setup del usuario (SKSE, ENB) intacto— es más
-barato que re-clonar, y es legítimo **sólo** si: (a) pasa el gate de §29.3 con la
-evidencia crítica **registrada en la metadata de su Generation de origen** (no con
-su propia medición); (b) su Generation de origen sigue `VALID`, de modo que la
-reparación por re-clonado siga disponible; y (c) el setup **observado** del Clone
-coincide con el manifest declarado. **Si el setup difiere, la activación falla
-cerrado** (R4-F4): la diferencia se **reporta** como diagnóstico, pero un Clone
-retenido con setup incompatible o incompleto **no se activa** hasta ser
-reparado/re-provisionado y **re-verificado**. "Activar igual y avisar" está
-prohibido: contradiría SFR-22 y el gate de §29.3. Si (b) no se cumple, la
-activación es posible pero debe **declarar** que la ruta de reparación no está
-disponible: nunca se reporta como equivalente a la vía canónica. **Un Clone
-retenido no reemplaza a la Generation como autoridad recuperable.**
+barato que re-clonar, y es legítimo **sólo** si se cumplen **las tres** condiciones,
+sin excepción: (a) pasa el gate de §29.3 con la evidencia crítica **registrada en la
+metadata de su Generation de origen** (no con su propia medición); (b) su Generation
+de origen sigue `VALID`; y (c) el setup **observado** del Clone coincide con el
+manifest declarado.
+
+Las tres son **condiciones de autorización, no de diagnóstico** (R4.1-F2):
+
+```text
+(a) NO se cumple  → retained Clone activation = REJECTED
+(b) NO se cumple  → retained Clone activation = REJECTED
+(c) NO se cumple  → retained Clone activation = REJECTED
+```
+
+- **Si el setup difiere (c)**, la activación falla cerrado (R4-F4): la diferencia se
+  **reporta** como diagnóstico, pero un Clone retenido con setup incompatible o
+  incompleto **no se activa** hasta ser reparado/re-provisionado y **re-verificado**.
+- **Si la Generation de origen no está `VALID` (b)**, la activación del Clone
+  retenido queda **RECHAZADA** —no "posible con advertencia"—: la vía rápida existe
+  *porque* la reparación por re-clonado sigue disponible, y sin una Generation
+  `VALID` esa ruta no existe. Que el Clone exista, que SKSE parezca intacto o que el
+  setup se vea correcto **no** autoriza: son indicios de diagnóstico.
+
+"Activar igual y avisar" está prohibido en los tres casos: contradiría SFR-22, SFR-17
+y el gate de §29.3. **Un Clone retenido no reemplaza a la Generation como autoridad
+recuperable**, y no se admite cuando esa autoridad no está `VALID`.
 
 No se reconstruyen archivos destruidos "a mano". El rollback **no depende de la
 Managed Source**: se materializa desde una Generation retenida y re-verificada,
@@ -960,7 +992,8 @@ alcanza, porque una Generation admite **varios** Clones (`G1 → C1, C2, C3`) y
   runtime anterior no es derivable de `G_prev`: sin registrarla, el rollback
   tendría que **adivinar** qué setup correspondía al runtime anterior. Por eso el
   estado persiste `previous_activation_target` (el target **saliente**), escrito
-  **transaccionalmente** al finalizar una transición (§12 paso 12). Regla dura:
+  **transaccionalmente** al persistir el par desired (§12 paso 12), antes del
+  POST-verify y del cierre de la transición. Regla dura:
   ```text
   rollback target must never be guessed
   previous operational setup identity must be durable
@@ -1704,7 +1737,7 @@ no inferido; v1 sigue leyéndose fail-closed.
 |---|---|---|
 | `P4_CROSS_PROCESS_LOCK` (ampliado) | P4 | Una clave **por `FrozenRuntimeRoot`**, no por destino; base del lockfile derivada del root (p. ej. dentro de `state/`), no de `tempfile.gettempdir()`. `destination_lock` de RV-3 **no sirve** (E7). Los instaladores toman un lock por `game_dir`, cuya clave **cambia** al repuntar la ruta: la promoción debe tomar ambas o usar una clave lógica. Participantes congelados por introspección/AST. |
 | `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un estado explícito (`INVALID`/`CANCELLED`), nunca en un `BUILDING` huérfano. **No se refactoriza a asyncio en P0.4.** |
-| `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding, **y también el rollback** (R4-F3): promoción y rollback usan el **mismo modelo**. El **ordering es normativo**: la transición `PENDING` se persiste **antes** de mutar el Effective Runtime y se finaliza tras el POST-verify (§12). Formato del registro = P4; ordering = congelado. |
+| `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding, **y también el rollback** (R4-F3): promoción y rollback usan el **mismo modelo**. El **ordering es normativo**: (i) la transición `PENDING` se persiste **antes** de mutar el Effective Runtime; y (ii) se **finaliza SÓLO después** de que el POST-verify pase (R4.1-F1) — invariante `FINALIZED ⇒ POST verification already passed`; si el POST falla, la transición **sigue `PENDING`** (recuperable). Formato del registro = P4; ordering = congelado. |
 | `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`); el **mecanismo** no existe. **El scope liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, ligadura con digest/identidad del propietario, single-use, expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño. |
 | `P4_RUNTIME_SETUP_PROVISIONING` (nuevo) | P4 | Implementar SFR-22: registrar el `RuntimeSetupManifest` por versión, provisionar el Clone de forma reproducible (SKSE del build exacto, root files, componentes) y verificar sus hashes declarados. Sin esto el rollback no reconstruye un runtime **listo para activación** (§31.2). Incluye declarar `assumptions` para lo no clasificado (Creation Club, Q22). |
 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` (nuevo) | P4 / P6 / P7 | R3-B1 (§31.5): adjudicar qué estrategia (A/B/C/D) garantiza que los artefactos declarados por el manifest sigan siendo recuperables, y **demostrar por Generation retenida** qué queda retenido o reproducible. Sin esta adjudicación **no se puede prometer rollback operativo**: el manifest declara procedencia, no disponibilidad futura. `RUNTIME_SETUP_ARTIFACT_AVAILABILITY = OPEN`. |
@@ -1784,6 +1817,8 @@ CLONE_INSIDE_MANAGED_SOURCE=NOT_ADMITTED       # ronda 4 (R4-F6)
 RUNTIME_CLONE_RECORD_INTEGRITY=OPEN            # ronda 4 (R4-F7)
 CLONE_ACTIVATION_REQUIRES_PROVISIONED=YES      # ronda 4 (R4-F9)
 ROLLBACK_TARGET=NEVER_GUESSED                  # ronda 4 (R4-F10)
+FINALIZE_ONLY_AFTER_POST_VERIFY=YES            # ronda 4.1 (R4.1-F1)
+RETAINED_CLONE_REQUIRES_VALID_GENERATION=YES   # ronda 4.1 (R4.1-F2)
 ```
 
 - **Disco:** ≈2 árboles completos por versión retenida (referencia + copia operativa)
@@ -2178,6 +2213,7 @@ C.lifecycle                  == PROVISIONED
 C passes activation gate
 approved artifact set        == reverified artifact set
 approval-time evidence       == pre-bind freshly recomputed evidence   (R4-F5)
+transition FINALIZED         ⇒ POST verification already passed          (R4.1-F1)
 ```
 
 > Nota de la ronda 3 (R3-F1): la versión anterior de este bloque escribía
@@ -2340,8 +2376,10 @@ reverify exact approved evidence
 persist durable PENDING ROLLBACK   # antes de mutar (R4-F3)
 bind Effective Runtime → C_prev
 observe/verify effective + linaje
-finalize desired pair + previous_activation_target
+persist desired pair + previous_activation_target   # transición aún PENDING
 POST verify coherence
+    if FAIL → transition stays PENDING (recoverable); DO NOT finalize
+finalize transition   # sólo tras POST OK (R4.1-F1)
 SUCCESS
 ```
 
@@ -2485,6 +2523,12 @@ R4_F10_ROLLBACK_TARGET_HISTORY      = CONFIRMED / CLOSED
 R4_F11_PR_STATUS_TEXT               = CLOSED
 ```
 
+> **Supersesión parcial (ronda 4.1, §33).** Los flujos canónicos ilustrados en §32.3
+> y §32.4 de esta sección finalizaban la transición **antes** del POST-verify; la
+> ronda 4.1 lo corrigió (`FINALIZED ⇒ POST verification already passed`). Los
+> veredictos de la tabla de arriba siguen vigentes; sólo cambió el **ordering** de los
+> flujos. Ver §33.2.
+
 ### 32.2 La distinción crítica (autoridades separadas)
 
 ```text
@@ -2521,8 +2565,10 @@ Managed Source
 → persist durable PENDING PROMOTION
 → bind Effective Runtime → C
 → observe Effective Runtime
-→ persist/finalize desired Generation+Clone
+→ persist desired Generation+Clone + previous_activation_target
 → POST verify coherence
+→     if FAIL → transition stays PENDING (recoverable); DO NOT finalize
+→ finalize transition        # sólo tras POST OK (R4.1-F1)
 → SUCCESS
 ```
 
@@ -2546,13 +2592,17 @@ reverify exact approved evidence
 persist durable PENDING ROLLBACK
 bind Effective Runtime
 observe/verify Effective Runtime
-finalize desired Generation+Clone + previous_activation_target
+persist desired Generation+Clone + previous_activation_target   # aún PENDING
 POST verify coherence
+    if FAIL → transition stays PENDING (recoverable); DO NOT finalize
+finalize transition        # sólo tras POST OK (R4.1-F1)
 SUCCESS
 ```
 
-Un Clone retenido con setup que no coincide: **NO ACTIVATION** salvo reparación /
-re-provisionamiento y re-verificación previas (R4-F4).
+Un Clone retenido cuya **Generation de origen no esté `VALID`** queda **RECHAZADO**
+para activación (R4.1-F2), igual que uno con setup que no coincide (R4-F4): en ambos
+casos **NO ACTIVATION**, y los indicios favorables (Clone existente, SKSE intacto,
+setup aparentemente correcto) sirven para **diagnóstico**, no para autorización.
 
 ### 32.5 Unidad de binding del game path
 
@@ -2616,4 +2666,76 @@ producto. La conclusión autoritativa del check-run es `cancelled` (no `fail`). 
 muestra que el modelo primario devolvió YAML inparseable, el fallback free colgó, y el
 job murió por su propio `timeout-minutes: 15`. Clasificación:
 `QODO_REGRESSION_CANCELLED = ACTION_REQUIRED` (re-ejecutar), **no** `BENIGN_SUPERSEDED`
-(no hubo run más nuevo que lo reemplace) y **no** un defecto del ADR.
+(no hubo run más nuevo que lo reemplace) y **no** un defecto del ADR. El re-run del
+HEAD `16619d3d` terminó `pass` en 1m6s, confirmando el flake transitorio.
+
+---
+
+## 33. Enmienda P0.4 — ronda 4.1: dos contratos de secuencia y autorización (2026-10-08)
+
+Sobre `16619d3d`, CodeRabbit publicó **2 findings nuevos** en comentarios *outside
+diff* (no como threads inline). Por eso `REVIEW_THREADS_REMAINING = 0` **no** era
+suficiente como gate: los findings fuera de diff viven en el cuerpo de la review, no
+en `reviewThreads`. Ambos verificados contra el texto y **CONFIRMED**.
+
+### 33.1 Adjudicación
+
+| Finding | Fuente | Sev. | Adjudicación | Resolución |
+|---|---|---|---|---|
+| **R4.1-F1** La transición se finaliza **antes** del POST-verify | CodeRabbit | Major | **CONFIRMED** | Promoción (§7, §11) y rollback (§12, §31.4, §32.3/§32.4) cerraban la transición **antes** del POST-verify. Reordenados los **6** flujos: `PENDING → bind → persist/observar → POST VERIFY → (si pasa) FINALIZE → SUCCESS`. Invariante nuevo: `FINALIZED ⇒ POST verification already passed`. Si el POST falla, la transición **sigue `PENDING`** (recuperable). |
+| **R4.1-F2** La vía rápida admite activación sin Generation `VALID` | CodeRabbit | Major | **CONFIRMED** | La vía rápida decía "si (b) no se cumple, la activación es posible pero debe declararlo". Contradice el gate de §29.3 y SFR-17. Ahora (a), (b) y (c) son **condiciones de autorización, no de diagnóstico**: cualquiera que falte ⇒ `retained Clone activation = REJECTED`. |
+
+```text
+R4_1_F1_FINALIZE_AFTER_POST_VERIFY   = CLOSED
+R4_1_F2_FAST_PATH_REQUIRES_VALID     = CLOSED
+```
+
+### 33.2 Por qué R4.1-F1 importa
+
+Cerrar la transición antes del POST-verify convierte una falla de verificación en un
+estado **no recuperable por el arranque**: el registro dice "terminado" cuando el
+desenlace real todavía no se confirmó. Es exactamente el split-brain que la transición
+durable existe para evitar, reintroducido por el orden de dos pasos.
+
+```text
+PENDING → bind → persist/observe result → POST VERIFY
+                                              │
+                              ┌───────────────┴───────────────┐
+                          PASS│                               │FAIL
+                              ▼                               ▼
+                    FINALIZE → SUCCESS            queda PENDING (recuperable)
+```
+
+La §29.8 ya declaraba "se finaliza tras el POST-verify" para `P4_DURABLE_TRANSITION`;
+los flujos ilustrativos lo contradecían. Ahora coinciden, y el invariante queda
+explícito en §11 regla 7 y en la coherencia de §31.1.
+
+### 33.3 Por qué R4.1-F2 importa
+
+La vía rápida existe **porque** la reparación por re-clonado sigue disponible —y esa
+ruta requiere una Generation de origen `VALID`. Sin ella, activar el Clone retenido
+deja al usuario sin fuente de recuperación si el Clone resulta defectuoso.
+
+```text
+source Generation != VALID  →  retained Clone activation = REJECTED
+```
+
+Los indicios favorables (el Clone existe, SKSE parece intacto, el setup se ve
+correcto) sirven para **diagnóstico**, nunca para autorización. Es la misma clase de
+error que R4-F4: tolerar una condición de autorización como si fuera una advertencia.
+
+### 33.4 Estado
+
+```text
+R4_1_F1_FINALIZE_AFTER_POST_VERIFY = CLOSED
+R4_1_F2_FAST_PATH_REQUIRES_VALID   = CLOSED
+
+P0_4_CORE_ARCHITECTURE = SOUND   (con R3_B1 y R4-F7 abiertos y declarados)
+P4_READY_TO_DESIGN     = YES
+P4_READY_TO_IMPLEMENT  = NO
+PR_READY_TO_MERGE      = NO
+```
+
+**Alcance de la ronda 4.1:** docs-only. `PRODUCT_CODE_CHANGED = NO`. Sólo se
+corrigieron los dos contratos de secuencia/autorización; no se implementó nada de
+P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
