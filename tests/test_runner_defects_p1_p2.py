@@ -2044,8 +2044,11 @@ async def test_r3_integracion_brokered_teardown_deadline_con_rollback_veto(
         )
         runner._readiness = runner_mod.ReadinessMode.DISABLED_FOR_TEST
 
+        spawn_listo = asyncio.Event()
+
         class _Strat:
             async def spawn(self, **kwargs):
+                spawn_listo.set()
                 return proc
 
         runner._spawn_strategy = _Strat()
@@ -2067,7 +2070,18 @@ async def test_r3_integracion_brokered_teardown_deadline_con_rollback_veto(
                     (target / "mutated.txt").write_text("mutated", encoding="utf-8")
 
                     task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
-                    await asyncio.sleep(0.05)
+
+                    # Checkpoint causal: esperar que el spawn haya ocurrido y que
+                    # el heartbeat esté activo (se crea inmediatamente antes del `try`
+                    # del proceso, sin ningún `await` intermedio). Esto garantiza que
+                    # la cancelación impacte dentro del bloque `try` protegido.
+                    await asyncio.wait_for(spawn_listo.wait(), timeout=5.0)
+
+                    async def _hasta_dentro_del_try() -> None:
+                        while not _tareas_del_proceso("_heartbeat_watcher"):
+                            await asyncio.sleep(0)
+
+                    await asyncio.wait_for(_hasta_dentro_del_try(), timeout=5.0)
                     task.cancel()
                     await task
             except asyncio.CancelledError as exc:
@@ -2077,6 +2091,7 @@ async def test_r3_integracion_brokered_teardown_deadline_con_rollback_veto(
         assert isinstance(caught_exc.__cause__, VfsTeardownDeadlineError), (
             f"la causa debe ser VfsTeardownDeadlineError; observado = {caught_exc.__cause__!r}"
         )
+        assert sesion.terminality_unknown, "la sesión brokered debe reportar terminalidad desconocida"
 
         # Invariante 1: close_job corrió exactamente una vez
         assert registro["close_job"] == 1, registro
