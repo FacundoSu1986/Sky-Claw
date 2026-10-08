@@ -1994,3 +1994,111 @@ def _es_cancelled(expr: ast.AST) -> bool:
         and isinstance(expr.value, ast.Name)
         and expr.value.id == "asyncio"
     )
+
+
+@pytest.mark.asyncio
+async def test_r3_integracion_brokered_teardown_deadline_con_rollback_veto(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integración R3 + #695: proceso brokered con teardown deadline vencido veta rollback.
+
+    Verifica la interacción completa entre la unidad de limpieza R3 de DynDOLODRunner
+    y los contratos brokered de #695:
+    1. Cancelación durante la ejecución de un proceso brokered.
+    2. kill_and_reap delega en proc.terminate() -> session.cancel().
+    3. El broker acota la espera con el bridge conectado (deadline).
+    4. Al vencer el deadline sin worker_exit, se levanta VfsTeardownDeadlineError
+       marcado con terminality_unknown.
+    5. _limpiar_recursos_del_proceso registra la falla exactamente una vez (log-once)
+       y limpia los helpers.
+    6. _execute_process propaga CancelledError encadenando VfsTeardownDeadlineError.
+    7. close_job se invoca exactamente una vez en finally.
+    8. DirectoryRollback evalúa el veto vía exception_forbids_rollback y VETA la
+       restauración, preservando el estado mutado y reteniendo el backup en disco.
+    """
+    from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODProcess
+    from sky_claw.local.mo2.vfs_broker import VfsTeardownDeadlineError
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+    from tests.test_vfs_teardown_deadline import _abrir_sesion, _BridgeFalso, _entorno, _kw_broker
+
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=8888)
+        proc = BrokeredDynDOLODProcess(sesion)
+
+        target = tmp_path / "target_dir"
+        target.mkdir()
+        (target / "orig.txt").write_text("original", encoding="utf-8")
+
+        runner = runner_mod.DynDOLODRunner.__new__(runner_mod.DynDOLODRunner)
+        runner._config = SimpleNamespace(
+            timeout_seconds=30.0,
+            heartbeat_interval=60.0,
+            fence_ownership=None,
+            output_layout=None,
+            external_work_root=None,
+        )
+        runner._readiness = runner_mod.ReadinessMode.DISABLED_FOR_TEST
+
+        class _Strat:
+            async def spawn(self, **kwargs):
+                return proc
+
+        runner._spawn_strategy = _Strat()
+        runner._exigir_root_born_empty = lambda _tool: None
+
+        orden: list[str] = []
+        registro = _registro_de_cierre()
+
+        rollback = DirectoryRollback(target, enabled=True)
+        caught_exc: BaseException | None = None
+
+        with (
+            _observar_cierre_de_job(monkeypatch, orden, registro),
+            _capturar_registros() as capturados,
+        ):
+            try:
+                async with rollback:
+                    target.mkdir()
+                    (target / "mutated.txt").write_text("mutated", encoding="utf-8")
+
+                    task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+                    await asyncio.sleep(0.05)
+                    task.cancel()
+                    await task
+            except asyncio.CancelledError as exc:
+                caught_exc = exc
+
+        assert caught_exc is not None, "la cancelación del caller debe propagarse"
+        assert isinstance(caught_exc.__cause__, VfsTeardownDeadlineError), (
+            f"la causa debe ser VfsTeardownDeadlineError; observado = {caught_exc.__cause__!r}"
+        )
+
+        # Invariante 1: close_job corrió exactamente una vez
+        assert registro["close_job"] == 1, registro
+        assert registro["job"] is None  # brokered assign_job devuelve None
+
+        # Invariante 2: log-once de la falla de limpieza
+        registros_falla = [
+            r for r in capturados.registros if getattr(r, "operation_type", None) == "dyndolod_cleanup_falla"
+        ]
+        assert len(registros_falla) == 1, (
+            f"la falla de teardown deadline debe registrarse exactamente UNA vez; hubo {len(registros_falla)}"
+        )
+
+        # Invariante 3: rollback vetado por terminalidad desconocida
+        assert not rollback.rollback_completed, "el rollback debió ser vetado"
+        assert (target / "mutated.txt").exists(), "el target mutado debe conservarse al vetarse el restore"
+        assert not (target / "orig.txt").exists(), "el target previo no debe haber sido restaurado"
+        assert rollback._backup is not None and (rollback._backup / "orig.txt").exists(), (
+            "el backup previo debe quedar retenido en disco para recuperación manual"
+        )
+    finally:
+        if worker is not None:
+            await worker.cerrar()
+        await bridge.cerrar()
+        await broker.close()
