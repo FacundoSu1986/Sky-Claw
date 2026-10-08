@@ -48,6 +48,7 @@ import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -401,8 +402,14 @@ def _rangos_en_cuarentena() -> dict[str, tuple[tuple[int, int], ...]]:
 
 
 def _huella(linea: str) -> str:
-    """Línea normalizada (espacios y mayúsculas) para comparar copias literales."""
-    return " ".join(linea.lstrip(chr(0xFEFF)).split()).casefold()
+    """Línea normalizada para comparar copias literales: sin BOM, en NFC, con espacios colapsados y en minúsculas.
+
+    La forma Unicode importa: ``é`` precompuesta (NFC) y ``e`` + acento combinado (NFD) se ven igual, pero
+    son otra cadena, así que una copia en NFD esquivaba la huella (y los trozos que salen de ella). NFC va
+    antes de ``casefold`` para que ambas formas lleguen a la misma cadena. Solo cubre la equivalencia
+    canónica: homoglifos y formas de compatibilidad (ancho completo, ligaduras) no se normalizan.
+    """
+    return " ".join(unicodedata.normalize("NFC", linea.lstrip(chr(0xFEFF))).split()).casefold()
 
 
 def _huellas_de_seccion(lineas: Iterable[str]) -> dict[str, int]:
@@ -819,7 +826,11 @@ def test_las_secciones_en_cuarentena_estan_senaladas() -> None:
 
 def test_la_politica_vigente_esta_en_la_raiz() -> None:
     politica = _texto_requerido("CLEAN_ROOM.md")
-    assert "**Estado:** VIGENTE" in politica
+    # Coherente con el ADR 0013: aprobada ahora, vigente en `main` solo al mergear (no antes).
+    assert "**Estado:** APROBADA por el operador" in politica
+    assert "entra en vigor al mergear" in politica
+    assert "entra en vigor al mergear" in _texto_requerido("docs/adr/0013-clean-room-native-parallax.md")
+    assert "VIGENTE desde" not in politica
     encabezados = [linea for linea in politica.splitlines() if linea.startswith("## ")]
     assert encabezados == ENCABEZADOS_DE_LA_POLITICA
 
@@ -1097,3 +1108,69 @@ def test_la_vista_de_barrido_decodifica_cada_bom_unicode_con_fidelidad(codec: st
     """Fija el orden UTF-32 LE, UTF-32 BE, UTF-16 LE, UTF-16 BE: el BOM de 4 bytes se mira antes que el de 2."""
     texto = "acción Ω 😀 PxR 123"
     assert _vista_de_barrido(_con_bom(texto, codec)) == texto
+
+
+# --------------------------------------------------------------------------- forma Unicode de las huellas
+
+# Sintético inocuo (no es material en cuarentena): acentos y eñes, más largo que 2·LARGO_DEL_TROZO−1.
+SINTETICO_ACENTUADO = (
+    "Acción corregida: éste añadió información útil sobre la canción del pingüino ñandú, "
+    "además de áreas, índices, óptimos y búhos"
+)
+BOM = chr(0xFEFF)
+
+
+def _nfd(texto: str) -> str:
+    return unicodedata.normalize("NFD", texto)
+
+
+CASOS_DE_COPIA_UNICODE = {
+    "nfd": lambda t: _nfd(t),
+    "mayusculas_y_nfd": lambda t: _nfd(t.upper()),
+    "minusculas_y_nfd": lambda t: _nfd(t.lower()),
+    "espacios_y_nfd": lambda t: _nfd(t).replace(" ", " \t  "),
+    "bom_inicial_y_nfd": lambda t: BOM + _nfd(t),
+    "todo_junto": lambda t: BOM + _nfd(t.upper()).replace(" ", "\t "),
+}
+
+
+def test_la_huella_conserva_el_ascii_y_normaliza_espacios_y_mayusculas() -> None:
+    assert _huella("  Texto\tASCII   Mixto \r\n") == "texto ascii mixto"
+    assert _huella(BOM + "Texto ASCII") == "texto ascii"
+    assert _huella("") == ""
+
+
+@pytest.mark.parametrize("construir", CASOS_DE_COPIA_UNICODE.values(), ids=CASOS_DE_COPIA_UNICODE)
+def test_la_huella_es_invariante_a_la_forma_unicode(construir: Any) -> None:
+    """Una copia visualmente equivalente (NFD, mayúsculas, espacios, BOM) tiene la MISMA huella que el original."""
+    copia = construir(SINTETICO_ACENTUADO)
+    assert copia != SINTETICO_ACENTUADO, "el caso no cambia nada: no prueba la propiedad"
+    assert _huella(copia) == _huella(SINTETICO_ACENTUADO)
+    assert _huella(_nfd(SINTETICO_ACENTUADO)) == _huella(unicodedata.normalize("NFC", SINTETICO_ACENTUADO))
+
+
+@pytest.mark.parametrize("construir", CASOS_DE_COPIA_UNICODE.values(), ids=CASOS_DE_COPIA_UNICODE)
+def test_una_copia_nfd_de_una_linea_completa_se_detecta(construir: Any) -> None:
+    origen = {huella: "origen línea 1" for huella in _huellas_de_seccion([SINTETICO_ACENTUADO])}
+    assert origen, "la línea sintética debe ser una huella válida (largo mínimo)"
+    textos = [("copia.md", f"intro\n{construir(SINTETICO_ACENTUADO)}\nfin\n"), ("limpio.md", "nada que ver\n")]
+    assert _huellas_copiadas(textos, origen, {}) == {"copia.md": ["origen línea 1"]}
+
+
+@pytest.mark.parametrize("construir", CASOS_DE_COPIA_UNICODE.values(), ids=CASOS_DE_COPIA_UNICODE)
+def test_una_copia_nfd_parcial_se_detecta_por_trozos(construir: Any) -> None:
+    huella = _huella(SINTETICO_ACENTUADO)
+    parcial = huella[9:111]  # más de 2·LARGO_DEL_TROZO−1 caracteres, desde una posición no alineada
+    assert len(parcial) >= 2 * LARGO_DEL_TROZO - 1
+    origen = {trozo: "origen línea 1" for trozo in _trozos_de(huella)}
+    textos = [("nuevo.md", f"intro\n{construir(parcial)}\nfin\n"), ("limpio.md", "nada que ver\n")]
+    assert _huellas_copiadas(textos, origen, {}) == {"nuevo.md": ["origen línea 1"]}
+
+
+def test_la_cuarentena_sigue_permitiendo_la_forma_original_dentro_de_su_rango() -> None:
+    origen = {huella: "origen línea 2" for huella in _huellas_de_seccion([SINTETICO_ACENTUADO])}
+    textos = [
+        ("origen.md", f"intro\n{unicodedata.normalize('NFC', SINTETICO_ACENTUADO)}\nfin\n"),
+        ("copia_nfd.md", f"intro\n{_nfd(SINTETICO_ACENTUADO)}\nfin\n"),
+    ]
+    assert _huellas_copiadas(textos, origen, {"origen.md": ((1, 2),)}) == {"copia_nfd.md": ["origen línea 2"]}

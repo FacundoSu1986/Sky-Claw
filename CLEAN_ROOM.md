@@ -1,6 +1,6 @@
 # CLEAN_ROOM.md — Política clean-room del Native Parallax Generator
 
-> **Estado:** VIGENTE desde 2026-10-07 (decisión del operador; [ADR 0013](docs/adr/0013-clean-room-native-parallax.md)).
+> **Estado:** APROBADA por el operador el 2026-10-07; entra en vigor al mergear el [ADR 0013](docs/adr/0013-clean-room-native-parallax.md) a `main`.
 > Antes era la propuesta NP-R0 de `docs/design/research/2026-09-21-native-parallax-battle/`.
 >
 > **Alcance:** toda ruta trackeada cuyo path contenga `native-parallax` o `native_parallax` (el paquete
