@@ -7,12 +7,13 @@
 >
 > **Fuentes canónicas:** ADR 0001–0013 en este directorio.
 >
-> **Última verificación:** 2026-10-08; ADR 0012 (Frozen Runtime) **enmendado en P0.4**.
+> **Última verificación:** 2026-10-08; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
+> con el diseño de P4 congelado (P4-D0)**.
 > **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
-> post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–33.
+> post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–34.
 > **Revisiones de enmienda** (rondas P0.4 sobre esa base): `f46853b5` (ronda 1, §29),
-> `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32) y la ronda 4.1
-> (§33). Ronda 1:
+> `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32), la ronda 4.1
+> (§33) y **P4-D0** (§34, sobre `af8e726c`). Ronda 1:
 > la Generation pasa a ser referencia no ejecutada y el Runtime Clone el Effective
 > Runtime. Ronda 2: el rollback tiene dos autoridades (Generation = versión,
 > `RuntimeSetupManifest` = setup operativo), SFR-16 exige el par Generation+Clone,
@@ -25,7 +26,14 @@
 > ciclo de vida de provisionamiento, target histórico de rollback y
 > `RUNTIME_CLONE_RECORD_INTEGRITY = OPEN`. Ronda 4.1: la transición se finaliza **sólo
 > después** del POST-verify (`FINALIZED ⇒ POST passed`) y la vía rápida del Clone
-> retenido exige Generation de origen `VALID`. Sigue en estado Propuesta.
+> retenido exige Generation de origen `VALID`. **P4-D0 (§34):** congela los contratos de
+> transición y autoridad de P4 (lock cross-process root-keyed, transición durable,
+> reconciliación de arranque, `ApprovalScope` con evidencia de contenido, reverify
+> TOCTOU, integridad de metadata/manifiesto/registro, expectativas críticas
+> obligatorias, inyección de enlaces post-activación y gate P4↔P5 `UNKNOWN !=
+> COMPATIBLE`), con matriz de crashes C0–C7 y revisión adversarial de 12 preguntas.
+> `P4_DESIGN_FROZEN = YES`, `P4_IMPLEMENTED = NO`, `P5_IMPLEMENTED = NO`. Sigue en
+> estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)

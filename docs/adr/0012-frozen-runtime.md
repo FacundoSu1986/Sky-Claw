@@ -2740,3 +2740,523 @@ PR_READY_TO_MERGE      = NO
 **Alcance de la ronda 4.1:** docs-only. `PRODUCT_CODE_CHANGED = NO`. Sólo se
 corrigieron los dos contratos de secuencia/autorización; no se implementó nada de
 P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
+
+---
+
+## 34. P4-D0 — congelamiento de contratos de transición y autoridad (2026-10-08)
+
+Esta sección **cierra el diseño contractual** de P4. **No implementa P4.** Su única
+promesa es que, si los contratos de acá se respetan, una implementación de P4 puede
+ser *fail-closed por construcción*. `P4_IMPLEMENTED = NO`, `P5_IMPLEMENTED = NO`.
+
+**Baseline congelado.** `origin/main = af8e726c7195b35c38cd10cdfdef8d3fbfb6803c`
+(merge de #701), que es el main post-P3 (#698, `5039997a`) más la tanda de
+endurecimiento de MO2/VFS. `HEAD == origin/main`, `WORKTREE_CLEAN = YES`.
+Rama `design/frozen-runtime-p4-contracts` (nombre **plano**; en esta máquina las
+ramas anidadas pueden perder la ref — ver `MEMORY.md`).
+
+### 34.1 Adjudicación del tracker #672
+
+El cuerpo de #672 arrastra texto previo a P0.4. Se contrastó **claim por claim**
+contra el ADR vigente (§§29–33) y contra el código actual de `main`.
+
+| TRACKER CLAIM | CURRENT ADR | CURRENT CODE | VERDICT | ACTION |
+|---|---|---|---|---|
+| "Frozen Runtime = runtime real del usuario" | §7/§28: la Effective Runtime es la que consume MO2/SKSE; la Generation **no se ejecuta** | `frozen_runtime/` no contiene ningún ejecutor; `runtime_vault/clone.py` produce materialización | **CURRENT (con matiz)** | Conservar. El matiz ("quién la consume") es de P5 |
+| "Sky-Claw observa + valida + crea candidate + promueve sólo con autorización" | §7, SFR-06/08 | `candidates.py` existe; promoción **no** | **CURRENT** | Conservar |
+| "P3 = CLOSED, PR #682 MERGED" | §29–31 no contradicen | `copying.py`, `candidates.py` presentes en `main` | **CURRENT** | Conservar |
+| "P4 = READY_TO_START, no iniciado" | §33.4 `P4_READY_TO_DESIGN = YES` | `runtime_setup`/`RuntimeCloneRecord` **ausentes** del código | **CURRENT** | Refinar a `P4_READY_TO_DESIGN = YES`, `P4_READY_TO_IMPLEMENT = NO` |
+| `P4_APPROVAL_SCOPE` = "aprobación ligada al Candidate **exacto**" | §31.4: operation-aware, ligada a **contenido**, no sólo IDs | no implementado | **SUPERSEDED** | Reemplazar por el contrato de §34.5 (D0-4) |
+| `P5 blocker` = "binding de **dos** superficies" | §29.4/§32.5: **3 clases** (6 configuradas/derivadas + 3 cacheadas) | 3 consumidores con cache verificados | **SUPERSEDED** | Reemplazar por "3 clases"; no congelar COUNT |
+| "SFR-16: promoción no completa hasta Desired ≡ Effective probados" | §33.2 `FINALIZED ⇒ POST verification already passed` | — | **CURRENT (reforzado)** | Conservar; el orden de §34.4 lo hace ejecutable |
+| "SFR-15: el Candidate jamás establece su propia evidencia" | §29, P3-Z/AA | `candidates.py::exigir_listo_para_persistencia` | **CURRENT** | Conservar; P4 lo extiende al `ApprovalScope` |
+| `P5_EFFECTIVE_RUNTIME_ORACLE = OPEN` | §32.6 sigue abierto | no existe oráculo | **STILL_OPEN** | P5; P4 responde `UNKNOWN → NO ACTIVATION` |
+| `CREATION_CLUB_CLASSIFICATION` sin resolver | §32.6 `DEFERRED_PENDING_EVIDENCE` | — | **DEFERRED_PENDING_EVIDENCE** | No decidir por intuición (§34.11) |
+| `P3_DIRECTORY_MEMBERSHIP` bloqueaba el TreeDigest | §29: cerrado | `membership.py` completo | **STALE (cerrado)** | Archivar |
+| "No se inicia P3 sin cerrar sus blockers" | §29 cerrado, §31.3 | — | **STALE** | Reformular como "no se inicia **P4** sin cerrar los D0-*" |
+| "Binding de dos superficies" (roadmap P5) | §29.4 | — | **SUPERSEDED** | Ídem fila P5 |
+
+**Nota de proceso.** No se actualiza #672 en esta ronda: la instrucción es no tocar el
+tracker hasta que el diseño esté cerrado **y** el Tech Lead lo valide. Se propone el
+update preciso en §34.13.
+
+### 34.2 Censo de código (evidencia enumerativa, no por nombre)
+
+Antes de diseñar se enumeró qué existe **hoy** en `main`. Resultado (todas son
+ausencias o presencias **verificadas por grep**, no inferidas):
+
+```text
+EXISTE:
+  storage.py            layout, contención (normcase), admisión fail-closed de root
+  state.py              active.json schema v1; escritura atómica; reserva 'x'
+  generations.py        metadata fuera del árbol; verificar_generation; colisiones
+  independence.py       SFR-18 (inodo, st_nlink==1, reparse); contención/overlap
+  membership.py         TreeDigest + membership de directorios; canonicalización
+  copying.py            copiado independiente; lote validado antes de mutar
+  candidates.py         Candidate READY; evidencia PRE/POST; SFR-15
+  observation.py        CRITICAL_EXE_BY_GAME = {"skyrimse": "SkyrimSE.exe"}
+  discovery.py          Managed Source (FOUND/AMBIGUOUS/INVALID)
+  provider_signals.py   ProviderObservationState; StateFlags != "4" ⇒ ACTIVE
+  runtime_vault/locking.py   destination_lock (destino-keyed, %TEMP%)
+  runtime_vault/clone.py     create_runtime_clone(*, critical_expectations=())
+  runtime_vault/golden.py    verify_critical_files(for exp in expectations)
+
+NO EXISTE (verificado):
+  RuntimeSetupManifest / runtime_setup_*    (0 hits en sky_claw/, sólo el ADR)
+  RuntimeCloneRecord / lifecycle FSM        (0 hits en sky_claw/, sólo el ADR)
+  admitted_role                             (0 hits)
+  gate de compatibilidad P4↔P5              (0 hits)
+  provisionador de SKSE                     (sólo skse_catalog.py: catálogo puro)
+  lock cross-process del Frozen Runtime
+  journal / transición durable
+  reconciliación de arranque
+```
+
+`SKSE_CATALOG_IS_A_PROVISIONER = NO`: `skse_catalog.py` declara explícitamente "No
+descarga ni verifica artifacts… Sin I/O ni side effects DE ESTE MÓDULO", y **2 de 5**
+releases tienen `artifact_name = None` (fuente NEXUS sin URL estática verificable).
+Esto es evidencia dura para D0-7/D0-9: "recordar la URL del artefacto" **no está
+disponible** ni siquiera como promesa para todos los casos.
+
+```text
+CRITICAL_EXE_SOURCE_OF_TRUTH = {"skyrimse": "SkyrimSE.exe"}   (observation.py)
+CRITICAL_EXPECTATIONS_DEFAULT = ()                            (clone.py, golden.py)
+all(()) == True                                               (footgun confirmado)
+```
+
+### 34.3 D0-1 — `P4_CROSS_PROCESS_LOCK` (diseño)
+
+**Evidencia.** El único lock real es `runtime_vault/locking.py::destination_lock`:
+clave = SHA-256 de `normcase(abspath(destino))` resuelto; archivo en
+`Path(tempfile.gettempdir())/".skyclaw_vault_locks"/…`; `threading.Lock` +
+`os.open(O_RDWR|O_CREAT)` + `msvcrt.locking(LK_NBLCK,1)` / `fcntl.flock(EX|NB)`;
+`RuntimeCloneError` fail-closed; libera en `finally`. **No tiene** identidad de
+dueño, lease, heartbeat, liveness de dueño muerto, ni recuperación más allá de que el
+SO libere el byte-range. `DistributedLockManager` (`app/db/locks.py`, SQLite/aiosqlite)
+sí tiene todo eso, pero es **async** y otra capa.
+
+**Decisión.**
+
+```text
+LOCK_RESOURCE      = FrozenRuntimeRoot   (uno solo, no destino-keyed)
+LOCK_IDENTITY      = root canónico (normcase abspath) + session_id (UUID por adquisición)
+LOCK_SCOPE         = toda mutación de autoridad del runtime
+LOCK_EXCLUSION_SET = { PROMOTION, ROLLBACK, activation/rebinding,
+                       startup reconciliation, publish Generation,
+                       candidate build que escriba state/ }
+LOCK_BUSY          = fail-closed con timeout acotado; NO espera indefinida
+LOCK_OWNER         = { session_id, pid, create_time (reloj del SO), acquired_at }
+LOCK_STALE         = dueño NO vivo ⇒ permitido reclamar (con evidencia)
+LOCK_LIVENESS      = pid + create_time  (NUNCA os.kill(pid,0); reuso de PID)
+LOCK_CRASH         = el lock NO se borra al morir el proceso; se marca huérfano y
+                     el arranque decide (§34.4)
+LOCK_TTL           = requerido si hay renew; renew_interval < TTL / 2
+LOCK_MULTI_RESOURCE= NO (un root, un lock; sin orden de adquisición ⇒ sin deadlock)
+```
+
+**Por qué root-keyed y no destino-keyed.** La promoción y el rollback mutan **la
+misma** autoridad (`active.json` + Effective Runtime) aunque el destino sea distinto.
+Un lock por destino permitiría dos transiciones concurrentes sobre estados que se
+pisan. El recurso lógico es **el runtime**, no la carpeta.
+
+**Principio que sí se reutiliza (código, no).** De `vfs_broker.py` se adopta el
+**patrón**, no la implementación: (a) token de adquisición que obliga a que release y
+renew prueben propiedad; (b) `assert_owned()` inmediatamente antes de mutar;
+(c) liveness por `pid + create_time`; (d) retención fail-closed del lock envenenado en
+vez de borrarlo. `CROSS_PROCESS_LOCK_PRIMITIVE_REUSE = NO` (principio sí, primitiva no).
+
+### 34.4 D0-2 — `P4_DURABLE_TRANSITION` (diseño)
+
+**Evidencia.** No existe journal. `active.json` v1 sólo guarda
+`{schema_version, desired_active_generation, updated_at_ns}` y su docstring dice
+explícitamente "este archivo NO registra Effective Runtime". `candidates.py` tiene el
+precedente exacto de "no puedo persistir un estado autoritativo sin evidencia
+completa" (`exigir_listo_para_persistencia`).
+
+**Estado durable mínimo (persistido ANTES de mutar Effective Runtime):**
+
+```text
+operation             PROMOTION | ROLLBACK
+transition_id         UUID v4 (una por transición; idempotencia)
+schema_version        entero (v1)
+state                 NONE | PENDING_PROMOTION | PENDING_ROLLBACK | FINALIZED
+source_activation     qué estaba activo (generation_id, clone_id, runtime_setup_id)
+target_generation_id
+target_clone_id
+target_runtime_setup_id
+approval_scope_digest hash del scope aprobado (§34.5)
+evidence_digests      { clone_evidence, runtime_setup_evidence, compatibility_evidence }
+expected_effective_path   la ruta que el bind va a producir
+created_at_ns         entero >= 0
+LOCK_SESSION_ID       quién tiene el lock al crear la transición
+```
+
+**Reglas.**
+
+```text
+PERSIST_BEFORE_BIND        = YES   (invariante duro)
+FINISHED_BEFORE_POST       = PROHIBIDO   (§33.2)
+FINALIZED ⇒ POST passed    = YES   (unidireccional)
+TRANSITION_ID_INMUTABLE    = YES
+WRITE_ATOMIC               = write_json_atomic (mkstemp+fsync+os.replace)
+STATE_FILE                 = state/transition.json   (NUEVO; sujeto al oráculo AST)
+UNKNOWN_STATE              = fail-closed (no "NONE por defecto")
+CORRUPT_STATE              = LANZA (nunca se degrada a "limpio")
+```
+
+**Restricción del oráculo de escritura.** `tests/test_frozen_runtime_p1_readonly.py`
+congela `MODULOS_CON_ESCRITURA_PERMITIDA` y prohíbe `os.open()`. Toda escritura nueva
+de P4 debe (a) vivir en un módulo declarado y (b) usar `open(path, "x")` para reserva
+exclusiva, nunca `os.open`. Esto **no se implementa ahora**, sólo se registra como
+restricción vinculante.
+
+**No se inventan nombres mejores que los del repo**: se reutiliza `schema_version`,
+`desired_active_generation`, `updated_at_ns` y el vocabulario `PENDING_*` que ya
+aparece en §11/§32.3/§32.4.
+
+### 34.5 D0-3 — `P4_STARTUP_RECONCILIATION` (diseño)
+
+**Evidencia doctrinal (reutilizable como principio).** `docs/operations/recovery.md`:
+"Detener productores, preservar evidencia y recuperar desde la última frontera
+durable conocida. No borrar archivos de control para forzar un estado limpio."
+ADR 0007: "La ausencia de evidencia terminal no equivale a terminalidad"; liberación
+de cuarentena automática **sólo** con evidencia tardía, o manual con
+`release_quarantine(evidence=...)`.
+
+**Entradas de la reconciliación** (leídas al arrancar, sin asumir nada):
+
+```text
+observed_desired_state    active.json (o ausente)
+observed_effective_state  lo que realmente consume el runtime (oráculo de P5)
+pending_transition         transition.json (o ausente/corrupto)
+target_evidence            los digests referenciados por la transición
+```
+
+**Resultado determinista:**
+
+| Situación | Resultado | Automático | Aprobación de dueño |
+|---|---|---|---|
+| No hay transición (`NONE`) y estado coherente | `COMPLETE` | — | — |
+| `PENDING_*`, Effective **coincide** con `expected_effective_path`, POST no corrido | re-correr POST → `COMPLETE`/`FINALIZE` | sí | no |
+| `PENDING_*`, Effective **no** coincide, y la evidencia objetivo se re-verifica OK | `RECOVER` (re-bind idempotente) | sí | no |
+| `PENDING_*`, evidencia objetivo **cambió** o no re-verifica | `REQUIRE_OWNER` | no | sí |
+| `PENDING_*`, `transition.json` ilegible/corrupto | `FAIL_CLOSED` | no | sí |
+| `state` desconocido / schema futuro | `FAIL_CLOSED` | no | sí |
+| Effective **indeterminado** (no se puede observar) | `FAIL_CLOSED` | no | sí |
+
+```text
+INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED = NO
+```
+
+Un `PENDING` **no** se revierte solo: "revertir" asume que el bind no ocurrió o que
+deshacerlo es seguro, y ninguna de las dos cosas se sabe. La reconciliación **observa
+primero** y decide después. Si el Effective ya coincide con el objetivo, la transición
+está más cerca de completarse que de revertirse.
+
+### 34.6 D0-4 — `P4_APPROVAL_SCOPE` (diseño)
+
+Operation-aware y ligado a **contenido**, no a IDs (R4-F5, §31.4).
+
+```text
+ApprovalScope {
+  operation            PROMOTION | ROLLBACK
+  generation_id
+  clone_id
+  runtime_setup_id
+  candidate_id         (PROMOTION: id;  ROLLBACK: NOT_APPLICABLE)
+  compatibility_evidence_id
+  clone_evidence       { identidad de contenido del Clone, no su ruta }
+  runtime_setup_evidence { identidad de contenido del setup aplicado }
+}
+```
+
+Heredado de `candidates.py`/`membership.py`: la evidencia es un **digest sellado**
+capturado de una sola observación coherente (`observar_arbol_sellado`), no una lista
+de rutas. `APPROVE_BY_IDS_ONLY = PROHIBIDO`. `clone_evidence` y
+`runtime_setup_evidence` **son** los digests de contenido; no existen como campos
+sueltos "por si acaso".
+
+### 34.7 D0-5 — `P4_REVERIFY_AFTER_APPROVAL` (diseño)
+
+```text
+GATE = approval-time evidence == freshly recomputed pre-bind evidence
+RE_MEASURED    = { clone content digest, runtime_setup applied-state digest,
+                   identity de Generation, identidad física del Clone }
+COMPARED       = digests exactos (no "parecido", no "misma ruta")
+METADATA_RE_READ = sí (nunca se confía en el objeto cacheado del momento de aprobar)
+ANY_APPROVED_MATERIAL_CHANGE = NO BIND
+```
+
+Modelo de implementación: `observar_arbol_sellado` ya resuelve el problema de "una
+sola observación, o ninguna" (membership PRE + identidad PRE + inventario + identidad
+POST + membership POST, y `TreeObservationCoherenceError` si algo derivó). El reverify
+reusa esa forma: no es un segundo mecanismo, es el mismo aplicado al momento correcto.
+
+**Ventana residual declarada:** `observar_arbol_sellado` documenta que **no** promete
+una garantía TOCTOU fuerte (no hay handle-grade). El lock (§34.3) reduce la carrera
+entre procesos; no la elimina a nivel kernel.
+`HANDLE_GRADE_PRE_BIND = NO` (declarado, no oculto).
+
+### 34.8 D0-6 — `GENERATION_METADATA_INTEGRITY` (diseño)
+
+**Evidencia.** La metadata vive **fuera** del árbol, en
+`state/generations/<generation-id>.json`. `_metadata_de_payload` es estricto; el id se
+deriva del nombre del directorio (`display_version = id.split("__",1)[0]`); hay
+chequeo `metadata.generation_id != entrada.name ⇒ INVALID`; `descubrir_generations`
+clasifica. **No hay** sello independiente, ni registro de dueño, ni contraste
+`created_at_ns` vs ctime del directorio.
+
+**Decisión — detección de corrupción accidental, no defensa anti-administrador:**
+
+```text
+THREAT_MODEL = integridad accidental / corrupción / inconsistencia
+               (NO administrador malicioso) ⇒ sin HMAC ni firma criptográfica
+SELLAR = { schema_version, generation_id, display_version, tree_digest,
+           critical_files, digest_global }
+DETECTA = clobber (id de metadata ≠ nombre de dir)   → INVALID
+          raíz inconsistente (root declarado ≠ root real) → INVALID
+          digest mismatch (inventario fresco ≠ registrado) → DRIFTED/INVALID
+          lineage mismatch (source_* incoherente)     → INVALID
+          metadata ausente/corrupta                   → INDETERMINATE (nunca VALID)
+UNKNOWN != VALID  (ya vigente)
+```
+
+Costo conocido y aceptado: hoy `verificar_generation` camina el árbol **dos veces**
+por verificación on-demand; la optimización de un solo recorrido queda diferida a
+P3/P4 (documentado en el propio módulo). No se cierra acá.
+
+### 34.9 D0-7 — `RUNTIME_SETUP_MANIFEST_INTEGRITY` (diseño)
+
+Tres problemas **separados** que el texto viejo mezclaba:
+
+```text
+MANIFEST_INTEGRITY      el manifiesto es válido y no fue alterado
+ARTIFACT_AVAILABILITY   el payload todavía se puede obtener       (§34.11, D0-9)
+ARTIFACT_INTEGRITY      el payload es el que el manifiesto declara
+```
+
+```text
+MUST_SEAL = { schema_version, artifact_identities, artifact_hashes,
+              source/provenance, operations, target_locations,
+              ordering/dependencies }
+VALID_MANIFEST ⇒ PAYLOAD_AVAILABLE = FALSO   (no se sigue)
+```
+
+El manifiesto **no** promete disponibilidad. Un manifiesto válido con payload
+desaparecido es un estado real y debe reportarse como tal, no como "listo".
+
+### 34.10 D0-8 — `RUNTIME_CLONE_RECORD_INTEGRITY` (diseño)
+
+El registro (`state/clones/<clone-id>.json`) es **autoridad** sobre identidad, linaje
+y ciclo de vida. Hoy **no existe** (0 hits).
+
+```text
+CAMPOS = { schema_version, clone_id, source_generation_id, root_path,
+           lifecycle (CREATED|PROVISIONING|PROVISIONED|INVALID),
+           intended_runtime_setup_id, verified_runtime_setup_id, admitted_role }
+
+FAIL_CLOSED si:
+  registro ausente                     → INVALID (no "crear por defecto")
+  schema inválido / campos faltantes   → INVALID
+  root_path ≠ raíz real del Clone      → INVALID
+  clone_id ≠ identidad del directorio  → INVALID
+  source_generation_id no VALID        → RECHAZA activación (§33.3)
+  setup mismatch (intended ≠ verified) → RECHAZA activación
+  transición de lifecycle inválida     → INVALID (FSM explícita)
+  sobreescritura silenciosa / clobber  → INVALID (misma clase que generations)
+```
+
+`admitted_role` existe para distinguir *qué* rol se le admitió al Clone (p. ej.
+candidato a activación vs. materialización), y **no** para autorizar por sí mismo.
+
+### 34.11 D0-9 — `RUNTIME_SETUP_ARTIFACT_AVAILABILITY` (decisión)
+
+Opciones analizadas, **ninguna implementada**:
+
+| Opción | Qué promete | Costo | Veredicto |
+|---|---|---|---|
+| A — readquisición externa | "recordamos la fuente" | barato | Insuficiente: 2/5 releases SKSE tienen `artifact_name=None` |
+| B — payload retenido | "guardamos el artefacto" | disco | Único que sostiene "rollback garantizado" |
+| C — cache content-addressed | "guardamos por hash" | disco + índice | Mejor que B para dedupe; mismo costo base |
+| D — híbrido | depende del artefacto | complejo | Preferido a largo plazo |
+
+```text
+MVP_PROMISE = "manifest válido + artefacto disponible en el momento de la promoción"
+ROLLBACK_GUARANTEED_SEMANTICS = NO se promete con A
+RUNTIME_SETUP_ARTIFACT_AVAILABILITY = KEEP_OPEN
+BLOCKS = { prometer "rollback garantizado" cuando el payload no está retenido }
+```
+
+**Lo que bloquea exactamente:** no hay evidencia todavía de cuánto payload hay que
+retener por caso, ni presupuesto de disco aceptado. Mientras eso no se decida, P4
+puede implementarse fail-closed: si el artefacto no está disponible al momento de
+preparar la activación, **no se activa**. Eso **no** bloquea P4; bloquea el *claim*
+"rollback garantizado".
+
+### 34.12 D0-10 — `MANDATORY_CRITICAL_EXPECTATIONS` (diseño)
+
+**Evidencia dura.** `golden.py::verify_critical_files` itera `for exp in
+expectations:` ⇒ lista vacía ⇒ evidencia vacía; `todos_verified = tree and runtime and
+all(...)` ⇒ `all(()) == True` ⇒ VERIFIED **sin evidencia crítica**. `clone.py` y
+`golden.py` usan `critical_expectations=()` por defecto. `observation.py` tiene **una
+sola** fuente de verdad crítica: `CRITICAL_EXE_BY_GAME = {"skyrimse": "SkyrimSE.exe"}`.
+
+```text
+missing != empty-valid      (contrato, no accidente de serialización)
+EMPTY_EXPECTATIONS ⇒ RECHAZO  (no ⇒ VERIFIED)
+```
+
+**Quién produce las expectativas.** La Generation (contenido-bound, ya sellado por
+P2/P3) es la fuente: los archivos críticos declarados por la Generation son los que el
+Clone debe preservar. **NO** el Candidate sobre sí mismo (SFR-15).
+
+```text
+EXPECTATIONS_PRODUCER   = Generation verificada
+EXPECTATIONS_SCHEMA     = mismo digest canónico que critical_expectations_digest
+EXTENSIBLE              = sí (skyrimse hoy: SkyrimSE.exe; el catálogo puede crecer)
+VACÍO_SIGNIFICA         = "no sé"  ⇒ fail-closed
+```
+
+`critical_expectations.py` hoy **digiere felizmente** `[]`; por eso la barrera debe
+ser un **contrato de P4**, no un efecto de la serialización.
+
+### 34.13 D0-11 — `POST_ACTIVATION_LINK_INJECTION` (diseño)
+
+**Evidencia.** `clone.py::verify_physical_independence` itera sólo `for f in files`
+(el inventario sellado) ⇒ un hardlink/junction/symlink/reparse insertado **después**
+de admitir el Clone, o fuera de esa lista, queda fuera de alcance. La cobertura de
+enlaces más fuerte que existe (`independence.py`) está aplicada a la **Generation**, no
+al Clone.
+
+```text
+RESPONSABLE = PRIMARIO: P4 (gate de activación) · SECUNDARIO: P5 (oráculo de Effective)
+CUÁNDO      = PRE-approval (evidencia) + PRE-bind (reverify §34.7)
+              + POST-bind (verify de coherencia) + ARRANQUE (§34.5)
+ESCANEO_INFINITO = PROHIBIDO
+```
+
+No es un escaneo continuo: son **puntos de control acotados** sobre el inventario
+sellado, y cualquier reparse **nuevo** dentro del inventario invalida. Un enlace
+insertado fuera del inventario es responsabilidad del bind coherente de P5 (las 3
+clases, §29.4). Se reconoce la ventana residual y **se declara**, no se esconde.
+
+### 34.14 D0-12 — `P4_P5_COMPATIBILITY_GATE` (diseño)
+
+```text
+COMPATIBILITY ∈ { COMPATIBLE, INCOMPATIBLE, UNKNOWN }
+UNKNOWN != COMPATIBLE     (invariante)
+```
+
+| Condición | Quién evalúa | Resultado si no se puede evaluar |
+|---|---|---|
+| Generation `VALID` | P4 | INCOMPATIBLE / INDETERMINATE → NO ACTIVATION |
+| Clone `lifecycle == PROVISIONED` | P4 | NO ACTIVATION |
+| setup `verified == intended` | P4 | NO ACTIVATION |
+| independencia física del Clone | P4 | NO ACTIVATION |
+| archivos críticos presentes | P4 | NO ACTIVATION |
+| SKSE/game-version match | **P5** | UNKNOWN → **NO ACTIVATION** |
+| Effective Runtime real (oráculo) | **P5** | UNKNOWN → **NO ACTIVATION** |
+
+```text
+P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW = CERRADO por diseño
+DELEGATED_TO_P5 = { skse/game match, effective runtime oracle }
+P5_IMPLEMENTED = NO
+```
+
+P4 **no** espera a P5 para funcionar: si P5 devuelve `UNKNOWN`, P4 **no activa**. Es
+la diferencia entre "no sé ⇒ no" y "no sé ⇒ sí".
+
+### 34.15 Matriz de crashes (obligatoria) — C0..C7
+
+Durable = `transition.json` (+ `active.json`). Effective = lo que consume el runtime.
+
+| Punto | Durable | Effective posible | Acción al arrancar | Recuperación automática | Dueño |
+|---|---|---|---|---|---|
+| **C0** antes de persistir PENDING | `NONE` | el original | `COMPLETE` | — | no |
+| **C1** tras PENDING, antes de bind | `PENDING` | el original | re-verificar objetivo → `RECOVER` (re-bind idempotente) o `REQUIRE_OWNER` si cambió evidencia | sí, si la evidencia re-verifica | solo si cambió |
+| **C2** durante el bind | `PENDING` | **indeterminado** (puede estar a medias) | **primero observar** el Effective; nunca asumir | `RECOVER` si observa objetivo+evidencia OK; si no, `FAIL_CLOSED` | si no se puede observar |
+| **C3** tras bind, antes de actualizar desired | `PENDING` | el objetivo | re-correr POST → `FINALIZE`; o `COMPLETE` si consiste | sí | no |
+| **C4** tras desired, antes de POST | `PENDING` | el objetivo | re-correr POST | sí | no |
+| **C5** POST falla | `PENDING` (sigue) | el objetivo, **no verificado** | **NO FINALIZA**; `REQUIRE_OWNER` o `RECOVER` | no (fail-closed) | sí |
+| **C6** POST pasa, antes de FINALIZE | `PENDING` | el objetivo, verificado | re-correr POST (idempotente) → `FINALIZE` | sí | no |
+| **C7** tras FINALIZE | `FINALIZED` | el objetivo | `COMPLETE` | — | no |
+
+```text
+FINALIZED_BEFORE_POST = PROHIBIDO en todos los puntos (§33.2)
+C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y como diseño)
+```
+
+### 34.16 Revisión adversarial local (12 preguntas)
+
+| # | Pregunta | Estado | Fundamento |
+|---|---|---|---|
+| 1 | ¿Dos procesos pueden iniciar Promoción/Rollback a la vez? | **CLOSED_BY_DESIGN** | Un lock root-keyed (§34.3), exclusión para ambos |
+| 2 | ¿Un crash tras el bind deja estado determinísticamente recuperable? | **CLOSED_BY_DESIGN** | C3/C4/C6 → POST idempotente; C2 → observar antes de decidir |
+| 3 | ¿El arranque distingue transición incompleta de corrupción? | **CLOSED_BY_DESIGN** | `PENDING` ≠ `FAIL_CLOSED`; corrupto/desconocido ⇒ `FAIL_CLOSED` |
+| 4 | ¿La aprobación identifica contenido mutable exacto? | **CLOSED_BY_DESIGN** | `clone_evidence`/`runtime_setup_evidence` como digests sellados (§34.6) |
+| 5 | ¿Un cambio tras aprobar puede escapar del reverify? | **CLOSED_BY_DESIGN** | `ANY MATERIAL CHANGE ⇒ NO BIND`; ventana TOCTOU declarada |
+| 6 | ¿Metadata adulterada accidentalmente puede volverse autoridad? | **CLOSED_BY_DESIGN** | §34.8/§34.10 fail-closed; `UNKNOWN != VALID` |
+| 7 | ¿Un manifiesto válido sin payload puede prometer rollback? | **CLOSED_BY_DESIGN (frase) / DEFERRED_FAIL_CLOSED (garantía)** | §34.9; la garantía queda KEEP_OPEN, P4 no activa sin payload |
+| 8 | ¿`critical_expectations` vacío puede pasar? | **CLOSED_BY_DESIGN** | `missing != empty-valid`; vacío ⇒ RECHAZO |
+| 9 | ¿Un hardlink/junction insertado tras admitir el Clone escapa? | **DEFERRED_FAIL_CLOSED** | §34.13: puntos de control acotados; ventana residual declarada |
+| 10 | ¿P4 puede activar si P5 devuelve `UNKNOWN`? | **CLOSED_BY_DESIGN** | `UNKNOWN != COMPATIBLE` (§34.14) |
+| 11 | ¿Se puede reconstruir el target histórico exacto sin adivinar? | **CLOSED_BY_DESIGN** | `previous_activation_target` durable (R4-F10) + `target_*` en la transición |
+| 12 | ¿Existe una ruta donde el Clone mutable reemplace a Generation+Setup como autoridad? | **CLOSED_BY_DESIGN** | §32.2 autoridades separadas; §34.6 evidencia de contenido; §33.3 Generation no VALID ⇒ rechazo |
+
+### 34.17 Resultado del diseño
+
+| BLOCKER | EVIDENCE | DECISION | DESIGN STATUS | IMPLEMENTATION STATUS | TARGET PHASE |
+|---|---|---|---|---|---|
+| `P4_CROSS_PROCESS_LOCK` | `runtime_vault/locking.py` (destino-keyed, `%TEMP%`, sin dueño) | lock root-keyed, token+lease, fail-closed | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `P4_DURABLE_TRANSITION` | `state.py` (sin Effective); `candidates.py` precedente | `transition.json` v1, persist-before-bind | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `P4_STARTUP_RECONCILIATION` | `recovery.md`, ADR 0007 | `COMPLETE/RECOVER/REQUIRE_OWNER/FAIL_CLOSED` | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `P4_APPROVAL_SCOPE` | `critical_expectations.py`, `membership.py` | operation-aware + evidencia de contenido | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `P4_REVERIFY_AFTER_APPROVAL` | `observar_arbol_sellado` | aprobación == pre-bind fresco | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `GENERATION_METADATA_INTEGRITY` | `generations.py` (sin sello) | threat model accidental; sin HMAC | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `RUNTIME_SETUP_MANIFEST_INTEGRITY` | 0 hits `runtime_setup` | 3 problemas separados; qué sella | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `RUNTIME_CLONE_RECORD_INTEGRITY` | 0 hits `RuntimeCloneRecord` | FSM + fail-closed (6 reglas) | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `MANDATORY_CRITICAL_EXPECTATIONS` | `golden.py:120`, `clone.py:200`, `all(())==True` | `missing != empty-valid`; productor = Generation | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `POST_ACTIVATION_LINK_INJECTION` | `clone.py` itera sólo `files` | puntos acotados P4(+P5), sin escaneo infinito | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4/P5 |
+| `P4_P5_COMPATIBILITY_GATE` | 0 hits gate | `UNKNOWN != COMPATIBLE`; delegación explícita | **DESIGN_CLOSED** | IMPLEMENTATION_OPEN | P4 |
+| `RUNTIME_SETUP_ARTIFACT_AVAILABILITY` | `skse_catalog.py` (2/5 `artifact_name=None`) | opciones A–D; MVP promise acotada | **KEEP_OPEN** | IMPLEMENTATION_OPEN | P4/P5 |
+| `CREATION_CLUB_CLASSIFICATION` | — | no decidir por intuición | **DEFERRED_PENDING_EVIDENCE** | IMPLEMENTATION_OPEN | P5 |
+| `P3B` (`StateFlags 6`/`518`) | `provider_signals.py:37,66` | no hardcodear `6`/`518` | **DEFERRED_PENDING_RIG** | IMPLEMENTATION_OPEN | P3b |
+
+### 34.18 Estado
+
+```text
+TRACKER_672_AUDITED          = YES
+P4_READY_TO_DESIGN           = YES
+P4_DESIGN_FROZEN             = YES
+P4_READY_TO_IMPLEMENT        = YES   (ver criterio abajo)
+P4_IMPLEMENTED               = NO
+P5_IMPLEMENTED               = NO
+
+CROSS_PROCESS_LOCK_PRIMITIVE_REUSE = NO   (principio sí, primitiva no)
+ROLLBACK_VETO_REUSE                = NO   (principio sí, acoplamiento in-memory no)
+ATOMIC_WRITE_REUSE                 = YES  (write_json_atomic + 'x')
+
+CREATION_CLUB_CLASSIFICATION = DEFERRED_PENDING_EVIDENCE
+P3B                          = DEFERRED_PENDING_RIG
+STATEFLAGS_6_518_SEMANTICS   = UNVERIFIED
+```
+
+**Criterio de `P4_READY_TO_IMPLEMENT = YES`.** Los diez blockers exigidos están
+`DESIGN_CLOSED`: `P4_CROSS_PROCESS_LOCK`, `P4_DURABLE_TRANSITION`,
+`P4_APPROVAL_SCOPE`, `P4_REVERIFY_AFTER_APPROVAL`, `P4_P5_COMPATIBILITY_GATE`,
+`GENERATION_METADATA_INTEGRITY`, `RUNTIME_SETUP_MANIFEST_INTEGRITY`,
+`RUNTIME_CLONE_RECORD_INTEGRITY`, `MANDATORY_CRITICAL_EXPECTATIONS`,
+`POST_ACTIVATION_LINK_INJECTION`. Los dos que quedan abiertos **no** impiden una
+implementación fail-closed:
+
+- `RUNTIME_SETUP_ARTIFACT_AVAILABILITY`: P4 no activa si el payload no está
+  disponible; sólo bloquea el *claim* "rollback garantizado".
+- `P3B` / `CREATION_CLUB_CLASSIFICATION`: P4 responde `UNKNOWN → NO ACTIVATION`.
+
+> `P4_READY_TO_IMPLEMENT = YES` significa **"el diseño no bloquea"**, no "P4 existe".
+> `P4_IMPLEMENTED = NO` sigue siendo el estado real.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
+transición, ni lock cross-process, ni `active.json` real, ni binding de MO2, ni setup
+de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5. No se
+mergea el Draft PR.
