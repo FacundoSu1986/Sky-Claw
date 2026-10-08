@@ -224,6 +224,10 @@ el camino con atestación (handler en el worker, v3 §6.4 opción A) es el únic
 
 ### 6.2 ParallaxR / BENDr / VRAMr
 
+> **CUARENTENA CLEAN-ROOM** — la tabla siguiente cita fragmentos de scripts de herramientas cerradas; no
+> consultar para `native_parallax/` ([CLEAN_ROOM.md](../../../CLEAN_ROOM.md)). Los permisos y el estado de B6-L están en §7.
+
+
 **Evidencia disponible (SUPPORTED_BY_PACKAGE, v3 §2.4/§2.5 + Nexus):**
 
 | Herramienta | A favor de "espera la vista virtual" | A favor de "trabaja fuera de la VFS" |

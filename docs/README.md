@@ -31,6 +31,7 @@
 - [Contribución](../CONTRIBUTING.md)
 - [Referencia técnica](api/README.md)
 - [Guías para agentes](agents/README.md)
+- [Clean-room del generador nativo de parallax](../CLEAN_ROOM.md)
 - [Fuentes de verdad y resolución de drift](documentation/source_of_truth.md)
 
 ## Decisiones y evidencia histórica

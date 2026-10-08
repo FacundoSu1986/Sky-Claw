@@ -120,6 +120,14 @@ class BrokeredDynDOLODProcess:
         return self._session.returncode
 
     @property
+    def confirmed_terminal(self) -> bool:
+        return self._session.confirmed_terminal
+
+    @property
+    def terminality_unknown(self) -> bool:
+        return self._session.terminality_unknown
+
+    @property
     def stdout(self) -> None:
         # La captura bounded vive en el worker. No se crea un stream IPC nuevo.
         return None

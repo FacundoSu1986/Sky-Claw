@@ -124,6 +124,35 @@ declara como targets los archivos fisicos del perfil. Una tool futura que
 necesite salida dedicada debera enviar el nombre validado de un mod administrado,
 nunca `<MO2>/overwrite` como path.
 
+### Teardown brokered, deadline y cuarentena (#623, PR #695)
+
+- **Deadline acotado con bridge conectado:** Cuando el bridge MO2 permanece
+  conectado pero el worker no sale ni responde a la terminación, el broker no
+  cuelga indefinidamente. Un deadline absoluto interno (`connected_worker_exit_deadline_seconds`,
+  por defecto 30.0s) expira con `VfsTeardownDeadlineError`.
+- **Principio de terminalidad demostrada:** La ausencia de evidencia terminal
+  (`timeout`, `bridge_error`, `job_unknown`) **no** equivale a terminalidad.
+  El broker jamás asume que un worker está muerto (`set_result(None)`) mientras
+  el bridge siga vivo.
+- **Veto de rollback fail-closed:** Si la terminalidad del worker es desconocida,
+  se marca `terminality_unknown = True` y `teardown_error` en la excepción.
+  `SnapshotTransactionLock` y `DirectoryRollback` consultan `exception_forbids_rollback(exc)`
+  y vetan la restauración de backups, protegiendo al disco de carreras contra un
+  árbol de procesos que podría seguir mutando.
+- **Cuarentena de instancia:** Una terminalidad indeterminada marca la instancia
+  en memoria y persiste un archivo atómico `.{instance_id}.quarantine` en `state_dir`.
+  Cualquier intento posterior de abrir sesión o enviar jobs mutantes en esa instancia
+  falla inmediatamente con `VfsInstanceQuarantinedError`, incluso si el broker o daemon
+  se reinicia.
+- **Liberación de cuarentena:** La cuarentena sólo se levanta de dos formas:
+  1. Automática: Si llega un `worker_exit` tardío que demuestra que el Job Object
+     finalizó.
+  2. Manual: Un operador invoca `release_quarantine(evidence="...")` proveyendo
+     evidencia explícita (e.g., constatación en el Administrador de Tareas).
+- **Limpieza local vs exclusividad:** `close()` en el broker limpia sockets,
+  servidor y descriptor localmente aun cuando un job activo expire por teardown error,
+  pero la exclusividad mutante queda protegida por el marcador de cuarentena.
+
 ## Alcance implementado
 
 - Infraestructura completa del broker, worker, plugin, instalador y empaquetado.
