@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import configparser
-import contextlib
 import enum
 import hashlib
 import logging
@@ -699,6 +698,91 @@ async def _cerrar_recursos_del_proceso(
         },
     )
     return intencion, falla
+
+
+async def _limpiar_helpers_en_salida_normal(
+    tool_name: str,
+    heartbeat: asyncio.Task[Any],
+    drain_out: asyncio.Task[Any],
+    drain_err: asyncio.Task[Any],
+) -> None:
+    """Limpia los helpers auxiliares en la salida normal del proceso (R3).
+
+    Garantiza dos propiedades esenciales del mecanismo:
+    1. La cancelación del caller no se suprime durante la espera de terminación
+       del heartbeat (reemplaza `contextlib.suppress` por `asyncio.gather(..., return_exceptions=True)`).
+    2. Si el caller pide cancelación durante la espera de heartbeat o durante el
+       drenaje residual (`drain-grace`), los drains se cancelan y se llevan a
+       terminalidad real (mediante `_handoff_terminal`, resistente a cancelaciones
+       repetidas) ANTES de propagar la cancelación hacia `finally: close_job`.
+    """
+    heartbeat.cancel()
+    try:
+        # gather(return_exceptions=True) absorbe el CancelledError propio del
+        # heartbeat sin relanzarlo; si el caller fue cancelado externamente,
+        # gather propaga CancelledError al llamador.
+        await asyncio.gather(heartbeat, return_exceptions=True)
+
+        # S-4: el proceso ya terminó; drenamos los buffers residuales pero con
+        # una cota. Si un nieto heredó el pipe y sigue vivo, el EOF nunca llega
+        # y sin timeout este gather colgaría para siempre (igual que el path de
+        # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
+        # drains y seguimos con el output parcial (el proceso ya reportó éxito).
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(drain_out, drain_err, return_exceptions=True),
+                timeout=_DRAIN_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            # SIN `pipeline_stage`: el proceso ya salió y su código de salida
+            # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
+            # propio mensaje dice que se continúa. Etiquetarlo sumaría un
+            # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
+            # presente pero dejó un nieto con el pipe heredado.
+            logger.warning(
+                "%s: los drains no cerraron en %.1fs tras la salida del proceso "
+                "(posible nieto con pipe heredado); se continúa con output parcial.",
+                tool_name,
+                _DRAIN_GRACE_SECONDS,
+                extra={"operation_type": "dyndolod_drenaje_incompleto", "tx_id": _tx_id()},
+            )
+            drain_out.cancel()
+            drain_err.cancel()
+            # gather(return_exceptions=True) sobre tasks ya canceladas captura
+            # sus CancelledError como resultados (no relanza); sin `suppress`
+            # una cancelación externa del caller propaga como corresponde.
+            results = await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+            results = []
+
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                # Exento por el mismo motivo que el drain-timeout de arriba:
+                # es diagnóstico del andamiaje de captura, no el veredicto —
+                # que lo dan el exit code, el artefacto y el log.
+                logger.warning(
+                    "%s drain task falló inesperadamente: %r",
+                    tool_name,
+                    r,
+                    extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
+                )
+    except asyncio.CancelledError as exc:
+        heartbeat.cancel()
+        drain_out.cancel()
+        drain_err.cancel()
+
+        async def _esperar_helpers_terminales() -> list[Any]:
+            return await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+
+        etapa = asyncio.create_task(_esperar_helpers_terminales())
+        intencion, _falla = await _handoff_terminal(
+            etapa,
+            operacion=_OPERACION_LIMPIEZA_HANDOFF,
+            mensaje=(
+                "cancelación durante la limpieza de salida normal: el caller queda retenido hasta que "
+                "los helpers sean terminales; ninguna cancelación lo libera antes"
+            ),
+        )
+        raise (intencion or exc) from None
 
 
 # =============================================================================
@@ -2333,50 +2417,9 @@ class DynDOLODRunner:
             raise veredicto from e
         else:
             # Process exited normally — cancel heartbeat and wait for drains to finish.
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
-            # S-4: el proceso ya terminó; drenamos los buffers residuales pero con
-            # una cota. Si un nieto heredó el pipe y sigue vivo, el EOF nunca llega
-            # y sin timeout este gather colgaría para siempre (igual que el path de
-            # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
-            # drains y seguimos con el output parcial (el proceso ya reportó éxito).
-            try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(drain_out, drain_err, return_exceptions=True),
-                    timeout=_DRAIN_GRACE_SECONDS,
-                )
-            except TimeoutError:
-                # SIN `pipeline_stage`: el proceso ya salió y su código de salida
-                # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
-                # propio mensaje dice que se continúa. Etiquetarlo sumaría un
-                # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
-                # presente pero dejó un nieto con el pipe heredado.
-                logger.warning(
-                    "%s: los drains no cerraron en %.1fs tras la salida del proceso "
-                    "(posible nieto con pipe heredado); se continúa con output parcial.",
-                    tool_name,
-                    _DRAIN_GRACE_SECONDS,
-                    extra={"operation_type": "dyndolod_drenaje_incompleto", "tx_id": _tx_id()},
-                )
-                drain_out.cancel()
-                drain_err.cancel()
-                # gather(return_exceptions=True) sobre tasks ya canceladas captura
-                # sus CancelledError como resultados (no relanza); sin `suppress`
-                # una cancelación externa del caller propaga como corresponde.
-                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
-                results = []
-            for r in results:
-                if isinstance(r, BaseException):
-                    # Exento por el mismo motivo que el drain-timeout de arriba:
-                    # es diagnóstico del andamiaje de captura, no el veredicto —
-                    # que lo dan el exit code, el artefacto y el log.
-                    logger.warning(
-                        "%s drain task falló inesperadamente: %r",
-                        tool_name,
-                        r,
-                        extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
-                    )
+            # Limpieza resistente a cancelación (R3): aísla y propaga la cancelación
+            # del caller sin suprimirla, y asegura helpers_terminal antes de close_job.
+            await _limpiar_helpers_en_salida_normal(tool_name, heartbeat, drain_out, drain_err)
         finally:
             # U-07: cerrar el job en TODA salida — y EXACTAMENTE una vez. Un
             # `finally` (y no una llamada por rama) es lo que hace que "toda

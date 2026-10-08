@@ -44,7 +44,14 @@ según el estado del defecto que cubren:
   falla real, que se registra y se encadena);
   **F4** la misma falla se registraba dos veces —en `_etapa` y otra vez en
   `_cerrar_recursos_del_proceso`— violando *log once* (ahora se registra una sola
-  vez, donde se descubre).
+  vez, donde se descubre);
+  **F5** la espera del heartbeat en la rama de salida normal suprimía la cancelación
+  del caller vía `suppress(CancelledError)` (`gather(return_exceptions=True)` absorbe
+  la del heartbeat pero propaga la del caller);
+  **F6** la cancelación durante el drain-grace en salida normal saltaba directamente
+  a `finally: close_job` con los drains vivos y sin resistir cancelación repetida
+  (`_limpiar_helpers_en_salida_normal` con `_handoff_terminal` garantiza
+  *helpers_terminal < close_job* en todo camino).
 
 Los tests R2 verifican aceptación (rechazo antes de copiar y preservar el destino
 previo, tags desconocidos, igualdad del inventario y la semántica TexGen). Los
@@ -1448,6 +1455,136 @@ async def test_r3_camino_normal_sin_cancelacion_no_cambia(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_r3_salida_normal_cancelacion_durante_espera_de_heartbeat_no_se_pierde(monkeypatch):
+    """R3 (salida normal) — la cancelación del caller durante la espera de heartbeat
+    NO se suprime ni produce resultado nominal.
+
+    Vulnerabilidad reproducida: `with contextlib.suppress(asyncio.CancelledError): await heartbeat`
+    suprime la cancelación externa del caller. El caller devolvía éxito en vez de propagar `CancelledError`.
+    """
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+    proc = _ProcesoNormal(salida=b"out", error=b"err", job=42)
+    runner = _runner_para_execute_process(proc)
+
+    heartbeat_en_cancelacion = asyncio.Event()
+    permitir_finalizar_heartbeat = asyncio.Event()
+    real_sleep = runner_mod.asyncio.sleep
+
+    async def _mock_sleep(delay: float) -> None:
+        try:
+            await real_sleep(delay)
+        except asyncio.CancelledError:
+            heartbeat_en_cancelacion.set()
+            await permitir_finalizar_heartbeat.wait()
+            raise
+
+    monkeypatch.setattr(runner_mod.asyncio, "sleep", _mock_sleep)
+
+    with _observar_cierre_de_job(monkeypatch, orden, registro):
+        caller = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+        await asyncio.wait_for(heartbeat_en_cancelacion.wait(), timeout=5.0)
+        caller.cancel()
+        permitir_finalizar_heartbeat.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=5.0)
+
+    assert caller.cancelled()
+    assert registro["close_job"] == 1, registro
+    assert registro["vivos_al_cerrar"] == [[]], registro
+
+
+@pytest.mark.asyncio
+async def test_r3_salida_normal_cancelacion_durante_drain_grace_espera_helpers_antes_de_close_job(monkeypatch):
+    """R3 (salida normal) — cancelación durante drain-grace lleva los drains a
+    terminalidad ANTES de close_job y resiste cancelación repetida.
+
+    Invariante: helpers_terminal < close_job.
+    """
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+
+    drain_en_gracia = asyncio.Event()
+    drain_cancel_iniciado = asyncio.Event()
+    permitir_terminar_drain = asyncio.Event()
+    proceso_termino = asyncio.Event()
+
+    class _StreamConDrainLento:
+        async def read(self, _n: int) -> bytes:
+            await proceso_termino.wait()
+            drain_en_gracia.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                orden.append("drain_cancel_iniciado")
+                drain_cancel_iniciado.set()
+                await permitir_terminar_drain.wait()
+                orden.append("drain_cancel_terminal")
+                raise
+            return b""
+
+    class _ProcesoSalidaNormalConDrain:
+        def __init__(self) -> None:
+            self._job = 99
+            self.stdout = _StreamConDrainLento()
+            self.stderr = _StreamFinito([b""])
+            self.returncode = 0
+            self.pid = "fake"
+            self.kill_llamado = False
+
+        def assign_job(self) -> int | None:
+            return self._job
+
+        def kill(self) -> None:
+            self.kill_llamado = True
+
+        async def terminate(self) -> None:
+            self.kill_llamado = True
+
+        async def wait(self) -> int:
+            proceso_termino.set()
+            return 0
+
+        async def captured_output(self) -> tuple[str, str] | None:
+            return None
+
+    proc = _ProcesoSalidaNormalConDrain()
+    runner = _runner_para_execute_process(proc)
+
+    with _observar_cierre_de_job(monkeypatch, orden, registro):
+        caller = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+        await asyncio.wait_for(drain_en_gracia.wait(), timeout=5.0)
+
+        # Cancel #1 durante drain-grace:
+        orden.append("cancel_1")
+        caller.cancel()
+
+        # Esperar causalmente a que el drain reciba su cancelación y empiece su cleanup:
+        await asyncio.wait_for(drain_cancel_iniciado.wait(), timeout=5.0)
+
+        # Cancel #2 repetido mientras el drain sigue limpiando:
+        orden.append("cancel_2")
+        caller.cancel()
+
+        # Cancel #2 NO debe liberar al caller ni cerrar el job mientras el drain no sea terminal:
+        assert not caller.done(), "cancel #2 no debe liberar al caller antes de que el drain sea terminal"
+        assert registro["close_job"] == 0, "close_job no debe correr mientras el drain esté vivo"
+
+        # Permitir que el drain complete su etapa terminal:
+        permitir_terminar_drain.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, timeout=5.0)
+
+    assert caller.cancelled()
+    assert registro["close_job"] == 1, registro
+    assert registro["vivos_al_cerrar"] == [[]], f"close_job corrió con helpers vivos: {registro['vivos_al_cerrar']}"
+    idx_drain_term = orden.index("drain_cancel_terminal")
+    idx_job_closed = orden.index("job_closed")
+    assert idx_drain_term < idx_job_closed, f"helpers deben ser terminales ANTES de close_job: orden={orden}"
+
+
+@pytest.mark.asyncio
 async def test_r3_la_clasificacion_de_error_no_cambia(monkeypatch):
     """Veredicto tipado intacto: `DynDOLODExecutionError` sigue saliendo tal cual."""
     orden: list[str] = []
@@ -1964,6 +2101,7 @@ def test_r3_ancla_ast_el_terminal_handoff_es_una_sola_primitiva():
         "_esperar_terminalidad_del_worker",
         "_cerrar_recursos_del_proceso",
         "_limpiar_recursos_del_proceso",
+        "_limpiar_helpers_en_salida_normal",
     ):
         fn = next((f for f in funciones if f.name == nombre), None)
         assert fn is not None, f"falta el call site {nombre}"
