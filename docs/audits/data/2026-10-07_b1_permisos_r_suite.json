@@ -1,0 +1,84 @@
+{
+  "registro": "B1",
+  "descripcion": "Permisos de las herramientas cerradas de la R-suite según la página del autor en Nexus, tal como los registró el P0.",
+  "fuente_primaria": {
+    "documento": "docs/design/research/2026-09-19-pre-lod-material-p0-evidence.md",
+    "secciones": [
+      "§2 (filas Nexus de la tabla de fuentes)",
+      "§7 (tabla B6-L)"
+    ],
+    "consultado_en_origen": "2026-09-19",
+    "estado_en_origen": "VERIFIED",
+    "transcripto_en": "2026-10-07",
+    "nivel_de_evidencia": "SUPPORTED_BY_REPO_EVIDENCE",
+    "reverificacion_en_vivo": "NO_REALIZADA: el egress del entorno bloquea www.nexusmods.com (2026-10-07)"
+  },
+  "herramientas": {
+    "parallaxr": {
+      "nexus_mod_id": 124711,
+      "version_registrada": "v3.0318",
+      "permisos_de_la_pagina": {
+        "upload_a_otros_sitios": "no",
+        "modificacion": "con_permiso",
+        "conversion": "no",
+        "uso_de_assets": "con_permiso"
+      },
+      "notas_del_autor": [
+        "It should be fine for you to upload/share ParallaxR Outputs",
+        "You may not share any of the ParallaxR mod files itself without checking the license restrictions"
+      ],
+      "ejecutar_copia_instalada": "si",
+      "descargar": "si_manual_desde_nexus",
+      "redistribuir_o_bundlear": "no",
+      "modificar": "con_permiso",
+      "invocacion_directa_de_helpers": "ABIERTA"
+    },
+    "bendr": {
+      "nexus_mod_id": 121578,
+      "version_registrada": "v3.0331",
+      "permisos_de_la_pagina": {
+        "upload_a_otros_sitios": "no",
+        "modificacion": "con_permiso",
+        "conversion": "no",
+        "uso_de_assets": "con_permiso"
+      },
+      "notas_del_autor": [],
+      "ejecutar_copia_instalada": "si",
+      "descargar": "si_manual_desde_nexus",
+      "redistribuir_o_bundlear": "no",
+      "modificar": "con_permiso",
+      "invocacion_directa_de_helpers": "ABIERTA"
+    },
+    "vramr": {
+      "nexus_mod_id": 90557,
+      "version_registrada": "v16.0310",
+      "permisos_de_la_pagina": {
+        "upload_a_otros_sitios": "no",
+        "modificacion": "con_permiso",
+        "conversion": "no",
+        "uso_de_assets": "con_permiso"
+      },
+      "notas_del_autor": [
+        "You may prepare for Collections or Wabbajacks VRAMr outputs and distribute these on Nexus without my permission. No other activity permitted without prior written consent."
+      ],
+      "ejecutar_copia_instalada": "si",
+      "descargar": "si_manual_desde_nexus",
+      "redistribuir_o_bundlear": "no",
+      "modificar": "con_permiso",
+      "invocacion_directa_de_helpers": "ABIERTA",
+      "origen_de_los_permisos": "La evidencia dice «igual patrón de permisos» que BENDr; no los lista por separado.",
+      "condicion_de_invocacion": "consentimiento escrito previo del autor"
+    }
+  },
+  "b6_l": {
+    "estado": "ABIERTA",
+    "siguiente_paso": "R-LIC-1: pedido escrito al autor de la R-suite y respuesta fechada"
+  },
+  "politica_vigente": [
+    "MANUAL_ONLY",
+    "NO_VENDOR",
+    "NO_BUNDLE",
+    "NO_REDISTRIBUTE"
+  ],
+  "sha256": "05ffca3dee16f2ea946749d920874e3e4e0162cae6e71274b6402250b31bde7b"
+}
