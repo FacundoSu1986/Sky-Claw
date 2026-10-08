@@ -1464,14 +1464,23 @@ async def test_r3_salida_normal_cancelacion_durante_espera_de_heartbeat_no_se_pi
     """
     orden: list[str] = []
     registro = _registro_de_cierre()
-    proc = _ProcesoNormal(salida=b"out", error=b"err", job=42)
-    runner = _runner_para_execute_process(proc)
 
+    heartbeat_iniciado = asyncio.Event()
+    permitir_salida_proceso = asyncio.Event()
     heartbeat_en_cancelacion = asyncio.Event()
     permitir_finalizar_heartbeat = asyncio.Event()
+
+    class _ProcesoNormalConHold(_ProcesoNormal):
+        async def wait(self) -> int:
+            await permitir_salida_proceso.wait()
+            return 0
+
+    proc = _ProcesoNormalConHold(salida=b"out", error=b"err", job=42)
+    runner = _runner_para_execute_process(proc)
     real_sleep = runner_mod.asyncio.sleep
 
     async def _mock_sleep(delay: float) -> None:
+        heartbeat_iniciado.set()
         try:
             await real_sleep(delay)
         except asyncio.CancelledError:
@@ -1483,11 +1492,22 @@ async def test_r3_salida_normal_cancelacion_durante_espera_de_heartbeat_no_se_pi
 
     with _observar_cierre_de_job(monkeypatch, orden, registro):
         caller = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
-        await asyncio.wait_for(heartbeat_en_cancelacion.wait(), timeout=5.0)
-        caller.cancel()
-        permitir_finalizar_heartbeat.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(caller, timeout=5.0)
+        try:
+            # 1. Esperar checkpoint causal de que el heartbeat inició su ciclo
+            await asyncio.wait_for(heartbeat_iniciado.wait(), timeout=5.0)
+            # 2. Permitir que el proceso termine su salida normal
+            permitir_salida_proceso.set()
+            # 3. Esperar que la limpieza de salida normal cancele el heartbeat
+            await asyncio.wait_for(heartbeat_en_cancelacion.wait(), timeout=5.0)
+            # 4. Cancelar al caller mientras espera la terminación del heartbeat
+            caller.cancel()
+            # 5. Liberar al heartbeat para completar su cancelación
+            permitir_finalizar_heartbeat.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, timeout=5.0)
+        finally:
+            permitir_salida_proceso.set()
+            permitir_finalizar_heartbeat.set()
 
     assert caller.cancelled()
     assert registro["close_job"] == 1, registro
@@ -2255,3 +2275,175 @@ async def test_r3_integracion_brokered_teardown_deadline_con_rollback_veto(
             await worker.cerrar()
         await bridge.cerrar()
         await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_r3_generica_sin_cancelacion_encadena_falla_de_limpieza_y_veta_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding A: en la rama `except Exception as e:`, si la limpieza falla
+    (por ejemplo, teardown con terminalidad desconocida), esa falla NO se descarta
+    de la cadena causal cuando el caller no fue cancelado.
+
+    Contrato de seguridad:
+    1. El error inesperado original `e` queda como causa directa del veredicto tipado.
+    2. La falla de limpieza se encadena al final (`veredicto -> e -> falla_limpieza`).
+    3. `exception_forbids_rollback(veredicto)` reconoce la falla y veta el rollback.
+    """
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+    from sky_claw.local.mo2.vfs_broker import VfsTeardownDeadlineError
+
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+    proc = _ProcesoCancelable(job=77, orden=orden)
+    runner = _runner_para_execute_process(proc)
+
+    falla_limpieza = VfsTeardownDeadlineError("teardown deadline vencido")
+
+    async def _readiness_explota(**_kwargs) -> None:
+        raise RuntimeError("error inesperado en protocolo")
+
+    async def _reap_que_falla(_proc: object, **_kwargs) -> None:
+        raise falla_limpieza
+
+    runner._protocolo_de_readiness = _readiness_explota
+    monkeypatch.setattr(runner_mod, "kill_and_reap", _reap_que_falla)
+
+    with (
+        _observar_cierre_de_job(monkeypatch, orden, registro),
+        pytest.raises(runner_mod.DynDOLODExecutionError) as exc_info,
+    ):
+        await runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen")
+
+    veredicto = exc_info.value
+    assert isinstance(veredicto.__cause__, RuntimeError), (
+        f"el error original debe ser la causa directa del veredicto; observado = {veredicto.__cause__!r}"
+    )
+    # Contrato Finding A: falla_limpieza debe estar encadenada y vetar rollback
+    assert exception_forbids_rollback(veredicto), (
+        "exception_forbids_rollback debe retornar True al estar VfsTeardownDeadlineError encadenada"
+    )
+    assert veredicto.__cause__.__cause__ is falla_limpieza
+    assert registro["close_job"] == 1, registro
+
+
+@pytest.mark.asyncio
+async def test_r3_salida_normal_cancelacion_con_drain_fallido_encadena_falla_y_emite_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding B: en salida normal, si el caller es cancelado durante la espera de helpers
+    y un drain falla inesperadamente (e.g. OSError), la excepción del drain NO se pierde
+    ni se silencia.
+
+    Contrato:
+    1. La cancelación del caller gana como resultado externo (`CancelledError`).
+    2. La falla no-cancelación del helper viaja encadenada en `__cause__`.
+    3. Se emite el registro técnico `dyndolod_drenaje_fallido`.
+    4. close_job se ejecuta en finally.
+    """
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+
+    falla_drain = OSError("pipe roto en drain_out")
+    drain_en_gracia = asyncio.Event()
+    drain_cancel_iniciado = asyncio.Event()
+    permitir_drain_terminar = asyncio.Event()
+    proceso_termino = asyncio.Event()
+
+    class _StreamConFalla:
+        async def read(self, _n: int) -> bytes:
+            await proceso_termino.wait()
+            drain_en_gracia.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                drain_cancel_iniciado.set()
+                await permitir_drain_terminar.wait()
+                raise falla_drain from None
+            return b""
+
+    class _ProcesoSalidaNormalConFallaDrain(_ProcesoNormal):
+        def __init__(self) -> None:
+            super().__init__(salida=b"", error=b"", job=88)
+            self.stdout = _StreamConFalla()
+
+        async def wait(self) -> int:
+            proceso_termino.set()
+            return 0
+
+    proc = _ProcesoSalidaNormalConFallaDrain()
+    runner = _runner_para_execute_process(proc)
+
+    with (
+        _observar_cierre_de_job(monkeypatch, orden, registro),
+        _capturar_registros() as capturados,
+    ):
+        caller = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+        try:
+            await asyncio.wait_for(drain_en_gracia.wait(), timeout=5.0)
+            caller.cancel()
+            await asyncio.wait_for(drain_cancel_iniciado.wait(), timeout=5.0)
+            permitir_drain_terminar.set()
+            with pytest.raises(asyncio.CancelledError) as exc_info:
+                await asyncio.wait_for(caller, timeout=5.0)
+        finally:
+            permitir_drain_terminar.set()
+
+    # 1. CancelledError con falla de drain encadenada
+    assert exc_info.value.__cause__ is falla_drain, (
+        f"la falla del drain debe viajar como causa de la cancelación; observado = {exc_info.value.__cause__!r}"
+    )
+
+    # 2. Log dyndolod_drenaje_fallido emitido (no silenciado)
+    logs_drenaje = [r for r in capturados.registros if getattr(r, "operation_type", None) == "dyndolod_drenaje_fallido"]
+    assert len(logs_drenaje) == 1, f"la falla de drain debe registrarse exactamente UNA vez; hubo {len(logs_drenaje)}"
+
+    # 3. close_job ejecutado exactamente una vez
+    assert registro["close_job"] == 1, registro
+    assert registro["vivos_al_cerrar"] == [[]], registro
+
+
+@pytest.mark.asyncio
+async def test_r3_falla_en_close_job_preserva_contexto_y_veto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding D: si `close_job` en el `finally` lanza una excepción, Python
+    encadena la excepción previa activa en `__context__`. `exception_forbids_rollback`
+    inspecciona `__context__` recursivamente, garantizando que un fallo en el cierre
+    del job no borre un veto de rollback previo originado en teardown.
+    """
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+    from sky_claw.local.mo2.vfs_broker import VfsTeardownDeadlineError
+
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+    proc = _ProcesoCancelable(job=55, orden=orden)
+    runner = _runner_para_execute_process(proc)
+
+    falla_limpieza = VfsTeardownDeadlineError("teardown deadline vencido")
+    falla_close_job = OSError("falla cerrando job handle")
+
+    async def _readiness_explota(**_kwargs) -> None:
+        raise RuntimeError("error inesperado en protocolo")
+
+    async def _reap_que_falla(_proc: object, **_kwargs) -> None:
+        raise falla_limpieza
+
+    def _close_job_que_falla(_job: object) -> None:
+        registro["close_job"] += 1
+        raise falla_close_job
+
+    runner._protocolo_de_readiness = _readiness_explota
+    monkeypatch.setattr(runner_mod, "kill_and_reap", _reap_que_falla)
+    monkeypatch.setattr(runner_mod, "close_job", _close_job_que_falla)
+
+    with pytest.raises(OSError) as exc_info:
+        await runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen")
+
+    falla_final = exc_info.value
+    assert falla_final is falla_close_job
+    # Invariante Finding D: falla_final.__context__ contiene veredicto, y éste contiene falla_limpieza
+    assert exception_forbids_rollback(falla_final), (
+        "exception_forbids_rollback debe inspeccionar __context__ y vetar rollback ante falla en close_job"
+    )
+    assert registro["close_job"] == 1, registro

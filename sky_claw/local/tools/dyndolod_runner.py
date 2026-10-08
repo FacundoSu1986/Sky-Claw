@@ -708,6 +708,14 @@ async def _limpiar_helpers_en_salida_normal(
 ) -> None:
     """Limpia los helpers auxiliares en la salida normal del proceso (R3).
 
+    Divergencia deliberada vs `_limpiar_recursos_del_proceso`:
+    En salida normal, el proceso ya concluyó por sí mismo (`proc.wait()` retornó
+    código de salida exitoso/reapeado) y no debe re-matarse (`kill_and_reap` no
+    aplica e introduciría riesgo de matar PIDs reciclados en Windows). Solo
+    resta limpiar los helpers auxiliares (`heartbeat`, `drain_out`, `drain_err`).
+    Ambos caminos comparten la primitiva unificada `_handoff_terminal` para
+    garantizar terminalidad bajo cancelaciones repetidas.
+
     Garantiza dos propiedades esenciales del mecanismo:
     1. La cancelación del caller no se suprime durante la espera de terminación
        del heartbeat (reemplaza `contextlib.suppress` por `asyncio.gather(..., return_exceptions=True)`).
@@ -717,6 +725,7 @@ async def _limpiar_helpers_en_salida_normal(
        repetidas) ANTES de propagar la cancelación hacia `finally: close_job`.
     """
     heartbeat.cancel()
+    results: list[Any] = []
     try:
         # gather(return_exceptions=True) absorbe el CancelledError propio del
         # heartbeat sin relanzarlo; si el caller fue cancelado externamente,
@@ -752,19 +761,6 @@ async def _limpiar_helpers_en_salida_normal(
             # sus CancelledError como resultados (no relanza); sin `suppress`
             # una cancelación externa del caller propaga como corresponde.
             results = await asyncio.gather(drain_out, drain_err, return_exceptions=True)
-            results = []
-
-        for r in results:
-            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
-                # Exento por el mismo motivo que el drain-timeout de arriba:
-                # es diagnóstico del andamiaje de captura, no el veredicto —
-                # que lo dan el exit code, el artefacto y el log.
-                logger.warning(
-                    "%s drain task falló inesperadamente: %r",
-                    tool_name,
-                    r,
-                    extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
-                )
     except asyncio.CancelledError as exc:
         heartbeat.cancel()
         drain_out.cancel()
@@ -782,7 +778,28 @@ async def _limpiar_helpers_en_salida_normal(
                 "los helpers sean terminales; ninguna cancelación lo libera antes"
             ),
         )
+        if not etapa.cancelled():
+            results = etapa.result()
+        falla_helper = next(
+            (r for r in results if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)),
+            None,
+        )
+        causa = _falla or falla_helper
+        if causa is not None:
+            raise (intencion or exc) from causa
         raise (intencion or exc) from None
+    finally:
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                # Exento por el mismo motivo que el drain-timeout de arriba:
+                # es diagnóstico del andamiaje de captura, no el veredicto —
+                # que lo dan el exit code, el artefacto y el log.
+                logger.warning(
+                    "%s drain task falló inesperadamente: %r",
+                    tool_name,
+                    r,
+                    extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
+                )
 
 
 # =============================================================================
@@ -2394,17 +2411,13 @@ class DynDOLODRunner:
             if intencion is not None:
                 raise asyncio.CancelledError() from _encadenar_falla_de_limpieza(veredicto_timeout, falla_limpieza)
             raise veredicto_timeout from falla_limpieza
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # La falla de la limpieza —si la hubo— ya quedó registrada UNA vez con
             # `exc_info` por la unidad de limpieza: no se pierde y no se repite.
-            # Acá la causa que se encadena sigue siendo `e` (política previa): el
-            # error inesperado es el que explica el corte, y desplazarlo por la
-            # falla de limpieza borraría el diagnóstico principal.
-            #
-            # F1: la clasificación no cambia (el `Exception` original se envuelve
-            # en el veredicto tipado), pero si el caller pidió cancelación durante
-            # la limpieza, manda la cancelación: el veredicto —con `e` encadenado—
-            # pasa a ser su causa en vez de devolverse normalmente.
+            # Acá la causa directa sigue siendo `e` (el error inesperado que explica
+            # el corte), pero la falla de limpieza —si la hubo— se encadena al FINAL
+            # de la cadena causal (`veredicto -> e -> falla_limpieza`) para que
+            # `exception_forbids_rollback` la detecte y vete el rollback.
             intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
             veredicto = DynDOLODExecutionError(
                 f"Unexpected error during {tool_name} execution: {e}",
@@ -2412,9 +2425,11 @@ class DynDOLODRunner:
                 stderr=str(e),
             )
             veredicto.__cause__ = e
+            if falla_limpieza is not None:
+                _encadenar_falla_de_limpieza(veredicto, falla_limpieza)
             if intencion is not None:
-                raise asyncio.CancelledError() from _encadenar_falla_de_limpieza(veredicto, falla_limpieza)
-            raise veredicto from e
+                raise asyncio.CancelledError() from veredicto
+            raise veredicto from veredicto.__cause__
         else:
             # Process exited normally — cancel heartbeat and wait for drains to finish.
             # Limpieza resistente a cancelación (R3): aísla y propaga la cancelación
