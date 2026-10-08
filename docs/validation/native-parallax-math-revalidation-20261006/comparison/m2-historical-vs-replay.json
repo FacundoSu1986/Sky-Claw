@@ -1,0 +1,2855 @@
+{
+ "surface": "HISTORICAL_OLD_vs_OLD_CODE_REPLAY_SAME_ENV",
+ "objective": "environment/replay drift",
+ "identity_key": [
+  "asset",
+  "split",
+  "policy",
+  "k",
+  "sigma_candidate"
+ ],
+ "n_rows_a": 174,
+ "n_rows_b": 174,
+ "n_paired_rows": 174,
+ "rows_only_in_a": [],
+ "rows_only_in_b": [],
+ "n_assets_a": 34,
+ "n_assets_b": 34,
+ "characs_only_in_a": [],
+ "characs_only_in_b": [],
+ "fields_unchanged": [
+  "activation_fraction",
+  "affine_scale",
+  "aligned_rmse",
+  "best_sign",
+  "catastrophic",
+  "corr",
+  "correlation",
+  "finite",
+  "gradient_energy_ratio",
+  "gradient_rmse",
+  "hf_energy_ratio",
+  "hf_gt_fraction",
+  "high_band_error",
+  "low_band_error",
+  "low_trust_fraction",
+  "mae",
+  "max_gradient",
+  "mid_band_error",
+  "negative_nz_fraction",
+  "normal_angle_mean",
+  "normal_angle_p95",
+  "offset_b",
+  "oracle_best_sign",
+  "p99_gradient",
+  "r2",
+  "r_p01_proxy",
+  "raw_centered_rmse",
+  "rmse",
+  "scale_a",
+  "seam_gradient",
+  "seam_height",
+  "sigma_eff",
+  "spearman",
+  "ssim",
+  "variance_ratio"
+ ],
+ "fields_changed": [
+  "runtime_ms"
+ ],
+ "taxonomy_counts": {
+  "NON_SCIENTIFIC_RUNTIME_VARIATION": 208
+ },
+ "material_changes": [
+  {
+   "key": [
+    "Asphalt013",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.88929999890388,
+   "new": 24.892200000067533,
+   "rel": 0.00011651597930758791,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Asphalt013",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.12339999905089,
+   "new": 50.79999999998108,
+   "rel": 0.9446167038680546,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Asphalt013",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.31939999992028,
+   "new": 26.460400000360096,
+   "rel": 0.0053572649999712825,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Asphalt021",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.890899996942608,
+   "new": 25.993600000219885,
+   "rel": 0.03336816532078666,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Asphalt021",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 38.78189999886672,
+   "new": 56.12620000010793,
+   "rel": 0.44722667021853085,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Asphalt021",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.989099999307655,
+   "new": 27.30539999993198,
+   "rel": 0.058080450907958096,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.50889999838546,
+   "new": 24.940599999354163,
+   "rel": 0.022278498840297544,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 30.89669999826583,
+   "new": 24.911299999985204,
+   "rel": 0.19372295418658225,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.61979999882169,
+   "new": 24.993699999868113,
+   "rel": 0.024438129844197583,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.615599999582628,
+   "new": 25.112600000284147,
+   "rel": 0.019636471498097916,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.97310000055586,
+   "new": 43.023400000492984,
+   "rel": 0.6564599527808472,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.373600001534214,
+   "new": 26.267299999744864,
+   "rel": 0.004030545764824155,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.95029999833787,
+   "new": 28.592200000275625,
+   "rel": 0.022965764302205288,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.276000000507338,
+   "new": 26.919800000541727,
+   "rel": 0.02450144618746988,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.620100001513492,
+   "new": 25.43229999992036,
+   "rel": 0.0792104301386761,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.12319999752799,
+   "new": 25.8825999999317,
+   "rel": 0.009210203865493472,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.797900001634844,
+   "new": 26.298400000086986,
+   "rel": 0.019400803880177248,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.405199998407625,
+   "new": 25.381299999935436,
+   "rel": 0.03877645306734792,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.90799999961746,
+   "new": 24.822100000164937,
+   "rel": 0.0419136945911902,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.455100000021048,
+   "new": 57.45019999994838,
+   "rel": 1.1716115229162873,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.76369999992312,
+   "new": 33.99669999998878,
+   "rel": 0.224501777503824,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.55629999935627,
+   "new": 27.449999999589636,
+   "rel": 0.03365303149365799,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.588400000036927,
+   "new": 25.93239999987418,
+   "rel": 0.024672413539808244,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks017",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.855599997157697,
+   "new": 26.048200000332145,
+   "rel": 0.007449063382618095,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.425200001336634,
+   "new": 25.331400000141002,
+   "rel": 0.0036892532287140607,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.156100000458537,
+   "new": 28.09019999949669,
+   "rel": 0.11663572648322561,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.734300001407973,
+   "new": 25.667500000054133,
+   "rel": 0.03990379405100028,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.91569999983767,
+   "new": 24.833599999510625,
+   "rel": 0.0032951111278262486,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.086300000111805,
+   "new": 48.46850000012637,
+   "rel": 0.9320704926557665,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.84310000060941,
+   "new": 25.765100000171515,
+   "rel": 0.07463249424067056,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.58190000167815,
+   "new": 26.58750000045984,
+   "rel": 0.03605262875863548,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 30.67920000103186,
+   "new": 25.88579999974172,
+   "rel": 0.15624266607763299,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks019",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.82059999986086,
+   "new": 25.528699999995297,
+   "rel": 0.011304927068586188,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.49530000053346,
+   "new": 62.16949999998178,
+   "rel": 1.3464350280513921,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.698000001284527,
+   "new": 26.44220000001951,
+   "rel": 0.028959452046765716,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.354699999297736,
+   "new": 76.88240000061342,
+   "rel": 2.0322740952463594,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.89850000003935,
+   "new": 69.57229999989067,
+   "rel": 1.686344768993763,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 29.7738000008394,
+   "new": 49.589799999921524,
+   "rel": 0.6655515922899817,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.07029999853694,
+   "new": 26.609199999256816,
+   "rel": 0.020671031815902404,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.88290000151028,
+   "new": 26.297299999896495,
+   "rel": 0.02178336420478762,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.150800000323215,
+   "new": 37.21149999910267,
+   "rel": 0.422958379806459,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks032",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.095400000485824,
+   "new": 35.73499999947671,
+   "rel": 0.3693984379933408,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.13120000003255,
+   "new": 62.29759999951057,
+   "rel": 1.4788947602752704,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.040200001967605,
+   "new": 62.976899999739544,
+   "rel": 1.5150318286112312,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.177600000461098,
+   "new": 84.46610000009969,
+   "rel": 2.3548114196171515,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.945999997929903,
+   "new": 33.347800000228744,
+   "rel": 0.2852771141173743,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 38.836199997604126,
+   "new": 51.911399999880814,
+   "rel": 0.3366755759596284,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.036100000259466,
+   "new": 27.778699999544187,
+   "rel": 0.027466979308317183,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.710499998240266,
+   "new": 26.185200000327313,
+   "rel": 0.01846327384218657,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.201400000194553,
+   "new": 59.08369999997376,
+   "rel": 1.1720830545321628,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks040",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.556099997629644,
+   "new": 92.4764999999752,
+   "rel": 2.6185685612653145,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.103600000875304,
+   "new": 24.53929999956017,
+   "rel": 0.02247884770692078,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.08719999968889,
+   "new": 25.68539999992936,
+   "rel": 0.023844829245507102,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.307099997007754,
+   "new": 24.48069999991276,
+   "rel": 0.03265486749539484,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 36.75170000133221,
+   "new": 25.436699999772827,
+   "rel": 0.30787691456855676,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 22.760700001526857,
+   "new": 53.64420000023529,
+   "rel": 1.356878303243603,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 29.094800000166288,
+   "new": 25.253600000723964,
+   "rel": 0.13202359182466866,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.85790000052657,
+   "new": 25.753699999768287,
+   "rel": 0.07553333168395712,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.360699998098426,
+   "new": 25.412100000721694,
+   "rel": 0.07121893802103602,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Bricks066",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.9172000005492,
+   "new": 25.31470000030822,
+   "rel": 0.023247110036123207,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete012",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.028199998516357,
+   "new": 26.135899999644607,
+   "rel": 0.06751414643009242,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete012",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.7493999999715,
+   "new": 56.06400000033318,
+   "rel": 1.0958974780889632,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete012",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.871899997786386,
+   "new": 26.610900000378024,
+   "rel": 0.00971274816555072,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete027",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.203599998552818,
+   "new": 32.240900000033434,
+   "rel": 0.2303996398133862,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete027",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 29.700100003537955,
+   "new": 41.50939999999537,
+   "rel": 0.3976181896711007,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete027",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.946199999860255,
+   "new": 42.479699999603326,
+   "rel": 0.5200528157608457,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete035",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.85200000248733,
+   "new": 50.838199999816425,
+   "rel": 0.9665093607815669,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete035",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 27.336499999364605,
+   "new": 62.73360000068351,
+   "rel": 1.2948658387921517,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Concrete035",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.957400001061615,
+   "new": 62.95779999982187,
+   "rel": 1.4254278162391842,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass004",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.989499998104293,
+   "new": 25.952300000426476,
+   "rel": 0.0014313471856145915,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass004",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 24.269300000014482,
+   "new": 54.59350000000995,
+   "rel": 1.2494880363247962,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass004",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 30.136199999105884,
+   "new": 27.036999999836553,
+   "rel": 0.10283977407109329,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass005",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.36700000221026,
+   "new": 27.19580000029964,
+   "rel": 0.03143323085750766,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass005",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 28.101199997763615,
+   "new": 59.84790000002249,
+   "rel": 1.1297275562888909,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Grass005",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.29370000088238,
+   "new": 27.387699999962933,
+   "rel": 0.003444018182859519,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Gravel011",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.718000000575557,
+   "new": 52.77219999970839,
+   "rel": 1.1349704668047411,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Gravel011",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 30.992399999377085,
+   "new": 49.1957000003822,
+   "rel": 0.5873472206531597,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Gravel011",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.967699999455363,
+   "new": 48.16510000000562,
+   "rel": 0.8548080885490752,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Ground037",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.39729999989504,
+   "new": 25.021899999956076,
+   "rel": 0.014781098775874399,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Ground037",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 27.026299998397008,
+   "new": 50.30259999966802,
+   "rel": 0.8612462676227076,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Ground037",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.072000000771368,
+   "new": 26.502200000322773,
+   "rel": 0.021047576848122022,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal018",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.71530000245548,
+   "new": 33.7002999995093,
+   "rel": 0.215945704954432,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal018",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 32.58379999897443,
+   "new": 50.24830000002112,
+   "rel": 0.5421252279231605,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal018",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.30820000215317,
+   "new": 63.32380000003468,
+   "rel": 1.318856606991372,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal049A",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 30.307099998026388,
+   "new": 25.561400000697176,
+   "rel": 0.15658707027852395,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal049A",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.242400002956856,
+   "new": 49.09670000051847,
+   "rel": 0.870892143820173,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal049A",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.72019999974873,
+   "new": 25.83059999960824,
+   "rel": 0.06816689634842528,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal062C",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.874899998598266,
+   "new": 25.40309999949386,
+   "rel": 0.01823388686062417,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal062C",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.291499998478685,
+   "new": 58.44520000027842,
+   "rel": 1.222969400896117,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal062C",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.00870000262512,
+   "new": 26.80990000044403,
+   "rel": 0.00736059129694377,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal063",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.497800000972347,
+   "new": 24.529399999664747,
+   "rel": 0.0012899116937498706,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal063",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 24.89389999755076,
+   "new": 58.07310000000143,
+   "rel": 1.3328245074381706,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Metal063",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.104399999894667,
+   "new": 25.33190000031027,
+   "rel": 0.029592712323880815,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones002",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.10989999791491,
+   "new": 61.50309999975434,
+   "rel": 1.4493566284557673,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones002",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 31.17039999779081,
+   "new": 45.82510000000184,
+   "rel": 0.47014796099022393,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones002",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.631900000211317,
+   "new": 43.358599999919534,
+   "rel": 0.6280700963722263,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones054",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.696600001538172,
+   "new": 53.33119999977498,
+   "rel": 1.0754185377280507,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones054",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 28.23730000091018,
+   "new": 67.53649999973277,
+   "rel": 1.391747794497202,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "PavingStones054",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.816200002940604,
+   "new": 50.061200000527606,
+   "rel": 0.8668267687083929,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.13810000164085,
+   "new": 65.12209999982588,
+   "rel": 1.5905736708651463,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.248499998269835,
+   "new": 41.344000000208325,
+   "rel": 0.6374834149767884,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.438100001541898,
+   "new": 25.91059999940626,
+   "rel": 0.019952265938356945,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.573400001827395,
+   "new": 64.81350000012753,
+   "rel": 1.6375471035879323,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 34.829599997465266,
+   "new": 47.588899999936984,
+   "rel": 0.36633495657143006,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.59309999924153,
+   "new": 51.44350000045961,
+   "rel": 1.0100534910575183,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.590099998633377,
+   "new": 28.206899999531743,
+   "rel": 0.022355845065038453,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.527300000248943,
+   "new": 73.70309999987512,
+   "rel": 1.887226616177832,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks012",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.94630000021425,
+   "new": 59.21829999988404,
+   "rel": 1.2823408347007106,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 24.690300000656862,
+   "new": 61.361399999441346,
+   "rel": 1.485243192582062,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.984000000084052,
+   "new": 33.376500000485976,
+   "rel": 0.2368996442477769,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.050799999007722,
+   "new": 60.47039999975823,
+   "rel": 1.4139109330701414,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.057599999854574,
+   "new": 76.04940000055649,
+   "rel": 2.034983398290253,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 30.45360000032815,
+   "new": 35.6298999995488,
+   "rel": 0.16997333645824694,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.67339999950491,
+   "new": 78.22550000037154,
+   "rel": 2.0469474242554573,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 30.198899999959394,
+   "new": 70.18539999990026,
+   "rel": 1.3241045203631465,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.69220000077621,
+   "new": 47.25190000044677,
+   "rel": 0.839153517371778,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Planks014",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.41119999680086,
+   "new": 76.26560000062454,
+   "rel": 1.8876234328566084,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Road001",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.140300000814022,
+   "new": 32.98819999963598,
+   "rel": 0.172276059554508,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Road001",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.85429999817279,
+   "new": 64.62240000018937,
+   "rel": 1.4994836450708953,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Road001",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.70089999830816,
+   "new": 30.68639999946754,
+   "rel": 0.10777628168549472,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.1739999987185,
+   "new": 77.53319999937958,
+   "rel": 1.9622220525397593,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.635999998485204,
+   "new": 59.96549999963463,
+   "rel": 1.3391129662653265,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.66529999987688,
+   "new": 47.81069999989995,
+   "rel": 0.7929931409029978,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.56080000087968,
+   "new": 50.69860000003246,
+   "rel": 0.9087753380302304,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.75710000039544,
+   "new": 59.85789999976987,
+   "rel": 1.2370847363460629,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.021999998396495,
+   "new": 70.6227000000581,
+   "rel": 1.6135260159961848,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.427999997598818,
+   "new": 57.77539999962755,
+   "rel": 1.106438675976575,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.848800000560004,
+   "new": 39.24060000008467,
+   "rel": 0.36021602282670134,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock010",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.503600001888117,
+   "new": 85.92999999927997,
+   "rel": 2.242201059220571,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.38009999989299,
+   "new": 49.781000000621134,
+   "rel": 0.9614185917640602,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.955500001145992,
+   "new": 40.0301000008767,
+   "rel": 0.5422588661019546,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.459100001171464,
+   "new": 27.507199999490695,
+   "rel": 0.0804466771498203,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.390200000605546,
+   "new": 47.64760000034585,
+   "rel": 0.8055035581106824,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 23.25139999811654,
+   "new": 27.1589000003587,
+   "rel": 0.16805439683454257,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.328400003170827,
+   "new": 57.01570000019274,
+   "rel": 1.08631679840669,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.980299997580005,
+   "new": 88.81500000006781,
+   "rel": 2.1741975607034005,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.88079999986803,
+   "new": 55.987800000366406,
+   "rel": 1.1632947977130494,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock022",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.205300000787247,
+   "new": 52.28160000024218,
+   "rel": 0.9217431896994076,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.98110000003362,
+   "new": 56.63730000014766,
+   "rel": 1.0241270000135667,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.587000000290573,
+   "new": 48.21460000039224,
+   "rel": 0.8134652273616916,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.46479999748408,
+   "new": 95.17520000008517,
+   "rel": 2.5962939455100043,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.196599999821046,
+   "new": 68.47399999969639,
+   "rel": 1.6138506523810017,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.33869999772287,
+   "new": 26.128699999389937,
+   "rel": 0.007973058592530698,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 34.67889999956242,
+   "new": 56.38029999954597,
+   "rel": 0.6257810945634775,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.88980000311858,
+   "new": 49.38510000010865,
+   "rel": 0.8365737191939377,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.14179999748012,
+   "new": 46.90110000046843,
+   "rel": 0.7280025644880881,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock029",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.845299998967675,
+   "new": 48.154600000088976,
+   "rel": 0.793781406873484,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.70460000060848,
+   "new": 47.37280000063038,
+   "rel": 0.8429697408054966,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 29.06240000083926,
+   "new": 69.15870000011637,
+   "rel": 1.3796623815692857,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.47860000070068,
+   "new": 53.05159999988973,
+   "rel": 1.003565143115039,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "FLOOR_CLAMP",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.104799999506213,
+   "new": 50.283999999919615,
+   "rel": 0.8551695640932852,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 27.563799998461036,
+   "new": 25.75170000000071,
+   "rel": 0.06574202390677267,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    0.5,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.88000000125612,
+   "new": 28.050000000803266,
+   "rel": 0.04352678569540437,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.782900000398513,
+   "new": 49.131300000226474,
+   "rel": 0.8344279372097656,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    2.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.36889999889536,
+   "new": 51.37699999977485,
+   "rel": 0.8110325039665054,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Rock030",
+    "CALIBRATION",
+    "SOFT_TIKHONOV",
+    4.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.598300002660835,
+   "new": 87.59269999973185,
+   "rel": 2.2931691119721664,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Snow002",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.035300001036376,
+   "new": 41.10830000081478,
+   "rel": 0.6420134769350891,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Snow002",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.378300000738818,
+   "new": 25.21679999972548,
+   "rel": 0.006363704464390268,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Snow002",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.560099999187514,
+   "new": 80.92899999974179,
+   "rel": 2.047014130301371,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Tiles049",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.520800001890166,
+   "new": 79.08119999956398,
+   "rel": 1.981855750728778,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Tiles049",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.845399999525398,
+   "new": 25.346299999910116,
+   "rel": 0.019310979889049784,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Tiles049",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.587100001052022,
+   "new": 45.77100000005885,
+   "rel": 0.7215491722770719,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Wood043",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.940799998352304,
+   "new": 50.3738000006706,
+   "rel": 0.9418753470930048,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Wood043",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 26.63580000080401,
+   "new": 25.138399999377725,
+   "rel": 0.056217571891254856,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "Wood043",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 28.21559999938472,
+   "new": 27.18430000004446,
+   "rel": 0.03655070242570605,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor027",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 27.152500002557645,
+   "new": 42.76389999995445,
+   "rel": 0.5749525824850853,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor027",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 27.101300001959316,
+   "new": 24.55149999968853,
+   "rel": 0.09408404770569845,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor027",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.31169999949634,
+   "new": 48.16170000049169,
+   "rel": 0.8304290487278893,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor030",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.92490000097314,
+   "new": 51.652500000272994,
+   "rel": 0.9923895559224576,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor030",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.79879999757395,
+   "new": 24.89499999956024,
+   "rel": 0.035032637103225774,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor030",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.785099998756777,
+   "new": 53.84689999937109,
+   "rel": 1.0882951782993786,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor043",
+    "HELD_OUT",
+    "FLOOR_CLAMP",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 25.792699998419266,
+   "new": 44.348100000206614,
+   "rel": 0.7194051031076443,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor043",
+    "HELD_OUT",
+    "RAW",
+    0.0,
+    "NONE"
+   ],
+   "field": "runtime_ms",
+   "old": 25.97839999725693,
+   "new": 25.083200000153738,
+   "rel": 0.034459396929669095,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "key": [
+    "WoodFloor043",
+    "HELD_OUT",
+    "SOFT_TIKHONOV",
+    1.0,
+    "nz_p01"
+   ],
+   "field": "runtime_ms",
+   "old": 26.581399997667177,
+   "new": 53.4403999999995,
+   "rel": 1.0104433929247334,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  }
+ ],
+ "characs_changes": [
+  {
+   "asset": "Asphalt013",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.12339999905089,
+   "new": 50.79999999998108,
+   "rel": 0.9446167038680546,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Asphalt021",
+   "field": "raw_eval.runtime_ms",
+   "old": 38.78189999886672,
+   "new": 56.12620000010793,
+   "rel": 0.44722667021853085,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks014",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.97310000055586,
+   "new": 43.023400000492984,
+   "rel": 0.6564599527808472,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks017",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.455100000021048,
+   "new": 57.45019999994838,
+   "rel": 1.1716115229162873,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks019",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.086300000111805,
+   "new": 48.46850000012637,
+   "rel": 0.9320704926557665,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks032",
+   "field": "raw_eval.runtime_ms",
+   "old": 29.7738000008394,
+   "new": 49.589799999921524,
+   "rel": 0.6655515922899817,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks040",
+   "field": "raw_eval.runtime_ms",
+   "old": 38.836199997604126,
+   "new": 51.911399999880814,
+   "rel": 0.3366755759596284,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Bricks066",
+   "field": "raw_eval.runtime_ms",
+   "old": 22.760700001526857,
+   "new": 53.64420000023529,
+   "rel": 1.356878303243603,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Concrete012",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.7493999999715,
+   "new": 56.06400000033318,
+   "rel": 1.0958974780889632,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Concrete027",
+   "field": "raw_eval.runtime_ms",
+   "old": 29.700100003537955,
+   "new": 41.50939999999537,
+   "rel": 0.3976181896711007,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Concrete035",
+   "field": "raw_eval.runtime_ms",
+   "old": 27.336499999364605,
+   "new": 62.73360000068351,
+   "rel": 1.2948658387921517,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Grass004",
+   "field": "raw_eval.runtime_ms",
+   "old": 24.269300000014482,
+   "new": 54.59350000000995,
+   "rel": 1.2494880363247962,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Grass005",
+   "field": "raw_eval.runtime_ms",
+   "old": 28.101199997763615,
+   "new": 59.84790000002249,
+   "rel": 1.1297275562888909,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Gravel011",
+   "field": "raw_eval.runtime_ms",
+   "old": 30.992399999377085,
+   "new": 49.1957000003822,
+   "rel": 0.5873472206531597,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Ground037",
+   "field": "raw_eval.runtime_ms",
+   "old": 27.026299998397008,
+   "new": 50.30259999966802,
+   "rel": 0.8612462676227076,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Metal018",
+   "field": "raw_eval.runtime_ms",
+   "old": 32.58379999897443,
+   "new": 50.24830000002112,
+   "rel": 0.5421252279231605,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Metal049A",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.242400002956856,
+   "new": 49.09670000051847,
+   "rel": 0.870892143820173,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Metal062C",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.291499998478685,
+   "new": 58.44520000027842,
+   "rel": 1.222969400896117,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Metal063",
+   "field": "raw_eval.runtime_ms",
+   "old": 24.89389999755076,
+   "new": 58.07310000000143,
+   "rel": 1.3328245074381706,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "PavingStones002",
+   "field": "raw_eval.runtime_ms",
+   "old": 31.17039999779081,
+   "new": 45.82510000000184,
+   "rel": 0.47014796099022393,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "PavingStones054",
+   "field": "raw_eval.runtime_ms",
+   "old": 28.23730000091018,
+   "new": 67.53649999973277,
+   "rel": 1.391747794497202,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Planks012",
+   "field": "raw_eval.runtime_ms",
+   "old": 34.829599997465266,
+   "new": 47.588899999936984,
+   "rel": 0.36633495657143006,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Planks014",
+   "field": "raw_eval.runtime_ms",
+   "old": 30.45360000032815,
+   "new": 35.6298999995488,
+   "rel": 0.16997333645824694,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Road001",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.85429999817279,
+   "new": 64.62240000018937,
+   "rel": 1.4994836450708953,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Rock010",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.75710000039544,
+   "new": 59.85789999976987,
+   "rel": 1.2370847363460629,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Rock022",
+   "field": "raw_eval.runtime_ms",
+   "old": 23.25139999811654,
+   "new": 27.1589000003587,
+   "rel": 0.16805439683454257,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Rock029",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.33869999772287,
+   "new": 26.128699999389937,
+   "rel": 0.007973058592530698,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Rock030",
+   "field": "raw_eval.runtime_ms",
+   "old": 27.563799998461036,
+   "new": 25.75170000000071,
+   "rel": 0.06574202390677267,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Snow002",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.378300000738818,
+   "new": 25.21679999972548,
+   "rel": 0.006363704464390268,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Tiles049",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.845399999525398,
+   "new": 25.346299999910116,
+   "rel": 0.019310979889049784,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "Wood043",
+   "field": "raw_eval.runtime_ms",
+   "old": 26.63580000080401,
+   "new": 25.138399999377725,
+   "rel": 0.056217571891254856,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "WoodFloor027",
+   "field": "raw_eval.runtime_ms",
+   "old": 27.101300001959316,
+   "new": 24.55149999968853,
+   "rel": 0.09408404770569845,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "WoodFloor030",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.79879999757395,
+   "new": 24.89499999956024,
+   "rel": 0.035032637103225774,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  },
+  {
+   "asset": "WoodFloor043",
+   "field": "raw_eval.runtime_ms",
+   "old": 25.97839999725693,
+   "new": 25.083200000153738,
+   "rel": 0.034459396929669095,
+   "classification": "NON_SCIENTIFIC_RUNTIME_VARIATION"
+  }
+ ],
+ "sigma_selection": {
+  "winner_old": "nz_p01",
+  "winner_new": "nz_p01",
+  "status_old": null,
+  "status_new": null,
+  "table_delta": [
+   {
+    "candidate": "curl_mad",
+    "target": "aligned_rmse",
+    "spearman_old": -0.3356643356643357,
+    "spearman_new": -0.3356643356643357,
+    "delta": 0.0,
+    "sigma_median_old": 87.31143462962528,
+    "sigma_median_new": 87.31143462962528
+   },
+   {
+    "candidate": "curl_mad",
+    "target": "gradient_rmse",
+    "spearman_old": -0.3706293706293707,
+    "spearman_new": -0.3706293706293707,
+    "delta": 0.0,
+    "sigma_median_old": 87.31143462962528,
+    "sigma_median_new": 87.31143462962528
+   },
+   {
+    "candidate": "nz_p01",
+    "target": "aligned_rmse",
+    "spearman_old": 0.3706293706293707,
+    "spearman_new": 0.3706293706293707,
+    "delta": 0.0,
+    "sigma_median_old": 0.4860075292440183,
+    "sigma_median_new": 0.4860075292440183
+   },
+   {
+    "candidate": "nz_p01",
+    "target": "gradient_rmse",
+    "spearman_old": 0.3076923076923077,
+    "spearman_new": 0.3076923076923077,
+    "delta": 0.0,
+    "sigma_median_old": 0.4860075292440183,
+    "sigma_median_new": 0.4860075292440183
+   },
+   {
+    "candidate": "nz_p05_div3",
+    "target": "aligned_rmse",
+    "spearman_old": 0.32867132867132864,
+    "spearman_new": 0.32867132867132864,
+    "delta": 0.0,
+    "sigma_median_old": 0.2209863004025573,
+    "sigma_median_new": 0.2209863004025573
+   },
+   {
+    "candidate": "nz_p05_div3",
+    "target": "gradient_rmse",
+    "spearman_old": 0.2377622377622378,
+    "spearman_new": 0.2377622377622378,
+    "delta": 0.0,
+    "sigma_median_old": 0.2209863004025573,
+    "sigma_median_new": 0.2209863004025573
+   },
+   {
+    "candidate": "projection_median",
+    "target": "aligned_rmse",
+    "spearman_old": 0.3216783216783217,
+    "spearman_new": 0.3216783216783217,
+    "delta": 0.0,
+    "sigma_median_old": 0.3431671151604889,
+    "sigma_median_new": 0.3431671151604889
+   },
+   {
+    "candidate": "projection_median",
+    "target": "gradient_rmse",
+    "spearman_old": 0.39860139860139865,
+    "spearman_new": 0.39860139860139865,
+    "delta": 0.0,
+    "sigma_median_old": 0.3431671151604889,
+    "sigma_median_new": 0.3431671151604889
+   }
+  ]
+ }
+}

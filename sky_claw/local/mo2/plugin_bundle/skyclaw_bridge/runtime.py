@@ -27,6 +27,43 @@ class BridgeCommandError(RuntimeError):
     """Comando del daemon no permitido por el bridge mínimo."""
 
 
+class BridgeJobUnknownError(BridgeCommandError):
+    """El job solicitado no está activo o ya terminó en el bridge."""
+
+
+class BridgeTerminationError(BridgeCommandError):
+    """Falla al terminar el Job Object o proceso del worker."""
+
+
+def bridge_error_event(
+    *,
+    command: object,
+    job_id: object,
+    exc: Exception,
+    kind: str | None = None,
+) -> dict[str, object]:
+    """Construye un evento bridge_error con clasificación estructurada (kind)."""
+    resolved_kind = kind
+    if resolved_kind is None:
+        if isinstance(exc, BridgeJobUnknownError):
+            resolved_kind = "job_unknown"
+        elif isinstance(exc, BridgeTerminationError):
+            resolved_kind = "termination_failed"
+        elif isinstance(exc, BridgeCommandError):
+            resolved_kind = "rejected"
+        else:
+            resolved_kind = "rejected"
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "type": "event",
+        "event": "bridge_error",
+        "command": command,
+        "job_id": job_id,
+        "message": str(exc),
+        "kind": resolved_kind,
+    }
+
+
 class BridgeEventOutbox(queue.Queue[dict[str, object]]):
     """Cola con espera acotada hasta confirmar el envío de sus eventos."""
 
@@ -326,7 +363,7 @@ class BridgeLaunchController:
         with self._lock:
             running = self._jobs.get(job_id)
         if running is None:
-            raise BridgeCommandError("cancel apunta a un job desconocido")
+            raise BridgeJobUnknownError("cancel apunta a un job desconocido")
         running.job_object.terminate()
 
     def stop(self) -> None:
@@ -433,7 +470,7 @@ class Win32JobObject:
 
     def terminate(self) -> None:
         if self._handle is not None and not self._kernel32.TerminateJobObject(self._handle, 1):
-            raise BridgeCommandError(f"TerminateJobObject falló: {ctypes.get_last_error()}")
+            raise BridgeTerminationError(f"TerminateJobObject falló: {ctypes.get_last_error()}")
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)

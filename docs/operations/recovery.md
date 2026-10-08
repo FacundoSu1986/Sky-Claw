@@ -7,12 +7,15 @@
 >
 > **Fuentes canónicas:** `sky_claw/app_context.py`,
 > `sky_claw/app/core/db_lifecycle.py`,
-> `sky_claw/app/db/`, `sky_claw/local/mo2/profile_sandbox.py` y
+> `sky_claw/app/db/`, `sky_claw/app/db/rollback_veto.py`,
+> `sky_claw/local/mo2/profile_sandbox.py` y
 > `sky_claw/local/mo2/vfs_broker.py`.
 >
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 >
 > **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`.
+>
+> **Contrato de cuarentena VFS:** 2026-10-07 (Issue #623 / PR #695).
 
 ## Principio
 
@@ -75,6 +78,53 @@ el checkpoint TRUNCATE completó y existe otro owner abierto sobre el mismo
 archivo, SQLite puede conservar los sidecars hasta que cierre la última
 conexión. Usar los logs/resultados del checkpoint y ownership real antes de
 clasificar el incidente.
+
+## Cuarentena de instancia VFS (Issue #623 / PR #695)
+
+Cuando un teardown brokered VFS sufre timeout de espera de salida (`worker_exit`)
+o fallo de terminación de Job Object con bridge vivo, la terminalidad del worker
+queda indeterminada (`terminality_unknown = True`). En este escenario:
+
+1. **Principio de seguridad operacional:** `timeout != terminalidad`. Rollbacks
+   automáticos y nuevas operaciones mutantes son vetados (`VfsInstanceQuarantinedError`).
+2. **Marcador persistente:** El broker crea un archivo atómico en disco:
+   `<runtime_state_dir>/.<instance_id>.quarantine`
+   que contiene metadatos JSON auditables (`job_id`, `session_id`, `pid`, `reason`, `error_type`, `detail`, `timestamp`).
+   En caso de fallo de E/S al escribir dicho marcador, el broker activa el camino fail-closed de emergencia
+   envenenando el descriptor de file lock `<runtime_state_dir>/.<instance_id>.lock` con `"quarantined": true`
+   y retiene el lock al cerrarse.
+3. **Persistencia entre reinicios:** Nuevas aperturas de sesión VFS (`open_session`,
+   `submit`) sobre la misma instancia serán rechazadas mientras el archivo de cuarentena
+   o el envenenamiento del lock existan.
+
+### Procedimiento del operador
+
+Si se detecta `VfsInstanceQuarantinedError`:
+
+1. **Inspeccionar árbol de procesos:**
+   Verificar si el proceso worker o procesos hijos (xEdit, LOOT, DynDOLOD, dlls inyectadas por USVFS)
+   siguen vivos en el sistema operativo:
+   ```powershell
+   Get-Process -Name "*DynDOLOD*", "*xEdit*", "*LOOT*", "*usvfs*" -ErrorAction SilentlyContinue
+   ```
+2. **Recuperación automática tardía:**
+   Si el broker o bridge sigue en ejecución y el worker del job cuarentenado finalmente sale, el evento
+   tardío `worker_exit` para ese `job_id` coincidente ejecuta una reconciliación interna de cuarentena
+   (`_liberar_cuarentena_por_worker_exit`), removiendo el marcador y saneando el lock en disco.
+   Eventos `worker_exit` de jobs ajenos no alteran la cuarentena.
+3. **Recuperación manual del operador:**
+   Si se confirma documental y operativamente que el árbol de procesos está 100% muerto
+   (por ejemplo, tras terminación forzada y verificación de handles liberados):
+   - **Broker en ejecución:** Usar la operación autorizada de API:
+     `await broker.release_quarantine(evidence="verificacion_operador_procesos_muertos")`.
+     Esta operación es transaccional y fail-closed: valida evidencia no vacía, elimina el marcador
+     en disco, reconcilia el payload del lock de instancia y limpia el estado en memoria. Si el disco
+     falla al sanearse, la operación falla y mantiene la instancia en cuarentena.
+   - **Intervención manual en disco (broker detenido):** Sólo cuando el proceso del broker ya finalizó,
+     se puede remover manualmente el archivo de marcador `.<instance_id>.quarantine` y verificar que el
+     archivo `.<instance_id>.lock` no contenga `"quarantined": true` antes de reiniciar el broker.
+     (Si el broker continúa en ejecución, borrar únicamente el archivo en disco no desactiva la cuarentena
+     en memoria del proceso activo; debe usarse la API).
 
 ## Cierre de incidente
 

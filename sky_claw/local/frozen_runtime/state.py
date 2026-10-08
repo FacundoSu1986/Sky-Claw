@@ -153,6 +153,32 @@ def save_frozen_runtime_state(path: pathlib.Path, state: FrozenRuntimeState) -> 
         raise
 
 
+def reservar_ruta_json_exclusiva(path: pathlib.Path) -> None:
+    """Reserva *path* de forma EXCLUSIVA (``O_CREAT | O_EXCL``), sin escribir contenido.
+
+    Es el single-winner de una RUTA -- hermano de ``mkdir(exist_ok=False)`` para un
+    directorio. Si el destino ya existe (incluido un enlace colgado) falla con
+    ``FileExistsError`` y NUNCA reemplaza lo que habia.
+
+    Deja un placeholder vacio a proposito: a partir de aca el proceso que gano la
+    reserva es el unico dueno de esa ruta, asi que ``write_json_atomic`` (que
+    reemplaza) solo puede pisar SU PROPIO placeholder y nunca la evidencia de otro.
+    Un fallo antes de la escritura deja el JSON vacio, que el lector clasifica como
+    corrupcion: fail-closed, y sin riesgo para nada preexistente.
+
+    No se usa ``os.link`` (rechazado por SFR-18 y por el oraculo de escritura). Se
+    usa el modo exclusivo ``"x"`` de ``open`` a proposito: el oraculo AST que
+    congela el vocabulario de escritura por modulo SI lo inspecciona, asi que la
+    primitive queda visible y declarada en `MODULOS_CON_OPEN_ESCRITURA` (un
+    ``os.open`` crudo escaparia a los dos oraculos).
+    """
+    exigir_namespace_escribible(path.parent)
+    with open(path, "x", encoding="utf-8"):
+        # Solo la CREACION exclusiva importa: el contenido lo escribe despues el
+        # escritor atomico sobre ESTE placeholder, del que ya somos duenos.
+        pass
+
+
 def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> None:
     """Escritura atómica genérica (temporal en el mismo directorio + ``os.replace``).
 

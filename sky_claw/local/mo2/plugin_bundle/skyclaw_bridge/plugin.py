@@ -28,6 +28,7 @@ from .runtime import (
     BridgeEventOutbox,
     BridgeLaunchController,
     ascii_safe_message,
+    bridge_error_event,
 )
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
@@ -297,14 +298,11 @@ class SkyClawBridgePlugin(mobase.IPlugin):
             except (OSError, RuntimeError, ValueError) as exc:
                 _qt_warning(f"Sky-Claw bridge rechazó comando: {exc}")
                 self._outgoing.put(
-                    {
-                        "protocol_version": PROTOCOL_VERSION,
-                        "type": "event",
-                        "event": "bridge_error",
-                        "command": message.get("type"),
-                        "job_id": message.get("job_id"),
-                        "message": str(exc),
-                    }
+                    bridge_error_event(
+                        command=message.get("type"),
+                        job_id=message.get("job_id"),
+                        exc=exc,
+                    )
                 )
 
     def _shutdown(self) -> None:
