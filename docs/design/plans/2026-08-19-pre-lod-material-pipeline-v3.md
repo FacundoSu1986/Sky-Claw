@@ -4,6 +4,12 @@
 > Base: `main` @ `fd1d3c6`. **v3 corrige H1 e incorpora el paquete de evidencia completo del
 > operador** (ParallaxR, BENDr, VRAMr, PGPatcher, Auto Parallax) con niveles de evidencia
 > explícitos y política de no-vendorización.
+>
+> **CUARENTENA CLEAN-ROOM (2026-10-07).** Las secciones §2.2 (filas de ParallaxR/BENDr) y §2.4
+> contienen citas de scripts y strings de binarios de herramientas cerradas. Se conservan como
+> evidencia de contratos de integración; **no son fuente** del algoritmo, las heurísticas ni las
+> exclusiones del generador nativo, y quien trabaje en `native_parallax/` no las lee.
+> Política: [CLEAN_ROOM.md](../../../CLEAN_ROOM.md) · ancla: `tests/test_clean_room_invariant.py`.
 
 ---
 
@@ -258,6 +264,9 @@ PGPatcher, Auto Parallax) es **T2**.
 
 ### 2.2 Corrección de H1 — y la lección de método que la causó
 
+> **CUARENTENA CLEAN-ROOM** — no consultar para `native_parallax/` ([CLEAN_ROOM.md](../../../CLEAN_ROOM.md)).
+
+
 **v2 afirmaba:** *"`ExtractBSA.exe` es un binario Rust + clap 4.5.60"*. **Es falso.**
 
 El archivo que llegó a esta sesión se llamaba `BSA.exe`. Su hash
@@ -336,6 +345,9 @@ una propiedad falsa.*
 | Único PR abierto (#488), colisión baja | GitHub | Alta |
 
 ### 2.4 ParallaxR v3.0318 y BENDr v3.0331 — hallazgos de los BAT (T1)
+
+> **CUARENTENA CLEAN-ROOM** — no consultar para `native_parallax/` ([CLEAN_ROOM.md](../../../CLEAN_ROOM.md)).
+
 
 #### H1 — Interfaces CLI invocables (ver §2.2 para el toolchain)
 
@@ -642,7 +654,7 @@ Tres ejes **ortogonales**. Confundirlos fue el error de v1.
 | Eje | Pregunta | Cómo se responde | Estado |
 |---|---|---|---|
 | **T — Técnico** | ¿Existe una interfaz invocable sin GUI? | Inspección del artefacto | **CERRADO** para ParallaxR/BENDr (los BAT demuestran CLI invocable, §2.2) y para los helpers de VRAMr (§2.5). **Abierto** para el pipeline completo de VRAMr (B3) y para PGPatcher (B4) |
-| **L — Legal** | ¿Los permisos permiten invocar los helpers, redistribuirlos, descargarlos automáticamente? | Leer permisos del autor / licencia | **ABIERTO** para ParallaxR/BENDr/VRAMr (B1, B6-L). **CERRADO** para PGPatcher (GPL-3) |
+| **L — Legal** | ¿Los permisos permiten invocar los helpers, redistribuirlos, descargarlos automáticamente? | Leer permisos del autor / licencia | **B1 CERRADO** (lectura de permisos de ParallaxR/BENDr/VRAMr, 2026-10-07: [registro](../../audits/2026-10-07_b1_permisos_r_suite.md)); **B6-L ABIERTO** (invocación directa de helpers: `MATERIAL_PIPELINE` los mantiene `BLOCKED`). **CERRADO** para PGPatcher (GPL-3) |
 | **S — Seguridad** | ¿El artefacto hace cosas que Sky-Claw no puede replicar? | Inspección del artefacto | **CERRADO y caracterizado** (H2). Se evita **no replicándolo**; no se hereda |
 
 **Que S esté cerrado no desbloquea nada por sí solo** — solo elimina un riesgo. Y que T esté
@@ -671,6 +683,10 @@ cerrado **no autoriza** a invocar los helpers: eso lo decide L. Un permiso del a
 
 - **B1 (eje L).** Permisos/licencia de ParallaxR, BENDr y VRAMr en Nexus. Para VRAMr solo decide
   AUTO vs MANUAL; `MANUAL_ONLY` es el default conservador y funcionalmente completo.
+  **Actualización 2026-10-07:** la lectura de permisos está **cerrada** (consultada en origen el
+  2026-09-19; registro con hash en
+  [`docs/audits/2026-10-07_b1_permisos_r_suite.md`](../../audits/2026-10-07_b1_permisos_r_suite.md));
+  B6-L sigue abierto.
 - **B6-L (eje L).** ¿El autor permite que un tercero invoque `MakeUnpack.exe` / `ExtractBSA.exe` /
   `HeightMap.exe` / `BENDr.exe` directamente, sin pasar por su BAT? **Es lo único que bloquea
   PR-A/PR-B.** B6-T está cerrado (§2.2).
@@ -933,8 +949,8 @@ camino `TOOL`. Eso es P4, y beneficia también a LOOT/xEdit/Pandora/BodySlide.
 | Herramienta | `install_kind` | Primer corte | Segundo corte |
 |---|---|---|---|
 | **PGPatcher** | TOOL | `AUTO_GITHUB` vía `_ensure_github_mod` sobre el camino TOOL atómico de P4 | — |
-| **VRAMr** | TOOL | **`MANUAL_ONLY`** — se detecta y valida, no se descarga | `AUTO_NEXUS` (PR-C) cuando B1 cierre |
-| **ParallaxR** | TOOL | Nodo declarado, sin adapter | Según B1/B6-L |
+| **VRAMr** | TOOL | **`MANUAL_ONLY`** — se detecta y valida, no se descarga | `AUTO_NEXUS` (PR-C) solo con autorización explícita: B1 se cerró el 2026-10-07 sin autorizarlo y rige `MANUAL_ONLY` |
+| **ParallaxR** | TOOL | Nodo declarado, sin adapter | Según B6-L (B1 cerrado el 2026-10-07) |
 | **BENDr** | TOOL | Nodo declarado, sin adapter | ídem |
 | **Auto Parallax** | **RUNTIME_PLUGIN** | **No es una herramienta del pipeline.** Plugin SKSE (DLL/INI/PDB, §2.7). Solo se *detecta* como contexto; nunca se instala ni se quita automáticamente | — |
 
@@ -1708,7 +1724,8 @@ LODGen); cero trabajo legítimo vs. fallo; **los dos logs presentes y frescos** 
 **Complejidad: Media** (hereda el molde y la etapa compartida).
 
 #### PR-C — VRAMr a `AUTO_NEXUS`
-**Bloqueado por** B1. **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
+**Bloqueado por** una autorización explícita para `AUTO_NEXUS`: B1 (la lectura de permisos) se cerró el
+2026-10-07 sin otorgarla y rige `MANUAL_ONLY`. **Cambios.** Un campo del `ExternalToolSpec` + `ensure_vramr` sobre
 `_ensure_nexus_mod` + pin en `_PINNED_SHA256`. La UX de fallback manual no cambia.
 **Complejidad: Baja.**
 

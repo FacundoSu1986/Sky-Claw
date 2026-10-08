@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 from sky_claw.app.security.links import (
     link_kind_and_identity_or_raise,
     link_kind_or_raise,
@@ -306,7 +307,7 @@ class DirectoryRollback:
     ) -> None:
         if not self._enabled:
             return
-        cleanup_task = _track(asyncio.ensure_future(self._cleanup_on_exit(exc_type)))
+        cleanup_task = _track(asyncio.ensure_future(self._cleanup_on_exit(exc_type, exc_val)))
         cancelado_durante_cleanup = await _esperar_hasta_terminal(cleanup_task)
         try:
             cleanup_task.result()
@@ -324,16 +325,20 @@ class DirectoryRollback:
             # preserva esa excepción original en vez de reemplazarla.
             raise asyncio.CancelledError
 
-    async def _cleanup_on_exit(self, exc_type: type[BaseException] | None) -> None:
+    async def _cleanup_on_exit(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None = None,
+    ) -> None:
         """Ejecuta restore/discard completo dentro de una task rastreada."""
         if exc_type is not None:
-            if not self._veto_permite_restaurar():
-                # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
-                # que restaurar pisaría SU salida con nuestro backup viejo. El
-                # backup queda para recovery manual y la TX debe seguir PENDING.
+            if not self._veto_permite_restaurar(exc_val):
+                # Perdimos la exclusividad o la terminalidad es desconocida: otro
+                # dueño pudo haber mutado ya, así que restaurar pisaría SU salida
+                # con nuestro backup viejo. El backup queda para recovery manual.
                 logger.critical(
-                    "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
-                    "El backup queda en '%s' para recuperación manual.",
+                    "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso o "
+                    "la terminalidad es desconocida. El backup queda en '%s' para recuperación manual.",
                     self._target,
                     self._backup,
                 )
@@ -385,9 +390,10 @@ class DirectoryRollback:
         self.finalization_completed = False
         return True
 
-    def _veto_permite_restaurar(self) -> bool:
+    def _veto_permite_restaurar(self, exc_val: BaseException | None = None) -> bool:
         """Evalúa el veto de ``should_rollback`` **fail-closed** (review CodeRabbit #399).
 
+        Si la excepción acarrea terminalidad desconocida, se veta incondicionalmente.
         El callback lo provee el caller y puede lanzar (p. ej. un ``AttributeError``
         si el lock cambia de superficie). Dejarlo escapar rompería la garantía que
         la docstring de la clase promete —*nunca lanza desde ``__aexit__``*— y
@@ -395,6 +401,8 @@ class DirectoryRollback:
         evaluar, se asume lo conservador: **no restaurar**, y el backup queda en
         disco. Restaurar a ciegas es lo único irreversible de las dos opciones.
         """
+        if exception_forbids_rollback(exc_val):
+            return False
         if self._should_rollback is None:
             return True
         try:

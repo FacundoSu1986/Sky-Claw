@@ -1452,8 +1452,10 @@ class TestAnclaConstructoresManualesDeMods:
         # líneas (124, 388, 397 → 136, 413, 422); mismos tres sites, ninguna
         # construcción nueva de `<base>/mods`. El hardening de PR-2 (import de
         # LOOT_FAILURE_KINDS y LOOTWorkerProtocolError) las corrió dos más
-        # (136, 413, 422 → 138, 415, 424); mismos tres sites.
-        "sky_claw/local/mo2/brokered_loot.py": (138, 415, 424),
+        # (136, 413, 422 → 138, 415, 424); y PR #695 / issue #623 (propagación
+        # de atributos de teardown en LOOTTimeoutError) las corrió a
+        # (138, 420, 429); mismos tres sites.
+        "sky_claw/local/mo2/brokered_loot.py": (138, 420, 429),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         # #633 (fingerprint v2: canonicalización semántica de plugins.txt por su
@@ -1473,10 +1475,11 @@ class TestAnclaConstructoresManualesDeMods:
         # brokered, moviendo la construcción canónica de mods_dir a la línea 576.
         "sky_claw/local/mo2/vfs_attestation.py": (576,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
-        # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323 y sus
-        # follow-ups de revisión a la ~339) y VfsWorkerManifest: única
+        # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323, sus
+        # follow-ups a la ~339, PR #695 / issue #623 a la ~581 por cuarentena,
+        # y pase de identidad/replay grace a la ~589) y VfsWorkerManifest: única
         # construcción cuando no se pasa mods_dir.
-        "sky_claw/local/mo2/vfs_broker.py": (339,),
+        "sky_claw/local/mo2/vfs_broker.py": (589,),
         "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.

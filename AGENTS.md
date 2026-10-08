@@ -160,6 +160,40 @@ modding de Skyrim** (orden de stages, reglas por tool, failure modes) — antes 
 modificar `sky_claw/local/tools/`, `sky_claw/local/xedit/` o
 `sky_claw/app/orchestrator/tool_strategies/`.
 
+## Clean-room: generador nativo de parallax
+
+`sky_claw/local/native_parallax/` se desarrolla **clean-room** respecto de ParallaxR y de cualquier
+herramienta cerrada de su categoría. La política vigente es [CLEAN_ROOM.md](CLEAN_ROOM.md)
+([ADR 0013](docs/adr/0013-clean-room-native-parallax.md)); leela antes de tocar ese paquete o sus docs
+de diseño (toda ruta cuyo path contenga `native-parallax` o `native_parallax`). El puntero local es
+[`sky_claw/local/native_parallax/AGENTS.md`](sky_claw/local/native_parallax/AGENTS.md).
+
+Tres propiedades, con su ancla (`tests/test_clean_room_invariant.py`, que recorre **todos** los archivos
+trackeados sin descartar ninguno por tamaño, codificación ni formato):
+
+- *el contenido en cuarentena no sale de su sección*: las citas de scripts y los strings de binarios de
+  herramientas cerradas viven **solo** en las secciones señalizadas del P0 (plan v3 §2.2/§2.4 y evidencia
+  §6.2), y ninguna línea de esas secciones puede reaparecer en otro lugar (huellas normalizadas: un script
+  copiado sin etiquetas, re-cortado, incrustado o en un tramo de al menos 79 caracteres también rompe el
+  test; los contratos de integración se eximen solo del chequeo de tramos, nunca de las líneas completas).
+  Un archivo nuevo con ese contenido rompe el test, y agregarlo a la lista no es la salida.
+- *la zona limpia no tiene ni una marca*: toda ruta que nombre el generador (por patrón, no por lista) no
+  contiene citas, nombres de ejecutables internos ni hashes de artefactos de esas herramientas; sus
+  binarios están congelados por enumeración y el repo no versiona ejecutables (se miran por cabecera).
+- *la evidencia legal y el contrato coinciden*: el registro de permisos (B1,
+  `docs/audits/2026-10-07_b1_permisos_r_suite.md`) tiene un vocabulario cerrado de estados y levanta
+  `B6_L` de `MATERIAL_PIPELINE` solo con `AUTORIZADA`; un estado desconocido, un paso con `B6_L` que el
+  registro no cubra o levantar uno sin el otro rompe el test.
+
+**Límite:** el ancla no detecta contenido derivado que no esté en el repo (un script reescrito con otras
+palabras, salidas de la herramienta convertidas, copias parciales de menos de 79 caracteres): ahí manda el
+procedimiento de `CLEAN_ROOM.md`.
+
+**Agentes:** al trabajar en `native_parallax/` **no leas** las secciones en cuarentena; los contratos de
+integración que necesites están en `parallaxr_assisted.py`, `material_contract.py` y el registro B1. Usar
+la **salida** de una herramienta cerrada como etiqueta de entrenamiento o para ajustar umbrales está
+prohibido; compararla a ciegas como evaluación (#676) está permitido.
+
 ## Contratos vigentes
 
 **Resultado de tools.** Todo tool nuevo emite `success: bool` + `message: str` (canónico,

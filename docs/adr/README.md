@@ -5,7 +5,7 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0012 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0013 en este directorio.
 >
 > **Última verificación:** 2026-10-08; ADR 0012 (Frozen Runtime) **enmendado en P0.4**.
 > **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
@@ -39,6 +39,7 @@
 - [0010 — RV-GP2: Protect Golden / Golden Protection Apply](0010-runtime-vault-golden-protection-apply.md)
 - [0011 — DynDOLOD PR-2: external_work_root y binding de propiedad](0011-dyndolod-external-work-root.md)
 - [0012 — Frozen Runtime: promoción aislada de versiones](0012-frozen-runtime.md)
+- [0013 — Clean-room del generador nativo de parallax](0013-clean-room-native-parallax.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
