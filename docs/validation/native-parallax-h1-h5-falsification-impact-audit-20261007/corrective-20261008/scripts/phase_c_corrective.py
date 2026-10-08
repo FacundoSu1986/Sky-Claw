@@ -42,7 +42,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 from corrective_optimizer import OptimizerConfig, minimize_1d
 
 from sky_claw.local.native_parallax.research.authored_dataset import load_asset
@@ -67,8 +66,7 @@ RESOLUTION = 512
 REPO_ROOT = Path(__file__).resolve().parents[5]
 HISTORICAL_M4 = REPO_ROOT / "data" / "exp-m4-results.json"
 DEFAULT_MANIFEST = (
-    REPO_ROOT / "docs" / "design" / "research" / "native-parallax" / "data"
-    / "exp-m3-clean-authored-manifest.json"
+    REPO_ROOT / "docs" / "design" / "research" / "native-parallax" / "data" / "exp-m3-clean-authored-manifest.json"
 )
 
 # Tolerancia para declarar que la rejilla "matchea" el continuo (en grados).
@@ -203,7 +201,9 @@ def main() -> None:  # noqa: C901
         sum(1 for r in rows if abs(r["grid_agreement_deg"] - r["continuous_agreement_deg"]) <= GRID_MATCH_TOLERANCE_DEG)
     )
     n_below_floor = int(sum(1 for r in rows if abs(r["continuous_best_strength"]) < FLOOR_STRENGTH))
-    n_grid_at_floor = int(sum(1 for s in (r["grid_best_strength"] for r in rows) if abs(abs(s) - FLOOR_STRENGTH) < 1e-9))
+    n_grid_at_floor = int(
+        sum(1 for s in (r["grid_best_strength"] for r in rows) if abs(abs(s) - FLOOR_STRENGTH) < 1e-9)
+    )
 
     # ---------------- F3: dos universos explícitos
     delta_baseline = [r["delta_rmse_baseline"] for r in rows]

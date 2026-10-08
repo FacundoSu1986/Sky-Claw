@@ -24,14 +24,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 from corrective_optimizer import OptimizerConfig, minimize_1d
 
 from sky_claw.local.native_parallax.research.normal_from_height import spectral_gradients
 from sky_claw.local.native_parallax.research.synthetic_height import PERIODIC_CASES
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from h4_magnitude_probe_corrective import safe_surface, resize_height_unclipped  # noqa: E402
+from h4_magnitude_probe_corrective import resize_height_unclipped, safe_surface  # noqa: E402
 
 CASES = ["S07_bumps", "S09_bricks", "S15_periodic_noise"]
 AMPS = [0.05, 0.01]

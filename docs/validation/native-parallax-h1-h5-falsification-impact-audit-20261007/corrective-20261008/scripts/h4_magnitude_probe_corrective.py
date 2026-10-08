@@ -45,7 +45,6 @@ from PIL import Image
 
 from sky_claw.local.native_parallax.research.authored_dataset import resize_height, resize_normal
 from sky_claw.local.native_parallax.research.normal_from_height import (
-    normals_from_gradients,
     spectral_gradients,
 )
 from sky_claw.local.native_parallax.research.solver_coherence import evaluate_path, self_forward
@@ -106,8 +105,7 @@ def safe_surface(h_centered: np.ndarray) -> tuple[np.ndarray, float]:
     if hi + offset > 1.0:
         # la amplitud excede el rango authored: inflar hacia arriba no alcanza.
         raise ValueError(
-            f"safe_surface: amplitud fuera de rango válido (min={lo:.6f}, max={hi:.6f}); "
-            "no se clipea en silencio"
+            f"safe_surface: amplitud fuera de rango válido (min={lo:.6f}, max={hi:.6f}); no se clipea en silencio"
         )
     return h_centered + offset, offset
 
@@ -131,8 +129,13 @@ def main() -> None:  # noqa: C901
     args = ap.parse_args()
 
     cases = [
-        "S02_sine_x", "S06_multifreq", "S07_bumps", "S08_ridges",
-        "S09_bricks", "S11_highfreq", "S15_periodic_noise",
+        "S02_sine_x",
+        "S06_multifreq",
+        "S07_bumps",
+        "S08_ridges",
+        "S09_bricks",
+        "S11_highfreq",
+        "S15_periodic_noise",
     ]
     out: dict[str, Any] = {}
     invariants: dict[str, Any] = {}
@@ -174,9 +177,9 @@ def main() -> None:  # noqa: C901
             # ---- brazo NUEVO (superficie segura, sin clip)
             if valid:
                 h_ref_safe = resize_height_unclipped(h_safe, TARGET)
-                # El offset constante sobrevive al resize bilineal (es lineal): se resta
-                # para recuperar la superficie centrada equivalente, sin alterar gradientes.
-                h_ref_equiv = h_ref_safe - offset
+                # El offset constante sobrevive al resize bilineal (es lineal) y no altera
+                # gradientes; no hace falta restarlo para el chequeo de invariantes, que se
+                # hace en la MISMA resolución (ver `target_grad` más abajo).
                 n_ideal_safe = self_forward(h_ref_safe, bits=None)
                 m_old_safe = evaluate_path(h_ref_safe, n_old, path="old")
                 m_new_safe = evaluate_path(h_ref_safe, n_new, path="new")
@@ -187,11 +190,12 @@ def main() -> None:  # noqa: C901
                 h_ref_from_safe = resize_height_unclipped(h_safe, TARGET)
                 target_grad = _grad_check(h_ref_safe, h_ref_from_safe)
                 target_ok = bool(
-                    target_grad["max_abs_dp"] <= 1e-9 and target_grad["max_abs_dq"] <= 1e-9
+                    target_grad["max_abs_dp"] <= 1e-9
+                    and target_grad["max_abs_dq"] <= 1e-9
                     and np.allclose(h_ref_safe, h_ref_from_safe, atol=0.0, rtol=0.0)
                 )
             else:
-                h_ref_safe = h_ref_equiv = n_ideal_safe = None
+                h_ref_safe = n_ideal_safe = None
                 m_old_safe = m_new_safe = None
                 target_ok = False
 
@@ -209,7 +213,8 @@ def main() -> None:  # noqa: C901
                     "downstream_aligned_new": float(m_new_clip["path_rmse"]),
                     "downstream_aligned_ratio": (
                         float(m_old_clip["path_rmse"] / m_new_clip["path_rmse"])
-                        if m_new_clip["path_rmse"] > 0 else None
+                        if m_new_clip["path_rmse"] > 0
+                        else None
                     ),
                     "downstream_delta": float(m_old_clip["path_rmse"] - m_new_clip["path_rmse"]),
                 },
@@ -223,7 +228,8 @@ def main() -> None:  # noqa: C901
                     "downstream_aligned_new": float(m_new_safe["path_rmse"]),
                     "downstream_aligned_ratio": (
                         float(m_old_safe["path_rmse"] / m_new_safe["path_rmse"])
-                        if m_new_safe["path_rmse"] > 0 else None
+                        if m_new_safe["path_rmse"] > 0
+                        else None
                     ),
                     "downstream_delta": float(m_old_safe["path_rmse"] - m_new_safe["path_rmse"]),
                     "target_corresponds_to_h_safe": target_ok,
@@ -267,7 +273,8 @@ def main() -> None:  # noqa: C901
                         "delta": e["safe_surface"]["downstream_delta"],
                         "normal_rmse_old_vs_new": e["safe_surface"]["normal_rmse_old_vs_new"],
                     }
-                    if "safe_surface" in e else None
+                    if "safe_surface" in e
+                    else None
                 ),
             }
 
@@ -288,7 +295,9 @@ def main() -> None:  # noqa: C901
         "summary": {
             "clipped_old_arm": _summary("clipped"),
             "safe_surface_new_arm": _summary("safe_surface"),
-            "n_invariants_ok": int(sum(1 for v in invariants.values() if v.get("range_invariant_ok") and v.get("gradient_invariant_ok"))),
+            "n_invariants_ok": int(
+                sum(1 for v in invariants.values() if v.get("range_invariant_ok") and v.get("gradient_invariant_ok"))
+            ),
             "n_invariants_total": len(invariants),
         },
     }
@@ -299,8 +308,10 @@ def main() -> None:  # noqa: C901
     print(json.dumps(payload["summary"], indent=1))
     print("claim externo (c=0.05, c=0.01):")
     for k, v in external.items():
-        print(f"  {k:26s} clipped ratio={v['clipped']['ratio']}  safe ratio="
-              f"{v['safe_surface']['ratio'] if v['safe_surface'] else None}")
+        print(
+            f"  {k:26s} clipped ratio={v['clipped']['ratio']}  safe ratio="
+            f"{v['safe_surface']['ratio'] if v['safe_surface'] else None}"
+        )
 
 
 if __name__ == "__main__":

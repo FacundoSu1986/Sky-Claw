@@ -74,15 +74,11 @@ def _adjudicate_h1(h1: dict[str, Any]) -> dict[str, Any]:
         "H1_BOUNDARY_CASES": counts["n_boundary_cases"],
         "H1_GRID_BEST_STRENGTH_AT_FLOOR": counts["n_grid_best_strength_at_floor"],
         "H1_GRID_NEVER_FINDS_OPTIMUM": grid_never,
-        "H1_SPEARMAN_BASELINE": h1["universes"]["BASELINE_COUNTERFACTUAL"]["continuous"][
+        "H1_SPEARMAN_BASELINE": h1["universes"]["BASELINE_COUNTERFACTUAL"]["continuous"]["spearman_deg_vs_delta_rmse"],
+        "H1_SPEARMAN_BASELINE_GRID": h1["universes"]["BASELINE_COUNTERFACTUAL"]["grid"]["spearman_deg_vs_delta_rmse"],
+        "H1_SPEARMAN_HISTORICAL_HYBRID_CONTINUOUS": h1["universes"]["HISTORICAL_COMPARISON"]["continuous"][
             "spearman_deg_vs_delta_rmse"
         ],
-        "H1_SPEARMAN_BASELINE_GRID": h1["universes"]["BASELINE_COUNTERFACTUAL"]["grid"][
-            "spearman_deg_vs_delta_rmse"
-        ],
-        "H1_SPEARMAN_HISTORICAL_HYBRID_CONTINUOUS": h1["universes"]["HISTORICAL_COMPARISON"][
-            "continuous"
-        ]["spearman_deg_vs_delta_rmse"],
         "H1_PRIMARY_IMPACT": "NONE",
         "H1_PRIMARY_IMPACT_REASON": (
             "coherence_diagnostic de M4 es explícitamente no decisional; "
@@ -100,10 +96,7 @@ def _adjudicate_h4(h4: dict[str, Any]) -> dict[str, Any]:
     aplicables = [v for v in inv.values() if "error" not in v]
     no_aplicables = [v for v in inv.values() if "error" in v]
     n_app = len(aplicables)
-    n_app_ok = sum(
-        1 for v in aplicables
-        if v.get("range_invariant_ok") and v.get("gradient_invariant_ok")
-    )
+    n_app_ok = sum(1 for v in aplicables if v.get("range_invariant_ok") and v.get("gradient_invariant_ok"))
     n_broken = n_app - n_app_ok
     consistent = "YES" if n_broken == 0 else "NO"
 
@@ -154,9 +147,7 @@ def _adjudicate_h4(h4: dict[str, Any]) -> dict[str, Any]:
         "H4_INVARIANTS_APPLICABLE_OK": n_app_ok,
         "H4_INVARIANTS_BROKEN": n_broken,
         "H4_INVARIANTS_NOT_APPLICABLE": len(no_aplicables),
-        "H4_INVARIANTS_NOT_APPLICABLE_KEYS": sorted(
-            k for k, v in inv.items() if "error" in v
-        ),
+        "H4_INVARIANTS_NOT_APPLICABLE_KEYS": sorted(k for k, v in inv.items() if "error" in v),
         "H4_INVARIANTS_OK": h4["summary"]["n_invariants_ok"],
         "H4_INVARIANTS_TOTAL": h4["summary"]["n_invariants_total"],
         "H4_EXTERNAL_MAGNITUDE": external_safe,
@@ -164,12 +155,8 @@ def _adjudicate_h4(h4: dict[str, Any]) -> dict[str, Any]:
         "H4_RATIOS_AT_C_0_05_0_01_CLIPPED": clipped,
         "H4_RATIOS_AT_C_0_05_0_01_SAFE": safe,
         "H4_EXTERNAL_RATIO_BAND": [EXTERNAL_RATIO_LOW, EXTERNAL_RATIO_HIGH],
-        "H4_C_0_05_RESULT": {
-            k: v["safe_surface"] for k, v in ext.items() if v["amplitude"] == 0.05
-        },
-        "H4_C_0_01_RESULT": {
-            k: v["safe_surface"] for k, v in ext.items() if v["amplitude"] == 0.01
-        },
+        "H4_C_0_05_RESULT": {k: v["safe_surface"] for k, v in ext.items() if v["amplitude"] == 0.05},
+        "H4_C_0_01_RESULT": {k: v["safe_surface"] for k, v in ext.items() if v["amplitude"] == 0.01},
         "H4_M4_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
         "H4_M5_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
         "H4_T_DELTA_RMSE": t_delta,
@@ -263,8 +250,11 @@ def main() -> None:
     with args.out.open("w", encoding="utf-8") as fh:
         json.dump(adjudication, fh, indent=1, allow_nan=False)
     print(f"OK -> {args.out}")
-    print(json.dumps({"H1": a1, "H4": {k: v for k, v in a4.items() if not isinstance(v, dict)}},
-                     indent=1, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"H1": a1, "H4": {k: v for k, v in a4.items() if not isinstance(v, dict)}}, indent=1, ensure_ascii=False
+        )
+    )
 
 
 if __name__ == "__main__":

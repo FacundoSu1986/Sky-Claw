@@ -31,8 +31,9 @@ Uso:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 __all__ = ["OptimizerConfig", "OptimizeResult", "minimize_1d", "golden_section"]
 
@@ -293,9 +294,7 @@ def minimize_1d(
             break
 
     if boundary_hit:
-        status = (
-            STATUS_MAX_EXPANSIONS if expansions >= cfg.max_bracket_expansions else STATUS_BOUNDARY
-        )
+        status = STATUS_MAX_EXPANSIONS if expansions >= cfg.max_bracket_expansions else STATUS_BOUNDARY
         converged = False
     else:
         status = STATUS_CONVERGED

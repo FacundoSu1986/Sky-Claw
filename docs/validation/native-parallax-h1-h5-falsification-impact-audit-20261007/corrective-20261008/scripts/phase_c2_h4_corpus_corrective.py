@@ -55,7 +55,6 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
     T_SELF_RMSE,
     T_SELF_VAR,
     decide,
-    delta_stats,
     evaluate_path,
     evaluate_rules,
     self_forward,
@@ -65,7 +64,11 @@ RESOLUTION = 512
 # scripts/ -> corrective-20261008/ -> <audit>/ -> validation/ -> docs/ -> <repo>
 DEFAULT_MANIFEST = (
     Path(__file__).resolve().parents[5]
-    / "docs" / "design" / "research" / "native-parallax" / "data"
+    / "docs"
+    / "design"
+    / "research"
+    / "native-parallax"
+    / "data"
     / "exp-m3-clean-authored-manifest.json"
 )
 
@@ -85,7 +88,7 @@ def resize_normal_float(n: np.ndarray, size: int) -> np.ndarray:
 def build_asset(spec, counterfactual: bool) -> tuple[np.ndarray, np.ndarray]:
     """Réplica EXACTA de load_asset() cambiando SÓLO el resize del normal."""
     normal_native = decode_normal_image(Path(spec.normal_path))
-    if spec.declared_convention in ("OPENGL", "DIRECTX") and SOLVER_NORMAL_CONVENTION != spec.declared_convention:
+    if spec.declared_convention in ("OPENGL", "DIRECTX") and spec.declared_convention != SOLVER_NORMAL_CONVENTION:
         normal_native = apply_convention(normal_native, spec.declared_convention, SOLVER_NORMAL_CONVENTION)
     height = resize_height(decode_height_image(Path(spec.height_path)), RESOLUTION)
     resizer = resize_normal_float if counterfactual else resize_normal
@@ -137,7 +140,9 @@ def rules_from(rows: list[dict[str, Any]], key_self: str, key_auth: str, key_cor
     full = {
         "rmse_self_median": float(np.median([r[key_self] for r in rows])),
         "rmse_auth_median": float(np.median([r[key_auth] for r in rows])),
-        "delta_rmse_median": float(np.median([r["delta_rmse_old" if key_auth.endswith("old") else "delta_rmse_new"] for r in rows])),
+        "delta_rmse_median": float(
+            np.median([r["delta_rmse_old" if key_auth.endswith("old") else "delta_rmse_new"] for r in rows])
+        ),
         "abs_corr_self_median": float(np.median([r["self_abs_corr"] for r in rows])),
         "abs_corr_auth_median": float(np.median([r[key_corr] for r in rows])),
         "var_self_median": float(np.median([r["self_var"] for r in rows])),
@@ -187,7 +192,9 @@ def main() -> None:
     full_new = build_full("auth_rmse_new", "auth_abs_corr_new", "auth_var_new", "delta_rmse_new")
 
     # held-out: mismos assets, sólo cambia el AUTH
-    def build_sub(split: str, full: dict[str, float], key_auth: str, key_corr: str, key_var: str, key_delta: str) -> dict[str, float]:
+    def build_sub(
+        split: str, full: dict[str, float], key_auth: str, key_corr: str, key_var: str, key_delta: str
+    ) -> dict[str, float]:
         sub = [r for r in rows if r["split"] == split]
         return {
             "rmse_self_median": float(np.median([r["self_rmse"] for r in sub])),
@@ -229,25 +236,35 @@ def main() -> None:
         "resolution": RESOLUTION,
         "corpus_integrity": {"exclusions": exclusions, "n_prepared": len(prepared)},
         "thresholds_unchanged": {
-            "T_SELF_RMSE": T_SELF_RMSE, "T_SELF_CORR": T_SELF_CORR, "T_SELF_VAR": T_SELF_VAR,
-            "T_DELTA_RMSE": T_DELTA_RMSE, "T_DELTA_CORR": T_DELTA_CORR,
-            "T_LOWMID_NRMSE": T_LOWMID_NRMSE, "T_LOWMID_EXCESS": T_LOWMID_EXCESS,
+            "T_SELF_RMSE": T_SELF_RMSE,
+            "T_SELF_CORR": T_SELF_CORR,
+            "T_SELF_VAR": T_SELF_VAR,
+            "T_DELTA_RMSE": T_DELTA_RMSE,
+            "T_DELTA_CORR": T_DELTA_CORR,
+            "T_LOWMID_NRMSE": T_LOWMID_NRMSE,
+            "T_LOWMID_EXCESS": T_LOWMID_EXCESS,
             "T_HIGH_ENRICHMENT": T_HIGH_ENRICHMENT,
         },
         "m4": {
             "rows": rows,
-            "full_old": full_old, "full_new": full_new,
-            "heldout_old": held_old, "heldout_new": held_new,
-            "rules_old": rules_old, "rules_new": rules_new,
-            "decision_old": dec_old, "decision_new": dec_new,
+            "full_old": full_old,
+            "full_new": full_new,
+            "heldout_old": held_old,
+            "heldout_new": held_new,
+            "rules_old": rules_old,
+            "rules_new": rules_new,
+            "decision_old": dec_old,
+            "decision_new": dec_new,
             "decision_changed": bool(dec_old != dec_new),
             "delta_rmse_max_abs_change": float(max(abs(r["delta_rmse_new"] - r["delta_rmse_old"]) for r in rows)),
             "auth_rmse_max_abs_change": float(max(abs(r["auth_rmse_new"] - r["auth_rmse_old"]) for r in rows)),
             "normal_rmse_old_vs_new_max": float(max(r["normal_rmse_old_vs_new"] for r in rows)),
         },
         "m5": {
-            "medians_old": med_old, "medians_new": med_new,
-            "C1_old": c1(med_old), "C1_new": c1(med_new),
+            "medians_old": med_old,
+            "medians_new": med_new,
+            "C1_old": c1(med_old),
+            "C1_new": c1(med_new),
             "C2_components_old": c2_components(med_old),
             "C2_components_new": c2_components(med_new),
             "auth_lowmid_max_abs_change": abs(med_new["auth_lowmid_nrmse"] - med_old["auth_lowmid_nrmse"]),
@@ -266,11 +283,15 @@ def main() -> None:
         json.dump(payload, fh, indent=1, allow_nan=False)
     print(f"OK -> {args.out}")
     print(f"M4 decision: {dec_old} -> {dec_new}  changed={payload['m4']['decision_changed']}")
-    print(f"M4 delta_rmse median: {full_old['delta_rmse_median']:.5f} -> {full_new['delta_rmse_median']:.5f} "
-          f"(max |change| per asset {payload['m4']['delta_rmse_max_abs_change']:.5f})")
+    print(
+        f"M4 delta_rmse median: {full_old['delta_rmse_median']:.5f} -> {full_new['delta_rmse_median']:.5f} "
+        f"(max |change| per asset {payload['m4']['delta_rmse_max_abs_change']:.5f})"
+    )
     print(f"M5 C1: {payload['m5']['C1_old']} -> {payload['m5']['C1_new']}")
-    print(f"M5 excess_lowmid: {med_old['excess_lowmid_nrmse']:.5f} -> {med_new['excess_lowmid_nrmse']:.5f} | "
-          f"excess_high: {med_old['excess_high_nrmse']:.5f} -> {med_new['excess_high_nrmse']:.5f}")
+    print(
+        f"M5 excess_lowmid: {med_old['excess_lowmid_nrmse']:.5f} -> {med_new['excess_lowmid_nrmse']:.5f} | "
+        f"excess_high: {med_old['excess_high_nrmse']:.5f} -> {med_new['excess_high_nrmse']:.5f}"
+    )
 
 
 if __name__ == "__main__":
