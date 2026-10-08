@@ -588,7 +588,8 @@ Reglas:
    Effective Runtime y se confirma `root_path == C.root_path` y la coherencia con el
    par desired. La transición durable se **finaliza después** de que el POST-verify
    pase; si falla, la transición **sigue `PENDING`** (recuperable) y **no** se
-   finaliza. Si no, se revierte (F5/F9). Invariante:
+   finaliza. La recuperación posterior de una transición que quedó `PENDING` sigue
+   F5/F9; no se finaliza antes del POST-verify. Invariante:
 
    ```text
    FINALIZED ⇒ POST verification already passed
