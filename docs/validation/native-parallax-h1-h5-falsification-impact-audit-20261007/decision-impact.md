@@ -1,5 +1,12 @@
 # Adjudicación de impacto — H1–H5 sobre M3/M4/M5
 
+> **⚠️ SUPERSEDED IN PART BY CORRECTIVE AUDIT (2026-10-08).** Las secciones de **H1** (§3) y
+> **H4** (§5.2 magnitud sintética) fueron corregidas en
+> [`corrective-20261008/`](corrective-20261008/README.md). El veredicto de magnitud de H4 pasa
+> de `NOT_REPRODUCED` a `PARTIALLY_REPRODUCED`; la tabla de §3 lleva enmiendas de signo,
+> Spearman y conteo. **H2/H3/H5 (§4, §6) y las conclusiones de decisión (§7–§11) no cambian.**
+> Cada enmienda va marcada en su lugar.
+
 > **Base:** `97dcc7ab9ade29153faa0ccec428b78612cfc04a` · **Carácter:** AUDIT_ONLY
 > **No se reranearon M2/M3/M4/M5. No se cambió ningún umbral. No se tocó código científico.**
 
@@ -50,14 +57,26 @@ recupera la strength verdadera con error ≤ 1.1e-16): para pares **perfectament
 
 | Métrica | Rejilla (código actual) | Continuo (forma cerrada + refinamiento) |
 |---|---|---|
-| `best_strength` | **31/31 clavados en el piso `-0.05`** | 27/31 con `|s*| < 0.05` (mediana ≈ 0.016) |
+| `best_strength` | **31/31 clavados en el piso `+0.05`** (baseline recalculado) | 27/31 con `|s*| < 0.05` (mediana ≈ 0.016) |
 | mediana de agreement | **10.71°** | **1.68°** |
 | Spearman vs `delta_rmse` | 0.135 | 0.480 |
 
-Es decir: **para los 31 assets**, el oráculo nunca encuentra el óptimo — el argmin está en el
-borde de la rejilla. El diagnóstico §5 pasa de «13.40° (mediana histórica) / 10.71° (baseline)»
+Es decir: **para los 31 assets**, el oráculo no alcanza el óptimo — el argmin del baseline
+queda en el borde de la rejilla. El diagnóstico §5 pasa de «13.40° (mediana histórica) / 10.71° (baseline)»
 a «1.68°»: el desacuerdo normal↔height que el diagnóstico reportaba es, en su mayor parte, un
 **artefacto de resolución del instrumento**, no una propiedad del dataset.
+
+> **Corregido el 2026-10-08 (F2 + F3).** Tres enmiendas sobre el párrafo y la tabla de arriba:
+> 1. **Signo (F2):** el baseline recalculado da `grid_best_strength = +0.05`, no `-0.05`. El
+>    `-0.05` pertenece al histórico `fe54e9a9`. Son universos distintos y no deben mezclarse
+>    (el conteo usa `abs(abs(s) - 0.05)` y por eso es agnóstico al signo).
+> 2. **Spearman (F3):** la fila "Spearman vs `delta_rmse`" mezclaba ángulos del baseline con
+>    `delta_rmse` del artefacto histórico **no ancestro** — un dataset híbrido. Ver
+>    `corrective-20261008/`: el universo `BASELINE_COUNTERFACTUAL` da **0.1367 (rejilla) /
+>    0.4782 (continuo)** con el delta recomputado en el mismo baseline.
+> 3. **"Nunca encuentra el óptimo" (F2):** con el optimizador correcto (sección áurea,
+>    convergencia explícita) la afirmación se sostiene (`n_grid_matches_continuous = 0` con
+>    31/31 convergidos), pero `|s*| < 0.05` es **28/31**, no 27/31, y no hay casos de borde.
 
 **Pero no cambia ninguna decisión:** `evaluate_rules` de M4 no lee el oráculo, y `decide_exp_m3`
 no lee Cohort B. Por lo tanto:
@@ -118,6 +137,26 @@ float da `0.0`). Es el offset de −0.5 LSB clásico del round-trip `[-1,1] → 
 Sólo el camino **AUTH** pasa por acá (SELF se arma desde el height float).
 
 ### 5.2 Magnitud sintética — el número del audit externo NO se reproduce
+
+> **⚠️ CORREGIDO EL 2026-10-08 (F4 + F5). El veredicto de esta subsección queda superado.**
+> Dos defectos metodológicos invalidaban la conclusión `NOT_REPRODUCED`:
+>
+> - **F4:** la sonda probaba amplitudes `[1.0, 0.3, 0.1, 0.03]`, pero el claim externo se midió
+>   en `c = 0.05` y `c = 0.01`. El efecto es no lineal ⇒ las amplitudes viejas no podían
+>   falsar el claim citado.
+> - **F5:** `h_nat` centrado tiene negativos y `resize_height` clipea a `[0,1]`, mientras las
+>   normales salían del campo sin clipear ⇒ el height target y la superficie de las normales
+>   **no eran la misma superficie**. El clip dominaba la señal y enmascaraba la cuantización.
+>
+> Con la superficie consistente y las amplitudes correctas, los ratios **sí aparecen**:
+> `S07_bumps@0.05` = **27.99×**, `S07_bumps@0.01` = **82.12×**,
+> `S15_periodic_noise@0.05` = **3.52×**, `S15_periodic_noise@0.01` = **18.97×**.
+> Veredicto corregido: `H4_EXTERNAL_MAGNITUDE = PARTIALLY_REPRODUCED`. Además, sobre superficie
+> corregida el máximo `|downstream delta|` es **0.0353 ≥ T_DELTA_RMSE (0.02)** — la afirmación
+> "no material por la letra" del sintético también cambia (ver `corrective-20261008/`).
+> **M4/M5 no cambian:** el contrafactual real no usa superficies sintéticas clipeadas.
+>
+> El texto original se conserva abajo como registro de la ejecución original.
 
 El audit afirma «5–21× mayor … y llega a 0.023 absoluto». `scripts/h4_magnitude_probe.py` barre
 7 casos × 4 amplitudes a 1024→512 y mide todas las candidatas:

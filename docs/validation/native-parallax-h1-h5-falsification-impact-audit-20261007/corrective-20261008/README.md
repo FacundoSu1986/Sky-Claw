@@ -1,0 +1,186 @@
+# Native Parallax — Auditoría correctiva H1/H4 (PR #700)
+
+> **Fecha:** 2026-10-08 · **Carácter:** `CORRECTIVE_AUDIT`
+> **Padre de la corrección:** `d260b7c9b8afff33a6720106ac8c5f6d95891ecd`
+> **Base científica original:** `97dcc7ab9ade29153faa0ccec428b78612cfc04a`
+> **Rama:** `research/native-parallax-h1-h5-falsification-impact-audit`
+> **Worktree:** `E:\SkyClaw_H1H5_AUDIT_CORRECTION_d260b7c9`
+> **Sesión:** exclusiva, nueva. No se reutilizó `E:\SkyClaw_H1H5_AUDIT_97dcc7ab`.
+
+Esta carpeta **corrige** —no reescribe— la auditoría de
+`../` (2026-10-07). Los artefactos originales quedan intactos. Donde la evidencia
+corregida contradice la conclusión original, **se corrige la conclusión**.
+
+---
+
+## 1. Qué se corrigió y por qué
+
+Cinco findings materiales quedaron abiertos en el review del PR #700. Los cinco están
+confirmados. Esta corrida los resuelve metodológicamente.
+
+| # | Defecto confirmado | Corrección aplicada |
+|---|---|---|
+| **F1** | El supuesto oráculo "continuo" era un **barrido finito** (`s0·exp2(linspace) ∪ linspace(-0.05,0.05)`) sin bracketing ni convergencia. `polyhaven_gray_rocks` caía en el borde `0.05` con cero mejora. | `scripts/corrective_optimizer.py`: barrido grueso log-uniforme + bracketing + **sección áurea** + expansión de borde + metadatos de convergencia. Determinista, sin SciPy. |
+| **F2** | La narrativa mezclaba el `+0.05` del baseline recalculado con el `-0.05` del histórico `fe54e9a9`, y afirmaba "la rejilla nunca encuentra el óptimo" sin haberlo medido de verdad. | Se distinguen explícitamente los tres universos y se emite el **conteo real** de matches antes de afirmar nada. |
+| **F3** | El Spearman era **híbrido**: ángulos recalculados en el baseline contra `delta_rmse` del artefacto histórico no-ancestro. | `scripts/phase_c_corrective.py` emite dos universos separados: `BASELINE_COUNTERFACTUAL` (delta recomputado) y `HISTORICAL_COMPARISON` (etiquetado híbrido). |
+| **F4** | La sonda H4 probaba amplitudes `[1.0, 0.3, 0.1, 0.03]`, pero el claim externo se midió en `c = 0.05` y `c = 0.01`. El efecto es no lineal ⇒ no falsaba el claim citado. | Batería `[1.0, 0.3, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]`, con `0.05` y `0.01` **obligatorias**. |
+| **F5** | `h_nat` centrado tiene negativos; `resize_height` clipea a `[0,1]`; pero `n_nat = self_forward(h_nat)` sale del campo **sin** clipear ⇒ el height target y la superficie de las normales **no eran la misma superficie**. | `safe_surface()`: `h_safe = h_nat + offset` sin scaling (∇(h+c) = ∇h preserva pendientes). Casos fuera de rango se marcan inválidos; **no se clipea en silencio**. Invariantes verificados por test. |
+
+---
+
+## 2. Resultado H1 — la conclusión cambia de magnitud, no de existencia
+
+Corrida corregida sobre los 31 assets del corpus primario (SHA256 verificado, 0 exclusiones):
+
+| Métrica | Sonda vieja (barrido finito) | **Correctiva (optimizador real)** |
+|---|---|---|
+| `H1_CONVERGED_ASSETS` | n/a (sin criterio de convergencia) | **31 / 31** |
+| `H1_UNRESOLVED_ASSETS` | n/a | **0** |
+| `H1_BOUNDARY_CASES` | ≥1 (`gray_rocks` en el borde `0.05`) | **0** |
+| mediana agreement continuo | 1.6832° | **1.6826°** |
+| mediana agreement rejilla | 10.7085° | 10.7085° |
+| `n_continuous_abs_strength_lt_0_05` | 27 / 31 | **28 / 31** |
+| `n_grid_matches_continuous` | no medido | **0** |
+
+**Lectura honesta:**
+
+- El defecto de H1 **se confirma** y ahora está medido con un optimizador que realmente
+  converge en los 31 assets. La magnitud de la mejora (10.71° → 1.68°) **se sostiene**.
+- La afirmación "la rejilla nunca encuentra el óptimo" pasa de **no soportada** a
+  **soportada**: `n_grid_matches_continuous == 0` **y** todos los casos convergen
+  (condición exacta que el brief §16 exige para poder afirmarla).
+- El conteo `|s*| < 0.05` sube de 27 a **28**: un asset más tiene su óptimo real por
+  debajo del piso histórico. La sonda vieja lo estaba perdiendo.
+- **`gray_rocks` deja de ser un caso de borde**: con minimización real su óptimo está
+  dentro del dominio, no clavado en `0.05`. El borde era un artefacto de la rejilla.
+
+**El impacto primario sigue siendo `NONE`**: `coherence_diagnostic` de M4 es
+explícitamente no decisional, `decide_exp_m3` no lee Cohort B, y `evaluate_rules` de M4
+no lee el oráculo. La corrección cambia la **magnitud del diagnóstico**, no una decisión.
+
+---
+
+## 3. Resultado H4 — el claim externo se reproduce parcialmente (y antes no)
+
+Con la superficie consistente (F5) y las amplitudes correctas (F4), en `c = 0.05` y `c = 0.01`:
+
+| Caso | Brazo clipeado (sonda vieja) | **Brazo corregido** | Claim externo |
+|---|---|---|---|
+| `S07_bumps@0.05` | ratio 1.000× | **27.99×** | 5–21× |
+| `S07_bumps@0.01` | ratio 0.999× | **82.12×** | 5–21× |
+| `S15_periodic_noise@0.05` | ratio 1.000× | **3.52×** | 5–21× |
+| `S15_periodic_noise@0.01` | ratio 1.001× | **18.97×** | 5–21× |
+
+**El veredicto original `NOT_REPRODUCED` era un artefacto de dos defectos combinados.**
+El brazo clipeado daba ratio ≈ 1.0 porque el clip `[0,1]` dominaba la señal y enmascaraba
+por completo el efecto de la cuantización uint8. Al medir sobre una superficie coherente
+y a las amplitudes que el claim realmente usó, los ratios **sí** aparecen.
+
+`H4_EXTERNAL_MAGNITUDE = PARTIALLY_REPRODUCED`: hay casos dentro de la banda 5–21×
+(`S15@0.01` con 19.0×) y casos por encima (`S07@0.01` con 82×). Eso es consistente con un
+efecto no lineal que crece al bajar la amplitud — exactamente lo que el finding F4 decía
+que las amplitudes viejas no podían capturar.
+
+### 3.1 Hallazgo nuevo: la materialidad del sintético también cambia
+
+Con la superficie corregida aparece un resultado que la sonda original no podía ver:
+
+| brazo | máx `|downstream delta|` | casos `>= T_DELTA_RMSE (0.02)` |
+|---|---|---|
+| clipeado (viejo) | 0.0162 | **0** |
+| **superficie segura (nuevo)** | **0.0353** | **1** (`S09_bricks@1.0`, ratio 1.58×) |
+
+La afirmación "no material por la letra (0.0162 < 0.02)" del sintético **queda superada**: el
+valor real es `0.0353 >= 0.02`. En ese caso el `normal_rmse_old_vs_ideal` cae de **0.559**
+(clipeado) a **0.210** (seguro) — el clip inflaba el error medido 2.7×.
+
+**Esto no invalida M4/M5.** El umbral `T_DELTA_RMSE` gobierna el `delta_rmse` del **corpus
+real**, no del sintético; y el contrafactual real de una sola variable (Fase C2, re-ejecutado
+en esta corrección) **no usa superficies sintéticas clipeadas**.
+
+---
+
+## 4. Contrafactual del corpus real (Fase C2) — re-verificado
+
+§23 del brief exigía **no** asumir que F5 invalida el contrafactual real, sino revalidarlo.
+Se re-ejecutó el script C2 (con el guard `len(prepared) != 31 → HARD STOP` añadido):
+
+```
+M4 decision: EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT -> EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT  changed=False
+M4 delta_rmse median: 0.03506 -> 0.03508   (max |change| per asset 0.03543)
+M5 C1: False -> False
+M5 excess_lowmid: 0.50820 -> 0.44682 | excess_high: 0.33504 -> 0.33491
+```
+
+La decisión de M4 y `C1` de M5 **no cambian** entre brazos. `H4_M4_PRIMARY_IMPACT` y
+`H4_M5_PRIMARY_IMPACT` permanecen `NUMERICAL_NOT_DECISIONAL`.
+
+---
+
+## 5. Adjudicación final
+
+```
+H1_IMPLEMENTATION_DEFECT     = CONFIRMED
+H1_CONTINUOUS_OPTIMIZATION   = VALID          (31/31 convergen, 0 unresolved)
+H1_GRID_MATCHES_CONTINUOUS   = 0
+H1_GRID_NEVER_FINDS_OPTIMUM  = TRUE           (0 matches Y todo converge)
+H1_MEDIAN_GRID_AGREEMENT_DEG = 10.7085
+H1_MEDIAN_CONT_AGREEMENT_DEG = 1.6826
+H1_ABS_STRENGTH_LT_0_05      = 28
+H1_PRIMARY_IMPACT            = NONE
+
+H4_IMPLEMENTATION_DEFECT        = CONFIRMED
+H4_SYNTHETIC_SURFACE_CONSISTENT = YES         (sobre todos los casos aplicables)
+H4_EXTERNAL_MAGNITUDE           = PARTIALLY_REPRODUCED
+H4_M4_PRIMARY_IMPACT            = NUMERICAL_NOT_DECISIONAL
+H4_M5_PRIMARY_IMPACT            = NUMERICAL_NOT_DECISIONAL
+
+M4_PRIMARY_STATUS = NOT_INVALIDATED
+M5_PRIMARY_STATUS = NOT_INVALIDATED
+PR697_DISPOSITION = STILL_VALID_NARROW_SCOPE
+PR675_RECOMMENDATION = KEEP_DRAFT_BLOCKED
+M6_IMPLEMENTATION_BLOCKED = YES
+CORRECTIVE_REPRODUCIBILITY = PASS
+```
+
+---
+
+## 6. Qué NO se tocó
+
+- **H2 / H3 / H5 sin cambios.** Se preservan `H2_BUG_CLASSIFICATION=NOT_PROVEN`,
+  `H2_UNIT_CONTRACT=UV_NORMALIZED`, `H3_MECHANISM=CONFIRMED`,
+  `H3_CONTRACTUAL_MEANINGFULNESS=SUPPORTED`, `H5_DIAGNOSTIC_DEFECT=CONFIRMED`,
+  `H5_PRIMARY_M4_BLOCKER=NO`. Este slice no aprovecha el PR para limpiar H5.
+- **Sin rerun completo de M4/M5.** No se re-ejecutó M4, M5, ni la reconstrucción
+  LEGACY_HELDOUT, ni M6.
+- **Sin cambios en código científico ni umbrales.** El corpus se leyó READ-ONLY.
+- **Artefactos originales intactos.** `synthetic-evidence.json`, `real-impact.json`,
+  `hypothesis-status.json` y `provenance.json` de la auditoría 2026-10-07 **no se
+  modificaron**. La superación es explícita, no silenciosa.
+
+---
+
+## 7. Contenido de esta carpeta
+
+```
+README.md                        este documento
+corrective-provenance.json       SHAs, hashes, qué se corrigió y por qué
+corrective-adjudication.json     veredictos finales H1/H4 + M4/M5 + PR697/PR675
+h1-corrected-evidence.json       Fase C corregida (optimizador real + 2 universos Spearman)
+h4-corrected-evidence.json       sonda H4 corregida (amplitudes del claim + superficie segura)
+evidence/determinism.json        verificación de reproducibilidad (2 pasadas, bit a bit)
+evidence/h1-corrected-evidence.json   salida cruda de la corrida H1
+evidence/h4-corrected-evidence.json   salida cruda de la corrida H4
+scripts/corrective_optimizer.py             F1: minimizador escalar 1-D determinista
+scripts/phase_c_corrective.py               F1+F3: oráculo continuo real sobre el corpus
+scripts/h4_magnitude_probe_corrective.py    F4+F5: sonda de magnitud corregida
+scripts/verify_determinism.py               §28: verificación de reproducibilidad
+scripts/build_corrective_evidence.py        Fase D: adjudicación consolidada
+```
+
+Tests asociados (fuera de esta carpeta, en `tests/`):
+
+```
+tests/test_native_parallax_pr700_corrective_optimizer.py    F1: 16 tests
+tests/test_native_parallax_pr700_corrective_h4_invariants.py F4/F5: 20 tests
+```

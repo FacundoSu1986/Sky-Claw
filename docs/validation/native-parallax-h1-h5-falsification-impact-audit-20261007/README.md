@@ -1,5 +1,14 @@
 # Native Parallax — Auditoría de falsificación e impacto H1–H5
 
+> **⚠️ SUPERSEDED IN PART BY CORRECTIVE AUDIT (2026-10-08).**
+> Los resultados de **H1** y **H4** de este documento fueron corregidos por
+> [`corrective-20261008/`](corrective-20261008/README.md) a raíz de cinco findings
+> materiales del review del PR #700. Los números de H1 (Ronda de magnitud, conteo
+> `n_grid_matches_continuous`, casos de borde) y el veredicto de magnitud de H4
+> (`NOT_REPRODUCED` → `PARTIALLY_REPRODUCED`) quedan superados. **H2, H3 y H5 no
+> cambian.** Los artefactos JSON de este directorio se preservan intactos como
+> registro de la ejecución original.
+
 > **Fecha:** 2026-10-07 · **Base:** `97dcc7ab9ade29153faa0ccec428b78612cfc04a`
 > **Rama:** `research/native-parallax-h1-h5-falsification-impact-audit`
 > **Worktree:** `E:\SkyClaw_H1H5_AUDIT_97dcc7ab`
@@ -40,12 +49,20 @@ Detalle causal completo en [`decision-impact.md`](decision-impact.md); contrato 
 ## 3. Los dos hallazgos que más importan
 
 **H1 — el diagnóstico de coherencia de M4 es, en su mayor parte, un artefacto del instrumento.**
-Sobre los 31 assets del corpus primario, el oráculo de rejilla nunca encuentra el óptimo: el
-`best_strength` queda clavado en el borde de la rejilla (`-0.05`) en **31/31** casos, y 27/31
-tienen `|s*| < 0.05`. El contrafactual continuo baja la mediana de **10.71° → 1.68°**. El
+Sobre los 31 assets del corpus primario, el oráculo de rejilla no alcanza el óptimo real:
+el `best_strength` del **baseline recalculado** queda clavado en el borde de la rejilla
+(`+0.05`) en **31/31** casos, mientras el histórico `fe54e9a9` daba `-0.05` (universos
+distintos: no mezclar). El contrafactual continuo baja la mediana de **10.71° → 1.68°**. El
 «NORMAL_HEIGHT_MISMATCH» que el diagnóstico reportaba es en gran medida un artefacto de
 resolución del oráculo. **No cambia ninguna decisión** (`coherence_diagnostic` es
 explícitamente no decisional), pero invalida el uso del número como evidencia de dataset.
+
+> **Corregido el 2026-10-08 (F2):** la versión original de este párrafo decía `-0.05` para el
+> baseline (era `+0.05`; el `-0.05` es del histórico) y afirmaba que la rejilla "nunca
+> encuentra el óptimo" sin haberlo medido con un optimizador real. Ver
+> [`corrective-20261008/`](corrective-20261008/README.md): con minimización real
+> `n_grid_matches_continuous = 0` en 31/31 assets convergidos, por lo que la afirmación
+> **ahora sí está soportada** — y `|s*| < 0.05` es **28/31**, no 27/31.
 
 **H4 — el defecto es real y toca el camino AUTH, pero no mueve la aguja.**
 `resize_normal` trunca a uint8 y re-cuantiza en el resize de Pillow (el hermano que #653 arregló

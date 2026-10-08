@@ -1,0 +1,108 @@
+{
+ "phase": "D_CORRECTIVE_ADJUDICATION",
+ "audit_only": true,
+ "corrective": true,
+ "correction_parent_head": "d260b7c9b8afff33a6720106ac8c5f6d95891ecd",
+ "original_scientific_base": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "H1": {
+  "H1_IMPLEMENTATION_DEFECT": "CONFIRMED",
+  "H1_CONTINUOUS_OPTIMIZATION": "VALID",
+  "H1_CONVERGED_ASSETS": 31,
+  "H1_UNRESOLVED_ASSETS": 0,
+  "H1_GRID_MATCHES_CONTINUOUS": 0,
+  "H1_MEDIAN_GRID_AGREEMENT_DEG": 10.708549536549764,
+  "H1_MEDIAN_CONTINUOUS_AGREEMENT_DEG": 1.6825904440332888,
+  "H1_ABS_STRENGTH_LT_0_05": 28,
+  "H1_BOUNDARY_CASES": 0,
+  "H1_GRID_BEST_STRENGTH_AT_FLOOR": 31,
+  "H1_GRID_NEVER_FINDS_OPTIMUM": true,
+  "H1_SPEARMAN_BASELINE": 0.4782258064516129,
+  "H1_SPEARMAN_BASELINE_GRID": 0.13669354838709677,
+  "H1_SPEARMAN_HISTORICAL_HYBRID_CONTINUOUS": 0.4798387096774194,
+  "H1_PRIMARY_IMPACT": "NONE",
+  "H1_PRIMARY_IMPACT_REASON": "coherence_diagnostic de M4 es expl\u00edcitamente no decisional; decide_exp_m3 no lee Cohort B; evaluate_rules de M4 no lee el or\u00e1culo"
+ },
+ "H4": {
+  "H4_IMPLEMENTATION_DEFECT": "CONFIRMED",
+  "H4_SYNTHETIC_SURFACE_CONSISTENT": "YES",
+  "H4_INVARIANTS_APPLICABLE": 51,
+  "H4_INVARIANTS_APPLICABLE_OK": 51,
+  "H4_INVARIANTS_BROKEN": 0,
+  "H4_INVARIANTS_NOT_APPLICABLE": 5,
+  "H4_INVARIANTS_NOT_APPLICABLE_KEYS": [
+   "S02_sine_x@1.0",
+   "S06_multifreq@1.0",
+   "S07_bumps@1.0",
+   "S08_ridges@1.0",
+   "S11_highfreq@1.0"
+  ],
+  "H4_INVARIANTS_OK": 51,
+  "H4_INVARIANTS_TOTAL": 56,
+  "H4_EXTERNAL_MAGNITUDE": "PARTIALLY_REPRODUCED",
+  "H4_EXTERNAL_MAGNITUDE_CLIPPED_ARM": "NOT_REPRODUCED",
+  "H4_RATIOS_AT_C_0_05_0_01_CLIPPED": [
+   0.9998058800280458,
+   0.9989661325427115,
+   0.9997744287752417,
+   1.0005323162820923
+  ],
+  "H4_RATIOS_AT_C_0_05_0_01_SAFE": [
+   27.98697421567143,
+   82.12329464999517,
+   3.516275837418015,
+   18.97157324464671
+  ],
+  "H4_EXTERNAL_RATIO_BAND": [
+   5.0,
+   21.0
+  ],
+  "H4_C_0_05_RESULT": {
+   "S07_bumps@0.05": {
+    "ratio": 27.98697421567143,
+    "delta": 5.385861122314052e-05,
+    "normal_rmse_old_vs_new": 0.003078515711528365
+   },
+   "S15_periodic_noise@0.05": {
+    "ratio": 3.516275837418015,
+    "delta": 7.090904680729603e-06,
+    "normal_rmse_old_vs_new": 0.002511982306868582
+   }
+  },
+  "H4_C_0_01_RESULT": {
+   "S07_bumps@0.01": {
+    "ratio": 82.12329464999517,
+    "delta": 3.227543568269354e-05,
+    "normal_rmse_old_vs_new": 0.003545060467912267
+   },
+   "S15_periodic_noise@0.01": {
+    "ratio": 18.97157324464671,
+    "delta": 1.0047703883308982e-05,
+    "normal_rmse_old_vs_new": 0.002775214017219686
+   }
+  },
+  "H4_M4_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+  "H4_M5_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+  "H4_T_DELTA_RMSE": 0.02,
+  "H4_MAX_ABS_DOWNSTREAM_DELTA_CLIPPED_ARM": 0.016171353038210115,
+  "H4_MAX_ABS_DOWNSTREAM_DELTA_SAFE_ARM": 0.035339907940470365,
+  "H4_N_CASES_DELTA_GE_T_SAFE_ARM": 1,
+  "H4_SYNTHETIC_MATERIALITY_CHANGED": true,
+  "H4_SYNTHETIC_MATERIALITY_NOTE": "HALLAZGO NUEVO (F5): la sonda original reportaba max delta 0.0162 < T_DELTA_RMSE=0.02 => 'no material por la letra'. Sobre superficie CONSISTENTE el maximo es 0.0353 >= 0.02 (S09_bricks@1.0, ratio 1.58x). El veredicto de materialidad del SINTETICO cambia de NO a SI. NO cambia M4/M5: el umbral gobierna delta_rmse del corpus real, no del sintetico, y el contrafactual real (Fase C2) no usa superficies sinteticas clipeadas.",
+  "H4_M4_M5_IMPACT_REASON": "la correcci\u00f3n F5 afecta la sonda SINT\u00c9TICA; el contrafactual real de una sola variable (Fase C2) no usa superficies sint\u00e9ticas clipeadas y sus decisiones no cambiaron (ver phase_c2_h4_corpus.py, decisi\u00f3n id\u00e9ntica en ambos brazos)",
+  "H4_NOTE_19_5_WIDTH": "El brazo seguro reproduce ratios POR ENCIMA de 21x en c=0.01 (hasta 82x). El claim externo '5-21x' queda parcialmente reproducido: hay casos dentro de la banda y casos por encima, consistente con un efecto no lineal que crece al bajar la amplitud."
+ },
+ "M4_PRIMARY_STATUS": "NOT_INVALIDATED",
+ "M5_PRIMARY_STATUS": "NOT_INVALIDATED",
+ "PR697_DISPOSITION": "STILL_VALID_NARROW_SCOPE",
+ "PR675_RECOMMENDATION": "KEEP_DRAFT_BLOCKED",
+ "M6_IMPLEMENTATION_BLOCKED": "YES",
+ "CORRECTIVE_REPRODUCIBILITY": "PASS",
+ "baseline_unchanged_claims": {
+  "H2_BUG_CLASSIFICATION": "NOT_PROVEN",
+  "H2_UNIT_CONTRACT": "UV_NORMALIZED",
+  "H3_MECHANISM": "CONFIRMED",
+  "H3_CONTRACTUAL_MEANINGFULNESS": "SUPPORTED",
+  "H5_DIAGNOSTIC_DEFECT": "CONFIRMED",
+  "H5_PRIMARY_M4_BLOCKER": "NO"
+ }
+}
