@@ -287,8 +287,11 @@ def main() -> None:
     h4 = json.loads(args.h4.read_text(encoding="utf-8"))
     det = json.loads(args.determinism.read_text(encoding="utf-8"))
     roster = None
+    roster_gate = None
     if args.c2 is not None and args.c2.exists():
-        roster = json.loads(args.c2.read_text(encoding="utf-8")).get("roster_identity")
+        c2_doc = json.loads(args.c2.read_text(encoding="utf-8"))
+        roster = c2_doc.get("roster_identity")
+        roster_gate = c2_doc.get("roster_gate")
 
     a1 = _adjudicate_h1(h1)
     a4 = _adjudicate_h4(h4)
@@ -311,11 +314,20 @@ def main() -> None:
         "H4": a4,
         "M4_PRIMARY_STATUS": m4_status,
         "M5_PRIMARY_STATUS": m5_status,
-        # --- identidad del roster (finding F)
+        # --- identidad del roster (finding F; endurecido en la ronda 3)
         "ROSTER_COUNT_MATCH": (roster or {}).get("roster_count_match"),
         "ROSTER_IDENTITY_MATCH": (roster or {}).get("roster_identity_match"),
         "ROSTER_DIGEST_MATCH": (roster or {}).get("roster_digest_match"),
-        "MANIFEST_DIGEST_MATCH": (roster or {}).get("manifest_digest_match"),
+        # Renombrado (ronda 3): el campo viejo `MANIFEST_DIGEST_MATCH` NO comparaba el
+        # digest del manifiesto; comparaba el del roster HISTÓRICO contra el SHA congelado.
+        "HISTORICAL_ROSTER_DIGEST_MATCHES_FROZEN_SHA": (roster or {}).get(
+            "historical_roster_digest_matches_frozen_sha"
+        ),
+        # Contrato SEPARADO (ronda 3): el ARCHIVO del manifiesto M3, canónico LF.
+        "M3_MANIFEST_SHA256_MATCHES_FROZEN": (roster or {}).get("m3_manifest_sha256_matches_frozen"),
+        # El gate es lo que decide; se publica su veredicto, no sólo los insumos.
+        "ROSTER_GATE_ALLOWED": (roster_gate or {}).get("allowed"),
+        "ROSTER_GATE_FAILED_CONDITIONS": (roster_gate or {}).get("failed_conditions"),
         "ROSTER_DETAIL": roster,
         "PR697_DISPOSITION": (
             "STILL_VALID_NARROW_SCOPE"

@@ -16,6 +16,13 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > endurece el optimizador (D, E), desdobla la adjudicación de H4 (C), fija la identidad
 > del roster (F) y ajusta las afirmaciones del texto (A, B, G, H). Los valores de H1
 > **cambiaron** donde correspondía: ver §2 y §2.2.
+>
+> **Tercera ronda (2026-10-09, misma sesión).** Un finding nuevo sobre el HEAD `2e13118`:
+> el digest congelado del roster histórico se **calculaba** pero **no participaba del hard
+> stop**, así que un artefacto histórico alterado junto con un corpus alterado de forma
+> consistente pasaba el gate. Confirmado y corregido: gate **fail-closed** de cuatro
+> condiciones, renombre del booleano engañoso y contrato **separado** para el archivo del
+> manifiesto M3 (digest canónico LF). Ver §4.
 
 ---
 
@@ -186,13 +193,35 @@ en esta corrección) **no usa superficies sintéticas clipeadas**.
 ## 4. Contrafactual del corpus real (Fase C2) — re-verificado
 
 §23 del brief exigía **no** asumir que F5 invalida el contrafactual real, sino revalidarlo.
-Se re-ejecutó el script C2 con **dos** guardas antes de calcular M4/M5 (ronda 2, finding F):
-`len(prepared) != 31 → HARD STOP` **y** verificación de **identidad** del roster, no sólo de
-su tamaño — conjunto ordenado de `asset_id` y digest SHA256 contra el histórico
-(`HISTORICAL_ROSTER_SHA256 = a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e`),
-más el digest del manifiesto M3 (`c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde`).
-Con un roster de 31 assets **distinto** el script no decide: ver
-`ROSTER_COUNT_MATCH` / `ROSTER_IDENTITY_MATCH` / `MANIFEST_DIGEST_MATCH` en la adjudicación.
+Se re-ejecutó el script C2 con un **gate fail-closed** antes de calcular M4/M5. El gate exige
+**cuatro** condiciones, cada una **exactamente** `True` (una clave ausente o un valor
+truthy-no-booleano bloquea):
+
+| Condición | Qué ancla |
+|---|---|
+| `roster_count_match` | hay 31 assets |
+| `roster_identity_match` | el conjunto de `asset_id` es exactamente el histórico |
+| `historical_roster_digest_matches_frozen_sha` | el digest del **roster histórico** contra `HISTORICAL_ROSTER_SHA256 = a3ddcced…` |
+| `m3_manifest_sha256_matches_frozen` | el digest del **archivo** del manifiesto M3 contra `EXPECTED_M3_MANIFEST_SHA256_LF = b0f5a4c6…` |
+
+Las dos últimas anclan objetos **distintos** y no se mezclan: una fija la identidad del roster
+del artefacto histórico, la otra la identidad del archivo que define el corpus. La ronda 2
+calculaba la segunda pero **no la usaba en la decisión** (finding de la ronda 3): un artefacto
+histórico alterado *junto con* un corpus alterado de forma consistente pasaba el gate con
+`count=true` e `identity=true`. Además, el booleano se llamaba `manifest_digest_match` cuando en
+realidad comparaba el roster histórico — nombre que se corrigió.
+
+**Convención EOL (explícita).** El digest del manifiesto se congela sobre bytes canónicos **LF**
+(`b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f`), **no** sobre el checkout
+CRLF de Windows (`c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde`, 76217 bytes).
+El repo ya documenta esa relación
+(`docs/design/research/native-parallax/m2-m3-math-revalidation-protocol.md`; `data/exp-m4-data-required.json`
+registra el valor LF). Congelar el CRLF habría roto el gate en un checkout Linux. La evidencia
+emite ambos, etiquetados.
+
+Con cualquiera de las cuatro condiciones en falso el script **no decide** (HARD STOP) y la
+adjudicación publica `ROSTER_GATE_ALLOWED` / `ROSTER_GATE_FAILED_CONDITIONS` junto a los
+booleanos crudos.
 
 ```
 M4 decision: EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT -> EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT  changed=False
