@@ -42,6 +42,10 @@ puede no verla. Por eso el resultado emite `global_optimum_proven = False` y
             RESULT_FINITE                 = sí
         "No toqué el borde" NO es prueba de convergencia.
 
+    `VALID_MINIMUM_BRACKET` **no** significa "el punto medio cae dentro del intervalo":
+    exige evidencia de un mínimo interior (ver `is_valid_minimum_bracket`). Con la
+    condición débil, un objetivo plano o monótono se declaraba con bracket válido.
+
 Contrato de determinismo (brief §28): sin aleatoriedad, sin SciPy; tolerancia,
 iteraciones máximas y regla de expansión son parámetros congelados y se emiten en
 los metadatos de convergencia de cada asset.
@@ -61,7 +65,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["OptimizerConfig", "OptimizeResult", "minimize_1d", "golden_section"]
+__all__ = ["OptimizerConfig", "OptimizeResult", "minimize_1d", "golden_section", "is_valid_minimum_bracket"]
 
 # Constante de la sección áurea: 1/phi = (sqrt(5) - 1) / 2
 _INV_PHI = (math.sqrt(5.0) - 1.0) / 2.0
@@ -287,6 +291,43 @@ def golden_section(
     return x, fx, iters, evals
 
 
+def is_valid_minimum_bracket(
+    f: Callable[[float], float],
+    lo: float,
+    mid: float,
+    hi: float,
+    *,
+    tolerance: float,
+) -> bool:
+    """¿El bracket `(lo, mid, hi)` aporta evidencia de un MÍNIMO INTERIOR?
+
+    Contrato (bracketing estándar de tres puntos):
+
+        lo < mid < hi
+        AND f(mid) < f(lo) - tolerance
+        AND f(mid) < f(hi) - tolerance
+
+    Para `f` continua esto **implica** un mínimo local estrictamente dentro de
+    `(lo, hi)`: el mínimo de `f` sobre `[lo, hi]` no puede estar en `lo` ni en `hi`
+    (ambos son peores que `mid`), así que cae en el interior y allí es un mínimo local.
+
+    La condición `lo < mid < hi` **sola no alcanza**: un objetivo plano o monótono la
+    cumple y no tiene ningún mínimo interior. Tercera ronda correctiva: el código previo
+    usaba sólo esa condición y por eso un objetivo plano o monótono salía con
+    `VALID_MINIMUM_BRACKET = YES`.
+
+    `tolerance` es la tolerancia de métrica del propio optimizador
+    (`OptimizerConfig.metric_tolerance`): una mejora menor que ella no cuenta como
+    evidencia. Fail-closed: si algún valor no es finito, devuelve `False`.
+    """
+    if not (lo < mid < hi):
+        return False
+    f_lo, f_mid, f_hi = f(lo), f(mid), f(hi)
+    if not (math.isfinite(f_lo) and math.isfinite(f_mid) and math.isfinite(f_hi)):
+        return False
+    return f_mid < f_lo - tolerance and f_mid < f_hi - tolerance
+
+
 def _boundary_eps(cfg: OptimizerConfig, span: float) -> float:
     """Umbral para declarar que el punto refinado tocó el borde del bracket.
 
@@ -428,8 +469,11 @@ def minimize_1d(
         lo, hi = float(b_lo), float(b_hi)
         if not (hi > lo):
             continue
-        # un bracket es válido si su punto medio es interior (hay mínimo que buscar)
-        if lo < b_mid < hi:
+        # Un bracket es válido sólo si APORTA evidencia de un mínimo interior. No alcanza
+        # con que el punto medio sea interior al intervalo: un objetivo plano o monótono
+        # también lo cumple y no tiene ningún mínimo interior que buscar.
+        # Ver `is_valid_minimum_bracket` para el contrato y su justificación.
+        if is_valid_minimum_bracket(f, lo, float(b_mid), hi, tolerance=cfg.metric_tolerance):
             valid_bracket = True
         bx, bfx, it, _, stop_met = _golden_section_detailed(
             f,

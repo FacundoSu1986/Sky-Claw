@@ -16,6 +16,21 @@ E) `STATUS_CONVERGED` exige evidencia de convergencia
    criterio de parada efectivamente cumplido (no agotamiento de `max_iterations`) y
    resultado finito.
 
+Tercera ronda (2026-10-09) — `VALID_MINIMUM_BRACKET` con evidencia real de mínimo
+   El código de la ronda 2 marcaba
+
+       valid_minimum_bracket = True   <=>   lo < b_mid < hi
+
+   Eso sólo prueba que el punto medio es **interior al intervalo**, no que exista
+   evidencia de un mínimo interior. Un objetivo plano o monótono recibía
+   `VALID_MINIMUM_BRACKET = YES`. El contrato correcto es el bracketing estándar de
+   tres puntos, con la tolerancia de métrica del propio optimizador:
+
+       lo < mid < hi  AND  f(mid) < f(lo) - tol  AND  f(mid) < f(hi) - tol
+
+   Para `f` continua eso SÍ implica un mínimo local estrictamente dentro de `(lo, hi)`.
+   Los tests de la sección F se escribieron **antes** del fix (rojo → verde).
+
 Regresión obligatoria del caso real: `polyhaven_gray_rocks`.
 
 Tests RESEARCH-ONLY: sin red, sin corpus.
@@ -222,3 +237,113 @@ def test_metadatos_declarar_cobertura_no_global():
     assert d.get("search_scope") in {"COARSE_GLOBAL_DOMAIN_LOCAL_REFINEMENT", None} or isinstance(
         d.get("search_scope"), str
     )
+
+
+# ------------------------------------------------------------------ F: bracket con evidencia real
+# Tercera ronda correctiva. `valid_minimum_bracket` significa "hay evidencia de un mínimo
+# interior bracketed", no "el punto medio cae dentro del intervalo". Reproducción del
+# defecto sobre el código previo al fix:
+#
+#   caso                                status            valid_minimum_bracket
+#   plano f=1.0                         FLAT_OBJECTIVE    True   <-- no hay mínimo alguno
+#   monotono f=10+5s                    MAX_EXPANSIONS    True   <-- mínimo en el borde
+#   monotono f=10-5s                    MAX_EXPANSIONS    True   <-- mínimo en el borde
+#   casi-plano 2+1e-14*sin(1000s)       FLAT_OBJECTIVE    True   <-- ruido despreciable
+#
+# La familia se enumera por forma del objetivo, no por un caso suelto: plano, monótono en
+# ambos sentidos, casi-plano, mínimo interior estricto, kink y bracket del caller.
+
+
+@pytest.mark.parametrize(
+    "nombre, objective",
+    [
+        ("plano", lambda s: 1.0),
+        ("monotono creciente", lambda s: 10.0 + 5.0 * s),
+        ("monotono decreciente", lambda s: 10.0 - 5.0 * s),
+        ("casi plano", lambda s: 2.0 + 1e-14 * math.sin(s * 1000.0)),
+    ],
+)
+def test_sin_minimo_interior_no_declara_bracket_valido(nombre, objective):
+    """Sin evidencia de mínimo interior, `valid_minimum_bracket` debe ser False."""
+    res = minimize_1d(objective, OptimizerConfig())
+    assert res.valid_minimum_bracket is False, (
+        f"{nombre}: se declaró VALID_MINIMUM_BRACKET=YES sin evidencia de mínimo interior "
+        f"(status={res.status!r}, boundary_hit={res.boundary_hit!r})"
+    )
+    assert not res.converged
+
+
+@pytest.mark.parametrize(
+    "nombre, objective",
+    [
+        ("parabola", lambda s: (s - 0.5) ** 2),
+        ("kink", lambda s: 10.0 + 5.0 * abs(s - 3.9)),
+        ("cuenca angosta", lambda s: 1.0 + 50.0 * (s - 0.02) ** 2),
+    ],
+)
+def test_minimo_interior_estricto_si_declara_bracket_valido(nombre, objective):
+    """Contraprueba: con mínimo interior real, el bracket sigue siendo válido y converge."""
+    res = minimize_1d(objective, OptimizerConfig())
+    assert res.valid_minimum_bracket is True, f"{nombre}: se perdió un bracket legítimo"
+    assert res.converged is True, f"{nombre}: un mínimo interior debe converger"
+    assert res.status == opt.STATUS_CONVERGED
+
+
+def test_predicado_de_bracket_exige_mejora_estricta_en_el_punto_medio():
+    """Contrato del predicado, caso por caso, sin depender del barrido."""
+    tol = OptimizerConfig().metric_tolerance
+
+    def ident(s: float) -> float:
+        return s
+
+    def valle(s: float) -> float:
+        return (s - 1.0) ** 2
+
+    def desplazado(s: float) -> float:
+        return (s - 0.5) ** 2
+
+    def no_finito(s: float) -> float:
+        return math.nan
+
+    # punto medio interior pero objetivo monótono -> NO hay mínimo interior
+    assert opt.is_valid_minimum_bracket(ident, 0.0, 1.0, 2.0, tolerance=tol) is False
+    # mínimo justo en el punto medio -> bracket válido
+    assert opt.is_valid_minimum_bracket(valle, 0.0, 1.0, 2.0, tolerance=tol) is True
+    # punto medio NO interior -> no es un bracket
+    assert opt.is_valid_minimum_bracket(valle, 1.0, 1.0, 2.0, tolerance=tol) is False
+    assert opt.is_valid_minimum_bracket(valle, 2.0, 1.0, 0.0, tolerance=tol) is False
+    # f(mid) == f(lo): sin mejora estricta no hay evidencia
+    assert opt.is_valid_minimum_bracket(desplazado, 0.0, 1.0, 2.0, tolerance=tol) is False
+    # valores no finitos -> fail-closed
+    assert opt.is_valid_minimum_bracket(no_finito, 0.0, 1.0, 2.0, tolerance=tol) is False
+
+
+def test_candidato_en_el_borde_no_declara_bracket_valido():
+    """Un óptimo en el borde del dominio NO es un mínimo interior bracketed.
+
+    `f = 10 + 5s` es monótona: su mínimo sobre el dominio barrido está en el extremo, y el
+    bracket simétrico que el optimizador arma alrededor del mejor punto coarse no aporta
+    evidencia de un mínimo interior. La expansión de borde sigue funcionando; lo que cambia
+    es que el bracket no se declara válido.
+    """
+    res = minimize_1d(lambda s: 10.0 + 5.0 * s, OptimizerConfig())
+    assert res.boundary_hit is True or res.status in {opt.STATUS_MAX_EXPANSIONS, opt.STATUS_BOUNDARY}
+    assert res.valid_minimum_bracket is False
+    assert res.converged is False
+
+
+def test_objetivo_plano_no_se_convierte_en_bracket_valido():
+    """Brief §15: un objetivo plano NO puede volverse VALID_MINIMUM_BRACKET=YES."""
+    res = minimize_1d(lambda s: 1.0, OptimizerConfig())
+    assert res.status == opt.STATUS_FLAT
+    assert res.valid_minimum_bracket is False
+    assert res.converged is False
+
+
+def test_resultado_finito_sigue_siendo_el_contrato_previo():
+    """Los contratos anteriores de convergencia no se debilitan con el fix del bracket."""
+    res = minimize_1d(lambda s: (s - 0.5) ** 2, OptimizerConfig())
+    assert res.result_finite is True
+    assert res.stop_criterion_met is True
+    assert res.valid_minimum_bracket is True
+    assert res.status == opt.STATUS_CONVERGED
