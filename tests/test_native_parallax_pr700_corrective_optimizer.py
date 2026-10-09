@@ -74,11 +74,47 @@ def test_golden_section_recupera_optimo_cuadratico():
     ],
 )
 def test_recupera_optimo_conocido(label, s_true):
-    """El minimizador recupera el óptimo de un caso unimodal determinista."""
+    """El minimizador recupera el óptimo de un caso unimodal determinista.
+
+    Tolerancia **medida**, no elegida a ojo (finding C — Weak Test Oracle). El error real
+    de recuperación sobre los 6 casos es `<= 2.727e-07` y el piso teórico impuesto por
+    `metric_tolerance` es `sqrt(metric_tolerance / f'') = 7.07e-07`. La aserción previa de
+    `1e-4` era ~367x más laxa que el error observado: una desviación material del óptimo
+    (p.ej. devolver el punto del barrido grueso, a `>= 3.4e-04` del óptimo real) habría
+    pasado en silencio. `1e-5` deja 37x de margen sobre lo observado, 14x sobre el piso
+    teórico, y sigue siendo 34x más estricta que la distancia al punto de rejilla.
+    """
     f = lambda s: float((s - s_true) ** 2 + 0.1 * np.cos(0.0 * s))  # noqa: E731
     res = minimize_1d(f, OptimizerConfig())
     assert res.converged, f"{label}: status={res.status}"
-    assert abs(res.best_x - s_true) <= 1e-4, f"{label}: x*={res.best_x} != {s_true}"
+    assert abs(res.best_x - s_true) <= 1e-5, f"{label}: x*={res.best_x} != {s_true}"
+
+
+@pytest.mark.parametrize(
+    ("label", "s_true"),
+    [
+        ("positive_far", 2.5),
+        ("positive_small", 0.08),
+        ("negative_far", -1.75),
+        ("negative_small", -0.09),
+        ("near_zero_positive", 0.01),
+        ("near_zero_negative", -0.01),
+    ],
+)
+def test_la_tolerancia_rechaza_una_desviacion_material(label, s_true):
+    """La tolerancia elegida discrimina: el punto del barrido grueso NO la pasa.
+
+    Defecto histórico F1: el "oráculo continuo" era un barrido finito y publicaba el mejor
+    punto de la rejilla sin refinar. Ese punto dista `>= 3.4e-04` del óptimo real en todos
+    los casos. Un test con tolerancia `1e-5` lo **rechaza**; uno con `1e-4` lo aceptaba.
+    """
+    f = lambda s: float((s - s_true) ** 2 + 0.1 * np.cos(0.0 * s))  # noqa: E731
+    res = minimize_1d(f, OptimizerConfig())
+    assert abs(res.best_x - s_true) <= 1e-5
+    # el resultado SIN refinar (mejor punto del barrido grueso) queda fuera de la tolerancia
+    assert abs(res.coarse_best_x - s_true) > 1e-5, (
+        f"{label}: el punto coarse pasaría la tolerancia; el test no discriminaría"
+    )
 
 
 def test_optimo_fuera_del_piso_historico():

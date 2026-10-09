@@ -40,6 +40,19 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > se propagaba. Ambos reproducidos y corregidos: C2 **obligatorio** y **fail-closed**, y
 > propagación de `m4.decision_changed`. **`SCIENTIFIC_RESULT_CHANGED = NO`**: con la
 > evidencia C2 real (`decision_changed = false`) la adjudicación queda idéntica; ver §4.1.
+>
+> **Séptima ronda — micro-slice adversarial del optimizador H1 (2026-10-09, misma
+> sesión/worktree).** Tres findings sobre la **atribución de la evidencia de convergencia**
+> en `minimize_1d`, los tres reproducidos con tests RED antes del fix. **A** — `valid_bracket`
+> y `stop_met_any` se acumulaban con un OR sobre **todas** las cuencas, así que un resultado
+> podía declararse `CONVERGED` con la validez de bracket de una cuenca y el criterio de parada
+> de otra. **B** — la detección y la expansión de borde estaban restringidas a la cuenca que
+> en ese momento era la mejor (`if bfx <= best_fx + 1e-15:`), de modo que una cuenca
+> no-ganadora que tocaba su borde quedaba **sin expandir** y un mínimo mejor situado fuera de
+> su bracket se perdía. **C** — la tolerancia del test de recuperación (`1e-4`) era ~367×
+> más laxa que el error real medido. Los tres corregidos; **`SCIENTIFIC_RESULT_CHANGED = NO`**
+> (`31/31` converge; la única diferencia contra la evidencia publicada es `n_evaluations`,
+> instrumentación). Ver §4.3.
 
 ---
 
@@ -500,6 +513,170 @@ H1 publicada **no se regeneró** (el brief lo prohíbe cuando no hay diferencia 
 
 ---
 
+### 4.3 Séptima ronda — atribución de la evidencia de convergencia (findings A, B, C)
+
+Micro-slice adversarial **sobre el optimizador**, no sobre el corpus. Los tres findings se
+reprodujeron con tests RED **antes** de tocar el código; ninguno se adjudicó por autoridad
+del revisor.
+
+#### A — `CONVERGENCIA_MULTICUENCA` (CONFIRMADO)
+
+El contrato que el propio artefacto declara en su docstring (§2.1) es que la evidencia de
+convergencia pertenece **al bracket que produjo el resultado publicado**. El código no lo
+cumplía: acumulaba la evidencia sobre **todas** las cuencas refinadas.
+
+```python
+# ANTES (corrective_optimizer.py, dentro del bucle de cuencas)
+if is_valid_minimum_bracket(f, lo, float(b_mid), hi, tolerance=cfg.metric_tolerance):
+    valid_bracket = True                       # OR sobre TODAS las cuencas
+...
+stop_met_any = stop_met_any or stop_met        # OR sobre TODAS las cuencas
+```
+
+Consecuencia: `VALID_BRACKET(A)` **junto con** `STOP_MET(B)` producía `CONVERGED`, aunque el
+resultado publicado fuese el de `B` y `B` no aportara ninguna de las dos cosas. La evidencia
+publicada describía a una cuenca distinta de la que produjo el número.
+
+Matriz de casos del brief §4, sobre objetivos sintéticos deterministas y verificables
+(cada uno declara su mínimo real, medido por una referencia independiente):
+
+| caso | construcción del ganador | status antes (defectuoso) | status correcto |
+|---|---|---|---|
+| A (control) | mínimo interior único, bien bracketed | `CONVERGED` | `CONVERGED` |
+| B | sale del bracket de **borde** (inválido); la validez la aporta la cuenca interior | `CONVERGED` con `valid_minimum_bracket = True` | `NO_VALID_BRACKET` |
+| B′ | espejo de B (borde ganador a la izquierda) | `CONVERGED` | `NO_VALID_BRACKET` |
+| C | agota `max_iterations`; la parada la aporta el bracket del caller (ancho `8e-9` < `tolerance`) | `CONVERGED` | `MAX_ITERATIONS` |
+| D | no aporta ni bracket válido ni parada; ambas vienen de otras cuencas | `CONVERGED` | `NO_VALID_BRACKET` / `MAX_ITERATIONS` |
+| E | el ganador es el **punto coarse** (`max_iterations = 0`): ningún refinamiento lo mejora | `CONVERGED` | `MAX_ITERATIONS` |
+
+**Corrección.** `considered` registra cada bracket efectivamente explorado —el de cada cuenca
+y el resultado final de cada expansión—. Al terminar, la evidencia se toma **sólo** de los
+brackets que **contienen** al ganador:
+
+```python
+containing = [c for c in considered if c[0] <= best_x <= c[2]]
+valid_bracket = any(is_valid_minimum_bracket(f, c[0], c[1], c[2], ...) for c in containing)
+stop_met_any  = any(c[3] for c in containing)
+boundary_hit  = any(c[4] for c in containing)
+expansions_total = max((c[5] for c in containing), default=0)
+```
+
+Si ningún bracket que contiene al ganador aporta evidencia, el status es `NO_VALID_BRACKET`
+o `MAX_ITERATIONS` — **nunca** `CONVERGED`. La regla es de **contención**, no de «cuenca
+ganadora»: un bracket expandido contiene a los intermedios, así que basta registrar su estado
+final.
+
+#### B — `EXPANSION_DE_BORDES` (CONFIRMADO)
+
+La detección de borde y su expansión vivían dentro de `if bfx <= best_fx + 1e-15:`, es decir,
+restringidas a la cuenca que **en ese momento** era la mejor. Una cuenca que toca su borde
+pero todavía no es la mejor quedaba sin expandir, y el mínimo mejor situado fuera de su
+bracket se perdía.
+
+Objetivo `dos_cuencas_pozo_angosto`: el mejor punto del barrido está en el borde `+4`
+(`f = 0.17`); la cuenca interior refina a `0.12` y pasa a ser la mejor; el bracket de borde
+refina a `0.13` (toca el extremo `8`). Como `0.13 > 0.12`, el gate lo excluía de la expansión
+y el mínimo real (`s = 12`, `f = 0.09`) quedaba **oculto**:
+
+| | antes | después |
+|---|---|---|
+| `best_fx` | `0.12` | **`0.09`** |
+| `best_x` | `-2` (cuenca interior) | **`12.0`** |
+| `boundary_expansions` | `0` | **`1`** |
+| status | `CONVERGED` (evidencia ajena) | `CONVERGED` (evidencia propia) |
+
+Referencia independiente: rejilla densa de 240 001 puntos sobre `[-4, 20]` ⇒ mínimo en
+`s = 12.0` con `f = 0.09`. El optimizador corregido alcanza ese valor.
+
+**Corrección.** La detección y la expansión se aplican a **toda** cuenca que toca su borde;
+la expansión queda desacoplada del orden de selección. Sólo se adopta el resultado expandido
+si **mejora** el publicado (invariante D, §2.2), así que el fix no puede degradar ningún
+resultado. Los límites declarados (`max_bracket_expansions`, `bracket_max_extent`) se siguen
+respetando.
+
+#### C — `WEAK_TEST_ORACLE` (CONFIRMADO)
+
+`test_recupera_optimo_conocido` afirmaba `abs(best_x - s_true) <= 1e-4` mientras el propio
+optimizador trabaja con `tolerance = 1e-8`. Valores **medidos** sobre los 6 casos:
+
+| magnitud | valor | significado |
+|---|---|---|
+| error real de recuperación (máx) | `2.727e-07` | lo que el optimizador efectivamente logra |
+| piso teórico `sqrt(metric_tolerance / f'')` | `7.071e-07` | límite impuesto por `metric_tolerance = 1e-12` |
+| distancia mínima al punto del barrido grueso | `3.409e-04` | lo que el defecto F1 publicaba |
+
+`1e-4` **sí** rechazaba el punto del barrido grueso (que dista `>= 3.409e-04 > 1e-4`), así que
+no era un oráculo vacío. El defecto es otro: **no tenía margen de discriminación**. Con
+`1e-4`, una implementación que convergiera **367× peor** que la actual seguía pasando en
+silencio — y el brief exige que un test de esta familia **rechace** un régimen defectuoso
+medible. La tolerancia se endurece a **`1e-5`**, anclada a los valores medidos: 37× de margen
+sobre lo observado, 14× sobre el piso teórico, y 34× **más estricta** que la distancia al
+punto de rejilla (es decir, el régimen defectuoso queda rechazado con margen, no al filo). Se
+agrega `test_la_tolerancia_rechaza_una_desviacion_material`, que **exige** que el punto coarse
+quede fuera de la tolerancia: si no quedara fuera, el test no discriminaría y **falla**.
+
+#### RED → GREEN y mutación
+
+Archivo nuevo `tests/test_native_parallax_pr700_corrective_multibasin_convergence.py`
+(18 tests), escrito **antes** del fix. Sobre el optimizador sin corregir: **7 fallan / 9 pasan**
+(RED). Con el fix: **18/18** (GREEN).
+
+Mutación (re-inyección textual exacta del defecto, serie, nunca concurrente; la suite nueva
+es la que debe detectarlo):
+
+| mutante | defecto reintroducido | resultado |
+|---|---|---|
+| M1 | evidencia global entre cuencas (`containing = list(considered)`) | **DETECTADO** |
+| M2 | parada global entre cuencas (`stop_met_any` sobre `considered`) | **DETECTADO** |
+| M3 | gate de expansión restringido a la mejor cuenca | **DETECTADO** |
+
+Restauración exacta del archivo verificada por SHA256 tras cada mutante.
+
+#### Impacto científico medido: `NONE`
+
+Re-ejecución completa de `phase_c_corrective.py` sobre los 31 assets (corpus READ-ONLY):
+
+| métrica | evidencia publicada | re-ejecución con el fix |
+|---|---|---|
+| `n_converged` | 31 | **31** |
+| `n_unresolved` | 0 | **0** |
+| `n_valid_minimum_bracket` | 31 | **31** |
+| `n_stop_criterion_met` | 31 | **31** |
+| `n_continuous_abs_strength_lt_0_05` | 27 | **27** |
+| `n_grid_matches_refined` | 0 | **0** |
+| `n_boundary_cases` | 0 | **0** |
+| `n_caller_bracket_accepted` | 29 | **29** |
+| mediana agreement (rejilla / continuo) | 10.7085° / 1.6826° | **10.7085° / 1.6826°** |
+| Spearman (rejilla / continuo) | 0.1367 / 0.4782 | **0.1367 / 0.4782** |
+
+Los **12** contadores de `counts_16`, los escalares de cabecera (`search_scope`,
+`grid_oracle_signature`, `inputs_sha256`, `corpus_integrity`) y los dos universos del
+Spearman son **idénticos**. La única diferencia, en los 31 assets, es
+`continuous_meta.n_evaluations` (**+3** por asset): la validez se chequea ahora sólo en los
+brackets que contienen al ganador (una llamada de tres evaluaciones), en lugar de una vez por
+cada cuenca refinada. Es **instrumentación**, no un resultado, y no entra en la lista de
+campos científicos del brief §17.
+
+Un primer fix **incorrecto** —atribuir la evidencia a la «cuenca ganadora» exigiendo que su
+refinamiento hubiera mejorado el resultado— bajó `n_converged` a `28/31` en tres assets
+reales, porque en ellos el resultado publicado es el **punto coarse** y el bracket que lo
+contiene **sí** es válido. La regla de **contención** es la que preserva el contrato sin
+romper esos casos. Se documenta porque es la clase de defecto que un fix de atribución
+introduce con facilidad.
+
+**Conclusión: `SCIENTIFIC_RESULT_CHANGED = NO`.** La evidencia H1 publicada **no se
+regenera**: el corpus se leyó READ-ONLY y no cambió ningún campo científico.
+
+#### Reproducibilidad
+
+Dos corridas consecutivas del mismo código sobre el mismo corpus producen archivos
+**byte-idénticos** (mismo SHA256) ⇒ `CORRECTIVE_REPRODUCIBILITY = PASS`. Una de las dos
+corridas se hizo antes de una limpieza cosmética del código (eliminación de dos acumuladores
+muertos que ya no se leían), lo que confirma además que la limpieza **no** altera la
+semántica: si la alterara, los archivos diferirían.
+
+---
+
 ## 5. Adjudicación final
 
 ```
@@ -571,13 +748,15 @@ sin un C2 válido **no** publica M4/M5 (fail-closed, ver §4.1).
 Tests asociados (fuera de esta carpeta, en `tests/`):
 
 ```
-tests/test_native_parallax_pr700_corrective_optimizer.py             F1: 16 tests
-tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E/F6: 27 tests
-tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 20 tests
+tests/test_native_parallax_pr700_corrective_optimizer.py             F1 + C (ronda 7): 22 tests
+tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E/F6: 32 tests
+tests/test_native_parallax_pr700_corrective_multibasin_convergence.py A/B (ronda 7): 18 tests
+tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 38 tests
 tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
 tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 13 tests
+tests/test_native_parallax_pr700_corrective_universe_json_safety.py  F9: 9 tests
 tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H/I: 8 tests
 tests/test_native_parallax_pr700_corrective_c2_fail_closed.py        C2 (ronda 5): 19 tests
 ```
 
-Total: **111 tests correctivos** (`pytest -k pr700_corrective`).
+Total: **167 tests correctivos** (`pytest -k pr700_corrective`).

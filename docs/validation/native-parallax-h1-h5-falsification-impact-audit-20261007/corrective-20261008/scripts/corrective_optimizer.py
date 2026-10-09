@@ -42,6 +42,23 @@ puede no verla. Por eso el resultado emite `global_optimum_proven = False` y
             RESULT_FINITE                 = sí
         "No toqué el borde" NO es prueba de convergencia.
 
+## Evidencia atada a la cuenca ganadora (septima ronda — findings A y B)
+
+    A)  La evidencia de convergencia pertenece al bracket que CONTIENE al resultado
+        publicado, nunca al conjunto de cuencas. `valid_bracket`, `stop_met_any` y
+        `boundary_hit` se toman de los brackets que contienen al ganador. Acumular un OR
+        entre cuencas permitía publicar `CONVERGED` con la validez de bracket de una
+        cuenca y la parada de otra (`VALID_BRACKET(A) + STOP_MET(B) != CONVERGED(B)`).
+        Si ningún bracket que contiene al ganador aporta evidencia, el status es
+        `NO_VALID_BRACKET` / `MAX_ITERATIONS`, nunca `CONVERGED`.
+
+    B)  La detección de borde y su expansión se aplican a TODA cuenca que toca su borde,
+        no sólo a la que en ese momento es la mejor. La versión previa las restringía con
+        `if bfx <= best_fx + 1e-15:`, así que una cuenca que golpeaba su borde quedaba sin
+        expandir cuando otra ya ofrecía un objetivo mejor, y el mínimo situado fuera de su
+        bracket se perdía. La expansión queda desacoplada del orden de selección; sólo se
+        adopta el resultado expandido si mejora el publicado (invariante D).
+
     `VALID_MINIMUM_BRACKET` **no** significa "el punto medio cae dentro del intervalo":
     exige evidencia de un mínimo interior (ver `is_valid_minimum_bracket`). Con la
     condición débil, un objetivo plano o monótono se declaraba con bracket válido.
@@ -471,24 +488,28 @@ def minimize_1d(
         n_basins_detected = 0
 
     bracket_low, bracket_high = float("nan"), float("nan")
-    boundary_hit = False
-    expansions_total = 0
     iters_total = 0
-    stop_met_any = False
-    valid_bracket = False
     refined_any = False
+    # `boundary_hit`, `expansions_total`, `stop_met_any` y `valid_bracket` NO se acumulan
+    # durante el barrido: se derivan al final, del bracket que CONTIENE al ganador (bloque 6).
+    # Declararlos acá como acumuladores globales era parte del defecto de atribución
+    # (findings A y B): la evidencia de convergencia debe pertenecer a la cuenca ganadora.
 
     # ---- 3) refinamiento de cada cuenca, conservando el mejor resultado observado
+    #
+    # La evidencia de convergencia (bracket válido, criterio de parada, estado de borde) se
+    # ATRIBUYE al bracket que CONTIENE al resultado publicado, no al conjunto de cuencas.
+    # Acumular un OR entre cuencas permitía declarar `CONVERGED` con evidencia de bracketing
+    # o de parada perteneciente a OTRA cuenca (finding A / §6 del brief): `VALID_BRACKET(A)`
+    # junto a `STOP_MET(B)` no era prueba de `CONVERGED(B)`. `considered` registra cada
+    # bracket efectivamente explorado —el de cada cuenca y el resultado final de cada
+    # expansión— y al terminar se conservan sólo los que contienen al ganador.
+    considered: list[tuple[float, float, float, bool, bool, int]] = []
+
     for b_lo, b_mid, b_hi in basins:
         lo, hi = float(b_lo), float(b_hi)
         if not (hi > lo):
             continue
-        # Un bracket es válido sólo si APORTA evidencia de un mínimo interior. No alcanza
-        # con que el punto medio sea interior al intervalo: un objetivo plano o monótono
-        # también lo cumple y no tiene ningún mínimo interior que buscar.
-        # Ver `is_valid_minimum_bracket` para el contrato y su justificación.
-        if is_valid_minimum_bracket(f, lo, float(b_mid), hi, tolerance=cfg.metric_tolerance):
-            valid_bracket = True
         bx, bfx, it, _, stop_met = _golden_section_detailed(
             f,
             lo,
@@ -497,7 +518,6 @@ def minimize_1d(
             metric_tolerance=cfg.metric_tolerance,
             max_iterations=cfg.max_iterations,
         )
-        stop_met_any = stop_met_any or stop_met
         iters_total += it
         refined_any = True
         # INVARIANTE D: sólo se adopta el refinado si MEJORA lo ya observado.
@@ -508,44 +528,64 @@ def minimize_1d(
                 bracket_low = lo
             if math.isnan(bracket_high) or hi > bracket_high:
                 bracket_high = hi
-        # ---- 4/5) borde + expansión, sólo sobre la cuenca que produjo el mejor valor
-        if bfx <= best_fx + 1e-15:
-            span = hi - lo
-            eps = _boundary_eps(cfg, span)
-            if abs(bx - lo) <= eps or abs(bx - hi) <= eps:
-                boundary_hit = True
-                expansions = 0
-                cur_lo, cur_hi = lo, hi
-                while boundary_hit and expansions < cfg.max_bracket_expansions:
-                    span = cur_hi - cur_lo
-                    n_lo = cur_lo - cfg.bracket_expansion_factor * span
-                    n_hi = cur_hi + cfg.bracket_expansion_factor * span
-                    if n_hi - n_lo > cfg.bracket_max_extent:
-                        n_lo = -cfg.bracket_max_extent
-                        n_hi = cfg.bracket_max_extent
-                    if not (n_hi > n_lo):
-                        break
-                    ex, efx, eit, _, ex_stop = _golden_section_detailed(
-                        f,
-                        n_lo,
-                        n_hi,
-                        tolerance=cfg.tolerance,
-                        metric_tolerance=cfg.metric_tolerance,
-                        max_iterations=cfg.max_iterations,
-                    )
-                    stop_met_any = stop_met_any or ex_stop
-                    iters_total += eit
-                    if efx < best_fx:
-                        best_x, best_fx = ex, efx
-                    if math.isfinite(ex):
-                        bracket_low = min(bracket_low, n_lo)
-                        bracket_high = max(bracket_high, n_hi)
-                    cur_lo, cur_hi = n_lo, n_hi
-                    span = cur_hi - cur_lo
-                    eps = _boundary_eps(cfg, span)
-                    boundary_hit = bool(abs(ex - cur_lo) <= eps or abs(ex - cur_hi) <= eps)
-                    expansions += 1
-                expansions_total = max(expansions_total, expansions)
+        considered.append((lo, float(b_mid), hi, stop_met, False, 0))
+        # ---- 4/5) borde + expansión, para TODA cuenca que toca su borde.
+        # Antes se restringía a la cuenca con el mejor valor en ese momento
+        # (`if bfx <= best_fx + 1e-15:`), lo que OCULTABA un mínimo mejor situado fuera del
+        # bracket de una cuenca que todavía no era la mejor (finding B): expandir todas las
+        # cuencas que tocan su borde desacopla la expansión del orden de selección. Sólo se
+        # adopta el resultado expandido si mejora el publicado (invariante D).
+        span = hi - lo
+        eps = _boundary_eps(cfg, span)
+        hit = abs(bx - lo) <= eps or abs(bx - hi) <= eps
+        if hit:
+            expansions = 0
+            cur_lo, cur_hi = lo, hi
+            # El bracket expandido CONTIENE a los intermedios, así que basta registrar su
+            # estado FINAL como evidencia: cualquier punto hallado en el camino cae dentro.
+            final = (lo, bx, hi, stop_met, hit, 0)
+            while hit and expansions < cfg.max_bracket_expansions:
+                span = cur_hi - cur_lo
+                n_lo = cur_lo - cfg.bracket_expansion_factor * span
+                n_hi = cur_hi + cfg.bracket_expansion_factor * span
+                if n_hi - n_lo > cfg.bracket_max_extent:
+                    n_lo = -cfg.bracket_max_extent
+                    n_hi = cfg.bracket_max_extent
+                if not (n_hi > n_lo):
+                    break
+                ex, efx, eit, _, ex_stop = _golden_section_detailed(
+                    f,
+                    n_lo,
+                    n_hi,
+                    tolerance=cfg.tolerance,
+                    metric_tolerance=cfg.metric_tolerance,
+                    max_iterations=cfg.max_iterations,
+                )
+                iters_total += eit
+                if efx < best_fx:
+                    best_x, best_fx = ex, efx
+                if math.isfinite(ex):
+                    bracket_low = min(bracket_low, n_lo)
+                    bracket_high = max(bracket_high, n_hi)
+                cur_lo, cur_hi = n_lo, n_hi
+                span = cur_hi - cur_lo
+                eps = _boundary_eps(cfg, span)
+                hit = bool(abs(ex - cur_lo) <= eps or abs(ex - cur_hi) <= eps)
+                expansions += 1
+                final = (n_lo, ex, n_hi, ex_stop, hit, expansions)
+            # La expansión NO se acumula globalmente entre cuencas: el conteo publicado
+            # sale del bracket que contiene al ganador (bloque 6). Acumular acá un máximo
+            # global reintroduciría el defecto de atribución que este fix elimina.
+            considered.append(final)
+
+    # ---- 6) evidencia del resultado publicado: sólo los brackets que lo CONTIENEN
+    containing = [c for c in considered if c[0] <= best_x <= c[2]]
+    valid_bracket = any(
+        is_valid_minimum_bracket(f, c[0], c[1], c[2], tolerance=cfg.metric_tolerance) for c in containing
+    )
+    stop_met_any = any(c[3] for c in containing)
+    boundary_hit = any(c[4] for c in containing)
+    expansions_total = max((c[5] for c in containing), default=0)
 
     result_finite = math.isfinite(best_x) and math.isfinite(best_fx)
 
