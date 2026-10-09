@@ -280,7 +280,7 @@ para no migrar IDs ya documentados (`SFR-01..23`) en docs, tests e issues.
 | **Generation** | Snapshot inmutable y versionado del árbol completo del juego dentro del Frozen Runtime (`versions/<generation-id>/`). Lógicamente inmutable (SFR-17). Es la **referencia**: no se ejecuta (SFR-19) y es la **autoridad de versión** —qué versión de Skyrim es— para el rollback (§12). Por sí sola **no** describe el setup operativo: eso es el `RuntimeSetupManifest` (SFR-22). |
 | **RuntimeSetupManifest** | Autoridad del **setup operativo** de una versión: qué necesita una Generation para ser *nuestro* runtime jugable (SKSE, archivos de root, componentes requeridos), con procedencia, hashes y **operaciones reproducibles**. No necesariamente duplica el payload (SFR-22). Vive fuera del árbol de la Generation. |
 | **Runtime Clone** | Copia operativa derivada de una Generation `VALID` (`clones/<clone-id>/`), creada con RV-2 → RV-3 y con un RuntimeSetup aplicado. **Es el Effective Runtime**: lo que MO2/SKSE/Sky-Claw ejecutan (SFR-20). **Mutable**: su deriva es esperada y se reporta. No es una Generation. Su **linaje** (`source_generation_id`) y su setup (`runtime_setup_id`) quedan registrados, no inferidos. |
-| **RuntimeCloneRecord** | Identidad **lógica registrada** de un Runtime Clone: `clone_id`, `source_generation_id`, `lifecycle` (`CREATED`/`PROVISIONING`/`PROVISIONED`/`INVALID`), `intended_runtime_setup_id`, `verified_runtime_setup_id`, `root_path`, `admitted_role = "runtime_clone"`. Es la autoridad para decidir si un target operativo es admisible (SFR-19/§30.5); **no** un prefijo de ruta, porque la ubicación física de los Clones sigue abierta (Q18) —pero la admisión exige además **exclusión física** de la Managed Source (R4-F6). Su propia **integridad** está adjudicada como **`DESIGN_CLOSED`** (`RUNTIME_CLONE_RECORD_INTEGRITY`, R4-F7; §34.10; §43). |
+| **RuntimeCloneRecord** | Identidad **lógica registrada** de un Runtime Clone: `clone_id`, `source_generation_id`, `lifecycle` (`CREATED`/`PROVISIONING`/`PROVISIONED`/`INVALID`), `intended_runtime_setup_id`, `verified_runtime_setup_id`, `root_path`, `admitted_role = "runtime_clone"`. Es la autoridad para decidir si un target operativo es admisible (SFR-19/§30.5); **no** un prefijo de ruta, porque la ubicación física de los Clones sigue abierta (Q18) —pero la admisión exige además **exclusión física** de la Managed Source (R4-F6). Su propia **integridad** está adjudicada como **`DESIGN_CLOSED`** (`RUNTIME_CLONE_RECORD_INTEGRITY`, R4-F7; §34.10; §44). |
 | **Desired Generation / Desired Clone** | Estado persistente de Sky-Claw (`state/active.json` v2). Los nombres de campo son **literales y únicos**: `desired_generation_id` y `desired_clone_id`. No existen alias (`active.generation_id`, `active.clone_id`, `desired_active_generation` quedan **fuera** del schema v2). Sólo el par identifica sin ambigüedad el Effective Runtime pretendido, porque una Generation admite varios Clones (§31.1). |
 | **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo): desde P0.4, `RuntimeCloneRecord.root_path` de un Runtime Clone. Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
 | **ApprovalScope** | Conjunto exacto de artefactos al que queda ligada la aprobación del propietario, con la **lista normativa completa y sin alias** de §38.5: `operation` (`PROMOTION` o `ROLLBACK`), `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, **evidencia de contenido** del Clone (`clone_evidence`), `runtime_setup_id`, **evidencia de contenido** del manifest (`runtime_setup_evidence`), `compatibility_evidence_id` y —sólo en `PROMOTION`— `candidate_id`, más `approval_id`, `approval_seq`, `approval_scope_digest` y `approval_provenance`. Antes de mutar el Effective Runtime se **re-verifica** ese conjunto, no "la intención de actualizar" (SFR-23; §11; §31.4; §37.1). Ligar sólo IDs es insuficiente: el Clone es mutable (R4-F5). El scope se **propone** con `approval_id`/`approval_seq` preasignados y su `approval_scope_digest` calculado **antes** de presentarlo, y el propietario aprueba ese digest: `WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES` (§39.3). |
@@ -1383,17 +1383,17 @@ enumerativas):
     (§34.11): hay que demostrar qué artefactos quedan retenidos o recuperables por
     Generation retenida (§31.5). `KEEP_OPEN` **no** significa diseño sin adjudicar:
     significa que la *garantía* queda diferida y **no** bloquea implementar P4 —sin
-    payload no hay activación—, sólo el *claim* "rollback garantizado" (§43).
+    payload no hay activación—, sólo el *claim* "rollback garantizado" (§44).
 
-## 26. Preguntas abiertas de P0.4 (registro histórico; estados vigentes en §43.7)
+## 26. Preguntas abiertas de P0.4 (registro histórico; estados vigentes en §44.7)
 
 Sin resolver en P0; varias quedan como **gates explícitos** de P1/P2/P3/P5. No se
 inventan soluciones.
 
-> **Registro histórico con estados propagados (rondas 7, 8 y 9; §41, §42, §43).** Esta lista se
+> **Registro histórico con estados propagados (rondas 7, 8, 9 y 10; §41, §42, §43, §44).** Esta lista se
 > conserva como **registro** de las preguntas de P0.4 y de sus gates, pero **no** es la
 > autoridad de estado: el estado vigente de los requisitos P4 vive en **§34.17** y en
-> **§43.7**. Las preguntas ya adjudicadas llevan su estado **corregido in place** (Q11,
+> **§44.7**. Las preguntas ya adjudicadas llevan su estado **corregido in place** (Q11,
 > Q21, Q23, Q24); las que siguen genuinamente abiertas —gates de implementación de
 > P1/P3/P5/P7 y las excepciones diferidas de §42.5— se mantienen tal cual.
 
@@ -1908,13 +1908,13 @@ no inferido; v1 sigue leyéndose fail-closed.
 
 Cada pregunta cierra en un estado explícito. Los `UNKNOWN` no se ocultan.
 
-> **Estados propagados en las rondas 8 y 9 (D0-R8.1, D0-R9.1; §42, §43).** Esta tabla es
+> **Estados propagados en las rondas 8, 9 y 10 (D0-R8.1, D0-R9.1, D0-R10.1; §42, §43, §44).** Esta tabla es
 > el registro adversarial de P0.4. Las filas cuyos blockers fueron adjudicados en §34
 > llevan su **estado corregido in place** (10, 19, 21). Las filas **7** y **18** son
 > `ANSWERED` con **riesgo residual declarado**: el requisito `P4_CLONE_ACTIVATION_GATE`
 > sigue **`DESIGN_CLOSED`** (§29.8; §35.8.3; censo #7) y un residual declarado **no**
 > cambia el estado del requisito (§43.4). El estado normativo vigente de cada requisito
-> es el de **§34.17** y **§43.7**.
+> es el de **§34.17** y **§44.7**.
 
 | # | Pregunta | Estado | Fundamento |
 |---|---|---|---|
@@ -2316,7 +2316,7 @@ POST_ACTIVATION_LINK_INJECTION   = DESIGN_CLOSED   (§34.13; antes OPEN / activa
 RUNTIME_SETUP_MANIFEST_INTEGRITY = DESIGN_CLOSED   (§34.9;  antes OPEN)
 CREATION_CLUB_CLASSIFICATION     = DEFERRED_PENDING_EVIDENCE     (Q22 — sin cambio; excepción)
 P3B                              = DEFERRED_PENDING_RIG          (§29.5 — sin cambio; excepción)
-P4_READY_TO_IMPLEMENT            = YES   (el diseño no bloquea; §43)
+P4_READY_TO_IMPLEMENT            = YES   (el diseño no bloquea; §44)
 ```
 
 `RUNTIME_SETUP_MANIFEST_INTEGRITY` es la contraparte de `GENERATION_METADATA_INTEGRITY`:
@@ -2648,7 +2648,7 @@ MANDATORY_CRITICAL_EXPECTATIONS  = DESIGN_CLOSED   (§34.12)
 POST_ACTIVATION_LINK_INJECTION   = DESIGN_CLOSED   (§34.13)
 CREATION_CLUB_CLASSIFICATION     = DEFERRED_PENDING_EVIDENCE   (sin cambio; excepción)
 P3B                              = DEFERRED_PENDING_RIG        (sin cambio; excepción)
-P4_READY_TO_IMPLEMENT            = YES   (el diseño no bloquea; §43)
+P4_READY_TO_IMPLEMENT            = YES   (el diseño no bloquea; §44)
 ```
 
 ### 31.7 Revisión adversarial local
@@ -2675,12 +2675,12 @@ R3_B1_ARTIFACT_AVAILABILITY     = DEFERRED_FAIL_CLOSED / KEEP_OPEN   (§34.11)
 
 > **SUPERSEDED por la ronda 7 (§41).** `R3_B1` no es un blocker abierto de P4: está
 > adjudicado como **`DEFERRED_FAIL_CLOSED` / `KEEP_OPEN`** (§34.11). El estado vigente es el
-> de **§43.7**.
+> de **§44.7**.
 
 ```text
 P0_4_CORE_ARCHITECTURE = SOUND   (R3_B1 diferido y declarado, no bloqueante; §34.11)
 P4_READY_TO_DESIGN     = YES
-P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §43.7)
+P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §44.7)
 ```
 
 **Alcance de la ronda 3:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
@@ -2842,7 +2842,7 @@ MANDATORY_CRITICAL_EXPECTATIONS    = DESIGN_CLOSED   (§34.12)
 POST_ACTIVATION_LINK_INJECTION     = DESIGN_CLOSED   (§34.13)
 CREATION_CLUB_CLASSIFICATION       = DEFERRED_PENDING_EVIDENCE   (sin cambio; excepción)
 P3B                                = DEFERRED_PENDING_RIG        (sin cambio; excepción)
-P4_READY_TO_IMPLEMENT              = YES   (el diseño no bloquea; §43)
+P4_READY_TO_IMPLEMENT              = YES   (el diseño no bloquea; §44)
 ```
 
 Ningún blocker se cerró para poder mergear.
@@ -2864,12 +2864,12 @@ Ningún blocker se cerró para poder mergear.
 
 > **SUPERSEDED por la ronda 7 (§41).** `R4-F7` (`RUNTIME_CLONE_RECORD_INTEGRITY`) quedó
 > **`DESIGN_CLOSED`** en §34.10 y `R3_B1` está **`DEFERRED_FAIL_CLOSED` / `KEEP_OPEN`**
-> (§34.11), no abierto. El estado vigente es el de **§43.7**.
+> (§34.11), no abierto. El estado vigente es el de **§44.7**.
 
 ```text
 P0_4_CORE_ARCHITECTURE = SOUND   (R4-F7 cerrado §34.10; R3_B1 diferido §34.11)
 P4_READY_TO_DESIGN     = YES
-P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §43.7)
+P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §44.7)
 ```
 
 **Alcance de la ronda 4:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
@@ -2947,12 +2947,12 @@ R4_1_F2_FAST_PATH_REQUIRES_VALID   = CLOSED
 
 > **SUPERSEDED por la ronda 7 (§41).** `R4-F7` quedó **`DESIGN_CLOSED`** (§34.10) y
 > `R3_B1` está **`DEFERRED_FAIL_CLOSED` / `KEEP_OPEN`** (§34.11). El estado vigente es el de
-> **§43.7**.
+> **§44.7**.
 
 ```text
 P0_4_CORE_ARCHITECTURE = SOUND   (R4-F7 cerrado §34.10; R3_B1 diferido §34.11)
 P4_READY_TO_DESIGN     = YES
-P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §43.7)
+P4_READY_TO_IMPLEMENT  = NO   (SUPERSEDED: ver §44.7)
 PR_READY_TO_MERGE      = NO
 ```
 ```
@@ -2982,7 +2982,7 @@ P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
 > - **§34.14** — "P4 no espera a P5" era ambiguo. ⇒ §35.7 (D0-R6).
 >
 > **§34.18 declaraba `P4_DESIGN_FROZEN = YES` y `P4_READY_TO_IMPLEMENT = YES`: ambos
-> quedan `NO` hasta que §35 cierre los 6 findings.** El estado vigente es el de §43.7.
+> quedan `NO` hasta que §35 cierre los 6 findings.** El estado vigente es el de §44.7.
 >
 > **Segunda supersesión parcial (ronda adversarial 2, §36).** La revisión externa sobre
 > `589805ee` encontró **6 residuos nuevos** (más un séptimo de consistencia de schema y
@@ -2997,7 +2997,7 @@ P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
 > - **§34.16 q11** — el fundamento citaba el target histórico sin su punto de
 >   publicación ni su autoridad. ⇒ §36.2/§36.8.
 >
-> **§34.18 ya no es el estado vigente: el estado es el de §43.7.**
+> **§34.18 ya no es el estado vigente: el estado es el de §44.7.**
 
 Esta sección **cierra el diseño contractual** de P4. **No implementa P4.** Su única
 promesa es que, si los contratos de acá se respetan, una implementación de P4 puede
@@ -3024,7 +3024,7 @@ contra el ADR vigente (§§29–33) y contra el código actual de `main`.
 | `P5 blocker` = "binding de **dos** superficies" | §29.4/§32.5: **3 clases** (6 configuradas/derivadas + 3 cacheadas) | 3 consumidores con cache verificados | **SUPERSEDED** | Reemplazar por "3 clases"; no congelar COUNT |
 | "SFR-16: promoción no completa hasta Desired ≡ Effective probados" | §33.2 `FINALIZED ⇒ POST verification already passed` | — | **CURRENT (reforzado)** | Conservar; el orden de §34.4 lo hace ejecutable |
 | "SFR-15: el Candidate jamás establece su propia evidencia" | §29, P3-Z/AA | `candidates.py::exigir_listo_para_persistencia` | **CURRENT** | Conservar; P4 lo extiende al `ApprovalScope` |
-| `P5_EFFECTIVE_RUNTIME_ORACLE = OPEN` | §43.7 lo mantiene abierto (fuera de P4) | no existe oráculo | **STILL_OPEN** | P5; P4 responde `UNKNOWN → NO ACTIVATION` |
+| `P5_EFFECTIVE_RUNTIME_ORACLE = OPEN` | §44.7 lo mantiene abierto (fuera de P4) | no existe oráculo | **STILL_OPEN** | P5; P4 responde `UNKNOWN → NO ACTIVATION` |
 | `CREATION_CLUB_CLASSIFICATION` sin resolver | §32.6 `DEFERRED_PENDING_EVIDENCE` | — | **DEFERRED_PENDING_EVIDENCE** | No decidir por intuición (§34.11) |
 | `P3_DIRECTORY_MEMBERSHIP` bloqueaba el TreeDigest | §29: cerrado | `membership.py` completo | **STALE (cerrado)** | Archivar |
 | "No se inicia P3 sin cerrar sus blockers" | §29 cerrado, §31.3 | — | **STALE** | Reformular como "no se inicia **P4** sin cerrar los D0-*" |
@@ -3530,8 +3530,8 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 ```text
 TRACKER_672_AUDITED          = YES
 P4_READY_TO_DESIGN           = YES
-P4_DESIGN_FROZEN             = NO   (SUPERSEDED nueve veces: rondas 1 (§35), 2 (§36), 3 (§37), 4 (§38), 5 (§39), 6 (§40), 7 (§41), 8 (§42) y 9 (§43); estado vigente en §43.7)
-P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §43.7)
+P4_DESIGN_FROZEN             = NO   (SUPERSEDED diez veces: rondas 1 (§35), 2 (§36), 3 (§37), 4 (§38), 5 (§39), 6 (§40), 7 (§41), 8 (§42), 9 (§43) y 10 (§44); estado vigente en §44.7)
+P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §44.7)
 P4_IMPLEMENTED               = NO
 P5_IMPLEMENTED               = NO
 
@@ -3581,7 +3581,7 @@ verificados contra el texto y contra el código antes de adjudicarlos. Esta secc
 > **corregida in-place** por §36 en: `previous_activation_target` (§35.8.5 — se le
 > agrega la autoridad única), cancelación y provisioning (§35.8.1/§35.8.2/§35.8.4 —
 > semántica determinista) y el censo (§35.5 — desglose aritmético). **§35.13 ya no es
-> el estado vigente: el estado es el de §43.7.**
+> el estado vigente: el estado es el de §44.7.**
 
 ### 35.1 Adjudicación
 
@@ -4185,18 +4185,19 @@ P3B                                 = DEFERRED_PENDING_RIG
 OPEN_P4_DESIGN_BLOCKERS = 0
 
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = NO   (SUPERSEDED nueve veces: la ronda adversarial 1 (§35) abrió
+P4_DESIGN_FROZEN        = NO   (SUPERSEDED diez veces: la ronda adversarial 1 (§35) abrió
                                 6 findings contractuales, la ronda 2 (§36) abrió 6 residuos,
                                 la ronda 3 (§37) abrió 5 blockers de durabilidad, la ronda 4
                                 (§38) abrió 4 residuos de durabilidad terminal, la ronda 5
                                 (§39) abrió 1 blocker de orden de emisión, la ronda 6 (§40)
                                 abrió 2 residuos de durabilidad de la EMISIÓN, la ronda 7
                                 (§41) abrió 1 blocker de deriva de estado normativo, la
-                                ronda 8 (§42) abrió 2 residuos de deriva semántica de estado
-                                y la ronda 9 (§43) abrió 3 residuos (reclasificación del
-                                gate, alcance del rollback y etiquetas de scope);
-                                estado vigente en §43.7)
-P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §43.7)
+                                ronda 8 (§42) abrió 2 residuos de deriva semántica de estado,
+                                la ronda 9 (§43) abrió 3 residuos (reclasificación del gate,
+                                alcance del rollback y etiquetas de scope) y la ronda 10
+                                (§44) abrió 1 residuo (alcance exhaustivo de las preguntas
+                                de implementación); estado vigente en §44.7)
+P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §44.7)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
 PR_READY_TO_MERGE       = NO
@@ -5019,7 +5020,7 @@ y la **emisión de `approval_id`/`approval_seq`** por la superficie HITL.
 > congelado** (preasignar → digest → presentar → consentir → CAS, sin sostener el lock
 > durante la interacción humana) y **witness de emisión durable** (`state/issuances/`,
 > escrito antes del ledger), que vuelve el estado `ISSUED` detectable y reconciliable
-> fuera de `approval.json`. Estado vigente en **§43.7**.
+> fuera de `approval.json`. Estado vigente en **§44.7**.
 
 ### 36.16 Verificación de esta ronda
 
@@ -5771,7 +5772,7 @@ implementación** —no como diseño—: el **oráculo de Effective Runtime** (P
 > `last_finalization_seq` se usaba en el CAS de F1 **sin autoridad definida**; el estado
 > `FINALIZED` seguía figurando como estado del journal en §34.4/§36.14/§36.15; y la
 > lista normativa de `ApprovalScope` divergía entre secciones (`target_*` vs nombres
-> planos) y estaba incompleta en §29.8. **El estado vigente es el de §43.7.**
+> planos) y estaba incompleta en §29.8. **El estado vigente es el de §44.7.**
 > `P4_DESIGN_FROZEN` y `P4_READY_TO_IMPLEMENT` quedaron en `NO` **en esta ronda**; las
 > rondas 4 (§38), 5 (§39) y 6 (§40) volvieron a ponerlos en `YES` al cerrar cada una sus
 > propios residuos.
@@ -6438,7 +6439,7 @@ OPEN_BLOCKER = 0
 > `approval_seq` y `approval_scope_digest` mientras §37.3 los producía **al emitir**, y el
 > digest los compromete (§38.5) — de modo que el scope presentado no podía tener un digest
 > que recompute, y ninguna sección decía qué valores había visto y aprobado el propietario.
-> El estado vigente es el de **§43.7**.
+> El estado vigente es el de **§44.7**.
 
 ```text
 D0_R4_1_TERMINAL_APPROVAL_ROLLBACK     = CLOSED
@@ -6534,7 +6535,7 @@ rg -n "state/approvals/|approval_terminal_store|WRITE_AHEAD_APPROVAL_TERMINAL" \
 rg -n "RETENTION_FRONTIER|RETENTION_BOUNDARY_VALID|BROKEN_CHAIN" \
    docs/adr/0012-frozen-runtime.md
 
-# (6) estados vigentes, sin YES adelantados fuera de §43.7
+# (6) estados vigentes, sin YES adelantados fuera de §44.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (7) censo (no se asume; se recomputa)
@@ -6842,7 +6843,7 @@ OPEN_BLOCKER = 0
 > durable fuera del ledger**, así que una restauración borraba una aprobación `ISSUED` y el
 > ABA `R → R+1 → R` quedaba invisible; y la colisión con un registro durable tenía **dos
 > semánticas incompatibles** (§39.3 A5 decía «buscar otra secuencia», §38.2 R2 decía
-> `FAIL_CLOSED`). El estado vigente es el de **§43.7**.
+> `FAIL_CLOSED`). El estado vigente es el de **§44.7**.
 
 ```text
 D0_R5_1_APPROVAL_ISSUANCE_ORDER        = CLOSED
@@ -7205,7 +7206,7 @@ OPEN_BLOCKER = 0
 > normativas antiguas (§29.1, §29.8, §30.7, §31.6, §32.6, §33.4), estados **incompatibles**
 > con este bloque —requisitos todavía marcados `OPEN / adjudicate before P4 implementation`
 > y `P4_READY_TO_IMPLEMENT = NO`— pese a que su diseño ya estaba cerrado en §34 y refinado
-> en §35–§40. El estado vigente es el de **§43.7**.
+> en §35–§40. El estado vigente es el de **§44.7**.
 
 ```text
 D0_R6_1_ISSUED_ROLLBACK_ABA            = CLOSED
@@ -7300,7 +7301,7 @@ rg -n "COLLISION_RESOLUTION|APPROVAL_SEQ_NEVER_SKIPS" docs/adr/0012-frozen-runti
 rg -n "CAS_ALONE_DETECTS_A_RESTORED_LEDGER|Corregido en la ronda 6" \
    docs/adr/0012-frozen-runtime.md
 
-# (6) estados vigentes, sin YES adelantados fuera de §43.7
+# (6) estados vigentes, sin YES adelantados fuera de §44.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (7) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
@@ -7546,7 +7547,7 @@ MERGE                  = NO
 
 > **SUPERSEDED por la ronda 8 (§42).** Esta ronda declaró `P4_DESIGN_FROZEN = YES`; el gate
 > externo lo **rechazó** y abrió D0-R8.1 (deriva semántica de estado) y D0-R8.2 (política de
-> downgrade/promoción sin adjudicar). El estado vigente es el de **§43.7**.
+> downgrade/promoción sin adjudicar). El estado vigente es el de **§44.7**.
 
 `P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque el documento dejó de contradecirse:
 cada requisito tiene **un** estado normativo, los bloques de vigencia se corrigieron, los
@@ -7587,7 +7588,7 @@ rg -n "estado vigente|Estado vigente|SUPERSEDED" docs/adr/0012-frozen-runtime.md
 rg -n "GENERATION_METADATA_INTEGRITY|RUNTIME_SETUP_MANIFEST_INTEGRITY|RUNTIME_CLONE_RECORD_INTEGRITY|MANDATORY_CRITICAL_EXPECTATIONS|POST_ACTIVATION_LINK_INJECTION" \
    docs/adr/0012-frozen-runtime.md
 
-# (7) estados vigentes, sin YES adelantados fuera de §43.7
+# (7) estados vigentes, sin YES adelantados fuera de §44.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (8) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
@@ -7675,7 +7676,7 @@ Se barrieron **patrones semánticos** (no tokens del censo) sobre el documento *
 | `Blocker abierto (§31.5)` | 1 | 1 defecto (§26-Q24) |
 | `OPEN / MUST_BE_ADJUDICATED_…` | 2 | 2 defectos (§26-Q24, §31.5) |
 | `DEFERRED_WITH_BLOCKER` | 7 | 5 defectos (§29.10 filas 7, 10, 18, 19, 21) + 2 legítimos (§29.10 filas 11, 13: P5 y P3b) |
-| `Gate P4` | 3 | Q18/Q19/Q20 — gates de **implementación**, no de diseño (§42.5) |
+| `Gate P4` (etiqueta en §26) | 2 | Q18, Q19 — gates de **implementación** de P4, no de diseño (§42.5); Q20 es `Gate posterior a P4`, no `Gate P4` (§44.2) |
 | `sin adjudicar` | 4 | Creation Club (excepción declarada; §42.5) |
 | `sigue abierto` | 5 | Q18 (ubicación del Clone), Q7 (espacio en disco) — implementación; 2 en §41 (histórico) |
 
@@ -7859,7 +7860,7 @@ MERGE                  = NO
 > **SUPERSEDED por la ronda 9 (§43).** El gate externo aceptó `D0-R8.1` y `D0-R8.2` y abrió
 > tres residuos —dos de ellos introducidos por esta misma ronda—: `D0-R9.1` (reclasificación
 > indebida de `P4_CLONE_ACTIVATION_GATE`), `D0-R9.2` (ampliación del alcance del rollback) y
-> `D0-R9.3` (etiquetas de alcance ambiguo). El estado vigente es el de **§43.7**.
+> `D0-R9.3` (etiquetas de alcance ambiguo). El estado vigente es el de **§44.7**.
 
 `P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque las once afirmaciones de estado
 quedaron propagadas y la única pregunta de diseño abierta quedó **adjudicada** con
@@ -7898,7 +7899,7 @@ rg -n "BY_PROVENANCE|VERSION_ORDER|Downgrade/promoción hacia atrás" \
 # (6) la cadena de supersesión apunta al estado vivo
 rg -n "estado vigente|Estado vigente|SUPERSEDED" docs/adr/0012-frozen-runtime.md
 
-# (7) estados vigentes, sin YES adelantados fuera de §43.7
+# (7) estados vigentes, sin YES adelantados fuera de §44.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (8) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
@@ -7909,8 +7910,8 @@ El comando (1) debe dar **cero**. El comando (2) debe dar **cero**: el valor vie
 sobrevive citado dentro de §42.2. El comando (3) debe dar **cero**. En el comando (4),
 **todas** las coincidencias tienen que ser `P5_QUIESCENCE` (§29.10 fila 11), `P3b`
 (§29.10 fila 13) o la cita de §42.2: ninguna puede ser un requisito P4. El comando (7) debe
-mostrar `= YES` **sólo** en §43.7, en los tres bloques de vigencia
-§30.7/§31.6/§32.6 (que lo declaran con su puntero a §43), en las líneas que **definen**
+mostrar `= YES` **sólo** en §44.7, en los tres bloques de vigencia
+§30.7/§31.6/§32.6 (que lo declaran con su puntero a §44), en las líneas que **definen**
 el símbolo («significa "el diseño no bloquea"») y en bloques históricos marcados con
 banner — nunca en un bloque de estado sin banner. El comando (8) debe dar
 **36**, el mismo número que en §38, §39, §40 y §41.
@@ -7950,7 +7951,7 @@ se reabre ningún contrato de §34–§40.
 |---|---|---|---|---|---|
 | D0-R9.1 | P1 | Reclasificación indebida del gate | «`P4_CLONE_ACTIVATION_GATE` NO es uno de los 17 requisitos P4 del censo» → `DEFERRED_FAIL_CLOSED` | `REQUIREMENT = DESIGN_CLOSED` + `RESIDUAL_RISK = DECLARED` (datos distintos) | §29.8; §35.8.3; §35.13/#7; §36.13/#7 |
 | D0-R9.2 | P1 | Ampliación del alcance del rollback | «volver a un target HISTÓRICO retenido, elegido del historial durable»; «`K ≥ 3` acota qué targets históricos son elegibles» | `ROLLBACK = previous_activation_target` del `FINALIZED` más reciente; `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY` | §35.8.5; §37.5 |
-| D0-R9.3 | P2 | Etiqueta de alcance ambigua | `PREGUNTAS_ABIERTAS_TRAS_ADJUDICACION = 0` junto a Q18/Q19/Q20 abiertas | `PREGUNTAS_DE_DISENO_ABIERTAS_TRAS_ADJUDICACION = 0` (las de implementación se declaran aparte) | §26-Q18/Q19/Q20; §31.3 |
+| D0-R9.3 | P2 | Etiqueta de alcance ambigua | `PREGUNTAS_ABIERTAS_TRAS_ADJUDICACION = 0` junto a Q18/Q19/Q20 abiertas | `PREGUNTAS_DE_DISENO_ABIERTAS_TRAS_ADJUDICACION = 0` (las de implementación se declaran aparte; **alcance por fase** desde §44.4) | §26; §31.3; §44.2 |
 
 **D0-R9.1 — el requisito y el riesgo son datos distintos.** La ronda 8 leyó «residual declarado»
 como si fuera «requisito diferido» y movió el **estado del requisito**. El gate lo detectó:
@@ -8059,8 +8060,9 @@ P4_CLONE_ACTIVATION_GATE = DESIGN_CLOSED   (requisito; §29.8; §35.8.3; censo #
 CLONE_GATE_RESIDUAL_RISK = DECLARED        (riesgo declarado; §42.5)
 ```
 
-Y `IMPLEMENTATION_OPEN` se conserva donde corresponde: los gates de **implementación** de §26
-—Q18, Q19, Q20— **no** son gates de diseño y se mantienen tal cual (§31.3).
+Y `IMPLEMENTATION_OPEN` se conserva donde corresponde: §26 mantiene abiertas sus preguntas de
+implementación —los gates de P4 (`Q18`, `Q19`) y el gate posterior a P4 (`Q20`), **entre
+otras**—, que **no** son gates de diseño; su alcance se acota por fase en §44.4 (§31.3).
 
 ### 43.6 Revisión adversarial local — 20 preguntas
 
@@ -8078,7 +8080,7 @@ Y `IMPLEMENTATION_OPEN` se conserva donde corresponde: los gates de **implementa
 | 10 | ¿Un rollback a una versión mayor sigue siendo `ROLLBACK`? | **CLOSED_BY_DESIGN** | Sí, si el previous target era más alto; el orden no decide. |
 | 11 | ¿Se reabrió `P4_ROLLBACK_TARGET_HISTORY`? | **CLOSED_BY_DESIGN** | No: sigue en la preferencia **A**. |
 | 12 | ¿Las etiquetas de alcance son inequívocas? | **CLOSED_BY_DESIGN** | Sí: comando (4) → **0** para la forma vieja. |
-| 13 | ¿§26 conserva sus preguntas de implementación abiertas? | **CLOSED_BY_DESIGN** | Sí: Q18/Q19/Q20 siguen abiertas y ahora se declaran aparte. |
+| 13 | ¿§26 conserva sus preguntas de implementación abiertas? | **CLOSED_BY_DESIGN** | Sí: §26 las conserva y su autoridad es §26; el alcance se acota por fase en §44.4. |
 | 14 | ¿La cadena de supersesión apunta al estado vivo? | **CLOSED_BY_DESIGN** | Sí: los punteros «estado vigente» apuntan a §43.7. |
 | 15 | ¿§42.7 quedó marcado? | **CLOSED_BY_DESIGN** | Sí: banner `SUPERSEDED` → §43.7. |
 | 16 | ¿Se agregó un símbolo `P4_` nuevo? | **CLOSED_BY_DESIGN** | No: censo **36**, verificado por set-diff (§43.8). |
@@ -8092,6 +8094,10 @@ OPEN_BLOCKER = 0
 ```
 
 ### 43.7 Estado
+
+> **SUPERSEDED por la ronda 10 (§44).** El gate externo aceptó los tres cierres de la ronda 9
+> y abrió **un** residuo: `D0-R10.1` (el alcance de las preguntas de implementación se declaró
+> de forma exhaustiva). El estado vigente es el de **§44.7**.
 
 ```text
 D0_R9_1_CLONE_GATE_STATUS              = CLOSED
@@ -8111,7 +8117,8 @@ ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED   = NO
 P4_ROLLBACK_TARGET_HISTORY             = A   (sin cambio)
 
 PREGUNTAS_DE_DISENO_ABIERTAS_TRAS_ADJUDICACION  = 0
-PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS            = Q18, Q19, Q20   (§26; §31.3)
+IMPLEMENTATION_OPEN_PRESERVADO                  = YES   (el alcance se declara por fase; §44.4)
+OPEN_IMPLEMENTATION_QUESTIONS_AUTHORITY         = §26   (lista completa en §26)
 REQUISITOS_DE_DISENO_ABIERTOS_TRAS_ADJUDICACION = 0
 
 RUNTIME_SETUP_ARTIFACT_AVAILABILITY    = DEFERRED_FAIL_CLOSED / KEEP_OPEN   (NO cerrado)
@@ -8172,7 +8179,7 @@ rg -n "^HISTORICAL_STORE_IS_TARGET_MENU *= *NO" docs/adr/0012-frozen-runtime.md
 # (6) la cadena de supersesión apunta al estado vivo
 rg -n "estado vigente|Estado vigente|SUPERSEDED" docs/adr/0012-frozen-runtime.md
 
-# (7) estados vigentes, sin YES adelantados fuera de §43.7
+# (7) estados vigentes, sin YES adelantados fuera de §44.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (8) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
@@ -8181,9 +8188,9 @@ grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
 
 El comando (4) debe dar **cero** en **ambas** formas: la etiqueta vieja y la afirmación retirada
 sólo sobreviven, si acaso, citadas en §43.2/§43.3.
-Los comandos (1), (2), (3) y (5) deben coincidir **sólo** en sus bloques normativos y en §43.7. El
-comando (7) debe mostrar `= YES` **sólo** en §43.7, en los tres bloques de vigencia
-§30.7/§31.6/§32.6 (que lo declaran con su puntero a §43), en las líneas que **definen**
+Los comandos (1), (2), (3) y (5) deben coincidir **sólo** en sus bloques normativos y en §44.7. El
+comando (7) debe mostrar `= YES` **sólo** en §44.7, en los tres bloques de vigencia
+§30.7/§31.6/§32.6 (que lo declaran con su puntero a §44), en las líneas que **definen**
 el símbolo («significa "el diseño no bloquea"») y en bloques históricos marcados con
 banner — nunca en un bloque de estado sin banner. El comando
 (8) debe dar **36**, el mismo número que en §38, §39, §40, §41 y §42.
@@ -8193,3 +8200,237 @@ CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni store de e
 de historial, ni revocación, ni lock cross-process, ni escaneo de namespace, ni provisioning, ni
 cancelación, ni gate de activación, ni `active.json` real, ni binding de MO2, ni setup de SKSE, ni
 cache de artefactos, ni rollback, ni promoción. No se tocó P5. `MERGE = NO`.
+
+## 44. P4-D0 — ronda adversarial 10: alcance de las preguntas de implementación (2026-10-09)
+
+Décima ronda adversarial. El gate externo aceptó los tres cierres de la ronda 9 (`D0-R9.1`,
+`D0-R9.2`, `D0-R9.3`) y **no** encontró defecto nuevo en la arquitectura P4, en approvals,
+journal, recovery ni rollback. Abrió **un** residuo, de la misma familia que `D0-R9.3`: el
+**alcance** con que la propia ronda 9 declaró las preguntas abiertas.
+
+### 44.1 Adjudicación
+
+```text
+D0_R10_1_IMPLEMENTATION_QUESTION_SCOPE = CLOSED
+```
+
+El defecto es **de redacción, no de mecanismo**: §43.7 enumeró `Q18, Q19, Q20` como
+`PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS`, lo que leído literalmente afirma que **esas son todas**
+las preguntas de implementación abiertas del ADR. No lo son: §26 conserva abiertas, además,
+`Q1`–`Q4`, `Q7`–`Q9`, `Q12`–`Q14`, `Q16`, `Q17` y `Q22`, con gates de P1/P3/P3b/P5/P7 y la
+evidencia de Creation Club. Y §42.3 seguía clasificando `Q20` bajo `Gate P4` cuando §26 lo
+define como **`Gate posterior a P4`**.
+
+Ninguno de los dos enunciados cambia un gate, un orden, un CAS ni el estado de un requisito. Se
+corrigen por la regla que ya rige el documento —**ONE NORMATIVE CONTRACT**: una afirmación
+exhaustiva falsa no puede convivir con el contrato que la contradice— y se **deja de mantener**
+una enumeración global de preguntas abiertas.
+
+### 44.2 El defecto, con las citas
+
+| # | Sev. | Defecto | Afirmación vieja (§42/§43) | Estado correcto | Fuente |
+|---|---|---|---|---|---|
+| D0-R10.1 | P2 | Alcance exhaustivo de las preguntas de implementación | `PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS = Q18, Q19, Q20`; `Gate P4` = 3 → Q18/Q19/Q20 | El alcance se declara **por fase**; la autoridad de las preguntas abiertas es **§26**; `Q20` es `Gate posterior a P4` | §26 (Q18, Q19, Q20); §31.3 |
+
+**D0-R10.1 — una lista de ejemplos no es un censo.** `Q18` (ubicación física del Clone), `Q19`
+(catálogo de críticos) y `Q20` (retención/GC) **no** agotan las preguntas abiertas: son las que
+§26 marca, respectivamente, `Gate P4`, `Gate P4` y `Gate posterior a P4`. Escribirlas como
+`PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS = Q18, Q19, Q20` convierte una lista **de una fase** en
+una afirmación **exhaustiva** que §26 desmiente. Y clasificar `Q20` bajo `Gate P4` contradice la
+etiqueta que §26 le da.
+
+### 44.3 Censo del barrido — enumerativo, no por muestreo
+
+Se barrieron patrones de **exhaustividad** (no tokens del censo) sobre el documento **entero**:
+
+| Patrón barrido | Ocurrencias | Clasificación |
+|---|---|---|
+| `PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS = Q…` | 1 | 1 defecto (§43.7) |
+| `Q18/Q19/Q20` (o `Q18, Q19, Q20`) | 5 | 3 defectos (§42.3, §43.4, §43.6-Q13) + 1 estado vigente (§43.7) + 1 registro histórico (§43.2) |
+| `Gate P4` | 4 | 2 etiquetas de gate (§26: Q18, Q19) + 1 cita (§42.2) + 1 fila de censo corregida (§42.3) |
+| `Gate posterior a P4` | 1 | 1 etiqueta de gate (§26: Q20) — la que §42.3 clasificaba mal |
+| `todas` / `únicas` / `la totalidad` | 0 | sin coincidencias |
+| `_ABIERTAS… =` | 5 | 2 vigentes (§43.7) + 3 históricos (§43.2, §43.3) |
+| `sin resolver` | 2 | 1 excepción declarada (Creation Club) + 1 intro histórica ya marcada (§26) |
+| `sin adjudicar` | 8 | excepción declarada (Creation Club) + registros históricos de rondas previas |
+
+```text
+AFIRMACIONES_EXHAUSTIVAS_BARRIDAS = 8   (las 8 filas de esta tabla)
+SITIOS_CORREGIDOS                 = §42.3, §43.4, §43.6, §43.7
+FALSOS_POSITIVOS                  = 0   (todo match quedó clasificado)
+```
+
+### 44.4 Contrato congelado — el alcance se declara por fase; la autoridad es §26
+
+No se sigue manteniendo una **enumeración global** de preguntas abiertas: es frágil y ya falló
+dos veces (rondas 9 y 10). El contrato pasa a declarar **el alcance por fase** y a delegar la
+lista completa en su dueño:
+
+```text
+PREGUNTAS_DE_DISENO_ABIERTAS_EN_P4      = 0        (el diseño de P4 no deja preguntas abiertas)
+IMPLEMENTATION_OPEN_PRESERVADO          = YES      (el diseño cerrado NO cierra la implementación)
+OPEN_IMPLEMENTATION_QUESTIONS_AUTHORITY = §26      (la lista completa vive en §26, no acá)
+
+GATES_DE_IMPLEMENTACION_DE_P4           = Q18, Q19   (§26; no son gates de diseño)
+GATES_POSTERIORES_A_P4                  = Q20         (§26; retención/GC, después de P4)
+```
+
+**Nota de nomenclatura.** La etiqueta termina en `_EN_P4` para no introducir un símbolo con
+prefijo `P4_`: el censo `P4_[A-Z0-9_]+` debe seguir dando **36** (§44.8, comando (8)).
+
+**Lo que NO cambia.** Los mecanismos de la ronda 9 quedan intactos: `P4_CLONE_ACTIVATION_GATE =
+DESIGN_CLOSED` como **requisito** (con `CLONE_GATE_RESIDUAL_RISK = DECLARED` como dato
+separado), `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY`, `HISTORICAL_STORE_IS_TARGET_MENU =
+NO`, `K_GE_3_WIDENS_PROMISED_DEPTH = NO` y `ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED = NO`. Esta
+ronda **no** toca §34–§40.
+
+### 44.5 Excepciones que NO se cierran (deliberadas)
+
+```text
+RUNTIME_SETUP_ARTIFACT_AVAILABILITY = DEFERRED_FAIL_CLOSED / KEEP_OPEN
+    Sin payload no hay activación (fail-closed). Único requisito P4 en la columna DEFERRED.
+
+CREATION_CLUB_CLASSIFICATION = DEFERRED_PENDING_EVIDENCE   (sin cambio)
+P3B                          = DEFERRED_PENDING_RIG        (sin cambio)
+P5_EFFECTIVE_RUNTIME_ORACLE  = OPEN                        (es de P5, fuera de P4)
+
+P4_CLONE_ACTIVATION_GATE = DESIGN_CLOSED   (requisito; §29.8; §35.8.3; censo #7)
+CLONE_GATE_RESIDUAL_RISK = DECLARED        (riesgo declarado; §42.5)
+```
+
+Y `IMPLEMENTATION_OPEN` se conserva donde corresponde: §26 mantiene abiertas sus preguntas de
+implementación —los gates de P4 (`Q18`, `Q19`) y el gate posterior a P4 (`Q20`), **entre
+otras**—, que **no** son gates de diseño; su alcance se acota por fase en §44.4 (§31.3).
+
+### 44.6 Revisión adversarial local — 20 preguntas
+
+| # | Pregunta | Veredicto | Respuesta |
+|---|---|---|---|
+| 1 | ¿El defecto es de diseño o de redacción? | **CLOSED_BY_DESIGN** | De redacción: lo introdujo §43.7 al declarar el alcance; §34–§40 no cambian. |
+| 2 | ¿Se reabrió algún requisito adjudicado? | **CLOSED_BY_DESIGN** | No: los 17 requisitos y su partición 16/1/0 quedan intactos. |
+| 3 | ¿Cambia el comportamiento de algún contrato? | **CLOSED_BY_DESIGN** | No: ningún gate, orden ni CAS cambia. |
+| 4 | ¿Se tocó approvals, journal, CAS, witnesses o recovery? | **CLOSED_BY_DESIGN** | No: §37–§40 intactos. |
+| 5 | ¿`Q20` está clasificado correctamente ahora? | **CLOSED_BY_DESIGN** | Sí: `Gate posterior a P4` (§26), no `Gate P4`. |
+| 6 | ¿La lista de preguntas de implementación sigue pretendiendo ser exhaustiva? | **CLOSED_BY_DESIGN** | No: se declara el **alcance por fase** y la autoridad es §26. |
+| 7 | ¿Se perdió la distinción diseño/implementación? | **CLOSED_BY_DESIGN** | No: `IMPLEMENTATION_OPEN_PRESERVADO = YES` (§31.3 intacto). |
+| 8 | ¿Se perdió algún gate al dejar de enumerar? | **CLOSED_BY_DESIGN** | No: los gates siguen en §26, que es su dueño. |
+| 9 | ¿El rollback sigue acotado al inmediatamente anterior? | **CLOSED_BY_DESIGN** | Sí: `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY` (§43.4). |
+| 10 | ¿`K ≥ 3` amplía la profundidad prometida? | **CLOSED_BY_DESIGN** | No: verifica procedencia; la profundidad sigue acotada. |
+| 11 | ¿El gate de activación sigue `DESIGN_CLOSED` como requisito? | **CLOSED_BY_DESIGN** | Sí: #7 del censo; el residual es otro dato. |
+| 12 | ¿La cadena de supersesión apunta al estado vivo? | **CLOSED_BY_DESIGN** | Sí: los punteros «estado vigente» apuntan a §44.7. |
+| 13 | ¿§43.7 quedó marcado? | **CLOSED_BY_DESIGN** | Sí: banner `SUPERSEDED` → §44.7. |
+| 14 | ¿Se agregó un símbolo `P4_` nuevo? | **CLOSED_BY_DESIGN** | No: censo **36**, verificado por set-diff (§44.8). |
+| 15 | ¿Se agregó un requisito al censo? | **CLOSED_BY_DESIGN** | No: 17 requisitos, sin cambio. |
+| 16 | ¿La ronda introduce código o tests de producto? | **CLOSED_BY_DESIGN** | No: `PRODUCT_CODE_CHANGED = NO`. |
+| 17 | ¿Se tocó P5? | **CLOSED_BY_DESIGN** | No: `P5_IMPLEMENTED = NO`. |
+| 18 | ¿Queda alguna afirmación exhaustiva falsa sobre preguntas abiertas? | **CLOSED_BY_DESIGN** | No: comando (1) → **0**. |
+| 19 | ¿La ronda 10 fue más chica que las anteriores? | **CLOSED_BY_DESIGN** | Sí: 1 finding, 4 sitios, 0 mecanismos. |
+| 20 | ¿El freeze se puede re-afirmar con esta ronda? | **CLOSED_BY_DESIGN** | Sí, y sólo porque la ronda se limitó a **acotar lo que la ronda 9 declaró de más**. |
+
+```text
+OPEN_BLOCKER = 0
+```
+
+### 44.7 Estado
+
+```text
+D0_R10_1_IMPLEMENTATION_QUESTION_SCOPE = CLOSED
+
+AUTODEFECTO_DE_LA_RONDA_9              = 1   (el alcance exhaustivo lo introdujo §43)
+
+PREGUNTAS_DE_DISENO_ABIERTAS_EN_P4      = 0
+IMPLEMENTATION_OPEN_PRESERVADO          = YES
+OPEN_IMPLEMENTATION_QUESTIONS_AUTHORITY = §26
+
+GATES_DE_IMPLEMENTACION_DE_P4           = Q18, Q19   (§26; no son gates de diseño)
+GATES_POSTERIORES_A_P4                  = Q20         (§26; retención/GC)
+
+P4_CLONE_ACTIVATION_GATE               = DESIGN_CLOSED   (requisito; §29.8; §35.8.3; censo #7)
+CLONE_GATE_RESIDUAL_RISK               = DECLARED        (otro dato; §42.5)
+REQUIREMENT_STATUS_VS_RESIDUAL_RISK    = DISTINTOS
+
+ROLLBACK_SELECTION                     = IMMEDIATE_PREVIOUS_ONLY
+HISTORICAL_STORE_IS_TARGET_MENU        = NO
+K_GE_3_WIDENS_PROMISED_DEPTH           = NO
+ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED   = NO
+
+PREGUNTAS_DE_DISENO_ABIERTAS_TRAS_ADJUDICACION  = 0
+REQUISITOS_DE_DISENO_ABIERTOS_TRAS_ADJUDICACION = 0
+
+RUNTIME_SETUP_ARTIFACT_AVAILABILITY    = DEFERRED_FAIL_CLOSED / KEEP_OPEN   (NO cerrado)
+CREATION_CLUB_CLASSIFICATION           = DEFERRED_PENDING_EVIDENCE          (sin cambio)
+P3B                                    = DEFERRED_PENDING_RIG               (sin cambio)
+P5_EFFECTIVE_RUNTIME_ORACLE            = OPEN (P5)                          (sin cambio)
+
+P4_REQUIREMENTS_DISCOVERED             = 17
+P4_REQUIREMENTS_DESIGN_CLOSED          = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED   = 1
+P4_REQUIREMENTS_OPEN                   = 0
+NEW_PREFIXED_SYMBOLS_THIS_ROUND        = 0
+
+OPEN_P4_DESIGN_BLOCKERS = 0
+NEW_FINDINGS            = 1   (D0-R10.1) — autodefecto de §43
+
+P0_4_CORE_ARCHITECTURE  = SOUND   (mismo hecho y mismo símbolo que §32.8)
+P4_READY_TO_DESIGN      = YES
+P4_DESIGN_FROZEN        = YES
+P4_READY_TO_IMPLEMENT   = YES
+P4_IMPLEMENTED          = NO
+P5_IMPLEMENTED          = NO
+PR_SAFE_FOR_NEXT_REVIEW = YES
+PR_SAFE_TO_MERGE        = NO
+MERGE                   = NO
+```
+
+`P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque (a) los tres cierres de la ronda 9 siguen
+firmes, (b) el alcance de las preguntas de implementación quedó **acotado por fase** con §26 como
+autoridad y (c) ningún mecanismo se tocó. La lección cierra la serie de dimensiones del censo: la
+ronda 7 miró los **tokens**, la 8 las **frases**, la 9 los **datos** y la 10 el **alcance** de lo
+declarado.
+
+### 44.8 Verificación de esta ronda
+
+```bash
+# (1) la etiqueta exhaustiva retirada no sobrevive (ancla a columna 0) -> 0
+rg -n "^PREGUNTAS_DE_IMPLEMENTACION_ABIERTAS" docs/adr/0012-frozen-runtime.md
+
+# (2) el alcance se declara por fase, con §26 como autoridad (ancla a columna 0)
+rg -n "^PREGUNTAS_DE_DISENO_ABIERTAS_EN_P4 *= *0" docs/adr/0012-frozen-runtime.md
+rg -n "^OPEN_IMPLEMENTATION_QUESTIONS_AUTHORITY *= *§26" docs/adr/0012-frozen-runtime.md
+
+# (3) el censo del gate separa P4 de posterior-a-P4 (ancla a columna 0)
+rg -n "^GATES_DE_IMPLEMENTACION_DE_P4|^GATES_POSTERIORES_A_P4" docs/adr/0012-frozen-runtime.md
+
+# (4) §42.3 ya no clasifica Q20 como Gate P4 (ancla a la forma normativa de la fila) -> 0
+rg -n '^\| `Gate P4` \| 3 \|' docs/adr/0012-frozen-runtime.md
+
+# (5) los mecanismos de la ronda 9 siguen intactos (ancla a columna 0)
+rg -n "^P4_CLONE_ACTIVATION_GATE *= *DESIGN_CLOSED" docs/adr/0012-frozen-runtime.md
+rg -n "^ROLLBACK_SELECTION *= *IMMEDIATE_PREVIOUS_ONLY" docs/adr/0012-frozen-runtime.md
+rg -n "^ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED *= *NO" docs/adr/0012-frozen-runtime.md
+
+# (6) la cadena de supersesión apunta al estado vivo
+rg -n "estado vigente|Estado vigente|SUPERSEDED" docs/adr/0012-frozen-runtime.md
+
+# (7) estados vigentes, sin YES adelantados fuera de §44.7
+rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
+
+# (8) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+```
+
+El comando (1) debe dar **cero**: la etiqueta exhaustiva se **retira**, no se acota —una etiqueta
+sin lista sigue leyéndose como exhaustiva—. El comando (4) debe dar **cero** también: ancla a la **forma normativa** de la fila, no a su cita. El comando
+(3) debe mostrar los dos símbolos nuevos, que son los únicos datos de estado que esta ronda
+agrega. El comando (5) debe seguir coincidiendo en sus bloques normativos y en §43.7/§44.7. El
+comando (7) debe mostrar `= YES` **sólo** en §44.7, en los tres bloques de vigencia
+§30.7/§31.6/§32.6 (que lo declaran con su puntero a §44), en las líneas que **definen** el
+símbolo («significa "el diseño no bloquea"») y en bloques históricos marcados con banner — nunca
+en un bloque de estado sin banner. El comando (8) debe dar **36**, el mismo número que en §38,
+§39, §40, §41, §42 y §43.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó transición, ni
+CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni store de emisiones, ni
+almacén de historial, ni revocación, ni lock cross-process, ni escaneo de namespace, ni
+provisioning, ni cancelación, ni gate de activación, ni `active.json` real, ni binding de MO2, ni
+setup de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5. `MERGE = NO`.
