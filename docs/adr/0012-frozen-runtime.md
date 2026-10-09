@@ -350,19 +350,26 @@ Managed Source (estabilizada; provider: Steam)
     ↓   provisionar RuntimeSetupManifest S sobre C   (SFR-22; → PROVISIONING → PROVISIONED)
     ↓   gate de activación de C   (§29.3)
   PREPARADO  (nada activo cambió; SFR-23)
+    ↓   coherencia del SOURCE BASELINE   (§36.3; D0-R2.2)
+    │      Desired source == Effective observado == RuntimeCloneRecord registrado
+    │      si divergen ⇒ FAIL_CLOSED: sin aprobación, sin PENDING, sin promoción
     ↓   USER APPROVES   (SFR-08; operation = PROMOTION;
-    │                     scope = {generation_id, clone_id, clone_evidence,
+    │                     scope = {source_activation, source_activation_digest,
+    │                              generation_id, clone_id, clone_evidence,
     │                              runtime_setup_id, runtime_setup_evidence,
-    │                              compatibility_evidence_id, candidate_id})
-    ↓   re-verificar EXACTAMENTE la evidencia aprobada   (SFR-23; §11; R4-F5)
-    ↓   persist durable PENDING PROMOTION   (R4-F3; ANTES de mutar)
+    │                              compatibility_evidence_id, candidate_id,
+    │                              approval_id})
+    ↓   re-verificar EXACTAMENTE la evidencia aprobada   (SFR-23; §11; R4-F5; §36.3)
+    ↓   CAS CREATE: persist durable PENDING PROMOTION   (R4-F3; §36.6; ANTES de mutar)
+    │      + consumo atómico de la aprobación (single-use durable, §36.5)
     ↓   bind Effective Runtime → C   (primitiva P5)
     ↓   verify effective_path == C.root_path  y  linaje C → G
-    ↓   persist active.desired_generation_id = G  y  active.desired_clone_id = C
-    │   (+ previous_activation_target = saliente)   (R4-F10)
+    ↓   CAS UPDATE: persistir active.desired_* = (G, C)   (§36.6)
     ↓   POST verify de coherencia   (SFR-16)
     │      si FALLA ⇒ la transición sigue PENDING (recuperable); NO se finaliza
-    ↓   finalizar la transición pendiente   (R4-F3; SÓLO tras POST OK)
+    ↓   CAS FINALIZE: finalizar la transición pendiente   (R4-F3; SÓLO tras POST OK)
+    │      y en la MISMA operación lógica publicar
+    │      previous_activation_target = source_activation   (§35.8.5; §36.2)
   SUCCESS
 ```
 
@@ -489,19 +496,25 @@ FASE 1 — PREPARACIÓN (no activa; no requiere aprobación)
   gate C                       # activación: §29.3  →  PREPARADO
 
 FASE 2 — ACTIVACIÓN (muta el Effective Runtime; requiere aprobación)
+  source baseline coherente    # Desired source == Effective == RuntimeCloneRecord (§36.3)
+                               # divergencia ⇒ FAIL_CLOSED, sin aprobación ni PENDING
   user approves                # SFR-08; operation = PROMOTION;
-                               # scope = {generation_id, clone_id, clone_evidence,
+                               # scope = {source_activation, source_activation_digest,
+                               #          generation_id, clone_id, clone_evidence,
                                #          runtime_setup_id, runtime_setup_evidence,
-                               #          compatibility_evidence_id, candidate_id}
+                               #          compatibility_evidence_id, candidate_id,
+                               #          approval_id}
   reverify approved evidence   # re-verificar EXACTAMENTE lo aprobado (SFR-23; R4-F5)
-  persist PENDING PROMOTION    # intención durable ANTES de mutar (R4-F3)
+  CAS CREATE PENDING PROMOTION # intención durable ANTES de mutar (R4-F3; §36.6)
+                               # + consumo atómico de la aprobación (§36.5)
   bind Effective Runtime → C   # primitiva P5 (re-apuntar gamePath/SKYRIM_PATH, o alias)
   verify effective_path == C.root_path  y  linaje C → G
-  persist active.desired_generation_id = G  y  active.desired_clone_id = C
-                               # + previous_activation_target = saliente (R4-F10)
+  CAS UPDATE active.desired_generation_id = G  y  active.desired_clone_id = C   # §36.6
   POST verify de coherencia    # SFR-16
                                # si FALLA ⇒ la transición sigue PENDING; NO se finaliza
-  finalize PENDING PROMOTION   # cerrar la transición durable SÓLO tras POST OK (R4-F3)
+  CAS FINALIZE PENDING PROMOTION  # cerrar la transición durable SÓLO tras POST OK (R4-F3)
+                               # y en la MISMA operación lógica publicar
+                               # previous_activation_target = source_activation (§35.8.5)
   SUCCESS
 ```
 
@@ -516,8 +529,13 @@ Reglas:
    nueva; la anterior no se borra (SFR-10) y su Clone retenido queda intacto.
 3. **Preparación sin aprobación; activación con aprobación** (SFR-23). Preparar
    artefactos que no se activan no pide permiso; lo que lo pide es el **binding**.
-   Si el propietario cancela, el runtime activo queda **idéntico** y los artefactos
-   preparados permanecen **inactivos** (su limpieza es GC explícito, §23).
+   Si el propietario cancela **antes** de que exista una transición durable, el
+   runtime activo queda **idéntico** y los artefactos preparados permanecen
+   **inactivos** (su limpieza es GC explícito, §23). Cancelar **después** de
+   persistir `PENDING_*` es un caso distinto (D0-R2.6; §36.7): `CANCELLED` es un
+   **resultado de operación**, no un estado del ciclo de vida del Clone, y no borra
+   la transición, no reclama rollback y no declara estado limpio — recovery
+   gobierna la transición que ya está en disco.
 4. **La aprobación se liga a un conjunto exacto de artefactos**, no a la intención
    de actualizar (`ApprovalScope`, ver el contrato completo abajo): el conjunto
    incluye la **operación** aprobada y los artefactos que se van a activar. Antes
@@ -537,6 +555,8 @@ Reglas:
    ```text
    ApprovalScope:
        operation = PROMOTION | ROLLBACK
+       source_activation         # el runtime SALIENTE que se reemplaza (§35.2; §36.3)
+       source_activation_digest  # SHA-256(canonical_json(source_activation))
        generation_id
        clone_id                  # identidad (NECESARIA, no suficiente)
        clone_evidence            # huella/evidencia del ESTADO aprobado del Clone
@@ -544,10 +564,17 @@ Reglas:
        runtime_setup_evidence    # digest del manifest aprobado
        compatibility_evidence_id
        candidate_id              # sólo PROMOTION
+       approval_id               # identidad durable de la aprobación (§36.5)
 
    PROMOTION: candidate_id REQUIRED
    ROLLBACK:  candidate_id NOT_APPLICABLE   # ni string vacío, ni Candidate falso
    ```
+
+   **El scope liga el source, no sólo el target (D0-R1; §35.2).** Sin
+   `source_activation` una aprobación obtenida en otro contexto pasaría con el target
+   intacto. La igualdad `aprobado == actual` se comprueba **bajo el lock**, antes de
+   persistir `PENDING_*`, y el source debe ser **coherente con el Effective
+   observado** (§36.3), no sólo con el estado Desired registrado.
 
    **Los identificadores solos NO alcanzan (R4-F5).** Un Runtime Clone es
    **mutable** por definición y el gate tolera deriva **no crítica** (§29.3): si el
@@ -604,6 +631,22 @@ Reglas:
    puede declarar `SUCCESS`**. P4 no debe sustituir el paso de verificación de
    coherencia por un supuesto: sin observación, el desenlace es `FAILED`/
    `PENDING`, nunca éxito asumido (SFR-16).
+9. **Coherencia del source baseline (D0-R2.2; §36.3).** Antes de **presentar** una
+   aprobación de activación debe demostrarse que el runtime saliente es uno solo:
+   `Desired source == Effective observado == RuntimeCloneRecord registrado`,
+   incluido el setup correspondiente. La evidencia de la observación viaja en
+   `source_activation` y queda ligada a la aprobación. Si Desired y Effective
+   divergen —y **no** hay transición `PENDING` que lo explique— el estado es
+   `INCONSISTENT_BASELINE`: `FAIL_CLOSED`, sin aprobación nueva, sin `PENDING`
+   nuevo, sin promoción ni rollback, `REQUIRE_OWNER`/recovery (§36.4). Nunca se
+   convierte el Effective en Desired ni el Desired en Effective por conveniencia.
+10. **`previous_activation_target` se publica con el FINALIZE, no antes
+    (D0-R2.1; §36.2).** El target histórico saliente se escribe **sólo** cuando el
+    POST pasó, con el mismo `transition_id`, y como parte de la misma operación
+    lógica que finaliza la transición. Antes de eso, el registro `PENDING`
+    **retiene** `source_activation` para poder reconstruirlo; sobrescribir el
+    histórico previo antes de una transición exitosa está **prohibido**. La
+    autoridad de ese dato es el **registro de transición finalizado** (§36.8).
 
 ## 12. Rollback
 
@@ -666,11 +709,15 @@ Secuencia exacta (vía de integridad, la canónica):
 5. Aplicar el **gate de compatibilidad** y el **gate de activación** de §29.3 a
    `C_prev` (identidad, críticos, independencia, exclusión de la Managed Source,
    setup verificado, quiescencia).
-6. **Presentar el `ApprovalScope` exacto** de la operación (§31.4) con su
-   **evidencia de contenido**: `operation = ROLLBACK`, `generation_id`, `clone_id`,
-   `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`,
-   `compatibility_evidence_id`; `candidate_id NOT_APPLICABLE` — un rollback
-   canónico **no** debe preservar un Candidate histórico para poder volver atrás.
+6. **Verificar el source baseline y presentar el `ApprovalScope` exacto** de la
+   operación (§31.4) con su **evidencia de contenido**: `operation = ROLLBACK`,
+   `source_activation` + `source_activation_digest` (el runtime saliente, §36.3),
+   `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`,
+   `runtime_setup_evidence`, `compatibility_evidence_id`, `approval_id`;
+   `candidate_id NOT_APPLICABLE` — un rollback canónico **no** debe preservar un
+   Candidate histórico para poder volver atrás. Si el source baseline no es
+   coherente (Desired ≠ Effective sin transición que lo explique), no se presenta
+   scope: `FAIL_CLOSED` (§36.4).
 7. **Aprobación del propietario** (SFR-08). Si cancela, el runtime activo queda
    **idéntico** y los artefactos preparados quedan inactivos (SFR-23).
 8. **Re-verificar EXACTAMENTE la evidencia aprobada** justo antes de mutar: si algo
@@ -683,11 +730,15 @@ Secuencia exacta (vía de integridad, la canónica):
     `C_prev.source_generation_id == G_prev`.
 12. **Persistir** el par `desired_generation_id = G_prev` **y**
     `desired_clone_id = C_prev` (atómico, `active.json` v2; nombres literales,
-    §31.1) con el `previous_activation_target` saliente (R4-F10). **La transición
-    sigue `PENDING`**: no se cierra todavía.
+    §31.1) — CAS UPDATE sobre `transition_id` (§36.6). **La transición sigue
+    `PENDING`**: no se cierra todavía, y `previous_activation_target` **no** se
+    escribe en este paso (D0-R2.1; §36.2).
 13. **POST verify** de coherencia desired/effective (SFR-16). Si **pasa**,
-    **finalizar** la transición pendiente y devolver `SUCCESS`. Si **falla**, la
-    transición **sigue `PENDING`** (recuperable) — **no** se finaliza.
+    **finalizar** la transición pendiente —CAS FINALIZE— y, en la **misma**
+    operación lógica, publicar `previous_activation_target = source_activation`
+    (el `G_saliente/C_saliente/S_saliente` que el registro `PENDING` retuvo) y
+    devolver `SUCCESS`. Si **falla**, la transición **sigue `PENDING`**
+    (recuperable) — **no** se finaliza y el target histórico **no** se publica.
 
 **El ordenamiento es normativo (R4-F3; R4.1-F1).** El binding (paso 10) **nunca**
 ocurre antes de persistir la intención durable (paso 9): un proceso que muera entre
@@ -695,6 +746,9 @@ ambos dejaría `active.json` describiendo el runtime viejo sin transición pendi
 es decir el split-brain desired/effective que §11 exige registrar antes de mutar. Y
 la transición **nunca se finaliza antes del POST-verify** (paso 13): la invariante
 `FINALIZED ⇒ POST verification already passed` vale igual para promoción y rollback.
+Y `previous_activation_target` **nunca se escribe antes del POST exitoso** (D0-R2.1;
+§36.2): el histórico previo sigue siendo autoridad hasta que la transición nueva se
+complete, y se publica como parte del mismo acto lógico que finaliza la transición.
 Promoción y rollback usan **el mismo modelo de transición durable** —no hay una
 ruta "rápida" que saltee la intención previa **ni** el POST-verify—; el formato
 concreto del registro de transición es de P4 (`P4_DURABLE_TRANSITION`, §29.8), pero
@@ -975,37 +1029,46 @@ alcanza, porque una Generation admite **varios** Clones (`G1 → C1, C2, C3`) y
   "schema_version": 2,
   "desired_generation_id": "1.6.1170__a1b2c3d4e5f6",
   "desired_clone_id": "1.6.1170__a1b2c3d4e5f6--c3",
-  "previous_activation_target": {
-    "generation_id": "1.6.1170__09f8e7d6c5b4",
-    "clone_id": "1.6.1170__09f8e7d6c5b4--c1",
-    "runtime_setup_id": "skyrimse-1.6.1170--s1"
-  },
   "updated_at_ns": 1789000000000000000
 }
 ```
 
+`previous_activation_target` **no** vive en `active.json` v2 (D0-R2.7; §36.8): su
+autoridad es el **registro de transición finalizado** y tenerlo en dos archivos
+crearía dos autoridades que pueden divergir. La corrección del schema v2 se registra
+en §36.8.
+
 - `desired_generation_id: null` **y** `desired_clone_id: null` = arranque limpio
   (sin runtime activo). Un par **parcialmente** nulo (uno sí, otro no) es estado
   **corrupto**, no "limpio": fail-closed.
-- **Identidad operativa previa (R4-F10).** El par `desired_*` describe el runtime
-  **actual**; al promocionar se sobreescribe. Como el `runtime_setup_id` es un dato
-  **por Clone** (§19c) y una Generation admite varios setups, la identidad del
-  runtime anterior no es derivable de `G_prev`: sin registrarla, el rollback
-  tendría que **adivinar** qué setup correspondía al runtime anterior. Por eso el
-  estado persiste `previous_activation_target` (el target **saliente**), escrito
-  **transaccionalmente** al persistir el par desired (§12 paso 12), antes del
-  POST-verify y del cierre de la transición. Regla dura:
+- **Identidad operativa previa (R4-F10; corregido en D0-R2.1/D0-R2.7).** El par
+  `desired_*` describe el runtime **actual**; al promocionar se sobreescribe. Como el
+  `runtime_setup_id` es un dato **por Clone** (§19c) y una Generation admite varios
+  setups, la identidad del runtime anterior no es derivable de `G_prev`: sin
+  registrarla, el rollback tendría que **adivinar** qué setup correspondía al runtime
+  anterior. Por eso el sistema conserva `previous_activation_target` (el target
+  **saliente**). Regla dura:
   ```text
   rollback target must never be guessed
   previous operational setup identity must be durable
   ```
-  Se elige **A (un único target previo, acotado)** sobre B (ledger de activaciones
-  de profundidad arbitraria) porque reutiliza la maquinaria de transición durable
-  que R4-F3 ya exige y respeta el presupuesto de complejidad del MVP (§21). El
-  `clone_id` previo queda disponible para la vía rápida opcional (§12), pero **no**
-  convierte al Clone anterior en autoridad. Si P4 concluye que una Generation puede
-  mapear a **varios** manifiestos canónicos, el setup previo se **registra**, nunca
-  se infiere. El formato concreto se implementa en P4.
+  **Dónde y cuándo se escribe (D0-R2.1).** `previous_activation_target` se publica
+  **sólo** cuando el POST pasó, con el mismo `transition_id`, como parte de la
+  **misma operación lógica** que finaliza la transición (§35.8.5; §36.2). Antes de
+  eso el histórico previo sigue siendo autoridad y el registro `PENDING` **retiene**
+  `source_activation` para reconstruirlo. Escribirlo al persistir el par desired
+  —como decía el texto anterior a esta corrección— publicaba un histórico que la
+  transición todavía no había ganado.
+  **Quién es la autoridad (D0-R2.7; §36.8).** El registro de transición finalizado,
+  **no** `active.json`. Se elige **A (un único target previo, acotado y derivado)**
+  sobre B (ledger de activaciones de profundidad arbitraria) porque reutiliza la
+  maquinaria de transición durable que R4-F3 ya exige y respeta el presupuesto de
+  complejidad del MVP (§21); y se evita duplicar el dato en dos archivos porque dos
+  copias pueden divergir. El `clone_id` previo queda disponible para la vía rápida
+  opcional (§12), pero **no** convierte al Clone anterior en autoridad. Si P4
+  concluye que una Generation puede mapear a **varios** manifiestos canónicos, el
+  setup previo se **registra**, nunca se infiere. El formato concreto se implementa
+  en P4.
 - Reader fail-closed: **ausente** = limpio; **presente pero corrupto**
   (JSON malformado/truncado, UTF-8 inválido, schema desconocido, campo ausente
   o con tipo incorrecto, id con traversal) LANZA — nunca se interpreta como
@@ -1737,14 +1800,14 @@ no inferido; v1 sigue leyéndose fail-closed.
 | Blocker | Slice | Requisito |
 |---|---|---|
 | `P4_CROSS_PROCESS_LOCK` (ampliado) | P4 | Una clave **por `FrozenRuntimeRoot`**, no por destino; base del lockfile derivada del root (p. ej. dentro de `state/`), no de `tempfile.gettempdir()`. `destination_lock` de RV-3 **no sirve** (E7). Los instaladores toman un lock por `game_dir`, cuya clave **cambia** al repuntar la ruta: la promoción debe tomar ambas o usar una clave lógica. Participantes congelados por introspección/AST. |
-| `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un estado explícito (`INVALID`/`CANCELLED`), nunca en un `BUILDING` huérfano. **No se refactoriza a asyncio en P0.4.** |
+| `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un **resultado de operación** explícito (`SUCCESS`/`CANCELLED`/`FAILED`), nunca en un `BUILDING` huérfano. `CANCELLED` **no** es un estado del ciclo de vida del Clone (D0-R2.6; §36.7): la FSM del Clone sigue siendo `CREATED \| PROVISIONING \| PROVISIONED \| INVALID`. **No se refactoriza a asyncio en P0.4.** |
 | `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding, **y también el rollback** (R4-F3): promoción y rollback usan el **mismo modelo**. El **ordering es normativo**: (i) la transición `PENDING` se persiste **antes** de mutar el Effective Runtime; y (ii) se **finaliza SÓLO después** de que el POST-verify pase (R4.1-F1) — invariante `FINALIZED ⇒ POST verification already passed`; si el POST falla, la transición **sigue `PENDING`** (recuperable). Formato del registro = P4; ordering = congelado. |
-| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`); el **mecanismo** no existe. **El scope liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, ligadura con digest/identidad del propietario, single-use, expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño. |
+| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`, `approval_id`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`); el **mecanismo** no existe. **El scope liga el SOURCE que se reemplaza, no sólo el target** (D0-R1; §35.2): sin él, una aprobación obtenida en otro contexto pasaría con el target intacto. **Y liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, la **autoridad durable de consumo** (`approval_id`/nonce, §36.5), expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño — el lock **no** es autorización humana. |
 | `P4_RUNTIME_SETUP_PROVISIONING` (nuevo) | P4 | Implementar SFR-22: registrar el `RuntimeSetupManifest` por versión, provisionar el Clone de forma reproducible (SKSE del build exacto, root files, componentes) y verificar sus hashes declarados. Sin esto el rollback no reconstruye un runtime **listo para activación** (§31.2). Incluye declarar `assumptions` para lo no clasificado (Creation Club, Q22). |
 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` (nuevo) | P4 / P6 / P7 | R3-B1 (§31.5): adjudicar qué estrategia (A/B/C/D) garantiza que los artefactos declarados por el manifest sigan siendo recuperables, y **demostrar por Generation retenida** qué queda retenido o reproducible. Sin esta adjudicación **no se puede prometer rollback operativo**: el manifest declara procedencia, no disponibilidad futura. `RUNTIME_SETUP_ARTIFACT_AVAILABILITY = OPEN`. |
 | `P4_CLONE_ACTIVATION_GATE` (nuevo) | P4 | Implementar §29.3, incluyendo el catálogo de críticos (Q19) y el **reporte** de deriva (no sólo el veredicto). Además: (a) las expectativas críticas deben **pasarse explícitamente** desde la metadata —nunca quedar en el default `()` de RV-2/RV-3, que desactiva el chequeo en silencio (§29.10-20)—; (b) el gate debe rechazar reparse points que **escapen** del Clone, no sólo comparar inodos contra el origen (§29.10-21); (c) **exclusión física de la Managed Source** (R4-F6): la identidad lógica es necesaria y no suficiente, hace falta no-contención/no-solapamiento con `steamapps/common`; (d) exigir `lifecycle == PROVISIONED` (R4-F9), no la mera presencia de un `intended_runtime_setup_id`. |
-| `P4_CLONE_PROVISIONING_LIFECYCLE` (nuevo) | P4 | R4-F9 (§19c): implementar la FSM `CREATED \| PROVISIONING \| PROVISIONED \| INVALID` y la distinción `intended_runtime_setup_id` / `verified_runtime_setup_id`. Un corte entre publicar el Clone (RV-3) y provisionar el setup debe ser **descubrible y clasificable** al arranque, nunca leído como setup aplicado. Fail-closed: `PROVISIONED` es requisito de activación. |
-| `P4_ROLLBACK_TARGET_HISTORY` (nuevo) | P4 | R4-F10 (§19a): persistir `previous_activation_target` (el target operativo **saliente**) de forma **transaccional** al finalizar una transición, para que el rollback no **adivine** qué setup correspondía al runtime anterior. Preferencia declarada: **A** (un único target previo) sobre B (ledger de profundidad arbitraria), reutilizando la maquinaria de `P4_DURABLE_TRANSITION`. |
+| `P4_CLONE_PROVISIONING_LIFECYCLE` (nuevo) | P4 | R4-F9 (§19c): implementar la FSM `CREATED \| PROVISIONING \| PROVISIONED \| INVALID` y la distinción `intended_runtime_setup_id` / `verified_runtime_setup_id`. Un corte entre publicar el Clone (RV-3) y provisionar el setup debe ser **descubrible y clasificable** al arranque, nunca leído como setup aplicado. Fail-closed: `PROVISIONED` es requisito de activación. **Fallo de provisionamiento con semántica única** (D0-R2.6; §36.7): `PROVISIONING_FAILURE ⇒ lifecycle = INVALID`, sin activación y con reintento sobre un **Clone nuevo** — no se demostró idempotencia completa del provisionamiento actual (§36.7, contraste con `ensure_skse`). |
+| `P4_ROLLBACK_TARGET_HISTORY` (nuevo) | P4 | R4-F10 (§19a): conservar `previous_activation_target` (el target operativo **saliente**) de forma **transaccional**, publicado **sólo** al finalizar una transición exitosa (POST passed ∧ mismo `transition_id`), para que el rollback no **adivine** qué setup correspondía al runtime anterior. Preferencia declarada: **A** (un único target previo) sobre B (ledger de profundidad arbitraria), reutilizando la maquinaria de `P4_DURABLE_TRANSITION`. **Autoridad única (D0-R2.7; §36.8):** el registro de transición finalizado — **no** `active.json`, que deja de llevar el campo para no crear dos autoridades divergentes. |
 | `P4_RUNTIME_CLONE_RECORD_INTEGRITY` (nuevo) | P4 | R4-F7: el `RuntimeCloneRecord` es autoridad de admisión (`admitted_role`) y hoy no tiene blocker de integridad propio. Requisitos: identidad no-clobber, schema validado, consistencia `clone_id` ↔ clave, integridad de `source_generation_id`/`runtime_setup_id`/`root_path`, y `admitted_role` no forjable en silencio. **No** se decide HMAC/firma acá. `RUNTIME_CLONE_RECORD_INTEGRITY = OPEN`. |
 | `P5_EFFECTIVE_RUNTIME_ORACLE` (ampliado) | P5 | El bridge MO2 no expone hoy ninguna información de ruta (la operación `health` sólo emite `bridge_health`). Una extensión de **sólo lectura** es la candidata; la API de MO2 no está verificada. Sin oráculo, la promoción queda `PENDING` (SFR-16). El plugin no gana operaciones mutantes (ADR 0007). |
 | `P5_PATH_SURFACES_UNIT` (nuevo) | P5 | Binder transaccional de las **tres clases** de §29.4 —configuradas/persistidas, derivadas y **cacheadas en memoria**— **más** los escritores del game dir, con rollback, con MO2 cerrado, y ancla enumerativa de igualdad literal. Repuntar sólo las superficies resueltas deja los caches stale (R4-F2). |
@@ -2109,6 +2172,8 @@ re-verificada (§12) y **no** debe exigir un Candidate histórico.
 ```text
 ApprovalScope:
     operation                     # PROMOTION | ROLLBACK
+    source_activation             # runtime SALIENTE (ronda 2, D0-R2.2; §36.3)
+    source_activation_digest
     generation_id
     clone_id
     clone_evidence                # contenido del Clone aprobado (ronda 4, R4-F5)
@@ -2116,7 +2181,12 @@ ApprovalScope:
     runtime_setup_evidence        # digest del manifest aprobado (ronda 4, R4-F5)
     compatibility_evidence_id
     candidate_id                  # REQUIRED en PROMOTION; NOT_APPLICABLE en ROLLBACK
+    approval_id                   # identidad durable single-use (ronda 2, D0-R2.4; §36.5)
 ```
+
+Antes de presentar el scope se exige además **coherencia del source baseline**
+(`Desired source == Effective observado == RuntimeCloneRecord registrado`): si
+divergen, no hay aprobación nueva (§36.3/§36.4).
 
 Y antes de mutar el Effective Runtime:
 
@@ -2371,16 +2441,17 @@ verify G_prev authority/evidence
 materialize fresh Clone C_prev  (or fast path: retained Clone only if fully admissible)
 provision/verify RuntimeSetup S_prev
 activation gate (incl. exclusión de Managed Source)
-present exact ROLLBACK scope + content evidence
+source baseline coherence (Desired == Effective == RuntimeCloneRecord)   # §36.3
+present exact ROLLBACK scope + source activation + content evidence + approval_id
 user approves
 reverify exact approved evidence
-persist durable PENDING ROLLBACK   # antes de mutar (R4-F3)
+CAS CREATE durable PENDING ROLLBACK   # antes de mutar (R4-F3; §36.6) + consumo de aprobación
 bind Effective Runtime → C_prev
 observe/verify effective + linaje
-persist desired pair + previous_activation_target   # transición aún PENDING
+CAS UPDATE desired pair   # transición aún PENDING; previous_activation_target NO se toca
 POST verify coherence
     if FAIL → transition stays PENDING (recoverable); DO NOT finalize
-finalize transition   # sólo tras POST OK (R4.1-F1)
+CAS FINALIZE transition   # sólo tras POST OK (R4.1-F1); publica previous_activation_target
 SUCCESS
 ```
 
@@ -2560,16 +2631,18 @@ Managed Source
 → verify setup (→ PROVISIONED)
 → compatibility gate
 → activation gate
-→ PRESENT exact ApprovalScope + content evidence
+→ source baseline coherence (Desired == Effective == RuntimeCloneRecord)   # §36.3
+→ PRESENT exact ApprovalScope + source activation + content evidence + approval_id
 → USER APPROVES
 → freshly reverify exact approved evidence
-→ persist durable PENDING PROMOTION
+→ CAS CREATE durable PENDING PROMOTION + consumo de aprobación             # §36.5/§36.6
 → bind Effective Runtime → C
 → observe Effective Runtime
-→ persist desired Generation+Clone + previous_activation_target
+→ CAS UPDATE desired Generation+Clone   # previous_activation_target NO se toca
 → POST verify coherence
 →     if FAIL → transition stays PENDING (recoverable); DO NOT finalize
-→ finalize transition        # sólo tras POST OK (R4.1-F1)
+→ CAS FINALIZE transition        # sólo tras POST OK (R4.1-F1)
+→     publica previous_activation_target = source_activation              # §35.8.5
 → SUCCESS
 ```
 
@@ -2587,16 +2660,17 @@ choose:
 provision/verify S_prev
 compatibility gate
 activation gate
-present exact ROLLBACK ApprovalScope + content evidence
+source baseline coherence (Desired == Effective == RuntimeCloneRecord)   # §36.3
+present exact ROLLBACK ApprovalScope + source activation + content evidence + approval_id
 USER APPROVES
 reverify exact approved evidence
-persist durable PENDING ROLLBACK
+CAS CREATE durable PENDING ROLLBACK + consumo de aprobación   # §36.5/§36.6
 bind Effective Runtime
 observe/verify Effective Runtime
-persist desired Generation+Clone + previous_activation_target   # aún PENDING
+CAS UPDATE desired Generation+Clone   # aún PENDING; previous_activation_target NO se toca
 POST verify coherence
     if FAIL → transition stays PENDING (recoverable); DO NOT finalize
-finalize transition        # sólo tras POST OK (R4.1-F1)
+CAS FINALIZE transition   # sólo tras POST OK (R4.1-F1); publica previous_activation_target
 SUCCESS
 ```
 
@@ -2644,7 +2718,7 @@ Ningún blocker se cerró para poder mergear.
 | 1 | ¿La verificación de independencia física cubre contención en Managed Source? | **ANSWERED** | No: `verify_physical_independence` compara `(st_dev, st_ino)` por archivo (hardlinks). La contención es un chequeo **distinto** y ahora explícito (§29.3 paso 0; R4-F6). |
 | 2 | ¿El rollback puede activar un Clone con setup distinto al manifest? | **ANSWERED** | No: fail-closed (R4-F4). |
 | 3 | ¿Puede aprobarse un payload distinto del que se mostró? | **ANSWERED** | No si el scope liga evidencia de contenido (R4-F5); sí si sólo compara IDs, que es lo que se corrigió. |
-| 4 | ¿Se puede saber qué setup estaba activo antes de promocionar? | **ANSWERED** | Sí, con `previous_activation_target` durable (R4-F10). Sin él, el rollback adivinaba. |
+| 4 | ¿Se puede saber qué setup estaba activo antes de promocionar? | **ANSWERED** | Sí, con `previous_activation_target` durable (R4-F10), publicado al FINALIZE y con el registro de transición finalizado como autoridad única (D0-R2.1/D0-R2.7; §36.2/§36.8). Sin él, el rollback adivinaba. |
 | 5 | ¿Un Clone cortado a mitad de provisionamiento se activa? | **ANSWERED** | No: `lifecycle == PROVISIONED` requerido (R4-F9). |
 | 6 | ¿Queda alguna afirmación de que ejecutar *necesariamente* deriva? | **ANSWERED** | No: §29.1 y E1 reescritos; ejecución = violación de política, modificación = `DRIFTED` (§30.5). |
 | 7 | ¿El `RuntimeCloneRecord` puede forjarse en silencio? | **OPEN_WITH_BLOCKER** | `RUNTIME_CLONE_RECORD_INTEGRITY = OPEN` (R4-F7). Fuera del threat model de administrador malicioso; se adjudica en P4. |
@@ -2763,6 +2837,21 @@ P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
 >
 > **§34.18 declaraba `P4_DESIGN_FROZEN = YES` y `P4_READY_TO_IMPLEMENT = YES`: ambos
 > quedan `NO` hasta que §35 cierre los 6 findings.** El estado vigente es el de §35.12.
+>
+> **Segunda supersesión parcial (ronda adversarial 2, §36).** La revisión externa sobre
+> `589805ee` encontró **6 residuos nuevos** (más un séptimo de consistencia de schema y
+> un defecto aritmético del censo). Quedan corregidos por §36 en estos puntos de esta
+> sección:
+>
+> - **§34.4** — `source_activation` no probaba el Effective Runtime saliente. ⇒ §36.3.
+> - **§34.5** — la tabla de reconciliación no cubría `NONE + Desired != Effective` ni
+>   distinguía journal corrupto de ausente. ⇒ §36.4.
+> - **§34.6** — el `ApprovalScope` seguía sin `source_activation` ni autoridad durable
+>   de consumo. ⇒ §36.3/§36.5.
+> - **§34.16 q11** — el fundamento citaba el target histórico sin su punto de
+>   publicación ni su autoridad. ⇒ §36.2/§36.8.
+>
+> **§34.18 ya no es el estado vigente: el estado es el de §36.15.**
 
 Esta sección **cierra el diseño contractual** de P4. **No implementa P4.** Su única
 promesa es que, si los contratos de acá se respetan, una implementación de P4 puede
@@ -2897,18 +2986,28 @@ completa" (`exigir_listo_para_persistencia`).
 ```text
 operation             PROMOTION | ROLLBACK
 transition_id         UUID v4 (una por transición; idempotencia)
+journal_revision      entero monótono por root (CAS anti-ABA; §36.6)
 schema_version        entero (v1)
 state                 NONE | PENDING_PROMOTION | PENDING_ROLLBACK | FINALIZED
-source_activation     qué estaba activo (generation_id, clone_id, runtime_setup_id)
+source_activation     qué estaba activo:
+                      { generation_id, clone_id, runtime_setup_id,
+                        effective_runtime_evidence }      (§36.3; D0-R2.2)
+source_activation_digest  SHA-256(canonical_json(source_activation))
 target_generation_id
 target_clone_id
 target_runtime_setup_id
-approval_scope_digest hash del scope aprobado (§34.5)
+approval_scope_digest hash del scope aprobado (§34.6)
+consumed_approval_id  la aprobación que esta transición consumió (§36.5)
 evidence_digests      { clone_evidence, runtime_setup_evidence, compatibility_evidence }
 expected_effective_path   la ruta que el bind va a producir
 created_at_ns         entero >= 0
 LOCK_SESSION_ID       quién tiene el lock al crear la transición
+                      (propiedad de proceso, NO autorización humana; §35.2)
 ```
+
+Al finalizar, el registro se completa con la evidencia durable del POST
+(`post_verify_evidence_digest`, `post_verified_at_ns`, `finalized_from_transition_id`,
+§35.6) y pasa a ser **inmutable** (§36.8/§36.9).
 
 **Reglas.**
 
@@ -2920,7 +3019,11 @@ TRANSITION_ID_INMUTABLE    = YES
 WRITE_ATOMIC               = write_json_atomic (mkstemp+fsync+os.replace)
 STATE_FILE                 = state/transition.json   (NUEVO; sujeto al oráculo AST)
 UNKNOWN_STATE              = fail-closed (no "NONE por defecto")
-CORRUPT_STATE              = LANZA (nunca se degrada a "limpio")
+CORRUPT_STATE              = LANZA (nunca se degrada a "limpio"; §36.4 N2)
+AT_MOST_ONE_PENDING_PER_ROOT = YES  (PENDING exists ⇒ no second transition; §36.6)
+CAS_ON_EVERY_MUTATION      = YES   (transition_id + journal_revision; §36.6)
+PREVIOUS_TARGET_WRITE_POINT = FINALIZE (nunca antes del POST PASS; §35.8.5/§36.2)
+PREVIOUS_TARGET_AUTHORITY   = registro de transición finalizado (no active.json; §36.8)
 ```
 
 **Restricción del oráculo de escritura.** `tests/test_frozen_runtime_p1_readonly.py`
@@ -2955,17 +3058,26 @@ target_evidence            los digests referenciados por la transición
 
 | Situación | Resultado | Automático | Aprobación de dueño |
 |---|---|---|---|
-| No hay transición (`NONE`) y estado coherente | `COMPLETE` | — | — |
+| **N0** — no hay transición (`NONE`), `Desired == Effective`, coherente | `COMPLETE` | — | — |
+| **N1** — no hay transición (`NONE`), `Desired != Effective` | `INCONSISTENT_BASELINE` → `FAIL_CLOSED` (§36.4) | no | sí |
+| **N2** — `transition.json` corrupto o ilegible | `FAIL_CLOSED` — **nunca** se lee como `NONE` (§36.4) | no | sí |
 | `PENDING_*`, Effective **coincide** con `expected_effective_path`, POST no corrido | re-correr POST → `COMPLETE`/`FINALIZE` | sí | no |
 | `PENDING_*`, Effective **no** coincide, y la evidencia objetivo se re-verifica OK | `RECOVER` (re-bind idempotente) | sí | no |
 | `PENDING_*`, evidencia objetivo **cambió** o no re-verifica | `REQUIRE_OWNER` | no | sí |
-| `PENDING_*`, `transition.json` ilegible/corrupto | `FAIL_CLOSED` | no | sí |
 | `state` desconocido / schema futuro | `FAIL_CLOSED` | no | sí |
 | Effective **indeterminado** (no se puede observar) | `FAIL_CLOSED` | no | sí |
 
 ```text
 INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED = NO
+NO_PENDING_BASELINE_SPLIT_IS_A_FAIL_CLOSED_STATE = YES   (N1; §36.4)
+CORRUPT_JOURNAL_IS_NEVER_READ_AS_ABSENT          = YES   (N2; §36.4)
 ```
+
+La fila **N1** es la que faltaba: el estado "no hay transición y aun así Desired y
+Effective divergen" puede venir de un cambio externo, corrupción, un fallo histórico,
+intervención manual, software ajeno o pérdida del journal. **No** se fabrica un
+`PENDING` retroactivo y **no** se elige automáticamente ni Desired ni Effective: la
+reconciliación de arranque debe detectarlo **aunque `transition.json` no exista**.
 
 Un `PENDING` **no** se revierte solo: "revertir" asume que el bind no ocurrió o que
 deshacerlo es seguro, y ninguna de las dos cosas se sabe. La reconciliación **observa
@@ -2979,6 +3091,9 @@ Operation-aware y ligado a **contenido**, no a IDs (R4-F5, §31.4).
 ```text
 ApprovalScope {
   operation            PROMOTION | ROLLBACK
+  source_activation    { generation_id, clone_id, runtime_setup_id,
+                         effective_runtime_evidence }      (§36.3; D0-R2.2)
+  source_activation_digest
   generation_id
   clone_id
   runtime_setup_id
@@ -2986,8 +3101,13 @@ ApprovalScope {
   compatibility_evidence_id
   clone_evidence       { identidad de contenido del Clone, no su ruta }
   runtime_setup_evidence { identidad de contenido del setup aplicado }
+  approval_id          identidad durable single-use (§36.5; D0-R2.4)
 }
 ```
+
+Sin `source_activation` una aprobación obtenida en otro contexto pasaría con el
+target intacto (§35.2); sin `approval_id` no hay forma de probar el consumo después
+de rotar el journal (§36.5).
 
 Heredado de `candidates.py`/`membership.py`: la evidencia es un **digest sellado**
 capturado de una sola observación coherente (`observar_arbol_sellado`), no una lista
@@ -3222,7 +3342,7 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 | 8 | ¿`critical_expectations` vacío puede pasar? | **CLOSED_BY_DESIGN** | `missing != empty-valid`; vacío ⇒ RECHAZO |
 | 9 | ¿Un hardlink/junction insertado tras admitir el Clone escapa? | **DEFERRED_FAIL_CLOSED** | §34.13: puntos de control acotados; ventana residual declarada |
 | 10 | ¿P4 puede activar si P5 devuelve `UNKNOWN`? | **CLOSED_BY_DESIGN** | `UNKNOWN != COMPATIBLE` (§34.14) |
-| 11 | ¿Se puede reconstruir el target histórico exacto sin adivinar? | **CLOSED_BY_DESIGN** | `previous_activation_target` durable (R4-F10) + `target_*` en la transición |
+| 11 | ¿Se puede reconstruir el target histórico exacto sin adivinar? | **CLOSED_BY_DESIGN** | `previous_activation_target` durable (R4-F10), publicado **sólo** al FINALIZE con el registro de transición finalizado como autoridad única (§36.2/§36.8) + `target_*` en la transición |
 | 12 | ¿Existe una ruta donde el Clone mutable reemplace a Generation+Setup como autoridad? | **CLOSED_BY_DESIGN** | §32.2 autoridades separadas; §34.6 evidencia de contenido; §33.3 Generation no VALID ⇒ rechazo |
 
 ### 34.17 Resultado del diseño
@@ -3249,8 +3369,8 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 ```text
 TRACKER_672_AUDITED          = YES
 P4_READY_TO_DESIGN           = YES
-P4_DESIGN_FROZEN             = NO   (SUPERSEDED: la ronda adversarial 1 abrió 6 findings; estado vigente en §35.13)
-P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §35.13)
+P4_DESIGN_FROZEN             = NO   (SUPERSEDED dos veces: ronda 1 (§35) y ronda 2 (§36); estado vigente en §36.15)
+P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §36.15)
 P4_IMPLEMENTED               = NO
 P5_IMPLEMENTED               = NO
 
@@ -3293,6 +3413,14 @@ mergea el Draft PR.
 Revisión adversarial del Tech Lead sobre `81fb83a2`. **6 findings, todos `CONFIRMED`**,
 verificados contra el texto y contra el código antes de adjudicarlos. Esta sección
 **corrige** §34; no implementa nada.
+
+> **Supersesión parcial (ronda adversarial 2, §36).** La revisión externa sobre
+> `589805ee` encontró **6 residuos nuevos** en los contratos que esta sección dejó
+> abiertos. Esta sección sigue siendo el registro de la ronda 1, pero queda
+> **corregida in-place** por §36 en: `previous_activation_target` (§35.8.5 — se le
+> agrega la autoridad única), cancelación y provisioning (§35.8.1/§35.8.2/§35.8.4 —
+> semántica determinista) y el censo (§35.5 — desglose aritmético). **§35.13 ya no es
+> el estado vigente: el estado es el de §36.15.**
 
 ### 35.1 Adjudicación
 
@@ -3441,13 +3569,14 @@ real quedó:
 
 | Desired | Effective | Fase real | Acción | Automático | Dueño | ¿Puede finalizar? |
 |---|---|---|---|---|---|---|
-| — (no hay transición) | coherente | limpio | `COMPLETE` | — | no | — |
+| — (no hay transición) | coherente | limpio (**N0**) | `COMPLETE` | — | no | — |
+| — (no hay transición) | **Desired != Effective** | **`INCONSISTENT_BASELINE` (N1)** | `FAIL_CLOSED` · `REQUIRE_OWNER`/recovery; **no** se fabrica `PENDING`, **no** se elige Desired ni Effective (§36.4) | no | sí | no |
 | source | source | bind no aplicado (C0/C1) | re-bind si: aprobación válida + source matchea + target evidence fresca + lock re-adquirido | sí si todo matchea | sólo si no matchea | sí, tras bind + POST |
 | source | target | bind aplicado, desired atrás (C3) | completar hacia adelante: persistir Desired, POST, finalize | sí | no | sí si POST pasa |
 | target | target | desired y effective alineados (C4/C6) | re-correr POST (idempotente) | sí | no | sí si POST pasa y mismo `transition_id` |
 | target | source | desired avanzado sin bind | **NO finalizar**; `RECOVER` (re-aplicar bind) o `REQUIRE_OWNER` | no si la evidencia no matchea | sí | no |
 | cualquiera | `UNKNOWN` | no observable | `FAIL_CLOSED` | no | sí | no |
-| `PENDING` con `transition.json` corrupto | — | indeterminado | `FAIL_CLOSED` | no | sí | no |
+| `PENDING` con `transition.json` corrupto | — | indeterminado (**N2**) | `FAIL_CLOSED` — **nunca** se lee como `NONE` | no | sí | no |
 
 ```text
 INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED = NO
@@ -3516,18 +3645,25 @@ dice nada sobre si hay un junction dentro del árbol.
 grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u
 ```
 
-Sobre el ADR **completo tras §35** devuelve **36 símbolos**: **17 requisitos** más
-**19 indicadores de estado / etiquetas de adjudicación** (`P4_READY_TO_DESIGN`,
-`P4_READY_TO_IMPLEMENT`, `P4_DESIGN_FROZEN`, `P4_IMPLEMENTED`, `P4_DESIGN_BLOCKERS`,
-`P4_REQUIREMENTS_DISCOVERED`, `P4_REQUIREMENTS_DESIGN_CLOSED`,
-`P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED`, `P4_REQUIREMENTS_OPEN`,
-`P4_APPROVAL_SCOPE_DESIGN`, `P4_APPROVAL_SCOPE_IMPLEMENTATION`, `P4_REVERIFY`,
-`P4_REVERIFY_DESIGN`, `P4_REVERIFY_IMPLEMENTATION`,
-`P4_CORE_MAY_BE_IMPLEMENTED_BEFORE_P5`, `P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW`,
-`P4_BLOCKERS_CENSUSED`, `P4_P5_WORDING`, y los `P4_*_DESIGN` de los cinco requisitos
-diseñados en §35.8). El conteo **no** se toma como lista de requisitos: la lista de
-**requisitos** se normaliza contra §29.8 + §32.6 + §34 y es la de la tabla de abajo
-(**17**).
+Sobre el ADR **completo tras §35** devuelve **36 símbolos**: **13 nombres de
+requisito con prefijo `P4_`** más **23 indicadores de estado / etiquetas de
+adjudicación** (`P4_READY_TO_DESIGN`, `P4_READY_TO_IMPLEMENT`, `P4_DESIGN_FROZEN`,
+`P4_IMPLEMENTED`, `P4_DESIGN_BLOCKERS`, `P4_REQUIREMENTS_DISCOVERED`,
+`P4_REQUIREMENTS_DESIGN_CLOSED`, `P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED`,
+`P4_REQUIREMENTS_OPEN`, `P4_APPROVAL_SCOPE_DESIGN`,
+`P4_APPROVAL_SCOPE_IMPLEMENTATION`, `P4_REVERIFY`, `P4_REVERIFY_DESIGN`,
+`P4_REVERIFY_IMPLEMENTATION`, `P4_CORE_MAY_BE_IMPLEMENTED_BEFORE_P5`,
+`P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW`, `P4_BLOCKERS_CENSUSED`,
+`P4_P5_WORDING`, y los `P4_*_DESIGN` de los cinco requisitos diseñados en §35.8).
+El conteo **no** se toma como lista de requisitos: la lista de **requisitos** se
+normaliza contra §29.8 + §32.6 + §34 y es la de la tabla de abajo (**17**, de los
+cuales **13** llevan prefijo `P4_` y **4** no: `GENERATION_METADATA_INTEGRITY`,
+`RUNTIME_SETUP_MANIFEST_INTEGRITY`, `MANDATORY_CRITICAL_EXPECTATIONS` y
+`POST_ACTIVATION_LINK_INJECTION`). El desglose `13 + 23 = 36` **cierra**; el texto
+anterior a esta corrección decía "17 requisitos más 19 indicadores", que sumaba 36
+por coincidencia pero describía mal ambos sumandos (D0-R2.8). El conteo está
+**scopeado a la revisión**: agregar símbolos `P4_` nuevos lo mueve, así que el
+número vigente se recomputa con el comando de arriba.
 
 | # | P4 REGISTERED REQUIREMENT | §29 STATUS | §34 DECISIÓN | ¿BLOQUEA IMPLEMENTACIÓN? | DESIGN STATUS |
 |---|---|---|---|---|---|
@@ -3630,7 +3766,10 @@ por root.
 
 ```text
 CANCELACIÓN_COOPERATIVA = YES (token)
-ESTADO_FINAL_NUNCA_AMBIGUO = YES → INVALID | CANCELLED, jamás un BUILDING huérfano
+RESULTADO_DE_OPERACIÓN_NUNCA_AMBIGUO = YES → SUCCESS | CANCELLED | FAILED,
+    jamás un BUILDING huérfano   (corregido en D0-R2.6: `CANCELLED` NO es un estado
+    del ciclo de vida del Clone; ver §36.7)
+CLONE_LIFECYCLE_NO_ADMITE_CANCELLED = YES  (CREATED | PROVISIONING | PROVISIONED | INVALID)
 LOCK_SE_CONSERVA_MIENTRAS_HAYA_MUTADOR = YES
 CANCELACIÓN_DURANTE_TRANSICIÓN != ROLLBACK EXITOSO = YES
     (cancelar NO simula un rollback exitoso; no toca el Effective Runtime a medias)
@@ -3646,7 +3785,10 @@ IMPLEMENTATION = slice dentro de P4 (no bloquea el core)
 ```text
 FSM = CREATED → PROVISIONING → PROVISIONED (| INVALID)
 SOLO PROVISIONED ENTRA AL ACTIVATION GATE
-PROVISIONING_FAILURE = INVALID o estado recuperable NO activo · NO ACTIVATION
+PROVISIONING_FAILURE ⇒ lifecycle = INVALID · NO ACTIVATION   (semántica ÚNICA;
+    corregido en D0-R2.6: el "INVALID o estado recuperable NO activo" dejaba el
+    contrato abierto — ver §36.7 y el contraste con `ensure_skse`)
+PROVISIONING_RETRY = Clone NUEVO (no se reintenta in-place sobre el mismo Clone)
 SETUP_INTENT != SETUP_VERIFIED   (intended_runtime_setup_id != verified_runtime_setup_id)
 NO_CLASIFICADO (Creation Club, Q22) = declarar `assumptions`; sin clasificar ⇒ no activa
 ```
@@ -3684,6 +3826,9 @@ FSM = CREATED | PROVISIONING | PROVISIONED | INVALID
 UN CORTE entre publicar el Clone y provisionar el setup debe ser DESCUBRIBLE y
 CLASIFICABLE al arranque, NUNCA leído como setup aplicado.
 PROVISIONED es requisito de activación (fail-closed).
+UN CLONE EN PROVISIONING NO ES ACTIVABLE aunque su loader parezca presente
+    (la detección de "ya instalado" no prueba el set completo; §36.7)
+PROVISIONING_FAILURE ⇒ INVALID; RETRY = fresh Clone   (§36.7; D0-R2.6)
 ```
 
 #### 35.8.5 `P4_ROLLBACK_TARGET_HISTORY`
@@ -3695,6 +3840,8 @@ SE ESCRIBE ATÓMICAMENTE con FINALIZED (misma operación lógica)
 ANTES DE ESO: el registro PENDING retiene source_activation para reconstruirlo
 NO SOBRESCRIBIR el target histórico antes de una transición exitosa
 CRASH ANTES ⇒ PENDING retiene source_activation (reconstrucción, no adivinanza)
+AUTORIDAD = el registro de transición finalizado, inmutable y retenido (D0-R2.7; §36.8)
+NO_DUPLICAR_EN_ACTIVE_JSON = YES   (dos copias pueden divergir; §36.8)
 ```
 
 ### 35.9 Matriz de crashes C0..C7 (revalidada tras R2/R5)
@@ -3716,6 +3863,12 @@ C2_ASSUMPTION = NINGUNA
 C5_APPROVAL_AFTER_FAILURE = CONSUMIDA por esa transición (no reutilizable para otra)
 ```
 
+> **Revalidada y ampliada en la ronda 2 (§36.9).** Esa matriz cubre estados
+> **dentro** de una transición; la ronda 2 agrega las columnas de **estado de
+> consumo de la aprobación** y de **source baseline**, y los tres estados **fuera**
+> de transición (`N0` limpio, `N1` `NONE + Desired != Effective`, `N2` journal
+> corrupto).
+
 ### 35.10 Matriz de replay de aprobación
 
 | Caso | Veredicto |
@@ -3731,6 +3884,11 @@ C5_APPROVAL_AFTER_FAILURE = CONSUMIDA por esa transición (no reutilizable para 
 ```text
 SILENT_REUSE = PROHIBIDO
 ```
+
+> **Matriz ampliada en la ronda 2 (§36.11).** Esta tabla sigue vigente, pero la
+> ronda 2 le agrega los casos de **source baseline incoherente**, **aprobación
+> consumida por una transición anterior tras rotar el journal** y **`approval_seq`
+> ya consumido**, que son los que el `transition_id` solo no cubría (§36.5).
 
 ### 35.11 Matriz de independencia física del Clone
 
@@ -3755,8 +3913,8 @@ NO_ASUMIR_QUE_SOLO_LOS_ARCHIVOS_PREVIAMENTE_INVENTARIADOS_IMPORTAN = YES
 
 | # | Pregunta | Estado | Fundamento |
 |---|---|---|---|
-| 1 | ¿Una aprobación puede aplicarse si cambió el runtime de origen? | **CLOSED_BY_DESIGN** | §35.2: igualdad de `source_activation_digest` bajo lock |
-| 2 | ¿Una aprobación puede usarse dos veces? | **CLOSED_BY_DESIGN** | Single-use + `consumed_by_transition_id` |
+| 1 | ¿Una aprobación puede aplicarse si cambió el runtime de origen? | **CLOSED_BY_DESIGN** | §35.2: igualdad de `source_activation_digest` bajo lock; ampliado en §36.3 (el source debe ser el **Effective observado**, no sólo el Desired registrado) |
+| 2 | ¿Una aprobación puede usarse dos veces? | **CLOSED_BY_DESIGN** | Single-use + `consumed_by_transition_id`; la ronda 2 agrega la **autoridad durable de consumo** que sobrevive a la rotación del journal (§36.5) |
 | 3 | ¿Un `transition_id` viejo puede finalizar una transición nueva? | **CLOSED_BY_DESIGN** | CAS por `transition_id` (§35.6) |
 | 4 | ¿`FINALIZED` tiene evidencia durable del POST? | **CLOSED_BY_DESIGN** | `post_verify_evidence_digest` + `post_verified_at_ns` + `finalized_from_transition_id` |
 | 5 | ¿C3 puede completar sin violar `Desired==Effective`? | **CLOSED_BY_DESIGN** | §35.3: `Desired=target` **antes** del POST |
@@ -3819,8 +3977,9 @@ P3B                                 = DEFERRED_PENDING_RIG
 OPEN_P4_DESIGN_BLOCKERS = 0
 
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = YES
-P4_READY_TO_IMPLEMENT   = YES
+P4_DESIGN_FROZEN        = NO   (SUPERSEDED: la ronda adversarial 2 abrió 6 residuos;
+                                estado vigente en §36.15)
+P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §36.15)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
 PR_READY_TO_MERGE       = NO
@@ -3833,3 +3992,762 @@ PR_READY_TO_MERGE       = NO
 transición, ni lock cross-process, ni CAS, ni escaneo de namespace, ni provisioning, ni
 cancelación, ni gate de activación, ni `active.json` real, ni binding de MO2, ni setup
 de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5. `MERGE = NO`.
+
+---
+
+## 36. P4-D0 — ronda adversarial 2: cierre de residuos contractuales (2026-10-09)
+
+Revisión adversarial externa sobre `589805ee130eb3e780f1b7c581959e0792a6c3f2`.
+**6 residuos nuevos, todos `CONFIRMED`**, más **1 finding de consistencia** que la
+ronda 1 dejó abierto (`previous_activation_target` vs `active.json`) y **1 defecto
+aritmético** descubierto al rehacer el censo. Cada uno se verificó contra el texto y
+contra el código **antes** de adjudicarlo; ninguno se aceptó por autoridad de quien lo
+reportó.
+
+Esta sección **corrige in-place** §7, §11, §12, §19, §29.8, §30.6, §31.4, §32, §34 y
+§35. No agrega banners de supersesión como sustituto de la corrección: las secciones
+normativas viejas **dicen ahora lo mismo** que este contrato.
+
+`docs-only`. `PRODUCT_CODE_CHANGED = NO`. `P4_IMPLEMENTED = NO`, `P5_IMPLEMENTED = NO`.
+
+### 36.1 Adjudicación
+
+| Finding | Sev. | Adjudicación | Resolución |
+|---|---|---|---|
+| **D0-R2.1** `previous_activation_target` tiene ordering contradictorio | P1 | **CONFIRMED** | §36.2: se congela **un solo** punto de escritura (FINALIZE, tras POST PASS) y se corrigen **in-place** §7, §11, §12, §19a, §30.6, §31.4, §32.3, §32.4. |
+| **D0-R2.2** `source_activation` no prueba el Effective Runtime saliente | P1 | **CONFIRMED** | §36.3: `NEW_TRANSITION_REQUIRES_COHERENT_SOURCE_BASELINE = YES`; el source se demuestra contra el **Effective observado**, no contra el Desired registrado. Divergencia ⇒ `FAIL_CLOSED`. |
+| **D0-R2.3** falta `NO PENDING + Desired != Effective` | P1 | **CONFIRMED** | §36.4: estado `N1 = INCONSISTENT_BASELINE` explícito, detectable **aunque `transition.json` no exista**; prohibido fabricar `PENDING` o elegir un lado. |
+| **D0-R2.4** `APPROVAL_SINGLE_USE` necesita autoridad durable | P1 | **CONFIRMED** | §36.5: autoridad de consumo **fuera del journal** (contador monótono + `approval_id`), acotada y no dependiente de la profundidad del histórico. `APPROVAL_REPLAY_AFTER_JOURNAL_REPLACEMENT = IMPOSSIBLE_BY_CONTRACT`. |
+| **D0-R2.5** CAS incompleto para creación/reemplazo del journal | P2 | **CONFIRMED** | §36.6: se distinguen `CREATE`, `UPDATE`, `FINALIZE` y `START_NEXT` con su precondición, más `journal_revision` monótona (anti-ABA) y `AT MOST ONE PENDING PER ROOT`. |
+| **D0-R2.6** cancelación y provisioning con estados ambiguos | P2 | **CONFIRMED** | §36.7: `CANCELLED` es **resultado de operación**, nunca lifecycle del Clone; `PROVISIONING_FAILURE` pasa a tener **una** semántica (`INVALID`, reintento = Clone nuevo), contrastada con `ensure_skse`. |
+| **D0-R2.7** `previous_activation_target`: `active.json` vs transición | P2 | **CONFIRMED** (relacionado con R2.1) | §36.8: **autoridad única** = registro de transición finalizado; se corrige el schema v2 de `active.json` para no duplicar el dato. |
+| **D0-R2.8** desglose aritmético del censo de §35.5 | P3 | **CONFIRMED** (**finding nuevo**, descubierto en esta ronda) | §36.13: el desglose real es `13 + 23 = 36`, no `17 + 19`; corregido in-place en §35.5. No bloquea diseño. |
+
+```text
+D0_R2_1_PREVIOUS_TARGET_ORDERING        = CONFIRMED / CLOSED (§36.2)
+D0_R2_2_EFFECTIVE_SOURCE_BASELINE       = CONFIRMED / CLOSED (§36.3)
+D0_R2_3_NO_PENDING_SPLIT_BRAIN          = CONFIRMED / CLOSED (§36.4)
+D0_R2_4_DURABLE_APPROVAL_SINGLE_USE     = CONFIRMED / CLOSED (§36.5)
+D0_R2_5_JOURNAL_CREATE_REPLACE_CAS      = CONFIRMED / CLOSED (§36.6)
+D0_R2_6_CANCELLATION_PROVISIONING_FSM   = CONFIRMED / CLOSED (§36.7)
+D0_R2_7_PREVIOUS_TARGET_AUTHORITY       = CONFIRMED / CLOSED (§36.8)
+D0_R2_8_CENSUS_ARITHMETIC               = CONFIRMED / CLOSED (§36.13)
+```
+
+### 36.2 D0-R2.1 — `previous_activation_target` se publica en el FINALIZE
+
+**El defecto.** §35.8.5 ya decía lo correcto —se escribe **sólo** con POST passed, con
+el mismo `transition_id`, atómicamente con `FINALIZED`— pero el resto del ADR seguía
+describiendo el orden viejo: persistir el par desired **y** `previous_activation_target`
+**antes** del POST. Residuos verificados en §7, §11, §12 paso 12, §19a, §31.4, §32.3 y
+§32.4. Con esa secuencia, un POST que falla dejaba publicado como "histórico previo" un
+runtime que la transición todavía no había ganado.
+
+**Semántica normativa única (la de este bloque, y la única que el ADR describe ahora):**
+
+```text
+PENDING ya contiene source_activation
+    ↓
+bind target
+    ↓
+persist Desired = target            (CAS UPDATE)
+    ↓
+POST verify Desired == Effective
+    ↓
+POST PASS
+    ↓
+FINALIZE transition                 (CAS FINALIZE)
+AND atomically publish:
+    previous_activation_target = source_activation
+    ↓
+SUCCESS
+```
+
+```text
+PREVIOUS_TARGET_WRITE_POINT                    = FINALIZE
+PREVIOUS_TARGET_MUTATED_BEFORE_POST_PASS       = PROHIBIDO
+PREVIOUS_TARGET_REQUIRES_SAME_TRANSITION_ID    = YES
+PREVIOUS_TARGET_WRITTEN_ATOMICALLY_WITH_FINALIZE = YES
+PREVIOUS_TARGET_SURVIVES_CRASH_BEFORE_FINALIZE = NO  (correcto: la transición no se completó)
+BEFORE_FINALIZE = el histórico previo sigue siendo autoridad; el registro PENDING
+                  retiene source_activation para reconstruirlo (no se adivina)
+```
+
+**Por qué no alcanza un banner.** Los flujos de §7/§11/§12/§31.4/§32.3/§32.4 son la
+especificación que un implementador lee primero; dejar el texto viejo y una nota al pie
+produce exactamente el defecto que este ADR documenta como dominante. Se corrigieron
+**in-place**, y el orden viejo ya no aparece en ninguna sección normativa.
+
+### 36.3 D0-R2.2 — el source baseline debe ser el Effective observado
+
+**El defecto.** `source_activation = { generation_id, clone_id, runtime_setup_id }`
+(§35.2) se derivaba del estado **Desired/registrado**. Eso no demuestra qué runtime se
+está ejecutando. Caso adversarial:
+
+```text
+Desired   = G1 / C1 / S1
+pero por corrupción o mutación externa:
+Effective = G3 / C3 / S3
+y NO hay transición PENDING que lo explique
+```
+
+Con la ligadura vieja, una aprobación se crearía con `source_activation = G1/C1/S1`
+mientras el runtime que realmente se reemplaza es `G3/C3/S3` — y
+`previous_activation_target = source_activation` habría guardado el **histórico
+equivocado**. Es el mismo tipo de error que D0-R2.1 y D0-R2.3: dar por probado lo que
+sólo estaba registrado.
+
+**Contrato.**
+
+```text
+NEW_TRANSITION_REQUIRES_COHERENT_SOURCE_BASELINE = YES
+```
+
+Antes de **presentar** (y por lo tanto antes de aceptar) una `ApprovalScope` nueva:
+
+```text
+Desired source  ==  Effective source observado  ==  RuntimeCloneRecord source
+```
+
+donde "source" es la terna completa **incluido el setup**:
+
+```text
+source_activation = {
+    generation_id,            # Desired registrado (active.json)
+    clone_id,                 # RuntimeCloneRecord del target activo
+    runtime_setup_id,         # verified_runtime_setup_id del Clone activo
+    effective_runtime_evidence,   # NUEVO: observación del Effective Runtime
+                                  # (primitiva de P5) que sostiene la igualdad
+}
+source_activation_digest = SHA-256(canonical_json(source_activation))
+```
+
+`effective_runtime_evidence` es la pieza que convierte una afirmación registrada en una
+afirmación **observada**: sin ella el source es una intención, no un hecho. La evidencia
+queda **ligada a la aprobación** (viaja en el scope y en su digest), de modo que la
+re-verificación pre-bind compara observación contra observación, no identidad contra
+identidad.
+
+**Si Desired y Effective divergen:**
+
+```text
+NO NEW APPROVAL
+NO NEW PENDING
+NO PROMOTION
+NO ROLLBACK
+→ FAIL_CLOSED
+→ RECOVERY / REQUIRE_OWNER          (§36.4)
+```
+
+```text
+SILENT_DESIRED_TO_EFFECTIVE_CONVERSION = PROHIBIDO
+SILENT_EFFECTIVE_TO_DESIRED_CONVERSION = PROHIBIDO
+```
+
+Nunca se convierte uno en el otro "para que cierre".
+
+**Dependencia declarada, no oculta.** La observación del Effective Runtime es de P5
+(`P5_EFFECTIVE_RUNTIME_ORACLE`). Mientras P5 devuelva `UNKNOWN`, la triple igualdad
+**no puede demostrarse** y por lo tanto **no se crea una transición nueva**: es la misma
+dirección que `UNKNOWN != COMPATIBLE` y que §35.7. Esto **no** bloquea implementar y
+testear el core de P4 —el gate recibe la observación como entrada y se ejercita con un
+doble de test— pero sí implica que la activación no se completa sin P5. Es una
+**restricción más fuerte** que §35.7 y se declara como tal:
+
+```text
+P4_CORE_MAY_BE_IMPLEMENTED_BEFORE_P5 = YES        (sin cambios)
+ACTIVATION_COMPLETION_REQUIRES_P5    = YES        (sin cambios)
+NEW_TRANSITION_REQUIRES_P5_OBSERVATION = YES      (agregado por D0-R2.2)
+```
+
+### 36.4 D0-R2.3 — `NO PENDING + Desired != Effective` es un estado propio
+
+**El defecto.** §35.3 cubría "no hay transición y el estado es coherente" y varios
+estados con `PENDING`, pero **no** el caso:
+
+```text
+NO transition
++
+Desired != Effective
+```
+
+Ese estado es alcanzable sin ninguna transición en curso: cambio externo, corrupción,
+fallo histórico, intervención manual, software ajeno o pérdida del journal. Al no
+nombrarlo, la reconciliación podía leerlo como "no hay nada que hacer".
+
+**Contrato.**
+
+```text
+transition = NONE
+Desired != Effective
+    ⇒ INCONSISTENT_BASELINE            (estado N1)
+    ⇒ FAIL_CLOSED
+    ⇒ NO NEW TRANSITION
+    ⇒ NO NEW APPROVAL
+    ⇒ REQUIRE_OWNER / RECOVERY
+```
+
+Prohibiciones explícitas:
+
+```text
+FABRICAR_UN_PENDING_RETROACTIVO      = PROHIBIDO
+ELEGIR_AUTOMATICAMENTE_DESIRED       = PROHIBIDO
+ELEGIR_AUTOMATICAMENTE_EFFECTIVE     = PROHIBIDO
+```
+
+`Startup reconciliation` debe **detectar** este estado **aunque `transition.json` no
+exista**: la detección no puede depender de que haya un journal que leer. Los tres
+estados fuera de transición quedan nombrados:
+
+```text
+N0: journal NONE  · Desired == Effective  → clean (COMPLETE)
+N1: journal NONE  · Desired != Effective  → INCONSISTENT_BASELINE → FAIL_CLOSED
+N2: journal corrupto (con o sin transición previa) → FAIL_CLOSED
+```
+
+```text
+CORRUPT_JOURNAL_IS_NEVER_READ_AS_ABSENT = YES
+```
+
+Un journal corrupto **no** es un journal ausente: degradarlo a `NONE` convertiría N2 en
+N0 y borraría la única evidencia de que algo estaba en curso.
+
+### 36.5 D0-R2.4 — autoridad durable del consumo de aprobación
+
+**El defecto.** §35 declara `APPROVAL_SINGLE_USE = YES` y `consumed_by_transition_id`,
+lo cual funciona **mientras la transición T1 sigue representada**. Pero el journal es un
+archivo que se reemplaza: tras `FINALIZED(T1) → PENDING(T2)`, `transition.json` ya no
+menciona T1. Sin una autoridad que sobreviva a esa rotación, "esta aprobación ya se
+consumió" deja de ser demostrable y el replay vuelve a ser posible.
+
+**La pregunta a resolver:** ¿quién es la autoridad durable de
+`approval already consumed`?
+
+| Opción | Qué ofrece | Límite |
+|---|---|---|
+| **A** — la autoridad HITL emite un token/nonce durable single-use | la identidad nace con la autorización | el producto **hoy no emite** ese nonce: la solicitud HITL es efímera (§35.2: `OWNER_IDENTITY_BINDING = DEFERRED`) |
+| **B** — Sky-Claw persiste los IDs/nonces consumidos | demostrable y local | un **ledger** de profundidad arbitraria crece sin cota |
+| **C** — el `approval_id` sólo existe dentro de un registro de transición inmutable, retenido por historia acotada | reutiliza la maquinaria del journal | una ventana acotada puede **agotarse**: más allá de K rotaciones el replay deja de estar bloqueado |
+| **D** — equivalente, acotada | — | — |
+
+**Decisión: D — combinación acotada y demostrablemente equivalente.**
+
+```text
+APPROVAL_AUTHORITY    = la superficie HITL del producto (quién dijo que sí)
+APPROVAL_IDENTITY     = approval_id (UUID v4) + approval_seq (entero monótono por root)
+APPROVAL_PROVENANCE   = referencia opaca (superficie + id de solicitud) en el scope
+PROCESS_LOCK_OWNER    = session_id del lock P4 (proceso, NO identidad humana)
+
+lock_session_id == human_authorization_identity  ⇒ NO (no demostrado; sigue DEFERRED)
+```
+
+`approval_id`/`approval_seq` **no** son una identidad humana: son un **token de
+consumo**. Las cuatro cosas —authority, identity/nonce, provenance, lock owner— quedan
+separadas para no fingir una garantía que el producto todavía no emite.
+
+**Autoridad de consumo: fuera del journal.**
+
+```text
+CONSUMPTION_AUTHORITY = state/approval_consumption.json   (durable, escritura atómica)
+{
+  schema_version,
+  last_issued_approval_seq,     # emisión (la escribe la superficie de aprobación)
+  last_consumed_approval_seq,   # consumo (lo escribe el CREATE PENDING)
+  consumed_ring[]               # K entradas, SÓLO auditoría — NO es el mecanismo de bloqueo
+}
+```
+
+```text
+CONSUME requires: approval_seq == last_issued_approval_seq
+                ∧ approval_seq >  last_consumed_approval_seq
+                ∧ approval_id    == el de la aprobación presentada
+ON CONSUME:       last_consumed_approval_seq = approval_seq
+ATOMICIDAD:       el consumo se escribe en la MISMA operación lógica que el CREATE de
+                  PENDING_* (§36.6): no hay ventana "consumida pero sin transición" ni
+                  "transición sin aprobación consumida"
+EMISIÓN vs CONSUMO: `last_issued_approval_seq` lo escribe SÓLO la autoridad de
+                  aprobación; la maquinaria de transición NUNCA lo escribe. Si el mismo
+                  componente pudiera emitir y consumir, la aprobación sería una
+                  auto-autorización y la separación de §35.2 quedaría vacía.
+LEDGER AUSENTE    ⇒ no hay aprobaciones emitidas ⇒ ninguna aprobación es válida
+LEDGER CORRUPTO   ⇒ FAIL_CLOSED (nunca "sin consumo previo")
+```
+
+```text
+SELF_ISSUED_APPROVAL_IS_AUTHORIZATION = NO
+APPROVAL_ISSUER_IS_NOT_THE_TRANSITION_MACHINERY = YES
+```
+
+**Por qué el contador monótono y por qué C sola no alcanza.** El bloqueo lo da
+`approval_seq > last_consumed_approval_seq`: es **O(1)**, no depende de la profundidad
+del histórico y **no se agota**. El anillo `consumed_ring[]` es auditoría, no
+enforcement: si se recorta, no se debilita ninguna garantía. La opción C sola dependía
+de que la ventana retenida alcanzara; el contador vuelve esa dependencia innecesaria
+para el bloqueo.
+
+```text
+APPROVAL_REPLAY_AFTER_JOURNAL_REPLACEMENT = IMPOSSIBLE_BY_CONTRACT
+APPROVAL_DURABLE_IDENTITY                 = approval_id (UUID v4) + approval_seq monótono
+APPROVAL_CONSUMPTION_STATE_IS_BOUNDED     = YES (2 enteros + anillo de auditoría)
+APPROVAL_LEDGER_DEPTH_UNBOUNDED           = NO
+```
+
+**Dependencia declarada.** Que la superficie HITL **emita** `approval_id`/`approval_seq`
+es un requisito de implementación de P4 sobre la superficie de aprobación, y hoy no
+existe. El **contrato** queda cerrado acá; el mecanismo, abierto como el resto de P4.
+
+### 36.6 D0-R2.5 — CAS de creación, actualización, finalización y rotación
+
+**El defecto.** `expected_transition_id == current_transition_id` (§35.6) alcanza para
+**actualizar** T1, pero no define `NONE → PENDING T1` ni `FINALIZED T1 → PENDING T2`, y
+no dice qué pasa si ya existe un `PENDING`.
+
+**Estados del journal:**
+
+```text
+ABSENT | PENDING_PROMOTION | PENDING_ROLLBACK | FINALIZED | CORRUPT
+```
+
+**Precondiciones por operación:**
+
+```text
+CREATE (ABSENT|NONE → PENDING T):
+    expected journal ∈ { ABSENT, NONE, FINALIZED }
+    ∧ NO existe PENDING activo
+    ∧ consumo de aprobación OK (§36.5), en la MISMA operación lógica
+    ∧ T.transition_id no visto antes
+
+UPDATE (PENDING T → PENDING T):
+    expected (transition_id == T, journal_revision == R)
+
+FINALIZE (PENDING T → FINALIZED T):
+    expected (transition_id == T, journal_revision == R)
+    ∧ post_verify_evidence presente y en PASS (§35.6)
+    ∧ publica previous_activation_target en la misma operación (§36.2)
+
+START_NEXT (FINALIZED Tprev → PENDING Tnext):
+    expected journal == FINALIZED
+    ∧ finalized_from_transition_id == Tprev
+    ∧ Tnext.transition_id != Tprev
+    ∧ el registro FINALIZED(Tprev) queda RETENIDO e inmutable (§36.9)
+```
+
+**Reglas duras:**
+
+```text
+AT_MOST_ONE_ACTIVE_PENDING_TRANSITION_PER_FrozenRuntimeRoot = YES
+PENDING_EXISTS ⇒ NO_SECOND_TRANSITION                        = YES
+CAS_FAILURE    ⇒ FAIL_CLOSED (nunca "seguir igual")
+CORRUPT_JOURNAL ⇒ FAIL_CLOSED (nunca ABSENT)                 = YES   (§36.4 N2)
+```
+
+**Anti-ABA / anti-replay.** `transition_id` es UUID v4 (no se reutiliza) y cada mutación
+incrementa `journal_revision`, un entero monótono por root. El CAS compara **ambos**: una
+transición vieja no puede finalizar una más nueva ni "volver" a un estado anterior con el
+mismo `transition_id`, porque la revisión ya avanzó.
+
+```text
+JOURNAL_CREATE_CAS          = journal ∈ {ABSENT, FINALIZED} ∧ no PENDING ∧ consumo atómico
+JOURNAL_UPDATE_CAS          = (transition_id, journal_revision)
+JOURNAL_FINALIZE_CAS        = (transition_id, journal_revision) ∧ POST evidence PASS
+JOURNAL_NEXT_TRANSITION_CAS = FINALIZED ∧ finalized_from_transition_id == Tprev
+ABA_PROTECTION              = transition_id (UUIDv4) + journal_revision monótona
+```
+
+### 36.7 D0-R2.6 — cancelación y provisioning con semántica determinista
+
+**El defecto (a).** §35.8.1 decía `INVALID | CANCELLED` como estado final, pero la FSM
+de `RuntimeCloneRecord` (§19c) es `CREATED | PROVISIONING | PROVISIONED | INVALID`:
+`CANCELLED` **no existe** ahí. Mezclar el resultado de una operación con el ciclo de vida
+del Clone deja abierta la pregunta de si un Clone "cancelado" sigue siendo activable.
+
+**Decisión (a).**
+
+```text
+CANCELLED_IS_CLONE_LIFECYCLE   = NO
+CANCELLED_IS_OPERATION_OUTCOME = YES
+
+Clone lifecycle (sin cambios, §19c):
+    CREATED | PROVISIONING | PROVISIONED | INVALID
+Operation result:
+    SUCCESS | CANCELLED | FAILED | ...
+```
+
+No se agregan estados a la FSM sin justificación: una cancelación no cambia **qué es** el
+Clone, cambia **qué pasó con la operación** que lo estaba preparando.
+
+```text
+CANCEL BEFORE PENDING  → el runtime activo queda idéntico; artefactos preparados inactivos
+CANCEL AFTER  PENDING  → MUST NOT erase PENDING
+                         MUST NOT claim rollback
+                         MUST NOT claim clean state
+                         recovery gobierna la transición que ya está en disco
+```
+
+Detalle por fase en la matriz de §36.12.
+
+**El defecto (b).** §35.8.2 decía
+`PROVISIONING_FAILURE = INVALID o estado recuperable NO activo`. Ese **"o"** dejaba el
+contrato abierto: dos desenlaces posibles para el mismo hecho.
+
+**Contraste con el código (evidencia, no intuición).** `ensure_skse`
+(`sky_claw/local/tools_installer.py`) es el provisionador real que existe hoy:
+
+1. resuelve el release por el **runtime exacto** del ejecutable (fail-closed antes de
+   cualquier escritura);
+2. **idempotencia**: `find_skse_installation(...)` — "loader del juego + algún DLL de
+   runtime que corresponda al runtime real";
+3. descarga a **staging** temporal, extrae y **re-valida el PE pegado a la copia**;
+4. `_copy_skse_files` escribe loader/DLL/`Data` en el game dir — **primera mutación**;
+5. `_cleanup_orphaned_skse_dlls` corre **después** de que la copia terminó sin excepción
+   (el propio comentario del código lo declara el punto de no retorno).
+
+De ahí salen las respuestas, medidas y no supuestas:
+
+```text
+1. ¿Puede PROVISIONING reintentarse sobre el mismo Clone?
+   NO con garantía: la detección de idempotencia prueba "hay un loader y un DLL del
+   runtime", NO que el set completo del payload esté aplicado.
+2. ¿El fallo parcial deja archivos mutados?
+   SÍ: `_copy_skse_files` muta el game dir y puede fallar a mitad (disco lleno,
+   permisos). La limpieza de DLL huérfanos NO corre en ese caso.
+3. ¿Puede conocerse qué componentes llegaron a instalarse?
+   HOY NO: no hay registro por componente del set aplicado.
+4. ¿Es más seguro invalidar el Clone y recrearlo?
+   SÍ, mientras (3) siga siendo NO.
+5. ¿Existe un retry idempotente demostrable?
+   NO demostrado. Un Clone parcialmente provisionado con loader + DLL presentes sería
+   reportado `already_existed` por la detección de (2) y quedaría leído como setup
+   aplicado — exactamente el fail-open que el gate debe evitar.
+```
+
+**Decisión (b) — una sola semántica:**
+
+```text
+PROVISIONING_FAILURE ⇒ RuntimeCloneRecord.lifecycle = INVALID
+NO ACTIVATION
+RETRY = fresh Clone            (no se reintenta in-place sobre el mismo Clone)
+UN_CLONE_EN_PROVISIONING_NO_ES_ACTIVABLE_AUNQUE_EL_LOADER_PAREZCA_PRESENTE = YES
+```
+
+Si en el futuro se demuestra idempotencia completa (registro por componente + set
+verificable), la política puede relajarse; hoy **no** está demostrada y el diseño no la
+supone.
+
+### 36.8 D0-R2.7 — una sola autoridad para `previous_activation_target`
+
+El ADR histórico mostraba `previous_activation_target` **dentro** de `active.json` v2
+(§19) y §35.8.5 lo publicaba al FINALIZE. Dos lugares para el mismo dato son dos
+autoridades, y dos autoridades pueden divergir.
+
+**Decisión: la autoridad es el registro de transición finalizado.** `active.json` v2
+**deja de llevar el campo**.
+
+```text
+PREVIOUS_TARGET_AUTHORITY      = registro de transición FINALIZED (inmutable, retenido)
+PREVIOUS_TARGET_IN_ACTIVE_JSON = NO   (schema v2 corregido in-place en §19)
+PREVIOUS_TARGET                = source_activation del FINALIZED más reciente;
+                                 NONE si no hay ninguno (hecho, no incógnita)
+```
+
+**Por qué esta dirección y no la otra.** Mantener el campo en `active.json` exigía
+declararlo *proyección* del registro de transición y verificar la coincidencia al
+arrancar — una autoridad más un chequeo de divergencia, para un dato que ya vive en la
+maquinaria de transición que §36.5 y §36.6 **necesitan de todos modos**. Con autoridad
+única no hay nada que pueda divergir.
+
+```text
+DOS_AUTORIDADES_INDEPENDIENTES_PARA_PREVIOUS_TARGET = PROHIBIDO
+ACTIVE_JSON_V2_CARRIES_PREVIOUS_TARGET              = NO (corregido)
+DERIVACION_ES_DETERMINISTA                          = YES (no se adivina)
+```
+
+Consecuencia práctica: el rollback lee el target histórico del registro finalizado, no de
+`active.json`. Sin registros finalizados, el target previo es `NONE`.
+
+### 36.9 Matriz de crashes revalidada — C0..C7 más N0/N1/N2
+
+Cada fila declara las diez dimensiones que un implementador necesita para decidir sin
+adivinar. `consumo` es el estado de la aprobación según §36.5; `baseline` es la triple
+igualdad de §36.3.
+
+| Punto | journal | consumo | Desired | Effective | source baseline | target evidence | próxima acción | auto | dueño | ¿finaliza? |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **N0** sin transición, coherente | `NONE` | no consumida | == Effective | == Desired | coherente | — | `COMPLETE` | — | no | — |
+| **N1** sin transición, divergente | `NONE` | no consumida | **!= Effective** | **!= Desired** | **INCOHERENTE** | — | `INCONSISTENT_BASELINE` → `FAIL_CLOSED` · `REQUIRE_OWNER`/recovery | no | sí | no |
+| **N2** journal corrupto | `CORRUPT` | indeterminado | indeterminado | indeterminado | indeterminado | indeterminado | `FAIL_CLOSED` (**nunca** `NONE`) | no | sí | no |
+| **C0** antes de PENDING | `NONE` | no consumida | source | source | coherente | — | `COMPLETE` | — | no | — |
+| **C1** tras PENDING, antes de bind | `PENDING` | consumida por T | source | source | re-verificar | en el registro | re-bind **sólo si**: consumo consistente ∧ source matchea ∧ target evidence fresca ∧ lock re-adquirido; si no, `REQUIRE_OWNER` | sí si todo matchea | sólo si no matchea | tras bind + POST |
+| **C2** durante el bind | `PENDING` | consumida por T | source | **UNKNOWN / parcial** | indeterminado | en el registro | **observar primero**; nunca suponer target. `RECOVER` si observa target + evidencia OK; si no, `FAIL_CLOSED` | sólo con observación concluyente | sí si no se puede observar | sólo tras observar + POST |
+| **C3** tras bind, antes de desired | `PENDING` | consumida por T | source | target | coherente | en el registro | persistir `Desired=target` → POST → finalize (§35.3) | sí | no | sí si POST pasa |
+| **C4** tras desired, antes de POST | `PENDING` | consumida por T | target | target | coherente | en el registro | re-correr POST | sí | no | sí si POST pasa |
+| **C5** POST falla | `PENDING` (sigue) | **consumida por esa transición** | target | target **no verificado** | coherente | en el registro | **NO FINALIZA**. La aprobación no autoriza un bind nuevo; el dueño repara dentro del mismo `transition_id` o aborta | no (fail-closed) | sí | no |
+| **C6** POST pasa, antes de FINALIZE | `PENDING` | consumida por T | target | target verificado | coherente | en el registro | repetir POST y finalizar **sólo si**: mismo `transition_id` ∧ mismo source/target ∧ mismo Desired ∧ mismo Effective ∧ evidencia fresca en PASS | sí | no | sí |
+| **C7** tras FINALIZE | `FINALIZED` (+ evidencia POST) | consumida por T | target | target | coherente | — | `COMPLETE`; `previous_activation_target` publicado | — | no | — |
+
+```text
+FINALIZED_BEFORE_POST              = PROHIBIDO en todos los puntos (§33.2)
+C2_ASSUMPTION                      = NINGUNA
+C5_APPROVAL_AFTER_FAILURE          = CONSUMIDA por esa transición (no reutilizable para otra)
+PREVIOUS_TARGET_WRITTEN_AT         = C7 (FINALIZE), nunca antes
+NO_TRANSITION_MATRIX               = N0 / N1 / N2 (§36.4)
+```
+
+### 36.10 Ciclo de vida del journal
+
+```text
+ABSENT → PENDING_PROMOTION | PENDING_ROLLBACK → FINALIZED → (START_NEXT) → PENDING_*
+CORRUPT es un estado de DETECCIÓN, no una fase del ciclo
+```
+
+| Pregunta | Respuesta |
+|---|---|
+| ¿se conserva `FINALIZED`? | **Sí.** Pasa a ser un registro **inmutable**; no se reescribe. |
+| ¿por cuánto tiempo? | Historia **acotada** de `K` registros finalizados, con `K ≥ 2` (el vigente y su predecesor). `K ≥ 2` es lo que exigen el CAS de `START_NEXT` (§36.6) y la derivación de `previous_activation_target` (§36.8). |
+| ¿cómo empieza la siguiente transición? | `START_NEXT` con CAS sobre `FINALIZED ∧ finalized_from_transition_id == Tprev` (§36.6). |
+| ¿qué evidencia conserva? | `post_verify_evidence_digest`, `post_verified_at_ns`, `finalized_from_transition_id` (§35.6), más `source_activation`, `target_*`, `approval_scope_digest` y `consumed_approval_id`. |
+| ¿cómo se evita replay? | Tres capas: `approval_seq` monótono (consumo, §36.5), `transition_id` UUIDv4 + `journal_revision` monótona (journal, §36.6) y CAS de `START_NEXT`. |
+| ¿cómo se vincula el consumo de aprobación? | El registro guarda `consumed_approval_id`; la **autoridad** es `state/approval_consumption.json` (§36.5), que sobrevive a la rotación. |
+| ¿cómo se vincula `previous_activation_target`? | Es el `source_activation` del registro `FINALIZED` **más reciente** (§36.8); no se duplica en `active.json`. |
+| ¿cómo se recupera tras crash? | §36.9: observar primero, decidir después; `PENDING` gobierna recovery; nunca revertir automáticamente ni asumir el target. |
+
+```text
+JOURNAL_RETENTION_DEPTH_FOR_BLOCKING = 0     (el bloqueo de replay NO depende de K)
+JOURNAL_RETENTION_DEPTH_FOR_DERIVATION = 2   (K ≥ 2)
+FINALIZED_RECORDS_ARE_IMMUTABLE = YES
+```
+
+### 36.11 Matriz de aprobación — ronda 2
+
+Extiende §35.10 con los casos que el `transition_id` solo no cubría.
+
+| Caso | Veredicto |
+|---|---|
+| source `Desired == Effective` y todo lo demás matchea | **ALLOW** |
+| source `Desired != Effective` sin transición que lo explique | **FAIL_CLOSED** (N1, §36.4) |
+| source `Desired != Effective` con transición `PENDING` que lo explica | **RECOVERY** gobierna (§36.9) |
+| aprobación **sin consumir** (`approval_seq == last_issued` ∧ `> last_consumed`) | **ALLOW** |
+| aprobación consumida **por la misma transición** | **CONTINUE_SAME_TRANSITION** (es continuación, no replay) |
+| aprobación consumida **por una transición anterior** (journal ya rotado) | **FAIL_CLOSED** (`approval_seq <= last_consumed`; §36.5) |
+| `approval_id` desconocido | **FAIL_CLOSED** |
+| `approval_id` no coincide con el del scope presentado | **FAIL_CLOSED** |
+| provenance de aprobación ausente | **FAIL_CLOSED** (es requisito del scope) |
+| target sin cambios | **CONTINUE_SAME_TRANSITION** |
+| target cambió | **REQUIRE_NEW_APPROVAL** |
+| source cambió | **REQUIRE_NEW_APPROVAL** |
+| journal cambió (CAS de revisión) | **FAIL_CLOSED** |
+| predecessor de transición no coincide (`START_NEXT`) | **FAIL_CLOSED** |
+| ledger de consumo ausente | **FAIL_CLOSED** (no hay aprobaciones emitidas) |
+| ledger de consumo corrupto | **FAIL_CLOSED** (nunca "sin consumo previo") |
+
+```text
+SILENT_REUSE = PROHIBIDO
+APROBACION_NO_PUEDE_SALTAR_EL_BASELINE = YES
+```
+
+### 36.12 Matriz de provisioning y cancelación
+
+Columnas: fase de la cancelación · lifecycle del Clone · resultado de operación · estado
+del journal · ¿cleanup permitido? · ruta de recovery · ¿dueño?
+
+| Caso | Clone lifecycle | Resultado | journal | ¿cleanup? | recovery | ¿dueño? |
+|---|---|---|---|---|---|---|
+| cancel **antes** de crear el Clone | — (no existe) | `CANCELLED` | `NONE` | sí (nada que limpiar) | ninguna | no |
+| cancel **después de `CREATED`** | `CREATED` | `CANCELLED` | `NONE` | sí (artefacto inactivo, GC §23) | ninguna | no |
+| cancel **durante `PROVISIONING`** | `INVALID` (§36.7) | `CANCELLED` | `NONE` | sí, con el Clone invalidado | Clone nuevo si se reintenta | no |
+| **provisioning falla parcialmente** | `INVALID` | `FAILED` | `NONE` | sí, con el Clone invalidado | Clone nuevo (no retry in-place) | no |
+| cancel **tras `PROVISIONED`, antes de aprobar** | `PROVISIONED` | `CANCELLED` | `NONE` | sí (inactivo, GC §23) | ninguna | no |
+| cancel **tras aprobar, antes de `PENDING`** | `PROVISIONED` | `CANCELLED` | `NONE` | aprobación **no consumida**; artefactos inactivos | ninguna | no |
+| cancel **tras `PENDING`, antes del bind** | sin cambio | `CANCELLED` | **`PENDING` (se conserva)** | **NO** borrar el journal | recovery de §36.9 (C1) | no |
+| cancel **durante el bind** | sin cambio | `CANCELLED` | **`PENDING` (se conserva)** | **NO** | recovery (C2): observar primero | sí si no se puede observar |
+| cancel **tras el bind, antes del POST** | sin cambio | `CANCELLED` | **`PENDING` (se conserva)** | **NO** | recovery (C3/C4) | no |
+
+```text
+CANCEL_AFTER_PENDING_ERASES_TRANSITION = PROHIBIDO
+CANCEL_AFTER_PENDING_CLAIMS_ROLLBACK   = PROHIBIDO
+CANCEL_AFTER_PENDING_CLAIMS_CLEAN      = PROHIBIDO
+CANCELLED_CHANGES_CLONE_LIFECYCLE      = NO
+PARTIAL_PROVISIONED_CLONE_IS_ACTIVABLE = NO
+```
+
+### 36.13 Censo de readiness — recomputado, no recordado
+
+```bash
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u
+```
+
+Sobre el ADR tras §36 devuelve **36 símbolos**, el mismo total que tras §35: esta ronda
+**no introdujo nombres `P4_` nuevos**. El desglose es **13 nombres de requisito con
+prefijo `P4_`** más **23 indicadores de estado / etiquetas de adjudicación** — §35.5
+corregido in-place (`13 + 23 = 36`, no `17 + 19`; ver D0-R2.8 abajo).
+
+La lista de **requisitos** no se toma del grep: se normaliza contra §29.8 + §32.6 + §34 y
+sigue siendo la de **17** (13 con prefijo `P4_` + 4 sin prefijo). **La ronda 2 no agregó
+requisitos P4**: agregó decisiones dentro de requisitos ya registrados.
+
+| # | P4 REGISTERED REQUIREMENT | §29 STATUS | DECISIÓN | ¿BLOQUEA IMPLEMENTACIÓN? | DESIGN STATUS |
+|---|---|---|---|---|---|
+| 1 | `P4_CROSS_PROCESS_LOCK` | OPEN (ampliado) | §34.3 | no | **DESIGN_CLOSED** |
+| 2 | `P4_LONG_RUNNING_CANCELLATION` | OPEN (nuevo) | §35.8.1 + **§36.7** | no | **DESIGN_CLOSED** |
+| 3 | `P4_DURABLE_TRANSITION` | OPEN (ampliado) | §34.4 + §35.6 + **§36.6** | no | **DESIGN_CLOSED** |
+| 4 | `P4_APPROVAL_SCOPE` | DESIGN CLOSED / IMPL OPEN | §34.6 + §35.2 + **§36.3/§36.5** | no | **DESIGN_CLOSED** |
+| 5 | `P4_RUNTIME_SETUP_PROVISIONING` | OPEN (nuevo) | §35.8.2 + **§36.7** | no | **DESIGN_CLOSED** |
+| 6 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` | OPEN | §34.11 | no (P4 no activa sin payload) | **DEFERRED_FAIL_CLOSED** |
+| 7 | `P4_CLONE_ACTIVATION_GATE` | OPEN (nuevo) | §35.8.3 | no | **DESIGN_CLOSED** |
+| 8 | `P4_CLONE_PROVISIONING_LIFECYCLE` | OPEN (nuevo) | §35.8.4 + **§36.7** | no | **DESIGN_CLOSED** |
+| 9 | `P4_ROLLBACK_TARGET_HISTORY` | OPEN (nuevo) | §35.8.5 + **§36.2/§36.8** | no | **DESIGN_CLOSED** |
+| 10 | `P4_RUNTIME_CLONE_RECORD_INTEGRITY` | OPEN | §34.10 | no | **DESIGN_CLOSED** |
+| 11 | `P4_STARTUP_RECONCILIATION` | (§34) | §34.5 + §35.3 + **§36.4** | no | **DESIGN_CLOSED** |
+| 12 | `P4_REVERIFY_AFTER_APPROVAL` | (§29.8) | §34.7 | no | **DESIGN_CLOSED** |
+| 13 | `P4_P5_COMPATIBILITY_GATE` | (§34) | §34.14 + §35.7 + **§36.3** | no | **DESIGN_CLOSED** |
+| 14 | `GENERATION_METADATA_INTEGRITY` | §32.6 OPEN | §34.8 | no | **DESIGN_CLOSED** |
+| 15 | `RUNTIME_SETUP_MANIFEST_INTEGRITY` | §32.6 OPEN | §34.9 | no | **DESIGN_CLOSED** |
+| 16 | `MANDATORY_CRITICAL_EXPECTATIONS` | §32.6 OPEN | §34.12 | no | **DESIGN_CLOSED** |
+| 17 | `POST_ACTIVATION_LINK_INJECTION` | §32.6 OPEN | §34.13 + §35.4 | no | **DESIGN_CLOSED** |
+
+```text
+P4_REQUIREMENTS_DISCOVERED           = 17
+P4_REQUIREMENTS_DESIGN_CLOSED        = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED = 1   (RUNTIME_SETUP_ARTIFACT_AVAILABILITY)
+P4_REQUIREMENTS_OPEN                 = 0
+```
+
+**D0-R2.8 (finding nuevo, P3, cerrado).** §35.5 afirmaba que los 36 símbolos se
+descomponían en "17 requisitos más 19 indicadores". El comando documentado no devuelve 17
+nombres de requisito con prefijo `P4_` —devuelve **13**— y los indicadores son **23**, no
+19. La suma (36) era correcta por coincidencia; el desglose describía mal ambos sumandos.
+Corregido in-place en §35.5. No es un blocker de diseño: es un defecto de contabilidad del
+censo, del mismo tipo que la ronda 1 ya había corregido una vez.
+
+**Fuera de alcance P4 (P5/P6, no cuentan para readiness de P4):**
+`P5_EFFECTIVE_RUNTIME_ORACLE`, `P5_PATH_SURFACES_UNIT`, `P5_QUIESCENCE`,
+`P6_STEAM_STATUS_NOTICE` — `OUT_OF_SCOPE_P5`.
+
+**Regla de readiness.**
+
+```text
+P4_READY_TO_IMPLEMENT = YES  sólo si TODOS los requisitos P4 conocidos están
+                             DESIGN_CLOSED, o demostrablemente DEFERRED_FAIL_CLOSED
+                             Y no requeridos para un P4 core seguro.
+```
+
+`RUNTIME_SETUP_ARTIFACT_AVAILABILITY` cumple: sin payload P4 **no activa**; lo que queda
+sin prometer es la *garantía de rollback*, no el core. `CREATION_CLUB_CLASSIFICATION`
+(`DEFERRED_PENDING_EVIDENCE`) y `P3B` (`DEFERRED_PENDING_RIG`) tampoco bloquean: P4
+responde `UNKNOWN → NO ACTIVATION`.
+
+### 36.14 Revisión adversarial local — 20 preguntas
+
+| # | Pregunta | Estado | Fundamento |
+|---|---|---|---|
+| 1 | ¿Puede `previous_activation_target` cambiar antes de POST PASS? | **CLOSED_BY_DESIGN** | §36.2: punto de escritura único = FINALIZE |
+| 2 | ¿Hay alguna sección vieja que todavía diga lo contrario? | **CLOSED_BY_DESIGN** | Corrección in-place de §7, §11, §12, §19, §30.6, §31.4, §32.3/§32.4; grep de verificación en §36.16 |
+| 3 | ¿Una nueva transición puede comenzar con Desired != Effective? | **CLOSED_BY_DESIGN** | §36.3/§36.4: no; `INCONSISTENT_BASELINE → FAIL_CLOSED` |
+| 4 | ¿`source_activation` representa el Effective real observado? | **CLOSED_BY_DESIGN** | §36.3: `effective_runtime_evidence` + triple igualdad |
+| 5 | ¿El runtime que se registra como previous target es exactamente el que estaba activo? | **CLOSED_BY_DESIGN** | §36.2 + §36.3: el source se demuestra contra el Effective observado antes de aprobar |
+| 6 | ¿Una aprobación vieja puede reutilizarse después de rotar el journal? | **CLOSED_BY_DESIGN** | §36.5: `approval_seq` monótono fuera del journal |
+| 7 | ¿Existe una autoridad durable del consumo de aprobación? | **CLOSED_BY_DESIGN** | §36.5: `state/approval_consumption.json`, acotado |
+| 8 | ¿Puede crearse T2 mientras T1 sigue PENDING? | **CLOSED_BY_DESIGN** | §36.6: `AT MOST ONE PENDING PER ROOT` |
+| 9 | ¿CAS define `NONE → PENDING`? | **CLOSED_BY_DESIGN** | §36.6: `CREATE` (∈ {ABSENT, NONE, FINALIZED}) |
+| 10 | ¿CAS define `FINALIZED(T1) → PENDING(T2)`? | **CLOSED_BY_DESIGN** | §36.6: `START_NEXT` con `finalized_from_transition_id == Tprev` |
+| 11 | ¿Un journal corrupto puede interpretarse como `NONE`? | **CLOSED_BY_DESIGN** | §36.4 N2: nunca; `FAIL_CLOSED` |
+| 12 | ¿`CANCELLED` es lifecycle del Clone accidentalmente? | **CLOSED_BY_DESIGN** | §36.7: es resultado de operación; FSM sin cambios |
+| 13 | ¿Provisioning failure tiene una sola semántica? | **CLOSED_BY_DESIGN** | §36.7: `INVALID`; retry = Clone nuevo |
+| 14 | ¿Un Clone parcialmente provisionado puede activarse? | **CLOSED_BY_DESIGN** | §36.7 + §35.8.3: `lifecycle == PROVISIONED` obligatorio |
+| 15 | ¿Cancel after PENDING puede borrar la transición? | **CLOSED_BY_DESIGN** | §36.12: no borra, no reclama rollback, no declara limpio |
+| 16 | ¿Startup con `NONE + Desired != Effective` bloquea? | **CLOSED_BY_DESIGN** | §36.4 N1: sí, sin depender de `transition.json` |
+| 17 | ¿Hay dos autoridades distintas para `previous_activation_target`? | **CLOSED_BY_DESIGN** | §36.8: autoridad única (registro finalizado); `active.json` corregido |
+| 18 | ¿Approval authority y lock owner siguen separados? | **CLOSED_BY_DESIGN** | §36.5: emisor ≠ consumidor; `lock_session_id != human identity` |
+| 19 | ¿P5 `UNKNOWN` sigue impidiendo completar la activación? | **CLOSED_BY_DESIGN** | §35.7 + §36.3: además impide **crear** una transición nueva |
+| 20 | ¿El Clone mutable sigue sin poder convertirse en recovery authority? | **CLOSED_BY_DESIGN** | §32.2 + §33.3: `source Generation != VALID ⇒ RECHAZADO` |
+
+```text
+OPEN_BLOCKER = 0
+```
+
+### 36.15 Estado
+
+```text
+D0_R2_1_PREVIOUS_TARGET_ORDERING       = CLOSED
+D0_R2_2_EFFECTIVE_SOURCE_BASELINE      = CLOSED
+D0_R2_3_NO_PENDING_SPLIT_BRAIN         = CLOSED
+D0_R2_4_DURABLE_APPROVAL_SINGLE_USE    = CLOSED
+D0_R2_5_JOURNAL_CREATE_REPLACE_CAS     = CLOSED
+D0_R2_6_CANCELLATION_PROVISIONING_FSM  = CLOSED
+D0_R2_7_PREVIOUS_TARGET_AUTHORITY      = CLOSED
+D0_R2_8_CENSUS_ARITHMETIC              = CLOSED
+
+PREVIOUS_TARGET_WRITE_POINT             = FINALIZE (post POST PASS)
+PREVIOUS_TARGET_AUTHORITY               = registro de transición FINALIZED
+NEW_TRANSITION_REQUIRES_COHERENT_SOURCE = YES
+SOURCE_DESIRED_EFFECTIVE_MATCH_REQUIRED = YES
+NO_PENDING_DESIRED_EFFECTIVE_MISMATCH   = INCONSISTENT_BASELINE → FAIL_CLOSED
+APPROVAL_DURABLE_IDENTITY               = approval_id (UUIDv4) + approval_seq monótono
+APPROVAL_REPLAY_AFTER_JOURNAL_ROTATION  = IMPOSSIBLE_BY_CONTRACT
+MAX_PENDING_TRANSITIONS_PER_ROOT        = 1
+JOURNAL_CREATE_CAS                      = ABSENT|NONE|FINALIZED ∧ no PENDING ∧ consumo atómico
+JOURNAL_UPDATE_CAS                      = (transition_id, journal_revision)
+JOURNAL_NEXT_TRANSITION_CAS             = FINALIZED ∧ finalized_from_transition_id == Tprev
+
+CANCELLED_IS_CLONE_LIFECYCLE   = NO
+CANCELLED_IS_OPERATION_OUTCOME = YES
+PROVISIONING_FAILURE_LIFECYCLE = INVALID
+PROVISIONING_RETRY_POLICY      = fresh Clone
+
+CRASH_MATRIX_REVALIDATED         = YES (C0..C7 + N0/N1/N2)
+NO_TRANSITION_MATRIX             = YES (N0/N1/N2)
+APPROVAL_MATRIX_REVALIDATED      = YES
+PROVISIONING_CANCELLATION_MATRIX = YES
+
+P4_REQUIREMENTS_DISCOVERED           = 17
+P4_REQUIREMENTS_DESIGN_CLOSED        = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED = 1
+P4_REQUIREMENTS_OPEN                 = 0
+
+OPEN_P4_DESIGN_BLOCKERS = 0
+NEW_FINDINGS            = 1   (D0-R2.8, P3, cerrado in-place en §35.5)
+
+P4_READY_TO_DESIGN     = YES
+P4_DESIGN_FROZEN       = YES
+P4_READY_TO_IMPLEMENT  = YES
+P4_IMPLEMENTED         = NO
+P5_IMPLEMENTED         = NO
+PR_SAFE_TO_MERGE       = NO
+MERGE                  = NO
+```
+
+`P4_READY_TO_IMPLEMENT = YES` significa **"el diseño no bloquea"**, no "P4 existe".
+`P4_IMPLEMENTED = NO` sigue siendo el estado real. Dos dependencias quedan **declaradas y
+abiertas como implementación**, no como diseño: el **oráculo de Effective Runtime** (P5)
+y la **emisión de `approval_id`/`approval_seq`** por la superficie HITL.
+
+### 36.16 Verificación de esta ronda
+
+Comandos de control usados para cerrar los residuos (reproducibles sobre el HEAD de esta
+ronda):
+
+```bash
+# el orden viejo no debe aparecer en ninguna sección normativa
+rg -n "previous_activation_target.*POST|POST.*previous_activation_target" \
+   docs/adr/0012-frozen-runtime.md
+
+# CANCELLED y PROVISIONING_FAILURE con una sola semántica
+rg -n "CANCELLED|PROVISIONING_FAILURE" docs/adr/0012-frozen-runtime.md
+
+# estados vigentes, sin YES adelantados
+rg -n "P4_READY_TO_IMPLEMENT|P4_DESIGN_FROZEN" docs/adr/0012-frozen-runtime.md
+
+# censo
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+```
+
+Las coincidencias del primer comando son, todas, las formulaciones **corregidas**
+("nunca antes del POST", "sólo tras POST OK") o los registros históricos de §32/§35 que
+ya describían el orden correcto. No queda ninguna sección normativa que escriba el target
+antes del POST.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
+transición, ni CAS, ni journal, ni autoridad de consumo de aprobación, ni escaneo de
+namespace, ni provisioning, ni cancelación, ni gate de activación, ni `active.json` real,
+ni binding de MO2, ni setup de SKSE, ni cache de artefactos, ni rollback, ni promoción. No
+se tocó P5. `MERGE = NO`.

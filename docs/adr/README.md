@@ -7,13 +7,14 @@
 >
 > **Fuentes canónicas:** ADR 0001–0013 en este directorio.
 >
-> **Última verificación:** 2026-10-08; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
-> con el diseño de P4 congelado (P4-D0)**.
+> **Última verificación:** 2026-10-09; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
+> con el diseño de P4 congelado (P4-D0, dos rondas adversariales)**.
 > **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
 > post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–35.
 > **Revisiones de enmienda** (rondas P0.4 sobre esa base): `f46853b5` (ronda 1, §29),
 > `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32), la ronda 4.1
-> (§33) y **P4-D0** (§34, sobre `af8e726c`) con su **ronda adversarial 1** (§35). Ronda 1:
+> (§33) y **P4-D0** (§34, sobre `af8e726c`) con su **ronda adversarial 1** (§35, sobre
+> `81fb83a2`) y su **ronda adversarial 2** (§36, sobre `589805ee`). Ronda 1:
 > la Generation pasa a ser referencia no ejecutada y el Runtime Clone el Effective
 > Runtime. Ronda 2: el rollback tiene dos autoridades (Generation = versión,
 > `RuntimeSetupManifest` = setup operativo), SFR-16 exige el par Generation+Clone,
@@ -40,8 +41,21 @@
 > `CONFIRMED` y corregidos: `ApprovalScope` liga `source_activation` y es single-use;
 > C3 persiste `Desired=target` antes del POST; el escaneo de independencia física
 > enumera el namespace **actual** (archivos **y** directorios); el censo cubre **17/17**
-> requisitos P4; `FINALIZED` exige evidencia durable + CAS por `transition_id`. Sigue en
-> estado Propuesta.
+> requisitos P4; `FINALIZED` exige evidencia durable + CAS por `transition_id`. **P4-D0
+> ronda adversarial 2 (§36):** la revisión externa sobre `589805ee` encontró **6
+> residuos nuevos** más un defecto de contabilidad del censo, todos `CONFIRMED` y
+> cerrados **corrigiendo in-place** las secciones normativas (§7, §11, §12, §19, §30.6,
+> §31.4, §32, §34, §35): `previous_activation_target` se publica **sólo** en el
+> FINALIZE (autoridad única = registro de transición finalizado, `active.json` v2 deja
+> de llevarlo); el **source baseline** debe ser el Effective **observado**
+> (`Desired == Effective == RuntimeCloneRecord`) y su divergencia sin transición es
+> `INCONSISTENT_BASELINE → FAIL_CLOSED`; el consumo de aprobación tiene **autoridad
+> durable** fuera del journal (`approval_id` + `approval_seq` monótono), con
+> `APPROVAL_REPLAY_AFTER_JOURNAL_ROTATION = IMPOSSIBLE_BY_CONTRACT`; el journal define
+> CAS de `CREATE`/`UPDATE`/`FINALIZE`/`START_NEXT` con `journal_revision` anti-ABA y
+> **un solo** `PENDING` por root; `CANCELLED` es resultado de operación (no lifecycle
+> del Clone) y `PROVISIONING_FAILURE` tiene una única semántica (`INVALID`, retry =
+> Clone nuevo), contrastada con `ensure_skse`. Sigue en estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
