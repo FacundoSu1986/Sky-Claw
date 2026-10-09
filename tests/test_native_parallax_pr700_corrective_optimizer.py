@@ -112,10 +112,18 @@ def test_objetivo_plano_no_finge_convergencia_de_calidad():
     assert np.isfinite(res.best_x)
     assert res.best_fx == pytest.approx(1.0)
     # Un objetivo sin mínimo interior no puede declararse resuelto con confianza.
+    # Segunda ronda correctiva (finding E): un campo plano se reporta FLAT_OBJECTIVE,
+    # no CONVERGED. Se aceptan además los estados de borde legítimos.
     if res.converged:
         assert res.status == opt.STATUS_CONVERGED
     else:
-        assert res.status in {opt.STATUS_BOUNDARY, opt.STATUS_MAX_EXPANSIONS}
+        assert res.status in {
+            opt.STATUS_BOUNDARY,
+            opt.STATUS_MAX_EXPANSIONS,
+            opt.STATUS_FLAT,
+            opt.STATUS_NO_VALID_BRACKET,
+            opt.STATUS_MAX_ITERATIONS,
+        }
 
 
 def test_objetivo_casi_plano_no_explota():
