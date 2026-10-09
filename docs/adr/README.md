@@ -8,13 +8,14 @@
 > **Fuentes canónicas:** ADR 0001–0013 en este directorio.
 >
 > **Última verificación:** 2026-10-09; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
-> con el diseño de P4 congelado (P4-D0, dos rondas adversariales)**.
+> con el diseño de P4 congelado (P4-D0, tres rondas adversariales)**.
 > **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
 > post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–35.
 > **Revisiones de enmienda** (rondas P0.4 sobre esa base): `f46853b5` (ronda 1, §29),
 > `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32), la ronda 4.1
 > (§33) y **P4-D0** (§34, sobre `af8e726c`) con su **ronda adversarial 1** (§35, sobre
-> `81fb83a2`) y su **ronda adversarial 2** (§36, sobre `589805ee`). Ronda 1:
+> `81fb83a2`), su **ronda adversarial 2** (§36, sobre `589805ee`) y su **ronda
+> adversarial 3** (§37, sobre `1215429b`). Ronda 1:
 > la Generation pasa a ser referencia no ejecutada y el Runtime Clone el Effective
 > Runtime. Ronda 2: el rollback tiene dos autoridades (Generation = versión,
 > `RuntimeSetupManifest` = setup operativo), SFR-16 exige el par Generation+Clone,
@@ -55,7 +56,21 @@
 > CAS de `CREATE`/`UPDATE`/`FINALIZE`/`START_NEXT` con `journal_revision` anti-ABA y
 > **un solo** `PENDING` por root; `CANCELLED` es resultado de operación (no lifecycle
 > del Clone) y `PROVISIONING_FAILURE` tiene una única semántica (`INVALID`, retry =
-> Clone nuevo), contrastada con `ensure_skse`. Sigue en estado Propuesta.
+> Clone nuevo), contrastada con `ensure_skse`. **P4-D0 ronda adversarial 3 (§37):** la
+> revisión externa sobre `1215429b` encontró **5 blockers nuevos** en la maquinaria de
+> aprobación y journal que la ronda 2 había agregado, más 2 findings nuevos, todos
+> `CONFIRMED` y cerrados **corrigiendo in-place** las secciones normativas (§7, §11,
+> §12, §19, §29.8, §30.6, §31.4, §34.4, §34.6, §35.2, §35.5, §35.6, §35.8.5, §35.10,
+> §35.13 y §36): el `ApprovalScope` liga ahora `approval_seq`,
+> `approval_scope_digest` y `approval_provenance` (el consumo compara el scope
+> presentado contra el registrado, no `approval_id == approval_id`); el ledger es
+> **una sola autoridad** `state/approval.json` con **un solo `approval_revision` bajo
+> CAS** para todo escritor; el consumo y la creación del journal se ordenan con un
+> protocolo **burn-first** (no se reclama atomicidad entre archivos:/n> `CROSS_FILE_ATOMICITY = NOT_CLAIMED`) con matriz de crash explícita; la aprobación
+> tiene ciclo de vida `ISSUED | CONSUMED | REVOKED` (cancelar tras aprobar **revoca**,
+> no deja token reutilizable); el historial `FINALIZED` gana almacén propio inmutable
+> (`state/transitions/<transition_id>.json`) con orden **lógico** (`finalization_seq`,
+> no mtime); y la retención se corrige a **`K ≥ 3`**. Sigue en estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
