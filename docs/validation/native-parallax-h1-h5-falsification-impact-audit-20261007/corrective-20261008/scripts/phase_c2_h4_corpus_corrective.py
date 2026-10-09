@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -61,16 +62,60 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
 )
 
 RESOLUTION = 512
-# scripts/ -> corrective-20261008/ -> <audit>/ -> validation/ -> docs/ -> <repo>
+_REPO_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_MANIFEST = (
-    Path(__file__).resolve().parents[5]
-    / "docs"
-    / "design"
-    / "research"
-    / "native-parallax"
-    / "data"
-    / "exp-m3-clean-authored-manifest.json"
+    _REPO_ROOT / "docs" / "design" / "research" / "native-parallax" / "data" / "exp-m3-clean-authored-manifest.json"
 )
+
+# ---- Identidad del roster (segunda ronda correctiva, finding F)
+# Fuente AUTORIZADA dentro de #700: el artefacto de la auditoría original, que ya está
+# en el PR. No se abre material nuevo ni se inventa ningún hash.
+HISTORICAL_AUDIT_ARTIFACT = (
+    _REPO_ROOT
+    / "docs"
+    / "validation"
+    / "native-parallax-h1-h5-falsification-impact-audit-20261007"
+    / "real-impact.json"
+)
+# Digest congelado del roster histórico (SHA256 de los asset-ids ordenados, separados
+# por '\n'). Se usa para detectar drift del propio artefacto de referencia.
+HISTORICAL_ROSTER_SHA256 = "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e"
+HISTORICAL_ROSTER_SIZE = 31
+
+
+def _roster_digest(ids: list[str]) -> str:
+    """SHA256 de los asset-ids ordenados, unidos por '\\n' (forma canónica)."""
+    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
+
+
+def check_roster_identity(prepared: list[dict[str, Any]], manifest: Path) -> dict[str, Any]:
+    """Verifica que el corpus preparado sea EXACTAMENTE el roster histórico de 31.
+
+    El conteo por sí solo no prueba identidad: un manifest distinto con 31 assets
+    válidos pasaría y publicaría M4/M5 como contrafactual del corpus equivocado.
+    """
+    current_ids = sorted(str(e["asset_id"]) for e in prepared)
+    hist_doc = json.loads(HISTORICAL_AUDIT_ARTIFACT.read_text(encoding="utf-8"))
+    hist_ids = sorted(str(r["asset"]) for r in hist_doc["H1_coherence_oracle_counterfactual"]["rows"])
+    manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    current_digest = _roster_digest(current_ids)
+    historical_digest = _roster_digest(hist_ids)
+    return {
+        "n_prepared": len(current_ids),
+        "n_historical": len(hist_ids),
+        "roster_count_match": len(current_ids) == len(hist_ids) == HISTORICAL_ROSTER_SIZE,
+        "roster_identity_match": current_ids == hist_ids,
+        "roster_digest_match": current_digest == historical_digest,
+        "manifest_digest_match": historical_digest == HISTORICAL_ROSTER_SHA256,
+        "current_roster_sha256": current_digest,
+        "historical_roster_sha256": historical_digest,
+        "expected_historical_roster_sha256": HISTORICAL_ROSTER_SHA256,
+        "manifest_sha256": manifest_digest,
+        "manifest_path": str(manifest),
+        "historical_artifact": str(HISTORICAL_AUDIT_ARTIFACT),
+        "only_current": sorted(set(current_ids) - set(hist_ids)),
+        "only_historical": sorted(set(hist_ids) - set(current_ids)),
+    }
 
 
 def resize_normal_float(n: np.ndarray, size: int) -> np.ndarray:
@@ -174,6 +219,21 @@ def main() -> None:
         print(f"HARD STOP: prepared={len(prepared)} != histórico=31")
         sys.exit(3)
 
+    # ---- Identidad del roster (segunda ronda correctiva, finding F)
+    # El conteo NO prueba identidad: un manifest distinto con 31 assets válidos pasaría
+    # el guard anterior y publicaría M4/M5 como contrafactual del corpus equivocado.
+    # Se verifica (a) el conjunto exacto de asset-ids y (b) el digest del manifest.
+    roster_check = check_roster_identity(prepared, args.m3_manifest)
+    if not (roster_check["roster_count_match"] and roster_check["roster_identity_match"]):
+        print("HARD STOP: identidad de roster no verificada -> NO se calcula M4/M5")
+        print(json.dumps(roster_check, indent=1, ensure_ascii=False))
+        sys.exit(3)
+    print(
+        f"ROSTER ok: n={roster_check['n_prepared']} "
+        f"identity_match={roster_check['roster_identity_match']} "
+        f"manifest_sha256={roster_check['manifest_sha256'][:16]}..."
+    )
+
     rows = [m4_row(e) for e in prepared]
 
     # ---------------- M4: reglas primarias con AUTH old vs new (mismos self y umbrales)
@@ -235,6 +295,7 @@ def main() -> None:
         "corpus_root": str(args.corpus_root),
         "resolution": RESOLUTION,
         "corpus_integrity": {"exclusions": exclusions, "n_prepared": len(prepared)},
+        "roster_identity": roster_check,
         "thresholds_unchanged": {
             "T_SELF_RMSE": T_SELF_RMSE,
             "T_SELF_CORR": T_SELF_CORR,
