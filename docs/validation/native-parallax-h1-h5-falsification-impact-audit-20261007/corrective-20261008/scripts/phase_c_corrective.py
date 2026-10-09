@@ -211,19 +211,14 @@ def main() -> None:  # noqa: C901
         sum(
             1
             for r in rows
-            if r["continuous_meta"]["continuous_best_objective"]
-            > r["continuous_meta"]["coarse_best_objective"] + 1e-12
+            if r["continuous_meta"]["continuous_best_objective"] > r["continuous_meta"]["coarse_best_objective"] + 1e-12
         )
     )
-    n_caller_bracket_accepted = int(
-        sum(1 for r in rows if r["continuous_meta"].get("caller_bracket_accepted"))
-    )
+    n_caller_bracket_accepted = int(sum(1 for r in rows if r["continuous_meta"].get("caller_bracket_accepted")))
     n_valid_min_bracket = int(sum(1 for r in rows if r["continuous_meta"].get("valid_minimum_bracket")))
     n_stop_criterion_met = int(sum(1 for r in rows if r["continuous_meta"].get("stop_criterion_met")))
     # ---------------- alcance honesto de la búsqueda (finding A)
-    global_optimum_proven = any(
-        r["continuous_meta"].get("global_optimum_proven") is True for r in rows
-    )
+    global_optimum_proven = any(r["continuous_meta"].get("global_optimum_proven") is True for r in rows)
     search_scopes = sorted({str(r["continuous_meta"].get("search_scope")) for r in rows})
 
     # ---------------- F3: dos universos explícitos
