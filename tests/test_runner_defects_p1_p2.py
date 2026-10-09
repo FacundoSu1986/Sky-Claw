@@ -2447,3 +2447,64 @@ async def test_r3_falla_en_close_job_preserva_contexto_y_veto(
         "exception_forbids_rollback debe inspeccionar __context__ y vetar rollback ante falla en close_job"
     )
     assert registro["close_job"] == 1, registro
+
+
+@pytest.mark.asyncio
+async def test_r3_cancelacion_preserva_identidad_y_mensaje_con_y_sin_falla_de_limpieza(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso B: la rama `except asyncio.CancelledError as exc` debe preservar la
+    identidad y mensaje del `CancelledError` original del caller en ambos caminos:
+    1. Cleanup exitoso: re-lanza el `exc` original intacto (con su mensaje/args).
+    2. Cleanup fallido: re-lanza el `exc` original (con su mensaje/args) encadenando
+       la falla de limpieza como `__cause__`, permitiendo el veto de rollback.
+    """
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+    from sky_claw.local.mo2.vfs_broker import VfsTeardownDeadlineError
+
+    orden: list[str] = []
+    registro = _registro_de_cierre()
+
+    # --- Camino 1: Cleanup fallido ---
+    proc1 = _ProcesoCancelable(job=101, orden=orden)
+    runner1 = _runner_para_execute_process(proc1)
+    falla_limpieza = VfsTeardownDeadlineError("teardown deadline vencido")
+
+    async def _reap_que_falla(_proc: object, **_kwargs) -> None:
+        raise falla_limpieza
+
+    monkeypatch.setattr(runner_mod, "kill_and_reap", _reap_que_falla)
+
+    with _observar_cierre_de_job(monkeypatch, orden, registro):
+        task1 = asyncio.create_task(runner1._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+        assert await asyncio.wait_for(proc1.espera_entrada.wait(), timeout=5.0)
+        task1.cancel("motivo de cancelacion 1")
+        with pytest.raises(asyncio.CancelledError) as exc_info1:
+            await asyncio.wait_for(task1, timeout=5.0)
+
+    exc1 = exc_info1.value
+    # Preservación de mensaje / args originales
+    assert exc1.args == ("motivo de cancelacion 1",), f"se perdió el mensaje del cancel: args={exc1.args}"
+    assert exc1.__cause__ is falla_limpieza
+    assert exception_forbids_rollback(exc1)
+
+    # --- Camino 2: Cleanup exitoso ---
+    orden.clear()
+
+    async def _reap_exitoso(_proc: object, **_kwargs) -> None:
+        pass
+
+    monkeypatch.setattr(runner_mod, "kill_and_reap", _reap_exitoso)
+    proc2 = _ProcesoCancelable(job=102, orden=orden)
+    runner2 = _runner_para_execute_process(proc2)
+
+    with _observar_cierre_de_job(monkeypatch, orden, registro):
+        task2 = asyncio.create_task(runner2._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "TexGen"))
+        assert await asyncio.wait_for(proc2.espera_entrada.wait(), timeout=5.0)
+        task2.cancel("motivo de cancelacion 2")
+        with pytest.raises(asyncio.CancelledError) as exc_info2:
+            await asyncio.wait_for(task2, timeout=5.0)
+
+    exc2 = exc_info2.value
+    assert exc2.args == ("motivo de cancelacion 2",), f"se perdió el mensaje del cancel: args={exc2.args}"
+    assert exc2.__cause__ is None

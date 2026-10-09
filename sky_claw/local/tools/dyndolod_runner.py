@@ -2365,7 +2365,7 @@ class DynDOLODRunner:
             if presupuesto <= 0:
                 raise TimeoutError()
             await asyncio.wait_for(proc.wait(), timeout=presupuesto)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # R3 — RUNNER_P2_DOUBLE_CANCEL. Un shutdown externo debe matar el
             # árbol antes de propagar la cancelación: de otro modo DynDOLOD/TexGen
             # continúa escribiendo después de que la capa superior liberó su lock
@@ -2376,10 +2376,10 @@ class DynDOLODRunner:
             #
             # La intención absorbida no agrega nada acá: ya estamos cancelando, y
             # el resultado externo es esta misma `CancelledError`. Se conserva el
-            # contrato previo de la falla de limpieza como causa.
+            # contrato previo de la falla de limpieza como causa sobre la excepción original.
             _intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
             if falla_limpieza is not None:
-                raise asyncio.CancelledError() from falla_limpieza
+                raise exc from falla_limpieza
             raise
         except DynDOLODExecutionError as exc:
             # Rechazo pre-generación del protocolo de readiness (UIA no-MATCH,

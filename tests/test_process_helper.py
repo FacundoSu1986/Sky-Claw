@@ -326,3 +326,66 @@ async def test_spawn_detached_windows_suppresses_console(monkeypatch):
 
     _, kwargs = spawn.call_args
     assert kwargs.get("creationflags") == _process._CREATE_NO_WINDOW
+
+
+# --- assign_kill_on_close_job ------------------------------------------------
+
+
+def test_assign_kill_on_close_job_retorna_none_sin_lanzar_con_pids_invalidos():
+    """Contrato best-effort: PIDs inválidos (None, <=0, tipos no-int) retornan None
+    sin tocar Win32 y sin lanzar excepción."""
+    import sky_claw.local.tools._process as _process
+
+    for pid_invalido in (None, 0, -1, -999, "1234", 3.14):
+        assert _process.assign_kill_on_close_job(pid_invalido) is None  # type: ignore[arg-type]
+
+
+def test_assign_kill_on_close_job_captura_fallos_de_win32_sin_lanzar(monkeypatch):
+    """Contrato best-effort: ante cualquier fallo de ctypes / Win32 (OpenProcess fallido,
+    ArgumentError, OSError), assign_kill_on_close_job devuelve None sin propagar excepción."""
+    import ctypes
+    from unittest.mock import MagicMock
+
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+
+    # Caso 1: CreateJobObjectW falla (retorna 0)
+    fake_k32 = MagicMock()
+    fake_k32.CreateJobObjectW.return_value = 0
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: fake_k32)
+    assert _process.assign_kill_on_close_job(1234) is None
+
+    # Caso 2: ctypes lanza ArgumentError
+    def _raise_arg_error(*_a, **_k):
+        raise ctypes.ArgumentError("fake ctypes argument error")
+
+    fake_k32.CreateJobObjectW.side_effect = _raise_arg_error
+    assert _process.assign_kill_on_close_job(1234) is None
+
+    # Caso 3: OpenProcess falla con OSError
+    def _raise_os_error(*_a, **_k):
+        raise OSError("fake OS error")
+
+    fake_k32.CreateJobObjectW.side_effect = _raise_os_error
+    assert _process.assign_kill_on_close_job(1234) is None
+
+
+def test_dyndolod_process_assign_job_contrato_seguro():
+    """Contrato de assign_job para DynDOLODProcess en standalone y brokered:
+    ambos son best-effort y devuelven None o int sin propagar excepciones."""
+    from unittest.mock import MagicMock
+
+    from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODProcess
+    from sky_claw.local.tools.dyndolod_runner import _StandaloneDynDOLODProcess
+
+    # Brokered: siempre None por diseño
+    sesion_fake = MagicMock()
+    brokered = BrokeredDynDOLODProcess(sesion_fake)
+    assert brokered.assign_job() is None
+
+    # Standalone con proceso mock inválido/inactivo: devuelve None sin lanzar
+    proc_fake = MagicMock()
+    proc_fake.pid = -1
+    standalone = _StandaloneDynDOLODProcess(proc_fake)
+    assert standalone.assign_job() is None
