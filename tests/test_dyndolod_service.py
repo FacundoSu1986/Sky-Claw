@@ -3395,6 +3395,14 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         # unwind ni romper el cierre.
         "Exception",
         "Exception",
+        # T2 (cierre del ciclo `started` → `completed`): el ÚNICO punto de
+        # suspensión entre `_publish_started` y el try protegido es el gate de
+        # resume (`_consultar_resume`), que corre FUERA de ese try. Sin cinturón,
+        # una cancelación ahí —o un fallo inesperado de la consulta— salía sin
+        # evento terminal y el consumidor del bus quedaba viendo "corriendo" para
+        # siempre. Los dos handlers publican el terminal best-effort y RE-LANZAN:
+        # la observabilidad cierra el ciclo sin cambiar el veredicto de `execute`.
+        "Exception",
         "JournalTransactionError, LockLeaseLostError, OSError",
         "LockAcquisitionError",
         "_ActionManifestError",
@@ -3407,6 +3415,8 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         # pero pierde el `return` de `_preservar_mod_de_texgen`. Recupera el path y
         # re-lanza la CancelledError intacta para que el cierre lo clasifique como
         # PRESERVADA/PENDIENTE y no como "rollback INCOMPLETO".
+        "asyncio.CancelledError",
+        # T2: el cinturón del gate de resume (ver el `Exception` de arriba).
         "asyncio.CancelledError",
     ]
 
@@ -7547,34 +7557,42 @@ async def test_un_bus_caido_no_enmascara_la_cancelacion_y_deja_un_registro_ident
     )
 
 
-def _logs_de_prueba(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
-    """``(log_viejo_de_texgen, log_de_dyndolod_a_escribir)`` bajo un ``Logs/`` común."""
-    logs = tmp_path / "tool" / "Logs"
-    logs.mkdir(parents=True)
-    viejo = logs / "TexGen_SSE_log.txt"
-    viejo.write_text("[00:47] TexGen completed successfully\n", encoding="utf-8")
-    hace_una_hora = time.time() - 3600
-    import os
+def _runner_con_firma_real(runner: AsyncMock, rutas: dict[str, pathlib.Path]) -> AsyncMock:
+    """Doble de runner cuya firma de continuidad es la del runner REAL.
 
-    os.utime(viejo, (hace_una_hora, hace_una_hora))
-    return viejo, logs / "DynDOLOD_SSE_log.txt"
+    ``_ruta_del_log`` se redirige al tmp y ``_firma_del_log``/``_digest_del_prefijo``
+    se toman de la implementación de producción: un doble con su propio digest
+    probaría el doble, no el contrato de procedencia. ``_firma_del_log`` resuelve el
+    path por ``self._ruta_del_log``, así que redirigir ese método alcanza.
+    """
+    runner._ruta_del_log = MagicMock(side_effect=lambda tool: rutas[tool])
+    runner._firma_del_log = DynDOLODRunner._firma_del_log.__get__(runner)
+    runner._digest_del_prefijo = DynDOLODRunner._digest_del_prefijo.__get__(runner)
+    return runner
+
+
+def _log(path: pathlib.Path, texto: str = "") -> pathlib.Path:
+    """Crea ``path`` con ``texto`` (creando el directorio padre) y lo devuelve."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(texto, encoding="utf-8")
+    return path
 
 
 @pytest.mark.asyncio
-async def test_el_completed_fallido_lleva_solo_los_logs_de_esta_corrida(
+async def test_el_completed_fallido_lleva_el_log_que_esta_corrida_escribio(
     service: DynDOLODPipelineService,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Un log de una corrida ANTERIOR no se adjunta como si explicara este fallo."""
+    """Caso positivo: el log creció durante la corrida y su prefijo quedó intacto."""
     mods = tmp_path / "mods"
     (mods / "DynDOLOD Output").mkdir(parents=True)
-    log_viejo, log_nuevo = _logs_de_prueba(tmp_path)
-    runner = _mock_runner_with_output(mods)
-    runner._ruta_del_log = MagicMock(side_effect=lambda tool: {"TexGen": log_viejo, "DynDOLOD": log_nuevo}[tool])
+    log = _log(tmp_path / "tool" / "Logs" / "DynDOLOD_SSE_log.txt", "[00:01] sesión anterior\n")
+    runner = _runner_con_firma_real(_mock_runner_with_output(mods), {"TexGen": log, "DynDOLOD": log})
 
     async def _pipeline_que_falla(**_kwargs: object) -> DynDOLODPipelineResult:
-        log_nuevo.write_text("[00:10] Fatal: Can not create path\n", encoding="utf-8")  # lo escribe ESTA corrida
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[00:10] Fatal: Can not create path\n")  # lo escribe ESTA corrida
         raise DynDOLODExecutionError("boom")
 
     runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_falla)
@@ -7583,12 +7601,11 @@ async def test_el_completed_fallido_lleva_solo_los_logs_de_esta_corrida(
     resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
     assert resultado["success"] is False
-    completed = _eventos_publicados(mock_event_bus)[-1][1]
-    assert completed["log_paths"] == (str(log_nuevo),)
+    assert _eventos_publicados(mock_event_bus)[-1][1]["log_paths"] == (str(log),)
 
 
 @pytest.mark.asyncio
-async def test_el_error_inesperado_tambien_lleva_los_logs_de_esta_corrida(
+async def test_el_error_inesperado_tambien_lleva_el_log_de_esta_corrida(
     service: DynDOLODPipelineService,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
@@ -7596,12 +7613,12 @@ async def test_el_error_inesperado_tambien_lleva_los_logs_de_esta_corrida(
     """El hermano: el handler de `Exception` arma su `completed` igual que el de dominio."""
     mods = tmp_path / "mods"
     (mods / "DynDOLOD Output").mkdir(parents=True)
-    _log_viejo, log_nuevo = _logs_de_prueba(tmp_path)
-    runner = _mock_runner_with_output(mods)
-    runner._ruta_del_log = MagicMock(side_effect=lambda tool: log_nuevo if tool == "DynDOLOD" else _log_viejo)
+    log = _log(tmp_path / "tool" / "Logs" / "DynDOLOD_SSE_log.txt", "[00:01] sesión anterior\n")
+    runner = _runner_con_firma_real(_mock_runner_with_output(mods), {"TexGen": log, "DynDOLOD": log})
 
     async def _pipeline_que_explota(**_kwargs: object) -> DynDOLODPipelineResult:
-        log_nuevo.write_text("[00:10] algo salió mal\n", encoding="utf-8")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[00:10] algo salió mal\n")
         raise ValueError("estado inesperado")
 
     runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_explota)
@@ -7609,8 +7626,7 @@ async def test_el_error_inesperado_tambien_lleva_los_logs_de_esta_corrida(
 
     await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
-    completed = _eventos_publicados(mock_event_bus)[-1][1]
-    assert completed["log_paths"] == (str(log_nuevo),)
+    assert _eventos_publicados(mock_event_bus)[-1][1]["log_paths"] == (str(log),)
 
 
 @pytest.mark.asyncio
@@ -7640,19 +7656,30 @@ async def test_el_completed_exitoso_no_adjunta_logs(
 
 
 @pytest.mark.asyncio
-async def test_las_rutas_de_log_ignoran_dobles_sin_ruta_real_y_logs_ausentes_o_vacios(
+async def test_sin_firma_previa_no_se_adjunta_ninguna_ruta(
     service: DynDOLODPipelineService,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Defensa del helper: un doble (``MagicMock``), un log ausente o uno vacío no son evidencia."""
-    runner = MagicMock()  # `_ruta_del_log` devuelve un MagicMock, no un Path
-    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0) == ()
+    """Sin firma de continuidad no hay con qué demostrar autoría: se omite, no se adivina."""
+    log = _log(tmp_path / "DynDOLOD_SSE_log.txt", "[00:10] Fatal: boom\n")
+    runner = MagicMock()  # doble sin `_firma_del_log` real
+    runner._ruta_del_log = MagicMock(return_value=log)
 
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas={}) == ()
+
+
+@pytest.mark.asyncio
+async def test_un_log_ausente_o_vacio_no_se_adjunta(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un log que no está, o que existe vacío, no es evidencia de nada."""
     ausente = tmp_path / "no_existe_log.txt"
-    vacio = tmp_path / "vacio_log.txt"
-    vacio.write_bytes(b"")
-    runner._ruta_del_log = MagicMock(side_effect=lambda tool: ausente if tool == "TexGen" else vacio)
-    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0) == ()
+    vacio = _log(tmp_path / "vacio_log.txt")
+    runner = _runner_con_firma_real(_mock_runner_with_output(tmp_path), {"TexGen": ausente, "DynDOLOD": vacio})
+    firmas = await service._firmar_logs_previos(runner, run_texgen=True)
+
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, firmas_previas=firmas) == ()
 
 
 @pytest.mark.asyncio
@@ -7660,16 +7687,18 @@ async def test_las_rutas_de_log_sin_texgen_no_consideran_el_log_de_texgen(
     service: DynDOLODPipelineService,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Con ``run_texgen=False`` el log de TexGen no es de esta corrida aunque esté fresco."""
-    texgen = tmp_path / "TexGen_SSE_log.txt"
-    texgen.write_text("[00:47] TexGen completed successfully\n", encoding="utf-8")
-    dyndolod = tmp_path / "DynDOLOD_SSE_log.txt"
-    dyndolod.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
-    runner = MagicMock()
-    runner._ruta_del_log = MagicMock(side_effect=lambda tool: texgen if tool == "TexGen" else dyndolod)
+    """Con ``run_texgen=False`` el log de TexGen ni se sondea, aunque haya crecido."""
+    texgen = _log(tmp_path / "TexGen_SSE_log.txt")
+    dyndolod = _log(tmp_path / "DynDOLOD_SSE_log.txt")
+    runner = _runner_con_firma_real(MagicMock(), {"TexGen": texgen, "DynDOLOD": dyndolod})
 
-    sin = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, desde_epoch=0.0)
-    con = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=0.0)
+    firmas = await service._firmar_logs_previos(runner, run_texgen=True)
+    # Las DOS herramientas escriben durante la corrida.
+    texgen.write_text("[00:47] TexGen completed successfully\n", encoding="utf-8")
+    dyndolod.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
+
+    sin = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas=firmas)
+    con = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, firmas_previas=firmas)
 
     assert sin == (str(dyndolod),)
     assert con == (str(texgen), str(dyndolod)), "orden estable: TexGen primero, DynDOLOD después"
@@ -7741,48 +7770,363 @@ def test_todo_handler_terminal_de_execute_publica_el_evento_completed() -> None:
     assert sin_evento == [], f"handlers terminales que dejan `started` sin `completed`: {sin_evento}"
 
 
+# -----------------------------------------------------------------------------
+# Contrato E — procedencia: la firma de continuidad, no el `mtime`
+# -----------------------------------------------------------------------------
+#
+# `mtime` sólo dice que el archivo se TOCÓ; no dice QUIÉN lo tocó. Los casos de
+# abajo son exactamente los que un filtro por marca temporal deja pasar —un log
+# ajeno con la marca cerca del inicio, o uno que un proceso externo modifica
+# durante la corrida— y que la firma de continuidad (tamaño + digest del prefijo,
+# la MISMA técnica que el runner usa para su post-check) rechaza.
+
+
 @pytest.mark.asyncio
-async def test_las_rutas_de_log_excluyen_un_log_anterior_a_esta_corrida(
+async def test_un_log_que_no_crecio_no_se_adjunta_aunque_le_toquen_el_mtime(
     service: DynDOLODPipelineService,
     tmp_path: pathlib.Path,
 ) -> None:
-    """El filtro por ``mtime`` es lo que impide adjuntar evidencia de otro día.
+    """EL caso que ``mtime`` no puede rechazar: el archivo se toca pero NO crece.
 
-    Los dos logs son de herramientas que ESTA corrida sí consideraba
-    (``run_texgen=True``): sólo el de DynDOLOD se escribió después del inicio.
+    Es el log de una corrida anterior —o el de un proceso ajeno— con la marca
+    temporal dentro de la ventana: cualquier filtro por marca lo daría por bueno y
+    mandaría al operador a leer evidencia de otro día. Sin bytes nuevos no hay
+    nada que atribuirle a esta corrida.
     """
-    log_viejo, log_nuevo = _logs_de_prueba(tmp_path)  # el de TexGen tiene mtime de hace una hora
-    log_nuevo.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
-    runner = MagicMock()
-    runner._ruta_del_log = MagicMock(side_effect=lambda tool: log_viejo if tool == "TexGen" else log_nuevo)
+    log = _log(tmp_path / "DynDOLOD_SSE_log.txt", "[00:47] corrida ANTERIOR: completed\n")
+    runner = _runner_con_firma_real(MagicMock(), {"TexGen": log, "DynDOLOD": log})
+    firmas = await service._firmar_logs_previos(runner, run_texgen=False)
 
-    rutas = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=True, desde_epoch=time.time() - 60)
+    log.touch()  # la marca temporal pasa a "ahora"; el contenido, ni un byte
 
-    assert rutas == (str(log_nuevo),)
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas=firmas) == ()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("antes_del_inicio", "incluido"),
-    [(0.0, True), (1.0, True), (5.0, False)],
-    ids=["justo_al_inicio", "dentro_de_la_holgura", "fuera_de_la_holgura"],
-)
-async def test_las_rutas_de_log_respetan_la_holgura_de_mtime(
+async def test_un_log_reescrito_mas_grande_no_se_adjunta(
     service: DynDOLODPipelineService,
     tmp_path: pathlib.Path,
-    antes_del_inicio: float,
-    incluido: bool,
 ) -> None:
-    """La holgura absorbe el redondeo del sistema de archivos (FAT: 2 s), no más."""
-    import os
+    """Creció, pero el prefijo CAMBIÓ: no fue un append, y no se recorta lo no demostrado."""
+    log = _log(tmp_path / "DynDOLOD_SSE_log.txt", "AAAA\n")
+    runner = _runner_con_firma_real(MagicMock(), {"TexGen": log, "DynDOLOD": log})
+    firmas = await service._firmar_logs_previos(runner, run_texgen=False)
 
-    inicio = time.time()
+    log.write_text("BBBBBBBBBBBB\n", encoding="utf-8")  # reescritura: más grande, prefijo distinto
+
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas=firmas) == ()
+
+
+@pytest.mark.asyncio
+async def test_un_log_truncado_durante_la_corrida_no_se_adjunta(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Achicó: el prefijo previo ya no está, así que no hay ventana atribuible."""
+    log = _log(tmp_path / "DynDOLOD_SSE_log.txt", "linea vieja\n")
+    runner = _runner_con_firma_real(MagicMock(), {"TexGen": log, "DynDOLOD": log})
+    firmas = await service._firmar_logs_previos(runner, run_texgen=False)
+
+    log.write_text("x", encoding="utf-8")
+
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas=firmas) == ()
+
+
+@pytest.mark.asyncio
+async def test_el_log_que_no_existia_antes_es_de_esta_corrida(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """No había log: todo el archivo lo escribió esta corrida, sin frontera que demostrar."""
     log = tmp_path / "DynDOLOD_SSE_log.txt"
+    runner = _runner_con_firma_real(MagicMock(), {"TexGen": log, "DynDOLOD": log})
+    firmas = await service._firmar_logs_previos(runner, run_texgen=False)
+
     log.write_text("[00:10] Fatal: boom\n", encoding="utf-8")
-    os.utime(log, (inicio - antes_del_inicio, inicio - antes_del_inicio))
-    runner = MagicMock()
-    runner._ruta_del_log = MagicMock(return_value=log)
 
-    rutas = await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, desde_epoch=inicio)
+    assert await service._rutas_de_log_de_esta_corrida(runner, run_texgen=False, firmas_previas=firmas) == (str(log),)
 
-    assert rutas == ((str(log),) if incluido else ())
+
+@pytest.mark.asyncio
+async def test_un_fallo_de_sondeo_no_reemplaza_el_error_principal(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """La procedencia es best-effort: sondear mal NO puede cambiar qué error se propaga.
+
+    El sondeo corre DENTRO del handler que está reportando el fallo original. Si
+    levantara, el error real del pipeline quedaría enmascarado por un fallo de
+    filesystem del helper de observabilidad — exactamente lo que el principio
+    "la observabilidad no cambia el resultado real" prohíbe.
+    """
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner._ruta_del_log = MagicMock(side_effect=OSError("el path se fue"))
+    runner.run_full_pipeline = AsyncMock(side_effect=DynDOLODExecutionError("boom"))
+    service._runner = runner
+
+    resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert resultado["errors"] == ["boom"], "el error reportado sigue siendo el del pipeline, no el del sondeo"
+    assert _eventos_publicados(mock_event_bus)[-1][1]["log_paths"] == ()
+
+
+# -----------------------------------------------------------------------------
+# Contrato A — el ciclo se cierra aunque la cancelación llegue ANTES del try
+# -----------------------------------------------------------------------------
+
+
+def _esperas_entre_started_y_el_try_protegido() -> list[ast.Await]:
+    """Los ``ast.Await`` de ``execute`` que viven entre el `started` y el try protegido.
+
+    ENUMERA; no muestrea. El try protegido es el que sostiene el ``AsyncExitStack``
+    del pipeline; el `started` es la publicación que abre el ciclo de vida. Todo lo
+    que se pueda SUSPENDER en el medio —y por lo tanto cancelar— tiene que estar
+    cerrado por un handler que publique el evento terminal, o el consumidor del bus
+    queda viendo "corriendo" para siempre.
+    """
+    ejecutar = _metodo_execute_ast()
+    inicio = next(
+        i
+        for i, nodo in enumerate(ejecutar.body)
+        if isinstance(nodo, ast.Expr) and isinstance(nodo.value, ast.Await) and "_publish_started" in ast.unparse(nodo)
+    )
+    fin = next(
+        i
+        for i, nodo in enumerate(ejecutar.body)
+        if isinstance(nodo, ast.Try)
+        and any(
+            isinstance(hijo, ast.AsyncWith)
+            and any("AsyncExitStack" in ast.unparse(item.context_expr) for item in hijo.items)
+            for hijo in ast.walk(ast.Module(body=nodo.body, type_ignores=[]))
+        )
+    )
+    assert inicio < fin, "`_publish_started` debe publicarse antes del try protegido"
+    return [n for nodo in ejecutar.body[inicio + 1 : fin] for n in ast.walk(nodo) if isinstance(n, ast.Await)]
+
+
+def test_toda_espera_entre_started_y_el_try_protegido_cierra_el_ciclo() -> None:
+    """ENUMERA los puntos de suspensión entre `started` y el try protegido.
+
+    La propiedad es *todo `started` tiene su `completed`*. Un `await` cancelable es
+    el ÚNICO modo de salir de esa región sin publicar el evento terminal —ahí no
+    hay ningún `raise` propio—, y hasta T2 la región no tenía cinturón: una
+    cancelación en el gate de resume dejaba al consumidor creyendo que la etapa
+    seguía corriendo. El ancla recorre los `await` REALES del método, así que
+    agregar uno nuevo sin cinturón la rompe: no hay caso escrito a mano que ataje
+    al tercero.
+
+    Las publicaciones del evento terminal se excluyen del universo: si el `publish`
+    mismo se cancela, no hay garantía que reclamar (y el cinturón tampoco la
+    inventaría).
+    """
+    publicadores = {"_publish_completed", "_publish_completed_best_effort"}
+    esperas = [
+        espera
+        for espera in _esperas_entre_started_y_el_try_protegido()
+        if not any(publicador in ast.unparse(espera.value) for publicador in publicadores)
+    ]
+    assert esperas, "no se detectaron esperas entre `started` y el try protegido: el ancla quedaría vacía"
+    assert any("_consultar_resume" in ast.unparse(espera.value) for espera in esperas), (
+        "el gate de resume dejó de estar entre `started` y el try protegido: revisar esta ancla"
+    )
+
+    ejecutar = _metodo_execute_ast()
+    sin_cinturon = sorted(
+        ast.unparse(espera.value)[:70]
+        for espera in esperas
+        if not any(
+            isinstance(nodo, ast.Try)
+            and nodo.lineno <= espera.lineno <= (nodo.end_lineno or nodo.lineno)
+            and any(
+                isinstance(llamada, ast.Call)
+                and isinstance(llamada.func, ast.Attribute)
+                and llamada.func.attr in publicadores
+                for handler in nodo.handlers
+                for llamada in ast.walk(handler)
+            )
+            for nodo in ast.walk(ejecutar)
+        )
+    )
+    assert sin_cinturon == [], (
+        f"esperas cancelables entre `started` y el try protegido sin un handler que publique el evento "
+        f"terminal: {sin_cinturon}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_la_cancelacion_en_el_gate_de_resume_publica_el_evento_terminal(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """`started` ya se publicó y este `await` vive FUERA del try protegido.
+
+    Antes del cinturón, la cancelación acá salía sin evento terminal: el consumidor
+    del bus quedaba con el ciclo abierto para siempre.
+    """
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    service._runner = _mock_runner_with_output(mods)
+    service._consultar_resume = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    eventos = _eventos_publicados(mock_event_bus)
+    assert [topic for topic, _ in eventos] == ["pipeline.dyndolod.started", "pipeline.dyndolod.completed"]
+    assert eventos[-1][1]["success"] is False
+    assert eventos[-1][1]["log_paths"] == ()
+
+
+@pytest.mark.asyncio
+async def test_un_fallo_del_gate_de_resume_publica_el_evento_terminal_y_propaga_lo_mismo(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El hermano simétrico: un fallo inesperado del gate tampoco deja el ciclo abierto."""
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    service._runner = _mock_runner_with_output(mods)
+    service._consultar_resume = AsyncMock(side_effect=RuntimeError("la base no responde"))
+
+    with pytest.raises(RuntimeError, match="la base no responde"):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    eventos = _eventos_publicados(mock_event_bus)
+    assert [topic for topic, _ in eventos] == ["pipeline.dyndolod.started", "pipeline.dyndolod.completed"]
+    assert eventos[-1][1]["errors"] == ("la base no responde",)
+
+
+# -----------------------------------------------------------------------------
+# Contrato B — la publicación del evento terminal no debilita el cierre R3
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_una_segunda_cancelacion_durante_la_publicacion_conserva_el_cierre(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cancelación original → cleanup → publicación del terminal → SEGUNDA cancelación.
+
+    El orden se verifica con checkpoints causales (``asyncio.Event``), no con
+    sleeps: cuando el bus queda bloqueado, el cierre transaccional YA corrió. La
+    segunda cancelación se propaga —no se convierte en un evento de éxito— y el
+    intento de publicar no reemplaza nada: ``best-effort`` no captura
+    ``CancelledError``.
+    """
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock(side_effect=asyncio.CancelledError)
+    service._runner = runner
+
+    cierre_terminado = asyncio.Event()
+    publicando = asyncio.Event()
+    bus_bloqueado = asyncio.Event()
+    publicaciones: list[str] = []
+
+    cerrar_original = service._cerrar_tx_tras_rollback
+
+    async def _cerrar(*args: object, **kwargs: object) -> bool:
+        resultado = await cerrar_original(*args, **kwargs)  # type: ignore[arg-type]
+        cierre_terminado.set()
+        return resultado
+
+    service._cerrar_tx_tras_rollback = _cerrar  # type: ignore[method-assign]
+
+    async def _publish(evento: object) -> None:
+        publicaciones.append(getattr(evento, "topic", ""))
+        if len(publicaciones) == 1:
+            return  # `started` entra
+        assert cierre_terminado.is_set(), "el evento terminal se intentó ANTES de cerrar la transacción"
+        publicando.set()
+        await bus_bloqueado.wait()  # el bus se queda colgado
+
+    mock_event_bus.publish = AsyncMock(side_effect=_publish)
+
+    tarea = asyncio.create_task(service.execute(preset="Medium", run_texgen=False, create_snapshot=True))
+    await asyncio.wait_for(publicando.wait(), timeout=5)
+    tarea.cancel()  # SEGUNDA cancelación, con el bus bloqueado
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert publicaciones == ["pipeline.dyndolod.started", "pipeline.dyndolod.completed"], (
+        "no hay un tercer evento: la cancelación durante la publicación no fabrica un éxito"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Contrato C — el `rolled_back` del payload refleja el rollback REAL
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("rollback_real", "esperado"), [(True, True), (False, False)])
+async def test_el_evento_de_cancelacion_reporta_el_rollback_real(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+    rollback_real: bool,
+    esperado: bool,
+) -> None:
+    """El payload de cancelación no inventa un rollback: reporta el que ocurrió.
+
+    El cierre transaccional se reemplaza por un doble porque lo que se ancla acá es
+    el CALL SITE: el donor pasó de descartar el retorno de ``_cerrar_tx_tras_rollback``
+    a usarlo. Una versión que volviera a descartarlo publicaría ``rolled_back=False``
+    en los dos casos y este test la mata.
+    """
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock(side_effect=asyncio.CancelledError)
+    service._runner = runner
+    service._cerrar_tx_tras_rollback = AsyncMock(return_value=rollback_real)  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    completed = _eventos_publicados(mock_event_bus)[-1][1]
+    assert completed["rolled_back"] is esperado
+    assert completed["success"] is False, "un rollback confirmado no convierte la cancelación en éxito"
+
+
+@pytest.mark.asyncio
+async def test_el_cierre_transaccional_se_ejecuta_antes_de_publicar_el_terminal(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """La observabilidad es POSTERIOR al cierre: el evento no puede interrumpir el cleanup."""
+    mods = tmp_path / "mods"
+    (mods / "DynDOLOD Output").mkdir(parents=True)
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock(side_effect=asyncio.CancelledError)
+    service._runner = runner
+
+    orden: list[str] = []
+    cerrar_original = service._cerrar_tx_tras_rollback
+
+    async def _cerrar(*args: object, **kwargs: object) -> bool:
+        orden.append("cierre")
+        return await cerrar_original(*args, **kwargs)  # type: ignore[arg-type]
+
+    service._cerrar_tx_tras_rollback = _cerrar  # type: ignore[method-assign]
+
+    async def _publish(evento: object) -> None:
+        if getattr(evento, "topic", "") == "pipeline.dyndolod.completed":
+            orden.append("completed")
+
+    mock_event_bus.publish = AsyncMock(side_effect=_publish)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert orden == ["cierre", "completed"], f"el evento terminal debe publicarse DESPUÉS del cierre: {orden}"

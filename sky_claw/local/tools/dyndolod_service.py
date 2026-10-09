@@ -87,11 +87,11 @@ logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 #: Si alguna vez se construye, este es el único sitio a cambiar en este servicio.
 _ETAPA_DYNDOLOD = 9
 
-#: Holgura al comparar el ``mtime`` de un log con el inicio de la corrida. Los
-#: sistemas de archivos redondean (FAT guarda de a 2 s) y el reloj de pared puede
-#: retroceder un poco: sin holgura, un log escrito en el primer segundo se
-#: descartaría como "anterior". Un log VIEJO queda lejos de este margen.
-_HOLGURA_DE_MTIME_SEGUNDOS = 2.0
+#: Firma de continuidad de un log: ``(tamaño, digest)`` — el MISMO formato que
+#: produce ``DynDOLODRunner._firma_del_log``. Se compara por igualdad y nunca por
+#: verdad, porque sus dos valores "vacíos" significan cosas distintas: la tupla
+#: vacía es "no había log" y ``None`` es "no se pudo sondear".
+_FirmaDeLog = tuple[int | str, ...] | None
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -1292,15 +1292,18 @@ class DynDOLODPipelineService:
                 )
 
         start_time = time.monotonic()
-        # Reloj de pared para decidir qué logs de herramienta pertenecen a ESTA
-        # corrida (mtime >= inicio). El monotónico mide duraciones y no es
-        # comparable con un mtime.
-        start_epoch = time.time()
         # Declarado acá —igual que `needs_deployment`— porque el handler de
         # cancelación lo lee y no puede depender de que la asignación dentro del
         # `try` haya llegado a existir. Con `journal_committed=True` siempre está
         # asignado; antes de eso puede ser None.
         result: DynDOLODPipelineResult | None = None
+        # Firma de continuidad de cada log, tomada ANTES de cederle el control al
+        # runner (justo antes de `run_full_pipeline`). Es lo que vuelve
+        # DEMOSTRABLE la procedencia de `log_paths`: sin ella el evento sólo
+        # podría afirmar "el archivo se tocó" —`mtime`—, no "estos bytes los
+        # escribió esta corrida". Vacío = no se pudo firmar, y entonces NINGUNA
+        # ruta se adjunta: omitir antes que atribuir evidencia ajena.
+        firmas_de_log_previas: dict[str, _FirmaDeLog] = {}
         rolled_back = False
         journal_committed = False
         mutation_started = False
@@ -1479,37 +1482,74 @@ class DynDOLODPipelineService:
         # D2 (PR #493): la decisión de resume consulta el estado DURABLE del
         # handoff — nunca ``Path.exists`` del mod. Corre ANTES del lock para no
         # sostenerlo durante el digest del árbol (GBs).
-        if not run_texgen:
-            consulta = await self._consultar_resume(runner)
-            if isinstance(consulta, _ResumeBloqueado):
-                logger.error(
-                    "DynDOLOD (stage 9): resume bloqueado (%s): %s",
-                    consulta.reason,
-                    consulta.detail,
-                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-                )
-                duration = time.monotonic() - start_time
-                await self._publish_completed(
-                    preset=preset,
-                    run_texgen=run_texgen,
-                    success=False,
-                    texgen_success=False,
-                    dyndolod_success=False,
-                    errors=(consulta.detail,),
-                    duration_seconds=duration,
-                    rolled_back=False,
-                )
-                return _attach_preflight(
-                    {
-                        "success": False,
-                        "reason": consulta.reason,
-                        "message": consulta.detail,
-                        "errors": [consulta.detail],
-                        "duration_seconds": duration,
-                    },
-                    preflight_report,
-                )
-            handoff_resume = consulta
+        #
+        # `started` YA se publicó y este bloque contiene el ÚNICO punto de
+        # suspensión entre el evento de inicio y el `try` protegido de abajo: sin
+        # este cinturón, una cancelación durante la consulta —shutdown, cancel del
+        # operador— salía por el camino de la excepción SIN evento terminal, y el
+        # consumidor del bus quedaba viendo "corriendo" para siempre. El
+        # `except Exception` cierra el hermano simétrico: un fallo de la consulta
+        # tampoco puede dejar el ciclo abierto. Los dos RE-LANZAN — la
+        # observabilidad publica el cierre pero no cambia el veredicto de
+        # `execute`, que sigue propagando exactamente lo mismo que antes.
+        try:
+            if not run_texgen:
+                consulta = await self._consultar_resume(runner)
+                if isinstance(consulta, _ResumeBloqueado):
+                    logger.error(
+                        "DynDOLOD (stage 9): resume bloqueado (%s): %s",
+                        consulta.reason,
+                        consulta.detail,
+                        extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                    )
+                    duration = time.monotonic() - start_time
+                    await self._publish_completed(
+                        preset=preset,
+                        run_texgen=run_texgen,
+                        success=False,
+                        texgen_success=False,
+                        dyndolod_success=False,
+                        errors=(consulta.detail,),
+                        duration_seconds=duration,
+                        rolled_back=False,
+                    )
+                    return _attach_preflight(
+                        {
+                            "success": False,
+                            "reason": consulta.reason,
+                            "message": consulta.detail,
+                            "errors": [consulta.detail],
+                            "duration_seconds": duration,
+                        },
+                        preflight_report,
+                    )
+                handoff_resume = consulta
+        except asyncio.CancelledError:
+            await self._publish_completed_best_effort(
+                tx_id=tx_id,
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=("Pipeline cancelado antes de completarse.",),
+                duration_seconds=time.monotonic() - start_time,
+                rolled_back=False,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 — boundary: el gate de resume no puede dejar el ciclo abierto
+            await self._publish_completed_best_effort(
+                tx_id=tx_id,
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=(str(exc),),
+                duration_seconds=time.monotonic() - start_time,
+                rolled_back=False,
+            )
+            raise
 
         # DD-1: Directorios regenerados a proteger con rollback move-aside.
         # El backend de snapshots es copy-based/solo-archivos y ``Output/`` puede
@@ -1868,6 +1908,11 @@ class DynDOLODPipelineService:
                         and handoff_resume.expected_bytes is not None
                         else None
                     )
+                    # Frontera causal de esta corrida: se firman los logs ANTES de
+                    # cederle el control al runner. El runner vuelve a firmar antes
+                    # de cada spawn, pero para SU post-check; ésta es la firma del
+                    # servicio, la que después decide qué rutas son de esta corrida.
+                    firmas_de_log_previas = await self._firmar_logs_previos(runner, run_texgen=run_texgen)
                     result = await runner.run_full_pipeline(
                         run_texgen=run_texgen,
                         preset=preset,
@@ -2406,7 +2451,7 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=rolled_back,
                 log_paths=await self._rutas_de_log_de_esta_corrida(
-                    runner, run_texgen=run_texgen, desde_epoch=start_epoch
+                    runner, run_texgen=run_texgen, firmas_previas=firmas_de_log_previas
                 ),
             )
             # F1: el payload distingue "se rompió" de "está listo y falta
@@ -2536,7 +2581,7 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=rolled_back,
                 log_paths=await self._rutas_de_log_de_esta_corrida(
-                    runner, run_texgen=run_texgen, desde_epoch=start_epoch
+                    runner, run_texgen=run_texgen, firmas_previas=firmas_de_log_previas
                 ),
             )
             return _attach_preflight(
@@ -2685,46 +2730,125 @@ class DynDOLODPipelineService:
                 extra={"operation_type": "dyndolod_completed_no_publicado", "tx_id": tx_id},
             )
 
+    async def _firmar_logs_previos(self, runner: DynDOLODRunner, *, run_texgen: bool) -> dict[str, _FirmaDeLog]:
+        """Firma los logs de las herramientas ANTES de cederle el control al runner.
+
+        ``mtime`` no alcanza para atribuir: prueba que el archivo se tocó, no quién
+        lo tocó. Un log de una corrida anterior con la marca cerca del inicio, o un
+        proceso ajeno que lo modifica durante la corrida, pasan ese filtro igual. La
+        firma de continuidad —``(tamaño, digest)`` del contenido, la MISMA técnica
+        que el runner toma antes de cada spawn para su post-check— sí permite
+        DEMOSTRARLO: al cerrar se exige que el archivo haya crecido y que el prefijo
+        siga siendo byte-exacto. Es el criterio que el propio runner ya declaró
+        (``_firma_del_log``: *"el append hay que demostrarlo, no suponerlo"*).
+
+        Best-effort por contrato: si no se puede firmar, la herramienta queda sin
+        firma y su ruta se OMITE — no poder sondear un log nunca tumba la corrida—.
+        ``CancelledError`` sí se propaga: cancelar no es un fallo de sondeo.
+        """
+        herramientas = ("TexGen", "DynDOLOD") if run_texgen else ("DynDOLOD",)
+        try:
+            return await asyncio.to_thread(self._firmar_logs_sincronos, runner, herramientas)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — boundary best-effort: sondear no decide ningún veredicto
+            return {}
+
+    @staticmethod
+    def _firmar_logs_sincronos(
+        runner: DynDOLODRunner,
+        herramientas: tuple[str, ...],
+    ) -> dict[str, _FirmaDeLog]:
+        return {herramienta: runner._firma_del_log(herramienta) for herramienta in herramientas}
+
     async def _rutas_de_log_de_esta_corrida(
         self,
         runner: DynDOLODRunner,
         *,
         run_texgen: bool,
-        desde_epoch: float,
+        firmas_previas: dict[str, _FirmaDeLog],
     ) -> tuple[str, ...]:
-        """Logs de las herramientas que ESCRIBIERON durante esta corrida.
+        """Logs que ESCRIBIÓ esta corrida, demostrado por firma de continuidad.
 
-        Un log de una corrida anterior no explica este fallo y adjuntarlo
-        mandaría al operador a leer evidencia de otro día: se exige que el
-        archivo exista, no esté vacío y su ``mtime`` sea de esta corrida. TexGen
-        sólo cuenta si esta corrida lo ejecutó (``run_texgen``). Orden estable:
-        TexGen primero.
+        Un log de una corrida anterior no explica este fallo y adjuntarlo mandaría
+        al operador a leer evidencia de otro día. La prueba no es ``mtime`` —que
+        sólo dice que el archivo se tocó— sino que el archivo haya CRECIDO desde la
+        firma tomada antes de cederle el control al runner y que su prefijo siga
+        siendo byte-exacto (ver :meth:`_log_escrito_en_esta_corrida`).
 
-        Un doble sin ``Path`` real, un log ausente o ilegible no son evidencia y
-        se omiten sin ruido: esto alimenta un evento best-effort y no decide
-        ningún veredicto (el veredicto es del post-check del runner).
+        TexGen sólo cuenta si esta corrida lo ejecutó (``run_texgen``). Orden
+        estable: TexGen primero. Un doble sin ``Path`` real, un log ausente,
+        ilegible o sin firma previa no son evidencia y se omiten sin ruido: esto
+        alimenta un evento best-effort y no decide ningún veredicto (el veredicto
+        es del post-check del runner).
+
+        **Límite declarado (TOCTOU):** entre esta selección y el momento en que un
+        consumidor abra la ruta, el archivo puede cambiar de contenido o de destino.
+        T2 transporta RUTAS, no contenido ni autorización: T3 debe volver a
+        verificar procedencia y contención antes de abrir o adjuntar nada.
         """
         herramientas = ("TexGen", "DynDOLOD") if run_texgen else ("DynDOLOD",)
-        return await asyncio.to_thread(self._rutas_de_log_sincronas, runner, herramientas, desde_epoch)
+        try:
+            return await asyncio.to_thread(self._rutas_de_log_sincronas, runner, herramientas, firmas_previas)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — boundary best-effort: sondear rutas no puede reemplazar el error que se reporta
+            return ()
 
     @staticmethod
     def _rutas_de_log_sincronas(
         runner: DynDOLODRunner,
         herramientas: tuple[str, ...],
-        desde_epoch: float,
+        firmas_previas: dict[str, _FirmaDeLog],
     ) -> tuple[str, ...]:
         rutas: list[str] = []
         for herramienta in herramientas:
             ruta = runner._ruta_del_log(herramienta)
             if not isinstance(ruta, pathlib.Path):
                 continue
-            try:
-                info = ruta.stat()
-            except OSError:
-                continue
-            if info.st_size > 0 and info.st_mtime >= desde_epoch - _HOLGURA_DE_MTIME_SEGUNDOS:
+            if DynDOLODPipelineService._log_escrito_en_esta_corrida(
+                runner, herramienta, firmas_previas.get(herramienta)
+            ):
                 rutas.append(str(ruta))
         return tuple(rutas)
+
+    @staticmethod
+    def _log_escrito_en_esta_corrida(
+        runner: DynDOLODRunner,
+        herramienta: str,
+        firma_previa: _FirmaDeLog,
+    ) -> bool:
+        """¿Los bytes del log de ``herramienta`` los escribió ESTA corrida?
+
+        Mismo criterio que ``DynDOLODRunner._validar_completitud_de_la_corrida``
+        aplica al VEREDICTO, aplicado acá a la procedencia de la RUTA. Cuatro
+        desenlaces, y ninguno adivina:
+
+        - **Sin firma previa** (``None``: no se pudo sondear antes de lanzar) ⇒ no
+          hay con qué distinguir lo nuevo de lo heredado ⇒ **omitir**.
+        - **No había log antes** (tupla vacía) ⇒ todo el archivo es de esta corrida.
+        - **Creció y el prefijo coincide** ⇒ append DEMOSTRADO ⇒ es de esta corrida.
+        - **No creció, o el prefijo cambió** ⇒ no hay bytes nuevos atribuibles ⇒
+          **omitir**. Un ``mtime`` distinto sobre el mismo tamaño no prueba nada.
+
+        Un sondeo que falla (``stat``/lectura) devuelve ``False`` y no levanta: la
+        procedencia de una ruta best-effort jamás puede reemplazar al error que se
+        está reportando.
+        """
+        if firma_previa is None:
+            return False
+        try:
+            firma_actual = runner._firma_del_log(herramienta)
+            if firma_actual is None or len(firma_actual) == 0:
+                return False
+            if len(firma_previa) == 0:
+                return int(firma_actual[0]) > 0
+            previo = int(firma_previa[0])
+            if int(firma_actual[0]) <= previo:
+                return False
+            return runner._digest_del_prefijo(herramienta, previo) == firma_previa[1]
+        except Exception:  # noqa: BLE001 — boundary de sondeo: un fallo de filesystem no es evidencia
+            return False
 
     # ------------------------------------------------------------------
     # Journal helpers
