@@ -61,8 +61,10 @@ explícitamente no decisional), pero invalida el uso del número como evidencia 
 > baseline (era `+0.05`; el `-0.05` es del histórico) y afirmaba que la rejilla "nunca
 > encuentra el óptimo" sin haberlo medido con un optimizador real. Ver
 > [`corrective-20261008/`](corrective-20261008/README.md): con minimización real
-> `n_grid_matches_continuous = 0` en 31/31 assets convergidos, por lo que la afirmación
-> **ahora sí está soportada** — y `|s*| < 0.05` es **28/31**, no 27/31.
+> `n_grid_matches_refined = 0` en 31/31 assets convergidos, por lo que la afirmación
+> **ahora sí está soportada** — y `abs(s*) < 0.05` es **27/31** (el valor `28/31` que
+> publicó la primera ronda correctiva fue un artefacto del defecto D, corregido en la
+> ronda 2; ver §2 de ese README).
 
 **H4 — el defecto es real y toca el camino AUTH, pero no mueve la aguja.**
 `resize_normal` trunca a uint8 y re-cuantiza en el resize de Pillow (el hermano que #653 arregló

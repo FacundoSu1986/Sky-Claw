@@ -77,7 +77,7 @@ a «1.68°»: el desacuerdo normal↔height que el diagnóstico reportaba es, en
 > 3. **"Nunca encuentra el óptimo" (F2):** con el optimizador correcto (sección áurea,
 >    convergencia explícita) la afirmación se sostiene (`n_grid_matches_refined = 0`, con
 >    tolerancia declarada de `1e-06°`, y 31/31 convergidos), pero `abs(s*) < 0.05` es
->    **27/31**, no 27/31 del texto original, y no hay casos de borde.
+>    **27/31** y no hay casos de borde.
 >    **Actualizado el 2026-10-08 (ronda 2, hallazgos D y E):** este conteo pasó de 28 a
 >    **27**. La primera ronda correctiva publicaba `gray_rocks` con `s* = 0.0237` (dentro del
 >    piso) por un defecto del optimizador: el refinamiento reemplazaba un resultado coarse

@@ -23,6 +23,14 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > consistente pasaba el gate. Confirmado y corregido: gate **fail-closed** de cuatro
 > condiciones, renombre del booleano engañoso y contrato **separado** para el archivo del
 > manifiesto M3 (digest canónico LF). Ver §4.
+>
+> **Cuarta ronda (2026-10-09, sesión de cierre final de #700).** Un finding nuevo sobre
+> `scripts/corrective_optimizer.py:433`: `valid_minimum_bracket` se marcaba con la sola
+> condición `lo < b_mid < hi`, que prueba que el punto medio es **interior al intervalo**
+> pero **no** que exista evidencia de un mínimo interior. Reproducido (un objetivo plano o
+> monótono salía con `VALID_MINIMUM_BRACKET = YES`) y corregido con el bracketing estándar
+> de tres puntos. **Impacto científico medido: `NONE`** — la evidencia correctiva se
+> re-ejecutó completa y todos los valores científicos son idénticos; ver §2.3.
 
 ---
 
@@ -38,6 +46,7 @@ confirmados. Esta corrida los resuelve metodológicamente.
 | **F3** | El Spearman era **híbrido**: ángulos recalculados en el baseline contra `delta_rmse` del artefacto histórico no-ancestro. | `scripts/phase_c_corrective.py` emite dos universos separados: `BASELINE_COUNTERFACTUAL` (delta recomputado) y `HISTORICAL_COMPARISON` (etiquetado híbrido). |
 | **F4** | La sonda H4 probaba amplitudes `[1.0, 0.3, 0.1, 0.03]`, pero el claim externo se midió en `c = 0.05` y `c = 0.01`. El efecto es no lineal ⇒ no falsaba el claim citado. | Batería `[1.0, 0.3, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]`, con `0.05` y `0.01` **obligatorias**. |
 | **F5** | `h_nat` centrado tiene negativos; `resize_height` clipea a `[0,1]`; pero `n_nat = self_forward(h_nat)` sale del campo **sin** clipear ⇒ el height target y la superficie de las normales **no eran la misma superficie**. | `safe_surface()`: `h_safe = h_nat + offset` sin scaling (∇(h+c) = ∇h preserva pendientes). Casos fuera de rango se marcan inválidos; **no se clipea en silencio**. Invariantes verificados por test. |
+| **F6** | `valid_minimum_bracket` se marcaba con la sola condición `lo < b_mid < hi`. Eso prueba que el punto medio es **interior al intervalo**, no que exista evidencia de un mínimo interior: un objetivo plano o monótono salía con `VALID_MINIMUM_BRACKET = YES`. | `scripts/corrective_optimizer.py::is_valid_minimum_bracket()`: exige el bracketing estándar de tres puntos (`f(mid) < f(lo) − tol` **y** `f(mid) < f(hi) − tol`, con `tol = metric_tolerance`). Cubierto por tests de plano, monótono en ambos sentidos, casi-plano, borde, mínimo interior y kink. Ver §2.3. |
 
 ---
 
@@ -113,6 +122,59 @@ El refinamiento **jamás** puede reemplazar un resultado mejor ya observado por 
 En la primera ronda esto se violaba en 5 de 31 assets, incluido `polyhaven_gray_rocks`
 (coarse `0.08954885 @ 17.024981969` publicado como `0.02373315 @ 23.695281265`).
 Corregido: ver §2 y la tabla de cambios.
+
+### 2.3 Contrato del bracket mínimo (cuarta ronda, finding F6) e impacto sobre H1
+
+`VALID_MINIMUM_BRACKET` no significa "el punto medio cae dentro del intervalo": significa
+**hay evidencia de un mínimo interior bracketed**. El contrato es el bracketing estándar de
+tres puntos, con la tolerancia de métrica del propio optimizador:
+
+```text
+lo < mid < hi
+AND f(mid) < f(lo) - metric_tolerance
+AND f(mid) < f(hi) - metric_tolerance
+```
+
+Para `f` continua eso **implica** un mínimo local estrictamente dentro de `(lo, hi)`: el
+mínimo de `f` sobre `[lo, hi]` no puede estar en `lo` ni en `hi` (ambos son peores que
+`mid`), así que cae en el interior. La condición `lo < mid < hi` **sola no alcanza**.
+
+Reproducción del defecto sobre el código previo al fix — objetivos **sin** mínimo interior
+que igual recibían `VALID_MINIMUM_BRACKET = YES`:
+
+| objetivo | status | `valid_minimum_bracket` (antes) | (después) |
+|---|---|---|---|
+| `f = 1.0` (plano) | `FLAT_OBJECTIVE` | **True** | `False` |
+| `f = 10 + 5s` (monótono ↑) | `MAX_EXPANSIONS` | **True** | `False` |
+| `f = 10 − 5s` (monótono ↓) | `MAX_EXPANSIONS` | **True** | `False` |
+| `f = 2 + 1e-14·sin(1000s)` (casi plano) | `FLAT_OBJECTIVE` | **True** | `False` |
+
+**Impacto sobre H1: `NONE`.** Se re-ejecutó `phase_c_corrective.py` completo (31 assets,
+corpus `EXP-M3`, READ-ONLY) con el optimizador corregido y se comparó campo por campo
+contra la evidencia congelada:
+
+| métrica | evidencia congelada | re-ejecución con el fix |
+|---|---|---|
+| `n_converged` | 31 | **31** |
+| `n_unresolved` | 0 | **0** |
+| `n_valid_minimum_bracket` | 31 | **31** |
+| `n_stop_criterion_met` | 31 | **31** |
+| `n_continuous_abs_strength_lt_0_05` | 27 | **27** |
+| `n_grid_matches_refined` | 0 | **0** |
+| mediana agreement (rejilla / continuo) | 10.7085° / 1.6826° | **10.7085° / 1.6826°** |
+| Spearman (rejilla / continuo) | 0.1367 / 0.4782 | **0.1367 / 0.4782** |
+
+Los **12** contadores de `counts_16` y **todos** los campos escalares por asset
+(`continuous_best_strength`, `continuous_agreement_deg`, `grid_*`, `delta_*`, `split`,
+`replica_abs_diff_deg`) son idénticos. La única diferencia es
+`continuous_meta.n_evaluations` (+3 por bracket validado, hasta +27 en un asset): el
+chequeo de validez evalúa `f` en los tres puntos del bracket. Es **instrumentación**, no un
+resultado, y no entra en la lista de campos científicos de §17 del brief.
+
+Por eso la evidencia correctiva **no se regenera** (el brief pide regenerar sólo si cambia
+un resultado científico) y `evidence/` queda congelado en la ejecución del 2026-10-08. Para
+reproducir el experimento con el script actual: mismo comando, mismos valores científicos,
+`n_evaluations` mayor.
 
 ---
 
@@ -242,9 +304,10 @@ H1_IMPLEMENTATION_DEFECT     = CONFIRMED
 H1_CONTINUOUS_OPTIMIZATION   = VALID          (31/31 convergen, 0 unresolved)
 H1_GRID_MATCHES_CONTINUOUS   = 0
 H1_GRID_NEVER_FINDS_OPTIMUM  = TRUE           (0 matches Y todo converge)
+H1_VALID_MINIMUM_BRACKET     = 31             (con evidencia de mínimo interior, F6)
 H1_MEDIAN_GRID_AGREEMENT_DEG = 10.7085
 H1_MEDIAN_CONT_AGREEMENT_DEG = 1.6826
-H1_ABS_STRENGTH_LT_0_05      = 28
+H1_ABS_STRENGTH_LT_0_05      = 27
 H1_PRIMARY_IMPACT            = NONE
 
 H4_IMPLEMENTATION_DEFECT        = CONFIRMED
@@ -300,11 +363,11 @@ Tests asociados (fuera de esta carpeta, en `tests/`):
 
 ```
 tests/test_native_parallax_pr700_corrective_optimizer.py             F1: 16 tests
-tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E: 16 tests
+tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E/F6: 27 tests
 tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 20 tests
 tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
-tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 6 tests
-tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H: 5 tests
+tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 13 tests
+tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H/I: 8 tests
 ```
 
-Total: **71 tests correctivos** (`pytest -k pr700_corrective`).
+Total: **92 tests correctivos** (`pytest -k pr700_corrective`).
