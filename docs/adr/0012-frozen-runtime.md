@@ -3510,12 +3510,24 @@ dice nada sobre si hay un junction dentro del árbol.
 `P4_CLONE_ACTIVATION_GATE`, `P4_CLONE_PROVISIONING_LIFECYCLE` y
 `P4_ROLLBACK_TARGET_HISTORY`. "No estaba en la lista de 10" **no** es justificación.
 
-**Censo reproducible.** `grep -oE "P4_[A-Z0-9_]+"` sobre el ADR da **23 símbolos**
-(17 requisitos + 6 de estado/variantes: `P4_READY_TO_DESIGN`, `P4_READY_TO_IMPLEMENT`,
-`P4_DESIGN_FROZEN`, `P4_IMPLEMENTED`, `P4_APPROVAL_SCOPE_DESIGN`,
-`P4_APPROVAL_SCOPE_IMPLEMENTATION`, `P4_REVERIFY_DESIGN`, `P4_REVERIFY_IMPLEMENTATION`,
-`P4_REVERIFY`, `P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW`). La lista de
-**requisitos** se normaliza contra §29.8 + §32.6 + §34:
+**Censo reproducible.**
+
+```bash
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u
+```
+
+Sobre el ADR **completo tras §35** devuelve **36 símbolos**: **17 requisitos** más
+**19 indicadores de estado / etiquetas de adjudicación** (`P4_READY_TO_DESIGN`,
+`P4_READY_TO_IMPLEMENT`, `P4_DESIGN_FROZEN`, `P4_IMPLEMENTED`, `P4_DESIGN_BLOCKERS`,
+`P4_REQUIREMENTS_DISCOVERED`, `P4_REQUIREMENTS_DESIGN_CLOSED`,
+`P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED`, `P4_REQUIREMENTS_OPEN`,
+`P4_APPROVAL_SCOPE_DESIGN`, `P4_APPROVAL_SCOPE_IMPLEMENTATION`, `P4_REVERIFY`,
+`P4_REVERIFY_DESIGN`, `P4_REVERIFY_IMPLEMENTATION`,
+`P4_CORE_MAY_BE_IMPLEMENTED_BEFORE_P5`, `P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW`,
+`P4_BLOCKERS_CENSUSED`, `P4_P5_WORDING`, y los `P4_*_DESIGN` de los cinco requisitos
+diseñados en §35.8). El conteo **no** se toma como lista de requisitos: la lista de
+**requisitos** se normaliza contra §29.8 + §32.6 + §34 y es la de la tabla de abajo
+(**17**).
 
 | # | P4 REGISTERED REQUIREMENT | §29 STATUS | §34 DECISIÓN | ¿BLOQUEA IMPLEMENTACIÓN? | DESIGN STATUS |
 |---|---|---|---|---|---|
