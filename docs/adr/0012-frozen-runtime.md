@@ -1821,10 +1821,12 @@ marcada para actualizar.
 
 Ver §20: se agregan `clones/<clone-id>/`, `state/clones/<clone-id>.json` y
 `state/runtime_setups/<runtime-setup-id>.json`. Los artefactos durables de P4 (§34.4,
-§37.5, §38.2) son `state/transition.json` (journal vigente), `state/transitions/<T>.json`
-(historial inmutable de transiciones finalizadas), `state/approval.json` (ledger único de
-aprobación) y `state/approvals/<approval_seq>-<approval_id>.json` (evidencia terminal
-inmutable de una aprobación). El **contrato** del esquema v2 de
+§37.5, §38.2, §40.2) son `state/transition.json` (journal vigente),
+`state/transitions/<T>.json` (historial inmutable de transiciones finalizadas),
+`state/approval.json` (ledger único de aprobación), `state/issuances/<approval_seq>.json`
+(evidencia inmutable de **emisión**, una por seq) y
+`state/approvals/<approval_seq>-<approval_id>.json` (evidencia terminal inmutable de una
+aprobación). El **contrato** del esquema v2 de
 `active.json`, de la metadata del Clone y del manifest de setup se congela acá
 (§19); su **implementación** y la migración v1 → v2 son de P4. Invariante: el
 Desired apunta a un **par** (Generation, Clone) y el linaje es un dato registrado,
@@ -1851,7 +1853,7 @@ no inferido; v1 sigue leyéndose fail-closed.
 | `P4_CROSS_PROCESS_LOCK` (ampliado) | P4 | Una clave **por `FrozenRuntimeRoot`**, no por destino; base del lockfile derivada del root (p. ej. dentro de `state/`), no de `tempfile.gettempdir()`. `destination_lock` de RV-3 **no sirve** (E7). Los instaladores toman un lock por `game_dir`, cuya clave **cambia** al repuntar la ruta: la promoción debe tomar ambas o usar una clave lógica. Participantes congelados por introspección/AST. |
 | `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un **resultado de operación** explícito (`SUCCESS`/`CANCELLED`/`FAILED`), nunca en un `BUILDING` huérfano. `CANCELLED` **no** es un estado del ciclo de vida del Clone (D0-R2.6; §36.7): la FSM del Clone sigue siendo `CREATED \| PROVISIONING \| PROVISIONED \| INVALID`. **No se refactoriza a asyncio en P0.4.** |
 | `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding, **y también el rollback** (R4-F3): promoción y rollback usan el **mismo modelo**. El **ordering es normativo**: (i) la transición `PENDING` se persiste **antes** de mutar el Effective Runtime; y (ii) se **finaliza SÓLO después** de que el POST-verify pase (R4.1-F1) — invariante `FINALIZED ⇒ POST verification already passed`; si el POST falla, la transición **sigue `PENDING`** (recuperable). Formato del registro = P4; ordering = congelado. El historial `FINALIZED` tiene **almacén propio** (`state/transitions/<transition_id>.json`, inmutable, ordenado por `finalization_seq` lógico y **no** por mtime) y el protocolo de escritura entre la aprobación y el journal es **burn-first**, con matriz de crash explícita (§37.2/§37.5). |
-| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`, `approval_id`, `approval_seq`, `approval_scope_digest`, `approval_provenance`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`; lista normativa única y censo de §38.5); el **mecanismo** no existe. **El scope liga el SOURCE que se reemplaza, no sólo el target** (D0-R1; §35.2): sin él, una aprobación obtenida en otro contexto pasaría con el target intacto. **Y liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, la **autoridad durable de consumo** (`approval_id` + `approval_seq` + `approval_scope_digest`, §36.5/§37.1), el **ciclo de vida de la aprobación** (`ISSUED | CONSUMED | REVOKED` con CAS, §37.4), la expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño — el lock **no** es autorización humana. **Y el orden de emisión está congelado** (D0-R5.1; §39.3): el scope se propone con `approval_id`/`approval_seq` preasignados y su `approval_scope_digest` calculado **antes** de presentarlo, el propietario aprueba ese digest, y el `CAS ISSUE` posterior publica exactamente esos valores — de modo que `WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES`. |
+| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`, `approval_id`, `approval_seq`, `approval_scope_digest`, `approval_provenance`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`; lista normativa única y censo de §38.5); el **mecanismo** no existe. **El scope liga el SOURCE que se reemplaza, no sólo el target** (D0-R1; §35.2): sin él, una aprobación obtenida en otro contexto pasaría con el target intacto. **Y liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, la **autoridad durable de consumo** (`approval_id` + `approval_seq` + `approval_scope_digest`, §36.5/§37.1), el **ciclo de vida de la aprobación** (`ISSUED | CONSUMED | REVOKED` con CAS, §37.4), la expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño — el lock **no** es autorización humana. **Y el orden de emisión está congelado** (D0-R5.1; §39.3): el scope se propone con `approval_id`/`approval_seq` preasignados y su `approval_scope_digest` calculado **antes** de presentarlo, el propietario aprueba ese digest, y el `CAS ISSUE` posterior publica exactamente esos valores — de modo que `WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES`. **Y la emisión es durable fuera del ledger** (D0-R6.1; §40.2): `state/issuances/<seq>.json` inmutable, escrito antes del ledger, con **un único witness por seq**; `approval.json` pasa a ser **caché reconciliable**, no autoridad de emisión. Cualquier colisión con la seq esperada es `LEDGER_RETROCEDIDO` ⇒ `FAIL_CLOSED`, nunca «buscar otra secuencia» (D0-R6.2; §40.3). |
 | `P4_RUNTIME_SETUP_PROVISIONING` (nuevo) | P4 | Implementar SFR-22: registrar el `RuntimeSetupManifest` por versión, provisionar el Clone de forma reproducible (SKSE del build exacto, root files, componentes) y verificar sus hashes declarados. Sin esto el rollback no reconstruye un runtime **listo para activación** (§31.2). Incluye declarar `assumptions` para lo no clasificado (Creation Club, Q22). |
 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` (nuevo) | P4 / P6 / P7 | R3-B1 (§31.5): adjudicar qué estrategia (A/B/C/D) garantiza que los artefactos declarados por el manifest sigan siendo recuperables, y **demostrar por Generation retenida** qué queda retenido o reproducible. Sin esta adjudicación **no se puede prometer rollback operativo**: el manifest declara procedencia, no disponibilidad futura. `RUNTIME_SETUP_ARTIFACT_AVAILABILITY = OPEN`. |
 | `P4_CLONE_ACTIVATION_GATE` (nuevo) | P4 | Implementar §29.3, incluyendo el catálogo de críticos (Q19) y el **reporte** de deriva (no sólo el veredicto). Además: (a) las expectativas críticas deben **pasarse explícitamente** desde la metadata —nunca quedar en el default `()` de RV-2/RV-3, que desactiva el chequeo en silencio (§29.10-20)—; (b) el gate debe rechazar reparse points que **escapen** del Clone, no sólo comparar inodos contra el origen (§29.10-21); (c) **exclusión física de la Managed Source** (R4-F6): la identidad lógica es necesaria y no suficiente, hace falta no-contención/no-solapamiento con `steamapps/common`; (d) exigir `lifecycle == PROVISIONED` (R4-F9), no la mera presencia de un `intended_runtime_setup_id`. |
@@ -3461,8 +3463,8 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 ```text
 TRACKER_672_AUDITED          = YES
 P4_READY_TO_DESIGN           = YES
-P4_DESIGN_FROZEN             = NO   (SUPERSEDED cinco veces: rondas 1 (§35), 2 (§36), 3 (§37), 4 (§38) y 5 (§39); estado vigente en §39.9)
-P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §39.9)
+P4_DESIGN_FROZEN             = NO   (SUPERSEDED seis veces: rondas 1 (§35), 2 (§36), 3 (§37), 4 (§38), 5 (§39) y 6 (§40); estado vigente en §40.7)
+P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §40.7)
 P4_IMPLEMENTED               = NO
 P5_IMPLEMENTED               = NO
 
@@ -4116,12 +4118,13 @@ P3B                                 = DEFERRED_PENDING_RIG
 OPEN_P4_DESIGN_BLOCKERS = 0
 
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = NO   (SUPERSEDED cinco veces: la ronda adversarial 2 abrió 6
+P4_DESIGN_FROZEN        = NO   (SUPERSEDED seis veces: la ronda adversarial 2 abrió 6
                                 residuos, la ronda 3 abrió 5 blockers de durabilidad, la
-                                ronda 4 abrió 4 residuos de durabilidad terminal y la
-                                ronda 5 abrió 1 blocker de orden de emisión;
-                                estado vigente en §39.9)
-P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §39.9)
+                                ronda 4 abrió 4 residuos de durabilidad terminal, la
+                                ronda 5 abrió 1 blocker de orden de emisión y la ronda 6
+                                abrió 2 residuos de durabilidad de la EMISIÓN;
+                                estado vigente en §40.7)
+P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §40.7)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
 PR_READY_TO_MERGE       = NO
@@ -4927,10 +4930,12 @@ MERGE                  = NO
 abiertas como implementación**, no como diseño: el **oráculo de Effective Runtime** (P5)
 y la **emisión de `approval_id`/`approval_seq`** por la superficie HITL.
 
-> **Extendido por las rondas 3 (§37) y 4 (§38).** La revisión externa sobre `1215429b`
-> abrió **5 blockers** en la maquinaria de aprobación/journal que esta ronda había
-> agregado; la revisión sobre `6f257e7b` abrió **4 residuos** más sobre la durabilidad
-> terminal. Cambios de contrato: `state/approval_consumption.json` → `state/approval.json`
+> **Extendido por las rondas 3 (§37), 4 (§38), 5 (§39) y 6 (§40).** La revisión externa
+> sobre `1215429b` abrió **5 blockers** en la maquinaria de aprobación/journal que esta
+> ronda había agregado; la revisión sobre `6f257e7b` abrió **4 residuos** más sobre la
+> durabilidad terminal; la ronda 5 abrió **1 blocker** de orden de emisión y la ronda 6
+> **2 residuos** de durabilidad de la emisión. Cambios de contrato:
+> `state/approval_consumption.json` → `state/approval.json`
 > con **un solo `approval_revision` bajo CAS** para todo escritor; `approval_seq`/
 > `approval_scope_digest`/`approval_provenance` **dentro** del scope; protocolo
 > **burn-first** con matriz de crash entre aprobación y journal (sin reclamar
@@ -4938,7 +4943,11 @@ y la **emisión de `approval_id`/`approval_seq`** por la superficie HITL.
 > `FINALIZED` con almacén propio e inmutable y orden **lógico** (`finalization_seq`);
 > retención corregida a **`K ≥ 3`**; y —ronda 4— **evidencia terminal inmutable**
 > (`state/approvals/`) escrita **antes** del ledger, `finalization_seq` **derivado** del
-> store y frontera de retención **posicional**. Estado vigente en **§39.9**.
+> store y frontera de retención **posicional**; y —rondas 5 y 6— **ordering de emisión
+> congelado** (preasignar → digest → presentar → consentir → CAS, sin sostener el lock
+> durante la interacción humana) y **witness de emisión durable** (`state/issuances/`,
+> escrito antes del ledger), que vuelve el estado `ISSUED` detectable y reconciliable
+> fuera de `approval.json`. Estado vigente en **§40.7**.
 
 ### 36.16 Verificación de esta ronda
 
@@ -5158,18 +5167,25 @@ su tombstone inmutable y **después** el ledger (write-ahead; §38.2):
 ```text
 ISSUE (state ∈ {CONSUMED, REVOKED} ∨ ledger ausente → ISSUED):
     # Publica una aprobación YA CONSENTIDA. El ordering completo —preasignar,
-    # digest, presentar, consentir— es §39.3. R es la revisión observada al
-    # PROPONER (A1), no una recién leída: presentar la recién leída abriría
-    # la ventana ABA.
-    CAS: approval_revision == R                      # revisión de la PROPUESTA
+    # digest, presentar, consentir— es §39.3; la evidencia durable es §40.2.
+    # R es la revisión observada al PROPONER (A1), no una recién leída.
+    [0] CREATE state/issuances/<proposed_approval_seq>.json  (no-clobber; fsync)
+        ← LA EMISIÓN OCURRE ACÁ. El witness es la autoridad de la emisión y
+          sobrevive a la restauración del ledger (D0-R6.1). Un solo witness
+          por seq: es también lo que hace cumplir MAX_ISSUED = 1.
+        si el CREATE falla ⇒ clasificar por el ledger (§40.3):
+            el ledger conoce la seq ⇒ CARRERA_NORMAL ⇒ descartar y re-presentar
+            el ledger NO la conoce ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED
+    CAS sobre el ledger — refresco de la CACHÉ, con esperado = R:
+         approval_revision == R                      # revisión de la PROPUESTA
          ∧ NOT (state == ISSUED)                     # MAX_ISSUED = 1 (§37.6)
          ∧ el scope PROPUESTO es bien formado y su digest recomputa
          ∧ last_issued_approval_seq == proposed_approval_seq - 1
-         ∧ NO existe tombstone con approval_seq == proposed_approval_seq
-         ∧ NO existe tombstone con approval_id  == proposed_approval_id
-           (por seq Y por id por separado: §38.2 R3; cubre el ledger restaurado)
-         ∧ max(approval_seq sobre tombstones) <= last_issued_approval_seq
-           (ledger retrocedido ⇒ FAIL_CLOSED; §38.2 R2)
+         ∧ H == proposed_approval_seq        # el witness [0] ES la cabeza de la cadena
+         ∧ T <= proposed_approval_seq - 1    # ningún tombstone en o más allá de esa seq
+           (subsume la regla R2 de §38.2 y la unifica; §40.2/§40.3)
+           (NO max(H,T) == proposed_seq - 1: el witness [0] ya existe y H lo incluye;
+            esa forma sería insatisfacible — §39.3 C3)
     → { state: ISSUED,
         approval_seq = proposed_approval_seq,        # EXACTAMENTE lo propuesto
         approval_id  = proposed_approval_id,         # EXACTAMENTE lo propuesto
@@ -5178,8 +5194,9 @@ ISSUE (state ∈ {CONSUMED, REVOKED} ∨ ledger ausente → ISSUED):
         approval_revision = R + 1 }
     fsync
     EMISOR = superficie HITL (NUNCA la maquinaria de transición)
-    FALLA DEL CAS ⇒ DESCARTAR la propuesta y re-presentar (§39.3 C3):
-                    NUNCA adaptar el scope ni reasignar seq en silencio
+    FALLA DEL CAS TRAS EL CREATE ⇒ la emisión YA ocurrió ⇒ RECONCILIAR el ledger
+        hacia adelante desde los stores (§40.2); NUNCA deshacer el witness
+    EN NINGÚN CAMINO: adaptar el scope, reasignar seq, ni saltar a otra secuencia
 
 CONSUME (ISSUED → CONSUMED):                  # el "burn" de §37.2
   [0] CREATE state/approvals/<seq>-<id>.json  (no-clobber; terminal_state=CONSUMED;
@@ -5433,13 +5450,24 @@ el ledger; pero **no** se le atribuye una garantía que no da.
 otro» aplicada a las autoridades durables:
 
 ```text
-approval_id / approval_seq / state   → state/approval.json            (una autoridad)
+approval_id / approval_seq / state   → state/approval.json             (ledger de trabajo:
+                                       CACHE reconciliable, NO autoridad; §40.2)
+emisión de una aprobación            → state/issuances/<seq>.json      (una autoridad;
+                                       evidencia inmutable; §40.2)
 estado terminal de una aprobación    → state/approvals/<seq>-<id>.json (una autoridad;
                                        evidencia inmutable; §38.2)
 transición vigente                   → state/transition.json          (una autoridad)
 historial FINALIZED                  → state/transitions/<T>.json     (una autoridad)
 previous_activation_target           → el registro FINALIZED           (una autoridad; §36.8)
 ```
+
+**`approval.json` es caché, no autoridad (ronda 6).** Desde §40.2 todo lo que el ledger
+guarda sobre una aprobación es **derivable** de los dos stores inmutables: `state` y
+`last_issued_*` de `max(state/issuances/)` menos los tombstones; `last_consumed_*` del
+tombstone de mayor seq. La única excepción es `approval_revision`, que **no** se deriva: es
+el token de concurrencia del propio ledger, no una autoridad, y por eso una restauración
+puede hacerlo retroceder sin romper ninguna garantía. Ésa es la razón por la que la
+reconciliación de §40.2 puede reparar el ledger hacia adelante sin pedir autorización nueva.
 
 **Un escritor por campo, un CAS para todos.** Aunque `approval.json` tiene dos escritores
 lógicos (superficie HITL y maquinaria de transición), **toda** escritura pasa por el mismo
@@ -5671,9 +5699,10 @@ implementación** —no como diseño—: el **oráculo de Effective Runtime** (P
 > `last_finalization_seq` se usaba en el CAS de F1 **sin autoridad definida**; el estado
 > `FINALIZED` seguía figurando como estado del journal en §34.4/§36.14/§36.15; y la
 > lista normativa de `ApprovalScope` divergía entre secciones (`target_*` vs nombres
-> planos) y estaba incompleta en §29.8. **El estado vigente es el de §39.9.**
-> `P4_DESIGN_FROZEN` y `P4_READY_TO_IMPLEMENT` vuelven a `NO` hasta que §38 cierre los
-> cuatro.
+> planos) y estaba incompleta en §29.8. **El estado vigente es el de §40.7.**
+> `P4_DESIGN_FROZEN` y `P4_READY_TO_IMPLEMENT` quedaron en `NO` **en esta ronda**; las
+> rondas 4 (§38), 5 (§39) y 6 (§40) volvieron a ponerlos en `YES` al cerrar cada una sus
+> propios residuos.
 
 ### 37.11 Verificación de esta ronda
 
@@ -5895,10 +5924,15 @@ R1 — RESURRECCIÓN DIRECTA
      ⇒ el ledger presenta como ISSUED una aprobación que YA es terminal
      ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED
 
-R2 — CONTADOR RETROCEDIDO
+R2 — CONTADOR RETROCEDIDO   (generalizado en la ronda 6; §40.3)
      max(approval_seq sobre TODOS los tombstones) > last_issued_approval_seq
      ⇒ el ledger volvió atrás más allá de la última emisión
      ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED
+     Desde la ronda 6 la comprobación se hace sobre `max(H, T)`, con
+     `H = max(approval_seq)` del store de EMISIONES (§40.2), porque el caso
+     `ISSUED` —una emisión que todavía no llegó a estado terminal— también tiene
+     que detectarse (D0-R6.1). Y la resolución es **única**: `FAIL_CLOSED`, sin
+     re-propuesta y sin saltar secuencias (§40.3).
 
 R3 — AMBIGÜEDAD
      dos tombstones con el mismo approval_seq, o con el mismo approval_id
@@ -6428,7 +6462,7 @@ rg -n "state/approvals/|approval_terminal_store|WRITE_AHEAD_APPROVAL_TERMINAL" \
 rg -n "RETENTION_FRONTIER|RETENTION_BOUNDARY_VALID|BROKEN_CHAIN" \
    docs/adr/0012-frozen-runtime.md
 
-# (6) estados vigentes, sin YES adelantados fuera de §39.9
+# (6) estados vigentes, sin YES adelantados fuera de §40.7
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (7) censo (no se asume; se recomputa)
@@ -6519,10 +6553,16 @@ FASE A — PROPUESTA (bajo el lock del root; NO persiste nada)
       source_activation_digest, target, evidencias de CONTENIDO, candidate_id)
       sale del snapshot ya verificado
   A4  calcular approval_scope_digest = SHA-256(canonical_json(scope \ {él}))
-  A5  verificar contra el store de tombstones (§38.2):
-        ∄ tombstone con approval_seq == proposed_approval_seq
-        ∄ tombstone con approval_id  == proposed_approval_id
-      colisión ⇒ descartar y volver a A2 con OTRA secuencia (NUNCA reusar)
+  A5  verificar la AUTORIDAD DURABLE contra el ledger (§40.2/§40.3):
+        H = max(approval_seq) sobre state/issuances/     (0 si el store está vacío)
+        T = max(approval_seq) sobre state/approvals/     (0 si el store está vacío)
+        si max(H, T) >= proposed_approval_seq
+          ⇒ LEDGER_RETROCEDIDO / INCONSISTENT_AUTHORITY
+          ⇒ FAIL_CLOSED · NO se propone · NO se presenta · RECOVERY (§40.3)
+        si existe witness o tombstone con approval_id == proposed_approval_id
+          ⇒ APPROVAL_ID_MINTING_DEFECT ⇒ FAIL_CLOSED · NO se reacuña en silencio
+      NUNCA se «busca otra secuencia»: como proposed_seq = last_issued + 1, un
+      registro durable en esa seq ES la detección disparándose (§40.3).
   A6  liberar el lock      ← el lock NO se sostiene durante la interacción humana (§39.4)
 
 FASE B — CONSENTIMIENTO (sin lock)
@@ -6531,15 +6571,30 @@ FASE B — CONSENTIMIENTO (sin lock)
       si cancela: no se persiste NADA y los artefactos preparados quedan
       inactivos (SFR-23)
 
-FASE C — PUBLICACIÓN (bajo el lock; CAS)
-  C1  releer approval.json — SÓLO para diagnóstico; NO se usa como valor esperado
-  C2  CAS ISSUE con esperado = R, la revisión de la PROPUESTA:
+FASE C — PUBLICACIÓN (bajo el lock)
+  C1  releer approval.json — SÓLO para clasificar; NO se usa como valor esperado
+  C2  CREATE state/issuances/<proposed_approval_seq>.json  (no-clobber; fsync)
+      ← LA EMISIÓN OCURRE ACÁ, no en el CAS del ledger (§40.2).
+        El CREATE es el punto de serialización: un solo witness por seq, y por
+        eso es también lo que hace cumplir MAX_ISSUED_APPROVALS_PER_ROOT = 1
+        (cualquier emisión concurrente compite por la MISMA seq).
+        contenido del witness (inmutable):
+          { schema_version, root_id, approval_seq, approval_id,
+            approval_scope_digest, approval_provenance,
+            issued_at_ns, ledger_revision_at_issue = R }
+        si el CREATE falla porque el witness ya existe, se clasifica por el ledger:
+          el ledger YA conoce esa seq (last_issued >= proposed_seq)
+            ⇒ CARRERA_NORMAL ⇒ descartar y re-presentar
+          el ledger NO la conoce (last_issued < proposed_seq)
+            ⇒ max(H, T) > last_issued ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED (§40.3)
+  C3  CAS sobre el ledger — refresco de la CACHÉ, esperado = R, la revisión de la
+      PROPUESTA (no la recién leída: eso sería ABA):
         approval_revision == R
         ∧ NOT (state == ISSUED)
         ∧ last_issued_approval_seq == proposed_approval_seq - 1
-        ∧ el digest presentado recomputa sobre el scope propuesto
-        ∧ ∄ tombstone para (proposed_seq, proposed_id), y tampoco por seq
-          ni por id por separado (§38.2 R3)
+        ∧ H == proposed_approval_seq        # el witness de C2 ES la cabeza de la cadena
+        ∧ T <= proposed_approval_seq - 1    # ningún tombstone en o más allá de esa seq
+                                            # = R2 de §38.2 con last_issued = seq - 1
       → persistir EXACTAMENTE lo propuesto y aprobado:
           last_issued_approval_id   = proposed_approval_id
           last_issued_approval_seq  = proposed_approval_seq
@@ -6547,23 +6602,41 @@ FASE C — PUBLICACIÓN (bajo el lock; CAS)
           last_issued_provenance    = proposed_provenance
           state = ISSUED, approval_revision = R + 1
       fsync
-  C3  si el CAS falla ⇒ DESCARTAR la propuesta. NO adaptar el scope, NO
-      reasignar seq en silencio, NO publicar un scope distinto del aprobado.
-      Se vuelve a FASE A y se presenta un scope NUEVO.
+  C4  si el CAS falla DESPUÉS de crear el witness: la emisión YA ocurrió —el
+      witness es la autoridad— así que NO se descarta. Se RECONCILIA el ledger
+      hacia adelante desde los dos stores inmutables (§40.2). Sólo una cadena de
+      witnesses rota (hueco interior) ⇒ FAIL_CLOSED · RECOVERY.
+      NO adaptar el scope, NO reasignar seq, NO publicar un scope distinto del
+      aprobado — en ningún camino.
 ```
+
+**Por qué la precondición durable del CAS se escribe `H == proposed_seq ∧ T <= proposed_seq - 1`
+y NO `max(H, T) == proposed_seq - 1`.** Cuando el CAS corre, `C2` **ya creó** el witness de
+`proposed_approval_seq`, de modo que `H` **incluye** ese witness y vale
+`H >= proposed_approval_seq`. Escribir `max(H, T) == proposed_approval_seq - 1` sería por lo
+tanto **insatisfacible**: el `ISSUE` no podría publicar nunca. La forma correcta **separa las
+dos autoridades** en vez de mezclarlas: `H` tiene que ser exactamente la cabeza recién creada
+(eso es lo que verifica que la cadena de witnesses es contigua desde 1) y `T` no puede
+alcanzar esa seq (eso es R2 de §38.2 leído con `last_issued = proposed_seq - 1`). La
+comprobación `max(H, T) >= proposed_approval_seq` de `A5` —donde el witness todavía **no**
+existe— sí es correcta tal como está: `A5` corre antes del `CREATE`.
 
 ```text
 WHAT_HUMAN_APPROVED                    = approval_scope_digest del scope PRESENTADO
-WHAT_WAS_ISSUED                        = los mismos 14 campos, publicados por el CAS
+WHAT_WAS_ISSUED                        = los mismos 14 campos, publicados por el witness
 WHAT_CONSUME_LATER_VERIFIES            = el mismo digest contra last_issued_scope_digest
 WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES = YES
 
 PROPOSED_IDS_ARE_MINTED_BEFORE_THE_DIGEST      = YES
 PROPOSED_IDS_AUTHORITY_BEFORE_ISSUE            = NINGUNA (en memoria; no persistidas)
 NO_AUTHORIZATION_PERSISTED_BEFORE_CONSENT      = YES
+ISSUE_ACT                                      = CREATE del witness (no-clobber; §40.2)
+ISSUE_IS_DURABLE_INDEPENDENTLY_OF_THE_LEDGER   = YES (§40.2)
+ISSUE_LEDGER_UPDATE_IS_A_CACHE_REFRESH         = YES (§40.2)
 ISSUE_PUBLISHES_EXACTLY_THE_PROPOSED_TRIPLE    = YES
 ISSUE_CAS_PRESENTS_THE_PROPOSAL_TIME_REVISION  = YES (no la recién leída: eso sería ABA)
-ISSUE_CAS_FAILURE_ACTION                       = DESCARTAR_Y_REPRESENTAR
+ISSUE_WITNESS_CREATE_FAILURE_ACTION            = CLASIFICAR_POR_EL_LEDGER (§40.3)
+ISSUE_LEDGER_CAS_FAILURE_ACTION                = RECONCILIAR_HACIA_ADELANTE (§40.2)
 SCOPE_IS_FROZEN_AT_PROPOSAL_TIME               = YES
 PROPOSAL_IS_NOT_A_LIFECYCLE_STATE              = YES (la FSM sigue ISSUED | CONSUMED | REVOKED)
 PROPOSAL_EXPIRY_IS_THE_CAS                     = YES
@@ -6585,10 +6658,18 @@ propiedad del lock ante cancelación o crash. §35.2 ya rechaza esa ambigüedad 
 que el lock sea autorización humana: si el lock cubriera la espera, «tener el lock» y
 «tener el consentimiento» se volverían indistinguibles en la práctica.
 
-**Y el CAS es estrictamente más fuerte que el lock para esta ventana.** El lock excluye
-sólo a los procesos que **cooperan** en tomarlo; el CAS sobre `approval_revision` excluye a
-**cualquier** escritor, incluido un ledger restaurado desde un backup (D0-R4.1). La ventana
-sin lock no es un compromiso: es la parte del protocolo que hace la garantía.
+**Y la autoridad durable es estrictamente más fuerte que el lock para esta ventana.** El
+lock excluye sólo a los procesos que **cooperan** en tomarlo; la evidencia durable —el
+witness de emisión (§40.2) y el tombstone terminal (§38.2)— sobrevive a la restauración del
+ledger y la delata.
+
+> **Corregido en la ronda 6 (D0-R6.1).** Esta sección afirmaba que «el CAS sobre
+> `approval_revision` excluye a **cualquier** escritor, incluido un ledger restaurado desde
+> un backup». Eso era **falso en el estado `ISSUED`**: hasta la ronda 6 la única evidencia
+> de una emisión vivía dentro de `approval.json`, así que una restauración borraba el rastro
+> y producía ABA (`R → R+1 → R`) sin detección. El CAS sigue siendo necesario como token de
+> concurrencia del ledger, pero **no** es lo que da la garantía frente a una restauración: lo
+> que la da es que la emisión sea durable **fuera** del ledger (§40.2).
 
 ```text
 ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION            = NO
@@ -6605,15 +6686,23 @@ CROSS_FILE_ATOMICITY                               = NOT_CLAIMED   (sin cambio; 
 | `P2` el propietario APROBÓ, antes del `CAS ISSUE` | sin cambios | **ninguna** (el consentimiento no se persistió) | se pierde la **presentación**, no la seguridad | re-presentar un scope nuevo | **YES** |
 | `P3` `ISSUE` con éxito, `fsync` no confirmado | puede quedar rasgado ⇒ `CORRUPT` | — | `FAIL_CLOSED` | reconciliación de arranque (§36.9) | **YES** |
 | `P4` entre `ISSUE` y el `CONSUME` | `state = ISSUED` | la aprobada, exacta | normal | crear la transición | **YES** |
-| `P5` otro actor emitió o revocó entre `A6` y `C2` | `revision != R` | ninguna publicada | el CAS **falla** | descartar y re-presentar | **YES** |
-| `P6` el ledger se restauró desde un backup entre `A6` y `C2` | `revision` puede volver a `R` | ninguna publicada | el CAS **falla** por tombstone (§38.2 R3) | descartar y re-presentar | **YES** |
+| `P5` otro actor emitió entre `A6` y `C2` | el ledger ya conoce esa seq | ninguna publicada | el `CREATE` del witness **falla** | `CARRERA_NORMAL` ⇒ descartar y re-presentar | **YES** |
+| `P6` el ledger se restauró desde un backup — caso **terminal** (había tombstone) | `revision` puede volver a `R` | ninguna publicada | `max(H, T) > last_issued` | `LEDGER_RETROCEDIDO` ⇒ `FAIL_CLOSED` · `RECOVERY` | **YES** |
+| `P8` el ledger se restauró desde un backup — caso **`ISSUED`**, sin tombstone (**D0-R6.1**) | `revision` vuelve a `R` | ninguna publicada | el **witness sobrevive** ⇒ `max(H) > last_issued` | `LEDGER_RETROCEDIDO` ⇒ `FAIL_CLOSED` · la reconciliación hacia adelante **restaura la emisión perdida** | **YES** |
+| `P9` crash entre el `CREATE` del witness y el CAS del ledger | `revision = R`, sin emisión | la emisión **existe** (witness) | el ledger quedó atrás | reconciliar hacia adelante (§40.2) | **YES** |
 | `P7` el propietario cancela en `FASE B` | sin cambios | ninguna | artefactos inactivos (SFR-23) | ninguna | **YES** |
 
 `P2` es la misma dirección que la ventana tolerada de §37.2: cuesta una **presentación**,
-nunca la seguridad. `P6` es el punto donde la ronda 4 y la ronda 5 se sostienen mutuamente:
-la preasignación sólo es segura porque el store de tombstones sobrevive a la restauración
-del ledger, y por eso la comprobación de colisión se repite en `C2` — y se hace **por `seq`
-y por `id` por separado**, no sólo por el par.
+nunca la seguridad. `P6` y `P8` son las dos mitades del mismo problema, y hasta la ronda 6
+sólo la primera estaba cubierta: el store de tombstones prueba que una aprobación
+**terminó**, no que **empezó**. `P8` es exactamente el agujero que D0-R6.1 señaló — el
+ledger restaurado borraba toda evidencia de una aprobación `ISSUED` que todavía no había
+llegado a estado terminal, y el ABA `R → R+1 → R` quedaba invisible. Con el witness de
+§40.2 la evidencia sobrevive y la emisión perdida se **recupera**, no sólo se detecta.
+
+`P9` es la contrapartida del write-ahead: si el crash ocurre después del `CREATE` y antes
+del CAS, el ledger quedó atrás de la autoridad, y la reparación es determinista porque el
+witness guarda la terna completa y `ledger_revision_at_issue`.
 
 ### 39.6 Matriz de coherencia presentado / emitido
 
@@ -6674,6 +6763,14 @@ OPEN_BLOCKER = 0
 ```
 
 ### 39.9 Estado
+
+> **SUPERSEDED por la ronda adversarial 6 (§40).** La revisión externa posterior a esta
+> ronda encontró **2 residuos P1** (`D0-R6.1`, `D0-R6.2`), ambos en el cruce de §39 con el
+> mecanismo anti-rollback de §38: la emisión de una aprobación **no dejaba evidencia
+> durable fuera del ledger**, así que una restauración borraba una aprobación `ISSUED` y el
+> ABA `R → R+1 → R` quedaba invisible; y la colisión con un registro durable tenía **dos
+> semánticas incompatibles** (§39.3 A5 decía «buscar otra secuencia», §38.2 R2 decía
+> `FAIL_CLOSED`). El estado vigente es el de **§40.7**.
 
 ```text
 D0_R5_1_APPROVAL_ISSUANCE_ORDER        = CLOSED
@@ -6769,3 +6866,389 @@ almacén de historial, ni revocación, ni lock cross-process, ni escaneo de name
 provisioning, ni cancelación, ni gate de activación, ni `active.json` real, ni binding de
 MO2, ni setup de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5.
 `MERGE = NO`.
+
+---
+
+## 40. P4-D0 — ronda adversarial 6: durabilidad de la EMISIÓN y semántica de colisión (2026-10-09)
+
+### 40.1 Adjudicación
+
+| Finding | Severidad | Estado | Resolución |
+|---|---|---|---|
+| **D0-R6.1** el rollback de una aprobación todavía `ISSUED` es invisible | P1 | **CONFIRMED / CLOSED** | §40.2: **witness de emisión** inmutable y no-clobber, `state/issuances/<approval_seq>.json`, escrito **antes** del ledger. La emisión deja de vivir sólo dentro de `approval.json`. |
+| **D0-R6.2** la colisión con un registro durable tenía dos semánticas incompatibles | P1 | **CONFIRMED / CLOSED** | §40.3: **una sola** semántica — colisión en la seq esperada ⇒ `LEDGER_RETROCEDIDO` / `INCONSISTENT_AUTHORITY` ⇒ `FAIL_CLOSED`, sin re-propuesta, sin huecos y sin «buscar otra secuencia». |
+
+```text
+D0_R6_1_ISSUED_ROLLBACK_ABA   = CONFIRMED / CLOSED (§40.2)
+D0_R6_2_TOMBSTONE_COLLISION   = CONFIRMED / CLOSED (§40.3)
+```
+
+### 40.2 D0-R6.1 — la emisión no era durable
+
+**El defecto.** La ronda 4 hizo durable el **final** del ciclo de vida de una aprobación
+(`CONSUMED` / `REVOKED` ⇒ tombstone en `state/approvals/`). Nadie hizo durable su
+**comienzo**: un estado `ISSUED` existía **sólo** dentro de `approval.json`. Por eso el
+store de la ronda 4 cubre dos de los tres estados y no el tercero.
+
+La consecuencia es un ABA indetectable:
+
+```text
+approval.json:  revision = R,  last_issued_seq = N
+
+A propone:      seq = N+1, id = A, expected revision = R   (Fase A)
+                ... el propietario decide ...
+
+B publica:      revision = R+1, state = ISSUED, seq = N+1, id = B
+                B todavía NO fue CONSUMED ni REVOKED ⇒ NO hay tombstone
+
+restauración:   approval.json ← backup anterior
+                revision = R,  last_issued_seq = N
+
+A retoma Fase C y TODAS las precondiciones pasan:
+                approval_revision == R                    PASS
+                last_issued_approval_seq == N             PASS
+                no existe tombstone con seq N+1           PASS  (B no era terminal)
+                no existe tombstone con id A              PASS
+⇒ el CAS acepta A
+```
+
+Hubo un writer entre A y C, la restauración produjo `R → R+1 → R`, y **desapareció toda
+prueba durable de B**. §39.4 afirmaba que el CAS cubría una restauración del ledger: eso
+era **falso en el estado `ISSUED`**, porque el CAS compara el ledger **contra sí mismo** y
+un ledger restaurado es autoconsistente.
+
+**Opción A — witness de emisión (adoptada).**
+
+```text
+APPROVAL_ISSUANCE_STORE = state/issuances/<approval_seq>.json
+```
+
+Un archivo **inmutable**, **no-clobber**, **uno por `approval_seq`**, escrito **antes** del
+ledger. Contenido:
+
+```text
+{ schema_version, root_id, approval_seq, approval_id,
+  approval_scope_digest, approval_provenance,
+  issued_at_ns, ledger_revision_at_issue }
+```
+
+```text
+H = max(approval_seq) sobre state/issuances/     (0 si el store está vacío)
+T = max(approval_seq) sobre state/approvals/     (0 si el store está vacío)
+ISSUANCE_WITNESS_CHAIN = contigua desde 1 (la seq avanza de a uno)
+APPROVAL_ISSUANCE_WITNESS_GC = PROHIBIDO
+```
+
+**El `CREATE` del witness ES la emisión.** No es un registro de auditoría del `ISSUE`: es
+el acto. Tres propiedades caen de ahí:
+
+1. **Durabilidad fuera del ledger.** El witness sobrevive a la restauración, así que el ABA
+   de arriba deja de ser invisible: `H = N+1 > last_issued = N` ⇒ detectado.
+2. **Serialización.** Como el nombre del archivo depende sólo de `approval_seq` y el
+   `CREATE` es no-clobber, dos emisiones concurrentes compiten por **la misma** seq y sólo
+   una gana. Eso es lo que hace cumplir `MAX_ISSUED_APPROVALS_PER_ROOT = 1` y la
+   monotonía de `approval_seq` sin ningún lock adicional.
+3. **Reparación, no sólo detección.** El witness guarda la terna completa y
+   `ledger_revision_at_issue`, así que un ledger atrasado se **reconcilia hacia adelante**
+   de forma determinista. La emisión perdida de B se **recupera**.
+
+**Reconciliación (bajo el root lock, en el arranque y antes de proponer):**
+
+```text
+max(H, T) == last_issued_approval_seq          ⇒ CONSISTENTE
+max(H, T) >  last_issued_approval_seq          ⇒ el ledger quedó ATRÁS
+                                                 ⇒ completar hacia adelante desde los
+                                                   stores (determinista; el witness es
+                                                   post-consentimiento)
+                                                 ⇒ si la cadena de witnesses tiene un
+                                                   HUECO INTERIOR ⇒ INCONSISTENT_AUTHORITY
+                                                   ⇒ FAIL_CLOSED · RECOVERY
+max(H)    <  last_issued_approval_seq          ⇒ LEDGER_ISSUED_WITHOUT_WITNESS
+                                                 ⇒ FAIL_CLOSED · RECOVERY
+```
+
+**Detección del store de emisiones (espejo de R1–R4 de §38.2):**
+
+```text
+S1 — WITNESS ADELANTADO
+     max(H) > last_issued_approval_seq
+     ⇒ hubo una emisión que el ledger no registra (rollback, o crash tras el CREATE)
+     ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED ⇒ reconciliar hacia adelante
+
+S2 — LEDGER EMITIDO SIN WITNESS
+     last_issued_approval_seq > max(H)
+     ⇒ el ledger afirma una emisión que no se puede sustanciar
+     ⇒ FAIL_CLOSED · RECOVERY
+
+S3 — AMBIGÜEDAD
+     dos witnesses con el mismo approval_id
+     ⇒ APPROVAL_ID_MINTING_DEFECT ⇒ FAIL_CLOSED
+
+S4 — EVIDENCIA ILEGIBLE
+     un witness no se puede leer o parsear
+     ⇒ FAIL_CLOSED (nunca se lee como ausente)
+```
+
+**Opción B — reducir el modelo de amenaza (rechazada).** Declarar que la restauración del
+ledger queda fuera del modelo sería coherente sólo si §39 no hubiera **afirmado** ya que el
+CAS la cubría. Retirar una garantía afirmada para que un finding desaparezca es
+exactamente lo que la ronda 4 rechazó como opción C de D0-R4.1, y por la misma razón: el
+contrato no puede encogerse para acomodar el defecto.
+
+**Simetría de las dos rondas.** La ronda 4 hizo durable el **fin** del ciclo de vida; la
+ronda 6 hace durable el **comienzo**. Con ambos stores, los tres estados de la FSM tienen
+evidencia inmutable fuera del ledger, y `approval.json` queda como **caché reconciliable**
+(§37.6).
+
+### 40.3 D0-R6.2 — una sola semántica para la colisión
+
+**El defecto.** Dos textos normativos no podían convivir:
+
+- **§39.3 A5** (ronda 5): colisión con un tombstone ⇒ *descartar y volver a A2 con **otra**
+  secuencia*.
+- **§38.2 R2** (ronda 4): `max(approval_seq sobre tombstones) > last_issued_approval_seq`
+  ⇒ `LEDGER_RETROCEDIDO` ⇒ `FAIL_CLOSED`.
+
+**Por qué la colisión no es casual.** En Fase A, `proposed_seq = last_issued_seq + 1`. Por
+lo tanto, si existe un registro durable en `proposed_seq`, entonces
+`max(H, T) >= last_issued_seq + 1 > last_issued_seq`: la existencia del registro **es** la
+demostración de que el ledger quedó por detrás de la historia durable. No es una colisión
+de UUID que se resuelva probando suerte con el número siguiente. Elegir `N+2` además
+rompería `last_issued_seq == proposed_seq - 1` sin inventar un salto de secuencia.
+
+**Semántica única (congelada):**
+
+```text
+COLISIÓN EN LA SEQ ESPERADA (proposed_seq = last_issued_seq + 1)
+  ⇒ max(H, T) >= proposed_seq  ⇔  max(H, T) > last_issued_seq
+  ⇒ LEDGER_RETROCEDIDO / INCONSISTENT_AUTHORITY
+  ⇒ FAIL_CLOSED
+  ⇒ NO re-propuesta · NO «otra secuencia» · NO huecos
+  ⇒ RECOVERY / OWNER hasta reconciliar la autoridad
+
+COLISIÓN EN approval_id (UUID ya usado por otro registro durable)
+  ⇒ APPROVAL_ID_MINTING_DEFECT ⇒ FAIL_CLOSED
+  ⇒ NO se reacuña en silencio (un RNG que colisiona no se reintenta a ciegas)
+```
+
+**Por qué R2 y A5 ahora conviven.** El discriminador es la comparación de `max(H, T)`
+contra `last_issued_approval_seq` **releído** (`L_now`), no contra `proposed_seq - 1`:
+
+```text
+max(H, T) >  L_now   ⇒ el ledger está DETRÁS de la evidencia durable
+                     ⇒ LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED (no se re-propone)
+
+max(H, T) == L_now   ⇒ el ledger YA conoce esa seq: alguien emitió normalmente
+                     ⇒ CARRERA_NORMAL ⇒ descartar y re-presentar
+```
+
+En el primer caso `proposed_seq` **sigue siendo** la próxima seq esperada y hay un registro
+durable en ella: es la detección disparándose. En el segundo, el ledger ya avanzó más allá
+de `proposed_seq`, así que esa seq **ya no es** la esperada y no hay nada anómalo: es una
+carrera legítima, y la re-propuesta —con la seq que resulte del ledger ya avanzado— es la
+resolución correcta.
+
+```text
+COLLISION_RESOLUTION                   = FAIL_CLOSED (semántica ÚNICA; sin excepciones)
+APPROVAL_SEQ_NEVER_SKIPS               = YES
+LEDGER_BEHIND_DURABLE_EVIDENCE         = FAIL_CLOSED
+LEDGER_AHEAD_OF_DURABLE_EVIDENCE       = FAIL_CLOSED
+RE_PROPOSAL_ALLOWED_ONLY_ON            = CARRERA_NORMAL (max(H,T) == L_now)
+```
+
+### 40.4 Matrices
+
+**Matriz del store de emisiones.**
+
+| Estado observado | `H` vs ledger | Detector | Veredicto | Próxima acción |
+|---|---|---|---|---|
+| witness y ledger coherentes | `max(H,T) == L` | — | **OK** | ninguna |
+| ledger `ISSUED` sin witness | `last_issued > max(H)` | `S2` | `FAIL_CLOSED` | `RECOVERY` |
+| witness adelantado por 1 (crash tras el `CREATE`) | `max(H) = L+1` | `S1` | `FAIL_CLOSED` | reconciliar hacia adelante |
+| witness adelantado, cadena contigua | `max(H) > L` | `S1` | `FAIL_CLOSED` | reconciliar hacia adelante (emisión recuperada) |
+| witness adelantado, **hueco interior** | `max(H) > L` | `S1` | `INCONSISTENT_AUTHORITY` | `FAIL_CLOSED` · `RECOVERY` |
+| dos witnesses con el mismo `approval_id` | — | `S3` | `APPROVAL_ID_MINTING_DEFECT` | `FAIL_CLOSED` |
+| witness ilegible o corrupto | — | `S4` | `FAIL_CLOSED` | `RECOVERY` (nunca leído como ausente) |
+
+**Matriz de semántica de colisión.**
+
+| Caso | `max(H,T)` vs `L_now` | ¿Es la seq esperada? | Veredicto | Acción |
+|---|---|---|---|---|
+| sin colisión | `== L_now` | sí | **OK** | emitir |
+| colisión en la seq esperada, ledger detrás | `> L_now` | sí | `LEDGER_RETROCEDIDO` | `FAIL_CLOSED` · `RECOVERY` |
+| ledger adelantado a la evidencia durable | `< L_now` | — | `LEDGER_ISSUED_WITHOUT_WITNESS` | `FAIL_CLOSED` · `RECOVERY` (`S2`, §40.2) |
+| colisión en una seq que el ledger ya conoce | `== L_now` | no | `CARRERA_NORMAL` | descartar y re-presentar |
+| colisión de `approval_id` | cualquiera | — | `APPROVAL_ID_MINTING_DEFECT` | `FAIL_CLOSED` |
+
+### 40.5 Censo de readiness — recomputado, no recordado
+
+```text
+P4_REQUIREMENTS_DISCOVERED             = 17   (sin cambio: D0-R6.1/R6.2 endurecen
+                                               la autoridad de un contrato existente)
+P4_REQUIREMENTS_DESIGN_CLOSED          = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED   = 1    (RUNTIME_SETUP_ARTIFACT_AVAILABILITY)
+P4_REQUIREMENTS_OPEN                   = 0
+NEW_PREFIXED_SYMBOLS_THIS_ROUND        = 0    (verificado por set-diff en §40.8)
+```
+
+La fila de `P4_APPROVAL_SCOPE` en §29.8 se **refina** otra vez: la durabilidad de la
+emisión es la misma obligación —«la aprobación queda ligada exactamente a lo aprobado, y
+eso es verificable»— vista desde el otro extremo del ciclo de vida. No se agrega un
+requisito nuevo ni un símbolo `P4_` nuevo.
+
+### 40.6 Revisión adversarial local — 20 preguntas
+
+| # | Pregunta | Veredicto | Respuesta |
+|---|---|---|---|
+| 1 | ¿El CAS cubría la restauración del ledger en todos los estados? | **CLOSED_BY_DESIGN** | No, y era el defecto: sólo la cubría en los estados terminales. §39.4 queda corregido. |
+| 2 | ¿Dónde es durable una emisión ahora? | **CLOSED_BY_DESIGN** | En `state/issuances/<seq>.json`, fuera del ledger (§40.2). |
+| 3 | ¿El witness es auditoría o es el acto de emisión? | **CLOSED_BY_DESIGN** | Es el **acto**: el `CREATE` no-clobber es la emisión. |
+| 4 | ¿Un witness escrito antes del CAS puede quedar huérfano? | **CLOSED_BY_DESIGN** | Sí (`P9`), y se **reconcilia hacia adelante**, no se deshace. |
+| 5 | ¿Eso convierte una carrera normal en un `FAIL_CLOSED`? | **CLOSED_BY_DESIGN** | No: la carrera se detecta en el `CREATE` y se clasifica `CARRERA_NORMAL` (§40.3). |
+| 6 | ¿Qué pasa si el ledger y el witness discrepan por un hueco? | **CLOSED_BY_DESIGN** | `INCONSISTENT_AUTHORITY` ⇒ `FAIL_CLOSED` · `RECOVERY`. |
+| 7 | ¿Se puede borrar un witness para «arreglar» una discrepancia? | **CLOSED_BY_DESIGN** | No: `APPROVAL_ISSUANCE_WITNESS_GC = PROHIBIDO`. |
+| 8 | ¿El witness fija `approval_seq` de forma única? | **CLOSED_BY_DESIGN** | Sí: el nombre del archivo depende sólo de la seq y el `CREATE` es no-clobber. |
+| 9 | ¿Eso hace falta para `MAX_ISSUED = 1`? | **CLOSED_BY_DESIGN** | Sí: dos emisiones concurrentes compiten por la misma seq; sólo una gana. |
+| 10 | ¿La colisión en la seq esperada puede resolverse saltando? | **CLOSED_BY_DESIGN** | No: `COLLISION_RESOLUTION = FAIL_CLOSED`, sin huecos (§40.3). |
+| 11 | ¿Sigue existiendo algún camino de re-propuesta? | **CLOSED_BY_DESIGN** | Sí, y sólo uno: `CARRERA_NORMAL` con `max(H,T) == L_now`. |
+| 12 | ¿R2 de §38.2 y A5 de §39.3 siguen contradiciéndose? | **CLOSED_BY_DESIGN** | No: A5 se reescribe y R2 se generaliza a `max(H,T)`; una sola semántica. |
+| 13 | ¿Un `approval_id` repetido se reintenta con otro UUID? | **CLOSED_BY_DESIGN** | No: `APPROVAL_ID_MINTING_DEFECT` ⇒ `FAIL_CLOSED`. |
+| 14 | ¿`approval.json` sigue siendo la autoridad de algo? | **CLOSED_BY_DESIGN** | No: es caché reconciliable; `approval_revision` es token de concurrencia, no autoridad. |
+| 15 | ¿Se puede reconciliar el ledger sin pedir autorización nueva? | **CLOSED_BY_DESIGN** | Sí: los stores guardan la terna completa y el witness es post-consentimiento. |
+| 16 | ¿Un witness ilegible se lee como ausente? | **CLOSED_BY_DESIGN** | No: `S4` ⇒ `FAIL_CLOSED`, mismo criterio que «journal corrupto no es ausente». |
+| 17 | ¿La emisión sigue siendo del emisor HITL? | **CLOSED_BY_DESIGN** | Sí: `APPROVAL_ISSUER_IS_NOT_THE_TRANSITION_MACHINERY = YES`, sin cambio. |
+| 18 | ¿Cambia la FSM de la aprobación? | **CLOSED_BY_DESIGN** | No: `ISSUED / CONSUMED / REVOKED`; el witness no es un estado. |
+| 19 | ¿Se agrega algún campo al `ApprovalScope`? | **CLOSED_BY_DESIGN** | No: sigue en 14 (§38.5); el witness es otro artefacto. |
+| 20 | ¿La ronda introduce símbolos `P4_` nuevos? | **CLOSED_BY_DESIGN** | No: censo **36**, verificado por set-diff (§40.8). |
+
+```text
+OPEN_BLOCKER = 0
+```
+
+### 40.7 Estado
+
+```text
+D0_R6_1_ISSUED_ROLLBACK_ABA            = CLOSED
+D0_R6_2_TOMBSTONE_COLLISION            = CLOSED
+
+ISSUANCE_AUTHORITY                     = state/issuances/<approval_seq>.json
+ISSUANCE_EVIDENCE_IS_INDEPENDENT_OF_THE_LEDGER = YES
+ISSUANCE_ACT                           = CREATE no-clobber del witness
+ISSUANCE_WITNESS_CHAIN                 = contigua desde 1
+ISSUANCE_HIGH_WATER_MARK               = max(approval_seq) sobre el store de emisiones
+LEDGER_BEHIND_DURABLE_EVIDENCE         = reparación hacia adelante (determinista)
+LEDGER_AHEAD_OF_DURABLE_EVIDENCE       = FAIL_CLOSED
+APPROVAL_ISSUANCE_WITNESS_GC           = PROHIBIDO
+APPROVAL_LEDGER_ROLE                   = CACHE reconciliable (NO autoridad)
+APPROVAL_REVISION_ROLE                 = token de concurrencia (NO autoridad)
+CAS_DURABLE_PRECONDITION_IS_SATISFIABLE = YES  (H == proposed_seq ∧ T <= proposed_seq - 1;
+                                                §39.3 C3; verificado antes del commit)
+
+COLLISION_RESOLUTION                   = FAIL_CLOSED (semántica ÚNICA)
+APPROVAL_SEQ_NEVER_SKIPS               = YES
+RE_PROPOSAL_ALLOWED_ONLY_ON            = CARRERA_NORMAL
+LEDGER_ISSUED_WITHOUT_WITNESS          = FAIL_CLOSED
+
+ISSUED_STATE_IS_DURABLE                = YES   (antes: NO — D0-R6.1)
+APPROVAL_LIFECYCLE_FULLY_DURABLE       = YES   (emisión §40.2 + terminal §38.2)
+CAS_ALONE_DETECTS_A_RESTORED_LEDGER    = NO    (corregido en §39.4)
+
+ISSUANCE_STORE_MATRIX                  = YES   (§40.4, 7 filas)
+COLLISION_SEMANTICS_MATRIX             = YES   (§40.4, 4 filas)
+
+P4_REQUIREMENTS_DISCOVERED             = 17
+P4_REQUIREMENTS_DESIGN_CLOSED          = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED   = 1
+P4_REQUIREMENTS_OPEN                   = 0
+NEW_PREFIXED_SYMBOLS_THIS_ROUND        = 0
+
+OPEN_P4_DESIGN_BLOCKERS = 0
+NEW_FINDINGS            = 2   (D0-R6.1 y D0-R6.2) — ambos confirmados por el
+                               revisor externo, ambos P1
+
+P0_4_CORE_ARCHITECTURE = SOUND   (mismo hecho y mismo símbolo que §32.8; la ronda 6
+                                  no introduce un nombre nuevo para la arquitectura)
+P4_READY_TO_DESIGN     = YES
+P4_DESIGN_FROZEN       = YES
+P4_READY_TO_IMPLEMENT  = YES
+P4_IMPLEMENTED         = NO
+P5_IMPLEMENTED         = NO
+PR_SAFE_FOR_NEXT_REVIEW = YES
+PR_SAFE_TO_MERGE       = NO
+MERGE                  = NO
+```
+
+`P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque los dos residuos quedaron cerrados
+con mecanismo: la emisión tiene ahora una autoridad durable propia y ajena al ledger, la
+colisión tiene una semántica única y sin excepciones, y la afirmación falsa de §39.4 quedó
+corregida en el lugar en vez de dejarse como texto que promete más de lo que el mecanismo
+sostiene.
+
+**Defecto propio detectado antes del commit (no llegó al revisor).** Al escribir el witness
+como acto de emisión, la precondición durable del CAS quedó redactada como
+`max(H, T) == proposed_approval_seq - 1`. Esa forma es **insatisfacible**: para cuando el CAS
+corre, el witness de `C2` ya existe, así que `H >= proposed_approval_seq` y el conjunct no
+puede cumplirse nunca — el `ISSUE` no habría podido publicar jamás. Se corrigió a
+`H == proposed_approval_seq ∧ T <= proposed_approval_seq - 1` en las **dos** superficies
+normativas del `ISSUE` (§37.3 y §39.3 `C3`), con la explicación de por qué la comprobación de
+`A5` sí es correcta tal como está (ahí el witness todavía no existe). Queda anclado con los
+comandos (8) y (9) de §40.8: la forma insatisfacible debe dar **cero** coincidencias y la
+correcta debe aparecer en **ambos** lugares.
+
+Siguen **declaradas y abiertas como implementación** —no como diseño— las dos dependencias
+de siempre: el **oráculo de Effective Runtime** (P5) y la **emisión de
+`approval_id`/`approval_seq`** por la superficie HITL. `P4_IMPLEMENTED = NO` es el estado
+real: ninguna ronda empezó RED-first.
+
+### 40.8 Verificación de esta ronda
+
+```bash
+# (1) la emisión tiene autoridad fuera del ledger
+rg -n "state/issuances/|ISSUANCE_AUTHORITY|ISSUANCE_ACT" docs/adr/0012-frozen-runtime.md
+
+# (2) el ledger ya no se declara autoridad de emisión
+rg -n "APPROVAL_LEDGER_ROLE|CACHE reconciliable|approval.json es caché" \
+   docs/adr/0012-frozen-runtime.md
+
+# (3) no sobrevive la semántica «buscar otra secuencia»
+rg -n "OTRA secuencia|otra secuencia" docs/adr/0012-frozen-runtime.md
+
+# (4) la colisión tiene una sola semántica
+rg -n "COLLISION_RESOLUTION|APPROVAL_SEQ_NEVER_SKIPS" docs/adr/0012-frozen-runtime.md
+
+# (5) la afirmación falsa del CAS quedó corregida
+rg -n "CAS_ALONE_DETECTS_A_RESTORED_LEDGER|Corregido en la ronda 6" \
+   docs/adr/0012-frozen-runtime.md
+
+# (6) estados vigentes, sin YES adelantados fuera de §40.7
+rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
+
+# (7) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+
+# (8) la precondición durable del CAS no puede ser insatisfacible: el witness de C2
+#     ya existe y H lo incluye ⇒ la forma CONJUNTIVA no debe aparecer (0 coincidencias)
+rg -n "∧ max\(H, T\) == proposed_approval_seq - 1" docs/adr/0012-frozen-runtime.md
+
+# (9) y la forma correcta sí está, en los DOS lugares normativos (§37.3 y §39.3 C3)
+rg -n "H == proposed_approval_seq|T <= proposed_approval_seq - 1" \
+   docs/adr/0012-frozen-runtime.md
+```
+
+Las coincidencias del comando (3) deben ser, todas, la **nota de corrección** que dice que
+esa semántica se retiró — ninguna puede quedar como instrucción vigente. Las del comando
+(7) deben dar **36**, el mismo número que en §38 y §39. El comando (8) debe dar **cero**
+coincidencias **en forma conjuntiva**: `max(H, T) == proposed_approval_seq - 1` es
+**insatisfacible** porque el witness de `C2` ya existe cuando el CAS corre (`H >=
+proposed_approval_seq`) y el `ISSUE` no podría publicar nunca. Las tres menciones de esa
+expresión que quedan en el documento son, todas, **notas de corrección** que explican por qué
+es inválida — mismo criterio que el comando (3): ninguna puede quedar como instrucción. El
+comando (9) debe dar coincidencias en **§37.3 y §39.3 C3** (las dos superficies normativas
+del `ISSUE`), que es la comprobación de que la corrección se propagó a ambas y no sólo a una.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
+transición, ni CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni store
+de emisiones, ni almacén de historial, ni revocación, ni lock cross-process, ni escaneo de
+namespace, ni provisioning, ni cancelación, ni gate de activación, ni `active.json` real,
+ni binding de MO2, ni setup de SKSE, ni cache de artefactos, ni rollback, ni promoción. No
+se tocó P5. `MERGE = NO`.
