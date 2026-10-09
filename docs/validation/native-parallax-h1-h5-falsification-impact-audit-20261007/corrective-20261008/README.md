@@ -31,6 +31,15 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > monótono salía con `VALID_MINIMUM_BRACKET = YES`) y corregido con el bracketing estándar
 > de tres puntos. **Impacto científico medido: `NONE`** — la evidencia correctiva se
 > re-ejecutó completa y todos los valores científicos son idénticos; ver §2.3.
+>
+> **Quinta ronda — micro-slice final (2026-10-09, misma sesión/worktree).** Dos findings
+> materiales **fuera del diff inline** (por eso no tenían thread): (1) `--c2` era opcional
+> en el builder y su ausencia no impedía publicar `M4_PRIMARY_STATUS` / `M5_PRIMARY_STATUS`
+> como `NOT_INVALIDATED` — contradice el contrato fail-closed; (2) el C2 registraba
+> `m4.decision_changed` pero el builder **no lo leía**, así que un cambio de decisión M4 no
+> se propagaba. Ambos reproducidos y corregidos: C2 **obligatorio** y **fail-closed**, y
+> propagación de `m4.decision_changed`. **`SCIENTIFIC_RESULT_CHANGED = NO`**: con la
+> evidencia C2 real (`decision_changed = false`) la adjudicación queda idéntica; ver §4.1.
 
 ---
 
@@ -295,6 +304,63 @@ M5 excess_lowmid: 0.50820 -> 0.44682 | excess_high: 0.33504 -> 0.33491
 La decisión de M4 y `C1` de M5 **no cambian** entre brazos. `H4_M4_PRIMARY_IMPACT` y
 `H4_M5_PRIMARY_IMPACT` permanecen `NUMERICAL_NOT_DECISIONAL`.
 
+### 4.1 La adjudicación final exige un C2 válido (quinta ronda, micro-slice final)
+
+**Final adjudication requires valid C2 evidence. Missing/invalid C2 is fail-closed and
+cannot publish M4/M5 statuses.**
+
+El gate de identidad de roster (§4) vive en `phase_c2_h4_corpus_corrective.py`, pero el
+builder de la adjudicación (`scripts/build_corrective_evidence.py`) lo trataba como
+opcional:
+
+```python
+# ANTES (defecto confirmado)
+ap.add_argument("--c2", type=Path, default=None)
+...
+if args.c2 is not None and args.c2.exists():   # ausente => sigue igual
+    ...
+# y publicaba M4_PRIMARY_STATUS / M5_PRIMARY_STATUS sin ninguna evidencia de roster
+```
+
+Reproducción del defecto sobre el código previo: correr el builder **sin** `--c2`
+devolvía `rc=0` y escribía una adjudicación con `M4 = NOT_INVALIDATED`,
+`M5 = NOT_INVALIDATED` y `ROSTER_GATE_ALLOWED = null`. El contrato corregido:
+
+```text
+--c2 es OBLIGATORIO (argparse required=True)
+el archivo debe existir                 -> si no: HARD STOP (SystemExit 3)
+validate_c2_for_adjudication() exige:
+    roster_identity is dict
+    roster_gate is dict
+    roster_gate.allowed is True
+    cada una de las cuatro condiciones is True
+    m4.decision_changed legible como bool
+si falla cualquiera -> HARD STOP (SystemExit 3); NO se publica adjudicación parcial
+```
+
+Las cuatro condiciones son **exactamente** las del gate de §4 y se validan con
+`is True`: una clave ausente, `None`, `1` o un string truthy bloquean (fail-closed).
+
+**Propagación de la decisión M4.** El C2 registra `m4.decision_changed`; el builder ahora
+lo lee. La regla, explícita y con el gate de H4 intacto:
+
+```text
+H4_M4_PRIMARY_IMPACT=DECISIONAL  OR  H4_M5_PRIMARY_IMPACT=DECISIONAL
+    -> M4 = UNRESOLVED, M5 = UNRESOLVED          (comportamiento previo, NO se debilita)
+si no:
+    C2 m4.decision_changed is True
+        -> M4 = UNRESOLVED, M5 = NOT_INVALIDATED (hallazgo exclusivamente M4 no mueve M5)
+    C2 m4.decision_changed is False
+        -> M4 = NOT_INVALIDATED, M5 = NOT_INVALIDATED
+```
+
+Con la evidencia C2 real (`m4.decision_changed = false`) la adjudicación es la misma que
+antes: `M4_PRIMARY_STATUS = NOT_INVALIDATED`, `M5_PRIMARY_STATUS = NOT_INVALIDATED`. El
+artefacto `corrective-adjudication.json` se regeneró sólo para incorporar los campos del
+contrato (`C2_VALIDATED_FOR_ADJUDICATION`, `C2_M4_DECISION_CHANGED`,
+`C2_REQUIRED_ROSTER_CONDITIONS`, `SCIENTIFIC_RESULT_CHANGED = NO`); ninguna clave previa
+cambió y `H1`/`H4` quedaron idénticos byte a byte.
+
 ---
 
 ## 5. Adjudicación final
@@ -318,6 +384,9 @@ H4_M5_PRIMARY_IMPACT            = NUMERICAL_NOT_DECISIONAL
 
 M4_PRIMARY_STATUS = NOT_INVALIDATED
 M5_PRIMARY_STATUS = NOT_INVALIDATED
+C2_VALIDATED_FOR_ADJUDICATION = YES      (fail-closed: sin C2 válido no se publica)
+C2_M4_DECISION_CHANGED = FALSE
+SCIENTIFIC_RESULT_CHANGED = NO
 PR697_DISPOSITION = STILL_VALID_NARROW_SCOPE
 PR675_RECOMMENDATION = KEEP_DRAFT_BLOCKED
 M6_IMPLEMENTATION_BLOCKED = YES
@@ -356,8 +425,11 @@ scripts/phase_c_corrective.py               F1+F3: oráculo continuo real sobre 
 scripts/h4_magnitude_probe_corrective.py    F4+F5: sonda de magnitud corregida
 scripts/phase_c2_h4_corpus_corrective.py    Fase C2 + finding F: identidad de roster
 scripts/verify_determinism.py               §28: verificación de reproducibilidad
-scripts/build_corrective_evidence.py        Fase D: adjudicación consolidada
+scripts/build_corrective_evidence.py        Fase D: adjudicación consolidada (C2 obligatorio)
 ```
+
+`build_corrective_evidence.py` exige `--c2 <evidence/h4-corpus-counterfactual.json>`:
+sin un C2 válido **no** publica M4/M5 (fail-closed, ver §4.1).
 
 Tests asociados (fuera de esta carpeta, en `tests/`):
 
@@ -368,6 +440,7 @@ tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 20 t
 tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
 tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 13 tests
 tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H/I: 8 tests
+tests/test_native_parallax_pr700_corrective_c2_fail_closed.py        C2 (ronda 5): 19 tests
 ```
 
-Total: **92 tests correctivos** (`pytest -k pr700_corrective`).
+Total: **111 tests correctivos** (`pytest -k pr700_corrective`).

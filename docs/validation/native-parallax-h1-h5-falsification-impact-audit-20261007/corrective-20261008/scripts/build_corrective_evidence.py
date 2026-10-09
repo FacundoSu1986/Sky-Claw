@@ -17,9 +17,14 @@ H4:
   H4_EXTERNAL_MAGNITUDE     = por comparación de ratios medidos vs claim 5-21x
   H4_M4/M5_PRIMARY_IMPACT   = NUMERICAL_NOT_DECISIONAL salvo cambio de decisión
 
+La adjudicación final es **fail-closed respecto de C2**: `--c2` es obligatorio y el
+archivo debe existir; un C2 ausente, ilegible o que no pase el gate de identidad de
+roster ABORTA la corrida (no se publican M4/M5). El campo `m4.decision_changed` del C2
+participa de la decisión: si es `True`, M4 no puede quedar `NOT_INVALIDATED`.
+
 Uso:
   PYTHONPATH=<corrective_scripts> python build_corrective_evidence.py \
-      --h1 <json> --h4 <json> --determinism <json> --out <json>
+      --h1 <json> --h4 <json> --determinism <json> --c2 <json> --out <json>
 """
 
 from __future__ import annotations
@@ -46,6 +51,117 @@ EXTERNAL_ABSOLUTE_CLAIM = 0.023
 #   más allá      -> NOT_REPRODUCED
 ABSOLUTE_FACTOR_REPRODUCED = 2.0
 ABSOLUTE_FACTOR_PARTIAL = 10.0
+
+# ---- Contrato C2 fail-closed (micro-slice final).
+# La adjudicación final NO puede publicar M4/M5 sin evidencia C2 válida. El C2 se acepta
+# sólo si el gate de identidad de roster lo permite Y cada una de las cuatro condiciones
+# es **exactamente** `True`: una clave ausente, `None`, `1` o un string truthy bloquean.
+C2_REQUIRED_ROSTER_CONDITIONS = (
+    "roster_count_match",
+    "roster_identity_match",
+    "historical_roster_digest_matches_frozen_sha",
+    "m3_manifest_sha256_matches_frozen",
+)
+
+
+def _classify_absolute(deltas: list[float]) -> str:
+    """Adjudica el componente ABSOLUTO del claim contra `EXTERNAL_ABSOLUTE_CLAIM`.
+
+    Se compara el mayor delta medido: si ni el mejor caso se acerca al valor
+    reclamado, el componente absoluto no está reproducido, por más que los
+    ratios (adimensionales) luzcan altos.
+    """
+    if not deltas:
+        return "UNRESOLVED"
+    best = max(deltas)
+    claim = EXTERNAL_ABSOLUTE_CLAIM
+    if claim <= 0:
+        return "UNRESOLVED"
+    if claim / ABSOLUTE_FACTOR_REPRODUCED <= best <= claim * ABSOLUTE_FACTOR_REPRODUCED:
+        return "REPRODUCED"
+    if claim / ABSOLUTE_FACTOR_PARTIAL <= best <= claim * ABSOLUTE_FACTOR_PARTIAL:
+        return "PARTIALLY_REPRODUCED"
+    return "NOT_REPRODUCED"
+
+
+def validate_c2_for_adjudication(c2_doc: Any) -> dict[str, Any]:
+    """Valida la evidencia C2 antes de publicar M4/M5. Fail-closed.
+
+    Devuelve:
+      - ``valid``: True sólo si TODAS las condiciones se cumplen.
+      - ``failed_conditions``: condiciones incumplidas (vacía si es válido).
+      - ``roster_identity`` / ``roster_gate``: los bloques validados (dict o None).
+      - ``m4_decision_changed``: `c2_doc["m4"]["decision_changed"]` cuando es bool; None
+        si el campo falta o no es booleano (no se puede descartar un cambio).
+    """
+    failed: list[str] = []
+    if not isinstance(c2_doc, dict):
+        return {
+            "valid": False,
+            "failed_conditions": ["c2_document_is_object"],
+            "roster_identity": None,
+            "roster_gate": None,
+            "m4_decision_changed": None,
+        }
+
+    roster = c2_doc.get("roster_identity")
+    roster_gate = c2_doc.get("roster_gate")
+    if not isinstance(roster, dict):
+        failed.append("roster_identity_is_object")
+        roster = None
+    if not isinstance(roster_gate, dict):
+        failed.append("roster_gate_is_object")
+        roster_gate = None
+
+    if isinstance(roster_gate, dict) and roster_gate.get("allowed") is not True:
+        failed.append("roster_gate.allowed")
+
+    if isinstance(roster, dict):
+        for cond in C2_REQUIRED_ROSTER_CONDITIONS:
+            if roster.get(cond) is not True:
+                failed.append(cond)
+
+    m4 = c2_doc.get("m4")
+    m4_decision_changed: bool | None
+    if not isinstance(m4, dict):
+        failed.append("m4_is_object")
+        m4_decision_changed = None
+    elif not isinstance(m4.get("decision_changed"), bool):
+        # Sin este campo legible no se puede descartar un cambio de decisión: fail-closed.
+        failed.append("m4.decision_changed_is_bool")
+        m4_decision_changed = None
+    else:
+        m4_decision_changed = bool(m4["decision_changed"])
+
+    return {
+        "valid": not failed,
+        "failed_conditions": failed,
+        "roster_identity": roster,
+        "roster_gate": roster_gate,
+        "m4_decision_changed": m4_decision_changed,
+    }
+
+
+def resolve_primary_statuses(h4_m4_impact: str, h4_m5_impact: str, c2_m4_decision_changed: bool) -> dict[str, Any]:
+    """Decide `M4_PRIMARY_STATUS` / `M5_PRIMARY_STATUS` (§33 + propagación C2).
+
+    - H4 decisional (M4 **o** M5) => ambos `UNRESOLVED`. Gate existente: NO se debilita.
+    - C2 con `m4.decision_changed=True` => M4 `UNRESOLVED`, M5 `NOT_INVALIDATED`: un
+      hallazgo exclusivamente M4 no mueve M5.
+    - Caso contrario => ambos `NOT_INVALIDATED`.
+    """
+    h4_decisional = h4_m4_impact == "DECISIONAL" or h4_m5_impact == "DECISIONAL"
+    if h4_decisional:
+        return {
+            "M4_PRIMARY_STATUS": "UNRESOLVED",
+            "M5_PRIMARY_STATUS": "UNRESOLVED",
+            "H4_DECISIONAL": True,
+        }
+    return {
+        "M4_PRIMARY_STATUS": "UNRESOLVED" if c2_m4_decision_changed else "NOT_INVALIDATED",
+        "M5_PRIMARY_STATUS": "NOT_INVALIDATED",
+        "H4_DECISIONAL": False,
+    }
 
 
 def _adjudicate_h1(h1: dict[str, Any]) -> dict[str, Any]:
@@ -155,25 +271,6 @@ def _adjudicate_h4(h4: dict[str, Any]) -> dict[str, Any]:
             return "PARTIALLY_REPRODUCED"
         return "NOT_REPRODUCED"
 
-    def _classify_absolute(deltas: list[float]) -> str:
-        """Adjudica el componente ABSOLUTO del claim contra `EXTERNAL_ABSOLUTE_CLAIM`.
-
-        Se compara el mayor delta medido: si ni el mejor caso se acerca al valor
-        reclamado, el componente absoluto no está reproducido, por más que los
-        ratios (adimensionales) luzcan altos.
-        """
-        if not deltas:
-            return "UNRESOLVED"
-        best = max(deltas)
-        claim = EXTERNAL_ABSOLUTE_CLAIM
-        if claim <= 0:
-            return "UNRESOLVED"
-        if claim / ABSOLUTE_FACTOR_REPRODUCED <= best <= claim * ABSOLUTE_FACTOR_REPRODUCED:
-            return "REPRODUCED"
-        if claim / ABSOLUTE_FACTOR_PARTIAL <= best <= claim * ABSOLUTE_FACTOR_PARTIAL:
-            return "PARTIALLY_REPRODUCED"
-        return "NOT_REPRODUCED"
-
     external_clipped = _classify(clipped)
     external_safe = _classify(safe)
     absolute_clipped = _classify_absolute(clipped_deltas)
@@ -279,30 +376,63 @@ def main() -> None:
     ap.add_argument("--h1", type=Path, required=True)
     ap.add_argument("--h4", type=Path, required=True)
     ap.add_argument("--determinism", type=Path, required=True)
-    ap.add_argument("--c2", type=Path, default=None, help="evidencia C2 (identidad de roster)")
+    # C2 es OBLIGATORIO: sin evidencia de identidad de roster no se publica M4/M5.
+    ap.add_argument(
+        "--c2",
+        type=Path,
+        required=True,
+        help="evidencia C2 (identidad de roster + decisión M4); obligatoria y fail-closed",
+    )
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
     h1 = json.loads(args.h1.read_text(encoding="utf-8"))
     h4 = json.loads(args.h4.read_text(encoding="utf-8"))
     det = json.loads(args.determinism.read_text(encoding="utf-8"))
-    roster = None
-    roster_gate = None
-    if args.c2 is not None and args.c2.exists():
-        c2_doc = json.loads(args.c2.read_text(encoding="utf-8"))
-        roster = c2_doc.get("roster_identity")
-        roster_gate = c2_doc.get("roster_gate")
+
+    # ---- C2 obligatorio y fail-closed (micro-slice final, finding 1).
+    # Antes: `--c2` era opcional y, si el archivo no existía, el builder seguía y
+    # publicaba M4/M5 = NOT_INVALIDATED sin ninguna evidencia de identidad de roster.
+    if not args.c2.exists():
+        print(f"HARD STOP: C2 evidence not found: {args.c2}", file=sys.stderr)
+        raise SystemExit(3)
+    c2_doc = json.loads(args.c2.read_text(encoding="utf-8"))
+    c2_validation = validate_c2_for_adjudication(c2_doc)
+    if not c2_validation["valid"]:
+        print(
+            "HARD STOP: C2 evidence failed fail-closed validation -> NO M4/M5 adjudication",
+            file=sys.stderr,
+        )
+        print(
+            json.dumps(
+                {k: v for k, v in c2_validation.items() if k not in ("roster_identity", "roster_gate")},
+                indent=1,
+                ensure_ascii=False,
+            )
+        )
+        raise SystemExit(3)
+    roster = c2_validation["roster_identity"]
+    roster_gate = c2_validation["roster_gate"]
 
     a1 = _adjudicate_h1(h1)
     a4 = _adjudicate_h4(h4)
 
-    # §33: M4/M5 sólo se invalidan si H4/hallazgos cambian una decisión primaria.
-    h4_decisional = a4["H4_M4_PRIMARY_IMPACT"] == "DECISIONAL" or a4["H4_M5_PRIMARY_IMPACT"] == "DECISIONAL"
-    if h4_decisional:
-        m4_status = m5_status = "UNRESOLVED"
-    else:
-        m4_status = "NOT_INVALIDATED"
-        m5_status = "NOT_INVALIDATED"
+    # §33 + propagación C2 (finding 2): H4 decisional mantiene el gate actual; si no,
+    # un `m4.decision_changed=True` del C2 impide publicar M4 como NOT_INVALIDATED.
+    statuses = resolve_primary_statuses(
+        a4["H4_M4_PRIMARY_IMPACT"], a4["H4_M5_PRIMARY_IMPACT"], c2_validation["m4_decision_changed"]
+    )
+    m4_status = statuses["M4_PRIMARY_STATUS"]
+    m5_status = statuses["M5_PRIMARY_STATUS"]
+    # ¿El fix cambió el resultado científico? Se compara contra la lógica PRE-fix
+    # (sin propagación C2) sobre la MISMA evidencia: si M4/M5 no se mueven, es NO.
+    _pre_fix = resolve_primary_statuses(
+        a4["H4_M4_PRIMARY_IMPACT"], a4["H4_M5_PRIMARY_IMPACT"], c2_m4_decision_changed=False
+    )
+    scientific_result_changed = (m4_status, m5_status) != (
+        _pre_fix["M4_PRIMARY_STATUS"],
+        _pre_fix["M5_PRIMARY_STATUS"],
+    )
 
     adjudication = {
         "phase": "D_CORRECTIVE_ADJUDICATION",
@@ -314,6 +444,12 @@ def main() -> None:
         "H4": a4,
         "M4_PRIMARY_STATUS": m4_status,
         "M5_PRIMARY_STATUS": m5_status,
+        # --- C2 fail-closed (micro-slice final): la adjudicación final exige un C2
+        # válido; sin él la corrida aborta y estos campos no se publican.
+        "C2_VALIDATED_FOR_ADJUDICATION": True,
+        "C2_REQUIRED_ROSTER_CONDITIONS": list(C2_REQUIRED_ROSTER_CONDITIONS),
+        "C2_M4_DECISION_CHANGED": bool(c2_validation["m4_decision_changed"]),
+        "SCIENTIFIC_RESULT_CHANGED": "YES" if scientific_result_changed else "NO",
         # --- identidad del roster (finding F; endurecido en la ronda 3)
         "ROSTER_COUNT_MATCH": (roster or {}).get("roster_count_match"),
         "ROSTER_IDENTITY_MATCH": (roster or {}).get("roster_identity_match"),

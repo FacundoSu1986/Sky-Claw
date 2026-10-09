@@ -101,16 +101,26 @@ def test_el_resumen_no_oculta_la_discrepancia():
 
 
 def test_clasificador_absoluto_distingue_bandas():
-    """Contrapruebas del clasificador, con el claim real de 0.023."""
-    f = bce._classify_absolute if hasattr(bce, "_classify_absolute") else None
-    if f is None:
-        # el clasificador vive dentro de _adjudicate_h4; se prueba vía evidencia
-        return
+    """Contrapruebas de las cuatro bandas, con el claim real de 0.023.
+
+    `_classify_absolute` vive a scope de módulo: si desaparece, este test falla en vez
+    de saltearse en silencio (antes hacía `if not hasattr(...): return` y podía no
+    probar nada).
+    """
+    f = bce._classify_absolute
     claim = bce.EXTERNAL_ABSOLUTE_CLAIM
+    # las cuatro bandas
     assert f([claim]) == "REPRODUCED"
     assert f([claim * 5.0]) == "PARTIALLY_REPRODUCED"
     assert f([claim / 500.0]) == "NOT_REPRODUCED"
     assert f([]) == "UNRESOLVED"
+    # bordes exactos de cada banda
+    assert f([claim * bce.ABSOLUTE_FACTOR_REPRODUCED]) == "REPRODUCED"
+    assert f([claim / bce.ABSOLUTE_FACTOR_REPRODUCED]) == "REPRODUCED"
+    assert f([claim * bce.ABSOLUTE_FACTOR_PARTIAL]) == "PARTIALLY_REPRODUCED"
+    assert f([claim / bce.ABSOLUTE_FACTOR_PARTIAL]) == "PARTIALLY_REPRODUCED"
+    # se adjudica por el MAYOR delta medido, no por el promedio
+    assert f([claim / 500.0, claim]) == "REPRODUCED"
 
 
 def test_evidencia_h4_registra_deltas_de_ambos_brazos():

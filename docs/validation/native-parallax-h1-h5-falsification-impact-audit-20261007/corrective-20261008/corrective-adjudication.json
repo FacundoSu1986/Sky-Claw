@@ -127,6 +127,15 @@
  },
  "M4_PRIMARY_STATUS": "NOT_INVALIDATED",
  "M5_PRIMARY_STATUS": "NOT_INVALIDATED",
+ "C2_VALIDATED_FOR_ADJUDICATION": true,
+ "C2_REQUIRED_ROSTER_CONDITIONS": [
+  "roster_count_match",
+  "roster_identity_match",
+  "historical_roster_digest_matches_frozen_sha",
+  "m3_manifest_sha256_matches_frozen"
+ ],
+ "C2_M4_DECISION_CHANGED": false,
+ "SCIENTIFIC_RESULT_CHANGED": "NO",
  "ROSTER_COUNT_MATCH": true,
  "ROSTER_IDENTITY_MATCH": true,
  "ROSTER_DIGEST_MATCH": true,
