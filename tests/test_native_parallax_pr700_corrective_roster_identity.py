@@ -199,21 +199,44 @@ def test_gate_es_fail_closed_ante_valores_no_booleanos():
     assert gate["failed_conditions"] == ["roster_count_match"]
 
 
-def test_manifest_digest_canonico_es_independiente_del_eol():
-    """El digest congelado del manifiesto es el canónico LF: un checkout LF (Linux) y
-    uno CRLF (Windows) producen el MISMO valor. Congelar el digest CRLF rompería el
-    gate en Linux."""
-    raw = c2.DEFAULT_MANIFEST.read_bytes()
-    lf = raw.replace(b"\r\n", b"\n")
-    crlf = lf.replace(b"\n", b"\r\n")
-    assert c2._bytes_digest_lf(lf) == c2._bytes_digest_lf(crlf)
+def test_manifest_digest_canonico_lf_es_independiente_del_checkout():
+    """Contrato portable del digest congelado (finding de portabilidad Linux).
+
+    La propiedad que interesa es la del CONTENIDO, no la del checkout:
+
+        lf_bytes   --canonicaliza--> digest canónico LF
+        crlf_bytes --canonicaliza--> el MISMO digest canónico LF
+
+    y que ese digest sea el congelado (`EXPECTED_M3_MANIFEST_SHA256_LF`). Las dos
+    variantes se construyen acá explícitamente, así que el test no depende del EOL
+    físico del checkout y se puede razonar y correr igual en Linux (LF) y Windows
+    (CRLF).
+    """
+    lf_bytes = c2.DEFAULT_MANIFEST.read_bytes().replace(b"\r\n", b"\n")
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+
+    assert b"\r\n" not in lf_bytes, "lf_bytes debe ser LF puro"
+    assert crlf_bytes != lf_bytes and b"\r\n" in crlf_bytes
+
+    assert c2._bytes_digest_lf(lf_bytes) == c2._bytes_digest_lf(crlf_bytes)
+    assert c2._bytes_digest_lf(lf_bytes) == c2.EXPECTED_M3_MANIFEST_SHA256_LF
+    assert c2._bytes_digest_lf(crlf_bytes) == c2.EXPECTED_M3_MANIFEST_SHA256_LF
+
+    # Y el checkout real — LF en Linux, CRLF en Windows — canoniza al MISMO valor.
     assert c2._manifest_digest_lf(c2.DEFAULT_MANIFEST) == c2.EXPECTED_M3_MANIFEST_SHA256_LF
 
 
-def test_manifest_digest_lf_no_es_el_digest_crlf_del_worktree():
-    """Deja explícita la relación EOL que el protocolo M2/M3 ya documenta."""
-    import hashlib
+def test_el_digest_fisico_depende_del_eol_pero_el_del_gate_no():
+    """El digest de los bytes FÍSICOS depende del checkout; el que decide, no.
 
-    raw = c2.DEFAULT_MANIFEST.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() != c2.EXPECTED_M3_MANIFEST_SHA256_LF
-    assert c2._manifest_digest_lf(c2.DEFAULT_MANIFEST) != hashlib.sha256(raw).hexdigest()
+    En un checkout CRLF `sha256(raw) != digest_canónico`; en uno LF son iguales — y esa
+    igualdad es válida, no un fallo. Por eso NO se afirma `sha256(raw) != EXPECTED`
+    (sería un test checkout-dependent) y el gate compara siempre el canónico LF:
+    `check_roster_identity` decide con `manifest_sha256_lf` y emite
+    `manifest_sha256_worktree` sólo como procedencia.
+    """
+    res = c2.check_roster_identity([{"asset_id": a} for a in _historical_ids()], c2.DEFAULT_MANIFEST)
+    assert res["manifest_sha256_lf"] == c2.EXPECTED_M3_MANIFEST_SHA256_LF
+    assert res["m3_manifest_sha256_matches_frozen"] is True
+    # Procedencia: 64 hex chars, coincida o no con el canónico según el EOL del checkout.
+    assert len(res["manifest_sha256_worktree"]) == 64
