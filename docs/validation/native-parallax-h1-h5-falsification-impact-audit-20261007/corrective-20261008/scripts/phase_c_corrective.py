@@ -205,6 +205,27 @@ def main() -> None:  # noqa: C901
         sum(1 for s in (r["grid_best_strength"] for r in rows) if abs(abs(s) - FLOOR_STRENGTH) < 1e-9)
     )
 
+    # ---------------- invariante D (segunda ronda correctiva)
+    # El refinamiento JAMÁS puede publicar un objetivo peor que el mejor ya observado.
+    n_refinement_lost = int(
+        sum(
+            1
+            for r in rows
+            if r["continuous_meta"]["continuous_best_objective"]
+            > r["continuous_meta"]["coarse_best_objective"] + 1e-12
+        )
+    )
+    n_caller_bracket_accepted = int(
+        sum(1 for r in rows if r["continuous_meta"].get("caller_bracket_accepted"))
+    )
+    n_valid_min_bracket = int(sum(1 for r in rows if r["continuous_meta"].get("valid_minimum_bracket")))
+    n_stop_criterion_met = int(sum(1 for r in rows if r["continuous_meta"].get("stop_criterion_met")))
+    # ---------------- alcance honesto de la búsqueda (finding A)
+    global_optimum_proven = any(
+        r["continuous_meta"].get("global_optimum_proven") is True for r in rows
+    )
+    search_scopes = sorted({str(r["continuous_meta"].get("search_scope")) for r in rows})
+
     # ---------------- F3: dos universos explícitos
     delta_baseline = [r["delta_rmse_baseline"] for r in rows]
     delta_historical = [r["delta_rmse_historical"] for r in rows]
@@ -265,12 +286,28 @@ def main() -> None:  # noqa: C901
         "universes": universes,
         "counts_16": {
             "n_grid_matches_continuous_within_tolerance": n_grid_matches,
+            # Segunda ronda correctiva (§14): nombre explícito del conteo recalculado.
+            "n_grid_matches_refined": n_grid_matches,
             "grid_match_tolerance_deg": GRID_MATCH_TOLERANCE_DEG,
             "n_continuous_abs_strength_lt_0_05": n_below_floor,
             "n_grid_best_strength_at_floor": n_grid_at_floor,
             "n_boundary_cases": n_boundary,
             "n_converged": n_converged,
             "n_unresolved": n_unresolved,
+            # --- evidencia de convergencia (finding E)
+            "n_valid_minimum_bracket": n_valid_min_bracket,
+            "n_stop_criterion_met": n_stop_criterion_met,
+            "n_caller_bracket_accepted": n_caller_bracket_accepted,
+            # --- invariante D: refinamiento nunca publica peor que el mejor observado
+            "n_refinement_lost_better_coarse": n_refinement_lost,
+        },
+        "search_scope": {
+            "scope": search_scopes[0] if len(search_scopes) == 1 else search_scopes,
+            "global_optimum_proven": global_optimum_proven,
+            "note": (
+                "El barrido grueso cubre un dominio acotado declarado y el refinamiento es "
+                "local a cada cuenca detectada. NO se prueba optimalidad global."
+            ),
         },
         "grid_oracle_signature": {
             "n_assets": len(rows),
