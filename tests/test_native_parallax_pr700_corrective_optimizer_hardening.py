@@ -347,3 +347,68 @@ def test_resultado_finito_sigue_siendo_el_contrato_previo():
     assert res.stop_criterion_met is True
     assert res.valid_minimum_bracket is True
     assert res.status == opt.STATUS_CONVERGED
+
+
+# ------------------------------------------- Cuarta ronda: plano vs no-evaluable
+# Finding del Regression & Test Oracle sobre el HEAD 3ba2609e:
+# `flat` describía DOS cosas a la vez (forma del objetivo y calidad de la evaluación).
+# Una sola evaluación no finita hacía `spread = inf` y clasificaba TODO el barrido como
+# plano, forzando `STATUS_FLAT` y `converged=False` aunque el resto fuera informativo.
+def test_un_valor_no_finito_no_clasifica_todo_como_plano():
+    """Con un tramo no finito pero variación real, el objetivo NO es plano.
+
+    Antes del fix este caso devolvía `STATUS_FLAT`: la región `s < -1` devuelve `inf`, el
+    rango del barrido quedaba en `inf` y la clasificación se comía un objetivo que tiene un
+    mínimo interior perfectamente refinable.
+    """
+
+    def objective(s: float) -> float:
+        return float("inf") if s < -1.0 else (s - 0.5) ** 2
+
+    res = minimize_1d(objective, OptimizerConfig())
+    assert res.status != opt.STATUS_FLAT, f"clasificado como plano: {res.status}"
+    assert res.converged is True
+    assert res.valid_minimum_bracket is True
+    assert res.best_x == pytest.approx(0.5, abs=1e-4)
+
+
+def test_objetivo_realmente_plano_sigue_siendo_flat():
+    """El fix no puede sobre-corregir: sin variación REAL el veredicto sigue siendo FLAT."""
+    res = minimize_1d(lambda s: 1.0, OptimizerConfig())
+    assert res.status == opt.STATUS_FLAT
+    assert res.converged is False
+
+
+def test_casi_plano_con_tramo_no_finito_sigue_siendo_flat():
+    """Casi-plano (rango bajo `flat_tolerance`) con un tramo `inf` sigue siendo FLAT.
+
+    La separación es entre «no varía» y «no se puede evaluar», no entre «varía» y «falla».
+    """
+    res = minimize_1d(lambda s: float("inf") if s < -1.0 else 1.0 + 1e-14 * s, OptimizerConfig())
+    assert res.status == opt.STATUS_FLAT
+    assert res.converged is False
+
+
+def test_sin_ninguna_evaluacion_finita_es_fail_closed():
+    """Si NO hay ningún valor finito no hay nada que minimizar: fail-closed, nunca CONVERGED."""
+    res = minimize_1d(lambda s: float("inf"), OptimizerConfig())
+    assert res.status != opt.STATUS_CONVERGED
+    assert res.converged is False
+    assert res.result_finite is False
+
+
+def test_nan_en_el_barrido_no_clasifica_como_plano():
+    """Un NaN tampoco puede hacer que TODO el objetivo se declare plano.
+
+    El NaN está lejos del mínimo real (que existe y es refinable), así que el resultado
+    correcto es converger al mínimo: lo que NO puede pasar es perder el objetivo entero
+    por una evaluación no finita en otra región.
+    """
+
+    def objective(s: float) -> float:
+        return float("nan") if s > 1.0 else (s - 0.5) ** 2
+
+    res = minimize_1d(objective, OptimizerConfig())
+    assert res.status != opt.STATUS_FLAT
+    assert res.result_finite is True
+    assert res.best_x == pytest.approx(0.5, abs=1e-4)

@@ -48,6 +48,10 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 Cinco findings materiales quedaron abiertos en el review del PR #700. Los cinco están
 confirmados. Esta corrida los resuelve metodológicamente.
 
+Rondas posteriores del mismo review agregaron F6 (§2.3) y F7–F11 (§4.2). De F7–F11, tres
+están corregidos y dos quedan **diferidos con motivo explícito**, sin comprometer ninguna
+conclusión.
+
 | # | Defecto confirmado | Corrección aplicada |
 |---|---|---|
 | **F1** | El supuesto oráculo "continuo" era un **barrido finito** (`s0·exp2(linspace) ∪ linspace(-0.05,0.05)`) sin bracketing ni convergencia. `polyhaven_gray_rocks` caía en el borde `0.05` con cero mejora. | `scripts/corrective_optimizer.py`: barrido grueso log-uniforme + detección de cuencas + bracketing + **sección áurea** + expansión de borde + metadatos de convergencia. Determinista, sin SciPy. **Alcance: mínimo local dentro de cada cuenca detectada — NO optimalidad global** (ver §5). |
@@ -56,6 +60,11 @@ confirmados. Esta corrida los resuelve metodológicamente.
 | **F4** | La sonda H4 probaba amplitudes `[1.0, 0.3, 0.1, 0.03]`, pero el claim externo se midió en `c = 0.05` y `c = 0.01`. El efecto es no lineal ⇒ no falsaba el claim citado. | Batería `[1.0, 0.3, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]`, con `0.05` y `0.01` **obligatorias**. |
 | **F5** | `h_nat` centrado tiene negativos; `resize_height` clipea a `[0,1]`; pero `n_nat = self_forward(h_nat)` sale del campo **sin** clipear ⇒ el height target y la superficie de las normales **no eran la misma superficie**. | `safe_surface()`: `h_safe = h_nat + offset` sin scaling (∇(h+c) = ∇h preserva pendientes). Casos fuera de rango se marcan inválidos; **no se clipea en silencio**. Invariantes verificados por test. |
 | **F6** | `valid_minimum_bracket` se marcaba con la sola condición `lo < b_mid < hi`. Eso prueba que el punto medio es **interior al intervalo**, no que exista evidencia de un mínimo interior: un objetivo plano o monótono salía con `VALID_MINIMUM_BRACKET = YES`. | `scripts/corrective_optimizer.py::is_valid_minimum_bracket()`: exige el bracketing estándar de tres puntos (`f(mid) < f(lo) − tol` **y** `f(mid) < f(hi) − tol`, con `tol = metric_tolerance`). Cubierto por tests de plano, monótono en ambos sentidos, casi-plano, borde, mínimo interior y kink. Ver §2.3. |
+| **F7** | El invariante `target_corresponds_to_h_safe` de la sonda H4 era **tautológico**: comparaba `resize_height_unclipped(h_safe, TARGET)` contra una segunda llamada idéntica sobre el MISMO input, así que `np.allclose` daba `True` por construcción y el invariante **no podía fallar**. El defecto F5 que la corrección dice eliminar quedaba sin evidencia. | `target_matches_safe_surface()`: compara contra `resize(h_nat)` y exige gradientes iguales **y** offset DC superviviente, con tolerancias medidas (correcto ≤8.3e-5 / ≤8.3e-8; clipeado ≥6.2e-2 / ≥2.1e-3). Ver §4.2. |
+| **F8** | `flat` mezclaba dos cosas distintas: una sola evaluación no finita en el barrido grueso hacía `spread = inf` y clasificaba **todo** el objetivo como plano (`STATUS_FLAT`, `converged=False`), ocultando que el problema era de evaluabilidad y no de forma. | `corrective_optimizer.py`: `flat` depende sólo del rango de los valores **finitos**; sin ningún valor finito el caso cae por `result_finite` (`NO_BRACKET`), que es el fail-closed correcto. Ver §4.2. |
+| **F9** | El guard de Spearman no finito era **inefectivo en los dos extremos**: escribía el centinela `UNAVAILABLE` en `universes["BASELINE_COUNTERFACTUAL"]["spearman_..."]` —un nivel que NINGÚN consumidor consulta— y sólo miraba `grid`. Como la evidencia se escribe con `allow_nan=False`, un `nan` que llegara al archivo tumbaba la corrida entera. | `phase_c_corrective.spearman_or_unavailable()`: `float` finito o `"UNAVAILABLE"`, en la MISMA clave que lee `build_corrective_evidence._adjudicate_h1`, para las cuatro ranuras (2 universos × grid/continuous). Ver §4.2. |
+| **F10** | `n_basins_detected` se calcula **antes** de prependear el bracket del caller y `n_basins_refined` **después** ⇒ con `caller_used=True` se publica `refined = detected + 1` (29 de 31 assets). Contamina la trazabilidad; no es decisional. | **DIFERIDO**: corregirlo agrega una clave a la evidencia H1 publicada, y este micro-slice prohíbe regenerarla. Ver §4.2. |
+| **F11** | Si `initial_bracket` contiene al coarse best en el borde exacto (`cb_x == lo_c` o `cb_x == hi_c`), el bracket `(lo_c, cb_x, hi_c)` viola `lo < mid < hi` y no puede aportar bracket válido: el status reportado sería pesimista. Fail-closed (nunca una respuesta incorrecta). | **DIFERIDO**: decidir si es alcanzable exige una corrida del corpus, fuera del alcance de este micro-slice. Ver §4.2. |
 
 ---
 
@@ -360,6 +369,134 @@ artefacto `corrective-adjudication.json` se regeneró sólo para incorporar los 
 contrato (`C2_VALIDATED_FOR_ADJUDICATION`, `C2_M4_DECISION_CHANGED`,
 `C2_REQUIRED_ROSTER_CONDITIONS`, `SCIENTIFIC_RESULT_CHANGED = NO`); ninguna clave previa
 cambió y `H1`/`H4` quedaron idénticos byte a byte.
+
+---
+
+### 4.2 Hallazgos del Oracle sobre el HEAD `3ba2609e` (sexta ronda)
+
+El `Regression & Test Oracle` dejó cinco observaciones nuevas sobre el HEAD `3ba2609e`. Se
+adjudicaron **yendo al código**, no por autoridad del revisor: los cinco se reprodujeron.
+Tres se corrigieron (F7, F8, F9); dos quedan diferidos con motivo explícito (F10, F11).
+
+#### F7 — el invariante del target era tautológico (CORREGIDO)
+
+```python
+# ANTES (h4_magnitude_probe_corrective.py, líneas 179 y 190)
+h_ref_safe      = resize_height_unclipped(h_safe, TARGET)   # línea 179
+...
+h_ref_from_safe = resize_height_unclipped(h_safe, TARGET)   # línea 190 — MISMO input
+target_grad = _grad_check(h_ref_safe, h_ref_from_safe)
+target_ok = bool(
+    target_grad["max_abs_dp"] <= 1e-9
+    and target_grad["max_abs_dq"] <= 1e-9
+    and np.allclose(h_ref_safe, h_ref_from_safe, atol=0.0, rtol=0.0)   # siempre True
+)
+```
+
+Dos llamadas idénticas sobre el mismo input devuelven el mismo array: `allclose` es `True`
+por construcción y `max|Δ∇|` es exactamente `0`. El invariante **no podía fallar**, así que
+el defecto F5 que la corrección dice eliminar quedaba sin evidencia.
+
+El chequeo correcto compara contra la superficie **natural** (`resize(h_nat)`) y exige dos
+propiedades: gradientes iguales en la resolución target y offset DC superviviente. Las
+tolerancias son **medidas** sobre las 51 combinaciones válidas de la batería:
+
+| canal | correcto (max) | clipeado / defecto F5 (min) | tolerancia |
+|---|---|---|---|
+| `max_abs_dp` y `max_abs_dq` | 8.3e-5 | 6.2e-2 | 1e-3 |
+| error de offset tras el resize | 8.3e-8 | 2.1e-3 | 1e-5 |
+
+Cada tolerancia cae entre ambos regímenes (≥12× por encima del correcto, ≥62× por debajo
+del defectuoso), así que el chequeo **discrimina** en vez de decorar. El canal `dq` puede ser
+`0` en ambos brazos (casos con `q ≡ 0`), por eso se exigen los tres canales a la vez y el
+error de offset es el discriminante universal.
+
+**Impacto medido: NINGUNO.** La re-corrida de la sonda reproduce la evidencia publicada con
+**0 diferencias de valor**; `target_corresponds_to_h_safe` sigue `True` en 51/51. El artefacto
+regenerado sólo agrega 153 claves de diagnóstico (51 × 3), y la adjudicación H4 resultante es
+**idéntica campo por campo** (`_adjudicate_h4` sobre el JSON viejo y el nuevo devuelve el
+mismo dict).
+
+#### F8 — `flat` no puede comerse un objetivo evaluable (CORREGIDO)
+
+```python
+# ANTES (corrective_optimizer.py)
+spread = (max(finite_vals) - min(finite_vals)) if len(finite_vals) == len(vals) else float("inf")
+flat = (not math.isfinite(spread)) or (spread <= cfg.flat_tolerance)
+```
+
+Con **una** evaluación no finita, `spread = inf` ⇒ `flat = True` ⇒ `STATUS_FLAT` y
+`converged = False` para todo el barrido. Reproducción sobre el código previo:
+
+```text
+objetivo: inf si s < -1  else (s-0.5)^2      ANTES: FLAT_OBJECTIVE, converged=False
+                                            DESPUÉS: CONVERGED, converged=True, s* = 0.5
+objetivo: inf siempre                       ANTES: FLAT_OBJECTIVE
+                                            DESPUÉS: NO_BRACKET (result_finite = False)
+objetivo: inf si s < -1  else 1 + 1e-14*s   AMBOS: FLAT_OBJECTIVE (rango real < flat_tolerance)
+```
+
+La separación es entre «no varía» y «no se puede evaluar», no entre «varía» y «falla»: el
+casi-plano con un tramo `inf` sigue siendo `FLAT`, y sin ningún valor finito el caso cae por
+`result_finite` (`NO_BRACKET`), que es el fail-closed correcto.
+
+#### F9 — el centinela se publicaba donde nadie lo lee (CORREGIDO)
+
+```python
+# ANTES (phase_c_corrective.py, líneas 261-262)
+if not np.isfinite(universes["BASELINE_COUNTERFACTUAL"]["grid"]["spearman_deg_vs_delta_rmse"]):
+    universes["BASELINE_COUNTERFACTUAL"]["spearman_deg_vs_delta_rmse"] = "UNAVAILABLE"
+```
+
+Tres defectos en dos líneas:
+
+1. El centinela se escribía en `universes["BASELINE_COUNTERFACTUAL"]["spearman_..."]`, pero
+   `build_corrective_evidence._adjudicate_h1` lee
+   `universes[<universo>][grid|continuous].spearman_deg_vs_delta_rmse` (líneas 215-219): el
+   `nan` quedaba publicado igual en la clave que el consumidor **sí** mira.
+2. Sólo miraba `grid`: `continuous` y el universo `HISTORICAL_COMPARISON` quedaban sin guarda.
+3. La evidencia se escribe con `allow_nan=False`, así que un `nan` que llegara al archivo no
+   se publicaba «en crudo»: **tumbaba la corrida entera** con `ValueError`.
+
+El contrato corregido publica `float` finito o `"UNAVAILABLE"` en las cuatro ranuras, y un
+test lo verifica **en la clave que el consumidor lee** (inyecta el centinela sobre la
+evidencia real y corre `_adjudicate_h1`).
+
+#### F10 y F11 — diferidos, con motivo
+
+- **F10** (`n_basins_detected` vs `n_basins_refined`): corregirlo agrega una clave a la
+  evidencia H1 publicada. Este micro-slice prohíbe regenerar esa evidencia salvo que la
+  corrección de F7 produjera una diferencia real, y no la produjo. Queda documentado el
+  vínculo exacto: `n_basins_refined = n_basins_detected + (1 si caller_bracket_accepted)`.
+- **F11** (bracket del caller en el borde exacto): decidir si es alcanzable exige una corrida
+  del corpus. Es fail-closed —status pesimista, nunca una respuesta incorrecta—, así que
+  diferirlo no compromete ninguna conclusión.
+
+#### Impacto acumulado sobre H1 (medido)
+
+Re-corrida completa del corpus (`converged = 31/31`, `unresolved = 0`, `|s*| < 0.05 = 27`,
+`grid matches = 0`, `boundary = 0`, `grid@floor = 31`) contra la evidencia publicada:
+
+```text
+diferencias totales ............ 31
+todas son ...................... rows[i].continuous_meta.n_evaluations
+delta .......................... +6 a +27, TODOS múltiplos de 3
+counts_16 ...................... IDÉNTICO
+universes ...................... IDÉNTICO  (los 4 Spearman, bit a bit)
+search_scope ................... IDÉNTICO
+grid_oracle_signature .......... IDÉNTICO
+inputs_sha256 .................. IDÉNTICO
+campos decisorios distintos .... 0
+```
+
+El único delta es `n_evaluations`, y es **múltiplo de 3 en todas las filas**: es la
+instrumentación de `is_valid_minimum_bracket` (F6), que evalúa `f(lo)`, `f(mid)` y `f(hi)`
+por cada bracket. Ya estaba documentado como `BRACKET_FIX_SCIENTIFIC_IMPACT = NONE` y es
+**anterior** a esta ronda: la evidencia publicada no se regeneró entonces. Ninguno de los
+tres fixes de esta ronda agrega ni quita evaluaciones, así que no contribuyen al delta.
+
+**Conclusión: `SCIENTIFIC_RESULT_CHANGED = NO`.** El corpus se leyó READ-ONLY y la evidencia
+H1 publicada **no se regeneró** (el brief lo prohíbe cuando no hay diferencia real).
 
 ---
 

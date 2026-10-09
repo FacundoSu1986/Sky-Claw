@@ -194,9 +194,7 @@ def target_matches_safe_surface(
     offset_native = float(np.mean(h_safe - h_nat))
     max_abs_offset_error = float(np.max(np.abs((h_ref_safe - h_ref_nat) - offset_native)))
     finite = bool(
-        math.isfinite(g["max_abs_dp"])
-        and math.isfinite(g["max_abs_dq"])
-        and math.isfinite(max_abs_offset_error)
+        math.isfinite(g["max_abs_dp"]) and math.isfinite(g["max_abs_dq"]) and math.isfinite(max_abs_offset_error)
     )
     ok = bool(
         finite

@@ -75,6 +75,36 @@ GRID_MATCH_TOLERANCE_DEG = 1e-6
 FLOOR_STRENGTH = 0.05
 
 
+def spearman_or_unavailable(a: list[float], b: list[float]) -> float | str:
+    """Spearman JSON-safe: centinela `UNAVAILABLE` si el valor no es finito.
+
+    Dos motivos, ambos verificables en el código:
+
+    1. Esta evidencia se escribe con `allow_nan=False`. Un `nan` no sólo no es una
+       medición: **tumba la corrida entera** al serializar. Un Spearman no finito
+       (serie degenerada) no puede llegar al archivo como `nan`.
+    2. El centinela se publica en la MISMA clave que leen los consumidores.
+       `build_corrective_evidence._adjudicate_h1` lee
+       `universes[<universo>][grid|continuous].spearman_deg_vs_delta_rmse`.
+       El guard previo escribía en `universes["BASELINE_COUNTERFACTUAL"]["spearman_..."]`
+       —un nivel que NINGÚN lector consulta— y sólo miraba `grid` y no `continuous`, así
+       que no protegía ni al consumidor ni a la serialización. Hallazgo del Oracle sobre
+       el HEAD 3ba2609e, profundizado acá: el defecto no era sólo la asimetría.
+
+    Un `ValueError` de `spearman` (entrada degenerada) se traduce al mismo centinela.
+    """
+    try:
+        valor = float(spearman(a, b))
+    except ValueError:
+        return "UNAVAILABLE"
+    return valor if bool(np.isfinite(valor)) else "UNAVAILABLE"
+
+
+def _fmt_spearman(valor: float | str) -> str:
+    """Formatea un Spearman que puede ser el centinela `UNAVAILABLE` (no siempre es float)."""
+    return f"{valor:.4f}" if isinstance(valor, float) else str(valor)
+
+
 def median_angle_deg(normal: np.ndarray, h_centered: np.ndarray, s: float) -> float:
     """Réplica EXACTA del cuerpo del oráculo para un solo s (idéntica a la auditoría org.)."""
     h = h_centered * float(s)
@@ -225,23 +255,17 @@ def main() -> None:  # noqa: C901
     delta_baseline = [r["delta_rmse_baseline"] for r in rows]
     delta_historical = [r["delta_rmse_historical"] for r in rows]
 
-    def _sp(a: list[float], b: list[float]) -> float:
-        try:
-            return float(spearman(a, b))
-        except ValueError:
-            return float("nan")
-
     universes = {
         "BASELINE_COUNTERFACTUAL": {
             "label": "ángulos (rejilla/continuo) y delta_rmse AMBOS recalculados en el baseline",
             "delta_rmse_source": "recomputed_on_baseline_path",
             "grid": {
                 "median_agreement_deg": float(np.median(grid_deg)),
-                "spearman_deg_vs_delta_rmse": _sp(grid_deg, delta_baseline),
+                "spearman_deg_vs_delta_rmse": spearman_or_unavailable(grid_deg, delta_baseline),
             },
             "continuous": {
                 "median_agreement_deg": float(np.median(cont_deg)),
-                "spearman_deg_vs_delta_rmse": _sp(cont_deg, delta_baseline),
+                "spearman_deg_vs_delta_rmse": spearman_or_unavailable(cont_deg, delta_baseline),
             },
         },
         "HISTORICAL_COMPARISON": {
@@ -250,16 +274,14 @@ def main() -> None:  # noqa: C901
             "is_hybrid": True,
             "grid": {
                 "median_agreement_deg": float(np.median(grid_deg)),
-                "spearman_deg_vs_delta_rmse": _sp(grid_deg, delta_historical),
+                "spearman_deg_vs_delta_rmse": spearman_or_unavailable(grid_deg, delta_historical),
             },
             "continuous": {
                 "median_agreement_deg": float(np.median(cont_deg)),
-                "spearman_deg_vs_delta_rmse": _sp(cont_deg, delta_historical),
+                "spearman_deg_vs_delta_rmse": spearman_or_unavailable(cont_deg, delta_historical),
             },
         },
     }
-    if not np.isfinite(universes["BASELINE_COUNTERFACTUAL"]["grid"]["spearman_deg_vs_delta_rmse"]):
-        universes["BASELINE_COUNTERFACTUAL"]["spearman_deg_vs_delta_rmse"] = "UNAVAILABLE"
 
     payload = {
         "phase": "C_CORRECTIVE_H1_CONTINUOUS_OPTIMIZATION",
@@ -335,8 +357,8 @@ def main() -> None:  # noqa: C901
     )
     ub = universes["BASELINE_COUNTERFACTUAL"]
     print(
-        f"SPEARMAN baseline: grid={ub['grid']['spearman_deg_vs_delta_rmse']:.4f}  "
-        f"cont={ub['continuous']['spearman_deg_vs_delta_rmse']:.4f}"
+        f"SPEARMAN baseline: grid={_fmt_spearman(ub['grid']['spearman_deg_vs_delta_rmse'])}  "
+        f"cont={_fmt_spearman(ub['continuous']['spearman_deg_vs_delta_rmse'])}"
     )
 
 

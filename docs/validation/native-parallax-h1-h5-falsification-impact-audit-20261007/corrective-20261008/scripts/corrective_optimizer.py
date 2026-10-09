@@ -75,6 +75,9 @@ STATUS_BOUNDARY = "BOUNDARY_UNRESOLVED"
 STATUS_MAX_EXPANSIONS = "MAX_EXPANSIONS"
 STATUS_NO_BRACKET = "NO_BRACKET"
 # --- status nuevos de la segunda ronda correctiva (finding E)
+# `FLAT_OBJECTIVE` describe la FORMA del objetivo (sin variación sobre el barrido grueso).
+# NO se emite por una evaluación no finita: eso es un problema de evaluabilidad y cae por
+# `result_finite` (NO_BRACKET). Ver el bloque de detección dentro de `minimize_1d`.
 STATUS_FLAT = "FLAT_OBJECTIVE"
 STATUS_NO_VALID_BRACKET = "NO_VALID_BRACKET"
 STATUS_MAX_ITERATIONS = "MAX_ITERATIONS"
@@ -434,10 +437,21 @@ def minimize_1d(
     best_x, best_fx = cb_x, cb_fx
 
     # ---- detección de objetivo plano: sin variación no hay mínimo que declarar
+    #
+    # `flat` describe la FORMA del objetivo (no varía), NO la calidad de la evaluación.
+    # La versión previa mezclaba ambas cosas en una sola condición: si CUALQUIER punto del
+    # barrido devolvía NaN/inf, `spread` quedaba en `inf` y el objetivo entero se clasificaba
+    # como plano (`STATUS_FLAT`, `converged=False`), ocultando que el problema era de
+    # evaluabilidad y no de forma. Hallazgo del Oracle sobre el HEAD 3ba2609e.
+    #
+    # Ahora: sin ningún valor finito no hay nada que minimizar (fail-closed: cae por
+    # `result_finite` más abajo), y con valores finitos `flat` depende sólo del rango
+    # observado. El corpus actual no tiene valores no finitos, así que el cambio es
+    # inobservable en la evidencia publicada.
     vals = [v for _, v in coarse]
     finite_vals = [v for v in vals if math.isfinite(v)]
-    spread = (max(finite_vals) - min(finite_vals)) if len(finite_vals) == len(vals) else float("inf")
-    flat = (not math.isfinite(spread)) or (spread <= cfg.flat_tolerance)
+    spread = (max(finite_vals) - min(finite_vals)) if finite_vals else 0.0
+    flat = bool(finite_vals) and spread <= cfg.flat_tolerance
 
     # ---- 2) cuencas candidatas del barrido grueso
     basins = _basins_from_coarse(coarse, cfg.max_refined_basins, cfg.coarse_max_magnitude)

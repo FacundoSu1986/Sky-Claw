@@ -270,6 +270,5 @@ def test_las_tolerancias_del_target_separan_el_defecto():
         correcto.append(ok["max_abs_offset_error"])
         clipeado.append(bad["max_abs_offset_error"])
     assert max(correcto) < probe.TARGET_OFFSET_TOL < min(clipeado), (
-        f"correcto max={max(correcto):.3e} tol={probe.TARGET_OFFSET_TOL:.3e} "
-        f"clipeado min={min(clipeado):.3e}"
+        f"correcto max={max(correcto):.3e} tol={probe.TARGET_OFFSET_TOL:.3e} clipeado min={min(clipeado):.3e}"
     )
