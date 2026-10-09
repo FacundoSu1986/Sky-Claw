@@ -164,7 +164,7 @@ acá tienen veredictos distintos.
 Criterio declarado (no implícito): dentro de 2× del valor reclamado ⇒ `REPRODUCED`;
 dentro de 10× ⇒ `PARTIALLY_REPRODUCED`; más allá ⇒ `NOT_REPRODUCED`.
 
-### 3.1 Hallazgo nuevo: la materialidad del sintético también cambia
+### 3.2 Hallazgo nuevo: la materialidad del sintético también cambia
 
 Con la superficie corregida aparece un resultado que la sonda original no podía ver:
 
@@ -186,7 +186,13 @@ en esta corrección) **no usa superficies sintéticas clipeadas**.
 ## 4. Contrafactual del corpus real (Fase C2) — re-verificado
 
 §23 del brief exigía **no** asumir que F5 invalida el contrafactual real, sino revalidarlo.
-Se re-ejecutó el script C2 (con el guard `len(prepared) != 31 → HARD STOP` añadido):
+Se re-ejecutó el script C2 con **dos** guardas antes de calcular M4/M5 (ronda 2, finding F):
+`len(prepared) != 31 → HARD STOP` **y** verificación de **identidad** del roster, no sólo de
+su tamaño — conjunto ordenado de `asset_id` y digest SHA256 contra el histórico
+(`HISTORICAL_ROSTER_SHA256 = a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e`),
+más el digest del manifiesto M3 (`c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde`).
+Con un roster de 31 assets **distinto** el script no decide: ver
+`ROSTER_COUNT_MATCH` / `ROSTER_IDENTITY_MATCH` / `MANIFEST_DIGEST_MATCH` en la adjudicación.
 
 ```
 M4 decision: EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT -> EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT  changed=False
@@ -249,14 +255,14 @@ CORRECTIVE_REPRODUCIBILITY = PASS
 README.md                        este documento
 corrective-provenance.json       SHAs, hashes, qué se corrigió y por qué
 corrective-adjudication.json     veredictos finales H1/H4 + M4/M5 + PR697/PR675
-h1-corrected-evidence.json       Fase C corregida (optimizador real + 2 universos Spearman)
-h4-corrected-evidence.json       sonda H4 corregida (amplitudes del claim + superficie segura)
 evidence/determinism.json        verificación de reproducibilidad (2 pasadas, bit a bit)
-evidence/h1-corrected-evidence.json   salida cruda de la corrida H1
-evidence/h4-corrected-evidence.json   salida cruda de la corrida H4
+evidence/h1-corrected-evidence.json      salida cruda de la corrida H1
+evidence/h4-corrected-evidence.json      salida cruda de la corrida H4
+evidence/h4-corpus-counterfactual.json   Fase C2: contrafactual READ-ONLY del corpus real
 scripts/corrective_optimizer.py             F1: minimizador escalar 1-D determinista
 scripts/phase_c_corrective.py               F1+F3: oráculo continuo real sobre el corpus
 scripts/h4_magnitude_probe_corrective.py    F4+F5: sonda de magnitud corregida
+scripts/phase_c2_h4_corpus_corrective.py    Fase C2 + finding F: identidad de roster
 scripts/verify_determinism.py               §28: verificación de reproducibilidad
 scripts/build_corrective_evidence.py        Fase D: adjudicación consolidada
 ```
@@ -264,6 +270,12 @@ scripts/build_corrective_evidence.py        Fase D: adjudicación consolidada
 Tests asociados (fuera de esta carpeta, en `tests/`):
 
 ```
-tests/test_native_parallax_pr700_corrective_optimizer.py    F1: 16 tests
-tests/test_native_parallax_pr700_corrective_h4_invariants.py F4/F5: 20 tests
+tests/test_native_parallax_pr700_corrective_optimizer.py             F1: 16 tests
+tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E: 16 tests
+tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 20 tests
+tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
+tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 6 tests
+tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H: 5 tests
 ```
+
+Total: **71 tests correctivos** (`pytest -k pr700_corrective`).
