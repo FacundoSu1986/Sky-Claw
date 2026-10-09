@@ -2745,6 +2745,25 @@ P4/P5, no se tocó MO2, y no se reabrió ningún finding ya cerrado.
 
 ## 34. P4-D0 — congelamiento de contratos de transición y autoridad (2026-10-08)
 
+> **Supersesión parcial (ronda adversarial 1, §35).** La revisión del Tech Lead sobre
+> `81fb83a2` encontró **6 defectos contractuales** en esta sección. Los veredictos y el
+> censo de abajo siguen siendo el registro de la primera pasada, pero quedan
+> **corregidos** por §35 en estos puntos concretos:
+>
+> - **§34.6** (`ApprovalScope`) — le faltaba el **source activation** y no adjudicaba
+>   single-use/expiración/identidad del propietario. ⇒ §35.2 (D0-R1).
+> - **§34.5 / §34.15 C3** — el orden de C3 era **imposible**: con `Desired=source` y
+>   `Effective=target` el POST de coherencia no puede pasar. ⇒ §35.3 (D0-R2).
+> - **§34.13** (`POST_ACTIVATION_LINK_INJECTION`) — derivar a P5 un enlace fuera del
+>   inventario **no alcanza**. ⇒ §35.4 (D0-R3).
+> - **§34.17** — omitía **5 requisitos P4** registrados en §29.8. ⇒ §35.5 (D0-R4).
+> - **§34.4** — `FINALIZED` dependía del orden procedural, sin evidencia durable del
+>   POST ni regla anti-clobber. ⇒ §35.6 (D0-R5).
+> - **§34.14** — "P4 no espera a P5" era ambiguo. ⇒ §35.7 (D0-R6).
+>
+> **§34.18 declaraba `P4_DESIGN_FROZEN = YES` y `P4_READY_TO_IMPLEMENT = YES`: ambos
+> quedan `NO` hasta que §35 cierre los 6 findings.** El estado vigente es el de §35.12.
+
 Esta sección **cierra el diseño contractual** de P4. **No implementa P4.** Su única
 promesa es que, si los contratos de acá se respetan, una implementación de P4 puede
 ser *fail-closed por construcción*. `P4_IMPLEMENTED = NO`, `P5_IMPLEMENTED = NO`.
@@ -3135,10 +3154,12 @@ CUÁNDO      = PRE-approval (evidencia) + PRE-bind (reverify §34.7)
 ESCANEO_INFINITO = PROHIBIDO
 ```
 
-No es un escaneo continuo: son **puntos de control acotados** sobre el inventario
-sellado, y cualquier reparse **nuevo** dentro del inventario invalida. Un enlace
-insertado fuera del inventario es responsabilidad del bind coherente de P5 (las 3
-clases, §29.4). Se reconoce la ventana residual y **se declara**, no se esconde.
+No es un escaneo continuo: son **puntos de control acotados**, y cualquier reparse
+**nuevo** invalida. **Corregido en §35.4 (D0-R3):** derivar a P5 un enlace fuera del
+inventario **no alcanza** —el escaneo debe enumerar el **namespace actual** del Clone
+(archivos **y** directorios), porque un junction creado dentro del Clone tras aprobar
+no es una superficie del game path ni responsabilidad del binder. La ventana residual
+entre el último checkpoint y la ejecución se **declara**, no se esconde.
 
 ### 34.14 D0-12 — `P4_P5_COMPATIBILITY_GATE` (diseño)
 
@@ -3163,8 +3184,9 @@ DELEGATED_TO_P5 = { skse/game match, effective runtime oracle }
 P5_IMPLEMENTED = NO
 ```
 
-P4 **no** espera a P5 para funcionar: si P5 devuelve `UNKNOWN`, P4 **no activa**. Es
-la diferencia entre "no sé ⇒ no" y "no sé ⇒ sí".
+P4 **no** espera a P5 para **poder implementarse y testearse**; pero **corregido en
+§35.7 (D0-R6):** mientras P5 devuelva `UNKNOWN`, P4 **no puede completar la activación
+ni finalizar con SUCCESS**. Es la diferencia entre "no sé ⇒ no" y "no sé ⇒ sí".
 
 ### 34.15 Matriz de crashes (obligatoria) — C0..C7
 
@@ -3175,7 +3197,7 @@ Durable = `transition.json` (+ `active.json`). Effective = lo que consume el run
 | **C0** antes de persistir PENDING | `NONE` | el original | `COMPLETE` | — | no |
 | **C1** tras PENDING, antes de bind | `PENDING` | el original | re-verificar objetivo → `RECOVER` (re-bind idempotente) o `REQUIRE_OWNER` si cambió evidencia | sí, si la evidencia re-verifica | solo si cambió |
 | **C2** durante el bind | `PENDING` | **indeterminado** (puede estar a medias) | **primero observar** el Effective; nunca asumir | `RECOVER` si observa objetivo+evidencia OK; si no, `FAIL_CLOSED` | si no se puede observar |
-| **C3** tras bind, antes de actualizar desired | `PENDING` | el objetivo | re-correr POST → `FINALIZE`; o `COMPLETE` si consiste | sí | no |
+| **C3** tras bind, antes de actualizar desired | `PENDING` | el objetivo | **CORREGIDO en §35.3**: persistir `Desired=target` **antes** del POST (con `Desired=source` el POST no puede pasar); luego POST → `FINALIZE` | sí | no |
 | **C4** tras desired, antes de POST | `PENDING` | el objetivo | re-correr POST | sí | no |
 | **C5** POST falla | `PENDING` (sigue) | el objetivo, **no verificado** | **NO FINALIZA**; `REQUIRE_OWNER` o `RECOVER` | no (fail-closed) | sí |
 | **C6** POST pasa, antes de FINALIZE | `PENDING` | el objetivo, verificado | re-correr POST (idempotente) → `FINALIZE` | sí | no |
@@ -3227,8 +3249,8 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 ```text
 TRACKER_672_AUDITED          = YES
 P4_READY_TO_DESIGN           = YES
-P4_DESIGN_FROZEN             = YES
-P4_READY_TO_IMPLEMENT        = YES   (ver criterio abajo)
+P4_DESIGN_FROZEN             = NO   (SUPERSEDED: la ronda adversarial 1 abrió 6 findings; estado vigente en §35.13)
+P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §35.13)
 P4_IMPLEMENTED               = NO
 P5_IMPLEMENTED               = NO
 
@@ -3241,7 +3263,10 @@ P3B                          = DEFERRED_PENDING_RIG
 STATEFLAGS_6_518_SEMANTICS   = UNVERIFIED
 ```
 
-**Criterio de `P4_READY_TO_IMPLEMENT = YES`.** Los diez blockers exigidos están
+**Criterio de `P4_READY_TO_IMPLEMENT = YES`.** *(SUPERSEDED por §35.5 y §35.13: este
+criterio enumeraba sólo 10 blockers y omitía 5 requisitos P4 registrados en §29.8. El
+criterio vigente exige **todos** los requisitos P4 conocidos, `DESIGN_CLOSED` o
+demostrablemente `DEFERRED_FAIL_CLOSED`.)* Los diez blockers que enumeraba están
 `DESIGN_CLOSED`: `P4_CROSS_PROCESS_LOCK`, `P4_DURABLE_TRANSITION`,
 `P4_APPROVAL_SCOPE`, `P4_REVERIFY_AFTER_APPROVAL`, `P4_P5_COMPATIBILITY_GATE`,
 `GENERATION_METADATA_INTEGRITY`, `RUNTIME_SETUP_MANIFEST_INTEGRITY`,
@@ -3260,3 +3285,539 @@ implementación fail-closed:
 transición, ni lock cross-process, ni `active.json` real, ni binding de MO2, ni setup
 de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5. No se
 mergea el Draft PR.
+
+---
+
+## 35. P4-D0 — ronda adversarial 1: correcciones contractuales (2026-10-08)
+
+Revisión adversarial del Tech Lead sobre `81fb83a2`. **6 findings, todos `CONFIRMED`**,
+verificados contra el texto y contra el código antes de adjudicarlos. Esta sección
+**corrige** §34; no implementa nada.
+
+### 35.1 Adjudicación
+
+| Finding | Sev. | Adjudicación | Resolución |
+|---|---|---|---|
+| **D0-R1** Aprobación liga el target pero no el **source** que reemplaza | P1 | **CONFIRMED** | §35.2: el `ApprovalScope` liga `source_activation`; la igualdad `aprobado == actual` se comprueba **bajo el lock** antes de persistir `PENDING_*`. Single-use, expiración e identidad del propietario adjudicadas. |
+| **D0-R2** C3 tiene un **ordering imposible** | P1 | **CONFIRMED** | Con `Desired=source` / `Effective=target` el POST de coherencia no puede pasar. §35.3 corrige C3 (persistir `Desired=target` **antes** del POST) y rehace la reconciliación de arranque. |
+| **D0-R3** La inyección de enlaces post-activación **sigue abierta** | P1 | **CONFIRMED** | Derivar a P5 un enlace fuera del inventario no alcanza. §35.4 exige **escaneo fresco del namespace actual** (archivos **y** directorios). |
+| **D0-R4** La readiness **omite blockers P4** | P1 | **CONFIRMED** | §34.17 adjudicaba 12 de **17** requisitos P4 de §29.8. §35.5 hace el censo completo y rediseña los 5 faltantes (§35.8). |
+| **D0-R5** `FINALIZED` no conserva **prueba de finalización** | P2 | **CONFIRMED** | §35.6 exige evidencia durable del POST y regla anti-clobber (CAS por `transition_id`). |
+| **D0-R6** Wording P4↔P5 demasiado fuerte | P2 | **CONFIRMED** | §35.7 separa "P4 se puede implementar" de "la activación puede completarse". |
+
+```text
+D0_R1_APPROVAL_SOURCE_BINDING        = CONFIRMED / CLOSED (§35.2)
+D0_R2_CRASH_C3_ORDERING              = CONFIRMED / CLOSED (§35.3)
+D0_R3_FRESH_CLONE_NAMESPACE_INTEGRITY= CONFIRMED / CLOSED (§35.4)
+D0_R4_ALL_P4_BLOCKERS_CENSUSED       = CONFIRMED / CLOSED (§35.5, §35.8)
+D0_R5_FINALIZATION_EVIDENCE_AND_CAS  = CONFIRMED / CLOSED (§35.6)
+D0_R6_P4_P5_WORDING                  = CONFIRMED / CLOSED (§35.7)
+```
+
+### 35.2 D0-R1 — `ApprovalScope` liga el source activation (replay / TOCTOU)
+
+**El defecto.** §34.6 ligaba con precisión el **target** (`generation_id`, `clone_id`,
+`clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`,
+`compatibility_evidence_id`, `candidate_id`) pero **no** el runtime **saliente**. Un
+flujo concurrente que cambiara el source entre la aprobación y el bind dejaría pasar
+una aprobación obtenida en otro contexto, con el target intacto.
+
+**Representación (auditada contra el repo, no copiada del enunciado).** Hoy
+`active.json` **v1** sólo tiene `{schema_version, desired_active_generation,
+updated_at_ns}` y su docstring declara que **no** registra Effective Runtime; ni
+`clone_id` ni `runtime_setup_id` viven ahí, y `previous_activation_target` tiene
+**0 ocurrencias** en código. El source es entonces una **tupla derivada**, y su
+identidad se sella como **digest de contenido** —el patrón del repo
+(`generation-id`, `TreeDigest`, `critical_expectations_digest`), no un contador ni un
+timestamp:
+
+```text
+source_activation = {
+    generation_id,          # desired_active_generation (active.json) — existe hoy
+    clone_id,               # target activo (RuntimeCloneRecord) — diseño v2
+    runtime_setup_id,       # verified_runtime_setup_id del Clone activo — diseño v2
+}
+source_activation_digest = SHA-256(canonical_json(source_activation))
+```
+
+**Por qué digest y no `updated_at_ns`.** Un reloj de pared no es una revisión: dos
+estados distintos pueden compartir timestamp (resolución) y una reescritura con
+contenido idéntico lo cambia (falso positivo). La identidad content-bound es
+**estrictamente más fuerte** para este threat model.
+
+**Contrato.**
+
+```text
+ApprovalScope {
+  operation                 PROMOTION | ROLLBACK
+  source_activation         { generation_id, clone_id, runtime_setup_id }
+  source_activation_digest
+  target_generation_id
+  target_clone_id
+  target_runtime_setup_id
+  candidate_id              (PROMOTION: id; ROLLBACK: NOT_APPLICABLE)
+  compatibility_evidence_id
+  clone_evidence            (digest de contenido, no ruta)
+  runtime_setup_evidence    (digest de contenido)
+}
+```
+
+```text
+CHECK = (approved source_activation_digest == current source_activation_digest)
+WHEN  = UNDER_THE_P4_CROSS_PROCESS_LOCK, inmediatamente ANTES de persistir
+        PENDING_PROMOTION | PENDING_ROLLBACK
+SI CAMBIA:
+    APPROVAL INVALIDATED · NO PENDING · NO BIND · NEW APPROVAL REQUIRED
+```
+
+**Single-use.**
+
+```text
+APPROVAL_SINGLE_USE = YES
+CONSUMO      = crear una transición con estado PENDING_* registra consumed_by_transition_id
+REUSO        = una aprobación NO puede crear una segunda transición (otro transition_id)
+CONTINUACIÓN = reanudar la MISMA transición (recovery C1/C3/C4/C6) está AUTORIZADO
+               (es continuación, no replay: mismo transition_id, mismo source, mismo target)
+```
+
+La transición liga la aprobación a `{transition_id, approval_scope_digest,
+source_activation, target_evidence}`.
+
+**Expiración.**
+
+```text
+TIME_BASED_EXPIRATION_REQUIRED = NO
+INVALIDACIÓN = cualquier cambio de source_activation O de target evidence
+JUSTIFICACIÓN = el riesgo real es "el mundo cambió bajo la aprobación", y eso lo atrapa
+                exactamente la ligadura source+target. Un TTL por reloj o bien expira
+                aprobaciones todavía válidas (fuerza re-aprobación sin ganancia de
+                seguridad) o bien es demasiado largo para importar.
+ADITIVO = un TTL puede agregarse después sin debilitar este contrato.
+```
+
+**Identidad del propietario — no fingir una seguridad que el producto no tiene.**
+
+```text
+APPROVAL_AUTHORITY   = la superficie HITL del producto (quién dijo que sí)
+APPROVAL_PROVENANCE  = referencia opaca que viaja en el scope (superficie + id de solicitud si existe)
+LOCK_OWNERSHIP       = el session_id del lock P4 (proceso, NO identidad humana)
+lock_session_id == human_authorization_identity  ⇒ NO (no demostrado)
+OWNER_IDENTITY_BINDING = DEFERRED
+```
+
+`§29.8` ya registra que la capa del agente LLM es lock-only y que el HITL de la GUI
+documenta una solicitud sin pestaña lanzadora **sin dueño**. P4 **no** equipara
+propiedad del lock con autorización humana: la protección anti-replay es
+**single-use + ligadura de source**, no una identidad que el producto todavía no
+emite. `P4_APPROVAL_SCOPE_DESIGN = CLOSED` **sólo** con single-use y expiración
+adjudicadas, que es lo que esta sección hace.
+
+### 35.3 D0-R2 — C3 corregido + reconciliación de arranque
+
+**El defecto.** §34.15 decía: `PENDING / bind hecho / desired anterior → re-run POST →
+FINALIZE`. Si `Desired=source` y `Effective=target`, el POST de coherencia
+(SFR-16) **no puede pasar**. El ordering era imposible.
+
+**C3 corregido.**
+
+```text
+PENDING · Desired=source · Effective=target
+  → assert same transition_id (CAS, §35.6)
+  → re-verificar evidencia fresca de source Y target
+  → persistir Desired = target              (prerequisito de SFR-16)
+  → POST verify Desired == Effective
+  → PASS: FINALIZE atómico con previous_activation_target = source_activation
+          (tomado del registro de transición) · SUCCESS
+  → FAIL: sigue PENDING · NO FINALIZE
+```
+
+`previous_activation_target` se escribe **con** el FINALIZE (§35.8.5); hasta entonces
+`source_activation` vive en el registro `PENDING`, que es lo que permite reconstruirlo.
+
+**Reconciliación de arranque (§34.5 corregido).** No alcanza con "`Effective ==
+expected_effective_path` → POST". Hay que observar **por separado** `transition state`,
+`Desired`, `Effective`, `source activation` y `target evidence`, y decidir en qué fase
+real quedó:
+
+| Desired | Effective | Fase real | Acción | Automático | Dueño | ¿Puede finalizar? |
+|---|---|---|---|---|---|---|
+| — (no hay transición) | coherente | limpio | `COMPLETE` | — | no | — |
+| source | source | bind no aplicado (C0/C1) | re-bind si: aprobación válida + source matchea + target evidence fresca + lock re-adquirido | sí si todo matchea | sólo si no matchea | sí, tras bind + POST |
+| source | target | bind aplicado, desired atrás (C3) | completar hacia adelante: persistir Desired, POST, finalize | sí | no | sí si POST pasa |
+| target | target | desired y effective alineados (C4/C6) | re-correr POST (idempotente) | sí | no | sí si POST pasa y mismo `transition_id` |
+| target | source | desired avanzado sin bind | **NO finalizar**; `RECOVER` (re-aplicar bind) o `REQUIRE_OWNER` | no si la evidencia no matchea | sí | no |
+| cualquiera | `UNKNOWN` | no observable | `FAIL_CLOSED` | no | sí | no |
+| `PENDING` con `transition.json` corrupto | — | indeterminado | `FAIL_CLOSED` | no | sí | no |
+
+```text
+INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED = NO
+NO_INVENTAR_EXITO = YES   (ningún camino asume target sin observarlo)
+```
+
+### 35.4 D0-R3 — integridad física del Clone: escaneo fresco del namespace
+
+**El defecto.** §34.13 decía que un enlace **fuera del inventario sellado** era
+responsabilidad del bind de P5. Falso: un junction creado *dentro* del Clone después de
+aprobar (p. ej. `Data\SomeMod → junction`) no es una superficie del game path ni
+responsabilidad conceptual del binder.
+
+**Contrato nuevo.**
+
+```text
+FRESH_NAMESPACE_SCAN = YES
+SCOPE   = FILES + DIRECTORIES del namespace ACTUAL del Clone
+          (NO `for file in old_inventory`)
+DETECTA = symlink · junction · reparse point · hardlink prohibido ·
+          namespace escape · solapamiento con Managed Source
+NO_PROMETE_VIGILANCIA_CONTINUA = YES
+```
+
+**Primitivas existentes (reutilizar, no reinventar):**
+
+| Qué | Primitiva | Estado |
+|---|---|---|
+| Archivos | `independence._archivos_fisicos` — rechaza `is_symlink()` y reparse (`st_file_attributes & 0x400`), exige `st_dev>0` y `st_ino>0` | existe (hoy aplicada a la **Generation**) |
+| Directorios | `membership.capturar_membership_directorios` — "un symlink/junction/reparse dentro del scope **no se sigue ni se ignora**"; `scandir` + re-validación por identidad | existe |
+| Contención | `independence.exigir_contencion_fisica` / `storage._contenida` | existe |
+| Solapamiento | `independence.verify_generation_independence` (ambas direcciones) | existe, scoped a Generation |
+
+El escaneo del Clone **combina** las dos primeras (archivos **y** directorios) y les
+suma contención y solapamiento. Ninguna pieza es nueva; la novedad es aplicarlas al
+**Clone** y al **namespace actual**.
+
+**Puntos de control (adjudicados, no todos redundantes):**
+
+```text
+PRE-approval = OBLIGATORIO   la evidencia que el usuario aprueba debe reflejar el namespace actual
+PRE-bind     = OBLIGATORIO   carga la garantía: es la ventana aprobación→bind
+POST-bind    = OBLIGATORIO   el árbol bindeado es el que se ejecuta
+startup      = OBLIGATORIO   reconciliación (§35.3)
+REDUNDANTE   = NINGUNO       PRE-approval y PRE-bind difieren por la ventana aprobación→bind
+```
+
+```text
+P5_BINDING_CLASSES != CLONE_FILESYSTEM_INTEGRITY
+```
+
+Son **responsabilidades distintas**: el binder de P5 repunta superficies del game path
+(§29.4); la integridad física del Clone es del gate de P4. Que P5 repunte bien **no**
+dice nada sobre si hay un junction dentro del árbol.
+
+### 35.5 D0-R4 — censo completo de requisitos P4
+
+**El defecto.** §34.17 adjudicaba 12 requisitos. §29.8 registra **17**. Faltaban
+`P4_LONG_RUNNING_CANCELLATION`, `P4_RUNTIME_SETUP_PROVISIONING`,
+`P4_CLONE_ACTIVATION_GATE`, `P4_CLONE_PROVISIONING_LIFECYCLE` y
+`P4_ROLLBACK_TARGET_HISTORY`. "No estaba en la lista de 10" **no** es justificación.
+
+**Censo reproducible.** `grep -oE "P4_[A-Z0-9_]+"` sobre el ADR da **23 símbolos**
+(17 requisitos + 6 de estado/variantes: `P4_READY_TO_DESIGN`, `P4_READY_TO_IMPLEMENT`,
+`P4_DESIGN_FROZEN`, `P4_IMPLEMENTED`, `P4_APPROVAL_SCOPE_DESIGN`,
+`P4_APPROVAL_SCOPE_IMPLEMENTATION`, `P4_REVERIFY_DESIGN`, `P4_REVERIFY_IMPLEMENTATION`,
+`P4_REVERIFY`, `P4_CANNOT_ACTIVATE_BECAUSE_P5_DOES_NOT_KNOW`). La lista de
+**requisitos** se normaliza contra §29.8 + §32.6 + §34:
+
+| # | P4 REGISTERED REQUIREMENT | §29 STATUS | §34 DECISIÓN | ¿BLOQUEA IMPLEMENTACIÓN? | DESIGN STATUS |
+|---|---|---|---|---|---|
+| 1 | `P4_CROSS_PROCESS_LOCK` | OPEN (ampliado) | §34.3 | no | **DESIGN_CLOSED** |
+| 2 | `P4_LONG_RUNNING_CANCELLATION` | OPEN (nuevo) | **§35.8.1** | no | **DESIGN_CLOSED** |
+| 3 | `P4_DURABLE_TRANSITION` | OPEN (ampliado) | §34.4 + §35.6 | no | **DESIGN_CLOSED** |
+| 4 | `P4_APPROVAL_SCOPE` | DESIGN CLOSED / IMPL OPEN | §34.6 + **§35.2** | no | **DESIGN_CLOSED** |
+| 5 | `P4_RUNTIME_SETUP_PROVISIONING` | OPEN (nuevo) | **§35.8.2** | no | **DESIGN_CLOSED** |
+| 6 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` | OPEN | §34.11 | no (P4 no activa sin payload) | **DEFERRED_FAIL_CLOSED** |
+| 7 | `P4_CLONE_ACTIVATION_GATE` | OPEN (nuevo) | **§35.8.3** | no | **DESIGN_CLOSED** |
+| 8 | `P4_CLONE_PROVISIONING_LIFECYCLE` | OPEN (nuevo) | **§35.8.4** | no | **DESIGN_CLOSED** |
+| 9 | `P4_ROLLBACK_TARGET_HISTORY` | OPEN (nuevo) | **§35.8.5** | no | **DESIGN_CLOSED** |
+| 10 | `P4_RUNTIME_CLONE_RECORD_INTEGRITY` | OPEN | §34.10 | no | **DESIGN_CLOSED** |
+| 11 | `P4_STARTUP_RECONCILIATION` | (§34) | §34.5 + **§35.3** | no | **DESIGN_CLOSED** |
+| 12 | `P4_REVERIFY_AFTER_APPROVAL` | (§29.8) | §34.7 | no | **DESIGN_CLOSED** |
+| 13 | `P4_P5_COMPATIBILITY_GATE` | (§34) | §34.14 + **§35.7** | no | **DESIGN_CLOSED** |
+| 14 | `GENERATION_METADATA_INTEGRITY` | §32.6 OPEN | §34.8 | no | **DESIGN_CLOSED** |
+| 15 | `RUNTIME_SETUP_MANIFEST_INTEGRITY` | §32.6 OPEN | §34.9 | no | **DESIGN_CLOSED** |
+| 16 | `MANDATORY_CRITICAL_EXPECTATIONS` | §32.6 OPEN | §34.12 | no | **DESIGN_CLOSED** |
+| 17 | `POST_ACTIVATION_LINK_INJECTION` | §32.6 OPEN | §34.13 + **§35.4** | no | **DESIGN_CLOSED** |
+
+```text
+P4_REQUIREMENTS_DISCOVERED          = 17
+P4_REQUIREMENTS_DESIGN_CLOSED       = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED= 1   (RUNTIME_SETUP_ARTIFACT_AVAILABILITY)
+P4_REQUIREMENTS_OPEN                = 0
+```
+
+**Fuera de alcance P4 (P5/P6, no cuentan para readiness de P4):**
+`P5_EFFECTIVE_RUNTIME_ORACLE`, `P5_PATH_SURFACES_UNIT`, `P5_QUIESCENCE`,
+`P6_STEAM_STATUS_NOTICE`. Se registran como `OUT_OF_SCOPE_P5`.
+
+**Regla de readiness (corregida).**
+
+```text
+P4_READY_TO_IMPLEMENT = YES  sólo si TODOS los requisitos P4 conocidos están
+                             DESIGN_CLOSED, o demostrablemente DEFERRED_FAIL_CLOSED
+                             Y no requeridos para un P4 core seguro.
+```
+
+`RUNTIME_SETUP_ARTIFACT_AVAILABILITY` cumple: sin payload P4 **no activa**; lo que
+queda sin prometer es la *garantía de rollback*, no el core. `CREATION_CLUB_CLASSIFICATION`
+(`DEFERRED_PENDING_EVIDENCE`) y `P3B` (`DEFERRED_PENDING_RIG`) tampoco bloquean: P4
+responde `UNKNOWN → NO ACTIVATION`.
+
+### 35.6 D0-R5 — evidencia durable de finalización + no-clobber (CAS)
+
+**El defecto.** `state = FINALIZED` no llevaba prueba: la garantía
+`FINALIZED ⇒ POST passed` dependía sólo del **orden procedural**.
+
+**Evidencia durable mínima del POST exitoso:**
+
+```text
+post_verify_evidence_digest     digest del resultado de la verificación de coherencia
+post_verified_at_ns             entero >= 0
+finalized_from_transition_id    la transición que se finalizó
+```
+
+```text
+INVARIANTE = FINALIZED no puede existir sin evidencia durable que ligue, al MISMO:
+             { transition_id, source, target, desired state, effective observation }
+```
+
+**No-clobber / CAS.**
+
+```text
+expected_transition_id == current_transition_id   ANTES de toda mutación del journal
+SI NO COINCIDE ⇒ FAIL_CLOSED
+```
+
+Una transición vieja **no puede** finalizar una más nueva. El CAS se exige en cada
+mutación de `transition.json` (crear PENDING, actualizar, finalizar). No se implementa
+acá; el **contrato** queda congelado.
+
+### 35.7 D0-R6 — P4↔P5: separar implementación de activación
+
+**El defecto.** "P4 no espera a P5 para funcionar" era ambiguo: confundía *poder
+desarrollar y testear P4* con *poder completar la activación*.
+
+```text
+P4_CORE_MAY_BE_IMPLEMENTED_BEFORE_P5 = YES   (desarrollo y test del core P4)
+ACTIVATION_COMPLETION_REQUIRES_P5    = YES   (compatibilidad + evidencia de Effective Runtime)
+
+MIENTRAS P5 = UNKNOWN, P4 PUEDE:
+    preparar · validar lo que P4 posee · persistir artefactos NO activos
+MIENTRAS P5 = UNKNOWN, P4 NO PUEDE:
+    completar la activación · finalizar con SUCCESS
+UNKNOWN != COMPATIBLE   (se mantiene)
+```
+
+Es la diferencia entre "no sé ⇒ no activo" y "no sé ⇒ activo igual".
+
+### 35.8 Requisitos P4 faltantes — diseño
+
+#### 35.8.1 `P4_LONG_RUNNING_CANCELLATION`
+
+`frozen_runtime` es 100 % síncrono (E9). Requisito: fachada async con executor
+dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight
+por root.
+
+```text
+CANCELACIÓN_COOPERATIVA = YES (token)
+ESTADO_FINAL_NUNCA_AMBIGUO = YES → INVALID | CANCELLED, jamás un BUILDING huérfano
+LOCK_SE_CONSERVA_MIENTRAS_HAYA_MUTADOR = YES
+CANCELACIÓN_DURANTE_TRANSICIÓN != ROLLBACK EXITOSO = YES
+    (cancelar NO simula un rollback exitoso; no toca el Effective Runtime a medias)
+PENDING_DURABLE_GOBIERNA_RECOVERY = YES
+    (si la transición ya se persistió, la cancelación la deja PENDING para §35.3;
+     NO la borra para "quedar limpio")
+REFACTOR_ASYNCIO_REQUERIDO = NO
+IMPLEMENTATION = slice dentro de P4 (no bloquea el core)
+```
+
+#### 35.8.2 `P4_RUNTIME_SETUP_PROVISIONING`
+
+```text
+FSM = CREATED → PROVISIONING → PROVISIONED (| INVALID)
+SOLO PROVISIONED ENTRA AL ACTIVATION GATE
+PROVISIONING_FAILURE = INVALID o estado recuperable NO activo · NO ACTIVATION
+SETUP_INTENT != SETUP_VERIFIED   (intended_runtime_setup_id != verified_runtime_setup_id)
+NO_CLASIFICADO (Creation Club, Q22) = declarar `assumptions`; sin clasificar ⇒ no activa
+```
+
+No basta decir "existirá un manifest": el provisionamiento es una operación con
+resultado tipado, y su fallo es un estado explícito, nunca "setup aplicado".
+
+#### 35.8.3 `P4_CLONE_ACTIVATION_GATE` — composición congelada
+
+```text
+P4-OWNED:
+  Generation VALID
+  RuntimeCloneRecord válido
+  lifecycle == PROVISIONED
+  setup intended == verified
+  critical expectations NON-EMPTY y en PASS
+  independencia física fresca / escaneo de namespace (§35.4)
+  exclusión de Managed Source
+  approval scope válido (incl. source activation, §35.2)
+  source activation sin cambios
+  reverify fresco (§34.7)
+
+P5-OWNED:
+  compatibility == COMPATIBLE
+  quiescencia
+  oráculo de Effective Runtime
+
+SI UN CHECK P5-OWNED NO EXISTE ⇒ UNKNOWN ⇒ NO ACTIVATION
+```
+
+#### 35.8.4 `P4_CLONE_PROVISIONING_LIFECYCLE`
+
+```text
+FSM = CREATED | PROVISIONING | PROVISIONED | INVALID
+UN CORTE entre publicar el Clone y provisionar el setup debe ser DESCUBRIBLE y
+CLASIFICABLE al arranque, NUNCA leído como setup aplicado.
+PROVISIONED es requisito de activación (fail-closed).
+```
+
+#### 35.8.5 `P4_ROLLBACK_TARGET_HISTORY`
+
+```text
+previous_activation_target = source_activation
+SE ESCRIBE SÓLO CUANDO: POST passed ∧ mismo transition_id ∧ finalización exitosa
+SE ESCRIBE ATÓMICAMENTE con FINALIZED (misma operación lógica)
+ANTES DE ESO: el registro PENDING retiene source_activation para reconstruirlo
+NO SOBRESCRIBIR el target histórico antes de una transición exitosa
+CRASH ANTES ⇒ PENDING retiene source_activation (reconstrucción, no adivinanza)
+```
+
+### 35.9 Matriz de crashes C0..C7 (revalidada tras R2/R5)
+
+| Punto | transition durable | Desired | Effective posible | source activation | target evidence | Próxima acción segura | Automático | Dueño | ¿Finalizar? |
+|---|---|---|---|---|---|---|---|---|---|
+| **C0** antes de PENDING | `NONE` | source | source | actual | — | `COMPLETE` | — | no | — |
+| **C1** tras PENDING, antes de bind | `PENDING` | source | source | en el registro | en el registro | re-bind **sólo si**: single-use no consumida por otra + source matchea + target evidence fresca + lock re-adquirido; si no, `REQUIRE_OWNER` | sí si todo matchea | sólo si no matchea | tras bind + POST |
+| **C2** durante el bind | `PENDING` | source | **UNKNOWN / parcial** | en el registro | en el registro | **observar primero**; nunca suponer target. `RECOVER` si observa target + evidencia OK; si no, `FAIL_CLOSED` | sólo con observación concluyente | sí si no se puede observar | sólo tras observar + POST |
+| **C3** tras bind, antes de desired | `PENDING` | source | target | en el registro | en el registro | persistir `Desired=target` → POST → finalize (§35.3) | sí | no | sí si POST pasa |
+| **C4** tras desired, antes de POST | `PENDING` | target | target | en el registro | en el registro | re-correr POST | sí | no | sí si POST pasa |
+| **C5** POST falla | `PENDING` (sigue) | target | target **no verificado** | en el registro | en el registro | **NO FINALIZA**. La aprobación original queda **consumida** por esa transición: no autoriza un bind nuevo; el dueño decide reparar (dentro del mismo `transition_id`) o abortar | no (fail-closed) | sí | no |
+| **C6** POST pasa, antes de FINALIZE | `PENDING` | target | target verificado | en el registro | en el registro | repetir POST y finalizar **sólo si**: mismo `transition_id` ∧ mismo source/target ∧ mismo Desired ∧ mismo Effective ∧ evidencia fresca en PASS | sí | no | sí |
+| **C7** tras FINALIZE | `FINALIZED` (+ evidencia POST) | target | target | `previous_activation_target` escrito | — | `COMPLETE` | — | no | — |
+
+```text
+FINALIZED_BEFORE_POST = PROHIBIDO en todos los puntos (§33.2)
+C2_ASSUMPTION = NINGUNA
+C5_APPROVAL_AFTER_FAILURE = CONSUMIDA por esa transición (no reutilizable para otra)
+```
+
+### 35.10 Matriz de replay de aprobación
+
+| Caso | Veredicto |
+|---|---|
+| source sin cambios + target sin cambios | **VALID** (continúa la misma transición) |
+| source **cambió** + target sin cambios | **INVALIDATE** → `NEW APPROVAL REQUIRED` |
+| source sin cambios + target **cambió** | **INVALIDATE** → `NEW APPROVAL REQUIRED` |
+| source **cambió** + target **cambió** | **INVALIDATE** → `NEW APPROVAL REQUIRED` |
+| aprobación ya consumida (otro `transition_id`) | **FAIL_CLOSED** (single-use) |
+| aprobación stale/desconocida | **FAIL_CLOSED** |
+| `transition_id` mismatch (CAS) | **FAIL_CLOSED** |
+
+```text
+SILENT_REUSE = PROHIBIDO
+```
+
+### 35.11 Matriz de independencia física del Clone
+
+| Caso | Veredicto |
+|---|---|
+| symlink nuevo (archivo) | **BLOQUEA activación** |
+| symlink nuevo (directorio) | **BLOQUEA activación** |
+| junction nuevo (directorio) | **BLOQUEA activación** |
+| reparse nuevo (directorio) | **BLOQUEA activación** |
+| hardlink nuevo hacia Managed Source | **BLOQUEA activación** |
+| archivo normal nuevo | **diagnóstico** (deriva reportada, no bloquea) |
+| directorio normal nuevo | **diagnóstico** (deriva reportada, no bloquea) |
+| directorio desaparecido | **diagnóstico**; si era crítico, **BLOQUEA** |
+| archivo desaparecido | **diagnóstico**; si era crítico, **BLOQUEA** |
+| cualquier caso anterior detectado **tras** aprobar | **INVALIDA la aprobación** (evidencia de contenido cambió) |
+
+```text
+NO_ASUMIR_QUE_SOLO_LOS_ARCHIVOS_PREVIAMENTE_INVENTARIADOS_IMPORTAN = YES
+```
+
+### 35.12 Revisión adversarial local — 18 preguntas
+
+| # | Pregunta | Estado | Fundamento |
+|---|---|---|---|
+| 1 | ¿Una aprobación puede aplicarse si cambió el runtime de origen? | **CLOSED_BY_DESIGN** | §35.2: igualdad de `source_activation_digest` bajo lock |
+| 2 | ¿Una aprobación puede usarse dos veces? | **CLOSED_BY_DESIGN** | Single-use + `consumed_by_transition_id` |
+| 3 | ¿Un `transition_id` viejo puede finalizar una transición nueva? | **CLOSED_BY_DESIGN** | CAS por `transition_id` (§35.6) |
+| 4 | ¿`FINALIZED` tiene evidencia durable del POST? | **CLOSED_BY_DESIGN** | `post_verify_evidence_digest` + `post_verified_at_ns` + `finalized_from_transition_id` |
+| 5 | ¿C3 puede completar sin violar `Desired==Effective`? | **CLOSED_BY_DESIGN** | §35.3: `Desired=target` **antes** del POST |
+| 6 | ¿Startup distingue `Desired=source` / `Effective=target`? | **CLOSED_BY_DESIGN** | Matriz de §35.3 (5 combinaciones + corrupto) |
+| 7 | ¿Un junction nuevo no presente en el inventario anterior escapa? | **CLOSED_BY_DESIGN** | §35.4: se enumera el namespace **actual**, no el inventario viejo |
+| 8 | ¿Se escanean directorios actuales, no sólo archivos viejos? | **CLOSED_BY_DESIGN** | `_archivos_fisicos` + `capturar_membership_directorios` |
+| 9 | ¿P5 binding quedó separado de integridad física del Clone? | **CLOSED_BY_DESIGN** | §35.4: `P5_BINDING_CLASSES != CLONE_FILESYSTEM_INTEGRITY` |
+| 10 | ¿Todos los P4 blockers registrados fueron adjudicados? | **CLOSED_BY_DESIGN** | §35.5: 17/17, `OPEN = 0` |
+| 11 | ¿Cancelación deja estados durables recuperables? | **CLOSED_BY_DESIGN** | §35.8.1: `PENDING` gobierna recovery; nunca `BUILDING` huérfano |
+| 12 | ¿Un Clone no `PROVISIONED` puede activarse? | **CLOSED_BY_DESIGN** | §35.8.3/§35.8.4: `lifecycle == PROVISIONED` obligatorio |
+| 13 | ¿Critical expectations vacías pueden pasar? | **CLOSED_BY_DESIGN** | `missing != empty-valid` (§34.12) |
+| 14 | ¿Un source Generation no `VALID` permite retained fast path? | **CLOSED_BY_DESIGN** | §33.3 (R4.1-F2) |
+| 15 | ¿P4 puede terminar activación con P5 `UNKNOWN`? | **CLOSED_BY_DESIGN** | §35.7: `UNKNOWN != COMPATIBLE` |
+| 16 | ¿`previous_activation_target` puede sobrescribirse antes del POST? | **CLOSED_BY_DESIGN** | §35.8.5: sólo con POST passed ∧ mismo `transition_id` ∧ finalize |
+| 17 | ¿Recovery reutiliza aprobación sólo cuando source+target+transition siguen idénticos? | **CLOSED_BY_DESIGN** | §35.10 + CAS |
+| 18 | ¿Hay algún camino donde el Clone mutable se vuelva autoridad? | **CLOSED_BY_DESIGN** | §32.2 + §34.6/§35.2 (evidencia de contenido) + §33.3 |
+
+```text
+OPEN_BLOCKER = 0
+```
+
+### 35.13 Estado
+
+```text
+D0_R1_APPROVAL_SOURCE_BINDING         = CLOSED
+D0_R2_CRASH_C3_ORDERING               = CLOSED
+D0_R3_FRESH_CLONE_NAMESPACE_INTEGRITY = CLOSED
+D0_R4_ALL_P4_BLOCKERS_CENSUSED        = CLOSED
+D0_R5_FINALIZATION_EVIDENCE_AND_CAS   = CLOSED
+D0_R6_P4_P5_WORDING                   = CLOSED
+
+APPROVAL_BINDS_SOURCE_ACTIVATION = YES
+APPROVAL_SINGLE_USE              = YES
+APPROVAL_EXPIRATION_POLICY       = NO_TIME_BASED / CONTENT_BOUND_INVALIDATION
+APPROVAL_OWNER_IDENTITY          = DEFERRED (no se equipara lock con identidad humana)
+TRANSITION_ID_NO_CLOBBER         = YES (CAS)
+FINALIZED_HAS_POST_EVIDENCE      = YES
+
+CRASH_C3_DESIRED_BEFORE_POST     = YES
+STARTUP_DESIRED_EFFECTIVE_MATRIX = YES (5 combinaciones + corrupto)
+FRESH_NAMESPACE_SCAN_FILES       = YES
+FRESH_NAMESPACE_SCAN_DIRECTORIES = YES
+P5_BINDING_SEPARATE_FROM_CLONE_INTEGRITY = YES
+
+P4_REQUIREMENTS_DISCOVERED           = 17
+P4_REQUIREMENTS_DESIGN_CLOSED        = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED = 1
+P4_REQUIREMENTS_OPEN                 = 0
+
+P4_LONG_RUNNING_CANCELLATION_DESIGN    = DESIGN_CLOSED
+P4_RUNTIME_SETUP_PROVISIONING_DESIGN   = DESIGN_CLOSED
+P4_CLONE_ACTIVATION_GATE_DESIGN        = DESIGN_CLOSED
+P4_CLONE_PROVISIONING_LIFECYCLE_DESIGN = DESIGN_CLOSED
+P4_ROLLBACK_TARGET_HISTORY_DESIGN      = DESIGN_CLOSED
+
+RUNTIME_SETUP_ARTIFACT_AVAILABILITY = DEFERRED_FAIL_CLOSED
+CREATION_CLUB_CLASSIFICATION        = DEFERRED_PENDING_EVIDENCE
+P3B                                 = DEFERRED_PENDING_RIG
+
+OPEN_P4_DESIGN_BLOCKERS = 0
+
+P4_READY_TO_DESIGN      = YES
+P4_DESIGN_FROZEN        = YES
+P4_READY_TO_IMPLEMENT   = YES
+P4_IMPLEMENTED          = NO
+P5_IMPLEMENTED          = NO
+PR_READY_TO_MERGE       = NO
+```
+
+`P4_READY_TO_IMPLEMENT = YES` significa **"el diseño no bloquea"**, no "P4 existe".
+`P4_IMPLEMENTED = NO` sigue siendo el estado real.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
+transición, ni lock cross-process, ni CAS, ni escaneo de namespace, ni provisioning, ni
+cancelación, ni gate de activación, ni `active.json` real, ni binding de MO2, ni setup
+de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5. `MERGE = NO`.
