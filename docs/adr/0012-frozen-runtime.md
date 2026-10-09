@@ -281,7 +281,7 @@ para no migrar IDs ya documentados (`SFR-01..23`) en docs, tests e issues.
 | **RuntimeCloneRecord** | Identidad **lógica registrada** de un Runtime Clone: `clone_id`, `source_generation_id`, `lifecycle` (`CREATED`/`PROVISIONING`/`PROVISIONED`/`INVALID`), `intended_runtime_setup_id`, `verified_runtime_setup_id`, `root_path`, `admitted_role = "runtime_clone"`. Es la autoridad para decidir si un target operativo es admisible (SFR-19/§30.5); **no** un prefijo de ruta, porque la ubicación física de los Clones sigue abierta (Q18) —pero la admisión exige además **exclusión física** de la Managed Source (R4-F6). Su propia **integridad** es un blocker abierto (`RUNTIME_CLONE_RECORD_INTEGRITY`, R4-F7). |
 | **Desired Generation / Desired Clone** | Estado persistente de Sky-Claw (`state/active.json` v2). Los nombres de campo son **literales y únicos**: `desired_generation_id` y `desired_clone_id`. No existen alias (`active.generation_id`, `active.clone_id`, `desired_active_generation` quedan **fuera** del schema v2). Sólo el par identifica sin ambigüedad el Effective Runtime pretendido, porque una Generation admite varios Clones (§31.1). |
 | **Effective Runtime** | La ruta que MO2/SKSE ejecutan **realmente** (game path efectivo): desde P0.4, `RuntimeCloneRecord.root_path` de un Runtime Clone. Puede divergir del Desired; esa divergencia es un defecto de promoción, no un éxito (SFR-16). |
-| **ApprovalScope** | Conjunto exacto de artefactos al que queda ligada la aprobación del propietario, con la **lista normativa completa y sin alias** de §38.5: `operation` (`PROMOTION` o `ROLLBACK`), `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, **evidencia de contenido** del Clone (`clone_evidence`), `runtime_setup_id`, **evidencia de contenido** del manifest (`runtime_setup_evidence`), `compatibility_evidence_id` y —sólo en `PROMOTION`— `candidate_id`, más `approval_id`, `approval_seq`, `approval_scope_digest` y `approval_provenance`. Antes de mutar el Effective Runtime se **re-verifica** ese conjunto, no "la intención de actualizar" (SFR-23; §11; §31.4; §37.1). Ligar sólo IDs es insuficiente: el Clone es mutable (R4-F5). |
+| **ApprovalScope** | Conjunto exacto de artefactos al que queda ligada la aprobación del propietario, con la **lista normativa completa y sin alias** de §38.5: `operation` (`PROMOTION` o `ROLLBACK`), `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, **evidencia de contenido** del Clone (`clone_evidence`), `runtime_setup_id`, **evidencia de contenido** del manifest (`runtime_setup_evidence`), `compatibility_evidence_id` y —sólo en `PROMOTION`— `candidate_id`, más `approval_id`, `approval_seq`, `approval_scope_digest` y `approval_provenance`. Antes de mutar el Effective Runtime se **re-verifica** ese conjunto, no "la intención de actualizar" (SFR-23; §11; §31.4; §37.1). Ligar sólo IDs es insuficiente: el Clone es mutable (R4-F5). El scope se **propone** con `approval_id`/`approval_seq` preasignados y su `approval_scope_digest` calculado **antes** de presentarlo, y el propietario aprueba ese digest: `WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES` (§39.3). |
 | **DRIFTED** | Estado de una Generation cuyo árbol ya no coincide con su identidad registrada (`runtime_identity`/`tree_digest`). `DRIFTED != VALID` y `DRIFTED` **no es fuente de clonación** (SFR-17; F10). La detección es **on-demand**: re-verificación de identidad antes de clonar o reparar; no se promete monitoreo continuo. Desde P0.4 la deriva por **uso normal** no debería ocurrir (la Generation no se ejecuta, SFR-19); si ocurre, es una mutación externa o una violación de política, y se trata igual: fail-closed. **Ejecutar una Generation y modificar una Generation son hechos distintos** (§30.5). |
 | **Promotion** | Acto explícito y autorizado de hacer que el par Desired Generation/Desired Clone y el Effective Runtime pasen a ser, **probadamente coherentes**, un Candidate verificado materializado en un Runtime Clone provisionado; sin sobreescribir el runtime activo anterior (SFR-09/16/23). |
 | **Rollback** | Hacer que el par Desired Generation/Desired Clone y el Effective Runtime pasen a ser, probadamente coherentes, una **Generation anterior retenida y re-verificada**, **re-materializada** en un Runtime Clone nuevo y **provisionada** con su RuntimeSetupManifest. La **autoridad de versión es la Generation** y la **autoridad de setup es el RuntimeSetupManifest**; un Clone retenido es una vía rápida opcional, nunca la única autoridad (§12). No reconstruye archivos "a mano" ni depende de la Managed Source (SFR-10/22). |
@@ -504,7 +504,12 @@ FASE 1 — PREPARACIÓN (no activa; no requiere aprobación)
 FASE 2 — ACTIVACIÓN (muta el Effective Runtime; requiere aprobación)
   source baseline coherente    # Desired source == Effective == RuntimeCloneRecord (§36.3)
                                # divergencia ⇒ FAIL_CLOSED, sin aprobación ni PENDING
+  propose scope                # preasignar approval_id/approval_seq EN MEMORIA y
+                               # calcular approval_scope_digest ANTES de presentar
+                               # (§39.3 A; el digest compromete esos dos campos)
   user approves                # SFR-08; operation = PROMOTION;
+                               # el propietario aprueba el DIGEST presentado, no una
+                               # intención
                                # scope = {operation, source_activation,
                                #          source_activation_digest, generation_id,
                                #          clone_id, clone_evidence, runtime_setup_id,
@@ -512,6 +517,8 @@ FASE 2 — ACTIVACIÓN (muta el Effective Runtime; requiere aprobación)
                                #          compatibility_evidence_id, candidate_id,
                                #          approval_id, approval_seq,
                                #          approval_scope_digest, approval_provenance}
+  CAS ISSUE approval           # publicar EXACTAMENTE lo propuesto y aprobado (§39.3 C)
+                               # si el CAS falla ⇒ descartar y re-presentar (C3)
   reverify approved evidence   # re-verificar EXACTAMENTE lo aprobado (SFR-23; R4-F5)
   BURN approval (CAS CONSUME)  # quemar la aprobación ANTES de crear la transición,
                                # durable + fsync (§36.5; §37.3); no hay atomicidad
@@ -741,11 +748,16 @@ Secuencia exacta (vía de integridad, la canónica):
    `runtime_setup_evidence`, `compatibility_evidence_id`, `approval_id`,
    `approval_seq`, `approval_scope_digest`, `approval_provenance`;
    `candidate_id NOT_APPLICABLE` — un rollback canónico **no** debe preservar un
-   Candidate histórico para poder volver atrás. Si el source baseline no es
-   coherente (Desired ≠ Effective sin transición que lo explique), no se presenta
-   scope: `FAIL_CLOSED` (§36.4).
-7. **Aprobación del propietario** (SFR-08). Si cancela, el runtime activo queda
-   **idéntico** y los artefactos preparados quedan inactivos (SFR-23).
+   Candidate histórico para poder volver atrás. `approval_id` y `approval_seq` son
+   **preasignados en la propuesta** y el `approval_scope_digest` se calcula **antes**
+   de presentar (§39.3 A): el digest compromete esos dos campos, así que no pueden
+   nacer al emitir. Si el source baseline no es coherente (Desired ≠ Effective sin
+   transición que lo explique), no se presenta scope: `FAIL_CLOSED` (§36.4).
+7. **Aprobación del propietario** (SFR-08): aprueba el **digest** del scope
+   presentado, no una intención. Después, `CAS ISSUE` publica exactamente lo
+   propuesto y aprobado (§39.3 C); si el CAS falla, la propuesta se **descarta** y se
+   presenta una nueva. Si cancela, el runtime activo queda **idéntico** y los
+   artefactos preparados quedan inactivos (SFR-23).
 8. **Re-verificar EXACTAMENTE la evidencia aprobada** justo antes de mutar: si algo
    cambió entre la aprobación y el binding, **no se activa** (SFR-23; R4-F5).
 9. **Quemar la aprobación (CAS CONSUME)** —durable + `fsync`— **antes** de
@@ -1839,7 +1851,7 @@ no inferido; v1 sigue leyéndose fail-closed.
 | `P4_CROSS_PROCESS_LOCK` (ampliado) | P4 | Una clave **por `FrozenRuntimeRoot`**, no por destino; base del lockfile derivada del root (p. ej. dentro de `state/`), no de `tempfile.gettempdir()`. `destination_lock` de RV-3 **no sirve** (E7). Los instaladores toman un lock por `game_dir`, cuya clave **cambia** al repuntar la ruta: la promoción debe tomar ambas o usar una clave lógica. Participantes congelados por introspección/AST. |
 | `P4_LONG_RUNNING_CANCELLATION` (nuevo) | P4 | `frozen_runtime` es 100 % síncrono (E9), sin cancelación ni progreso. `crear_candidate` hace varios recorridos SHA-256 completos + copia con `fsync`; instanciar un Clone con RV-2/RV-3 suma otros. Requisito: fachada async con executor dedicado, token de cancelación cooperativo, progreso hacia el event loop, single-flight por root, y cancelación que termina en un **resultado de operación** explícito (`SUCCESS`/`CANCELLED`/`FAILED`), nunca en un `BUILDING` huérfano. `CANCELLED` **no** es un estado del ciclo de vida del Clone (D0-R2.6; §36.7): la FSM del Clone sigue siendo `CREATED \| PROVISIONING \| PROVISIONED \| INVALID`. **No se refactoriza a asyncio en P0.4.** |
 | `P4_DURABLE_TRANSITION` (ampliado) | P4 | La intención durable cubre la secuencia completa: publicar Generation, instanciar Clone y binding, **y también el rollback** (R4-F3): promoción y rollback usan el **mismo modelo**. El **ordering es normativo**: (i) la transición `PENDING` se persiste **antes** de mutar el Effective Runtime; y (ii) se **finaliza SÓLO después** de que el POST-verify pase (R4.1-F1) — invariante `FINALIZED ⇒ POST verification already passed`; si el POST falla, la transición **sigue `PENDING`** (recuperable). Formato del registro = P4; ordering = congelado. El historial `FINALIZED` tiene **almacén propio** (`state/transitions/<transition_id>.json`, inmutable, ordenado por `finalization_seq` lógico y **no** por mtime) y el protocolo de escritura entre la aprobación y el journal es **burn-first**, con matriz de crash explícita (§37.2/§37.5). |
-| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`, `approval_id`, `approval_seq`, `approval_scope_digest`, `approval_provenance`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`; lista normativa única y censo de §38.5); el **mecanismo** no existe. **El scope liga el SOURCE que se reemplaza, no sólo el target** (D0-R1; §35.2): sin él, una aprobación obtenida en otro contexto pasaría con el target intacto. **Y liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, la **autoridad durable de consumo** (`approval_id` + `approval_seq` + `approval_scope_digest`, §36.5/§37.1), el **ciclo de vida de la aprobación** (`ISSUED | CONSUMED | REVOKED` con CAS, §37.4), la expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño — el lock **no** es autorización humana. |
+| `P4_APPROVAL_SCOPE` (ampliado) | P4 | **DESIGN = CLOSED / IMPLEMENTATION = OPEN.** El contrato está decidido (§11: `ApprovalScope` operation-aware —`operation`, `source_activation`, `source_activation_digest`, `generation_id`, `clone_id`, `clone_evidence`, `runtime_setup_id`, `runtime_setup_evidence`, `compatibility_evidence_id`, `candidate_id`, `approval_id`, `approval_seq`, `approval_scope_digest`, `approval_provenance`— con `candidate_id` REQUIRED sólo en `PROMOTION` y NOT_APPLICABLE en `ROLLBACK`; lista normativa única y censo de §38.5); el **mecanismo** no existe. **El scope liga el SOURCE que se reemplaza, no sólo el target** (D0-R1; §35.2): sin él, una aprobación obtenida en otro contexto pasaría con el target intacto. **Y liga evidencia de CONTENIDO, no sólo IDs** (R4-F5): un Clone es mutable, así que la comparación pre-bind debe detectar cambios de payload con IDs estables. Falta implementar: representación de `clone_evidence`/`runtime_setup_evidence`, la **autoridad durable de consumo** (`approval_id` + `approval_seq` + `approval_scope_digest`, §36.5/§37.1), el **ciclo de vida de la aprobación** (`ISSUED | CONSUMED | REVOKED` con CAS, §37.4), la expiración y la re-verificación previa al binding. "El propietario" debe definirse: la capa del agente LLM es lock-only y el HITL de la GUI documenta que una solicitud sin pestaña lanzadora queda sin dueño — el lock **no** es autorización humana. **Y el orden de emisión está congelado** (D0-R5.1; §39.3): el scope se propone con `approval_id`/`approval_seq` preasignados y su `approval_scope_digest` calculado **antes** de presentarlo, el propietario aprueba ese digest, y el `CAS ISSUE` posterior publica exactamente esos valores — de modo que `WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES`. |
 | `P4_RUNTIME_SETUP_PROVISIONING` (nuevo) | P4 | Implementar SFR-22: registrar el `RuntimeSetupManifest` por versión, provisionar el Clone de forma reproducible (SKSE del build exacto, root files, componentes) y verificar sus hashes declarados. Sin esto el rollback no reconstruye un runtime **listo para activación** (§31.2). Incluye declarar `assumptions` para lo no clasificado (Creation Club, Q22). |
 | `P4_RUNTIME_SETUP_ARTIFACT_AVAILABILITY` (nuevo) | P4 / P6 / P7 | R3-B1 (§31.5): adjudicar qué estrategia (A/B/C/D) garantiza que los artefactos declarados por el manifest sigan siendo recuperables, y **demostrar por Generation retenida** qué queda retenido o reproducible. Sin esta adjudicación **no se puede prometer rollback operativo**: el manifest declara procedencia, no disponibilidad futura. `RUNTIME_SETUP_ARTIFACT_AVAILABILITY = OPEN`. |
 | `P4_CLONE_ACTIVATION_GATE` (nuevo) | P4 | Implementar §29.3, incluyendo el catálogo de críticos (Q19) y el **reporte** de deriva (no sólo el veredicto). Además: (a) las expectativas críticas deben **pasarse explícitamente** desde la metadata —nunca quedar en el default `()` de RV-2/RV-3, que desactiva el chequeo en silencio (§29.10-20)—; (b) el gate debe rechazar reparse points que **escapen** del Clone, no sólo comparar inodos contra el origen (§29.10-21); (c) **exclusión física de la Managed Source** (R4-F6): la identidad lógica es necesaria y no suficiente, hace falta no-contención/no-solapamiento con `steamapps/common`; (d) exigir `lifecycle == PROVISIONED` (R4-F9), no la mera presencia de un `intended_runtime_setup_id`. |
@@ -2219,14 +2231,23 @@ ApprovalScope:
     compatibility_evidence_id
     candidate_id                  # REQUIRED en PROMOTION; NOT_APPLICABLE en ROLLBACK
     approval_id                   # identidad durable single-use (ronda 2, D0-R2.4; §36.5)
+                                  # PREASIGNADA en la propuesta (ronda 5; §39.3 A2)
     approval_seq                  # secuencia monótona por root (ronda 3, D0-R3.1; §37.1)
+                                  # PREASIGNADA en la propuesta (ronda 5; §39.3 A2)
     approval_scope_digest         # SHA-256 del scope sin este campo (ronda 3; §37.1)
+                                  # calculado ANTES de presentar (ronda 5; §39.3 A4)
     approval_provenance           # referencia opaca a la superficie emisora (ronda 3)
+                                  # identifica la PRESENTACIÓN (ronda 5; §39.3 A2)
 ```
 
 Antes de presentar el scope se exige además **coherencia del source baseline**
 (`Desired source == Effective observado == RuntimeCloneRecord registrado`): si
 divergen, no hay aprobación nueva (§36.3/§36.4).
+
+Y el scope que se presenta lleva ya **preasignados** `approval_id` y `approval_seq`, con su
+`approval_scope_digest` calculado: el digest compromete esos dos campos, así que no pueden
+nacer al emitir (§39.3). El propietario aprueba ese digest, y el `CAS ISSUE` posterior
+publica exactamente los mismos valores.
 
 Y antes de mutar el Effective Runtime:
 
@@ -2488,9 +2509,14 @@ materialize fresh Clone C_prev  (or fast path: retained Clone only if fully admi
 provision/verify RuntimeSetup S_prev
 activation gate (incl. exclusión de Managed Source)
 source baseline coherence (Desired == Effective == RuntimeCloneRecord)   # §36.3
-present exact ROLLBACK scope + source activation + content evidence
+propose exact ROLLBACK scope   # preasignar approval_id/approval_seq EN MEMORIA y
+                               # calcular approval_scope_digest ANTES de presentar
+                               # (§39.3 A)
+present that exact scope + source activation + content evidence
        + approval_id + approval_seq + approval_scope_digest + approval_provenance
-user approves
+user approves the DIGEST       # aprueba lo que vio, no una intención (§39.3 B2)
+CAS ISSUE approval             # publicar EXACTAMENTE lo propuesto (§39.3 C);
+                               # fallo del CAS ⇒ descartar y re-presentar (C3)
 reverify exact approved evidence
 CAS CONSUME approval (BURN)   # durable + fsync; ANTES del CREATE (§37.3)
 CAS CREATE durable PENDING ROLLBACK   # antes de mutar (R4-F3; §36.6)
@@ -3159,8 +3185,11 @@ ApprovalScope {
   clone_evidence       { identidad de contenido del Clone, no su ruta }
   runtime_setup_evidence { identidad de contenido del setup aplicado }
   approval_id          identidad durable single-use (§36.5; D0-R2.4)
+                       PREASIGNADA en la propuesta, antes del digest (§39.3 A2)
   approval_seq         secuencia monótona por root (§37.1; D0-R3.1)
+                       PREASIGNADA en la propuesta, antes del digest (§39.3 A2)
   approval_scope_digest SHA-256 del scope sin este campo (§37.1; D0-R3.1)
+                       calculado ANTES de presentar al propietario (§39.3 A4)
   approval_provenance  referencia opaca a la superficie emisora (§37.1; D0-R3.1)
 }
 ```
@@ -3432,8 +3461,8 @@ C2_ASSUMPTION = NINGUNA  ("rollback si hace falta" está prohibido como frase y 
 ```text
 TRACKER_672_AUDITED          = YES
 P4_READY_TO_DESIGN           = YES
-P4_DESIGN_FROZEN             = NO   (SUPERSEDED cuatro veces: rondas 1 (§35), 2 (§36), 3 (§37) y 4 (§38); estado vigente en §38.10)
-P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §38.10)
+P4_DESIGN_FROZEN             = NO   (SUPERSEDED cinco veces: rondas 1 (§35), 2 (§36), 3 (§37), 4 (§38) y 5 (§39); estado vigente en §39.9)
+P4_READY_TO_IMPLEMENT        = NO   (SUPERSEDED: ver §39.9)
 P4_IMPLEMENTED               = NO
 P5_IMPLEMENTED               = NO
 
@@ -3566,6 +3595,18 @@ ApprovalScope {
 > (`target_generation_id` en `state/transition.json` y en
 > `state/transitions/<T>.json`, §34.4/§37.5), que es otro artefacto. El
 > `approval_scope_digest` se computa sobre el scope con los nombres planos.
+
+**Orden de emisión (D0-R5.1; §39.3).** `approval_id` y `approval_seq` están **dentro** del
+scope y el digest los compromete, así que se **preasignan antes** de calcularlo: el scope
+que se presenta al propietario ya los lleva, y el `CAS ISSUE` posterior al consentimiento
+publica exactamente esos valores. Un `approval_id` que nace **al emitir** no puede estar en
+un scope cuyo digest se presentó **antes** de emitir.
+
+```text
+APPROVAL_IDS_ARE_PREASSIGNED_BEFORE_THE_DIGEST = YES   (§39.3 A2 → A4)
+APPROVAL_IDS_HAVE_NO_AUTHORITY_UNTIL_ISSUE     = YES   (en memoria; §39.3)
+WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED         = YES   (§39.3 C2)
+```
 
 ```text
 CHECK = (approved source_activation_digest == current source_activation_digest)
@@ -4075,11 +4116,12 @@ P3B                                 = DEFERRED_PENDING_RIG
 OPEN_P4_DESIGN_BLOCKERS = 0
 
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = NO   (SUPERSEDED tres veces: la ronda adversarial 2 abrió 6
-                                residuos, la ronda 3 abrió 5 blockers de durabilidad y
-                                la ronda 4 abrió 4 residuos de durabilidad terminal;
-                                estado vigente en §38.10)
-P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §38.10)
+P4_DESIGN_FROZEN        = NO   (SUPERSEDED cinco veces: la ronda adversarial 2 abrió 6
+                                residuos, la ronda 3 abrió 5 blockers de durabilidad, la
+                                ronda 4 abrió 4 residuos de durabilidad terminal y la
+                                ronda 5 abrió 1 blocker de orden de emisión;
+                                estado vigente en §39.9)
+P4_READY_TO_IMPLEMENT   = NO   (SUPERSEDED: ver §39.9)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
 PR_READY_TO_MERGE       = NO
@@ -4896,7 +4938,7 @@ y la **emisión de `approval_id`/`approval_seq`** por la superficie HITL.
 > `FINALIZED` con almacén propio e inmutable y orden **lógico** (`finalization_seq`);
 > retención corregida a **`K ≥ 3`**; y —ronda 4— **evidencia terminal inmutable**
 > (`state/approvals/`) escrita **antes** del ledger, `finalization_seq` **derivado** del
-> store y frontera de retención **posicional**. Estado vigente en **§38.10**.
+> store y frontera de retención **posicional**. Estado vigente en **§39.9**.
 
 ### 36.16 Verificación de esta ronda
 
@@ -5098,6 +5140,11 @@ clone_evidence · runtime_setup_id · runtime_setup_evidence · compatibility_ev
 candidate_id · approval_id · approval_seq · approval_provenance
 ```
 
+Como el digest compromete `approval_id` y `approval_seq`, esos dos valores tienen que
+existir **antes** de calcularlo: se **preasignan** en la propuesta y el `ISSUE` los publica
+tal cual (§39.3). Emitirlos y recién después calcular el digest es el defecto D0-R5.1
+(ronda 5), y dejaba sin responder qué valores había visto y aprobado el propietario.
+
 **Por qué esto cierra la tautología (D0-R3.1).** Con la ligadura vieja, el consumo
 comparaba `approval_id == el de la aprobación presentada` — es decir, el dato que el
 propio presentador aporta contra sí mismo. Con `last_issued_scope_digest`, el consumo
@@ -5110,20 +5157,29 @@ su tombstone inmutable y **después** el ledger (write-ahead; §38.2):
 
 ```text
 ISSUE (state ∈ {CONSUMED, REVOKED} ∨ ledger ausente → ISSUED):
-    CAS: approval_revision == R
-         ∧ NOT (state == ISSUED)              # MAX_ISSUED = 1 (§37.6)
-         ∧ el scope presentado es bien formado y su digest recomputa
-         ∧ NO existe tombstone para el (approval_seq, approval_id) a emitir
+    # Publica una aprobación YA CONSENTIDA. El ordering completo —preasignar,
+    # digest, presentar, consentir— es §39.3. R es la revisión observada al
+    # PROPONER (A1), no una recién leída: presentar la recién leída abriría
+    # la ventana ABA.
+    CAS: approval_revision == R                      # revisión de la PROPUESTA
+         ∧ NOT (state == ISSUED)                     # MAX_ISSUED = 1 (§37.6)
+         ∧ el scope PROPUESTO es bien formado y su digest recomputa
+         ∧ last_issued_approval_seq == proposed_approval_seq - 1
+         ∧ NO existe tombstone con approval_seq == proposed_approval_seq
+         ∧ NO existe tombstone con approval_id  == proposed_approval_id
+           (por seq Y por id por separado: §38.2 R3; cubre el ledger restaurado)
          ∧ max(approval_seq sobre tombstones) <= last_issued_approval_seq
            (ledger retrocedido ⇒ FAIL_CLOSED; §38.2 R2)
-         ∧ los tombstones son unívocos en seq y en approval_id (§38.2 R3)
     → { state: ISSUED,
-        approval_seq = last_issued_approval_seq + 1,
-        approval_id  = UUID v4 nuevo,
-        last_issued_scope_digest = digest del scope presentado,
+        approval_seq = proposed_approval_seq,        # EXACTAMENTE lo propuesto
+        approval_id  = proposed_approval_id,         # EXACTAMENTE lo propuesto
+        last_issued_scope_digest = digest presentado y aprobado,
+        last_issued_provenance   = proposed_provenance,
         approval_revision = R + 1 }
     fsync
     EMISOR = superficie HITL (NUNCA la maquinaria de transición)
+    FALLA DEL CAS ⇒ DESCARTAR la propuesta y re-presentar (§39.3 C3):
+                    NUNCA adaptar el scope ni reasignar seq en silencio
 
 CONSUME (ISSUED → CONSUMED):                  # el "burn" de §37.2
   [0] CREATE state/approvals/<seq>-<id>.json  (no-clobber; terminal_state=CONSUMED;
@@ -5190,9 +5246,17 @@ REVOKED  → ISSUED  = PROHIBIDO
 REVOKED  → CONSUMED = PROHIBIDO
 ```
 
+La **propuesta** de §39.3 **no** agrega un estado a esta FSM: `PROPOSED` no existe como
+estado del ledger, y `PROPOSAL_IS_NOT_A_LIFECYCLE_STATE = YES`. Una propuesta es un valor
+en memoria de la superficie emisora; lo único durable es el resultado del `CAS ISSUE`. El
+ledger sigue teniendo exactamente tres estados, y `(none)` —el valor previo a toda
+emisión— sigue siendo el punto de partida.
+
 **Cancelación según el punto en que ocurra:**
 
 ```text
+CANCEL EN LA PROPUESTA             → nada que revocar y NADA PERSISTIDO; la propuesta
+(antes de ISSUE)                     se descarta y el runtime queda intacto (§39.3 B2)
 CANCEL ANTES DE ISSUE              → nada que revocar; runtime intacto
 CANCEL TRAS ISSUE, ANTES DE CREATE → CAS REVOKE (§37.3) ⇒ REVOKED
                                      orden write-ahead: tombstone(REVOKED) PRIMERO,
@@ -5607,7 +5671,7 @@ implementación** —no como diseño—: el **oráculo de Effective Runtime** (P
 > `last_finalization_seq` se usaba en el CAS de F1 **sin autoridad definida**; el estado
 > `FINALIZED` seguía figurando como estado del journal en §34.4/§36.14/§36.15; y la
 > lista normativa de `ApprovalScope` divergía entre secciones (`target_*` vs nombres
-> planos) y estaba incompleta en §29.8. **El estado vigente es el de §38.10.**
+> planos) y estaba incompleta en §29.8. **El estado vigente es el de §39.9.**
 > `P4_DESIGN_FROZEN` y `P4_READY_TO_IMPLEMENT` vuelven a `NO` hasta que §38 cierre los
 > cuatro.
 
@@ -6067,6 +6131,19 @@ APPROVAL_SCOPE_DIGEST_COMMITS = los 13 campos restantes (todos)
 APPROVAL_SCOPE_DIGEST_EXCLUDES_ITSELF = YES
 ```
 
+**Consecuencia de emisión (D0-R5.1; §39.3).** Que el digest comprometa `approval_id` y
+`approval_seq` **obliga** a que ambos existan antes de calcularlo. Por eso el scope se
+**propone** —con los dos identificadores preasignados en memoria y el `approval_provenance`
+de la presentación— y recién entonces se computa el digest, se presenta y se pide el
+consentimiento. El `CAS ISSUE` posterior publica exactamente esos valores. El orden
+inverso —emitir y después calcular— era el defecto que la ronda 5 cierra.
+
+```text
+APPROVAL_SCOPE_IS_PROPOSED_BEFORE_THE_DIGEST = YES   (§39.3 A3 → A4)
+APPROVAL_SCOPE_IS_FROZEN_AT_PROPOSAL_TIME    = YES   (§39.3)
+APPROVAL_SCOPE_FIELDS                        = 14    (la ronda 5 no agrega ninguno)
+```
+
 ### 38.6 Frontera de retención del historial (R4.5)
 
 **El problema.** La ronda 3 fijó `RETENTION_MIN_K = 3` y declaró que
@@ -6249,6 +6326,14 @@ OPEN_BLOCKER = 0
 
 ### 38.10 Estado
 
+> **SUPERSEDED por la ronda adversarial 5 (§39).** La revisión externa posterior a esta
+> ronda encontró **1 blocker P1** (`D0-R5.1`): la emisión del `ApprovalScope` era
+> **circular**, porque §11 presentaba al propietario un scope que incluía `approval_id`,
+> `approval_seq` y `approval_scope_digest` mientras §37.3 los producía **al emitir**, y el
+> digest los compromete (§38.5) — de modo que el scope presentado no podía tener un digest
+> que recompute, y ninguna sección decía qué valores había visto y aprobado el propietario.
+> El estado vigente es el de **§39.9**.
+
 ```text
 D0_R4_1_TERMINAL_APPROVAL_ROLLBACK     = CLOSED
 D0_R4_2_FINALIZATION_SEQ_AUTHORITY     = CLOSED
@@ -6343,7 +6428,7 @@ rg -n "state/approvals/|approval_terminal_store|WRITE_AHEAD_APPROVAL_TERMINAL" \
 rg -n "RETENTION_FRONTIER|RETENTION_BOUNDARY_VALID|BROKEN_CHAIN" \
    docs/adr/0012-frozen-runtime.md
 
-# (6) estados vigentes, sin YES adelantados fuera de §38.10
+# (6) estados vigentes, sin YES adelantados fuera de §39.9
 rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (7) censo (no se asume; se recomputa)
@@ -6360,6 +6445,323 @@ que documentan la corrección. Las del comando (3) deben ser, todas, referencias
 bloque de §35.2 que explica por qué se retiró el alias. Las del comando (8) deben ser,
 todas, la nota de reemplazo del ledger (§36.5/§37.3), la nota de retiro de §38.1 y la
 propia línea del comando — ninguna puede afirmar que el anillo existe.
+
+**Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
+transición, ni CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni
+almacén de historial, ni revocación, ni lock cross-process, ni escaneo de namespace, ni
+provisioning, ni cancelación, ni gate de activación, ni `active.json` real, ni binding de
+MO2, ni setup de SKSE, ni cache de artefactos, ni rollback, ni promoción. No se tocó P5.
+`MERGE = NO`.
+
+---
+
+## 39. P4-D0 — ronda adversarial 5: ordering de emisión de la aprobación (2026-10-09)
+
+### 39.1 Adjudicación
+
+| Finding | Severidad | Estado | Resolución |
+|---|---|---|---|
+| **D0-R5.1** emisión circular del `ApprovalScope` | P1 | **CONFIRMED / CLOSED** | §39.3: se congela el ordering **preasignar → digest → presentar → consentir → `CAS ISSUE`**. Los identificadores se acuñan **antes** del digest y viven **en memoria, sin autoridad**, hasta que el CAS posterior al consentimiento los publica. Sin campo nuevo (§38.5 sigue en 14). |
+
+```text
+D0_R5_1_APPROVAL_ISSUANCE_ORDER = CONFIRMED / CLOSED (§39.3)
+```
+
+### 39.2 El defecto, con las citas
+
+Tres textos normativos vigentes no pueden ser verdaderos a la vez:
+
+1. **§11 presenta el scope completo antes de la aprobación.** En el flujo de `PROMOTION`
+   (línea «`user approves`»), el scope que se pone delante del propietario incluye
+   literalmente `approval_id`, `approval_seq` y `approval_scope_digest`; y el paso 6 del
+   flujo de `ROLLBACK` enumera esos mismos campos como parte del scope que se **presenta**,
+   siendo el paso 7 la aprobación del propietario.
+2. **§37.3 `ISSUE` los produce.** El bloque de `ISSUE` asigna
+   `approval_seq = last_issued_approval_seq + 1` y `approval_id = UUID v4 nuevo`
+   **como resultado** de emitir la aprobación.
+3. **§38.5/§37.3: el digest los compromete.**
+   `approval_scope_digest = SHA-256(canonical_json(scope \ {approval_scope_digest}))`
+   cubre los 13 campos restantes, **incluidos `approval_id` y `approval_seq`**.
+
+La consecuencia es que el scope presentado **no puede** tener un digest que recompute:
+dos de sus campos no existen todavía en el momento de presentarlo. Y ninguna sección decía
+**qué valores vio y aprobó** el propietario.
+
+**Por qué no es cosmético.** El `CONSUME` compara el digest presentado contra
+`last_issued_scope_digest` (§37.3). Si el digest emitido se calcula sobre un scope armado
+*después* del consentimiento, la anti-tautología de D0-R3.1 se satisface formalmente pero
+**no liga al humano**: ligaría el scope que la máquina construyó, no el que el propietario
+aprobó. El invariante de §11 —«el propietario no puede aprobar algo distinto de lo que se
+aplica»— quedaría enunciado sin mecanismo, que es exactamente lo que esta ronda existe
+para evitar.
+
+### 39.3 Protocolo congelado: preasignar → digest → presentar → consentir → CAS
+
+**Decisión.** Los identificadores de la aprobación se **preasignan antes** de calcular el
+digest, se presentan junto con él, y el `ISSUE` posterior al consentimiento los **publica
+exactamente**. La propuesta se identifica por `approval_provenance`, que ya es «referencia
+opaca (superficie + id de solicitud)»: **no se agrega ningún campo**, `APPROVAL_SCOPE_FIELDS`
+sigue siendo **14** y D0-R4.4 no se reabre.
+
+```text
+FASE A — PROPUESTA (bajo el lock del root; NO persiste nada)
+  A0  precondición: NOT (state == ISSUED)
+      (una aprobación ISSUED pendiente bloquea la emisión; hay que consumirla
+       o revocarla primero — §37.4)
+  A1  leer approval.json → revision R, last_issued_approval_seq
+  A2  acuñar EN MEMORIA, todavía SIN AUTORIDAD:
+        proposed_approval_seq = last_issued_approval_seq + 1
+        proposed_approval_id  = UUID v4 nuevo
+        proposed_provenance   = (superficie emisora + id de solicitud)
+                                ← identifica la PRESENTACIÓN, no el token
+  A3  construir el ApprovalScope COMPLETO (§38.5, los 14 campos) usando los
+      tres valores propuestos; el resto (operation, source_activation,
+      source_activation_digest, target, evidencias de CONTENIDO, candidate_id)
+      sale del snapshot ya verificado
+  A4  calcular approval_scope_digest = SHA-256(canonical_json(scope \ {él}))
+  A5  verificar contra el store de tombstones (§38.2):
+        ∄ tombstone con approval_seq == proposed_approval_seq
+        ∄ tombstone con approval_id  == proposed_approval_id
+      colisión ⇒ descartar y volver a A2 con OTRA secuencia (NUNCA reusar)
+  A6  liberar el lock      ← el lock NO se sostiene durante la interacción humana (§39.4)
+
+FASE B — CONSENTIMIENTO (sin lock)
+  B1  presentar al propietario el scope EXACTO y su digest
+  B2  el propietario aprueba el DIGEST, no una intención
+      si cancela: no se persiste NADA y los artefactos preparados quedan
+      inactivos (SFR-23)
+
+FASE C — PUBLICACIÓN (bajo el lock; CAS)
+  C1  releer approval.json — SÓLO para diagnóstico; NO se usa como valor esperado
+  C2  CAS ISSUE con esperado = R, la revisión de la PROPUESTA:
+        approval_revision == R
+        ∧ NOT (state == ISSUED)
+        ∧ last_issued_approval_seq == proposed_approval_seq - 1
+        ∧ el digest presentado recomputa sobre el scope propuesto
+        ∧ ∄ tombstone para (proposed_seq, proposed_id), y tampoco por seq
+          ni por id por separado (§38.2 R3)
+      → persistir EXACTAMENTE lo propuesto y aprobado:
+          last_issued_approval_id   = proposed_approval_id
+          last_issued_approval_seq  = proposed_approval_seq
+          last_issued_scope_digest  = digest presentado
+          last_issued_provenance    = proposed_provenance
+          state = ISSUED, approval_revision = R + 1
+      fsync
+  C3  si el CAS falla ⇒ DESCARTAR la propuesta. NO adaptar el scope, NO
+      reasignar seq en silencio, NO publicar un scope distinto del aprobado.
+      Se vuelve a FASE A y se presenta un scope NUEVO.
+```
+
+```text
+WHAT_HUMAN_APPROVED                    = approval_scope_digest del scope PRESENTADO
+WHAT_WAS_ISSUED                        = los mismos 14 campos, publicados por el CAS
+WHAT_CONSUME_LATER_VERIFIES            = el mismo digest contra last_issued_scope_digest
+WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED == WHAT_CONSUME_VERIFIES = YES
+
+PROPOSED_IDS_ARE_MINTED_BEFORE_THE_DIGEST      = YES
+PROPOSED_IDS_AUTHORITY_BEFORE_ISSUE            = NINGUNA (en memoria; no persistidas)
+NO_AUTHORIZATION_PERSISTED_BEFORE_CONSENT      = YES
+ISSUE_PUBLISHES_EXACTLY_THE_PROPOSED_TRIPLE    = YES
+ISSUE_CAS_PRESENTS_THE_PROPOSAL_TIME_REVISION  = YES (no la recién leída: eso sería ABA)
+ISSUE_CAS_FAILURE_ACTION                       = DESCARTAR_Y_REPRESENTAR
+SCOPE_IS_FROZEN_AT_PROPOSAL_TIME               = YES
+PROPOSAL_IS_NOT_A_LIFECYCLE_STATE              = YES (la FSM sigue ISSUED | CONSUMED | REVOKED)
+PROPOSAL_EXPIRY_IS_THE_CAS                     = YES
+TIME_BASED_EXPIRATION_REQUIRED                 = NO   (sin cambio; §37.4)
+APPROVAL_SCOPE_FIELDS                          = 14   (sin campo nuevo; §38.5)
+```
+
+### 39.4 Por qué el lock NO se sostiene durante la interacción humana
+
+El bosquejo original de este cierre sostenía el lock del root durante **todo** el flujo,
+incluida la presentación y la respuesta del propietario. Se **corrige**: el lock se toma en
+la FASE A y en la FASE C, y se **libera** durante la FASE B.
+
+**Razón.** El lock del root es cross-process (`P4_CROSS_PROCESS_LOCK`) y es el mismo objeto
+sobre el que tiene que razonar `P4_LONG_RUNNING_CANCELLATION` (§35.8.1). Una decisión humana
+tiene duración **no acotada** —el propietario puede tardar horas o no responder nunca—, así
+que sostenerlo convertiría una sección crítica corta en una ilimitada y dejaría ambigua la
+propiedad del lock ante cancelación o crash. §35.2 ya rechaza esa ambigüedad cuando niega
+que el lock sea autorización humana: si el lock cubriera la espera, «tener el lock» y
+«tener el consentimiento» se volverían indistinguibles en la práctica.
+
+**Y el CAS es estrictamente más fuerte que el lock para esta ventana.** El lock excluye
+sólo a los procesos que **cooperan** en tomarlo; el CAS sobre `approval_revision` excluye a
+**cualquier** escritor, incluido un ledger restaurado desde un backup (D0-R4.1). La ventana
+sin lock no es un compromiso: es la parte del protocolo que hace la garantía.
+
+```text
+ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION            = NO
+HUMAN_INTERACTION_IS_OUTSIDE_THE_CRITICAL_SECTION  = YES
+CROSS_FILE_ATOMICITY                               = NOT_CLAIMED   (sin cambio; §37.2)
+```
+
+### 39.5 Matriz de la propuesta (crash y carrera)
+
+| Punto | Ledger | Autorización existente | Efecto | Próxima acción | ¿Seguro? |
+|---|---|---|---|---|---|
+| `P0` propuesta en memoria, no presentada | sin cambios | ninguna | ninguno | descartar | **YES** |
+| `P1` presentada, el propietario no respondió | sin cambios | ninguna | ninguno | descartar o re-presentar | **YES** |
+| `P2` el propietario APROBÓ, antes del `CAS ISSUE` | sin cambios | **ninguna** (el consentimiento no se persistió) | se pierde la **presentación**, no la seguridad | re-presentar un scope nuevo | **YES** |
+| `P3` `ISSUE` con éxito, `fsync` no confirmado | puede quedar rasgado ⇒ `CORRUPT` | — | `FAIL_CLOSED` | reconciliación de arranque (§36.9) | **YES** |
+| `P4` entre `ISSUE` y el `CONSUME` | `state = ISSUED` | la aprobada, exacta | normal | crear la transición | **YES** |
+| `P5` otro actor emitió o revocó entre `A6` y `C2` | `revision != R` | ninguna publicada | el CAS **falla** | descartar y re-presentar | **YES** |
+| `P6` el ledger se restauró desde un backup entre `A6` y `C2` | `revision` puede volver a `R` | ninguna publicada | el CAS **falla** por tombstone (§38.2 R3) | descartar y re-presentar | **YES** |
+| `P7` el propietario cancela en `FASE B` | sin cambios | ninguna | artefactos inactivos (SFR-23) | ninguna | **YES** |
+
+`P2` es la misma dirección que la ventana tolerada de §37.2: cuesta una **presentación**,
+nunca la seguridad. `P6` es el punto donde la ronda 4 y la ronda 5 se sostienen mutuamente:
+la preasignación sólo es segura porque el store de tombstones sobrevive a la restauración
+del ledger, y por eso la comprobación de colisión se repite en `C2` — y se hace **por `seq`
+y por `id` por separado**, no sólo por el par.
+
+### 39.6 Matriz de coherencia presentado / emitido
+
+| Escenario | Presentado | Emitido | Digest | Veredicto |
+|---|---|---|---|---|
+| normal | `S` | `S` | igual | **OK** |
+| secuencia reasignada en silencio | `S(seq=12)` | `S(seq=13)` | distinto | **PROHIBIDO**; si se observa ⇒ `FAIL_CLOSED` |
+| scope adaptado tras fallo de CAS | `S1` | `S2` | distinto | **PROHIBIDO**; descartar y re-presentar |
+| digest recalculado con otro `provenance` | `S` | `S'` | distinto | **PROHIBIDO** |
+| scope presentado sin digest | `S` | — | no computable | **PROHIBIDO**: no se presenta un scope sin digest (`A4`) |
+| emitido sin presentación | — | `S` | — | **PROHIBIDO**: no hay `ISSUE` sin consentimiento |
+
+### 39.7 Censo de readiness — recomputado, no recordado
+
+```text
+P4_REQUIREMENTS_DISCOVERED             = 17   (sin cambio: D0-R5.1 refina un
+                                               contrato existente, no descubre
+                                               un requisito nuevo)
+P4_REQUIREMENTS_DESIGN_CLOSED          = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED   = 1    (RUNTIME_SETUP_ARTIFACT_AVAILABILITY)
+P4_REQUIREMENTS_OPEN                   = 0
+NEW_PREFIXED_SYMBOLS_THIS_ROUND        = 0    (censo verificado por set-diff en §39.10)
+```
+
+`P4_APPROVAL_SCOPE` sigue siendo el requisito que cubre esta superficie: la pregunta «¿qué
+valores vio y aprobó el propietario?» pertenece al mismo contrato —el conjunto exacto de
+artefactos al que queda ligada la aprobación—, así que se **refina** su fila en §29.8 y
+**no** se agrega un `P4_` nuevo. Declararlo como requisito aparte inflaría el censo sin
+agregar una obligación distinta.
+
+### 39.8 Revisión adversarial local — 20 preguntas
+
+| # | Pregunta | Veredicto | Respuesta |
+|---|---|---|---|
+| 1 | ¿El digest se puede calcular antes de conocer `approval_id`/`approval_seq`? | **CLOSED_BY_DESIGN** | No: por eso se **preasignan** en `A2`, antes del digest en `A4`. |
+| 2 | ¿Preasignar los identificadores les da autoridad? | **CLOSED_BY_DESIGN** | No: viven en memoria y nada se persiste antes del consentimiento (`NO_AUTHORIZATION_PERSISTED_BEFORE_CONSENT`). |
+| 3 | ¿`PROPOSED` se cuela como estado del ciclo de vida? | **CLOSED_BY_DESIGN** | No: `PROPOSAL_IS_NOT_A_LIFECYCLE_STATE = YES`; la FSM sigue `ISSUED / CONSUMED / REVOKED`. |
+| 4 | ¿Qué pasa si el propietario aprueba y el proceso muere antes del CAS? | **CLOSED_BY_DESIGN** | `P2`: no hay autorización publicada; se re-presenta. Se pierde la presentación, no la seguridad. |
+| 5 | ¿Y si el CAS falla porque otro emitió? | **CLOSED_BY_DESIGN** | `P5`: descartar y re-presentar. Prohibido adaptar el scope o reasignar la secuencia. |
+| 6 | ¿Puede el CAS publicar un scope distinto del aprobado? | **CLOSED_BY_DESIGN** | No: publica exactamente `proposed_approval_id`, `proposed_approval_seq` y el digest presentado. |
+| 7 | ¿Presentar la revisión recién leída en el CAS abre una ventana ABA? | **CLOSED_BY_DESIGN** | Sí, por eso el CAS presenta `R`, la revisión de la **propuesta**. `C1` es sólo diagnóstico. |
+| 8 | ¿El lock debe cubrir la interacción humana? | **CLOSED_BY_DESIGN** | No (§39.4): sección crítica acotada más CAS, que es más fuerte que el lock. |
+| 9 | ¿Un ledger restaurado puede publicar una aprobación ya terminal? | **CLOSED_BY_DESIGN** | No: `P6`; el store de tombstones lo detecta (§38.2 R1/R3). |
+| 10 | ¿Basta comprobar la colisión por el par `(seq, id)`? | **CLOSED_BY_DESIGN** | No: también **por `seq` solo y por `id` solo** (`A5`, `C2`), que es lo que cubre el ledger retrocedido. |
+| 11 | ¿El `approval_provenance` puede fijarse al emitir en vez de al proponer? | **CLOSED_BY_DESIGN** | No: está **dentro** del digest, así que se fija en `A2`. |
+| 12 | ¿Hace falta expiración por reloj de la propuesta? | **CLOSED_BY_DESIGN** | No: el CAS **es** la expiración (`PROPOSAL_EXPIRY_IS_THE_CAS`). |
+| 13 | ¿La propuesta agrega un campo al scope? | **CLOSED_BY_DESIGN** | No: 14 campos; se identifica por `approval_provenance`. |
+| 14 | ¿Se debilita la anti-tautología de D0-R3.1? | **CLOSED_BY_DESIGN** | No, se refuerza: ahora el digest emitido es **probadamente** el que el propietario vio. |
+| 15 | ¿Qué pasa si el propietario cancela? | **CLOSED_BY_DESIGN** | `P7`: no se persiste nada y los artefactos quedan inactivos (SFR-23). |
+| 16 | ¿Pueden coexistir dos propuestas vivas? | **CLOSED_BY_DESIGN** | En memoria sí, pero **sólo una publica**: lo garantizan el CAS y `MAX_ISSUED_APPROVALS_PER_ROOT = 1`. |
+| 17 | ¿El orden de la lista de 14 campos es semántico? | **CLOSED_BY_DESIGN** | No: el digest usa `canonical_json`, que ordena claves (§38.5). |
+| 18 | ¿El `ISSUE` sigue siendo del emisor HITL y no de la maquinaria de transición? | **CLOSED_BY_DESIGN** | Sí, sin cambio: `APPROVAL_ISSUER_IS_NOT_THE_TRANSITION_MACHINERY = YES`. |
+| 19 | ¿Cambia `TIME_BASED_EXPIRATION_REQUIRED`? | **CLOSED_BY_DESIGN** | No: sigue en `NO` (§37.4); el bloqueo lo da `approval_seq > last_consumed_approval_seq`. |
+| 20 | ¿La ronda introduce símbolos `P4_` nuevos? | **CLOSED_BY_DESIGN** | No: censo **36**, verificado por set-diff (§39.10). |
+
+```text
+OPEN_BLOCKER = 0
+```
+
+### 39.9 Estado
+
+```text
+D0_R5_1_APPROVAL_ISSUANCE_ORDER        = CLOSED
+
+APPROVAL_ISSUANCE_ORDER                = preasignar → digest → presentar → consentir
+                                         → CAS ISSUE (§39.3)
+APPROVAL_ISSUANCE_PHASES               = A (lock) · B (sin lock) · C (lock + CAS)
+WHAT_HUMAN_APPROVED_EQUALS_WHAT_WAS_ISSUED = YES
+WHAT_WAS_ISSUED_EQUALS_WHAT_CONSUME_VERIFIES = YES
+ISSUE_PUBLISHES_EXACTLY_THE_PROPOSED_TRIPLE  = YES
+ISSUE_CAS_PRESENTS_THE_PROPOSAL_TIME_REVISION = YES
+ISSUE_CAS_FAILURE_ACTION               = DESCARTAR_Y_REPRESENTAR
+NO_AUTHORIZATION_PERSISTED_BEFORE_CONSENT = YES
+PROPOSAL_IS_NOT_A_LIFECYCLE_STATE      = YES
+PROPOSAL_EXPIRY_IS_THE_CAS             = YES
+ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION = NO
+APPROVAL_SCOPE_FIELDS                  = 14   (sin cambio)
+APPROVAL_LIFECYCLE                     = ISSUED | CONSUMED | REVOKED   (sin cambio)
+
+APPROVAL_PROPOSAL_MATRIX               = YES   (§39.5, 8 puntos)
+PRESENTED_VS_ISSUED_MATRIX             = YES   (§39.6, 6 filas)
+
+P4_REQUIREMENTS_DISCOVERED             = 17
+P4_REQUIREMENTS_DESIGN_CLOSED          = 16
+P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED   = 1
+P4_REQUIREMENTS_OPEN                   = 0
+NEW_PREFIXED_SYMBOLS_THIS_ROUND        = 0
+
+OPEN_P4_DESIGN_BLOCKERS = 0
+NEW_FINDINGS            = 1   (D0-R5.1) — confirmado por el revisor externo,
+                               no preventivo
+
+P0_4_CORE_ARCHITECTURE = SOUND   (mismo hecho y mismo símbolo que §32.8; la ronda 5
+                                  no introduce un nombre nuevo para la arquitectura)
+P4_READY_TO_DESIGN     = YES
+P4_DESIGN_FROZEN       = YES
+P4_READY_TO_IMPLEMENT  = YES
+P4_IMPLEMENTED         = NO
+P5_IMPLEMENTED         = NO
+PR_SAFE_FOR_NEXT_REVIEW = YES
+PR_SAFE_TO_MERGE       = NO
+MERGE                  = NO
+```
+
+`P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque D0-R5.1 quedó cerrado con
+mecanismo y no con prosa: el ordering está escrito como fases, con el valor esperado de
+cada CAS, con la acción obligatoria ante fallo y con dos matrices que enumeran los puntos
+de crash y de carrera. La ronda 4 no podía sostenerlo porque este residuo era anterior a
+ella y la invalidaba.
+
+Siguen **declaradas y abiertas como implementación** —no como diseño— las dos dependencias
+de siempre: el **oráculo de Effective Runtime** (P5) y la **emisión de
+`approval_id`/`approval_seq`** por la superficie HITL. `P4_IMPLEMENTED = NO` es el estado
+real: ninguna ronda empezó RED-first.
+
+### 39.10 Verificación de esta ronda
+
+```bash
+# (1) el orden viejo (emitir y DESPUÉS asignar los ids) no puede quedar como
+#     paso vigente de ningún bloque de protocolo
+rg -n "^\s+approval_seq = last_issued_approval_seq \+ 1|^\s+approval_id  = UUID v4 nuevo" \
+   docs/adr/0012-frozen-runtime.md
+
+# (2) la preasignación está presente y es la única vía de emisión
+rg -n "proposed_approval_seq|proposed_approval_id|proposed_provenance" \
+   docs/adr/0012-frozen-runtime.md
+
+# (3) el CAS de ISSUE presenta la revisión de la PROPUESTA, no una recién leída
+rg -n "ISSUE_CAS_PRESENTS_THE_PROPOSAL_TIME_REVISION|revisión de la PROPUESTA" \
+   docs/adr/0012-frozen-runtime.md
+
+# (4) el fallo del CAS descarta, no adapta
+rg -n "DESCARTAR_Y_REPRESENTAR|DESCARTAR la propuesta" docs/adr/0012-frozen-runtime.md
+
+# (5) la propuesta NO es un estado del ciclo de vida
+rg -n "PROPOSAL_IS_NOT_A_LIFECYCLE_STATE" docs/adr/0012-frozen-runtime.md
+
+# (6) el lock no cubre la interacción humana
+rg -n "ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION" docs/adr/0012-frozen-runtime.md
+
+# (7) censo (no se asume; se recomputa por set-diff contra el HEAD previo)
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+```
+
+Las coincidencias del comando (1) son **cero**: la forma vieja —asignar
+`approval_seq`/`approval_id` **al emitir**— no sobrevive como paso de ningún protocolo; sólo
+aparece citada **en prosa** dentro de §39.2, que es donde se documenta el defecto. Las del
+comando (7) deben dar **36**, el mismo número que en §38.
 
 **Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
 transición, ni CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni
