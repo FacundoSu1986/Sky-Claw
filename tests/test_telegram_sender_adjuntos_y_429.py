@@ -265,6 +265,31 @@ class TestSendDocument:
     def test_el_nombre_del_archivo_se_sanea(self, entrada: str, esperado: str) -> None:
         assert sender_mod._nombre_de_archivo_seguro(entrada) == esperado
 
+    @pytest.mark.parametrize(
+        ("crudo", "esperado"),
+        [
+            ("../../etc/passwd", "passwd"),
+            ("C:\\Logs\\DynDOLOD_SSE_log.txt", "DynDOLOD_SSE_log.txt"),
+        ],
+    )
+    async def test_el_saneo_esta_cableado_en_send_document(
+        self, servidor: _ServidorDeTelegram, crudo: str, esperado: str
+    ) -> None:
+        """El nombre saneado es el que sale por el cable, no sólo el que devuelve la función.
+
+        ``test_el_nombre_del_archivo_se_sanea`` cubre ``_nombre_de_archivo_seguro``
+        aislada: si ``send_document`` deja de invocarla, ese test sigue verde y el
+        nombre crudo del caller (una ruta con ``..``) viaja al ``Content-Disposition``.
+        Este caso cierra el cableado end-to-end, contra el multipart real.
+        """
+        sender, sesion = await _sender_contra(servidor)
+        try:
+            await sender.send_document(456, b"x", crudo)
+        finally:
+            await sesion.close()
+
+        assert servidor.recibidos[-1]["filename"] == esperado
+
     async def test_el_caption_se_trunca_al_limite_de_telegram(self, servidor: _ServidorDeTelegram) -> None:
         sender, sesion = await _sender_contra(servidor)
         try:
