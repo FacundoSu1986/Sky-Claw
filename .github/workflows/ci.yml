@@ -68,7 +68,12 @@ jobs:
   test:
     name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # 2026-10-09: 30 min era insuficiente. Medido en las corridas recientes, pytest
+    # tarda 1057-1719 s segun el runner asignado (py3.11 es el volatil; py3.12 se
+    # mantiene en 1334-1392 s) y el job suma ~90 s de instalacion. Con 30 min quedo
+    # al 88-96 % del limite en 6 de 8 corridas muestreadas y se cancelo aunque el
+    # paso de tests habia devuelto 0. 40 min deja el peor caso observado al 76 %.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
