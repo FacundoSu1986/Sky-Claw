@@ -82,6 +82,45 @@ HISTORICAL_AUDIT_ARTIFACT = (
 HISTORICAL_ROSTER_SHA256 = "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e"
 HISTORICAL_ROSTER_SIZE = 31
 
+# ---- Contrato SEPARADO: el ARCHIVO del manifiesto M3 congelado (ronda 3).
+# No confundir con el digest del roster histórico de arriba: son dos objetos distintos.
+#   - HISTORICAL_ROSTER_SHA256  -> identidad del ROSTER del artefacto histórico.
+#   - EXPECTED_M3_MANIFEST_...  -> identidad del ARCHIVO del manifiesto que define el corpus.
+# Se congela el digest CANÓNICO (EOL normalizado a LF) para que el gate no dependa del
+# checkout: el worktree de Windows tiene CRLF y un checkout Linux tiene LF, y el repo ya
+# documenta esa relación (docs/design/research/native-parallax/m2-m3-math-revalidation-protocol.md
+# y data/exp-m4-data-required.json, que registra exactamente este valor LF).
+EXPECTED_M3_MANIFEST_SHA256_LF = "b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f"
+
+# Condiciones que el gate exige TODAS (fail-closed) antes de calcular M4/M5.
+ROSTER_GATE_CONDITIONS = (
+    "roster_count_match",
+    "roster_identity_match",
+    "historical_roster_digest_matches_frozen_sha",
+    "m3_manifest_sha256_matches_frozen",
+)
+
+
+def _bytes_digest_lf(data: bytes) -> str:
+    """SHA256 canónico: EOL normalizado a LF (independiente del checkout)."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _manifest_digest_lf(path: Path) -> str:
+    """Digest canónico LF del manifiesto. Portable entre Windows (CRLF) y Linux (LF)."""
+    return _bytes_digest_lf(path.read_bytes())
+
+
+def roster_gate(roster: dict[str, Any]) -> dict[str, Any]:
+    """Decide si se permite calcular M4/M5 a partir del chequeo de identidad.
+
+    Fail-closed: cada condición debe ser **exactamente** `True`. Una clave ausente,
+    `None` o un valor truthy-no-booleano bloquea. Calcular un digest no alcanza: tiene
+    que participar de la decisión (finding de la ronda 3).
+    """
+    failed = [k for k in ROSTER_GATE_CONDITIONS if roster.get(k) is not True]
+    return {"allowed": not failed, "failed_conditions": failed, "conditions": list(ROSTER_GATE_CONDITIONS)}
+
 
 def _roster_digest(ids: list[str]) -> str:
     """SHA256 de los asset-ids ordenados, unidos por '\\n' (forma canónica)."""
@@ -97,7 +136,7 @@ def check_roster_identity(prepared: list[dict[str, Any]], manifest: Path) -> dic
     current_ids = sorted(str(e["asset_id"]) for e in prepared)
     hist_doc = json.loads(HISTORICAL_AUDIT_ARTIFACT.read_text(encoding="utf-8"))
     hist_ids = sorted(str(r["asset"]) for r in hist_doc["H1_coherence_oracle_counterfactual"]["rows"])
-    manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    manifest_bytes = manifest.read_bytes()
     current_digest = _roster_digest(current_ids)
     historical_digest = _roster_digest(hist_ids)
     return {
@@ -106,11 +145,21 @@ def check_roster_identity(prepared: list[dict[str, Any]], manifest: Path) -> dic
         "roster_count_match": len(current_ids) == len(hist_ids) == HISTORICAL_ROSTER_SIZE,
         "roster_identity_match": current_ids == hist_ids,
         "roster_digest_match": current_digest == historical_digest,
-        "manifest_digest_match": historical_digest == HISTORICAL_ROSTER_SHA256,
+        # Renombrado (ronda 3): el nombre viejo (`manifest_digest_match`) describía mal lo
+        # que calculaba: esto compara el digest del roster HISTÓRICO contra el SHA
+        # congelado, NO el digest del archivo del manifiesto.
+        "historical_roster_digest_matches_frozen_sha": historical_digest == HISTORICAL_ROSTER_SHA256,
+        # Contrato SEPARADO: identidad del ARCHIVO del manifiesto M3 (canónico LF).
+        "m3_manifest_sha256_matches_frozen": _bytes_digest_lf(manifest_bytes) == EXPECTED_M3_MANIFEST_SHA256_LF,
         "current_roster_sha256": current_digest,
         "historical_roster_sha256": historical_digest,
         "expected_historical_roster_sha256": HISTORICAL_ROSTER_SHA256,
-        "manifest_sha256": manifest_digest,
+        "manifest_sha256_lf": _bytes_digest_lf(manifest_bytes),
+        "manifest_sha256_worktree": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_sha256_eol_convention": (
+            "LF_CANONICAL: el gate usa manifest_sha256_lf; manifest_sha256_worktree se "
+            "registra sólo como procedencia (depende del checkout CRLF/LF)"
+        ),
         "manifest_path": str(manifest),
         "historical_artifact": str(HISTORICAL_AUDIT_ARTIFACT),
         "only_current": sorted(set(current_ids) - set(hist_ids)),
@@ -219,19 +268,29 @@ def main() -> None:
         print(f"HARD STOP: prepared={len(prepared)} != histórico=31")
         sys.exit(3)
 
-    # ---- Identidad del roster (segunda ronda correctiva, finding F)
+    # ---- Identidad del roster (segunda ronda correctiva, finding F; endurecido en la 3)
     # El conteo NO prueba identidad: un manifest distinto con 31 assets válidos pasaría
     # el guard anterior y publicaría M4/M5 como contrafactual del corpus equivocado.
-    # Se verifica (a) el conjunto exacto de asset-ids y (b) el digest del manifest.
+    # El gate exige las CUATRO condiciones (fail-closed): conteo, identidad del conjunto,
+    # digest del roster histórico contra el SHA congelado, y digest del ARCHIVO del
+    # manifiesto M3 contra su propio valor congelado. Calcular un digest no alcanza:
+    # tiene que participar de la decisión.
     roster_check = check_roster_identity(prepared, args.m3_manifest)
-    if not (roster_check["roster_count_match"] and roster_check["roster_identity_match"]):
+    roster_gate_result = roster_gate(roster_check)
+    if not roster_gate_result["allowed"]:
         print("HARD STOP: identidad de roster no verificada -> NO se calcula M4/M5")
-        print(json.dumps(roster_check, indent=1, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"roster_gate": roster_gate_result, **roster_check},
+                indent=1,
+                ensure_ascii=False,
+            )
+        )
         sys.exit(3)
     print(
         f"ROSTER ok: n={roster_check['n_prepared']} "
         f"identity_match={roster_check['roster_identity_match']} "
-        f"manifest_sha256={roster_check['manifest_sha256'][:16]}..."
+        f"manifest_sha256_lf={roster_check['manifest_sha256_lf'][:16]}..."
     )
 
     rows = [m4_row(e) for e in prepared]
@@ -296,6 +355,7 @@ def main() -> None:
         "resolution": RESOLUTION,
         "corpus_integrity": {"exclusions": exclusions, "n_prepared": len(prepared)},
         "roster_identity": roster_check,
+        "roster_gate": roster_gate_result,
         "thresholds_unchanged": {
             "T_SELF_RMSE": T_SELF_RMSE,
             "T_SELF_CORR": T_SELF_CORR,
