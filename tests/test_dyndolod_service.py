@@ -3845,11 +3845,11 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
 #:
 #: Tres motivos distintos aparecen acá, y conviene no confundirlos:
 #:
-#: 1. **Best-effort que no falla la etapa**: los dos de `_execute_process` corren
-#:    DESPUÉS de que el proceso salió (el código de salida ya está decidido) y su
-#:    propio mensaje dice "se continúa"; los dos de `_leer_log` son el caso que el
-#:    SOP §2.9 declara explícitamente como advertencia y no fallo ("A missing or
-#:    unreadable log is a warning, not a failure").
+#: 1. **Best-effort que no falla la etapa**: los dos de
+#:    `_limpiar_helpers_en_salida_normal` corren DESPUÉS de que el proceso salió
+#:    (el código de salida ya está decidido) y su propio mensaje dice "se continúa";
+#:    los dos de `_leer_log` son el caso que el SOP §2.9 declara explícitamente como
+#:    advertencia y no fallo ("A missing or unreadable log is a warning, not a failure").
 #: 2. **Sonda, no veredicto**: sondear un candidato de staging devuelve un
 #:    dato al post-check, que es quien decide y reporta por `run_texgen`/
 #:    `run_dyndolod`. `_validar_salida_dyndolod` es el caso más claro y el más
@@ -3871,7 +3871,7 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
 #:    menciona; exento, no duplicado.
 _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
     "dyndolod_drenaje_incompleto": {
-        "metodo": "_execute_process",
+        "metodo": "_limpiar_helpers_en_salida_normal",
         "motivo": (
             "Los drains no cerraron dentro de la gracia tras la salida NORMAL del proceso. "
             "El código de salida ya está decidido y el propio mensaje dice que se continúa "
@@ -3880,7 +3880,7 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
         ),
     },
     "dyndolod_drenaje_fallido": {
-        "metodo": "_execute_process",
+        "metodo": "_limpiar_helpers_en_salida_normal",
         "motivo": (
             "Una task de drenaje terminó con excepción, se reporta y se sigue. Mismo criterio "
             "que dyndolod_drenaje_incompleto: es diagnóstico del andamiaje de captura, no el "
