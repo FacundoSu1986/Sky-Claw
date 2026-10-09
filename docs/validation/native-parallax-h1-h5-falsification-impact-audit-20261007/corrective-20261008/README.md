@@ -1,15 +1,21 @@
 # Native Parallax — Auditoría correctiva H1/H4 (PR #700)
 
-> **Fecha:** 2026-10-08 · **Carácter:** `CORRECTIVE_AUDIT`
+> **Fecha:** 2026-10-08 · **Carácter:** `CORRECTIVE_AUDIT` · **Ronda:** 2
 > **Padre de la corrección:** `d260b7c9b8afff33a6720106ac8c5f6d95891ecd`
 > **Base científica original:** `97dcc7ab9ade29153faa0ccec428b78612cfc04a`
 > **Rama:** `research/native-parallax-h1-h5-falsification-impact-audit`
 > **Worktree:** `E:\SkyClaw_H1H5_AUDIT_CORRECTION_d260b7c9`
-> **Sesión:** exclusiva, nueva. No se reutilizó `E:\SkyClaw_H1H5_AUDIT_97dcc7ab`.
+> **Sesión:** exclusiva. No se reutilizó `E:\SkyClaw_H1H5_AUDIT_97dcc7ab`.
 
 Esta carpeta **corrige** —no reescribe— la auditoría de
 `../` (2026-10-07). Los artefactos originales quedan intactos. Donde la evidencia
 corregida contradice la conclusión original, **se corrige la conclusión**.
+
+> **Segunda ronda (2026-10-08, misma sesión).** Tras la promoción a Ready, el review
+> abrió 8 findings nuevos. Los 8 se reprodujeron y los 8 resultaron válidos. Esta ronda
+> endurece el optimizador (D, E), desdobla la adjudicación de H4 (C), fija la identidad
+> del roster (F) y ajusta las afirmaciones del texto (A, B, G, H). Los valores de H1
+> **cambiaron** donde correspondía: ver §2 y §2.2.
 
 ---
 
@@ -20,7 +26,7 @@ confirmados. Esta corrida los resuelve metodológicamente.
 
 | # | Defecto confirmado | Corrección aplicada |
 |---|---|---|
-| **F1** | El supuesto oráculo "continuo" era un **barrido finito** (`s0·exp2(linspace) ∪ linspace(-0.05,0.05)`) sin bracketing ni convergencia. `polyhaven_gray_rocks` caía en el borde `0.05` con cero mejora. | `scripts/corrective_optimizer.py`: barrido grueso log-uniforme + bracketing + **sección áurea** + expansión de borde + metadatos de convergencia. Determinista, sin SciPy. |
+| **F1** | El supuesto oráculo "continuo" era un **barrido finito** (`s0·exp2(linspace) ∪ linspace(-0.05,0.05)`) sin bracketing ni convergencia. `polyhaven_gray_rocks` caía en el borde `0.05` con cero mejora. | `scripts/corrective_optimizer.py`: barrido grueso log-uniforme + detección de cuencas + bracketing + **sección áurea** + expansión de borde + metadatos de convergencia. Determinista, sin SciPy. **Alcance: mínimo local dentro de cada cuenca detectada — NO optimalidad global** (ver §5). |
 | **F2** | La narrativa mezclaba el `+0.05` del baseline recalculado con el `-0.05` del histórico `fe54e9a9`, y afirmaba "la rejilla nunca encuentra el óptimo" sin haberlo medido de verdad. | Se distinguen explícitamente los tres universos y se emite el **conteo real** de matches antes de afirmar nada. |
 | **F3** | El Spearman era **híbrido**: ángulos recalculados en el baseline contra `delta_rmse` del artefacto histórico no-ancestro. | `scripts/phase_c_corrective.py` emite dos universos separados: `BASELINE_COUNTERFACTUAL` (delta recomputado) y `HISTORICAL_COMPARISON` (etiquetado híbrido). |
 | **F4** | La sonda H4 probaba amplitudes `[1.0, 0.3, 0.1, 0.03]`, pero el claim externo se midió en `c = 0.05` y `c = 0.01`. El efecto es no lineal ⇒ no falsaba el claim citado. | Batería `[1.0, 0.3, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]`, con `0.05` y `0.01` **obligatorias**. |
@@ -39,24 +45,67 @@ Corrida corregida sobre los 31 assets del corpus primario (SHA256 verificado, 0 
 | `H1_BOUNDARY_CASES` | ≥1 (`gray_rocks` en el borde `0.05`) | **0** |
 | mediana agreement continuo | 1.6832° | **1.6826°** |
 | mediana agreement rejilla | 10.7085° | 10.7085° |
-| `n_continuous_abs_strength_lt_0_05` | 27 / 31 | **28 / 31** |
-| `n_grid_matches_continuous` | no medido | **0** |
+| `n_continuous_abs_strength_lt_0_05` | 27 / 31 | **27 / 31** |
+| `n_grid_matches_refined` | no medido | **0** (coincidencia dentro de `1e-06°`) |
+| `n_refinement_lost_better_coarse` | n/a | **0** |
 
 **Lectura honesta:**
 
-- El defecto de H1 **se confirma** y ahora está medido con un optimizador que realmente
-  converge en los 31 assets. La magnitud de la mejora (10.71° → 1.68°) **se sostiene**.
-- La afirmación "la rejilla nunca encuentra el óptimo" pasa de **no soportada** a
-  **soportada**: `n_grid_matches_continuous == 0` **y** todos los casos convergen
-  (condición exacta que el brief §16 exige para poder afirmarla).
-- El conteo `|s*| < 0.05` sube de 27 a **28**: un asset más tiene su óptimo real por
-  debajo del piso histórico. La sonda vieja lo estaba perdiendo.
-- **`gray_rocks` deja de ser un caso de borde**: con minimización real su óptimo está
-  dentro del dominio, no clavado en `0.05`. El borde era un artefacto de la rejilla.
+- El defecto de H1 **se confirma** y ahora está medido con un optimizador que converge
+  **dentro del bracket seleccionado** en los 31 assets. La mejora (10.71° → 1.68°)
+  corresponde a los **mínimos locales encontrados**; **no** demuestra un mínimo global.
+  Ver §5 para el alcance exacto de la búsqueda.
+- La afirmación "la rejilla nunca coincide con el mínimo encontrado" pasa de **no
+  soportada** a **soportada**: `n_grid_matches_refined == 0` con tolerancia declarada de
+  `1e-06°`, **y** los 31 casos convergen con bracket válido y criterio de parada cumplido.
+  Eso **no** demuestra que la rejilla nunca encuentre el mínimo **global**.
+- **`gray_rocks` deja de ser un caso de borde dentro del bracket seleccionado**: su mínimo
+  encontrado está dentro del dominio, no clavado en `0.05`. El borde era un artefacto de
+  la rejilla dentro de ese alcance.
+- El conteo `|s*| < 0.05` **baja de 28 a 27** respecto de la primera ronda correctiva:
+  `gray_rocks` tenía publicado `s* = 0.0237` (dentro del piso) y con el optimizador
+  corregido su óptimo real es `s* = 0.0926` (fuera del piso). El conteo anterior era un
+  artefacto del defecto D, no una propiedad del corpus.
 
 **El impacto primario sigue siendo `NONE`**: `coherence_diagnostic` de M4 es
 explícitamente no decisional, `decide_exp_m3` no lee Cohort B, y `evaluate_rules` de M4
 no lee el oráculo. La corrección cambia la **magnitud del diagnóstico**, no una decisión.
+
+### 2.1 Alcance de la búsqueda — qué prueba y qué NO prueba este optimizador
+
+El brief §23 exige no usar la palabra "global" sin cobertura global suficiente. Este
+optimizador **no** la tiene, y el artefacto lo declara explícitamente:
+
+```text
+search_scope            = COARSE_GLOBAL_DOMAIN_LOCAL_REFINEMENT
+global_optimum_proven   = false
+```
+
+La distinción operativa:
+
+| Concepto | Estado |
+|---|---|
+| Dominio del barrido grueso | Declarado y acotado (`coarse_max_magnitude = 4.0`, 6 décadas hacia abajo) |
+| Cuencas detectadas por el barrido | Refinadas todas las que el barrido ve (hasta `max_refined_basins = 8`) |
+| Mínimo **local** dentro de cada cuenca refinada | Sí, con bracket válido y criterio de parada cumplido |
+| **Óptimo global** | **NO probado.** Una cuenca más angosta que el espaciado del barrido grueso puede pasar desapercibida |
+
+Por lo tanto las afirmaciones de §2 son sobre **mínimos locales encontrados dentro del
+alcance barrido**, y así deben citarse. `GLOBAL_OPTIMUM_PROVEN = NO` **no invalida H1**:
+el defecto que H1 denuncia (la rejilla finita no explora el interior) se sostiene sin
+necesidad de optimalidad global.
+
+### 2.2 Invariante de corrección del refinamiento (hallazgo D de la ronda 2)
+
+```text
+final_objective <= best_observed_objective   (+ tolerancia numérica)
+n_refinement_lost_better_coarse = 0 / 31
+```
+
+El refinamiento **jamás** puede reemplazar un resultado mejor ya observado por uno peor.
+En la primera ronda esto se violaba en 5 de 31 assets, incluido `polyhaven_gray_rocks`
+(coarse `0.08954885 @ 17.024981969` publicado como `0.02373315 @ 23.695281265`).
+Corregido: ver §2 y la tabla de cambios.
 
 ---
 
@@ -81,11 +130,45 @@ y a las amplitudes que el claim realmente usó, los ratios **sí** aparecen.
 efecto no lineal que crece al bajar la amplitud — exactamente lo que el finding F4 decía
 que las amplitudes viejas no podían capturar.
 
+### 3.1 El claim tiene DOS componentes y se adjudican por separado (hallazgo C, ronda 2)
+
+El claim externo registrado no era sólo relativo. Textualmente:
+
+```text
+"5-21x mayor ... y llega a 0.023 absoluto"
+```
+
+La primera ronda clasificaba **sólo el ratio** y publicaba un único
+`PARTIALLY_REPRODUCED`, lo que se lee como si el componente absoluto también hubiera
+quedado reproducido. **No lo está.** Adjudicación desdoblada:
+
+| Componente | Veredicto |
+|---|---|
+| `H4_RATIO_CLAIM_STATUS` (relativo, adimensional) | **PARTIALLY_REPRODUCED** |
+| `H4_ABSOLUTE_CLAIM_STATUS` (absoluto, contra `0.023`) | **NOT_REPRODUCED** |
+
+Deltas absolutos medidos en el brazo de superficie consistente, en los puntos de
+operación del propio claim (`c = 0.05`, `c = 0.01`):
+
+| Caso | delta absoluto |
+|---|---|
+| `S07_bumps@0.05` | 5.39e-05 |
+| `S07_bumps@0.01` | 3.23e-05 |
+| `S15_periodic_noise@0.05` | 7.09e-06 |
+| `S15_periodic_noise@0.01` | 1.00e-05 |
+
+El **mejor** caso está **427× por debajo** de `0.023`. Un ratio adimensional alto **no**
+implica que el valor absoluto se haya reproducido: son afirmaciones independientes y
+acá tienen veredictos distintos.
+
+Criterio declarado (no implícito): dentro de 2× del valor reclamado ⇒ `REPRODUCED`;
+dentro de 10× ⇒ `PARTIALLY_REPRODUCED`; más allá ⇒ `NOT_REPRODUCED`.
+
 ### 3.1 Hallazgo nuevo: la materialidad del sintético también cambia
 
 Con la superficie corregida aparece un resultado que la sonda original no podía ver:
 
-| brazo | máx `|downstream delta|` | casos `>= T_DELTA_RMSE (0.02)` |
+| brazo | máx `abs(downstream delta)` | casos `>= T_DELTA_RMSE (0.02)` |
 |---|---|---|
 | clipeado (viejo) | 0.0162 | **0** |
 | **superficie segura (nuevo)** | **0.0353** | **1** (`S09_bricks@1.0`, ratio 1.58×) |

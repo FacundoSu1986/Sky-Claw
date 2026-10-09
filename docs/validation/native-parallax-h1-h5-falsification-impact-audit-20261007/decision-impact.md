@@ -57,7 +57,7 @@ recupera la strength verdadera con error ≤ 1.1e-16): para pares **perfectament
 
 | Métrica | Rejilla (código actual) | Continuo (forma cerrada + refinamiento) |
 |---|---|---|
-| `best_strength` | **31/31 clavados en el piso `+0.05`** (baseline recalculado) | 27/31 con `|s*| < 0.05` (mediana ≈ 0.016) |
+| `best_strength` | **31/31 clavados en el piso `+0.05`** (baseline recalculado) | 27/31 con `abs(s*) < 0.05` (mediana ≈ 0.016) |
 | mediana de agreement | **10.71°** | **1.68°** |
 | Spearman vs `delta_rmse` | 0.135 | 0.480 |
 
@@ -75,8 +75,17 @@ a «1.68°»: el desacuerdo normal↔height que el diagnóstico reportaba es, en
 >    `corrective-20261008/`: el universo `BASELINE_COUNTERFACTUAL` da **0.1367 (rejilla) /
 >    0.4782 (continuo)** con el delta recomputado en el mismo baseline.
 > 3. **"Nunca encuentra el óptimo" (F2):** con el optimizador correcto (sección áurea,
->    convergencia explícita) la afirmación se sostiene (`n_grid_matches_continuous = 0` con
->    31/31 convergidos), pero `|s*| < 0.05` es **28/31**, no 27/31, y no hay casos de borde.
+>    convergencia explícita) la afirmación se sostiene (`n_grid_matches_refined = 0`, con
+>    tolerancia declarada de `1e-06°`, y 31/31 convergidos), pero `abs(s*) < 0.05` es
+>    **27/31**, no 27/31 del texto original, y no hay casos de borde.
+>    **Actualizado el 2026-10-08 (ronda 2, hallazgos D y E):** este conteo pasó de 28 a
+>    **27**. La primera ronda correctiva publicaba `gray_rocks` con `s* = 0.0237` (dentro del
+>    piso) por un defecto del optimizador: el refinamiento reemplazaba un resultado coarse
+>    mejor (`0.0895 @ 17.02`) por uno peor (`0.0237 @ 23.70`). Con el invariante corregido
+>    (`final_objective <= best_observed_objective`, 0 violaciones en 31 assets) su óptimo real
+>    es `s* = 0.0926`, fuera del piso. Ver `corrective-20261008/README.md` §2.2.
+>    El alcance es **mínimo local dentro del bracket seleccionado**, no óptimo global
+>    (`global_optimum_proven = false`).
 
 **Pero no cambia ninguna decisión:** `evaluate_rules` de M4 no lee el oráculo, y `decide_exp_m3`
 no lee Cohort B. Por lo tanto:
@@ -164,7 +173,7 @@ El audit afirma «5–21× mayor … y llega a 0.023 absoluto». `scripts/h4_mag
 | métrica | máximo medido |
 |---|---|
 | `normal_rmse_old_vs_new` | 0.01755 |
-| `|Δ downstream aligned rmse|` | **0.01617** (= 81 % de `T_DELTA_RMSE`) |
+| `abs(Δ downstream aligned rmse)` | **0.01617** (= 81 % de `T_DELTA_RMSE`) |
 | ratio downstream old/new | **1.201×** (no 5–21×) |
 | casos con Δ ≥ 0.02 | **0** |
 
@@ -307,8 +316,8 @@ Revisión independiente buscando específicamente los ocho modos de falla listad
 | Modo de falla buscado | Hallazgo |
 |---|---|
 | **Supuestos circulares en el sintético H2** | **CONFIRMADO como riesgo** — se demostró la simetría exacta (mismo grid, resultado invertido según el contrato). Por eso `H2_BUG_CLASSIFICATION = NOT_PROVEN`. No se usó como prueba. |
-| **Confusión de escala en H3** | Acotada: la conclusión no se apoya en el sintético sino en la dirección del efecto (conservadora) y en el régimen real medido (`|s*|≈0.005–0.05`). |
-| **Contaminación del contrafactual H4** | Una sola variable (el resizer). Verificado que `rmse_self_median` es bit-idéntico entre brazos, lo que prueba que nada más cambió. |
+| **Confusión de escala en H3** | Acotada: la conclusión no se apoya en el sintético sino en la dirección del efecto (conservadora) y en el régimen real medido (`abs(s*)≈0.005–0.05`). |
+| **Contaminación del contrafactual H4** | Una sola variable (el resizer). La comparación **estructural** de ambos brazos está en `phase_c2_h4_corpus_corrective.py::m4_row`: el height target `h` y el par SELF (`self_q8`) se calculan **una sola vez por asset** y los dos brazos leen exactamente la misma variable `r["self_rmse"]`; sólo difieren `n_old` (uint8 requantize) y `n_new` (float bilinear + renormalize). Los umbrales no se leen ni se retunean (`thresholds_unchanged`). Por eso `rmse_self_median` es idéntico **por construcción**, no por coincidencia. Nota de alcance: esto aísla la variable *dentro del código de este contrafactual*; no es una prueba de aislamiento causal del sistema completo. |
 | **Fuga de umbrales (threshold leakage)** | Ningún umbral fue leído, escrito ni retuneado; `thresholds_unchanged` se emite en `real-impact.json`. |
 | **Artefacto histórico equivocado** | **CONFIRMADO y corregido** — `data/exp-m4-results.json` (fe54e9a9) no se reproduce en el baseline; la adjudicación de H1 usa rejilla vs continuo **ambos** recalculados en `97dcc7ab`. Documentado en `real-impact.json`. |
 | **Confusión decisión vs diagnóstico** | Núcleo del documento (§1, §2). H1 y H5 se adjudican `NONE`/`NO` precisamente por esto. |
