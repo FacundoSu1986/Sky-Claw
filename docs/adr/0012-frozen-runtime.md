@@ -4413,15 +4413,17 @@ CROSS_FILE_ATOMICITY = NOT_CLAIMED                  (§37.2; D0-R3.2)
 
 **Por qué el contador monótono y por qué C sola no alcanza.** El bloqueo lo da
 `approval_seq > last_consumed_approval_seq`: es **O(1)**, no depende de la profundidad
-del histórico y **no se agota**. El anillo `consumed_ring[]` es auditoría, no
-enforcement: si se recorta, no se debilita ninguna garantía. La opción C sola dependía
-de que la ventana retenida alcanzara; el contador vuelve esa dependencia innecesaria
-para el bloqueo.
+del histórico y **no se agota**. El ledger **no** guarda historial de consumo: la
+evidencia terminal durable vive fuera de él, en `state/approvals/<seq>-<id>.json`
+(§38.2). La ronda 4 **retiró** el anillo `consumed_ring[]` que la ronda 2 proponía
+(§38.1): era «sólo auditoría» y no cubría `REVOKED` ni el consumo sin transición. La
+opción C sola dependía de que la ventana retenida alcanzara; el contador vuelve esa
+dependencia innecesaria para el bloqueo.
 
 ```text
 APPROVAL_REPLAY_AFTER_JOURNAL_REPLACEMENT = IMPOSSIBLE_BY_CONTRACT
 APPROVAL_DURABLE_IDENTITY                 = approval_id (UUID v4) + approval_seq monótono
-APPROVAL_CONSUMPTION_STATE_IS_BOUNDED     = YES (2 enteros + anillo de auditoría)
+APPROVAL_CONSUMPTION_STATE_IS_BOUNDED     = YES (2 enteros; la evidencia terminal vive fuera del ledger, §38.2)
 APPROVAL_LEDGER_DEPTH_UNBOUNDED           = NO
 ```
 
@@ -5702,6 +5704,14 @@ el consumo sin transición. Se **retira** del ledger (§36.5, §37.3) y su funci
 el store inmutable. El ledger queda **acotado** — 2 contadores, 2 identidades, 1 estado —
 sin historial de profundidad variable.
 
+Las dos menciones normativas que §36.5 todavía conservaba del anillo se **corrigen en el
+lugar**, no se dejan como texto contradictorio: la prosa «es auditoría, no enforcement»
+y el invariante `APPROVAL_CONSUMPTION_STATE_IS_BOUNDED = YES (2 enteros + anillo de
+auditoría)`. La cota pasa a ser **2 enteros**, con la evidencia terminal **fuera** del
+ledger (§38.2). Mismo criterio que §38.4 aplica a `FINALIZED`: una retirada que no se
+propaga a todo el texto normativo es exactamente la clase de defecto que esta ronda
+cierra.
+
 ### 38.2 Aprobación terminal: anti-rollback durable (D0-R4.1 + R4.6)
 
 **El defecto.** §37 declaraba que una restauración de `state/approval.json` se detecta por
@@ -6314,7 +6324,7 @@ Runtime** (P5) y la **emisión de `approval_id`/`approval_seq`** por la superfic
 
 ```bash
 # (1) FINALIZED no puede figurar como estado del journal en ninguna enumeración
-rg -n "ABSENT\|NONE\|FINALIZED|NONE \| PENDING_PROMOTION \| PENDING_ROLLBACK \| FINALIZED" \
+rg -n "ABSENT \| NONE \| FINALIZED|PENDING_PROMOTION \| PENDING_ROLLBACK \| FINALIZED|journal.*FINALIZED" \
    docs/adr/0012-frozen-runtime.md
 
 # (2) toda mención a last_finalization_seq debe estar acompañada de su derivación
@@ -6338,13 +6348,18 @@ rg -n "P4_DESIGN_FROZEN|P4_READY_TO_IMPLEMENT" docs/adr/0012-frozen-runtime.md
 
 # (7) censo (no se asume; se recomputa)
 grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+
+# (8) el anillo retirado no puede reaparecer como estado vigente del ledger
+rg -n "consumed_ring" docs/adr/0012-frozen-runtime.md
 ```
 
 Las coincidencias del comando (1) deben ser, todas, o bien la formulación corregida que
 **niega** que `FINALIZED` sea estado del journal, o bien registros históricos de §35/§36/§37
 que documentan la corrección. Las del comando (3) deben ser, todas, referencias al
 **registro de transición** (`state/transition.json` / `state/transitions/<T>.json`) o al
-bloque de §35.2 que explica por qué se retiró el alias.
+bloque de §35.2 que explica por qué se retiró el alias. Las del comando (8) deben ser,
+todas, la nota de reemplazo del ledger (§36.5/§37.3), la nota de retiro de §38.1 y la
+propia línea del comando — ninguna puede afirmar que el anillo existe.
 
 **Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó
 transición, ni CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni
