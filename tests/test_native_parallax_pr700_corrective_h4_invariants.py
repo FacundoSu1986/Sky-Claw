@@ -140,3 +140,136 @@ def test_resize_height_unclipped_conserva_negativos():
     out = probe.resize_height_unclipped(h, 512)
     assert out.min() < 0.0
     assert out.min() == pytest.approx(float(h.min()), abs=1e-3)
+
+
+# ------------------------------------------- F5: el invariante del target NO es tautológico
+def test_el_invariante_f5_previo_era_tautologico():
+    """Regresión del finding del Oracle (HEAD 3ba2609e): la expresión previa no podía fallar.
+
+    Se reproduce literalmente el patrón viejo — dos llamadas idénticas sobre el MISMO input
+    — y se deja medido que su comparación es vacua: los arrays son iguales por construcción,
+    `np.allclose` da `True` siempre y el máximo |Δ∇| es exactamente 0. Cualquier par de
+    entradas, incluso uno donde la superficie de normales SÍ difiere, pasaba el chequeo.
+    """
+    h = PERIODIC_CASES["S15_periodic_noise"](NATIVE, NATIVE)
+    h = (h - h.mean()) * 0.05
+    h_safe, offset = safe_surface(h)
+    assert offset > 0.0, "premisa: el campo centrado necesita offset para entrar en [0,1]"
+
+    h_ref_a = probe.resize_height_unclipped(h_safe, 512)
+    h_ref_b = probe.resize_height_unclipped(h_safe, 512)
+    assert np.array_equal(h_ref_a, h_ref_b), "dos llamadas idénticas dan el mismo array"
+    assert np.allclose(h_ref_a, h_ref_b, atol=0.0, rtol=0.0)
+    g = _grad_check(h_ref_a, h_ref_b)
+    assert g["max_abs_dp"] == 0.0
+    assert g["max_abs_dq"] == 0.0
+
+
+@pytest.mark.parametrize("name", CASES)
+def test_target_matches_safe_surface_acepta_el_camino_correcto(name):
+    """El invariante corregido se cumple para la superficie segura real, en la resolución target."""
+    h = PERIODIC_CASES[name](NATIVE, NATIVE)
+    h = (h - h.mean()) * 0.05
+    h_safe, offset = safe_surface(h)
+    res = probe.target_matches_safe_surface(
+        h_safe,
+        h,
+        512,
+        gradient_tol=probe.TARGET_GRADIENT_TOL,
+        offset_tol=probe.TARGET_OFFSET_TOL,
+    )
+    assert res["ok"] is True, f"{name}: el camino correcto no pasó el invariante: {res}"
+    assert res["max_abs_dp"] <= probe.TARGET_GRADIENT_TOL
+    assert res["max_abs_dq"] <= probe.TARGET_GRADIENT_TOL
+    assert res["max_abs_offset_error"] <= probe.TARGET_OFFSET_TOL
+    assert res["offset_native"] == pytest.approx(offset, abs=1e-9)
+
+
+@pytest.mark.parametrize("name", CASES)
+def test_target_matches_safe_surface_rechaza_el_camino_clipeado(name):
+    """Discriminante: si la superficie se clipea (defecto F5), el invariante DEBE fallar.
+
+    Este es el test que el chequeo previo no podía pasar: devolvía `True` para cualquier par,
+    incluido este, donde la superficie de normales usada como target SÍ difiere de la real.
+    Se usa el clip a resolución NATIVA, que es lo que hacía el camino viejo antes del resize
+    y es la perturbación que rompe la propiedad «offset constante».
+    """
+    h = PERIODIC_CASES[name](NATIVE, NATIVE)
+    h = (h - h.mean()) * 0.05
+    assert h.min() < 0.0, "premisa: el campo centrado tiene negativos"
+
+    h_clip = np.clip(h, 0.0, 1.0)  # el clip del camino viejo, sobre el campo real
+    res = probe.target_matches_safe_surface(
+        h_clip,
+        h,
+        512,
+        gradient_tol=probe.TARGET_GRADIENT_TOL,
+        offset_tol=probe.TARGET_OFFSET_TOL,
+    )
+    assert res["ok"] is False, f"{name}: el invariante no detectó el clip: {res}"
+    assert res["max_abs_offset_error"] > probe.TARGET_OFFSET_TOL
+
+
+def test_target_matches_safe_surface_rechaza_resoluciones_distintas():
+    """Guard explícito: h_safe y h_nat deben estar en la misma resolución."""
+    h = PERIODIC_CASES["S15_periodic_noise"](NATIVE, NATIVE)
+    h = (h - h.mean()) * 0.05
+    h_safe, _ = safe_surface(h)
+    with pytest.raises(ValueError, match="misma resolución"):
+        probe.target_matches_safe_surface(
+            probe.resize_height_unclipped(h_safe, 512),
+            h,
+            512,
+            gradient_tol=probe.TARGET_GRADIENT_TOL,
+            offset_tol=probe.TARGET_OFFSET_TOL,
+        )
+
+
+def test_target_matches_safe_surface_es_fail_closed_con_no_finitos():
+    """Un campo no finito no puede pasar el invariante (fail-closed)."""
+    h = PERIODIC_CASES["S15_periodic_noise"](NATIVE, NATIVE)
+    h = (h - h.mean()) * 0.05
+    h_safe, _ = safe_surface(h)
+    h_bad = h_safe.copy()
+    h_bad[0, 0] = np.nan
+    res = probe.target_matches_safe_surface(
+        h_bad,
+        h,
+        512,
+        gradient_tol=probe.TARGET_GRADIENT_TOL,
+        offset_tol=probe.TARGET_OFFSET_TOL,
+    )
+    assert res["ok"] is False
+
+
+def test_las_tolerancias_del_target_separan_el_defecto():
+    """Las tolerancias declaradas caen ESTRICTAMENTE entre el camino correcto y el defectuoso.
+
+    Si alguien las relaja hasta volver el chequeo vacuo, este test lo delata: se exige que
+    el error del camino correcto esté por debajo y el del camino clipeado por encima.
+    """
+    correcto, clipeado = [], []
+    for name in CASES:
+        h = PERIODIC_CASES[name](NATIVE, NATIVE)
+        h = (h - h.mean()) * 0.05
+        h_safe, _ = safe_surface(h)
+        ok = probe.target_matches_safe_surface(
+            h_safe,
+            h,
+            512,
+            gradient_tol=probe.TARGET_GRADIENT_TOL,
+            offset_tol=probe.TARGET_OFFSET_TOL,
+        )
+        bad = probe.target_matches_safe_surface(
+            np.clip(h, 0.0, 1.0),
+            h,
+            512,
+            gradient_tol=probe.TARGET_GRADIENT_TOL,
+            offset_tol=probe.TARGET_OFFSET_TOL,
+        )
+        correcto.append(ok["max_abs_offset_error"])
+        clipeado.append(bad["max_abs_offset_error"])
+    assert max(correcto) < probe.TARGET_OFFSET_TOL < min(clipeado), (
+        f"correcto max={max(correcto):.3e} tol={probe.TARGET_OFFSET_TOL:.3e} "
+        f"clipeado min={min(clipeado):.3e}"
+    )

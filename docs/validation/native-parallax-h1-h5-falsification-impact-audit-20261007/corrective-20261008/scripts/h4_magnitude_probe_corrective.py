@@ -23,6 +23,16 @@ Corrige los dos defectos del `h4_magnitude_probe.py` original:
         - gradient(h_safe) == gradient(h_nat) dentro de la tolerancia numérica
         - el target de normales corresponde a h_safe
 
+      Corregido en la quinta ronda (hallazgo del Oracle sobre el HEAD 3ba2609e): el tercer
+      invariante era TAUTOLÓGICO. Comparaba `resize_height_unclipped(h_safe, TARGET)` con
+      una segunda llamada idéntica sobre el mismo input, así que `np.allclose` daba `True`
+      por construcción y no podía fallar. Ahora la comparación es contra `resize(h_nat)`
+      (ver `target_matches_safe_surface`), con tolerancias medidas sobre la batería real:
+      el camino correcto queda a <=8.3e-5 y el camino clipeado que F5 elimina a >=6.2e-2.
+      El resultado del corpus no cambió (`target_corresponds_to_h_safe` sigue siendo `True`
+      en todas las combinaciones); lo que cambió es que ahora es evidencia y no una aserción
+      vacía.
+
       Se reportan AMBOS brazos (clipeado viejo y seguro nuevo) para medir cuánto del efecto
       reportado era artefacto del clip.
 
@@ -36,6 +46,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -66,6 +77,15 @@ OBLIGATORIAS = [0.05, 0.01]
 # (el efecto del clip es O(1e-1)); 1e-12 resultaba por debajo del ruido de la FFT.
 GRADIENT_TOL = 1e-9
 RANGE_TOL = 1e-12
+
+# Tolerancias del invariante F5 EN LA RESOLUCIÓN TARGET (ver
+# `target_matches_safe_surface`). Son medidas, no elegidas a ojo: separan el camino
+# correcto (`resize(h_safe)` vs `resize(h_nat)`: <=8.3e-5 en gradiente y <=8.3e-8 en
+# offset, sobre las 51 combinaciones válidas de la batería) del camino clipeado que la
+# corrección elimina (>=6.2e-2 y >=2.1e-3 respectivamente). Cada tolerancia queda al
+# menos 12x por encima del régimen correcto y 62x por debajo del defectuoso.
+TARGET_GRADIENT_TOL = 1e-3
+TARGET_OFFSET_TOL = 1e-5
 
 
 def resize_normal_float_counterfactual(n: np.ndarray, size: int) -> np.ndarray:
@@ -116,6 +136,80 @@ def _grad_check(h_safe: np.ndarray, h_nat: np.ndarray) -> dict[str, float]:
     return {
         "max_abs_dp": float(np.max(np.abs(p1 - p2))),
         "max_abs_dq": float(np.max(np.abs(q1 - q2))),
+    }
+
+
+def target_matches_safe_surface(
+    h_safe: np.ndarray,
+    h_nat: np.ndarray,
+    size: int,
+    *,
+    gradient_tol: float,
+    offset_tol: float,
+) -> dict[str, Any]:
+    """¿El target de normales derivado de `resize(h_safe)` corresponde a `h_safe`?
+
+    Contrato (finding F5, corregido tras la revisión del Oracle): la superficie segura es
+    `h_safe = h_nat + offset` con `offset` constante. El resize bilineal es **lineal**, de
+    modo que `resize(h_safe) == resize(h_nat) + offset`; y como la superficie de normales
+    depende sólo de los gradientes, con ∇(h + c) = ∇h el offset no debe alterarla.
+
+    Verificar eso exige comparar `resize(h_safe)` contra `resize(h_nat)` — **no** contra sí
+    misma. La versión previa de esta sonda comparaba `resize_height_unclipped(h_safe)` con
+    una segunda llamada idéntica sobre el MISMO input: los dos arrays eran iguales por
+    construcción, `np.allclose` daba `True` siempre y el invariante no podía fallar. El
+    defecto F5 que la corrección dice eliminar quedaba, por lo tanto, sin evidencia.
+
+    Se verifican dos propiedades, ambas necesarias:
+
+    1. **Gradientes**: `∇resize(h_safe) ≈ ∇resize(h_nat)` — la superficie de normales en la
+       resolución target es la misma que la del campo natural.
+    2. **Offset superviviente**: `resize(h_safe) - resize(h_nat) ≈ offset` en todo el campo
+       — el desplazamiento DC atraviesa el resize sin deformarse. Sin esta condición, un
+       resize que escalara o recortara el campo podría dejar pasar la propiedad 1.
+
+    Las tolerancias se midieron sobre la batería real (7 casos x amplitudes válidas = 51
+    combinaciones), comparando el camino correcto contra el camino clipeado (el defecto F5):
+
+        canal             correcto (max)   clipeado (min)   tolerancia
+        |d∇| dp y dq      8.3e-5           6.2e-2           1e-3
+        error de offset   8.3e-8           2.1e-3           1e-5
+
+    El canal `dq` puede ser exactamente 0 en ambos brazos (casos con `q ≡ 0`), así que no
+    discrimina por sí solo: por eso se exigen los tres canales a la vez y el error de offset
+    es el discriminante universal. Fail-closed: valores no finitos no pasan.
+
+    `h_safe` y `h_nat` deben estar en la MISMA resolución (la nativa): el helper hace el
+    resize de ambos a `size`. Se valida explícitamente para que un uso incorrecto falle con
+    un mensaje claro en vez de un error de broadcasting.
+    """
+    if h_safe.shape != h_nat.shape:
+        raise ValueError(
+            f"target_matches_safe_surface: h_safe {h_safe.shape} y h_nat {h_nat.shape} "
+            "deben tener la misma resolución (la nativa)"
+        )
+    h_ref_safe = resize_height_unclipped(h_safe, size)
+    h_ref_nat = resize_height_unclipped(h_nat, size)
+    g = _grad_check(h_ref_safe, h_ref_nat)
+    offset_native = float(np.mean(h_safe - h_nat))
+    max_abs_offset_error = float(np.max(np.abs((h_ref_safe - h_ref_nat) - offset_native)))
+    finite = bool(
+        math.isfinite(g["max_abs_dp"])
+        and math.isfinite(g["max_abs_dq"])
+        and math.isfinite(max_abs_offset_error)
+    )
+    ok = bool(
+        finite
+        and g["max_abs_dp"] <= gradient_tol
+        and g["max_abs_dq"] <= gradient_tol
+        and max_abs_offset_error <= offset_tol
+    )
+    return {
+        "ok": ok,
+        "max_abs_dp": g["max_abs_dp"],
+        "max_abs_dq": g["max_abs_dq"],
+        "offset_native": offset_native,
+        "max_abs_offset_error": max_abs_offset_error,
     }
 
 
@@ -175,25 +269,27 @@ def main() -> None:  # noqa: C901
             m_new_clip = evaluate_path(h_ref_clip, n_new, path="new")
 
             # ---- brazo NUEVO (superficie segura, sin clip)
+            tgt: dict[str, Any] | None = None
             if valid:
                 h_ref_safe = resize_height_unclipped(h_safe, TARGET)
                 # El offset constante sobrevive al resize bilineal (es lineal) y no altera
                 # gradientes; no hace falta restarlo para el chequeo de invariantes, que se
-                # hace en la MISMA resolución (ver `target_grad` más abajo).
+                # hace en la MISMA resolución (ver `target_matches_safe_surface`).
                 n_ideal_safe = self_forward(h_ref_safe, bits=None)
                 m_old_safe = evaluate_path(h_ref_safe, n_old, path="old")
                 m_new_safe = evaluate_path(h_ref_safe, n_new, path="new")
-                # invariante: el target de normales corresponde a h_safe, no a un campo clipeado.
-                # Comparación en la MISMA resolución: resize(h_safe) vs el campo resized sin
-                # clip del que se deriva el target. Si el resize fuera correcto, los gradientes
-                # de `resize_height_unclipped(h_safe)` y `h_ref_safe_minus_offset` deben coincidir.
-                h_ref_from_safe = resize_height_unclipped(h_safe, TARGET)
-                target_grad = _grad_check(h_ref_safe, h_ref_from_safe)
-                target_ok = bool(
-                    target_grad["max_abs_dp"] <= 1e-9
-                    and target_grad["max_abs_dq"] <= 1e-9
-                    and np.allclose(h_ref_safe, h_ref_from_safe, atol=0.0, rtol=0.0)
+                # Invariante F5: el target de normales derivado de `resize(h_safe)` debe
+                # describir la MISMA superficie que `h_nat`. La comparación es contra
+                # `resize(h_nat)` — nunca contra una segunda llamada idéntica, que es lo que
+                # volvía tautológico al chequeo previo (hallazgo del Oracle, corregido acá).
+                tgt = target_matches_safe_surface(
+                    h_safe,
+                    h_nat,
+                    TARGET,
+                    gradient_tol=TARGET_GRADIENT_TOL,
+                    offset_tol=TARGET_OFFSET_TOL,
                 )
+                target_ok = bool(tgt["ok"])
             else:
                 h_ref_safe = n_ideal_safe = None
                 m_old_safe = m_new_safe = None
@@ -233,6 +329,10 @@ def main() -> None:  # noqa: C901
                     ),
                     "downstream_delta": float(m_old_safe["path_rmse"] - m_new_safe["path_rmse"]),
                     "target_corresponds_to_h_safe": target_ok,
+                    # Diagnóstico del invariante F5 en la resolución target (auditable).
+                    "target_grad_max_abs_dp": (tgt or {}).get("max_abs_dp"),
+                    "target_grad_max_abs_dq": (tgt or {}).get("max_abs_dq"),
+                    "target_offset_error_after_resize": (tgt or {}).get("max_abs_offset_error"),
                 }
             out[key] = entry
 
