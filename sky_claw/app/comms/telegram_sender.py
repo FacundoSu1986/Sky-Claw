@@ -113,8 +113,12 @@ UPLOAD_SETUP_MARGIN_SECONDS = _margen_de_conexion(DEFAULT_REQUEST_TIMEOUT)
 #: Presupuesto efectivo de transferencia de bytes de una subida.
 UPLOAD_TRANSFER_BUDGET_SECONDS = _presupuesto_de_transferencia(UPLOAD_DEADLINE_SECONDS, UPLOAD_SETUP_MARGIN_SECONDS)
 
-#: Throughput mínimo que la política asume para un enlace de salida (~2 Mbit/s).
-#: Por debajo de esto la subida NO está garantizada: el gateway la corta.
+#: Throughput mínimo que la política ASUME para un enlace de salida (~2 Mbit/s).
+#: Es un SUPUESTO de la estimación, no una propiedad del enlace: por debajo de esto
+#: la subida NO está garantizada y el gateway la corta con
+#: ``NetworkGatewayTimeoutError``. El máximo publicado es, por lo tanto, una
+#: ESTIMACIÓN bajo este supuesto y el de latencia de
+#: :data:`UPLOAD_RESIDUAL_SLACK_SECONDS`.
 MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND = 256 * 1024
 
 #: Unidad a la que se trunca (HACIA ABAJO) el máximo publicado.
@@ -127,9 +131,24 @@ _CUANTIZACION_MAX_DOCUMENT_BYTES = 1024 * 1024
 #: múltiplo entero de MiB hacia abajo para no publicar un borde que consuma el
 #: presupuesto hasta el último segundo. Queda muy por debajo del tope de la Bot API.
 #: El caller adjunta la COLA del log, no el archivo.
+#:
+#: Es una ESTIMACIÓN bajo los supuestos de throughput y latencia de esta política,
+#: NO una garantía de éxito en cualquier red: dice "este tamaño entra en el deadline
+#: si el enlace sostiene el throughput asumido y la latencia cabe en la holgura
+#: residual", no "cualquier red lo sube".
 MAX_DOCUMENT_BYTES = (
     int(UPLOAD_TRANSFER_BUDGET_SECONDS * MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND) // _CUANTIZACION_MAX_DOCUMENT_BYTES
 ) * _CUANTIZACION_MAX_DOCUMENT_BYTES
+
+#: Holgura residual dentro del deadline que la política NO asigna a transferencia.
+#: Es el margen implícito para la latencia de ida y vuelta, el framing del multipart
+#: y el tiempo de respuesta del endpoint: el máximo publicado se transmite al
+#: throughput mínimo asumido y lo que sobra hasta el deadline es esta holgura. Debe
+#: ser ESTRICTAMENTE positiva; si se agotara, ``MAX_DOCUMENT_BYTES`` dejaría de ser
+#: una estimación conservadora y pasaría a ser una promesa que la red puede romper.
+UPLOAD_RESIDUAL_SLACK_SECONDS = (
+    UPLOAD_DEADLINE_SECONDS - UPLOAD_SETUP_MARGIN_SECONDS - MAX_DOCUMENT_BYTES / MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND
+)
 
 #: Reintentos tras un 429 (además del intento inicial). Acotado a propósito: un
 #: aviso de fallo que no entra tras ``1 + N`` intentos se reporta, no se encola
@@ -337,13 +356,16 @@ class TelegramSender:
 
         Política de tamaño y deadline: ``data`` no puede superar
         :data:`MAX_DOCUMENT_BYTES` (el máximo OPERATIVO de Sky-Claw, muy por debajo
-        del tope de la Bot API). Ese máximo se deriva de
+        del tope de la Bot API). Ese máximo es una ESTIMACIÓN DERIVADA de
         :data:`UPLOAD_TRANSFER_BUDGET_SECONDS` y
-        :data:`MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND`, de modo que un documento
-        admitido entra en el deadline del gateway en cualquier enlace por encima de
-        ese throughput mínimo. Un enlace más lento hace que el gateway corte la
-        subida con ``NetworkGatewayTimeoutError`` — un fallo observable, nunca un
-        éxito fabricado.
+        :data:`MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND` bajo DOS supuestos: el
+        throughput mínimo del enlace y la latencia de respuesta. Un documento
+        admitido entra en el deadline del gateway si el enlace sostiene ese
+        throughput y la latencia cabe en la holgura residual
+        (:data:`UPLOAD_RESIDUAL_SLACK_SECONDS`). NO es una garantía de éxito en
+        cualquier red: un enlace más lento, o con más latencia de la asumida, hace
+        que el gateway corte la subida con ``NetworkGatewayTimeoutError`` — un fallo
+        observable, nunca un éxito fabricado.
 
         Política de duración: TODA la operación (espera del rate limit local,
         reintentos por 429 y hops de redirección) está envuelta en un

@@ -363,6 +363,11 @@ class TestPoliticaDeTamanoOperativo:
     internamente inconsistente. El máximo ahora se DERIVA de un presupuesto de
     subida y de un throughput mínimo asumido, y queda muy por debajo del tope de
     la Bot API (50 MB), que sigue siendo el límite del protocolo, no el nuestro.
+
+    Es una ESTIMACIÓN bajo los supuestos de throughput y latencia de la política,
+    NO una garantía de éxito en cualquier red: lo que se publica es "este tamaño
+    entra en el deadline si el enlace sostiene el throughput asumido y la latencia
+    cabe en :data:`UPLOAD_RESIDUAL_SLACK_SECONDS`".
     """
 
     def test_el_maximo_operativo_se_deriva_del_presupuesto_y_el_throughput(self) -> None:
@@ -392,11 +397,28 @@ class TestPoliticaDeTamanoOperativo:
         assert gateway_mod.DEFAULT_REQUEST_TIMEOUT.connect == sender_mod.UPLOAD_SETUP_MARGIN_SECONDS
 
     def test_el_maximo_transmitido_mas_el_margen_entran_en_el_deadline(self) -> None:
-        # La garantía que la política PUBLICA: un documento admitido, transmitido al
+        # La estimación que la política PUBLICA: un documento admitido, transmitido al
         # throughput mínimo asumido, cabe en el deadline aunque el handshake consuma
         # TODO su presupuesto.
         segundos_de_transferencia = sender_mod.MAX_DOCUMENT_BYTES / sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND
         assert segundos_de_transferencia + sender_mod.UPLOAD_SETUP_MARGIN_SECONDS <= sender_mod.UPLOAD_DEADLINE_SECONDS
+
+    def test_la_holgura_residual_cubre_latencia_y_framing(self) -> None:
+        # El máximo publicado NO consume el deadline hasta el último segundo: lo que
+        # sobra es la holgura para la latencia de ida y vuelta, el framing del
+        # multipart y el tiempo de respuesta del endpoint. Si la holgura se agotara,
+        # el contrato publicado dejaría de ser una ESTIMACIÓN bajo supuestos —lo que
+        # documenta ``send_document``— y pasaría a ser una garantía que la red rompe.
+        assert sender_mod.UPLOAD_RESIDUAL_SLACK_SECONDS > 0, (
+            "el máximo publicado consume el deadline entero: no queda holgura para latencia/framing"
+        )
+        # Fuente INDEPENDIENTE: el presupuesto se recalcula desde el timeout del
+        # gateway, no desde las constantes derivadas del sender. Si el sender dejara
+        # de reservar el ``connect`` real, esta resta no daría la holgura publicada.
+        presupuesto = gateway_mod.DEFAULT_REQUEST_TIMEOUT.total - gateway_mod.DEFAULT_REQUEST_TIMEOUT.connect
+        transferencia = sender_mod.MAX_DOCUMENT_BYTES / sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND
+        holgura_esperada = presupuesto - transferencia
+        assert holgura_esperada == pytest.approx(sender_mod.UPLOAD_RESIDUAL_SLACK_SECONDS)
 
     def test_el_peor_caso_total_de_una_subida_esta_acotado(self) -> None:
         # La política debe acotar el ACUMULADO, no sólo cada petición: la espera del
