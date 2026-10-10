@@ -1245,3 +1245,101 @@ def test_f13_assert_owned_fails_if_os_lock_is_lost_causally(tmp_path: pathlib.Pa
     # pero el lock del SO fue liberado. assert_owned() DEBE fallar inmediatamente.
     with pytest.raises(FrozenRuntimeLockOwnershipError, match="mutex del sistema operativo"):
         handle.assert_owned()
+
+
+def test_f14_assert_owned_rejects_indeterminate_probe_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-14 (P1): assert_owned() no acepta errores de I/O o indeterminado en el probe como prueba de posesión (UNKNOWN != OWNED)."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    from sky_claw.local.frozen_runtime import (
+        FrozenRuntimeLockIndeterminateError,
+        FrozenRuntimeLockOwnershipError,
+    )
+    from sky_claw.local.frozen_runtime.root_lock import OSLockProbeResult
+
+    # Forzar que la sonda del SO devuelva INDETERMINATE (simulando OSError de I/O, permisos o transient)
+    monkeypatch.setattr(
+        "sky_claw.local.frozen_runtime.root_lock._probe_os_lock_state",
+        lambda lock_path: OSLockProbeResult.INDETERMINATE,
+    )
+
+    # assert_owned DEBE fallar cerrado (rechazando INDETERMINATE como prueba positiva)
+    with pytest.raises(FrozenRuntimeLockOwnershipError) as exc_info:
+        handle.assert_owned()
+
+    assert "fail-closed" in str(exc_info.value) or "UNKNOWN != OWNED" in str(exc_info.value)
+    # También es capturable como FrozenRuntimeLockIndeterminateError
+    assert isinstance(exc_info.value, FrozenRuntimeLockIndeterminateError)
+
+    # Restaurar y liberar limpiamente
+    monkeypatch.undo()
+    handle.assert_owned()
+    handle.release()
+
+
+def test_f14_probe_unexpected_oserror_returns_indeterminate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-14 (P1): Errores inesperados de sistema o I/O al sondear el mutex clasifican INDETERMINATE, nunca HELD."""
+    root = _crear_root_valido(tmp_path)
+    canonical_str, lock_path = canonical_root_key(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(b"test")
+
+    import builtins
+    import errno
+
+    from sky_claw.local.frozen_runtime.root_lock import (
+        OSLockProbeResult,
+        _probe_os_lock_state,
+    )
+
+    # Caso 1: Error al abrir el archivo (e.g. EIO o EACCES no de lock sino de permisos de FS)
+    real_open = builtins.open
+
+    def mock_open(file, *args, **kwargs):
+        if str(file) == str(lock_path):
+            raise OSError(errno.EIO, "Fallo transitorio de I/O de disco")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", mock_open)
+    assert _probe_os_lock_state(lock_path) == OSLockProbeResult.INDETERMINATE
+    monkeypatch.undo()
+
+    # Caso 2: Error inesperado al intentar bloquear en _try_lock_probe_fd (e.g. ENOSPC)
+    monkeypatch.setattr(
+        "sky_claw.local.frozen_runtime.root_lock._try_lock_probe_fd",
+        lambda fd: None,
+    )
+    assert _probe_os_lock_state(lock_path) == OSLockProbeResult.INDETERMINATE
+
+
+def test_f14_inspect_classifies_indeterminate_probe_as_indeterminate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-14 (P1): inspect() clasifica como INDETERMINATE cuando la sonda del mutex del SO falla con error no concluyente."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    from sky_claw.local.frozen_runtime.root_lock import (
+        LockDisposition,
+        OSLockProbeResult,
+    )
+
+    # Forzar que la sonda del SO devuelva INDETERMINATE
+    monkeypatch.setattr(
+        "sky_claw.local.frozen_runtime.root_lock._probe_os_lock_state",
+        lambda lock_path: OSLockProbeResult.INDETERMINATE,
+    )
+
+    res = inspect_frozen_runtime_root_lock(root)
+    assert res.disposition == LockDisposition.INDETERMINATE
+    assert res.is_os_locked is False
+
+    monkeypatch.undo()
+    handle.release()

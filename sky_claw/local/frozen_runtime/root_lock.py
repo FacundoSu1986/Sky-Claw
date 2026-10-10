@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import json
 import math
 import os
@@ -35,6 +36,7 @@ from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeLockAdmissionError,
     FrozenRuntimeLockBusyError,
     FrozenRuntimeLockIndeterminateError,
+    FrozenRuntimeLockIndeterminateOwnershipError,
     FrozenRuntimeLockMetadataError,
     FrozenRuntimeLockOrphanedError,
     FrozenRuntimeLockOwnershipError,
@@ -78,6 +80,17 @@ if sys.platform == "win32":
         except OSError:
             return False
 
+    def _try_lock_probe_fd(fd: int) -> bool | None:
+        try:
+            os.lseek(fd, _LOCK_BYTE_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            # En Windows msvcrt.locking eleva EACCES (13) o EDEADLK (36) si la región ya está bloqueada
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            return None
+
     def _unlock_fd(fd: int) -> None:
         with contextlib.suppress(OSError):
             os.lseek(fd, _LOCK_BYTE_OFFSET, os.SEEK_SET)
@@ -93,27 +106,65 @@ else:
         except OSError:
             return False
 
+    def _try_lock_probe_fd(fd: int) -> bool | None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            # En POSIX flock eleva EWOULDBLOCK / EAGAIN o EACCES si el archivo ya está bloqueado
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                return False
+            return None
+
     def _unlock_fd(fd: int) -> None:
         with contextlib.suppress(OSError):
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-def _probe_os_lock_held(lock_path: pathlib.Path) -> bool:
+class OSLockProbeResult(StrEnum):
+    """Resultado tri-state del sondeo de exclusión del SO (§34.3)."""
+
+    HELD = "HELD"
+    FREE = "FREE"
+    INDETERMINATE = "INDETERMINATE"
+
+
+def _probe_os_lock_state(lock_path: pathlib.Path) -> OSLockProbeResult:
     """Comprueba causalmente si el mutex del SO está tomado sobre lock_path.
 
-    Devuelve True si el mutex del SO sigue bloqueado exclusivamente, o False si
-    un descriptor de prueba independiente pudo adquirir el lock (demostrando
-    que se perdió la exclusión del SO).
+    Devuelve:
+    - HELD: si el descriptor de prueba demostró exclusión activa (error específico
+            EACCES/EWOULDBLOCK/EAGAIN al intentar bloquear).
+    - FREE: si el descriptor de prueba pudo adquirir y liberar exitosamente el mutex del SO.
+    - INDETERMINATE: si ocurrió un fallo de I/O, error de permisos en open() o error
+                     inesperado que impide certificar el estado (fail-closed: UNKNOWN != OWNED).
     """
     try:
-        with open(lock_path, "r+b") as probe_file:
-            if not _lock_fd(probe_file.fileno()):
-                return True
-            _unlock_fd(probe_file.fileno())
-            return False
+        probe_file = open(lock_path, "r+b")  # noqa: SIM115
     except OSError:
-        # En Windows o POSIX, un error de acceso/compartición al abrir indica exclusión activa
-        return True
+        # Fallo al abrir el archivo (permisos, I/O transitorio, sharing violation ajena)
+        return OSLockProbeResult.INDETERMINATE
+
+    try:
+        locked_ok = _try_lock_probe_fd(probe_file.fileno())
+        if locked_ok is None:
+            # Error inesperado durante la operación de lock del SO
+            return OSLockProbeResult.INDETERMINATE
+        elif locked_ok:
+            # Se pudo adquirir: el lock del SO no estaba retenido por nadie
+            _unlock_fd(probe_file.fileno())
+            return OSLockProbeResult.FREE
+        else:
+            # Falló específicamente porque la región/archivo ya está tomada exclusivamente
+            return OSLockProbeResult.HELD
+    finally:
+        with contextlib.suppress(OSError):
+            probe_file.close()
+
+
+def _probe_os_lock_held(lock_path: pathlib.Path) -> bool:
+    """Helper de conveniencia booleano (True sólo si HELD confirmado)."""
+    return _probe_os_lock_state(lock_path) == OSLockProbeResult.HELD
 
 
 class OwnerLiveness(StrEnum):
@@ -443,10 +494,17 @@ def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockM
     if meta.phase != LockPhase.HELD:
         raise FrozenRuntimeLockOwnershipError(f"phase en disco no es HELD ({meta.phase})")
 
-    # F-13: Comprobar causalmente que el mutex del SO sigue efectivamente retenido
-    if not _probe_os_lock_held(handle.lock_path):
+    # F-13 / F-14: Comprobar causalmente que el mutex del SO sigue efectivamente retenido
+    probe_state = _probe_os_lock_state(handle.lock_path)
+    if probe_state == OSLockProbeResult.FREE:
         raise FrozenRuntimeLockOwnershipError(
-            "El mutex del sistema operativo no está retenido (exclusión del SO perdida)."
+            f"El mutex del sistema operativo para {handle.root} no está retenido "
+            "(exclusión del SO perdida: el lock está libre)."
+        )
+    if probe_state == OSLockProbeResult.INDETERMINATE:
+        raise FrozenRuntimeLockIndeterminateOwnershipError(
+            f"No se pudo determinar el estado del mutex del sistema operativo para {handle.root} "
+            "(fail-closed: UNKNOWN != OWNED)."
         )
 
     return meta
@@ -555,11 +613,21 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
             liveness=None,
         )
 
-    # Probar si el OS lock está tomado SIEMPRE que el archivo exista (Finding 1, F-13)
-    is_os_locked = _probe_os_lock_held(lock_path)
+    # Probar si el OS lock está tomado SIEMPRE que el archivo exista (Finding 1, F-13, F-14)
+    probe_state = _probe_os_lock_state(lock_path)
+    is_os_locked = probe_state == OSLockProbeResult.HELD
 
     st_size = lock_path.stat().st_size
     if st_size == 0:
+        if probe_state == OSLockProbeResult.INDETERMINATE:
+            return LockInspectionResult(
+                canonical_root=canonical_str,
+                lock_path=lock_path,
+                disposition=LockDisposition.INDETERMINATE,
+                is_os_locked=False,
+                metadata=None,
+                liveness=None,
+            )
         if is_os_locked:
             return LockInspectionResult(
                 canonical_root=canonical_str,
@@ -594,8 +662,10 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
 
     liveness = _check_process_liveness(metadata.pid, metadata.process_create_time)
 
-    # Si la metadata ya fue liberada limpiamente (Finding 2)
-    if metadata.phase == LockPhase.RELEASED:
+    # F-14: Si la sonda de mutex del SO fue indeterminada, clasificar INDETERMINATE (fail-closed)
+    if probe_state == OSLockProbeResult.INDETERMINATE:
+        disposition = LockDisposition.INDETERMINATE
+    elif metadata.phase == LockPhase.RELEASED:
         disposition = LockDisposition.FREE if not is_os_locked else LockDisposition.ACQUIRING
     elif is_os_locked:
         if liveness == OwnerLiveness.ALIVE:

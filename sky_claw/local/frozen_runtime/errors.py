@@ -140,6 +140,12 @@ class FrozenRuntimeLockIndeterminateError(FrozenRuntimeLockError):
     """No se puede determinar la vitalidad (liveness) del dueño de forma certera (fail-closed)."""
 
 
+class FrozenRuntimeLockIndeterminateOwnershipError(
+    FrozenRuntimeLockOwnershipError, FrozenRuntimeLockIndeterminateError
+):
+    """El estado del mutex del SO no se pudo determinar con certeza durante assert_owned (fail-closed: UNKNOWN != OWNED)."""
+
+
 class FrozenRuntimeLockOrphanedError(FrozenRuntimeLockError):
     """El lock quedó huérfano por crash de un dueño anterior: requiere reconciliación/reclaim."""
 
