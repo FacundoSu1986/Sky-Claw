@@ -32,6 +32,12 @@ arrastran, cada uno, una desviación de protocolo **preexistente y ajena a REVAL
 `PR675_RECOMMENDATION = READY_FOR_DESIGN_RECONCILIATION` — habilita un **slice nuevo** para
 reconciliar #675. **No** es una autorización de merge y **no** se tocó #675 en esta sesión.
 
+> **Nota 2026-10-10 (post #700, SUPERSEDED).** La línea anterior es la recomendación
+> **histórica** de esta auditoría (`eb066a1`). Quedó **superada** por la autoridad de #700:
+> `PR675_RECOMMENDATION = KEEP_DRAFT_BLOCKED`. El veredicto científico estrecho
+> `NOT_INVALIDATED` se conserva. `M6_IMPLEMENTATION_BLOCKED = YES`. Ver §12 y
+> `post-700-reconciliation.json`.
+
 ---
 
 ## 1. Qué cambió en REVAL-1
@@ -374,11 +380,17 @@ REVAL_PYTHON="E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe"
 
 ```
 PR675_RECOMMENDATION = READY_FOR_DESIGN_RECONCILIATION
+PR675_RECOMMENDATION_HISTORICAL_STATUS = SUPERSEDED
 ```
 
 Ambas decisiones M4/M5 quedan `NOT_INVALIDATED`, que es la condición del brief para
 habilitar la reconciliación. Esto **no** es un merge y **no** se modificó #675:
 permanece `OPEN` + `DRAFT` + `UNCHANGED_BY_THIS_SLICE`.
+
+> **Nota 2026-10-10 (post #700, SUPERSEDED).** El bloque anterior es el registro
+> histórico de 2026-10-07. La recomendación **vigente** es
+> `PR675_RECOMMENDATION = KEEP_DRAFT_BLOCKED` (§12). `NOT_INVALIDATED` no se
+> relabeló a `REVALIDATED` y no autoriza implementar M6.
 
 ---
 
@@ -409,11 +421,110 @@ Ningún hallazgo altera el veredicto de impacto ni la recomendación sobre #675.
 ## 11. Contenido de este directorio
 
 ```
-README.md                 este documento
-impact-matrix.json        matriz de impacto + ancestria + semantica de valores + adjudicaciones
-provenance.json           SHAs, hashes de artefactos, RAW usados (path/bytes/sha256/mtime UTC)
-callgraph-evidence.json   call graph por conclusion + alcanzabilidad por correccion + diagnosticos
+README.md                      este documento
+impact-matrix.json             matriz de impacto + ancestria + semantica de valores + adjudicaciones
+provenance.json                SHAs, hashes de artefactos, RAW usados (path/bytes/sha256/mtime UTC)
+callgraph-evidence.json        call graph por conclusion + alcanzabilidad por correccion + diagnosticos
+post-700-reconciliation.json   reconciliación documental posterior a #700 (2026-10-10)
 ```
 
 No se copia corpus ni RAW binario. Los RAW bajo `C:\SkyClawResearch\` se leyeron y
-hashearon **sin mutar**.
+hashearon **sin mutar**. `impact-matrix.json`, `provenance.json` y
+`callgraph-evidence.json` conservan el blob de `eb066a1` (hashes en
+`post-700-reconciliation.json`).
+
+---
+
+## 12. Reconciliación posterior a PR #700 (2026-10-10)
+
+#700 (`e7c96094`, MERGED) investigó una pregunta **distinta** a la de este PR.
+Las dos auditorías no se mezclan.
+
+| | #697 (este PR) | #700 (main) |
+|---|---|---|
+| Pregunta | ¿REVAL-1 invalidó M4/M5? | ¿H1–H5 afectan decisiones anteriores? |
+| Autoridad numérica | `impact-matrix.json` (`eb066a1`) | `corrective-adjudication.json` |
+| M4/M5 primary | `NOT_INVALIDATED` | `NOT_INVALIDATED` |
+| Relabel a `REVALIDATED` | **no** | **no** |
+| `PR697_DISPOSITION` | — | `STILL_VALID_NARROW_SCOPE` |
+| `PR675_RECOMMENDATION` | histórica `READY_FOR_DESIGN_RECONCILIATION` | vigente `KEEP_DRAFT_BLOCKED` |
+
+```
+PR697_DISPOSITION              = STILL_VALID_NARROW_SCOPE
+PR697_NARROW_SCOPE_PRESERVED   = YES
+M4_PRIMARY_STATUS              = NOT_INVALIDATED
+M5_PRIMARY_STATUS              = NOT_INVALIDATED
+M4_DECISION_NOT_SILENTLY_RELABELED = YES
+M5_DECISION_NOT_SILENTLY_RELABELED = YES
+SCIENTIFIC_RESULT_CHANGED      = NO
+H1_CONVERGED_ASSETS            = 31
+H1_UNRESOLVED_ASSETS           = 0
+
+PR675_RECOMMENDATION_HISTORICAL        = READY_FOR_DESIGN_RECONCILIATION
+PR675_RECOMMENDATION_HISTORICAL_STATUS = SUPERSEDED
+PR675_RECOMMENDATION                   = KEEP_DRAFT_BLOCKED
+PR675_RECOMMENDATION_STATUS            = CURRENT
+PR675_RECOMMENDATION_CONSISTENT        = YES
+M6_IMPLEMENTATION_BLOCKED              = YES
+READY_FOR_M6_IMPLEMENTATION            = NO
+PR675_CHANGED                          = NO
+HISTORICAL_EVIDENCE_UNCHANGED          = YES
+MAIN_CONTAINS_PR700                    = YES
+```
+
+Tres decisiones independientes (A no implica B ni C):
+
+| # | Pregunta | Veredicto |
+|---|---|---|
+| **A** | ¿La conclusión estrecha de #697 sigue vigente? | **SÍ** — `STILL_VALID_NARROW_SCOPE` |
+| **B** | ¿Se puede abrir la reconciliación documental de #675? | **NO** — `KEEP_DRAFT_BLOCKED` |
+| **C** | ¿Se puede implementar M6? | **NO** — `M6_IMPLEMENTATION_BLOCKED=YES` |
+
+### 12.1 Por qué cambió la recomendación sobre #675
+
+#697 recomendó `READY_FOR_DESIGN_RECONCILIATION` porque REVAL-1 no invalidó M4/M5,
+que era la condición de *ese* brief para un slice documental de #675. #700 no
+contradice esa medición. Cambia la recomendación **por otra causa**, documentada
+en `decision-impact.md` §9:
+
+1. El slice de #675 se puso en espera hasta terminar la auditoría H1–H5.
+2. H4 **sí** es un defecto real en el camino primario AUTH
+   (`authored_dataset.resize_normal`, hermano uint8 de `resize_height` / #653).
+3. El contrafactual C2 (31 assets, una sola variable) midió impacto
+   `NUMERICAL_NOT_DECISIONAL`: decisión y reglas M4 idénticas; C1 y los dos
+   componentes evaluables de C2 de M5 idénticos y lejos de umbral.
+4. Antes de desbloquear el diseño hay que decidir si el fix de `resize_normal`
+   entra en el alcance de la reconciliación de M6.
+   `H4_RESIZE_NORMAL_DESIGN_DEPENDENCY = UNRESOLVED`.
+
+`READY_FOR_DESIGN_RECONCILIATION` **no** significa `READY_FOR_M6_IMPLEMENTATION`.
+Tampoco las dos recomendaciones son el mismo estado con otro nombre.
+
+### 12.2 Limitación LEGACY_HELDOUT
+
+El contrafactual C2 de #700 declara que C2 de M5 exige además la réplica
+direccional en `LEGACY_HELDOUT`, y que ese término **no** es reproducible en el
+slice READ-ONLY (no hay artefacto de filas M5 en el repo).
+`M5_LEGACY_HELDOUT_LIMITATION = DECLARED_NOT_IN_C2_COUNTERFACTUAL`.
+
+M5 ya arrastraba `UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE` (§7), ajena a
+REVAL-1. El diseño M6-A.1 (#675, `e6b81317`) ya declara
+`LEGACY_HELDOUT_IS_INDEPENDENT_VALIDATION = NO`. Esta sesión no cierra esa
+limitación.
+
+### 12.3 Qué falta antes de tocar #675
+
+- Decidir `H4_RESIZE_NORMAL_DESIGN_DEPENDENCY` (incluir o excluir el fix de
+  `resize_normal` del alcance de diseño, con evidencia).
+- Conservar `LEGACY_HELDOUT` como limitación heredada, no como validación
+  independiente.
+- Los contratos propios de #675 que esta sesión **no** reabre: thresholds
+  (`T_N`, `T_R`, `G`, `NUMERICAL_ENERGY_FLOOR`, `T_AMBIG`) sin congelar;
+  Hodge como diagnóstico, no como reconstrucción; `curl_proxy` histórico
+  bloqueado; corpus no blind.
+- Worktree nuevo bajo `<repo>/.worktrees/`, rama
+  `research/native-parallax-exp-m6-pair-mismatch-decomposition`.
+  **No** implementar M6. **No** marcar #675 Ready.
+
+Siguiente sesión propuesta: `PR675_DESIGN_RECON_PREFLIGHT`. Detalle
+machine-readable en `post-700-reconciliation.json`.

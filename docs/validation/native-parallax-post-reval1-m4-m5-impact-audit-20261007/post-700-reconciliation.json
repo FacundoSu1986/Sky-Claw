@@ -1,0 +1,241 @@
+{
+  "artifact": "native-parallax-post-reval1-m4-m5-impact-audit-post-700-reconciliation",
+  "date_utc": "2026-10-10",
+  "session": "POST700_PR697_RECON",
+  "scope": "DOCUMENTARY_RECONCILIATION_ONLY",
+  "audit_only": true,
+  "scientific_rerun_executed": false,
+  "m4_rerun_executed": false,
+  "m5_rerun_executed": false,
+  "m6_real_run_executed": false,
+  "pr675_changed": false,
+  "pr700_artifacts_modified": false,
+  "note": "Registro versionado posterior al merge de #700. No reescribe impact-matrix.json, provenance.json ni callgraph-evidence.json. La recomendación histórica sobre #675 se conserva como SUPERSEDED; la vigente vive en este archivo y en README.md §12.",
+
+  "git": {
+    "worktree": "E:\\SkyClaw_M4M5_AUDIT_97dcc7ab",
+    "local_branch": "research/native-parallax-post-reval1-m4-m5-impact-audit",
+    "remote_branch": "research/native-parallax-post-reval1-m4-m5-impact-audit",
+    "pr697_start_head": "eb066a1f38011e0003f4f8ea7619d2582b3e5d3e",
+    "sync_merge_sha": "ec7679140fb4a3888fdfc9d24a34380068e25b2c",
+    "sync_merge_parents": [
+      "eb066a1f38011e0003f4f8ea7619d2582b3e5d3e",
+      "e7c9609432c7e2425a72640c057fce3a4c234370"
+    ],
+    "main_sha": "e7c9609432c7e2425a72640c057fce3a4c234370",
+    "pr700_merge_sha": "e7c9609432c7e2425a72640c057fce3a4c234370",
+    "pr700_head_merged": "7d1362f3fddf68ae9e579b2b55b99b95610e2f19",
+    "pr675_head_sha": "e6b81317063e64549bf1178d7cf1e44d8d7f3746",
+    "pr675_branch": "research/native-parallax-exp-m6-pair-mismatch-decomposition",
+    "main_contains_pr700": true,
+    "ancestry_method": "git merge-base --is-ancestor 7d1362f3fddf68ae9e579b2b55b99b95610e2f19 origin/main; git rev-list --parents -n 1 origin/main"
+  },
+
+  "questions_separated": {
+    "pr697": {
+      "object": "¿Las correcciones REVAL-1 invalidaron las decisiones históricas EXP-M4 o EXP-M5?",
+      "authority": "docs/validation/native-parallax-post-reval1-m4-m5-impact-audit-20261007/impact-matrix.json (eb066a1)",
+      "conclusion": "M4_IMPACT_ADJUDICATION=NOT_INVALIDATED; M5_IMPACT_ADJUDICATION=NOT_INVALIDATED; M4_RERUN_REQUIRED=NO; M5_RERUN_REQUIRED=NO",
+      "disposition_after_700": "STILL_VALID_NARROW_SCOPE"
+    },
+    "pr700": {
+      "object": "¿Los defectos de instrumentación H1–H5 afectan las conclusiones y decisiones científicas anteriores?",
+      "authority": "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/corrective-adjudication.json",
+      "conclusion": "M4_PRIMARY_STATUS=NOT_INVALIDATED; M5_PRIMARY_STATUS=NOT_INVALIDATED; SCIENTIFIC_RESULT_CHANGED=NO",
+      "does_not_automatically_invalidate_pr697": true
+    }
+  },
+
+  "authority": {
+    "PR697_DISPOSITION": "STILL_VALID_NARROW_SCOPE",
+    "PR697_DISPOSITION_SOURCE": "corrective-adjudication.json de #700; confirmado 2026-10-10 sin contraejemplo nuevo",
+    "M4_PRIMARY_STATUS": "NOT_INVALIDATED",
+    "M5_PRIMARY_STATUS": "NOT_INVALIDATED",
+    "M4_IMPACT_ADJUDICATION": "NOT_INVALIDATED",
+    "M5_IMPACT_ADJUDICATION": "NOT_INVALIDATED",
+    "M4_RERUN_REQUIRED": "NO",
+    "M5_RERUN_REQUIRED": "NO",
+    "SCIENTIFIC_RESULT_CHANGED": "NO",
+    "NOT_INVALIDATED_IS_NOT_REVALIDATED": true,
+    "H1_CONVERGED_ASSETS": 31,
+    "H1_UNRESOLVED_ASSETS": 0,
+    "H1_PRIMARY_IMPACT": "NONE",
+    "H4_IMPLEMENTATION_DEFECT": "CONFIRMED",
+    "H4_M4_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+    "H4_M5_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+    "C2_M4_DECISION_CHANGED": false,
+    "C2_VALIDATED_FOR_ADJUDICATION": true
+  },
+
+  "pr675": {
+    "PR675_STATE": "OPEN_DRAFT",
+    "PR675_CHANGED_BY_THIS_SLICE": false,
+    "PR675_RECOMMENDATION_HISTORICAL": "READY_FOR_DESIGN_RECONCILIATION",
+    "PR675_RECOMMENDATION_HISTORICAL_STATUS": "SUPERSEDED",
+    "PR675_RECOMMENDATION_HISTORICAL_SHA": "eb066a1f38011e0003f4f8ea7619d2582b3e5d3e",
+    "PR675_RECOMMENDATION_HISTORICAL_DATE_UTC": "2026-10-07",
+    "PR675_RECOMMENDATION": "KEEP_DRAFT_BLOCKED",
+    "PR675_RECOMMENDATION_STATUS": "CURRENT",
+    "PR675_RECOMMENDATION_SOURCE": "PR #700 decision-impact.md §9 y corrective-adjudication.json",
+    "M6_IMPLEMENTATION_BLOCKED": "YES",
+    "READY_FOR_DESIGN_RECONCILIATION": "NO",
+    "READY_FOR_M6_IMPLEMENTATION": "NO"
+  },
+
+  "independent_decisions": {
+    "A_pr697_narrow_conclusion_still_valid": {
+      "verdict": "YES",
+      "label": "STILL_VALID_NARROW_SCOPE",
+      "reason": "Ningún contraejemplo nuevo sobre la pregunta REVAL-1 → M4/M5. #700 confirma NOT_INVALIDATED por otra vía y publica PR697_DISPOSITION=STILL_VALID_NARROW_SCOPE."
+    },
+    "B_open_675_documentary_reconciliation": {
+      "verdict": "NO",
+      "label": "KEEP_DRAFT_BLOCKED",
+      "reason": "A no implica B. #700 dejó #675 en ON_HOLD porque H4 es un defecto real en el camino AUTH y hay que decidir si el fix de resize_normal entra en el alcance de la reconciliación de diseño. #675 permanece OPEN/DRAFT."
+    },
+    "C_implement_m6": {
+      "verdict": "NO",
+      "label": "M6_IMPLEMENTATION_BLOCKED",
+      "reason": "La autorización de implementación M6 permanece bloqueada. READY_FOR_DESIGN_RECONCILIATION nunca fue READY_FOR_M6_IMPLEMENTATION."
+    }
+  },
+
+  "h4_resize_normal": {
+    "H4_RESIZE_NORMAL_DESIGN_DEPENDENCY": "UNRESOLVED",
+    "defect": "CONFIRMED",
+    "function": "authored_dataset.resize_normal",
+    "mechanism": "(clip(n,-1,1)*127.5+127.5).astype(np.uint8) trunca y Pillow modo L re-cuantiza. Hermano de resize_height (#653) que quedó intacto.",
+    "auth_path_only": true,
+    "self_path_affected": false,
+    "primary_m4_m5_impact": "NUMERICAL_NOT_DECISIONAL",
+    "c2_corpus": {
+      "path": "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/evidence/h4-corpus-counterfactual.json",
+      "n_assets": 31,
+      "single_variable": "resize_normal (uint8 requantize -> float bilinear + renormalize)",
+      "m4_decision_changed": false,
+      "m4_decision_old": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+      "m4_decision_new": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+      "m5_C1_old": false,
+      "m5_C1_new": false,
+      "m5_C2_high_gt_lowmid_old": false,
+      "m5_C2_high_gt_lowmid_new": false,
+      "m5_C2_high_enrichment_ge_threshold_old": false,
+      "m5_C2_high_enrichment_ge_threshold_new": false
+    },
+    "design_consequence": "Antes de abrir la reconciliación documental de #675 hay que decidir explícitamente si el fix de resize_normal entra en el alcance de M6. Esta sesión no toma esa decisión de diseño."
+  },
+
+  "m5_legacy_heldout": {
+    "M5_LEGACY_HELDOUT_LIMITATION": "DECLARED_NOT_IN_C2_COUNTERFACTUAL",
+    "c2_note": "C2 de M5 exige además la réplica direccional en la cohorte LEGACY_HELDOUT, que no es reproducible en el slice READ-ONLY de #700 (no hay artefacto de filas M5 en el repo). Se reportaron C1 y los dos componentes de C2 evaluables.",
+    "m5_protocol_preexisting": "UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE",
+    "m5_protocol_source": "impact-matrix.json notes + provenance.json m5_artifacts + exp-m6 design §26",
+    "pr675_already_declares": {
+      "LEGACY_HELDOUT_IS_INDEPENDENT_VALIDATION": "NO",
+      "LEGACY_HELDOUT_PERMITTED_USE": "DESCRIPTIVE_DIRECTIONAL_STABILITY_ONLY",
+      "LEGACY_HELDOUT_BLIND_CONFIRMATION_CLAIM": "NO"
+    },
+    "resolved_by_this_slice": false
+  },
+
+  "dependency_matrix": [
+    {
+      "dependency": "REVAL-1 M2/M3",
+      "evidence": "docs/validation/native-parallax-post-reval1-m4-m5-impact-audit-20261007/impact-matrix.json + provenance.json",
+      "sha_or_file": "eb066a1f38011e0003f4f8ea7619d2582b3e5d3e",
+      "claim": "MATH-A/B/REPRO-A no alcanzan la decisión primaria M4/M5; height fidelity ya re-ejecutado en M4 (1a52c3ea) y presente en M5.",
+      "state": "VERIFIED_NARROW_SCOPE",
+      "m6_impact": "No invalida M4/M5. No autoriza implementar M6."
+    },
+    {
+      "dependency": "H1 optimizador correctivo",
+      "evidence": "corrective-adjudication.json H1",
+      "sha_or_file": "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/corrective-adjudication.json",
+      "claim": "H1_CONVERGED_ASSETS=31; H1_UNRESOLVED_ASSETS=0; H1_PRIMARY_IMPACT=NONE.",
+      "state": "MERGED_IN_MAIN",
+      "m6_impact": "Diagnóstico de coherencia; no decisional para M4/M5. No desbloquea M6."
+    },
+    {
+      "dependency": "H4 resize_normal",
+      "evidence": "decision-impact.md §5 + h4-corpus-counterfactual.json + corrective-adjudication.json H4",
+      "sha_or_file": "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/evidence/h4-corpus-counterfactual.json",
+      "claim": "Defecto CONFIRMED en camino AUTH; impacto primario M4/M5 NUMERICAL_NOT_DECISIONAL; decisión idéntica en C2.",
+      "state": "MEASURED_NOT_DECISIONAL; DESIGN_DEPENDENCY_UNRESOLVED",
+      "m6_impact": "Bloquea la reconciliación de diseño de #675 hasta decidir si el fix entra en el alcance."
+    },
+    {
+      "dependency": "H4 C2 corpus",
+      "evidence": "h4-corpus-counterfactual.json; C2_VALIDATED_FOR_ADJUDICATION=true; C2_M4_DECISION_CHANGED=false",
+      "sha_or_file": "corrective-adjudication.json",
+      "claim": "Roster 31/31 idéntico; decisiones M4/M5 no cambian en los componentes evaluables.",
+      "state": "VERIFIED",
+      "m6_impact": "Acota el impacto numérico. No es re-ejecución de M4/M5. No incluye LEGACY_HELDOUT."
+    },
+    {
+      "dependency": "M4 primary",
+      "evidence": "impact-matrix.json adjudications + C2 m4.decision_changed=false",
+      "sha_or_file": "data/exp-m4-results.json (fe54e9a9) y revalidation 1a52c3ea",
+      "claim": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT; NOT_INVALIDATED. No relabel a REVALIDATED.",
+      "state": "NOT_INVALIDATED",
+      "m6_impact": "Premisa heredada vigente. Desviación de protocolo preexistente UNDER_REVIEW_PROTOCOL_DEVIATION no resuelta."
+    },
+    {
+      "dependency": "M5 primary",
+      "evidence": "impact-matrix.json adjudications + C2 m5 C1/C2 components unchanged",
+      "sha_or_file": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\full-corrected-e3dbda51.json",
+      "claim": "EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED; NOT_INVALIDATED. No relabel a REVALIDATED.",
+      "state": "NOT_INVALIDATED",
+      "m6_impact": "Premisa heredada vigente. Protocolo UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE no resuelto."
+    },
+    {
+      "dependency": "M5 LEGACY_HELDOUT",
+      "evidence": "h4-corpus-counterfactual.json m5.note; exp-m6 design §26; provenance.json m5 rules.legacy_heldout_replication=false",
+      "sha_or_file": "e3dbda517782cb71d9647acad607ea3846629952",
+      "claim": "La réplica direccional LEGACY_HELDOUT no está en el contrafactual C2 disponible. #675 ya declara que no es validación independiente.",
+      "state": "DECLARED_LIMITATION",
+      "m6_impact": "Delimita qué puede afirmar M6 sobre held-out. No se cierra en esta sesión."
+    },
+    {
+      "dependency": "Diseño M6-A.1",
+      "evidence": "docs/design/research/native-parallax/exp-m6-pair-mismatch-decomposition.md en PR #675",
+      "sha_or_file": "e6b81317063e64549bf1178d7cf1e44d8d7f3746",
+      "claim": "OPEN/DRAFT. Contratos pendientes propios: thresholds no congelados (T_N, T_R, G, NUMERICAL_ENERGY_FLOOR, T_AMBIG), Hodge como diagnóstico, curl_proxy histórico bloqueado, corpus no blind.",
+      "state": "DRAFT_NOT_MODIFIED",
+      "m6_impact": "Write-set ajeno. Esta sesión no lo modifica."
+    }
+  ],
+
+  "contracts": {
+    "PR697_NARROW_SCOPE_PRESERVED": "YES",
+    "M4_DECISION_NOT_SILENTLY_RELABELED": "YES",
+    "M5_DECISION_NOT_SILENTLY_RELABELED": "YES",
+    "PR675_RECOMMENDATION_CONSISTENT": "YES",
+    "M6_IMPLEMENTATION_BLOCKED": "YES",
+    "HISTORICAL_EVIDENCE_UNCHANGED": "YES",
+    "JSON_VALID": "YES",
+    "MAIN_CONTAINS_PR700": "YES"
+  },
+
+  "historical_blob_sha1": {
+    "note": "sha1 git del blob (git hash-object) al freeze 2026-10-10, HEAD de auditoría original eb066a1. README.md se actualiza en esta reconciliación; los tres JSON históricos no.",
+    "original_readme_at_eb066a1": "41aa7ab5fdf1bb8b7319b0f042febb87047c5754",
+    "impact-matrix.json": "570617da347b515b4065a0c0dade9640ca24a7ee",
+    "provenance.json": "cbdb89edb80244ad39fd090397894840ca3d54a2",
+    "callgraph-evidence.json": "5460f368e63ac90c88794330a3f6be76c1272381"
+  },
+
+  "pr700_authority_blob_sha1": {
+    "corrective-adjudication.json": "fd0033f5738875eecde1101030313ba379f92cf6",
+    "decision-impact.md": "cbcaa12f94a56b62781a21df0b015b7471452a0b"
+  },
+
+  "next_session": {
+    "session": "PR675_DESIGN_RECON_PREFLIGHT",
+    "goal": "Decidir H4_RESIZE_NORMAL_DESIGN_DEPENDENCY y actualizar blockers documentales de #675. No implementar M6. No marcar Ready.",
+    "branch": "research/native-parallax-exp-m6-pair-mismatch-decomposition",
+    "worktree": "<repo>/.worktrees/pr675-post700-design-recon",
+    "write_set": "docs/design/research/native-parallax/exp-m6-pair-mismatch-decomposition.md",
+    "pr697_is_write_target": false,
+    "m6_implementation_blocked": true
+  }
+}
