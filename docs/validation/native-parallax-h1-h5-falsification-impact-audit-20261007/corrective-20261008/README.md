@@ -53,6 +53,18 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > más laxa que el error real medido. Los tres corregidos; **`SCIENTIFIC_RESULT_CHANGED = NO`**
 > (`31/31` converge; la única diferencia contra la evidencia publicada es `n_evaluations`,
 > instrumentación). Ver §4.3.
+>
+> **Octava ronda — verificación del cierre (2026-10-10, misma rama).** El Tech Lead dejó una
+> reserva técnica **nueva** sobre el HEAD `44a74310`: dentro del conjunto de brackets que
+> contienen al ganador, `valid_bracket` y `stop_met_any` seguían siendo dos `any()`
+> **independientes**, así que dos brackets **superpuestos** —ambos conteniendo al ganador—
+> podían aportar uno la validez y el otro la parada. **Reproducido con el contraejemplo
+> exacto** (`OptimizerConfig(coarse_max_magnitude=400.0, max_iterations=5)`, `f(s) = s²`,
+> `initial_bracket = (-4e-9, 4e-9)`): `CONVERGED` con `valid_minimum_bracket = True` de la
+> cuenca del barrido y `stop_criterion_met = True` del bracket del caller, **sin ningún
+> bracket que aportara ambas**. Es un **residual del finding A**, un nivel más adentro.
+> Corregido: el status exige **asociación conjunta**. **Cero** cambios científicos
+> (`31/31`; todos los contadores idénticos; sólo `n_evaluations`). Ver §4.4.
 
 ---
 
@@ -632,6 +644,13 @@ es la que debe detectarlo):
 
 Restauración exacta del archivo verificada por SHA256 tras cada mutante.
 
+> **Vigencia (ronda 8).** El mutante **M2** de esta tabla quedó **inerte**: al moverse el gate
+> del status a `joint_evidence` (§4.4), `stop_met_any` ya no decide el status —sólo se
+> reporta—, así que mutarlo no cambia el comportamiento. La tabla de §4.4 renumera M2 como el
+> gate conjunto, que es el defecto vivo. El driver de mutación de la ronda 8 trabaja a nivel
+> de **bytes**: el anterior usaba `read_text`/`write_text`, que reescribe el archivo en CRLF
+> en Windows y dejaba pasar el hash de texto igual.
+
 #### Impacto científico medido: `NONE`
 
 Re-ejecución completa de `phase_c_corrective.py` sobre los 31 assets (corpus READ-ONLY):
@@ -674,6 +693,127 @@ Dos corridas consecutivas del mismo código sobre el mismo corpus producen archi
 corridas se hizo antes de una limpieza cosmética del código (eliminación de dos acumuladores
 muertos que ya no se leían), lo que confirma además que la limpieza **no** altera la
 semántica: si la alterara, los archivos diferirían.
+
+---
+
+### 4.4 Octava ronda — la evidencia de convergencia debe ser CONJUNTA (residual del finding A)
+
+Reserva técnica del Tech Lead sobre el HEAD `44a74310`, **verificada contra el código real**
+antes de aceptarla o descartarla. Es un **residual del finding A**: la ronda 7 ató la
+evidencia a los brackets que **contienen** al ganador, pero dentro de ese conjunto seguía
+habiendo dos `any()` independientes.
+
+```python
+# HEAD 44a74310 (defectuoso)
+containing    = [c for c in considered if c[0] <= best_x <= c[2]]
+valid_bracket = any(is_valid_minimum_bracket(f, c[0], c[1], c[2], ...) for c in containing)
+stop_met_any  = any(c[3] for c in containing)
+```
+
+Dos brackets **distintos**, ambos conteniendo al ganador, podían aportar uno la validez y el
+otro la parada. La contención arregló la atribución **entre cuencas**; no la asociación
+**entre brackets superpuestos** dentro del conjunto que contiene al ganador.
+
+#### El contraejemplo, ejecutado
+
+```python
+cfg = OptimizerConfig(coarse_max_magnitude=400.0, max_iterations=5)
+res = minimize_1d(lambda s: s * s, cfg, initial_bracket=(-4e-9, 4e-9))
+```
+
+Traza instrumentada (monkeypatch en runtime de `_golden_section_detailed` e
+`is_valid_minimum_bracket`; el módulo **no** se tocó):
+
+| bracket | contiene `best_x = 0` | `valid` | `stop_met` |
+|---|---|---|---|
+| `[-4e-9, 0, 4e-9]` (caller) | sí | **False** | **True** (0 iteraciones: ancho `8e-9` < `tolerance`) |
+| `[-2.8e-8, 1.56e-9, 2.8e-8]` (expansión) | sí | False | True |
+| `[-4e-4, 0, 4e-4]` (cuenca del barrido) | sí | **True** | **False** (5 iteraciones = `max_iterations`) |
+
+**Cero brackets aportan ambas.** `best_x = 0.0` es el punto coarse (el `0` está siempre en
+`_coarse_candidates`), ningún refinamiento lo mejora y el ganador **no se mueve**: queda
+dentro del bracket minúsculo del caller. La variación de `f` en `[-4e-9, 4e-9]` es `1.6e-17`,
+por debajo de `metric_tolerance = 1e-12`, así que ese bracket no demuestra un mínimo interior;
+pero su ancho sí satisface la parada. Resultado defectuoso: `CONVERGED`.
+
+**Por qué el caso C del suite no lo cubría.** Allí el ganador **se mueve fuera** del bracket
+del caller (`best_x = 0.019967` para `f(s) = (s − 0.02)²`), la contención lo excluye y el
+status cae en `MAX_ITERATIONS` por otro camino. El defecto necesita que el barrido grueso
+contenga el óptimo **exacto**.
+
+#### Corrección
+
+```python
+containing = [c for c in considered if c[0] <= best_x <= c[2]]
+valid_bracket = False
+joint_evidence = False
+for c in containing:
+    if is_valid_minimum_bracket(f, c[0], c[1], c[2], tolerance=cfg.metric_tolerance):
+        valid_bracket = True
+        if c[3]:
+            joint_evidence = True
+            break
+...
+elif not valid_bracket:
+    status, converged = STATUS_NO_VALID_BRACKET, False
+elif not joint_evidence:
+    status, converged = STATUS_MAX_ITERATIONS, False
+else:
+    status, converged = STATUS_CONVERGED, True
+```
+
+El status exige que **un mismo** bracket aporte las dos mitades. `valid_minimum_bracket` y
+`stop_criterion_met` se siguen reportando como afirmaciones de **existencia** —describen qué
+encontró la búsqueda—; el status es el veredicto conjunto. El **corte temprano** apenas el
+mismo bracket aporta ambas preserva el conteo de evaluaciones: en el caso normal se corta en
+el primer bracket, igual que antes.
+
+#### RED → GREEN y mutación
+
+Archivo nuevo `tests/test_native_parallax_pr700_corrective_joint_evidence.py` (13 tests),
+escrito **antes** del fix. Sobre el optimizador sin corregir: **5 fallan / 8 pasan** (RED).
+Con el fix: **13/13** (GREEN).
+
+| mutante | defecto reintroducido | detectado por |
+|---|---|---|
+| M1 | evidencia global entre cuencas (`containing = list(considered)`) | suite multicuenca |
+| M2 | gate conjunto revertido al OR de existencia (`elif not stop_met_any:`) | suite ronda 8 |
+| M3 | gate de expansión restringido a la mejor cuenca | suite multicuenca |
+| M4 | el conjunto ignora la mitad de parada (`joint == valid`) | ambas |
+
+Restauración exacta verificada por SHA256 **de bytes** (no de texto), con el EOL preservado.
+
+#### Impacto científico medido: `NONE`
+
+| métrica | evidencia publicada | re-ejecución ronda 8 |
+|---|---|---|
+| `n_converged` / `n_unresolved` | 31 / 0 | **31 / 0** |
+| `n_valid_minimum_bracket` / `n_stop_criterion_met` | 31 / 31 | **31 / 31** |
+| `n_continuous_abs_strength_lt_0_05` | 27 | **27** |
+| `n_grid_matches_refined` / `n_boundary_cases` | 0 / 0 | **0 / 0** |
+| `n_caller_bracket_accepted` | 29 | **29** |
+| mediana agreement (rejilla / continuo) | 10.7085° / 1.6826° | **idénticas** |
+| Spearman (rejilla / continuo) | 0.1367 / 0.4782 | **idénticos** |
+
+Los **12** contadores de `counts_16`, los escalares de cabecera (`search_scope`,
+`grid_oracle_signature`, `inputs_sha256`, `corpus_integrity`) y los dos universos del
+Spearman son **idénticos**; **0** assets con diferencia científica. La única diferencia, en
+los 31, es `continuous_meta.n_evaluations` (**+3** por asset), el mismo delta ya documentado
+en §4.2 y §4.3.
+
+**Conclusión: `SCIENTIFIC_RESULT_CHANGED = NO`.** La evidencia publicada **no se regenera**.
+La corrección es de **contrato**, no de resultado: el corpus nunca ejerció el camino
+degenerado, porque su `initial_bracket` es **ancho** (anclado en la forma cerrada,
+`min(−|s0|·2, s0·0.5) .. max(|s0|·2, −s0·0.5)`), no un bracket minúsculo alrededor del punto
+coarse. Un bracket ancho que contiene al ganador refina y satisface la parada por sí mismo.
+
+#### Reproducibilidad
+
+Dos corridas consecutivas del mismo código sobre el mismo corpus producen archivos
+**byte-idénticos** (`SHA256 2e2d7a75e26c88f6c14f3d7b9f0f5000438ce27aaf313b6d4469e8a3f7235b82`)
+⇒ `CORRECTIVE_REPRODUCIBILITY = PASS`. Ese hash coincide con el de la ronda 7: el fix de la
+ronda 8 es **inerte sobre el corpus**, como exige la medición de impacto — sólo cambia el
+veredicto en configuraciones degeneradas que el corpus no ejerce.
 
 ---
 
@@ -751,6 +891,7 @@ Tests asociados (fuera de esta carpeta, en `tests/`):
 tests/test_native_parallax_pr700_corrective_optimizer.py             F1 + C (ronda 7): 22 tests
 tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E/F6: 32 tests
 tests/test_native_parallax_pr700_corrective_multibasin_convergence.py A/B (ronda 7): 18 tests
+tests/test_native_parallax_pr700_corrective_joint_evidence.py        A residual (ronda 8): 13 tests
 tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 38 tests
 tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
 tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 13 tests
@@ -759,4 +900,4 @@ tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H/I: 8 te
 tests/test_native_parallax_pr700_corrective_c2_fail_closed.py        C2 (ronda 5): 19 tests
 ```
 
-Total: **167 tests correctivos** (`pytest -k pr700_corrective`).
+Total: **180 tests correctivos** (`pytest -k pr700_corrective`).

@@ -503,7 +503,8 @@ def minimize_1d(
     # o de parada perteneciente a OTRA cuenca (finding A / §6 del brief): `VALID_BRACKET(A)`
     # junto a `STOP_MET(B)` no era prueba de `CONVERGED(B)`. `considered` registra cada
     # bracket efectivamente explorado —el de cada cuenca y el resultado final de cada
-    # expansión— y al terminar se conservan sólo los que contienen al ganador.
+    # expansión— y al terminar se conservan sólo los que contienen al ganador. Dentro de ese
+    # conjunto, además, ambas mitades de la evidencia deben venir del MISMO bracket (bloque 6).
     considered: list[tuple[float, float, float, bool, bool, int]] = []
 
     for b_lo, b_mid, b_hi in basins:
@@ -579,10 +580,30 @@ def minimize_1d(
             considered.append(final)
 
     # ---- 6) evidencia del resultado publicado: sólo los brackets que lo CONTIENEN
+    #
+    # La evidencia debe ser CONJUNTA: un MISMO bracket que contenga al ganador tiene que
+    # aportar el mínimo interior **y** el criterio de parada. Dos `any()` independientes
+    # sobre `containing` permitían `VALID_BRACKET(A) + STOP_MET(B)` con `A != B`: dos
+    # brackets superpuestos que contienen al ganador, cada uno aportando la mitad de la
+    # prueba (residual del finding A, octava ronda). La contención ató la evidencia a los
+    # brackets que contienen al ganador; la asociación conjunta exige además que las dos
+    # mitades vengan del mismo bracket.
+    #
+    # `valid_minimum_bracket` y `stop_criterion_met` se reportan como afirmaciones de
+    # EXISTENCIA —describen qué encontró la búsqueda—; el status es el veredicto conjunto.
     containing = [c for c in considered if c[0] <= best_x <= c[2]]
-    valid_bracket = any(
-        is_valid_minimum_bracket(f, c[0], c[1], c[2], tolerance=cfg.metric_tolerance) for c in containing
-    )
+    # Una sola evaluación de validez por bracket, con corte temprano apenas el MISMO bracket
+    # aporta las dos mitades. Así el conteo de evaluaciones no cambia respecto de la versión
+    # que sólo buscaba la validez: en el caso normal (la cuenca que contiene al ganador
+    # también cumple la parada) se corta en el primer bracket, igual que antes.
+    valid_bracket = False
+    joint_evidence = False
+    for c in containing:
+        if is_valid_minimum_bracket(f, c[0], c[1], c[2], tolerance=cfg.metric_tolerance):
+            valid_bracket = True
+            if c[3]:
+                joint_evidence = True
+                break
     stop_met_any = any(c[3] for c in containing)
     boundary_hit = any(c[4] for c in containing)
     expansions_total = max((c[5] for c in containing), default=0)
@@ -600,7 +621,11 @@ def minimize_1d(
         status, converged = STATUS_BOUNDARY, False
     elif not valid_bracket:
         status, converged = STATUS_NO_VALID_BRACKET, False
-    elif not stop_met_any:
+    elif not joint_evidence:
+        # Hay un bracket válido y hay un bracket que cumple la parada, pero NINGÚN bracket
+        # aporta ambas: el refinamiento que demuestra el mínimo no alcanzó el criterio de
+        # parada. `VALID_BRACKET(A) + STOP_MET(B)` con `A != B` no es convergencia, aunque
+        # ambos brackets contengan al ganador.
         status, converged = STATUS_MAX_ITERATIONS, False
     else:
         status, converged = STATUS_CONVERGED, True
