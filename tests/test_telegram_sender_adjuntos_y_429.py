@@ -35,8 +35,18 @@ from sky_claw.app.comms.telegram_sender import (
     TelegramSender,
     TelegramSendError,
 )
+from sky_claw.app.security import network_gateway as gateway_mod
+from sky_claw.app.security.network_gateway import (
+    EgressPolicy,
+    NetworkGateway,
+    NetworkGatewayTimeoutError,
+)
 
 _TOKEN = "123:ABC"
+
+#: El ``TestServer`` de aiohttp capa el body en 1 MiB por defecto; la política de
+#: #705 admite documentos más grandes, así que los servidores de prueba suben el cap.
+_CLIENT_MAX_SIZE = 64 * 1024 * 1024
 
 
 def _respuesta(status: int, cuerpo: dict[str, Any] | str, headers: dict[str, str] | None = None) -> AsyncMock:
@@ -184,7 +194,7 @@ class _ServidorDeTelegram:
     def __init__(self) -> None:
         self.recibidos: list[dict[str, Any]] = []
         self.ruta: str | None = None
-        app = web.Application()
+        app = web.Application(client_max_size=_CLIENT_MAX_SIZE)
         app.router.add_post("/bot{token}/sendDocument", self._send_document)
         self.server = TestServer(app)
 
@@ -336,3 +346,239 @@ class TestSendDocument:
         await sender.send_document(456, b"y", "b.txt")
 
         assert len(dormidos) == 1, "el segundo adjunto debe esperar el slot del rate limit local"
+
+
+# ---------------------------------------------------------------------------
+# #705 — política de tamaño operativo
+# ---------------------------------------------------------------------------
+
+
+class TestPoliticaDeTamanoOperativo:
+    """El máximo publicado debe ser TRANSMISIBLE dentro del deadline del gateway.
+
+    Defecto de #705: ``MAX_DOCUMENT_BYTES = 45 MiB`` exige ≈1 MiB/s sostenido para
+    entrar en los 45 s por defecto del :class:`NetworkGateway`. El contrato era
+    internamente inconsistente. El máximo ahora se DERIVA de un presupuesto de
+    subida y de un throughput mínimo asumido, y queda muy por debajo del tope de
+    la Bot API (50 MB), que sigue siendo el límite del protocolo, no el nuestro.
+    """
+
+    def test_el_maximo_operativo_se_deriva_del_presupuesto_y_el_throughput(self) -> None:
+        esperado = int(sender_mod.UPLOAD_TRANSFER_BUDGET_SECONDS * sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND)
+        assert esperado == sender_mod.MAX_DOCUMENT_BYTES, "el máximo debe ser un número DERIVADO, no mágico"
+
+    def test_el_maximo_operativo_es_menor_que_el_de_la_bot_api(self) -> None:
+        assert sender_mod.MAX_DOCUMENT_BYTES < sender_mod.TELEGRAM_BOT_API_MAX_DOCUMENT_BYTES
+
+    def test_el_presupuesto_de_subida_entra_en_el_deadline_del_gateway(self) -> None:
+        # Consistencia cross-módulo: si el gateway cambiara su deadline por defecto
+        # sin revisar la política de subida, esta ancla rompe. El margen debe ser
+        # ESTRICTAMENTE positivo (presupuesto < deadline).
+        assert sender_mod.UPLOAD_TRANSFER_BUDGET_SECONDS < sender_mod.UPLOAD_DEADLINE_SECONDS
+        assert gateway_mod.DEFAULT_REQUEST_TIMEOUT.total == sender_mod.UPLOAD_DEADLINE_SECONDS
+
+    def test_el_peor_caso_total_de_una_subida_esta_acotado(self) -> None:
+        # La política debe acotar el ACUMULADO, no sólo cada petición: intentos ×
+        # deadline por intento + Σ esperas de retry_after.
+        intentos = sender_mod._MAX_REINTENTOS_429 + 1
+        esperado = intentos * sender_mod.UPLOAD_DEADLINE_SECONDS + sender_mod._MAX_REINTENTOS_429 * (
+            sender_mod._RETRY_AFTER_MAX_SEGUNDOS
+        )
+        assert esperado == sender_mod.MAX_UPLOAD_TOTAL_SECONDS
+
+    async def test_rechaza_un_byte_por_encima_del_maximo_sin_tocar_la_red(self) -> None:
+        sender, gateway = _sender()
+
+        with pytest.raises(ValueError, match="excede"):
+            await sender.send_document(456, b"x" * (sender_mod.MAX_DOCUMENT_BYTES + 1), "a.txt")
+
+        gateway.request.assert_not_called()
+
+    async def test_rechaza_el_tamano_antiguo_de_45_mib_antes_de_la_red(self) -> None:
+        # El límite previo (45 MiB) ya NO es aceptable: exigía ≈1 MiB/s para entrar
+        # en el deadline. El rechazo ocurre antes de tocar la red (error del caller).
+        sender, gateway = _sender()
+
+        with pytest.raises(ValueError, match="excede"):
+            await sender.send_document(456, b"x" * (45 * 1024 * 1024), "a.txt")
+
+        gateway.request.assert_not_called()
+
+    async def test_acepta_exactamente_el_maximo_operativo(self, servidor: _ServidorDeTelegram) -> None:
+        sender, sesion = await _sender_contra(servidor)
+        contenido = b"x" * sender_mod.MAX_DOCUMENT_BYTES
+        try:
+            resultado = await sender.send_document(456, contenido, "log.txt")
+        finally:
+            await sesion.close()
+
+        assert resultado == TelegramMessage(chat_id=456, message_id=99)
+        assert servidor.recibidos[-1]["contenido"] == contenido, "el borde superior debe transmitirse entero"
+
+    async def test_send_document_egresa_por_el_gateway(self) -> None:
+        # No hay ruta alternativa: el adjunto pasa por gateway.request (allow-list,
+        # método autorizado, timeout) como el resto del egress.
+        sender, gateway = _sender(_ok())
+
+        await sender.send_document(456, b"x", "a.txt")
+
+        args, _kwargs = gateway.request.await_args
+        assert args[0] == "POST"
+        assert args[1].startswith("https://api.telegram.org/bot")
+        assert args[1].endswith("/sendDocument")
+
+    async def test_la_respuesta_se_libera_con_el_context_manager(self) -> None:
+        # ``async with resp`` es lo que devuelve la conexión al pool. Si el bloque
+        # deja de usarlo (p. ej. se cambia por un ``if``), la respuesta queda
+        # retenida y el pool se agota bajo carga.
+        resp = _ok()
+        sender, _gateway = _sender(resp)
+
+        await sender.send_document(456, b"x", "a.txt")
+
+        resp.__aexit__.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# #705 — deadline de subida sobre un enlace lento
+# ---------------------------------------------------------------------------
+
+
+class _ServidorConEnlaceLento:
+    """Servidor local cuyo consumo del body simula un enlace de salida.
+
+    ``bytes_por_segundo <= 0`` ⇒ enlace detenido: el handler nunca responde, así
+    que la petición queda colgada hasta que el deadline del gateway la corta. Un
+    valor positivo ⇒ el handler lee a esa tasa (la subida tarda ``size / rate``).
+    """
+
+    def __init__(self, bytes_por_segundo: float) -> None:
+        self.rate = bytes_por_segundo
+        self.leido = 0
+        self.recibido = asyncio.Event()
+        app = web.Application(client_max_size=_CLIENT_MAX_SIZE)
+        app.router.add_post("/bot{token}/sendDocument", self._handler)
+        self.server = TestServer(app)
+
+    async def _handler(self, request: web.Request) -> web.Response:
+        self.recibido.set()
+        if self.rate <= 0:
+            await asyncio.Event().wait()  # enlace que dejó de avanzar
+        total = 0
+        while True:
+            trozo = await request.content.read(16 * 1024)
+            if not trozo:
+                break
+            total += len(trozo)
+            await asyncio.sleep(len(trozo) / self.rate)
+        self.leido = total
+        return web.json_response({"ok": True, "result": {"message_id": 42}})
+
+
+@pytest.fixture
+async def enlace() -> Any:
+    """Fábrica de servidores de enlace lento; cierra todos al terminar el test."""
+    servidores: list[_ServidorConEnlaceLento] = []
+
+    async def _crear(bytes_por_segundo: float) -> _ServidorConEnlaceLento:
+        servidor = _ServidorConEnlaceLento(bytes_por_segundo)
+        await servidor.server.start_server()
+        servidores.append(servidor)
+        return servidor
+
+    try:
+        yield _crear
+    finally:
+        for servidor in servidores:
+            await servidor.server.close()
+
+
+def _gateway_loopback() -> NetworkGateway:
+    """Gateway REAL con política que autoriza el servidor local (loopback)."""
+    policy = EgressPolicy(
+        allowed_hosts=frozenset(["127.0.0.1"]),
+        allowed_methods={"127.0.0.1": frozenset(["POST"])},
+        block_private_ips=False,
+    )
+    return NetworkGateway(policy)
+
+
+def _sender_con_gateway_real(servidor: _ServidorConEnlaceLento) -> tuple[TelegramSender, aiohttp.ClientSession]:
+    """Sender cuyo egreso pasa por el NetworkGateway REAL hacia el servidor local."""
+    sesion = aiohttp.ClientSession()
+    sender = TelegramSender(bot_token=_TOKEN, gateway=_gateway_loopback(), session=sesion)
+    sender._url = str(servidor.server.make_url(f"/bot{_TOKEN}/"))
+    return sender, sesion
+
+
+class TestDeadlineDeSubida:
+    """El deadline del gateway debe cortar una subida trabada, de forma observable.
+
+    Se inyecta un deadline CORTO en el gateway en vez de esperar 45 s reales: la
+    autoridad del corte es el deadline, no un ``sleep`` del test.
+    """
+
+    async def test_una_subida_que_deja_de_avanzar_se_corta_en_el_deadline(
+        self, enlace: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=0.25, connect=0.2))
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            with pytest.raises(NetworkGatewayTimeoutError):
+                await sender.send_document(456, b"x" * 4096, "log.txt")
+        finally:
+            await sesion.close()
+
+    async def test_el_timeout_no_se_convierte_en_un_exito(self, enlace: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Nunca debe devolverse un TelegramMessage si Telegram no confirmó nada.
+        monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=0.25, connect=0.2))
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            with pytest.raises(NetworkGatewayTimeoutError):
+                await sender.send_document(456, b"x" * 4096, "log.txt")
+        finally:
+            await sesion.close()
+
+    async def test_una_subida_lenta_pero_dentro_del_deadline_completa(
+        self, enlace: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=5.0, connect=1.0))
+        # 128 KiB a 512 KiB/s ⇒ ~0.25 s de transferencia, holgadamente bajo el deadline.
+        servidor = await enlace(512 * 1024)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        contenido = b"x" * (128 * 1024)
+        try:
+            resultado = await sender.send_document(456, contenido, "log.txt")
+        finally:
+            await sesion.close()
+
+        assert resultado == TelegramMessage(chat_id=456, message_id=42)
+        # El servidor lee el body multipart COMPLETO (payload + framing), por eso
+        # se compara por cota inferior: el payload tiene que llegar entero.
+        assert servidor.leido >= len(contenido)
+
+    async def test_la_cancelacion_durante_una_subida_se_propaga(self, enlace: Any) -> None:
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            tarea = asyncio.create_task(sender.send_document(456, b"x" * 4096, "log.txt"))
+            await asyncio.wait_for(servidor.recibido.wait(), timeout=5)
+            tarea.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+        finally:
+            await sesion.close()
+
+    async def test_el_timeout_libera_la_conexion_del_pool(self, enlace: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=0.25, connect=0.2))
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            with pytest.raises(NetworkGatewayTimeoutError):
+                await sender.send_document(456, b"x" * 4096, "log.txt")
+            await asyncio.sleep(0)
+            assert not sesion.connector._acquired, "la conexión abortada debe volver al pool, no quedar retenida"
+        finally:
+            await sesion.close()

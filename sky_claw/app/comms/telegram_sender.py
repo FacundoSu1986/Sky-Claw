@@ -5,12 +5,17 @@ Sends responses back to Telegram chats with per-chat rate limiting
 Also attaches files (:meth:`TelegramSender.send_document`) and honours the Bot
 API flood-control (HTTP 429 + ``retry_after``) with a bounded retry.
 All outbound traffic goes through :class:`NetworkGateway`.
+
+La subida de documentos sigue una política acotada: un máximo operativo derivado
+(:data:`MAX_DOCUMENT_BYTES`) consistente con el deadline del gateway, y una cota
+total de duración (:data:`MAX_UPLOAD_TOTAL_SECONDS`) que incluye los reintentos.
 """
 
 from __future__ import annotations
 
 import asyncio
 import collections
+import io
 import json
 import logging
 import math
@@ -21,6 +26,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
+
+from sky_claw.app.security.network_gateway import DEFAULT_REQUEST_TIMEOUT
 
 if TYPE_CHECKING:
     from sky_claw.app.security.network_gateway import NetworkGateway
@@ -34,10 +41,34 @@ MAX_MESSAGES_PER_MINUTE = 20
 #: Límite de ``caption`` de la Bot API (1024 caracteres tras el parseo).
 MAX_CAPTION_LENGTH = 1024
 
-#: Tope de ``send_document``. La Bot API admite 50 MB para bots; se deja margen
-#: porque el multipart agrega sus propios bytes de framing. Un log de DynDOLOD
-#: pesa decenas de MB en el peor caso y el caller adjunta su COLA, no el archivo.
-MAX_DOCUMENT_BYTES = 45 * 1024 * 1024
+#: Tope de ``send_document`` según la Bot API (50 MB para bots). Es el límite del
+#: PROTOCOLO, no el de Sky-Claw: el multipart agrega bytes de framing y, sobre todo,
+#: el :class:`NetworkGateway` corta la subida en su deadline. Ver
+#: :data:`MAX_DOCUMENT_BYTES`.
+TELEGRAM_BOT_API_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+
+#: Deadline por hop que el :class:`NetworkGateway` aplica cuando el caller no fija
+#: uno. La política de subida lo toma como TECHO: un documento que no entre en este
+#: presupuesto se corta con ``NetworkGatewayTimeoutError``.
+UPLOAD_DEADLINE_SECONDS = float(DEFAULT_REQUEST_TIMEOUT.total or 0.0)
+
+#: Margen dentro del deadline reservado para handshake TLS, cabeceras multipart y
+#: lectura de la respuesta. Lo que queda es presupuesto de transferencia de bytes.
+UPLOAD_SETUP_MARGIN_SECONDS = 5.0
+
+#: Presupuesto efectivo de transferencia de bytes de una subida.
+UPLOAD_TRANSFER_BUDGET_SECONDS = UPLOAD_DEADLINE_SECONDS - UPLOAD_SETUP_MARGIN_SECONDS
+
+#: Throughput mínimo que la política asume para un enlace de salida (~2 Mbit/s).
+#: Por debajo de esto la subida NO está garantizada: el gateway la corta.
+MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND = 256 * 1024
+
+#: Máximo operativo de ``send_document``. DERIVADO del presupuesto de subida y del
+#: throughput mínimo asumido — no un número mágico — para que el límite publicado
+#: sea consistente con el deadline del gateway (defecto de #705: 45 MiB exigían
+#: ≈1 MiB/s sostenido y el contrato era internamente inconsistente). Queda muy por
+#: debajo del tope de la Bot API. El caller adjunta la COLA del log, no el archivo.
+MAX_DOCUMENT_BYTES = int(UPLOAD_TRANSFER_BUDGET_SECONDS * MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND)
 
 #: Reintentos tras un 429 (además del intento inicial). Acotado a propósito: un
 #: aviso de fallo que no entra tras ``1 + N`` intentos se reporta, no se encola
@@ -50,6 +81,13 @@ _RETRY_AFTER_MAX_SEGUNDOS = 30.0
 
 #: Espera cuando Telegram responde 429 sin ``retry_after`` legible.
 _RETRY_AFTER_POR_DEFECTO = 1.0
+
+#: Peor caso acumulado de una subida: (1 + reintentos) × deadline por intento +
+#: Σ esperas de ``retry_after``. Cota EXPLÍCITA de la política, no sólo por
+#: petición: un aviso de fallo no puede bloquear al caller más allá de esto.
+MAX_UPLOAD_TOTAL_SECONDS = (1 + _MAX_REINTENTOS_429) * UPLOAD_DEADLINE_SECONDS + (
+    _MAX_REINTENTOS_429 * _RETRY_AFTER_MAX_SEGUNDOS
+)
 
 _NOMBRE_DE_ARCHIVO_MAX = 100
 _NOMBRE_DE_ARCHIVO_INVALIDO = re.compile(r"[^A-Za-z0-9._ -]")
@@ -220,6 +258,20 @@ class TelegramSender:
         ``<Error: ...>`` y el modo HTML de Telegram las rechazaría. El egreso pasa
         por :class:`NetworkGateway` igual que el resto del transporte.
 
+        Política de tamaño y deadline: ``data`` no puede superar
+        :data:`MAX_DOCUMENT_BYTES` (el máximo OPERATIVO de Sky-Claw, muy por debajo
+        del tope de la Bot API). Ese máximo se deriva de
+        :data:`UPLOAD_TRANSFER_BUDGET_SECONDS` y
+        :data:`MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND`, de modo que un documento
+        admitido entra en el deadline del gateway en cualquier enlace por encima de
+        ese throughput mínimo. Un enlace más lento hace que el gateway corte la
+        subida con ``NetworkGatewayTimeoutError`` — un fallo observable, nunca un
+        éxito fabricado.
+
+        El documento se envía como ``BytesIO`` (leído por trozos): un body grande
+        no bloquea el event loop y la cancelación externa se procesa durante la
+        subida. El costo es una copia transitoria del buffer (≤ 2× el documento).
+
         Raises:
             ValueError: ``data`` vacío o por encima de :data:`MAX_DOCUMENT_BYTES`
                 (error del caller, se detecta antes de tocar la red).
@@ -236,11 +288,16 @@ class TelegramSender:
 
         def _formulario() -> dict[str, Any]:
             # ``FormData`` es de UN solo uso: tras un 429 el reintento arma uno nuevo.
+            # El documento viaja como ``BytesIO``, NO como ``bytes`` crudos: aiohttp
+            # marca un body >1 MB en bytes con un ``ResourceWarning`` ("might lock the
+            # event loop"), que la política de tests del repo eleva a error, y es la
+            # forma que aiohttp recomienda para cuerpos grandes. ``BytesIO`` se lee
+            # por trozos (mejor para la cancelación) y es reconstruible por intento.
             form = aiohttp.FormData()
             form.add_field("chat_id", str(chat_id))
             if texto:
                 form.add_field("caption", texto)
-            form.add_field("document", data, filename=nombre, content_type="text/plain")
+            form.add_field("document", io.BytesIO(data), filename=nombre, content_type="text/plain")
             return {"data": form}
 
         await self._wait_for_rate_limit(chat_id)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import re
 import socket
 import ssl
@@ -40,6 +41,52 @@ class EgressViolationError(Exception):
 
 class NetworkGatewayTimeoutError(Exception):
     """Raised when an egress request exceeds the safe timeout bounds."""
+
+
+#: Timeout por hop aplicado cuando el caller NO fija uno. Acota el cuelgue de
+#: cualquier egress — incluido un upload multipart — de forma finita y predecible.
+DEFAULT_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=10)
+
+#: Techo absoluto de duración para CUALQUIER hop. El caller puede pedir un deadline
+#: MÁS CORTO, nunca uno mayor ni infinito: el gateway selecciona el máximo. Se fija
+#: por encima del deadline legítimo más largo del repo (descarga de Nexus, 600 s)
+#: para no acotar por debajo a un caller real.
+MAX_REQUEST_TIMEOUT_SECONDS = 600.0
+
+
+def _acotar_timeout(timeout: Any) -> aiohttp.ClientTimeout:
+    """Devuelve un ``ClientTimeout`` finito y acotado al techo del gateway.
+
+    Cierra el bypass de la política: un caller NO puede convertir el límite seguro
+    en una espera infinita.
+
+    - ``None`` (kwarg ausente o ``timeout=None`` explícito) ⇒ el default seguro;
+      ``None`` NUNCA significa "sin deadline".
+    - Un valor que no sea ``aiohttp.ClientTimeout`` ⇒ rechazado.
+    - Campos no finitos (``inf``/``nan``), nulos o no positivos ⇒ rechazados.
+    - Un valor por encima de :data:`MAX_REQUEST_TIMEOUT_SECONDS` ⇒ acotado.
+    """
+    if timeout is None:
+        return DEFAULT_REQUEST_TIMEOUT
+    if not isinstance(timeout, aiohttp.ClientTimeout):
+        raise EgressViolationError(f"timeout must be an aiohttp.ClientTimeout, got {type(timeout).__name__}")
+
+    def _campo(valor: float | None, nombre: str) -> float | None:
+        if valor is None:
+            return None
+        if not math.isfinite(valor) or valor <= 0:
+            raise EgressViolationError(f"timeout.{nombre}={valor!r} must be a finite positive number")
+        return min(valor, MAX_REQUEST_TIMEOUT_SECONDS)
+
+    total = _campo(timeout.total, "total")
+    if total is None:
+        raise EgressViolationError("timeout.total must be finite: an unbounded deadline is not allowed")
+    return aiohttp.ClientTimeout(
+        total=total,
+        connect=_campo(timeout.connect, "connect"),
+        sock_read=_campo(timeout.sock_read, "sock_read"),
+        sock_connect=_campo(timeout.sock_connect, "sock_connect"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +350,10 @@ class NetworkGateway:
                 The *initial* URL is always fully authorized regardless.
         """
         kwargs["allow_redirects"] = False
+        # La política de timeout la SELECCIONA el gateway: se valida/acota una sola
+        # vez y el resultado viaja a cada hop. Un ``timeout`` inválido o infinito se
+        # rechaza acá, antes de cualquier llamada de red.
+        kwargs["timeout"] = _acotar_timeout(kwargs.get("timeout"))
 
         try:
             original_host = (urlparse(url).hostname or "").lower()
@@ -340,9 +391,6 @@ class NetworkGateway:
             is_loopback = self._is_loopback_host(parsed.hostname or "")
 
             hop_kwargs = dict(kwargs)
-            safe_timeout = aiohttp.ClientTimeout(total=45, connect=10)
-            if "timeout" not in hop_kwargs:
-                hop_kwargs["timeout"] = safe_timeout
             if is_loopback and parsed.scheme == "http":
                 hop_kwargs["ssl"] = False
             # Zero-Trust: un redirect a OTRO host no debe arrastrar las credenciales

@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 
+from sky_claw.app.security import network_gateway
 from sky_claw.app.security.network_gateway import (
     EgressPolicy,
     EgressViolationError,
     NetworkGateway,
 )
-from sky_claw.config import GITHUB_RELEASE_ASSET_REDIRECT_HOSTS
+from sky_claw.config import GITHUB_RELEASE_ASSET_REDIRECT_HOSTS, NEXUS_DOWNLOAD_TIMEOUT_SECONDS
 
 
 class _GatewayResponse:
@@ -666,3 +668,125 @@ class TestMatchingPattern:
         gw = self.make_gateway(["localhost"])
         assert gw._matching_pattern("localhost") is not None
         assert gw._matching_pattern("not-localhost") is None
+
+
+# ------------------------------------------------------------------
+# #705 — política de timeout: el caller no puede eludir los límites
+# ------------------------------------------------------------------
+
+
+class TestTimeoutPolicy:
+    """El gateway acota el ``timeout`` inyectado por el caller.
+
+    Defecto de #705: ``request()`` respetaba un ``timeout`` del caller sin más, y
+    ``timeout=None`` desactivaba por completo el deadline (espera infinita). El
+    gateway ahora SELECCIONA el máximo: default finito cuando no hay timeout,
+    rechazo de valores inválidos/infinitos, y acotado al techo cuando se lo supera.
+    """
+
+    def _session(self) -> MagicMock:
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(return_value=_GatewayResponse(200))
+        return session
+
+    @staticmethod
+    def _timeout_pasado(session: MagicMock) -> aiohttp.ClientTimeout:
+        return session.request.await_args.kwargs["timeout"]
+
+    def test_el_default_del_gateway_es_finito_y_positivo(self) -> None:
+        total = network_gateway.DEFAULT_REQUEST_TIMEOUT.total
+        assert total is not None and total > 0
+
+    @pytest.mark.asyncio
+    async def test_sin_timeout_del_caller_se_aplica_el_default_finito(self, gw: NetworkGateway) -> None:
+        session = self._session()
+
+        await gw.request("GET", "https://www.nexusmods.com/mods", session)
+
+        assert self._timeout_pasado(session).total == network_gateway.DEFAULT_REQUEST_TIMEOUT.total
+
+    @pytest.mark.asyncio
+    async def test_timeout_none_no_desactiva_el_deadline(self, gw: NetworkGateway) -> None:
+        """``timeout=None`` NO puede significar "sin deadline": es el bypass clásico."""
+        session = self._session()
+
+        await gw.request("GET", "https://www.nexusmods.com/mods", session, timeout=None)
+
+        assert self._timeout_pasado(session).total == network_gateway.DEFAULT_REQUEST_TIMEOUT.total
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_que_no_es_clienttimeout_se_rechaza(self, gw: NetworkGateway) -> None:
+        session = self._session()
+
+        with pytest.raises(EgressViolationError, match="ClientTimeout"):
+            await gw.request("GET", "https://www.nexusmods.com/mods", session, timeout=5)
+
+        session.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("total", [None, float("inf"), float("nan"), 0, -1])
+    async def test_un_total_no_finito_o_no_positivo_se_rechaza(self, gw: NetworkGateway, total: Any) -> None:
+        session = self._session()
+
+        with pytest.raises(EgressViolationError):
+            await gw.request(
+                "GET",
+                "https://www.nexusmods.com/mods",
+                session,
+                timeout=aiohttp.ClientTimeout(total=total),
+            )
+
+        session.request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_por_encima_del_techo_se_acota(self, gw: NetworkGateway) -> None:
+        session = self._session()
+
+        await gw.request(
+            "GET",
+            "https://www.nexusmods.com/mods",
+            session,
+            timeout=aiohttp.ClientTimeout(total=999_999),
+        )
+
+        assert self._timeout_pasado(session).total == network_gateway.MAX_REQUEST_TIMEOUT_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_un_timeout_legitimo_bajo_el_techo_se_preserva(self, gw: NetworkGateway) -> None:
+        session = self._session()
+
+        await gw.request("GET", "https://www.nexusmods.com/mods", session, timeout=aiohttp.ClientTimeout(total=30))
+
+        assert self._timeout_pasado(session).total == 30
+
+    @pytest.mark.asyncio
+    async def test_el_techo_no_rompe_el_timeout_legitimo_de_nexus(self, gw: NetworkGateway) -> None:
+        """El techo debe admitir el deadline real del descargador de Nexus (600 s):
+        acotarlo por debajo sería una regresión sobre un caller legítimo."""
+        session = self._session()
+
+        await gw.request(
+            "GET",
+            "https://www.nexusmods.com/mods",
+            session,
+            timeout=aiohttp.ClientTimeout(total=NEXUS_DOWNLOAD_TIMEOUT_SECONDS),
+        )
+
+        assert self._timeout_pasado(session).total == NEXUS_DOWNLOAD_TIMEOUT_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_el_timeout_validado_se_aplica_en_cada_hop_del_redirect(self, gw: NetworkGateway) -> None:
+        asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[_GatewayResponse(302, {"Location": cdn_url}), _GatewayResponse(200)])
+
+        await gw.request(
+            "GET",
+            asset_url,
+            session,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+            timeout=aiohttp.ClientTimeout(total=30),
+        )
+
+        assert [call.kwargs["timeout"].total for call in session.request.await_args_list] == [30, 30]
