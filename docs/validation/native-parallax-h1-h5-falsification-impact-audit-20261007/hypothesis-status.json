@@ -1,0 +1,157 @@
+{
+ "artifact": "native-parallax-h1-h5-hypothesis-status",
+ "base_sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "audit_only": true,
+ "external_audit_commit": "dcc6551ef5afb2dfcab1b8662d1eafedc8b7d133",
+ "note": "El audit externo se trató como HIPÓTESIS, no como verdad: H1/H3/H4/H5 se reprodujeron independientemente y H2 se resolvió formalmente.",
+ "hypotheses": {
+  "H1": {
+   "claim": "El oráculo de strength busca en una rejilla lineal finita; un par height↔normal perfectamente coherente reporta disagreement ≠ 0 sólo porque la strength verdadera no está en la rejilla.",
+   "H1_IMPLEMENTATION_DEFECT": "CONFIRMED",
+   "evidence_synthetic": {
+    "max_grid_angle_deg": 61.95151561312576,
+    "max_continuous_angle_deg": 8.537736462515939e-07,
+    "oracle_replica_max_abs_diff_deg": 0.0,
+    "closed_form_recovers_true_strength": 1.1102230246251565e-16
+   },
+   "evidence_real": {
+    "n_assets": 31,
+    "n_best_strength_at_grid_floor": 31,
+    "n_continuous_strength_below_floor": 27,
+    "grid_median_agreement_deg": 10.708549536549764,
+    "continuous_median_agreement_deg": 1.6832395078839522,
+    "grid_spearman": 0.1350806451612903,
+    "continuous_spearman": 0.4798387096774194
+   },
+   "H1_M3_COHORT_B_MEMBERSHIP_CHANGED": "NOT_COMPUTABLE (corpus EXP-M2 ausente)",
+   "H1_M3_FINAL_DECISION_PATH_REACHED": "NO",
+   "H1_M4_COHERENCE_DIAGNOSTIC_CHANGED": "YES",
+   "H1_M4_C1_C2_PATH_REACHED": "NO",
+   "H1_M3_PRIMARY_IMPACT": "NONE",
+   "H1_M4_PRIMARY_IMPACT": "NONE",
+   "blast_radius": [
+    "M3 Cohort B: filtro de pertenencia con el oráculo (load_cohort_b) — cohorte etiquetada EVALUATION_DIAGNOSTIC_ONLY; NO entra en decide_exp_m3",
+    "M3 Cohort A: oracle_agreement_deg se GRABA por fila pero no alimenta build_cohort_a_summary / trust_gate_passes / decide_exp_m3",
+    "M4: coherence_agreement_deg → coherence_diagnostic (§5) — docstring propio: 'NO es trust proxy ni criterio de exclusión'",
+    "M4 C1/C2: evaluate_rules usa self_rmse/abs_corr/var/delta_rmse — no toca el oráculo"
+   ]
+  },
+  "H2": {
+   "claim": "El solver asume x=j/W, y=i/H (tile cuadrado físico); un normal map real codifica pendiente por texel isotrópico, así que en texturas no cuadradas la proyección L2 queda sesgada anisotrópicamente.",
+   "H2_NUMERICAL_OBSERVATION": "REPRODUCED",
+   "H2_BUG_CLASSIFICATION": "NOT_PROVEN",
+   "H2_UNIT_CONTRACT": "UV_NORMALIZED",
+   "evidence": {
+    "circularity_probe": {
+     "64x128": {
+      "audit_claim_reproduced": true,
+      "opposite_result_under_other_contract": true
+     },
+     "128x64": {
+      "audit_claim_reproduced": true,
+      "opposite_result_under_other_contract": true
+     },
+     "96x160": {
+      "audit_claim_reproduced": true,
+      "opposite_result_under_other_contract": true
+     },
+     "63x65": {
+      "audit_claim_reproduced": false,
+      "opposite_result_under_other_contract": false
+     },
+     "128x128": {
+      "audit_claim_reproduced": false,
+      "opposite_result_under_other_contract": false
+     }
+    },
+    "square_identity_abs_diff": 0.0,
+    "implemented_contract_sources": [
+     "normal_fft_periodic.freq_axes: wx = 2π·fftfreq(W)·W (rad por unidad de x)",
+     "normal_fft_periodic docstring: x=j/W, y=i/H — coordenadas de textura, NO índices de muestra",
+     "tests/test_native_parallax_math_spike.py::test_frecuencias_en_espacio_de_textura (grid NO cuadrado 8x16, wx[0,1]=2π y wy[1,0]=2π)",
+     "docs/design/research/native-parallax/np-m0-results.md §5 (2π·fftfreq = rad/muestra vs rad/unidad de textura)"
+    ],
+    "corpus_relevance": {
+     "m3_cohort_a": "31/31 assets 1024x1024 (CUADRADOS) → v1 ≡ v2 exactamente",
+     "m2_manifest": "3/34 no cuadrados (Concrete035 2048x1024, WoodFloor043 2048x1024, PavingStones054 1365x2048) pero load_asset los reescala a 512² ANTES del solver"
+    }
+   },
+   "why_not_proven": "El sintético rectangular sólo demuestra que cada contrato reconstruye mejor el sintético construido BAJO ESE contrato (se verificó la simetría exacta: bajo UV_NORMALIZED el resultado se invierte). El repo NO declara en ningún manifest, test o doc que los normal maps del corpus sean de texel isótropo; el único contrato declarado y congelado por test es UV_NORMALIZED. Sin esa premisa independiente, la clasificación es NOT_PROVEN, no CONFIRMED.",
+   "H2_IMPACT_ON_M4_M5": "NONE (corpus 100% cuadrado; el efecto sólo existe para W≠H)"
+  },
+  "H3": {
+   "claim": "El techo SELF-Q8 depende de la escala de pendiente c; c=1 sería mucho más empinada que un normal authored típico, así que la conclusión de M4 sobre Q8 valdría sólo para ese régimen.",
+   "H3_MECHANISM": "CONFIRMED",
+   "H3_CONTRACTUAL_MEANINGFULNESS": "SUPPORTED",
+   "H3_REAL_CORPUS_IMPACT": "NOT_DECISION_CHANGING (dirección CONSERVADORA)",
+   "evidence_synthetic": {
+    "max_rmse_ratio_across_cases": 4339.342775708558,
+    "c_values": [
+     1.0,
+     0.3,
+     0.1,
+     0.03,
+     0.01,
+     0.003
+    ],
+    "self_float_aligned_rmse_machine_eps": true
+   },
+   "evidence_real": {
+    "continuous_best_strength_median_abs": 0.016,
+    "n_continuous_strength_below_grid_floor": 27,
+    "m4_self_q8_rmse_median_historical": 0.0037464634293201122,
+    "m4_delta_rmse_median_historical": 0.03529285034519526
+   },
+   "reasoning": "c=1 SÍ es el contrato: SELF se deriva del height almacenado sin reescalar y los umbrales T_SELF_RMSE=0.10 / T_DELTA_RMSE=0.02 se calibraron en el mismo régimen (NP-M0 §E1). El contrafactual real muestra que el AUTH del corpus vive a |s*|≈0.005–0.05, es decir 20–200× más plano que c=1. En esa dirección el SELF-Q8 de c=1 SOBREESTIMA el error de cuantización ⇒ self_rmse inflado ⇒ delta_rmse DEFLACTADO ⇒ C2 se vuelve MÁS difícil de pasar. El resultado real (C1∧C2 verdaderos con margen amplio) es por lo tanto conservador."
+  },
+  "H4": {
+   "claim": "resize_normal re-cuantiza a uint8 con truncado y vuelve a cuantizar en el resize de Pillow modo L; es el hermano que el fix #653 dejó intacto.",
+   "H4_IMPLEMENTATION_DEFECT": "CONFIRMED",
+   "evidence_synthetic": {
+    "flat_normal_nx_bias_old": -0.003921508320212736,
+    "flat_normal_nx_bias_new": 0.0,
+    "max_downstream_delta_rmse_probe": 0.016171353038210115,
+    "max_normal_rmse_old_vs_new_probe": 0.017548730447945086,
+    "max_downstream_ratio_probe": 1.2010263966054606,
+    "t_delta_rmse": 0.02
+   },
+   "evidence_real": {
+    "m4_decision_old": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+    "m4_decision_new": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+    "m4_decision_changed": false,
+    "m4_delta_rmse_median_old": 0.03506316332557898,
+    "m4_delta_rmse_median_new": 0.03508353888983565,
+    "m4_auth_rmse_max_abs_change": 0.03542548369295237,
+    "m4_auth_rmse_change_median": 8.067e-05,
+    "m4_auth_rmse_change_p90": 0.0004954,
+    "n_assets_change_gt_0_01": 1,
+    "m5_C1_old": false,
+    "m5_C1_new": false,
+    "m5_excess_lowmid_median_old": 0.5082023969791158,
+    "m5_excess_lowmid_median_new": 0.44681982459763225,
+    "m5_high_enrichment_median_old": 0.7541691251882152,
+    "m5_high_enrichment_median_new": 0.8034395020006374
+   },
+   "H4_M4_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+   "H4_M5_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+   "reasoning": "Defecto de implementación REAL (sesgo de −0.5 LSB: la normal (0,0,1) sale con nx=−0.00392; truncado por astype(uint8); re-cuantización en el resize modo L). Pero con UNA sola variable cambiada: la decisión de M4 y sus reglas C1/C2 quedan idénticas, la mediana de delta_rmse se mueve 2.0e-5 y el cambio por asset es 8.1e-5 (mediana) / 5.0e-4 (p90) / 3.5e-2 (máximo, 1 asset de 31). En M5, C1 y los dos componentes evaluables de C2 no cambian: los valores quedan lejos de los umbrales en AMBOS brazos (excess_lowmid 0.51→0.45 vs T=0.10; high_enrichment 0.75→0.80 vs T=2.0). Numérico, no decisional."
+  },
+  "H5": {
+   "claim": "fd_forward deriva por muestra y el solver por unidad UV; el control FD-Q8 mide un cambio de régimen de cuantización, no la discretización FD.",
+   "H5_DIAGNOSTIC_DEFECT": "CONFIRMED",
+   "H5_PRIMARY_M4_BLOCKER": "NO",
+   "evidence_synthetic": {
+    "float_ratio_max": 1.000000000000007,
+    "q8_ratio_max": 5.936098305521232,
+    "q8_ratio_range": "0.063–5.94 (signo inconsistente entre casos)"
+   },
+   "evidence_call_site": {
+    "usage": "run_exp_m4.py:163,381 — sólo report['summary']['secondary']['fd_q8_diagnostic'] = path_medians('fd_q8', rows)",
+    "enters_C1_C2": false,
+    "enters_decision": false,
+    "docstring": "fd_forward: 'NUNCA reemplaza al par matched como primario: mide el mismatch FD↔espectral del mismo contenido'"
+   },
+   "reasoning": "El defecto de unidades es real (fd_forward usa (roll diff)/2 = derivada por índice de muestra; freq_axes usa rad por unidad UV). Pero en float el factor constante es absorbido EXACTAMENTE por el fit afín global (ratio 1.000000000000007), así que el control no mide unidades en el régimen float: en Q8 el ratio se dispersa 0.063–5.94. Es un diagnóstico secundario, no alcanza C1/C2 ni la decisión de M4, y M5 no usa fd_forward."
+  }
+ }
+}
