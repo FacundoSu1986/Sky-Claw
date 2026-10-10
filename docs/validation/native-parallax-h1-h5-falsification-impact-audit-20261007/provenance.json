@@ -1,0 +1,53 @@
+{
+ "artifact": "native-parallax-h1-h5-falsification-impact-audit",
+ "date_utc": "2026-10-07",
+ "scope": "AUDIT_ONLY",
+ "base_sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "branch": "research/native-parallax-h1-h5-falsification-impact-audit",
+ "worktree": "E:\\SkyClaw_H1H5_AUDIT_97dcc7ab",
+ "external_audit": {
+  "commit": "dcc6551ef5afb2dfcab1b8662d1eafedc8b7d133",
+  "path": "docs/audits/2026-10-07_native_parallax_math_architecture_audit.md",
+  "blob_sha256": "ce647d7a75e3f524c4898d045b8855f66779782829de9e881811abf633b85ff2",
+  "treatment": "HIPOTESIS — leído con git show, sin cherry-pick, sin basar el worktree en esa rama"
+ },
+ "execution": {
+  "python": "3.11.9",
+  "numpy": "2.4.6",
+  "pillow": "11.3.0",
+  "fft_backend": "numpy.fft",
+  "interpreter": "E:\\Skyclaw_Main_Sync\\.venv\\Scripts\\python.exe"
+ },
+ "module_blobs_sha256_lf_at_base": {
+  "trust_proxies.py": "8f5a0703343b88ea29a0bf71d09c95b96e3f4d5994bf32a831ec3ea5fc37981e",
+  "normal_from_height.py": "f8370696bae46c7c01d9858c6cc50fd6e24a6174f3bba8d9c7fde4bc7ad66191",
+  "normal_fft_periodic.py": "994f4ebfead14e8970b25f053ef951bca83079d6cfd1fb796252db4ec3dd4306",
+  "authored_dataset.py": "4184cbada6885cf62ef98a95100a7b1921a881b8e2f7450f2889e9337befde8c",
+  "solver_coherence.py": "0d0bdf21a30988228c3e506211b239f9e795ec08a52c22e67b5bac2e832554ab",
+  "run_exp_m4.py": "ecf78ee4fb18d682844cfb4b1559662fc3ac910c49ca4bfa56c93054d9872e19",
+  "run_exp_m5.py": "6040f27cdbc233c18997ab9b5f348c0261213b8979f2ff405dd7908a5f61696a",
+  "run_exp_m3.py": "7c809e549a39d7907a4e5391fa6ffb544c1ad396ca61c94d7204ee9dd5486325",
+  "frequency_coherence.py": "b7144da781e049a29061c677d3008de9c67cc83b47702f22ea976f3ba20c9a4e"
+ },
+ "artifacts_read_only_sha256": {
+  "docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+  "docs/design/research/native-parallax/data/exp-m2-authored-manifest.json": "2cbac0f2272937d99747504a09e154fff666f8f721fb2cccad495211d8b40efe",
+  "data/exp-m4-results.json": "2f56f863709f31567c720921719e835727729e8b0182907f9a0a5bb703e19862",
+  "docs/validation/native-parallax-revalidation-20260928/exp_m4_results.json": "de172bc59ae4cdba755333c585913245b301c7fa0fc4514a8c30639e807577d9"
+ },
+ "historical_artifacts_mutated": false,
+ "corpus_mutated": false,
+ "corpus_root_read_only": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3",
+ "scientific_code_mutated": false,
+ "thresholds_changed": false,
+ "m4_m5_rerun_executed": false,
+ "m6_real_run_executed": false,
+ "scripts": [
+  "scripts/phase_a_synthetic.py",
+  "scripts/phase_b_units.py",
+  "scripts/h4_magnitude_probe.py",
+  "scripts/phase_c_real_impact.py",
+  "scripts/phase_c2_h4_corpus.py",
+  "scripts/build_evidence.py"
+ ]
+}

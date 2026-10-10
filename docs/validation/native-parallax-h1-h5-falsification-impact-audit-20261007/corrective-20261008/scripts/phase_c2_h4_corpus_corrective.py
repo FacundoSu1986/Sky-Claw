@@ -1,0 +1,419 @@
+"""PHASE C2 — Contrafactual READ-ONLY de resize_normal sobre el corpus real (H4).
+
+Cambia EXACTAMENTE UNA variable: el método de resize del normal AUTH
+(uint8+truncado de ``authored_dataset.resize_normal`` → bilineal float + renormalización).
+Todo lo demás (height, solver, umbrales, split, convención, alineamiento global,
+resolución, reglas de decisión) queda idéntico.
+
+PROHIBIDO (respetado): no se ejecuta run_exp_m4/run_exp_m5, no se escribe bajo data/ ni
+docs/validation históricos, no se toca C:\\SkyClawResearch\\**, no se cambian umbrales.
+
+Uso:
+  PYTHONPATH=<worktree> python phase_c2_h4_corpus.py \
+      --corpus-root C:/SkyClawResearch/NativeParallax/EXP-M3 --out <json>
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import io
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from PIL import Image
+
+from sky_claw.local.native_parallax.research.authored_dataset import (
+    apply_convention,
+    decode_height_image,
+    decode_normal_image,
+    resize_height,
+    resize_normal,
+)
+from sky_claw.local.native_parallax.research.frequency_coherence import (
+    T_HIGH_ENRICHMENT,
+    T_LOWMID_EXCESS,
+    T_LOWMID_NRMSE,
+    asset_summary,
+    band_masks,
+    cohort_medians,
+)
+from sky_claw.local.native_parallax.research.run_exp_m2 import split_of
+from sky_claw.local.native_parallax.research.run_exp_m3 import (
+    SOLVER_NORMAL_CONVENTION,
+    material_spec_from_entry,
+)
+from sky_claw.local.native_parallax.research.run_exp_m4 import prepare_entries
+from sky_claw.local.native_parallax.research.run_exp_m5 import _aligned_reconstruction
+from sky_claw.local.native_parallax.research.solver_coherence import (
+    T_DELTA_CORR,
+    T_DELTA_RMSE,
+    T_SELF_CORR,
+    T_SELF_RMSE,
+    T_SELF_VAR,
+    decide,
+    evaluate_path,
+    evaluate_rules,
+    self_forward,
+)
+
+RESOLUTION = 512
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+DEFAULT_MANIFEST = (
+    _REPO_ROOT / "docs" / "design" / "research" / "native-parallax" / "data" / "exp-m3-clean-authored-manifest.json"
+)
+
+# ---- Identidad del roster (segunda ronda correctiva, finding F)
+# Fuente AUTORIZADA dentro de #700: el artefacto de la auditoría original, que ya está
+# en el PR. No se abre material nuevo ni se inventa ningún hash.
+HISTORICAL_AUDIT_ARTIFACT = (
+    _REPO_ROOT
+    / "docs"
+    / "validation"
+    / "native-parallax-h1-h5-falsification-impact-audit-20261007"
+    / "real-impact.json"
+)
+# Digest congelado del roster histórico (SHA256 de los asset-ids ordenados, separados
+# por '\n'). Se usa para detectar drift del propio artefacto de referencia.
+HISTORICAL_ROSTER_SHA256 = "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e"
+HISTORICAL_ROSTER_SIZE = 31
+
+# ---- Contrato SEPARADO: el ARCHIVO del manifiesto M3 congelado (ronda 3).
+# No confundir con el digest del roster histórico de arriba: son dos objetos distintos.
+#   - HISTORICAL_ROSTER_SHA256  -> identidad del ROSTER del artefacto histórico.
+#   - EXPECTED_M3_MANIFEST_...  -> identidad del ARCHIVO del manifiesto que define el corpus.
+# Se congela el digest CANÓNICO (EOL normalizado a LF) para que el gate no dependa del
+# checkout: el worktree de Windows tiene CRLF y un checkout Linux tiene LF, y el repo ya
+# documenta esa relación (docs/design/research/native-parallax/m2-m3-math-revalidation-protocol.md
+# y data/exp-m4-data-required.json, que registra exactamente este valor LF).
+EXPECTED_M3_MANIFEST_SHA256_LF = "b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f"
+
+# Condiciones que el gate exige TODAS (fail-closed) antes de calcular M4/M5.
+ROSTER_GATE_CONDITIONS = (
+    "roster_count_match",
+    "roster_identity_match",
+    "historical_roster_digest_matches_frozen_sha",
+    "m3_manifest_sha256_matches_frozen",
+)
+
+
+def _bytes_digest_lf(data: bytes) -> str:
+    """SHA256 canónico: EOL normalizado a LF (independiente del checkout)."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _manifest_digest_lf(path: Path) -> str:
+    """Digest canónico LF del manifiesto. Portable entre Windows (CRLF) y Linux (LF)."""
+    return _bytes_digest_lf(path.read_bytes())
+
+
+def roster_gate(roster: dict[str, Any]) -> dict[str, Any]:
+    """Decide si se permite calcular M4/M5 a partir del chequeo de identidad.
+
+    Fail-closed: cada condición debe ser **exactamente** `True`. Una clave ausente,
+    `None` o un valor truthy-no-booleano bloquea. Calcular un digest no alcanza: tiene
+    que participar de la decisión (finding de la ronda 3).
+    """
+    failed = [k for k in ROSTER_GATE_CONDITIONS if roster.get(k) is not True]
+    return {"allowed": not failed, "failed_conditions": failed, "conditions": list(ROSTER_GATE_CONDITIONS)}
+
+
+def _roster_digest(ids: list[str]) -> str:
+    """SHA256 de los asset-ids ordenados, unidos por '\\n' (forma canónica)."""
+    return hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
+
+
+def check_roster_identity(prepared: list[dict[str, Any]], manifest: Path) -> dict[str, Any]:
+    """Verifica que el corpus preparado sea EXACTAMENTE el roster histórico de 31.
+
+    El conteo por sí solo no prueba identidad: un manifest distinto con 31 assets
+    válidos pasaría y publicaría M4/M5 como contrafactual del corpus equivocado.
+    """
+    current_ids = sorted(str(e["asset_id"]) for e in prepared)
+    hist_doc = json.loads(HISTORICAL_AUDIT_ARTIFACT.read_text(encoding="utf-8"))
+    hist_ids = sorted(str(r["asset"]) for r in hist_doc["H1_coherence_oracle_counterfactual"]["rows"])
+    manifest_bytes = manifest.read_bytes()
+    current_digest = _roster_digest(current_ids)
+    historical_digest = _roster_digest(hist_ids)
+    return {
+        "n_prepared": len(current_ids),
+        "n_historical": len(hist_ids),
+        "roster_count_match": len(current_ids) == len(hist_ids) == HISTORICAL_ROSTER_SIZE,
+        "roster_identity_match": current_ids == hist_ids,
+        "roster_digest_match": current_digest == historical_digest,
+        # Renombrado (ronda 3): el nombre viejo (`manifest_digest_match`) describía mal lo
+        # que calculaba: esto compara el digest del roster HISTÓRICO contra el SHA
+        # congelado, NO el digest del archivo del manifiesto.
+        "historical_roster_digest_matches_frozen_sha": historical_digest == HISTORICAL_ROSTER_SHA256,
+        # Contrato SEPARADO: identidad del ARCHIVO del manifiesto M3 (canónico LF).
+        "m3_manifest_sha256_matches_frozen": _bytes_digest_lf(manifest_bytes) == EXPECTED_M3_MANIFEST_SHA256_LF,
+        "current_roster_sha256": current_digest,
+        "historical_roster_sha256": historical_digest,
+        "expected_historical_roster_sha256": HISTORICAL_ROSTER_SHA256,
+        "manifest_sha256_lf": _bytes_digest_lf(manifest_bytes),
+        "manifest_sha256_worktree": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_sha256_eol_convention": (
+            "LF_CANONICAL: el gate usa manifest_sha256_lf; manifest_sha256_worktree se "
+            "registra sólo como procedencia (depende del checkout CRLF/LF)"
+        ),
+        "manifest_path": str(manifest),
+        "historical_artifact": str(HISTORICAL_AUDIT_ARTIFACT),
+        "only_current": sorted(set(current_ids) - set(hist_ids)),
+        "only_historical": sorted(set(hist_ids) - set(current_ids)),
+    }
+
+
+def resize_normal_float(n: np.ndarray, size: int) -> np.ndarray:
+    """FLOAT_RESIZE_NORMAL_COUNTERFACTUAL (audit-only, NO versionado)."""
+    if n.shape[0] == size and n.shape[1] == size:
+        return np.asarray(n, dtype=np.float64)
+    ch = []
+    for c in range(3):
+        im = Image.fromarray(np.asarray(np.clip(n[..., c], -1.0, 1.0), dtype=np.float32))
+        ch.append(np.asarray(im.resize((size, size), Image.Resampling.BILINEAR), dtype=np.float64))
+    out = np.stack(ch, axis=-1)
+    return np.asarray(out / np.maximum(np.linalg.norm(out, axis=-1, keepdims=True), 1e-12), dtype=np.float64)
+
+
+def build_asset(spec, counterfactual: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Réplica EXACTA de load_asset() cambiando SÓLO el resize del normal."""
+    normal_native = decode_normal_image(Path(spec.normal_path))
+    if spec.declared_convention in ("OPENGL", "DIRECTX") and spec.declared_convention != SOLVER_NORMAL_CONVENTION:
+        normal_native = apply_convention(normal_native, spec.declared_convention, SOLVER_NORMAL_CONVENTION)
+    height = resize_height(decode_height_image(Path(spec.height_path)), RESOLUTION)
+    resizer = resize_normal_float if counterfactual else resize_normal
+    return resizer(normal_native, RESOLUTION), height
+
+
+def m4_row(entry: dict[str, Any]) -> dict[str, Any]:
+    spec = material_spec_from_entry(entry)
+    n_old, h = build_asset(spec, counterfactual=False)
+    n_new, _ = build_asset(spec, counterfactual=True)
+    self_q8 = evaluate_path(h, self_forward(h, bits=8), path="self_q8")
+    old = evaluate_path(h, n_old, path="auth_old")
+    new = evaluate_path(h, n_new, path="auth_new")
+    return {
+        "asset": spec.asset_id,
+        "family": spec.family,
+        "split": split_of(spec.family),
+        "self_rmse": self_q8["path_rmse"],
+        "self_abs_corr": self_q8["path_abs_corr"],
+        "self_var": self_q8["path_variance_ratio"],
+        "auth_rmse_old": old["path_rmse"],
+        "auth_rmse_new": new["path_rmse"],
+        "auth_abs_corr_old": old["path_abs_corr"],
+        "auth_abs_corr_new": new["path_abs_corr"],
+        "auth_var_old": old["path_variance_ratio"],
+        "auth_var_new": new["path_variance_ratio"],
+        "delta_rmse_old": old["path_rmse"] - self_q8["path_rmse"],
+        "delta_rmse_new": new["path_rmse"] - self_q8["path_rmse"],
+        "normal_rmse_old_vs_new": float(np.sqrt(np.mean((n_old - n_new) ** 2))),
+        "mean_nx_old": float(np.mean(n_old[..., 0])),
+        "mean_nx_new": float(np.mean(n_new[..., 0])),
+    }
+
+
+def m5_row(entry: dict[str, Any]) -> dict[str, Any]:
+    spec = material_spec_from_entry(entry)
+    n_old, h = build_asset(spec, counterfactual=False)
+    n_new, _ = build_asset(spec, counterfactual=True)
+    r_self, _ = _aligned_reconstruction(h, self_forward(h, bits=8))
+    r_old, _ = _aligned_reconstruction(h, n_old)
+    r_new, _ = _aligned_reconstruction(h, n_new)
+    masks = band_masks(h.shape[0], h.shape[1])
+    s_old = asset_summary(h, r_self, r_old, masks)
+    s_new = asset_summary(h, r_self, r_new, masks)
+    return {"asset": spec.asset_id, "family": spec.family, "old": s_old, "new": s_new}
+
+
+def rules_from(rows: list[dict[str, Any]], key_self: str, key_auth: str, key_corr: str, key_var: str) -> dict[str, Any]:
+    full = {
+        "rmse_self_median": float(np.median([r[key_self] for r in rows])),
+        "rmse_auth_median": float(np.median([r[key_auth] for r in rows])),
+        "delta_rmse_median": float(
+            np.median([r["delta_rmse_old" if key_auth.endswith("old") else "delta_rmse_new"] for r in rows])
+        ),
+        "abs_corr_self_median": float(np.median([r["self_abs_corr"] for r in rows])),
+        "abs_corr_auth_median": float(np.median([r[key_corr] for r in rows])),
+        "var_self_median": float(np.median([r["self_var"] for r in rows])),
+        "var_auth_median": float(np.median([r[key_var] for r in rows])),
+    }
+    return full
+
+
+def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            with contextlib.suppress(AttributeError, io.UnsupportedOperation, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--m3-manifest", type=Path, default=DEFAULT_MANIFEST)
+    ap.add_argument("--corpus-root", type=Path, required=True)
+    ap.add_argument("--out", type=Path, required=True)
+    args = ap.parse_args()
+
+    prepared, exclusions = prepare_entries(args.m3_manifest, args.corpus_root)
+    if exclusions:
+        print(f"HARD STOP: corpus no íntegro: {exclusions}")
+        sys.exit(3)
+    # Fix del thread PRRT_kwDOR1JjU86qZ5qt: `prepare_entries` acepta cualquier manifest de
+    # Cohort A con >=15 assets de 3 familias. El contrato del audit exige el corpus
+    # HISTÓRICO de 31: sin este guard, un manifest de 15 assets sin exclusiones produciría
+    # decisiones M4/M5 etiquetadas como contrafactual del corpus.
+    if len(prepared) != 31:
+        print(f"HARD STOP: prepared={len(prepared)} != histórico=31")
+        sys.exit(3)
+
+    # ---- Identidad del roster (segunda ronda correctiva, finding F; endurecido en la 3)
+    # El conteo NO prueba identidad: un manifest distinto con 31 assets válidos pasaría
+    # el guard anterior y publicaría M4/M5 como contrafactual del corpus equivocado.
+    # El gate exige las CUATRO condiciones (fail-closed): conteo, identidad del conjunto,
+    # digest del roster histórico contra el SHA congelado, y digest del ARCHIVO del
+    # manifiesto M3 contra su propio valor congelado. Calcular un digest no alcanza:
+    # tiene que participar de la decisión.
+    roster_check = check_roster_identity(prepared, args.m3_manifest)
+    roster_gate_result = roster_gate(roster_check)
+    if not roster_gate_result["allowed"]:
+        print("HARD STOP: identidad de roster no verificada -> NO se calcula M4/M5")
+        print(
+            json.dumps(
+                {"roster_gate": roster_gate_result, **roster_check},
+                indent=1,
+                ensure_ascii=False,
+            )
+        )
+        sys.exit(3)
+    print(
+        f"ROSTER ok: n={roster_check['n_prepared']} "
+        f"identity_match={roster_check['roster_identity_match']} "
+        f"manifest_sha256_lf={roster_check['manifest_sha256_lf'][:16]}..."
+    )
+
+    rows = [m4_row(e) for e in prepared]
+
+    # ---------------- M4: reglas primarias con AUTH old vs new (mismos self y umbrales)
+    def build_full(key_auth: str, key_corr: str, key_var: str, key_delta: str) -> dict[str, float]:
+        return {
+            "rmse_self_median": float(np.median([r["self_rmse"] for r in rows])),
+            "rmse_auth_median": float(np.median([r[key_auth] for r in rows])),
+            "delta_rmse_median": float(np.median([r[key_delta] for r in rows])),
+            "abs_corr_self_median": float(np.median([r["self_abs_corr"] for r in rows])),
+            "abs_corr_auth_median": float(np.median([r[key_corr] for r in rows])),
+            "var_self_median": float(np.median([r["self_var"] for r in rows])),
+            "var_auth_median": float(np.median([r[key_var] for r in rows])),
+        }
+
+    full_old = build_full("auth_rmse_old", "auth_abs_corr_old", "auth_var_old", "delta_rmse_old")
+    full_new = build_full("auth_rmse_new", "auth_abs_corr_new", "auth_var_new", "delta_rmse_new")
+
+    # held-out: mismos assets, sólo cambia el AUTH
+    def build_sub(
+        split: str, full: dict[str, float], key_auth: str, key_corr: str, key_var: str, key_delta: str
+    ) -> dict[str, float]:
+        sub = [r for r in rows if r["split"] == split]
+        return {
+            "rmse_self_median": float(np.median([r["self_rmse"] for r in sub])),
+            "rmse_auth_median": float(np.median([r[key_auth] for r in sub])),
+            "delta_rmse_median": float(np.median([r[key_delta] for r in sub])),
+            "abs_corr_self_median": float(np.median([r["self_abs_corr"] for r in sub])),
+            "abs_corr_auth_median": float(np.median([r[key_corr] for r in sub])),
+            "var_self_median": float(np.median([r["self_var"] for r in sub])),
+            "var_auth_median": float(np.median([r[key_var] for r in sub])),
+        }
+
+    held_old = build_sub("HELD_OUT", full_old, "auth_rmse_old", "auth_abs_corr_old", "auth_var_old", "delta_rmse_old")
+    held_new = build_sub("HELD_OUT", full_new, "auth_rmse_new", "auth_abs_corr_new", "auth_var_new", "delta_rmse_new")
+
+    rules_old = evaluate_rules(full_old, held_old)
+    rules_new = evaluate_rules(full_new, held_new)
+    dec_old = decide(rules_old["C1_self_good"], rules_old["C2_auth_worse"])
+    dec_new = decide(rules_new["C1_self_good"], rules_new["C2_auth_worse"])
+
+    # ---------------- M5: medianas por banda con AUTH old vs new
+    m5 = [m5_row(e) for e in prepared]
+    med_old = cohort_medians([m["old"] for m in m5])
+    med_new = cohort_medians([m["new"] for m in m5])
+
+    def c1(med: dict[str, float]) -> bool:
+        return bool(med["auth_lowmid_nrmse"] <= T_LOWMID_NRMSE and med["excess_lowmid_nrmse"] <= T_LOWMID_EXCESS)
+
+    def c2_components(med: dict[str, float]) -> dict[str, bool]:
+        return {
+            "high_gt_lowmid_excess": bool(med["excess_high_nrmse"] > med["excess_lowmid_nrmse"]),
+            "high_enrichment_ge_threshold": bool(med["high_enrichment"] >= T_HIGH_ENRICHMENT),
+        }
+
+    payload = {
+        "phase": "C2_H4_RESIZE_NORMAL_CORPUS_COUNTERFACTUAL",
+        "audit_only": True,
+        "single_variable": "resize_normal (uint8 requantize -> float bilinear + renormalize)",
+        "corpus_root": str(args.corpus_root),
+        "resolution": RESOLUTION,
+        "corpus_integrity": {"exclusions": exclusions, "n_prepared": len(prepared)},
+        "roster_identity": roster_check,
+        "roster_gate": roster_gate_result,
+        "thresholds_unchanged": {
+            "T_SELF_RMSE": T_SELF_RMSE,
+            "T_SELF_CORR": T_SELF_CORR,
+            "T_SELF_VAR": T_SELF_VAR,
+            "T_DELTA_RMSE": T_DELTA_RMSE,
+            "T_DELTA_CORR": T_DELTA_CORR,
+            "T_LOWMID_NRMSE": T_LOWMID_NRMSE,
+            "T_LOWMID_EXCESS": T_LOWMID_EXCESS,
+            "T_HIGH_ENRICHMENT": T_HIGH_ENRICHMENT,
+        },
+        "m4": {
+            "rows": rows,
+            "full_old": full_old,
+            "full_new": full_new,
+            "heldout_old": held_old,
+            "heldout_new": held_new,
+            "rules_old": rules_old,
+            "rules_new": rules_new,
+            "decision_old": dec_old,
+            "decision_new": dec_new,
+            "decision_changed": bool(dec_old != dec_new),
+            "delta_rmse_max_abs_change": float(max(abs(r["delta_rmse_new"] - r["delta_rmse_old"]) for r in rows)),
+            "auth_rmse_max_abs_change": float(max(abs(r["auth_rmse_new"] - r["auth_rmse_old"]) for r in rows)),
+            "normal_rmse_old_vs_new_max": float(max(r["normal_rmse_old_vs_new"] for r in rows)),
+        },
+        "m5": {
+            "medians_old": med_old,
+            "medians_new": med_new,
+            "C1_old": c1(med_old),
+            "C1_new": c1(med_new),
+            "C2_components_old": c2_components(med_old),
+            "C2_components_new": c2_components(med_new),
+            "auth_lowmid_max_abs_change": abs(med_new["auth_lowmid_nrmse"] - med_old["auth_lowmid_nrmse"]),
+            "excess_lowmid_max_abs_change": abs(med_new["excess_lowmid_nrmse"] - med_old["excess_lowmid_nrmse"]),
+            "excess_high_max_abs_change": abs(med_new["excess_high_nrmse"] - med_old["excess_high_nrmse"]),
+            "high_enrichment_max_abs_change": abs(med_new["high_enrichment"] - med_old["high_enrichment"]),
+            "note": (
+                "C2 de M5 exige además la réplica direccional en la cohorte LEGACY_HELDOUT, que "
+                "no es reproducible en este slice READ-ONLY (no hay artefacto de filas M5 en el "
+                "repo). Se reportan C1 y los dos componentes de C2 evaluables."
+            ),
+        },
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with args.out.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=1, allow_nan=False)
+    print(f"OK -> {args.out}")
+    print(f"M4 decision: {dec_old} -> {dec_new}  changed={payload['m4']['decision_changed']}")
+    print(
+        f"M4 delta_rmse median: {full_old['delta_rmse_median']:.5f} -> {full_new['delta_rmse_median']:.5f} "
+        f"(max |change| per asset {payload['m4']['delta_rmse_max_abs_change']:.5f})"
+    )
+    print(f"M5 C1: {payload['m5']['C1_old']} -> {payload['m5']['C1_new']}")
+    print(
+        f"M5 excess_lowmid: {med_old['excess_lowmid_nrmse']:.5f} -> {med_new['excess_lowmid_nrmse']:.5f} | "
+        f"excess_high: {med_old['excess_high_nrmse']:.5f} -> {med_new['excess_high_nrmse']:.5f}"
+    )
+
+
+if __name__ == "__main__":
+    main()
