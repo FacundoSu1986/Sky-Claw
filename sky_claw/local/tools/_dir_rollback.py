@@ -36,7 +36,7 @@ _FS_RETRIES = 5
 _FS_BACKOFF_SECONDS = 0.1
 
 
-async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
+async def _borrar_arbol_o_enlace(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
     """Descarta *ruta*, sea un árbol real o un enlace, sin tocar ningún destino ajeno.
 
     Delega en :func:`~sky_claw.app.security.links.rmtree_link_aware`, que aplica
@@ -50,15 +50,20 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     ``_fs_op_with_retry``, así que un ``OSError`` transitorio reintenta todo —
     idempotente, porque lo ya borrado no vuelve a aparecer en el ``scandir``.
 
-    ``limpiar_readonly`` queda apagado: los artefactos de rollback los produce
-    este módulo con un ``rename``, así que heredan los permisos del árbol que la
-    herramienta generó. Si alguno viniera de solo-lectura, el ``OSError`` tiene
-    que verse en vez de que se muten permisos en silencio.
+    ``limpiar_readonly`` queda apagado por defecto: los artefactos de rollback
+    los produce este módulo con un ``rename``, así que heredan los permisos del
+    árbol que la herramienta generó. Si alguno viniera de solo-lectura, el
+    ``OSError`` tiene que verse en vez de que se muten permisos en silencio.
+    El caller que SÍ conoce ese caso lo pide explícito (ver
+    ``DirectoryRollback(limpiar_readonly_al_borrar=...)``): una herramienta
+    externa de Windows —DynDOLOD/TexGen— deja su salida con
+    ``FILE_ATTRIBUTE_READONLY``, y ahí el ``OSError`` no es información sino un
+    backup que queda huérfano en el camino de ÉXITO.
     """
-    await _fs_op_with_retry(rmtree_link_aware, ruta)
+    await _fs_op_with_retry(rmtree_link_aware, ruta, limpiar_readonly=limpiar_readonly)
 
 
-async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
+async def _fs_op_with_retry(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Ejecuta una op de FS off-loop, reintentando ante ``OSError`` transitorio.
 
     En Windows, ``rename``/``rmtree`` sobre un directorio recién creado puede
@@ -69,7 +74,7 @@ async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
     last_exc: OSError | None = None
     for attempt in range(_FS_RETRIES):
         try:
-            return await asyncio.to_thread(op, *args)
+            return await asyncio.to_thread(op, *args, **kwargs)
         except OSError as exc:
             last_exc = exc
             if attempt < _FS_RETRIES - 1:
@@ -187,6 +192,7 @@ class DirectoryRollback:
         enabled: bool = True,
         should_rollback: Callable[[], bool] | None = None,
         validate_final_target: Callable[[], bool] | None = None,
+        limpiar_readonly_al_borrar: bool = False,
     ) -> None:
         self._target = target_dir
         self._enabled = enabled
@@ -200,6 +206,14 @@ class DirectoryRollback:
         #: capas apliquen el MISMO criterio.
         self._should_rollback = should_rollback
         self._validate_final_target = validate_final_target
+        #: ``True`` cuando el árbol protegido lo generó una herramienta externa de
+        #: Windows que puede dejarlo con ``FILE_ATTRIBUTE_READONLY``. Sin esto, la
+        #: única operación que borra la generación anterior —el descarte del
+        #: backup, que corre en el camino de ÉXITO— falla con ``PermissionError``,
+        #: ``__aexit__`` traga el ``OSError`` por diseño y el residuo queda
+        #: huérfano donde nadie lo mira. Apagado por defecto: mutar permisos en
+        #: silencio no es algo que un caller pueda recibir sin pedirlo.
+        self._limpiar_readonly_al_borrar = limpiar_readonly_al_borrar
         self._backup: pathlib.Path | None = None
         #: M-7: outcome exclusivo del ROLLBACK. Empieza True porque el preflight
         #: todavía no mutó; cambia a False al habilitar un primer run o move-aside
@@ -424,7 +438,7 @@ class DirectoryRollback:
         # Sobre un enlace, ``rmtree`` lanzaría —quedando el parcial en disco y el
         # restore sin hacer— o atravesaría un junction borrando un árbol ajeno.
         if await asyncio.to_thread(path_present, self._target):
-            await _borrar_arbol_o_enlace(self._target)
+            await _borrar_arbol_o_enlace(self._target, limpiar_readonly=self._limpiar_readonly_al_borrar)
         if self._backup is not None and await asyncio.to_thread(path_present, self._backup):
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
@@ -507,7 +521,7 @@ class DirectoryRollback:
         # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
         # Windows), y esto corre en el camino de ÉXITO — donde ``__aexit__`` traga el
         # OSError y nadie se entera.
-        await _borrar_arbol_o_enlace(self._backup)
+        await _borrar_arbol_o_enlace(self._backup, limpiar_readonly=self._limpiar_readonly_al_borrar)
         return True
 
     def _restaurar_target_vacio_sync(self) -> bool:

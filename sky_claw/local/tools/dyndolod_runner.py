@@ -33,8 +33,8 @@ from sky_claw.app.security.links import (
     exigir_contencion_fisica,
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
-    rmtree_link_aware,
 )
+from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_uia_gate import (
@@ -2786,14 +2786,22 @@ class DynDOLODRunner:
         mod_name: str,
         *,
         preservar_directorio_raiz: bool = False,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> pathlib.Path:
         """
         Empaqueta la salida de una herramienta como un mod válido para MO2.
 
+        La sustitución del mod anterior es TRANSACCIONAL (#592 finding 2): el
+        destino se aparta con un move-aside O(1) y sólo se descarta cuando la
+        versión nueva —copia completa + ``meta.ini``— está confirmada. Ante
+        cualquier fallo, el estado previo vuelve byte-exacto.
+
         Pasos:
-        1. Crear directorio en self._config.mo2_mods_path / mod_name
-        2. Copiar el contenido de output_path o preservar esa raíz Data-relative
-        3. Generar meta.ini válido
+        1. Validar ownership de la fuente, forma del árbol y destino no enlazado
+        2. Medir el presupuesto de COEXISTENCIA (fuente vs. espacio libre)
+        3. Apartar el mod previo (``DirectoryRollback``) y crear el nuevo
+        4. Copiar el contenido de output_path o preservar esa raíz Data-relative
+        5. Generar meta.ini válido, y recién entonces descartar el backup
 
         Args:
             output_path: Path al directorio de salida de la herramienta.
@@ -2801,6 +2809,12 @@ class DynDOLODRunner:
             preservar_directorio_raiz: Si es True, copia ``output_path`` como
                 hijo del mod. TexGen lo necesita porque su artefacto físico es
                 ``root/textures`` y ``textures`` forma parte del layout Data.
+            veto_de_rollback: Veto consultado justo antes de restaurar el mod
+                previo. El servicio pasa el MISMO criterio que usa para sus
+                ``DirectoryRollback`` (``not lock.lease_lost``): sin exclusividad
+                no se restaura, porque hacerlo pisaría la salida de un dueño
+                concurrente. ``None`` = runner directo de test/rig, sin leases
+                que consultar: se restaura.
 
         Returns:
             pathlib.Path: Ruta al directorio del mod creado.
@@ -2916,6 +2930,43 @@ class DynDOLODRunner:
                     output_path=mod_path,
                 )
 
+            # #592 finding 2 — PRESUPUESTO ANTES DE MUTAR NADA.
+            #
+            # El orden anterior era `rmtree_link_aware(mod_path)` → medir →
+            # `copytree`: el mod anterior desaparecía ANTES de saber si el nuevo
+            # podía empaquetarse, y con `create_snapshot=False` —renuncia válida
+            # del operador— ningún `DirectoryRollback` del servicio lo cubría. Un
+            # ENOSPC, una copia parcial o un `meta.ini` fallido dejaban al
+            # operador sin la última generación de LODs.
+            #
+            # El presupuesto es de COEXISTENCIA, no de "espacio recuperable": el
+            # mod previo sigue ocupando su lugar hasta que el nuevo esté completo,
+            # así que `shutil.disk_usage` —medido con el árbol anterior todavía en
+            # disco— es el número honesto. Borrar el previo para liberar espacio y
+            # medir después es exactamente el defecto: con 500 MiB libres, un
+            # previo de 2 GiB y un nuevo de 3 GiB, la cuenta "corregida" daría
+            # 2,5 GiB y seguiría rechazando, pero habiendo ya destruido el previo.
+            #
+            # Medir acá —y no dentro del worker mutante— es lo que hace que un
+            # rechazo por capacidad no mute el destino. No lleva terminal handoff
+            # como el pre-scan: es de SÓLO LECTURA sobre la fuente, así que no
+            # participa del contrato `worker_terminal < rollback < lease_released`
+            # (el ancla AST del packaging congela exactamente dos handoffs: el
+            # pre-scan y el worker mutante).
+            def _presupuesto() -> tuple[int, int]:
+                return _bytes_del_arbol(output_path), _espacio_libre_en(mod_path.parent)
+
+            necesarios, disponibles = await asyncio.to_thread(_presupuesto)
+            if necesarios > disponibles:
+                raise DynDOLODValidationError(
+                    f"No hay espacio en el volumen de '{mod_path.parent}' para empaquetar "
+                    f"'{mod_name}': la fuente pesa {necesarios} bytes y hay {disponibles} libres. "
+                    "El mod previo se conserva hasta que el nuevo esté completo, así que el "
+                    "presupuesto exige que ambos coexistan y no se libera borrándolo. "
+                    "El staging raw y sus backups quedan intactos; liberá espacio y reintentá.",
+                    output_path=output_path,
+                )
+
             def _empaquetar_sincrono() -> None:
                 # Todo el cuerpo de abajo es I/O bloqueante — copiar la salida
                 # de DynDOLOD mueve miles de archivos de LOD, texturas y
@@ -2924,33 +2975,10 @@ class DynDOLODRunner:
                 # sus fases de borrado/copia (`_limpiar`, `_calc_dir_size_and_remove`).
                 # Correrlo en el hilo del event loop congelaba la UI de
                 # NiceGUI y desconectaba WebSockets durante el empaquetado.
-
-                if mod_path.exists():
-                    logger.debug("Limpiando directorio existente: %s", mod_path)
-                    # `limpiar_readonly`: el árbol es la salida de una corrida
-                    # previa de DynDOLOD, y una herramienta externa de Windows
-                    # puede dejar sus archivos con FILE_ATTRIBUTE_READONLY. Sin
-                    # el flag, el borrado falla con PermissionError y el
-                    # empaquetado aborta sobre su propia salida vieja.
-                    rmtree_link_aware(mod_path, limpiar_readonly=True)
-
-                # P2.2 — ENOSPC ANTES de copiar (spec §11): medir el source y el
-                # espacio libre del destino. Un disco lleno descubierto a mitad de
-                # `copytree` deja un mod parcial; el source raw y los backups
-                # tienen que seguir intactos y el fallo ser explícito. Se mide
-                # DESPUÉS de liberar el mod previo, que es espacio realmente
-                # recuperable. La medición no promete garantía (otro proceso puede
-                # consumir el volumen en paralelo): acota el fallo evidente.
-                necesarios = _bytes_del_arbol(output_path)
-                disponibles = _espacio_libre_en(mod_path.parent)
-                if necesarios > disponibles:
-                    raise DynDOLODValidationError(
-                        f"No hay espacio en el volumen de '{mod_path.parent}' para empaquetar "
-                        f"'{mod_name}': la fuente pesa {necesarios} bytes y hay {disponibles} libres. "
-                        "El staging raw y sus backups quedan intactos; liberá espacio y reintentá.",
-                        output_path=output_path,
-                    )
-
+                #
+                # Acá NO hay `rmtree` del mod previo: el `DirectoryRollback` de
+                # afuera ya lo apartó con un rename O(1), así que `mod_path` no
+                # existe (o no existía nunca, en una primera instalación).
                 mod_path.mkdir(parents=True, exist_ok=True)
 
                 # TexGen entrega ``root/textures`` como artefacto/fuente exacta,
@@ -2969,13 +2997,45 @@ class DynDOLODRunner:
                 # Generar meta.ini
                 self._generate_meta_ini(mod_path, mod_name)
 
-            # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
-            # y su hilo nativo NO se puede cancelar cancelando el await. Task
-            # propia + terminal handoff común: ninguna cancelación (ni repetida)
-            # suelta al caller antes de que el worker sea terminal — recién
-            # entonces puede empezar rollback/cleanup/lease release.
-            worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
-            await _esperar_terminalidad_del_worker(worker_mutante)
+            # #592 finding 2 — SUSTITUCIÓN TRANSACCIONAL DEL MOD ANTERIOR.
+            #
+            # Propiedad del mecanismo, no recordatorio de proceso: *el mod previo
+            # sólo puede desaparecer cuando existe una versión nueva completa y
+            # confirmada*. `DirectoryRollback` implementa exactamente ese
+            # protocolo —move-aside O(1) a un hermano con nombre exclusivo,
+            # restore ante CUALQUIER fallo, descarte recién tras el éxito— y ya
+            # está probado en el paquete. En particular:
+            #
+            #   * con `create_snapshot=True` el servicio ya apartó `mod_path`
+            #     antes del run, así que acá no hay nada que mover (no hay doble
+            #     move-aside ni doble rollback);
+            #   * el residuo se llama `<name>.rollback-<nonce>`, que es
+            #     exactamente la forma que `rollback_reconciler` enumera para el
+            #     productor `dyndolod`: una muerte dura entre el move-aside y la
+            #     copia se recupera en el arranque siguiente sin inventar un
+            #     segundo sistema de recovery;
+            #   * `limpiar_readonly_al_borrar=True` porque este árbol lo generó
+            #     una herramienta externa de Windows y puede venir con
+            #     `FILE_ATTRIBUTE_READONLY` — sin el flag, el descarte del backup
+            #     falla en el camino de ÉXITO y deja el residuo huérfano;
+            #   * `should_rollback=veto_de_rollback` es el MISMO veto de lease que
+            #     el servicio usa para sus propios `DirectoryRollback`: sin
+            #     exclusividad no se restaura, porque hacerlo pisaría la salida de
+            #     un dueño concurrente (el backup queda para recuperación manual).
+            async with DirectoryRollback(
+                mod_path,
+                should_rollback=veto_de_rollback,
+                limpiar_readonly_al_borrar=True,
+            ):
+                # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
+                # y su hilo nativo NO se puede cancelar cancelando el await. Task
+                # propia + terminal handoff común: ninguna cancelación (ni repetida)
+                # suelta al caller antes de que el worker sea terminal — recién
+                # entonces puede empezar rollback/cleanup/lease release. Y el
+                # `__aexit__` de arriba corre DESPUÉS, así que el orden
+                # `worker_terminal < rollback < lease_released` se conserva.
+                worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
+                await _esperar_terminalidad_del_worker(worker_mutante)
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path
@@ -3057,6 +3117,7 @@ class DynDOLODRunner:
         *,
         expected_profile: str | None = None,
         authorized_identity: TreeDigest | None = None,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> DynDOLODPipelineResult:
         """
         Ejecuta el pipeline completo: TexGen → Empaquetado → DynDOLOD → Empaquetado.
@@ -3088,6 +3149,11 @@ class DynDOLODRunner:
                 artifact cuando existe un handoff que la certifica; el gate la
                 re-verifica cerca del spawn. ``None`` = sin autoridad durable
                 previa (primera corrida, camino legacy).
+            veto_de_rollback: veto consultado antes de restaurar el mod previo
+                en la sustitución transaccional de ``_package_output_as_mod``
+                (#592 finding 2). El servicio pasa el mismo criterio que usa
+                para sus ``DirectoryRollback``; ``None`` = runner directo de
+                test/rig, sin leases que consultar.
 
         Returns:
             DynDOLODPipelineResult con resultados completos.
@@ -3148,6 +3214,7 @@ class DynDOLODRunner:
                             texgen_result.output_path,
                             self.TEXGEN_MOD_NAME,
                             preservar_directorio_raiz=True,
+                            veto_de_rollback=veto_de_rollback,
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package TexGen output: {e}")
@@ -3384,6 +3451,7 @@ class DynDOLODRunner:
                         dyndolod_mod_path = await self._package_output_as_mod(
                             dyndolod_result.output_path,
                             self.DYNDOLLOD_MOD_NAME,
+                            veto_de_rollback=veto_de_rollback,
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package DynDOLOD output: {e}")

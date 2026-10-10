@@ -2031,6 +2031,14 @@ class DynDOLODPipelineService:
                         dyndolod_args=dyndolod_args,
                         expected_profile=self._mo2_profile,
                         authorized_identity=authorized_identity,
+                        # #592 finding 2: la sustitución del mod previo dentro del
+                        # packaging es un `DirectoryRollback` MÁS, así que aplica
+                        # el mismo veto que los de acá arriba. Cablearlo es la
+                        # mitad que evita el defecto hermano: sin esto, el rollback
+                        # interno restauraría su backup sobre la salida de un dueño
+                        # concurrente cuando la lease ya se perdió — el hallazgo de
+                        # Codex #399, reintroducido en una superficie nueva.
+                        veto_de_rollback=_conserva_las_leases,
                     )
 
                     # Validar salida de DynDOLOD si fue exitoso
