@@ -65,9 +65,17 @@ _HISTORICAL_MARKERS = (
 )
 
 
-def _blob_sha1(path: Path) -> str:
-    data = path.read_bytes()
+def _git_blob_sha1(data: bytes) -> str:
     return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+
+
+def _blob_sha1_lf(path: Path) -> str:
+    """sha1 git-blob sobre bytes canónicos LF.
+
+    El freeze es el objeto git (LF). Un checkout Windows con autocrlf no
+    puede hacer fallar el ancla: el contenido científico no cambió.
+    """
+    return _git_blob_sha1(path.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def _recon() -> dict:
@@ -101,13 +109,22 @@ def test_el_roster_del_directorio_de_auditoria_esta_cerrado() -> None:
 
 
 def test_los_tres_json_historicos_conservan_el_blob_de_eb066a1() -> None:
-    """La reconciliación no reescribe la evidencia numérica de #697."""
+    """La reconciliación no reescribe la evidencia numérica de #697.
+
+    El SHA congelado es el blob git LF. El checkout puede ser CRLF (CI Windows);
+    se canoniza antes de hashear. Un cambio de contenido real sigue fallando.
+    """
     for nombre, esperado in _BLOBS_HISTORICOS.items():
-        actual = _blob_sha1(_AUDIT / nombre)
-        assert actual == esperado, (
-            f"{nombre} cambió de blob: {actual} vs {esperado} (eb066a1). "
-            "La evidencia histórica no se reescribe para parecer contemporánea."
+        raw = (_AUDIT / nombre).read_bytes()
+        lf = raw.replace(b"\r\n", b"\n")
+        crlf = lf.replace(b"\n", b"\r\n")
+        assert _git_blob_sha1(lf) == esperado, (
+            f"{nombre} cambió de contenido LF: {_git_blob_sha1(lf)} vs {esperado} "
+            "(eb066a1). La evidencia histórica no se reescribe para parecer "
+            "contemporánea."
         )
+        assert _git_blob_sha1(crlf.replace(b"\r\n", b"\n")) == esperado
+        assert _blob_sha1_lf(_AUDIT / nombre) == esperado
     recon = _recon()
     for nombre, esperado in _BLOBS_HISTORICOS.items():
         assert recon["historical_blob_sha1"][nombre] == esperado
