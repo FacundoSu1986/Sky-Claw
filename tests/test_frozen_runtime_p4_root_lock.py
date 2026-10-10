@@ -24,7 +24,9 @@ import sys
 import threading
 import time
 import uuid
+from typing import Any
 
+import psutil
 import pytest
 
 from sky_claw.local.frozen_runtime.errors import (
@@ -40,6 +42,8 @@ from sky_claw.local.frozen_runtime.root_lock import (
     FrozenRuntimeRootLockHandle,
     LockDisposition,
     OwnerLiveness,
+    _get_thread_lock,
+    _read_metadata_bytes,
     acquire_frozen_runtime_root_lock,
     canonical_root_key,
     inspect_frozen_runtime_root_lock,
@@ -276,6 +280,7 @@ def test_rl08_pid_reuse_detectado_como_no_mismo_owner(tmp_path: pathlib.Path) ->
         "pid": os.getpid(),
         "process_create_time": 1000.0,  # creation_time falso
         "acquired_at": time.time(),
+        "phase": "HELD",
     }
     lock_file.write_text(json.dumps(metadata_simulada), encoding="utf-8")
 
@@ -302,6 +307,7 @@ def test_rl09_owner_liveness_indeterminada_fail_closed(tmp_path: pathlib.Path, m
         "pid": 999999,
         "process_create_time": 123456.0,
         "acquired_at": time.time(),
+        "phase": "HELD",
     }
     lock_file.write_text(json.dumps(metadata_simulada), encoding="utf-8")
 
@@ -490,8 +496,9 @@ def test_rl15_state_redirigido_rechaza_adquisicion_fail_closed(tmp_path: pathlib
         "esto no es json",
         "{}",
         '{"schema_version": 1}',  # faltan campos
-        '{"schema_version": 999, "canonical_root": "x", "session_id": "y", "pid": 1, "process_create_time": 1.0, "acquired_at": 1.0}',  # schema desconocido
-        '{"schema_version": 1, "canonical_root": "x", "session_id": "not-a-uuid", "pid": 1, "process_create_time": 1.0, "acquired_at": 1.0}',  # UUID inválido
+        '{"schema_version": 999, "canonical_root": "x", "session_id": "y", "pid": 1, "process_create_time": 1.0, "acquired_at": 1.0, "phase": "HELD"}',  # schema desconocido
+        '{"schema_version": 1, "canonical_root": "x", "session_id": "not-a-uuid", "pid": 1, "process_create_time": 1.0, "acquired_at": 1.0, "phase": "HELD"}',  # UUID inválido
+        '{"schema_version": 1, "canonical_root": "x", "session_id": "a93f2a9a-329d-41b7-b4b5-93dfe30351ff", "pid": 1, "process_create_time": 1.0, "acquired_at": 1.0, "phase": "INVALID"}',  # phase inválido
     ],
 )
 def test_rl16_lock_metadata_corrupta_no_se_trata_como_libre(tmp_path: pathlib.Path, contenido_invalido: str) -> None:
@@ -534,27 +541,35 @@ def test_rl17_canonical_root_representaciones_equivalentes(tmp_path: pathlib.Pat
 # ============================================================================
 
 
-def test_rl18_sustitucion_de_metadata_falla_assert_owned(tmp_path: pathlib.Path) -> None:
-    """RL-18: Si la metadata en disco cambia mientras el handle está vivo, assert_owned falla."""
+def test_rl18_sustitucion_de_metadata_falla_assert_owned_y_release(tmp_path: pathlib.Path) -> None:
+    """RL-18: Si la metadata en disco cambia mientras el handle está vivo, assert_owned y release fallan sin borrar evidencia."""
     root = _crear_root_valido(tmp_path)
 
-    with acquire_frozen_runtime_root_lock(root, timeout=1.0) as handle:
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    # Sustituir la metadata en disco por la de otra sesión
+    metadata_adulterada = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": handle.canonical_root,
+        "session_id": str(uuid.uuid4()),  # Otra sesión
+        "pid": os.getpid(),
+        "process_create_time": handle.process_create_time,
+        "acquired_at": time.time(),
+        "phase": "HELD",
+    }
+    handle.lock_path.write_text(json.dumps(metadata_adulterada), encoding="utf-8")
+
+    # Inmediatamente assert_owned debe fallar cerrado
+    with pytest.raises(FrozenRuntimeLockOwnershipError):
         handle.assert_owned()
 
-        # Sustituir la metadata en disco por la de otra sesión
-        metadata_adulterada = {
-            "schema_version": LOCK_SCHEMA_VERSION,
-            "canonical_root": handle.canonical_root,
-            "session_id": str(uuid.uuid4()),  # Otra sesión
-            "pid": os.getpid(),
-            "process_create_time": handle.process_create_time,
-            "acquired_at": time.time(),
-        }
-        handle.lock_path.write_text(json.dumps(metadata_adulterada), encoding="utf-8")
+    # Y release() debe negarse a borrar la evidencia ajena
+    with pytest.raises(FrozenRuntimeLockOwnershipError):
+        handle.release()
 
-        # Inmediatamente assert_owned debe fallar cerrado
-        with pytest.raises(FrozenRuntimeLockOwnershipError):
-            handle.assert_owned()
+    # La metadata adulterada se preserva en disco para análisis forense
+    assert json.loads(handle.lock_path.read_text(encoding="utf-8"))["session_id"] == metadata_adulterada["session_id"]
 
 
 # ============================================================================
@@ -622,3 +637,244 @@ def test_guard_derivacion_de_lock_no_depende_de_target() -> None:
     assert "root" in parametros
     assert "target" not in parametros
     assert "destination" not in parametros
+
+
+# ============================================================================
+# F-01 a F-05 — Tests Quirúrgicos de Revisión Externa (PR #710 Follow-up)
+# ============================================================================
+
+
+def test_f01_inspect_empty_metadata_with_active_os_lock_not_free(tmp_path: pathlib.Path) -> None:
+    """F-01 (P1): inspect() con archivo vacío pero lock del SO tomado NO debe devolver FREE."""
+    root = _crear_root_valido(tmp_path)
+    lock_path = root / "state" / LOCK_FILE_NAME
+    # Crear archivo vacío (como ocurre en la ventana entre open() y write_metadata())
+    lock_path.write_bytes(b"")
+
+    # Tomar el lock del SO desde otro subproceso y mantenerlo
+    senal_listo = tmp_path / "f01_locked.tmp"
+    codigo_hijo = f"""
+import os, sys, pathlib, time
+from sky_claw.local.frozen_runtime.root_lock import _lock_fd
+
+p = pathlib.Path({str(lock_path)!r})
+f = open(p, "r+b")
+assert _lock_fd(f.fileno()), "No se pudo tomar lock del SO"
+pathlib.Path({str(senal_listo)!r}).write_text("OK", encoding="utf-8")
+time.sleep(3.0)
+f.close()
+"""
+    subp = subprocess.Popen([sys.executable, "-c", codigo_hijo])
+    try:
+        for _ in range(50):
+            if senal_listo.exists():
+                break
+            time.sleep(0.05)
+        assert senal_listo.exists(), "El subproceso no confirmó lock del SO"
+
+        # Inspeccionar: debe detectar que el OS está bloqueado y la disposición NO es FREE
+        res = inspect_frozen_runtime_root_lock(root)
+        assert res.is_os_locked is True
+        assert res.disposition != LockDisposition.FREE
+        assert res.disposition == LockDisposition.ACQUIRING
+    finally:
+        subp.terminate()
+        subp.wait(timeout=2.0)
+
+
+def test_f02_release_records_released_phase_and_preserves_forensics(tmp_path: pathlib.Path) -> None:
+    """F-02 (P1): release() escribe phase=RELEASED en vez de truncate(0) para crash-safety."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    session_id = handle.session_id
+    pid = handle.pid
+
+    # Durante HELD:
+    payload_held = json.loads(handle.lock_path.read_text(encoding="utf-8"))
+    assert payload_held["phase"] == "HELD"
+    assert payload_held["session_id"] == session_id
+
+    # Liberar limpiamente
+    handle.release()
+
+    # Forense post-release: el archivo NO debe estar vacío a 0 bytes
+    assert handle.lock_path.exists()
+    assert handle.lock_path.stat().st_size > 0
+    payload_released = json.loads(handle.lock_path.read_text(encoding="utf-8"))
+    assert payload_released["phase"] == "RELEASED"
+    assert payload_released["session_id"] == session_id
+    assert payload_released["pid"] == pid
+    assert "released_at" in payload_released
+
+    # inspect() sobre lock liberado reporta FREE
+    res = inspect_frozen_runtime_root_lock(root)
+    assert res.is_os_locked is False
+    assert res.disposition == LockDisposition.FREE
+
+    # Un nuevo acquire() adquiere limpiamente sin requerir reclaim_orphaned
+    with acquire_frozen_runtime_root_lock(root, timeout=1.0) as nuevo_handle:
+        nuevo_handle.assert_owned()
+        payload_nuevo = json.loads(nuevo_handle.lock_path.read_text(encoding="utf-8"))
+        assert payload_nuevo["phase"] == "HELD"
+        assert payload_nuevo["session_id"] != session_id
+
+
+def test_f03_release_poisoned_metadata_fails_and_preserves_evidence(tmp_path: pathlib.Path) -> None:
+    """F-03 (P1): release() con metadata alterada en disco no la trunca ni sobreescribe y lanza error."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+
+    # Simular envenenamiento en disco por un atacante o proceso concurrente
+    payload_envenenado = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": handle.canonical_root,
+        "session_id": str(uuid.uuid4()),
+        "pid": 12345,
+        "process_create_time": 9999.0,
+        "acquired_at": time.time(),
+        "phase": "HELD",
+    }
+    handle.lock_path.write_text(json.dumps(payload_envenenado), encoding="utf-8")
+
+    # release() debe detectar que el disco no le pertenece, lanzar error y NO truncar
+    with pytest.raises(FrozenRuntimeLockOwnershipError):
+        handle.release()
+
+    # Comprobar que la evidencia envenenada sigue intacta en disco
+    payload_post = json.loads(handle.lock_path.read_text(encoding="utf-8"))
+    assert payload_post["session_id"] == payload_envenenado["session_id"]
+    assert payload_post["pid"] == 12345
+
+
+def test_f03b_acquire_fails_closed_when_held_by_live_owner(tmp_path: pathlib.Path) -> None:
+    """F-03b (P1): acquire() no debe sobreescribir metadata si el lock previo registra phase=HELD y el PID sigue ALIVE."""
+    root = _crear_root_valido(tmp_path)
+    lock_path = root / "state" / LOCK_FILE_NAME
+
+    # Simular metadata con phase=HELD de este mismo proceso vivo
+    own_pid = os.getpid()
+    own_create_time = psutil.Process(own_pid).create_time()
+    payload_vivo = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": os.path.normcase(os.path.abspath(os.fspath(root))),
+        "session_id": str(uuid.uuid4()),
+        "pid": own_pid,
+        "process_create_time": own_create_time,
+        "acquired_at": time.time(),
+        "phase": "HELD",
+    }
+    lock_path.write_text(json.dumps(payload_vivo), encoding="utf-8")
+
+    # acquire() concurrente (incluso con OS mutex libre, p.ej. tras cierre anómalo de fd)
+    # DEBE fallar cerrado porque el dueño registrado sigue ALIVE y phase es HELD.
+    with pytest.raises(FrozenRuntimeLockBusyError):
+        acquire_frozen_runtime_root_lock(root, timeout=0.0)
+
+
+def test_f04_metadata_strict_typing_and_values(tmp_path: pathlib.Path) -> None:
+    """F-04 (P2): _read_metadata_bytes rechaza tipos bool como int/float, roots ajenos y floats no finitos."""
+    root = _crear_root_valido(tmp_path)
+    canonical_str = os.path.normcase(os.path.abspath(os.fspath(root)))
+
+    base = {
+        "schema_version": 1,
+        "canonical_root": canonical_str,
+        "session_id": str(uuid.uuid4()),
+        "pid": 123,
+        "process_create_time": 100.0,
+        "acquired_at": 200.0,
+        "phase": "HELD",
+    }
+
+    # 1. canonical_root ajeno al root esperado
+    payload_wrong_root = dict(base)
+    payload_wrong_root["canonical_root"] = "c:/otro/root"
+    raw = json.dumps(payload_wrong_root).encode("utf-8")
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="canonical_root no coincide"):
+        _read_metadata_bytes(raw, expected_canonical_root=canonical_str)
+
+    # 2. canonical_root no es string
+    payload_non_str_root = dict(base)
+    payload_non_str_root["canonical_root"] = 12345
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="canonical_root debe ser un string"):
+        _read_metadata_bytes(json.dumps(payload_non_str_root).encode("utf-8"))
+
+    # 3. bool como int/float (True es int en Python)
+    for field in ["pid", "schema_version", "process_create_time", "acquired_at"]:
+        payload_bool = dict(base)
+        payload_bool[field] = True
+        with pytest.raises(FrozenRuntimeLockMetadataError, match=f"{field} inválido"):
+            _read_metadata_bytes(json.dumps(payload_bool).encode("utf-8"))
+
+    # 4. Floats no finitos (inf, nan, <=0)
+    for field in ["process_create_time", "acquired_at"]:
+        payload_inf = dict(base)
+        payload_inf[field] = float("inf")
+        with pytest.raises(FrozenRuntimeLockMetadataError, match=f"{field} inválido"):
+            _read_metadata_bytes(json.dumps(payload_inf).encode("utf-8"))
+
+        payload_neg = dict(base)
+        payload_neg[field] = -1.0
+        with pytest.raises(FrozenRuntimeLockMetadataError, match=f"{field} inválido"):
+            _read_metadata_bytes(json.dumps(payload_neg).encode("utf-8"))
+
+
+def test_f04b_assert_owned_checks_all_metadata_fields(tmp_path: pathlib.Path) -> None:
+    """F-04b (P2): assert_owned() valida que create_time, acquired_at y phase sigan coincidiendo."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    # Alterar process_create_time en disco
+    payload = json.loads(handle.lock_path.read_text(encoding="utf-8"))
+    payload["process_create_time"] = payload["process_create_time"] + 10.0
+    handle.lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="process_create_time"):
+        handle.assert_owned()
+
+    # Restaurar y alterar acquired_at
+    payload["process_create_time"] = handle.process_create_time
+    payload["acquired_at"] = payload["acquired_at"] + 10.0
+    handle.lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="acquired_at"):
+        handle.assert_owned()
+
+    # Restaurar y alterar phase a RELEASED
+    payload["acquired_at"] = handle.acquired_at
+    payload["phase"] = "RELEASED"
+    handle.lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="phase"):
+        handle.assert_owned()
+
+    # Restaurar a HELD para permitir liberación limpia
+    payload["phase"] = "HELD"
+    handle.lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    handle.release()
+
+
+def test_f05_acquire_base_exception_cleans_up_thread_and_os_locks(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-05 (P2): acquire() maneja BaseException (KeyboardInterrupt) liberando thread lock y fd."""
+    root = _crear_root_valido(tmp_path)
+    canonical_str, _ = canonical_root_key(root)
+    thread_lock = _get_thread_lock(canonical_str)
+
+    from sky_claw.local.frozen_runtime import root_lock
+
+    def _simular_keyboard_interrupt(*args: Any, **kwargs: Any) -> Any:
+        raise KeyboardInterrupt("Simulación de Ctrl+C durante adquisición")
+
+    # Interceptar después de tomar el thread lock
+    monkeypatch.setattr(root_lock, "_lock_fd", _simular_keyboard_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        acquire_frozen_runtime_root_lock(root, timeout=1.0)
+
+    # El thread lock DEBE haber sido liberado estructuralmente
+    assert not thread_lock.locked(), "El thread lock quedó retenido tras KeyboardInterrupt!"
+
+    # Una siguiente adquisición debe poder ejecutarse sin deadlock
+    monkeypatch.undo()
+    with acquire_frozen_runtime_root_lock(root, timeout=1.0) as nuevo_handle:
+        nuevo_handle.assert_owned()

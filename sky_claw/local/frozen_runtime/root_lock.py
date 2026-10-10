@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import sys
@@ -42,7 +43,9 @@ from sky_claw.local.frozen_runtime.storage import admitir_storage_root
 
 LOCK_FILE_NAME = "frozen-runtime.lock"
 LOCK_SCHEMA_VERSION = 1
-LOCK_METADATA_FIELDS = frozenset(
+
+# Campos mínimos normativos de LOCK_OWNER (§34.3) más fase del ciclo de vida
+LOCK_OWNER_FIELDS = frozenset(
     {
         "schema_version",
         "canonical_root",
@@ -50,8 +53,11 @@ LOCK_METADATA_FIELDS = frozenset(
         "pid",
         "process_create_time",
         "acquired_at",
+        "phase",
     }
 )
+LOCK_METADATA_ALLOWED_FIELDS = frozenset(LOCK_OWNER_FIELDS | {"released_at"})
+LOCK_METADATA_FIELDS = LOCK_OWNER_FIELDS
 
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _ACTIVE_HANDLES: dict[str, FrozenRuntimeRootLockHandle] = {}
@@ -100,10 +106,18 @@ class OwnerLiveness(StrEnum):
     INDETERMINATE = "INDETERMINATE"
 
 
+class LockPhase(StrEnum):
+    """Fase del ciclo de vida del lock persistida en disco (crash-safe)."""
+
+    HELD = "HELD"
+    RELEASED = "RELEASED"
+
+
 class LockDisposition(StrEnum):
     """Clasificación del estado observado del lock de un root."""
 
     FREE = "FREE"
+    ACQUIRING = "ACQUIRING"
     HELD_BY_LIVE_OWNER = "HELD_BY_LIVE_OWNER"
     ORPHANED = "ORPHANED"
     INDETERMINATE = "INDETERMINATE"
@@ -112,10 +126,7 @@ class LockDisposition(StrEnum):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RootLockMetadata:
-    """Metadata de ownership persistida en el lockfile.
-
-    Esquema cerrado normativo con exactamente 6 campos (§34.3).
-    """
+    """Metadata de ownership persistida en el lockfile (§34.3 + crash forensics)."""
 
     schema_version: int
     canonical_root: str
@@ -123,6 +134,8 @@ class RootLockMetadata:
     pid: int
     process_create_time: float
     acquired_at: float
+    phase: LockPhase
+    released_at: float | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -212,8 +225,11 @@ def _validate_root_and_state_admission(canonical_root_path: pathlib.Path) -> pat
     return lock_path
 
 
-def _read_metadata_bytes(raw: bytes) -> RootLockMetadata:
-    """Parsea estrictamente la metadata del lock (esquema normativo cerrado)."""
+def _read_metadata_bytes(
+    raw: bytes,
+    expected_canonical_root: str | None = None,
+) -> RootLockMetadata:
+    """Parsea estrictamente la metadata del lock (esquema normativo cerrado con crash forensics)."""
     if not raw:
         raise FrozenRuntimeLockMetadataError("Metadata vacía")
     try:
@@ -224,16 +240,27 @@ def _read_metadata_bytes(raw: bytes) -> RootLockMetadata:
     if not isinstance(payload, dict):
         raise FrozenRuntimeLockMetadataError("Metadata no es un objeto JSON")
 
-    if set(payload.keys()) != LOCK_METADATA_FIELDS:
+    keys = set(payload.keys())
+    if not LOCK_OWNER_FIELDS.issubset(keys) or not keys.issubset(LOCK_METADATA_ALLOWED_FIELDS):
         raise FrozenRuntimeLockMetadataError(
-            f"Metadata debe contener exactamente los campos normativos {sorted(LOCK_METADATA_FIELDS)}"
+            f"Campos de metadata inválidos: {sorted(keys)}. Requeridos: {sorted(LOCK_OWNER_FIELDS)}"
         )
 
-    if payload["schema_version"] != LOCK_SCHEMA_VERSION:
-        raise FrozenRuntimeLockMetadataError(f"schema_version desconocido: {payload['schema_version']}")
+    schema_version = payload["schema_version"]
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int) or schema_version != LOCK_SCHEMA_VERSION:
+        raise FrozenRuntimeLockMetadataError(f"schema_version inválido: {schema_version}")
+
+    canonical_root = payload["canonical_root"]
+    if isinstance(canonical_root, bool) or not isinstance(canonical_root, str) or not canonical_root:
+        raise FrozenRuntimeLockMetadataError("canonical_root debe ser un string no vacío")
+
+    if expected_canonical_root is not None and canonical_root != expected_canonical_root:
+        raise FrozenRuntimeLockMetadataError(
+            f"canonical_root no coincide con el root esperado ({canonical_root} != {expected_canonical_root})"
+        )
 
     session_str = payload["session_id"]
-    if not isinstance(session_str, str):
+    if isinstance(session_str, bool) or not isinstance(session_str, str):
         raise FrozenRuntimeLockMetadataError("session_id debe ser un string")
     try:
         parsed_uuid = uuid.UUID(session_str)
@@ -243,24 +270,54 @@ def _read_metadata_bytes(raw: bytes) -> RootLockMetadata:
         raise FrozenRuntimeLockMetadataError(f"session_id no es un UUID válido: {exc}") from exc
 
     pid = payload["pid"]
-    if not isinstance(pid, int) or pid <= 0:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         raise FrozenRuntimeLockMetadataError(f"pid inválido: {pid}")
 
     create_time = payload["process_create_time"]
-    if not isinstance(create_time, (int, float)):
+    if (
+        isinstance(create_time, bool)
+        or not isinstance(create_time, (int, float))
+        or not math.isfinite(create_time)
+        or create_time <= 0
+    ):
         raise FrozenRuntimeLockMetadataError(f"process_create_time inválido: {create_time}")
 
     acquired_at = payload["acquired_at"]
-    if not isinstance(acquired_at, (int, float)):
+    if (
+        isinstance(acquired_at, bool)
+        or not isinstance(acquired_at, (int, float))
+        or not math.isfinite(acquired_at)
+        or acquired_at <= 0
+    ):
         raise FrozenRuntimeLockMetadataError(f"acquired_at inválido: {acquired_at}")
 
+    raw_phase = payload["phase"]
+    if raw_phase not in (LockPhase.HELD.value, LockPhase.RELEASED.value):
+        raise FrozenRuntimeLockMetadataError(f"phase inválido: {raw_phase}")
+    phase = LockPhase(raw_phase)
+
+    released_at = payload.get("released_at")
+    if released_at is not None:
+        if (
+            isinstance(released_at, bool)
+            or not isinstance(released_at, (int, float))
+            or not math.isfinite(released_at)
+            or released_at <= 0
+        ):
+            raise FrozenRuntimeLockMetadataError(f"released_at inválido: {released_at}")
+        released_at_float: float | None = float(released_at)
+    else:
+        released_at_float = None
+
     return RootLockMetadata(
-        schema_version=int(payload["schema_version"]),
-        canonical_root=str(payload["canonical_root"]),
+        schema_version=int(schema_version),
+        canonical_root=canonical_root,
         session_id=session_str,
         pid=int(pid),
         process_create_time=float(create_time),
         acquired_at=float(acquired_at),
+        phase=phase,
+        released_at=released_at_float,
     )
 
 
@@ -277,6 +334,7 @@ class FrozenRuntimeRootLockHandle:
         pid: int,
         process_create_time: float,
         acquired_at: float,
+        phase: LockPhase = LockPhase.HELD,
         file_obj: Any = None,
         thread_lock: threading.Lock | None = None,
     ) -> None:
@@ -287,6 +345,7 @@ class FrozenRuntimeRootLockHandle:
         self.pid = pid
         self.process_create_time = process_create_time
         self.acquired_at = acquired_at
+        self.phase = phase
         self._file_obj = file_obj
         self._thread_lock = thread_lock
         self._released = False
@@ -304,13 +363,13 @@ class FrozenRuntimeRootLockHandle:
             if active is not self:
                 raise FrozenRuntimeLockOwnershipError("Este handle no es el dueño activo registrado en memoria.")
 
-        # Verificar que la metadata en disco no haya sido alterada ni sustituida (RL-18)
+        # Verificar que la metadata en disco no haya sido alterada ni sustituida (RL-18, F-03)
         if not self.lock_path.exists():
             raise FrozenRuntimeLockOwnershipError("El archivo de lock no existe en disco.")
 
         try:
             raw = self.lock_path.read_bytes()
-            meta = _read_metadata_bytes(raw)
+            meta = _read_metadata_bytes(raw, expected_canonical_root=self.canonical_root)
         except (FrozenRuntimeLockMetadataError, OSError) as exc:
             raise FrozenRuntimeLockOwnershipError(f"La metadata del lock en disco no es válida: {exc}") from exc
 
@@ -321,8 +380,19 @@ class FrozenRuntimeRootLockHandle:
         if meta.pid != self.pid or meta.canonical_root != self.canonical_root:
             raise FrozenRuntimeLockOwnershipError("La metadata en disco no coincide con este handle.")
 
+        if abs(meta.process_create_time - self.process_create_time) > 0.001:
+            raise FrozenRuntimeLockOwnershipError(
+                f"process_create_time en disco no coincide ({meta.process_create_time} != {self.process_create_time})"
+            )
+        if abs(meta.acquired_at - self.acquired_at) > 0.001:
+            raise FrozenRuntimeLockOwnershipError(
+                f"acquired_at en disco no coincide ({meta.acquired_at} != {self.acquired_at})"
+            )
+        if meta.phase != LockPhase.HELD:
+            raise FrozenRuntimeLockOwnershipError(f"phase en disco no es HELD ({meta.phase})")
+
     def release(self) -> None:
-        """Libera la exclusión del lock de forma segura e idempotente."""
+        """Libera la exclusión del lock de forma crash-safe y poison-safe."""
         if self._released:
             return
 
@@ -334,22 +404,58 @@ class FrozenRuntimeRootLockHandle:
                 )
             if active is None and self._file_obj is None:
                 raise FrozenRuntimeLockOwnershipError("Este handle no posee un lock activo para liberar.")
-            if active is self:
+
+        # Validar ownership en disco antes de modificar nada (Finding 3)
+        # Si la metadata en disco fue adulterada, NO truncar ni escribir; preservar evidencia intacta.
+        if self._file_obj is not None and not self._file_obj.closed and self.lock_path.exists():
+            try:
+                raw_disk = self.lock_path.read_bytes()
+                meta_disk = _read_metadata_bytes(raw_disk, expected_canonical_root=self.canonical_root)
+                if (
+                    meta_disk.session_id != self.session_id
+                    or meta_disk.pid != self.pid
+                    or abs(meta_disk.process_create_time - self.process_create_time) > 0.001
+                    or meta_disk.phase != LockPhase.HELD
+                ):
+                    raise FrozenRuntimeLockOwnershipError(
+                        "La metadata en disco no coincide con la sesión del handle al liberar (posible envenenamiento)."
+                    )
+            except FrozenRuntimeLockMetadataError as exc:
+                raise FrozenRuntimeLockOwnershipError(
+                    f"Metadata corrupta en disco detectada al liberar: {exc}"
+                ) from exc
+
+        # Ownership verificado en memoria y disco: persistir phase=RELEASED (Finding 2)
+        if self._file_obj is not None and not self._file_obj.closed:
+            payload = {
+                "schema_version": LOCK_SCHEMA_VERSION,
+                "canonical_root": self.canonical_root,
+                "session_id": self.session_id,
+                "pid": self.pid,
+                "process_create_time": self.process_create_time,
+                "acquired_at": self.acquired_at,
+                "phase": LockPhase.RELEASED.value,
+                "released_at": time.time(),
+            }
+            serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            self._file_obj.seek(0)
+            self._file_obj.write(serialized)
+            self._file_obj.truncate(len(serialized))
+            self._file_obj.flush()
+            os.fsync(self._file_obj.fileno())
+
+        # Cleanup de recursos en memoria
+        with _THREAD_LOCKS_GUARD:
+            if _ACTIVE_HANDLES.get(self.canonical_root) is self:
                 _ACTIVE_HANDLES.pop(self.canonical_root, None)
 
         self._released = True
+        self.phase = LockPhase.RELEASED
 
         if self._file_obj is not None and not self._file_obj.closed:
             try:
-                # Truncar a 0 bytes en liberación limpia para indicar estado libre
-                self._file_obj.seek(0)
-                self._file_obj.truncate(0)
-                self._file_obj.flush()
-                os.fsync(self._file_obj.fileno())
-            except OSError:
-                pass
-            finally:
                 _unlock_fd(self._file_obj.fileno())
+            finally:
                 with contextlib.suppress(OSError):
                     self._file_obj.close()
 
@@ -367,7 +473,38 @@ class FrozenRuntimeRootLockHandle:
 def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspectionResult:
     """Inspecciona el estado de exclusión y metadata del lock de un root sin mutarlo."""
     canonical_str, lock_path = canonical_root_key(root)
-    if not lock_path.exists() or lock_path.stat().st_size == 0:
+    if not lock_path.exists():
+        return LockInspectionResult(
+            canonical_root=canonical_str,
+            lock_path=lock_path,
+            disposition=LockDisposition.FREE,
+            is_os_locked=False,
+            metadata=None,
+            liveness=None,
+        )
+
+    # Probar si el OS lock está tomado SIEMPRE que el archivo exista (Finding 1)
+    is_os_locked = False
+    try:
+        with open(lock_path, "r+b") as probe_file:
+            if not _lock_fd(probe_file.fileno()):
+                is_os_locked = True
+            else:
+                _unlock_fd(probe_file.fileno())
+    except OSError:
+        is_os_locked = True
+
+    st_size = lock_path.stat().st_size
+    if st_size == 0:
+        if is_os_locked:
+            return LockInspectionResult(
+                canonical_root=canonical_str,
+                lock_path=lock_path,
+                disposition=LockDisposition.ACQUIRING,
+                is_os_locked=True,
+                metadata=None,
+                liveness=None,
+            )
         return LockInspectionResult(
             canonical_root=canonical_str,
             lock_path=lock_path,
@@ -380,31 +517,23 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
     # El archivo existe y tiene tamaño > 0
     try:
         raw_bytes = lock_path.read_bytes()
-        metadata = _read_metadata_bytes(raw_bytes)
+        metadata = _read_metadata_bytes(raw_bytes, expected_canonical_root=canonical_str)
     except FrozenRuntimeLockMetadataError:
         return LockInspectionResult(
             canonical_root=canonical_str,
             lock_path=lock_path,
             disposition=LockDisposition.CORRUPT_METADATA,
-            is_os_locked=True,
+            is_os_locked=is_os_locked,
             metadata=None,
             liveness=None,
         )
 
-    # Probar si el OS lock está tomado
-    is_os_locked = False
-    try:
-        with open(lock_path, "r+b") as probe_file:
-            if not _lock_fd(probe_file.fileno()):
-                is_os_locked = True
-            else:
-                _unlock_fd(probe_file.fileno())
-    except OSError:
-        is_os_locked = True
-
     liveness = _check_process_liveness(metadata.pid, metadata.process_create_time)
 
-    if is_os_locked:
+    # Si la metadata ya fue liberada limpiamente (Finding 2)
+    if metadata.phase == LockPhase.RELEASED:
+        disposition = LockDisposition.FREE if not is_os_locked else LockDisposition.ACQUIRING
+    elif is_os_locked:
         if liveness == OwnerLiveness.ALIVE:
             disposition = LockDisposition.HELD_BY_LIVE_OWNER
         elif liveness == OwnerLiveness.INDETERMINATE:
@@ -412,11 +541,13 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
         else:
             disposition = LockDisposition.ORPHANED
     else:
+        # OS lock liberado (proceso muerto sin release / crash)
         if liveness == OwnerLiveness.DEAD:
             disposition = LockDisposition.ORPHANED
         elif liveness == OwnerLiveness.INDETERMINATE:
             disposition = LockDisposition.INDETERMINATE
         else:
+            # PID vivo pero no tiene OS mutex: inconsistente/huérfano
             disposition = LockDisposition.ORPHANED
 
     return LockInspectionResult(
@@ -481,28 +612,41 @@ def acquire_frozen_runtime_root_lock(
             f.seek(0)
             raw_existente = f.read()
             try:
-                meta_existente = _read_metadata_bytes(raw_existente)
+                meta_existente = _read_metadata_bytes(raw_existente, expected_canonical_root=canonical_str)
             except FrozenRuntimeLockMetadataError as exc:
                 _unlock_fd(f.fileno())
                 f.close()
                 raise FrozenRuntimeLockMetadataError(f"Metadata corrupta en el lockfile preexistente: {exc}") from exc
 
-            # Verificar liveness del dueño preexistente
-            liveness = _check_process_liveness(meta_existente.pid, meta_existente.process_create_time)
-            if liveness == OwnerLiveness.INDETERMINATE:
-                _unlock_fd(f.fileno())
-                f.close()
-                raise FrozenRuntimeLockIndeterminateError(
-                    "No se pudo determinar si el dueño del lock previo sigue vivo (fail-closed)."
-                )
+            # Si el lock previo fue liberado limpiamente, está disponible para adquisición inmediata
+            if meta_existente.phase == LockPhase.RELEASED:
+                pass
+            else:
+                # meta_existente.phase == LockPhase.HELD
+                # Verificar liveness del dueño previo
+                liveness = _check_process_liveness(meta_existente.pid, meta_existente.process_create_time)
+                if liveness == OwnerLiveness.ALIVE:
+                    # El dueño previo está VIVO y tiene phase=HELD (Finding 3b)
+                    _unlock_fd(f.fileno())
+                    f.close()
+                    raise FrozenRuntimeLockBusyError(
+                        f"El root '{root}' registra un lock activo no liberado por un proceso vivo (PID {meta_existente.pid})."
+                    )
 
-            if liveness == OwnerLiveness.DEAD and not reclaim_orphaned:
-                _unlock_fd(f.fileno())
-                f.close()
-                raise FrozenRuntimeLockOrphanedError(
-                    f"El root '{root}' contiene un lock huérfano de un proceso muerto (pid {meta_existente.pid}). "
-                    "Requiere reconciliación/reclaim explícito."
-                )
+                if liveness == OwnerLiveness.INDETERMINATE:
+                    _unlock_fd(f.fileno())
+                    f.close()
+                    raise FrozenRuntimeLockIndeterminateError(
+                        "No se pudo determinar si el dueño del lock previo sigue vivo (fail-closed)."
+                    )
+
+                if liveness == OwnerLiveness.DEAD and not reclaim_orphaned:
+                    _unlock_fd(f.fileno())
+                    f.close()
+                    raise FrozenRuntimeLockOrphanedError(
+                        f"El root '{root}' contiene un lock huérfano de un proceso muerto (pid {meta_existente.pid}). "
+                        "Requiere reconciliación/reclaim explícito."
+                    )
 
         # 4. Acuñar nueva sesión de lock
         session_id = str(uuid.uuid4())
@@ -517,6 +661,7 @@ def acquire_frozen_runtime_root_lock(
             "pid": own_pid,
             "process_create_time": own_create_time,
             "acquired_at": acquired_at,
+            "phase": LockPhase.HELD.value,
         }
         serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -534,6 +679,7 @@ def acquire_frozen_runtime_root_lock(
             pid=own_pid,
             process_create_time=own_create_time,
             acquired_at=acquired_at,
+            phase=LockPhase.HELD,
             file_obj=f,
             thread_lock=thread_lock,
         )
@@ -543,7 +689,8 @@ def acquire_frozen_runtime_root_lock(
 
         return handle
 
-    except Exception:
+    except BaseException:
+        # Finding 5: Cleanup estructural ante BaseException (KeyboardInterrupt, SystemExit, etc.)
         if f is not None and not f.closed:
             _unlock_fd(f.fileno())
             with contextlib.suppress(OSError):
