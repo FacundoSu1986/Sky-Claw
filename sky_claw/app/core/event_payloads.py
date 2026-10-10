@@ -207,6 +207,13 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
         errors: Errores detectados durante la ejecución.
         duration_seconds: Duración total de la ejecución.
         rolled_back: Si se ejecutó rollback automático.
+        log_paths: Rutas de los logs de las herramientas que ESCRIBIERON en esta
+            corrida (``TexGen_SSE_log.txt``/``DynDOLOD_SSE_log.txt``), sólo en un
+            fallo de herramienta; ``()`` en éxito, cancelación o fallos previos al
+            spawn. Existe para que un consumidor (el notificador de operador)
+            pueda adjuntar el log que explica el fallo: sin esto el evento sólo
+            llevaba el texto de las líneas terminales. Es un hecho de filesystem
+            leído por el servicio, nunca un dato del tool.
         completed_at: Timestamp de finalización (epoch float, autogenerado).
     """
 
@@ -220,6 +227,7 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
     errors: tuple[str, ...]
     duration_seconds: float
     rolled_back: bool
+    log_paths: tuple[str, ...] = ()
     completed_at: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:
