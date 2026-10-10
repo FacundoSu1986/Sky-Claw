@@ -114,7 +114,10 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # observación no debe llevarse su destino. Que el árbol sea propio no
     # habilita una excepción a la regla "shutil.rmtree no existe en el paquete".
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "link-aware",
-    "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
+    # `dyndolod_runner.py` SALIÓ de este censo con #592 finding 2: dejó de
+    # borrar el mod previo y ahora lo aparta con un `DirectoryRollback`, que
+    # delega en `_dir_rollback.py` (declarado acá). El barrido de la familia
+    # sigue enumerando al borrador real, no al que delega.
     "sky_claw/local/tools/rollback_reconciler.py": "link-aware",
     "sky_claw/local/tools/vramr_service.py": "link-aware",
     "sky_claw/local/tools_installer.py": "link-aware",
@@ -439,7 +442,13 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/mo2/vfs.py": "requiere",
     "sky_claw/local/runtime_vault/clone.py": "requiere",
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "no-requiere",
-    "sky_claw/local/tools/dyndolod_runner.py": "requiere",
+    # `dyndolod_runner.py` SALIÓ de este censo con #592 finding 2: ya no invoca
+    # `rmtree_link_aware`. El requisito NO se perdió — se mudó al parámetro
+    # `limpiar_readonly_al_borrar=True` de la construcción de `DirectoryRollback`
+    # que reemplazó al borrado, y su ancla vive en
+    # `tests/test_runner_defects_p1_p2.py::test_592_ancla_ast_...`. Si ese
+    # keyword se cae, el descarte del backup vuelve a fallar en silencio sobre un
+    # árbol read-only en el camino de ÉXITO.
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
     "sky_claw/local/tools/vramr_service.py": "requiere",
     "sky_claw/local/tools_installer.py": "requiere",

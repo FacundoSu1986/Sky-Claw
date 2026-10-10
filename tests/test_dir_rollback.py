@@ -541,11 +541,11 @@ async def test_cancelaciones_repetidas_esperan_discard_antes_de_liberar_lock(tmp
         async def __aexit__(self, *_args: object) -> None:
             lock_liberado.set()
 
-    def _borrar_bloqueado(path: pathlib.Path) -> None:
+    def _borrar_bloqueado(path: pathlib.Path, **kwargs: object) -> None:
         delete_empezo.set()
         assert permitir_delete.wait(5.0), "el test no liberó el delete"
         try:
-            borrar_real(path)
+            borrar_real(path, **kwargs)  # type: ignore[arg-type]
         finally:
             delete_termino.set()
 

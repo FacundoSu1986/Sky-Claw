@@ -587,6 +587,37 @@ def _espiar_copytree(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     return llamadas
 
 
+class _EspiaSustitucion:
+    """Espía de la frontera que SÍ puede tocar el mod previo (#592 finding 2).
+
+    Reemplaza al viejo espía de ``rmtree_link_aware`` en los tests de R2: desde
+    que la sustitución es transaccional, el destino anterior ya no se borra
+    directamente — se aparta bajo ``DirectoryRollback``. La pregunta "¿el gate
+    corrió antes de mutar el destino?" se mide ahora sobre esa frontera, que es
+    la única que muta. Si el espía llegara a instanciarse, el test que lo usa
+    estaría probando la razón equivocada.
+    """
+
+    def __init__(self) -> None:
+        self.instanciados: list[pathlib.Path] = []
+
+    def __call__(self, target: pathlib.Path, **_kwargs: object) -> _EspiaSustitucion:
+        self.instanciados.append(pathlib.Path(target))
+        return self
+
+    async def __aenter__(self) -> _EspiaSustitucion:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+def _espiar_sustitucion(monkeypatch: pytest.MonkeyPatch) -> _EspiaSustitucion:
+    espia = _EspiaSustitucion()
+    monkeypatch.setattr(runner_mod, "DirectoryRollback", espia)
+    return espia
+
+
 @pytest.mark.asyncio
 @junction_guard
 async def test_r2_junction_descendiente_falla_antes_de_copytree_y_no_copia_evil(tmp_path, monkeypatch):
@@ -617,7 +648,15 @@ async def test_r2_junction_descendiente_falla_antes_de_copytree_y_no_copia_evil(
 @pytest.mark.asyncio
 @junction_guard
 async def test_r2_package_rechaza_junction_antes_de_rmtree_y_preserva_mod_previo(tmp_path, monkeypatch):
-    """Una fuente con junction no destruye el mod anterior ni inicia ninguna copia."""
+    """Una fuente con junction no destruye el mod anterior ni inicia ninguna copia.
+
+    El nombre conserva el histórico "antes de rmtree" (lo referencian
+    `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y la
+    tabla de `docs/pending_ooda_status.md`), pero desde #592 finding 2 el mod
+    previo no se borra: se aparta bajo `DirectoryRollback`. La aserción se
+    enuncia sobre esa frontera —la única que muta el destino—, no sobre la
+    llamada que ya no existe.
+    """
     src, externo = _crear_arbol_con_junction(tmp_path)
     runner = _runner_stub(tmp_path)
     mod_path = tmp_path / "mods" / "TestMod"
@@ -626,19 +665,12 @@ async def test_r2_package_rechaza_junction_antes_de_rmtree_y_preserva_mod_previo
     previo.write_bytes(b"keep the prior mod")
 
     copytree_calls = _espiar_copytree(monkeypatch)
-    rmtree_calls: list[pathlib.Path] = []
-    rmtree_original = runner_mod.rmtree_link_aware
-
-    def _rmtree(path: pathlib.Path, **kwargs):
-        rmtree_calls.append(path)
-        return rmtree_original(path, **kwargs)
-
-    monkeypatch.setattr(runner_mod, "rmtree_link_aware", _rmtree)
+    sustitucion = _espiar_sustitucion(monkeypatch)
 
     with pytest.raises(runner_mod.DynDOLODValidationError, match="junction"):
         await runner._package_output_as_mod(src, "TestMod")
 
-    assert rmtree_calls == [], "el gate R2 debe ejecutarse antes de borrar el mod previo"
+    assert sustitucion.instanciados == [], "el gate R2 debe ejecutarse antes de apartar el mod previo"
     assert copytree_calls == [], "el gate R2 debe ejecutarse antes de copiar cualquier directorio"
     assert previo.read_bytes() == b"keep the prior mod"
     assert not (mod_path / "nested" / "evil.bin").exists()
@@ -783,14 +815,7 @@ async def test_r2_cancel_durante_prescan_espera_terminal_y_no_muta(tmp_path, mon
     monkeypatch.setattr(runner_mod, "exigir_arbol_copiable_sin_reparse", _scan_bloqueado)
     monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda _path: None)
 
-    rmtree_calls: list[pathlib.Path] = []
-    rmtree_original = runner_mod.rmtree_link_aware
-
-    def _rmtree(path: pathlib.Path, **kwargs):
-        rmtree_calls.append(path)
-        return rmtree_original(path, **kwargs)
-
-    monkeypatch.setattr(runner_mod, "rmtree_link_aware", _rmtree)
+    sustitucion = _espiar_sustitucion(monkeypatch)
     copytree_calls = _espiar_copytree(monkeypatch)
 
     copy2_calls: list[object] = []
@@ -836,7 +861,7 @@ async def test_r2_cancel_durante_prescan_espera_terminal_y_no_muta(tmp_path, mon
     caller = asyncio.create_task(_caller_con_rollback_y_lease())
 
     def _assert_sin_mutacion() -> None:
-        assert rmtree_calls == [], "el worker mutante no debe borrar el mod previo"
+        assert sustitucion.instanciados == [], "el worker mutante no debe apartar el mod previo"
         assert mkdir_calls == [], "el worker mutante no debe iniciar mkdir del mod"
         assert copytree_calls == [], "el worker mutante no debe iniciar copytree"
         assert copy2_calls == [], "el worker mutante no debe iniciar copy2"
@@ -2508,3 +2533,622 @@ async def test_r3_cancelacion_preserva_identidad_y_mensaje_con_y_sin_falla_de_li
     exc2 = exc_info2.value
     assert exc2.args == ("motivo de cancelacion 2",), f"se perdió el mensaje del cancel: args={exc2.args}"
     assert exc2.__cause__ is None
+
+
+# ---------------------------------------------------------------------------
+# #592 finding 2 — la sustitución del mod anterior es transaccional
+# ---------------------------------------------------------------------------
+#
+# **Defecto (PRE-FIX, reproducido).** `_empaquetar_sincrono` ejecutaba, en este
+# orden:
+#
+#     rmtree_link_aware(mod_path)  →  _bytes_del_arbol / _espacio_libre_en  →  copytree
+#
+# así que el mod anterior desaparecía ANTES de saber si el nuevo podía
+# empaquetarse. Con `create_snapshot=True` lo cubría el `DirectoryRollback` del
+# servicio; con `create_snapshot=False` —renuncia válida del operador— no había
+# red: ENOSPC, una copia parcial o un `meta.ini` fallido dejaban al operador sin
+# la última generación de LODs, varios GB y horas de cómputo.
+#
+# **Invariante congelado (BEFORE SUCCESSFUL PROMOTION):**
+#
+#     previous_mod intacto  O  recuperable bajo un protocolo de backup con dueño
+#
+# Tres propiedades lo sostienen, y cada test de abajo falla si se rompe UNA:
+#
+#   1. el presupuesto ENOSPC es de COEXISTENCIA — no se borra el mod previo
+#      para liberar espacio, así que `necesarios > libres` rechaza sin tocar el
+#      destino (el caso crítico de §8: 500 MiB libres, 2 GiB previos, 3 GiB
+#      nuevos no se arregla borrando el previo);
+#   2. la sustitución corre bajo `DirectoryRollback` — move-aside O(1) con
+#      nombre exclusivo, restore ante CUALQUIER fallo, descarte sólo tras el
+#      éxito completo (copia + `meta.ini`);
+#   3. el nombre del residuo es el que `rollback_reconciler` ya reconoce, así
+#      que una muerte dura entre el move-aside y la copia es recuperable sin
+#      inventar un segundo sistema de recovery.
+#
+# Los tests NO llenan el disco, NO usan mods reales del usuario y NO ejecutan
+# TexGen/DynDOLOD: el espacio se inyecta por mock determinista.
+
+_PREVIO_ARCHIVOS: dict[str, bytes] = {
+    "meshes/previous.nif": b"P" * 2048,
+    "textures/previous.dds": b"T" * 1024,
+}
+_PREVIO_META_INI = b"[General]\nname=Previous\n"
+
+
+def _runner_592(tmp_path: pathlib.Path, *, meta_ini_falla: bool = False):
+    """Runner stub con `meta.ini` real (o fallable) y veto de rollback inyectable."""
+    r = runner_mod.DynDOLODRunner.__new__(runner_mod.DynDOLODRunner)
+    r._config = SimpleNamespace(mo2_mods_path=tmp_path / "mods", fence_ownership=None)
+    r._es_la_raiz_administrada = lambda _p: False
+    r._exigir_fuente_del_subroot = AsyncMock(return_value=None)
+
+    def _meta(mod_path: pathlib.Path, mod_name: str) -> None:
+        if meta_ini_falla:
+            raise OSError("no se pudo escribir meta.ini")
+        (mod_path / "meta.ini").write_text(f"[General]\nname={mod_name}\n", encoding="utf-8")
+
+    r._generate_meta_ini = _meta
+    return r
+
+
+def _poblar_mod_previo(mod_path: pathlib.Path) -> dict[str, bytes]:
+    """Mod anterior poblado, con contenido byte-exacto conocido."""
+    for rel, contenido in _PREVIO_ARCHIVOS.items():
+        destino = mod_path / rel
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(contenido)
+    (mod_path / "meta.ini").write_bytes(_PREVIO_META_INI)
+    return {**_PREVIO_ARCHIVOS, "meta.ini": _PREVIO_META_INI}
+
+
+def _staging_nuevo(base: pathlib.Path, nombre: str = "staging") -> pathlib.Path:
+    """Staging nuevo independiente del mod anterior."""
+    src = base / nombre
+    (src / "meshes").mkdir(parents=True)
+    (src / "textures").mkdir(parents=True)
+    (src / "meshes" / "new.nif").write_bytes(b"N" * 4096)
+    (src / "textures" / "new.dds").write_bytes(b"D" * 512)
+    return src
+
+
+def _leer_arbol(raiz: pathlib.Path) -> dict[str, bytes]:
+    """Contenido byte-exacto del árbol (vacío si la raíz no existe)."""
+    if not raiz.exists():
+        return {}
+    return {p.relative_to(raiz).as_posix(): p.read_bytes() for p in sorted(raiz.rglob("*")) if p.is_file()}
+
+
+def _residuos_de(mod_path: pathlib.Path) -> list[pathlib.Path]:
+    """Backups move-aside del destino — el residuo que el protocolo puede dejar."""
+    if not mod_path.parent.is_dir():
+        return []
+    return sorted(p for p in mod_path.parent.iterdir() if p.name.startswith(f"{mod_path.name}.rollback-"))
+
+
+def _mock_espacio_libre(monkeypatch: pytest.MonkeyPatch, libres: int) -> None:
+    monkeypatch.setattr(
+        runner_mod.shutil,
+        "disk_usage",
+        lambda _p: SimpleNamespace(total=libres, used=0, free=libres),
+    )
+
+
+@pytest.mark.asyncio
+async def test_592_p1_enospc_conserva_el_mod_anterior_byte_exacto(tmp_path, monkeypatch):
+    """P1/P17 — ENOSPC sin snapshot: el mod previo y el source raw sobreviven.
+
+    Es la reproducción directa del finding 2: el presupuesto se agota y el
+    destino anterior NO puede haberse tocado, porque la medición corre antes de
+    cualquier mutación del mod.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    source_antes = _leer_arbol(src)
+    runner = _runner_592(tmp_path)
+    _mock_espacio_libre(monkeypatch, 1)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError, match="espacio"):
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert _leer_arbol(mod_path) == previo, "el mod anterior se perdió (o cambió) al fallar por ENOSPC"
+    assert _leer_arbol(src) == source_antes, "el staging raw debe quedar byte-exacto"
+    assert _residuos_de(mod_path) == [], "un rechazo por capacidad no debe dejar residuo de move-aside"
+
+
+@pytest.mark.asyncio
+async def test_592_p14_el_presupuesto_es_de_coexistencia_y_no_libera_borrando_el_previo(tmp_path, monkeypatch):
+    """P14 — espacio insuficiente para COEXISTIR: fallo seguro, previo intacto.
+
+    Caso discriminante de §8. Con 2,5 GiB libres y un previo de 2 GiB, una
+    solución que borra el previo para recuperar espacio vería 4,5 GiB y copiaría
+    3 GiB "con éxito" destruyendo la última generación. La política correcta
+    exige que ambos árboles convivan: 3 GiB > 2,5 GiB ⇒ rechazo sin mutación.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path)
+    monkeypatch.setattr(runner_mod, "_bytes_del_arbol", lambda _p: 3 * 1024**3)
+    _mock_espacio_libre(monkeypatch, int(2.5 * 1024**3))
+
+    with pytest.raises(runner_mod.DynDOLODValidationError, match="espacio"):
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert _leer_arbol(mod_path) == previo
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p2_copia_parcial_conserva_el_mod_anterior(tmp_path, monkeypatch):
+    """P2/P17 — fallo a mitad de `copytree`: el previo se restaura byte-exacto.
+
+    Demuestra por qué una comprobación de espacio al principio no alcanza: el
+    fallo ocurre DESPUÉS de empezar a escribir el mod nuevo.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    source_antes = _leer_arbol(src)
+    runner = _runner_592(tmp_path)
+
+    def _copytree_parcial(_src: object, dst: object, **_kw: object) -> None:
+        destino = pathlib.Path(str(dst))
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "parcial.bin").write_bytes(b"PARC")
+        raise OSError("fallo de copia a mitad")
+
+    monkeypatch.setattr(runner_mod.shutil, "copytree", _copytree_parcial)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert _leer_arbol(mod_path) == previo, "el mod anterior no volvió byte-exacto tras la copia parcial"
+    assert _residuos_de(mod_path) == [], "el backup debía descartarse al restaurar"
+    assert _leer_arbol(src) == source_antes, "el staging raw debe quedar byte-exacto"
+
+
+@pytest.mark.asyncio
+async def test_592_p3_fallo_de_meta_ini_no_publica_un_mod_incompleto(tmp_path, monkeypatch):
+    """P3 — `meta.ini` falla: no se publica un mod nuevo sin metadata."""
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path, meta_ini_falla=True)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert _leer_arbol(mod_path) == previo, "un `meta.ini` fallido no puede dejar expuesto el mod nuevo"
+    assert not (mod_path / "meshes" / "new.nif").exists()
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p4_primera_instalacion_sin_mod_previo(tmp_path, monkeypatch):
+    """P4 — sin mod anterior el camino sigue siendo válido, y su fallo no deja parcial.
+
+    La corrección no puede asumir que siempre hay algo que preservar: se afirma
+    el éxito limpio Y la ausencia de un "previo preservado" que nunca existió.
+    """
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+
+    src_ok = _staging_nuevo(tmp_path, "staging-ok")
+    runner_ok = _runner_592(tmp_path)
+    empaquetado = await runner_ok._package_output_as_mod(src_ok, "DynDOLOD Output")
+    assert empaquetado == mod_path
+    assert (mod_path / "meshes" / "new.nif").read_bytes() == b"N" * 4096
+    assert (mod_path / "meta.ini").read_text(encoding="utf-8").startswith("[General]")
+    assert _residuos_de(mod_path) == []
+
+    # Segundo escenario: primera instalación que FALLA. No hay previo que
+    # preservar, pero tampoco puede quedar un mod a medias.
+    mod_path_2 = tmp_path / "mods2" / "DynDOLOD Output"
+    src_falla = _staging_nuevo(tmp_path, "staging-falla")
+    runner_falla = _runner_592(tmp_path)
+    runner_falla._config = SimpleNamespace(mo2_mods_path=tmp_path / "mods2", fence_ownership=None)
+    monkeypatch.setattr(
+        runner_mod.shutil,
+        "copytree",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("fallo sin previo")),
+    )
+
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner_falla._package_output_as_mod(src_falla, "DynDOLOD Output")
+
+    assert not mod_path_2.exists(), "sin mod previo, un fallo no debe dejar un parcial publicado"
+    assert _residuos_de(mod_path_2) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p11_rename_del_move_aside_fallido_no_destruye_el_previo(tmp_path, monkeypatch):
+    """P11 — si el move-aside no se puede hacer, fail-closed y previo intacto."""
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path)
+
+    rename_original = pathlib.Path.rename
+
+    def _rename_que_falla(self: pathlib.Path, destino: object) -> None:
+        if self == mod_path:
+            raise OSError("rename bloqueado por otro handle")
+        return rename_original(self, destino)
+
+    monkeypatch.setattr(pathlib.Path, "rename", _rename_que_falla)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert _leer_arbol(mod_path) == previo, "el mod anterior debe quedar donde estaba si no se pudo apartar"
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p10_veto_de_lease_no_restaura_sobre_un_nuevo_dueno(tmp_path, monkeypatch):
+    """P10 — sin exclusividad no se restaura: el backup queda, no se pisa al nuevo dueño."""
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path)
+
+    def _copytree_parcial(_src: object, dst: object, **_kw: object) -> None:
+        destino = pathlib.Path(str(dst))
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "de_otro_dueno.bin").write_bytes(b"AJENO")
+        raise OSError("fallo con lease perdida")
+
+    monkeypatch.setattr(runner_mod.shutil, "copytree", _copytree_parcial)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner._package_output_as_mod(
+            src,
+            "DynDOLOD Output",
+            veto_de_rollback=lambda: False,
+        )
+
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1, "el backup debe quedar en disco para recuperación manual"
+    assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"
+    assert _leer_arbol(mod_path) == {"meshes/de_otro_dueno.bin": b"AJENO"}, (
+        "con la lease perdida no se toca el target: restaurar encima pisaría al dueño concurrente"
+    )
+
+
+@pytest.mark.asyncio
+async def test_592_p12_residuos_de_otros_destinos_no_se_borran(tmp_path, monkeypatch):
+    """P12 — un residuo con forma de backup que no es NUESTRO no se toca.
+
+    El descarte sólo puede alcanzar el backup que este protocolo creó: un
+    `rmtree` por patrón sobre el padre borraría datos ajenos.
+    """
+    src = _staging_nuevo(tmp_path)
+    mods = tmp_path / "mods"
+    mod_path = mods / "DynDOLOD Output"
+    _poblar_mod_previo(mod_path)
+
+    ajeno = mods / "Otro Mod.rollback-123456789012345"
+    ajeno.mkdir(parents=True)
+    (ajeno / "ajeno.bin").write_bytes(b"NO TOCAR")
+    real_ajeno = mods / "Otro Mod"
+    real_ajeno.mkdir()
+    (real_ajeno / "real.bin").write_bytes(b"REAL")
+
+    runner = _runner_592(tmp_path)
+    await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert (ajeno / "ajeno.bin").read_bytes() == b"NO TOCAR"
+    assert (real_ajeno / "real.bin").read_bytes() == b"REAL"
+    assert (mod_path / "meshes" / "new.nif").read_bytes() == b"N" * 4096
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p5_texgen_sustituye_el_mod_previo_conservando_textures(tmp_path, monkeypatch):
+    """P5 — TexGen: la sustitución no aplana el layout `textures/` Data-relative."""
+    src = tmp_path / "staging" / "textures"
+    (src / "terrain").mkdir(parents=True)
+    (src / "terrain" / "new.dds").write_bytes(b"NUEVO")
+
+    mod_path = tmp_path / "mods" / "TexGen Output"
+    (mod_path / "textures" / "terrain").mkdir(parents=True)
+    (mod_path / "textures" / "terrain" / "old.dds").write_bytes(b"VIEJO")
+    (mod_path / "meta.ini").write_bytes(_PREVIO_META_INI)
+
+    runner = _runner_592(tmp_path)
+    await runner._package_output_as_mod(src, "TexGen Output", preservar_directorio_raiz=True)
+
+    assert (mod_path / "textures" / "terrain" / "new.dds").read_bytes() == b"NUEVO"
+    assert not (mod_path / "terrain").exists(), "TexGen debe conservar textures/ como prefijo del mod"
+    assert set(_leer_arbol(mod_path)) == {"textures/terrain/new.dds", "meta.ini"}, (
+        "la versión anterior debe haber sido reemplazada por completo, no fusionada"
+    )
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p16_falla_el_descarte_del_backup_sin_perdida_ni_falso_exito(tmp_path, monkeypatch):
+    """P16 — si el cleanup del backup falla: el mod nuevo está completo y el previo sigue.
+
+    El descarte del backup es la ÚNICA operación que borra la generación
+    anterior, y corre en el camino de ÉXITO. Si falla, no puede haber pérdida
+    silenciosa: ambos árboles quedan en disco y el resultado es el mod nuevo
+    (que sí está completo).
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path)
+
+    rmtree_original = dir_rollback_mod.rmtree_link_aware
+
+    def _rmtree_que_falla(ruta: pathlib.Path, **kwargs: object) -> int:
+        if ".rollback-" in pathlib.Path(ruta).name:
+            raise OSError("handle retenido por el indexador")
+        return rmtree_original(ruta, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dir_rollback_mod, "rmtree_link_aware", _rmtree_que_falla)
+
+    empaquetado = await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    assert empaquetado == mod_path
+    assert (mod_path / "meshes" / "new.nif").read_bytes() == b"N" * 4096
+    assert (mod_path / "meta.ini").exists()
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1, "un backup que no se pudo descartar debe quedar localizable"
+    assert _leer_arbol(residuos[0]) == previo, "no puede haber pérdida: el backup sigue íntegro"
+
+
+@pytest.mark.asyncio
+async def test_592_readonly_el_descarte_del_backup_no_deja_residuo(tmp_path, monkeypatch):
+    """§9 — un mod anterior con archivos READONLY no debe bloquear la sustitución.
+
+    La salida de una corrida previa de DynDOLOD puede quedar con
+    `FILE_ATTRIBUTE_READONLY` (herramienta externa en Windows). El descarte del
+    backup tiene que tolerarlo, o el residuo queda huérfano en el camino de
+    éxito — que es justo donde nadie lo mira.
+    """
+    import stat as stat_mod
+
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    _poblar_mod_previo(mod_path)
+    readonly = mod_path / "meshes" / "previous.nif"
+    readonly.chmod(stat_mod.S_IREAD)
+
+    runner = _runner_592(tmp_path)
+    try:
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+        assert (mod_path / "meshes" / "new.nif").read_bytes() == b"N" * 4096
+        assert _residuos_de(mod_path) == [], "el backup readonly quedó huérfano tras un empaquetado exitoso"
+    finally:
+        # El archivo readonly debe haber sido descartado junto con el backup; si
+        # el fix no funcionó, sigue acá y hay que devolverle el bit de escritura
+        # para que pytest pueda limpiar el tmp_path.
+        if readonly.exists():
+            readonly.chmod(stat_mod.S_IWRITE)
+
+
+@pytest.mark.asyncio
+async def test_592_p9_doble_cancelacion_durante_la_copia_restaura_el_previo(tmp_path, monkeypatch):
+    """P9 — cancel #1/#2 durante la copia: el caller no se libera y el previo vuelve.
+
+    Conserva el orden de R1 (`worker_terminal < rollback_started <
+    lease_released`) con la sustitución activa, y agrega la propiedad nueva: al
+    final del unwind el mod anterior está de vuelta byte-exacto.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+
+    runner = _runner_592(tmp_path)
+    monkeypatch.setattr(runner_mod, "link_kind_or_raise_with_retry", lambda _p: None)
+
+    copia_arranco = threading.Event()
+    permitir_copia = threading.Event()
+    orden: list[str] = []
+    eventos: asyncio.Queue[str] = asyncio.Queue()
+
+    def _copytree_bloqueado(*args: object, **kwargs: object):
+        copia_arranco.set()
+        assert permitir_copia.wait(timeout=30), "el test no liberó la copia"
+        orden.append("copia_terminada")
+        return shutil.copytree(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod.shutil, "copytree", _copytree_bloqueado)
+
+    rollback_started = threading.Event()
+    lease_released = threading.Event()
+
+    async def _caller() -> None:
+        try:
+            await runner._package_output_as_mod(src, "DynDOLOD Output")
+        except asyncio.CancelledError:
+            orden.append("cancel_propagado")
+            raise
+        finally:
+            orden.append("rollback_started")
+            rollback_started.set()
+            orden.append("lease_released")
+            lease_released.set()
+
+    tarea = asyncio.create_task(_caller())
+    try:
+        with _observar_cancelaciones(orden, eventos):
+            assert await asyncio.to_thread(copia_arranco.wait, 10), "la copia no arrancó"
+            tarea.cancel()
+            assert await asyncio.wait_for(eventos.get(), timeout=5) == "cancel_1_procesada"
+            assert not tarea.done(), "cancel #1 liberó al caller antes de worker_terminal"
+            assert not rollback_started.is_set()
+            assert not lease_released.is_set()
+
+            tarea.cancel()
+            assert await asyncio.wait_for(eventos.get(), timeout=5) == "cancel_2_procesada"
+            assert not tarea.done(), "cancel #2 liberó al caller antes de worker_terminal"
+            assert not rollback_started.is_set()
+
+            permitir_copia.set()
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+    finally:
+        permitir_copia.set()
+        if not tarea.done():
+            tarea.cancel()
+        with contextlib.suppress(BaseException):
+            await tarea
+
+    assert orden.index("worker_terminal") < orden.index("cancel_propagado") < orden.index("rollback_started")
+    assert orden.index("rollback_started") < orden.index("lease_released")
+    assert _leer_arbol(mod_path) == previo, "tras el doble cancel el mod anterior debe volver byte-exacto"
+    assert _residuos_de(mod_path) == []
+
+
+@pytest.mark.asyncio
+async def test_592_p15_muerte_dura_entre_el_move_aside_y_la_copia_es_recuperable(tmp_path):
+    """P15 — el residuo del move-aside es el que `rollback_reconciler` ya reconoce.
+
+    Una muerte dura (SIGKILL/corte) después del move-aside y antes de que el
+    nuevo mod exista deja `<mod>.rollback-<nonce>` sin destino. El protocolo NO
+    inventa un recovery paralelo: reutiliza el nombre que el reconciliador de
+    arranque ya sabe identificar y restaurar.
+    """
+    import sky_claw.local.tools.rollback_reconciler as recon_mod
+
+    mods = tmp_path / "mods"
+    mod_path = mods / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+
+    # La muerte dura: move-aside hecho, restore nunca ejecutado. El stack NO se
+    # sale a propósito — salir ejecutaría el `__aexit__` que la muerte dura evita.
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    pila = contextlib.AsyncExitStack()
+    await pila.enter_async_context(DirectoryRollback(mod_path))
+    assert not mod_path.exists(), "el move-aside debe haber apartado el mod"
+
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1
+    assert recon_mod._listar_backups_move_aside([mod_path]) == residuos, (
+        "el nombre del residuo debe ser el que el reconciliador ya enumera"
+    )
+
+    acc = recon_mod._Acumulador()
+    await recon_mod._reconciliar_move_aside([mod_path], acc)
+    assert acc.restaurados == [mod_path]
+    assert acc.preservados == []
+    assert _leer_arbol(mod_path) == previo, "el reconciliador debe devolver el último estado bueno"
+    assert _residuos_de(mod_path) == []
+
+
+def test_592_ancla_ast_el_previo_solo_se_aparta_bajo_el_protocolo_y_tras_el_presupuesto():
+    """Ancla de forma: enumera las tres propiedades del mecanismo en el código real.
+
+    Congela, sobre `_package_output_as_mod`:
+    (1) NO existe ningún borrado directo del mod (`rmtree_link_aware`) — el
+        único camino que puede tocar el destino anterior es el protocolo de
+        rollback, que lo aparta en O(1) y lo devuelve ante cualquier fallo;
+    (2) la sustitución corre dentro de un `async with DirectoryRollback(...)`;
+    (3) el presupuesto ENOSPC se mide —y se invoca— ANTES de ese `async with` y
+        FUERA del worker mutante, así que un rechazo por capacidad no muta el
+        destino. Se ancla por EJECUCIÓN y no por posición en el archivo: ver el
+        comentario de (3a).
+    """
+    arbol = ast.parse(RUNNER_SRC.read_text(encoding="utf-8"))
+    metodo = next(
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "_package_output_as_mod"
+    )
+
+    borrados_directos = [
+        nodo
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "rmtree_link_aware"
+    ]
+    assert borrados_directos == [], (
+        "el packaging no puede borrar el mod anterior directamente: la única vía es el move-aside de DirectoryRollback"
+    )
+
+    async_withs = [
+        nodo
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.AsyncWith)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
+            and item.context_expr.func.id == "DirectoryRollback"
+            for item in nodo.items
+        )
+    ]
+    assert len(async_withs) == 1, "la sustitución del mod anterior debe correr bajo UN DirectoryRollback"
+    sustitucion = async_withs[0]
+    construccion = sustitucion.items[0].context_expr
+    assert isinstance(construccion, ast.Call)
+
+    # (2b) El descarte del backup borra la generación anterior —el árbol que dejó
+    # una herramienta EXTERNA de Windows, con FILE_ATTRIBUTE_READONLY posible—, y
+    # corre en el camino de ÉXITO. Sin el flag, ese OSError lo traga `__aexit__`
+    # por diseño y el residuo queda huérfano donde nadie lo mira. Este ancla es
+    # donde vive el requisito desde que #592 finding 2 sacó a `dyndolod_runner.py`
+    # de `POLITICA_DE_LIMPIAR_READONLY` (ya no invoca `rmtree_link_aware`).
+    flags = {kw.arg: kw.value for kw in construccion.keywords if isinstance(kw.value, ast.Constant)}
+    assert flags.get("limpiar_readonly_al_borrar") is not None
+    assert flags["limpiar_readonly_al_borrar"].value is True, (
+        "el descarte del backup del mod previo debe tolerar el bit read-only de la salida de una herramienta externa"
+    )
+    assert "should_rollback" in {kw.arg for kw in construccion.keywords}, (
+        "la sustitución debe aceptar el veto de lease del servicio: sin él restauraría "
+        "sobre la salida de un dueño concurrente"
+    )
+
+    def _llamadas_de_presupuesto(raiz: ast.AST) -> list[ast.Call]:
+        return [
+            nodo
+            for nodo in ast.walk(raiz)
+            if isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id in {"_espacio_libre_en", "_bytes_del_arbol"}
+        ]
+
+    presupuestos = _llamadas_de_presupuesto(metodo)
+    assert presupuestos, "el packaging debe seguir midiendo el presupuesto de disco"
+
+    # (3a) El worker mutante NO mide el presupuesto.
+    #
+    # Es una propiedad de EJECUCIÓN, y comparar posiciones en el ARCHIVO no
+    # alcanza para congelarla: `_empaquetar_sincrono` se DEFINE antes del
+    # `async with` y se INVOCA dentro, así que cualquier línea de su cuerpo queda
+    # "antes" del move-aside aunque corra después. Un mutante que movía la
+    # medición adentro del worker sobrevivía a la versión anterior de este ancla
+    # por exactamente eso (M01 del barrido de mutación: 0 tests nuevos en rojo).
+    workers = [
+        nodo for nodo in ast.walk(metodo) if isinstance(nodo, ast.FunctionDef) and nodo.name == "_empaquetar_sincrono"
+    ]
+    assert len(workers) == 1, "el packaging debe tener UN worker mutante identificable"
+    assert _llamadas_de_presupuesto(workers[0]) == [], (
+        "el worker que muta el destino NO puede medir el presupuesto: para cuando corre, "
+        "el mod previo ya fue apartado y un rechazo por capacidad ya mutó el destino"
+    )
+
+    # (3b) La medición se INVOCA desde el cuerpo, y antes del `async with`.
+    invocaciones = [
+        nodo
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "to_thread"
+        and any(isinstance(arg, ast.Name) and arg.id == "_presupuesto" for arg in nodo.args)
+    ]
+    assert len(invocaciones) == 1, (
+        "el presupuesto debe INVOCARSE una vez desde el cuerpo del packaging: medirlo "
+        "dentro del worker mutante (o no invocarlo) deja el rechazo por capacidad "
+        "después de la mutación del destino"
+    )
+    assert invocaciones[0].lineno < sustitucion.lineno, (
+        "el presupuesto ENOSPC debe evaluarse ANTES de apartar el mod anterior: "
+        "un rechazo por capacidad no puede haber mutado el destino"
+    )
