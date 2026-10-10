@@ -7,16 +7,20 @@
 >
 > **Fuentes canónicas:** ADR 0001–0013 en este directorio.
 >
-> **Última verificación:** 2026-10-09; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
-> con el diseño de P4 congelado (P4-D0, cuatro rondas adversariales)**.
-> **Revisión base** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
-> post-merge #698): es la base sobre la que se enmendó y **no** contiene §§29–35.
+> **Última verificación:** 2026-10-10; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
+> con el diseño de P4 congelado (P4-D0)**. **El estado vigente es §45**; el índice de
+> rondas adversariales se lee de las secciones **§§35–§45** (no se fija un número de
+> rondas acá: fijarlo volvía frágil este índice).
+> **Base histórica de P0.4** = `origin/main` `5039997a` (cierre de P3 en #682 y hardening
+> post-merge #698): es la base sobre la que se enmendó P0.4 y **no** contiene §§29+.
+> **Baseline congelado de P4-D0** = `af8e726c7195b35c38cd10cdfdef8d3fbfb6803c` (§34): es
+> el punto de partida del trabajo documental de P4-D0, **distinto** de la base histórica.
 > **Revisiones de enmienda** (rondas P0.4 sobre esa base): `f46853b5` (ronda 1, §29),
 > `d930e5b2` (ronda 2, §30), `d8879662` (ronda 3, §31), la ronda 4 (§32), la ronda 4.1
-> (§33) y **P4-D0** (§34, sobre `af8e726c`) con su **ronda adversarial 1** (§35, sobre
-> `81fb83a2`), su **ronda adversarial 2** (§36, sobre `589805ee`), su **ronda
-> adversarial 3** (§37, sobre `1215429b`) y su **ronda adversarial 4** (§38, sobre
-> `6f257e7b`). Ronda 1:
+> (§33) y **P4-D0** (§34, sobre `af8e726c`) con sus **rondas adversariales 1–10**
+> (§§35–§44, sobre `81fb83a2`, `589805ee`, `1215429b`, `6f257e7b` y los HEADs siguientes)
+> y la **ronda adversarial 11** (§45, remediación de la revisión externa del PR #702).
+> Ronda 1:
 > la Generation pasa a ser referencia no ejecutada y el Runtime Clone el Effective
 > Runtime. Ronda 2: el rollback tiene dos autoridades (Generation = versión,
 > `RuntimeSetupManifest` = setup operativo), SFR-16 exige el par Generation+Clone,
@@ -88,7 +92,16 @@
 > §34.4/§36.14/§36.15; la lista normativa de `ApprovalScope` se unifica en **14 campos**
 > sin alias (§35.2 usaba `target_*`); y la **frontera de retención** queda definida por
 > posición (un predecesor ausente en la frontera es válido; un hueco interior es
-> `FAIL_CLOSED`), sin archivos ni campos nuevos. Sigue en estado Propuesta.
+> `FAIL_CLOSED`), sin archivos ni campos nuevos. **P4-D0 rondas adversariales 5–11
+> (§§39–§45):** ordering de emisión de la aprobación y su durabilidad fuera del ledger
+> (witness de emisión, `state/issuances/`), colisión con semántica única, durabilidad
+> terminal, alcance del rollback (`ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY`), deriva
+> de estado normativo y alcance de las preguntas de implementación; y —ronda 11— la
+> **remediación de la revisión externa del PR #702** (validación antes del tombstone,
+> reconstrucción de `last_issued_*` sin restar tombstones, bootstrap de `K`, reserva
+> durable de `finalization_seq`, compatibilidad en el reverify pre-bind, entradas de
+> startup reconciliation y el ordering desired/bind). **Estado vigente: §45.** Sigue en
+> estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
