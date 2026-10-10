@@ -365,7 +365,17 @@ class TelegramSender:
         if not data:
             raise ValueError("send_document: el documento está vacío (Telegram rechaza archivos sin contenido)")
         if len(data) > MAX_DOCUMENT_BYTES:
-            raise ValueError(f"send_document: el documento excede el máximo de {MAX_DOCUMENT_BYTES} bytes")
+            # El rechazo NO es silencioso: nombra el máximo, su unidad y la RAZÓN
+            # (política DERIVADA del deadline). El máximo es más chico que el valor
+            # fijo anterior, así que un caller que adjuntaba el log entero recibe
+            # una acción concreta (mandar la COLA) en vez de un "demasiado grande"
+            # sin explicación.
+            raise ValueError(
+                f"send_document: el documento excede el máximo operativo de {MAX_DOCUMENT_BYTES} bytes "
+                f"({MAX_DOCUMENT_BYTES // _CUANTIZACION_MAX_DOCUMENT_BYTES} MiB), derivado del deadline de subida "
+                f"({UPLOAD_DEADLINE_SECONDS:g}s) y del throughput mínimo asumido "
+                f"({MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND // 1024} KiB/s). Adjuntar la COLA del log."
+            )
 
         nombre = _nombre_de_archivo_seguro(filename)
         texto = caption[:MAX_CAPTION_LENGTH] if caption else None
@@ -377,6 +387,14 @@ class TelegramSender:
             # event loop"), que la política de tests del repo eleva a error, y es la
             # forma que aiohttp recomienda para cuerpos grandes. ``BytesIO`` se lee
             # por trozos (mejor para la cancelación) y es reconstruible por intento.
+            #
+            # Ciclo de vida: ``BytesIO`` no posee ningún recurso del SO (no hay fd
+            # que cerrar); su único recurso es el buffer, que es una COPIA de
+            # ``data``. ``data`` sigue vivo en el frame del caller durante toda la
+            # llamada, así que el pico de memoria es 2× el documento se cierre o no
+            # explícitamente, y en CPython el refcount lo libera al soltar el dict
+            # del formulario. Un ``finally`` no bajaría el pico: sólo haría
+            # determinista la liberación de memoria ya no referenciada.
             form = aiohttp.FormData()
             form.add_field("chat_id", str(chat_id))
             if texto:

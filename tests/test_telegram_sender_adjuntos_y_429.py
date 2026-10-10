@@ -431,6 +431,21 @@ class TestPoliticaDeTamanoOperativo:
 
         gateway.request.assert_not_called()
 
+    async def test_el_rechazo_por_tamano_explica_la_politica_y_la_accion(self) -> None:
+        # El máximo es más chico que el valor fijo anterior: un caller que adjuntaba
+        # el log ENTERO debe recibir la RAZÓN (política derivada del deadline) y la
+        # ACCIÓN concreta (mandar la cola), no un "demasiado grande" sin explicación.
+        sender, gateway = _sender()
+
+        with pytest.raises(ValueError) as excinfo:
+            await sender.send_document(456, b"x" * (sender_mod.MAX_DOCUMENT_BYTES + 1), "a.txt")
+
+        mensaje = str(excinfo.value)
+        assert str(sender_mod.MAX_DOCUMENT_BYTES) in mensaje
+        assert "deadline de subida" in mensaje
+        assert "COLA" in mensaje
+        gateway.request.assert_not_called()
+
     async def test_acepta_exactamente_el_maximo_operativo(self, servidor: _ServidorDeTelegram) -> None:
         sender, sesion = await _sender_contra(servidor)
         contenido = b"x" * sender_mod.MAX_DOCUMENT_BYTES

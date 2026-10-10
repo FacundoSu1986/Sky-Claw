@@ -774,6 +774,60 @@ class TestTimeoutPolicy:
 
         assert self._timeout_pasado(session).total == NEXUS_DOWNLOAD_TIMEOUT_SECONDS
 
+    def test_el_techo_admite_el_deadline_legitimo_mas_largo_del_repo(self) -> None:
+        # Ancla EXPLÍCITA de la RELACIÓN, no sólo del valor 600.0: si el deadline de
+        # Nexus subiera por encima del techo, el gateway acotaría por debajo a un
+        # caller legítimo. El techo NO se deriva de ``sky_claw.config`` a propósito:
+        # la capa de seguridad no debe depender de la configuración de un dominio
+        # (invertiría la dependencia); la relación se ancla acá, en el test.
+        assert NEXUS_DOWNLOAD_TIMEOUT_SECONDS <= network_gateway.MAX_REQUEST_TIMEOUT_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_el_timeout_completo_del_caller_sobrevive_a_cada_hop_del_redirect(self, gw: NetworkGateway) -> None:
+        # La política es UNIFORME por diseño: el caller no puede aflojar un hop
+        # intermedio (sería un vector de bypass del egreso). Eso mismo exige anclar
+        # que ``connect``/``sock_read``/``sock_connect`` viajan intactos a CADA hop:
+        # si un hop recibiera un ``ClientTimeout`` recomputado sin esos campos, el
+        # límite del caller se perdería en silencio.
+        asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[_GatewayResponse(302, {"Location": cdn_url}), _GatewayResponse(200)])
+
+        await gw.request(
+            "GET",
+            asset_url,
+            session,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+            timeout=aiohttp.ClientTimeout(total=30, connect=10, sock_read=5, sock_connect=7),
+        )
+
+        pasados = [call.kwargs["timeout"] for call in session.request.await_args_list]
+        assert [(t.total, t.connect, t.sock_read, t.sock_connect) for t in pasados] == [(30, 10, 5, 7)] * 2
+
+    @pytest.mark.asyncio
+    async def test_el_techo_se_aplica_a_cada_campo_del_timeout_en_cada_hop(self, gw: NetworkGateway) -> None:
+        # El acotado no es sólo de ``total``: un ``sock_read`` enorme es igual de
+        # capaz de colgar un hop, y debe acotarse en TODOS los hops.
+        asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[_GatewayResponse(302, {"Location": cdn_url}), _GatewayResponse(200)])
+
+        await gw.request(
+            "GET",
+            asset_url,
+            session,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+            timeout=aiohttp.ClientTimeout(total=999_999, connect=999_999, sock_read=999_999, sock_connect=999_999),
+        )
+
+        techo = network_gateway.MAX_REQUEST_TIMEOUT_SECONDS
+        pasados = [call.kwargs["timeout"] for call in session.request.await_args_list]
+        assert [(t.total, t.connect, t.sock_read, t.sock_connect) for t in pasados] == [
+            (techo, techo, techo, techo)
+        ] * 2
+
     @pytest.mark.asyncio
     async def test_el_timeout_validado_se_aplica_en_cada_hop_del_redirect(self, gw: NetworkGateway) -> None:
         asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
