@@ -405,16 +405,21 @@ class TelegramSender:
         # Cota TOTAL de la operación, no sólo de cada intento: ``asyncio.timeout``
         # envuelve la espera del rate limit local, los reintentos por 429 y los hops
         # de redirección del gateway (cada hop tiene su deadline, pero el acumulado
-        # queda acotado acá). ``Timeout.expired()`` distingue NUESTRO vencimiento de
-        # un ``TimeoutError`` ajeno o de una cancelación externa, que se propaga
-        # intacta.
+        # queda acotado acá).
         cota = asyncio.timeout(MAX_UPLOAD_TOTAL_SECONDS)
         try:
             async with cota:
                 await self._wait_for_rate_limit(chat_id)
                 return await self._enviar("sendDocument", chat_id, _formulario)
         except TimeoutError as exc:
-            if not cota.expired():
+            # Sólo el vencimiento PROPIO es la cota. ``asyncio.timeout`` re-lanza
+            # encadenando (``raise ... from``) el ``CancelledError`` de SU propia
+            # cancelación, así que el ``TimeoutError`` que produce él es el único
+            # con un ``CancelledError`` como ``__cause__``. Un ``TimeoutError``
+            # AJENO — incluso uno lanzado durante el desenrollado, cuando la cota
+            # YA expiró — no lo lleva y se propaga intacto: ``expired()`` por sí
+            # solo no distingue ese caso y reetiquetaría la causa real.
+            if not cota.expired() or not isinstance(exc.__cause__, asyncio.CancelledError):
                 raise
             raise TelegramUploadTimeoutError(
                 f"send_document: la subida excedió la cota total de {MAX_UPLOAD_TOTAL_SECONDS:g}s "

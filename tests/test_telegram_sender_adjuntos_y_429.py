@@ -774,3 +774,32 @@ class TestCotaTotalDeSubida:
 
         assert not isinstance(excinfo.value, TelegramUploadTimeoutError)
         assert str(excinfo.value) == "de otra capa"
+
+    async def test_un_timeout_ajeno_lanzado_tras_vencer_la_cota_no_se_re_etiqueta(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``cota.expired()`` por sí solo NO alcanza: hace falta mirar la causa.
+
+        Si algo lanza su PROPIO ``TimeoutError`` durante el desenrollado de la
+        cancelación, la cota ya expiró ⇒ ``expired()`` es ``True`` y el error ajeno
+        se reclasificaría como ``TelegramUploadTimeoutError``, perdiendo la causa.
+        Sólo el ``TimeoutError`` que produce ``asyncio.timeout`` lleva como
+        ``__cause__`` el ``CancelledError`` de su propia cancelación.
+        """
+
+        async def _timeout_ajeno(*_args: Any, **_kwargs: Any) -> Any:
+            try:
+                await asyncio.sleep(3600)  # lo cancela la cota
+            except asyncio.CancelledError:
+                raise TimeoutError("ajeno, durante el desenrollado") from None
+
+        gateway = MagicMock()
+        gateway.request = AsyncMock(side_effect=_timeout_ajeno)
+        sender = TelegramSender(bot_token=_TOKEN, gateway=gateway, session=MagicMock(spec=aiohttp.ClientSession))
+        monkeypatch.setattr(sender_mod, "MAX_UPLOAD_TOTAL_SECONDS", 0.05)
+
+        with pytest.raises(TimeoutError) as excinfo:
+            await sender.send_document(456, b"x", "a.txt")
+
+        assert not isinstance(excinfo.value, TelegramUploadTimeoutError)
+        assert str(excinfo.value) == "ajeno, durante el desenrollado"
