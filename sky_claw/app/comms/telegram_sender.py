@@ -8,7 +8,9 @@ All outbound traffic goes through :class:`NetworkGateway`.
 
 La subida de documentos sigue una política acotada: un máximo operativo derivado
 (:data:`MAX_DOCUMENT_BYTES`) consistente con el deadline del gateway, y una cota
-total de duración (:data:`MAX_UPLOAD_TOTAL_SECONDS`) que incluye los reintentos.
+total de duración (:data:`MAX_UPLOAD_TOTAL_SECONDS`) que ``send_document`` IMPONE
+— no sólo documenta — sobre la operación completa (rate limit local + reintentos
+por 429 + hops de redirección).
 """
 
 from __future__ import annotations
@@ -34,9 +36,60 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _deadline_de_subida(total: float | None) -> float:
+    """``total`` del gateway como deadline positivo y finito de la política de subida.
+
+    Falla RUIDOSAMENTE si el gateway quedara sin deadline. Un ``or 0.0`` silencioso
+    derivaría un presupuesto negativo y un :data:`MAX_DOCUMENT_BYTES` absurdo: el
+    rechazo se leería como "documento demasiado grande" cuando el defecto real es
+    "la política no se pudo derivar".
+    """
+    if total is None or not math.isfinite(total) or total <= 0:
+        raise RuntimeError(
+            f"telegram_sender: DEFAULT_REQUEST_TIMEOUT.total={total!r} no es un deadline finito y positivo; "
+            "la política de subida no puede derivarse"
+        )
+    return float(total)
+
+
+def _margen_de_conexion(timeout: aiohttp.ClientTimeout) -> float:
+    """Segundos del deadline reservados al establecimiento de la conexión.
+
+    aiohttp usa ``total`` cuando ``connect`` es ``None``, así que ese es el margen
+    REAL que hay que reservar. Reservar de menos (p. ej. un 5.0 fijo mientras
+    ``connect`` permite 10 s) publica un máximo que no entra en el deadline cuando
+    el handshake consume su presupuesto completo.
+    """
+    margen = timeout.connect if timeout.connect is not None else timeout.total
+    if margen is None or not math.isfinite(margen) or margen <= 0:
+        raise RuntimeError(f"telegram_sender: DEFAULT_REQUEST_TIMEOUT.connect={margen!r} no es un margen válido")
+    return float(margen)
+
+
+def _presupuesto_de_transferencia(deadline: float, margen: float) -> float:
+    """Presupuesto de transferencia de bytes, o fallo RUIDOSO si no queda ninguno.
+
+    Un presupuesto ≤ 0 derivaría ``MAX_DOCUMENT_BYTES = 0``: la política rechazaría
+    TODO documento y el síntoma ("documento demasiado grande") no señalaría la causa.
+    """
+    presupuesto = deadline - margen
+    if presupuesto <= 0:
+        raise RuntimeError(
+            f"telegram_sender: el margen de conexión ({margen!r}s) consume el deadline ({deadline!r}s); "
+            "no queda presupuesto de transferencia"
+        )
+    return presupuesto
+
+
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/"
 MAX_MESSAGE_LENGTH = 4096
 MAX_MESSAGES_PER_MINUTE = 20
+
+#: Ventana del rate limit local por chat. :meth:`TelegramSender._wait_for_rate_limit`
+#: puede dormir casi esta ventana completa, así que forma parte de la cota TOTAL de
+#: una subida (no de cada petición).
+RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 #: Límite de ``caption`` de la Bot API (1024 caracteres tras el parseo).
 MAX_CAPTION_LENGTH = 1024
@@ -50,25 +103,33 @@ TELEGRAM_BOT_API_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 #: Deadline por hop que el :class:`NetworkGateway` aplica cuando el caller no fija
 #: uno. La política de subida lo toma como TECHO: un documento que no entre en este
 #: presupuesto se corta con ``NetworkGatewayTimeoutError``.
-UPLOAD_DEADLINE_SECONDS = float(DEFAULT_REQUEST_TIMEOUT.total or 0.0)
+UPLOAD_DEADLINE_SECONDS = _deadline_de_subida(DEFAULT_REQUEST_TIMEOUT.total)
 
-#: Margen dentro del deadline reservado para handshake TLS, cabeceras multipart y
-#: lectura de la respuesta. Lo que queda es presupuesto de transferencia de bytes.
-UPLOAD_SETUP_MARGIN_SECONDS = 5.0
+#: Margen dentro del deadline reservado al establecimiento de la conexión — el
+#: ``connect`` REAL del gateway, no un valor fijo. Lo que queda es presupuesto de
+#: transferencia de bytes.
+UPLOAD_SETUP_MARGIN_SECONDS = _margen_de_conexion(DEFAULT_REQUEST_TIMEOUT)
 
 #: Presupuesto efectivo de transferencia de bytes de una subida.
-UPLOAD_TRANSFER_BUDGET_SECONDS = UPLOAD_DEADLINE_SECONDS - UPLOAD_SETUP_MARGIN_SECONDS
+UPLOAD_TRANSFER_BUDGET_SECONDS = _presupuesto_de_transferencia(UPLOAD_DEADLINE_SECONDS, UPLOAD_SETUP_MARGIN_SECONDS)
 
 #: Throughput mínimo que la política asume para un enlace de salida (~2 Mbit/s).
 #: Por debajo de esto la subida NO está garantizada: el gateway la corta.
 MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND = 256 * 1024
 
+#: Unidad a la que se trunca (HACIA ABAJO) el máximo publicado.
+_CUANTIZACION_MAX_DOCUMENT_BYTES = 1024 * 1024
+
 #: Máximo operativo de ``send_document``. DERIVADO del presupuesto de subida y del
 #: throughput mínimo asumido — no un número mágico — para que el límite publicado
 #: sea consistente con el deadline del gateway (defecto de #705: 45 MiB exigían
-#: ≈1 MiB/s sostenido y el contrato era internamente inconsistente). Queda muy por
-#: debajo del tope de la Bot API. El caller adjunta la COLA del log, no el archivo.
-MAX_DOCUMENT_BYTES = int(UPLOAD_TRANSFER_BUDGET_SECONDS * MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND)
+#: ≈1 MiB/s sostenido y el contrato era internamente inconsistente). Se trunca a un
+#: múltiplo entero de MiB hacia abajo para no publicar un borde que consuma el
+#: presupuesto hasta el último segundo. Queda muy por debajo del tope de la Bot API.
+#: El caller adjunta la COLA del log, no el archivo.
+MAX_DOCUMENT_BYTES = (
+    int(UPLOAD_TRANSFER_BUDGET_SECONDS * MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND) // _CUANTIZACION_MAX_DOCUMENT_BYTES
+) * _CUANTIZACION_MAX_DOCUMENT_BYTES
 
 #: Reintentos tras un 429 (además del intento inicial). Acotado a propósito: un
 #: aviso de fallo que no entra tras ``1 + N`` intentos se reporta, no se encola
@@ -82,11 +143,16 @@ _RETRY_AFTER_MAX_SEGUNDOS = 30.0
 #: Espera cuando Telegram responde 429 sin ``retry_after`` legible.
 _RETRY_AFTER_POR_DEFECTO = 1.0
 
-#: Peor caso acumulado de una subida: (1 + reintentos) × deadline por intento +
-#: Σ esperas de ``retry_after``. Cota EXPLÍCITA de la política, no sólo por
-#: petición: un aviso de fallo no puede bloquear al caller más allá de esto.
-MAX_UPLOAD_TOTAL_SECONDS = (1 + _MAX_REINTENTOS_429) * UPLOAD_DEADLINE_SECONDS + (
-    _MAX_REINTENTOS_429 * _RETRY_AFTER_MAX_SEGUNDOS
+#: Cota TOTAL de una subida — que :meth:`TelegramSender.send_document` IMPONE, no
+#: sólo documenta, con un ``asyncio.timeout`` alrededor de TODA la operación:
+#:   espera del rate limit local + (1 + reintentos) × deadline por intento
+#:   + Σ esperas de ``retry_after``.
+#: Los hops de redirección quedan SUBORDINADOS a esta cota: cada hop tiene su propio
+#: deadline, pero el acumulado no puede excederla.
+MAX_UPLOAD_TOTAL_SECONDS = (
+    RATE_LIMIT_WINDOW_SECONDS
+    + (1 + _MAX_REINTENTOS_429) * UPLOAD_DEADLINE_SECONDS
+    + _MAX_REINTENTOS_429 * _RETRY_AFTER_MAX_SEGUNDOS
 )
 
 _NOMBRE_DE_ARCHIVO_MAX = 100
@@ -109,6 +175,17 @@ class TelegramRateLimitError(TelegramSendError):
     def __init__(self, message: str, *, retry_after: float) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class TelegramUploadTimeoutError(TelegramSendError):
+    """La subida excedió la cota TOTAL de la política (:data:`MAX_UPLOAD_TOTAL_SECONDS`).
+
+    Subclase de :class:`TelegramSendError`: los callers existentes la siguen
+    atrapando. Distingue "se agotó el acumulado de la operación" (rate limit local
+    + reintentos + hops) de "el gateway cortó un hop"
+    (:class:`~sky_claw.app.security.network_gateway.NetworkGatewayTimeoutError`):
+    son fallos distintos y el caller puede querer tratarlos distinto.
+    """
 
 
 def _como_segundos(valor: object) -> float | None:
@@ -268,6 +345,12 @@ class TelegramSender:
         subida con ``NetworkGatewayTimeoutError`` — un fallo observable, nunca un
         éxito fabricado.
 
+        Política de duración: TODA la operación (espera del rate limit local,
+        reintentos por 429 y hops de redirección) está envuelta en un
+        ``asyncio.timeout`` de :data:`MAX_UPLOAD_TOTAL_SECONDS`, así que la cota
+        acumulada se IMPONE y no sólo se documenta. Una cancelación externa NO se
+        convierte en timeout.
+
         El documento se envía como ``BytesIO`` (leído por trozos): un body grande
         no bloquea el event loop y la cancelación externa se procesa durante la
         subida. El costo es una copia transitoria del buffer (≤ 2× el documento).
@@ -275,6 +358,7 @@ class TelegramSender:
         Raises:
             ValueError: ``data`` vacío o por encima de :data:`MAX_DOCUMENT_BYTES`
                 (error del caller, se detecta antes de tocar la red).
+            TelegramUploadTimeoutError: se agotó la cota total de la operación.
             TelegramRateLimitError: flood-control que los reintentos no absorbieron.
             TelegramSendError: cualquier otra falla de la API.
         """
@@ -300,8 +384,24 @@ class TelegramSender:
             form.add_field("document", io.BytesIO(data), filename=nombre, content_type="text/plain")
             return {"data": form}
 
-        await self._wait_for_rate_limit(chat_id)
-        return await self._enviar("sendDocument", chat_id, _formulario)
+        # Cota TOTAL de la operación, no sólo de cada intento: ``asyncio.timeout``
+        # envuelve la espera del rate limit local, los reintentos por 429 y los hops
+        # de redirección del gateway (cada hop tiene su deadline, pero el acumulado
+        # queda acotado acá). ``Timeout.expired()`` distingue NUESTRO vencimiento de
+        # un ``TimeoutError`` ajeno o de una cancelación externa, que se propaga
+        # intacta.
+        cota = asyncio.timeout(MAX_UPLOAD_TOTAL_SECONDS)
+        try:
+            async with cota:
+                await self._wait_for_rate_limit(chat_id)
+                return await self._enviar("sendDocument", chat_id, _formulario)
+        except TimeoutError as exc:
+            if not cota.expired():
+                raise
+            raise TelegramUploadTimeoutError(
+                f"send_document: la subida excedió la cota total de {MAX_UPLOAD_TOTAL_SECONDS:g}s "
+                f"({_MAX_REINTENTOS_429} reintentos incluidos)"
+            ) from exc
 
     async def _enviar(
         self,
@@ -383,12 +483,12 @@ class TelegramSender:
         times = self._send_times[chat_id]
         now = time.monotonic()
 
-        # Prune entries older than 60 seconds.
-        while times and now - times[0] > 60.0:
+        # Prune entries older than the rate-limit window.
+        while times and now - times[0] > RATE_LIMIT_WINDOW_SECONDS:
             times.popleft()
 
         if len(times) >= self._rate_limit:
-            wait_seconds = 60.0 - (now - times[0])
+            wait_seconds = RATE_LIMIT_WINDOW_SECONDS - (now - times[0])
             if wait_seconds > 0:
                 logger.debug("Rate limit for chat_id=%d, waiting %.1fs", chat_id, wait_seconds)
                 await asyncio.sleep(wait_seconds)

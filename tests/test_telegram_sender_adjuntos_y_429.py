@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,6 +35,7 @@ from sky_claw.app.comms.telegram_sender import (
     TelegramRateLimitError,
     TelegramSender,
     TelegramSendError,
+    TelegramUploadTimeoutError,
 )
 from sky_claw.app.security import network_gateway as gateway_mod
 from sky_claw.app.security.network_gateway import (
@@ -364,8 +366,14 @@ class TestPoliticaDeTamanoOperativo:
     """
 
     def test_el_maximo_operativo_se_deriva_del_presupuesto_y_el_throughput(self) -> None:
-        esperado = int(sender_mod.UPLOAD_TRANSFER_BUDGET_SECONDS * sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND)
-        assert esperado == sender_mod.MAX_DOCUMENT_BYTES, "el máximo debe ser un número DERIVADO, no mágico"
+        crudo = int(sender_mod.UPLOAD_TRANSFER_BUDGET_SECONDS * sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND)
+        cuantizado = (
+            crudo // sender_mod._CUANTIZACION_MAX_DOCUMENT_BYTES
+        ) * sender_mod._CUANTIZACION_MAX_DOCUMENT_BYTES
+        assert cuantizado == sender_mod.MAX_DOCUMENT_BYTES, "el máximo debe ser un número DERIVADO, no mágico"
+
+    def test_el_maximo_operativo_es_un_multiplo_exacto_de_la_cuantizacion(self) -> None:
+        assert sender_mod.MAX_DOCUMENT_BYTES % sender_mod._CUANTIZACION_MAX_DOCUMENT_BYTES == 0
 
     def test_el_maximo_operativo_es_menor_que_el_de_la_bot_api(self) -> None:
         assert sender_mod.MAX_DOCUMENT_BYTES < sender_mod.TELEGRAM_BOT_API_MAX_DOCUMENT_BYTES
@@ -377,14 +385,33 @@ class TestPoliticaDeTamanoOperativo:
         assert sender_mod.UPLOAD_TRANSFER_BUDGET_SECONDS < sender_mod.UPLOAD_DEADLINE_SECONDS
         assert gateway_mod.DEFAULT_REQUEST_TIMEOUT.total == sender_mod.UPLOAD_DEADLINE_SECONDS
 
+    def test_el_margen_reservado_cubre_todo_el_connect_del_gateway(self) -> None:
+        # El margen NO es un valor fijo elegido a mano: es el ``connect`` REAL del
+        # gateway. Reservar menos (el 5.0 anterior) publicaba un máximo que no entra
+        # en el deadline si el handshake consumía su presupuesto completo.
+        assert gateway_mod.DEFAULT_REQUEST_TIMEOUT.connect == sender_mod.UPLOAD_SETUP_MARGIN_SECONDS
+
+    def test_el_maximo_transmitido_mas_el_margen_entran_en_el_deadline(self) -> None:
+        # La garantía que la política PUBLICA: un documento admitido, transmitido al
+        # throughput mínimo asumido, cabe en el deadline aunque el handshake consuma
+        # TODO su presupuesto.
+        segundos_de_transferencia = sender_mod.MAX_DOCUMENT_BYTES / sender_mod.MIN_UPLOAD_THROUGHPUT_BYTES_PER_SECOND
+        assert segundos_de_transferencia + sender_mod.UPLOAD_SETUP_MARGIN_SECONDS <= sender_mod.UPLOAD_DEADLINE_SECONDS
+
     def test_el_peor_caso_total_de_una_subida_esta_acotado(self) -> None:
-        # La política debe acotar el ACUMULADO, no sólo cada petición: intentos ×
-        # deadline por intento + Σ esperas de retry_after.
+        # La política debe acotar el ACUMULADO, no sólo cada petición: la espera del
+        # rate limit local + intentos × deadline por intento + Σ esperas de
+        # retry_after. Omitir la espera del rate limit dejaba fuera hasta 60 s.
         intentos = sender_mod._MAX_REINTENTOS_429 + 1
-        esperado = intentos * sender_mod.UPLOAD_DEADLINE_SECONDS + sender_mod._MAX_REINTENTOS_429 * (
-            sender_mod._RETRY_AFTER_MAX_SEGUNDOS
+        esperado = (
+            sender_mod.RATE_LIMIT_WINDOW_SECONDS
+            + intentos * sender_mod.UPLOAD_DEADLINE_SECONDS
+            + sender_mod._MAX_REINTENTOS_429 * sender_mod._RETRY_AFTER_MAX_SEGUNDOS
         )
         assert esperado == sender_mod.MAX_UPLOAD_TOTAL_SECONDS
+
+    def test_la_cota_total_domina_la_espera_del_rate_limit_local(self) -> None:
+        assert sender_mod.MAX_UPLOAD_TOTAL_SECONDS > sender_mod.RATE_LIMIT_WINDOW_SECONDS
 
     async def test_rechaza_un_byte_por_encima_del_maximo_sin_tocar_la_red(self) -> None:
         sender, gateway = _sender()
@@ -437,6 +464,46 @@ class TestPoliticaDeTamanoOperativo:
         await sender.send_document(456, b"x", "a.txt")
 
         resp.__aexit__.assert_awaited()
+
+
+class TestDerivacionDeLaPolitica:
+    """La derivación debe FALLAR RUIDOSAMENTE, no enmascarar una mala configuración.
+
+    ``TestPoliticaDeTamanoOperativo`` ancla las constantes YA derivadas (se
+    calcularon al importar). Estos tests ejercen la función de derivación con
+    entradas DISTINTAS — incluida la mala configuración — de modo que el defecto
+    (un ``or 0.0`` silencioso) se rechace sin depender de recargar el módulo.
+    """
+
+    @pytest.mark.parametrize("total", [None, 0, 0.0, -1.0, float("nan"), float("inf")])
+    def test_un_deadline_ausente_o_no_finito_no_se_enmascara(self, total: float | None) -> None:
+        with pytest.raises(RuntimeError, match="no es un deadline finito y positivo"):
+            sender_mod._deadline_de_subida(total)
+
+    def test_un_deadline_valido_se_conserva(self) -> None:
+        assert sender_mod._deadline_de_subida(45.0) == 45.0
+
+    def test_el_margen_es_el_connect_real_del_gateway(self) -> None:
+        assert sender_mod._margen_de_conexion(aiohttp.ClientTimeout(total=45, connect=10)) == 10.0
+
+    def test_el_margen_cae_al_total_cuando_connect_es_none(self) -> None:
+        # aiohttp usa ``total`` si ``connect`` es ``None``: ese es el margen real.
+        assert sender_mod._margen_de_conexion(aiohttp.ClientTimeout(total=45)) == 45.0
+
+    @pytest.mark.parametrize("connect", [0, -1.0, float("nan")])
+    def test_un_margen_invalido_no_se_enmascara(self, connect: float) -> None:
+        with pytest.raises(RuntimeError, match="no es un margen válido"):
+            sender_mod._margen_de_conexion(aiohttp.ClientTimeout(total=45, connect=connect))
+
+    def test_un_presupuesto_no_positivo_no_se_enmascara(self) -> None:
+        # Sin este guardia, ``connect == total`` derivaría MAX_DOCUMENT_BYTES = 0 y
+        # TODA subida se rechazaría como "demasiado grande": el síntoma taparía la
+        # causa real.
+        with pytest.raises(RuntimeError, match="no queda presupuesto de transferencia"):
+            sender_mod._presupuesto_de_transferencia(45.0, 45.0)
+
+    def test_un_presupuesto_positivo_se_conserva(self) -> None:
+        assert sender_mod._presupuesto_de_transferencia(45.0, 10.0) == 35.0
 
 
 # ---------------------------------------------------------------------------
@@ -582,3 +649,89 @@ class TestDeadlineDeSubida:
             assert not sesion.connector._acquired, "la conexión abortada debe volver al pool, no quedar retenida"
         finally:
             await sesion.close()
+
+
+# ---------------------------------------------------------------------------
+# #705 — cota TOTAL de la subida (IMPONE, no sólo documenta)
+# ---------------------------------------------------------------------------
+
+
+class TestCotaTotalDeSubida:
+    """``MAX_UPLOAD_TOTAL_SECONDS`` debe IMPONERSE sobre la operación completa.
+
+    Defecto de la revisión: la constante se documentaba como cota acumulada pero
+    nada la aplicaba — el gateway sólo acota CADA hop, así que la suma de rate
+    limit local (≤ 60 s) + reintentos + hops de redirección no tenía techo. La
+    autoridad de estos tests es la cota inyectada, no el tiempo real medido: el
+    ``asyncio.timeout`` corta en cuanto vence, sin esperar el plazo nominal.
+    """
+
+    def test_la_cota_total_es_un_limite_finito_y_positivo(self) -> None:
+        assert math.isfinite(sender_mod.MAX_UPLOAD_TOTAL_SECONDS)
+        assert sender_mod.MAX_UPLOAD_TOTAL_SECONDS > 0
+
+    def test_el_error_de_cota_lo_siguen_atrapando_los_callers_existentes(self) -> None:
+        assert issubclass(TelegramUploadTimeoutError, TelegramSendError)
+
+    async def test_la_espera_del_rate_limit_local_esta_dentro_de_la_cota(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sender, _gateway = _sender(_ok(), _ok())
+        sender._rate_limit = 1
+        await sender.send_document(456, b"x", "a.txt")
+
+        # El segundo adjunto quedaría ~60 s esperando el slot del rate limit local.
+        monkeypatch.setattr(sender_mod, "MAX_UPLOAD_TOTAL_SECONDS", 0.05)
+
+        with pytest.raises(TelegramUploadTimeoutError, match="cota total"):
+            await sender.send_document(456, b"y", "b.txt")
+
+    async def test_la_espera_del_backoff_429_esta_dentro_de_la_cota(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sender, _gateway = _sender(_429(retry_after=30), _ok())
+        monkeypatch.setattr(sender_mod, "MAX_UPLOAD_TOTAL_SECONDS", 0.05)
+
+        # Sin la cota, este ``asyncio.sleep(30.0)`` del backoff bloquearía al caller.
+        with pytest.raises(TelegramUploadTimeoutError, match="cota total"):
+            await sender.send_document(456, b"x", "a.txt")
+
+    async def test_la_cota_corta_la_subida_real_antes_que_el_deadline_del_hop(
+        self, enlace: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # La cota se IMPONE sobre la operación real (gateway real + servidor real):
+        # con un enlace detenido y una cota más corta que el deadline del gateway,
+        # el fallo reportado es el de la cota total, no el del hop.
+        monkeypatch.setattr(sender_mod, "MAX_UPLOAD_TOTAL_SECONDS", 0.05)
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            with pytest.raises(TelegramUploadTimeoutError, match="cota total"):
+                await sender.send_document(456, b"x" * 4096, "log.txt")
+        finally:
+            await sesion.close()
+
+    async def test_una_cancelacion_externa_no_se_reporta_como_vencimiento_de_la_cota(self, enlace: Any) -> None:
+        # ``Timeout.expired()`` distingue NUESTRO vencimiento de una cancelación
+        # ajena: si se re-etiquetara, el caller perdería la señal de cancelación.
+        servidor = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(servidor)
+        try:
+            tarea = asyncio.create_task(sender.send_document(456, b"x" * 4096, "log.txt"))
+            await asyncio.wait_for(servidor.recibido.wait(), timeout=5)
+            tarea.cancel()
+            with pytest.raises(asyncio.CancelledError) as excinfo:
+                await tarea
+            assert not isinstance(excinfo.value, TelegramUploadTimeoutError)
+        finally:
+            await sesion.close()
+
+    async def test_un_timeout_ajeno_no_se_re_etiqueta_como_vencimiento_de_la_cota(self) -> None:
+        # Sólo el vencimiento PROPIO es la cota: un ``TimeoutError`` de otra capa
+        # debe propagarse intacto. Re-etiquetarlo taparía la causa real y haría que
+        # el caller buscara el problema en la política de subida.
+        gateway = MagicMock()
+        gateway.request = AsyncMock(side_effect=TimeoutError("de otra capa"))
+        sender = TelegramSender(bot_token=_TOKEN, gateway=gateway, session=MagicMock(spec=aiohttp.ClientSession))
+
+        with pytest.raises(TimeoutError) as excinfo:
+            await sender.send_document(456, b"x", "a.txt")
+
+        assert not isinstance(excinfo.value, TelegramUploadTimeoutError)
+        assert str(excinfo.value) == "de otra capa"
