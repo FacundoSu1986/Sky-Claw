@@ -547,7 +547,8 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
 
     Contrato post-merge: la fila deja de ser ``Parcial``, cita el merge commit y no
     puede volver a declarar el estado pre-merge. Además el tracking conserva lo que
-    NO se cerró: #592 sigue abierto por sus otros findings y R3 sigue OPEN.
+    NO se cerró: #592 sigue abierto por sus otros findings, y R3 —que sí tiene fix—
+    queda en ``Parcial`` con ``merge_status=PENDING`` hasta que su PR se mergee.
     """
     fila = _tabla()["Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)"]
     estado = fila["Qué falta"]
@@ -587,11 +588,17 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
         assert frase_obsoleta not in estado, f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
         assert frase_obsoleta not in fila["Cerrado en"], f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
 
-    # R3 sigue abierto: el bookkeeping de R2 no lo adelanta.
+    # R3 no se adelanta: su PR sigue abierto, así que la fila queda en `Parcial`
+    # con el fix declarado y `merge_status=PENDING` — nunca `Cerrado`/`MERGED`.
     fila_r3 = _tabla()["Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)"]
-    assert fila_r3["Estado"] == "Abierto"
-    assert "resolution_status=OPEN" in fila_r3["Qué falta"]
+    assert fila_r3["Estado"] == "Parcial"
+    assert "pendiente de merge" in fila_r3["Cerrado en"]
+    assert "resolution_status=FIXED" in fila_r3["Qué falta"]
     assert "evidence_status=REPRODUCED" in fila_r3["Qué falta"]
+    assert "merge_status=PENDING" in fila_r3["Qué falta"]
+    assert "merge_status=MERGED" not in fila_r3["Qué falta"], (
+        "R3 no puede declararse MERGED antes de que su PR se mergee"
+    )
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

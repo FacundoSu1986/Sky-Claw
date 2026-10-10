@@ -14,7 +14,7 @@
 | `30_architect_b_hibrida.md` | ARQUITECTO B — híbrido determinista + IA opcional (MODE 0/1/2). Secciones A–U. |
 | `40_critica_cruzada.md` | A critica B, B critica A. Cada cargo con evidencia o experimento. |
 | `50_sintesis_c.md` | SYNTHESIS C — componentes que sobreviven, matriz de decisión, roadmap por PRs. |
-| `CLEAN_ROOM.md` | Política clean-room propuesta (qué NO se acepta en el repo, qué sí). |
+| `CLEAN_ROOM.md` | Puntero: la política dejó de ser propuesta y está vigente en [`/CLEAN_ROOM.md`](../../../../CLEAN_ROOM.md) (ADR 0013). |
 
 ## Método de evidencia
 

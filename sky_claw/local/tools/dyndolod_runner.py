@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import configparser
-import contextlib
 import enum
 import hashlib
 import logging
@@ -326,6 +325,120 @@ def _espacio_libre_en(destino: pathlib.Path) -> int:
     return shutil.disk_usage(probe).free
 
 
+#: Etiquetas de observabilidad del terminal handoff. R1 (packaging) y R3
+#: (limpieza del proceso) son DOS call sites del MISMO mecanismo, así que el
+#: núcleo es uno solo y cada familia aporta su `operation_type` — el
+#: `pipeline_stage`/`tx_id` los pone el núcleo, porque son los mismos.
+_OPERACION_HANDOFF_PACKAGING = "dyndolod_packaging_cancel_handoff"
+_OPERACION_TERMINAL_PACKAGING = "dyndolod_packaging_cancel_terminal"
+_OPERACION_FALLA_PACKAGING = "dyndolod_packaging_worker_falla_en_handoff"
+
+_OPERACION_LIMPIEZA_HANDOFF = "dyndolod_cleanup_cancel_handoff"
+_OPERACION_LIMPIEZA_TERMINAL = "dyndolod_cleanup_terminal"
+_OPERACION_LIMPIEZA_FALLA = "dyndolod_cleanup_falla"
+
+#: Re-conducciones máximas de una etapa cuya Task fue cancelada por un tercero.
+#: Un `done()` producido por cancelación NO es evidencia de trabajo completado
+#: (el proceso puede haber quedado sin reapear), así que la etapa lógica se
+#: re-conduce. El tope evita un loop infinito si alguien cancelara la etapa en
+#: bucle: agotado, la limpieza lo REPORTA como falla en vez de declararse
+#: exitosa.
+_MAX_RECONDUCCIONES_DE_ETAPA = 3
+
+
+def _encadenar_falla_de_limpieza(
+    veredicto: BaseException,
+    falla_limpieza: BaseException | None,
+) -> BaseException:
+    """Cuelga la falla de limpieza al FINAL de la cadena de ``__cause__``.
+
+    Se recorre hasta el último eslabón en vez de pisar ``__cause__``: si el
+    veredicto ya trae su propio diagnóstico (el ``Exception`` original del camino
+    genérico), la falla de limpieza se agrega DESPUÉS y ninguno de los dos
+    desaparece. Sin falla, el veredicto queda intacto.
+
+    El corte por ``id`` repetido evita un ciclo si alguien armara la cadena
+    circular: sin él este recorrido no terminaría.
+    """
+    if falla_limpieza is None:
+        return veredicto
+    ultimo = veredicto
+    visto = {id(ultimo)}
+    while ultimo.__cause__ is not None and id(ultimo.__cause__) not in visto:
+        ultimo = ultimo.__cause__
+        visto.add(id(ultimo))
+    ultimo.__cause__ = falla_limpieza
+    return veredicto
+
+
+async def _handoff_terminal(
+    task: asyncio.Task[Any],
+    *,
+    operacion: str,
+    mensaje: str,
+) -> tuple[asyncio.CancelledError | None, BaseException | None]:
+    """Núcleo del *terminal handoff*: retiene al caller hasta que `task` sea terminal.
+
+    Propiedad del mecanismo — vale para los dos call sites (R1 packaging, R3
+    limpieza de proceso): `task` es privada del llamador, así que ninguna
+    cancelación externa debe transferírsele. Si se transfiriera, `done()` sería
+    un handle MENTIROSO: una Task cancelada queda ``done`` con el trabajo
+    todavía corriendo (un hilo de ``to_thread`` no se interrumpe; un cleanup de
+    proceso dejaría el job abierto). Por eso cada vuelta espera
+    ``asyncio.shield(task)`` y el loop absorbe cancelaciones REPETIDAS
+    registrando la primera como intención: ninguna libera al caller antes de la
+    terminalidad real.
+
+    ``shield`` por sí sólo no alcanza: el await externo sigue recibiendo
+    ``CancelledError``; este loop es la fase explícita de *terminal handoff*.
+
+    NO cancela `task` y NO decide el desenlace: devuelve ``(intencion, falla)``
+    —la primera ``CancelledError`` absorbida (o ``None``) y la excepción con que
+    terminó `task` (o ``None``)— para que cada llamador aplique su propia
+    precedencia. Ese es el punto donde R1 y R3 difieren: R1 corre en camino
+    normal (sin cancelación el desenlace de `task` se propaga tal cual), R3
+    corre dentro de un handler de cancelación (el resultado externo es siempre
+    ``CancelledError``).
+    """
+    intencion: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                # `task` misma fue cancelada por un tercero — el código
+                # productivo jamás lo hace (la Task es privada de este helper).
+                # Su desenlace se mira abajo; ya no hay espera posible.
+                break
+            if intencion is None:
+                intencion = exc
+            logger.warning(
+                mensaje,
+                extra={
+                    "operation_type": operacion,
+                    "pipeline_stage": _ETAPA_DYNDOLOD,
+                    "tx_id": _tx_id(),
+                },
+            )
+        except Exception:  # noqa: BLE001 — el desenlace exacto se recupera abajo vía task.exception()
+            # `task` ya es terminal (done con excepción): la espera terminó.
+            # No se propaga acá para aplicar abajo la precedencia cancel vs falla.
+            break
+
+    if task.cancelled():
+        # Rama defensiva: `task` es privada del llamador. Si igual la canceló un
+        # tercero, el handle dejó de representar al trabajo y sólo queda
+        # propagar su desenlace (su propio CancelledError).
+        if intencion is None:
+            try:
+                task.result()
+            except asyncio.CancelledError as exc:  # pragma: no cover — defensivo
+                intencion = exc
+        return intencion, None
+
+    return intencion, task.exception()
+
+
 async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
     """Retiene al caller hasta que un worker ``to_thread`` de packaging es terminal.
 
@@ -340,13 +453,9 @@ async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
 
         worker_terminal < rollback_started < lease_released
 
-    Mecanismo: cada vuelta espera ``asyncio.shield(worker)`` — protegido desde
-    el PRIMER await, la cancelación externa jamás se transfiere a la Task del
-    worker (la dejaría ``done()`` sin que el hilo haya terminado: un handle
-    mentiroso) — y el loop absorbe cancelaciones REPETIDAS registrando la
-    intención. ``shield`` por sí sólo no alcanza: el await externo sigue
-    recibiendo ``CancelledError``; éste loop es la fase explícita de
-    *terminal handoff*.
+    El mecanismo vive en :func:`_handoff_terminal`, el núcleo común que también
+    usa la limpieza de proceso (R3). Acá sólo se aplica la PRECEDENCIA del
+    packaging.
 
     Precedencia de desenlaces (verificada en 3.11 y 3.12): sin cancelación, el
     éxito y las excepciones del worker se propagan tal cual — el camino normal
@@ -356,38 +465,14 @@ async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
     ``__cause__``: nunca se pierde silenciosamente ni deja
     ``Task exception was never retrieved``.
     """
-    intencion: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            if worker.cancelled():
-                # El worker mismo fue cancelado por un tercero — el código
-                # productivo jamás lo hace (la Task es privada de este helper).
-                # Su desenlace se mira abajo; ya no hay espera posible.
-                break
-            if intencion is None:
-                intencion = exc
-            logger.warning(
-                "cancelación durante el packaging: el caller queda retenido hasta que "
-                "el worker bloqueante llegue a terminal; ninguna cancelación lo libera antes",
-                extra={
-                    "operation_type": "dyndolod_packaging_cancel_handoff",
-                    "pipeline_stage": _ETAPA_DYNDOLOD,
-                    "tx_id": _tx_id(),
-                },
-            )
-        except Exception:  # noqa: BLE001 — el desenlace exacto se recupera abajo vía worker.exception()
-            # El worker ya es terminal (done con excepción): la espera terminó.
-            # No se propaga acá para aplicar abajo la precedencia cancel vs falla.
-            break
-
-    if worker.cancelled() and intencion is None:
-        # Rama defensiva: nadie cancela este worker desde código productivo. Si
-        # llega a pasar, el handle dejó de representar al hilo y sólo queda
-        # propagar el desenlace del worker.
-        worker.result()  # siempre CancelledError; nunca retorna
-    falla = None if worker.cancelled() else worker.exception()
+    intencion, falla = await _handoff_terminal(
+        worker,
+        operacion=_OPERACION_HANDOFF_PACKAGING,
+        mensaje=(
+            "cancelación durante el packaging: el caller queda retenido hasta que "
+            "el worker bloqueante llegue a terminal; ninguna cancelación lo libera antes"
+        ),
+    )
 
     if intencion is None:
         # Camino normal intacto: éxito retorna; la excepción del worker se
@@ -403,7 +488,7 @@ async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
             "registrada y encadenada",
             exc_info=(type(falla), falla, falla.__traceback__),
             extra={
-                "operation_type": "dyndolod_packaging_worker_falla_en_handoff",
+                "operation_type": _OPERACION_FALLA_PACKAGING,
                 "pipeline_stage": _ETAPA_DYNDOLOD,
                 "tx_id": _tx_id(),
             },
@@ -411,7 +496,7 @@ async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
     logger.info(
         "worker de packaging terminal; se libera al caller cancelado",
         extra={
-            "operation_type": "dyndolod_packaging_cancel_terminal",
+            "operation_type": _OPERACION_TERMINAL_PACKAGING,
             "pipeline_stage": _ETAPA_DYNDOLOD,
             "tx_id": _tx_id(),
         },
@@ -419,6 +504,302 @@ async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
     if falla is not None:
         raise intencion from falla
     raise intencion
+
+
+async def _limpiar_recursos_del_proceso(
+    proc: DynDOLODProcess,
+    heartbeat: asyncio.Task[Any],
+    drain_out: asyncio.Task[Any],
+    drain_err: asyncio.Task[Any],
+) -> BaseException | None:
+    """Unidad de limpieza del proceso (R3): TODAS las etapas, en orden causal.
+
+    R3 — ``RUNNER_P2_DOUBLE_CANCEL``. Orden congelado por tests, nunca inferido
+    por sleeps::
+
+        proc_reaped < helpers_cancelled < helpers_terminal
+
+    ``close_job`` NO vive acá: lo ejecuta el ``finally`` de ``_execute_process``,
+    que es lo que garantiza "en TODA salida, exactamente una vez" — incluida la
+    cancelación del propio cleanup y el camino de salida normal, que no pasa por
+    esta función.
+
+    Una falla de etapa NO aborta las siguientes: abandonar la limpieza a medias
+    es exactamente el defecto que R3 cierra. La primera falla se RE-LANZA al
+    terminar todas las etapas — así la Task de limpieza la expone por
+    ``exception()`` y el handoff la entrega al llamador, que la encadena como
+    ``__cause__`` del veredicto. Cada falla se registra UNA vez, donde se
+    descubre (``_registrar``); nadie más la vuelve a registrar.
+    """
+    fallas: list[BaseException] = []
+
+    def _registrar(nombre: str, exc: BaseException) -> None:
+        """Registra el hecho de falla — UNA vez, en el punto donde se descubre."""
+        fallas.append(exc)
+        logger.error(
+            "la etapa %s de la limpieza del proceso falló: se registra y se continúa con las siguientes",
+            nombre,
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "operation_type": _OPERACION_LIMPIEZA_FALLA,
+                "pipeline_stage": _ETAPA_DYNDOLOD,
+                "tx_id": _tx_id(),
+            },
+        )
+
+    async def _etapa(nombre: str, fabrica: Callable[[], Awaitable[Any]]) -> Any:
+        """Lleva UNA etapa a terminalidad REAL y devuelve su resultado (o ``None``).
+
+        La etapa corre en su PROPIA Task y se espera por :func:`_handoff_terminal`.
+        Eso es lo que la vuelve inmune a DOS cancelaciones distintas:
+
+        * la del **caller** (nunca llega: la Task de limpieza es privada y está
+          shielded por el handoff externo), y
+        * la de la **propia Task de limpieza** — ``await trabajo`` pelado dejaba
+          el ``kill_and_reap`` abortado a mitad de camino, y como la limpieza
+          seguía con los helpers, ``close_job`` corría con el proceso SIN reapear
+          y el cleanup parecía exitoso. Con la Task de etapa separada, esa
+          cancelación la absorbe el handoff y el trabajo llega a terminal.
+
+        Si un tercero cancela la Task de ETAPA, su ``done()`` no prueba nada: se
+        re-conduce la etapa lógica (``_MAX_RECONDUCCIONES_DE_ETAPA`` intentos) y
+        si se agota se reporta como falla, nunca como éxito.
+        """
+        for intento in range(1, _MAX_RECONDUCCIONES_DE_ETAPA + 1):
+            etapa = asyncio.create_task(fabrica())
+            _intencion, falla = await _handoff_terminal(
+                etapa,
+                operacion=_OPERACION_LIMPIEZA_HANDOFF,
+                mensaje=(
+                    "cancelación durante la etapa de limpieza: se absorbe y la etapa se lleva igual a terminalidad real"
+                ),
+            )
+            if not etapa.cancelled():
+                if falla is not None:
+                    _registrar(nombre, falla)
+                    return None
+                return etapa.result()
+            logger.warning(
+                "la Task de la etapa %s de la limpieza fue cancelada (intento %d/%d): "
+                "su `done()` no prueba trabajo completado, se re-conduce",
+                nombre,
+                intento,
+                _MAX_RECONDUCCIONES_DE_ETAPA,
+                extra={
+                    "operation_type": _OPERACION_LIMPIEZA_HANDOFF,
+                    "pipeline_stage": _ETAPA_DYNDOLOD,
+                    "tx_id": _tx_id(),
+                },
+            )
+
+        _registrar(
+            nombre,
+            RuntimeError(
+                f"la etapa {nombre} de la limpieza fue cancelada {_MAX_RECONDUCCIONES_DE_ETAPA} veces "
+                "seguidas: no se puede demostrar que la operación se completara"
+            ),
+        )
+        return None
+
+    await _etapa("reap", lambda: kill_and_reap(proc))
+
+    heartbeat.cancel()
+    drain_out.cancel()
+    drain_err.cancel()
+
+    async def _esperar_helpers() -> list[Any]:
+        """`gather` (no `wait`) es lo que convierte "cancelación solicitada" en
+        terminalidad OBSERVADA: vuelve cuando las tres Tasks están done.
+
+        `return_exceptions=True` es necesario para observar a las TRES, pero
+        convierte las excepciones en VALORES: por eso se inspeccionan después.
+
+        Va envuelto en una corrutina propia porque `asyncio.gather` devuelve un
+        `_GatheringFuture` y `create_task` exige una corrutina.
+        """
+        return await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+
+    resultados = await _etapa("helpers", _esperar_helpers)
+    if resultados is not None:
+        for resultado in resultados:
+            if isinstance(resultado, BaseException) and not isinstance(resultado, asyncio.CancelledError):
+                # El `CancelledError` es el esperado por el `task.cancel()` de
+                # arriba: no es falla de limpieza. Cualquier otra excepción sí lo
+                # es, y se registra como su PROPIO hecho de falla.
+                _registrar("helpers", resultado)
+
+    if fallas:
+        # Re-lanzar (y no devolver) es lo que hace que la Task de limpieza sea
+        # terminal CON falla: `exception()` la expone y el handoff la entrega.
+        raise fallas[0]
+    return None
+
+
+async def _cerrar_recursos_del_proceso(
+    proc: DynDOLODProcess,
+    heartbeat: asyncio.Task[Any],
+    drain_out: asyncio.Task[Any],
+    drain_err: asyncio.Task[Any],
+) -> tuple[asyncio.CancelledError | None, BaseException | None]:
+    """Cierra los recursos del proceso como UNA operación resistente a cancelación (R3).
+
+    La limpieza corre en su PROPIA Task y se espera por :func:`_handoff_terminal`:
+    como la Task es privada, `shield` impide que la cancelación del caller se
+    transfiera, y el loop del handoff absorbe las cancelaciones REPETIDAS. El
+    caller no recupera el control hasta que el proceso está reapeado y los
+    helpers TERMINALES; ``close_job`` corre después, en el ``finally`` del
+    llamador, y la cancelación se propaga recién ahí.
+
+    Devuelve ``(intencion_de_cancelacion, falla_de_limpieza)`` — NUNCA vuelve a
+    tirar la intención. Ese es el punto de F1: la cancelación pedida durante la
+    limpieza se ABSORBE (la limpieza tiene que terminar igual), pero no se
+    DESCARTA: cada llamador decide con ella su precedencia. Antes esta función
+    devolvía sólo la falla, así que una cancelación pedida durante el cleanup de
+    las ramas de error/timeout/genérica se perdía y salía un veredicto ordinario.
+
+    NO registra la falla de limpieza: ya quedó registrada —una vez— donde se
+    descubrió (``_registrar`` dentro de la unidad). Duplicarla acá violaba
+    *log once*: un hecho de falla, un registro técnico.
+    """
+    limpieza = asyncio.create_task(_limpiar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err))
+    intencion, falla = await _handoff_terminal(
+        limpieza,
+        operacion=_OPERACION_LIMPIEZA_HANDOFF,
+        mensaje=(
+            "cancelación durante la limpieza del proceso: el caller queda retenido hasta que "
+            "el proceso esté reapeado y los helpers terminales; ninguna cancelación lo libera antes"
+        ),
+    )
+
+    if limpieza.cancelled() and falla is None:
+        # La Task de limpieza terminó CANCELADA. Su `done()` no prueba que las
+        # etapas se completaran — el caso patológico es exactamente el de R3: el
+        # proceso podría haber quedado sin reapear. No se declara exitosa: se
+        # reporta como falla real para que el veredicto la encadene.
+        falla = RuntimeError(
+            "la limpieza del proceso terminó cancelada sin completar sus etapas: "
+            "no se puede demostrar que el proceso quedara reapeado y los helpers terminales"
+        )
+        logger.error(
+            "la limpieza del proceso quedó abandonada por cancelación; se reporta como falla",
+            extra={
+                "operation_type": _OPERACION_LIMPIEZA_FALLA,
+                "pipeline_stage": _ETAPA_DYNDOLOD,
+                "tx_id": _tx_id(),
+            },
+        )
+
+    logger.info(
+        "limpieza del proceso terminal; se libera al caller",
+        extra={
+            "operation_type": _OPERACION_LIMPIEZA_TERMINAL,
+            "pipeline_stage": _ETAPA_DYNDOLOD,
+            "tx_id": _tx_id(),
+        },
+    )
+    return intencion, falla
+
+
+async def _limpiar_helpers_en_salida_normal(
+    tool_name: str,
+    heartbeat: asyncio.Task[Any],
+    drain_out: asyncio.Task[Any],
+    drain_err: asyncio.Task[Any],
+) -> None:
+    """Limpia los helpers auxiliares en la salida normal del proceso (R3).
+
+    Divergencia deliberada vs `_limpiar_recursos_del_proceso`:
+    En salida normal, el proceso ya concluyó por sí mismo (`proc.wait()` retornó
+    código de salida exitoso/reapeado) y no debe re-matarse (`kill_and_reap` no
+    aplica e introduciría riesgo de matar PIDs reciclados en Windows). Solo
+    resta limpiar los helpers auxiliares (`heartbeat`, `drain_out`, `drain_err`).
+    Ambos caminos comparten la primitiva unificada `_handoff_terminal` para
+    garantizar terminalidad bajo cancelaciones repetidas.
+
+    Garantiza dos propiedades esenciales del mecanismo:
+    1. La cancelación del caller no se suprime durante la espera de terminación
+       del heartbeat (reemplaza `contextlib.suppress` por `asyncio.gather(..., return_exceptions=True)`).
+    2. Si el caller pide cancelación durante la espera de heartbeat o durante el
+       drenaje residual (`drain-grace`), los drains se cancelan y se llevan a
+       terminalidad real (mediante `_handoff_terminal`, resistente a cancelaciones
+       repetidas) ANTES de propagar la cancelación hacia `finally: close_job`.
+    """
+    heartbeat.cancel()
+    results: list[Any] = []
+    try:
+        # gather(return_exceptions=True) absorbe el CancelledError propio del
+        # heartbeat sin relanzarlo; si el caller fue cancelado externamente,
+        # gather propaga CancelledError al llamador.
+        await asyncio.gather(heartbeat, return_exceptions=True)
+
+        # S-4: el proceso ya terminó; drenamos los buffers residuales pero con
+        # una cota. Si un nieto heredó el pipe y sigue vivo, el EOF nunca llega
+        # y sin timeout este gather colgaría para siempre (igual que el path de
+        # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
+        # drains y seguimos con el output parcial (el proceso ya reportó éxito).
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(drain_out, drain_err, return_exceptions=True),
+                timeout=_DRAIN_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            # SIN `pipeline_stage`: el proceso ya salió y su código de salida
+            # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
+            # propio mensaje dice que se continúa. Etiquetarlo sumaría un
+            # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
+            # presente pero dejó un nieto con el pipe heredado.
+            logger.warning(
+                "%s: los drains no cerraron en %.1fs tras la salida del proceso "
+                "(posible nieto con pipe heredado); se continúa con output parcial.",
+                tool_name,
+                _DRAIN_GRACE_SECONDS,
+                extra={"operation_type": "dyndolod_drenaje_incompleto", "tx_id": _tx_id()},
+            )
+            drain_out.cancel()
+            drain_err.cancel()
+            # gather(return_exceptions=True) sobre tasks ya canceladas captura
+            # sus CancelledError como resultados (no relanza); sin `suppress`
+            # una cancelación externa del caller propaga como corresponde.
+            results = await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+    except asyncio.CancelledError as exc:
+        heartbeat.cancel()
+        drain_out.cancel()
+        drain_err.cancel()
+
+        async def _esperar_helpers_terminales() -> list[Any]:
+            return await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+
+        etapa = asyncio.create_task(_esperar_helpers_terminales())
+        intencion, _falla = await _handoff_terminal(
+            etapa,
+            operacion=_OPERACION_LIMPIEZA_HANDOFF,
+            mensaje=(
+                "cancelación durante la limpieza de salida normal: el caller queda retenido hasta que "
+                "los helpers sean terminales; ninguna cancelación lo libera antes"
+            ),
+        )
+        if not etapa.cancelled():
+            results = etapa.result()
+        falla_helper = next(
+            (r for r in results if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError)),
+            None,
+        )
+        causa = _falla or falla_helper
+        if causa is not None:
+            raise (intencion or exc) from causa
+        raise (intencion or exc) from None
+    finally:
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
+                # Exento por el mismo motivo que el drain-timeout de arriba:
+                # es diagnóstico del andamiaje de captura, no el veredicto —
+                # que lo dan el exit code, el artefacto y el log.
+                logger.warning(
+                    "%s drain task falló inesperadamente: %r",
+                    tool_name,
+                    r,
+                    extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
+                )
 
 
 # =============================================================================
@@ -1984,18 +2365,23 @@ class DynDOLODRunner:
             if presupuesto <= 0:
                 raise TimeoutError()
             await asyncio.wait_for(proc.wait(), timeout=presupuesto)
-        except asyncio.CancelledError:
-            # Un shutdown externo debe matar el árbol antes de propagar la
-            # cancelación: de otro modo DynDOLOD/TexGen continúa escribiendo
-            # después de que la capa superior liberó su lock o hizo rollback.
-            await kill_and_reap(proc)
-            heartbeat.cancel()
-            drain_out.cancel()
-            drain_err.cancel()
-            await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-            close_job(job)
+        except asyncio.CancelledError as exc:
+            # R3 — RUNNER_P2_DOUBLE_CANCEL. Un shutdown externo debe matar el
+            # árbol antes de propagar la cancelación: de otro modo DynDOLOD/TexGen
+            # continúa escribiendo después de que la capa superior liberó su lock
+            # o hizo rollback. La limpieza va por la unidad PROTEGIDA: corre en su
+            # propia Task, se espera por el terminal handoff y absorbe
+            # cancelaciones REPETIDAS — ninguna libera al caller antes de que el
+            # proceso esté reapeado y los helpers terminales.
+            #
+            # La intención absorbida no agrega nada acá: ya estamos cancelando, y
+            # el resultado externo es esta misma `CancelledError`. Se conserva el
+            # contrato previo de la falla de limpieza como causa sobre la excepción original.
+            _intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
+            if falla_limpieza is not None:
+                raise exc from falla_limpieza
             raise
-        except DynDOLODExecutionError:
+        except DynDOLODExecutionError as exc:
             # Rechazo pre-generación del protocolo de readiness (UIA no-MATCH,
             # deny/timeout/canal, proceso muerto durante la espera): mismo cleanup
             # que un fallo del proceso, pero el veredicto TIPADO se re-lanza tal
@@ -2003,87 +2389,62 @@ class DynDOLODRunner:
             # `_post_check` nunca corre: la excepción sale de `_execute_process`
             # antes de que los lanzadores lleguen a él, así que no se empaqueta ni
             # se avanza al tool siguiente.
-            await kill_and_reap(proc)
-            heartbeat.cancel()
-            drain_out.cancel()
-            drain_err.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-            close_job(job)
+            #
+            # F1: si el caller pidió cancelación mientras la limpieza corría, esa
+            # cancelación GANA como resultado externo y el veredicto tipado queda
+            # como causa — nunca se devuelve un veredicto ordinario después de que
+            # el caller pidió cancelación.
+            intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
+            if intencion is not None:
+                raise asyncio.CancelledError() from _encadenar_falla_de_limpieza(exc, falla_limpieza)
+            if falla_limpieza is not None:
+                raise exc from falla_limpieza
             raise
         except TimeoutError:
             # Global timeout exceeded — kill process tree (evita nietos como
             # TexGen huérfanos) y cancela las tasks de monitoreo.
-            await kill_and_reap(proc)
-            heartbeat.cancel()
-            drain_out.cancel()
-            drain_err.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-            close_job(job)
-            raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
-        except Exception as e:
-            await kill_and_reap(proc)
-            heartbeat.cancel()
-            drain_out.cancel()
-            drain_err.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
-            close_job(job)
-            raise DynDOLODExecutionError(
+            #
+            # F1: mismo contrato que la rama tipada — manda la cancelación del
+            # caller y el veredicto `DynDOLODTimeoutError` viaja como causa.
+            intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
+            veredicto_timeout = DynDOLODTimeoutError(effective_timeout, tool_name)
+            if intencion is not None:
+                raise asyncio.CancelledError() from _encadenar_falla_de_limpieza(veredicto_timeout, falla_limpieza)
+            raise veredicto_timeout from falla_limpieza
+        except Exception as e:  # noqa: BLE001
+            # La falla de la limpieza —si la hubo— ya quedó registrada UNA vez con
+            # `exc_info` por la unidad de limpieza: no se pierde y no se repite.
+            # Acá la causa directa sigue siendo `e` (el error inesperado que explica
+            # el corte), pero la falla de limpieza —si la hubo— se encadena al FINAL
+            # de la cadena causal (`veredicto -> e -> falla_limpieza`) para que
+            # `exception_forbids_rollback` la detecte y vete el rollback.
+            intencion, falla_limpieza = await _cerrar_recursos_del_proceso(proc, heartbeat, drain_out, drain_err)
+            veredicto = DynDOLODExecutionError(
                 f"Unexpected error during {tool_name} execution: {e}",
                 return_code=proc.returncode,
                 stderr=str(e),
-            ) from e
+            )
+            veredicto.__cause__ = e
+            if falla_limpieza is not None:
+                _encadenar_falla_de_limpieza(veredicto, falla_limpieza)
+            if intencion is not None:
+                raise asyncio.CancelledError() from veredicto
+            raise veredicto from veredicto.__cause__
         else:
             # Process exited normally — cancel heartbeat and wait for drains to finish.
-            heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await heartbeat
-            # S-4: el proceso ya terminó; drenamos los buffers residuales pero con
-            # una cota. Si un nieto heredó el pipe y sigue vivo, el EOF nunca llega
-            # y sin timeout este gather colgaría para siempre (igual que el path de
-            # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
-            # drains y seguimos con el output parcial (el proceso ya reportó éxito).
-            try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(drain_out, drain_err, return_exceptions=True),
-                    timeout=_DRAIN_GRACE_SECONDS,
-                )
-            except TimeoutError:
-                # SIN `pipeline_stage`: el proceso ya salió y su código de salida
-                # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
-                # propio mensaje dice que se continúa. Etiquetarlo sumaría un
-                # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
-                # presente pero dejó un nieto con el pipe heredado.
-                logger.warning(
-                    "%s: los drains no cerraron en %.1fs tras la salida del proceso "
-                    "(posible nieto con pipe heredado); se continúa con output parcial.",
-                    tool_name,
-                    _DRAIN_GRACE_SECONDS,
-                    extra={"operation_type": "dyndolod_drenaje_incompleto", "tx_id": _tx_id()},
-                )
-                drain_out.cancel()
-                drain_err.cancel()
-                # gather(return_exceptions=True) sobre tasks ya canceladas captura
-                # sus CancelledError como resultados (no relanza); sin `suppress`
-                # una cancelación externa del caller propaga como corresponde.
-                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
-                results = []
-            for r in results:
-                if isinstance(r, BaseException):
-                    # Exento por el mismo motivo que el drain-timeout de arriba:
-                    # es diagnóstico del andamiaje de captura, no el veredicto —
-                    # que lo dan el exit code, el artefacto y el log.
-                    logger.warning(
-                        "%s drain task falló inesperadamente: %r",
-                        tool_name,
-                        r,
-                        extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
-                    )
-            # U-07: salida normal. Cerrar el job mata el nieto que sobrevivió
-            # heredando el pipe (el mismo que dispara el drain-timeout de arriba) —
-            # ya no es alcanzable por PID porque su padre salió, pero el job lo retiene.
+            # Limpieza resistente a cancelación (R3): aísla y propaga la cancelación
+            # del caller sin suprimirla, y asegura helpers_terminal antes de close_job.
+            await _limpiar_helpers_en_salida_normal(tool_name, heartbeat, drain_out, drain_err)
+        finally:
+            # U-07: cerrar el job en TODA salida — y EXACTAMENTE una vez. Un
+            # `finally` (y no una llamada por rama) es lo que hace que "toda
+            # salida" cubra también el camino de éxito y la cancelación del
+            # propio cleanup, y que el cierre no se pueda saltear moviendo una
+            # rama. Corre DESPUÉS de la limpieza: cuando el job se cierra, el
+            # proceso ya está reapeado y los helpers son terminales — el nieto
+            # que sobrevivió heredando el pipe (el que dispara el drain-timeout
+            # de arriba) ya no es alcanzable por PID porque su padre salió, pero
+            # el job lo retiene por membresía.
             close_job(job)
 
         duration = time.monotonic() - start_time

@@ -62,6 +62,7 @@ que esa marca pretende cubrir.
 | Seguridad | `security/`, `config.py`, callers productivos |
 | MO2/USVFS | `local/mo2/`, ADR 0007 |
 | DAG de modding | `sky_claw/local/AGENTS.md` |
+| Clean-room del generador nativo de parallax | `CLEAN_ROOM.md`, ADR 0013, `tests/test_clean_room_invariant.py` |
 | CI | `.github/workflows/ci.yml` |
 | Packaging | `sky_claw.spec`, `build.bat`, workflow Build |
 

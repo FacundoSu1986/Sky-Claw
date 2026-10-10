@@ -70,7 +70,21 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     "candidates.py": frozenset({"mkdir"}),
 }
 
-MODOS_ESCRITURA: frozenset[str] = frozenset({"w", "a", "x", "+", "wb", "ab", "xb", "r+", "rb+"})
+
+def _es_modo_de_escritura(modo: str) -> bool:
+    """Un modo de ``open()`` habilita escritura si pide w/a/x o update (``+``).
+
+    Sigue la semantica documentada de ``open``: ``w`` (truncar), ``a`` (anexar),
+    ``x`` (crear en exclusiva) y ``+`` (update, lectura+escritura) son las cuatro
+    marcas que habilitan escritura; sin ninguna de ellas (``r``, ``rb``, ``rt``)
+    el modo es lectura pura. Enumerar las combinaciones a mano dejaba afuera
+    variantes validas —``wt``, ``w+``, ``w+b``, ``a+``, ``x+``— por las que un
+    modulo NO declarado podia abrir escritura sin que el oracle lo viera
+    (CodeRabbit sobre #698). El chequeo es sobre el modo, no sobre el fuente: no
+    hay marcado por substring de la llamada.
+    """
+    return any(marca in modo for marca in ("w", "a", "x", "+"))
+
 
 #: Módulos autorizados a abrir archivos en modo escritura, con el modo EXACTO
 #: que declaran. `xb` es exclusivo de creación: sobreescribir un payload ya
@@ -145,6 +159,22 @@ def test_sin_lanzadores_de_proceso() -> None:
     assert not violaciones, f"lanzadores de proceso en Frozen Runtime: {violaciones}"
 
 
+def _modo_de_open(nodo: ast.Call, *, posicional: int) -> ast.expr | None:
+    """Modo de un ``open(...)``: el posicional si está, si no ``mode=``.
+
+    ``posicional`` es el índice del modo cuando se pasa sin nombre: ``0`` para
+    ``Path.open`` (el receptor es el ``self``) y ``1`` para el ``open`` builtin
+    (el ``file`` va primero). ``mode=`` funciona en ambos y es la ÚNICA forma
+    cuando la llamada no tiene posicionales.
+    """
+    if len(nodo.args) > posicional:
+        return nodo.args[posicional]
+    for kw in nodo.keywords:
+        if kw.arg == "mode":
+            return kw.value
+    return None
+
+
 def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
     permitidos = MODULOS_CON_OPEN_ESCRITURA.get(nombre_modulo, frozenset())
     arbol = ast.parse(fuente, filename=nombre_modulo)
@@ -154,36 +184,24 @@ def _detectar_open_no_declarado(fuente: str, nombre_modulo: str) -> list[str]:
             continue
         es_open_bare = isinstance(nodo.func, ast.Name) and nodo.func.id == "open"
         es_open_attr = isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "open"
-        if (es_open_bare or es_open_attr) and nodo.args:
-            if (
-                isinstance(nodo.func, ast.Attribute)
-                and isinstance(nodo.func.value, ast.Name)
-                and nodo.func.value.id == "os"
-            ):
-                violaciones.append(f"{nombre_modulo}:{nodo.lineno}: os.open() no permitido en Frozen Runtime")
-                continue
-            if es_open_attr:
-                modo = (
-                    nodo.args[0]
-                    if nodo.args
-                    else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
-                )
-            else:
-                modo = (
-                    nodo.args[1]
-                    if len(nodo.args) > 1
-                    else nodo.keywords and next((kw.value for kw in nodo.keywords if kw.arg == "mode"), None)
-                )
-            if (
-                isinstance(modo, ast.Constant)
-                and isinstance(modo.value, str)
-                and modo.value in MODOS_ESCRITURA
-                and modo.value not in permitidos
-            ):
-                violaciones.append(
-                    f"{nombre_modulo}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
-                    f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
-                )
+        # El chequeo del modo NO puede exigir posicionales: `ruta.open(mode="w")`
+        # no tiene ninguno y era la forma que se escapaba (finding post-merge #682).
+        if not (es_open_bare or es_open_attr):
+            continue
+        if es_open_attr and isinstance(nodo.func.value, ast.Name) and nodo.func.value.id == "os":
+            violaciones.append(f"{nombre_modulo}:{nodo.lineno}: os.open() no permitido en Frozen Runtime")
+            continue
+        modo = _modo_de_open(nodo, posicional=0 if es_open_attr else 1)
+        if (
+            isinstance(modo, ast.Constant)
+            and isinstance(modo.value, str)
+            and _es_modo_de_escritura(modo.value)
+            and modo.value not in permitidos
+        ):
+            violaciones.append(
+                f"{nombre_modulo}:{nodo.lineno}: open modo '{modo.value}' no declarado en "
+                f"MODULOS_CON_OPEN_ESCRITURA (permitidos: {sorted(permitidos) or 'ninguno'})"
+            )
     return violaciones
 
 
@@ -207,6 +225,68 @@ def test_el_oracle_detecta_path_open_en_modo_escritura() -> None:
     codigo_os_open = "def f(ruta):\n    os.open(ruta, 0)\n"
     assert len(_detectar_open_no_declarado(codigo_path_open, "no_declarado.py")) == 1
     assert len(_detectar_open_no_declarado(codigo_os_open, "no_declarado.py")) == 1
+
+
+def test_el_oracle_detecta_el_modo_de_escritura_pasado_por_keyword() -> None:
+    """`ruta.open(mode="w")` también es escritura (finding post-merge de #682).
+
+    La rama exigía `nodo.args` ANTES de inspeccionar el modo, así que una llamada
+    SIN posicionales —la forma keyword, que es la idiomática cuando sólo se pasa
+    `mode`— nunca entraba al análisis: el boundary quedaba ciego justo para la
+    variante que un escritor nuevo escribiría. El modo se busca ahora en
+    posicional y en `mode=`, y el default read-only sigue sin marcarse.
+    """
+    # Escritura por keyword: el hueco del finding.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='xb')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='a')\n", "no_declarado.py")) == 1
+    # `open` bare con `file=`/`mode=`: misma familia, sin receptor.
+    assert len(_detectar_open_no_declarado("def f(p):\n    open(file=p, mode='w')\n", "no_declarado.py")) == 1
+    # Posicional: no se puede perder al arreglar el keyword.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open('w')\n", "no_declarado.py")) == 1
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open('x')\n", "no_declarado.py")) == 1
+    # Read-only explícito e implícito: sin falsos positivos.
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open('r')\n", "no_declarado.py") == []
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='rb')\n", "no_declarado.py") == []
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open()\n", "no_declarado.py") == []
+    assert (
+        _detectar_open_no_declarado("def f(ruta):\n    with ruta.open(mode='r') as fh:\n        fh.read()\n", "no.py")
+        == []
+    )
+    # El modo variable no se adivina (mismo criterio que antes: sólo constantes).
+    assert _detectar_open_no_declarado("def f(ruta, m):\n    ruta.open(mode=m)\n", "no_declarado.py") == []
+
+
+def test_el_oracle_clasifica_todas_las_variantes_de_escritura() -> None:
+    """Ninguna variante constante con capacidad de escritura puede escapar (CodeRabbit #698).
+
+    La lista enumerada original omitia combinaciones validas (`wt`, `w+`, `w+b`,
+    `a+`, `x+`): un modulo no declarado podia abrir escritura sin que el oracle lo
+    viera. La clasificacion sigue ahora la semantica de `open` (marcas w/a/x/+),
+    asi que las variantes con marca se detectan y las de lectura pura no.
+    """
+    # Keyword: variantes que la enumeracion dejaba afuera.
+    for modo in ("wt", "w+", "w+b", "wb+", "a+", "at", "x+", "xt", "r+", "r+b", "rb+"):
+        codigo = f"def f(ruta):\n    ruta.open(mode={modo!r})\n"
+        assert len(_detectar_open_no_declarado(codigo, "no_declarado.py")) == 1, modo
+    # Posicional: misma clasificacion.
+    for modo in ("w", "x", "a", "wb", "xb"):
+        codigo = f"def f(ruta):\n    ruta.open({modo!r})\n"
+        assert len(_detectar_open_no_declarado(codigo, "no_declarado.py")) == 1, modo
+    # Lectura pura (sin marca de escritura): sin falso positivo.
+    for modo in ("r", "rb", "rt", "tr"):
+        codigo = f"def f(ruta):\n    ruta.open(mode={modo!r})\n"
+        assert _detectar_open_no_declarado(codigo, "no_declarado.py") == [], modo
+
+
+def test_el_oracle_de_open_conserva_los_modos_declarados_por_modulo() -> None:
+    """La declaración por módulo sigue mandando: `copying.py` puede `xb`, no `w`."""
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='xb')\n", "copying.py") == []
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "copying.py")) == 1
+    assert _detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='x')\n", "state.py") == []
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='w')\n", "state.py")) == 1
+    # Un módulo sin declaración sigue cerrado por default.
+    assert len(_detectar_open_no_declarado("def f(ruta):\n    ruta.open(mode='x')\n", "membership.py")) == 1
 
 
 def test_el_oracle_distingue_str_replace_de_path_replace() -> None:
