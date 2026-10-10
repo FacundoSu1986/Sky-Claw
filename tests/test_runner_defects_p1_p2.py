@@ -3354,3 +3354,59 @@ async def test_592_f2_perdida_de_lease_durante_la_copia_no_descarta_el_backup(tm
     residuos = _residuos_de(mod_path)
     assert len(residuos) == 1, "el backup del mod previo NO puede descartarse tras perder la lease"
     assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"
+
+
+@pytest.mark.asyncio
+async def test_592_f3_el_cleanup_no_descarta_el_backup_sin_lease_vigente(tmp_path, monkeypatch):
+    """F3 (CodeRabbit #709, P1) — el fence NO cubre la ventana del CLEANUP.
+
+    F2 cerró la pérdida de lease DURANTE la copia, convirtiéndola en excepción
+    dentro del `async with`. Pero el fence corre ANTES de `__aexit__`, y entre ese
+    fence y el borrado del backup quedan varios `await`: `_final_target_is_valid`,
+    `path_present`, `link_kind_or_raise` —con hasta 5 reintentos y backoff, ~1,5 s—
+    y `_sin_regenerar`. Si el lease muere ahí, el ex-dueño borraría la ÚLTIMA copia
+    del mod previo mientras otro dueño puede estar mutando el mismo target.
+
+    Acá la copia TERMINA BIEN y los DOS fences pasan: la pérdida se inyecta en la
+    primera inspección del descarte, ya dentro del cleanup. El mod nuevo se
+    publica igual —la corrida no falla—, pero el backup del previo tiene que
+    sobrevivir.
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+
+    estado = {"perdida": False, "fences": 0}
+
+    async def _fence() -> None:
+        estado["fences"] += 1
+        if estado["perdida"]:
+            raise LockLeaseLostError("lease de etapa 9 perdida (test)")
+
+    runner = _runner_592(tmp_path)
+    runner._config = SimpleNamespace(mo2_mods_path=tmp_path / "mods", fence_ownership=_fence)
+
+    inspeccion_real = dir_rollback_mod.link_kind_or_raise
+
+    def _inspeccion_que_pierde_la_lease(ruta: pathlib.Path) -> object:
+        # El fence YA pasó: la lease muere dentro de la ventana del cleanup.
+        estado["perdida"] = True
+        return inspeccion_real(ruta)
+
+    monkeypatch.setattr(dir_rollback_mod, "link_kind_or_raise", _inspeccion_que_pierde_la_lease)
+
+    mod_devuelto = await runner._package_output_as_mod(
+        src,
+        "DynDOLOD Output",
+        veto_de_rollback=lambda: not estado["perdida"],
+    )
+
+    assert estado["fences"] == 2, "los DOS fences pasan ANTES de que se pierda la lease"
+    assert mod_devuelto == mod_path, "el mod nuevo se empaquetó y publicó: la corrida no falla"
+    assert (mod_path / "meshes" / "new.nif").exists(), "el mod nuevo queda completo en el destino"
+
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1, "el backup del mod previo NO puede descartarse sin lease vigente"
+    assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"

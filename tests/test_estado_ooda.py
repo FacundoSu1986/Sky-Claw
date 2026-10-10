@@ -616,6 +616,11 @@ def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
     declara —la promoción no es atómica y no se reclama crash-safety desde
     ``Path.rename``— no pueden desaparecer de la fila: son justamente lo que
     distingue «el previo sobrevive» de «el previo nunca corrió riesgo».
+
+    La ronda de revisión sumó un tercer hallazgo (F3, CodeRabbit P1: el descarte
+    del backup necesitaba autoridad VIGENTE, no sólo la del fence). La fila tiene
+    que declarar las dos mitades de ese fix —el veto fusionado con el borrado y la
+    preservación de ``commit()``— y citar sus anclas, igual que F1/F2.
     """
     item = (
         "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia "
@@ -636,6 +641,16 @@ def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
     assert "test_runner_defects_p1_p2.py" in fila["Verificado por"]
     assert "test_592_p1_enospc_conserva_el_mod_anterior_byte_exacto" in fila["Verificado por"]
     assert "test_592_f2_perdida_de_lease_durante_la_copia_no_descarta_el_backup" in fila["Verificado por"]
+    # F3: el veto fusionado con el borrado y ``commit()`` intacto.
+    assert "_descartar_backup_sync" in estado
+    assert "permitir_restore=True" in estado
+    assert "test_592_f3_el_cleanup_no_descarta_el_backup_sin_lease_vigente" in fila["Verificado por"]
+    assert "test_dir_rollback.py" in fila["Verificado por"]
+    assert "test_ancla_ast_el_veto_del_descarte_esta_fusionado_con_el_borrado" in fila["Verificado por"]
+    # El barrido de mutación se extendió con la ronda F3: si la fila vuelve a
+    # decir sólo M01–M18, la evidencia de F3 quedó sin declarar. Vive en la
+    # columna de verificación, junto a los tests.
+    assert "M19" in fila["Verificado por"] and "M24" in fila["Verificado por"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

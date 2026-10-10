@@ -83,6 +83,32 @@ async def _fs_op_with_retry(op: Callable[..., Any], *args: Any, **kwargs: Any) -
     raise last_exc
 
 
+def _fs_op_with_retry_sync(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Twin síncrono de :func:`_fs_op_with_retry` — mismo reintento, sin ``await``.
+
+    Existe por UNA razón: fusionar un chequeo de autoridad con la mutación que
+    autoriza. En el hermano async, un ``await`` entre "consulté el veto" y "borré"
+    devuelve el control al event loop, y en esa ventana el lease puede perderse —
+    el mismo TOCTOU que ``_restaurar_target_vacio_sync`` ya cierra para el restore
+    (review CodeRabbit #404). Con esta variante el chequeo y el borrado corren
+    enteros dentro del mismo hilo, así que "no hay ventana" es cierto de verdad y
+    no sólo "la ventana es chica".
+
+    Sólo se usa desde un hilo que ya está off-loop (``asyncio.to_thread``): acá
+    ``time.sleep`` no bloquea el event loop, y por eso el backoff es el mismo.
+    """
+    last_exc: OSError | None = None
+    for attempt in range(_FS_RETRIES):
+        try:
+            return op(*args, **kwargs)
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _FS_RETRIES - 1:
+                time.sleep(_FS_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None  # el loop siempre corre al menos una vez
+    raise last_exc
+
+
 #: Referencias fuertes a las tasks en vuelo tras una cancelación: el loop solo
 #: guarda referencias DÉBILES, así que sin esto el GC podría recolectar la task
 #: del rename —o la de su deshacer— antes de que termine (mismo motivo que
@@ -521,7 +547,59 @@ class DirectoryRollback:
         # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
         # Windows), y esto corre en el camino de ÉXITO — donde ``__aexit__`` traga el
         # OSError y nadie se entera.
+        #
+        # Review CodeRabbit #709 (P1) — el descarte es una MUTACIÓN y necesita
+        # autoridad VIGENTE, no sólo la que había cuando el runner fenceó.
+        #
+        # El fence del packaging corre justo antes de ``__aexit__``, pero entre ese
+        # fence y este borrado quedan varios ``await``: ``_final_target_is_valid``,
+        # ``path_present``, ``link_kind_or_raise`` (con hasta ``_FS_RETRIES``
+        # reintentos y backoff, ~1,5 s) y ``_sin_regenerar``. Si el lease se pierde
+        # en esa ventana, otro dueño puede estar mutando el mismo target y este
+        # proceso —ya sin exclusividad— borraría la ÚLTIMA copia del mod previo.
+        # El veto se consultaba en la rama de excepción y en el restore de target
+        # vacío, pero NO acá: el hermano que faltaba.
+        #
+        # El chequeo va FUSIONADO con el borrado (``_descartar_backup_sync``), no
+        # como un ``await`` más antes: un chequeo separado deja la misma ventana,
+        # sólo más chica, y esta clase ya aprendió esa lección en el restore.
+        if permitir_restore:
+            return await asyncio.to_thread(self._descartar_backup_sync)
+
+        # ``commit()``: punto de no-retorno EXPLÍCITO del caller (``permitir_restore
+        # =False``). Ahí el descarte es intencional y no se consulta veto — el
+        # comportamiento queda igual que antes de este fix.
         await _borrar_arbol_o_enlace(self._backup, limpiar_readonly=self._limpiar_readonly_al_borrar)
+        return True
+
+    def _descartar_backup_sync(self) -> bool:
+        """Veto de autoridad **y** borrado del backup, en UNA unidad síncrona.
+
+        Corre dentro de un solo ``asyncio.to_thread``: entre la lectura del veto y
+        el ``rmtree`` no hay ningún ``await``, así que el lease no puede perderse
+        "en el medio" — la propiedad es *no hay ventana*, no *la ventana es chica*.
+
+        Devuelve ``True`` sólo si el backup se descartó. Un veto que no autoriza
+        devuelve ``False`` **sin tocar nada**: el backup queda en disco, con nombre
+        determinista, para recuperación manual — misma dirección segura que el
+        restore vetado. El llamador lo propaga a ``finalization_completed``, así
+        que ningún consumidor puede leer ese cleanup como completado.
+        """
+        if not self._veto_permite_restaurar():
+            logger.critical(
+                "Descarte del backup de '%s' OMITIDO: se perdió la exclusividad del recurso o "
+                "la terminalidad es desconocida. El backup queda en '%s' para recuperación manual.",
+                self._target,
+                self._backup,
+            )
+            return False
+        assert self._backup is not None  # invariante: el caller ya lo verificó
+        # ``rmtree_link_aware`` llega por REFERENCIA, igual que en el hermano
+        # async: no agrega una invocación directa que el censo de
+        # ``tests/test_borrado_recursivo.py`` tenga que declarar aparte, y el
+        # parcheo de ``_dir_rollback.rmtree_link_aware`` (test_dir_rollback.py)
+        # sigue funcionando porque el global se resuelve al llamar.
+        _fs_op_with_retry_sync(rmtree_link_aware, self._backup, limpiar_readonly=self._limpiar_readonly_al_borrar)
         return True
 
     def _restaurar_target_vacio_sync(self) -> bool:

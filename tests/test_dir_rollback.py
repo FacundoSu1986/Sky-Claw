@@ -184,6 +184,194 @@ async def test_finalization_completed_false_si_falla_el_discard_limpio(
     assert list(tmp_path.glob("Output.rollback-*"))
 
 
+async def test_descarte_no_borra_el_backup_si_el_lease_se_pierde_en_el_cleanup(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Review CodeRabbit #709 (P1): el fence NO cubre la ventana del cleanup.
+
+    El runner fencea la lease justo antes de ``__aexit__``, pero entre ese fence
+    y el borrado del backup quedan varios ``await`` —``validate_final_target``,
+    ``path_present``, ``link_kind_or_raise`` con reintentos— y en esa ventana el
+    lease puede perderse. Si eso pasa, el ex-dueño borraría la ÚLTIMA copia del
+    mod previo sin autoridad vigente, mientras otro dueño puede estar mutando el
+    mismo target: el descarte es una mutación, y el veto tiene que gobernarla
+    igual que gobierna el restore.
+
+    La pérdida se inyecta en ``validate_final_target``, que corre **después** del
+    fence y **antes** del descarte: exactamente la ventana que el finding señala,
+    y de forma determinista (sin sleeps ni carreras).
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    lease_viva = True
+
+    def _perder_la_lease_al_validar() -> bool:
+        nonlocal lease_viva
+        # El fence ya pasó; la lease muere inmediatamente después.
+        lease_viva = False
+        return True
+
+    rb = DirectoryRollback(
+        target,
+        should_rollback=lambda: lease_viva,
+        validate_final_target=_perder_la_lease_al_validar,
+    )
+
+    async with rb:
+        # El target SÍ se regenera: es el camino de éxito real, no el de
+        # target vacío (donde el veto ya se consultaba).
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    # El mod nuevo está completo y publicado — eso es correcto.
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+    # Pero el backup del mod previo NO se descarta sin autoridad vigente.
+    backups = list(tmp_path.glob("Output.rollback-*"))
+    assert backups, "el backup del mod previo se borró sin lease vigente"
+    assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "OLD"
+    # Y el cleanup no puede declararse completado: nadie debe leer un éxito.
+    assert rb.finalization_completed is False
+    # El backup queda localizable para recovery manual.
+    assert rb._backup is not None
+
+
+async def test_commit_descarta_el_backup_aunque_el_veto_niegue(tmp_path: pathlib.Path) -> None:
+    """La otra mitad del contrato: ``commit()`` NO queda gobernado por el veto.
+
+    El fix del descarte veta el borrado cuando no hay autoridad vigente, pero sólo
+    en el camino de finalización normal (``permitir_restore=True``). En ``commit()``
+    el caller ya selló el estado nuevo a propósito: es un punto de no-retorno, y el
+    descarte tiene que seguir siendo incondicional. Si el veto lo gobernara, un
+    lease perdido dejaría el backup huérfano para siempre en un camino donde la
+    decisión ya se tomó.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    rb = DirectoryRollback(target, should_rollback=lambda: False)
+
+    async with rb:
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+        await rb.commit()  # el output ya es final: no hay vuelta atrás
+
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+    assert not list(tmp_path.glob("Output.rollback-*")), "commit() descarta el backup sin consultar el veto"
+    assert rb.finalization_completed is True
+
+
+async def test_el_descarte_reintenta_un_oserror_transitorio_del_borrado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El borrado del backup reintenta un ``OSError`` transitorio, no aborta al primero.
+
+    En Windows el backup recién movido queda unos milisegundos con handles del
+    AV/indexer. Sin reintento, el descarte falla con ``OSError`` y ``__aexit__`` lo
+    traga —camino de ÉXITO— dejando el residuo huérfano: el mismo modo de falla que
+    el flag ``limpiar_readonly`` cerró para el bit READONLY. El reintento vive ahora
+    en el hermano SÍNCRONO, así que necesita su propia ancla y no puede heredarla
+    del async.
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    intentos = {"n": 0}
+    borrar_real = dir_rollback_mod.rmtree_link_aware
+
+    def _falla_una_vez(ruta: pathlib.Path, **kwargs: object) -> int:
+        intentos["n"] += 1
+        if intentos["n"] == 1:
+            raise OSError("sharing violation transitoria (test)")
+        return borrar_real(ruta, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dir_rollback_mod, "rmtree_link_aware", _falla_una_vez)
+
+    rb = DirectoryRollback(target)
+    async with rb:
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    assert intentos["n"] >= 2, "el borrado tenía que reintentar el OSError transitorio"
+    assert not list(tmp_path.glob("Output.rollback-*")), (
+        "el residuo no puede quedar huérfano por un OSError transitorio"
+    )
+    assert rb.finalization_completed is True
+
+
+def test_ancla_ast_el_veto_del_descarte_esta_fusionado_con_el_borrado() -> None:
+    """El veto del descarte y el borrado viven en la MISMA unidad síncrona.
+
+    La fusión no es observable desde afuera: un chequeo separado por un ``await``
+    da el mismo resultado en cualquier test que inyecte la pérdida ANTES del
+    descarte. Pero un ``await`` entre "consulté el veto" y "borré" devuelve el
+    control al event loop y reabre la ventana — exactamente lo que este paquete ya
+    corrigió en el restore (``_restaurar_target_vacio_sync``, review CodeRabbit
+    #404). Se congela por forma, que es lo único que la distingue.
+
+    Se ancla sobre ``_descartar_backup_sync``: tiene que contener el llamado al
+    veto **y** el del borrado, y no puede tener ningún ``await``. Y ``_discard_backup``
+    tiene que USAR esa unidad: un chequeo suelto seguido del borrado async —
+    la variante "no fusionada"— daría el mismo resultado en todos los tests de
+    comportamiento y sin embargo dejaría la ventana abierta.
+    """
+    fuente = pathlib.Path(__file__).resolve().parents[1] / "sky_claw" / "local" / "tools" / "_dir_rollback.py"
+    arbol = ast.parse(fuente.read_text(encoding="utf-8"))
+
+    def _buscar(nombre: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        # ``_discard_backup`` es async: hay que mirar las DOS formas, o el ancla
+        # pasa por no encontrar la función en vez de por verificar la propiedad.
+        return next(
+            (
+                nodo
+                for nodo in ast.walk(arbol)
+                if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == nombre
+            ),
+            None,
+        )
+
+    def _llamados(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+        """Nombres referenciados en el cuerpo.
+
+        Cubre las DOS formas reales del paquete: la invocación ``f(...)`` y la
+        referencia ``self.f`` pasada a otro callable —``to_thread(self.f)``—, que
+        no es un ``ast.Call`` y por eso se escapaba de una lista que sólo mirara
+        llamadas. El idioma de pasar por referencia es el que usa este archivo
+        justamente para que el censo no lo enumere aparte.
+        """
+        nombres: set[str] = set()
+        for nodo in ast.walk(funcion):
+            if isinstance(nodo, ast.Attribute):
+                nombres.add(nodo.attr)
+            elif isinstance(nodo, ast.Name):
+                nombres.add(nodo.id)
+        return nombres
+
+    fusionado = _buscar("_descartar_backup_sync")
+    assert fusionado is not None, "desapareció la unidad fusionada del descarte"
+    assert "_veto_permite_restaurar" in _llamados(fusionado), (
+        "el descarte volvió a borrar sin consultar la autoridad vigente"
+    )
+    assert "_fs_op_with_retry_sync" in _llamados(fusionado), (
+        "el descarte dejó de usar el borrado síncrono (sin ceder el loop)"
+    )
+    assert not any(isinstance(nodo, ast.Await) for nodo in ast.walk(fusionado)), (
+        "hay un `await` entre el veto y el borrado: la ventana volvió a abrirse"
+    )
+
+    descarte = _buscar("_discard_backup")
+    assert descarte is not None
+    assert "_descartar_backup_sync" in _llamados(descarte), (
+        "el descarte dejó de usar la unidad fusionada: un chequeo suelto antes del borrado async "
+        "deja la misma ventana, sólo más chica"
+    )
+
+
 async def test_primer_run_no_finaliza_si_el_validador_final_rechaza_el_target(tmp_path: pathlib.Path) -> None:
     target = tmp_path / "Output"
     rb = DirectoryRollback(target, validate_final_target=lambda: False)
