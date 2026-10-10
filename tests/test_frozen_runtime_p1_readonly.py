@@ -68,6 +68,7 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     "storage.py": frozenset({"mkdir"}),
     "copying.py": frozenset({"flush", "fsync", "mkdir"}),
     "candidates.py": frozenset({"mkdir"}),
+    "root_lock.py": frozenset({"flush", "fsync", "mkdir", "write"}),
 }
 
 
@@ -96,6 +97,9 @@ MODULOS_CON_OPEN_ESCRITURA: dict[str, frozenset[str]] = {
     # placeholder vacio deja al ganador como unico dueno de la ruta, y el escritor
     # atomico despues lo reemplaza sin poder tocar la evidencia de otro.
     "state.py": frozenset({"x"}),
+    # P4-S1: root_lock.py abre con `xb` exclusivo para creacion inicial y con `r+b`
+    # para adquisicion y lectura/escritura del lockfile persistente bajo root/state/.
+    "root_lock.py": frozenset({"r+b", "xb"}),
 }
 
 
