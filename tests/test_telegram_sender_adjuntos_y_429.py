@@ -570,9 +570,16 @@ def _gateway_loopback() -> NetworkGateway:
     return NetworkGateway(policy)
 
 
-def _sender_con_gateway_real(servidor: _ServidorConEnlaceLento) -> tuple[TelegramSender, aiohttp.ClientSession]:
-    """Sender cuyo egreso pasa por el NetworkGateway REAL hacia el servidor local."""
-    sesion = aiohttp.ClientSession()
+def _sender_con_gateway_real(
+    servidor: _ServidorConEnlaceLento, *, limite_del_pool: int = 100
+) -> tuple[TelegramSender, aiohttp.ClientSession]:
+    """Sender cuyo egreso pasa por el NetworkGateway REAL hacia el servidor local.
+
+    ``limite_del_pool`` acota el pool de conexiones: con ``1``, una conexión
+    retenida deja sin slot a la petición siguiente, así que el propio éxito de esa
+    petición demuestra —por comportamiento PÚBLICO— que la anterior se liberó.
+    """
+    sesion = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=limite_del_pool))
     sender = TelegramSender(bot_token=_TOKEN, gateway=_gateway_loopback(), session=sesion)
     sender._url = str(servidor.server.make_url(f"/bot{_TOKEN}/"))
     return sender, sesion
@@ -638,17 +645,34 @@ class TestDeadlineDeSubida:
         finally:
             await sesion.close()
 
-    async def test_el_timeout_libera_la_conexion_del_pool(self, enlace: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_el_timeout_devuelve_la_conexion_al_pool(self, enlace: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Comportamiento PÚBLICO, sin leer atributos privados de aiohttp: con un
+        # pool de UNA sola conexión, una conexión retenida dejaría sin slot a la
+        # subida siguiente y ésta se agotaría esperando. Que la segunda subida
+        # COMPLETE prueba que el fallo no dejó la sesión inservible.
+        #
+        # Alcance honesto: en la ruta de timeout la respuesta NUNCA se construye
+        # (``gateway.request`` propaga antes de devolverla), así que lo que este
+        # test ancla es "el estado del pool sobrevive al fallo" y que el fallo no
+        # se convierte en un éxito fabricado — verificado con un mutante que sí lo
+        # mata. NO pretende cubrir la liberación de una respuesta que no existe.
         monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=0.25, connect=0.2))
-        servidor = await enlace(0.0)
-        sender, sesion = _sender_con_gateway_real(servidor)
+        detenido = await enlace(0.0)
+        sender, sesion = _sender_con_gateway_real(detenido, limite_del_pool=1)
         try:
             with pytest.raises(NetworkGatewayTimeoutError):
                 await sender.send_document(456, b"x" * 4096, "log.txt")
-            await asyncio.sleep(0)
-            assert not sesion.connector._acquired, "la conexión abortada debe volver al pool, no quedar retenida"
+
+            # Deadline holgado para la segunda subida: el punto no es el tiempo,
+            # sino que el slot del pool esté DISPONIBLE.
+            monkeypatch.setattr(gateway_mod, "DEFAULT_REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=5.0, connect=1.0))
+            vivo = await enlace(512 * 1024)
+            sender._url = str(vivo.server.make_url(f"/bot{_TOKEN}/"))
+            resultado = await sender.send_document(456, b"y" * 1024, "log.txt")
         finally:
             await sesion.close()
+
+        assert resultado == TelegramMessage(chat_id=456, message_id=42)
 
 
 # ---------------------------------------------------------------------------
