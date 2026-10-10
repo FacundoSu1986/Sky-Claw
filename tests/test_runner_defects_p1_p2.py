@@ -67,9 +67,11 @@ import ast
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
 import shutil
 import stat
+import sys
 import threading
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -78,6 +80,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import sky_claw.app.security.links as links_mod
+from sky_claw.app.db.locks import LockLeaseLostError
 from sky_claw.local.tools import dyndolod_runner as runner_mod
 from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
@@ -310,22 +313,45 @@ def test_r1_ancla_ast_el_worker_de_packaging_pasa_por_el_handoff_terminal():
         "el worker debe vivir en una Task propia para que done() sea un handle confiable"
     )
 
-    # (3) esa espera pasa por el helper de terminal handoff.
-    esperas_helper = [
-        nodo
+    # (3) esa espera pasa por el helper de terminal handoff, y ENUMERA a TODOS los
+    # workers del packaging — no fija un número.
+    #
+    # Antes esta ancla exigía `len(...) == 2` ("el pre-scan y el worker mutante").
+    # Fijar el CONTEO como propiedad convertía en fallo cualquier worker nuevo que
+    # legítimamente necesite el handoff, que es exactamente lo que pasó cuando el
+    # scan del presupuesto tuvo que entrar (review Codex #709 F1): el número es
+    # superficie mutante, la propiedad no. Se enumeran los DOS lados y se comparan
+    # por conjunto: agregar un worker sin handoff rompe el ancla; agregarlo CON
+    # handoff no la rompe.
+    despachados = {
+        destino.id
+        for nodo in ast.walk(metodo)
+        if isinstance(nodo, ast.Assign)
+        and isinstance(nodo.value, ast.Call)
+        and isinstance(nodo.value.func, ast.Attribute)
+        and nodo.value.func.attr in {"create_task", "ensure_future"}
+        for destino in nodo.targets
+        if isinstance(destino, ast.Name)
+    }
+    esperados_por_el_handoff = {
+        nodo.value.args[0].id
         for nodo in ast.walk(metodo)
         if isinstance(nodo, ast.Await)
         and isinstance(nodo.value, ast.Call)
         and isinstance(nodo.value.func, ast.Name)
         and nodo.value.func.id == "_esperar_terminalidad_del_worker"
-    ]
-    assert len(esperas_helper) == 2, (
-        "el pre-scan y el worker mutante deben usar la primitiva común _esperar_terminalidad_del_worker"
+        and nodo.value.args
+        and isinstance(nodo.value.args[0], ast.Name)
+    }
+    assert despachados, "el packaging debe despachar sus workers en Tasks propias"
+    assert despachados == esperados_por_el_handoff, (
+        "TODO worker despachado por `to_thread` en el packaging tiene que esperarse por "
+        f"_esperar_terminalidad_del_worker (despachados={sorted(despachados)}, "
+        f"esperados={sorted(esperados_por_el_handoff)})"
     )
-    assert any(
-        espera.value.args and isinstance(espera.value.args[0], ast.Name) and espera.value.args[0].id == "worker_mutante"
-        for espera in esperas_helper
-    ), "R1 debe seguir pasando el worker mutante por el terminal handoff"
+    assert "worker_mutante" in esperados_por_el_handoff, (
+        "R1 debe seguir pasando el worker mutante por el terminal handoff"
+    )
 
     # (4) el mecanismo vive en el núcleo común `_handoff_terminal` — loop sobre
     # task.done() con shield y rama que absorbe CancelledError. R1 y R3 son DOS
@@ -2903,6 +2929,15 @@ async def test_592_p16_falla_el_descarte_del_backup_sin_perdida_ni_falso_exito(t
     assert _leer_arbol(residuos[0]) == previo, "no puede haber pérdida: el backup sigue íntegro"
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "FILE_ATTRIBUTE_READONLY es semántica de Windows: en POSIX el bit de escritura del "
+        "ARCHIVO no impide borrarlo —sólo el del directorio lo hace—, así que el test no "
+        "podría fallar por el motivo que afirma y daría falsa confianza en CI POSIX "
+        "(CodeRabbit, PR #709)."
+    ),
+)
 @pytest.mark.asyncio
 async def test_592_readonly_el_descarte_del_backup_no_deja_residuo(tmp_path, monkeypatch):
     """§9 — un mod anterior con archivos READONLY no debe bloquear la sustitución.
@@ -2911,14 +2946,35 @@ async def test_592_readonly_el_descarte_del_backup_no_deja_residuo(tmp_path, mon
     `FILE_ATTRIBUTE_READONLY` (herramienta externa en Windows). El descarte del
     backup tiene que tolerarlo, o el residuo queda huérfano en el camino de
     éxito — que es justo donde nadie lo mira.
+
+    Windows-only **y con el régimen armado y verificado**: el `skipif` solo no
+    alcanza si el atributo no llegara a ponerse, porque entonces el test tampoco
+    podría fallar por su motivo. La aserción de atributo cierra esa segunda vía, y
+    el `pytest.raises` confirma que el régimen es DISCRIMINANTE — sin el flag el
+    descarte tiene que fallar, o `limpiar_readonly_al_borrar=True` sería
+    indistinguible de no tenerlo.
     """
     import stat as stat_mod
+
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
 
     src = _staging_nuevo(tmp_path)
     mod_path = tmp_path / "mods" / "DynDOLOD Output"
     _poblar_mod_previo(mod_path)
     readonly = mod_path / "meshes" / "previous.nif"
     readonly.chmod(stat_mod.S_IREAD)
+
+    assert os.stat(readonly).st_file_attributes & stat_mod.FILE_ATTRIBUTE_READONLY, (
+        "el régimen readonly no quedó armado: el resto del test no probaría nada"
+    )
+    # Sobre un árbol DESCARTABLE, para no mutilar la fixture que el empaquetado
+    # necesita entera.
+    sonda = tmp_path / "sonda_readonly"
+    (sonda / "meshes").mkdir(parents=True)
+    (sonda / "meshes" / "x.nif").write_bytes(b"x")
+    (sonda / "meshes" / "x.nif").chmod(stat_mod.S_IREAD)
+    with pytest.raises(OSError):
+        await dir_rollback_mod._borrar_arbol_o_enlace(sonda, limpiar_readonly=False)
 
     runner = _runner_592(tmp_path)
     try:
@@ -3152,3 +3208,149 @@ def test_592_ancla_ast_el_previo_solo_se_aparta_bajo_el_protocolo_y_tras_el_pres
         "el presupuesto ENOSPC debe evaluarse ANTES de apartar el mod anterior: "
         "un rechazo por capacidad no puede haber mutado el destino"
     )
+
+    # (3c) El scan del presupuesto se espera por el TERMINAL HANDOFF (review Codex
+    # #709 F1). `_bytes_del_arbol` recorre todo el árbol fuente: cancelar un
+    # `to_thread` pelado no detiene el hilo, que seguiría con handles dentro de un
+    # root que el unwind va a renombrar mientras las leases se sueltan.
+    assert any(
+        isinstance(nodo, ast.Assign)
+        and isinstance(nodo.value, ast.Call)
+        and isinstance(nodo.value.func, ast.Attribute)
+        and nodo.value.func.attr in {"create_task", "ensure_future"}
+        and any(isinstance(t, ast.Name) and t.id == "worker_presupuesto" for t in nodo.targets)
+        for nodo in ast.walk(metodo)
+    ), "el scan del presupuesto debe vivir en una Task propia, no en un `to_thread` pelado"
+    assert any(
+        isinstance(nodo, ast.Await)
+        and isinstance(nodo.value, ast.Call)
+        and isinstance(nodo.value.func, ast.Name)
+        and nodo.value.func.id == "_esperar_terminalidad_del_worker"
+        and nodo.value.args
+        and isinstance(nodo.value.args[0], ast.Name)
+        and nodo.value.args[0].id == "worker_presupuesto"
+        for nodo in ast.walk(metodo)
+    ), (
+        "el scan del presupuesto debe esperarse por _esperar_terminalidad_del_worker: "
+        "cancelar el await de un to_thread no detiene su hilo (Codex #709 F1)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #592 finding 2 — hallazgos de la revisión de PR #709 (Codex, dos P1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_592_f1_cancel_durante_el_scan_del_presupuesto_no_libera_al_caller(tmp_path, monkeypatch):
+    """F1 (Codex #709) — el scan del presupuesto corre bajo el terminal handoff.
+
+    `_bytes_del_arbol` recorre TODO el árbol fuente —miles de archivos en una
+    salida real de DynDOLOD—, así que un `to_thread` pelado no es
+    cancellation-safe: cancelar el `await` no detiene el hilo, y el unwind
+    (los `DirectoryRollback` del servicio, la liberación de las leases de etapa 9)
+    correría mientras ese hilo todavía enumera un root que el rollback va a
+    renombrar, con otro dueño ya en condiciones de adquirir el workspace.
+
+    Se ancla el orden: cancel #1 y #2 quedan absorbidas hasta que el scan es
+    terminal, y el destino no se toca — el presupuesto corre ANTES de cualquier
+    mutación.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+    runner = _runner_592(tmp_path)
+
+    arranque = threading.Event()
+    permitir = threading.Event()
+    medir_real = runner_mod._bytes_del_arbol
+
+    def _scan_bloqueado(raiz: pathlib.Path) -> int:
+        arranque.set()
+        assert permitir.wait(timeout=30), "el test no liberó el scan del presupuesto"
+        return medir_real(raiz)
+
+    monkeypatch.setattr(runner_mod, "_bytes_del_arbol", _scan_bloqueado)
+
+    orden: list[str] = []
+    eventos: asyncio.Queue[str] = asyncio.Queue()
+
+    async def _caller() -> None:
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
+
+    tarea = asyncio.create_task(_caller())
+    try:
+        with _observar_cancelaciones(orden, eventos):
+            assert await asyncio.to_thread(arranque.wait, 10), "el scan del presupuesto no arrancó"
+            tarea.cancel()
+            assert await asyncio.wait_for(eventos.get(), timeout=5) == "cancel_1_procesada"
+            assert not tarea.done(), "cancel #1 liberó al caller antes de que el scan fuera terminal"
+
+            tarea.cancel()
+            assert await asyncio.wait_for(eventos.get(), timeout=5) == "cancel_2_procesada"
+            assert not tarea.done(), "cancel #2 liberó al caller antes de que el scan fuera terminal"
+
+            permitir.set()
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+    finally:
+        permitir.set()
+        if not tarea.done():
+            tarea.cancel()
+        with contextlib.suppress(BaseException):
+            await tarea
+
+    assert _leer_arbol(mod_path) == previo, "el presupuesto corre ANTES de mutar: el destino no puede haberse tocado"
+    assert _residuos_de(mod_path) == [], "un cancel durante el scan no debe dejar residuo de move-aside"
+
+
+@pytest.mark.asyncio
+async def test_592_f2_perdida_de_lease_durante_la_copia_no_descarta_el_backup(tmp_path, monkeypatch):
+    """F2 (Codex #709) — el camino de ÉXITO también consulta la exclusividad.
+
+    `should_rollback` sólo se evalúa en el camino de EXCEPCIÓN. Si la lease de
+    etapa 9 se pierde DURANTE la copia y el worker igual termina bien, sin un
+    fence fresco `__aexit__` tomaría el camino de éxito y descartaría el backup
+    del mod previo SIN consultar nada: la corrida declararía éxito sobre bytes
+    que ya no son atribuibles a ella —el mismo motivo por el que existe el fence
+    previo al packaging— y borraría la última copia buena.
+
+    Con el fence fresco, la pérdida de lease se convierte en una excepción DENTRO
+    del `async with`: el veto ve el fallo, el restore se omite y el backup queda
+    en disco para recuperación manual.
+    """
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+
+    estado = {"perdida": False, "fences": 0}
+
+    async def _fence() -> None:
+        estado["fences"] += 1
+        if estado["perdida"]:
+            raise LockLeaseLostError("lease de etapa 9 perdida durante la copia (test)")
+
+    runner = _runner_592(tmp_path)
+    runner._config = SimpleNamespace(mo2_mods_path=tmp_path / "mods", fence_ownership=_fence)
+
+    copiar_real = shutil.copytree
+
+    def _copia_que_pierde_la_lease(*args: object, **kwargs: object):
+        resultado = copiar_real(*args, **kwargs)
+        # La copia TERMINA BIEN: sin el fence fresco esto sería un "éxito".
+        estado["perdida"] = True
+        return resultado
+
+    monkeypatch.setattr(runner_mod.shutil, "copytree", _copia_que_pierde_la_lease)
+
+    with pytest.raises(LockLeaseLostError):
+        await runner._package_output_as_mod(
+            src,
+            "DynDOLOD Output",
+            veto_de_rollback=lambda: not estado["perdida"],
+        )
+
+    assert estado["fences"] == 2, "debe fencearse ANTES de la copia y OTRA VEZ antes de tomar el camino de éxito"
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1, "el backup del mod previo NO puede descartarse tras perder la lease"
+    assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"

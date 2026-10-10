@@ -439,7 +439,7 @@ async def _handoff_terminal(
     return intencion, task.exception()
 
 
-async def _esperar_terminalidad_del_worker(worker: asyncio.Task[None]) -> None:
+async def _esperar_terminalidad_del_worker(worker: asyncio.Task[Any]) -> None:
     """Retiene al caller hasta que un worker ``to_thread`` de packaging es terminal.
 
     R1/R2 — ``RUNNER_P1_PACKAGING_CANCEL`` / ``RUNNER_P1_REPARSE_COPY``. Un hilo
@@ -2948,15 +2948,24 @@ class DynDOLODRunner:
             # 2,5 GiB y seguiría rechazando, pero habiendo ya destruido el previo.
             #
             # Medir acá —y no dentro del worker mutante— es lo que hace que un
-            # rechazo por capacidad no mute el destino. No lleva terminal handoff
-            # como el pre-scan: es de SÓLO LECTURA sobre la fuente, así que no
-            # participa del contrato `worker_terminal < rollback < lease_released`
-            # (el ancla AST del packaging congela exactamente dos handoffs: el
-            # pre-scan y el worker mutante).
+            # rechazo por capacidad no mute el destino.
+            #
+            # El scan NO puede ser un `to_thread` pelado (review Codex #709 F1):
+            # `_bytes_del_arbol` recorre TODO el árbol fuente —miles de archivos
+            # en una salida real de DynDOLOD—, y cancelar el `await` no detiene el
+            # hilo. El hilo seguiría con handles abiertos dentro de un root que el
+            # unwind va a RENOMBRAR (los `DirectoryRollback` del servicio) mientras
+            # las leases de etapa 9 se sueltan y otro dueño puede adquirir el
+            # workspace. Es el mismo modo de falla que R1/R2 cerraron para el
+            # pre-scan y para el worker mutante, así que usa la MISMA primitiva:
+            # Task propia + terminal handoff. Sigue corriendo ANTES de cualquier
+            # mutación del destino, que es lo que exige el presupuesto.
             def _presupuesto() -> tuple[int, int]:
                 return _bytes_del_arbol(output_path), _espacio_libre_en(mod_path.parent)
 
-            necesarios, disponibles = await asyncio.to_thread(_presupuesto)
+            worker_presupuesto = asyncio.create_task(asyncio.to_thread(_presupuesto))
+            await _esperar_terminalidad_del_worker(worker_presupuesto)
+            necesarios, disponibles = worker_presupuesto.result()
             if necesarios > disponibles:
                 raise DynDOLODValidationError(
                     f"No hay espacio en el volumen de '{mod_path.parent}' para empaquetar "
@@ -3036,6 +3045,23 @@ class DynDOLODRunner:
                 # `worker_terminal < rollback < lease_released` se conserva.
                 worker_mutante = asyncio.create_task(asyncio.to_thread(_empaquetar_sincrono))
                 await _esperar_terminalidad_del_worker(worker_mutante)
+
+                # Review Codex #709 F2 — FENCE FRESCO antes de tomar el camino de
+                # ÉXITO.
+                #
+                # `should_rollback` sólo se consulta en el camino de EXCEPCIÓN (o
+                # al restaurar un target vacío). Si la lease de etapa 9 se pierde
+                # DURANTE la copia y el worker igual termina bien, `__aexit__`
+                # tomaría el camino de éxito y descartaría el backup del mod
+                # previo SIN consultar nada: la corrida declararía éxito sobre
+                # bytes que ya no son atribuibles a ella —el mismo motivo por el
+                # que existe el fence previo al packaging— y borraría la última
+                # copia buena. Fencear acá convierte la pérdida de lease en una
+                # excepción DENTRO del `async with`, así el veto ve el fallo, el
+                # restore se omite y el backup queda para recuperación manual en
+                # vez de descartarse.
+                if self._config.fence_ownership is not None:
+                    await self._config.fence_ownership()
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path

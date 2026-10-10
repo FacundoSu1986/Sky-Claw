@@ -120,6 +120,13 @@ _ITEMS = frozenset(
         # `docs/validation/2026-10-02_p0_uia_alpha209/p0b/runner-defects-plan.md` y
         # R1/R2 son hermanos en #592.
         "Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)",
+        # #592 finding 2 (PR #709): el packaging dejó de borrar el mod previo ANTES
+        # de medir ENOSPC —ahora mide primero y sustituye bajo `DirectoryRollback`—,
+        # así que este censo de inventario y los dos de familia
+        # (`test_rollback_salida.py`, `test_rollback_reconciler.py`) se mueven juntos.
+        # Fila "Parcial" porque el PR está pendiente de merge; #592 sigue ABIERTO por
+        # sus otros findings.
+        "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia (`RUNNER_P2_PACKAGING_PRESERVE_PREVIOUS`, #592 finding 2)",
     }
 )
 
@@ -599,6 +606,36 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
     assert "merge_status=MERGED" not in fila_r3["Qué falta"], (
         "R3 no puede declararse MERGED antes de que su PR se mergee"
     )
+
+
+def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
+    """#592 finding 2 tiene fix y evidencia, pero su PR sigue abierto.
+
+    Mismo contrato que R2/R3: ``Parcial`` mientras ``#592`` siga abierto por sus
+    otros findings, ``merge_status`` nunca ``MERGED``. Y los dos límites que el fix
+    declara —la promoción no es atómica y no se reclama crash-safety desde
+    ``Path.rename``— no pueden desaparecer de la fila: son justamente lo que
+    distingue «el previo sobrevive» de «el previo nunca corrió riesgo».
+    """
+    item = (
+        "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia "
+        "(`RUNNER_P2_PACKAGING_PRESERVE_PREVIOUS`, #592 finding 2)"
+    )
+    fila = _tabla()[item]
+    estado = fila["Qué falta"]
+
+    assert fila["Estado"] == "Parcial"
+    assert "pendiente de merge" in fila["Cerrado en"]
+    assert "resolution_status=FIXED" in estado
+    assert "evidence_status=REPRODUCED" in estado
+    assert "merge_status=MERGED" not in estado
+    # El doc escribe la negación en mayúsculas ("NO es atómica"): se compara sin
+    # distinguir caso para que una edición de estilo no rompa el ancla.
+    assert "no es atómica" in estado.lower()
+    assert "no se reclama crash-safety" in estado.lower()
+    assert "test_runner_defects_p1_p2.py" in fila["Verificado por"]
+    assert "test_592_p1_enospc_conserva_el_mod_anterior_byte_exacto" in fila["Verificado por"]
+    assert "test_592_f2_perdida_de_lease_durante_la_copia_no_descarta_el_backup" in fila["Verificado por"]
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:

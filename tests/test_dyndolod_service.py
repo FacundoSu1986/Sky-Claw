@@ -6464,10 +6464,13 @@ async def test_tp02_50_ownership_valido_prepara_y_spawnea(
     assert result["success"] is True, result.get("errors")
     assert fake.tools == ["TexGen", "DynDOLOD"]
     # Fences observables con `_execute_process` parcheado: pre-move-aside,
-    # pre-mkdir y los DOS packagings. El fence previo al spawn vive DENTRO de
-    # `_execute_process` (por eso el fake lo puentea) y tiene su test directo
-    # (`test_el_fence_del_runner_corre_antes_del_spawn`).
-    assert ownership.fences == 4, f"el fence no se ejecutó en todas las fronteras: {ownership.fences}"
+    # pre-mkdir y los DOS packagings × DOS fences cada uno — el previo a la copia
+    # (P2.2) y el FRESCO posterior al worker terminal (review Codex #709 F2: sin
+    # él, la pérdida de lease durante la copia tomaba el camino de ÉXITO y
+    # descartaba el backup del mod previo sin consultar el veto). El fence previo
+    # al spawn vive DENTRO de `_execute_process` (por eso el fake lo puentea) y
+    # tiene su test directo (`test_el_fence_del_runner_corre_antes_del_spawn`).
+    assert ownership.fences == 6, f"el fence no se ejecutó en todas las fronteras: {ownership.fences}"
 
 
 @pytest.mark.asyncio
