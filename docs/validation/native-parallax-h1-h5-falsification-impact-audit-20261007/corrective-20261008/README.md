@@ -65,6 +65,17 @@ corregida contradice la conclusión original, **se corrige la conclusión**.
 > bracket que aportara ambas**. Es un **residual del finding A**, un nivel más adentro.
 > Corregido: el status exige **asociación conjunta**. **Cero** cambios científicos
 > (`31/31`; todos los contadores idénticos; sólo `n_evaluations`). Ver §4.4.
+>
+> **Novena ronda — adjudicación del informe automático y sincronización final
+> (2026-10-10, misma rama).** Cinco observaciones nuevas sobre el HEAD `dbec8d9c`. Cuatro son
+> **no bloqueantes** (una ya cubierta por tests previos); la quinta — NaN/Inf **dentro** del
+> refinamiento por sección áurea — se adjudicó con una **prueba focal** de 64 tests nuevos, sin
+> reabrir las corridas científicas. Resultado: **no se reproduce ningún defecto material**; el
+> refinamiento es fail-closed **por construcción** (`CONVERGED` exige `result_finite`; el
+> invariante D rechaza el `NaN` porque `NaN < x` es falso; `is_valid_minimum_bracket` exige
+> puntos finitos). **No se modificó ningún script** ⇒ la evidencia publicada queda intacta y
+> `H1` **no** se re-ejecuta. Se fusionó `origin/main` (`ef4b8aa9`, 4 commits, **0** archivos en
+> común con los 36 del PR). Ver §4.5.
 
 ---
 
@@ -817,6 +828,99 @@ veredicto en configuraciones degeneradas que el corpus no ejerce.
 
 ---
 
+### 4.5 Novena ronda — adjudicación de las cinco observaciones del informe automático
+
+El informe automático (Qodo) sobre el HEAD `dbec8d9c` dejó cinco observaciones. Se contrastaron
+con el código real antes de aceptarlas o descartarlas.
+
+| # | Observación | Adjudicación |
+|---|---|---|
+| 1 | La parada de la sección áurea usa el punto equivocado | **NO CONFIRMADO** — la parada por métrica sólo puede dispararse sobre el punto **recién evaluado**. `newly < best_val` exige una mejora estricta sobre el histórico; el valor reutilizado ya está contado en `best_val`, así que no puede ser menor. Fijado por test (§4.5.1) y **explicado por el mutante inerte M4** (§4.5.2). |
+| 2 | Evaluaciones no contabilizadas y tolerancia del bracket | **PARCIALMENTE INFUNDADO** — `n_evaluations` se incrementa en el wrapper `f()`, que envuelve **toda** evaluación (barrido grueso, refinamiento, expansión y los tres puntos de `is_valid_minimum_bracket`); el contador local `evals` de la sección áurea es `2 + iters` y no se publica. Una tolerancia de bracket independiente es una decisión de diseño **no demostrada necesaria**. Sin cambio. |
+| 3 | NaN/Inf durante el refinamiento | **NO ES UN DEFECTO MATERIAL** — fail-closed por construcción; prueba focal en §4.5.1. |
+| 4 | El bracket inicial no está centrado en `s0` | **CONFIRMADO como imprecisión descriptiva, no bloqueante** — el bracket es `[-2·abs(s0), 2·abs(s0)]`: simétrico alrededor de **cero**, no centrado en la semilla. Fijado por test (§4.5.1). |
+| 5 | C2 rechaza valores truthy no booleanos | **CORRECTO POR DISEÑO** — el contrato fail-closed exige `is True`. Ya cubierto por `test_g_condicion_requerida_truthy_no_bool_hard_stop` y `test_validador_no_acepta_truthy_no_bool_en_cada_condicion` (ronda 5). Sin cambio. |
+
+#### 4.5.1 Prueba focal — valores no finitos durante el refinamiento
+
+**Método.** Se importa `corrective_optimizer` **tal cual está en el árbol** (sin monkeypatch ni
+edición) y se enumeran **12 objetivos** que devuelven un no finito en regiones distintas: todo
+el dominio, el ancla `f(0.0)`, la vecindad del óptimo, un mínimo lejano, los positivos y un
+punto aislado del barrido. Para cada uno se registran `status`, `converged`, `result_finite`,
+`best_x`, `best_fx` y `n_evaluations`.
+
+| escenario | `status` | `converged` | `best_fx` finito |
+|---|---|---|---|
+| `todos_nan` | `NO_BRACKET` | False | no |
+| `todos_pos_inf` | `NO_BRACKET` | False | no |
+| `todos_neg_inf` | `NO_BRACKET` | False | no |
+| `nan_en_ancla_cero` | `NO_BRACKET` | False | no |
+| `nan_en_vecindad_optimo` | `NO_BRACKET` | False | no |
+| `nan_en_optimo_exacto` | `CONVERGED` | True | sí |
+| `nan_en_positivos` | `MAX_EXPANSIONS` | False | sí |
+| `pos_inf_en_vecindad_optimo` | `NO_VALID_BRACKET` | False | sí |
+| `neg_inf_en_optimo` | `CONVERGED` | True | sí |
+| `nan_en_un_punto_del_barrido` | `CONVERGED` | True | sí |
+| `nan_en_vecindad_de_un_minimo_lejano` | `CONVERGED` | True | sí |
+| `control_limpio` | `CONVERGED` | True | sí |
+
+**Contrato verificado.** (i) `converged` ⇒ resultado finito; (ii) resultado no finito ⇒
+`converged = False` **y** `status = NO_BRACKET` (el fail-closed de F8, que distingue un problema
+de **evaluabilidad** de uno de **forma**); (iii) el invariante D se sostiene
+(`best_fx <= coarse_best_fx`) siempre que ambos sean finitos; (iv) `is_valid_minimum_bracket`
+devuelve `False` si **cualquiera** de los tres puntos no es finito (enumerado sobre `NaN`,
+`+inf`, `-inf` × posición `lo`/`mid`/`hi` = 9 combinaciones); (v) un no finito **aislado** no
+reemplaza un mejor valor finito ya observado.
+
+**Por qué es fail-closed.** `NaN < x` es `False` para todo `x`, así que el invariante D
+(`if bfx < best_fx`) **no puede** adoptar un valor no finito: el resultado publicado sigue
+siendo el mejor **finito**. Y como `valid_minimum_bracket` exige tres puntos finitos y la
+evidencia se atribuye al bracket que **contiene** al ganador, un `NaN` en el ancla deja el
+conjunto de brackets que contienen al ganador sin evidencia válida. El único efecto observado es
+**pesimismo**: si `f(0.0)` es `NaN`, el barrido pierde su ancla y el caso cae por `NO_BRACKET`
+aunque existan valores finitos en el resto del dominio. Es un **falso negativo honesto**, no una
+respuesta incorrecta — y es determinista (`min(coarse, key=...)` con clave `NaN` conserva el
+primer elemento, porque toda comparación con `NaN` es falsa).
+
+**No se modificó el módulo.** `corrective_optimizer.py` queda byte-idéntico al HEAD `dbec8d9c`
+(`SHA256 0e28bcb3c3c838bf1ec9ce97f7a7fb153dff6df76facb83a9174d3e62dd0476b`). Por eso **no se
+re-ejecuta H1**: la evidencia publicada no puede haber cambiado.
+
+#### 4.5.2 Mutación (a nivel de bytes)
+
+| mutante | defecto reintroducido | detectado |
+|---|---|---|
+| M1 | `is_valid_minimum_bracket` sin la guarda de finitud | **sí** (4 tests) |
+| M2 | rama `result_finite` anulada en el gate de status | **sí** (6 tests) |
+| M3 | adopción `not (bfx > best_fx)` en vez de `bfx < best_fx` (adopta `NaN`) | **sí** (1 test) |
+| M4 | parada `min(fc, fd)` en vez del punto recién evaluado | **no** — inerte |
+
+**M4 es inerte, y por eso la observación 1 no se confirma.** Las dos formas son **idénticas para
+valores finitos** (`fc if fc <= fd else fd` coincide con `min(fc, fd)`). Sólo difieren cuando uno
+de los dos extremos evalúa no finito, y allí el `min` produce `NaN`, que **nunca** satisface
+`newly < best_val`: la diferencia cambia *cuándo* dispara la parada por métrica, nunca el
+resultado publicado ni el veredicto. Se verificó con una **sonda diferencial** sobre una familia
+de 9 objetivos (incluidas bandas `NaN` y `+inf`): los resultados son **idénticos**. La
+restauración del módulo se verificó por SHA256 **de bytes** (EOL preservado).
+
+#### 4.5.3 Gates locales y sincronización con `main`
+
+| gate | resultado |
+|---|---|
+| `pytest -k pr700_corrective` | **244 passed** (180 + 64 nuevos) |
+| `pytest -k native_parallax` | **570 passed** (506 + 64) |
+| `pytest -k clean_room` | **123 passed** |
+| `ruff check sky_claw/ tests/` | `All checks passed!` |
+| `ruff format --check sky_claw/ tests/` | 850 files already formatted |
+| `mypy sky_claw/ --ignore-missing-imports` | OK |
+
+Sincronización: `git diff --name-only 98967ecb origin/main` da **3** archivos
+(`event_payloads.py`, `dyndolod_service.py`, `test_dyndolod_service.py`) y la intersección con
+los **36** archivos del PR es **0**. El merge de `ef4b8aa9` entró sin conflictos y sin tocar
+ningún archivo del PR.
+
+---
+
 ## 5. Adjudicación final
 
 ```
@@ -892,6 +996,7 @@ tests/test_native_parallax_pr700_corrective_optimizer.py             F1 + C (ron
 tests/test_native_parallax_pr700_corrective_optimizer_hardening.py   D/E/F6: 32 tests
 tests/test_native_parallax_pr700_corrective_multibasin_convergence.py A/B (ronda 7): 18 tests
 tests/test_native_parallax_pr700_corrective_joint_evidence.py        A residual (ronda 8): 13 tests
+tests/test_native_parallax_pr700_corrective_nonfinite_refinement.py  NaN/Inf (ronda 9): 64 tests
 tests/test_native_parallax_pr700_corrective_h4_invariants.py         F4/F5: 38 tests
 tests/test_native_parallax_pr700_corrective_h4_claim_split.py        C: 8 tests
 tests/test_native_parallax_pr700_corrective_roster_identity.py       F: 13 tests
@@ -900,4 +1005,4 @@ tests/test_native_parallax_pr700_corrective_docs_invariants.py       G/H/I: 8 te
 tests/test_native_parallax_pr700_corrective_c2_fail_closed.py        C2 (ronda 5): 19 tests
 ```
 
-Total: **180 tests correctivos** (`pytest -k pr700_corrective`).
+Total: **244 tests correctivos** (`pytest -k pr700_corrective`).
