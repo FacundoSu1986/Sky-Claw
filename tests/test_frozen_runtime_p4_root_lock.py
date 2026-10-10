@@ -41,6 +41,7 @@ from sky_claw.local.frozen_runtime.root_lock import (
     LOCK_SCHEMA_VERSION,
     FrozenRuntimeRootLockHandle,
     LockDisposition,
+    LockPhase,
     OwnerLiveness,
     _get_thread_lock,
     _read_metadata_bytes,
@@ -878,3 +879,309 @@ def test_f05_acquire_base_exception_cleans_up_thread_and_os_locks(
     monkeypatch.undo()
     with acquire_frozen_runtime_root_lock(root, timeout=1.0) as nuevo_handle:
         nuevo_handle.assert_owned()
+
+
+# ============================================================================
+# F-06 a F-11 — Segunda Ola de Hardening Adversarial (PR #710)
+# ============================================================================
+
+
+def test_f06_inspect_applies_anti_reparse_admission_boundary(tmp_path: pathlib.Path) -> None:
+    """F-06 (P1): inspect() aplica el boundary anti-reparse sin crear directorios (REDIRECTED != FREE)."""
+    # 1. state/ es un junction o symlink
+    root_link = tmp_path / "root_link"
+    root_link.mkdir()
+    state_externo = tmp_path / "state_ext"
+    state_externo.mkdir()
+    state_target = root_link / "state"
+
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(state_externo), str(state_target))
+    else:
+        try:
+            state_target.symlink_to(state_externo, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("El entorno no permite symlinks de directorio")
+
+    with pytest.raises(FrozenRuntimeLockAdmissionError, match="state/ es un enlace/reparse"):
+        inspect_frozen_runtime_root_lock(root_link)
+
+    # 2. lock_path redirigido por symlink de archivo
+    root_file_link = _crear_root_valido(tmp_path)
+    lock_file = root_file_link / "state" / LOCK_FILE_NAME
+    archivo_externo = tmp_path / "externo.lock"
+    archivo_externo.write_text("dummy", encoding="utf-8")
+    try:
+        lock_file.symlink_to(archivo_externo)
+        with pytest.raises(FrozenRuntimeLockAdmissionError, match="lockfile es un enlace/reparse"):
+            inspect_frozen_runtime_root_lock(root_file_link)
+    except (OSError, NotImplementedError):
+        pass  # En Windows sin SeCreateSymbolicLinkPrivilege los symlinks de archivo requieren permisos
+
+    # 3. root rechazado por almacenamiento (ej. forma reservada de Windows o steamapps)
+    root_steam = tmp_path / "steamapps" / "common" / "Skyrim Special Edition" / "frozen"
+    with pytest.raises(FrozenRuntimeLockAdmissionError, match="administrada por Steam"):
+        inspect_frozen_runtime_root_lock(root_steam)
+
+    # 4. inspect() sobre un root nuevo NO debe crear el directorio state/
+    root_nuevo = tmp_path / "root_nuevo_sin_state"
+    root_nuevo.mkdir()
+    res = inspect_frozen_runtime_root_lock(root_nuevo)
+    assert res.disposition == LockDisposition.FREE
+    assert not (root_nuevo / "state").exists(), "inspect() no debe crear directorios mutando el storage"
+
+
+def test_f07_forked_or_foreign_process_cannot_assert_owned_or_release(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-07 (P1): Un proceso forkeado o ajeno al creador del handle no puede llamar assert_owned() ni release()."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    # 1. Proceso con PID distinto
+    monkeypatch.setattr(os, "getpid", lambda: handle.pid + 1000)
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="Frontera de proceso violada"):
+        handle.assert_owned()
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="Frontera de proceso violada"):
+        handle.release()
+
+    # 2. Proceso con mismo PID pero create_time distinto (PID reciclado tras fork/exec)
+    monkeypatch.setattr(os, "getpid", lambda: handle.pid)
+    from unittest.mock import MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.create_time.return_value = handle.process_create_time + 10.0
+    monkeypatch.setattr(psutil, "Process", lambda pid: mock_proc)
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="process_create_time"):
+        handle.assert_owned()
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="process_create_time"):
+        handle.release()
+
+    # Restaurar y verificar que el dueño legítimo sí puede liberar
+    monkeypatch.undo()
+    handle.assert_owned()
+    handle.release()
+
+
+def test_f08_release_crash_boundary_committed_at_released_marker(tmp_path: pathlib.Path) -> None:
+    """F-08 (P1): Commit point de release es la escritura durable de phase=RELEASED (Opción A)."""
+    root = _crear_root_valido(tmp_path)
+
+    # Escenario A: Crash antes del commit point (phase=HELD en disco al morir el proceso)
+    senal_listo_held = tmp_path / "crash_held_ready.tmp"
+    codigo_crash_held = f"""
+import os, sys, pathlib, time
+from sky_claw.local.frozen_runtime.root_lock import acquire_frozen_runtime_root_lock
+
+root = pathlib.Path({str(root)!r})
+handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+pathlib.Path({str(senal_listo_held)!r}).write_text(handle.session_id, encoding="utf-8")
+time.sleep(10.0)
+"""
+    p_held = subprocess.Popen([sys.executable, "-c", codigo_crash_held])
+    try:
+        for _ in range(50):
+            if senal_listo_held.exists():
+                break
+            time.sleep(0.05)
+        assert senal_listo_held.exists()
+    finally:
+        p_held.kill()
+        p_held.wait(timeout=2.0)
+
+    # Tras crash con phase=HELD, el kernel liberó OS lock pero metadata indica HELD de dueño DEAD -> ORPHANED
+    res_held = inspect_frozen_runtime_root_lock(root)
+    assert res_held.is_os_locked is False
+    assert res_held.disposition == LockDisposition.ORPHANED
+    assert res_held.liveness == OwnerLiveness.DEAD
+    assert res_held.metadata is not None
+    assert res_held.metadata.phase == LockPhase.HELD
+
+    # Escenario B: Crash DESPUÉS del commit point (phase=RELEASED persistido y fsync'd, pero proceso muere antes de cerrar fd)
+    senal_listo_rel = tmp_path / "crash_rel_ready.tmp"
+    codigo_crash_rel = f"""
+import os, sys, pathlib, time
+from sky_claw.local.frozen_runtime.root_lock import (
+    acquire_frozen_runtime_root_lock,
+    LOCK_SCHEMA_VERSION,
+    LockPhase,
+)
+import json
+
+root = pathlib.Path({str(root)!r})
+handle = acquire_frozen_runtime_root_lock(root, timeout=1.0, reclaim_orphaned=True)
+
+# Simular commit point de release: escribir phase=RELEASED y fsync, manteniendo OS lock abierto
+payload = {{
+    "schema_version": LOCK_SCHEMA_VERSION,
+    "canonical_root": handle.canonical_root,
+    "session_id": handle.session_id,
+    "pid": handle.pid,
+    "process_create_time": handle.process_create_time,
+    "acquired_at": handle.acquired_at,
+    "phase": LockPhase.RELEASED.value,
+    "released_at": time.time(),
+}}
+serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+handle._file_obj.seek(0)
+handle._file_obj.write(serialized)
+handle._file_obj.truncate(len(serialized))
+handle._file_obj.flush()
+os.fsync(handle._file_obj.fileno())
+
+pathlib.Path({str(senal_listo_rel)!r}).write_text("COMMITTED", encoding="utf-8")
+# Morir abruptamente manteniendo fd abierto hasta el fin
+time.sleep(10.0)
+"""
+    p_rel = subprocess.Popen([sys.executable, "-c", codigo_crash_rel])
+    try:
+        for _ in range(50):
+            if senal_listo_rel.exists():
+                break
+            time.sleep(0.05)
+        assert senal_listo_rel.exists()
+    finally:
+        p_rel.kill()
+        p_rel.wait(timeout=2.0)
+
+    # Tras muerte después del commit point: OS lock liberado y metadata tiene phase=RELEASED -> FREE
+    res_rel = inspect_frozen_runtime_root_lock(root)
+    assert res_rel.is_os_locked is False
+    assert res_rel.disposition == LockDisposition.FREE
+    assert res_rel.metadata is not None
+    assert res_rel.metadata.phase == LockPhase.RELEASED
+
+
+def test_f09_release_validates_full_lock_owner_identity_matching_assert_owned(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F-09 (P1): release() valida todos los campos de LOCK_OWNER antes de mutar el lockfile."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    original_meta = json.loads(handle.lock_path.read_text(encoding="utf-8"))
+
+    # 1. acquired_at alterado en disco
+    tampered_acquired = dict(original_meta)
+    tampered_acquired["acquired_at"] = original_meta["acquired_at"] + 5.0
+    handle.lock_path.write_text(json.dumps(tampered_acquired), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="acquired_at"):
+        handle.release()
+    # Comprobar que no sobreescribió
+    assert json.loads(handle.lock_path.read_text(encoding="utf-8"))["acquired_at"] == tampered_acquired["acquired_at"]
+
+    # 2. canonical_root alterado en disco
+    tampered_root = dict(original_meta)
+    tampered_root["canonical_root"] = "c:/otro/root/distinto"
+    handle.lock_path.write_text(json.dumps(tampered_root), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="canonical_root"):
+        handle.release()
+
+    # 3. phase alterado a un valor distinto de HELD
+    tampered_phase = dict(original_meta)
+    tampered_phase["phase"] = "RELEASED"
+    tampered_phase["released_at"] = time.time()
+    handle.lock_path.write_text(json.dumps(tampered_phase), encoding="utf-8")
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="phase"):
+        handle.release()
+
+    # 4. Descriptor de archivo cerrado
+    handle.lock_path.write_text(json.dumps(original_meta), encoding="utf-8")
+    handle._file_obj.close()
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="descriptor de archivo"):
+        handle.release()
+
+    # 5. Handle ya liberado es idempotente (no error)
+    handle._released = True
+    handle.release()  # No-op
+
+
+def test_f10_schema_enforces_phase_released_at_consistency(tmp_path: pathlib.Path) -> None:
+    """F-10 (P1): Validación estricta de coherencia entre phase, released_at y campos permitidos."""
+    root = _crear_root_valido(tmp_path)
+    canonical_str = os.path.normcase(os.path.abspath(os.fspath(root)))
+    base_held = {
+        "schema_version": 1,
+        "canonical_root": canonical_str,
+        "session_id": str(uuid.uuid4()),
+        "pid": 1234,
+        "process_create_time": 100.0,
+        "acquired_at": 200.0,
+        "phase": "HELD",
+    }
+
+    # 1. phase=HELD con released_at presente debe fallar
+    held_with_rel = dict(base_held)
+    held_with_rel["released_at"] = 250.0
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="released_at"):
+        _read_metadata_bytes(json.dumps(held_with_rel).encode("utf-8"))
+
+    # 2. phase=HELD con campo desconocido debe fallar
+    held_with_unknown = dict(base_held)
+    held_with_unknown["unknown_campo"] = "valor"
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="Campos de metadata inválidos"):
+        _read_metadata_bytes(json.dumps(held_with_unknown).encode("utf-8"))
+
+    base_released = {
+        "schema_version": 1,
+        "canonical_root": canonical_str,
+        "session_id": str(uuid.uuid4()),
+        "pid": 1234,
+        "process_create_time": 100.0,
+        "acquired_at": 200.0,
+        "phase": "RELEASED",
+    }
+
+    # 3. phase=RELEASED sin released_at debe fallar
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="released_at"):
+        _read_metadata_bytes(json.dumps(base_released).encode("utf-8"))
+
+    # 4. phase=RELEASED con released_at < acquired_at debe fallar
+    rel_earlier = dict(base_released)
+    rel_earlier["released_at"] = 199.0
+    with pytest.raises(FrozenRuntimeLockMetadataError, match="no puede ser anterior a acquired_at"):
+        _read_metadata_bytes(json.dumps(rel_earlier).encode("utf-8"))
+
+    # 5. phase=RELEASED con released_at no numérico / bool / inf
+    for invalid_val in [True, None, "200.0", float("inf"), float("nan"), -1.0]:
+        rel_invalid = dict(base_released)
+        rel_invalid["released_at"] = invalid_val
+        with pytest.raises(FrozenRuntimeLockMetadataError, match="released_at"):
+            _read_metadata_bytes(json.dumps(rel_invalid).encode("utf-8"))
+
+    # 6. phase=RELEASED válido pasa limpiamente
+    rel_valid = dict(base_released)
+    rel_valid["released_at"] = 205.0
+    meta = _read_metadata_bytes(json.dumps(rel_valid).encode("utf-8"))
+    assert meta.phase == LockPhase.RELEASED
+    assert meta.released_at == 205.0
+
+
+def test_f11_liveness_zombie_and_tight_float_precision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F-11 (P1): Comprobación universal de zombie y tolerancia estricta 1e-4 para liveness."""
+    from unittest.mock import MagicMock
+
+    from sky_claw.local.frozen_runtime.root_lock import OwnerLiveness, _check_process_liveness
+
+    mock_proc = MagicMock()
+    mock_proc.is_running.return_value = True
+    mock_proc.status.return_value = psutil.STATUS_ZOMBIE
+    mock_proc.create_time.return_value = 1000.0
+    monkeypatch.setattr(psutil, "Process", lambda pid: mock_proc)
+
+    # 1. Proceso ZOMBIE en cualquier SO reporta DEAD
+    liveness_zombie = _check_process_liveness(1234, 1000.0)
+    assert liveness_zombie == OwnerLiveness.DEAD
+
+    # 2. Tolerancia estricta: discrepancia de 1ms (0.001) clasifica DEAD (antes 0.05 toleraba hasta 50ms)
+    mock_proc.status.return_value = psutil.STATUS_RUNNING
+    mock_proc.create_time.return_value = 1000.001
+    liveness_diff_1ms = _check_process_liveness(1234, 1000.0)
+    assert liveness_diff_1ms == OwnerLiveness.DEAD
+
+    # 3. Discrepancia mínima por representación flotante (1e-5) se clasifica ALIVE
+    mock_proc.create_time.return_value = 1000.0 + 1e-5
+    liveness_tight = _check_process_liveness(1234, 1000.0)
+    assert liveness_tight == OwnerLiveness.ALIVE

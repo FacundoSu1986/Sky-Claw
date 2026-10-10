@@ -169,14 +169,14 @@ def _check_process_liveness(pid: int, expected_create_time: float) -> OwnerLiven
         actual_create_time = proc.create_time()
         if not proc.is_running():
             return OwnerLiveness.DEAD
-        if sys.platform == "win32" and proc.status() == psutil.STATUS_ZOMBIE:
+        if proc.status() == psutil.STATUS_ZOMBIE:
             return OwnerLiveness.DEAD
     except psutil.NoSuchProcess:
         return OwnerLiveness.DEAD
     except (psutil.AccessDenied, psutil.Error, OSError, ValueError):
         return OwnerLiveness.INDETERMINATE
 
-    if abs(actual_create_time - expected_create_time) > 0.05:
+    if abs(actual_create_time - expected_create_time) > 1e-4:
         # PID reutilizado por otro proceso del SO: el dueño original murió
         return OwnerLiveness.DEAD
     return OwnerLiveness.ALIVE
@@ -190,6 +190,36 @@ def canonical_root_key(root: pathlib.Path | str) -> tuple[str, pathlib.Path]:
     canonical_root_path = pathlib.Path(canonical_str)
     lock_path = canonical_root_path / "state" / LOCK_FILE_NAME
     return canonical_str, lock_path
+
+
+def _validate_root_and_state_admission_readonly(canonical_root_path: pathlib.Path) -> pathlib.Path:
+    """Valida que el root y state/ cumplan los invariantes de seguridad de storage de forma no mutante."""
+    res = admitir_storage_root(canonical_root_path)
+    if res.state != res.state.ADMITTED:
+        raise FrozenRuntimeLockAdmissionError(f"Root de storage rechazado: {res.message}")
+
+    state_dir = canonical_root_path / "state"
+    try:
+        kind = link_kind_or_raise(state_dir)
+    except OSError as exc:
+        raise FrozenRuntimeLockAdmissionError(f"No se pudo inspeccionar state/: {exc}") from exc
+    if kind is not None:
+        raise FrozenRuntimeLockAdmissionError(
+            f"state/ es un enlace/reparse ({kind}): namespace redirigido (fail-closed)"
+        )
+
+    if state_dir.exists() and not state_dir.is_dir():
+        raise FrozenRuntimeLockAdmissionError(f"state/ no es un directorio: '{state_dir}'")
+
+    lock_path = state_dir / LOCK_FILE_NAME
+    try:
+        lock_kind = link_kind_or_raise(lock_path)
+    except OSError as exc:
+        raise FrozenRuntimeLockAdmissionError(f"No se pudo inspeccionar lockfile: {exc}") from exc
+    if lock_kind is not None:
+        raise FrozenRuntimeLockAdmissionError(f"El lockfile es un enlace/reparse ({lock_kind}): fail-closed")
+
+    return lock_path
 
 
 def _validate_root_and_state_admission(canonical_root_path: pathlib.Path) -> pathlib.Path:
@@ -214,13 +244,12 @@ def _validate_root_and_state_admission(canonical_root_path: pathlib.Path) -> pat
         state_dir.mkdir(parents=True, exist_ok=True)
 
     lock_path = state_dir / LOCK_FILE_NAME
-    if lock_path.exists():
-        try:
-            lock_kind = link_kind_or_raise(lock_path)
-        except OSError as exc:
-            raise FrozenRuntimeLockAdmissionError(f"No se pudo inspeccionar lockfile: {exc}") from exc
-        if lock_kind is not None:
-            raise FrozenRuntimeLockAdmissionError(f"El lockfile es un enlace/reparse ({lock_kind}): fail-closed")
+    try:
+        lock_kind = link_kind_or_raise(lock_path)
+    except OSError as exc:
+        raise FrozenRuntimeLockAdmissionError(f"No se pudo inspeccionar lockfile: {exc}") from exc
+    if lock_kind is not None:
+        raise FrozenRuntimeLockAdmissionError(f"El lockfile es un enlace/reparse ({lock_kind}): fail-closed")
 
     return lock_path
 
@@ -296,8 +325,15 @@ def _read_metadata_bytes(
         raise FrozenRuntimeLockMetadataError(f"phase inválido: {raw_phase}")
     phase = LockPhase(raw_phase)
 
-    released_at = payload.get("released_at")
-    if released_at is not None:
+    if phase == LockPhase.HELD:
+        if "released_at" in payload:
+            raise FrozenRuntimeLockMetadataError("released_at no debe estar presente cuando phase es HELD")
+        released_at_float: float | None = None
+    else:
+        # phase == LockPhase.RELEASED
+        if "released_at" not in payload:
+            raise FrozenRuntimeLockMetadataError("released_at es obligatorio cuando phase es RELEASED")
+        released_at = payload["released_at"]
         if (
             isinstance(released_at, bool)
             or not isinstance(released_at, (int, float))
@@ -305,9 +341,11 @@ def _read_metadata_bytes(
             or released_at <= 0
         ):
             raise FrozenRuntimeLockMetadataError(f"released_at inválido: {released_at}")
-        released_at_float: float | None = float(released_at)
-    else:
-        released_at_float = None
+        released_at_float = float(released_at)
+        if released_at_float < float(acquired_at):
+            raise FrozenRuntimeLockMetadataError(
+                f"released_at ({released_at_float}) no puede ser anterior a acquired_at ({acquired_at})"
+            )
 
     return RootLockMetadata(
         schema_version=int(schema_version),
@@ -319,6 +357,75 @@ def _read_metadata_bytes(
         phase=phase,
         released_at=released_at_float,
     )
+
+
+def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockMetadata:
+    """Valida identidad completa de ownership del handle (memoria, SO/proceso y disco)."""
+    if handle._released:
+        raise FrozenRuntimeLockOwnershipError("El handle del lock ya fue liberado.")
+
+    # F-07: Guard de frontera de proceso (anti-fork / anti-PID mismatch)
+    current_pid = os.getpid()
+    if current_pid != handle.pid:
+        raise FrozenRuntimeLockOwnershipError(
+            f"Frontera de proceso violada: el handle pertenece al PID {handle.pid}, "
+            f"pero el proceso actual es PID {current_pid}."
+        )
+
+    try:
+        current_create_time = psutil.Process(current_pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error, OSError) as exc:
+        raise FrozenRuntimeLockOwnershipError(
+            f"No se pudo determinar el process_create_time del proceso actual: {exc}"
+        ) from exc
+
+    if abs(current_create_time - handle.process_create_time) > 1e-4:
+        raise FrozenRuntimeLockOwnershipError(
+            f"process_create_time del proceso actual no coincide con el handle "
+            f"({current_create_time} != {handle.process_create_time})."
+        )
+
+    if handle._file_obj is None or handle._file_obj.closed:
+        raise FrozenRuntimeLockOwnershipError("El descriptor de archivo del lock fue cerrado.")
+
+    with _THREAD_LOCKS_GUARD:
+        active = _ACTIVE_HANDLES.get(handle.canonical_root)
+        if active is not handle:
+            raise FrozenRuntimeLockOwnershipError("Este handle no es el dueño activo registrado en memoria.")
+
+    # F-09: Validar metadata completa en disco contra identidad del handle
+    if not handle.lock_path.exists():
+        raise FrozenRuntimeLockOwnershipError("El archivo de lock no existe en disco.")
+
+    try:
+        raw_disk = handle.lock_path.read_bytes()
+        meta = _read_metadata_bytes(raw_disk, expected_canonical_root=handle.canonical_root)
+    except (FrozenRuntimeLockMetadataError, OSError) as exc:
+        raise FrozenRuntimeLockOwnershipError(f"La metadata del lock en disco no es válida: {exc}") from exc
+
+    if meta.session_id != handle.session_id:
+        raise FrozenRuntimeLockOwnershipError(
+            f"La metadata en disco pertenece a otra sesión ({meta.session_id} != {handle.session_id})"
+        )
+    if meta.pid != handle.pid:
+        raise FrozenRuntimeLockOwnershipError(f"pid en disco no coincide con el handle ({meta.pid} != {handle.pid})")
+    if meta.canonical_root != handle.canonical_root:
+        raise FrozenRuntimeLockOwnershipError(
+            f"canonical_root en disco no coincide con el handle ({meta.canonical_root} != {handle.canonical_root})"
+        )
+
+    if abs(meta.process_create_time - handle.process_create_time) > 1e-4:
+        raise FrozenRuntimeLockOwnershipError(
+            f"process_create_time en disco no coincide ({meta.process_create_time} != {handle.process_create_time})"
+        )
+    if abs(meta.acquired_at - handle.acquired_at) > 1e-4:
+        raise FrozenRuntimeLockOwnershipError(
+            f"acquired_at en disco no coincide ({meta.acquired_at} != {handle.acquired_at})"
+        )
+    if meta.phase != LockPhase.HELD:
+        raise FrozenRuntimeLockOwnershipError(f"phase en disco no es HELD ({meta.phase})")
+
+    return meta
 
 
 class FrozenRuntimeRootLockHandle:
@@ -352,97 +459,35 @@ class FrozenRuntimeRootLockHandle:
 
     def assert_owned(self) -> None:
         """Verifica que este handle sigue siendo dueño legítimo del lock."""
-        if self._released:
-            raise FrozenRuntimeLockOwnershipError("El handle del lock ya fue liberado.")
-
-        if self._file_obj is None or self._file_obj.closed:
-            raise FrozenRuntimeLockOwnershipError("El descriptor de archivo del lock fue cerrado.")
-
-        with _THREAD_LOCKS_GUARD:
-            active = _ACTIVE_HANDLES.get(self.canonical_root)
-            if active is not self:
-                raise FrozenRuntimeLockOwnershipError("Este handle no es el dueño activo registrado en memoria.")
-
-        # Verificar que la metadata en disco no haya sido alterada ni sustituida (RL-18, F-03)
-        if not self.lock_path.exists():
-            raise FrozenRuntimeLockOwnershipError("El archivo de lock no existe en disco.")
-
-        try:
-            raw = self.lock_path.read_bytes()
-            meta = _read_metadata_bytes(raw, expected_canonical_root=self.canonical_root)
-        except (FrozenRuntimeLockMetadataError, OSError) as exc:
-            raise FrozenRuntimeLockOwnershipError(f"La metadata del lock en disco no es válida: {exc}") from exc
-
-        if meta.session_id != self.session_id:
-            raise FrozenRuntimeLockOwnershipError(
-                f"La metadata en disco pertenece a otra sesión ({meta.session_id} != {self.session_id})"
-            )
-        if meta.pid != self.pid or meta.canonical_root != self.canonical_root:
-            raise FrozenRuntimeLockOwnershipError("La metadata en disco no coincide con este handle.")
-
-        if abs(meta.process_create_time - self.process_create_time) > 0.001:
-            raise FrozenRuntimeLockOwnershipError(
-                f"process_create_time en disco no coincide ({meta.process_create_time} != {self.process_create_time})"
-            )
-        if abs(meta.acquired_at - self.acquired_at) > 0.001:
-            raise FrozenRuntimeLockOwnershipError(
-                f"acquired_at en disco no coincide ({meta.acquired_at} != {self.acquired_at})"
-            )
-        if meta.phase != LockPhase.HELD:
-            raise FrozenRuntimeLockOwnershipError(f"phase en disco no es HELD ({meta.phase})")
+        _validate_handle_ownership(self)
 
     def release(self) -> None:
         """Libera la exclusión del lock de forma crash-safe y poison-safe."""
         if self._released:
             return
 
-        with _THREAD_LOCKS_GUARD:
-            active = _ACTIVE_HANDLES.get(self.canonical_root)
-            if active is not None and active.session_id != self.session_id:
-                raise FrozenRuntimeLockOwnershipError(
-                    f"No se puede liberar un lock perteneciente a otra sesión ({self.session_id} != {active.session_id})."
-                )
-            if active is None and self._file_obj is None:
-                raise FrozenRuntimeLockOwnershipError("Este handle no posee un lock activo para liberar.")
+        # Validar ownership estricto antes de mutar disco (F-07, F-09, RL-18, F-03)
+        _validate_handle_ownership(self)
 
-        # Validar ownership en disco antes de modificar nada (Finding 3)
-        # Si la metadata en disco fue adulterada, NO truncar ni escribir; preservar evidencia intacta.
-        if self._file_obj is not None and not self._file_obj.closed and self.lock_path.exists():
-            try:
-                raw_disk = self.lock_path.read_bytes()
-                meta_disk = _read_metadata_bytes(raw_disk, expected_canonical_root=self.canonical_root)
-                if (
-                    meta_disk.session_id != self.session_id
-                    or meta_disk.pid != self.pid
-                    or abs(meta_disk.process_create_time - self.process_create_time) > 0.001
-                    or meta_disk.phase != LockPhase.HELD
-                ):
-                    raise FrozenRuntimeLockOwnershipError(
-                        "La metadata en disco no coincide con la sesión del handle al liberar (posible envenenamiento)."
-                    )
-            except FrozenRuntimeLockMetadataError as exc:
-                raise FrozenRuntimeLockOwnershipError(
-                    f"Metadata corrupta en disco detectada al liberar: {exc}"
-                ) from exc
-
-        # Ownership verificado en memoria y disco: persistir phase=RELEASED (Finding 2)
-        if self._file_obj is not None and not self._file_obj.closed:
-            payload = {
-                "schema_version": LOCK_SCHEMA_VERSION,
-                "canonical_root": self.canonical_root,
-                "session_id": self.session_id,
-                "pid": self.pid,
-                "process_create_time": self.process_create_time,
-                "acquired_at": self.acquired_at,
-                "phase": LockPhase.RELEASED.value,
-                "released_at": time.time(),
-            }
-            serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            self._file_obj.seek(0)
-            self._file_obj.write(serialized)
-            self._file_obj.truncate(len(serialized))
-            self._file_obj.flush()
-            os.fsync(self._file_obj.fileno())
+        # F-08 / F-10: Persistir phase=RELEASED con released_at >= acquired_at (commit point)
+        now = time.time()
+        released_at = max(now, self.acquired_at)
+        payload = {
+            "schema_version": LOCK_SCHEMA_VERSION,
+            "canonical_root": self.canonical_root,
+            "session_id": self.session_id,
+            "pid": self.pid,
+            "process_create_time": self.process_create_time,
+            "acquired_at": self.acquired_at,
+            "phase": LockPhase.RELEASED.value,
+            "released_at": released_at,
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self._file_obj.seek(0)
+        self._file_obj.write(serialized)
+        self._file_obj.truncate(len(serialized))
+        self._file_obj.flush()
+        os.fsync(self._file_obj.fileno())
 
         # Cleanup de recursos en memoria
         with _THREAD_LOCKS_GUARD:
@@ -473,6 +518,9 @@ class FrozenRuntimeRootLockHandle:
 def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspectionResult:
     """Inspecciona el estado de exclusión y metadata del lock de un root sin mutarlo."""
     canonical_str, lock_path = canonical_root_key(root)
+    root_path = pathlib.Path(canonical_str)
+    _validate_root_and_state_admission_readonly(root_path)
+
     if not lock_path.exists():
         return LockInspectionResult(
             canonical_root=canonical_str,
