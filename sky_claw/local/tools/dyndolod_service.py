@@ -94,6 +94,63 @@ _ETAPA_DYNDOLOD = 9
 _FirmaDeLog = tuple[int | str, ...] | None
 
 
+class _EstadoDePublicacionTerminal:
+    """Publicación terminal de UN ciclo de ``execute``: un solo intento, observable.
+
+    ``CoreEventBus.publish`` crea una Task interna para ``queue.put`` y espera
+    ``asyncio.wait({publisher_task, dispatch_task})``. Una cancelación del caller
+    puede aterrizar cuando el evento YA entró a la cola —admitido— pero la
+    confirmación todavía no volvió, y desde afuera los dos desenlaces son
+    indistinguibles. Reintentar en ese punto DUPLICA el evento terminal: el
+    consumidor que ya vio el cierre recibe un segundo, con otro ``rolled_back`` y
+    otra duración, y no hay forma de saber cuál vale. No reintentar puede perderlo.
+    La política acá es **un único intento por ciclo**:
+
+    - ``intentado`` se marca ANTES de llamar al bus, así que nunca existe un
+      segundo intento: ni duplicado ni reintento sobre un resultado ambiguo.
+    - ``confirmada`` queda en ``True`` sólo si el ``publish`` volvió sin excepción:
+      es ADMISIÓN EN COLA confirmada, que no es entrega al consumidor (el dispatch
+      es fire-and-forget) ni sobrevive a un bus caído.
+    - Un intento cancelado deja el desenlace INDETERMINADO y se registra con
+      ``operation_type``/``tx_id``. La cancelación externa sigue propagándose
+      intacta, con su instancia y su motivo.
+
+    No promete exactly-once: distingue *intento único*, *admisión* y *entrega*, y
+    sólo se compromete con el primero. Sin este estado, una cancelación durante el
+    ``publish`` del camino de éxito hacía que el handler de cancelación publicara
+    OTRO ``completed`` para el mismo ciclo.
+    """
+
+    __slots__ = ("confirmada", "intentado")
+
+    def __init__(self) -> None:
+        self.intentado = False
+        self.confirmada = False
+
+
+def _rolled_back_del_evento(*, tx_id: int | None, confirmado: bool) -> bool:
+    """``rolled_back`` del evento: hubo una TRANSACCIÓN y su rollback se confirmó.
+
+    ``_cerrar_tx_tras_rollback`` devuelve ``True`` también en el caso VACUO —sin
+    transacción abierta, sin mutación, nada que revertir—, y eso no es un rollback
+    ejecutado. El evento lo reportaba igual y el operador leía "se revirtió" sobre
+    una corrida que nunca abrió TX (cancelación durante la adquisición del lock,
+    fallo de un gate previo al lock). Acá se exige que la transacción haya
+    existido:
+
+    - **sin transacción** (``tx_id is None``) ⇒ ``False``: no hubo nada que revertir.
+    - **transacción con rollback confirmado** ⇒ ``True``.
+    - **rollback incompleto / TX pendiente** ⇒ ``False``: el helper no confirma.
+    - **commit durable** ⇒ ``False``: el helper corta en ``journal_committed``.
+    - **mutación preservada a propósito** ⇒ ``False`` (``#592.1``: la TX queda
+      PENDING y el helper devuelve ``False`` literal).
+
+    No cambia la semántica del helper transaccional: sólo la LECTURA que el evento
+    hace de su resultado.
+    """
+    return tx_id is not None and confirmado
+
+
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
 
@@ -1304,6 +1361,18 @@ class DynDOLODPipelineService:
         # escribió esta corrida". Vacío = no se pudo firmar, y entonces NINGUNA
         # ruta se adjunta: omitir antes que atribuir evidencia ajena.
         firmas_de_log_previas: dict[str, _FirmaDeLog] = {}
+        # Publicación terminal del ciclo: un único intento, con desenlace
+        # observable. Ver `_EstadoDePublicacionTerminal`.
+        estado_de_publicacion = _EstadoDePublicacionTerminal()
+        # Rutas de log ATRIBUIDAS a esta corrida, capturadas BAJO LEASE en el
+        # unwind del `AsyncExitStack` (ver `_capturar_rutas_de_log_bajo_lease`).
+        # Los handlers leen esta evidencia; sondear desde ahí ya sería sin
+        # autoridad exclusiva sobre el archivo.
+        rutas_de_log_de_esta_corrida: tuple[str, ...] = ()
+        # Un éxito no necesita atribuir logs —el contrato los reserva para un
+        # fallo de herramienta—, así que el cierre no paga el digest de los
+        # archivos. Se enciende justo antes del retorno exitoso.
+        corrida_exitosa = False
         rolled_back = False
         journal_committed = False
         mutation_started = False
@@ -1358,7 +1427,9 @@ class DynDOLODPipelineService:
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
             duration = time.monotonic() - start_time
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -1390,7 +1461,9 @@ class DynDOLODPipelineService:
             )
             duration = time.monotonic() - start_time
             logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id})
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -1421,7 +1494,9 @@ class DynDOLODPipelineService:
             msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
             duration = time.monotonic() - start_time
             logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id})
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -1459,7 +1534,9 @@ class DynDOLODPipelineService:
                 msg,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -1503,7 +1580,9 @@ class DynDOLODPipelineService:
                         extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                     )
                     duration = time.monotonic() - start_time
-                    await self._publish_completed(
+                    await self._publicar_evento_terminal(
+                        estado=estado_de_publicacion,
+                        tx_id=tx_id,
                         preset=preset,
                         run_texgen=run_texgen,
                         success=False,
@@ -1525,7 +1604,8 @@ class DynDOLODPipelineService:
                     )
                 handoff_resume = consulta
         except asyncio.CancelledError:
-            await self._publish_completed_best_effort(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
                 tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1538,7 +1618,8 @@ class DynDOLODPipelineService:
             )
             raise
         except Exception as exc:  # noqa: BLE001 — boundary: el gate de resume no puede dejar el ciclo abierto
-            await self._publish_completed_best_effort(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
                 tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1677,6 +1758,36 @@ class DynDOLODPipelineService:
                     metadata={"preset": preset, "run_texgen": run_texgen},
                 )
                 await tx_stack.enter_async_context(tx_lock)
+
+                async def _capturar_rutas_de_log_bajo_lease() -> None:
+                    """Atribuye los logs de ESTA corrida MIENTRAS la lease sigue viva.
+
+                    Corre en el unwind del ``AsyncExitStack``: después de que los
+                    ``DirectoryRollback`` restauraron sus targets y ANTES de que se
+                    suelten ``tx_lock`` y el ritual de etapa 9 — o sea con autoridad
+                    exclusiva todavía en mano. Ésa es la diferencia con sondear desde
+                    el handler: ahí el unwind ya soltó las leases, otra corrida puede
+                    haber adquirido el ritual y apendado al MISMO archivo, y la firma
+                    de continuidad seguiría coincidiendo (el prefijo viejo intacto,
+                    el archivo más grande) ⇒ esta corrida publicaría una ruta AJENA
+                    como propia. La firma demuestra el append, no quién lo hizo.
+
+                    Best-effort por contrato: ``_rutas_de_log_de_esta_corrida``
+                    devuelve ``()`` ante cualquier fallo de filesystem. Un
+                    ``CancelledError`` sí sube —cancelar no es un fallo de sondeo—,
+                    y en el unwind gana la cancelación, que es el desenlace correcto
+                    de una task cancelada. El hilo de hashing que quede vivo tras
+                    cancelar es de SOLO LECTURA: no toca leases, ownership ni
+                    lifecycle.
+                    """
+                    nonlocal rutas_de_log_de_esta_corrida
+                    if corrida_exitosa:
+                        return
+                    rutas_de_log_de_esta_corrida = await self._rutas_de_log_de_esta_corrida(
+                        runner, run_texgen=run_texgen, firmas_previas=firmas_de_log_previas
+                    )
+
+                tx_stack.push_async_callback(_capturar_rutas_de_log_bajo_lease)
 
                 def _conserva_las_leases() -> bool:
                     """¿Siguen vivas TODAS las leases que sostienen esta corrida?
@@ -2238,7 +2349,9 @@ class DynDOLODPipelineService:
                 await self._log_result(result, preset, success=True)
                 texgen_ok = result.texgen_result.success if result.texgen_result else False
                 dyndolod_ok = result.dyndolod_result.success if result.dyndolod_result else False
-                await self._publish_completed(
+                await self._publicar_evento_terminal(
+                    estado=estado_de_publicacion,
+                    tx_id=tx_id,
                     preset=preset,
                     run_texgen=run_texgen,
                     success=True,
@@ -2267,6 +2380,11 @@ class DynDOLODPipelineService:
                     return obj
 
                 result_dict = normalize_for_serialization(dataclasses.asdict(result))
+
+                # El ciclo cerró en verde: no hay log que atribuir (el contrato los
+                # reserva para fallos de herramienta), así que el unwind del stack
+                # se salta el sondeo en vez de pagar el digest de los archivos.
+                corrida_exitosa = True
 
                 return _attach_preflight(
                     {
@@ -2304,7 +2422,9 @@ class DynDOLODPipelineService:
                 contexto="fallo del manifiesto",
             )
             duration = time.monotonic() - start_time
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -2312,7 +2432,7 @@ class DynDOLODPipelineService:
                 dyndolod_success=False,
                 errors=(str(exc),),
                 duration_seconds=duration,
-                rolled_back=rolled_back,
+                rolled_back=_rolled_back_del_evento(tx_id=tx_id, confirmado=rolled_back),
             )
             detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
             return _attach_preflight(
@@ -2334,7 +2454,9 @@ class DynDOLODPipelineService:
                 exc,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -2365,7 +2487,9 @@ class DynDOLODPipelineService:
             rolled_back = False
             duration = time.monotonic() - start_time
             await self._log_result_error(preset, str(pres), tx_id, False)
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -2441,7 +2565,9 @@ class DynDOLODPipelineService:
             duration = time.monotonic() - start_time
 
             await self._log_result_error(preset, str(exc), tx_id, rolled_back)
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -2449,10 +2575,17 @@ class DynDOLODPipelineService:
                 dyndolod_success=False,
                 errors=(str(exc),),
                 duration_seconds=duration,
-                rolled_back=rolled_back,
-                log_paths=await self._rutas_de_log_de_esta_corrida(
-                    runner, run_texgen=run_texgen, firmas_previas=firmas_de_log_previas
-                ),
+                rolled_back=_rolled_back_del_evento(tx_id=tx_id, confirmado=rolled_back),
+                # Éste ES el camino de los fallos de HERRAMIENTA, así que el
+                # contrato de `log_paths` se cumple sin gate adicional. Las rutas
+                # vienen de la captura BAJO LEASE (`_capturar_rutas_de_log_bajo_lease`),
+                # nunca de un sondeo acá: en este punto el unwind ya soltó las
+                # leases y sondear atribuiría el log de otra corrida. Los casos de
+                # infraestructura que también desembocan acá (transición de
+                # handoff, certificación) no aportan una ruta espuria: el runner no
+                # corrió —no hay bytes nuevos— o su resultado YA es el fallo, y la
+                # firma de continuidad rechaza lo que no creció.
+                log_paths=rutas_de_log_de_esta_corrida,
             )
             # F1: el payload distingue "se rompió" de "está listo y falta
             # desplegarlo". `success` sigue en False —DynDOLOD no corrió y no hay
@@ -2517,11 +2650,13 @@ class DynDOLODPipelineService:
             # del bus veía `started` y nada más, o sea "corriendo" para siempre tras
             # una cancelación o un shutdown. Con la TX ya commiteada la etapa SÍ
             # tuvo éxito (ver el WARNING de arriba) y el evento lo dice; antes del
-            # commit es un fallo cancelado. Best-effort: el bus puede estar
-            # deteniéndose justo porque esto es un shutdown, y publicar no puede
-            # enmascarar la cancelación que se está propagando.
+            # commit es un fallo cancelado. El contrato de `log_paths` reserva `()`
+            # para una cancelación —no hay un fallo de herramienta que explicar— y
+            # acá no se sondea a propósito: además de no aportar, sería una ventana
+            # de cancelación más en el camino de salida.
             if journal_committed and result is not None:
-                await self._publish_completed_best_effort(
+                await self._publicar_evento_terminal(
+                    estado=estado_de_publicacion,
                     tx_id=tx_id,
                     preset=preset,
                     run_texgen=run_texgen,
@@ -2533,7 +2668,8 @@ class DynDOLODPipelineService:
                     rolled_back=False,
                 )
             else:
-                await self._publish_completed_best_effort(
+                await self._publicar_evento_terminal(
+                    estado=estado_de_publicacion,
                     tx_id=tx_id,
                     preset=preset,
                     run_texgen=run_texgen,
@@ -2542,7 +2678,7 @@ class DynDOLODPipelineService:
                     dyndolod_success=False,
                     errors=("Pipeline cancelado antes de completarse.",),
                     duration_seconds=duration,
-                    rolled_back=rolled_back,
+                    rolled_back=_rolled_back_del_evento(tx_id=tx_id, confirmado=rolled_back),
                 )
             raise
 
@@ -2571,7 +2707,9 @@ class DynDOLODPipelineService:
             duration = time.monotonic() - start_time
 
             await self._log_result_error(preset, str(exc), tx_id, rolled_back)
-            await self._publish_completed(
+            await self._publicar_evento_terminal(
+                estado=estado_de_publicacion,
+                tx_id=tx_id,
                 preset=preset,
                 run_texgen=run_texgen,
                 success=False,
@@ -2579,10 +2717,15 @@ class DynDOLODPipelineService:
                 dyndolod_success=False,
                 errors=(str(exc),),
                 duration_seconds=duration,
-                rolled_back=rolled_back,
-                log_paths=await self._rutas_de_log_de_esta_corrida(
-                    runner, run_texgen=run_texgen, firmas_previas=firmas_de_log_previas
-                ),
+                rolled_back=_rolled_back_del_evento(tx_id=tx_id, confirmado=rolled_back),
+                # Gate de PROCEDENCIA: este handler recibe, sobre todo, fallos de
+                # INFRAESTRUCTURA posteriores a un runner exitoso (journal, digest,
+                # empaquetado, postproceso). Adjuntar el log de las herramientas
+                # como explicación de un error de journal manda al operador a leer
+                # la evidencia equivocada, y el contrato reserva `log_paths` para
+                # un fallo de herramienta. La decisión sale del resultado REAL del
+                # runner, nunca de que haya un log nuevo.
+                log_paths=(rutas_de_log_de_esta_corrida if self._el_fallo_admite_logs_de_herramienta(result) else ()),
             )
             return _attach_preflight(
                 {
@@ -2706,21 +2849,57 @@ class DynDOLODPipelineService:
             )
         )
 
-    async def _publish_completed_best_effort(self, *, tx_id: int | None, **kwargs: Any) -> None:
-        """``_publish_completed`` que NUNCA enmascara lo que se está propagando.
+    async def _publicar_evento_terminal(
+        self,
+        *,
+        estado: _EstadoDePublicacionTerminal,
+        tx_id: int | None,
+        **kwargs: Any,
+    ) -> None:
+        """Publica el evento terminal del ciclo UNA sola vez, sin enmascarar nada.
 
-        Para el handler de cancelación: ahí el bus puede estar deteniéndose
-        precisamente porque es un shutdown, y una excepción del ``publish``
-        reemplazaría a la ``CancelledError`` que tiene que seguir subiendo. Un
-        fallo se loguea con ``operation_type`` propio y ``tx_id`` y NO lleva
-        ``pipeline_stage``: no publicar el evento terminal es un fallo de la
-        infraestructura de notificación, no de la etapa 9 (mismo criterio que
-        ``_emit_flight_report``; la exención está declarada y anclada en
-        ``tests/test_dyndolod_service.py``).
+        Unifica la política de publicación que hasta ahora estaba repartida: cada
+        handler llamaba a ``_publish_completed`` (o a su variante best-effort) por
+        su cuenta, y un fallo del bus podía REEMPLAZAR lo que se estaba reportando
+        —el error original, un retorno controlado, una cancelación, o el resultado
+        transaccional de la corrida—. Peor: un fallo del bus en la publicación del
+        ÉXITO caía en el handler genérico y la corrida terminaba reportándose como
+        fallida. Acá el evento nunca cambia el veredicto:
+
+        - **Un único intento** (``estado.intentado``): el segundo llamado se
+          descarta y se registra. Sin esto, una cancelación durante el ``publish``
+          del camino de éxito hacía que el handler de cancelación publicara OTRO
+          ``completed`` —dos terminales para el mismo ciclo—.
+        - **Un fallo del bus no se propaga**: se registra con ``operation_type``
+          propio y ``tx_id``, y NO lleva ``pipeline_stage`` —no publicar el evento
+          terminal es un fallo de la infraestructura de notificación, no de la
+          etapa 9; mismo criterio que ``_emit_flight_report``, y la exención está
+          declarada y anclada en ``tests/test_dyndolod_service.py``—.
+        - **``CancelledError`` sí se propaga**, intacta: la cancelación externa
+          conserva su instancia, su motivo y su precedencia. El intento queda
+          INDETERMINADO (el evento pudo haber sido admitido en la cola) y se
+          registra como tal; no se reintenta, porque reintentar es exactamente lo
+          que duplica el terminal.
         """
+        if estado.intentado:
+            logger.warning(
+                "DynDOLOD: ya se intentó publicar el evento terminal de esta corrida (TX %s): "
+                "se descarta el reintento para no duplicar el evento.",
+                tx_id,
+                extra={"operation_type": "dyndolod_completed_intento_duplicado", "tx_id": tx_id},
+            )
+            return
+        estado.intentado = True
         try:
             await self._publish_completed(**kwargs)
         except asyncio.CancelledError:
+            logger.warning(
+                "DynDOLOD: la publicación de pipeline.dyndolod.completed quedó CANCELADA y su desenlace "
+                "es indeterminado (TX %s): el evento pudo haber sido admitido en la cola del bus o no. "
+                "No se reintenta —reintentar duplicaría el terminal—.",
+                tx_id,
+                extra={"operation_type": "dyndolod_completed_indeterminado", "tx_id": tx_id},
+            )
             raise
         except Exception:  # noqa: BLE001 — boundary best-effort del bus de eventos
             logger.warning(
@@ -2729,6 +2908,32 @@ class DynDOLODPipelineService:
                 exc_info=True,
                 extra={"operation_type": "dyndolod_completed_no_publicado", "tx_id": tx_id},
             )
+            return
+        estado.confirmada = True
+
+    @staticmethod
+    def _el_fallo_admite_logs_de_herramienta(result: DynDOLODPipelineResult | None) -> bool:
+        """¿El fallo que se reporta es de HERRAMIENTA, según la evidencia del runner?
+
+        El contrato de ``log_paths`` los reserva para un fallo de herramienta: son
+        la evidencia que explica POR QUÉ la herramienta abortó. La presencia de un
+        log nuevo NO alcanza para atribuir la causa —prueba que la herramienta
+        corrió, no que su fallo sea lo que se está reportando—, así que la
+        evidencia es el resultado REAL del runner:
+
+        - ``result is None``: el runner nunca devolvió ⇒ no hay fallo de
+          herramienta demostrado ⇒ omitir (error antes del spawn, fallo del gate,
+          journal roto antes de correr).
+        - ``result.success``: la corrida terminó bien y el fallo es POSTERIOR
+          (journal, digest, empaquetado, postproceso) ⇒ los logs de las
+          herramientas no explican nada ⇒ omitir.
+        - ``not result.success``: el runner reportó el fallo de la herramienta ⇒
+          adjuntar.
+
+        En la duda se omite la ruta: adjuntar un log como causa de un error de
+        journal manda al operador a leer la evidencia equivocada.
+        """
+        return result is not None and not result.success
 
     async def _firmar_logs_previos(self, runner: DynDOLODRunner, *, run_texgen: bool) -> dict[str, _FirmaDeLog]:
         """Firma los logs de las herramientas ANTES de cederle el control al runner.
