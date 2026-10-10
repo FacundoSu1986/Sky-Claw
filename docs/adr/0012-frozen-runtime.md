@@ -8930,10 +8930,15 @@ R11_9_IMMEDIATE_ROLLBACK_FAILURE          = CLOSED
 R11_10_DESIRED_BIND_ORDERING              = CLOSED
 R11_11_README_INDEX                       = CLOSED
 
+R11_12_N6_REVISION_VS_EVIDENCE            = OPEN   (CONFIRMED; NO remediado — §45.9)
+R11_13_LAST_CONSUMED_STATUS_FILTER        = OPEN   (CONFIRMED; NO remediado — §45.9)
+R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = OPEN   (CONFIRMED; NO remediado — §45.9)
+
 REVIEW_FINDINGS_RAW                       = 12
 REVIEW_FINDINGS_UNIQUE                    = 11
 FALSE_POSITIVES                           = 0
-NEW_FINDINGS_DURING_REMEDIATION           = 0   (re-lectura de reviews tras el push)
+NEW_FINDINGS_DURING_REMEDIATION           = 3   (R11.12–R11.14; revisión post-push
+                                                sobre 4d1558ed — §45.9)
 
 APPROVAL_AUTHORITY_MODEL                  = una autoridad por dato; approval.json = CACHÉ
                                             reconciliable; issuance witness + terminal
@@ -8971,14 +8976,15 @@ P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED      = 1
 P4_REQUIREMENTS_OPEN                      = 0
 NEW_PREFIXED_SYMBOLS_THIS_ROUND           = 0
 
-OPEN_P4_DESIGN_BLOCKERS = 0
-NEW_FINDINGS            = 11  (R11.1–R11.11) — todos confirmados por la revisión
-                                externa del PR #702, 8 P1 + 3 P2
+OPEN_P4_DESIGN_BLOCKERS = 3   (R11.12–R11.14; hallazgos post-push, adjudicados
+                                CONFIRMED y **no** remediados — §45.9)
+NEW_FINDINGS            = 11  (R11.1–R11.11) — revisión externa del PR #702 sobre
+                                af365600, 8 P1 + 3 P2 (todos remediados en 4d1558ed)
 
 P0_4_CORE_ARCHITECTURE  = SOUND   (mismo hecho y mismo símbolo que §32.8)
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = YES
-P4_READY_TO_IMPLEMENT   = YES
+P4_DESIGN_FROZEN        = NO   (SUSPENDIDO: la revisión post-push abrió R11.12–R11.14)
+P4_READY_TO_IMPLEMENT   = NO   (idem)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
 EXTERNAL_TECH_LEAD_GATE = PENDING
@@ -8987,12 +8993,19 @@ PR_SAFE_TO_MERGE        = NO
 MERGE                   = NO
 ```
 
-`P4_DESIGN_FROZEN = YES` vuelve a valer **sólo** porque las contradicciones entre secciones
-normativas quedaron cerradas con mecanismo y **propagadas in-place** (no con banners como
-sustituto): una sola autoridad coherente para el ciclo de vida de la aprobación, el bootstrap
-de la historia de finalización y el ordering desired/bind. **El gate del Tech Lead externo
-sobre esta ronda queda `PENDING`**: `PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa
-verificación.
+**Reafirmación suspendida (ronda 11, post-push).** La revisión que disparó el push de
+`4d1558ed` publicó **3 hallazgos nuevos** (§45.9) contra texto que **esta misma ronda**
+introdujo. Por la regla de parada de la ronda —*«si aparece material nuevo: no ocultarlo, no
+declarar cierre»*—, `P4_DESIGN_FROZEN` **no** se reafirma y `OPEN_P4_DESIGN_BLOCKERS = 3`. La
+congelación vuelve a valer **sólo** cuando esos 3 hallazgos cierren con mecanismo y el **gate
+externo del Tech Lead** adjudique la ronda.
+
+`P4_DESIGN_FROZEN = YES` valía, hasta `4d1558ed`, **sólo** porque las contradicciones entre
+secciones normativas de las rondas 1–10 quedaron cerradas con mecanismo y **propagadas
+in-place** (no con banners como sustituto): una sola autoridad coherente para el ciclo de vida
+de la aprobación, el bootstrap de la historia de finalización y el ordering desired/bind. Ese
+juicio **no se extiende** a la superficie nueva: **el gate del Tech Lead externo sobre esta
+ronda queda `PENDING`**: `PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa verificación.
 
 ### 45.8 Verificación de esta ronda
 
@@ -9052,3 +9065,42 @@ ni escaneo de namespace, ni provisioning, ni cancelación, ni gate de activació
 `active.json` real, ni binding de MO2, ni setup de SKSE, ni cache de artefactos, ni rollback,
 ni promoción. No se tocó P5. **No se inició la implementación de P4.** `EXTERNAL_TECH_LEAD_GATE
 = PENDING`. `PR_SAFE_TO_MERGE = NO`. `MERGE = NO`.
+
+### 45.9 Hallazgos post-push (ronda 11b) — adjudicados, **no** remediados
+
+La revisión externa que se dispara **al publicar** `4d1558ed` (CodeRabbit, review
+`5478816782`, «Outside diff range comments (3)») publicó **3 hallazgos nuevos**, todos
+severidad **Major**, y los tres contra **texto que esta misma ronda introdujo**. Se adjudican
+acá y **no** se remedian: la regla de parada de la ronda manda *detener y elevar al gate del
+Tech Lead* cuando aparece material nuevo, en vez de seguir iterando contra la superficie de
+revisión (que se regenera en cada push).
+
+| # | Ubicación | Sev. | Adjudicación | Contradicción verificada |
+|---|---|---|---|---|
+| R11.12 | §34.5, fila `N6` | Major | **CONFIRMED** | `N6` manda `FAIL_CLOSED` para «caché restaurada hacia atrás (**revisión retrocedida**)»; §37.6 dice que `approval_revision` **no** es autoridad y que su retroceso **sí** se repara hacia adelante sin autorización nueva. Si **sólo** retrocede la revisión y witnesses/tombstones siguen coherentes, las dos reglas exigen resultados opuestos. |
+| R11.13 | §37.6, reconstrucción de `last_consumed_*` | Major | **CONFIRMED** | La regla toma el tombstone de **MAYOR seq** sin filtrar por estado; el de mayor seq puede ser `REVOKED`. §37.3 escribe `last_consumed_approval_seq` **sólo** en `CONSUME`, así que la derivación registra una aprobación **revocada** como «última consumida». |
+| R11.14 | §12, paso 2 | Major | **CONFIRMED** | Tras declarar `FAIL_CLOSED` para `G_prev` `DRIFTED`/`INVALID`, el paso **igual** permite intentar la vía rápida del Clone retenido; pero §12 «Vía rápida opcional» exige, condición **(b)**, que su Generation de origen siga `VALID` ⇒ con `G_prev` inválida **ambas** vías fallan y la frase es engañosa. |
+
+**Por qué se elevan y no se corrigen acá.** El propio protocolo de la ronda fija que, ante
+material nuevo, no se declara cierre ni se itera: se documenta y se eleva. Corregirlas acá
+reabriría el ciclo push → revisión → hallazgo sin un tercero que adjudique, y el ADR ya tiene
+un gate designado para eso. **El fix propuesto** (para el Tech Lead) es: (R11.12) acotar `N6`
+al retroceso **incoherente** de la autoridad y agregar el caso «sólo retrocede la revisión con
+evidencia coherente ⇒ reconciliar la caché hacia adelante»; (R11.13) seleccionar el tombstone
+de mayor seq **con estado `CONSUMED`** y dejar `REVOKED` en el estado terminal derivado;
+(R11.14) declarar explícitamente que con `G_prev` inválida la vía rápida **también** falla, y
+habilitar la elección de vía **sólo** con `G_prev` `VALID`.
+
+```text
+R11_12_N6_REVISION_VS_EVIDENCE            = CONFIRMED / OPEN
+R11_13_LAST_CONSUMED_STATUS_FILTER        = CONFIRMED / OPEN
+R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = CONFIRMED / OPEN
+POST_PUSH_NEW_FINDINGS                    = 3   (0 falsos positivos)
+OPEN_P4_DESIGN_BLOCKERS                   = 3
+P4_DESIGN_FROZEN                          = NO  (suspendido hasta cerrar R11.12–R11.14)
+```
+
+Los tres son defectos de **coherencia normativa introducidos por la remediación de la ronda
+11**, no del contrato de P4 previo: `N6`, la reconstrucción de `last_consumed_*` y la frase de
+vía rápida de §12 son texto nuevo de esta ronda. El censo `P4_` **no** cambia (36); §45.9 no
+agrega símbolos con ese prefijo.
