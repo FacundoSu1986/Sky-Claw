@@ -743,15 +743,33 @@ Secuencia exacta (vía de integridad, la canónica):
    admite varios setups, así que la identidad operativa previa debe ser
    **durable** (§19a).
 2. **Re-verificar `G_prev`** (identidad fresca + `tree_digest` registrado +
-   archivos críticos + integridad física, P2-B2). Si `G_prev` está `DRIFTED`,
-   `INVALID` o no es verificable, **no es fuente de clonación**: el rollback
-   **`FAIL_CLOSED`** (SFR-17; F10). **No** se salta automáticamente a una Generation
-   retenida **más antigua**: `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY` (§43.4) y
-   el store de historial **no** es un menú de targets. Está permitido intentar la
-   **vía rápida** del Clone retenido (§12 «Vía rápida opcional») o **re-materializar
-   otro Clone**, pero **sólo** si ambos corresponden al **MISMO immediate previous
+   archivos críticos + integridad física, P2-B2). Esta verificación es una **frontera
+   dura**: gobierna **todo** el resto del procedimiento y no admite excepciones por
+   conveniencia (corregido en la ronda 11; §45.10).
+
+   ```text
+   si G_prev != VALID  (DRIFTED · INVALID · no verificable):
+       ROLLBACK = FAIL_CLOSED              (SFR-17; F10)
+       vía rápida del Clone retenido   = NO
+       re-materialización de otro Clone = NO
+       target retenido más antiguo     = NO
+       STOP  (no se ejecuta ningún paso posterior)
+
+   si G_prev == VALID:
+       opción A: vía rápida del Clone retenido (§12 «Vía rápida opcional»)
+                 — sólo si además pasa sus TRES gates (a)(b)(c)
+       opción B: re-materializar un Clone nuevo desde ESA MISMA G_prev
+   ```
+
+   La vía rápida **no** es una excepción a esta frontera: su condición **(b)** exige que
+   la Generation de origen siga `VALID`, de modo que con `G_prev` inválida la vía rápida
+   queda **RECHAZADA por su propio gate** —no por una regla aparte—, y la
+   re-materialización no tiene fuente válida desde la cual clonar. **No** se salta
+   automáticamente a una Generation retenida **más antigua**:
+   `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY` (§43.4) y el store de historial **no**
+   es un menú de targets. Ambas opciones corresponden al **MISMO immediate previous
    target**; un rollback de profundidad arbitraria requeriría **otra** operación,
-   especificada aparte — no se introduce acá.
+   especificada aparte — no se introduce acá (`ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED = NO`).
 3. **Instanciar un Runtime Clone nuevo** `C_prev` desde `G_prev` (RV-2 → RV-3).
 4. **Provisionar `C_prev` con `S_prev`** (SFR-22): aplicar las operaciones
    reproducibles del manifest —SKSE del build exacto, archivos de root,
@@ -3257,7 +3275,8 @@ de aprobación y su resultado de cross-check son entradas obligatorias.
 | **N3** — caché de aprobación **coherente** con witnesses y terminal store (`max(H,T) == last_issued`) | coherente | — | — |
 | **N4** — caché **detrás** de un issuance witness (`max(H) > last_issued`) | `LEDGER_RETROCEDIDO`/`S1` → reconciliar la caché **hacia adelante** (determinista; el witness es post-consentimiento) | sí | no |
 | **N5** — caché **detrás** de un tombstone terminal (`max(T) > last_issued`) | `LEDGER_RETROCEDIDO`/`R2` → `FAIL_CLOSED` · `RECOVERY`/`REQUIRE_OWNER` | no | sí |
-| **N6** — caché **restaurada hacia atrás** (revisión retrocedida) | detectado por `R1`/`R2`/`S1`/`S2` → `FAIL_CLOSED` | no | sí |
+| **N6** — **sólo** retrocedió `approval_revision` (`CACHE_REVISION_ROLLBACK_ONLY`): witnesses y tombstones siguen **coherentes** y la caché se reconstruye **exactamente** | reconstruir `approval.json` desde la autoridad durable; **no** se pide aprobación humana nueva (§37.6) | sí | no |
+| **N6b** — rollback **de la autoridad durable** o evidencia **incoherente** (`DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY`: witness faltante/corrupto, tombstone contradictorio, ledger adelantado, gap/fork, terminal incompatible) | `FAIL_CLOSED` · `RECOVERY`/`REQUIRE_OWNER` (casos concretos: `N5`, `N9`–`N12`) | no | sí |
 | **N7** — witness **sin** refresco de caché (crash tras el `CREATE`) | reconciliar hacia adelante (`P9`) | sí | no |
 | **N8** — tombstone terminal **sin** refresco de caché (`A1b`/`A2`) | el tombstone **manda**: la aprobación es terminal; completar la caché o `REQUIRE_OWNER` | no | sí |
 | **N9** — **tombstone sin issuance witness** | `INCONSISTENT_AUTHORITY` → `FAIL_CLOSED` · `RECOVERY` | no | sí |
@@ -3280,10 +3299,22 @@ UNKNOWN NUNCA SE CONVIERTE EN SUCCESS
 ```
 
 ```text
-INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED = NO
+INCOMPLETE_TRANSITION_IS_AUTOMATICALLY_REVERTED  = NO
 NO_PENDING_BASELINE_SPLIT_IS_A_FAIL_CLOSED_STATE = YES   (N1; §36.4)
 CORRUPT_JOURNAL_IS_NEVER_READ_AS_ABSENT          = YES   (N2; §36.4)
+CACHE_REVISION_ROLLBACK_ONLY                     = RECONCILIAR_HACIA_ADELANTE (N6; §37.6)
+DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY      = FAIL_CLOSED (N6b; §37.6)
+APPROVAL_REVISION_ALONE_PROTECTS_AGAINST_RESTORE = NO    (ronda 11; §37.6)
 ```
+
+La separación **N6/N6b** es la corrección de la ronda 11 (§45.10). La fila `N6` original mandaba
+`FAIL_CLOSED` ante «caché restaurada hacia atrás (**revisión retrocedida**)», pero
+`approval_revision` **no es autoridad**: es el token de concurrencia de la caché (§37.6). Si
+**sólo** retrocede la revisión y la evidencia durable (witnesses + tombstones) sigue **coherente**,
+el resultado correcto es **reconciliar la caché hacia adelante**, no fallar cerrado; y `FAIL_CLOSED`
+queda reservado al rollback o a la incoherencia de la **autoridad durable** (`N6b`, cuyos casos
+concretos ya viven en `N5` y `N9`–`N12`). Sin la separación, dos secciones normativas exigían
+resultados opuestos para el **mismo** hecho.
 
 La fila **N1** es la que faltaba: el estado "no hay transición y aun así Desired y
 Effective divergen" puede venir de un cambio externo, corrupción, un fallo histórico,
@@ -5027,7 +5058,7 @@ responde `UNKNOWN → NO ACTIVATION`.
 | 4 | ¿`source_activation` representa el Effective real observado? | **CLOSED_BY_DESIGN** | §36.3: `effective_runtime_evidence` + triple igualdad |
 | 5 | ¿El runtime que se registra como previous target es exactamente el que estaba activo? | **CLOSED_BY_DESIGN** | §36.2 + §36.3: el source se demuestra contra el Effective observado antes de aprobar |
 | 6 | ¿Una aprobación vieja puede reutilizarse después de rotar el journal? | **CLOSED_BY_DESIGN** | §36.5: `approval_seq` monótono fuera del journal |
-| 7 | ¿Existe una autoridad durable del consumo de aprobación? | **CLOSED_BY_DESIGN** | §36.5/§37.1: `state/approval.json` con `approval_revision` CAS, acotado |
+| 7 | ¿Existe una autoridad durable del consumo de aprobación? | **CLOSED_BY_DESIGN** | §38.2: el **tombstone terminal** `state/approvals/<seq>-<id>.json` (inmutable, no-clobber) es la autoridad durable del consumo; `state/approval.json` es **caché** y `approval_revision` sólo su token de concurrencia (§37.6; ronda 11) |
 | 8 | ¿Puede crearse T2 mientras T1 sigue PENDING? | **CLOSED_BY_DESIGN** | §36.6: `AT MOST ONE PENDING PER ROOT` |
 | 9 | ¿CAS define `NONE → PENDING`? | **CLOSED_BY_DESIGN** | §36.6: `CREATE` (∈ {ABSENT, NONE}; el journal **no** tiene estado `FINALIZED`, §38.4) |
 | 10 | ¿CAS define `NONE` + registro finalizado(T1) → `PENDING`(T2)? | **CLOSED_BY_DESIGN** | §36.6: `START_NEXT` con `LATEST_FINALIZED_RECORD == Tprev`, derivado del store (§38.3) |
@@ -5696,7 +5727,8 @@ inmutables, pero **sin restar los tombstones de la emisión**:
 last_issued_*      = el witness de MAYOR approval_seq sobre state/issuances/
                      (la emisión histórica es monótona; un tombstone terminal NO la borra)
 lifecycle/state    = join(issuance witness, optional terminal tombstone)
-last_consumed_*    = el tombstone terminal de MAYOR seq sobre state/approvals/
+last_consumed_*    = el tombstone de MAYOR approval_seq sobre state/approvals/
+                     **con `terminal_state == CONSUMED`**
 ```
 
 Restar los tombstones al reconstruir `last_issued_*` haría **retroceder** el contador de
@@ -5705,11 +5737,44 @@ propuesta reutilizaría la `seq` `N` y colisionaría con su witness/tombstone in
 clasificándose como ledger retrocedido (`LEDGER_RETROCEDIDO ⇒ FAIL_CLOSED`). El
 `last_issued_approval_id`, el `last_issued_scope_digest` y el `last_issued_provenance` se
 reconstruyen del **mismo** witness de `max(seq)` — todos del mismo origen, nunca unos del
-witness y otros restados contra el tombstone. La única excepción es `approval_revision`, que
-**no** se deriva: es el token de concurrencia del propio ledger, no una autoridad, y por eso
-una restauración puede hacerlo retroceder sin romper ninguna garantía. Ésa es la razón por la
-que la reconciliación de §40.2 puede reparar el ledger hacia adelante sin pedir autorización
-nueva.
+witness y otros restados contra el tombstone.
+
+**`last_consumed_*` filtra por estado (ronda 11; §45.10).** El tombstone de **mayor `seq`** no
+alcanza: el de mayor `seq` puede ser `REVOKED`. `last_consumed_*` se reconstruye del tombstone de
+mayor `approval_seq` **cuyo `terminal_state == CONSUMED`**, y los cuatro campos salen del
+**mismo** tombstone (nunca unos de un tombstone y otros de otro):
+
+```text
+last_consumed_approval_seq
+consumed_approval_id
+consumed_scope_digest
+consumed_by_transition_id
+```
+
+Si **no existe ningún** tombstone `CONSUMED`, `last_consumed_* = genesis/null` según el schema.
+Un tombstone `REVOKED` participa en `lifecycle/state`, en la **evidencia terminal** y en la
+protección **anti-replay** — **nunca** en `last_consumed_*`. Ejemplo que la regla vieja resolvía
+mal: `seq 20 = CONSUMED`, `seq 21 = REVOKED` ⇒ `max(terminal seq) = 21`, pero `21` nunca fue
+consumida; `last_consumed_approval_seq` debe seguir siendo `20`.
+
+`approval_revision` **no** se deriva de ningún store: es el token de concurrencia del propio
+ledger y **no es autoridad**. Su retroceso, **por sí solo**, no rompe ninguna garantía *porque la
+caché se reconstruye desde la evidencia durable* — pero **sólo mientras esa evidencia durable sea
+coherente**. Por eso el retroceso de la revisión **no** es un estado terminal ni una condición de
+`FAIL_CLOSED` automática: se clasifica (ronda 11; §45.10).
+
+```text
+CACHE_REVISION_ROLLBACK_ONLY   (retrocede approval_revision ∧ witnesses coherentes ∧
+                                tombstones coherentes ∧ sin gaps/forks/conflictos ∧
+                                la caché se reconstruye exactamente)
+    ⇒ reconstruir approval.json desde la autoridad durable
+    ⇒ NO se pide aprobación humana nueva
+
+DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY   (witness faltante/corrupto · tombstone
+                                               contradictorio · ledger adelantado ·
+                                               gap/fork · evidencia terminal incompatible)
+    ⇒ FAIL_CLOSED / RECOVERY / REQUIRE_OWNER
+```
 
 **Un escritor por campo, un CAS para todos.** Aunque `approval.json` tiene dos escritores
 lógicos (superficie HITL y maquinaria de transición), **toda** escritura pasa por el mismo
@@ -5720,7 +5785,14 @@ ISSUE  : escribe last_issued_*        bajo CAS(approval_revision)
 CONSUME: escribe last_consumed_*/state bajo CAS(approval_revision)
 REVOKE : escribe state                 bajo CAS(approval_revision)
 SERIALIZACIÓN PRIMARIA = lock cross-process root-keyed (§34.3)
-ÚLTIMA LÍNEA DE DEFENSA = CAS (si el lock se pierde, el CAS falla cerrado)
+PROTECCIÓN DE CONCURRENCIA DE LA CACHÉ = CAS(approval_revision) — lost update y escritura
+    stale: si el lock se pierde, el CAS falla cerrado. Es concurrencia de la CACHÉ, **no**
+    durabilidad: **no** sobrevive por sí solo a un restore del archivo (§45.10).
+PROTECCIÓN ANTI-REPLAY / RESTORE (durable, **no** del contador):
+      issuance witness no-clobber (§40.2)
+    + terminal tombstone no-clobber (§38.2)
+    + lock cross-process root-keyed (§34.3)
+    + validación completa ANTES de escribir autoridad terminal (§37.2)
 ```
 
 **Auditoría D0-R3.6 — ¿sobrevive el contador a crash, corrupción o escritura stale?**
@@ -5733,21 +5805,37 @@ SERIALIZACIÓN PRIMARIA = lock cross-process root-keyed (§34.3)
 (c) CRASH          : el consumo se persiste con fsync ANTES del CREATE (§37.2); un crash
                     deja CONSUMED (fail-closed), nunca un PENDING sin consumo.
 (d) CORRUPCIÓN     : JSON ilegible ⇒ FAIL_CLOSED, jamás "sin consumo previo".
-(e) RETROCESO      : restauración de backup o rollback de `state/approval.json` ⇒ lo
-                    detecta el **store de tombstones terminales** (§38.2, R1/R2): toda
-                    aprobación terminal dejó evidencia inmutable, incluso si nunca
-                    finalizó una transición. ⇒ FAIL_CLOSED.
+(e) RETROCESO      : restauración de backup o rollback de `state/approval.json` **no** se
+                    adjudica por el contador. Se clasifica por la evidencia durable
+                    (§45.10): si witnesses y tombstones siguen coherentes y la caché se
+                    reconstruye exactamente ⇒ CACHE_REVISION_ROLLBACK_ONLY ⇒ reconstruir
+                    hacia adelante; si la autoridad durable está incompleta, contradictoria
+                    o adelantada ⇒ DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY ⇒ FAIL_CLOSED.
+                    La detección de una aprobación **terminal** la da el store de tombstones
+                    terminales (§38.2, R1/R2): toda aprobación terminal dejó evidencia
+                    inmutable, incluso si nunca finalizó una transición.
                     El cross-check contra el historial FINALIZADO (§37.5) **no** alcanza
                     por sí solo: no cubre CONSUMED-sin-transición ni REVOKED (D0-R4.1).
-(f) ABA            : approval_revision es monótono y nunca se reinicia; reutilizar una
-                    revisión vieja no "vuelve" a un estado anterior.
+(f) ABA            : la protección anti-replay **no** es la monotonía de `approval_revision`
+                    —el contador vive en la caché y un restore puede retrocederlo—, sino la
+                    **no-clobber** de las autoridades inmutables: reutilizar una `seq` choca
+                    contra un witness/tombstone ya escrito (CREATE exclusivo) y se clasifica
+                    como ledger retrocedido ⇒ FAIL_CLOSED (§40.3). El CAS del contador
+                    protege la concurrencia de la caché, no la durabilidad.
 
-MONOTONIC_COUNTER_SURVIVES_CRASH = YES  (bajo (a)–(f))
+MONOTONIC_COUNTER_SURVIVES_CRASH            = YES  (bajo (a)–(d): no retrocede por crash ni
+                                                   por escritura stale)
+MONOTONIC_COUNTER_SURVIVES_RESTORE          = NO   (un restore del archivo SÍ puede
+                                                   retrocederlo; lo que sobrevive es la
+                                                   evidencia durable, no el contador — §45.10)
+ANTI_REPLAY_IS_ANCHORED_IN_IMMUTABLE_STORES = YES  (witness + tombstone no-clobber;
+                                                   §38.2/§40.2)
 ```
 
 No se declaró `CONFIRMED` sin auditar: se verificó el mecanismo y el resultado es
-`CLOSED_BY_CONTRACT`. Si en P4 alguna de las condiciones (a)–(f) no se implementa, la
-garantía **no** se hereda.
+`CLOSED_BY_CONTRACT`. Si en P4 alguna de las condiciones (a)–(d) no se implementa, la garantía
+del **contador** no se hereda; y la garantía **anti-replay** no se hereda si no se implementa la
+**no-clobber** de witness y tombstone (§38.2/§40.2), que es su anclaje real.
 
 **Lock ≠ autorización humana.** El lock es propiedad de **proceso** (`session_id`), no una
 identidad humana; §35.2 sigue vigente y `OWNER_IDENTITY_BINDING = DEFERRED`. La
@@ -6964,7 +7052,10 @@ ledger y la delata.
 > de una emisión vivía dentro de `approval.json`, así que una restauración borraba el rastro
 > y producía ABA (`R → R+1 → R`) sin detección. El CAS sigue siendo necesario como token de
 > concurrencia del ledger, pero **no** es lo que da la garantía frente a una restauración: lo
-> que la da es que la emisión sea durable **fuera** del ledger (§40.2).
+> que la da es que la emisión sea durable **fuera** del ledger (§40.2). La lista completa de
+> anclajes durables es: witness no-clobber (§40.2) + tombstone no-clobber (§38.2) + lock
+> cross-process root-keyed (§34.3) + validación completa **antes** de escribir autoridad
+> terminal (§37.2). El contador, **por sí solo**, no sobrevive a un restore (§37.6; §45.10).
 
 ```text
 ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION            = NO
@@ -8738,6 +8829,11 @@ SUPERSEDED_BY_NEWER     = 0
 NEEDS_ADJUDICATION      = 0
 ```
 
+**Inventario post-push (rondas 11b/11c).** La revisión disparada al publicar `4d1558ed` agregó
+**3 hallazgos** (CodeRabbit, «Outside diff range comments»), todos **únicos** y todos
+`Major`/P1: R11.12–R11.14 (§45.9/§45.10). Total acumulado de la ronda 11: **15 observaciones
+crudas → 14 únicas** (11 P1 + 3 P2), 1 duplicado, 0 falsos positivos.
+
 ### 45.3 Causas raíz
 
 Los 11 findings no son 11 parches aislados: se agrupan en **cuatro causas raíz**. La clase
@@ -8792,7 +8888,8 @@ Mismo análisis para `REVOKE`. Corregido en §37.2, §37.3, §38.2 y §36.5.
 **R11.4 — reconstrucción de `last_issued_*`.** `last_issued_*` = witness de **mayor**
 `approval_seq` sobre `state/issuances/` (la emisión histórica **no** se resta con
 tombstones); `lifecycle/state` = join(witness, tombstone opcional); `last_consumed_*` = el
-tombstone de mayor seq. `last_issued_approval_id`/`_scope_digest`/`_provenance` salen del
+tombstone de mayor `approval_seq` **con `terminal_state == CONSUMED`** (filtro de estado:
+ronda 11; §45.10). `last_issued_approval_id`/`_scope_digest`/`_provenance` salen del
 **mismo** witness de `max(seq)`. Corregido en §37.6.
 
 **R11.5 — bootstrap de `K`.** `START_NEXT` ya **no** exige `K ≥ 3` registros: valida
@@ -8819,15 +8916,17 @@ COMPATIBLE`. **No** se agrega un campo al `ApprovalScope` (sigue en 14): el defe
 **R11.8 — entradas de startup reconciliation.** Se agregan a la lista canónica
 `approval_cache`, `issuance_witnesses`, `terminal_approval_store` y `finalized_history`, y la
 matriz gana los casos N3–N12 (coherente / caché detrás del witness / detrás del tombstone /
-restaurada hacia atrás / witness sin caché / tombstone sin caché / tombstone sin witness /
+revisión retrocedida **con evidencia durable coherente** (`N6`) / **autoridad durable
+incoherente** (`N6b`) / witness sin caché / tombstone sin caché / tombstone sin witness /
 corrupto / conflicting / seq duplicada o gap). Regla: evidencia inmutable adelantada y
 coherente ⇒ reconciliar la caché hacia adelante; autoridad corrupta/contradictoria/faltante ⇒
 `FAIL_CLOSED`/`REQUIRE_OWNER`. `UNKNOWN` nunca es `SUCCESS`. Corregido en §34.5.
 
 **R11.9 — rollback inmediato inválido.** Si la Generation del **immediate previous target**
-está `DRIFTED`/`INVALID`/no verificable ⇒ **`FAIL_CLOSED`**. Permitido: vía rápida del Clone
-retenido o re-materializar **otro** Clone, **sólo** si ambos son el **MISMO immediate previous
-target**. No se salta a un target más antiguo. Corregido en §12 paso 2.
+está `DRIFTED`/`INVALID`/no verificable ⇒ **`FAIL_CLOSED`**, y **ninguna** vía continúa: ni la
+vía rápida del Clone retenido, ni la re-materialización, ni un salto a un target más antiguo
+(frontera dura; corregido en la ronda 11c — §45.10.3). Con `G_prev` `VALID`, la elección de vía
+queda habilitada **sólo** para el **MISMO immediate previous target**. Corregido en §12 paso 2.
 
 **R11.10 — ordering desired/bind.** Q13 queda **RESUELTA/SUPERSEDED**: el orden causal está
 congelado (`PERSIST PENDING → BIND → VERIFY → CAS UPDATE DESIRED → POST → FINALIZE`); P5
@@ -8848,6 +8947,8 @@ entre ellas:
 | tras `CREATE` del witness | `ISSUED` previo | presente | — | **emisión ocurrió** | reconciliar la caché hacia adelante (`P9`) |
 | tras el CAS del ledger | `ISSUED` | presente | — | OK | `CONSUME` o `REVOKE` |
 | **crash entre witness y CAS** | atrás | presente | — | `LEDGER_RETROCEDIDO`/`S1` | reconciliar hacia adelante; **no** descartar |
+| **restore de la caché**, evidencia durable **coherente** | atrás | presente | coherente | `CACHE_REVISION_ROLLBACK_ONLY` | reconstruir la caché desde la autoridad durable; **no** se pide aprobación nueva (`N6`; §37.6) |
+| **restore con autoridad durable incoherente** (witness/tombstone faltante, contradictorio o adelantado) | atrás | inconsistente | inconsistente | `DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY` | `FAIL_CLOSED` (`N6b`) |
 | `REVOKED` | `REVOKED` | presente | `REVOKED` | terminal | no consumible ni reutilizable |
 | `CONSUMED` | `CONSUMED` | presente | `CONSUMED` | terminal | crear la transición |
 | `CONSUMED` + sin `PENDING` | `CONSUMED` | presente | `CONSUMED` | **NO ACTIVACIÓN** | completar con `T` o `REQUIRE_OWNER` |
@@ -8879,10 +8980,12 @@ entre ellas:
 | durante el bind | `CONSUMED` | `PENDING` | no | recovery C2 (observar primero) |
 | post-bind, pre-POST | `CONSUMED` | `PENDING` | no | recovery C3/C4 |
 
-**Matriz de startup reconciliation (ampliada por R11.8).** Cruza journal · historial
-finalizado · caché de aprobación · issuance store · terminal store · observación del
-Effective. Cubierta por los casos N0–N12 de §34.5; los estados imposibles se agrupan
-(`FAIL_CLOSED`) y las ventanas reales se enumeran.
+**Matriz de startup reconciliation (ampliada por R11.8; refinada por R11.12).** Cruza journal ·
+historial finalizado · caché de aprobación · issuance store · terminal store · observación del
+Effective. Cubierta por los casos N0–N12 de §34.5 —con la separación **`N6`/`N6b`** de la ronda
+11c: revisión retrocedida **con evidencia coherente** ⇒ reconciliar hacia adelante; autoridad
+durable **incoherente** ⇒ `FAIL_CLOSED`—; los estados imposibles se agrupan (`FAIL_CLOSED`) y las
+ventanas reales se enumeran.
 
 ### 45.6 Censo / sweep document-wide
 
@@ -8913,7 +9016,11 @@ Debe seguir dando **36** (mismo número que §38–§44): la ronda 11 **no** int
 `FINALIZATION_SEQ_RESERVATION_*`, `INVALID_REQUEST_PRODUCES_TERMINAL_TOMBSTONE`,
 `TERMINAL_TOMBSTONE_REQUIRES_VALIDATION_FIRST`, `K_GOVERNS`, `K_DOES_NOT_GATE`,
 `COMPATIBILITY_EVIDENCE_ID_IS_CONTENT_BOUND`— se escriben **sin** prefijo `P4_`, como el
-resto de las etiquetas de estado del ADR. El set-diff contra `af365600` es **vacío**.
+resto de las etiquetas de estado del ADR. Lo mismo vale para las etiquetas del follow-up
+quirúrgico (§45.10): `CACHE_REVISION_ROLLBACK_ONLY`,
+`DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY`,
+`APPROVAL_REVISION_ALONE_PROTECTS_AGAINST_RESTORE`, `MONOTONIC_COUNTER_SURVIVES_RESTORE`,
+`ANTI_REPLAY_IS_ANCHORED_IN_IMMUTABLE_STORES`. El set-diff contra `af365600` es **vacío**.
 
 ### 45.7 Estado
 
@@ -8930,9 +9037,9 @@ R11_9_IMMEDIATE_ROLLBACK_FAILURE          = CLOSED
 R11_10_DESIRED_BIND_ORDERING              = CLOSED
 R11_11_README_INDEX                       = CLOSED
 
-R11_12_N6_REVISION_VS_EVIDENCE            = OPEN   (CONFIRMED; NO remediado — §45.9)
-R11_13_LAST_CONSUMED_STATUS_FILTER        = OPEN   (CONFIRMED; NO remediado — §45.9)
-R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = OPEN   (CONFIRMED; NO remediado — §45.9)
+R11_12_N6_REVISION_VS_EVIDENCE            = CLOSED (§45.10)
+R11_13_LAST_CONSUMED_STATUS_FILTER        = CLOSED (§45.10)
+R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = CLOSED (§45.10)
 
 REVIEW_FINDINGS_RAW                       = 12
 REVIEW_FINDINGS_UNIQUE                    = 11
@@ -8948,6 +9055,14 @@ REVOKE_ORDERING                           = VALIDATE → CREATE tombstone → CA
 CANCELLATION_MATRIX                       = A/B/C/D (§36.7, §36.12)
 LAST_ISSUED_AUTHORITY                     = max(seq) de TODOS los issuance witnesses
                                             (sin restar tombstones; §37.6)
+LAST_CONSUMED_AUTHORITY                   = max(seq) de los tombstones con
+                                            terminal_state == CONSUMED (§37.6)
+CACHE_VS_DURABLE_AUTHORITY                = aprobación retrocedida de la CACHÉ con evidencia
+                                            durable coherente ⇒ reconciliar hacia adelante;
+                                            autoridad durable incoherente ⇒ FAIL_CLOSED
+                                            (§34.5 N6/N6b; §37.6)
+APPROVAL_REVISION_DURABILITY              = concurrencia de la CACHÉ, NO durabilidad;
+                                            MONOTONIC_COUNTER_SURVIVES_RESTORE = NO (§37.6)
 
 FINALIZATION_SEQ_AUTHORITY                = derivación del store de registros (§38.3)
 FINALIZATION_SEQ_COLLISION_GUARD          = reserva no-clobber keyed por seq
@@ -8976,36 +9091,39 @@ P4_REQUIREMENTS_DEFERRED_FAIL_CLOSED      = 1
 P4_REQUIREMENTS_OPEN                      = 0
 NEW_PREFIXED_SYMBOLS_THIS_ROUND           = 0
 
-OPEN_P4_DESIGN_BLOCKERS = 3   (R11.12–R11.14; hallazgos post-push, adjudicados
-                                CONFIRMED y **no** remediados — §45.9)
-NEW_FINDINGS            = 11  (R11.1–R11.11) — revisión externa del PR #702 sobre
-                                af365600, 8 P1 + 3 P2 (todos remediados en 4d1558ed)
+OPEN_P4_DESIGN_BLOCKERS = 0   (R11.12–R11.14 remediados in-place en §45.10)
+NEW_FINDINGS            = 14  (R11.1–R11.11 sobre af365600 — 8 P1 + 3 P2, remediados en
+                                4d1558ed; R11.12–R11.14 post-push sobre 4d1558ed — 3 P1,
+                                remediados en el follow-up de §45.10)
 
 P0_4_CORE_ARCHITECTURE  = SOUND   (mismo hecho y mismo símbolo que §32.8)
 P4_READY_TO_DESIGN      = YES
-P4_DESIGN_FROZEN        = NO   (SUSPENDIDO: la revisión post-push abrió R11.12–R11.14)
-P4_READY_TO_IMPLEMENT   = NO   (idem)
+P4_DESIGN_FROZEN        = YES  (reafirmado tras cerrar R11.12–R11.14 con mecanismo;
+                                reapertura normativa en §45.10)
+P4_READY_TO_IMPLEMENT   = YES  (idem)
 P4_IMPLEMENTED          = NO
 P5_IMPLEMENTED          = NO
-EXTERNAL_TECH_LEAD_GATE = PENDING
+EXTERNAL_TECH_LEAD_GATE = PENDING   (re-gate externo sobre la ronda 11)
 PR_SAFE_FOR_NEXT_REVIEW = YES
 PR_SAFE_TO_MERGE        = NO
 MERGE                   = NO
 ```
 
-**Reafirmación suspendida (ronda 11, post-push).** La revisión que disparó el push de
-`4d1558ed` publicó **3 hallazgos nuevos** (§45.9) contra texto que **esta misma ronda**
-introdujo. Por la regla de parada de la ronda —*«si aparece material nuevo: no ocultarlo, no
-declarar cierre»*—, `P4_DESIGN_FROZEN` **no** se reafirma y `OPEN_P4_DESIGN_BLOCKERS = 3`. La
-congelación vuelve a valer **sólo** cuando esos 3 hallazgos cierren con mecanismo y el **gate
-externo del Tech Lead** adjudique la ronda.
+**Reafirmación (ronda 11c, follow-up quirúrgico).** El gate externo del Tech Lead adjudicó
+R11.12–R11.14 como `CONFIRMED / P1` y ordenó un follow-up **quirúrgico** —no una ronda nueva—
+sobre esas tres superficies. Cerradas con mecanismo en §45.10, `OPEN_P4_DESIGN_BLOCKERS = 0` y
+`P4_DESIGN_FROZEN` se reafirma. La congelación vale **sólo** porque las contradicciones entre
+secciones normativas quedaron cerradas con mecanismo y **propagadas in-place** (no con banners
+como sustituto): una sola autoridad coherente para el ciclo de vida de la aprobación, el
+bootstrap de la historia de finalización, el ordering desired/bind y —desde esta ronda— el
+reparto explícito de responsabilidades entre la **caché** y la **evidencia durable**.
 
-`P4_DESIGN_FROZEN = YES` valía, hasta `4d1558ed`, **sólo** porque las contradicciones entre
-secciones normativas de las rondas 1–10 quedaron cerradas con mecanismo y **propagadas
-in-place** (no con banners como sustituto): una sola autoridad coherente para el ciclo de vida
-de la aprobación, el bootstrap de la historia de finalización y el ordering desired/bind. Ese
-juicio **no se extiende** a la superficie nueva: **el gate del Tech Lead externo sobre esta
-ronda queda `PENDING`**: `PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa verificación.
+**Regla de reapertura (normativa).** Si la revisión automática disparada por el push de este
+follow-up publica **cualquier** finding material, ese finding se registra y `P4_DESIGN_FROZEN`
+vuelve a `NO` (`OPEN_P4_DESIGN_BLOCKERS` se incrementa) hasta que cierre con mecanismo. La
+reafirmación **no** es incondicional: vale mientras la superficie de revisión no aporte material
+nuevo. **El gate del Tech Lead externo sobre esta ronda sigue `PENDING`**: `PR_SAFE_TO_MERGE =
+NO` y `MERGE = NO` hasta esa verificación.
 
 ### 45.8 Verificación de esta ronda
 
@@ -9050,6 +9168,16 @@ rg -n "Estado vigente: §45|Baseline congelado de P4-D0" docs/adr/README.md
 
 # (12) censo (no se asume; se recomputa por set-diff contra af365600)
 grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+
+# (13) el contador NO se presenta como protección durable ante restore
+rg -n "MONOTONIC_COUNTER_SURVIVES_RESTOR[E]|ANCHORED_IN_IMMUTABLE_STORE[S]" \
+   docs/adr/0012-frozen-runtime.md
+
+# (14) last_consumed_* filtra por estado CONSUMED (no por cualquier terminal)
+rg -n "terminal_state == CONSU[M]ED" docs/adr/0012-frozen-runtime.md
+
+# (15) la frontera G_prev gobierna la vía rápida: ninguna vía con G_prev inválida
+rg -n "G_prev !=\s*VALI[D]" docs/adr/0012-frozen-runtime.md
 ```
 
 Comandos (4) y (5): deben devolver la **forma normativa vigente** (§37.6 y §37.5), nunca la
@@ -9057,6 +9185,11 @@ forma vieja; si la forma vieja reapareciera como instrucción viva, la cazaría 
 concepto de §45.6. Comando (10): la coincidencia debe ser la resolución de Q13 en §26 — el
 orden causal no puede quedar libre en ninguna otra sección. Comando (6): la reserva por seq
 debe aparecer en §38.3. Comando (12): debe dar **36**, el mismo número que en §38–§44.
+Comandos (13)–(15) (follow-up quirúrgico de §45.10): (13) debe devolver `SURVIVES_RESTORE = NO`
+y `ANCHORED_... = YES` en §37.6; (14) la coincidencia tiene que ser la **regla** de §37.6 (más
+la fila `N6` de §34.5), no una nota suelta; (15) la frontera tiene que estar en el **paso 2** de
+§12. Los patrones usan una **clase de caracteres** en el último símbolo para que **no** puedan
+matchear su propia línea de comando.
 
 **Alcance de esta ronda:** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó transición,
 ni CAS, ni journal, ni ledger de aprobación, ni store de tombstones, ni store de emisiones, ni
@@ -9066,14 +9199,15 @@ ni escaneo de namespace, ni provisioning, ni cancelación, ni gate de activació
 ni promoción. No se tocó P5. **No se inició la implementación de P4.** `EXTERNAL_TECH_LEAD_GATE
 = PENDING`. `PR_SAFE_TO_MERGE = NO`. `MERGE = NO`.
 
-### 45.9 Hallazgos post-push (ronda 11b) — adjudicados, **no** remediados
+### 45.9 Hallazgos post-push (ronda 11b) — adjudicados
 
 La revisión externa que se dispara **al publicar** `4d1558ed` (CodeRabbit, review
 `5478816782`, «Outside diff range comments (3)») publicó **3 hallazgos nuevos**, todos
-severidad **Major**, y los tres contra **texto que esta misma ronda introdujo**. Se adjudican
-acá y **no** se remedian: la regla de parada de la ronda manda *detener y elevar al gate del
-Tech Lead* cuando aparece material nuevo, en vez de seguir iterando contra la superficie de
-revisión (que se regenera en cada push).
+severidad **Major**, y los tres contra **texto que esta misma ronda introdujo**. Se adjudicaron
+acá y **no** se remediaron en ese momento: la regla de parada de la ronda manda *detener y
+elevar al gate del Tech Lead* cuando aparece material nuevo, en vez de seguir iterando contra la
+superficie de revisión (que se regenera en cada push). **El gate externo del Tech Lead los
+confirmó y ordenó el follow-up quirúrgico que los cierra en §45.10.**
 
 | # | Ubicación | Sev. | Adjudicación | Contradicción verificada |
 |---|---|---|---|---|
@@ -9089,18 +9223,166 @@ al retroceso **incoherente** de la autoridad y agregar el caso «sólo retrocede
 evidencia coherente ⇒ reconciliar la caché hacia adelante»; (R11.13) seleccionar el tombstone
 de mayor seq **con estado `CONSUMED`** y dejar `REVOKED` en el estado terminal derivado;
 (R11.14) declarar explícitamente que con `G_prev` inválida la vía rápida **también** falla, y
-habilitar la elección de vía **sólo** con `G_prev` `VALID`.
+habilitar la elección de vía **sólo** con `G_prev` `VALID`. **Aplicado in-place en §45.10 (ronda
+11c), tras la adjudicación del gate externo.**
 
 ```text
-R11_12_N6_REVISION_VS_EVIDENCE            = CONFIRMED / OPEN
-R11_13_LAST_CONSUMED_STATUS_FILTER        = CONFIRMED / OPEN
-R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = CONFIRMED / OPEN
+R11_12_N6_REVISION_VS_EVIDENCE            = CONFIRMED → CLOSED (§45.10)
+R11_13_LAST_CONSUMED_STATUS_FILTER        = CONFIRMED → CLOSED (§45.10)
+R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = CONFIRMED → CLOSED (§45.10)
 POST_PUSH_NEW_FINDINGS                    = 3   (0 falsos positivos)
-OPEN_P4_DESIGN_BLOCKERS                   = 3
-P4_DESIGN_FROZEN                          = NO  (suspendido hasta cerrar R11.12–R11.14)
+OPEN_P4_DESIGN_BLOCKERS                   = 0   (tras §45.10)
+P4_DESIGN_FROZEN                          = YES (reafirmado en §45.7/§45.10)
 ```
 
 Los tres son defectos de **coherencia normativa introducidos por la remediación de la ronda
 11**, no del contrato de P4 previo: `N6`, la reconstrucción de `last_consumed_*` y la frase de
 vía rápida de §12 son texto nuevo de esta ronda. El censo `P4_` **no** cambia (36); §45.9 no
-agrega símbolos con ese prefijo.
+agrega símbolos con ese prefijo. **Remediados in-place en §45.10 (ronda 11c).**
+
+### 45.10 Follow-up quirúrgico (ronda 11c) — remediación de R11.12–R11.14
+
+El **gate externo del Tech Lead** sobre la ronda 11 revalidó el PR vivo y adjudicó los tres
+hallazgos post-push como `CONFIRMED / P1`, ordenando un **follow-up quirúrgico** —no una ronda
+12— limitado a esas tres superficies. Esta subsección documenta la corrección in-place, el
+mecanismo y la verificación.
+
+**Alcance.** Docs-only; sólo las tres superficies señaladas y sus **superficies hermanas por
+concepto** (barrido de §45.6). No se abrió ronda nueva, no se creó rama/worktree/PR, no se
+mergeó, no se implementó P4 ni P5.
+
+#### 45.10.1 R11.12 — `approval_revision` vs. autoridad durable
+
+**Defecto.** `N6` mandaba `FAIL_CLOSED` para «caché restaurada hacia atrás (**revisión
+retrocedida**)», mientras §37.6 afirmaba que `approval_revision` **no** es autoridad y que su
+retroceso **sí** se repara hacia adelante. Además, §37.6 (e)/(f) sostenía a la vez que un restore
+de `approval.json` ⇒ `FAIL_CLOSED` y que `approval_revision` «es monótono y nunca se reinicia»,
+lo que no puede coexistir literalmente con «la revisión puede retroceder sin romper garantías».
+
+**Mecanismo (una sola semántica).** Se separa el retroceso de la **caché** del rollback o la
+incoherencia de la **autoridad durable**:
+
+```text
+CACHE_REVISION_ROLLBACK_ONLY
+    = retrocede approval_revision ∧ witnesses coherentes ∧ tombstones coherentes
+      ∧ sin gaps/forks/conflictos ∧ la caché se reconstruye exactamente
+    ⇒ reconstruir approval.json desde la autoridad durable
+    ⇒ NO se pide aprobación humana nueva
+
+DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY
+    = witness faltante/corrupto · tombstone contradictorio · ledger adelantado ·
+      gap/fork · evidencia terminal incompatible
+    ⇒ FAIL_CLOSED / RECOVERY / REQUIRE_OWNER
+```
+
+**Propagación in-place (no banners como sustituto):**
+
+| Superficie | Antes | Después |
+|---|---|---|
+| §34.5, fila `N6` | «caché restaurada hacia atrás (revisión retrocedida) ⇒ `FAIL_CLOSED`» | `N6` = `CACHE_REVISION_ROLLBACK_ONLY` ⇒ reconciliar hacia adelante; fila nueva `N6b` = `DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY` ⇒ `FAIL_CLOSED` |
+| §34.5, flags | — | `CACHE_REVISION_ROLLBACK_ONLY`, `DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY`, `APPROVAL_REVISION_ALONE_PROTECTS_AGAINST_RESTORE = NO` |
+| §37.6 (e) | «restauración ⇒ lo detecta el store de tombstones ⇒ `FAIL_CLOSED`» | clasifica por evidencia durable: coherente ⇒ reconciliar; incoherente ⇒ `FAIL_CLOSED` |
+| §37.6 (f) | «`approval_revision` es monótono y nunca se reinicia» | la protección anti-replay **no** es la monotonía del contador, sino la **no-clobber** de witness/tombstone; el CAS protege la concurrencia de la caché |
+| §37.6, bloque CAS | «`ÚLTIMA LÍNEA DE DEFENSA = CAS`» | `PROTECCIÓN DE CONCURRENCIA DE LA CACHÉ = CAS` + lista explícita de la protección **anti-replay/restore** durable |
+| §37.6, flags | `MONOTONIC_COUNTER_SURVIVES_CRASH = YES (bajo (a)–(f))` | `..._SURVIVES_CRASH = YES (bajo (a)–(d))`; `..._SURVIVES_RESTORE = NO`; `ANTI_REPLAY_IS_ANCHORED_IN_IMMUTABLE_STORES = YES` |
+| §36.9-q7 | «autoridad durable del consumo = `state/approval.json` con `approval_revision` CAS» | autoridad durable del consumo = **tombstone terminal** (§38.2); `approval.json` = caché, `approval_revision` = token de concurrencia |
+| §39.4 (nota D0-R6.1) | lista incompleta de anclajes | lista completa: witness no-clobber + tombstone no-clobber + root lock + validación **antes** de escribir autoridad terminal |
+
+**Lo que queda normativo.** La protección frente a replay/restore vive en: **issuance witness
+no-clobber** (§40.2) + **terminal tombstone no-clobber** (§38.2) + **root lock** (§34.3) +
+**validación completa antes de escribir autoridad terminal** (§37.2). El CAS sigue siendo
+necesario, pero como protección de **concurrencia de la caché**: no se le atribuye una
+durabilidad que no tiene.
+
+#### 45.10.2 R11.13 — `last_consumed_*` filtra por estado
+
+**Defecto.** La regla tomaba el tombstone de **mayor `seq`** sin filtrar por estado; el de mayor
+`seq` puede ser `REVOKED`, y §37.3 escribe `last_consumed_approval_seq` **sólo** en `CONSUME`.
+
+**Mecanismo.** `last_consumed_*` = tombstone de mayor `approval_seq` **con
+`terminal_state == CONSUMED`**, y los cuatro campos salen del **mismo** tombstone:
+`last_consumed_approval_seq`, `consumed_approval_id`, `consumed_scope_digest`,
+`consumed_by_transition_id`. Si no existe **ningún** `CONSUMED` ⇒ `genesis/null` según schema.
+Un tombstone `REVOKED` participa en `lifecycle/state`, en la evidencia terminal y en la
+protección anti-replay — **nunca** en `last_consumed_*`. Contraejemplo que la regla vieja
+resolvía mal: `seq 20 = CONSUMED`, `seq 21 = REVOKED` ⇒ `last_consumed_approval_seq` debe seguir
+siendo `20`.
+
+**Propagación in-place:** §37.6 (bloque de reconstrucción + párrafo nuevo con el contraejemplo),
+§45.4 (resumen de R11.4) y §45.7 (`LAST_CONSUMED_AUTHORITY`).
+
+#### 45.10.3 R11.14 — vía rápida con `G_prev` inválida
+
+**Defecto.** Tras declarar `FAIL_CLOSED` para `G_prev` `DRIFTED`/`INVALID`, §12 **igual** ofrecía
+la vía rápida del Clone retenido; pero la vía rápida exige, condición **(b)**, que su Generation
+de origen siga `VALID`. Con `G_prev` inválida, ambas vías quedan sin fuente válida y la frase era
+engañosa.
+
+**Mecanismo.** El paso 2 de §12 pasa a ser una **frontera dura** que gobierna todo el resto:
+
+```text
+1. seleccionar el target IMMEDIATE_PREVIOUS
+2. verificar G_prev
+   si G_prev != VALID: ROLLBACK = FAIL_CLOSED
+                       NO vía rápida · NO re-materialización · NO target más antiguo · STOP
+3. sólo si G_prev == VALID:
+   opción A: vía rápida del Clone retenido (si además pasa sus gates (a)(b)(c))
+   opción B: re-materializar un Clone nuevo desde ESA MISMA G_prev
+```
+
+Se conservan `ROLLBACK_SELECTION = IMMEDIATE_PREVIOUS_ONLY` (§43.4) y
+`ARBITRARY_DEPTH_ROLLBACK_IS_PROMISED = NO`, **sin** agregar ninguna operación nueva. La vía
+rápida no es una excepción: la rechaza su propio gate (b).
+
+#### 45.10.4 Verificación del follow-up
+
+```bash
+# el contador no se presenta como protección durable ante restore
+rg -n "MONOTONIC_COUNTER_SURVIVES_RESTOR[E]|ANCHORED_IN_IMMUTABLE_STORE[S]" \
+   docs/adr/0012-frozen-runtime.md
+
+# last_consumed_* filtra por estado CONSUMED
+rg -n "terminal_state == CONSU[M]ED" docs/adr/0012-frozen-runtime.md
+
+# la frontera G_prev gobierna la vía rápida
+rg -n "G_prev !=\s*VALI[D]" docs/adr/0012-frozen-runtime.md
+
+# N6/N6b separados: ninguna fila manda FAIL_CLOSED por la sola revisión retrocedida
+rg -n "CACHE_REVISION_ROLLBACK_ONLY|DURABLE_AUTHORITY_ROLLBACK_OR_INCONSISTENCY" \
+   docs/adr/0012-frozen-runtime.md
+
+# censo (recomputado, no recordado): debe seguir dando 36
+grep -oE "P4_[A-Z0-9_]+" docs/adr/0012-frozen-runtime.md | sort -u | wc -l
+```
+
+#### 45.10.5 Estado tras el follow-up
+
+```text
+R11_12_N6_REVISION_VS_EVIDENCE            = CLOSED
+R11_13_LAST_CONSUMED_STATUS_FILTER        = CLOSED
+R11_14_ROLLBACK_FASTPATH_INVALID_G_PREV   = CLOSED
+
+OPEN_P4_DESIGN_BLOCKERS                   = 0
+CENSO_SIMBOLOS_ANTES                      = 36
+CENSO_SIMBOLOS_DESPUES                    = 36
+CENSO_SIMBOLOS_ANADIDOS                   = 0
+CENSO_SIMBOLOS_ELIMINADOS                 = 0
+
+P4_DESIGN_FROZEN                          = YES
+P4_READY_TO_IMPLEMENT                     = YES
+P4_IMPLEMENTED                            = NO
+P5_IMPLEMENTED                            = NO
+EXTERNAL_TECH_LEAD_GATE                   = PENDING   (re-gate sobre la ronda 11)
+PR_SAFE_TO_MERGE                          = NO
+MERGE                                     = NO
+```
+
+**Regla de reapertura.** Si la revisión automática disparada por el push de este follow-up
+publica cualquier finding material, se registra y `P4_DESIGN_FROZEN` vuelve a `NO`
+(`OPEN_P4_DESIGN_BLOCKERS` se incrementa) hasta que cierre con mecanismo. La reafirmación vale
+mientras la superficie de revisión no aporte material nuevo.
+
+**Alcance.** docs-only. `PRODUCT_CODE_CHANGED = NO`. No se implementó CAS, ni ledger, ni store de
+tombstones, ni store de emisiones, ni rollback, ni promoción, ni nada de P5. **No se inició la
+implementación de P4.** El próximo paso es el **re-gate externo del Tech Lead** sobre la ronda 11;
+`PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa verificación.

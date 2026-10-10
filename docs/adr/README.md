@@ -100,8 +100,11 @@
 > **remediación de la revisión externa del PR #702** (validación antes del tombstone,
 > reconstrucción de `last_issued_*` sin restar tombstones, bootstrap de `K`, reserva
 > durable de `finalization_seq`, compatibilidad en el reverify pre-bind, entradas de
-> startup reconciliation y el ordering desired/bind). **Estado vigente: §45.** Sigue en
-> estado Propuesta.
+> startup reconciliation y el ordering desired/bind), más el **follow-up quirúrgico
+> (ronda 11c, §45.10)** que cierra los tres hallazgos post-push: la separación
+> caché/autoridad durable para `approval_revision` (`N6`/`N6b`), el filtro por estado de
+> `last_consumed_*` y la frontera `G_prev` de la vía rápida de rollback. **Estado
+> vigente: §45.** Sigue en estado Propuesta.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
