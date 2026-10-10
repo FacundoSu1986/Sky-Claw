@@ -98,6 +98,24 @@ else:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+def _probe_os_lock_held(lock_path: pathlib.Path) -> bool:
+    """Comprueba causalmente si el mutex del SO está tomado sobre lock_path.
+
+    Devuelve True si el mutex del SO sigue bloqueado exclusivamente, o False si
+    un descriptor de prueba independiente pudo adquirir el lock (demostrando
+    que se perdió la exclusión del SO).
+    """
+    try:
+        with open(lock_path, "r+b") as probe_file:
+            if not _lock_fd(probe_file.fileno()):
+                return True
+            _unlock_fd(probe_file.fileno())
+            return False
+    except OSError:
+        # En Windows o POSIX, un error de acceso/compartición al abrir indica exclusión activa
+        return True
+
+
 class OwnerLiveness(StrEnum):
     """Estado de vitalidad del dueño registrado en la metadata."""
 
@@ -425,6 +443,12 @@ def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockM
     if meta.phase != LockPhase.HELD:
         raise FrozenRuntimeLockOwnershipError(f"phase en disco no es HELD ({meta.phase})")
 
+    # F-13: Comprobar causalmente que el mutex del SO sigue efectivamente retenido
+    if not _probe_os_lock_held(handle.lock_path):
+        raise FrozenRuntimeLockOwnershipError(
+            "El mutex del sistema operativo no está retenido (exclusión del SO perdida)."
+        )
+
     return meta
 
 
@@ -531,16 +555,8 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
             liveness=None,
         )
 
-    # Probar si el OS lock está tomado SIEMPRE que el archivo exista (Finding 1)
-    is_os_locked = False
-    try:
-        with open(lock_path, "r+b") as probe_file:
-            if not _lock_fd(probe_file.fileno()):
-                is_os_locked = True
-            else:
-                _unlock_fd(probe_file.fileno())
-    except OSError:
-        is_os_locked = True
+    # Probar si el OS lock está tomado SIEMPRE que el archivo exista (Finding 1, F-13)
+    is_os_locked = _probe_os_lock_held(lock_path)
 
     st_size = lock_path.stat().st_size
     if st_size == 0:

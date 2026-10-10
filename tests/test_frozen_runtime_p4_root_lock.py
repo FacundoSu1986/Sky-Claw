@@ -1185,3 +1185,63 @@ def test_f11_liveness_zombie_and_tight_float_precision(monkeypatch: pytest.Monke
     mock_proc.create_time.return_value = 1000.0 + 1e-5
     liveness_tight = _check_process_liveness(1234, 1000.0)
     assert liveness_tight == OwnerLiveness.ALIVE
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="os.fork() sólo está disponible en entornos POSIX")
+def test_f12_posix_real_fork_child_cannot_assert_owned_or_release(tmp_path: pathlib.Path) -> None:
+    """F-12 (P2): Un proceso hijo real creado vía os.fork() no puede llamar assert_owned() ni release()."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    pid = os.fork()
+    if pid == 0:
+        # Proceso hijo
+        exit_code = 0
+        try:
+            # 1. El hijo heredó el handle; intentar assert_owned() DEBE fallar con FrozenRuntimeLockOwnershipError
+            try:
+                handle.assert_owned()
+                exit_code = 1  # No falló como se esperaba
+            except FrozenRuntimeLockOwnershipError:
+                pass
+            except Exception:
+                exit_code = 2
+
+            # 2. Intentar release() desde el hijo DEBE fallar con FrozenRuntimeLockOwnershipError
+            try:
+                handle.release()
+                exit_code = 3  # No falló como se esperaba
+            except FrozenRuntimeLockOwnershipError:
+                pass
+            except Exception:
+                exit_code = 4
+        finally:
+            os._exit(exit_code)
+    else:
+        # Proceso padre: esperar al hijo y verificar su código de salida
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFEXITED(status), "El proceso hijo no terminó normalmente"
+        exit_code = os.WEXITSTATUS(status)
+        assert exit_code == 0, f"El proceso hijo falló la verificación de ownership con código {exit_code}"
+
+        # El padre sigue siendo el dueño legítimo
+        handle.assert_owned()
+        handle.release()
+
+
+def test_f13_assert_owned_fails_if_os_lock_is_lost_causally(tmp_path: pathlib.Path) -> None:
+    """F-13 (P1): assert_owned() debe fallar si el mutex del SO se pierde causalmente, aun con metadata y fd intactos."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    # Forzar pérdida real del lock del SO sin cerrar el descriptor de archivo ni alterar la metadata en disco
+    from sky_claw.local.frozen_runtime.root_lock import _unlock_fd
+
+    _unlock_fd(handle._file_obj.fileno())
+
+    # Metadata en disco, fd abierto, proceso y _ACTIVE_HANDLES siguen intactos,
+    # pero el lock del SO fue liberado. assert_owned() DEBE fallar inmediatamente.
+    with pytest.raises(FrozenRuntimeLockOwnershipError, match="mutex del sistema operativo"):
+        handle.assert_owned()
