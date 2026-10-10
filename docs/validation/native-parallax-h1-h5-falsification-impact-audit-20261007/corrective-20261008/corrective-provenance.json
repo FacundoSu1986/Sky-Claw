@@ -1,0 +1,76 @@
+{
+ "artifact": "native-parallax-h1-h5-falsification-impact-audit/CORRECTIVE",
+ "date_utc": "2026-10-08",
+ "scope": "CORRECTIVE_AUDIT",
+ "supersedes_in_part": "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/",
+ "correction_parent_head": "d260b7c9b8afff33a6720106ac8c5f6d95891ecd",
+ "original_scientific_base": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "original_audit_head": "aee8a54ab35e5ab8d2e097e66d3126d123418163",
+ "branch": "research/native-parallax-h1-h5-falsification-impact-audit",
+ "worktree": "E:\\SkyClaw_H1H5_AUDIT_CORRECTION_d260b7c9",
+ "reason": "material review findings on H1/H4 (5 unresolved threads on PR #700)",
+ "findings_addressed": {
+  "F1": {
+   "thread": "PRRT_kwDOR1JjU86qZ-ft",
+   "path": "scripts/phase_c_real_impact.py:100",
+   "defect": "el 'continuous' era un barrido finito sin bracketing ni convergencia; polyhaven_gray_rocks caia en el borde 0.05",
+   "correction": "corrective_optimizer.py: barrido grueso log-uniforme + bracketing + seccion aurea + expansion de borde + metadatos de convergencia"
+  },
+  "F2": {
+   "thread": "PRRT_kwDOR1JjU86qZ-f2",
+   "path": "decision-impact.md:57, README.md:31",
+   "defect": "baseline grid_best_strength=+0.05 (31/31) mezclado con el historico -0.05; frase 'grid nunca encuentra el optimo'",
+   "correction": "narrativa reescrita distinguiendo HISTORICAL / BASELINE_RECALCULATED / CORRECTIVE_CONTINUOUS; conteo real de matches emitido"
+  },
+  "F3": {
+   "thread": "PRRT_kwDOR1JjU86qZ-ge",
+   "path": "scripts/phase_c_real_impact.py:165",
+   "defect": "Spearman hibrido: angulos del baseline con delta_rmse del artefacto historico no-ancestro",
+   "correction": "phase_c_corrective.py emite dos universos explicitos: BASELINE_COUNTERFACTUAL (delta recomputado) y HISTORICAL_COMPARISON (etiquetado hibrido)"
+  },
+  "F4": {
+   "thread": "PRRT_kwDOR1JjU86qZ-hG",
+   "path": "scripts/h4_magnitude_probe.py:55",
+   "defect": "la sonda probaba 1.0/0.3/0.1/0.03 pero el claim externo se midio en c=0.05 y c=0.01",
+   "correction": "h4_magnitude_probe_corrective.py: bateria 1.0,0.3,0.1,0.07,0.05,0.03,0.02,0.01 con 0.05 y 0.01 obligatorias"
+  },
+  "F5": {
+   "thread": "PRRT_kwDOR1JjU86qZ-hN",
+   "path": "scripts/h4_magnitude_probe.py:62",
+   "defect": "h_nat centrado contiene negativos; resize_height clipea a [0,1] pero n_nat sale del campo sin clipear => height target != superficie de las normales",
+   "correction": "safe_surface(): h_safe = h_nat + offset sin scaling; invariantes min>=0, max<=1, gradiente preservado; casos fuera de rango se marcan invalidos, no se clipean"
+  }
+ },
+ "resolved_threads_verification_required": {
+  "PRRT_kwDOR1JjU86qZ5qJ": "F2 (signo del piso) — prosa corregida",
+  "PRRT_kwDOR1JjU86qZ5qY": "median_agreement_deg desde coherence_diagnostic.historical_recorded",
+  "PRRT_kwDOR1JjU86qZ5qt": "guard len(prepared)!=31 en phase_c2",
+  "PRRT_kwDOR1JjU86qZ-gI": "LEGACY_HELDOUT evaluable",
+  "PRRT_kwDOR1JjU86qZ-gr": "fail-closed de BASE_SHA",
+  "PRRT_kwDOR1JjU86qZ-g4": "hash de artefactos: convencion de fin de linea"
+ },
+ "execution": {
+  "python": "3.11.9",
+  "numpy": "2.4.6",
+  "pillow": "11.3.0",
+  "interpreter": "E:\\Skyclaw_Main_Sync\\.venv\\Scripts\\python.exe"
+ },
+ "historical_artifacts_mutated": false,
+ "corpus_mutated": false,
+ "corpus_root_read_only": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3",
+ "scientific_code_mutated": false,
+ "thresholds_changed": false,
+ "m4_m5_rerun_executed": false,
+ "m6_real_run_executed": false,
+ "scripts": [
+  "scripts/corrective_optimizer.py",
+  "scripts/phase_c_corrective.py",
+  "scripts/h4_magnitude_probe_corrective.py",
+  "scripts/verify_determinism.py",
+  "scripts/build_corrective_evidence.py"
+ ],
+ "tests": [
+  "tests/test_native_parallax_pr700_corrective_optimizer.py",
+  "tests/test_native_parallax_pr700_corrective_h4_invariants.py"
+ ]
+}

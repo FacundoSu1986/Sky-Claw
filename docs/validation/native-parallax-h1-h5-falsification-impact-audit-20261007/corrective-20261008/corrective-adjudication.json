@@ -1,0 +1,177 @@
+{
+ "phase": "D_CORRECTIVE_ADJUDICATION",
+ "audit_only": true,
+ "corrective": true,
+ "correction_parent_head": "d260b7c9b8afff33a6720106ac8c5f6d95891ecd",
+ "original_scientific_base": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "H1": {
+  "H1_IMPLEMENTATION_DEFECT": "CONFIRMED",
+  "H1_CONTINUOUS_OPTIMIZATION": "VALID",
+  "H1_CONVERGED_ASSETS": 31,
+  "H1_UNRESOLVED_ASSETS": 0,
+  "H1_GRID_MATCHES_CONTINUOUS": 0,
+  "H1_GRID_MATCHES_REFINED": 0,
+  "H1_GRID_MATCH_TOLERANCE_DEG": 1e-06,
+  "H1_VALID_MINIMUM_BRACKET": 31,
+  "H1_STOP_CRITERION_MET": 31,
+  "H1_CALLER_BRACKET_ACCEPTED": 29,
+  "H1_REFINEMENT_LOST_BETTER_COARSE": 0,
+  "H1_SEARCH_SCOPE": "COARSE_GLOBAL_DOMAIN_LOCAL_REFINEMENT",
+  "H1_GLOBAL_OPTIMUM_PROVEN": false,
+  "H1_MEDIAN_GRID_AGREEMENT_DEG": 10.708549536549764,
+  "H1_MEDIAN_CONTINUOUS_AGREEMENT_DEG": 1.6825904440332888,
+  "H1_MEDIAN_REFINED_AGREEMENT_DEG": 1.6825904440332888,
+  "H1_ABS_STRENGTH_LT_0_05": 27,
+  "H1_BOUNDARY_CASES": 0,
+  "H1_BOUNDARY_ASSETS": 0,
+  "H1_GRID_BEST_STRENGTH_AT_FLOOR": 31,
+  "H1_GRID_NEVER_FINDS_OPTIMUM": true,
+  "H1_SPEARMAN_BASELINE": 0.4782258064516129,
+  "H1_SPEARMAN_BASELINE_GRID": 0.13669354838709677,
+  "H1_SPEARMAN_HISTORICAL_HYBRID_CONTINUOUS": 0.4798387096774194,
+  "H1_PRIMARY_IMPACT": "NONE",
+  "H1_PRIMARY_IMPACT_REASON": "coherence_diagnostic de M4 es expl\u00edcitamente no decisional; decide_exp_m3 no lee Cohort B; evaluate_rules de M4 no lee el or\u00e1culo"
+ },
+ "H4": {
+  "H4_IMPLEMENTATION_DEFECT": "CONFIRMED",
+  "H4_SYNTHETIC_SURFACE_CONSISTENT": "YES",
+  "H4_INVARIANTS_APPLICABLE": 51,
+  "H4_INVARIANTS_APPLICABLE_OK": 51,
+  "H4_INVARIANTS_BROKEN": 0,
+  "H4_INVARIANTS_NOT_APPLICABLE": 5,
+  "H4_INVARIANTS_NOT_APPLICABLE_KEYS": [
+   "S02_sine_x@1.0",
+   "S06_multifreq@1.0",
+   "S07_bumps@1.0",
+   "S08_ridges@1.0",
+   "S11_highfreq@1.0"
+  ],
+  "H4_INVARIANTS_OK": 51,
+  "H4_INVARIANTS_TOTAL": 56,
+  "H4_EXTERNAL_MAGNITUDE": "PARTIALLY_REPRODUCED",
+  "H4_EXTERNAL_MAGNITUDE_CLIPPED_ARM": "NOT_REPRODUCED",
+  "H4_RATIO_CLAIM_STATUS": "PARTIALLY_REPRODUCED",
+  "H4_ABSOLUTE_CLAIM_STATUS": "NOT_REPRODUCED",
+  "H4_RATIO_CLAIM_STATUS_CLIPPED_ARM": "NOT_REPRODUCED",
+  "H4_ABSOLUTE_CLAIM_STATUS_CLIPPED_ARM": "NOT_REPRODUCED",
+  "H4_EXTERNAL_ABSOLUTE_CLAIM": 0.023,
+  "H4_ABSOLUTE_DELTAS_SAFE_ARM": [
+   5.385861122314052e-05,
+   3.227543568269354e-05,
+   7.090904680729603e-06,
+   1.0047703883308982e-05
+  ],
+  "H4_ABSOLUTE_DELTAS_CLIPPED_ARM": [
+   7.249662043185001e-07,
+   7.72211670022234e-07,
+   1.8470494320078825e-07,
+   8.717641402584465e-08
+  ],
+  "H4_ABSOLUTE_MAX_SAFE_ARM": 5.385861122314052e-05,
+  "H4_ABSOLUTE_FACTOR_VS_CLAIM_SAFE_ARM": 0.0023416787488321966,
+  "H4_ABSOLUTE_TOLERANCE_FACTORS": {
+   "reproduced_within": 2.0,
+   "partial_within": 10.0
+  },
+  "H4_EXTERNAL_MAGNITUDE_SUMMARY": "RATIO=PARTIALLY_REPRODUCED; ABSOLUTE=NOT_REPRODUCED. Los ratios adimensionales del brazo de superficie consistente caen en la banda 5-21x (y la superan en c=0.01), pero el componente ABSOLUTO del claim (0.023) NO se reproduce: el mayor delta medido es 5.386e-05, 427x por debajo. Ratio alto NO implica absoluto reproducido.",
+  "H4_RATIOS_AT_C_0_05_0_01_CLIPPED": [
+   0.9998058800280458,
+   0.9989661325427115,
+   0.9997744287752417,
+   1.0005323162820923
+  ],
+  "H4_RATIOS_AT_C_0_05_0_01_SAFE": [
+   27.98697421567143,
+   82.12329464999517,
+   3.516275837418015,
+   18.97157324464671
+  ],
+  "H4_EXTERNAL_RATIO_BAND": [
+   5.0,
+   21.0
+  ],
+  "H4_C_0_05_RESULT": {
+   "S07_bumps@0.05": {
+    "ratio": 27.98697421567143,
+    "delta": 5.385861122314052e-05,
+    "normal_rmse_old_vs_new": 0.003078515711528365
+   },
+   "S15_periodic_noise@0.05": {
+    "ratio": 3.516275837418015,
+    "delta": 7.090904680729603e-06,
+    "normal_rmse_old_vs_new": 0.002511982306868582
+   }
+  },
+  "H4_C_0_01_RESULT": {
+   "S07_bumps@0.01": {
+    "ratio": 82.12329464999517,
+    "delta": 3.227543568269354e-05,
+    "normal_rmse_old_vs_new": 0.003545060467912267
+   },
+   "S15_periodic_noise@0.01": {
+    "ratio": 18.97157324464671,
+    "delta": 1.0047703883308982e-05,
+    "normal_rmse_old_vs_new": 0.002775214017219686
+   }
+  },
+  "H4_M4_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+  "H4_M5_PRIMARY_IMPACT": "NUMERICAL_NOT_DECISIONAL",
+  "H4_T_DELTA_RMSE": 0.02,
+  "H4_MAX_ABS_DOWNSTREAM_DELTA_CLIPPED_ARM": 0.016171353038210115,
+  "H4_MAX_ABS_DOWNSTREAM_DELTA_SAFE_ARM": 0.035339907940470365,
+  "H4_N_CASES_DELTA_GE_T_SAFE_ARM": 1,
+  "H4_SYNTHETIC_MATERIALITY_CHANGED": true,
+  "H4_SYNTHETIC_MATERIALITY_NOTE": "HALLAZGO NUEVO (F5): la sonda original reportaba max delta 0.0162 < T_DELTA_RMSE=0.02 => 'no material por la letra'. Sobre superficie CONSISTENTE el maximo es 0.0353 >= 0.02 (S09_bricks@1.0, ratio 1.58x). El veredicto de materialidad del SINTETICO cambia de NO a SI. NO cambia M4/M5: el umbral gobierna delta_rmse del corpus real, no del sintetico, y el contrafactual real (Fase C2) no usa superficies sinteticas clipeadas.",
+  "H4_M4_M5_IMPACT_REASON": "la correcci\u00f3n F5 afecta la sonda SINT\u00c9TICA; el contrafactual real de una sola variable (Fase C2) no usa superficies sint\u00e9ticas clipeadas y sus decisiones no cambiaron (ver phase_c2_h4_corpus.py, decisi\u00f3n id\u00e9ntica en ambos brazos)",
+  "H4_NOTE_19_5_WIDTH": "El brazo seguro reproduce ratios POR ENCIMA de 21x en c=0.01 (hasta 82x). El claim externo '5-21x' queda parcialmente reproducido: hay casos dentro de la banda y casos por encima, consistente con un efecto no lineal que crece al bajar la amplitud."
+ },
+ "M4_PRIMARY_STATUS": "NOT_INVALIDATED",
+ "M5_PRIMARY_STATUS": "NOT_INVALIDATED",
+ "C2_VALIDATED_FOR_ADJUDICATION": true,
+ "C2_REQUIRED_ROSTER_CONDITIONS": [
+  "roster_count_match",
+  "roster_identity_match",
+  "historical_roster_digest_matches_frozen_sha",
+  "m3_manifest_sha256_matches_frozen"
+ ],
+ "C2_M4_DECISION_CHANGED": false,
+ "SCIENTIFIC_RESULT_CHANGED": "NO",
+ "ROSTER_COUNT_MATCH": true,
+ "ROSTER_IDENTITY_MATCH": true,
+ "ROSTER_DIGEST_MATCH": true,
+ "HISTORICAL_ROSTER_DIGEST_MATCHES_FROZEN_SHA": true,
+ "M3_MANIFEST_SHA256_MATCHES_FROZEN": true,
+ "ROSTER_GATE_ALLOWED": true,
+ "ROSTER_GATE_FAILED_CONDITIONS": [],
+ "ROSTER_DETAIL": {
+  "n_prepared": 31,
+  "n_historical": 31,
+  "roster_count_match": true,
+  "roster_identity_match": true,
+  "roster_digest_match": true,
+  "historical_roster_digest_matches_frozen_sha": true,
+  "m3_manifest_sha256_matches_frozen": true,
+  "current_roster_sha256": "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e",
+  "historical_roster_sha256": "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e",
+  "expected_historical_roster_sha256": "a3ddccede47ce7ca9ff7a06cc871c5d381398f7aa0d2bbd29f4aee89f1f32d5e",
+  "manifest_sha256_lf": "b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f",
+  "manifest_sha256_worktree": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+  "manifest_sha256_eol_convention": "LF_CANONICAL: el gate usa manifest_sha256_lf; manifest_sha256_worktree se registra s\u00f3lo como procedencia (depende del checkout CRLF/LF)",
+  "manifest_path": "E:\\SkyClaw_H1H5_AUDIT_CORRECTION_d260b7c9\\docs\\design\\research\\native-parallax\\data\\exp-m3-clean-authored-manifest.json",
+  "historical_artifact": "E:\\SkyClaw_H1H5_AUDIT_CORRECTION_d260b7c9\\docs\\validation\\native-parallax-h1-h5-falsification-impact-audit-20261007\\real-impact.json",
+  "only_current": [],
+  "only_historical": []
+ },
+ "PR697_DISPOSITION": "STILL_VALID_NARROW_SCOPE",
+ "PR675_RECOMMENDATION": "KEEP_DRAFT_BLOCKED",
+ "M6_IMPLEMENTATION_BLOCKED": "YES",
+ "CORRECTIVE_REPRODUCIBILITY": "PASS",
+ "baseline_unchanged_claims": {
+  "H2_BUG_CLASSIFICATION": "NOT_PROVEN",
+  "H2_UNIT_CONTRACT": "UV_NORMALIZED",
+  "H3_MECHANISM": "CONFIRMED",
+  "H3_CONTRACTUAL_MEANINGFULNESS": "SUPPORTED",
+  "H5_DIAGNOSTIC_DEFECT": "CONFIRMED",
+  "H5_PRIMARY_M4_BLOCKER": "NO"
+ }
+}
