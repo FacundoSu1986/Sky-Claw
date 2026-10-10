@@ -262,6 +262,12 @@ La construcción `g_N = (p, q)` **debe** derivarse del contrato canónico de §5
 `decode_gradients_policy()` hasta que el PR-MATH-A esté mergeado: ambas implementan
 la forma `−sx·nx/nz`, que es incorrecta para `sx ≠ ±1`.
 
+> **Vigencia actualizada el 2026-10-10 (ver §43.14).** `PR-MATH-A` (#681) y `PR-MATH-B` (#685)
+> **ya están fusionados** (2026-10-05): el bloqueo condicional de este párrafo queda
+> **satisfecho**. Lo que permanece abierto es un bloqueo **distinto** — el defecto H4 de
+> `resize_normal` (`authored_dataset.py:237`), que **nunca** formó parte de MATH-A/B y exige su
+> propio slice. Este addendum no reescribe el párrafo: lo fecha.
+
 El **diseño** Fourier/Hodge (§6) permanece válido e independiente de esta
 dependencia: la proyección se define sobre cualquier campo, sea cual sea su
 procedencia.
@@ -2089,13 +2095,29 @@ Si un caso sintético futuro emula el pipeline AUTH, la clasificación pasa a
 2. **La no-decisionalidad de H4 en M4/M5 NO se hereda.** M4/M5 deciden sobre `delta_rmse` /
    `high_enrichment`; M6 decide sobre una **razón de energías** cuyo denominador es
    `E_AUTH − E_SELF`. H4 infla `E_AUTH` de forma **asimétrica** (SELF no pasa por el resizer del
-   normal) y, con `R = (E_AUTH − E_MODEL)/(E_AUTH − E_SELF)`, resulta
-   `∂R/∂δ = (E_MODEL − E_SELF)/(E_AUTH − E_SELF)² ≠ 0`. El sesgo **no se cancela** entre
-   numerador y denominador: el efecto sobre `RECOVERY_FRACTION` es de primer orden y **no medido**.
+   normal). Con `R = (E_AUTH − E_MODEL)/(E_AUTH − E_SELF)` y **el resto de las energías fijas**,
+   `∂R/∂E_AUTH = (E_MODEL − E_SELF)/(E_AUTH − E_SELF)² ≠ 0`: el sesgo **no se cancela** entre
+   numerador y denominador.
+   **Cualificación obligatoria.** Esa derivada **no** cuantifica el efecto real: `resize_normal`
+   mueve `N_AUTH`, y los modelos M2/M3/M4 se construyen **sobre el campo derivado de AUTH**
+   (§16, §17.2: `H_model_j` sale de la descomposición de `g_N`), así que `E_MODEL_j` **también**
+   se mueve. Lo demostrado es la **dependencia causal**; la **magnitud y el signo** del efecto
+   sobre `RECOVERY_FRACTION` quedan **sin cuantificar**. No se afirma un cambio de primer orden
+   para todos los activos: se afirma que `NUMERICAL_NOT_DECISIONAL` (M4/M5) **no lo cubre**.
 3. **`NONINTEGRABLE_FRACTION`** se calcula por proyección espectral directa sobre `g_N` (§7.2),
-   no vía `curl_proxy`. H4 añade a `g_N` un componente espurio (sesgo ≈ constante + ruido de
-   truncado). El sesgo constante es el gradiente de un ramp ⇒ entra en `E_∥`, no en `E_⚥`; el ruido
-   de truncado entra en ambos. La fracción se desplaza, en una dirección **no cuantificada aquí**.
+   no vía `curl_proxy`. H4 añade a `g_N` un componente espurio con **dos partes separables**:
+   - **Sesgo constante (≈ −0.5 LSB).** En un dominio periódico un campo constante **es** la
+     componente **DC** (`k = 0`), **no** el gradiente de una altura periódica —una rampa lineal no
+     es periódica y no es representable—. El contrato vigente la **excluye** de `E_∥` y de `E_⚥` y
+     la reporta aparte como `DC_SLOPE_FRACTION` (§5.5; §7.1: `E(f) = Σ_{(k,l) ≠ (0,0)} |F{f}|²`).
+     Por tanto el sesgo constante **no** entra en `NONINTEGRABLE_FRACTION`: mueve
+     `DC_SLOPE_FRACTION`.
+   - **Perturbación espacial del truncado.** El error de truncado no es uniforme: varía por píxel y
+     la renormalización de `resize_normal` lo hace además dependiente de la longitud local del
+     vector. Su parte **no-DC** sí entra en `E_∥` y en `E_⚥`.
+   Consecuencia: la fracción sólo puede desplazarse por la **segunda** parte, en dirección y
+   magnitud **no cuantificadas aquí**; la primera es visible únicamente como deriva del
+   diagnóstico DC.
 4. **`δ*` y `β`** son *fits post-solver* sobre la reconstrucción: heredan la perturbación como
    dependencia de segundo orden. No introducen un DOF nuevo ni alteran la parsimonia (§15, §31):
    `TOTAL_PRIMARY_FREE_PARAMETERS = 3` **sin cambios**.
@@ -2146,12 +2168,17 @@ Consecuencias para M6:
 
 ### 43.9 Bloqueos vigentes y estado de thresholds
 
-Sin cambios respecto de M6-A.1, más la dependencia H4 declarada en §43.11:
+Sin cambios respecto de M6-A.1 en los bloqueos de **diseño**; el estado de las **dependencias
+matemáticas** se refresca en §43.14:
 
 ```text
-ISSUE_667_BLOCKING_DEPENDENCY = YES
-STOP_M6_DESIGN (condición 8)  = DISPARADA   (#667 cambia una primitiva científica usada por M6)
-STOP_M6_IMPLEMENTATION (cond. 10): implementar M6 antes de PR-MATH-A/B  →  STOP
+ISSUE_667_BLOCKING_DEPENDENCY = YES                     (#667 sigue OPEN: tracker, no fix)
+PR_MATH_A_681_STATUS         = MERGED                   (2026-10-05)
+PR_MATH_B_685_STATUS         = MERGED                   (2026-10-05)
+MATH_FOUNDATION_STATUS       = SATISFIED_BY_MATH_A_B
+H4_RESIZE_NORMAL_FIX_STATUS  = PENDING_NEW_SLICE
+STOP_M6_DESIGN (condición 8) = DISPARADA   (#667 cambia una primitiva científica usada por M6)
+STOP_M6_IMPLEMENTATION (cond. 10): implementar M6 con el bloqueo H4 sin adjudicar  →  STOP
 THRESHOLDS_FROZEN = NO
 M6_IMPLEMENTATION_BLOCKED = YES
 ```
@@ -2164,10 +2191,10 @@ Propiedad que debe controlar cada parámetro, y su acoplamiento con H4 (declarat
 
 | Parámetro | Propiedad matemática que controla | Acoplamiento con H4 |
 |---|---|---|
-| `T_N` | separa «coherente (≈0)» de «mezcla con fracción de energía conocida» en `NONINTEGRABLE_EXCESS` | indirecto: `NONINTEGRABLE_FRACTION` se calcula sobre `g_N` (H4-perturbado) |
-| `T_R` | separa «mecanismo inyectado (recovery alto)» de «geometría distinta (recovery bajo)» | **directo**: `R` es una razón con `E_AUTH` en numerador y denominador |
-| `G` | efecto relativo del gate del denominador | **directo**: `E_AUTH − E_SELF` es el denominador |
-| `NUMERICAL_ENERGY_FLOOR` | piso absoluto de precisión numérica del gate | **directo**: mismo denominador |
+| `T_N` | separa «coherente (≈0)» de «mezcla con fracción de energía conocida» en `NONINTEGRABLE_EXCESS` | indirecto: `NONINTEGRABLE_FRACTION` se calcula sobre `g_N` (H4-perturbado, sólo su parte no-DC) |
+| `T_R` | separa «mecanismo inyectado (recovery alto)» de «geometría distinta (recovery bajo)» | **directo (acoplamiento)**; magnitud y signo **sin cuantificar** (§43.6.2) |
+| `G` | efecto relativo del gate del denominador | **directo (acoplamiento)**: `E_AUTH − E_SELF` es el denominador |
+| `NUMERICAL_ENERGY_FLOOR` | piso absoluto de precisión numérica del gate | **directo (acoplamiento)**: mismo denominador |
 | `T_AMBIG` | separa registro ambiguo (tiles repetidos) de único | indirecto (vía la reconstrucción) |
 
 **Regla añadida:** la derivación de `T_R`, `G` y `NUMERICAL_ENERGY_FLOOR` debe hacerse **sobre el
@@ -2181,10 +2208,12 @@ Además de las condiciones ya vigentes (§32, §35, §41.1), esta reconciliació
 1. **Procedencia del resizer, machine-readable.** El JSON de M6 (§33.1) registra el resizer que
    produjo `N_AUTH` — p.ej. `resize_normal_impl ∈ {HISTORICAL_UINT8, CANONICAL_FLOAT}` — junto al
    SHA256 del módulo. Un `N_AUTH` sin procedencia declarada ⇒ `STOP_M6_EXECUTION`.
-2. **El fix de `resize_normal` entra al alcance de PR-MATH-A** (o se declara una desviación
-   controlada). `authored_dataset.py` ya está en el scope de colisión de #667 (§34), pero
-   `resize_normal` **no** figuraba en la tabla de defectos confirmados de §5.4. Esta reconciliación
-   lo agrega como dependencia de diseño.
+2. **El fix de `resize_normal` exige un slice correctivo propio — no PR-MATH-A.** PR-MATH-A (#681)
+   y PR-MATH-B (#685) **ya están fusionados** (2026-10-05); #667 sigue OPEN. No corresponde
+   «incorporar el fix a PR-MATH-A»: corresponde un slice **nuevo**, basado en el `main` actual y
+   con alcance, tests y adjudicación propios (§43.14.d). `authored_dataset.py` ya está en el scope
+   de colisión de #667 (§34), pero `resize_normal` **no** figuraba en la tabla de defectos
+   confirmados de §5.4: esta reconciliación lo agrega como dependencia de diseño.
 3. **Contrafactual con la métrica de M6, no la de M4/M5.** Si se opta por la desviación controlada
    (correr con el resizer histórico), la evidencia que la justifique debe medir
    `PAIR_EXCESS_ENERGY` y `RECOVERY_FRACTION` en los dos brazos. El `NUMERICAL_NOT_DECISIONAL` de
@@ -2257,3 +2286,110 @@ renderizados como código. **Corregido en este mismo commit** insertando el cier
 inmediatamente después de la última línea del bloque. Es una corrección **mecánica y no
 científica**: no cambia ninguna afirmación, ningún número ni ningún contrato. Se declara aquí en
 lugar de hacerse en silencio.
+
+### 43.14 Refresco de estado de dependencias — correctivo `PR675_DESIGN_RECON_CORRECTIVE`
+
+> **Slice:** `PR675_DESIGN_RECON_CORRECTIVE` (docs-only). Corrige tres precisiones del handoff de
+> `PR675_DESIGN_RECON_PREFLIGHT` y registra el estado **verificado** de las dependencias
+> matemáticas. **No** cambia la adjudicación de §43.11 ni autoriza nada.
+
+#### a) Dependencias matemáticas ya satisfechas vs. bloqueo nuevo
+
+Estado verificado contra GitHub y contra `main` (`647d2461…`) el 2026-10-10:
+
+| Dependencia | Estado | Alcance |
+|---|---|---|
+| PR #681 — MATH-A | **MERGED** (2026-10-05) | `gradients_from_normal`, `decode_gradients_policy`, `curl_proxy`, `projection_residual` |
+| PR #685 — MATH-B | **MERGED** (2026-10-05) | `metrics._ranks` / `spearman` (empates) |
+| Issue #667 — auditoría / triage | **OPEN** | tracker de colisión, no es un fix |
+| Defecto H4 `resize_normal` | **PENDIENTE** | **fuera** del alcance de MATH-A/B |
+
+```text
+PR_MATH_A_STATUS            = MERGED
+PR_MATH_B_STATUS            = MERGED
+MATH_FOUNDATION_STATUS      = SATISFIED_BY_MATH_A_B
+H4_RESIZE_NORMAL_FIX_STATUS = PENDING_NEW_SLICE
+```
+
+Consecuencia documental: la tabla de defectos de §5.4 enumera símbolos que **ya se corrigieron** en
+MATH-A/B (la propia tabla lo anticipaba: «se corrigen en PR-MATH-A/B, **no aquí**»), y el bloqueo
+condicional de §5.4 queda satisfecho — se fecha con un addendum de vigencia en esa sección, sin
+reescribirla. **`resize_normal` nunca estuvo en esa tabla**: es un bloqueo **nuevo y separado**, no
+una deuda heredada de MATH-A/B. Presentarlo como «incorporar el fix a MATH-A» habría sido
+impreciso: ese PR ya está fusionado.
+
+#### b) Corrección — Hodge y el sesgo DC (retira una afirmación de §43.6.3)
+
+La primera versión de §43.6.3 afirmaba que el sesgo constante de H4 entra en `E_∥` por ser «el
+gradiente de una rampa». **Era incorrecto por dos motivos**: (i) en un dominio periódico un campo
+constante es la componente **DC** (`k = 0`), no el gradiente de una altura periódica —una rampa
+lineal no es periódica ni representable—; y (ii) el contrato vigente **excluye** la energía DC de
+`E_∥` y de `E_⚥` y la reporta aparte como `DC_SLOPE_FRACTION` (§5.5; §7.1). Corregido en §43.6.3.
+
+```text
+HODGE_DC_DOCUMENTATION       = CORRECTED
+H4_CONSTANT_BIAS_SURFACE     = DC_SLOPE_FRACTION
+H4_NONDC_TRUNCATION_SURFACE  = E_∥ / E_⚥   (sólo la parte no-DC del error de truncado)
+```
+
+#### c) Corrección — sensibilidad de `RECOVERY_FRACTION` (cualifica §43.6.2)
+
+La derivada parcial de §43.6.2 es correcta **manteniendo fijas las otras energías**, pero no
+cuantifica el efecto real: al cambiar `resize_normal` cambia `N_AUTH`, y los modelos M2/M3/M4 se
+construyen sobre el campo derivado de AUTH (§16, §17.2), de modo que `E_MODEL_j` **también** se
+mueve. Corregido en §43.6.2.
+
+```text
+RECOVERY_FRACTION_SENSITIVITY       = QUALIFIED_CAUSAL_DEPENDENCY_NOT_QUANTIFIED
+RECOVERY_FRACTION_FIRST_ORDER_CLAIM = RETIRADO
+```
+
+#### d) Condiciones para un PR exclusivo del fix H4
+
+1. Partir del **`main` actual**, no de esta rama.
+2. Cambiar **sólo** el resizer del normal, replicando el patrón de #653 (`resize_height` → modo `F`,
+   float32, sin cuantizar), preservando la renormalización de `resize_normal`.
+3. Traer **tests propios**, incluido el **ancla por enumeración** de las primitivas de carga del
+   camino AUTH (§43.10.6).
+4. Medir el contrafactual con `PAIR_EXCESS_ENERGY` y `RECOVERY_FRACTION` en los dos brazos — **no**
+   con las métricas de M4/M5.
+5. No tocar thresholds, corpus, artefactos históricos ni los documentos congelados de #697/#700.
+
+```text
+H4_FIX_SLICE_BASE                  = main actual (no esta rama)
+H4_FIX_SLICE_OWNS_TESTS            = YES
+H4_FIX_SLICE_MEASURES_M6_METRICS   = REQUIRED
+```
+
+#### e) Adjudicación
+
+Sin cambios en §43.11: `H4_RESIZE_NORMAL_DESIGN_DEPENDENCY = IN_SCOPE_AND_SPECIFIED`. Este
+correctivo **no** autoriza implementar M6 ni el fix H4.
+
+```text
+PR675_DESIGN_RECON_CORRECTIVE = COMPLETE
+H4_DESIGN_DEPENDENCY          = IN_SCOPE_AND_SPECIFIED
+HODGE_DC_DOCUMENTATION        = CORRECTED
+MATH_A_B_DEPENDENCY_STATUS    = REFRESHED
+RECOVERY_FRACTION_SENSITIVITY = QUALIFIED
+M6_IMPLEMENTATION_BLOCKED     = YES
+READY_FOR_H4_CODE_SLICE       = NO
+```
+
+#### f) Hallazgo de integridad documental **no** corregido (fuera de alcance)
+
+Al validar el documento se detectó un **segundo** defecto de renderizado, **pre-existente** y
+ajeno a §43: la tabla de §37.3 (línea 1716) contiene `|δ|` **sin escapar** dentro de una celda
+(línea 1719), lo que en GFM la parte en 5 columnas donde la tabla declara 3. Verificado como
+pre-existente: la línea existe igual en `e6b81317` y **no** figura en el diff de este slice.
+
+**No se corrige aquí**, a diferencia del fence de §43.13, por tres razones: (i) vive en una sección
+histórica del diseño y queda fuera del mandato de este correctivo; (ii) ninguna afirmación de §43
+depende de ella —el fence sí, porque §43.7 cita `(§7.1)` y el bloque engullía ese encabezado—; y
+(iii) el checker de tablas del repo **prohíbe** `\|` escapado dentro de una celda, así que la
+corrección exige **reescribir prosa** de una sección histórica, no un arreglo mecánico de dos
+caracteres. Queda declarado para decisión del Tech Lead.
+
+```text
+MARKDOWN_TABLE_DEFECT_§37.3 = DECLARED_NOT_CORRECTED_OUT_OF_SCOPE
+```
