@@ -295,6 +295,7 @@ Para `k ≠ 0` se proyecta sobre la dirección de `k` y su ortogonal:
 ```text
 ĝ_∥(k) = k · (k · ĝ(k)) / |k|²
 ĝ_⚥(k) = ĝ(k) − ĝ_∥(k)
+```
 ## 7. Métrica de no-integrabilidad
 
 ### 7.1 Energía (Parseval, no-DC)
@@ -1949,3 +1950,310 @@ ISSUE_676_MIXED_IN = NO
 
 La separación es deliberada: #676 es camino de producto y M6 es diseño explicativo
 sobre un oráculo. Mezclarlos reintroduciría exactamente el riesgo que §23 prohíbe.
+
+---
+
+## 43. Post-700 Design Reconciliation — H4 `resize_normal`
+
+> **Slice:** `PR675_DESIGN_RECON_PREFLIGHT` · **Carácter:** `DESIGN_RECONCILIATION` (docs-only).
+> **No implementa, no ejecuta el corpus, no crea tests, no ajusta thresholds y no reabre
+> ninguna sección anterior de este documento.**
+>
+> **Nada de lo aquí reportado se ejecutó en esta sesión sobre el corpus.** Toda cifra citada
+> es evidencia **ya publicada** en #700 / #697 y se referencia por ruta y SHA. Este slice no
+> ejecutó runners, no abrió el corpus, no recalculó ninguna métrica y no generó evidencia nueva.
+
+### 43.1 Base científica y commits de referencia
+
+```text
+M6_DESIGN_SHA            = 319fb02fbb84d8e246aba8331887a747ec601db5
+M6_A1_SHA                = e6b81317063e64549bf1178d7cf1e44d8d7f3746
+M6_DESIGN_BASE_MAIN      = ee4a67ec2f0635f02dea794c71eb0f5d06781ada   (merge de M5)
+PR700_MERGE_SHA          = e7c9609432c7e2425a72640c057fce3a4c234370   (auditoría H1–H5 en main)
+PR697_RECON_SHA          = 5a59308fab0dc3c7f3b287f458a502b549ae0bea
+MAIN_AT_RECONCILIATION   = 647d2461c5eee2c0827f99f9df360e300adfbe13
+AUDIT_BASE_SHA           = 97dcc7ab9ade29153faa0ccec428b78612cfc04a
+AUDIT_CORRECTIVE_PARENT  = d260b7c9b8afff33a6720106ac8c5f6d95891ecd
+```
+
+Continuidad verificada antes de operar: `e7c96094` **es ancestro** de `origin/main`
+(`647d2461`), comprobado con `git merge-base --is-ancestor` → verdadero. `main` avanzó
+después de #700 por PRs ajenos a Native Parallax (#705, #708); ninguna superficie de M4/M5/M6
+se movió. Todos los SHA de la tabla existen en el repositorio (`git cat-file -t` → `commit`).
+
+La evidencia de #700 se leyó **desde `main`**, no desde este worktree: la base de #675 es
+`ee4a67ec`, **previa** al merge de #700, así que los artefactos de la auditoría no existen en
+esta rama. Rutas leídas:
+
+- `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/decision-impact.md` §5
+- `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/README.md` §2–§3
+- `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/README.md` §3–§4
+- `docs/validation/.../corrective-20261008/corrective-adjudication.json` (bloque `H4`)
+- `docs/validation/.../corrective-20261008/evidence/h4-corpus-counterfactual.json` (Fase C2)
+- `docs/audits/2026-10-07_native_parallax_math_architecture_audit.md` (§H4 / S3)
+
+### 43.2 Pregunta investigada
+
+> **¿El defecto H4 de `resize_normal`, identificado y medido en la auditoría #700, debe
+> incorporarse explícitamente al diseño EXP-M6?**
+
+Estado heredado antes de esta reconciliación: `H4_RESIZE_NORMAL_DESIGN_DEPENDENCY = UNRESOLVED`.
+
+Se prohíbe inferir afectación por el hecho de que ambos experimentos trabajen con normales.
+La ruta causal se demuestra por **call graph sobre el código real**, no por búsqueda textual.
+
+### 43.3 Alcance de H4 — lo que la evidencia dice, y lo que no
+
+```text
+H4_IMPLEMENTATION_DEFECT          = CONFIRMED
+H4_M4_PRIMARY_IMPACT              = NUMERICAL_NOT_DECISIONAL
+H4_M5_PRIMARY_IMPACT              = NUMERICAL_NOT_DECISIONAL
+M4_M5_REVALIDATION_REQUIRED_BY_H4 = NO
+```
+
+`authored_dataset.resize_normal` (`sky_claw/local/native_parallax/research/authored_dataset.py:237`)
+cuantiza a uint8 con **truncado** (`(clip(n,-1,1)*127.5+127.5).astype(np.uint8)`) y vuelve a
+cuantizar en el resize bilineal de Pillow modo `L`. Es el hermano que el fix **#653** arregló en
+`resize_height` (modo `F`, float32, sin cuantizar) y dejó intacto en el normal. Sesgo medido:
+normal plana `(0,0,1)` → `mean(nx) = −0.00392` (el contrafactual float da `0.0`) — el offset
+clásico de **−0.5 LSB** del round-trip `[-1,1] → uint8 → [-1,1]`.
+
+Alcance que la propia auditoría declara, y que esta reconciliación **no amplía**:
+
+- **Sólo el camino AUTH pasa por `resize_normal`.** El camino SELF se arma desde el height (float).
+- El contrafactual C2 es **READ-ONLY y de una sola variable**, sobre los 31 assets: la decisión de
+  M4 y las reglas C1/C2 de M5 quedan **idénticas** entre brazos.
+- **Residual declarado:** el contrafactual de M5 **no incluye** la réplica direccional
+  `LEGACY_HELDOUT` (no hay artefacto de filas M5 en el repo).
+- El veredicto `NUMERICAL_NOT_DECISIONAL` se midió sobre las métricas **de M4/M5**
+  (`delta_rmse`, `excess_lowmid_nrmse`, `high_enrichment`). **No** se midió sobre ninguna
+  métrica de M6.
+
+### 43.4 Análisis del call graph
+
+Cadena real, verificada sobre `origin/main`:
+
+```text
+run_exp_m4.py:150  run_asset()      load_asset(spec, 512, tested_convention=SOLVER_NORMAL_CONVENTION)
+run_exp_m5.py:304  run_asset_m5()   load_asset(spec, resolution, tested_convention=SOLVER_NORMAL_CONVENTION)
+        │
+        └─► authored_dataset.load_asset()            (authored_dataset.py:307)
+              ├─ decode_normal_image()               (JPG/PNG → normal float64 unitaria)
+              ├─ resize_normal(normal, resolution)   ◄── H4 (def. :237, invocado en :323)
+              └─ resize_height(height, resolution)   (corregido en #653)
+```
+
+En `run_exp_m4.run_asset` el camino AUTH es literalmente `mat.normal`, y el camino SELF es
+`self_forward(h, bits=8)` sobre el height. **La asimetría es estructural, no un supuesto**: sólo
+AUTH atraviesa el resizer del normal. En `run_exp_m5.run_asset_m5` ocurre lo mismo
+(`r_auth` desde `mat.normal`, `r_self` desde `self_forward`).
+
+Resolución: el corpus primario declara `normal_resolution = [1024, 1024]` y
+`height_resolution = [1024, 1024]` en
+`docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json`; la resolución
+primaria es 512 ⇒ **el resize 1024→512 se ejecuta** (la guarda `n.shape[0] == size` de
+`resize_normal` no cortocircuita).
+
+Punto de anclaje de M6: §16.2 define `M0 := reconstrucción AUTH de M4/M5` con la **misma cadena**
+(`N_AUTH → p,q RAW → integrate_periodic → fit_global_scale → OracleOnly.evaluate`, 512, DIRECTX),
+y §32-H especifica un **FULL sobre los 31 assets a 512**. Es decir, el diseño **re-ejecuta el
+loader**; no reutiliza artefactos congelados. Por tanto el `N_AUTH` que alimenta M6 pasa por
+`resize_normal`.
+
+**Consecuencia dura:** `M0` es **dependiente de la ruta** respecto del resizer. Dos corridas de M6
+con el mismo corpus y distinto `resize_normal` producen distinto `M0` — y ninguna de las dos es
+"la" baseline canónica. El diseño vigente **no** declara cuál usa.
+
+### 43.5 Matriz de afectación H4 → superficies M6
+
+| Superficie M6 | ¿Alcanza H4? | Evidencia | Consecuencia |
+|---|---|---|---|
+| Entradas authored (`N_AUTH`) | **DIRECT_DEPENDENCY** | `load_asset → resize_normal` (`authored_dataset.py:237,323`); §16.2 M0 reusa la cadena AUTH | `M0` cambia si cambia el resizer |
+| Hodge diagnostic (`g_N`, `NONINTEGRABLE_FRACTION`) | **DIRECT_DEPENDENCY** | `g_N` se deriva de `N_AUTH` (§5.1); mismo insumo que AUTH | la única métrica normal-only se calcula sobre un campo perturbado por H4 |
+| Métricas de mismatch (`E_AUTH`, `PAIR_EXCESS_ENERGY`, `RECOVERY_FRACTION`) | **DIRECT_DEPENDENCY** | `E_AUTH` sale de la reconstrucción AUTH (§17.2); el C2 de M5 midió `excess_lowmid_nrmse` 0.50820 → 0.44682 (Δ 0.061, ≈12 %) | el **denominador** de `RECOVERY_FRACTION` es sensible a H4; el veredicto de M4/M5 **no** lo cubre |
+| Registration (`δ*`) | **INDIRECT_DEPENDENCY** | `δ*` = argmax de la correlación reconstrucción↔`H` (§11.3); la reconstrucción sale de `N_AUTH` | un `argmax` discreto puede cambiar de bin en un asset; la **magnitud** de `R` es invariante al operador (traslación de toro) |
+| Spectral transfer (`β`) | **INDIRECT_DEPENDENCY** | `β` se ajusta contra `H` sobre la reconstrucción AUTH (§14) | `β*` puede desplazarse; el anchor `G_β(ρ_ref) = 1` impide confundirlo con la escala global |
+| Controles sintéticos (S0–S7, A0–A14) | **NO_PATH** (condicional) | §38: batería de matemática pura, sin corpus y sin runner; los campos se generan analíticamente a la resolución target | no hay arista `batería sintética → authored_dataset.resize_normal` en el diseño vigente; la condición se fija como contrato en §43.10.4 |
+
+`NO_PATH` **no** se declara por ausencia de referencia textual. Se declara porque el call graph del
+diseño (§38) no contiene la arista hacia `authored_dataset.resize_normal` —la batería es matemática
+pura sobre campos analíticos— y esa ausencia se **convierte en contrato explícito** en §43.10.4.
+Si un caso sintético futuro emula el pipeline AUTH, la clasificación pasa a
+`INDIRECT_DEPENDENCY` y hereda la condición de procedencia.
+
+### 43.6 Consecuencias para los componentes M6
+
+1. **`M0` deja de ser canónico sin una procedencia del resizer.** El diseño debe declarar qué
+   `resize_normal` produjo `N_AUTH` (histórico o corregido), igual que §33.1 ya exige para
+   `git_sha` y los SHA de módulos.
+2. **La no-decisionalidad de H4 en M4/M5 NO se hereda.** M4/M5 deciden sobre `delta_rmse` /
+   `high_enrichment`; M6 decide sobre una **razón de energías** cuyo denominador es
+   `E_AUTH − E_SELF`. H4 infla `E_AUTH` de forma **asimétrica** (SELF no pasa por el resizer del
+   normal) y, con `R = (E_AUTH − E_MODEL)/(E_AUTH − E_SELF)`, resulta
+   `∂R/∂δ = (E_MODEL − E_SELF)/(E_AUTH − E_SELF)² ≠ 0`. El sesgo **no se cancela** entre
+   numerador y denominador: el efecto sobre `RECOVERY_FRACTION` es de primer orden y **no medido**.
+3. **`NONINTEGRABLE_FRACTION`** se calcula por proyección espectral directa sobre `g_N` (§7.2),
+   no vía `curl_proxy`. H4 añade a `g_N` un componente espurio (sesgo ≈ constante + ruido de
+   truncado). El sesgo constante es el gradiente de un ramp ⇒ entra en `E_∥`, no en `E_⚥`; el ruido
+   de truncado entra en ambos. La fracción se desplaza, en una dirección **no cuantificada aquí**.
+4. **`δ*` y `β`** son *fits post-solver* sobre la reconstrucción: heredan la perturbación como
+   dependencia de segundo orden. No introducen un DOF nuevo ni alteran la parsimonia (§15, §31):
+   `TOTAL_PRIMARY_FREE_PARAMETERS = 3` **sin cambios**.
+
+### 43.7 Contratos matemáticos preservados (verificados contra el texto vigente)
+
+Ninguno de los contratos M6-A.1 se modifica en esta reconciliación:
+
+```text
+CANONICAL_GRADIENT_CONTRACT   p = −nx/(sx·max(nz,nz_floor)),  q = −ny/(sy·max(nz,nz_floor))   (§5.1)   PRESERVED
+CANONICAL_CURL_CONTRACT       curl_z = ∂q/∂x − ∂p/∂y                                           (§7.5)   PRESERVED
+HODGE_AS_RECONSTRUCTION = NO · HODGE_AS_DIAGNOSTIC = YES                                        (§8)     PRESERVED
+REGISTRATION_PRIMARY = YES · FULL_INTEGER_TORUS_EXHAUSTIVE = YES                                (§12.4)  PRESERVED
+SPECTRAL_TRANSFER_PRIMARY = YES · SPECTRAL_TRANSFER_DOF = 1                                     (§14)    PRESERVED
+ρ_ref = 32 ciclos/tile  (heredado de M5, no elegido por M6)                                     (§14.4)  PRESERVED
+low_spectral_limit = G_β(0⁺) = 2^(+β/2)                                                         (§14.2)  PRESERVED
+PAIR_EXCESS_ENERGY con signo real (sin abs, sin clamp)                                          (§17.3)  PRESERVED
+Estados del denominador: NON_POSITIVE_PAIR_EXCESS · TOO_SMALL_PAIR_EXCESS · EVALUABLE           (§18.1)  PRESERVED
+Gate: PAIR_EXCESS_ENERGY > max( G · E_SELF , NUMERICAL_ENERGY_FLOOR )                           (§18.2)  PRESERVED
+PRIMARY_RESOLUTION = 512 · SECONDARY_1024 = DEFERRED                                            (§27)    PRESERVED
+```
+
+La reconciliación **no** reabre el defecto de signo del límite low espectral: el texto vigente ya
+documenta `2^(+β/2)` (§14.2), que es lo correcto.
+
+### 43.8 Limitaciones heredadas de M4/M5
+
+```text
+M5_LEGACY_HELDOUT_LIMITATION = DECLARED_NOT_IN_C2_COUNTERFACTUAL
+```
+
+El contrafactual C2 de H4 no reproduce la **réplica direccional** de M5 sobre `LEGACY_HELDOUT`
+(`h4-corpus-counterfactual.json` → `m5.note`: «no hay artefacto de filas M5 en el repo»).
+Consecuencias para M6:
+
+1. La limitación **no** alcanza un supuesto activo de M6: el árbol de decisión (§29) usa `N` y
+   `R_simple` sobre Cohort A y **no** reejecuta la réplica de M5. **M6 no reejecuta M5.**
+2. La **evidencia histórica de M5** y el **contrafactual correctivo** son objetos distintos: la
+   primera es una corrida completa; el segundo es una reconstrucción READ-ONLY de una sola columna
+   que reutiliza los valores históricos inmutables para todo lo demás.
+3. M6 **no** abre el corpus `LEGACY_HELDOUT` para inspeccionar resultados ni para ajustar
+   parámetros. No se habilitan exposiciones nuevas de held-out.
+4. La desviación de protocolo histórica (`UNDER_REVIEW_PREMATURE_LEGACY_HELDOUT_EXPOSURE`,
+   M5 §18) se **hereda y no se reescribe** (§26 de este documento), sin ocultarla.
+5. `LEGACY_HELDOUT` se conserva con `LEGACY_HELDOUT_IS_INDEPENDENT_VALIDATION = NO` y
+   `LEGACY_HELDOUT_PERMITTED_USE = DESCRIPTIVE_DIRECTIONAL_STABILITY_ONLY` (§26). La limitación
+   **no** se reinterpreta como prueba de invalidación de nada.
+
+### 43.9 Bloqueos vigentes y estado de thresholds
+
+Sin cambios respecto de M6-A.1, más la dependencia H4 declarada en §43.11:
+
+```text
+ISSUE_667_BLOCKING_DEPENDENCY = YES
+STOP_M6_DESIGN (condición 8)  = DISPARADA   (#667 cambia una primitiva científica usada por M6)
+STOP_M6_IMPLEMENTATION (cond. 10): implementar M6 antes de PR-MATH-A/B  →  STOP
+THRESHOLDS_FROZEN = NO
+M6_IMPLEMENTATION_BLOCKED = YES
+```
+
+Thresholds pendientes de derivación y freeze: `T_N`, `T_R`, `G`, `NUMERICAL_ENERGY_FLOOR`,
+`T_AMBIG`, tolerancias de identificabilidad y seed. **Ninguno se fija aquí**; no se eligió ningún
+valor numérico y no se ejecutó ninguna búsqueda orientada a maximizar una confirmación.
+
+Propiedad que debe controlar cada parámetro, y su acoplamiento con H4 (declarativo, sin valores):
+
+| Parámetro | Propiedad matemática que controla | Acoplamiento con H4 |
+|---|---|---|
+| `T_N` | separa «coherente (≈0)» de «mezcla con fracción de energía conocida» en `NONINTEGRABLE_EXCESS` | indirecto: `NONINTEGRABLE_FRACTION` se calcula sobre `g_N` (H4-perturbado) |
+| `T_R` | separa «mecanismo inyectado (recovery alto)» de «geometría distinta (recovery bajo)» | **directo**: `R` es una razón con `E_AUTH` en numerador y denominador |
+| `G` | efecto relativo del gate del denominador | **directo**: `E_AUTH − E_SELF` es el denominador |
+| `NUMERICAL_ENERGY_FLOOR` | piso absoluto de precisión numérica del gate | **directo**: mismo denominador |
+| `T_AMBIG` | separa registro ambiguo (tiles repetidos) de único | indirecto (vía la reconstrucción) |
+
+**Regla añadida:** la derivación de `T_R`, `G` y `NUMERICAL_ENERGY_FLOOR` debe hacerse **sobre el
+resizer fijado** (§43.10.1). Derivarlos con un resizer y ejecutar M6 con el otro reintroduciría
+exactamente el defecto que esta sección cierra.
+
+### 43.10 Condiciones necesarias para una futura implementación sintética
+
+Además de las condiciones ya vigentes (§32, §35, §41.1), esta reconciliación añade:
+
+1. **Procedencia del resizer, machine-readable.** El JSON de M6 (§33.1) registra el resizer que
+   produjo `N_AUTH` — p.ej. `resize_normal_impl ∈ {HISTORICAL_UINT8, CANONICAL_FLOAT}` — junto al
+   SHA256 del módulo. Un `N_AUTH` sin procedencia declarada ⇒ `STOP_M6_EXECUTION`.
+2. **El fix de `resize_normal` entra al alcance de PR-MATH-A** (o se declara una desviación
+   controlada). `authored_dataset.py` ya está en el scope de colisión de #667 (§34), pero
+   `resize_normal` **no** figuraba en la tabla de defectos confirmados de §5.4. Esta reconciliación
+   lo agrega como dependencia de diseño.
+3. **Contrafactual con la métrica de M6, no la de M4/M5.** Si se opta por la desviación controlada
+   (correr con el resizer histórico), la evidencia que la justifique debe medir
+   `PAIR_EXCESS_ENERGY` y `RECOVERY_FRACTION` en los dos brazos. El `NUMERICAL_NOT_DECISIONAL` de
+   #700 **no** es transferible.
+4. **La batería sintética no rutea por `authored_dataset.resize_normal`.** §38 la define como
+   matemática pura, sin corpus. Debe declararse explícitamente y anclarse con un test que
+   **enumere** las primitivas de carga que M6 usa, no que muestree una. Si un caso sintético futuro
+   necesita emular el pipeline AUTH, pasa a `INDIRECT_DEPENDENCY` y hereda la condición 1.
+5. **Ningún held-out nuevo.** `LEGACY_HELDOUT` no se usa para derivar ni para validar parámetros
+   (§43.8).
+6. **Test ancla por enumeración (declarado aquí, NO creado en este slice).** La familia de
+   primitivas de carga del camino AUTH de M6 se detecta por introspección y se congela, al estilo
+   de `tests/test_ritual_dispatch.py` / `tests/test_db_connection_invariant.py`. Un primitivo nuevo
+   de carga rompe el ancla hasta que se le declare su procedencia.
+
+### 43.11 Adjudicación final
+
+```text
+H4_RESIZE_NORMAL_DESIGN_DEPENDENCY = IN_SCOPE_AND_SPECIFIED
+
+H4_TO_AUTHORED_INPUTS    = DIRECT_DEPENDENCY
+H4_TO_HODGE              = DIRECT_DEPENDENCY
+H4_TO_MISMATCH_METRICS   = DIRECT_DEPENDENCY
+H4_TO_REGISTRATION       = INDIRECT_DEPENDENCY
+H4_TO_SPECTRAL_TRANSFER  = INDIRECT_DEPENDENCY
+H4_TO_SYNTHETIC_CONTROLS = NO_PATH (condicional a §43.10.4)
+```
+
+**Fundamento.** H4 tiene una ruta causal **demostrada** (no inferida) hasta el insumo `N_AUTH` de
+M6, vía `load_asset → resize_normal`, ejercida en la resolución primaria 512 sobre un corpus 1024².
+Alcanza directamente las entradas authored, el eje diagnóstico Hodge y las métricas de mismatch; e
+indirectamente el registro y la transferencia espectral. El veredicto `NUMERICAL_NOT_DECISIONAL` de
+#700 se midió sobre las métricas de M4/M5 y **no** cubre la razón de energías de M6, por lo que no
+puede heredarse.
+
+La resolución es **documental**: incorpora H4 como dependencia explícita del diseño y fija el
+contrato de procedencia. **No** autoriza implementar M6.
+
+```text
+M6_IMPLEMENTATION_BLOCKED = YES   (sin cambios)
+PR675_STATE               = OPEN_DRAFT
+```
+
+### 43.12 Referencias a evidencia y hashes
+
+Todos los hashes citados existen en el repositorio (`git cat-file -t` → `commit`).
+
+| Referencia | Ruta / SHA |
+|---|---|
+| Diseño M6-A / M6-A.1 | `319fb02f…`, `e6b81317…` |
+| Auditoría H1–H5 (merge en main) | `e7c96094…` (PR #700) |
+| Reconciliación #697 | `5a59308f…` |
+| `main` al momento de esta reconciliación | `647d2461…` |
+| Base de la auditoría / padre correctivo | `97dcc7ab…`, `d260b7c9…` |
+| `resize_normal` (implementación, `main`) | `sky_claw/local/native_parallax/research/authored_dataset.py:237` (invocada en `:323`) |
+| Call sites del loader | `run_exp_m4.py:150`, `run_exp_m5.py:304` |
+| Corpus (resolución nativa) | `docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json` |
+| Adjudicación H4 | `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/decision-impact.md` §5 |
+| Contrafactual C2 | `docs/validation/.../corrective-20261008/evidence/h4-corpus-counterfactual.json` |
+| Veredictos correctivos | `docs/validation/.../corrective-20261008/corrective-adjudication.json` |
+| Estado por hipótesis | `docs/validation/.../hypothesis-status.json` |
+
+### 43.13 Integridad documental (hallazgo de este slice)
+
+Al verificar el documento **antes** de modificarlo se detectó un **fence de código sin cerrar** en
+§6: el bloque abierto con ` ```text ` (línea 295) nunca se cierra. Con el emparejamiento estricto de
+fences (CommonMark: un fence de **cierre** no admite info string), el bloque `295→307` engullía el
+encabezado `## 7.` y el encabezado `### 7.1` junto con el párrafo de Parseval, que quedaban
+renderizados como código. **Corregido en este mismo commit** insertando el cierre faltante
+inmediatamente después de la última línea del bloque. Es una corrección **mecánica y no
+científica**: no cambia ninguna afirmación, ningún número ni ningún contrato. Se declara aquí en
+lugar de hacerse en silencio.
