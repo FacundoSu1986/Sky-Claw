@@ -113,3 +113,36 @@ class CandidateCorruptMetadataError(FrozenRuntimeStorageError):
     ni como "Candidate valido". Un Candidate sin metadata legible es UNKNOWN y
     jamas READY.
     """
+
+
+# ============================================================================
+# Root Lock (P4)
+# ============================================================================
+
+
+class FrozenRuntimeLockError(FrozenRuntimeError):
+    """Base de errores del lock interproceso por root de Frozen Runtime (P4)."""
+
+
+class FrozenRuntimeLockBusyError(FrozenRuntimeLockError):
+    """El lock está actualmente ocupado por otro proceso o hilo (o timeout expirado)."""
+
+
+class FrozenRuntimeLockOwnershipError(FrozenRuntimeLockError):
+    """Fallo en la prueba de propiedad del lock (assert_owned, liberación ajena o metadata alterada)."""
+
+
+class FrozenRuntimeLockMetadataError(FrozenRuntimeLockError):
+    """Metadata del lock ilegible, corrupta o que no cumple el esquema normativo cerrado."""
+
+
+class FrozenRuntimeLockIndeterminateError(FrozenRuntimeLockError):
+    """No se puede determinar la vitalidad (liveness) del dueño de forma certera (fail-closed)."""
+
+
+class FrozenRuntimeLockOrphanedError(FrozenRuntimeLockError):
+    """El lock quedó huérfano por crash de un dueño anterior: requiere reconciliación/reclaim."""
+
+
+class FrozenRuntimeLockAdmissionError(FrozenRuntimeLockError):
+    """El root o el directorio state/ fue rechazado (redirigido, enlace simbólico o reparse)."""
