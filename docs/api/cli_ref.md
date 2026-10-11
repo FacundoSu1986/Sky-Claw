@@ -6,7 +6,7 @@
 >
 > **Fuente canónica:** `sky_claw/__main__.py::_parse_args`.
 >
-> **Última verificación:** 2026-08-10 sobre `origin/main` `60f7957` más este cambio.
+> **Última verificación:** 2026-10-10 sobre `origin/main` `647d246` más este cambio.
 
 ## Sintaxis
 
@@ -15,14 +15,17 @@ python -m sky_claw [opciones] [command]
 ```
 
 `command` es opcional y posicional. El modo por defecto desde fuente es `cli`;
-el ejecutable congelado cambia el default a `gui`.
+el ejecutable congelado cambia el default a `gui`. Los `(default: X)` que imprime
+`--help` se derivan del default efectivo de cada contexto (`%(default)s`), así que
+el congelado declara `gui` y `--provider` declara el proveedor configurado; lo
+ancla `tests/test_cli_help_defaults.py`.
 
 ## Opciones
 
 | Opción | Valores o default | Uso |
 |---|---|---|
 | `--mode` | `cli`, `telegram`, `oneshot`, `gui`, `security`, `install-vfs-bridge`, `vfs-health` | Selecciona el modo |
-| `--provider` | `anthropic`, `deepseek`, `openai`, `ollama` | Proveedor LLM |
+| `--provider` | `anthropic`, `deepseek`, `openai`, `ollama`; default: config o `deepseek` | Proveedor LLM |
 | `--mo2-root` | config o `C:\MO2Portable` | Instancia portable |
 | `--skyrim-path` | config o vacío | Instalación; obligatoria para `vfs-health` |
 | `--profile` | `MO2_PROFILE` o `Default` | Perfil MO2 de **toda** la sesión |
