@@ -118,15 +118,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   volvía a golpear la API **dentro de la misma ventana** que Telegram acababa de
   anunciar, agotando los reintentos acotados de la ráfaga y perdiendo avisos. Ahora
   `TelegramSender` publica cada 429 en `CooldownCompartido` —deadline monotónico,
-  acotado a los 30 s de la política, extendido con `max` para que dos avisos
-  concurrentes converjan en el más lejano— y lo consulta **antes de cada intento
-  HTTP**, no sólo antes del primero. El alcance es el del **bot** (un 429 no permite
-  atribuir si el límite excedido fue el del chat o el global) y las tres vías HTTP del
-  módulo participan: `sendMessage`/`sendDocument` reintentan de forma acotada,
-  `editMessageText` y `answerCallbackQuery` esperan y publican sin reintentar, para
-  que una edición de HITL perdida no deje botones viejos ni deje a las hermanas
-  golpeando la ventana. Un 429 sigue sin ocupar un cupo del rate limit local ni
-  producir identidad de mensaje, la espera es cancelable y no hay lock sostenido
+  extendido con `max` para que dos avisos concurrentes converjan en el más lejano—
+  y lo consulta **antes de cada intento HTTP**, no sólo antes del primero. La autoridad
+  retiene la restricción íntegra del servidor (tope de sanidad de 24 h) —distinguiendo
+  el umbral de reintento de 30 s de la duración del deadline— mientras los
+  llamadores operan con presupuestos finitos (90 s por defecto) para fallar rápido
+  determinísticamente sin golpear la red. La espera reevalúa en bucle tras cada suspensión,
+  honrando extensiones progresivas de múltiples corrutinas. Los mensajes multichunk
+  comparten un presupuesto acumulado de cooldown único reportando entregas parciales,
+  descontando exclusivamente las suspensiones reales de flood-control sin penalizar
+  la espera del rate limit local ni la latencia de red.
+  `send_document` clasifica el agotamiento de presupuesto como `TelegramUploadTimeoutError`
+  y las vías HITL (`editMessageText`, `answerCallbackQuery` con cota de 10 s) acotan su espera para evitar
+  bloqueos prolongados, atrapando fallos de transporte y rate limit en el ack con inspección estricta de URLs HTTP y sin revertir decisiones comprometidas.
+  El alcance es el del **bot** (un 429 no permite atribuir si el
+  límite excedido fue el del chat o el global). Un 429 sigue sin ocupar un cupo del rate
+  limit local ni producir identidad de mensaje, la espera es cancelable y no hay lock sostenido
   durante una petición. Anclas: `tests/test_telegram_flood_control_compartido.py`
   (reloj simulado y envíos concurrentes deterministas, más el ancla AST que enumera
   los caminos HTTP y exige la consulta previa a la petición) y
