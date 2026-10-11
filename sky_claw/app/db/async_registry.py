@@ -161,6 +161,27 @@ class AsyncModRegistry:
     # ------------------------------------------------------------------
 
     async def open(self) -> None:
+        """Abre la DB (ver ``_abrir``) con una guarda única ante apertura fallida.
+
+        #474: ``_abrir`` publica ``self._conn`` temprano (el quick_check y la
+        recovery la necesitan) y tiene varios pasos que pueden fallar después
+        —incluido el DDL final—. Una guarda por paso es el patrón que deja
+        hermanos sin cubrir; esta envuelve la apertura ENTERA: ante cualquier
+        ``BaseException`` (incluida la cancelación) cierra la conexión propia y
+        despeja el sentinel, así el reintento ejecuta el schema de verdad. Con
+        lifecycle sólo se suelta la referencia: el manager conserva ownership.
+        """
+        try:
+            await self._abrir()
+        except BaseException:
+            if self._conn is not None and self._owns_conn:
+                with contextlib.suppress(Exception):
+                    await self._conn.close()
+            self._conn = None
+            self._owns_conn = False
+            raise
+
+    async def _abrir(self) -> None:
         """Open (or create) the database and ensure the schema exists.
 
         M-01: If a DatabaseLifecycleManager was injected, the connection is

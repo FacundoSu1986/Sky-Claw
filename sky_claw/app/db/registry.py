@@ -6,6 +6,7 @@ correlation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -89,8 +90,11 @@ class ModRegistry:
                 if row is None or str(row[0]).lower() != "ok":
                     raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
             await self._conn.executescript(_SCHEMA_SQL)
-        except Exception:
-            await self._conn.close()
+        except BaseException:
+            # #474: ``BaseException`` (no ``Exception``): una cancelación a mitad
+            # de la apertura también tiene que cerrar y despejar el sentinel.
+            with contextlib.suppress(Exception):
+                await self._conn.close()
             self._conn = None
             raise
 

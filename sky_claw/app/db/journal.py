@@ -997,14 +997,15 @@ class OperationJournal:
 
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except (sqlite3.Error, JournalError) as e:
-            if self._db is not None and self._owns_conn:
-                with contextlib.suppress(Exception):
-                    await self._db.close()
-            # Con lifecycle externo, el manager conserva ownership y
-            # reintentara el cierre durante shutdown_all().
-            self._db = None
-            self._owns_conn = False
+            await self._descartar_apertura_fallida()
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
+        except BaseException:
+            # #474: cualquier otro fallo (OSError, cancelación…) también despeja
+            # el sentinel ``self._db`` y cierra la conexión propia; si no, el
+            # reintento sería un no-op. Se relanza sin envolver: el contrato
+            # ``JournalConnectionError`` sigue siendo exclusivo de errores SQLite.
+            await self._descartar_apertura_fallida()
+            raise
 
         # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
         # anteriores (crash / excepción sin rollback) se barren al arrancar.
@@ -1018,6 +1019,18 @@ class OperationJournal:
                 "Journal: startup sweep of stale PENDING transactions failed",
                 exc_info=True,
             )
+
+    async def _descartar_apertura_fallida(self) -> None:
+        """Deshace una apertura a medias: cierra la conexión propia y despeja el sentinel.
+
+        Con lifecycle externo, el manager conserva ownership y reintentará el
+        cierre durante ``shutdown_all()``: acá sólo se suelta la referencia.
+        """
+        if self._db is not None and self._owns_conn:
+            with contextlib.suppress(Exception):
+                await self._db.close()
+        self._db = None
+        self._owns_conn = False
 
     async def close(self) -> None:
         """Cierra la conexión a la base de datos."""

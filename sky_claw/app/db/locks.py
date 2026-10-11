@@ -263,7 +263,8 @@ class DistributedLockManager:
         cerrar la conexión debajo de él. Fix #473 (sentinel): ``self._conn`` se
         asigna DESPUÉS del DDL exitoso (dentro del boundary): un fallo del
         schema no deja un sentinel de apertura que convierta el reintento en
-        no-op. Fix #473 (C5): toda la transición corre bajo ``_conn_lock``
+        no-op. #474: la rama standalone sigue la misma regla (local + cierre
+        ante ``BaseException``). Fix #473 (C5): toda la transición corre bajo ``_conn_lock``
         (instancia): un ``close()`` concurrente espera a que el initialize en
         vuelo termine y luego nulea — no puede haber resurrección.
         """
@@ -277,11 +278,22 @@ class DistributedLockManager:
                     await conn.executescript(_LOCKS_SCHEMA_SQL)
                     self._conn = conn
             else:
+                # #474: hermano standalone del fix #473. La conexión vive en una
+                # local hasta que PRAGMAs + DDL terminan; ante cualquier fallo
+                # (incluida la cancelación) se cierra y NO se publica en
+                # ``self._conn`` — si no, el reintento sería un no-op sobre una
+                # conexión sin schema y sin dueño.
+                conn = await aiosqlite.connect(self._db_path)
+                try:
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.execute("PRAGMA busy_timeout=5000")
+                    await conn.executescript(_LOCKS_SCHEMA_SQL)
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    raise
                 self._owns_conn = True
-                self._conn = await aiosqlite.connect(self._db_path)
-                await self._conn.execute("PRAGMA journal_mode=WAL")
-                await self._conn.execute("PRAGMA busy_timeout=5000")
-                await self._conn.executescript(_LOCKS_SCHEMA_SQL)
+                self._conn = conn
             logger.info(
                 "DistributedLockManager initialized",
                 extra={"db_path": self._db_path, "default_ttl": self._default_ttl},
