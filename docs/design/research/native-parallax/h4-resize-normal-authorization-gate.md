@@ -124,6 +124,38 @@ adjudicación de F1/F2 se hace sobre el texto del comentario `6113684862` y se r
 como resolución de threads. Al pasar a `Ready`, los bots correrán sobre el HEAD final y sus hilos
 se adjudicarán en §14.
 
+### 1.6 CI del HEAD corregido (`851f20e0`)
+
+Run `38176267616`. **No se declara `CI=PASS` global** — se declara lo medido, con el job autoritativo
+distinguido del que falla por causa ajena.
+
+```text
+PY312_WINDOWS (autoritativo) = PASS   (11172 passed, 22 skipped; "Coverage XML written to file")
+PY311_WINDOWS                = 1 failed, 11171 passed, 22 skipped
+  fallo: tests/test_telegram_sender_adjuntos_y_429.py::TestFloodControl429::
+         test_un_retry_after_invalido_se_trata_como_ausente
+  causa: test de PLAZO de reloj (assert [0.984] == approx([1.0 ± 0.01])) — flake de scheduling
+  clasificación: PRE_EXISTING_ENVIRONMENTAL (no toca el write-set; no toca NP/H4)
+RUFF_CHECK (x2)              = PASS
+MYPY (x2)                    = PASS
+SECURITY_SCAN                = PASS
+POSIX_CORE                   = PASS
+TEST_NUEVO_EN_CI             = SÍ (tests/test_native_parallax_h4_authorization_gate.py corrió en py3.12)
+```
+
+**Cómo se leyó el fallo (no por el estado del check, por el log).** El job py3.11 reporta `failure`,
+pero el log muestra `=== 1 failed, 11171 passed, 22 skipped … ===` **y** `Coverage XML written to
+file`: la suite corrió completa. El único fallo es un test de *deadline* de reloj
+(`publicación + retry_after`, tolerancia `1e-2`) en el módulo de Telegram — un componente que este
+PR no toca (write-set = 1 doc + 1 test de invariantes documentales). El job py3.12 corrió **el mismo
+test y pasó**, lo que confirma la flake. Se clasifica `PRE_EXISTING_ENVIRONMENTAL` y **no** se
+presenta como verde global ni se usa para declarar el contrato verificado.
+
+> **Lo que este CI sí prueba y lo que no.** Prueba que el documento y su ancla documental son
+> consistentes, que el ancla corre en CI (no fue deseleccionada) y que no se rompió nada aguas
+> arriba. **No** prueba nada del fix H4: la corrección no existe todavía. Un CI verde acá **no** es
+> evidencia de que `resize_normal` esté arreglado.
+
 ---
 
 ## 2. Fase 0 — Protección del entorno (ejecutada)
