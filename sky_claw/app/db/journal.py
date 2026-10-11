@@ -996,6 +996,22 @@ class OperationJournal:
                             await self._db.rollback()
 
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
+
+            # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
+            # anteriores (crash / excepción sin rollback) se barren al arrancar.
+            # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
+            # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
+            # #474: vive dentro del boundary de apertura: si el sweep se cancela u
+            # ocurre otra BaseException, se descarta la apertura fallida y se despeja
+            # el sentinel self._db.
+            self._swept_pending_transaction_ids_this_open = set()
+            try:
+                await self.sweep_stale_pending()
+            except (JournalError, sqlite3.Error):
+                logger.warning(
+                    "Journal: startup sweep of stale PENDING transactions failed",
+                    exc_info=True,
+                )
         except (sqlite3.Error, JournalError) as e:
             await self._descartar_apertura_fallida()
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
@@ -1006,19 +1022,6 @@ class OperationJournal:
             # ``JournalConnectionError`` sigue siendo exclusivo de errores SQLite.
             await self._descartar_apertura_fallida()
             raise
-
-        # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
-        # anteriores (crash / excepción sin rollback) se barren al arrancar.
-        # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
-        # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
-        self._swept_pending_transaction_ids_this_open = set()
-        try:
-            await self.sweep_stale_pending()
-        except (JournalError, sqlite3.Error):
-            logger.warning(
-                "Journal: startup sweep of stale PENDING transactions failed",
-                exc_info=True,
-            )
 
     async def _descartar_apertura_fallida(self) -> None:
         """Deshace una apertura a medias: cierra la conexión propia y despeja el sentinel.
@@ -1031,6 +1034,8 @@ class OperationJournal:
                 await self._db.close()
         self._db = None
         self._owns_conn = False
+        self._lock = asyncio.Lock()
+        self._swept_pending_transaction_ids_this_open = set()
 
     async def close(self) -> None:
         """Cierra la conexión a la base de datos."""

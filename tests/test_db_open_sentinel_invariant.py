@@ -369,3 +369,67 @@ async def test_un_open_fallido_no_deja_el_sentinel_ni_la_conexion(
         for conn in conexiones_standalone:
             if not await _esta_cerrada(conn):
                 await conn.close()
+
+
+@pytest.mark.parametrize("rama", ["standalone", "lifecycle"])
+@pytest.mark.parametrize("fallo", ["cancelacion", "no-sqlite"])
+async def test_journal_open_fallido_durante_sweep_despeja_sentinel_y_permite_reintento(
+    rama: str,
+    fallo: str,
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+) -> None:
+    # Preparar
+    db = tmp_path / "journal_sweep.db"
+    lifecycle: DatabaseLifecycleManager | None = None
+    conn_lifecycle: aiosqlite.Connection | None = None
+    if rama == "lifecycle":
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[db],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+        )
+        await lifecycle.init_all()
+        conn_lifecycle = await lifecycle.get_connection(db)
+
+    journal = OperationJournal(db, lifecycle=lifecycle)
+    sweep_real = journal.sweep_stale_pending
+    llamadas_sweep = 0
+
+    async def sweep_inyectado(*args: Any, **kwargs: Any) -> list[int]:
+        nonlocal llamadas_sweep
+        llamadas_sweep += 1
+        if llamadas_sweep == 1:
+            raise FALLOS[fallo]("Fallo simulado durante sweep de arranque")
+        return await sweep_real(*args, **kwargs)
+
+    journal.sweep_stale_pending = sweep_inyectado  # type: ignore[method-assign]
+
+    try:
+        # Actuar — primer intento: el sweep falla.
+        with pytest.raises(FALLOS[fallo]):
+            await journal.open()
+
+        # Verificar
+        assert llamadas_sweep == 1
+        assert journal._db is None, "el sentinel _db quedó puesto tras fallo en sweep_stale_pending"
+        if rama == "standalone":
+            abiertas = [c for c in conexiones_standalone if not await _esta_cerrada(c)]
+            assert not abiertas, "la conexión propia quedó abierta tras fallo en sweep_stale_pending"
+        else:
+            assert conn_lifecycle is not None
+            assert not await _esta_cerrada(conn_lifecycle), "se cerró la conexión del lifecycle tras fallo en sweep"
+
+        # Actuar — reintento: debe ejecutar el sweep y completar la apertura.
+        await journal.open()
+
+        # Verificar
+        assert llamadas_sweep >= 2, "el reintento fue un no-op"
+        assert journal._db is not None
+        assert isinstance(await journal.begin_transaction("sonda_sweep"), int)
+    finally:
+        await journal.close()
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()

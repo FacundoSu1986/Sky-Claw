@@ -16,16 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   había arreglado sólo en la rama lifecycle y sólo para `OperationalError`. Los
   hermanos tenían la misma forma: `LLMRouter.open()` (standalone, idéntico),
   `AsyncModRegistry.open()` (DDL final fuera de todo `try`, en ambas ramas),
-  `OperationJournal.open()` (limpiaba sólo ante `sqlite3.Error/JournalError`:
-  una cancelación u `OSError` dejaban `_db` puesto) y `ModRegistry.open()`
+  `OperationJournal.open()` (limpiaba sólo ante `sqlite3.Error/JournalError`
+  y antes del sweep: una cancelación u `OSError` dejaban `_db` puesto) y `ModRegistry.open()`
   (`except Exception` no ve la cancelación). Ahora la conexión se publica recién
-  cuando la apertura terminó entera y cualquier `BaseException` la cierra (si es
-  propia) y despeja el sentinel; `JournalConnectionError` sigue reservado a
-  errores SQLite. Ancla: `tests/test_db_open_sentinel_invariant.py` detecta la
-  familia por AST (método async con sentinel que abre SQLite), la congela contra
-  sus recetas y recorre consumidor × rama (standalone/lifecycle) × fallo
-  (SQLite, no-SQLite, cancelación), verificando sentinel despejado, conexión
-  propia cerrada, conexión del lifecycle intacta y reintento funcional.
+  cuando la apertura terminó entera —incluido el sweep de arranque en `OperationJournal`—
+  y cualquier `BaseException` la cierra (si es propia) y despeja el sentinel;
+  `JournalConnectionError` sigue reservado a errores SQLite. Ancla:
+  `tests/test_db_open_sentinel_invariant.py` detecta la familia por AST (método
+  async con sentinel que abre SQLite), la congela contra sus recetas y recorre
+  consumidor × rama (standalone/lifecycle) × fallo (SQLite, no-SQLite, cancelación),
+  verificando sentinel despejado, conexión propia cerrada, conexión del lifecycle
+  intacta, reintento funcional y robustez ante fallos en sweep.
 - **El `--help` declaraba defaults que no eran los que corrían (#665).** `--mode`
   decía `(default: cli)` también en el `.exe` congelado, donde el default real es
   `gui` (un `set_defaults` posterior lo pisaba sin tocar el texto). El mismo
