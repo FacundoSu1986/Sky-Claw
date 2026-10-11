@@ -946,6 +946,20 @@ F1_F2_SCOPE_CHANGED          = NO            (no se amplió el alcance de §17)
 CONDITION_9_STATUS           = PENDING
 ```
 
+**Efecto de la revisión adversarial de Codex (§14.4).** Los cinco hilos de `chatgpt-codex-connector`
+devolvieron cuatro hallazgos materiales más (N-09…N-12) sobre R1/R5/R6/R7. Las correcciones afectan
+las filas **2** (R1, N-11), **6** (R5, N-09), **5** (R6, N-10) y **8** (R7, N-12) de esta matriz.
+Igual que con F1/F2, **ninguna fila cambia de estado**: las cuatro ya eran `YES`, y lo que cambió es
+la **calidad de la evidencia** (un rango desambiguado, una tupla con runtime, una allowlist
+declarada, una premisa marcada como conjetura). La condición **9** sigue `PENDING` — y lo sigue
+siendo por la razón de siempre: es una aprobación humana, **no** derivable de tests, de CI verde ni
+de haber cerrado N-09…N-12.
+
+> **Lo que estos cierres NO son.** Cerrar N-09 no prueba que exista un runner M6 que coteje el
+> runtime; cierra el **contrato** que lo exige. Cerrar N-10 no prueba que el ancla exista; cierra la
+> **especificación** del ancla. Cerrar N-12 no fija el umbral; prohíbe presentar la premisa como
+> resultado. El carácter del slice sigue siendo `AUTHORIZATION_GATE_ONLY`.
+
 ---
 
 ## 8. Veredictos
