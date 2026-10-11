@@ -1,0 +1,127 @@
+{
+ "artifact": "native-parallax-post-reval1-m4-m5-impact-audit",
+ "date_utc": "2026-10-07",
+ "method": "static call graph sobre el codigo post-REVAL-1 (97dcc7ab), verificado por grep de call sites + lectura de la funcion + git diff del fix contra cada execution SHA. Ninguna conclusion se apoya en 'parece que no afecta'.",
+
+ "m4_decision_chain": {
+  "entry": "run_exp_m4.main",
+  "steps": [
+   {"from": "run_exp_m4.main", "to": "run_exp_m4.prepare_entries", "detail": "carga del manifest + gate SHA256 (exclusiones objetivas). No usa matematica del proxy."},
+   {"from": "run_exp_m4.main", "to": "run_exp_m4.run_asset(entry, 512)", "detail": "una fila por asset."},
+   {"from": "run_exp_m4.run_asset", "to": "authored_dataset.load_asset", "detail": "UNICO call site de resize_height -> HEIGHT_FIDELITY entra por aca."},
+   {"from": "authored_dataset.load_asset", "to": "authored_dataset.resize_height", "detail": "fix #653 (uint8 -> float32)."},
+   {"from": "run_exp_m4.run_asset", "to": "solver_coherence.self_forward(h, bits=8)", "detail": "spectral_gradients + normals_from_gradients(sx=1.0,sy=1.0) + quantize_decode. normals_from_gradients NO fue tocada por MATH-A."},
+   {"from": "run_exp_m4.run_asset", "to": "solver_coherence.evaluate_path(h, normal, path=label)", "detail": "por cada uno de self_q8 / self_float / fd_q8 / auth."},
+   {"from": "solver_coherence.evaluate_path", "to": "solver_coherence.solve_normal", "detail": "reconstruct_from_normal(n,'RAW',0.0,0.0) -> decode_gradients_policy(n, 1.0, 1.0, 'RAW', 0.0, 0.0). sx=sy=1 LITERAL."},
+   {"from": "solver_coherence.evaluate_path", "to": "OracleOnly.fit_global_scale", "detail": "escala afin global; NO tocada por MATH-A."},
+   {"from": "solver_coherence.evaluate_path", "to": "OracleOnly.evaluate", "detail": "devuelve rmse, corr, variance_ratio, gradient_rmse, raw_centered_rmse, seam_*; evaluate_path SELECCIONA solo 10 claves y descarta spearman/curl."},
+   {"from": "run_exp_m4.run_asset", "to": "OracleOnly.normal_height_residual_oracle(mat.normal, h)", "detail": "TOCHADA por MATH-A. Solo alimenta coherence_agreement_deg / coherence_best_strength."},
+   {"from": "run_exp_m4.main", "to": "solver_coherence.delta_stats(rows)", "detail": "medianas de self_rmse, auth_rmse, delta_rmse, abs_corr, var."},
+   {"from": "run_exp_m4.main", "to": "solver_coherence.evaluate_rules(full_stats, held_stats)", "detail": "C1 y C2."},
+   {"from": "run_exp_m4.main", "to": "solver_coherence.decide(C1, C2)", "detail": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT si C1 y C2."},
+   {"from": "run_exp_m4.main", "to": "run_exp_m4.coherence_diagnostic(rows)", "detail": "TOCHADA por MATH-B (extraccion + None). NO alimenta evaluate_rules."}
+  ],
+  "decision_inputs": ["self_rmse", "auth_rmse", "delta_rmse", "self_abs_corr", "auth_abs_corr", "self_var", "auth_var", "heldout equivalents"],
+  "not_decision_inputs": ["coherence_agreement_deg", "coherence_best_strength", "coherence_diagnostic.*", "fd_q8_*", "self_float_*", "family_diagnostics", "provider_diagnostics"],
+  "thresholds": {"T_SELF_RMSE": 0.1, "T_SELF_CORR": 0.95, "T_SELF_VAR": 0.85, "T_DELTA_RMSE": 0.02, "T_DELTA_CORR": 0.1},
+  "decision_rule_source": "solver_coherence.evaluate_rules + decide"
+ },
+
+ "m5_decision_chain": {
+  "entry": "run_exp_m5.main",
+  "steps": [
+   {"from": "run_exp_m5.main", "to": "run_exp_m4.prepare_entries", "detail": "REUSA la carga/exclusiones de M4."},
+   {"from": "run_exp_m5.main", "to": "run_exp_m5.run_asset_m5(entry, 512)"},
+   {"from": "run_exp_m5.run_asset_m5", "to": "authored_dataset.load_asset", "detail": "UNICO call site de resize_height -> height fix ya presente en el freeze."},
+   {"from": "run_exp_m5.run_asset_m5", "to": "solver_coherence.self_forward(h, bits=8)", "detail": "mismo forward matched que M4."},
+   {"from": "run_exp_m5.run_asset_m5", "to": "run_exp_m5._aligned_reconstruction", "detail": "dos veces: SELF y AUTH."},
+   {"from": "run_exp_m5._aligned_reconstruction", "to": "solver_coherence.solve_normal", "detail": "mismo solver RAW (sx=sy=1) que M4."},
+   {"from": "run_exp_m5._aligned_reconstruction", "to": "OracleOnly.fit_global_scale", "detail": "misma escala global unica por asset."},
+   {"from": "run_exp_m5.run_asset_m5", "to": "frequency_coherence.band_masks + frequency_coherence.asset_summary", "detail": "modulo PURO (solo numpy/math). analyze_path + high_enrichment por FFT."},
+   {"from": "run_exp_m5.main", "to": "frequency_coherence.cohort_medians(rows)", "detail": "medianas apareadas de exceso (corrective fix §21/§22)."},
+   {"from": "run_exp_m5.main", "to": "frequency_coherence.evaluate_rules(cohort, held)", "detail": "C1 y C2."},
+   {"from": "run_exp_m5.main", "to": "frequency_coherence.decide(rules)", "detail": "EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED si !C1 y !C2."}
+  ],
+  "decision_inputs": ["auth_lowmid_nrmse", "excess_lowmid_nrmse", "excess_high_nrmse", "high_enrichment", "legacy_heldout equivalents"],
+  "not_decision_inputs": ["bands.self/auth.* (por banda)", "coherence por banda", "affine_scale_self/auth", "bootstrap (informativo)"],
+  "thresholds": {"T_LOWMID_NRMSE": 0.15, "T_LOWMID_EXCESS": 0.1, "T_HIGH_ENRICHMENT": 2.0, "LOWMID_HIGH_CUTOFF": 32, "ENERGY_GATE_FRACTION": 1e-06, "M5_BOOTSTRAP_SEED": 20260925},
+  "decision_rule_source": "frequency_coherence.evaluate_rules + decide",
+  "m4_reuse_verified": "run_exp_m5 importa solve_normal, self_forward, bootstrap_median_ci de solver_coherence; prepare_entries, sha256_file, environment_block de run_exp_m4; split_of de run_exp_m2; SOLVER_NORMAL_CONVENTION y material_spec_from_entry de run_exp_m3."
+ },
+
+ "reachability_by_upstream_change": {
+  "HEIGHT_FIDELITY": {
+   "call_site": "authored_dataset.load_asset -> resize_height",
+   "reachable_from": ["M4 (run_asset)", "M5 (run_asset_m5)"],
+   "present_at": {"M4_historical": false, "M4_revalidated": true, "M5_all": true},
+   "conclusion": "Reach M4 y M5. En M4 historico produjo delta material en metricas primarias (decision igual); en M4 revalidado y en M5 ya estaba incorporado."
+  },
+  "MATH_A_GRADIENT_SCALING": {
+   "functions": ["normal_from_height.gradients_from_normal", "nz_policies.decode_gradients_policy"],
+   "call_sites_found": {
+    "gradients_from_normal": ["metrics.reconstruct_case (metrics.py:302; NO invocado por ningun runner: solo tests -> codigo muerto para M4/M5)", "run_np_m0.py:70,100", "trust_proxies.py:110 (projection_residual)", "tests"],
+    "decode_gradients_policy": ["run_exp_m1.py:88,311,339", "run_exp_m2.py:94 (reconstruct_from_normal)"]
+   },
+   "reachable_from": ["M4 via solve_normal -> reconstruct_from_normal -> decode_gradients_policy(n,1.0,1.0,...)", "M5 idem"],
+   "config_used": "sx=1.0, sy=1.0 literales (reconstruct_from_normal hardcodea 1.0, 1.0); M4/M5 no pasan sx/sy en ningun call site",
+   "conclusion": "INOBSERVABLE: identidad bit a bit medida en las 4 policies y en gradients_from_normal a sx=sy=1."
+  },
+  "MATH_A_CURL": {
+   "functions": ["trust_proxies.curl_field", "trust_proxies.curl_proxy"],
+   "call_sites_found": ["trust_proxies.py:191 (normal_only_features)"],
+   "reachable_from": ["M1/M2 (via normal_only_features y FEATURE_FUNCS)", "NO desde M4", "NO desde M5"],
+   "conclusion": "NO_PATH para M4/M5: ningun campo curl_* existe en las filas M4 (56 claves) y M5 no importa curl."
+  },
+  "MATH_A_PROJECTION": {
+   "functions": ["trust_proxies.projection_residual"],
+   "call_sites_found": ["trust_proxies.py:192 (normal_only_features)", "trust_proxies.py:227 (SIGMA_EFF_CANDIDATES['projection_median'])", "run_exp_m3.py:103-104 (nombres de proxy)"],
+   "reachable_from": ["M1/M2/M3", "NO desde M4", "NO desde M5"],
+   "conclusion": "NO_PATH para M4/M5: ningun campo projection_* en las filas M4; M5 no lo importa."
+  },
+  "MATH_A_ORACLE": {
+   "functions": ["trust_proxies.OracleOnly.normal_height_residual_oracle"],
+   "call_sites_found": ["run_exp_m2.py:157", "run_exp_m3.py:180,348", "run_exp_m4.py:182"],
+   "reachable_from": ["M2/M3/M4", "NO desde M5"],
+   "m4_consumer": "run_asset -> coherence_agreement_deg / coherence_best_strength -> coherence_diagnostic",
+   "conclusion": "M4: DIAGNOSTIC_ONLY (evaluate_rules no lee esos campos). M5: NO_PATH."
+  },
+  "MATH_B_SPEARMAN": {
+   "functions": ["metrics.average_ranks", "metrics.spearman", "metrics.compute_all (guarda finite)", "run_exp_m2.spearman (wrapper)", "run_exp_m4.coherence_diagnostic"],
+   "call_sites_found": ["run_exp_m4.py:255 (coherence_diagnostic)", "metrics.compute_all (clave 'spearman' del dict, descartada por evaluate_path)"],
+   "reachable_from": ["M2/M3 (seleccion de sigma, rates_sweep, spearman_ci)", "M4 solo via coherence_diagnostic", "NO desde M5"],
+   "conclusion": "M4: DIAGNOSTIC_ONLY. M5: NO_PATH (grep de spearman|rank|tie en frequency_coherence.py / run_exp_m5.py / solver_coherence.py no devuelve llamadas)."
+  },
+  "REPRO_A": {
+   "functions": ["run_exp_m2._json_safe", "run_exp_m2._write_json", "run_exp_m2.main"],
+   "reachable_from": ["solo el boundary JSON de M2", "NO desde M4", "NO desde M5"],
+   "m4_m5_imports_from_run_exp_m2": ["spearman", "split_of"],
+   "conclusion": "NO_PATH: REPRO-A no toca spearman ni split_of; ademas M4 ya usaba allow_nan=False y M5 tiene su propio _json_safe."
+  }
+ },
+
+ "synthetic_diagnostics": {
+  "note": "Diagnosticos sinteticos pequenos (sin corpus), permitidos por el contrato AUDIT_ONLY. Semilla 20261007, N=64, height con relieve sintetico.",
+  "decode_gradients_policy_sx1": {
+   "RAW": {"max_abs_diff_p": 0.0, "max_abs_diff_q": 0.0, "bit_identical": true},
+   "FLOOR_CLAMP": {"max_abs_diff_p": 0.0, "max_abs_diff_q": 0.0, "bit_identical": true},
+   "FLOOR_ZERO": {"max_abs_diff_p": 0.0, "max_abs_diff_q": 0.0, "bit_identical": true},
+   "SOFT_TIKHONOV": {"max_abs_diff_p": 0.0, "max_abs_diff_q": 0.0, "bit_identical": true}
+  },
+  "gradients_from_normal": {
+   "sx_sy_1": {"bit_identical": true, "max_abs_diff": 0.0},
+   "sx_1_7": {"max_abs_diff": 51.031167703924126, "comment": "defecto geometrico LATENTE: no ejercido por ningun call site actual"}
+  },
+  "normal_height_residual_oracle": {
+   "hist": {"height_normal_oracle_agreement_deg": 7.106035859281105, "oracle_best_strength": -0.25625000000000003},
+   "new": {"height_normal_oracle_agreement_deg": 0.5449889715502787, "oracle_best_strength": 1.08125},
+   "differs": true,
+   "strength_sign_flip": true,
+   "comment": "Justifica DIAGNOSTIC_ONLY para M4: si MATH-A se aplicara, los diagnosticos de coherencia cambiarian materialmente, pero evaluate_rules no los consume."
+  },
+  "spearman": {
+   "sin_empates": {"hist": -0.19047619047619047, "new": -0.19047619047619047, "bit_identical": true},
+   "con_empates_5_6": {"hist": 0.9999999999999998, "new": 0.8333333333333335, "esperado_manual": 0.8333333333333334},
+   "comment": "El cambio de MATH-B solo puede alterar resultados donde hay empates o degeneracion."
+  }
+ }
+}

@@ -1,0 +1,211 @@
+{
+ "artifact": "native-parallax-post-reval1-m4-m5-impact-audit",
+ "date_utc": "2026-10-07",
+ "audit_base_sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "audit_branch": "research/native-parallax-post-reval1-m4-m5-impact-audit",
+ "scope": "AUDIT_ONLY",
+ "scientific_rerun_executed": false,
+ "m4_rerun_executed": false,
+ "m5_rerun_executed": false,
+ "m6_real_run_executed": false,
+
+ "value_semantics": {
+  "NO_PATH": "El codigo corregido no es alcanzable desde el camino que produce la decision (ni desde sus diagnosticos) para esa superficie.",
+  "INOBSERVABLE": "El codigo corregido SI esta en el camino, pero en la configuracion efectivamente usada produce valores identicos (identidad exacta, no tolerancia). Para correcciones YA presentes en el execution SHA de la superficie, INOBSERVABLE significa 'sin delta pendiente en el artefacto congelado' y se acompania de already_present_at_execution_freeze=true.",
+  "DIAGNOSTIC_ONLY": "Alcanza campos de diagnostico que por contrato NO participan de la decision primaria.",
+  "SERIALIZATION_ONLY": "Solo cambia la representacion en el boundary JSON; el valor subyacente no cambia.",
+  "MATERIAL_PRIMARY_IMPACT": "Alcanza y modifica valores que alimentan la decision primaria.",
+  "UNKNOWN": "No determinado."
+ },
+
+ "upstream_changes": {
+  "HEIGHT_FIDELITY_CORRECTION": {
+   "commit": "2530f7a83b931ffdfa250b0fdda43ab351f56477",
+   "pr": 653,
+   "date": "2026-09-28",
+   "file": "sky_claw/local/native_parallax/research/authored_dataset.py",
+   "function": "resize_height",
+   "change": "uint8 quantization (Image mode L, *255 -> uint8) reemplazada por preservacion float32 (Pillow mode F). Solo actua cuando h.shape != size; si el height ya es size x size devuelve el array sin tocar.",
+   "note": "No prevista por la taxonomia del protocolo REVAL-1; etiqueta introducida por REVAL-1 como causa dominante de los deltas M2."
+  },
+  "MATH_A": {
+   "commit": "ae97fd9375727afc093c0dd0aba3d6ae58a3431c",
+   "pr": 681,
+   "date": "2026-10-04",
+   "files": [
+    "sky_claw/local/native_parallax/research/normal_from_height.py",
+    "sky_claw/local/native_parallax/research/nz_policies.py",
+    "sky_claw/local/native_parallax/research/solver_coherence.py",
+    "sky_claw/local/native_parallax/research/trust_proxies.py"
+   ],
+   "sub_changes": {
+    "MATH_A_GRADIENT_SCALING": "gradients_from_normal: p=-sx*nx/nz -> p=-nx/(sx*nz); decode_gradients_policy: el factor sx/sy DIVIDE en las 4 policies. Coinciden bit a bit cuando sx=sy=1 (medido, no inferido).",
+    "MATH_A_CURL": "curl_proxy / curl_field: d p/dx - d q/dy -> d q/dx - d p/dy (curl canonico). El campo firmado curl_field es nuevo.",
+    "MATH_A_PROJECTION": "projection_residual: reproyeccion via normals_from_gradients en lugar de nz=sqrt(max(0,1-p^2-q^2)) con signo XY invertido.",
+    "MATH_A_ORACLE": "normal_height_residual_oracle: idem reproyeccion canonica; agrega kwargs sx/sy con default 1.0 (no altera callers existentes)."
+   },
+   "solver_coherence_note": "El cambio en solver_coherence.py es EXCLUSIVAMENTE de docstring (verificado con git diff); sin cambio de comportamiento. El blob pasa de 1d665f64 a b8cd0e70."
+  },
+  "MATH_B": {
+   "commit": "32e4c1d606014033aa23fb2ac83f81eaec15659c",
+   "pr": 685,
+   "date": "2026-10-05",
+   "files": [
+    "sky_claw/local/native_parallax/research/metrics.py",
+    "sky_claw/local/native_parallax/research/run_exp_m2.py",
+    "sky_claw/local/native_parallax/research/run_exp_m3.py",
+    "sky_claw/local/native_parallax/research/run_exp_m4.py"
+   ],
+   "change": "Spearman pasa de rango ordinal (doble argsort) a rango medio (average_ranks, unica implementacion canonica en metrics.py). Constante => nan; NaN/Inf => ValueError. run_exp_m4.py: se extrae coherence_diagnostic() y un rho no evaluable se reporta como None con status.",
+   "tie_scope": "El cambio solo puede alterar resultados donde haya empates o degeneracion (verificado: sin empates la salida es identica bit a bit)."
+  },
+  "REPRO_A": {
+   "commit": "1dd607455664421a0aa4fd89cbc48acd6082e28f",
+   "pr": 687,
+   "date": "2026-10-05",
+   "files": [
+    "sky_claw/local/native_parallax/research/run_exp_m2.py"
+   ],
+   "change": "_json_safe (no finito -> null) + _write_json (allow_nan=False) como punto de escritura unico de los artefactos M2. No cambia matematica, ni seleccion, ni Spearman, ni M3/M4/M5."
+  }
+ },
+
+ "ancestry": {
+  "method": "git merge-base --is-ancestor <fix> <execution_sha>",
+  "legend": {"YES": "fix presente en el codigo de la corrida", "NO": "fix ausente"},
+  "rows": [
+   {"surface": "M4_historical", "sha": "fe54e9a9e189adc575a222a537a87b04d83d2915", "timestamp_utc": "2026-09-26T20:20:58Z", "HEIGHT_FIDELITY": "NO", "MATH_A": "NO", "MATH_B": "NO", "REPRO_A": "NO"},
+   {"surface": "M4_revalidated", "sha": "1a52c3ea5d2259f3b05bfdef1fdbe781608c610f", "timestamp_utc": "2026-09-29T18:36:30Z", "HEIGHT_FIDELITY": "YES", "MATH_A": "NO", "MATH_B": "NO", "REPRO_A": "NO"},
+   {"surface": "M5_prereg_freeze", "sha": "d33f81ca4218d98ab6f445a93db87a76bc19d7ba", "timestamp_utc": "2026-10-01", "HEIGHT_FIDELITY": "YES", "MATH_A": "NO", "MATH_B": "NO", "REPRO_A": "NO"},
+   {"surface": "M5_execution_freeze_historical", "sha": "e116196fc47f83659c7df7ada5ec82f9f993bbcd", "timestamp_utc": "2026-10-02", "HEIGHT_FIDELITY": "YES", "MATH_A": "NO", "MATH_B": "NO", "REPRO_A": "NO"},
+   {"surface": "M5_corrective_execution_freeze", "sha": "e3dbda517782cb71d9647acad607ea3846629952", "timestamp_utc": "2026-10-03", "HEIGHT_FIDELITY": "YES", "MATH_A": "NO", "MATH_B": "NO", "REPRO_A": "NO"},
+   {"surface": "post_reval1_main", "sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a", "timestamp_utc": "2026-10-07", "HEIGHT_FIDELITY": "YES", "MATH_A": "YES", "MATH_B": "YES", "REPRO_A": "YES"}
+  ]
+ },
+
+ "module_identity_sha256_lf": {
+  "note": "sha256 del contenido del blob (LF), calculado con git show <sha>:<path> | sha256sum. solver_module_sha256 registrado en los artefactos M4/M5 coincide exactamente con estas columnas.",
+  "solver_coherence.py": {
+   "fe54e9a9": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "1a52c3ea": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "e3dbda51": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "97dcc7ab": "0d0bdf21a30988228c3e506211b239f9e795ec08a52c22e67b5bac2e832554ab"
+  },
+  "authored_dataset.py": {
+   "fe54e9a9": "290f2845b5acfc6297d08f9f8fcb0b3dbcb29daf7bd8350761af045e30ccf109",
+   "1a52c3ea": "4184cbada6885cf62ef98a95100a7b1921a881b8e2f7450f2889e9337befde8c",
+   "97dcc7ab": "4184cbada6885cf62ef98a95100a7b1921a881b8e2f7450f2889e9337befde8c"
+  },
+  "frequency_coherence.py": {
+   "fe54e9a9": "ABSENT",
+   "1a52c3ea": "ABSENT",
+   "d33f81ca": "a12749dc90c22a219c9a07b5eee2d69c0cb42155 (git blob sha1)",
+   "e116196f": "a12749dc90c22a219c9a07b5eee2d69c0cb42155 (git blob sha1)",
+   "e3dbda51": "836fb62e9b9610e025399f2b07598417919a065c (git blob sha1)",
+   "97dcc7ab": "836fb62e9b9610e025399f2b07598417919a065c (git blob sha1)"
+  }
+ },
+
+ "matrix": [
+  {
+   "upstream_change": "HEIGHT_FIDELITY",
+   "m4_primary": "MATERIAL_PRIMARY_IMPACT",
+   "m4_diagnostic": "MATERIAL_PRIMARY_IMPACT",
+   "m5_primary": "INOBSERVABLE",
+   "m5_diagnostic": "INOBSERVABLE",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": true, "m5": true},
+   "decision_effect": {"m4": "DECISION_EQUIVALENT", "m5": "NONE_PENDING"},
+   "evidence": "M4: 31/31 assets cambian en metricas primarias entre fe54e9a9 y 1a52c3ea (delta_rmse max|d|=1.714e-03 med|d|=1.181e-04); decision y reglas IDENTICAS (C1=true C2=true, EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT). El revalidado de 2026-09-28 ES el rerun con el fix. M5: el fix ya estaba presente en d33f81ca/e116196f/e3dbda51 (authored_dataset blob dff54d13 en las tres); no hay delta pendiente. No implica que el fix sea inocuo en general: en M4 historico SI movio los numeros."
+  },
+  {
+   "upstream_change": "MATH_A_GRADIENT_SCALING",
+   "m4_primary": "INOBSERVABLE",
+   "m4_diagnostic": "INOBSERVABLE",
+   "m5_primary": "INOBSERVABLE",
+   "m5_diagnostic": "INOBSERVABLE",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "El camino primario usa sx=sy=1 de forma literal: solve_normal -> reconstruct_from_normal(n,'RAW',0.0,0.0) -> decode_gradients_policy(normal, 1.0, 1.0, ...); self_forward default sx=sy=1.0; M4/M5 no pasan sx/sy en ningun call site. Diagnostico sintetico (N=64, 4 policies): max|diff| = 0.0 y array_equal=True para las 4 policies. A sx=1.7 el mismo diagnostico da max|diff|=51.03 (defecto latente, no ejercido)."
+  },
+  {
+   "upstream_change": "MATH_A_CURL",
+   "m4_primary": "NO_PATH",
+   "m4_diagnostic": "NO_PATH",
+   "m5_primary": "NO_PATH",
+   "m5_diagnostic": "NO_PATH",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "curl_proxy/curl_field solo se invocan desde normal_only_features (trust_proxies) y desde la tabla de FEATURE_FUNCS de M1/M2. Ninguna fila de M4 contiene campos curl_* (verificado: 56 claves de fila, ninguna matchea curl). run_exp_m5/frequency_coherence no importan ni llaman curl."
+  },
+  {
+   "upstream_change": "MATH_A_PROJECTION",
+   "m4_primary": "NO_PATH",
+   "m4_diagnostic": "NO_PATH",
+   "m5_primary": "NO_PATH",
+   "m5_diagnostic": "NO_PATH",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "projection_residual solo se invoca desde normal_only_features (trust_proxies) y desde el mapa de SIGMA_EFF_CANDIDATES de M1/M2/M3. Ninguna fila de M4 contiene campos projection_* (verificado). M5 no lo importa."
+  },
+  {
+   "upstream_change": "MATH_A_ORACLE",
+   "m4_primary": "NO_PATH",
+   "m4_diagnostic": "DIAGNOSTIC_ONLY",
+   "m5_primary": "NO_PATH",
+   "m5_diagnostic": "NO_PATH",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "M4 llama OracleOnly.normal_height_residual_oracle(mat.normal, h) y usa el resultado solo en coherence_agreement_deg / coherence_best_strength -> summary.coherence_diagnostic, cuyo propio note dice 'NO es trust proxy ni criterio de exclusion'. evaluate_rules (unica fuente de C1/C2) no lee esos campos: usa rmse_self/abs_corr_self/var_self y delta_rmse_median / delta abs_corr, todos de evaluate_path. Diagnostico sintetico: el oraculo HIST y NEW difieren materialmente sobre el MISMO input (7.106 deg / strength -0.256 vs 0.545 deg / +1.081, signo invertido) => si MATH-A se aplicara, cambiarian los diagnosticos, no la decision. M5 no llama al oraculo (grep sin matches en run_exp_m5/frequency_coherence/solver_coherence salvo un docstring)."
+  },
+  {
+   "upstream_change": "MATH_B_SPEARMAN",
+   "m4_primary": "NO_PATH",
+   "m4_diagnostic": "DIAGNOSTIC_ONLY",
+   "m5_primary": "NO_PATH",
+   "m5_diagnostic": "NO_PATH",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "M4: usos alcanzables de spearman son DOS, y ninguno es decision-bearing: (i) run_exp_m4.coherence_diagnostic (extraido por MATH-B) — diagnostico; (ii) metrics.compute_all, invocado desde el path primario via OracleOnly.evaluate, cuya linea spearman MATH-B tambien modifico (guarda `if finite`) — pero la clave 'spearman' del dict es DESCARTADA por evaluate_path, que selecciona 10 claves (rmse/corr/variance_ratio/gradient_rmse/raw_centered_rmse/seam_*). evaluate_rules no usa rangos. El artefacto revalidado todavia tiene el coherence_diagnostic SIN la clave 'status' => confirma que se corrio antes de MATH-B. M5: grep de spearman|rank|tie sobre frequency_coherence.py, run_exp_m5.py y solver_coherence.py no devuelve ninguna llamada (solo un docstring). El rho de M4 fue finito en ambas corridas (0.15040 hist / 0.15524 reval), asi que ni el None-degenerado se activo. Diagnostico sintetico: sin empates ordinal==rango medio bit a bit; con empates difieren (5/6 vs ~1.0)."
+  },
+  {
+   "upstream_change": "REPRO_A_SERIALIZATION",
+   "m4_primary": "NO_PATH",
+   "m4_diagnostic": "NO_PATH",
+   "m5_primary": "NO_PATH",
+   "m5_diagnostic": "NO_PATH",
+   "already_present_at_execution_freeze": {"m4_historical": false, "m4_revalidated": false, "m5": false},
+   "decision_effect": {"m4": "NONE", "m5": "NONE"},
+   "evidence": "REPRO-A toca solo _json_safe/_write_json y los dos call sites de main en run_exp_m2.py. M4 importa de run_exp_m2 unicamente spearman y split_of (no tocados); M5 importa solo split_of. Ademas M4 ya escribe con allow_nan=False (run_exp_m4.py) y M5 usa su propio _json_safe: el contrato estricto ya era el de M4/M5 antes de REPRO-A. No hay ningun token no estandar en los artefactos M4/M5."
+  }
+ ],
+
+ "adjudications": {
+  "M4_HISTORICAL_DECISION": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+  "M4_HEIGHT_FIDELITY_IMPACT": "MATERIAL_PRIMARY_IMPACT",
+  "M4_MATH_A_IMPACT": "INOBSERVABLE (escalado) + NO_PATH (curl/proyeccion) + DIAGNOSTIC_ONLY (oraculo)",
+  "M4_MATH_B_IMPACT": "DIAGNOSTIC_ONLY",
+  "M4_REPRO_A_IMPACT": "NO_PATH",
+  "M4_IMPACT_ADJUDICATION": "NOT_INVALIDATED",
+  "M4_RERUN_REQUIRED": "NO",
+  "M4_RERUN_RATIONALE": "El rerun ya existe y esta publicado: 1a52c3ea (2026-09-28, revalidation-height-resize) re-ejecuto M4 con el fix de height y reproduce la decision (C1=true C2=true) y las reglas. El unico delta NUMERICO historico->revalidado es el fix de height (#653); en el mismo rango tambien cambia run_exp_m4.py por #643 (OSError -> exclusion objetiva), no numerico y no activado (0 exclusiones, 31/31 filas en ambas corridas). MATH-A/B/REPRO-A no estaban presentes en ninguna de las dos corridas y se demuestra que no alcanzan la decision primaria.",
+
+  "M5_EXECUTION_SHA": "e3dbda517782cb71d9647acad607ea3846629952",
+  "M5_HISTORICAL_EXECUTION_FREEZE_SHA": "e116196fc47f83659c7df7ada5ec82f9f993bbcd",
+  "M5_HISTORICAL_DECISION": "EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED",
+  "M5_HEIGHT_FIDELITY_IMPACT": "INOBSERVABLE",
+  "M5_MATH_A_IMPACT": "INOBSERVABLE (escalado) + NO_PATH (curl/proyeccion/oraculo)",
+  "M5_MATH_B_IMPACT": "NO_PATH",
+  "M5_REPRO_A_IMPACT": "NO_PATH",
+  "M5_THRESHOLDS_UNCHANGED": "YES",
+  "M5_IMPACT_ADJUDICATION": "NOT_INVALIDATED",
+  "M5_RERUN_REQUIRED": "NO",
+  "M5_RERUN_RATIONALE": "Ninguna de las cuatro correcciones de REVAL-1 esta en el camino de decision M5 ni alcanza sus metricas. El fix de height ya estaba incorporado en el execution freeze. El rerun correctivo (e3dbda51) que existe fue motivado por un defecto INTERNO de M5 (agregacion de EXCESS no coincidente con el prereg, finding post-FULL §21) y es decision-equivalente (NOT_SUPPORTED en ambas). No debe presentarse como revalidacion frente a REVAL-1."
+ },
+
+ "notes": [
+  "M4 y M5 no fueron reejecutados en este slice.",
+  "Las decisiones M4/M5 NO se declaran 'revalidadas' por REVAL-1: se declaran NO INVALIDADAS. La distincion es explicita.",
+  "M4 arrastra una desviacion de protocolo PREEXISTENTE y ajena a REVAL-1 (no hubo commit de execution-freeze entre calibration y full; el artefacto lo declara con protocol_status=UNDER_REVIEW_PROTOCOL_DEVIATION y confirmatory_final=false). Este audit no la resuelve ni la agrava.",
+  "M5 arrastra una desviacion de protocolo PREEXISTENTE y ajena a REVAL-1 (exposicion prematura de LEGACY_HELDOUT, §18 del design doc). Este audit no la resuelve ni la agrava."
+ ]
+}

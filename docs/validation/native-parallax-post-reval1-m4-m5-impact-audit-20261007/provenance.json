@@ -1,0 +1,217 @@
+{
+ "artifact": "native-parallax-post-reval1-m4-m5-impact-audit",
+ "date_utc": "2026-10-07",
+ "audit_base_sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a",
+ "audit_worktree": "E:\\SkyClaw_M4M5_AUDIT_97dcc7ab",
+ "audit_branch": "research/native-parallax-post-reval1-m4-m5-impact-audit",
+ "worktree_clean_at_start": true,
+ "main_worktree_untouched": true,
+ "raw_policy": "READ_ONLY. Los RAW bajo C:\\SkyClawResearch\\ fueron solo leidos y hasheados: no se mutaron, movieron, renombraron, sobrescribieron ni regeneraron.",
+
+ "upstream_fixes": {
+  "HEIGHT_FIDELITY_CORRECTION": {"sha": "2530f7a83b931ffdfa250b0fdda43ab351f56477", "pr": 653, "date": "2026-09-28T17:39:04-03:00"},
+  "MATH_A": {"sha": "ae97fd9375727afc093c0dd0aba3d6ae58a3431c", "pr": 681, "date": "2026-10-04T21:15:11-03:00"},
+  "MATH_B": {"sha": "32e4c1d606014033aa23fb2ac83f81eaec15659c", "pr": 685, "date": "2026-10-05T13:50:04-03:00"},
+  "REPRO_A": {"sha": "1dd607455664421a0aa4fd89cbc48acd6082e28f", "pr": 687, "date": "2026-10-05T16:53:21-03:00"}
+ },
+
+ "reval1_evidence_loaded_from_main": {
+  "path": "docs/validation/native-parallax-math-revalidation-20261006/",
+  "protocol_sha": "fc87b7e5191e42bd7e38b128b7baeaec7516dadb",
+  "old_replay_sha": "e23bf7ac75bf8ac7b1b80f1944119598f743b7b7",
+  "files_read": [
+   "README.md",
+   "comparison/impact-report.md",
+   "comparison/taxonomy-summary.json",
+   "comparison/environment.json",
+   "comparison/m2-historical-vs-new.json (leido por estructura; 1.47 MB)",
+   "comparison/m2-replay-vs-new.json (leido por estructura; 1.47 MB)",
+   "comparison/m2-historical-vs-replay.json",
+   "comparison/m3-historical-vs-new.json",
+   "comparison/spearman-diagnostics.json"
+  ],
+  "frozen_results": {
+   "ENVIRONMENT_REPLAY_DRIFT": 0,
+   "UNEXPECTED_UNEXPLAINED_CHANGES": 0,
+   "M2_SIGMA_WINNER": "nz_p01",
+   "M3_DECISION_EQUIVALENT": "YES",
+   "OLD_RATE_Q_MAPPING_VERIFIED": "NO",
+   "dominant_m2_cause": "HEIGHT_FIDELITY_CORRECTION (4564 / 5456 celdas de la superficie B, ~83.6%)"
+  }
+ },
+
+ "execution_shas": {
+  "M4_historical": {"sha": "fe54e9a9e189adc575a222a537a87b04d83d2915", "timestamp_utc": "2026-09-26T20:20:58Z", "artifact": "data/exp-m4-results.json"},
+  "M4_revalidated": {"sha": "1a52c3ea5d2259f3b05bfdef1fdbe781608c610f", "timestamp_utc": "2026-09-29T18:36:30Z", "artifact": "docs/validation/native-parallax-revalidation-20260928/exp_m4_results.json"},
+  "M5_prereg_freeze": {"sha": "d33f81ca4218d98ab6f445a93db87a76bc19d7ba", "date": "2026-10-01"},
+  "M5_execution_freeze_historical": {"sha": "e116196fc47f83659c7df7ada5ec82f9f993bbcd", "date": "2026-10-02"},
+  "M5_corrective_execution_freeze": {"sha": "e3dbda517782cb71d9647acad607ea3846629952", "date": "2026-10-03"},
+  "post_reval1_main": {"sha": "97dcc7ab9ade29153faa0ccec428b78612cfc04a", "date": "2026-10-07"}
+ },
+
+ "m4_artifacts": {
+  "historical": {
+   "repo_path": "data/exp-m4-results.json",
+   "git_sha": "fe54e9a9e189adc575a222a537a87b04d83d2915",
+   "solver_module_sha256": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "manifest_sha256": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+   "resolution": 512,
+   "decision": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+   "rules": {"C1_self_good": true, "C2_auth_worse": true},
+   "frozen_ack": "freeze-fe54e9a9e189adc575a222a537a87b04d83d2915"
+  },
+  "revalidated": {
+   "repo_path": "docs/validation/native-parallax-revalidation-20260928/exp_m4_results.json",
+   "git_sha": "1a52c3ea5d2259f3b05bfdef1fdbe781608c610f",
+   "solver_module_sha256": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "manifest_sha256": "c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde",
+   "resolution": 512,
+   "decision": "EXP_M4_PAIR_MODEL_MISMATCH_DOMINANT",
+   "rules": {"C1_self_good": true, "C2_auth_worse": true},
+   "frozen_ack": "freeze-1a52c3ea5d2259f3b05bfdef1fdbe781608c610f",
+   "protocol_status": {
+    "status": "UNDER_REVIEW_PROTOCOL_DEVIATION",
+    "confirmatory_final": false,
+    "observed_runner_decision_is_confirmatory": false,
+    "note": "Desviacion PREEXISTENTE (no hubo commit de execution-freeze entre calibration y full). Ajena a REVAL-1. Registrada, no resuelta por este audit."
+   },
+   "raw_source_path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\revalidation-height-resize-20260928\\m4\\exp_m4_results.json",
+   "raw_sha256": "8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557",
+   "raw_bytes": 83233
+  },
+  "delta_historical_to_revalidated": {
+   "assets_paired": 31,
+   "assets_with_any_primary_delta": 31,
+   "row_keys_identical": true,
+   "row_keys_count": 56,
+   "row_keys_with_spearman_curl_or_projection": [],
+   "decision_changed": false,
+   "rules_changed": false,
+   "fields_with_identical_values": ["auth_max_gradient", "auth_negative_nz_fraction", "coherence_best_strength", "fd_q8_negative_nz_fraction", "self_float_negative_nz_fraction", "self_q8_negative_nz_fraction"],
+   "max_abs_delta_examples": {
+    "delta_rmse": {"n": 31, "max": 1.714e-3, "median": 1.181e-4},
+    "self_rmse": {"n": 31, "max": 1.690e-3, "median": 9.712e-5},
+    "self_abs_corr": {"n": 31, "max": 5.598e-3, "median": 8.082e-5},
+    "self_var": {"n": 31, "max": 9.477e-3, "median": 1.614e-4},
+    "coherence_agreement_deg": {"n": 31, "max": 2.753, "median": 8.237e-1},
+    "coherence_best_strength": {"n": 0, "note": "sin diferencias: confirma que MATH-A no estaba en ninguna de las dos corridas"}
+   },
+   "attribution": "El delta NUMERICO es atribuible al fix de height (#653): authored_dataset.py pasa de blob 5c65af28 (fe54e9a9) a dff54d13 (1a52c3ea) y no vuelve a cambiar hasta 97dcc7ab. El directorio de la corrida se llama revalidation-height-resize-20260928. Precisión (review adversarial F1): entre fe54e9a9 y 1a52c3ea tambien cambia run_exp_m4.py por #643 (2d1473f2, OSError -> exclusion objetiva), pero es NO numerico y no se activo: ambos artefactos tienen 0 exclusiones, n_prepared=31 y n_rows=31. (Un tercer commit del rango, 336ae917/#639, es el squash de la rama M4 ya contenido en fe54e9a9: no aporta delta neto.)",
+   "summary_full_historical_vs_revalidated": {
+    "rmse_self_median": [0.0037464634293201122, 0.0036591679374911455],
+    "rmse_auth_median": [0.03923831451200043, 0.039210970503690816],
+    "delta_rmse_median": [0.03529285034519526, 0.03506316332557898],
+    "abs_corr_self_median": [0.9991646275986957, 0.9989952520308288],
+    "abs_corr_auth_median": [0.8392287789945122, 0.8391782269373411],
+    "var_self_median": [0.9983299530444413, 0.9979915135801384],
+    "var_auth_median": [0.7043049434926205, 0.7042200965657]
+   }
+  }
+ },
+
+ "m5_artifacts": {
+  "thresholds_all_runs": {
+   "T_LOWMID_NRMSE": 0.15,
+   "T_LOWMID_EXCESS": 0.1,
+   "T_HIGH_ENRICHMENT": 2.0,
+   "LOWMID_HIGH_CUTOFF": 32,
+   "ENERGY_GATE_FRACTION": 1e-06,
+   "M5_BOOTSTRAP_SEED": 20260925,
+   "band_edges": [4, 8, 16, 32, 64, 128],
+   "changed_between_runs": false
+  },
+  "historical_full": {
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\full-e116196f.json",
+   "sha256": "f8503610d14d29b4ecc276108b10cfcfa59673ab64d57274cbf2d8f7fcd4bd46",
+   "bytes": 196006,
+   "git_sha": "e116196fc47f83659c7df7ada5ec82f9f993bbcd",
+   "m5_execution_freeze_sha": "e116196fc47f83659c7df7ada5ec82f9f993bbcd",
+   "m5_prereg_freeze_sha": "d33f81ca4218d98ab6f445a93db87a76bc19d7ba",
+   "base_main_sha": "9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5",
+   "solver_module_sha256": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "frequency_module_sha256": "9c724732f713428a0b96059d8076d2021f88d57a97ea829edfc6b1ea4701e941",
+   "resolution": 512,
+   "decision": "EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED",
+   "rules": {"C1_lowmid_preserved": false, "C2_high_enriched": false, "high_gt_lowmid_excess": false, "high_enrichment_ge_threshold": false, "legacy_heldout_replication": false},
+   "full_medians": {
+    "auth_lowmid_nrmse": 0.5543140185923835,
+    "self_lowmid_nrmse": 0.050267545787079204,
+    "excess_lowmid_nrmse": 0.5040464728053042,
+    "auth_high_nrmse": 0.42522176815319634,
+    "self_high_nrmse": 0.07784856698826483,
+    "excess_high_nrmse": 0.34737320116493153,
+    "high_enrichment": 0.7541691251882152,
+    "n_assets": 31
+   },
+   "note": "SUPERSEDIDO para propositos de decision por el corrective FULL (§21/§22 del design doc: agregacion de EXCESS no coincidia con el prereg). Artefacto PRESERVADO sin reescribir."
+  },
+  "corrective_full": {
+   "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\full-corrected-e3dbda51.json",
+   "sha256": "57b22b1d6138622ba31c4a76934b5b9f35ba8bdaff5c174e638150a1d60a6480",
+   "bytes": 196006,
+   "git_sha": "e3dbda517782cb71d9647acad607ea3846629952",
+   "m5_execution_freeze_sha": "e3dbda517782cb71d9647acad607ea3846629952",
+   "m5_prereg_freeze_sha": "d33f81ca4218d98ab6f445a93db87a76bc19d7ba",
+   "base_main_sha": "9f6fa0c2f4a111df4dd3c57b505fb9549a3bbeb5",
+   "solver_module_sha256": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+   "frequency_module_sha256": "b7144da781e049a29061c677d3008de9c67cc83b47702f22ea976f3ba20c9a4e",
+   "resolution": 512,
+   "decision": "EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED",
+   "rules": {"C1_lowmid_preserved": false, "C2_high_enriched": false, "high_gt_lowmid_excess": false, "high_enrichment_ge_threshold": false, "legacy_heldout_replication": false},
+   "full_medians": {
+    "auth_lowmid_nrmse": 0.5543140185923835,
+    "self_lowmid_nrmse": 0.050267545787079204,
+    "excess_lowmid_nrmse": 0.5082023969791158,
+    "auth_high_nrmse": 0.42522176815319634,
+    "self_high_nrmse": 0.07784856698826483,
+    "excess_high_nrmse": 0.33504144042079254,
+    "high_enrichment": 0.7541691251882152,
+    "n_assets": 31
+   },
+   "role": "Resultado vigente de M5. El rerun correctivo fue motivado por un defecto INTERNO de M5 (agregacion de EXCESS), NO por REVAL-1. historical_to_corrected_decision_equivalent=true."
+  },
+  "calibration": {
+   "prereg_freeze_calibration": {
+    "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\calibration-d33f81ca.json",
+    "sha256": "b8f667b5d78b8eaf26be86626d9630e682fb25d36c7b22fd639fd8ba829833db",
+    "bytes": 94914,
+    "git_sha": "d33f81ca4218d98ab6f445a93db87a76bc19d7ba",
+    "decision": "PENDING_FREEZE"
+   },
+   "first_calibration": {
+    "path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\calibration.json",
+    "sha256": "388bfcdf0b7344b793ccffc92772dd1290a458ab3ed3fa0b3aaf5c37fe224c20",
+    "bytes": 94561,
+    "note": "Artefacto de la primera calibration; citado en §18 del design doc."
+   }
+  },
+  "known_numbers_verified": {
+   "brief_LOWMID_excess_0.5082": "CONFIRMADO en full-corrected-e3dbda51.json (0.5082023969791158). En el historico e116196f el campo summary.full.excess_lowmid_nrmse es 0.5040464728053042 (agregacion por diferencia de medianas).",
+   "brief_HIGH_excess_0.3350": "CONFIRMADO en full-corrected-e3dbda51.json (0.33504144042079254). Historico: 0.34737320116493153.",
+   "brief_HIGH_ENRICHMENT_0.7542": "CONFIRMADO en ambos (0.7541691251882152)."
+  }
+ },
+
+ "raw_used_read_only": [
+  {"path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\full-e116196f.json", "bytes": 196006, "sha256": "f8503610d14d29b4ecc276108b10cfcfa59673ab64d57274cbf2d8f7fcd4bd46", "mtime_utc": "2026-10-03T01:43:12Z"},
+  {"path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\full-corrected-e3dbda51.json", "bytes": 196006, "sha256": "57b22b1d6138622ba31c4a76934b5b9f35ba8bdaff5c174e638150a1d60a6480", "mtime_utc": "2026-10-04T00:39:00Z"},
+  {"path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\calibration-d33f81ca.json", "bytes": 94914, "sha256": "b8f667b5d78b8eaf26be86626d9630e682fb25d36c7b22fd639fd8ba829833db", "mtime_utc": "2026-10-02T20:42:26Z"},
+  {"path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\exp-m5\\calibration.json", "bytes": 94561, "sha256": "388bfcdf0b7344b793ccffc92772dd1290a458ab3ed3fa0b3aaf5c37fe224c20", "mtime_utc": "2026-09-30T19:37:46Z"},
+  {"path": "C:\\SkyClawResearch\\NativeParallax\\EXP-M3\\runs\\revalidation-height-resize-20260928\\m4\\exp_m4_results.json", "bytes": 83233, "sha256": "8b018150883c1ebf3e7ab16fe365431e5dadc307b1197f1bb042d08ec26b1557", "mtime_utc": "2026-09-29T18:36:30Z"}
+ ],
+
+ "historical_evidence_not_modified": [
+  "data/exp-m4-results.json",
+  "data/exp-m4-calibration.json",
+  "docs/validation/native-parallax-revalidation-20260928/**",
+  "docs/validation/native-parallax-math-revalidation-20261006/**",
+  "C:\\SkyClawResearch\\**"
+ ],
+
+ "environment": {
+  "python": "E:\\Skyclaw_Main_Sync\\.venv\\Scripts\\python.exe (3.11.9)",
+  "import_source_verified": "E:\\SkyClaw_M4M5_AUDIT_97dcc7ab\\sky_claw\\local\\native_parallax\\research\\solver_coherence.py",
+  "os": "Windows-10-10.0.19045-SP0",
+  "tests_run": "tests/test_native_parallax_exp_m4.py tests/test_native_parallax_exp_m5.py tests/test_native_parallax_spearman.py tests/test_native_parallax_proxy_math.py -> 189 passed"
+ }
+}
