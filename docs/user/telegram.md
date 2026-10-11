@@ -63,32 +63,36 @@ callback tardío no puede reabrir una solicitud ni cambiar una decisión termina
 ## Flood-control y envíos concurrentes
 
 Telegram responde **HTTP 429 + `retry_after`** cuando una ráfaga excede sus límites.
-El transporte (`sky_claw/app/comms/telegram_sender.py`) reintenta de forma acotada
-—3 reintentos además del intento inicial, con espera máxima de 30 s por aviso— y
-**coordina esa espera entre todas las corrutinas del mismo bot**:
+Los envíos de mensajes reintentan de forma acotada —hasta 3 reintentos además del intento inicial;
+el transporte sólo intenta otro envío si `retry_after` no supera 30 s—. Antes de cada intento espera
+el *cooldown* compartido vigente y falla sin solicitar la red si la espera excede el presupuesto del
+llamador. El transporte **coordina esa espera entre todas las corrutinas del mismo bot**:
 
-- un 429 publica un *cooldown* con **reloj monotónico** que retiene íntegramente
-  el deadline del servidor (acotado a una política de sanidad de 24 h); los llamadores
-  operan bajo presupuestos finitos (90 s por defecto para texto) para fallar rápido
-  determinísticamente sin colgar la tarea ni golpear prematuramente la API;
-- la espera reevalúa el deadline en bucle tras cada suspensión, de modo que extensiones
-  intercaladas concurrentes se honran efectivamente antes de llegar a la red;
-- el aviso cubre el alcance global del bot: un 429 no informa cuál de los dos límites
-  se excedió, así que se converge al mayor de forma conservadora;
-- dos 429 concurrentes convergen en el deadline **más lejano** (un aviso nuevo nunca
-  acorta uno vigente), la espera es cancelable y no hay lock sostenido durante una
-  petición de red;
-- los mensajes divididos en fragmentos (*multichunk*) comparten un deadline y presupuesto
-  monotónico único a nivel de `send()`; si un fragmento agota el presupuesto, se reportan
-  las entregas parciales y se preserva el error tipado sin fabricar éxito;
-- en `send_document`, si el cooldown activo excede el presupuesto disponible de la
-  operación, el fallo se clasifica como `TelegramUploadTimeoutError`;
-- las vías HITL (`editMessageText` y `answerCallbackQuery`) acotan su espera con presupuesto
-  finito (10 s para acknowledgements de callback) para no bloquear el event loop ni el cliente de Telegram;
-- **un 429 nunca cuenta como mensaje entregado**: no ocupa un cupo del rate limit
-  local (20 mensajes/minuto por chat) ni produce una identidad de mensaje, y una
-  ráfaga que agota los reintentos termina en `TelegramRateLimitError` con el
-  `retry_after` real — nunca en un éxito fabricado.
+- el límite de 30 s (`_RETRY_AFTER_MAX_SEGUNDOS`) determina exclusivamente si se realiza un nuevo
+  reintento ante una respuesta 429, no la duración de cada suspensión ni el límite del *cooldown* compartido;
+- un 429 publica un *cooldown* con **reloj monotónico** que retiene íntegramente el deadline del
+  servidor (acotado a una política de sanidad de 24 h); los llamadores operan bajo presupuestos
+  finitos (90 s acumulados de cooldown para texto, 10 s para acknowledgements de callback, o el
+  remanente de `MAX_UPLOAD_TOTAL_SECONDS` para documentos) para fallar rápido determinísticamente
+  sin colgar la tarea ni golpear prematuramente la API;
+- la espera reevalúa el deadline en bucle tras cada suspensión, de modo que extensiones intercaladas
+  concurrentes se honran efectivamente antes de llegar a la red;
+- el presupuesto acumulado de cooldown para mensajes multichunk contabiliza únicamente el tiempo
+  efectivamente dormido en cooldown, sin descontar la espera del rate limit local ni la latencia HTTP de la red;
+- el aviso cubre el alcance global del bot: un 429 no informa cuál de los dos límites se excedió,
+  así que se converge al mayor de forma conservadora;
+- dos 429 concurrentes convergen en el deadline **más lejano** (un aviso nuevo nunca acorta uno
+  vigente), la espera es cancelable y no hay lock sostenido durante una petición de red;
+- los mensajes divididos en fragmentos (*multichunk*) comparten un presupuesto acumulado de
+  cooldown único a nivel de `send()`; si un fragmento agota el presupuesto, se reportan las
+  entregas parciales y se preserva el error tipado sin fabricar éxito;
+- en `send_document`, si el cooldown activo excede el presupuesto disponible de la operación, el
+  fallo se clasifica como `TelegramUploadTimeoutError`;
+- las vías HITL (`editMessageText` y `answerCallbackQuery`) acotan su espera con presupuesto finito
+  (10 s para acknowledgements de callback) para no bloquear el event loop ni el cliente de Telegram;
+- **un 429 nunca cuenta como mensaje entregado**: no ocupa un cupo del rate limit local (20
+  mensajes/minuto por chat) ni produce una identidad de mensaje, y una ráfaga que agota los
+  reintentos termina en `TelegramRateLimitError` con el `retry_after` real — nunca en un éxito fabricado.
 
 Contrato para quien consuma estas notificaciones (fase T3), con los reintentos ya
 agotados: una actualización **no crítica** (progreso, estado de LOD, seguimiento) se

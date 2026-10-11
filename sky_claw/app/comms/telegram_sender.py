@@ -273,13 +273,15 @@ class CooldownCompartido:
         """Segundos que restan del aviso vigente (0.0 si no hay ninguno)."""
         return max(0.0, self._deadline[0] - time.monotonic())
 
-    async def esperar(self, presupuesto: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS) -> None:
+    async def esperar(self, presupuesto: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS) -> float:
         """Espera —cancelable— al deadline compartido vigente, si hay alguno.
 
         Reevalúa el deadline en bucle tras cada suspensión para honrar extensiones
         concurrentes. Si la espera requerida excede ``presupuesto``, lanza
         :class:`TelegramRateLimitError` para fallar rápido determinísticamente sin
         bloquear indefinidamente la tarea ni saturar el event loop.
+
+        Devuelve los segundos efectivamente dormidos (monotónicos).
         """
         total_dormido = 0.0
         while True:
@@ -295,8 +297,11 @@ class CooldownCompartido:
                     presupuesto_agotado=True,
                 )
             antes = time.monotonic()
-            await asyncio.sleep(restante)
-            total_dormido += max(0.0, time.monotonic() - antes)
+            try:
+                await asyncio.sleep(restante)
+            finally:
+                total_dormido += max(0.0, time.monotonic() - antes)
+        return total_dormido
 
 
 class TelegramSendError(Exception):
@@ -464,13 +469,17 @@ class TelegramSender:
         chunks = self._split_message(text)
         last_message: TelegramMessage | None = None
         mensajes_entregados: list[TelegramMessage] = []
-        tiempo_inicio = time.monotonic()
-        presupuesto_total = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS
+        presupuesto_cooldown_total = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS
+        cooldown_dormido_acumulado = 0.0
+
+        def _registrar_cooldown(dormido: float) -> None:
+            nonlocal cooldown_dormido_acumulado
+            cooldown_dormido_acumulado += dormido
+
         for i, chunk in enumerate(chunks):
             await self._wait_for_rate_limit(chat_id)
             markup = reply_markup if i == len(chunks) - 1 else None
-            tiempo_transcurrido = time.monotonic() - tiempo_inicio
-            presupuesto_remanente = max(0.0, presupuesto_total - tiempo_transcurrido)
+            presupuesto_remanente = max(0.0, presupuesto_cooldown_total - cooldown_dormido_acumulado)
             try:
                 last_message = await self._send_chunk(
                     chat_id,
@@ -478,6 +487,7 @@ class TelegramSender:
                     markup,
                     parse_mode,
                     presupuesto_cooldown=presupuesto_remanente,
+                    on_cooldown_sleep=_registrar_cooldown,
                 )
                 mensajes_entregados.append(last_message)
             except TelegramRateLimitError as exc:
@@ -507,6 +517,7 @@ class TelegramSender:
         parse_mode: str | None = None,
         *,
         presupuesto_cooldown: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS,
+        on_cooldown_sleep: Callable[[float], None] | None = None,
     ) -> TelegramMessage:
         """Send a single message chunk via the Telegram API."""
         payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "HTML"}
@@ -518,6 +529,7 @@ class TelegramSender:
             chat_id,
             lambda: {"json": payload},
             presupuesto_cooldown=presupuesto_cooldown,
+            on_cooldown_sleep=on_cooldown_sleep,
         )
 
     async def send_document(
@@ -655,6 +667,7 @@ class TelegramSender:
         make_kwargs: Callable[[], dict[str, Any]],
         *,
         presupuesto_cooldown: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS,
+        on_cooldown_sleep: Callable[[float], None] | None = None,
     ) -> TelegramMessage:
         """POST a ``endpoint`` con la política de flood-control compartida.
 
@@ -674,17 +687,18 @@ class TelegramSender:
         url = self._url + endpoint
         retry_after = _RETRY_AFTER_POR_DEFECTO
         cuerpo_429 = ""
-        tiempo_inicio = time.monotonic()
+        dormido_en_llamada = 0.0
         for intento in range(_MAX_REINTENTOS_429 + 1):
             # La consulta va DENTRO del bucle: después de un 429 el próximo intento
             # también espera, y si otra corrutina publicó un aviso mientras tanto,
             # este intento lo honra.
             tiempo_restante = (
-                max(0.0, presupuesto_cooldown - (time.monotonic() - tiempo_inicio))
-                if presupuesto_cooldown is not None
-                else None
+                max(0.0, presupuesto_cooldown - dormido_en_llamada) if presupuesto_cooldown is not None else None
             )
-            await self._cooldown.esperar(presupuesto=tiempo_restante)
+            dormido = await self._cooldown.esperar(presupuesto=tiempo_restante)
+            dormido_en_llamada += dormido
+            if on_cooldown_sleep is not None and dormido > 0.0:
+                on_cooldown_sleep(dormido)
             resp = await self._gateway.request("POST", url, self._session, **make_kwargs())
             async with resp:
                 if resp.status != 429:
@@ -707,9 +721,8 @@ class TelegramSender:
                 self._cooldown.restante(),
             )
 
-        tiempo_transcurrido = time.monotonic() - tiempo_inicio
         tiempo_restante = (
-            max(0.0, presupuesto_cooldown - tiempo_transcurrido) if presupuesto_cooldown is not None else None
+            max(0.0, presupuesto_cooldown - dormido_en_llamada) if presupuesto_cooldown is not None else None
         )
         presupuesto_agotado = tiempo_restante is not None and retry_after > tiempo_restante
         raise TelegramRateLimitError(

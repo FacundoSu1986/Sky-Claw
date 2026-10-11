@@ -120,14 +120,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TelegramSender` publica cada 429 en `CooldownCompartido` —deadline monotónico,
   extendido con `max` para que dos avisos concurrentes converjan en el más lejano—
   y lo consulta **antes de cada intento HTTP**, no sólo antes del primero. La autoridad
-  retiene la restricción íntegra del servidor (tope de sanidad de 24 h) mientras los
+  retiene la restricción íntegra del servidor (tope de sanidad de 24 h) —distinguiendo
+  el umbral de reintento de 30 s de la duración del deadline— mientras los
   llamadores operan con presupuestos finitos (90 s por defecto) para fallar rápido
   determinísticamente sin golpear la red. La espera reevalúa en bucle tras cada suspensión,
   honrando extensiones progresivas de múltiples corrutinas. Los mensajes multichunk
-  comparten un único deadline/presupuesto acumulado reportando entregas parciales,
+  comparten un presupuesto acumulado de cooldown único reportando entregas parciales,
+  descontando exclusivamente las suspensiones reales de flood-control sin penalizar
+  la espera del rate limit local ni la latencia de red.
   `send_document` clasifica el agotamiento de presupuesto como `TelegramUploadTimeoutError`
   y las vías HITL (`editMessageText`, `answerCallbackQuery` con cota de 10 s) acotan su espera para evitar
-  bloqueos prolongados, atrapando fallos de transporte y rate limit en el ack sin revertir decisiones comprometidas.
+  bloqueos prolongados, atrapando fallos de transporte y rate limit en el ack con inspección estricta de URLs HTTP y sin revertir decisiones comprometidas.
   El alcance es el del **bot** (un 429 no permite atribuir si el
   límite excedido fue el del chat o el global). Un 429 sigue sin ocupar un cupo del rate
   limit local ni producir identidad de mensaje, la espera es cancelable y no hay lock sostenido

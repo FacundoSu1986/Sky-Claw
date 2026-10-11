@@ -603,6 +603,41 @@ class TestContratoDeFallo:
             TelegramMessage(chat_id=123, message_id=102),
         )
 
+    async def test_multichunk_con_espera_de_rate_limit_local_y_latencia_no_contamina_presupuesto_de_cooldown(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """F7: Esperas del rate limit local y latencia de red no deben descontarse
+        del presupuesto de cooldown (90s). Un mensaje largo con >20 chunks que espera
+        en el rate limit local debe poder absorber un 429 corto posterior.
+        """
+        # 25 chunks (>4096 caracteres cada división)
+        texto = "\n".join(f"chunk_{i} " + ("A" * 4000) for i in range(25))
+        # 24 chunks exitosos, el chunk 25 recibe 429 de 2s y luego 200 OK
+        respuestas = [_ok(100 + i) for i in range(24)] + [_429(retry_after=2), _ok(200)]
+        sender, gw = _sender(tiempo, *respuestas)
+
+        # Simular latencia de red acumulada en cada petición HTTP
+        orig_request = gw.request.side_effect
+        count = 0
+
+        async def request_with_latency(*args: Any, **kwargs: Any) -> Any:
+            nonlocal count
+            count += 1
+            if count > 20:
+                tiempo.reloj.avanzar(7.0)
+            else:
+                tiempo.reloj.avanzar(0.1)
+            return await orig_request(*args, **kwargs)
+
+        gw.request.side_effect = request_with_latency
+
+        # En la implementación no endurecida, el tiempo transcurrido (espera rate limit 60s +
+        # latencia acumulada > 95s) superaba los 90s, dejando presupuesto_remanente en 0s y
+        # rechazando indebidamente el 429 de 2s a pesar de no haber consumido cooldown previo.
+        res = await sender.send(123, texto)
+        assert res.message_id == 200
+        assert tiempo.reloj.ahora > 90.0
+
     async def test_send_document_con_cooldown_excediendo_cota_lanza_upload_timeout(self, tiempo: _Tiempo) -> None:
         """D: Si el cooldown activo supera el tiempo remanente de MAX_UPLOAD_TOTAL_SECONDS,
 
@@ -712,8 +747,11 @@ class TestContratoDeFallo:
         hitl.respond.assert_awaited_once_with("req-p2a", True)
         # El callback intentó confirmar pero falló en CooldownCompartido sin llamar al gateway
         # (cero llamadas de answerCallbackQuery al gateway dentro del cooldown)
-        llamadas_cb = [c for c in gw.llamadas if "answerCallbackQuery" in getattr(c, "url", "")]
+        llamadas_cb = [c for c in gw.request.await_args_list if "answerCallbackQuery" in c.args[1]]
         assert len(llamadas_cb) == 0, "no debe generar peticiones HTTP de callbackquery dentro del cooldown"
+        # Pero no debe prohibir la terminalización legítima de HITL vía editMessageText
+        llamadas_edit = [c for c in gw.request.await_args_list if "editMessageText" in c.args[1]]
+        assert len(llamadas_edit) == 1, "debe ejecutar la terminalización legítima de HITL vía editMessageText"
 
     async def test_send_document_con_nuevo_429_que_excede_presupuesto_restante_pero_menor_al_total_lanza_upload_timeout(
         self, tiempo: _Tiempo
@@ -850,3 +888,35 @@ class TestAnclasEstructurales:
             if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name) and nodo.value.id == "time"
         )
         assert set(usos) == {"monotonic"}, "el sender sólo puede leer el reloj monotónico"
+
+    def test_ancla_documentacion_cooldown_y_reintentos_429(self) -> None:
+        """F9: La documentación debe distinguir inequívocamente el umbral de reintento (30s)
+        de la retención íntegra del deadline (hasta 24h) y de los presupuestos de llamada.
+        """
+        doc_path = Path(__file__).resolve().parents[1] / "docs" / "user" / "telegram.md"
+        contenido = doc_path.read_text(encoding="utf-8")
+
+        # Verifica mención explícita del contrato de 30s como umbral de reintento
+        assert "_RETRY_AFTER_MAX_SEGUNDOS" in contenido
+        assert "sólo intenta otro envío si `retry_after` no supera 30 s" in contenido
+        # Verifica mención de retención íntegra hasta 24h
+        assert "24 h" in contenido
+        # Verifica presupuestos explícitos
+        assert "90 s" in contenido
+        assert "10 s" in contenido
+        assert "MAX_UPLOAD_TOTAL_SECONDS" in contenido
+
+        # Ancla de constantes en el código
+        assert sender_mod._RETRY_AFTER_MAX_SEGUNDOS == 30.0
+        assert sender_mod._SANIDAD_MAX_COOLDOWN_SEGUNDOS == 86400.0
+        assert sender_mod._MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS == 90.0
+        assert sender_mod._PRESUPUESTO_CALLBACK_SEGUNDOS == 10.0
+
+        # Cooldown retiene íntegramente 600s y acota a 24h
+        t = _Tiempo()
+        with patch.object(sender_mod, "time", t.reloj):
+            cd = sender_mod.CooldownCompartido()
+            cd.publicar(600.0)
+            assert cd.restante() == 600.0
+            cd.publicar(100_000.0)
+            assert cd.restante() == 86400.0
