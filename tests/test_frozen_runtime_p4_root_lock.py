@@ -1462,30 +1462,39 @@ def test_f19_posix_fork_child_does_not_keep_kernel_flock_if_parent_dies(
     parent_pid = os.fork()
     if parent_pid == 0:
         # En el proceso A
-        os.close(pipe_r)
-        handle = acquire_frozen_runtime_root_lock(root, timeout=2.0)
-        handle.assert_owned()
+        codigo = 1
+        try:
+            os.close(pipe_r)
+            handle = acquire_frozen_runtime_root_lock(root, timeout=2.0)
+            handle.assert_owned()
 
-        # A crea hijo B
-        child_b_pid = os.fork()
-        if child_b_pid == 0:
-            # En hijo B: enviar PID al test runner y esperar indefinidamente
-            b_pid = os.getpid()
-            os.write(pipe_w, f"{b_pid}\n".encode("ascii"))
+            child_b_pid = os.fork()
+            if child_b_pid == 0:
+                codigo_hijo = 1
+                try:
+                    b_pid = os.getpid()
+                    os.write(pipe_w, f"{b_pid}\n".encode("ascii"))
+                    os.close(pipe_w)
+                    time.sleep(30)
+                    codigo_hijo = 0
+                finally:
+                    os._exit(codigo_hijo)
+
             os.close(pipe_w)
-            # Dormir hasta que el proceso de prueba lo termine
-            time.sleep(30)
-            os._exit(0)
-
-        # Proceso A sale inmediatamente sin release (simula muerte con lock tomado)
-        os.close(pipe_w)
-        os._exit(0)
+            codigo = 0
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(pipe_w)
+            os._exit(codigo)
 
     # En el test runner
     os.close(pipe_w)
     pipe_file = os.fdopen(pipe_r, "r")
     child_b_pid_str = pipe_file.readline().strip()
     pipe_file.close()
+    if not child_b_pid_str:
+        _, status = os.waitpid(parent_pid, 0)
+        pytest.fail(f"El proceso A terminó antes de comunicar el PID de B: status={status}")
     child_b_pid = int(child_b_pid_str)
 
     try:
