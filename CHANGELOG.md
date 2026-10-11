@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **El `--help` declaraba defaults que no eran los que corrían (#665).** `--mode`
+  decía `(default: cli)` también en el `.exe` congelado, donde el default real es
+  `gui` (un `set_defaults` posterior lo pisaba sin tocar el texto). El mismo
+  defecto tenía su hermano en el parser: `--provider` decía `(default: deepseek)`
+  aunque el default efectivo sale de `llm_provider` en la config; `--vfs-timeout`
+  decía `30` frente a un `30.0` efectivo, y `--profile` usaba el formato
+  `(default: …)` para describir una resolución posterior (su default argparse es
+  vacío). Ahora el default de `--mode` se decide una sola vez y todos los
+  `(default: X)` se derivan con `%(default)s`. Ancla:
+  `tests/test_cli_help_defaults.py` recorre TODAS las acciones del parser en los
+  cuatro contextos (fuente/congelado × config con/sin provider) y compara cada
+  default declarado contra `parse_args([])`; el conjunto de argumentos que
+  declaran default queda congelado por igualdad literal.
 - **El launcher `SkyClawApp.bat` no encontraba el entorno del repo y avisaba por
   el puerto equivocado.** Buscaba `venv\Scripts\python.exe` (el repo usa `.venv`,
   el que crean `build.bat`/`uv`) y caía al Python del sistema, que no tiene
