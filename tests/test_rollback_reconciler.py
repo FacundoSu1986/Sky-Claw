@@ -58,6 +58,12 @@ _PAQUETE = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
 #: enumera quién **revierte**, acá quién deja **residuo durable** que reconciliar.
 PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
     "sky_claw/local/tools/_dir_rollback.py": "move-aside",
+    # #592 finding 2: el packaging del runner dejó de borrar el mod previo y
+    # pasó a apartarlo con un `DirectoryRollback`, así que AHORA deja residuo
+    # move-aside bajo `mods/`. Su destino (`mods/DynDOLOD Output`) ya está en los
+    # `destinos` del productor `dyndolod` de `construir_productores_de_move_aside`,
+    # así que el barrido de arranque lo cubre sin agregar ninguna familia.
+    "sky_claw/local/tools/dyndolod_runner.py": "move-aside",
     "sky_claw/local/mo2/profile_sandbox.py": "clon-sandbox",
 }
 
@@ -69,6 +75,11 @@ PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
 #: su ``ProductorDeMoveAside``.
 USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "dyndolod",
+    # #592 finding 2: el packaging aparta `mods/DynDOLOD Output` (y el de TexGen)
+    # para sustituirlo sin destruir la generación anterior. Los dos destinos ya
+    # están declarados por el productor `dyndolod`, bajo el lock del ritual de
+    # etapa 9 — el mismo que el servicio toma para la corrida que los produce.
+    "sky_claw/local/tools/dyndolod_runner.py": "dyndolod",
     "sky_claw/local/tools/pandora_service.py": "pandora",
     "sky_claw/app/agent/tools/system_tools.py": "bodyslide",
 }
