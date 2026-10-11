@@ -36,7 +36,7 @@ _FS_RETRIES = 5
 _FS_BACKOFF_SECONDS = 0.1
 
 
-async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
+async def _borrar_arbol_o_enlace(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
     """Descarta *ruta*, sea un árbol real o un enlace, sin tocar ningún destino ajeno.
 
     Delega en :func:`~sky_claw.app.security.links.rmtree_link_aware`, que aplica
@@ -50,15 +50,20 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     ``_fs_op_with_retry``, así que un ``OSError`` transitorio reintenta todo —
     idempotente, porque lo ya borrado no vuelve a aparecer en el ``scandir``.
 
-    ``limpiar_readonly`` queda apagado: los artefactos de rollback los produce
-    este módulo con un ``rename``, así que heredan los permisos del árbol que la
-    herramienta generó. Si alguno viniera de solo-lectura, el ``OSError`` tiene
-    que verse en vez de que se muten permisos en silencio.
+    ``limpiar_readonly`` queda apagado por defecto: los artefactos de rollback
+    los produce este módulo con un ``rename``, así que heredan los permisos del
+    árbol que la herramienta generó. Si alguno viniera de solo-lectura, el
+    ``OSError`` tiene que verse en vez de que se muten permisos en silencio.
+    El caller que SÍ conoce ese caso lo pide explícito (ver
+    ``DirectoryRollback(limpiar_readonly_al_borrar=...)``): una herramienta
+    externa de Windows —DynDOLOD/TexGen— deja su salida con
+    ``FILE_ATTRIBUTE_READONLY``, y ahí el ``OSError`` no es información sino un
+    backup que queda huérfano en el camino de ÉXITO.
     """
-    await _fs_op_with_retry(rmtree_link_aware, ruta)
+    await _fs_op_with_retry(rmtree_link_aware, ruta, limpiar_readonly=limpiar_readonly)
 
 
-async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
+async def _fs_op_with_retry(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Ejecuta una op de FS off-loop, reintentando ante ``OSError`` transitorio.
 
     En Windows, ``rename``/``rmtree`` sobre un directorio recién creado puede
@@ -69,11 +74,37 @@ async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
     last_exc: OSError | None = None
     for attempt in range(_FS_RETRIES):
         try:
-            return await asyncio.to_thread(op, *args)
+            return await asyncio.to_thread(op, *args, **kwargs)
         except OSError as exc:
             last_exc = exc
             if attempt < _FS_RETRIES - 1:
                 await asyncio.sleep(_FS_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None  # el loop siempre corre al menos una vez
+    raise last_exc
+
+
+def _fs_op_with_retry_sync(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Twin síncrono de :func:`_fs_op_with_retry` — mismo reintento, sin ``await``.
+
+    Existe por UNA razón: fusionar un chequeo de autoridad con la mutación que
+    autoriza. En el hermano async, un ``await`` entre "consulté el veto" y "borré"
+    devuelve el control al event loop, y en esa ventana el lease puede perderse —
+    el mismo TOCTOU que ``_restaurar_target_vacio_sync`` ya cierra para el restore
+    (review CodeRabbit #404). Con esta variante el chequeo y el borrado corren
+    enteros dentro del mismo hilo, así que "no hay ventana" es cierto de verdad y
+    no sólo "la ventana es chica".
+
+    Sólo se usa desde un hilo que ya está off-loop (``asyncio.to_thread``): acá
+    ``time.sleep`` no bloquea el event loop, y por eso el backoff es el mismo.
+    """
+    last_exc: OSError | None = None
+    for attempt in range(_FS_RETRIES):
+        try:
+            return op(*args, **kwargs)
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _FS_RETRIES - 1:
+                time.sleep(_FS_BACKOFF_SECONDS * (attempt + 1))
     assert last_exc is not None  # el loop siempre corre al menos una vez
     raise last_exc
 
@@ -187,6 +218,7 @@ class DirectoryRollback:
         enabled: bool = True,
         should_rollback: Callable[[], bool] | None = None,
         validate_final_target: Callable[[], bool] | None = None,
+        limpiar_readonly_al_borrar: bool = False,
     ) -> None:
         self._target = target_dir
         self._enabled = enabled
@@ -200,6 +232,14 @@ class DirectoryRollback:
         #: capas apliquen el MISMO criterio.
         self._should_rollback = should_rollback
         self._validate_final_target = validate_final_target
+        #: ``True`` cuando el árbol protegido lo generó una herramienta externa de
+        #: Windows que puede dejarlo con ``FILE_ATTRIBUTE_READONLY``. Sin esto, la
+        #: única operación que borra la generación anterior —el descarte del
+        #: backup, que corre en el camino de ÉXITO— falla con ``PermissionError``,
+        #: ``__aexit__`` traga el ``OSError`` por diseño y el residuo queda
+        #: huérfano donde nadie lo mira. Apagado por defecto: mutar permisos en
+        #: silencio no es algo que un caller pueda recibir sin pedirlo.
+        self._limpiar_readonly_al_borrar = limpiar_readonly_al_borrar
         self._backup: pathlib.Path | None = None
         #: M-7: outcome exclusivo del ROLLBACK. Empieza True porque el preflight
         #: todavía no mutó; cambia a False al habilitar un primer run o move-aside
@@ -208,12 +248,30 @@ class DirectoryRollback:
         #: consulta mediante ``finalization_completed``.
         self.rollback_completed: bool = True
         self.finalization_completed: bool = True
+        #: Diagnóstico ADITIVO (review F4 del PR #709): ``__aexit__`` traga el
+        #: ``OSError`` del cleanup **por diseño** —no puede enmascarar la
+        #: excepción del body ni romper un cierre limpio—, así que sin esto la
+        #: causa real del descarte fallido se perdía y el caller sólo veía
+        #: ``finalization_completed=False``, sin poder decir POR QUÉ. Guardarla
+        #: NO cambia el contrato de ``__aexit__``: sigue sin lanzar y sigue
+        #: logueando con ``exc_info``; sólo lo hace inspeccionable.
+        self.cleanup_error: BaseException | None = None
 
     @property
     def target(self) -> pathlib.Path:
         """Directorio protegido — para que el caller lo nombre en sus logs sin
         tener que alcanzar el atributo privado."""
         return self._target
+
+    @property
+    def backup(self) -> pathlib.Path | None:
+        """Residuo move-aside actual (``<name>.rollback-<nonce>``), o ``None``.
+
+        Mismo motivo que ``target``: el caller tiene que poder NOMBRAR el residuo
+        recuperable en su contrato de fallo —"el backup quedó acá"— sin alcanzar
+        ``self._backup``. ``None`` significa que no hubo move-aside (primer run).
+        """
+        return self._backup
 
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
@@ -311,7 +369,10 @@ class DirectoryRollback:
         cancelado_durante_cleanup = await _esperar_hasta_terminal(cleanup_task)
         try:
             cleanup_task.result()
-        except OSError:
+        except OSError as exc:
+            # Se registra ANTES de tragar: el contrato sigue siendo "no lanzar
+            # desde acá", pero la causa deja de evaporarse (review F4 #709).
+            self.cleanup_error = exc
             # Nunca enmascarar la excepción del body ni romper un cierre limpio.
             logger.critical(
                 "Fallo limpiando/restaurando el rollback de '%s' (exc_body=%s)",
@@ -424,7 +485,7 @@ class DirectoryRollback:
         # Sobre un enlace, ``rmtree`` lanzaría —quedando el parcial en disco y el
         # restore sin hacer— o atravesaría un junction borrando un árbol ajeno.
         if await asyncio.to_thread(path_present, self._target):
-            await _borrar_arbol_o_enlace(self._target)
+            await _borrar_arbol_o_enlace(self._target, limpiar_readonly=self._limpiar_readonly_al_borrar)
         if self._backup is not None and await asyncio.to_thread(path_present, self._backup):
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
@@ -507,7 +568,59 @@ class DirectoryRollback:
         # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
         # Windows), y esto corre en el camino de ÉXITO — donde ``__aexit__`` traga el
         # OSError y nadie se entera.
-        await _borrar_arbol_o_enlace(self._backup)
+        #
+        # Review CodeRabbit #709 (P1) — el descarte es una MUTACIÓN y necesita
+        # autoridad VIGENTE, no sólo la que había cuando el runner fenceó.
+        #
+        # El fence del packaging corre justo antes de ``__aexit__``, pero entre ese
+        # fence y este borrado quedan varios ``await``: ``_final_target_is_valid``,
+        # ``path_present``, ``link_kind_or_raise`` (con hasta ``_FS_RETRIES``
+        # reintentos y backoff, ~1,5 s) y ``_sin_regenerar``. Si el lease se pierde
+        # en esa ventana, otro dueño puede estar mutando el mismo target y este
+        # proceso —ya sin exclusividad— borraría la ÚLTIMA copia del mod previo.
+        # El veto se consultaba en la rama de excepción y en el restore de target
+        # vacío, pero NO acá: el hermano que faltaba.
+        #
+        # El chequeo va FUSIONADO con el borrado (``_descartar_backup_sync``), no
+        # como un ``await`` más antes: un chequeo separado deja la misma ventana,
+        # sólo más chica, y esta clase ya aprendió esa lección en el restore.
+        if permitir_restore:
+            return await asyncio.to_thread(self._descartar_backup_sync)
+
+        # ``commit()``: punto de no-retorno EXPLÍCITO del caller (``permitir_restore
+        # =False``). Ahí el descarte es intencional y no se consulta veto — el
+        # comportamiento queda igual que antes de este fix.
+        await _borrar_arbol_o_enlace(self._backup, limpiar_readonly=self._limpiar_readonly_al_borrar)
+        return True
+
+    def _descartar_backup_sync(self) -> bool:
+        """Veto de autoridad **y** borrado del backup, en UNA unidad síncrona.
+
+        Corre dentro de un solo ``asyncio.to_thread``: entre la lectura del veto y
+        el ``rmtree`` no hay ningún ``await``, así que el lease no puede perderse
+        "en el medio" — la propiedad es *no hay ventana*, no *la ventana es chica*.
+
+        Devuelve ``True`` sólo si el backup se descartó. Un veto que no autoriza
+        devuelve ``False`` **sin tocar nada**: el backup queda en disco, con nombre
+        determinista, para recuperación manual — misma dirección segura que el
+        restore vetado. El llamador lo propaga a ``finalization_completed``, así
+        que ningún consumidor puede leer ese cleanup como completado.
+        """
+        if not self._veto_permite_restaurar():
+            logger.critical(
+                "Descarte del backup de '%s' OMITIDO: se perdió la exclusividad del recurso o "
+                "la terminalidad es desconocida. El backup queda en '%s' para recuperación manual.",
+                self._target,
+                self._backup,
+            )
+            return False
+        assert self._backup is not None  # invariante: el caller ya lo verificó
+        # ``rmtree_link_aware`` llega por REFERENCIA, igual que en el hermano
+        # async: no agrega una invocación directa que el censo de
+        # ``tests/test_borrado_recursivo.py`` tenga que declarar aparte, y el
+        # parcheo de ``_dir_rollback.rmtree_link_aware`` (test_dir_rollback.py)
+        # sigue funcionando porque el global se resuelve al llamar.
+        _fs_op_with_retry_sync(rmtree_link_aware, self._backup, limpiar_readonly=self._limpiar_readonly_al_borrar)
         return True
 
     def _restaurar_target_vacio_sync(self) -> bool:

@@ -2299,6 +2299,7 @@ async def test_pipeline_entrega_a_packaging_la_fuente_texgen_exacta(tmp_path: pa
         mod_name: str,
         *,
         preservar_directorio_raiz: bool = False,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> pathlib.Path:
         llamadas.append((output_path, mod_name, preservar_directorio_raiz))
         return config.mo2_mods_path / mod_name
@@ -4763,6 +4764,7 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         mod_name: str,
         *,
         preservar_directorio_raiz: bool = False,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> pathlib.Path:
         del output_path, preservar_directorio_raiz
         if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
@@ -4836,6 +4838,7 @@ async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
         mod_name: str,
         *,
         preservar_directorio_raiz: bool = False,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> pathlib.Path:
         del output_path, preservar_directorio_raiz
         if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
@@ -5572,6 +5575,7 @@ async def test_fallo_de_texgen_no_toca_el_output_de_dyndolod(tmp_path: pathlib.P
         mod_name: str,
         *,
         preservar_directorio_raiz: bool = False,
+        veto_de_rollback: Callable[[], bool] | None = None,
     ) -> pathlib.Path:
         del output_path, preservar_directorio_raiz
         empaquetados.append(mod_name)
@@ -6460,10 +6464,13 @@ async def test_tp02_50_ownership_valido_prepara_y_spawnea(
     assert result["success"] is True, result.get("errors")
     assert fake.tools == ["TexGen", "DynDOLOD"]
     # Fences observables con `_execute_process` parcheado: pre-move-aside,
-    # pre-mkdir y los DOS packagings. El fence previo al spawn vive DENTRO de
-    # `_execute_process` (por eso el fake lo puentea) y tiene su test directo
-    # (`test_el_fence_del_runner_corre_antes_del_spawn`).
-    assert ownership.fences == 4, f"el fence no se ejecutó en todas las fronteras: {ownership.fences}"
+    # pre-mkdir y los DOS packagings × DOS fences cada uno — el previo a la copia
+    # (P2.2) y el FRESCO posterior al worker terminal (review Codex #709 F2: sin
+    # él, la pérdida de lease durante la copia tomaba el camino de ÉXITO y
+    # descartaba el backup del mod previo sin consultar el veto). El fence previo
+    # al spawn vive DENTRO de `_execute_process` (por eso el fake lo puentea) y
+    # tiene su test directo (`test_el_fence_del_runner_corre_antes_del_spawn`).
+    assert ownership.fences == 6, f"el fence no se ejecutó en todas las fronteras: {ownership.fences}"
 
 
 @pytest.mark.asyncio
@@ -8592,3 +8599,381 @@ def test_toda_salida_temprana_de_execute_publica_el_evento_terminal() -> None:
     assert sin_publicacion == [], (
         f"salidas tempranas de `execute` que cierran el ciclo sin publicar el evento terminal: {sin_publicacion}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #592 finding 2 — el mod anterior sobrevive al packaging, también sin snapshot
+# ---------------------------------------------------------------------------
+#
+# El defecto vivía en `_empaquetar_sincrono` (runner), pero su consecuencia se
+# decide en el SERVICIO: con `create_snapshot=True` el `DirectoryRollback` del
+# servicio ya apartaba `mods/DynDOLOD Output` antes del run, así que el `rmtree`
+# del packaging era un no-op y el backup estaba a salvo. Con
+# `create_snapshot=False` —renuncia válida del operador— no había ninguna red.
+# Por eso los tests de abajo corren el `execute` REAL con `create_snapshot=False`:
+# son la mitad que el runner aislado no puede demostrar.
+
+
+def _arbol_de(raiz: pathlib.Path) -> dict[str, bytes]:
+    if not raiz.exists():
+        return {}
+    return {p.relative_to(raiz).as_posix(): p.read_bytes() for p in sorted(raiz.rglob("*")) if p.is_file()}
+
+
+def _sin_espacio(monkeypatch: pytest.MonkeyPatch, libres: int = 1) -> None:
+    monkeypatch.setattr(
+        sky_claw.local.tools.dyndolod_runner.shutil,
+        "disk_usage",
+        lambda _p: types.SimpleNamespace(total=libres, used=0, free=libres),
+    )
+
+
+@pytest.mark.asyncio
+async def test_592_f2_sin_snapshot_el_mod_previo_sobrevive_al_enospc(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1 de extremo a extremo: `create_snapshot=False` + ENOSPC ⇒ previo intacto.
+
+    Es la reproducción del finding 2 sobre el camino real del servicio. Antes del
+    fix, el `rmtree` del packaging borraba `mods/TexGen Output` y RECIÉN DESPUÉS
+    medía el espacio: la corrida fallaba y el operador quedaba sin su generación
+    anterior, sin backup y sin nada que el rollback del servicio pudiera
+    restaurar (no había snapshot que restaurar).
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    service._runner = runner
+
+    mod_previo = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    (mod_previo / "textures" / "terrain").mkdir(parents=True)
+    (mod_previo / "textures" / "terrain" / "viejo.dds").write_bytes(b"VIEJO")
+    (mod_previo / "meta.ini").write_bytes(b"[General]\nname=TexGen Output\n")
+    antes = _arbol_de(mod_previo)
+    assert antes, "el escenario exige un mod previo poblado"
+
+    _sin_espacio(monkeypatch)
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(texgen_staging, "nuevo.dds", b"NUEVO"),
+        ),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert resultado["success"] is False, "sin espacio el pipeline no puede reportar éxito"
+    assert _arbol_de(mod_previo) == antes, "el mod previo se perdió al fallar por ENOSPC sin snapshot"
+    residuos = sorted(p.name for p in config.mo2_mods_path.iterdir() if ".rollback-" in p.name)
+    assert residuos == [], "un rechazo por capacidad no debe dejar residuo de move-aside"
+
+
+@pytest.mark.asyncio
+async def test_592_f2_con_snapshot_el_rollback_del_servicio_no_se_duplica(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P7 — `create_snapshot=True`: el protocolo del servicio queda intacto.
+
+    Con snapshot, el servicio ya apartó el mod antes del run, así que la
+    sustitución del packaging NO tiene nada que mover. Lo que se ancla acá es que
+    los dos protocolos conviven: no aparece un segundo move-aside, y el rollback
+    del servicio sigue devolviendo el mod previo byte-exacto cuando la corrida
+    falla.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    service._runner = runner
+
+    mod_previo = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    (mod_previo / "textures").mkdir(parents=True)
+    (mod_previo / "textures" / "viejo.dds").write_bytes(b"VIEJO")
+    (mod_previo / "meta.ini").write_bytes(b"[General]\nname=TexGen Output\n")
+    antes = _arbol_de(mod_previo)
+
+    _sin_espacio(monkeypatch)
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(texgen_staging, "nuevo.dds", b"NUEVO"),
+        ),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert resultado["success"] is False
+    assert _arbol_de(mod_previo) == antes, "el rollback del servicio no devolvió el mod previo"
+    residuos = sorted(p.name for p in config.mo2_mods_path.iterdir() if ".rollback-" in p.name)
+    assert residuos == [], "los dos protocolos de rollback dejaron residuo: revisar doble move-aside"
+
+
+@pytest.mark.asyncio
+async def test_592_f2_el_servicio_cablea_el_veto_de_lease_al_packaging(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """P10 — el veto de lease llega al packaging, y es el MISMO del servicio.
+
+    Sin este cableado, la sustitución restauraría su backup sobre la salida de un
+    dueño concurrente cuando la lease ya se perdió: el hallazgo de Codex #399
+    reintroducido en una superficie nueva. Se verifica sobre la llamada real, no
+    sobre la intención del fix.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    service._runner = runner
+
+    # El empaquetado de TexGen ACÁ SÍ termina bien (el sujeto es el cableado del
+    # veto, no el fallo), así que la corrida sigue hasta el preflight de la etapa
+    # DynDOLOD. Sin `Data` física el servicio aborta antes de ese packaging y el
+    # test pasaría por vacío (`vetos == []`) en vez de por el cableado.
+    (config.game_path / "Data").mkdir()
+
+    vetos: list[object] = []
+    empaquetar_real = runner._package_output_as_mod
+
+    async def _espiar(output_path, mod_name, *, preservar_directorio_raiz=False, veto_de_rollback=None):
+        vetos.append(veto_de_rollback)
+        return await empaquetar_real(
+            output_path,
+            mod_name,
+            preservar_directorio_raiz=preservar_directorio_raiz,
+            veto_de_rollback=veto_de_rollback,
+        )
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(texgen_staging, "nuevo.dds", b"NUEVO"),
+        ),
+    )
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "_package_output_as_mod", side_effect=_espiar),
+    ):
+        await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert vetos, "el packaging no llegó a invocarse"
+    assert all(v is not None for v in vetos), (
+        "el packaging recibió veto_de_rollback=None: restauraría sin consultar la lease"
+    )
+    assert all(callable(v) for v in vetos)
+
+
+@pytest.mark.asyncio
+async def test_592_f2_el_veto_cableado_llega_a_los_dos_packagings_y_es_el_predicado_vivo(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """P10 — los DOS call sites de packaging reciben el predicado VIVO de lease.
+
+    `test_592_f2_el_servicio_cablea_el_veto_de_lease_al_packaging` cubre el call
+    site de TexGen; un `is not None` ahí NO prueba el de DynDOLOD, que es otra
+    llamada de `run_full_pipeline`. Medido por mutación: borrar el
+    `veto_de_rollback=` del call site de DynDOLOD dejaba la suite entera verde
+    (M13, 0 tests nuevos en rojo). Por eso esta corrida llega hasta el SEGUNDO
+    packaging (`run_texgen=True` con las dos herramientas completas).
+
+    Y no alcanza con "recibió algo": se evalúa el veto capturado antes y después
+    de perder la lease del workspace — `True` → `False`. Un veto constante, un
+    `lambda: True` o `None` pasan el chequeo de identidad y fallan éste.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    layout = config.output_layout
+    ownership = _OwnershipFake()
+    _servicio_con_workspace(service, runner, ownership=ownership)
+
+    def _spawn_texgen() -> None:
+        _escribir_salida(layout.texgen_root / "textures", "ONLY_TEXGEN.dds", b"ONLY_TEXGEN")
+        _mirror_a_data(layout.texgen_root / "textures", config.data_dir)
+        _apendear_log(tmp_path, "TexGen", _log_completo("TexGen"))
+
+    def _spawn_dyndolod() -> None:
+        _escribir_salida(layout.dyndolod_root, "DynDOLOD.esp", b"esp")
+        _apendear_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    # (herramienta, veto con la lease viva, veto con la lease perdida)
+    observado: list[tuple[str, object, object]] = []
+    empaquetar_real = runner._package_output_as_mod
+
+    async def _espiar(output_path, mod_name, *, preservar_directorio_raiz=False, veto_de_rollback=None):
+        herramienta = "TexGen" if preservar_directorio_raiz else "DynDOLOD"
+        if veto_de_rollback is None:
+            observado.append((herramienta, None, None))
+        else:
+            antes = veto_de_rollback()
+            ownership.lease_lost = True
+            try:
+                despues = veto_de_rollback()
+            finally:
+                ownership.lease_lost = False
+            observado.append((herramienta, antes, despues))
+        return await empaquetar_real(
+            output_path,
+            mod_name,
+            preservar_directorio_raiz=preservar_directorio_raiz,
+            veto_de_rollback=veto_de_rollback,
+        )
+
+    fake = _EjecucionFalsaPorTool({"TexGen": _spawn_texgen, "DynDOLOD": _spawn_dyndolod})
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "_package_output_as_mod", side_effect=_espiar),
+    ):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert fake.tools == ["TexGen", "DynDOLOD"], result.get("errors")
+    assert [h for h, _, _ in observado] == ["TexGen", "DynDOLOD"], (
+        "la corrida tiene que llegar a los DOS call sites de packaging: el de TexGen "
+        "y el de DynDOLOD son llamadas distintas y cablear una sola deja la otra "
+        f"restaurando sin consultar la lease (observado={observado})"
+    )
+    for herramienta, antes, despues in observado:
+        assert antes is True, f"el veto del packaging de {herramienta} no consulta la lease viva (devolvió {antes!r})"
+        assert despues is False, (
+            f"el veto del packaging de {herramienta} NO es el predicado de lease del servicio: "
+            "con la lease perdida seguiría restaurando sobre la salida de un dueño concurrente "
+            f"(devolvió {despues!r})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_592_f4_un_packaging_de_texgen_no_confirmado_no_habilita_el_spawn_de_dyndolod(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F4 — un packaging NO CONFIRMADO no habilita la etapa que depende de él.
+
+    El escenario es F4 en su forma más limpia: la copia termina bien y el mod
+    nuevo queda completo en ``mods/``, pero el descarte del backup falla. F3 ya
+    garantizaba que el backup SOBREVIVA; lo que faltaba era el CONTRATO — el
+    runner logueaba "Mod empaquetado exitosamente" y devolvía ``mod_path``, así
+    que el pipeline seguía como si el empaquetado estuviera confirmado. Una copia
+    completa no demuestra una finalización autorizada.
+
+    Se ancla la consecuencia de punta a punta sobre el camino REAL del servicio:
+
+    * el packaging de TexGen sale por ``DynDOLODValidationError`` en vez de
+      devolver un path;
+    * el gate de prerrequisitos corta ANTES del spawn de DynDOLOD — no se gastan
+      30+ min sobre un artifact no confirmado;
+    * el journal NO commitea (U-11: nada de éxito sobre estado indeterminado);
+    * el corte NO se marca ``needs_deployment``: no hay nada válido esperando una
+      acción humana, y marcarlo haría que el servicio PRESERVARA una mutación de
+      una corrida fallida;
+    * el backup del mod previo sobrevive byte-exacto y localizable.
+
+    La vía del VETO de lease —mismo ``finalization_completed=False``, otra
+    causa— está anclada en
+    ``test_592_f4_el_runner_no_declara_exito_si_la_finalizacion_no_se_confirmo``
+    y en ``test_descarte_no_borra_el_backup_si_el_lease_se_pierde_en_el_cleanup``.
+    Acá se usa la vía del ``OSError`` del descarte a propósito: así el sujeto es
+    el CONTRATO y no el cableado de ownership del servicio.
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    service._runner = runner
+
+    # Sin `Data` física el servicio aborta en el preflight y el test pasaría por
+    # vacío (nunca llegaría al packaging). El sujeto es el contrato del
+    # empaquetado, no la configuración del workspace.
+    (config.game_path / "Data").mkdir()
+
+    mod_previo = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    (mod_previo / "textures").mkdir(parents=True)
+    (mod_previo / "textures" / "viejo.dds").write_bytes(b"VIEJO")
+    (mod_previo / "meta.ini").write_bytes(b"[General]\nname=TexGen Output\n")
+    antes = _arbol_de(mod_previo)
+    assert antes, "el escenario exige un mod previo poblado"
+
+    rmtree_real = dir_rollback_mod.rmtree_link_aware
+    prefijo_del_residuo = f"{DynDOLODRunner.TEXGEN_MOD_NAME}.rollback-"
+
+    def _rmtree_que_falla_solo_el_residuo_del_previo(ruta: object, **kwargs: object) -> object:
+        # Falla SÓLO el descarte del backup del mod previo: el resto del teardown
+        # (staging, rollbacks del servicio) tiene que seguir funcionando para que
+        # el test mida el contrato y no un derrumbe lateral.
+        if pathlib.Path(str(ruta)).name.startswith(prefijo_del_residuo):
+            raise OSError("handle retenido por el indexador")
+        return rmtree_real(ruta, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dir_rollback_mod, "rmtree_link_aware", _rmtree_que_falla_solo_el_residuo_del_previo)
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(texgen_staging, "nuevo.dds", b"NUEVO"),
+        ),
+    )
+    run_dyndolod = AsyncMock()
+
+    # El `DynDOLODPipelineResult` es el ÚNICO lugar donde `texgen_packaging_attempted`
+    # y `needs_deployment` son observables: el service los consume pero no los
+    # publica. Se captura el resultado real en vez de re-derivar la fórmula.
+    pipeline_real = runner.run_full_pipeline
+    capturado: list[object] = []
+
+    async def _espiar_pipeline(**kwargs: object) -> object:
+        res = await pipeline_real(**kwargs)  # type: ignore[arg-type]
+        capturado.append(res)
+        return res
+
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "run_full_pipeline", _espiar_pipeline),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert len(capturado) == 1, "el pipeline tiene que haber corrido exactamente una vez"
+    pipeline = capturado[0]
+
+    # 1. NO se lanza DynDOLOD sobre un packaging no confirmado.
+    run_dyndolod.assert_not_awaited()
+    assert pipeline.dyndolod_result is None, "sin packaging confirmado no puede haber corrida de DynDOLOD"
+    # 2. La corrida no declara éxito.
+    assert resultado["success"] is False, resultado.get("message")
+    assert pipeline.success is False
+    # 3. El journal no commitea: nada de commits parciales sobre estado indeterminado.
+    mock_journal.commit_transaction.assert_not_awaited()
+    # 4. El corte no se disfraza de "falta una acción humana", y SÍ queda registrado
+    #    que el empaquetado de TexGen se intentó (la evidencia que el service usa
+    #    para distinguir "el artifact nunca se tocó" de "el reemplazo empezó").
+    assert pipeline.needs_deployment is False, (
+        "un packaging NO CONFIRMADO no es 'esperando despliegue': marcarlo haría que el service "
+        "PRESERVARA la mutación de una corrida fallida"
+    )
+    assert "needs_deployment" not in resultado, resultado
+    assert pipeline.texgen_packaging_attempted is True, (
+        "el intento de empaquetado de TexGen tiene que quedar registrado aunque haya fallado"
+    )
+    # 5. El fallo nombra la causa: el empaquetado de TexGen y su finalización sin confirmar.
+    errores = " | ".join(str(e) for e in resultado["errors"])
+    assert "TexGen" in errores, errores
+    assert "finaliz" in errores.lower() or "confirm" in errores.lower(), errores
+    # 6. La última copia buena del mod previo sobrevive, íntegra y localizable.
+    residuos = sorted(p for p in config.mo2_mods_path.iterdir() if p.name.startswith(prefijo_del_residuo))
+    assert len(residuos) == 1, f"el backup del mod previo tiene que quedar localizable: {residuos}"
+    assert _arbol_de(residuos[0]) == antes, "no puede haber pérdida: el backup sigue byte-exacto"
+    # 7. Y el mod nuevo SÍ quedó completo: el fallo es del contrato de éxito, no de la copia.
+    assert b"NUEVO" in _arbol_de(mod_previo).values(), _arbol_de(mod_previo)
