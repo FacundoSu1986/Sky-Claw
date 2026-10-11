@@ -621,6 +621,13 @@ def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
     del backup necesitaba autoridad VIGENTE, no sólo la del fence). La fila tiene
     que declarar las dos mitades de ese fix —el veto fusionado con el borrado y la
     preservación de ``commit()``— y citar sus anclas, igual que F1/F2.
+
+    El bloqueo final de integridad sumó F4: F3 propagaba el resultado a
+    ``finalization_completed``, pero NADIE lo consumía, así que el runner seguía
+    declarando éxito con una copia completa que ya no era atribuible a la corrida.
+    La fila tiene que declarar que el fail-closed vive en el RUNNER —no en
+    ``DirectoryRollback.__aexit__``, cuyo contrato best-effort queda intacto— y
+    citar las anclas de los tres niveles (runner, servicio, protocolo) más M25–M28.
     """
     item = (
         "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia "
@@ -647,6 +654,20 @@ def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
     assert "test_592_f3_el_cleanup_no_descarta_el_backup_sin_lease_vigente" in fila["Verificado por"]
     assert "test_dir_rollback.py" in fila["Verificado por"]
     assert "test_ancla_ast_el_veto_del_descarte_esta_fusionado_con_el_borrado" in fila["Verificado por"]
+    # F4: el RUNNER consume ``finalization_completed`` y no declara un éxito falso.
+    assert "finalization_completed" in estado
+    assert "rollback.backup" in estado
+    assert "cleanup_error" in estado
+    assert "el fail-closed es del RUNNER, no del protocolo" in estado
+    assert "test_592_f4_el_runner_no_declara_exito_si_la_finalizacion_no_se_confirmo" in fila["Verificado por"]
+    assert "test_592_f4_un_packaging_de_texgen_no_confirmado_no_habilita_el_spawn_de_dyndolod" in fila["Verificado por"]
+    assert "test_592_f4_el_oserror_del_descarte_real_queda_inspeccionable_y_no_escapa" in fila["Verificado por"]
+    assert "test_592_f4_la_primera_instalacion_confirma_la_finalizacion_sin_backup" in fila["Verificado por"]
+    assert "test_592_f4_la_propiedad_backup_nombra_el_residuo_durante_el_move_aside" in fila["Verificado por"]
+    assert "M25" in fila["Verificado por"] and "M28" in fila["Verificado por"]
+    # El límite que impide vender el fix como atomicidad global del filesystem.
+    assert "transacción globalmente atómica" in estado.lower()
+    assert "no la del sistema de archivos" in estado.lower()
     # El barrido de mutación se extendió con la ronda F3: si la fila vuelve a
     # decir sólo M01–M18, la evidencia de F3 quedó sin declarar. Vive en la
     # columna de verificación, junto a los tests.

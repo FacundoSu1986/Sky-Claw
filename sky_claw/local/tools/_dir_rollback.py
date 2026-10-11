@@ -248,12 +248,30 @@ class DirectoryRollback:
         #: consulta mediante ``finalization_completed``.
         self.rollback_completed: bool = True
         self.finalization_completed: bool = True
+        #: Diagnóstico ADITIVO (review F4 del PR #709): ``__aexit__`` traga el
+        #: ``OSError`` del cleanup **por diseño** —no puede enmascarar la
+        #: excepción del body ni romper un cierre limpio—, así que sin esto la
+        #: causa real del descarte fallido se perdía y el caller sólo veía
+        #: ``finalization_completed=False``, sin poder decir POR QUÉ. Guardarla
+        #: NO cambia el contrato de ``__aexit__``: sigue sin lanzar y sigue
+        #: logueando con ``exc_info``; sólo lo hace inspeccionable.
+        self.cleanup_error: BaseException | None = None
 
     @property
     def target(self) -> pathlib.Path:
         """Directorio protegido — para que el caller lo nombre en sus logs sin
         tener que alcanzar el atributo privado."""
         return self._target
+
+    @property
+    def backup(self) -> pathlib.Path | None:
+        """Residuo move-aside actual (``<name>.rollback-<nonce>``), o ``None``.
+
+        Mismo motivo que ``target``: el caller tiene que poder NOMBRAR el residuo
+        recuperable en su contrato de fallo —"el backup quedó acá"— sin alcanzar
+        ``self._backup``. ``None`` significa que no hubo move-aside (primer run).
+        """
+        return self._backup
 
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
@@ -351,7 +369,10 @@ class DirectoryRollback:
         cancelado_durante_cleanup = await _esperar_hasta_terminal(cleanup_task)
         try:
             cleanup_task.result()
-        except OSError:
+        except OSError as exc:
+            # Se registra ANTES de tragar: el contrato sigue siendo "no lanzar
+            # desde acá", pero la causa deja de evaporarse (review F4 #709).
+            self.cleanup_error = exc
             # Nunca enmascarar la excepción del body ni romper un cierre limpio.
             logger.critical(
                 "Fallo limpiando/restaurando el rollback de '%s' (exc_body=%s)",

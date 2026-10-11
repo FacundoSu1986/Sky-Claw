@@ -8848,3 +8848,132 @@ async def test_592_f2_el_veto_cableado_llega_a_los_dos_packagings_y_es_el_predic
             "con la lease perdida seguiría restaurando sobre la salida de un dueño concurrente "
             f"(devolvió {despues!r})"
         )
+
+
+@pytest.mark.asyncio
+async def test_592_f4_un_packaging_de_texgen_no_confirmado_no_habilita_el_spawn_de_dyndolod(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F4 — un packaging NO CONFIRMADO no habilita la etapa que depende de él.
+
+    El escenario es F4 en su forma más limpia: la copia termina bien y el mod
+    nuevo queda completo en ``mods/``, pero el descarte del backup falla. F3 ya
+    garantizaba que el backup SOBREVIVA; lo que faltaba era el CONTRATO — el
+    runner logueaba "Mod empaquetado exitosamente" y devolvía ``mod_path``, así
+    que el pipeline seguía como si el empaquetado estuviera confirmado. Una copia
+    completa no demuestra una finalización autorizada.
+
+    Se ancla la consecuencia de punta a punta sobre el camino REAL del servicio:
+
+    * el packaging de TexGen sale por ``DynDOLODValidationError`` en vez de
+      devolver un path;
+    * el gate de prerrequisitos corta ANTES del spawn de DynDOLOD — no se gastan
+      30+ min sobre un artifact no confirmado;
+    * el journal NO commitea (U-11: nada de éxito sobre estado indeterminado);
+    * el corte NO se marca ``needs_deployment``: no hay nada válido esperando una
+      acción humana, y marcarlo haría que el servicio PRESERVARA una mutación de
+      una corrida fallida;
+    * el backup del mod previo sobrevive byte-exacto y localizable.
+
+    La vía del VETO de lease —mismo ``finalization_completed=False``, otra
+    causa— está anclada en
+    ``test_592_f4_el_runner_no_declara_exito_si_la_finalizacion_no_se_confirmo``
+    y en ``test_descarte_no_borra_el_backup_si_el_lease_se_pierde_en_el_cleanup``.
+    Acá se usa la vía del ``OSError`` del descarte a propósito: así el sujeto es
+    el CONTRATO y no el cableado de ownership del servicio.
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    service._runner = runner
+
+    # Sin `Data` física el servicio aborta en el preflight y el test pasaría por
+    # vacío (nunca llegaría al packaging). El sujeto es el contrato del
+    # empaquetado, no la configuración del workspace.
+    (config.game_path / "Data").mkdir()
+
+    mod_previo = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    (mod_previo / "textures").mkdir(parents=True)
+    (mod_previo / "textures" / "viejo.dds").write_bytes(b"VIEJO")
+    (mod_previo / "meta.ini").write_bytes(b"[General]\nname=TexGen Output\n")
+    antes = _arbol_de(mod_previo)
+    assert antes, "el escenario exige un mod previo poblado"
+
+    rmtree_real = dir_rollback_mod.rmtree_link_aware
+    prefijo_del_residuo = f"{DynDOLODRunner.TEXGEN_MOD_NAME}.rollback-"
+
+    def _rmtree_que_falla_solo_el_residuo_del_previo(ruta: object, **kwargs: object) -> object:
+        # Falla SÓLO el descarte del backup del mod previo: el resto del teardown
+        # (staging, rollbacks del servicio) tiene que seguir funcionando para que
+        # el test mida el contrato y no un derrumbe lateral.
+        if pathlib.Path(str(ruta)).name.startswith(prefijo_del_residuo):
+            raise OSError("handle retenido por el indexador")
+        return rmtree_real(ruta, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dir_rollback_mod, "rmtree_link_aware", _rmtree_que_falla_solo_el_residuo_del_previo)
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(texgen_staging, "nuevo.dds", b"NUEVO"),
+        ),
+    )
+    run_dyndolod = AsyncMock()
+
+    # El `DynDOLODPipelineResult` es el ÚNICO lugar donde `texgen_packaging_attempted`
+    # y `needs_deployment` son observables: el service los consume pero no los
+    # publica. Se captura el resultado real en vez de re-derivar la fórmula.
+    pipeline_real = runner.run_full_pipeline
+    capturado: list[object] = []
+
+    async def _espiar_pipeline(**kwargs: object) -> object:
+        res = await pipeline_real(**kwargs)  # type: ignore[arg-type]
+        capturado.append(res)
+        return res
+
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "run_full_pipeline", _espiar_pipeline),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert len(capturado) == 1, "el pipeline tiene que haber corrido exactamente una vez"
+    pipeline = capturado[0]
+
+    # 1. NO se lanza DynDOLOD sobre un packaging no confirmado.
+    run_dyndolod.assert_not_awaited()
+    assert pipeline.dyndolod_result is None, "sin packaging confirmado no puede haber corrida de DynDOLOD"
+    # 2. La corrida no declara éxito.
+    assert resultado["success"] is False, resultado.get("message")
+    assert pipeline.success is False
+    # 3. El journal no commitea: nada de commits parciales sobre estado indeterminado.
+    mock_journal.commit_transaction.assert_not_awaited()
+    # 4. El corte no se disfraza de "falta una acción humana", y SÍ queda registrado
+    #    que el empaquetado de TexGen se intentó (la evidencia que el service usa
+    #    para distinguir "el artifact nunca se tocó" de "el reemplazo empezó").
+    assert pipeline.needs_deployment is False, (
+        "un packaging NO CONFIRMADO no es 'esperando despliegue': marcarlo haría que el service "
+        "PRESERVARA la mutación de una corrida fallida"
+    )
+    assert "needs_deployment" not in resultado, resultado
+    assert pipeline.texgen_packaging_attempted is True, (
+        "el intento de empaquetado de TexGen tiene que quedar registrado aunque haya fallado"
+    )
+    # 5. El fallo nombra la causa: el empaquetado de TexGen y su finalización sin confirmar.
+    errores = " | ".join(str(e) for e in resultado["errors"])
+    assert "TexGen" in errores, errores
+    assert "finaliz" in errores.lower() or "confirm" in errores.lower(), errores
+    # 6. La última copia buena del mod previo sobrevive, íntegra y localizable.
+    residuos = sorted(p for p in config.mo2_mods_path.iterdir() if p.name.startswith(prefijo_del_residuo))
+    assert len(residuos) == 1, f"el backup del mod previo tiene que quedar localizable: {residuos}"
+    assert _arbol_de(residuos[0]) == antes, "no puede haber pérdida: el backup sigue byte-exacto"
+    # 7. Y el mod nuevo SÍ quedó completo: el fallo es del contrato de éxito, no de la copia.
+    assert b"NUEVO" in _arbol_de(mod_previo).values(), _arbol_de(mod_previo)

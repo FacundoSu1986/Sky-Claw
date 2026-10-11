@@ -2900,8 +2900,13 @@ async def test_592_p16_falla_el_descarte_del_backup_sin_perdida_ni_falso_exito(t
 
     El descarte del backup es la ÚNICA operación que borra la generación
     anterior, y corre en el camino de ÉXITO. Si falla, no puede haber pérdida
-    silenciosa: ambos árboles quedan en disco y el resultado es el mod nuevo
-    (que sí está completo).
+    silenciosa: ambos árboles quedan en disco y el mod nuevo está completo.
+
+    **F4 (review #709): y tampoco puede haber falso éxito.** Un descarte fallido
+    deja `finalization_completed=False`, así que la corrida sale por
+    `DynDOLODValidationError` — el mod nuevo queda publicado, el backup queda
+    íntegro y localizable, y la causa real (`OSError` del indexador) viaja
+    encadenada en vez de evaporarse en el `except OSError` de `__aexit__`.
     """
     import sky_claw.local.tools._dir_rollback as dir_rollback_mod
 
@@ -2919,14 +2924,20 @@ async def test_592_p16_falla_el_descarte_del_backup_sin_perdida_ni_falso_exito(t
 
     monkeypatch.setattr(dir_rollback_mod, "rmtree_link_aware", _rmtree_que_falla)
 
-    empaquetado = await runner._package_output_as_mod(src, "DynDOLOD Output")
+    with pytest.raises(runner_mod.DynDOLODValidationError) as excinfo:
+        await runner._package_output_as_mod(src, "DynDOLOD Output")
 
-    assert empaquetado == mod_path
+    # No hay pérdida: el mod nuevo está completo y el previo sigue íntegro.
     assert (mod_path / "meshes" / "new.nif").read_bytes() == b"N" * 4096
     assert (mod_path / "meta.ini").exists()
     residuos = _residuos_de(mod_path)
     assert len(residuos) == 1, "un backup que no se pudo descartar debe quedar localizable"
     assert _leer_arbol(residuos[0]) == previo, "no puede haber pérdida: el backup sigue íntegro"
+    # Y el error original NO se perdió: viaja como causa del fallo de empaquetado.
+    assert isinstance(excinfo.value.__cause__, OSError), (
+        "la causa real del descarte fallido tiene que viajar encadenada, no evaporarse"
+    )
+    assert "indexador" in str(excinfo.value.__cause__)
 
 
 @pytest.mark.skipif(
@@ -3368,9 +3379,13 @@ async def test_592_f3_el_cleanup_no_descarta_el_backup_sin_lease_vigente(tmp_pat
     del mod previo mientras otro dueño puede estar mutando el mismo target.
 
     Acá la copia TERMINA BIEN y los DOS fences pasan: la pérdida se inyecta en la
-    primera inspección del descarte, ya dentro del cleanup. El mod nuevo se
-    publica igual —la corrida no falla—, pero el backup del previo tiene que
-    sobrevivir.
+    primera inspección del descarte, ya dentro del cleanup. El mod nuevo queda
+    completo en el destino, pero el backup del previo tiene que sobrevivir.
+
+    Desde F4 la corrida además NO puede declararse exitosa —una copia completa no
+    demuestra una finalización AUTORIZADA—: acá se ancla la mitad "el backup
+    sobrevive"; el contrato de éxito/fallo se ancla en
+    ``test_592_f4_...``.
     """
     import sky_claw.local.tools._dir_rollback as dir_rollback_mod
 
@@ -3397,16 +3412,84 @@ async def test_592_f3_el_cleanup_no_descarta_el_backup_sin_lease_vigente(tmp_pat
 
     monkeypatch.setattr(dir_rollback_mod, "link_kind_or_raise", _inspeccion_que_pierde_la_lease)
 
-    mod_devuelto = await runner._package_output_as_mod(
-        src,
-        "DynDOLOD Output",
-        veto_de_rollback=lambda: not estado["perdida"],
-    )
+    with pytest.raises(runner_mod.DynDOLODValidationError):
+        await runner._package_output_as_mod(
+            src,
+            "DynDOLOD Output",
+            veto_de_rollback=lambda: not estado["perdida"],
+        )
 
     assert estado["fences"] == 2, "los DOS fences pasan ANTES de que se pierda la lease"
-    assert mod_devuelto == mod_path, "el mod nuevo se empaquetó y publicó: la corrida no falla"
     assert (mod_path / "meshes" / "new.nif").exists(), "el mod nuevo queda completo en el destino"
 
+    residuos = _residuos_de(mod_path)
+    assert len(residuos) == 1, "el backup del mod previo NO puede descartarse sin lease vigente"
+    assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"
+
+
+@pytest.mark.asyncio
+async def test_592_f4_el_runner_no_declara_exito_si_la_finalizacion_no_se_confirmo(tmp_path, monkeypatch):
+    """F4 — una copia completa NO demuestra una finalización AUTORIZADA.
+
+    F3 preservó el backup cuando la lease se pierde dentro del cleanup, pero el
+    runner seguía tomando el camino de ÉXITO: `_package_output_as_mod` nunca leía
+    `finalization_completed`, así que logueaba "Mod empaquetado exitosamente" y
+    devolvía `mod_path` con el rollback SIN confirmar. Es un falso éxito por
+    partida doble: (a) los bytes que la corrida escribió dejaron de ser
+    atribuibles a ella en el momento en que perdió la exclusividad —otro dueño
+    pudo tomar el recurso en esa ventana— y (b) el pipeline seguía hacia una
+    etapa que depende de un packaging no confirmado.
+
+    El escenario es EXACTAMENTE el de F3 (copia OK, los DOS fences pasan, la
+    lease muere dentro del cleanup, el veto deniega el descarte). Lo que cambia
+    es el CONTRATO: con `finalization_completed=False` el runner falla cerrado y
+    el backup recuperable queda en disco.
+    """
+    import sky_claw.local.tools._dir_rollback as dir_rollback_mod
+
+    src = _staging_nuevo(tmp_path)
+    mod_path = tmp_path / "mods" / "DynDOLOD Output"
+    previo = _poblar_mod_previo(mod_path)
+
+    estado = {"perdida": False, "fences": 0}
+
+    async def _fence() -> None:
+        estado["fences"] += 1
+        if estado["perdida"]:
+            raise LockLeaseLostError("lease de etapa 9 perdida (test)")
+
+    runner = _runner_592(tmp_path)
+    runner._config = SimpleNamespace(mo2_mods_path=tmp_path / "mods", fence_ownership=_fence)
+
+    inspeccion_real = dir_rollback_mod.link_kind_or_raise
+
+    def _inspeccion_que_pierde_la_lease(ruta: pathlib.Path) -> object:
+        # El fence YA pasó: la lease muere dentro de la ventana del cleanup.
+        estado["perdida"] = True
+        return inspeccion_real(ruta)
+
+    monkeypatch.setattr(dir_rollback_mod, "link_kind_or_raise", _inspeccion_que_pierde_la_lease)
+
+    with pytest.raises(runner_mod.DynDOLODValidationError) as excinfo:
+        await runner._package_output_as_mod(
+            src,
+            "DynDOLOD Output",
+            veto_de_rollback=lambda: not estado["perdida"],
+        )
+
+    # El fallo es EXPLÍCITO y nombra la causa: no es un error genérico ni una
+    # excepción que se escape sin contrato.
+    mensaje = str(excinfo.value)
+    assert "finaliz" in mensaje.lower() or "confirm" in mensaje.lower(), (
+        f"el fallo tiene que nombrar la finalización no confirmada, no ser genérico: {mensaje!r}"
+    )
+    # El error apunta al residuo recuperable: el operador sabe dónde mirar.
+    assert ".rollback-" in mensaje, f"el fallo tiene que nombrar el backup recuperable: {mensaje!r}"
+
+    assert estado["fences"] == 2, "los DOS fences pasan ANTES de que se pierda la lease"
+    # La copia SÍ terminó: el mod nuevo está completo en el destino.
+    assert (mod_path / "meshes" / "new.nif").exists()
+    # Y la última copia buena del mod previo sobrevive, byte-exacta.
     residuos = _residuos_de(mod_path)
     assert len(residuos) == 1, "el backup del mod previo NO puede descartarse sin lease vigente"
     assert _leer_arbol(residuos[0]) == previo, "el backup es la última copia buena y debe estar íntegro"

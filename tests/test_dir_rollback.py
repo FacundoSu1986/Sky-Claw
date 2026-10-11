@@ -237,6 +237,116 @@ async def test_descarte_no_borra_el_backup_si_el_lease_se_pierde_en_el_cleanup(
     assert rb._backup is not None
 
 
+async def test_592_f4_el_oserror_del_descarte_real_queda_inspeccionable_y_no_escapa(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F4 (#709): la causa del descarte fallido deja de evaporarse en ``__aexit__``.
+
+    ``__aexit__`` traga el ``OSError`` del cleanup **por diseño** —no puede
+    enmascarar la excepción del body ni romper un cierre limpio—, pero hasta F4
+    eso dejaba al caller viendo sólo ``finalization_completed=False`` sin poder
+    decir POR QUÉ. El fix es aditivo: guarda la causa en ``cleanup_error`` sin
+    cambiar el contrato de ``__aexit__``.
+
+    Se ejercita el camino REAL —el ``rmtree`` del descarte falla— y no un
+    ``_discard_backup`` monkeypatcheado: el test hermano
+    ``test_finalization_completed_false_si_falla_el_discard_limpio`` corta ANTES
+    del ``to_thread`` y por eso nunca pasa por el ``except OSError`` que este
+    test ancla. Sin esta cobertura, borrar el ``self.cleanup_error = exc``
+    dejaba la suite verde y la causa evaporada de nuevo.
+    """
+    import sky_claw.local.tools._dir_rollback as mod
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    def _rmtree_que_falla(*_args: object, **_kwargs: object) -> None:
+        raise OSError("handle retenido por el indexador")
+
+    monkeypatch.setattr(mod, "rmtree_link_aware", _rmtree_que_falla)
+
+    async with rb:
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    # ``__aexit__`` no lanzó: el contrato best-effort sigue intacto.
+    assert isinstance(rb.cleanup_error, OSError), (
+        "la causa del descarte fallido tiene que quedar inspeccionable; evaporarla es el defecto que F4 cierra"
+    )
+    assert "indexador" in str(rb.cleanup_error)
+    # Y el desenlace sigue siendo el conservador: sin descarte confirmado no hay
+    # finalización, y el residuo queda nombrable.
+    assert rb.finalization_completed is False
+    assert rb.backup is not None, "sin descarte confirmado el residuo tiene que seguir siendo nombrable"
+    assert (rb.backup / "old.txt").read_text(encoding="utf-8") == "OLD"
+    # El mod nuevo quedó completo y publicado: el fallo del cleanup no lo tumba.
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+
+
+async def test_592_f4_la_primera_instalacion_confirma_la_finalizacion_sin_backup(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F4 (#709): sin move-aside no hay nada que descartar, y el cleanup SÍ se confirma.
+
+    Es la forma que toma el packaging del runner con ``create_snapshot=True``: el
+    servicio ya apartó el mod antes del run, así que el ``DirectoryRollback`` del
+    packaging nace sin backup. El gate de F4 —que exige
+    ``finalization_completed=True`` para declarar éxito— NO puede dispararse acá,
+    y ése es el punto: la AUSENCIA de residuo no es una finalización sin
+    confirmar. Ancla las dos mitades observables para que un cambio futuro que
+    las confunda rompa acá en vez de romper el camino de primera instalación.
+    """
+    target = tmp_path / "Output"
+    rb = DirectoryRollback(target)
+
+    assert rb.backup is None, "antes del move-aside no hay residuo que nombrar"
+    async with rb:
+        assert rb.finalization_completed is False
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    assert rb.finalization_completed is True, (
+        "sin backup no hay descarte que confirmar: el cleanup terminó y el gate de F4 no puede leerlo como fallo"
+    )
+    assert rb.backup is None
+    assert rb.cleanup_error is None
+    assert list(tmp_path.glob("Output.rollback-*")) == []
+
+
+async def test_592_f4_la_propiedad_backup_nombra_el_residuo_durante_el_move_aside(
+    tmp_path: pathlib.Path,
+) -> None:
+    """``backup`` es la superficie que el contrato de fallo del caller necesita.
+
+    El mensaje de F4 nombra el residuo recuperable («quedó en
+    ``'<...>.rollback-…'``»), y para eso el caller tiene que poder alcanzarlo sin
+    tocar ``_backup``. Se ancla el ciclo observable: ``None`` antes del move-aside,
+    el hermano exacto durante, y el path del residuo ya borrado tras un descarte
+    confirmado — el protocolo no lo limpia fuera de ``commit()``, así que lo
+    honesto es afirmar que ya no existe, no que la referencia se volvió ``None``.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    assert rb.backup is None
+    async with rb:
+        assert rb.backup is not None, "durante el move-aside el residuo tiene que ser nombrable"
+        assert rb.backup.name.startswith("Output.rollback-")
+        assert rb.backup.parent == tmp_path
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    assert rb.finalization_completed is True
+    assert rb.backup is not None and not rb.backup.exists(), (
+        "tras el descarte confirmado el residuo ya no está en disco"
+    )
+    assert list(tmp_path.glob("Output.rollback-*")) == []
+
+
 async def test_commit_descarta_el_backup_aunque_el_veto_niegue(tmp_path: pathlib.Path) -> None:
     """La otra mitad del contrato: ``commit()`` NO queda gobernado por el veto.
 

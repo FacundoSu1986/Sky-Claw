@@ -2802,6 +2802,18 @@ class DynDOLODRunner:
         3. Apartar el mod previo (``DirectoryRollback``) y crear el nuevo
         4. Copiar el contenido de output_path o preservar esa raíz Data-relative
         5. Generar meta.ini válido, y recién entonces descartar el backup
+        6. Exigir que el rollback haya CONFIRMADO su finalización (review F4):
+           `finalization_completed=False` ⇒ fallo cerrado, nunca éxito
+
+        Contrato de éxito (review F4 del PR #709): este método devuelve
+        ``mod_path`` SÓLO si el ``DirectoryRollback`` cerró con
+        ``finalization_completed=True``. Una copia completa **no** demuestra una
+        finalización autorizada: si el veto denegó el descarte, si el descarte
+        falló, o si el validador final rechazó el target, el backup recuperable
+        se preserva y la corrida sale por ``DynDOLODValidationError`` — con el
+        residuo nombrado en el mensaje y la causa del descarte encadenada cuando
+        existe. La excepción original del body nunca se enmascara: el chequeo
+        vive sólo en el camino limpio.
 
         Args:
             output_path: Path al directorio de salida de la herramienta.
@@ -3035,7 +3047,7 @@ class DynDOLODRunner:
                 mod_path,
                 should_rollback=veto_de_rollback,
                 limpiar_readonly_al_borrar=True,
-            ):
+            ) as rollback:
                 # R1 — RUNNER_P1_PACKAGING_CANCEL: `_empaquetar_sincrono` muta disco
                 # y su hilo nativo NO se puede cancelar cancelando el await. Task
                 # propia + terminal handoff común: ninguna cancelación (ni repetida)
@@ -3062,6 +3074,51 @@ class DynDOLODRunner:
                 # vez de descartarse.
                 if self._config.fence_ownership is not None:
                     await self._config.fence_ownership()
+
+            # Review F4 del PR #709 — UNA COPIA COMPLETA NO DEMUESTRA UNA
+            # FINALIZACIÓN AUTORIZADA.
+            #
+            # F3 preservó el backup cuando la lease se pierde dentro del cleanup,
+            # pero el runner seguía saliendo por acá como si nada: nadie leía
+            # `finalization_completed`, así que se logueaba "Mod empaquetado
+            # exitosamente" y se devolvía `mod_path` con el rollback SIN
+            # confirmar. Es un falso éxito por partida doble: (a) los bytes que
+            # esta corrida escribió dejaron de ser atribuibles a ella en el
+            # momento en que perdió la exclusividad —otro dueño pudo tomar el
+            # recurso en esa ventana— y (b) el pipeline seguía hacia una etapa
+            # que depende de un packaging no confirmado.
+            #
+            # `finalization_completed` es la ÚNICA señal honesta de que el
+            # protocolo cerró: queda en `False` cuando el veto denegó el descarte,
+            # cuando el descarte falló con `OSError` y cuando el validador final
+            # rechazó el target. En los tres casos la respuesta correcta es la
+            # misma —fail-closed— y el backup recuperable ya está preservado en
+            # disco por el propio protocolo: no se restaura encima de un posible
+            # nuevo dueño ni se descarta sin autoridad vigente.
+            #
+            # El corte se hace ACÁ y no dentro de `DirectoryRollback.__aexit__` a
+            # propósito: otros consumidores dependen de su contrato best-effort
+            # —nunca lanzar, nunca enmascarar la excepción del body— y volverlo
+            # fail-closed globalmente les cambiaría el comportamiento. La
+            # política de "esto es un fallo" es de quien empaqueta.
+            if not rollback.finalization_completed:
+                destino_del_backup = (
+                    f"el backup del mod anterior quedó en '{rollback.backup}', intacto para recuperación manual."
+                    if rollback.backup is not None
+                    else "no había un mod anterior que preservar (primera instalación)."
+                )
+                error = DynDOLODValidationError(
+                    f"Empaquetado de '{mod_name}' NO confirmado: la finalización del rollback no se "
+                    f"completó (`finalization_completed=False`), así que la corrida no puede declarar "
+                    f"éxito sobre bytes que ya no son atribuibles a ella. El mod nuevo quedó en "
+                    f"'{mod_path}'; {destino_del_backup}",
+                    output_path=mod_path,
+                )
+                # La causa del descarte fallido, si la hubo, viaja encadenada:
+                # `__aexit__` la traga por diseño y sin esto se perdía.
+                if rollback.cleanup_error is not None:
+                    raise error from rollback.cleanup_error
+                raise error
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path
