@@ -135,7 +135,6 @@ def _after_fork_in_child() -> None:
         if file_obj is not None and not getattr(file_obj, "closed", True):
             with contextlib.suppress(OSError):
                 file_obj.close()
-        handle._released = True
     _ACTIVE_HANDLES = {}
     _THREAD_LOCKS = {}
     _THREAD_LOCKS_GUARD = threading.Lock()
@@ -480,9 +479,6 @@ def _is_current_process_owner(handle: FrozenRuntimeRootLockHandle) -> bool:
 
 def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockMetadata:
     """Valida identidad completa de ownership del handle (memoria, SO/proceso y disco)."""
-    if handle._released:
-        raise FrozenRuntimeLockOwnershipError("El handle del lock ya fue liberado.")
-
     # F-07: Guard de frontera de proceso (anti-fork / anti-PID mismatch)
     current_pid = os.getpid()
     if current_pid != handle.pid:
@@ -503,6 +499,9 @@ def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockM
             f"process_create_time del proceso actual no coincide con el handle "
             f"({current_create_time} != {handle.process_create_time})."
         )
+
+    if handle._released:
+        raise FrozenRuntimeLockOwnershipError("El handle del lock ya fue liberado.")
 
     if handle._file_obj is None or handle._file_obj.closed:
         raise FrozenRuntimeLockOwnershipError("El descriptor de archivo del lock fue cerrado.")
@@ -595,12 +594,12 @@ class FrozenRuntimeRootLockHandle:
 
     def release(self) -> None:
         """Libera la exclusión del lock de forma crash-safe y poison-safe (F-16)."""
-        if self._released:
-            return
-
         if not _is_current_process_owner(self):
             # En un proceso hijo (fork) o ajeno, no tocar descriptores ni locks del dueño legítimo (F-16/F-07)
             _validate_handle_ownership(self)
+            return
+
+        if self._released:
             return
 
         try:
