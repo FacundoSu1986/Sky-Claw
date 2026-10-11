@@ -1,6 +1,7 @@
 # H4 `resize_normal` — Preflight científico y de ingeniería
 
-> **Slice:** `H4_RESIZE_NORMAL_FIX_PREFLIGHT` · **Carácter:** `PRE_FLIGHT_RESEARCH_ONLY` (docs-only).
+> **Slice:** `H4_RESIZE_NORMAL_FIX_PREFLIGHT` + `H4_PREFLIGHT_CONTRACT_CLOSURE` · **Carácter:**
+> `PRE_FLIGHT_RESEARCH_ONLY` (docs-only).
 > **No implementa el fix, no ejecuta M6, no accede al corpus real, no ajusta thresholds y no
 > modifica ningún PR abierto (#675, #697) ni la evidencia de #700.**
 >
@@ -9,6 +10,12 @@
 >
 > **Write-set:** un único archivo nuevo —
 > `docs/design/research/native-parallax/h4-resize-normal-preflight.md`.
+>
+> **Revisión 2 (`H4_PREFLIGHT_CONTRACT_CLOSURE`, 2026-10-10).** Incorpora el veredicto del Tech
+> Lead sobre PR #711: **D-06 cerrado** en fail-closed (§5.3), **D-07 cerrado** preservando el
+> no-op válido del camino identidad (§7.3), **alcance de la deprecación de Pillow corregido**
+> (§4.1) y **separación explícita** entre requisitos previos y tests de implementación (§8.0). El
+> registro completo está en §21.
 
 ---
 
@@ -20,6 +27,7 @@ documento.
 | Estado | Significado |
 |---|---|
 | `CONFIRMED` | Verificado por ejecución en este slice, o publicado como artefacto en el repositorio y citado por ruta. |
+| `CONTRACT_CLOSED` | Decisión de contrato **tomada y registrada** (Tech Lead, 2026-10-10). La implementación sigue pendiente: no es evidencia de corrección. |
 | `DESIGN_PROPOSED` | Especificado acá. **No implementado. No probado.** No es evidencia de corrección. |
 | `NOT_MEASURED` | Reconocido y no medido. Se declara explícitamente en vez de estimarse. |
 | `DEFERRED` | Fuera de este slice por decisión de alcance. |
@@ -343,19 +351,43 @@ bilineal → reescala a [-1,1] → renormaliza`.
    `−0.5 LSB`.
 2. El propio resize bilineal de Pillow sobre modo `L` (8 bits por canal).
 
-**Hallazgo adicional (`CONFIRMED`, medido en este slice).** La llamada usa
-`Image.fromarray(..., mode="L")`, y el parámetro `mode` de `Image.fromarray` está **deprecado**
-en Pillow: la suite existente emite
+**Hallazgo adicional (`CONFIRMED`, medido; alcance CORREGIDO en el cierre de contrato).** La
+llamada usa `Image.fromarray(..., mode="L")` y la suite existente emite
 
 ```text
 DeprecationWarning: 'mode' parameter is deprecated and will be removed in Pillow 13 (2026-10-15)
     im = Image.fromarray((np.clip(n[..., c], -1.0, 1.0) * 127.5 + 127.5).astype(np.uint8), mode="L")
 ```
 
-El pin del repositorio es `pillow>=10,<12`, así que hoy no rompe; pero el fix debe migrar al
-patrón sin `mode` (el que ya usa `resize_height`: `Image.fromarray(array_float32)` infiere modo
-`F`). Esto **refuerza** la corrección en vez de ser un motivo aparte: es una segunda razón,
-independiente de la cuantización, para reescribir la función.
+**Alcance real de la deprecación** (verificado contra la documentación oficial de Pillow,
+2026-10-10). El parámetro `mode` de `Image.fromarray` fue deprecado en **11.3.0** y en **12.0.0
+fue parcialmente revertido**:
+
+> «Using the `mode` parameter in `Image.fromarray()` was deprecated in Pillow 11.3.0. In Pillow
+> 12.0.0, this was partially reverted, and now the **only functionality removed is when the mode
+> changes data types**. Since pixel values do not contain information about palettes or color
+> spaces, the parameter can still be used to place grayscale L mode data within a P mode image, or
+> read RGB data as YCbCr for example. If omitted, the mode will be automatically determined from
+> the object's shape and type.»
+>
+> — `docs/deprecations.rst`, sección «Image.fromarray mode parameter»
+> (`.. deprecated:: 11.3.0` · `.. versionremoved:: 13.0.0`)
+
+El uso que hace `resize_normal` es **`uint8` + `mode="L"`**: **no** cambia el tipo de dato (L es
+gris de 8 bits, igual que `uint8`), así que **no pertenece a la funcionalidad removida**. Medido
+en este slice con Pillow 11.3.0:
+
+| Caso | Resultado medido |
+|---|---|
+| `uint8` + `mode="L"` (el que usa `resize_normal`) | funciona, modo `L`, sólo `DeprecationWarning` |
+| `uint8` + `mode="F"` (sí cambia el tipo de dato) | `ValueError: not enough image data` |
+
+**Conclusión corregida.** Migrar a la inferencia automática de modo (el patrón que ya usa
+`resize_height`) es **deseable por claridad y compatibilidad futura**, pero **no se afirma que el
+código actual dejará necesariamente de funcionar en Pillow 13**. La directiva
+`versionremoved:: 13.0.0` sigue declarada, así que la migración es prudente; lo que no
+corresponde es presentarla como una rotura inminente. El motivo principal para reescribir la
+función sigue siendo la **cuantización**, no esta deprecación.
 
 ### 4.2 Hermano corregido — `resize_height` (`authored_dataset.py:224-234`)
 
@@ -478,28 +510,35 @@ cancelación de dos vecinos con direcciones opuestas, es decir un artefacto de l
 resolución**. No debe publicarse como normal, ni silenciosamente, ni con un valor de reemplazo
 que oculte el evento.
 
-**Contrato de salida exigido al slice de código (a adjudicar, no a inventar acá):** el fix debe
-elegir **una** de estas dos formas y declararla, junto con el conteo por asset:
+**Decisión de contrato (D-06 CERRADO — Tech Lead, 2026-10-10): P-1 — FAIL-CLOSED.**
 
-- **(P-1) Fail-closed.** Un vector degenerado lanza o marca el asset, y el conteo
-  `degenerate_normal_fraction` se publica en el JSON. El asset **no** se excluye del resto de
-  métricas (mismo tratamiento que `ENERGY_GATE` de M5: marca la métrica, no el asset).
-- **(P-2) Política declarada y contabilizada.** Se define un valor de reemplazo explícito
-  (p. ej. renormalizar desde la media de los cuatro vecinos, o la normal `(0,0,1)`) **y** se
-  publica `degenerate_normal_fraction` + la política aplicada.
+Cuando la interpolación cancela las direcciones, **no existe una normal resultante bien
+definida**. Sustituirla automáticamente por `(0,0,1)` **inventaría una orientación** y podría
+contaminar las métricas científicas. Por eso la política es fail-closed, con cuatro requisitos:
 
-**Prohibido en cualquiera de las dos:** devolver el vector nulo como si fuera una normal; usar
-`1e-12` como si fuera un invariante de norma; o introducir un `epsilon` silencioso.
+- **(D-06.a) Detección con criterio numérico justificado.** `DEGENERATE_THRESHOLD` se deriva de
+  **teoría y controles sintéticos**, nunca del corpus (misma regla que los thresholds de M6,
+  §18.3). Su valor no se fija en este documento.
+- **(D-06.b) Registro del conteo.** `degenerate_normal_fraction` se publica por asset y por brazo.
+- **(D-06.c) Rechazo explícito de la evaluación afectada.** El asset recibe el estado
+  `NON_EVALUABLE` con su razón; **no** se calcula una métrica sobre un vector nulo.
+- **(D-06.d) Ningún asset desaparece en silencio.** Un asset afectado **no** se borra del roster:
+  queda con su estado explícito. **Distinguir el rechazo numérico de una exclusión silenciosa del
+  experimento es un requisito, no un detalle de implementación.**
+
+**Prohibido:** devolver el vector nulo como si fuera una normal; usar `1e-12` como si fuera un
+invariante de norma; inventar `(0,0,1)` como reemplazo; introducir un `epsilon` silencioso; o
+excluir el asset sin dejar constancia.
 
 **Compatibilidad declarada.** El histórico **no** producía vectores nulos en los casos medidos
-(§3.5). Por lo tanto P-1/P-2 son **cambios de comportamiento**, no preservación: el slice de
-código debe medir `degenerate_normal_fraction` en **ambos** brazos sobre el corpus y publicarlo.
-Si el brazo histórico da 0 y el corregido da > 0, eso es un **hallazgo material** que el
-contrafactual M6 debe absorber, no esconder.
+(§3.5). Por lo tanto la política fail-closed es un **cambio de comportamiento**, no preservación:
+el slice de código debe medir `degenerate_normal_fraction` en **ambos** brazos y publicarlo. Si el
+brazo histórico da 0 y el corregido da > 0, eso es un **hallazgo material** que el contrafactual
+M6 debe absorber, no esconder.
 
 ```text
-INVALID_VECTOR_POLICY = SPECIFIED (opciones P-1 / P-2; la elección pertenece al slice de código)
-DEGENERATE_THRESHOLD  = DEFERRED (se deriva en el slice de código, no acá)
+INVALID_VECTOR_POLICY = FAIL_CLOSED      (D-06 CERRADO — decisión de Tech Lead, 2026-10-10)
+DEGENERATE_THRESHOLD  = DEFERRED (se deriva de teoría + sintético; prohibido derivarlo del corpus)
 ```
 
 ---
@@ -515,13 +554,13 @@ Cada invariante se enuncia como propiedad del **mecanismo**, no como recordatori
 |---|---|---|---|
 | I-01 | No hay conversión intermedia a `uint8` en el camino de resize | `DESIGN_PROPOSED` | Escaneo de fuente del anti-patrón `astype(np.uint8)` en el cuerpo de la función |
 | I-02 | Norma ≈ 1 para entrada suave, con tolerancia declarada | `CONFIRMED` (histórico) / `DESIGN_PROPOSED` (nuevo) | Test de comportamiento |
-| I-03 | Norma ≈ 1 **o** marca explícita de degenerado — nunca un valor intermedio silencioso | `DESIGN_PROPOSED` | Test con entrada de cancelación |
+| I-03 | Norma ≈ 1 **o** estado `NON_EVALUABLE` explícito — nunca un valor intermedio silencioso | `CONTRACT_CLOSED` (D-06, §5.3) | Test con entrada de cancelación |
 | I-04 | Los canales no se permutan: `out[...,c]` proviene de `n[...,c]` | `DESIGN_PROPOSED` | Campo con un canal distinguible |
 | I-05 | El canal Y no se invierte dentro del resizer | `DESIGN_PROPOSED` | Campo con `ny` asimétrico |
 | I-06 | La convención declarada no se altera | `DESIGN_PROPOSED` | Integración con `load_asset` |
 | I-07 | No se publican NaN ni Inf | `DESIGN_PROPOSED` | Entrada con NaN/Inf, fail-closed |
 | I-08 | Campo constante unitario `c` se preserva exactamente | `DESIGN_PROPOSED` | Analíticamente exacto para bilineal |
-| I-09 | Camino identidad: contrato declarado (¿renormaliza o no?) | **UNRESOLVED** | Ver §7.3 |
+| I-09 | Camino identidad: no-op para entradas válidas; validación explícita para inválidas | `CONTRACT_CLOSED` (D-07, §7.3) | Ver §7.3 |
 | I-10 | Determinismo: dos llamadas idénticas dan el mismo array | `DESIGN_PROPOSED` | `np.array_equal` |
 | I-11 | El height no se toca | `DESIGN_PROPOSED` | Integración |
 | I-12 | `resize_height` conserva su implementación (modo F) | `CONFIRMED` (vigente) | Test de no-regresión |
@@ -581,22 +620,38 @@ resizer, con la misma limitación: con un píxel `(0,0,0)` en el bitmap, la sali
 Son vacíos **reales** del contrato vigente. El preflight los identifica; no los inventa ni los
 cierra por conveniencia.
 
-- **V-01 — Camino identidad.** `resize_normal(n, size)` con `n.shape == (size, size)` devuelve `n`
-  **sin renormalizar** y **sin copiar**. Si un llamador futuro pasa una normal no unitaria con la
-  forma ya correcta, obtiene una normal no unitaria **sin señal alguna**. El histórico es
-  consistente sólo porque `decode_normal_image` ya renormalizó. ¿El fix debe renormalizar también
-  en el camino identidad? `UNRESOLVED` — **el fix no puede cambiarlo en silencio** (cambiaría el
-  comportamiento del camino que hoy **no** se ejecuta para el corpus, pero sí para otras
-  resoluciones).
-- **V-02 — Política de degenerados.** Ver §5.3.
+- **V-01 — Camino identidad (`CONTRACT_CLOSED` — D-07, Tech Lead 2026-10-10).**
+  `resize_normal(n, size)` con `n.shape == (size, size)` devuelve `n` **sin renormalizar** y **sin
+  copiar**. **Decisión: preservar el no-op para entradas válidas** — sin interpolación, sin
+  renormalización y sin copia obligatoria. El histórico es consistente porque
+  `decode_normal_image` ya renormalizó; cambiarlo en silencio alteraría el comportamiento de un
+  camino que hoy **no** se ejecuta para el corpus (1024 → 512), pero **sí** para otras
+  resoluciones.
+
+  **Complemento obligatorio:** las entradas **no finitas o geométricamente inválidas** deben
+  rechazarse mediante **validación explícita** (fail-closed), **no** corregirse mediante una
+  renormalización silenciosa. El no-op se preserva **sólo para entradas válidas**; una entrada
+  inválida no se "arregla", se rechaza.
+
+  **Derivación de la tolerancia:** la tolerancia de norma del camino identidad se deriva mediante
+  **pruebas sintéticas**, **no** se ajusta al corpus.
+
+  ```text
+  IDENTITY_PATH_CONTRACT         = PRESERVE_VALID_NOOP + EXPLICIT_VALIDATION_FOR_INVALID
+  IDENTITY_PATH_TOLERANCE_SOURCE = SYNTHETIC_TESTS (prohibido ajustarla al corpus)
+  ```
+
+- **V-02 — Política de degenerados.** `CONTRACT_CLOSED` — ver §5.3 (fail-closed, D-06).
 - **V-03 — Dimensiones no cuadradas.** No hay gate. El corpus M3 es cuadrado, pero
   `load_asset` reescala a `512²` antes del solver, así que un asset no cuadrado se vuelve cuadrado
   **antes** de llegar al resizer de la normal. La interacción con `freq_axes` (H2) queda fuera.
-- **V-04 — No finitos.** No hay guard. ¿Debe haberlo, al estilo de `decode_height_image` modo F
-  (`DatasetInvalidError` con NaN/Inf)? `DESIGN_PROPOSED`: sí, fail-closed, coherente con el
-  hermano.
+  `DEFERRED` (fuera del alcance del fix H4).
+- **V-04 — No finitos.** No hay guard. `CONTRACT_CLOSED`: **sí**, fail-closed al estilo de
+  `decode_height_image` modo F (`DatasetInvalidError` con NaN/Inf), coherente con el hermano y con
+  D-07.
 - **V-05 — Estabilidad entre versiones.** El pin admite `pillow>=10,<12`. El kernel bilineal de
-  Pillow no está garantizado bit a bit entre versiones mayores. `NOT_MEASURED`.
+  Pillow no está garantizado bit a bit entre versiones mayores. `NOT_MEASURED` (se registra la
+  versión en la procedencia, §10).
 
 ---
 
@@ -607,6 +662,39 @@ Los tests se **diseñan** acá y se **implementan** en el slice de código. Ning
 **Regla de oro (del brief, no negociable):** un test que pasa en **ambos** brazos (histórico y
 corregido) **no** es evidencia de haber reparado H4. Todo test de la Familia A debe exhibir el
 **rojo** contra la implementación vigente.
+
+### 8.0 Separación: requisitos previos vs tests de implementación
+
+Dos clases de trabajo distintas. Mezclarlas es el error que este cierre de contrato evita.
+
+**(a) Requisitos previos a la implementación** — deben estar **cerrados antes** de escribir una
+línea de producción. Son decisiones y contratos, no tests. No se ejecutan: se **declaran**.
+
+| # | Requisito previo | Estado |
+|---|---|---|
+| R1 | Contrato numérico de entrada/salida (§7.1, §7.2) | `DESIGN_PROPOSED` |
+| R2 | Política de vectores degenerados = fail-closed (D-06, §5.3) | `CONTRACT_CLOSED` |
+| R3 | Contrato del camino identidad (D-07, §7.3) | `CONTRACT_CLOSED` |
+| R4 | Validación explícita de entradas no finitas / inválidas (V-04) | `CONTRACT_CLOSED` |
+| R5 | Contrato de procedencia machine-readable + gate (§10) | `DESIGN_PROPOSED` |
+| R6 | Ancla de enumeración de primitivas de carga **diseñada** (Familia E) | `DESIGN_PROPOSED` |
+| R7 | `DEGENERATE_THRESHOLD` derivado de teoría + sintético, **no** del corpus | `DEFERRED` al slice 2 |
+
+**(b) Tests `RED→GREEN` que se ejecutan DURANTE la implementación** — Familias A–F de §8.1–§8.6.
+Se escriben y se corren contra el baseline (**RED**, deben fallar) y luego contra el fix
+(**GREEN**). Ninguno se ejecuta en este slice: no existen.
+
+| Familia | Qué prueba | Se ejecuta |
+|---|---|---|
+| A — Cuantización | Que el defecto histórico es real | RED antes del fix |
+| B — Contrato geométrico | Norma, degenerados, convención, finitud | Durante el fix |
+| C — Interpolación | Oráculo **independiente** | Durante el fix |
+| D — Integración | `load_asset`, rutas AUTH/SELF, 512/1024 | Durante el fix |
+| E — Ancla de cobertura | Enumeración de primitivas de carga | Durante el fix |
+| F — Mutantes | Discriminación de la suite | Después del GREEN |
+
+**Regla de secuencia:** un requisito previo abierto **no** se cierra escribiendo un test que lo
+asume. El test verifica la decisión; no la sustituye.
 
 ### Familia A — Error de cuantización (`RED` obligatorio contra el histórico)
 
@@ -621,8 +709,13 @@ corregido) **no** es evidencia de haber reparado H4. Todo test de la Familia A d
 
 | Test | Aserción |
 |---|---|
-| `test_norma_unitaria_bajo_tolerancia_derivada` | `‖out‖ ≈ 1` con tolerancia derivada, no elegida |
-| `test_degenerados_no_se_publican_como_normal` | Vector nulo ⇒ marca explícita, **no** `(0,0,0)` silencioso (§3.5) |
+| `test_norma_unitaria_bajo_tolerancia_derivada` | `‖out‖ ≈ 1` con tolerancia derivada de sintético, no elegida ni ajustada al corpus |
+| `test_degenerados_no_se_publican_como_normal` | Vector nulo ⇒ estado `NON_EVALUABLE`, **no** `(0,0,0)` silencioso (§3.5) |
+| `test_degenerado_no_inventa_orientacion` | Un degenerado **no** se reemplaza por `(0,0,1)` ni por ningún valor fabricado (D-06) |
+| `test_asset_degenerado_no_desaparece_del_roster` | El asset queda con estado explícito; el conteo se preserva (D-06.d) |
+| `test_rechazo_numerico_distinto_de_exclusion_silenciosa` | El estado `NON_EVALUABLE` es visible y distinguible de "asset ausente" (D-06.d) |
+| `test_camino_identidad_preserva_el_noop` | Forma correcta + entrada válida ⇒ sin interpolación y sin renormalización (D-07) |
+| `test_camino_identidad_rechaza_entrada_invalida` | No finitos / geométricamente inválidos ⇒ validación explícita, **no** renormalización silenciosa (D-07) |
 | `test_convencion_no_se_altera` | El resizer no invierte Y ni cambia convención |
 | `test_sin_permutacion_de_canales` | Un canal distinguible sale por el mismo índice |
 | `test_sin_nan_inf_publicados` | Entrada con NaN/Inf ⇒ fail-closed |
@@ -982,7 +1075,7 @@ Formato exigido: `RISK → FAILURE_MODE → DETECTION → REQUIRED_GATE → REMA
 | R-11 | Un resultado no evaluable desaparece de la muestra | Sesgo de selección | §12.2: conteo por estado obligatorio | Reporte del conteo por estado | Ninguna |
 | R-12 | La evidencia M4/M5 se confunde con evidencia M6 | Se hereda un veredicto que no aplica | §3.4 y §12.1: `NUMERICAL_NOT_DECISIONAL` es de M4/M5 | `H4_NUMERICAL_IMPACT_ON_M6 = NOT_MEASURED` explícito | Ninguna — es una regla de lectura |
 | R-13 | El port directo del patrón de `resize_height` se cree suficiente | Se implementa y **crea** un defecto nuevo (nulos) | **§3.5** — hallazgo propio de este preflight | Política de degenerados obligatoria antes de escribir código | Magnitud real en el corpus: `NOT_MEASURED` |
-| R-14 | El parámetro `mode="L"` de `Image.fromarray` se remueve en Pillow 13 | La función deja de importar/ejecutar al subir el pin | `DeprecationWarning` **medido** en la suite (§4.1) | Migrar al patrón sin `mode` (modo `F` inferido) en el slice 2 | El pin actual (`pillow>=10,<12`) no lo expone todavía |
+| R-14 | El parámetro `mode="L"` de `Image.fromarray` está deprecado | Migración pendiente; eventual rotura si la remoción de 13.0.0 alcanzara también el uso que **no** cambia tipo de dato | `DeprecationWarning` **medido** (§4.1) | Migrar a la inferencia automática de modo en el slice 2 | **Alcance corregido (§4.1):** `uint8` + `mode="L"` **no** cambia el tipo de dato ⇒ queda fuera de la funcionalidad removida según la documentación de Pillow 12. Pero la directiva `versionremoved:: 13.0.0` sigue declarada ⇒ **no** se puede descartar del todo |
 
 Ninguna condición se clasifica como segura sin evidencia.
 
@@ -992,12 +1085,21 @@ Ninguna condición se clasifica como segura sin evidencia.
 
 Tres trabajos distintos. **No se mezclan en un solo PR.**
 
-### Slice 1 — Preflight H4 (esta sesión)
+### Slice 1 — Preflight H4
 
 - **Alcance:** auditoría, especificación, tests propuestos, procedencia, riesgos, plan de
   contrafactual, condiciones de autorización.
 - **Write-set:** un documento nuevo.
-- **Estado:** `COMPLETE` (sujeto al gate de §17).
+- **Estado:** `COMPLETE_WITH_FINDINGS`.
+
+### Slice 1b — Cierre de contrato del preflight (`H4_PREFLIGHT_CONTRACT_CLOSURE`)
+
+- **Alcance:** fijar D-06 (**fail-closed**) y D-07 (**no-op válido + validación explícita**),
+  corregir el alcance de la afirmación sobre Pillow 13, y separar los **requisitos previos** de los
+  **tests `RED→GREEN`** de la implementación (§8.0).
+- **Write-set:** el **mismo** documento de §1.4, sobre la **misma** rama y worktree. Sin código,
+  sin tests, sin corpus.
+- **Estado:** `COMPLETE` (ver §21).
 
 ### Slice 2 — Corrección de código H4 (**no autorizado**)
 
@@ -1025,14 +1127,15 @@ El slice 2 se autoriza cuando **todo** lo siguiente es `YES`:
 
 | # | Condición | Estado actual |
 |---|---|---|
-| 1 | Defecto H4 reproducido desde la fuente y anclado con un test `RED` | `DESIGN_PROPOSED` (el test no existe) |
-| 2 | Contrato numérico cerrado, incluidos los vacíos V-01…V-05 | `UNRESOLVED` (V-01, V-03, V-05 abiertos) |
-| 3 | Política de vectores degenerados **elegida** (P-1 o P-2) y declarada | `SPECIFIED` como opciones, no elegida |
+| 1 | Defecto H4 reproducido desde la fuente y anclado con un test `RED` | `DESIGN_PROPOSED` (el test no existe — pertenece a la **implementación**, §8.0.b) |
+| 2 | Contrato numérico cerrado, incluidos los vacíos V-01…V-05 | `CONTRACT_CLOSED` para V-01, V-02, V-04; `DEFERRED` V-03; `NOT_MEASURED` V-05 |
+| 3 | Política de vectores degenerados elegida y declarada | `CONTRACT_CLOSED` — **fail-closed** (D-06, §5.3) |
 | 4 | Plan de mutantes con el test que detecta cada uno | `DESIGN_PROPOSED` (§9) |
-| 5 | Ancla de enumeración de primitivas de carga diseñada | `DESIGN_PROPOSED` (Familia E) |
+| 5 | Ancla de enumeración de primitivas de carga **diseñada** | `DESIGN_PROPOSED` (Familia E) |
 | 6 | Contrato de procedencia especificado con gate fail-closed | `DESIGN_PROPOSED` (§10) |
-| 7 | `resize_height` con test de no-regresión | `DESIGN_PROPOSED` |
-| 8 | Conformidad del Tech Lead con el alcance del slice 2 | **PENDIENTE** |
+| 7 | `resize_height` con test de no-regresión | `DESIGN_PROPOSED` (pertenece a la implementación) |
+| 8 | `DEGENERATE_THRESHOLD` derivado de teoría + sintético (no del corpus) | `DEFERRED` al slice 2 (§8.0.a R7) |
+| 9 | Conformidad del Tech Lead con el alcance del slice 2 | **PENDIENTE** (el veredicto de §21 recomienda un PR independiente y acotado) |
 
 ```text
 H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
@@ -1051,8 +1154,9 @@ H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
 | D-03 | `PAIR_EXCESS_ENERGY` / `RECOVERY_FRACTION` instrumentados | **NO EXISTEN** | Slice 3 |
 | D-04 | Thresholds `G`, `NUMERICAL_ENERGY_FLOOR`, `T_R`, `T_N`, `T_AMBIG` | **NO DERIVADOS** (`THRESHOLDS_FROZEN = NO`) | Slice 3 |
 | D-05 | JSON de procedencia con `resize_normal_impl` | **NO EXISTE** | Slice 3 |
-| D-06 | Elección P-1 vs P-2 para vectores degenerados | **PENDIENTE** | Slice 2 |
-| D-07 | V-01 (camino identidad: ¿renormaliza?) | **UNRESOLVED** | Slice 2 |
+| D-06 | Política de vectores degenerados | **CERRADO** en este slice — fail-closed (§5.3) | — |
+| D-07 | Contrato del camino identidad (V-01) | **CERRADO** en este slice — no-op válido + validación explícita (§7.3) | — |
+| D-07b | Valor numérico de `DEGENERATE_THRESHOLD` | **PENDIENTE** — se deriva de teoría + controles sintéticos, nunca del corpus | Slice 2 |
 | D-08 | Issue #667 (triage de colisión) | `OPEN` | Declarativo |
 | D-09 | Correcciones documentales de #675 (§14 del brief) | **PENDIENTES en la rama de #675** | Documental, no de código |
 | D-10 | Defecto Markdown preexistente §37.3 de #675 (delta con barras sin escapar) | **DECLARADO, no corregido** | Documental |
@@ -1092,10 +1196,13 @@ documental de #675.
 
 ### P1. ¿Está suficientemente especificada la reparación float de `resize_normal`?
 
-**Casi.** `DESIGN_PROPOSED`. La transformación candidata está especificada (§5.1) y los contratos
-M6 están verificados como preservados (§14). **Falta cerrar dos puntos antes de escribir código:**
-la política de vectores degenerados (D-06, §5.3) y el contrato del camino identidad (V-01, §7.3).
-Sin esos dos, el port directo **crea** un defecto nuevo (§3.5, R-13).
+**Sí, tras el cierre de contrato.** La transformación candidata está especificada (§5.1), los
+contratos M6 están verificados como preservados (§14) y los dos puntos que faltaban quedaron
+cerrados: la política de vectores degenerados (**fail-closed**, D-06, §5.3) y el contrato del
+camino identidad (**no-op válido + validación explícita**, D-07, §7.3). Sin esos dos, el port
+directo **creaba** un defecto nuevo (§3.5, R-13). Queda `DEFERRED` al slice 2 el **valor
+numérico** de `DEGENERATE_THRESHOLD`, que por regla se deriva de teoría y controles sintéticos —
+nunca del corpus.
 
 ### P2. ¿Qué comportamientos exactos hay que preservar?
 
@@ -1118,10 +1225,13 @@ brazos no es evidencia de nada.
 
 ### P4. ¿Qué pruebas impedirán regresiones geométricas y de datos?
 
-Familia B (norma, degenerados, convención, permutación, NaN/Inf), Familia C (oráculo de
-interpolación **independiente**, no una segunda llamada al mismo algoritmo), Familia D
-(integración: `load_asset`, ruta AUTH, ruta SELF, `resize_height`, manifest, 512/1024) y Familia
-E (ancla por **enumeración** de las primitivas de carga).
+Familia B (norma, degenerados con estado `NON_EVALUABLE`, **ausencia de orientación inventada**,
+**el asset no desaparece del roster**, **rechazo numérico distinguible de exclusión silenciosa**,
+camino identidad **no-op** y su **validación explícita** de entradas inválidas, convención,
+permutación, NaN/Inf), Familia C (oráculo de interpolación **independiente**, no una segunda
+llamada al mismo algoritmo), Familia D (integración: `load_asset`, ruta AUTH, ruta SELF,
+`resize_height`, manifest, 512/1024) y Familia E (ancla por **enumeración** de las primitivas de
+carga). El detalle de cada test está en §8.1–§8.6.
 
 ### P5. ¿Qué atributos machine-readable distinguen las implementaciones?
 
@@ -1153,8 +1263,12 @@ para producción** porque cambia la política de vectores degenerados sin declar
 ### P9. ¿Se puede proponer un PR de código H4 independiente?
 
 **Sí, y debe serlo** — pero **no autorizado todavía**. Es independiente de M6 (no requiere
-implementar M6) y de #675 (parte de un `main` nuevo). La recomendación es
-`READY_FOR_TECH_LEAD_REVIEW`, **no** `READY_TO_IMPLEMENT`: faltan D-06 y D-07.
+implementar M6) y de #675 (parte de un `main` nuevo). Con D-06 y D-07 cerrados, el bloqueo que
+quedaba es de **conformidad del Tech Lead** con el alcance del slice 2 (§17, condición 9), más el
+valor numérico de `DEGENERATE_THRESHOLD` que se deriva **durante** la implementación (§8.0.a R7).
+
+La recomendación es `READY_FOR_TECH_LEAD_REVIEW`. **No** es `READY_TO_IMPLEMENT`:
+`H4_CODE_IMPLEMENTATION_AUTHORIZED = NO` hasta que la condición 9 de §17 se satisfaga.
 
 ### P10. ¿Cuál debe ser su sesión, rama, worktree y write-set exacto?
 
@@ -1197,7 +1311,90 @@ Todos los SHA citados existen en el repositorio (`git cat-file -t` → `commit`)
 | Corpus M3 (resolución nativa 1024²) | `docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json` | — |
 | Test existente del resizer | `tests/test_native_parallax_exp_m2.py::test_m3_normal_resize_renormalizes` | — |
 | Checker de tablas Markdown | `tests/test_native_parallax_pr700_corrective_docs_invariants.py` | 2026-10-08 |
+| Deprecación de `Image.fromarray(mode=)` | `docs/deprecations.rst` de Pillow (sección «Image.fromarray mode parameter»): `.. deprecated:: 11.3.0` · `.. versionremoved:: 13.0.0` | 2026-10-10 |
+| Release notes de Pillow 12.0.0 | `docs/releasenotes/12.0.0.rst` — «Part of this functionality has been restored in Pillow 12.0.0» | 2026-10-10 |
 | Entorno de este slice | Python `3.11.9` · NumPy `2.4.6` · Pillow `11.3.0` (pin `numpy>=1.26,<2.5`, `pillow>=10,<12`) | 2026-10-10 |
+
+---
+
+## 21. Cierre de contrato — decisión del Tech Lead (`H4_PREFLIGHT_CONTRACT_CLOSURE`)
+
+> **Slice:** `H4_PREFLIGHT_CONTRACT_CLOSURE` (docs-only). Misma rama y worktree que el preflight.
+> **No** implementa código, **no** crea tests, **no** ejecuta M6, **no** accede al corpus.
+> Registra las decisiones del Tech Lead sobre PR #711 y las aplica al documento.
+
+### 21.1 Veredicto recibido
+
+```text
+PR711_PREFLIGHT=PASS_WITH_FINDINGS
+CI=PASS
+D06_RECOMMENDATION=FAIL_CLOSED
+D07_RECOMMENDATION=PRESERVE_VALID_IDENTITY_NOOP
+PILLOW13_REMOVAL_CLAIM=NEEDS_CORRECTION
+H4_CODE_IMPLEMENTATION_AUTHORIZED=NO
+M6_IMPLEMENTATION_BLOCKED=YES
+NEXT_SLICE=H4_PREFLIGHT_CONTRACT_CLOSURE
+```
+
+Nota de lectura del propio Tech Lead, que este documento adopta: el CI verde acredita los checks
+**ejecutados**, no una auditoría adversarial completa. Qodo y CodeRabbit quedaron `skipped` por
+ser el PR Draft (requieren `draft == false`), así que **no** hubo revisión adversarial automática
+del documento.
+
+### 21.2 Decisión D-06 — vectores degenerados: **fail-closed**
+
+Cuando la interpolación cancela las direcciones, **no existe una normal resultante bien
+definida**. Sustituirla por `(0,0,1)` **inventaría una orientación** y podría contaminar las
+métricas científicas. La política queda **fail-closed**, con el requisito explícito de que el
+rechazo numérico sea **distinguible** de una exclusión silenciosa del experimento. Aplicado en
+§5.3.
+
+### 21.3 Decisión D-07 — camino identidad: **preservar el no-op válido**
+
+Con la resolución sin cambios y entrada válida, se conserva la semántica actual: sin
+interpolación, sin renormalización y sin copia obligatoria. Las entradas **no finitas o
+geométricamente inválidas** se rechazan con **validación explícita**, sin usar la renormalización
+para corregirlas en silencio. La **tolerancia de norma se deriva de pruebas sintéticas**, no se
+ajusta al corpus. Aplicado en §7.3 (V-01) y §7.3 (V-04).
+
+### 21.4 Corrección — alcance de la deprecación de `mode` en Pillow
+
+**Aceptada.** El claim original del preflight («se remueve en Pillow 13», aplicado a la llamada
+`uint8` + `mode="L"`) era **demasiado fuerte**. Evidencia que lo corrige:
+
+- Documentación oficial (`docs/deprecations.rst`): deprecado en **11.3.0**, **parcialmente
+  revertido en 12.0.0**; «the **only functionality removed is when the mode changes data
+  types**»; el parámetro «can still be used».
+- Medición propia con Pillow 11.3.0: `uint8` + `mode="L"` → funciona (solo
+  `DeprecationWarning`); `uint8` + `mode="F"` → `ValueError: not enough image data`.
+
+El uso de `resize_normal` **no cambia el tipo de dato**, así que no pertenece a la funcionalidad
+removida. La migración a la inferencia automática de modo se mantiene como **deseable por
+claridad y compatibilidad futura**, no como una rotura inminente. Aplicado en §4.1 y en el riesgo
+R-14 (§15).
+
+### 21.5 Separación aplicada
+
+Los **requisitos previos a la implementación** quedaron separados de los **tests `RED→GREEN` que
+se ejecutan durante ella** (§8.0), con la regla de secuencia: *un requisito previo abierto no se
+cierra escribiendo un test que lo asume — el test verifica la decisión, no la sustituye.*
+
+### 21.6 Estado resultante
+
+```text
+D06_STATUS                     = CLOSED_FAIL_CLOSED
+D07_STATUS                     = CLOSED_PRESERVE_VALID_IDENTITY_NOOP
+PILLOW13_REMOVAL_CLAIM         = CORRECTED
+PRE_IMPLEMENTATION_VS_TESTS    = SEPARATED (§8.0)
+H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
+M6_IMPLEMENTATION_BLOCKED      = YES
+NEXT_SLICE                     = PR independiente y acotado para la corrección H4
+                                 (base: un `main` nuevo; ver §19 P10)
+```
+
+**Nada de esto autoriza a empezar a escribir código.** El siguiente trabajo es un PR
+**independiente y estrictamente acotado** para la corrección H4, que parte de un `main` nuevo y
+trae sus propios tests. No hace falta reabrir #700, modificar #675 ni repetir el corpus real.
 
 ---
 
@@ -1205,7 +1402,7 @@ Todos los SHA citados existen en el repositorio (`git cat-file -t` → `commit`)
 
 ```text
 ### A. Git
-SESSION=H4_RESIZE_NORMAL_FIX_PREFLIGHT
+SESSION=H4_RESIZE_NORMAL_FIX_PREFLIGHT + H4_PREFLIGHT_CONTRACT_CLOSURE
 WORKTREE=E:/Skyclaw_Main_Sync/.worktrees/h4-resize-normal-preflight
 LOCAL_BRANCH=h4-resize-normal-preflight
 REMOTE_BRANCH=research/native-parallax-h4-resize-normal-preflight
@@ -1217,12 +1414,17 @@ CONCURRENT_WRITER=NO
 
 ### B. Estado técnico
 H4_DEFECT_REPRODUCED_FROM_SOURCE=YES
-H4_CORRECTION_SPECIFIED=YES (con 2 puntos abiertos: D-06, D-07)
+H4_CORRECTION_SPECIFIED=YES
+D06_INVALID_VECTOR_POLICY=FAIL_CLOSED                (CERRADO)
+D07_IDENTITY_PATH_CONTRACT=PRESERVE_VALID_NOOP       (CERRADO)
+PILLOW13_REMOVAL_CLAIM=CORRECTED
+PRE_IMPLEMENTATION_VS_TESTS=SEPARATED
 FLOAT_RESIZER_IMPLEMENTED=NO
 TDD_TEST_PLAN_COMPLETE=YES
 ADVERSARIAL_MUTATION_PLAN_COMPLETE=YES
 PROVENANCE_CONTRACT_SPECIFIED=YES
-INVALID_VECTOR_POLICY=SPECIFIED (opciones P-1 / P-2; elección pendiente)
+INVALID_VECTOR_POLICY=FAIL_CLOSED
+DEGENERATE_THRESHOLD=DEFERRED (teoría + sintético; prohibido derivarlo del corpus)
 
 ### C. Contrafactual
 M6_CONTRAFACTUAL_PROTOCOL=SPECIFIED
@@ -1249,21 +1451,25 @@ UNRESOLVED_THREADS=<Apéndice B>
 
 ### F. Decisión final
 PREFLIGHT_STATUS=COMPLETE_WITH_FINDINGS
+CONTRACT_CLOSURE_STATUS=COMPLETE
 H4_CODE_SLICE_RECOMMENDATION=READY_FOR_TECH_LEAD_REVIEW
 H4_CODE_IMPLEMENTATION_AUTHORIZED=NO
 M6_IMPLEMENTATION_BLOCKED=YES
 READY_FOR_M6_IMPLEMENTATION=NO
+NEXT_SLICE=PR independiente y acotado para la corrección H4 (base: un `main` nuevo)
 ```
 
 ## Apéndice B — Resultado de los gates de calidad
 
-Ejecutados antes de publicar (§16 del brief). Los valores son **medidos**, no declarados.
+Ejecutados antes de publicar. Los valores son **medidos**, no declarados. Los de la **revisión 2**
+(`H4_PREFLIGHT_CONTRACT_CLOSURE`) son los vigentes; se conservan los de la revisión 1 para
+trazabilidad.
 
 ```text
-WRITE_SET_UNICO            = PASS  (git status --porcelain=v1 → un solo path nuevo, el documento)
+WRITE_SET_UNICO            = PASS  (un solo path: el documento; rev.1 nuevo, rev.2 modificado)
 DIFF_CHECK                 = PASS  (git diff --check vacío; sin whitespace sobrante ni marcadores)
-MARKDOWN_TABLAS            = PASS  (23 tablas; 0 filas con conteo de celdas inconsistente)
-MARKDOWN_FENCES            = PASS  (64 fences, número par → balanceados)
+MARKDOWN_TABLAS            = PASS  (rev.2: 26 tablas, 0 filas con conteo inconsistente; rev.1: 23)
+MARKDOWN_FENCES            = PASS  (rev.2: 76 fences, par → balanceados; rev.1: 64)
 MARKDOWN_BARRAS_ESCAPADAS  = PASS  (0 celdas con "\|" — prohibido por el checker del repo)
 SHA_VALIDATION             = PASS  (8 commits + 1 blob citados; git cat-file -t los resuelve)
 MAIN_BASE                  = PASS  (origin/main sigue en 647d2461…; main local sin cambios en ef4b8aa9…)
@@ -1271,8 +1477,17 @@ ARTEFACTOS_CIENTIFICOS     = PASS  (0 archivos científicos modificados)
 PR675_PR697_PR700          = PASS  (no tocados; #675 sigue en f1415711…)
 TESTS_EXISTENTES           = PASS  (26 passed — test_native_parallax_exp_m2.py + pr700 docs invariants)
 TESTS_H4_NUEVOS            = NO_EJECUTADOS (pertenecen al slice 2; no existen todavía)
-CI                         = ver la corrida del PR (los Qodo requieren PR no-draft; quedan skipped)
+CI_REV1                    = PASS  (17 pass / 3 skipping / 0 fallos en 9634679f)
+CI_REV2                    = ver la corrida del PR tras el push de cierre
 ```
+
+**Verificación del falso verde (trampa conocida de este repo).** El job `py3.11` puede reportar
+verde sin haber corrido la suite. Se leyó el **log**, no el check: `10943 passed, 20 skipped, 135
+warnings` **y** `Coverage XML written to file` presente, sin `FAILED`/`ERROR`. Verde **real**.
+
+**Revisión adversarial ausente.** Los workflows Qodo y CodeRabbit quedaron `skipped` porque el PR
+está en Draft (requieren `draft == false`). Por lo tanto **no** hubo revisión adversarial
+automática del documento; el CI verde acredita los checks **ejecutados**, no una auditoría.
 
 **Advertencia explícita.** Un CI verde de este PR **no** valida ninguna implementación H4: el
 documento es `RESEARCH ONLY` y el fix no existe. La única validación que este PR puede dar es
