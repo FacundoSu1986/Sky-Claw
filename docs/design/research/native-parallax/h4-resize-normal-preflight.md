@@ -16,6 +16,10 @@
 > no-op válido del camino identidad (§7.3), **alcance de la deprecación de Pillow corregido**
 > (§4.1) y **separación explícita** entre requisitos previos y tests de implementación (§8.0). El
 > registro completo está en §21.
+>
+> **Revisión 3 (`H4_PREFLIGHT_REVIEW_REMEDIATION`, 2026-10-11).** Adjudica los 10 threads de
+> revisión de PR #711 y corrige el único residuo real: §19 P3 citaba `1/255` como caso `RED`,
+> contradiciendo §8 Familia A. Sin cambios de alcance, de contrato ni de conclusión científica.
 
 ---
 
@@ -1271,8 +1275,9 @@ nunca del corpus.
 ### P3. ¿Qué casos `RED` demostrarán el defecto histórico?
 
 Los de la Familia A (§8): normal plana `(0,0,1)` con `mean(nx) = −0.0039215` (debe dar 0); sesgo
-XY del camino uint8 sobre campo simétrico; componentes de amplitud `1/255` que la cuantización
-colapsa. Cada uno **debe** fallar contra la implementación vigente. Un test que pase en ambos
+XY del camino uint8 sobre campo simétrico; componentes sub-LSB de amplitud `1/(4·255)`, cuyo
+signo la cuantización histórica invierte (`1/255` **no** discrimina: sobrevive al round-trip).
+Cada uno **debe** fallar contra la implementación vigente. Un test que pase en ambos
 brazos no es evidencia de nada.
 
 ### P4. ¿Qué pruebas impedirán regresiones geométricas y de datos?
@@ -1513,9 +1518,9 @@ NEXT_SLICE=PR independiente y acotado para la corrección H4 (base: un `main` nu
 
 ## Apéndice B — Resultado de los gates de calidad
 
-Ejecutados antes de publicar. Los valores son **medidos**, no declarados. Los de la **revisión 2**
-(`H4_PREFLIGHT_CONTRACT_CLOSURE`) son los vigentes; se conservan los de la revisión 1 para
-trazabilidad.
+Ejecutados antes de publicar. Los valores son **medidos**, no declarados. Los de la **revisión 3**
+(`H4_PREFLIGHT_REVIEW_REMEDIATION`) son los vigentes; se conservan los de las revisiones 1 y 2
+para trazabilidad.
 
 ```text
 WRITE_SET_UNICO            = PASS  (un solo path: el documento; rev.1 nuevo, rev.2 modificado)
@@ -1532,7 +1537,24 @@ PR675_PR697_PR700          = PASS  (no tocados; #675 sigue en f1415711…)
 TESTS_EXISTENTES           = PASS  (26 passed — test_native_parallax_exp_m2.py + pr700 docs invariants)
 TESTS_H4_NUEVOS            = NO_EJECUTADOS (pertenecen al slice 2; no existen todavía)
 CI_REV1                    = PASS  (17 pass / 3 skipping / 0 fallos en 9634679f)
-CI_REV2                    = ver la corrida del PR tras el push de cierre
+CI_REV2                    = PASS  (corrida del PR sobre 754bccc5)
+```
+
+**Revisión 3 (`H4_PREFLIGHT_REVIEW_REMEDIATION`, 2026-10-11).** Adjudicación de los 10 threads
+de revisión de PR #711. El único defecto residual real era §19 P3 (`1/255` como caso `RED`,
+contradiciendo §8 Familia A); corregido acá. Los otros nueve hallazgos ya estaban atendidos en
+la rev.2 (`754bccc5`) y se re-verificaron contra el código y los artefactos. Gates medidos
+sobre este HEAD:
+```text
+WRITE_SET_UNICO_REV3       = PASS  (un solo path: el documento)
+DIFF_CHECK_REV3            = PASS  (git diff --check vacío)
+MARKDOWN_TABLAS_REV3       = PASS  (26 tablas, 0 filas con conteo inconsistente)
+MARKDOWN_BARRAS_ESCAPADAS_REV3 = PASS  (0 celdas con "\|")
+TESTS_EXISTENTES_REV3      = PASS  (26 passed — test_native_parallax_exp_m2.py + pr700 docs invariants)
+MAIN_BASE_REV3             = PASS  (origin/main 74054f51…; sin overlap sobre el path de este PR)
+M6_EXTERNAL_REF_DURABILITY = BLOCKED  (sin cambios: PR #675 externo a #711)
+ARTEFACTOS_CIENTIFICOS_REV3 = PASS  (0 archivos científicos modificados)
+CI_REV3                    = ver la corrida del PR tras el push de esta revisión
 ```
 
 **Verificación del falso verde (trampa conocida de este repo).** El job `py3.11` puede reportar
