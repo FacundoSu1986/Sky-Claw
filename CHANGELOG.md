@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Telegram: el cooldown de HTTP 429 era por corrutina y no se compartía entre envíos concurrentes (#706).**
+  Cuando una tarea recibía 429, otra corrutina dirigida al mismo chat o al mismo bot podía golpear
+  la API de Telegram inmediatamente sin consultar la restricción temporal anunciada, provocando
+  ráfagas concurrentes y agotamiento prematuro de reintentos. Se implementó `CooldownCompartido`
+  en `sky_claw/app/comms/telegram_sender.py` con reloj monotónico, alcance aislado por `chat_id` (y
+  cooldown global de bot para operaciones como `answer_callback_query`), extensión monotónica que
+  impide acortar ventanas vigentes, acotación por reintento (≤30.0s) y presupuesto total finito
+  (90.0s en texto y 330.0s en `send_document`). La comprobación ocurre inmediatamente antes de cada
+  intento HTTP en `sendMessage`, `sendDocument`, `editMessageText` y `answerCallbackQuery`.
+  Anclas y tests deterministas con reloj simulado y aniquilación de 12 mutaciones en
+  `tests/test_telegram_flood_control_compartido.py`.
 - **El `--help` declaraba defaults que no eran los que corrían (#665).** `--mode`
   decía `(default: cli)` también en el `.exe` congelado, donde el default real es
   `gui` (un `set_defaults` posterior lo pisaba sin tocar el texto). El mismo

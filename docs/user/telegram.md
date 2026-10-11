@@ -56,8 +56,37 @@ comando textual, otra interfaz válida o un timeout:
 La interfaz de Telegram sólo refleja la decisión autoritativa del guard. Un
 callback tardío no puede reabrir una solicitud ni cambiar una decisión terminal.
 
-## Verificación segura
+## Flood-control coordinado y política de HTTP 429 (#706)
 
+El cliente `TelegramSender` coordina las respuestas HTTP 429 a través de una
+autoridad de cooldown compartida en memoria (`CooldownCompartido`):
+
+1. **Ámbito por chat:** Las restricciones temporales se aíslan por `chat_id`. Una
+   respuesta 429 recibida en el chat `123` frena a todas las corrutinas que envían
+   a `123`, pero no bloquea los envíos dirigidos a otros chats (`456`).
+2. **Ámbito a nivel bot:** Endpoints que no operan sobre un chat específico (como
+   `answer_callback_query`) consultan y publican cooldown a nivel global (`None`),
+   restringiendo preventivamente todo el egress del bot durante la ventana informada.
+3. **Comprobación antes de cada intento:** La autoridad se consulta inmediatamente
+   antes de cada llamada HTTP a través de `NetworkGateway`, tanto en el primer intento
+   como en cada reintento subsiguiente de `sendMessage`, `sendDocument`,
+   `editMessageText` y `answerCallbackQuery`.
+4. **Extensión monotónica:** El deadline compartido se actualiza calculando
+   `max(actual, monotonic_now + retry_after)`, impidiendo que respuestas tardías
+   con un `retry_after` menor reduzcan una restricción vigente mayor.
+5. **Acotación finita:** Cada `retry_after` individual se acota a 30.0 segundos.
+   Además, el tiempo total acumulado de espera está presupuestado (90.0s para
+   mensajes de texto y 330.0s para subida de documentos vía `MAX_UPLOAD_TOTAL_SECONDS`).
+   Si el cooldown supera el presupuesto, la operación falla de inmediato sin golpear
+   la API.
+6. **Contrato del consumidor T3 (notificador de progreso / estado):**
+   - **Avisos críticos** (fallo de ritual, estado terminal, solicitud HITL):
+     NUNCA asumir entrega exitosa. Ante `TelegramRateLimitError`, registrar la falla
+     y reportar por un canal alternativo observable (GUI/CLI/log de auditoría).
+   - **Actualizaciones no críticas** (progreso en tiempo real, `/lod_status`):
+     Descartar la actualización obsoleta; no reprogramar ni encolar indefinidamente.
+
+## Verificación segura
 
 1. Probar con un chat de operador controlado.
 2. Confirmar que un remitente distinto es rechazado.
