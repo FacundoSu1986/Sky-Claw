@@ -12,12 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Cuando una tarea recibía 429, otra corrutina dirigida al mismo chat o al mismo bot podía golpear
   la API de Telegram inmediatamente sin consultar la restricción temporal anunciada, provocando
   ráfagas concurrentes y agotamiento prematuro de reintentos. Se implementó `CooldownCompartido`
-  en `sky_claw/app/comms/telegram_sender.py` con reloj monotónico, alcance aislado por `chat_id` (y
-  cooldown global de bot para operaciones como `answer_callback_query`), extensión monotónica que
-  impide acortar ventanas vigentes, acotación por reintento (≤30.0s) y presupuesto total finito
-  (90.0s en texto y 330.0s en `send_document`). La comprobación ocurre inmediatamente antes de cada
+  en `sky_claw/app/comms/telegram_sender.py` con reloj monotónico, política conservadora global ante
+  respuestas ambiguas de la Bot API (aislamiento explícito disponible con `ambito="chat"`), preservación
+  íntegra del deadline devuelto por el servidor (con tope de sanidad de 24h) impidiendo reintentos
+  anticipados en otras tareas, presupuesto monotónico único (90.0s) compartido entre todos los chunks de
+  mensajes de texto divididos (`send`), clasificación fiel de `TelegramUploadTimeoutError` cuando la cota
+  remanente de subida no cubre el cooldown, reevaluación directa de deadlines tras cada despertar
+  (eliminando carreras de versiones con la purga amortizada) y presupuesto finito por defecto en vías
+  HITL (`edit_message` y `answer_callback_query`). La comprobación ocurre inmediatamente antes de cada
   intento HTTP en `sendMessage`, `sendDocument`, `editMessageText` y `answerCallbackQuery`.
-  Anclas y tests deterministas con reloj simulado y aniquilación de 12 mutaciones en
+  Anclas y tests deterministas con reloj simulado y aniquilación de 18 mutaciones en
   `tests/test_telegram_flood_control_compartido.py`.
 - **El `--help` declaraba defaults que no eran los que corrían (#665).** `--mode`
   decía `(default: cli)` también en el `.exe` congelado, donde el default real es

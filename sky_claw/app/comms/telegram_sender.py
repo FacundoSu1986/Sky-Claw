@@ -159,6 +159,10 @@ _MAX_REINTENTOS_429 = 3
 #: caller (un HITL, un aviso de pipeline) por un plazo que ya no es "un instante".
 _RETRY_AFTER_MAX_SEGUNDOS = 30.0
 
+#: Tope de sanidad para la autoridad compartida (24 horas): evita desbordes con
+#: valores absurdos pero preserva restricciones reales del servidor como retry_after=600s.
+_SANIDAD_MAX_COOLDOWN_SEGUNDOS = 86400.0
+
 #: Espera cuando Telegram responde 429 sin ``retry_after`` legible.
 _RETRY_AFTER_POR_DEFECTO = 1.0
 
@@ -205,9 +209,18 @@ class TelegramRateLimitError(TelegramSendError):
       posteriores no golpearán la API de Telegram durante la ventana anunciada.
     """
 
-    def __init__(self, message: str, *, retry_after: float) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after: float,
+        motivo: str | None = None,
+        presupuesto_agotado: bool = False,
+    ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.motivo = motivo
+        self.presupuesto_agotado = presupuesto_agotado
 
 
 class TelegramUploadTimeoutError(TelegramSendError):
@@ -271,36 +284,49 @@ class CooldownCompartido:
 
     Coordina corrutinas concurrentes dentro de la misma instancia de :class:`TelegramSender`:
     - Las fechas de vencimiento (deadlines) se calculan a partir de :func:`time.monotonic`.
-    - Ámbito por chat: ``chat_id`` numérico aísla la restricción a ese chat.
-    - Ámbito bot/global: ``chat_id=None`` representa un cooldown general (ej. de endpoints sin chat).
+    - Ámbito por chat: ``chat_id`` numérico aísla la restricción si se indica ámbito 'chat'.
+    - Ámbito bot/global: política conservadora por defecto ante 429 ambiguos (broadcast/rate de bot).
     - Extensión monotónica: publicar un nuevo deadline nunca acorta uno existente mayor.
-    - Acotación en publicación: ningún cooldown excede :data:`_RETRY_AFTER_MAX_SEGUNDOS`.
+    - Preservación de deadline: la autoridad retiene el plazo completo devuelto por Telegram
+      (hasta una cota de sanidad :data:`_SANIDAD_MAX_COOLDOWN_SEGUNDOS`), mientras que los llamadores
+      usan presupuestos finitos para fallar rápido sin golpear la API.
     - Purgado amortizado: se limpian los chats vencidos periódicamente sin hilos de fondo.
-    - Espera cancelable y presupuestada: no usa locks para evitar sostener bloqueos durante awaits.
+    - Espera cancelable y presupuestada: reevalúa ``deadline_para()`` tras cada suspensión
+      para no depender de contadores de versión.
     """
 
     def __init__(self) -> None:
         self._deadlines: dict[int | None, float] = {}
-        self._versiones: dict[int | None, int] = {}
         self._operaciones: int = 0
 
     def _purgar_vencidos(self, ahora: float) -> None:
         vencidos = [cid for cid, d in self._deadlines.items() if d <= ahora]
         for cid in vencidos:
             del self._deadlines[cid]
-            self._versiones.pop(cid, None)
 
-    def publicar(self, chat_id: int | None, espera_segundos: float) -> float:
-        """Publica o extiende el deadline para ``chat_id`` de forma monotónica."""
+    def publicar(
+        self,
+        chat_id: int | None = None,
+        espera_segundos: float = _RETRY_AFTER_POR_DEFECTO,
+        *,
+        ambito: str = "global",
+    ) -> float:
+        """Publica o extiende el deadline de forma monotónica.
+
+        Ante respuestas 429 estándar de Telegram donde no se puede demostrar que el límite
+        es exclusivamente local a un chat, se aplica por defecto ``ambito='global'``
+        afectando a todos los envíos del bot. Un ámbito ``'chat'`` explícito aísla
+        la restricción al ``chat_id`` indicado.
+        """
         ahora = time.monotonic()
         self._purgar_vencidos(ahora)
-        espera_acotada = min(max(espera_segundos, 0.0), _RETRY_AFTER_MAX_SEGUNDOS)
+        espera_acotada = min(max(espera_segundos, 0.0), _SANIDAD_MAX_COOLDOWN_SEGUNDOS)
         nuevo_deadline = ahora + espera_acotada
-        anterior = self._deadlines.get(chat_id, 0.0)
-        definitivo = max(anterior, nuevo_deadline)
-        self._deadlines[chat_id] = definitivo
-        self._versiones[chat_id] = self._versiones.get(chat_id, 0) + 1
-        return definitivo
+        if chat_id is not None:
+            self._deadlines[chat_id] = max(self._deadlines.get(chat_id, 0.0), nuevo_deadline)
+        if ambito == "global" or chat_id is None:
+            self._deadlines[None] = max(self._deadlines.get(None, 0.0), nuevo_deadline)
+        return max(self._deadlines.get(chat_id, 0.0), self._deadlines.get(None, 0.0))
 
     def deadline_para(self, chat_id: int | None) -> float:
         """Deadline efectivo para ``chat_id`` considerando el límite por chat y el global."""
@@ -313,34 +339,34 @@ class CooldownCompartido:
         ahora = time.monotonic()
         return max(self.deadline_para(chat_id) - ahora, 0.0)
 
-    async def esperar(self, chat_id: int | None = None, presupuesto: float | None = None) -> None:
+    async def esperar(
+        self,
+        chat_id: int | None = None,
+        presupuesto: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS,
+    ) -> None:
         """Espera al deadline compartido vigente para ``chat_id``.
 
         Si la espera requerida excede ``presupuesto``, lanza :class:`TelegramRateLimitError`.
+        El bucle reevalúa ``deadline_para(chat_id)`` tras cada despertar, garantizando que
+        extensiones concurrentes se respeten sin falsas salidas.
         """
         total_dormido = 0.0
-        v_chat = self._versiones.get(chat_id, 0) if chat_id is not None else 0
-        v_global = self._versiones.get(None, 0)
         while True:
             ahora = time.monotonic()
             d = self.deadline_para(chat_id)
             restante = d - ahora
-            if restante <= 0:
+            if restante <= 0.0:
                 break
             if presupuesto is not None and (total_dormido + restante) > presupuesto:
                 raise TelegramRateLimitError(
                     f"El cooldown compartido ({restante:.1f}s) excede el presupuesto disponible ({presupuesto:.1f}s)",
                     retry_after=restante,
+                    motivo="COOLDOWN_EXCEEDS_OPERATION_BUDGET",
+                    presupuesto_agotado=True,
                 )
             dormir_secs = round(restante, 4)
             await asyncio.sleep(dormir_secs)
             total_dormido += restante
-            v_chat_post = self._versiones.get(chat_id, 0) if chat_id is not None else 0
-            v_global_post = self._versiones.get(None, 0)
-            if v_chat_post == v_chat and v_global_post == v_global:
-                break
-            v_chat = v_chat_post
-            v_global = v_global_post
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,11 +429,21 @@ class TelegramSender:
         """
         chunks = self._split_message(text)
         last_message: TelegramMessage | None = None
+        tiempo_inicio = time.monotonic()
+        presupuesto_total = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS
         for i, chunk in enumerate(chunks):
             await self._wait_for_rate_limit(chat_id)
             # Only add reply_markup to the last chunk if it's split
             markup = reply_markup if i == len(chunks) - 1 else None
-            last_message = await self._send_chunk(chat_id, chunk, markup, parse_mode)
+            tiempo_transcurrido = time.monotonic() - tiempo_inicio
+            presupuesto_remanente = max(presupuesto_total - tiempo_transcurrido, 0.0)
+            last_message = await self._send_chunk(
+                chat_id,
+                chunk,
+                markup,
+                parse_mode,
+                presupuesto_cooldown=presupuesto_remanente,
+            )
 
         # ``_split_message`` siempre devuelve al menos un chunk, pero conservar
         # este guard explícito evita que un cambio futuro fabrique un mapping HITL
@@ -422,13 +458,20 @@ class TelegramSender:
         text: str,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
+        *,
+        presupuesto_cooldown: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS,
     ) -> TelegramMessage:
         """Send a single message chunk via the Telegram API."""
         payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "HTML"}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
-        return await self._enviar("sendMessage", chat_id, lambda: {"json": payload})
+        return await self._enviar(
+            "sendMessage",
+            chat_id,
+            lambda: {"json": payload},
+            presupuesto_cooldown=presupuesto_cooldown,
+        )
 
     async def send_document(
         self,
@@ -520,15 +563,18 @@ class TelegramSender:
         # envuelve la espera del rate limit local, los reintentos por 429 y los hops
         # de redirección del gateway (cada hop tiene su deadline, pero el acumulado
         # queda acotado acá).
+        tiempo_inicio = time.monotonic()
         cota = asyncio.timeout(MAX_UPLOAD_TOTAL_SECONDS)
         try:
             async with cota:
                 await self._wait_for_rate_limit(chat_id)
+                tiempo_transcurrido = time.monotonic() - tiempo_inicio
+                presupuesto_remanente = max(MAX_UPLOAD_TOTAL_SECONDS - tiempo_transcurrido, 0.0)
                 return await self._enviar(
                     "sendDocument",
                     chat_id,
                     _formulario,
-                    presupuesto_cooldown=MAX_UPLOAD_TOTAL_SECONDS,
+                    presupuesto_cooldown=presupuesto_remanente,
                 )
         except TimeoutError as exc:
             # Sólo el vencimiento PROPIO es la cota. ``asyncio.timeout`` re-lanza
@@ -545,7 +591,7 @@ class TelegramSender:
                 f"({_MAX_REINTENTOS_429} reintentos incluidos)"
             ) from exc
         except TelegramRateLimitError as exc:
-            if exc.retry_after > MAX_UPLOAD_TOTAL_SECONDS:
+            if exc.presupuesto_agotado or exc.retry_after > MAX_UPLOAD_TOTAL_SECONDS:
                 raise TelegramUploadTimeoutError(
                     f"send_document: la subida excedió la cota total de {MAX_UPLOAD_TOTAL_SECONDS:g}s "
                     f"debido a flood-control ({exc.retry_after:g}s)"
@@ -593,7 +639,7 @@ class TelegramSender:
                 cuerpo_429 = await resp.text()
                 retry_after = _retry_after_de(resp.headers, cuerpo_429)
 
-            self._cooldown.publicar(chat_id, retry_after)
+            self._cooldown.publicar(chat_id, retry_after, ambito="global")
 
             if intento == _MAX_REINTENTOS_429 or retry_after > _RETRY_AFTER_MAX_SEGUNDOS:
                 break
@@ -754,8 +800,8 @@ class TelegramSender:
         )
         async with resp:
             if resp.status == 429:
-                self._cooldown.publicar(chat_id, _retry_after_de(resp.headers, await resp.text()))
-                logger.warning("Telegram editMessageText: flood-control (429); cooldown del chat publicado")
+                self._cooldown.publicar(chat_id, _retry_after_de(resp.headers, await resp.text()), ambito="global")
+                logger.warning("Telegram editMessageText: flood-control (429); cooldown del bot publicado")
             elif resp.status != 200:
                 body = await resp.text()
                 logger.error("Failed to edit message: %s", body)

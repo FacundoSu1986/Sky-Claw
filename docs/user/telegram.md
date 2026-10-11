@@ -61,25 +61,31 @@ callback tardío no puede reabrir una solicitud ni cambiar una decisión termina
 El cliente `TelegramSender` coordina las respuestas HTTP 429 a través de una
 autoridad de cooldown compartida en memoria (`CooldownCompartido`):
 
-1. **Ámbito por chat:** Las restricciones temporales se aíslan por `chat_id`. Una
-   respuesta 429 recibida en el chat `123` frena a todas las corrutinas que envían
-   a `123`, pero no bloquea los envíos dirigidos a otros chats (`456`).
-2. **Ámbito a nivel bot:** Endpoints que no operan sobre un chat específico (como
-   `answer_callback_query`) consultan y publican cooldown a nivel global (`None`),
-   restringiendo preventivamente todo el egress del bot durante la ventana informada.
-3. **Comprobación antes de cada intento:** La autoridad se consulta inmediatamente
-   antes de cada llamada HTTP a través de `NetworkGateway`, tanto en el primer intento
-   como en cada reintento subsiguiente de `sendMessage`, `sendDocument`,
-   `editMessageText` y `answerCallbackQuery`.
-4. **Extensión monotónica:** El deadline compartido se actualiza calculando
-   `max(actual, monotonic_now + retry_after)`, impidiendo que respuestas tardías
-   con un `retry_after` menor reduzcan una restricción vigente mayor.
-5. **Acotación finita:** Cada `retry_after` individual se acota a 30.0 segundos.
-   Además, el tiempo total acumulado de espera está presupuestado (90.0s para
-   mensajes de texto y 330.0s para subida de documentos vía `MAX_UPLOAD_TOTAL_SECONDS`).
-   Si el cooldown supera el presupuesto, la operación falla de inmediato sin golpear
-   la API.
-6. **Contrato del consumidor T3 (notificador de progreso / estado):**
+1. **Política conservadora ante 429 ambiguos:** La Bot API de Telegram no distingue
+   en `ResponseParameters` si el 429 se debe al límite del chat o al límite global
+   de broadcast del bot (~30 msgs/s). Para evitar ráfagas prohibidas, un 429 recibido
+   en `sendMessage`, `sendDocument` o `editMessageText` publica preventivamente una
+   restricción global que frena a todas las corrutinas del bot durante la ventana informada.
+   La autoridad conserva soporte para aislar restricciones exclusivamente a un chat
+   cuando se indique `ambito="chat"`.
+2. **Retención íntegra del deadline de Telegram:** La autoridad retiene el valor completo
+   anunciado por el servidor en `parameters.retry_after` (incluso si supera 30.0s, hasta
+   la cota de sanidad de 24 horas). Ninguna corrutina subsiguiente intentará alcanzar la
+   API antes de que expire la restricción real del servidor.
+3. **Presupuesto compartido en mensajes divididos:** Para mensajes de texto largos divididos
+   en múltiples fragmentos (`_split_message`), `send()` define un único presupuesto monotónico
+   de 90.0 segundos para la operación total. Los fragmentos subsiguientes consumen el
+   presupuesto remanente, impidiendo que cada fragmento reinicie un plazo de 90 segundos.
+4. **Clasificación precisa de timeouts en documentos:** Cuando el tiempo restante de la
+   cota de subida (:data:`MAX_UPLOAD_TOTAL_SECONDS`, 330.0s) es inferior al cooldown activo,
+   `send_document` clasifica el fallo como :class:`TelegramUploadTimeoutError`, garantizando
+   que el llamador reciba consistentemente la señal de tiempo de subida agotado.
+5. **Reevaluación continua y sin falsas salidas:** El bucle de espera en `CooldownCompartido`
+   reevalúa directamente el deadline efectivo tras cada suspensión, evitando condiciones
+   de carrera con la purga amortizada y extensiones concurrentes.
+6. **Acotación por defecto en vías HITL:** `editMessageText` y `answerCallbackQuery`
+   aplican por defecto el presupuesto finito de 90.0 segundos, evitando bloqueos indefinidos.
+7. **Contrato del consumidor T3 (notificador de progreso / estado):**
    - **Avisos críticos** (fallo de ritual, estado terminal, solicitud HITL):
      NUNCA asumir entrega exitosa. Ante `TelegramRateLimitError`, registrar la falla
      y reportar por un canal alternativo observable (GUI/CLI/log de auditoría).
