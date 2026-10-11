@@ -150,6 +150,7 @@ class AsyncModRegistry:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
+        self._conn_lock = asyncio.Lock()
         # P1: all coroutines share ONE aiosqlite connection, so execute+commit
         # (and executemany+rollback) must be serialized — otherwise one writer's
         # commit/rollback lands mid-transaction of another, committing partial
@@ -161,6 +162,19 @@ class AsyncModRegistry:
     # ------------------------------------------------------------------
 
     async def open(self) -> None:
+        """Abre la DB (ver ``_abrir``) con una guarda única ante apertura fallida.
+
+        #474: serializa la apertura bajo ``_conn_lock`` para evitar carreras
+        concurrentes de inicialización y asegura que ante cualquier ``BaseException``
+        (incluida la cancelación) se cierre la conexión propia y se despeje el
+        sentinel, permitiendo un reintento limpio.
+        """
+        async with self._conn_lock:
+            if self._conn is not None:
+                return
+            await self._abrir()
+
+    async def _abrir(self) -> None:
         """Open (or create) the database and ensure the schema exists.
 
         M-01: If a DatabaseLifecycleManager was injected, the connection is
@@ -177,192 +191,203 @@ class AsyncModRegistry:
         if self._conn is not None:
             return
 
-        if self._lifecycle is not None:
-            # ----------------------------------------------------------
-            # M-01 DI path — lifecycle owns and manages the connection
-            # ----------------------------------------------------------
-            self._owns_conn = False
-            try:
-                # Bind the per-connection write lock (shared across wrappers that
-                # reuse this managed connection), not the per-instance default —
-                # otherwise concurrent wrappers on the same connection would not
-                # serialize and the transaction-interleaving race would remain.
-                self._write_lock = self._lifecycle.get_write_lock(self._db_path)
-
-                # PR-1b2b: el SQL lifecycle-backed corre dentro del boundary del
-                # path. El quick_check es lectura: operation() sostiene el lock
-                # compartido mientras corre, y lo libera antes de cualquier
-                # recovery (close/evict/rename corren fuera del boundary).
-                async with self._lifecycle.operation(self._db_path) as conn:
-                    self._conn = conn
-                    self._conn.row_factory = aiosqlite.Row
-                    async with conn.execute("PRAGMA quick_check") as cur:
-                        row = await cur.fetchone()
-                        if row is None or str(row[0]).lower() != "ok":
-                            # DB-004: Use specific exception to avoid catching unrelated RuntimeErrors
-                            raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
-
-            except _DatabaseCorruptionError as corruption_error:
-                # PR-2: la invalidación de la conexión corrupta ya NO se hace a
-                # mano (close + evict_connection). Ese par dejaba dos agujeros:
-                # el cierre no confirmado perdía el ownership, y entre el evict y
-                # el rename un operation() hermano podía abrir una conexión
-                # "fresh" sobre el archivo que estaba por moverse — el rename se
-                # llevaba el inodo y la recovery terminaba escribiendo el schema
-                # dentro del backup corrupto. La ventana del lifecycle cubre las
-                # dos cosas: mantiene el path fail-closed mientras dura, sin
-                # sostener L_path durante el rename/backoff.
-                corrupt_conn = self._conn
-                if corrupt_conn is None:
-                    raise
-                self._conn = None
-
-                db_file = pathlib.Path(self._db_path)
+        conn: aiosqlite.Connection | None = None
+        try:
+            if self._lifecycle is not None:
+                # ----------------------------------------------------------
+                # M-01 DI path — lifecycle owns and manages the connection
+                # ----------------------------------------------------------
+                self._owns_conn = False
                 try:
-                    async with self._lifecycle.recover_connection(
-                        self._db_path,
-                        corrupt_conn,
-                    ) as reabrir:
-                        if db_file.exists():
-                            backup_path = db_file.with_name(
-                                f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}"
-                            )
+                    # Bind the per-connection write lock (shared across wrappers that
+                    # reuse this managed connection), not the per-instance default —
+                    # otherwise concurrent wrappers on the same connection would not
+                    # serialize and the transaction-interleaving race would remain.
+                    self._write_lock = self._lifecycle.get_write_lock(self._db_path)
 
-                            @retry(
-                                retry=retry_if_exception_type(OSError),
-                                stop=stop_after_attempt(5),
-                                wait=wait_exponential(multiplier=1, min=1, max=10),
-                                reraise=True,
-                            )
-                            async def _do_backup_lifecycle():
-                                await asyncio.to_thread(db_file.rename, backup_path)
+                    # PR-1b2b: el SQL lifecycle-backed corre dentro del boundary del
+                    # path. El quick_check es lectura: operation() sostiene el lock
+                    # compartido mientras corre, y lo libera antes de cualquier
+                    # recovery (close/evict/rename corren fuera del boundary).
+                    async with self._lifecycle.operation(self._db_path) as op_conn:
+                        conn = op_conn
+                        op_conn.row_factory = aiosqlite.Row
+                        async with op_conn.execute("PRAGMA quick_check") as cur:
+                            row = await cur.fetchone()
+                            if row is None or str(row[0]).lower() != "ok":
+                                # DB-004: Use specific exception to avoid catching unrelated RuntimeErrors
+                                raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
 
-                            try:
-                                await _do_backup_lifecycle()
-                                logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
-                            except OSError as e:
-                                logger.error("Failed to backup corrupt database: %s", e)
-                                raise
-
-                        # Conexión fresh Y schema DENTRO de la ventana: la
-                        # cuarentena se levanta al salir, así que el path nunca
-                        # se presenta como usable a medio reconstruir.
-                        async with reabrir() as conn:
-                            self._conn = conn
-                            conn.row_factory = aiosqlite.Row
-                            await conn.executescript(_SCHEMA_SQL)
-                except DatabaseConnectionReplacedError as error:
-                    self._conn = None
-                    logger.error(
-                        "Corrupt database connection was replaced before invalidation; replacement ownership retained"
-                    )
-                    raise corruption_error from error
-                except DatabaseConnectionQuarantinedError as error:
-                    self._conn = None
-                    logger.error(
-                        "Failed to close corrupt database; lifecycle ownership retained: %s",
-                        error,
-                        exc_info=(type(error), error, error.__traceback__),
-                    )
-                    raise corruption_error from (error.__cause__ or error)
-                except BaseException:
-                    # Recovery abortada a mitad (rename agotado, schema fallido,
-                    # cancelación). El lifecycle dejó el path fail-closed; quedarse
-                    # con la referencia haría que open() creyera estar abierto y
-                    # que cada query muriera contra la cuarentena.
-                    self._conn = None
-                    raise
-
-            except Exception as exc:
-                # El lifecycle sigue siendo propietario de cualquier conexion
-                # obtenida antes del fallo y la cerrara durante shutdown_all().
-                self._conn = None
-                logger.error("Failed to open async registry: %s", exc)
-                raise
-
-        else:
-            # ----------------------------------------------------------
-            # Backwards-compat path — direct aiosqlite.connect (pre-M-01)
-            # ----------------------------------------------------------
-            # Does NOT create a DatabaseLifecycleManager internally.
-            # Lifecycle managers spawn non-daemon aiosqlite worker threads;
-            # on CPython 3.11 those threads block process exit when callers
-            # omit close(), causing observed CI 20-minute timeouts.
-            self._owns_conn = True
-            try:
-                self._conn = await aiosqlite.connect(self._db_path)
-                self._conn.row_factory = aiosqlite.Row
-                await self._conn.execute("PRAGMA journal_mode=WAL")
-                await self._conn.execute("PRAGMA foreign_keys=ON")
-                await self._conn.execute("PRAGMA busy_timeout=5000")
-                await self._conn.execute("PRAGMA synchronous=NORMAL")
-
-                async with self._conn.execute("PRAGMA quick_check") as cur:
-                    row = await cur.fetchone()
-                    if row is None or str(row[0]).lower() != "ok":
-                        raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
-
-            except _DatabaseCorruptionError:
-                with contextlib.suppress(Exception):
-                    await self._conn.close()
-                self._conn = None
-
-                db_file = pathlib.Path(self._db_path)
-                if db_file.exists():
-                    backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
-
-                    @retry(
-                        retry=retry_if_exception_type(OSError),
-                        stop=stop_after_attempt(5),
-                        wait=wait_exponential(multiplier=1, min=1, max=10),
-                        reraise=True,
-                    )
-                    async def _do_backup_direct():
-                        await asyncio.to_thread(db_file.rename, backup_path)
-
-                    try:
-                        await _do_backup_direct()
-                        logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
-                    except OSError as e:
-                        logger.error("Failed to backup corrupt database: %s", e)
+                except _DatabaseCorruptionError as corruption_error:
+                    # PR-2: la invalidación de la conexión corrupta ya NO se hace a
+                    # mano (close + evict_connection). Ese par dejaba dos agujeros:
+                    # el cierre no confirmado perdía el ownership, y entre el evict y
+                    # el rename un operation() hermano podía abrir una conexión
+                    # "fresh" sobre el archivo que estaba por moverse — el rename se
+                    # llevaba el inodo y la recovery terminaba escribiendo el schema
+                    # dentro del backup corrupto. La ventana del lifecycle cubre las
+                    # dos cosas: mantiene el path fail-closed mientras dura, sin
+                    # sostener L_path durante el rename/backoff.
+                    corrupt_conn = conn
+                    conn = None
+                    if corrupt_conn is None:
                         raise
 
-                self._conn = await aiosqlite.connect(self._db_path)
-                self._conn.row_factory = aiosqlite.Row
-                await self._conn.execute("PRAGMA journal_mode=WAL")
-                await self._conn.execute("PRAGMA foreign_keys=ON")
-                await self._conn.execute("PRAGMA busy_timeout=5000")
-                await self._conn.execute("PRAGMA synchronous=NORMAL")
+                    db_file = pathlib.Path(self._db_path)
+                    try:
+                        async with self._lifecycle.recover_connection(
+                            self._db_path,
+                            corrupt_conn,
+                        ) as reabrir:
+                            if db_file.exists():
+                                backup_path = db_file.with_name(
+                                    f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}"
+                                )
 
-            except Exception as exc:
-                if self._conn is not None:
-                    with contextlib.suppress(Exception):
-                        await self._conn.close()
-                self._conn = None
-                logger.error("Failed to open async registry: %s", exc)
-                raise
+                                @retry(
+                                    retry=retry_if_exception_type(OSError),
+                                    stop=stop_after_attempt(5),
+                                    wait=wait_exponential(multiplier=1, min=1, max=10),
+                                    reraise=True,
+                                )
+                                async def _do_backup_lifecycle():
+                                    await asyncio.to_thread(db_file.rename, backup_path)
 
-        # El schema es DDL: executescript emite un COMMIT implícito de cualquier
-        # transacción pendiente en la conexión compartida, así que en el camino
-        # lifecycle debe correr bajo el boundary del path (nunca con SQL ajeno
-        # en vuelo). En standalone la conexión es propia y no hace falta.
-        if self._lifecycle is not None:
-            async with self._lifecycle.operation(self._db_path) as conn:
-                self._conn = conn
+                                try:
+                                    await _do_backup_lifecycle()
+                                    logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                                except OSError as e:
+                                    logger.error("Failed to backup corrupt database: %s", e)
+                                    raise
+
+                            # Conexión fresh Y schema DENTRO de la ventana: la
+                            # cuarentena se levanta al salir, así que el path nunca
+                            # se presenta como usable a medio reconstruir.
+                            async with reabrir() as recovered_conn:
+                                recovered_conn.row_factory = aiosqlite.Row
+                                await recovered_conn.executescript(_SCHEMA_SQL)
+                                conn = recovered_conn
+                    except DatabaseConnectionReplacedError as error:
+                        logger.error(
+                            "Corrupt database connection was replaced before invalidation; replacement ownership retained"
+                        )
+                        raise corruption_error from error
+                    except DatabaseConnectionQuarantinedError as error:
+                        logger.error(
+                            "Failed to close corrupt database; lifecycle ownership retained: %s",
+                            error,
+                            exc_info=(type(error), error, error.__traceback__),
+                        )
+                        raise corruption_error from (error.__cause__ or error)
+                    except BaseException:
+                        # Recovery abortada a mitad (rename agotado, schema fallido,
+                        # cancelación). El lifecycle dejó el path fail-closed.
+                        raise
+
+                except Exception as exc:
+                    # El lifecycle sigue siendo propietario de cualquier conexion
+                    # obtenida antes del fallo y la cerrara durante shutdown_all().
+                    logger.error("Failed to open async registry: %s", exc)
+                    raise
+
+            else:
+                # ----------------------------------------------------------
+                # Backwards-compat path — direct aiosqlite.connect (pre-M-01)
+                # ----------------------------------------------------------
+                # Does NOT create a DatabaseLifecycleManager internally.
+                # Lifecycle managers spawn non-daemon aiosqlite worker threads;
+                # on CPython 3.11 those threads block process exit when callers
+                # omit close(), causing observed CI 20-minute timeouts.
+                self._owns_conn = True
+                try:
+                    direct_conn = await aiosqlite.connect(self._db_path)
+                    conn = direct_conn
+                    direct_conn.row_factory = aiosqlite.Row
+                    await direct_conn.execute("PRAGMA journal_mode=WAL")
+                    await direct_conn.execute("PRAGMA foreign_keys=ON")
+                    await direct_conn.execute("PRAGMA busy_timeout=5000")
+                    await direct_conn.execute("PRAGMA synchronous=NORMAL")
+
+                    async with direct_conn.execute("PRAGMA quick_check") as cur:
+                        row = await cur.fetchone()
+                        if row is None or str(row[0]).lower() != "ok":
+                            raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
+
+                except _DatabaseCorruptionError:
+                    if "direct_conn" in locals():
+                        with contextlib.suppress(Exception):
+                            await direct_conn.close()
+                    conn = None
+
+                    db_file = pathlib.Path(self._db_path)
+                    if db_file.exists():
+                        backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
+
+                        @retry(
+                            retry=retry_if_exception_type(OSError),
+                            stop=stop_after_attempt(5),
+                            wait=wait_exponential(multiplier=1, min=1, max=10),
+                            reraise=True,
+                        )
+                        async def _do_backup_direct():
+                            await asyncio.to_thread(db_file.rename, backup_path)
+
+                        try:
+                            await _do_backup_direct()
+                            logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                        except OSError as e:
+                            logger.error("Failed to backup corrupt database: %s", e)
+                            raise
+
+                    recovered_conn = await aiosqlite.connect(self._db_path)
+                    conn = recovered_conn
+                    recovered_conn.row_factory = aiosqlite.Row
+                    await recovered_conn.execute("PRAGMA journal_mode=WAL")
+                    await recovered_conn.execute("PRAGMA foreign_keys=ON")
+                    await recovered_conn.execute("PRAGMA busy_timeout=5000")
+                    await recovered_conn.execute("PRAGMA synchronous=NORMAL")
+
+                except Exception as exc:
+                    if "direct_conn" in locals() and direct_conn is not None:
+                        with contextlib.suppress(Exception):
+                            await direct_conn.close()
+                    logger.error("Failed to open async registry: %s", exc)
+                    raise
+
+            # El schema es DDL: executescript emite un COMMIT implícito de cualquier
+            # transacción pendiente en la conexión compartida, así que en el camino
+            # lifecycle debe correr bajo el boundary del path (nunca con SQL ajeno
+            # en vuelo). En standalone la conexión es propia y no hace falta.
+            if self._lifecycle is not None:
+                async with self._lifecycle.operation(self._db_path) as schema_conn:
+                    await schema_conn.executescript(_SCHEMA_SQL)
+                    conn = schema_conn
+            else:
+                assert conn is not None
                 await conn.executescript(_SCHEMA_SQL)
-        else:
-            await self._conn.executescript(_SCHEMA_SQL)
+
+            # Publicar la conexión recién al final de todo el setup exitoso.
+            self._conn = conn
+
+        except BaseException:
+            if conn is not None and self._owns_conn:
+                with contextlib.suppress(Exception):
+                    await conn.close()
+            self._conn = None
+            self._owns_conn = False
+            raise
 
     async def close(self) -> None:
-        if self._conn is not None:
-            if self._owns_conn:
-                # Backwards-compat: we opened the connection directly, we close it.
-                with contextlib.suppress(Exception):
-                    await self._conn.close()
-                self._owns_conn = False
-            # Si el lifecycle es externo, no cerramos la conexión aquí;
-            # el propietario (LifecycleContext) la cierra en shutdown_all().
-            self._conn = None
+        async with self._conn_lock:
+            if self._conn is not None:
+                if self._owns_conn:
+                    # Backwards-compat: we opened the connection directly, we close it.
+                    with contextlib.suppress(Exception):
+                        await self._conn.close()
+                    self._owns_conn = False
+                # Si el lifecycle es externo, no cerramos la conexión aquí;
+                # el propietario (LifecycleContext) la cierra en shutdown_all().
+                self._conn = None
 
     # ------------------------------------------------------------------
     # Single-row helpers
