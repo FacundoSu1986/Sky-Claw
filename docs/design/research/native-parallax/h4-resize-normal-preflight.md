@@ -20,6 +20,13 @@
 > **Revisión 3 (`H4_PREFLIGHT_REVIEW_REMEDIATION`, 2026-10-11).** Adjudica los 10 threads de
 > revisión de PR #711 y corrige el único residuo real: §19 P3 citaba `1/255` como caso `RED`,
 > contradiciendo §8 Familia A. Sin cambios de alcance, de contrato ni de conclusión científica.
+>
+> **Revisión 4 (`H4_PREFLIGHT_REVIEW_REMEDIATION`, 2026-10-11).** Atiende los 2 threads de
+> CodeRabbit sobre `30fdce08`: §10.1 renombra `renormalization_policy` a
+> `DIVIDE_BY_MAX_L2_NORM_1E-12` (el nombre anterior afirmaba una garantía de norma que §5.2 D-2
+> niega) y retira `DECLARED_REPLACEMENT` de `degenerate_policy` (D-06 cerrado como `FAIL_CLOSED`);
+> el Apéndice B corrige el estado de la revisión adversarial. Sin cambios de alcance ni de
+> conclusión científica.
 
 ---
 
@@ -837,8 +844,8 @@ module_blob_sha             : dff54d13…  (git blob)
 module_sha256_lf            : 4184cbad…  (canónico LF, independiente del checkout)
 algorithm                   : "BILINEAR"
 intermediate_dtype          : "uint8" | "float32"
-renormalization_policy      : "UNIT_NORM_CLAMP_1E12" | <política nueva declarada>
-degenerate_policy           : "NONE" | "FAIL_CLOSED" | "DECLARED_REPLACEMENT"
+renormalization_policy      : "DIVIDE_BY_MAX_L2_NORM_1E-12" | <política nueva declarada>
+degenerate_policy           : "NONE" | "FAIL_CLOSED"
 degenerate_threshold        : número o null
 normal_convention           : "OPENGL" | "DIRECTX"
 input_resolution            : [H, W]
@@ -849,6 +856,13 @@ manifest_sha256_lf          : sha256 canónico LF del manifest
 spec_version                : entero de esquema
 python_version / numpy_version / pillow_version
 ```
+
+**Nota sobre los nombres (corrección 2026-10-11).** `DIVIDE_BY_MAX_L2_NORM_1E-12` describe la
+**operación** (`out / max(L, 1e-12)`), no una garantía: §5.2 D-2 establece que ese piso **no**
+garantiza norma unitaria cuando `L < 1e-12`, y §5.3 prohíbe usar `1e-12` «como si fuera un
+invariante de norma». `DECLARED_REPLACEMENT` se retira de `degenerate_policy`: D-06 está
+cerrado como `FAIL_CLOSED` y §5.3 prohíbe el reemplazo inventado, así que no es un valor
+admisible del contrato.
 
 ### 10.2 Distinción obligatoria de hashes
 
@@ -1518,8 +1532,8 @@ NEXT_SLICE=PR independiente y acotado para la corrección H4 (base: un `main` nu
 
 ## Apéndice B — Resultado de los gates de calidad
 
-Ejecutados antes de publicar. Los valores son **medidos**, no declarados. Los de la **revisión 3**
-(`H4_PREFLIGHT_REVIEW_REMEDIATION`) son los vigentes; se conservan los de las revisiones 1 y 2
+Ejecutados antes de publicar. Los valores son **medidos**, no declarados. Los de la **revisión 4**
+(`H4_PREFLIGHT_REVIEW_REMEDIATION`) son los vigentes; se conservan los de las revisiones 1–3
 para trazabilidad.
 
 ```text
@@ -1554,16 +1568,34 @@ TESTS_EXISTENTES_REV3      = PASS  (26 passed — test_native_parallax_exp_m2.py
 MAIN_BASE_REV3             = PASS  (origin/main 74054f51…; sin overlap sobre el path de este PR)
 M6_EXTERNAL_REF_DURABILITY = BLOCKED  (sin cambios: PR #675 externo a #711)
 ARTEFACTOS_CIENTIFICOS_REV3 = PASS  (0 archivos científicos modificados)
-CI_REV3                    = ver la corrida del PR tras el push de esta revisión
+CI_REV3                    = PASS  (corrida del PR sobre 30fdce08; windows py3.11/py3.12 verdes)
+```
+
+**Revisión 4 (`H4_PREFLIGHT_REVIEW_REMEDIATION`, 2026-10-11).** Cierra los 2 threads de
+CodeRabbit abiertos sobre `30fdce08` (§10.1 y el estado de la revisión adversarial). Gates
+medidos sobre este HEAD:
+
+```text
+WRITE_SET_UNICO_REV4       = PASS  (un solo path: el documento)
+DIFF_CHECK_REV4            = PASS  (git diff --check vacío)
+MARKDOWN_TABLAS_REV4       = PASS  (26 tablas, 0 filas con conteo inconsistente)
+MARKDOWN_BARRAS_ESCAPADAS_REV4 = PASS  (0 celdas con "\|")
+TESTS_EXISTENTES_REV4      = PASS  (26 passed — test_native_parallax_exp_m2.py + pr700 docs invariants)
+CI_REV4                    = ver la corrida del PR tras el push de esta revisión
 ```
 
 **Verificación del falso verde (trampa conocida de este repo).** El job `py3.11` puede reportar
-verde sin haber corrido la suite. Se leyó el **log**, no el check: `10943 passed, 20 skipped, 135
-warnings` **y** `Coverage XML written to file` presente, sin `FAILED`/`ERROR`. Verde **real**.
+verde sin haber corrido la suite. Se leyó el **log**, no el check. Rev.1: `10943 passed, 20
+skipped, 135 warnings`. Rev.3 (`30fdce08`): `collected 11013` = `10993 passed + 20 skipped` con
+`Coverage XML written to file`, sin `FAILED`/`ERROR`. Verde **real** en ambos casos.
 
-**Revisión adversarial ausente.** Los workflows Qodo y CodeRabbit quedaron `skipped` porque el PR
-está en Draft (requieren `draft == false`). Por lo tanto **no** hubo revisión adversarial
-automática del documento; el CI verde acredita los checks **ejecutados**, no una auditoría.
+**Revisión adversarial (estado corregido).** En las revisiones 1 y 2 el PR estaba en Draft, así
+que los workflows Qodo y CodeRabbit quedaron `skipped` (requieren `draft == false`) y en ese
+tramo **no** hubo revisión adversarial automática: ese dato se conserva como histórico. Con el PR
+en Ready la situación cambió: Codex revisó `39a21cf` (2026-10-11T12:11:58Z) y produjo los 10
+threads originales, y CodeRabbit revisó `30fdce08` (2026-10-11T15:10:46Z) y produjo 2 threads
+nuevos (§10.1 y este apéndice), adjudicados como válidos y corregidos. El CI verde acredita los
+checks **ejecutados**, no una auditoría.
 
 **Advertencia explícita.** Un CI verde de este PR **no** valida ninguna implementación H4: el
 documento es `RESEARCH ONLY` y el fix no existe. La única validación que este PR puede dar es
