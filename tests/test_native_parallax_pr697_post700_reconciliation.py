@@ -52,7 +52,7 @@ _ASSIGNMENT = re.compile(
     r"|M5_PRIMARY_STATUS"
     r"|M4_IMPACT_ADJUDICATION"
     r"|M5_IMPACT_ADJUDICATION)"
-    r"""\s*[=:]\s*["']?(?P<value>[A-Z][A-Z0-9_]*)"""
+    r"""["']?\s*[=:]\s*["']?(?P<value>[A-Z][A-Z0-9_]*)"""
 )
 
 _HISTORICAL_MARKERS = (
@@ -158,10 +158,16 @@ def test_m4_y_m5_siguen_not_invalidated_y_no_se_relabelan() -> None:
         if not path.is_file():
             continue
         texto = path.read_text(encoding="utf-8")
-        assert "M4_PRIMARY_STATUS=REVALIDATED" not in texto
-        assert "M5_PRIMARY_STATUS=REVALIDATED" not in texto
-        assert "M4_IMPACT_ADJUDICATION=REVALIDATED" not in texto
-        assert "M5_IMPACT_ADJUDICATION=REVALIDATED" not in texto
+        for match in _ASSIGNMENT.finditer(texto):
+            if match.group("key") in {
+                "M4_PRIMARY_STATUS",
+                "M5_PRIMARY_STATUS",
+                "M4_IMPACT_ADJUDICATION",
+                "M5_IMPACT_ADJUDICATION",
+            }:
+                assert match.group("value") != "REVALIDATED", (
+                    f"{path.name}: {match.group('key')} = REVALIDATED"
+                )
 
 
 def _ocurrencias_pr675(texto: str) -> list[tuple[int, str, str, str]]:
@@ -276,6 +282,66 @@ def test_h4_y_c2_citados_coinciden_con_los_artefactos_de_700() -> None:
     assert c2["m4"]["decision_changed"] is False
     assert c2["m4"]["decision_old"] == c2["m4"]["decision_new"]
     assert "LEGACY_HELDOUT" in c2["m5"]["note"]
+    claimed = recon["h4_resize_normal"]["c2_corpus"]
+    observed = c2["m5"]
+    assert claimed["m5_C1_old"] is observed["C1_old"]
+    assert claimed["m5_C1_new"] is observed["C1_new"]
+    assert claimed["m5_C2_high_gt_lowmid_old"] is observed["C2_components_old"]["high_gt_lowmid_excess"]
+    assert claimed["m5_C2_high_gt_lowmid_new"] is observed["C2_components_new"]["high_gt_lowmid_excess"]
+    assert claimed["m5_C2_high_enrichment_ge_threshold_old"] is observed["C2_components_old"]["high_enrichment_ge_threshold"]
+    assert claimed["m5_C2_high_enrichment_ge_threshold_new"] is observed["C2_components_new"]["high_enrichment_ge_threshold"]
+
+
+def test_parser_captura_json_y_status_formateados() -> None:
+    """Arrange/Act/Assert: el scanner no ignora comillas JSON ni espacios."""
+    doc = (
+        '"PR675_RECOMMENDATION": "READY_FOR_DESIGN_RECONCILIATION"\\n'
+        "M4_PRIMARY_STATUS              = REVALIDATED\\n"
+        '"M5_PRIMARY_STATUS": "REVALIDATED"'
+    )
+    matches = [(m.group("key"), m.group("value")) for m in _ASSIGNMENT.finditer(doc)]
+    assert ("PR675_RECOMMENDATION", "READY_FOR_DESIGN_RECONCILIATION") in matches
+    assert ("M4_PRIMARY_STATUS", "REVALIDATED") in matches
+    assert ("M5_PRIMARY_STATUS", "REVALIDATED") in matches
+    assert _ocurrencias_pr675(doc)[0][2] == "READY_FOR_DESIGN_RECONCILIATION"
+
+
+def test_pr700_autoridades_tienen_los_hashes_registrados() -> None:
+    """No aceptar evidencia #700 mutada detrás de la reconciliación."""
+    recon = _recon()
+    origin = _PR700_ADJ.parents[1]
+    expected_paths = {
+        "corrective-adjudication.json": _PR700_ADJ,
+        "decision-impact.md": origin / "decision-impact.md",
+    }
+    recorded = recon["pr700_authority_blob_sha1"]
+    assert set(recorded) == set(expected_paths)
+    for name, path in expected_paths.items():
+        assert path.is_file(), f"falta autoridad #700: {name}"
+        assert _blob_sha1_lf(path) == recorded[name], name
+
+
+def test_errata_corrige_alcanzabilidad_sin_reescribir_historicos() -> None:
+    recon = _recon()
+    err = recon["review_errata_20261011"]
+    assert err["historical_json_unchanged"] is True
+    assert err["status"] == "CORRECTIVE_INTERPRETATION_ONLY"
+    assert _matrix()["adjudications"]["M5_RERUN_REQUIRED"] == "NO"
+    assert next(
+        item for item in _matrix()["upstream_changes"]
+        if item["upstream_change"] == "MATH_B_SPEARMAN"
+    )["m4_primary"] == "NO_PATH"  # estado histórico, conservado por SHA
+    m4 = err["m4_math_b_spearman"]
+    assert m4["historical_m4_primary"] == "NO_PATH"
+    assert m4["corrected_reachability"] == "EXECUTED_RESULT_DISCARDED"
+    assert "metrics.compute_all" in m4["primary_call_chain"]
+    assert m4["discarded_key"] == "spearman"
+    assert m4["decision_effect"] == "NONE"
+    m5 = err["m5_rerun_rationale"]
+    assert m5["height_fidelity"] == "ALREADY_PRESENT_AT_EXECUTION"
+    assert m5["math_a_gradient_scaling"] == "REACHABLE_NUMERICALLY_IDENTICAL"
+    assert (m5["sx"], m5["sy"]) == (1.0, 1.0)
+    assert m5["rerun_required"] == "NO"
 
 
 def test_readme_declara_keep_draft_blocked_como_vigente() -> None:
