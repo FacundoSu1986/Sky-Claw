@@ -16,6 +16,7 @@ ADR 0012 §34.3 es la autoridad normativa:
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import os
 import pathlib
@@ -1059,43 +1060,53 @@ def test_f09_release_validates_full_lock_owner_identity_matching_assert_owned(
     tmp_path: pathlib.Path,
 ) -> None:
     """F-09 (P1): release() valida todos los campos de LOCK_OWNER antes de mutar el lockfile."""
-    root = _crear_root_valido(tmp_path)
-    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
-    original_meta = json.loads(handle.lock_path.read_text(encoding="utf-8"))
-
     # 1. acquired_at alterado en disco
-    tampered_acquired = dict(original_meta)
-    tampered_acquired["acquired_at"] = original_meta["acquired_at"] + 5.0
-    handle.lock_path.write_text(json.dumps(tampered_acquired), encoding="utf-8")
+    root1 = _crear_root_valido(tmp_path / "case_acquired")
+    handle1 = acquire_frozen_runtime_root_lock(root1, timeout=1.0)
+    original_meta1 = json.loads(handle1.lock_path.read_text(encoding="utf-8"))
+    tampered_acquired = dict(original_meta1)
+    tampered_acquired["acquired_at"] = original_meta1["acquired_at"] + 5.0
+    handle1.lock_path.write_text(json.dumps(tampered_acquired), encoding="utf-8")
     with pytest.raises(FrozenRuntimeLockOwnershipError, match="acquired_at"):
-        handle.release()
+        handle1.release()
     # Comprobar que no sobreescribió
-    assert json.loads(handle.lock_path.read_text(encoding="utf-8"))["acquired_at"] == tampered_acquired["acquired_at"]
+    assert json.loads(handle1.lock_path.read_text(encoding="utf-8"))["acquired_at"] == tampered_acquired["acquired_at"]
 
     # 2. canonical_root alterado en disco
-    tampered_root = dict(original_meta)
+    root2 = _crear_root_valido(tmp_path / "case_root")
+    handle2 = acquire_frozen_runtime_root_lock(root2, timeout=1.0)
+    original_meta2 = json.loads(handle2.lock_path.read_text(encoding="utf-8"))
+    tampered_root = dict(original_meta2)
     tampered_root["canonical_root"] = "c:/otro/root/distinto"
-    handle.lock_path.write_text(json.dumps(tampered_root), encoding="utf-8")
+    handle2.lock_path.write_text(json.dumps(tampered_root), encoding="utf-8")
     with pytest.raises(FrozenRuntimeLockOwnershipError, match="canonical_root"):
-        handle.release()
+        handle2.release()
 
     # 3. phase alterado a un valor distinto de HELD
-    tampered_phase = dict(original_meta)
+    root3 = _crear_root_valido(tmp_path / "case_phase")
+    handle3 = acquire_frozen_runtime_root_lock(root3, timeout=1.0)
+    original_meta3 = json.loads(handle3.lock_path.read_text(encoding="utf-8"))
+    tampered_phase = dict(original_meta3)
     tampered_phase["phase"] = "RELEASED"
     tampered_phase["released_at"] = time.time()
-    handle.lock_path.write_text(json.dumps(tampered_phase), encoding="utf-8")
+    handle3.lock_path.write_text(json.dumps(tampered_phase), encoding="utf-8")
     with pytest.raises(FrozenRuntimeLockOwnershipError, match="phase"):
-        handle.release()
+        handle3.release()
 
     # 4. Descriptor de archivo cerrado
-    handle.lock_path.write_text(json.dumps(original_meta), encoding="utf-8")
-    handle._file_obj.close()
+    root4 = _crear_root_valido(tmp_path / "case_file_closed")
+    handle4 = acquire_frozen_runtime_root_lock(root4, timeout=1.0)
+    original_meta4 = json.loads(handle4.lock_path.read_text(encoding="utf-8"))
+    handle4.lock_path.write_text(json.dumps(original_meta4), encoding="utf-8")
+    handle4._file_obj.close()
     with pytest.raises(FrozenRuntimeLockOwnershipError, match="descriptor de archivo"):
-        handle.release()
+        handle4.release()
 
     # 5. Handle ya liberado es idempotente (no error)
-    handle._released = True
-    handle.release()  # No-op
+    root5 = _crear_root_valido(tmp_path / "case_idempotent")
+    handle5 = acquire_frozen_runtime_root_lock(root5, timeout=1.0)
+    handle5.release()
+    handle5.release()  # No-op
 
 
 def test_f10_schema_enforces_phase_released_at_consistency(tmp_path: pathlib.Path) -> None:
@@ -1343,3 +1354,160 @@ def test_f14_inspect_classifies_indeterminate_probe_as_indeterminate(
 
     monkeypatch.undo()
     handle.release()
+
+
+def test_f16_release_failure_cleans_up_local_resources_in_owner_process(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F-16 (P1): Si release() falla validación de ownership en el dueño, limpia recursos locales sin deadlocks."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    from sky_claw.local.frozen_runtime import FrozenRuntimeLockOwnershipError
+    from sky_claw.local.frozen_runtime.root_lock import _ACTIVE_HANDLES
+
+    # Adulterar la metadata en disco para que falle la validación
+    adulterado = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": handle.canonical_root,
+        "session_id": str(uuid.uuid4()),
+        "pid": os.getpid(),
+        "process_create_time": handle.process_create_time,
+        "acquired_at": time.time(),
+        "phase": "HELD",
+    }
+    handle.lock_path.write_text(json.dumps(adulterado), encoding="utf-8")
+
+    # release() debe fallar con FrozenRuntimeLockOwnershipError
+    with pytest.raises(FrozenRuntimeLockOwnershipError):
+        handle.release()
+
+    # Pero los recursos locales del proceso dueño deben haberse limpiado (F-16 fail-safe)
+    assert handle._released is True
+    assert handle.canonical_root not in _ACTIVE_HANDLES
+    assert handle._file_obj is None or handle._file_obj.closed is True
+    if handle._thread_lock is not None:
+        assert not handle._thread_lock.locked()
+
+
+def test_f17_inspect_live_owner_without_os_mutex_is_indeterminate(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F-17 (P2): inspect() con owner vivo, phase=HELD pero sin mutex del SO clasifica INDETERMINATE, no ORPHANED."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    from sky_claw.local.frozen_runtime.root_lock import (
+        LockDisposition,
+        _lock_fd,
+        _unlock_fd,
+    )
+
+    # Forzar la pérdida del mutex a nivel de descriptor sin alterar metadata
+    _unlock_fd(handle._file_obj.fileno())
+
+    # Metadata = HELD, owner = ALIVE (este proceso), pero OS lock = FREE
+    res = inspect_frozen_runtime_root_lock(root)
+    assert res.disposition == LockDisposition.INDETERMINATE
+    assert res.is_os_locked is False
+    assert res.liveness == OwnerLiveness.ALIVE
+
+    # Restaurar y liberar
+    assert _lock_fd(handle._file_obj.fileno()) is True
+    handle.release()
+
+
+def test_f18_metadata_rewrite_leaves_no_stale_tail(tmp_path: pathlib.Path) -> None:
+    """F-18 (P1): Reescritura de metadata con JSON más corto no deja colas viejas ni 'Extra data'."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+
+    # release() escribe metadata RELEASED con released_at (JSON más largo)
+    handle.release()
+    len_released = handle.lock_path.stat().st_size
+
+    # Adquirir nuevamente escribe HELD sin released_at (JSON más corto)
+    nuevo_handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    nuevo_handle.assert_owned()
+    len_held = nuevo_handle.lock_path.stat().st_size
+
+    assert len_held < len_released, f"Se esperaba JSON de HELD más corto ({len_held} < {len_released})"
+
+    # Leer bytes crudos y comprobar que no hay bytes sobrantes ni errores de Extra data
+    raw = nuevo_handle.lock_path.read_bytes()
+    assert len(raw) == len_held
+
+    from sky_claw.local.frozen_runtime.root_lock import _read_metadata_bytes
+
+    meta = _read_metadata_bytes(raw, expected_canonical_root=nuevo_handle.canonical_root)
+    assert meta.phase == LockPhase.HELD
+
+    nuevo_handle.release()
+
+
+def test_f19_posix_fork_child_does_not_keep_kernel_flock_if_parent_dies(
+    tmp_path: pathlib.Path,
+) -> None:
+    """F-19 (P1): Proceso hijo tras fork() no retiene el flock en el kernel si el padre muere."""
+    if not hasattr(os, "fork"):
+        pytest.skip("Test causal exclusivo de POSIX (requiere os.fork)")
+
+    root = _crear_root_valido(tmp_path)
+    pipe_r, pipe_w = os.pipe()
+
+    # Proceso A (padre) adquiere lock, forkea hijo, y termina
+    parent_pid = os.fork()
+    if parent_pid == 0:
+        # En el proceso A
+        os.close(pipe_r)
+        handle = acquire_frozen_runtime_root_lock(root, timeout=2.0)
+        handle.assert_owned()
+
+        # A crea hijo B
+        child_b_pid = os.fork()
+        if child_b_pid == 0:
+            # En hijo B: enviar PID al test runner y esperar indefinidamente
+            b_pid = os.getpid()
+            os.write(pipe_w, f"{b_pid}\n".encode("ascii"))
+            os.close(pipe_w)
+            # Dormir hasta que el proceso de prueba lo termine
+            time.sleep(30)
+            os._exit(0)
+
+        # Proceso A sale inmediatamente sin release (simula muerte con lock tomado)
+        os.close(pipe_w)
+        os._exit(0)
+
+    # En el test runner
+    os.close(pipe_w)
+    pipe_file = os.fdopen(pipe_r, "r")
+    child_b_pid_str = pipe_file.readline().strip()
+    pipe_file.close()
+    child_b_pid = int(child_b_pid_str)
+
+    try:
+        # Esperar a que el proceso A (dueño del lock) haya muerto
+        _, status = os.waitpid(parent_pid, 0)
+        assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+        # Verificar que hijo B sigue VIVO
+        try:
+            os.kill(child_b_pid, 0)
+            child_b_alive = True
+        except OSError:
+            child_b_alive = False
+        assert child_b_alive, "El hijo B debería seguir vivo para comprobar que no retiene el descriptor"
+
+        # Con el padre muerto y el hijo vivo: un nuevo proceso DEBE poder recuperar el lock (reclaim_orphaned)
+        nuevo_handle = acquire_frozen_runtime_root_lock(root, timeout=2.0, reclaim_orphaned=True)
+        nuevo_handle.assert_owned()
+        nuevo_handle.release()
+    finally:
+        # Matar al hijo B y hacer waitpid
+        with contextlib.suppress(OSError):
+            os.kill(child_b_pid, 9)
+        with contextlib.suppress(OSError):
+            os.waitpid(child_b_pid, 0)

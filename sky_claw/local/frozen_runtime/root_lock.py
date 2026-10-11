@@ -121,6 +121,30 @@ else:
             fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+def _after_fork_in_child() -> None:
+    """Hook ejecutado en el proceso hijo tras os.fork() (F-19).
+
+    Cierra los descriptores de archivo heredados sin llamar a flock(LOCK_UN)
+    para no desbloquear el kernel lock del padre, pero garantizando que el hijo
+    no retenga el flock si el padre muere posteriormente.
+    Limpia los registries intraproceso para evitar estado zombie/desincronizado.
+    """
+    global _THREAD_LOCKS_GUARD, _THREAD_LOCKS, _ACTIVE_HANDLES
+    for handle in list(_ACTIVE_HANDLES.values()):
+        file_obj = getattr(handle, "_file_obj", None)
+        if file_obj is not None and not getattr(file_obj, "closed", True):
+            with contextlib.suppress(OSError):
+                file_obj.close()
+        handle._released = True
+    _ACTIVE_HANDLES = {}
+    _THREAD_LOCKS = {}
+    _THREAD_LOCKS_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
+
+
 class OSLockProbeResult(StrEnum):
     """Resultado tri-state del sondeo de exclusión del SO (§34.3)."""
 
@@ -428,6 +452,32 @@ def _read_metadata_bytes(
     )
 
 
+def _write_metadata_crash_safe(file_obj: Any, payload: dict[str, Any]) -> None:
+    """Escribe metadata de forma crash-safe truncando a 0 antes de escribir (F-18).
+
+    Evita que un JSON más corto deje colas residuales del JSON anterior ('Extra data')
+    si el proceso muere o crashea entre la escritura y el truncamiento.
+    """
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    file_obj.seek(0)
+    file_obj.truncate(0)
+    file_obj.write(serialized)
+    file_obj.flush()
+    os.fsync(file_obj.fileno())
+
+
+def _is_current_process_owner(handle: FrozenRuntimeRootLockHandle) -> bool:
+    """Verifica si el proceso actual es el dueño del handle (PID + process_create_time)."""
+    current_pid = os.getpid()
+    if current_pid != handle.pid:
+        return False
+    try:
+        current_create_time = psutil.Process(current_pid).create_time()
+        return bool(abs(float(current_create_time) - float(handle.process_create_time)) <= 1e-4)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error, OSError, ValueError):
+        return False
+
+
 def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockMetadata:
     """Valida identidad completa de ownership del handle (memoria, SO/proceso y disco)."""
     if handle._released:
@@ -544,51 +594,51 @@ class FrozenRuntimeRootLockHandle:
         _validate_handle_ownership(self)
 
     def release(self) -> None:
-        """Libera la exclusión del lock de forma crash-safe y poison-safe."""
+        """Libera la exclusión del lock de forma crash-safe y poison-safe (F-16)."""
         if self._released:
             return
 
-        # Validar ownership estricto antes de mutar disco (F-07, F-09, RL-18, F-03)
-        _validate_handle_ownership(self)
+        if not _is_current_process_owner(self):
+            # En un proceso hijo (fork) o ajeno, no tocar descriptores ni locks del dueño legítimo (F-16/F-07)
+            _validate_handle_ownership(self)
+            return
 
-        # F-08 / F-10: Persistir phase=RELEASED con released_at >= acquired_at (commit point)
-        now = time.time()
-        released_at = max(now, self.acquired_at)
-        payload = {
-            "schema_version": LOCK_SCHEMA_VERSION,
-            "canonical_root": self.canonical_root,
-            "session_id": self.session_id,
-            "pid": self.pid,
-            "process_create_time": self.process_create_time,
-            "acquired_at": self.acquired_at,
-            "phase": LockPhase.RELEASED.value,
-            "released_at": released_at,
-        }
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        self._file_obj.seek(0)
-        self._file_obj.write(serialized)
-        self._file_obj.truncate(len(serialized))
-        self._file_obj.flush()
-        os.fsync(self._file_obj.fileno())
+        try:
+            # Validar ownership estricto antes de mutar disco (F-07, F-09, RL-18, F-03)
+            _validate_handle_ownership(self)
 
-        # Cleanup de recursos en memoria
-        with _THREAD_LOCKS_GUARD:
-            if _ACTIVE_HANDLES.get(self.canonical_root) is self:
-                _ACTIVE_HANDLES.pop(self.canonical_root, None)
+            # F-08 / F-10: Persistir phase=RELEASED con released_at >= acquired_at (commit point)
+            now = time.time()
+            released_at = max(now, self.acquired_at)
+            payload = {
+                "schema_version": LOCK_SCHEMA_VERSION,
+                "canonical_root": self.canonical_root,
+                "session_id": self.session_id,
+                "pid": self.pid,
+                "process_create_time": self.process_create_time,
+                "acquired_at": self.acquired_at,
+                "phase": LockPhase.RELEASED.value,
+                "released_at": released_at,
+            }
+            _write_metadata_crash_safe(self._file_obj, payload)
+            self.phase = LockPhase.RELEASED
+        finally:
+            # F-16: Limpiar recursos locales del dueño incluso si la validación o fsync fallan
+            self._released = True
+            with _THREAD_LOCKS_GUARD:
+                if _ACTIVE_HANDLES.get(self.canonical_root) is self:
+                    _ACTIVE_HANDLES.pop(self.canonical_root, None)
 
-        self._released = True
-        self.phase = LockPhase.RELEASED
+            if self._file_obj is not None and not self._file_obj.closed:
+                try:
+                    _unlock_fd(self._file_obj.fileno())
+                finally:
+                    with contextlib.suppress(OSError):
+                        self._file_obj.close()
 
-        if self._file_obj is not None and not self._file_obj.closed:
-            try:
-                _unlock_fd(self._file_obj.fileno())
-            finally:
-                with contextlib.suppress(OSError):
-                    self._file_obj.close()
-
-        if self._thread_lock is not None:
-            with contextlib.suppress(RuntimeError):
-                self._thread_lock.release()
+            if self._thread_lock is not None:
+                with contextlib.suppress(RuntimeError):
+                    self._thread_lock.release()
 
     def __enter__(self) -> FrozenRuntimeRootLockHandle:
         return self
@@ -681,8 +731,8 @@ def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspection
         elif liveness == OwnerLiveness.INDETERMINATE:
             disposition = LockDisposition.INDETERMINATE
         else:
-            # PID vivo pero no tiene OS mutex: inconsistente/huérfano
-            disposition = LockDisposition.ORPHANED
+            # F-17: PID vivo pero sin OS mutex: estado inconsistente/indeterminado (fail-closed)
+            disposition = LockDisposition.INDETERMINATE
 
     return LockInspectionResult(
         canonical_root=canonical_str,
@@ -797,13 +847,7 @@ def acquire_frozen_runtime_root_lock(
             "acquired_at": acquired_at,
             "phase": LockPhase.HELD.value,
         }
-        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-        f.seek(0)
-        f.write(serialized)
-        f.truncate(len(serialized))
-        f.flush()
-        os.fsync(f.fileno())
+        _write_metadata_crash_safe(f, payload)
 
         handle = FrozenRuntimeRootLockHandle(
             root=root_path,
