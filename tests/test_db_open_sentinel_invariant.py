@@ -39,7 +39,7 @@ import pytest
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.app.db.async_registry import AsyncModRegistry
-from sky_claw.app.db.journal import OperationJournal
+from sky_claw.app.db.journal import JournalConnectionError, OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.registry import ModRegistry
 
@@ -204,6 +204,13 @@ MATRIZ = [
     for fallo in FALLOS
 ]
 
+MATRIZ_CONCURRENCIA = [
+    pytest.param(clave, rama, id=f"{clave.split('::')[1]}-{rama}")
+    for clave, receta in RECETAS.items()
+    for rama in ("standalone", "lifecycle")
+    if rama == "standalone" or receta.admite_lifecycle
+]
+
 
 # ---------------------------------------------------------------------------
 # Inyección del fallo
@@ -213,9 +220,10 @@ MATRIZ = [
 class _DDLQueFallaUnaVez:
     """``executescript`` que falla la PRIMERA vez (en cualquier conexión) y luego delega."""
 
-    def __init__(self, error: type[BaseException]) -> None:
+    def __init__(self, error: type[BaseException], pausa: float = 0.0) -> None:
         self.error = error
         self.llamadas = 0
+        self.pausa = pausa
 
     def envolver(self, conn: aiosqlite.Connection) -> None:
         real = conn.executescript
@@ -223,6 +231,8 @@ class _DDLQueFallaUnaVez:
         async def executescript(sql: str) -> Any:
             self.llamadas += 1
             if self.llamadas == 1:
+                if self.pausa > 0:
+                    await asyncio.sleep(self.pausa)
                 raise self.error("DDL falló (simulado #474)")
             return await real(sql)
 
@@ -433,3 +443,216 @@ async def test_journal_open_fallido_durante_sweep_despeja_sentinel_y_permite_rei
         for conn in conexiones_standalone:
             if not await _esta_cerrada(conn):
                 await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Concurrencia e invariante de no-publicación prematura
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("clave", "rama"), MATRIZ_CONCURRENCIA)
+async def test_open_concurrente_serializa_y_no_publica_sentinel_prematuro(
+    clave: str,
+    rama: str,
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Preparar
+    receta = RECETAS[clave]
+    db = tmp_path / "concurrente.db"
+    lifecycle: DatabaseLifecycleManager | None = None
+    conn_lifecycle: aiosqlite.Connection | None = None
+    ddl_llamadas = 0
+    objeto: Any = None
+
+    def envolver_espia_ddl(conn: aiosqlite.Connection) -> None:
+        real = conn.executescript
+
+        async def executescript(sql: str) -> Any:
+            nonlocal ddl_llamadas
+            ddl_llamadas += 1
+            # Invariante clave de no-publicación prematura:
+            # Mientras se ejecuta el DDL, el sentinel del objeto NO debe estar publicado.
+            if objeto is not None:
+                assert getattr(objeto, receta.atributo) is None, (
+                    f"El atributo {receta.atributo} se publicó antes de terminar el DDL"
+                )
+            # Yield para permitir que coroutines concurrentes intenten entrar y
+            # queden bloqueadas esperando _conn_lock.
+            await asyncio.sleep(0.01)
+            return await real(sql)
+
+        conn.executescript = executescript  # type: ignore[method-assign]
+
+    if rama == "lifecycle":
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[db],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+        )
+        await lifecycle.init_all()
+        conn_lifecycle = await lifecycle.get_connection(db)
+        envolver_espia_ddl(conn_lifecycle)
+    else:
+        conectar_real = aiosqlite.connect
+
+        def conectar_con_espia(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
+            conn = conectar_real(*args, **kwargs)
+            envolver_espia_ddl(conn)
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", conectar_con_espia)
+
+    objeto = receta.construir(db, lifecycle)
+
+    try:
+        # Actuar: 5 llamadas concurrentes a open()
+        tareas = [asyncio.create_task(receta.abrir(objeto)) for _ in range(5)]
+        await asyncio.gather(*tareas)
+
+        # Verificar:
+        # 1. El DDL se ejecutó exactamente una vez (el ganador serializado creó el schema,
+        #    los otros 4 esperaron en _conn_lock y salieron por el sentinel ya publicado).
+        assert ddl_llamadas == 1, f"Se esperaba exactamente 1 ejecución de DDL, hubo {ddl_llamadas}"
+        # 2. El sentinel quedó publicado al terminar.
+        assert getattr(objeto, receta.atributo) is not None
+        # 3. La sonda funcional responde correctamente.
+        await receta.sondear(objeto)
+    finally:
+        await receta.cerrar(objeto)
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()
+
+
+@pytest.mark.parametrize(("clave", "rama"), MATRIZ_CONCURRENCIA)
+async def test_open_concurrente_con_primer_fallo_permite_a_la_segunda_abrir_limpio(
+    clave: str,
+    rama: str,
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Preparar
+    receta = RECETAS[clave]
+    db = tmp_path / "concurrente_fallo.db"
+    ddl = _DDLQueFallaUnaVez(sqlite3.OperationalError, pausa=0.01)
+    lifecycle: DatabaseLifecycleManager | None = None
+    if rama == "lifecycle":
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[db],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+        )
+        await lifecycle.init_all()
+        conn_lifecycle = await lifecycle.get_connection(db)
+        ddl.envolver(conn_lifecycle)
+    else:
+        conectar_real = aiosqlite.connect
+
+        def conectar_con_ddl_fallido(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
+            conn = conectar_real(*args, **kwargs)
+            ddl.envolver(conn)
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", conectar_con_ddl_fallido)
+
+    objeto = receta.construir(db, lifecycle)
+
+    try:
+        # Actuar: Dos llamadas concurrentes. La primera en entrar pausará y fallará en DDL.
+        # La segunda espera en _conn_lock; cuando entra, debe encontrar el sentinel
+        # en None, correr su propia inicialización y completarla con éxito.
+        t1 = asyncio.create_task(receta.abrir(objeto))
+        t2 = asyncio.create_task(receta.abrir(objeto))
+        resultados = await asyncio.gather(t1, t2, return_exceptions=True)
+
+        # Verificar: exactamente una falló y exactamente una tuvo éxito.
+        errores = [r for r in resultados if isinstance(r, BaseException)]
+        exitos = [r for r in resultados if r is None]
+        assert len(errores) == 1, f"Se esperaba 1 fallo, hubo {len(errores)}: {errores}"
+        assert len(exitos) == 1, f"Se esperaba 1 éxito, hubo {len(exitos)}"
+
+        # El objeto debe haber quedado completamente abierto y funcional.
+        assert getattr(objeto, receta.atributo) is not None
+        await receta.sondear(objeto)
+    finally:
+        await receta.cerrar(objeto)
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()
+
+
+@pytest.mark.parametrize("rama", ["standalone", "lifecycle"])
+async def test_journal_ensure_connected_concurrente_serializa_open(
+    rama: str,
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+) -> None:
+    # Preparar
+    db = tmp_path / "journal_ensure.db"
+    lifecycle: DatabaseLifecycleManager | None = None
+    if rama == "lifecycle":
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[db],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+        )
+        await lifecycle.init_all()
+
+    journal = OperationJournal(db, lifecycle=lifecycle)
+    try:
+        # Actuar: varias coroutines llaman a _ensure_connected concurrentemente
+        # cuando la base aún está cerrada.
+        conns = await asyncio.gather(*(journal._ensure_connected() for _ in range(5)))
+        # Verificar: todas obtienen la misma conexión abierta y funcional.
+        assert all(c is conns[0] for c in conns)
+        assert journal._db is not None
+        assert isinstance(await journal.begin_transaction("tx_ensure"), int)
+    finally:
+        await journal.close()
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()
+
+
+async def test_journal_descartar_apertura_fallida_preserva_lock_de_lifecycle(
+    tmp_path: Path,
+) -> None:
+    # Preparar
+    db = tmp_path / "journal_lifecycle_lock.db"
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[db],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+    )
+    await lifecycle.init_all()
+    conn_lifecycle = await lifecycle.get_connection(db)
+    ddl = _DDLQueFallaUnaVez(sqlite3.OperationalError)
+    ddl.envolver(conn_lifecycle)
+
+    lock_compartido = lifecycle.get_write_lock(db)
+    journal = OperationJournal(db, lifecycle=lifecycle)
+
+    try:
+        # Actuar: primera apertura falla
+        with pytest.raises(JournalConnectionError):
+            await journal.open()
+
+        # Verificar: _descartar_apertura_fallida NO reemplazó _lock con un Lock() huérfano
+        assert journal._lock is lock_compartido, (
+            "El lock compartido del lifecycle fue pisado por un asyncio.Lock() local"
+        )
+        assert journal._db is None
+
+        # Reintento exitoso
+        await journal.open()
+        assert journal._lock is lock_compartido
+        assert journal._db is not None
+        assert isinstance(await journal.begin_transaction("tx_lifecycle_lock"), int)
+    finally:
+        await journal.close()
+        await lifecycle.shutdown_all()

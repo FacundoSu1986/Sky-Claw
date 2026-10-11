@@ -6,6 +6,7 @@ correlation.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from contextlib import asynccontextmanager
@@ -71,6 +72,7 @@ class ModRegistry:
     def __init__(self, db_path: pathlib.Path | str | None = None) -> None:
         self._db_path = str(db_path or DB_PATH)
         self._conn: aiosqlite.Connection | None = None
+        self._conn_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -78,30 +80,32 @@ class ModRegistry:
 
     async def open(self) -> None:
         """Open (or create) the database and ensure the schema exists."""
-        if self._conn is not None:
-            return
-        self._conn = await aiosqlite.connect(self._db_path)
-        self._conn.row_factory = aiosqlite.Row
-        try:
-            await self._conn.execute("PRAGMA journal_mode=WAL")
-            await self._conn.execute("PRAGMA foreign_keys=ON")
-            async with self._conn.execute("PRAGMA quick_check") as cur:
-                row = await cur.fetchone()
-                if row is None or str(row[0]).lower() != "ok":
-                    raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
-            await self._conn.executescript(_SCHEMA_SQL)
-        except BaseException:
-            # #474: ``BaseException`` (no ``Exception``): una cancelación a mitad
-            # de la apertura también tiene que cerrar y despejar el sentinel.
-            with contextlib.suppress(Exception):
-                await self._conn.close()
-            self._conn = None
-            raise
+        async with self._conn_lock:
+            if self._conn is not None:
+                return
+            conn = await aiosqlite.connect(self._db_path)
+            conn.row_factory = aiosqlite.Row
+            try:
+                await conn.execute("PRAGMA journal_mode=WAL")
+                await conn.execute("PRAGMA foreign_keys=ON")
+                async with conn.execute("PRAGMA quick_check") as cur:
+                    row = await cur.fetchone()
+                    if row is None or str(row[0]).lower() != "ok":
+                        raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
+                await conn.executescript(_SCHEMA_SQL)
+            except BaseException:
+                # #474: ``BaseException`` (no ``Exception``): una cancelación a mitad
+                # de la apertura también tiene que cerrar y no publicar el sentinel.
+                with contextlib.suppress(Exception):
+                    await conn.close()
+                raise
+            self._conn = conn
 
     async def close(self) -> None:
-        if self._conn is not None:
-            await self._conn.close()
-            self._conn = None
+        async with self._conn_lock:
+            if self._conn is not None:
+                await self._conn.close()
+                self._conn = None
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[aiosqlite.Cursor, None]:

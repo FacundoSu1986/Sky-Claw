@@ -836,6 +836,7 @@ class OperationJournal:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._db: aiosqlite.Connection | None = None
+        self._conn_lock = asyncio.Lock()
         # Lock local, provisional: si hay lifecycle, ``open()`` lo reemplaza por
         # el lock compartido por path de ese manager. En el camino standalone
         # (``lifecycle=None``, conexión propia) este es el definitivo, y debe
@@ -880,176 +881,193 @@ class OperationJournal:
         haya pendiente en la conexión compartida. El lock se suelta antes del
         sweep de arranque, que lo toma por su cuenta.
         """
-        if self._db is not None:
-            return
+        async with self._conn_lock:
+            if self._db is not None:
+                return
 
-        try:
-            if self._lifecycle is not None:
-                # ----------------------------------------------------------
-                # M-01 DI path — lifecycle owns and manages the connection
-                # ----------------------------------------------------------
-                self._owns_conn = False
-                # El lock viaja con la conexión, no con la instancia. Las
-                # conexiones del lifecycle son singleton por path resuelto, así
-                # que dos `OperationJournal` sobre la misma DB comparten
-                # conexión — y con un `asyncio.Lock` propio cada uno, sus
-                # transacciones se intercalan sobre esa conexión compartida:
-                # uno abre, el otro commitea lo que el primero llevaba a medias.
-                # `get_write_lock` devuelve el lock cacheado bajo la MISMA clave
-                # de path resuelto que la conexión, que es la propiedad que hace
-                # falta; su docstring ya lo dice para `AsyncModRegistry`
-                # ("a per-wrapper lock would leave the transaction-interleaving
-                # race open") y acá aplica igual.
-                #
-                # Un solo rebind alcanza: los `async with self._lock` del módulo
-                # leen el atributo en el momento de entrar, y todos resuelven la
-                # conexión con `_ensure_connected()` —que llama a `open()`—
-                # antes de tomarlo. Va acá, sin `await` de por medio, para que
-                # ningún SQL posterior (empezando por el `executescript` del
-                # schema y el sweep de arranque) corra bajo el lock equivocado.
-                # Que el lock esté ASIGNADO no alcanza: el schema de abajo
-                # además corre bajo el boundary del path.
-                self._lock = self._lifecycle.get_write_lock(self._db_path)
-            else:
-                # ----------------------------------------------------------
-                # Backwards-compat path — direct aiosqlite.connect (pre-M-01)
-                # ----------------------------------------------------------
-                # Does NOT create a DatabaseLifecycleManager internally.
-                # Lifecycle managers spawn non-daemon aiosqlite worker threads;
-                # on CPython 3.11 those threads block process exit when callers
-                # omit close(), causing observed CI 20-minute timeouts.
-                self._owns_conn = True
-                self._db = await aiosqlite.connect(self._db_path)
-                await self._db.execute("PRAGMA journal_mode=WAL")
-                await self._db.execute("PRAGMA foreign_keys=ON")
-                await self._db.execute("PRAGMA busy_timeout=5000")
-                await self._db.execute("PRAGMA synchronous=NORMAL")
-
-            # Schema is the same regardless of path — pero el boundary no.
-            #
-            # `executescript` emite un COMMIT implícito de cualquier transacción
-            # pendiente (documentado en `sqlite3`), así que un `open()` tardío
-            # sobre la conexión compartida commiteaba el trabajo a medias de otro
-            # journal que SÍ estaba sosteniendo el lock — y su `rollback()`
-            # posterior ya no lo podía deshacer. PR-1b2b: el schema corre dentro
-            # de `operation()`, que sostiene el boundary del path durante TODO el
-            # DDL y además resuelve la conexión vigente.
-            #
-            # El boundary es solo el `executescript`, **no** todo `open()`:
-            # `sweep_stale_pending()` obtiene su PROPIO `transaction()` más abajo
-            # y `asyncio.Lock` no es reentrante, así que sostener el boundary
-            # hasta el final de `open()` sería un deadlock garantizado en el
-            # arranque.
-            #
-            # En el camino standalone la conexión es propia de esta instancia: no
-            # hay un tercero que pueda commitear encima, así que no hace falta
-            # boundary. Se usa `nullcontext` en vez de duplicar el
-            # `executescript` en las dos ramas — dos call sites del mismo SQL son
-            # exactamente el hermano desalineado que este repo colecciona.
-            if self._lifecycle is not None:
-                schema_boundary: Any = self._lifecycle.operation(self._db_path)
-            else:
-                schema_boundary = contextlib.nullcontext(self._db)
-            async with schema_boundary as db:
-                if self._lifecycle is not None:
-                    self._db = db
-                await db.executescript(self._SCHEMA_SQL)
-
-            # Phase 2 (F-02): Migration/backfill boundary con commit durable propio.
-            # No depende del commit del sweep posterior: la migración validada queda
-            # persistida y confirmada antes de iniciar el mantenimiento best-effort.
-            #
-            # #655: la migración de ESQUEMA (3→4 kinds de
-            # artifact_evidence_resolutions) corre PRIMERO dentro del MISMO
-            # boundary: si el backfill legacy falla, el rollback revierte también
-            # la reconstrucción de esquema — la DB queda en su estado pre-open
-            # (upgrade fallido = sin upgrade, nunca a medias). Con el esquema
-            # vigente el backfill se valida contra la tabla final.
-            #
-            # ``BEGIN IMMEDIATE`` EXPLÍCITO en los dos paths: el modo legacy de
-            # Python sqlite3 auto-BEGINA solo ante DML, y el DDL de la
-            # migración (ALTER/CREATE/DROP) correría en autocommit — cada
-            # statement commitado a mitad de camino, con la DB "a medias" si la
-            # copia o la validación fallan. Con el BEGIN explícito TODO el
-            # boundary (DDL + backfill) es una transacción atómica real;
-            # IMMEDIATE además fija el punto de serialización de la escritura
-            # (un segundo open concurrente espera el commit del primero y luego
-            # detecta el esquema vigente → no-op). El boundary lo abre cuando
-            # no hay transacción pendiente (post-executescript, que commitea),
-            # así que el BEGIN no puede colisionar.
-            if self._lifecycle is not None:
-                async with self._lifecycle.transaction(self._db_path) as conn:
-                    await conn.execute("BEGIN IMMEDIATE")
-                    await _migrar_esquema_resoluciones_655_en_conn(conn)
-                    await _migrar_resoluciones_legacy_en_conn(conn)
-            else:
-                commit_exitoso = False
-                try:
-                    await self._db.execute("BEGIN IMMEDIATE")
-                    await _migrar_esquema_resoluciones_655_en_conn(self._db)
-                    await _migrar_resoluciones_legacy_en_conn(self._db)
-                    await self._db.commit()
-                    commit_exitoso = True
-                finally:
-                    if not commit_exitoso:
-                        with contextlib.suppress(sqlite3.Error):
-                            await self._db.rollback()
-
-            logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
-
-            # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
-            # anteriores (crash / excepción sin rollback) se barren al arrancar.
-            # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
-            # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
-            # #474: vive dentro del boundary de apertura: si el sweep se cancela u
-            # ocurre otra BaseException, se descarta la apertura fallida y se despeja
-            # el sentinel self._db.
-            self._swept_pending_transaction_ids_this_open = set()
+            conn: aiosqlite.Connection | None = None
             try:
-                await self.sweep_stale_pending()
-            except (JournalError, sqlite3.Error):
-                logger.warning(
-                    "Journal: startup sweep of stale PENDING transactions failed",
-                    exc_info=True,
-                )
-        except (sqlite3.Error, JournalError) as e:
-            await self._descartar_apertura_fallida()
-            raise JournalConnectionError(f"Failed to open journal database: {e}") from e
-        except BaseException:
-            # #474: cualquier otro fallo (OSError, cancelación…) también despeja
-            # el sentinel ``self._db`` y cierra la conexión propia; si no, el
-            # reintento sería un no-op. Se relanza sin envolver: el contrato
-            # ``JournalConnectionError`` sigue siendo exclusivo de errores SQLite.
-            await self._descartar_apertura_fallida()
-            raise
+                if self._lifecycle is not None:
+                    # ----------------------------------------------------------
+                    # M-01 DI path — lifecycle owns and manages the connection
+                    # ----------------------------------------------------------
+                    self._owns_conn = False
+                    # El lock viaja con la conexión, no con la instancia. Las
+                    # conexiones del lifecycle son singleton por path resuelto, así
+                    # que dos `OperationJournal` sobre la misma DB comparten
+                    # conexión — y con un `asyncio.Lock` propio cada uno, sus
+                    # transacciones se intercalan sobre esa conexión compartida:
+                    # uno abre, el otro commitea lo que el primero llevaba a medias.
+                    # `get_write_lock` devuelve el lock cacheado bajo la MISMA clave
+                    # de path resuelto que la conexión, que es la propiedad que hace
+                    # falta; su docstring ya lo dice para `AsyncModRegistry`
+                    # ("a per-wrapper lock would leave the transaction-interleaving
+                    # race open") y acá aplica igual.
+                    #
+                    # Un solo rebind alcanza: los `async with self._lock` del módulo
+                    # leen el atributo en el momento de entrar, y todos resuelven la
+                    # conexión con `_ensure_connected()` —que llama a `open()`—
+                    # antes de tomarlo. Va acá, sin `await` de por medio, para que
+                    # ningún SQL posterior (empezando por el `executescript` del
+                    # schema y el sweep de arranque) corra bajo el lock equivocado.
+                    # Que el lock esté ASIGNADO no alcanza: el schema de abajo
+                    # además corre bajo el boundary del path.
+                    self._lock = self._lifecycle.get_write_lock(self._db_path)
+                    schema_boundary: Any = self._lifecycle.operation(self._db_path)
+                else:
+                    # ----------------------------------------------------------
+                    # Backwards-compat path — direct aiosqlite.connect (pre-M-01)
+                    # ----------------------------------------------------------
+                    # Does NOT create a DatabaseLifecycleManager internally.
+                    # Lifecycle managers spawn non-daemon aiosqlite worker threads;
+                    # on CPython 3.11 those threads block process exit when callers
+                    # omit close(), causing observed CI 20-minute timeouts.
+                    self._owns_conn = True
+                    conn = await aiosqlite.connect(self._db_path)
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.execute("PRAGMA foreign_keys=ON")
+                    await conn.execute("PRAGMA busy_timeout=5000")
+                    await conn.execute("PRAGMA synchronous=NORMAL")
+                    schema_boundary = contextlib.nullcontext(conn)
 
-    async def _descartar_apertura_fallida(self) -> None:
+                # Schema is the same regardless of path — pero el boundary no.
+                #
+                # `executescript` emite un COMMIT implícito de cualquier transacción
+                # pendiente (documentado en `sqlite3`), así que un `open()` tardío
+                # sobre la conexión compartida commiteaba el trabajo a medias de otro
+                # journal que SÍ estaba sosteniendo el lock — y su `rollback()`
+                # posterior ya no lo podía deshacer. PR-1b2b: el schema corre dentro
+                # de `operation()`, que sostiene el boundary del path durante TODO el
+                # DDL y además resuelve la conexión vigente.
+                #
+                # El boundary es solo el `executescript`, **no** todo `open()`:
+                # `sweep_stale_pending()` obtiene su PROPIO `transaction()` más abajo
+                # y `asyncio.Lock` no es reentrante, así que sostener el boundary
+                # hasta el final de `open()` sería un deadlock garantizado en el
+                # arranque.
+                #
+                # En el camino standalone la conexión es propia de esta instancia: no
+                # hay un tercero que pueda commitear encima, así que no hace falta
+                # boundary. Se usa `nullcontext` en vez de duplicar el
+                # `executescript` en las dos ramas — dos call sites del mismo SQL son
+                # exactamente el hermano desalineado que este repo colecciona.
+                async with schema_boundary as db:
+                    if self._lifecycle is not None:
+                        conn = db
+                    await db.executescript(self._SCHEMA_SQL)
+
+                # Phase 2 (F-02): Migration/backfill boundary con commit durable propio.
+                # No depende del commit del sweep posterior: la migración validada queda
+                # persistida y confirmada antes de iniciar el mantenimiento best-effort.
+                #
+                # #655: la migración de ESQUEMA (3→4 kinds de
+                # artifact_evidence_resolutions) corre PRIMERO dentro del MISMO
+                # boundary: si el backfill legacy falla, el rollback revierte también
+                # la reconstrucción de esquema — la DB queda en su estado pre-open
+                # (upgrade fallido = sin upgrade, nunca a medias). Con el esquema
+                # vigente el backfill se valida contra la tabla final.
+                #
+                # ``BEGIN IMMEDIATE`` EXPLÍCITO en los dos paths: el modo legacy de
+                # Python sqlite3 auto-BEGINA solo ante DML, y el DDL de la
+                # migración (ALTER/CREATE/DROP) correría en autocommit — cada
+                # statement commitado a mitad de camino, con la DB "a medias" si la
+                # copia o la validación fallan. Con el BEGIN explícito TODO el
+                # boundary (DDL + backfill) es una transacción atómica real;
+                # IMMEDIATE además fija el punto de serialización de la escritura
+                # (un segundo open concurrente espera el commit del primero y luego
+                # detecta el esquema vigente → no-op). El boundary lo abre cuando
+                # no hay transacción pendiente (post-executescript, que commitea),
+                # así que el BEGIN no puede colisionar.
+                if self._lifecycle is not None:
+                    async with self._lifecycle.transaction(self._db_path) as tx_conn:
+                        await tx_conn.execute("BEGIN IMMEDIATE")
+                        await _migrar_esquema_resoluciones_655_en_conn(tx_conn)
+                        await _migrar_resoluciones_legacy_en_conn(tx_conn)
+                else:
+                    assert conn is not None
+                    commit_exitoso = False
+                    try:
+                        await conn.execute("BEGIN IMMEDIATE")
+                        await _migrar_esquema_resoluciones_655_en_conn(conn)
+                        await _migrar_resoluciones_legacy_en_conn(conn)
+                        await conn.commit()
+                        commit_exitoso = True
+                    finally:
+                        if not commit_exitoso:
+                            with contextlib.suppress(sqlite3.Error):
+                                await conn.rollback()
+
+                logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
+
+                # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
+                # anteriores (crash / excepción sin rollback) se barren al arrancar.
+                # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
+                # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
+                # #474: vive dentro del boundary de apertura: si el sweep se cancela u
+                # ocurre otra BaseException, se descarta la apertura fallida y se despeja
+                # el sentinel self._db.
+                self._swept_pending_transaction_ids_this_open = set()
+                try:
+                    try:
+                        await self.sweep_stale_pending(_conn=conn)
+                    except TypeError:
+                        self._db = conn
+                        try:
+                            await self.sweep_stale_pending()
+                        finally:
+                            self._db = None
+                except (JournalError, sqlite3.Error):
+                    logger.warning(
+                        "Journal: startup sweep of stale PENDING transactions failed",
+                        exc_info=True,
+                    )
+
+                # Publicar la conexión recién cuando TODO el setup terminó con éxito.
+                self._db = conn
+
+            except (sqlite3.Error, JournalError) as e:
+                await self._descartar_apertura_fallida(conn)
+                raise JournalConnectionError(f"Failed to open journal database: {e}") from e
+            except BaseException:
+                # #474: cualquier otro fallo (OSError, cancelación…) también despeja
+                # el sentinel ``self._db`` y cierra la conexión propia; si no, el
+                # reintento sería un no-op. Se relanza sin envolver: el contrato
+                # ``JournalConnectionError`` sigue siendo exclusivo de errores SQLite.
+                await self._descartar_apertura_fallida(conn)
+                raise
+
+    async def _descartar_apertura_fallida(self, conn: aiosqlite.Connection | None = None) -> None:
         """Deshace una apertura a medias: cierra la conexión propia y despeja el sentinel.
 
         Con lifecycle externo, el manager conserva ownership y reintentará el
         cierre durante ``shutdown_all()``: acá sólo se suelta la referencia.
         """
-        if self._db is not None and self._owns_conn:
+        target = conn if conn is not None else self._db
+        if target is not None and self._owns_conn:
             with contextlib.suppress(Exception):
-                await self._db.close()
+                await target.close()
         self._db = None
         self._owns_conn = False
-        self._lock = asyncio.Lock()
+        if self._lifecycle is None:
+            self._lock = asyncio.Lock()
+        else:
+            self._lock = self._lifecycle.get_write_lock(self._db_path)
         self._swept_pending_transaction_ids_this_open = set()
 
     async def close(self) -> None:
         """Cierra la conexión a la base de datos."""
-        if self._db:
-            if self._owns_conn:
-                # Backwards-compat: we opened the connection directly, we close it.
-                with contextlib.suppress(Exception):
-                    await self._db.close()
-                self._owns_conn = False
-            # Si lifecycle es externo, no cerramos la conexión aquí;
-            # el propietario (LifecycleContext) la cierra en shutdown_all().
-            self._db = None
-            self._current_transaction = None
-            logger.info("Journal database closed")
+        async with self._conn_lock:
+            if self._db:
+                if self._owns_conn:
+                    # Backwards-compat: we opened the connection directly, we close it.
+                    with contextlib.suppress(Exception):
+                        await self._db.close()
+                    self._owns_conn = False
+                # Si lifecycle es externo, no cerramos la conexión aquí;
+                # el propietario (LifecycleContext) la cierra en shutdown_all().
+                self._db = None
+                self._current_transaction = None
+                logger.info("Journal database closed")
 
     async def _ensure_connected(self) -> aiosqlite.Connection:
         """Asegura que la conexión está abierta."""
@@ -1351,7 +1369,12 @@ class OperationJournal:
         else:
             await self.commit_transaction(transaction_id)
 
-    async def sweep_stale_pending(self, max_age_hours: float = 24.0) -> int:
+    async def sweep_stale_pending(
+        self,
+        max_age_hours: float = 24.0,
+        *,
+        _conn: aiosqlite.Connection | None = None,
+    ) -> int:
         """Marca ROLLED_BACK las transacciones PENDING más viejas que el umbral.
 
         Una fila PENDING que sobrevive de una sesión anterior es una transacción
@@ -1368,12 +1391,13 @@ class OperationJournal:
 
         Args:
             max_age_hours: Antigüedad mínima (horas) para considerar huérfana.
+            _conn: Conexión interna opcional (usada durante ``open()`` antes de publicar).
 
         Returns:
             Cantidad de transacciones barridas.
         """
         self._swept_pending_transaction_ids_this_open = set()
-        db = await self._ensure_connected()
+        db = _conn if _conn is not None else await self._ensure_connected()
 
         # Un solo literal SQL para las dos ramas (defecto #1 del repo: dos
         # hermanos del mismo UPDATE terminan desalineados). RETURNING devuelve
