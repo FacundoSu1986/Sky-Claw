@@ -71,6 +71,17 @@ _VERDICTOS_DERIVADOS = {
     "F1_ADJUDICATION": "ACCEPTED",
     "F2_ADJUDICATION": "ACCEPTED",
     "CONDITION_9_STATUS": "PENDING",
+    # Adjudicación de la revisión automática de Codex (§14.4). Repiten el cierre en otra
+    # superficie: si §4 dice DESIGN_CLOSED y §14 dice PARTIALLY_ACCEPTED sin cierre, el
+    # documento se contradice.
+    "GATE_REJECTS_RUNTIME_MISMATCH": "YES",
+    "HISTORICAL_CONSUMERS_ALLOWLISTED": "YES",
+    "ANCHOR_HAS_FROZEN_ALLOWLIST": "YES",
+    "RANGO_ES_PRECONDICION": "NO",
+    "RANGO_ES_POSTCONDICION": "YES",
+    "R7_WORST_CASE_PREMISE": "CONJECTURE_NOT_FALSIFIED",
+    "CODEX_REJECTED": "0",
+    "CODEX_PARTIALLY_ACCEPTED": "1",
 }
 
 # Tokens cuya presencia activa exige ausencia de bloqueantes abiertos.
@@ -109,8 +120,11 @@ _ASSIGNMENT = re.compile(
     r"|PRODUCTION_CHANGED|SCIENTIFIC_ARTIFACTS_CHANGED|PR675_CHANGED"
     r"|THRESHOLDS_TUNED|CORPUS_ACCESSED|TECH_LEAD_SCOPE_APPROVAL"
     r"|F1_SHAPE_CHANNEL_SEMANTICS|F2_DEGENERATE_TRANSPORT"
-    r"|F1_ADJUDICATION|F2_ADJUDICATION|CONDITION_9_STATUS)"
-    r"\s*[=:]\s*[\"'`]?(?P<value>[A-Z][A-Z0-9_]*)"
+    r"|F1_ADJUDICATION|F2_ADJUDICATION|CONDITION_9_STATUS"
+    r"|GATE_REJECTS_RUNTIME_MISMATCH|HISTORICAL_CONSUMERS_ALLOWLISTED"
+    r"|ANCHOR_HAS_FROZEN_ALLOWLIST|RANGO_ES_PRECONDICION|RANGO_ES_POSTCONDICION"
+    r"|R7_WORST_CASE_PREMISE|CODEX_REJECTED|CODEX_PARTIALLY_ACCEPTED)"
+    r"\s*[=:]\s*[\"'`]?(?P<value>[A-Z0-9][A-Z0-9_]*)"
 )
 
 # Una cita entre comillas invertidas (p.ej. `` `TECH_LEAD_SCOPE_APPROVAL=NOT_RECORDED` ``)
@@ -220,16 +234,16 @@ def test_la_condicion_9_sigue_pendiente_y_se_cita():
 # --- Familia 4: F1 — envolvente estructural vs. V-03 ----------------------------
 
 
-def _filas_tabla_f1() -> list[list[str]]:
-    """Extrae las filas de la tabla de comportamiento medido de §3.4.
+def _tabla_por_encabezado(prefijo_encabezado: str) -> list[list[str]]:
+    """Extrae las filas de datos de la **primera** tabla cuyo encabezado empieza con el prefijo.
 
-    Se localiza la tabla por su encabezado (`| Entrada hostil |`), no por posición
-    absoluta: anclar por posición no congela el orden de ejecución ni sobrevive a
-    inserciones. Devuelve las filas **de datos** (sin encabezado ni separador).
+    Se localiza la tabla por su encabezado, no por posición absoluta: anclar por posición
+    no congela el orden de ejecución ni sobrevive a inserciones. Devuelve las filas **de
+    datos** (sin encabezado ni separador); `[]` si el encabezado no aparece.
     """
     lines = _lineas()
     for i, line in enumerate(lines):
-        if line.strip().startswith("| Entrada hostil"):
+        if line.strip().startswith(prefijo_encabezado):
             filas: list[list[str]] = []
             for j in range(i + 2, len(lines)):
                 if not lines[j].strip().startswith("|"):
@@ -240,14 +254,40 @@ def _filas_tabla_f1() -> list[list[str]]:
     return []
 
 
-def _fila_por_entrada(fragmento: str) -> list[str] | None:
+def _filas_tabla_f1() -> list[list[str]]:
+    """Tabla de comportamiento medido de §10.1 (probe ejecutado, 18 filas).
+
+    El encabezado es `| Entrada hostil |`. Es la tabla **más completa**: enumera los casos
+    hostiles efectivamente ejercitados en este slice.
+    """
+    return _tabla_por_encabezado("| Entrada hostil")
+
+
+def _filas_tabla_contrato_34() -> list[list[str]]:
+    """Tabla de comportamiento medido de §3.4 (encabezado `| Entrada |`).
+
+    Es una superficie **distinta** de la de §10.1: la de §3.4 es la que declara la
+    disposición por caso (`REJECT`/`TOLERADO`) junto al contrato. Hasta la corrección del
+    review de #717, el helper anterior tomaba la **primera** tabla que empezara con
+    `| Entrada`, que resultó ser la de §10.1: §3.4 quedaba **sin anclar**. Eso es el patrón
+    "arreglar un hermano y no al otro" — se anclan **ambas**.
+    """
+    return _tabla_por_encabezado("| Entrada |")
+
+
+def _fila_por_entrada(fragmento: str, tabla: str = "10.1") -> list[str] | None:
     """Busca la fila cuya primera celda contiene `fragmento`, ignorando backticks.
 
     La celda mezcla código y prosa (`` `(H, W)` 2D ``): se normaliza quitando backticks
     para que el ancla no dependa del marcado inline.
+
+    `tabla` selecciona la superficie: `"10.1"` (probe ejecutado) o `"3.4"` (declaración de
+    contrato). Ambas se enumeran por separado — no se asume que una esté contenida en la
+    otra.
     """
     normalizado = fragmento.replace("`", "")
-    for fila in _filas_tabla_f1():
+    filas = _filas_tabla_f1() if tabla == "10.1" else _filas_tabla_contrato_34()
+    for fila in filas:
         if fila and normalizado in fila[0].replace("`", ""):
             return fila
     return None
@@ -482,6 +522,26 @@ def test_f2_el_contrato_declara_que_el_vehiculo_no_esta_implementado():
     ), "el contrato debe declarar NORMAL_RESIZE_RESULT_IMPLEMENTED = NO (Slice 2)"
 
 
+def _fence_por_marca(marca: str) -> str:
+    """Devuelve el cuerpo del fence ```text ... ``` que contiene `marca`.
+
+    Necesario porque un token puede aparecer **declarado** en un bloque normativo y
+    **citado** en las tablas de §9/§14. Anclar sobre el documento entero deja que la cita
+    sostenga el ancla cuando la declaración cambia (lección M-18: mutar el token de §5.3
+    sobrevivía porque §14.3 lo cita). Se mide el bloque que **declara**.
+    """
+    lineas = _lineas()
+    for i, ln in enumerate(lineas):
+        if ln.strip().startswith("```"):
+            for j in range(i + 1, len(lineas)):
+                if lineas[j].strip().startswith("```"):
+                    cuerpo = "\n".join(lineas[i + 1 : j])
+                    if marca in cuerpo:
+                        return cuerpo
+                    break
+    return ""
+
+
 def test_f2_la_fachada_resize_normal_es_fail_closed():
     """RC-1: la fachada no puede devolver un array degenerado en silencio.
 
@@ -493,14 +553,13 @@ def test_f2_la_fachada_resize_normal_es_fail_closed():
     `raise DegenerateNormalError` dentro de esa rama, y (c) el `return res.array` en la
     rama contraria. Un mutante que ponga `if True:` elimina la distinción de ramas y este
     ancla lo rechaza.
+
+    El token se busca **en su fence de declaración** (el que define la fachada), no en el
+    documento entero: §14.3 lo cita y esa cita no debe sostener el ancla (lección M-18).
     """
     texto = _texto()
-    assert re.search(
-        r"RESIZE_NORMAL_FACADE_FAIL_CLOSED\s*[=:]\s*YES",
-        texto,
-    ), "el contrato debe declarar RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES (RC-1)"
 
-    # Extrae el cuerpo del fence que define la fachada.
+    # Extrae el cuerpo del fence que define la fachada y ancla el token **ahí**.
     lineas = _lineas()
     inicio = next(
         (i for i, ln in enumerate(lineas) if "def resize_normal(n, size)" in ln),
@@ -508,6 +567,15 @@ def test_f2_la_fachada_resize_normal_es_fail_closed():
     )
     assert inicio is not None, "falta la firma de la fachada `resize_normal` en el contrato"
     cuerpo = lineas[inicio : inicio + 16]
+
+    # El token declarativo debe estar en la **misma región declarativa** (§5.3), y valer YES.
+    assert re.search(
+        r"RESIZE_NORMAL_FACADE_FAIL_CLOSED\s*[=:]\s*YES",
+        _fence_por_marca("RESIZE_NORMAL_FACADE_FAIL_CLOSED"),
+    ), (
+        "el contrato debe declarar RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES **en su fence "
+        "normativo** (RC-1); una cita en §14 no cuenta como declaración"
+    )
 
     condicion = [ln for ln in cuerpo if re.search(r"if\s+res\.degenerate\s*:", ln)]
     assert condicion, (
@@ -548,4 +616,206 @@ def test_la_adjudicacion_adversarial_registra_f1_y_f2_como_aceptados():
     # El veredicto de la revisión debe quedar registrado, no parafraseado.
     assert "CHANGES_REQUESTED_FOR_CONTRACT_COMPLETENESS" in texto, (
         "el veredicto de la revisión de #717 debe quedar registrado textualmente"
+    )
+
+
+# --- Familia 6: revisión de Codex (N-09 … N-12) ----------------------------------
+
+
+def _bloque_identidad_r5() -> str:
+    """Extrae el fence `IDENTITY_TUPLE = (...)` de §4.1.
+
+    Se ancla sobre la **tupla misma**, no sobre el documento entero: si sólo se busca
+    `numpy_version` en cualquier posición, el token podría sobrevivir en la prosa que
+    *explica* por qué hace falta, mientras la tupla que el runner recalcula queda sin él.
+    Medir la superficie que obliga, no la que comenta.
+    """
+    lineas = _lineas()
+    inicio = next((i for i, ln in enumerate(lineas) if ln.strip().startswith("IDENTITY_TUPLE")), None)
+    assert inicio is not None, "falta la tupla de identidad de R5 (§4.1)"
+    cuerpo: list[str] = []
+    for ln in lineas[inicio:]:
+        cuerpo.append(ln)
+        if ln.strip() == ")":
+            break
+    return "\n".join(cuerpo)
+
+
+def test_codex_n09_la_tupla_de_identidad_incluye_el_runtime():
+    """N-09: la identidad de R5 no puede omitir Python/NumPy/Pillow.
+
+    El `module_sha256_lf` hashea **nuestro** código, no la librería que lo ejecuta. Con la
+    estabilidad entre versiones en `NOT_MEASURED` y el kernel dependiente de Pillow, dos
+    corridas con distinto runtime no son comparables. Se enumera cada versión exigida.
+    """
+    tupla = _bloque_identidad_r5()
+    for campo in ("python_version", "numpy_version", "pillow_version"):
+        assert campo in tupla, f"la IDENTITY_TUPLE de R5 debe incluir `{campo}` (hallazgo N-09); tupla actual:\n{tupla}"
+
+
+def test_codex_n09_el_gate_rechaza_mismatch_de_runtime():
+    """Declarar el campo no basta: el algoritmo del gate debe **rechazar** el mismatch."""
+    texto = _texto()
+    assert re.search(r"GATE_REJECTS_RUNTIME_MISMATCH\s*[=:]\s*YES", texto), (
+        "el contrato debe declarar GATE_REJECTS_RUNTIME_MISMATCH = YES (N-09)"
+    )
+    # La regla fail-closed debe nombrar las tres versiones y la acción STOP.
+    assert re.search(
+        r"python_version\s*\|\s*numpy_version\s*\|\s*pillow_version",
+        texto,
+    ), "la regla fail-closed debe enumerar las tres versiones del runtime (N-09)"
+    assert "STOP_M6_EXECUTION" in texto, "la regla de runtime debe abortar con STOP_M6_EXECUTION (N-09)"
+
+
+def _tabla_allowlist_n10() -> dict[str, str]:
+    """Extrae la allowlist histórica de §5.1: `{archivo: tratamiento}`.
+
+    Se localiza por la fila que contiene `EXCLUIDO por diseño`, que es la marca de la
+    allowlist. Se ancla la allowlist **entera** (enumerando cada entrada), no la presencia
+    de un nombre suelto en el documento: un nombre puede sobrevivir en la prosa de §14.4
+    mientras su fila se borra de la allowlist (lección M-23).
+    """
+    entradas: dict[str, str] = {}
+    for fila in _tabla_por_encabezado("| Invocador histórico"):
+        if len(fila) >= 3 and "EXCLUIDO por diseño" in fila[2]:
+            archivo = fila[0].replace("`", "").strip()
+            entradas[archivo] = fila[1].replace("`", "").strip()
+    return entradas
+
+
+def test_codex_n10_los_consumidores_historicos_estan_allowlistados():
+    """N-10: la frontera productivo/histórico debe estar **declarada**, no supuesta.
+
+    Los invocadores de `docs/validation/` son reales y tracked. Excluirlos sin decirlo es
+    indistinguible de omitirlos. Se exige que cada uno figure con su razón de exclusión.
+
+    Se ancla la allowlist como **tabla**: se enumera cada fila. Buscar los nombres en el
+    documento entero no alcanza — un nombre citado en §14.4 sostendría el ancla aunque su
+    fila desapareciera de la allowlist.
+    """
+    texto = _texto()
+    assert re.search(r"HISTORICAL_CONSUMERS_ALLOWLISTED\s*[=:]\s*YES", texto), (
+        "el contrato debe declarar HISTORICAL_CONSUMERS_ALLOWLISTED = YES (N-10)"
+    )
+    assert re.search(r"ANCHOR_HAS_FROZEN_ALLOWLIST\s*[=:]\s*YES", texto), (
+        "el ancla de §5.4 debe declarar ANCHOR_HAS_FROZEN_ALLOWLIST = YES (N-10)"
+    )
+
+    allowlist = _tabla_allowlist_n10()
+    assert allowlist, "falta la tabla de allowlist histórica en §5.1 (N-10)"
+
+    # Se enumera cada consumidor histórico citado **como fila de la allowlist**.
+    for consumidor in (
+        "h4_magnitude_probe.py",
+        "phase_a_synthetic.py",
+        "h4_magnitude_probe_corrective.py",
+        "phase_c2_h4_corpus_corrective.py",
+        "phase_c_real_impact.py",
+        "phase_c_corrective.py",
+    ):
+        assert any(consumidor in archivo for archivo in allowlist), (
+            f"la allowlist histórica debe enumerar {consumidor!r} como entrada propia "
+            f"(hallazgo N-10); entradas actuales: {sorted(allowlist)}"
+        )
+    # Y cada entrada declara su símbolo ejercido (no basta con el nombre del archivo).
+    assert all(simbolo in ("resize_normal", "load_asset") for simbolo in allowlist.values()), (
+        f"cada entrada de la allowlist debe declarar qué símbolo ejerce: {allowlist}"
+    )
+
+
+def test_codex_n11_el_rango_por_canal_es_postcondicion_no_precondicion():
+    """N-11: `[-1,1]` no puede leerse a la vez como rechazo y como clip.
+
+    Se anclan los dos lados: la disposición cerrada (postcondición) y el caso medido
+    (`1000.0` tolerado) que la hace observable. Sólo anclar el token dejaría pasar un
+    cambio de la tabla que reintrodujera el rechazo.
+    """
+    texto = _texto()
+    assert re.search(r"RANGO_ES_PRECONDICION\s*[=:]\s*NO", texto), (
+        "el contrato debe declarar RANGO_ES_PRECONDICION = NO (N-11)"
+    )
+    assert re.search(r"RANGO_ES_POSTCONDICION\s*[=:]\s*YES", texto), (
+        "el contrato debe declarar RANGO_ES_POSTCONDICION = YES (N-11)"
+    )
+    # El caso medido que discrimina: 1000.0 debe seguir siendo tolerado con clip.
+    # Vive en la tabla de **§3.4** (la de §10.1 es el probe de formas hostiles y no
+    # incluye el caso de rango). Se apunta a la superficie correcta.
+    fila = _fila_por_entrada("1000.0", tabla="3.4")
+    assert fila is not None, "falta la fila de la entrada `1000.0` en la tabla de §3.4"
+    assert "TOLER" in fila[-1].upper() or "clip" in fila[-1].lower(), (
+        f"la fila de `1000.0` debe declarar clip tolerado, no rechazo (N-11): {fila[-1]!r}"
+    )
+    assert "REJECT" not in fila[-1], f"un valor finito fuera de rango NO se rechaza (N-11): {fila[-1]!r}"
+
+
+def test_codex_n11_la_tabla_34_esta_anclada_por_si_misma():
+    """La tabla de §3.4 no puede quedar sin anclar detrás de la de §10.1.
+
+    Defecto descubierto en esta corrección: `_filas_tabla_f1()` tomaba la **primera** tabla
+    cuyo encabezado empezara con `| Entrada`, que es la de §10.1. La tabla de §3.4 —que es
+    la que declara la disposición por caso— quedaba **sin cubrir**. Se enumera cada fila de
+    §3.4 y se exige una disposición explícita, igual que en §10.1.
+    """
+    filas = _filas_tabla_contrato_34()
+    assert filas, "falta la tabla de comportamiento medido de §3.4 (encabezado `| Entrada |`)"
+    assert len(filas) >= 8, f"la tabla de §3.4 debe enumerar los casos medidos; tiene {len(filas)}"
+    for fila in filas:
+        assert len(fila) >= 3, f"fila malformada en la tabla de §3.4: {fila}"
+        disposicion = fila[-1]
+        assert ("REJECT" in disposicion) or ("No" in disposicion) or ("Sí" in disposicion), (
+            f"cada fila de §3.4 debe declarar su disposición explícita: {fila!r}"
+        )
+    # El caso de rango tolerado debe estar en §3.4 y NO puede decir REJECT.
+    rango = _fila_por_entrada("1000.0", tabla="3.4")
+    assert rango is not None and "REJECT" not in rango[-1], (
+        "§3.4 debe declarar el rango finito fuera de [-1,1] como tolerado, no rechazado (N-11)"
+    )
+
+
+def test_codex_n12_la_premisa_de_nyquist_es_conjetura_no_establecida():
+    """N-12: 'Nyquist = peor caso' no puede figurar como resultado sin derivación.
+
+    R7 sigue `DEFERRED` en su valor; lo que se prohíbe es presentar la premisa como
+    establecida. Se ancla que queda marcada como conjetura **y** que la obligación de
+    falsación por ratio/fase/borde está escrita.
+    """
+    texto = _texto()
+    assert re.search(r"R7_WORST_CASE_PREMISE\s*[=:]\s*CONJECTURE_NOT_FALSIFIED", texto), (
+        "el contrato debe declarar R7_WORST_CASE_PREMISE = CONJECTURE_NOT_FALSIFIED (N-12)"
+    )
+    assert "CONJETURA" in texto, (
+        "la premisa de Nyquist debe declararse explícitamente como conjetura, no como resultado (N-12)"
+    )
+    # La falsación debe cubrir ratio, fase y borde — no sólo Nyquist.
+    for eje in ("ratio", "fase", "borde"):
+        assert eje in texto, f"la falsación de la cota debe barrer el eje {eje!r} (N-12)"
+    # Y el valor del umbral sigue fuera del documento.
+    assert re.search(r"R7_NUMERIC_VALUE\s*[=:]\s*DEFERRED", texto), (
+        "R7_NUMERIC_VALUE debe seguir DEFERRED a Slice 2 (N-12, sin cambio)"
+    )
+    # El umbral no puede quedar fijado: se ancla en **su fence normativo** de §6.1, no en
+    # el documento entero. `THRESHOLD_FIXED_HERE` aparecía además citado en §7 y §14; mutar
+    # la declaración de §6.1 sobrevivía porque las citas seguían diciendo `NO` (lección M-28).
+    assert re.search(
+        r"THRESHOLD_FIXED_HERE\s*[=:]\s*NO",
+        _fence_por_marca("THRESHOLD_FIXED_HERE"),
+    ), (
+        "el umbral no puede quedar fijado en este documento (N-12); se mide en su fence "
+        "normativo de §6.1, no en las citas de §7/§14"
+    )
+
+
+def test_codex_los_cinco_hilos_quedan_adjudicados():
+    """§14.4 debe registrar los cinco hilos de Codex con su adjudicación explícita."""
+    texto = _texto()
+    for tid in ("4243420665", "4243420673", "4243420679", "4243420687", "4243420695"):
+        assert tid in texto, f"el registro §14.4 debe citar el hilo de Codex {tid}"
+    assert re.search(r"CODEX_THREADS_TOTAL\s*[=:]\s*5", texto), (
+        "el bloque de §14.4 debe declarar CODEX_THREADS_TOTAL = 5"
+    )
+    assert re.search(r"CODEX_REJECTED\s*[=:]\s*0", texto), (
+        "ningún hallazgo de Codex se rechaza en bloque; el bloque debe declararlo"
+    )
+    assert re.search(r"CODEX_PARTIALLY_ACCEPTED\s*[=:]\s*1", texto), (
+        "el hilo N-12 es PARTIALLY_ACCEPTED; el bloque debe declararlo (no forzar ACCEPTED)"
     )

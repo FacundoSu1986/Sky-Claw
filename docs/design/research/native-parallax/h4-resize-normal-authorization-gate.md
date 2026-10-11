@@ -124,6 +124,20 @@ adjudicación de F1/F2 se hace sobre el texto del comentario `6113684862` y se r
 como resolución de threads. Al pasar a `Ready`, los bots correrán sobre el HEAD final y sus hilos
 se adjudicarán en §14.
 
+### 1.5bis Segunda y tercera ronda de revisión (RC-1/RC-2 y Codex)
+
+```text
+RONDA_2 (Ready, HEAD 4bc449a6)  = CodeRabbit inline: RC-1 (fachada) · RC-2 (ancla de tabla)
+                                  → adjudicados y cerrados en 3df2bfd1 (§14.3)
+RONDA_3 (HEAD 3df2bfd1)         = Codex inline: 5 hilos (2 P1, 3 P2)
+                                  4243420665 (P1) fechada fachada → ACCEPTED (ya cerrado por RC-1)
+                                  4243420673 (P1) runtime en R5    → ACCEPTED (N-09)
+                                  4243420679 (P2) censo R6         → ACCEPTED (N-10)
+                                  4243420687 (P2) rango [−1,1]     → ACCEPTED (N-11)
+                                  4243420695 (P2) premisa Nyquist  → PARTIALLY_ACCEPTED (N-12)
+REVIEW_THREADS_ABIERTOS_FINAL   = 0 (todos adjudicados; ver §14.4/§14.5)
+```
+
 ### 1.6 CI del HEAD corregido (`851f20e0`)
 
 Run `38176267616`. **No se declara `CI=PASS` global** — se declara lo medido, con el job autoritativo
@@ -203,7 +217,7 @@ sobre `H ≠ W`** (V-03, diferido). Son dos cosas distintas y no se confunden.
 | Nº de canales | **Exactamente 3** (`arr.shape[-1] == 3`) | Es una normal tangencial RGB; 2/4/0 canales no son el tipo | `DESIGN_CLOSED` |
 | `H > 0` y `W > 0` | **Requerido**; dimensión cero ⇒ rechazo | Una rejilla sin píxeles no es una normal | `DESIGN_CLOSED` |
 | `H ≠ W` | **V-03** — ver fila propia abajo | Vacío declarado del preflight §7.3 | `DEFERRED` |
-| Rango por canal | `[-1, 1]` | `decode_normal_image`: `rgb/255*2 − 1`; el corpus no excede | `CONFIRMED` |
+| Rango por canal | `[-1, 1]` **tras** el clip documentado; el rango es **postcondición**, no precondición | `decode_normal_image`: `rgb/255*2 − 1`; el corpus no excede. Fuera de rango **finito** ⇒ clip tolerado (ver regla, §3.4) | `CONFIRMED` |
 | Normalización previa | Unitaria (ya renormalizada) | `decode_normal_image` | `CONFIRMED` |
 | Convención | Aplicada por `apply_convention` **antes** del resize | `load_asset:317-318` | `CONFIRMED` |
 | Finitud | **Requerida**; NaN/Inf ⇒ rechazo fail-closed | V-04; **hoy el camino uint8 los clipea en silencio** (medido, §3.4) | `CONTRACT_CLOSED` (decisión) |
@@ -294,6 +308,25 @@ TOLERADO (contrato ya vigente):
   entrada válida con resize          -> interpolar + renormalizar (o NON_EVALUABLE si degenera)
 ```
 
+**Desambiguación del rango (hallazgo del review de #717).** La distinción entre `[-1,1]` como
+**precondición** (se rechaza lo que esté fuera) y como **postcondición** (se tolera lo finito y se
+clipea) era ambigua entre §3.1 y esta tabla, y ambos caminos producen resultados distintos. La
+regla **cerrada** es la segunda:
+
+```text
+RANGO_ES_PRECONDICION     = NO   (no se rechaza un valor finito por estar fuera de [-1,1])
+RANGO_ES_POSTCONDICION    = YES  (la salida siempre queda en [-1,1])
+FUERA_DE_RANGO_FINITO     = CLIP documentado por canal (1000.0 -> 1.0), TOLERADO
+FUERA_DE_RANGO_NO_FINITO  = REJECT (NaN/Inf; ver RECHAZO arriba)
+```
+
+El racional: el corpus decodifica a `[-1,1]` (`rgb/255*2 − 1`), así que un valor fuera de rango
+**finito** no es un error de dominio — es una entrada extrapolada que el clip ya maneja hoy y cuyo
+comportamiento está medido (`1000.0 -> 1.0`). Rechazarlo sería **endurecer** el contrato sobre un
+caso que el camino vigente tolera, sin defecto observado que lo justifique. Lo que **sí** se rechaza
+es lo **no finito**, porque el clip lo convertiría en un valor inventado en silencio (V-04). El test
+de discriminación (§10.1) ancla ambos lados: `1000.0 -> tolerado/clip` y `NaN -> REJECT`.
+
 **Casos explícitamente `NOT_DEFERRED`.** Un `ndim`/`shape[-1]` incorrecto, una dimensión vacía o
 un `size` inválido **no** se difieren "a un slice futuro": se cierran acá como **rechazo**. Diferir
 una forma malformada dejaría pasar exactamente el defecto que F1 señala (un canal descartado en
@@ -355,14 +388,30 @@ IDENTITY_TUPLE = (
   code_git_sha     : HEAD del checkout de la corrida,
   intermediate_dtype: "uint8" | "float32",
   degenerate_policy : "NONE" | "FAIL_CLOSED",
+  python_version   : versión exacta del intérprete de la corrida,       # ← runtime (R5)
+  numpy_version    : versión exacta de NumPy importada,                 # ← runtime (R5)
+  pillow_version   : versión exacta de Pillow importada,                # ← runtime (R5)
 )
 ```
 
-Regla de verificación (fail-closed, del preflight §10.3, **preservada**):
+**Por qué el runtime integra la tupla (hallazgo del review de #717).** El preflight §10.1 exige
+`python_version / numpy_version / pillow_version` en el JSON de procedencia, y §3.4/§7 de este
+documento registra que el **kernel bilineal de Pillow no está garantizado bit a bit entre
+versiones mayores** (`H4_CROSS_VERSION_STABILITY = NOT_MEASURED`, V-05). El `module_sha256_lf`
+hashea **nuestro** código, no la librería que lo ejecuta: dos corridas con el mismo hash de módulo
+pero distinto Pillow producirían resultados posiblemente distintos y la tupla las declararía
+equivalentes. Sin el runtime, el gate no puede distinguir esas dos ejecuciones, que es justamente
+lo que R5 debe impedir. Las versiones viajan a la tupla **y** al cotejo fail-closed de abajo.
+
+Regla de verificación (fail-closed, del preflight §10.3, **preservada y extendida**):
 
 ```text
 Si hash(módulo ejecutado) no coincide con la tupla registrada para la etiqueta
   -> STOP_M6_EXECUTION (rechazar hash desconocido / etiqueta incompatible / selección no verificable)
+
+Si (python_version | numpy_version | pillow_version) de la corrida
+   no coincide con la tupla registrada
+  -> STOP_M6_EXECUTION (runtime distinto ⇒ kernel posiblemente distinto ⇒ corrida NO comparable)
 ```
 
 **Distinción de hashes (obligatoria, §10.2):** `module_sha256_lf` (**código**) ≠ `input_identity`
@@ -397,7 +446,9 @@ registrado y por ello NO puede declararse aceptada."*
 ```text
 PROVENANCE_SCHEME                 = SPECIFIED (design closed)
 IDENTITY_TUPLE_DEFINED            = YES
+IDENTITY_TUPLE_INCLUDES_RUNTIME   = YES (python/numpy/pillow version; hallazgo del review de #717)
 GATE_ALGORITHM_SPECIFIED          = YES
+GATE_REJECTS_RUNTIME_MISMATCH     = YES (fail-closed, además del hash de módulo)
 PROVENANCE_GATE_IMPLEMENTED       = NO  (DEFERRED a Slice 3)
 CORRECTED_IMPL_HASH_REGISTERED    = NO  (BLOCKED: el código corregido no existe)
 CANONICAL_FLOAT_LABEL_AUTHORIZED  = NO  (prohibido etiquetarlo sin hash corregido)
@@ -407,9 +458,18 @@ R5_PROVENANCE_CONTRACT            = DESIGN_CLOSED
 ### 4.4 Mensaje de cierre de R5
 
 R5 pasa a `DESIGN_CLOSED`: la asociación es una tupla recalculable, no una afirmación del
-operador; el algoritmo del gate es fail-closed y está especificado; y la separación
-H4-Slice-2 / runner-M6 está explícita. Lo que **no** se cierra —y no puede cerrarse documentalmente
-— es el hash del código corregido, que sólo existirá tras implementarlo.
+operador; el algoritmo del gate es fail-closed y está especificado; la tupla incluye el **runtime**
+(Python/NumPy/Pillow) para que dos corridas con kernels potencialmente distintos no se declaren
+equivalentes; y la separación H4-Slice-2 / runner-M6 está explícita. Lo que **no** se cierra —y no
+puede cerrarse documentalmente— es el hash del código corregido, que sólo existirá tras
+implementarlo.
+
+**Corrección del review de #717 (P1).** La primera versión de la tupla terminaba en
+`degenerate_policy` y omitía el runtime, contradiciendo la propia exigencia del preflight §10.1
+(`python_version / numpy_version / pillow_version`). Dado que la estabilidad entre versiones está
+declarada `NOT_MEASURED` y el kernel depende de Pillow, ese hueco dejaba que el gate aceptara como
+equivalentes dos ejecuciones no comparables. La tupla y la regla fail-closed se extendieron en
+consecuencia (§4.1).
 
 ---
 
@@ -424,7 +484,28 @@ diferenciada** para el caso crítico de M3.
 Se inspeccionaron con AST `run_exp_m2.py`, `run_exp_m3.py`, `run_exp_m4.py`, `run_exp_m5.py`,
 `authored_dataset.py`, `fetch_exp_m2_corpus.py`.
 
-**Call-sites de `load_asset` (el único invocador de `resize_normal`):**
+**Frontera de alcance (explicitada por el review de #717).** Este censo enumera los **runners
+productivos** — los módulos de `sky_claw/local/native_parallax/research/`. Fuera de esa frontera
+existen invocadores **históricos** de `resize_normal` / `load_asset`, todos bajo
+`docs/validation/` y **congelados por la auditoría que los produjo** (no son caminos que corran en
+la suite ni en M6). El review de #717 citó, correctamente, que `rg` los encuentra:
+
+| Invocador histórico (tracked, en `docs/validation/`) | Símbolo | Tratamiento |
+|---|---|---|
+| `native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/h4_magnitude_probe.py:63` | `resize_normal` | **EXCLUIDO por diseño** — probe de la auditoría de impacto H1–H5, fijado al hallazgo histórico |
+| `…/scripts/phase_a_synthetic.py:237` | `resize_normal` | **EXCLUIDO por diseño** — ídem |
+| `…/corrective-20261008/scripts/h4_magnitude_probe_corrective.py:263` | `resize_normal` | **EXCLUIDO por diseño** — contrafactual correctivo |
+| `…/corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py:188` | `resize_normal` | **EXCLUIDO por diseño** — contrafactual READ-ONLY (C2) |
+| `…/scripts/phase_c_real_impact.py:138`, `corrective-20261008/scripts/phase_c_corrective.py:185` | `load_asset` | **EXCLUIDO por diseño** — ídem |
+
+La exclusión **no** es una omisión silenciosa: es una frontera declarada. Estos módulos reproducen
+el hallazgo **histórico**; reescribirlos para consumir el vehículo nuevo (F2) **destruiría la
+evidencia** que los hace citables como baseline. El ancla de §5.4 debe **reconocerlos como
+exclusiones congeladas** (allowlist explícita con su razón) y romper **sólo** ante un consumidor
+nuevo **fuera** de esa allowlist. Congelar la lista es el punto: un consumidor nuevo en
+`sky_claw/` **o** un módulo nuevo bajo `docs/validation/` que no esté en la allowlist rompe el ancla.
+
+**Call-sites de `load_asset` (el único invocador de `resize_normal` en el camino productivo):**
 
 | Archivo | Call-sites | Convención |
 |---|---|---|
@@ -670,6 +751,7 @@ SCIENTIFIC_PUBLICATION_PROHIBITED= YES (tras DegenerateNormalError)
 EXISTING_EXCLUSIONS_UNCHANGED    = YES (no reclasificar integridad como H4)
 SYNTHETIC_DISCRIMINATING_TESTS   = 7 (especificados, NO implementados)
 AST_ANCHOR_SPECIFIED             = YES (ordena handlers + censo congelado)
+HISTORICAL_CONSUMERS_ALLOWLISTED = YES (6 invocadores en docs/validation/, exclusión declarada)
 R6_CONSUMER_COVERAGE             = DESIGN_CLOSED
 ```
 
@@ -693,8 +775,17 @@ FAMILY_E_ANCHOR_DESIGNED          = YES
 ANCHOR_ENUMERATES_BY_AST          = YES
 ANCHOR_COVERS_ALL_RUNNERS         = YES (M2/M3/M4/M5 + load_asset)
 ANCHOR_CHECKS_HANDLER_ORDER       = YES (subclase antes de superclase)
+ANCHOR_HAS_FROZEN_ALLOWLIST       = YES (exclusiones históricas declaradas, §5.1)
 ANCHOR_IMPLEMENTED                = NO  (pertenece al Slice 2)
 ```
+
+**La allowlist es parte del contrato, no un detalle.** El review de #717 mostró que un `rg` global
+encuentra consumidores fuera del censo productivo. El ancla no puede ignorarlos (sería el mismo
+defecto de "arreglar un hermano y no al otro") **ni** puede exigirles el vehículo nuevo (destruiría
+la evidencia histórica). La resolución es una **allowlist congelada y con razón declarada**: los seis
+invocadores de `docs/validation/` figuran con su motivo de exclusión; un séptimo que aparezca rompe
+el ancla hasta que se le declare tratamiento. Así la frontera es **explícita y mutable-sólo-a-
+propósito**, que es exactamente lo que R6 debe garantizar.
 
 ### 5.5 Mensaje de cierre de R6
 
@@ -702,9 +793,17 @@ R6 pasa a `DESIGN_CLOSED`: la enumeración se hizo por AST (no a mano), el punto
 quedó `CONFIRMED` con la línea exacta, el **vehículo** de la señal está especificado de punta a
 punta (`resize_normal_diagnostic → NormalResizeResult → load_asset → runners`, §5.3), la jerarquía
 de excepciones hace imposible confundir un rechazo de forma con un rechazo de degeneración, las
-reglas de propagación están fijadas por consumidor (§5.3.3), y el ancla de cobertura está diseñada
-para **detectar** consumidores nuevos **y** verificar el **orden** de los handlers (§5.4). Lo que
-**no** se cierra es la implementación del vehículo, de la jerarquía ni del ancla (Slice 2).
+reglas de propagación están fijadas por consumidor (§5.3.3), el ancla de cobertura está diseñada
+para **detectar** consumidores nuevos **y** verificar el **orden** de los handlers (§5.4), y la
+**frontera** entre consumidores productivos e históricos está **declarada como allowlist congelada**
+con razón por entrada (§5.1) — de modo que ni una omisión silenciosa ni una exigencia imposible
+sobre la evidencia histórica pueden pasar. Lo que **no** se cierra es la implementación del
+vehículo, de la jerarquía ni del ancla (Slice 2).
+
+**Corrección del review de #717 (P2, censo).** La primera versión enumeraba los runners productivos
+pero **no declaraba** la frontera: un `rg` global encuentra seis invocadores bajo `docs/validation/`
+que quedaban, en la práctica, indistinguibles de una omisión. Se añadió la allowlist congelada
+(§5.1) y la obligación del ancla de romper ante un consumidor nuevo fuera de ella (§5.4).
 
 Lo que F2 corrigió respecto de la primera versión de este documento: no basta con declarar que el
 consumidor decide. La firma `resize_normal` devuelve hoy **sólo** `NDArray`, de modo que
@@ -726,8 +825,22 @@ aceptación del Slice 2 (§17.8).
 ### 6.1 Procedimiento cerrado (teoría + sintético)
 
 1. **Cota teórica de cancelación.** Dado el kernel bilineal y una ventana de reducción de factor
-   `k`, el peor caso de cancelación ocurre con contenido a Nyquist (`±1` alternado). La norma
+   `k`, el peor caso de cancelación **propuesto** es contenido a Nyquist (`±1` alternado). La norma
    mínima alcanzable del vector interpolado define el orden de magnitud del umbral.
+
+   **El supuesto "Nyquist = peor caso" es una CONJETURA, no un resultado (hallazgo del review de
+   #717).** La cancelación depende también del **factor de reducción**, la **fase de muestreo** y el
+   **tratamiento de borde**; una grilla sintética que sólo barra Nyquist a un ratio fijo puede
+   **no** alcanzar la norma mínima real y elegir un umbral que siga normalizando direcciones no
+   confiables. El procedimiento **no** puede tratar la conjetura como premisa cerrada. Se exige,
+   como criterio de aceptación del Slice 2:
+
+   - **derivar** la cota para las configuraciones de resize soportadas (barriendo ratio, fase y
+     borde), **o** citar una fuente pública que la establezca, y
+   - **falsarla**: exhibir que ninguna configuración soportada produce una norma menor que la de
+     Nyquist; si alguna lo hace, Nyquist **no** era el peor caso y el umbral se recalcula sobre el
+     mínimo real.
+   Mientras eso no se ejecute, la premisa queda `CONJECTURE_NOT_FALSIFIED` — **no** `ESTABLISHED`.
 2. **Calibración con controles sintéticos.** Construir campos sintéticos cuyos vectores
    interpolados tengan norma conocida `L ∈ {0, ε₁, ε₂, …, 1}` y medir el error de dirección
    `Δθ(L)` respecto del oráculo independiente. El umbral es el `L` por debajo del cual la
@@ -736,11 +849,13 @@ aceptación del Slice 2 (§17.8).
    `L' ≥ L` en la grilla sintética, `Δθ(L')` ≤ tolerancia declarada. El criterio y la tolerancia
    se fijan **antes** de correr.
 4. **Falsación.** Probar que el umbral **no** es trivial: un campo sintético con `L` apenas por
-   debajo del umbral debe quedar `NON_EVALUABLE`; uno apenas por encima debe ser evaluable.
+   debajo del umbral debe quedar `NON_EVALUABLE`; uno apenas por encima debe ser evaluable. La
+   grilla debe incluir el barrido de ratio/fase/borde del punto 1, no sólo Nyquist.
 
 ```text
 R7_PROCEDURE              = SPECIFIED (teoría + sintético)
 R7_NUMERIC_VALUE          = DEFERRED a Slice 2
+R7_WORST_CASE_PREMISE     = CONJECTURE_NOT_FALSIFIED (Nyquist; exige derivación/cita + falsación)
 CORPUS_CALIBRATION        = PROHIBITED
 HISTORICAL_TUNING         = PROHIBITED
 THRESHOLD_FIXED_HERE      = NO
@@ -872,6 +987,10 @@ posterior sobre la condición 9 de §17 puede cambiar ese estado.
 | N-06 | M3 registra la exclusión con razón y re-verifica suficiencia, **pero** si quedan assets suficientes publica la decisión con la degeneración indistinguible de una exclusión de integridad. | **Hallazgo de integración** | §5.2 |
 | N-07 | (F1, revisión adversarial) La primera versión de §3.4 declaraba `forma != (H,W,3) -> DEFERRED (V-03)`, usando V-03 —que en el preflight §7.3 trata **dimensiones no cuadradas**— para diferir canales incorrectos, dimensiones cero y `size` inválido. El instrumento de medición fue un probe que ejercitó 10 formas hostiles: `(H,W,2)`→`IndexError`, `(H,W,4)`→**descarte silencioso del 4.º canal**, `(H,W)` 2D→aceptado, `(0,W,3)`→aceptado, `size=0/−1`→`ValueError` de Pillow, `size=2.5`→`TypeError`, `NaN/Inf`→**clip silencioso**. | **Defecto de contrato** | §3.4 |
 | N-08 | (F2, revisión adversarial) La primera versión de §5.3 declaraba que "el consumidor decide" sin especificar por dónde viajan `degenerate_count`, `total_pixels` y `threshold` — la firma `resize_normal` devuelve sólo `NDArray`. Regla sin vehículo = regla inejecutable; el conteo se pierde en el primer `return`. | **Defecto de contrato** | §5.3.1 |
+| N-09 | (Codex, revisión de #717) La `IDENTITY_TUPLE` de R5 omitía `python_version / numpy_version / pillow_version`, aunque el preflight §10.1 los exige y la estabilidad entre versiones está `NOT_MEASURED`. El `module_sha256_lf` hashea **nuestro** código, no la librería que lo ejecuta: dos corridas con distinto Pillow declaraban la misma identidad. | **Defecto de contrato (R5)** | §4.1 |
+| N-10 | (Codex, revisión de #717) El censo de §5.1 enumeraba sólo los runners productivos, sin declarar la **frontera** frente a los 6 invocadores históricos de `docs/validation/`. Un `rg` global los encuentra; la omisión era real aunque el alcance fuera correcto. | **Precisión de censo (R6)** | §5.1, §5.4 |
+| N-11 | (Codex, revisión de #717) `[-1,1]` figuraba como rango de canal sin aclarar si era **precondición** (rechazo) o **postcondición** (clip). Ambas lecturas eran defendibles desde §3.1 y §3.4 y producen caminos distintos. | **Ambigüedad de contrato (R1)** | §3.4 |
+| N-12 | (Codex, revisión de #717) El procedimiento R7 usaba "Nyquist = peor caso" como **premisa** sin derivación ni cita, cuando la cancelación depende de ratio, fase y borde. Una grilla que sólo barra Nyquist puede no alcanzar la norma mínima real. | **Premisa no falsificada (R7)** | §6.1 |
 
 **Contradicciones resueltas sin inventar semántica:**
 
@@ -975,9 +1094,11 @@ SUITE_FOCAL_NP   = PASS  (79 passed — m2 + m2_json + pr700 docs + pr697 reconc
 RUFF_CHECK       = PASS  (All checks passed!)
 RUFF_FORMAT      = PASS  (858 files already formatted)
 MYPY             = PASS  (no issues found in 364 source files)
-MUTANTES_ANCLA   = 22/22 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
+MUTANTES_ANCLA   = 30/30 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
                                    M-12/M-13/M-14/M-15/M-16 de F2 +
-                                   M-17/M-18 de RC-1 + M-19/M-20 de RC-2)
+                                   M-17/M-18 de RC-1 + M-19/M-20 de RC-2 +
+                                   M-21/M-22/M-29 de N-09 + M-23/M-24 de N-10 +
+                                   M-25/M-26 de N-11 + M-27/M-28 de N-12)
 ARTEFACTOS_CIENTIFICOS = PASS  (0 archivos científicos modificados)
 PRODUCCION       = PASS  (0 archivos de sky_claw/ modificados)
 ```
@@ -1005,6 +1126,30 @@ backup de la corrida siguiente congeló **ese** estado como "pristino" — el ba
 de mutar y aborta si no lo está; (2) registra el hash pristine en un sidecar y detecta
 contaminación entre corridas; (3) re-verifica el hash al restaurar. Lección: un backup tomado
 *después* de una mutación interrumpida no es un pristine — es evidencia contaminada.
+
+**Cuarta lección (token ≠ comportamiento, RC-1).** Al endurecer el ancla de RC-1, el primer intento
+verificaba sólo la **presencia** del token `RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES`: M-17
+(`if res.degenerate:` → `if True:`) **sobrevivía**. Anclar el token no es anclar el comportamiento;
+hay que extraer el **cuerpo del fence** y exigir la condición, el `raise` y el `return`.
+
+**Quinta lección (la cita sostiene el ancla — hallazgo de esta corrida).** La extensión a los
+hallazgos de Codex (N-09…N-12) dejó **tres mutantes vivos** en la primera pasada: M-18
+(`RESIZE_NORMAL_FACADE_FAIL_CLOSED` → `UNKNOWN`), M-23 (borrar la fila de `phase_a_synthetic.py` de
+la allowlist) y M-28 (`THRESHOLD_FIXED_HERE` → `YES`). Causa **común**: el token/fila seguía
+apareciendo **citado** en las tablas de §14 (y §7), de modo que un ancla que buscaba sobre el
+documento entero encontraba la cita y **no** la declaración. Se corrigió midiendo el **fence
+normativo** que declara (`_fence_por_marca`) y la **tabla** que enumera (`_tabla_allowlist_n10`).
+Es la misma clase que la cuarta lección, un nivel más abajo: **no alcanza con "no muestrear": hay
+que anclar la superficie que declara, y una cita no declara.** Un documento que registra sus propias
+correcciones (trazabilidad) crea citas que pueden volverse sostén falso de un ancla ingenua.
+
+**Sexta lección (la tabla de §3.4 no estaba anclada).** Al añadir el ancla de N-11 se descubrió que
+`_filas_tabla_f1()` tomaba la **primera** tabla cuyo encabezado empezara con `| Entrada`, que
+resultó ser la de §10.1 (probe). La tabla de §3.4 —que declara la disposición por caso junto al
+contrato— quedaba **sin cubrir** desde el inicio. Se corrigió: el helper ahora selecciona la tabla
+por **encabezado exacto** y se anclan **ambas** superficies. Lección: "arreglar un hermano y no al
+otro" también aplica a las superficies de un **mismo** documento; un helper que toma "la primera
+coincidencia" es una muestra disfrazada de enumeración.
 
 
 ---
@@ -1065,10 +1210,11 @@ SLICE                          = H4_RESIZE_NORMAL_AUTHORIZATION_CLOSURE
 CHARACTER                      = AUTHORIZATION_GATE_ONLY
 
 H4_DEFECT_REPRODUCED           = YES (sesgo, sub-LSB, cancelación)
-R1_NUMERIC_CONTRACT            = DESIGN_CLOSED
-R5_PROVENANCE_CONTRACT         = DESIGN_CLOSED
-R6_CONSUMER_COVERAGE           = DESIGN_CLOSED
+R1_NUMERIC_CONTRACT            = DESIGN_CLOSED  (rango = postcondición; P2 Codex)
+R5_PROVENANCE_CONTRACT         = DESIGN_CLOSED  (tupla incluye runtime; P1 Codex)
+R6_CONSUMER_COVERAGE           = DESIGN_CLOSED  (allowlist histórica declarada; P2 Codex)
 R7_THRESHOLD_PROCEDURE         = DESIGN_CLOSED (valor DEFERRED a Slice 2)
+R7_WORST_CASE_PREMISE          = CONJECTURE_NOT_FALSIFIED (P2 Codex; exige falsación)
 
 F1_SHAPE_CHANNEL_SEMANTICS     = CLOSED  (envolvente estructural REJECT; V-03 H!=W sigue DEFERRED)
 F2_DEGENERATE_TRANSPORT        = CLOSED  (NormalResizeResult + jerarquía + propagación por consumidor)
@@ -1189,3 +1335,86 @@ M-17 (`if res.degenerate:` → `if True:`) **sobrevivía**. Se corrigió el ancl
 **cuerpo del fence** de la fachada y exigir (a) la condición `res.degenerate`, (b) el `raise` en esa
 rama y (c) el `return res.array` en la contraria. Lección: anclar el **token** no es anclar el
 **comportamiento**; hay que anclar la estructura del código contractual, no su etiqueta.
+
+### 14.4 Revisión automática de Codex (`chatgpt-codex-connector[bot]`)
+
+Sobre el HEAD `4bc449a6`, Codex emitió **5 hilos inline** (2 P1, 3 P2). Tres se adjudican
+**ACCEPTED** y **CLOSED** en este slice (con corrección documental); uno se **ACCEPTED** con cierre
+diferido declarado; uno se **PARTIALLY_ACCEPTED** (hecho correcto, premisa residual registrada).
+
+| Thread | Finding (resumen) | Sev. declarada | Adjudicación | Corrección / resolución |
+|---|---|---|---|---|
+| `4243420665` | La fachada `resize_normal` no debe descartar la señal de degeneración; debe ser fail-closed. | `P1` | **ACCEPTED** — ya resuelto por **RC-1** en `3df2bfd1` | Ver §14.3 RC-1: fachada inspecciona `res.degenerate`, lanza `DegenerateNormalError`. El hilo de Codex es **independiente y coincidente** con RC-1; misma corrección, doble confirmación. |
+| `4243420673` | La identidad de R5 debe incluir las versiones de runtime (NumPy/Pillow). | `P1` | **ACCEPTED** | N-09. `IDENTITY_TUPLE` extendida con `python_version / numpy_version / pillow_version`; la regla fail-closed rechaza **también** el mismatch de runtime. §4.1, §4.3. |
+| `4243420679` | El censo de R6 omite consumidores directos fuera del conjunto declarado (cita `h4_magnitude_probe.py:63`, `phase_a_synthetic.py:237`). | `P2` | **ACCEPTED en el hecho, reencuadrado en el alcance** | N-10. Verificado con `git grep`: los 6 invocadores existen y están **tracked**, todos en `docs/validation/` (históricos, congelados por su auditoría). El alcance productivo era correcto, pero la **frontera no estaba declarada**. Se añadió la allowlist congelada con razón por entrada (§5.1) y `ANCHOR_HAS_FROZEN_ALLOWLIST=YES` (§5.4). |
+| `4243420687` | `[-1,1]` como rango de canal contradice la tolerancia de clip de `1000.0`. | `P2` | **ACCEPTED** | N-11. Desambiguado: `RANGO_ES_PRECONDICION=NO`, `RANGO_ES_POSTCONDICION=YES`; `1000.0` tolerado por clip documentado, **no** rechazado. §3.1, §3.4. |
+| `4243420695` | El supuesto "Nyquist = peor caso" no está derivado ni citado. | `P2` | **PARTIALLY_ACCEPTED** | N-12. R7 ya estaba `DEFERRED` en su valor, así que **no** se declaraba cerrado numéricamente. Lo aceptado: la premisa pasa a `CONJECTURE_NOT_FALSIFIED` y se **exige** derivación/cita **y** falsación por barrido de ratio/fase/borde como criterio de aceptación del Slice 2 (§6.1). No se pretende derivar la cota acá. |
+
+```text
+CODEX_THREADS_TOTAL            = 5
+CODEX_ACCEPTED_CLOSED          = 4  (4243420665 -> RC-1; 673; 679; 687)
+CODEX_PARTIALLY_ACCEPTED       = 1  (4243420695, premisa -> CONJECTURE_NOT_FALSIFIED)
+CODEX_REJECTED                 = 0
+PRODUCTION_TOUCHED             = NO (correcciones documentales + anclas de test)
+```
+
+**Por qué `4243420679` no se rechaza pese a que el alcance era correcto.** El revisor tenía razón en
+el **hecho** (los invocadores existen) y la objeción útil en el **método** (una frontera no declarada
+es indistinguible de una omisión). Rechazarlo porque "el alcance era productivo" habría repetido el
+error de asumir que un supuesto compartido no necesita escribirse. Se acepta el hallazgo y se
+**declara** la frontera, que es la corrección que impide que un consumidor nuevo pase inadvertido.
+
+**Por qué `4243420695` es `PARTIALLY_ACCEPTED` y no `ACCEPTED`.** El revisor pide derivar la cota
+"antes de tratar R7 como `DESIGN_CLOSED`". R7 **no** está `DESIGN_CLOSED` en su valor: está
+`DEFERRED` a Slice 2 con `THRESHOLD_FIXED_HERE=NO`. La parte aceptada es que la **premisa** no puede
+figurar como establecida: ahora es explícitamente una conjetura con obligación de falsación. La parte
+que se **rechaza** es que esto bloquee el cierre documental de R7: el procedimiento es correcto como
+procedimiento; lo que falta es el **valor**, y eso ya estaba y sigue estando diferido.
+
+### 14.5 Estado agregado de todos los hilos (al cierre de esta sesión)
+
+```text
+REVIEW_THREADS_TOTAL              = 7
+  human_review_6113684862         = 1  (F1, F2 — resueltos)
+  coderabbit_inline               = 4  (2 RC iniciales + 2 confirmaciones "resolved")
+  codex_inline                    = 5  ... contabilidad abajo
+THREADS_ACCEPTED                  = 6  (F1, F2, RC-1, RC-2, + Codex 673/679/687)
+THREADS_PARTIALLY_ACCEPTED        = 1  (Codex 4243420695)
+THREADS_REJECTED                  = 0
+CONVERGENCIA_RC1_CODEX_665        = YES (dos revisores independientes, mismo defecto de fachada)
+PRODUCTION_FILES_TOUCHED          = 0
+SCIENTIFIC_ARTIFACTS_TOUCHED      = 0
+```
+
+**Lectura de la convergencia.** Que CodeRabbit (RC-1) y Codex (`4243420665`) reporten **el mismo**
+defecto de fachada por caminos independientes es evidencia fuerte de que el defecto era real y no un
+artefacto de un revisor: dos instrumentos distintos midieron la misma superficie. El cierre de RC-1
+en `3df2bfd1` **también** atiende el hilo de Codex. Igualmente, `4243420673` (P1) y `4243420687`
+(P2) son hallazgos que **ningún** test detectaba: el documento declaraba cierres (`R5_PROVENANCE_
+CONTRACT=DESIGN_CLOSED`, `RANGO=[-1,1]`) sobre superficies que contenían una omisión y una
+ambigüedad. La lección de método es la misma que en §14.3: un cierre declarado no es un cierre
+**verificado** hasta que un ancla enumera la superficie que lo sostiene.
+
+### 14.6 Estado de los tokens tras esta corrección
+
+```text
+F1_SHAPE_CHANNEL_SEMANTICS        = CLOSED   (sin cambio)
+F2_DEGENERATE_TRANSPORT           = CLOSED   (sin cambio)
+R1_NUMERIC_CONTRACT               = DESIGN_CLOSED  (desambiguado: rango = postcondición)
+R5_PROVENANCE_CONTRACT            = DESIGN_CLOSED  (extendido: runtime en la tupla)
+R6_CONSUMER_COVERAGE              = DESIGN_CLOSED  (extendido: allowlist histórica declarada)
+R7_PROCEDURE                      = SPECIFIED
+R7_WORST_CASE_PREMISE             = CONJECTURE_NOT_FALSIFIED  (nuevo)
+R7_NUMERIC_VALUE                  = DEFERRED a Slice 2
+RC1_ADJUDICATION                  = ACCEPTED (MATERIAL)
+RC2_ADJUDICATION                  = ACCEPTED (MATERIAL)
+CODEX_4243420665                  = ACCEPTED (cerrado por RC-1)
+CODEX_4243420673                  = ACCEPTED (N-09)
+CODEX_4243420679                  = ACCEPTED (N-10)
+CODEX_4243420687                  = ACCEPTED (N-11)
+CODEX_4243420695                  = PARTIALLY_ACCEPTED (N-12)
+H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
+M6_IMPLEMENTATION_BLOCKED         = YES
+TECH_LEAD_SCOPE_APPROVAL          = PENDING
+READY_TO_IMPLEMENT                = NO
+```
