@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -94,13 +95,20 @@ def _esperas(*segundos: float) -> Any:
 
 
 @pytest.fixture
-def dormidos() -> Any:
+def dormidos(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Espía ``asyncio.sleep`` del sender: el backoff se observa, no se espera."""
     esperas: list[float] = []
+    base_tiempo = time.monotonic()
+    tiempo_acumulado = [0.0]
+
+    def _monotonic_falso() -> float:
+        return base_tiempo + tiempo_acumulado[0]
 
     async def _dormir(segundos: float) -> None:
         esperas.append(segundos)
+        tiempo_acumulado[0] += segundos
 
+    monkeypatch.setattr(sender_mod.time, "monotonic", _monotonic_falso)
     with patch.object(sender_mod.asyncio, "sleep", _dormir):
         yield esperas
 

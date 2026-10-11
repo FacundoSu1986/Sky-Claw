@@ -241,16 +241,20 @@ class TestAutoridadDeCooldown:
 
         assert cooldown.restante() == pytest.approx(5.0)
 
-    @pytest.mark.parametrize("absurdo", [60.0, 600.0, 9999.0])
-    def test_un_retry_after_mayor_al_tope_se_acota(self, tiempo: _Tiempo, absurdo: float) -> None:
-        # Criterio 6: no hay esperas indefinidas. El tope que ya usa el reintento
-        # acota TAMBIÉN lo que se publica para las demás corrutinas.
+    @pytest.mark.parametrize("segundos", [60.0, 600.0])
+    def test_un_retry_after_largo_se_retiene_completo_en_autoridad(self, tiempo: _Tiempo, segundos: float) -> None:
+        # La autoridad compartida retiene el deadline real devuelto por Telegram:
         cooldown = sender_mod.CooldownCompartido()
+        cooldown.publicar(segundos)
+        assert cooldown.restante() == pytest.approx(segundos)
 
+    @pytest.mark.parametrize("absurdo", [100000.0, 999999.0])
+    def test_un_retry_after_mayor_a_sanidad_se_acota_a_24h(self, tiempo: _Tiempo, absurdo: float) -> None:
+        # Criterio de sanidad: valores absurdos se acotan al tope de 24 horas:
+        cooldown = sender_mod.CooldownCompartido()
         cooldown.publicar(absurdo)
-
-        assert cooldown.restante() == pytest.approx(sender_mod._RETRY_AFTER_MAX_SEGUNDOS)
-        assert cooldown.restante() <= sender_mod._RETRY_AFTER_MAX_SEGUNDOS
+        assert cooldown.restante() == pytest.approx(sender_mod._SANIDAD_MAX_COOLDOWN_SEGUNDOS)
+        assert cooldown.restante() <= sender_mod._SANIDAD_MAX_COOLDOWN_SEGUNDOS
 
     async def test_sin_aviso_esperar_no_duerme(self, tiempo: _Tiempo) -> None:
         cooldown = sender_mod.CooldownCompartido()
@@ -288,6 +292,32 @@ class TestAutoridadDeCooldown:
 
         assert tiempo.dormidos == [3.0, 5.0], "la extensión se espera una sola vez"
         assert tiempo.reloj.ahora == pytest.approx(8.0)
+
+    async def test_tres_extensiones_progresivas_intercaladas_reevaluan_deadline_completo(self, tiempo: _Tiempo) -> None:
+        """A: CooldownCompartido.esperar() no debe detenerse tras dos sleeps si el
+
+        deadline fue extendido una tercera vez; debe reevaluar en bucle hasta vencimiento.
+        """
+        cooldown = sender_mod.CooldownCompartido()
+        cooldown.publicar(3.0)  # t=0, deadline=3.0
+        extensiones = 0
+
+        def _extender(_segundos: float) -> None:
+            nonlocal extensiones
+            if extensiones == 0:
+                extensiones = 1
+                cooldown.publicar(4.0)  # t=3, deadline=7.0
+            elif extensiones == 1:
+                extensiones = 2
+                cooldown.publicar(5.0)  # t=7, deadline=12.0
+
+        tiempo.al_dormir(_extender)
+
+        await cooldown.esperar()
+
+        assert tiempo.dormidos == [3.0, 4.0, 5.0]
+        assert tiempo.reloj.ahora == pytest.approx(12.0)
+        assert cooldown.restante() == 0.0
 
     async def test_la_espera_es_cancelable(self, tiempo: _Tiempo) -> None:
         # Criterio 7: la cancelación se propaga; el ``asyncio.sleep`` no la traga.
@@ -358,6 +388,35 @@ class TestEnviosConcurrentes:
         # publicado, cada hermana reintentaría dentro de la ventana y la ráfaga
         # terminaría en errores en vez de entregar los cuatro avisos.
         assert all(t % 4.0 == 0.0 for t in _tiempos(tiempo)), "ningún intento cae dentro de la ventana"
+
+    async def test_ninguna_corrutina_llega_al_gateway_antes_del_vencimiento_efectivo_con_tres_extensiones(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """A: Exigir que ninguna corrutina llegue a NetworkGateway.request() antes
+
+        del vencimiento efectivo cuando tres publicaciones intercaladas extienden el cooldown.
+        """
+        sender, _gw = _sender(tiempo, _ok(1))
+        sender._cooldown.publicar(3.0)  # t=0, d=3.0
+        extensiones = 0
+
+        def _extender(_segundos: float) -> None:
+            nonlocal extensiones
+            if extensiones == 0:
+                extensiones = 1
+                sender._cooldown.publicar(4.0)  # t=3, d=7.0
+            elif extensiones == 1:
+                extensiones = 2
+                sender._cooldown.publicar(5.0)  # t=7, d=12.0
+
+        tiempo.al_dormir(_extender)
+
+        await sender.send(123, "mensaje")
+
+        # Con main (2 sleeps), despierta a t=7.0 y llama al gateway antes del vencimiento efectivo (12.0s):
+        assert len(tiempo.llamadas) == 1
+        _chat, instante = tiempo.llamadas[0]
+        assert instante >= 12.0, f"Llamada prematura al gateway en t={instante}s cuando el deadline efectivo era 12.0s"
 
     async def test_cancelar_una_espera_no_deja_a_la_otra_corrutina_bloqueada(self, tiempo: _Tiempo) -> None:
         # Criterios 7/10: cancelar una tarea durante la espera compartida ni retiene
@@ -475,6 +534,107 @@ class TestContratoDeFallo:
 
         assert resultado == TelegramMessage(chat_id=456, message_id=3)
         assert len(sender._send_times[456]) == 1
+
+    async def test_retry_after_600_retiene_deadline_completo_y_falla_rapido_sin_dormir_600s(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """B: retry_after=600 no debe truncarse a 30s en la autoridad compartida; debe
+
+        retener 600s y los callers con presupuesto insuficiente (90s) deben fallar rápido sin colgarse 600s,
+        evitando además que solicitudes a los 35s golpeen la red prematuramente.
+        """
+        sender, gw = _sender(tiempo, _429(retry_after=600))
+
+        with pytest.raises(TelegramRateLimitError) as exc_info:
+            await sender.send(123, "primer intento")
+
+        assert exc_info.value.retry_after == 600.0
+        assert gw.request.await_count == 1
+        # La autoridad retiene los 600s íntegros:
+        assert sender._cooldown.restante() == pytest.approx(600.0)
+
+        # En main (donde el cooldown expiró a los 30s), una llamada a los 35s golpeaba la red:
+        tiempo.reloj.avanzar(35.0)  # restan 565s > 90s
+        with pytest.raises(TelegramRateLimitError):
+            await sender.send(123, "intento subsecuente dentro de los 600s")
+
+        # El gateway no debió recibir llamadas a los 35s:
+        assert gw.request.await_count == 1
+
+    async def test_mensaje_multichunk_comparte_presupuesto_total_y_reporta_entregas_parciales(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """C: Una operación send() dividida en fragmentos comparte un presupuesto único (90s).
+
+        Si fragmentos iniciales se entregan y un fragmento posterior agota el presupuesto,
+        debe fallar con TelegramRateLimitError (sin fabricar éxito) e informar entregas parciales.
+        """
+        # Mensaje de 3 chunks (>4096 caracteres cada división)
+        texto_largo = "A" * 4000 + "\n" + "B" * 4000 + "\n" + "C" * 1000
+        # Chunk 1: recibe 429(30s), duerme 30s, reintenta -> éxito (id=101). Consumió 30s.
+        # Chunk 2: recibe 429(30s), duerme 30s, reintenta -> éxito (id=102). Consumió 60s acumulados.
+        # Chunk 3: recibe 429(20s), duerme 20s -> consumió 80s acumulados.
+        # Chunk 3 (intento 2): recibe 429(20s). Como el presupuesto restante es 10s (90s - 80s),
+        # 20s excede el presupuesto y debe fallar sin dormir otros 20s ni entregar el tercer chunk.
+        respuestas = [
+            _429(retry_after=30),
+            _ok(101),
+            _429(retry_after=30),
+            _ok(102),
+            _429(retry_after=20),
+            _429(retry_after=20),
+            _ok(103),  # no debe alcanzarse si el presupuesto es compartido
+        ]
+        sender, gw = _sender(tiempo, *respuestas)
+
+        with pytest.raises(TelegramRateLimitError) as exc_info:
+            await sender.send(123, texto_largo)
+
+        assert exc_info.value.retry_after == 20.0
+        # No fabricó éxito: lanzó excepción
+        # Y reporta que los chunks 1 y 2 fueron entregados:
+        assert exc_info.value.mensajes_entregados == (
+            TelegramMessage(chat_id=123, message_id=101),
+            TelegramMessage(chat_id=123, message_id=102),
+        )
+
+    async def test_send_document_con_cooldown_excediendo_cota_lanza_upload_timeout(self, tiempo: _Tiempo) -> None:
+        """D: Si el cooldown activo supera el tiempo remanente de MAX_UPLOAD_TOTAL_SECONDS,
+
+        send_document debe clasificar el fallo como TelegramUploadTimeoutError.
+        """
+        sender, _ = _sender(tiempo, _ok(99))
+
+        async def _rate_limit_lento(chat_id: int) -> None:
+            # Simula que la espera previa consumió casi toda la cota
+            tiempo.reloj.avanzar(sender_mod.MAX_UPLOAD_TOTAL_SECONDS - 5.0)
+            # Cooldown activo de 10s (mayor a los 5s restantes)
+            sender._cooldown.publicar(10.0)
+
+        sender._wait_for_rate_limit = _rate_limit_lento  # type: ignore[assignment]
+
+        with pytest.raises(sender_mod.TelegramUploadTimeoutError) as exc_info:
+            await sender.send_document(123, b"datos de prueba", "log.txt")
+
+        assert "cota total" in str(exc_info.value)
+
+    async def test_vias_hitl_tienen_presupuesto_acotado_y_no_se_bloquean_en_cooldown_largo(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """D: edit_message y answer_callback_query usan presupuesto acotado por defecto
+
+        y no se bloquean durante un cooldown largo (ej. 600s).
+        """
+        sender, gw = _sender(tiempo, _ok(1))
+        sender._cooldown.publicar(600.0)
+
+        with pytest.raises(TelegramRateLimitError):
+            await sender.edit_message(123, 10, "edit")
+
+        with pytest.raises(TelegramRateLimitError):
+            await sender.answer_callback_query("cb_1", text="ack")
+
+        assert gw.request.await_count == 0, "no debieron llamar al gateway durante cooldown que excede presupuesto"
 
 
 # ---------------------------------------------------------------------------

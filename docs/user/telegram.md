@@ -67,16 +67,24 @@ El transporte (`sky_claw/app/comms/telegram_sender.py`) reintenta de forma acota
 —3 reintentos además del intento inicial, con espera máxima de 30 s por aviso— y
 **coordina esa espera entre todas las corrutinas del mismo bot**:
 
-- un 429 publica un *cooldown* con **reloj monotónico**, acotado al tope de la
-  política, y se consulta **antes de cada intento HTTP**, no sólo antes del primer
-  mensaje;
-- el aviso cubre el chat que lo recibió **y** el alcance global del bot: un 429 no
-  informa cuál de los dos límites se excedió, así que se converge al mayor — esperar
-  de más cuesta latencia acotada, golpear la API dentro de una ventana anunciada
-  cuesta avisos perdidos;
+- un 429 publica un *cooldown* con **reloj monotónico** que retiene íntegramente
+  el deadline del servidor (acotado a una política de sanidad de 24 h); los llamadores
+  operan bajo presupuestos finitos (90 s por defecto para texto) para fallar rápido
+  determinísticamente sin colgar la tarea ni golpear prematuramente la API;
+- la espera reevalúa el deadline en bucle tras cada suspensión, de modo que extensiones
+  intercaladas concurrentes se honran efectivamente antes de llegar a la red;
+- el aviso cubre el alcance global del bot: un 429 no informa cuál de los dos límites
+  se excedió, así que se converge al mayor de forma conservadora;
 - dos 429 concurrentes convergen en el deadline **más lejano** (un aviso nuevo nunca
   acorta uno vigente), la espera es cancelable y no hay lock sostenido durante una
   petición de red;
+- los mensajes divididos en fragmentos (*multichunk*) comparten un deadline y presupuesto
+  monotónico único a nivel de `send()`; si un fragmento agota el presupuesto, se reportan
+  las entregas parciales y se preserva el error tipado sin fabricar éxito;
+- en `send_document`, si el cooldown activo excede el presupuesto disponible de la
+  operación, el fallo se clasifica como `TelegramUploadTimeoutError`;
+- las vías HITL (`editMessageText` y `answerCallbackQuery`) acotan su espera con presupuesto
+  finito para no bloquear el event loop ni el cliente de Telegram;
 - **un 429 nunca cuenta como mensaje entregado**: no ocupa un cupo del rate limit
   local (20 mensajes/minuto por chat) ni produce una identidad de mensaje, y una
   ráfaga que agota los reintentos termina en `TelegramRateLimitError` con el
