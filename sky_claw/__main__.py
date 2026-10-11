@@ -54,10 +54,15 @@ from sky_claw.logging_config import (  # noqa: E402
 logger = logging.getLogger("sky_claw")
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     config = Config()
     _chat_id_str = config.telegram_chat_id or ""
     _default_chat_id = int(_chat_id_str) if _chat_id_str.isdigit() else None
+
+    # #665: el default de --mode se decide UNA vez y el help lo deriva con
+    # ``%(default)s``. Antes el help fijaba "default: cli" y un
+    # ``set_defaults(mode="gui")`` posterior lo desmentía en el .exe congelado.
+    modo_por_defecto = "gui" if getattr(sys, "frozen", False) else "cli"
 
     parser = argparse.ArgumentParser(
         prog="sky_claw",
@@ -74,14 +79,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "install-vfs-bridge",
             "vfs-health",
         ],
-        default="cli",
-        help="Operation mode (default: cli)",
+        default=modo_por_defecto,
+        help="Operation mode (default: %(default)s)",
     )
     parser.add_argument(
         "--provider",
         choices=["anthropic", "deepseek", "openai", "ollama"],
         default=config.llm_provider or "deepseek",
-        help="LLM provider (default: deepseek)",
+        help="LLM provider (default: %(default)s)",
     )
     parser.add_argument(
         "command",
@@ -98,7 +103,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         default="",
-        help="MO2 profile for this Sky-Claw session (default: MO2_PROFILE or Default; restart to change)",
+        help="MO2 profile for this Sky-Claw session (if omitted: MO2_PROFILE or Default; restart to change)",
     )
     parser.add_argument(
         "--skyrim-path",
@@ -109,13 +114,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--vfs-profile",
         default="Default",
-        help="MO2 profile used by the vfs-health probe (default: Default)",
+        help="MO2 profile used by the vfs-health probe (default: %(default)s)",
     )
     parser.add_argument(
         "--vfs-timeout",
         type=float,
         default=30.0,
-        help="Timeout in seconds for the vfs-health worker (default: 30)",
+        help="Timeout in seconds for the vfs-health worker (default: %(default)s)",
     )
     parser.add_argument(
         "--db-path",
@@ -132,13 +137,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--webhook-host",
         default="127.0.0.1",  # nosec
-        help="Host for the Telegram webhook server (default: 127.0.0.1)",
+        help="Host for the Telegram webhook server (default: %(default)s)",
     )
     parser.add_argument(
         "--webhook-port",
         type=int,
         default=8080,
-        help="Port for the Telegram webhook server (default: 8080)",
+        help="Port for the Telegram webhook server (default: %(default)s)",
     )
     parser.add_argument(
         "--operator-chat-id",
@@ -170,10 +175,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug logging",
     )
-    if getattr(sys, "frozen", False):
-        parser.set_defaults(mode="gui")
+    return parser
 
-    return parser.parse_args(argv)
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _build_parser().parse_args(argv)
 
 
 # Compat: el helper vive ahora en logging_config (compartido con el bootstrap de
