@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import json
 import os
 import pathlib
@@ -30,10 +31,12 @@ from typing import Any
 import psutil
 import pytest
 
+from sky_claw.local.frozen_runtime import root_lock as rl
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeLockAdmissionError,
     FrozenRuntimeLockBusyError,
     FrozenRuntimeLockMetadataError,
+    FrozenRuntimeLockOrphanedError,
     FrozenRuntimeLockOwnershipError,
 )
 from sky_claw.local.frozen_runtime.root_lock import (
@@ -749,28 +752,70 @@ def test_f03_release_poisoned_metadata_fails_and_preserves_evidence(tmp_path: pa
 
 
 def test_f03b_acquire_fails_closed_when_held_by_live_owner(tmp_path: pathlib.Path) -> None:
-    """F-03b (P1): acquire() no debe sobreescribir metadata si el lock previo registra phase=HELD y el PID sigue ALIVE."""
+    """F-03b (P1): acquire() no sobreescribe metadata si el lock previo registra HELD por un dueño EXTERNO vivo.
+
+    F-22 hizo que un registro HELD del PROPIO proceso deje de ser BUSY (es el residuo de un
+    release fallido, readquirible por el mismo proceso). El fail-closed que este test protege
+    es el del dueño de OTRO proceso: por eso el dueño se materializa con un subproceso real
+    que permanece vivo, y no con ``os.getpid()`` como antes.
+    """
     root = _crear_root_valido(tmp_path)
     lock_path = root / "state" / LOCK_FILE_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    senal_pid = tmp_path / "dueno_externo.pid"
 
-    # Simular metadata con phase=HELD de este mismo proceso vivo
-    own_pid = os.getpid()
-    own_create_time = psutil.Process(own_pid).create_time()
-    payload_vivo = {
-        "schema_version": LOCK_SCHEMA_VERSION,
-        "canonical_root": os.path.normcase(os.path.abspath(os.fspath(root))),
-        "session_id": str(uuid.uuid4()),
-        "pid": own_pid,
-        "process_create_time": own_create_time,
-        "acquired_at": time.time(),
-        "phase": "HELD",
-    }
-    lock_path.write_text(json.dumps(payload_vivo), encoding="utf-8")
+    codigo_dueno = f"""
+import os, pathlib, time
+pathlib.Path({str(senal_pid)!r}).write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(30.0)
+"""
+    subp = subprocess.Popen(
+        [sys.executable, "-c", codigo_dueno],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        limite = time.monotonic() + 15.0
+        while not senal_pid.exists() and time.monotonic() < limite:
+            time.sleep(0.05)
+        assert senal_pid.exists(), f"El dueño externo no arrancó a tiempo (rc={subp.poll()})"
 
-    # acquire() concurrente (incluso con OS mutex libre, p.ej. tras cierre anómalo de fd)
-    # DEBE fallar cerrado porque el dueño registrado sigue ALIVE y phase es HELD.
-    with pytest.raises(FrozenRuntimeLockBusyError):
-        acquire_frozen_runtime_root_lock(root, timeout=0.0)
+        foreign_pid = int(senal_pid.read_text(encoding="utf-8").strip())
+        assert foreign_pid != os.getpid(), "El dueño externo debe ser OTRO proceso"
+        assert psutil.Process(foreign_pid).is_running()
+        foreign_create_time = psutil.Process(foreign_pid).create_time()
+
+        payload_vivo = {
+            "schema_version": LOCK_SCHEMA_VERSION,
+            "canonical_root": os.path.normcase(os.path.abspath(os.fspath(root))),
+            "session_id": str(uuid.uuid4()),
+            "pid": foreign_pid,
+            "process_create_time": foreign_create_time,
+            "acquired_at": time.time(),
+            "phase": "HELD",
+        }
+        lock_path.write_text(json.dumps(payload_vivo), encoding="utf-8")
+
+        # Dueño externo VIVO ⇒ BUSY, aunque el mutex físico del SO esté libre.
+        with pytest.raises(FrozenRuntimeLockBusyError):
+            acquire_frozen_runtime_root_lock(root, timeout=0.0)
+
+        # Ni el reclaim explícito puede pisar a un dueño externo vivo (F-22 no relaja esto).
+        with pytest.raises(FrozenRuntimeLockBusyError):
+            acquire_frozen_runtime_root_lock(root, timeout=0.0, reclaim_orphaned=True)
+
+        # La evidencia del dueño externo sigue intacta en disco.
+        payload_post = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert payload_post["session_id"] == payload_vivo["session_id"]
+        assert payload_post["pid"] == foreign_pid
+    finally:
+        if subp.poll() is None:
+            subp.terminate()
+        try:
+            subp.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            subp.kill()
+            subp.communicate(timeout=5.0)
 
 
 def test_f04_metadata_strict_typing_and_values(tmp_path: pathlib.Path) -> None:
@@ -1592,3 +1637,264 @@ def test_f20_metadata_rewrite_padded_with_whitespace_preserves_crash_evidence(
     assert not raw_normal.endswith(b" ")
     meta_normal = _read_metadata_bytes(raw_normal, expected_canonical_root=canonical_root)
     assert meta_normal.phase == LockPhase.HELD
+
+
+# ============================================================================
+# F-22 y F-23 — Cuarta Ola: stale local tras release fallido + deadline de apertura
+# ============================================================================
+
+
+class _CarreraDeAperturaAgotadaError(AssertionError):
+    """Sentinel anti-cuelgue: el bucle de apertura atómica no respetó el deadline pactado.
+
+    No es un error del producto: es la guarda que convierte un bucle sin cota (el defecto
+    F-23) en un fallo explícito y rápido en vez de un test colgado.
+    """
+
+
+def _fake_open_en_carrera(
+    lock_path: pathlib.Path,
+    intentos: dict[str, int],
+    *,
+    limite: int,
+    carreras: int | None = None,
+) -> Any:
+    """Construye un ``open`` que simula la carrera ``x+b -> FileExistsError`` / ``r+b -> FileNotFoundError``.
+
+    - ``carreras=None``: la carrera es PERSISTENTE (nunca se abre el descriptor).
+    - ``carreras=N``: tras N llamadas en carrera delega en el ``open`` real, para probar que
+      una carrera transitoria se recupera antes del deadline.
+    - ``limite``: guarda anti-cuelgue. Si el bucle la supera, el defecto F-23 se manifiesta
+      como un fallo explícito en lugar de un test colgado.
+    """
+    import builtins
+
+    real_open = builtins.open
+
+    def _open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if str(file) != str(lock_path):
+            return real_open(file, mode, *args, **kwargs)
+        intentos["n"] += 1
+        if intentos["n"] > limite:
+            raise _CarreraDeAperturaAgotadaError(
+                f"El bucle de apertura atómica no respetó el deadline ({intentos['n']} intentos sin cota)"
+            )
+        if carreras is not None and intentos["n"] > carreras:
+            return real_open(file, mode, *args, **kwargs)
+        if "x" in mode:
+            raise FileExistsError(errno.EEXIST, "carrera simulada", str(file))
+        raise FileNotFoundError(errno.ENOENT, "carrera simulada", str(file))
+
+    return _open
+
+
+def test_f22_failed_release_same_process_stale_record_can_be_reacquired(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-22 (P1): un release() fallido deja el registro HELD del PROPIO proceso en disco.
+
+    El proceso dueño limpia sus recursos locales (F-16), pero el registro ``phase=HELD`` con
+    su propio ``pid``/``process_create_time`` queda durablemente en disco. Sin F-22 una
+    adquisición posterior del MISMO proceso se bloquea a sí misma hasta reiniciarse, porque
+    la liveness del dueño es ``ALIVE``.
+
+    El contrato: ``acquire()`` readquiere — sin exigir ``reclaim_orphaned`` — sólo cuando
+    puede probar simultáneamente que posee el thread lock per-root, que posee el mutex del
+    SO y que no hay handle activo local para ese root. Un dueño VIVO de OTRO proceso sigue
+    siendo BUSY (cubierto por F-03b).
+    """
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+    canonical = handle.canonical_root
+    lock_path = handle.lock_path
+    sesion_previa = handle.session_id
+
+    def _fallo_de_persistencia(*args: Any, **kwargs: Any) -> None:
+        raise OSError("fallo simulado de persistencia durante release()")
+
+    # Forzar el fallo en la persistencia del commit point (phase=RELEASED) del release().
+    monkeypatch.setattr(rl, "_write_metadata_crash_safe", _fallo_de_persistencia)
+    with pytest.raises(OSError):
+        handle.release()
+    monkeypatch.undo()
+
+    # 1. Recursos locales del dueño limpios: sin handle, sin fd, sin thread lock (F-16 vigente).
+    assert handle._released is True
+    assert canonical not in rl._ACTIVE_HANDLES
+    assert handle._file_obj is None or handle._file_obj.closed is True
+    if handle._thread_lock is not None:
+        assert not handle._thread_lock.locked()
+
+    # 2. La evidencia en disco sigue siendo el registro HELD del proceso ACTUAL.
+    meta_stale = _read_metadata_bytes(lock_path.read_bytes(), expected_canonical_root=canonical)
+    assert meta_stale.phase == LockPhase.HELD
+    assert meta_stale.pid == os.getpid()
+    assert abs(meta_stale.process_create_time - psutil.Process().create_time()) <= 1e-4
+    assert meta_stale.session_id == sesion_previa
+
+    # 3. Asimetría deliberada: inspect() NO posee el thread lock per-root, así que no puede
+    #    probar que el registro sea stale local. Sigue conservador: INDETERMINATE, nunca FREE.
+    inspeccion = inspect_frozen_runtime_root_lock(root)
+    assert inspeccion.disposition == LockDisposition.INDETERMINATE
+    assert inspeccion.disposition != LockDisposition.FREE
+    assert inspeccion.liveness == OwnerLiveness.ALIVE
+    assert inspeccion.is_os_locked is False
+
+    # 4. acquire() SÍ puede probarlo ⇒ readquiere sin reclaim_orphaned, con sesión nueva.
+    nuevo = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    try:
+        nuevo.assert_owned()
+        assert nuevo.session_id != sesion_previa
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["phase"] == "HELD"
+    finally:
+        nuevo.release()
+
+    # 5. Sin residuos: un tercer ciclo completo (thread lock y mutex del SO libres de verdad).
+    with acquire_frozen_runtime_root_lock(root, timeout=1.0) as tercero:
+        tercero.assert_owned()
+        assert tercero.session_id != sesion_previa
+
+
+def test_f22_inspect_keeps_indeterminate_while_acquire_can_reclaim(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-22 (P1): la asimetría inspect()/acquire() sobre el mismo estado es intencional y verificable.
+
+    Congela las DOS mitades: ``inspect()`` declara INDETERMINATE (no puede probar el stale
+    local sin el thread lock) mientras ``acquire()`` —que sí lo posee— reclama el residuo.
+    Convertir ``INDETERMINATE -> FREE`` en el inspector sólo para simetrizar las APIs sería
+    relajar el fail-closed de un observador read-only.
+    """
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    canonical = handle.canonical_root
+    lock_path = handle.lock_path
+
+    # Residuo HELD del propio proceso: se libera a mano el mutex del SO y el fd, dejando la
+    # metadata intacta (el estado exacto que deja un release() fallido).
+    rl._unlock_fd(handle._file_obj.fileno())
+    handle._file_obj.close()
+    with rl._THREAD_LOCKS_GUARD:
+        rl._ACTIVE_HANDLES.pop(canonical, None)
+    handle._thread_lock.release()
+    handle._released = True
+
+    meta = _read_metadata_bytes(lock_path.read_bytes(), expected_canonical_root=canonical)
+    assert meta.phase == LockPhase.HELD
+    assert meta.pid == os.getpid()
+
+    assert inspect_frozen_runtime_root_lock(root).disposition == LockDisposition.INDETERMINATE
+
+    with acquire_frozen_runtime_root_lock(root, timeout=1.0) as nuevo:
+        nuevo.assert_owned()
+
+
+def test_f22_pid_reuse_no_cuenta_como_residuo_del_proceso_actual(tmp_path: pathlib.Path) -> None:
+    """F-22 (P1): el residuo local exige PID *y* ``process_create_time``; un PID reutilizado no alcanza.
+
+    Un registro HELD con el PID del proceso actual pero con OTRO ``process_create_time`` lo
+    escribió un proceso anterior del SO que ya murió y cuyo PID el SO reasignó. Tratarlo como
+    "residuo del propio proceso" sería tomar una identidad ajena por propia: debe clasificar
+    como huérfano (dueño muerto) y exigir reconciliación explícita. Es la mitad de la pregunta
+    "¿PID reuse sigue protegido por create_time?" que F-22 no puede relajar.
+    """
+    root = _crear_root_valido(tmp_path)
+    lock_path = root / "state" / LOCK_FILE_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    create_time_actual = psutil.Process(os.getpid()).create_time()
+    payload_pid_reutilizado = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": os.path.normcase(os.path.abspath(os.fspath(root))),
+        "session_id": str(uuid.uuid4()),
+        "pid": os.getpid(),
+        "process_create_time": create_time_actual + 500.0,
+        "acquired_at": time.time(),
+        "phase": "HELD",
+    }
+    lock_path.write_text(json.dumps(payload_pid_reutilizado), encoding="utf-8")
+
+    # Mismo PID, distinto create_time ⇒ dueño MUERTO, no residuo local.
+    with pytest.raises(FrozenRuntimeLockOrphanedError):
+        acquire_frozen_runtime_root_lock(root, timeout=0.0)
+
+    # Y con reclaim explícito sí se reclama: no queda bloqueado para siempre.
+    handle = acquire_frozen_runtime_root_lock(root, timeout=0.0, reclaim_orphaned=True)
+    try:
+        handle.assert_owned()
+        assert handle.session_id != payload_pid_reutilizado["session_id"]
+    finally:
+        handle.release()
+
+
+def test_f23a_timeout_cero_carrera_persistente_falla_acotado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-23-A (P1): con timeout=0 una carrera x+b/r+b persistente no puede reintentar sin fin.
+
+    ``timeout=0`` significa un único intento inmediato: si la apertura encuentra la carrera y
+    no obtiene un descriptor estable en el acto, falla acotado con BUSY.
+    """
+    root = _crear_root_valido(tmp_path)
+    _, lock_path = canonical_root_key(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(b'{"pre":1}')  # asegura FileExistsError en x+b
+
+    intentos = {"n": 0}
+    monkeypatch.setattr(rl, "open", _fake_open_en_carrera(lock_path, intentos, limite=200), raising=False)
+
+    inicio = time.monotonic()
+    with pytest.raises(FrozenRuntimeLockBusyError):
+        acquire_frozen_runtime_root_lock(root, timeout=0.0)
+    assert time.monotonic() - inicio < 2.0, "timeout=0 no puede demorar: falla inmediata"
+    # Una sola vuelta de la carrera: x+b y r+b. Sin retry.
+    assert intentos["n"] <= 2, f"timeout=0 reintentó la apertura ({intentos['n']} intentos)"
+
+
+def test_f23b_timeout_positivo_carrera_persistente_termina_en_el_deadline(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-23-B (P1): con timeout>0 una carrera persistente se corta cuando vence el deadline."""
+    root = _crear_root_valido(tmp_path)
+    _, lock_path = canonical_root_key(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_bytes(b'{"pre":1}')
+
+    intentos = {"n": 0}
+    # El límite alto convierte el bucle sin cota (F-23) en un fallo explícito en vez de un cuelgue.
+    monkeypatch.setattr(rl, "open", _fake_open_en_carrera(lock_path, intentos, limite=100_000), raising=False)
+
+    inicio = time.monotonic()
+    with pytest.raises(FrozenRuntimeLockBusyError):
+        acquire_frozen_runtime_root_lock(root, timeout=0.3)
+    transcurrido = time.monotonic() - inicio
+
+    assert transcurrido >= 0.25, f"Devolvió antes del deadline pactado ({transcurrido:.3f}s)"
+    assert transcurrido <= 5.0, f"Excedió el deadline pactado ({transcurrido:.3f}s)"
+    assert intentos["n"] > 2, "Hubo reintentos acotados, no un fallo en el primer intento"
+    # El backoff acotado debe espaciar los reintentos: un busy-spin haría miles de intentos.
+    assert intentos["n"] <= 100, f"El reintento no tuvo backoff ({intentos['n']} intentos en {transcurrido:.3f}s)"
+
+
+def test_f23c_carrera_transitoria_se_recupera_antes_del_deadline(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-23-C (P1): la carrera transitoria sigue siendo recuperable — no se volvió un error permanente."""
+    root = _crear_root_valido(tmp_path)
+    _, lock_path = canonical_root_key(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    intentos = {"n": 0}
+    monkeypatch.setattr(rl, "open", _fake_open_en_carrera(lock_path, intentos, limite=50, carreras=4), raising=False)
+
+    handle = acquire_frozen_runtime_root_lock(root, timeout=2.0)
+    llamadas = intentos["n"]
+    # Restaurar el open real antes de tocar el handle: assert_owned() sondea el lockfile.
+    monkeypatch.undo()
+
+    try:
+        handle.assert_owned()
+        assert llamadas == 5, f"Se esperaban 4 carreras y una apertura real, hubo {llamadas} llamadas"
+    finally:
+        handle.release()

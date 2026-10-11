@@ -487,6 +487,43 @@ def _is_current_process_owner(handle: FrozenRuntimeRootLockHandle) -> bool:
         return False
 
 
+def _is_same_process_stale_record(
+    metadata: RootLockMetadata,
+    canonical_root: str,
+    current_pid: int,
+    current_process_create_time: float,
+) -> bool:
+    """Decide si un registro HELD en disco es residuo del PROPIO proceso (F-22).
+
+    Un ``release()`` que falla a mitad de camino (validación de ownership o persistencia)
+    deja en disco el registro ``phase=HELD`` con la identidad del proceso dueño, pero
+    libera TODOS los recursos locales: handle activo, mutex del SO, descriptor y thread
+    lock (F-16). Sin esta comprobación el proceso se bloquearía a sí mismo hasta
+    reiniciarse, porque la liveness de su propio PID es ``ALIVE`` por definición.
+
+    Esta función NO es una autoridad global: sólo es una prueba concluyente dentro de
+    ``acquire()``, donde el llamador YA posee el thread lock per-root y el mutex del SO.
+    Todo handle legítimo local conserva su thread lock mientras vive, así que "poseo el
+    thread lock + no hay handle activo para este root" demuestra que ningún dueño local
+    puede seguir siéndolo. ``inspect_frozen_runtime_root_lock()`` no tiene esa prueba y
+    por eso clasifica el mismo estado como ``INDETERMINATE``, nunca como ``FREE``.
+
+    Un dueño VIVO de OTRO proceso nunca satisface la identidad de proceso y sigue siendo
+    BUSY: esto no relaja el fail-closed interproceso. La reutilización de PID tampoco
+    alcanza, porque ``process_create_time`` debe coincidir además del ``pid``.
+    """
+    if metadata.phase != LockPhase.HELD:
+        return False
+    if metadata.canonical_root != canonical_root:
+        return False
+    if metadata.pid != current_pid:
+        return False
+    if abs(metadata.process_create_time - current_process_create_time) > 1e-4:
+        return False
+    with _THREAD_LOCKS_GUARD:
+        return _ACTIVE_HANDLES.get(canonical_root) is None
+
+
 def _validate_handle_ownership(handle: FrozenRuntimeRootLockHandle) -> RootLockMetadata:
     """Valida identidad completa de ownership del handle (memoria, SO/proceso y disco)."""
     # F-07: Guard de frontera de proceso (anti-fork / anti-PID mismatch)
@@ -657,7 +694,16 @@ class FrozenRuntimeRootLockHandle:
 
 
 def inspect_frozen_runtime_root_lock(root: pathlib.Path | str) -> LockInspectionResult:
-    """Inspecciona el estado de exclusión y metadata del lock de un root sin mutarlo."""
+    """Inspecciona el estado de exclusión y metadata del lock de un root sin mutarlo.
+
+    Asimetría deliberada con ``acquire_frozen_runtime_root_lock`` (F-22): un registro
+    ``phase=HELD`` con la identidad del proceso actual y el mutex del SO libre se clasifica
+    ``INDETERMINATE``, nunca ``FREE`` ni "stale reclamable". El inspector no posee el thread
+    lock per-root, así que NO puede probar que no exista un handle vivo local que siga siendo
+    dueño; declarar ``FREE`` sin esa prueba relajaría el fail-closed de un observador
+    read-only. ``acquire()``, que sí posee el thread lock y el mutex, puede demostrarlo y
+    reclama el residuo.
+    """
     canonical_str, lock_path = canonical_root_key(root)
     root_path = pathlib.Path(canonical_str)
     _validate_root_and_state_admission_readonly(root_path)
@@ -778,7 +824,16 @@ def acquire_frozen_runtime_root_lock(
 
     f = None
     try:
-        # Asegurar descriptor abierto atómicamente para el lockfile exclusivo (x+b o r+b)
+        # Identidad del proceso actual: se necesita ANTES de clasificar el registro
+        # preexistente (F-22: residuo HELD del propio proceso tras un release fallido).
+        own_pid = os.getpid()
+        own_create_time = psutil.Process(own_pid).create_time()
+
+        # Asegurar descriptor abierto atómicamente para el lockfile exclusivo (x+b o r+b).
+        # F-23: la carrera x+b -> FileExistsError -> r+b -> FileNotFoundError es transitoria
+        # y debe reintentarse, pero ACOTADA por el MISMO deadline monotónico que el resto de
+        # la adquisición. Sin esa cota el bucle podía superar cualquier timeout pactado
+        # (incluido timeout=0) y esperar indefinidamente, violando LOCK_BUSY.
         while f is None:
             try:
                 f = open(lock_path, "x+b")  # noqa: SIM115
@@ -786,7 +841,14 @@ def acquire_frozen_runtime_root_lock(
                 try:
                     f = open(lock_path, "r+b")  # noqa: SIM115
                 except FileNotFoundError:
-                    continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        # timeout=0: un único intento inmediato; si la carrera persiste, falla acotado.
+                        raise FrozenRuntimeLockBusyError(
+                            f"El root '{root}' está ocupado: la carrera de apertura del lockfile agotó el timeout."
+                        ) from None
+                    # Backoff acotado que nunca duerme más allá del deadline pactado.
+                    time.sleep(min(0.05, remaining))
 
         # 2. Lock a nivel de SO con retry acotado si timeout > 0
         while True:
@@ -817,12 +879,18 @@ def acquire_frozen_runtime_root_lock(
                 # meta_existente.phase == LockPhase.HELD
                 # Verificar liveness del dueño previo
                 liveness = _check_process_liveness(meta_existente.pid, meta_existente.process_create_time)
-                if liveness == OwnerLiveness.ALIVE:
-                    # El dueño previo está VIVO y tiene phase=HELD (Finding 3b)
+                # F-22: un registro HELD del PROPIO proceso sin handle activo local es el residuo
+                # de un release() fallido y se reclama SIN exigir reclaim_orphaned: ya poseemos el
+                # thread lock per-root y el mutex del SO, así que ningún dueño local puede seguir
+                # siéndolo. Un dueño de OTRO proceso —o este mismo con handle activo (Finding 3b)—
+                # sigue siendo BUSY, incluso con reclaim_orphaned=True.
+                residuo_local = _is_same_process_stale_record(meta_existente, canonical_str, own_pid, own_create_time)
+                if liveness == OwnerLiveness.ALIVE and not residuo_local:
                     _unlock_fd(f.fileno())
                     f.close()
                     raise FrozenRuntimeLockBusyError(
-                        f"El root '{root}' registra un lock activo no liberado por un proceso vivo (PID {meta_existente.pid})."
+                        f"El root '{root}' registra un lock activo no liberado por un proceso vivo "
+                        f"(PID {meta_existente.pid})."
                     )
 
                 if liveness == OwnerLiveness.INDETERMINATE:
@@ -842,8 +910,6 @@ def acquire_frozen_runtime_root_lock(
 
         # 4. Acuñar nueva sesión de lock
         session_id = str(uuid.uuid4())
-        own_pid = os.getpid()
-        own_create_time = psutil.Process(own_pid).create_time()
         acquired_at = time.time()
 
         payload = {
