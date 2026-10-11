@@ -35,6 +35,7 @@ from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeLockAdmissionError,
     FrozenRuntimeLockBusyError,
+    FrozenRuntimeLockError,
     FrozenRuntimeLockIndeterminateError,
     FrozenRuntimeLockIndeterminateOwnershipError,
     FrozenRuntimeLockMetadataError,
@@ -457,22 +458,36 @@ def _write_metadata_crash_safe(file_obj: Any, payload: dict[str, Any]) -> None:
     Escribe primero el nuevo payload rellenado con espacios ASCII hasta el tamaño
     previo del archivo (garantizando JSON sintácticamente válido en todo momento).
     Tras el fsync de la nueva representación, trunca al tamaño exacto si era menor.
+
+    **Contrato de error (P4-S2).** Un fallo de `write`/`flush`/`fsync`/`truncate`
+    se traduce a ``FrozenRuntimeLockError`` en vez de escapar como ``OSError``
+    crudo. La razón es que este helper corre DENTRO de la sección crítica de
+    adquisición: si el filesystem falla al sellar la metadata, la adquisición
+    debe fallar de forma TIPADA (familia del lock) y no contaminar el contrato
+    del caller, que clasifica por tipo. Solo se captura ``OSError`` a propósito
+    -- `BaseException`/`MemoryError` siguen propagándose y el bloque de limpieza
+    estructural del llamador se encarga de liberar el fd y el lock de hilo.
     """
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    file_obj.seek(0, os.SEEK_END)
-    old_size = file_obj.tell()
+    try:
+        file_obj.seek(0, os.SEEK_END)
+        old_size = file_obj.tell()
 
-    durable_payload = serialized + (b" " * (old_size - len(serialized))) if old_size > len(serialized) else serialized
+        durable_payload = (
+            serialized + (b" " * (old_size - len(serialized))) if old_size > len(serialized) else serialized
+        )
 
-    file_obj.seek(0)
-    file_obj.write(durable_payload)
-    file_obj.flush()
-    os.fsync(file_obj.fileno())
-
-    if len(durable_payload) > len(serialized):
-        file_obj.truncate(len(serialized))
+        file_obj.seek(0)
+        file_obj.write(durable_payload)
         file_obj.flush()
         os.fsync(file_obj.fileno())
+
+        if len(durable_payload) > len(serialized):
+            file_obj.truncate(len(serialized))
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+    except OSError as exc:
+        raise FrozenRuntimeLockError(f"no se pudo persistir la metadata del root lock: {exc}") from exc
 
 
 def _is_current_process_owner(handle: FrozenRuntimeRootLockHandle) -> bool:
@@ -949,3 +964,36 @@ def acquire_frozen_runtime_root_lock(
                 f.close()
         thread_lock.release()
         raise
+
+
+def participant_lock(
+    root: pathlib.Path | str,
+    *,
+    timeout: float = 0.0,
+    reclaim_orphaned: bool = False,
+) -> FrozenRuntimeRootLockHandle:
+    """Adquiere el root lock para una MUTACIÓN de participante (contrato P4-S2).
+
+    Es el punto de entrada que deben usar los mutadores del FrozenRuntimeRoot. La
+    primitiva cruda (``acquire_frozen_runtime_root_lock``) sigue disponible, pero
+    este helper formaliza el contrato de participación:
+
+    - **No reentrante por diseño.** El lock intraproceso es un ``threading.Lock``
+      no reentrante y el del SO es un lock de byte-range: una segunda adquisición
+      del MISMO root desde la misma cadena de llamadas se bloquea a sí misma
+      (deadlock, o ``LOCK_BUSY`` acotado si el timeout es 0). Por eso los
+      llamadores internos NO vuelven a adquirir: los públicos mutadores son la
+      única frontera de adquisición y las funciones auxiliares asumen posesión.
+
+    - **Fail-closed.** Un fallo de adquisición (busy, huérfano, indeterminado,
+      admisión) ES el resultado: la mutación protegida NO se ejecuta. El error se
+      propaga con el tipo de la familia ``FrozenRuntimeLockError``.
+
+    Usar ``assert_owned()`` para verificar posesión antes de mutar; llamar a este
+    helper desde dentro de otra sección crítica del mismo root es un error de uso.
+    """
+    return acquire_frozen_runtime_root_lock(
+        root,
+        timeout=timeout,
+        reclaim_orphaned=reclaim_orphaned,
+    )
