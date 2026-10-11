@@ -28,7 +28,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import sqlite3
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -107,10 +107,10 @@ def _familia_detectada() -> set[str]:
 @dataclass(frozen=True)
 class Receta:
     construir: Callable[[Path, DatabaseLifecycleManager | None], Any]
-    abrir: Callable[[Any], Awaitable[None]]
-    cerrar: Callable[[Any], Awaitable[None]]
+    abrir: Callable[[Any], Coroutine[Any, Any, None]]
+    cerrar: Callable[[Any], Coroutine[Any, Any, None]]
     #: Prueba funcional después del reintento: ejercita el schema de verdad.
-    sondear: Callable[[Any], Awaitable[None]]
+    sondear: Callable[[Any], Coroutine[Any, Any, None]]
     atributo: str
     admite_lifecycle: bool
 
@@ -236,7 +236,7 @@ class _DDLQueFallaUnaVez:
                 raise self.error("DDL falló (simulado #474)")
             return await real(sql)
 
-        conn.executescript = executescript  # type: ignore[method-assign]
+        conn.executescript = executescript  # type: ignore[method-assign,assignment]
 
 
 async def _esta_cerrada(conn: aiosqlite.Connection) -> bool:
@@ -405,14 +405,14 @@ async def test_journal_open_fallido_durante_sweep_despeja_sentinel_y_permite_rei
     sweep_real = journal.sweep_stale_pending
     llamadas_sweep = 0
 
-    async def sweep_inyectado(*args: Any, **kwargs: Any) -> list[int]:
+    async def sweep_inyectado(*args: Any, **kwargs: Any) -> int:
         nonlocal llamadas_sweep
         llamadas_sweep += 1
         if llamadas_sweep == 1:
             raise FALLOS[fallo]("Fallo simulado durante sweep de arranque")
         return await sweep_real(*args, **kwargs)
 
-    journal.sweep_stale_pending = sweep_inyectado  # type: ignore[method-assign]
+    journal.sweep_stale_pending = sweep_inyectado  # type: ignore[method-assign,assignment]
 
     try:
         # Actuar — primer intento: el sweep falla.
@@ -483,7 +483,7 @@ async def test_open_concurrente_serializa_y_no_publica_sentinel_prematuro(
             await asyncio.sleep(0.01)
             return await real(sql)
 
-        conn.executescript = executescript  # type: ignore[method-assign]
+        conn.executescript = executescript  # type: ignore[method-assign,assignment]
 
     if rama == "lifecycle":
         lifecycle = DatabaseLifecycleManager(
@@ -507,7 +507,7 @@ async def test_open_concurrente_serializa_y_no_publica_sentinel_prematuro(
 
     try:
         # Actuar: 5 llamadas concurrentes a open()
-        tareas = [asyncio.create_task(receta.abrir(objeto)) for _ in range(5)]
+        tareas: list[asyncio.Task[None]] = [asyncio.create_task(receta.abrir(objeto)) for _ in range(5)]
         await asyncio.gather(*tareas)
 
         # Verificar:
@@ -564,8 +564,8 @@ async def test_open_concurrente_con_primer_fallo_permite_a_la_segunda_abrir_limp
         # Actuar: Dos llamadas concurrentes. La primera en entrar pausará y fallará en DDL.
         # La segunda espera en _conn_lock; cuando entra, debe encontrar el sentinel
         # en None, correr su propia inicialización y completarla con éxito.
-        t1 = asyncio.create_task(receta.abrir(objeto))
-        t2 = asyncio.create_task(receta.abrir(objeto))
+        t1: asyncio.Task[None] = asyncio.create_task(receta.abrir(objeto))
+        t2: asyncio.Task[None] = asyncio.create_task(receta.abrir(objeto))
         resultados = await asyncio.gather(t1, t2, return_exceptions=True)
 
         # Verificar: exactamente una falló y exactamente una tuvo éxito.
@@ -656,3 +656,113 @@ async def test_journal_descartar_apertura_fallida_preserva_lock_de_lifecycle(
     finally:
         await journal.close()
         await lifecycle.shutdown_all()
+
+
+async def test_async_registry_standalone_cancelacion_en_pragma_cierra_conexion(
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Preparar
+    db = tmp_path / "cancelacion_pragma.db"
+    registry = AsyncModRegistry(db)
+
+    conectar_real = aiosqlite.connect
+
+    def conectar_con_fallo_en_pragma(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
+        conn = conectar_real(*args, **kwargs)
+        real_execute = conn.execute
+
+        def execute(sql: str, *params: Any) -> Any:
+            if "PRAGMA journal_mode=WAL" in sql:
+                raise asyncio.CancelledError("Cancelación durante PRAGMA")
+            return real_execute(sql, *params)
+
+        conn.execute = execute  # type: ignore[method-assign]
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_con_fallo_en_pragma)
+
+    try:
+        # Actuar
+        with pytest.raises(asyncio.CancelledError):
+            await registry.open()
+
+        # Verificar
+        assert registry._conn is None
+        abiertas = [c for c in conexiones_standalone if not await _esta_cerrada(c)]
+        assert not abiertas, "La conexión directa quedó abierta tras una cancelación durante PRAGMA"
+    finally:
+        await registry.close()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()
+
+
+async def test_async_registry_standalone_cancelacion_en_pragma_de_recuperacion_cierra_conexion(
+    tmp_path: Path,
+    conexiones_standalone: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Preparar
+    db = tmp_path / "cancelacion_recuperacion.db"
+    async with aiosqlite.connect(db) as inicial:
+        await inicial.execute("CREATE TABLE t (x INT)")
+        await inicial.commit()
+
+    registry = AsyncModRegistry(db)
+    llamadas_connect = 0
+    conectar_real = aiosqlite.connect
+
+    def conectar_con_fallo_en_segunda_conexion(*args: Any, **kwargs: Any) -> aiosqlite.Connection:
+        nonlocal llamadas_connect
+        llamadas_connect += 1
+        conn = conectar_real(*args, **kwargs)
+        real_execute = conn.execute
+
+        if llamadas_connect == 1:
+
+            class _CursorCorrupto:
+                async def fetchone(self) -> tuple[str]:
+                    return ("corrupt",)
+
+                async def __aenter__(self) -> _CursorCorrupto:
+                    return self
+
+                async def __aexit__(self, *args: Any) -> None:
+                    pass
+
+            def execute_primera(sql: str, *params: Any) -> Any:
+                if "quick_check" in sql:
+                    return _CursorCorrupto()
+                return real_execute(sql, *params)
+
+            conn.execute = execute_primera  # type: ignore[method-assign]
+        else:
+
+            def execute_segunda(sql: str, *params: Any) -> Any:
+                if "PRAGMA journal_mode=WAL" in sql:
+                    raise asyncio.CancelledError("Cancelación durante PRAGMA de recuperación")
+                return real_execute(sql, *params)
+
+            conn.execute = execute_segunda  # type: ignore[method-assign]
+
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_con_fallo_en_segunda_conexion)
+
+    try:
+        # Actuar
+        with pytest.raises(asyncio.CancelledError):
+            await registry.open()
+
+        # Verificar
+        assert registry._conn is None
+        assert llamadas_connect >= 2
+        abiertas = [c for c in conexiones_standalone if not await _esta_cerrada(c)]
+        assert not abiertas, "La recovered_conn quedó abierta tras una cancelación durante PRAGMA de recuperación"
+    finally:
+        await registry.close()
+        for conn in conexiones_standalone:
+            if not await _esta_cerrada(conn):
+                await conn.close()

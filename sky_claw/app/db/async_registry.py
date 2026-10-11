@@ -301,6 +301,7 @@ class AsyncModRegistry:
                 self._owns_conn = True
                 try:
                     direct_conn = await aiosqlite.connect(self._db_path)
+                    conn = direct_conn
                     direct_conn.row_factory = aiosqlite.Row
                     await direct_conn.execute("PRAGMA journal_mode=WAL")
                     await direct_conn.execute("PRAGMA foreign_keys=ON")
@@ -311,12 +312,12 @@ class AsyncModRegistry:
                         row = await cur.fetchone()
                         if row is None or str(row[0]).lower() != "ok":
                             raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
-                    conn = direct_conn
 
                 except _DatabaseCorruptionError:
                     if "direct_conn" in locals():
                         with contextlib.suppress(Exception):
                             await direct_conn.close()
+                    conn = None
 
                     db_file = pathlib.Path(self._db_path)
                     if db_file.exists():
@@ -339,12 +340,12 @@ class AsyncModRegistry:
                             raise
 
                     recovered_conn = await aiosqlite.connect(self._db_path)
+                    conn = recovered_conn
                     recovered_conn.row_factory = aiosqlite.Row
                     await recovered_conn.execute("PRAGMA journal_mode=WAL")
                     await recovered_conn.execute("PRAGMA foreign_keys=ON")
                     await recovered_conn.execute("PRAGMA busy_timeout=5000")
                     await recovered_conn.execute("PRAGMA synchronous=NORMAL")
-                    conn = recovered_conn
 
                 except Exception as exc:
                     if "direct_conn" in locals() and direct_conn is not None:
