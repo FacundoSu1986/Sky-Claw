@@ -8,6 +8,7 @@ Maintains chat history in SQLite, calls the configured LLM provider
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -345,7 +346,8 @@ class LLMRouter:
         ``_conn_lock`` → boundary del path (nunca al revés). Fix #473
         (sentinel): ``self._conn`` se asigna DESPUÉS del DDL exitoso (dentro
         del boundary): un fallo del schema no deja un sentinel de apertura que
-        convierta el reintento en no-op.
+        convierta el reintento en no-op. #474: la rama standalone sigue la misma
+        regla (local + cierre ante ``BaseException``).
         """
         async with self._conn_lock:
             if self._conn is not None:
@@ -356,10 +358,20 @@ class LLMRouter:
                     await conn.executescript(_HISTORY_SCHEMA)
                     self._conn = conn
             else:
+                # #474: hermano standalone del fix #473 (mismo patrón que
+                # ``DistributedLockManager.initialize``). La conexión vive en una
+                # local hasta que PRAGMA + DDL terminan; ante cualquier fallo
+                # (incluida la cancelación) se cierra y NO se publica.
+                conn = await aiosqlite.connect(self._db_path)
+                try:
+                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await conn.executescript(_HISTORY_SCHEMA)
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    raise
                 self._owns_conn = True
-                self._conn = await aiosqlite.connect(self._db_path)
-                await self._conn.execute("PRAGMA journal_mode=WAL")
-                await self._conn.executescript(_HISTORY_SCHEMA)
+                self._conn = conn
 
     async def close(self) -> None:
         """Close the history database (lifecycle-owned connections stay open)."""
