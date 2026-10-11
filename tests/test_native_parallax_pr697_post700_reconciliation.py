@@ -288,15 +288,21 @@ def test_h4_y_c2_citados_coinciden_con_los_artefactos_de_700() -> None:
     assert claimed["m5_C1_new"] is observed["C1_new"]
     assert claimed["m5_C2_high_gt_lowmid_old"] is observed["C2_components_old"]["high_gt_lowmid_excess"]
     assert claimed["m5_C2_high_gt_lowmid_new"] is observed["C2_components_new"]["high_gt_lowmid_excess"]
-    assert claimed["m5_C2_high_enrichment_ge_threshold_old"] is observed["C2_components_old"]["high_enrichment_ge_threshold"]
-    assert claimed["m5_C2_high_enrichment_ge_threshold_new"] is observed["C2_components_new"]["high_enrichment_ge_threshold"]
+    assert (
+        claimed["m5_C2_high_enrichment_ge_threshold_old"]
+        is observed["C2_components_old"]["high_enrichment_ge_threshold"]
+    )
+    assert (
+        claimed["m5_C2_high_enrichment_ge_threshold_new"]
+        is observed["C2_components_new"]["high_enrichment_ge_threshold"]
+    )
 
 
 def test_parser_captura_json_y_status_formateados() -> None:
     """Arrange/Act/Assert: el scanner no ignora comillas JSON ni espacios."""
     doc = (
-        '"PR675_RECOMMENDATION": "READY_FOR_DESIGN_RECONCILIATION"\\n'
-        "M4_PRIMARY_STATUS              = REVALIDATED\\n"
+        '"PR675_RECOMMENDATION": "READY_FOR_DESIGN_RECONCILIATION"\n'
+        "M4_PRIMARY_STATUS              = REVALIDATED\n"
         '"M5_PRIMARY_STATUS": "REVALIDATED"'
     )
     matches = [(m.group("key"), m.group("value")) for m in _ASSIGNMENT.finditer(doc)]
@@ -328,7 +334,7 @@ def test_errata_corrige_alcanzabilidad_sin_reescribir_historicos() -> None:
     assert err["status"] == "CORRECTIVE_INTERPRETATION_ONLY"
     assert _matrix()["adjudications"]["M5_RERUN_REQUIRED"] == "NO"
     assert next(
-        item for item in _matrix()["upstream_changes"]
+        item for item in _matrix()["matrix"]
         if item["upstream_change"] == "MATH_B_SPEARMAN"
     )["m4_primary"] == "NO_PATH"  # estado histórico, conservado por SHA
     m4 = err["m4_math_b_spearman"]
