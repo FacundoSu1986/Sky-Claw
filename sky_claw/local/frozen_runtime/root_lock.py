@@ -768,16 +768,15 @@ def acquire_frozen_runtime_root_lock(
 
     f = None
     try:
-        # Asegurar existencia del lockfile exclusivo si no existe
-        if not lock_path.exists():
+        # Asegurar descriptor abierto atómicamente para el lockfile exclusivo (x+b o r+b)
+        while f is None:
             try:
-                with open(lock_path, "xb"):
-                    pass
+                f = open(lock_path, "x+b")  # noqa: SIM115
             except FileExistsError:
-                pass
-
-        # El descriptor debe permanecer abierto bajo el ciclo de vida del handle
-        f = open(lock_path, "r+b")  # noqa: SIM115
+                try:
+                    f = open(lock_path, "r+b")  # noqa: SIM115
+                except FileNotFoundError:
+                    continue
 
         # 2. Lock a nivel de SO con retry acotado si timeout > 0
         while True:
