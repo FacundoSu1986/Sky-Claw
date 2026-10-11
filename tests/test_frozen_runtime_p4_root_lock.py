@@ -766,7 +766,10 @@ def test_f03b_acquire_fails_closed_when_held_by_live_owner(tmp_path: pathlib.Pat
 
     codigo_dueno = f"""
 import os, pathlib, time
-pathlib.Path({str(senal_pid)!r}).write_text(str(os.getpid()), encoding="utf-8")
+destino = pathlib.Path({str(senal_pid)!r})
+tmp = destino.with_suffix(".tmp")
+tmp.write_text(str(os.getpid()), encoding="utf-8")
+os.replace(tmp, destino)
 time.sleep(30.0)
 """
     subp = subprocess.Popen(
@@ -775,6 +778,8 @@ time.sleep(30.0)
         stderr=subprocess.PIPE,
     )
     try:
+        # El hijo publica el PID con os.replace (rename atómico): el archivo nunca es
+        # visible a medio escribir, así que leerlo tras exists() no puede dar "" .
         limite = time.monotonic() + 15.0
         while not senal_pid.exists() and time.monotonic() < limite:
             time.sleep(0.05)
