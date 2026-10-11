@@ -95,14 +95,14 @@ def _defaults_declarados(parser: argparse.ArgumentParser) -> dict[str, str]:
 
 @pytest.mark.parametrize("contexto_cli", CONTEXTOS, indirect=True)
 def test_cada_default_declarado_coincide_con_el_efectivo(contexto_cli: argparse.ArgumentParser) -> None:
-    # Arrange
+    # Preparar
     parser = contexto_cli
     efectivos = vars(parser.parse_args([]))
 
-    # Act
+    # Actuar
     declarados = _defaults_declarados(parser)
 
-    # Assert
+    # Verificar
     divergencias = {
         dest: {"declarado": texto, "efectivo": str(efectivos[dest])}
         for dest, texto in declarados.items()
@@ -113,10 +113,10 @@ def test_cada_default_declarado_coincide_con_el_efectivo(contexto_cli: argparse.
 
 @pytest.mark.parametrize("contexto_cli", CONTEXTOS, indirect=True)
 def test_el_conjunto_de_defaults_declarados_esta_congelado(contexto_cli: argparse.ArgumentParser) -> None:
-    # Arrange / Act
+    # Preparar / Actuar
     declarados = set(_defaults_declarados(contexto_cli))
 
-    # Assert — igualdad literal: un default declarado nuevo (o uno que
+    # Verificar — igualdad literal: un default declarado nuevo (o uno que
     # desaparece) obliga a revisar esta lista y su contrato.
     assert declarados == DESTS_CON_DEFAULT_DECLARADO
 
@@ -124,34 +124,34 @@ def test_el_conjunto_de_defaults_declarados_esta_congelado(contexto_cli: argpars
 @pytest.mark.parametrize("contexto_cli", CONTEXTOS, indirect=True)
 def test_ningun_help_menciona_default_fuera_del_formato_verificado(contexto_cli: argparse.ArgumentParser) -> None:
     """Un ``defaults to X`` o ``default X`` suelto escaparía al chequeo de arriba."""
-    # Arrange
+    # Preparar
     parser = contexto_cli
     declarados = _defaults_declarados(parser)
 
-    # Act
+    # Actuar
     sueltos = {
         action.dest: _help_expandido(parser, action)
         for action in parser._actions
         if action.dest not in declarados and re.search(r"\bdefaults?\b", _help_expandido(parser, action))
     }
 
-    # Assert
+    # Verificar
     assert not sueltos, f"Help que menciona un default sin el formato '(default: X)': {sueltos}"
 
 
 @pytest.mark.parametrize("contexto_cli", CONTEXTOS, indirect=True)
 def test_el_help_renderizado_declara_el_modo_efectivo(contexto_cli: argparse.ArgumentParser) -> None:
     """Superficie del usuario final: lo que imprime ``--help`` de verdad."""
-    # Arrange
+    # Preparar
     parser = contexto_cli
     modo_efectivo = parser.parse_args([]).mode
     salida = io.StringIO()
 
-    # Act
+    # Actuar
     with contextlib.redirect_stdout(salida), pytest.raises(SystemExit):
         parser.parse_args(["--help"])
 
-    # Assert
+    # Verificar
     lineas_modo = [linea for linea in salida.getvalue().splitlines() if "Operation mode" in linea]
     assert len(lineas_modo) == 1
     assert lineas_modo[0].rstrip().endswith(f"Operation mode (default: {modo_efectivo})")
@@ -167,14 +167,14 @@ def test_parse_args_conserva_el_default_de_modo_por_contexto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """El fix alinea el texto; el comportamiento (cli/gui) no cambia."""
-    # Arrange
+    # Preparar
     if congelado:
         monkeypatch.setattr(sys, "frozen", True, raising=False)
     else:
         monkeypatch.delattr(sys, "frozen", raising=False)
 
-    # Act
+    # Actuar
     args = cli._parse_args([])
 
-    # Assert
+    # Verificar
     assert args.mode == modo_esperado
