@@ -311,10 +311,8 @@ def test_f1_ninguna_fila_de_la_tabla_declara_deferred():
     """Ninguna fila de la tabla de comportamiento de §3.4 puede declarar `DEFERRED`.
 
     La tabla mide **envolvente estructural**: todo caso hostil medido es `REJECT` (o
-    `TOLERATED` para la entrada válida de referencia). `H != W` —lo único diferido— no
-    tiene fila acá porque no se midió como entrada hostil: está en la tabla de contrato
-    de §3.1. Este test cierra el mutante que repone `forma != (H,W,3) -> DEFERRED (V-03)`
-    en la fila del `ndim`: esa fila pasaría a declarar `DEFERRED` y el ancla lo rechaza.
+    `TOLERATED` para la entrada válida). `H != W` —lo único diferido— no tiene fila acá
+    porque no se midió como entrada hostil: está en las tablas de contrato de §3.1/§3.4.
 
     Se **enumera la tabla entera**, no se muestrean filas: muestrear es la trampa.
     """
@@ -330,6 +328,70 @@ def test_f1_ninguna_fila_de_la_tabla_declara_deferred():
         assert ("REJECT" in regla) or ("TOLERATED" in regla), (
             f"la fila {entrada!r} debe declarar REJECT o TOLERATED, tiene {regla!r}"
         )
+
+
+def _bloque_reglas_f1() -> dict[str, str]:
+    """Extrae las reglas **normativas** del bloque de §3.4 (el fence con `-> REJECT`).
+
+    Es una superficie distinta de la tabla de comportamiento medido: la tabla dice qué
+    hace hoy el código; el bloque dice qué debe hacer el contrato. Mutar el bloque sin
+    tocar la tabla dejaba los tests verdes (hallazgo RC-2 de la revisión). Se devuelve
+    `{sujeto: disposición}` con las líneas `sujeto -> DISPOSICION`.
+    """
+    lineas = _lineas()
+    reglas: dict[str, str] = {}
+    # El separador es ` -> ` (con espacios). El sujeto puede contener `-` (p. ej.
+    # `shape[-1] != 3`), así que NO se puede cortar en el primer `-`.
+    #
+    # Sólo se aceptan líneas con **dos espacios iniciales**: es la forma de las reglas
+    # del bloque normativo de §3.4. Así se excluyen las citas históricas de §9 (N-07) y
+    # §14 (adjudicación), que empiezan con `|` y son filas de tabla, no reglas vigentes.
+    patron = re.compile(r"^  (?P<sujeto>.+?)\s+->\s+(?P<disp>REJECT|DEFERRED|TOLERADO)\b")
+    for line in lineas:
+        m = patron.match(line)
+        if m:
+            reglas[m.group("sujeto").strip()] = m.group("disp")
+    return reglas
+
+
+def test_f1_el_bloque_normativo_de_reglas_existe():
+    """Sin las reglas normativas enumeradas, F1 no está anclado (hallazgo RC-2)."""
+    reglas = _bloque_reglas_f1()
+    assert reglas, "falta el bloque normativo de reglas `sujeto -> DISPOSICION` en §3.4"
+    assert len(reglas) >= 7, f"el bloque debe enumerar >= 7 reglas; tiene {len(reglas)}"
+
+
+def test_f1_cada_regla_normativa_tiene_la_disposicion_esperada():
+    """Enumera las reglas del bloque y verifica cada disposición.
+
+    Se exige: `REJECT` para toda la envolvente estructural, y `DEFERRED` **sólo** para
+    `H != W`. Se ancla la **disposición de cada regla**, no la presencia de la palabra.
+    """
+    reglas = _bloque_reglas_f1()
+
+    esperadas_reject = (
+        "ndim != 3",
+        "shape[-1] != 3",
+        "H == 0",
+        "size < 1",
+    )
+    for sujeto_fragmento in esperadas_reject:
+        coincidencias = [s for s in reglas if sujeto_fragmento in s]
+        assert coincidencias, f"falta la regla normativa que mencione {sujeto_fragmento!r}"
+        for sujeto in coincidencias:
+            assert reglas[sujeto] == "REJECT", f"la regla {sujeto!r} debe ser REJECT, es {reglas[sujeto]!r}"
+
+    # La única regla diferida es la de cuadratura (V-03).
+    diferidas = [s for s, d in reglas.items() if d == "DEFERRED"]
+    assert len(diferidas) == 1, f"debe haber exactamente una regla DEFERRED, hay {len(diferidas)}: {diferidas}"
+    assert "H != W" in diferidas[0] or "H ≠ W" in diferidas[0], (
+        f"la única regla diferida debe ser la de cuadratura (H != W), es {diferidas[0]!r}"
+    )
+
+    # Ninguna regla con finitud puede diferirse (V-04 está cerrado).
+    for sujeto, disp in reglas.items():
+        if "NaN" in sujeto or "Inf" in sujeto:
+            assert disp == "REJECT", f"la regla de finitud {sujeto!r} no puede diferirse: {disp!r}"
 
 
 def test_f1_ninguna_forma_malformada_aparece_como_deferred_por_v03():
@@ -418,6 +480,64 @@ def test_f2_el_contrato_declara_que_el_vehiculo_no_esta_implementado():
         r"NORMAL_RESIZE_RESULT_IMPLEMENTED\s*[=:]\s*NO",
         texto,
     ), "el contrato debe declarar NORMAL_RESIZE_RESULT_IMPLEMENTED = NO (Slice 2)"
+
+
+def test_f2_la_fachada_resize_normal_es_fail_closed():
+    """RC-1: la fachada no puede devolver un array degenerado en silencio.
+
+    La primera versión dejaba que `resize_normal` retornara `res.array` sin inspeccionar
+    `res.degenerate`: un llamador directo recibía vectores nulos sin señal.
+
+    No basta con verificar que el token existe: hay que verificar que el **código del
+    contrato** (el fence del Slice 2) tenga (a) la condición `if res.degenerate`, (b) el
+    `raise DegenerateNormalError` dentro de esa rama, y (c) el `return res.array` en la
+    rama contraria. Un mutante que ponga `if True:` elimina la distinción de ramas y este
+    ancla lo rechaza.
+    """
+    texto = _texto()
+    assert re.search(
+        r"RESIZE_NORMAL_FACADE_FAIL_CLOSED\s*[=:]\s*YES",
+        texto,
+    ), "el contrato debe declarar RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES (RC-1)"
+
+    # Extrae el cuerpo del fence que define la fachada.
+    lineas = _lineas()
+    inicio = next(
+        (i for i, ln in enumerate(lineas) if "def resize_normal(n, size)" in ln),
+        None,
+    )
+    assert inicio is not None, "falta la firma de la fachada `resize_normal` en el contrato"
+    cuerpo = lineas[inicio : inicio + 16]
+
+    condicion = [ln for ln in cuerpo if re.search(r"if\s+res\.degenerate\s*:", ln)]
+    assert condicion, (
+        "la fachada debe condicionar en `res.degenerate` (no en un literal): "
+        f"encontrado {[ln.strip() for ln in cuerpo if 'if ' in ln]}"
+    )
+    # Dentro de la rama condicional debe haber un raise, y fuera un return del array.
+    idx = cuerpo.index(condicion[0])
+    rama = cuerpo[idx : idx + 3]
+    assert any("raise DegenerateNormalError" in ln for ln in rama), (
+        f"la rama `if res.degenerate` debe lanzar DegenerateNormalError: {rama}"
+    )
+    assert any(re.search(r"return\s+res\.array", ln) for ln in cuerpo), (
+        "la fachada debe devolver `res.array` cuando no es degenerado"
+    )
+    # Y el test sintético que discrimina la pérdida silenciosa debe estar exigido.
+    assert "test_fachada_no_devuelve_array_degenerado_en_silencio" in texto, (
+        "el contrato debe exigir el test que discrimina la fachada silenciosa"
+    )
+    assert "test_fachada_sobre_entrada_valida_sigue_siendo_no_op_valido" in texto, (
+        "el contrato debe exigir el test que protege el comportamiento válido de la fachada"
+    )
+
+
+def test_f2_la_regla_de_simetria_de_hermanos_esta_declarada():
+    """RC-1 generaliza: proteger sólo `load_asset` deja a la fachada como hermano no cubierto."""
+    texto = _texto()
+    assert "Simetría de hermanos" in texto or "simetría de hermanos" in texto, (
+        "el contrato debe declarar la regla de simetría de hermanos (RC-1)"
+    )
 
 
 def test_la_adjudicacion_adversarial_registra_f1_y_f2_como_aceptados():

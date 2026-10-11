@@ -508,9 +508,35 @@ class NormalResizeResult:
     degenerate: bool                # degenerate_count > 0
 
 def resize_normal_diagnostic(n, size) -> NormalResizeResult: ...   # NUEVA API del Slice 2
-def resize_normal(n, size) -> NDArray[np.float64]:                 # API VIGENTE, preservada
-    return resize_normal_diagnostic(n, size).array                 # delega; no cambia su firma
+def resize_normal(n, size) -> NDArray[np.float64]:                 # API VIGENTE, firma preservada
+    res = resize_normal_diagnostic(n, size)                        # delega
+    if res.degenerate:                                             # ← NO devuelve el array en silencio
+        raise DegenerateNormalError(                               # FAIL-CLOSED en la fachada
+            asset_id = None,                                       # la fachada no conoce el asset
+            degenerate_count = res.degenerate_count,
+            total_pixels = res.total_pixels,
+            threshold = res.threshold,
+            fraction = res.degenerate_count / res.total_pixels,
+            reason = "NON_EVALUABLE: uso directo de la fachada sobre campo degenerado",
+        )
+    return res.array
 ```
+
+**Por qué la fachada también rechaza (corrección de la revisión adversarial, RC-1).** La primera
+versión de este contrato dejaba que `resize_normal` devolviera `res.array` **sin mirar**
+`res.degenerate`. Eso reabría por la puerta de atrás el mismo defecto que el documento combate:
+un llamador directo —el test `tests/test_native_parallax_exp_m2.py:96`, o cualquier consumidor
+futuro— recibiría un array con vectores nulos **sin ninguna señal**, exactamente la clase de
+pérdida silenciosa que motivó H4. Que `load_asset` esté protegido **no** protege a sus hermanos:
+arreglar un camino y no al otro es el patrón de defecto dominante de este repositorio. Por eso la
+fachada es **fail-closed por defecto**: inspecciona y lanza. Un llamador que necesite el array
+crudo *y* la evidencia usa `resize_normal_diagnostic`, que es explícito por nombre.
+
+**Trazabilidad del asset en la fachada.** `asset_id = None` porque `resize_normal` no recibe el
+`spec`; el error lleva `asset_id=None` y la **ruta de diagnóstico** (`resize_normal_diagnostic`)
+es la que permite población correcta del campo. Esto es deliberado: la fachada sirve para uso
+directo e instrumental, no para el camino científico, y su error es explícitamente degradado en
+procedencia para que no se confunda con un rechazo con identidad.
 
 **Por qué `resize_normal` conserva la firma.** Hay dos caminos:
 
@@ -519,8 +545,18 @@ def resize_normal(n, size) -> NDArray[np.float64]:                 # API VIGENTE
    array directamente; además obligaría a cambiar la primitiva que el preflight quiere corregir
    **sin** cambiar su contrato de retorno (§5.1: "se devuelve el tipo contratado `float64`").
 2. **Elegido:** se agrega `resize_normal_diagnostic` (o se le da a `resize_normal` un parámetro
-   `*, with_diagnostics: bool = False`). `resize_normal` delega y sigue devolviendo el array. El
-   diagnóstico vive en la varita nueva, no en la firma histórica.
+   `*, with_diagnostics: bool = False`). `resize_normal` delega, **inspecciona el resultado y sigue
+   devolviendo el array sólo si no es degenerado**; para entrada degenerada lanza, porque "devuelve
+   siempre un array" y "no señala nunca que el array es inválido" son cosas distintas. La firma
+   (tipo de retorno `float64`, aridad) se conserva; lo que **no** se conserva es la disposición a
+   devolver un array silenciosamente degenerado.
+
+**Qué sigue funcionando igual.** `resize_normal(n, 16)` sobre una normal válida devuelve el mismo
+`NDArray` renormalizado de siempre — el ancla vigente
+`test_m3_normal_resize_renormalizes` (`tests/test_native_parallax_exp_m2.py:94-98`) **no cambia**:
+su entrada es un campo periódico no degenerado, así que la rama de rechazo no se ejerce. El
+comportamiento observable cambia **sólo** para entrada degenerada, y ahí el cambio es
+precisamente pasar de pérdida silenciosa a rechazo explícito.
 
 **Cómo se transporta sin publicar un array inválido.** El punto clave: `load_asset` **no** devuelve
 el array del resizer si es degenerado. Lo inspecciona **antes** de construir `AuthoredMaterial`:
@@ -562,6 +598,7 @@ degeneración captura `DegenerateNormalError` explícitamente.
 
 | Consumidor | Comportamiento actual | Regla cerrada (Slice 2) |
 |---|---|---|
+| `resize_normal` (fachada / uso directo) | devuelve `NDArray` sin señal de degeneración | **Fail-closed**: inspecciona `NormalResizeResult` y **lanza** `DegenerateNormalError` si `degenerate`; si no, devuelve el array como siempre |
 | `run_exp_m2.py` | propaga (0 capturas) | `DegenerateNormalError` **aborta** la corrida (burbujea); no publica |
 | `run_exp_m4.py` | propaga (0 capturas) | idem |
 | `run_exp_m5.py` | propaga (0 capturas) | idem |
@@ -576,7 +613,9 @@ stderr — pero **no** publica artefacto científico exitoso. `continue` está *
 
 #### 5.3.4 Reglas de comportamiento (fail-closed)
 
-1. `resize_normal` **no** lanza por degeneración; delega en `resize_normal_diagnostic`.
+1. `resize_normal` (fachada) delega en `resize_normal_diagnostic`, **inspecciona** el resultado y
+   **lanza `DegenerateNormalError`** si `degenerate` es verdadero. **Nunca** devuelve un array
+   degenerado en silencio. Para entrada válida se comporta como siempre.
 2. `load_asset` inspecciona el resultado **antes** de construir `AuthoredMaterial` y lanza
    `DegenerateNormalError` con toda la evidencia, incluida la identidad del asset.
 3. `DegenerateNormalError` **hereda** de `DatasetInvalidError` (compatibilidad) pero se lanza
@@ -587,6 +626,9 @@ stderr — pero **no** publica artefacto científico exitoso. `continue` está *
    exitoso tras un `DegenerateNormalError`.
 6. **Prohibido** cambiar exclusiones preexistentes (integridad) por motivos distintos de H4
    (dictamen: *"No cambiar exclusiones preexistentes por motivos distintos de H4"*).
+7. **Simetría de hermanos.** La regla 1 existe porque proteger sólo `load_asset` dejaría a la
+   fachada como hermano no cubierto. Cualquier API nueva que devuelva un array de la normal debe
+   cumplir la misma regla: o inspecciona y lanza, o su nombre declara que devuelve diagnóstico.
 
 #### 5.3.5 Tests sintéticos discriminatorios exigidos (Slice 2)
 
@@ -601,6 +643,8 @@ Cada uno debe fallar contra un vehículo ausente y pasar con el vehículo implem
 | `test_identidad_del_asset_conservada` | `exc.asset_id` es el del asset que degeneró | un error sin identidad |
 | `test_exclusiones_historicas_no_h4_intactas` | Las exclusiones por integridad preexistentes siguen siendo exclusiones por integridad | una reclasificación de integridad como H4 |
 | `test_forma_malformada_no_es_degeneracion` | `(H,W,2)`/`(H,W,4)` lanzan `InvalidNormalShapeError`, **no** `DegenerateNormalError` | confundir F1 con D-06 |
+| `test_fachada_no_devuelve_array_degenerado_en_silencio` | `resize_normal` sobre un campo sintético degenerado **lanza** `DegenerateNormalError` en vez de devolver el array | la fachada que devuelve `res.array` sin inspeccionar (RC-1) |
+| `test_fachada_sobre_entrada_valida_sigue_siendo_no_op_valido` | `resize_normal(n, 16)` sobre campo no degenerado devuelve `(16,16,3)` renormalizado, como hoy | romper el call-site vigente al endurecer la fachada |
 
 **Ancla AST exigida (Slice 2).** Un test que **enumere** por introspección/AST todos los
 `except` de los runners y exija que:
@@ -610,11 +654,14 @@ Cada uno debe fallar contra un vehículo ausente y pasar con el vehículo implem
   aparecen en el mismo `try` (el orden de las cláusulas es load-bearing: una subclase capturada
   antes de la superclase);
 - todo módulo que llame a `load_asset` **o** a `resize_normal` esté en el censo congelado — un
-  consumidor nuevo rompe el ancla hasta que se le declare su tratamiento.
+  consumidor nuevo rompe el ancla hasta que se le declare su tratamiento. `resize_normal` entra
+  en el censo por RC-1: la fachada **también** es una superficie por la que puede salir un
+  array degenerado, y enumerar sólo `load_asset` dejaba ese hermano afuera.
 
 ```text
 TRANSPORT_VEHICLE                = NormalResizeResult (dataclass, campo .array + censo)  DESIGN_CLOSED
 RESIZE_NORMAL_SIGNATURE_PRESERVED= YES (delega; el diagnóstico vive en la varita nueva)
+RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES (inspecciona y lanza; no devuelve array degenerado)  ← RC-1
 LOAD_ASSET_RAISES_WITH_IDENTITY  = YES (DegenerateNormalError con asset_id + censo)
 DEGENERATE_ERROR_BEFORE_CONTINUE = YES (handling precede a except DatasetInvalidError)
 THREE_ERRORS_DISTINCT            = YES (DatasetInvalid / InvalidNormalShape / DegenerateNormal)
@@ -921,15 +968,16 @@ WRITE_SET        = PASS  (2 paths: el documento + tests/test_native_parallax_h4_
 DIFF_CHECK       = PASS  (sin whitespace sobrante ni marcadores; `git diff --check` limpio)
 MARKDOWN_TABLES  = PASS  (21 tablas, 0 inconsistencias — con las funciones del checker del repo IMPORTADAS)
 MARKDOWN_BARRAS  = PASS  (0 celdas con "\|")
-TEST_NUEVO       = PASS  (33 passed — tests/test_native_parallax_h4_authorization_gate.py)
+TEST_NUEVO       = PASS  (37 passed — tests/test_native_parallax_h4_authorization_gate.py)
 TEST_VIGENTE     = PASS  (18 passed — test_native_parallax_exp_m2.py, incluye el ancla del resizer)
 CHECKER_REPO     = PASS  (8 passed — test_native_parallax_pr700_corrective_docs_invariants.py)
 SUITE_FOCAL_NP   = PASS  (79 passed — m2 + m2_json + pr700 docs + pr697 reconciliation + gate)
 RUFF_CHECK       = PASS  (All checks passed!)
 RUFF_FORMAT      = PASS  (858 files already formatted)
 MYPY             = PASS  (no issues found in 364 source files)
-MUTANTES_ANCLA   = 17/17 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
-                                   M-12/M-13/M-14/M-15/M-16 de F2)
+MUTANTES_ANCLA   = 22/22 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
+                                   M-12/M-13/M-14/M-15/M-16 de F2 +
+                                   M-17/M-18 de RC-1 + M-19/M-20 de RC-2)
 ARTEFACTOS_CIENTIFICOS = PASS  (0 archivos científicos modificados)
 PRODUCCION       = PASS  (0 archivos de sky_claw/ modificados)
 ```
@@ -1054,7 +1102,8 @@ se había medido.
 F2 se cerró especificando el **vehículo** de la señal de punta a punta: sin él, "el consumidor
 decide" era una regla sin transporte y el conteo de degenerados se perdía en el primer `return`
 de `resize_normal`. El contrato ahora fija el resultado tipado, la jerarquía de excepciones, el
-orden de inspección en `load_asset` y la propagación por consumidor.
+orden de inspección en `load_asset`, la propagación por consumidor y —tras RC-1— el rechazo
+**también en la fachada**, para no dejar a `resize_normal` como hermano no cubierto de `load_asset`.
 
 No queda ningún requisito **técnico** previo abierto. Lo único que falta para autorizar el Slice 2
 es la **conformidad explícita del Tech Lead** con el alcance (condición 9), que por definición no
@@ -1100,3 +1149,43 @@ Cuando el PR pase a `Ready`, los revisores automáticos correrán sobre el HEAD 
 hilo nuevo se adjudicará en `14.3` (agregado, no reemplazo). **Regla:** ningún hilo se cierra sin
 una razón escrita; "ya está bien" no es una razón, y una corrección de prosa no cierra un hallazgo
 material.
+
+### 14.3 Revisión automática al pasar a `Ready` (RC-1, RC-2)
+
+Al pasar el PR a `Ready` sobre `4bc449a6`, CodeRabbit emitió **2 hilos inline**. Ambos verificados
+contra el documento y **aceptados**.
+
+| Item | Finding | Severidad | Adjudicación | Corrección |
+|---|---|---|---|---|
+| **RC-1** | `NormalResizeResult.array` puede contener un vector degenerado, pero la fachada `resize_normal` devuelve `.array` y **descarta** `degenerate`: un llamador directo recibe un array inválido **sin señal**. `load_asset` está cubierto, la fachada **no**. | `Minor` (declarada) · **`MATERIAL` (adjudicada)** | **ACCEPTED** | §5.3.1: la fachada **inspecciona** `res.degenerate` y **lanza** `DegenerateNormalError`; `return res.array` sólo en la rama válida. §5.3.4 regla 7 (simetría de hermanos). §5.3.5: dos tests sintéticos nuevos (`test_fachada_no_devuelve_array_degenerado_en_silencio`, `test_fachada_sobre_entrada_valida_sigue_siendo_no_op_valido`). Token `RESIZE_NORMAL_FACADE_FAIL_CLOSED=YES`. |
+| **RC-2** | `_filas_tabla_f1()` ancla la tabla **medida** de §3.4; las reglas **normativas** están en un fence aparte. Cambiar una regla de `REJECT` a `DEFERRED` ahí dejaba los tests verdes. | `Minor` (declarada) · **`MATERIAL` (adjudicada)** | **ACCEPTED** | El ancla ahora extrae el **bloque normativo** (`_bloque_reglas_f1()`) y exige: `REJECT` para `ndim != 3`, `shape[-1] != 3`, `H == 0`, `size < 1`, finitud; y **exactamente una** regla `DEFERRED`, la de `H != W`. |
+
+```text
+RC1_ADJUDICATION       = ACCEPTED  (severidad elevada de Minor a MATERIAL)
+RC2_ADJUDICATION       = ACCEPTED  (severidad elevada de Minor a MATERIAL)
+RC1_CLOSED             = YES (contrato: fachada fail-closed)
+RC2_CLOSED             = YES (ancla: bloque normativo enumerado)
+MUTANTES_RC            = 4/4 killed (M-17, M-18, M-19, M-20)
+PRODUCTION_TOUCHED     = NO
+```
+
+**Por qué se elevó la severidad de RC-1.** El revisor la marcó `Minor` porque el repo tiene un solo
+call-site productivo y `load_asset` está cubierto. Pero la severidad **del contrato** no depende de
+cuántos llamadores hay hoy: `resize_normal` es API pública del módulo y su modo de falla actual
+—devolver un array con vectores nulos sin señal— es **exactamente** la clase de defecto que H4
+existe para eliminar. Dejarla así habría significado arreglar un camino (`load_asset`) y no a su
+hermano (la fachada), que es el patrón de defecto dominante documentado en este repositorio. Se
+acepta con severidad elevada y se cierra en el contrato.
+
+**Por qué RC-2 no era cosmético.** Un ancla que verifica una superficie y no la otra da **falsa
+confianza**: el test pasa, el mutante sobrevive, y el contrato puede degradarse sin que nadie se
+entere. Es el mismo error que anclar por *presencia de token* en vez de por *fila* (§10.3): el
+instrumento de medición tiene que cubrir **todas** las superficies que declaran. Se enumera el
+bloque normativo entero.
+
+**Tercera corrección propia (no estaba en el review).** Al endurecer el ancla de RC-1, el primer
+intento verificaba sólo que el token `RESIZE_NORMAL_FACADE_FAIL_CLOSED = YES` existiera: el mutante
+M-17 (`if res.degenerate:` → `if True:`) **sobrevivía**. Se corrigió el ancla para extraer el
+**cuerpo del fence** de la fachada y exigir (a) la condición `res.degenerate`, (b) el `raise` en esa
+rama y (c) el `return res.array` en la contraria. Lección: anclar el **token** no es anclar el
+**comportamiento**; hay que anclar la estructura del código contractual, no su etiqueta.
