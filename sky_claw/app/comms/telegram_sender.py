@@ -9,8 +9,26 @@ All outbound traffic goes through :class:`NetworkGateway`.
 La subida de documentos sigue una política acotada: un máximo operativo derivado
 (:data:`MAX_DOCUMENT_BYTES`) consistente con el deadline del gateway, y una cota
 total de duración (:data:`MAX_UPLOAD_TOTAL_SECONDS`) que ``send_document`` IMPONE
-— no sólo documenta — sobre la operación completa (rate limit local + reintentos
-por 429 + hops de redirección).
+— no sólo documenta — sobre la operación completa (rate limit local + cooldowns
+compartidos + reintentos por 429 + hops de redirección).
+
+Flood-control COORDINADO (#706)
+-------------------------------
+
+Un 429 no duerme sólo a la corrutina que lo recibió: publica un deadline en
+:class:`CooldownCompartido` —compartido por TODAS las corrutinas del mismo
+:class:`TelegramSender`— que se consulta **antes de cada intento HTTP**. Una
+ráfaga concurrente, entonces, no vuelve a golpear la API dentro de la ventana de
+flood-control que Telegram ya anunció (antes, una ``send()`` hermana pasaba el
+rate limit local de inmediato y agotaba reintentos ajenos). El alcance del aviso es
+el del BOT (un 429 no es atribuible a un chat o al bot: ver
+:class:`CooldownCompartido`), y las tres vías HTTP del módulo —``sendMessage``/
+``sendDocument``, ``editMessageText`` y ``answerCallbackQuery``— participan de él.
+
+El contrato del consumidor (T3 — notificaciones) cuando los reintentos acotados se
+agotan está en :class:`TelegramRateLimitError`: descarte explícito de lo no
+crítico, alerta por otra vía para lo terminal, y nunca un bucle de reintento
+ilimitado ni un éxito fabricado.
 """
 
 from __future__ import annotations
@@ -162,20 +180,110 @@ _RETRY_AFTER_MAX_SEGUNDOS = 30.0
 #: Espera cuando Telegram responde 429 sin ``retry_after`` legible.
 _RETRY_AFTER_POR_DEFECTO = 1.0
 
+#: Espera MÁXIMA que el cooldown compartido puede imponer antes de CADA intento:
+#: el aviso vigente (≤ :data:`_RETRY_AFTER_MAX_SEGUNDOS`) más UNA extensión nueva que
+#: haya llegado mientras se dormía (≤ el tope). ``esperar`` no re-consulta por el
+#: mero paso del reloj, así que no hay un tercer término: la espera por intento está
+#: acotada por construcción.
+_MAX_ESPERA_COMPARTIDA_POR_INTENTO = 2.0 * _RETRY_AFTER_MAX_SEGUNDOS
+
 #: Cota TOTAL de una subida — que :meth:`TelegramSender.send_document` IMPONE, no
 #: sólo documenta, con un ``asyncio.timeout`` alrededor de TODA la operación:
-#:   espera del rate limit local + (1 + reintentos) × deadline por intento
-#:   + Σ esperas de ``retry_after``.
+#:   espera del rate limit local + Σ por intento (deadline del hop + espera
+#:   compartida máxima) + hops de redirección.
 #: Los hops de redirección quedan SUBORDINADOS a esta cota: cada hop tiene su propio
-#: deadline, pero el acumulado no puede excederla.
-MAX_UPLOAD_TOTAL_SECONDS = (
-    RATE_LIMIT_WINDOW_SECONDS
-    + (1 + _MAX_REINTENTOS_429) * UPLOAD_DEADLINE_SECONDS
-    + _MAX_REINTENTOS_429 * _RETRY_AFTER_MAX_SEGUNDOS
+#: deadline, pero el acumulado no puede excederla. Desde #706 la espera COMPARTIDA
+#: del flood-control precede a cada intento (no sólo al primero), así que entra en la
+#: cota: omitirla dejaría vencimientos propios cortando subidas que sólo esperaban un
+#: 429 anunciado.
+MAX_UPLOAD_TOTAL_SECONDS = RATE_LIMIT_WINDOW_SECONDS + (1 + _MAX_REINTENTOS_429) * (
+    UPLOAD_DEADLINE_SECONDS + _MAX_ESPERA_COMPARTIDA_POR_INTENTO
 )
 
 _NOMBRE_DE_ARCHIVO_MAX = 100
 _NOMBRE_DE_ARCHIVO_INVALIDO = re.compile(r"[^A-Za-z0-9._ -]")
+
+
+class CooldownCompartido:
+    """Autoridad COMPARTIDA del cooldown de flood-control (HTTP 429).
+
+    Una instancia por :class:`TelegramSender`: todas las corrutinas que envían por
+    el mismo bot comparten el objeto, así que un 429 que observa una NO sólo la
+    duerme a ella — publica un deadline que las demás consultan antes de CADA
+    intento HTTP.
+
+    Cuatro decisiones, y por qué:
+
+    - **Reloj monotónico.** El deadline se mide con ``time.monotonic``: un ajuste
+      del reloj de pared (NTP, cambio de huso) no puede acortar ni alargar la espera.
+    - **Un aviso no retrocede.** ``publicar`` extiende con ``max``, nunca reemplaza,
+      así que dos corrutinas que reciben 429 con ``retry_after`` distinto convergen en
+      el MÁS LEJANO. La carrera leer-y-reemplazar no existe acá porque la mutación es
+      síncrona: no hay ``await`` entre leer y escribir y el event loop es mono-hilo,
+      así que el deadline que ve un consumidor nunca es un valor a medio actualizar.
+    - **Alcance del BOT, no del chat (criterio 3 de #706).** Un 429 no dice si el
+      límite excedido fue el del chat o el global del bot, y el rate limit local por
+      chat (20/min) ya acota el caso por-chat ANTES de tocar la red. Se publica
+      entonces un único deadline del bot y lo honran TODOS los chats: esperar de más
+      cuesta latencia acotada (≤ :data:`_RETRY_AFTER_MAX_SEGUNDOS`) en un bot que
+      atiende a un operador, mientras que golpear la API dentro de una ventana
+      anunciada cuesta avisos perdidos. Un alcance "por chat" que igual publicara el
+      mismo deadline sería una segunda fuente de verdad que el deadline global siempre
+      domina: estructura sin contrato. Si una política futura necesita no frenar a los
+      otros chats, se cambia acá y el ancla estructural lo nombra.
+    - **Sin locks.** No hay lock que pueda quedar sostenido durante una espera o una
+      petición de red (criterio 8 de #706): la coordinación es un deadline y la espera
+      es un ``asyncio.sleep`` cancelable.
+    """
+
+    __slots__ = ("_deadline", "_publicacion", "_publicaciones")
+
+    def __init__(self) -> None:
+        #: ``(deadline, publicación)`` vigente del alcance del bot.
+        self._deadline: tuple[float, int] = (0.0, 0)
+        #: Contador monotónico global de publicaciones: distingue "el deadline se
+        #: movió" de "el reloj no avanzó lo suficiente" sin depender del reloj.
+        self._publicaciones = 0
+
+    def publicar(self, espera: float) -> float:
+        """Registra un aviso de flood-control y devuelve el deadline vigente.
+
+        ``espera`` es el ``retry_after`` informado por Telegram, acotado al tope de la
+        política: nunca se publica para las demás corrutinas una espera más larga que
+        la que el propio reintento respetaría.
+        """
+        espera = min(espera, _RETRY_AFTER_MAX_SEGUNDOS) if espera > 0 else 0.0
+        deadline = max(time.monotonic() + espera, self._deadline[0])
+        self._publicaciones += 1
+        self._deadline = (deadline, self._publicaciones)
+        return deadline
+
+    def restante(self) -> float:
+        """Segundos que restan del aviso vigente (0.0 si no hay ninguno)."""
+        return max(0.0, self._deadline[0] - time.monotonic())
+
+    async def esperar(self) -> None:
+        """Espera —cancelable— al deadline compartido vigente, si hay alguno.
+
+        Duerme lo que reste del aviso vigente y, si DURANTE la espera otra corrutina
+        publicó un aviso NUEVO, lo que reste del deadline extendido: una extensión por
+        consulta, así que la espera es ``≤ 2 ×`` :data:`_RETRY_AFTER_MAX_SEGUNDOS` y no
+        hay bucle que pueda crecer sin límite. No se re-consulta por el mero paso del
+        reloj (con el reloj real, al volver de dormir el deadline observado ya venció)
+        sino por la publicación nueva, que es el único caso en que la espera en curso
+        quedó corta.
+        """
+        deadline, publicacion = self._deadline
+        restante = deadline - time.monotonic()
+        if restante <= 0:
+            return
+        await asyncio.sleep(restante)
+        deadline, publicacion_nueva = self._deadline
+        if publicacion_nueva == publicacion:
+            return
+        restante = deadline - time.monotonic()
+        if restante > 0:
+            await asyncio.sleep(restante)
 
 
 class TelegramSendError(Exception):
@@ -189,6 +297,23 @@ class TelegramRateLimitError(TelegramSendError):
     atrapándola. ``retry_after`` (segundos) permite a un consumidor best-effort,
     como el notificador de progreso, decidir si descarta la actualización en vez
     de insistir.
+
+    **Contrato del consumidor (T3 — notificaciones concurrentes, #706).** Cuando el
+    error llega, los reintentos acotados ya se agotaron: no quedan credenciales
+    para insistir dentro de esta llamada, y un 429 **nunca** es un mensaje
+    entregado. Entonces:
+
+    - una actualización **no crítica** (progreso, ``/lod_status``, seguimiento) se
+      **descarta explícitamente**: se registra el fallo y no se reprograma, porque su
+      validez caduca antes de la ventana de flood-control;
+    - un evento **terminal** (fallo o completitud de un ritual) no puede depender del
+      canal limitado para llegar al operador: se reporta por una vía que no compita
+      por el mismo chat (estado del pipeline en la GUI/CLI) además de intentar
+      **una** reprogramación acotada —sólo si el caller tiene su propia cola—;
+    - el cooldown compartido ya quedó publicado con el aviso acotado, así que el
+      siguiente envío —de cualquier corrutina del mismo sender— no vuelve a golpear
+      la API antes de que venza;
+    - **prohibido** el bucle de reintento ilimitado y tratar este error como éxito.
     """
 
     def __init__(self, message: str, *, retry_after: float) -> None:
@@ -282,6 +407,9 @@ class TelegramSender:
         self._session = session
         self._rate_limit = rate_limit
         self._send_times: dict[int, collections.deque[float]] = {}
+        #: Cooldown de flood-control COMPARTIDO por todas las corrutinas de este
+        #: sender (#706): el 429 de una frena a las demás antes de cada intento.
+        self._cooldown = CooldownCompartido()
         self._url = TELEGRAM_API_BASE.format(token=bot_token)
 
     async def send(
@@ -367,8 +495,9 @@ class TelegramSender:
         que el gateway corte la subida con ``NetworkGatewayTimeoutError`` — un fallo
         observable, nunca un éxito fabricado.
 
-        Política de duración: TODA la operación (espera del rate limit local,
-        reintentos por 429 y hops de redirección) está envuelta en un
+        Política de duración: TODA la operación (espera del rate limit local, esperas
+        compartidas del flood-control, reintentos por 429 y hops de redirección) está
+        envuelta en un
         ``asyncio.timeout`` de :data:`MAX_UPLOAD_TOTAL_SECONDS`, así que la cota
         acumulada se IMPONE y no sólo se documenta. Una cancelación externa NO se
         convierte en timeout.
@@ -462,15 +591,21 @@ class TelegramSender:
         ``make_kwargs`` se invoca en CADA intento porque un cuerpo multipart se
         consume al enviarse.
 
-        Un 429 se reintenta hasta :data:`_MAX_REINTENTOS_429` veces esperando el
-        ``retry_after`` que Telegram informa (con tope en
-        :data:`_RETRY_AFTER_MAX_SEGUNDOS`). La espera ocurre con la conexión ya
-        liberada y es cancelable. Cualquier otro ``status != 200`` es fallo duro.
+        Antes de CADA intento se consulta el cooldown COMPARTIDO
+        (:class:`CooldownCompartido`): la espera que pidió un 429 no duerme sólo a la
+        corrutina que lo recibió, frena a todas las que comparten el sender, así que
+        una ráfaga no vuelve a golpear la API dentro de la ventana anunciada. Un 429 se reintenta hasta :data:`_MAX_REINTENTOS_429` veces, con la
+        espera acotada por :data:`_RETRY_AFTER_MAX_SEGUNDOS`. Cualquier otro
+        ``status != 200`` es fallo duro.
         """
         url = self._url + endpoint
         retry_after = _RETRY_AFTER_POR_DEFECTO
         cuerpo_429 = ""
         for intento in range(_MAX_REINTENTOS_429 + 1):
+            # La consulta va DENTRO del bucle: después de un 429 el próximo intento
+            # también espera, y si otra corrutina publicó un aviso mientras tanto,
+            # este intento lo honra.
+            await self._cooldown.esperar()
             resp = await self._gateway.request("POST", url, self._session, **make_kwargs())
             async with resp:
                 if resp.status != 429:
@@ -478,16 +613,20 @@ class TelegramSender:
                 cuerpo_429 = await resp.text()
                 retry_after = _retry_after_de(resp.headers, cuerpo_429)
 
+            # El aviso se publica SIEMPRE, también cuando este caller ya no va a
+            # reintentar: una tarea que se rinde no debe dejar a sus hermanas
+            # golpeando la misma ventana de flood-control.
+            self._cooldown.publicar(retry_after)
+
             if intento == _MAX_REINTENTOS_429 or retry_after > _RETRY_AFTER_MAX_SEGUNDOS:
                 break
             logger.warning(
-                "Telegram %s: flood-control (429), reintento %d/%d tras %.1fs",
+                "Telegram %s: flood-control (429), reintento %d/%d (espera compartida %.1fs)",
                 endpoint,
                 intento + 1,
                 _MAX_REINTENTOS_429,
-                retry_after,
+                self._cooldown.restante(),
             )
-            await asyncio.sleep(retry_after)
 
         raise TelegramRateLimitError(
             f"Telegram API returned 429: {cuerpo_429} (retry_after={retry_after:g}s)",
@@ -581,6 +720,10 @@ class TelegramSender:
         Cierra el estado de carga del botón en el cliente de Telegram. Como todo el
         egress, pasa por ``gateway.request`` (allow-list/SSRF/timeout/re-auth de
         redirects) y libera la respuesta con ``async with`` para no fugar la conexión.
+
+        Es una vía de control: participa del cooldown compartido del bot (#706)
+        —espera el aviso vigente antes de intentar y publica el suyo si recibe un
+        429— pero no reintenta, porque eso excede el contrato de un cierre de botón.
         """
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text is not None:
@@ -589,6 +732,7 @@ class TelegramSender:
             payload["show_alert"] = True
 
         url = self._url + "answerCallbackQuery"
+        await self._cooldown.esperar()
         resp = await self._gateway.request(
             "POST",
             url,
@@ -596,7 +740,13 @@ class TelegramSender:
             json=payload,
         )
         async with resp:
-            if resp.status != 200:
+            if resp.status == 429:
+                # La ventana se publica aunque esta llamada no reintente: si no,
+                # cualquier corrutina hermana seguiría golpeando la API dentro de la
+                # ventana que Telegram acaba de anunciar.
+                self._cooldown.publicar(_retry_after_de(resp.headers, await resp.text()))
+                logger.warning("Telegram answerCallbackQuery: flood-control (429); cooldown del bot publicado")
+            elif resp.status != 200:
                 body = await resp.text()
                 logger.error("Failed to answer callback query: %s", body)
 
@@ -607,7 +757,13 @@ class TelegramSender:
         text: str,
         reply_markup: dict[str, Any] | None = None,
     ) -> None:
-        """Edit an existing Telegram message."""
+        """Edit an existing Telegram message.
+
+        Como ``answerCallbackQuery``, es una vía de control: no reintenta, pero SÍ
+        consulta el cooldown compartido del bot (#706) antes de intentar y publica el
+        suyo ante un 429, para que una edición perdida no deje botones viejos en el
+        prompt del operador ni deje a las demás corrutinas golpeando la ventana.
+        """
         payload = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -617,6 +773,7 @@ class TelegramSender:
             "reply_markup": reply_markup if reply_markup is not None else {"inline_keyboard": []},
         }
         url = self._url + "editMessageText"
+        await self._cooldown.esperar()
         resp = await self._gateway.request(
             "POST",
             url,
@@ -624,6 +781,9 @@ class TelegramSender:
             json=payload,
         )
         async with resp:
-            if resp.status != 200:
+            if resp.status == 429:
+                self._cooldown.publicar(_retry_after_de(resp.headers, await resp.text()))
+                logger.warning("Telegram editMessageText: flood-control (429); cooldown del bot publicado")
+            elif resp.status != 200:
                 body = await resp.text()
                 logger.error("Failed to edit message: %s", body)

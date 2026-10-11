@@ -81,6 +81,18 @@ def _sender(*respuestas: AsyncMock) -> tuple[TelegramSender, MagicMock]:
     return TelegramSender(bot_token=_TOKEN, gateway=gateway, session=MagicMock(spec=aiohttp.ClientSession)), gateway
 
 
+def _esperas(*segundos: float) -> Any:
+    """Espera(s) del flood-control con la holgura del deadline COMPARTIDO (#706).
+
+    Desde #706 la espera se mide contra ``publicación + retry_after``, no contra un
+    ``sleep`` fijo: el plazo es EXACTAMENTE el mismo, y lo que queda por debajo es el
+    tiempo que pasó entre publicar el aviso y consultarlo (log, scheduling). La
+    holgura es de 10 ms sobre esperas de 1-4 s: no relaja el contrato, sólo reconoce
+    ese desfase.
+    """
+    return pytest.approx(list(segundos), abs=1e-2)
+
+
 @pytest.fixture
 def dormidos() -> Any:
     """Espía ``asyncio.sleep`` del sender: el backoff se observa, no se espera."""
@@ -106,21 +118,21 @@ class TestFloodControl429:
 
         assert resultado == TelegramMessage(chat_id=456, message_id=11)
         assert gateway.request.await_count == 2
-        assert dormidos == [3.0]
+        assert dormidos == _esperas(3.0)
 
     async def test_el_retry_after_cae_al_header_cuando_el_cuerpo_no_lo_trae(self, dormidos: list[float]) -> None:
         sender, _gateway = _sender(_429(retry_after=None, header="4"), _ok())
 
         await sender.send(456, "hola")
 
-        assert dormidos == [4.0]
+        assert dormidos == _esperas(4.0)
 
     async def test_sin_ninguna_pista_se_espera_un_segundo_por_defecto(self, dormidos: list[float]) -> None:
         sender, _gateway = _sender(_429(retry_after=None), _ok())
 
         await sender.send(456, "hola")
 
-        assert dormidos == [1.0]
+        assert dormidos == _esperas(1.0)
 
     async def test_un_429_persistente_agota_los_reintentos_y_lanza_el_error_tipado(self, dormidos: list[float]) -> None:
         # 1 intento + _MAX_REINTENTOS_429 reintentos, todos limitados.
@@ -150,7 +162,7 @@ class TestFloodControl429:
 
         await sender.send(456, "hola")
 
-        assert dormidos == [1.0]
+        assert dormidos == _esperas(1.0)
 
     async def test_otros_errores_http_siguen_siendo_fallo_duro_sin_reintento(self, dormidos: list[float]) -> None:
         sender, gateway = _sender(_respuesta(400, "Bad Request"))
@@ -328,7 +340,7 @@ class TestSendDocument:
         resultado = await sender.send_document(456, b"contenido", "a.txt")
 
         assert resultado == TelegramMessage(chat_id=456, message_id=55)
-        assert dormidos == [2.0]
+        assert dormidos == _esperas(2.0)
         formularios = [llamada.kwargs["data"] for llamada in gateway.request.await_args_list]
         assert len(formularios) == 2
         assert formularios[0] is not formularios[1], "reusar el FormData consumido enviaría un cuerpo vacío"
@@ -424,11 +436,13 @@ class TestPoliticaDeTamanoOperativo:
         # La política debe acotar el ACUMULADO, no sólo cada petición: la espera del
         # rate limit local + intentos × deadline por intento + Σ esperas de
         # retry_after. Omitir la espera del rate limit dejaba fuera hasta 60 s.
+        # Desde #706 cada intento puede esperar además el cooldown COMPARTIDO
+        # (el aviso vigente más una extensión nueva, ambas acotadas por el tope):
+        # omitir ese término hacía que la cota venciera subidas que sólo esperaban
+        # un 429 anunciado.
         intentos = sender_mod._MAX_REINTENTOS_429 + 1
-        esperado = (
-            sender_mod.RATE_LIMIT_WINDOW_SECONDS
-            + intentos * sender_mod.UPLOAD_DEADLINE_SECONDS
-            + sender_mod._MAX_REINTENTOS_429 * sender_mod._RETRY_AFTER_MAX_SEGUNDOS
+        esperado = sender_mod.RATE_LIMIT_WINDOW_SECONDS + intentos * (
+            sender_mod.UPLOAD_DEADLINE_SECONDS + sender_mod._MAX_ESPERA_COMPARTIDA_POR_INTENTO
         )
         assert esperado == sender_mod.MAX_UPLOAD_TOTAL_SECONDS
 

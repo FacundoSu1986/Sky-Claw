@@ -93,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Anclas: `tests/test_vfs_attestation_canonicalization.py`.
 
 ### Added
+- **Cooldown COMPARTIDO del flood-control de Telegram (#706).** El reintento de un
+  HTTP 429 dormía **sólo** a la corrutina que lo recibió: una `send()` concurrente
+  pasaba el rate limit local de inmediato (un 429, por contrato, no registra envío) y
+  volvía a golpear la API **dentro de la misma ventana** que Telegram acababa de
+  anunciar, agotando los reintentos acotados de la ráfaga y perdiendo avisos. Ahora
+  `TelegramSender` publica cada 429 en `CooldownCompartido` —deadline monotónico,
+  acotado a los 30 s de la política, extendido con `max` para que dos avisos
+  concurrentes converjan en el más lejano— y lo consulta **antes de cada intento
+  HTTP**, no sólo antes del primero. El alcance es el del **bot** (un 429 no permite
+  atribuir si el límite excedido fue el del chat o el global) y las tres vías HTTP del
+  módulo participan: `sendMessage`/`sendDocument` reintentan de forma acotada,
+  `editMessageText` y `answerCallbackQuery` esperan y publican sin reintentar, para
+  que una edición de HITL perdida no deje botones viejos ni deje a las hermanas
+  golpeando la ventana. Un 429 sigue sin ocupar un cupo del rate limit local ni
+  producir identidad de mensaje, la espera es cancelable y no hay lock sostenido
+  durante una petición. Anclas: `tests/test_telegram_flood_control_compartido.py`
+  (reloj simulado y envíos concurrentes deterministas, más el ancla AST que enumera
+  los caminos HTTP y exige la consulta previa a la petición) y
+  `tests/test_telegram_sender_adjuntos_y_429.py`.
 - **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
 - **Runtime Vault — global TGR serialization lock (GP2-P2).** Primitiva de
   exclusión cross-process que serializa los ciclos `LOAD → MODIFY → WRITE` sobre
