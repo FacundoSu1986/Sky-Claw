@@ -121,7 +121,8 @@ jobs:
             tests/test_dyndolod_uia_preflight.py::test_el_observador_por_defecto_falla_cerrado_en_vez_de_adivinar \
             tests/test_dyndolod_uia_preflight.py::test_el_pipeline_con_el_observador_por_defecto_da_unknown_no_error \
             tests/test_dyndolod_uia_preflight.py::test_uia_no_disponible_es_un_error_uia \
-            tests/test_dyndolod_uia_preflight.py::test_el_modulo_no_importa_nada_de_windows
+            tests/test_dyndolod_uia_preflight.py::test_el_modulo_no_importa_nada_de_windows \
+            tests/test_frozen_runtime_p4_root_lock.py
 
   # ── Gate 4: Security ─────────────────────────────────
   security:
