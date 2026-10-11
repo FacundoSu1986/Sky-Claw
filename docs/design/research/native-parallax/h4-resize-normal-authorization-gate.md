@@ -104,6 +104,26 @@ autoritativos de Windows seguían corriendo, este slice **no** afirma verde glob
 bloqueante para este trabajo: este slice no toca producción y no depende de esa corrida. Se
 registra como límite de medición, no como hallazgo.
 
+### 1.5 Estado del PR y revisión adversarial
+
+```text
+PR                            = 717
+URL                           = https://github.com/FacundoSu1986/Sky-Claw/pull/717
+HEAD_DE_REFERENCIA_AL_ABRIR   = e7e28a98062705b0af7d6f96f504306bb39fb69a
+ESTADO_INICIAL                = DRAFT / OPEN / MERGEABLE
+ARCHIVOS_CAMBIADOS            = 2 (el documento + el test de invariantes documentales)
+REVIEW_COMMENT_ID             = 6113684862
+REVIEW_VERDICT                = CHANGES_REQUESTED_FOR_CONTRACT_COMPLETENESS
+REVIEW_FINDINGS               = F1 (contrato numérico) · F2 (propagación de degenerados) — ambos MATERIAL
+REVIEW_THREADS_ABIERTOS       = 0 (por estar en Draft, los bots no corrieron)
+```
+
+**Por qué 0 threads.** Mientras el PR está en `Draft`, los revisores automáticos (Qodo, CodeRabbit)
+no se disparan; la revisión llegó por comentario humano explícito, no por hilo inline. Por eso la
+adjudicación de F1/F2 se hace sobre el texto del comentario `6113684862` y se registra acá, no
+como resolución de threads. Al pasar a `Ready`, los bots correrán sobre el HEAD final y sus hilos
+se adjudicarán en §14.
+
 ---
 
 ## 2. Fase 0 — Protección del entorno (ejecutada)
@@ -141,16 +161,28 @@ justificadas".
 
 ### 3.1 Contrato consolidado de entrada
 
+Se distingue **el tipo/estructura del array** (contrato de forma, cerrado acá) de **la política
+sobre `H ≠ W`** (V-03, diferido). Son dos cosas distintas y no se confunden.
+
 | Atributo | Contrato cerrado | Fundamento | Estado |
 |---|---|---|---|
-| Tipo | `NDArray[np.float64]` | Firma vigente | `CONFIRMED` |
-| Forma | `(H, W, 3)` | Uso en `load_asset`; `decode_normal_image` produce RGB | `CONFIRMED` |
+| Tipo | `NDArray` convertible a `np.float64` | Firma vigente; el cast es explícito en la salida | `CONFIRMED` |
+| `ndim` | **Exactamente 3** (`arr.ndim == 3`) | Firma `(H, W, 3)`; un 4D debe rechazarse, no adivinarse | `DESIGN_CLOSED` |
+| Nº de canales | **Exactamente 3** (`arr.shape[-1] == 3`) | Es una normal tangencial RGB; 2/4/0 canales no son el tipo | `DESIGN_CLOSED` |
+| `H > 0` y `W > 0` | **Requerido**; dimensión cero ⇒ rechazo | Una rejilla sin píxeles no es una normal | `DESIGN_CLOSED` |
+| `H ≠ W` | **V-03** — ver fila propia abajo | Vacío declarado del preflight §7.3 | `DEFERRED` |
 | Rango por canal | `[-1, 1]` | `decode_normal_image`: `rgb/255*2 − 1`; el corpus no excede | `CONFIRMED` |
 | Normalización previa | Unitaria (ya renormalizada) | `decode_normal_image` | `CONFIRMED` |
 | Convención | Aplicada por `apply_convention` **antes** del resize | `load_asset:317-318` | `CONFIRMED` |
-| No finitos (NaN/Inf) | **Rechazo fail-closed** | V-04 `CONTRACT_CLOSED` | `CONTRACT_CLOSED` |
-| Dimensiones admitidas | Cuadradas en la práctica; el resizer **no** valida | V-03 `DEFERRED`; corpus M3 100 % cuadrado | `DEFERRED` |
-| `size` destino | Entero positivo; `PRIMARY_RESOLUTION = 512` | §27 M6 | `CONFIRMED` |
+| Finitud | **Requerida**; NaN/Inf ⇒ rechazo fail-closed | V-04; **hoy el camino uint8 los clipea en silencio** (medido, §3.4) | `CONTRACT_CLOSED` (decisión) |
+| `size` destino | **Entero** con `size > 0` | §27 M6 (`512`); `type(size) is int` y `size >= 1` | `DESIGN_CLOSED` |
+
+**Sobre la fila `H ≠ W`.** V-03 trata **exclusivamente** dimensiones no cuadradas
+(`H ≠ W` con `H, W > 0` y 3 canales). La razón por la que se difiere es que `load_asset`
+reescala a `512²` **antes** del solver, así que un asset no cuadrado se vuelve cuadrado **antes**
+de llegar al resizer de la normal (§7.3 del preflight). Una forma **malformada**
+(`ndim != 3`, `shape[-1] != 3`, `H == 0`, `W == 0`) **no** es un caso de V-03 y **no** puede
+diferirse invocándolo.
 
 ### 3.2 Contrato consolidado de salida
 
@@ -169,26 +201,77 @@ justificadas".
 |---|---|---|---|
 | V-01 | Camino identidad | Preservar **no-op válido** (sin interpolar, sin renormalizar, sin copia obligatoria) + **validación explícita** de entradas inválidas | `CONTRACT_CLOSED` (D-07) |
 | V-02 | Política de degenerados | **FAIL_CLOSED** con umbral derivado de teoría + sintético (§5.3) | `CONTRACT_CLOSED` (D-06) |
-| V-03 | Dimensiones no cuadradas | Fuera del alcance H4; `load_asset` cuadra a 512 antes del solver | `DEFERRED` |
+| V-03 | Dimensiones **no cuadradas** (`H ≠ W`, `H,W > 0`, 3 canales) | Fuera del alcance H4; `load_asset` cuadra a 512 antes del solver | `DEFERRED` |
 | V-04 | No finitos | Rechazo fail-closed, coherente con `decode_height_image` modo F | `CONTRACT_CLOSED` |
 | V-05 | Estabilidad entre versiones | `NOT_MEASURED`; la versión se registra en la procedencia (§10) | `NOT_MEASURED` (registrado, no presentado como probado) |
 
+**Corrección de alcance (F1 del review de #717).** V-03 cubre **sólo** `H ≠ W`. La revisión
+anterior de este documento atribuía a V-03 el caso genérico `forma != (H,W,3)`, lo que era
+incorrecto: `ndim != 3`, `shape[-1] != 3`, `H == 0`, `W == 0` y `size` inválido **no** son
+"non-square" y se cierran acá como contrato propio (§3.4).
+
 ### 3.4 Regla de comportamiento ante entrada inválida (cierre)
 
-El contrato exige que **toda** entrada inválida tenga comportamiento definido y explícito. Se
-cierra así:
+**Medición del comportamiento vigente (ejecutada en este slice, sin corpus).** Antes de fijar la
+regla se midió qué hace hoy la implementación, para no inventar semántica:
+
+| Entrada | Comportamiento medido **hoy** | Es un contrato válido? |
+|---|---|---|
+| `(H,W,3)` válido | interpola normalmente | Sí |
+| `(H,W,2)` | `IndexError: index 2 is out of bounds for axis 2 with size 2` | **No** — excepción genérica, no semántica |
+| `(H,W,1)` | `IndexError` (axis 2 size 1) | **No** — idem |
+| `(H,W,0)` | `IndexError` (axis 2 size 0) | **No** — idem |
+| `(H,W,4)` | **OK** `(size,size,3)` — **descarta el 4º canal en silencio** | **No** — pérdida silenciosa |
+| `(H,W)` 2D | **OK** `(size,size,3)` — broadcasting implícito de `n[..., c]` | **No** — semántica ambigua |
+| `(H,W,3,1)` 4D | `ValueError: Too many dimensions: 3 > 2.` (de Pillow) | **No** — error de dependencia |
+| `(0,W,3)` | **OK** — `H == 0` no falla | **No** — rejilla vacía sin marca |
+| `(H,0,3)` | **OK** — `W == 0` no falla | **No** — idem |
+| `size = 0` / `size < 0` | `ValueError: height and width must be > 0` (de Pillow) | **No** — error de dependencia |
+| `size = 2.5` / `size = "4"` | `TypeError` (de Pillow) | **No** — error de dependencia |
+| NaN / +Inf / −Inf | **OK** — clipeados a `[-1,1]` en silencio | **No** — contradice V-04 |
+| `> 1` finito (p. ej. `1000.0`) | clip a `1.0` (declarado) | Sí (clip documentado) |
+| dtype `float32`/`int32`/`uint8` | **OK** — cast a `float64` en la salida | Sí (tolerado) |
+
+El hallazgo central es que **hoy no hay validación de forma ni de finitud**: unos casos explotan
+con errores de dependencia (`IndexError`/`ValueError`/`TypeError` de Pillow/NumPy), otro
+(`(H,W,4)`) descarta un canal **sin decirlo**, y los no finitos se clipean en silencio. Ninguno
+de esos comportamientos es un contrato.
+
+**Regla cerrada (fail-closed), separando lo que se rechaza de lo que se difiere:**
 
 ```text
-entrada con NaN/Inf            -> reject (fail-closed, DatasetInvalidError-like)
-entrada con forma != (H,W,3)   -> DEFERRED (V-03): el resizer no valida hoy;
-                                  el slice de código NO debe inventar una semántica
-                                  de dominio no justificada. Se documenta el límite.
-entrada válida en camino identidad -> no-op (V-01)
-entrada válida con resize      -> interpolar + renormalizar (o NON_EVALUABLE si degenerado)
+RECHAZO FAIL-CLOSED (contrato cerrado — el Slice 2 debe implementar la validación):
+
+  ndim != 3                          -> REJECT  (InvalidNormalShapeError-like)
+  shape[-1] != 3                     -> REJECT  (no se descarta ningún canal)
+  H == 0  o  W == 0                  -> REJECT  (rejilla vacía)
+  cualquier NaN/Inf en la entrada    -> REJECT  (V-04; NO se clipea en silencio)
+  size no-entero (type(size) is not int / bool) -> REJECT
+  size < 1                           -> REJECT
+
+DIFERIDO (V-03 — NO es rechazo, es alcance):
+
+  H != W  con  H,W > 0  y  3 canales -> DEFERRED
+      (load_asset cuadra a 512 antes del solver; el resizer no declara política acá)
+
+TOLERADO (contrato ya vigente):
+
+  dtype distinto de float64          -> cast a float64 (la firma promete float64 en salida)
+  valores finitos fuera de [-1,1]    -> clip documentado por canal (comportamiento actual)
+  entrada válida en camino identidad -> no-op (V-01)
+  entrada válida con resize          -> interpolar + renormalizar (o NON_EVALUABLE si degenera)
 ```
 
-**No se inventa** un contrato de forma no cuadrada: el preflight lo declara `DEFERRED` y este
-cierre **preserva** ese límite en vez de fabricar una regla de dominio.
+**Casos explícitamente `NOT_DEFERRED`.** Un `ndim`/`shape[-1]` incorrecto, una dimensión vacía o
+un `size` inválido **no** se difieren "a un slice futuro": se cierran acá como **rechazo**. Diferir
+una forma malformada dejaría pasar exactamente el defecto que F1 señala (un canal descartado en
+silencio, o un error de Pillow disfrazado de contrato).
+
+```text
+R1_ENVELOPE_CLOSED     = YES  (ndim, shape[-1], H>0, W>0, size, finitud -> REJECT)
+V03_SCOPE              = H!=W SOLAMENTE (no cubre formas malformadas)
+MALFORMED_NOT_DEFERRED = YES  (ndim/shape[-1]/H=0/W=0 -> rechazo, no "fuera de alcance")
+```
 
 ### 3.5 Tolerancias — principio de justificación (cierre metodológico)
 
@@ -205,15 +288,17 @@ El preflight exige tolerancias "derivadas de sintético, no ajustadas al corpus"
 ```text
 R1_NUMERIC_CONTRACT = DESIGN_CLOSED
 TOLERANCE_SOURCE    = SYNTHETIC_AND_ANALYTICAL (prohibido ajustar al corpus)
-V03_HANDLING        = DEFERRED_PRESERVED (no se inventa semántica no cuadrada)
+V03_HANDLING        = DEFERRED_PRESERVED (sólo H!=W; no cubre formas malformadas)
 ```
 
 ### 3.6 Mensaje de cierre de R1
 
 R1 pasa de `DESIGN_PROPOSED` a `DESIGN_CLOSED`: el contrato de entrada y salida está
-especificado como unidad, los cinco vacíos tienen estado explícito, y el criterio de tolerancias
-está fijado por fuente (sintético/analítico) sin números ajustados al corpus. **No** se declara
-`CONFIRMED`: eso requiere la implementación, que no existe.
+especificado como unidad, el **envelope estructural** (`ndim == 3`, `shape[-1] == 3`, `H,W > 0`,
+`size` entero positivo, finitud) se cierra como **rechazo fail-closed**, V-03 queda acotado a
+`H ≠ W` sin absorber casos que no cubre, y el criterio de tolerancias está fijado por fuente
+(sintético/analítico) sin números ajustados al corpus. **No** se declara `CONFIRMED`: eso requiere
+la implementación, que no existe.
 
 ---
 
@@ -363,45 +448,149 @@ El preflight lo dice en §5.3 (D-06.d/D-06.e): basta un píxel degenerado para m
 roster con estado explícito… Si ese runner todavía no soporta tal salida, debe abortar antes de
 publicar un resultado científico"*.
 
-### 5.3 La señal de error diferenciada (contrato cerrado)
+### 5.3 El vehículo de la señal: `resize_normal → load_asset → runners` (contrato cerrado)
 
-Diseño cerrado para el Slice 2 (implementación `BLOCKED`, contrato `DESIGN_CLOSED`):
+**El problema (F2 del review de #717).** Decir "la señal se eleva desde una capa que conoce el
+asset" no alcanza: la firma vigente es `resize_normal(n, size) -> NDArray[np.float64]` y devuelve
+**sólo** un array. Nada en esa firma transporta `degenerate_count`, `total_pixels` ni `threshold`.
+Sin un vehículo explícito, el conteo se pierde entre el resizer y el asset, y la política
+fail-closed no es ejecutable. En particular, **no** se puede "detectar la degeneración en el
+resizer y lanzar desde el consumidor" si el resizer no comunica nada.
+
+#### 5.3.1 El vehículo: resultado tipado, no excepción desde el resizer
+
+Se cierra el mecanismo: `resize_normal` **no** lanza por degeneración (sigue devolviendo un
+`NDArray`, para no romper el call-site de test ni la firma, y porque un vector degenerado **no**
+es un fallo del resizer sino un hecho del campo). Devuelve en cambio un **resultado tipado** que
+lleva la evidencia:
 
 ```text
-Jerarquía de excepciones (propuesta para el Slice 2 — NO implementada acá):
+# Contrato cerrado para el Slice 2 (NO implementado acá):
 
-  DatasetInvalidError(Exception)                    # integridad de archivo/manifest (existente)
-  └─ DegenerateNormalError(DatasetInvalidError)     # NUEVA: error de degeneración H4
-       .asset_id, .degenerate_count, .total_pixels, .threshold
+@dataclass(frozen=True)
+class NormalResizeResult:
+    array: NDArray[np.float64]      # (size, size, 3); puede contener el vector crudo (aún sin renormalizar)
+    degenerate_count: int           # píxeles con 0 <= L < threshold (antes de renormalizar)
+    total_pixels: int               # size*size
+    threshold: float                # DEGENERATE_THRESHOLD usado en esta corrida
+    degenerate: bool                # degenerate_count > 0
+
+def resize_normal_diagnostic(n, size) -> NormalResizeResult: ...   # NUEVA API del Slice 2
+def resize_normal(n, size) -> NDArray[np.float64]:                 # API VIGENTE, preservada
+    return resize_normal_diagnostic(n, size).array                 # delega; no cambia su firma
 ```
 
-**Reglas de comportamiento (fail-closed):**
+**Por qué `resize_normal` conserva la firma.** Hay dos caminos:
 
-1. `resize_normal` **no** lanza por degeneración en su forma actual: no puede abortar un asset
-   por una propiedad del *campo* sin que el consumidor decida. La señal se eleva como
-   `DegenerateNormalError` desde una capa que conozca el asset (el punto de integración del
-   Slice 2), con el conteo y el threshold.
-2. `DegenerateNormalError` **hereda** de `DatasetInvalidError` (compatibilidad de `except` en
-   consumidores que hoy no distinguen), **pero** se lanza **antes** de que M3 haga `continue`, y
-   su handling debe **preceder** al `except DatasetInvalidError`.
-3. En M3, el nuevo handler `except DegenerateNormalError` debe **abortar** (`raise` o
-   `sys.exit`), **no** `continue` — porque M3 no tiene hoy un roster persistente con estado
-   `NON_EVALUABLE`.
-4. Mientras no exista roster persistente, **ningún** consumidor puede publicar un artefacto
-   científico exitoso tras registrar un `DegenerateNormalError`. `continue` está **prohibido**
-   para esta señal.
-5. **Prohibido** cambiar exclusiones preexistentes (integridad) por motivos distintos de H4
-   (dictamen: *"No cambiar exclusiones preexistentes por motivos distintos de H4"*).
+1. **Descartado:** cambiar la firma de `resize_normal` a `-> NormalResizeResult`. Rompería el
+   call-site de test (`tests/test_native_parallax_exp_m2.py:96`) y todo consumidor que hoy usa el
+   array directamente; además obligaría a cambiar la primitiva que el preflight quiere corregir
+   **sin** cambiar su contrato de retorno (§5.1: "se devuelve el tipo contratado `float64`").
+2. **Elegido:** se agrega `resize_normal_diagnostic` (o se le da a `resize_normal` un parámetro
+   `*, with_diagnostics: bool = False`). `resize_normal` delega y sigue devolviendo el array. El
+   diagnóstico vive en la varita nueva, no en la firma histórica.
 
-**Test de propagación exigido (Slice 2, no existe aún):** un ancla que, por introspección/AST,
-**enumere** todos los `except DatasetInvalidError` de los runners y **exija** que ninguno capture
-`DegenerateNormalError` con `continue`. Un runner nuevo sin tratamiento rompe el ancla.
+**Cómo se transporta sin publicar un array inválido.** El punto clave: `load_asset` **no** devuelve
+el array del resizer si es degenerado. Lo inspecciona **antes** de construir `AuthoredMaterial`:
 
 ```text
-DIFFERENTIATED_ERROR_SIGNAL      = DegenerateNormalError(DatasetInvalidError)  (DESIGN_CLOSED)
-M3_MUST_NOT_SILENTLY_EXCLUDE     = YES (abortar mientras no haya roster persistente)
-SILENT_EXCLUSION_PROHIBITED      = YES
+load_asset(spec, resolution, ...):
+    res = resize_normal_diagnostic(normal, resolution)            # ← recibe la evidencia
+    if res.degenerate:                                            # ← decisión con identidad del asset
+        raise DegenerateNormalError(
+            asset_id = spec.asset_id,                             # identidad conservada
+            degenerate_count = res.degenerate_count,              # censo
+            total_pixels = res.total_pixels,                      # denominador
+            threshold = res.threshold,                            # umbral usado
+            fraction = res.degenerate_count / res.total_pixels,   # fracción
+            reason = "NON_EVALUABLE: vector nulo/casi-nulo tras interpolación",
+        )
+    ...  # sólo si no es degenerado se construye AuthoredMaterial
+```
+
+Así el array degenerado **nunca** llega al solver: `load_asset` aborta antes de retornar
+`AuthoredMaterial`. La información viaja **dentro del objeto de error**, no dentro del array.
+
+#### 5.3.2 Jerarquía de excepciones
+
+```text
+DatasetInvalidError(Exception)                    # integridad de archivo/manifest (existente)
+├─ InvalidNormalShapeError(DatasetInvalidError)   # NUEVA: ndim/shape[-1]/H=0/W=0/size inválido (§3.4, F1)
+└─ DegenerateNormalError(DatasetInvalidError)     # NUEVA: degeneración H4 (D-06)
+      .asset_id, .degenerate_count, .total_pixels, .threshold, .fraction, .reason
+```
+
+Los dos errores nuevos **heredan** de `DatasetInvalidError` para compatibilidad de los `except`
+existentes, pero cada uno se lanza **antes** del `continue` de M3 y su handling debe **preceder**
+al `except DatasetInvalidError`. **Son señales distintas**: una es "forma/estructura inválida"
+(F1), la otra es "dirección no confiable" (D-06). Un consumidor que quiera tratar sólo la
+degeneración captura `DegenerateNormalError` explícitamente.
+
+#### 5.3.3 Reglas de propagación por consumidor (fail-closed)
+
+| Consumidor | Comportamiento actual | Regla cerrada (Slice 2) |
+|---|---|---|
+| `run_exp_m2.py` | propaga (0 capturas) | `DegenerateNormalError` **aborta** la corrida (burbujea); no publica |
+| `run_exp_m4.py` | propaga (0 capturas) | idem |
+| `run_exp_m5.py` | propaga (0 capturas) | idem |
+| `run_exp_m3.py` | `except DatasetInvalidError: continue` (L340) | **Debe** capturar `DegenerateNormalError` **antes** y **abortar** (`raise`), no `continue`. Sin roster persistente no hay `NON_EVALUABLE` que registrar ⇒ se aborta. |
+| `fetch_exp_m2_corpus.py` | 3 capturas, **no** ejerce el resizer | Sin cambio (no es consumidor de degeneración) |
+
+**Transporte de la evidencia a través de los runners.** Cuando el runner tenga roster persistente
+(Slice 3), el `except DegenerateNormalError as exc` escribe, por asset:
+`degenerate_count`, `total_pixels`, `fraction`, `threshold`, `reason`, estado `NON_EVALUABLE`.
+Mientras ese roster **no exista** (hoy), el runner **aborta** y registra el asset causante en
+stderr — pero **no** publica artefacto científico exitoso. `continue` está **prohibido**.
+
+#### 5.3.4 Reglas de comportamiento (fail-closed)
+
+1. `resize_normal` **no** lanza por degeneración; delega en `resize_normal_diagnostic`.
+2. `load_asset` inspecciona el resultado **antes** de construir `AuthoredMaterial` y lanza
+   `DegenerateNormalError` con toda la evidencia, incluida la identidad del asset.
+3. `DegenerateNormalError` **hereda** de `DatasetInvalidError` (compatibilidad) pero se lanza
+   **antes** del `continue` de M3 y su handling **precede** al `except DatasetInvalidError`.
+4. En M3, `except DegenerateNormalError` debe **abortar**, **no** `continue` — no hay roster
+   persistente con estado `NON_EVALUABLE`.
+5. Mientras no exista roster persistente, **ningún** consumidor publica un artefacto científico
+   exitoso tras un `DegenerateNormalError`.
+6. **Prohibido** cambiar exclusiones preexistentes (integridad) por motivos distintos de H4
+   (dictamen: *"No cambiar exclusiones preexistentes por motivos distintos de H4"*).
+
+#### 5.3.5 Tests sintéticos discriminatorios exigidos (Slice 2)
+
+Cada uno debe fallar contra un vehículo ausente y pasar con el vehículo implementado:
+
+| Test | Qué prueba | Discrimina contra |
+|---|---|---|
+| `test_cuenta_exacta_de_pixeles_degenerados` | `degenerate_count` y `total_pixels` del caso sintético de cancelación coinciden con el censo del oráculo independiente | un resizer que devuelve el array sin conteo |
+| `test_umbral_reportado_es_el_usado` | `result.threshold` == el `DEGENERATE_THRESHOLD` de la corrida | un threshold recomputado o inventado |
+| `test_rechazo_visible_no_exclusion_silenciosa` | Con degenerados, `load_asset` lanza `DegenerateNormalError` (no devuelve material) | un `continue`/exclusión silenciosa |
+| `test_cero_publicacion_cientifica_exitosa` | El runner aborta y **no** escribe artefacto de resultado | un runner que publica con la cohorte alterada |
+| `test_identidad_del_asset_conservada` | `exc.asset_id` es el del asset que degeneró | un error sin identidad |
+| `test_exclusiones_historicas_no_h4_intactas` | Las exclusiones por integridad preexistentes siguen siendo exclusiones por integridad | una reclasificación de integridad como H4 |
+| `test_forma_malformada_no_es_degeneracion` | `(H,W,2)`/`(H,W,4)` lanzan `InvalidNormalShapeError`, **no** `DegenerateNormalError` | confundir F1 con D-06 |
+
+**Ancla AST exigida (Slice 2).** Un test que **enumere** por introspección/AST todos los
+`except` de los runners y exija que:
+
+- ningún handler capture `DegenerateNormalError` con `continue`;
+- el handler de `DegenerateNormalError` **preceda** al de `DatasetInvalidError` cuando ambos
+  aparecen en el mismo `try` (el orden de las cláusulas es load-bearing: una subclase capturada
+  antes de la superclase);
+- todo módulo que llame a `load_asset` **o** a `resize_normal` esté en el censo congelado — un
+  consumidor nuevo rompe el ancla hasta que se le declare su tratamiento.
+
+```text
+TRANSPORT_VEHICLE                = NormalResizeResult (dataclass, campo .array + censo)  DESIGN_CLOSED
+RESIZE_NORMAL_SIGNATURE_PRESERVED= YES (delega; el diagnóstico vive en la varita nueva)
+LOAD_ASSET_RAISES_WITH_IDENTITY  = YES (DegenerateNormalError con asset_id + censo)
+DEGENERATE_ERROR_BEFORE_CONTINUE = YES (handling precede a except DatasetInvalidError)
+THREE_ERRORS_DISTINCT            = YES (DatasetInvalid / InvalidNormalShape / DegenerateNormal)
+M3_ABORTS_NOT_CONTINUE           = YES (mientras no haya roster persistente)
+SCIENTIFIC_PUBLICATION_PROHIBITED= YES (tras DegenerateNormalError)
 EXISTING_EXCLUSIONS_UNCHANGED    = YES (no reclasificar integridad como H4)
+SYNTHETIC_DISCRIMINATING_TESTS   = 7 (especificados, NO implementados)
+AST_ANCHOR_SPECIFIED             = YES (ordena handlers + censo congelado)
 R6_CONSUMER_COVERAGE             = DESIGN_CLOSED
 ```
 
@@ -411,25 +600,40 @@ El preflight (§8 Familia E) pide un ancla que detecte una **nueva ruta de carga
 resizer declarado. Cierre del diseño:
 
 - **Detectar por AST**, no por lista: recorrer los runners y sus imports; congelar el conjunto de
-  módulos que llaman a `load_asset` **y** el conjunto que llama a `resize_normal`.
+  módulos que llaman a `load_asset` **y** el conjunto que llama a `resize_normal` (o a la varita
+  `resize_normal_diagnostic`).
 - Un primitivo nuevo (otra función que produzca `N_AUTH` sin pasar por `load_asset`) rompe el
   ancla hasta que se le declare procedencia.
 - **No** limitarse a `load_asset`: enumerar también las rutas de runner (M2/M3/M4/M5) para que una
   ruta nueva **no** herede silenciosamente una excepción.
+- **Ordinal de handlers:** cuando un `try` captura `DatasetInvalidError` y `DegenerateNormalError`,
+  el de la subclase debe ir **primero**. El ancla verifica el **orden**, no sólo la presencia.
 
 ```text
 FAMILY_E_ANCHOR_DESIGNED          = YES
 ANCHOR_ENUMERATES_BY_AST          = YES
 ANCHOR_COVERS_ALL_RUNNERS         = YES (M2/M3/M4/M5 + load_asset)
+ANCHOR_CHECKS_HANDLER_ORDER       = YES (subclase antes de superclase)
 ANCHOR_IMPLEMENTED                = NO  (pertenece al Slice 2)
 ```
 
 ### 5.5 Mensaje de cierre de R6
 
 R6 pasa a `DESIGN_CLOSED`: la enumeración se hizo por AST (no a mano), el punto crítico de M3
-quedó `CONFIRMED` con la línea exacta, la señal diferenciada está especificada con reglas
-fail-closed, y el ancla de cobertura está diseñada para **detectar** consumidores nuevos. Lo que
-**no** se cierra es la implementación de la señal ni del ancla (Slice 2).
+quedó `CONFIRMED` con la línea exacta, el **vehículo** de la señal está especificado de punta a
+punta (`resize_normal_diagnostic → NormalResizeResult → load_asset → runners`, §5.3), la jerarquía
+de excepciones hace imposible confundir un rechazo de forma con un rechazo de degeneración, las
+reglas de propagación están fijadas por consumidor (§5.3.3), y el ancla de cobertura está diseñada
+para **detectar** consumidores nuevos **y** verificar el **orden** de los handlers (§5.4). Lo que
+**no** se cierra es la implementación del vehículo, de la jerarquía ni del ancla (Slice 2).
+
+Lo que F2 corrigió respecto de la primera versión de este documento: no basta con declarar que el
+consumidor decide. La firma `resize_normal` devuelve hoy **sólo** `NDArray`, de modo que
+`degenerate_count`, `total_pixels` y `threshold` no tienen por dónde viajar. Por eso el contrato
+introduce un resultado tipado (`NormalResizeResult`) y una API nueva
+(`resize_normal_diagnostic`), preservando la firma de `resize_normal` como fachada. Sin ese
+vehículo, cualquier "regla de propagación" sería inejecutable y el conteo se perdería en el
+primer `return`.
 
 ---
 
@@ -476,10 +680,10 @@ Estados: `YES` · `NO` · `PENDING`. La autorización requiere **todo** `YES`.
 | # | Condición §17 | Estado | Evidencia | SHA | Test / verificación | Riesgos restantes | Dependencias | Responsable |
 |---|---|---|---|---|---|---|---|---|
 | 1 | Defecto H4 identificado en fuente y caso RED especificado (ejecución RED = aceptación de Slice 2) | **YES** | `authored_dataset.py:237-253`; sesgo medido `mean(nx) = −0.0039215083`; sub-LSB `1/(4·255)` invierte signo | `dff54d13` | Ancla documental (este slice) + probe de reproducción | Ninguno (la corrección aún no existe) | — | Tech Lead |
-| 2 | Contrato numérico cerrado, incluidos V-01…V-05 | **YES** | §3 (este documento) + §7 preflight | `dff54d13` | `test_..._authorization_gate.py` | V-03 `DEFERRED`, V-05 `NOT_MEASURED` (registrados) | R1 | Tech Lead |
-| 3 | Política de degenerados elegida y declarada | **YES** | §5.3 preflight (D-06 `FAIL_CLOSED`) | — | Ancla documental | Umbral sin valor (R7) | D-07b | Tech Lead |
+| 2 | Contrato numérico cerrado, incluidos V-01…V-05 | **YES** | §3 (este documento, corregido por F1) + §7 preflight | `dff54d13` | `test_..._authorization_gate.py` | V-03 `DEFERRED` (**sólo** `H != W`), V-05 `NOT_MEASURED` (registrados) | R1 | Tech Lead |
+| 3 | Política de degenerados elegida y declarada | **YES** | §5.3 preflight (D-06 `FAIL_CLOSED`) + §5.3 de este doc (vehículo F2) | — | Ancla documental | Umbral sin valor (R7) | D-07b | Tech Lead |
 | 4 | Plan de mutantes con test detector por mutante | **YES** | §9 preflight (M-01…M-10) | — | Ancla documental | M-10 debe romper algo (nota §9) | — | Tech Lead |
-| 5 | Ancla de enumeración de primitivas **diseñada** | **YES** | §5.4 (este documento) + §8 Familia E | — | Ancla documental + `ANCHOR_IMPLEMENTED=NO` | Implementación pendiente | R6 | Tech Lead |
+| 5 | Ancla de enumeración de primitivas **diseñada** | **YES** | §5.4 (este documento, corregido por F2) + §8 Familia E | — | Ancla documental + `ANCHOR_IMPLEMENTED=NO` | Implementación pendiente | R6 | Tech Lead |
 | 6 | Contrato de procedencia especificado con gate fail-closed | **YES** | §4 (este documento) + §10 preflight | `dff54d13` | `test_..._authorization_gate.py` | `PROVENANCE_GATE_IMPLEMENTED=NO` (Slice 3) | R5 | Tech Lead |
 | 7 | Plan de no-regresión de `resize_height` (test ejecutado = aceptación de Slice 2) | **YES** | §4.2 preflight; `resize_height` modo F intacto | `dff54d13` | Ancla documental + suite existente (`18 passed`) | Ninguno | — | Tech Lead |
 | 8 | Método de derivación de `DEGENERATE_THRESHOLD` aprobado (valor = aceptación de Slice 2) | **YES** | §6 (este documento) | — | Ancla documental + `THRESHOLD_FIXED_HERE=NO` | Valor numérico pendiente | D-07b | Tech Lead |
@@ -533,6 +737,21 @@ AUTO_DERIVED_APPROVAL = PROHIBITED (no se deriva de tests ni de CI verde)
 **Como queda un requisito previo sin cerrar (condición 9), la decisión es `BLOCKED`.** No se
 inventa una aprobación.
 
+**Efecto de la revisión adversarial de #717 sobre esta matriz.** La revisión
+(`comment 6113684862`) devolvió `PR717_REVIEW=CHANGES_REQUESTED_FOR_CONTRACT_COMPLETENESS` con
+dos hallazgos materiales (F1, F2). Ambos se adjudicaron y se corrigió el **contrato**, no la
+redacción. Consecuencia sobre la matriz: las filas 2, 3 y 5 pasan a apoyarse en §3 (corregido) y
+§5.3–§5.4 (nuevos); **ninguna fila cambia de estado** — las tres ya eran `YES`, y lo que cambió es
+la **calidad de la evidencia** que las sostiene. La condición 9 sigue `PENDING`: no hay ninguna
+aprobación derivable de tests, ni de CI, ni de haber cerrado F1/F2.
+
+```text
+F1_SHAPE_CHANNEL_SEMANTICS   = CLOSED        (envolvente estructural; V-03 sigue DEFERRED)
+F2_DEGENERATE_TRANSPORT      = CLOSED        (vehículo tipado + jerarquía + propagación)
+F1_F2_SCOPE_CHANGED          = NO            (no se amplió el alcance de §17)
+CONDITION_9_STATUS           = PENDING
+```
+
 ---
 
 ## 8. Veredictos
@@ -572,6 +791,8 @@ posterior sobre la condición 9 de §17 puede cambiar ese estado.
 | N-04 | La reproducción independiente de §3.5 dio `3968/4096` píxeles nulos (float), no `4092/4096`. El **clase** de hallazgo se confirma (histórico `0/4096`, float concentra nulos y 96.9 % no unitaria); el número exacto depende del kernel de Pillow. | Diferencia de instrumento | §10.1 |
 | N-05 | `fetch_exp_m2_corpus.py` también captura `DatasetInvalidError` (3 sitios) pero **no** ejerce el resizer: no es un consumidor de degeneración H4. Se documenta para que el ancla no lo trate como hermano. | Precisión de censo | §5.1 |
 | N-06 | M3 registra la exclusión con razón y re-verifica suficiencia, **pero** si quedan assets suficientes publica la decisión con la degeneración indistinguible de una exclusión de integridad. | **Hallazgo de integración** | §5.2 |
+| N-07 | (F1, revisión adversarial) La primera versión de §3.4 declaraba `forma != (H,W,3) -> DEFERRED (V-03)`, usando V-03 —que en el preflight §7.3 trata **dimensiones no cuadradas**— para diferir canales incorrectos, dimensiones cero y `size` inválido. El instrumento de medición fue un probe que ejercitó 10 formas hostiles: `(H,W,2)`→`IndexError`, `(H,W,4)`→**descarte silencioso del 4.º canal**, `(H,W)` 2D→aceptado, `(0,W,3)`→aceptado, `size=0/−1`→`ValueError` de Pillow, `size=2.5`→`TypeError`, `NaN/Inf`→**clip silencioso**. | **Defecto de contrato** | §3.4 |
+| N-08 | (F2, revisión adversarial) La primera versión de §5.3 declaraba que "el consumidor decide" sin especificar por dónde viajan `degenerate_count`, `total_pixels` y `threshold` — la firma `resize_normal` devuelve sólo `NDArray`. Regla sin vehículo = regla inejecutable; el conteo se pierde en el primer `return`. | **Defecto de contrato** | §5.3.1 |
 
 **Contradicciones resueltas sin inventar semántica:**
 
@@ -580,6 +801,25 @@ posterior sobre la condición 9 de §17 puede cambiar ese estado.
   (no se valida forma no cuadrada) y se prohíbe inventar una regla de dominio. §3.3.
 - El brief pedía "finitud y norma" como parte de R1. El preflight las cerró en V-04/D-06.
   **Resolución:** se consolidan en §3.2 sin reabrir las decisiones de Tech Lead.
+
+**Adjudicación de F1 y F2 (revisión adversarial de `#717`, comment `6113684862`).** Ambos fueron
+`MATERIAL` y `ACCEPTED`. Ninguno se resuelve "mejorando la prosa": cada uno exigió **medir** y
+**cambiar el contrato**.
+
+| Finding | Estado inicial | Adjudicación | Corrección aplicada | Evidencia |
+|---|---|---|---|---|
+| **F1** — el diferido de V-03 se usaba para formas malformadas | `REJECTED` como redacción: la tabla confundía dos ejes (cuadratura vs. envolvente estructural) | **ACCEPTED (material)** | §3.1 separa el **envolvente estructural** (`ndim`, `shape[-1]`, `H,W>0`, finitud, `size`) de V-03 (`H != W` **únicamente**). §3.4 fija la regla `REJECT / DEFERRED / TOLERATED` por caso, con la tabla de comportamiento medido. | `scratch/f1_shape_probe.py` → §3.4 |
+| **F2** — no había vehículo para la señal de degeneración | `PARTIAL`: la política estaba decidida, la propagación no | **ACCEPTED (material)** | §5.3.1 introduce `NormalResizeResult` (frozen) y `resize_normal_diagnostic`, preservando la firma de `resize_normal`. §5.3.2 jerarquía de excepciones. §5.3.3 propagación por consumidor. §5.3.5 siete tests sintéticos. §5.4 ancla que verifica **orden** de handlers. | §5.3–§5.4 |
+
+**Lo que F1 **no** autoriza.** Cerrar la envolvente estructural no cierra V-03. `H != W` sigue
+`DEFERRED`: el corpus es cuadrado por construcción y no hay evidencia de que el resizer deba
+admitir no-cuadradas. La diferencia es que ahora la **deferencia es una sola cosa** (cuadratura
+real) y no una bolsa donde entraba todo lo que no se quiso especificar.
+
+**Lo que F2 **no** autoriza.** Especificar el vehículo no implementa el vehículo.
+`NORMAL_RESIZE_RESULT_IMPLEMENTED = NO`, `EXCEPTION_HIERARCHY_IMPLEMENTED = NO` y
+`HANDLER_ORDER_ANCHOR_IMPLEMENTED = NO` pertenecen al Slice 2. Lo cerrado acá es el **contrato**
+(firmas, campos, orden de inspección, reglas de propagación, tests exigidos), no el código.
 
 ---
 
@@ -600,6 +840,37 @@ Ejecutada contra la implementación **vigente** del worktree (no modificada):
 | Caso límite `8×2→8×1` (uint8) | `(0.57735, −0.57735, −0.57735)`, norma 1.0 | norma 1.0 | Coincide |
 | Caso límite `8×2→8×1` (float) | `(0,0,0)`, norma 0.0 | norma 0.0 | Coincide |
 
+**Sonda F1 — envolvente estructural (medida en este slice, `scratch/f1_shape_probe.py`).**
+Ejercita la **implementación vigente** con entradas hostiles para fundar la tabla de §3.4 en
+comportamiento observado, no en suposición:
+
+| Entrada hostil | Comportamiento **vigente** medido | ¿Es aceptable? | Regla F1 |
+|---|---|---|---|
+| `(H, W, 3)` válido | `OK shape=(2, 2, 3)` | Sí (referencia) | `TOLERATED` |
+| `(H, W, 2)` | `IndexError: index 2 is out of bounds for axis 2 with size 2` | No: excepción no tipada | `REJECT` |
+| `(H, W, 1)` | `IndexError: index 1 is out of bounds for axis 2 with size 1` | No: excepción no tipada | `REJECT` |
+| `(H, W, 0)` | `IndexError: index 0 is out of bounds for axis 2 with size 0` | No: excepción no tipada | `REJECT` |
+| `(H, W, 4)` | **Acepta y devuelve `(2, 2, 3)`: descarta el 4.º canal en silencio** | **No: pérdida silenciosa de datos** | `REJECT` |
+| `(H, W)` 2D | **Acepta vía broadcast implícito** | No: tipo equivocado | `REJECT` |
+| `(H, W, 3, 1)` 4D | `ValueError: Too many dimensions: 3 > 2.` | No: excepción no tipada | `REJECT` |
+| `(0, W, 3)` | **Acepta** (produce salida interpolada de una rejilla vacía) | No: rejilla sin píxeles | `REJECT` |
+| `(H, 0, 3)` | **Acepta** (ídem) | No | `REJECT` |
+| `size = 0` | `ValueError: height and width must be > 0` (de Pillow, no del dominio) | No: falla tarde y ajena | `REJECT` |
+| `size = −1` | `ValueError: height and width must be > 0` | No | `REJECT` |
+| `size = 2.5` | `TypeError: 'float' object cannot be interpreted as an integer` | No: firma exige `int` | `REJECT` |
+| `size = "4"` | `TypeError: 'str' object cannot be interpreted as an integer` | No | `REJECT` |
+| `NaN` en la entrada | **Acepta: clipeo silencioso** (`RuntimeWarning: invalid value encountered in cast`; salida `finite=True`) | **No: dato corrupto sin señal** | `REJECT` |
+| `±Inf` en la entrada | **Acepta: clipeo silencioso** a `±1` | **No** | `REJECT` |
+| `(2, 2, 2)` camino identidad | **Devuelve `(2, 2, 2)` sin validar canales** | No: el camino identidad evade el contrato | `REJECT` (D-07) |
+| `(2, 2, 4)` camino identidad | **Devuelve `(2, 2, 4)` sin validar canales** | No | `REJECT` (D-07) |
+| `(2, 2)` camino identidad | **Devuelve `(2, 2)` sin validar `ndim`** | No | `REJECT` (D-07) |
+
+Las seis filas en **negrita** son las que motivan que la envolvente sea `REJECT` explícito y no una
+deferencia: el descarte del 4.º canal, la aceptación de 2D por broadcast, la interpolación de una
+rejilla vacía, el clipeo de no-finitos y el camino identidad que no valida canales/`ndim` son
+**pérdidas silenciosas**, exactamente la clase de defecto que H4 combate (`astype` que trunca sin
+avisar). Diferirlas habría reproducido el mismo patrón en otra capa.
+
 ### 10.2 Suite existente (ancla vigente)
 
 ```text
@@ -615,18 +886,18 @@ Valores **medidos** antes de publicar.
 
 ```text
 WRITE_SET        = PASS  (2 paths: el documento + tests/test_native_parallax_h4_authorization_gate.py)
-DIFF_CHECK       = PASS  (sin whitespace sobrante ni marcadores; `git status --short` = sólo ?? de los 2 paths)
-MARKDOWN_TABLES  = PASS  (verificado con las funciones del checker del repo IMPORTADAS, no reimplementadas)
+DIFF_CHECK       = PASS  (sin whitespace sobrante ni marcadores; `git diff --check` limpio)
+MARKDOWN_TABLES  = PASS  (21 tablas, 0 inconsistencias — con las funciones del checker del repo IMPORTADAS)
 MARKDOWN_BARRAS  = PASS  (0 celdas con "\|")
-TEST_NUEVO       = PASS  (17 passed — tests/test_native_parallax_h4_authorization_gate.py)
+TEST_NUEVO       = PASS  (33 passed — tests/test_native_parallax_h4_authorization_gate.py)
 TEST_VIGENTE     = PASS  (18 passed — test_native_parallax_exp_m2.py, incluye el ancla del resizer)
 CHECKER_REPO     = PASS  (8 passed — test_native_parallax_pr700_corrective_docs_invariants.py)
-SUITE_FOCAL_NP   = PASS  (63 passed — m2 + m2_json + pr700 docs + pr697 reconciliation + gate)
+SUITE_FOCAL_NP   = PASS  (79 passed — m2 + m2_json + pr700 docs + pr697 reconciliation + gate)
 RUFF_CHECK       = PASS  (All checks passed!)
 RUFF_FORMAT      = PASS  (858 files already formatted)
 MYPY             = PASS  (no issues found in 364 source files)
-MUTANTES_ANCLA   = 8/8 killed  (auth=YES, ready=YES, cierre=APPROVED, produccion=YES,
-                                corpus=YES, fila rota, barra escapada, R1=BLOCKED)
+MUTANTES_ANCLA   = 17/17 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
+                                   M-12/M-13/M-14/M-15/M-16 de F2)
 ARTEFACTOS_CIENTIFICOS = PASS  (0 archivos científicos modificados)
 PRODUCCION       = PASS  (0 archivos de sky_claw/ modificados)
 ```
@@ -639,6 +910,21 @@ tras la corrida. En la primera pasada surgió un **hermano no cubierto**: `TECH_
 filtra la cita histórica entre backticks (`=NOT_RECORDED` del dictamen de #711), que es una
 cita, no una declaración. Lección: el ancla debe enumerar las superficies que **declaran**, no
 muestrear una.
+
+**Segunda lección (mutantes F1/F2, tres rondas).** La primera versión de los anclas F1/F2
+**no era load-bearing**: M-09, M-10 y M-11 **sobrevivían** con baseline verde. Causa: los tests
+verificaban *presencia de token en el documento* (`"REJECT" in texto`) en vez de *la regla de
+cada fila*. La corrección fue anclar por **fila de tabla** —extraída por encabezado, con
+normalización de backticks— exigiendo que **cada** fila estructural declare `REJECT`/`TOLERATED`
+y **ninguna** declare `DEFERRED`. Muestrear filas es el mismo error que muestrear call-sites.
+
+**Tercera lección (contaminación por SIGTERM).** La primera corrida del driver murió por SIGTERM
+*durante* una mutación: `finally` no corrió, el doc quedó mutado (`degenerate_count` → `cnt`) y el
+backup de la corrida siguiente congeló **ese** estado como "pristino" — el baseline salió con
+**1 failed** y M-13 se reportó "NO APLICADO". El driver ahora: (1) exige baseline **verde** antes
+de mutar y aborta si no lo está; (2) registra el hash pristine en un sidecar y detecta
+contaminación entre corridas; (3) re-verifica el hash al restaurar. Lección: un backup tomado
+*después* de una mutación interrumpida no es un pristine — es evidencia contaminada.
 
 
 ---
@@ -674,11 +960,18 @@ PROHIBIDO      = thresholds, corpus, artefactos históricos, docs de #697/#700, 
 BASE           = un `main` NUEVO (no la rama de #675 ni la de este cierre)
 ```
 
-**Adiciones de este cierre al write-set del Slice 2** (consecuencia de §5.2/R6):
+**Adiciones de este cierre al write-set del Slice 2** (consecuencia de §5.2/R6 y de la corrección
+F2 de §5.3):
 
-- La señal diferenciada `DegenerateNormalError` y su handling fail-closed en **cada** consumidor
-  enumerado por el ancla (M2/M3/M4/M5), con `continue` prohibido para esa señal.
-- El ancla de cobertura (Familia E) implementada por AST.
+- El **vehículo** de la señal: `NormalResizeResult` (frozen dataclass) y la API
+  `resize_normal_diagnostic`, con `resize_normal` conservando su firma como fachada.
+- La jerarquía `InvalidNormalShapeError` / `DegenerateNormalError` (bajo `DatasetInvalidError`) y
+  su handling fail-closed en **cada** consumidor enumerado por el ancla (M2/M3/M4/M5), con
+  `continue` prohibido para la señal de degeneración.
+- El ancla de cobertura (Familia E) implementada por AST, incluyendo la verificación del **orden**
+  de los handlers (subclase antes que superclase).
+- La **envolvente estructural** de F1 (`ndim == 3`, `shape[-1] == 3`, `H,W > 0`, finitud, `size`
+  entero ≥ 1) como validación explícita. V-03 (`H != W`) **no** entra: sigue `DEFERRED`.
 
 **Precondición dura para abrir ese PR:** la condición 9 de §17 (`H4_TECH_LEAD_APPROVAL`)
 resuelta a `YES` de forma explícita. Sin eso, el PR de implementación **no** debe abrirse.
@@ -696,6 +989,9 @@ R1_NUMERIC_CONTRACT            = DESIGN_CLOSED
 R5_PROVENANCE_CONTRACT         = DESIGN_CLOSED
 R6_CONSUMER_COVERAGE           = DESIGN_CLOSED
 R7_THRESHOLD_PROCEDURE         = DESIGN_CLOSED (valor DEFERRED a Slice 2)
+
+F1_SHAPE_CHANNEL_SEMANTICS     = CLOSED  (envolvente estructural REJECT; V-03 H!=W sigue DEFERRED)
+F2_DEGENERATE_TRANSPORT        = CLOSED  (NormalResizeResult + jerarquía + propagación por consumidor)
 
 D06_STATUS                     = CONTRACT_CLOSED_FAIL_CLOSED
 D07_STATUS                     = CONTRACT_CLOSED_PRESERVE_VALID_IDENTITY_NOOP
@@ -715,7 +1011,60 @@ CORPUS_ACCESSED                = NO
 ```
 
 **Estado narrativo.** Los tres contratos que el dictamen de #711 pidió cerrar (R1, R5, R6) están
-cerrados como documentación verificable. No queda ningún requisito **técnico** previo abierto. Lo
-único que falta para autorizar el Slice 2 es la **conformidad explícita del Tech Lead** con el
-alcance (condición 9), que por definición no puede derivarse de tests ni de CI. Mientras esa
-firma no exista, el estado es `BLOCKED` y `H4_CODE_IMPLEMENTATION_AUTHORIZED = NO`.
+cerrados como documentación verificable, y las dos objeciones **materiales** de la revisión
+adversarial de #717 (F1 y F2) quedaron adjudicadas y corregidas en el contrato —no en la prosa—.
+
+F1 se cerró separando dos ejes que la primera versión mezclaba: el **envolvente estructural**
+(ndim, canales, dimensiones vacías, finitud, `size`) se rechaza explícitamente; `H != W` —lo
+**único** que V-03 significa— sigue diferido. Antes, V-03 era la bolsa donde caía todo lo que no
+se había medido.
+
+F2 se cerró especificando el **vehículo** de la señal de punta a punta: sin él, "el consumidor
+decide" era una regla sin transporte y el conteo de degenerados se perdía en el primer `return`
+de `resize_normal`. El contrato ahora fija el resultado tipado, la jerarquía de excepciones, el
+orden de inspección en `load_asset` y la propagación por consumidor.
+
+No queda ningún requisito **técnico** previo abierto. Lo único que falta para autorizar el Slice 2
+es la **conformidad explícita del Tech Lead** con el alcance (condición 9), que por definición no
+puede derivarse de tests ni de CI. Mientras esa firma no exista, el estado es `BLOCKED` y
+`H4_CODE_IMPLEMENTATION_AUTHORIZED = NO`.
+
+---
+
+## 14. Registro de adjudicación adversarial
+
+Esta sección es el registro de los hallazgos de revisión y su adjudicación. Se actualiza cada vez
+que llega una revisión nueva; no se borra lo anterior.
+
+### 14.1 Revisión humana `6113684862` (F1, F2)
+
+| Item | Finding | Severidad declarada | Adjudicación propia | Razón |
+|---|---|---|---|---|
+| F1 | `forma != (H,W,3) -> DEFERRED (V-03)` usaba V-03 (cuadratura) para diferir canales/`ndim`/dimensiones cero/`size` | `MATERIAL` | **ACCEPTED** | Verificado contra el código vigente: `(H,W,4)` descarta el 4.º canal en silencio, `(H,W)` 2D se acepta, `NaN/Inf` se clipea en silencio. Diferirlos habría reproducido el defecto de pérdida silenciosa. Corregido en §3.1/§3.4. |
+| F2 | "El consumidor decide" sin especificar cómo viaja `degenerate_count`/`total_pixels`/`threshold` (la firma devuelve sólo `NDArray`) | `MATERIAL` | **ACCEPTED** | Una regla sin vehículo es inejecutable: el conteo se pierde en el primer `return`. Corregido en §5.3 (vehicle tipado + jerarquía + propagación) y §5.4 (ancla de orden). |
+
+```text
+F1_ADJUDICATION        = ACCEPTED
+F2_ADJUDICATION        = ACCEPTED
+F1_CLOSED              = YES (contrato, no prosa)
+F2_CLOSED              = YES (contrato, no prosa)
+PRODUCTION_TOUCHED     = NO
+```
+
+**Hallazgos de la propia adjudicación (no estaban en el review).** Al medir F1 con la sonda de
+formas apareció que el **camino identidad** (`H == W == size`) también evade la validación: devuelve
+`(2,2,2)`, `(2,2,4)` o `(2,2)` sin verificar nada. Eso es un caso de D-07 (V-01) que la primera
+versión del documento no había conectado con la envolvente de F1. Se incorpora a §3.4.
+
+### 14.2 Estado de threads inline
+
+```text
+THREADS_INLINE_ABIERTOS   = 0   (el PR estaba en Draft; los bots no corrieron)
+THREADS_PENDIENTES        = 0
+PROXIMA_REVISION          = al pasar a Ready, sobre el HEAD final
+```
+
+Cuando el PR pase a `Ready`, los revisores automáticos correrán sobre el HEAD final. Cualquier
+hilo nuevo se adjudicará en `14.3` (agregado, no reemplazo). **Regla:** ningún hilo se cierra sin
+una razón escrita; "ya está bien" no es una razón, y una corrección de prosa no cierra un hallazgo
+material.
