@@ -229,6 +229,47 @@
     "decision-impact.md": "cbcaa12f94a56b62781a21df0b015b7471452a0b"
   },
 
+  "review_errata_20261011": {
+    "status": "CORRECTIVE_INTERPRETATION_ONLY",
+    "historical_json_unchanged": true,
+    "note": "Congelados por SHA: impact-matrix.json, provenance.json, callgraph-evidence.json. La errata no modifica ningún número ni conclusión científica.",
+    "m4_math_b_spearman": {
+      "historical_m4_primary": "NO_PATH",
+      "corrected_reachability": "EXECUTED_RESULT_DISCARDED",
+      "primary_call_chain": [
+        "run_exp_m4.run_asset",
+        "solver_coherence.evaluate_path",
+        "OracleOnly.evaluate",
+        "metrics.compute_all"
+      ],
+      "discarded_key": "spearman",
+      "second_path": "run_exp_m4.coherence_diagnostic",
+      "decision_effect": "NONE",
+      "rerun_required": "NO"
+    },
+    "m5_rerun_rationale": {
+      "height_fidelity": "ALREADY_PRESENT_AT_EXECUTION",
+      "height_call_chain": [
+        "run_exp_m5.run_asset_m5",
+        "authored_dataset.load_asset",
+        "resize_height"
+      ],
+      "math_a_gradient_scaling": "REACHABLE_NUMERICALLY_IDENTICAL",
+      "math_a_call_chain": [
+        "solve_normal",
+        "reconstruct_from_normal",
+        "decode_gradients_policy"
+      ],
+      "sx": 1,
+      "sy": 1,
+      "math_a_curl_projection_oracle": "NO_PATH",
+      "math_b_spearman": "NO_PATH",
+      "repro_a_serialization": "NO_PATH",
+      "decision_effect": "NONE",
+      "rerun_required": "NO"
+    }
+  },
+
   "next_session": {
     "session": "PR675_DESIGN_RECON_PREFLIGHT",
     "goal": "Decidir H4_RESIZE_NORMAL_DESIGN_DEPENDENCY y actualizar blockers documentales de #675. No implementar M6. No marcar Ready.",
