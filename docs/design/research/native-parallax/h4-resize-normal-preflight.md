@@ -500,9 +500,12 @@ exige **distinguir un caso inválido de una normal física válida**. La especif
 `DEGENERATE_THRESHOLD` (a derivar en el slice de código, **no** en este documento) tal que:
 
 ```text
-L >= DEGENERATE_THRESHOLD      → normal válida:  n_out = v / L
-0 < L < DEGENERATE_THRESHOLD   → normal de dirección recuperable pero no confiable
-L == 0  (o L < eps de máquina) → vector nulo: NO es una normal física
+L finito >= DEGENERATE_THRESHOLD     → normal válida: n_out = v / L
+L finito en [0, DEGENERATE_THRESHOLD) → dirección no confiable: NON_EVALUABLE
+L no finito                        → entrada inválida: error fail-closed
+
+DEGENERATE_THRESHOLD debe ser finito y estrictamente positivo. No hay excepción
+para L positivo pequeño: el intervalo completo [0, threshold) se rechaza.
 ```
 
 **Criterio de clasificación (obligatorio).** Un vector nulo **no** es una normal física: es la
@@ -512,19 +515,32 @@ que oculte el evento.
 
 **Decisión de contrato (D-06 CERRADO — Tech Lead, 2026-10-10): P-1 — FAIL-CLOSED.**
 
-Cuando la interpolación cancela las direcciones, **no existe una normal resultante bien
-definida**. Sustituirla automáticamente por `(0,0,1)` **inventaría una orientación** y podría
+Cuando la interpolación cancela o casi cancela las direcciones
+(`0 <= L < DEGENERATE_THRESHOLD`), **no existe una dirección suficientemente confiable para
+evaluación científica**. Sustituirla automáticamente por `(0,0,1)` **inventaría una orientación** y podría
 contaminar las métricas científicas. Por eso la política es fail-closed, con cuatro requisitos:
 
 - **(D-06.a) Detección con criterio numérico justificado.** `DEGENERATE_THRESHOLD` se deriva de
   **teoría y controles sintéticos**, nunca del corpus (misma regla que los thresholds de M6,
   §18.3). Su valor no se fija en este documento.
-- **(D-06.b) Registro del conteo.** `degenerate_normal_fraction` se publica por asset y por brazo.
-- **(D-06.c) Rechazo explícito de la evaluación afectada.** El asset recibe el estado
-  `NON_EVALUABLE` con su razón; **no** se calcula una métrica sobre un vector nulo.
-- **(D-06.d) Ningún asset desaparece en silencio.** Un asset afectado **no** se borra del roster:
-  queda con su estado explícito. **Distinguir el rechazo numérico de una exclusión silenciosa del
-  experimento es un requisito, no un detalle de implementación.**
+- **(D-06.b) Registro del conteo.** `degenerate_normal_fraction` incluye TODOS los píxeles
+  cuyo `L` finito cumple `0 <= L < DEGENERATE_THRESHOLD`, antes de renormalizar; se registra
+  por asset y brazo junto al conteo, total de píxeles y threshold utilizado.
+- **(D-06.c) Rechazo explícito.** Basta un píxel degenerado para marcar el brazo del asset
+  `NON_EVALUABLE` para métricas AUTH, con razón y conteo explícitos. No se calcula una
+  métrica científica AUTH sobre ese array; tampoco se intenta renormalizar una dirección
+  casi nula.
+- **(D-06.d) Ninguna exclusión silenciosa.** Un runner que publique resultados debe mantener
+  la identidad del asset en el roster con estado explícito `NON_EVALUABLE`. Si ese runner
+  todavía no soporta tal salida, **debe abortar antes de publicar un resultado científico**
+  y registrar el asset causante; está prohibido omitirlo y continuar. El esquema persistente
+  de roster en los runners es trabajo de integración (Slice 3 o slice independiente), no
+  algo ya resuelto por corregir una única función.
+- **(D-06.e) Propagación transitoria.** M2, M4 y M5 propagan actualmente el fallo de
+  `load_asset` hacia arriba; M3 contiene un `except DatasetInvalidError: ...; continue`
+  y requiere tratamiento explícito de degeneración para evitar una exclusión silenciosa.
+  El slice de implementación debe revisar y probar **cada** consumidor antes de declarar
+  que H4 puede ejecutarse, incluso si sólo puede abortar fail-closed.
 
 **Prohibido:** devolver el vector nulo como si fuera una normal; usar `1e-12` como si fuera un
 invariante de norma; inventar `(0,0,1)` como reemplazo; introducir un `epsilon` silencioso; o
@@ -559,7 +575,7 @@ Cada invariante se enuncia como propiedad del **mecanismo**, no como recordatori
 | I-05 | El canal Y no se invierte dentro del resizer | `DESIGN_PROPOSED` | Campo con `ny` asimétrico |
 | I-06 | La convención declarada no se altera | `DESIGN_PROPOSED` | Integración con `load_asset` |
 | I-07 | No se publican NaN ni Inf | `DESIGN_PROPOSED` | Entrada con NaN/Inf, fail-closed |
-| I-08 | Campo constante unitario `c` se preserva exactamente | `DESIGN_PROPOSED` | Analíticamente exacto para bilineal |
+| I-08 | Campo constante unitario `c` se preserva dentro del error de conversión `float64 → float32 → float64` y renormalización, no exactamente para cualquier `c` | `DESIGN_PROPOSED` | Oráculo analítico con cota derivada de `float32`, no tolerancia de máquina `float64` |
 | I-09 | Camino identidad: no-op para entradas válidas; validación explícita para inválidas | `CONTRACT_CLOSED` (D-07, §7.3) | Ver §7.3 |
 | I-10 | Determinismo: dos llamadas idénticas dan el mismo array | `DESIGN_PROPOSED` | `np.array_equal` |
 | I-11 | El height no se toca | `DESIGN_PROPOSED` | Integración |
@@ -577,9 +593,9 @@ Ninguno se resuelve por intuición. Cada uno es un caso de test o una pregunta a
 | Valores sub-LSB | Sobreviven al procesamiento float | `DESIGN_PROPOSED` |
 | Normales cercanas al plano XY | Caso crítico: es donde aparecen los nulos (§3.5) | `CONFIRMED` el riesgo / `DESIGN_PROPOSED` el tratamiento |
 | Campos de alta frecuencia | Caso crítico: cancelación (§3.5) | `CONFIRMED` el riesgo |
-| Vectores de longitud casi nula tras interpolar | Política explícita, no `1e-12` mudo | `DESIGN_PROPOSED` |
+| Vectores de longitud casi nula tras interpolar | `0 <= L < DEGENERATE_THRESHOLD` ⇒ `NON_EVALUABLE`; sin reemplazo (§5.3) | `CONTRACT_CLOSED` |
 | Datos NaN/Inf | Fail-closed, declarado | `DESIGN_PROPOSED` |
-| Resolución de identidad | Contrato a declarar (§7.3) | `UNRESOLVED` |
+| Resolución de identidad | Preservar no-op válido y rechazar inválidos (D-07, §7.3) | `CONTRACT_CLOSED` |
 | Reducción de resolución | Camino principal (1024 → 512) | `CONFIRMED` que se ejecuta |
 | Dimensiones no cuadradas | Ver contrato real: el corpus M3 es 100 % cuadrado | `CONFIRMED` (H2, #700) |
 | Diferencias entre versiones de Pillow y NumPy | Pin actual `numpy>=1.26,<2.5`, `pillow>=10,<12` | `NOT_MEASURED` |
@@ -601,8 +617,12 @@ Ninguno se resuelve por intuición. Cada uno es un caso de test o una pregunta a
 | Dimensiones admitidas | **No definidas** en el resizer; el corpus M3 es 100 % cuadrado | `H2_BUG_CLASSIFICATION = NOT_PROVEN` (#700) |
 | Resolución destino | `512` (primaria) | `PRIMARY_RESOLUTION = 512` (M6 §27) |
 
-`decode_normal_image` sí acota el denominador con `max(length, 1e-12)` — misma guarda que el
-resizer, con la misma limitación: con un píxel `(0,0,0)` en el bitmap, la salida queda nula.
+`decode_normal_image` sí acota el denominador con `max(length, 1e-12)`, pero su bitmap
+RGB de 8 bits **no puede decodificar un vector exactamente nulo** mediante
+`rgb / 255 * 2 - 1`: el centro es `127.5`, no representable como byte. Un vector cero
+entregado **directamente como array** al resizer sería inválido; no debe presentarse
+como consecuencia alcanzable del bitmap `(0,0,0)`, que decodifica a `(-1,-1,-1)`
+y luego se normaliza.
 
 ### 7.2 Salida
 
@@ -615,7 +635,7 @@ resizer, con la misma limitación: con un píxel `(0,0,0)` en el bitmap, la sali
 | Convención | Idéntica a la de entrada |
 | Finitud | Sin NaN/Inf |
 
-### 7.3 Vacíos identificados (`UNRESOLVED`)
+### 7.3 Vacíos identificados (contratos cerrados y pendientes diferenciados)
 
 Son vacíos **reales** del contrato vigente. El preflight los identifica; no los inventa ni los
 cierra por conveniencia.
@@ -702,7 +722,7 @@ asume. El test verifica la decisión; no la sustituye.
 |---|---|---|
 | `test_normal_plana_permanece_plana` | `(0,0,1)` → `mean(nx) == 0` dentro de tolerancia | `mean(nx) = −0.0039215` ⇒ ROJO |
 | `test_no_reaparece_el_sesgo_xy_del_uint8` | `mean(nx)` y `mean(ny)` sobre un campo simétrico ≈ 0 | sesgo `−0.5 LSB` ⇒ ROJO |
-| `test_componentes_pequenas_sobreviven_al_float` | Amplitud `1/255` se preserva dentro de tolerancia | cuantización la colapsa ⇒ ROJO |
+| `test_componentes_pequenas_sobreviven_al_float` | Campo unitario constante con `nx = 1/(4·255)`, `ny = 0`, `nz = sqrt(1 − nx²)`; tras downsample exigir signo positivo y error acotado por `float32` | El histórico trunca `nx` a byte 127, lo decodifica como `−1/255` y cambia el signo ⇒ ROJO; `1/255` NO sirve como caso RED |
 | `test_renormalizacion_no_introduce_artefactos` | La renormalización no cambia la dirección más allá de la tolerancia | depende del caso |
 
 ### Familia B — Contrato geométrico
@@ -728,8 +748,8 @@ algoritmo y las mismas suposiciones.
 
 | Caso | Resultado esperado | Tipo |
 |---|---|---|
-| Campo constante unitario | **Exacto** analíticamente | Sin tolerancia (o tolerancia de máquina) |
-| Patrón sintético lineal | **Exacto** analíticamente (bilineal reproduce funciones afines) | Tolerancia de máquina |
+| Campo constante unitario | Constancia analítica antes de redondeo; renormalización posterior | Tolerancia derivada de ida/vuelta `float32`, no exactitud bit a bit |
+| Patrón sintético lineal | Bilineal reproduce funciones afines en aritmética exacta; medir error del kernel `float32` y renormalización | Tolerancia derivada de `float32` |
 | Campo analítico suavemente variable | Tolerancia numérica **declarada** | Tolerancia |
 | Campo con discontinuidades | Requiere tolerancia; documentar el comportamiento en el borde | Tolerancia |
 | Patrón adversarial de alta frecuencia | **No** se exige exactitud: se exige que **no** publique basura (nulos/NaN) | Contrato, no valor |
@@ -845,9 +865,17 @@ Si se pretende consumir N_AUTH sin procedencia válida del resizer
 ```
 
 **Componente donde se implementa:** el runner de M6 (ETAPA B+), en el punto donde hoy §33.1
-exige `git_sha`, `m6_prereg_freeze_sha` y los SHA256 de módulos. Se añade la clave
-`resize_normal_impl` como **input del operador** (nunca heurística de runtime), y la ausencia de
-la clave ⇒ `STOP_M6_EXECUTION`.
+exige `git_sha`, `m6_prereg_freeze_sha` y los SHA256 de módulos. La clave
+`resize_normal_impl` **no puede ser una afirmación libre del operador**: debe cotejarse
+contra una asociación versionada y permitida `(etiqueta, hash de módulo, entrypoint ejecutado)`.
+El runner calcula el hash del módulo realmente ejecutado, exige una asociación inequívoca y
+rechaza hash desconocido, etiqueta incompatible o selección no verificable:
+`STOP_M6_EXECUTION`. El hash histórico documentado **no** autoriza etiquetarlo
+`CANONICAL_FLOAT`. La implementación corregida aún carece de hash registrado y por ello NO
+puede declararse aceptada. Si ambos brazos proceden de diferentes revisiones, se registra
+`code_git_sha` y hash **por brazo**, verificando que las diferencias de código se limiten a
+la intervención autorizada; un SHA compartido sólo es válido si ambas implementaciones
+residen de modo explícito y verificable en ese mismo checkout.
 
 **No se modifica aún el esquema de salida de M6** (§43.10.1 ya lo especifica como condición; este
 preflight no lo implementa).
@@ -920,8 +948,11 @@ protocolo queda **especificado y bloqueado**, no ejecutado.
               RECOVERY_FRACTION_j, denominator_state, NONINTEGRABLE_FRACTION,
               DC_SLOPE_FRACTION, identifiable, registration_state,
               degenerate_normal_fraction, provenance } ],
-  "cohort_medians": { A: …, B: … },
-  "decision": { A: …, B: …, changed: bool },
+  "paired_cohort": { "eligible_assets": […], "unpaired_assets": […],
+                     "non_evaluable_by_arm_and_reason": { A: …, B: … } },
+  "cohort_medians": { "paired_A": …, "paired_B": …, "descriptive_unpaired": … },
+  "decision": { "paired_comparison_state": "EVALUABLE | PAIRED_COMPARISON_NOT_EVALUABLE",
+                "changed": "bool | null" },
   "execution_status": "NOT_EXECUTED"
 }
 ```
@@ -942,12 +973,12 @@ Para cada asset y cada brazo, el protocolo debe contemplar:
 
 | Métrica | Origen (M6) | Estado esperado |
 |---|---|---|
-| `E_AUTH` | §17.2 | Siempre |
-| `E_SELF` | §17.2 | Siempre |
-| `E_MODEL_j` (j ∈ M0, M2, M3, M4) | §16 | Siempre |
-| `PAIR_EXCESS_ENERGY = E_AUTH − E_SELF` | §17.3 | **Signo real**, sin `abs`, sin clamp |
-| `RECOVERY_FRACTION_j = (E_AUTH − E_MODEL_j)/(E_AUTH − E_SELF)` | §17.3 | Sólo si el gate del denominador pasa |
-| Estado del gate del denominador | §18.1 | `NON_POSITIVE_PAIR_EXCESS` / `TOO_SMALL_PAIR_EXCESS` / `EVALUABLE` |
+| `E_AUTH` | §17.2 | Sólo si AUTH es evaluable; si no `UNAVAILABLE_AUTH_DEGENERATE` |
+| `E_SELF` | §17.2 | Puede calcularse con height válido aunque AUTH no sea evaluable; no habilita por sí solo el par |
+| `E_MODEL_j` (j ∈ M0, M2, M3, M4) | §16 | Sólo si sus dependencias AUTH son evaluables; si no `UNAVAILABLE_AUTH_DEGENERATE` |
+| `PAIR_EXCESS_ENERGY = E_AUTH − E_SELF` | §17.3 | Si ambas energías están disponibles, signo real; de otro modo estado `UNAVAILABLE_AUTH_DEGENERATE` |
+| `RECOVERY_FRACTION_j = (E_AUTH − E_MODEL_j)/(E_AUTH − E_SELF)` | §17.3 | Sólo si AUTH/modelo están disponibles y el gate del denominador pasa |
+| Estado del gate del denominador | §18.1 | `UNAVAILABLE_AUTH_DEGENERATE` previo al gate; si AUTH válido: `NON_POSITIVE_PAIR_EXCESS` / `TOO_SMALL_PAIR_EXCESS` / `EVALUABLE` |
 | `NONINTEGRABLE_FRACTION` | §7.2 | Sobre `g_N` |
 | `DC_SLOPE_FRACTION` | §5.5 | Sobre `g_N` |
 | Estado de identificabilidad | §22 | Explícito |
@@ -981,9 +1012,19 @@ sobre M6 no están demostradas.
 
 Un asset en `NON_POSITIVE_PAIR_EXCESS` o `TOO_SMALL_PAIR_EXCESS` recibe
 `RECOVERY_FRACTION_NOT_EVALUABLE` con su razón, y su `R_j` **no** entra a las medianas de la
-cohorte. El asset **no** se excluye del resto de métricas (mismo tratamiento que `ENERGY_GATE` de
-M5: marca la métrica, no el asset). Un resultado no evaluable **no** desaparece de la muestra: se
-cuenta y se reporta.
+cohorte. Cuando **AUTH es degenerado** se informa `UNAVAILABLE_AUTH_DEGENERATE` también en
+`E_AUTH` y toda métrica dependiente de AUTH, no sólo en `R_j`. `E_SELF` permanece
+independiente de ese rechazo cuando height sea válido.
+
+**Regla pareada para A/B:** el universo principal es la **intersección por identidad** de assets
+evaluables para la misma métrica en los dos brazos. Los rechazos asimétricos se publican en
+`non_evaluable_by_arm_and_reason` y `unpaired_assets`, sin reemplazar valores faltantes ni
+comparar medianas sobre universos distintos. Los descriptivos de cada brazo fuera de esa
+intersección se etiquetan `descriptive_unpaired` y **no** sustentan decisión causal. Ante
+cualquier rechazo asimétrico, la decisión primaria de cohorte queda
+`PAIRED_COMPARISON_NOT_EVALUABLE` (`changed = null`) hasta un protocolo preregistrado que
+autorice tratar el conjunto pareado incompleto. Todo roster de entrada debe quedar contabilizado;
+si el runner no puede hacerlo, aborta sin publicar conclusión.
 
 ---
 
@@ -1104,7 +1145,12 @@ Tres trabajos distintos. **No se mezclan en un solo PR.**
 ### Slice 2 — Corrección de código H4 (**no autorizado**)
 
 - **Alcance candidato:** `resize_normal`, tests focales propios, registro de procedencia
-  estrictamente necesario, política de degenerados. Sin alterar resultados históricos.
+  estrictamente necesario, política de degenerados **y propagación fail-closed verificable**
+  a todos sus consumidores (M2/M3/M4/M5). En particular, M3 no puede capturar un error H4
+  y continuar omitiendo el asset. Cuando aún no exista registro persistente por asset, se
+  exige **abortar sin artefacto científico exitoso**; el roster explícito del contrafactual
+  se implementa en Slice 3 o en un slice de integración autorizado por separado.
+  Sin alterar resultados históricos.
 - **Base obligatoria:** un **nuevo HEAD de `main`**, no la rama de #675 ni la de este preflight.
 - **Estado:** `BLOCKED` hasta que §17 se satisfaga.
 
@@ -1127,19 +1173,25 @@ El slice 2 se autoriza cuando **todo** lo siguiente es `YES`:
 
 | # | Condición | Estado actual |
 |---|---|---|
-| 1 | Defecto H4 reproducido desde la fuente y anclado con un test `RED` | `DESIGN_PROPOSED` (el test no existe — pertenece a la **implementación**, §8.0.b) |
+| 1 | Defecto H4 identificado en fuente y caso RED especificado; **ejecución RED es criterio de aceptación del Slice 2, no gate previo** | `DESIGN_PROPOSED` (§8.1, Familia A) |
 | 2 | Contrato numérico cerrado, incluidos los vacíos V-01…V-05 | `CONTRACT_CLOSED` para V-01, V-02, V-04; `DEFERRED` V-03; `NOT_MEASURED` V-05 |
 | 3 | Política de vectores degenerados elegida y declarada | `CONTRACT_CLOSED` — **fail-closed** (D-06, §5.3) |
 | 4 | Plan de mutantes con el test que detecta cada uno | `DESIGN_PROPOSED` (§9) |
 | 5 | Ancla de enumeración de primitivas de carga **diseñada** | `DESIGN_PROPOSED` (Familia E) |
 | 6 | Contrato de procedencia especificado con gate fail-closed | `DESIGN_PROPOSED` (§10) |
-| 7 | `resize_height` con test de no-regresión | `DESIGN_PROPOSED` (pertenece a la implementación) |
-| 8 | `DEGENERATE_THRESHOLD` derivado de teoría + sintético (no del corpus) | `DEFERRED` al slice 2 (§8.0.a R7) |
+| 7 | Plan de no-regresión de `resize_height` (test ejecutado: **aceptación de Slice 2**) | `DESIGN_PROPOSED` |
+| 8 | Método de derivación teórica + sintética de `DEGENERATE_THRESHOLD` aprobado (valor numérico: **aceptación de Slice 2**, sin corpus) | `DESIGN_PROPOSED` (§8.0.a R7) |
 | 9 | Conformidad del Tech Lead con el alcance del slice 2 | **PENDIENTE** (el veredicto de §21 recomienda un PR independiente y acotado) |
 
 ```text
 H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
 ```
+
+**Separación de transición:** §17 autoriza **iniciar** Slice 2 sólo con contratos previos
+cerrados y conformidad del Tech Lead (punto 9). Los tests RED, no-regresión y la derivación
+numérica del umbral son condiciones para **cerrar** Slice 2, no para comenzarlo.
+Si se exige RED antes de escribir producción, puede ejecutarse una subfase test-only dentro
+del Slice 2 autorizado. No se marca `H4_CODE_IMPLEMENTATION_AUTHORIZED=YES` por esta corrección.
 
 **Un check verde de CI general no valida una implementación H4 que todavía no existe.**
 
@@ -1307,7 +1359,7 @@ Todos los SHA citados existen en el repositorio (`git cat-file -t` → `commit`)
 | Estado por hipótesis | `docs/validation/.../hypothesis-status.json` | 2026-10-07 |
 | Script del contrafactual | `docs/validation/.../corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py` | 2026-10-08 |
 | Sonda de magnitud corregida | `docs/validation/.../corrective-20261008/scripts/h4_magnitude_probe_corrective.py` | 2026-10-08 |
-| Diseño EXP-M6 (§5, §7, §16–18, §32–33, §37.3, §43) | `docs/design/research/native-parallax/exp-m6-pair-mismatch-decomposition.md` (rama de #675, `f1415711…`) | 2026-10-10 |
+| Diseño EXP-M6 (§5, §7, §16–18, §32–33, §37.3, §43) | PR #675 (rama independiente, **no ancestro** de #711): https://github.com/FacundoSu1986/Sky-Claw/pull/675 ; `f1415711c51a2ec483fd37f41a164044649747aa` — debe recuperarse explícitamente con `git fetch origin refs/pull/675/head`, verificar HEAD exacto antes de usarlo y congelar/snapshotear la versión antes de cualquier ejecución M6. **No es una fuente durable incorporada al árbol de #711.** | Dependencia `BLOCKED` |
 | Corpus M3 (resolución nativa 1024²) | `docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json` | — |
 | Test existente del resizer | `tests/test_native_parallax_exp_m2.py::test_m3_normal_resize_renormalizes` | — |
 | Checker de tablas Markdown | `tests/test_native_parallax_pr700_corrective_docs_invariants.py` | 2026-10-08 |
@@ -1471,7 +1523,9 @@ DIFF_CHECK                 = PASS  (git diff --check vacío; sin whitespace sobr
 MARKDOWN_TABLAS            = PASS  (rev.2: 26 tablas, 0 filas con conteo inconsistente; rev.1: 23)
 MARKDOWN_FENCES            = PASS  (rev.2: 76 fences, par → balanceados; rev.1: 64)
 MARKDOWN_BARRAS_ESCAPADAS  = PASS  (0 celdas con "\|" — prohibido por el checker del repo)
-SHA_VALIDATION             = PASS  (8 commits + 1 blob citados; git cat-file -t los resuelve)
+SHA_VALIDATION             = PASS histórico reportado para el checkout de la rev.2 (8 commits + 1 blob)
+M6_EXTERNAL_REF_DURABILITY = BLOCKED (PR #675 externo a #711; exige fetch y freeze del diseño)
+M6_SHA_IN_CI_CHECKOUT      = NOT_VERIFIED (no inferir existencia local desde estado remoto)
 MAIN_BASE                  = PASS  (origin/main sigue en 647d2461…; main local sin cambios en ef4b8aa9…)
 ARTEFACTOS_CIENTIFICOS     = PASS  (0 archivos científicos modificados)
 PR675_PR697_PR700          = PASS  (no tocados; #675 sigue en f1415711…)
