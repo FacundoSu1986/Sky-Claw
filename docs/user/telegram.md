@@ -84,7 +84,7 @@ El transporte (`sky_claw/app/comms/telegram_sender.py`) reintenta de forma acota
 - en `send_document`, si el cooldown activo excede el presupuesto disponible de la
   operación, el fallo se clasifica como `TelegramUploadTimeoutError`;
 - las vías HITL (`editMessageText` y `answerCallbackQuery`) acotan su espera con presupuesto
-  finito para no bloquear el event loop ni el cliente de Telegram;
+  finito (10 s para acknowledgements de callback) para no bloquear el event loop ni el cliente de Telegram;
 - **un 429 nunca cuenta como mensaje entregado**: no ocupa un cupo del rate limit
   local (20 mensajes/minuto por chat) ni produce una identidad de mensaje, y una
   ráfaga que agota los reintentos termina en `TelegramRateLimitError` con el

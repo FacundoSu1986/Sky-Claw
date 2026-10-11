@@ -39,6 +39,11 @@ import aiohttp
 import pytest
 
 from sky_claw.app.comms import telegram_sender as sender_mod
+from sky_claw.app.comms.telegram import (
+    TelegramHITLMessageRegistry,
+    TelegramWebhook,
+    build_hitl_callback_data,
+)
 from sky_claw.app.comms.telegram_sender import (
     TelegramMessage,
     TelegramRateLimitError,
@@ -635,6 +640,118 @@ class TestContratoDeFallo:
             await sender.answer_callback_query("cb_1", text="ack")
 
         assert gw.request.await_count == 0, "no debieron llamar al gateway durante cooldown que excede presupuesto"
+
+    async def test_answer_callback_query_usa_presupuesto_efectivo_de_10_segundos_y_falla_rapido(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """P2-A: answer_callback_query debe usar un presupuesto efectivo de 10.0s,
+        fallando rápido sin esperar ni golpear el gateway cuando el cooldown lo supera,
+        pero esperando y completando si el cooldown cabe en los 10.0s.
+        """
+        sender, gw = _sender(tiempo, _ok(1))
+        # 1. Cooldown de 12s supera el presupuesto de 10s -> falla rápido en 0s
+        sender._cooldown.publicar(12.0)
+        with pytest.raises(TelegramRateLimitError) as exc_info:
+            await sender.answer_callback_query("cb_1", text="ack")
+
+        assert exc_info.value.presupuesto_agotado is True
+        assert exc_info.value.retry_after == 12.0
+        assert gw.request.await_count == 0, "no debe llamar al gateway cuando el cooldown supera el presupuesto"
+        assert tiempo.dormidos == [], "debe fallar de inmediato sin dormir"
+
+        # 2. Tras vencer el cooldown anterior, un cooldown de 5s cabe dentro de los 10s -> espera los 5s y ejecuta
+        tiempo.reloj.avanzar(12.0)
+        sender._cooldown.publicar(5.0)
+        await sender.answer_callback_query("cb_2", text="ack2")
+        assert gw.request.await_count == 1
+        assert 5.0 in tiempo.dormidos
+
+    async def test_callback_hitl_con_cooldown_activo_ejecuta_decision_y_no_genera_segundo_intento(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """P2-A: Escenario HITL completo con cooldown activo:
+        1. Publicar cooldown largo antes del ack.
+        2. Ejecutar procesamiento del callback.
+        3. Decisión del guard se compromete exactamente una vez.
+        4. Fallo de ack por cooldown se observa pero no aborta el flujo.
+        5. El flujo terminal/fallback continúa sin generar segundo intento HTTP.
+        """
+        sender, gw = _sender(tiempo, _ok(1))
+        # Publicar cooldown de 15s (excede los 10s de callback query)
+        sender._cooldown.publicar(15.0)
+
+        hitl = MagicMock()
+        hitl.respond = AsyncMock(return_value=True)
+        registry = TelegramHITLMessageRegistry()
+        token = await registry.reserve_token("req-p2a")
+        await registry.register("req-p2a", 123, 9, sender, token=token)
+
+        webhook = TelegramWebhook(
+            router=MagicMock(),
+            sender=sender,
+            session=MagicMock(spec=aiohttp.ClientSession),
+            hitl=hitl,
+            authorized_user_id=123,
+            hitl_registry=registry,
+        )
+
+        update = {
+            "update_id": 1,
+            "callback_query": {
+                "id": "cb-hitl-1",
+                "from": {"id": 123},
+                "message": {"chat": {"id": 123}, "message_id": 9},
+                "data": build_hitl_callback_data("approve", token),
+            },
+        }
+
+        # Procesa el update: no debe fallar ni escapar TelegramRateLimitError
+        await webhook.process_update(update)
+
+        # La decisión del guard se comprometió exactamente una vez
+        hitl.respond.assert_awaited_once_with("req-p2a", True)
+        # El callback intentó confirmar pero falló en CooldownCompartido sin llamar al gateway
+        # (cero llamadas de answerCallbackQuery al gateway dentro del cooldown)
+        llamadas_cb = [c for c in gw.llamadas if "answerCallbackQuery" in getattr(c, "url", "")]
+        assert len(llamadas_cb) == 0, "no debe generar peticiones HTTP de callbackquery dentro del cooldown"
+
+    async def test_send_document_con_nuevo_429_que_excede_presupuesto_restante_pero_menor_al_total_lanza_upload_timeout(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """P2-B Escenario B: Un documento consume parte de su plazo y recibe un HTTP 429 NUEVO
+        con retry_after > 30s y > tiempo_restante, pero menor a MAX_UPLOAD_TOTAL_SECONDS.
+        Debe fallar específicamente como TelegramUploadTimeoutError.
+        """
+        sender, gw = _sender(tiempo, _429(retry_after=35))
+
+        async def _rate_limit_lento(chat_id: int) -> None:
+            # Simula que trabajo previo consumió casi toda la cota (quedan 20s de presupuesto restante)
+            tiempo.reloj.avanzar(sender_mod.MAX_UPLOAD_TOTAL_SECONDS - 20.0)
+
+        sender._wait_for_rate_limit = _rate_limit_lento  # type: ignore[assignment]
+
+        with pytest.raises(sender_mod.TelegramUploadTimeoutError) as exc_info:
+            await sender.send_document(123, b"datos de prueba", "log.txt")
+
+        assert "cota total" in str(exc_info.value)
+        assert "35" in str(exc_info.value)
+        assert sender._cooldown.restante() == 35.0
+
+    async def test_send_document_con_reintentos_agotados_sin_consumir_presupuesto_conserva_rate_limit_error(
+        self, tiempo: _Tiempo
+    ) -> None:
+        """P2-B: Cuando se agotan los reintentos pero el cooldown cabe en el presupuesto
+        restante, send_document debe conservar TelegramRateLimitError según el contrato.
+        """
+        # 4 respuestas consecutivas 429 con retry_after=2s (agota _MAX_REINTENTOS_429 = 3)
+        sender, gw = _sender(tiempo, _429(retry_after=2), _429(retry_after=2), _429(retry_after=2), _429(retry_after=2))
+
+        with pytest.raises(TelegramRateLimitError) as exc_info:
+            await sender.send_document(123, b"datos de prueba", "log.txt")
+
+        assert not isinstance(exc_info.value, sender_mod.TelegramUploadTimeoutError)
+        assert exc_info.value.retry_after == 2.0
+        assert exc_info.value.presupuesto_agotado is False
 
 
 # ---------------------------------------------------------------------------

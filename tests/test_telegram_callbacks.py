@@ -10,6 +10,7 @@ from sky_claw.app.comms.telegram import (
     TelegramWebhook,
     build_hitl_callback_data,
 )
+from sky_claw.app.comms.telegram_sender import TelegramRateLimitError
 from sky_claw.app.security.network_gateway import EgressViolationError
 
 
@@ -169,3 +170,21 @@ async def test_fallo_inesperado_del_ack_se_propaga() -> None:
 
     respond.assert_awaited_once_with("req-1", True)
     sender.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cooldown_agotado_en_ack_no_interrumpe_flujo_hitl_ni_revierte_decision() -> None:
+    """P2-A: Un TelegramRateLimitError en answer_callback_query_safely no debe revertir
+    la decisión de HITL ni abortar la terminalización o el flujo del webhook.
+    """
+    webhook, respond, sender, registry = await _crear_webhook()
+    token = await _registrar(registry, "req-1", sender)
+    sender.answer_callback_query = AsyncMock(
+        side_effect=TelegramRateLimitError("cooldown compartido agotado", retry_after=15.0, presupuesto_agotado=True)
+    )
+
+    await webhook.process_update(_crear_update(build_hitl_callback_data("approve", token)))
+
+    respond.assert_awaited_once_with("req-1", True)
+    sender.answer_callback_query.assert_awaited_once_with("callback-1", text=None)
+    sender.edit_message.assert_awaited_once()

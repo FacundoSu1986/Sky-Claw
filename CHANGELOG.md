@@ -126,8 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honrando extensiones progresivas de múltiples corrutinas. Los mensajes multichunk
   comparten un único deadline/presupuesto acumulado reportando entregas parciales,
   `send_document` clasifica el agotamiento de presupuesto como `TelegramUploadTimeoutError`
-  y las vías HITL (`editMessageText`, `answerCallbackQuery`) acotan su espera para evitar
-  bloqueos prolongados. El alcance es el del **bot** (un 429 no permite atribuir si el
+  y las vías HITL (`editMessageText`, `answerCallbackQuery` con cota de 10 s) acotan su espera para evitar
+  bloqueos prolongados, atrapando fallos de transporte y rate limit en el ack sin revertir decisiones comprometidas.
+  El alcance es el del **bot** (un 429 no permite atribuir si el
   límite excedido fue el del chat o el global). Un 429 sigue sin ocupar un cupo del rate
   limit local ni producir identidad de mensaje, la espera es cancelable y no hay lock sostenido
   durante una petición. Anclas: `tests/test_telegram_flood_control_compartido.py`

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
+from sky_claw.app.comms.telegram_sender import TelegramRateLimitError
 from sky_claw.app.security.network_gateway import EgressViolationError, NetworkGatewayTimeoutError
 from sky_claw.logging_config import correlation_id_var
 
@@ -740,7 +741,14 @@ class TelegramWebhook:
             return
         try:
             await self._sender.answer_callback_query(callback_id, text=text)
-        except (aiohttp.ClientError, OSError, TimeoutError, EgressViolationError, NetworkGatewayTimeoutError):
+        except (
+            aiohttp.ClientError,
+            OSError,
+            TimeoutError,
+            EgressViolationError,
+            NetworkGatewayTimeoutError,
+            TelegramRateLimitError,
+        ):
             # Un fallo de transporte no revierte una decisión ya comprometida.
             logger.warning("No se pudo confirmar el callback de Telegram %s", callback_id, exc_info=True)
 

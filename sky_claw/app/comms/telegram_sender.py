@@ -185,6 +185,10 @@ _SANIDAD_MAX_COOLDOWN_SEGUNDOS = 86400.0
 #: (cubre reintentos consecutivos al límite máximo sin colgar indefinidamente la tarea).
 _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS = 90.0
 
+#: Presupuesto máximo de espera en acknowledgements de callback (botones inline).
+#: Corto por contrato: el cliente Telegram vence la interacción visual en segundos.
+_PRESUPUESTO_CALLBACK_SEGUNDOS = 10.0
+
 #: Espera cuando Telegram responde 429 sin ``retry_after`` legible.
 _RETRY_AFTER_POR_DEFECTO = 1.0
 
@@ -635,7 +639,9 @@ class TelegramSender:
                 f"({_MAX_REINTENTOS_429} reintentos incluidos)"
             ) from exc
         except TelegramRateLimitError as exc:
-            if exc.presupuesto_agotado or exc.retry_after > MAX_UPLOAD_TOTAL_SECONDS:
+            tiempo_transcurrido = time.monotonic() - tiempo_inicio
+            presupuesto_remanente = max(0.0, MAX_UPLOAD_TOTAL_SECONDS - tiempo_transcurrido)
+            if exc.presupuesto_agotado or exc.retry_after > presupuesto_remanente:
                 raise TelegramUploadTimeoutError(
                     f"send_document: la subida excedió la cota total de {MAX_UPLOAD_TOTAL_SECONDS:g}s "
                     f"debido a flood-control ({exc.retry_after:g}s)"
@@ -701,9 +707,15 @@ class TelegramSender:
                 self._cooldown.restante(),
             )
 
+        tiempo_transcurrido = time.monotonic() - tiempo_inicio
+        tiempo_restante = (
+            max(0.0, presupuesto_cooldown - tiempo_transcurrido) if presupuesto_cooldown is not None else None
+        )
+        presupuesto_agotado = tiempo_restante is not None and retry_after > tiempo_restante
         raise TelegramRateLimitError(
             f"Telegram API returned 429: {cuerpo_429} (retry_after={retry_after:g}s)",
             retry_after=retry_after,
+            presupuesto_agotado=presupuesto_agotado,
         )
 
     async def _interpretar_respuesta(
@@ -787,6 +799,8 @@ class TelegramSender:
         callback_query_id: str,
         text: str | None = None,
         show_alert: bool = False,
+        *,
+        presupuesto: float | None = _PRESUPUESTO_CALLBACK_SEGUNDOS,
     ) -> None:
         """Responde a un ``callback_query`` (botón inline) vía el NetworkGateway.
 
@@ -805,7 +819,7 @@ class TelegramSender:
             payload["show_alert"] = True
 
         url = self._url + "answerCallbackQuery"
-        await self._cooldown.esperar()
+        await self._cooldown.esperar(presupuesto=presupuesto)
         resp = await self._gateway.request(
             "POST",
             url,
