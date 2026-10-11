@@ -26,7 +26,8 @@ M6_REAL_RUN_EXECUTED = NO
 | **EXP-M5** | `EXP_M5_BANDLIMITED_RECOVERY_NOT_SUPPORTED` | `NOT_INVALIDATED` | `NO` |
 
 **`NOT_INVALIDATED` no significa `revalidado`.** Ambas decisiones sobreviven a REVAL-1
-porque ninguna de sus cuatro correcciones alcanza la decisión primaria — pero M4 y M5
+porque los efectos de sus correcciones no modifican las decisiones primarias (height
+sí alcanza M4 y ya existe un rerun correctivo) — pero M4 y M5
 arrastran, cada uno, una desviación de protocolo **preexistente y ajena a REVAL-1** (§7).
 
 `PR675_RECOMMENDATION = READY_FOR_DESIGN_RECONCILIATION` — habilita un **slice nuevo** para
@@ -290,10 +291,16 @@ acá. Este audit no lo mezcla con REVAL-1.
 | `MATH-A` curl | `NO_PATH` | `NO_PATH` | `NO_PATH` | `NO_PATH` | sólo `normal_only_features` (M1/M2); ninguna fila M4 tiene `curl_*` |
 | `MATH-A` projection | `NO_PATH` | `NO_PATH` | `NO_PATH` | `NO_PATH` | sólo features/candidatos σ_eff (M1/M2/M3) |
 | `MATH-A` oracle | `NO_PATH` | `DIAGNOSTIC_ONLY` | `NO_PATH` | `NO_PATH` | `coherence_*` no entra a `evaluate_rules`; M5 no lo llama |
-| `MATH-B` Spearman | `NO_PATH` | `DIAGNOSTIC_ONLY` | `NO_PATH` | `NO_PATH` | único uso M4 = `coherence_diagnostic`; M5 sin llamadas |
+| `MATH-B` Spearman | `EXECUTED_RESULT_DISCARDED` | `DIAGNOSTIC_ONLY` | `NO_PATH` | `NO_PATH` | M4 ejecuta `metrics.compute_all` vía `evaluate_path → OracleOnly.evaluate`, pero descarta su campo Spearman; además `coherence_diagnostic` es no decisional. M5 sin llamadas |
 | `REPRO-A` serialization | `NO_PATH` | `NO_PATH` | `NO_PATH` | `NO_PATH` | sólo boundary JSON de M2; M4 ya usaba `allow_nan=False` |
 
-Detalle machine-readable en `impact-matrix.json`.
+**Errata de alcanzabilidad (2026-10-11):** los tres JSON originales son evidencia
+histórica **inmutable por SHA**. Por tanto, `impact-matrix.json` conserva la celda histórica
+`MATH_B_SPEARMAN.m4_primary = NO_PATH`, y `callgraph-evidence.json` conserva la descripción
+incompleta de su `reachable_from`. La corrección de lectura vigente está en esta tabla,
+en §3.5 y en `post-700-reconciliation.json.review_errata_20261011`. Se debe distinguir
+**código alcanzado con valor descartado** de **código inalcanzable**. El efecto decisional
+sigue siendo `NONE`, sin rerun ni relabel a `REVALIDATED`.
 
 ---
 
@@ -343,9 +350,11 @@ En ambos casos: **REVAL-1 no los crea, no los agrava y este audit no los resuelv
 git fetch origin --prune
 git rev-parse origin/main                                   # == 97dcc7ab9ade29153faa0ccec428b78612cfc04a
 
-# Worktree del audit
-git worktree add -b research/native-parallax-post-reval1-m4-m5-impact-audit \
-  E:/SkyClaw_M4M5_AUDIT_97dcc7ab 97dcc7ab9ade29153faa0ccec428b78612cfc04a
+# Nueva reproducción aislada, bajo .worktrees del repositorio; no reutilizar
+# el worktree histórico E:/SkyClaw_M4M5_AUDIT_97dcc7ab
+git worktree add --detach \
+  "E:/Skyclaw_Main_Sync/.worktrees/697-reval1-impact-repro" \
+  97dcc7ab9ade29153faa0ccec428b78612cfc04a
 
 # Ancestria (desde el worktree del audit). Repetir por cada par (fix, execution SHA).
 git merge-base --is-ancestor 2530f7a83b931ffdfa250b0fdda43ab351f56477 \
@@ -528,3 +537,24 @@ limitación.
 
 Siguiente sesión propuesta: `PR675_DESIGN_RECON_PREFLIGHT`. Detalle
 machine-readable en `post-700-reconciliation.json`.
+
+### 12.4 Errata de alcanzabilidad sin modificar evidencia histórica (2026-10-11)
+
+Esta revisión corrige **interpretaciones** de los archivos congelados, no su contenido:
+
+- **M4 / MATH-B Spearman:** `metrics.compute_all` se ejecuta en el camino primario mediante
+  `evaluate_path → OracleOnly.evaluate`, pero `evaluate_path` **descarta** `spearman`.
+  Existe también la ruta diagnóstica `coherence_diagnostic`. La etiqueta histórica
+  `NO_PATH` es falsa como afirmación de alcanzabilidad; la clasificación vigente es
+  `EXECUTED_RESULT_DISCARDED` y el impacto sobre la decisión sigue siendo `NONE`.
+- **M5 / height fidelity:** el cambio sí alcanza `load_asset → resize_height`, pero estaba
+  incorporado en el freeze de M5 (`ALREADY_PRESENT_AT_EXECUTION`); no hay delta pendiente.
+- **M5 / MATH-A scaling:** `solve_normal → decode_gradients_policy` es alcanzable, pero el
+  escalado es inobservable con `sx=sy=1` (`REACHABLE_NUMERICALLY_IDENTICAL`).
+- **M5 / curl, proyección, oráculo, MATH-B Spearman y REPRO-A:** no hay path a la
+  decisión M5. No mezclar estas ausencias con las dos situaciones anteriores.
+
+Se preservan íntegros `impact-matrix.json`, `provenance.json` y
+`callgraph-evidence.json` (SHAs de `eb066a1`). Autoridad machine-readable de esta
+**corrección interpretativa**: `post-700-reconciliation.json.review_errata_20261011`.
+`M4_RERUN_REQUIRED=NO` y `M5_RERUN_REQUIRED=NO` no cambian.
