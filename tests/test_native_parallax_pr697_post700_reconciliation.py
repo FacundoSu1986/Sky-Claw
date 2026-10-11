@@ -165,9 +165,7 @@ def test_m4_y_m5_siguen_not_invalidated_y_no_se_relabelan() -> None:
                 "M4_IMPACT_ADJUDICATION",
                 "M5_IMPACT_ADJUDICATION",
             }:
-                assert match.group("value") != "REVALIDATED", (
-                    f"{path.name}: {match.group('key')} = REVALIDATED"
-                )
+                assert match.group("value") != "REVALIDATED", f"{path.name}: {match.group('key')} = REVALIDATED"
 
 
 def _ocurrencias_pr675(texto: str) -> list[tuple[int, str, str, str]]:
@@ -333,10 +331,10 @@ def test_errata_corrige_alcanzabilidad_sin_reescribir_historicos() -> None:
     assert err["historical_json_unchanged"] is True
     assert err["status"] == "CORRECTIVE_INTERPRETATION_ONLY"
     assert _matrix()["adjudications"]["M5_RERUN_REQUIRED"] == "NO"
-    assert next(
-        item for item in _matrix()["matrix"]
-        if item["upstream_change"] == "MATH_B_SPEARMAN"
-    )["m4_primary"] == "NO_PATH"  # estado histórico, conservado por SHA
+    assert (
+        next(item for item in _matrix()["matrix"] if item["upstream_change"] == "MATH_B_SPEARMAN")["m4_primary"]
+        == "NO_PATH"
+    )  # estado histórico, conservado por SHA
     m4 = err["m4_math_b_spearman"]
     assert m4["historical_m4_primary"] == "NO_PATH"
     assert m4["corrected_reachability"] == "EXECUTED_RESULT_DISCARDED"
