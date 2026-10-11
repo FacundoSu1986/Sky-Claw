@@ -1515,8 +1515,9 @@ class TestAnclaConstructoresManualesDeMods:
         # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
         "sky_claw/app_context.py": (1409,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
-        # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA.
-        "sky_claw/__main__.py": (271,),
+        # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA; #665
+        # (271 → 277) al extraer `_build_parser` y derivar el default de --mode.
+        "sky_claw/__main__.py": (277,),
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
         "sky_claw/local/tools/output_targets.py": (225,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.

@@ -45,6 +45,25 @@ _NO_SON_MUTADORES: dict[str, str] = {
     ),
 }
 
+#: Módulos que construyen un ``DirectoryRollback`` **por encargo** de un mutador de
+#: salida ya clasificado: no toman el lock, no eligen el target y no tienen output
+#: propio que revertir — ejecutan el move-aside sobre el destino que otro decidió.
+#:
+#: Igual que ``_NO_SON_MUTADORES``, se excluyen con el motivo ESCRITO, nunca por
+#: omisión. La exclusión es inocua por construcción y el guard de abajo la cruza: si
+#: un excluido tomara el lock, ``test_la_enumeracion_cubre_todos_los_mutadores`` ya
+#: lo obligaría a estar declarado con su mecanismo, y estaría en las dos listas.
+_LO_CONSTRUYEN_POR_ENCARGO: dict[str, str] = {
+    "sky_claw/local/tools/dyndolod_runner.py": (
+        "el packaging de etapa 9 es un paso DENTRO de `dyndolod_service.py`, que "
+        "figura arriba como 'directorio': el servicio toma el lock, decide el "
+        "`mod_path` y cablea el `veto_de_rollback` desde sus leases — el runner sólo "
+        "ejecuta la sustitución con ese veto ya recibido. Su residuo move-aside cae "
+        "bajo `mods/`, la familia que ya barre el productor `dyndolod` de "
+        "`rollback_reconciler` (declarado en tests/test_rollback_reconciler.py)."
+    ),
+}
+
 #: Módulo → mecanismo con el que revierte su SALIDA ante un run fallido.
 #:
 #: ``"snapshot"``    — ``target_files`` reales en el ``SnapshotTransactionLock``.
@@ -110,10 +129,26 @@ def test_quien_dice_revertir_por_directorio_usa_el_move_aside() -> None:
     estar clasificado así. Sin esto, un servicio podría quedar etiquetado como
     protegido sin tener el mecanismo."""
     declarados = {m for m, mecanismo in MECANISMO_DE_ROLLBACK.items() if mecanismo == "directorio"}
-    reales = {
-        ruta.relative_to(_PAQUETE.parent).as_posix()
-        for ruta in _PAQUETE.rglob("*.py")
-        if "DirectoryRollback(" in ruta.read_text(encoding="utf-8")
-    } - {"sky_claw/local/tools/_dir_rollback.py"}  # define la clase
+    reales = (
+        {
+            ruta.relative_to(_PAQUETE.parent).as_posix()
+            for ruta in _PAQUETE.rglob("*.py")
+            if "DirectoryRollback(" in ruta.read_text(encoding="utf-8")
+        }
+        - {"sky_claw/local/tools/_dir_rollback.py"}  # define la clase
+        - set(_LO_CONSTRUYEN_POR_ENCARGO)  # por encargo de un mutador, con motivo escrito
+    )
 
     assert declarados == reales
+
+
+def test_quien_construye_el_move_aside_por_encargo_nombra_su_motivo() -> None:
+    """Una exclusión sin motivo escrito es indistinguible de un olvido (#318/#373).
+
+    Y no puede tapar a un mutador de salida real: si el excluido tomara el lock,
+    ``test_la_enumeracion_cubre_todos_los_mutadores`` ya lo exigiría declarado con su
+    mecanismo, así que la exclusión dejaría de ser inocua. Las dos direcciones del
+    censo quedan cruzadas y ninguna se relaja por escribir prosa.
+    """
+    assert all(motivo.strip() for motivo in _LO_CONSTRUYEN_POR_ENCARGO.values())
+    assert not set(_LO_CONSTRUYEN_POR_ENCARGO) & _modulos_que_toman_el_lock()
