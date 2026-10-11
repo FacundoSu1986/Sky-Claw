@@ -1520,3 +1520,75 @@ def test_f19_posix_fork_child_does_not_keep_kernel_flock_if_parent_dies(
             os.kill(child_b_pid, 9)
         with contextlib.suppress(OSError):
             os.waitpid(child_b_pid, 0)
+
+
+def test_f20_metadata_rewrite_padded_with_whitespace_preserves_crash_evidence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-20 (P1): Reescritura con padding de espacios preserva evidencia ante crash antes de truncar."""
+    root = _crear_root_valido(tmp_path)
+    handle = acquire_frozen_runtime_root_lock(root, timeout=1.0)
+    handle.assert_owned()
+    canonical_root = handle.canonical_root
+    lock_path = handle.lock_path
+    handle.release()
+
+    len_released = lock_path.stat().st_size
+    assert len_released > 0
+
+    from sky_claw.local.frozen_runtime.root_lock import (
+        _read_metadata_bytes,
+        _write_metadata_crash_safe,
+    )
+
+    # Simular una escritura de HELD (más corto) donde el proceso crashea antes del truncate final
+    payload_held = {
+        "schema_version": LOCK_SCHEMA_VERSION,
+        "canonical_root": canonical_root,
+        "session_id": str(uuid.uuid4()),
+        "pid": 999999,  # PID no existente (muerto)
+        "process_create_time": 1000.0,
+        "acquired_at": time.time(),
+        "phase": LockPhase.HELD.value,
+    }
+
+    # Interceptar truncate para simular crash de proceso inmediatamente tras el primer fsync
+    class CrashBeforeTruncateError(Exception):
+        pass
+
+    with open(lock_path, "r+b") as f:
+
+        def crashing_truncate(size: int | None = None) -> int:
+            raise CrashBeforeTruncateError("Crash simulado antes de truncar espacio residual")
+
+        monkeypatch.setattr(f, "truncate", crashing_truncate)
+        with pytest.raises(CrashBeforeTruncateError):
+            _write_metadata_crash_safe(f, payload_held)
+
+    # 1. El archivo preserva su tamaño previo (len_released), no quedó truncado a 0
+    size_after_crash = lock_path.stat().st_size
+    assert size_after_crash == len_released
+
+    # 2. El contenido en disco es JSON sintácticamente válido terminado en espacios ASCII
+    raw_after_crash = lock_path.read_bytes()
+    assert raw_after_crash.endswith(b" ")
+    meta = _read_metadata_bytes(raw_after_crash, expected_canonical_root=canonical_root)
+    assert meta.phase == LockPhase.HELD
+    assert meta.pid == 999999
+
+    # 3. inspect() NO declara FREE ni CORRUPT_METADATA: preserva la evidencia y declara ORPHANED
+    res = inspect_frozen_runtime_root_lock(root)
+    assert res.disposition == LockDisposition.ORPHANED
+    assert res.metadata is not None
+    assert res.metadata.phase == LockPhase.HELD
+
+    # 4. En ejecución normal sin interrupción, _write_metadata_crash_safe trunca los espacios
+    with open(lock_path, "r+b") as f:
+        _write_metadata_crash_safe(f, payload_held)
+
+    size_normal = lock_path.stat().st_size
+    assert size_normal < len_released
+    raw_normal = lock_path.read_bytes()
+    assert not raw_normal.endswith(b" ")
+    meta_normal = _read_metadata_bytes(raw_normal, expected_canonical_root=canonical_root)
+    assert meta_normal.phase == LockPhase.HELD

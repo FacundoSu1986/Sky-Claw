@@ -452,17 +452,27 @@ def _read_metadata_bytes(
 
 
 def _write_metadata_crash_safe(file_obj: Any, payload: dict[str, Any]) -> None:
-    """Escribe metadata de forma crash-safe truncando a 0 antes de escribir (F-18).
+    """Escribe metadata de forma crash-safe sin perder evidencia forense (F-18/F-20).
 
-    Evita que un JSON más corto deje colas residuales del JSON anterior ('Extra data')
-    si el proceso muere o crashea entre la escritura y el truncamiento.
+    Escribe primero el nuevo payload rellenado con espacios ASCII hasta el tamaño
+    previo del archivo (garantizando JSON sintácticamente válido en todo momento).
+    Tras el fsync de la nueva representación, trunca al tamaño exacto si era menor.
     """
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    file_obj.seek(0, os.SEEK_END)
+    old_size = file_obj.tell()
+
+    durable_payload = serialized + (b" " * (old_size - len(serialized))) if old_size > len(serialized) else serialized
+
     file_obj.seek(0)
-    file_obj.truncate(0)
-    file_obj.write(serialized)
+    file_obj.write(durable_payload)
     file_obj.flush()
     os.fsync(file_obj.fileno())
+
+    if len(durable_payload) > len(serialized):
+        file_obj.truncate(len(serialized))
+        file_obj.flush()
+        os.fsync(file_obj.fileno())
 
 
 def _is_current_process_owner(handle: FrozenRuntimeRootLockHandle) -> bool:

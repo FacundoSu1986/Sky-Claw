@@ -97,9 +97,9 @@ MODULOS_CON_OPEN_ESCRITURA: dict[str, frozenset[str]] = {
     # placeholder vacio deja al ganador como unico dueno de la ruta, y el escritor
     # atomico despues lo reemplaza sin poder tocar la evidencia de otro.
     "state.py": frozenset({"x"}),
-    # P4-S1: root_lock.py abre con `xb` exclusivo para creacion inicial y con `r+b`
+    # P4-S1: root_lock.py abre con `x+b` exclusivo para creacion atomica y con `r+b`
     # para adquisicion y lectura/escritura del lockfile persistente bajo root/state/.
-    "root_lock.py": frozenset({"r+b", "xb"}),
+    "root_lock.py": frozenset({"r+b", "x+b"}),
 }
 
 
