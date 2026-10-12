@@ -213,6 +213,7 @@ R7_THRESHOLD_KIND          = HEURISTIC (RMS)
 R7_THRESHOLD_VALUE         = 5/16  (CONSERVADO; prohibido recalibrarlo con corpus)
 R7_WORST_CASE_PREMISE      = CONJECTURE_NOT_FALSIFIED  (SIN CAMBIO: gate #717 §6.1, FROZEN)
 R7_NYQUIST_ATTAINMENT      = ESTABLISHED_AS_ATTAINED_BOUND  (token NUEVO de este slice)
+R7_WORST_CASE_CROSSING     = 1/2   (token NUEVO del slice de RECONCILIACIÓN; ver §3.1)
 R7_VALUE_IS_CONSERVATIVE   = YES (medido, k en {2,4,8,16}, criterio predefinido)
 R7_NUMERIC_VALUE_FROM_CORPUS = NO
 M6_IMPLEMENTATION_BLOCKED  = YES
@@ -234,6 +235,40 @@ medido. No se recalibró con corpus ni con resultados históricos (§6.1).
 | `test_g_el_criterio_se_sostiene_en_toda_la_cola_y_discrimina` | cierra la cláusula "para todo `L' >= L`" de §6.1.3 y prueba que el criterio no es trivial |
 | `test_g_la_aritmetica_declarada_es_sum_w2_no_sqrt` | `5/16` es `sum(w^2)`, no `sqrt(sum(w^2))` |
 | `test_g_la_propagacion_rms_no_es_cota_worst_case` | un RMS no acota el peor caso (`2.771x`) |
+
+### 3.1 Retiración del 9.º ancla (slice de RECONCILIACIÓN #711/#717/#723)
+
+`test_g_el_peor_caso_dirigido_tambien_queda_bajo_el_umbral` se **retira**: era **vacuo**.
+Su adversario, `d[..., 0] = ±(q/2) * s`, está perfectamente correlacionado con el patrón
+alternado `s` de `_familia_f02`; la renormalización por píxel deja la misma norma en todos
+los píxeles, la componente `x` sigue alternando y el kernel simétrico la cancela **exacta**.
+Medido: `delta_theta == 0.0` en todo `L`, así que el cruce caía en el primer punto de la
+grilla (`0.02`) y `assert cruce < 0.3125` pasaba sin haber medido error angular alguno.
+
+| Test | Qué discrimina |
+|---|---|
+| `test_g_el_adversario_alineado_con_el_patron_mide_cero` | mantiene retirada la evidencia vacua: reintroducirla rompe la aserción |
+| `test_g_el_peor_caso_coherente_cruza_en_un_medio_y_supera_el_umbral` | el cruce del peor caso **estructural** cae en `L = 1/2`, `1.6x` el umbral |
+
+El peor caso real es la perturbación **coherente perpendicular** (la misma `(q/2)` en todos
+los píxeles, en un eje sin componente en el vector interpolado): los pesos positivos del
+kernel la **suman** en vez de promediarla. Medido sobre la implementación real y sobre el
+oráculo independiente en `k ∈ {2, 4, 8, 16}`: `delta_theta(L) = atan((q/2)/L)`, cruce exacto
+en `L = 1/2`. La banda `[5/16, 1/2)` —declarada EVALUABLE— se publica con error de dirección
+de hasta `1.60x q_ang`.
+
+Esto **no** cambia `DEGENERATE_THRESHOLD` ni ninguna fila congelada: es la contraparte en
+cruce de `R7_WORST_CASE_BOUND = 2.771x`, registrada bajo su propio token
+(`R7_WORST_CASE_CROSSING`). La decisión —conservar la heurística RMS y aceptar el riesgo, o
+subir el umbral a `1/2`— es del Tech Lead; la matriz está en
+`h4-resize-normal-contract-reconciliation.md`.
+
+### 3.2 Retiración de una afirmación de producción (misma clase)
+
+El comentario de producción afirmaba que el cruce cae bajo `5/16` "tanto bajo el criterio
+RMS como bajo el peor caso dirigido". La segunda mitad era la misma evidencia vacua; se
+retira. La secuencia de cruces RMS declarada también se corrige a los valores medidos con la
+malla fina (`0.0925 / 0.0683 / 0.0442 / 0.0200`), que son cotas superiores del cruce real.
 
 ## 4. Lo que este slice NO hace
 

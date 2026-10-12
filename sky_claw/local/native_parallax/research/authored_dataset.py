@@ -168,17 +168,41 @@ class DegenerateNormalError(DatasetInvalidError):
 #                                ALCANCE del ínfimo —falsación intentada y no lograda—,
 #                                coherente con `CONJECTURE_NOT_FALSIFIED`, NO un
 #                                ascenso del gate.)
+#        R7_WORST_CASE_CROSSING = 1/2 (evidencia NUEVA del slice de RECONCILIACIÓN #711/
+#                                #717/#723; NO cambia el valor del umbral). Bajo una
+#                                perturbación COHERENTE perpendicular —la MISMA `(q/2)`
+#                                en TODOS los píxeles, en un eje sin componente en el
+#                                vector interpolado— la amplificación NO se promedia: los
+#                                pesos del kernel son positivos y suman. Medido sobre la
+#                                implementación real (Pillow modo F) en k in {2,4,8,16}:
+#                                `delta_theta(L) = atan((q/2)/L)`, que cruza `q_ang` en
+#                                `L = 1/2` EXACTO. Consecuencia: la banda `[5/16, 1/2)`
+#                                —que este umbral declara EVALUABLE— tiene error de
+#                                dirección de hasta `1.60x q_ang` en `L = 5/16`. El RMS
+#                                (0.0925 en k=2) NO acota ese peor caso; el adversario
+#                                que la familia G usaba para cubrirlo (`d[...,0] =
+#                                +-(q/2)*s`, alineado con el patrón alternado) mide
+#                                `delta_theta == 0` EXACTO y por eso era VACUO. Es la
+#                                contraparte en CRUCE de `R7_WORST_CASE_BOUND = 2.771x`;
+#                                no autoriza recalibrar: `R7_NUMERIC_DERIVATION` sigue
+#                                `BLOCKED` y la decisión es del Tech Lead.
 #
 #    Lo que SÍ se verifica —con una prueba sintética independiente del valor de
 #    producción (oráculo propio, semilla fija, factores `k in {2, 4, 8, 16}`), en
 #    `tests/test_native_parallax_h4_resize_normal.py`, familia G— es la
-#    CONSERVADURÍA del valor: el cruce medido `delta_theta(L) = q_ang` cae muy por
-#    debajo de `5/16` en TODOS los factores soportados, tanto bajo el criterio RMS
-#    como bajo el peor caso dirigido. Cruces RMS medidos (malla de paso 0.02, así que
-#    son cotas SUPERIORES del cruce real): `k=2 -> <= 0.10`, `k=4 -> <= 0.06`,
-#    `k=8 -> <= 0.04`, `k=16 -> <= 0.02`, todos por debajo de `0.3125`. Es decir,
-#    `5/16` rechaza un superconjunto de la banda no confiable — pero por un margen
-#    (~2.4x-3x) que la derivación publicada no cuantifica, y SIN garantía de peor caso.
+#    CONSERVADURÍA del valor BAJO EL CRITERIO RMS: el cruce medido `delta_theta(L) =
+#    q_ang` cae muy por debajo de `5/16` en TODOS los factores soportados. Cruces RMS
+#    medidos (malla de paso 0.02, así que son cotas SUPERIORES del cruce real):
+#    `k=2 -> 0.0925`, `k=4 -> 0.0683`, `k=8 -> 0.0442`, `k=16 -> 0.0200`, todos por
+#    debajo de `0.3125`.
+#    **Corrección de una segunda afirmación no medida (slice de RECONCILIACIÓN).** El
+#    comentario decía que el cruce cae por debajo de `5/16` "tanto bajo el criterio RMS
+#    como bajo el peor caso dirigido". Es FALSO: el adversario que lo respaldaba
+#    (`d[...,0] = +-(q/2)*s`) está alineado con el patrón alternado y la interpolación lo
+#    cancela, de modo que medía `delta_theta == 0` EXACTO y su cruce caía en el primer
+#    punto de la grilla. Bajo el peor caso ESTRUCTURAL —perturbación coherente
+#    perpendicular— el cruce es `L = 1/2`, `1.6x` el umbral (ver `R7_WORST_CASE_CROSSING`
+#    arriba). Se retira la afirmación; `5/16` es conservador sólo bajo el criterio RMS.
 #
 # 5. Dominio y riesgo residual. `RESIDUAL_RISK = DECLARED`, no oculto. La cota RMS
 #    `sum_k w_k^2` DECRECE con el factor `k`, y la secuencia está MEDIDA (derivada del
@@ -223,6 +247,22 @@ DEGENERATE_THRESHOLD = 5.0 / 16.0
 #       (AGENTS.md: "arreglar un hermano y no al otro").
 # El no-op bit a bit que D-07 protege se conserva para la entrada que realmente lo
 # justifica: la que YA es unitaria (la que produce `decode_normal_image`).
+#
+# ESTADO DEL CONTRATO (slice de RECONCILIACIÓN #711/#717/#723). Esta adjudicación es una
+# RESOLUCIÓN DE INGENIERÍA, no un cierre normativo: V-01 (#711) dice que la entrada
+# "geométricamente inválida" se RECHAZA y no se corrige por renormalización, y el término
+# queda sin definir. Lo implementado es la opción que sostiene §3.2 + N-11 + §5.3.4.7
+# simultáneamente, pero la DEFINICIÓN del término la adjudica el Tech Lead:
+#
+#     F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD
+#
+# La lectura implementada es `geometricamente_invalida := no finito OR forma malformada
+# OR L < DEGENERATE_THRESHOLD`; bajo ella no hay divergencia con V-01 y el único defecto
+# era el vacío de `ADMISIBLE(n)` en §3.4.1 (omitía la norma). La lectura alternativa
+# —`invalida := L != 1`— es incompatible con el camino `resize`, donde la interpolación
+# SIEMPRE produce norma no unitaria, y con N-11 (el clip de `1000.0` da norma `sqrt(3)`).
+# Ninguna de las dos se implementa acá: la matriz está en
+# `docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md`.
 UNIT_NORM_TOLERANCE = 1e-6
 
 

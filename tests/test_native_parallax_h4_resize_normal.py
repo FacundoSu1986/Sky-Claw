@@ -1098,28 +1098,55 @@ def _cruce_rms(size_in: int, size_out: int, rng: np.random.Generator) -> float:
     return float("nan")
 
 
-def _cruce_peor_caso_dirigido(size_in: int, size_out: int) -> float:
-    """Cruce bajo peor caso dirigido: el signo de la perturbación se ELIGE, no se sortea.
+def _delta_theta_adversario_alineado(size_in: int, size_out: int, largo: float) -> float:
+    """Adversario **RETIRADO** (H4-F02-ANCLA-DIRIGIDO): perturbación alineada con el patrón.
 
-    Devuelve `nan` si el criterio **nunca** se cumple en la grilla — mismo contrato que
-    `_cruce_rms`, y por la misma razón. Un centinela optimista (p. ej. el extremo inferior
-    `0.02`) haría pasar la aserción de conservaduría sin haber medido nada: el verde falso
-    que la familia G existe para evitar. Con `nan`, `nan < umbral` es `False` y el fallo es
-    ruidoso.
+    `d[..., 0] = ±(q/2) * s` está PERFECTAMENTE correlacionada con el patrón alternado
+    `s` de `_familia_f02`. La renormalización por píxel deja la MISMA norma en todos los
+    píxeles (el módulo `|sin(theta) ± q/2|` no depende del signo de `s`), así que la
+    componente `x` sigue alternando y el kernel simétrico la cancela EXACTA: el vector
+    interpolado perturbado tiene la misma dirección que el limpio.
+
+    Medido: `delta_theta == 0.0` en todo `L`. La versión previa usaba este adversario
+    como prueba del "peor caso dirigido"; medía cero, su cruce caía en el primer punto de
+    la grilla (`0.02`) y `assert cruce < umbral` pasaba sin haber medido nada. Se conserva
+    como ancla de la RETIRACIÓN, no como evidencia de cobertura.
     """
     s = np.where(np.arange(size_in) % 2 == 0, 1.0, -1.0)
-    for largo in np.linspace(0.02, 0.60, 25):
+    base = _familia_f02(size_in, largo)
+    v_limpio = _oraculo(base, size_out)
+    peor = 0.0
+    for signo in (1.0, -1.0):
+        d = np.zeros_like(base)
+        d[..., 0] = signo * _Q8 / 2 * s[None, :]
+        pert = base + d
+        pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
+        dt = _delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2]
+        peor = max(peor, float(dt.max()))
+    return peor
+
+
+def _cruce_peor_caso_coherente(size_in: int, size_out: int) -> float:
+    """Cruce bajo el peor caso **estructural**: perturbación COHERENTE perpendicular.
+
+    Los pesos del kernel bilineal son positivos y suman 1, así que una perturbación
+    COHERENTE (la misma en TODOS los píxeles) no se promedia: **suma**. Eligiendo la
+    dirección perpendicular al vector interpolado, la amplificación es `q/2` y
+    `delta_theta(L) = atan((q/2)/L)`, que cruza `q_ang = q` en `L = 1/2` exacto, con
+    independencia del factor de reducción.
+
+    Devuelve `nan` si el criterio nunca se cumple — mismo contrato que `_cruce_rms`, y por
+    la misma razón: un centinela optimista haría pasar la aserción sin medir nada.
+    """
+    for largo in np.linspace(0.02, 0.95, 94):
         base = _familia_f02(size_in, largo)
         v_limpio = _oraculo(base, size_out)
-        peor = 0.0
-        for signo in (1.0, -1.0):
-            d = np.zeros_like(base)
-            d[..., 0] = signo * _Q8 / 2 * s[None, :]
-            pert = base + d
-            pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
-            dt = _delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2]
-            peor = max(peor, float(np.percentile(dt, 99.0)))
-        if peor <= _Q8:
+        d = np.zeros_like(base)
+        d[..., 1] = _Q8 / 2
+        pert = base + d
+        pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
+        dt = _delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2]
+        if float(dt.max()) <= _Q8:
             return float(largo)
     return float("nan")
 
@@ -1181,12 +1208,57 @@ def test_g_el_cruce_medido_es_conservador_en_los_factores_soportados() -> None:
     assert medidos[2] >= medidos[16], f"el cruce debe decrecer con k: {medidos}"
 
 
-def test_g_el_peor_caso_dirigido_tambien_queda_bajo_el_umbral() -> None:
-    """H4-F02: incluso ELIGIENDO el signo de la perturbación (no al azar), el cruce
-    queda por debajo del umbral en los factores soportados."""
+def test_g_el_adversario_alineado_con_el_patron_mide_cero() -> None:
+    """H4-F02-ANCLA-DIRIGIDO (retiración): el adversario "dirigido" previo era **VACUO**.
+
+    `d[..., 0] = ±(q/2) * s` está correlacionada con el patrón alternado, así que el kernel
+    simétrico la cancela: `delta_theta` queda a precisión de máquina (`<= 1e-12`, contra un
+    `q_ang` de `7.8e-03`), en TODO `L`. La versión previa lo usaba como prueba del peor caso
+    dirigido, su cruce caía en el primer punto de la grilla (`0.02`) y la aserción
+    `cruce < umbral` pasaba sin medir error angular alguno.
+
+    Si alguien reintrodujera ese adversario como evidencia, la aserción falla.
+    """
+    for largo in (0.02, 0.10, 0.3125, 0.50, 0.80):
+        dt = _delta_theta_adversario_alineado(_TAMANO_F02, _TAMANO_F02 // 2, largo)
+        assert dt <= 1e-12, (
+            f"L={largo}: el adversario alineado con el patrón dejó de medir ~0 "
+            f"(delta_theta={dt:.3e}); ya no documenta la retiración"
+        )
+
+
+def test_g_el_peor_caso_coherente_cruza_en_un_medio_y_supera_el_umbral() -> None:
+    """H4-F02-ANCLA-DIRIGIDO: el umbral **NO** cubre el peor caso estructural.
+
+    Sustituye a `test_g_el_peor_caso_dirigido_tambien_queda_bajo_el_umbral`, cuya aserción
+    era vacua (ver `test_g_el_adversario_alineado_con_el_patron_mide_cero`).
+
+    El peor caso real es la perturbación COHERENTE perpendicular: los pesos positivos del
+    kernel la SUMAN en vez de promediarla. Medido con el oráculo independiente en los cuatro
+    factores soportados, el cruce `delta_theta(L) = q_ang` cae en `L = 1/2` — `1.6x` el
+    umbral de producción. La banda `[5/16, 1/2)` se publica con error de dirección de hasta
+    `1.60x q_ang`.
+
+    Este test **no** pide recalibrar el umbral: ancla la falsación para que el riesgo
+    residual quede medido y no se pueda volver a declarar `R7 = PASS` por conveniencia. La
+    decisión (conservar la heurística RMS y aceptar el riesgo, o subir el umbral a `1/2`)
+    es del Tech Lead — ver
+    `docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md`.
+    """
     for k in _FACTORES_SOPORTADOS:
-        cruce = _cruce_peor_caso_dirigido(_TAMANO_F02, _TAMANO_F02 // k)
-        assert cruce < ad.DEGENERATE_THRESHOLD, f"k={k}: peor caso dirigido en {cruce:.4f}"
+        cruce = _cruce_peor_caso_coherente(_TAMANO_F02, _TAMANO_F02 // k)
+        assert cruce == pytest.approx(0.50, abs=0.011), (
+            f"k={k}: el cruce del peor caso coherente debe caer en 1/2; medido {cruce}"
+        )
+        assert cruce > ad.DEGENERATE_THRESHOLD, (
+            f"k={k}: el cruce {cruce} NO supera el umbral {ad.DEGENERATE_THRESHOLD}: "
+            "la falsación del peor caso no estaría respaldada"
+        )
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    assert "R7_WORST_CASE_CROSSING = 1/2" in fuente, (
+        "la producción debe declarar el cruce del peor caso bajo su propio token, sin "
+        "reescribir `R7_WORST_CASE_PREMISE` (gate #717 §6.1, FROZEN)"
+    )
 
 
 def test_g_la_produccion_declara_el_estado_de_la_derivacion() -> None:
