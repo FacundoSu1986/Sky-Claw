@@ -186,6 +186,13 @@ class DegenerateNormalError(DatasetInvalidError):
 #                                contraparte en CRUCE de `R7_WORST_CASE_BOUND = 2.771x`;
 #                                no autoriza recalibrar: `R7_NUMERIC_DERIVATION` sigue
 #                                `BLOCKED` y la decisión es del Tech Lead.
+#                                ALCANCE (no leerlo de más): `1/2` es el cruce de ESA familia
+#                                de perturbación, NO el peor caso sobre todas las admitidas
+#                                por `abs(eps_c) <= q/2` con renormalización — acotar esa
+#                                familia exige una cota de error angular en función de la
+#                                CORRELACIÓN entre píxeles, que este slice no aporta. Lo
+#                                falsado es la PRETENSIÓN DE GARANTÍA, no que `1/2` sea el
+#                                valor correcto.
 #
 #    Lo que SÍ se verifica —con una prueba sintética independiente del valor de
 #    producción (oráculo propio, semilla fija, factores `k in {2, 4, 8, 16}`), en
@@ -259,8 +266,12 @@ DEGENERATE_THRESHOLD = 5.0 / 16.0
 # La lectura implementada es `geometricamente_invalida := no finito OR forma malformada
 # OR L < DEGENERATE_THRESHOLD`; bajo ella no hay divergencia con V-01 y el único defecto
 # era el vacío de `ADMISIBLE(n)` en §3.4.1 (omitía la norma). La lectura alternativa
-# —`invalida := L != 1`— es incompatible con el camino `resize`, donde la interpolación
-# SIEMPRE produce norma no unitaria, y con N-11 (el clip de `1000.0` da norma `sqrt(3)`).
+# —`invalida := L != 1`— es IMPLEMENTABLE para la entrada ya decodificada (P-ENTRADA), pero
+# no se puede aplicar al INTERMEDIARIO del camino `resize`, donde la norma no unitaria la
+# produce la operación. Ojo con el argumento fácil: la interpolación NO siempre baja la
+# norma (un campo unitario constante la preserva); baja la norma cuando el campo VARÍA. Y
+# el clip de `1000.0` da norma `sqrt(3)`, así que esa lectura exige además una regla nueva
+# en N-11 (tolerar el clip sólo si la entrada requirió clipping, que sí es observable).
 # Ninguna de las dos se implementa acá: la matriz está en
 # `docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md`.
 UNIT_NORM_TOLERANCE = 1e-6
