@@ -25,11 +25,13 @@ from __future__ import annotations
 import ast
 import math
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
+from PIL import Image
 
 from sky_claw.local.native_parallax.research import authored_dataset as ad
 from sky_claw.local.native_parallax.research.authored_dataset import (
@@ -130,20 +132,44 @@ def _normal_nyquist(size: int) -> NDArray[np.float64]:
     return n
 
 
-def _normal_por_L(size: int, L: float) -> NDArray[np.float64]:
-    """Campo unitario cuyo vector interpolado (factor 2) tiene norma `L` en el interior.
+def _normal_por_largo(size: int, largo: float) -> NDArray[np.float64]:
+    """Campo unitario cuyo vector interpolado (factor 2) tiene norma `largo` en el interior.
 
     `n(i,j) = (sin(theta)*s(i), 0, cos(theta))` con `s` alternada. El kernel 1-D a
-    factor 2 suma cero sobre `s`, así que `v = (0, 0, cos(theta))` y `L = cos(theta)`
-    en el interior. En el borde el kernel se recorta y `L` sube — el test lo tiene en
+    factor 2 suma cero sobre `s`, así que `v = (0, 0, cos(theta))` y `largo = cos(theta)`
+    en el interior. En el borde el kernel se recorta y `largo` sube — el test lo tiene en
     cuenta: basta UN píxel por debajo del umbral para declarar el campo degenerado.
     """
-    theta = math.acos(L)
+    theta = math.acos(largo)
     s = np.where(np.arange(size) % 2 == 0, 1.0, -1.0)
     n = np.zeros((size, size, 3), dtype=np.float64)
     n[..., 0] = (math.sin(theta) * s)[None, :]
     n[..., 2] = math.cos(theta)
     return n
+
+
+# ---------------------------------------------------------------------------
+# Referencia del camino histórico (el defecto que se está corrigiendo)
+# ---------------------------------------------------------------------------
+def _camino_historico(n: NDArray[np.float64], size: int) -> NDArray[np.float64]:
+    """Copia del `resize_normal` retirado (baseline `da738b75`, líneas 237-253).
+
+    Se conserva como *régimen defectuoso* explícito: los tests de familia A exigen que
+    esta referencia realmente reproduzca el sesgo, y sólo entonces comparan contra el
+    camino corregido. Si la referencia dejara de ser defectuosa, la aserción lo delata
+    en vez de dejar pasar una comparación vacía.
+
+    `Image.fromarray` sin `mode=` infiere `L` para un array 2-D `uint8`, que es
+    exactamente lo que hacía el original (`mode="L"`), sin el `DeprecationWarning`.
+    """
+    canales = []
+    for c in range(3):
+        im = Image.fromarray((np.clip(n[..., c], -1.0, 1.0) * 127.5 + 127.5).astype(np.uint8))
+        canales.append(
+            (np.asarray(im.resize((size, size), Image.Resampling.BILINEAR), dtype=np.float64) - 127.5) / 127.5
+        )
+    out = np.stack(canales, axis=-1)
+    return out / np.maximum(np.linalg.norm(out, axis=-1, keepdims=True), 1e-12)
 
 
 # ===========================================================================
@@ -166,10 +192,37 @@ def test_a_componente_sub_lsb_conserva_el_signo() -> None:
 
 
 def test_a_campo_simetrico_no_tiene_sesgo() -> None:
-    """Un campo con simetría exacta debe promediar 0 en ambos canales tangenciales."""
-    out = resize_normal(_normal_simetrica(64), 32)
-    assert abs(float(out[..., 0].mean())) < 1e-5, f"sesgo nx: {out[..., 0].mean()}"
-    assert abs(float(out[..., 1].mean())) < 1e-5, f"sesgo ny: {out[..., 1].mean()}"
+    """El sesgo de cuantización debe desaparecer — medido contra el régimen histórico.
+
+    No se fija una tolerancia a ojo: se miden LOS DOS regímenes en la misma corrida y se
+    exigen tres cosas independientes.
+
+    (1) **Aserción load-bearing**: el camino histórico DEBE sesgar (`> 1e-3`). Si no lo
+        hiciera, la comparación sería vacía y el test lo delata en vez de pasar.
+    (2) El camino corregido reduce ese sesgo **al menos 5x**. Medido en esta máquina:
+        `nx` 148x (`1.63e-5` vs `-2.42e-3`), `ny` 11.8x (`-2.80e-4` vs `-3.30e-3`). El
+        margen se deja en 5x —y no en 10x— porque (1)+(3) ya cargan el peso científico
+        y una guarda robusta no debe depender del camino interno de Pillow. Un mutante
+        que reintroduzca cuantización lleva el cociente a ~1 y falla.
+    (3) **El residual es del campo, no del código**: `mean(ny) = -2.80e-4` sobrevive al
+        fix, y es idéntico en el oráculo float64 puro porque el kernel de borde recortado
+        aplicado a `cos(2*pi*3*y)` no conserva la media nula. Sin este anclaje el
+        residual parecería un sesgo residual del fix.
+    """
+    n = _normal_simetrica(64)
+    out = resize_normal(n, 32)
+    hist = _camino_historico(n, 32)
+    orac = _oraculo(n, 32)
+    orac = orac / np.linalg.norm(orac, axis=-1, keepdims=True)
+
+    for c, eje in ((0, "nx"), (1, "ny")):
+        b_corr = abs(float(out[..., c].mean()))
+        b_hist = abs(float(hist[..., c].mean()))
+        assert b_hist > 1e-3, f"{eje}: la referencia histórica no reproduce el sesgo ({b_hist:.3e})"
+        assert b_corr * 5.0 < b_hist, f"{eje}: corregido {b_corr:.3e} vs histórico {b_hist:.3e} (<5x)"
+        assert abs(float(out[..., c].mean()) - float(orac[..., c].mean())) < TOL_F32, (
+            f"{eje}: el residuo no lo explica el oráculo independiente"
+        )
 
 
 def test_a_campo_constante_sobrevive_al_redondeo_float32() -> None:
@@ -230,18 +283,18 @@ def test_b_degenerado_no_se_reemplaza_por_un_vector_inventado() -> None:
 
 def test_b_casi_nulo_bajo_el_umbral_es_non_evaluable() -> None:
     """Falsación, lado A: apenas por debajo del umbral -> NON_EVALUABLE."""
-    L = ad.DEGENERATE_THRESHOLD * 0.96
-    diag = ad.resize_normal_diagnostic(_normal_por_L(128, L), 64)
-    assert diag.degenerate is True, f"L objetivo {L} no fue detectado como degenerado"
+    largo = ad.DEGENERATE_THRESHOLD * 0.96
+    diag = ad.resize_normal_diagnostic(_normal_por_largo(128, largo), 64)
+    assert diag.degenerate is True, f"norma objetivo {largo} no fue detectada como degenerada"
     assert diag.degenerate_count >= 1
 
 
 def test_b_justo_sobre_el_umbral_es_evaluable() -> None:
     """Falsación, lado B: apenas por encima del umbral -> evaluable y unitario."""
-    L = ad.DEGENERATE_THRESHOLD * 1.02
-    n = _normal_por_L(128, L)
+    largo = ad.DEGENERATE_THRESHOLD * 1.02
+    n = _normal_por_largo(128, largo)
     diag = ad.resize_normal_diagnostic(n, 64)
-    assert diag.degenerate is False, f"L objetivo {L} fue rechazado"
+    assert diag.degenerate is False, f"norma objetivo {largo} fue rechazada"
     assert diag.degenerate_count == 0
     assert float(np.abs(np.linalg.norm(diag.array, axis=-1) - 1.0).max()) < TOL_F32
 
@@ -309,11 +362,16 @@ def test_b_sin_nan_inf_publicados() -> None:
 
 
 def test_b_fuera_de_rango_finito_es_clip_no_rechazo() -> None:
-    """N-11: `[-1,1]` es postcondición. Un valor finito fuera de rango se clipea."""
+    """N-11: `[-1,1]` es postcondición. Un valor finito fuera de rango se clipea.
+
+    `nx = 1000.0` se clipea a `1.0` antes de interpolar; el campo queda `(1,0,1)`
+    constante y la renormalización lo lleva a `(1/sqrt(2), 0, 1/sqrt(2))`.
+    """
     n = _normal_plana(16)
     n[..., 0] = 1000.0
     out = resize_normal(n, 8)
-    np.testing.assert_allclose(out[..., 0], 1.0, atol=TOL_F32)
+    np.testing.assert_allclose(out[..., 0], 1.0 / math.sqrt(2.0), atol=TOL_F32)
+    np.testing.assert_allclose(out[..., 2], 1.0 / math.sqrt(2.0), atol=TOL_F32)
 
 
 def test_b_convencion_y_orden_de_canales_no_se_alteran() -> None:
@@ -358,17 +416,15 @@ def test_c_el_oraculo_no_es_una_llamada_a_pillow() -> None:
 
 def test_c_el_oraculo_independiente_coincide_con_el_resizer() -> None:
     """El resizer corregido y la referencia NumPy float64 coinciden dentro de float32."""
-    rng = np.random.default_rng(20261012)
     for size_in, size_out in ((128, 64), (128, 32), (100, 37), (64, 16)):
-        v = rng.normal(size=(size_in, size_in, 3))
-        v[..., 2] = np.abs(v[..., 2]) + 0.25
-        n = _unitaria(v)
+        x = np.linspace(0.0, 2 * np.pi, size_in, endpoint=False)
+        xx, yy = np.meshgrid(x, x, indexing="xy")
+        n = _unitaria(np.stack([0.3 * np.sin(xx), 0.3 * np.cos(yy), np.ones_like(xx)], axis=-1))
         esperado = _oraculo(n, size_out)
         obtenido = ad.resize_normal_diagnostic(n, size_out)
-        assert obtenido.degenerate is False
-        # El oráculo no renormaliza; el resizer sí. Se compara la dirección.
+        assert obtenido.degenerate is False, f"{size_in}->{size_out} degeneró un campo suave"
         np.testing.assert_allclose(
-            _unitaria(obtenido.array),
+            obtenido.array,
             _unitaria(esperado),
             atol=1e-5,
             err_msg=f"{size_in}->{size_out}",
@@ -378,7 +434,8 @@ def test_c_el_oraculo_independiente_coincide_con_el_resizer() -> None:
 def test_c_campo_constante_es_constante() -> None:
     n = _normal_plana(64)
     out = resize_normal(n, 16)
-    np.testing.assert_allclose(out, n[0, 0], atol=TOL_F32)
+    esperado = np.broadcast_to(n[0, 0], out.shape)
+    np.testing.assert_allclose(out, esperado, atol=TOL_F32)
 
 
 def test_c_campo_afin_se_reproduce_analiticamente() -> None:
@@ -424,34 +481,36 @@ def test_c_patron_de_alta_frecuencia_no_publica_basura() -> None:
 # Familia D — integración
 # ===========================================================================
 def test_d_load_asset_usa_la_api_de_diagnostico() -> None:
-    fuente = (ad.__file__ and Path(ad.__file__).read_text(encoding="utf-8")) or ""
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
     fn = next(n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "load_asset")
-    llamados = {
-        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
+    llamados = {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "resize_normal_diagnostic" in llamados, (
         "load_asset debe recibir la evidencia por la API de diagnóstico, no por la fachada"
     )
 
 
 def test_d_load_asset_propaga_degeneracion_con_identidad_del_asset(tmp_path: Path) -> None:
-    """El error de `load_asset` lleva el `asset_id`: la fachada no puede, esta ruta sí."""
+    """El error de `load_asset` lleva el `asset_id`: la fachada no puede, esta ruta sí.
+
+    El bitmap alterna `(255,0,0)` / `(0,255,255)`, cuyos decodificados son antípodas
+    exactas `(1,-1,-1)/sqrt(3)` y `(-1,1,1)/sqrt(3)`: el kernel a factor 2 los cancela.
+    """
     import json
 
     from PIL import Image
 
+    from sky_claw.local.native_parallax.research.authored_dataset import MaterialSpec, _sha256
+
+    ancho = np.where(np.arange(64) % 2 == 0, 255, 0).astype(np.uint8)[None, :]
     normal = np.zeros((64, 64, 3), dtype=np.uint8)
-    normal[..., 0] = np.where(np.arange(64) % 2 == 0, 255, 0)[None, :]
+    normal[..., 0] = ancho
+    normal[..., 1] = 255 - ancho
+    normal[..., 2] = 255 - ancho
     ruta_n = tmp_path / "n.png"
     Image.fromarray(normal).save(ruta_n)
     ruta_h = tmp_path / "h.png"
     Image.fromarray(np.zeros((64, 64), dtype=np.uint8)).save(ruta_h)
-
-    from sky_claw.local.native_parallax.research.authored_dataset import (
-        MaterialSpec,
-        _sha256,  # noqa: PLC2701 - helper del módulo bajo prueba
-    )
 
     spec = MaterialSpec(
         asset_id="asset-degenerado",
@@ -478,13 +537,13 @@ def test_d_load_asset_propaga_degeneracion_con_identidad_del_asset(tmp_path: Pat
 
 def test_d_resize_height_no_regresiona() -> None:
     """M-07 / #653: el hermano escalar conserva modo F, sin uint8, sin clip en resize."""
-    ramp = np.linspace(0.0, 1.0, 1024, dtype=np.float64)[None, :].repeat(1024, axis=0)
+    ramp = np.tile(np.linspace(0.0, 1.0, 1024, dtype=np.float64), (1024, 1))
     out = resize_height(ramp, 512)
     assert out.shape == (512, 512)
     assert float(out.min()) >= 0.0
     assert float(out.max()) <= 1.0
     # 16-bit: una rampa de 1024 niveles no debe colapsar a 256 niveles.
-    assert len(np.unique(np.round(out[:, 0], 6))) > 256
+    assert len(np.unique(np.round(out[0, :], 6))) > 256
     constante = np.full((32, 32), 0.375, dtype=np.float64)
     np.testing.assert_allclose(resize_height(constante, 16), 0.375, atol=1e-7)
 
@@ -495,23 +554,28 @@ def test_d_la_resolucion_primaria_del_runner_sigue_siendo_512() -> None:
     defaults = {
         n.args[0].value
         for n in ast.walk(arbol)
-        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_argument"
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "attr", "") == "add_argument"
         and n.args
         and isinstance(n.args[0], ast.Constant)
         and n.args[0].value == "--resolution"
     }
     assert defaults == {"--resolution"}
-    assert 'default=512' in fuente.replace(" ", ""), "PRIMARY_RESOLUTION = 512 no debe cambiar"
+    assert "default=512" in fuente.replace(" ", ""), "PRIMARY_RESOLUTION = 512 no debe cambiar"
 
 
 # ===========================================================================
 # Familia E — ancla de enumeración por AST
 # ===========================================================================
-_SIMBOLOS = ("resize_normal", "load_asset")
+_SIMBOLOS = ("resize_normal", "resize_normal_diagnostic", "load_asset")
 
 _CENSO_PRODUCCION_ESPERADO = frozenset(
     {
-        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal"),
+        # `authored_dataset` ya no referencia `resize_normal` como `ast.Name`: la fachada
+        # define la función y delega en `resize_normal_diagnostic`. El censo sigue
+        # cubriendo el módulo — por la superficie nueva, que es la que el contrato §5.4
+        # manda enumerar ("o a la varita `resize_normal_diagnostic`").
+        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal_diagnostic"),
         ("sky_claw/local/native_parallax/research/run_exp_m2.py", "load_asset"),
         ("sky_claw/local/native_parallax/research/run_exp_m3.py", "load_asset"),
         ("sky_claw/local/native_parallax/research/run_exp_m4.py", "load_asset"),
@@ -560,9 +624,7 @@ _HANDLER_QUE_ABORTA = "DegenerateNormalError"
 
 
 def _tracked_py() -> list[str]:
-    listado = subprocess.run(
-        ["git", "ls-files", "*.py"], cwd=_REPO, capture_output=True, text=True, check=True
-    )
+    listado = subprocess.run(["git", "ls-files", "*.py"], cwd=_REPO, capture_output=True, text=True, check=True)
     return [rel.strip() for rel in listado.stdout.splitlines() if rel.strip()]
 
 
@@ -609,6 +671,26 @@ def _contiene_continue(handler: ast.ExceptHandler) -> bool:
     return any(isinstance(n, ast.Continue) for n in ast.walk(handler))
 
 
+_LLAMADAS_QUE_CARGAN_NORMALES = {"load_asset", "resize_normal", "resize_normal_diagnostic"}
+
+
+def _trys_que_cargan_normales(rel: str) -> list[ast.Try]:
+    """`try` cuyo cuerpo carga una normal — las únicas superficies donde el orden importa."""
+    arbol = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
+    objetivo: list[ast.Try] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Try):
+            continue
+        llamados = {n.func.id for n in ast.walk(nodo) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        if llamados & _LLAMADAS_QUE_CARGAN_NORMALES:
+            objetivo.append(nodo)
+    return objetivo
+
+
+def _indices_de_handlers(t: ast.Try) -> list[str]:
+    return [_nombre_de_handler(h) for h in t.handlers]
+
+
 def test_e_el_censo_productivo_esta_congelado() -> None:
     censo = _censo_consumidores()
     assert censo["produccion"] == set(_CENSO_PRODUCCION_ESPERADO), (
@@ -647,17 +729,26 @@ def test_e_el_handler_de_degeneracion_precede_al_de_dataset_invalid() -> None:
     """Una subclase capturada después de su superclase es código muerto.
 
     El orden de las cláusulas es load-bearing: `DegenerateNormalError` hereda de
-    `DatasetInvalidError`, así que si aparece después, el `continue` la absorbe.
+    `DatasetInvalidError`, así que si aparece después, el `continue` de integridad la
+    absorbe y la degeneración desaparece sin señal. Se enumeran **todos** los `try`
+    de producción que cargan una normal, no sólo el de M3.
     """
+    revisados = 0
     for rel in sorted({r for r, _ in _CENSO_PRODUCCION_ESPERADO}):
-        for handler in _handlers_de_excepciones(rel):
-            nombre = _nombre_de_handler(handler)
-            if "DatasetInvalidError" not in nombre or _HANDLER_QUE_ABORTA in nombre:
+        for t in _trys_que_cargan_normales(rel):
+            nombres = _indices_de_handlers(t)
+            if not any("DatasetInvalidError" in n for n in nombres):
                 continue
-            assert not _contiene_continue(handler), (
-                f"{rel}:{handler.lineno} captura DatasetInvalidError con `continue` "
-                f"sin haber tratado antes {_HANDLER_QUE_ABORTA}"
+            revisados += 1
+            i_degen = next((k for k, n in enumerate(nombres) if _HANDLER_QUE_ABORTA in n), None)
+            assert i_degen is not None, (
+                f"{rel}:{t.lineno} carga una normal y captura DatasetInvalidError sin tratar "
+                f"{_HANDLER_QUE_ABORTA} antes (handlers={nombres})"
             )
+            assert i_degen < nombres.index("DatasetInvalidError"), (
+                f"{rel}:{t.lineno} {_HANDLER_QUE_ABORTA} debe preceder a DatasetInvalidError (handlers={nombres})"
+            )
+    assert revisados >= 1, "no se encontró ningún try de producción que cargue normales"
 
 
 def test_e_la_fachada_no_expone_un_array_degenerado_en_silencio() -> None:
@@ -666,10 +757,7 @@ def test_e_la_fachada_no_expone_un_array_degenerado_en_silencio() -> None:
     arbol = ast.parse(fuente)
     fn = next(n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "resize_normal")
     tiene_guard = any(
-        isinstance(n, ast.If)
-        and any(
-            isinstance(s, ast.Attribute) and s.attr == "degenerate" for s in ast.walk(n.test)
-        )
+        isinstance(n, ast.If) and any(isinstance(s, ast.Attribute) and s.attr == "degenerate" for s in ast.walk(n.test))
         for n in ast.walk(fn)
     )
     lanza = any(
@@ -762,6 +850,32 @@ def test_f_m3_la_exclusion_de_integridad_sigue_siendo_exclusion(monkeypatch: pyt
     assert [d["asset_id"] for d in ev["dataset_invalid"]] == ["asset-m3"]
 
 
+def test_f_m3_no_publica_artefacto_cientifico(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Un H4 degenerado NO puede producir `exp_m3_results.json` (fail-closed end-to-end).
+
+    El único `write_text` del artefacto vive al final de `main()`, después de toda la
+    evaluación. Si la degeneración aborta la corrida antes, el archivo no existe: es la
+    prueba de que el error no se degrada en un resultado científico publicado sobre una
+    cohorte alterada (§5.3.4.4). El test no confía en el orden por lectura: lo ejecuta.
+    """
+    from sky_claw.local.native_parallax.research import run_exp_m3
+
+    def _revienta(*_a: object, **_k: object) -> None:
+        raise _error_degenerado()  # type: ignore[misc]
+
+    monkeypatch.setattr(run_exp_m3, "load_asset", _revienta)
+    monkeypatch.setattr(run_exp_m3, "load_cohort_a", lambda *_a, **_k: ([dict(_ENTRADA_M3)], []))
+    monkeypatch.setattr(run_exp_m3, "check_cohort_a_sufficient", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_exp_m3", "--m3-manifest", "m3.json", "--m2-manifest", "m2.json", "--out", str(tmp_path)],
+    )
+    with pytest.raises(ad.DegenerateNormalError):
+        run_exp_m3.main()
+    assert not (tmp_path / "exp_m3_results.json").exists(), "se publicó un artefacto sobre una cohorte alterada"
+
+
 def test_f_m2_m4_m5_no_capturan_dataset_invalid() -> None:
     """M2/M4/M5 propagan por defecto: cero capturas alrededor de `load_asset`."""
     for rel in (
@@ -769,32 +883,26 @@ def test_f_m2_m4_m5_no_capturan_dataset_invalid() -> None:
         "sky_claw/local/native_parallax/research/run_exp_m4.py",
         "sky_claw/local/native_parallax/research/run_exp_m5.py",
     ):
-        capturas = [
-            h
-            for h in _handlers_de_excepciones(rel)
-            if "DatasetInvalidError" in _nombre_de_handler(h)
-        ]
+        capturas = [h for h in _handlers_de_excepciones(rel) if "DatasetInvalidError" in _nombre_de_handler(h)]
         assert not capturas, f"{rel} captura DatasetInvalidError en {[h.lineno for h in capturas]}"
 
 
 def test_f_m3_declara_el_handler_de_degeneracion_antes_del_de_integridad() -> None:
-    """El orden de las cláusulas del `try` crítico de M3 es load-bearing."""
+    """El `try` crítico de M3: subclase antes que superclase, y aborta (no `continue`)."""
     rel = "sky_claw/local/native_parallax/research/run_exp_m3.py"
-    arbol = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
-    trys = [n for n in ast.walk(arbol) if isinstance(n, ast.Try)]
     objetivo = [
-        t
-        for t in trys
-        if any("DatasetInvalidError" in _nombre_de_handler(h) for h in t.handlers)
-        and any("load_asset" in {x.id for x in ast.walk(t) if isinstance(x, ast.Name)} for _ in [0])
+        t for t in _trys_que_cargan_normales(rel) if any("DatasetInvalidError" in n for n in _indices_de_handlers(t))
     ]
-    assert objetivo, "no se encontró el try crítico de M3 con `load_asset`"
+    assert objetivo, "no se encontró el try crítico de M3 que carga normales y captura DatasetInvalidError"
     for t in objetivo:
-        nombres = [_nombre_de_handler(h) for h in t.handlers]
-        if "DatasetInvalidError" not in nombres:
-            continue
+        nombres = _indices_de_handlers(t)
         i_degen = next((k for k, n in enumerate(nombres) if _HANDLER_QUE_ABORTA in n), None)
-        assert i_degen is not None, f"{rel}: el try crítico no trata {_HANDLER_QUE_ABORTA}"
+        assert i_degen is not None, f"{rel}:{t.lineno}: el try crítico no trata {_HANDLER_QUE_ABORTA}"
         assert i_degen < nombres.index("DatasetInvalidError"), (
-            f"{rel}: {_HANDLER_QUE_ABORTA} debe preceder a DatasetInvalidError (nombres={nombres})"
+            f"{rel}:{t.lineno}: {_HANDLER_QUE_ABORTA} debe preceder a DatasetInvalidError (handlers={nombres})"
+        )
+        handler = t.handlers[i_degen]
+        assert not _contiene_continue(handler), f"{rel}:{handler.lineno}: `continue` prohibido para la degeneración"
+        assert any(isinstance(n, ast.Raise) for n in ast.walk(handler)), (
+            f"{rel}:{handler.lineno}: el handler de {_HANDLER_QUE_ABORTA} debe abortar (`raise`)"
         )
