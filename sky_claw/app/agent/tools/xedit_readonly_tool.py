@@ -42,17 +42,34 @@ def _conflictos_legacy(result: Any) -> list[dict[str, str]]:
 
 
 async def _ejecutar_conflictos(xedit_runner: Any, plugins: list[str]) -> dict[str, Any]:
-    """Ejecuta ``list_all_conflicts.pas`` y valida su protocolo estructurado."""
+    """Ejecuta ``list_all_conflicts.pas`` y valida su protocolo estructurado.
+
+    Contrato de ``summary`` (#549) — la clave está SIEMPRE presente y su tipo
+    distingue las dos ramas:
+
+    * Hubo stdout de protocolo → ``summary`` es el dict validado de
+      ``SUMMARY|...`` (contiene ``total_conflicts`` y ese conteo cierra contra
+      ``conflicts``). Cualquier desvío levanta :class:`RuntimeError`.
+    * Un adapter legacy entregó un ``XEditResult`` preparseado sin stdout → no
+      existió ningún ``SUMMARY`` que describa esa corrida, así que ``summary``
+      vale ``None``: ausencia explícita y estable, en vez de ``{}`` (indistinguible
+      de un resumen con cero campos para un consumidor que lea ``summary.get(...)``).
+      No se deriva ``total_conflicts`` de ``len(conflictos)``: el conteo del
+      protocolo es la afirmación de xEdit de que el script llegó a ``Finalize``,
+      no un conteo nuestro, y fabricarlo le daría a la rama de compatibilidad la
+      apariencia de una corrida validada.
+    """
     from sky_claw.local.xedit.conflict_analyzer import parse_summary_line
     from sky_claw.local.xedit.output_parser import XEditOutputParser
 
     script = "list_all_conflicts.pas"
     result = await _ejecutar_script_canonico(xedit_runner, script, plugins)
     raw_stdout = result.raw_stdout
-    summary = parse_summary_line(raw_stdout)
-    conflictos = XEditOutputParser.parse_conflict_report(raw_stdout)
+    summary: dict[str, int] | None
 
     if raw_stdout.strip():
+        summary = parse_summary_line(raw_stdout)
+        conflictos: list[dict[str, Any]] = XEditOutputParser.parse_conflict_report(raw_stdout)
         if "total_conflicts" not in summary:
             raise RuntimeError(f"Salida de {script} truncada: falta SUMMARY|total_conflicts.")
         if summary["total_conflicts"] != len(conflictos):
@@ -66,6 +83,7 @@ async def _ejecutar_conflictos(xedit_runner: Any, plugins: list[str]) -> dict[st
         # preparseado y no conservan stdout. El runner productivo sí conserva
         # raw_stdout y por tanto siempre pasa por el protocolo estricto de arriba.
         conflictos = _conflictos_legacy(result)
+        summary = None
     else:
         # Sin protocolo y sin conflictos preparseados no hay forma de distinguir
         # "0 conflictos" de "xEdit no escribió nada" (binario GUI, log -R: vacío):
