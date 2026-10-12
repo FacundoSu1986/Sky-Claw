@@ -443,8 +443,39 @@ class IdempotencyMiddleware:
             )
             raise
 
-        self._sm.transition(task.task_id, "COMPLETED", result=result)
+        if _is_error_result(result):
+            self._sm.transition(
+                task.task_id,
+                "FAILED",
+                error_message=_extract_error_message(result),
+                result=result if isinstance(result, dict) else None,
+            )
+        else:
+            self._sm.transition(task.task_id, "COMPLETED", result=result)
         return result
+
+
+def _is_error_result(result: Any) -> bool:
+    """Determina si el resultado devuelto por la cadena representa un error."""
+    if not isinstance(result, dict):
+        return True
+    if result.get("status") == "error":
+        return True
+    return result.get("success") is False
+
+
+def _extract_error_message(result: Any) -> str:
+    """Extrae un mensaje descriptivo de error desde el resultado."""
+    if not isinstance(result, dict):
+        return f"Invalid result type: {type(result).__name__}"
+    for key in ("message", "details", "error", "reason"):
+        val = result.get(key)
+        if val:
+            return str(val)
+    errors = result.get("errors")
+    if errors and isinstance(errors, (list, tuple)):
+        return "; ".join(str(e) for e in errors)
+    return "Tool execution failed"
 
 
 class ProgressMiddleware:

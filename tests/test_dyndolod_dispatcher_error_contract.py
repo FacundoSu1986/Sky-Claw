@@ -21,7 +21,11 @@ import pytest
 
 from sky_claw.app.gui.controllers.ritual_runner import summarize_ritual_result
 from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
-from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.app.orchestrator.tool_state_machine import ToolStateMachine
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
+    HitlGateMiddleware,
+    IdempotencyMiddleware,
+)
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 
@@ -166,3 +170,55 @@ async def test_compatibilidad_con_consumidores_existentes() -> None:
     assert "Subproceso DynDOLOD abortó con código 1" in vista_normalizada["message"]
     assert tipo_feedback == "negative"
     assert "Subproceso DynDOLOD abortó con código 1" in mensaje_feedback
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_generate_lods_registra_estado_failed_en_state_machine() -> None:
+    # Arrange: simular una falla de ejecución con ToolStateMachine e IdempotencyMiddleware reales
+    sm = ToolStateMachine()
+    idempotency = IdempotencyMiddleware(state_machine=sm)
+    dyndolod_service = MagicMock()
+    dyndolod_service.execute = AsyncMock(side_effect=RuntimeError("DynDOLOD falló catastróficamente"))
+    deps = crear_dependencias_dispatcher(dyndolod_service=dyndolod_service)
+    gate = HitlGateMiddleware(allow_unattended=True)
+    dispatcher = build_orchestration_dispatcher(deps, hitl_gate=gate, idempotency=idempotency)
+
+    # Act
+    resultado = await dispatcher.dispatch("generate_lods", {})
+
+    # Assert: el resultado retorna el dict de error esperado
+    assert resultado["status"] == "error"
+    assert resultado["reason"] == "DynDOLODPipelineExecutionFailed"
+
+    # Invariante Codex P2: la tarea en ToolStateMachine debe estar en FAILED, nunca en COMPLETED
+    tasks = list(sm._tasks.values())
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.state == "FAILED"
+    assert "DynDOLOD falló catastróficamente" in str(task.error_message)
+    assert task.result == resultado
+    assert sm.guard.is_active(task.idempotency_key) is False
+
+
+@pytest.mark.asyncio
+async def test_exito_de_generate_lods_registra_estado_completed_en_state_machine() -> None:
+    # Arrange: simular una ejecución exitosa con ToolStateMachine real
+    sm = ToolStateMachine()
+    idempotency = IdempotencyMiddleware(state_machine=sm)
+    dyndolod_service = MagicMock()
+    dyndolod_service.execute = AsyncMock(return_value={"status": "success", "success": True, "message": "OK"})
+    deps = crear_dependencias_dispatcher(dyndolod_service=dyndolod_service)
+    gate = HitlGateMiddleware(allow_unattended=True)
+    dispatcher = build_orchestration_dispatcher(deps, hitl_gate=gate, idempotency=idempotency)
+
+    # Act
+    resultado = await dispatcher.dispatch("generate_lods", {})
+
+    # Assert
+    assert resultado["status"] == "success"
+    tasks = list(sm._tasks.values())
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.state == "COMPLETED"
+    assert task.result == resultado
+    assert sm.guard.is_active(task.idempotency_key) is False
