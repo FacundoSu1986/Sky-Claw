@@ -105,11 +105,25 @@ class DegenerateNormalError(DatasetInvalidError):
 #    `||n_i|| = 1`  =>  `L = ||v||` en [0, 1]. El ínfimo 0 se ALCANZA: una entrada
 #    de normales unitarias alternadas `(+-1,0,0)` es cancelada exactamente por el
 #    kernel separable a factor 2 (el de reducción 1024->512), y también por los de
-#    factor 4/8/16 — verificado por barrido de factor, fase y borde. La conjetura
-#    "Nyquist es el peor caso" deja de ser conjetura: es una cota alcanzada, y como
-#    `L >= 0` siempre, ninguna configuración soportada puede bajarla. El barrido
-#    corrobora `min L = 0` y muestra que el recorte del kernel en el borde es MÁS
-#    benigno (no cancela del todo).
+#    factor 4/8/16. La premisa "Nyquist es el peor caso" NO queda probada por esto: lo
+#    que el barrido establece es el ALCANCE del ínfimo —que `0` se alcanza, y como
+#    `L >= 0` siempre, ninguna configuración soportada puede bajarlo—. Es una falsación
+#    INTENTADA y no lograda, que es exactamente el estado `CONJECTURE_NOT_FALSIFIED`
+#    que fija el gate (§6.1, N-12); no lo asciende. El barrido ejecutable (factor
+#    `k in {2,4,8,16}` x fase `fase in [0, k)` x borde) corrobora `min L = 0` en TODAS
+#    las combinaciones. Evidencia registrada como `R7_NYQUIST_ATTAINMENT` (punto 4).
+#
+#    **Corrección de una afirmación previa no medida (H4-F02).** El comentario decía
+#    que "el recorte del kernel en el borde es MÁS benigno (no cancela del todo)".
+#    El barrido lo FALSIFICA: el borde alcanza el MISMO ínfimo que el interior
+#    (`min L <= 1e-12`, a precisión de máquina, en las 30 combinaciones medidas),
+#    así que no es más benigno.
+#    La afirmación se retira; lo único que se sostiene es que el borde NO baja el
+#    mínimo, es decir que no agrega un modo de cancelación peor.
+#    H4-F02-ANCLA-BORDE: el borde no es más benigno — alcanza el mismo ínfimo.
+#
+#    OJO: esto acota el MÍNIMO de `L` —cuán degenerado puede llegar a estar el
+#    campo—, NO el umbral de rechazo; ver punto 4.
 #
 # 2. Criterio de confiabilidad (fijado ANTES de medir). Una dirección es confiable
 #    sólo si la resuelve el DATO, no el último bit del dato. La procedencia declarada
@@ -119,22 +133,97 @@ class DegenerateNormalError(DatasetInvalidError):
 #    (`U(-q/2, q/2)^3`, renormalizado) y se exige que el cambio de dirección
 #    inducido cumpla `delta_theta(L) <= q_ang` para todo `L' >= L`.
 #
-# 3. Umbral. La amplificación de una perturbación es `delta_theta ~ ||dv|| / L`; para
-#    el kernel separable a factor 2 (pesos 1-D `[1/8, 3/8, 3/8, 1/8]`) la propagación
-#    RMS de la perturbación vale `||dv|| = sqrt(sum_k w_k^2) * q = 5/16 * q`. Igualando
-#    `delta_theta = q_ang = q` queda `L = 5/16`. Medición independiente sobre la
-#    familia sintética de `L` analítico: el cruce cae en `L = 0.309 <= 0.3125`, así
-#    que la cota analítica no se viola y el umbral la redondea hacia arriba.
+# 3. Amplificación, y de dónde sale `5/16` (CORREGIDO — hallazgo H4-F02).
+#    La amplificación de una perturbación es `delta_theta ~ ||dv|| / L`. Para el
+#    kernel separable a factor 2 (pesos 1-D `[1/8, 3/8, 3/8, 1/8]`) la suma de
+#    cuadrados de los pesos vale `sum_k w_k^2 = 1/64 + 9/64 + 9/64 + 1/64 = 20/64 = 5/16`.
+#    Igualar `delta_theta = q_ang = q` con ese factor da `L = 5/16`.
 #
-# 4. Dominio y riesgo residual. Para todo factor `k >= 2` la cota decrece
-#    (0.3125 -> 0.2346 -> 0.1641 -> ...), así que `5/16` es CONSERVADOR en las
-#    reducciones soportadas por el pipeline (corpus 1024/2048 -> 512, k en {2, 4}).
-#    Para `1 < k < 2` la cota es mayor: `RESIDUAL_RISK = DECLARED`, no oculto.
+#    **`5/16` es `sum_k w_k^2`, NO `sqrt(sum_k w_k^2)`.** La justificación previa
+#    escribía `||dv|| = sqrt(sum_k w_k^2) * q = 5/16 * q`, que confunde las dos
+#    cantidades: `sqrt(sum_k w_k^2) = sqrt(5/16) = 0.5590`, no `0.3125`.
+#
+# 4. Estado de la derivación: HEURÍSTICA, no garantía (hallazgo H4-F02).
+#    El factor `5/16` sale de una propagación **RMS** (valor medio cuadrático) de la
+#    perturbación, y un RMS **no** es una cota superior de error angular: es el
+#    promedio de una familia, no el peor caso. La cota *worst-case* de la MISMA celda
+#    declarada es `||dv|| <= sum_{k,l} w_k w_l * (q/2) * sqrt(3) = (q/2) * sqrt(3)`,
+#    es decir `2.771x` el factor RMS. Por lo tanto:
+#
+#        R7_NUMERIC_DERIVATION = BLOCKED (la justificación publicada no sostiene una
+#                                garantía matemática universal; es una heurística)
+#        R7_THRESHOLD_KIND     = HEURISTIC (RMS), NO garantía matemática
+#        R7_THRESHOLD_VALUE    = 5/16 (CONSERVADO; prohibido recalibrarlo con corpus)
+#        R7_WORST_CASE_BOUND   = (q/2) * sqrt(3) = 2.771x el factor RMS declarado
+#        R7_WORST_CASE_PREMISE = CONJECTURE_NOT_FALSIFIED (ESTADO FIJADO por el gate
+#                                #717 §6.1, que está FROZEN: N-12 prohíbe presentar
+#                                la premisa como resultado. Un comentario de
+#                                producción NO reescribe el estado declarado de un
+#                                contrato congelado; ver el token de evidencia abajo.)
+#        R7_NYQUIST_ATTAINMENT  = ESTABLISHED_AS_ATTAINED_BOUND (evidencia NUEVA de este
+#                                Slice, registrada bajo su PROPIO token y no como
+#                                reescritura de la premisa: el barrido factor x fase x
+#                                borde alcanza min L = 0 en las 30 combinaciones, y
+#                                como L >= 0 nada puede bajarlo. Es un hallazgo de
+#                                ALCANCE del ínfimo —falsación intentada y no lograda—,
+#                                coherente con `CONJECTURE_NOT_FALSIFIED`, NO un
+#                                ascenso del gate.)
+#
+#    Lo que SÍ se verifica —con una prueba sintética independiente del valor de
+#    producción (oráculo propio, semilla fija, factores `k in {2, 4, 8, 16}`), en
+#    `tests/test_native_parallax_h4_resize_normal.py`, familia G— es la
+#    CONSERVADURÍA del valor: el cruce medido `delta_theta(L) = q_ang` cae muy por
+#    debajo de `5/16` en TODOS los factores soportados, tanto bajo el criterio RMS
+#    como bajo el peor caso dirigido. Cruces RMS medidos (malla de paso 0.02, así que
+#    son cotas SUPERIORES del cruce real): `k=2 -> <= 0.10`, `k=4 -> <= 0.06`,
+#    `k=8 -> <= 0.04`, `k=16 -> <= 0.02`, todos por debajo de `0.3125`. Es decir,
+#    `5/16` rechaza un superconjunto de la banda no confiable — pero por un margen
+#    (~2.4x-3x) que la derivación publicada no cuantifica, y SIN garantía de peor caso.
+#
+# 5. Dominio y riesgo residual. `RESIDUAL_RISK = DECLARED`, no oculto. La cota RMS
+#    `sum_k w_k^2` DECRECE con el factor `k`, y la secuencia está MEDIDA (derivada del
+#    oráculo por respuesta a impulsos, no estimada):
+#
+#        k=2  -> 0.3125000    k=4  -> 0.1640625    k=8  -> 0.0830078    k=16 -> 0.0416260
+#
+#    H4-F02-ANCLA-COTA: 0.3125000, 0.1640625, 0.0830078, 0.0416260 para k = 2, 4, 8, 16.
+#    (Una versión previa declaraba `0.3125 -> 0.2346 -> 0.1641 -> ...`, que NO es la
+#    secuencia medida: el valor `0.2346` no corresponde a ningún factor del kernel.
+#    Se corrige con la medición; ver `test_g_la_cota_rms_decrece_con_el_factor`.)
+#    Con eso, `5/16` es conservador para las reducciones del pipeline (corpus
+#    1024/2048 -> 512, `k` en {2, 4}). Para `1 < k < 2` la cota es mayor y el umbral
+#    deja de dominarla.
 #    Sobre contenido realista (superficie fractal 1/f con pendientes hasta 2.5,
 #    1024->512) el porcentaje de píxeles por debajo del umbral es 0.0000 %; el
 #    contenido que sí cae es cancelación genuina (Nyquist: 100 %; período 5: 40 %;
 #    ruido blanco: 59 %).
 DEGENERATE_THRESHOLD = 5.0 / 16.0
+
+# --- H4: tolerancia de norma del camino identidad (contrato #717 §3.5, D-07) ---
+# Fuente SINTÉTICA/ANALÍTICA (§3.5: prohibido ajustarla al corpus). La entrada
+# admisible del camino identidad es una normal **unitaria**; el único desvío legítimo
+# proviene de la ida/vuelta `float32 -> float64` del pipeline (`Image` modo F), cuya
+# cota analítica por componente es `2**-24`, i.e.
+# `||v_f32 - v|| <= sqrt(3) * 2**-24 = 1.032e-07`. Se toma `1e-6` (~10x de margen sobre
+# esa cota) y se ancla con una medición sintética en
+# `tests/test_native_parallax_h4_resize_normal.py` (familia B).
+#
+# ADJUDICACIÓN H4-F01 — dominio geométrico del camino identidad.
+# §3.2 (salida: norma `≈ 1` **o** `NON_EVALUABLE`, nunca un valor intermedio
+# silencioso) y §3.4.1 paso (4) ("identidad: no-op, sin renormalizar") entran en
+# conflicto para una entrada de norma NO unitaria. Se resuelve a favor de §3.2 más
+# §5.3.4.7 (simetría de hermanos), por dos razones medidas:
+#   (a) rechazar el resultado del clip contradiría N-11
+#       (`FUERA_DE_RANGO_FINITO = CLIP, TOLERADO`), que es una regla `CONTRACT_CLOSED`
+#       con test exigido, y haría que el MISMO valor `1000.0` fuera tolerado por el
+#       camino `resize` y rechazado por el de identidad;
+#   (b) el hermano `resize` ya renormaliza una dirección confiable de norma no unitaria
+#       (`test_b_fuera_de_rango_finito_es_clip_no_rechazo`); dejar al camino identidad
+#       como excepción es exactamente la clase de defecto dominante del repo
+#       (AGENTS.md: "arreglar un hermano y no al otro").
+# El no-op bit a bit que D-07 protege se conserva para la entrada que realmente lo
+# justifica: la que YA es unitaria (la que produce `decode_normal_image`).
+UNIT_NORM_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -392,9 +481,13 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
     2. **Finitud** (V-04) y **clip declarado a `[-1,1]`** (§3.4.1 paso 3): el rango es
        POSTCONDICIÓN, no precondición — se aplica **antes** de la bifurcación, de modo
        que vale en ambos caminos sin excepción.
-    3. **Bifurcación**: `H == W == size` es no-op (D-07) sobre entradas admisibles; en
-       otro caso se interpola canal por canal en **Pillow modo F** (float32), sin
-       cuantización intermedia a `uint8`, con `BILINEAR` explícito.
+    3. **Bifurcación**: `H == W == size` omite el REMUESTREO (D-07), pero **mide la
+       norma** y aplica la misma política de degenerados (D-06) y la misma postcondición
+       de norma unitaria (§3.2) que el camino `resize`: no-op exacto si la entrada ya es
+       unitaria, renormalización si su dirección es confiable pero su norma no es 1, y
+       `degenerate=True` si algún píxel cae bajo `DEGENERATE_THRESHOLD`. En otro caso se
+       interpola canal por canal en **Pillow modo F** (float32), sin cuantización
+       intermedia a `uint8`, con `BILINEAR` explícito.
     4. **Renormalización con política de degenerados** (D-06): si algún píxel tiene
        `0 <= L < DEGENERATE_THRESHOLD` —donde `L` es la norma del vector **interpolado,
        antes de renormalizar**— el resultado se marca degenerado y **no se renormaliza**
@@ -409,10 +502,39 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
 
     total_pixels = size * size
     if arr.shape[0] == size and arr.shape[1] == size:
-        # D-07: no-op del paso de remuestreo para entradas admisibles — sin interpolar
-        # y sin renormalizar (`decode_normal_image` ya renormalizó aguas arriba).
+        # D-07: no-op del paso de REMUESTREO (no hay nada que interpolar). Pero la
+        # postcondición de salida §3.2 —norma `≈ 1` o `NON_EVALUABLE`, nunca un valor
+        # intermedio silencioso— NO tiene excepción de identidad (hallazgo H4-F01): el
+        # bypass histórico devolvía el vector nulo, `(1,1,1)` de norma `sqrt(3)`, o un
+        # campo de norma 0.5, sin medir una sola norma. La corrección es mínima y
+        # SIMÉTRICA con el hermano `resize`: el único paso que se omite es interpolar.
+        largo = np.linalg.norm(arr, axis=-1)
+        degenerados = int(np.count_nonzero(largo < DEGENERATE_THRESHOLD))
+        if degenerados:
+            return NormalResizeResult(
+                array=arr,
+                degenerate_count=degenerados,
+                total_pixels=total_pixels,
+                threshold=DEGENERATE_THRESHOLD,
+                degenerate=True,
+            )
+        if bool(np.all(np.abs(largo - 1.0) <= UNIT_NORM_TOLERANCE)):
+            # Entrada YA unitaria: no-op EXACTO — sin remuestrear, sin copiar y sin
+            # renormalizar. Es el caso que `decode_normal_image` produce aguas arriba, y
+            # el único para el que D-07 justifica el no-op bit a bit.
+            return NormalResizeResult(
+                array=arr,
+                degenerate_count=0,
+                total_pixels=total_pixels,
+                threshold=DEGENERATE_THRESHOLD,
+                degenerate=False,
+            )
+        # Dirección confiable pero norma no unitaria (p. ej. el clip de un valor fuera de
+        # rango, que lleva `1000.0` a `(1,1,1)`, de norma `sqrt(3)`): se renormaliza con
+        # el MISMO paso que el camino `resize`, en vez de publicar un array cuya norma no
+        # es 1. No se inventa dirección — se conserva la de la entrada.
         return NormalResizeResult(
-            array=arr,
+            array=np.asarray(arr / largo[..., None], dtype=np.float64),
             degenerate_count=0,
             total_pixels=total_pixels,
             threshold=DEGENERATE_THRESHOLD,

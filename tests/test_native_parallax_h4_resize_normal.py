@@ -9,6 +9,23 @@ Familias A–F del preflight `docs/design/research/native-parallax/h4-resize-nor
   D — Integración (`load_asset`, `resize_height`, resolución primaria)
   E — Ancla de enumeración por AST (censo + orden de handlers + allowlist histórica)
   F — Propagación fail-closed en M2/M3/M4/M5
+  G — Derivación del umbral (H4-F02), independiente del valor de producción
+
+**H4-F01 — dominio geométrico del camino identidad.** El camino identidad medía CERO
+normas: publicaba el vector nulo, un campo de norma 0.5 o `(1,1,1)` de norma `sqrt(3)`
+como si fueran evaluables, declarando `degenerate=False`. §3.2 (salida: norma `≈ 1` o
+`NON_EVALUABLE`) no tiene excepción de identidad. La familia B ancla las cuatro clases
+discriminatorias —cero, norma 0.5, unitaria válida, clip de `1000.0`— en **las dos
+superficies** (fachada y API diagnóstica), y exige simetría con el hermano `resize`.
+La adjudicación entre §3.2 y §3.4.1 paso (4) está registrada en la producción
+(`UNIT_NORM_TOLERANCE`).
+
+**H4-F02 — el umbral es heurística, no garantía.** `5/16` es `sum_k w_k^2`, no
+`sqrt(sum_k w_k^2)` (que vale `0.5590`), y sale de una propagación **RMS**, que no es
+cota superior de error angular: el peor caso de la misma celda es `(q/2)*sqrt(3)`,
+`2.771x` mayor. La familia G **deriva su propio cruce** con oráculo, semilla y factores
+propios (sin leer `DEGENERATE_THRESHOLD` para derivarlo) y verifica lo único que se
+sostiene: que el valor de producción es conservador en `k in {2, 4, 8, 16}`.
 
 **Por qué los símbolos nuevos se acceden como `ad.X`.** El contrato #717 introduce
 `DEGENERATE_THRESHOLD`, `NormalResizeResult`, `resize_normal_diagnostic`,
@@ -103,6 +120,13 @@ def _unitaria(v: NDArray[np.float64]) -> NDArray[np.float64]:
 def _normal_plana(size: int) -> NDArray[np.float64]:
     n = np.zeros((size, size, 3), dtype=np.float64)
     n[..., 2] = 1.0
+    return n
+
+
+def _campo_de_norma(size: int, largo: float) -> NDArray[np.float64]:
+    """Campo constante `(0, 0, largo)`: dirección confiable, norma exactamente `largo`."""
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 2] = largo
     return n
 
 
@@ -282,7 +306,12 @@ def test_b_degenerado_no_se_reemplaza_por_un_vector_inventado() -> None:
 
 
 def test_b_casi_nulo_bajo_el_umbral_es_non_evaluable() -> None:
-    """Falsación, lado A: apenas por debajo del umbral -> NON_EVALUABLE."""
+    """Falsación, lado A: apenas por debajo del umbral -> NON_EVALUABLE.
+
+    Alcance declarado (H4-F02): esto verifica la RAMA de clasificación, **no** el
+    VALOR del umbral — lee `ad.DEGENERATE_THRESHOLD` de producción. La derivación
+    independiente del número vive en la familia G.
+    """
     largo = ad.DEGENERATE_THRESHOLD * 0.96
     diag = ad.resize_normal_diagnostic(_normal_por_largo(128, largo), 64)
     assert diag.degenerate is True, f"norma objetivo {largo} no fue detectada como degenerada"
@@ -290,7 +319,10 @@ def test_b_casi_nulo_bajo_el_umbral_es_non_evaluable() -> None:
 
 
 def test_b_justo_sobre_el_umbral_es_evaluable() -> None:
-    """Falsación, lado B: apenas por encima del umbral -> evaluable y unitario."""
+    """Falsación, lado B: apenas por encima del umbral -> evaluable y unitario.
+
+    Alcance declarado (H4-F02): igual que el lado A, verifica la rama y no el valor.
+    """
     largo = ad.DEGENERATE_THRESHOLD * 1.02
     n = _normal_por_largo(128, largo)
     diag = ad.resize_normal_diagnostic(n, 64)
@@ -312,11 +344,20 @@ def test_b_camino_identidad_preserva_el_noop() -> None:
 
 
 def test_b_identidad_fuera_de_rango_clipea_no_devuelve_crudo() -> None:
-    """§3.4.1: `RANGO_ES_POSTCONDICION` vale también en el camino identidad."""
+    """§3.4.1 + §3.2: `RANGO_ES_POSTCONDICION` vale en el camino identidad, y la salida
+    sigue siendo **unitaria**: el clip no exime de la postcondición de norma.
+
+    `1000.0` se clipea a `(1,1,1)` —norma `sqrt(3)`, no 1—, así que la salida publicada
+    es `(1,1,1)/sqrt(3)`, el mismo resultado que da el hermano `resize` (H4-F01). La
+    aserción previa (`max == min == 1.0`) anclaba la norma `sqrt(3)` como aceptable.
+    """
     n = np.full((4, 4, 3), 1000.0, dtype=np.float64)
     out = resize_normal(n, 4)
-    assert float(out.max()) == 1.0
-    assert float(out.min()) == 1.0
+    assert float(out.max()) <= 1.0
+    assert float(out.min()) >= -1.0
+    assert float(out.max()) < 1.0, "publicó la norma sqrt(3) del clip (H4-F01)"
+    np.testing.assert_allclose(out, 1.0 / math.sqrt(3.0), atol=TOL_F32)
+    np.testing.assert_allclose(np.linalg.norm(out, axis=-1), 1.0, atol=TOL_F32)
 
 
 def test_b_identidad_no_finita_rechaza() -> None:
@@ -388,17 +429,94 @@ def test_b_convencion_y_orden_de_canales_no_se_alteran() -> None:
     np.testing.assert_allclose(out[..., 1], n[0, 0, 1], atol=TOL_F32)
 
 
-def test_b_el_camino_identidad_no_renormaliza_una_entrada_no_unitaria() -> None:
-    """Propiedad DECLARADA (V-01/D-07), no un defecto oculto: el no-op no renormaliza.
+# ---------------------------------------------------------------------------
+# H4-F01 — dominio geométrico del camino identidad, en LAS DOS superficies
+# ---------------------------------------------------------------------------
+def test_b_f01_el_cero_del_camino_identidad_es_non_evaluable() -> None:
+    """H4-F01 (a): `L = 0` es degeneración (D-06), no un no-op.
 
-    `decode_normal_image` ya renormalizó aguas arriba. El camino identidad preserva
-    la entrada admisible tal cual — se ancla para que un cambio futuro no lo altere
-    en silencio.
+    El bypass histórico devolvía el vector nulo declarando `degenerate=False`. Las dos
+    superficies deben respetar la señal: diagnóstico con `degenerate=True` y censo
+    completo; fachada que **lanza** en vez de publicar el nulo.
     """
-    n = _normal_plana(8)
-    n[..., 2] = 0.5  # norma 0.5, en rango, finita -> admisible
+    n = _campo_de_norma(4, 0.0)
+    diag = ad.resize_normal_diagnostic(n, 4)
+    assert diag.degenerate is True, "el camino identidad publicó un vector nulo como evaluable"
+    assert diag.degenerate_count == 16
+    assert diag.total_pixels == 16
+    assert diag.threshold == ad.DEGENERATE_THRESHOLD
+    with pytest.raises(ad.DegenerateNormalError) as exc:
+        resize_normal(n, 4)
+    assert exc.value.degenerate_count == 16
+
+
+def test_b_f01_la_norma_no_unitaria_no_es_un_noop_valido() -> None:
+    """H4-F01 (b): `L = 0.5` tiene dirección confiable pero **no** es un no-op válido.
+
+    La versión previa anclaba `assert_array_equal(out, n)` para esta entrada,
+    contradiciendo §3.2. La dirección es confiable (queda sobre el umbral), así que no
+    es degeneración: se renormaliza, igual que en el hermano `resize`.
+    """
+    n = _campo_de_norma(8, 0.5)
+    diag = ad.resize_normal_diagnostic(n, 8)
+    assert diag.degenerate is False
+    assert diag.degenerate_count == 0
+    np.testing.assert_allclose(np.linalg.norm(diag.array, axis=-1), 1.0, atol=TOL_F32)
     out = resize_normal(n, 8)
-    np.testing.assert_array_equal(out, n)
+    np.testing.assert_allclose(out, np.broadcast_to(np.array([0.0, 0.0, 1.0]), out.shape), atol=TOL_F32)
+    assert not np.array_equal(out, n), "devolvió la entrada cruda de norma 0.5"
+
+
+def test_b_f01_el_clip_no_publica_norma_sqrt3() -> None:
+    """H4-F01 (d): `1000.0` -> clip `(1,1,1)`, norma `sqrt(3)`; la salida debe ser
+    unitaria (o rechazo). Publicar `sqrt(3)` viola §3.2 y no lo hace el hermano."""
+    n = np.full((4, 4, 3), 1000.0, dtype=np.float64)
+    diag = ad.resize_normal_diagnostic(n, 4)
+    assert diag.degenerate is False
+    normas = np.linalg.norm(diag.array, axis=-1)
+    assert float(np.abs(normas - 1.0).max()) < TOL_F32, f"norma publicada {float(normas.max()):.6f}"
+    assert not math.isclose(float(normas.max()), math.sqrt(3.0), abs_tol=1e-3)
+    np.testing.assert_allclose(np.linalg.norm(resize_normal(n, 4), axis=-1), 1.0, atol=TOL_F32)
+
+
+def test_b_f01_la_entrada_unitaria_conserva_el_noop_exacto() -> None:
+    """H4-F01 (c): la ÚNICA entrada para la que D-07 justifica el no-op bit a bit.
+
+    `decode_normal_image` produce exactamente esto aguas arriba, así que el camino
+    identidad del pipeline real sigue sin tocar un solo bit.
+    """
+    n = _normal_simetrica(32)
+    assert float(np.abs(np.linalg.norm(n, axis=-1) - 1.0).max()) <= ad.UNIT_NORM_TOLERANCE
+    np.testing.assert_array_equal(resize_normal(n, 32), n)
+    np.testing.assert_array_equal(ad.resize_normal_diagnostic(n, 32).array, n)
+
+
+def test_b_f01_identidad_y_resize_son_simetricos_en_la_norma() -> None:
+    """§5.3.4.7 (simetría de hermanos): la misma entrada, por los dos caminos, debe
+    publicar la misma postcondición de norma. El único paso que difiere es interpolar."""
+    for largo in (0.4, 0.5, 1.0, 1.7):
+        identidad = _campo_de_norma(8, largo)
+        escalada = np.repeat(np.repeat(_campo_de_norma(4, largo), 2, axis=0), 2, axis=1)
+        n_identidad = np.linalg.norm(resize_normal(identidad, 8), axis=-1)
+        n_resize = np.linalg.norm(resize_normal(escalada, 4), axis=-1)
+        np.testing.assert_allclose(n_identidad, 1.0, atol=TOL_F32, err_msg=f"identidad L={largo}")
+        np.testing.assert_allclose(n_resize, 1.0, atol=TOL_F32, err_msg=f"resize L={largo}")
+
+
+def test_b_f01_la_tolerancia_de_identidad_se_deriva_de_float32() -> None:
+    """§3.5: la tolerancia del camino identidad sale de la cota **analítica** de la
+    ida/vuelta `float32 -> float64`, no de ninguna medición del corpus."""
+    cota_analitica = math.sqrt(3.0) * 2.0**-24
+    assert cota_analitica < ad.UNIT_NORM_TOLERANCE <= 1e-5, (
+        "la tolerancia debe cubrir la cota analítica sin inflarse hasta volverse inútil"
+    )
+    # Medición sintética independiente: el peor desvío real queda por debajo.
+    rng = np.random.default_rng(20261012)
+    v = rng.normal(size=(64, 64, 3))
+    v = v / np.linalg.norm(v, axis=-1, keepdims=True)
+    ida_vuelta = v.astype(np.float32).astype(np.float64)
+    desvio = float(np.abs(np.linalg.norm(ida_vuelta, axis=-1) - 1.0).max())
+    assert desvio < ad.UNIT_NORM_TOLERANCE, f"desvío medido {desvio:.3e} excede la tolerancia declarada"
 
 
 # ===========================================================================
@@ -906,3 +1024,338 @@ def test_f_m3_declara_el_handler_de_degeneracion_antes_del_de_integridad() -> No
         assert any(isinstance(n, ast.Raise) for n in ast.walk(handler)), (
             f"{rel}:{handler.lineno}: el handler de {_HANDLER_QUE_ABORTA} debe abortar (`raise`)"
         )
+
+
+# ===========================================================================
+# Familia G — derivación del umbral (H4-F02), independiente del valor de producción
+# ===========================================================================
+# `ad.DEGENERATE_THRESHOLD` se lee SÓLO para COMPARAR contra el cruce derivado acá. Un
+# test que leyera el umbral para "derivarlo" validaría la rama, no el valor — que es
+# exactamente lo que el hallazgo H4-F02 señala de los tests previos.
+_Q8 = 2.0 / 255.0
+_SEMILLA_F02 = 20261012
+_FACTORES_SOPORTADOS = (2, 4, 8, 16)
+_TAMANO_F02 = 128
+
+
+def _pesos_1d_del_factor_dos() -> NDArray[np.float64]:
+    """Pesos 1-D del kernel separable a factor 2, extraídos del oráculo independiente."""
+    filas = _coeficientes(128, 64)
+    return max((w for _, w in filas), key=len)
+
+
+def _familia_f02(size: int, largo: float, fase: int = 0) -> NDArray[np.float64]:
+    """`n(i,j) = (sin(theta)*s(i), 0, cos(theta))` con `s` alternada y FASE desplazable.
+
+    El kernel a factor 2 suma cero sobre `s`, así que el vector interpolado del interior
+    es `(0, 0, cos(theta))` y su norma `L = cos(theta)` es **analítica**, no medida.
+
+    `fase` desplaza el patrón (`s(i) = +1 si (i + fase) % 2 == 0`). El contrato §6.1
+    punto 1 exige barrer ratio, **fase** y borde, no sólo Nyquist a fase fija: una grilla
+    de fase única puede no alcanzar el mínimo real del kernel.
+    """
+    theta = math.acos(min(1.0, max(0.0, largo)))
+    s = np.where((np.arange(size) + fase) % 2 == 0, 1.0, -1.0)
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 0] = (math.sin(theta) * s)[None, :]
+    n[..., 2] = math.cos(theta)
+    return n
+
+
+def _delta_theta(v_limpio: NDArray[np.float64], v_pert: NDArray[np.float64]) -> NDArray[np.float64]:
+    a = v_limpio / np.linalg.norm(v_limpio, axis=-1, keepdims=True)
+    b = v_pert / np.maximum(np.linalg.norm(v_pert, axis=-1, keepdims=True), 1e-300)
+    return np.arccos(np.clip(np.sum(a * b, axis=-1), -1.0, 1.0))
+
+
+def _delta_theta_mc(size_in: int, size_out: int, largo: float, trials: int, rng: np.random.Generator):
+    """Monte Carlo: perturba cada píxel dentro de su celda de retícula 8-bit
+    (`U(-q/2, q/2)^3`, renormalizado) y mide el cambio de dirección inducido sobre el
+    vector interpolado. Oráculo NumPy float64 — no otra llamada a Pillow."""
+    base = _familia_f02(size_in, largo)
+    v_limpio = _oraculo(base, size_out)
+    interior = np.zeros((size_out, size_out), dtype=bool)
+    interior[2:-2, 2:-2] = True
+    acum: list[NDArray[np.float64]] = []
+    for _ in range(trials):
+        pert = base + rng.uniform(-_Q8 / 2, _Q8 / 2, size=base.shape)
+        pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
+        acum.append(_delta_theta(v_limpio, _oraculo(pert, size_out))[interior])
+    return np.concatenate(acum)
+
+
+def _cruce_rms(size_in: int, size_out: int, rng: np.random.Generator) -> float:
+    """Primer `L` de la grilla donde el RMS de `delta_theta` cae por debajo de `q_ang`.
+
+    Devuelve `nan` si el criterio **nunca** se cumple en la grilla. Un centinela
+    "optimista" (p. ej. el extremo inferior) haría pasar la aserción de conservaduría sin
+    haber medido nada: es exactamente el verde falso que la familia G debe evitar.
+    """
+    for largo in np.linspace(0.02, 0.60, 25):
+        dt = _delta_theta_mc(size_in, size_out, float(largo), 16, rng)
+        if float(np.sqrt(np.mean(dt**2))) <= _Q8:
+            return float(largo)
+    return float("nan")
+
+
+def _cruce_peor_caso_dirigido(size_in: int, size_out: int) -> float:
+    """Cruce bajo peor caso dirigido: el signo de la perturbación se ELIGE, no se sortea.
+
+    Devuelve `nan` si el criterio **nunca** se cumple en la grilla — mismo contrato que
+    `_cruce_rms`, y por la misma razón. Un centinela optimista (p. ej. el extremo inferior
+    `0.02`) haría pasar la aserción de conservaduría sin haber medido nada: el verde falso
+    que la familia G existe para evitar. Con `nan`, `nan < umbral` es `False` y el fallo es
+    ruidoso.
+    """
+    s = np.where(np.arange(size_in) % 2 == 0, 1.0, -1.0)
+    for largo in np.linspace(0.02, 0.60, 25):
+        base = _familia_f02(size_in, largo)
+        v_limpio = _oraculo(base, size_out)
+        peor = 0.0
+        for signo in (1.0, -1.0):
+            d = np.zeros_like(base)
+            d[..., 0] = signo * _Q8 / 2 * s[None, :]
+            pert = base + d
+            pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
+            dt = _delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2]
+            peor = max(peor, float(np.percentile(dt, 99.0)))
+        if peor <= _Q8:
+            return float(largo)
+    return float("nan")
+
+
+def test_g_la_aritmetica_declarada_es_sum_w2_no_sqrt() -> None:
+    """H4-F02: `5/16` es `sum(w^2)`, NO `sqrt(sum(w^2))` — que vale `0.5590`.
+
+    La justificación previa confundía ambas cantidades. Acá los pesos se derivan del
+    oráculo independiente y se verifica cuál de las dos coincide con producción.
+    """
+    w = _pesos_1d_del_factor_dos()
+    assert len(w) == 4, f"el kernel a factor 2 debe tener 4 taps en el interior: {w}"
+    np.testing.assert_allclose(w, [1 / 8, 3 / 8, 3 / 8, 1 / 8], atol=1e-12)
+    suma_cuadrados = float(np.sum(w**2))
+    assert suma_cuadrados == pytest.approx(5 / 16, abs=1e-15)
+    assert math.sqrt(suma_cuadrados) == pytest.approx(0.5590169943749475, abs=1e-12)
+    assert not math.isclose(math.sqrt(suma_cuadrados), 5 / 16, abs_tol=1e-3), (
+        "sqrt(sum w^2) NO es 5/16: la justificación previa confundía las dos cantidades"
+    )
+    assert suma_cuadrados == pytest.approx(ad.DEGENERATE_THRESHOLD, abs=1e-15), (
+        "el umbral de producción debe ser sum(w^2), no sqrt(sum(w^2))"
+    )
+
+
+def test_g_la_propagacion_rms_no_es_cota_worst_case() -> None:
+    """H4-F02: un RMS **no** acota el peor caso. La cota *worst-case* de la MISMA celda
+    declarada es `(q/2)*sqrt(3)` — `2.771x` el factor RMS."""
+    w = _pesos_1d_del_factor_dos()
+    rms = float(np.sum(w**2)) * _Q8
+    worst_case = (_Q8 / 2) * math.sqrt(3.0) * float(np.sum(w) ** 2)
+    assert worst_case > rms, "el peor caso no puede ser menor que el RMS"
+    assert worst_case / rms == pytest.approx(2.771281292110204, rel=1e-9)
+    assert worst_case / _Q8 > ad.DEGENERATE_THRESHOLD, (
+        "5/16 no puede presentarse como cota worst-case: el peor caso la supera"
+    )
+
+
+def test_g_el_cruce_medido_es_conservador_en_los_factores_soportados() -> None:
+    """H4-F02: prueba sintética REPRODUCIBLE e independiente del valor de producción.
+
+    Oráculo: filtro separable bilineal en NumPy float64. Familia: `L = cos(theta)`
+    analítico. Perturbación: `U(-q/2, q/2)^3` renormalizada, `q = 2/255`. Métrica:
+    `delta_theta` entre el vector interpolado limpio y el perturbado. Criterio (fijado
+    ANTES de medir): el umbral es conservador si el cruce `delta_theta(L) = q_ang` cae
+    por debajo de `5/16` en todos los factores soportados.
+
+    Lo que NO prueba: que `5/16` sea una garantía matemática universal — no lo es (ver
+    `test_g_la_propagacion_rms_no_es_cota_worst_case`). Prueba que el valor vigente
+    rechaza un superconjunto de la banda no confiable.
+    """
+    rng = np.random.default_rng(_SEMILLA_F02)
+    medidos: dict[int, float] = {}
+    for k in _FACTORES_SOPORTADOS:
+        cruce = _cruce_rms(_TAMANO_F02, _TAMANO_F02 // k, rng)
+        medidos[k] = cruce
+        assert cruce < ad.DEGENERATE_THRESHOLD, (
+            f"k={k}: el cruce medido {cruce:.4f} NO queda por debajo de {ad.DEGENERATE_THRESHOLD:.4f}"
+        )
+    assert medidos[2] >= medidos[16], f"el cruce debe decrecer con k: {medidos}"
+
+
+def test_g_el_peor_caso_dirigido_tambien_queda_bajo_el_umbral() -> None:
+    """H4-F02: incluso ELIGIENDO el signo de la perturbación (no al azar), el cruce
+    queda por debajo del umbral en los factores soportados."""
+    for k in _FACTORES_SOPORTADOS:
+        cruce = _cruce_peor_caso_dirigido(_TAMANO_F02, _TAMANO_F02 // k)
+        assert cruce < ad.DEGENERATE_THRESHOLD, f"k={k}: peor caso dirigido en {cruce:.4f}"
+
+
+def test_g_la_produccion_declara_el_estado_de_la_derivacion() -> None:
+    """H4-F02: la producción no puede presentar el umbral como garantía derivada.
+
+    El estado real es `R7_NUMERIC_DERIVATION = BLOCKED` (heurística RMS, no cota) y la
+    corrección aritmética debe estar declarada en el módulo, no sólo en este test.
+
+    Además la premisa de Nyquist debe quedar **alineada con el gate #717 §6.1**, que está
+    `FROZEN` y fija `CONJECTURE_NOT_FALSIFIED` por N-12. Un comentario de producción no
+    puede reescribir el estado declarado de un contrato congelado: la evidencia nueva de
+    alcance del ínfimo se registra bajo su propio nombre (`R7_NYQUIST_ATTAINMENT`).
+    """
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    assert "R7_NUMERIC_DERIVATION = BLOCKED" in fuente, (
+        "la producción debe declarar que la derivación está BLOCKED (heurística, no garantía)"
+    )
+    assert "sqrt(sum_k w_k^2) = sqrt(5/16) = 0.5590" in fuente, (
+        "la producción debe declarar la corrección aritmética sum(w^2) vs sqrt(sum(w^2))"
+    )
+    assert "R7_WORST_CASE_PREMISE = CONJECTURE_NOT_FALSIFIED" in fuente, (
+        "la producción no puede declarar la premisa de Nyquist como establecida: el gate "
+        "#717 §6.1 (FROZEN, N-12) la fija como CONJECTURE_NOT_FALSIFIED"
+    )
+    assert "R7_NYQUIST_ATTAINMENT" in fuente, (
+        "la evidencia de alcance del ínfimo debe declararse bajo su propio nombre, no reemplazando el estado del gate"
+    )
+
+
+# ---------------------------------------------------------------------------
+# H4-F02 (cont.) — barrido de factor, FASE y BORDE que exige §6.1 punto 1
+# ---------------------------------------------------------------------------
+def _minimos_por_fase(k: int) -> list[tuple[float, float]]:
+    """`(min L interior, min L borde)` para cada fase del patrón alternado.
+
+    El borde se mide sobre el anillo exterior completo (fila 0, última fila y columnas
+    extremas), que es donde el kernel se recorta y se renormaliza.
+    """
+    size_in = _TAMANO_F02
+    size_out = size_in // k
+    res: list[tuple[float, float]] = []
+    for fase in range(k):
+        norma = np.linalg.norm(_oraculo(_familia_f02(size_in, 0.0, fase), size_out), axis=-1)
+        anillo = np.concatenate([norma[0, :], norma[-1, :], norma[1:-1, 0], norma[1:-1, -1]])
+        res.append((float(norma[1:-1, 1:-1].min()), float(anillo.min())))
+    return res
+
+
+def test_g_nyquist_alcanza_el_infimo_en_todo_factor_y_fase() -> None:
+    """§6.1 punto 1: "Nyquist = peor caso" deja de ser CONJETURA y pasa a ser COTA ALCANZADA.
+
+    Se barre factor `k in {2,4,8,16}` x fase `fase in [0, k)` (30 combinaciones). En todas,
+    el vector interpolado alcanza `L = 0` a precisión de máquina (`~6.1e-17`, que es el
+    `cos(pi/2)` de la familia analítica). Como `L = ||v|| >= 0` para TODO vector, ninguna
+    configuración soportada puede producir una norma menor: el ínfimo es `0` y Nyquist lo
+    alcanza. Por eso la conclusión del punto 1 del procedimiento no necesita cita externa.
+
+    Discriminación: se verifica que el cero NO sea un artefacto del oráculo, midiendo una
+    familia de `L` analítico distinto (0.5) que debe dar norma mínima `~0.5`.
+
+    **Brazos (declarado a propósito).** Esta prueba NO discrimina el fix H4: el kernel
+    bilineal de Pillow es el MISMO en el brazo histórico y en el corregido, así que pasa en
+    los dos. Es evidencia de la **derivación** de F02 —de qué cota es alcanzable—, no de la
+    corrección del resizer. Se declara para que nadie la cuente como RED→GREEN.
+    """
+    combinaciones = 0
+    for k in _FACTORES_SOPORTADOS:
+        for interior, borde in _minimos_por_fase(k):
+            assert interior <= 1e-12, f"k={k}: el interior no alcanza el ínfimo ({interior:.3e})"
+            assert borde <= 1e-12, f"k={k}: el borde no alcanza el ínfimo ({borde:.3e})"
+            combinaciones += 1
+    assert combinaciones == sum(_FACTORES_SOPORTADOS), f"combinaciones barridas: {combinaciones}"
+
+    # Control negativo: la familia de `L` analítico = 0.5 NO debe dar 0 — si lo diera, el
+    # cero medido arriba sería un artefacto del oráculo y no una cancelación real.
+    norma_control = np.linalg.norm(_oraculo(_familia_f02(_TAMANO_F02, 0.5, 0), _TAMANO_F02 // 2), axis=-1)
+    assert 0.4 <= float(norma_control[2:-2, 2:-2].min()) <= 0.5, (
+        f"el control negativo no reproduce el L analítico: {float(norma_control.min()):.4f}"
+    )
+
+
+def test_g_el_borde_no_es_mas_benigno_que_el_interior() -> None:
+    """H4-F02: falsación de una afirmación del comentario de producción que NUNCA se midió.
+
+    El comentario afirmaba que "el recorte del kernel en el borde es MÁS benigno (no cancela
+    del todo)". La medición lo contradice: en las 30 combinaciones (factor x fase) el borde
+    alcanza el MISMO ínfimo que el interior. La afirmación se retiró del módulo y esta prueba
+    la mantiene retirada: si alguien la reintrodujera, la primera aserción falla.
+    """
+    for k in _FACTORES_SOPORTADOS:
+        for interior, borde in _minimos_por_fase(k):
+            assert borde <= interior + 1e-12, (
+                f"k={k}: el borde resultó MENOS degenerado que el interior "
+                f"({borde:.3e} > {interior:.3e}); la afirmación retirada volvería a ser cierta"
+            )
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    assert "H4-F02-ANCLA-BORDE" in fuente, "la producción debe declarar la falsación del borde"
+    assert "no es más benigno" in fuente
+
+
+def test_g_la_cota_rms_decrece_con_el_factor_y_la_secuencia_declarada_es_la_medida() -> None:
+    """H4-F02: la secuencia de cotas por factor está MEDIDA, no estimada.
+
+    El comentario declaraba `0.3125 -> 0.2346 -> 0.1641 -> ...`. El valor `0.2346` no
+    corresponde a ningún factor del kernel: la secuencia real —derivada del oráculo por
+    respuesta a impulsos— es la que se verifica acá contra el ancla de producción.
+    """
+    medidos: list[float] = []
+    for k in _FACTORES_SOPORTADOS:
+        w = max((x for _, x in _coeficientes(_TAMANO_F02, _TAMANO_F02 // k)), key=len)
+        assert float(np.sum(w)) == pytest.approx(1.0, abs=1e-12), f"k={k}: los pesos no suman 1"
+        np.testing.assert_allclose(w, w[::-1], atol=1e-15, err_msg=f"k={k}: kernel no simétrico")
+        medidos.append(float(np.sum(w**2)))
+    assert all(b < a for a, b in zip(medidos, medidos[1:], strict=False)), f"la cota no decrece con k: {medidos}"
+    assert medidos[0] == pytest.approx(ad.DEGENERATE_THRESHOLD, abs=1e-15), (
+        "el umbral de producción debe ser sum(w^2) del factor 2, no otra cantidad"
+    )
+    # La secuencia declarada se LEE de producción y se compara con la medida: una copia
+    # literal en el test no anclaría nada (el mutante que reintrodujera `0.2346` sobreviviría).
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    ancla = [ln for ln in fuente.splitlines() if "H4-F02-ANCLA-COTA" in ln]
+    assert ancla, "la producción debe declarar la secuencia medida de cotas por factor"
+    for valor in medidos:
+        assert f"{valor:.7f}" in ancla[0], f"el valor medido {valor:.7f} no está declarado en producción: {ancla[0]!r}"
+
+
+def test_g_el_riesgo_residual_de_factores_sub_dos_esta_medido() -> None:
+    """§6.1 punto 1: el barrido de RATIO debe cubrir también los factores no soportados.
+
+    El comentario declara `RESIDUAL_RISK = DECLARED` para `1 < k < 2` porque "la cota es
+    mayor y el umbral deja de dominarla". Eso es una afirmación sobre el kernel: se mide.
+    """
+    for k in (1.1, 1.28, 1.5, 1.75):
+        w = max((x for _, x in _coeficientes(1000, int(round(1000 / k)))), key=len)
+        amplificacion = float(np.sum(w**2))
+        assert amplificacion > ad.DEGENERATE_THRESHOLD, (
+            f"k={k}: la amplificación {amplificacion:.4f} NO supera el umbral "
+            f"{ad.DEGENERATE_THRESHOLD:.4f}; el riesgo residual declarado no estaría respaldado"
+        )
+    for k in _FACTORES_SOPORTADOS:
+        w = max((x for _, x in _coeficientes(_TAMANO_F02, _TAMANO_F02 // k)), key=len)
+        assert float(np.sum(w**2)) <= ad.DEGENERATE_THRESHOLD, (
+            f"k={k}: el umbral no domina la amplificación del factor soportado"
+        )
+
+
+def test_g_el_criterio_se_sostiene_en_toda_la_cola_y_discrimina() -> None:
+    """§6.1 punto 3: el umbral es el MENOR `L` tal que para TODO `L' >= L` se cumple
+    `delta_theta(L') <= q_ang`. Se cierra la cláusula "para todo" sobre la malla declarada.
+
+    Discriminación (lo que impide un verde falso): el criterio NO puede ser trivialmente
+    cierto. Muy por debajo del cruce debe FALLAR; si se cumpliera en todas partes, cualquier
+    valor de umbral lo satisfaría y la prueba no probaría nada.
+    """
+    rng = np.random.default_rng(_SEMILLA_F02)
+    size_out = _TAMANO_F02 // 2
+    malla = (0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60)
+    rms = {
+        largo: float(np.sqrt(np.mean(_delta_theta_mc(_TAMANO_F02, size_out, largo, 12, rng) ** 2))) for largo in malla
+    }
+    assert rms[0.02] > _Q8, (
+        f"el criterio es trivialmente cierto en L=0.02 ({rms[0.02]:.3e} <= q={_Q8:.3e}): "
+        "la prueba no discriminaría nada"
+    )
+    cruce = next((largo for largo in malla if rms[largo] <= _Q8), None)
+    assert cruce is not None, f"el criterio no se cumple en ninguna parte de la malla: {rms}"
+    for largo in malla:
+        if largo >= cruce:
+            assert rms[largo] <= _Q8, f"L={largo}: la cola no se sostiene ({rms[largo]:.3e} > q)"
+    assert cruce < ad.DEGENERATE_THRESHOLD, (
+        f"el cruce medido {cruce} no queda por debajo del umbral {ad.DEGENERATE_THRESHOLD}"
+    )
