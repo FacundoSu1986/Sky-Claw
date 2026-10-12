@@ -52,6 +52,16 @@ autoridad es la RUTA COMPLETA: `sky_claw.local.frozen_runtime.root_lock` (modulo
 legitimos y el import diferido del codigo productivo siguen aceptandose; un
 `import a.b.c` SIN alias no se registra, porque Python liga `a` y no `c`.
 
+**F06 -- vinculaciones autorizadas OBSOLETAS.** `_tabla_de_enlaces` solo AGREGABA.
+Un import AJENO POSTERIOR que reutilizaba el nombre local ya autorizado
+(`from unrelated.root_lock import participant_lock`, o el mismo alias `rl`/`pl`) no
+satisfacia ninguna condicion y dejaba VIVO el enlace anterior: la tabla seguia
+diciendo que `participant_lock` designaba la primitiva real y el cuerpo contaba como
+adquirente del root lock aunque llamara a un objeto ajeno. Ahora cada `import`
+invalida PRIMERO el nombre local que introduce y registra DESPUES solo si el origen
+es autorizado; el caso inverso (ajeno primero, autorizado despues) queda
+correctamente como adquisicion, porque el enlace FINAL es el autorizado.
+
 Este modulo cubre:
 - Contrato de adquisicion (ancla por AST contra el inventario real de escritores).
 - Exclusion concurrente real (multiproceso) ejecutando los participantes.
@@ -235,6 +245,15 @@ def _tabla_de_enlaces(cuerpo: list[ast.stmt], base: tuple[set[str], set[str]]) -
     `participant_lock`, ese nombre deja de designar la primitiva real. La sombra
     gana siempre (fail-closed hacia el lado seguro): es justo el falso positivo
     que el hallazgo senala.
+
+    F06 -- el ORDEN de las importaciones importa. Cada `import` INVALIDA primero
+    el enlace previo del nombre local que va a introducir y SOLO despues lo
+    registra si el origen es autorizado. La version previa solo AGREGABA: un
+    import AJENO posterior que reutilizaba el nombre no cumplia ninguna condicion
+    y dejaba VIVO el enlace autorizado anterior, asi que un cuerpo que en la
+    practica llama a un objeto ajeno se clasificaba como adquirente del root lock.
+    Se invalida SIEMPRE (origen ajeno o no), porque el nombre local pasa a
+    designar el objeto NUEVO; registrar despues no es mas que un caso particular.
     """
     entrypoints, modulos = set(base[0]), set(base[1])
 
@@ -247,7 +266,14 @@ def _tabla_de_enlaces(cuerpo: list[ast.stmt], base: tuple[set[str], set[str]]) -
             # Se exige la RUTA COMPLETA autorizada: `from <...>.root_lock import X`
             # trae el entrypoint; `from <paquete> import root_lock` trae el MODULO.
             for alias in nodo.names:
+                if alias.name == "*":
+                    # `from X import *` introduce un conjunto de nombres que no se
+                    # puede resolver estaticamente: fail-closed, invalida TODO.
+                    entrypoints.clear()
+                    modulos.clear()
+                    continue
                 local = alias.asname or alias.name
+                _sombra(local)  # F06: el import REVINCULA `local`; el enlace previo caduca.
                 if nodo.module == _MODULO_ROOT_LOCK and alias.name in _ENTRYPOINTS_ADQUISICION:
                     entrypoints.add(local)
                 elif nodo.module == _PAQUETE_FROZEN_RUNTIME and alias.name == "root_lock":
@@ -255,7 +281,11 @@ def _tabla_de_enlaces(cuerpo: list[ast.stmt], base: tuple[set[str], set[str]]) -
         elif isinstance(nodo, ast.Import):
             for alias in nodo.names:
                 # `import a.b.c` SIN alias vincula `a` (el paquete raiz), no `c`: no
-                # habilita un receptor directo, asi que no se registra nada.
+                # habilita un receptor directo, asi que no se registra nada -- pero
+                # SI invalida el nombre realmente ligado (`a`), que es lo que Python
+                # rebindea.
+                local = alias.asname or alias.name.split(".")[0]
+                _sombra(local)  # F06: idem, con el nombre que Python liga de verdad.
                 if alias.name == _MODULO_ROOT_LOCK and alias.asname:
                     modulos.add(alias.asname)
         elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -371,6 +401,43 @@ _PARTICIPANTES_PUBLICOS: dict[str, str] = {
     "storage.py": "initialize_frozen_runtime_storage",
     "state.py": "save_frozen_runtime_state",
 }
+
+#: Garantia REAL por participante: la prueba de COMPORTAMIENTO que lo EJECUTA, no
+#: el ancla AST (que es sintactica y tiene los limites declarados en
+#: `test_s2_el_ancla_ast_es_necesaria_pero_no_suficiente`). Se enumeran los CUATRO:
+#: tres tienen exclusion multiproceso en este modulo; `generations.py` no tiene
+#: exclusion concurrente en este slice y su cobertura es funcional, en el modulo
+#: P2. Declararlo como limite es parte de la evidencia: un participante sin
+#: cobertura comportamental quedaria como hueco visible, no como omision silenciosa.
+_COBERTURA_COMPORTAMENTAL: dict[str, tuple[str, ...]] = {
+    "storage.py": (
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_init_concurrente_es_excluyente_y_sin_deadlock",
+    ),
+    "state.py": (
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_escritura_concurrente_de_estado_serializa",
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_escritura_de_estado_bajo_contencion_nunca_corrompe",
+    ),
+    "candidates.py": (
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_crear_candidate_concurrente_no_deadlock",
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_candidate_colision_de_id_no_pisa_el_historial",
+        "tests/test_frozen_runtime_p4_s2_participant_wiring.py::test_s2_candidate_con_root_ocupado_devuelve_indeterminate_acotado",
+    ),
+    "generations.py": ("tests/test_frozen_runtime_p2_generations.py::test_g06_mismo_id_misma_identidad_idempotente",),
+}
+
+
+def _prueba_comportamental_existe(referencia: str) -> bool:
+    """`<ruta-relativa-al-worktree>::<nombre-del-test>` existe de verdad.
+
+    Ancla por ENUMERACION: se verifica que la prueba nombrada siga existiendo en su
+    archivo, para que borrarla (o renombrarla) rompa este test en vez de degradar
+    la cobertura en silencio.
+    """
+    archivo, _, nombre = referencia.partition("::")
+    ruta = _RAIZ_WORKTREE / archivo
+    if not ruta.is_file():
+        return False
+    return f"def {nombre}(" in ruta.read_text(encoding="utf-8")
 
 
 def _funciones_top_level(arbol: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -541,6 +608,152 @@ def test_s2_el_censo_reconoce_alias_y_modulo_autorizado() -> None:
         """
     )
     assert "mutador_modulo" in _funciones_que_adquieren_lock(ast.parse(modulo_alias))
+
+
+def test_s2_el_censo_invalida_un_enlace_autorizado_obsoleto() -> None:
+    """Control negativo (F06): un import POSTERIOR revincula el nombre local.
+
+    `_tabla_de_enlaces` solo AGREGABA. Un import AJENO posterior que reutilizaba el
+    nombre ya autorizado no satisfacia ninguna condicion y dejaba VIVO el enlace
+    anterior, asi que el cuerpo se clasificaba como adquirente del root lock
+    llamando a un objeto ajeno (cobertura falsa).
+
+    Se enumeran los CUATRO ordenes relevantes -- no una muestra: los tres "ajeno
+    sobre autorizado" deben quedar FUERA y el INVERSO debe seguir DENTRO, porque
+    su enlace FINAL si es el autorizado. Un control que solo probara el primero
+    dejaria pasar los otros dos, y uno que exigiera "ningun import ajeno" romperia
+    el caso legitimo.
+
+    No se comprueba solo el booleano: se comprueba la TABLA DE ENLACES, que es
+    donde se ve que el analizador clasifica el simbolo que queda VINCULADO y no el
+    texto del import.
+    """
+    casos: dict[str, tuple[str, str, str, str, bool]] = {
+        # nombre: (primer_import, segundo_import, nombre_local, invocacion, debe_adquirir)
+        "autorizado_luego_ajeno_mismo_nombre": (
+            "from sky_claw.local.frozen_runtime.root_lock import participant_lock",
+            "from unrelated.root_lock import participant_lock",
+            "participant_lock",
+            "participant_lock(root, timeout=0.0)",
+            False,
+        ),
+        "autorizado_modulo_luego_ajeno_mismo_alias": (
+            "from sky_claw.local.frozen_runtime import root_lock as rl",
+            "from unrelated import root_lock as rl",
+            "rl",
+            "rl.participant_lock(root, timeout=0.0)",
+            False,
+        ),
+        "autorizado_alias_luego_ajeno_mismo_alias": (
+            "from sky_claw.local.frozen_runtime.root_lock import participant_lock as pl",
+            "from unrelated.root_lock import participant_lock as pl",
+            "pl",
+            "pl(root, timeout=0.0)",
+            False,
+        ),
+        "ajeno_luego_autorizado_enlace_final_autorizado": (
+            "from unrelated.root_lock import participant_lock",
+            "from sky_claw.local.frozen_runtime.root_lock import participant_lock",
+            "participant_lock",
+            "participant_lock(root, timeout=0.0)",
+            True,
+        ),
+    }
+    for nombre, (primero, segundo, local, invocacion, debe_adquirir) in casos.items():
+        fuente = textwrap.dedent(
+            f"""
+            {primero}
+            {segundo}
+
+            def mutador(root):
+                with {invocacion} as h:
+                    h.assert_owned()
+            """
+        )
+        arbol = ast.parse(fuente)
+        tabla_modulo = _tabla_de_enlaces(arbol.body, (set(), set()))
+        funcion = next(n for n in arbol.body if isinstance(n, ast.FunctionDef))
+        tabla_funcion = _tabla_de_enlaces(funcion.body, tabla_modulo)
+        adquiere = "mutador" in _funciones_que_adquieren_lock(ast.parse(fuente))
+
+        if debe_adquirir:
+            assert local in tabla_modulo[0] | tabla_modulo[1], (
+                f"{nombre}: el enlace FINAL es el autorizado y debe quedar registrado en la tabla"
+            )
+            assert local in tabla_funcion[0] | tabla_funcion[1], f"{nombre}: el enlace debe alcanzar la funcion"
+            assert adquiere, f"{nombre}: un enlace autorizado posterior SI debe contar como adquisicion"
+        else:
+            assert local not in tabla_modulo[0], (
+                f"{nombre}: el import ajeno posterior debe EXPULSAR `{local}` de los entrypoints"
+            )
+            assert local not in tabla_modulo[1], (
+                f"{nombre}: el import ajeno posterior debe EXPULSAR `{local}` de los modulos"
+            )
+            assert local not in tabla_funcion[0] | tabla_funcion[1], (
+                f"{nombre}: el enlace obsoleto no debe sobrevivir al cuerpo de la funcion"
+            )
+            assert not adquiere, f"{nombre}: un enlace obsoleto NO puede dar cobertura al mutador"
+
+
+def test_s2_el_ancla_ast_es_necesaria_pero_no_suficiente() -> None:
+    """Limite declarado (Phase 3 de F06): el ancla es SINTACTICA, no semantica.
+
+    Verificacion adversarial: el analizador NO evalua alcanzabilidad ni exige que
+    la llamada al entrypoint se use como context manager. Se declaran las DOS
+    coberturas falsas que eso admite para que nadie confunda el ancla con una
+    garantia:
+
+      - una adquisicion dentro de `if False:` SI cuenta;
+      - una llamada al entrypoint SIN `with` (sin seccion critica efectiva) SI cuenta.
+
+    Lo que SI se excluye, y se fija aca, es una mera REFERENCIA sin llamada. La
+    garantia real sobre los CUATRO participantes son las pruebas de COMPORTAMIENTO
+    que se enumeran abajo: si se borrara una, esta ancla lo delata (no se muestrea).
+    """
+    limite_inalcanzable = textwrap.dedent(
+        """
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+        def mutador(root):
+            if False:
+                with participant_lock(root, timeout=0.0) as h:
+                    h.assert_owned()
+        """
+    )
+    assert "mutador" in _funciones_que_adquieren_lock(ast.parse(limite_inalcanzable)), (
+        "limite declarado: el ancla es sintactica, no evalua alcanzabilidad"
+    )
+
+    limite_sin_seccion_critica = textwrap.dedent(
+        """
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+        def mutador(root):
+            participant_lock(root, timeout=0.0)
+        """
+    )
+    assert "mutador" in _funciones_que_adquieren_lock(ast.parse(limite_sin_seccion_critica)), (
+        "limite declarado: el ancla no exige que la llamada sea un context manager"
+    )
+
+    referencia_sin_llamada = textwrap.dedent(
+        """
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+        def mutador(root):
+            fabrica = participant_lock
+        """
+    )
+    assert "mutador" not in _funciones_que_adquieren_lock(ast.parse(referencia_sin_llamada)), (
+        "una mera referencia al entrypoint NO es una adquisicion"
+    )
+
+    for modulo, pruebas in _COBERTURA_COMPORTAMENTAL.items():
+        assert pruebas, f"{modulo} es participante real y no declara prueba de comportamiento"
+        for referencia in pruebas:
+            assert _prueba_comportamental_existe(referencia), (
+                f"{modulo}: falta la prueba de comportamiento que lo protege ({referencia})"
+            )
 
 
 def test_s2_el_censo_rechaza_un_origen_ajeno_por_sufijo() -> None:
