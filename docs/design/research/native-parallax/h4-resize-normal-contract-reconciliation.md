@@ -269,6 +269,44 @@ Anclas ejecutables nuevas:
 | `test_g_el_adversario_alineado_con_el_patron_mide_cero` | reintroducir el adversario vacuo como evidencia rompe la aserción |
 | `test_g_el_peor_caso_coherente_cruza_en_un_medio_y_supera_el_umbral` | el cruce del peor caso estructural es `1/2` y supera el umbral; el token declarado en producción coincide con lo medido |
 
+### 3.3 Reproducción
+
+Los probes que produjeron cada tabla viven en `scratch/h4-s2-reconciliation/` (directorio
+`gitignoreado`: **no** entra en el PR). Todos llevan el guard de procedencia y se corren desde el
+worktree, con el `PYTHONPATH` explícito — sin él, el `editable install` del venv importa el
+worktree **principal** y la medición es del baseline histórico:
+
+```bash
+cd E:/Skyclaw_Main_Sync/.worktrees/h4-resize-normal-fix
+PYTHONPATH="E:/Skyclaw_Main_Sync/.worktrees/h4-resize-normal-fix" \
+  E:/Skyclaw_Main_Sync/.venv/Scripts/python.exe scratch/h4-s2-reconciliation/f02c_autoritativo.py
+```
+
+| Probe | Tabla que produce |
+|---|---|
+| `f01_probe.py` / `f01b_matriz.py` | §1.1 — las cinco clases y la simetría de hermanos |
+| `f02c_autoritativo.py` | §2.3 y §2.4 — cruces con el oráculo **del propio archivo de tests** |
+| `f02b_decisivo.py` | §2.3 — búsqueda sobre 512 direcciones; §2.4 — vacuidad del adversario previo |
+| `f02d_tasa_rechazo.py` / `f02e_controles.py` / `f02f_periodo5.py` | §2.5 — tasa de rechazo sintética |
+| `mutacion.py` | barrido de mutación con restauración verificada por `md5` |
+| `check_docs.py` | tablas de este documento con el checker **importado** del repo |
+
+Barrido de mutación ejecutado (4/4 muertos, restauración verificada por `md5` y
+`git status --porcelain` vacío tras cada uno):
+
+| Mutante | Cambio | Resultado |
+|---|---|---|
+| M-01 | `R7_WORST_CASE_CROSSING = 1/2` → `1/4` en producción | muerto |
+| M-02 | dirección del adversario coherente `d[...,1]` → `d[...,0]` | muerto |
+| M-03 | adversario de la retiración vuelve a medir `!= 0` | muerto |
+| M-04 | `DEGENERATE_THRESHOLD = 5/16` → `4/16` | muerto (`3 failed, 68 passed`) |
+
+Checks del slice: `pytest` de las tres suites afectadas **148 passed**; `ruff check sky_claw/ tests/`
+y `ruff format --check sky_claw/ tests/` limpios; `mypy sky_claw/` sin issues (364 archivos).
+Falla **ambiental preexistente**, ajena a este slice: `test_snapshot_cleanup_por_patron.py` (4,
+symlinks sin privilegio en el sandbox) y `test_worktree_convention_invariant.py` (1, worktrees de
+otras sesiones fuera de convención).
+
 ## 4. Lo que este slice NO hace
 
 - No pasa #723 a Ready ni lo fusiona.
