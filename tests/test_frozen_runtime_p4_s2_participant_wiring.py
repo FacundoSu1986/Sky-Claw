@@ -24,6 +24,26 @@ escritura del proyecto (`MODULOS_CON_ESCRITURA_PERMITIDA` /
 `MODULOS_CON_OPEN_ESCRITURA`, importados -- no reimplementados) y exige que el
 entrypoint que adquiere sea resolublemente el root lock.
 
+--- F04 residual (misma revision externa, dos hallazgos P2) -------------------
+
+**Finding 1 -- resolucion por NOMBRE, no por SIMBOLO.** `_resuelve_a_root_lock`
+devolvia True para cualquier `ast.Name` llamado `participant_lock` y aceptaba un
+receptor por lista fija (`root_lock`/`rl`/`modulo_root_lock`) sin comprobar que
+viniera de un import del modulo autorizado. Un `def participant_lock(...)` local
+daba por cableado un mutador que jamas tomo el lock. Ahora se construye una TABLA
+DE ENLACES por cuerpo (dos niveles: modulo + funcion actual; alcanza para el
+import diferido real y no se convierte en un resolvedor generico de Python) y se
+reconocen alias (`as pl`) y modulo importado (`as rl`); un homonimo local SOMBREA.
+
+**Finding 2 -- censo de MODULOS, no de FUNCIONES.** El censo previo verificaba
+que cada modulo escritor estuviera contemplado y que una lista FIJA de funciones
+adquiriera: un mutador publico NUEVO dentro de un modulo ya contemplado (p.ej.
+`state.py`) no rompia nada. Ahora el censo DERIVA las funciones del AST y toda
+funcion con un call site de mutador debe adquirir o estar declarada como primitiva
+de bajo nivel; esas primitivas se anclan ADEMAS por call site, para que la lista
+no funcione como silenciador. El limite del analisis estatico esta declarado en el
+comentario de `_PRIMITIVAS_BAJO_LOCK`.
+
 Este modulo cubre:
 - Contrato de adquisicion (ancla por AST contra el inventario real de escritores).
 - Exclusion concurrente real (multiproceso) ejecutando los participantes.
@@ -50,6 +70,7 @@ from sky_claw.local.frozen_runtime.root_lock import acquire_frozen_runtime_root_
 from tests.test_frozen_runtime_p1_readonly import (
     MODULOS_CON_ESCRITURA_PERMITIDA,
     MODULOS_CON_OPEN_ESCRITURA,
+    MUTADORES_FILESYSTEM,
     _detectar_open_no_declarado,
 )
 
@@ -140,9 +161,6 @@ def _escribir_rig_p3(base: pathlib.Path) -> pathlib.Path:
 #: objeto ajeno (F04): el nombre no prueba que se haya tomado EL lock.
 _ENTRYPOINTS_ADQUISICION = frozenset({"acquire_frozen_runtime_root_lock", "participant_lock"})
 
-#: Modulos importados del oracle del proyecto: el inventario de escritura NO se
-#: reimplementa aca (una copia se desincroniza y mide otra cosa).
-
 
 def _paquete() -> pathlib.Path:
     return _RAIZ_WORKTREE / "sky_claw" / "local" / "frozen_runtime"
@@ -157,46 +175,109 @@ def _nombre_llamado(nodo: ast.Call) -> str | None:
     return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
 
 
-def _resuelve_a_root_lock(nodo: ast.Call, arbol: ast.Module) -> bool:
+# ---------------------------------------------------------------------------
+# F04 residual — Finding 1: resolucion de SIMBOLO, no de nombre
+# ---------------------------------------------------------------------------
+#
+# Un censo por NOMBRE acepta un homonimo local: `def participant_lock(...)` en el
+# mismo modulo satisfacia al guard previo. El instrumento construye una tabla de
+# enlaces por cuerpo (dos niveles: modulo + funcion actual; alcanza para el patron
+# real de import diferido y NO se convierte en un resolvedor generico de Python) y
+# exige que el nombre llamado provenga del modulo autorizado.
+#
+# Formas legitimas reconocidas:
+#   from <...>.root_lock import participant_lock [as X]            -> X es entrypoint
+#   from <...>.root_lock import acquire_frozen_runtime_root_lock [as X]
+#   from <...> import root_lock [as X]                            -> X es el MODULO
+#   import <...>.root_lock [as X]                                 -> X es el MODULO
+# Se RECHAZAN: un `def`/`class`/asignacion homonima en el mismo cuerpo (sombra) y
+# un receptor que no proviene de un import del modulo autorizado.
+
+
+def _objetivos_asignados(nodo: ast.stmt) -> set[str]:
+    if isinstance(nodo, ast.Assign):
+        objetivos = list(nodo.targets)
+    elif isinstance(nodo, (ast.AnnAssign, ast.AugAssign)):
+        objetivos = [nodo.target]
+    else:
+        return set()
+    return {sub.id for objetivo in objetivos for sub in ast.walk(objetivo) if isinstance(sub, ast.Name)}
+
+
+def _tabla_de_enlaces(cuerpo: list[ast.stmt], base: tuple[set[str], set[str]]) -> tuple[set[str], set[str]]:
+    """(nombres_del_entrypoint, nombres_del_MODULO) visibles en este cuerpo.
+
+    `base` es la tabla del ambito contenedor. Un `def`/`class`/asignacion con el
+    mismo nombre SOMBREA el enlace importado: si el cuerpo define su propio
+    `participant_lock`, ese nombre deja de designar la primitiva real. La sombra
+    gana siempre (fail-closed hacia el lado seguro): es justo el falso positivo
+    que el hallazgo senala.
+    """
+    entrypoints, modulos = set(base[0]), set(base[1])
+
+    def _sombra(nombre: str) -> None:
+        entrypoints.discard(nombre)
+        modulos.discard(nombre)
+
+    for nodo in cuerpo:
+        if isinstance(nodo, ast.ImportFrom):
+            # `from <...>.root_lock import participant_lock [as X]` trae el entrypoint;
+            # `from <pkg> import root_lock [as X]` trae el MODULO como submodulo.
+            modulo_es_root_lock = (nodo.module or "").split(".")[-1] == "root_lock"
+            for alias in nodo.names:
+                local = alias.asname or alias.name
+                if alias.name in _ENTRYPOINTS_ADQUISICION and modulo_es_root_lock:
+                    entrypoints.add(local)
+                elif alias.name == "root_lock":
+                    modulos.add(local)
+        elif isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if alias.name.split(".")[-1] == "root_lock":
+                    modulos.add(alias.asname or "root_lock")
+        elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _sombra(nodo.name)
+        elif isinstance(nodo, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for objetivo in _objetivos_asignados(nodo):
+                _sombra(objetivo)
+    return entrypoints, modulos
+
+
+def _resuelve_a_root_lock(nodo: ast.Call, entrypoints: set[str], modulos: set[str]) -> bool:
     """Decide si la llamada apunta al root lock y no a un homonimo ajeno.
 
-    Un `mi_objeto.acquire()` satisface cualquier censo por nombre. Aca se exige
-    que el nombre este en el conjunto de entrypoints Y que, si es un atributo, el
-    receptor no sea un `Name` distinto del modulo importado (p.ej.
-    `root_lock.participant_lock` es valido; `self.conn.acquire` no).
+    `mi_objeto.acquire()` satisface cualquier censo por nombre; un `def
+    participant_lock` local satisfacia a la version previa de este mismo guard.
+    Aca el nombre tiene que estar LIGADO por un import del modulo autorizado en el
+    ambito que lo llama (o su contenedor).
     """
-    nombre = _nombre_llamado(nodo)
-    if nombre not in _ENTRYPOINTS_ADQUISICION:
-        return False
     func = nodo.func
     if isinstance(func, ast.Name):
-        return True
+        return func.id in entrypoints
     if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        receptor = func.value.id
-        # El receptor debe ser un modulo/alias del paquete, no un objeto cualquiera.
-        return receptor in {"root_lock", "rl", "modulo_root_lock"}
+        return func.value.id in modulos and func.attr in _ENTRYPOINTS_ADQUISICION
     return False
 
 
 def _funciones_que_adquieren_lock(arbol: ast.Module) -> set[str]:
     """Funciones que invocan una adquisicion RESOLUBLE al root lock.
 
-    Recorre el arbol llevando el contenedor inmediato: a diferencia del walker
-    plano, una llamada dentro de un `with` anidado sigue atribuyendose a la
-    funcion que la contiene (que es donde vive la seccion critica).
+    Recorre el arbol llevando el contenedor inmediato y la tabla de enlaces del
+    ambito: una llamada dentro de un `with` anidado sigue atribuyendose a la
+    funcion que la contiene, y el import diferido DENTRO del participante cuenta
+    para ESA funcion (que es donde vive la seccion critica).
     """
     adquirentes: set[str] = set()
 
-    def _visitar(nodo: ast.AST, contenedor: str | None) -> None:
+    def _visitar(nodo: ast.AST, contenedor: str | None, tabla: tuple[set[str], set[str]]) -> None:
         for hijo in ast.iter_child_nodes(nodo):
             if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _visitar(hijo, hijo.name)
+                _visitar(hijo, hijo.name, _tabla_de_enlaces(hijo.body, tabla))
                 continue
-            if isinstance(hijo, ast.Call) and contenedor is not None and _resuelve_a_root_lock(hijo, arbol):
+            if isinstance(hijo, ast.Call) and contenedor is not None and _resuelve_a_root_lock(hijo, *tabla):
                 adquirentes.add(contenedor)
-            _visitar(hijo, contenedor)
+            _visitar(hijo, contenedor, tabla)
 
-    _visitar(arbol, None)
+    _visitar(arbol, None, _tabla_de_enlaces(arbol.body, (set(), set())))
     return adquirentes
 
 
@@ -215,41 +296,155 @@ def _escritores_reales_del_paquete() -> set[str]:
     return escritores
 
 
-def test_s2_censo_publicos_que_mutan_el_root_adquieren_el_lock() -> None:
-    """Ancla enumerativa: cada mutador REAL del root adquiere el root lock.
+# ---------------------------------------------------------------------------
+# F04 residual — Finding 2: censo de FUNCIONES mutadoras, no solo de modulos
+# ---------------------------------------------------------------------------
+#
+# El censo previo verificaba que cada modulo escritor estuviera contemplado y que
+# una lista FIJA de funciones adquiriera. Un mutador publico NUEVO dentro de un
+# modulo ya contemplado (p.ej. `state.py`) no rompia nada: el modulo seguia en la
+# lista y la funcion fija seguia adquiriendo. Este censo DERIVA las funciones del
+# AST: toda funcion top-level con un call site de mutador del inventario debe
+# adquirir el lock o estar declarada como primitiva de bajo nivel.
+#
+# LIMITE DECLARADO del analisis estatico (no se esconde): cubre funciones
+# TOP-LEVEL de los modulos escritores y los mutadores del inventario
+# (`MUTADORES_FILESYSTEM`). No sigue el grafo de llamadas de forma general ni
+# resuelve metodos de clase; un mutador escondido tras una indireccion dinamica
+# (`getattr`) no se detecta por AST. Ese limite lo cubren las pruebas de
+# COMPORTAMIENTO de este mismo modulo (exclusion real multiproceso), que no
+# dependen del analisis estatico.
 
-    El censo no es una lista fija de cuatro nombres: se DERIVA de los modulos que
-    el proyecto declara con capacidad de escritura y se exige que los entrypoints
-    publicos que mutan el root esten cableados. Agregar un mutador nuevo en un
-    modulo escritor sin cablearlo rompe esta ancla.
-    """
-    esperado = {
-        "generations.py": {"registrar_generation_metadata"},
-        "candidates.py": {"crear_candidate"},
-        "storage.py": {"initialize_frozen_runtime_storage"},
-        "state.py": {"save_frozen_runtime_state"},
+#: Primitivas de escritura que NO adquieren el lock por diseno: su contrato es
+#: correr DENTRO de una seccion critica ya tomada por un entrypoint publico. La
+#: lista sola seria un silenciador, por eso el call site se ancla aparte
+#: (`test_s2_las_primitivas_bajo_lock_solo_se_invocan_bajo_lock`): declarar aca un
+#: mutador nuevo no lo salva si se lo invoca fuera de un lock.
+_PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("state.py", "write_json_atomic"),
+        ("state.py", "_save_frozen_runtime_state_locked"),
+        ("storage.py", "_initialize_frozen_runtime_storage_locked"),
+        ("candidates.py", "_exigir_candidates_state_dir"),
+        ("candidates.py", "_reservar_candidate_id"),
+        ("candidates.py", "_persistir_metadata"),
+        ("candidates.py", "_persistir_metadata_inicial"),
+        ("candidates.py", "_marcar_invalid"),
+        ("candidates.py", "_crear_candidate_bajo_lock"),
+        ("copying.py", "copiar_arbol_independiente"),
+        ("copying.py", "copiar_archivo"),
+        ("copying.py", "_materializar_directorio_del_destino"),
     }
-    # Todo modulo que el inventario declara escritor debe estar contemplado.
-    escritores = _escritores_reales_del_paquete()
-    no_contemplados = escritores - set(esperado) - {"copying.py", "root_lock.py"}
-    assert not no_contemplados, (
-        "el inventario de escritura declara modulos que el censo de participantes no contempla: "
-        f"{sorted(no_contemplados)} -- si escribe en el root, necesita adquisicion"
-    )
+)
 
-    for modulo, funciones in esperado.items():
-        arbol = _arbol_de(_paquete() / modulo)
-        adquirentes = _funciones_que_adquieren_lock(arbol)
-        faltantes = funciones - adquirentes
-        assert not faltantes, f"{modulo}: los publicos mutadores no adquieren el root lock: {sorted(faltantes)}"
+#: Participantes publicos del slice: deben adquirir SIEMPRE. Es una enumeracion
+#: CURADA y el limite esta declarado: `generations.py` escribe por DELEGACION
+#: (`state.write_json_atomic`), asi que no aparece en el censo derivado por
+#: mutadores directos y necesita su propia fila.
+_PARTICIPANTES_PUBLICOS: dict[str, str] = {
+    "generations.py": "registrar_generation_metadata",
+    "candidates.py": "crear_candidate",
+    "storage.py": "initialize_frozen_runtime_storage",
+    "state.py": "save_frozen_runtime_state",
+}
+
+
+def _funciones_top_level(arbol: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [n for n in arbol.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _llamadas_propias(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Call]:
+    """Llamadas dentro de `funcion`, sin descender a funciones anidadas."""
+    llamadas: list[ast.Call] = []
+    pila: list[ast.AST] = list(funcion.body)
+    while pila:
+        nodo = pila.pop()
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(nodo, ast.Call):
+            llamadas.append(nodo)
+        pila.extend(ast.iter_child_nodes(nodo))
+    return llamadas
+
+
+def _contiene_mutador(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(_nombre_llamado(llamada) in MUTADORES_FILESYSTEM for llamada in _llamadas_propias(funcion))
+
+
+def _funciones_mutadoras(nombre_modulo: str, fuente: str) -> set[str]:
+    """Funciones top-level con un call site de mutador del inventario."""
+    arbol = ast.parse(fuente, filename=nombre_modulo)
+    return {funcion.name for funcion in _funciones_top_level(arbol) if _contiene_mutador(funcion)}
+
+
+def _mutadores_sin_cobertura(nombre_modulo: str, fuente: str) -> set[str]:
+    """Funciones que escriben en el root sin adquirir el lock ni estar declaradas."""
+    adquirentes = _funciones_que_adquieren_lock(ast.parse(fuente, filename=nombre_modulo))
+    declaradas = {funcion for (modulo, funcion) in _PRIMITIVAS_BAJO_LOCK if modulo == nombre_modulo}
+    return _funciones_mutadoras(nombre_modulo, fuente) - adquirentes - declaradas
+
+
+def _call_sites_de(nombre_funcion: str) -> list[tuple[str, str]]:
+    """(modulo, funcion_contenedora) de cada invocacion de `nombre_funcion`."""
+    sitios: list[tuple[str, str]] = []
+    for ruta in sorted(_paquete().glob("*.py")):
+        for funcion in _funciones_top_level(_arbol_de(ruta)):
+            if any(_nombre_llamado(llamada) == nombre_funcion for llamada in _llamadas_propias(funcion)):
+                sitios.append((ruta.name, funcion.name))
+    return sitios
+
+
+def test_s2_los_participantes_publicos_adquieren_el_lock() -> None:
+    """Ancla curada: cada participante publico del slice adquiere el root lock."""
+    for modulo, funcion in _PARTICIPANTES_PUBLICOS.items():
+        adquirentes = _funciones_que_adquieren_lock(_arbol_de(_paquete() / modulo))
+        assert funcion in adquirentes, f"{modulo}: {funcion} no adquiere el root lock"
+
+
+def test_s2_censo_de_funciones_que_mutan_el_root() -> None:
+    """Ancla DERIVADA: toda funcion que muta el root adquiere o es primitiva declarada.
+
+    No hay lista fija de funciones: el censo se calcula del AST de cada modulo con
+    escritura declarada. Un mutador nuevo sin lock (o una primitiva nueva no
+    declarada) rompe el ancla.
+    """
+    for modulo in sorted(_escritores_reales_del_paquete() - {"root_lock.py"}):
+        fuente = (_paquete() / modulo).read_text(encoding="utf-8")
+        sin_cobertura = _mutadores_sin_cobertura(modulo, fuente)
+        assert not sin_cobertura, (
+            f"{modulo}: funciones que escriben en el root sin adquisicion ni declaracion: "
+            f"{sorted(sin_cobertura)} -- si muta el root, necesita el root lock"
+        )
+
+
+def test_s2_las_primitivas_bajo_lock_solo_se_invocan_bajo_lock() -> None:
+    """Las primitivas de bajo nivel no se pueden invocar fuera de una seccion critica.
+
+    Cierra el silenciador: declarar una funcion en `_PRIMITIVAS_BAJO_LOCK` la exime
+    del censo, pero TODOS sus call sites tienen que estar dentro de una funcion que
+    adquiere el lock o de otra primitiva declarada.
+    """
+    primitivas = {funcion for (_, funcion) in _PRIMITIVAS_BAJO_LOCK}
+    adquirentes_por_modulo: dict[str, set[str]] = {}
+    for _, primitiva in sorted(_PRIMITIVAS_BAJO_LOCK):
+        for modulo_origen, contenedora in _call_sites_de(primitiva):
+            if modulo_origen not in adquirentes_por_modulo:
+                adquirentes_por_modulo[modulo_origen] = _funciones_que_adquieren_lock(
+                    _arbol_de(_paquete() / modulo_origen)
+                )
+            cubierta = contenedora in adquirentes_por_modulo[modulo_origen] or contenedora in primitivas
+            assert cubierta, (
+                f"{primitiva} se invoca desde {modulo_origen}::{contenedora}, que no adquiere el lock "
+                "ni es una primitiva declarada"
+            )
 
 
 def test_s2_el_censo_rechaza_una_adquisicion_homonima() -> None:
-    """Control negativo del ancla: `objeto.acquire()` NO cuenta como adquisicion.
+    """Control negativo: `objeto.acquire()` NO cuenta como adquisicion.
 
     Sin esto, el censo pasaria por el nombre de un metodo cualquiera: la version
-    original reconocia `acquire` a secas y daba por cableada una funcion que
-    jamas tomo el root lock (F04).
+    original reconocia `acquire` a secas y daba por cableada una funcion que jamas
+    tomo el root lock (F04).
     """
     falso = textwrap.dedent(
         """
@@ -258,18 +453,112 @@ def test_s2_el_censo_rechaza_una_adquisicion_homonima() -> None:
             root.joinpath("x").write_text("boom")
         """
     )
-    arbol = ast.parse(falso)
-    assert "mutador_falso" not in _funciones_que_adquieren_lock(arbol)
+    assert "mutador_falso" not in _funciones_que_adquieren_lock(ast.parse(falso))
 
     # Y una adquisicion REAL si se reconoce (el control no es vacuamente falso).
     real = textwrap.dedent(
         """
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
         def mutador_real(root):
             with participant_lock(root, timeout=0.0) as h:
                 h.assert_owned()
         """
     )
     assert "mutador_real" in _funciones_que_adquieren_lock(ast.parse(real))
+
+
+def test_s2_el_censo_rechaza_un_participant_lock_local() -> None:
+    """Control negativo (Finding 1): un `participant_lock` DEFINIDO localmente no adquiere.
+
+    Es el defecto residual: la version previa devolvia True para cualquier
+    `ast.Name` llamado `participant_lock`, asi que una funcion homonima local
+    daba por cableado un mutador que nunca tomo el root lock.
+    """
+    falso = textwrap.dedent(
+        """
+        def participant_lock(root, timeout=0.0):
+            return None
+
+        def mutador_con_homonimo(root):
+            with participant_lock(root, timeout=0.0):
+                (root / "x").write_text("boom", encoding="utf-8")
+        """
+    )
+    assert "mutador_con_homonimo" not in _funciones_que_adquieren_lock(ast.parse(falso))
+    # Y el censo de mutadores lo ve como no cubierto (no se salva por el nombre).
+    assert "mutador_con_homonimo" in _mutadores_sin_cobertura("fake.py", falso)
+
+
+def test_s2_el_censo_reconoce_alias_y_modulo_autorizado() -> None:
+    """Control positivo (Finding 1): alias y modulo importado SI cuentan.
+
+    Sin esto, la correccion podria ser vacuamente estricta (rechazar todo) y el
+    control negativo de arriba pasaria por la razon equivocada.
+    """
+    alias_entrypoint = textwrap.dedent(
+        """
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock as pl
+
+        def mutador_alias(root):
+            with pl(root, timeout=0.0) as h:
+                h.assert_owned()
+        """
+    )
+    assert "mutador_alias" in _funciones_que_adquieren_lock(ast.parse(alias_entrypoint))
+
+    modulo_alias = textwrap.dedent(
+        """
+        from sky_claw.local.frozen_runtime import root_lock as rl
+
+        def mutador_modulo(root):
+            with rl.participant_lock(root, timeout=0.0) as h:
+                h.assert_owned()
+        """
+    )
+    assert "mutador_modulo" in _funciones_que_adquieren_lock(ast.parse(modulo_alias))
+
+
+def test_s2_el_censo_rechaza_un_receptor_homonimo() -> None:
+    """Control negativo (Finding 1): `rl.participant_lock(...)` con `rl` local no cuenta.
+
+    La version previa aceptaba un receptor por NOMBRE (`rl` estaba en una lista
+    fija), sin comprobar que viniera de un import del modulo autorizado.
+    """
+    falso = textwrap.dedent(
+        """
+        class Fake:
+            def participant_lock(self, root, timeout=0.0):
+                return None
+
+        def mutador_falso(root):
+            rl = Fake()
+            with rl.participant_lock(root, timeout=0.0):
+                (root / "x").write_text("boom", encoding="utf-8")
+        """
+    )
+    assert "mutador_falso" not in _funciones_que_adquieren_lock(ast.parse(falso))
+
+
+def test_s2_el_censo_rechaza_un_mutador_nuevo_sin_lock() -> None:
+    """Control negativo (Finding 2): un mutador publico NUEVO sin lock da RED.
+
+    Se simula la incorporacion de `guardar_nuevo_estado` a `state.py` (modulo ya
+    contemplado) que escribe sin adquirir. El censo previo no lo veia; el derivado
+    si.
+    """
+    original = (_paquete() / "state.py").read_text(encoding="utf-8")
+    assert _mutadores_sin_cobertura("state.py", original) == set()
+
+    mutado = original + textwrap.dedent(
+        """
+
+        def guardar_nuevo_estado(root, payload):
+            (root / "state" / "nuevo.json").write_text(payload, encoding="utf-8")
+        """
+    )
+    sin_cobertura = _mutadores_sin_cobertura("state.py", mutado)
+    assert "guardar_nuevo_estado" in sin_cobertura, "un mutador publico nuevo sin lock debe quedar sin cobertura (RED)"
 
 
 def test_s2_cada_modulo_escritor_declara_su_adquisicion_si_muta_el_root() -> None:
