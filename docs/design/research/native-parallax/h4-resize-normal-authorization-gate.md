@@ -170,6 +170,30 @@ presenta como verde global ni se usa para declarar el contrato verificado.
 > arriba. **No** prueba nada del fix H4: la corrección no existe todavía. Un CI verde acá **no** es
 > evidencia de que `resize_normal` esté arreglado.
 
+### 1.7 Cuarta ronda — revisión de integración y CodeRabbit sobre `14daff53`
+
+**HEAD de entrada de esta sesión:** `14daff53131e006e6ad0f1685e8dd7315d1736b7` (verificado con
+`git rev-parse HEAD` y `git ls-remote --heads origin`; worktree limpio, sin cambios pendientes).
+
+**CI sobre `14daff53`** (run `38185323939`): `completed/success`, **12/12 jobs verdes**, leídos del
+log y no del estado del check.
+
+```text
+PY312_WINDOWS (autoritativo) = PASS   (11205 passed, 22 skipped; "Coverage XML written to file")
+PY311_WINDOWS                = PASS   (11205 passed, 22 skipped; ídem)
+RUFF_CHECK (x3) / MYPY (x3) / SECURITY_SCAN / POSIX_CORE / BUILD = PASS
+TEST_NUEVO_EN_CI             = SÍ (tests/test_native_parallax_h4_authorization_gate.py corrió en ambos Windows)
+```
+
+**Revisión de integración** (`comment 6115604174`): `PR717_READINESS=CHANGES_REQUIRED`,
+`CI=PASS_ON_14daff53`, `OPEN_THREADS=9`, `H4_IMPLEMENTATION=BLOCKED`. Reporta 11 hilos totales
+(9 abiertos) y **cuatro hallazgos nuevos** de CodeRabbit (CR-3 … CR-6), adjudicados en §14.7.
+
+**Estado de los hilos al abrir la sesión** (GraphQL `reviewThreads`, no el contador de la UI):
+2 resueltos (RC-1, RC-2), **9 abiertos** — 5 de Codex (respondidos pero sin resolución formal) y
+4 de CodeRabbit (CR-3 … CR-6). Un `reply` no equivale a una resolución: se resolverán formalmente
+sólo los que tengan corrección verificada.
+
 ---
 
 ## 2. Fase 0 — Protección del entorno (ejecutada)
@@ -290,7 +314,8 @@ RECHAZO FAIL-CLOSED (contrato cerrado — el Slice 2 debe implementar la validac
 
   ndim != 3                          -> REJECT  (InvalidNormalShapeError-like)
   shape[-1] != 3                     -> REJECT  (no se descarta ningún canal)
-  H == 0  o  W == 0                  -> REJECT  (rejilla vacía)
+  H == 0                             -> REJECT  (rejilla vacía en filas)
+  W == 0                             -> REJECT  (rejilla vacía en columnas)
   cualquier NaN/Inf en la entrada    -> REJECT  (V-04; NO se clipea en silencio)
   size no-entero (type(size) is not int / bool) -> REJECT
   size < 1                           -> REJECT
@@ -338,6 +363,106 @@ V03_SCOPE              = H!=W SOLAMENTE (no cubre formas malformadas)
 MALFORMED_NOT_DEFERRED = YES  (ndim/shape[-1]/H=0/W=0 -> rechazo, no "fuera de alcance")
 ```
 
+### 3.4.1 Camino identidad (D-07) — alcance del no-op y rango
+
+**Hallazgo del review de #717 (CR-3), verificado midiendo.** El camino identidad de la
+implementación vigente es un **bypass total** de la validación:
+
+```python
+if n.shape[0] == size and n.shape[1] == size:
+    return np.asarray(n, dtype=np.float64)      # ← no valida forma, ni finitud, ni rango
+```
+
+Medido con `H == W == size` (`scratch/f1_shape_probe.py`; tabla completa en §10.1):
+
+| Entrada (camino identidad) | Salida **vigente** | Contrato violado |
+|---|---|---|
+| `1000.0` finito | `1000.0` (sin clip) | `RANGO_ES_POSTCONDICION = YES` |
+| `NaN` / `±Inf` | `NaN` / `±Inf` | finitud (§3.2, V-04) |
+| `(2,2,4)` | `(2,2,4)` | `shape[-1] == 3` (§3.1) |
+| `(2,2)` 2D | `(2,2)` | `ndim == 3` (§3.1) |
+
+La contradicción que CR-3 señala (`1000.0` sobrevive al no-op pese a la postcondición) es un caso
+particular de un defecto mayor: **el camino identidad no ejecuta el contrato de entrada**. La
+primera versión del documento ya había anotado que evade la validación (§14.1), pero no lo había
+cerrado con una regla.
+
+**Regla cerrada.** El orden se invierte: la validación y la normalización de rango corren **antes**
+de la bifurcación identidad/resize, y el no-op se aplica **sólo a entradas admisibles**:
+
+```text
+resize_normal(n, size):
+    (1) ENVOLVENTE ESTRUCTURAL  [F1, §3.4]   ==> REJECT si ndim / shape[-1] / H / W / size invalidos
+    (2) FINITUD                 [V-04, §3.2] ==> REJECT si NaN / Inf
+    (3) NORMALIZACION DE RANGO  [N-11, §3.4] ==> clip declarado a [-1,1]  (uniforme, ANTES de la rama)
+    (4) BIFURCACION
+        si  H == W == size:  NO-OP  (devuelve la entrada ya admisible; no remuestrea)
+        si no:               interpolar + renormalizar
+
+ADMISIBLE(n) := forma valida (ndim==3, shape[-1]==3, H,W>0, size entero >=1)
+                Y finito
+                Y n en [-1,1]
+```
+
+**Qué significa exactamente "no-op" acá.** El no-op es una propiedad del **paso de remuestreo**:
+cuando `H == W == size` no hay nada que interpolar. **No** es una propiedad del valor: para una
+entrada fuera de rango, el clip declarado del paso (3) ya la dejó en `[-1,1]`, de modo que lo que
+se devuelve **no** es la entrada cruda. Por eso el no-op es válido **exclusivamente** para entradas
+admisibles — que es exactamente lo que el contrato ya declaraba:
+`D07_STATUS = CONTRACT_CLOSED_PRESERVE_VALID_IDENTITY_NOOP`. La palabra `VALID` ya estaba en el
+nombre; el defecto era que la implementación no la respetaba.
+
+**Por qué `clip` y no `REJECT` para el fuera de rango.** Se consideró rechazar el finito fuera de
+rango en el camino identidad y se **descartó**, por dos razones:
+
+1. **Contradiría N-11.** El contrato de entrada ya cerró (§3.4) que el rango es **postcondición,
+   no precondición**: un valor finito fuera de rango es una entrada extrapolada **tolerada**, no un
+   error de dominio. Rechazarlo en el camino identidad haría que el mismo valor fuera tolerado o
+   rechazado según una coincidencia geométrica (`H == W == size`), reintroduciendo la contradicción
+   por otra puerta.
+2. **Sería una corrección numérica *nueva*.** El clip a `[-1,1]` **ya existe** en el camino resize
+   (`np.clip(n[..., c], -1.0, 1.0)`, `authored_dataset.py:247`) y está medido (`1000.0 -> 1.0`).
+   Moverlo **antes** de la bifurcación no inventa una operación: **unifica** una operación ya
+   contratada. No hay corrección silenciosa alguna — es el mismo clip, declarado y con ancla
+   (§10.1, `test_codex_n11_...`).
+
+**La postcondición no tiene excepción.** Con esta regla, `RANGO_ES_POSTCONDICION = YES` vale en
+**ambos** caminos sin excepción: en resize por el clip dentro del pipeline, en identidad por el
+mismo clip aplicado antes de la bifurcación. Se **rechaza** explícitamente la alternativa que el
+review ofrecía ("excepción de identidad a la postcondición"): una postcondición con excepciones
+deja de ser una postcondición.
+
+**Tabla de discriminación (exigida como test documental).** Las celdas que el ancla debe
+distinguir — tres clases de entrada × dos caminos:
+
+| Clase de entrada | Camino identidad (`H == W == size`) | Camino resize |
+|---|---|---|
+| Válida (forma ok, finita, en `[-1,1]`) | **no-op** — devuelve la entrada sin remuestrear | interpola + renormaliza |
+| Fuera de rango, finita (`1000.0`) | **clip declarado** (`1000.0 -> 1.0`); **no** es no-op | clip declarado (tolerado, N-11) |
+| No finita (`NaN` / `±Inf`) | **REJECT** (V-04) | **REJECT** (V-04) |
+| Forma inválida (`ndim` / `shape[-1]` / `H=0` / `W=0` / `size`) | **REJECT** (F1, §3.4) | **REJECT** (F1, §3.4) |
+
+```text
+IDENTITY_PATH_VALIDATES_ENVELOPE      = YES  (F1 corre ANTES de la bifurcacion)
+IDENTITY_PATH_VALIDATES_FINITENESS    = YES  (V-04 corre ANTES de la bifurcacion)
+IDENTITY_NOOP_ONLY_FOR_ADMISSIBLE     = YES  (no-op exclusivo de entradas admisibles)
+IDENTITY_RANGE_POLICY                 = CLIP_DECLARED (mismo clip que el camino resize; NO se rechaza)
+POSTCONDITION_HAS_IDENTITY_EXCEPTION  = NO   (la postcondicion vale sin excepcion)
+RANGO_ES_POSTCONDICION_UNIVERSAL      = YES  (identidad y resize, ambos)
+IDENTITY_PATH_IMPLEMENTED             = NO   (pertenece al Slice 2)
+```
+
+**Tests exigidos por CR-3.**
+
+| Test | Naturaleza | Qué discrimina |
+|---|---|---|
+| `test_cr3_el_camino_identidad_valida_la_envolvente` | documental | un contrato que deje el camino identidad sin validar forma/finitud/rango |
+| `test_cr3_la_postcondicion_no_tiene_excepcion_de_identidad` | documental | declarar una "excepción de identidad" a `RANGO_ES_POSTCONDICION` |
+| `test_cr3_la_tabla_de_discriminacion_cubre_ambos_caminos` | documental | cubrir sólo un camino (o muestrear las celdas) |
+| `test_identidad_fuera_de_rango_clipea_no_devuelve_crudo` | Slice 2 (sintético) | el no-op devolviendo `1000.0` crudo |
+| `test_identidad_no_finita_rechaza` | Slice 2 (sintético) | el no-op devolviendo `NaN`/`Inf` |
+| `test_identidad_forma_invalida_rechaza` | Slice 2 (sintético) | el no-op devolviendo `(2,2,4)` o `(2,2)` |
+
 ### 3.5 Tolerancias — principio de justificación (cierre metodológico)
 
 El preflight exige tolerancias "derivadas de sintético, no ajustadas al corpus". Este cierre fija
@@ -361,9 +486,10 @@ V03_HANDLING        = DEFERRED_PRESERVED (sólo H!=W; no cubre formas malformada
 R1 pasa de `DESIGN_PROPOSED` a `DESIGN_CLOSED`: el contrato de entrada y salida está
 especificado como unidad, el **envelope estructural** (`ndim == 3`, `shape[-1] == 3`, `H,W > 0`,
 `size` entero positivo, finitud) se cierra como **rechazo fail-closed**, V-03 queda acotado a
-`H ≠ W` sin absorber casos que no cubre, y el criterio de tolerancias está fijado por fuente
-(sintético/analítico) sin números ajustados al corpus. **No** se declara `CONFIRMED`: eso requiere
-la implementación, que no existe.
+`H ≠ W` sin absorber casos que no cubre, el **camino identidad** deja de ser un bypass y pasa a
+validar la misma envolvente antes de la bifurcación (§3.4.1), y el criterio de tolerancias está
+fijado por fuente (sintético/analítico) sin números ajustados al corpus. **No** se declara
+`CONFIRMED`: eso requiere la implementación, que no existe.
 
 ---
 
@@ -488,22 +614,46 @@ Se inspeccionaron con AST `run_exp_m2.py`, `run_exp_m3.py`, `run_exp_m4.py`, `ru
 productivos** — los módulos de `sky_claw/local/native_parallax/research/`. Fuera de esa frontera
 existen invocadores **históricos** de `resize_normal` / `load_asset`, todos bajo
 `docs/validation/` y **congelados por la auditoría que los produjo** (no son caminos que corran en
-la suite ni en M6). El review de #717 citó, correctamente, que `rg` los encuentra:
+la suite ni en M6).
 
-| Invocador histórico (tracked, en `docs/validation/`) | Símbolo | Tratamiento |
-|---|---|---|
-| `native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/h4_magnitude_probe.py:63` | `resize_normal` | **EXCLUIDO por diseño** — probe de la auditoría de impacto H1–H5, fijado al hallazgo histórico |
-| `…/scripts/phase_a_synthetic.py:237` | `resize_normal` | **EXCLUIDO por diseño** — ídem |
-| `…/corrective-20261008/scripts/h4_magnitude_probe_corrective.py:263` | `resize_normal` | **EXCLUIDO por diseño** — contrafactual correctivo |
-| `…/corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py:188` | `resize_normal` | **EXCLUIDO por diseño** — contrafactual READ-ONLY (C2) |
-| `…/scripts/phase_c_real_impact.py:138`, `corrective-20261008/scripts/phase_c_corrective.py:185` | `load_asset` | **EXCLUIDO por diseño** — ídem |
+**El censo histórico es de SIETE archivos, no seis (hallazgo N-13).** El review de #717 citó seis
+invocadores; el censo real, ejecutado por AST sobre **todos** los `.py` tracked, devuelve **siete**:
+faltaba `phase_c2_h4_corpus.py`, el hermano **no correctivo** de `phase_c2_h4_corpus_corrective.py`.
+Es el patrón "arreglar un hermano y no al otro" dentro de la propia allowlist: enumerar de memoria
+habría congelado la omisión. La allowlist se construye **desde el censo**, no desde la lista del
+review. Además, dos de los siete **no llaman** al símbolo: lo **referencian**
+(`resizer = resize_normal_float if counterfactual else resize_normal`), de modo que un ancla basada
+sólo en nodos `ast.Call` tendría el mismo punto ciego que la lista original. El ancla enumera
+**referencias** (`ast.Name`), no sólo llamadas.
+
+Cada consumidor tiene su **propia fila**, con la **ruta completa repo-relativa** (sin abreviar con
+`…/`), el símbolo que ejerce y la localización exacta:
+
+| Ruta repo-relativa (tracked) | Símbolo | Localización | Tratamiento |
+|---|---|---|---|
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/h4_magnitude_probe.py` | `resize_normal` | L63 (llamada) | **EXCLUIDO por diseño** — probe de la auditoría de impacto H1–H5, fijado al hallazgo histórico |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_a_synthetic.py` | `resize_normal` | L237 (llamada) | **EXCLUIDO por diseño** — control sintético de fase A, ídem |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c2_h4_corpus.py` | `resize_normal` | L90 (referencia) | **EXCLUIDO por diseño** — contrafactual READ-ONLY C2 (variante no correctiva) |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c_real_impact.py` | `load_asset` | L138 (llamada) | **EXCLUIDO por diseño** — impacto real sobre el corpus (fase C) |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/scripts/h4_magnitude_probe_corrective.py` | `resize_normal` | L263 (llamada) | **EXCLUIDO por diseño** — contrafactual correctivo del probe |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py` | `resize_normal` | L188 (referencia) | **EXCLUIDO por diseño** — contrafactual READ-ONLY C2 (correctivo) |
+| `docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/corrective-20261008/scripts/phase_c_corrective.py` | `load_asset` | L185 (llamada) | **EXCLUIDO por diseño** — fase C correctiva |
 
 La exclusión **no** es una omisión silenciosa: es una frontera declarada. Estos módulos reproducen
 el hallazgo **histórico**; reescribirlos para consumir el vehículo nuevo (F2) **destruiría la
-evidencia** que los hace citables como baseline. El ancla de §5.4 debe **reconocerlos como
-exclusiones congeladas** (allowlist explícita con su razón) y romper **sólo** ante un consumidor
-nuevo **fuera** de esa allowlist. Congelar la lista es el punto: un consumidor nuevo en
-`sky_claw/` **o** un módulo nuevo bajo `docs/validation/` que no esté en la allowlist rompe el ancla.
+evidencia** que los hace citables como baseline. El ancla de §5.4 **reconoce** la allowlist como
+conjunto congelado y rompe ante un consumidor **nuevo fuera** de ella. Congelar la lista es el
+punto: un consumidor nuevo en `sky_claw/` **o** un módulo nuevo bajo `docs/validation/` que no esté
+en la allowlist rompe el ancla.
+
+```text
+HISTORICAL_CONSUMERS_TOTAL    = 7  (5 resize_normal + 2 load_asset; censo AST, no la lista del review)
+HISTORICAL_CONSUMERS_CALL     = 5  (h4_magnitude_probe, phase_a_synthetic, h4_magnitude_probe_corrective,
+                                    phase_c_real_impact, phase_c_corrective)
+HISTORICAL_CONSUMERS_REF      = 2  (phase_c2_h4_corpus, phase_c2_h4_corpus_corrective — asignación a variable)
+HISTORICAL_ALLOWLIST_FROZEN   = YES (conjunto exacto de (ruta, símbolo); ancla por igualdad de conjuntos)
+HISTORICAL_FILES_MUTATED      = NO  (los scripts congelados NO se tocan)
+```
 
 **Call-sites de `load_asset` (el único invocador de `resize_normal` en el camino productivo):**
 
@@ -570,12 +720,21 @@ Sin un vehículo explícito, el conteo se pierde entre el resizer y el asset, y 
 fail-closed no es ejecutable. En particular, **no** se puede "detectar la degeneración en el
 resizer y lanzar desde el consumidor" si el resizer no comunica nada.
 
-#### 5.3.1 El vehículo: resultado tipado, no excepción desde el resizer
+#### 5.3.1 El vehículo: resultado tipado en el diagnóstico, rechazo en la fachada
 
-Se cierra el mecanismo: `resize_normal` **no** lanza por degeneración (sigue devolviendo un
-`NDArray`, para no romper el call-site de test ni la firma, y porque un vector degenerado **no**
-es un fallo del resizer sino un hecho del campo). Devuelve en cambio un **resultado tipado** que
-lleva la evidencia:
+Se cierra el mecanismo separando **dos superficies con contratos distintos**:
+
+- **`resize_normal_diagnostic`** (API nueva del Slice 2) **no** lanza por degeneración: devuelve un
+  **resultado tipado** (`NormalResizeResult`) que lleva la evidencia. Un vector degenerado **no** es
+  un fallo del resizer sino un hecho del campo, y quien necesita el conteo —y puede decidir con la
+  identidad del asset— usa esta superficie.
+- **`resize_normal`** (fachada vigente) **sí** rechaza: delega en la de diagnóstico, inspecciona
+  `res.degenerate` y, si es verdadero, **lanza `DegenerateNormalError`**. Devuelve `NDArray`
+  **exclusivamente** para entradas evaluables. La firma (tipo de retorno `float64`, aridad) se
+  conserva; lo que **no** se conserva es la disposición a devolver un array degenerado en silencio.
+
+El resultado tipado es el vehículo de la evidencia **en la API de diagnóstico**; la fachada no lo
+expone, lo consume y decide. El pseudocódigo del contrato:
 
 ```text
 # Contrato cerrado para el Slice 2 (NO implementado acá):
@@ -751,7 +910,7 @@ SCIENTIFIC_PUBLICATION_PROHIBITED= YES (tras DegenerateNormalError)
 EXISTING_EXCLUSIONS_UNCHANGED    = YES (no reclasificar integridad como H4)
 SYNTHETIC_DISCRIMINATING_TESTS   = 7 (especificados, NO implementados)
 AST_ANCHOR_SPECIFIED             = YES (ordena handlers + censo congelado)
-HISTORICAL_CONSUMERS_ALLOWLISTED = YES (6 invocadores en docs/validation/, exclusión declarada)
+HISTORICAL_CONSUMERS_ALLOWLISTED = YES (7 invocadores en docs/validation/, exclusión declarada; N-13)
 R6_CONSUMER_COVERAGE             = DESIGN_CLOSED
 ```
 
@@ -775,17 +934,22 @@ FAMILY_E_ANCHOR_DESIGNED          = YES
 ANCHOR_ENUMERATES_BY_AST          = YES
 ANCHOR_COVERS_ALL_RUNNERS         = YES (M2/M3/M4/M5 + load_asset)
 ANCHOR_CHECKS_HANDLER_ORDER       = YES (subclase antes de superclase)
-ANCHOR_HAS_FROZEN_ALLOWLIST       = YES (exclusiones históricas declaradas, §5.1)
+ANCHOR_HAS_FROZEN_ALLOWLIST       = YES (7 exclusiones históricas declaradas, §5.1)
+ANCHOR_COMPARES_EXACT_SETS        = YES (igualdad de conjuntos (ruta, símbolo), no substrings; N-13)
+ANCHOR_COUNTS_REFERENCES          = YES (ast.Name, no sólo ast.Call; dos consumidores referencian)
 ANCHOR_IMPLEMENTED                = NO  (pertenece al Slice 2)
 ```
 
 **La allowlist es parte del contrato, no un detalle.** El review de #717 mostró que un `rg` global
 encuentra consumidores fuera del censo productivo. El ancla no puede ignorarlos (sería el mismo
 defecto de "arreglar un hermano y no al otro") **ni** puede exigirles el vehículo nuevo (destruiría
-la evidencia histórica). La resolución es una **allowlist congelada y con razón declarada**: los seis
-invocadores de `docs/validation/` figuran con su motivo de exclusión; un séptimo que aparezca rompe
-el ancla hasta que se le declare tratamiento. Así la frontera es **explícita y mutable-sólo-a-
-propósito**, que es exactamente lo que R6 debe garantizar.
+la evidencia histórica). La resolución es una **allowlist congelada y con razón declarada**: los
+**siete** invocadores de `docs/validation/` figuran con su motivo de exclusión; un octavo que
+aparezca rompe el ancla hasta que se le declare tratamiento. El ancla compara **conjuntos exactos**
+de `(ruta repo-relativa, símbolo)` —no substrings de nombre de archivo— y enumera **referencias**
+(`ast.Name`), no sólo llamadas: dos de los siete consumidores asignan el símbolo a una variable
+(`resizer = ... else resize_normal`), y un ancla basada en `ast.Call` los perdería (N-13). Así la
+frontera es **explícita y mutable-sólo-a-propósito**, que es exactamente lo que R6 debe garantizar.
 
 ### 5.5 Mensaje de cierre de R6
 
@@ -939,9 +1103,20 @@ redacción. Consecuencia sobre la matriz: las filas 2, 3 y 5 pasan a apoyarse en
 la **calidad de la evidencia** que las sostiene. La condición 9 sigue `PENDING`: no hay ninguna
 aprobación derivable de tests, ni de CI, ni de haber cerrado F1/F2.
 
+**Efecto de la revisión de CodeRabbit sobre `14daff53` (CR-3 … CR-6).** Cuatro hallazgos, los
+cuatro adjudicados `ACCEPTED` (dos ampliados: N-13, N-14). Las filas 2, 3 y 5 vuelven a ganar
+evidencia: la fila 2 (contrato numérico, V-01…V-05) ahora incluye el **camino identidad** cerrado
+(§3.4.1), y la fila 5 (ancla de enumeración diseñada) ahora exige **igualdad de conjuntos exactos**
+sobre 7 consumidores históricos. **Ninguna fila cambia de estado** por sexta vez consecutiva: la
+condición 9 es una firma humana y no se deriva de cerrar hallazgos.
+
 ```text
 F1_SHAPE_CHANNEL_SEMANTICS   = CLOSED        (envolvente estructural; V-03 sigue DEFERRED)
+F1_ENUMERACION_POR_REGLA     = CLOSED        (cada caso estructural con regla propia; CR-6)
 F2_DEGENERATE_TRANSPORT      = CLOSED        (vehículo tipado + jerarquía + propagación)
+F2_FACHADA_SIN_CONTRADICCION = CLOSED        (§5.3.1 desambigua diagnóstico vs fachada; CR-5)
+R1_CAMINO_IDENTIDAD          = CLOSED        (no-op exclusivo de admisibles; CR-3)
+R6_ALLOWLIST_EXACTA          = CLOSED        (7 filas exactas por AST; CR-4)
 F1_F2_SCOPE_CHANGED          = NO            (no se amplió el alcance de §17)
 CONDITION_9_STATUS           = PENDING
 ```
@@ -1005,6 +1180,8 @@ posterior sobre la condición 9 de §17 puede cambiar ese estado.
 | N-10 | (Codex, revisión de #717) El censo de §5.1 enumeraba sólo los runners productivos, sin declarar la **frontera** frente a los 6 invocadores históricos de `docs/validation/`. Un `rg` global los encuentra; la omisión era real aunque el alcance fuera correcto. | **Precisión de censo (R6)** | §5.1, §5.4 |
 | N-11 | (Codex, revisión de #717) `[-1,1]` figuraba como rango de canal sin aclarar si era **precondición** (rechazo) o **postcondición** (clip). Ambas lecturas eran defendibles desde §3.1 y §3.4 y producen caminos distintos. | **Ambigüedad de contrato (R1)** | §3.4 |
 | N-12 | (Codex, revisión de #717) El procedimiento R7 usaba "Nyquist = peor caso" como **premisa** sin derivación ni cita, cuando la cancelación depende de ratio, fase y borde. Una grilla que sólo barra Nyquist puede no alcanzar la norma mínima real. | **Premisa no falsificada (R7)** | §6.1 |
+| N-13 | (CR-4, revisión de CodeRabbit) El censo histórico de §5.1 declaraba **6** invocadores; el censo real por AST sobre los `.py` tracked da **7**: faltaba `phase_c2_h4_corpus.py` (hermano no correctivo de `phase_c2_h4_corpus_corrective.py`). Además, 2 de los 7 **referencian** el símbolo (`resizer = ... else resize_normal`) en vez de llamarlo, así que un ancla por `ast.Call` los perdería igual que la lista original. | **Defecto de censo (R6)** | §5.1, §5.4 |
+| N-14 | (CR-3, revisión de CodeRabbit) El camino identidad (`H == W == size`) **no ejecuta ningún contrato de entrada**: devuelve `1000.0` sin clip (viola `RANGO_ES_POSTCONDICION`), `NaN`/`±Inf` (viola V-04), `(2,2,4)` y `(2,2)` (violan §3.1). El review reportó sólo la violación de rango; la medición mostró que es un **bypass total**. §14.1 ya lo había anotado sin cerrarlo con regla. | **Defecto de contrato (R1/D-07)** | §3.4.1 |
 
 **Contradicciones resueltas sin inventar semántica:**
 
@@ -1073,15 +1250,18 @@ comportamiento observado, no en suposición:
 | `size = "4"` | `TypeError: 'str' object cannot be interpreted as an integer` | No | `REJECT` |
 | `NaN` en la entrada | **Acepta: clipeo silencioso** (`RuntimeWarning: invalid value encountered in cast`; salida `finite=True`) | **No: dato corrupto sin señal** | `REJECT` |
 | `±Inf` en la entrada | **Acepta: clipeo silencioso** a `±1` | **No** | `REJECT` |
+| `1000.0` finito, camino identidad | **Devuelve `1000.0` sin clip** | **No: viola `RANGO_ES_POSTCONDICION`** | `CLIP declarado` (D-07) |
+| `NaN`, camino identidad | **Devuelve `NaN`** | **No: viola finitud (V-04)** | `REJECT` (D-07) |
+| `±Inf`, camino identidad | **Devuelve `±Inf`** | **No** | `REJECT` (D-07) |
 | `(2, 2, 2)` camino identidad | **Devuelve `(2, 2, 2)` sin validar canales** | No: el camino identidad evade el contrato | `REJECT` (D-07) |
 | `(2, 2, 4)` camino identidad | **Devuelve `(2, 2, 4)` sin validar canales** | No | `REJECT` (D-07) |
 | `(2, 2)` camino identidad | **Devuelve `(2, 2)` sin validar `ndim`** | No | `REJECT` (D-07) |
 
-Las seis filas en **negrita** son las que motivan que la envolvente sea `REJECT` explícito y no una
+Las filas en **negrita** son las que motivan que la envolvente sea `REJECT` explícito y no una
 deferencia: el descarte del 4.º canal, la aceptación de 2D por broadcast, la interpolación de una
-rejilla vacía, el clipeo de no-finitos y el camino identidad que no valida canales/`ndim` son
-**pérdidas silenciosas**, exactamente la clase de defecto que H4 combate (`astype` que trunca sin
-avisar). Diferirlas habría reproducido el mismo patrón en otra capa.
+rejilla vacía, el clipeo de no-finitos y el camino identidad que no valida canales/`ndim`/finitud/
+rango son **pérdidas silenciosas**, exactamente la clase de defecto que H4 combate (`astype` que
+trunca sin avisar). Diferirlas habría reproducido el mismo patrón en otra capa.
 
 ### 10.2 Suite existente (ancla vigente)
 
@@ -1099,20 +1279,22 @@ Valores **medidos** antes de publicar.
 ```text
 WRITE_SET        = PASS  (2 paths: el documento + tests/test_native_parallax_h4_authorization_gate.py)
 DIFF_CHECK       = PASS  (sin whitespace sobrante ni marcadores; `git diff --check` limpio)
-MARKDOWN_TABLES  = PASS  (21 tablas, 0 inconsistencias — con las funciones del checker del repo IMPORTADAS)
+MARKDOWN_TABLES  = PASS  (28 tablas, 0 inconsistencias — con las funciones del checker del repo IMPORTADAS)
 MARKDOWN_BARRAS  = PASS  (0 celdas con "\|")
-TEST_NUEVO       = PASS  (37 passed — tests/test_native_parallax_h4_authorization_gate.py)
+TEST_NUEVO       = PASS  (69 passed — tests/test_native_parallax_h4_authorization_gate.py)
 TEST_VIGENTE     = PASS  (18 passed — test_native_parallax_exp_m2.py, incluye el ancla del resizer)
 CHECKER_REPO     = PASS  (8 passed — test_native_parallax_pr700_corrective_docs_invariants.py)
-SUITE_FOCAL_NP   = PASS  (79 passed — m2 + m2_json + pr700 docs + pr697 reconciliation + gate)
+SUITE_FOCAL_NP   = PASS  (115 passed — m2 + m2_json + pr700 docs + pr697 reconciliation + gate)
 RUFF_CHECK       = PASS  (All checks passed!)
 RUFF_FORMAT      = PASS  (858 files already formatted)
 MYPY             = PASS  (no issues found in 364 source files)
-MUTANTES_ANCLA   = 30/30 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
+MUTANTES_ANCLA   = 42/42 killed  (8 de autorización + M-09/M-09b/M-10/M-11 de F1 +
                                    M-12/M-13/M-14/M-15/M-16 de F2 +
                                    M-17/M-18 de RC-1 + M-19/M-20 de RC-2 +
                                    M-21/M-22/M-29 de N-09 + M-23/M-24 de N-10 +
-                                   M-25/M-26 de N-11 + M-27/M-28 de N-12)
+                                   M-25/M-26 de N-11 + M-27/M-28 de N-12 +
+                                   M-30..M-33 de CR-6 + M-34..M-37 de CR-3 +
+                                   M-38/M-39 de CR-4 + M-40/M-41 de CR-5)
 ARTEFACTOS_CIENTIFICOS = PASS  (0 archivos científicos modificados)
 PRODUCCION       = PASS  (0 archivos de sky_claw/ modificados)
 ```
@@ -1164,6 +1346,23 @@ contrato— quedaba **sin cubrir** desde el inicio. Se corrigió: el helper ahor
 por **encabezado exacto** y se anclan **ambas** superficies. Lección: "arreglar un hermano y no al
 otro" también aplica a las superficies de un **mismo** documento; un helper que toma "la primera
 coincidencia" es una muestra disfrazada de enumeración.
+
+**Séptima lección (M-41: la prosa cita lo que el fence declara).** La batería de CR-3…CR-6 dejó
+**un** mutante vivo en la primera pasada: M-41 (borrar `asset_id = None` del **fence** de la
+fachada). El ancla buscaba `asset_id\s*=\s*None` en el **documento entero**, y la **prosa** de
+§5.3.1 cita ese mismo texto («`asset_id = None` porque `resize_normal` no recibe el `spec`») — la
+cita sostenía el ancla aunque el fence hubiera cambiado. Es la **quinta lección** otra vez, ahora
+en su forma más fina: no alcanza con excluir backticks (la cita acá está **fuera** de un bloque de
+código pero **dentro** de la prosa); hay que extraer el **fence** que declara y medir ahí. Corregido
+con `_fence_por_marca("def resize_normal(n, size)")` y `_fence_por_marca("resize_normal_diagnostic(normal, resolution")`.
+Regla general: **toda ancla de código contractual se mide sobre el fence, nunca sobre el documento**.
+
+**Octava lección (la medición amplía el hallazgo).** CR-3 y CR-4 se adjudicaron **ampliados**: en
+ambos el hecho medido excedía lo reportado. CR-3 reportaba la violación de rango; la medición mostró
+que el camino identidad viola la envolvente **entera** (forma, finitud, rango). CR-4 reportaba rutas
+abreviadas; el censo por AST mostró que la lista misma estaba **incompleta** (7, no 6) y que dos
+consumidores referencian el símbolo sin llamarlo. Aceptar un hallazgo "en su forma literal" habría
+cerrado el síntoma y dejado la causa. La medición no confirma al revisor: lo **corrige**.
 
 
 ---
@@ -1232,6 +1431,10 @@ R7_WORST_CASE_PREMISE          = CONJECTURE_NOT_FALSIFIED (P2 Codex; exige falsa
 
 F1_SHAPE_CHANNEL_SEMANTICS     = CLOSED  (envolvente estructural REJECT; V-03 H!=W sigue DEFERRED)
 F2_DEGENERATE_TRANSPORT        = CLOSED  (NormalResizeResult + jerarquía + propagación por consumidor)
+F1_ENUMERACION_POR_REGLA       = CLOSED  (cada caso estructural con su propia regla REJECT; CR-6)
+R1_CAMINO_IDENTIDAD            = CLOSED  (no-op exclusivo de admisibles; postcondición sin excepción; CR-3)
+R6_ALLOWLIST_EXACTA            = CLOSED  (7 filas exactas por AST; CR-4)
+F2_FACHADA_SIN_CONTRADICCION   = CLOSED  (§5.3.1 desambigua diagnóstico vs fachada; CR-5)
 
 D06_STATUS                     = CONTRACT_CLOSED_FAIL_CLOSED
 D07_STATUS                     = CONTRACT_CLOSED_PRESERVE_VALID_IDENTITY_NOOP
@@ -1360,7 +1563,7 @@ diferido declarado; uno se **PARTIALLY_ACCEPTED** (hecho correcto, premisa resid
 |---|---|---|---|---|
 | `4243420665` | La fachada `resize_normal` no debe descartar la señal de degeneración; debe ser fail-closed. | `P1` | **ACCEPTED** — ya resuelto por **RC-1** en `3df2bfd1` | Ver §14.3 RC-1: fachada inspecciona `res.degenerate`, lanza `DegenerateNormalError`. El hilo de Codex es **independiente y coincidente** con RC-1; misma corrección, doble confirmación. |
 | `4243420673` | La identidad de R5 debe incluir las versiones de runtime (NumPy/Pillow). | `P1` | **ACCEPTED** | N-09. `IDENTITY_TUPLE` extendida con `python_version / numpy_version / pillow_version`; la regla fail-closed rechaza **también** el mismatch de runtime. §4.1, §4.3. |
-| `4243420679` | El censo de R6 omite consumidores directos fuera del conjunto declarado (cita `h4_magnitude_probe.py:63`, `phase_a_synthetic.py:237`). | `P2` | **ACCEPTED en el hecho, reencuadrado en el alcance** | N-10. Verificado con `git grep`: los 6 invocadores existen y están **tracked**, todos en `docs/validation/` (históricos, congelados por su auditoría). El alcance productivo era correcto, pero la **frontera no estaba declarada**. Se añadió la allowlist congelada con razón por entrada (§5.1) y `ANCHOR_HAS_FROZEN_ALLOWLIST=YES` (§5.4). |
+| `4243420679` | El censo de R6 omite consumidores directos fuera del conjunto declarado (cita `h4_magnitude_probe.py:63`, `phase_a_synthetic.py:237`). | `P2` | **ACCEPTED en el hecho, reencuadrado en el alcance** | N-10. Verificado con `git grep`: los invocadores existen y están **tracked**, todos en `docs/validation/` (históricos, congelados por su auditoría). El alcance productivo era correcto, pero la **frontera no estaba declarada**. Se añadió la allowlist congelada con razón por entrada (§5.1) y `ANCHOR_HAS_FROZEN_ALLOWLIST=YES` (§5.4). **Corregido luego por CR-4/N-13**: la lista que se congeló tenía 6 filas y el censo real da 7. |
 | `4243420687` | `[-1,1]` como rango de canal contradice la tolerancia de clip de `1000.0`. | `P2` | **ACCEPTED** | N-11. Desambiguado: `RANGO_ES_PRECONDICION=NO`, `RANGO_ES_POSTCONDICION=YES`; `1000.0` tolerado por clip documentado, **no** rechazado. §3.1, §3.4. |
 | `4243420695` | El supuesto "Nyquist = peor caso" no está derivado ni citado. | `P2` | **PARTIALLY_ACCEPTED** | N-12. R7 ya estaba `DEFERRED` en su valor, así que **no** se declaraba cerrado numéricamente. Lo aceptado: la premisa pasa a `CONJECTURE_NOT_FALSIFIED` y se **exige** derivación/cita **y** falsación por barrido de ratio/fase/borde como criterio de aceptación del Slice 2 (§6.1). No se pretende derivar la cota acá. |
 
@@ -1388,13 +1591,15 @@ procedimiento; lo que falta es el **valor**, y eso ya estaba y sigue estando dif
 ### 14.5 Estado agregado de todos los hilos (al cierre de esta sesión)
 
 ```text
-REVIEW_THREADS_TOTAL              = 7
-  human_review_6113684862         = 1  (F1, F2 — resueltos)
-  coderabbit_inline               = 4  (2 RC iniciales + 2 confirmaciones "resolved")
-  codex_inline                    = 5  ... contabilidad abajo
-THREADS_ACCEPTED                  = 6  (F1, F2, RC-1, RC-2, + Codex 673/679/687)
-THREADS_PARTIALLY_ACCEPTED        = 1  (Codex 4243420695)
-THREADS_REJECTED                  = 0
+REVIEW_THREADS_TOTAL              = 11  (hilos inline sobre el PR)
+  human_review_6113684862         = 1   (F1, F2 — comentario, no hilo)
+  coderabbit_inline               = 6   (RC-1, RC-2 resueltos + CR-3, CR-4, CR-5, CR-6)
+  codex_inline                    = 5   (respondidos; pendientes de resolución formal)
+THREADS_RESOLVED_FORMAL           = 2   (RC-1, RC-2 — resueltos por los bots)
+THREADS_PENDING_RESOLUTION        = 9   (Codex x5 + CodeRabbit CR-3..CR-6)
+HALLAZGOS_ACCEPTED                = 12  (F1, F2, RC-1, RC-2, Codex 665/673/679/687, CR-3..CR-6)
+HALLAZGOS_PARTIALLY_ACCEPTED      = 1   (Codex 4243420695)
+HALLAZGOS_REJECTED                = 0
 CONVERGENCIA_RC1_CODEX_665        = YES (dos revisores independientes, mismo defecto de fachada)
 PRODUCTION_FILES_TOUCHED          = 0
 SCIENTIFIC_ARTIFACTS_TOUCHED      = 0
@@ -1427,8 +1632,49 @@ CODEX_4243420673                  = ACCEPTED (N-09)
 CODEX_4243420679                  = ACCEPTED (N-10)
 CODEX_4243420687                  = ACCEPTED (N-11)
 CODEX_4243420695                  = PARTIALLY_ACCEPTED (N-12)
+CR3_ADJUDICATION                  = ACCEPTED (ampliado)
+CR4_ADJUDICATION                  = ACCEPTED (ampliado)
+CR5_ADJUDICATION                  = ACCEPTED
+CR6_ADJUDICATION                  = ACCEPTED
 H4_CODE_IMPLEMENTATION_AUTHORIZED = NO
 M6_IMPLEMENTATION_BLOCKED         = YES
 TECH_LEAD_SCOPE_APPROVAL          = PENDING
 READY_TO_IMPLEMENT                = NO
 ```
+
+### 14.7 Revisión automática de CodeRabbit sobre `14daff53` (CR-3 … CR-6)
+
+Sobre el HEAD `14daff53`, CodeRabbit emitió **4 hilos inline** nuevos. Los cuatro se verificaron
+contra el documento y se adjudican **ACCEPTED**; **dos de ellos se amplían** porque el hecho
+medido **excede** lo reportado.
+
+| Thread | Finding (resumen) | Sev. declarada | Adjudicación | Corrección / resolución |
+|---|---|---|---|---|
+| `4243666873` | **CR-3** — el camino identidad devuelve `1000.0` sin clip, violando `RANGO_ES_POSTCONDICION=YES`. | `Major` | **ACCEPTED (ampliado)** | Medido: el camino identidad es un **bypass total**, no sólo de rango — también deja pasar `NaN`/`±Inf`, `(2,2,4)` y `(2,2)`. Cerrado en §3.4.1: la envolvente (F1) y la finitud (V-04) corren **antes** de la bifurcación; el clip declarado (N-11) se aplica **uniformemente** antes de la rama; el no-op queda **exclusivo** de entradas admisibles. La postcondición vale **sin excepción**. Se descarta `REJECT` para el fuera de rango: contradiría N-11 y sería una corrección numérica nueva. |
+| `4243666878` | **CR-4** — la allowlist usa `…/`, omite el prefijo y fusiona dos `load_asset` en una fila; el test compara substrings. | `Minor` | **ACCEPTED (ampliado)** | Censado por AST: son **7** archivos, no 6 — faltaba `phase_c2_h4_corpus.py` (hermano no correctivo). Además dos consumidores **referencian** el símbolo sin llamarlo, así que un ancla por `ast.Call` los perdería. §5.1 reescrita con 7 filas exactas (ruta repo-relativa completa, símbolo, localización); ancla por **igualdad de conjuntos** de `(ruta, símbolo)` sobre referencias `ast.Name`. |
+| `4243666883` | **CR-5** — §5.3.1 dice que `resize_normal` «no lanza por degeneración» y «devuelve un resultado tipado», contradiciendo el pseudocódigo y §5.3.4. | `Minor` | **ACCEPTED** | §5.3.1 reescrita: `resize_normal_diagnostic` devuelve `NormalResizeResult`; `resize_normal` **lanza** `DegenerateNormalError`. Se preserva `asset_id=None` en la fachada vs identidad conocida en `load_asset`. Anclas sobre **ambas** superficies (cuerpo del fence + regla de §5.3.4). |
+| `4243666891` | **CR-6** — el ancla F1 verifica `H==0` dentro de una regla combinada con `W==0`, no exige `W==0` ni `size` no-entero por separado, y acepta un recuento mínimo. | `Minor` | **ACCEPTED** | La regla combinada se **separó** en `H == 0` y `W == 0` (§3.4). El ancla ahora **enumera** cada caso estructural con su disposición `REJECT` individual y exige que el conjunto de sujetos `REJECT` sea **exactamente** el enumerado (no un `>=` de recuento). Mutantes por disposición (M-30…M-33). |
+
+```text
+CR_THREADS_TOTAL               = 4
+CR_ADJUDICATION_ACCEPTED       = 4
+CR_ADJUDICATION_AMPLIADA       = 2  (CR-3: bypass total, no sólo rango; CR-4: 7 consumidores, no 6)
+CR_REJECTED                    = 0
+IDENTITY_PATH_BYPASS_CONFIRMED = YES (medido: 1000.0 / NaN / Inf / (2,2,4) / (2,2) sin validar)
+HISTORICAL_CONSUMERS_TOTAL     = 7  (el review citaba 6; hallazgo N-13)
+```
+
+**Por qué CR-3 y CR-4 se adjudican "ampliados".** En ambos, el hecho verificado **excede** lo
+reportado, y aceptar el hallazgo en su forma literal habría dejado el defecto mayor abierto:
+
+- **CR-3** reporta la violación de **rango** (`1000.0`). Al medir, la violación es la **envolvente
+  entera**: el camino identidad no ejecuta **ningún** contrato (forma, finitud, rango). Corregir
+  sólo el rango habría dejado pasar `NaN`, `(2,2,4)` y `(2,2)` — es decir, habría arreglado el
+  síntoma que el revisor vio y no la causa.
+- **CR-4** reporta rutas abreviadas y una fila fusionada. Al censar por AST, la lista misma estaba
+  **incompleta**: 7 archivos, no 6. Corregir el formato de las seis filas habría congelado la
+  omisión del séptimo con apariencia de exactitud.
+
+En los dos casos la lección es la misma que en §10.3 (quinta y sexta lección): **el instrumento de
+medición decide**, no el texto del review. Un hallazgo aceptado "en su forma literal" puede ser un
+cierre falso.

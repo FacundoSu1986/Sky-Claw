@@ -26,7 +26,9 @@ Tests RESEARCH-ONLY: sin red; sólo leen el documento del PR.
 
 from __future__ import annotations
 
+import ast
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -82,6 +84,23 @@ _VERDICTOS_DERIVADOS = {
     "R7_WORST_CASE_PREMISE": "CONJECTURE_NOT_FALSIFIED",
     "CODEX_REJECTED": "0",
     "CODEX_PARTIALLY_ACCEPTED": "1",
+    # Adjudicación de la revisión de CodeRabbit sobre 14daff53 (§14.7). Repiten el cierre en
+    # otra superficie (§13 y §14.6): si §13 dice CLOSED y §14.7 dice otra cosa, el documento
+    # se contradice.
+    "CR3_ADJUDICATION": "ACCEPTED",
+    "CR4_ADJUDICATION": "ACCEPTED",
+    "CR5_ADJUDICATION": "ACCEPTED",
+    "CR6_ADJUDICATION": "ACCEPTED",
+    "CR_REJECTED": "0",
+    "CR_ADJUDICATION_AMPLIADA": "2",
+    # CR-3: contrato del camino identidad (§3.4.1).
+    "IDENTITY_NOOP_ONLY_FOR_ADMISSIBLE": "YES",
+    "POSTCONDITION_HAS_IDENTITY_EXCEPTION": "NO",
+    "RANGO_ES_POSTCONDICION_UNIVERSAL": "YES",
+    "IDENTITY_RANGE_POLICY": "CLIP_DECLARED",
+    # CR-4: el censo histórico es de SIETE, no seis (N-13).
+    "HISTORICAL_CONSUMERS_TOTAL": "7",
+    "ANCHOR_COMPARES_EXACT_SETS": "YES",
 }
 
 # Tokens cuya presencia activa exige ausencia de bloqueantes abiertos.
@@ -122,8 +141,13 @@ _ASSIGNMENT = re.compile(
     r"|F1_SHAPE_CHANNEL_SEMANTICS|F2_DEGENERATE_TRANSPORT"
     r"|F1_ADJUDICATION|F2_ADJUDICATION|CONDITION_9_STATUS"
     r"|GATE_REJECTS_RUNTIME_MISMATCH|HISTORICAL_CONSUMERS_ALLOWLISTED"
-    r"|ANCHOR_HAS_FROZEN_ALLOWLIST|RANGO_ES_PRECONDICION|RANGO_ES_POSTCONDICION"
-    r"|R7_WORST_CASE_PREMISE|CODEX_REJECTED|CODEX_PARTIALLY_ACCEPTED)"
+    r"|ANCHOR_HAS_FROZEN_ALLOWLIST|ANCHOR_COMPARES_EXACT_SETS"
+    r"|RANGO_ES_PRECONDICION|RANGO_ES_POSTCONDICION_UNIVERSAL|RANGO_ES_POSTCONDICION"
+    r"|R7_WORST_CASE_PREMISE|CODEX_REJECTED|CODEX_PARTIALLY_ACCEPTED"
+    r"|CR3_ADJUDICATION|CR4_ADJUDICATION|CR5_ADJUDICATION|CR6_ADJUDICATION"
+    r"|CR_REJECTED|CR_ADJUDICATION_AMPLIADA|HISTORICAL_CONSUMERS_TOTAL"
+    r"|IDENTITY_NOOP_ONLY_FOR_ADMISSIBLE|POSTCONDITION_HAS_IDENTITY_EXCEPTION"
+    r"|IDENTITY_RANGE_POLICY)"
     r"\s*[=:]\s*[\"'`]?(?P<value>[A-Z0-9][A-Z0-9_]*)"
 )
 
@@ -365,8 +389,8 @@ def test_f1_ninguna_fila_de_la_tabla_declara_deferred():
             f"la fila {entrada!r} declara DEFERRED; la envolvente estructural de §3.4 "
             f"sólo admite REJECT/TOLERATED (hallazgo F1): {regla!r}"
         )
-        assert ("REJECT" in regla) or ("TOLERATED" in regla), (
-            f"la fila {entrada!r} debe declarar REJECT o TOLERATED, tiene {regla!r}"
+        assert ("REJECT" in regla) or ("TOLERATED" in regla) or ("CLIP" in regla), (
+            f"la fila {entrada!r} debe declarar REJECT, TOLERATED o CLIP, tiene {regla!r}"
         )
 
 
@@ -383,10 +407,12 @@ def _bloque_reglas_f1() -> dict[str, str]:
     # El separador es ` -> ` (con espacios). El sujeto puede contener `-` (p. ej.
     # `shape[-1] != 3`), así que NO se puede cortar en el primer `-`.
     #
-    # Sólo se aceptan líneas con **dos espacios iniciales**: es la forma de las reglas
-    # del bloque normativo de §3.4. Así se excluyen las citas históricas de §9 (N-07) y
-    # §14 (adjudicación), que empiezan con `|` y son filas de tabla, no reglas vigentes.
-    patron = re.compile(r"^  (?P<sujeto>.+?)\s+->\s+(?P<disp>REJECT|DEFERRED|TOLERADO)\b")
+    # Sólo se aceptan líneas con **dos espacios iniciales** y sujeto que arranque en
+    # columna 3 sin espacio: es la forma de las reglas del bloque normativo de §3.4. Así se
+    # excluyen (a) las citas históricas de §9/§14, que empiezan con `|`, y (b) las líneas
+    # de otros fences con indentación de 4+ espacios (p. ej. los comentarios del pseudocódigo
+    # de §3.4.1), que de otro modo entrarían como reglas espurias.
+    patron = re.compile(r"^  (?P<sujeto>\S.*?)\s+->\s+(?P<disp>REJECT|DEFERRED|TOLERADO)\b")
     for line in lineas:
         m = patron.match(line)
         if m:
@@ -394,34 +420,57 @@ def _bloque_reglas_f1() -> dict[str, str]:
     return reglas
 
 
-def test_f1_el_bloque_normativo_de_reglas_existe():
-    """Sin las reglas normativas enumeradas, F1 no está anclado (hallazgo RC-2)."""
-    reglas = _bloque_reglas_f1()
-    assert reglas, "falta el bloque normativo de reglas `sujeto -> DISPOSICION` en §3.4"
-    assert len(reglas) >= 7, f"el bloque debe enumerar >= 7 reglas; tiene {len(reglas)}"
+# CR-6: cada caso estructural debe tener su PROPIA regla, con su disposición explícita.
+# El mapa es el conjunto **exacto** esperado: ni `H == 0` combinado con `W == 0` en una
+# sola línea, ni un recuento mínimo que toleraría perder una regla.
+_REGLAS_NORMATIVAS_ESPERADAS = {
+    "ndim != 3": "REJECT",
+    "shape[-1] != 3": "REJECT",
+    "H == 0": "REJECT",
+    "W == 0": "REJECT",
+    "NaN": "REJECT",
+    "size no-entero": "REJECT",
+    "size < 1": "REJECT",
+    "H != W": "DEFERRED",
+}
 
 
-def test_f1_cada_regla_normativa_tiene_la_disposicion_esperada():
-    """Enumera las reglas del bloque y verifica cada disposición.
+def test_f1_el_bloque_normativo_enumera_cada_caso_con_su_disposicion():
+    """CR-6: el bloque normativo se ancla por **regla enumerada**, no por recuento mínimo.
 
-    Se exige: `REJECT` para toda la envolvente estructural, y `DEFERRED` **sólo** para
-    `H != W`. Se ancla la **disposición de cada regla**, no la presencia de la palabra.
+    La versión anterior verificaba `len(reglas) >= 7` y buscaba `H == 0` dentro de una
+    regla **combinada** con `W == 0`; además no exigía `size` no-entero. Un mutante podía
+    cambiar `W == 0` o `size` no-entero a `TOLERADO` y el test seguía verde.
+
+    Acá se exige: (a) el número **exacto** de reglas (una por caso, sin combinar);
+    (b) cada caso estructural con **su propia** regla y la disposición esperada; (c) que el
+    conjunto de sujetos `REJECT` sea exactamente el enumerado; (d) exactamente una
+    `DEFERRED`, la de cuadratura.
     """
     reglas = _bloque_reglas_f1()
-
-    esperadas_reject = (
-        "ndim != 3",
-        "shape[-1] != 3",
-        "H == 0",
-        "size < 1",
+    assert reglas, "falta el bloque normativo de reglas `sujeto -> DISPOSICION` en §3.4"
+    assert len(reglas) == len(_REGLAS_NORMATIVAS_ESPERADAS), (
+        f"el bloque debe tener exactamente {len(_REGLAS_NORMATIVAS_ESPERADAS)} reglas "
+        f"(una por caso, sin combinar); tiene {len(reglas)}: {sorted(reglas)}"
     )
-    for sujeto_fragmento in esperadas_reject:
-        coincidencias = [s for s in reglas if sujeto_fragmento in s]
-        assert coincidencias, f"falta la regla normativa que mencione {sujeto_fragmento!r}"
-        for sujeto in coincidencias:
-            assert reglas[sujeto] == "REJECT", f"la regla {sujeto!r} debe ser REJECT, es {reglas[sujeto]!r}"
 
-    # La única regla diferida es la de cuadratura (V-03).
+    for sujeto, disp in _REGLAS_NORMATIVAS_ESPERADAS.items():
+        coincidencias = [s for s in reglas if sujeto in s]
+        assert len(coincidencias) == 1, (
+            f"debe haber EXACTAMENTE una regla que mencione {sujeto!r} (CR-6); hay {len(coincidencias)}: {coincidencias}"
+        )
+        assert reglas[coincidencias[0]] == disp, (
+            f"la regla {coincidencias[0]!r} debe ser {disp}, es {reglas[coincidencias[0]]!r}"
+        )
+
+    # El conjunto de sujetos REJECT debe ser exactamente el enumerado (ni más ni menos).
+    reject = sorted(s for s, d in reglas.items() if d == "REJECT")
+    esperados_reject = sorted(s for s, d in _REGLAS_NORMATIVAS_ESPERADAS.items() if d == "REJECT")
+    assert len(reject) == len(esperados_reject), (
+        f"el bloque debe tener exactamente {len(esperados_reject)} reglas REJECT; tiene {len(reject)}: {reject}"
+    )
+
+    # Y exactamente una DEFERRED, la de cuadratura (V-03).
     diferidas = [s for s, d in reglas.items() if d == "DEFERRED"]
     assert len(diferidas) == 1, f"debe haber exactamente una regla DEFERRED, hay {len(diferidas)}: {diferidas}"
     assert "H != W" in diferidas[0] or "H ≠ W" in diferidas[0], (
@@ -668,19 +717,170 @@ def test_codex_n09_el_gate_rechaza_mismatch_de_runtime():
 
 
 def _tabla_allowlist_n10() -> dict[str, str]:
-    """Extrae la allowlist histórica de §5.1: `{archivo: tratamiento}`.
+    """Extrae la allowlist histórica de §5.1: `{ruta repo-relativa: símbolo}`.
 
-    Se localiza por la fila que contiene `EXCLUIDO por diseño`, que es la marca de la
-    allowlist. Se ancla la allowlist **entera** (enumerando cada entrada), no la presencia
-    de un nombre suelto en el documento: un nombre puede sobrevivir en la prosa de §14.4
-    mientras su fila se borra de la allowlist (lección M-23).
+    La tabla tiene **cuatro** columnas (`Ruta repo-relativa | Símbolo | Localización |
+    Tratamiento`). Se localiza por su encabezado y se exige la marca `EXCLUIDO por diseño`
+    en la columna de tratamiento. Se ancla la allowlist **entera** (enumerando cada fila), no
+    la presencia de un nombre suelto: un nombre puede sobrevivir en la prosa de §14 mientras
+    su fila se borra de la allowlist (lección M-23).
     """
     entradas: dict[str, str] = {}
-    for fila in _tabla_por_encabezado("| Invocador histórico"):
-        if len(fila) >= 3 and "EXCLUIDO por diseño" in fila[2]:
-            archivo = fila[0].replace("`", "").strip()
-            entradas[archivo] = fila[1].replace("`", "").strip()
+    for fila in _tabla_por_encabezado("| Ruta repo-relativa"):
+        if len(fila) >= 4 and "EXCLUIDO por diseño" in fila[3]:
+            ruta = fila[0].replace("`", "").strip()
+            simbolo = fila[1].replace("`", "").strip()
+            entradas[ruta] = simbolo
     return entradas
+
+
+# --- CR-4 / N-13: censo exacto de consumidores por AST ---------------------------
+# El censo congelado. Se compara por IGUALDAD DE CONJUNTOS contra el censo AST real y
+# contra la allowlist del documento: agregar un consumidor (producción, histórico o test)
+# rompe el ancla hasta que se le declare tratamiento.
+_SIMBOLOS_CONSUMIDOS = ("resize_normal", "load_asset")
+
+_CENSO_PRODUCCION_ESPERADO = frozenset(
+    {
+        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal"),
+        ("sky_claw/local/native_parallax/research/run_exp_m2.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m3.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m4.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m5.py", "load_asset"),
+    }
+)
+
+# SIETE, no seis: el review citaba seis y omitía `phase_c2_h4_corpus.py` (hermano no
+# correctivo de `phase_c2_h4_corpus_corrective.py`). Hallazgo N-13.
+_ALLOWLIST_HISTORICA_ESPERADA = frozenset(
+    {
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/h4_magnitude_probe.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_a_synthetic.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c2_h4_corpus.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c_real_impact.py",
+            "load_asset",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/h4_magnitude_probe_corrective.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/phase_c_corrective.py",
+            "load_asset",
+        ),
+    }
+)
+
+_CENSO_TESTS_ESPERADO = frozenset(
+    {
+        ("tests/test_native_parallax_exp_m2.py", "resize_normal"),
+        ("tests/test_native_parallax_exp_m3.py", "load_asset"),
+    }
+)
+
+
+def _censo_ast_consumidores() -> dict[str, set[tuple[str, str]]]:
+    """Censo por AST de los consumidores de `resize_normal` / `load_asset` en .py tracked.
+
+    Enumera **referencias** (`ast.Name`), no sólo llamadas: dos consumidores históricos
+    asignan el símbolo a una variable (`resizer = ... else resize_normal`) y un ancla basada
+    en `ast.Call` los perdería — el mismo punto ciego que la lista original (N-13). Los
+    nombres en sentencias `import` son nodos `ast.alias`, no `ast.Name`, así que se excluyen
+    solos; las definiciones (`def load_asset`) también (el nombre es un atributo del
+    `FunctionDef`, no un `Name`).
+    """
+    listado = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    censo: dict[str, set[tuple[str, str]]] = {"produccion": set(), "historico": set(), "tests": set()}
+    for rel in listado.stdout.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        ruta = _REPO / rel
+        if not ruta.is_file():
+            continue
+        try:
+            arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        encontrados = {
+            nodo.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Name) and nodo.id in _SIMBOLOS_CONSUMIDOS
+        }
+        if not encontrados:
+            continue
+        if rel.startswith("sky_claw/"):
+            destino = "produccion"
+        elif rel.startswith("docs/"):
+            destino = "historico"
+        elif rel.startswith("tests/"):
+            destino = "tests"
+        else:
+            continue
+        for simbolo in encontrados:
+            censo[destino].add((rel, simbolo))
+    return censo
+
+
+def test_cr4_el_censo_ast_coincide_con_la_allowlist_del_documento():
+    """CR-4: el censo real (AST) debe ser **exactamente** la allowlist declarada.
+
+    Tres igualdades de conjuntos: (1) producción AST == censo productivo congelado;
+    (2) históricos AST == allowlist del documento == allowlist congelada; (3) tests AST ==
+    censo de tests congelado. Un consumidor nuevo en cualquiera de las tres superficies
+    rompe el ancla hasta que se le declare tratamiento. Un ancla que sólo comparara
+    substrings de nombre de archivo no detectaría ni una ruta nueva ni una fila fusionada.
+    """
+    censo = _censo_ast_consumidores()
+
+    assert censo["produccion"] == set(_CENSO_PRODUCCION_ESPERADO), (
+        "el censo productivo por AST difiere del congelado: "
+        f"nuevos={sorted(censo['produccion'] - set(_CENSO_PRODUCCION_ESPERADO))} "
+        f"faltantes={sorted(set(_CENSO_PRODUCCION_ESPERADO) - censo['produccion'])}"
+    )
+    assert censo["tests"] == set(_CENSO_TESTS_ESPERADO), (
+        "el censo de tests por AST difiere del congelado: "
+        f"nuevos={sorted(censo['tests'] - set(_CENSO_TESTS_ESPERADO))} "
+        f"faltantes={sorted(set(_CENSO_TESTS_ESPERADO) - censo['tests'])}"
+    )
+
+    allowlist_doc = _tabla_allowlist_n10()
+    assert len(allowlist_doc) == 7, (
+        f"la allowlist del documento debe tener 7 filas independientes (CR-4); tiene {len(allowlist_doc)}"
+    )
+    declarado = {(ruta, simbolo) for ruta, simbolo in allowlist_doc.items()}
+    assert declarado == set(_ALLOWLIST_HISTORICA_ESPERADA), (
+        "la allowlist del documento difiere del conjunto congelado: "
+        f"extra={sorted(declarado - set(_ALLOWLIST_HISTORICA_ESPERADA))} "
+        f"faltantes={sorted(set(_ALLOWLIST_HISTORICA_ESPERADA) - declarado)}"
+    )
+    assert censo["historico"] == set(_ALLOWLIST_HISTORICA_ESPERADA), (
+        "el censo histórico real difiere del congelado (N-13): "
+        f"nuevos={sorted(censo['historico'] - set(_ALLOWLIST_HISTORICA_ESPERADA))} "
+        f"faltantes={sorted(set(_ALLOWLIST_HISTORICA_ESPERADA) - censo['historico'])}"
+    )
+    assert len(_ALLOWLIST_HISTORICA_ESPERADA) == 7, "el censo histórico es de SIETE archivos, no seis (N-13)"
 
 
 def test_codex_n10_los_consumidores_historicos_estan_allowlistados():
@@ -690,7 +890,7 @@ def test_codex_n10_los_consumidores_historicos_estan_allowlistados():
     indistinguible de omitirlos. Se exige que cada uno figure con su razón de exclusión.
 
     Se ancla la allowlist como **tabla**: se enumera cada fila. Buscar los nombres en el
-    documento entero no alcanza — un nombre citado en §14.4 sostendría el ancla aunque su
+    documento entero no alcanza — un nombre citado en §14.7 sostendría el ancla aunque su
     fila desapareciera de la allowlist.
     """
     texto = _texto()
@@ -708,6 +908,7 @@ def test_codex_n10_los_consumidores_historicos_estan_allowlistados():
     for consumidor in (
         "h4_magnitude_probe.py",
         "phase_a_synthetic.py",
+        "phase_c2_h4_corpus.py",
         "h4_magnitude_probe_corrective.py",
         "phase_c2_h4_corpus_corrective.py",
         "phase_c_real_impact.py",
@@ -818,4 +1019,146 @@ def test_codex_los_cinco_hilos_quedan_adjudicados():
     )
     assert re.search(r"CODEX_PARTIALLY_ACCEPTED\s*[=:]\s*1", texto), (
         "el hilo N-12 es PARTIALLY_ACCEPTED; el bloque debe declararlo (no forzar ACCEPTED)"
+    )
+
+
+# --- Familia 7: CR-3 — camino identidad (rango / no-op) ---------------------------
+
+
+def test_cr3_el_camino_identidad_valida_la_envolvente():
+    """CR-3: el camino identidad no puede ser un bypass del contrato de entrada.
+
+    Medido: con `H == W == size` la implementación vigente devuelve `1000.0` sin clip,
+    `NaN`/`Inf`, `(2,2,4)` y `(2,2)` — no ejecuta **ningún** contrato. El contrato debe
+    declarar que la envolvente (F1) y la finitud (V-04) corren **antes** de la bifurcación.
+    """
+    texto = _texto()
+    for token, valor in (
+        ("IDENTITY_PATH_VALIDATES_ENVELOPE", "YES"),
+        ("IDENTITY_PATH_VALIDATES_FINITENESS", "YES"),
+        ("IDENTITY_NOOP_ONLY_FOR_ADMISSIBLE", "YES"),
+        ("IDENTITY_RANGE_POLICY", "CLIP_DECLARED"),
+    ):
+        assert re.search(rf"{token}\s*[=:]\s*{valor}", texto), f"el contrato debe declarar {token} = {valor} (CR-3)"
+
+
+def test_cr3_la_postcondicion_no_tiene_excepcion_de_identidad():
+    """CR-3: la postcondición `[-1,1]` vale en ambos caminos, sin excepción.
+
+    Se descartó explícitamente la alternativa de declarar una "excepción de identidad": una
+    postcondición con excepciones deja de ser una postcondición. Y el clip aplicado en la
+    identidad debe ser el **ya declarado** (N-11), no una corrección numérica nueva.
+    """
+    texto = _texto()
+    assert re.search(r"POSTCONDITION_HAS_IDENTITY_EXCEPTION\s*[=:]\s*NO", texto), (
+        "el contrato no puede declarar una excepción de identidad a la postcondición (CR-3)"
+    )
+    assert re.search(r"RANGO_ES_POSTCONDICION_UNIVERSAL\s*[=:]\s*YES", texto), (
+        "el contrato debe declarar RANGO_ES_POSTCONDICION_UNIVERSAL = YES (CR-3)"
+    )
+    assert re.search(r"IDENTITY_RANGE_POLICY\s*[=:]\s*CLIP_DECLARED", texto), (
+        "la identidad debe aplicar el clip ya declarado, no una corrección nueva (CR-3)"
+    )
+
+
+def test_cr3_la_tabla_de_discriminacion_cubre_ambos_caminos():
+    """CR-3: la tabla de §3.4.1 debe cubrir las clases de entrada × los dos caminos.
+
+    Se enumera cada fila: una tabla que sólo cubriera el camino resize (o que dejara la
+    celda de identidad vacía) no distinguiría la clase de defecto.
+    """
+    filas = _tabla_por_encabezado("| Clase de entrada |")
+    assert filas, "falta la tabla de discriminación de §3.4.1 (CR-3)"
+
+    for fila in filas:
+        assert len(fila) == 3, f"la tabla debe declarar identidad y resize por fila: {fila}"
+        assert fila[1].strip(), f"celda de identidad vacía: {fila}"
+        assert fila[2].strip(), f"celda de resize vacía: {fila}"
+
+    # La fila de fuera de rango debe clipear en identidad (no rechazar) — decisión de CR-3.
+    fuera = next((f for f in filas if "Fuera de rango" in f[0]), None)
+    assert fuera is not None, "falta la fila de 'fuera de rango' en la tabla de §3.4.1"
+    assert "clip" in fuera[1].lower(), (
+        f"la identidad debe clipear el fuera de rango finito, no rechazarlo (CR-3): {fuera[1]!r}"
+    )
+    assert "REJECT" not in fuera[1], (
+        f"la identidad NO debe rechazar el fuera de rango finito (contradiría N-11): {fuera[1]!r}"
+    )
+
+    # La fila de no finita debe rechazar en AMBOS caminos.
+    no_finita = next((f for f in filas if "No finita" in f[0]), None)
+    assert no_finita is not None, "falta la fila de 'no finita' en la tabla de §3.4.1"
+    assert "REJECT" in no_finita[1] and "REJECT" in no_finita[2], (
+        f"la entrada no finita debe rechazarse en ambos caminos (V-04): {no_finita}"
+    )
+
+    # La fila válida debe declarar el no-op en identidad.
+    valida = next((f for f in filas if f[0].startswith("Válida")), None)
+    assert valida is not None, "falta la fila de entrada válida"
+    assert "no-op" in valida[1].lower(), f"la identidad debe ser no-op para entrada válida: {valida[1]!r}"
+
+
+# --- Familia 8: CR-5 — la prosa de la fachada no contradice su contrato ------------
+
+
+def _seccion_531() -> str:
+    """Cuerpo de §5.3.1 (desde su encabezado hasta el siguiente `###`/`####`)."""
+    lineas = _lineas()
+    inicio = next((i for i, ln in enumerate(lineas) if ln.startswith("#### 5.3.1")), None)
+    assert inicio is not None, "falta la subsección §5.3.1"
+    fin = len(lineas)
+    for i in range(inicio + 1, len(lineas)):
+        if lineas[i].startswith("#### ") or lineas[i].startswith("### "):
+            fin = i
+            break
+    return "\n".join(lineas[inicio:fin])
+
+
+def test_cr5_la_prosa_de_la_fachada_no_contradice_el_contrato():
+    """CR-5: §5.3.1 no puede decir que `resize_normal` no lanza y devuelve un tipado.
+
+    La prosa normativa decía «`resize_normal` **no** lanza por degeneración (sigue devolviendo
+    un `NDArray`) … devuelve un resultado tipado», mientras el pseudocódigo inmediatamente
+    inferior y §5.3.4 prescriben lo contrario. Se anclan **las dos** superficies: la prosa y
+    el pseudocódigo, no sólo sus nombres.
+    """
+    seccion = _seccion_531()
+
+    # (a) La prosa no puede atribuir el "no lanza" a la fachada.
+    assert not re.search(r"`resize_normal`\s*\*\*no\*\*\s+lanza", seccion), (
+        "§5.3.1 no puede afirmar que `resize_normal` no lanza por degeneración (CR-5)"
+    )
+    # (b) La superficie de diagnóstico es la que devuelve el resultado tipado.
+    assert re.search(r"resize_normal_diagnostic.{0,220}resultado\s+tipado", seccion, re.DOTALL), (
+        "§5.3.1 debe declarar que `resize_normal_diagnostic` devuelve el resultado tipado (CR-5)"
+    )
+    # (c) La fachada lanza DegenerateNormalError.
+    assert re.search(r"`resize_normal`.{0,220}lanza\s+`?DegenerateNormalError", seccion, re.DOTALL), (
+        "§5.3.1 debe declarar que `resize_normal` lanza `DegenerateNormalError` (CR-5)"
+    )
+    # (d) La distinción de identidad se preserva: asset_id=None en fachada vs asset en
+    #     load_asset. Se ancla en el **fence** que declara cada superficie, no en el
+    #     documento entero: la prosa de §5.3.1 *cita* `asset_id = None` y esa cita no debe
+    #     sostener el ancla (lección M-41: mutar el fence sobrevivía porque la prosa lo citaba).
+    fachada = _fence_por_marca("def resize_normal(n, size)")
+    assert fachada, "falta el fence que declara la fachada `resize_normal` (CR-5)"
+    assert re.search(r"asset_id\s*=\s*None", fachada), (
+        "la fachada debe declarar asset_id=None **en su fence**, no sólo citarlo en la prosa (CR-5)"
+    )
+    carga = _fence_por_marca("resize_normal_diagnostic(normal, resolution")
+    assert carga, "falta el fence que declara `load_asset` (CR-5)"
+    assert re.search(r"asset_id\s*=\s*spec\.asset_id", carga), (
+        "load_asset debe conservar la identidad del asset **en su fence** (CR-5)"
+    )
+
+
+def test_cr_los_cuatro_hilos_quedan_adjudicados():
+    """§14.7 debe registrar los cuatro hilos de CodeRabbit (CR-3…CR-6) con su adjudicación."""
+    texto = _texto()
+    for tid in ("4243666873", "4243666878", "4243666883", "4243666891"):
+        assert tid in texto, f"el registro §14.7 debe citar el hilo de CodeRabbit {tid}"
+    assert re.search(r"CR_THREADS_TOTAL\s*[=:]\s*4", texto), "el bloque de §14.7 debe declarar CR_THREADS_TOTAL = 4"
+    assert re.search(r"CR_REJECTED\s*[=:]\s*0", texto), "ningún hallazgo de CR se rechaza en bloque"
+    assert re.search(r"CR_ADJUDICATION_AMPLIADA\s*[=:]\s*2", texto), (
+        "CR-3 y CR-4 se adjudican ampliados; el bloque debe declararlo (no forzar la forma literal)"
     )
