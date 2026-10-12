@@ -44,6 +44,14 @@ de bajo nivel; esas primitivas se anclan ADEMAS por call site, para que la lista
 no funcione como silenciador. El limite del analisis estatico esta declarado en el
 comentario de `_PRIMITIVAS_BAJO_LOCK`.
 
+**F04-IMPORT-ORIGIN -- el sufijo no autoriza.** `_tabla_de_enlaces` aceptaba
+cualquier modulo cuyo ultimo componente fuera `root_lock`, asi que un origen ajeno
+(`from unrelated.root_lock import participant_lock`) contaba como adquisicion. La
+autoridad es la RUTA COMPLETA: `sky_claw.local.frozen_runtime.root_lock` (modulo) y
+`sky_claw.local.frozen_runtime` con su submodulo explicito `root_lock`. Los alias
+legitimos y el import diferido del codigo productivo siguen aceptandose; un
+`import a.b.c` SIN alias no se registra, porque Python liga `a` y no `c`.
+
 Este modulo cubre:
 - Contrato de adquisicion (ancla por AST contra el inventario real de escritores).
 - Exclusion concurrente real (multiproceso) ejecutando los participantes.
@@ -161,6 +169,12 @@ def _escribir_rig_p3(base: pathlib.Path) -> pathlib.Path:
 #: objeto ajeno (F04): el nombre no prueba que se haya tomado EL lock.
 _ENTRYPOINTS_ADQUISICION = frozenset({"acquire_frozen_runtime_root_lock", "participant_lock"})
 
+#: Origenes AUTORIZADOS del root lock, por RUTA COMPLETA (no por sufijo). Un modulo
+#: ajeno que termine en `root_lock` (p.ej. `unrelated.root_lock`) NO habilita el
+#: lock: aceptarlo por sufijo era el falso positivo F04-IMPORT-ORIGIN.
+_MODULO_ROOT_LOCK = "sky_claw.local.frozen_runtime.root_lock"
+_PAQUETE_FROZEN_RUNTIME = "sky_claw.local.frozen_runtime"
+
 
 def _paquete() -> pathlib.Path:
     return _RAIZ_WORKTREE / "sky_claw" / "local" / "frozen_runtime"
@@ -185,13 +199,22 @@ def _nombre_llamado(nodo: ast.Call) -> str | None:
 # real de import diferido y NO se convierte en un resolvedor generico de Python) y
 # exige que el nombre llamado provenga del modulo autorizado.
 #
-# Formas legitimas reconocidas:
-#   from <...>.root_lock import participant_lock [as X]            -> X es entrypoint
-#   from <...>.root_lock import acquire_frozen_runtime_root_lock [as X]
-#   from <...> import root_lock [as X]                            -> X es el MODULO
-#   import <...>.root_lock [as X]                                 -> X es el MODULO
-# Se RECHAZAN: un `def`/`class`/asignacion homonima en el mismo cuerpo (sombra) y
-# un receptor que no proviene de un import del modulo autorizado.
+# Formas legitimas reconocidas (RUTA COMPLETA, no sufijo):
+#   from sky_claw.local.frozen_runtime.root_lock import participant_lock [as X]
+#   from sky_claw.local.frozen_runtime.root_lock import acquire_frozen_runtime_root_lock [as X]
+#   from sky_claw.local.frozen_runtime import root_lock [as X]     -> X es el MODULO
+#   import sky_claw.local.frozen_runtime.root_lock as X            -> X es el MODULO
+# Se RECHAZAN: un `def`/`class`/asignacion homonima en el mismo cuerpo (sombra), un
+# receptor que no proviene de un import autorizado, y un modulo AJENO que solo
+# comparta el sufijo `root_lock` (`unrelated.root_lock` era el falso positivo
+# F04-IMPORT-ORIGIN).
+#
+# LIMITES DECLARADOS (fail-closed: si el codigo productivo cambiara a una de estas
+# formas, el ancla da ROJO y hay que revisarla a mano, nunca verde en falso):
+#   - Los imports RELATIVOS (`from .root_lock import ...`) no se resuelven: exigiria
+#     conocer el paquete del modulo y eso ya seria un resolvedor generico.
+#   - `import a.b.c` SIN alias no se registra: en Python vincula `a` (el paquete
+#     raiz), no `c`, asi que no habilita un receptor directo `root_lock`.
 
 
 def _objetivos_asignados(nodo: ast.stmt) -> set[str]:
@@ -221,19 +244,20 @@ def _tabla_de_enlaces(cuerpo: list[ast.stmt], base: tuple[set[str], set[str]]) -
 
     for nodo in cuerpo:
         if isinstance(nodo, ast.ImportFrom):
-            # `from <...>.root_lock import participant_lock [as X]` trae el entrypoint;
-            # `from <pkg> import root_lock [as X]` trae el MODULO como submodulo.
-            modulo_es_root_lock = (nodo.module or "").split(".")[-1] == "root_lock"
+            # Se exige la RUTA COMPLETA autorizada: `from <...>.root_lock import X`
+            # trae el entrypoint; `from <paquete> import root_lock` trae el MODULO.
             for alias in nodo.names:
                 local = alias.asname or alias.name
-                if alias.name in _ENTRYPOINTS_ADQUISICION and modulo_es_root_lock:
+                if nodo.module == _MODULO_ROOT_LOCK and alias.name in _ENTRYPOINTS_ADQUISICION:
                     entrypoints.add(local)
-                elif alias.name == "root_lock":
+                elif nodo.module == _PAQUETE_FROZEN_RUNTIME and alias.name == "root_lock":
                     modulos.add(local)
         elif isinstance(nodo, ast.Import):
             for alias in nodo.names:
-                if alias.name.split(".")[-1] == "root_lock":
-                    modulos.add(alias.asname or "root_lock")
+                # `import a.b.c` SIN alias vincula `a` (el paquete raiz), no `c`: no
+                # habilita un receptor directo, asi que no se registra nada.
+                if alias.name == _MODULO_ROOT_LOCK and alias.asname:
+                    modulos.add(alias.asname)
         elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             _sombra(nodo.name)
         elif isinstance(nodo, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
@@ -517,6 +541,121 @@ def test_s2_el_censo_reconoce_alias_y_modulo_autorizado() -> None:
         """
     )
     assert "mutador_modulo" in _funciones_que_adquieren_lock(ast.parse(modulo_alias))
+
+
+def test_s2_el_censo_rechaza_un_origen_ajeno_por_sufijo() -> None:
+    """Control negativo (F04-IMPORT-ORIGIN): el sufijo `root_lock` NO autoriza.
+
+    `_tabla_de_enlaces` aceptaba cualquier modulo cuyo ultimo componente fuera
+    `root_lock`, asi que `from unrelated.root_lock import participant_lock` contaba
+    como adquisicion del FrozenRuntimeRoot lock. La ruta autorizada es COMPLETA.
+
+    El control es doble a proposito: los origenes ajenos se rechazan Y los
+    autorizados (con y sin alias) se siguen aceptando. Sin la segunda mitad, una
+    correccion vacuamente estricta pasaria el test por la razon equivocada.
+    """
+    ajenos: dict[str, tuple[str, str]] = {
+        "ImportFrom_de_modulo_ajeno": (
+            "from unrelated.root_lock import participant_lock as adquirir",
+            "adquirir(root, timeout=0.0)",
+        ),
+        "ImportFrom_de_paquete_ajeno": (
+            "from unrelated import root_lock as rl",
+            "rl.participant_lock(root, timeout=0.0)",
+        ),
+        "Import_de_modulo_ajeno": (
+            "import unrelated.root_lock as rl",
+            "rl.participant_lock(root, timeout=0.0)",
+        ),
+        "hermano_del_paquete_autorizado": (
+            "from sky_claw.local.frozen_runtime.otro import participant_lock",
+            "participant_lock(root, timeout=0.0)",
+        ),
+    }
+    for nombre, (encabezado, invocacion) in ajenos.items():
+        fuente = textwrap.dedent(
+            f"""
+            {encabezado}
+
+            def mutador(root):
+                with {invocacion} as h:
+                    h.assert_owned()
+            """
+        )
+        assert "mutador" not in _funciones_que_adquieren_lock(ast.parse(fuente)), (
+            f"{nombre}: un origen ajeno con sufijo root_lock NO debe contar como adquisicion"
+        )
+
+    autorizados: dict[str, tuple[str, str]] = {
+        "entrypoint_sin_alias": (
+            "from sky_claw.local.frozen_runtime.root_lock import participant_lock",
+            "participant_lock(root, timeout=0.0)",
+        ),
+        "entrypoint_con_alias": (
+            "from sky_claw.local.frozen_runtime.root_lock import participant_lock as adquirir",
+            "adquirir(root, timeout=0.0)",
+        ),
+        "acquire_con_alias": (
+            "from sky_claw.local.frozen_runtime.root_lock import acquire_frozen_runtime_root_lock as acq",
+            "acq(root, timeout=0.0)",
+        ),
+        "modulo_del_paquete_sin_alias": (
+            "from sky_claw.local.frozen_runtime import root_lock",
+            "root_lock.participant_lock(root, timeout=0.0)",
+        ),
+        "modulo_del_paquete_con_alias": (
+            "from sky_claw.local.frozen_runtime import root_lock as rl",
+            "rl.participant_lock(root, timeout=0.0)",
+        ),
+        "import_del_modulo_con_alias": (
+            "import sky_claw.local.frozen_runtime.root_lock as rl",
+            "rl.participant_lock(root, timeout=0.0)",
+        ),
+    }
+    for nombre, (encabezado, invocacion) in autorizados.items():
+        fuente = textwrap.dedent(
+            f"""
+            {encabezado}
+
+            def mutador(root):
+                with {invocacion} as h:
+                    h.assert_owned()
+            """
+        )
+        assert "mutador" in _funciones_que_adquieren_lock(ast.parse(fuente)), (
+            f"{nombre}: un import AUTORIZADO debe seguir contando como adquisicion"
+        )
+
+
+def test_s2_el_censo_no_registra_un_import_sin_alias() -> None:
+    """Control negativo: `import a.b.c` sin alias vincula `a`, no `c`.
+
+    En Python `import sky_claw.local.frozen_runtime.root_lock` liga `sky_claw` en el
+    ambito local, no `root_lock`. Registrarlo como si ligara `root_lock` habilitaria
+    un receptor que en la practica no existe (y enmascararia un mutador sin lock).
+    """
+    sin_alias = textwrap.dedent(
+        """
+        import sky_claw.local.frozen_runtime.root_lock
+
+        def mutador(root):
+            with root_lock.participant_lock(root, timeout=0.0) as h:
+                h.assert_owned()
+        """
+    )
+    assert "mutador" not in _funciones_que_adquieren_lock(ast.parse(sin_alias))
+
+    # Con alias SI liga el nombre local: el mismo cuerpo pasa a contar.
+    con_alias = textwrap.dedent(
+        """
+        import sky_claw.local.frozen_runtime.root_lock as root_lock
+
+        def mutador(root):
+            with root_lock.participant_lock(root, timeout=0.0) as h:
+                h.assert_owned()
+        """
+    )
+    assert "mutador" in _funciones_que_adquieren_lock(ast.parse(con_alias))
 
 
 def test_s2_el_censo_rechaza_un_receptor_homonimo() -> None:
