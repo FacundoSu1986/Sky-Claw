@@ -77,41 +77,68 @@ LECTURA R1  geometricamente_invalida := NO FINITO  O  FORMA MALFORMADA  O  L < D
 LECTURA R2  geometricamente_invalida := L != 1   (la norma no unitaria ES la invalidez)
 ```
 
-### 1.3 La falsación decisiva de R2
+### 1.3 Separación obligatoria: validez de entrada vs. longitud del intermediario
 
-**R2 no puede aplicarse al camino `resize`.** La interpolación bilineal de vectores unitarios
-produce **siempre** vectores de norma `< 1` (promedia direcciones): renormalizar *es* la
-operación del hermano, no una corrección de una entrada inválida. Si "norma ≠ 1" fuera
-invalidez, el camino `resize` no tendría ninguna entrada admisible. Además:
+Dos proposiciones **distintas** que R2 mezcla y que hay que mantener separadas:
 
-- El clip declarado de `1000.0` da `(1,1,1)`, de norma `sqrt(3) ≠ 1`. Bajo R2 habría que
-  **rechazarlo**, contradiciendo `FUERA_DE_RANGO_FINITO = CLIP, TOLERADO` (N-11, con test
-  exigido en §10.1).
-- Aplicar R2 **sólo** al camino identidad haría que el mismo array fuera tolerado por
-  `resize` y rechazado por identidad: exactamente la asimetría de hermanos que §5.3.4.7 fija
-  y que AGENTS.md identifica como la clase de defecto dominante del repo.
+| Proposición | Enunciado | ¿Universal? |
+|---|---|---|
+| **P-ENTRADA** | La normal **de entrada** ya decodificada tiene norma unitaria (lo promete §3.1: `decode_normal_image` renormalizó) | Es una **precondición de contrato**, exigible |
+| **P-INTERMEDIO** | El vector **interpolado** que produce el remuestreo tiene norma unitaria | **No** — es una propiedad del campo, no de la validez de la entrada |
 
-Bajo **R1**, en cambio, las cuatro reglas cierran sin contradicción: el vector nulo cae en
+**P-INTERMEDIO no es universal, y conviene no invocarla como si lo fuera.** La interpolación
+bilineal de un campo unitario **constante** preserva la norma exactamente (`L = 1`); la reduce
+cuando el campo **varía**, porque promedia direcciones distintas. Es decir: el intermediario
+tiene norma `1` o `< 1` según la variación local del campo, no según si la entrada era válida.
+
+Esa corrección **debilita** el argumento fácil contra R2 y hay que decirlo: no se puede
+descartar R2 diciendo "la interpolación siempre da norma `< 1`". R2 es **implementable** para el
+camino identidad — exigir norma unitaria a una normal ya decodificada es una precondición
+legítima sobre P-ENTRADA. Lo que R2 no puede hacer es aplicarse al **intermediario** del camino
+`resize`, porque ahí la norma no unitaria la **produce la operación**, no el llamador.
+
+Los costos reales de R2, medidos y no retóricos:
+
+- **El clip de N-11 necesita una decisión explícita.** El clip declarado de `1000.0` da
+  `(1,1,1)`, de norma `sqrt(3) != 1`. Bajo R2 estricto habría que rechazarlo, contradiciendo
+  `FUERA_DE_RANGO_FINITO = CLIP, TOLERADO`. La salida **existe**: tolerar el clip sólo cuando la
+  entrada **efectivamente requirió** clipping (cualquier `abs(v) > 1` pre-clip) y rechazar la
+  norma no unitaria **en rango**. Es observable desde la entrada, así que es implementable — pero
+  es una regla nueva, no una lectura de la existente.
+- **La asimetría con `resize` es semántica, no automáticamente un defecto.** §5.3.4.7 fija la
+  simetría de hermanos y AGENTS.md marca "arreglar un hermano y no al otro" como la clase de
+  defecto dominante. Pero los dos caminos **no** son simétricos en su semántica: en identidad el
+  vector no unitario es del **llamador**; en `resize` es del **algoritmo**. Que R2 sea correcto
+  depende de si el Tech Lead considera esa diferencia semántica suficiente para justificar el
+  trato distinto — y eso es exactamente la decisión pendiente, no un hecho que se pueda medir.
+
+Bajo **R1**, las cuatro reglas cierran sin contradicción: el vector nulo cae en
 `L < DEGENERATE_THRESHOLD` ⇒ `NON_EVALUABLE`; el clip se tolera y su resultado se renormaliza
 como en el hermano; y el único defecto real es que **§3.4.1 omitió la cláusula de norma en
-`ADMISIBLE(n)`** — el vacío que F01 identifica.
+`ADMISIBLE(n)`** — el vacío que F01 identifica. Pero R1 es una **enmienda propuesta**, no la
+interpretación obligatoria de V-01.
 
 ### 1.4 Matriz de decisión F01
 
 | Opción | Qué se decide | Consistencia con #717 | Efecto en la tasa de rechazo | Costo |
 |---|---|---|---|---|
 | **A — Enmienda definicional (recomendada)** | Fijar `geometricamente_invalida` con R1; `ADMISIBLE(n)` incorpora `L >= DEGENERATE_THRESHOLD` | Total: §3.2, N-11, §5.3.4.7 y §3.4.1 quedan coherentes | **Ninguno**: no se agrega ningún rechazo | Firma del Tech Lead + nota de enmienda en V-01. **Cero código** |
-| **B — Rechazo estricto (V-01 literal)** | El camino identidad rechaza toda entrada finita en rango con `abs(L-1) > TOL` | Requiere **cambiar N-11** (el clip da norma `sqrt(3)`) o introducir una excepción "vino del clip", que no es observable desde la entrada | Aumenta, **no medido** (requeriría censo de corpus: prohibido acá) | Rompe §5.3.4.7; cambio de contrato mayor |
+| **B — Rechazo estricto (V-01 literal, sobre P-ENTRADA)** | El camino identidad exige `abs(L-1) <= TOL` en la entrada ya decodificada, con carve-out explícito para el clip | **Implementable**, pero exige una **regla nueva** en N-11: tolerar el clip sólo si la entrada requirió clipping (`abs(v) > 1` pre-clip) y rechazar la norma no unitaria **en rango**. El carve-out **sí** es observable desde la entrada | Aumenta, **no medido** (requeriría censo de corpus: prohibido acá) | Cambio de contrato mayor; la asimetría con `resize` queda, y su justificación es semántica (el no unitario es del llamador, no del algoritmo) |
 | **C — `NON_EVALUABLE` para todo `L != 1` en identidad** | El camino identidad marca degenerado cualquier no unitario | Redefine D-06 (que se ancla en `L < umbral`) y contradice N-11 para el clip | Aumenta mucho | Incoherente con el hermano; **descartada** |
 
-**Recomendación técnica: A.** Es la única opción que satisface simultáneamente §3.2, N-11,
-§3.4.1 y §5.3.4.7 sin cambiar ninguna decisión `CONTRACT_CLOSED`; su costo es una
-**definición**, no una recalibración. La implementación de #723 ya es la de A.
+**Ninguna de las tres se declara "imposible".** A y B son las dos políticas viables; C se
+descarta por incoherencia con D-06 y N-11, no por imposibilidad técnica.
 
-**Si el Tech Lead elige B**, la enmienda debe ser explícita y de mayor alcance: hay que
-declarar `FUERA_DE_RANGO_FINITO = REJECT` (derogando N-11) y aceptar la asimetría de
-hermanos, o redefinir el contrato de entrada para que el clip no exista. No es una
-corrección de una línea.
+**Recomendación técnica: A**, con la salvedad de que es una **enmienda propuesta**, no la
+interpretación obligatoria de V-01. A favor: satisface §3.2, N-11, §3.4.1 y §5.3.4.7 sin
+recalibrar nada, y su costo es una **definición**. En contra: deja pasar como "no error" una
+entrada que viola P-ENTRADA (`L != 1` en rango), y ese es el riesgo que B elimina. La
+implementación de #723 ya es la de A, así que elegir A no mueve código; elegir B sí.
+
+**Si el Tech Lead elige B**, la enmienda es de mayor alcance y debe declararse como tal:
+hay que escribir la regla del carve-out del clip (tolerar sólo si la entrada requirió
+clipping) y decidir explícitamente si la asimetría con `resize` es aceptable. No es una
+corrección de una línea, pero tampoco es imposible — el carve-out es observable.
 
 ```text
 F01_CONTRACT_AMENDMENT          = PENDING_TECH_LEAD
@@ -181,6 +208,21 @@ En la banda `[5/16, 1/2)`, **15 de 16** puntos de la malla superan `q_ang`. Bús
 sobre 512 direcciones unitarias: el óptimo es siempre `u* = (0, 1, 0)`, el eje con componente
 nula en el vector limpio — la dirección que el patrón alternado **no** cancela.
 
+**Alcance de la falsación — leer con cuidado.** Lo que queda falsado es la pretensión de
+**garantía** de `5/16` bajo perturbaciones admitidas cuando no se exige independencia entre
+píxeles. Lo que **no** queda establecido:
+
+- Que `L = 1/2` sea el peor caso sobre **todas** las perturbaciones permitidas por
+  `abs(eps_c) <= q/2` con renormalización. La cota de magnitud agregada antes de modelar la
+  renormalización (`||eps|| <= (q/2) * sqrt(3)`) no está traducida a una cota de error angular.
+  La relación entre `delta_theta`, la norma filtrada y la **correlación** entre píxeles es
+  justamente lo que falta especificar.
+- Que el adversario coherente sea alcanzable por **todo** campo admitido: se construye sobre la
+  familia Nyquist, donde el eje `(0,1,0)` tiene componente nula en el vector limpio.
+- Nada sobre la distribución de assets reales: todo es sintético y sin corpus.
+
+Por eso la conclusión es "el umbral no es una garantía", **no** "el umbral correcto es `1/2`".
+
 ### 2.4 Falsación del adversario que decía cubrir el peor caso
 
 `_cruce_peor_caso_dirigido` (implementación previa de este PR) devolvía `0.0200` en los
@@ -209,8 +251,14 @@ adversario discriminante. Es una corrección de **evidencia**, no del umbral.
 | Opción | Qué se decide | Garantía que queda declarada | Efecto en la tasa de rechazo (medido, sintético) | Riesgo |
 |---|---|---|---|---|
 | **1 — Conservar `5/16` y declarar el criterio RMS** | El criterio de aceptación (§17.8 / §6.1.3) es la **amplificación RMS**; el contrato **no** promete cota worst-case | Estadística: `delta_theta_rms` cruza `q_ang` en `0.0925` (k=2) | La actual | La banda `[5/16, 1/2)` se publica con error de hasta `1.60x q_ang`. Requiere firma explícita del riesgo |
-| **2 — Subir el umbral a `1/2`** | El criterio pasa a ser el peor caso estructural medido | Worst-case sobre la celda declarada | **0.0000 %** en superficie 1/f (pendientes 0–2.5, 1024→512, 12 corridas). Pero `99.61 %` en un patrón periódico p=4 y `95.65 %` en ruido blanco | Rechaza assets estructurados hoy aceptados. No es "gratis" |
-| **3 — Conservar `5/16` y añadir un estado intermedio `LOW_CONFIDENCE` para `[5/16, 1/2)`** | No se rechaza nada; la incertidumbre se **propaga** al consumidor | Explícita y honesta en ambos regímenes | **Ninguno** | Cambia la máquina de estados de §3.2 (hoy `EVALUABLE` / `NON_EVALUABLE`) y exige decisión de consumo en M6 |
+| **2 — Subir el umbral a `1/2`** | Cubre el adversario coherente medido | **Parcial, y hay que decirlo**: cubre la familia coherente de magnitud `q/2` por canal en un eje perpendicular, **no** todas las perturbaciones admitidas por `abs(eps_c) <= q/2` con renormalización. Acotar esa familia exige una cota verificable que este slice **no** aporta | **0.0000 %** en superficie 1/f (pendientes 0–2.5, 1024→512, 12 corridas). Pero `99.61 %` en un patrón periódico p=4 y `95.65 %` en ruido blanco | Rechaza assets estructurados hoy aceptados. No es "gratis", y **no** cierra R7 por sí sola |
+| **3 — Conservar `5/16` y añadir un estado intermedio `LOW_CONFIDENCE` para `[5/16, 1/2)`** | No se rechaza nada; la incertidumbre se **propaga** al consumidor | Explícita y honesta en ambos regímenes, y **no** pretende ser worst-case | **Ninguno** | Cambia la máquina de estados de §3.2 (hoy `EVALUABLE` / `NON_EVALUABLE`) y exige decisión de consumo en M6 |
+
+**Alcance de la evidencia de tasa de rechazo.** Las fracciones de la tabla siguiente son de las
+**familias sintéticas ensayadas** (Nyquist, periódicos, ruido blanco, superficies 1/f
+generadas), **no** de la distribución de assets reales: sin corpus (prohibido en este slice) no
+se puede afirmar nada sobre ella. En particular, `0.0000 %` en 1/f significa "en estas 12
+corridas sintéticas", no "en el corpus".
 
 Evidencia de tasa de rechazo (contenido **sintético**, sin corpus), fracción de píxeles bajo
 cada umbral a 1024→512:
@@ -231,13 +279,15 @@ banda es densa, pero ahí la dirección **tampoco** es confiable: rechazar es lo
 (p. ej. texturas con motivo regular), que este slice **no** puede cuantificar sin corpus.
 
 **Recomendación técnica.** No hay base medida para `5/16` como garantía: `R7_NUMERIC_DERIVATION`
-debe **seguir `BLOCKED`**. La opción con mejor relación riesgo/costo es **2** —subir el umbral
-al cruce worst-case medido— porque su costo en contenido suave es nulo y su costo en contenido
-estructurado es *rechazar lo que efectivamente no es confiable*; pero la decisión final es del
-Tech Lead, y si se prefiere preservar cobertura, **3** es preferible a **1** porque no oculta
-la incertidumbre. La opción **1** sólo es defendible con una firma explícita que acepte el
-riesgo residual y **cambie el criterio de aceptación** de §17.8 de "garantía" a "heurística
-RMS declarada".
+debe **seguir `BLOCKED`**. Entre las tres, la que más reduce el error publicado es **2** —el
+cruce del adversario coherente medido— pero **2 no cierra R7**: cubre una familia de
+perturbación, no todas las admitidas por `abs(eps_c) <= q/2`. Lo que sí cierra el bloqueante es
+una **especificación de fiabilidad explícita** (determinista con cota verificable, o estadística
+aprobada) junto con el **dominio de resize soportado**; sin eso, cualquier valor es una
+convención. Si se prefiere preservar cobertura, **3** es preferible a **1** porque no oculta la
+incertidumbre. La opción **1** sólo es defendible con una firma explícita que acepte el riesgo
+residual y **cambie el criterio de aceptación** de §17.8 de "garantía" a "heurística RMS
+declarada".
 
 ```text
 R7_NUMERIC_DERIVATION       = BLOCKED          (SIN CAMBIO — no autodeclarar PASS)
@@ -258,7 +308,7 @@ Todos son correcciones de **evidencia** o de **documentación**. Ninguno cambia
 
 | Archivo | Cambio | Naturaleza |
 |---|---|---|
-| `tests/test_native_parallax_h4_resize_normal.py` | Retira el adversario vacuo y añade uno discriminante (`_cruce_peor_caso_coherente`), más el ancla de la retiración | Evidencia |
+| `tests/test_native_parallax_h4_resize_normal.py` | Retira el adversario vacuo y añade uno discriminante (`_delta_theta_peor_caso_coherente` + `_cruce_peor_caso_coherente`), su **control negativo** y el ancla de la retiración | Evidencia |
 | `sky_claw/.../authored_dataset.py` | Tokens nuevos `R7_WORST_CASE_CROSSING = 1/2` y `F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD`; retira la afirmación "también bajo el peor caso dirigido" | Comentario |
 | `docs/design/research/native-parallax/h4-resize-normal-f01-f02-adjudication.md` | §3.1 retira el 9.º ancla; §3.2 retira la afirmación de producción; §2.6 registra el token nuevo | Documentación |
 
@@ -268,6 +318,10 @@ Anclas ejecutables nuevas:
 |---|---|
 | `test_g_el_adversario_alineado_con_el_patron_mide_cero` | reintroducir el adversario vacuo como evidencia rompe la aserción |
 | `test_g_el_peor_caso_coherente_cruza_en_un_medio_y_supera_el_umbral` | el cruce del peor caso estructural es `1/2` y supera el umbral; el token declarado en producción coincide con lo medido |
+| `test_g_control_negativo_del_peor_caso_coherente_discrimina` | **control negativo versionado**: en `L = 0.45` el criterio FALLA y en `L = 0.55` SE CUMPLE, con la misma medición. Una métrica constante (siempre `> q_ang`, o siempre `0`) cae |
+
+**El contraejemplo vive en tests versionados, no en `scratch/`.** Los probes de §3.3 son
+reproducción auxiliar; las anclas que el gate ejecuta son las tres filas de arriba.
 
 ### 3.3 Reproducción
 
@@ -300,6 +354,7 @@ Barrido de mutación ejecutado (4/4 muertos, restauración verificada por `md5` 
 | M-02 | dirección del adversario coherente `d[...,1]` → `d[...,0]` | muerto |
 | M-03 | adversario de la retiración vuelve a medir `!= 0` | muerto |
 | M-04 | `DEGENERATE_THRESHOLD = 5/16` → `4/16` | muerto (`3 failed, 68 passed`) |
+| M-05 | control negativo: métrica constante (devolver `q_ang + 1`) | muerto |
 
 Checks del slice: `pytest` de las tres suites afectadas **148 passed**; `ruff check sky_claw/ tests/`
 y `ruff format --check sky_claw/ tests/` limpios; `mypy sky_claw/` sin issues (364 archivos).
@@ -329,13 +384,17 @@ SAFE_TO_MERGE               = NO
 
 ## 5. Recomendación al Tech Lead
 
-1. **F01** — adjudicar la definición de "geométricamente inválida" (opción **A**
-   recomendada). Es una definición, no una recalibración: cero código, cero cambio de tasa de
-   rechazo. Si se elige **B**, la enmienda es de mayor alcance (deroga N-11) y debe declararse
-   como tal.
-2. **F02** — decidir entre conservar `5/16` con el criterio **RMS declarado y firmado**
-   (opción 1), subir el umbral a `1/2` (opción **2**, recomendada por costo medido), o añadir
-   un estado `LOW_CONFIDENCE` (opción 3, sin costo de rechazo). `R7_NUMERIC_DERIVATION` debe
-   seguir `BLOCKED` hasta que exista una de esas firmas.
+1. **F01** — adjudicar **dos políticas viables**, ninguna "imposible". **A** (recomendada): fijar
+   `geometricamente_invalida` con R1 y completar `ADMISIBLE(n)` con la cláusula de norma; cero
+   código, cero cambio de tasa de rechazo, pero deja pasar como "no error" una violación de
+   P-ENTRADA. **B**: exigir norma unitaria a la normal ya decodificada, con carve-out explícito
+   del clip; elimina ese riesgo pero requiere una regla nueva en N-11 y aceptar la asimetría con
+   `resize`, cuya justificación es semántica. **C** queda descartada por incoherencia con D-06.
+2. **F02** — lo que cierra el bloqueante **no es un valor de umbral** sino una **especificación de
+   fiabilidad**: determinista con cota verificable, o estadística aprobada, **más el dominio de
+   resize soportado**. Sobre esa base, elegir entre conservar `5/16` con el criterio **RMS
+   declarado y firmado** (opción 1), subir el umbral a `1/2` (opción 2, cubre el adversario
+   coherente pero **no** todas las perturbaciones admitidas), o añadir `LOW_CONFIDENCE`
+   (opción 3, sin costo de rechazo). `R7_NUMERIC_DERIVATION` sigue `BLOCKED` hasta esa firma.
 3. Recién entonces: pasar #723 a Ready for Review para que Qodo/CodeRabbit revisen sobre HEAD
    exacto, adjudicar findings y revalidar CI.

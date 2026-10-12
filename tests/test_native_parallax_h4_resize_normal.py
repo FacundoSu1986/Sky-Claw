@@ -1126,27 +1126,37 @@ def _delta_theta_adversario_alineado(size_in: int, size_out: int, largo: float) 
     return peor
 
 
-def _cruce_peor_caso_coherente(size_in: int, size_out: int) -> float:
-    """Cruce bajo el peor caso **estructural**: perturbación COHERENTE perpendicular.
+def _delta_theta_peor_caso_coherente(size_in: int, size_out: int, largo: float) -> float:
+    """`delta_theta` máximo bajo la perturbación COHERENTE perpendicular, en un `L` dado.
 
     Los pesos del kernel bilineal son positivos y suman 1, así que una perturbación
     COHERENTE (la misma en TODOS los píxeles) no se promedia: **suma**. Eligiendo la
-    dirección perpendicular al vector interpolado, la amplificación es `q/2` y
-    `delta_theta(L) = atan((q/2)/L)`, que cruza `q_ang = q` en `L = 1/2` exacto, con
-    independencia del factor de reducción.
+    dirección perpendicular al vector interpolado, `dv = (q/2) * u` y
+    `delta_theta(L) = atan((q/2)/L)`, con independencia del factor de reducción.
+
+    Alcance declarado: esto es el peor caso de **esta familia de perturbación** (coherente
+    y de magnitud `q/2` por canal, en un eje sin componente en el vector interpolado). NO
+    es el peor caso sobre TODAS las perturbaciones admitidas por `|eps_c| <= q/2` con
+    renormalización: acotar esa familia exige una cota verificable que este slice no
+    aporta.
+    """
+    base = _familia_f02(size_in, largo)
+    v_limpio = _oraculo(base, size_out)
+    d = np.zeros_like(base)
+    d[..., 1] = _Q8 / 2
+    pert = base + d
+    pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
+    return float(_delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2].max())
+
+
+def _cruce_peor_caso_coherente(size_in: int, size_out: int) -> float:
+    """Cruce bajo el peor caso **estructural**: perturbación COHERENTE perpendicular.
 
     Devuelve `nan` si el criterio nunca se cumple — mismo contrato que `_cruce_rms`, y por
     la misma razón: un centinela optimista haría pasar la aserción sin medir nada.
     """
     for largo in np.linspace(0.02, 0.95, 94):
-        base = _familia_f02(size_in, largo)
-        v_limpio = _oraculo(base, size_out)
-        d = np.zeros_like(base)
-        d[..., 1] = _Q8 / 2
-        pert = base + d
-        pert = pert / np.linalg.norm(pert, axis=-1, keepdims=True)
-        dt = _delta_theta(v_limpio, _oraculo(pert, size_out))[2:-2, 2:-2]
-        if float(dt.max()) <= _Q8:
+        if _delta_theta_peor_caso_coherente(size_in, size_out, float(largo)) <= _Q8:
             return float(largo)
     return float("nan")
 
@@ -1259,6 +1269,35 @@ def test_g_el_peor_caso_coherente_cruza_en_un_medio_y_supera_el_umbral() -> None
         "la producción debe declarar el cruce del peor caso bajo su propio token, sin "
         "reescribir `R7_WORST_CASE_PREMISE` (gate #717 §6.1, FROZEN)"
     )
+
+
+def test_g_control_negativo_del_peor_caso_coherente_discrimina() -> None:
+    """Control negativo del contraejemplo coherente: la medición **discrimina**.
+
+    Un contraejemplo sólo vale si el instrumento distingue los dos lados del criterio. Acá
+    se exige que, con la MISMA medición y el MISMO adversario:
+
+      - `L` por debajo del cruce (0.45)  -> `delta_theta > q_ang`  (el criterio FALLA)
+      - `L` por encima del cruce (0.55)  -> `delta_theta <= q_ang` (el criterio SE CUMPLE)
+
+    Si la métrica devolviera un valor constante (p. ej. siempre `> q_ang`, o siempre `0`),
+    una de las dos aserciones cae. Es el mismo patrón que `_cruce_rms` exige en
+    `test_g_el_criterio_se_sostiene_en_toda_la_cola_y_discrimina`: sin esto, el
+    contraejemplo no probaría nada.
+    """
+    for k in _FACTORES_SOPORTADOS:
+        n_out = _TAMANO_F02 // k
+        abajo = _delta_theta_peor_caso_coherente(_TAMANO_F02, n_out, 0.45)
+        arriba = _delta_theta_peor_caso_coherente(_TAMANO_F02, n_out, 0.55)
+        assert abajo > _Q8, (
+            f"k={k}: en L=0.45 el criterio NO falla ({abajo:.3e} <= q={_Q8:.3e}); el "
+            "contraejemplo no discriminaría y el cruce declarado no estaría medido"
+        )
+        assert arriba <= _Q8, (
+            f"k={k}: en L=0.55 el criterio NO se cumple ({arriba:.3e} > q={_Q8:.3e}); la "
+            "métrica no distingue los dos lados del cruce"
+        )
+        assert abajo > arriba, f"k={k}: delta_theta debe decrecer con L ({abajo:.3e} vs {arriba:.3e})"
 
 
 def test_g_la_produccion_declara_el_estado_de_la_derivacion() -> None:
