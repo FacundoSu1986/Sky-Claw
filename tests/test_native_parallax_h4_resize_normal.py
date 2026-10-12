@@ -1,0 +1,800 @@
+"""H4 `resize_normal` — corrección float fail-closed (Slice 2, issue #721).
+
+Familias A–F del preflight `docs/design/research/native-parallax/h4-resize-normal-preflight.md`
+§8 y del contrato `h4-resize-normal-authorization-gate.md` §§3.4/3.4.1/5.3/5.4/6.1.
+
+  A — Error de cuantización (RED obligatorio contra el histórico)
+  B — Contrato geométrico, envolvente estructural y camino identidad
+  C — Interpolación contra un oráculo INDEPENDIENTE (no otra llamada a Pillow)
+  D — Integración (`load_asset`, `resize_height`, resolución primaria)
+  E — Ancla de enumeración por AST (censo + orden de handlers + allowlist histórica)
+  F — Propagación fail-closed en M2/M3/M4/M5
+
+**Por qué los símbolos nuevos se acceden como `ad.X`.** El contrato #717 introduce
+`DEGENERATE_THRESHOLD`, `NormalResizeResult`, `resize_normal_diagnostic`,
+`DegenerateNormalError` e `InvalidNormalShapeError`, que **no existen** en el baseline
+histórico. Con `from ... import X` el módulo de tests no colecciona y el rojo se pierde en un
+error de importación. Accediendo por atributo, cada test **falla en su propia aserción** contra
+el baseline (evidencia RED por test) y pasa contra la implementación corregida.
+
+Sin red, sin corpus, sin escritura. Sólo campos sintéticos en memoria.
+"""
+
+from __future__ import annotations
+
+import ast
+import math
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pytest
+from numpy.typing import NDArray
+
+from sky_claw.local.native_parallax.research import authored_dataset as ad
+from sky_claw.local.native_parallax.research.authored_dataset import (
+    DatasetInvalidError,
+    resize_height,
+    resize_normal,
+)
+
+_REPO = Path(__file__).resolve().parents[1]
+_PRODUCCION = _REPO / "sky_claw" / "local" / "native_parallax" / "research"
+
+# ---------------------------------------------------------------------------
+# Constantes del contrato
+# ---------------------------------------------------------------------------
+
+# Cuanto de la retícula del decodificador 8-bit (`decode_normal_image`: rgb/255*2-1).
+Q8 = 2.0 / 255.0
+# Tolerancia de ida/vuelta float32 -> float64 (el pipeline pasa por modo F).
+TOL_F32 = 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Oráculo INDEPENDIENTE: reducción separable bilineal en NumPy float64
+# ---------------------------------------------------------------------------
+def _coeficientes(n_in: int, n_out: int) -> list[tuple[int, NDArray[np.float64]]]:
+    """Coeficientes por píxel de salida del filtro triangular separado.
+
+    Modelo derivado de la respuesta a impulsos del filtro (validado contra él en
+    `test_c_el_oraculo_independiente_coincide_con_el_resizer`):
+
+        centro      = (i + 0.5) * escala - 0.5
+        filterscale = max(1, escala)
+        w(x)        = max(0, 1 - |x - centro| / filterscale), normalizado
+    """
+    escala = n_in / n_out
+    filterscale = max(1.0, escala)
+    filas: list[tuple[int, NDArray[np.float64]]] = []
+    for i in range(n_out):
+        centro = (i + 0.5) * escala - 0.5
+        x0 = max(0, math.floor(centro - filterscale + 0.5))
+        x1 = min(n_in, math.ceil(centro + filterscale + 0.5))
+        xs = np.arange(x0, x1)
+        w = np.maximum(0.0, 1.0 - np.abs(xs - centro) / filterscale)
+        filas.append((x0, w / w.sum()))
+    return filas
+
+
+def _eje(a: NDArray[np.float64], n_out: int, eje: int) -> NDArray[np.float64]:
+    b = np.moveaxis(a, eje, 0)
+    filas = _coeficientes(b.shape[0], n_out)
+    out = np.zeros((n_out,) + b.shape[1:], dtype=np.float64)
+    for i, (x0, w) in enumerate(filas):
+        out[i] = np.tensordot(w, b[x0 : x0 + len(w)], axes=(0, 0))
+    return np.moveaxis(out, 0, eje)
+
+
+def _oraculo(n: NDArray[np.float64], size: int) -> NDArray[np.float64]:
+    """Reducción separable float64 — NO llama a Pillow."""
+    return _eje(_eje(np.asarray(n, dtype=np.float64), size, 0), size, 1)
+
+
+# ---------------------------------------------------------------------------
+# Campos sintéticos
+# ---------------------------------------------------------------------------
+def _unitaria(v: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.asarray(v / np.linalg.norm(v, axis=-1, keepdims=True), dtype=np.float64)
+
+
+def _normal_plana(size: int) -> NDArray[np.float64]:
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 2] = 1.0
+    return n
+
+
+def _normal_sub_lsb(size: int) -> NDArray[np.float64]:
+    """Componente `1/(4*255)`: por debajo del LSB de la retícula uint8 del histórico."""
+    nx = 1.0 / (4 * 255)
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 0] = nx
+    n[..., 2] = math.sqrt(1.0 - nx * nx)
+    return n
+
+
+def _normal_simetrica(size: int) -> NDArray[np.float64]:
+    x = np.arange(size) / size
+    xx, yy = np.meshgrid(x, x, indexing="xy")
+    nx = 0.5 * np.sin(2 * np.pi * 2 * xx)
+    ny = 0.5 * np.cos(2 * np.pi * 3 * yy)
+    nz = np.sqrt(np.maximum(1.0 - nx**2 - ny**2, 0.0))
+    return _unitaria(np.stack([nx, ny, nz], axis=-1))
+
+
+def _normal_nyquist(size: int) -> NDArray[np.float64]:
+    """Normales unitarias `(+-1, 0, 0)` alternadas: cancelación exacta a factor 2."""
+    s = np.where(np.arange(size) % 2 == 0, 1.0, -1.0)
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 0] = s[None, :]
+    return n
+
+
+def _normal_por_L(size: int, L: float) -> NDArray[np.float64]:
+    """Campo unitario cuyo vector interpolado (factor 2) tiene norma `L` en el interior.
+
+    `n(i,j) = (sin(theta)*s(i), 0, cos(theta))` con `s` alternada. El kernel 1-D a
+    factor 2 suma cero sobre `s`, así que `v = (0, 0, cos(theta))` y `L = cos(theta)`
+    en el interior. En el borde el kernel se recorta y `L` sube — el test lo tiene en
+    cuenta: basta UN píxel por debajo del umbral para declarar el campo degenerado.
+    """
+    theta = math.acos(L)
+    s = np.where(np.arange(size) % 2 == 0, 1.0, -1.0)
+    n = np.zeros((size, size, 3), dtype=np.float64)
+    n[..., 0] = (math.sin(theta) * s)[None, :]
+    n[..., 2] = math.cos(theta)
+    return n
+
+
+# ===========================================================================
+# Familia A — error de cuantización (RED obligatorio contra el histórico)
+# ===========================================================================
+def test_a_normal_plana_no_reintroduce_el_sesgo_xy() -> None:
+    """El histórico sesga `mean(nx) = mean(ny) = -0.5 LSB` (medido -0.0039215)."""
+    out = resize_normal(_normal_plana(16), 8)
+    assert abs(float(out[..., 0].mean())) < TOL_F32, f"sesgo residual en nx: {out[..., 0].mean()}"
+    assert abs(float(out[..., 1].mean())) < TOL_F32, f"sesgo residual en ny: {out[..., 1].mean()}"
+    np.testing.assert_allclose(out[..., 2], 1.0, atol=TOL_F32)
+
+
+def test_a_componente_sub_lsb_conserva_el_signo() -> None:
+    """`1/(4*255)` es sub-LSB: el histórico la trunca a byte 127 y le invierte el signo."""
+    n = _normal_sub_lsb(16)
+    out = resize_normal(n, 8)
+    assert float(out[0, 0, 0]) > 0.0, f"signo invertido: {out[0, 0, 0]}"
+    np.testing.assert_allclose(out[..., 0], 1.0 / (4 * 255), atol=TOL_F32)
+
+
+def test_a_campo_simetrico_no_tiene_sesgo() -> None:
+    """Un campo con simetría exacta debe promediar 0 en ambos canales tangenciales."""
+    out = resize_normal(_normal_simetrica(64), 32)
+    assert abs(float(out[..., 0].mean())) < 1e-5, f"sesgo nx: {out[..., 0].mean()}"
+    assert abs(float(out[..., 1].mean())) < 1e-5, f"sesgo ny: {out[..., 1].mean()}"
+
+
+def test_a_campo_constante_sobrevive_al_redondeo_float32() -> None:
+    """Un campo constante no debe moverse más que el redondeo de ida/vuelta float32."""
+    n = _normal_plana(32)
+    out = resize_normal(n, 16)
+    assert float(np.abs(out - n[0, 0]).max()) < TOL_F32, "el pipeline desplazó un campo constante"
+
+
+def test_a_no_hay_reticula_uint8_intermedia() -> None:
+    """Ninguna salida puede caer en la retícula `(k-127.5)/127.5` del camino uint8.
+
+    Un valor intermedio de esa retícula (p. ej. `-1/255`) delata cuantización. Se
+    elige un campo constante con una componente que NO pertenece a la retícula.
+    """
+    valor = 0.37  # no pertenece a {(k-127.5)/127.5}
+    assert min(abs(valor - (k - 127.5) / 127.5) for k in range(256)) > 1e-3
+    n = _unitaria(np.array([[[valor, 0.0, 1.0]] * 16] * 16, dtype=np.float64))
+    out = resize_normal(n, 8)
+    assert float(np.abs(out - n[0, 0]).max()) < TOL_F32, "la salida cayó en la retícula uint8"
+
+
+# ===========================================================================
+# Familia B — contrato geométrico, envolvente y camino identidad
+# ===========================================================================
+def test_b_norma_unitaria_bajo_tolerancia_derivada() -> None:
+    out = resize_normal(_normal_simetrica(64), 32)
+    normas = np.linalg.norm(out, axis=-1)
+    assert float(np.abs(normas - 1.0).max()) < TOL_F32
+
+
+def test_b_degenerado_lanza_degenerate_normal_error() -> None:
+    """Cancelación exacta: la fachada NO puede devolver el array en silencio (RC-1)."""
+    with pytest.raises(ad.DegenerateNormalError):
+        resize_normal(_normal_nyquist(128), 64)
+
+
+def test_b_degenerado_reporta_censo_total_y_umbral() -> None:
+    with pytest.raises(ad.DegenerateNormalError) as exc:
+        resize_normal(_normal_nyquist(128), 64)
+    err = exc.value
+    assert err.degenerate_count > 0
+    assert err.total_pixels == 64 * 64
+    assert err.threshold == ad.DEGENERATE_THRESHOLD
+    assert err.fraction == pytest.approx(err.degenerate_count / err.total_pixels)
+    assert err.asset_id is None  # la fachada no conoce el asset: degradación declarada
+
+
+def test_b_degenerado_no_se_reemplaza_por_un_vector_inventado() -> None:
+    """D-06: prohibido sustituir por `(0,0,1)`, devolver el nulo como válido, o inventar."""
+    n = _normal_nyquist(64)
+    diag = ad.resize_normal_diagnostic(n, 32)
+    assert diag.degenerate is True
+    # El array crudo puede contener el nulo; lo que NO puede es publicarse como normal.
+    with pytest.raises(ad.DegenerateNormalError):
+        resize_normal(n, 32)
+
+
+def test_b_casi_nulo_bajo_el_umbral_es_non_evaluable() -> None:
+    """Falsación, lado A: apenas por debajo del umbral -> NON_EVALUABLE."""
+    L = ad.DEGENERATE_THRESHOLD * 0.96
+    diag = ad.resize_normal_diagnostic(_normal_por_L(128, L), 64)
+    assert diag.degenerate is True, f"L objetivo {L} no fue detectado como degenerado"
+    assert diag.degenerate_count >= 1
+
+
+def test_b_justo_sobre_el_umbral_es_evaluable() -> None:
+    """Falsación, lado B: apenas por encima del umbral -> evaluable y unitario."""
+    L = ad.DEGENERATE_THRESHOLD * 1.02
+    n = _normal_por_L(128, L)
+    diag = ad.resize_normal_diagnostic(n, 64)
+    assert diag.degenerate is False, f"L objetivo {L} fue rechazado"
+    assert diag.degenerate_count == 0
+    assert float(np.abs(np.linalg.norm(diag.array, axis=-1) - 1.0).max()) < TOL_F32
+
+
+def test_b_el_umbral_reportado_es_el_usado() -> None:
+    diag = ad.resize_normal_diagnostic(_normal_plana(32), 16)
+    assert diag.threshold == ad.DEGENERATE_THRESHOLD
+
+
+def test_b_camino_identidad_preserva_el_noop() -> None:
+    """D-07: `H == W == size` sobre entrada admisible -> sin interpolar ni renormalizar."""
+    n = _normal_simetrica(32)
+    out = resize_normal(n, 32)
+    np.testing.assert_array_equal(out, n)
+
+
+def test_b_identidad_fuera_de_rango_clipea_no_devuelve_crudo() -> None:
+    """§3.4.1: `RANGO_ES_POSTCONDICION` vale también en el camino identidad."""
+    n = np.full((4, 4, 3), 1000.0, dtype=np.float64)
+    out = resize_normal(n, 4)
+    assert float(out.max()) == 1.0
+    assert float(out.min()) == 1.0
+
+
+def test_b_identidad_no_finita_rechaza() -> None:
+    for valor in (np.nan, np.inf, -np.inf):
+        n = _normal_plana(4)
+        n[0, 0, 0] = valor
+        with pytest.raises(ad.InvalidNormalShapeError):
+            resize_normal(n, 4)
+
+
+@pytest.mark.parametrize("forma", [(4, 4, 4), (4, 4, 2), (4, 4, 1), (4, 4, 0), (4, 4), (4, 4, 3, 1)])
+def test_b_identidad_forma_invalida_rechaza(forma: tuple[int, ...]) -> None:
+    """F1: `ndim != 3` / `shape[-1] != 3` se rechazan; no se difieren por V-03."""
+    n = np.zeros(forma, dtype=np.float64)
+    with pytest.raises(ad.InvalidNormalShapeError):
+        resize_normal(n, forma[0] if len(forma) > 1 else 4)
+
+
+def test_b_identidad_dimension_vacia_rechaza() -> None:
+    for forma in ((0, 4, 3), (4, 0, 3)):
+        with pytest.raises(ad.InvalidNormalShapeError):
+            resize_normal(np.zeros(forma, dtype=np.float64), 4)
+
+
+@pytest.mark.parametrize("size", [0, -1, -64, 2.5, "4", None, True])
+def test_b_size_invalido_rechaza(size: object) -> None:
+    with pytest.raises(ad.InvalidNormalShapeError):
+        resize_normal(_normal_plana(8), size)  # type: ignore[arg-type]
+
+
+def test_b_forma_malformada_no_es_degeneracion() -> None:
+    """F1 y D-06 son señales distintas: una forma inválida no es una degeneración."""
+    with pytest.raises(ad.InvalidNormalShapeError) as exc:
+        resize_normal(np.zeros((4, 4, 2), dtype=np.float64), 4)
+    assert not isinstance(exc.value, ad.DegenerateNormalError)
+
+
+def test_b_sin_nan_inf_publicados() -> None:
+    n = _normal_plana(32)
+    n[3, 3, 1] = np.nan
+    with pytest.raises(ad.InvalidNormalShapeError):
+        resize_normal(n, 16)
+
+
+def test_b_fuera_de_rango_finito_es_clip_no_rechazo() -> None:
+    """N-11: `[-1,1]` es postcondición. Un valor finito fuera de rango se clipea."""
+    n = _normal_plana(16)
+    n[..., 0] = 1000.0
+    out = resize_normal(n, 8)
+    np.testing.assert_allclose(out[..., 0], 1.0, atol=TOL_F32)
+
+
+def test_b_convencion_y_orden_de_canales_no_se_alteran() -> None:
+    """M-03/M-04: no se invierte Y, no se permutan canales, no se reordena nada."""
+    n = np.zeros((16, 16, 3), dtype=np.float64)
+    n[..., 0] = 0.3
+    n[..., 1] = 0.4
+    n[..., 2] = 0.8660254037844386
+    out = resize_normal(n, 8)
+    assert float(out[..., 0].mean()) > 0.0
+    assert float(out[..., 1].mean()) > 0.0
+    assert float(out[..., 2].mean()) > 0.0
+    np.testing.assert_allclose(out[..., 0], n[0, 0, 0], atol=TOL_F32)
+    np.testing.assert_allclose(out[..., 1], n[0, 0, 1], atol=TOL_F32)
+
+
+def test_b_el_camino_identidad_no_renormaliza_una_entrada_no_unitaria() -> None:
+    """Propiedad DECLARADA (V-01/D-07), no un defecto oculto: el no-op no renormaliza.
+
+    `decode_normal_image` ya renormalizó aguas arriba. El camino identidad preserva
+    la entrada admisible tal cual — se ancla para que un cambio futuro no lo altere
+    en silencio.
+    """
+    n = _normal_plana(8)
+    n[..., 2] = 0.5  # norma 0.5, en rango, finita -> admisible
+    out = resize_normal(n, 8)
+    np.testing.assert_array_equal(out, n)
+
+
+# ===========================================================================
+# Familia C — interpolación contra un oráculo independiente
+# ===========================================================================
+def test_c_el_oraculo_no_es_una_llamada_a_pillow() -> None:
+    """El oráculo debe estar escrito aparte, no delegar en la misma primitiva."""
+    fuente = Path(__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.FunctionDef) and nodo.name in {"_oraculo", "_eje", "_coeficientes"}:
+            nombres = {n.id for n in ast.walk(nodo) if isinstance(n, ast.Name)}
+            assert "Image" not in nombres, f"{nodo.name} usa Pillow: no es un oráculo independiente"
+
+
+def test_c_el_oraculo_independiente_coincide_con_el_resizer() -> None:
+    """El resizer corregido y la referencia NumPy float64 coinciden dentro de float32."""
+    rng = np.random.default_rng(20261012)
+    for size_in, size_out in ((128, 64), (128, 32), (100, 37), (64, 16)):
+        v = rng.normal(size=(size_in, size_in, 3))
+        v[..., 2] = np.abs(v[..., 2]) + 0.25
+        n = _unitaria(v)
+        esperado = _oraculo(n, size_out)
+        obtenido = ad.resize_normal_diagnostic(n, size_out)
+        assert obtenido.degenerate is False
+        # El oráculo no renormaliza; el resizer sí. Se compara la dirección.
+        np.testing.assert_allclose(
+            _unitaria(obtenido.array),
+            _unitaria(esperado),
+            atol=1e-5,
+            err_msg=f"{size_in}->{size_out}",
+        )
+
+
+def test_c_campo_constante_es_constante() -> None:
+    n = _normal_plana(64)
+    out = resize_normal(n, 16)
+    np.testing.assert_allclose(out, n[0, 0], atol=TOL_F32)
+
+
+def test_c_campo_afin_se_reproduce_analiticamente() -> None:
+    """Un filtro normalizado y simétrico reproduce funciones afines.
+
+    Predicción analítica cerrada: el píxel de salida `i` muestrea la coordenada de
+    entrada `(i + 0.5) * escala - 0.5`. El oráculo es la fórmula, no otra corrida.
+    """
+    size_in, size_out = 128, 32
+    escala = size_in / size_out
+    idx = np.arange(size_out)
+    centros = (idx + 0.5) * escala - 0.5
+    # Campo afín en x (no unitario a propósito: la reproducción afín es del filtro).
+    n = np.zeros((size_in, size_in, 3), dtype=np.float64)
+    n[..., 0] = np.linspace(-0.8, 0.8, size_in)[None, :]
+    n[..., 2] = 1.0
+    crudo = _oraculo(n, size_out)
+    esperado = np.linspace(-0.8, 0.8, size_in)[np.clip(np.round(centros).astype(int), 0, size_in - 1)]
+    # Se compara el oráculo contra la fórmula cerrada (error de discretización acotado).
+    np.testing.assert_allclose(crudo[0, :, 0], esperado, atol=0.02)
+    # Y el resizer real reproduce el mismo campo afín.
+    obtenido = ad.resize_normal_diagnostic(n, size_out)
+    assert obtenido.degenerate is False
+    np.testing.assert_allclose(_unitaria(obtenido.array)[..., 0], _unitaria(crudo)[..., 0], atol=1e-4)
+
+
+def test_c_patron_de_alta_frecuencia_no_publica_basura() -> None:
+    """Contrato, no valor: o se rechaza, o la salida es finita y unitaria. Nunca basura."""
+    rng = np.random.default_rng(3)
+    v = rng.normal(size=(256, 256, 3))
+    v[..., 2] = np.abs(v[..., 2]) + 0.2
+    n = _unitaria(v)
+    try:
+        out = resize_normal(n, 64)
+    except ad.DegenerateNormalError as exc:
+        assert exc.degenerate_count > 0
+        return
+    assert np.all(np.isfinite(out))
+    np.testing.assert_allclose(np.linalg.norm(out, axis=-1), 1.0, atol=TOL_F32)
+
+
+# ===========================================================================
+# Familia D — integración
+# ===========================================================================
+def test_d_load_asset_usa_la_api_de_diagnostico() -> None:
+    fuente = (ad.__file__ and Path(ad.__file__).read_text(encoding="utf-8")) or ""
+    arbol = ast.parse(fuente)
+    fn = next(n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "load_asset")
+    llamados = {
+        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "resize_normal_diagnostic" in llamados, (
+        "load_asset debe recibir la evidencia por la API de diagnóstico, no por la fachada"
+    )
+
+
+def test_d_load_asset_propaga_degeneracion_con_identidad_del_asset(tmp_path: Path) -> None:
+    """El error de `load_asset` lleva el `asset_id`: la fachada no puede, esta ruta sí."""
+    import json
+
+    from PIL import Image
+
+    normal = np.zeros((64, 64, 3), dtype=np.uint8)
+    normal[..., 0] = np.where(np.arange(64) % 2 == 0, 255, 0)[None, :]
+    ruta_n = tmp_path / "n.png"
+    Image.fromarray(normal).save(ruta_n)
+    ruta_h = tmp_path / "h.png"
+    Image.fromarray(np.zeros((64, 64), dtype=np.uint8)).save(ruta_h)
+
+    from sky_claw.local.native_parallax.research.authored_dataset import (
+        MaterialSpec,
+        _sha256,  # noqa: PLC2701 - helper del módulo bajo prueba
+    )
+
+    spec = MaterialSpec(
+        asset_id="asset-degenerado",
+        family="brick",
+        source="ambientCG",
+        mirror="ambientCG",
+        license="CC0-1.0",
+        license_url="https://example.invalid",
+        source_url="https://example.invalid",
+        normal_path=str(ruta_n),
+        height_path=str(ruta_h),
+        normal_sha256=_sha256(ruta_n),
+        height_sha256=_sha256(ruta_h),
+        native_resolution=(64, 64),
+        declared_convention="OPENGL",
+        height_semantics="UNKNOWN_SCALE_RELATIVE_GRAYSCALE",
+    )
+    with pytest.raises(ad.DegenerateNormalError) as exc:
+        ad.load_asset(spec, 32)
+    assert exc.value.asset_id == "asset-degenerado"
+    assert exc.value.total_pixels == 32 * 32
+    assert json.dumps(exc.value.fraction)  # fracción serializable, no un NaN
+
+
+def test_d_resize_height_no_regresiona() -> None:
+    """M-07 / #653: el hermano escalar conserva modo F, sin uint8, sin clip en resize."""
+    ramp = np.linspace(0.0, 1.0, 1024, dtype=np.float64)[None, :].repeat(1024, axis=0)
+    out = resize_height(ramp, 512)
+    assert out.shape == (512, 512)
+    assert float(out.min()) >= 0.0
+    assert float(out.max()) <= 1.0
+    # 16-bit: una rampa de 1024 niveles no debe colapsar a 256 niveles.
+    assert len(np.unique(np.round(out[:, 0], 6))) > 256
+    constante = np.full((32, 32), 0.375, dtype=np.float64)
+    np.testing.assert_allclose(resize_height(constante, 16), 0.375, atol=1e-7)
+
+
+def test_d_la_resolucion_primaria_del_runner_sigue_siendo_512() -> None:
+    fuente = (_PRODUCCION / "run_exp_m3.py").read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    defaults = {
+        n.args[0].value
+        for n in ast.walk(arbol)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_argument"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+        and n.args[0].value == "--resolution"
+    }
+    assert defaults == {"--resolution"}
+    assert 'default=512' in fuente.replace(" ", ""), "PRIMARY_RESOLUTION = 512 no debe cambiar"
+
+
+# ===========================================================================
+# Familia E — ancla de enumeración por AST
+# ===========================================================================
+_SIMBOLOS = ("resize_normal", "load_asset")
+
+_CENSO_PRODUCCION_ESPERADO = frozenset(
+    {
+        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal"),
+        ("sky_claw/local/native_parallax/research/run_exp_m2.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m3.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m4.py", "load_asset"),
+        ("sky_claw/local/native_parallax/research/run_exp_m5.py", "load_asset"),
+    }
+)
+
+_ALLOWLIST_HISTORICA = frozenset(
+    {
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/h4_magnitude_probe.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_a_synthetic.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c2_h4_corpus.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/scripts/phase_c_real_impact.py",
+            "load_asset",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/h4_magnitude_probe_corrective.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/phase_c2_h4_corpus_corrective.py",
+            "resize_normal",
+        ),
+        (
+            "docs/validation/native-parallax-h1-h5-falsification-impact-audit-20261007/"
+            "corrective-20261008/scripts/phase_c_corrective.py",
+            "load_asset",
+        ),
+    }
+)
+
+# Handlers de degeneración admitidos: ninguno puede `continue`.
+_HANDLER_QUE_ABORTA = "DegenerateNormalError"
+
+
+def _tracked_py() -> list[str]:
+    listado = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=_REPO, capture_output=True, text=True, check=True
+    )
+    return [rel.strip() for rel in listado.stdout.splitlines() if rel.strip()]
+
+
+def _censo_consumidores() -> dict[str, set[tuple[str, str]]]:
+    """Censo por AST de referencias (`ast.Name`), no sólo llamadas (N-13)."""
+    censo: dict[str, set[tuple[str, str]]] = {"produccion": set(), "historico": set()}
+    for rel in _tracked_py():
+        ruta = _REPO / rel
+        if not ruta.is_file():
+            continue
+        try:
+            arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        hallados = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name) and n.id in _SIMBOLOS}
+        if not hallados:
+            continue
+        if rel.startswith("sky_claw/"):
+            destino = "produccion"
+        elif rel.startswith("docs/validation/"):
+            destino = "historico"
+        else:
+            continue
+        for simbolo in hallados:
+            censo[destino].add((rel, simbolo))
+    return censo
+
+
+def _handlers_de_excepciones(rel: str) -> list[ast.ExceptHandler]:
+    arbol = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
+    return [n for n in ast.walk(arbol) if isinstance(n, ast.ExceptHandler)]
+
+
+def _nombre_de_handler(handler: ast.ExceptHandler) -> str:
+    tipo = handler.type
+    if isinstance(tipo, ast.Name):
+        return tipo.id
+    if isinstance(tipo, ast.Tuple):
+        return "+".join(t.id for t in tipo.elts if isinstance(t, ast.Name))
+    return ""
+
+
+def _contiene_continue(handler: ast.ExceptHandler) -> bool:
+    return any(isinstance(n, ast.Continue) for n in ast.walk(handler))
+
+
+def test_e_el_censo_productivo_esta_congelado() -> None:
+    censo = _censo_consumidores()
+    assert censo["produccion"] == set(_CENSO_PRODUCCION_ESPERADO), (
+        f"nuevos={sorted(censo['produccion'] - set(_CENSO_PRODUCCION_ESPERADO))} "
+        f"faltantes={sorted(set(_CENSO_PRODUCCION_ESPERADO) - censo['produccion'])}"
+    )
+
+
+def test_e_la_allowlist_historica_es_exacta_y_de_siete() -> None:
+    """N-13: SIETE invocadores en `docs/validation/`, comparados por conjunto exacto."""
+    assert len(_ALLOWLIST_HISTORICA) == 7
+    censo = _censo_consumidores()
+    assert censo["historico"] == set(_ALLOWLIST_HISTORICA), (
+        f"nuevos={sorted(censo['historico'] - set(_ALLOWLIST_HISTORICA))} "
+        f"faltantes={sorted(set(_ALLOWLIST_HISTORICA) - censo['historico'])}"
+    )
+
+
+def test_e_ningun_handler_de_degeneracion_usa_continue() -> None:
+    """D-06.e: `continue` está PROHIBIDO para la señal de degeneración."""
+    ofensores: list[str] = []
+    for rel in _tracked_py():
+        if not rel.startswith("sky_claw/"):
+            continue
+        try:
+            handlers = _handlers_de_excepciones(rel)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for handler in handlers:
+            if _HANDLER_QUE_ABORTA in _nombre_de_handler(handler) and _contiene_continue(handler):
+                ofensores.append(f"{rel}:{handler.lineno}")
+    assert not ofensores, f"handlers de {_HANDLER_QUE_ABORTA} con `continue` (prohibido): {ofensores}"
+
+
+def test_e_el_handler_de_degeneracion_precede_al_de_dataset_invalid() -> None:
+    """Una subclase capturada después de su superclase es código muerto.
+
+    El orden de las cláusulas es load-bearing: `DegenerateNormalError` hereda de
+    `DatasetInvalidError`, así que si aparece después, el `continue` la absorbe.
+    """
+    for rel in sorted({r for r, _ in _CENSO_PRODUCCION_ESPERADO}):
+        for handler in _handlers_de_excepciones(rel):
+            nombre = _nombre_de_handler(handler)
+            if "DatasetInvalidError" not in nombre or _HANDLER_QUE_ABORTA in nombre:
+                continue
+            assert not _contiene_continue(handler), (
+                f"{rel}:{handler.lineno} captura DatasetInvalidError con `continue` "
+                f"sin haber tratado antes {_HANDLER_QUE_ABORTA}"
+            )
+
+
+def test_e_la_fachada_no_expone_un_array_degenerado_en_silencio() -> None:
+    """RC-1: la fachada inspecciona el diagnóstico y lanza. No hay `return res.array` crudo."""
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    fn = next(n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "resize_normal")
+    tiene_guard = any(
+        isinstance(n, ast.If)
+        and any(
+            isinstance(s, ast.Attribute) and s.attr == "degenerate" for s in ast.walk(n.test)
+        )
+        for n in ast.walk(fn)
+    )
+    lanza = any(
+        isinstance(n, ast.Raise)
+        and isinstance(n.exc, ast.Call)
+        and getattr(n.exc.func, "id", "") == _HANDLER_QUE_ABORTA
+        for n in ast.walk(fn)
+    )
+    assert tiene_guard, "resize_normal debe inspeccionar `res.degenerate` (RC-1)"
+    assert lanza, f"resize_normal debe lanzar {_HANDLER_QUE_ABORTA} ante degeneración (RC-1)"
+
+
+def test_e_el_umbral_vive_en_un_solo_lugar() -> None:
+    """El umbral no se recalcula ni se duplica: una sola definición en producción."""
+    apariciones: list[str] = []
+    for rel in _tracked_py():
+        if not rel.startswith("sky_claw/"):
+            continue
+        texto = (_REPO / rel).read_text(encoding="utf-8")
+        if "DEGENERATE_THRESHOLD" in texto:
+            apariciones.append(rel)
+    assert apariciones == ["sky_claw/local/native_parallax/research/authored_dataset.py"], (
+        f"DEGENERATE_THRESHOLD debe definirse en un único módulo de producción: {apariciones}"
+    )
+
+
+def test_e_la_referencia_independiente_no_entra_en_produccion() -> None:
+    """El oráculo es instrumento de medición: no puede filtrarse al paquete."""
+    fuente = (_PRODUCCION / "authored_dataset.py").read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    assert not any(
+        isinstance(n, ast.FunctionDef) and n.name in {"_oraculo", "_eje", "_coeficientes"} for n in ast.walk(arbol)
+    )
+
+
+# ===========================================================================
+# Familia F — propagación fail-closed en M2/M3/M4/M5
+# ===========================================================================
+_ENTRADA_M3: dict[str, object] = {
+    "asset_id": "asset-m3",
+    "family": "brick",
+    "provider": "ambientCG",
+    "normal_path": "n.png",
+    "height_path": "h.png",
+    "normal_convention": "OPENGL",
+    "height_semantics": "UNKNOWN_SCALE_RELATIVE_GRAYSCALE",
+    "license": "CC0-1.0",
+    "official_source": "https://example.invalid",
+    "normal_sha256": "0" * 64,
+    "height_sha256": "0" * 64,
+    "normal_resolution": [1024, 1024],
+    "provenance_status": "PRIMARY_SOURCE_DOWNLOADED",
+    "height_bit_depth": 8,
+}
+
+
+def _error_degenerado() -> object:
+    return ad.DegenerateNormalError(
+        asset_id="asset-m3",
+        degenerate_count=7,
+        total_pixels=512 * 512,
+        threshold=ad.DEGENERATE_THRESHOLD,
+        fraction=7 / (512 * 512),
+        reason="NON_EVALUABLE: sintético de test",
+    )
+
+
+def test_f_m3_aborta_ante_degeneracion_y_no_excluye(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El punto crítico (§5.2): `except DatasetInvalidError: continue` NO puede absorberla."""
+    from sky_claw.local.native_parallax.research import run_exp_m3
+
+    def _revienta(*_a: object, **_k: object) -> None:
+        raise _error_degenerado()  # type: ignore[misc]
+
+    monkeypatch.setattr(run_exp_m3, "load_asset", _revienta)
+    with pytest.raises(ad.DegenerateNormalError):
+        run_exp_m3.evaluate_cohort_a([dict(_ENTRADA_M3)], 512)
+
+
+def test_f_m3_la_exclusion_de_integridad_sigue_siendo_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-06.e / §5.3.4.6: no se reclasifica la integridad como H4."""
+    from sky_claw.local.native_parallax.research import run_exp_m3
+
+    def _revienta(*_a: object, **_k: object) -> None:
+        raise DatasetInvalidError("asset-m3: hash cambió para n.png (§43)")
+
+    monkeypatch.setattr(run_exp_m3, "load_asset", _revienta)
+    ev = run_exp_m3.evaluate_cohort_a([dict(_ENTRADA_M3)], 512)
+    assert ev["rows"] == []
+    assert [d["asset_id"] for d in ev["dataset_invalid"]] == ["asset-m3"]
+
+
+def test_f_m2_m4_m5_no_capturan_dataset_invalid() -> None:
+    """M2/M4/M5 propagan por defecto: cero capturas alrededor de `load_asset`."""
+    for rel in (
+        "sky_claw/local/native_parallax/research/run_exp_m2.py",
+        "sky_claw/local/native_parallax/research/run_exp_m4.py",
+        "sky_claw/local/native_parallax/research/run_exp_m5.py",
+    ):
+        capturas = [
+            h
+            for h in _handlers_de_excepciones(rel)
+            if "DatasetInvalidError" in _nombre_de_handler(h)
+        ]
+        assert not capturas, f"{rel} captura DatasetInvalidError en {[h.lineno for h in capturas]}"
+
+
+def test_f_m3_declara_el_handler_de_degeneracion_antes_del_de_integridad() -> None:
+    """El orden de las cláusulas del `try` crítico de M3 es load-bearing."""
+    rel = "sky_claw/local/native_parallax/research/run_exp_m3.py"
+    arbol = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
+    trys = [n for n in ast.walk(arbol) if isinstance(n, ast.Try)]
+    objetivo = [
+        t
+        for t in trys
+        if any("DatasetInvalidError" in _nombre_de_handler(h) for h in t.handlers)
+        and any("load_asset" in {x.id for x in ast.walk(t) if isinstance(x, ast.Name)} for _ in [0])
+    ]
+    assert objetivo, "no se encontró el try crítico de M3 con `load_asset`"
+    for t in objetivo:
+        nombres = [_nombre_de_handler(h) for h in t.handlers]
+        if "DatasetInvalidError" not in nombres:
+            continue
+        i_degen = next((k for k, n in enumerate(nombres) if _HANDLER_QUE_ABORTA in n), None)
+        assert i_degen is not None, f"{rel}: el try crítico no trata {_HANDLER_QUE_ABORTA}"
+        assert i_degen < nombres.index("DatasetInvalidError"), (
+            f"{rel}: {_HANDLER_QUE_ABORTA} debe preceder a DatasetInvalidError (nombres={nombres})"
+        )
