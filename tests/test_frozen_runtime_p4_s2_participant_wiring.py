@@ -426,18 +426,45 @@ _COBERTURA_COMPORTAMENTAL: dict[str, tuple[str, ...]] = {
 }
 
 
+def _existe_test_en_fuente(fuente: str, nombre: str) -> bool:
+    """True si `fuente` DEFINE el test `nombre` como pytest lo COLECTA.
+
+    Se resuelve por AST y no por substring: un `def <nombre>(` dentro de un
+    COMENTARIO, de un DOCSTRING o de una funcion ANIDADA (que pytest no colecta)
+    satisfaria un match textual y daria por viva una prueba que no existe —
+    justamente lo contrario de lo que este ancla promete.
+
+    Se aceptan las dos formas que pytest colecta en estos modulos con la config del
+    repo (sin `python_classes`/`python_functions` propios, o sea los defaults):
+    funcion de modulo, y metodo de una clase de modulo `Test*`. El segundo caso no
+    es decorativo: `test_g06_mismo_id_misma_identidad_idempotente` (la cobertura
+    comportamental de `generations.py`) vive dentro de `class TestGenerations`, y
+    un chequeo limitado a `arbol.body` lo daria por inexistente.
+    """
+    arbol = ast.parse(fuente)
+    for nodo in arbol.body:
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == nombre:
+            return True
+        if isinstance(nodo, ast.ClassDef) and nodo.name.startswith("Test"):
+            for hijo in nodo.body:
+                if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef)) and hijo.name == nombre:
+                    return True
+    return False
+
+
 def _prueba_comportamental_existe(referencia: str) -> bool:
     """`<ruta-relativa-al-worktree>::<nombre-del-test>` existe de verdad.
 
     Ancla por ENUMERACION: se verifica que la prueba nombrada siga existiendo en su
     archivo, para que borrarla (o renombrarla) rompa este test en vez de degradar
-    la cobertura en silencio.
+    la cobertura en silencio. La resolucion sintactica vive en
+    `_existe_test_en_fuente`, que se puede ejercitar con fuentes sinteticas.
     """
     archivo, _, nombre = referencia.partition("::")
     ruta = _RAIZ_WORKTREE / archivo
     if not ruta.is_file():
         return False
-    return f"def {nombre}(" in ruta.read_text(encoding="utf-8")
+    return _existe_test_en_fuente(ruta.read_text(encoding="utf-8"), nombre)
 
 
 def _funciones_top_level(arbol: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -747,6 +774,19 @@ def test_s2_el_ancla_ast_es_necesaria_pero_no_suficiente() -> None:
     assert "mutador" not in _funciones_que_adquieren_lock(ast.parse(referencia_sin_llamada)), (
         "una mera referencia al entrypoint NO es una adquisicion"
     )
+
+    # El ancla de EXISTENCIA resuelve por AST, no por substring. Un match textual
+    # (`"def <nombre>(" in fuente`) daria por viva una prueba que pytest NO
+    # colecta: prosa en un comentario o un docstring, o una funcion ANIDADA.
+    assert not _existe_test_en_fuente("# def fantasma():\nX = 1\n", "fantasma")
+    assert not _existe_test_en_fuente('"""def fantasma()"""\n', "fantasma")
+    assert not _existe_test_en_fuente("def externa():\n    def fantasma():\n        pass\n", "fantasma")
+    assert not _existe_test_en_fuente("class Auxiliar:\n    def fantasma(self):\n        pass\n", "fantasma")
+    # Y SI reconoce lo que pytest colecta: funcion de modulo (sync y async) y
+    # metodo de una clase `Test*`.
+    assert _existe_test_en_fuente("def fantasma():\n    pass\n", "fantasma")
+    assert _existe_test_en_fuente("async def fantasma():\n    pass\n", "fantasma")
+    assert _existe_test_en_fuente("class TestX:\n    def fantasma(self):\n        pass\n", "fantasma")
 
     for modulo, pruebas in _COBERTURA_COMPORTAMENTAL.items():
         assert pruebas, f"{modulo} es participante real y no declara prueba de comportamiento"
