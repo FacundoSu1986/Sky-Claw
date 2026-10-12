@@ -1030,6 +1030,26 @@ def _esperar_archivo(ruta: pathlib.Path, *, timeout: float = 60.0) -> bool:
     return False
 
 
+def _recolectar(procesos: list[subprocess.Popen[str]]) -> None:
+    """Termina y recolecta los hijos que sigan vivos. Nunca deja procesos colgados.
+
+    Se usa en el `finally` de los tests de contencion: un fallo de asercion no
+    puede dejar un escritor reteniendo el lock (bloquearia a los tests siguientes
+    del modulo, que comparten la maquina) ni descriptores de pipe sin cerrar. Un
+    hijo que ya termino se recolecta sin efectos; `communicate` sobre un proceso
+    ya recolectado devuelve inmediatamente.
+    """
+    for proc in procesos:
+        if proc.poll() is None:
+            proc.terminate()
+    for proc in procesos:
+        try:
+            proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:  # pragma: no cover - solo si terminate no alcanza
+            proc.kill()
+            proc.communicate()
+
+
 def test_s2_escritura_concurrente_de_estado_serializa(tmp_path: pathlib.Path) -> None:
     """Dos procesos ESCRIBEN estado con `save_frozen_runtime_state` real.
 
@@ -1122,39 +1142,76 @@ def test_s2_escritura_de_estado_bajo_contencion_nunca_corrompe(tmp_path: pathlib
     Nota (auditoria): la version previa asumia que "sin contencion ambas ganan".
     Bajo `timeout=0.0` eso NO esta garantizado y afirmarlo seria fijar un contrato
     que el ADR no promete. Lo que si esta garantizado es la integridad.
+
+    Sincronizacion DETERMINISTA (estabilizacion). La version previa lanzaba los
+    CUATRO procesos a la vez con una barrera que nunca se liberaba: el ganador
+    agotaba su espera interna de 60 s dentro de la seccion critica, lo que metia
+    ~60 s de latencia artificial en cada corrida (80-110 s de test contra el cap
+    `--timeout=120` de `pyproject.toml`) y lo volvia intermitente bajo carga
+    (medido: 1 fallo en 4 corridas locales). Ahora la secuencia es por EVENTOS,
+    nunca por reloj ni por orden de planificacion:
+
+    1. se lanza SOLO el primer escritor y se espera la senal que el mismo crea
+       desde DENTRO de su seccion critica (el `os.replace` del commit atomico);
+    2. con el lock YA retenido se lanzan los tres competidores;
+    3. los tres deben fallar CERRADO con `LockBusy`;
+    4. recien entonces se libera al ganador, que debe terminar con exito.
+
+    La liberacion vive en un `finally` junto con la recoleccion de hijos: un fallo
+    de asercion no puede dejar al ganador girando ni un proceso sin recolectar.
     """
     root = _crear_root(tmp_path)
     assert initialize_frozen_runtime_storage(root).success
     solapamiento = tmp_path / "solapamiento.txt"
     solapamiento.write_text("", encoding="utf-8")
-    sin_barrera = tmp_path / "no_existe.txt"
+    # La barrera de liberacion NO existe todavia: el ganador entra a la seccion
+    # critica y espera ahi hasta que el test la cree.
+    liberar = tmp_path / "liberar.txt"
 
-    procesos = [
-        _lanzar(
-            "estado",
-            root,
-            {
-                "solapamiento": str(solapamiento),
-                "dentro": str(tmp_path / f"dentro_{i}.txt"),
-                "mantener_hasta": str(sin_barrera),
-                "desired": f"1.6.1170__{i:012x}",
-                "updated_at_ns": 1000 + i,
-            },
+    def _args(indice: int) -> dict:
+        return {
+            "solapamiento": str(solapamiento),
+            "dentro": str(tmp_path / f"dentro_{indice}.txt"),
+            "mantener_hasta": str(liberar),
+            "desired": f"1.6.1170__{indice:012x}",
+            "updated_at_ns": 1000 + indice,
+        }
+
+    ganador: subprocess.Popen[str] | None = None
+    competidores: list[subprocess.Popen[str]] = []
+    try:
+        # 1. Primer escritor: entra a su seccion critica real y se queda ahi.
+        ganador = _lanzar("estado", root, _args(0))
+        assert _esperar_archivo(tmp_path / "dentro_0.txt"), (
+            "el primer escritor no llego a su seccion critica: no hay lock retenido que medir"
         )
-        for i in range(4)
-    ]
-    ganadores = 0
-    for p in procesos:
-        out, err = p.communicate(timeout=90)
-        if p.returncode == 0:
-            ganadores += 1
-            assert json.loads(out.strip().splitlines()[-1])["ok"] is True
-        else:
-            # El perdedor falla CERRADO con el error del lock, no con un traceback
-            # arbitrario ni un archivo corrupto.
-            assert "LockBusy" in err, f"perdida inesperada: {err!r}"
 
-    assert ganadores >= 1, "ningun escritor completo: la exclusion no debe bloquear siempre"
+        # 2. Competidores mientras el lock esta RETENIDO. `timeout=0.0` ⇒ fail-fast.
+        competidores = [_lanzar("estado", root, _args(i)) for i in (1, 2, 3)]
+
+        # 3. Cada competidor falla CERRADO con el error TIPADO del lock.
+        for indice, proc in enumerate(competidores, start=1):
+            out, err = proc.communicate(timeout=90)
+            assert proc.returncode != 0, (
+                f"el competidor {indice} adquirio un lock que el ganador retenia (exclusion perdida); stdout={out!r}"
+            )
+            assert "LockBusy" in err, f"perdida inesperada en el competidor {indice}: {err!r}"
+
+        # Exclusion REAL, no un timeout: cada hijo escribe su PROPIO archivo desde
+        # dentro de la seccion critica, asi que la evidencia es por proceso y no
+        # depende de una escritura compartida (que seria racy). Si algun competidor
+        # hubiera entrado, su archivo estaria aca.
+        intrusos = sorted(p.name for p in tmp_path.glob("dentro_*.txt") if p.name != "dentro_0.txt")
+        assert not intrusos, f"escritores que entraron a la seccion critica sin el lock: {intrusos}"
+
+        # 4. Liberar al ganador y exigir que COMPLETE (no que se caiga).
+        liberar.write_text("liberar", encoding="utf-8")
+        assert _resultado(ganador, timeout=60)["ok"] is True
+    finally:
+        # Incondicional: sin esto, un fallo de asercion dejaria al ganador girando
+        # hasta su cota interna y a los hijos sin recolectar.
+        liberar.write_text("liberar", encoding="utf-8")
+        _recolectar([p for p in [ganador, *competidores] if p is not None])
 
     # Integridad: el estado final es de UNO de los escritores, nunca una mezcla,
     # y no quedo ningun temporal de escritura atomica.
