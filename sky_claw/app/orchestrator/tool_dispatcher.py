@@ -254,10 +254,14 @@ def build_orchestration_dispatcher(
         ],
     )
 
-    # FASE 1.5.1: generate_lods is destructive → HITL gate
+    # FASE 1.5.1 + #592 F6: generate_lods is destructive → ErrorWrapping + DictGuard + HITL gate
     dispatcher.register(
         GenerateLodsStrategy(service=dependencies.dyndolod_service),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("DynDOLODPipelineExecutionFailed"),
+            DictResultGuardMiddleware("InvalidDynDOLODResult"),
+            gate,
+        ],
     )
 
     # Follow-up A: generate_animations (Pandora) is destructive → HITL gate
