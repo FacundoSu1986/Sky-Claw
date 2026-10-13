@@ -400,6 +400,132 @@ async def test_close_fallido_conserva_ownership_y_el_reintento_cierra(
     await agente.close()
 
 
+async def test_dos_init_concurrentes_crean_un_solo_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dos ``init_db()`` simultáneos no crean dos managers (uno quedaría huérfano)."""
+    db_path = tmp_path / "init-concurrente.db"
+    init_en_curso = asyncio.Event()
+    liberar_init = asyncio.Event()
+
+    class LifecycleInitLento(_LifecycleRastreado):
+        async def init_all(self) -> None:
+            init_en_curso.set()
+            await liberar_init.wait()
+            await super().init_all()
+
+    fabrica = _Fabrica(db_path, LifecycleInitLento)
+    _instalar_fabrica(monkeypatch, fabrica)
+    agente = DatabaseAgent(str(db_path))
+
+    primera = asyncio.create_task(agente.init_db())
+    segunda = asyncio.create_task(agente.init_db())
+    try:
+        await _esperar(init_en_curso)
+        liberar_init.set()
+        await asyncio.gather(primera, segunda)
+
+        assert len(fabrica.creados) == 1
+        assert agente._lifecycle is fabrica.creados[0]
+        assert fabrica.creados[0].shutdowns == 0
+        await agente.set_memory("clave", "valor", 1.0)
+        assert await agente.get_memory("clave") == "valor"
+    finally:
+        liberar_init.set()
+        await asyncio.gather(primera, segunda, return_exceptions=True)
+        await agente.close()
+
+
+async def test_close_durante_un_init_en_curso_espera_y_cierra_lo_publicado(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``close()`` no declara el cierre completo mientras un init sigue en vuelo."""
+    db_path = tmp_path / "close-durante-init.db"
+    init_en_curso = asyncio.Event()
+    liberar_init = asyncio.Event()
+
+    class LifecycleInitLento(_LifecycleRastreado):
+        async def init_all(self) -> None:
+            init_en_curso.set()
+            await liberar_init.wait()
+            await super().init_all()
+
+    fabrica = _Fabrica(db_path, LifecycleInitLento)
+    _instalar_fabrica(monkeypatch, fabrica)
+    agente = DatabaseAgent(str(db_path))
+
+    tarea_init = asyncio.create_task(agente.init_db())
+    try:
+        await _esperar(init_en_curso)
+        tarea_close = asyncio.create_task(agente.close())
+        # El cierre no puede completarse antes que la inicialización en vuelo.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(tarea_close), timeout=0.05)
+
+        liberar_init.set()
+        await tarea_init
+        await tarea_close
+
+        assert agente._lifecycle is None
+        assert agente._conn is None
+        assert fabrica.creados[0].shutdowns == 1
+    finally:
+        liberar_init.set()
+        await asyncio.gather(tarea_init, return_exceptions=True)
+        await agente.close()
+
+
+async def test_cancelacion_durante_la_limpieza_se_observa_hasta_el_final_y_manda(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelar durante el shutdown de limpieza no lo aborta ni traga la cancelación."""
+    db_path = tmp_path / "cancel-en-limpieza.db"
+    limpieza_en_curso = asyncio.Event()
+    liberar_limpieza = asyncio.Event()
+    limpieza_terminada = asyncio.Event()
+
+    class LifecycleLimpiezaLenta(_LifecycleRastreado):
+        async def init_all(self) -> None:
+            raise sqlite3.OperationalError("fallo init_all inducido")
+
+        async def shutdown_all(self) -> None:
+            self.shutdowns += 1
+            limpieza_en_curso.set()
+            await liberar_limpieza.wait()
+            await DatabaseLifecycleManager.shutdown_all(self)
+            limpieza_terminada.set()
+
+    fabrica = _Fabrica(db_path, LifecycleLimpiezaLenta)
+    _instalar_fabrica(monkeypatch, fabrica)
+    agente = DatabaseAgent(str(db_path))
+
+    tarea = asyncio.create_task(agente.init_db())
+    try:
+        await _esperar(limpieza_en_curso)
+        tarea.cancel("cancelación durante la limpieza")
+        await asyncio.sleep(0)
+        # La limpieza blindada sigue en curso: la tarea aún no terminó.
+        assert not tarea.done()
+
+        liberar_limpieza.set()
+        with pytest.raises(asyncio.CancelledError, match="cancelación durante la limpieza") as exc_info:
+            await tarea
+
+        # La cancelación manda sobre el error de init y este queda como causa.
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+        assert limpieza_terminada.is_set()
+        assert agente._lifecycle is None
+        assert agente._conn is None
+    finally:
+        liberar_limpieza.set()
+        if not tarea.done():
+            tarea.cancel()
+            await asyncio.gather(tarea, return_exceptions=True)
+
+
 async def test_close_con_lifecycle_delega_y_no_cierra_la_conexion_por_su_cuenta(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
