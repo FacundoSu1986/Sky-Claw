@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -27,78 +28,174 @@ class DatabaseAgent:
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._lifecycle: DatabaseLifecycleManager | None = None
+        # True SOLO tras publicar un lifecycle cuyo DDL ya terminó. Distingue
+        # "inicializado y usable" de "lifecycle retenido para reintentar su
+        # cierre" (``_lifecycle`` no nulo con ``_conn is None``); sin la
+        # bandera, un ``init_db()`` repetido no podría discriminar ambos.
+        self._initialized = False
+
+    async def _cerrar_lifecycle_propio(
+        self,
+        lifecycle: DatabaseLifecycleManager,
+    ) -> BaseException | None:
+        """Cierra un lifecycle propio y devuelve el error, sin lanzarlo.
+
+        El cierre va blindado (``shield``): si quien llamó está siendo
+        cancelado, el shutdown sigue corriendo en segundo plano en vez de
+        abortarse a mitad de camino. Devolver el error —en lugar de lanzarlo—
+        permite al llamador decidir ownership: ``None`` = cierre confirmado y
+        la referencia puede soltarse; cualquier otro valor = el manager debe
+        QUEDAR referenciado para reintentar su cierre, nunca huérfano.
+        """
+        try:
+            await asyncio.shield(lifecycle.shutdown_all())
+        except BaseException as error:  # noqa: BLE001 - se devuelve, no se traga
+            return error
+        return None
+
+    async def _descartar_lifecycle_retenido(self) -> None:
+        """Cierra el manager retenido de un intento anterior antes de crear otro.
+
+        Propiedad del mecanismo (#719): *ningún* ``init_db()`` crea un manager
+        nuevo mientras el anterior siga referenciado sin cerrar — reemplazarlo
+        sin más perdería el ownership del previo (sus conexiones aiosqlite
+        mantienen worker threads vivos). Si el cierre del retenido falla, el
+        error se propaga y la referencia se conserva para el próximo intento.
+        """
+        retenido = self._lifecycle
+        if retenido is None:
+            return
+        error_cierre = await self._cerrar_lifecycle_propio(retenido)
+        if error_cierre is not None:
+            self._conn = None
+            raise error_cierre
+        self._lifecycle = None
+        self._conn = None
 
     async def init_db(self) -> None:
         """Inicializa esquemas con modo WAL y pragmas de concurrencia.
 
         FASE 1.5.2: Uses DatabaseLifecycleManager for WAL recovery and
         hardened pragmas. Maintains identical behavior to the legacy init.
+
+        Contrato de ownership (#719):
+
+        - **Idempotente tras el éxito**: una segunda llamada consecutiva es
+          un no-op que conserva el mismo manager y la misma conexión.
+        - **Publicación atómica**: ``_lifecycle``/``_conn`` solo se asignan
+          cuando el DDL ya terminó; un fallo de ``init_all``,
+          ``get_connection``, del DDL/commit o una cancelación no deja una
+          conexión publicada como si estuviera inicializada.
+        - **Limpieza propietaria**: ante cualquier fallo, el manager creado
+          por esta llamada se cierra acá. Si ese cierre también falla, el
+          manager queda retenido en ``_lifecycle`` (con ``_conn is None``)
+          y el error ORIGINAL se propaga; el próximo ``init_db()`` cierra
+          primero el retenido (ver ``_descartar_lifecycle_retenido``).
         """
+        if self._initialized:
+            return
+        await self._descartar_lifecycle_retenido()
+
         db_path = Path(self.db_path)
 
-        # FASE 1.5.2: Use lifecycle manager for WAL recovery + pragmas
-        self._lifecycle = DatabaseLifecycleManager(db_paths=[db_path])
-        await self._lifecycle.init_all()
+        # FASE 1.5.2: Use lifecycle manager for WAL recovery + pragmas.
+        # Todo en variables LOCALES hasta que el esquema esté completo:
+        # publicar antes del DDL expondría una conexión "inicializada"
+        # sobre un esquema a medio crear.
+        lifecycle = DatabaseLifecycleManager(db_paths=[db_path])
+        conn: aiosqlite.Connection | None = None
+        try:
+            await lifecycle.init_all()
 
-        # Get the managed connection (M-01: get_connection is async + lazy).
-        # get_connection siempre retorna Connection o lanza excepción; no retorna None.
-        self._conn = await self._lifecycle.get_connection(self.db_path)
-        self._conn.row_factory = aiosqlite.Row
+            # Get the managed connection (M-01: get_connection is async + lazy).
+            # get_connection siempre retorna Connection o lanza excepción; no retorna None.
+            conn = await lifecycle.get_connection(self.db_path)
+            conn.row_factory = aiosqlite.Row
 
-        async with self._write_transaction() as conn:
-            await conn.execute("BEGIN IMMEDIATE")
-            # ── Core tables (Scraper / Agent Memory) ──
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS scraper_state (
-                    domain TEXT PRIMARY KEY,
-                    cookies TEXT,
-                    failures INTEGER DEFAULT 0,
-                    locked_until REAL DEFAULT 0
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS agent_memory (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at REAL
-                )
-            """)
+            async with lifecycle.transaction(self.db_path) as conn:
+                await conn.execute("BEGIN IMMEDIATE")
+                # ── Core tables (Scraper / Agent Memory) ──
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scraper_state (
+                        domain TEXT PRIMARY KEY,
+                        cookies TEXT,
+                        failures INTEGER DEFAULT 0,
+                        locked_until REAL DEFAULT 0
+                    )
+                """)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_memory (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at REAL
+                    )
+                """)
 
-            # ── GUI tables (Mods / Conflicts / Activity Log) ──
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS mods (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    version TEXT,
-                    size_mb REAL DEFAULT 0,
-                    status TEXT DEFAULT 'inactive',
-                    source TEXT,
-                    installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS conflicts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mod_id_1 INTEGER,
-                    mod_id_2 INTEGER,
-                    conflict_type TEXT,
-                    resolved BOOLEAN DEFAULT 0,
-                    resolution TEXT,
-                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (mod_id_1) REFERENCES mods(id),
-                    FOREIGN KEY (mod_id_2) REFERENCES mods(id)
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS activity_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_type TEXT,
-                    message TEXT,
-                    details TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+                # ── GUI tables (Mods / Conflicts / Activity Log) ──
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS mods (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        version TEXT,
+                        size_mb REAL DEFAULT 0,
+                        status TEXT DEFAULT 'inactive',
+                        source TEXT,
+                        installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP
+                    )
+                """)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS conflicts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mod_id_1 INTEGER,
+                        mod_id_2 INTEGER,
+                        conflict_type TEXT,
+                        resolved BOOLEAN DEFAULT 0,
+                        resolution TEXT,
+                        detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (mod_id_1) REFERENCES mods(id),
+                        FOREIGN KEY (mod_id_2) REFERENCES mods(id)
+                    )
+                """)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS activity_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_type TEXT,
+                        message TEXT,
+                        details TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+        except BaseException:
+            # Limpieza propietaria: el manager creado por ESTA llamada se
+            # cierra acá, también en cancelación (``BaseException``). El error
+            # original siempre manda y se relanza; el de cierre solo decide
+            # ownership (ver el contrato en el docstring).
+            error_cierre = await self._cerrar_lifecycle_propio(lifecycle)
+            self._initialized = False
+            if error_cierre is None:
+                if self._lifecycle is lifecycle:
+                    self._lifecycle = None
+                self._conn = None
+            else:
+                # Cierre no confirmado: se conserva la referencia para que
+                # el próximo init_db()/close() reintente el cierre; perderla
+                # dejaría el manager huérfano con sus threads vivos.
+                self._lifecycle = lifecycle
+                self._conn = None
+                if not isinstance(error_cierre, asyncio.CancelledError):
+                    logger.critical(
+                        "DatabaseAgent: no se pudo cerrar el lifecycle tras un fallo de "
+                        "inicialización; se conserva el ownership para reintentar el cierre",
+                        exc_info=(type(error_cierre), error_cierre, error_cierre.__traceback__),
+                    )
+            raise
+
+        # Publicación: recién ahora, con el esquema completo, la conexión
+        # pasa a ser "la inicializada" que consumen _get_conn/_read_operation.
+        self._lifecycle = lifecycle
+        self._conn = conn
+        self._initialized = True
         logger.info(
             "Base de datos SQLite inicializada en modo WAL "
             "(scraper_state, agent_memory, mods, conflicts, activity_log)."
@@ -109,17 +206,29 @@ class DatabaseAgent:
 
         FASE 1.5.2: Delegates to DatabaseLifecycleManager.shutdown_all()
         which executes PRAGMA wal_checkpoint(TRUNCATE) before closing.
+
+        Seguro de repetir tras éxito, tras un éxito parcial y sin haber
+        inicializado (#719). Si el shutdown falla, el error se propaga y el
+        ownership se CONSERVA (``_lifecycle`` sigue referenciado) para que
+        un cierre posterior lo reintente — el caller de la GUI
+        (``close_db_agent``) depende de exactamente esto. Con lifecycle
+        presente NO se cierra además ``_conn`` por cuenta propia: esa
+        conexión es del lifecycle y cerrarla dos veces sería cerrar un
+        recurso de otro propietario.
         """
+        self._initialized = False
         if self._lifecycle is not None:
             await self._lifecycle.shutdown_all()
             self._lifecycle = None
             self._conn = None
         else:
-            # Fallback for legacy codepath without lifecycle manager
+            # Fallback for legacy codepath without lifecycle manager.
+            # La referencia se suelta SOLO tras un cierre confirmado: si
+            # ``conn.close()`` falla, ``_conn`` queda para el reintento.
             conn = self._conn
-            if conn:
-                self._conn = None
+            if conn is not None:
                 await conn.close()
+                self._conn = None
 
     async def _get_conn(self) -> aiosqlite.Connection:
         """Devuelve la conexión persistente; lanza error si no fue inicializada."""
