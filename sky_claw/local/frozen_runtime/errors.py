@@ -150,5 +150,16 @@ class FrozenRuntimeLockOrphanedError(FrozenRuntimeLockError):
     """El lock quedó huérfano por crash de un dueño anterior: requiere reconciliación/reclaim."""
 
 
-class FrozenRuntimeLockAdmissionError(FrozenRuntimeLockError):
-    """El root o el directorio state/ fue rechazado (redirigido, enlace simbólico o reparse)."""
+class FrozenRuntimeLockAdmissionError(FrozenRuntimeLockError, FrozenRuntimeStorageError):
+    """El root o el directorio state/ fue rechazado (redirigido, enlace simbólico o reparse).
+
+    Hereda ADEMAS de ``FrozenRuntimeStorageError`` (P4-S2). La admisión del
+    root/`state/` es la misma condición de namespace que P2 ya tipaba con la
+    familia de storage: cuando el lock la re-evalúa al crear `state/` (o al
+    sellar la metadata), el rechazo debe seguir siendo capturable por los
+    callers que protegen el namespace con ``except FrozenRuntimeStorageError``.
+    Sin este cruce, cablear el lock a los participantes cambiaría el TIPO visible
+    del rechazo (sibling en vez de storage) y rompería contratos ya congelados
+    (p.ej. ``test_sr09``). La semántica no cambia: sigue siendo fail-closed y la
+    escritura sigue sin ocurrir.
+    """

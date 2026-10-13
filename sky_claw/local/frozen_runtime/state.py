@@ -125,8 +125,23 @@ def save_frozen_runtime_state(path: pathlib.Path, state: FrozenRuntimeState) -> 
     Ante cualquier fallo antes del ``os.replace``, el estado anterior permanece
     válido y el temporal se limpia. Nunca se escribe directamente sobre
     ``active.json``.
+
+    Exclusión (P4-S2): la escritura del estado durable corre bajo el root lock,
+    adquirido a partir del FrozenRuntimeRoot (``path.parent.parent`` — ``path`` es
+    ``<root>/state/active.json``). El import es diferido para no crear el ciclo
+    ``state → root_lock → storage → state``.
     """
     ruta = pathlib.Path(path)
+    root = ruta.parent.parent
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    with participant_lock(root, timeout=0.0) as handle:
+        handle.assert_owned()
+        _save_frozen_runtime_state_locked(ruta, state)
+
+
+def _save_frozen_runtime_state_locked(ruta: pathlib.Path, state: FrozenRuntimeState) -> None:
+    """Cuerpo de la escritura de estado, ya bajo el root lock (no re-adquiere)."""
     payload = {
         "schema_version": state.schema_version,
         "desired_active_generation": state.desired_active_generation,

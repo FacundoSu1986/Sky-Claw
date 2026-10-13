@@ -40,6 +40,10 @@ VERSIONS_DIR_NAME = "versions"
 CANDIDATES_DIR_NAME = "candidates"
 STATE_DIR_NAME = "state"
 
+# P4-S2: el init es idempotente y la concurrencia es legítima; se serializa
+# esperando acotadamente en vez de fallar de inmediato con LOCK_BUSY.
+INIT_LOCK_TIMEOUT_SECONDS = 30.0
+
 _RESERVADOS_WINDOWS: frozenset[str] = frozenset(
     {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 )
@@ -217,6 +221,48 @@ def initialize_frozen_runtime_storage(
     if not admission.success:
         return StorageInitResult(admission=admission, root=ruta)
 
+    # Exclusión (P4-S2): la inicialización crea directorios y escribe el estado
+    # inicial; dos procesos inicializando el mismo root deben serializarse. El
+    # root lock crea `state/` si no existe (misma admisión fail-closed), así que
+    # es compatible con la precondición del inicializador. Import diferido para
+    # no crear el ciclo storage → root_lock → storage.
+    #
+    # TIMEOUT: el init es idempotente y la concurrencia es legítima (dos
+    # arranques simultáneos del mismo root no son un error), así que el contrato
+    # correcto es ESPERAR acotadamente y serializar, no fallar de inmediato con
+    # LOCK_BUSY. Un `timeout=0` convertiría una carrera benigna en un fallo.
+    #
+    # CONTRATO DE RESULTADO: `initialize_frozen_runtime_storage` documenta
+    # resultado TIPADO (`StorageInitResult.success`) y no excepción. El lock
+    # re-aplica la admisión anti-reparse al crear `state/` y falla con
+    # `FrozenRuntimeLockAdmissionError`; si eso escapara, un caller que sólo mira
+    # `resultado.success` recibiría una excepción en vez del rechazo tipado, y
+    # los caminos de reparse-redirect (sr03/sr04/sr09) cambiarían de forma. Cada
+    # fallo del lock se traduce a un `StorageAdmissionResult` RECHAZADO.
+    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeLockError
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    try:
+        with participant_lock(ruta, timeout=INIT_LOCK_TIMEOUT_SECONDS) as handle:
+            handle.assert_owned()
+            return _initialize_frozen_runtime_storage_locked(ruta, admission=admission)
+    except FrozenRuntimeLockError as exc:
+        return StorageInitResult(
+            admission=StorageAdmissionResult(
+                state=StorageAdmissionState.REJECTED,
+                message=f"no se pudo adquirir la exclusión del FrozenRuntimeRoot: {exc}",
+                root=ruta,
+            ),
+            root=ruta,
+        )
+
+
+def _initialize_frozen_runtime_storage_locked(
+    ruta: pathlib.Path,
+    *,
+    admission: StorageAdmissionResult,
+) -> StorageInitResult:
+    """Cuerpo de la inicialización, ya bajo el root lock (no re-adquiere)."""
     # Cada componente persistente se admite fail-closed ANTES de crear/escribir
     # (P2-B1): un junction/symlink en `state/` o `state/generations/` no puede
     # redirigir escrituras fuera del FrozenRuntimeRoot.

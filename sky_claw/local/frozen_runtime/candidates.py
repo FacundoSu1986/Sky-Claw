@@ -50,6 +50,7 @@ from sky_claw.local.frozen_runtime.errors import (
     CandidateIdCollisionError,
     CandidateVerificationError,
     FrozenRuntimeError,
+    FrozenRuntimeLockError,
     FrozenRuntimeObservationError,
     FrozenRuntimeStorageError,
     InvalidCandidateIdError,
@@ -97,6 +98,11 @@ from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, T
 
 CANDIDATE_SCHEMA_VERSION = 1
 CANDIDATE_METADATA_SUBDIR = "candidates"
+
+#: P4-S2: el candidate build concurrente es legítimo (dos candidatos distintos
+#: del mismo root pueden construirse en serie). Se serializa esperando
+#: acotadamente en vez de fallar de inmediato con LOCK_BUSY.
+CANDIDATE_LOCK_TIMEOUT_SECONDS = 30.0
 
 #: Campos que `serializar_metadata_candidate` emite SIEMPRE para schema v1
 #: (P3-X). La ausencia de CUALQUIERA de ellos en disco es metadata truncada o
@@ -1224,6 +1230,46 @@ def crear_candidate(
         )
 
     candidate_id = nuevo_candidate_id(id_factory)
+    # Exclusión (P4-S2): la secuencia reserva-id → BUILDING → copia → READY/INVALID
+    # debe ser indivisible respecto de otros mutadores del root. El lock se
+    # adquiere DESPUÉS de obtener la evidencia PRE (observación larga de la
+    # Managed Source, que NO muta el root) y se sostiene hasta el veredicto: la
+    # reserva y las escrituras de metadata no pueden quedar a medias. Import
+    # diferido para no crear el ciclo candidates → root_lock → storage → state.
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    try:
+        with participant_lock(raiz, timeout=CANDIDATE_LOCK_TIMEOUT_SECONDS) as handle:
+            handle.assert_owned()
+            return _crear_candidate_bajo_lock(
+                source=source,
+                raiz=raiz,
+                ahora=ahora,
+                pre=pre,
+                candidate_id=candidate_id,
+                quiet_window_seconds=quiet_window_seconds,
+                sleep=sleep,
+            )
+    except FrozenRuntimeLockError as exc:
+        return CandidateResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"no se pudo adquirir la exclusión del FrozenRuntimeRoot: {exc}",
+            candidate_id=candidate_id,
+            pre_source_evidence=pre,
+        )
+
+
+def _crear_candidate_bajo_lock(
+    *,
+    source: ManagedSource,
+    raiz: pathlib.Path,
+    ahora: int,
+    pre: CandidateSourceEvidence,
+    candidate_id: str,
+    quiet_window_seconds: float,
+    sleep: Callable[[float], None],
+) -> CandidateResult:
+    """Cuerpo de `crear_candidate` ya bajo el root lock (no re-adquiere)."""
     # RESERVA ANTES DE ESCRIBIR. Sin esto, un `id_factory` que devuelve un id ya
     # usado persistiria la metadata BUILDING encima de la del Candidate previo
     # (incluido uno READY) y la colision del payload recien se descubriria --
