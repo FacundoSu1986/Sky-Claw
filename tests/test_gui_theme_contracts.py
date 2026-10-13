@@ -183,6 +183,36 @@ def _bloque_de_capa(nombre: str) -> str | None:
     return None
 
 
+def _reglas_de_bloque(bloque: str) -> list[tuple[str, str]]:
+    """Pares ``(selectores, cuerpo)`` de las reglas planas dentro de ``bloque``
+    (el texto completo de ``@layer theme { ... }``), sobre CSS sin comentarios.
+
+    ``selectores`` es el texto crudo previo a ``{`` (puede ser una lista separada
+    por comas); ``cuerpo`` es lo entre ``{`` y ``}``. El wrapper de la capa se
+    descarta: se parsea el contenido entre la primera ``{`` y la última ``}``,
+    así el regex no confunde el ``@layer theme`` inicial con un selector.
+    """
+    interno = _sin_comentarios(bloque)
+    inicio = interno.index("{")
+    fin = interno.rindex("}")
+    interno = interno[inicio + 1 : fin]
+    return [(m.group(1).strip(), m.group(2)) for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", interno)]
+
+
+def _cuerpo_de_regla_con_selector(bloque: str, selector: str) -> str | None:
+    """Cuerpo de la regla dentro de ``bloque`` que declara ``selector`` como uno
+    de sus selectores independientes.
+
+    La lista de selectores separada por comas se parte y se compara por igualdad
+    exacta tras ``strip`` (``.a:focus-visible, .b:focus-visible { ... }`` declara
+    ambos). Devuelve ``None`` si ninguna regla del bloque declara el selector.
+    """
+    for selectores, cuerpo in _reglas_de_bloque(bloque):
+        if selector in [parte.strip() for parte in selectores.split(",")]:
+            return cuerpo
+    return None
+
+
 def _pisas_important_unlayered_sobre_quasar(css: str) -> list[tuple[str, str, frozenset[str]]]:
     """Declaraciones !important UNLAYERED de una hoja de estilo cuyo selector toca
     una clase .q-*. Las de dentro de ``@layer {...}`` quedan EXCLUIDAS por
@@ -262,17 +292,47 @@ def test_foco_de_inputs_gana_por_capa_theme_no_por_important_unlayered() -> None
     ``outline: 2px solid``. El !important sigue siendo necesario dentro de la
     capa: una declaración normal jamás vence a un !important, esté donde esté.
 
-    El ancla vieja sólo grepeaba el string de la declaración y pasaba sobre CSS
-    roto — no veía la cascada de capas.
+    El ancla acopla cada selector a SU regla: las declaraciones se exigen en el
+    cuerpo de la regla que declara el selector dentro de ``@layer theme``, no en
+    cualquier parte de la capa. Una regla ajena con las mismas declaraciones NO
+    salva a la regla de foco si ésta las perdió (revisión #631).
     """
     bloque = _bloque_de_capa("theme")
     assert bloque is not None, "el fix de foco debe vivir dentro de @layer theme { ... }"
     for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
-        assert clase in bloque, f"{clase} debe estar dentro de @layer theme"
-    assert re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", bloque), (
-        "el outline dorado debe conservar !important dentro de la capa"
+        cuerpo = _cuerpo_de_regla_con_selector(bloque, clase)
+        assert cuerpo is not None, f"{clase} debe estar dentro de @layer theme en su propia regla"
+        assert re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", cuerpo), (
+            f"{clase}: la regla que lo declara en @layer theme perdió el outline dorado !important"
+        )
+        assert "outline-offset" in cuerpo, f"{clase}: la regla que lo declara en @layer theme perdió outline-offset"
+
+
+def test_ancla_de_foco_no_se_satisface_con_una_regla_ajena_en_la_capa() -> None:
+    """RED-proof del acoplamiento selector→regla (revisión #631).
+
+    Construye una capa donde la regla de foco PERDIÓ las declaraciones pero una
+    regla ajena del mismo ``@layer theme`` sí las tiene: el helper debe devolver
+    el cuerpo de la regla de foco (sin ellas), no el de la ajena. Si el ancla
+    volviera a grepear el bloque entero, este test dejaría de proteger.
+    """
+    bloque = (
+        "@layer theme {\n"
+        "    .q-field__native:focus-visible,\n"
+        "    .q-field__input:focus-visible { color: red; }\n"
+        "    .regla-ajena:focus-visible {\n"
+        "        outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "        outline-offset: 2px !important;\n"
+        "    }\n"
+        "}"
     )
-    assert "outline-offset" in bloque
+    for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
+        cuerpo = _cuerpo_de_regla_con_selector(bloque, clase)
+        assert cuerpo is not None, f"{clase} debe seguir declarándose en la capa"
+        assert not re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", cuerpo), (
+            f"{clase}: el helper devolvió el cuerpo de una regla ajena"
+        )
+        assert "outline-offset" not in cuerpo, f"{clase}: el helper devolvió el cuerpo de una regla ajena"
 
 
 def test_ninguna_pisa_important_unlayered_la_tapa_quasar_en_silencio() -> None:
