@@ -91,7 +91,7 @@ jobs:
         run: pytest --cov=sky_claw --cov-report=xml --cov-fail-under=60 tests/
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}
           path: coverage.xml
@@ -149,7 +149,7 @@ jobs:
       - name: Pip-audit (SCA — strict)
         run: pip-audit --strict --skip-editable -r requirements.lock
       # P0.5 — Node gateway supply-chain audit
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
       - name: NPM ci (Telegram gateway)
@@ -222,7 +222,7 @@ jobs:
           pip install -e .
       - name: Build executable
         run: pyinstaller sky_claw.spec --clean
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe
