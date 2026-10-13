@@ -331,7 +331,19 @@ def test_foco_de_inputs_gana_por_capa_theme_no_por_important_unlayered() -> None
 
 
 _SELECTORES_DE_FOCO = (".q-field__native:focus-visible", ".q-field__input:focus-visible")
-_OUTLINE_DORADO = r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important"
+_OUTLINE_DORADO = r"2px solid var\(--sky-gold-bright\)\s*!important"
+
+
+def _ultima_declaracion(cuerpo: str, propiedad: str) -> str | None:
+    """Valor de la ÚLTIMA declaración de ``propiedad`` en ``cuerpo`` (la que gana
+    dentro de una regla cuando se repite), o ``None`` si no se declara. Compara el
+    nombre de propiedad exacto: ``outline`` no matchea ``outline-offset``."""
+    valor = None
+    for declaracion in cuerpo.split(";"):
+        nombre, separador, resto = declaracion.partition(":")
+        if separador and nombre.strip().lower() == propiedad:
+            valor = resto.strip()
+    return valor
 
 
 def _violaciones_de_foco(bloque: str, selector: str) -> list[str]:
@@ -353,9 +365,10 @@ def _violaciones_de_foco(bloque: str, selector: str) -> list[str]:
     violaciones = []
     if condicional:
         violaciones.append("su regla está bajo un at-rule condicional (@media/@supports)")
-    if not re.search(_OUTLINE_DORADO, cuerpo):
+    outline = _ultima_declaracion(cuerpo, "outline")
+    if outline is None or not re.fullmatch(_OUTLINE_DORADO, outline):
         violaciones.append("su regla perdió el outline dorado !important")
-    if "outline-offset" not in cuerpo:
+    if _ultima_declaracion(cuerpo, "outline-offset") is None:
         violaciones.append("su regla perdió outline-offset")
     return violaciones
 
@@ -417,6 +430,29 @@ def test_ancla_de_foco_rechaza_un_selector_declarado_dos_veces() -> None:
         assert len(violaciones) == 1 and "2 reglas" in violaciones[0]
     # el hermano que sólo aparece en la lista por comas sigue sano
     assert _violaciones_de_foco(_capa(_REGLA_DE_FOCO_OK, anula), ".q-field__input:focus-visible") == []
+
+
+def test_ancla_de_foco_evalua_la_ultima_declaracion_de_outline_de_la_regla() -> None:
+    """RED-proof (revisión de #730): dentro de UNA regla, ``outline`` repetido se
+    resuelve por orden de fuente. El dorado seguido de ``outline: 0 !important``
+    anula el foco aunque el dorado esté presente; el orden inverso lo conserva."""
+    anula_despues = (
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible {\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "    outline: 0 !important;\n"
+        "}\n"
+    )
+    dorado_despues = (
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible {\n"
+        "    outline: 0 !important;\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "}\n"
+    )
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(anula_despues), clase) == ["su regla perdió el outline dorado !important"]
+        assert _violaciones_de_foco(_capa(dorado_despues), clase) == []
 
 
 def test_ancla_de_foco_falla_si_el_selector_desaparece_de_la_capa() -> None:
