@@ -3504,4 +3504,3 @@ class StagingJournal(OperationJournal):
             await self._real_journal.mark_transaction_rolled_back(self._staged_tx_id)
             self._staged_tx_id = None
             self._staged_commit = False
-

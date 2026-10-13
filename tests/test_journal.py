@@ -1642,4 +1642,3 @@ class TestFailOperationHermanos:
         """Firma idéntica y sin efecto: un `fail_operation` con metadata no puede
         tirar `TypeError` en el modo no-op."""
         await NoOpJournal().fail_operation(1, error="boom", metadata={"k": "v"})
-
