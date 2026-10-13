@@ -183,34 +183,61 @@ def _bloque_de_capa(nombre: str) -> str | None:
     return None
 
 
-def _reglas_de_bloque(bloque: str) -> list[tuple[str, str]]:
-    """Pares ``(selectores, cuerpo)`` de las reglas planas dentro de ``bloque``
-    (el texto completo de ``@layer theme { ... }``), sobre CSS sin comentarios.
+def _reglas_de_bloque(bloque: str) -> list[tuple[str, str, bool]]:
+    """Ternas ``(selectores, cuerpo, condicional)`` de TODAS las reglas dentro de
+    ``bloque`` (el texto completo de ``@layer theme { ... }``), sobre CSS sin
+    comentarios y con conteo de llaves.
 
     ``selectores`` es el texto crudo previo a ``{`` (puede ser una lista separada
-    por comas); ``cuerpo`` es lo entre ``{`` y ``}``. El wrapper de la capa se
-    descarta: se parsea el contenido entre la primera ``{`` y la última ``}``,
-    así el regex no confunde el ``@layer theme`` inicial con un selector.
+    por comas); ``cuerpo`` es lo entre ``{`` y su ``}``. Un at-rule anidado
+    (``@media``, ``@supports``...) se recorre hacia adentro y marca sus reglas
+    como ``condicional=True``: aplican sólo bajo esa condición, así que no pueden
+    sostener un contrato incondicional. El wrapper de la capa se descarta.
     """
-    interno = _sin_comentarios(bloque)
-    inicio = interno.index("{")
-    fin = interno.rindex("}")
-    interno = interno[inicio + 1 : fin]
-    return [(m.group(1).strip(), m.group(2)) for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", interno)]
+    css = _sin_comentarios(bloque)
+    css = css[css.index("{") + 1 : css.rindex("}")]
+
+    def recorrer(texto: str, condicional: bool) -> list[tuple[str, str, bool]]:
+        reglas: list[tuple[str, str, bool]] = []
+        cursor = 0
+        while (abre := texto.find("{", cursor)) != -1:
+            profundidad = 0
+            for cierra in range(abre, len(texto)):
+                if texto[cierra] == "{":
+                    profundidad += 1
+                elif texto[cierra] == "}":
+                    profundidad -= 1
+                    if profundidad == 0:
+                        break
+            else:
+                raise AssertionError("llaves desbalanceadas en el bloque de capa")
+            prelude = texto[cursor:abre].strip()
+            contenido = texto[abre + 1 : cierra]
+            if prelude.startswith("@"):
+                reglas.extend(recorrer(contenido, True))
+            else:
+                reglas.append((prelude, contenido, condicional))
+            cursor = cierra + 1
+        return reglas
+
+    return recorrer(css, False)
 
 
-def _cuerpo_de_regla_con_selector(bloque: str, selector: str) -> str | None:
-    """Cuerpo de la regla dentro de ``bloque`` que declara ``selector`` como uno
-    de sus selectores independientes.
+def _reglas_que_declaran_selector(bloque: str, selector: str) -> list[tuple[str, bool]]:
+    """Pares ``(cuerpo, condicional)`` de CADA regla de ``bloque`` que declara
+    ``selector`` como uno de sus selectores independientes.
 
-    La lista de selectores separada por comas se parte y se compara por igualdad
-    exacta tras ``strip`` (``.a:focus-visible, .b:focus-visible { ... }`` declara
-    ambos). Devuelve ``None`` si ninguna regla del bloque declara el selector.
+    La lista separada por comas se parte y se compara por igualdad exacta tras
+    ``strip`` (``.a:focus-visible, .b:focus-visible { ... }`` declara ambos).
+    Devuelve todas, no la primera: dos reglas con el mismo selector, capa y
+    especificidad se resuelven por orden de fuente, y muestrear sólo la primera
+    deja pasar una posterior que anula el contrato.
     """
-    for selectores, cuerpo in _reglas_de_bloque(bloque):
-        if selector in [parte.strip() for parte in selectores.split(",")]:
-            return cuerpo
-    return None
+    return [
+        (cuerpo, condicional)
+        for selectores, cuerpo, condicional in _reglas_de_bloque(bloque)
+        if selector in [parte.strip() for parte in selectores.split(",")]
+    ]
 
 
 def _pisas_important_unlayered_sobre_quasar(css: str) -> list[tuple[str, str, frozenset[str]]]:
@@ -299,40 +326,102 @@ def test_foco_de_inputs_gana_por_capa_theme_no_por_important_unlayered() -> None
     """
     bloque = _bloque_de_capa("theme")
     assert bloque is not None, "el fix de foco debe vivir dentro de @layer theme { ... }"
-    for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
-        cuerpo = _cuerpo_de_regla_con_selector(bloque, clase)
-        assert cuerpo is not None, f"{clase} debe estar dentro de @layer theme en su propia regla"
-        assert re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", cuerpo), (
-            f"{clase}: la regla que lo declara en @layer theme perdió el outline dorado !important"
-        )
-        assert "outline-offset" in cuerpo, f"{clase}: la regla que lo declara en @layer theme perdió outline-offset"
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(bloque, clase) == [], f"{clase}: {_violaciones_de_foco(bloque, clase)}"
+
+
+_SELECTORES_DE_FOCO = (".q-field__native:focus-visible", ".q-field__input:focus-visible")
+_OUTLINE_DORADO = r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important"
+
+
+def _violaciones_de_foco(bloque: str, selector: str) -> list[str]:
+    """Violaciones del contrato de foco de ``selector`` dentro de ``bloque``.
+
+    Enumera TODAS las reglas de la capa que declaran el selector (no la primera):
+    exige exactamente una —con el mismo selector, capa y especificidad gana la
+    última por orden de fuente, así que una segunda regla podría anular el
+    outline sin que el ancla lo viera— e incondicional —una regla bajo
+    ``@media``/``@supports`` no sostiene el foco fuera de esa condición, donde el
+    reset de Quasar vuelve a ganar—. Lista vacía = contrato cumplido.
+    """
+    reglas = _reglas_que_declaran_selector(bloque, selector)
+    if not reglas:
+        return ["no está declarado en @layer theme"]
+    if len(reglas) > 1:
+        return [f"declarado en {len(reglas)} reglas; debe ser exactamente una (gana la última por orden)"]
+    cuerpo, condicional = reglas[0]
+    violaciones = []
+    if condicional:
+        violaciones.append("su regla está bajo un at-rule condicional (@media/@supports)")
+    if not re.search(_OUTLINE_DORADO, cuerpo):
+        violaciones.append("su regla perdió el outline dorado !important")
+    if "outline-offset" not in cuerpo:
+        violaciones.append("su regla perdió outline-offset")
+    return violaciones
+
+
+_REGLA_DE_FOCO_OK = (
+    ".q-field__native:focus-visible,\n"
+    ".q-field__input:focus-visible {\n"
+    "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+    "    outline-offset: 2px !important;\n"
+    "}\n"
+)
+
+
+def _capa(*reglas: str) -> str:
+    return "@layer theme {\n" + "".join(reglas) + "}"
+
+
+def test_ancla_de_foco_acepta_la_regla_sana_en_lista_de_selectores() -> None:
+    """Control positivo: la forma real (lista por comas, una regla) cumple."""
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(_REGLA_DE_FOCO_OK), clase) == []
 
 
 def test_ancla_de_foco_no_se_satisface_con_una_regla_ajena_en_la_capa() -> None:
-    """RED-proof del acoplamiento selector→regla (revisión #631).
-
-    Construye una capa donde la regla de foco PERDIÓ las declaraciones pero una
-    regla ajena del mismo ``@layer theme`` sí las tiene: el helper debe devolver
-    el cuerpo de la regla de foco (sin ellas), no el de la ajena. Si el ancla
-    volviera a grepear el bloque entero, este test dejaría de proteger.
-    """
-    bloque = (
-        "@layer theme {\n"
-        "    .q-field__native:focus-visible,\n"
-        "    .q-field__input:focus-visible { color: red; }\n"
-        "    .regla-ajena:focus-visible {\n"
-        "        outline: 2px solid var(--sky-gold-bright) !important;\n"
-        "        outline-offset: 2px !important;\n"
-        "    }\n"
-        "}"
+    """RED-proof del acoplamiento selector→regla (revisión #631): la regla de foco
+    PERDIÓ las declaraciones pero una regla ajena de la capa sí las tiene."""
+    bloque = _capa(
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible { color: red; }\n"
+        ".regla-ajena:focus-visible {\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "}\n"
     )
-    for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
-        cuerpo = _cuerpo_de_regla_con_selector(bloque, clase)
-        assert cuerpo is not None, f"{clase} debe seguir declarándose en la capa"
-        assert not re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", cuerpo), (
-            f"{clase}: el helper devolvió el cuerpo de una regla ajena"
-        )
-        assert "outline-offset" not in cuerpo, f"{clase}: el helper devolvió el cuerpo de una regla ajena"
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(bloque, clase) == [
+            "su regla perdió el outline dorado !important",
+            "su regla perdió outline-offset",
+        ]
+
+
+def test_ancla_de_foco_rechaza_la_regla_bajo_at_rule_condicional() -> None:
+    """RED-proof (revisión de #730): mover la regla de foco bajo ``@media`` la deja
+    sin efecto fuera de la condición; el ancla no puede darla por incondicional."""
+    for at_rule in ("@media (min-width: 600px)", "@supports (outline: 1px solid red)"):
+        bloque = _capa(at_rule + " {\n" + _REGLA_DE_FOCO_OK + "}\n")
+        for clase in _SELECTORES_DE_FOCO:
+            assert _violaciones_de_foco(bloque, clase) == [
+                "su regla está bajo un at-rule condicional (@media/@supports)"
+            ]
+
+
+def test_ancla_de_foco_rechaza_un_selector_declarado_dos_veces() -> None:
+    """RED-proof (revisión de #730): una regla posterior con el mismo selector, capa
+    y especificidad gana por orden de fuente. El ancla enumera todas las reglas
+    del selector y exige exactamente una, no muestrea la primera."""
+    anula = ".q-field__native:focus-visible { outline: 0 !important; }\n"
+    for orden in ((_REGLA_DE_FOCO_OK, anula), (anula, _REGLA_DE_FOCO_OK)):
+        violaciones = _violaciones_de_foco(_capa(*orden), ".q-field__native:focus-visible")
+        assert len(violaciones) == 1 and "2 reglas" in violaciones[0]
+    # el hermano que sólo aparece en la lista por comas sigue sano
+    assert _violaciones_de_foco(_capa(_REGLA_DE_FOCO_OK, anula), ".q-field__input:focus-visible") == []
+
+
+def test_ancla_de_foco_falla_si_el_selector_desaparece_de_la_capa() -> None:
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(".otro { color: red; }\n"), clase) == ["no está declarado en @layer theme"]
 
 
 def test_ninguna_pisa_important_unlayered_la_tapa_quasar_en_silencio() -> None:
