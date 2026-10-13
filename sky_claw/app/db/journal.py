@@ -1008,21 +1008,18 @@ class OperationJournal:
                 # el sentinel self._db.
                 self._swept_pending_transaction_ids_this_open = set()
                 try:
-                    try:
-                        await self.sweep_stale_pending(_conn=conn)
-                    except TypeError:
-                        self._db = conn
-                        try:
-                            await self.sweep_stale_pending()
-                        finally:
-                            self._db = None
+                    await self.sweep_stale_pending(_conn=conn)
                 except (JournalError, sqlite3.Error):
+                    # Best-effort: el sweep de arranque es mantenimiento, no crítico.
+                    # Se loguea y se continúa publicando la conexión para no abortar
+                    # el startup por fallos transitorios de limpieza.
                     logger.warning(
                         "Journal: startup sweep of stale PENDING transactions failed",
                         exc_info=True,
                     )
 
-                # Publicar la conexión recién cuando TODO el setup terminó con éxito.
+                # Publicar la conexión recién cuando TODO el setup crítico terminó
+                # con éxito (o el sweep best-effort falló de forma controlada).
                 self._db = conn
 
             except (sqlite3.Error, JournalError) as e:
