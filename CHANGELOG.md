@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **El adapter legacy de `run_xedit_script` devolvía un resumen vacío como si fuera
+  el resumen validado (#549).** La tool del agente lee `list_all_conflicts.pas` y
+  verifica que `SUMMARY|total_conflicts` exista y cierre contra los conflictos
+  parseados; un adapter heredado que entrega un `XEditResult` preparseado sin
+  `raw_stdout` salteaba esa verificación y devolvía `success: true` con `conflicts`
+  llenos y `summary: {}` — un dict vacío que cualquier consumidor que lea
+  `summary.get(...)` confunde con un protocolo que declaró cero, cuando en realidad
+  no hubo protocolo. Ahora esa rama declara la ausencia: `summary` es `None`, la
+  clave sigue siempre presente y la forma del payload no cambia entre rutas. No se
+  deriva `total_conflicts` de `len(conflicts)`: el conteo es la afirmación de xEdit
+  de que el script llegó a `Finalize`, no un recuento nuestro. Se verificó que
+  ningún caller productivo cae en la rama legacy —el único `run_script` de
+  producción, `XEditRunner`, construye su resultado con `XEditOutputParser.parse`,
+  que siempre conserva `raw_stdout`—, así que el cambio es de contrato sobre
+  adapters heredados y no toca la ruta estricta. Anclas:
+  `tests/test_xedit_agent_readonly_policy.py` (las dos ramas y los tres fallos
+  cerrados) y `tests/test_xedit_summary_contract_invariant.py`, que descubre por
+  AST el censo de funciones que llaman `parse_summary_line`, lo congela por igualdad
+  literal y exige a cada una un guard `if clave not in resumen: raise` — la hermana
+  del orquestador (`ConflictAnalyzer.analyze`) ya fallaba cerrado; el censo es lo que
+  impide que un tercer consumidor herede la forma ambigua.
 - **Un `open()` fallido dejaba al consumidor de SQLite "abierto" sin schema (#474).**
   `DistributedLockManager.initialize()` en modo standalone asignaba `self._conn`
   antes de los PRAGMA y el DDL: si algo fallaba, el sentinel
