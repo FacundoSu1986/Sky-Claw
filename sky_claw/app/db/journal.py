@@ -1,1 +1,1 @@
-$(cat /tmp/journal_pr.py)
+PLACEHOLDER_JOURNAL
