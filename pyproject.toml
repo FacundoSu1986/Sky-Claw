@@ -125,7 +125,7 @@ filterwarnings = [
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["sky_claw", "tests", "local_scripts"]
+src = ["sky_claw", "scripts", "tests", "local_scripts"]
 
 [tool.ruff.lint]
 select = [

@@ -317,7 +317,7 @@ MO2 descartable la primera vez):
 - [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. Esa es la fuente de bootstrap. Si habilitás `SKYCLAW_VAULT_MASTER_KEY`, el provider activo puede sembrarse en `CredentialVault` para la ruta vault-backed de `LLMRouter.reload_provider()`; el reload de configuración viva mediante `AppContext.reload_llm_provider()` sigue usando clave explícita/keyring.
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
-- [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
+- [ ] Gates: `ruff check sky_claw/ scripts/ tests/`, `ruff format --check sky_claw/ scripts/ tests/` y `mypy sky_claw/ scripts/`.
 - [ ] `~/.sky_claw/logs/` escribible; correr con `-v` la primera vez. Si no lo
   está, Sky-Claw debe continuar y el logging queda degradado.
 - [ ] Perfil de MO2 respaldado (el rollback cubre operaciones del agente, pero un backup externo es barato).
@@ -376,10 +376,10 @@ Antes de invocar el empaquetado, **todos** los gates de CI deben estar en verde 
 1.  **Verificar versión del paquete:** Bump de `version` en `pyproject.toml` (semver: `MAJOR.MINOR.PATCH`).
 2.  **Actualizar CHANGELOG:** Mover los cambios de `[Unreleased]` a la nueva sección de versión con fecha.
 3.  **Gates locales:**
-    - `ruff check sky_claw/ tests/` (sin errores).
-    - `ruff format --check sky_claw/ tests/`.
-    - `mypy sky_claw/` (bloqueante).
-    - `pytest -q` (cobertura ≥ 60%).
+    - `ruff check sky_claw/ scripts/ tests/` (sin errores).
+    - `ruff format --check sky_claw/ scripts/ tests/`.
+    - `mypy sky_claw/ scripts/` (bloqueante).
+    - `pytest --cov=sky_claw --cov=scripts --cov-fail-under=60 tests/`.
 4.  **Smoke del VFS Bridge:** Ejecutar el flujo de la sección §2 (Bridge MO2/USVFS) en un perfil descartable para confirmar que el bridge funciona con el binario empaquetado.
 
 ### 10.2 Empaquetado con PyInstaller
@@ -391,7 +391,14 @@ El script `build.bat` orquesta la construcción del entorno y el binario. Para i
 pyinstaller sky_claw.spec --noconfirm --clean
 ```
 
-El binario resultante se deposita en `dist/SkyClawApp/` (o equivalente según el spec). El `.spec` maneja:
+El binario resultante se deposita en `dist/SkyClawApp/` (o equivalente según el spec). Después de compilar, ejecutar el smoke sin instalarlo:
+
+```bash
+python scripts/smoke_frozen_executable.py dist/SkyClawApp.exe
+```
+
+CI lo corre antes de subir el artifact; la receta de release también lo conserva
+antes de SBOM, firma y publicación, aunque el job siga pausado. El `.spec` maneja:
 - Inclusión de assets (plantillas, recursos estáticos de NiceGUI).
 - Autoderivación del `VERSIONINFO` de Windows desde `pyproject.toml`.
 - Hidden imports de dependencias dinámicas (ej. plugins de Pydantic).
