@@ -5,10 +5,11 @@ la entrada decodificada vive en una reticula 8-bit de paso ``q = 2/255``; el err
 canal esta acotado por ``abs(eps_c) <= q/2``; y el vector perturbado se RENORMALIZA:
 ``n' = normalize(n + eps)``. El modelo NO exige independencia entre pixeles.
 
-DOS OBJETOS DISTINTOS, que este archivo mantiene separados (el defecto formal que se repara):
+TRES OBJETOS DISTINTOS, que este archivo mantiene separados (el defecto formal que se repara):
 
   PERTURBACION   ``delta       = (q/2)*sqrt(3)``          sup de ``norm(eps)`` sobre el cubo
-  DESPLAZAMIENTO ``delta_chord = 2*sin(asin(delta)/2)``   sup de ``norm(n' - n)``
+  DESPLAZAMIENTO ``delta_chord = 2*sin(asin(delta)/2)``   sup de ``norm(n' - n)`` por pixel
+  ANGULO         ``delta_theta``                          lo que mide el umbral vigente
 
 ``norm(n' - n) <= delta`` es **FALSA**: la renormalizacion por pixel no es no-expansiva en
 la metrica de cuerda (``delta_chord/delta = 1.0000057671290952``). Usar ``delta`` como cota
@@ -20,21 +21,33 @@ de desplazamiento no es un redondeo conservador: es un paso invalido. La cadena 
    salida (pesos >= 0 que suman 1, tambien con la ventana recortada del borde), asi que
    ``norm(dv) = norm(sum_i w_i*delta_i) <= max_i norm(delta_i) <= delta_chord``.
    Vale para CUALQUIER correlacion entre pixeles: no se invoca independencia.
-3. Angulo. Para ``norm(v) = largo > delta_chord`` y ``norm(dv) <= delta_chord``,
+3. Angulo. Para ``v' = v + dv`` con ``norm(v) = largo > norm(dv)``, el maximo de
+   ``delta_theta`` a ``norm(dv)`` FIJO es ``asin(norm(dv)/largo)``, y se alcanza con
+   ``cos(angle(v, dv)) = -norm(dv)/largo`` (``dv`` inclinado hacia atras), donde
+   ``norm(v') = sqrt(largo^2 - norm(dv)^2)``. Consecuencia:
    ``delta_theta <= asin(norm(dv)/largo) <= asin(delta_chord/largo)``.
 
-Consecuencia: ``delta_theta <= q_ang`` queda garantizado para
-``largo >= delta_chord/sin(q_ang) = 0.8660392772765432``. NO es ``1/2`` y NO es exactamente
-``sqrt(3)/2``: ese valor queda ``1.387e-05`` por debajo (el corrimiento es
-``(1 + q^2/6)*(1 + 5.767e-06)``).
+TRES UMBRALES QUE NO SON EL MISMO, y no hay que confundir:
 
-La cota ``asin(delta_chord/largo)`` es CONSERVADORA, no ajustada. La construccion cerrada
-coherente alcanza ``delta_theta = atan(delta/largo)`` EXACTO (12 digitos significativos, y
-el refinamiento local vuelve al vertice ``eps = (q/2)*(1,1,1)`` con ratio 1.000000000000).
-La brecha ``asin(delta_chord/largo) - atan(delta/largo)`` vale <=1.02e-06 rad sobre
-``largo in [0.55, 1.0]`` (<=1.3e-04 de ``q_ang``), y se encoge al crecer ``largo``: la cota
-es valida pero no tight. ``atan(delta/largo)`` es la construccion ALCANZABLE; por si sola
-NO es una cota superior universal.
+  ``L_SUFICIENTE  = delta_chord/sin(q_ang) = 0.8660392772765431``  cruce de la COTA SUPERIOR:
+      ``largo >= L_SUFICIENTE`` GARANTIZA ``delta_theta <= q_ang``.
+  ``L_ALCANZABLE  = delta/tan(q_ang)       = 0.8660076459178669``  cruce de la construccion
+      cerrada: ``largo < L_ALCANZABLE`` certifica que EXISTE una entrada admisible con
+      ``delta_theta > q_ang`` (cota INFERIOR del peor caso). NO es el cruce de la cota.
+  ``L_INVALIDO    = delta/sin(q_ang)       = 0.8660342827450337``  el cruce que daba el paso
+      invalido ``norm(n'-n) <= delta``; se conserva solo para el control negativo.
+
+La banda ``[L_ALCANZABLE, L_SUFICIENTE)`` (ancho ``3.163e-05``) queda **indecidida** por
+este analisis: ni garantiza el criterio ni certifica su violacion.
+
+La cota ``asin(delta_chord/largo)`` es SUFICIENTE pero NO tight: la construccion cerrada
+alcanza ``delta_theta = atan(delta/largo)`` EXACTO (12 digitos, con ``norm(dv) ~ delta``,
+por DEBAJO de ``delta``), de modo que ``atan(delta/largo)`` es una cota INFERIOR del peor
+caso y NO una cota superior universal. La brecha ``asin(delta_chord/largo) - atan(delta/largo)``
+vale <=1.02e-06 rad sobre ``largo in [0.55, 1.0]`` (<=1.3e-04 de ``q_ang``) y se encoge al
+crecer ``largo``. Que la cota sea alcanzable por ALGUN adversario admisible **no esta
+demostrado**: una busqueda acotada (dos pixeles, pesos 1/2, 300 semillas + descenso por
+coordenadas) converge a ``asin(delta/largo)``, que es ``0.9999942x`` la cota.
 
 Relacion con la reconciliacion (#723). Aquel documento midio el cruce en ``1/2`` con un
 adversario COHERENTE de magnitud ``q/2`` en UN SOLO canal (``d[...,1] = q/2``). El modelo
@@ -43,8 +56,8 @@ declarado admite el vertice del cubo, de magnitud ``(q/2)*sqrt(3)``: el cruce es
 el de este archivo es el del modelo COMPLETO.
 
 ``R7_NUMERIC_DERIVATION`` sigue BLOCKED. La derivacion existe; lo que falta es (a) la
-adjudicacion worst-case vs estadistica, y (b) el margen numerico de la implementacion
-float32, que la seccion 8 MIDE pero no eleva a garantia.
+adjudicacion worst-case vs estadistica, (b) el margen numerico de la implementacion
+float32, que la seccion 8 MIDE pero no eleva a garantia, y (c) la tightness de la cota.
 """
 
 from __future__ import annotations
@@ -69,14 +82,16 @@ ALPHA_PERT = math.asin(DELTA_PERT)
 # DESPLAZAMIENTO: sup de `norm(normalize(n+eps) - n)`. Es la cuerda de `ALPHA_PERT`, y es
 # ESTRICTAMENTE MAYOR que `DELTA_PERT`: la renormalizacion no es no-expansiva en la cuerda.
 DELTA_CHORD = 2.0 * math.sin(ALPHA_PERT / 2.0)
-# Cruce CONSERVADOR de la cota angular.
-L_CRUCE_COTA = DELTA_CHORD / math.sin(Q_ANG)
-# Cruce de la construccion ALCANZABLE (`atan`), que es una cita inferior, no la cota.
-L_CRUCE_ATAN = DELTA_PERT / math.tan(Q_ANG)
+# Umbral SUFICIENTE: cruce de la cota superior `asin(delta_chord/largo)`.
+L_SUFICIENTE = DELTA_CHORD / math.sin(Q_ANG)
+# Cruce de la construccion ALCANZABLE: certifica RECHAZO (cota inferior), no garantia.
+L_ALCANZABLE = DELTA_PERT / math.tan(Q_ANG)
+# Cruce del paso INVALIDO (`delta` como cota de desplazamiento). Solo para el control negativo.
+L_INVALIDO = DELTA_PERT / math.sin(Q_ANG)
 
 # Margen numerico ESTIMADO de la implementacion float32 (Pillow modo F): `u = 2**-24` por
 # operacion, y el kernel separable de 64->32 toca 4 muestras por eje. NO es una garantia
-# demostrada: se usa para comparar, no para declarar cierre (ver seccion 8).
+# demostrada: se usa para comparar, no para declarar cierre (ver seccion 8 del documento).
 U_F32 = 2.0**-24
 TERMINOS_KERNEL = 4
 DELTA_PERT_NUM = (T + TERMINOS_KERNEL * U_F32) * math.sqrt(3.0)
@@ -87,6 +102,11 @@ _SIGMA = np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0)
 _V_HAT = np.array([1.0, -1.0, 0.0]) / math.sqrt(2.0)
 _U_HAT = np.cross(_SIGMA, _V_HAT)
 _EPS_VERTICE = T * np.array([1.0, 1.0, 1.0])
+
+_DOC = (
+    Path(__file__).resolve().parents[1]
+    / "docs/design/research/native-parallax/h4-resize-normal-r7-deterministic-bound.md"
+)
 
 
 def _renorm(x: np.ndarray) -> np.ndarray:
@@ -121,6 +141,18 @@ def _delta_theta_extremo(largo: float) -> float:
     return _angulo(v_limpio, v_pert)
 
 
+def _norma_dv_extremo(largo: float) -> float:
+    """`norm(dv)` de la construccion cerrada. Es MENOR que `delta`, y por lo tanto que `delta_chord`.
+
+    Cierre analitico (vale porque en la construccion `<eps, v> = 0`):
+    ``norm(dv)^2 = largo^2*(1/sqrt(1+delta^2) - 1)^2 + delta^2/(1+delta^2)``.
+    """
+    n_a, n_b = _campo_extremo(largo)
+    v_limpio = 0.5 * (n_a + n_b)
+    v_pert = 0.5 * (_renorm(n_a + _EPS_VERTICE) + _renorm(n_b + _EPS_VERTICE))
+    return float(np.linalg.norm(v_pert - v_limpio))
+
+
 def _cuerda_de_a(a: float) -> float:
     """Cuerda `norm(normalize(n+eps) - n)` para `eps = delta*sigma` y `<sigma, n> = a`.
 
@@ -134,6 +166,40 @@ def _cuerda_de_a(a: float) -> float:
     num = 1.0 + a * DELTA_PERT
     den = math.sqrt(1.0 + 2.0 * a * DELTA_PERT + DELTA_PERT * DELTA_PERT)
     return math.sqrt(max(0.0, 2.0 * (1.0 - num / den)))
+
+
+def _num(celda: str) -> float:
+    """Extrae un float de una celda markdown (quita backticks, negritas y signo explicito)."""
+    limpio = celda.replace("`", "").replace("*", "").replace("+", "").strip()
+    return float(limpio)
+
+
+def _filas_de_tabla(texto: str, ancla: str) -> list[list[str]]:
+    """Filas de datos de la PRIMERA tabla markdown que aparece despues del encabezado `ancla`."""
+    lineas = texto.splitlines()
+    for i, linea in enumerate(lineas):
+        if linea.startswith(ancla):
+            for j in range(i + 1, len(lineas)):
+                if lineas[j].lstrip().startswith("|"):
+                    crudas = []
+                    k = j
+                    while k < len(lineas) and lineas[k].lstrip().startswith("|"):
+                        crudas.append([c.strip() for c in lineas[k].strip().strip("|").split("|")])
+                        k += 1
+                    return [f for f in crudas[2:] if any(c.strip(" -:") for c in f)]
+    raise AssertionError(f"no encontre la tabla que sigue a {ancla!r}")
+
+
+def _bloque_de_tokens(texto: str) -> dict[str, str]:
+    """Tokens declarados en el ultimo bloque ```text del documento."""
+    bloques = re.findall(r"```text\n(.*?)```", texto, flags=re.DOTALL)
+    assert bloques, "el documento debe declarar su bloque de tokens"
+    tokens: dict[str, str] = {}
+    for linea in bloques[-1].splitlines():
+        m = re.match(r"^([A-Z][A-Z0-9_]*)\s*=\s*(.*)$", linea.strip())
+        if m:
+            tokens[m.group(1)] = m.group(2).strip()
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -206,25 +272,57 @@ def test_r7_forma_cerrada_de_la_cuerda_y_su_optimo_en_a_menos_delta() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Cota angular y cruce corregido
+# 2. Cota angular: el paso 3 y su umbral suficiente
 # ---------------------------------------------------------------------------
-def test_r7_la_cota_angular_y_su_cruce_corregido() -> None:
-    """`delta_theta <= asin(delta_chord/largo)` cruza `q_ang` en `0.8660392772765432`."""
-    assert math.isclose(L_CRUCE_COTA, 0.8660392772765432, rel_tol=1e-12)
-    assert math.isclose(_cota_angular(L_CRUCE_COTA), Q_ANG, rel_tol=1e-12)
+@pytest.mark.parametrize("largo", [0.55, 0.70, 0.80, 0.8660392772765431, 0.95, 1.0])
+def test_r7_optimo_angular_con_norma_de_dv_fija_es_asin(largo: float) -> None:
+    """Con `norm(dv) = d` FIJO, el maximo de `delta_theta` es `asin(d/largo)`.
+
+    Se alcanza con `cos(angle(v, dv)) = -d/largo` (dv inclinado hacia atras), donde
+    `norm(v') = sqrt(largo^2 - d^2)`. El caso perpendicular (`cos = 0`) da `atan(d/largo)`,
+    que es ESTRICTAMENTE MENOR: por eso la construccion cerrada no alcanza la cota.
+
+    Este es el paso que hace riguroso `delta_theta <= asin(norm(dv)/largo)`; sin el, la
+    cota solo seria valida si `norm(v') >= largo`, que NO se cumple en general.
+    """
+    for d in (DELTA_PERT, DELTA_CHORD):
+        v = np.array([largo, 0.0, 0.0])
+        c_opt = -d / largo
+        s = math.sqrt(max(0.0, 1.0 - c_opt * c_opt))
+        dv = d * (c_opt * np.array([1.0, 0.0, 0.0]) + s * np.array([0.0, 1.0, 0.0]))
+        # el optimo alcanza el asin (rel_tol 1e-9: `acos` cerca de 1 pierde digitos)
+        assert math.isclose(_angulo(v, v + dv), math.asin(d / largo), rel_tol=1e-9)
+        # y la norma del vector perturbado es la prevista por el triangulo rectangulo
+        assert math.isclose(float(np.linalg.norm(v + dv)), math.sqrt(largo * largo - d * d), rel_tol=1e-12)
+        # el caso perpendicular da atan, estrictamente menos
+        dv_perp = d * np.array([0.0, 1.0, 0.0])
+        assert _angulo(v, v + dv_perp) < math.asin(d / largo)
+        assert math.isclose(_angulo(v, v + dv_perp), math.atan(d / largo), rel_tol=1e-9)
+        # barrido fino: nada supera el asin
+        peor = 0.0
+        for c in np.linspace(-1.0, 1.0, 4001):
+            ss = math.sqrt(max(0.0, 1.0 - c * c))
+            peor = max(peor, _angulo(v, v + d * (c * np.array([1.0, 0.0, 0.0]) + ss * np.array([0.0, 1.0, 0.0]))))
+        assert peor <= math.asin(d / largo) * (1.0 + 1e-9)
+
+
+def test_r7_la_cota_angular_y_su_umbral_suficiente() -> None:
+    """`delta_theta <= asin(delta_chord/largo)` cruza `q_ang` en `L_SUFICIENTE`."""
+    assert math.isclose(L_SUFICIENTE, 0.8660392772765431, rel_tol=1e-12)
+    assert math.isclose(_cota_angular(L_SUFICIENTE), Q_ANG, rel_tol=1e-12)
     # el valor esta por ENCIMA de sqrt(3)/2, aunque a solo 1.39e-05
     raiz_de_tres_medios = math.sqrt(3) / 2
-    assert L_CRUCE_COTA - raiz_de_tres_medios > 0.0
-    assert math.isclose(L_CRUCE_COTA - raiz_de_tres_medios, 1.387349210457689e-05, rel_tol=1e-6)
+    assert raiz_de_tres_medios < L_SUFICIENTE
+    assert math.isclose(L_SUFICIENTE - raiz_de_tres_medios, 1.387349210457689e-05, rel_tol=1e-6)
     # y muy por encima de los umbrales vigentes
-    assert L_CRUCE_COTA > 0.5
-    assert L_CRUCE_COTA > 5.0 / 16.0
+    assert L_SUFICIENTE > 0.5
+    assert L_SUFICIENTE > 5.0 / 16.0
     # la cota es decreciente en `largo`
     assert _cota_angular(0.9) < _cota_angular(0.8) < _cota_angular(0.7)
 
 
-def test_r7_verificacion_independiente_del_cruce_por_biseccion() -> None:
-    """El cruce se recomputa por biseccion: no se copia como constante de autoridad."""
+def test_r7_verificacion_independiente_del_umbral_por_biseccion() -> None:
+    """El umbral se recomputa por biseccion: no se copia como constante de autoridad."""
     lo, hi = 0.5, 1.0
     for _ in range(200):
         mid = 0.5 * (lo + hi)
@@ -232,17 +330,21 @@ def test_r7_verificacion_independiente_del_cruce_por_biseccion() -> None:
             lo = mid
         else:
             hi = mid
-    assert math.isclose(0.5 * (lo + hi), L_CRUCE_COTA, rel_tol=1e-14)
+    assert math.isclose(0.5 * (lo + hi), L_SUFICIENTE, rel_tol=1e-14)
     # y la formula cerrada se recompone desde sus piezas declaradas
-    assert math.isclose(L_CRUCE_COTA, 2.0 * math.sin(math.asin(DELTA_PERT) / 2.0) / math.sin(Q_ANG), rel_tol=1e-15)
+    assert math.isclose(L_SUFICIENTE, 2.0 * math.sin(math.asin(DELTA_PERT) / 2.0) / math.sin(Q_ANG), rel_tol=1e-15)
 
 
 # ---------------------------------------------------------------------------
-# 3. Alcanzabilidad: la cota no es vacua, pero es conservadora
+# 3. Alcanzabilidad: la cota no es vacua, pero es conservadora y NO tight
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("largo", [0.55, 0.70, 0.80, 0.866, 0.95, 1.0])
 def test_r7_construccion_extrema_alcanza_atan_delta_sobre_largo(largo: float) -> None:
-    """`delta_theta = atan(delta/largo)` EXACTO en la construccion cerrada (cita inferior)."""
+    """`delta_theta = atan(delta/largo)` EXACTO en la construccion cerrada.
+
+    Es una cota INFERIOR del peor caso (la construccion es admisible), NO una cota superior
+    universal: por eso el test exige tambien que quede POR DEBAJO de la cota probada.
+    """
     dt = _delta_theta_extremo(largo)
     assert math.isclose(dt, math.atan(DELTA_PERT / largo), rel_tol=1e-9)
     assert dt <= _cota_angular(largo) + 1e-12  # respeta la cota conservadora
@@ -270,14 +372,93 @@ def test_r7_la_cota_es_conservadora_frente_a_la_construccion_alcanzable() -> Non
     assert math.isclose(_cota_angular(0.55) - _delta_theta_extremo(0.55), 1.0129e-06, rel_tol=1e-3)
 
 
-def test_r7_la_cota_no_es_vacua_en_el_cruce() -> None:
-    """Justo sobre el cruce la construccion alcanzable toca `q_ang` (la cota no es hueca)."""
-    dt = _delta_theta_extremo(L_CRUCE_COTA)
+def test_r7_la_cota_no_es_vacua_en_el_umbral() -> None:
+    """Justo sobre el umbral suficiente la construccion alcanzable toca `q_ang` (la cota no es hueca)."""
+    dt = _delta_theta_extremo(L_SUFICIENTE)
     assert math.isclose(dt, Q_ANG, rel_tol=1e-3)
 
 
 # ---------------------------------------------------------------------------
-# 4. Controles negativos
+# 4. R7-REV-02: la construccion NO alcanza `delta_chord` en norma de `dv`
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("largo", [0.55, 0.70, 0.80, 0.866, 0.95, 1.0])
+def test_r7_rev02_la_construccion_no_alcanza_delta_chord_en_norma_de_dv(largo: float) -> None:
+    """`norm(dv)` de la construccion cerrada queda POR DEBAJO de `delta` (y de `delta_chord`).
+
+    El error documental que esto mata: afirmar que la construccion del vertice alcanza
+    `delta_chord` en norma de `dv`. No lo alcanza: la mezcla de normales y la renormalizacion
+    cambian la magnitud del desplazamiento. La cota `delta_chord` acota `norm(dv)`, no lo iguala.
+    """
+    d = _norma_dv_extremo(largo)
+    assert d < DELTA_PERT, f"L={largo}: norm(dv)={d} deberia quedar por debajo de delta={DELTA_PERT}"
+    assert d < DELTA_CHORD
+    # el cierre analitico reproduce el valor medido (no hay margen para "aproximar a ojo")
+    s = math.sqrt(1.0 + DELTA_PERT * DELTA_PERT)
+    predicho = math.sqrt(
+        largo * largo * (1.0 / s - 1.0) ** 2 + DELTA_PERT * DELTA_PERT / (1.0 + DELTA_PERT * DELTA_PERT)
+    )
+    assert math.isclose(d, predicho, rel_tol=1e-12)
+    # y la brecha contra la cota de desplazamiento es del orden de 1.6e-07..1.8e-07, no nula
+    assert 1e-7 < DELTA_CHORD - d < 2e-7
+
+
+def test_r7_rev02_el_sup_de_norma_dv_es_alcanzable_pero_no_maximiza_el_angulo() -> None:
+    """`delta_chord` SI es alcanzable como desplazamiento, pero esa configuracion NO maximiza el angulo.
+
+    Con `n_i = -delta*sigma + sqrt(1-delta^2)*w_i` y `eps_i = delta*sigma` (coherente), sale
+    `norm(n'_i - n_i) = delta_chord` exacto. Sin embargo el angulo resultante es `asin(delta)`,
+    que NO es el maximo angular para esa norma: el maximo exigiria `cos(alpha) = -d/largo`.
+    Las dos familias extremales son DISTINTAS, y por eso la cota no es tight.
+    """
+    n = -DELTA_PERT * _SIGMA + math.sqrt(1.0 - DELTA_PERT * DELTA_PERT) * _V_HAT
+    n_prima = _renorm(n + _EPS_VERTICE)
+    d = float(np.linalg.norm(n_prima - n))
+    assert math.isclose(d, DELTA_CHORD, rel_tol=1e-12)  # el sup de desplazamiento SI se alcanza
+    # pero el angulo de esa configuracion es asin(delta), no asin(delta_chord) ni atan(delta)
+    angulo = _angulo(n, n_prima)
+    assert math.isclose(angulo, math.asin(DELTA_PERT), rel_tol=1e-9)
+    assert angulo < math.asin(DELTA_CHORD)
+    # el coseno queda lejos del optimo angular (-d/largo), que es lo que impide la tightness
+    cos_alpha = float(np.dot(n, n_prima - n)) / d
+    assert math.isclose(cos_alpha, -(DELTA_PERT**2) / (2.0 * DELTA_CHORD), rel_tol=1e-3)
+    assert cos_alpha > -d  # el optimo exigiria -d/largo <= -d
+
+
+# ---------------------------------------------------------------------------
+# 5. R7-REV-03: umbral suficiente vs cota inferior certificada
+# ---------------------------------------------------------------------------
+def test_r7_rev03_los_tres_umbrales_son_distintos_y_ordenados() -> None:
+    """`delta/tan(q) < delta/sin(q) < delta_chord/sin(q)`: garantia, paso invalido y rechazo.
+
+    El token de cruce NO debe llamarse "worst case": `L_SUFICIENTE` es el cruce de una COTA
+    SUPERIOR. El cruce de la construccion alcanzable (`L_ALCANZABLE`) es DISTINTO y MENOR, y
+    es el que certifica RECHAZO: si `largo < L_ALCANZABLE`, existe una entrada admisible con
+    `delta_theta > q_ang`.
+    """
+    assert L_ALCANZABLE < L_INVALIDO < L_SUFICIENTE
+    assert math.isclose(L_ALCANZABLE, 0.8660076459178669, rel_tol=1e-12)
+    assert math.isclose(L_INVALIDO, 0.8660342827450337, rel_tol=1e-12)
+    # la banda indecidida por este analisis
+    assert 0.0 < L_SUFICIENTE - L_ALCANZABLE < 1e-4
+    assert math.isclose(L_SUFICIENTE - L_ALCANZABLE, 3.163135867612077e-05, rel_tol=1e-9)
+
+
+def test_r7_rev03_rechazo_certificado_por_debajo_de_la_construccion() -> None:
+    """Por DEBAJO de `L_ALCANZABLE` el rechazo es CERTIFICADO (cota inferior), no conjetura."""
+    for largo in (L_ALCANZABLE * (1.0 - 1e-3), 0.80, 0.55):
+        assert largo < L_ALCANZABLE
+        assert _delta_theta_extremo(largo) > Q_ANG  # existe entrada admisible que viola el criterio
+    # y por ENCIMA de `L_SUFICIENTE` la garantia es igual de dura (cota superior)
+    for largo in (L_SUFICIENTE * (1.0 + 1e-6), 0.95, 1.0):
+        assert _cota_angular(largo) < Q_ANG
+    # la banda intermedia queda INDECIDIDA: no se puede afirmar ninguna de las dos cosas
+    medio = 0.5 * (L_ALCANZABLE + L_SUFICIENTE)
+    assert _cota_angular(medio) > Q_ANG  # la cota no garantiza
+    assert _delta_theta_extremo(medio) < Q_ANG  # la construccion tampoco certifica rechazo
+
+
+# ---------------------------------------------------------------------------
+# 6. Controles negativos
 # ---------------------------------------------------------------------------
 def test_r7_control_negativo_eps_paralelo_a_v_mide_cero() -> None:
     """Si `eps` queda PARALELO al vector interpolado, la deflexion es nula.
@@ -320,32 +501,32 @@ def test_r7_control_negativo_medir_largo_tras_renormalizar_invierte_el_veredicto
 def test_r7_control_negativo_delta_no_acota_el_desplazamiento() -> None:
     """Una cota con `delta` (en vez de `delta_chord`) NO encierra el peor caso alcanzable.
 
-    Es el control que mata la reaparicion de `norm(dv) <= delta`: en el cruce derivado, el
+    Es el control que mata la reaparicion de `norm(dv) <= delta`: en el umbral derivado, el
     desplazamiento real por pixel vale `delta_chord > delta`, de modo que la cota ingenua
     queda por debajo de la cantidad que pretende acotar.
     """
     assert DELTA_CHORD > DELTA_PERT
-    # la cota ingenua del cruce es estrictamente menor: no alcanza para el mismo criterio
-    assert DELTA_PERT / math.sin(Q_ANG) < L_CRUCE_COTA
+    # la cota ingenua del umbral es estrictamente menor: no alcanza para el mismo criterio
+    assert L_INVALIDO < L_SUFICIENTE
     # y en el punto donde la cota correcta vale exactamente `q_ang`, la ingenua se queda corta
-    assert _cota_angular(L_CRUCE_COTA) > math.asin(min(1.0, DELTA_PERT / L_CRUCE_COTA))
+    assert _cota_angular(L_SUFICIENTE) > math.asin(min(1.0, DELTA_PERT / L_SUFICIENTE))
 
 
 # ---------------------------------------------------------------------------
-# 5. Implicaciones sobre los umbrales vigentes
+# 7. Implicaciones sobre los umbrales vigentes
 # ---------------------------------------------------------------------------
 def test_r7_los_umbrales_vigentes_no_garantizan_q_ang_bajo_el_modelo() -> None:
     """`5/16` y `1/2` dejan pasar `delta_theta` mayor que `q_ang`."""
     assert math.isclose(_cota_angular(5.0 / 16.0), 2.7715 * Q_ANG, rel_tol=2e-3)
     assert math.isclose(_cota_angular(0.5), 1.7321 * Q_ANG, rel_tol=2e-3)
     # el cruce del modelo completo escala el de la reconciliacion por sqrt(3)
-    assert math.isclose(L_CRUCE_ATAN / 0.5, math.sqrt(3), rel_tol=2e-3)
-    # y solo en el cruce derivado la cota vale exactamente q_ang
-    assert math.isclose(_cota_angular(L_CRUCE_COTA), Q_ANG, rel_tol=1e-12)
+    assert math.isclose(L_ALCANZABLE / 0.5, math.sqrt(3), rel_tol=2e-3)
+    # y solo en el umbral suficiente la cota vale exactamente q_ang
+    assert math.isclose(_cota_angular(L_SUFICIENTE), Q_ANG, rel_tol=1e-12)
 
 
 # ---------------------------------------------------------------------------
-# 6. Bordes: el kernel recortado sigue siendo convexo
+# 8. Bordes: el kernel recortado sigue siendo convexo
 # ---------------------------------------------------------------------------
 def test_r7_el_borde_no_tiene_un_modo_de_cancelacion_peor() -> None:
     """La ventana recortada del borde tiene pesos >= 0 que suman 1 => misma cota."""
@@ -363,7 +544,7 @@ def test_r7_el_borde_no_tiene_un_modo_de_cancelacion_peor() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. La implementacion real (Pillow modo F) alcanza la cota
+# 9. La implementacion real (Pillow modo F) alcanza la cota
 # ---------------------------------------------------------------------------
 def _filtro_ideal(campo: np.ndarray, n_out: int) -> np.ndarray:
     """Filtro bilineal triangular separable EXACTO en float64 (sin el float32 de Pillow)."""
@@ -469,21 +650,87 @@ def test_r7_el_error_numerico_de_pillow_modo_f_cabe_en_el_margen_estimado() -> N
 
 
 # ---------------------------------------------------------------------------
-# 8. Guarda documental: el doc no puede reintroducir la desigualdad ingenua
+# 10. R7-REV-01: las tablas del documento se recalculan fila por fila
+# ---------------------------------------------------------------------------
+def test_r7_rev01_la_tabla_de_conservadurismo_se_recalcula_con_su_propio_largo() -> None:
+    """Cada fila de la tabla de conservadurismo se recomputa con SU PROPIO `largo`.
+
+    El error que esto mata (R7-REV-01): una fila rotulada `L*` llevaba el `atan` de `L=0.866`,
+    de modo que lo "alcanzable" parecia EXCEDER la cota probada. La tabla es manual: sin este
+    gate, vuelve a divergir.
+    """
+    filas = _filas_de_tabla(_DOC.read_text(encoding="utf-8"), "## 4.")
+    assert len(filas) >= 4, "la tabla de conservadurismo debe tener al menos 4 filas"
+    for fila in filas:
+        largo = _num(fila[0])
+        cota = _cota_angular(largo)
+        alcanzable = math.atan(DELTA_PERT / largo)
+        assert alcanzable <= cota, f"fila L={largo}: alcanzable {alcanzable} EXCEDE la cota {cota}"
+        assert math.isclose(_num(fila[1]), cota, rel_tol=1e-6), f"fila L={largo}: cota del doc"
+        assert math.isclose(_num(fila[2]), alcanzable, rel_tol=1e-6), f"fila L={largo}: atan del doc"
+        assert math.isclose(_num(fila[3]), cota - alcanzable, rel_tol=1e-4, abs_tol=1e-12)
+        assert math.isclose(_num(fila[4]), (cota - alcanzable) / Q_ANG, rel_tol=1e-4)
+
+
+def test_r7_rev01_la_tabla_numerica_float32_se_recalcula_con_su_propio_largo() -> None:
+    """Cada fila de la tabla de margen numerico se recomputa (ideal, Pillow, gap, holgura)."""
+    filas = _filas_de_tabla(_DOC.read_text(encoding="utf-8"), "## 8.")
+    assert len(filas) >= 4
+    for fila in filas:
+        largo = _num(fila[0])
+        campo, pert = _campos_de_prueba(largo)
+        v_ideal = _filtro_ideal(campo, 32)[16, 16]
+        p_ideal = _filtro_ideal(pert, 32)[16, 16]
+        v_pill = _filtro_pillow(campo, 32)[16, 16]
+        p_pill = _filtro_pillow(pert, 32)[16, 16]
+        dt_ideal = _angulo(v_ideal, p_ideal)
+        dt_pill = _angulo(v_pill, p_pill)
+        largo_pill = float(np.linalg.norm(v_pill))
+        assert math.isclose(_num(fila[1]), dt_ideal, rel_tol=1e-6), f"fila L={largo}: ideal"
+        assert math.isclose(_num(fila[2]), dt_pill, rel_tol=1e-6), f"fila L={largo}: pillow"
+        assert math.isclose(_num(fila[3]), dt_pill - dt_ideal, rel_tol=1e-3, abs_tol=1e-12)
+        assert math.isclose(_num(fila[4]), _cota_angular(largo_pill) - dt_pill, rel_tol=1e-3, abs_tol=1e-12)
+
+
+def test_r7_rev01_la_tabla_de_umbrales_se_recalcula_y_su_veredicto_es_coherente() -> None:
+    """La columna "¿garantiza?" debe coincidir con `cota(L) <= q_ang`, fila por fila."""
+    filas = _filas_de_tabla(_DOC.read_text(encoding="utf-8"), "## 9.")
+    assert len(filas) >= 3
+    for fila in filas:
+        largo = _num(fila[1])
+        cota = _cota_angular(largo)
+        assert math.isclose(_num(fila[2]), cota, rel_tol=1e-6), f"L={largo}: cota del doc"
+        assert math.isclose(_num(fila[3]), cota / Q_ANG, rel_tol=1e-5), f"L={largo}: x q_ang del doc"
+        garantiza = cota <= Q_ANG * (1.0 + 1e-12)
+        afirmado = "Sí" in fila[4]
+        assert afirmado == garantiza, f"L={largo}: el doc dice {fila[4]!r} pero cota={cota} vs q_ang={Q_ANG}"
+
+
+# ---------------------------------------------------------------------------
+# 11. Guarda documental
 # ---------------------------------------------------------------------------
 def test_r7_el_documento_no_reintroduce_la_desigualdad_ingenua() -> None:
-    """Ancla el doc al modelo corregido y prohibe el paso invalido `max_i norm(delta_i) <= delta`."""
-    raiz = Path(__file__).resolve().parents[1]
-    doc = raiz / "docs/design/research/native-parallax/h4-resize-normal-r7-deterministic-bound.md"
-    texto = doc.read_text(encoding="utf-8")
+    """Ancla el doc al modelo corregido y prohibe el paso invalido y el token enganoso."""
+    texto = _DOC.read_text(encoding="utf-8")
     compacto = re.sub(r"\s+", "", texto)
 
-    # invariantes positivos: el doc declara la cuerda y el cruce corregido
+    # invariantes positivos: el doc declara la cuerda, los umbrales y su semantica
     assert "delta_chord" in texto
-    assert "0.8660392772765432" in texto
+    assert "0.866039277276543" in texto
+    assert "0.8660076459178669" in texto
     assert "R7_WORST_CASE_BOUND_ANGULAR" in texto
-    assert "R7_WORST_CASE_CROSSING_FULL" in texto
+    assert "R7_SUFICIENTE_THRESHOLD_IDEAL" in texto
+    assert "R7_ALCANZABLE_THRESHOLD_LOWER_BOUND" in texto
     # invariantes negativos: el paso invalido y su consecuencia no reaparecen
     assert "max_i||delta_i||<=Delta_max" not in compacto
     assert "||dv||<=Delta_max" not in compacto
     assert "delta_theta<=asin(Delta_max/L)" not in compacto
+    # R7-REV-02: la construccion NO iguala delta_chord en norma de dv
+    assert "norm(dv)=delta_chord" not in compacto
+    assert "||dv||=delta_chord" not in compacto
+    # R7-REV-03: el token de cruce ya no se declara como "worst case"
+    tokens = _bloque_de_tokens(texto)
+    assert "R7_WORST_CASE_CROSSING_FULL" not in tokens
+    assert "R7_SUFICIENTE_THRESHOLD_IDEAL" in tokens
+    assert "R7_ALCANZABLE_THRESHOLD_LOWER_BOUND" in tokens
+    assert "R7_NUMERIC_DERIVATION" in tokens and tokens["R7_NUMERIC_DERIVATION"].startswith("BLOCKED")
