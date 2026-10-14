@@ -722,9 +722,19 @@ def _serializar_reserva(reserva: SeqReservation) -> dict[str, object]:
 
 
 def cargar_journal_transicion(root: pathlib.Path) -> JournalLoadResult:
-    """Lee y clasifica el journal vigente. Ausente ≠ corrupto (§36.4 N2)."""
+    """Lee y clasifica el journal vigente. Ausente ≠ corrupto (§36.4 N2).
+
+    Un reparse point (enlace, junction, y también uno CÍCLICO o colgado, cuyo
+    ``exists()`` es False) NUNCA se lee como ausente: se inspecciona el enlace
+    con ``lstat`` ANTES de decidir, y ``_leer_json_estricto`` rechaza lo que no
+    sea un archivo real.
+    """
     ruta = transition_journal_path(root)
-    if not ruta.exists():
+    try:
+        kind = link_kind_or_raise(ruta)
+    except OSError as exc:
+        raise JournalCorruptError(f"{ruta}: no se pudo inspeccionar: {exc}") from exc
+    if kind is None and not ruta.exists():
         return JournalLoadResult(
             disposition=JournalDisposition.ABSENT,
             journal=None,
