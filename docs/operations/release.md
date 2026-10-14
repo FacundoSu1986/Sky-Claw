@@ -15,7 +15,9 @@
 ## Qué existe
 
 - Cinco gates en CI: Lint, Mypy, Tests, Security y Build.
-- Build PyInstaller y artifact de CI.
+- Build PyInstaller y artifact de CI. Antes de subirlo, el job `Build` ejecuta
+  `dist/SkyClawApp.exe --help` con perfil, config, logs y temporales aislados; un
+  timeout o código distinto de cero bloquea el artifact.
 - Lockfiles `requirements.lock` y `uv.lock`.
 - Runbook de deployment y checklist de rig real.
 - La release `v0.2.4`, cuyo workflow terminó correctamente, publicó
@@ -37,6 +39,20 @@ Esta actualización documental no verificó criptográficamente el bundle de
 artefacto histórico. Authenticode, identidad de publisher y comportamiento de
 SmartScreen permanecen sin verificación independiente aquí. La existencia del
 workflow, sus assets y una ejecución exitosa no sustituye esos smokes.
+
+## Smoke automatizado del ejecutable (actualización parcial 2026-10-14)
+
+El job `Build` de CI ejecuta el `SkyClawApp.exe` recién generado con `--help`
+antes de subirlo como artifact. El smoke usa un perfil temporal; descarta la
+configuración Sky-Claw, las rutas Python y las variables de entorno con nombres
+comunes de secretos; impone un timeout de 60 segundos y adjunta
+`crash.log`/salida acotada si el proceso falla. Así se detectan fallos de
+bootstrap del bundle o del parser antes de distribuir el binario.
+
+El alcance es deliberadamente acotado: no arranca la GUI, no verifica el cold
+boot en una máquina Windows limpia y no prueba MO2/USVFS, herramientas externas,
+rollback ni firma. Esos gates manuales siguen vigentes; el smoke automatizado no
+los sustituye.
 
 ## Gate documental previo
 

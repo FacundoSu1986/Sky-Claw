@@ -221,7 +221,11 @@ jobs:
           pip install pyinstaller
           pip install -e .
       - name: Build executable
+        id: build_executable
         run: pyinstaller sky_claw.spec --clean
+      - name: Smoke-test frozen executable
+        id: smoke_frozen_executable
+        run: python scripts/smoke_frozen_executable.py dist/SkyClawApp.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SkyClawApp-exe
