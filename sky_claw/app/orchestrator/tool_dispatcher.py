@@ -264,16 +264,36 @@ def build_orchestration_dispatcher(
         ],
     )
 
-    # Follow-up A: generate_animations (Pandora) is destructive → HITL gate
+    # Follow-up A + #726: generate_animations (Pandora) is destructive →
+    # ErrorWrapping + DictGuard + HITL gate. El wrapping va FUERA del gate para
+    # que el ValueError de `validate_for_approval` (payload con claves que la
+    # estrategia NO honra — Codex #213) degrade a error dict en vez de escapar
+    # del dispatcher. `PandoraPipelineService.generate_animations` ya devuelve
+    # dict ante `Exception` (boundary T11), así que acá el wrapping es defensa en
+    # profundidad y uniformidad del contrato del dispatcher, no un escape medido.
     dispatcher.register(
         GenerateAnimationsStrategy(service=dependencies.pandora_service),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("PandoraAnimationsExecutionFailed"),
+            DictResultGuardMiddleware("InvalidPandoraAnimationsResult"),
+            gate,
+        ],
     )
 
-    # Follow-up B: quick_auto_clean (SSEEdit QuickAutoClean) is destructive → HITL gate
+    # Follow-up B + #726: quick_auto_clean reescribe los DLC oficiales EN DISCO →
+    # ErrorWrapping + DictGuard + HITL gate (mismo orden que generate_lods).
+    # Acá el hueco sí es medido: `XEditPipelineService.quick_auto_clean` sólo
+    # captura `_ActionManifestError`, `LockAcquisitionError` y
+    # `(PatchingError, XEditError)`, a diferencia de sus hermanos Pandora y Wrye
+    # Bash que cierran con el `except Exception → dict` de T11. Cualquier otra
+    # excepción (p. ej. `OSError` al resolver `Data`) escapaba del dispatcher.
     dispatcher.register(
         QuickAutoCleanStrategy(service=dependencies.xedit_service),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("XEditQuickAutoCleanFailed"),
+            DictResultGuardMiddleware("InvalidXEditQuickAutoCleanResult"),
+            gate,
+        ],
     )
 
     # PR-5 grass cache: la Fase A es read-only (sin gate, con wrapping como
@@ -308,12 +328,23 @@ def build_orchestration_dispatcher(
         ),
     )
 
-    # FASE 1.5.1: generate_bashed_patch is destructive → HITL gate
+    # FASE 1.5.1 + #726: generate_bashed_patch is destructive → ErrorWrapping +
+    # DictGuard + HITL gate. Contraste verificado: `WryeBashPipelineService`
+    # ya convierte todo en dict (incluido `WryeBashHeadlessUnsupportedError`, que
+    # subclasea `WryeBashExecutionError`), así que —igual que Pandora— acá el
+    # wrapping es defensa en profundidad y uniformidad del contrato, NO la
+    # corrección de un escape medido. La estrategia NO implementa
+    # `validate_for_approval`: filtra y advierte (semántica deliberada, distinta
+    # de las otras dos), y el wrapping no la altera.
     dispatcher.register(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=dependencies.wrye_bash_pipeline,
         ),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"),
+            DictResultGuardMiddleware("InvalidWryeBashPipelineResult"),
+            gate,
+        ],
     )
 
     dispatcher.register(
