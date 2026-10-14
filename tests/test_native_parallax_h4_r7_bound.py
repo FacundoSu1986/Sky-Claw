@@ -666,8 +666,8 @@ def test_r7_rev01_la_tabla_de_conservadurismo_se_recalcula_con_su_propio_largo()
         cota = _cota_angular(largo)
         alcanzable = math.atan(DELTA_PERT / largo)
         assert alcanzable <= cota, f"fila L={largo}: alcanzable {alcanzable} EXCEDE la cota {cota}"
-        assert math.isclose(_num(fila[1]), cota, rel_tol=1e-6), f"fila L={largo}: cota del doc"
-        assert math.isclose(_num(fila[2]), alcanzable, rel_tol=1e-6), f"fila L={largo}: atan del doc"
+        assert math.isclose(_num(fila[1]), cota, rel_tol=1e-12), f"fila L={largo}: cota del doc"
+        assert math.isclose(_num(fila[2]), alcanzable, rel_tol=1e-12), f"fila L={largo}: atan del doc"
         assert math.isclose(_num(fila[3]), cota - alcanzable, rel_tol=1e-4, abs_tol=1e-12)
         assert math.isclose(_num(fila[4]), (cota - alcanzable) / Q_ANG, rel_tol=1e-4)
 
@@ -686,8 +686,8 @@ def test_r7_rev01_la_tabla_numerica_float32_se_recalcula_con_su_propio_largo() -
         dt_ideal = _angulo(v_ideal, p_ideal)
         dt_pill = _angulo(v_pill, p_pill)
         largo_pill = float(np.linalg.norm(v_pill))
-        assert math.isclose(_num(fila[1]), dt_ideal, rel_tol=1e-6), f"fila L={largo}: ideal"
-        assert math.isclose(_num(fila[2]), dt_pill, rel_tol=1e-6), f"fila L={largo}: pillow"
+        assert math.isclose(_num(fila[1]), dt_ideal, rel_tol=1e-9), f"fila L={largo}: ideal"
+        assert math.isclose(_num(fila[2]), dt_pill, rel_tol=1e-9), f"fila L={largo}: pillow"
         assert math.isclose(_num(fila[3]), dt_pill - dt_ideal, rel_tol=1e-3, abs_tol=1e-12)
         assert math.isclose(_num(fila[4]), _cota_angular(largo_pill) - dt_pill, rel_tol=1e-3, abs_tol=1e-12)
 
@@ -699,7 +699,7 @@ def test_r7_rev01_la_tabla_de_umbrales_se_recalcula_y_su_veredicto_es_coherente(
     for fila in filas:
         largo = _num(fila[1])
         cota = _cota_angular(largo)
-        assert math.isclose(_num(fila[2]), cota, rel_tol=1e-6), f"L={largo}: cota del doc"
+        assert math.isclose(_num(fila[2]), cota, rel_tol=1e-12), f"L={largo}: cota del doc"
         assert math.isclose(_num(fila[3]), cota / Q_ANG, rel_tol=1e-5), f"L={largo}: x q_ang del doc"
         garantiza = cota <= Q_ANG * (1.0 + 1e-12)
         afirmado = "Sí" in fila[4]
@@ -725,7 +725,9 @@ def test_r7_el_documento_no_reintroduce_la_desigualdad_ingenua() -> None:
     assert "max_i||delta_i||<=Delta_max" not in compacto
     assert "||dv||<=Delta_max" not in compacto
     assert "delta_theta<=asin(Delta_max/L)" not in compacto
-    # R7-REV-02: la construccion NO iguala delta_chord en norma de dv
+    # R7-REV-02: la cadena de §3.3 debe cerrar en `<= delta_chord`, no en una igualdad.
+    # El ancla positiva es la cadena COMPLETA: reemplazarla por `= delta_chord` la rompe.
+    assert "max_inorm(delta_i)<=delta_chord" in compacto
     assert "norm(dv)=delta_chord" not in compacto
     assert "||dv||=delta_chord" not in compacto
     # R7-REV-03: el token de cruce ya no se declara como "worst case"
