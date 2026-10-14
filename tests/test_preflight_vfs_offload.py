@@ -14,16 +14,16 @@ permissions/visibility). Como el checker es de SOLO LECTURA y opera sobre estado
 inmutable, el hilo residual tras una cancelación es inofensivo (no toca leases,
 ownership ni estado mutable) y la cancelación sigue siendo fail-closed.
 
-Los tests son deterministas: no dependen de tiempos arbitrarios para decidir el
-veredicto, sino de la planificación real del event loop
-(``call_soon_threadsafe`` + ``Event``).
+Los tests son deterministas: no dependen de sleeps arbitrarios para decidir el
+veredicto, sino de señales explícitas de ejecución y finalización
+(``call_soon_threadsafe`` + ``Event``). Los únicos topes de tiempo que quedan
+son cotas anti-bloqueo: si una señal no llega, el test falla —no se cuelga—.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -55,6 +55,22 @@ def _servicio_con(
     )
 
 
+# Único tope de espera del archivo. NO es una duración estimada ni un slack de
+# temporización: es cota anti-bloqueo. El veredicto de cada test no depende de
+# que la señal llegue rápido —depende de que llegue—, y en la versión síncrona
+# pre-fix la señal NUNCA llega (el event loop está bloqueado dentro del check),
+# así que la capacidad RED se conserva.
+_TOPE_ESPERA = 10.0
+
+
+async def _esperar_senal_del_loop(evento: asyncio.Event, contexto: str) -> None:
+    """Espera una señal programada en el loop, con cota anti-bloqueo."""
+    try:
+        await asyncio.wait_for(evento.wait(), timeout=_TOPE_ESPERA)
+    except TimeoutError:
+        pytest.fail(f"el loop no ejecutó la señal en {_TOPE_ESPERA}s: {contexto}")
+
+
 class TestVfsOffloadNoBloqueaElEventLoop:
     """RED contra el código previo (check síncrono); GREEN tras el fix."""
 
@@ -63,16 +79,20 @@ class TestVfsOffloadNoBloqueaElEventLoop:
         VFS check corre. Con el check síncrono en el loop, el callback no puede
         correr hasta que check() retorna -> el flag queda en False (RED)."""
         loop = asyncio.get_running_loop()
-        ran_during_check = asyncio.Event()
+        # Señal EXPLÍCITA de ejecución del callback. Es un threading.Event
+        # porque sincroniza el hilo del checker con el hilo del loop.
+        corrio_el_callback = threading.Event()
         probe: dict[str, object] = {"flag_al_retornar_check": None}
 
         def check_lento() -> list[VfsIssue]:
             # Se programa en el loop desde el hilo del checker.
-            loop.call_soon_threadsafe(ran_during_check.set)
-            # Trabajo de inspección que, en la versión bugueada, corre EN el hilo
-            # del event loop y lo bloquea; en la corregida corre en un worker.
-            time.sleep(0.05)
-            probe["flag_al_retornar_check"] = ran_during_check.is_set()
+            loop.call_soon_threadsafe(corrio_el_callback.set)
+            # El checker espera a que el loop EJECUTE el callback. Con el check
+            # síncrono (pre-fix) el loop está bloqueado adentro de esta misma
+            # función y la señal nunca llega: el wait corta por la cota y el
+            # flag queda False (RED). Con el offload el loop está libre y la
+            # prende en milisegundos. No hay ningún sleep que adivinar.
+            probe["flag_al_retornar_check"] = corrio_el_callback.wait(timeout=_TOPE_ESPERA)
             return []
 
         checker = MagicMock()
@@ -89,8 +109,9 @@ class TestVfsOffloadNoBloqueaElEventLoop:
         checker_thread: list[threading.Thread] = []
 
         def check_lento() -> list[VfsIssue]:
+            # Sin sleeps: la identidad del hilo se registra al entrar y el
+            # veredicto no depende de ninguna temporización.
             checker_thread.append(threading.current_thread())
-            time.sleep(0.05)
             return []
 
         checker = MagicMock()
@@ -129,26 +150,38 @@ class TestVfsOffloadCancelacion:
     async def test_cancelacion_durante_el_check_no_emite_reporte_y_es_fail_closed(self) -> None:
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
+        # Señales explícitas con el worker: el test AUTORIZA la salida y espera
+        # la finalización REAL del hilo. La cancelación cae determinísticamente
+        # dentro de la ventana de trabajo porque el checker no puede terminar
+        # antes de ser autorizado.
+        puede_terminar = threading.Event()
+        termino = threading.Event()
         probe: dict[str, object] = {"hilo_termino": False}
 
         def check_lento() -> list[VfsIssue]:
             loop.call_soon_threadsafe(started.set)
-            time.sleep(0.3)  # ventana suficiente para cancelar
+            if not puede_terminar.wait(timeout=_TOPE_ESPERA):
+                raise AssertionError(f"el test no autorizó la salida en {_TOPE_ESPERA}s")
             probe["hilo_termino"] = True  # read-only: no toca estado compartido
+            termino.set()
             return []
 
         checker = MagicMock()
         checker.check.side_effect = check_lento
 
         task = asyncio.create_task(_servicio_con(checker).run())
-        await started.wait()  # el checker efectivamente está corriendo
+        await _esperar_senal_del_loop(started, "el checker arrancó")
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            # El hilo de to_thread NO es cancelable: se lo libera explícitamente.
+            puede_terminar.set()
 
-        # El hilo de to_thread NO es cancelable: termina por su cuenta. Es
-        # inofensivo porque el checker es read-only. Sin efectos tardíos peligrosos.
-        await asyncio.sleep(0.4)
+        # Se espera la finalización REAL del worker (señal explícita), no un
+        # sleep fijo. Es inofensivo porque el checker es read-only.
+        assert termino.wait(timeout=_TOPE_ESPERA), "el worker no terminó"
         assert probe["hilo_termino"] is True
 
     async def test_sin_efectos_tardios_sobre_estado_externo(self) -> None:
@@ -157,23 +190,32 @@ class TestVfsOffloadCancelacion:
         y al cancelarse no se emite ninguno."""
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
+        # Mismo patrón de señales explícitas: la aserción se evalúa DESPUÉS de
+        # la finalización REAL del worker, no después de un sleep arbitrario.
+        puede_terminar = threading.Event()
+        termino = threading.Event()
         shared_log: list[str] = []  # el checker NO debe escribir aquí
 
         def check_lento() -> list[VfsIssue]:
             loop.call_soon_threadsafe(started.set)
-            time.sleep(0.3)
+            if not puede_terminar.wait(timeout=_TOPE_ESPERA):
+                raise AssertionError(f"el test no autorizó la salida en {_TOPE_ESPERA}s")
+            termino.set()
             return []
 
         checker = MagicMock()
         checker.check.side_effect = check_lento
 
         task = asyncio.create_task(_servicio_con(checker).run())
-        await started.wait()
+        await _esperar_senal_del_loop(started, "el checker arrancó")
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.sleep(0.4)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            puede_terminar.set()
 
+        assert termino.wait(timeout=_TOPE_ESPERA), "el worker no terminó"
         assert shared_log == []  # nada mutó fuera del scope read-only del checker
 
 
