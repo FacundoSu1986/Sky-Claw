@@ -1,0 +1,1389 @@
+"""Tests RED-first para P4-S3: journal durable de transición (ADR 0012).
+
+Autoridad normativa: §34.4 (`P4_DURABLE_TRANSITION`), §34.5 (reconciliación de
+arranque), §35.6 (evidencia durable de finalización + no-clobber), §36.6 (CAS),
+§36.9/§36.10 (matriz de crashes y ciclo de vida), §37.5 (store `FINALIZED`),
+§37.6 (concurrencia), §38.3 (`finalization_seq` derivado + reserva).
+
+Este slice NO implementa promoción, rollback ni binding: construye las
+primitivas durables (lectura/validación/clasificación, persistencia atómica,
+CAS, historial inmutable, reserva de secuencia y reconciliación fail-closed).
+La creación de un `PENDING` de producción queda BLOQUEADA porque la autoridad
+durable de aprobación consumida (§36.5/§37.3) todavía no existe; los tests
+ejercitan la maquinaria interna con evidencia explícita (fault injection),
+nunca con una aprobación simulada en la ruta de producción.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import uuid
+
+import pytest
+
+from sky_claw.local.frozen_runtime import journal as journal_module
+from sky_claw.local.frozen_runtime.errors import (
+    JournalCasError,
+    JournalCorruptError,
+    JournalDependenciaNoDisponibleError,
+    JournalEvidenciaPostError,
+    JournalIdentityError,
+    JournalSchemaError,
+    JournalStoreNoInicializadoError,
+)
+from sky_claw.local.frozen_runtime.root_lock import participant_lock
+from sky_claw.local.frozen_runtime.storage import (
+    finalization_seqs_state_dir,
+    initialize_frozen_runtime_storage,
+    transition_journal_path,
+    transitions_state_dir,
+)
+
+WORKTREE = pathlib.Path(__file__).resolve().parents[1]
+ENTORNO_HIJO = {
+    **os.environ,
+    "PYTHONPATH": str(WORKTREE),
+    "SKYCLAW_P4_S3_WORKTREE": str(WORKTREE),
+}
+
+# Identidades UUID v4 válidas y fijas (determinismo de digests).
+T1 = "8f4e1a90-5ac1-4b6d-9c21-0d2b8f4e1a90"
+T2 = "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+T3 = "2b3c4d5e-6f70-4818-9a9b-c0d1e2f3a4b5"
+APROBACION = "3c4d5e6f-7081-4242-9b8c-7d6e5f4a3b2c"
+SESION = "4d5e6f70-8192-4344-9c8d-7e6f5a4b3c2d"
+
+GEN_OBJETIVO = "1.6.640.0__0f1e2d3c4b5a"
+GEN_ORIGEN = "1.6.1170.0__a1b2c3d4e5f6"
+DIGEST_64 = "a" * 64
+OTRO_DIGEST_64 = "0" * 64
+
+# payloads de referencia (el test escribe el documento crudo: los tests de
+# parseo no deben depender del serializador que se está probando).
+
+
+def _digest(payload: object) -> str:
+    canonico = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
+
+
+def _fuente(generation: str = GEN_ORIGEN) -> dict:
+    return {
+        "generation_id": generation,
+        "clone_id": "clone-origen",
+        "runtime_setup_id": "setup-origen",
+        "effective_runtime_evidence": "b" * 64,
+    }
+
+
+def _payload_pendiente(
+    *,
+    transition_id: str = T1,
+    revision: int = 0,
+    operation: str = "PROMOTION",
+    scope_digest: str = "c" * 64,
+    fuente: dict | None = None,
+) -> dict:
+    fuente = _fuente() if fuente is None else fuente
+    return {
+        "schema_version": 1,
+        "state": f"PENDING_{operation}",
+        "journal_revision": revision,
+        "operation": operation,
+        "transition_id": transition_id,
+        "source_activation": fuente,
+        "source_activation_digest": _digest(fuente),
+        "target_generation_id": GEN_OBJETIVO,
+        "target_clone_id": "clone-objetivo",
+        "target_runtime_setup_id": "setup-objetivo",
+        "approval_scope_digest": scope_digest,
+        "consumed_approval_id": APROBACION,
+        "consumed_approval_seq": 12,
+        "consumed_scope_digest": scope_digest,
+        "evidence_digests": {
+            "clone_evidence": "d" * 64,
+            "runtime_setup_evidence": "e" * 64,
+            "compatibility_evidence": "f" * 64,
+        },
+        "expected_effective_path": "E:/rt/versions/" + GEN_OBJETIVO,
+        "created_at_ns": 1_700_000_000_000_000_000,
+        "lock_session_id": SESION,
+    }
+
+
+def _payload_none(*, revision: int = 1, witness: str | None = T1) -> dict:
+    payload: dict = {
+        "schema_version": 1,
+        "state": "NONE",
+        "journal_revision": revision,
+        "created_at_ns": 1_700_000_000_000_000_000,
+        "lock_session_id": SESION,
+    }
+    if witness is not _SIN_TESTIGO:
+        payload["last_finalized_transition_id"] = witness
+    return payload
+
+
+_SIN_TESTIGO = object()  # centinela: journal NONE sin campo testigo
+
+
+def _payload_registro(
+    *,
+    transition_id: str = T1,
+    seq: int = 1,
+    previa: str | None = None,
+    scope_digest: str = "c" * 64,
+) -> dict:
+    fuente = _fuente()
+    return {
+        "schema_version": 1,
+        "record_state": "FINALIZED",
+        "transition_id": transition_id,
+        "finalization_seq": seq,
+        "finalized_from_transition_id": previa,
+        "operation": "PROMOTION",
+        "source_activation": fuente,
+        "source_activation_digest": _digest(fuente),
+        "previous_activation_target": fuente,
+        "target_generation_id": GEN_OBJETIVO,
+        "target_clone_id": "clone-objetivo",
+        "target_runtime_setup_id": "setup-objetivo",
+        "approval_scope_digest": scope_digest,
+        "consumed_approval_id": APROBACION,
+        "consumed_approval_seq": 12,
+        "post_verify_evidence_digest": "1" * 64,
+        "post_verified_at_ns": 1_700_000_000_000_000_001,
+        "finalized_at_ns": 1_700_000_000_000_000_002,
+    }
+
+
+def _payload_reserva(root: pathlib.Path, *, seq: int = 1, transition_id: str = T1) -> dict:
+    from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
+
+    return {
+        "schema_version": 1,
+        "root_id": canonical_root_key(root)[0],
+        "finalization_seq": seq,
+        "transition_id": transition_id,
+    }
+
+
+def _escribir_json(ruta: pathlib.Path, payload: dict) -> None:
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _root(tmp_path: pathlib.Path, nombre: str = "root") -> pathlib.Path:
+    root = tmp_path / nombre
+    resultado = initialize_frozen_runtime_storage(root)
+    assert resultado.success, resultado.admission.message
+    return root
+
+
+def _propuesta(transition_id: str = T1, *, operation: str = "PROMOTION") -> object:
+    from sky_claw.local.frozen_runtime.journal import (
+        EvidenceDigests,
+        JournalOperation,
+        PropuestaTransicion,
+        SourceActivation,
+    )
+
+    fuente = _fuente()
+    return PropuestaTransicion(
+        transition_id=transition_id,
+        operation=JournalOperation(operation),
+        source_activation=SourceActivation(
+            generation_id=GEN_ORIGEN,
+            clone_id="clone-origen",
+            runtime_setup_id="setup-origen",
+            effective_runtime_evidence="b" * 64,
+        ),
+        source_activation_digest=_digest(fuente),
+        target_generation_id=GEN_OBJETIVO,
+        target_clone_id="clone-objetivo",
+        target_runtime_setup_id="setup-objetivo",
+        approval_scope_digest="c" * 64,
+        evidence_digests=EvidenceDigests(
+            clone_evidence="d" * 64,
+            runtime_setup_evidence="e" * 64,
+            compatibility_evidence="f" * 64,
+        ),
+        expected_effective_path="E:/rt/versions/" + GEN_OBJETIVO,
+        created_at_ns=1_700_000_000_000_000_000,
+    )
+
+
+def _aprobacion(transition_id: str = T1) -> object:
+    from sky_claw.local.frozen_runtime.journal import AprobacionConsumida
+
+    return AprobacionConsumida(
+        approval_id=APROBACION,
+        approval_seq=12,
+        scope_digest="c" * 64,
+        consumed_by_transition_id=transition_id,
+    )
+
+
+def _post(transition_id: str = T1, *, resultado: str = "PASS", target_generation: str = GEN_OBJETIVO) -> object:
+    from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
+
+    return PostVerifyEvidence(
+        transition_id=transition_id,
+        resultado=resultado,
+        source_activation_digest=_digest(_fuente()),
+        target_generation_id=target_generation,
+        target_clone_id="clone-objetivo",
+        target_runtime_setup_id="setup-objetivo",
+        desired_active_generation=GEN_OBJETIVO,
+        effective_observation_digest="1" * 64,
+        payload_digest="2" * 64,
+        verified_at_ns=1_700_000_000_000_000_001,
+    )
+
+
+def _crear_pendiente(root: pathlib.Path, propuesta: object = None, aprobacion: object = None) -> object:
+    """Driver de test: crea el PENDING vía la maquinaria interna bajo el lock."""
+    from sky_claw.local.frozen_runtime.journal import _crear_pendiente_bajo_lock
+
+    return _crear_pendiente_bajo_lock(root, propuesta or _propuesta(), aprobacion or _aprobacion())
+
+
+def _finalizar(root: pathlib.Path, evidencia: object = None) -> object:
+    """Driver de test: ejecuta la finalización (F1a/F1b/F2) bajo el lock."""
+    from sky_claw.local.frozen_runtime.journal import _finalizar_transicion_bajo_lock
+
+    return _finalizar_transicion_bajo_lock(root, evidencia or _post())
+
+
+def _start_next(root: pathlib.Path, propuesta: object = None, aprobacion: object = None) -> object:
+    from sky_claw.local.frozen_runtime.journal import _start_next_bajo_lock
+
+    return _start_next_bajo_lock(root, propuesta or _propuesta(T2), aprobacion or _aprobacion(T2))
+
+
+def _dump_estado(root: pathlib.Path) -> dict:
+    journal = transition_journal_path(root)
+    return {
+        "journal_existe": journal.exists(),
+        "journal_bytes": journal.read_bytes() if journal.exists() else None,
+        "registros": sorted(p.name for p in transitions_state_dir(root).glob("*.json")),
+        "reservas": sorted(p.name for p in finalization_seqs_state_dir(root).glob("*.json")),
+    }
+
+
+# ============================================================================
+# Integridad: ausente ≠ corrupto, schema estricta, campos obligatorios
+# ============================================================================
+
+
+def test_journal_ausente_es_arranque_limpio_y_no_es_corrupcion(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "ABSENT"
+    assert snapshot.journal is None
+    # La ausencia NUNCA se degrada a NONE con transición inventada.
+    assert snapshot.journal is None
+
+
+def test_journal_corrupto_nunca_se_lee_como_none(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    casos = {
+        "json_malformado": b'{"schema_version": 1, "state": "NONE"',
+        "vacio": b"",
+        "blanco": b"   \n  ",
+        "no_utf8": b"\xff\xfe\x00bad",
+        "no_objeto": b"[1, 2, 3]",
+        "string_json": b'"NONE"',
+    }
+    for nombre, contenido in casos.items():
+        ruta.write_bytes(contenido)
+        with pytest.raises(JournalCorruptError):
+            journal_module.cargar_journal_transicion(root)
+        # El intento de reconciliación también falla cerrado (N2).
+        resultado = journal_module.reconciliar_journal(root)
+        assert resultado.veredicto.value == "FAIL_CLOSED", nombre
+
+
+def test_esquema_desconocido_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    payload = _payload_none(revision=3, witness=None)
+    payload["schema_version"] = 2
+    _escribir_json(transition_journal_path(root), payload)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_campo_obligatorio_ausente_rechaza(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    for campo in (
+        "schema_version",
+        "state",
+        "journal_revision",
+        "operation",
+        "transition_id",
+        "source_activation",
+        "source_activation_digest",
+        "target_generation_id",
+        "target_clone_id",
+        "target_runtime_setup_id",
+        "approval_scope_digest",
+        "consumed_approval_id",
+        "consumed_approval_seq",
+        "consumed_scope_digest",
+        "evidence_digests",
+        "expected_effective_path",
+        "created_at_ns",
+        "lock_session_id",
+    ):
+        payload = _payload_pendiente()
+        del payload[campo]
+        _escribir_json(ruta, payload)
+        with pytest.raises((JournalSchemaError, JournalIdentityError)):
+            journal_module.cargar_journal_transicion(root)
+
+
+def test_tipos_invalidos_rechazan(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    mutaciones: dict[str, object] = {
+        "journal_revision": -1,
+        "journal_revision_str": None,
+        "created_at_ns_negativo": None,
+        "consumed_approval_seq_str": None,
+        "state_desconocido": "PENDING_CANCEL",
+        "operation_desconocida": "FREEZE",
+    }
+    base = _payload_pendiente()
+    base["journal_revision"] = "cero"
+    _escribir_json(ruta, base)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+    base = _payload_pendiente()
+    base["created_at_ns"] = -5
+    _escribir_json(ruta, base)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+    base = _payload_pendiente()
+    base["consumed_approval_seq"] = "12"
+    _escribir_json(ruta, base)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+    base = _payload_pendiente()
+    base["state"] = "PENDING_CANCEL"
+    _escribir_json(ruta, base)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+    base = _payload_pendiente()
+    base["operation"] = "FREEZE"
+    _escribir_json(ruta, base)
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+    assert mutaciones  # el mapa documenta las familias cubiertas arriba
+
+
+@pytest.mark.parametrize(
+    "transition_id",
+    [
+        T1.upper(),
+        T1.replace("-", ""),
+        "no-es-uuid",
+        str(uuid.uuid1()),  # v1 no es v4
+        "8f4e1a90-5ac1-1b6d-9c21-0d2b8f4e1a90",  # versión 1
+    ],
+)
+def test_transition_id_debe_ser_uuid_v4_canonico(tmp_path: pathlib.Path, transition_id: str) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transition_journal_path(root), _payload_pendiente(transition_id=transition_id))
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_digests_deben_ser_sha256_hex(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    for campo in ("source_activation_digest", "approval_scope_digest", "consumed_scope_digest"):
+        payload = _payload_pendiente()
+        payload[campo] = "zz" + DIGEST_64[2:]
+        _escribir_json(ruta, payload)
+        with pytest.raises((JournalSchemaError, JournalIdentityError)):
+            journal_module.cargar_journal_transicion(root)
+    payload = _payload_pendiente()
+    payload["evidence_digests"]["clone_evidence"] = "corto"
+    _escribir_json(ruta, payload)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_source_activation_digest_debe_ligar_el_contenido(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    payload = _payload_pendiente()
+    payload["source_activation_digest"] = OTRO_DIGEST_64
+    _escribir_json(transition_journal_path(root), payload)
+    with pytest.raises(JournalIdentityError):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_source_activation_y_evidence_no_admiten_campos_extra(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    payload = _payload_pendiente()
+    payload["source_activation"]["extra"] = "campo-inventado"
+    _escribir_json(ruta, payload)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+    payload = _payload_pendiente()
+    payload["evidence_digests"]["extra"] = DIGEST_64
+    _escribir_json(ruta, payload)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_journal_none_no_admite_campos_de_transicion(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    payload = _payload_none(revision=2, witness=T1)
+    payload["transition_id"] = T1
+    _escribir_json(ruta, payload)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+# ============================================================================
+# Historial FINALIZED: cadena, contigüidad, anti-fork, testigo, reservas
+# ============================================================================
+
+
+def test_store_vacio_next_es_uno_y_latest_none(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    vista = journal_module.derivar_historial_finalizados(root)
+    assert vista.registros == ()
+    assert vista.next_seq == 1
+    assert vista.latest is None
+
+
+def test_cadena_contigua_valida_y_next_derivado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1, previa=None))
+    _escribir_json(transitions_state_dir(root) / f"{T2}.json", _payload_registro(transition_id=T2, seq=2, previa=T1))
+    _escribir_json(transitions_state_dir(root) / f"{T3}.json", _payload_registro(transition_id=T3, seq=3, previa=T2))
+    vista = journal_module.derivar_historial_finalizados(root)
+    assert tuple(r.transition_id for r in vista.registros) == (T1, T2, T3)
+    assert vista.next_seq == 4
+    assert vista.latest is not None and vista.latest.transition_id == T3
+    assert vista.frontera_seq == 1
+
+
+def test_registro_incompatible_con_su_nombre_rechaza(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T2, seq=1))
+    with pytest.raises(JournalIdentityError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_registro_corrupto_nunca_se_saltea(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    (transitions_state_dir(root) / f"{T2}.json").write_text("{roto", encoding="utf-8")
+    with pytest.raises(JournalCorruptError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_historial_rechaza_duplicado_de_seq(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=7))
+    _escribir_json(transitions_state_dir(root) / f"{T2}.json", _payload_registro(transition_id=T2, seq=7))
+    with pytest.raises(JournalIdentityError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_historial_rechaza_hueco_interior(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    _escribir_json(transitions_state_dir(root) / f"{T3}.json", _payload_registro(transition_id=T3, seq=3, previa=T1))
+    with pytest.raises(JournalIdentityError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_historial_rechaza_predecesor_roto(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    _escribir_json(
+        transitions_state_dir(root) / f"{T2}.json",
+        _payload_registro(transition_id=T2, seq=2, previa=T3),
+    )
+    with pytest.raises(JournalIdentityError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_frontera_de_retencion_admite_predecesor_fuera_de_ventana(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    # Truncamiento frontal lícito: la frontera puede apuntar fuera de la ventana.
+    _escribir_json(
+        transitions_state_dir(root) / f"{T2}.json",
+        _payload_registro(transition_id=T2, seq=5, previa=T1),
+    )
+    _escribir_json(
+        transitions_state_dir(root) / f"{T3}.json",
+        _payload_registro(transition_id=T3, seq=6, previa=T2),
+    )
+    vista = journal_module.derivar_historial_finalizados(root)
+    assert vista.frontera_seq == 5
+    assert vista.next_seq == 7
+    assert vista.latest is not None and vista.latest.transition_id == T3
+
+
+def test_journal_none_sin_testigo_con_store_no_vacio_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transition_journal_path(root), _payload_none(revision=1, witness=_SIN_TESTIGO))
+    # Store COHERENTE (registro con su reserva): la única anomalía es el testigo.
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", _payload_reserva(root, seq=1, transition_id=T1))
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "JOURNAL_NONE_SIN_TESTIGO_CON_STORE_NO_VACIO" in resultado.motivo
+
+
+def test_journal_none_con_testigo_distinto_al_store_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", _payload_reserva(root, seq=1, transition_id=T1))
+    _escribir_json(transition_journal_path(root), _payload_none(revision=1, witness=T2))
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "TESTIGO_DIFIERE_DEL_STORE_DERIVADO" in resultado.motivo
+
+
+def test_journal_ausente_con_store_no_vacio_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", _payload_reserva(root, seq=1, transition_id=T1))
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "HISTORIAL_O_RESERVAS_SIN_JOURNAL" in resultado.motivo
+
+
+def test_reserva_con_seq_incoherente_con_el_nombre_rechaza(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", _payload_reserva(root, seq=2))
+    with pytest.raises(JournalIdentityError):
+        journal_module.auditar_reservas_finalizacion(root)
+
+
+def test_reserva_con_transition_id_invalido_rechaza(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    payload = _payload_reserva(root, seq=1, transition_id=T1)
+    payload["transition_id"] = "no-es-uuid"
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", payload)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.auditar_reservas_finalizacion(root)
+
+
+def test_reserva_huerfana_y_registro_sin_reserva(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    # Registro finalizado CON su reserva comprometida (F1a precede a F1b).
+    _escribir_json(finalization_seqs_state_dir(root) / "1.json", _payload_reserva(root, seq=1, transition_id=T1))
+    _escribir_json(transitions_state_dir(root) / f"{T1}.json", _payload_registro(transition_id=T1, seq=1))
+    # Reserva para una seq que el store todavía no alcanzó: huérfana completable.
+    _escribir_json(finalization_seqs_state_dir(root) / "2.json", _payload_reserva(root, seq=2, transition_id=T2))
+    auditoria = journal_module.auditar_reservas_finalizacion(root, journal_module.derivar_historial_finalizados(root))
+    assert auditoria.huerfanas == ((2, T2),)
+    assert auditoria.inconsistentes == ()
+    # Registro finalizado SIN su reserva: autoridad incoherente ⇒ FAIL_CLOSED.
+    (finalization_seqs_state_dir(root) / "1.json").unlink()
+    with pytest.raises(JournalIdentityError):
+        journal_module.auditar_reservas_finalizacion(root, journal_module.derivar_historial_finalizados(root))
+
+
+# ============================================================================
+# CAS, exclusión de PENDING, aprobación consumida, inmutabilidad
+# ============================================================================
+
+
+def test_crear_pendiente_aumenta_revision_y_excluye_segundo(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    journal1 = _crear_pendiente(root)
+    assert journal1.journal_revision == 0
+    assert journal1.transition_id == T1
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "PENDING_PROMOTION"
+    # AT_MOST_ONE_PENDING_PER_ROOT: un segundo PENDING (incluso con otro id) falla.
+    with pytest.raises(JournalCasError):
+        _crear_pendiente(root, _propuesta(T2), _aprobacion(T2))
+    # Reintentar la MISMA transición también falla (el PENDING vigente es otro
+    # momento de la revisión: no hay escritura nueva).
+    with pytest.raises(JournalCasError):
+        _crear_pendiente(root)
+
+
+def test_crear_pendiente_rechaza_transition_id_ya_finalizado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _finalizar(root)
+    with pytest.raises(JournalCasError):
+        _crear_pendiente(root)  # T1 ya existe en el historial: no se reutiliza
+
+
+def test_crear_pendiente_exige_aprobacion_consumida_coherente(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.journal import _crear_pendiente_bajo_lock
+
+    # scope digest distinto del propuesto
+    aprobacion = _aprobacion()
+    aprobacion = type(aprobacion)(
+        approval_id=aprobacion.approval_id,
+        approval_seq=aprobacion.approval_seq,
+        scope_digest=OTRO_DIGEST_64,
+        consumed_by_transition_id=T1,
+    )
+    with pytest.raises(JournalIdentityError):
+        _crear_pendiente_bajo_lock(root, _propuesta(), aprobacion)
+    # consumida por otra transición
+    with pytest.raises(JournalIdentityError):
+        _crear_pendiente_bajo_lock(root, _propuesta(), _aprobacion(T2))
+    # secuencia no positiva
+    aprobacion = _aprobacion()
+    aprobacion = type(aprobacion)(
+        approval_id=aprobacion.approval_id,
+        approval_seq=0,
+        scope_digest=aprobacion.scope_digest,
+        consumed_by_transition_id=T1,
+    )
+    with pytest.raises(JournalSchemaError):
+        _crear_pendiente_bajo_lock(root, _propuesta(), aprobacion)
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "ABSENT"  # nada se persistió
+
+
+def test_entrada_publica_de_creacion_esta_bloqueada(tmp_path: pathlib.Path) -> None:
+    """P4-S3 no tiene autoridad durable de aprobación: crear PENDING falla cerrado."""
+    root = _root(tmp_path)
+    with pytest.raises(JournalDependenciaNoDisponibleError):
+        journal_module.iniciar_transicion_pendiente(root, _propuesta())
+
+
+def test_escritura_bajo_lock_verifica_ownership(tmp_path: pathlib.Path) -> None:
+    """La maquinaria interna exige el handle dueño: sin lock no hay escritura."""
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime import journal as journal_mod
+    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeLockOwnershipError
+
+    with participant_lock(root) as handle:
+        handle.release()
+        with pytest.raises(FrozenRuntimeLockOwnershipError):
+            journal_mod._finalizar_locked(handle, root, _post())
+
+
+def test_journal_sin_dirs_de_store_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    import shutil
+
+    shutil.rmtree(transitions_state_dir(root))
+    shutil.rmtree(finalization_seqs_state_dir(root))
+    from sky_claw.local.frozen_runtime.journal import _crear_pendiente_bajo_lock
+
+    with pytest.raises(JournalStoreNoInicializadoError):
+        _crear_pendiente_bajo_lock(root, _propuesta(), _aprobacion())
+
+
+def test_actualizacion_con_revision_desactualizada_falla(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
+
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.journal is not None
+    actual = snapshot.journal
+    # revisión anterior a la vigente
+    with pytest.raises(JournalCasError):
+        _actualizar_bajo_lock(
+            root,
+            expected_transition_id=T1,
+            expected_journal_revision=actual.journal_revision - 1,
+            cambios={
+                "evidence_digests": {
+                    "clone_evidence": "9" * 64,
+                    "runtime_setup_evidence": "e" * 64,
+                    "compatibility_evidence": "f" * 64,
+                }
+            },
+        )
+    # identidad distinta
+    with pytest.raises(JournalCasError):
+        _actualizar_bajo_lock(
+            root,
+            expected_transition_id=T2,
+            expected_journal_revision=actual.journal_revision,
+            cambios={},
+        )
+
+
+def test_actualizacion_valida_avanza_revision_sin_tocar_identidad(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
+
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.journal is not None
+    revision = snapshot.journal.journal_revision
+    nuevo = _actualizar_bajo_lock(
+        root,
+        expected_transition_id=T1,
+        expected_journal_revision=revision,
+        cambios={
+            "evidence_digests": {
+                "clone_evidence": "9" * 64,
+                "runtime_setup_evidence": "e" * 64,
+                "compatibility_evidence": "f" * 64,
+            }
+        },
+    )
+    assert nuevo.journal_revision == revision + 1
+    assert nuevo.transition_id == T1
+    despues = journal_module.cargar_journal_transicion(root)
+    assert despues.journal is not None
+    assert despues.journal.evidence_digests.clone_evidence == "9" * 64
+
+
+def test_actualizacion_rechaza_drift_de_identidad(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
+
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.journal is not None
+    with pytest.raises(JournalIdentityError):
+        _actualizar_bajo_lock(
+            root,
+            expected_transition_id=T1,
+            expected_journal_revision=snapshot.journal.journal_revision,
+            cambios={"target_generation_id": "otra-generation"},
+        )
+
+
+def test_finalizar_crea_registro_reserva_y_rota_journal(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    registro = _finalizar(root)
+    assert registro.transition_id == T1
+    assert registro.finalization_seq == 1
+    assert registro.finalized_from_transition_id is None
+    assert registro.record_state.value == "FINALIZED"
+    estado = _dump_estado(root)
+    assert estado["registros"] == [f"{T1}.json"]
+    assert estado["reservas"] == ["1.json"]
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "NONE"
+    assert snapshot.journal is not None
+    assert snapshot.journal.last_finalized_transition_id == T1
+
+
+def test_reintento_de_la_misma_finalizacion_es_idempotente(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    primero = _finalizar(root)
+    bytes_antes = (transitions_state_dir(root) / f"{T1}.json").read_bytes()
+    journal_antes = transition_journal_path(root).read_bytes()
+    segundo = _finalizar(root)
+    assert segundo.transition_id == primero.transition_id
+    assert segundo.finalization_seq == primero.finalization_seq
+    assert (transitions_state_dir(root) / f"{T1}.json").read_bytes() == bytes_antes
+    assert transition_journal_path(root).read_bytes() == journal_antes
+
+
+def test_evidencia_post_distinta_nunca_sobrescribe_el_registro(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _finalizar(root)
+    bytes_antes = (transitions_state_dir(root) / f"{T1}.json").read_bytes()
+    from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
+
+    otra = PostVerifyEvidence(
+        transition_id=T1,
+        resultado="PASS",
+        source_activation_digest=_digest(_fuente()),
+        target_generation_id=GEN_OBJETIVO,
+        target_clone_id="clone-objetivo",
+        target_runtime_setup_id="setup-objetivo",
+        desired_active_generation=GEN_OBJETIVO,
+        effective_observation_digest="3" * 64,
+        payload_digest="4" * 64,
+        verified_at_ns=1_700_000_000_000_000_009,
+    )
+    with pytest.raises(JournalEvidenciaPostError):
+        _finalizar(root, otra)
+    assert (transitions_state_dir(root) / f"{T1}.json").read_bytes() == bytes_antes
+
+
+def test_finalizar_sin_post_valido_no_finaliza(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
+
+    def _evidencia(**cambios: object) -> object:
+        base = _post()
+        campos = {
+            "transition_id": base.transition_id,
+            "resultado": base.resultado,
+            "source_activation_digest": base.source_activation_digest,
+            "target_generation_id": base.target_generation_id,
+            "target_clone_id": base.target_clone_id,
+            "target_runtime_setup_id": base.target_runtime_setup_id,
+            "desired_active_generation": base.desired_active_generation,
+            "effective_observation_digest": base.effective_observation_digest,
+            "payload_digest": base.payload_digest,
+            "verified_at_ns": base.verified_at_ns,
+        }
+        campos.update(cambios)
+        return PostVerifyEvidence(**campos)
+
+    casos = {
+        "post_falla": _evidencia(resultado="FAIL"),
+        "digest_invalido": _evidencia(payload_digest="corto"),
+        "otra_transicion": _evidencia(transition_id=T2),
+        "target_distinto": _evidencia(target_generation_id="1.6.1170__otra"),
+        "source_distinto": _evidencia(source_activation_digest=OTRO_DIGEST_64),
+        "sin_timestamp": _evidencia(verified_at_ns=0),
+    }
+    for nombre, evidencia in casos.items():
+        with pytest.raises(JournalEvidenciaPostError):
+            _finalizar(root, evidencia)
+        estado = _dump_estado(root)
+        assert estado["registros"] == [], nombre
+        snapshot = journal_module.cargar_journal_transicion(root)
+        assert snapshot.disposition.value == "PENDING_PROMOTION", nombre
+
+
+def test_transicion_posterior_no_sustituye_evidencia_historica(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _finalizar(root)
+    bytes_t1 = (transitions_state_dir(root) / f"{T1}.json").read_bytes()
+    _start_next(root)
+    segundo = _finalizar(root, _post(T2))
+    assert segundo.finalization_seq == 2
+    assert segundo.finalized_from_transition_id == T1
+    assert (transitions_state_dir(root) / f"{T1}.json").read_bytes() == bytes_t1
+    vista = journal_module.derivar_historial_finalizados(root)
+    assert tuple(r.transition_id for r in vista.registros) == (T1, T2)
+    assert vista.next_seq == 3
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "NONE"
+    assert snapshot.journal is not None
+    assert snapshot.journal.last_finalized_transition_id == T2
+
+
+def test_start_next_exige_latest_y_rechaza_reutilizacion_de_id(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _finalizar(root)
+    # El propuesto igual al predecesor finalizado se rechaza (no ABA).
+    with pytest.raises((JournalCasError, JournalIdentityError)):
+        _start_next(root, _propuesta(T1), _aprobacion(T1))
+
+
+def test_reserva_keyed_por_seq_evita_dos_finalizadores(tmp_path: pathlib.Path) -> None:
+    """Dos finalizadores con el mismo NEXT y distinto id: sólo uno reserva."""
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    with participant_lock(root) as handle:
+        handle.assert_owned()
+        from sky_claw.local.frozen_runtime.journal import _reservar_seq_locked
+
+        _reservar_seq_locked(handle, root, seq=1, transition_id=T1)
+        with pytest.raises(JournalCasError):
+            _reservar_seq_locked(handle, root, seq=1, transition_id=T2)
+        # El mismo transition_id sobre la misma reserva es idempotente (reintento).
+        _reservar_seq_locked(handle, root, seq=1, transition_id=T1)
+    contenido = json.loads((finalization_seqs_state_dir(root) / "1.json").read_text(encoding="utf-8"))
+    assert contenido["transition_id"] == T1
+
+
+# ============================================================================
+# Crash matrix y recuperación (fault injection determinista)
+# ============================================================================
+
+
+def _parchear_fallo_en_escritura(monkeypatch: pytest.MonkeyPatch, *, fallar_en_llamada: int) -> list[int]:
+    """Falla la escritura atómica nº ``fallar_en_llamada`` (1-indexada) y cuenta.
+
+    El orden dentro de una finalización es: 1=reserva, 2=registro, 3=rotación.
+    """
+    from sky_claw.local.frozen_runtime import state as state_module
+
+    llamadas: list[int] = []
+
+    def _envuelto(ruta: pathlib.Path, payload: dict) -> None:
+        llamadas.append(len(llamadas) + 1)
+        if len(llamadas) == fallar_en_llamada:
+            raise OSError("falla inyectada de I/O")
+        original(ruta, payload)
+
+    original = state_module.write_json_atomic
+    monkeypatch.setattr(state_module, "write_json_atomic", _envuelto)
+    return llamadas
+
+
+def test_crash_antes_de_f1_deja_pending_reintentable(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=1)
+    with pytest.raises(OSError):
+        _finalizar(root)
+    estado = _dump_estado(root)
+    # La ruta quedó reservada (placeholder de 0 bytes) pero SIN contenido: la
+    # escritura del payload falló, así que no hay reserva comprometida.
+    assert estado["registros"] == []
+    assert estado["reservas"] == ["1.json"]
+    assert (finalization_seqs_state_dir(root) / "1.json").stat().st_size == 0
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "PENDING_PROMOTION"
+    # Sin evidencia comprometida, la reconciliación no inventa un éxito.
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "UNKNOWN_EFFECTIVE"
+    # Reintento completo tras levantar la falla (el placeholder se completa).
+    monkeypatch.undo()
+    registro = _finalizar(root)
+    assert registro.finalization_seq == 1
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "NONE"
+
+
+def test_crash_entre_f1b_y_f2_deja_registro_y_classifica_finalizado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=3)
+    with pytest.raises(OSError):
+        _finalizar(root)
+    estado = _dump_estado(root)
+    assert estado["registros"] == [f"{T1}.json"]
+    assert estado["reservas"] == ["1.json"]
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "PENDING_PROMOTION"
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "REGISTRO_FINALIZADO_CON_JOURNAL_PENDING"
+    assert resultado.registro_finalizado_presente is True
+    # La reconciliación NUNCA muta: ambas evidencias se preservan.
+    assert _dump_estado(root)["journal_bytes"] == estado["journal_bytes"]
+    # Completar la rotación (misma evidencia) es la reconciliación permitida.
+    monkeypatch.undo()
+    registro = _finalizar(root)
+    assert registro.finalization_seq == 1
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "NONE"
+
+
+def test_crash_entre_reserva_y_registro_deja_reserva_huerfana(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=2)
+    with pytest.raises(OSError):
+        _finalizar(root)
+    estado = _dump_estado(root)
+    # F1b interrumpida: la ruta del registro quedó reservada con 0 bytes. La
+    # derivación NO lo lee como registro finalizado (ni como corrupción).
+    assert estado["registros"] == [f"{T1}.json"]
+    assert (transitions_state_dir(root) / f"{T1}.json").stat().st_size == 0
+    assert estado["reservas"] == ["1.json"]
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "RECOVER"
+    assert "RESERVA_HUERFANA" in resultado.motivo
+    assert resultado.registro_finalizado_presente is False
+    # Con la MISMA transición se puede completar; con otra, REQUIRE_OWNER.
+    monkeypatch.undo()
+    registro = _finalizar(root)
+    assert registro.finalization_seq == 1
+
+    root2 = _root(tmp_path, "root2")
+    _crear_pendiente(root2)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=2)
+    with pytest.raises(OSError):
+        _finalizar(root2)
+    # La reserva huérfana quedó para T1: un cierre con evidencia AJENA no puede
+    # reclamarla (la evidencia POST debe ligar la transición pendiente).
+    monkeypatch.undo()
+    with pytest.raises(JournalEvidenciaPostError):
+        _finalizar(root2, _post(T2))
+
+
+def test_reconciliacion_pending_sin_oraculo_nunca_es_complete(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "UNKNOWN_EFFECTIVE"
+    assert resultado.punto_crash is not None and resultado.punto_crash.startswith("C")
+    # Nunca afirma COMPLETE ni revierte solo.
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "PENDING_PROMOTION"
+
+
+def test_reconciliacion_none_sin_oraculo_nunca_es_complete(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "UNKNOWN_EFFECTIVE"
+
+
+def test_reconciliacion_n0_y_n1_con_oraculo_de_effective(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_ORIGEN, updated_at_ns=1),
+    )
+    # N0: Desired == Effective observado.
+    n0 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_ORIGEN)
+    assert n0.veredicto.value == "COMPLETE"
+    # N1: sin transición y Desired != Effective ⇒ FAIL_CLOSED, dueño requerido.
+    n1 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    assert n1.veredicto.value == "FAIL_CLOSED"
+    assert n1.requiere_dueno is True
+
+
+def test_reconciliacion_c5_c6_c7_con_evidencia_y_registro(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    _crear_pendiente(root)
+    # C6: con oráculo que observa el objetivo, la reconciliación permite
+    # re-correr el POST (RECOVER) sin finalizar por sí sola.
+    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    assert c6.veredicto.value == "RECOVER"
+    _finalizar(root)
+    # C7 equivale a N0 una vez rotado: Desired == Effective y sin transición.
+    # (La actualización de Desired=C3 pertenece al flujo de promoción, diferido;
+    # el test la ejerce con el participante REAL de estado.)
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_OBJETIVO, updated_at_ns=1),
+    )
+    c7 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    assert c7.veredicto.value == "COMPLETE"
+    assert c7.punto_crash == "N0"
+
+
+def test_reconciliacion_oraculo_indeterminado_es_fail_closed(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+
+    def _oraculo_roto() -> str:
+        raise RuntimeError("no se pudo observar el runtime")
+
+    resultado = journal_module.reconciliar_journal(root, observador_effective=_oraculo_roto)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+
+
+def test_desired_corrupto_en_reconciliacion_es_fail_closed(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    (root / "state" / "active.json").write_text("{roto", encoding="utf-8")
+    resultado = journal_module.reconciliar_journal(root)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+
+
+def test_reconciliacion_rechaza_enlaces_en_el_journal(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    ruta = transition_journal_path(root)
+    try:
+        os.symlink(ruta, ruta.with_suffix(".json.link"))
+        os.replace(ruta.with_suffix(".json.link"), ruta)
+    except OSError as exc:  # pragma: no cover - régimen sin privilegios
+        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
+    if not ruta.is_symlink():
+        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    with pytest.raises((JournalCorruptError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+# ============================================================================
+# Concurrencia real (dos procesos) sobre el mismo root
+# ============================================================================
+
+_CHILD = pathlib.Path(__file__).resolve().parent / "_p4_s3_child.py"
+
+
+def _lanzar(modo: str, root: pathlib.Path, args: dict) -> dict:
+    proceso = subprocess.run(  # noqa: S603
+        [sys.executable, str(_CHILD), modo, str(root), json.dumps(args)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=ENTORNO_HIJO,
+        timeout=90,
+        cwd=str(WORKTREE),
+    )
+    assert proceso.returncode == 0, proceso.stderr
+    return json.loads(proceso.stdout.strip().splitlines()[-1])
+
+
+def _esperar(path: pathlib.Path, *, timeout: float = 30.0) -> None:
+    limite = time.monotonic() + timeout
+    while not path.exists() and time.monotonic() < limite:
+        time.sleep(0.02)
+    assert path.exists(), f"nunca apareció {path}"
+
+
+def test_s3_dos_procesos_creando_pending_solo_uno_gana(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    dentro = tmp_path / "dentro"
+    liberar = tmp_path / "liberar"
+    ganador = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            str(_CHILD),
+            "crear",
+            str(root),
+            json.dumps({"transition_id": T1, "dentro": str(dentro), "liberar": str(liberar)}),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=ENTORNO_HIJO,
+        cwd=str(WORKTREE),
+    )
+    try:
+        _esperar(dentro)
+        # El ganador está DENTRO de la sección crítica (handshake sobre la
+        # única escritura de CREATE): el journal todavía no existe y el lock
+        # está tomado, así que el contendente sólo puede fallar por busy.
+        assert journal_module.cargar_journal_transicion(root).disposition.value == "ABSENT"
+        perdedor = _lanzar("crear", root, {"transition_id": T2})
+        assert perdedor["ok"] is False
+        assert perdedor["error_type"] == "FrozenRuntimeLockBusyError", perdedor
+    finally:
+        liberar.write_text("1", encoding="utf-8")
+        salida, _err = ganador.communicate(timeout=90)
+        resultado = json.loads(salida.strip().splitlines()[-1])
+        assert resultado["ok"] is True, resultado
+    # El ganador sigue siendo el único escritor del journal vigente.
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "PENDING_PROMOTION"
+    assert snapshot.journal is not None and snapshot.journal.transition_id == T1
+
+
+def test_s3_dos_procesos_finalizando_un_solo_registro_y_reserva(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    dentro = tmp_path / "dentro"
+    liberar = tmp_path / "liberar"
+    ganador = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            str(_CHILD),
+            "finalizar",
+            str(root),
+            json.dumps({"transition_id": T1, "dentro": str(dentro), "liberar": str(liberar)}),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=ENTORNO_HIJO,
+        cwd=str(WORKTREE),
+    )
+    try:
+        _esperar(dentro)
+        perdedor = _lanzar("finalizar", root, {"transition_id": T1})
+        assert perdedor["ok"] is False
+        assert perdedor["error_type"] == "FrozenRuntimeLockBusyError", perdedor
+        # El ganador está DENTRO de la sección crítica (handshake sobre la
+        # primera escritura de F1a): el journal sigue PENDING y nadie más escribió.
+        snapshot = journal_module.cargar_journal_transicion(root)
+        assert snapshot.disposition.value == "PENDING_PROMOTION"
+        assert snapshot.journal is not None and snapshot.journal.transition_id == T1
+        assert _dump_estado(root)["registros"] == []
+    finally:
+        liberar.write_text("1", encoding="utf-8")
+        salida, _err = ganador.communicate(timeout=90)
+        resultado = json.loads(salida.strip().splitlines()[-1])
+        assert resultado["ok"] is True, resultado
+    estado = _dump_estado(root)
+    assert estado["registros"] == [f"{T1}.json"]
+    assert estado["reservas"] == ["1.json"]
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.disposition.value == "NONE"
+    vista = journal_module.derivar_historial_finalizados(root)
+    assert vista.next_seq == 2
+
+
+def test_s3_lock_ocupado_falla_cerrado_sin_deadlock(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    dentro = tmp_path / "dentro"
+    liberar = tmp_path / "liberar"
+    ganador = subprocess.Popen(  # noqa: S603
+        [
+            sys.executable,
+            str(_CHILD),
+            "crear",
+            str(root),
+            json.dumps({"transition_id": T1, "dentro": str(dentro), "liberar": str(liberar)}),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=ENTORNO_HIJO,
+        cwd=str(WORKTREE),
+    )
+    try:
+        _esperar(dentro)
+        inicio = time.monotonic()
+        perdedor = _lanzar("crear", root, {"transition_id": T2})
+        assert time.monotonic() - inicio < 30.0, "el contendiente no falló acotado"
+        assert perdedor["ok"] is False
+        assert perdedor["error_type"] == "FrozenRuntimeLockBusyError", perdedor
+    finally:
+        liberar.write_text("1", encoding="utf-8")
+        ganador.communicate(timeout=90)
+
+
+def test_s3_contencion_no_deja_temporales_ni_basura(tmp_path: pathlib.Path) -> None:
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _finalizar(root)
+    _start_next(root)
+    _finalizar(root, _post(T2))
+    basura = [p.name for p in (root / "state").iterdir() if p.name.startswith(".") or p.name.endswith(".tmp")]
+    assert basura == []
+
+
+# ============================================================================
+# Anclas estructurales del slice (oráculos, disciplina de lock, superficie)
+# ============================================================================
+
+
+def _fuente_journal() -> str:
+    import sky_claw.local.frozen_runtime.journal as modulo
+
+    return pathlib.Path(modulo.__file__).read_text(encoding="utf-8")
+
+
+def test_s3_journal_no_declara_mutadores_fuera_del_inventario() -> None:
+    """journal.py no usa mkdir/open-escritura: escribe por delegación declarada."""
+    from tests.test_frozen_runtime_p1_readonly import (
+        MUTADORES_FILESYSTEM,
+        _detectar_open_no_declarado,
+        _mutadores_de_fuente,
+    )
+
+    fuente = _fuente_journal()
+    assert _detectar_open_no_declarado(fuente, "journal.py") == []
+    assert _mutadores_de_fuente(fuente) == set()
+    assert fuente.count("state_module.") > 0  # escribe por el serializador canónico
+    assert MUTADORES_FILESYSTEM  # el inventario sigue vivo
+
+
+def test_s3_toda_escritura_del_journal_corre_bajo_el_lock() -> None:
+    """Cada helper de escritura del journal sólo se llama bajo el root lock.
+
+    Se reutilizan los resolutores del censo de P4-S2 (no se reimplementan): un
+    helper que escribe vía ``state_module.<escritor>``, o adquiere el lock, o es
+    primitiva ``_locked`` cuyos call sites viven dentro de funciones que
+    adquieren. journal.py NO figura en el inventario de mutadores (escribe por
+    delegación declarada), así que este ancla es su cobertura de lock.
+    """
+    from tests.test_frozen_runtime_p4_s2_participant_wiring import (
+        _arbol_de,
+        _call_sites_de,
+        _funciones_que_adquieren_lock,
+        _llamadas_propias,
+        _nombre_llamado,
+    )
+
+    ruta = pathlib.Path(journal_module.__file__)
+    arbol = _arbol_de(ruta)
+    adquirentes = _funciones_que_adquieren_lock(arbol)
+    assert adquirentes, "journal.py no declara ninguna función que adquiera el root lock"
+
+    escritores_canonica = {"write_json_atomic", "reservar_ruta_json_exclusiva"}
+    escritores: set[str] = set()
+    for funcion in arbol.body:
+        if not isinstance(funcion, ast.FunctionDef):
+            continue
+        for llamada in _llamadas_propias(funcion):
+            nombre = _nombre_llamado(llamada)
+            if nombre in escritores_canonica:
+                escritores.add(funcion.name)
+    assert escritores, "no se detectaron los escritores canónicos del journal"
+    for nombre in sorted(escritores):
+        assert nombre in adquirentes or nombre.endswith("_locked"), f"{nombre} escribe sin convención _locked"
+        for modulo, contenedor in _call_sites_de(nombre):
+            assert modulo == "journal.py", f"{nombre} se invoca desde {modulo}"
+            assert contenedor in adquirentes or contenedor.endswith("_locked"), (
+                f"{contenedor} llama a {nombre} fuera del lock"
+            )
+
+
+def test_s3_los_flanos_bajo_lock_solo_se_llaman_entre_ellos() -> None:
+    """Las primitivas ``_locked`` del journal no se llaman desde el exterior."""
+    from tests.test_frozen_runtime_p4_s2_participant_wiring import _arbol_de, _call_sites_de, _funciones_top_level
+
+    ruta = pathlib.Path(journal_module.__file__)
+    arbol = _arbol_de(ruta)
+    primitivas = {funcion.name for funcion in _funciones_top_level(arbol) if funcion.name.endswith("_locked")}
+    assert primitivas, "el journal no declara primitivas _locked"
+    for nombre in sorted(primitivas):
+        sitios = _call_sites_de(nombre)
+        # Sólo dentro de journal.py, y sólo desde adquirentes u otras primitivas.
+        for modulo, contenedor in sitios:
+            assert modulo == "journal.py", f"{nombre} se invoca desde {modulo}"
+            assert contenedor in primitivas or contenedor.endswith("_bajo_lock"), (
+                f"{contenedor} llama a la primitiva {nombre} sin ser adquirente"
+            )
+
+
+def test_s3_superficie_publica_no_expone_mutacion() -> None:
+    """P4-S3 no expone mutación pública: la aprobación y el POST son dependencias.
+
+    La superficie pública es sólo lectura/validación/clasificación más la entrada
+    de creación BLOQUEADA (falla cerrado por dependencia ausente).
+    """
+    import sky_claw.local.frozen_runtime.journal as modulo
+
+    publicas = {
+        nombre
+        for nombre in dir(modulo)
+        if not nombre.startswith("_")
+        and callable(getattr(modulo, nombre))
+        and not isinstance(getattr(modulo, nombre), type)
+        and getattr(modulo, nombre).__module__ == modulo.__name__
+    }
+    esperadas = {
+        "cargar_journal_transicion",
+        "derivar_historial_finalizados",
+        "auditar_reservas_finalizacion",
+        "reconciliar_journal",
+        "iniciar_transicion_pendiente",
+        "iniciar_transicion_rollback",
+    }
+    assert publicas == esperadas, f"superficie pública inesperada: {sorted(publicas)}"
+    assert modulo.iniciar_transicion_pendiente.__module__ == modulo.__name__
+
+
+def test_s3_finalize_y_create_internos_exigen_handle() -> None:
+    """La firma de los mutadores internos exige el handle dueño (no hay bypass)."""
+    import inspect
+
+    from sky_claw.local.frozen_runtime import journal as modulo
+
+    for nombre in ("_finalizar_locked", "_crear_pendiente_locked", "_start_next_locked", "_actualizar_locked"):
+        firma = inspect.signature(getattr(modulo, nombre))
+        assert "handle" in firma.parameters, nombre
