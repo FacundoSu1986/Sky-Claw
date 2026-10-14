@@ -163,3 +163,72 @@ class FrozenRuntimeLockAdmissionError(FrozenRuntimeLockError, FrozenRuntimeStora
     (p.ej. ``test_sr09``). La semántica no cambia: sigue siendo fail-closed y la
     escritura sigue sin ocurrir.
     """
+
+
+# ============================================================================
+# Journal durable de transición (P4-S3)
+# ============================================================================
+
+
+class JournalError(FrozenRuntimeError):
+    """Base de errores del journal durable de transición (ADR 0012 §34.4)."""
+
+
+class JournalCorruptError(JournalError):
+    """``transition.json`` (o un registro/reserva) es ilegible: JSON malformado,
+    truncado, vacío, no UTF-8 o no-objeto.
+
+    Fail-closed en el sentido fuerte: la corrupción NUNCA se degrada a
+    ``ABSENT``/``NONE`` (§36.4 N2). Ausencia de archivo y corrupción son
+    estados distintos, con clasificación distinta.
+    """
+
+
+class JournalSchemaError(JournalError):
+    """Esquema desconocido, campo obligatorio ausente o tipo de dato inválido.
+
+    Incluye ``schema_version`` futura (no se reinterpreta en silencio) y las
+    validaciones de forma (UUID v4 canónico, digest SHA-256 de 64 hex, enteros
+    monótonos, timestamps ``>= 0``).
+    """
+
+
+class JournalIdentityError(JournalError):
+    """Identidad incoherente: registro incompatible con su nombre de archivo,
+    ``source_activation_digest`` que no liga el contenido, testigo
+    ``last_finalized_transition_id`` que difiere del store derivado, cadena
+    ``finalized_from_transition_id`` rota, ``finalization_seq`` duplicado o
+    hueco interior, reserva sin registro. Siempre fail-closed.
+    """
+
+
+class JournalCasError(JournalError):
+    """Violación de CAS (§36.6): ``transition_id`` o ``journal_revision`` no
+    coinciden con el documento vigente, existe un PENDING activo, el
+    ``transition_id`` ya fue visto, o la reserva de ``finalization_seq`` ya
+    pertenece a otra transición. El CAS fallido DESCARTa, nunca adapta.
+    """
+
+
+class JournalEvidenciaPostError(JournalError):
+    """La evidencia POST es inexistente, inválida, no está en PASS o es
+    inconsistente con la transición vigente (§35.6: ``FINALIZED`` no puede
+    existir sin evidencia durable que ligue transición, source, target, estado
+    deseado y observación de Effective).
+    """
+
+
+class JournalDependenciaNoDisponibleError(JournalError):
+    """La operación requiere una autoridad durable que P4-S3 no implementa
+    (consumo de aprobación §36.5/§37.3, oráculo de Effective Runtime P5, POST
+    verifier). Fallar cerrado es el resultado correcto: no se sustituye por un
+    booleano, un mock productivo ni una aprobación simulada.
+    """
+
+
+class JournalStoreNoInicializadoError(JournalError):
+    """``state/transitions/`` o ``state/finalization-seqs/`` no existen: el
+    store del journal no fue inicializado (``initialize_frozen_runtime_storage``).
+    No se crea el directorio en el camino de escritura: la inicialización del
+    layout es del storage, bajo su propia admisión.
+    """

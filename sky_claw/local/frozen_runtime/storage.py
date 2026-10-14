@@ -74,6 +74,21 @@ def generations_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "generations"
 
 
+def transition_journal_path(root: pathlib.Path) -> pathlib.Path:
+    """Journal vigente de transición (``state/transition.json``; ADR §34.4)."""
+    return state_dir(root) / "transition.json"
+
+
+def transitions_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store INMUTABLE de registros finalizados (``state/transitions/``; §37.5)."""
+    return state_dir(root) / "transitions"
+
+
+def finalization_seqs_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store de reservas por ``finalization_seq`` (``state/finalization-seqs/``; §38.3)."""
+    return state_dir(root) / "finalization-seqs"
+
+
 def generation_dir(root: pathlib.Path, generation_id: str) -> pathlib.Path:
     return versions_dir(root) / generation_id
 
@@ -266,12 +281,19 @@ def _initialize_frozen_runtime_storage_locked(
     # Cada componente persistente se admite fail-closed ANTES de crear/escribir
     # (P2-B1): un junction/symlink en `state/` o `state/generations/` no puede
     # redirigir escrituras fuera del FrozenRuntimeRoot.
+    #
+    # P4-S3: el store del journal (`state/transitions/` y
+    # `state/finalization-seqs/`) se crea acá, bajo el lock y con la misma
+    # admisión. El journal NO crea directorios en su camino de escritura: si el
+    # store falta, falla cerrado con ``JournalStoreNoInicializadoError``.
     componentes: tuple[pathlib.Path, ...] = (
         ruta,
         versions_dir(ruta),
         candidates_dir(ruta),
         state_dir(ruta),
         generations_state_dir(ruta),
+        transitions_state_dir(ruta),
+        finalization_seqs_state_dir(ruta),
     )
     creados: list[pathlib.Path] = []
     try:
