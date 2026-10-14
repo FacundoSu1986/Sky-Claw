@@ -241,7 +241,22 @@ class PreflightService:
         """
         checks: list[PreflightCheck] = []
 
-        vfs_issues = self._vfs_checker.check() if self._vfs_checker is not None else []
+        # Finding 7 de #592: el VFS health-check (lstat/iterdir sobre las rutas
+        # del juego y de MO2) se ejecutaba SÍNCRONAMENTE en el event loop y lo
+        # bloqueaba durante la inspección de enlaces. Se mueve a un worker thread
+        # (igual que masters/limits/order/overwrite/permissions/visibility) para
+        # que el semáforo de preflight siga respondiendo a cancelaciones y a otros
+        # rituals mientras inspecciona. El checker es de SOLO LECTURA y opera sobre
+        # estado inmutable de self (configurado una vez en __init__), así que el
+        # hilo residual tras una cancelación es inofensivo: no toca leases,
+        # ownership ni estado mutable compartido (principio documentado en
+        # dyndolod_service, "hilo de hashing ... de SOLO LECTURA"). La cancelación
+        # propaga CancelledError fuera de run() -> no se emite PreflightReport ->
+        # no se habilitan mutaciones: fail-closed preservado.
+        if self._vfs_checker is not None:
+            vfs_issues = await asyncio.to_thread(self._vfs_checker.check)
+        else:
+            vfs_issues = []
         if self._keep(self._vfs_checker is not None):
             checks.append(self._vfs_check(vfs_issues, checker_configured=self._vfs_checker is not None))
 
