@@ -29,6 +29,7 @@ completa: es un insumo para el PR #723, no un test del estado vigente.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -74,9 +75,26 @@ _API_NAMES = (
 )
 
 
+# Modo contrato obligatorio (adjudicacion revision REV-2-review): en la CI del
+# PR #723 la ausencia de la API debe ser FALLO, no skip. Exportar
+#   SKYCLAW_REQUIRE_H4_CONTRACT=1
+# para exigir el contrato (uso: CI de #723 y validaciones del slice); sin la
+# variable, main historico se salta con razon explicita (modo compatible).
+_REQUIRE_H4 = os.environ.get("SKYCLAW_REQUIRE_H4_CONTRACT", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
 @pytest.fixture(scope="module")
 def m():
     if not _MODULE_PATH.exists():
+        if _REQUIRE_H4:
+            pytest.fail(
+                "SKYCLAW_REQUIRE_H4_CONTRACT=1: authored_dataset.py no existe en "
+                "este arbol (se exigia el contrato H4)."
+            )
         pytest.skip("authored_dataset.py no existe en este arbol.")
     try:
         mod = _load_contract_module()
@@ -87,6 +105,12 @@ def m():
         )
     faltantes = [name for name in _API_NAMES if not hasattr(mod, name)]
     if faltantes:
+        if _REQUIRE_H4:
+            pytest.fail(
+                "SKYCLAW_REQUIRE_H4_CONTRACT=1: API del Slice 2 ausente ("
+                + ", ".join(faltantes)
+                + "). El PR #723 no debe perder la API del contrato."
+            )
         pytest.skip(
             "API del Slice 2 ausente (" + ", ".join(faltantes) + "): estado main — "
             "insumo del PR #723, no test del estado vigente."
