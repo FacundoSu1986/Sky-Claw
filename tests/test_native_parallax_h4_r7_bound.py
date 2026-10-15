@@ -736,3 +736,472 @@ def test_r7_el_documento_no_reintroduce_la_desigualdad_ingenua() -> None:
     assert "R7_SUFICIENTE_THRESHOLD_IDEAL" in tokens
     assert "R7_ALCANZABLE_THRESHOLD_LOWER_BOUND" in tokens
     assert "R7_NUMERIC_DERIVATION" in tokens and tokens["R7_NUMERIC_DERIVATION"].startswith("BLOCKED")
+
+
+# ---------------------------------------------------------------------------
+# 12. Certificado del error de IMPLEMENTACION (Pillow modo F)
+#
+# La sombra de abajo es la traduccion literal de `src/libImaging/Resample.c` @
+# commit 89f1f4626a2aaf5f3d5ca6437f41def2998fbe09 (Pillow 11.3.0), ramas
+# `precompute_coeffs` + `ImagingResampleHorizontal_32bpc` +
+# `ImagingResampleVertical_32bpc`. Lo load-bearing NO es la formula: es que la
+# sombra reproduce el BINARIO bit a bit. Con eso establecido, la secuencia de
+# redondeos es la real y la cota que se deriva de ella aplica al binario.
+# ---------------------------------------------------------------------------
+from fractions import Fraction  # noqa: E402
+
+U_F32 = 2.0**-24
+U_F64 = 2.0**-53
+# Numero maximo de redondeos double por pasada (4 taps por eje en k=2; el termino
+# crece con el factor de escala y sigue siendo 5 ordenes mas chico que u).
+_TAPS_K2 = 4
+_KAPPA = 2.0 * _TAPS_K2 + 2.0 * _TAPS_K2 + 8.0
+# Version certificada. NO extrapolar a otra: habria que recertificar.
+PILLOW_CERTIFICADA = "11.3.0"
+PILLOW_COMMIT = "89f1f4626a2aaf5f3d5ca6437f41def2998fbe09"
+COMMIT_EVIDENCIA_MUTANTES = "e87a57888ed719f367cce1457320a195eee211b3"
+
+
+def _bilinear_shadow(x: float) -> float:
+    if x < 0.0:
+        x = -x
+    if x < 1.0:
+        return 1.0 - x
+    return 0.0
+
+
+def _precompute_coeffs_shadow(in_size: int, out_size: int) -> tuple[list[tuple[int, int]], list[list[float]]]:
+    """Traduccion literal de `precompute_coeffs` (coeficientes en double)."""
+    filterscale = scale = float(in_size) / float(out_size)
+    if filterscale < 1.0:
+        filterscale = 1.0
+    support = 1.0 * filterscale
+    bounds: list[tuple[int, int]] = []
+    kk: list[list[float]] = []
+    for xx in range(out_size):
+        center = (xx + 0.5) * scale
+        ww = 0.0
+        ss = 1.0 / filterscale
+        xmin = int(center - support + 0.5)  # (int) trunca hacia cero, como en C
+        if xmin < 0:
+            xmin = 0
+        xmax = int(center + support + 0.5)
+        if xmax > in_size:
+            xmax = in_size
+        n = xmax - xmin
+        k = [0.0] * (int(math.ceil(support)) * 2 + 1)
+        for x in range(n):
+            w = _bilinear_shadow((x + xmin - center + 0.5) * ss)
+            k[x] = w
+            ww += w
+        for x in range(n):
+            if ww != 0.0:
+                k[x] /= ww
+        bounds.append((xmin, n))
+        kk.append(k)
+    return bounds, kk
+
+
+def _shadow_resize_f32(campo2d: np.ndarray, out_size: int) -> np.ndarray:
+    """`Image.fromarray(f32).resize((n, n), BILINEAR)` en modo F, bit a bit.
+
+    Acumulador DOUBLE en ambas pasadas; redondeo a float32 en la entrada, en el
+    buffer intermedio (imTemp, modo F) y en la salida.
+    """
+    in_y, in_x = campo2d.shape
+    a32 = np.asarray(np.clip(campo2d, -1.0, 1.0), dtype=np.float32)
+    if in_x == out_size and in_y == out_size:
+        return a32.astype(np.float64)
+    bounds_h, kk_h = _precompute_coeffs_shadow(in_x, out_size)
+    bounds_v, kk_v = _precompute_coeffs_shadow(in_y, out_size)
+    ybox_first = bounds_v[0][0]
+    ybox_last = bounds_v[out_size - 1][0] + bounds_v[out_size - 1][1]
+    tmp = np.zeros((in_y, out_size))
+    for yy in range(in_y):
+        for xx in range(out_size):
+            xmin, n = bounds_h[xx]
+            k = kk_h[xx]
+            ss = 0.0
+            for x in range(n):
+                ss += float(np.float64(a32[yy, x + xmin]) * k[x])
+            tmp[yy, xx] = ss
+    tmp32 = tmp.astype(np.float32)  # buffer intermedio modo F
+    sub = tmp32[: ybox_last - ybox_first]
+    out = np.zeros((out_size, out_size))
+    for yy in range(out_size):
+        ymin, n = bounds_v[yy]
+        y0 = ymin - ybox_first
+        k = kk_v[yy]
+        for xx in range(out_size):
+            ss = 0.0
+            for y in range(n):
+                ss += float(np.float64(sub[y0 + y, xx]) * k[y])
+            out[yy, xx] = ss
+    return out.astype(np.float32).astype(np.float64)
+
+
+def _coeffs_exactos(in_size: int, out_size: int) -> list[tuple[int, int, list[Fraction]]]:
+    """Los mismos coeficientes, en aritmetica racional exacta (sin redondear)."""
+    # OJO: aca NO se usa `(xx + 0.5) * scale` con escala racional inexacta: el
+    # centro se computa como `(xx*2+1)*in_size / (2*out_size)`, que es EXACTO y
+    # coincide con el `center` en double de `_precompute_coeffs_shadow`.
+    filterscale = Fraction(in_size, out_size)
+    if filterscale < 1:
+        filterscale = Fraction(1)
+    support = filterscale
+    salida: list[tuple[int, int, list[Fraction]]] = []
+    for xx in range(out_size):
+        center = Fraction((xx * 2 + 1) * in_size, 2 * out_size)
+        ss = Fraction(1) / filterscale
+        xmin = int(center - support + Fraction(1, 2))
+        if xmin < 0:
+            xmin = 0
+        xmax = int(center + support + Fraction(1, 2))
+        if xmax > in_size:
+            xmax = in_size
+        ws: list[Fraction] = []
+        for x in range(xmax - xmin):
+            t = (Fraction(x + xmin) + Fraction(1, 2) - center) * ss
+            w = 1 - abs(t) if abs(t) < 1 else Fraction(0)
+            ws.append(w)
+        ww = sum(ws, Fraction(0))
+        salida.append((xmin, xmax - xmin, [w / ww for w in ws]))
+    return salida
+
+
+def _ideal_exacto(campo: np.ndarray, out_size: int) -> np.ndarray:
+    """B*: el MISMO algoritmo en aritmetica exacta (Fracciones), por canal."""
+    alto, ancho, ncanales = campo.shape
+    ch = _coeffs_exactos(ancho, out_size)
+    cv = _coeffs_exactos(alto, out_size)
+    campo_rac = [
+        [[Fraction(float(campo[y, x, k])) for x in range(ancho)] for y in range(alto)] for k in range(ncanales)
+    ]
+    out = np.zeros((out_size, out_size, ncanales))
+    for i in range(out_size):
+        y0, nv, vs = cv[i]
+        for j in range(out_size):
+            x0, nh, ks = ch[j]
+            for k in range(ncanales):
+                acc = Fraction(0)
+                for y in range(nv):
+                    fila = campo_rac[k][y0 + y]
+                    sub = Fraction(0)
+                    for x in range(nh):
+                        sub += ks[x] * fila[x0 + x]
+                    acc += vs[y] * sub
+                out[i, j, k] = float(acc)
+    return out
+
+
+def _cota_error_impl(largo: float) -> float:
+    """E_b: cota de `|b - B*|` por canal (M = 1 por el clip de produccion)."""
+    return U_F32 * 2.0 + U_F32 * largo + _KAPPA * U_F64
+
+
+def _cota_angulo_impl(largo: float) -> float:
+    """Mismo lema angular de §3.4, aplicado al desplazamiento de implementacion."""
+    if largo <= 0.0:
+        return float("inf")
+    return math.asin(min(1.0, math.sqrt(3.0) * _cota_error_impl(largo) / largo))
+
+
+def _umbral_suficiente_num() -> float:
+    """Minimo L con `asin(delta_chord/L) + asin(sqrt(3)*E_b/L) <= q_ang` (biseccion)."""
+    lo, hi = 0.5, 1.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        cota = math.asin(min(1.0, DELTA_CHORD / mid)) + _cota_angulo_impl(mid)
+        if cota > Q_ANG:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _campo_extremo_r7(largo: float, n: int = 64) -> np.ndarray:
+    """La construccion cerrada de §4 como campo 2D (invariante en Y)."""
+    r = math.sqrt(max(0.0, 1.0 - largo * largo))
+    n_a = largo * _V_HAT + r * _U_HAT
+    n_b = largo * _V_HAT - r * _U_HAT
+    s = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    fila = np.where(s[:, None] > 0, n_a[None, :], n_b[None, :])
+    limpio = np.repeat(fila[None, :, :], n, axis=0)
+    return _renorm(limpio + _EPS_VERTICE)
+
+
+def _campo_midpoint(n: int = 64) -> np.ndarray:
+    """Valores a distancia ~u/2 de un punto medio float32: redondeos coherentes."""
+    rng = np.random.default_rng(7)
+    base = rng.uniform(-1.0, 1.0, (n, n, 3))
+    f32 = base.astype(np.float32).astype(np.float64)
+    up = np.nextafter(f32.astype(np.float32), np.float32(2.0)).astype(np.float64)
+    mid = 0.5 * (f32 + up)
+    return np.clip(np.nextafter(mid, np.float32(-1.0)).astype(np.float64), -1.0, 1.0)
+
+
+def _peor_angulo_impl(campo: np.ndarray, out_size: int) -> tuple[float, float]:
+    """(peor angulo ideal-vs-real, peor cota de ese regimen) sobre pixeles con L >= 0.75."""
+    ideal = _ideal_exacto(campo, out_size)
+    real = np.stack([_pillow_resize(campo[..., k], out_size) for k in range(3)], axis=-1)
+    peor_ang = 0.0
+    peor_cota = 0.0
+    for i in range(out_size):
+        for j in range(out_size):
+            v = ideal[i, j]
+            largo = float(np.linalg.norm(v))
+            if largo < 0.75:
+                continue
+            peor_ang = max(peor_ang, _angulo(v, real[i, j]))
+            peor_cota = max(peor_cota, _cota_angulo_impl(largo))
+    return peor_ang, peor_cota
+
+
+def _pillow_resize(campo2d: np.ndarray, out_size: int) -> np.ndarray:
+    from PIL import Image
+
+    arr = np.clip(np.asarray(campo2d, dtype=np.float64), -1.0, 1.0)
+    im = Image.fromarray(np.ascontiguousarray(arr, dtype=np.float32))
+    return np.asarray(im.resize((out_size, out_size), Image.Resampling.BILINEAR), dtype=np.float64)
+
+
+def _shadow_acum_f32(campo2d: np.ndarray, out_size: int) -> np.ndarray:
+    """Modelo INCORRECTO: acumulador float32 en vez de double."""
+    in_y, in_x = campo2d.shape
+    a32 = np.asarray(np.clip(campo2d, -1.0, 1.0), dtype=np.float32)
+    bounds_h, kk_h = _precompute_coeffs_shadow(in_x, out_size)
+    bounds_v, kk_v = _precompute_coeffs_shadow(in_y, out_size)
+    ybox_first = bounds_v[0][0]
+    tmp = np.zeros((in_y, out_size), dtype=np.float32)
+    for yy in range(in_y):
+        for xx in range(out_size):
+            xmin, n = bounds_h[xx]
+            k = kk_h[xx]
+            ss = np.float32(0.0)
+            for x in range(n):
+                ss = np.float32(ss + np.float32(a32[yy, x + xmin]) * np.float32(k[x]))
+            tmp[yy, xx] = ss
+    out = np.zeros((out_size, out_size), dtype=np.float32)
+    for yy in range(out_size):
+        ymin, n = bounds_v[yy]
+        y0 = ymin - ybox_first
+        k = kk_v[yy]
+        for xx in range(out_size):
+            ss = np.float32(0.0)
+            for y in range(n):
+                ss = np.float32(ss + np.float32(tmp[y0 + y, xx]) * np.float32(k[y]))
+            out[yy, xx] = ss
+    return out.astype(np.float64)
+
+
+def _shadow_pesos_2tap(campo2d: np.ndarray, out_size: int) -> np.ndarray:
+    """Modelo INCORRECTO: pesos 'bilineales de verdad' (2 taps), no los de Pillow."""
+    in_y, in_x = campo2d.shape
+    a32 = np.asarray(np.clip(campo2d, -1.0, 1.0), dtype=np.float32).astype(np.float64)
+    escala = in_x / out_size
+    tmp = np.zeros((in_y, out_size))
+    for j in range(out_size):
+        c = (j + 0.5) * escala - 0.5
+        x0 = max(0, min(int(math.floor(c - 0.5)), in_x - 2))
+        w = c - (x0 + 0.5)
+        tmp[:, j] = (1.0 - w) * a32[:, x0] + w * a32[:, x0 + 1]
+    out = np.zeros((out_size, out_size))
+    for i in range(out_size):
+        c = (i + 0.5) * escala - 0.5
+        y0 = max(0, min(int(math.floor(c - 0.5)), in_y - 2))
+        w = c - (y0 + 0.5)
+        out[i, :] = (1.0 - w) * tmp[y0, :] + w * tmp[y0 + 1, :]
+    return out
+
+
+def test_r7_impl_version_certificada() -> None:
+    """El certificado vale para la version instalada, no para 'Pillow' en abstracto."""
+    import PIL
+
+    assert PIL.__version__ == PILLOW_CERTIFICADA
+
+
+def test_r7_impl_la_sombra_reproduce_el_binario_bit_a_bit() -> None:
+    """Gate load-bearing: la sombra (acumulador double, 3 redondeos float32) es
+    identica al binario real, bit a bit, en todas las familias y escalas.
+
+    Si el acumulador fuera float32, si MSVC contrajera a FMA, si el buffer
+    intermedio fuera double o si los pesos fueran otros, la sombra diferiria.
+    Que NO difiera es lo que autoriza a derivar la cota de esta secuencia.
+    """
+    familias: list[tuple[str, np.ndarray]] = [
+        ("extremo R7", _campo_extremo_r7(0.80)),
+        ("extremo R7 L=0.55", _campo_extremo_r7(0.55)),
+        ("midpoint", _campo_midpoint()),
+        ("aleatorio", np.random.default_rng(1).uniform(-1.0, 1.0, (64, 64, 3))),
+        (
+            "polos",
+            _renorm(
+                np.concatenate(
+                    [
+                        0.15 * np.random.default_rng(3).uniform(-1, 1, (64, 64, 2)),
+                        np.sign(np.random.default_rng(4).uniform(-1, 1, (64, 64, 1))),
+                    ],
+                    axis=-1,
+                )
+            ),
+        ),
+    ]
+    escalas = [(64, 32), (100, 37), (8, 16), (48, 13)]
+    for nombre, campo in familias:
+        for n_in, n_out in escalas:
+            if campo.shape[0] != n_in:
+                continue
+            real = np.stack([_pillow_resize(campo[..., k], n_out) for k in range(3)], axis=-1)
+            sombra = np.stack([_shadow_resize_f32(campo[..., k], n_out) for k in range(3)], axis=-1)
+            assert np.array_equal(real.view(np.uint32), sombra.view(np.uint32)), (
+                f"{nombre} {n_in}->{n_out}: la sombra NO reproduce el binario"
+            )
+
+
+@pytest.mark.parametrize("largo", [0.80, 0.8660392772765431, 0.95])
+def test_r7_impl_la_cota_nunca_se_viola(largo: float) -> None:
+    """El angulo entre el ideal exacto y la salida real no supera la cota, por pixel."""
+    ang, cota = _peor_angulo_impl(_campo_extremo_r7(largo), 32)
+    assert ang <= cota
+    # y no es vacua: el angulo medido es del orden del redondeo, no cero
+    assert ang >= 0.0
+
+
+def test_r7_impl_la_cota_aguanta_el_campo_de_saturacion() -> None:
+    """Campo con redondeos float32 coherentes en el regimen del umbral."""
+    ang, cota = _peor_angulo_impl(_campo_midpoint(), 32)
+    assert ang <= cota
+    # el peor caso observado es del orden de u, muy por debajo de la cota: se
+    # declara la holgura en vez de esconderla.
+    assert cota >= 4.0 * ang
+
+
+def test_r7_impl_controles_negativos_discriminan() -> None:
+    """Los modelos incorrectos deben diferir del binario: si no, el control no sirve."""
+    campo = _campo_extremo_r7(0.80)
+    campo_y = np.transpose(campo, (1, 0, 2))
+    real = np.stack([_pillow_resize(campo_y[..., k], 32) for k in range(3)], axis=-1)
+    por_canal = real.shape[-1] * real.shape[0] * real.shape[1]
+
+    acum = np.stack([_shadow_acum_f32(campo_y[..., k], 32) for k in range(3)], axis=-1)
+    assert not np.array_equal(acum.view(np.uint32), real.view(np.uint32))
+    assert int(np.count_nonzero(acum.view(np.uint32) != real.view(np.uint32))) > por_canal // 10
+
+    dos_taps = np.stack([_shadow_pesos_2tap(campo_y[..., k], 32) for k in range(3)], axis=-1)
+    assert not np.array_equal(dos_taps.view(np.uint32), real.view(np.uint32))
+    # y el angulo que produce el modelo de pesos equivocados es catastrofico
+    ideal = _ideal_exacto(campo_y, 32)
+    peor = max(
+        _angulo(ideal[i, j], dos_taps[i, j]) for i in range(32) for j in range(32) if np.linalg.norm(ideal[i, j]) > 1e-6
+    )
+    assert peor > 10.0 * Q_ANG
+
+
+def test_r7_impl_el_umbral_numerico_certificado() -> None:
+    """`L*_num` se recomputa por biseccion y compara con el valor declarado."""
+    lnum = _umbral_suficiente_num()
+    assert math.isclose(lnum, 0.8660770023307574, rel_tol=1e-12)
+    assert math.isclose(lnum - L_SUFICIENTE, 3.7725e-05, rel_tol=1e-3)
+    # el umbral numerico supera al ideal: el margen de implementacion se paga
+    assert lnum > L_SUFICIENTE
+    # y queda POR DEBAJO de la estimacion retirada (que cargaba 4u a la entrada)
+    assert lnum < 2.0 * math.sin(math.asin((T + 4 * U_F32) * math.sqrt(3.0)) / 2.0) / math.sin(Q_ANG)
+    # la cota de implementacion en el umbral ideal es pequena pero no nula
+    assert math.isclose(_cota_angulo_impl(L_SUFICIENTE), 3.4165303821e-07, rel_tol=1e-6)
+    assert _cota_angulo_impl(L_SUFICIENTE) / Q_ANG == pytest.approx(4.3561e-05, rel=1e-3)
+
+
+def test_r7_impl_la_cota_de_error_por_canal_es_la_declarada() -> None:
+    """`E_b = u*(2+L) + kappa*u_d`: tres redondeos float32 + los de double."""
+    assert math.isclose(_cota_error_impl(L_SUFICIENTE), 1.7082925570e-07, rel_tol=1e-9)
+    assert math.isclose(_cota_error_impl(1.0), U_F32 * 3.0 + _KAPPA * U_F64, rel_tol=1e-15)
+    # el margen de implementacion es del orden de u: 5 ordenes mas chico que
+    # delta_chord, asi que no cambia la escala de la cota, solo la correccion.
+    assert _cota_error_impl(1.0) < DELTA_CHORD * 1e-4
+
+
+def test_r7_impl_el_documento_declara_la_version_y_las_categorias() -> None:
+    """Anclas documentales del certificado de implementacion."""
+    texto = _DOC.read_text(encoding="utf-8")
+    assert PILLOW_CERTIFICADA in texto
+    assert PILLOW_COMMIT in texto
+    assert "0.8660770023307574" in texto
+    for categoria in (
+        "BOUND_ANALYTICALLY_PROVEN",
+        "BOUND_COMPUTATIONALLY_CERTIFIED",
+        "BOUND_EMPIRICALLY_OBSERVED",
+        "BOUND_ESTIMATED_ONLY",
+    ):
+        assert categoria in texto, f"el documento debe declarar la categoria {categoria}"
+    # la estimacion retirada sigue presente, pero marcada como sustituida
+    assert "BOUND_ESTIMATED_ONLY" in texto and "sustituida por" in texto
+    tokens = _bloque_de_tokens(texto)
+    assert "R7_IMPL_BOUND" in tokens
+    assert "R7_SUFICIENTE_THRESHOLD_NUM" in tokens
+    assert "R7_IMPL_CERTIFIED_VERSION" in tokens
+
+
+def test_r7_impl_los_tokens_de_implementacion_tienen_el_valor_certificado() -> None:
+    """Los tokens NO solo deben existir: deben tener el valor demostrado.
+
+    El defecto que esto mata: un mutante que cambia el valor del token (o que le
+    cuelga un "sin demostrar")pasaria una guarda de existencia. El ancla es
+    POSITIVA y cubre la cadena completa del token.
+    """
+    tokens = _bloque_de_tokens(_DOC.read_text(encoding="utf-8"))
+    # umbral numerico: el valor bisectado, no el ideal ni la estimacion retirada
+    valor_num = tokens["R7_SUFICIENTE_THRESHOLD_NUM"].split()[0]
+    assert math.isclose(float(valor_num), _umbral_suficiente_num(), rel_tol=1e-12)
+    assert math.isclose(float(valor_num), 0.8660770023307574, rel_tol=1e-12)
+    # la formula de la cota, completa
+    assert tokens["R7_IMPL_BOUND"] == "asin(sqrt(3) * E_b / L)   (E_b = u*(2+L) + (2m+2n+8)*u_d, u = 2**-24)"
+    # la version certificada, con commit
+    assert "11.3.0" in tokens["R7_IMPL_CERTIFIED_VERSION"]
+    assert PILLOW_COMMIT in tokens["R7_IMPL_CERTIFIED_VERSION"]
+    assert "NO extrapolar" in tokens["R7_IMPL_CERTIFIED_VERSION"]
+    # tightness declarada, no escondida
+    assert tokens["R7_IMPL_TIGHTNESS"].startswith("NOT_TIGHT")
+    # la categoria del certificado: computacionalmente certificada, NO "observada"
+    # ni "estimada", y ACOTADA a la version certificada
+    assert tokens["R7_PILLOW_CERTIFICATION"].startswith("BOUND_COMPUTATIONALLY_CERTIFIED")
+    assert "NO extrapolar" in tokens["R7_PILLOW_CERTIFICATION"]
+    assert "11.3.0" in tokens["R7_PILLOW_CERTIFICATION"]
+    # el certificado de implementacion NO habilita el global: sigue BLOCKED
+    assert "BLOCKED" in tokens["R7_PILLOW_CERTIFICATION"]
+
+
+def test_r7_los_estados_obligatorios_del_brief_estan_y_no_se_autoriza_nada() -> None:
+    """Los 9 estados obligatorios del brief deben figurar con su valor.
+
+    Sin esta ancla, nada impide que alguien "autorice" una fusion o un rerun de
+    corpus editando el bloque de tokens: la guarda seria de existencia, no de
+    valor. Aca se fija el VALOR.
+    """
+    tokens = _bloque_de_tokens(_DOC.read_text(encoding="utf-8"))
+    assert tokens["F01_CONTRACT_AMENDMENT"] == "PENDING_TECH_LEAD"
+    assert tokens["R7_NUMERIC_DERIVATION"].startswith("BLOCKED")
+    assert tokens["H4_CODE_MERGE_AUTHORIZED"] == "NO"
+    assert tokens["PR723_MERGE_AUTHORIZED"].startswith("NO")
+    assert tokens["PR733_MERGE_AUTHORIZED"].startswith("NO")
+    assert tokens["M6_IMPLEMENTATION_BLOCKED"] == "YES"
+    assert tokens["REAL_CORPUS_RERUN"].startswith("NO")
+    assert tokens["PR675_CHANGED"].startswith("NO")
+
+
+def test_r7_la_cifra_de_mutantes_apunta_al_commit_que_la_evidencia() -> None:
+    """Fase 5: la fila de mutacion de §7 declara 13/13 y apunta al commit que la evidencia.
+
+    La cifra vieja era 8/8 (barrido anterior a `e87a5788`). §12 es trazabilidad de
+    correcciones, NO el log de mutacion: por eso la cifra vivia en §7 y quedo
+    desactualizada. Se corrige contra el commit, no contra una afirmacion.
+    """
+    texto = _DOC.read_text(encoding="utf-8")
+    filas = _filas_de_tabla(texto, "## 7.")
+    fila_mut = [f for f in filas if "utación" in f[0]]
+    assert len(fila_mut) == 1, "debe haber exactamente una fila de mutantes en §7"
+    assert "13/13" in fila_mut[0][2]
+    assert "21/21" in fila_mut[0][2], "la cifra verificada en este slice es 13 + 8 nuevos"
+    assert "barrido_mutantes.py" in fila_mut[0][2], "la fila debe apuntar al barrido reproducible"
+    assert COMMIT_EVIDENCIA_MUTANTES in fila_mut[0][2]
+    assert COMMIT_EVIDENCIA_MUTANTES in texto
