@@ -62,6 +62,11 @@ SESION = "4d5e6f70-8192-4344-9c8d-7e6f5a4b3c2d"
 
 GEN_OBJETIVO = "1.6.640.0__0f1e2d3c4b5a"
 GEN_ORIGEN = "1.6.1170.0__a1b2c3d4e5f6"
+# Identidad del Runtime Clone efectivo que el bind produce (ADR §34.4:
+# "expected_effective_path — la ruta que el bind va a producir"). El oráculo
+# de P5 observa QUÉ RUTA ejecuta el runtime (§34.5), no la Generation: una
+# Generation a secas no demuestra identidad de Clone (§35.4).
+RUTA_EFECTIVA_OBJETIVO = "E:/rt/versions/" + GEN_OBJETIVO
 DIGEST_64 = "a" * 64
 OTRO_DIGEST_64 = "0" * 64
 
@@ -215,7 +220,7 @@ def _propuesta(transition_id: str = T1, *, operation: str = "PROMOTION") -> obje
             runtime_setup_evidence="e" * 64,
             compatibility_evidence="f" * 64,
         ),
-        expected_effective_path="E:/rt/versions/" + GEN_OBJETIVO,
+        expected_effective_path=RUTA_EFECTIVA_OBJETIVO,
         created_at_ns=1_700_000_000_000_000_000,
     )
 
@@ -1022,6 +1027,45 @@ def test_crash_entre_reserva_y_registro_deja_reserva_huerfana(
         _finalizar(root2, _post(T2))
 
 
+def test_store_no_omite_enlace_a_archivo_vacio_como_placeholder(tmp_path: pathlib.Path) -> None:
+    """Un enlace a un archivo de 0 bytes NUNCA se omite como placeholder (§34.5 N2).
+
+    ``_placeholder_vacio`` medía con ``stat()``, que SIGUE enlaces: un enlace a
+    un archivo vacío se clasificaba como placeholder y se omitía en la
+    derivación del historial sin pasar por ``_leer_json_estricto``, que sí
+    rechaza enlaces. Es el mismo hueco que el reparse point del journal, pero
+    en los stores históricos.
+    """
+    root = _root(tmp_path)
+    vacio = tmp_path / "vacio.bin"
+    vacio.write_bytes(b"")
+    ruta = transitions_state_dir(root) / f"{T2}.json"
+    try:
+        os.symlink(vacio, ruta)
+    except OSError as exc:  # pragma: no cover - régimen sin privilegios
+        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
+    if not ruta.is_symlink():
+        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    with pytest.raises(JournalCorruptError):
+        journal_module.derivar_historial_finalizados(root)
+
+
+def test_auditoria_no_omite_enlace_a_archivo_vacio_como_placeholder(tmp_path: pathlib.Path) -> None:
+    """Ídem en el store de reservas: el enlace va al lector estricto, no se omite."""
+    root = _root(tmp_path)
+    vacio = tmp_path / "vacio.bin"
+    vacio.write_bytes(b"")
+    ruta = finalization_seqs_state_dir(root) / "2.json"
+    try:
+        os.symlink(vacio, ruta)
+    except OSError as exc:  # pragma: no cover - régimen sin privilegios
+        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
+    if not ruta.is_symlink():
+        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    with pytest.raises(JournalCorruptError):
+        journal_module.auditar_reservas_finalizacion(root)
+
+
 def test_reconciliacion_pending_sin_oraculo_nunca_es_complete(tmp_path: pathlib.Path) -> None:
     root = _root(tmp_path)
     _crear_pendiente(root)
@@ -1057,15 +1101,36 @@ def test_reconciliacion_n0_y_n1_con_oraculo_de_effective(tmp_path: pathlib.Path)
     assert n1.requiere_dueno is True
 
 
+def test_reconciliacion_desired_none_y_oraculo_none_nunca_es_complete(tmp_path: pathlib.Path) -> None:
+    """UNKNOWN != SUCCESS (ADR §34.5): la igualdad de dos indeterminados NO es N0.
+
+    El oráculo que devuelve None no pudo determinar el runtime (indeterminado),
+    y un Desired sin generación declarada no es una declaración contra la que
+    comparar. ``None == None`` jamás puede producir COMPLETE.
+    """
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=None, updated_at_ns=1),
+    )
+    resultado = journal_module.reconciliar_journal(root, observador_effective=lambda: None)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "EFFECTIVE_INDETERMINADO" in resultado.motivo
+    assert resultado.requiere_dueno is True
+
+
 def test_reconciliacion_c5_c6_c7_con_evidencia_y_registro(tmp_path: pathlib.Path) -> None:
     root = _root(tmp_path)
     from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
     from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
 
     _crear_pendiente(root)
-    # C6: con oráculo que observa el objetivo, la reconciliación permite
-    # re-correr el POST (RECOVER) sin finalizar por sí sola.
-    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    # C6: el oráculo observa la RUTA efectiva (identidad del Clone, §34.5):
+    # la reconciliación permite re-correr el POST (RECOVER) sin finalizar sola.
+    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: RUTA_EFECTIVA_OBJETIVO)
     assert c6.veredicto.value == "RECOVER"
     _finalizar(root)
     # C7 equivale a N0 una vez rotado: Desired == Effective y sin transición.
@@ -1078,6 +1143,27 @@ def test_reconciliacion_c5_c6_c7_con_evidencia_y_registro(tmp_path: pathlib.Path
     c7 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
     assert c7.veredicto.value == "COMPLETE"
     assert c7.punto_crash == "N0"
+
+
+def test_reconciliacion_pending_exige_identidad_de_clone_no_de_generation(tmp_path: pathlib.Path) -> None:
+    """El ADR §34.5 exige demostrar la identidad del Runtime Clone efectivo.
+
+    En un PENDING, la fila que habilita re-correr el POST es "Effective
+    **coincide** con ``expected_effective_path``". Comparar contra
+    ``target_generation_id`` (la Generation) NO demuestra que el runtime
+    efectivo apunte al Runtime Clone del par Desired: la integridad del Clone
+    es física (§35.4) y la Generation no la prueba.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    # El oráculo observa la ruta que ejecuta el runtime: la esperada por el bind.
+    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: RUTA_EFECTIVA_OBJETIVO)
+    assert c6.veredicto.value == "RECOVER"
+    assert "EXPECTED_PATH" in c6.motivo
+    # Una Generation a secas no demuestra identidad de Clone: fail-closed.
+    por_generation = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    assert por_generation.veredicto.value == "REQUIRE_OWNER"
+    assert "EXPECTED_PATH" in por_generation.motivo
 
 
 def test_reconciliacion_oraculo_indeterminado_es_fail_closed(tmp_path: pathlib.Path) -> None:
