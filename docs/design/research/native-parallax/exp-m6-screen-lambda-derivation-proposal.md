@@ -1,8 +1,31 @@
-# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 5
+# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 6
 
 > **Estado:** `PROPOSAL` — insumo externo para la ETAPA A del prereg de EXP-M6
 > ([PR #675](https://github.com/FacundoSu1986/Sky-Claw/pull/675), DRAFT). **No autoriza
 > implementación ni ejecución de M6** (`M6_IMPLEMENTATION_BLOCKED = YES` vigente).
+>
+> **REV 6 (2026-10-15, ronda 6):** reconciliación asintótica sobre el PR #738. Tres
+> hallazgos adjudicados (§8.4), todos aceptados con verificación numérica previa:
+>
+> 1. **P1 — El límite asintótico de REV 5 era incorrecto.** (σ²/2π)·ln(π/√λ) es sólo
+>    el comportamiento dominante para λ→0, NO el límite del MSE de ruido con λ>0
+>    fijo. Límite exacto del operador declarado:
+>    **V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky = 0.006698379**
+>    (λ=1e-3, σ=0.1; dos vías independientes: disco en forma cerrada + esquinas
+>    Gauss-Legendre m=200/400/800, estable a 2e-12; extrapolación discreta de 3
+>    puntos = 0.006698378). La fórmula log queda **+9.22 %** por encima. La suma
+>    discreta converge a V∞ con exceso ∝1/N (+2.21 % ya en 1024²). Los valores
+>    dorados de REV 5 quedan intactos (no se tocó ninguna medición, sólo la
+>    caracterización del límite). RED→GREEN con oráculo independiente (§4.1).
+> 2. **§3 — Conjugación**: el código ya era correcto (`conj(dx)·p̂ + conj(dy)·q̂`);
+>    la fórmula del §2.1 `(dx·p̂+dy·q̂)*` era ambigua/incorrecta → corregida; pin de
+>    test por modo único añadido (la mutación de conjugación falla 2 tests).
+> 3. **§4 — Gate fail-closed estructural**: ningún workflow fija
+>    `SKYCLAW_REQUIRE_M6_CONTRACT` (verificado) → la ruta compatible permitía
+>    `5 skipped` con runner ausente (falso verde posible, demostrado). REV 6:
+>    **presencia incondicional del runner** (FAIL siempre, sin variables de
+>    entorno); variable eliminada por superada. Demostración negativa: runner
+>    eliminado → `1 failed, 6 skipped` (job rojo).
 >
 > **REV 5 (2026-10-15, ronda 5):** reconciliación acotada tras la revisión de la REV 4
 > (commit `5c473d5`) — "favorable para continuar, aún sin cerrar M6". Tres P2, **los
@@ -66,7 +89,14 @@ alcance: `T_R`/`T_N`/`T_AMBIG`, política de nz (EXP-M1), semántica final del s
 ### 2.1 Screened Frankot–Chellappa como Tikhonov
 
 Minimizar `Σ‖∇h − g‖² + λ‖h‖²` en el toro con derivadas espectrales da
-`ĥ = (dx·p̂ + dy·q̂)* / (|dx|²+|dy|²+λ)` (solución LS por modo), con dos consecuencias
+`ĥ = (conj(dx)·p̂ + conj(dy)·q̂) / (|dx|²+|dy|²+λ)` (solución LS por modo;
+**REV 6**: el numerador es `conj(dx)·p̂ + conj(dy)·q̂` — cada símbolo conjugado,
+NO la conjugación de la suma completa `conj(dx·p̂ + dy·q̂)`, que es una ecuación
+distinta; el texto REV≤5 `(dx·p̂+dy·q̂)*` era ambiguo y quedó corregido aquí. El
+código (`solve_screened`) siempre usó la convención correcta; pin de test por
+modo único en el gate: `p=sin(3·2πx/N)` → `h=−cos(3·2πx)/k_N` con RMSE<1e-10,
+y la convención errónea invierte el signo (RMSE>1) — mutación M2 detectada),
+con dos consecuencias
 exactas: atenuación de amplitud `k²/(k²+λ)` (modo de corte `k_c=√λ`, `VERIFIED`) y el
 término de ruido por **proyección ortogonal** `E|num(k)|² = D(k)·N²σ²` con
 `D(k)=|dx|²+|dy|²` (la REV 1 sobrecontaba ×2; corregido en REV 2).
@@ -167,18 +197,43 @@ solver y los pesos §2.3 (éste era el P1-1).
   incluye columnas mixtas de Nyquist): ratios MC/curva **1.0087 / 0.9952 / 0.9796**
   (`--check` del Apéndice A). `VERIFIED`.
 
-**Enunciado correcto de la divergencia (reemplaza al de REV 3):**
+**Enunciado correcto de la divergencia (REV 6 — reemplaza al de REV 3/REV 5):**
 
-| Caso | MSE de ruido | Comportamiento |
+| Nivel | Fórmula | Estado |
 |---|---|---|
-| λ=0 | `(σ²/2π)·ln N + O(1)` | crece **sin cota** con N (medido: 0.010205 @256² → 0.012422 @1024²) |
-| λ>0 fijo | → **(σ²/2π)·ln(π/√λ)** | **acotado**, no diverge; tampoco decae con N |
+| Modelo discreto exacto | `(σ²/N²)·Σ_{D>0} w·D/(D+λ)²` | lo que implementa `analytic_curve` (`VERIFIED`) |
+| Límite continuo (N→∞) | **`V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky`** | límite EXACTO del operador (REV 6, ronda 6) |
+| Aproximación log (λ→0) | `(σ²/2π)·ln(π/√λ)` | **sólo comportamiento dominante — NO es el límite** (+9.22 % sobre V∞ en λ=1e-3) |
+| Error de resolución finita | exceso sobre V∞ **∝ 1/N** (medido) | +8.9 % @256², +2.21 % @1024², +1.09 % @2048² |
+| λ=0 | `(σ²/2π)·ln N + O(1)` | divergencia infrarroja **sin cota** con N |
 
-Verificación de la asíntota: λ=1e-3, σ=0.1 → asíntota 0.007319; medido 0.006849
-@1024² (−6.4 %, aproximación desde abajo por el corte finito `k≥2π/N`); `--check`
-reproduce ambos. Consecuencia operativa sin cambios: con ruido blanco sin filtrar
-ningún λ constante arregla el problema — filtrar las pendientes de entrada sigue
-siendo la herramienta correcta (`INFERRED`, a falsar en #675).
+**P1 de la ronda 6 (aceptado tras verificación):** la REV 5 presentaba la fórmula
+log como el límite. Verificación independiente de REV 6 con DOS vías que no
+reutilizan `analytic_curve`:
+
+- **Disco + esquinas:** `V∞(λ) = (σ²/(2π)²)·[π·(ln((π²+λ)/λ) + λ/(π²+λ) − 1) + 4·I_esquinas]`,
+  esquinas por Gauss-Legendre anidado: m=200 → 0.006698379225; m=400 → …241;
+  m=800 → …243 (estable a 2e-12). **V∞(1e-3, σ=0.1) = 0.006698379** — coincide con
+  la referencia independiente de la revisión (0.006698379) al dígito.
+- **Extrapolación de la propia suma discreta** (3 puntos, modelo `V∞ + a/N + b/N²`):
+  **0.006698378** (a=0.1545, b=−3.5e-3) — coherente en 1e-9 con la cuadratura.
+- Convergencia discreta medida (λ=1e-3): 256²: 0.007296271 · 512²: 0.007000119 ·
+  1024²: 0.006849252 · 2048²: 0.006773816; ratios de exceso 1.99 / 2.02 / 2.04
+  (≈1/N). La explicación "−6.4 % por corte finito" de la REV 5 queda **RETIRADA**:
+  la discrepancia real era que la referencia log no era el límite.
+
+**Nyquist y medida nula (§4 del mandato):** los bins con D=0 — incluidos los
+Nyquist mixtos — aportan exactamente 0 al término de ruido para todo λ≥0
+(`D/(D+λ)²=0`) y corresponden a conjuntos de medida nula en el límite continuo:
+sin contribución a V∞. Verificado en la derivación y en el selftest (tablero).
+
+**Distinción operativa (§1.6 del mandato):** λ>0 fijo regulariza la divergencia
+infrarroja del RUIDO (MSE → V∞ < ∞), pero **NO recupera la señal**: el sesgo
+`(λ/(D+λ))²` de banda baja persiste y crece con λ. Ninguna conclusión operativa
+cambia: con ruido blanco sin filtrar ningún λ constante arregla el problema —
+filtrar las pendientes de entrada sigue siendo la herramienta correcta
+(`INFERRED`, a falsar en #675). `--check` y el gate reproducen la separación de
+tres niveles (recibo #5 del runner; test `test_limite_continuo_V_infinito`).
 
 **Separación noise-reconstruction vs λ-bias (pedida por la revisión):** el término
 `(λ/(D+λ))²·E|ĥ|²` es PÉRDIDA DE SEÑAL (mono. creciente en λ); el término
@@ -248,14 +303,20 @@ ruido que suprime). `EJECUTADO`.
    obliga a la separación: `h=(−1)^(x+y)` tiene RMS 1.0, pendientes ≡ 0 y fracción
    pendiente-nula **0.0** — la métrica de pendientes es ciega a la altura perdida.
    **Prohibido** presentar (i) como proxy de (ii).
-7. **Gate automatizado (REV 5 — P2-3):** el runner canónico vive en el repo
-   (`scripts/run_lambda_study_m6.py`) y `tests/test_native_parallax_m6_lambda_gate.py`
-   congela los recibos numéricos (SEED=20261015; curva λ=0 rég. B con los 5 valores
-   dorados de dos partes N∈{32,64,128,256,512}; asíntota λ=1e-3; Parseval toda
-   paridad; selftest 9/9). Ejecutar con `pytest
-   tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`. Verificado por
-   mutación: reinyectar los pesos bugueados de REV 4 hace fallar 2/4 tests. El
-   estudio completo (28 celdas, ~25 s) NO corre en CI — sólo el gate (<1 s).
+7. **Gate automatizado (REV 5 — P2-3; endurecido en REV 6):** el runner canónico
+   vive en el repo (`scripts/run_lambda_study_m6.py`) y
+   `tests/test_native_parallax_m6_lambda_gate.py` congela los recibos numéricos
+   (SEED=20261015; curva λ=0 rég. B con los 5 valores dorados de dos partes
+   N∈{32,64,128,256,512}; **límite continuo V∞(1e-3)=0.006698379 con oráculo
+   independiente** (REV 6); Parseval toda paridad; conjugación por modo único;
+   selftest 9/9). Ejecutar con `pytest tests/test_native_parallax_m6_lambda_gate.py
+   --noconftest -q`. **Fail-closed estructural (REV 6):** la ausencia del runner es
+   FAIL SIEMPRE (test de presencia incondicional, sin variables de entorno) —
+   ningún workflow fijaba `SKYCLAW_REQUIRE_M6_CONTRACT` y la ruta compatible
+   permitía `5 skipped` con runner ausente (falso verde posible, demostrado y
+   eliminado). Mutaciones adversariales cubiertas: log-como-límite, conjugación
+   errónea, pesos v4, runner ausente y tolerancia relajada (ver §8.4). El estudio
+   completo (28 celdas, ~25 s) NO corre en CI — sólo el gate (<1 s).
 
 ## 6. Estado del harness H4 (insumo #723) y del gauge — decisiones REV 3 (sin cambios en REV 4)
 
@@ -288,10 +349,16 @@ numérica (atenuación uniforme 1/(1+1e-4) en N∈{128…4096}); el reemplazo pr
 incluye un snapshot del runner en Apéndice A y declara canónico el archivo de
 `scripts/`.
 
-**Modo obligatorio (mismo patrón que el harness H4, §6.1):** con
-`SKYCLAW_REQUIRE_M6_CONTRACT=1` la ausencia del runner canónico es **FAIL** (no SKIP
-silencioso); sin la variable es SKIP con razón explícita. Con el runner presente los
-tests corren igual en ambos modos. CI del camino espectral debe exportar la variable.
+**Fail-closed estructural (REV 6 — sustituye al modo por entorno de REV 5):**
+la ausencia del runner canónico es **FAIL siempre** (test de presencia
+incondicional), independientemente de variables de entorno. Razón: se verificó que
+NINGÚN workflow de CI fijaba `SKYCLAW_REQUIRE_M6_CONTRACT`, por lo que el modo
+compatible de REV 5 permitía `5 skipped` con runner ausente — un falso verde
+posible en el propio PR #738. Demostración negativa: eliminando el runner, el gate
+pasa de `7 passed` a `1 failed, 6 skipped` (job rojo) SIN ninguna configuración de
+CI. La variable `SKYCLAW_REQUIRE_M6_CONTRACT` quedó eliminada por superada
+(documentado aquí; el harness H4 de #737 conserva SU variable por una razón
+distinta y justificada: debe correr también en árboles SIN la API H4).
 
 ## 7. Estados (REV 4)
 
@@ -303,9 +370,14 @@ tests corren igual en ambos modos. CI del camino espectral debe exportar la vari
 | Curva analítica con `D` del solver (§4) | `VERIFIED` (P1-1; ratios MC 1.009/0.995/0.980; coincidencia con revisión al dígito) |
 | Curva analítica REV 3 y sus valores λ=0 | `RETIRADO` (P1-1: fórmula de dispersión y pesos incorrectos) |
 | Fórmula de ruido `D·N²σ²` (proyección) | `VERIFIED` (MC banda 0.980; espectro completo 0.98–1.01) |
-| Divergencia λ=0 ~ln N; λ>0 → (σ²/2π)ln(π/√λ) | `VERIFIED` (P1-2; `--check` #4) |
+| Divergencia λ=0 ~ln N (sin cota) | `VERIFIED` (P1-2; `--check` #5) |
+| Límite continuo V∞(λ)=(σ²/(2π)²)∫∫ k²/(k²+λ)² — exacto | `VERIFIED` (ronda 6; 2 vías: GL disco+esquinas y extrapolación discreta; coincidencia con la revisión al dígito) |
+| Fórmula log (σ²/2π)·ln(π/√λ) | `RETIRADO` como límite (sólo dominante λ→0; +9.22 % sobre V∞ @1e-3) |
+| Exceso finito-N ∝1/N (medido; NO teorema) | `EJECUTADO` (ratios 1.99/2.02/2.04) |
+| Numerador conj(dx)·p̂+conj(dy)·q̂ (no conj de la suma) | `VERIFIED` (código correcto; §2.1 corregido; pin por modo único; mutación M2) |
+| Gate fail-closed estructural (presencia incondicional) | `VERIFIED` (7 passed; runner ausente → 1 failed sin env; 5 mutaciones detectadas) |
 | λ\*riesgo ≈ c/N² observado (c_A≈0.085, c_B≈0.146), ganancia <0.06 % examinada | `EJECUTADO` (REV 5 rewording; sustituye `RETIRADO` 3.15e-10) |
-| Gate automatizado (runner en repo + recibos congelados) | `VERIFIED` (4 passed; mutación de pesos detectada 2/4) |
+| Gate automatizado (runner en repo + recibos congelados) | `VERIFIED` (7 passed; 5 mutaciones detectadas, §8.4) |
 | Mallas rectangulares | FUERA DE CONTRATO (a resolver para el producto) |
 | λ=0 default (baseline) | `SUPPORTED_BY` §4 |
 | `null_slope_energy_fraction` ≠ altura irrecuperable (P1-3) | `VERIFIED` (contraejemplo (−1)^(x+y)); altura: `UNKNOWN` sin oráculo |
@@ -374,6 +446,28 @@ completo normal → altura → DDS → Skyrim. Sin merge a main; `M6_IMPLEMENTAT
 vigente.
 
 Ningún punto rechazado en cinco rondas.
+
+### 8.4 Ronda 6 — revisión de la REV 5 sobre #738 (session NP-M6-REV6-ASYMPTOTIC-RECONCILIATION; esta adjudicación)
+
+| Afirmación | Veredicto | Verificación independiente de esta parte / acción (RED→GREEN) |
+|---|---|---|
+| **P1: el límite asintótico era incorrecto** — (σ²/2π)·ln(π/√λ) no es el límite exacto; el candidato correcto es `V∞(λ)=(σ²/(2π)²)∫∫ k²/(k²+λ)²` con referencia 0.006698379 @λ=1e-3, σ=0.1 (insumo de falsificación, no autoridad). | **CORRECTA — aceptada** | Dos vías independientes de `analytic_curve`: (i) disco en forma cerrada + esquinas GL (m=200/400/800, Δ=2e-12) → **0.006698379** — su referencia confirmada al dígito; (ii) extrapolación discreta 3 puntos (V∞+a/N+b/N²) → **0.006698378**. La fórmula log: +9.22 % sobre V∞ (no es el límite). Exceso discreto ∝1/N (1.99/2.02/2.04). RED: `test_limite_continuo_V_infinito` fallaba con `AttributeError: noise_mse_limit` sobre el runner REV 5; GREEN: `noise_mse_limit()` (mismo oráculo disco+esquinas), recibos #5 reescritos con separación discreto/límite/log/error-finito; §4.1 reescrita; "−6.4 % por corte finito" `RETIRADO`. Valores dorados REV 5 intactos (ninguna medición tocada) |
+| **§3: conjugación del numerador** — `conj(dx)·p̂+conj(dy)·q̂`, no la conjugación de la suma completa; contrastar doc §2.1/§2.2/`solve_screened`/ecuaciones normales; tests con campos conjugado-simétricos. | **CORRECTA — adoptada** | Código correcto desde siempre (`num = conj(dx)·fp + conj(dy)·fq`; §2.2 consistente; ecuaciones normales LS por modo lo exigen). Defecto REAL: el TEXTO §2.1 `(dx·p̂+dy·q̂)*` — corregido a notación explícita. Pin nuevo `test_conjugacion_numerador_por_modo` (modo único p=sin(3·2πx/N) → h=−cos(3·2πx)/k, RMSE<1e-10; convención errónea → signo invertido, RMSE>1). Mutación M2 (conj de la suma): 2 failed |
+| **§4: gate fail-closed en CI** — verificar si el workflow fija la variable; si no, exigencia explícita verificable; prueba negativa de runner ausente. | **CORRECTA — aceptada** | `grep` en `.github/workflows/*`: la variable NO se fija en ningún job → ruta compatible REV 5 con runner ausente = `5 skipped` (falso verde posible — demostrado). Solución estructural sin tocar CI global: test de presencia INCONDICIONAL (`test_runner_canonico_presente`). Negativa demostrada: runner eliminado, SIN env → `1 failed, 6 skipped` (antes: `5 skipped`). Variable eliminada por superada; H4 conserva la suya con justificación propia (árboles sin API) |
+
+**Metodología registrada (§5 del mandato):** FASE A reprodujo REV 5 sin cambios
+(gate 7→7, runner 9/9, dorados intactos) · FASE B capturó el RED · FASE C construyó
+el oráculo independiente (disco+esquinas GL y extrapolación discreta, sin reutilizar
+`analytic_curve`) · FASE D aplicó el parche mínimo (una función + recibo #5 + gate)
+· FASE E ejecutó 5 mutaciones (log-como-límite: 2 failed; conjugación: 2 failed;
+pesos v4: 2 failed; runner ausente sin env: 1 failed; tolerancia relajada con curva
+corrupta +1e-4: 7 passed = falso verde demostrado → la tolerancia ±5e-9 es
+load-bearing); todas restauradas (md5 verificado) · FASE F: este doc.
+
+**Alcance restante para el cierre global** (sin cambios): ponderación WLS/gamma
+(`NOT_DERIVED`), generador `_p.dds` (no validado), revisión de congelamiento
+independiente del núcleo FFT periódico. `M6_MATH_CONTRACT_CLOSED=NO` ·
+`M6_IMPLEMENTATION_BLOCKED=YES` · sin merge.
 
 ## Apéndice A — Runner ejecutable (snapshot de `scripts/run_lambda_study_m6.py`, NumPy puro)
 
@@ -595,6 +689,38 @@ def analytic_curve(
     return np.array(out)
 
 
+def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
+    """Límite continuo EXACTO del término de ruido con λ>0 fijo (REV 6, P1 de la
+    ronda 6):
+
+        V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
+
+    derivado de la suma discreta (1/N²)·Σ w·D/(D+λ)² → integral en el límite
+    N→∞ (los bins con D=0 — incluidos los Nyquist mixtos — aportan 0 y tienen
+    medida nula en el continuo). Evaluación INDEPENDIENTE de analytic_curve:
+    disco r≤π en forma cerrada (polar) + 4 esquinas por Gauss-Legendre anidado
+    (m×m por esquina; estable a 2e-12 desde m=200).
+
+    IMPORTANTE: la aproximación log σ²/(2π)·ln(π/√λ) es sólo el comportamiento
+    dominante para λ→0, NO el límite: en λ=1e-3 queda +9.22 % por encima de
+    V∞ (0.007318911 vs 0.006698379 con σ=0.1). λ>0 acota el ruido pero NO
+    recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
+    x, wx = np.polynomial.legendre.leggauss(m)
+    y, wy = np.polynomial.legendre.leggauss(m)
+    xn = np.pi * (x + 1) / 2
+    wxn = (np.pi / 2) * wx
+    esquinas = 0.0
+    for xi, wi in zip(xn, wxn, strict=False):
+        y0 = float(np.sqrt(max(np.pi**2 - xi**2, 0.0)))
+        yy = (y + 1) / 2 * (np.pi - y0) + y0
+        ww = ((np.pi - y0) / 2) * wy
+        k2 = xi**2 + yy**2
+        esquinas += wi * float(np.sum(ww * k2 / (k2 + lam) ** 2))
+    disco = np.pi * (np.log((np.pi**2 + lam) / lam) + lam / (np.pi**2 + lam) - 1.0)
+    integral: float = float(disco + 4.0 * esquinas)
+    return (sigma**2 / (2 * np.pi) ** 2) * integral
+
+
 def lambda_star_continuous(
     n: int, beta: float, sigma: float, noise_filtered: bool = True
 ) -> tuple[float, float, float]:
@@ -665,13 +791,18 @@ def selftest() -> int:
         analytic_curve(n, 2.0, 0.1, [lam], noise_filtered=False, include_signal=False)[0] ** 2
         for n in (128, 256, 512, 1024)
     ]
-    assert vals[-1] < vals[1], vals  # decrece hacia la asíntota
-    asymp = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
-    assert abs(vals[-1] - asymp) / asymp < 0.15, (vals[-1], asymp)
+    assert vals[-1] < vals[1], vals  # decrece hacia V∞
+    v_inf = noise_mse_limit(lam, 0.1)
+    assert abs(v_inf - 0.006698379) < 5e-9, v_inf  # límite continuo (2 vías, ronda 6)
+    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.21% @1024²
+    asymp_log = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
+    assert abs(asymp_log - v_inf) / v_inf > 0.05, (asymp_log, v_inf)  # log ≠ límite
     lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2
     print(
-        f"[ok] λ=1e-3 acota el ruido: MSE(1024²)={vals[-1]:.6f} vs asíntota "
-        f"σ²/(2π)·ln(π/√λ)={asymp:.6f} (λ=0 en 1024²: {lam0_1024:.6f})"
+        f"[ok] λ=1e-3: V∞(λ)={v_inf:.9f} es el límite continuo exacto; discreto "
+        f"1024²={vals[-1]:.9f} (+{100 * (vals[-1] - v_inf) / v_inf:.2f}%, exceso ∝1/N); "
+        f"la fórmula log σ²/(2π)·ln(π/√λ)={asymp_log:.9f} NO es el límite "
+        f"(+{100 * (asymp_log - v_inf) / v_inf:.1f}%); λ=0 en 1024²: {lam0_1024:.6f}"
     )
     ok += 1
 
@@ -753,7 +884,7 @@ if __name__ == "__main__":
 [ok] MC(100, N=32, espectro completo) vs curva D: ratio=1.0087
 [ok] MC(100, N=64, espectro completo) vs curva D: ratio=0.9952
 [ok] MC(100, N=128, espectro completo) vs curva D: ratio=0.9796
-[ok] λ=1e-3 acota el ruido: MSE(1024²)=0.006849 vs asíntota σ²/(2π)·ln(π/√λ)=0.007319 (λ=0 en 1024²: 0.012422)
+[ok] λ=1e-3: V∞(λ)=0.006698379 es el límite continuo exacto; discreto 1024²=0.006849252 (+2.25%, exceso ∝1/N); la fórmula log σ²/(2π)·ln(π/√λ)=0.007318911 NO es el límite (+9.3%); λ=0 en 1024²: 0.012422
 [ok] Parseval rfft2 exacto (brute force vs fft2) N∈{4,5,8,33,64}
 [ok] campo integrable sin Nyquist: RMSE=3.05e-16
 selftest: 9/9 recibos OK
@@ -813,7 +944,33 @@ lambda*/N^2 : c_A ∈ [0.0846, 0.0849]; c_B ∈ [0.1457, 0.1459]  (px²)  [escal
 ```
 
 **B.4 Gate (CI):** `pytest tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`
-→ `5 passed` (<1 s; 4 recibos + presencia del runner). Verificación por mutación
-(pesos v4 reinyectados): `2 failed, 2 passed` → restaurado: `5 passed`. Runner
-ausente: sin env → `5 skipped` (razón explícita); con `SKYCLAW_REQUIRE_M6_CONTRACT=1`
-→ `5 failed` (FAIL, no silencio).
+→ `7 passed` (<1 s). Runner ausente (prueba negativa, SIN variables de entorno):
+`1 failed, 6 skipped` — job rojo por el test de presencia incondicional (REV 6;
+antes: `5 skipped` silencioso). Mutaciones adversariales (todas restauradas, md5
+verificado): log-como-límite → 2 failed · conjugación errónea → 2 failed · pesos v4
+→ 2 failed · runner ausente → 1 failed · tolerancia relajada (1e-3) con curva
+corrupta (+1e-4) → 7 passed = falso verde demostrado ⇒ la tolerancia dorada ±5e-9
+es load-bearing.
+
+**B.5 Límite continuo V∞(λ=1e-3, σ=0.1) — dos vías independientes (REV 6):**
+
+```
+Vía 1 — disco en forma cerrada + 4 esquinas, Gauss-Legendre anidado:
+  m=200 : 0.006698379225
+  m=400 : 0.006698379241     (Δ(200→400) = 1.6e-11)
+  m=800 : 0.006698379243     (Δ(400→800) = 2.0e-12)
+  → V∞ = 0.006698379   [coincide con la referencia de la revisión al dígito]
+
+Vía 2 — extrapolación de la suma discreta (v = V∞ + a/N + b/N²; N=512/1024/2048):
+  V∞ = 0.006698378   (a=0.1545, b=−3.5e-3)  [acuerdo 1e-9 con la Vía 1]
+
+Convergencia discreta (analytic_curve, λ=1e-3, sólo-ruido):
+  N= 256: 0.007296271  (exceso +8.88 %)
+  N= 512: 0.007000119  (exceso +4.46 %)
+  N=1024: 0.006849252  (exceso +2.21 %)   [ancla REV 5, intacta]
+  N=2048: 0.006773816  (exceso +1.09 %)   ratios de exceso: 1.99 / 2.02 / 2.04 ≈ 1/N
+
+Referencias del mismo λ:
+  aproximación log (σ²/2π)·ln(π/√λ) = 0.007318911  → +9.22 % sobre V∞ (NO es el límite)
+  valor discreto @1024²             = 0.006849252  → +2.21 % (converge a V∞)
+```

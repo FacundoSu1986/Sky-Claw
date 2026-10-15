@@ -207,6 +207,38 @@ def analytic_curve(
     return np.array(out)
 
 
+def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
+    """Límite continuo EXACTO del término de ruido con λ>0 fijo (REV 6, P1 de la
+    ronda 6):
+
+        V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
+
+    derivado de la suma discreta (1/N²)·Σ w·D/(D+λ)² → integral en el límite
+    N→∞ (los bins con D=0 — incluidos los Nyquist mixtos — aportan 0 y tienen
+    medida nula en el continuo). Evaluación INDEPENDIENTE de analytic_curve:
+    disco r≤π en forma cerrada (polar) + 4 esquinas por Gauss-Legendre anidado
+    (m×m por esquina; estable a 2e-12 desde m=200).
+
+    IMPORTANTE: la aproximación log σ²/(2π)·ln(π/√λ) es sólo el comportamiento
+    dominante para λ→0, NO el límite: en λ=1e-3 queda +9.22 % por encima de
+    V∞ (0.007318911 vs 0.006698379 con σ=0.1). λ>0 acota el ruido pero NO
+    recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
+    x, wx = np.polynomial.legendre.leggauss(m)
+    y, wy = np.polynomial.legendre.leggauss(m)
+    xn = np.pi * (x + 1) / 2
+    wxn = (np.pi / 2) * wx
+    esquinas = 0.0
+    for xi, wi in zip(xn, wxn, strict=False):
+        y0 = float(np.sqrt(max(np.pi**2 - xi**2, 0.0)))
+        yy = (y + 1) / 2 * (np.pi - y0) + y0
+        ww = ((np.pi - y0) / 2) * wy
+        k2 = xi**2 + yy**2
+        esquinas += wi * float(np.sum(ww * k2 / (k2 + lam) ** 2))
+    disco = np.pi * (np.log((np.pi**2 + lam) / lam) + lam / (np.pi**2 + lam) - 1.0)
+    integral: float = float(disco + 4.0 * esquinas)
+    return (sigma**2 / (2 * np.pi) ** 2) * integral
+
+
 def lambda_star_continuous(
     n: int, beta: float, sigma: float, noise_filtered: bool = True
 ) -> tuple[float, float, float]:
@@ -277,13 +309,18 @@ def selftest() -> int:
         analytic_curve(n, 2.0, 0.1, [lam], noise_filtered=False, include_signal=False)[0] ** 2
         for n in (128, 256, 512, 1024)
     ]
-    assert vals[-1] < vals[1], vals  # decrece hacia la asíntota
-    asymp = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
-    assert abs(vals[-1] - asymp) / asymp < 0.15, (vals[-1], asymp)
+    assert vals[-1] < vals[1], vals  # decrece hacia V∞
+    v_inf = noise_mse_limit(lam, 0.1)
+    assert abs(v_inf - 0.006698379) < 5e-9, v_inf  # límite continuo (2 vías, ronda 6)
+    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.21% @1024²
+    asymp_log = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
+    assert abs(asymp_log - v_inf) / v_inf > 0.05, (asymp_log, v_inf)  # log ≠ límite
     lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2
     print(
-        f"[ok] λ=1e-3 acota el ruido: MSE(1024²)={vals[-1]:.6f} vs asíntota "
-        f"σ²/(2π)·ln(π/√λ)={asymp:.6f} (λ=0 en 1024²: {lam0_1024:.6f})"
+        f"[ok] λ=1e-3: V∞(λ)={v_inf:.9f} es el límite continuo exacto; discreto "
+        f"1024²={vals[-1]:.9f} (+{100 * (vals[-1] - v_inf) / v_inf:.2f}%, exceso ∝1/N); "
+        f"la fórmula log σ²/(2π)·ln(π/√λ)={asymp_log:.9f} NO es el límite "
+        f"(+{100 * (asymp_log - v_inf) / v_inf:.1f}%); λ=0 en 1024²: {lam0_1024:.6f}"
     )
     ok += 1
 
