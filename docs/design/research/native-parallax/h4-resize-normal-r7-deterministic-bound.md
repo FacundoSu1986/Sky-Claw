@@ -660,6 +660,7 @@ La correccion documental **no** altera ninguna decision matematica congelada: lo
 | Ruff check | `ruff check sky_claw/ tests/` | **All checks passed** (860 archivos) |
 | Ruff format | `ruff format --check sky_claw/ tests/` | **860 archivos ya formateados** |
 | Mypy | `mypy sky_claw/ --ignore-missing-imports --no-error-summary` | **sin errores** |
+| Suite completa | `pytest tests/` (31 min) | **11227 passed, 22 failed** — los 22 son `PRE_EXISTING_ENVIRONMENTAL`, verificados contra el baseline (§13.3) |
 
 No se toco codigo de produccion: el diff de este slice es 2 archivos, ambos artefactos del
 PR #733 (documento + suite). `md5` de los dos artefactos verificado contra el pristino
@@ -678,3 +679,30 @@ despues de cada mutante y al final del barrido.
 
 Ambas son de clase `PRE_EXISTING_ENVIRONMENTAL`: ni el documento ni la suite de este slice
 intervienen en su camino causal.
+
+#### 13.3.1 La suite completa: los 22 fallos son del regimen, no del slice
+
+`pytest tests/` completo (31 min): **11227 passed, 120 skipped, 22 failed**. Los 22 fallos
+estan en 8 archivos ajenos al diff de este slice (que solo toca el documento R7 y su
+suite): `test_file_permissions_icacls_1332` (3), `test_file_permissions_post_validation` (2),
+`test_vfs_teardown_deadline` (16), `test_runtime_vault_*` (2), `test_dlq_schema_init_*` (1),
+`test_vfs_protocol_v2_split_roots` (1), `test_worktree_convention_invariant` (1).
+
+**Verificado contra el baseline, no razonado.** El mismo subconjunto de archivos se corrio
+en `e87a57888ed719f367cce1457320a195eee211b3` (padre de este commit, estado pristino del PR,
+checkout detached en el mismo worktree, mismo entorno: `PYTHONPATH`, `SKYCLAW_WORKTREE_ROLE`,
+mismo volumen `E:`): **23 failed, 219 passed**. Comparacion:
+
+- **21 de los 22 fallos identicos** en baseline y con el commit: mismas familias, mismos
+  tests.
+- **1 fluctuacion dentro de las mismas clases**: el baseline fallo
+  `test_observe_runtime_symlink_executable_rejected` (y paso
+  `test_s2_same_pid_wrong_creation_time_rejected` y `test_worker_exit_tardio_no_sobrescribe...`);
+  con el commit es al reves. Mismo par de clases cross-process con deadlines — inestables en
+  regimen sandbox (locks cross-process bloqueados, `symlink_to` que crea copias, icacls
+  restringido). El baseline tuvo **un fallo mas** que el commit.
+
+Ninguno de los 8 archivos importa, colecta ni comparte estado con los 2 artefactos de este
+slice. Clasificacion: **PRE_EXISTING_ENVIRONMENTAL** — el regimen sandbox de esta maquina
+(locks cross-process, ACLs reales, symlinks) es la causa comun; el commit no introduce ni
+remedia ninguno.
