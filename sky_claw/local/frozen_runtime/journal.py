@@ -485,14 +485,22 @@ def _exigir_dirs_store(root: pathlib.Path) -> None:
 
 
 def _placeholder_vacio(ruta: pathlib.Path) -> bool:
-    """True si *ruta* existe con 0 bytes: placeholder de una escritura interrumpida.
+    """True si *ruta* es un archivo REGULAR de 0 bytes: placeholder de escritura interrumpida.
 
     ``reservar_ruta_json_exclusiva`` deja el placeholder a propósito; si la
     escritura del payload falla después, el archivo queda vacío. Bajo el root
     lock, un placeholder vacío de una ruta reservada por ESTA transición es
     completable por su dueño: no hay evidencia que perder.
+
+    Un ENLACE nunca es placeholder: ``stat()`` sigue enlaces, así que un enlace
+    a un archivo vacío mediría 0 bytes y se omitiría en la derivación/auditoría
+    sin pasar por ``_leer_json_estricto``, que sí rechaza enlaces (§34.5 N2 —
+    misma doctrina que el reparse point del journal). Se inspecciona el enlace
+    ANTES de medir.
     """
     try:
+        if ruta.is_symlink():
+            return False
         return ruta.stat().st_size == 0
     except OSError:
         return False
@@ -1594,20 +1602,23 @@ def _veredicto_n0_n1(
             registro_finalizado_presente=None,
         )
     deseado_generacion = getattr(deseado, "desired_active_generation", None)
+    if observado is None:
+        # El oráculo no pudo determinar el runtime: INDETERMINADO. Se verifica
+        # ANTES de la igualdad porque ``None == None`` sería verdadero y
+        # convertiría dos indeterminados en COMPLETE (UNKNOWN != SUCCESS, §34.5).
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash="N1",
+            motivo="EFFECTIVE_INDETERMINADO: el oráculo no pudo determinar el runtime efectivo",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
     if deseado_generacion == observado:
         return ReconciliacionJournal(
             veredicto=VeredictoReconciliacion.COMPLETE,
             punto_crash="N0",
             motivo="Desired == Effective, sin transición: coherente",
             requiere_dueno=False,
-            registro_finalizado_presente=None,
-        )
-    if observado is None:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash="N1",
-            motivo="EFFECTIVE_INDETERMINADO con Desired declarado",
-            requiere_dueno=True,
             registro_finalizado_presente=None,
         )
     return ReconciliacionJournal(
@@ -1631,6 +1642,14 @@ def reconciliar_journal(
     si un registro FINALIZED existe con el journal en PENDING, se preservan
     AMBAS evidencias y la única reconciliación admitida es completar la
     rotación. Esta función NO muta nada: sólo lee y clasifica.
+
+    ``observador_effective`` es el oráculo de P5: devuelve lo observado del
+    runtime efectivo, o ``None`` si no pudo determinarlo (indeterminado ⇒
+    ``FAIL_CLOSED``, nunca éxito). En un PENDING, la identidad que el ADR
+    exige demostrar es la del **Runtime Clone** — ``expected_effective_path``,
+    "la ruta que el bind va a producir" (§34.4/§34.5); comparar la Generation
+    (``target_generation_id``) no la demuestra (§35.4: la integridad del Clone
+    es física).
     """
     ruta = pathlib.Path(root)
     try:
@@ -1771,12 +1790,16 @@ def reconciliar_journal(
             requiere_dueno=True,
             registro_finalizado_presente=False,
         )
-    if observado == journal.target_generation_id:
+    if observado == journal.expected_effective_path:
+        # §34.5: "PENDING_*, Effective coincide con expected_effective_path,
+        # POST no corrido ⇒ re-correr POST". La identidad que hay que demostrar
+        # es la del Runtime Clone (la ruta que el bind produce, §34.4); la
+        # Generation a secas no la demuestra (§35.4: integridad física del Clone).
         return ReconciliacionJournal(
             veredicto=VeredictoReconciliacion.RECOVER,
             punto_crash="C6",
             motivo=(
-                "EFFECTIVE_COINCIDE_CON_TARGET: re-correr POST idempotente y finalizar sólo con "
+                "EFFECTIVE_COINCIDE_CON_EXPECTED_PATH: re-correr POST idempotente y finalizar sólo con "
                 "mismo transition_id ∧ mismo source/target ∧ misma evidencia en PASS"
             ),
             requiere_dueno=False,
@@ -1794,7 +1817,7 @@ def reconciliar_journal(
         veredicto=VeredictoReconciliacion.REQUIRE_OWNER,
         punto_crash="C1",
         motivo=(
-            "EFFECTIVE_NO_COINCIDE_CON_TARGET: la re-verificación de evidencia objetivo "
+            "EFFECTIVE_NO_COINCIDE_CON_EXPECTED_PATH: la re-verificación de evidencia objetivo "
             "(P4_REVERIFY_AFTER_APPROVAL) es dependencia diferida"
         ),
         requiere_dueno=True,
