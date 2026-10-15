@@ -32,19 +32,40 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import os
 import pathlib
 import sys
 
 import numpy as np
 import pytest
 
-RUNNER_PATH = (
-    pathlib.Path(__file__).resolve().parents[1] / "scripts" / "run_lambda_study_m6.py"
-)
+RUNNER_PATH = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "run_lambda_study_m6.py"
+
+# Contrato obligatorio: con SKYCLAW_REQUIRE_M6_CONTRACT=1 la ausencia del runner
+# canónico es FAIL (no SKIP silencioso) — mismo patrón que el harness H4
+# (SKYCLAW_REQUIRE_H4_CONTRACT). Sin la variable, la ausencia es SKIP con razón
+# explícita; con el runner presente, los tests corren igual en ambos modos.
+REQUIRE_M6_GATE = os.environ.get("SKYCLAW_REQUIRE_M6_CONTRACT", "") == "1"
 
 pytestmark = pytest.mark.skipif(
-    not RUNNER_PATH.exists(), reason="runner M6 (scripts/run_lambda_study_m6.py) no presente"
+    not RUNNER_PATH.exists() and not REQUIRE_M6_GATE,
+    reason="runner M6 (scripts/run_lambda_study_m6.py) no presente; "
+    "exportá SKYCLAW_REQUIRE_M6_CONTRACT=1 para que la ausencia sea FAIL",
 )
+
+
+def test_runner_canonico_presente():
+    """La ausencia del runner nunca es silenciosa: SKIP con razón, o FAIL si el
+    contrato M6 es obligatorio (SKYCLAW_REQUIRE_M6_CONTRACT=1)."""
+    if RUNNER_PATH.exists():
+        return
+    if REQUIRE_M6_GATE:
+        pytest.fail(
+            "SKYCLAW_REQUIRE_M6_CONTRACT=1 y el runner canónico "
+            "scripts/run_lambda_study_m6.py no existe: FAIL (no SKIP)"
+        )
+    pytest.skip("runner canónico ausente (ver reason del módulo)")
+
 
 # Valores dorados (dos partes independientes, ronda 5): MSE(λ=0, rég. B,
 # sólo-ruido, σ=0.1). Pin a ±5e-9: detecta CUALQUIER cambio de pesos,
@@ -79,9 +100,7 @@ def test_parseval_pesos_exactos_toda_paridad():
     for n in (3, 4, 5, 8, 33, 64):
         h = rng.standard_normal((n, n))
         real = float(np.sum(np.abs(np.fft.fft2(h)) ** 2))
-        con_pesos = float(
-            np.sum(runner._parseval_weights(n) * np.abs(np.fft.rfft2(h)) ** 2)
-        )
+        con_pesos = float(np.sum(runner._parseval_weights(n) * np.abs(np.fft.rfft2(h)) ** 2))
         assert np.isclose(con_pesos, real, rtol=1e-12), (n, con_pesos / real)
 
 
@@ -89,27 +108,18 @@ def test_curva_lambda0_regimen_b_congelada():
     """P1-1: la curva usa los operadores D del solver; valores dorados fijos."""
     runner = _runner()
     for n, esperado in GOLDEN_MSE_LAMBDA0_REGIMEN_B.items():
-        medido = float(
-            runner.analytic_curve(n, 2.0, 0.1, [0.0], False, include_signal=False)[0]
-            ** 2
-        )
+        medido = float(runner.analytic_curve(n, 2.0, 0.1, [0.0], False, include_signal=False)[0] ** 2)
         assert abs(medido - esperado) < 5e-9, (n, medido, esperado)
 
 
 def test_asintota_ruido_lambda_positivo():
     """P1-2: λ=1e-3 acota el ruido en (σ²/2π)·ln(π/√λ); λ=0 crece ~ln N."""
     runner = _runner()
-    con_lambda = float(
-        runner.analytic_curve(1024, 2.0, 0.1, [1e-3], False, include_signal=False)[0]
-        ** 2
-    )
+    con_lambda = float(runner.analytic_curve(1024, 2.0, 0.1, [1e-3], False, include_signal=False)[0] ** 2)
     assert abs(con_lambda - GOLDEN_MSE_LAMBDA_1E3_N1024) < 5e-9
     asintota = 0.1**2 / (2 * np.pi) * math.log(np.pi / math.sqrt(1e-3))
     assert abs(con_lambda - asintota) / asintota < 0.15
-    sin_lambda = float(
-        runner.analytic_curve(1024, 2.0, 0.1, [0.0], False, include_signal=False)[0]
-        ** 2
-    )
+    sin_lambda = float(runner.analytic_curve(1024, 2.0, 0.1, [0.0], False, include_signal=False)[0] ** 2)
     assert sin_lambda > con_lambda  # λ=0 crece; λ>0 acota
 
 

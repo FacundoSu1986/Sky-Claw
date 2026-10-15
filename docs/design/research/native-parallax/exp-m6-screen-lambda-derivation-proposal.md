@@ -288,6 +288,11 @@ numérica (atenuación uniforme 1/(1+1e-4) en N∈{128…4096}); el reemplazo pr
 incluye un snapshot del runner en Apéndice A y declara canónico el archivo de
 `scripts/`.
 
+**Modo obligatorio (mismo patrón que el harness H4, §6.1):** con
+`SKYCLAW_REQUIRE_M6_CONTRACT=1` la ausencia del runner canónico es **FAIL** (no SKIP
+silencioso); sin la variable es SKIP con razón explícita. Con el runner presente los
+tests corren igual en ambos modos. CI del camino espectral debe exportar la variable.
+
 ## 7. Estados (REV 4)
 
 | Objeto | Estado |
@@ -407,6 +412,7 @@ solver y la regla de pesos rfft2 correcta para N par (valores λ=0 rég. B:
 0.006794/0.007955/0.009087/0.010205 @N=32/64/128/256, σ=0.1 — verificados por
 dos partes independientes al dígito). v5: esta.
 """
+
 from __future__ import annotations
 
 import sys
@@ -423,7 +429,7 @@ SEED = 20261015
 # ---------------------------------------------------------------------------
 # Operadores y solver (idénticos a v3: símbolos d coherentes)
 # ---------------------------------------------------------------------------
-def _d_symbols(n: int):
+def _d_symbols(n: int) -> tuple[np.ndarray, np.ndarray]:
     kx = (2 * np.pi * np.fft.rfftfreq(n))[None, :]
     ky = (2 * np.pi * np.fft.fftfreq(n))[:, None]
     dx, dy = 1j * kx, 1j * ky
@@ -433,7 +439,7 @@ def _d_symbols(n: int):
     return dx, dy
 
 
-def solve_screened(p: np.ndarray, q: np.ndarray, lam: float = 0.0):
+def solve_screened(p: np.ndarray, q: np.ndarray, lam: float = 0.0) -> np.ndarray:
     n = p.shape[0]
     dx, dy = _d_symbols(n)
     fp, fq = np.fft.rfft2(p), np.fft.rfft2(q)
@@ -464,7 +470,8 @@ def _parseval_weights(n: int) -> np.ndarray:
 
 def _D_matrix(n: int) -> np.ndarray:
     dx, dy = _d_symbols(n)
-    return np.abs(dx) ** 2 + np.abs(dy) ** 2
+    d_mat: np.ndarray = np.abs(dx) ** 2 + np.abs(dy) ** 2
+    return d_mat
 
 
 def null_slope_energy_fraction(p: np.ndarray, q: np.ndarray) -> float:
@@ -486,7 +493,7 @@ def null_slope_energy_fraction(p: np.ndarray, q: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 # Modelo declarado
 # ---------------------------------------------------------------------------
-def make_signal(n: int, beta: float, rng: np.random.Generator):
+def make_signal(n: int, beta: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     idx = np.fft.fftfreq(n) * n
     KX, KY = np.meshgrid(idx, idx, indexing="xy")
     kn = np.sqrt(KX**2 + KY**2) * (2 * np.pi / n)
@@ -506,7 +513,7 @@ def make_signal(n: int, beta: float, rng: np.random.Generator):
     return h, np.real(np.fft.ifft2(1j * kxf * hn)), np.real(np.fft.ifft2(1j * kyf * hn))
 
 
-def q8_noise(p: np.ndarray, q: np.ndarray):
+def q8_noise(p: np.ndarray, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Q8 SINTÉTICO: cuantización a 8 bits del mapa de normales. NO equivale a
     normales authored reales (eso es EXP-M2)."""
     nz = np.ones_like(p)
@@ -518,7 +525,7 @@ def q8_noise(p: np.ndarray, q: np.ndarray):
     return -dec_x / nz, -dec_y / nz
 
 
-def drift_noise(p, q, sigma, rng):
+def drift_noise(p: np.ndarray, q: np.ndarray, sigma: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     n = p.shape[0]
     idx = np.fft.fftfreq(n) * n
     KX, KY = np.meshgrid(idx, idx, indexing="xy")
@@ -536,14 +543,21 @@ def _bandpass_mask(n: int) -> np.ndarray:
     KX, KY = np.meshgrid(idx, idx, indexing="xy")
     kn = np.sqrt(KX**2 + KY**2) * (2 * np.pi / n)
     nyq = (np.abs(KX) == n // 2) | (np.abs(KY) == n // 2)
-    return (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    mask: np.ndarray = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    return mask
 
 
 # ---------------------------------------------------------------------------
 # Curva analítica CORREGIDA: D(k) de los símbolos del solver
 # ---------------------------------------------------------------------------
-def analytic_curve(n: int, beta: float, sigma: float, lams, noise_filtered: bool,
-                   include_signal: bool = True):
+def analytic_curve(
+    n: int,
+    beta: float,
+    sigma: float,
+    lams: np.ndarray | tuple[float, ...] | list[float],
+    noise_filtered: bool,
+    include_signal: bool = True,
+) -> np.ndarray:
     """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(D/(D+λ))²·E|ĥ|²  [sesgo de señal]
                  + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
     con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
@@ -581,7 +595,9 @@ def analytic_curve(n: int, beta: float, sigma: float, lams, noise_filtered: bool
     return np.array(out)
 
 
-def lambda_star_continuous(n: int, beta: float, sigma: float, noise_filtered: bool = True):
+def lambda_star_continuous(
+    n: int, beta: float, sigma: float, noise_filtered: bool = True
+) -> tuple[float, float, float]:
     fine = np.geomspace(1e-12, 1.0, 20000)
     e = analytic_curve(n, beta, sigma, fine, noise_filtered)
     i = int(np.argmin(e))
@@ -622,8 +638,10 @@ def selftest() -> int:
     q_cD = 0.5 * (np.roll(hcb, -1, 0) - np.roll(hcb, 1, 0))
     assert float(np.abs(p_cD).max()) == 0.0 and float(np.abs(q_cD).max()) == 0.0
     assert null_slope_energy_fraction(p_cD, q_cD) == 0.0
-    print("[ok] h=(-1)^(x+y): pendientes≡0 ⇒ fracción pendiente-nula=0 — altura "
-          "perdida UNKNOWN (requiere oráculo; separado en el manifest)")
+    print(
+        "[ok] h=(-1)^(x+y): pendientes≡0 ⇒ fracción pendiente-nula=0 — altura "
+        "perdida UNKNOWN (requiere oráculo; separado en el manifest)"
+    )
     ok += 1
 
     # 4. P1-1/P1-2: MC multi-resolución de ruido blanco ESPECTRO COMPLETO (λ=0)
@@ -635,8 +653,7 @@ def selftest() -> int:
             pe = 0.1 * rng.standard_normal((n, n))
             qe = 0.1 * rng.standard_normal((n, n))
             mses.append(float(np.mean(solve_screened(pe, qe) ** 2)))
-        pred = analytic_curve(n, 2.0, 0.1, [0.0], noise_filtered=False,
-                              include_signal=False)[0] ** 2
+        pred = analytic_curve(n, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2
         ratio = float(np.mean(mses)) / pred
         assert 0.93 < ratio < 1.07, (n, ratio)
         print(f"[ok] MC(100, N={n}, espectro completo) vs curva D: ratio={ratio:.4f}")
@@ -644,16 +661,18 @@ def selftest() -> int:
 
     # 5. P1-2: λ fijo acota el ruido; λ=0 diverge con N (fórmula y números).
     lam = 1e-3
-    vals = [analytic_curve(n, 2.0, 0.1, [lam], noise_filtered=False,
-                           include_signal=False)[0] ** 2
-            for n in (128, 256, 512, 1024)]
+    vals = [
+        analytic_curve(n, 2.0, 0.1, [lam], noise_filtered=False, include_signal=False)[0] ** 2
+        for n in (128, 256, 512, 1024)
+    ]
     assert vals[-1] < vals[1], vals  # decrece hacia la asíntota
     asymp = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
     assert abs(vals[-1] - asymp) / asymp < 0.15, (vals[-1], asymp)
-    lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False,
-                               include_signal=False)[0] ** 2
-    print(f"[ok] λ=1e-3 acota el ruido: MSE(1024²)={vals[-1]:.6f} vs asíntota "
-          f"σ²/(2π)·ln(π/√λ)={asymp:.6f} (λ=0 en 1024²: {lam0_1024:.6f})")
+    lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2
+    print(
+        f"[ok] λ=1e-3 acota el ruido: MSE(1024²)={vals[-1]:.6f} vs asíntota "
+        f"σ²/(2π)·ln(π/√λ)={asymp:.6f} (λ=0 en 1024²: {lam0_1024:.6f})"
+    )
     ok += 1
 
     # 6. Parseval rfft2 exacto para par E impar (P2-1, ronda 5): contra fft2.
@@ -683,37 +702,40 @@ def main() -> None:
         selftest()
         return
     rng = np.random.default_rng(SEED)
-    print(f"SEED={SEED} · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · "
-          f"curva con operadores D del solver v3 + pesos Parseval rfft2 (col.0/Nyquist=1, resto=2) · "
-          f"regímenes A(filtrado)/B(espectro completo) separados · mallas CUADRADAS (toda paridad; rectangulares fuera de contrato)")
+    print(
+        f"SEED={SEED} · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · "
+        f"curva con operadores D del solver v3 + pesos Parseval rfft2 (col.0/Nyquist=1, resto=2) · "
+        f"regímenes A(filtrado)/B(espectro completo) separados · mallas CUADRADAS (toda paridad; rectangulares fuera de contrato)"
+    )
     for n in N_VALUES:
         for beta in BETAS:
             h, p, q = make_signal(n, beta, rng)
             lam_star_A, e_star_A, e0_A = lambda_star_continuous(n, beta, 0.1, True)
             lam_star_B, e_star_B, e0_B = lambda_star_continuous(n, beta, 0.1, False)
             casos = {
-                **{f"gauss σ={s}": (p + s * rng.standard_normal(p.shape),
-                                    q + s * rng.standard_normal(p.shape), s)
-                   for s in SIGMAS},
+                **{
+                    f"gauss σ={s}": (p + s * rng.standard_normal(p.shape), q + s * rng.standard_normal(p.shape), s)
+                    for s in SIGMAS
+                },
                 "Q8 sintético": (*q8_noise(p, q), None),
                 "limpio": (p, q, None),
                 "driftLF σ=.05": (*drift_noise(p, q, 0.05, rng), 0.05),
                 "driftLF σ=.5": (*drift_noise(p, q, 0.5, rng), 0.5),
             }
             for label, (pn, qn, sigma) in casos.items():
-                sigma_eff = sigma if sigma is not None else float(
-                    np.sqrt(np.mean((pn - p) ** 2 + (qn - q) ** 2) / 2))
-                rmses = [float(np.sqrt(np.mean((solve_screened(pn, qn, lam) - h) ** 2)))
-                         for lam in LAMBDAS]
+                sigma_eff = sigma if sigma is not None else float(np.sqrt(np.mean((pn - p) ** 2 + (qn - q) ** 2) / 2))
+                rmses = [float(np.sqrt(np.mean((solve_screened(pn, qn, lam) - h) ** 2))) for lam in LAMBDAS]
                 i_opt = int(np.argmin(rmses))
                 e_f = analytic_curve(n, beta, sigma_eff, LAMBDAS, True)
                 e_u = analytic_curve(n, beta, sigma_eff, LAMBDAS, False)
-                print(f"N={n:4d} β={beta:.0f} {label:13s} σ_eff={sigma_eff:.4f} | "
-                      f"λ_opt_emp={LAMBDAS[i_opt]:g} (RMSE {rmses[i_opt]:.4f}) "
-                      f"λ=0: {rmses[0]:.4f} (×{rmses[0]/rmses[i_opt]:.3f}) | "
-                      f"E λ* A(filtr)={LAMBDAS[int(np.argmin(e_f))]:g} "
-                      f"B(compl)={LAMBDAS[int(np.argmin(e_u))]:g} | "
-                      f"λ*riesgo A(σ=.1)={lam_star_A:.1e} B={lam_star_B:.1e}")
+                print(
+                    f"N={n:4d} β={beta:.0f} {label:13s} σ_eff={sigma_eff:.4f} | "
+                    f"λ_opt_emp={LAMBDAS[i_opt]:g} (RMSE {rmses[i_opt]:.4f}) "
+                    f"λ=0: {rmses[0]:.4f} (×{rmses[0] / rmses[i_opt]:.3f}) | "
+                    f"E λ* A(filtr)={LAMBDAS[int(np.argmin(e_f))]:g} "
+                    f"B(compl)={LAMBDAS[int(np.argmin(e_u))]:g} | "
+                    f"λ*riesgo A(σ=.1)={lam_star_A:.1e} B={lam_star_B:.1e}"
+                )
 
 
 if __name__ == "__main__":
@@ -791,5 +813,7 @@ lambda*/N^2 : c_A ∈ [0.0846, 0.0849]; c_B ∈ [0.1457, 0.1459]  (px²)  [escal
 ```
 
 **B.4 Gate (CI):** `pytest tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`
-→ `4 passed` (<1 s). Verificación por mutación (pesos v4 reinyectados): `2 failed,
-2 passed` → restaurado: `4 passed`.
+→ `5 passed` (<1 s; 4 recibos + presencia del runner). Verificación por mutación
+(pesos v4 reinyectados): `2 failed, 2 passed` → restaurado: `5 passed`. Runner
+ausente: sin env → `5 skipped` (razón explícita); con `SKYCLAW_REQUIRE_M6_CONTRACT=1`
+→ `5 failed` (FAIL, no silencio).

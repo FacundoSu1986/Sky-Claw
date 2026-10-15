@@ -168,6 +168,9 @@ ignore = [
 "tests/**" = ["D", "ANN", "RUF006", "BLE001"]   # RUF006 OK en tests: task lifecycle controlado por pytest.
 "local_scripts/**" = ["BLE001"]
 "scripts/**" = ["BLE001"]
+# run_lambda_study_m6: notación matemática intencional (D, KX, KY, N, λ*) y
+# guardas if/else explícitas; ver EXP-M6 REV 5 (Apéndice A).
+"scripts/run_lambda_study_m6.py" = ["N802", "N806", "SIM108"]
 # BLE001 pendiente por carpeta (T-10 limpió sky_claw/local/tools/, T-11
 # sky_claw/local/xedit/; las siguientes van quitando entradas de esta
 # lista). Archivos top-level explícitos: los globs `*` de ruff cruzan
