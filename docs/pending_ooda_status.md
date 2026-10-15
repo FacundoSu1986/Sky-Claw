@@ -482,6 +482,25 @@ No es un defecto del contrato de argv del PR #462: en ese mismo rig el `-o:` se
 parseó exacto en los dos binarios y el acceptance gate de quoting quedó cerrado
 (informe §7.1). No bloquea ese merge.
 
+### Avance parcial — diagnóstico (Finding 4 de #592)
+
+> **Estado del ítem: sin cambios (`OPEN / FOLLOW-UP`).** Lo de abajo es un avance
+> de la mitad *diagnóstico/UX* del bullet "el diagnóstico no nombra al preset",
+> NO el mecanismo de precedencia, que sigue sin diseñar.
+
+El post-check ahora consume el eco de rutas del propio binario
+(`Using Output Path:`, `Using Skyrim Special Edition Data Path:`) **sobre la
+ventana atribuible a la corrida** (`_validar_completitud_de_la_corrida`) y compone
+un diagnóstico cuando falta el artefacto: qué artefacto falta, de qué herramienta,
+en qué subroot administrado se lo buscó y —sólo si hay evidencia verificable—
+qué ruta declaró el binario. Distingue causa **confirmada** (el eco declara una
+ruta distinta de la administrada) de causa **posible** (no hay evidencia: sugiere
+revisar el campo Output de la GUI, sin atribuir el fallo al preset). La autoridad
+del veredicto NO cambió: sigue siendo el artefacto físico en el subroot born-empty
+—el eco mide el parse del argv, no el destino de escritura, como este mismo ítem
+documenta— y por eso una discrepancia con artefacto presente sólo advierte.
+No se agregó ningún lector de presets ni escritura en UIA.
+
 ## 2.3 Zero-Trust — 2 ítems residuales
 
 Persisten dos trabajos no urgentes heredados del inventario Zero-Trust:
