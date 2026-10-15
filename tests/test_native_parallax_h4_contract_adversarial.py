@@ -57,39 +57,41 @@ def _load_contract_module():
     return mod
 
 
-def _contract_api_available() -> bool:
-    if not _MODULE_PATH.exists():
-        return False
-    try:
-        mod = _load_contract_module()
-    except Exception:
-        return False
-    return all(
-        hasattr(mod, name)
-        for name in (
-            "resize_normal_diagnostic",
-            "resize_normal",
-            "DEGENERATE_THRESHOLD",
-            "UNIT_NORM_TOLERANCE",
-            "NormalResizeResult",
-            "InvalidNormalShapeError",
-            "DegenerateNormalError",
-        )
-    )
-
-
-pytestmark = pytest.mark.skipif(
-    not _contract_api_available(),
-    reason=(
-        "Requiere el contrato H4 Slice 2 (PR #723: resize_normal_diagnostic y "
-        "excepciones tipadas en authored_dataset). En main la suite es insumo, no test."
-    ),
+# Politica de salto/fallo (adjudicacion de la revision externa del 2026-10-15,
+# hallazgo "skip silencioso"): la ausencia de la API del Slice 2 es el ESTADO VIGENTE
+# de main y se SALTA (esta suite es insumo del PR #723, no test de main). En cambio,
+# si el modulo EXISTE pero NO IMPORTA, eso es una regresion del PR y debe FALLAR, no
+# saltarse. Un modulo que importa pero no ofrece la API es indistinguible de main
+# desde afuera: se salta con la razon explicita (limitacion documentada).
+_API_NAMES = (
+    "resize_normal_diagnostic",
+    "resize_normal",
+    "DEGENERATE_THRESHOLD",
+    "UNIT_NORM_TOLERANCE",
+    "NormalResizeResult",
+    "InvalidNormalShapeError",
+    "DegenerateNormalError",
 )
 
 
 @pytest.fixture(scope="module")
 def m():
-    return _load_contract_module()
+    if not _MODULE_PATH.exists():
+        pytest.skip("authored_dataset.py no existe en este arbol.")
+    try:
+        mod = _load_contract_module()
+    except Exception as exc:  # el modulo existe y esta ROTO: FAIL, no skip
+        pytest.fail(
+            f"El modulo del contrato existe pero NO importa (regresion del PR #723, "
+            f"no se saltea): {type(exc).__name__}: {exc}"
+        )
+    faltantes = [name for name in _API_NAMES if not hasattr(mod, name)]
+    if faltantes:
+        pytest.skip(
+            "API del Slice 2 ausente (" + ", ".join(faltantes) + "): estado main — "
+            "insumo del PR #723, no test del estado vigente."
+        )
+    return mod
 
 
 # ============================================================================
@@ -415,7 +417,13 @@ def test_f1_vehiculo_censo_consistente(m):
 
 def test_f2_umbral_congelado_5_16_no_recalibrado(m):
     """§6.1: THRESHOLD_FIXED_HERE=NO fue cerrado por #723 con 5/16 (heurística RMS,
-    prohibido recalibrar con corpus). El valor es parte del contrato público."""
+    prohibido recalibrar con corpus).
+
+    ALCANCE PROVISIONAL (adjudicación revisión externa 2026-10-15): este pin protege
+    el valor DECLARADO por #723 contra drift accidental; NO lo eleva a garantía
+    geométrica universal. La reconciliación F01/V-01 está
+    `F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD` en el propio PR: si el Tech Lead
+    adjudica otra lectura, este test cambia con el contrato (y sólo entonces)."""
     assert m.DEGENERATE_THRESHOLD == 5.0 / 16.0
     assert m.UNIT_NORM_TOLERANCE == 1e-6
 
