@@ -1,12 +1,23 @@
-# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 4
+# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 5
 
 > **Estado:** `PROPOSAL` — insumo externo para la ETAPA A del prereg de EXP-M6
 > ([PR #675](https://github.com/FacundoSu1986/Sky-Claw/pull/675), DRAFT). **No autoriza
 > implementación ni ejecución de M6** (`M6_IMPLEMENTATION_BLOCKED = YES` vigente).
 >
-> **REV 4 (2026-10-15):** corrige la REV 3 (commit `db5e5bd7`) tras la cuarta revisión
-> externa. Tres hallazgos P1 de la revisión, **los tres confirmados numéricamente por
-> esta parte y aceptados** (adjudicación §8.2):
+> **REV 5 (2026-10-15, ronda 5):** reconciliación acotada tras la revisión de la REV 4
+> (commit `5c473d5`) — "favorable para continuar, aún sin cerrar M6". Tres P2, **los
+> tres confirmados/aceptados** (adjudicación §8.3): (1) pesos de Parseval generales
+> para toda paridad — la regla de v4 fallaba en N impar (P2-1); (2) rewording: λ\*≈c/N²
+> es observación bajo el prior (no teorema) y la ganancia correcta es "<0.06 % en los
+> escenarios examinados" — el propio dato 128²-B da 0.053 % (P2-2); (3) gate
+> automatizado en el repo: runner canónico `scripts/run_lambda_study_m6.py` +
+> `tests/test_native_parallax_m6_lambda_gate.py` con valores dorados congelados,
+> verificado por mutación (P2-3). Mallas CUADRADAS de toda paridad; rectangulares
+> FUERA de contrato. El veredicto de cierre de M6 sigue sin declararse (ver §8.3).
+>
+> **REV 4 (2026-10-15):** corrigió la REV 3 (commit `db5e5bd7`) tras la cuarta revisión
+> externa. Tres hallazgos P1, **los tres confirmados numéricamente por esta parte y
+> aceptados** (adjudicación §8.2):
 >
 > 1. **P1-1 — La curva analítica de REV 3 no correspondía a su propio solver.** Usaba
 >    una fórmula de dispersión distinta a los símbolos `d` del solver y pesos de
@@ -100,12 +111,21 @@ w(ky,kx) = 1  si kx ∈ {0, N/2}   (columnas frontera, COMPLETAMENTE materializa
 w(ky,kx) = 2  en otro caso        (columnas interiores: bin propio + espejo N−kx)
 ```
 
-La justificación es estructural: el conjugado de `(ky, kx=N/2)` es `(−ky, N/2)` —
-**misma columna**, también almacenada; ídem `kx=0`. Esos bins representan un único bin
-de la grilla completa (peso 1). Sólo las columnas interiores `1..N/2−1` representan
-dos bins full-grid (el propio y el espejo `N−kx`, no almacenado): peso 2. Verificación
-brute force exacta a máquina: `Σ|fft2(h)|² = Σ w·|rfft2(h)|²` para h aleatoria,
-N∈{4,8,16,64}. `VERIFIED`.
+La justificación es estructural: en la **columna** de Nyquist `kx=N/2` (que existe
+sólo si N es par) el conjugado de `(ky, N/2)` es `(−ky, N/2)` — **misma columna**,
+también almacenada; ídem `kx=0`. Esos bins representan un único bin de la grilla
+completa (peso 1). Sólo las columnas restantes representan dos bins full-grid (el
+propio y el espejo `N−kx`, no almacenado): peso 2. En N **impar** NO hay columna de
+Nyquist: la última columna `kx=(N−1)/2` tiene espejo `(N+1)/2` no almacenado y pesa 2
+— la regla `w[:, -1] = 1` de la REV 4 era un bug para N impar (detectado por la
+revisión en la ronda 5; ratios energía-calculada/real: 0.73 @5², 0.76 @7², 0.98 @33²).
+Fórmula general (REV 5): `w[:,0]=1`; `w[:,N/2]=1` sólo si N par; resto 2. Verificación
+brute force exacta a máquina: `Σ|fft2(h)|² = Σ w·|rfft2(h)|²`, N∈{3,4,5,7,8,32,33,64}
+(recibos de selftest #6 y del gate). `VERIFIED`.
+
+**Política de dimensiones (fijada en REV 5):** mallas **CUADRADAS**, cualquier
+paridad. Rectangulares: FUERA de contrato actual (el espejo de rfft2 es sólo el eje-x,
+la extensión es directa — se resolverá para el producto, no en este estudio).
 
 **Registro de transparencia del defecto (tres iteraciones, todas de esta parte):**
 (a) REV 3 publicó una curva con evaluación espectral implícita sin pesos correctos
@@ -170,11 +190,13 @@ sólo el de ruido — así se validó contra MC de ruido puro).
 
 - **Riesgo esperado (curva corregida).** Argmin continuo (20 000 puntos):
   (N=128, β=2, σ=0.1): **λ\*_A = 5.17e-06** (rég. A) / **8.89e-06** (rég. B), con
-  ganancia relativa frente a λ=0 de **−0.032 %** / **−0.053 %**. Ley de escalado
-  medida: **λ\* = c/N² exacto** — c_A ≈ 0.0846–0.0849, c_B ≈ 0.1457–0.1459 (px²) para
-  N∈{128,256,512,1024} (una-línea de reproducción en Apéndice B). Interpretación: el
-  trade-off vive en el modo más bajo de la banda (`k_min=2π/N`, `D_min∝N⁻²`), no en la
-  cola de ruido.
+  ganancia relativa frente a λ=0 de **−0.032 %** / **−0.053 %**. Escalado **observado
+  bajo el prior declarado** (P2-2: observación, no teorema cerrado): **λ\* ≈ c/N²**
+  con c_A ≈ 0.0846–0.0849, c_B ≈ 0.1457–0.1459 (px²) para N∈{128,256,512,1024}
+  (reproducción en Apéndice B). Interpretación: el trade-off vive en el modo más bajo
+  de la banda (`k_min=2π/N`, `D_min∝N⁻²`), no en la cola de ruido. **Ganancia esperada
+  < 0.06 % en los escenarios examinados** (máx. 0.053 % @128² rég. B — el enunciado
+  REV-4 "≤ 0.05 %" era falso para ese propio escenario).
 - **`RETIRADO`: λ\* = 3.15e-10 (REV 3, y su verificación externa).** Artefacto de la
   normalización del término de sesgo en la curva v3 (dividido por N² en vez de N⁴:
   curvatura de sesgo inflada ×N² ⇒ λ\* desplazado ~5 órdenes). La coincidencia entre
@@ -187,9 +209,9 @@ sólo el de ruido — así se validó contra MC de ruido puro).
   de muestra alrededor de una diferencia esperada despreciable, no evidencia de
   optimalidad.
 
-Enunciado defendible (REV 4): **λ=0 es el baseline correcto bajo este prior — el
-óptimo continuo existe (λ\*=c/N²>0) pero le gana a λ=0 menos del 0.06 % — y `λ=1e-3`
-sigue sin ninguna justificación** (su sesgo en banda baja cuesta más que todo el
+Enunciado defendible (REV 5): **λ=0 es el baseline correcto bajo este prior — el
+óptimo continuo existe (λ\*≈c/N²>0) pero le gana a λ=0 menos del 0.06 % en los
+escenarios examinados — y `λ=1e-3` sigue sin ninguna justificación** (su sesgo en banda baja cuesta más que todo el
 ruido que suprime). `EJECUTADO`.
 
 ### 4.3 Tabla (28 celdas; volcado completo Apéndice B)
@@ -208,8 +230,8 @@ ruido que suprime). `EJECUTADO`.
    eje (§2.2); denominador compuesto de los MISMOS símbolos; espacio nulo declarado y
    medido. Prohibida la máscara por bins de la REV 2.
 2. **Pesos de Parseval** (§2.3) obligatorios en cualquier evaluación espectral del
-   MSE (curvas, recibos, manifest): columnas frontera `kx∈{0,N/2}` peso 1,
-   interiores peso 2.
+   MSE (curvas, recibos, manifest): columna `kx=0` peso 1, columna de Nyquist peso 1
+   SÓLO si N es par, resto peso 2 (fórmula general, toda paridad; mallas cuadradas).
 3. **`screen_lambda = 0`** como default del camino espectral (baseline, §4.2). λ>0
    reservado a: (a) gauge del WLS (§5.3), (b) re-derivación si el prior cambia por §3.
 4. **Gauge WLS:** el absoluto `1e-6` atenúa 29.8 % el fundamental a 4096 (confirmado);
@@ -226,6 +248,14 @@ ruido que suprime). `EJECUTADO`.
    obliga a la separación: `h=(−1)^(x+y)` tiene RMS 1.0, pendientes ≡ 0 y fracción
    pendiente-nula **0.0** — la métrica de pendientes es ciega a la altura perdida.
    **Prohibido** presentar (i) como proxy de (ii).
+7. **Gate automatizado (REV 5 — P2-3):** el runner canónico vive en el repo
+   (`scripts/run_lambda_study_m6.py`) y `tests/test_native_parallax_m6_lambda_gate.py`
+   congela los recibos numéricos (SEED=20261015; curva λ=0 rég. B con los 5 valores
+   dorados de dos partes N∈{32,64,128,256,512}; asíntota λ=1e-3; Parseval toda
+   paridad; selftest 9/9). Ejecutar con `pytest
+   tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`. Verificado por
+   mutación: reinyectar los pesos bugueados de REV 4 hace fallar 2/4 tests. El
+   estudio completo (28 celdas, ~25 s) NO corre en CI — sólo el gate (<1 s).
 
 ## 6. Estado del harness H4 (insumo #723) y del gauge — decisiones REV 3 (sin cambios en REV 4)
 
@@ -251,18 +281,27 @@ exportar la variable (documento en el propio harness).
 numérica (atenuación uniforme 1/(1+1e-4) en N∈{128…4096}); el reemplazo proyectado-CG
 (§5.4) es el diseño requerido antes de cualquier congelamiento M6.
 
+### 6.3 Gate del contrato matemático (REV 5)
+
+`scripts/run_lambda_study_m6.py` (runner canónico) + `tests/test_native_parallax_m6_lambda_gate.py`
+(recibos congelados, ver §5.7). Estado en este commit: **4 passed en <1 s**. El doc
+incluye un snapshot del runner en Apéndice A y declara canónico el archivo de
+`scripts/`.
+
 ## 7. Estados (REV 4)
 
 | Objeto | Estado |
 |---|---|
 | Operadores `dx,dy` con Nyquist por eje + LS coherente | `VERIFIED` (contraejemplo 4.8e-16; regresiones OK) |
 | Máscara por bins de REV 2 | `RETIRADO` (defecto confirmado) |
-| Pesos de Parseval columnas-frontera (§2.3) | `VERIFIED` (fft2 exacto N∈{4,8,16,64}; MC/curva 0.98–1.01) |
+| Pesos de Parseval generales, toda paridad (§2.3) | `VERIFIED` (fft2 exacto N∈{3,4,5,7,8,32,33,64}; MC/curva 0.98–1.01; regla REV-4 `w[:,-1]=1` retirada para N impar) |
 | Curva analítica con `D` del solver (§4) | `VERIFIED` (P1-1; ratios MC 1.009/0.995/0.980; coincidencia con revisión al dígito) |
 | Curva analítica REV 3 y sus valores λ=0 | `RETIRADO` (P1-1: fórmula de dispersión y pesos incorrectos) |
 | Fórmula de ruido `D·N²σ²` (proyección) | `VERIFIED` (MC banda 0.980; espectro completo 0.98–1.01) |
 | Divergencia λ=0 ~ln N; λ>0 → (σ²/2π)ln(π/√λ) | `VERIFIED` (P1-2; `--check` #4) |
-| λ\*riesgo = c/N² (c_A≈0.085, c_B≈0.146), ganancia ≤0.05 % | `EJECUTADO` (REV 4; sustituye `RETIRADO` 3.15e-10) |
+| λ\*riesgo ≈ c/N² observado (c_A≈0.085, c_B≈0.146), ganancia <0.06 % examinada | `EJECUTADO` (REV 5 rewording; sustituye `RETIRADO` 3.15e-10) |
+| Gate automatizado (runner en repo + recibos congelados) | `VERIFIED` (4 passed; mutación de pesos detectada 2/4) |
+| Mallas rectangulares | FUERA DE CONTRATO (a resolver para el producto) |
 | λ=0 default (baseline) | `SUPPORTED_BY` §4 |
 | `null_slope_energy_fraction` ≠ altura irrecuperable (P1-3) | `VERIFIED` (contraejemplo (−1)^(x+y)); altura: `UNKNOWN` sin oráculo |
 | Gauge WLS relativo | `INGENIERÍA` provisional; proyectado-CG `NOT_DERIVED` |
@@ -311,43 +350,62 @@ manifest ✓ (§5.6); sigue: runner repetible desde el commit ✓ (Apéndice A) 
 de invariantes → reconciliación documentaria. **No merge a main**; el veredicto de
 cierre corresponde a la revisión externa.
 
-## Apéndice A — Runner ejecutable (`run_lambda_study_v4.py`, NumPy puro; `--check` = recibos)
+### 8.3 Ronda 5 — revisión de la REV 4 (commit `5c473d5`; esta adjudicación)
 
-8 recibos: contraejemplo Nyquist (4.8e-16), espacio nulo del tablero, ceguera de la
-métrica de pendientes ante altura nula (P1-3), MC multi-resolución de espectro
-completo vs curva (N=32/64/128), acotamiento λ=1e-3 vs asíntota, y regresión de
-exactitud integrable. `--check` ejecuta sólo el selftest; sin argumentos ejecuta el
-estudio completo (28 celdas) y las curvas/regímenes A/B.
+| Afirmación (P2) | Veredicto | Verificación independiente de esta parte / acción |
+|---|---|---|
+| **P2-1: los pesos de Parseval fallan para N impar** — `w[:,-1]=1` asume columna Nyquist; en N impar la última columna tiene espejo no almacenado y debe pesar 2. Sus ratios (5²/7²/33²): 0.7073/0.8459/0.9733. | **CORRECTA — aceptada** | Reproducido con otros campos aleatorios: 0.7274/0.7627/0.9759 (mismo defecto, misma dirección). Fórmula general implementada (col.0=1; Nyquist=1 sólo si par): exacta a máquina para N∈{3,5,7,8,32,33,64}. Recibo selftest #6 + gate. Rectangulares: FUERA de contrato, declarado |
+| **P2-2: λ\*≈c/N² es observación, no teorema; y "ganancia ≤0.05 %" era falsa** (128² rég. B = 0.05308 %). | **CORRECTA — aceptada** | Confirmado contra mi propio Apéndice B (−5.308e-04). Rewording: "escalado observado bajo el prior declarado" y "<0.06 % en los escenarios examinados" (§4.2, §7) |
+| **P2-3: falta gate automatizado en el repo** (runner sólo inline en Markdown); además un comentario del runner seguía hablando de "cuatro esquinas". | **CORRECTA — aceptada** | `scripts/run_lambda_study_m6.py` (canónico) + `tests/test_native_parallax_m6_lambda_gate.py` (4 tests, <1 s, valores dorados ±5e-9). Verificado por MUTACIÓN: pesos v4 reinyectados → 2/4 tests fallan; restaurado → 4/4. Sobre el comentario: era la nota-historial intencional del docstring, pero se movió al doc (§2.3) y el código quedó sólo con la regla vigente |
+| Extensión independiente del reviewer: curva λ=0 rég. B @512² = 0.011314910; óptimos 128² A/B coinciden con REV 4 | **CONCURRENTE** | Mi curva @512² = **0.011314910** — coincidencia a 9 dígitos; óptimos 128² (5.17e-06 / 8.89e-06) ya en REV 4 |
+
+**Dictamen de la revisión (ronda 5):** favorable para continuar; no declarar aún
+`M6_MATH_CONTRACT_CLOSED` global. Tabla de alcance aceptada: fórmula de riesgo (pares),
+Nyquist por eje, Parseval (pares→toda paridad en REV 5), λ=0 baseline → aceptables;
+impares/rectangulares → fuera de contrato (impares ahora soportados); WLS/gamma y
+generador `_p.dds` → pendientes; cierre global → no declarar. Próximo paso acordado:
+revisión de congelamiento independiente del núcleo FFT periódico, y luego el camino
+completo normal → altura → DDS → Skyrim. Sin merge a main; `M6_IMPLEMENTATION_BLOCKED`
+vigente.
+
+Ningún punto rechazado en cinco rondas.
+
+## Apéndice A — Runner ejecutable (snapshot de `scripts/run_lambda_study_m6.py`, NumPy puro)
+
+**Canónico:** `scripts/run_lambda_study_m6.py` (REV 5). El bloque inferior es un
+SNAPSHOT de este commit — el gate (`tests/test_native_parallax_m6_lambda_gate.py`)
+ejecuta siempre el archivo canónico. 9 recibos vía `--check`; estudio completo sin
+argumentos (28 celdas). Recibos: contraejemplo Nyquist (4.8e-16), espacio nulo del
+tablero, ceguera de la métrica de pendientes ante altura nula (P1-3), MC
+multi-resolución de espectro completo vs curva (N=32/64/128), acotamiento λ=1e-3 vs
+asíntota, Parseval toda paridad (P2-1), y regresión de exactitud integrable.
 
 ```python
-"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v4.
+"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v5.
 
-REV 4 (2026-10-15). Cambios sobre v3 (commit db5e5bd7), por la revisión externa
-(tres P1 confirmados numéricamente por ambas partes):
+REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
+Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
 
-1. CURVA ANALÍTICA = OPERADORES DEL SOLVER (P1-1). La curva ahora usa D(k)=
-   |dx|²+|dy|² de los MISMOS símbolos del solver v3 (Nyquist anulado SÓLO por
-   eje): E[MSE_ruido] = (σ²/N²)·Σ_{D>0} w(k)·D/(D+λ)². La máscara de v3
-   excluyendo Nyquist mixto estaba obsoleta (el solver v3 sí procesa esos bins).
-2. PESOS DE PARSEVAL CORREGIDOS: en la grilla rfft2 los bins auto-conjugados
-   son las 4 ESQUINAS (ky∈{0,N/2} ∧ kx∈{0,N/2}), peso 1; el resto peso 2.
-   (v3 usaba fila 0 + última columna: error ±5 % en el término de ruido.)
-3. DIVERGENCIA CORREGIDA (P1-2): con λ en unidades del solver (k², rad²/px²),
-   un λ fijo > 0 SÍ acota el MSE de ruido blanco:
-       E[MSE_ruido(λ)] → (σ²/2π)·ln(π/√λ) + O(1)   [N→∞]
-   mientras λ=0 crece como (σ²/2π)·ln N. La afirmación de v3 ("ningún λ
-   constante detiene la divergencia") era FALSA. Lo que λ paga es sesgo de
-   señal: atenuación k²/(k²+λ) en banda. λ* equilibra ambos términos y puede
-   ser > 0 a N grande — la curva corregida lo calcula por resolución.
-4. ENERGÍA NULA: `null_slope_energy_fraction` (antes nyquist_null_fraction)
-   mide la energía de PENDIENTES descartada. NO mide altura perdida: una
-   altura puramente en el espacio nulo (h=(-1)^{x+y}) deja pendientes
-   idénticamente nulas. La energía de altura irrecuperable queda declarada
-   UNKNOWN sin oráculo de altura (P1-3).
+1. PESOS DE PARSEVAL GENERALES (P2-1): la regla de columnas de v4 asumía N par
+   (w[:, -1] = 1). La regla general —col. 0 peso 1; col. Nyquist peso 1 SÓLO si
+   N es par; resto 2— es exacta para toda paridad (brute force contra fft2,
+   N∈{3,5,7,8,32,33,64}; recibo de selftest). Mallas CUADRADAS; rectangulares
+   FUERA de contrato (la extensión por eje-x es directa, no se usa aquí).
+2. REWORDING λ* (P2-2): el escalado λ* ≈ c/N² es una OBSERVACIÓN bajo el prior
+   declarado (no un teorema); la ganancia esperada es < 0.06 % en los escenarios
+   examinados (máx. 0.053 % @128² régimen B; el enunciado "≤ 0.05 %" era falso).
+3. GATE AUTOMATIZADO (P2-3): este archivo es el runner canónico en el repo;
+   tests/test_native_parallax_m6_lambda_gate.py congela los recibos numéricos
+   (SEED=20261015) y falla ante cualquier regresión de ponderación espectral,
+   de símbolos d o de la curva E(λ).
 
-Modelo declarado (sin corpus): altura band-limited |ĥ|²∝k^-(β+2), banda
-[2π/N, π/4] sin Nyquist estricto, RMS(altura)=1; ruido blanco σ (filtrado en
-banda = Régimen A, o espectro completo = Régimen B), Q8 sintético, deriva LF.
+Historial (detalle en docs/.../exp-m6-screen-lambda-derivation-proposal.md):
+v3 (db5e5bd7) corrigió el defecto Nyquist del solver (contraejemplo RMSE
+0.707107 → 4.8e-16) pero su curva analítica usaba una fórmula de dispersión y
+pesos incorrectos. v4 (5c473d5) reconstruyó la curva con los operadores D del
+solver y la regla de pesos rfft2 correcta para N par (valores λ=0 rég. B:
+0.006794/0.007955/0.009087/0.010205 @N=32/64/128/256, σ=0.1 — verificados por
+dos partes independientes al dígito). v5: esta.
 """
 from __future__ import annotations
 
@@ -386,18 +444,21 @@ def solve_screened(p: np.ndarray, q: np.ndarray, lam: float = 0.0):
     return np.fft.irfft2(num / denom, s=(n, n))
 
 
-def _parseval_weights(shape) -> np.ndarray:
-    """Pesos de Parseval en grilla rfft2 (row=ky fftfreq, col=kx rfftfreq):
-    las columnas frontera kx=0 y kx=N/2 están COMPLETAMENTE materializadas
-    (el conjugado de (ky,kx=N/2) es (−ky,kx=N/2), misma columna) → peso 1;
-    las columnas interiores kx=1..N/2−1 representan además la columna espejo
-    N−kx → peso 2. Verificado por brute force contra fft2 (N=4..64, exacto).
-    [REV 4: corrige el intento previo de "4 esquinas", que dejaba peso 2 en
-    la columna de Nyquist y sobrecontaba ~20% la energía de ruido.]"""
-    rows, cols = shape
-    w = np.full(shape, 2.0)
+def _parseval_weights(n: int) -> np.ndarray:
+    """Pesos de Parseval en la grilla rfft2 de una señal 1-D de largo n
+    (shape (n, n//2+1); filas = ky completo, columnas = kx):
+      - columna kx=0: completamente materializada (es su propio espejo) → 1
+      - columna kx=n/2 (Nyquist, SÓLO si n es par): espejo en la MISMA
+        columna ((-n/2) ≡ n/2 mod n) → 1
+      - resto: bin propio + espejo no almacenado n-kx → 2
+    Exacta para CUALQUIER paridad (verificado brute force contra fft2,
+    N∈{3,5,7,8,32,33,64}; recibos del selftest). CONTRATO: mallas CUADRADAS;
+    rectangulares FUERA de contrato (el espejo de rfft2 es sólo eje-x, la
+    extensión es directa pero no se usa en este estudio)."""
+    w = np.full((n, n // 2 + 1), 2.0)
     w[:, 0] = 1.0
-    w[:, -1] = 1.0
+    if n % 2 == 0:
+        w[:, n // 2] = 1.0
     return w
 
 
@@ -416,7 +477,7 @@ def null_slope_energy_fraction(p: np.ndarray, q: np.ndarray) -> float:
     D = _D_matrix(n)
     null = D == 0.0
     fp, fq = np.fft.rfft2(p), np.fft.rfft2(q)
-    w = _parseval_weights(D.shape)  # pesos corregidos: sin ellos el numerador
+    w = _parseval_weights(n)  # pesos corregidos: sin ellos el numerador
     ep, eq = w * np.abs(fp) ** 2, w * np.abs(fq) ** 2  # (bins frontera) no es
     tot = float(np.sum(ep) + np.sum(eq)) + 1e-300  # comparable al denominador
     return float((np.sum(ep[null]) + np.sum(eq[null])) / tot)
@@ -486,7 +547,7 @@ def analytic_curve(n: int, beta: float, sigma: float, lams, noise_filtered: bool
     """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(D/(D+λ))²·E|ĥ|²  [sesgo de señal]
                  + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
     con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
-    Parseval rfft2 (col. frontera peso 1, interiores 2). Régimen A (noise_filtered=True): ruido sólo en banda;
+    pesos de Parseval de _parseval_weights (exacto para toda paridad). Régimen A (noise_filtered=True): ruido sólo en banda;
     Régimen B (False): ruido blanco en TODO bin con D>0. Con λ>0 fijo el ruido
     de B acota a ≈(σ²/2π)·ln(π/√λ); con λ=0 crece como (σ²/2π)·ln N (P1-2).
     include_signal=False expone sólo el término de ruido (para MC de ruido puro)."""
@@ -498,7 +559,7 @@ def analytic_curve(n: int, beta: float, sigma: float, lams, noise_filtered: bool
     amp[band] = k[band] ** (-(beta + 2) / 2)
     eh = 2 * amp**2
     D = _D_matrix(n)
-    w = _parseval_weights(D.shape)
+    w = _parseval_weights(n)
     eh *= n**4 / (w * eh).sum()  # RMS(altura)=1: Σ w·eh = N⁴
     out = []
     for lam in lams:
@@ -531,7 +592,7 @@ def lambda_star_continuous(n: int, beta: float, sigma: float, noise_filtered: bo
 # ---------------------------------------------------------------------------
 # Recibos (--check)
 # ---------------------------------------------------------------------------
-def selftest() -> None:
+def selftest() -> int:
     ok = 0
 
     # 1. Contraejemplo Nyquist (REV 3, se mantiene).
@@ -595,7 +656,17 @@ def selftest() -> None:
           f"σ²/(2π)·ln(π/√λ)={asymp:.6f} (λ=0 en 1024²: {lam0_1024:.6f})")
     ok += 1
 
-    # 6. Exactitud integrable sin Nyquist (regresión del solver).
+    # 6. Parseval rfft2 exacto para par E impar (P2-1, ronda 5): contra fft2.
+    rngp = np.random.default_rng(9)
+    for np_ in (4, 5, 8, 33, 64):
+        hh = rngp.standard_normal((np_, np_))
+        real = float(np.sum(np.abs(np.fft.fft2(hh)) ** 2))
+        mía = float(np.sum(_parseval_weights(np_) * np.abs(np.fft.rfft2(hh)) ** 2))
+        assert np.isclose(mía, real, rtol=1e-12), (np_, mía / real)
+    print("[ok] Parseval rfft2 exacto (brute force vs fft2) N∈{4,5,8,33,64}")
+    ok += 1
+
+    # 7. Exactitud integrable sin Nyquist (regresión del solver).
     n = 128
     h2, p2, q2 = make_signal(n, 2.0, np.random.default_rng(1))
     e = float(np.sqrt(np.mean((solve_screened(p2, q2, 0.0) - h2) ** 2)))
@@ -603,7 +674,8 @@ def selftest() -> None:
     print(f"[ok] campo integrable sin Nyquist: RMSE={e:.2e}")
     ok += 1
 
-    print(f"selftest: {ok}/8 recibos OK")
+    print(f"selftest: {ok}/9 recibos OK")
+    return ok
 
 
 def main() -> None:
@@ -612,8 +684,8 @@ def main() -> None:
         return
     rng = np.random.default_rng(SEED)
     print(f"SEED={SEED} · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · "
-          f"curva con operadores D del solver v3 + pesos Parseval rfft2 columnas-frontera · "
-          f"regímenes A(filtrado)/B(espectro completo) separados")
+          f"curva con operadores D del solver v3 + pesos Parseval rfft2 (col.0/Nyquist=1, resto=2) · "
+          f"regímenes A(filtrado)/B(espectro completo) separados · mallas CUADRADAS (toda paridad; rectangulares fuera de contrato)")
     for n in N_VALUES:
         for beta in BETAS:
             h, p, q = make_signal(n, beta, rng)
@@ -650,7 +722,7 @@ if __name__ == "__main__":
 
 ## Apéndice B — Salida registrada (SEED=20261015)
 
-**B.1 `--check` (selftest, 8 recibos):**
+**B.1 `--check` (selftest, 9 recibos):**
 
 ```
 [ok] contraejemplo Nyquist-X recuperado por derivada-Y: RMSE=4.80e-16
@@ -660,14 +732,16 @@ if __name__ == "__main__":
 [ok] MC(100, N=64, espectro completo) vs curva D: ratio=0.9952
 [ok] MC(100, N=128, espectro completo) vs curva D: ratio=0.9796
 [ok] λ=1e-3 acota el ruido: MSE(1024²)=0.006849 vs asíntota σ²/(2π)·ln(π/√λ)=0.007319 (λ=0 en 1024²: 0.012422)
+[ok] Parseval rfft2 exacto (brute force vs fft2) N∈{4,5,8,33,64}
 [ok] campo integrable sin Nyquist: RMSE=3.05e-16
-selftest: 8/8 recibos OK
+selftest: 9/9 recibos OK
 ```
 
-**B.2 Estudio completo (28 celdas):**
+**B.2 Estudio completo (28 celdas; idéntico a REV 4 en pares — los pesos no cambian
+para N par):**
 
 ```
-SEED=20261015 · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · curva con operadores D del solver v3 + pesos Parseval rfft2 columnas-frontera · regímenes A(filtrado)/B(espectro completo) separados
+SEED=20261015 · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · curva con operadores D del solver v3 + pesos Parseval rfft2 (col.0/Nyquist=1, resto=2) · regímenes A(filtrado)/B(espectro completo) separados · mallas CUADRADAS (toda paridad; rectangulares fuera de contrato)
 N= 256 β=2 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0099) λ=0: 0.0099 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
 N= 256 β=2 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0327) λ=0: 0.0327 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
 N= 256 β=2 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=0 (RMSE 0.0962) λ=0: 0.0962 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
@@ -698,10 +772,10 @@ N= 128 β=4 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=3e-05 (RMSE 0.1642) λ=0: 
 N= 128 β=4 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0131) λ=0: 1.6493 (×1.628) | E λ* A(filtr)=0.0001 B(compl)=0.0001 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
 ```
 
-**B.3 Barrido λ\* = c/N² (β=2, σ=0.1; reproduce §4.2):**
+**B.3 Barrido λ\* ≈ c/N² (β=2, σ=0.1; reproduce §4.2):**
 
 ```python
-# python -i  (con run_lambda_study_v4.py en el cwd)
+# python -i  (con scripts/run_lambda_study_m6.py en el cwd)
 for n in (128, 256, 512, 1024):
     for filt in (True, False):
         lam, e_star, e0 = lambda_star_continuous(n, 2.0, 0.1, filt)
@@ -713,5 +787,9 @@ for n in (128, 256, 512, 1024):
 256 A lambda*=1.294e-06 ganancia=-2.653e-04   256 B lambda*=2.227e-06 ganancia=-4.734e-04
 512 A lambda*=3.241e-07 ganancia=-2.253e-04   512 B lambda*=5.570e-07 ganancia=-4.271e-04
 1024 A lambda*=8.096e-08 ganancia=-1.957e-04  1024 B lambda*=1.391e-07 ganancia=-3.891e-04
-lambda*/N^2 : c_A ∈ [0.0846, 0.0849]; c_B ∈ [0.1457, 0.1459]  (px²)
+lambda*/N^2 : c_A ∈ [0.0846, 0.0849]; c_B ∈ [0.1457, 0.1459]  (px²)  [escalado observado]
 ```
+
+**B.4 Gate (CI):** `pytest tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`
+→ `4 passed` (<1 s). Verificación por mutación (pesos v4 reinyectados): `2 failed,
+2 passed` → restaurado: `4 passed`.
