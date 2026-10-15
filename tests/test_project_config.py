@@ -234,7 +234,7 @@ def test_seams_pr5_pr6_orchestrator_bajo_mypy_strict() -> None:
     ``plugin_limit_guard`` y ``record_conflict_scan`` viven bajo
     ``sky_claw/app/orchestrator/``, que el override amplio
     ``sky_claw.app.orchestrator.*`` marca con ``ignore_errors = true``. Sin una
-    entrada estricta *explícita* por módulo, ``mypy sky_claw/`` los tapa: el gate
+    entrada estricta *explícita* por módulo, ``mypy sky_claw/ scripts/`` los tapa: el gate
     bloqueante saldría verde aunque estos módulos de producción tuvieran errores
     de tipos reales (exactamente lo que reprodujo el P1: ``source`` inferido como
     ``str`` en vez del ``Literal`` ``PluginListSource`` — el mismo patrón que

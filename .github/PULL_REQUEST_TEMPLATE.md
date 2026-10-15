@@ -25,7 +25,7 @@ Caminos alcanzados / excluidos:
 
 ## Verificación
 
-- [ ] `ruff check sky_claw/ tests/` **y** `ruff format --check sky_claw/ tests/`
+- [ ] `ruff check sky_claw/ scripts/ tests/` **y** `ruff format --check sky_claw/ scripts/ tests/`
 - [ ] `pytest` con **exit code 0** — no alcanza leer "N passed": el guard de
       `pytest_unconfigure` puede salir con `os._exit(3)` por hilos no-daemon
       justo después de imprimir el resumen (pasó en #362)

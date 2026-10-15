@@ -22,9 +22,11 @@ Gestión de mods de Skyrim SE/AE vía Mod Organizer 2 (LOOT, xEdit, DynDOLOD…)
   - POSIX: `.venv/bin/python -m pytest`
 
   (`asyncio_mode=auto`: los tests `async def` no necesitan decorador.)
-- Lint/format/types — el gate "Lint" de CI exige **ambos** comandos de ruff:
-  `ruff check sky_claw/ tests/` **y** `ruff format --check sky_claw/ tests/`.
-  `mypy sky_claw/` corre bloqueante **pero no cubre todo**: `pyproject.toml`
+- Lint/format/types — el gate "Lint" de CI exige **ambos** comandos de ruff
+  sobre `sky_claw/`, `scripts/` y `tests/`:
+  `ruff check sky_claw/ scripts/ tests/` **y**
+  `ruff format --check sky_claw/ scripts/ tests/`.
+  `mypy sky_claw/ scripts/` corre bloqueante **pero no cubre todo**: `pyproject.toml`
   tiene `ignore_errors = true` para ~30 módulos, incluidos `sky_claw.app.gui.*`,
   `sky_claw.app.web.*` y `sky_claw.local.tools.*`. Lo mismo `BLE001` de ruff,
   exento en todo `sky_claw/app/**`. Antes de confiar en que un gate te cubre,
