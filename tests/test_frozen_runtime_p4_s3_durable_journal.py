@@ -205,21 +205,27 @@ def _root(tmp_path: pathlib.Path, nombre: str = "root") -> pathlib.Path:
 
 
 def _quitar_enlace_sin_seguir(ruta: pathlib.Path) -> None:
-    """Borra *ruta* sin seguir el enlace (el destino queda intacto)."""
+    """Borra *ruta* si existe, sin seguir el enlace (el destino queda intacto).
+
+    Tolerante a la ruta AUSENTE: el caller limpia el remanente de un intento de
+    enlace que puede no haber creado NADA (``mklink /J`` sobre un volumen
+    no-NTFS o una ruta de red). Ahí "no hay nada que limpiar" es el caso normal;
+    sin esta tolerancia el fallback terminaría en ``FileNotFoundError`` —un ERROR
+    de test— en vez del ``pytest.skip`` documentado.
+    """
     try:
         tipo = link_kind_or_raise(ruta)
     except OSError:
         tipo = None
-    if tipo is not None:
-        if ruta.is_dir():
-            os.rmdir(ruta)  # quita el reparse point, NUNCA el destino
-        else:
-            ruta.unlink()
+    if tipo is None and not ruta.exists():
         return
-    if ruta.is_dir():
+    if tipo is not None and (tipo == "junction" or ruta.is_dir()):
+        os.rmdir(ruta)  # quita el reparse point, NUNCA el destino
+        return
+    if tipo is None and ruta.is_dir():
         shutil.rmtree(ruta, ignore_errors=True)
-    else:
-        ruta.unlink()
+        return
+    ruta.unlink()
 
 
 def _crear_enlace_de_directorio(destino: pathlib.Path, origen: pathlib.Path) -> str:
@@ -244,9 +250,14 @@ def _crear_enlace_de_directorio(destino: pathlib.Path, origen: pathlib.Path) -> 
             return "symlink"
         _quitar_enlace_sin_seguir(destino)  # era una copia, no un enlace
     if os.name == "nt":
+        # Sin `shell=True` y con la lista de argumentos, no hay interpretación de
+        # shell: `destino`/`origen` salen de `tmp_path` (pytest), no de entrada
+        # externa. El timeout evita que un `cmd` colgado bloquee el test hasta el
+        # timeout global.
         proceso = subprocess.run(  # noqa: S603
             ["cmd", "/c", "mklink", "/J", str(destino), str(origen)],
             capture_output=True,
+            timeout=30,
         )
         if proceso.returncode == 0 and link_kind_or_raise(destino) == "junction":
             return "junction"
@@ -1219,6 +1230,23 @@ def test_auditoria_no_omite_enlace_de_directorio_como_placeholder(tmp_path: path
     assert _exigir_enlace_real(ruta) == tipo
     with pytest.raises(JournalCorruptError):
         journal_module.auditar_reservas_finalizacion(root)
+
+
+def test_f14_limpiar_enlace_ausente_no_es_error(tmp_path: pathlib.Path) -> None:
+    """F14 — limpiar el remanente de un enlace fallido no puede ERROR-ear.
+
+    ``_crear_enlace_de_directorio`` limpia el remanente cuando el intento de
+    enlace no produjo un enlace real. Si ``os.symlink`` y ``mklink /J`` fallan
+    los dos (volumen no-NTFS, ruta de red), ``destino`` **no existe** y limpiar
+    "nada" es el caso NORMAL: debe ser un no-op para llegar al ``pytest.skip``
+    documentado. Con ``unlink()`` sin guarda, ese camino revienta con
+    ``FileNotFoundError`` y convierte un skip en un ERROR en todo test que use
+    el helper.
+    """
+    ausente = tmp_path / "no-existe-en-absoluto"
+    assert not ausente.exists()
+    _quitar_enlace_sin_seguir(ausente)  # no-op: no debe lanzar
+    assert not ausente.exists()
 
 
 def test_reconciliacion_pending_sin_oraculo_nunca_es_complete(tmp_path: pathlib.Path) -> None:
