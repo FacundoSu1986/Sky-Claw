@@ -46,6 +46,7 @@ import importlib.util
 import math
 import pathlib
 import sys
+import warnings
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -399,3 +400,201 @@ def test_guardas_documentales_seccion_y_docstring() -> None:
     assert "RMSE" in docstr
     # Consistencia con Apéndice A: el docstring del runner debe aparecer en el documento
     assert "(λ/(D+λ))²·E|ĥ|²" in doc or "(λ/(D+λ))²" in doc
+
+
+# ---------------------------------------------------------------------------
+# REV 7.2 — defectos de validación P2-REV72-01 / -02 / -03
+# ---------------------------------------------------------------------------
+_INTRO_CORTE = "## 0. Leyenda de estados"
+
+
+def _bloque_introduccion_activa(doc: str) -> str:
+    """Bloque de encabezado/REV anterior a §0: la introducción ACTIVA.
+
+    Excluye deliberadamente §4.1, §8.5 y los Apéndices para que una cifra
+    correcta en esas secciones no pueda ocultar una cifra distinta acá."""
+    assert _INTRO_CORTE in doc, f"delimitador de introducción ausente: {_INTRO_CORTE!r}"
+    return doc.split(_INTRO_CORTE, maxsplit=1)[0]
+
+
+def _bloque_seccion_41(doc: str) -> str:
+    """Cuerpo de §4.1 (tabla del límite continuo), acotado por §4.2."""
+    assert "### 4.1" in doc and "### 4.2" in doc, "delimitadores de §4.1 ausentes"
+    return doc.split("### 4.1", maxsplit=1)[1].split("### 4.2", maxsplit=1)[0]
+
+
+def _snapshot_apendice_a(doc: str) -> str:
+    """Contenido del bloque ```python del Apéndice A (snapshot del runner)."""
+    assert "## Apéndice A" in doc, "Apéndice A ausente del documento"
+    cola = doc.split("## Apéndice A", maxsplit=1)[1]
+    assert "```python" in cola, "bloque de código del Apéndice A ausente"
+    cuerpo = cola.split("```python", maxsplit=1)[1]
+    assert "```" in cuerpo, "cierre del bloque de código del Apéndice A ausente"
+    return cuerpo.split("```", maxsplit=1)[0]
+
+
+def _normalizado(bloque: str) -> str:
+    """Colapsa whitespace y saltos de línea para comparar frases sin depender del
+    reflow del Markdown. No es un parser de Markdown: son delimitadores de sección
+    más comparación semántica acotada."""
+    return " ".join(bloque.split())
+
+
+def _sin_eol(texto: str) -> str:
+    """Normaliza terminadores de línea y descarta el salto final.
+
+    El runner está forzado a LF por `.gitattributes` (`*.py text eol=lf`); el
+    documento se versiona en LF y se materializa en CRLF en Windows. La única
+    normalización admitida en la comparación del Apéndice A es la de fin de línea
+    más el salto final que introduce el bloque cercado."""
+    return texto.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+
+
+def test_make_signal_banda_vacia_lanza_valueerror() -> None:
+    """P2-REV72-01: `make_signal` normaliza la altura por su RMS. Con banda
+    espectral vacía la amplitud es idénticamente nula ⇒ 0/0 = NaN silencioso
+    (RuntimeWarning `invalid value encountered in divide`). El contrato exige un
+    `ValueError` explícito en vez de propagar NaN a todo el estudio.
+
+    El mínimo kn no nulo de la grilla es 2π/N y la banda exige kn ≤ π/4, de modo
+    que la banda es vacía ⇔ N < 8. Se enumeran varios tamaños degenerados (no
+    sólo N=7): un guard cableado a 7 pasaría el caso puntual y fallaría el resto."""
+    _requiere_runner()
+    runner = _runner()
+    for n in (1, 2, 3, 7):
+        with pytest.raises(ValueError, match=f"N={n} produce banda"):
+            runner.make_signal(n, 2.0, np.random.default_rng(20261015))
+
+
+def test_make_signal_no_produce_nan_silencioso() -> None:
+    """P2-REV72-01: la ruta degenerada debe fallar explícitamente y NO emitir el
+    RuntimeWarning de división inválida. Antes del fix, `make_signal(7, …)`
+    devolvía un array todo-NaN (`finite_frac = 0.0`)."""
+    _requiere_runner()
+    runner = _runner()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError):
+            runner.make_signal(7, 2.0, np.random.default_rng(20261015))
+
+
+def test_make_signal_energia_no_finita_se_rechaza() -> None:
+    """P2-REV72-01: con banda NO vacía la energía pre-normalización todavía puede
+    ser no finita. Con β extremo el factor kn^(-(β+2)/2) desborda a inf (kn < 1)
+    y la normalización sería inf/inf = NaN. El guard debe ser alcanzable, no
+    decorativo: este test lo ejercita end-to-end."""
+    _requiere_runner()
+    runner = _runner()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(ValueError, match="energía de la señal pre-normalización"):
+            runner.make_signal(8, 1e4, np.random.default_rng(20261015))
+
+
+def test_make_signal_dominio_valido_finito_y_reproducible() -> None:
+    """P2-REV72-01: N=8 es el borde geométrico de banda no vacía (4 bins) y
+    N=32/128 siguen siendo válidos. El fix no debe tocar la reproducibilidad:
+    misma semilla y mismos parámetros ⇒ resultado idéntico, RMS(altura)=1."""
+    _requiere_runner()
+    runner = _runner()
+    for n in (8, 32, 128):
+        h1, p1, q1 = runner.make_signal(n, 2.0, np.random.default_rng(20261015))
+        h2, p2, q2 = runner.make_signal(n, 2.0, np.random.default_rng(20261015))
+        for arr in (h1, p1, q1):
+            assert np.all(np.isfinite(arr)), n
+        assert np.array_equal(h1, h2) and np.array_equal(p1, p2) and np.array_equal(q1, q2), n
+        assert abs(float(np.sqrt(np.mean(h1**2))) - 1.0) < 1e-12, n
+
+
+def test_umbral_de_banda_m6_es_n8_por_construccion() -> None:
+    """P2-REV72-01 (oráculo analítico independiente del runner): la banda es
+    {2π/N ≤ kn ≤ π/4} menos las líneas Nyquist, y el menor kn no nulo de la grilla
+    es 2π/N. Por lo tanto la banda es no vacía ⇔ 2π/N ≤ π/4 ⇔ N ≥ 8.
+
+    Distingue el dominio GEOMÉTRICO mínimo (N ≥ 8, admisible) del dominio
+    experimental científicamente validado: N=8 es admisible, no está calibrado."""
+    for n in range(2, 17):
+        assert bool(2 * np.pi / n <= np.pi / 4) == (n >= 8), n
+    for n, bins_esperados in ((7, 0), (8, 4)):
+        idx = np.fft.fftfreq(n) * n
+        kx, ky = np.meshgrid(idx, idx, indexing="xy")
+        kn = np.sqrt(kx**2 + ky**2) * (2 * np.pi / n)
+        nyq = (np.abs(kx) == n // 2) | (np.abs(ky) == n // 2)
+        band = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+        assert int(band.sum()) == bins_esperados, (n, int(band.sum()))
+
+
+def test_guarda_introduccion_activa_porcentajes_exactos() -> None:
+    """P2-REV72-02: la introducción activa debe declarar las cifras precisas Y su
+    redondeo. La guarda previa sólo comprobaba que las cifras HISTÓRICAS no
+    estuvieran ahí y que las vigentes aparecieran en algún lugar del documento ⇒
+    mutar `+9.2639%` → `+9.2739%` en la introducción sobrevivía, porque el valor
+    correcto seguía presente en §4.1, §8.5 y el Apéndice A."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    intro = _normalizado(_bloque_introduccion_activa(doc))
+    for precisa, redondeada in (
+        ("+9.2639%", "+9.26%"),
+        ("+2.2524%", "+2.25%"),
+        ("+1.1262%", "+1.13%"),
+    ):
+        assert f"{precisa} ≈ {redondeada}" in intro, (
+            f"la introducción activa debe declarar «{precisa} ≈ {redondeada}»: una cifra "
+            "correcta en §4.1/§8.5/Apéndice A no sustituye a la de la introducción"
+        )
+    for historica in ("+9.22 %", "+2.21 %", "+1.09 %"):
+        assert historica not in intro, f"cifra histórica {historica} activa en la introducción"
+
+
+def test_guarda_seccion_41_limite_con_denominador_cuadrado() -> None:
+    """P2-REV72-02: §4.1 declara el límite continuo V∞(λ) con el integrando
+    k²/(k²+λ)². La guarda previa miraba §4.1 sólo para los porcentajes y una
+    frase de Nyquist, y comprobaba `(λ/(D+λ))²` sobre TODO el documento — donde
+    también aparece en el docstring del runner dentro del Apéndice A ⇒ degradar
+    el denominador a primer grado `k²/(k²+λ)` sobrevivía.
+
+    Se exige que TODA aparición de `k²/(k²+λ)` dentro de §4.1 lleve el exponente
+    cuadrado, y que la aproximación log siga etiquetada como comportamiento
+    dominante y no como límite exacto."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    s41 = _normalizado(_bloque_seccion_41(doc))
+    cuadraticas = s41.count("k²/(k²+λ)²")
+    lineales = s41.count("k²/(k²+λ)")
+    assert cuadraticas >= 1, "§4.1 debe declarar el límite continuo con denominador cuadrático"
+    assert lineales == cuadraticas, (
+        f"§4.1 tiene {lineales - cuadraticas} aparición(es) de k²/(k²+λ) sin el exponente "
+        "cuadrado (denominador de primer grado): el límite quedaría mal declarado"
+    )
+    assert "límite EXACTO del operador" in s41, "el límite continuo debe seguir marcado como exacto"
+    assert "sólo comportamiento dominante — NO es el límite" in s41, (
+        "la aproximación log debe seguir etiquetada como comportamiento dominante, no como límite"
+    )
+
+
+def test_apendice_a_snapshot_identico_al_runner_canonico() -> None:
+    """P2-REV72-03: el Apéndice A es un snapshot del runner canónico. Las guardas
+    previas sólo comprobaban la presencia de fórmulas sueltas en el documento
+    (que también viven en §4.1, §8.5 y en el docstring embebido), no que el
+    CÓDIGO del snapshot fuera el del runner ⇒ alterar una línea del snapshot sin
+    tocar el runner sobrevivía.
+
+    Comparación determinista tras normalizar terminadores de línea: el runner
+    está forzado a LF por `.gitattributes` mientras el documento se materializa
+    en CRLF en Windows, así que la única diferencia admisible es el fin de línea
+    y el salto final del bloque cercado. No se ignoran líneas."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    snapshot = _sin_eol(_snapshot_apendice_a(doc))
+    runner = _sin_eol(RUNNER_PATH.read_text(encoding="utf-8"))
+
+    # Anti-vacuidad: la comparación debe tener sustancia y cubrir el runner entero.
+    assert snapshot.count("\n") >= 400, "el snapshot del Apéndice A parece truncado"
+    for simbolo in ("def make_signal(", "def solve_screened(", "def noise_mse_limit("):
+        assert simbolo in snapshot, f"el snapshot no contiene {simbolo}"
+
+    if snapshot != runner:
+        lineas_snap, lineas_run = snapshot.split("\n"), runner.split("\n")
+        for i, (a, b) in enumerate(zip(lineas_snap, lineas_run, strict=False)):
+            if a != b:
+                pytest.fail(
+                    f"Apéndice A divergió del runner en la línea {i + 1}:\n  snapshot: {a!r}\n  runner:   {b!r}"
+                )
+        pytest.fail(f"Apéndice A y runner difieren en longitud: {len(lineas_snap)} vs {len(lineas_run)} líneas")

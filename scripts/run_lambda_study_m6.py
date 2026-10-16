@@ -7,6 +7,13 @@ nulos pertenecen al espacio nulo. Los porcentajes se recalculan desde los
 valores numéricos registrados; la tendencia finita ~1/N es observada, no un
 teorema general.
 
+REV 7.2 (2026-10-16, sesión NP-M6-REV7.2-FINAL-VALIDATION-FIX): tres defectos de
+validación. P2-REV72-01: `make_signal` rechaza explícitamente la banda vacía
+(N<8) en vez de normalizar 0/0; el solver FFT, sus símbolos y los valores
+dorados quedan intactos. P2-REV72-02: guardas documentales por ubicación
+semántica (introducción activa y §4.1) en el gate. P2-REV72-03: verificación
+estructural del snapshot del Apéndice A contra este archivo.
+
 REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
 Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
 
@@ -113,18 +120,40 @@ def null_slope_energy_fraction(p: np.ndarray, q: np.ndarray) -> float:
 # Modelo declarado
 # ---------------------------------------------------------------------------
 def make_signal(n: int, beta: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Señal sintética de banda [2π/N, π/4] sin Nyquist estricto, normalizada a
+    RMS(altura)=1.
+
+    REV 7.2 (P2-REV72-01): el menor kn no nulo de la grilla es 2π/N y la banda
+    exige kn ≤ π/4, de modo que la banda es VACÍA para N < 8. Antes se
+    normalizaba igual y `h /= 0` producía NaN silencioso en toda la señal. Ahora
+    la banda vacía se rechaza explícitamente y también se valida la energía
+    pre-normalización (una amplitud desbordada daría inf/inf en lugar de fallar).
+
+    Dominio GEOMÉTRICO mínimo: N ≥ 8. Eso NO implica que N=8 esté calibrado
+    para producción: el dominio experimental validado es el de `main()`."""
     idx = np.fft.fftfreq(n) * n
     KX, KY = np.meshgrid(idx, idx, indexing="xy")
     kn = np.sqrt(KX**2 + KY**2) * (2 * np.pi / n)
     nyq = (np.abs(KX) == n // 2) | (np.abs(KY) == n // 2)
     band = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    if not band.any():
+        raise ValueError(
+            f"N={n} produce banda [2π/N, π/4] vacía; se requiere N>=8 para señal no vacía. "
+            "Normalizar esa señal daría 0/0 (NaN)."
+        )
     coef = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
     amp = np.zeros((n, n))
     amp[band] = kn[band] ** (-(beta + 2) / 2)
     h_hat = coef * amp
     h_hat[0, 0] = 0.0
     h = np.real(np.fft.ifft2(h_hat))
-    h /= np.sqrt(np.mean(h**2))
+    energia = float(np.mean(h**2))
+    if not np.isfinite(energia) or energia <= 0.0:
+        raise ValueError(
+            f"N={n}: la energía de la señal pre-normalización es {energia!r} (nula o no "
+            "finita); normalizar produciría valores no finitos en lugar de fallar."
+        )
+    h /= np.sqrt(energia)
     kxf = (2 * np.pi * np.fft.fftfreq(n))[None, :]
     kyf = (2 * np.pi * np.fft.fftfreq(n))[:, None]
     hn = np.fft.fft2(h)
