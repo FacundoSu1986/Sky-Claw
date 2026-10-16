@@ -177,8 +177,12 @@ def analytic_curve(
     noise_filtered: bool,
     include_signal: bool = True,
 ) -> np.ndarray:
-    """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(D/(D+λ))²·E|ĥ|²  [sesgo de señal]
+    """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(λ/(D+λ))²·E|ĥ|²  [sesgo de señal]
                  + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
+    La función devuelve RMSE = sqrt(MSE esperada).
+    Transmisión de señal T(D,λ)=D/(D+λ); error de reconstrucción
+    H_est−H = −λ/(D+λ)·H; factor cuadrático de sesgo B(D,λ)=(λ/(D+λ))².
+    El término de ruido permanece D/(D+λ)².
     con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
     Parseval de _parseval_weights (exacto para toda paridad). Régimen A
     (noise_filtered=True): ruido sólo en banda; Régimen B (False): ruido
@@ -187,16 +191,27 @@ def analytic_curve(
     En N par, un bin de Nyquist mixto puede tener D>0; D=0 requiere que ambos
     símbolos sean nulos. Con λ=0, el ruido blanco crece como (σ²/2π)·ln N
     (P1-2). include_signal=False expone sólo el término de ruido (MC puro)."""
+    if n < 1:
+        raise ValueError(f"N debe ser >= 1, recibido {n}")
     kxr = (2 * np.pi * np.fft.rfftfreq(n))[None, :]
     kyr = (2 * np.pi * np.fft.fftfreq(n))[:, None]
     k = np.sqrt(kxr**2 + kyr**2)
     band = (k >= 2 * np.pi / n) & (k <= np.pi / 4)  # π/4 < π/2: sin Nyquist
+    if include_signal and not band.any():
+        raise ValueError(
+            f"N={n} produce banda [2π/N, π/4] vacía; se requiere N>=8 para señal no vacía. "
+            "Use include_signal=False para modos de sólo ruido."
+        )
     amp = np.zeros(band.shape)
     amp[band] = k[band] ** (-(beta + 2) / 2)
     eh = 2 * amp**2
     D = _D_matrix(n)
     w = _parseval_weights(n)
-    eh *= n**4 / (w * eh).sum()  # RMS(altura)=1: Σ w·eh = N⁴
+    if include_signal:
+        denom = (w * eh).sum()
+        if denom <= 0:
+            raise ValueError(f"Energía de señal nula o no positiva para N={n}")
+        eh *= n**4 / denom  # RMS(altura)=1: Σ w·eh = N⁴
     out = []
     for lam in lams:
         mse = 0.0

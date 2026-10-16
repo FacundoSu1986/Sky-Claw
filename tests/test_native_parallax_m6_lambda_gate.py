@@ -355,3 +355,47 @@ def test_documentacion_rev61_reconcilia_nyquist_y_porcentajes() -> None:
     assert "+1.1262%" in limit_doc
     assert "+9.22 %" not in limit_doc
     assert "acota a ≈(σ²/2π)·ln" not in analytic_doc
+
+
+def test_n7_include_signal_raises_valueerror() -> None:
+    """AAA: N=7 con señal produce ValueError explícito (banda vacía)."""
+    runner = _runner()
+    with pytest.raises(ValueError, match="N=7 produce banda"):
+        runner.analytic_curve(7, 2.0, 0.1, [1e-3], noise_filtered=False, include_signal=True)
+
+
+def test_n7_noise_only_succeeds() -> None:
+    """AAA: N=7 sólo-ruido funciona (sin normalizar señal inexistente)."""
+    runner = _runner()
+    out = runner.analytic_curve(7, 2.0, 0.1, [0.0, 1e-3], noise_filtered=False, include_signal=False)
+    assert out.shape == (2,)
+    assert np.all(np.isfinite(out))
+
+
+def test_n8_include_signal_succeeds() -> None:
+    """AAA: N=8 es el límite geométrico de banda no vacía y produce valores finitos."""
+    runner = _runner()
+    out = runner.analytic_curve(8, 2.0, 0.1, [0.0, 1e-3], noise_filtered=False, include_signal=True)
+    assert out.shape == (2,)
+    assert np.all(np.isfinite(out))
+    assert np.all(out >= 0)
+
+
+def test_guardas_documentales_seccion_y_docstring() -> None:
+    """Guardas acotadas: porcentajes vigentes sólo en §4.1, factor de sesgo correcto, consistencia Apéndice A."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    seccion_41 = doc.split("### 4.1", maxsplit=1)[1].split("### 4.2", maxsplit=1)[0]
+    for pct in ("+9.2639%", "+9.26%", "+2.2524%", "+2.25%", "+1.1262%", "+1.13%"):
+        assert pct in seccion_41, f"porcentaje vigente {pct} ausente de §4.1"
+    # Introducción activa no debe contener las cifras históricas como activas
+    intro = doc.split("## 1.", maxsplit=1)[0]
+    for hist in ("+9.22 %", "+2.21 %", "+1.09 %"):
+        assert hist not in intro, f"cifra histórica {hist} presente en introducción activa"
+
+    runner = _runner()
+    docstr = runner.analytic_curve.__doc__ or ""
+    assert "(λ/(D+λ))²" in docstr or "(lam / (D + lam))" in docstr or "λ/(D+λ))²" in docstr
+    assert "B(D,λ)=(λ/(D+λ))²" in docstr or "factor cuadrático de sesgo" in docstr
+    assert "RMSE" in docstr
+    # Consistencia con Apéndice A: el docstring del runner debe aparecer en el documento
+    assert "(λ/(D+λ))²·E|ĥ|²" in doc or "(λ/(D+λ))²" in doc
