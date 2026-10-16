@@ -17,8 +17,10 @@ nunca con una aprobación simulada en la ruta de producción.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import json
+import logging
 import os
 import pathlib
 import shutil
@@ -37,6 +39,7 @@ from sky_claw.local.frozen_runtime.errors import (
     JournalDependenciaNoDisponibleError,
     JournalEvidenciaPostError,
     JournalIdentityError,
+    JournalObservacionEffectiveError,
     JournalSchemaError,
     JournalStoreNoInicializadoError,
 )
@@ -64,6 +67,12 @@ SESION = "4d5e6f70-8192-4344-9c8d-7e6f5a4b3c2d"
 
 GEN_OBJETIVO = "1.6.640.0__0f1e2d3c4b5a"
 GEN_ORIGEN = "1.6.1170.0__a1b2c3d4e5f6"
+#: Generation-id CONFORME y distinto de los dos anteriores. Reemplaza a los
+#: fixtures que usaban ids sintácticamente inválidos (p. ej. `"1.6.1170__otra"`)
+#: para expresar "distinto": con la validación canónica de R3-01 esos casos
+#: pasaban a rechazarse por FORMATO y dejaban de ejercitar el mismatch que
+#: declaran.
+GEN_TERCERA = "1.6.1170.0__ffffffffffff"
 # Identidad del Runtime Clone efectivo que el bind produce (ADR §34.4:
 # "expected_effective_path — la ruta que el bind va a producir"). El oráculo
 # de P5 observa QUÉ RUTA ejecuta el runtime (§34.5), no la Generation: una
@@ -1025,7 +1034,7 @@ def test_finalizar_sin_post_valido_no_finaliza(tmp_path: pathlib.Path) -> None:
         "post_falla": _evidencia(resultado="FAIL"),
         "digest_invalido": _evidencia(payload_digest="corto"),
         "otra_transicion": _evidencia(transition_id=T2),
-        "target_distinto": _evidencia(target_generation_id="1.6.1170__otra"),
+        "target_distinto": _evidencia(target_generation_id=GEN_TERCERA),
         "source_distinto": _evidencia(source_activation_digest=OTRO_DIGEST_64),
         "sin_timestamp": _evidencia(verified_at_ns=0),
         "desired_none": _evidencia(desired_active_generation=None),
@@ -1850,7 +1859,7 @@ def test_f3_post_pass_con_desired_incorrecto_no_publica_registro(tmp_path: pathl
     """
     root = _root(tmp_path)
     _crear_pendiente(root)
-    for deseado in (None, GEN_ORIGEN, "1.6.640.0__otra"):
+    for deseado in (None, GEN_ORIGEN, GEN_TERCERA):
         with pytest.raises(JournalEvidenciaPostError):
             _finalizar(root, _post_para(root, desired=deseado))
         assert _dump_estado(root)["registros"] == [], deseado
@@ -2084,3 +2093,267 @@ def test_f13_store_redirigido_no_es_historial_vacio(tmp_path: pathlib.Path) -> N
     with pytest.raises(JournalIdentityError):
         journal_module.derivar_historial_finalizados(root)
     assert journal_module.reconciliar_journal(root).veredicto.value == "FAIL_CLOSED"
+
+
+# ============================================================================
+# R3 — adjudicación de los hallazgos de Qodo Adversarial sobre `d69d9701`
+#
+# Autoridad: §36.3/§36.6 (identidad persistida y CAS), §34.4/§34.5
+# (`expected_effective_path` = "la ruta que el bind va a producir";
+# `UNKNOWN != SUCCESS`), §35.6 (evidencia durable), P2 G03–G05
+# (`validar_generation_id`, fail-closed, "todo id que llegue a un path pasó por
+# acá").
+# ============================================================================
+
+#: Blancos ASCII: `str.strip()` los colapsa a vacío. `""` va como CONTROL — el
+#: código previo ya lo rechazaba por `not valor`, así que no aporta RED.
+_BLANCOS = ("", " ", "   ", "\t", "\n", " \t\n ")
+
+
+def _pendiente_crudo(root: pathlib.Path, **cambios: object) -> None:
+    """Escribe el PENDING crudo en disco con los campos sobrescritos."""
+    payload = _payload_pendiente()
+    payload.update(cambios)
+    _escribir_json(transition_journal_path(root), payload)
+
+
+def test_r3_01_identidad_de_transicion_en_blanco_rechaza(tmp_path: pathlib.Path) -> None:
+    """R3-01 — un `target_*` solo-whitespace no es una identidad persistible.
+
+    El parser usaba `not valor`, que rechaza `""` pero acepta `"   "`. La
+    identidad del target se persiste en el documento durable y se copia al
+    registro FINALIZED (§34.4/§36.6): una cadena en blanco no es una identidad,
+    y aguas abajo ya no hay forma de distinguirla de un id real.
+    """
+    root = _root(tmp_path)
+    for campo in ("target_generation_id", "target_clone_id", "target_runtime_setup_id"):
+        for valor in _BLANCOS:
+            _pendiente_crudo(root, **{campo: valor})
+            with pytest.raises((JournalSchemaError, JournalIdentityError)):
+                journal_module.cargar_journal_transicion(root)
+
+
+@pytest.mark.parametrize(
+    "generation_id",
+    [
+        "1.6.1170__otra",  # el "digest" no es 12 hex
+        "1.6.1170__A1B2C3D4E5F6",  # no canónico (mayúsculas)
+        "../escape",  # traversal
+        "sin-separador",  # falta `__<digest12>`
+        "con__a1b2c3d4e5f6",  # nombre reservado de Windows
+        "1.6.1170.0__a1b2c3d4e5f6 ",  # espacio final
+    ],
+)
+def test_r3_01_target_generation_id_no_conforme_rechaza(tmp_path: pathlib.Path, generation_id: str) -> None:
+    """R3-01 — el journal no inventa su propio criterio de Generation ID.
+
+    Existe un validador canónico del dominio (`validar_generation_id`, P2
+    G03–G05) que rechaza el whitespace de borde, el formato y el traversal; el
+    parser sólo exigía "string no vacío". Se exige el id **ya canónico**: se
+    VALIDA, no se normaliza — recortar o pasar a minúsculas en silencio cambiaría
+    la identidad persistida y el digest que la liga.
+    """
+    root = _root(tmp_path)
+    _pendiente_crudo(root, target_generation_id=generation_id)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_r3_01_source_activation_con_generation_id_en_blanco_rechaza(tmp_path: pathlib.Path) -> None:
+    """R3-01 — el `generation_id` del `source_activation` es una identidad más."""
+    root = _root(tmp_path)
+    fuente = _fuente()
+    fuente["generation_id"] = "   "
+    _escribir_json(transition_journal_path(root), _payload_pendiente(fuente=fuente))
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_r3_01_evidencia_post_con_identidad_en_blanco_no_finaliza(tmp_path: pathlib.Path) -> None:
+    """R3-01 — la evidencia POST tampoco admite identidades en blanco (§35.6).
+
+    Camino HERMANO del parser: `_validar_post_evidence` corre ANTES que la
+    comparación de coherencia, así que la identidad en blanco tiene que
+    rechazarse por FORMA y no porque "no coincide" con el journal. Se pincha el
+    motivo para que el test no pueda pasar por el camino equivocado: sin la
+    validación de forma, el rechazo viene de la comparación y el caso queda verde
+    sin haber ejercitado lo que declara.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    for campo, kwargs in (
+        ("target_generation_id", {"target_generation": "   "}),
+        ("target_clone_id", {"target_clone": "   "}),
+        ("target_runtime_setup_id", {"target_setup": "\t"}),
+        ("desired_active_generation", {"desired": "   "}),
+    ):
+        with pytest.raises(JournalEvidenciaPostError) as excinfo:
+            _finalizar(root, _post_para(root, **kwargs))
+        mensaje = str(excinfo.value)
+        assert "debe ser" in mensaje, (campo, mensaje)
+        assert "inconsistente" not in mensaje, (campo, mensaje)
+        assert _dump_estado(root)["registros"] == [], campo
+        assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION", campo
+
+
+def test_r3_01_propuesta_con_identidad_en_blanco_rechaza(tmp_path: pathlib.Path) -> None:
+    """R3-01 — el camino CREATE valida las mismas identidades que el parser."""
+    root = _root(tmp_path)
+    for campo, valor in (
+        ("target_generation_id", "   "),
+        ("target_clone_id", "   "),
+        ("target_runtime_setup_id", "\t"),
+        ("expected_effective_path", "   "),
+    ):
+        propuesta = dataclasses.replace(_propuesta(), **{campo: valor})
+        with pytest.raises((JournalSchemaError, JournalIdentityError)):
+            _crear_pendiente(root, propuesta=propuesta)
+
+
+def test_r3_01_valores_conformes_siguen_aceptandose(tmp_path: pathlib.Path) -> None:
+    """R3-01 (control positivo) — el endurecimiento no rechaza lo válido."""
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.journal is not None
+    assert snapshot.journal.target_generation_id == GEN_OBJETIVO
+    assert snapshot.journal.target_clone_id == "clone-objetivo"
+    assert snapshot.journal.target_runtime_setup_id == "setup-objetivo"
+    assert snapshot.journal.expected_effective_path == RUTA_EFECTIVA_OBJETIVO
+    _finalizar(root, _post_para(root))
+    assert _dump_estado(root)["registros"] == [f"{T1}.json"]
+
+
+@pytest.mark.parametrize("valor", ["", " ", "   ", "\t", "\n", "E:/rt/versions/x "])
+def test_r3_02_update_de_ruta_en_blanco_rechaza(tmp_path: pathlib.Path, valor: str) -> None:
+    """R3-02 — UPDATE de `expected_effective_path`: ni blancos ni bordes.
+
+    Es el camino HERMANO del parser y de la propuesta: los tres escriben el mismo
+    campo durable (§34.4). `""` ya se rechazaba; `"   "` se persistía y una ruta
+    con espacio final no es la ruta que el bind produce.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    revision = _revision_vigente(root)
+    with pytest.raises(JournalSchemaError):
+        journal_module._actualizar_bajo_lock(
+            root,
+            expected_transition_id=T1,
+            expected_journal_revision=revision,
+            cambios={"expected_effective_path": valor},
+        )
+    # El rechazo no dejó estado a medias: la revisión no avanzó.
+    assert _revision_vigente(root) == revision
+
+
+@pytest.mark.parametrize("valor", [" ", "   ", "\t", "\n", "E:/rt/versions/x "])
+def test_r3_02_parser_de_ruta_en_blanco_rechaza(tmp_path: pathlib.Path, valor: str) -> None:
+    """R3-02 — el parser del journal es el otro camino de entrada del mismo campo."""
+    root = _root(tmp_path)
+    _pendiente_crudo(root, expected_effective_path=valor)
+    with pytest.raises((JournalSchemaError, JournalIdentityError)):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_r3_02_update_con_ruta_valida_conserva_cas_y_identidad(tmp_path: pathlib.Path) -> None:
+    """R3-02 (control positivo) — una ruta válida sigue siendo actualizable.
+
+    §36.6: el UPDATE avanza la revisión y NO toca la identidad de la transición.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    revision = _revision_vigente(root)
+    doc = journal_module._actualizar_bajo_lock(
+        root,
+        expected_transition_id=T1,
+        expected_journal_revision=revision,
+        cambios={"expected_effective_path": "E:/rt/versions/ruta-post-bind"},
+    )
+    assert doc.expected_effective_path == "E:/rt/versions/ruta-post-bind"
+    assert doc.journal_revision == revision + 1
+    assert doc.target_generation_id == GEN_OBJETIVO
+
+
+def test_r3_03_error_inesperado_del_oraculo_se_registra_y_no_es_exito(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R3-03 — un bug de programación del oráculo NO se enmascara.
+
+    El `except Exception` de `_invocar_oraculo_effective` convertía TODO fallo en
+    `FAIL_CLOSED` con el mismo motivo y sin dejar rastro: un `AttributeError` del
+    callback quedaba indistinguible de "el runtime no se pudo observar". Ahora los
+    fallos ESPERADOS se traducen a INDETERMINADO y los INESPERADOS se registran
+    con traceback en la frontera única de `reconciliar_journal`, que sigue
+    fallando cerrado (§34.5: `UNKNOWN != SUCCESS`) pero con motivo propio.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+
+    def _oraculo_con_bug() -> object:
+        raise AttributeError("'NoneType' object has no attribute 'generation_id'")
+
+    with caplog.at_level(logging.ERROR, logger="sky_claw.local.frozen_runtime.journal"):
+        resultado = journal_module.reconciliar_journal(root, observador_effective=_oraculo_con_bug)
+
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert resultado.veredicto.value != "COMPLETE"
+    assert resultado.requiere_dueno is True
+    assert "INESPERADO" in resultado.motivo
+    registros = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert registros, "un fallo inesperado del oráculo debe quedar registrado, no enmascarado"
+    assert any(r.exc_info is not None and r.exc_info[0] is AttributeError for r in registros), (
+        "el registro debe conservar el traceback del fallo inesperado"
+    )
+
+
+def test_r3_03_error_esperado_del_oraculo_es_indeterminado(tmp_path: pathlib.Path) -> None:
+    """R3-03 — un fallo ESPERADO de observación sí se traduce a INDETERMINADO.
+
+    El contrato del callback es explícito: los fallos de observación se señalan
+    con el error tipado del dominio, y ése SÍ es el vocabulario de
+    "no se pudo observar" (§34.5).
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+
+    def _oraculo_no_disponible() -> object:
+        raise JournalObservacionEffectiveError("el runtime no responde")
+
+    resultado = journal_module.reconciliar_journal(root, observador_effective=_oraculo_no_disponible)
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "EFFECTIVE_INDETERMINADO" in resultado.motivo
+
+
+@pytest.mark.parametrize(
+    "excepcion",
+    [RuntimeError("x"), AttributeError("y"), TypeError("z"), KeyError("k"), ValueError("v")],
+)
+def test_r3_03_ninguna_excepcion_del_oraculo_produce_exito(tmp_path: pathlib.Path, excepcion: Exception) -> None:
+    """R3-03 — ninguna excepción del oráculo puede terminar en éxito (§34.5)."""
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+
+    def _oraculo(exc: Exception = excepcion) -> object:
+        raise exc
+
+    resultado = journal_module.reconciliar_journal(root, observador_effective=_oraculo)
+    assert resultado.veredicto.value not in {"COMPLETE", "RECOVER"}
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert resultado.requiere_dueno is True
+
+
+def test_r3_03_interrupcion_no_se_traga(tmp_path: pathlib.Path) -> None:
+    """R3-03 (guarda) — una interrupción NO es un fallo de observación.
+
+    `KeyboardInterrupt` es `BaseException`, no `Exception`: no se traduce a
+    veredicto, se propaga. La frontera superior de `reconciliar_journal` tampoco
+    la captura. Antes tampoco se tragaba; el test congela la propiedad.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+
+    def _oraculo_interrumpido() -> object:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        journal_module.reconciliar_journal(root, observador_effective=_oraculo_interrumpido)
