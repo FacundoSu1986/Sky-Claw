@@ -41,13 +41,13 @@ N=1024, 0.006849252 (+2.2524% ≈ +2.25%); N=2048, 0.006773816
 """
 
 from __future__ import annotations
-from typing import Any
 
 import importlib.util
 import math
 import pathlib
 import sys
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 import numpy as np
 import pytest
