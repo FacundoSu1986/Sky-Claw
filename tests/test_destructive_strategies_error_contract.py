@@ -73,7 +73,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     HitlGateMiddleware,
     IdempotencyMiddleware,
 )
-from sky_claw.app.security.hitl import Decision
+from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 
@@ -93,18 +93,21 @@ _RAZON_RESULTADO_INVALIDO: dict[str, str] = {
 HERRAMIENTAS = list(_RAZON_ERROR)
 
 
-class _GuardQueNiega:
+class _GuardQueNiega(HITLGuard):
     """Doble de ``HITLGuard`` que resuelve siempre con DENIED."""
 
     def __init__(self) -> None:
+        """Inicializa el contador de solicitudes de aprobación en cero."""
+        super().__init__()
         self.contador = 0
 
-    async def request_approval(self, **kwargs: Any) -> Decision:
+    async def request_approval(self, *args: Any, **kwargs: Any) -> Decision:
+        """Registra la invocación y deniega la operación."""
         self.contador += 1
         return Decision.DENIED
 
 
-class _GuardQueAprueba:
+class _GuardQueAprueba(HITLGuard):
     """Doble de ``HITLGuard`` que resuelve siempre con APPROVED.
 
     Con ``allow_unattended=True`` el gate devuelve ``next_call()`` ANTES de
@@ -113,9 +116,12 @@ class _GuardQueAprueba:
     """
 
     def __init__(self) -> None:
+        """Inicializa el contador de solicitudes de aprobación en cero."""
+        super().__init__()
         self.contador = 0
 
-    async def request_approval(self, **kwargs: Any) -> Decision:
+    async def request_approval(self, *args: Any, **kwargs: Any) -> Decision:
+        """Registra la invocación y aprueba la operación."""
         self.contador += 1
         return Decision.APPROVED
 
@@ -162,6 +168,7 @@ def _construir_dispatcher(
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_excepcion_del_servicio_se_convierte_en_error_dict(tool: str) -> None:
+    """Verifica que una excepción no capturada del servicio se traduzca al error dict legacy."""
     # Arrange: el servicio de la herramienta falla con una excepción inesperada.
     dependencias, _ = _doble_para(tool, excepcion=RuntimeError(f"{tool} explotó"))
     dispatcher = _construir_dispatcher(**dependencias)
@@ -183,19 +190,33 @@ async def test_excepcion_del_servicio_se_convierte_en_error_dict(tool: str) -> N
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_resultado_no_dict_se_convierte_en_error_dict(tool: str) -> None:
+    """Verifica que un retorno no-dict sea interceptado, marque FAILED y sea consumible por la GUI."""
     # Arrange: el servicio devuelve un tipo que ningún consumidor sabe leer.
+    sm = ToolStateMachine()
+    idempotency = IdempotencyMiddleware(state_machine=sm)
     dependencias, _ = _doble_para(tool, retorno=["no", "es", "un", "dict"])
-    dispatcher = _construir_dispatcher(**dependencias)
+    dispatcher = _construir_dispatcher(idempotency=idempotency, **dependencias)
 
     # Act
     resultado = await dispatcher.dispatch(tool, {})
+    vista = normalize_tool_result(resultado)
+    mensaje, tipo = summarize_ritual_result(tool, resultado)
 
-    # Assert
+    # Assert: DictResultGuardMiddleware normaliza el retorno y libera la idempotencia en FAILED.
     assert resultado == {"status": "error", "reason": _RAZON_RESULTADO_INVALIDO[tool]}
+    assert vista["success"] is False
+    assert vista["message"] == _RAZON_RESULTADO_INVALIDO[tool]
+    assert tipo == "negative"
+    assert _RAZON_RESULTADO_INVALIDO[tool] in mensaje
+    tareas = list(sm._tasks.values())
+    assert len(tareas) == 1
+    assert tareas[0].state == "FAILED"
+    assert sm.guard.is_active(tareas[0].idempotency_key) is False
 
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_error_dict_es_consumible_por_gui_y_normalizador(tool: str) -> None:
+    """Verifica que el dict emitido por ErrorWrappingMiddleware sea consumible por normalize_tool_result y la GUI."""
     # Arrange: fallo realista de la herramienta (binario ausente/cancelado).
     dependencias, _ = _doble_para(tool, excepcion=RuntimeError("subproceso abortó con código 1"))
     dispatcher = _construir_dispatcher(**dependencias)
@@ -219,24 +240,28 @@ async def test_error_dict_es_consumible_por_gui_y_normalizador(tool: str) -> Non
 
 @pytest.mark.parametrize("tool", ["generate_animations", "quick_auto_clean"])
 async def test_payload_invalido_se_convierte_en_error_dict(tool: str) -> None:
+    """Verifica que validate_for_approval rechace claves inesperadas antes del prompt HITL y retorne error dict."""
     # Arrange: las dos estrategias rechazan claves que no honran (Codex #213) para
     # que un `dry_run=True` no produzca una aprobación engañosa. Gate con guard que
     # APRUEBA: es la única forma de llegar a `validate_for_approval` (con
     # allow_unattended el gate corta antes y no la invoca).
+    guard = _GuardQueAprueba()
     dependencias, doble = _doble_para(tool, retorno={"status": "success", "success": True})
-    dispatcher = _construir_dispatcher(gate=HitlGateMiddleware(hitl_guard=_GuardQueAprueba()), **dependencias)
+    dispatcher = _construir_dispatcher(gate=HitlGateMiddleware(hitl_guard=guard), **dependencias)
 
     # Act
     resultado = await dispatcher.dispatch(tool, {"dry_run": True})
 
-    # Assert: el rechazo se reporta, y la mutación NO corre.
+    # Assert: el rechazo ocurre ANTES de solicitar aprobación al operador y la mutación NO corre.
     assert resultado["status"] == "error"
     assert resultado["reason"] == _RAZON_ERROR[tool]
     assert "dry_run" in resultado["details"]
+    assert guard.contador == 0
     doble.assert_not_awaited()
 
 
 async def test_generate_bashed_patch_filtra_claves_y_conserva_el_contrato() -> None:
+    """Verifica que generate_bashed_patch preserve su filtrado deliberado de claves desconocidas."""
     # Arrange: generate_bashed_patch NO tiene validate_for_approval — filtra y
     # advierte (semántica deliberada, distinta de las otras dos). El wrapping no
     # puede cambiar ese filtrado.
@@ -264,13 +289,23 @@ async def test_generate_bashed_patch_filtra_claves_y_conserva_el_contrato() -> N
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_cancelacion_se_propaga_sin_envolver(tool: str) -> None:
+    """Verifica que asyncio.CancelledError se propague sin envolver y libere la clave de idempotencia."""
     # Arrange
+    sm = ToolStateMachine()
+    idempotency = IdempotencyMiddleware(state_machine=sm)
     dependencias, _ = _doble_para(tool, excepcion=asyncio.CancelledError())
-    dispatcher = _construir_dispatcher(**dependencias)
+    dispatcher = _construir_dispatcher(idempotency=idempotency, **dependencias)
 
-    # Act & Assert: CancelledError no hereda de Exception; el wrapping no lo toca.
+    # Act & Assert: CancelledError no hereda de Exception; el wrapping no lo toca
+    # e IdempotencyMiddleware marca FAILED ("cancelled") y libera la clave activa.
     with pytest.raises(asyncio.CancelledError):
         await dispatcher.dispatch(tool, {})
+
+    tareas = list(sm._tasks.values())
+    assert len(tareas) == 1
+    assert tareas[0].state == "FAILED"
+    assert tareas[0].error_message == "cancelled"
+    assert sm.guard.is_active(tareas[0].idempotency_key) is False
 
 
 # ---------------------------------------------------------------------------
@@ -280,10 +315,11 @@ async def test_cancelacion_se_propaga_sin_envolver(tool: str) -> None:
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_fallo_registra_estado_failed_y_libera_el_lock(tool: str) -> None:
+    """Verifica que un fallo registre estado FAILED, libere el lock de idempotencia y permita reintentar."""
     # Arrange: state machine e idempotencia reales, como en la composición.
     sm = ToolStateMachine()
     idempotency = IdempotencyMiddleware(state_machine=sm)
-    dependencias, _ = _doble_para(tool, excepcion=RuntimeError(f"{tool} falló"))
+    dependencias, doble = _doble_para(tool, excepcion=RuntimeError(f"{tool} falló"))
     dispatcher = _construir_dispatcher(idempotency=idempotency, **dependencias)
 
     # Act
@@ -295,12 +331,21 @@ async def test_fallo_registra_estado_failed_y_libera_el_lock(tool: str) -> None:
     assert len(tareas) == 1
     tarea = tareas[0]
     assert tarea.state == "FAILED"
+    assert tarea.result == resultado
     assert f"{tool} falló" in str(tarea.error_message)
     assert sm.guard.is_active(tarea.idempotency_key) is False
+
+    # Un reintento posterior con los mismos argumentos no se bloquea por DuplicateExecution.
+    doble.side_effect = None
+    doble.return_value = {"status": "success", "success": True}
+    reintento = await dispatcher.dispatch(tool, {})
+    assert reintento["status"] == "success"
+    assert len(sm._tasks) == 2
 
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_exito_registra_estado_completed(tool: str) -> None:
+    """Verifica que una ejecución exitosa pase intacta y registre estado COMPLETED en ToolStateMachine."""
     # Arrange
     sm = ToolStateMachine()
     idempotency = IdempotencyMiddleware(state_machine=sm)
@@ -325,6 +370,7 @@ async def test_exito_registra_estado_completed(tool: str) -> None:
 
 @pytest.mark.parametrize("tool", HERRAMIENTAS)
 async def test_denegacion_hitl_no_queda_tapada_por_el_wrapping(tool: str) -> None:
+    """Verifica que la denegación del operador en HitlGateMiddleware retorne HITLApprovalDenied sin ejecutar."""
     # Arrange: gate real con un guard que niega.
     guard = _GuardQueNiega()
     dependencias, doble = _doble_para(tool, retorno={"status": "success", "success": True})
@@ -349,19 +395,35 @@ def test_toda_herramienta_destructiva_lleva_wrapping_guard_y_gate() -> None:
     """Ancla por introspección (no muestrea): la propiedad, no el recordatorio.
 
     Un wrapping que cubra solo a `generate_lods` no protege nada: la garantía
-    es de la FAMILIA. Registrar una estrategia destructiva sin la tripleta
-    rompe este test hasta que se le escriba su receta.
+    es de la FAMILIA y del ORDEN exacto ``[ErrorWrappingMiddleware,
+    DictResultGuardMiddleware, HitlGateMiddleware]``. Registrar una estrategia
+    destructiva sin la tripleta o con orden invertido rompe este test.
     """
     dispatcher = _construir_dispatcher()
 
     cadenas = dispatcher._middleware
+    razones_error: set[str] = set()
+    razones_guard: set[str] = set()
     for herramienta in sorted(DESTRUCTIVE_TOOL_PATTERNS):
         cadena = cadenas.get(herramienta)
         assert cadena is not None, f"la herramienta destructiva '{herramienta}' no está registrada"
-        tipos = {type(mw) for mw in cadena}
-        assert ErrorWrappingMiddleware in tipos, f"'{herramienta}' no envuelve excepciones"
-        assert DictResultGuardMiddleware in tipos, f"'{herramienta}' no valida el tipo de resultado"
-        assert HitlGateMiddleware in tipos, f"'{herramienta}' no pasa por el gate HITL"
+        assert [type(mw) for mw in cadena] == [
+            ErrorWrappingMiddleware,
+            DictResultGuardMiddleware,
+            HitlGateMiddleware,
+        ], (
+            f"'{herramienta}' debe registrar [ErrorWrappingMiddleware, "
+            f"DictResultGuardMiddleware, HitlGateMiddleware] en ese orden exacto"
+        )
+        wrapping_mw = cadena[0]
+        guard_mw = cadena[1]
+        assert isinstance(wrapping_mw, ErrorWrappingMiddleware) and wrapping_mw.reason_code
+        assert isinstance(guard_mw, DictResultGuardMiddleware) and guard_mw.reason_code
+        razones_error.add(wrapping_mw.reason_code)
+        razones_guard.add(guard_mw.reason_code)
+
+    assert len(razones_error) == len(DESTRUCTIVE_TOOL_PATTERNS)
+    assert len(razones_guard) == len(DESTRUCTIVE_TOOL_PATTERNS)
 
 
 def test_toda_herramienta_destructiva_esta_registrada() -> None:

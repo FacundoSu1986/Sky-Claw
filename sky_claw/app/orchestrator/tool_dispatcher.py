@@ -172,6 +172,28 @@ def _make_thunk(
     return thunk
 
 
+def _destructive_middleware(
+    *,
+    error_reason: str,
+    invalid_result_reason: str,
+    gate: HitlGateMiddleware,
+) -> list[ToolMiddleware]:
+    """Construye la tripleta canónica de middlewares para herramientas destructivas.
+
+    Orden invariante (outer → inner):
+    1. ``ErrorWrappingMiddleware`` — captura excepciones de la estrategia y de
+       los hooks pre-aprobación del gate (``validate_for_approval``).
+    2. ``DictResultGuardMiddleware`` — garantiza retorno ``dict`` ante tipos
+       inválidos devueltos por el servicio.
+    3. ``HitlGateMiddleware`` — exige aprobación humana antes de ejecutar.
+    """
+    return [
+        ErrorWrappingMiddleware(error_reason),
+        DictResultGuardMiddleware(invalid_result_reason),
+        gate,
+    ]
+
+
 def build_orchestration_dispatcher(
     dependencies: OrchestrationDispatcherDependencies,
     *,
@@ -219,11 +241,11 @@ def build_orchestration_dispatcher(
             # que el agente LLM, sobre el mismo plugins.txt.
             default_profile_getter=dependencies.default_profile_getter,
         ),
-        middleware=[
-            ErrorWrappingMiddleware("LootExecutionFailed"),
-            DictResultGuardMiddleware("InvalidLootResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="LootExecutionFailed",
+            invalid_result_reason="InvalidLootResult",
+            gate=gate,
+        ),
     )
 
     # T-27b·2: Synthesis corre SIEMPRE en sandbox — el flow resuelve
@@ -247,21 +269,21 @@ def build_orchestration_dispatcher(
     # legacy {"status": "error", ...} dict by ErrorWrapping/DictResultGuard.
     dispatcher.register(
         ResolveConflictWithPatchStrategy(service=dependencies.xedit_service),
-        middleware=[
-            ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
-            DictResultGuardMiddleware("InvalidXEditPatchResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="XEditPatchExecutionFailed",
+            invalid_result_reason="InvalidXEditPatchResult",
+            gate=gate,
+        ),
     )
 
     # FASE 1.5.1 + #592 F6: generate_lods is destructive → ErrorWrapping + DictGuard + HITL gate
     dispatcher.register(
         GenerateLodsStrategy(service=dependencies.dyndolod_service),
-        middleware=[
-            ErrorWrappingMiddleware("DynDOLODPipelineExecutionFailed"),
-            DictResultGuardMiddleware("InvalidDynDOLODResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="DynDOLODPipelineExecutionFailed",
+            invalid_result_reason="InvalidDynDOLODResult",
+            gate=gate,
+        ),
     )
 
     # Follow-up A + #726: generate_animations (Pandora) is destructive →
@@ -273,11 +295,11 @@ def build_orchestration_dispatcher(
     # profundidad y uniformidad del contrato del dispatcher, no un escape medido.
     dispatcher.register(
         GenerateAnimationsStrategy(service=dependencies.pandora_service),
-        middleware=[
-            ErrorWrappingMiddleware("PandoraAnimationsExecutionFailed"),
-            DictResultGuardMiddleware("InvalidPandoraAnimationsResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="PandoraAnimationsExecutionFailed",
+            invalid_result_reason="InvalidPandoraAnimationsResult",
+            gate=gate,
+        ),
     )
 
     # Follow-up B + #726: quick_auto_clean reescribe los DLC oficiales EN DISCO →
@@ -289,11 +311,11 @@ def build_orchestration_dispatcher(
     # excepción (p. ej. `OSError` al resolver `Data`) escapaba del dispatcher.
     dispatcher.register(
         QuickAutoCleanStrategy(service=dependencies.xedit_service),
-        middleware=[
-            ErrorWrappingMiddleware("XEditQuickAutoCleanFailed"),
-            DictResultGuardMiddleware("InvalidXEditQuickAutoCleanResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="XEditQuickAutoCleanFailed",
+            invalid_result_reason="InvalidXEditQuickAutoCleanResult",
+            gate=gate,
+        ),
     )
 
     # PR-5 grass cache: la Fase A es read-only (sin gate, con wrapping como
@@ -307,11 +329,11 @@ def build_orchestration_dispatcher(
     )
     dispatcher.register(
         GenerateGrassCacheStrategy(service=dependencies.grass_cache_service),
-        middleware=[
-            ErrorWrappingMiddleware("GrassCacheExecutionFailed"),
-            DictResultGuardMiddleware("InvalidGrassCacheResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="GrassCacheExecutionFailed",
+            invalid_result_reason="InvalidGrassCacheResult",
+            gate=gate,
+        ),
     )
 
     # Los callables explícitos conservan la resolución lazy del detector de
@@ -340,11 +362,11 @@ def build_orchestration_dispatcher(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=dependencies.wrye_bash_pipeline,
         ),
-        middleware=[
-            ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"),
-            DictResultGuardMiddleware("InvalidWryeBashPipelineResult"),
-            gate,
-        ],
+        middleware=_destructive_middleware(
+            error_reason="WryeBashPipelineExecutionFailed",
+            invalid_result_reason="InvalidWryeBashPipelineResult",
+            gate=gate,
+        ),
     )
 
     dispatcher.register(
