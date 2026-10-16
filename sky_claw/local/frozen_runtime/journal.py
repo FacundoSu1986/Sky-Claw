@@ -53,6 +53,7 @@ import dataclasses
 import hashlib
 import json
 import pathlib
+import stat
 import time
 import uuid
 from collections.abc import Callable
@@ -61,6 +62,7 @@ from enum import StrEnum
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime import state as state_module
 from sky_claw.local.frozen_runtime.errors import (
+    InvalidGenerationIdError,
     JournalCasError,
     JournalCorruptError,
     JournalDependenciaNoDisponibleError,
@@ -68,6 +70,8 @@ from sky_claw.local.frozen_runtime.errors import (
     JournalIdentityError,
     JournalSchemaError,
     JournalStoreNoInicializadoError,
+    StateCorruptError,
+    StateSchemaError,
 )
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle
@@ -78,6 +82,10 @@ from sky_claw.local.frozen_runtime.storage import (
     finalization_seqs_state_dir,
     transition_journal_path,
     transitions_state_dir,
+)
+from sky_claw.local.frozen_runtime.storage_models import (
+    FrozenRuntimeState,
+    FrozenRuntimeStateLoadResult,
 )
 
 JOURNAL_SCHEMA_VERSION = 1
@@ -210,9 +218,16 @@ class AprobacionConsumida:
 class PostVerifyEvidence:
     """Evidencia durable del POST exitoso (§35.6).
 
-    Liga, al mismo documento: transición, source, target, estado deseado y
-    observación de Effective. El journal sella su digest; la observación en sí
-    es responsabilidad del verificador POST (P5, diferido).
+    Liga, al mismo documento: transición, source, target, estado deseado,
+    observación de Effective **y la revisión del journal sobre la que se corrió
+    el POST** (``expected_journal_revision``). El journal sella su digest; la
+    observación en sí es responsabilidad del verificador POST (P5, diferido).
+
+    ``expected_journal_revision`` es el CAS anti-ABA de §36.6
+    (``JOURNAL_FINALIZE_CAS = (transition_id, journal_revision)``): una evidencia
+    calculada para la revisión R NO puede finalizar una transición que ya avanzó
+    a R+1. Sin este campo, comparar sólo ``transition_id`` deja que el mismo
+    ``transition_id`` cierre con evidencia obsoleta (§36.6/§36.9 C6).
     """
 
     transition_id: str
@@ -225,6 +240,7 @@ class PostVerifyEvidence:
     effective_observation_digest: str
     payload_digest: str
     verified_at_ns: int
+    expected_journal_revision: int
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -435,6 +451,16 @@ def _exigir_campos_exactos(
 
 
 def _validar_source_activation(payload: object, *, etiqueta: str) -> SourceActivation:
+    """Source baseline COHERENTE o bootstrap vacío (§36.3).
+
+    ``NEW_TRANSITION_REQUIRES_COHERENT_SOURCE_BASELINE = YES``: la terna
+    completa —incluido ``effective_runtime_evidence``— es lo que convierte una
+    afirmación *registrada* en una *observada*. Un source parcial (p. ej.
+    ``{generation_id, clone_id, runtime_setup_id, effective_runtime_evidence:
+    null}``) no es ni bootstrap ni observación: no demuestra contra qué runtime
+    se está midiendo, y ``previous_activation_target`` se derivaría de una
+    fuente que nunca estuvo demostrada (§36.3/§36.8). Fail-closed.
+    """
     if not isinstance(payload, dict):
         raise JournalSchemaError(f"{etiqueta}: 'source_activation' debe ser un objeto JSON")
     _exigir_campos_exactos(
@@ -443,12 +469,38 @@ def _validar_source_activation(payload: object, *, etiqueta: str) -> SourceActiv
         opcionales=frozenset(),
         etiqueta=etiqueta,
     )
-    return SourceActivation(
+    source = SourceActivation(
         generation_id=_exigir_texto_opcional(payload, "generation_id", etiqueta=etiqueta),
         clone_id=_exigir_texto_opcional(payload, "clone_id", etiqueta=etiqueta),
         runtime_setup_id=_exigir_texto_opcional(payload, "runtime_setup_id", etiqueta=etiqueta),
         effective_runtime_evidence=_exigir_texto_opcional(payload, "effective_runtime_evidence", etiqueta=etiqueta),
     )
+    presentes = [
+        nombre
+        for nombre, valor in (
+            ("generation_id", source.generation_id),
+            ("clone_id", source.clone_id),
+            ("runtime_setup_id", source.runtime_setup_id),
+            ("effective_runtime_evidence", source.effective_runtime_evidence),
+        )
+        if valor is not None
+    ]
+    if presentes and len(presentes) != 4:
+        faltantes = sorted(
+            {
+                "generation_id",
+                "clone_id",
+                "runtime_setup_id",
+                "effective_runtime_evidence",
+            }
+            - set(presentes)
+        )
+        raise JournalSchemaError(
+            f"{etiqueta}: 'source_activation' PARCIAL: presentes {sorted(presentes)}, faltantes {faltantes}. "
+            "O bootstrap íntegramente vacío (los cuatro en null) o la terna completa con su "
+            "effective_runtime_evidence (§36.3): una fuente a medias no es una observación."
+        )
+    return source
 
 
 def _validar_evidence_digests(payload: object, *, etiqueta: str) -> EvidenceDigests:
@@ -471,39 +523,62 @@ def _validar_evidence_digests(payload: object, *, etiqueta: str) -> EvidenceDige
     )
 
 
+def _root_id_canonico(root: pathlib.Path) -> str:
+    """Identidad canónica del root actual (la misma clave que usa el root lock)."""
+    from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
+
+    return canonical_root_key(root)[0]
+
+
+def _admitir_dir_store(directorio: pathlib.Path) -> bool:
+    """Admite un directorio del store ANTES de preguntar si existe (§34.5 N2).
+
+    ``exists()`` SIGUE enlaces: un symlink/junction colgado —o un ancestro
+    redirigido— se ve "ausente", y un store redirigido se degradaría a "store
+    vacío legítimo" (historial vacío ⇒ N0/N1 limpio). La admisión va PRIMERO y
+    falla cerrado; sólo un directorio real o uno inexistente-de-verdad siguen.
+
+    Devuelve ``True`` si el directorio existe (y es real), ``False`` si no
+    existe. Un enlace/reparse/archivo/ilegible ⇒ ``JournalIdentityError``.
+    """
+    admision = admitir_directorio_storage(directorio)
+    if not admision.success:
+        raise JournalIdentityError(f"{directorio}: {admision.message}")
+    return directorio.exists()
+
+
 def _exigir_dirs_store(root: pathlib.Path) -> None:
     """El store del journal debe existir (lo crea el init del storage)."""
     ruta = pathlib.Path(root)
     for directorio in (transitions_state_dir(ruta), finalization_seqs_state_dir(ruta)):
-        if not directorio.exists():
+        if not _admitir_dir_store(directorio):
             raise JournalStoreNoInicializadoError(
                 f"{directorio} no existe: ejecutá initialize_frozen_runtime_storage antes de usar el journal"
             )
-        admision = admitir_directorio_storage(directorio)
-        if not admision.success:
-            raise JournalIdentityError(f"{directorio}: {admision.message}")
 
 
 def _placeholder_vacio(ruta: pathlib.Path) -> bool:
-    """True si *ruta* es un archivo REGULAR de 0 bytes: placeholder de escritura interrumpida.
+    """True si *ruta* es un archivo REGULAR genuino de 0 bytes.
 
     ``reservar_ruta_json_exclusiva`` deja el placeholder a propósito; si la
     escritura del payload falla después, el archivo queda vacío. Bajo el root
     lock, un placeholder vacío de una ruta reservada por ESTA transición es
     completable por su dueño: no hay evidencia que perder.
 
-    Un ENLACE nunca es placeholder: ``stat()`` sigue enlaces, así que un enlace
-    a un archivo vacío mediría 0 bytes y se omitiría en la derivación/auditoría
-    sin pasar por ``_leer_json_estricto``, que sí rechaza enlaces (§34.5 N2 —
-    misma doctrina que el reparse point del journal). Se inspecciona el enlace
-    ANTES de medir.
+    Un ENLACE nunca es placeholder, y tampoco lo es un DIRECTORIO: ``stat()``
+    sigue enlaces y en NTFS un directorio reporta ``st_size == 0``, así que un
+    junction llamado ``<T>.json`` o un directorio real llamado ``<T>.json`` se
+    omitían como placeholder y nunca llegaban a ``_leer_json_estricto``, que sí
+    los rechaza (§34.5 N2). Se inspecciona el enlace ANTES de medir, se mide con
+    ``lstat`` (sin seguir enlaces) y sólo se acepta ``S_ISREG``.
     """
     try:
-        if ruta.is_symlink():
+        if link_kind_or_raise(ruta) is not None:
             return False
-        return ruta.stat().st_size == 0
+        medida = ruta.lstat()
     except OSError:
         return False
+    return stat.S_ISREG(medida.st_mode) and medida.st_size == 0
 
 
 def _leer_json_estricto(ruta: pathlib.Path) -> dict[str, object]:
@@ -743,6 +818,16 @@ def cargar_journal_transicion(root: pathlib.Path) -> JournalLoadResult:
     except OSError as exc:
         raise JournalCorruptError(f"{ruta}: no se pudo inspeccionar: {exc}") from exc
     if kind is None and not ruta.exists():
+        # La HOJA no es un enlace y no existe, pero eso NO alcanza para afirmar
+        # ausencia legítima: si `state/` (o un ancestro) es un symlink/junction
+        # hacia un directorio externo vacío, la hoja "no existe" AHÍ y el
+        # namespace redirigido se leería como primer arranque (§34.5 N2). El
+        # hermano `load_frozen_runtime_state` ya inspecciona el parent antes de
+        # decidir; acá se hace lo mismo, y `_leer_json_estricto` lo repetiría si
+        # la hoja existiera.
+        motivo_padre = descripcion_de_enlace(ruta.parent)
+        if motivo_padre is not None:
+            raise JournalCorruptError(f"{ruta}: namespace del journal redirigido: {motivo_padre}")
         return JournalLoadResult(
             disposition=JournalDisposition.ABSENT,
             journal=None,
@@ -832,7 +917,12 @@ def _validar_registro(payload: dict[str, object], ruta: pathlib.Path) -> Finaliz
     )
 
 
-def _validar_reserva(payload: dict[str, object], ruta: pathlib.Path) -> SeqReservation:
+def _validar_reserva(
+    payload: dict[str, object],
+    ruta: pathlib.Path,
+    *,
+    root_id_esperado: str | None = None,
+) -> SeqReservation:
     etiqueta = str(ruta)
     _exigir_campos_exactos(
         payload,
@@ -848,6 +938,17 @@ def _validar_reserva(payload: dict[str, object], ruta: pathlib.Path) -> SeqReser
         raise JournalIdentityError(f"{etiqueta}: reserva incompatible con su nombre (declara seq {seq})")
     if not isinstance(payload["root_id"], str) or not payload["root_id"]:
         raise JournalSchemaError(f"{etiqueta}: 'root_id' debe ser un string no vacío")
+    # F9: la reserva es autoridad LOCAL de una seq de ESTE root (§38.3). Sin este
+    # cross-check, reservas copiadas/restauradas de OTRO FrozenRuntimeRoot —y con
+    # registros que las acompañen— pasarían la auditoría entera, pese a que tanto
+    # el lock como la propiedad de la secuencia son root-keyed. La clave canónica
+    # se compara normalizada (normcase + abspath), igual que el lock.
+    if root_id_esperado is not None and payload["root_id"] != root_id_esperado:
+        raise JournalIdentityError(
+            f"{etiqueta}: 'root_id' no corresponde al root auditado "
+            f"(declara {payload['root_id']!r}, el root canónico es {root_id_esperado!r}): "
+            "una reserva de otro root NO es evidencia local"
+        )
     return SeqReservation(
         schema_version=version,
         root_id=payload["root_id"],
@@ -873,16 +974,13 @@ def derivar_historial_finalizados(root: pathlib.Path) -> HistorialFinalizado:
     (bajo el root lock) lo completa (``_persistir_registro_locked``).
     """
     directorio = transitions_state_dir(root)
-    if not directorio.exists():
+    if not _admitir_dir_store(directorio):
         snapshot = cargar_journal_transicion(root)
         if snapshot.disposition == JournalDisposition.ABSENT:
             return HistorialFinalizado(registros=(), next_seq=1, latest=None, frontera_seq=None)
         raise JournalStoreNoInicializadoError(
             f"{directorio} no existe pero el journal está presente: store no inicializado (fail-closed)"
         )
-    admision = admitir_directorio_storage(directorio)
-    if not admision.success:
-        raise JournalIdentityError(f"{directorio}: {admision.message}")
     registros: list[FinalizedTransitionRecord] = []
     for archivo in sorted(directorio.glob("*.json")):
         if _placeholder_vacio(archivo):
@@ -940,19 +1038,17 @@ def auditar_reservas_finalizacion(
     if historial is None:
         historial = derivar_historial_finalizados(root)
     directorio = finalization_seqs_state_dir(root)
-    if not directorio.exists():
+    if not _admitir_dir_store(directorio):
         if historial.registros:
             raise JournalIdentityError(f"{directorio} no existe pero hay registros finalizados: autoridad incoherente")
         return AuditoriaReservas(reservas=(), huerfanas=(), inconsistentes=())
-    admision = admitir_directorio_storage(directorio)
-    if not admision.success:
-        raise JournalIdentityError(f"{directorio}: {admision.message}")
     reservas: list[SeqReservation] = []
+    root_id_esperado = _root_id_canonico(root)
     for archivo in sorted(directorio.glob("*.json")):
         if _placeholder_vacio(archivo):
             continue  # F1a interrumpida: la reserva nunca se comprometió
         payload = _leer_json_estricto(archivo)
-        reservas.append(_validar_reserva(payload, archivo))
+        reservas.append(_validar_reserva(payload, archivo, root_id_esperado=root_id_esperado))
     seqs_store = {registro.finalization_seq: registro.transition_id for registro in historial.registros}
     inconsistentes: list[tuple[int, str]] = []
     for reserva in reservas:
@@ -1052,6 +1148,12 @@ def _validar_post_evidence(evidencia: PostVerifyEvidence) -> None:
         or evidencia.verified_at_ns < 1
     ):
         raise JournalEvidenciaPostError("evidencia POST: verified_at_ns debe ser un entero >= 1")
+    revision = evidencia.expected_journal_revision
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise JournalEvidenciaPostError(
+            "evidencia POST: expected_journal_revision debe ser un entero >= 0 "
+            "(la revisión del journal sobre la que se corrió el POST; §36.6)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1078,14 +1180,13 @@ def _reservar_seq_locked(
     ``reservar_ruta_json_exclusiva`` es la garantía física.
     """
     handle.assert_owned()
-    from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
-
     ruta = finalization_seqs_state_dir(root) / f"{seq}.json"
+    root_id = _root_id_canonico(root)
     try:
         state_module.reservar_ruta_json_exclusiva(ruta)
     except FileExistsError:
         if not _placeholder_vacio(ruta):
-            existente = _validar_reserva(_leer_json_estricto(ruta), ruta)
+            existente = _validar_reserva(_leer_json_estricto(ruta), ruta, root_id_esperado=root_id)
             if existente.finalization_seq == seq and existente.transition_id == transition_id:
                 return existente  # reintento de la MISMA reserva: idempotente
             raise JournalCasError(
@@ -1096,7 +1197,7 @@ def _reservar_seq_locked(
         # contiene evidencia que perder. Se completa.
     reserva = SeqReservation(
         schema_version=RESERVATION_SCHEMA_VERSION,
-        root_id=canonical_root_key(root)[0],
+        root_id=root_id,
         finalization_seq=seq,
         transition_id=transition_id,
     )
@@ -1285,6 +1386,10 @@ def _start_next_locked(
     historial = derivar_historial_finalizados(root)
     if not historial.registros or historial.latest is None:
         raise JournalCasError("START_NEXT exige historial finalizado (use CREATE para el bootstrap)")
+    # F4 — hermana de FINALIZE: la autoridad de la secuencia se audita antes de
+    # arrancar la transición siguiente. Arrancar sobre un store cuyo registro
+    # perdió su reserva propagaría la incoherencia a la cadena nueva.
+    auditar_reservas_finalizacion(root, historial)
     latest = historial.latest
     if propuesta.transition_id == latest.transition_id:
         raise JournalCasError("START_NEXT no puede reutilizar el transition_id del predecesor")
@@ -1305,7 +1410,21 @@ def _start_next_locked(
     return doc
 
 
-_CAMPOS_ACTUALIZABLES = frozenset({"evidence_digests", "expected_effective_path"})
+#: Único campo actualizable de un PENDING (§36.6).
+#:
+#: ``evidence_digests`` (``clone_evidence``, ``runtime_setup_evidence``,
+#: ``compatibility_evidence``) NO está acá a propósito: §38.5 lo declara parte
+#: del ``ApprovalScope`` —campos 6, 8 y 9—, y §38.5 "Cobertura del digest"
+#: establece que ``approval_scope_digest`` compromete los 13 campos restantes.
+#: Permitir sustituirlos conservando el ``approval_scope_digest`` consumido
+#: dejaba finalizar contenido NUEVO bajo la aprobación del contenido VIEJO
+#: (F1). §34.7 es explícito: ``ANY_APPROVED_MATERIAL_CHANGE = NO BIND`` — si la
+#: evidencia aprobada cambió, la transición NO avanza; no se "actualiza".
+#:
+#: ``expected_effective_path`` sí es actualizable: NO figura entre los 14 campos
+#: del ``ApprovalScope`` (§38.5), es "la ruta que el bind va a producir"
+#: (§34.4) y el scope liga CONTENIDO, no rutas (§34.6).
+_CAMPOS_ACTUALIZABLES = frozenset({"expected_effective_path"})
 
 
 def _actualizar_locked(
@@ -1319,8 +1438,9 @@ def _actualizar_locked(
     """UPDATE — ``PENDING T → PENDING T`` con CAS sobre identidad y revisión.
 
     La identidad de la transición (operation, transition_id, source, target,
-    aprobación, created_at) es INMUTABLE: sólo ``evidence_digests`` y
-    ``expected_effective_path`` pueden cambiar, y siempre con revisión + 1.
+    aprobación, created_at) es INMUTABLE, y también lo es la evidencia
+    aprobada (``evidence_digests``: campos 6/8/9 del ``ApprovalScope``, §38.5).
+    Sólo ``expected_effective_path`` puede cambiar, y siempre con revisión + 1.
     """
     handle.assert_owned()
     ruta = transition_journal_path(root)
@@ -1336,14 +1456,10 @@ def _actualizar_locked(
     no_permitidos = set(cambios) - _CAMPOS_ACTUALIZABLES
     if no_permitidos:
         raise JournalIdentityError(
-            f"campos no actualizables (identidad inmutable de la transición): {sorted(no_permitidos)}"
+            f"campos no actualizables (identidad inmutable de la transición y evidencia aprobada): "
+            f"{sorted(no_permitidos)}"
         )
-    # Los campos actualizables se resuelven con tipo explícito antes del
-    # ``replace``: ``**dict[str, object]`` no es verificable por mypy.
-    evidence = journal.evidence_digests
     expected_path = journal.expected_effective_path
-    if "evidence_digests" in cambios:
-        evidence = _validar_evidence_digests(cambios["evidence_digests"], etiqueta=f"{ruta}: evidence_digests")
     if "expected_effective_path" in cambios:
         valor = cambios["expected_effective_path"]
         if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
@@ -1352,12 +1468,102 @@ def _actualizar_locked(
     doc = dataclasses.replace(
         journal,
         journal_revision=journal.journal_revision + 1,
-        evidence_digests=evidence,
         expected_effective_path=expected_path,
     )
     _validar_antes_de_escribir_journal(doc, ruta)
     state_module.write_json_atomic(ruta, _serializar_journal(doc))
     return doc
+
+
+def _exigir_evidencia_coherente_con_pending(
+    journal: TransitionJournal,
+    evidencia_post: PostVerifyEvidence,
+) -> None:
+    """La evidencia POST debe ligar la transición vigente, su revisión y su Desired.
+
+    §35.6: ``FINALIZED`` no puede existir sin evidencia durable que ligue, al
+    MISMO: ``{ transition_id, source, target, desired state, effective
+    observation }``. §36.6: ``JOURNAL_FINALIZE_CAS = (transition_id,
+    journal_revision) ∧ POST evidence PASS``.
+
+    Comparar sólo ``transition_id`` (lo que hacía este camino) aceptaba
+    evidencia calculada para la revisión R sobre una transición que ya avanzó a
+    R+1 (F2), y evidencia con ``desired_active_generation`` de otra Generation o
+    ``None`` (F3): el POST declaraba explícitamente que el estado deseado NO era
+    el target y la transición finalizaba igual.
+    """
+    assert journal.transition_id is not None  # invariante del esquema PENDING
+    if journal.transition_id != evidencia_post.transition_id:
+        raise JournalEvidenciaPostError("la evidencia POST pertenece a otra transición")
+    if str(evidencia_post.resultado) != PostVerifyResultado.PASS.value:
+        raise JournalEvidenciaPostError("POST no está en PASS (C5): NO FINALIZA")
+    # F2 — CAS anti-ABA (§36.6/§36.9 C6): la evidencia declara la revisión que
+    # observó. Una evidencia calculada para R NO finaliza R+1.
+    if journal.journal_revision != evidencia_post.expected_journal_revision:
+        raise JournalCasError(
+            "CAS desactualizado al finalizar: la evidencia POST se calculó sobre la revisión "
+            f"{evidencia_post.expected_journal_revision} y el journal vigente está en la revisión "
+            f"{journal.journal_revision} (anti-ABA §36.6)"
+        )
+    for campo_evidencia, campo_journal in (
+        ("source_activation_digest", "source_activation_digest"),
+        ("target_generation_id", "target_generation_id"),
+        ("target_clone_id", "target_clone_id"),
+        ("target_runtime_setup_id", "target_runtime_setup_id"),
+    ):
+        if getattr(evidencia_post, campo_evidencia) != getattr(journal, campo_journal):
+            raise JournalEvidenciaPostError(
+                f"evidencia POST inconsistente con la transición vigente en '{campo_evidencia}'"
+            )
+    # F3 — el estado DESEADO también es parte de la identidad que la evidencia
+    # liga (§35.6). Para PROMOTION y ROLLBACK el target es la Generation que
+    # queda deseada: un Desired ``None`` o de otra Generation NO demuestra la
+    # transición y no puede producir un registro FINALIZED.
+    if evidencia_post.desired_active_generation != journal.target_generation_id:
+        raise JournalEvidenciaPostError(
+            "evidencia POST inconsistente con la transición vigente en 'desired_active_generation' "
+            f"({evidencia_post.desired_active_generation!r} != {journal.target_generation_id!r}): "
+            "§35.6 exige que la evidencia ligue el estado deseado"
+        )
+
+
+def _exigir_registro_coherente_con_pending(
+    registro: FinalizedTransitionRecord,
+    journal: TransitionJournal,
+    historial: HistorialFinalizado,
+) -> None:
+    """El registro FINALIZED existente debe ser EXACTAMENTE el que el PENDING describe.
+
+    §36.9 C6: al repetir el cierre hay que exigir "mismo ``transition_id`` ∧
+    mismo source/target ∧ mismo Desired ∧ mismo Effective". Comparar sólo
+    ``transition_id``, digest POST y timestamp aceptaba un registro de forma
+    válida pero de OTRO estado (operación, source, target, aprobación o
+    secuencia distintos) —mezcla de backups o corrupción verosímil— y después
+    rotaba el journal, volviendo autoridad a un historial que contradice la
+    transición pendiente (F7). El registro inmutable NO se reemplaza para
+    "corregir" la incompatibilidad: se falla cerrado.
+    """
+    discrepancias: list[str] = []
+    for nombre, valor_registro, valor_journal in (
+        ("operation", registro.operation, journal.operation),
+        ("source_activation", registro.source_activation, journal.source_activation),
+        ("source_activation_digest", registro.source_activation_digest, journal.source_activation_digest),
+        ("target_generation_id", registro.target_generation_id, journal.target_generation_id),
+        ("target_clone_id", registro.target_clone_id, journal.target_clone_id),
+        ("target_runtime_setup_id", registro.target_runtime_setup_id, journal.target_runtime_setup_id),
+        ("approval_scope_digest", registro.approval_scope_digest, journal.approval_scope_digest),
+        ("consumed_approval_id", registro.consumed_approval_id, journal.consumed_approval_id),
+        ("consumed_approval_seq", registro.consumed_approval_seq, journal.consumed_approval_seq),
+    ):
+        if valor_registro != valor_journal:
+            discrepancias.append(nombre)
+    if historial.latest is None or historial.latest.transition_id != registro.transition_id:
+        discrepancias.append("finalization_seq (el registro no es el tip de la cadena derivada)")
+    if discrepancias:
+        raise JournalIdentityError(
+            f"el registro FINALIZED de {registro.transition_id} NO corresponde a la transición pendiente: "
+            f"difieren {sorted(discrepancias)}. No se reescribe el registro inmutable para corregirlo."
+        )
 
 
 def _finalizar_locked(
@@ -1386,6 +1592,12 @@ def _finalizar_locked(
     # nunca — sólo se completa la rotación. NEXT se deriva SIEMPRE del store
     # validado, jamás del journal, para no bifurcar la cadena de seq.
     historial = derivar_historial_finalizados(root)
+    # F4 — la autoridad de la secuencia se audita ANTES de ampliar el historial
+    # (§38.3: "registro sin reserva ⇒ INCONSISTENT_AUTHORITY ⇒ FAIL_CLOSED").
+    # Si un registro retenido perdió su reserva, la cadena YA no es autoridad y
+    # FINALIZE no puede avanzar sobre ella dejando un store que sólo la
+    # reconciliación detectaría.
+    auditar_reservas_finalizacion(root, historial)
     registro_existente = next(
         (registro for registro in historial.registros if registro.transition_id == evidencia_post.transition_id),
         None,
@@ -1404,28 +1616,17 @@ def _finalizar_locked(
             if journal.last_finalized_transition_id != evidencia_post.transition_id:
                 raise JournalCasError("el journal en NONE no corresponde a la transición de la evidencia")
             return registro_existente  # reintento idempotente: nada que mutar
-        if journal.transition_id != evidencia_post.transition_id:
-            raise JournalEvidenciaPostError("la evidencia POST pertenece a otra transición")
         # C7: registro inmutable con journal PENDING — la única reconciliación
-        # admitida es completar F2 con el registro que ya existe.
+        # admitida es completar F2 con el registro que ya existe. Antes de rotar
+        # hay que probar que el registro ES el que la transición pendiente
+        # describe (F7) y que la evidencia sigue siendo la de ESTA revisión (F2).
+        _exigir_registro_coherente_con_pending(registro_existente, journal, historial)
+        _exigir_evidencia_coherente_con_pending(journal, evidencia_post)
         _rotar_journal_locked(handle, root, registro=registro_existente, revision_previa=journal.journal_revision)
         return registro_existente
     if snapshot.disposition == JournalDisposition.NONE:
         raise JournalCasError("el testigo apunta a una transición sin registro inmutable")
-    if journal.transition_id != evidencia_post.transition_id:
-        raise JournalEvidenciaPostError("la evidencia POST pertenece a otra transición")
-    if str(evidencia_post.resultado) != PostVerifyResultado.PASS.value:
-        raise JournalEvidenciaPostError("POST no está en PASS (C5): NO FINALIZA")
-    for campo_evidencia, campo_journal in (
-        ("source_activation_digest", "source_activation_digest"),
-        ("target_generation_id", "target_generation_id"),
-        ("target_clone_id", "target_clone_id"),
-        ("target_runtime_setup_id", "target_runtime_setup_id"),
-    ):
-        if getattr(evidencia_post, campo_evidencia) != getattr(journal, campo_journal):
-            raise JournalEvidenciaPostError(
-                f"evidencia POST inconsistente con la transición vigente en '{campo_evidencia}'"
-            )
+    _exigir_evidencia_coherente_con_pending(journal, evidencia_post)
     # Acá el journal vigente ES un PENDING (ya se descartaron ABSENT y NONE):
     # la esquema cerrada del parser garantiza estos campos. Se afirman para
     # no propagar ``str | None`` al registro inmutable.
@@ -1579,10 +1780,103 @@ def iniciar_transicion_rollback(root: pathlib.Path, propuesta: PropuestaTransici
 # ---------------------------------------------------------------------------
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ObservacionEffective:
+    """Observación TIPADA del Effective Runtime (oráculo de P5, §34.5).
+
+    Vocabulario ÚNICO para N0 y PENDING. Antes el callback devolvía un
+    ``str | None`` que N0 comparaba contra una **Generation** y PENDING contra
+    una **ruta de Clone**: el mismo callback no podía ser las dos cosas, y la
+    igualdad de Generation se usaba como prueba de identidad efectiva (F10).
+    La observación declara sus dos facetas:
+
+    - ``generation_id`` — la Generation que el runtime declara ejecutar.
+    - ``clone_id`` — la identidad del Runtime Clone efectivo.
+    - ``effective_path`` — la ruta que el bind produce (§34.4).
+
+    ``None`` en un campo = esa faceta quedó INDETERMINADA. ``None`` como
+    observación entera = el oráculo no pudo observar el runtime.
+    """
+
+    generation_id: str | None
+    clone_id: str | None
+    effective_path: str | None
+
+
+def _invocar_oraculo_effective(
+    observador_effective: Callable[[], ObservacionEffective | None],
+    *,
+    punto_crash: str,
+) -> ObservacionEffective | ReconciliacionJournal:
+    """Invoca el oráculo y NORMALIZA: fallo o resultado no tipado ⇒ INDETERMINADO.
+
+    El oráculo es externo (P5): cualquier excepción, un ``None`` o un valor de
+    otro tipo son INDETERMINADOS, jamás éxito (§34.5: ``UNKNOWN != SUCCESS``).
+    Un valor no tipado se rechaza explícitamente: aceptarlo reintroduciría el
+    vocabulario ambiguo que F10 cierra.
+    """
+    try:
+        observado = observador_effective()
+    except Exception as exc:  # noqa: BLE001 — el oráculo es externo: cualquier fallo es INDETERMINADO, nunca éxito
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash=punto_crash,
+            motivo=f"EFFECTIVE_INDETERMINADO: {exc}",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    if observado is None:
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash=punto_crash,
+            motivo="EFFECTIVE_INDETERMINADO: el oráculo no pudo determinar el runtime efectivo",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    if not isinstance(observado, ObservacionEffective):
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash=punto_crash,
+            motivo=(
+                f"EFFECTIVE_NO_TIPADO: el oráculo devolvió {type(observado).__name__}; se exige "
+                "ObservacionEffective (vocabulario único N0/PENDING)"
+            ),
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    return observado
+
+
+def _clone_activo_esperado(historial: HistorialFinalizado, generation_id: str) -> str | None:
+    """Identidad del Runtime Clone que la autoridad durable registra para *generation_id*.
+
+    P4-S3 no implementa el store de ``RuntimeCloneRecord`` (P4/P5 diferido), así
+    que la única autoridad durable disponible sobre qué Clone quedó activo es el
+    registro FINALIZED más reciente (§37.5): si su target es esa Generation, el
+    Clone activo es su ``target_clone_id``. Sin ese registro —o si el tip
+    pertenece a otra Generation— no hay demostración posible y se devuelve
+    ``None``: el caller falla INDETERMINADO, nunca ``COMPLETE``.
+    """
+    ultimo = historial.latest
+    if ultimo is None or ultimo.target_generation_id != generation_id:
+        return None
+    return ultimo.target_clone_id
+
+
 def _veredicto_n0_n1(
-    deseado: object,
-    observador_effective: Callable[[], str | None] | None,
+    deseado: FrozenRuntimeState | None,
+    historial: HistorialFinalizado,
+    observador_effective: Callable[[], ObservacionEffective | None] | None,
 ) -> ReconciliacionJournal:
+    """N0/N1 exigiendo identidad de Runtime Clone DEMOSTRADA (§34.5, §36.4).
+
+    ``N0_COMPLETE_REQUIRES_PROVEN_IDENTITY = YES``. La igualdad de Generation
+    entre Desired y Effective NO demuestra la coherencia del Clone efectivo
+    (§35.4: la integridad del Clone es física). Además de la igualdad de
+    Generation, N0 exige que la identidad del Clone observada coincida con la
+    que la autoridad durable registra para ese Desired. Si P4-S3 no puede
+    resolverla, el veredicto es INDETERMINADO — nunca ``COMPLETE``.
+    """
     if observador_effective is None:
         return ReconciliacionJournal(
             veredicto=VeredictoReconciliacion.UNKNOWN_EFFECTIVE,
@@ -1591,100 +1885,153 @@ def _veredicto_n0_n1(
             requiere_dueno=False,
             registro_finalizado_presente=None,
         )
-    try:
-        observado = observador_effective()
-    except Exception as exc:  # noqa: BLE001 — el oráculo es externo: cualquier fallo es INDETERMINADO, nunca éxito
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash="N0/N1",
-            motivo=f"EFFECTIVE_INDETERMINADO: {exc}",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
+    observado = _invocar_oraculo_effective(observador_effective, punto_crash="N0/N1")
+    if isinstance(observado, ReconciliacionJournal):
+        return observado
     deseado_generacion = getattr(deseado, "desired_active_generation", None)
-    if observado is None:
-        # El oráculo no pudo determinar el runtime: INDETERMINADO. Se verifica
+    if observado.generation_id is None:
+        # El oráculo no determinó la Generation: INDETERMINADO. Se verifica
         # ANTES de la igualdad porque ``None == None`` sería verdadero y
         # convertiría dos indeterminados en COMPLETE (UNKNOWN != SUCCESS, §34.5).
         return ReconciliacionJournal(
             veredicto=VeredictoReconciliacion.FAIL_CLOSED,
             punto_crash="N1",
-            motivo="EFFECTIVE_INDETERMINADO: el oráculo no pudo determinar el runtime efectivo",
+            motivo="EFFECTIVE_INDETERMINADO: el oráculo no determinó la Generation efectiva",
             requiere_dueno=True,
             registro_finalizado_presente=None,
         )
-    if deseado_generacion == observado:
+    if deseado_generacion != observado.generation_id:
         return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.COMPLETE,
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash="N1",
+            motivo="INCONSISTENT_BASELINE: sin transición y Desired != Effective",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    clone_esperado = _clone_activo_esperado(historial, observado.generation_id)
+    if clone_esperado is None:
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.UNKNOWN_EFFECTIVE,
             punto_crash="N0",
-            motivo="Desired == Effective, sin transición: coherente",
+            motivo=(
+                "IDENTIDAD_DE_CLONE_NO_DEMOSTRABLE: Desired == Effective en Generation, pero P4-S3 no "
+                "puede resolver la identidad del Runtime Clone del Desired (no hay registro FINALIZED "
+                "para esa Generation). UNKNOWN != SUCCESS (§34.5): no se declara COMPLETE."
+            ),
             requiere_dueno=False,
             registro_finalizado_presente=None,
         )
+    if observado.clone_id is None:
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash="N0",
+            motivo="EFFECTIVE_INDETERMINADO: el oráculo no determinó la identidad del Runtime Clone",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    if observado.clone_id != clone_esperado:
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
+            punto_crash="N0",
+            motivo=(
+                "INCONSISTENT_BASELINE: Desired == Effective en Generation, pero el Runtime Clone "
+                f"observado ({observado.clone_id!r}) no es el registrado para ese Desired ({clone_esperado!r})"
+            ),
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
+    return ReconciliacionJournal(
+        veredicto=VeredictoReconciliacion.COMPLETE,
+        punto_crash="N0",
+        motivo="Desired == Effective (Generation y Runtime Clone), sin transición: coherente",
+        requiere_dueno=False,
+        registro_finalizado_presente=None,
+    )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _EstadoDurable:
+    """Snapshot causalmente coherente del estado durable (tomado bajo el lock)."""
+
+    snapshot: JournalLoadResult
+    historial: HistorialFinalizado
+    auditoria: AuditoriaReservas
+    deseado: FrozenRuntimeStateLoadResult
+    huella: tuple[object, ...]
+
+
+def _huella_estado_durable(
+    snapshot: JournalLoadResult,
+    historial: HistorialFinalizado,
+    auditoria: AuditoriaReservas,
+    deseado: FrozenRuntimeStateLoadResult,
+) -> tuple[object, ...]:
+    """Huella de TODAS las fuentes que la clasificación consulta.
+
+    Sirve para revalidar, tras la observación externa, que la autoridad durable
+    no derivó: si la huella cambió, el veredicto correspondería a un estado que
+    ya no existe y NO puede devolverse como ``COMPLETE``.
+    """
+    journal = snapshot.journal
+    estado_deseado = getattr(deseado, "state", None)
+    return (
+        snapshot.disposition.value,
+        None if journal is None else journal.journal_revision,
+        None if journal is None else journal.transition_id,
+        None if journal is None else journal.last_finalized_transition_id,
+        None if journal is None else journal.expected_effective_path,
+        historial.next_seq,
+        tuple(registro.transition_id for registro in historial.registros),
+        tuple((reserva.finalization_seq, reserva.transition_id) for reserva in auditoria.reservas),
+        getattr(deseado, "found", None),
+        None if estado_deseado is None else estado_deseado.desired_active_generation,
+    )
+
+
+def _observar_estado_durable(root: pathlib.Path) -> _EstadoDurable:
+    """Lectura COHERENTE de journal + historial + reservas + Desired.
+
+    Debe correr BAJO el root lock: sin él, las cuatro fuentes se leen en
+    instantes distintos y la clasificación mezcla generaciones de estado —una
+    transición creada entre dos lecturas es invisible para el snapshot— (F8).
+    Propaga los errores tipados del dominio; el caller los clasifica.
+    """
+    snapshot = cargar_journal_transicion(root)
+    historial = derivar_historial_finalizados(root)
+    auditoria = auditar_reservas_finalizacion(root, historial)
+    deseado = load_frozen_runtime_state(active_state_path(root))
+    return _EstadoDurable(
+        snapshot=snapshot,
+        historial=historial,
+        auditoria=auditoria,
+        deseado=deseado,
+        huella=_huella_estado_durable(snapshot, historial, auditoria, deseado),
+    )
+
+
+def _fail_closed(punto_crash: str | None, motivo: str) -> ReconciliacionJournal:
     return ReconciliacionJournal(
         veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-        punto_crash="N1",
-        motivo="INCONSISTENT_BASELINE: sin transición y Desired != Effective",
+        punto_crash=punto_crash,
+        motivo=motivo,
         requiere_dueno=True,
         registro_finalizado_presente=None,
     )
 
 
-def reconciliar_journal(
-    root: pathlib.Path,
-    *,
-    observador_effective: Callable[[], str | None] | None = None,
+def _clasificar_reconciliacion(
+    estado: _EstadoDurable,
+    observador_effective: Callable[[], ObservacionEffective | None] | None,
 ) -> ReconciliacionJournal:
-    """Clasifica el estado del journal al arrancar (§34.5/§36.9).
+    """Clasifica un snapshot durable ya tomado (§34.5/§36.9). Función PURA.
 
-    Reglas no negociables: corrupción jamás se lee como ``NONE``; ``UNKNOWN``
-    jamás se convierte en éxito; un ``PENDING`` no se revierte automáticamente;
-    si un registro FINALIZED existe con el journal en PENDING, se preservan
-    AMBAS evidencias y la única reconciliación admitida es completar la
-    rotación. Esta función NO muta nada: sólo lee y clasifica.
-
-    ``observador_effective`` es el oráculo de P5: devuelve lo observado del
-    runtime efectivo, o ``None`` si no pudo determinarlo (indeterminado ⇒
-    ``FAIL_CLOSED``, nunca éxito). En un PENDING, la identidad que el ADR
-    exige demostrar es la del **Runtime Clone** — ``expected_effective_path``,
-    "la ruta que el bind va a producir" (§34.4/§34.5); comparar la Generation
-    (``target_generation_id``) no la demuestra (§35.4: la integridad del Clone
-    es física).
+    El oráculo de P5 se invoca acá, es decir FUERA del root lock (§34.3/§39.4:
+    no se sostiene el lock durante una llamada externa y potencialmente lenta).
     """
-    ruta = pathlib.Path(root)
-    try:
-        snapshot = cargar_journal_transicion(ruta)
-    except (JournalCorruptError, JournalSchemaError, JournalIdentityError) as exc:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash="N2",
-            motivo=f"JOURNAL_CORRUPTO_O_ILEGIBLE: {exc}",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
-    try:
-        historial = derivar_historial_finalizados(ruta)
-        auditoria = auditar_reservas_finalizacion(ruta, historial)
-    except (JournalCorruptError, JournalSchemaError, JournalIdentityError, JournalStoreNoInicializadoError) as exc:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash="N2",
-            motivo=f"STORE_INCONSISTENTE: {exc}",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
-    from sky_claw.local.frozen_runtime.errors import StateCorruptError, StateSchemaError
-
-    try:
-        deseado = load_frozen_runtime_state(active_state_path(ruta))
-    except (StateCorruptError, StateSchemaError) as exc:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash=None,
-            motivo=f"DESIRED_ILEGIBLE: {exc}",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
+    snapshot = estado.snapshot
+    historial = estado.historial
+    auditoria = estado.auditoria
+    deseado = estado.deseado
 
     if snapshot.disposition == JournalDisposition.ABSENT:
         if historial.registros or auditoria.huerfanas or auditoria.reservas:
@@ -1695,7 +2042,7 @@ def reconciliar_journal(
                 requiere_dueno=True,
                 registro_finalizado_presente=None,
             )
-        return _veredicto_n0_n1(deseado.state, observador_effective)
+        return _veredicto_n0_n1(deseado.state, historial, observador_effective)
 
     journal = snapshot.journal
     assert journal is not None  # invariante de lectura
@@ -1735,7 +2082,7 @@ def reconciliar_journal(
                 requiere_dueno=True,
                 registro_finalizado_presente=None,
             )
-        return _veredicto_n0_n1(deseado.state, observador_effective)
+        return _veredicto_n0_n1(deseado.state, historial, observador_effective)
 
     # PENDING_*
     assert journal.transition_id is not None  # invariante de lectura
@@ -1780,17 +2127,18 @@ def reconciliar_journal(
             requiere_dueno=False,
             registro_finalizado_presente=False,
         )
-    try:
-        observado = observador_effective()
-    except Exception as exc:  # noqa: BLE001 — el oráculo es externo: indeterminado durante el bind, nunca éxito
+    observado = _invocar_oraculo_effective(observador_effective, punto_crash="C2")
+    if isinstance(observado, ReconciliacionJournal):
+        return dataclasses.replace(observado, registro_finalizado_presente=False)
+    if observado.effective_path is None:
         return ReconciliacionJournal(
             veredicto=VeredictoReconciliacion.FAIL_CLOSED,
             punto_crash="C2",
-            motivo=f"EFFECTIVE_INDETERMINADO: {exc}",
+            motivo="EFFECTIVE_INDETERMINADO durante el bind: el oráculo no determinó la ruta del Clone",
             requiere_dueno=True,
             registro_finalizado_presente=False,
         )
-    if observado == journal.expected_effective_path:
+    if observado.effective_path == journal.expected_effective_path:
         # §34.5: "PENDING_*, Effective coincide con expected_effective_path,
         # POST no corrido ⇒ re-correr POST". La identidad que hay que demostrar
         # es la del Runtime Clone (la ruta que el bind produce, §34.4); la
@@ -1805,14 +2153,6 @@ def reconciliar_journal(
             requiere_dueno=False,
             registro_finalizado_presente=False,
         )
-    if observado is None:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash="C2",
-            motivo="EFFECTIVE_INDETERMINADO durante el bind",
-            requiere_dueno=True,
-            registro_finalizado_presente=False,
-        )
     return ReconciliacionJournal(
         veredicto=VeredictoReconciliacion.REQUIRE_OWNER,
         punto_crash="C1",
@@ -1823,3 +2163,84 @@ def reconciliar_journal(
         requiere_dueno=True,
         registro_finalizado_presente=False,
     )
+
+
+def reconciliar_journal(
+    root: pathlib.Path,
+    *,
+    observador_effective: Callable[[], ObservacionEffective | None] | None = None,
+) -> ReconciliacionJournal:
+    """Clasifica el estado del journal al arrancar (§34.5/§36.9).
+
+    Reglas no negociables: corrupción jamás se lee como ``NONE``; ``UNKNOWN``
+    jamás se convierte en éxito; un ``PENDING`` no se revierte automáticamente;
+    si un registro FINALIZED existe con el journal en PENDING, se preservan
+    AMBAS evidencias y la única reconciliación admitida es completar la
+    rotación. Esta función NO muta evidencia: sólo lee y clasifica.
+
+    **Coherencia causal (F8).** El estado durable (journal + historial +
+    reservas + Desired) se lee en un único snapshot BAJO el root lock; el
+    oráculo de P5 se invoca DESPUÉS, fuera del lock (§34.3/§39.4: no se sostiene
+    el lock durante una llamada externa lenta); y antes de devolver se
+    re-adquiere el lock y se compara la huella durable. Si cambió —una
+    transición concurrente creada mientras se observaba el Effective— el
+    veredicto es ``FAIL_CLOSED``: nunca ``COMPLETE`` sobre un estado anterior.
+
+    ``observador_effective`` es el oráculo de P5: devuelve una
+    ``ObservacionEffective`` (vocabulario ÚNICO para N0 y PENDING), o ``None`` si
+    no pudo observar el runtime (indeterminado ⇒ ``FAIL_CLOSED``, nunca éxito).
+
+    Nota de alcance: adquirir el root lock materializa ``state/`` vacío si el
+    root no estaba inicializado. No se altera ninguna evidencia —journal,
+    registros y reservas siguen ausentes— y la clasificación no cambia.
+    """
+    ruta = pathlib.Path(root)
+    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeLockError
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    # (1) Snapshot durable BAJO el root lock: una observación causalmente coherente.
+    try:
+        with participant_lock(ruta, timeout=0.0) as handle:
+            handle.assert_owned()
+            estado = _observar_estado_durable(ruta)
+    except (StateCorruptError, StateSchemaError, InvalidGenerationIdError) as exc:
+        # F11: `InvalidGenerationIdError` es hermana de `StateCorruptError` (ambas
+        # `FrozenRuntimeStorageError`), NO subclase: sin incluirla, un `active.json`
+        # con un generation-id sintácticamente inválido ESCAPABA de
+        # `reconciliar_journal`, abortando el barrido de roots en vez de devolver
+        # el resultado tipado. Se capturan sólo errores de dominio: no un `except
+        # Exception` global.
+        return _fail_closed(None, f"DESIRED_ILEGIBLE: {exc}")
+    except (JournalCorruptError, JournalSchemaError, JournalIdentityError) as exc:
+        return _fail_closed("N2", f"JOURNAL_CORRUPTO_O_ILEGIBLE: {exc}")
+    except JournalStoreNoInicializadoError as exc:
+        return _fail_closed("N2", f"STORE_INCONSISTENTE: {exc}")
+    except FrozenRuntimeLockError as exc:
+        return _fail_closed(None, f"ROOT_LOCK_NO_ADQUIRIDO: {exc}")
+
+    # (2) Clasificación: el oráculo externo corre FUERA del lock.
+    veredicto = _clasificar_reconciliacion(estado, observador_effective)
+
+    # (3) Revalidación bajo el lock: la autoridad durable no puede haber derivado.
+    try:
+        with participant_lock(ruta, timeout=0.0) as handle:
+            handle.assert_owned()
+            huella_actual = _observar_estado_durable(ruta).huella
+    except (
+        JournalCorruptError,
+        JournalSchemaError,
+        JournalIdentityError,
+        JournalStoreNoInicializadoError,
+        StateCorruptError,
+        StateSchemaError,
+        InvalidGenerationIdError,
+        FrozenRuntimeLockError,
+    ) as exc:
+        return _fail_closed(None, f"REVALIDACION_IMPOSIBLE: {exc}")
+    if huella_actual != estado.huella:
+        return _fail_closed(
+            None,
+            "AUTORIDAD_CAMBIADA_DURANTE_LA_RECONCILIACION: el estado durable derivó mientras se "
+            "observaba el Effective; la clasificación correspondería a un estado anterior (fail-closed)",
+        )
+    return veredicto
