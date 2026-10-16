@@ -482,24 +482,39 @@ No es un defecto del contrato de argv del PR #462: en ese mismo rig el `-o:` se
 parseó exacto en los dos binarios y el acceptance gate de quoting quedó cerrado
 (informe §7.1). No bloquea ese merge.
 
-### Avance parcial — diagnóstico (Finding 4 de #592)
+### Avance parcial — diagnóstico y política de procedencia (Findings 4 y 5 de #592)
 
 > **Estado del ítem: sin cambios (`OPEN / FOLLOW-UP`).** Lo de abajo es un avance
 > de la mitad *diagnóstico/UX* del bullet "el diagnóstico no nombra al preset",
 > NO el mecanismo de precedencia, que sigue sin diseñar.
 
-El post-check ahora consume el eco de rutas del propio binario
+El post-check consume el eco de rutas del propio binario
 (`Using Output Path:`, `Using Skyrim Special Edition Data Path:`) **sobre la
 ventana atribuible a la corrida** (`_validar_completitud_de_la_corrida`) y compone
 un diagnóstico cuando falta el artefacto: qué artefacto falta, de qué herramienta,
 en qué subroot administrado se lo buscó y —sólo si hay evidencia verificable—
-qué ruta declaró el binario. Distingue causa **confirmada** (el eco declara una
-ruta distinta de la administrada) de causa **posible** (no hay evidencia: sugiere
-revisar el campo Output de la GUI, sin atribuir el fallo al preset). La autoridad
-del veredicto NO cambió: sigue siendo el artefacto físico en el subroot born-empty
-—el eco mide el parse del argv, no el destino de escritura, como este mismo ítem
-documenta— y por eso una discrepancia con artefacto presente sólo advierte.
-No se agregó ningún lector de presets ni escritura en UIA.
+qué ruta declaró el binario. Distingue la **discrepancia confirmada** (el eco
+declara una ruta distinta de la administrada, y las dos rutas quedan nombradas) de
+la **causa no demostrada**: el eco acredita el argumento que el binario parseó, no
+el destino físico de escritura, así que una ruta distinta confirma la divergencia
+pero no que haya causado la ausencia del artefacto. Sin evidencia, el mensaje
+sugiere revisar el campo Output de la GUI sin atribuir el fallo al preset.
+
+**Las dos claves no comparten política, y la asimetría es deliberada.** El desvío
+de `-o:` con el artefacto presente **advierte**: viaja al resultado estructurado
+(`ToolExecutionResult.warnings`) además del registro, porque el eco mide el parse
+del argv y el artefacto físico en el subroot born-empty sigue siendo la autoridad
+del destino. El desvío de `-d:` es **fail-closed**: la corrida no se acepta ni se
+empaqueta, porque el artefacto prueba el destino y la forma de la salida, no que
+los LODs se hayan generado sobre el árbol de datos configurado. `AUSENTE` e
+`INDETERMINADO` no bloquean —sólo una contradicción afirmativa lo hace—, así que
+un binario que no emita el formato, o una config sin `data_dir`, siguen su curso.
+
+La comparación de rutas usa `ntpath` y no `os.path`: el eco de estos binarios es
+siempre una ruta Windows y `os.path` sólo es `ntpath` en Windows, de modo que en
+POSIX la misma evidencia se clasificaba `DIFIERE` —una discrepancia fabricada por
+el host que corre los tests—. No se agregó ningún lector de presets ni escritura
+en UIA.
 
 ## 2.3 Zero-Trust — 2 ítems residuales
 

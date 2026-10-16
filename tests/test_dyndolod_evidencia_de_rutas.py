@@ -12,17 +12,33 @@ arrancar las rutas que parsearon de su línea de comandos:
 Esas líneas son evidencia de lo que el binario **parseó**, no de dónde
 escribió: el rig 2026-08-11 midió el eco igual al argv mientras las escrituras
 iban al preset rancio de la GUI (``docs/pending_ooda_status.md``, ítem del
-preset). Por eso el check de este archivo **no autoriza ningún destino**: la
-autoridad post-run sigue siendo la verificación física del artefacto en el
-subroot exclusivo, y esta evidencia sólo (a) enriquece el diagnóstico cuando el
-artefacto falta (Finding 4) y (b) advierte cuando el binario declaró una ruta
-distinta de la configurada aunque el artefacto esté (Finding 5).
+preset). Por eso el destino físico lo sigue decidiendo el artefacto en el
+subroot exclusivo.
+
+**Las dos claves NO comparten política, y la asimetría es deliberada.**
+
+- ``output`` (``-o:``) — **advisory**. El eco mide el parse del argv y el
+  artefacto presente en el subroot administrado ya prueba que hay salida donde
+  debe: el desvío (a) enriquece el diagnóstico cuando el artefacto falta
+  (Finding 4) y (b) viaja como **advertencia estructurada** en
+  ``ToolExecutionResult.warnings`` cuando el artefacto está (Finding 5).
+- ``data`` (``-d:``) — **fail-closed**. El artefacto prueba el destino y la FORMA
+  de la salida, no la procedencia de los datos: si el binario declaró haber
+  parseado un ``-d:`` distinto del configurado, los LODs se habrían generado
+  sobre un árbol de datos que no es el administrado. La corrida no se acepta y no
+  se empaqueta, aunque el artefacto esté en su lugar.
+
+**Lo que NO bloquea.** ``AUSENTE`` (la corrida no emitió la línea) e
+``INDETERMINADO`` (valores en conflicto, o sin target contra el cual contrastar)
+no tumban nada: sólo una contradicción **afirmativa** lo hace. Un binario que no
+emita el formato, o una config sin ``data_dir``, siguen su curso.
 
 **Límite de la evidencia.** Los formatos citados están medidos sobre
-TexGenx64/DynDOLODx64 Alpha-209 reales. Un binario que no los emita no produce
-fallo: la ausencia es UNKNOWN, no veredicto. Endurecer la discrepancia a
-fallo cerrado exige repetir una corrida real con los ejecutables del operador
-(ver el handoff del PR).
+TexGenx64/DynDOLODx64 Alpha-209 reales, y la igualdad eco↔argv está medida para
+el caso COINCIDE (rig T5, ``docs/validation/2026-09-13_pr580_real_rig/``). El
+rechazo por ``data`` DIFIERE es una condición NUEVA de aceptación: su tasa de
+falso positivo sobre un rig real no está medida y queda declarada en el handoff
+del PR para adjudicación del Tech Lead.
 
 La atribución a la corrida actual es la de ``_validar_completitud_de_la_corrida``:
 estas funciones se evalúan SOLO sobre la ventana ``de_esta_corrida``. Ninguna
@@ -31,17 +47,22 @@ línea heredada de una ejecución anterior puede entrar por acá.
 
 from __future__ import annotations
 
+import ast
 import logging
 import pathlib
-import sys
+import posixpath
+import types
 from unittest.mock import patch
 
 import pytest
 
+from sky_claw.local.tools import dyndolod_runner
 from sky_claw.local.tools.dyndolod_runner import (
+    DynDOLODConfig,
     DynDOLODRunner,
     EvidenciaDeRuta,
     EvidenciaDeRutas,
+    ToolExecutionResult,
     VeredictoRuta,
     evaluar_evidencia_de_rutas,
     extraer_rutas_declaradas,
@@ -50,6 +71,7 @@ from sky_claw.local.tools.dyndolod_runner import (
 from tests.test_dyndolod_service import (
     _MARCADOR_DE_FIN,
     _apendear_log,
+    _clase_runner_ast,
     _corrida_que_completa,
     _EjecucionFalsa,
     _escribir_log,
@@ -121,36 +143,71 @@ def test_extraer_rutas_declaradas_sin_lineas_devuelve_tuplas_vacias() -> None:
 
 
 # ---------------------------------------------------------------------------
-# rutas_equivalentes — semántica Windows
+# rutas_equivalentes — semántica Windows, INDEPENDIENTE DEL HOST
 # ---------------------------------------------------------------------------
 
+#: Pares (declarada, configurada) que apuntan al MISMO directorio y sólo difieren
+#: en la FORMA: barra final simple o duplicada (``list2cmdline`` al citar por
+#: espacios), caso, y separadores ``/`` vs ``\``. Ninguno es una discrepancia.
+VECTORES_EQUIVALENTES: list[tuple[str, str]] = [
+    (
+        "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\\\",
+        "E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD",
+    ),
+    ("c:\\modding\\out\\", "C:/Modding/Out"),
+    ("\\\\servidor\\compartido\\out\\\\", "\\\\servidor\\compartido\\out"),
+]
 
-@pytest.mark.skipif(sys.platform != "win32", reason="normcase/backslash: semántica de Windows")
-def test_rutas_equivalentes_tolera_el_backslash_final_duplicado_del_rig() -> None:
-    """El vector T5 exacto: el eco trae ``\\\\`` final y el ``-o:`` configurado no.
+#: Pares que apuntan a DIRECTORIOS DISTINTOS. El último sólo difiere en el nombre
+#: de la hoja: un prefijo compartido no puede alcanzar para declararlos iguales.
+VECTORES_DISTINTOS: list[tuple[str, str]] = [
+    ("C:\\decoy\\TexGen\\", "C:\\managed\\DynDOLOD\\TexGen"),
+    ("C:\\managed\\DynDOLOD\\TexGen\\", "C:\\managed\\DynDOLOD\\DynDOLOD\\"),
+    ("C:\\managed\\DynDOLOD\\TexGen", "C:\\managed\\DynDOLOD\\TexGens"),
+]
 
-    ``list2cmdline`` duplica el backslash al citar por espacios; el binario lo
-    normaliza en el eco. Comparar en crudo daría DIFIERE sobre el mismo
-    directorio — un falso rojo fabricado por la serialización.
+
+@pytest.mark.parametrize(("declarada", "configurada"), VECTORES_EQUIVALENTES)
+def test_rutas_equivalentes_tolera_las_variantes_de_forma_del_mismo_directorio(
+    declarada: str, configurada: str
+) -> None:
+    """D9: barra final duplicada, caso y separadores NO son discrepancia.
+
+    Los tres vectores se evaluaban con ``skipif(sys.platform != "win32")``, así
+    que en el host donde el defecto vive —POSIX— la suite los salteaba en
+    silencio. El eco de estos binarios es SIEMPRE una ruta Windows: la
+    comparación tiene que dar lo mismo en los dos hosts, y por eso los saltos se
+    retiran (el gate pasa a ser el propio test).
     """
-    assert rutas_equivalentes(
-        r"E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD\\",
-        pathlib.Path(r"E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD"),
-    )
+    assert rutas_equivalentes(declarada, pathlib.Path(configurada)) is True
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="case-insensitivity: semántica de Windows")
-def test_rutas_equivalentes_ignora_mayusculas_y_separadores() -> None:
-    assert rutas_equivalentes("c:\\modding\\out\\", pathlib.Path("C:/Modding/Out"))
+@pytest.mark.parametrize(("declarada", "configurada"), VECTORES_DISTINTOS)
+def test_rutas_equivalentes_no_confunde_directorios_distintos(declarada: str, configurada: str) -> None:
+    """D10: una diferencia REAL de directorio se detecta en los dos hosts."""
+    assert rutas_equivalentes(declarada, pathlib.Path(configurada)) is False
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="UNC: semántica de Windows")
-def test_rutas_equivalentes_unc_con_barra_final() -> None:
-    assert rutas_equivalentes(r"\\servidor\compartido\out\\", pathlib.Path(r"\\servidor\compartido\out"))
+@pytest.mark.parametrize(("declarada", "configurada"), VECTORES_EQUIVALENTES)
+def test_rutas_equivalentes_no_depende_del_host(
+    declarada: str, configurada: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T3: la comparación no puede delegar en ``os.path``, que cambia de semántica por host.
 
+    En Windows ``os.path`` **es** ``ntpath``; en Linux es ``posixpath``, que no
+    trata ``\\`` como separador ni colapsa la barra final duplicada. Con
+    ``os.path``, este mismo vector —el del rig, medido— se clasifica ``DIFIERE``
+    en POSIX: una discrepancia FABRICADA por el host que corre los tests, que
+    además dispara la advertencia estructurada sobre una corrida correcta.
 
-def test_rutas_equivalentes_distintas_no_son_equivalentes() -> None:
-    assert not rutas_equivalentes("C:\\decoy\\TexGen\\", pathlib.Path(r"C:\managed\DynDOLOD\TexGen"))
+    Se sustituye el binding ``os`` **del módulo** (no el módulo global ``os``,
+    que rompería a cualquier otro consumidor durante el test) por un host POSIX
+    simulado. Con ``ntpath`` importado explícitamente la función es insensible al
+    host por construcción, así que el parche no la alcanza y el test pasa; con
+    ``os.path`` el parche la alcanza y el test cae. Ese es el discriminante.
+    """
+    monkeypatch.setattr(dyndolod_runner, "os", types.SimpleNamespace(path=posixpath), raising=False)
+    assert rutas_equivalentes(declarada, pathlib.Path(configurada)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +352,13 @@ async def test_f4_artefacto_ausente_con_eco_desviado_nombra_la_ruta_observada(tm
     assert "textures" in diagnostico  # el artefacto que falta, nombrado
     assert str(esperado) in diagnostico  # la ruta administrada esperada
     assert desviado in diagnostico  # la ruta observada, SOLO porque hay evidencia
-    assert "causa" in diagnostico.lower() and "confirmada" in diagnostico.lower()
+    # Y NO se afirma causalidad: el eco acredita el argv parseado, no el destino
+    # físico de escritura. Anclar sólo `"causa" in … and "confirmada" in …` no
+    # discriminaba nada — el texto viejo ("Causa CONFIRMADA por la evidencia de
+    # esta corrida") satisfacía las dos palabras, así que el ancla congelaba el
+    # defecto en vez de atajarlo.
+    assert "discrepancia confirmada" in diagnostico.lower()
+    assert "no queda demostrada" in diagnostico.lower()
 
 
 async def test_f4_dyndolod_artefacto_ausente_con_eco_desviado_nombra_la_ruta_observada(
@@ -334,7 +397,8 @@ async def test_f4_dyndolod_artefacto_ausente_con_eco_desviado_nombra_la_ruta_obs
     assert "textures" not in diagnostico  # ...y NO el del hermano
     assert str(esperado) in diagnostico  # la raíz administrada de DynDOLOD
     assert desviado in diagnostico  # la ruta observada, SOLO porque hay evidencia
-    assert "causa" in diagnostico.lower() and "confirmada" in diagnostico.lower()
+    assert "discrepancia confirmada" in diagnostico.lower()
+    assert "no queda demostrada" in diagnostico.lower()
 
 
 async def test_f4_artefacto_ausente_con_eco_correcto_sugiere_revisar_la_gui(tmp_path: pathlib.Path) -> None:
@@ -497,12 +561,17 @@ async def test_f5_artefacto_presente_con_eco_desviado_no_autoriza_pero_advierten
 ) -> None:
     """El artefacto ES la autoridad: la corrida con artefacto en el subroot sigue siendo éxito.
 
-    El eco desviado se advierte (logging) y queda en la evidencia del
-    post-check, pero NO tumbar el veredicto: (a) el mapa de autoridades del
-    brief mantiene el artefacto como autoridad post-run; (b) el eco mide el
+    El eco desviado NO tumba el veredicto de ``-o:``: (a) el mapa de autoridades
+    del brief mantiene el artefacto como autoridad post-run; (b) el eco mide el
     parse del argv, no el destino de escritura; (c) el formato está medido solo
     sobre Alpha-209 y extrapolarlo a un gate duro repite el criterio v1 que el
-    roadmap retiró. Endurecerlo exige corrida real — declarado en el handoff.
+    roadmap retiró.
+
+    Pero tiene que llegar al CONSUMIDOR, y no sólo al registro: ``_post_check``
+    devolvía los warnings parseados del log sin tocar, así que GUI y agentes
+    recibían un resultado exitoso sin ninguna señal de la discrepancia salvo que
+    alguien mirara los logs de la aplicación. Las dos vías se verifican acá: la
+    estructurada (``ToolExecutionResult.warnings``) y la de diagnóstico (registro).
     """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_layout is not None
@@ -521,6 +590,11 @@ async def test_f5_artefacto_presente_con_eco_desviado_no_autoriza_pero_advierten
         result = await runner.run_texgen()
 
     assert result.success is True  # el artefacto manda
+    # (1) Vía estructurada: el consumidor recibe la discrepancia en el resultado.
+    assert any(desviado in w for w in result.warnings), (
+        f"la discrepancia de -o: no viajó al resultado estructurado: warnings={result.warnings!r}"
+    )
+    # (2) Vía de diagnóstico: el registro sigue existiendo.
     advertencias = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any(desviado in r.getMessage() for r in advertencias)
 
@@ -544,6 +618,10 @@ async def test_f5_artefacto_presente_con_eco_correcto_es_exito_sin_advertencia(
         result = await runner.run_texgen()
 
     assert result.success is True
+    # El gemelo del test anterior, y el que impide el "arreglo" perezoso de
+    # advertir siempre: con el eco coincidiendo no hay discrepancia que reportar,
+    # ni en el registro ni en el resultado estructurado.
+    assert result.warnings == []
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
@@ -584,6 +662,217 @@ async def test_f5_data_path_correcto_e_incorrecto(tmp_path: pathlib.Path) -> Non
     assert post_mal.evidencia_rutas.data.declarada == "C:\\otro\\Data\\"
 
 
+# ---------------------------------------------------------------------------
+# P1 de la revisión — el desvío de `-d:` NO puede terminar en éxito
+# ---------------------------------------------------------------------------
+
+#: Las dos herramientas de la etapa. Parametrizar por acá es el punto: el
+#: predicado de éxito vive en DOS lanzadores y el defecto dominante de este repo
+#: es exactamente cablear uno y dejar el gemelo. Un test escrito sólo para TexGen
+#: no dice nada de DynDOLOD.
+HERRAMIENTAS = ["TexGen", "DynDOLOD"]
+
+#: Ruta de datos que NO es la configurada. El valor concreto es irrelevante: lo
+#: que importa es que el eco declare un `-d:` distinto del administrado.
+DATA_DESVIADA = "C:\\otro\\Data\\"
+
+
+def _raiz_de_salida(config: DynDOLODConfig, tool: str) -> pathlib.Path:
+    """El ``-o:`` administrado de ``tool``: contra ESE se contrasta su eco."""
+    assert config.output_layout is not None
+    return config.texgen_root if tool == "TexGen" else config.dyndolod_root
+
+
+def _log_con_dos_ecos_de_data(salida: pathlib.Path, tool: str) -> str:
+    """Log completo con DOS ecos de ``-d:`` de valores distintos: evidencia ambigua."""
+    return (
+        f"[00:00:01] Using Output Path: {salida}\\"
+        "\n"
+        "[00:00:01] Using Skyrim Special Edition Data Path: C:\\a\\Data\\\n"
+        "[00:00:01] Using Skyrim Special Edition Data Path: C:\\b\\Data\\\n"
+        f"[00:10:00] {_MARCADOR_DE_FIN[tool]}\n"
+    )
+
+
+async def _lanzar_con_eco(
+    tmp_path: pathlib.Path,
+    config: DynDOLODConfig,
+    runner: DynDOLODRunner,
+    tool: str,
+    *,
+    eco_output: str,
+    eco_data: str | None,
+    log: str | None = None,
+) -> ToolExecutionResult:
+    """Lanza ``tool`` con el eco dado y el artefacto SIEMPRE presente.
+
+    El artefacto se escribe en el subroot administrado en TODOS los casos: el
+    sujeto de estos tests es la política de procedencia, no el gate de artefacto.
+    Si el artefacto faltara, el rojo llegaría por el motivo equivocado y el test
+    pasaría a probar otra cosa.
+    """
+    raiz = _raiz_de_salida(config, tool)
+    if tool == "TexGen":
+        destino = raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+        artefacto = "a.dds"
+    else:
+        destino = raiz / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+        artefacto = "DynDOLOD.esp"
+
+    def _escribir() -> None:
+        _escribir_salida(destino, artefacto)
+
+    cuerpo = _log_con_eco(eco_output, eco_data, tool=tool) if log is None else log
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(tmp_path, tool, _escribir, log=cuerpo),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        if tool == "TexGen":
+            return await runner.run_texgen()
+        return await runner.run_dyndolod(preset="Medium")
+
+
+@pytest.mark.parametrize("tool", HERRAMIENTAS)
+async def test_p1_data_desviada_con_artefacto_presente_no_es_exito(tmp_path: pathlib.Path, tool: str) -> None:
+    """D3: artefacto presente + ``-d:`` inequívocamente distinto ⇒ NUNCA éxito.
+
+    Es el P1 de la revisión. El artefacto prueba que hay salida en el subroot
+    administrado y con la forma esperada; NO prueba que los LODs se hayan
+    generado sobre el ``Data`` que Sky-Claw configuró. Con el eco declarando otro
+    árbol de datos, publicar ese resultado es publicar LODs de procedencia
+    desconocida — y hasta acá la corrida se reportaba exitosa y se empaquetaba.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    result = await _lanzar_con_eco(
+        tmp_path,
+        config,
+        runner,
+        tool,
+        eco_output=f"Using Output Path: {_raiz_de_salida(config, tool)}\\",
+        eco_data=f"Using Skyrim Special Edition Data Path: {DATA_DESVIADA}",
+    )
+
+    assert result.success is False, "un Data Path desviado no puede terminar en éxito"
+    # Y NO falla por el artefacto: el artefacto está donde debe.
+    assert result.output_path is not None
+    diagnostico = " ".join(result.errors)
+    assert DATA_DESVIADA in diagnostico, "el error tiene que nombrar la ruta que el binario declaró"
+    assert str(config.data_dir) in diagnostico, "y la que Sky-Claw configuró"
+    assert "-d:" in diagnostico, "y el switch por el que viaja"
+
+
+@pytest.mark.asyncio
+async def test_p1_data_desviada_no_empaqueta_el_mod(tmp_path: pathlib.Path) -> None:
+    """El desvío de ``-d:`` no llega a ``mods/``: el pipeline no empaqueta.
+
+    No alcanza con ``success=False`` en el lanzador: lo que hay que probar es que
+    el resultado NO se publica. ``run_full_pipeline`` empaqueta dentro de
+    ``if dyndolod_result.success``, así que el mod no se crea — y sin mod no hay
+    nada que MO2 despliegue ni que el juego cargue.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "DynDOLOD",
+            lambda: _escribir_salida(config.dyndolod_root, "DynDOLOD.esp", b"esp"),
+            log=_log_con_eco(
+                f"Using Output Path: {config.dyndolod_root}\\",
+                f"Using Skyrim Special Edition Data Path: {DATA_DESVIADA}",
+                tool="DynDOLOD",
+            ),
+        ),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_full_pipeline(run_texgen=False)
+
+    assert result.dyndolod_result is not None
+    assert result.dyndolod_result.success is False
+    assert result.success is False
+    assert result.dyndolod_mod_path is None
+    assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists(), (
+        "el mod de DynDOLOD se empaquetó pese a la procedencia de datos incorrecta"
+    )
+
+
+@pytest.mark.parametrize("tool", HERRAMIENTAS)
+async def test_p1_data_ausente_no_bloquea(tmp_path: pathlib.Path, tool: str) -> None:
+    """Compatibilidad: ``AUSENTE`` NO es fallo. Sólo la contradicción AFIRMATIVA lo es.
+
+    Es la mitad que impide el falso rechazo: un binario que no emita la línea
+    —o una config sin ``data_dir``— no puede tumbar una corrida que hoy pasa.
+    Endurecer ``UNKNOWN`` a fallo es lo que el brief prohíbe sin justificar el
+    cambio de compatibilidad.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    result = await _lanzar_con_eco(
+        tmp_path,
+        config,
+        runner,
+        tool,
+        eco_output=f"Using Output Path: {_raiz_de_salida(config, tool)}\\",
+        eco_data=None,
+    )
+    assert result.success is True, "la ausencia de eco de -d: no es evidencia de desvío"
+
+
+@pytest.mark.parametrize("tool", HERRAMIENTAS)
+async def test_p1_data_indeterminada_no_bloquea(tmp_path: pathlib.Path, tool: str) -> None:
+    """D8: dos ecos contradictorios son evidencia AMBIGUA, no un desvío probado.
+
+    El binario puede ecoar la línea más de una vez. Si los valores difieren no
+    hay con qué afirmar cuál rigió, así que el veredicto es UNKNOWN y la corrida
+    no se tumba: adjudicar a ojo sería inventar la evidencia que falta.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    result = await _lanzar_con_eco(
+        tmp_path,
+        config,
+        runner,
+        tool,
+        eco_output="",
+        eco_data=None,
+        log=_log_con_dos_ecos_de_data(_raiz_de_salida(config, tool), tool),
+    )
+    assert result.success is True, "dos ecos contradictorios no son un desvío probado"
+
+
+def test_p1_todo_lanzador_consulta_la_procedencia_de_datos() -> None:
+    """Ancla ENUMERANTE: el predicado de éxito de CADA lanzador consulta la procedencia.
+
+    Muestrear TexGen no dice nada de DynDOLOD — el defecto hermano que ``AGENTS.md``
+    documenta como dominante. Acá la familia de lanzadores se descubre por AST
+    (los que pasan ``_post_check``), así que un TERCER lanzador rompe el ancla
+    hasta que se lo cablee, en vez de entrar sin gate con la suite en verde.
+    """
+    cls = _clase_runner_ast()
+
+    lanzadores: dict[str, ast.AST] = {}
+    for miembro in cls.body:
+        if not isinstance(miembro, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for nodo in ast.walk(miembro):
+            if (
+                isinstance(nodo, ast.Call)
+                and nodo.args
+                and isinstance(nodo.args[0], ast.Attribute)
+                and nodo.args[0].attr == "_post_check"
+            ):
+                lanzadores[miembro.name] = miembro
+
+    assert set(lanzadores) == {"run_texgen", "run_dyndolod"}
+    for nombre, miembro in lanzadores.items():
+        referencias = {n.attr for n in ast.walk(miembro) if isinstance(n, ast.Attribute)}
+        assert "procedencia_de_datos_es_confiable" in referencias, (
+            f"{nombre} no consulta `post.procedencia_de_datos_es_confiable` en su predicado de "
+            "éxito: el fail-closed de `-d:` queda sin efecto en este camino"
+        )
+
+
 def test_f5_dyndolod_no_hereda_el_subroot_de_texgen() -> None:
     """Aislamiento: el ``-o:`` de cada herramienta se contrasta contra SU subroot.
 
@@ -605,13 +894,16 @@ def test_f5_dyndolod_no_hereda_el_subroot_de_texgen() -> None:
     assert dyndolod.output.veredicto is VeredictoRuta.DIFIERE
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="el vector del rig es de Windows")
 async def test_f5_vector_del_rig_end_to_end_coincide(tmp_path: pathlib.Path) -> None:
     """El vector real del rig (espacios + backslash duplicado) contra un root equivalente.
 
     End-to-end sobre el post-check del runner con el literal del rig: el eco
     ``E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\`` coincide con el
     ``-o:`` configurado ``E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD``.
+
+    Ya no lleva ``skipif(sys.platform != "win32")``: con ``ntpath`` la comparación
+    es la misma en los dos hosts, y saltarla era dejar sin cobertura justamente el
+    host donde el defecto se manifestaba.
     """
     _, runner = _runner_texgen(tmp_path)
     raiz = pathlib.Path(r"E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD")
