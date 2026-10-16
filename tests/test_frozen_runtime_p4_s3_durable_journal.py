@@ -2357,3 +2357,33 @@ def test_r3_03_interrupcion_no_se_traga(tmp_path: pathlib.Path) -> None:
 
     with pytest.raises(KeyboardInterrupt):
         journal_module.reconciliar_journal(root, observador_effective=_oraculo_interrumpido)
+
+
+def test_r3_01_todo_error_del_journal_se_exporta_por_el_paquete() -> None:
+    """R3-01 (hermano) — un error nuevo del journal no puede quedar sin exportar.
+
+    Lo señaló CodeRabbit en la ronda R3: `JournalObservacionEffectiveError` se
+    agregó a `errors.py` pero **no** al paquete. La superficie del paquete es el
+    contrato del autor de oráculo: sin el export, un fallo ESPERADO de observación
+    sólo se puede señalar importando por ruta interna y, si no se hace, cae en el
+    camino "inesperado" (`ORACULO_FALLO_INESPERADO`) en vez de INDETERMINADO.
+
+    El ancla ENUMERA (AGENTS.md: "arreglar un hermano y no al otro"): recorre
+    TODAS las clases `Journal*Error` definidas en `errors.py`, así la próxima
+    tampoco puede olvidarse.
+    """
+    import sky_claw.local.frozen_runtime as paquete
+    from sky_claw.local.frozen_runtime import errors as errors_module
+
+    definidos = {
+        nombre
+        for nombre, obj in vars(errors_module).items()
+        if isinstance(obj, type)
+        and issubclass(obj, errors_module.JournalError)
+        and obj.__module__ == errors_module.__name__
+    }
+    assert definidos, "el censo debe encontrar los errores del journal"
+    faltantes = sorted(n for n in definidos if n not in paquete.__all__)
+    assert not faltantes, f"errores del journal sin exportar por el paquete: {faltantes}"
+    for nombre in sorted(definidos):
+        assert hasattr(paquete, nombre), nombre
