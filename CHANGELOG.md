@@ -131,6 +131,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   volvía a atar el digest a una reescritura sin significado. El digest sube de dominio a `skyclaw-vfs-profile-v2` y las secciones
   llevan largo explícito (el esquema v1 permitía colisionar dos repartos de bytes distintos).
   Anclas: `tests/test_vfs_attestation_canonicalization.py`.
+- **Tres rituales destructivos devolvían una excepción donde el contrato promete un dict (#726).**
+  `generate_animations` (Pandora), `quick_auto_clean` (SSEEdit) y `generate_bashed_patch`
+  (Wrye Bash) se registraban en el dispatcher sólo con el gate HITL, sin
+  `ErrorWrappingMiddleware` ni `DictResultGuardMiddleware` — el hueco que #722 cerró únicamente
+  para `generate_lods`. Consecuencia: el `ValueError` con que `validate_for_approval` rechaza un
+  payload con claves que la estrategia no honra (p. ej. un `dry_run=True` que el operador aprueba
+  y la estrategia ignora) escapaba del dispatcher hacia la GUI en vez de degradar al contrato
+  legacy, y un resultado no-dict rompía `normalize_tool_result`/`summarize_ritual_result`, que
+  asumen `dict`. Ahora las tres llevan la misma tripleta que `generate_lods`: excepción →
+  `{"status": "error", "reason": <código propio>, "details": ...}`, y resultado no-dict → el
+  código del guard. Alcance verificado leyendo cada servicio, no asumido: `quick_auto_clean` es
+  el hueco MEDIDO —`XEditPipelineService` sólo captura `_ActionManifestError`,
+  `LockAcquisitionError` y `(PatchingError, XEditError)`, sin el `except Exception → dict` de la
+  Regla T11 que sí tienen Pandora y Wrye Bash—; en esas dos el wrapping es defensa en profundidad
+  y uniformidad del contrato del dispatcher, no la corrección de un escape observado. Se preserva
+  lo que ya era correcto: la cancelación sigue propagándose sin envolver, el estado terminal
+  sigue siendo `FAILED` y la denegación HITL no queda tapada por el wrapping. Superficie hermana
+  auditada (no tocada): el registry del agente LLM ya envuelve sus dos tools equivalentes
+  (`run_pandora`, `generate_bashed_patch`) y no expone `quick_auto_clean`. Anclas:
+  `tests/test_destructive_strategies_error_contract.py` — 26 casos más un ancla de familia por
+  introspección sobre `DESTRUCTIVE_TOOL_PATTERNS`.
 
 ### Added
 - **Cooldown COMPARTIDO del flood-control de Telegram (#706).** El reintento de un
