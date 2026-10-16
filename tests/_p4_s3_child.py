@@ -101,7 +101,7 @@ def _aprobacion(transition_id: str) -> object:
     )
 
 
-def _post(transition_id: str) -> object:
+def _post(transition_id: str, revision: int) -> object:
     from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
 
     return PostVerifyEvidence(
@@ -115,6 +115,7 @@ def _post(transition_id: str) -> object:
         effective_observation_digest="1" * 64,
         payload_digest="2" * 64,
         verified_at_ns=1_700_000_000_000_000_001,
+        expected_journal_revision=revision,
     )
 
 
@@ -159,10 +160,17 @@ def _modo_crear(root: pathlib.Path, args: dict) -> dict:
 
 
 def _modo_finalizar(root: pathlib.Path, args: dict) -> dict:
-    from sky_claw.local.frozen_runtime.journal import _finalizar_transicion_bajo_lock
+    from sky_claw.local.frozen_runtime.journal import (
+        _finalizar_transicion_bajo_lock,
+        cargar_journal_transicion,
+    )
 
     _envolver_escritura(args)
-    registro = _finalizar_transicion_bajo_lock(root, _post(args["transition_id"]))
+    # La evidencia POST declara la revisión que observó (§36.6): el hijo la lee
+    # ANTES de finalizar, como haría el verificador real.
+    snapshot = cargar_journal_transicion(root)
+    revision = snapshot.journal.journal_revision if snapshot.journal is not None else 0
+    registro = _finalizar_transicion_bajo_lock(root, _post(args["transition_id"], revision))
     return {
         "ok": True,
         "pid": os.getpid(),

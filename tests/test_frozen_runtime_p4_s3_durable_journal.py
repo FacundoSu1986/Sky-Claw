@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ import uuid
 
 import pytest
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime import journal as journal_module
 from sky_claw.local.frozen_runtime.errors import (
     JournalCasError,
@@ -192,6 +194,63 @@ def _root(tmp_path: pathlib.Path, nombre: str = "root") -> pathlib.Path:
     return root
 
 
+def _quitar_enlace_sin_seguir(ruta: pathlib.Path) -> None:
+    """Borra *ruta* sin seguir el enlace (el destino queda intacto)."""
+    try:
+        tipo = link_kind_or_raise(ruta)
+    except OSError:
+        tipo = None
+    if tipo is not None:
+        if ruta.is_dir():
+            os.rmdir(ruta)  # quita el reparse point, NUNCA el destino
+        else:
+            ruta.unlink()
+        return
+    if ruta.is_dir():
+        shutil.rmtree(ruta, ignore_errors=True)
+    else:
+        ruta.unlink()
+
+
+def _crear_enlace_de_directorio(destino: pathlib.Path, origen: pathlib.Path) -> str:
+    """Crea un enlace de DIRECTORIO real en *destino*; devuelve ``"symlink"`` o ``"junction"``.
+
+    ``os.symlink`` es el camino primario (POSIX y Windows con Developer Mode).
+    Un régimen que intercepte ``os.symlink`` y materialice una COPIA no produce
+    enlace alguno, y el caso quedaría **sin ejercitar** en silencio. Ahí se cae a
+    un **junction** de NTFS (``mklink /J``), que sí es un reparse point real: el
+    mismo que ``link_kind_and_identity_or_raise`` clasifica como ``junction`` y
+    que el código de producción trata igual que un symlink (ambos ⇒
+    ``link_kind_or_raise`` != ``None``). Si ninguna vía produce un enlace real,
+    el test se omite con un motivo explícito — nunca se asume que "se ejecutó"
+    porque el contador global de ``skipped`` no subió.
+    """
+    try:
+        os.symlink(origen, destino, target_is_directory=True)
+    except OSError:
+        pass
+    else:
+        if link_kind_or_raise(destino) == "symlink":
+            return "symlink"
+        _quitar_enlace_sin_seguir(destino)  # era una copia, no un enlace
+    if os.name == "nt":
+        proceso = subprocess.run(  # noqa: S603
+            ["cmd", "/c", "mklink", "/J", str(destino), str(origen)],
+            capture_output=True,
+        )
+        if proceso.returncode == 0 and link_kind_or_raise(destino) == "junction":
+            return "junction"
+        _quitar_enlace_sin_seguir(destino)
+    pytest.skip("el régimen no puede crear un enlace de directorio real (ni symlink ni junction)")
+
+
+def _exigir_enlace_real(ruta: pathlib.Path) -> str:
+    """Aserta que *ruta* ES un enlace real y devuelve su tipo (evidencia por test)."""
+    tipo = link_kind_or_raise(ruta)
+    assert tipo is not None, f"{ruta} debía ser un enlace real y no lo es: el caso no se ejerció"
+    return tipo
+
+
 def _propuesta(transition_id: str = T1, *, operation: str = "PROMOTION") -> object:
     from sky_claw.local.frozen_runtime.journal import (
         EvidenceDigests,
@@ -236,7 +295,14 @@ def _aprobacion(transition_id: str = T1) -> object:
     )
 
 
-def _post(transition_id: str = T1, *, resultado: str = "PASS", target_generation: str = GEN_OBJETIVO) -> object:
+def _post(
+    transition_id: str = T1,
+    *,
+    resultado: str = "PASS",
+    target_generation: str = GEN_OBJETIVO,
+    revision: int = 0,
+    desired: str | None = GEN_OBJETIVO,
+) -> object:
     from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
 
     return PostVerifyEvidence(
@@ -246,11 +312,37 @@ def _post(transition_id: str = T1, *, resultado: str = "PASS", target_generation
         target_generation_id=target_generation,
         target_clone_id="clone-objetivo",
         target_runtime_setup_id="setup-objetivo",
-        desired_active_generation=GEN_OBJETIVO,
+        desired_active_generation=desired,
         effective_observation_digest="1" * 64,
         payload_digest="2" * 64,
         verified_at_ns=1_700_000_000_000_000_001,
+        expected_journal_revision=revision,
     )
+
+
+def _revision_vigente(root: pathlib.Path) -> int:
+    """Revisión del journal vigente: la que un POST honesto declara (§36.6)."""
+    snapshot = journal_module.cargar_journal_transicion(root)
+    if snapshot.journal is None:
+        return 0
+    return snapshot.journal.journal_revision
+
+
+def _post_para(root: pathlib.Path, transition_id: str = T1, **cambios: object) -> object:
+    """Evidencia POST calculada sobre la revisión VIGENTE (el caso honesto)."""
+    return _post(transition_id, revision=_revision_vigente(root), **cambios)
+
+
+def _observacion(
+    *,
+    generation: str | None = GEN_OBJETIVO,
+    clone: str | None = "clone-objetivo",
+    path: str | None = RUTA_EFECTIVA_OBJETIVO,
+) -> object:
+    """Observación tipada del Effective Runtime (vocabulario único N0/PENDING)."""
+    from sky_claw.local.frozen_runtime.journal import ObservacionEffective
+
+    return ObservacionEffective(generation_id=generation, clone_id=clone, effective_path=path)
 
 
 def _crear_pendiente(root: pathlib.Path, propuesta: object = None, aprobacion: object = None) -> object:
@@ -264,7 +356,7 @@ def _finalizar(root: pathlib.Path, evidencia: object = None) -> object:
     """Driver de test: ejecuta la finalización (F1a/F1b/F2) bajo el lock."""
     from sky_claw.local.frozen_runtime.journal import _finalizar_transicion_bajo_lock
 
-    return _finalizar_transicion_bajo_lock(root, evidencia or _post())
+    return _finalizar_transicion_bajo_lock(root, evidencia or _post_para(root))
 
 
 def _start_next(root: pathlib.Path, propuesta: object = None, aprobacion: object = None) -> object:
@@ -736,6 +828,11 @@ def test_actualizacion_con_revision_desactualizada_falla(tmp_path: pathlib.Path)
 
 
 def test_actualizacion_valida_avanza_revision_sin_tocar_identidad(tmp_path: pathlib.Path) -> None:
+    """El ÚNICO campo actualizable es ``expected_effective_path`` (no está en el scope).
+
+    ``evidence_digests`` son los campos 6/8/9 del ``ApprovalScope`` (§38.5) y
+    quedan inmutables: ver ``test_f1_evidencia_aprobada_no_se_sustituye``.
+    """
     root = _root(tmp_path)
     _crear_pendiente(root)
     from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
@@ -743,23 +840,20 @@ def test_actualizacion_valida_avanza_revision_sin_tocar_identidad(tmp_path: path
     snapshot = journal_module.cargar_journal_transicion(root)
     assert snapshot.journal is not None
     revision = snapshot.journal.journal_revision
+    nueva_ruta = "E:/rt/versions/otra-ruta-de-clone"
     nuevo = _actualizar_bajo_lock(
         root,
         expected_transition_id=T1,
         expected_journal_revision=revision,
-        cambios={
-            "evidence_digests": {
-                "clone_evidence": "9" * 64,
-                "runtime_setup_evidence": "e" * 64,
-                "compatibility_evidence": "f" * 64,
-            }
-        },
+        cambios={"expected_effective_path": nueva_ruta},
     )
     assert nuevo.journal_revision == revision + 1
     assert nuevo.transition_id == T1
     despues = journal_module.cargar_journal_transicion(root)
     assert despues.journal is not None
-    assert despues.journal.evidence_digests.clone_evidence == "9" * 64
+    assert despues.journal.expected_effective_path == nueva_ruta
+    # La evidencia aprobada NO se toca.
+    assert despues.journal.evidence_digests == snapshot.journal.evidence_digests
 
 
 def test_actualizacion_rechaza_drift_de_identidad(tmp_path: pathlib.Path) -> None:
@@ -826,6 +920,7 @@ def test_evidencia_post_distinta_nunca_sobrescribe_el_registro(tmp_path: pathlib
         effective_observation_digest="3" * 64,
         payload_digest="4" * 64,
         verified_at_ns=1_700_000_000_000_000_009,
+        expected_journal_revision=_revision_vigente(root),
     )
     with pytest.raises(JournalEvidenciaPostError):
         _finalizar(root, otra)
@@ -837,8 +932,10 @@ def test_finalizar_sin_post_valido_no_finaliza(tmp_path: pathlib.Path) -> None:
     _crear_pendiente(root)
     from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
 
+    base_revision = _revision_vigente(root)
+
     def _evidencia(**cambios: object) -> object:
-        base = _post()
+        base = _post_para(root)
         campos = {
             "transition_id": base.transition_id,
             "resultado": base.resultado,
@@ -850,6 +947,7 @@ def test_finalizar_sin_post_valido_no_finaliza(tmp_path: pathlib.Path) -> None:
             "effective_observation_digest": base.effective_observation_digest,
             "payload_digest": base.payload_digest,
             "verified_at_ns": base.verified_at_ns,
+            "expected_journal_revision": base.expected_journal_revision,
         }
         campos.update(cambios)
         return PostVerifyEvidence(**campos)
@@ -861,9 +959,12 @@ def test_finalizar_sin_post_valido_no_finaliza(tmp_path: pathlib.Path) -> None:
         "target_distinto": _evidencia(target_generation_id="1.6.1170__otra"),
         "source_distinto": _evidencia(source_activation_digest=OTRO_DIGEST_64),
         "sin_timestamp": _evidencia(verified_at_ns=0),
+        "desired_none": _evidencia(desired_active_generation=None),
+        "desired_de_otra_generation": _evidencia(desired_active_generation=GEN_ORIGEN),
+        "revision_de_otro_momento": _evidencia(expected_journal_revision=base_revision + 7),
     }
     for nombre, evidencia in casos.items():
-        with pytest.raises(JournalEvidenciaPostError):
+        with pytest.raises((JournalEvidenciaPostError, JournalCasError)):
             _finalizar(root, evidencia)
         estado = _dump_estado(root)
         assert estado["registros"] == [], nombre
@@ -877,7 +978,7 @@ def test_transicion_posterior_no_sustituye_evidencia_historica(tmp_path: pathlib
     _finalizar(root)
     bytes_t1 = (transitions_state_dir(root) / f"{T1}.json").read_bytes()
     _start_next(root)
-    segundo = _finalizar(root, _post(T2))
+    segundo = _finalizar(root, _post_para(root, T2))
     assert segundo.finalization_seq == 2
     assert segundo.finalized_from_transition_id == T1
     assert (transitions_state_dir(root) / f"{T1}.json").read_bytes() == bytes_t1
@@ -1024,44 +1125,40 @@ def test_crash_entre_reserva_y_registro_deja_reserva_huerfana(
     # reclamarla (la evidencia POST debe ligar la transición pendiente).
     monkeypatch.undo()
     with pytest.raises(JournalEvidenciaPostError):
-        _finalizar(root2, _post(T2))
+        _finalizar(root2, _post_para(root2, T2))
 
 
-def test_store_no_omite_enlace_a_archivo_vacio_como_placeholder(tmp_path: pathlib.Path) -> None:
-    """Un enlace a un archivo de 0 bytes NUNCA se omite como placeholder (§34.5 N2).
+def test_store_no_omite_enlace_de_directorio_como_placeholder(tmp_path: pathlib.Path) -> None:
+    """Un junction llamado ``<T>.json`` NUNCA se omite como placeholder (§34.5 N2).
 
-    ``_placeholder_vacio`` medía con ``stat()``, que SIGUE enlaces: un enlace a
-    un archivo vacío se clasificaba como placeholder y se omitía en la
-    derivación del historial sin pasar por ``_leer_json_estricto``, que sí
-    rechaza enlaces. Es el mismo hueco que el reparse point del journal, pero
-    en los stores históricos.
+    ``_placeholder_vacio`` filtraba con ``is_symlink()`` —CIEGO a los junctions de
+    NTFS— y medía con ``stat()``, que SIGUE el enlace. Un junction llamado
+    ``<T>.json`` apunta a un directorio, y en NTFS un directorio reporta
+    ``st_size == 0``: el guard no lo veía como enlace y la medición daba 0, así
+    que se clasificaba como placeholder y se omitía en la derivación del historial
+    sin pasar por ``_leer_json_estricto``, que sí rechaza enlaces. Es el mismo
+    hueco que el reparse point del journal, pero en los stores históricos.
     """
     root = _root(tmp_path)
-    vacio = tmp_path / "vacio.bin"
-    vacio.write_bytes(b"")
+    externo = tmp_path / "externo-dir-store"
+    externo.mkdir()
     ruta = transitions_state_dir(root) / f"{T2}.json"
-    try:
-        os.symlink(vacio, ruta)
-    except OSError as exc:  # pragma: no cover - régimen sin privilegios
-        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
-    if not ruta.is_symlink():
-        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    tipo = _crear_enlace_de_directorio(ruta, externo)
+    # Evidencia por test: el régimen produjo un enlace REAL y se ejerció el caso.
+    assert _exigir_enlace_real(ruta) == tipo
+    assert not ruta.is_symlink() or tipo == "symlink"
     with pytest.raises(JournalCorruptError):
         journal_module.derivar_historial_finalizados(root)
 
 
-def test_auditoria_no_omite_enlace_a_archivo_vacio_como_placeholder(tmp_path: pathlib.Path) -> None:
+def test_auditoria_no_omite_enlace_de_directorio_como_placeholder(tmp_path: pathlib.Path) -> None:
     """Ídem en el store de reservas: el enlace va al lector estricto, no se omite."""
     root = _root(tmp_path)
-    vacio = tmp_path / "vacio.bin"
-    vacio.write_bytes(b"")
+    externo = tmp_path / "externo-dir-reservas"
+    externo.mkdir()
     ruta = finalization_seqs_state_dir(root) / "2.json"
-    try:
-        os.symlink(vacio, ruta)
-    except OSError as exc:  # pragma: no cover - régimen sin privilegios
-        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
-    if not ruta.is_symlink():
-        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    tipo = _crear_enlace_de_directorio(ruta, externo)
+    assert _exigir_enlace_real(ruta) == tipo
     with pytest.raises(JournalCorruptError):
         journal_module.auditar_reservas_finalizacion(root)
 
@@ -1084,6 +1181,12 @@ def test_reconciliacion_none_sin_oraculo_nunca_es_complete(tmp_path: pathlib.Pat
 
 
 def test_reconciliacion_n0_y_n1_con_oraculo_de_effective(tmp_path: pathlib.Path) -> None:
+    """F10: dos Generation iguales NO prueban la identidad del Clone efectivo.
+
+    Sin un registro FINALIZED que ancle qué Runtime Clone corresponde al
+    Desired, P4-S3 no puede demostrar la coherencia del Clone: el veredicto es
+    INDETERMINADO (``UNKNOWN_EFFECTIVE``), nunca ``COMPLETE`` (§34.5).
+    """
     root = _root(tmp_path)
     from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
     from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
@@ -1092,13 +1195,57 @@ def test_reconciliacion_n0_y_n1_con_oraculo_de_effective(tmp_path: pathlib.Path)
         root / "state" / "active.json",
         FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_ORIGEN, updated_at_ns=1),
     )
-    # N0: Desired == Effective observado.
-    n0 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_ORIGEN)
-    assert n0.veredicto.value == "COMPLETE"
+    # Generation igual, pero SIN autoridad durable del Clone ⇒ indeterminado.
+    sin_ancla = journal_module.reconciliar_journal(
+        root,
+        observador_effective=lambda: _observacion(
+            generation=GEN_ORIGEN, clone="clone-origen", path="E:/rt/versions/" + GEN_ORIGEN
+        ),
+    )
+    assert sin_ancla.veredicto.value != "COMPLETE"
+    assert sin_ancla.veredicto.value == "UNKNOWN_EFFECTIVE"
+    assert "IDENTIDAD_DE_CLONE_NO_DEMOSTRABLE" in sin_ancla.motivo
     # N1: sin transición y Desired != Effective ⇒ FAIL_CLOSED, dueño requerido.
-    n1 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    n1 = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
     assert n1.veredicto.value == "FAIL_CLOSED"
     assert n1.requiere_dueno is True
+
+
+def test_reconciliacion_n0_complete_exige_clone_registrado(tmp_path: pathlib.Path) -> None:
+    """N0 sólo es COMPLETE con la identidad del Runtime Clone DEMOSTRADA (§34.5).
+
+    ``N0_COMPLETE_REQUIRES_PROVEN_IDENTITY = YES``: la autoridad durable del
+    Clone activo es el registro FINALIZED más reciente (§37.5).
+    """
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    _crear_pendiente(root)
+    _finalizar(root)  # registro T1: target GEN_OBJETIVO / clone "clone-objetivo"
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_OBJETIVO, updated_at_ns=1),
+    )
+    # Clone observado == el que la autoridad durable registra ⇒ COMPLETE.
+    ok = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
+    assert ok.veredicto.value == "COMPLETE"
+    assert ok.punto_crash == "N0"
+    # OTRO Clone de la MISMA Generation ⇒ FAIL_CLOSED (antes daba COMPLETE).
+    otro_clone = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-ajeno")
+    )
+    assert otro_clone.veredicto.value == "FAIL_CLOSED"
+    assert "Runtime Clone" in otro_clone.motivo
+    # Identidad de Clone indeterminada ⇒ FAIL_CLOSED, nunca COMPLETE.
+    indeterminado = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone=None)
+    )
+    assert indeterminado.veredicto.value == "FAIL_CLOSED"
 
 
 def test_reconciliacion_desired_none_y_oraculo_none_nunca_es_complete(tmp_path: pathlib.Path) -> None:
@@ -1130,7 +1277,9 @@ def test_reconciliacion_c5_c6_c7_con_evidencia_y_registro(tmp_path: pathlib.Path
     _crear_pendiente(root)
     # C6: el oráculo observa la RUTA efectiva (identidad del Clone, §34.5):
     # la reconciliación permite re-correr el POST (RECOVER) sin finalizar sola.
-    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: RUTA_EFECTIVA_OBJETIVO)
+    c6 = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
     assert c6.veredicto.value == "RECOVER"
     _finalizar(root)
     # C7 equivale a N0 una vez rotado: Desired == Effective y sin transición.
@@ -1140,7 +1289,9 @@ def test_reconciliacion_c5_c6_c7_con_evidencia_y_registro(tmp_path: pathlib.Path
         root / "state" / "active.json",
         FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_OBJETIVO, updated_at_ns=1),
     )
-    c7 = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    c7 = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
     assert c7.veredicto.value == "COMPLETE"
     assert c7.punto_crash == "N0"
 
@@ -1157,13 +1308,22 @@ def test_reconciliacion_pending_exige_identidad_de_clone_no_de_generation(tmp_pa
     root = _root(tmp_path)
     _crear_pendiente(root)
     # El oráculo observa la ruta que ejecuta el runtime: la esperada por el bind.
-    c6 = journal_module.reconciliar_journal(root, observador_effective=lambda: RUTA_EFECTIVA_OBJETIVO)
+    c6 = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
     assert c6.veredicto.value == "RECOVER"
     assert "EXPECTED_PATH" in c6.motivo
-    # Una Generation a secas no demuestra identidad de Clone: fail-closed.
-    por_generation = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    # Una observación cuya "ruta" es la Generation a secas no es la del Clone.
+    por_generation = journal_module.reconciliar_journal(
+        root,
+        observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo", path=GEN_OBJETIVO),
+    )
     assert por_generation.veredicto.value == "REQUIRE_OWNER"
     assert "EXPECTED_PATH" in por_generation.motivo
+    # F10: un callback que devuelve una Generation suelta ya no es contrato válido.
+    no_tipado = journal_module.reconciliar_journal(root, observador_effective=lambda: GEN_OBJETIVO)
+    assert no_tipado.veredicto.value == "FAIL_CLOSED"
+    assert "EFFECTIVE_NO_TIPADO" in no_tipado.motivo
 
 
 def test_reconciliacion_oraculo_indeterminado_es_fail_closed(tmp_path: pathlib.Path) -> None:
@@ -1187,13 +1347,10 @@ def test_desired_corrupto_en_reconciliacion_es_fail_closed(tmp_path: pathlib.Pat
 def test_reconciliacion_rechaza_enlaces_en_el_journal(tmp_path: pathlib.Path) -> None:
     root = _root(tmp_path)
     ruta = transition_journal_path(root)
-    try:
-        os.symlink(ruta, ruta.with_suffix(".json.link"))
-        os.replace(ruta.with_suffix(".json.link"), ruta)
-    except OSError as exc:  # pragma: no cover - régimen sin privilegios
-        pytest.skip(f"no se pudo crear el symlink en este régimen: {exc}")
-    if not ruta.is_symlink():
-        pytest.skip("el régimen sandbox convirtió el symlink en copia: no aplica")
+    externo = tmp_path / "externo-journal"
+    externo.mkdir()
+    tipo = _crear_enlace_de_directorio(ruta, externo)
+    assert _exigir_enlace_real(ruta) == tipo
     with pytest.raises((JournalCorruptError, JournalIdentityError)):
         journal_module.cargar_journal_transicion(root)
 
@@ -1346,7 +1503,7 @@ def test_s3_contencion_no_deja_temporales_ni_basura(tmp_path: pathlib.Path) -> N
     _crear_pendiente(root)
     _finalizar(root)
     _start_next(root)
-    _finalizar(root, _post(T2))
+    _finalizar(root, _post_para(root, T2))
     basura = [p.name for p in (root / "state").iterdir() if p.name.startswith(".") or p.name.endswith(".tmp")]
     assert basura == []
 
@@ -1473,3 +1630,326 @@ def test_s3_finalize_y_create_internos_exigen_handle() -> None:
     for nombre in ("_finalizar_locked", "_crear_pendiente_locked", "_start_next_locked", "_actualizar_locked"):
         firma = inspect.signature(getattr(modulo, nombre))
         assert "handle" in firma.parameters, nombre
+
+
+# ============================================================================
+# Ronda de revisión R2 (PR #736): adjudicación de los 15 hallazgos
+#
+# Autoridad: §35.6 (evidencia durable liga desired state), §36.3 (source
+# baseline coherente), §36.6 (JOURNAL_FINALIZE_CAS = transition_id +
+# journal_revision), §36.9 C6 (reintento exige mismo source/target/Desired),
+# §37.5/§38.3 (autoridad del store y de la reserva), §34.5 N2 (corrupto/redirigido
+# nunca se lee como ausente).
+# ============================================================================
+
+
+def test_f1_evidencia_aprobada_no_se_sustituye(tmp_path: pathlib.Path) -> None:
+    """F1 — el conjunto aprobado de artefactos no puede alterarse reutilizando la aprobación.
+
+    ``clone_evidence`` / ``runtime_setup_evidence`` / ``compatibility_evidence``
+    son los campos 6/8/9 del ``ApprovalScope`` (§38.5) y ``approval_scope_digest``
+    los compromete. Permitir sustituirlos conservando el scope consumido dejaba
+    finalizar contenido nuevo bajo la aprobación del contenido viejo.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
+
+    snapshot = journal_module.cargar_journal_transicion(root)
+    assert snapshot.journal is not None
+    revision = snapshot.journal.journal_revision
+    with pytest.raises(JournalIdentityError):
+        _actualizar_bajo_lock(
+            root,
+            expected_transition_id=T1,
+            expected_journal_revision=revision,
+            cambios={
+                "evidence_digests": {
+                    "clone_evidence": "9" * 64,
+                    "runtime_setup_evidence": "e" * 64,
+                    "compatibility_evidence": "f" * 64,
+                }
+            },
+        )
+    despues = journal_module.cargar_journal_transicion(root)
+    assert despues.journal is not None
+    # El journal NO se movió: la evidencia aprobada sigue siendo la misma.
+    assert despues.journal.evidence_digests == snapshot.journal.evidence_digests
+    assert despues.journal.journal_revision == revision
+    # Y la transición sigue finalizando con la aprobación ORIGINAL (no se invalidó).
+    _finalizar(root)
+    assert _dump_estado(root)["registros"] == [f"{T1}.json"]
+
+
+def test_f2_evidencia_post_de_otra_revision_no_finaliza(tmp_path: pathlib.Path) -> None:
+    """F2 — POST calculado para la revisión R no puede finalizar R+1 (§36.6).
+
+    ``JOURNAL_FINALIZE_CAS = (transition_id, journal_revision)``. Comparar sólo
+    ``transition_id`` aceptaba evidencia obsoleta y finalizaba después de que la
+    ruta efectiva esperada hubiera cambiado.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    from sky_claw.local.frozen_runtime.journal import _actualizar_bajo_lock
+
+    revision_r = _revision_vigente(root)
+    _actualizar_bajo_lock(
+        root,
+        expected_transition_id=T1,
+        expected_journal_revision=revision_r,
+        cambios={"expected_effective_path": "E:/rt/versions/ruta-post-bind"},
+    )
+    assert _revision_vigente(root) == revision_r + 1
+
+    with pytest.raises(JournalCasError):
+        _finalizar(root, _post(T1, revision=revision_r))
+    assert _dump_estado(root)["registros"] == []
+    assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+
+    # La evidencia de la revisión VIGENTE sí finaliza: la idempotencia válida se preserva.
+    _finalizar(root, _post_para(root))
+    assert _dump_estado(root)["registros"] == [f"{T1}.json"]
+
+
+def test_f3_post_pass_con_desired_incorrecto_no_publica_registro(tmp_path: pathlib.Path) -> None:
+    """F3 — POST PASS con ``desired_active_generation`` distinto del target no finaliza.
+
+    §35.6: la evidencia durable liga, al MISMO, ``{transition_id, source, target,
+    desired state, effective observation}``.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    for deseado in (None, GEN_ORIGEN, "1.6.640.0__otra"):
+        with pytest.raises(JournalEvidenciaPostError):
+            _finalizar(root, _post_para(root, desired=deseado))
+        assert _dump_estado(root)["registros"] == [], deseado
+        assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+    # El Desired correcto (== target) sí finaliza.
+    _finalizar(root, _post_para(root, desired=GEN_OBJETIVO))
+    assert _dump_estado(root)["registros"] == [f"{T1}.json"]
+
+
+def test_f4_registro_sin_reserva_bloquea_finalize_y_start_next(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F4 — la autoridad de la secuencia se audita ANTES de ampliar el historial (§38.3).
+
+    ``registro sin reserva ⇒ INCONSISTENT_AUTHORITY ⇒ FAIL_CLOSED``. Antes, sólo
+    la reconciliación lo detectaba: FINALIZE y START_NEXT avanzaban igual.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=3)  # F1a+F1b ok, F2 falla
+    with pytest.raises(OSError):
+        _finalizar(root)
+    monkeypatch.undo()
+    assert _dump_estado(root)["reservas"] == ["1.json"]
+    (finalization_seqs_state_dir(root) / "1.json").unlink()
+
+    # Completar la rotación exige autoridad coherente.
+    with pytest.raises(JournalIdentityError):
+        _finalizar(root)
+    assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+
+    # START_NEXT (el otro mutador que amplía el historial) también falla cerrado.
+    root2 = _root(tmp_path, "root2")
+    _crear_pendiente(root2)
+    _finalizar(root2)
+    (finalization_seqs_state_dir(root2) / "1.json").unlink()
+    with pytest.raises(JournalIdentityError):
+        _start_next(root2)
+    # La reconciliación clasifica la misma incoherencia.
+    assert journal_module.reconciliar_journal(root2).veredicto.value == "FAIL_CLOSED"
+
+
+def test_f5_ancestro_redirigido_nunca_es_absent(tmp_path: pathlib.Path) -> None:
+    """F5 — un namespace redirigido no es 'primer arranque' (§34.5 N2).
+
+    Con ``transition.json`` ausente bajo un ancestro enlazado, ``exists()`` es
+    False y el loader reportaba ABSENT limpio sin inspeccionar el parent.
+    """
+    root = _root(tmp_path)
+    externo = tmp_path / "externo-vacio"
+    externo.mkdir()
+    real = root / "state-real"
+    os.rename(root / "state", real)
+    tipo = _crear_enlace_de_directorio(root / "state", externo)
+    assert _exigir_enlace_real(root / "state") == tipo
+    assert not transition_journal_path(root).exists()
+    with pytest.raises(JournalCorruptError):
+        journal_module.cargar_journal_transicion(root)
+
+
+def test_f6_source_activation_parcial_rechaza(tmp_path: pathlib.Path) -> None:
+    """F6 — un source a medias no es ni bootstrap ni observación (§36.3).
+
+    ``{generation_id, clone_id, runtime_setup_id, effective_runtime_evidence:
+    null}`` pasaba y podía volverse ``previous_activation_target`` sin demostrar
+    el baseline observado.
+    """
+    root = _root(tmp_path)
+    parcial = {
+        "generation_id": GEN_ORIGEN,
+        "clone_id": "clone-origen",
+        "runtime_setup_id": "setup-origen",
+        "effective_runtime_evidence": None,
+    }
+    _escribir_json(transition_journal_path(root), _payload_pendiente(fuente=parcial))
+    with pytest.raises(JournalSchemaError):
+        journal_module.cargar_journal_transicion(root)
+
+    # El bootstrap íntegramente vacío sigue siendo legítimo (no es un parcial).
+    vacio = {
+        "generation_id": None,
+        "clone_id": None,
+        "runtime_setup_id": None,
+        "effective_runtime_evidence": None,
+    }
+    _escribir_json(transition_journal_path(root), _payload_pendiente(fuente=vacio))
+    assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+
+
+def test_f7_registro_finalizado_de_otro_estado_no_rota(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F7 — un registro de forma válida pero de OTRO estado no vuelve autoridad (§36.9 C6).
+
+    Comparar sólo ``transition_id`` + digest POST + timestamp aceptaba el
+    registro y rotaba el journal, dejando un historial que contradice la
+    transición pendiente.
+    """
+    root = _root(tmp_path)
+    _crear_pendiente(root)
+    _parchear_fallo_en_escritura(monkeypatch, fallar_en_llamada=3)
+    with pytest.raises(OSError):
+        _finalizar(root)
+    monkeypatch.undo()
+    ruta = transitions_state_dir(root) / f"{T1}.json"
+    payload = json.loads(ruta.read_text(encoding="utf-8"))
+    payload["operation"] = "ROLLBACK"  # forma válida; identidad inmutable distinta
+    _escribir_json(ruta, payload)
+    with pytest.raises(JournalIdentityError):
+        _finalizar(root)
+    # El journal NO rotó: ambas evidencias se preservan.
+    assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+    assert json.loads(ruta.read_text(encoding="utf-8"))["operation"] == "ROLLBACK"
+
+
+def test_f8_transicion_concurrente_no_permite_complete(tmp_path: pathlib.Path) -> None:
+    """F8 — el snapshot durable es causalmente coherente (§34.5).
+
+    Una transición creada mientras el reconciliador observa el Effective (fuera
+    del lock, como exige §34.3/§39.4) no puede quedar invisible y producir
+    ``COMPLETE`` sobre el estado anterior.
+    """
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    _crear_pendiente(root)
+    _finalizar(root)
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_OBJETIVO, updated_at_ns=1),
+    )
+    # Control: sin concurrencia, este estado es N0 COMPLETE.
+    control = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+    )
+    assert control.veredicto.value == "COMPLETE"
+
+    def _oraculo_con_carrera() -> object:
+        # El oráculo corre FUERA del lock: acá entra una transición nueva, que el
+        # snapshot ya tomado no vio.
+        _start_next(root, _propuesta(T2), _aprobacion(T2))
+        return _observacion(generation=GEN_OBJETIVO, clone="clone-objetivo")
+
+    resultado = journal_module.reconciliar_journal(root, observador_effective=_oraculo_con_carrera)
+    assert resultado.veredicto.value != "COMPLETE"
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "AUTORIDAD_CAMBIADA" in resultado.motivo
+    # La transición concurrente sigue intacta: la reconciliación nunca muta.
+    assert journal_module.cargar_journal_transicion(root).disposition.value == "PENDING_PROMOTION"
+
+
+def test_f9_reserva_de_otro_root_no_es_autoridad_local(tmp_path: pathlib.Path) -> None:
+    """F9 — la reserva está root-keyed: la de otro root no es evidencia local (§38.3)."""
+    from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
+
+    root = _root(tmp_path)
+    otro = _root(tmp_path, "otro-root")
+    _crear_pendiente(root)
+    _finalizar(root)
+    ruta = finalization_seqs_state_dir(root) / "1.json"
+    payload = json.loads(ruta.read_text(encoding="utf-8"))
+    assert payload["root_id"] == canonical_root_key(root)[0]
+    payload["root_id"] = canonical_root_key(otro)[0]
+    _escribir_json(ruta, payload)
+    with pytest.raises(JournalIdentityError):
+        journal_module.auditar_reservas_finalizacion(root)
+    assert journal_module.reconciliar_journal(root).veredicto.value == "FAIL_CLOSED"
+
+
+def test_f11_generation_id_invalido_no_aborta_el_barrido(tmp_path: pathlib.Path) -> None:
+    """F11 — ``InvalidGenerationIdError`` se clasifica; no escapa (§34.5).
+
+    Es hermana de ``StateCorruptError`` (ambas ``FrozenRuntimeStorageError``), no
+    subclase: sin incluirla, un root malformado abortaba el barrido de arranque
+    en vez de aislarse para recuperación por dueño.
+    """
+    root = _root(tmp_path)
+    (root / "state" / "active.json").write_text(
+        json.dumps({"schema_version": 1, "desired_active_generation": "../escape", "updated_at_ns": 1}),
+        encoding="utf-8",
+    )
+    resultado = journal_module.reconciliar_journal(root)  # NO debe propagar la excepción
+    assert resultado.veredicto.value == "FAIL_CLOSED"
+    assert "DESIRED_ILEGIBLE" in resultado.motivo
+    assert resultado.requiere_dueno is True
+
+
+def test_f12_directorio_o_enlace_de_directorio_nunca_es_placeholder(tmp_path: pathlib.Path) -> None:
+    """F12 — sólo un archivo REGULAR de 0 bytes es placeholder.
+
+    ``stat()`` sigue enlaces y en NTFS un directorio reporta ``st_size == 0``:
+    un junction/directorio llamado ``<T>.json`` se omitía como placeholder y
+    nunca llegaba al lector estricto.
+    """
+    root = _root(tmp_path)
+    # (a) directorio real llamado <T>.json
+    (transitions_state_dir(root) / f"{T2}.json").mkdir()
+    with pytest.raises(JournalCorruptError):
+        journal_module.derivar_historial_finalizados(root)
+    # La reconciliación CLASIFICA (no lanza): el directorio es corrupción, no ausencia.
+    assert journal_module.reconciliar_journal(root).veredicto.value == "FAIL_CLOSED"
+
+    # (b) enlace a un DIRECTORIO en el store de reservas
+    root2 = _root(tmp_path, "root2")
+    externo = tmp_path / "externo-dir"
+    externo.mkdir()
+    ruta_enlace = finalization_seqs_state_dir(root2) / "2.json"
+    tipo = _crear_enlace_de_directorio(ruta_enlace, externo)
+    assert _exigir_enlace_real(ruta_enlace) == tipo
+    with pytest.raises(JournalCorruptError):
+        journal_module.auditar_reservas_finalizacion(root2)
+
+    # (c) control positivo: el archivo regular de 0 bytes SÍ es placeholder
+    root3 = _root(tmp_path, "root3")
+    (transitions_state_dir(root3) / f"{T2}.json").write_bytes(b"")
+    vista = journal_module.derivar_historial_finalizados(root3)
+    assert vista.registros == ()
+
+
+def test_f13_store_redirigido_no_es_historial_vacio(tmp_path: pathlib.Path) -> None:
+    """F13 — la admisión del directorio precede a ``exists()`` (§34.5 N2).
+
+    Un enlace colgado en ``state/transitions/`` hace ``exists() == False`` y el
+    store se degradaba a "historial vacío legítimo" ⇒ N0/N1 limpio.
+    """
+    root = _root(tmp_path)
+    real = root / "state" / "transitions-real"
+    os.rename(transitions_state_dir(root), real)
+    tipo = _crear_enlace_de_directorio(transitions_state_dir(root), tmp_path / "destino-inexistente")
+    assert _exigir_enlace_real(transitions_state_dir(root)) == tipo
+    assert not transitions_state_dir(root).exists()  # el caso exacto del hallazgo
+    with pytest.raises(JournalIdentityError):
+        journal_module.derivar_historial_finalizados(root)
+    assert journal_module.reconciliar_journal(root).veredicto.value == "FAIL_CLOSED"
