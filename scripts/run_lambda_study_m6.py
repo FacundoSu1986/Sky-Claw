@@ -1,4 +1,11 @@
-"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v5.
+"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v6.1.
+
+REV 6.1 (2026-10-16): reconciliación documental de Nyquist mixto y porcentajes.
+El solver y sus símbolos no cambian: el test independiente confirma que los
+modos mixtos siguen siendo recuperables y que sólo los bins con ambos símbolos
+nulos pertenecen al espacio nulo. Los porcentajes se recalculan desde los
+valores numéricos registrados; la tendencia finita ~1/N es observada, no un
+teorema general.
 
 REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
 Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
@@ -22,7 +29,7 @@ v3 (db5e5bd7) corrigió el defecto Nyquist del solver (contraejemplo RMSE
 pesos incorrectos. v4 (5c473d5) reconstruyó la curva con los operadores D del
 solver y la regla de pesos rfft2 correcta para N par (valores λ=0 rég. B:
 0.006794/0.007955/0.009087/0.010205 @N=32/64/128/256, σ=0.1 — verificados por
-dos partes independientes al dígito). v5: esta.
+dos partes independientes al dígito). v5: runner canónico. v6.1: esta reconciliación documental; solver intacto.
 """
 
 from __future__ import annotations
@@ -173,10 +180,13 @@ def analytic_curve(
     """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(D/(D+λ))²·E|ĥ|²  [sesgo de señal]
                  + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
     con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
-    pesos de Parseval de _parseval_weights (exacto para toda paridad). Régimen A (noise_filtered=True): ruido sólo en banda;
-    Régimen B (False): ruido blanco en TODO bin con D>0. Con λ>0 fijo el ruido
-    de B acota a ≈(σ²/2π)·ln(π/√λ); con λ=0 crece como (σ²/2π)·ln N (P1-2).
-    include_signal=False expone sólo el término de ruido (para MC de ruido puro)."""
+    Parseval de _parseval_weights (exacto para toda paridad). Régimen A
+    (noise_filtered=True): ruido sólo en banda; Régimen B (False): ruido
+    blanco en cada bin con D>0. Para λ>0 fijo, la suma converge a
+    noise_mse_limit(λ, σ); la fórmula log sólo es dominante cuando λ→0.
+    En N par, un bin de Nyquist mixto puede tener D>0; D=0 requiere que ambos
+    símbolos sean nulos. Con λ=0, el ruido blanco crece como (σ²/2π)·ln N
+    (P1-2). include_signal=False expone sólo el término de ruido (MC puro)."""
     kxr = (2 * np.pi * np.fft.rfftfreq(n))[None, :]
     kyr = (2 * np.pi * np.fft.fftfreq(n))[:, None]
     k = np.sqrt(kxr**2 + kyr**2)
@@ -214,15 +224,21 @@ def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
         V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
 
     derivado de la suma discreta (1/N²)·Σ w·D/(D+λ)² → integral en el límite
-    N→∞ (los bins con D=0 — incluidos los Nyquist mixtos — aportan 0 y tienen
-    medida nula en el continuo). Evaluación INDEPENDIENTE de analytic_curve:
-    disco r≤π en forma cerrada (polar) + 4 esquinas por Gauss-Legendre anidado
-    (m×m por esquina; estable a 2e-12 desde m=200).
+    N→∞. Para λ>0, fλ(t)=t/(t+λ)² es continua y está acotada por 1/(4λ).
+    En N par, D sólo difiere de kx²+ky² en las líneas Nyquist: hay O(N) bins
+    excepcionales y su contribución normalizada es O(1/N); los demás términos
+    son sumas de Riemann de un integrando continuo. Las líneas tienen medida
+    nula, pero sus bins mixtos no son, en general, espacio nulo (ver §4.1).
+    Evaluación INDEPENDIENTE de analytic_curve: disco r≤π en forma cerrada
+    (polar) + 4 esquinas por Gauss-Legendre anidado (estable a 2e-12 desde
+    m=200).
 
-    IMPORTANTE: la aproximación log σ²/(2π)·ln(π/√λ) es sólo el comportamiento
-    dominante para λ→0, NO el límite: en λ=1e-3 queda +9.22 % por encima de
-    V∞ (0.007318911 vs 0.006698379 con σ=0.1). λ>0 acota el ruido pero NO
-    recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
+    Errata REV 6.1, con los valores registrados (σ=0.1, λ=1e-3): la
+    aproximación log 0.007318911 supera V∞=0.006698379 en +9.2639% (~+9.26%);
+    MSE discreto N=1024, 0.006849252, en +2.2524% (~+2.25%); N=2048,
+    0.006773816, en +1.1262% (~+1.13%). El comportamiento finito ~1/N se
+    observa en estos tamaños; no se afirma como teorema general. λ>0 acota
+    el ruido, pero NO recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
     x, wx = np.polynomial.legendre.leggauss(m)
     y, wy = np.polynomial.legendre.leggauss(m)
     xn = np.pi * (x + 1) / 2
@@ -312,7 +328,7 @@ def selftest() -> int:
     assert vals[-1] < vals[1], vals  # decrece hacia V∞
     v_inf = noise_mse_limit(lam, 0.1)
     assert abs(v_inf - 0.006698379) < 5e-9, v_inf  # límite continuo (2 vías, ronda 6)
-    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.21% @1024²
+    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.25% @1024²
     asymp_log = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
     assert abs(asymp_log - v_inf) / v_inf > 0.05, (asymp_log, v_inf)  # log ≠ límite
     lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2

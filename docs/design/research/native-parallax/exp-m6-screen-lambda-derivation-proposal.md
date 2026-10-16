@@ -1,8 +1,12 @@
-# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 6
+# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 6.1
 
 > **Estado:** `PROPOSAL` — insumo externo para la ETAPA A del prereg de EXP-M6
 > ([PR #675](https://github.com/FacundoSu1986/Sky-Claw/pull/675), DRAFT). **No autoriza
 > implementación ni ejecución de M6** (`M6_IMPLEMENTATION_BLOCKED = YES` vigente).
+>
+> **REV 6.1 (2026-10-16):** adjudicación acotada de Nyquist mixto y porcentajes (§8.5).
+> El solver FFT y sus símbolos quedan sin cambios; los dorados y las seis revisiones
+> históricas se preservan. Contrato global M6 aún abierto; implementación bloqueada.
 >
 > **REV 6 (2026-10-15, ronda 6):** reconciliación asintótica sobre el PR #738. Tres
 > hallazgos adjudicados (§8.4), todos aceptados con verificación numérica previa:
@@ -13,8 +17,10 @@
 >    **V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky = 0.006698379**
 >    (λ=1e-3, σ=0.1; dos vías independientes: disco en forma cerrada + esquinas
 >    Gauss-Legendre m=200/400/800, estable a 2e-12; extrapolación discreta de 3
->    puntos = 0.006698378). La fórmula log queda **+9.22 %** por encima. La suma
->    discreta converge a V∞ con exceso ∝1/N (+2.21 % ya en 1024²). Los valores
+>    puntos = 0.006698378). Con los valores registrados, la fórmula log queda
+>    **+9.2639% ≈ +9.26%** por encima; N=1024 queda **+2.2524% ≈ +2.25%** y
+>    N=2048 **+1.1262% ≈ +1.13%**. El comportamiento de exceso ~1/N es observado,
+>    no demostrado como teorema general. Los valores
 >    dorados de REV 5 quedan intactos (no se tocó ninguna medición, sólo la
 >    caracterización del límite). RED→GREEN con oráculo independiente (§4.1).
 > 2. **§3 — Conjugación**: el código ya era correcto (`conj(dx)·p̂ + conj(dy)·q̂`);
@@ -109,14 +115,19 @@ bin `k=N/2` mezcla las fases cos/sin y ningún operador consistente puede separa
 La convención estándar de métodos espectrales es `d = 0` en el eje Nyquist de cada eje:
 
 ```
-dx(kx,ky) = i·kx   si kx ≠ N/2 ;   0  si kx = N/2
-dy(kx,ky) = i·ky   si ky ≠ N/2 ;   0  si ky = N/2
-ĥ(k) = (conj(dx)·p̂ + conj(dy)·q̂) / (|dx|²+|dy|²+λ)     [bins con denom=0: ĥ=0]
+dx(kx,ky) = 0                         si kx = 0 o kx = π (N par)
+            i·kx                      fuera de esas frecuencias
+dy(kx,ky) = 0                         si ky = 0 o |ky| = π (N par; el orden FFT puede guardarlo como −π)
+            i·ky                      fuera de esas frecuencias
+D(kx,ky) = |dx|² + |dy|²
+ĥ(k) = (conj(dx)·p̂ + conj(dy)·q̂) / (D+λ)     [bins con D+λ=0: ĥ=0]
 ```
 
-**Espacio nulo REAL (declarándolo, no silenciándolo).** Sólo son no observables los
-bins donde **ambos** ejes carecen de derivada. Un bin con Nyquist en X pero `ky`
-genérico **conserva** la altura: se recupera por la derivada en Y.
+Para N impar no existe una frecuencia Nyquist exacta; cada símbolo es `i·k` salvo
+el cero de su eje. **Espacio nulo REAL (declarándolo, no silenciándolo).** Sólo son
+no observables los bins donde **ambos** símbolos valen cero. Un bin con Nyquist en
+X pero frecuencia Y no nula, o viceversa, **conserva** la altura por la derivada del
+otro eje; por eso una línea Nyquist no es un espacio nulo completo.
 
 **El defecto de la REV 2 (confirmado por contraejemplo, REV 3).** La máscara por bins
 completos eliminaba la columna/fila ENTERA: para `h(x,y) = (-1)^x·sin(6πy/64)`
@@ -203,9 +214,17 @@ solver y los pesos §2.3 (éste era el P1-1).
 |---|---|---|
 | Modelo discreto exacto | `(σ²/N²)·Σ_{D>0} w·D/(D+λ)²` | lo que implementa `analytic_curve` (`VERIFIED`) |
 | Límite continuo (N→∞) | **`V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky`** | límite EXACTO del operador (REV 6, ronda 6) |
-| Aproximación log (λ→0) | `(σ²/2π)·ln(π/√λ)` | **sólo comportamiento dominante — NO es el límite** (+9.22 % sobre V∞ en λ=1e-3) |
-| Error de resolución finita | exceso sobre V∞ **∝ 1/N** (medido) | +8.9 % @256², +2.21 % @1024², +1.09 % @2048² |
+| Aproximación log (λ→0) | `(σ²/2π)·ln(π/√λ)` | **sólo comportamiento dominante — NO es el límite**; con los datos registrados: +9.2639% ≈ +9.26% sobre V∞ |
+| Error de resolución finita | observado ~1/N en estos tamaños; **no es un teorema general** | +8.9259% ≈ +8.93% @256²; +4.5047% ≈ +4.50% @512²; +2.2524% ≈ +2.25% @1024²; +1.1262% ≈ +1.13% @2048² |
 | λ=0 | `(σ²/2π)·ln N + O(1)` | divergencia infrarroja **sin cota** con N |
+
+**Porcentajes reconciliados desde los datos registrados (λ=1e-3, σ=0.1):**
+`V∞=0.006698379`; aproximación log `0.007318911`; discreto N=1024
+`0.006849252`; discreto N=2048 `0.006773816`. Se calcula
+`100·(valor−V∞)/V∞`: log **+9.2639%** (presentación **+9.26%**), N=1024
+**+2.2524%** (presentación **+2.25%**) y N=2048 **+1.1262%** (presentación
+**+1.13%**). Los valores fuente no se alteran; sólo se corrigen sus cocientes y
+redondeos de presentación.
 
 **P1 de la ronda 6 (aceptado tras verificación):** la REV 5 presentaba la fórmula
 log como el límite. Verificación independiente de REV 6 con DOS vías que no
@@ -218,14 +237,35 @@ reutilizan `analytic_curve`:
 - **Extrapolación de la propia suma discreta** (3 puntos, modelo `V∞ + a/N + b/N²`):
   **0.006698378** (a=0.1545, b=−3.5e-3) — coherente en 1e-9 con la cuadratura.
 - Convergencia discreta medida (λ=1e-3): 256²: 0.007296271 · 512²: 0.007000119 ·
-  1024²: 0.006849252 · 2048²: 0.006773816; ratios de exceso 1.99 / 2.02 / 2.04
-  (≈1/N). La explicación "−6.4 % por corte finito" de la REV 5 queda **RETIRADA**:
-  la discrepancia real era que la referencia log no era el límite.
+  1024²: 0.006849252 · 2048²: 0.006773816. A partir de los valores impresos,
+  los excesos relativos son +8.9259%, +4.5047%, +2.2524% y +1.1262%; los cocientes
+  de excesos por doblar N son aproximadamente 1.98, 2.00 y 2.00. Esto es evidencia
+  finita compatible con ~1/N, no una demostración de una ley general. La explicación
+  "−6.4 % por corte finito" de la REV 5 queda **RETIRADA**: la discrepancia real era
+  que la referencia log no era el límite.
 
-**Nyquist y medida nula (§4 del mandato):** los bins con D=0 — incluidos los
-Nyquist mixtos — aportan exactamente 0 al término de ruido para todo λ≥0
-(`D/(D+λ)²=0`) y corresponden a conjuntos de medida nula en el límite continuo:
-sin contribución a V∞. Verificado en la derivación y en el selftest (tablero).
+**Acotación que justifica el límite para λ>0 fijo:** sea
+`fλ(t)=t/(t+λ)²`, `t≥0`. Como `sup fλ=1/(4λ)`, el integrando es continuo y acotado.
+En N par, el D discreto sólo difiere de `kx²+ky²` sobre la columna y la fila
+Nyquist: en la grilla completa hay a lo sumo `2N−1` bins excepcionales. Cada
+contribución difiere en no más de `1/(4λ)`, así que el error entre la suma de
+símbolos y la suma de Riemann del integrando continuo queda acotado por
+`σ²(2N−1)/(4λN²)=O(1/N)`. La suma de Riemann converge a la integral porque el
+integrando es continuo en `[-π,π]²`. Para N impar no hay línea Nyquist exacta y
+D coincide con `kx²+ky²` en la grilla (salvo el DC, que también aporta cero).
+Por tanto las líneas excepcionales tienen medida nula en el límite para λ>0,
+pero **eso no convierte cada bin Nyquist mixto en D=0**.
+
+**Nyquist y espacio nulo (§4 del mandato):** con N par y coordenadas `rfft2`
+(shape `(N, N/2+1)`), `dx=0` en `kx=0` y `kx=N/2`, y `dy=0` en `ky=0` y
+`ky=N/2`. D es cero sólo cuando ambos símbolos se anulan simultáneamente, en
+exactamente estos cuatro bins: `(ky=0, kx=0)`, `(ky=0, kx=N/2)`,
+`(ky=N/2, kx=0)`, `(ky=N/2, kx=N/2)`. Un modo mixto `(ky=3, kx=N/2)` tiene
+`dx=0`, `dy=i·6π/N` y `D=(6π/N)²>0`; se recupera mediante la derivada Y. Para N
+impar no hay frecuencia Nyquist exacta y el único bin nulo es `(ky=0, kx=0)`
+(media constante). La línea Nyquist tiene medida nula en el límite continuo,
+pero no todos sus bins son nulos. La prueba por campo analítico y el oráculo de
+símbolos de tests verifican esta distinción.
 
 **Distinción operativa (§1.6 del mandato):** λ>0 fijo regulariza la divergencia
 infrarroja del RUIDO (MSE → V∞ < ∞), pero **NO recupera la señal**: el sesgo
@@ -372,8 +412,10 @@ distinta y justificada: debe correr también en árboles SIN la API H4).
 | Fórmula de ruido `D·N²σ²` (proyección) | `VERIFIED` (MC banda 0.980; espectro completo 0.98–1.01) |
 | Divergencia λ=0 ~ln N (sin cota) | `VERIFIED` (P1-2; `--check` #5) |
 | Límite continuo V∞(λ)=(σ²/(2π)²)∫∫ k²/(k²+λ)² — exacto | `VERIFIED` (ronda 6; 2 vías: GL disco+esquinas y extrapolación discreta; coincidencia con la revisión al dígito) |
-| Fórmula log (σ²/2π)·ln(π/√λ) | `RETIRADO` como límite (sólo dominante λ→0; +9.22 % sobre V∞ @1e-3) |
-| Exceso finito-N ∝1/N (medido; NO teorema) | `EJECUTADO` (ratios 1.99/2.02/2.04) |
+| Fórmula log (σ²/2π)·ln(π/√λ) | `RETIRADO` como límite (sólo dominante λ→0; +9.2639% ≈ +9.26% sobre V∞ @1e-3) |
+| Exceso finito-N ~1/N en la secuencia medida (NO teorema general) | `EJECUTADO` (+8.9259%, +4.5047%, +2.2524%, +1.1262% @N=256/512/1024/2048; cocientes ≈1.98/2.00/2.00) |
+| Nyquist mixto y espacio nulo en rfft2 | `VERIFIED` (N par: cuatro bins nulos; N impar: DC únicamente; modo mixto D>0 recuperado) |
+| Porcentajes log / discreto reconciliados desde los valores registrados | `VERIFIED` (+9.2639%, +2.2524%, +1.1262%; presentación +9.26%, +2.25%, +1.13%) |
 | Numerador conj(dx)·p̂+conj(dy)·q̂ (no conj de la suma) | `VERIFIED` (código correcto; §2.1 corregido; pin por modo único; mutación M2) |
 | Gate fail-closed estructural (presencia incondicional) | `VERIFIED` (7 passed; runner ausente → 1 failed sin env; 5 mutaciones detectadas) |
 | λ\*riesgo ≈ c/N² observado (c_A≈0.085, c_B≈0.146), ganancia <0.06 % examinada | `EJECUTADO` (REV 5 rewording; sustituye `RETIRADO` 3.15e-10) |
@@ -451,7 +493,7 @@ Ningún punto rechazado en cinco rondas.
 
 | Afirmación | Veredicto | Verificación independiente de esta parte / acción (RED→GREEN) |
 |---|---|---|
-| **P1: el límite asintótico era incorrecto** — (σ²/2π)·ln(π/√λ) no es el límite exacto; el candidato correcto es `V∞(λ)=(σ²/(2π)²)∫∫ k²/(k²+λ)²` con referencia 0.006698379 @λ=1e-3, σ=0.1 (insumo de falsificación, no autoridad). | **CORRECTA — aceptada** | Dos vías independientes de `analytic_curve`: (i) disco en forma cerrada + esquinas GL (m=200/400/800, Δ=2e-12) → **0.006698379** — su referencia confirmada al dígito; (ii) extrapolación discreta 3 puntos (V∞+a/N+b/N²) → **0.006698378**. La fórmula log: +9.22 % sobre V∞ (no es el límite). Exceso discreto ∝1/N (1.99/2.02/2.04). RED: `test_limite_continuo_V_infinito` fallaba con `AttributeError: noise_mse_limit` sobre el runner REV 5; GREEN: `noise_mse_limit()` (mismo oráculo disco+esquinas), recibos #5 reescritos con separación discreto/límite/log/error-finito; §4.1 reescrita; "−6.4 % por corte finito" `RETIRADO`. Valores dorados REV 5 intactos (ninguna medición tocada) |
+| **P1: el límite asintótico era incorrecto** — (σ²/2π)·ln(π/√λ) no es el límite exacto; el candidato correcto es `V∞(λ)=(σ²/(2π)²)∫∫ k²/(k²+λ)²` con referencia 0.006698379 @λ=1e-3, σ=0.1 (insumo de falsificación, no autoridad). | **CORRECTA — aceptada** | Dos vías independientes de `analytic_curve`: (i) disco en forma cerrada + esquinas GL (m=200/400/800, Δ=2e-12) → **0.006698379** — su referencia confirmada al dígito; (ii) extrapolación discreta 3 puntos (V∞+a/N+b/N²) → **0.006698378**. REV 6 publicó porcentajes originales incorrectos; la errata aritmética y los valores corregidos se conservan en §8.5. La convergencia observada ~1/N no se eleva a teorema general. RED: `test_limite_continuo_V_infinito` fallaba con `AttributeError: noise_mse_limit` sobre el runner REV 5; GREEN: `noise_mse_limit()` (mismo oráculo disco+esquinas), recibos #5 reescritos con separación discreto/límite/log/error-finito; §4.1 reescrita; "−6.4 % por corte finito" `RETIRADO`. Valores dorados REV 5 intactos (ninguna medición tocada) |
 | **§3: conjugación del numerador** — `conj(dx)·p̂+conj(dy)·q̂`, no la conjugación de la suma completa; contrastar doc §2.1/§2.2/`solve_screened`/ecuaciones normales; tests con campos conjugado-simétricos. | **CORRECTA — adoptada** | Código correcto desde siempre (`num = conj(dx)·fp + conj(dy)·fq`; §2.2 consistente; ecuaciones normales LS por modo lo exigen). Defecto REAL: el TEXTO §2.1 `(dx·p̂+dy·q̂)*` — corregido a notación explícita. Pin nuevo `test_conjugacion_numerador_por_modo` (modo único p=sin(3·2πx/N) → h=−cos(3·2πx)/k, RMSE<1e-10; convención errónea → signo invertido, RMSE>1). Mutación M2 (conj de la suma): 2 failed |
 | **§4: gate fail-closed en CI** — verificar si el workflow fija la variable; si no, exigencia explícita verificable; prueba negativa de runner ausente. | **CORRECTA — aceptada** | `grep` en `.github/workflows/*`: la variable NO se fija en ningún job → ruta compatible REV 5 con runner ausente = `5 skipped` (falso verde posible — demostrado). Solución estructural sin tocar CI global: test de presencia INCONDICIONAL (`test_runner_canonico_presente`). Negativa demostrada: runner eliminado, SIN env → `1 failed, 6 skipped` (antes: `5 skipped`). Variable eliminada por superada; H4 conserva la suya con justificación propia (árboles sin API) |
 
@@ -469,9 +511,76 @@ load-bearing); todas restauradas (md5 verificado) · FASE F: este doc.
 independiente del núcleo FFT periódico. `M6_MATH_CONTRACT_CLOSED=NO` ·
 `M6_IMPLEMENTATION_BLOCKED=YES` · sin merge.
 
+### 8.5 REV 6.1 adjudicación (2026-10-16; alcance acotado)
+
+```
+REV_6_1_NYQUIST_NULLSPACE: CORRECTED
+REV_6_1_NUMERIC_PERCENTAGES: RECONCILED
+FFT_SOLVER_BEHAVIOR: UNCHANGED_IF_CORRECT
+GOLDEN_VALUES_REV5_REV6: PRESERVED
+```
+
+**P2-1 — Nyquist mixto y espacio nulo.** La frase de REV 6 que agrupaba
+"los bins con D=0 — incluidos los Nyquist mixtos" era demasiado amplia. Para N
+par, en `rfft2` los cuatro y sólo cuatro bins nulos son `(ky=0, kx=0)`,
+`(ky=0, kx=N/2)`, `(ky=N/2, kx=0)` y `(ky=N/2, kx=N/2)`. En N impar no hay
+frecuencia Nyquist exacta; queda sólo `(ky=0, kx=0)` como media constante.
+Un bin mixto con `kx=N/2`, `ky=3` tiene `dx=0`, `dy=i·6π/64` y
+`D=(6π/64)²>0`; su altura es observable mediante `q`.
+
+El contraejemplo independiente usa `h(x,y)=(-1)^x sin(6πy/64)`, con
+`p=0` y `q=(-1)^x(6π/64)cos(6πy/64)`. El oráculo analítico fija los símbolos
+`dx=0`, `dy=i·6π/64`; el test compara la reconstrucción con `h`, además de
+probar el caso simétrico (Nyquist en Y), el operador completo frente a derivadas
+FFT independientes y los bins nulos pares/impares. En el SHA de referencia la
+conducta ya era correcta: clasificación `ALREADY_GREEN`; no se modificó el
+solver y el RED matemático se demuestra por mutación deliberada, no se fabrica.
+
+**P2-2 — Errata porcentual con procedencia.** Los valores numéricos registrados
+(V∞ `0.006698379`; log `0.007318911`; N=1024 `0.006849252`; N=2048
+`0.006773816`) y las anclas doradas no se alteran. Los cocientes se recalculan
+como `100·(valor−V∞)/V∞`; el cálculo de cuatro decimales y el redondeo de dos
+decimales quedan separados en el gate.
+
+| REV 6 publicó | Reconciliación REV 6.1 desde los valores registrados |
+|---|---|
+| +9.22 % para la aproximación log | +9.2639% ≈ +9.26% |
+| +2.21 % para N=1024 | +2.2524% ≈ +2.25% |
+| +1.09 % para N=2048 | +1.1262% ≈ +1.13% |
+| ratios de exceso 1.99 / 2.02 / 2.04 | 1.98 / 2.00 / 2.00 al recalcular desde los nueve decimales impresos |
+
+Las cifras anteriores se conservan aquí como errata fechada de la publicación
+REV 6, no como valores vigentes. El exceso observado en N=256/512/1024/2048 es
+compatible con ~1/N en esta secuencia, pero no se ha demostrado como teorema
+general. La afirmación de que las líneas excepcionales de Nyquist tienen medida
+nula sólo justifica su desaparición en el límite cuando λ>0 fija el integrando:
+`fλ(t)=t/(t+λ)²≤1/(4λ)`, y hay O(N) muestras excepcionales frente a N² totales.
+No implica D=0 en todos los bins de esas líneas.
+
+**RED→GREEN, recibos y alcance.** Baseline reproducible en el SHA remoto
+`e98b2c883667af64e97d2c89191cd4ed6e1a25fd`: gate REV 6 **7 passed**; runner
+`--check` **9/9**. Antes de corregir documentación, los tres oráculos matemáticos
+independientes y Decimal pasaron, mientras el guard documental dio **1 failed**
+por ausencia de adjudicación: solver `ALREADY_GREEN`, documentación RED real.
+Tras la corrección: gate M6 **11 passed**, `--check` **9/9** y snapshot del
+Apéndice A idéntico al runner. Ruff check/format: **PASS** (882 archivos);
+Mypy `scripts/`: **PASS** (3 archivos, con nota de secciones de config no usadas
+por el alcance acotado); regresión Native Parallax sintética: **159 passed**;
+clean-room: **123 passed**.
+
+Mutaciones aisladas en copias scratch, todas detectadas: columna Nyquist X
+eliminada **2 failed**; fila Nyquist Y eliminada **2 failed**; denominador sin
+`dy` **2 failed**; porcentaje incorrecto reintroducido en el texto vigente
+**1 failed**; afirmación documental que vuelve a clasificar Nyquist mixto como
+nulo **1 failed**. No se modificó el solver ni se retunearon constantes; las
+mutaciones no tocaron el worktree. `GOLDEN_VALUES_REV5_REV6: PRESERVED`.
+WLS/gamma, DDS, corpus, mallas rectangulares y cierre global siguen fuera de
+alcance. `M6_MATH_CONTRACT_CLOSED=NO` · `M6_IMPLEMENTATION_BLOCKED=YES` ·
+sin merge.
+
 ## Apéndice A — Runner ejecutable (snapshot de `scripts/run_lambda_study_m6.py`, NumPy puro)
 
-**Canónico:** `scripts/run_lambda_study_m6.py` (REV 5). El bloque inferior es un
+**Canónico:** `scripts/run_lambda_study_m6.py` (REV 6.1). El bloque inferior es un
 SNAPSHOT de este commit — el gate (`tests/test_native_parallax_m6_lambda_gate.py`)
 ejecuta siempre el archivo canónico. 9 recibos vía `--check`; estudio completo sin
 argumentos (28 celdas). Recibos: contraejemplo Nyquist (4.8e-16), espacio nulo del
@@ -480,7 +589,14 @@ multi-resolución de espectro completo vs curva (N=32/64/128), acotamiento λ=1e
 asíntota, Parseval toda paridad (P2-1), y regresión de exactitud integrable.
 
 ```python
-"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v5.
+"""Estudio sintético de derivación de screen_lambda para EXP-M6 — v6.1.
+
+REV 6.1 (2026-10-16): reconciliación documental de Nyquist mixto y porcentajes.
+El solver y sus símbolos no cambian: el test independiente confirma que los
+modos mixtos siguen siendo recuperables y que sólo los bins con ambos símbolos
+nulos pertenecen al espacio nulo. Los porcentajes se recalculan desde los
+valores numéricos registrados; la tendencia finita ~1/N es observada, no un
+teorema general.
 
 REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
 Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
@@ -504,7 +620,7 @@ v3 (db5e5bd7) corrigió el defecto Nyquist del solver (contraejemplo RMSE
 pesos incorrectos. v4 (5c473d5) reconstruyó la curva con los operadores D del
 solver y la regla de pesos rfft2 correcta para N par (valores λ=0 rég. B:
 0.006794/0.007955/0.009087/0.010205 @N=32/64/128/256, σ=0.1 — verificados por
-dos partes independientes al dígito). v5: esta.
+dos partes independientes al dígito). v5: runner canónico. v6.1: esta reconciliación documental; solver intacto.
 """
 
 from __future__ import annotations
@@ -655,10 +771,13 @@ def analytic_curve(
     """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(D/(D+λ))²·E|ĥ|²  [sesgo de señal]
                  + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
     con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
-    pesos de Parseval de _parseval_weights (exacto para toda paridad). Régimen A (noise_filtered=True): ruido sólo en banda;
-    Régimen B (False): ruido blanco en TODO bin con D>0. Con λ>0 fijo el ruido
-    de B acota a ≈(σ²/2π)·ln(π/√λ); con λ=0 crece como (σ²/2π)·ln N (P1-2).
-    include_signal=False expone sólo el término de ruido (para MC de ruido puro)."""
+    Parseval de _parseval_weights (exacto para toda paridad). Régimen A
+    (noise_filtered=True): ruido sólo en banda; Régimen B (False): ruido
+    blanco en cada bin con D>0. Para λ>0 fijo, la suma converge a
+    noise_mse_limit(λ, σ); la fórmula log sólo es dominante cuando λ→0.
+    En N par, un bin de Nyquist mixto puede tener D>0; D=0 requiere que ambos
+    símbolos sean nulos. Con λ=0, el ruido blanco crece como (σ²/2π)·ln N
+    (P1-2). include_signal=False expone sólo el término de ruido (MC puro)."""
     kxr = (2 * np.pi * np.fft.rfftfreq(n))[None, :]
     kyr = (2 * np.pi * np.fft.fftfreq(n))[:, None]
     k = np.sqrt(kxr**2 + kyr**2)
@@ -696,15 +815,21 @@ def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
         V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
 
     derivado de la suma discreta (1/N²)·Σ w·D/(D+λ)² → integral en el límite
-    N→∞ (los bins con D=0 — incluidos los Nyquist mixtos — aportan 0 y tienen
-    medida nula en el continuo). Evaluación INDEPENDIENTE de analytic_curve:
-    disco r≤π en forma cerrada (polar) + 4 esquinas por Gauss-Legendre anidado
-    (m×m por esquina; estable a 2e-12 desde m=200).
+    N→∞. Para λ>0, fλ(t)=t/(t+λ)² es continua y está acotada por 1/(4λ).
+    En N par, D sólo difiere de kx²+ky² en las líneas Nyquist: hay O(N) bins
+    excepcionales y su contribución normalizada es O(1/N); los demás términos
+    son sumas de Riemann de un integrando continuo. Las líneas tienen medida
+    nula, pero sus bins mixtos no son, en general, espacio nulo (ver §4.1).
+    Evaluación INDEPENDIENTE de analytic_curve: disco r≤π en forma cerrada
+    (polar) + 4 esquinas por Gauss-Legendre anidado (estable a 2e-12 desde
+    m=200).
 
-    IMPORTANTE: la aproximación log σ²/(2π)·ln(π/√λ) es sólo el comportamiento
-    dominante para λ→0, NO el límite: en λ=1e-3 queda +9.22 % por encima de
-    V∞ (0.007318911 vs 0.006698379 con σ=0.1). λ>0 acota el ruido pero NO
-    recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
+    Errata REV 6.1, con los valores registrados (σ=0.1, λ=1e-3): la
+    aproximación log 0.007318911 supera V∞=0.006698379 en +9.2639% (~+9.26%);
+    MSE discreto N=1024, 0.006849252, en +2.2524% (~+2.25%); N=2048,
+    0.006773816, en +1.1262% (~+1.13%). El comportamiento finito ~1/N se
+    observa en estos tamaños; no se afirma como teorema general. λ>0 acota
+    el ruido, pero NO recupera la señal atenuada (el sesgo (λ/(D+λ))² persiste)."""
     x, wx = np.polynomial.legendre.leggauss(m)
     y, wy = np.polynomial.legendre.leggauss(m)
     xn = np.pi * (x + 1) / 2
@@ -794,7 +919,7 @@ def selftest() -> int:
     assert vals[-1] < vals[1], vals  # decrece hacia V∞
     v_inf = noise_mse_limit(lam, 0.1)
     assert abs(v_inf - 0.006698379) < 5e-9, v_inf  # límite continuo (2 vías, ronda 6)
-    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.21% @1024²
+    assert abs(vals[-1] - v_inf) / v_inf < 0.03, (vals[-1], v_inf)  # exceso +2.25% @1024²
     asymp_log = 0.1**2 / (2 * np.pi) * np.log(np.pi / np.sqrt(lam))
     assert abs(asymp_log - v_inf) / v_inf > 0.05, (asymp_log, v_inf)  # log ≠ límite
     lam0_1024 = analytic_curve(1024, 2.0, 0.1, [0.0], noise_filtered=False, include_signal=False)[0] ** 2
@@ -965,12 +1090,12 @@ Vía 2 — extrapolación de la suma discreta (v = V∞ + a/N + b/N²; N=512/102
   V∞ = 0.006698378   (a=0.1545, b=−3.5e-3)  [acuerdo 1e-9 con la Vía 1]
 
 Convergencia discreta (analytic_curve, λ=1e-3, sólo-ruido):
-  N= 256: 0.007296271  (exceso +8.88 %)
-  N= 512: 0.007000119  (exceso +4.46 %)
-  N=1024: 0.006849252  (exceso +2.21 %)   [ancla REV 5, intacta]
-  N=2048: 0.006773816  (exceso +1.09 %)   ratios de exceso: 1.99 / 2.02 / 2.04 ≈ 1/N
+  N= 256: 0.007296271  (exceso +8.9259% ≈ +8.93%)
+  N= 512: 0.007000119  (exceso +4.5047% ≈ +4.50%)
+  N=1024: 0.006849252  (exceso +2.2524% ≈ +2.25%)   [ancla REV 5, intacta]
+  N=2048: 0.006773816  (exceso +1.1262% ≈ +1.13%)   ratios recalculados: 1.98 / 2.00 / 2.00 ≈ 1/N
 
 Referencias del mismo λ:
-  aproximación log (σ²/2π)·ln(π/√λ) = 0.007318911  → +9.22 % sobre V∞ (NO es el límite)
-  valor discreto @1024²             = 0.006849252  → +2.21 % (converge a V∞)
+  aproximación log (σ²/2π)·ln(π/√λ) = 0.007318911  → +9.2639% ≈ +9.26% sobre V∞ (NO es el límite)
+  valor discreto @1024²             = 0.006849252  → +2.2524% ≈ +2.25% (converge a V∞)
 ```

@@ -4,10 +4,10 @@ ponderar (research-only, insumo de #675 / EXP-M6).
 Congela los recibos numéricos del runner canónico
 ``scripts/run_lambda_study_m6.py`` (SEED=20261015): pesos de Parseval rfft2
 (toda paridad), curva E(λ) construida con los operadores D del solver,
-límite continuo V∞(λ) del término de ruido con λ>0 (REV 6), y el selftest
-completo del runner (contraejemplo Nyquist, espacio nulo, ceguera de la
-métrica de pendientes ante altura nula, MC de espectro completo). Cualquier
-regresión de ponderación espectral, de símbolos d, de la curva o del límite
+límite continuo V∞(λ) del término de ruido con λ>0 (REV 6), el Nyquist mixto
+recuperable y los cuatro bins nulos de N par (REV 6.1), porcentajes calculados
+con Decimal y anclas documentales. Cualquier regresión de ponderación
+espectral, símbolos d, pseudoinversa, curva, límite o adjudicación documental
 falla aquí.
 
 Fail-closed estructural (REV 6): la ausencia del runner canónico es **FAIL
@@ -35,21 +35,32 @@ N       MSE
 Límite continuo (REV 6, ronda 6 — dos vías independientes, ver §8.4 del doc):
 V∞(λ=1e-3, σ=0.1) = 0.006698379 (disco en forma cerrada + esquinas
 Gauss-Legendre m=200/400/800, estable a 2e-12; extrapolación discreta de 3
-puntos: 0.006698378). La aproximación log σ²/(2π)·ln(π/√λ)=0.007318911 NO es
-el límite (+9.22 %).
+puntos: 0.006698378). La aproximación log es 0.007318911 (+9.2639% ≈ +9.26%);
+N=1024, 0.006849252 (+2.2524% ≈ +2.25%); N=2048, 0.006773816
+(+1.1262% ≈ +1.13%).
 """
 
 from __future__ import annotations
+from typing import Any
 
 import importlib.util
 import math
 import pathlib
 import sys
+from decimal import ROUND_HALF_UP, Decimal
 
 import numpy as np
 import pytest
 
 RUNNER_PATH = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "run_lambda_study_m6.py"
+DOC_PATH = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "docs"
+    / "design"
+    / "research"
+    / "native-parallax"
+    / "exp-m6-screen-lambda-derivation-proposal.md"
+)
 
 # Valores dorados (dos partes independientes, ronda 5): MSE(λ=0, rég. B,
 # sólo-ruido, σ=0.1). Pin a ±5e-9: detecta CUALQUIER cambio de pesos,
@@ -66,7 +77,7 @@ GOLDEN_MSE_LAMBDA_1E3_N1024 = 0.006849252  # valor DISCRETO (ancla REV 5, intact
 GOLDEN_V_INF_LAMBDA_1E3 = 0.006698379  # límite continuo EXACTO (REV 6, dos vías)
 
 
-def _runner():
+def _runner() -> Any:
     spec = importlib.util.spec_from_file_location("run_lambda_study_m6", RUNNER_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -142,10 +153,11 @@ def test_limite_continuo_v_infinito():
     continua del operador), NO la aproximación log σ²/(2π)·ln(π/√λ).
 
     - El oráculo del runner coincide con el cálculo independiente de este test.
-    - La suma discreta converge a V∞ (decreciente; exceso <3 % ya en 1024²,
-      medido ∝1/N).
-    - La fórmula log queda >5 % por encima de V∞ en λ=1e-3: sólo es el
-      comportamiento dominante para λ→0 (guarda anti-regresión documental)."""
+    - La suma discreta converge a V∞ (exceso <3 % en 1024²); en los tamaños
+      registrados el exceso es aproximadamente proporcional a 1/N, no un
+      teorema general.
+    - Los porcentajes se verifican por separado desde los valores registrados;
+      la fórmula log es sólo dominante para λ→0 (anti-regresión documental)."""
     _requiere_runner()
     runner = _runner()
     v_oraculo = _v_inf_oracle(1e-3, 0.1)
@@ -203,3 +215,143 @@ def test_selftest_completo_del_runner():
     integrable)."""
     _requiere_runner()
     assert _runner().selftest() == 9
+
+
+def _oraculo_derivadas_espectrales(altura: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Derivadas y proyección nula de referencia, sin usar el runner M6."""
+    n = altura.shape[0]
+    kx = (2 * np.pi * np.fft.fftfreq(n))[None, :]
+    ky = (2 * np.pi * np.fft.fftfreq(n))[:, None]
+    dx, dy = 1j * kx, 1j * ky
+    if n % 2 == 0:
+        dx[:, n // 2] = 0.0
+        dy[n // 2, :] = 0.0
+    d = np.abs(dx) ** 2 + np.abs(dy) ** 2
+    h_hat = np.fft.fft2(altura)
+    p = np.fft.ifft2(dx * h_hat).real
+    q = np.fft.ifft2(dy * h_hat).real
+    recuperable = np.fft.ifft2(np.where(d > 0.0, h_hat, 0.0)).real
+    return p, q, d, recuperable
+
+
+def test_nyquist_mixto_x_reconstruible_y_fila_nyquist_no_se_elimina():
+    """El Nyquist de un eje no anula el modo si el otro eje deriva.
+
+    Oráculo analítico independiente para h=(-1)^x sin(6πy/64): p=0,
+    q=(-1)^x(6π/64)cos(6πy/64), dx=0, dy=i·6π/64 y D>0. El modo simétrico
+    con Nyquist en Y además impide borrar una fila Nyquist completa."""
+    _requiere_runner()
+    runner = _runner()
+    n = 64
+    x = np.arange(n)[None, :]
+    y = np.arange(n)[:, None]
+    ky = 6 * np.pi / n
+
+    altura_x_nyquist = (-1.0) ** x * np.sin(6 * np.pi * y / n)
+    p_x_nyquist = np.zeros_like(altura_x_nyquist)
+    q_x_nyquist = (-1.0) ** x * ky * np.cos(6 * np.pi * y / n)
+    dx, dy = 0.0j, 1j * ky
+    d_mixto_x = abs(dx) ** 2 + abs(dy) ** 2
+    assert np.max(np.abs(p_x_nyquist)) == 0.0
+    assert d_mixto_x > 0.0
+    recuperada = runner.solve_screened(p_x_nyquist, q_x_nyquist, 0.0)
+    error = float(np.sqrt(np.mean((recuperada - altura_x_nyquist) ** 2)))
+    assert error < 1e-12, error
+
+    altura_y_nyquist = (-1.0) ** y * np.sin(6 * np.pi * x / n)
+    p_y_nyquist = (-1.0) ** y * ky * np.cos(6 * np.pi * x / n)
+    q_y_nyquist = np.zeros_like(altura_y_nyquist)
+    dx, dy = 1j * ky, 0.0j
+    d_mixto_y = abs(dx) ** 2 + abs(dy) ** 2
+    assert np.max(np.abs(q_y_nyquist)) == 0.0
+    assert d_mixto_y > 0.0
+    recuperada_y = runner.solve_screened(p_y_nyquist, q_y_nyquist, 0.0)
+    error_y = float(np.sqrt(np.mean((recuperada_y - altura_y_nyquist) ** 2)))
+    assert error_y < 1e-12, error_y
+
+
+def test_pseudoinversa_coherente_y_espacio_nulo_exacto_par_impar():
+    """Compara el solver con derivadas FFT de referencia y enumera los bins nulos.
+
+    En rfft2, N par tiene exactamente cuatro bins nulos; N impar no tiene
+    Nyquist exacto y conserva sólo el bin de media constante como espacio nulo.
+    El oráculo construye dx/dy directamente desde fftfreq, sin importar helpers
+    ni máscaras del runner."""
+    _requiere_runner()
+    runner = _runner()
+    for n in (64, 63):
+        h = np.random.default_rng(n).standard_normal((n, n))
+        p, q, d_full, h_recuperable = _oraculo_derivadas_espectrales(h)
+        bins_nulos = set(zip(*np.where(d_full == 0.0), strict=True))
+        esperado = {(0, 0), (0, n // 2), (n // 2, 0), (n // 2, n // 2)} if n % 2 == 0 else {(0, 0)}
+        assert bins_nulos == esperado, (n, bins_nulos)
+
+        kx = (2 * np.pi * np.fft.rfftfreq(n))[None, :]
+        ky = (2 * np.pi * np.fft.fftfreq(n))[:, None]
+        dx, dy = 1j * kx, 1j * ky
+        if n % 2 == 0:
+            dx[:, n // 2] = 0.0
+            dy[n // 2, :] = 0.0
+        d_rfft_oraculo = np.abs(dx) ** 2 + np.abs(dy) ** 2
+        d_rfft_runner = runner._D_matrix(n)
+        assert np.allclose(d_rfft_runner, d_rfft_oraculo, rtol=1e-13, atol=1e-15), n
+        assert np.array_equal(d_rfft_runner == 0.0, d_rfft_oraculo == 0.0), n
+
+        reconstruida = runner.solve_screened(p, q, 0.0)
+        error = float(np.sqrt(np.mean((reconstruida - h_recuperable) ** 2)))
+        assert error < 1e-11, (n, error)
+
+
+def test_porcentajes_reconciliados_desde_los_valores_registrados() -> None:
+    """Los porcentajes usan los datos congelados; el redondeo es sólo presentación."""
+    limite = Decimal("0.006698379")
+    valores = {
+        "log": (Decimal("0.007318911"), Decimal("9.2639"), Decimal("9.26")),
+        "N=1024": (Decimal("0.006849252"), Decimal("2.2524"), Decimal("2.25")),
+        "N=2048": (Decimal("0.006773816"), Decimal("1.1262"), Decimal("1.13")),
+    }
+    for etiqueta, (valor, esperado_preciso, esperado_presentacion) in valores.items():
+        porcentaje = (valor - limite) / limite * Decimal("100")
+        preciso = porcentaje.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        presentacion = porcentaje.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        assert preciso == esperado_preciso, (etiqueta, preciso)
+        assert presentacion == esperado_presentacion, (etiqueta, presentacion)
+
+
+def test_documentacion_rev61_reconcilia_nyquist_y_porcentajes() -> None:
+    """Ancla documental puntual: evita reintroducir las dos erratas adjudicadas."""
+    assert DOC_PATH.is_file(), f"documento de REV 6.1 ausente: {DOC_PATH}"
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    assert "REV_6_1_NYQUIST_NULLSPACE: CORRECTED" in doc
+    assert "REV_6_1_NUMERIC_PERCENTAGES: RECONCILED" in doc
+    adjudicacion = doc.split("### 8.5 REV 6.1 adjudicación", maxsplit=1)[1]
+    for coordenada in (
+        "(ky=0, kx=0)",
+        "(ky=0, kx=N/2)",
+        "(ky=N/2, kx=0)",
+        "(ky=N/2, kx=N/2)",
+    ):
+        assert coordenada in adjudicacion
+    assert "no se ha demostrado como teorema general" in " ".join(adjudicacion.split())
+
+    seccion_vigente = doc.split("### 4.1", maxsplit=1)[1].split("### 4.2", maxsplit=1)[0]
+    assert "D=0 — incluidos los Nyquist mixtos" not in seccion_vigente
+    for porcentaje in ("+9.2639%", "+9.26%", "+2.2524%", "+2.25%", "+1.1262%", "+1.13%"):
+        assert porcentaje in doc
+
+    # Los porcentajes REV 6 originales se conservan sólo como errata fechada,
+    # no como cifras activas en §4.1, docstrings ni Apéndices.
+    for cifra_historica in ("+9.22 %", "+2.21 %", "+1.09 %"):
+        posiciones = [i for i in range(len(doc)) if doc.startswith(cifra_historica, i)]
+        assert posiciones, f"se perdió la procedencia histórica de {cifra_historica}"
+        assert all(i >= doc.index("### 8.5 REV 6.1 adjudicación") for i in posiciones), cifra_historica
+
+    runner = _runner()
+    analytic_doc = runner.analytic_curve.__doc__ or ""
+    limit_doc = runner.noise_mse_limit.__doc__ or ""
+    assert "Nyquist mixtos — aportan 0" not in limit_doc
+    assert "+9.2639%" in limit_doc
+    assert "+2.2524%" in limit_doc
+    assert "+1.1262%" in limit_doc
+    assert "+9.22 %" not in limit_doc
+    assert "acota a ≈(σ²/2π)·ln" not in analytic_doc
