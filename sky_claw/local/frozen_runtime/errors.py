@@ -218,6 +218,24 @@ class JournalEvidenciaPostError(JournalError):
     """
 
 
+class JournalObservacionEffectiveError(JournalError):
+    """El oráculo de Effective Runtime (P5) NO PUDO observar el Effective.
+
+    Contrato del callback ``observador_effective`` (§34.5): los fallos
+    **esperados** de observación —el runtime no responde, el dato no está
+    disponible, la observación no se puede completar— se señalan con ESTE error,
+    y ``_invocar_oraculo_effective`` los traduce a un veredicto
+    ``FAIL_CLOSED``/``EFFECTIVE_INDETERMINADO``.
+
+    Cualquier OTRA excepción se considera un fallo INESPERADO (un bug de
+    programación en el callback, o un tipo de error que el contrato no previó):
+    no se traduce a veredicto, se propaga hasta la frontera única de
+    ``reconciliar_journal``, que la REGISTRA con traceback y también falla
+    cerrado —con un motivo distinto— para que el fallo no quede enmascarado
+    detrás de "no se pudo observar".
+    """
+
+
 class JournalDependenciaNoDisponibleError(JournalError):
     """La operación requiere una autoridad durable que P4-S3 no implementa
     (consumo de aprobación §36.5/§37.3, oráculo de Effective Runtime P5, POST

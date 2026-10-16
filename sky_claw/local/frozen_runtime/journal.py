@@ -52,6 +52,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import pathlib
 import stat
 import time
@@ -68,11 +69,13 @@ from sky_claw.local.frozen_runtime.errors import (
     JournalDependenciaNoDisponibleError,
     JournalEvidenciaPostError,
     JournalIdentityError,
+    JournalObservacionEffectiveError,
     JournalSchemaError,
     JournalStoreNoInicializadoError,
     StateCorruptError,
     StateSchemaError,
 )
+from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
@@ -91,6 +94,8 @@ from sky_claw.local.frozen_runtime.storage_models import (
 JOURNAL_SCHEMA_VERSION = 1
 RECORD_SCHEMA_VERSION = 1
 RESERVATION_SCHEMA_VERSION = 1
+
+logger = logging.getLogger(__name__)
 
 #: Retención mínima contractual (§37.5): gobierna RETENCIÓN/GC/procedencia de
 #: rollback, NO el arranque de la siguiente transición (R11.5).
@@ -387,13 +392,58 @@ def _digest_canonico(payload: object) -> str:
     return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
 
 
+def _exigir_texto_valor(valor: object, *, campo: str, etiqueta: str) -> str:
+    """String no vacío y SIN whitespace de borde (R3-01/R3-02).
+
+    El chequeo previo era `not valor`, que rechaza `""` pero acepta `"   "`: una
+    identidad o una ruta compuesta sólo por espacios pasaba la validación y se
+    persistía como valor legítimo.
+
+    Es **validación, no normalización**: se rechaza, no se recorta. Recortar en
+    silencio cambiaría el valor persistido y, con él, el digest que lo liga
+    (§36.3/§36.6): `"x "` y `"x"` no son la misma identidad.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
+        raise JournalSchemaError(f"{etiqueta}: '{campo}' debe ser un string no vacío")
+    if valor != valor.strip():
+        raise JournalSchemaError(f"{etiqueta}: '{campo}' debe ser un string sin espacios en los bordes: {valor!r}")
+    return valor
+
+
+def _exigir_generation_id_valor(valor: object, *, campo: str, etiqueta: str) -> str:
+    """Generation-id CANÓNICO según el validador del dominio (P2 G03–G05).
+
+    El journal NO inventa su propio criterio para un id que ya tiene validador
+    normativo: delega en ``validar_generation_id``, que rechaza el whitespace de
+    borde, el formato `<display-version>__<digest12>`, el traversal y los nombres
+    reservados de Windows — y su docstring lo declara la puerta obligatoria de
+    todo id que llegue a un path.
+
+    Se exige el id **ya canónico** (minúsculas): se VALIDA, no se normaliza.
+    Aceptar `"1.6.1170.0__A1B2C3D4E5F6"` y persistirlo tal cual dejaría una
+    identidad que el dominio considera no canónica; transformarla en silencio
+    cambiaría la identidad persistida y su digest.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
+        raise JournalSchemaError(f"{etiqueta}: '{campo}' debe ser un string no vacío")
+    try:
+        canonico = validar_generation_id(valor)
+    except InvalidGenerationIdError as exc:
+        raise JournalSchemaError(
+            f"{etiqueta}: '{campo}' debe ser un generation-id canónico "
+            f"('<display-version>__<digest12>', minúsculas): {exc}"
+        ) from exc
+    if canonico != valor:
+        raise JournalSchemaError(
+            f"{etiqueta}: '{campo}' debe ser un generation-id CANÓNICO (minúsculas, sin espacios): {valor!r}"
+        )
+    return valor
+
+
 def _exigir_texto(payload: dict[str, object], campo: str, *, etiqueta: str) -> str:
     if campo not in payload:
         raise JournalSchemaError(f"{etiqueta}: falta el campo obligatorio '{campo}'")
-    valor = payload[campo]
-    if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
-        raise JournalSchemaError(f"{etiqueta}: '{campo}' debe ser un string no vacío")
-    return valor
+    return _exigir_texto_valor(payload[campo], campo=campo, etiqueta=etiqueta)
 
 
 def _exigir_texto_opcional(payload: dict[str, object], campo: str, *, etiqueta: str) -> str | None:
@@ -402,9 +452,22 @@ def _exigir_texto_opcional(payload: dict[str, object], campo: str, *, etiqueta: 
     valor = payload[campo]
     if valor is None:
         return None
-    if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
-        raise JournalSchemaError(f"{etiqueta}: '{campo}' debe ser string no vacío o null")
-    return valor
+    return _exigir_texto_valor(valor, campo=campo, etiqueta=etiqueta)
+
+
+def _exigir_generation_id(payload: dict[str, object], campo: str, *, etiqueta: str) -> str:
+    if campo not in payload:
+        raise JournalSchemaError(f"{etiqueta}: falta el campo obligatorio '{campo}'")
+    return _exigir_generation_id_valor(payload[campo], campo=campo, etiqueta=etiqueta)
+
+
+def _exigir_generation_id_opcional(payload: dict[str, object], campo: str, *, etiqueta: str) -> str | None:
+    if campo not in payload:
+        return None
+    valor = payload[campo]
+    if valor is None:
+        return None
+    return _exigir_generation_id_valor(valor, campo=campo, etiqueta=etiqueta)
 
 
 def _exigir_entero(payload: dict[str, object], campo: str, *, etiqueta: str, minimo: int) -> int:
@@ -470,7 +533,7 @@ def _validar_source_activation(payload: object, *, etiqueta: str) -> SourceActiv
         etiqueta=etiqueta,
     )
     source = SourceActivation(
-        generation_id=_exigir_texto_opcional(payload, "generation_id", etiqueta=etiqueta),
+        generation_id=_exigir_generation_id_opcional(payload, "generation_id", etiqueta=etiqueta),
         clone_id=_exigir_texto_opcional(payload, "clone_id", etiqueta=etiqueta),
         runtime_setup_id=_exigir_texto_opcional(payload, "runtime_setup_id", etiqueta=etiqueta),
         effective_runtime_evidence=_exigir_texto_opcional(payload, "effective_runtime_evidence", etiqueta=etiqueta),
@@ -717,7 +780,7 @@ def _parsear_journal(payload: dict[str, object], ruta: object) -> TransitionJour
         operation=operation,
         source_activation=fuente,
         source_activation_digest=fuente_digest,
-        target_generation_id=_exigir_texto(payload, "target_generation_id", etiqueta=etiqueta),
+        target_generation_id=_exigir_generation_id(payload, "target_generation_id", etiqueta=etiqueta),
         target_clone_id=_exigir_texto(payload, "target_clone_id", etiqueta=etiqueta),
         target_runtime_setup_id=_exigir_texto(payload, "target_runtime_setup_id", etiqueta=etiqueta),
         approval_scope_digest=scope_digest,
@@ -897,7 +960,7 @@ def _validar_registro(payload: dict[str, object], ruta: pathlib.Path) -> Finaliz
         source_activation=fuente,
         source_activation_digest=fuente_digest,
         previous_activation_target=previo_target,
-        target_generation_id=_exigir_texto(payload, "target_generation_id", etiqueta=etiqueta),
+        target_generation_id=_exigir_generation_id(payload, "target_generation_id", etiqueta=etiqueta),
         target_clone_id=_exigir_texto(payload, "target_clone_id", etiqueta=etiqueta),
         target_runtime_setup_id=_exigir_texto(payload, "target_runtime_setup_id", etiqueta=etiqueta),
         approval_scope_digest=_exigir_digest(
@@ -1082,9 +1145,12 @@ def _validar_propuesta(propuesta: PropuestaTransicion) -> None:
         raise JournalSchemaError("propuesta: source_activation debe ser SourceActivation")
     if propuesta.source_activation_digest != _digest_canonico(fuente):
         raise JournalIdentityError("propuesta: source_activation_digest no liga el contenido")
-    for campo in ("target_generation_id", "target_clone_id", "target_runtime_setup_id", "expected_effective_path"):
-        if not isinstance(getattr(propuesta, campo), str) or not getattr(propuesta, campo):
-            raise JournalSchemaError(f"propuesta: '{campo}' debe ser un string no vacío")
+    # R3-01/R3-02: el camino CREATE valida las MISMAS identidades y la misma
+    # ruta que el parser. Un camino hermano sin el chequeo deja entrar por acá
+    # exactamente lo que el parser rechaza.
+    _exigir_generation_id_valor(propuesta.target_generation_id, campo="target_generation_id", etiqueta="propuesta")
+    for campo in ("target_clone_id", "target_runtime_setup_id", "expected_effective_path"):
+        _exigir_texto_valor(getattr(propuesta, campo), campo=campo, etiqueta="propuesta")
     _exigir_digest(propuesta.approval_scope_digest, campo="approval_scope_digest", etiqueta="propuesta")
     if not isinstance(propuesta.evidence_digests, EvidenceDigests):
         raise JournalSchemaError("propuesta: evidence_digests debe ser EvidenceDigests")
@@ -1125,6 +1191,21 @@ def _exigir_uuid_v4_post(valor: object, *, campo: str) -> str:
         raise JournalEvidenciaPostError(str(exc)) from exc
 
 
+def _exigir_identidad_post(valor: object, *, campo: str, generacion: bool) -> str:
+    """Identidad de la evidencia POST (R3-01): forma del dominio, error del POST.
+
+    Los errores de FORMA son del dominio POST —igual que ``_exigir_digest_post``—,
+    y esta validación corre ANTES de comparar la evidencia contra el journal, para
+    que una identidad en blanco se rechace por forma y no "por no coincidir".
+    """
+    try:
+        if generacion:
+            return _exigir_generation_id_valor(valor, campo=campo, etiqueta="evidencia POST")
+        return _exigir_texto_valor(valor, campo=campo, etiqueta="evidencia POST")
+    except JournalSchemaError as exc:
+        raise JournalEvidenciaPostError(str(exc)) from exc
+
+
 def _validar_post_evidence(evidencia: PostVerifyEvidence) -> None:
     _exigir_uuid_v4_post(evidencia.transition_id, campo="transition_id")
     resultado = evidencia.resultado
@@ -1136,12 +1217,14 @@ def _validar_post_evidence(evidencia: PostVerifyEvidence) -> None:
     _exigir_digest_post(evidencia.source_activation_digest, campo="source_activation_digest")
     _exigir_digest_post(evidencia.effective_observation_digest, campo="effective_observation_digest")
     _exigir_digest_post(evidencia.payload_digest, campo="payload_digest")
-    for campo in ("target_generation_id", "target_clone_id", "target_runtime_setup_id"):
-        if not isinstance(getattr(evidencia, campo), str) or not getattr(evidencia, campo):
-            raise JournalEvidenciaPostError(f"evidencia POST: '{campo}' debe ser un string no vacío")
+    # R3-01: las identidades de la evidencia se validan con la MISMA forma que el
+    # parser y la propuesta, y antes de cualquier comparación de coherencia.
+    _exigir_identidad_post(evidencia.target_generation_id, campo="target_generation_id", generacion=True)
+    for campo in ("target_clone_id", "target_runtime_setup_id"):
+        _exigir_identidad_post(getattr(evidencia, campo), campo=campo, generacion=False)
     deseado = evidencia.desired_active_generation
-    if deseado is not None and (not isinstance(deseado, str) or not deseado):
-        raise JournalEvidenciaPostError("evidencia POST: desired_active_generation debe ser string no vacío o null")
+    if deseado is not None:
+        _exigir_identidad_post(deseado, campo="desired_active_generation", generacion=True)
     if (
         isinstance(evidencia.verified_at_ns, bool)
         or not isinstance(evidencia.verified_at_ns, int)
@@ -1461,10 +1544,12 @@ def _actualizar_locked(
         )
     expected_path = journal.expected_effective_path
     if "expected_effective_path" in cambios:
-        valor = cambios["expected_effective_path"]
-        if isinstance(valor, bool) or not isinstance(valor, str) or not valor:
-            raise JournalSchemaError(f"{ruta}: 'expected_effective_path' debe ser un string no vacío")
-        expected_path = valor
+        # R3-02: MISMO validador que el parser y la propuesta (§34.4: "la ruta
+        # que el bind va a producir"). `not valor` aceptaba `"   "` y una ruta
+        # con espacio final, que se persistían como la ruta esperada.
+        expected_path = _exigir_texto_valor(
+            cambios["expected_effective_path"], campo="expected_effective_path", etiqueta=str(ruta)
+        )
     doc = dataclasses.replace(
         journal,
         journal_revision=journal.journal_revision + 1,
@@ -1808,41 +1893,36 @@ def _invocar_oraculo_effective(
     *,
     punto_crash: str,
 ) -> ObservacionEffective | ReconciliacionJournal:
-    """Invoca el oráculo y NORMALIZA: fallo o resultado no tipado ⇒ INDETERMINADO.
+    """Invoca el oráculo y NORMALIZA los fallos ESPERADOS a INDETERMINADO.
 
-    El oráculo es externo (P5): cualquier excepción, un ``None`` o un valor de
-    otro tipo son INDETERMINADOS, jamás éxito (§34.5: ``UNKNOWN != SUCCESS``).
-    Un valor no tipado se rechaza explícitamente: aceptarlo reintroduciría el
-    vocabulario ambiguo que F10 cierra.
+    Contrato del callback (§34.5): el oráculo es externo (P5). Sus fallos
+    **esperados** de observación se señalan con ``JournalObservacionEffectiveError``;
+    los de IO/filesystem y los de identidad también son esperables. Todos ellos
+    se traducen a ``FAIL_CLOSED``/INDETERMINADO: ``UNKNOWN != SUCCESS``.
+
+    Lo que NO se hace acá es tragarse lo inesperado. Un `except Exception` global
+    convertía cualquier fallo —incluido un `AttributeError` por un bug de
+    programación en el callback— en el mismo "no se pudo observar", sin dejar
+    rastro. Ahora esos fallos **se propagan** hasta la frontera única de
+    ``reconciliar_journal``, que los REGISTRA con traceback y también falla
+    cerrado, con un motivo distinto (R3-03).
     """
     try:
         observado = observador_effective()
-    except Exception as exc:  # noqa: BLE001 — el oráculo es externo: cualquier fallo es INDETERMINADO, nunca éxito
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash=punto_crash,
-            motivo=f"EFFECTIVE_INDETERMINADO: {exc}",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
+    except JournalObservacionEffectiveError as exc:
+        return _fail_closed(punto_crash, f"EFFECTIVE_INDETERMINADO: {exc}")
+    except (OSError, JournalIdentityError, InvalidGenerationIdError, StateCorruptError, StateSchemaError) as exc:
+        # Esperables también: el oráculo lee el filesystem y la identidad del
+        # runtime. Se traducen a INDETERMINADO con el tipo en el motivo, para que
+        # un fallo de IO se distinga de un bug del callback.
+        return _fail_closed(punto_crash, f"EFFECTIVE_INDETERMINADO({type(exc).__name__}): {exc}")
     if observado is None:
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash=punto_crash,
-            motivo="EFFECTIVE_INDETERMINADO: el oráculo no pudo determinar el runtime efectivo",
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
-        )
+        return _fail_closed(punto_crash, "EFFECTIVE_INDETERMINADO: el oráculo no pudo determinar el runtime efectivo")
     if not isinstance(observado, ObservacionEffective):
-        return ReconciliacionJournal(
-            veredicto=VeredictoReconciliacion.FAIL_CLOSED,
-            punto_crash=punto_crash,
-            motivo=(
-                f"EFFECTIVE_NO_TIPADO: el oráculo devolvió {type(observado).__name__}; se exige "
-                "ObservacionEffective (vocabulario único N0/PENDING)"
-            ),
-            requiere_dueno=True,
-            registro_finalizado_presente=None,
+        return _fail_closed(
+            punto_crash,
+            f"EFFECTIVE_NO_TIPADO: el oráculo devolvió {type(observado).__name__}; se exige "
+            "ObservacionEffective (vocabulario único N0/PENDING)",
         )
     return observado
 
@@ -2219,7 +2299,18 @@ def reconciliar_journal(
         return _fail_closed(None, f"ROOT_LOCK_NO_ADQUIRIDO: {exc}")
 
     # (2) Clasificación: el oráculo externo corre FUERA del lock.
-    veredicto = _clasificar_reconciliacion(estado, observador_effective)
+    # FRONTERA ÚNICA de los errores INESPERADOS del oráculo (R3-03). El bloque (1)
+    # enumera errores de dominio porque el estado durable SÍ es enumerable; el
+    # oráculo es código EXTERNO y no lo es. `_invocar_oraculo_effective` traduce
+    # sólo los fallos ESPERADOS; lo demás se propaga hasta acá, se REGISTRA con
+    # traceback —para que un bug de programación del callback no quede enmascarado
+    # como "no se pudo observar"— y también falla cerrado, con motivo propio.
+    # §34.5 sigue intacto: ninguna excepción del oráculo puede producir éxito.
+    try:
+        veredicto = _clasificar_reconciliacion(estado, observador_effective)
+    except Exception:  # noqa: BLE001 — frontera superior ÚNICA y deliberada: el oráculo es externo
+        logger.exception("reconciliación del journal: excepción INESPERADA del oráculo Effective en %s", ruta)
+        return _fail_closed(None, "ORACULO_FALLO_INESPERADO: excepción no tipada al observar el Effective")
 
     # (3) Revalidación bajo el lock: la autoridad durable no puede haber derivado.
     try:
