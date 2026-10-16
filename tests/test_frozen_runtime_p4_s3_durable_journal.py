@@ -90,6 +90,16 @@ def _fuente(generation: str = GEN_ORIGEN) -> dict:
     }
 
 
+def _fuente_objetivo() -> dict:
+    """Source ya promovido a ``GEN_OBJETIVO`` (escenarios de autoridad cruzada)."""
+    return {
+        "generation_id": GEN_OBJETIVO,
+        "clone_id": "clone-objetivo",
+        "runtime_setup_id": "setup-objetivo",
+        "effective_runtime_evidence": "b" * 64,
+    }
+
+
 def _payload_pendiente(
     *,
     transition_id: str = T1,
@@ -284,6 +294,51 @@ def _propuesta(transition_id: str = T1, *, operation: str = "PROMOTION") -> obje
     )
 
 
+def _propuesta_hacia(
+    transition_id: str,
+    *,
+    target_generation: str,
+    target_clone: str,
+    target_setup: str,
+) -> object:
+    """Propuesta con un target EXPLÍCITO (escenarios de autoridad cruzada).
+
+    ``_propuesta`` fija el target a ``GEN_OBJETIVO``; para probar que un tip de
+    OTRA Generation no es autoridad del Clone hace falta poder finalizar una
+    transición cuyo target sea otra Generation.
+    """
+    from sky_claw.local.frozen_runtime.journal import (
+        EvidenceDigests,
+        JournalOperation,
+        PropuestaTransicion,
+        SourceActivation,
+    )
+
+    fuente = _fuente_objetivo()
+    return PropuestaTransicion(
+        transition_id=transition_id,
+        operation=JournalOperation("PROMOTION"),
+        source_activation=SourceActivation(
+            generation_id=GEN_OBJETIVO,
+            clone_id="clone-objetivo",
+            runtime_setup_id="setup-objetivo",
+            effective_runtime_evidence="b" * 64,
+        ),
+        source_activation_digest=_digest(fuente),
+        target_generation_id=target_generation,
+        target_clone_id=target_clone,
+        target_runtime_setup_id=target_setup,
+        approval_scope_digest="c" * 64,
+        evidence_digests=EvidenceDigests(
+            clone_evidence="d" * 64,
+            runtime_setup_evidence="e" * 64,
+            compatibility_evidence="f" * 64,
+        ),
+        expected_effective_path="E:/rt/versions/" + target_generation,
+        created_at_ns=1_700_000_000_000_000_000,
+    )
+
+
 def _aprobacion(transition_id: str = T1) -> object:
     from sky_claw.local.frozen_runtime.journal import AprobacionConsumida
 
@@ -302,16 +357,19 @@ def _post(
     target_generation: str = GEN_OBJETIVO,
     revision: int = 0,
     desired: str | None = GEN_OBJETIVO,
+    target_clone: str = "clone-objetivo",
+    target_setup: str = "setup-objetivo",
+    fuente: dict | None = None,
 ) -> object:
     from sky_claw.local.frozen_runtime.journal import PostVerifyEvidence
 
     return PostVerifyEvidence(
         transition_id=transition_id,
         resultado=resultado,
-        source_activation_digest=_digest(_fuente()),
+        source_activation_digest=_digest(_fuente() if fuente is None else fuente),
         target_generation_id=target_generation,
-        target_clone_id="clone-objetivo",
-        target_runtime_setup_id="setup-objetivo",
+        target_clone_id=target_clone,
+        target_runtime_setup_id=target_setup,
         desired_active_generation=desired,
         effective_observation_digest="1" * 64,
         payload_digest="2" * 64,
@@ -1246,6 +1304,51 @@ def test_reconciliacion_n0_complete_exige_clone_registrado(tmp_path: pathlib.Pat
         root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone=None)
     )
     assert indeterminado.veredicto.value == "FAIL_CLOSED"
+
+
+def test_f10_tip_de_otra_generation_no_prueba_el_clone_activo(tmp_path: pathlib.Path) -> None:
+    """F10 — el tip de la autoridad sólo prueba el Clone si es de ESA Generation.
+
+    La autoridad durable del Clone activo es el registro FINALIZED más reciente
+    *de la Generation deseada* (§37.5). Si el tip pertenece a OTRA Generation no
+    hay demostración posible: el veredicto es ``UNKNOWN_EFFECTIVE``. Tomar el
+    ``target_clone_id`` del tip ignorando la Generation convertiría un
+    indeterminado en ``COMPLETE`` (``UNKNOWN != SUCCESS``, §34.5) — y lo haría
+    justamente cuando el Desired NO tiene ningún registro que lo respalde.
+    """
+    root = _root(tmp_path)
+    from sky_claw.local.frozen_runtime.state import save_frozen_runtime_state
+    from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
+
+    # El tip queda en GEN_ORIGEN: ninguna autoridad registra el Clone de GEN_OBJETIVO.
+    _crear_pendiente(
+        root,
+        _propuesta_hacia(T1, target_generation=GEN_ORIGEN, target_clone="clone-origen", target_setup="setup-origen"),
+        _aprobacion(T1),
+    )
+    _finalizar(
+        root,
+        _post_para(
+            root,
+            T1,
+            target_generation=GEN_ORIGEN,
+            target_clone="clone-origen",
+            target_setup="setup-origen",
+            desired=GEN_ORIGEN,
+            fuente=_fuente_objetivo(),
+        ),
+    )
+    save_frozen_runtime_state(
+        root / "state" / "active.json",
+        FrozenRuntimeState(schema_version=1, desired_active_generation=GEN_OBJETIVO, updated_at_ns=1),
+    )
+    # El oráculo devuelve el MISMO clone_id que el tip, pero de OTRA Generation:
+    # sin registro para GEN_OBJETIVO la identidad NO está demostrada.
+    resultado = journal_module.reconciliar_journal(
+        root, observador_effective=lambda: _observacion(generation=GEN_OBJETIVO, clone="clone-origen")
+    )
+    assert resultado.veredicto.value == "UNKNOWN_EFFECTIVE"
+    assert resultado.veredicto.value != "COMPLETE"
 
 
 def test_reconciliacion_desired_none_y_oraculo_none_nunca_es_complete(tmp_path: pathlib.Path) -> None:
