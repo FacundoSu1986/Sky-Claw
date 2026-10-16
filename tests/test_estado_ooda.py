@@ -127,6 +127,14 @@ _ITEMS = frozenset(
         # Fila "Parcial" porque el PR está pendiente de merge; #592 sigue ABIERTO por
         # sus otros findings.
         "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia (`RUNNER_P2_PACKAGING_PRESERVE_PREVIOUS`, #592 finding 2)",
+        # #726: el contrato de errores del dispatcher (ErrorWrapping +
+        # DictResultGuard + gate) se extendió a las TRES estrategias destructivas
+        # que #722 dejó fuera cuando lo cerró sólo para `generate_lods`. Fila con
+        # alcance acotado a propósito: distingue el hueco MEDIDO
+        # (`quick_auto_clean`, cuyo servicio no tiene el `except Exception → dict`
+        # de la Regla T11) de la defensa en profundidad (Pandora y Wrye Bash, que
+        # sí lo tienen), para que nadie la lea como "tres escapes demostrados".
+        "Contrato de errores de las estrategias destructivas restantes (#726)",
     }
 )
 
