@@ -1,4 +1,4 @@
-# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 7.3
+# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 7.4
 
 > **Estado:** `PROPOSAL` — insumo externo para la ETAPA A del prereg de EXP-M6
 > ([PR #675](https://github.com/FacundoSu1986/Sky-Claw/pull/675), DRAFT). **No autoriza
@@ -23,6 +23,12 @@
 > ejecución real en el gate. (4) **CR-2:** la etiqueta de escalado declaraba el
 > cociente invertido; es `c = λ*·N²` con los rangos corregidos. Solver FFT,
 > símbolos D, pesos y dorados de ruido: sin cambios.
+>
+> **REV 7.4 (2026-10-17):** cierre del P2 documental confirmado en la auditoría
+> externa REV 9 (§8.7). Sólo documento y tests: la tabla consolidada §7 y los
+> conteos de §5.7/§6.3 publican las cifras vigentes (selftest 10/10, gate
+> 31 passed) y los rangos corregidos de `c`; CR-5/CR-6 quedan protegidos por
+> tests. Modelo, solver, cuadratura y dorados: sin cambios.
 >
 > **REV 6.1 (2026-10-16):** adjudicación acotada de Nyquist mixto y porcentajes (§8.5).
 > El solver FFT y sus símbolos quedan sin cambios; los dorados y las seis revisiones
@@ -378,8 +384,9 @@ ruido que suprime). `EJECUTADO`.
    (SEED=20261015; curva λ=0 rég. B con los 5 valores dorados de dos partes
    N∈{32,64,128,256,512}; **límite continuo V∞(1e-3)=0.006698379 con oráculo
    independiente** (REV 6); Parseval toda paridad; conjugación por modo único;
-   selftest 9/9). Ejecutar con `pytest tests/test_native_parallax_m6_lambda_gate.py
-   --noconftest -q`. **Fail-closed estructural (REV 6):** la ausencia del runner es
+   selftest 10/10). Gate en este commit: **31 passed**. Ejecutar con
+   `pytest tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`.
+   **Fail-closed estructural (REV 6):** la ausencia del runner es
    FAIL SIEMPRE (test de presencia incondicional, sin variables de entorno) —
    ningún workflow fijaba `SKYCLAW_REQUIRE_M6_CONTRACT` y la ruta compatible
    permitía `5 skipped` con runner ausente (falso verde posible, demostrado y
@@ -414,7 +421,7 @@ numérica (atenuación uniforme 1/(1+1e-4) en N∈{128…4096}); el reemplazo pr
 ### 6.3 Gate del contrato matemático (REV 5)
 
 `scripts/run_lambda_study_m6.py` (runner canónico) + `tests/test_native_parallax_m6_lambda_gate.py`
-(recibos congelados, ver §5.7). Estado en este commit: **4 passed en <1 s**. El doc
+(recibos congelados, ver §5.7). Estado en este commit (REV 7.4): **31 passed**. El doc
 incluye un snapshot del runner en Apéndice A y declara canónico el archivo de
 `scripts/`.
 
@@ -423,13 +430,15 @@ la ausencia del runner canónico es **FAIL siempre** (test de presencia
 incondicional), independientemente de variables de entorno. Razón: se verificó que
 NINGÚN workflow de CI fijaba `SKYCLAW_REQUIRE_M6_CONTRACT`, por lo que el modo
 compatible de REV 5 permitía `5 skipped` con runner ausente — un falso verde
-posible en el propio PR #738. Demostración negativa: eliminando el runner, el gate
-pasa de `7 passed` a `1 failed, 6 skipped` (job rojo) SIN ninguna configuración de
-CI. La variable `SKYCLAW_REQUIRE_M6_CONTRACT` quedó eliminada por superada
+posible en el propio PR #738. Demostración negativa (REV 7.4, gate de 31 tests):
+eliminando el runner, el gate pasa de `31 passed` a `9 failed, 5 passed, 17 skipped`
+(job rojo) SIN ninguna configuración de CI. La medición original de REV 6, con el
+gate de 7 tests, daba `7 passed` → `1 failed, 6 skipped`. La variable
+`SKYCLAW_REQUIRE_M6_CONTRACT` quedó eliminada por superada
 (documentado aquí; el harness H4 de #737 conserva SU variable por una razón
 distinta y justificada: debe correr también en árboles SIN la API H4).
 
-## 7. Estados (REV 4)
+## 7. Estados — tabla consolidada (última actualización: REV 7.4)
 
 | Objeto | Estado |
 |---|---|
@@ -446,9 +455,9 @@ distinta y justificada: debe correr también en árboles SIN la API H4).
 | Nyquist mixto y espacio nulo en rfft2 | `VERIFIED` (N par: cuatro bins nulos; N impar: DC únicamente; modo mixto D>0 recuperado) |
 | Porcentajes log / discreto reconciliados desde los valores registrados | `VERIFIED` (+9.2639%, +2.2524%, +1.1262%; presentación +9.26%, +2.25%, +1.13%) |
 | Numerador conj(dx)·p̂+conj(dy)·q̂ (no conj de la suma) | `VERIFIED` (código correcto; §2.1 corregido; pin por modo único; mutación M2) |
-| Gate fail-closed estructural (presencia incondicional) | `VERIFIED` (7 passed; runner ausente → 1 failed sin env; 5 mutaciones detectadas) |
-| λ\*riesgo ≈ c/N² observado (c_A≈0.085, c_B≈0.146), ganancia <0.06 % examinada | `EJECUTADO` (REV 5 rewording; sustituye `RETIRADO` 3.15e-10) |
-| Gate automatizado (runner en repo + recibos congelados) | `VERIFIED` (7 passed; 5 mutaciones detectadas, §8.4) |
+| Gate fail-closed estructural (presencia incondicional) | `VERIFIED` (31 passed; runner ausente → 9 failed, 5 passed, 17 skipped sin variables de entorno) |
+| λ\*riesgo ≈ c/N² observado (c_A ∈ [0.0914, 0.0918], c_B ∈ [0.1574, 0.1578]), ganancia <0.06 % examinada | `EJECUTADO` (modelo exacto REV 7.3; los rangos del modelo previo quedan `superseded`; sustituye `RETIRADO` 3.15e-10) |
+| Gate automatizado (runner en repo + recibos congelados) | `VERIFIED` (31 passed; mutaciones adversariales en §8.6) |
 | Mallas rectangulares | FUERA DE CONTRATO (a resolver para el producto) |
 | λ=0 default (baseline) | `SUPPORTED_BY` §4 |
 | `null_slope_energy_fraction` ≠ altura irrecuperable (P1-3) | `VERIFIED` (contraejemplo (−1)^(x+y)); altura: `UNKNOWN` sin oráculo |
@@ -671,6 +680,59 @@ ausente → **9 failed, 17 skipped** (sin verde silencioso).
 dorados de ruido: sin cambios. WLS/gamma, DDS, corpus y cierre global siguen
 fuera de alcance. `M6_MATH_CONTRACT_CLOSED=NO` · `M6_IMPLEMENTATION_BLOCKED=YES` ·
 sin merge.
+
+### 8.7 REV 7.4 — cierre documental (CR-5/CR-6 de REV 7.3a y P2 de REV 9)
+
+```
+REV_7_4_CR5_DIRECCION_LAMBDA: CORRECTED
+REV_7_4_CR6_RATIO_MC_PREVIO: CORRECTED
+REV_7_4_P2_TABLA_ESTADOS: CORRECTED
+REV_7_4_MODELO_SOLVER_DORADOS: UNCHANGED
+```
+
+**Origen (P2 de REV 9).** La auditoría externa REV 9 confirmó que la tabla
+consolidada de estados (§7) seguía publicando cifras del modelo previo
+(`c_A≈0.085`, `c_B≈0.146`) y del gate de REV 5/6 (`7 passed`), y que §6.3
+declaraba `4 passed` como estado del commit. Ninguna describía el HEAD. Es el
+mismo defecto de CR-2 —valores de `c` desactualizados— en otra ubicación: el
+fix de REV 7.3 llegó a §4.2, §8.6 y B.3 pero no a la tabla consolidada.
+
+**CR-5 — dirección del error de λ\*.** El óptimo del modelo previo queda
+**por debajo** del exacto, no por encima. Recálculo sobre el cociente de
+esperanzas de `408914d2`: λ\*_A previo = 5.163e-06 vs exacto 5.578705e-06
+⇒ **−7.45 %** (el valor publicado en REV 4, 5.17e-06, difiere por la grilla de
+búsqueda; ambos quedan ≈7.4–7.5 % por debajo). Régimen B: 8.891e-06 vs
+9.606201e-06 ⇒ −7.45 %. Protegido por
+`test_cr5_lambda_previo_queda_por_debajo_del_exacto`, que recalcula el óptimo
+previo replicando el cociente de esperanzas y lo compara contra
+`lambda_star_continuous`.
+
+**CR-6 — dirección del ratio.** `MC/previo ≈ 0.93` (el modelo previo
+sobreestima el sesgo, así que el recibo queda por debajo de 1). `previo/exacto
+≈ 1.074` es el valor de **N=128**; el recibo #10 corre a **N=64**, donde vale
+1.078 y por tanto `MC/previo = 0.9976/1.078 ≈ 0.93`. La atribución se explicita
+para que el recibo sea verificable. Protegido por
+`test_cr6_ratio_mc_previo_y_previo_exacto_distinguidos`.
+
+**P2 cerrado.** §5.7, §6.3 y §7 publican ahora `selftest 10/10` y `31 passed`;
+§7 muestra sólo los rangos activos de `c`. El conteo queda **auto-verificado**:
+`test_conteo_tests_gate_documentado_igual_al_conteo_real` cuenta por AST los
+tests del gate y falla si el documento deja de coincidir. Las cifras del modelo
+previo sobreviven únicamente como historial etiquetado `superseded`.
+
+**Aviso de CodeRabbit sobre `λ*` sin escapar — no se aplica cambio.** No hay
+`markdownlint` en el repo ni en CI, y los tres `λ*` del párrafo de CR-4 son
+delimitadores *right-flanking* (precedidos de letra, seguidos de espacio) que no
+pueden **abrir** énfasis: renderizan literales. Es inconsistencia estilística
+con la convención `λ\*` del documento, no un defecto de presentación
+reproducible.
+
+**Alcance.** Sólo documento y tests
+(`tests/test_native_parallax_m6_documentary_consistency.py`). Runner, solver
+FFT, símbolos D, pesos Parseval, cuadratura,
+λ\* y dorados de ruido: sin cambios. `GOLDEN_VALUES_NOISE: PRESERVED` ·
+`SOLVER: UNCHANGED`. `M6_MATH_CONTRACT_CLOSED=NO` ·
+`M6_IMPLEMENTATION_BLOCKED=YES` · sin merge.
 
 ## Apéndice A — Runner ejecutable (snapshot de `scripts/run_lambda_study_m6.py`, NumPy puro)
 
