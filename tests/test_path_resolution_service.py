@@ -1513,11 +1513,14 @@ class TestAnclaConstructoresManualesDeMods:
         # P2.3 fenced mueve la línea (autoridad temporal + veredicto tipado +
         # cleanup de cancelación).
         # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
-        "sky_claw/app_context.py": (1409,),
+        # #661 (servicio de etapa 9 publicado para la superficie remota) la movió
+        # (1409 → 1426); mismo constructor.
+        "sky_claw/app_context.py": (1426,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA; #665
         # (271 → 277) al extraer `_build_parser` y derivar el default de --mode.
-        "sky_claw/__main__.py": (277,),
+        # #661 (despacho del helper del driver UIA desatendido) la movió (277 → 287).
+        "sky_claw/__main__.py": (287,),
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
         "sky_claw/local/tools/output_targets.py": (225,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.

@@ -2102,10 +2102,14 @@ class AppContext:
             # que un trabajo vivo se cancela y limpia con el ownership todavía
             # tomado.
             from sky_claw.app.agent.tools.lod_tools import GestorDeTrabajosDeLods
+            from sky_claw.app.orchestrator.dyndolod_desatendido_hitl import AprobadorDesatendidoHITL
 
+            # El override del guard de etapas previas (SOP §5.2) es del operador,
+            # por el MISMO guard remoto y con la categoría no auto-aprobable.
             lod_jobs = GestorDeTrabajosDeLods(
                 proveedor_de_servicio=lambda: self.servicio_de_etapa9,
                 notificar=hitl.notify_operator,
+                aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl).aprobar_sin_etapas_previas,
             )
             self.lod_jobs = lod_jobs
             self._push_startup_cleanup(lod_jobs.cerrar)

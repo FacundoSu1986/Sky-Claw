@@ -338,6 +338,9 @@ module = [
     "sky_claw.local.tools.dyndolod_uia_driver_helper",
     "sky_claw.local.tools.dyndolod_uia_driver_windows",
     "sky_claw.local.tools.dyndolod_presets",
+    "sky_claw.local.validators.etapas_previas_lods",
+    "sky_claw.app.agent.tools.lod_tools",
+    "sky_claw.app.orchestrator.dyndolod_desatendido_hitl",
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)
     # Primitiva de detección de enlaces: módulo nuevo, nace estricto. El opt-in es

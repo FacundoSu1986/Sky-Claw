@@ -68,6 +68,7 @@ from sky_claw.local.tools.texgen_handoff import HandoffPendingAction
 from sky_claw.logging_config import correlacion_de_transaccion
 
 if TYPE_CHECKING:
+    from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
@@ -526,6 +527,36 @@ class DynDOLODPipelineService:
             dyndolod_exe,
         )
         return self._runner
+
+    def verificar_etapas_previas(self) -> EvidenciaDeEtapasPrevias:
+        """SOP §5.2: artefactos de las etapas 6, 7 y 8 en el perfil activo (#661).
+
+        Lo consulta el camino REMOTO (tool del agente) antes de lanzar la etapa 9,
+        porque el SOP exige que todo camino nuevo de LODs agregue este guard. Lee
+        el MISMO perfil que alimenta el ``-p:`` (``_plugins_txt_del_perfil_activo``)
+        y la misma raíz de datos que usa el ritual de grass para ``overwrite/``.
+        Nunca lanza: una metadata ilegible es una etapa faltante (fail-closed).
+        """
+        from sky_claw.local.validators.etapas_previas_lods import verificar_etapas_previas_de_lods
+
+        try:
+            plugins_txt = self._plugins_txt_del_perfil_activo()
+        except DynDOLODExecutionError:
+            plugins_txt = None
+        try:
+            data_root = self._path_resolver.get_mo2_instance_data_root_estricto()
+        except (RuntimeError, OSError, ValueError):
+            data_root = None
+        try:
+            mods_dir: pathlib.Path | None = self._path_resolver.get_mo2_mods_path()
+        except (RuntimeError, OSError, ValueError):
+            mods_dir = None
+        return verificar_etapas_previas_de_lods(
+            plugins_txt=plugins_txt,
+            modlist_txt=plugins_txt.parent / "modlist.txt" if plugins_txt is not None else None,
+            mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
+            overwrite_dir=data_root / "overwrite" if isinstance(data_root, pathlib.Path) else None,
+        )
 
     def _plugins_txt_del_perfil_activo(self) -> pathlib.Path | None:
         """``plugins.txt`` del perfil MO2 activo, o ``None`` en modo standalone.

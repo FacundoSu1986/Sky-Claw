@@ -1,6 +1,6 @@
 """#661 — adapter HITL REMOTO de la etapa 9 desatendida (Telegram vía ``HITLGuard``).
 
-**Qué responde.** Las dos únicas decisiones humanas que quedan cuando nadie está
+**Qué responde.** Las tres únicas decisiones humanas que quedan cuando nadie está
 frente a la PC:
 
 1. *"¿Apruebo que TexGen/DynDOLOD corran solos con ESTA configuración?"* — antes
@@ -10,6 +10,10 @@ frente a la PC:
    está en disco.
 2. *"¿Continúo este modal de arranque medido?"* — mid-run, con la instrucción
    exacta del diálogo y su explicación. Sin aprobación el driver no lo toca.
+3. *"Faltan artefactos de etapas previas (SOP §5.2): ¿lanzo igual?"* — antes de
+   lanzar el trabajo remoto. Es el ÚNICO override del guard de etapas previas:
+   la tool del agente no tiene un parámetro para saltearlo, así que el modelo no
+   puede decidirlo por el operador.
 
 **Categoría propia y NO auto-aprobable** (``CATEGORIA_DYNDOLOD_DESATENDIDO``):
 la GUI no la intercepta, así que viaja por el canal remoto del guard.
@@ -83,6 +87,20 @@ def texto_de_modal(solicitud: SolicitudModalConocido) -> tuple[str, str]:
     return reason, detail
 
 
+#: Lo que el operador tiene para contestar si sigue sin las etapas previas.
+TIMEOUT_APROBACION_ETAPAS_PREVIAS_S = 900.0
+
+
+def texto_de_etapas_previas(faltantes: tuple[str, ...]) -> tuple[str, str]:
+    """``(reason, detail)`` del prompt de etapas previas: cada etapa faltante, nombrada."""
+    reason = (
+        "Etapa 9 (LODs) pedida desde el canal remoto, pero faltan artefactos de etapas previas "
+        "(SOP §5.2: DynDOLOD tiene que correr DESPUÉS de Wrye Bash, Synthesis y el grass cache). "
+        "Aprobá sólo si sabés que esas etapas no aplican a tu lista; denegá para cortar."
+    )
+    return reason, "\n".join(f"- {faltante}" for faltante in faltantes)
+
+
 class AprobadorDesatendidoHITL:
     """Implementación productiva de ``AprobadorDesatendido`` sobre ``HITLGuard``."""
 
@@ -130,6 +148,33 @@ class AprobadorDesatendidoHITL:
             raise
         except Exception:  # noqa: BLE001 -- canal humano: cualquier fallo es "no disponible"
             logger.warning("el canal HITL del modal de %s falló", solicitud.tool, exc_info=True)
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        return _traducir(decision)
+
+    async def aprobar_sin_etapas_previas(
+        self,
+        faltantes: tuple[str, ...],
+        *,
+        timeout_seconds: float = TIMEOUT_APROBACION_ETAPAS_PREVIAS_S,
+    ) -> ResultadoConfirmacion:
+        """Override HUMANO del guard de etapas previas del camino remoto (SOP §5.2)."""
+        if self._guard is None:
+            logger.warning("etapas previas faltantes sin canal HITL cableado: la etapa 9 no arranca")
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        reason, detail = texto_de_etapas_previas(faltantes)
+        request_id = new_hitl_request_id("dyndolod-etapas-previas")
+        try:
+            decision = await self._guard.request_approval(
+                request_id=request_id,
+                reason=reason,
+                detail=detail,
+                category=CATEGORIA_DYNDOLOD_DESATENDIDO,
+                timeout=float(timeout_seconds),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- canal humano: cualquier fallo es "no disponible"
+            logger.warning("el canal HITL de las etapas previas falló", exc_info=True)
             return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
         return _traducir(decision)
 

@@ -104,6 +104,9 @@ class BackendUIAWindows:
             raise UIANoDisponibleError("falta el binding COM `comtypes` (dependencia win32 de Sky-Claw)") from exc
         self._comtypes: Any = comtypes
         self._errores_com: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
+        # `ValueError`: comtypes lo lanza al usar un puntero COM nulo ("NULL COM
+        # pointer access"). Tupla precalculada: mypy no acepta `except (*t, X)`.
+        self._errores_de_patron: tuple[type[BaseException], ...] = (*self._errores_com, ValueError)
         self._apartamento = False
         try:
             comtypes.CoInitialize()
@@ -180,13 +183,13 @@ class BackendUIAWindows:
         """``GetCurrentPattern`` + ``QueryInterface``; ``None`` si el control no lo expone."""
         try:
             crudo = elemento.GetCurrentPattern(self._id(nombre_id))
-        except (*self._errores_com, ValueError):
+        except self._errores_de_patron:
             return None
         if crudo is None:
             return None
         try:
             return crudo.QueryInterface(interfaz)
-        except (*self._errores_com, ValueError):
+        except self._errores_de_patron:
             return None
 
     def leer_output(self, elemento: ElementoUI) -> str | None:

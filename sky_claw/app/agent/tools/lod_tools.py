@@ -21,6 +21,14 @@ el bootloader de la GUI. Sin ese servicio (``--mode telegram`` no levanta el
 supervisor) la tool responde ``success=false`` con la razón; no hay segundo
 constructor del servicio que pudiera divergir.
 
+**Guard de etapas previas (SOP §5 regla 2).** Todo camino nuevo de LODs tiene
+que probar que Wrye Bash, Synthesis y el grass cache ya corrieron. Antes de
+lanzar, el gestor le pide al servicio la evidencia
+(``verificar_etapas_previas``, que lee el MISMO perfil que alimenta el ``-p:``).
+Si falta algo, la etapa 9 no arranca sola: el override es una aprobación del
+OPERADOR por el canal remoto (``aprobar_sin_etapas_previas``), no un parámetro de
+la tool que el modelo pueda poner. Sin canal, se corta antes de lanzar.
+
 **Política HITL de esta capa**: lock-only, sin middleware general (#217). La
 aprobación que importa en modo desatendido la pide el propio pipeline con una
 categoría no auto-aprobable, por el canal remoto.
@@ -37,9 +45,17 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
+
 logger = logging.getLogger(__name__)
 
-EstadoDeTrabajo = Literal["iniciado", "en_curso", "exitoso", "fallido", "cancelado"]
+EstadoDeTrabajo = Literal["iniciado", "esperando_aprobacion", "en_curso", "exitoso", "fallido", "cancelado"]
+
+#: Estados de un trabajo vivo (ocupa el único lugar del gestor).
+_ESTADOS_VIVOS = frozenset({"iniciado", "esperando_aprobacion", "en_curso"})
+
+#: Override humano del guard de etapas previas: recibe las etapas faltantes.
+AprobadorDeEtapasPrevias = Callable[[tuple[str, ...]], Awaitable[ResultadoConfirmacion]]
 
 #: Lo que el operador lee cuando la etapa 9 no tiene servicio en esta sesión.
 MOTIVO_SIN_SERVICIO = (
@@ -61,6 +77,7 @@ class TrabajoDeLods:
     estado: EstadoDeTrabajo = "iniciado"
     terminado_en: float | None = None
     resultado: dict[str, Any] | None = None
+    etapas_faltantes: tuple[str, ...] = ()
     tarea: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def resumen(self) -> dict[str, Any]:
@@ -72,6 +89,8 @@ class TrabajoDeLods:
             "iniciado_en": self.iniciado_en,
             "duracion_segundos": round((self.terminado_en or time.time()) - self.iniciado_en, 1),
         }
+        if self.etapas_faltantes:
+            datos["etapas_faltantes"] = list(self.etapas_faltantes)
         if self.resultado is not None:
             datos["resultado"] = {
                 clave: self.resultado.get(clave)
@@ -118,6 +137,8 @@ class GestorDeTrabajosDeLods:
     ``proveedor_de_servicio`` se resuelve en CADA lanzamiento (el servicio se
     publica después de construir el registro de tools). ``notificar`` es la
     superficie de avisos del guard: best-effort, nunca decide el resultado.
+    ``aprobar_sin_etapas_previas`` es el override humano del guard de etapas
+    previas; ``None`` significa que no hay a quién preguntar y se corta.
     """
 
     def __init__(
@@ -125,19 +146,25 @@ class GestorDeTrabajosDeLods:
         *,
         proveedor_de_servicio: Callable[[], Any | None],
         notificar: Callable[[str], Awaitable[None]] | None = None,
+        aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None,
     ) -> None:
         self._proveedor = proveedor_de_servicio
         self._notificar = notificar
+        self._aprobar_sin_etapas_previas = aprobar_sin_etapas_previas
         self._actual: TrabajoDeLods | None = None
+        # La verificación de etapas corre en un hilo: sin este lock, dos
+        # lanzamientos concurrentes pasarían los dos el "ya hay uno en curso"
+        # antes de que cualquiera ocupe el lugar.
+        self._lanzamiento = asyncio.Lock()
 
     @property
     def actual(self) -> TrabajoDeLods | None:
         return self._actual
 
     def en_curso(self) -> bool:
-        return self._actual is not None and self._actual.estado in {"iniciado", "en_curso"}
+        return self._actual is not None and self._actual.estado in _ESTADOS_VIVOS
 
-    def iniciar(
+    async def iniciar(
         self,
         *,
         preset: str,
@@ -145,42 +172,77 @@ class GestorDeTrabajosDeLods:
         create_snapshot: bool,
         interaction_mode: str,
     ) -> dict[str, Any]:
-        """Lanza el trabajo y responde YA. Nunca bloquea el round del router."""
-        if self.en_curso() and self._actual is not None:
-            return {
-                "success": False,
-                "message": f"ya hay una etapa 9 en curso (trabajo {self._actual.id}); consultá lods_status",
-                "trabajo_id": self._actual.id,
+        """Lanza el trabajo y responde YA. Nunca espera una decisión humana en el round del router."""
+        async with self._lanzamiento:
+            if self.en_curso() and self._actual is not None:
+                return {
+                    "success": False,
+                    "message": f"ya hay una etapa 9 en curso (trabajo {self._actual.id}); consultá lods_status",
+                    "trabajo_id": self._actual.id,
+                }
+            servicio = self._proveedor()
+            if servicio is None:
+                return {"success": False, "message": MOTIVO_SIN_SERVICIO}
+            faltantes = await self._etapas_faltantes(servicio)
+            if faltantes and self._aprobar_sin_etapas_previas is None:
+                return {
+                    "success": False,
+                    "message": "la etapa 9 no se lanza: faltan etapas previas (SOP §5.2): " + "; ".join(faltantes),
+                    "etapas_faltantes": list(faltantes),
+                }
+            parametros = {
+                "preset": preset,
+                "run_texgen": run_texgen,
+                "create_snapshot": create_snapshot,
+                "interaction_mode": interaction_mode,
             }
-        servicio = self._proveedor()
-        if servicio is None:
-            return {"success": False, "message": MOTIVO_SIN_SERVICIO}
-        parametros = {
-            "preset": preset,
-            "run_texgen": run_texgen,
-            "create_snapshot": create_snapshot,
-            "interaction_mode": interaction_mode,
-        }
-        trabajo = TrabajoDeLods(id=f"lods-{next(_IDS)}", parametros=parametros, iniciado_en=time.time())
-        trabajo.tarea = asyncio.create_task(self._correr(trabajo, servicio), name=f"etapa9-{trabajo.id}")
-        self._actual = trabajo
+            trabajo = TrabajoDeLods(
+                id=f"lods-{next(_IDS)}",
+                parametros=parametros,
+                iniciado_en=time.time(),
+                estado="esperando_aprobacion" if faltantes else "iniciado",
+                etapas_faltantes=faltantes,
+            )
+            trabajo.tarea = asyncio.create_task(self._correr(trabajo, servicio), name=f"etapa9-{trabajo.id}")
+            self._actual = trabajo
         instruccion = (
             "Te llega por este canal la aprobación de la configuración; después Sky-Claw opera "
             "TexGen/DynDOLOD solo y te avisa al terminar."
             if interaction_mode == "desatendido"
             else "Modo asistido: alguien tiene que operar la ventana de TexGen/DynDOLOD en la PC."
         )
-        return {
+        respuesta: dict[str, Any] = {
             "success": True,
             "message": "",
-            "estado": "iniciado",
+            "estado": trabajo.estado,
             "trabajo_id": trabajo.id,
             "instrucciones": instruccion,
         }
+        if faltantes:
+            respuesta["etapas_faltantes"] = list(faltantes)
+            respuesta["instrucciones"] = (
+                "Faltan etapas previas: primero te llega por este canal la pregunta de si seguir igual; "
+                "sin tu aprobación la etapa 9 no arranca. " + instruccion
+            )
+        return respuesta
+
+    async def _etapas_faltantes(self, servicio: Any) -> tuple[str, ...]:
+        """Evidencia de las etapas 6–8 del servicio. Fail-closed: no poder verificar es faltar."""
+        try:
+            evidencia = await asyncio.to_thread(servicio.verificar_etapas_previas)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- el guard no puede abrirse por un error de lectura
+            logger.warning("no se pudieron verificar las etapas previas de la etapa 9", exc_info=True)
+            return (f"no se pudieron verificar las etapas previas: {exc}",)
+        return tuple(evidencia.faltantes)
 
     async def _correr(self, trabajo: TrabajoDeLods, servicio: Any) -> None:
-        trabajo.estado = "en_curso"
         try:
+            if trabajo.etapas_faltantes and not await self._operador_aprueba_seguir(trabajo):
+                await self._terminar(trabajo, trabajo.resultado or {"success": False, "message": ""})
+                return
+            trabajo.estado = "en_curso"
             resultado = await servicio.execute(**trabajo.parametros)
         except asyncio.CancelledError:
             trabajo.estado = "cancelado"
@@ -189,8 +251,35 @@ class GestorDeTrabajosDeLods:
         except Exception as exc:  # noqa: BLE001 -- boundary del trabajo: el servicio no debería lanzar
             logger.exception("la etapa 9 remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
             resultado = {"success": False, "message": f"error inesperado del pipeline: {exc}"}
-        trabajo.resultado = resultado if isinstance(resultado, dict) else {"success": False, "message": str(resultado)}
-        trabajo.estado = "exitoso" if trabajo.resultado.get("success") is True else "fallido"
+        await self._terminar(
+            trabajo, resultado if isinstance(resultado, dict) else {"success": False, "message": str(resultado)}
+        )
+
+    async def _operador_aprueba_seguir(self, trabajo: TrabajoDeLods) -> bool:
+        """Override humano del guard. Cualquier cosa que no sea APROBADA deja el resultado y corta."""
+        aprobar = self._aprobar_sin_etapas_previas
+        decision = (
+            ResultadoConfirmacion.CANAL_NO_DISPONIBLE if aprobar is None else await aprobar(trabajo.etapas_faltantes)
+        )
+        if decision is ResultadoConfirmacion.APROBADA:
+            logger.warning(
+                "etapa 9 remota (%s) lanzada SIN etapas previas por aprobación del operador: %s",
+                trabajo.id,
+                "; ".join(trabajo.etapas_faltantes),
+            )
+            return True
+        trabajo.resultado = {
+            "success": False,
+            "message": (
+                f"la etapa 9 no se lanzó: faltan etapas previas (SOP §5.2) y la aprobación para seguir "
+                f"igual quedó en {decision.value}: " + "; ".join(trabajo.etapas_faltantes)
+            ),
+        }
+        return False
+
+    async def _terminar(self, trabajo: TrabajoDeLods, resultado: dict[str, Any]) -> None:
+        trabajo.resultado = resultado
+        trabajo.estado = "exitoso" if resultado.get("success") is True else "fallido"
         trabajo.terminado_en = time.time()
         await self._avisar(resumen_para_el_operador(trabajo))
 
@@ -236,7 +325,7 @@ async def generate_lods(
     if gestor is None:
         return json.dumps({"success": False, "message": MOTIVO_SIN_SERVICIO}, ensure_ascii=False)
     return json.dumps(
-        gestor.iniciar(
+        await gestor.iniciar(
             preset=preset,
             run_texgen=run_texgen,
             create_snapshot=create_snapshot,
