@@ -401,6 +401,31 @@ async def test_f4_dyndolod_artefacto_ausente_con_eco_desviado_nombra_la_ruta_obs
     assert "no queda demostrada" in diagnostico.lower()
 
 
+async def test_f4_dyndolod_el_diagnostico_nombra_los_dos_lugares_aceptados(tmp_path: pathlib.Path) -> None:
+    """El artefacto de DynDOLOD se acepta en DOS candidatos, y el mensaje no puede decir uno solo.
+
+    ``_candidatos_de_salida`` acepta ``DynDOLOD.esp`` en ``DynDOLOD_Output/``
+    **o** directamente en el subroot exclusivo de DynDOLOD (interpretación B de
+    ``-o:``). Un diagnóstico que dijera "falta dentro de DynDOLOD_Output/" mandaría
+    al operador a buscar en un solo lugar (revisión Qodo, PR #739).
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(tmp_path, "DynDOLOD", lambda: None, log=_log_con_eco("", tool="DynDOLOD")),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    diagnostico = " ".join(result.errors)
+    assert f"{DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME}/" in diagnostico
+    assert "o directamente en el subroot de DynDOLOD" in diagnostico
+    for candidato in runner._candidatos_de_salida("DynDOLOD"):
+        assert str(candidato) in diagnostico
+
+
 async def test_f4_artefacto_ausente_con_eco_correcto_sugiere_revisar_la_gui(tmp_path: pathlib.Path) -> None:
     """Eco == raíz administrada: el parse fue correcto, así que la escritura pudo desviarse
     por otra vía. El diagnóstico NO inventa causa: sugiere revisar el campo Output.

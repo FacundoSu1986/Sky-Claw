@@ -4922,7 +4922,12 @@ class DynDOLODRunner:
         if tool == "TexGen":
             artefacto = f"el subárbol '{self.TEXGEN_OUTPUT_NAME}' no vacío"
         else:
-            artefacto = f"el archivo '{_ARTEFACTO_DYNDOLOD}' dentro de {self.DYNDOLLOD_OUTPUT_NAME}/"
+            # Dos candidatos aceptados (`_candidatos_de_salida`): el subárbol y, por la
+            # interpretación B de `-o:`, el subroot exclusivo mismo.
+            artefacto = (
+                f"el archivo '{_ARTEFACTO_DYNDOLOD}' (en {self.DYNDOLLOD_OUTPUT_NAME}/ "
+                f"o directamente en el subroot de DynDOLOD)"
+            )
         partes = [
             f"No se encontró el artefacto de {tool}: falta {artefacto} en el subroot administrado "
             f"({', '.join(str(c) for c in candidatos)})."
