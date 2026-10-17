@@ -73,6 +73,16 @@ def _conteo_tests_gate() -> int:
     return sum(1 for n in arbol.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"))
 
 
+def _conteos_passed(texto: str) -> set[int]:
+    """Conteos de gate `N passed` de un bloque documental.
+
+    Excluye la forma `M failed, N passed` de la demostración negativa. El
+    segundo lookbehind `(?<!\\d)` es necesario: sin él el grupo puede empezar en
+    un dígito interior y `9 failed, 15 passed` capturaría `5` (falso fallo con
+    el documento correcto)."""
+    return {int(m) for m in re.findall(r"(?<!failed, )(?<!\d)(\d+)\s+passed", texto)}
+
+
 def _bias_modelo_previo(n: int, beta: float, lams: Any) -> np.ndarray:
     """Réplica del sesgo del modelo PREVIO (REV 7.2, commit 408914d2):
     cociente de esperanzas Σu/Σv sobre las órbitas ±k. Equivale al cálculo
@@ -146,8 +156,16 @@ def test_conteo_tests_gate_documentado_igual_al_conteo_real() -> None:
         assert f"{real} passed" in _bloque(doc, clave), f"{clave} no publica el conteo real {real} passed"
     # `N passed` como conteo de gate: se excluye la forma "M failed, N passed"
     # de la demostración negativa, que no es un conteo de tests del gate.
-    conteos = {int(m) for m in re.findall(r"(?<!failed, )(\d+)\s+passed", _bloque(doc, "s7"))}
+    conteos = _conteos_passed(_bloque(doc, "s7"))
     assert conteos == {real}, f"§7 publica conteos de gate {sorted(conteos)}; el real es {real}"
+
+
+def test_conteos_passed_ignora_demostracion_negativa_y_digitos_interiores() -> None:
+    """El extractor de conteos no debe confundir la demostración negativa con un
+    conteo de gate, ni capturar un dígito interior de un número de dos cifras."""
+    assert _conteos_passed("gate 31 passed; runner ausente: 9 failed, 15 passed, 17 skipped") == {31}
+    assert _conteos_passed("`4 passed`") == {4}
+    assert _conteos_passed("sin conteos") == set()
 
 
 # ---------------------------------------------------------------------------
