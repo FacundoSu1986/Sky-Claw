@@ -152,6 +152,16 @@ existe en esta versión por ese motivo.
   dos modos (ancla de paridad de claves).
 * Requiere la app de escritorio (modo GUI) en ejecución: en `--mode telegram`
   no hay `SupervisorAgent` y la tool responde `success=false` con esa razón.
+* **Guard de etapas previas (SOP §5 regla 2).** Antes de lanzar, el gestor pide
+  al servicio la evidencia de las etapas 6–8 (`verificar_etapas_previas`:
+  `Bashed Patch, 0.esp` y `Synthesis.esp` habilitados en el perfil activo, un
+  `*.cgid` en `overwrite/Grass` o en un mod habilitado). Si falta algo, el ÚNICO
+  override es una aprobación del operador por el canal remoto (misma categoría
+  no auto-aprobable); la tool no tiene un parámetro para saltearlo. Sin canal,
+  se corta antes de lanzar. Prueba que los artefactos existen y están activos,
+  no que se regeneraron después del último cambio de load order. El camino de la
+  GUI (`GenerateLodsStrategy`) conserva su deuda documentada: cablearlo cambia
+  el comportamiento para los usuarios actuales y es decisión del owner.
 
 ## 7. Errores estables
 
@@ -183,3 +193,5 @@ TexGen, packaging, rollback, post-check, el protocolo ASISTIDO y su HITL.
 4. Superficie GUI del modo desatendido (botón/selector en el ritual): fuera de
    este cambio; hoy se pide por Telegram/`/api/chat` o por el payload del
    dispatcher.
+5. Verificación en Windows del backend COM y del helper: hasta ahora sólo
+   lectura de código, tests con GUI simulada y mypy con `--platform win32`.
