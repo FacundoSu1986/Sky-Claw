@@ -179,6 +179,15 @@ desviado con artefacto → `DIFIERE` advisory (`salida_desviada=true`), Data
 correcto. Casos 11/12 (TexGen fallido no arranca DynDOLOD; cancelación no
 publica éxito) están en `tests/test_dyndolod_service.py` de la suite focalizada.
 
+**Alcance de los casos 2–4 (`EVALUATOR_ONLY`).** Registran rutas de entrada y el
+veredicto de `evaluar_evidencia_de_rutas`, nada más: no registran presencia de
+artefacto, resultado del runner ni empaquetado, y no son una corrida negativa real.
+El rechazo con artefacto presente y la ausencia de empaquetado los prueban, con
+ejecución **simulada** (`_execute_process` parcheado), los tests que cada caso cita
+en `evidencia_simulada_del_runner`:
+`test_p1_data_desviada_con_artefacto_presente_no_es_exito[TexGen|DynDOLOD]` y
+`test_p1_data_desviada_no_empaqueta_el_mod`.
+
 ## G. Integridad
 
 - Roots de salida exclusivos; TexGen y DynDOLOD no mezclan directorios.
@@ -235,3 +244,59 @@ verdes (falla el test de cancelación de lease), ni ausencia de TX pendientes.
 **Abierto para Tech Lead:** decidir si las TX2–TX4 pendientes, el fallo del test
 de workspace y el fallo de infraestructura de Qodo impiden el merge. Esta sesión
 no mergea, no cierra #592, no resuelve el thread P1 y no inicia Findings 8/9.
+
+## J. Adjudicación del Tech Lead (2026-10-17, posterior al rig)
+
+Cada punto dice cómo se verificó. Nada de esto se ejecutó sobre el rig ni sobre
+su journal: vive en la máquina del operador y esta adjudicación no lo tocó.
+
+**TX2/TX3/TX4 `pending` — evidencia fail-closed correcta, no mutaciones huérfanas.**
+*Verificado leyendo el código; el estado del journal del rig NO se inspeccionó.*
+
+- Por qué quedan `pending`: `DynDOLODPipelineService` fija
+  `mutation_coverage_complete = False` en toda corrida (comentario "Cobertura
+  honesta": el staging crudo del binario y su temp no están bajo move-aside), y
+  `_cerrar_tx_tras_rollback` sólo marca `ROLLED_BACK` si la cobertura es completa
+  **o** el runner nunca arrancó. Toda corrida fallida DESPUÉS del spawn termina
+  `pending` por diseño: el journal no afirma un rollback total que no puede
+  probar. Es comportamiento de `main` anterior a este PR; el diff de #739 no toca
+  `dyndolod_service.py` (salvo tests) ni el journal.
+- Qué quedó en disco: según `attempts-summary.txt`, el servicio revirtió los
+  outputs administrados de los tres intentos. Lo no cubierto es el directorio del
+  ejecutable y el `-t:` del rig, ambos dentro de `C:\SkyClaw_Rigs\PR739 Data
+  Path` (`dyndolod-command.txt`). Ninguna ruta de producción está nombrada.
+- Qué hace el sistema con ellas sin intervención: `OperationJournal.open()`
+  llama a `sweep_stale_pending()`, que pasa a `ROLLED_BACK` las `pending` de más
+  de 24 h y escribe en el MISMO boundary un receipt durable
+  (`stale_pending_sweep_receipts`). Sólo cambia el estado de la fila; no toca el
+  filesystem. Mientras siguen `pending`, sólo cuentan como candidatas orphan
+  (`_candidatas_orphan_en_conn`) para artefactos que su manifest nombra, es
+  decir, rutas del rig.
+- **Disposición:** conservarlas. Sin SQL manual, sin transiciones forzadas, sin
+  limpieza. Si el operador quiere confirmar el estado antes del barrido, la
+  consulta read-only es
+  `SELECT transaction_id, status, created_at FROM transactions WHERE status = 'pending';`
+  sobre el journal del rig (las etiquetas TX2–TX4 de este informe se asumen como
+  esos `transaction_id`; la consulta por estado no depende de esa suposición). Si el rig se descarta, se descarta entero (namespace +
+  journal), decisión del operador.
+
+**`test_la_cancelacion_durante_la_resolucion_libera_la_lease` — defecto previo y
+real, ajeno a este PR.** *Reproducido ejecutando en Linux; causa leída en el código.*
+
+- En `SnapshotTransactionLock.__aenter__` (`sky_claw/app/db/locks.py`), el paso 1
+  (`acquire_lock`) está FUERA del `try/except BaseException` que libera el lock
+  si la entrada se corta. Una cancelación que llega después de que la fila quedó
+  persistida y antes de que el `await` retorne deja la lease de ownership viva
+  hasta su TTL. En una máquina lenta esa ventana cae dentro de los 0,15 s del test.
+- Reproducción: el mismo test con `acquire_lock` demorado 0,5 s DESPUÉS de
+  persistir → `AssertionError: la cancelación dejó la lease viva`. Sin demora,
+  pasa. En CI (Windows py3.11/py3.12) pasa sobre el head de este PR.
+- #739 no toca `locks.py`, `dyndolod_workspace.py` ni ese test. No bloquea el
+  merge; se arregla en un PR propio, sin debilitar el test.
+
+**Qodo (`Auto-revisión`, `Regression & Test Oracle`).** Las dos ejecuciones
+fallidas sobre `cfb970e2` murieron en el proveedor de modelos
+(`Service temporarily overloaded` / respuesta sin mapping de review), no en
+pytest. No se califican como verdes: se re-ejecutan sobre el head integrado con
+`main`.
+

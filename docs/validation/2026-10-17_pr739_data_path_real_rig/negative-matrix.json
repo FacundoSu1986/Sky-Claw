@@ -23,10 +23,12 @@
         "data"
       ],
       "declarada_data": "D:\\OtraData\\",
-      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\",
+      "tipo_de_evidencia": "EVALUATOR_ONLY",
+      "alcance": "Ejercita SOLO evaluar_evidencia_de_rutas sobre las rutas declaradas: no registra presencia de artefacto, resultado del runner ni empaquetado, y no es una corrida negativa real con los binarios."
     },
     {
-      "caso": "3_artefacto_presente_data_desviada_fail_closed",
+      "caso": "3_data_desviada_eval_para_el_caso_artefacto_presente",
       "output": "COINCIDE",
       "data": "DIFIERE",
       "datos_desviados": true,
@@ -35,10 +37,20 @@
         "data"
       ],
       "declarada_data": "D:\\OtraData\\",
-      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\",
+      "tipo_de_evidencia": "EVALUATOR_ONLY",
+      "alcance": "Ejercita SOLO evaluar_evidencia_de_rutas sobre las rutas declaradas: no registra presencia de artefacto, resultado del runner ni empaquetado, y no es una corrida negativa real con los binarios.",
+      "caso_original": "3_artefacto_presente_data_desviada_fail_closed",
+      "evidencia_simulada_del_runner": {
+        "tests": [
+          "tests/test_dyndolod_evidencia_de_rutas.py::test_p1_data_desviada_con_artefacto_presente_no_es_exito[TexGen]",
+          "tests/test_dyndolod_evidencia_de_rutas.py::test_p1_data_desviada_con_artefacto_presente_no_es_exito[DynDOLOD]"
+        ],
+        "afirma": "con el artefacto presente en el subroot administrado y el eco de -d: desviado, el lanzador devuelve success=False y el error nombra la ruta declarada, la configurada y el switch -d: (ejecución simulada con _execute_process parcheado)"
+      }
     },
     {
-      "caso": "4_data_desviada_sin_empaquetar",
+      "caso": "4_data_desviada_eval_para_el_caso_sin_empaquetar",
       "output": "COINCIDE",
       "data": "DIFIERE",
       "datos_desviados": true,
@@ -47,7 +59,16 @@
         "data"
       ],
       "declarada_data": "D:\\OtraData\\",
-      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\",
+      "tipo_de_evidencia": "EVALUATOR_ONLY",
+      "alcance": "Ejercita SOLO evaluar_evidencia_de_rutas sobre las rutas declaradas: no registra presencia de artefacto, resultado del runner ni empaquetado, y no es una corrida negativa real con los binarios.",
+      "caso_original": "4_data_desviada_sin_empaquetar",
+      "evidencia_simulada_del_runner": {
+        "tests": [
+          "tests/test_dyndolod_evidencia_de_rutas.py::test_p1_data_desviada_no_empaqueta_el_mod"
+        ],
+        "afirma": "run_full_pipeline(run_texgen=False) con -d: desviado no empaqueta: dyndolod_mod_path is None y el mod de DynDOLOD no existe en mods/ (ejecución simulada con _execute_process parcheado)"
+      }
     },
     {
       "caso": "5_data_ausente",
@@ -115,5 +136,6 @@
   "casos_11_12": {
     "11_texgen_fallido_dyndolod_no_arranca": "tests/test_dyndolod_service.py (suite completa)",
     "12_cancelacion_no_publica_exito": "tests/test_dyndolod_service.py (suite completa)"
-  }
+  },
+  "nota_de_alcance": "Los casos 2-4 son EVALUATOR_ONLY (revision CodeRabbit PR #739): registran rutas de entrada y veredictos del evaluador, no el resultado del runner. El rechazo con artefacto presente y la ausencia de empaquetado los prueban los tests citados en evidencia_simulada_del_runner, con ejecucion simulada; no hubo corrida negativa real con los binarios."
 }
