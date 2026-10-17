@@ -1136,6 +1136,42 @@ def auditar_reservas_finalizacion(
 # ---------------------------------------------------------------------------
 
 
+def _exigir_sin_reservas_huerfanas(root: pathlib.Path, historial: HistorialFinalizado) -> None:
+    """CR-R3-02 — un estado con reserva huérfana exige dueño, no un PENDING nuevo.
+
+    ``auditar_reservas_finalizacion`` devuelve las huérfanas en lugar de
+    levantarlas porque, cuando hay un ``PENDING`` vigente, una reserva huérfana
+    puede ser la MISMA transición interrumpida entre F1a y F1b y entonces el
+    veredicto es ``RECOVER`` (§38.3). Los mutadores que crean un ``PENDING``
+    nuevo operan sobre otro estado: exigen journal ``ABSENT``/``NONE``, y ahí no
+    existe transición pendiente que pueda reclamar la reserva. Por lo tanto toda
+    huérfana es AJENA —incluso si su ``transition_id`` coincide con el que se va
+    a proponer, porque sin ``PENDING`` tampoco hay ``RECOVER``— y el estado
+    durable es el que la reconciliación ya clasifica ``REQUIRE_OWNER``
+    (``NONE``) o ``FAIL_CLOSED`` (``ABSENT``).
+
+    Sin este guard, CREATE/START_NEXT escriben un ``PENDING`` que después no
+    puede finalizar: ``_reservar_seq_locked`` (F1a) encuentra la seq tomada por
+    la otra transición y levanta ``JournalCasError``, y por
+    ``AT_MOST_ONE_PENDING_PER_ROOT`` el ``PENDING`` colgado bloquea además todo
+    ``CREATE`` posterior.
+
+    Se levanta ``JournalIdentityError`` y no ``JournalCasError``: el estado no es
+    un CAS desactualizado que se resuelva reintentando, es autoridad incoherente
+    que requiere intervención del dueño — el mismo error que el docstring de
+    ``JournalIdentityError`` ya enumera como "reserva sin registro", y el mismo
+    que usa su hermana ``auditar_reservas_finalizacion`` para las
+    inconsistentes. El CAS fallido descarta; esto además exige un dueño.
+    """
+    auditoria = auditar_reservas_finalizacion(root, historial)
+    if auditoria.huerfanas:
+        raise JournalIdentityError(
+            f"reserva(s) huérfana(s) sin transición pendiente: {auditoria.huerfanas} "
+            "(REQUIRE_OWNER): no se escribe un PENDING nuevo sobre un store cuya autoridad "
+            "de secuencia no tiene dueño"
+        )
+
+
 def _validar_propuesta(propuesta: PropuestaTransicion) -> None:
     _exigir_uuid_v4(propuesta.transition_id, campo="transition_id", etiqueta="propuesta")
     if not isinstance(propuesta.operation, JournalOperation):
@@ -1427,6 +1463,10 @@ def _crear_pendiente_locked(
     if snapshot.disposition in (JournalDisposition.PENDING_PROMOTION, JournalDisposition.PENDING_ROLLBACK):
         raise JournalCasError("ya existe un PENDING activo para este root (AT_MOST_ONE_PENDING_PER_ROOT)")
     historial = derivar_historial_finalizados(root)
+    # CR-R3-02 — hermana de F4: la autoridad de la secuencia se audita ANTES de
+    # escribir el PENDING. Escribirlo sobre una reserva huérfana ajena produce
+    # una transición que no puede finalizar (ver ``_exigir_sin_reservas_huerfanas``).
+    _exigir_sin_reservas_huerfanas(root, historial)
     if any(registro.transition_id == propuesta.transition_id for registro in historial.registros):
         raise JournalCasError("el transition_id ya fue utilizado por una transición finalizada")
     if snapshot.disposition == JournalDisposition.NONE:
@@ -1472,7 +1512,11 @@ def _start_next_locked(
     # F4 — hermana de FINALIZE: la autoridad de la secuencia se audita antes de
     # arrancar la transición siguiente. Arrancar sobre un store cuyo registro
     # perdió su reserva propagaría la incoherencia a la cadena nueva.
-    auditar_reservas_finalizacion(root, historial)
+    # CR-R3-02 — y una reserva HUÉRFANA (sin registro) también es autoridad sin
+    # dueño: acá no hay PENDING que pueda reclamarla, así que el veredicto es
+    # REQUIRE_OWNER y no se escribe el PENDING (el resultado de la auditoría ya
+    # no se descarta).
+    _exigir_sin_reservas_huerfanas(root, historial)
     latest = historial.latest
     if propuesta.transition_id == latest.transition_id:
         raise JournalCasError("START_NEXT no puede reutilizar el transition_id del predecesor")
