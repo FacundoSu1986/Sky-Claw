@@ -2142,6 +2142,10 @@ class TestAnclaSemanticaDeRaicesMo2:
       construir el ``-p:`` productivo (``profiles/<perfil>/plugins.txt``). Falla
       cerrado con la metadata corrupta: el best-effort leería "sin raíz de datos"
       y omitiría ``-p:``, que es colapsar "no hay MO2" con "no lo pude resolver".
+    - dyndolod_service (guard de etapas previas, #661): ``overwrite/Grass`` como
+      evidencia de la etapa 8 para el camino remoto. Estricto a propósito y con el
+      error CAPTURADO: un guard que degradara a best-effort leería "sin raíz" como
+      "no hay nada que probar"; acá no poder resolverla es una etapa FALTANTE.
     - grass_runtime_deps: profiles/ y overwrite/Grass para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta).
     - loot_service: data_root para BrokeredLootRunner en lazy _ensure_loot_runner
@@ -2179,17 +2183,20 @@ class TestAnclaSemanticaDeRaicesMo2:
     _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/app_context.py": 1,
-        "sky_claw/local/tools/dyndolod_service.py": 1,
+        "sky_claw/local/tools/dyndolod_service.py": 2,
         "sky_claw/local/tools/loot_service.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path()`` (MODS_DIR estricto,
     #: falla cerrado con evidencia). asset_conflict_scan (escaneo de
     #: conflictos) y dyndolod (runner/permisos/preview): los consumidores de
-    #: siempre; un sitio nuevo debe declarar su severidad.
+    #: siempre; un sitio nuevo debe declarar su severidad. #661 suma el cuarto
+    #: de dyndolod: el guard de etapas previas busca el grass cache en los mods
+    #: habilitados; estricto con el error capturado = etapa 8 faltante, nunca
+    #: "sensor omitido" (que en un guard equivaldría a dejar pasar).
     _MODS_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/asset_conflict_scan.py": 1,
-        "sky_claw/local/tools/dyndolod_service.py": 3,
+        "sky_claw/local/tools/dyndolod_service.py": 4,
         "sky_claw/local/tools/loot_service.py": 1,
     }
 
