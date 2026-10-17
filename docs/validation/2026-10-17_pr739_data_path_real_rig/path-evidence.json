@@ -1,0 +1,58 @@
+{
+  "texgen": {
+    "tool": "TexGen",
+    "log": "C:\\SkyClaw_Rigs\\PR739 Data Path\\evidence\\dyndolod-attempt1-20261017_163715\\Logs\\TexGen_SSE_log.txt",
+    "log_bytes": 111102,
+    "declaradas": {
+      "output": [
+        "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\"
+      ],
+      "data": [
+        "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\"
+      ]
+    },
+    "output": {
+      "veredicto": "COINCIDE",
+      "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\",
+      "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+    },
+    "data": {
+      "veredicto": "COINCIDE",
+      "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+      "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data"
+    },
+    "discrepancias": [],
+    "datos_desviados": false,
+    "salida_desviada": false,
+    "equivalencia_output": true,
+    "equivalencia_data": true
+  },
+  "dyndolod": {
+    "tool": "DynDOLOD",
+    "log": "C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\Logs\\DynDOLOD_SSE_log.txt",
+    "log_bytes": 948705,
+    "declaradas": {
+      "output": [
+        "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\"
+      ],
+      "data": [
+        "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\"
+      ]
+    },
+    "output": {
+      "veredicto": "COINCIDE",
+      "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\",
+      "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD"
+    },
+    "data": {
+      "veredicto": "COINCIDE",
+      "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+      "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data"
+    },
+    "discrepancias": [],
+    "datos_desviados": false,
+    "salida_desviada": false,
+    "equivalencia_output": true,
+    "equivalencia_data": true
+  }
+}

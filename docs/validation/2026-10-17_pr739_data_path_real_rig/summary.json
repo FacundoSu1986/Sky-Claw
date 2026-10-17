@@ -1,0 +1,120 @@
+{
+  "preflight": "status=green",
+  "texgen_pipeline": {
+    "success": false,
+    "needs_deployment": true,
+    "handoff_action": "physical_deployment",
+    "texgen_mod_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\TexGen Output",
+    "error_is_expected_standalone_cut": true
+  },
+  "handoff": {
+    "handoff": {
+      "handoff_id": 1,
+      "state": "awaiting_deployment",
+      "expected_profile": "DataPathRig",
+      "expected_digest": "8fa39ec3c3091bcc0a10260642a32d39f3f1eb79d1a6fdeb75a5350817b563c2",
+      "expected_files": 1362,
+      "expected_bytes": 138457820
+    },
+    "texgen_result": null,
+    "needs_deployment": true
+  },
+  "dyndolod_pipeline": {
+    "success": true,
+    "needs_deployment": false,
+    "dyndolod_mod_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\DynDOLOD Output",
+    "errors": [],
+    "duration_seconds": 348.59299999999985,
+    "tool_success": true,
+    "tool_return_code": 0,
+    "tool_output_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD",
+    "tool_errors": [],
+    "tool_warnings_count": 137,
+    "tool_duration_seconds": 337.328
+  },
+  "paths": {
+    "texgen": {
+      "tool": "TexGen",
+      "log": "C:\\SkyClaw_Rigs\\PR739 Data Path\\evidence\\dyndolod-attempt1-20261017_163715\\Logs\\TexGen_SSE_log.txt",
+      "log_bytes": 111102,
+      "declaradas": {
+        "output": [
+          "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\"
+        ],
+        "data": [
+          "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\"
+        ]
+      },
+      "output": {
+        "veredicto": "COINCIDE",
+        "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\",
+        "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+      },
+      "data": {
+        "veredicto": "COINCIDE",
+        "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+        "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data"
+      },
+      "discrepancias": [],
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "equivalencia_output": true,
+      "equivalencia_data": true
+    },
+    "dyndolod": {
+      "tool": "DynDOLOD",
+      "log": "C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\Logs\\DynDOLOD_SSE_log.txt",
+      "log_bytes": 948705,
+      "declaradas": {
+        "output": [
+          "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\"
+        ],
+        "data": [
+          "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\"
+        ]
+      },
+      "output": {
+        "veredicto": "COINCIDE",
+        "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\",
+        "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD"
+      },
+      "data": {
+        "veredicto": "COINCIDE",
+        "declarada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+        "configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data"
+      },
+      "discrepancias": [],
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "equivalencia_output": true,
+      "equivalencia_data": true
+    }
+  },
+  "negative_matrix_cases": 10,
+  "active_roots_with_recent_third_party_writes": [
+    "G:\\Modding\\MO2\\SkyrimSE\\profiles",
+    "G:\\Modding\\MO2\\SkyrimSE\\overwrite",
+    "G:\\Modding\\MO2\\SkyrimSE\\mods"
+  ],
+  "artifacts": {
+    "dyndolod_esm": {
+      "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\DynDOLOD Output\\DynDOLOD.esm",
+      "bytes": 193555,
+      "sha256": "ea95b05266a840a706d8ab50f34c02342f928b486d8de92cf6e00302006312ab"
+    },
+    "dyndolod_esp": {
+      "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\DynDOLOD Output\\DynDOLOD.esp",
+      "bytes": 307742,
+      "sha256": "34377e40716578a78be8ced60a26ebf9035e57d9551b1b0189c72b832dcd1870"
+    },
+    "occlusion_esp": {
+      "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\DynDOLOD Output\\Occlusion.esp",
+      "bytes": 9368071,
+      "sha256": "4c9b5c66cf730b353a509b978b11f41b2a845229b885fe7f42d60f8d80e2ea8f"
+    },
+    "texgen_output_files": 1363,
+    "texgen_output_bytes": 138457917,
+    "dyndolod_output_files": 5121,
+    "dyndolod_output_bytes": 897631366
+  }
+}

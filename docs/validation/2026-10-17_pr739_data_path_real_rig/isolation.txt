@@ -1,0 +1,42 @@
+AISLAMIENTO FÍSICO — PRUEBA
+
+Namespace exclusivo: C:\SkyClaw_Rigs\PR739 Data Path
+Binding del workspace: 12f60f92-e0b5-4b10-afc2-8809c659cb71
+  game_path: C:\SkyClaw_Rigs\PR739 Data Path\game
+  mo2_instance_data_root: C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance
+  mo2_mods_path: C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance\mods
+  work root: C:\SkyClaw_Rigs\PR739 Data Path\Work Root
+  estado del resolver: C_BINDING_COMPATIBLE
+Perfil de prueba: DataPathRig (inequívocamente distinto de los perfiles activos)
+Plugins de prueba: Skyrim.esm, Update.esm, Dawnguard.esm, HearthFires.esm, Dragonborn.esm
+  (5 full / 0 light; el perfil no habilita plugins de mods)
+
+Comandos efectivos: -d:, -o:, -m:, -p: y -t: apuntan exclusivamente a
+C:\SkyClaw_Rigs\PR739 Data Path. Ninguna ruta activa aparece en el argv,
+en el binding ni en el workspace.
+
+Reparse points en el rig: ninguno.
+Reparse points en las rutas activas escaneadas: ninguno.
+
+FUENTES USADAS POR EL RIG — SIN CAMBIOS ATRIBUIBLES A ESTA SESIÓN
+  G:\Modding\Skyrim_Stock_1.6.1170\Data: último mtime 2026-08-22; 0 archivos
+    con mtime >= 2026-10-17T16:00.
+  C:\steam\steamapps\common\Skyrim Special Edition\Data: último mtime 2026-08-01;
+    0 archivos con mtime >= 2026-10-17T16:00.
+  SkyClaw-PR2-Rig\skyrim.ini / skyrimprefs.ini: mtimes 2026-09-20 / 2026-09-24;
+    hashes idénticos a las copias del rig.
+  DynDOLOD Resources SE: mtime 2026-10-10 22:01.
+
+ESCRITURAS DE TERCEROS OBSERVADAS (NO ATRIBUIBLES A ESTA SESIÓN)
+  El escaneo read-only posterior encontró archivos con mtime >= 16:00 en tres
+  raíces activas: profiles (8 archivos, 16:35–16:40), overwrite (5 archivos,
+  16:36–16:39) y mods (2 archivos .pex, 16:27:36–38). Son escrituras de otro
+  proceso/sesión (MO2/juego/otro agente), no de los comandos del rig: el rig no
+  referencia esas rutas y no comparte instancia. Los nombres de perfiles/mods
+  activos se omiten por privacidad; el escaneo completo queda en el rig local
+  (evidence\active-protected-scan.json).
+
+LÍMITE: no se puede afirmar "ninguna ruta activa cambió en la máquina"; sí se
+afirma que esta sesión no escribió en ellas y que las fuentes usadas por el rig
+no cambiaron durante la ventana. La actividad de terceros debe ser revisada por
+el operador.

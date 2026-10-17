@@ -1987,7 +1987,7 @@ def _corrida_que_completa(
     return _ejecutar
 
 
-def _log_completo(tool: str, extra: str = "") -> str:
+def _log_completo(tool: str, extra: str = "", *, raiz_de_salida: pathlib.Path | None = None) -> str:
     """Un log al que NO le falta el marcador de completitud de ``tool``.
 
     Desde T2 el veredicto exige que la herramienta declare que terminó: el gate
@@ -1996,10 +1996,20 @@ def _log_completo(tool: str, extra: str = "") -> str:
     este helper para no repetir el marcador —que es DISTINTO por herramienta— y,
     sobre todo, para que agregar una herramienta nueva no los deje pasando por
     omisión.
+
+    ``raiz_de_salida`` es el ``-o:`` administrado que el eco debe declarar. El
+    default (``C:\\out\\``) es SINTÉTICO y no coincide con el root del test: desde
+    que el desvío de ``-o:`` viaja al resultado estructurado, eso deja una
+    advertencia legítima en ``ToolExecutionResult.warnings``. Los tests que
+    asertan sobre ``warnings`` pasan el root real —el eco del binario real es el
+    argv que Sky-Claw le pasó, medido en el rig de T5— y así la corrida queda
+    COINCIDE; el resto conserva el default para no atarse al layout que elige
+    ``_runner_texgen``.
     """
     marcador = _MARCADOR_DE_FIN[tool]
     assert marcador in MARCADORES_DE_COMPLETITUD[tool], f"el runner dejó de reconocer el marcador de fin de {tool}"
-    return f"[00:00:01] Using Output Path: C:\\out\\\n{extra}[00:10:00] {marcador}\n"
+    eco = "C:\\out\\" if raiz_de_salida is None else f"{raiz_de_salida}\\"
+    return f"[00:00:01] Using Output Path: {eco}\n{extra}[00:10:00] {marcador}\n"
 
 
 @pytest.mark.asyncio
@@ -2115,7 +2125,14 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
 
     fake = _EjecucionFalsa(
         return_code=0,
-        al_ejecutar=_corrida_que_completa(tmp_path, "DynDOLOD", lambda: _escribir_salida(staging, "DynDOLOD.esp")),
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "DynDOLOD",
+            lambda: _escribir_salida(staging, "DynDOLOD.esp"),
+            # El eco declara el root ADMINISTRADO, como el binario real: la corrida
+            # es COINCIDE y `warnings == []` mide "log limpio", no un desvío.
+            log=_log_completo("DynDOLOD", raiz_de_salida=config.dyndolod_root),
+        ),
     )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="High")
@@ -2137,7 +2154,9 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
             tmp_path,
             "TexGen",
             lambda: _escribir_salida(staging, "a.dds"),
-            log=_log_completo("TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n"),
+            log=_log_completo(
+                "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n", raiz_de_salida=config.texgen_root
+            ),
         ),
     )
     with patch.object(runner, "_execute_process", fake):

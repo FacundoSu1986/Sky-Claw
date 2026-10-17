@@ -1,0 +1,14 @@
+{
+  "success": false,
+  "message": "DynDOLOD pipeline failed: TexGen se generó y se empaquetó, pero su contenido no es visible en el Data físico configurado para DynDOLOD ('C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\textures'): 338 sin aparecer (p. ej.: terrain\\lodgen\\TexGen_SSE_Tree_Billboards.txt, terrain\\lodgen\\skyrim.esm\\wrtempletreesapling01_000461d7.txt, terrain\\lodgen\\skyrim.esm\\wrtempletreesapling01_000461d7.dds, terrain\\lodgen\\skyrim.esm\\wrtempletree02_000461c9.txt, terrain\\lodgen\\skyrim.esm\\wrtempletree02_000461c9.dds); 1024 con contenido distinto (p. ej.: lod\\wrwoodplanks01lod_n.dds, lod\\wrwoodplanks01lod.dds, lod\\wrwoodlattice01lod_n.dds, lod\\wrwoodlattice01lod.dds, lod\\wrwoodfloorint01lod_n.dds) de 1362 archivo(s). Sky-Claw corre standalone y no hereda la USVFS de MO2, así que un mod bajo <mo2>/mods no le llega a DynDOLOD: materializá el árbol de mods del perfil activo en el Data del juego antes de reintentar (docs/operations/deployment_standalone_usvfs.md).",
+  "errors": [
+    "DynDOLOD pipeline failed: TexGen se generó y se empaquetó, pero su contenido no es visible en el Data físico configurado para DynDOLOD ('C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\textures'): 338 sin aparecer (p. ej.: terrain\\lodgen\\TexGen_SSE_Tree_Billboards.txt, terrain\\lodgen\\skyrim.esm\\wrtempletreesapling01_000461d7.txt, terrain\\lodgen\\skyrim.esm\\wrtempletreesapling01_000461d7.dds, terrain\\lodgen\\skyrim.esm\\wrtempletree02_000461c9.txt, terrain\\lodgen\\skyrim.esm\\wrtempletree02_000461c9.dds); 1024 con contenido distinto (p. ej.: lod\\wrwoodplanks01lod_n.dds, lod\\wrwoodplanks01lod.dds, lod\\wrwoodlattice01lod_n.dds, lod\\wrwoodlattice01lod.dds, lod\\wrwoodfloorint01lod_n.dds) de 1362 archivo(s). Sky-Claw corre standalone y no hereda la USVFS de MO2, así que un mod bajo <mo2>/mods no le llega a DynDOLOD: materializá el árbol de mods del perfil activo en el Data del juego antes de reintentar (docs/operations/deployment_standalone_usvfs.md)."
+  ],
+  "duration_seconds": 158.28100000000018,
+  "rolled_back": false,
+  "needs_deployment": true,
+  "dyndolod_started": false,
+  "handoff_action": "physical_deployment",
+  "texgen_mod_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods\\TexGen Output",
+  "assisted": true
+}

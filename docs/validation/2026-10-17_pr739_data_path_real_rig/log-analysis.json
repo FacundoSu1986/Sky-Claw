@@ -1,0 +1,105 @@
+{
+  "texgen": {
+    "tool": "TexGen",
+    "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\evidence\\dyndolod-attempt1-20261017_163715\\Logs\\TexGen_SSE_log.txt",
+    "lineas": 623,
+    "bytes": 111715,
+    "rutas": [
+      "Using Skyrim Special Edition Data Path: C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+      "Using Output Path: C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\"
+    ],
+    "completitud": [
+      "[01:29] TexGen completed successfully"
+    ],
+    "errores_no_fatales_total": 1,
+    "errores_no_fatales_muestra": [
+      "<Error: File not found C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\SkyrimSE.exe>"
+    ],
+    "warnings_total": 10,
+    "warnings_muestra": [
+      "Warning: Could not find save path",
+      "[00:00] xEdit Background Loader: Warning: <Can't find Skyrim - Patch.bsa>",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"HAZD\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"RGDL\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"CLDC\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"PWAT\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"SCOL\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"SCPT\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"HAIR\"",
+      "[00:03] xEdit Background Loader: [Dragonborn.esm] Warning: File contains empty top level group: GRUP Top \"AVIF\""
+    ],
+    "ultimas_lineas": [
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\skyrim.esm\\wrtempletree01_00023611 with Meshes\\landscape\\trees\\wrtempletree01.nif Skyrim.esm TreeWRTemple01 [TREE:00023611]",
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\skyrim.esm\\reachtree02_000b8a74 with Meshes\\landscape\\trees\\reachtree02.nif Skyrim.esm TreeReachTree02 [TREE:000B8A74]",
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\skyrim.esm\\treepineforest02_00018a02 with Meshes\\landscape\\trees\\treepineforest02.nif Skyrim.esm TreePineForest02 [TREE:00018A02]",
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\dragonborn.esm\\treepineforestash02_00017f73 with Meshes\\dlc02\\landscape\\trees\\treepineforestash02.nif Dragonborn.esm DLC2TreePineForestAsh02 [TREE:04017F73]",
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\dawnguard.esm\\soulcairntree02_l1_00004333 with Meshes\\dlc01\\landscape\\plants\\soulcairntree02_l1.nif Dawnguard.esm TreeSoulCairnTree02 \"�rbol marchito\" [TREE:02004333]",
+      "[01:20] \tCreating billboard C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen\\textures\\terrain\\lodgen\\skyrim.esm\\treepineforestdeadsnowl05_000ef59c with Meshes\\landscape\\trees\\treepineforestdeadsnowl05.nif Skyrim.esm TreePineForestSnowL05Dead [TREE:000EF59C]",
+      "[01:21] Waiting for Texconv to convert 499 textures",
+      "[01:29] TexGen completed successfully",
+      "[01:29] Exit TexGen, zip and exit, check log or restart? The zip option will only pack the relevant files into the zip file and permanently delete everything in the dedicated output folder C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen!",
+      ""
+    ]
+  },
+  "dyndolod": {
+    "tool": "DynDOLOD",
+    "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\Logs\\DynDOLOD_SSE_log.txt",
+    "lineas": 10953,
+    "bytes": 959656,
+    "rutas": [
+      "Using Skyrim Special Edition Data Path: C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\",
+      "Using Output Path: C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\"
+    ],
+    "completitud": [
+      "[03:46] DynDOLOD plugins generated successfully",
+      "[03:46] Occlusion.esp completed successfully",
+      "[03:50] User says \"Save and Exit\"",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\DynDOLOD.esm",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\DynDOLOD.esp",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\Occlusion.esp"
+    ],
+    "errores_no_fatales_total": 117,
+    "errores_no_fatales_muestra": [
+      "<Error: Deleted reference Update.esm [REFR:000C8701] (in FrostflowLighthouseExterior01 [CELL:00008F29] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 15,21))>",
+      "Error: DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found! Dynamic LOD can not be generated. There will be large reference bugs. Verify correct installation of the DynDOLOD.DLL from DynDOLOD DLL NG and Scripts.",
+      "[00:24] <Error: Unresolved FormID [0207B5B9] Error in Dawnguard.esm DLC1VampireLordBlocker [ACTI:02014760]>",
+      "[00:30] <Error: Deleted reference Update.esm [REFR:000138AF] (in POINorthernCoast09 [CELL:000092F6] (in Tamriel \"Skyrim\" [WRLD:0000003C] at -8,21))>",
+      "[00:31] <Error: Deleted reference Dawnguard.esm [REFR:00023C63] (in [CELL:0000713B] (in Tamriel \"Skyrim\" [WRLD:0000003C] at -41,3))>",
+      "[00:32] <Error: Deleted reference Dawnguard.esm [REFR:00041ED9] (in DLC1RuunvaldExterior01 [CELL:0000BBA5] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 44,-15))>",
+      "[00:32] <Error: Deleted reference Dawnguard.esm [REFR:00041EDB] (in [CELL:0000BB84] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 44,-14))>",
+      "[00:32] <Error: Deleted reference Dawnguard.esm [REFR:00041EDF] (in DLC1RuunvaldExterior01 [CELL:0000BBA5] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 44,-15))>",
+      "[00:32] <Error: Deleted reference Dawnguard.esm [REFR:00041EE2] (in DLC1RuunvaldExterior01 [CELL:0000BBA5] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 44,-15))>",
+      "[00:32] <Error: Deleted reference Update.esm [REFR:00042013] (in [CELL:00000D74] (in Tamriel \"Skyrim\" [WRLD:0000003C]))>",
+      "[00:32] <Error: Deleted reference Update.esm [REFR:00042014] (in [CELL:00000D74] (in Tamriel \"Skyrim\" [WRLD:0000003C]))>",
+      "[00:33] <Error: Deleted reference Update.esm [REFR:0004F0A2] (in [CELL:0000B51E] (in Tamriel \"Skyrim\" [WRLD:0000003C] at 32,5))>",
+      "[00:34] <Error: Deleted reference Update.esm [REFR:000528B7] (in [CELL:00000D74] (in Tamriel \"Skyrim\" [WRLD:0000003C]))>",
+      "[00:34] <Error: Deleted reference Update.esm [REFR:000528B8] (in [CELL:00007158] (in Tamriel \"Skyrim\" [WRLD:0000003C] at -39,2))>",
+      "[00:34] <Error: Deleted reference Update.esm [REFR:000528BA] (in [CELL:00000D74] (in Tamriel \"Skyrim\" [WRLD:0000003C]))>"
+    ],
+    "warnings_total": 19,
+    "warnings_muestra": [
+      "Warning: Could not find save path",
+      "[00:00] xEdit Background Loader: Warning: <Can't find Skyrim - Patch.bsa>",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"HAZD\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"RGDL\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"CLDC\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"PWAT\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"SCOL\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"SCPT\"",
+      "[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top \"HAIR\"",
+      "[00:04] xEdit Background Loader: [Dragonborn.esm] Warning: File contains empty top level group: GRUP Top \"AVIF\""
+    ],
+    "ultimas_lineas": [
+      "[03:46] LODGenx64Win6.exe generated object LOD for DLC2SolstheimWorld successfully",
+      "[03:46] LODGenx64Win6.exe generated object LOD for Tamriel successfully",
+      "[03:46] Created a summary of log messages C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\Summary\\DynDOLOD_Index.html.",
+      "[03:46] [Browser] Executing file:///C:/SkyClaw_Rigs/PR739 Data Path/tools/DynDOLOD/Summary/DynDOLOD_Index.html",
+      "[03:47] Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log? The zip option will only pack the relevant files into the zip file and permanently delete everything in the dedicated output folder C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\! If 'Check log' is selected, the DynDOLOD plugins will be saved and the log can be checked.",
+      "[03:50] User says \"Save and Exit\"",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\DynDOLOD.esm",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\DynDOLOD.esp",
+      "[03:50] Saving C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\Occlusion.esp",
+      ""
+    ]
+  }
+}
