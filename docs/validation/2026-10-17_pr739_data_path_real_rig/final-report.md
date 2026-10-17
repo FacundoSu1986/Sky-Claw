@@ -299,4 +299,3 @@ fallidas sobre `cfb970e2` murieron en el proveedor de modelos
 (`Service temporarily overloaded` / respuesta sin mapping de review), no en
 pytest. No se califican como verdes: se re-ejecutan sobre el head integrado con
 `main`.
-
