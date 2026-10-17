@@ -29,6 +29,7 @@ import numpy as np
 from sky_claw.local.native_parallax.research.authored_dataset import (
     AuthoredMaterial,
     DatasetInvalidError,
+    DegenerateNormalError,
     MaterialSpec,
     load_asset,
     load_manifest,
@@ -337,6 +338,18 @@ def evaluate_cohort_a(usables: list[dict[str, Any]], resolution: int) -> dict[st
             # §15: el archivo declara su convención; el solver consume DIRECTX. La
             # conversión (flip de Y vía apply_convention) queda auditada en tested_convention.
             mat = load_asset(spec, resolution, tested_convention=SOLVER_NORMAL_CONVENTION)
+        except DegenerateNormalError:
+            # D-06.e y §5.3.4.4 del contrato #717: la degeneración H4 NO es una exclusión
+            # de integridad y NO puede convertirse en `DATASET_INVALID` ordinario. Mientras
+            # no exista roster persistente con estado NON_EVALUABLE (Slice 3) no hay dónde
+            # registrarla con la identidad del asset, así que se ABORTA la corrida antes de
+            # publicar un resultado científico sobre una cohorte alterada. `continue` está
+            # PROHIBIDO: dejaría la degeneración indistinguible de "ilegible" o "hash cambió".
+            # Este handler DEBE preceder al de `DatasetInvalidError` — del que
+            # `DegenerateNormalError` hereda — porque una subclase capturada después de su
+            # superclase es código muerto. El orden lo ancla
+            # `tests/test_native_parallax_h4_resize_normal.py`.
+            raise
         except DatasetInvalidError as exc:
             dataset_invalid.append({"asset_id": str(entry.get("asset_id", "?")), "reason": str(exc)})
             continue
