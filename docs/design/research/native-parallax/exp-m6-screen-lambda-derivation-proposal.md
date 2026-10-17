@@ -624,11 +624,13 @@ calculaba el sesgo de señal como el cociente de esperanzas
 (`make_signal`+`solve_screened` con un campo de ruido por realización) es
 `E[Σ u_o·E_o/Σ v_o·E_o]` con `E_o=|z_o|²~Exp(1)` iid por órbita ±k. El anidamiento
 de la esperanza dentro del cociente no es un detalle: el modelo previo
-sobreestimaba el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto.
+sobreestimaba el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% bajo
+(5.17e-06 vs 5.58e-06 en N=128, β=2).
 Implementado por la identidad de la transformada de Laplace con cuadratura
 Gauss–Legendre (m=600, márgenes (36,16); convergencia medida 1e-10) y validado
 end-to-end contra MC de 400 realizaciones (`|z|≤1.4`; recibo #10 del runner:
-MC(400)/exacto = 0.9976 con el modelo exacto — el modelo previo daría ≈1.074). λ*
+MC(400)/exacto = 0.9976 con el modelo exacto; con el modelo previo el mismo
+recibo daría MC/modelo ≈ 0.93 —previo/exacto ≈ 1.074—). λ*
 corregidos: λ\*_A (N=128, β=2, σ=0.1) = 5.58e-06 y λ\*_B = 9.61e-06; `c = λ*·N²`
 pasa a c_A ≈ 0.0914–0.0918 y c_B ≈ 0.1574–0.1578. La ganancia esperada sigue
 **< 0.06 %** (máx. 0.0573 % @128² rég. B): ningún veredicto de riesgo cambia. Los
@@ -977,7 +979,8 @@ def _bias_exact_batch(
         E[X/Y] = ∫₀^∞ Π_o (1+s·v_o)^{−1} · Σ_o u_o·(1+s·v_o)^{−1} ds.
 
     NO es el cociente de esperanzas Σu·E[v]/Σv·E[v] del modelo previo: ese
-    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto."""
+    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% bajo
+    (5.17e-06 vs 5.58e-06 en N=128, β=2)."""
     prep = _bias_exact_prep(n, beta, m_nodes=m_nodes, margen_lo=margen_lo, margen_hi=margen_hi)
     lams_arr = np.atleast_1d(np.asarray(lams, dtype=float))
     B = (lams_arr[:, None] / (prep["d"][None, :] + lams_arr[:, None])) ** 2
@@ -1213,8 +1216,9 @@ def selftest() -> int:
     ok += 1
 
     # 8. REV 7.3 (CR-4): el sesgo por realización medido con make_signal +
-    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). El
-    #    cociente de esperanzas previo daba ratio≈1.074 (fuera de la cota).
+    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). Con el
+    #    cociente de esperanzas previo (previo/exacto≈1.074) el recibo daría
+    #    MC/previo≈0.93, fuera de la cota.
     n_b, beta_b, lam_b = 64, 2.0, 1e-3
     rng_b = np.random.default_rng(20261016)
     vals_b = np.empty(400)
@@ -1224,7 +1228,7 @@ def selftest() -> int:
         vals_b[i_b] = float(np.mean(e_b**2))
     ratio_b = float(vals_b.mean()) / float(_bias_exact_batch(n_b, beta_b, [lam_b])[0])
     assert 0.96 < ratio_b < 1.04, ratio_b
-    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (modelo previo ≈1.074)")
+    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (previo/exacto≈1.074)")
     ok += 1
 
     print(f"selftest: {ok}/10 recibos OK")
@@ -1290,7 +1294,7 @@ if __name__ == "__main__":
 [ok] λ=1e-3: V∞(λ)=0.006698379 es el límite continuo exacto; discreto 1024²=0.006849252 (+2.25%, exceso ∝1/N); la fórmula log σ²/(2π)·ln(π/√λ)=0.007318911 NO es el límite (+9.3%); λ=0 en 1024²: 0.012422
 [ok] Parseval rfft2 exacto (brute force vs fft2) N∈{4,5,8,33,64}
 [ok] campo integrable sin Nyquist: RMSE=3.59e-16
-[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto=0.9976 (modelo previo ≈1.074)
+[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto=0.9976 (previo/exacto≈1.074)
 selftest: 10/10 recibos OK
 ```
 

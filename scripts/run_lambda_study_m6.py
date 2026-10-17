@@ -293,7 +293,8 @@ def _bias_exact_batch(
         E[X/Y] = ∫₀^∞ Π_o (1+s·v_o)^{−1} · Σ_o u_o·(1+s·v_o)^{−1} ds.
 
     NO es el cociente de esperanzas Σu·E[v]/Σv·E[v] del modelo previo: ese
-    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto."""
+    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% bajo
+    (5.17e-06 vs 5.58e-06 en N=128, β=2)."""
     prep = _bias_exact_prep(n, beta, m_nodes=m_nodes, margen_lo=margen_lo, margen_hi=margen_hi)
     lams_arr = np.atleast_1d(np.asarray(lams, dtype=float))
     B = (lams_arr[:, None] / (prep["d"][None, :] + lams_arr[:, None])) ** 2
@@ -529,8 +530,9 @@ def selftest() -> int:
     ok += 1
 
     # 8. REV 7.3 (CR-4): el sesgo por realización medido con make_signal +
-    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). El
-    #    cociente de esperanzas previo daba ratio≈1.074 (fuera de la cota).
+    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). Con el
+    #    cociente de esperanzas previo (previo/exacto≈1.074) el recibo daría
+    #    MC/previo≈0.93, fuera de la cota.
     n_b, beta_b, lam_b = 64, 2.0, 1e-3
     rng_b = np.random.default_rng(20261016)
     vals_b = np.empty(400)
@@ -540,7 +542,7 @@ def selftest() -> int:
         vals_b[i_b] = float(np.mean(e_b**2))
     ratio_b = float(vals_b.mean()) / float(_bias_exact_batch(n_b, beta_b, [lam_b])[0])
     assert 0.96 < ratio_b < 1.04, ratio_b
-    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (modelo previo ≈1.074)")
+    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (previo/exacto≈1.074)")
     ok += 1
 
     print(f"selftest: {ok}/10 recibos OK")

@@ -612,7 +612,7 @@ def test_apendice_a_snapshot_identico_al_runner_canonico() -> None:
 #   CR-4: E[MSE_sesgo] es la esperanza POR REALIZACIÓN (Σu·E_o/Σv·E_o con
 #         E_o~Exp(1) iid por órbita), NO el cociente de esperanzas
 #         Σu·E[v]/Σv·E[v] del modelo analítico previo (sobreestima ≈7.4% β=2 /
-#         ≈4.8% β=4 y arrastraba λ* ~7% alto).
+#         ≈4.8% β=4 y arrastraba λ* ~7% bajo: 5.17e-06 vs 5.58e-06).
 # ---------------------------------------------------------------------------
 
 # λ* y ganancia corregidos (modelo exacto, REV 7.3) impresos por el snippet
