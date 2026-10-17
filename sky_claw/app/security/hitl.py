@@ -38,6 +38,14 @@ HITL_OBSERVER_TIMEOUT_SECONDS = 2.0
 #: ``download`` (egress) y ``sandbox_promotion`` (post-run): siempre manual.
 CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
 
+#: Categoría de las aprobaciones de la etapa 9 DESATENDIDA (#661): la
+#: configuración exacta antes del spawn y continuar un modal de arranque medido.
+#: Es la que reemplaza formalmente a ``dyndolod_configuracion_lista`` cuando
+#: nadie está frente a la PC, así que tampoco se auto-aprueba nunca. La GUI no la
+#: intercepta (``make_gui_hitl_notify`` sólo estaciona sus cuatro categorías):
+#: cae al canal REMOTO del guard —Telegram—, que es exactamente para quien existe.
+CATEGORIA_DYNDOLOD_DESATENDIDO = "dyndolod_desatendido"
+
 
 class Decision(enum.Enum):
     """Operator decision for a pending HITL prompt."""

@@ -37,6 +37,24 @@ from sky_claw.app.security.links import (
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
+from sky_claw.local.tools.dyndolod_presets import GuardaDePresets, PresetError, RegistroDePreset, leer_estado_de_preset
+from sky_claw.local.tools.dyndolod_uia_contrato import (
+    CodigoDesatendido,
+    ContratoDeUIHerramienta,
+    ModoDeInteraccion,
+    resolver_contrato,
+)
+from sky_claw.local.tools.dyndolod_uia_driver import (
+    CapacidadDesatendidaUIA,
+    ConductorDesatendido,
+    ContextoDeConduccion,
+    DesatendidoError,
+    LedgerDeAcciones,
+    ResumenDeHerramienta,
+    SolicitudAprobacionDesatendida,
+    consultar_aprobador,
+    informar_sin_gatear,
+)
 from sky_claw.local.tools.dyndolod_uia_gate import (
     CapacidadDeReadinessUIA,
     OperatorConfigurationReadyRequest,
@@ -1064,6 +1082,23 @@ class DynDOLODReadinessProtocolError(DynDOLODExecutionError):
         self.razon = razon
 
 
+class DynDOLODDesatendidoError(DynDOLODExecutionError):
+    """Corte fail-closed de una corrida DESATENDIDA (#661), con su código estable.
+
+    Subclase de :class:`DynDOLODExecutionError` a propósito: cada rama que ya
+    limpia y reporta un fallo de herramienta (cleanup del proceso en
+    ``_execute_process``, ``except`` de los lanzadores y de ``run_full_pipeline``)
+    lo cubre sin una rama nueva que un hermano podría olvidar. El mensaje empieza
+    por el código, así que viaja legible hasta el operador remoto.
+    """
+
+    def __init__(self, codigo: CodigoDesatendido, detalle: str, *, tool_name: str) -> None:
+        self.codigo = codigo
+        self.detalle = detalle
+        self.tool_name = tool_name
+        super().__init__(f"{tool_name}: {codigo.value}: {detalle}", return_code=None, stderr=detalle)
+
+
 class DataVisibilityDomainError(RuntimeError):
     """La strategy de spawn no declara un dominio de visibilidad de Data válido.
 
@@ -1410,6 +1445,9 @@ class DynDOLODPipelineResult:
     needs_deployment: bool = False
     handoff_action: HandoffPendingAction | None = None
     texgen_packaging_attempted: bool = False
+    #: Cortes de la corrida DESATENDIDA (valores de ``CodigoDesatendido``), en el
+    #: orden en que ocurrieron. Vacío en modo asistido.
+    codigos_desatendido: tuple[str, ...] = ()
 
 
 # =============================================================================
@@ -1514,6 +1552,64 @@ class ReadinessMode(enum.Enum):
     """
 
     DISABLED_FOR_TEST = "disabled_for_test"
+
+
+@dataclass(frozen=True)
+class HerramientaAprobada:
+    """Lo que el operador aprobó para UNA herramienta de una corrida desatendida."""
+
+    contrato: ContratoDeUIHerramienta
+    ruta_preset: pathlib.Path
+    huella_preset: str
+
+
+@dataclass(frozen=True)
+class InteraccionDeCorrida:
+    """El modo de ESTA corrida y, si es desatendida, lo aprobado por herramienta.
+
+    Viaja EXPLÍCITO de ``run_full_pipeline`` a los dos lanzadores y de ahí a
+    ``_execute_process`` (ancla: ``test_todo_spawn_recibe_la_interaccion_de_la_corrida``).
+    ``codigos`` acumula los cortes desatendidos de la corrida para el resultado.
+    """
+
+    modo: ModoDeInteraccion
+    aprobadas: Mapping[str, HerramientaAprobada] = field(default_factory=dict)
+    codigos: list[CodigoDesatendido] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparacionDeSpawnDesatendido:
+    """El contrato verificado y el snapshot durable del preset, tomados JUSTO antes del spawn."""
+
+    interaccion: InteraccionDeCorrida
+    aprobada: HerramientaAprobada
+    registro: RegistroDePreset
+
+
+def _sha256_de_archivo(ruta: pathlib.Path) -> str:
+    """SHA-256 del ejecutable que se va a lanzar (la clave del contrato de build)."""
+    digest = hashlib.sha256()
+    with ruta.open("rb") as archivo:
+        for bloque in iter(lambda: archivo.read(1024 * 1024), b""):
+            digest.update(bloque)
+    return digest.hexdigest()
+
+
+#: Instrucciones al operador por modo: el evento ``pipeline.dyndolod.started`` y
+#: el resultado del servicio las publican, y un consumidor no tiene que adivinar.
+INSTRUCCIONES_POR_MODO: Mapping[ModoDeInteraccion, str] = MappingProxyType(
+    {
+        ModoDeInteraccion.ASISTIDO: (
+            "La etapa 9 es asistida: seleccioná el preset y los worldspaces en la "
+            "ventana de TexGen/DynDOLOD y completá el asistente; el pipeline espera."
+        ),
+        ModoDeInteraccion.DESATENDIDO: (
+            "La etapa 9 es desatendida: Sky-Claw opera las ventanas de TexGen/DynDOLOD por "
+            "UI Automation con la configuración de sus presets. No interactúes con ellas; "
+            "las aprobaciones llegan por el canal remoto."
+        ),
+    }
+)
 
 
 class DynDOLODProcess(Protocol):
@@ -1872,6 +1968,7 @@ class DynDOLODRunner:
         *,
         readiness: CapacidadDeReadinessUIA | ReadinessMode,
         spawn_strategy: DynDOLODSpawnStrategy | None = None,
+        desatendido: CapacidadDesatendidaUIA | None = None,
     ) -> None:
         """
         Inicializa el runner de DynDOLOD.
@@ -1897,6 +1994,15 @@ class DynDOLODRunner:
                 f"root o ReadinessMode.DISABLED_FOR_TEST (tests/rig); llegó {type(readiness).__name__}"
             )
         self._readiness = readiness
+        # #661: capacidad del modo DESATENDIDO. Su ausencia NO es un permiso: una
+        # corrida que lo pide sin capacidad falla con
+        # UNATTENDED_CAPABILITY_UNAVAILABLE, y el modo asistido no cambia.
+        self._desatendido = desatendido
+        self._guarda_de_presets = (
+            GuardaDePresets(desatendido.directorio_de_presets)
+            if desatendido is not None and desatendido.directorio_de_presets is not None
+            else None
+        )
         # La selección de backend ocurre una sola vez en el seam de composición.
         # Un broker configurado no puede caer silenciosamente a este default:
         # callers brokered inyectan su strategy explícita.
@@ -1931,7 +2037,12 @@ class DynDOLODRunner:
             errors=["DynDOLOD administrado no configurado: no hay external_work_root para derivar el -o:"],
         )
 
-    async def run_texgen(self, extra_args: list[str] | None = None) -> ToolExecutionResult:
+    async def run_texgen(
+        self,
+        extra_args: list[str] | None = None,
+        *,
+        interaccion: InteraccionDeCorrida | None = None,
+    ) -> ToolExecutionResult:
         """
         Ejecuta TexGen (etapa 9, asistida).
 
@@ -1996,6 +2107,7 @@ class DynDOLODRunner:
                 args=args,
                 tool_name="TexGen",
                 cwd=execution_cwd,
+                interaccion=interaccion,
             )
         except DynDOLODExecutionError:
             raise
@@ -2075,9 +2187,10 @@ class DynDOLODRunner:
         extra_args: list[str] | None = None,
         *,
         handoff: TexGenHandoffApproval | None = None,
+        interaccion: InteraccionDeCorrida | None = None,
     ) -> ToolExecutionResult:
         """
-        Ejecuta DynDOLOD (etapa 9, asistida).
+        Ejecuta DynDOLOD (etapa 9, asistida o desatendida según ``interaccion``).
 
         CLI verificado (línea de comandos): DynDOLODx64.exe -sse -o:"…" -d:"…"
         [-m:"…"] [-p:"…"] -t:"…". Las comillas son de la LÍNEA; en el argv que
@@ -2124,6 +2237,7 @@ class DynDOLODRunner:
                 tool_name="DynDOLOD",
                 cwd=execution_cwd,
                 handoff=handoff,
+                interaccion=interaccion,
             )
         except DynDOLODExecutionError:
             raise
@@ -2197,6 +2311,7 @@ class DynDOLODRunner:
         timeout: int | None = None,
         cwd: pathlib.Path | None = None,
         handoff: TexGenHandoffApproval | None = None,
+        interaccion: InteraccionDeCorrida | None = None,
     ) -> tuple[str, str, int, float]:
         """
         Ejecuta un proceso con manejo de heartbeat para procesos largos.
@@ -2258,6 +2373,14 @@ class DynDOLODRunner:
         # hilo, como el resto de las sondas.
         await asyncio.to_thread(self._exigir_root_born_empty, tool_name)
 
+        # #661 — DESATENDIDO: lo último antes del spawn. Re-hashea el exe contra el
+        # contrato aprobado, re-verifica la huella del preset aprobada y toma el
+        # snapshot DURABLE del preset (la herramienta lo reescribe al iniciar).
+        # Un corte acá es fail-closed sin proceso.
+        preparacion: PreparacionDeSpawnDesatendido | None = None
+        if interaccion is not None and interaccion.modo is ModoDeInteraccion.DESATENDIDO:
+            preparacion = await self._preparar_spawn_desatendido(tool_name, executable, interaccion)
+
         # El reloj nace antes de pedir el backend: attestation, apertura de la
         # sesión y spawn local consumen el mismo presupuesto que readiness/HITL.
         start_time = time.monotonic()
@@ -2267,39 +2390,47 @@ class DynDOLODRunner:
             return max(0.0, deadline - time.monotonic())
 
         try:
-            presupuesto_spawn = remaining_budget()
-            if presupuesto_spawn <= 0:
-                raise TimeoutError()
-            proc = await asyncio.wait_for(
-                self._spawn_strategy.spawn(
-                    executable=executable,
-                    args=args,
-                    tool_name=tool_name,
-                    cwd=process_cwd,
-                    timeout=float(presupuesto_spawn),
-                    handoff=handoff,
-                ),
-                timeout=presupuesto_spawn,
-            )
-        except FileNotFoundError:
-            raise DynDOLODNotFoundError(executable) from None
-        except HandoffDriftError as e:
-            # El binding gate→spawn revalidó el estado aprobado y divergió: el
-            # proceso NO nace. Se traduce a la familia que `run_full_pipeline`
-            # reporta como corrida fallida, conservando la razón del corte.
-            raise DynDOLODExecutionError(
-                f"El spawn de {tool_name} fue bloqueado en la revalidación del handoff: {e}",
-                return_code=None,
-                stderr=str(e),
-            ) from e
-        except TimeoutError:
-            raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
-        except OSError as e:
-            raise DynDOLODExecutionError(
-                f"Failed to start {tool_name}: {e}",
-                return_code=None,
-                stderr=str(e),
-            ) from e
+            try:
+                presupuesto_spawn = remaining_budget()
+                if presupuesto_spawn <= 0:
+                    raise TimeoutError()
+                proc = await asyncio.wait_for(
+                    self._spawn_strategy.spawn(
+                        executable=executable,
+                        args=args,
+                        tool_name=tool_name,
+                        cwd=process_cwd,
+                        timeout=float(presupuesto_spawn),
+                        handoff=handoff,
+                    ),
+                    timeout=presupuesto_spawn,
+                )
+            except FileNotFoundError:
+                raise DynDOLODNotFoundError(executable) from None
+            except HandoffDriftError as e:
+                # El binding gate→spawn revalidó el estado aprobado y divergió: el
+                # proceso NO nace. Se traduce a la familia que `run_full_pipeline`
+                # reporta como corrida fallida, conservando la razón del corte.
+                raise DynDOLODExecutionError(
+                    f"El spawn de {tool_name} fue bloqueado en la revalidación del handoff: {e}",
+                    return_code=None,
+                    stderr=str(e),
+                ) from e
+            except TimeoutError:
+                raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
+            except OSError as e:
+                raise DynDOLODExecutionError(
+                    f"Failed to start {tool_name}: {e}",
+                    return_code=None,
+                    stderr=str(e),
+                ) from e
+        except BaseException:
+            # #661: el proceso no nació, así que la herramienta no reescribió su
+            # preset; igual se devuelve el snapshot ya, en vez de dejarlo para la
+            # reconciliación de la próxima corrida. Síncrono y sin lanzar: no hay
+            # punto de cancelación entre el fallo del spawn y su propagación.
+            self._restaurar_preset_sin_gatear(preparacion, tool_name)
+            raise
 
         # Un solo presupuesto whole-process desde antes del spawn. El readiness
         # (gates + HITL + aviso) consume el resto; ``proc.wait()`` nunca reinicia
@@ -2358,7 +2489,12 @@ class DynDOLODRunner:
             if presupuesto <= 0:
                 raise TimeoutError()
             await asyncio.wait_for(
-                self._protocolo_de_readiness(tool_name=tool_name, executable=executable, proc=proc),
+                self._protocolo_de_readiness(
+                    tool_name=tool_name,
+                    executable=executable,
+                    proc=proc,
+                    preparacion=preparacion,
+                ),
                 timeout=presupuesto,
             )
             presupuesto = remaining_budget()
@@ -2446,6 +2582,20 @@ class DynDOLODRunner:
             # de arriba) ya no es alcanzable por PID porque su padre salió, pero
             # el job lo retiene por membresía.
             close_job(job)
+            # #661 P8: con el proceso reapeado y el job cerrado, el preset vuelve a
+            # su snapshot. Síncrono a propósito (no es un punto de cancelación) y
+            # sin lanzar: en una salida por excepción la corrida ya falló y el
+            # registro durable queda para la reconciliación; en la salida normal
+            # el fallo se convierte en el corte de abajo.
+            fallo_de_restauracion = self._restaurar_preset_sin_gatear(preparacion, tool_name)
+
+        if preparacion is not None and fallo_de_restauracion is not None:
+            raise self._corte_desatendido(
+                preparacion.interaccion,
+                CodigoDesatendido.PRESET_RESTORE_FAILED,
+                f"{fallo_de_restauracion}; el snapshot durable queda para la reconciliación",
+                tool_name=tool_name,
+            )
 
         duration = time.monotonic() - start_time
         stdout_text = b"".join(stdout_chunks).decode(errors="replace")
@@ -2583,8 +2733,14 @@ class DynDOLODRunner:
         tool_name: str,
         executable: pathlib.Path,
         proc: DynDOLODProcess,
+        preparacion: PreparacionDeSpawnDesatendido | None = None,
     ) -> None:
         """Initial gate → confirmación humana → final gate, sobre la MISMA instancia.
+
+        En una corrida DESATENDIDA (``preparacion`` presente) el significado del
+        HITL asistido se reemplaza formalmente: el operador ya aprobó la
+        configuración antes del spawn, y este punto delega en el driver UIA
+        (:meth:`_protocolo_desatendido`), que lleva la GUI hasta el cierre.
 
         Corre DESPUÉS del spawn y con los drains ya vivos (ver ``_execute_process``):
         esperar acá sin drenar los pipes haría backpressure sobre una app GUI que
@@ -2606,6 +2762,14 @@ class DynDOLODRunner:
         abierta. Acá NO se pulsa Start, ni se habilita un botón, ni se escribe el
         preset, ni se inyecta input.
         """
+        if preparacion is not None:
+            await self._protocolo_desatendido(
+                tool_name=tool_name,
+                executable=executable,
+                proc=proc,
+                preparacion=preparacion,
+            )
+            return
         capacidad = self._readiness
         if isinstance(capacidad, ReadinessMode):
             # Opt-out explícito (tests/rig): modo directo, sin gate ni HITL.
@@ -2778,6 +2942,297 @@ class DynDOLODRunner:
                 tool_name,
                 exc_info=True,
                 extra={"operation_type": "dyndolod_aviso_operador_fallido", "tx_id": _tx_id()},
+            )
+
+    # =========================================================================
+    # #661 — etapa 9 DESATENDIDA: preparación, aprobación remota y driver UIA
+    # =========================================================================
+
+    def _corte_desatendido(
+        self,
+        interaccion: InteraccionDeCorrida | None,
+        codigo: CodigoDesatendido,
+        detalle: str,
+        *,
+        tool_name: str,
+    ) -> DynDOLODDesatendidoError:
+        """El ÚNICO constructor de cortes desatendidos: registra el código en la corrida."""
+        if interaccion is not None:
+            interaccion.codigos.append(codigo)
+        return DynDOLODDesatendidoError(codigo, detalle, tool_name=tool_name)
+
+    def _resultado_de_corte(self, codigo: CodigoDesatendido, detalle: str) -> DynDOLODPipelineResult:
+        """Corte ANTES de spawnear nada: no hay herramienta corrida ni nada que empaquetar."""
+        mensaje = f"{codigo.value}: {detalle}"
+        logger.error(
+            "Etapa 9 desatendida cortada antes del spawn: %s",
+            mensaje,
+            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+        )
+        return DynDOLODPipelineResult(
+            success=False,
+            texgen_result=None,
+            dyndolod_result=None,
+            errors=[mensaje],
+            codigos_desatendido=(codigo.value,),
+        )
+
+    async def _preparar_interaccion(
+        self,
+        modo: ModoDeInteraccion,
+        *,
+        run_texgen: bool,
+        preset: str,
+    ) -> InteraccionDeCorrida | DynDOLODPipelineResult:
+        """Reconciliación de presets + (desatendido) contrato, presets y aprobación remota.
+
+        Devuelve la interacción de la corrida o el resultado fallido del corte. La
+        reconciliación de residuos corre en LOS DOS modos: un snapshot de una
+        corrida desatendida que murió se devuelve antes de que cualquier corrida
+        nueva deje que la herramienta reescriba el preset otra vez.
+        """
+        guarda = self._guarda_de_presets
+        if guarda is not None:
+            try:
+                restaurados = await asyncio.to_thread(guarda.reconciliar)
+            except PresetError as exc:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.PRESET_RESTORE_FAILED,
+                    f"un preset de una corrida anterior no se pudo restaurar: {exc}",
+                )
+            if restaurados:
+                logger.info("presets de una corrida anterior reconciliados: %s", [str(r) for r in restaurados])
+        if modo is ModoDeInteraccion.ASISTIDO:
+            return InteraccionDeCorrida(modo=modo)
+
+        capacidad = self._desatendido
+        if capacidad is None or guarda is None:
+            return self._resultado_de_corte(
+                CodigoDesatendido.UNATTENDED_CAPABILITY_UNAVAILABLE,
+                "este runner no tiene cableado el driver desatendido (o su estado durable de presets); "
+                "no hay fallback a modo asistido: lanzá la corrida asistida explícitamente",
+            )
+        herramientas: list[tuple[str, pathlib.Path]] = []
+        if run_texgen and self._config.texgen_exe is not None:
+            herramientas.append(("TexGen", self._config.texgen_exe))
+        herramientas.append(("DynDOLOD", self._config.dyndolod_exe))
+
+        aprobadas: dict[str, HerramientaAprobada] = {}
+        resumenes: list[ResumenDeHerramienta] = []
+        for tool_name, ejecutable in herramientas:
+            try:
+                sha = await asyncio.to_thread(_sha256_de_archivo, ejecutable)
+            except OSError as exc:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.UNATTENDED_BUILD_UNSUPPORTED,
+                    f"{tool_name}: no se pudo leer {ejecutable} para identificar el build: {exc}",
+                )
+            contrato = resolver_contrato(tool_name, sha, self._modo())
+            if contrato is None:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.UNATTENDED_BUILD_UNSUPPORTED,
+                    f"{tool_name} sha256={sha} en modo {self._modo()} no tiene contrato de UI medido; "
+                    "sólo los builds medidos en rig corren desatendidos",
+                )
+            ruta_preset = ejecutable.parent.joinpath(*contrato.preset_relativo)
+            try:
+                estado = await asyncio.to_thread(
+                    leer_estado_de_preset,
+                    ruta_preset,
+                    seccion=contrato.seccion_preset,
+                    clave_de_calidad=contrato.clave_preset_de_calidad,
+                )
+            except PresetError as exc:
+                return self._resultado_de_corte(CodigoDesatendido.PRESET_MISMATCH, f"{tool_name}: {exc}")
+            if not estado.presente or estado.huella is None:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.PRESET_ABSENT,
+                    f"{tool_name}: no existe {ruta_preset}; corré la etapa una vez en modo ASISTIDO para que la "
+                    "herramienta guarde su configuración, y después repetila desatendida",
+                )
+            if contrato.clave_preset_de_calidad is not None and estado.preset_de_calidad != preset:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.PRESET_MISMATCH,
+                    f"{tool_name}: el preset guardado es {estado.preset_de_calidad!r} y la corrida pidió {preset!r}; "
+                    f"repetí con preset={estado.preset_de_calidad!r} o reconfigurá en modo asistido",
+                )
+            aprobadas[tool_name] = HerramientaAprobada(
+                contrato=contrato,
+                ruta_preset=ruta_preset,
+                huella_preset=estado.huella,
+            )
+            resumenes.append(
+                ResumenDeHerramienta(
+                    tool=tool_name,
+                    version=contrato.version,
+                    exe_sha256=sha,
+                    preset=str(ruta_preset),
+                    preset_huella=estado.huella,
+                    preset_de_calidad=estado.preset_de_calidad,
+                    output_esperado=str(self._expected_output_de(tool_name)),
+                )
+            )
+
+        decision = await consultar_aprobador(
+            lambda: capacidad.aprobador.aprobar_configuracion(
+                SolicitudAprobacionDesatendida(
+                    herramientas=tuple(resumenes),
+                    preset_pedido=preset,
+                    run_texgen=run_texgen,
+                    timeout_seconds=capacidad.aprobacion_timeout_segundos,
+                )
+            ),
+            timeout_segundos=capacidad.aprobacion_timeout_segundos,
+            gracia_segundos=capacidad.gracia_externa_segundos,
+        )
+        if decision is not ResultadoConfirmacion.APROBADA:
+            return self._resultado_de_corte(
+                CodigoDesatendido.UNATTENDED_CONFIGURATION_NOT_APPROVED,
+                f"el operador no aprobó la configuración desatendida: {decision.value}",
+            )
+        return InteraccionDeCorrida(modo=modo, aprobadas=aprobadas)
+
+    async def _preparar_spawn_desatendido(
+        self,
+        tool_name: str,
+        executable: pathlib.Path,
+        interaccion: InteraccionDeCorrida,
+    ) -> PreparacionDeSpawnDesatendido:
+        """Re-verificación anti-TOCTOU aprobación→spawn y snapshot durable del preset."""
+        aprobada = interaccion.aprobadas.get(tool_name)
+        if aprobada is None or self._guarda_de_presets is None:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+                "la herramienta no está en la configuración aprobada de esta corrida",
+                tool_name=tool_name,
+            )
+        try:
+            sha = await asyncio.to_thread(_sha256_de_archivo, executable)
+        except OSError as exc:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.UNATTENDED_BUILD_UNSUPPORTED,
+                f"no se pudo re-hashear {executable}: {exc}",
+                tool_name=tool_name,
+            ) from exc
+        if sha != aprobada.contrato.exe_sha256:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.UNATTENDED_BUILD_UNSUPPORTED,
+                f"el ejecutable cambió desde la aprobación (sha256 {sha})",
+                tool_name=tool_name,
+            )
+        contrato = aprobada.contrato
+        try:
+            estado = await asyncio.to_thread(
+                leer_estado_de_preset,
+                aprobada.ruta_preset,
+                seccion=contrato.seccion_preset,
+                clave_de_calidad=contrato.clave_preset_de_calidad,
+            )
+        except PresetError as exc:
+            raise self._corte_desatendido(
+                interaccion, CodigoDesatendido.PRESET_MISMATCH, str(exc), tool_name=tool_name
+            ) from exc
+        if estado.huella != aprobada.huella_preset:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.PRESET_MISMATCH,
+                f"el preset {aprobada.ruta_preset} cambió desde la aprobación",
+                tool_name=tool_name,
+            )
+        try:
+            registro = await asyncio.to_thread(self._guarda_de_presets.proteger, aprobada.ruta_preset)
+        except PresetError as exc:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.PRESET_RESTORE_FAILED,
+                f"no se pudo tomar el snapshot que garantiza el restore del preset: {exc}",
+                tool_name=tool_name,
+            ) from exc
+        return PreparacionDeSpawnDesatendido(interaccion=interaccion, aprobada=aprobada, registro=registro)
+
+    def _restaurar_preset_sin_gatear(
+        self,
+        preparacion: PreparacionDeSpawnDesatendido | None,
+        tool_name: str,
+    ) -> PresetError | None:
+        """Restore del snapshot. Nunca lanza: devuelve el error para que el llamador decida.
+
+        Es síncrono porque corre en ``finally``/``except BaseException`` de
+        ``_execute_process``: sin ``await`` no hay punto de cancelación que deje
+        el preset a medio restaurar (un archivo de decenas de KB).
+        """
+        if preparacion is None or self._guarda_de_presets is None:
+            return None
+        try:
+            self._guarda_de_presets.restaurar(preparacion.registro)
+        except PresetError as exc:
+            # El incidente ya lo reporta quien corta la corrida (el corte de la
+            # salida normal o la excepción que está propagando); esto es la causa.
+            logger.warning(
+                "%s: el preset no se pudo restaurar tras la corrida desatendida: %s",
+                tool_name,
+                exc,
+                extra={"operation_type": "dyndolod_preset_no_restaurado", "tx_id": _tx_id()},
+            )
+            return exc
+        return None
+
+    async def _protocolo_desatendido(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: DynDOLODProcess,
+        preparacion: PreparacionDeSpawnDesatendido,
+    ) -> None:
+        """Driver UIA desde el spawn hasta el cierre. Todo corte es DynDOLODDesatendidoError."""
+        capacidad = self._desatendido
+        if capacidad is None:
+            raise self._corte_desatendido(
+                preparacion.interaccion,
+                CodigoDesatendido.UNATTENDED_CAPABILITY_UNAVAILABLE,
+                "la capacidad desatendida desapareció entre la preparación y el spawn",
+                tool_name=tool_name,
+            )
+        raiz = self._expected_output_de(tool_name)
+        ctx = ContextoDeConduccion(
+            contrato=preparacion.aprobada.contrato,
+            pid=proc.pid,
+            ejecutable=str(executable),
+            output_esperado=str(raiz),
+            raiz_output=raiz,
+            ruta_log=self._ruta_del_log(tool_name),
+        )
+        conductor = ConductorDesatendido(capacidad)
+        ledger = LedgerDeAcciones()
+
+        def _vivo() -> bool:
+            return proc.returncode is None
+
+        try:
+            await conductor.conducir_hasta_inicio(ctx, ledger, proceso_vivo=_vivo)
+            await informar_sin_gatear(
+                capacidad.aprobador,
+                tool=tool_name,
+                mensaje=(
+                    f"{tool_name}: generación iniciada sin intervención (Output administrado {raiz}). "
+                    "Sky-Claw cierra la herramienta cuando termine."
+                ),
+                cota=capacidad.gracia_externa_segundos,
+            )
+            await conductor.esperar_fin_y_cerrar(ctx, ledger, proceso_vivo=_vivo)
+        except DesatendidoError as exc:
+            raise self._corte_desatendido(
+                preparacion.interaccion, exc.codigo, exc.detalle, tool_name=tool_name
+            ) from exc
+        finally:
+            logger.info(
+                "%s desatendido: ledger de acciones %s",
+                tool_name,
+                [(e.accion_id, e.estado.value, e.hresult) for e in ledger.entradas],
             )
 
     async def _package_output_as_mod(
@@ -3201,6 +3656,7 @@ class DynDOLODRunner:
         expected_profile: str | None = None,
         authorized_identity: TreeDigest | None = None,
         veto_de_rollback: Callable[[], bool] | None = None,
+        modo_de_interaccion: ModoDeInteraccion = ModoDeInteraccion.ASISTIDO,
     ) -> DynDOLODPipelineResult:
         """
         Ejecuta el pipeline completo: TexGen → Empaquetado → DynDOLOD → Empaquetado.
@@ -3237,15 +3693,31 @@ class DynDOLODRunner:
                 (#592 finding 2). El servicio pasa el mismo criterio que usa
                 para sus ``DirectoryRollback``; ``None`` = runner directo de
                 test/rig, sin leases que consultar.
+            modo_de_interaccion: ASISTIDO (protocolo T5-v2, default histórico) o
+                DESATENDIDO (#661: contrato de build + aprobación remota de la
+                configuración + driver UIA). Sin fallback entre los dos.
 
         Returns:
             DynDOLODPipelineResult con resultados completos.
         """
         logger.info(
-            "Iniciando pipeline DynDOLOD completo: run_texgen=%s, preset=%s",
+            "Iniciando pipeline DynDOLOD completo: run_texgen=%s, preset=%s, modo=%s",
             run_texgen,
             preset,
+            modo_de_interaccion.value,
         )
+
+        # #661: la interacción se decide UNA vez por corrida y viaja explícita a
+        # los dos lanzadores. En modo desatendido incluye la aprobación remota de
+        # la configuración; un corte acá no spawnea nada.
+        preparacion_de_corrida = await self._preparar_interaccion(
+            modo_de_interaccion,
+            run_texgen=run_texgen,
+            preset=preset,
+        )
+        if isinstance(preparacion_de_corrida, DynDOLODPipelineResult):
+            return preparacion_de_corrida
+        interaccion = preparacion_de_corrida
 
         errors: list[str] = []
         texgen_result: ToolExecutionResult | None = None
@@ -3287,7 +3759,7 @@ class DynDOLODRunner:
         # Paso 1: Ejecutar TexGen si está habilitado
         if run_texgen:
             try:
-                texgen_result = await self.run_texgen(extra_args=texgen_args)
+                texgen_result = await self.run_texgen(extra_args=texgen_args, interaccion=interaccion)
 
                 if texgen_result.success and texgen_result.output_path:
                     # Empaquetar TexGen Output
@@ -3526,6 +3998,7 @@ class DynDOLODRunner:
                     preset=preset,
                     extra_args=dyndolod_args,
                     handoff=handoff_para_spawn,
+                    interaccion=interaccion,
                 )
 
                 if dyndolod_result.success and dyndolod_result.output_path:
@@ -3640,6 +4113,7 @@ class DynDOLODRunner:
             # hay espera humana, y viajar con valor sería una mentira empaquetada.
             handoff_action=handoff_pending_action if not success else None,
             texgen_packaging_attempted=texgen_packaging_attempted,
+            codigos_desatendido=tuple(codigo.value for codigo in interaccion.codigos),
         )
 
         if result.success:

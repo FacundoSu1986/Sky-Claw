@@ -107,6 +107,8 @@ class GuiSimulada:
         inicio_sin_progreso: bool = False,
         modal_reaparece: bool = False,
         terminal_ambiguo: bool = False,
+        ruta_log: pathlib.Path | None = None,
+        ruta_preset: pathlib.Path | None = None,
     ) -> None:
         self.contrato = contrato
         self.pid = pid
@@ -128,6 +130,8 @@ class GuiSimulada:
         self.inicio_sin_progreso = inicio_sin_progreso
         self.modal_reaparece = modal_reaparece
         self.terminal_ambiguo = terminal_ambiguo
+        self.ruta_log = ruta_log
+        self.ruta_preset = ruta_preset
         self.vivo = True
         self.escrituras: list[tuple[MecanismoDeEscritura, str]] = []
         self.invocaciones: list[str] = []
@@ -262,6 +266,14 @@ class GuiSimulada:
                 if self.raiz_output is not None and not self.inicio_sin_progreso:
                     self.raiz_output.mkdir(parents=True, exist_ok=True)
                     (self.raiz_output / "progreso.dds").write_bytes(b"x")
+                if self.ruta_log is not None and not self.inicio_sin_progreso:
+                    self.ruta_log.parent.mkdir(parents=True, exist_ok=True)
+                    with self.ruta_log.open("ab") as log:
+                        log.write(b"[00:01] generando\n")
+                if self.ruta_preset is not None and self.ruta_preset.exists():
+                    # P0-B: la herramienta reescribe su preset al iniciar (OutputPath).
+                    contenido = self.ruta_preset.read_bytes()
+                    self.ruta_preset.write_bytes(contenido.replace(b"PR2 Work", b"Escrito Por La Herramienta"))
             elif (
                 self.estado == "terminal"
                 and nombre == self.contrato.accion_terminal.selector.nombre

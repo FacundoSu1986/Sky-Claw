@@ -1160,10 +1160,19 @@ class CapacidadDesatendidaUIA:
 
     Su ausencia en el runner NO es un permiso: una corrida que pide
     ``DESATENDIDO`` sin capacidad falla con ``UNATTENDED_CAPABILITY_UNAVAILABLE``.
+
+    Los plazos por defecto cubren un operador REMOTO: 15 minutos para contestar
+    una aprobación por Telegram, 5 para que la GUI quede lista (el gate read-only
+    usa el mismo), y ventanas de observación de 2 minutos por helper durante una
+    generación que puede durar horas (el techo lo pone el timeout global de la
+    corrida, no el driver).
     """
 
     ejecutor: EjecutorDePasoUIA
     aprobador: AprobadorDesatendido
+    #: Estado durable de los snapshots de presets (P8). ``None`` = no hay dónde
+    #: garantizar el restore, y una corrida desatendida falla cerrada.
+    directorio_de_presets: pathlib.Path | None = None
     arranque_timeout_segundos: float = 300.0
     observacion_intervalo_segundos: float = 1.0
     ventana_de_generacion_segundos: float = 120.0

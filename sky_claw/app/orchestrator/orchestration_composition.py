@@ -31,6 +31,7 @@ from sky_claw.app.orchestrator.dispatcher_dependencies import (
     build_synthesis_service_factory,
     build_wrye_bash_pipeline,
 )
+from sky_claw.app.orchestrator.dyndolod_desatendido_hitl import AprobadorDesatendidoHITL
 from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL
 from sky_claw.app.orchestrator.tool_dispatcher import (
     OrchestrationToolDispatcher,
@@ -42,12 +43,15 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
+from sky_claw.config import SystemPaths
 from sky_claw.local.tools.dyndolod_runner import (
     DataVisibilityDomainError,
     DynDOLODSpawnStrategy,
     resolve_data_visibility_domain,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_uia_driver import CapacidadDesatendidaUIA
+from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import EjecutorDePasoPorHelper
 from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGatePorHelper
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
@@ -217,6 +221,19 @@ def build_orchestration_composition(
         confirmador=ConfirmadorHITL(hitl_guard=hitl_guard),
     )
 
+    # #661: capacidad del modo DESATENDIDO (operable de forma remota). Se arma
+    # junto a la de readiness y por el mismo motivo: un solo sitio productivo, y
+    # el censo de constructores exige ambas. El ejecutor es el helper MUTANTE
+    # descartable (no el del gate read-only); el aprobador es el canal remoto del
+    # guard, y el estado durable de los presets vive en `runtime_state_dir()`
+    # —por usuario, independiente del cwd— como la coordinación de etapa 9.
+    # Armarla no toca COM ni disco: el helper nace por paso.
+    dyndolod_desatendido = CapacidadDesatendidaUIA(
+        ejecutor=EjecutorDePasoPorHelper(),
+        aprobador=AprobadorDesatendidoHITL(hitl_guard=hitl_guard),
+        directorio_de_presets=SystemPaths.runtime_state_dir() / "dyndolod_presets",
+    )
+
     # D2 (PR #493): mo2_profile es la identidad esperada del dueño del
     # handoff durable de DynDOLOD.
     # P2.2: el workspace del arranque aporta el root productivo y el fence de
@@ -232,6 +249,7 @@ def build_orchestration_composition(
         workspace=dyndolod_workspace,
         readiness=dyndolod_readiness,
         spawn_strategy=dyndolod_spawn_strategy,
+        desatendido=dyndolod_desatendido,
     )
 
     xedit_service = XEditPipelineService(

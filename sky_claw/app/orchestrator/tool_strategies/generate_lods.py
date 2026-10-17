@@ -10,7 +10,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VALID_LOD_KEYS = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args"}
+#: ``interaction_mode`` (#661) viaja igual que las demás claves: la superficie GUI
+#: (dispatcher) y la remota (tool del agente) piden el MISMO parámetro del
+#: servicio — ancla de paridad en ``tests/test_dyndolod_desatendido_remoto.py``.
+_VALID_LOD_KEYS = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args", "interaction_mode"}
 
 
 class GenerateLodsStrategy:
