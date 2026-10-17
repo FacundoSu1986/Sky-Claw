@@ -14,6 +14,7 @@ son ROJOS. Los verdes por construcción son los dos controles (el payload de
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -374,25 +375,37 @@ def test_todo_estado_que_necesita_transicion_de_usuario_tiene_superficie() -> No
 
 
 @pytest.mark.asyncio
-async def test_la_superficie_llm_no_registra_generate_lods_sin_guard_upstream() -> None:
-    """STOP_LLM_SURFACE_SCOPE_EXPANSION: el agente LLM NO expone ``generate_lods``
-    en este commit — el SOP §2 exige un guard de upstream-completion (Wrye Bash +
-    Synthesis) que ``GenerateLodsStrategy`` todavía no tiene (deuda abierta).
-    Este ancla congela la ausencia (por AST, sin instanciar el registry) para
-    que la expansión sea una decisión explícita, no un registro accidental."""
-    import ast
-    import pathlib
+async def test_la_superficie_llm_no_lanza_generate_lods_sin_guard_upstream() -> None:
+    """SOP §5.2: el agente LLM expone ``generate_lods`` (#661) SÓLO detrás del
+    guard de upstream-completion (Wrye Bash + Synthesis + grass) que el SOP exige
+    a todo camino nuevo de LODs.
 
-    from sky_claw.app.agent.tools import __file__ as tools_init
+    Hasta #661 este ancla congelaba la AUSENCIA de la tool, para que la expansión
+    fuera una decisión explícita. #661 la toma y el ancla pasa a exigir el
+    comportamiento sobre el registro REAL: con una etapa previa faltante y sin
+    canal para que el operador decida, la tool no llega al servicio. (El camino
+    de la GUI, ``GenerateLodsStrategy``, conserva su deuda documentada.)"""
+    from unittest.mock import MagicMock
 
-    arbol = ast.parse(pathlib.Path(str(tools_init)).read_text(encoding="utf-8"))
-    registradas: set[str] = set()
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.Subscript) and isinstance(nodo.value, ast.Attribute) and nodo.value.attr == "_tools":
-            clave = nodo.slice
-            if isinstance(clave, ast.Constant) and isinstance(clave.value, str):
-                registradas.add(clave.value)
+    from sky_claw.app.agent.tools import AsyncToolRegistry
+    from sky_claw.app.agent.tools.lod_tools import GestorDeTrabajosDeLods
+    from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias
 
-    assert "generate_lods" not in registradas, (
-        "generate_lods entró a la superficie LLM sin el guard de upstream-completion del SOP §2"
+    service = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True, "message": ""}),
+        verificar_etapas_previas=MagicMock(
+            return_value=EvidenciaDeEtapasPrevias(faltantes=("etapa 6 (Wrye Bash): falta",))
+        ),
     )
+    registro = AsyncToolRegistry(
+        registry=MagicMock(),
+        mo2=MagicMock(),
+        sync_engine=MagicMock(),
+        lod_jobs=GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: service),
+    )
+
+    respuesta = json.loads(await registro.execute("generate_lods", {"interaction_mode": "desatendido"}))
+
+    assert respuesta["success"] is False
+    service.verificar_etapas_previas.assert_called_once_with()
+    service.execute.assert_not_awaited()

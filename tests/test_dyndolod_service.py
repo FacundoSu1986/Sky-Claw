@@ -3915,6 +3915,16 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
 #:    porque nombra el artefacto —`meta.ini`— que el mensaje del handler no
 #:    menciona; exento, no duplicado.
 _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
+    "dyndolod_preset_no_restaurado": {
+        "metodo": "_restaurar_preset_sin_gatear",
+        "motivo": (
+            "#661 P8: causa y no veredicto. El restore del preset corre en el finally de "
+            "_execute_process y NUNCA decide la etapa por sí mismo: en la salida normal su fallo "
+            "se convierte en el corte PRESET_RESTORE_FAILED (DynDOLODDesatendidoError) que "
+            "run_full_pipeline reporta CON etapa; en una salida por excepción la corrida ya falló "
+            "y esa excepción es la que lleva la etapa. Etiquetar acá duplicaría el incidente."
+        ),
+    },
     "dyndolod_drenaje_incompleto": {
         "metodo": "_limpiar_helpers_en_salida_normal",
         "motivo": (

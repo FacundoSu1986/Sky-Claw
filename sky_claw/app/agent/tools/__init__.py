@@ -30,11 +30,13 @@ from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from .db_tools import install_mod, search_mod
 from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
+from .lod_tools import generate_lods, lods_status
 from .nexus_tools import download_mod, search_nexus
 from .schemas import (
     AnalyzeConflictsParams,
     BodySlideBatchParams,
     DownloadModParams,
+    GenerateLodsParams,
     InstallFromArchiveParams,
     InstallModParams,
     PreviewInstallerParams,
@@ -140,8 +142,13 @@ class AsyncToolRegistry:
         # #454: "el perfil queda fijo durante la sesión"). El default sigue siendo
         # "Default" para los callers legacy y los fixtures.
         mo2_profile: str = "Default",
+        # #661: gestor de trabajos de la etapa 9 (TexGen + DynDOLOD) en segundo
+        # plano. Delega en el MISMO servicio que la GUI (publicado por el
+        # bootloader); None = la etapa 9 no está disponible en esta sesión.
+        lod_jobs: Any | None = None,
     ) -> None:
         self._registry = registry
+        self._lod_jobs = lod_jobs
         self._mo2 = mo2
         self._sync_engine = sync_engine
         self._loot_exe = loot_exe or pathlib.Path("loot.exe")
@@ -606,6 +613,35 @@ class AsyncToolRegistry:
                 snapshot_manager=self._snapshot_manager,
                 journal=self._journal,
             ),
+        )
+        # #661: etapa 9 desde la superficie remota. Lanza un TRABAJO en segundo
+        # plano y responde enseguida (el round del router corta a los 120 s y una
+        # corrida dura horas); el resultado y las aprobaciones llegan por el canal
+        # de avisos del HITLGuard. Delega en el mismo DynDOLODPipelineService que
+        # el dispatcher de la GUI: mismo lock de etapa 9, coordinación y workspace.
+        self._tools["generate_lods"] = ToolDescriptor(
+            name="generate_lods",
+            description=(
+                "Generate distant LODs (stage 9: TexGen then DynDOLOD) as a background job and return "
+                "immediately with a job id. Use interaction_mode='desatendido' when the operator is remote: "
+                "Sky-Claw operates the TexGen/DynDOLOD windows itself after the operator approves the exact "
+                "configuration through this same channel, and reports the outcome when it finishes. Check "
+                "progress with lods_status."
+            ),
+            params_model=GenerateLodsParams,
+            fn=lambda interaction_mode, preset="Medium", run_texgen=True, create_snapshot=True: generate_lods(
+                self._lod_jobs,
+                preset=preset,
+                run_texgen=run_texgen,
+                create_snapshot=create_snapshot,
+                interaction_mode=interaction_mode,
+            ),
+        )
+        self._tools["lods_status"] = ToolDescriptor(
+            name="lods_status",
+            description="Report the state of the current or last stage-9 LOD generation job (read-only).",
+            params_model=None,
+            fn=lambda: lods_status(self._lod_jobs),
         )
         self._tools["uninstall_mod"] = ToolDescriptor(
             name="uninstall_mod",

@@ -135,6 +135,10 @@ _ITEMS = frozenset(
         # de la Regla T11) de la defensa en profundidad (Pandora y Wrye Bash, que
         # sí lo tienen), para que nadie la lea como "tres escapes demostrados".
         "Contrato de errores de las estrategias destructivas restantes (#726)",
+        # #661: etapa 9 desatendida (driver UIA por build medido) y operable desde
+        # Telegram. Parcial a propósito: la cadena real en rig no corrió todavía,
+        # y la fila lo dice en vez de dejar que el título del PR lo cierre.
+        "Etapa 9 desatendida y operable en remoto (#661)",
     }
 )
 

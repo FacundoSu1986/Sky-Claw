@@ -43,6 +43,7 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
+    INSTRUCCIONES_POR_MODO,
     DataVisibilityDomain,
     DynDOLODConfig,
     DynDOLODExecutionError,
@@ -54,6 +55,8 @@ from sky_claw.local.tools.dyndolod_runner import (
     normalize_dyndolod_spawn_strategy,
     resolve_data_visibility_domain,
 )
+from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
+from sky_claw.local.tools.dyndolod_uia_driver import CapacidadDesatendidaUIA
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import (
     OwnershipDeWorkspaceVivo,
@@ -65,6 +68,7 @@ from sky_claw.local.tools.texgen_handoff import HandoffPendingAction
 from sky_claw.logging_config import correlacion_de_transaccion
 
 if TYPE_CHECKING:
+    from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
@@ -151,19 +155,48 @@ def _rolled_back_del_evento(*, tx_id: int | None, confirmado: bool) -> bool:
     return tx_id is not None and confirmado
 
 
-def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
+def _modo_de_interaccion_o_none(valor: object) -> ModoDeInteraccion | None:
+    """El modo del contrato, o ``None`` si el valor no es uno (fail-closed, sin adivinar)."""
+    try:
+        return modo_de_interaccion_desde(valor)
+    except ValueError:
+        return None
+
+
+def _codigos_desatendidos_mencionados(texto: str) -> list[str]:
+    """Códigos de ``CodigoDesatendido`` presentes en un mensaje, en orden de enum.
+
+    El vocabulario es cerrado y sólo los cortes desatendidos lo emiten
+    (``DynDOLODDesatendidoError`` encabeza su mensaje con el código), así que la
+    extracción es una enumeración, no una heurística.
+    """
+    return [codigo.value for codigo in CodigoDesatendido if codigo.value in texto]
+
+
+def _attach_preflight(
+    result: dict[str, Any],
+    report: PreflightReport | None,
+    modo: ModoDeInteraccion,
+) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
 
     Mismo criterio que ``loot_service``/``xedit_service``/``synthesis_service``
     (T-16b/T-16c): un semáforo verde no ensucia el dict; amarillo/rojo viajan
     como ``result["preflight"]`` para que el panel vivo lo renderice.
 
-    También fija ``assisted`` UNA sola vez: la etapa 9 es asistida en TODOS los
-    retornos (éxito, error de dominio, fallos tempranos), así que el consumidor
-    del resultado no tiene que interpretar la ausencia de la clave. El retorno
-    de preflight en rojo también pasa por acá para el mismo contrato.
+    También fija ``assisted`` / ``interaction_mode`` UNA sola vez y en TODOS los
+    retornos (éxito, error de dominio, fallos tempranos): el consumidor no tiene
+    que interpretar la ausencia de la clave. ``modo`` es OBLIGATORIO —sin
+    default— y el ancla
+    ``test_todo_retorno_del_servicio_declara_el_modo_de_interaccion`` exige que
+    cada llamada lo pase: un retorno nuevo no puede volver a afirmar "asistida"
+    sobre una corrida desatendida. En desatendido, un fallo además lleva
+    ``unattended_error_codes`` (machine-readable, para el operador remoto).
     """
-    result.setdefault("assisted", True)
+    result.setdefault("assisted", modo is ModoDeInteraccion.ASISTIDO)
+    result.setdefault("interaction_mode", modo.value)
+    if modo is ModoDeInteraccion.DESATENDIDO and not result.get("success", False):
+        result.setdefault("unattended_error_codes", _codigos_desatendidos_mencionados(str(result.get("message", ""))))
     if report is not None and report.status.value != "green":
         result["preflight"] = report.to_dict()
     return result
@@ -309,6 +342,7 @@ class DynDOLODPipelineService:
     #: U-01: un doble sin configuración conserva el sensor físico activo.
     _workspace: WorkspaceResuelto | None = None
     _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
+    _desatendido: CapacidadDesatendidaUIA | None = None
     _spawn_strategy: DynDOLODSpawnStrategy | None = None
     _data_visibility_domain: DataVisibilityDomain = "physical"
 
@@ -326,6 +360,7 @@ class DynDOLODPipelineService:
         workspace: WorkspaceResuelto | None = None,
         readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None,
         spawn_strategy: DynDOLODSpawnStrategy | None = None,
+        desatendido: CapacidadDesatendidaUIA | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -363,6 +398,10 @@ class DynDOLODPipelineService:
         # (`tests/test_dyndolod_t5v21_wiring.py::test_censo_de_constructores_del_runner`)
         # exige que TODO constructor productivo del runner la cablee.
         self._readiness = readiness
+        # #661: capacidad del modo DESATENDIDO, pass-through puro al runner (igual
+        # que `readiness`). `None` = este servicio no puede correr desatendido: una
+        # corrida que lo pide falla cerrada, sin caer al modo asistido.
+        self._desatendido = desatendido
         # Seam explícito del backend: None conserva standalone histórico; una
         # strategy inyectada no tiene fallback si su apertura brokered falla.
         # P2 Codex: normalizar por identidad, nunca por truthiness. El mismo
@@ -480,6 +519,7 @@ class DynDOLODPipelineService:
             config,
             readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,
             spawn_strategy=self._spawn_strategy,
+            desatendido=self._desatendido,
         )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
@@ -487,6 +527,36 @@ class DynDOLODPipelineService:
             dyndolod_exe,
         )
         return self._runner
+
+    def verificar_etapas_previas(self) -> EvidenciaDeEtapasPrevias:
+        """SOP §5.2: artefactos de las etapas 6, 7 y 8 en el perfil activo (#661).
+
+        Lo consulta el camino REMOTO (tool del agente) antes de lanzar la etapa 9,
+        porque el SOP exige que todo camino nuevo de LODs agregue este guard. Lee
+        el MISMO perfil que alimenta el ``-p:`` (``_plugins_txt_del_perfil_activo``)
+        y la misma raíz de datos que usa el ritual de grass para ``overwrite/``.
+        Nunca lanza: una metadata ilegible es una etapa faltante (fail-closed).
+        """
+        from sky_claw.local.validators.etapas_previas_lods import verificar_etapas_previas_de_lods
+
+        try:
+            plugins_txt = self._plugins_txt_del_perfil_activo()
+        except DynDOLODExecutionError:
+            plugins_txt = None
+        try:
+            data_root = self._path_resolver.get_mo2_instance_data_root_estricto()
+        except (RuntimeError, OSError, ValueError):
+            data_root = None
+        try:
+            mods_dir: pathlib.Path | None = self._path_resolver.get_mo2_mods_path()
+        except (RuntimeError, OSError, ValueError):
+            mods_dir = None
+        return verificar_etapas_previas_de_lods(
+            plugins_txt=plugins_txt,
+            modlist_txt=plugins_txt.parent / "modlist.txt" if plugins_txt is not None else None,
+            mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
+            overwrite_dir=data_root / "overwrite" if isinstance(data_root, pathlib.Path) else None,
+        )
 
     def _plugins_txt_del_perfil_activo(self) -> pathlib.Path | None:
         """``plugins.txt`` del perfil MO2 activo, o ``None`` en modo standalone.
@@ -1278,6 +1348,7 @@ class DynDOLODPipelineService:
         texgen_args: list[str] | None = None,
         dyndolod_args: list[str] | None = None,
         dry_run: bool = False,
+        interaction_mode: str | ModoDeInteraccion = ModoDeInteraccion.ASISTIDO,
     ) -> dict[str, Any]:
         """Ejecuta el pipeline completo de generación de LODs.
 
@@ -1299,11 +1370,34 @@ class DynDOLODPipelineService:
                 plan-only (``status="dry_run_preview"`` + ``change_set``) sin
                 lock, journal ni eventos. DynDOLOD es la etapa más cara (GBs,
                 30+ min), por eso el preview nunca la ejecuta.
+            interaction_mode: ``"asistido"`` (default histórico: el operador
+                configura la GUI en la PC) o ``"desatendido"`` (#661: Sky-Claw
+                opera la GUI por UIA tras una aprobación REMOTA de la
+                configuración). Cualquier otro valor se rechaza sin tocar nada;
+                no hay fallback entre modos.
 
         Returns:
             Diccionario con resultado del pipeline, o el preview plan-only
             cuando ``dry_run=True``.
         """
+        # Validación de frontera ANTES de cualquier efecto: un modo que no está en
+        # el contrato no se adivina (sería mutar una GUI sin pedirlo). El parseo
+        # vive en un helper para no sumar un `except` a la familia congelada de
+        # `execute` (`test_la_familia_de_handlers_de_execute_esta_congelada`).
+        modo_de_interaccion = _modo_de_interaccion_o_none(interaction_mode)
+        if modo_de_interaccion is None:
+            detalle = (
+                f"modo de interacción desconocido: {interaction_mode!r}; "
+                f"valores admitidos: {[modo.value for modo in ModoDeInteraccion]}"
+            )
+            return {
+                "success": False,
+                "message": detalle,
+                "errors": [detalle],
+                "assisted": True,
+                "interaction_mode": None,
+            }
+
         if dry_run:
             return await self._preview(preset=preset, run_texgen=run_texgen)
 
@@ -1346,6 +1440,7 @@ class DynDOLODPipelineService:
                         "errors": [red],
                     },
                     preflight_report,
+                    modo_de_interaccion,
                 )
 
         start_time = time.monotonic()
@@ -1415,7 +1510,7 @@ class DynDOLODPipelineService:
         )
 
         # 1. Publicar evento de inicio
-        await self._publish_started(preset=preset, run_texgen=run_texgen)
+        await self._publish_started(preset=preset, run_texgen=run_texgen, modo=modo_de_interaccion)
 
         # 2. Inicializar runner
         try:
@@ -1447,6 +1542,7 @@ class DynDOLODPipelineService:
                     "duration_seconds": duration,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         # P2.2 — coherencia workspace ↔ runner. Con un `WorkspaceResuelto`
@@ -1482,6 +1578,7 @@ class DynDOLODPipelineService:
                     "duration_seconds": duration,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         # Rutas de config: fallar rápido ANTES del lock. Un fallo acá cuesta
@@ -1514,6 +1611,7 @@ class DynDOLODPipelineService:
                     "duration_seconds": duration,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         # D2 (PR #493): el gate de perfil corre ANTES de cualquier mutación
@@ -1554,6 +1652,7 @@ class DynDOLODPipelineService:
                     "errors": [msg],
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         # D2 (PR #493): la decisión de resume consulta el estado DURABLE del
@@ -1601,6 +1700,7 @@ class DynDOLODPipelineService:
                             "duration_seconds": duration,
                         },
                         preflight_report,
+                        modo_de_interaccion,
                     )
                 handoff_resume = consulta
         except asyncio.CancelledError:
@@ -2039,6 +2139,7 @@ class DynDOLODPipelineService:
                         # concurrente cuando la lease ya se perdió — el hallazgo de
                         # Codex #399, reintroducido en una superficie nueva.
                         veto_de_rollback=_conserva_las_leases,
+                        modo_de_interaccion=modo_de_interaccion,
                     )
 
                     # Validar salida de DynDOLOD si fue exitoso
@@ -2402,6 +2503,7 @@ class DynDOLODPipelineService:
                         "duration_seconds": duration,
                     },
                     preflight_report,
+                    modo_de_interaccion,
                 )
 
         except _ActionManifestError as exc:
@@ -2453,6 +2555,7 @@ class DynDOLODPipelineService:
                     "rolled_back": rolled_back,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         except LockAcquisitionError as exc:
@@ -2482,6 +2585,7 @@ class DynDOLODPipelineService:
                     "duration_seconds": duration,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
         except _CertificacionPreservadaError as pres:
@@ -2525,7 +2629,7 @@ class DynDOLODPipelineService:
             mod_texgen_resp = mods_path / runner.TEXGEN_MOD_NAME
             if mod_texgen_resp.is_dir():
                 payload["texgen_mod_path"] = str(mod_texgen_resp)
-            return _attach_preflight(payload, preflight_report)
+            return _attach_preflight(payload, preflight_report, modo_de_interaccion)
 
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
             # El logger.error del incidente va PRIMERO, antes de cualquier await
@@ -2621,7 +2725,7 @@ class DynDOLODPipelineService:
                 mod_texgen = mods_path / runner.TEXGEN_MOD_NAME
                 if mod_texgen.is_dir():
                     payload["texgen_mod_path"] = str(mod_texgen)
-            return _attach_preflight(payload, preflight_report)
+            return _attach_preflight(payload, preflight_report, modo_de_interaccion)
 
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
@@ -2744,6 +2848,7 @@ class DynDOLODPipelineService:
                     "rolled_back": rolled_back,
                 },
                 preflight_report,
+                modo_de_interaccion,
             )
 
     # ------------------------------------------------------------------
@@ -2809,12 +2914,14 @@ class DynDOLODPipelineService:
     # Eventos
     # ------------------------------------------------------------------
 
-    async def _publish_started(self, *, preset: str, run_texgen: bool) -> None:
-        """Publica evento de inicio del pipeline (etapa 9 ASISTIDA)."""
+    async def _publish_started(self, *, preset: str, run_texgen: bool, modo: ModoDeInteraccion) -> None:
+        """Publica evento de inicio del pipeline con el modo de interacción de ESTA corrida."""
         payload = DynDOLODPipelineStartedPayload(
             preset=preset,
             run_texgen=run_texgen,
-            assisted=True,
+            assisted=modo is ModoDeInteraccion.ASISTIDO,
+            operator_instructions=INSTRUCCIONES_POR_MODO[modo],
+            interaction_mode=modo.value,
         )
         await self._event_bus.publish(
             Event(

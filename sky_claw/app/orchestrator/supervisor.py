@@ -603,6 +603,19 @@ class SupervisorAgent:
     # =========================================================================
 
     @property
+    def dyndolod_service(self) -> Any:
+        """El servicio de etapa 9 del composition root, de solo lectura (#661).
+
+        Lo publica el bootloader de la GUI en el ``AppContext`` para que la tool
+        remota del agente (``generate_lods``) delegue en EXACTAMENTE este
+        servicio —mismo lock, coordinación y workspace— en vez de construir otro.
+        Tipado ``Any`` a propósito: el Supervisor no importa dominio, ni siquiera
+        bajo ``TYPE_CHECKING`` (``test_no_importa_dominio_de_herramientas``); el
+        tipo concreto lo declara ``OrchestrationServices.dyndolod_service``.
+        """
+        return self._dyndolod_service
+
+    @property
     def event_bus(self) -> CoreEventBus:
         """Acceso de solo lectura al CoreEventBus interno.
 

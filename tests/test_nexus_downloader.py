@@ -1100,7 +1100,8 @@ class TestDownloadModSchema:
         # duplicates removed (21 -> 19); run_pandora / run_bodyslide remain,
         # now backed by the M-02/M-03 runners.
         # search_nexus added (read-only NL Nexus discovery): 19 -> 20.
-        assert len(tool_registry.tools) == 20
+        # #661: generate_lods + lods_status (etapa 9 desde la superficie remota): 20 -> 22.
+        assert len(tool_registry.tools) == 22
 
 
 # ---------------------------------------------------------------------------
