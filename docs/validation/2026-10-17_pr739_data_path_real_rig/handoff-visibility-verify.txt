@@ -1,0 +1,3 @@
+staging=C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance\mods\TexGen Output\textures
+data_dir=C:\SkyClaw_Rigs\PR739 Data Path\game\Data
+RESULTADO: VISIBILIDAD_OK

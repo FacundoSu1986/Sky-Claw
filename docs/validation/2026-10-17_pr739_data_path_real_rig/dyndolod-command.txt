@@ -1,0 +1,12 @@
+tool=DynDOLOD
+exe=C:\SkyClaw_Rigs\PR739 Data Path\tools\DynDOLOD\DynDOLODx64.exe
+exe_sha256=b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0
+argv=["-sse", "-o:C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\", "-d:C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\", "-m:C:\\SkyClaw_Rigs\\PR739 Data Path\\Game INI\\", "-p:C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\profiles\\DataPathRig\\plugins.txt", "-t:C:\\SkyClaw_Rigs\\PR739 Data Path\\temp\\"]
+command_line="C:\SkyClaw_Rigs\PR739 Data Path\tools\DynDOLOD\DynDOLODx64.exe" -sse "-o:C:\SkyClaw_Rigs\PR739 Data Path\Work Root\DynDOLOD\DynDOLOD\\" "-d:C:\SkyClaw_Rigs\PR739 Data Path\game\Data\\" "-m:C:\SkyClaw_Rigs\PR739 Data Path\Game INI\\" "-p:C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance\profiles\DataPathRig\plugins.txt" "-t:C:\SkyClaw_Rigs\PR739 Data Path\temp\\"
+cwd=E:\Skyclaw_Main_Sync\.worktrees\dyndolod-592-f4-f5-output-evidence
+data_dir=C:\SkyClaw_Rigs\PR739 Data Path\game\Data
+ini_dir=C:\SkyClaw_Rigs\PR739 Data Path\Game INI
+plugins_file=C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance\profiles\DataPathRig\plugins.txt
+temp_dir=C:\SkyClaw_Rigs\PR739 Data Path\temp
+external_work_root=C:\SkyClaw_Rigs\PR739 Data Path\Work Root
+output_root=C:\SkyClaw_Rigs\PR739 Data Path\Work Root\DynDOLOD\DynDOLOD

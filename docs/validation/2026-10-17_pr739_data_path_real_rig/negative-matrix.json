@@ -1,0 +1,119 @@
+{
+  "data_configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data",
+  "salida_configurada": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD",
+  "equivalencia_alias_directa": true,
+  "casos": [
+    {
+      "caso": "1_data_correcta",
+      "output": "COINCIDE",
+      "data": "COINCIDE",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\\\",
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "2_data_desviada",
+      "output": "COINCIDE",
+      "data": "DIFIERE",
+      "datos_desviados": true,
+      "salida_desviada": false,
+      "discrepancias": [
+        "data"
+      ],
+      "declarada_data": "D:\\OtraData\\",
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "3_artefacto_presente_data_desviada_fail_closed",
+      "output": "COINCIDE",
+      "data": "DIFIERE",
+      "datos_desviados": true,
+      "salida_desviada": false,
+      "discrepancias": [
+        "data"
+      ],
+      "declarada_data": "D:\\OtraData\\",
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "4_data_desviada_sin_empaquetar",
+      "output": "COINCIDE",
+      "data": "DIFIERE",
+      "datos_desviados": true,
+      "salida_desviada": false,
+      "discrepancias": [
+        "data"
+      ],
+      "declarada_data": "D:\\OtraData\\",
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "5_data_ausente",
+      "output": "COINCIDE",
+      "data": "AUSENTE",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": null,
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "6_data_indeterminada",
+      "output": "COINCIDE",
+      "data": "INDETERMINADO",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\\\",
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "7_eco_antiguo_no_atribuible",
+      "output": "COINCIDE",
+      "data": "AUSENTE",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": null,
+      "declarada_output": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\DynDOLOD\\\\"
+    },
+    {
+      "caso": "8_log_truncado",
+      "output": "AUSENTE",
+      "data": "AUSENTE",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": null,
+      "declarada_output": null
+    },
+    {
+      "caso": "9_alias_textual_equivalente",
+      "output": "COINCIDE",
+      "data": "COINCIDE",
+      "datos_desviados": false,
+      "salida_desviada": false,
+      "discrepancias": [],
+      "declarada_data": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\data\\\\",
+      "declarada_output": "c:\\skyclaw_rigs\\pr739 data path\\work root\\dyndolod\\dyndolod\\\\"
+    },
+    {
+      "caso": "10_output_desviado_artefacto_presente",
+      "output": "DIFIERE",
+      "data": "COINCIDE",
+      "datos_desviados": false,
+      "salida_desviada": true,
+      "discrepancias": [
+        "output"
+      ],
+      "declarada_data": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game\\Data\\\\",
+      "declarada_output": "D:\\OtraSalida\\"
+    }
+  ],
+  "casos_11_12": {
+    "11_texgen_fallido_dyndolod_no_arranca": "tests/test_dyndolod_service.py (suite completa)",
+    "12_cancelacion_no_publica_exito": "tests/test_dyndolod_service.py (suite completa)"
+  }
+}

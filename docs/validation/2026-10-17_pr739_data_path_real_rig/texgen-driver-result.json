@@ -1,0 +1,190 @@
+{
+  "tool": "texgen",
+  "pid": 2748,
+  "acciones": [
+    {
+      "accion": "proceso_encontrado",
+      "t": 0.328,
+      "pid": 2748,
+      "exe": "C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\TexGenx64.exe"
+    },
+    {
+      "accion": "wizard_visible",
+      "t": 11.5,
+      "ventana": {
+        "runtime_id": [
+          42,
+          198558
+        ],
+        "control_type": "Edit",
+        "class_name": "TEdit",
+        "automation_id": "198558",
+        "name": "",
+        "native_hwnd": 198558,
+        "is_enabled": true,
+        "is_offscreen": false
+      }
+    },
+    {
+      "accion": "wizard_visible",
+      "t": 14.562,
+      "ventana": {
+        "runtime_id": [
+          42,
+          198558
+        ],
+        "control_type": "Edit",
+        "class_name": "TEdit",
+        "automation_id": "198558",
+        "name": "",
+        "native_hwnd": 198558,
+        "is_enabled": true,
+        "is_offscreen": false
+      }
+    },
+    {
+      "accion": "lectura_output",
+      "t": 15.781,
+      "lectura": {
+        "value_pattern_value": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen",
+        "value_is_readonly": true,
+        "legacy_value": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+      }
+    },
+    {
+      "accion": "output_ya_coincide",
+      "t": 15.781,
+      "readback": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+    },
+    {
+      "accion": "configurado",
+      "t": 15.781,
+      "preset": null,
+      "readback": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+    },
+    {
+      "accion": "hitl_request_visible",
+      "t": 16.781,
+      "archivo": "C:\\SkyClaw_Rigs\\PR739 Data Path\\state\\hitl\\texgen-request.json"
+    },
+    {
+      "accion": "start_habilitado",
+      "t": 39.937,
+      "contenido": "Output verificado contra la raíz administrada: podés continuar con Start."
+    },
+    {
+      "accion": "wizard_visible",
+      "t": 41.781,
+      "ventana": {
+        "runtime_id": [
+          42,
+          198558
+        ],
+        "control_type": "Edit",
+        "class_name": "TEdit",
+        "automation_id": "198558",
+        "name": "",
+        "native_hwnd": 198558,
+        "is_enabled": true,
+        "is_offscreen": false
+      }
+    },
+    {
+      "accion": "invoke",
+      "t": 41.906,
+      "etiqueta": "texgen_start",
+      "resultado": "S_OK",
+      "fingerprint": {
+        "runtime_id": [
+          42,
+          264078
+        ],
+        "control_type": "Button",
+        "class_name": "TButton",
+        "automation_id": "264078",
+        "name": "Start",
+        "native_hwnd": 264078,
+        "is_enabled": true,
+        "is_offscreen": false
+      }
+    },
+    {
+      "accion": "generacion_iniciada",
+      "t": 41.906
+    },
+    {
+      "accion": "terminal_detectado",
+      "t": 136.046,
+      "ventana": {
+        "pid": 2748,
+        "hwnd": 198422,
+        "name": "Elapsed Time: 01:29, Total Elapsed Time: 01:29",
+        "class_name": "TfrmMain",
+        "control_type": "Window"
+      },
+      "botones": [
+        "Exit TexGen",
+        "Zip and Exit",
+        "Check log",
+        "Restart",
+        "Cerrar",
+        "Línea arriba",
+        "Re Pág",
+        "Línea abajo",
+        "Columna a la izquierda",
+        "Página a la derecha",
+        "Columna a la derecha",
+        "Minimizar",
+        "Maximizar",
+        "Cerrar"
+      ]
+    },
+    {
+      "accion": "invoke",
+      "t": 136.109,
+      "etiqueta": "texgen_terminal",
+      "resultado": "S_OK",
+      "fingerprint": {
+        "runtime_id": [
+          42,
+          198954
+        ],
+        "control_type": "Button",
+        "class_name": "CCPushButton",
+        "automation_id": "CommandButton_7",
+        "name": "Exit TexGen",
+        "native_hwnd": 198954,
+        "is_enabled": true,
+        "is_offscreen": false
+      }
+    },
+    {
+      "accion": "proceso_termino",
+      "t": 149.703,
+      "exit_code": 0
+    }
+  ],
+  "modales": [],
+  "terminal": {
+    "estado": "TERMINAL",
+    "exit_code": 0,
+    "botones": [
+      "Exit TexGen",
+      "Zip and Exit",
+      "Check log",
+      "Restart",
+      "Cerrar",
+      "Línea arriba",
+      "Re Pág",
+      "Línea abajo",
+      "Columna a la izquierda",
+      "Página a la derecha",
+      "Columna a la derecha",
+      "Minimizar",
+      "Maximizar",
+      "Cerrar"
+    ]
+  },
+  "finished_at": "2026-10-17T16:27:45-0300",
+  "estado": "OK"
+}

@@ -1,0 +1,10 @@
+status=green
+blocks_mutations=False
+
+- vfs: green :: Sin symlinks/junctions en rutas críticas.
+- masters: green :: Todos los masters presentes y habilitados.
+- plugin_limits: green :: 5/254 full, 0/4096 light.
+- master_order: green :: Todos los masters cargan antes que sus dependientes.
+- overwrite: green :: Overwrite limpio.
+- write_permissions: green :: Escritura verificada en 3 ruta(s).
+- vfs_visibility: green :: El perfil no habilita plugins de mods.
