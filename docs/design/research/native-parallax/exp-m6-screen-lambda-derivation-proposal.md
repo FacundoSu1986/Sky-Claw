@@ -1,8 +1,28 @@
-# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 6.1
+# EXP-M6 — Propuesta de derivación de `screen_lambda` (y estatus de `gamma`) — REV 7.3
 
 > **Estado:** `PROPOSAL` — insumo externo para la ETAPA A del prereg de EXP-M6
 > ([PR #675](https://github.com/FacundoSu1986/Sky-Claw/pull/675), DRAFT). **No autoriza
 > implementación ni ejecución de M6** (`M6_IMPLEMENTATION_BLOCKED = YES` vigente).
+>
+> **REV 7.3 (2026-10-17):** reconciliación de los hallazgos CR-1..CR-4 del revisor
+> (PR #738) sobre la REV 7.2; adjudicación completa y evidencia en §8.6.
+> (1) **CR-4 (único sustantivo):** el término de sesgo de `analytic_curve` usaba el
+> cociente de esperanzas `Σu·E[v]/Σv·E[v]`; el valor correcto es la esperanza
+> **POR REALIZACIÓN** `E[Σu_o·E_o/Σv_o·E_o]` con `E_o~Exp(1)` iid por órbita ±k —
+> el modelo previo sobreestimaba el sesgo ≈7.4% (β=2) / ≈4.8% (β=4). Implementado
+> por cuadratura Gauss-Legendre (m=600, márgenes (36,16); convergencia medida
+> 1e-10) y validado contra MC directo de `make_signal`+`solve_screened` (|z|≤1.4;
+> recibo #10 del runner). λ* corregidos: `c = λ*·N²` pasa a c_A ≈ 0.0914–0.0918,
+> c_B ≈ 0.1574–0.1578; la ganancia esperada sigue **< 0.06 %** (máx. 0.0573 %
+> @128² rég. B). Los λ* históricos 5.17e-06 / 8.89e-06 quedan **superseded**.
+> La ruta de ruido (curva λ=0, V∞, dorados) queda **intacta**.
+> (2) **CR-3:** `noise_mse_limit` = `V∞(λ)` es sólo el límite del régimen B; el
+> régimen A converge a `V_A(λ)` (disco r≤π/4; `V_A(1e-3)=0.004319357` vs
+> `V∞(1e-3)=0.006698379`). (3) **CR-1:** el snippet de B.3 era un fragmento
+> `python -i` que no definía `lambda_star_continuous` → import explícito y
+> ejecución real en el gate. (4) **CR-2:** la etiqueta de escalado declaraba el
+> cociente invertido; es `c = λ*·N²` con los rangos corregidos. Solver FFT,
+> símbolos D, pesos y dorados de ruido: sin cambios.
 >
 > **REV 6.1 (2026-10-16):** adjudicación acotada de Nyquist mixto y porcentajes (§8.5).
 > El solver FFT y sus símbolos quedan sin cambios; los dorados y las seis revisiones
@@ -201,7 +221,11 @@ solver y los pesos §2.3 (éste era el P1-1).
 
 - **Régimen A — "ruido filtrado en banda"** (el modelo declarado): curva y MC con el
   ruido restringido a la banda. Fórmula vs MC(200) en N=128: ratio **0.980**
-  (medición 2026-10-15; REV 3 medía 1.0055 con su curva defectuosa).
+  (medición 2026-10-15; REV 3 medía 1.0055 con su curva defectuosa). Su límite
+  continuo (N→∞) es **`V_A(λ) = (σ²/(2π)²)·∫∫_{r≤π/4} k²/(k²+λ)² dkx dky`** (disco
+  en forma cerrada; con σ=0.1, λ=1e-3: `V_A = 0.004319357`), **distinto** del límite
+  del régimen B, `V∞(λ)`=0.006698379 (REV 7.3, CR-3: `noise_mse_limit` sólo es el
+  límite del régimen B).
 - **Régimen B — "ruido sin filtrar"** (lo que el solver recibe con ruido blanco real):
   `E[MSE(0)] = (σ²/N²)·Σ_{D>0} w/D ≈ (σ²/2π)·ln N + O(1)` — divergencia logarítmica
   de FC. MC multi-resolución de espectro completo (100 realizaciones, N=32/64/128,
@@ -283,14 +307,19 @@ sólo el de ruido — así se validó contra MC de ruido puro).
 
 ### 4.2 Métricas separadas: riesgo esperado vs realización (λ\* recalculado)
 
-- **Riesgo esperado (curva corregida).** Argmin continuo (20 000 puntos):
-  (N=128, β=2, σ=0.1): **λ\*_A = 5.17e-06** (rég. A) / **8.89e-06** (rég. B), con
-  ganancia relativa frente a λ=0 de **−0.032 %** / **−0.053 %**. Escalado **observado
+- **Riesgo esperado (curva corregida).** Argmin continuo (malla geométrica gruesa de
+  200 puntos + refinamiento local 80×3; sobre el sesgo **exacto por realización**,
+  REV 7.3 §8.6):
+  (N=128, β=2, σ=0.1): **λ\*_A = 5.58e-06** (rég. A) / **9.61e-06** (rég. B), con
+  ganancia relativa frente a λ=0 de **−0.035 %** / **−0.057 %**. Escalado **observado
   bajo el prior declarado** (P2-2: observación, no teorema cerrado): **λ\* ≈ c/N²**
-  con c_A ≈ 0.0846–0.0849, c_B ≈ 0.1457–0.1459 (px²) para N∈{128,256,512,1024}
-  (reproducción en Apéndice B). Interpretación: el trade-off vive en el modo más bajo
+  con c_A ≈ 0.0914–0.0918, c_B ≈ 0.1574–0.1578 (px²) para N∈{128,256,512,1024}
+  (reproducción en Apéndice B, B.3). Los valores publicados en REV 4–7.2
+  (5.17e-06 / 8.89e-06; c_A ≈ 0.0846–0.0849, c_B ≈ 0.1457–0.1459) provenían del
+  cociente de esperanzas del sesgo y quedan **superseded** (≈7 % bajos; §8.6).
+  Interpretación: el trade-off vive en el modo más bajo
   de la banda (`k_min=2π/N`, `D_min∝N⁻²`), no en la cola de ruido. **Ganancia esperada
-  < 0.06 % en los escenarios examinados** (máx. 0.053 % @128² rég. B — el enunciado
+  < 0.06 % en los escenarios examinados** (máx. 0.0573 % @128² rég. B — el enunciado
   REV-4 "≤ 0.05 %" era falso para ese propio escenario).
 - **`RETIRADO`: λ\* = 3.15e-10 (REV 3, y su verificación externa).** Artefacto de la
   normalización del término de sesgo en la curva v3 (dividido por N² en vez de N⁴:
@@ -313,7 +342,7 @@ ruido que suprime). `EJECUTADO`.
 
 | Escenario | λ_opt empírico | Ganancia | λ\*riesgo continuo (A / B) | Nota |
 |---|---|---|---|---|
-| Blanco σ=0.01–0.1 (12) | **0** (9/12; 3×3e-05 en N=128 σ=0.1) | ≤ ×1.007 | 1.0–1.3e-06 / 1.8–2.2e-06 (N=256) · 4.1–5.2e-06 / 7.1–8.9e-06 (N=128) | rég. B aplica al experimento |
+| Blanco σ=0.01–0.1 (12) | **0** (9/12; 3×3e-05 en N=128 σ=0.1) | ≤ ×1.007 | 1.1–1.4e-06 / 1.9–2.4e-06 (N=256) · 4.4–5.6e-06 / 7.5–9.6e-06 (N=128) | rég. B aplica al experimento |
 | Q8 sintético (4) | **0** (4/4) | ×1.000 | ídem | σ_eff≈0.0023 |
 | Limpio (4) | **0** | — | ídem | ~2.5e-16 |
 | Deriva LF σ=0.05 (4) | 0–1e-4 | ≤ ×1.014 | ídem | |
@@ -578,15 +607,79 @@ WLS/gamma, DDS, corpus, mallas rectangulares y cierre global siguen fuera de
 alcance. `M6_MATH_CONTRACT_CLOSED=NO` · `M6_IMPLEMENTATION_BLOCKED=YES` ·
 sin merge.
 
+### 8.6 REV 7.3 adjudicación (2026-10-17; reconciliación CR-1..CR-4 de PR #738)
+
+```
+REV_7_3_CR4_BIAS_PER_REALIZATION: CORRECTED
+REV_7_3_CR3_NOISE_LIMIT_SCOPED_TO_B: CORRECTED
+REV_7_3_CR1_B3_SNIPPET_EXECUTABLE: CORRECTED
+REV_7_3_CR2_SCALING_LABEL: CORRECTED
+REV_7_3_NOISE_GOLDENS: PRESERVED
+REV_7_3_SOLVER_AND_D_SYMBOLS: UNCHANGED
+```
+
+**CR-4 (P2, el único sustantivo) — sesgo por realización.** `analytic_curve`
+calculaba el sesgo de señal como el cociente de esperanzas
+`Σ u_o·E[v_o]/Σ v_o·E[v_o]`; el valor correcto del experimento
+(`make_signal`+`solve_screened` con un campo de ruido por realización) es
+`E[Σ u_o·E_o/Σ v_o·E_o]` con `E_o=|z_o|²~Exp(1)` iid por órbita ±k. El anidamiento
+de la esperanza dentro del cociente no es un detalle: el modelo previo
+sobreestimaba el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto.
+Implementado por la identidad de la transformada de Laplace con cuadratura
+Gauss–Legendre (m=600, márgenes (36,16); convergencia medida 1e-10) y validado
+end-to-end contra MC de 400 realizaciones (`|z|≤1.4`; recibo #10 del runner:
+MC(400)/exacto = 0.9976 con el modelo exacto — el modelo previo daría ≈1.074). λ*
+corregidos: λ\*_A (N=128, β=2, σ=0.1) = 5.58e-06 y λ\*_B = 9.61e-06; `c = λ*·N²`
+pasa a c_A ≈ 0.0914–0.0918 y c_B ≈ 0.1574–0.1578. La ganancia esperada sigue
+**< 0.06 %** (máx. 0.0573 % @128² rég. B): ningún veredicto de riesgo cambia. Los
+λ* publicados en REV 4–7.2 (5.17e-06 / 8.89e-06; c_A ≈ 0.0846–0.0849,
+c_B ≈ 0.1457–0.1459) quedan **superseded** (§4.2, B.3).
+
+**CR-3 — scoping del límite de ruido.** `noise_mse_limit` (V∞) es el límite del
+régimen B (espectro completo, λ>0 fijo). El régimen A (ruido filtrado a la banda)
+converge al disco r≤π/4: `V_A(1e-3)=0.004319357` ≠ `V∞(1e-3)=0.006698379`.
+Distinción documentada en §4.1 y en los docstrings; sin cambios de fórmula ni de
+dorados.
+
+**CR-1 — snippet B.3 ejecutable.** El bloque era un fragmento `python -i` que no
+definía `lambda_star_continuous` (NameError al pegarlo). Ahora importa explícito
+desde `scripts/` y el gate lo **ejecuta** en subproceso real comparando sus 8
+salidas contra los valores congelados (rtol 2e-3).
+
+**CR-2 — etiqueta de escalado.** La etiqueta declaraba el cociente invertido
+(λ*/N² en lugar de c = λ*·N², pues λ* decrece con N); la correcta es
+**c = λ*·N²**, con los rangos corregidos del modelo exacto.
+
+**RED→GREEN y recibos.** Baseline REV 7.2 (`408914d2`): los 8 tests nuevos dieron
+**8 failed + 23 passed** (la equivalencia coarse/refine ya pasaba: invariante de
+contrato, no de valor). Tras implementar el modelo exacto en el runner: gate
+**31 passed**; `--check` **10/10** en 0.5 s (recibo nuevo, tolerancia medida
+0.96–1.04); estudio completo (29 líneas) en 4.2–4.8 s; snippet B.3 ejecutado como
+receta real (rc=0, 2.8 s). Ruff check/format y mypy: PASS.
+
+**Mutaciones adversariales** (todas restauradas, md5 verificado; no tocan el
+worktree): cociente de esperanzas reintroducido → **5 failed** (oráculo MC
+end-to-end, cuadratura-vs-MC de órbitas, recibo #10, snippet B.3, snapshot del
+Apéndice A) · multiplicidad por bins → **4 failed** · cuadratura con 40 nodos →
+**4 failed** · sin refinamiento → **3 failed** · snippet sin import → **1 failed**
+· etiqueta invertida → **1 failed** · §4.1 sin V_A(λ) → **1 failed** · runner
+ausente → **9 failed, 17 skipped** (sin verde silencioso).
+
+`GOLDEN_VALUES_NOISE: PRESERVED`. Solver FFT, símbolos D, pesos Parseval y
+dorados de ruido: sin cambios. WLS/gamma, DDS, corpus y cierre global siguen
+fuera de alcance. `M6_MATH_CONTRACT_CLOSED=NO` · `M6_IMPLEMENTATION_BLOCKED=YES` ·
+sin merge.
+
 ## Apéndice A — Runner ejecutable (snapshot de `scripts/run_lambda_study_m6.py`, NumPy puro)
 
-**Canónico:** `scripts/run_lambda_study_m6.py` (REV 6.1). El bloque inferior es un
+**Canónico:** `scripts/run_lambda_study_m6.py` (REV 7.3). El bloque inferior es un
 SNAPSHOT de este commit — el gate (`tests/test_native_parallax_m6_lambda_gate.py`)
-ejecuta siempre el archivo canónico. 9 recibos vía `--check`; estudio completo sin
+ejecuta siempre el archivo canónico. 10 recibos vía `--check`; estudio completo sin
 argumentos (28 celdas). Recibos: contraejemplo Nyquist (4.8e-16), espacio nulo del
 tablero, ceguera de la métrica de pendientes ante altura nula (P1-3), MC
 multi-resolución de espectro completo vs curva (N=32/64/128), acotamiento λ=1e-3 vs
-asíntota, Parseval toda paridad (P2-1), y regresión de exactitud integrable.
+asíntota, Parseval toda paridad (P2-1), regresión de exactitud integrable, y sesgo
+por realización vs MC con el modelo exacto (CR-4, REV 7.3).
 
 ```python
 """Estudio sintético de derivación de screen_lambda para EXP-M6 — v6.1.
@@ -604,6 +697,17 @@ validación. P2-REV72-01: `make_signal` rechaza explícitamente la banda vacía
 dorados quedan intactos. P2-REV72-02: guardas documentales por ubicación
 semántica (introducción activa y §4.1) en el gate. P2-REV72-03: verificación
 estructural del snapshot del Apéndice A contra este archivo.
+
+REV 7.3 (2026-10-17, sesión NP-M6-REV7.3-CODERABBIT-RECONCILIATION): el término
+de SESGO de `analytic_curve` pasa del cociente de esperanzas Σu·E[v]/Σv·E[v]
+(modelo previo, sobreestimaba ≈7.4% β=2 / ≈4.8% β=4) al modelo EXACTO por
+realización E[Σu_o·E_o/Σv_o·E_o] con E_o=|z_o|²~Exp(1) iid por órbita ±k,
+evaluado por cuadratura Gauss-Legendre (m=600, márgenes (36,16); convergencia
+medida a 1e-10). La ruta de RUIDO (include_signal=False), el solver, los
+símbolos D y los valores dorados de ruido quedan intactos. `noise_mse_limit`
+queda scoped como límite del régimen B (V∞); el régimen A (filtrado) converge a
+V_A (disco r≤π/4). CR-1: snippet B.3 ejecutable; CR-2: c=λ*·N² corregido;
+recibo nuevo de sesgo por realización vs MC (CR-4).
 
 REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
 Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
@@ -787,6 +891,103 @@ def _bandpass_mask(n: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Modelo EXACTO del término de sesgo (REV 7.3, CR-4)
+# ---------------------------------------------------------------------------
+_BIAS_PREP_CACHE: dict[tuple[int, float, int, float, float], dict[str, np.ndarray]] = {}
+
+
+def _orbit_classes(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Radios únicos kn de la banda [2π/N, π/4] sin líneas Nyquist y
+    multiplicidad de ÓRBITAS ±k (cada órbita es el par de bins {k, −k}; en banda
+    no hay bins auto-espejo, así que la cuenta de bins por radio es par).
+
+    El sesgo exacto agrupa por radio: en banda D = kn² y v_o, D_o dependen sólo
+    del radio; las E_o = |z_o|² ~ Exp(1) iid de cada órbita son idénticas en ley."""
+    idx = np.fft.fftfreq(n) * n
+    kx, ky = np.meshgrid(idx, idx, indexing="xy")
+    kn = np.sqrt(kx**2 + ky**2) * (2 * np.pi / n)
+    nyq = (np.abs(kx) == n // 2) | (np.abs(ky) == n // 2)
+    band = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    vals, counts = np.unique(kn[band], return_counts=True)
+    if np.any(counts % 2 != 0):
+        raise ValueError("hay bins auto-espejo en la banda (imposible con el reflejo de la grilla FFT)")
+    return vals, counts // 2
+
+
+def _bias_exact_prep(
+    n: int,
+    beta: float,
+    m_nodes: int = 600,
+    margen_lo: float = 36.0,
+    margen_hi: float = 16.0,
+) -> dict[str, np.ndarray]:
+    """Precómputo cached de la cuadratura de E[X/Y] (REV 7.3, CR-4).
+
+    Nodos Gauss-Legendre en u=ln s sobre [−ln v_max − margen_lo,
+    −ln v_min + margen_hi]: el integrando cae como 1/s² fuera del rango útil y
+    el margen medido (36,16) está convergido a 1e-10 (nodos m=600 vs 1200).
+    P(u) = Π_o (1+s·v_o)^{−mult_o} por suma de logs (estable); K(u,o) =
+    1/(1+s·v_o); v_o = 2·kn_o^{−(β+2)} por órbita."""
+    clave = (n, float(beta), int(m_nodes), float(margen_lo), float(margen_hi))
+    cached = _BIAS_PREP_CACHE.get(clave)
+    if cached is not None:
+        return cached
+    radios, mult = _orbit_classes(n)
+    v = 2.0 * radios ** (-(beta + 2.0))
+    if not bool(np.all(np.isfinite(v))):
+        raise ValueError(
+            f"N={n} β={beta}: la energía espectral es no finita; el modelo exacto de sesgo "
+            "no está definido (mismo dominio que make_signal)."
+        )
+    u_lo = -float(np.log(v.max())) - margen_lo
+    u_hi = -float(np.log(v.min())) + margen_hi
+    x, wx = np.polynomial.legendre.leggauss(m_nodes)
+    u = (u_hi - u_lo) / 2 * x + (u_hi + u_lo) / 2
+    wu = (u_hi - u_lo) / 2 * wx
+    s = np.exp(u)
+    prep: dict[str, np.ndarray] = {
+        "v": v,
+        "d": radios**2,
+        "mult": mult,
+        "u": u,
+        "wu": wu,
+        "prod": np.exp(-(mult[None, :] * np.log1p(s[:, None] * v[None, :])).sum(axis=1)),
+        "kern": 1.0 / (1.0 + s[:, None] * v[None, :]),
+    }
+    _BIAS_PREP_CACHE[clave] = prep
+    return prep
+
+
+def _bias_exact_batch(
+    n: int,
+    beta: float,
+    lams: np.ndarray | tuple[float, ...] | list[float],
+    m_nodes: int = 600,
+    margen_lo: float = 36.0,
+    margen_hi: float = 16.0,
+) -> np.ndarray:
+    """E[MSE_sesgo(λ)] EXACTO por realización (REV 7.3, CR-4):
+
+        MSE(λ, realización) = Σ_o u_o(λ)·E_o / Σ_o v_o·E_o,  E_o = |z_o|²~Exp(1) iid
+
+    con v_o = 2·kn_o^{−(β+2)} y u_o = v_o·(λ/(kn_o²+λ))² por órbita. La esperanza
+    es E[X/Y] con X, Y correlacionados; se calcula por la identidad de la
+    transformada de Laplace (E_o~Exp(1) iid, s≥0):
+
+        E[X/Y] = ∫₀^∞ Π_o (1+s·v_o)^{−1} · Σ_o u_o·(1+s·v_o)^{−1} ds.
+
+    NO es el cociente de esperanzas Σu·E[v]/Σv·E[v] del modelo previo: ese
+    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto."""
+    prep = _bias_exact_prep(n, beta, m_nodes=m_nodes, margen_lo=margen_lo, margen_hi=margen_hi)
+    lams_arr = np.atleast_1d(np.asarray(lams, dtype=float))
+    B = (lams_arr[:, None] / (prep["d"][None, :] + lams_arr[:, None])) ** 2
+    Q = prep["kern"] @ (prep["mult"][None, :] * prep["v"][None, :] * B).T
+    integ = (np.exp(prep["u"]) * prep["prod"])[:, None] * Q
+    resultado: np.ndarray = prep["wu"] @ integ
+    return resultado
+
+
+# ---------------------------------------------------------------------------
 # Curva analítica CORREGIDA: D(k) de los símbolos del solver
 # ---------------------------------------------------------------------------
 def analytic_curve(
@@ -797,17 +998,23 @@ def analytic_curve(
     noise_filtered: bool,
     include_signal: bool = True,
 ) -> np.ndarray:
-    """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(λ/(D+λ))²·E|ĥ|²  [sesgo de señal]
-                 + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
+    """E[MSE(λ)] = E[ Σ_o u_o(λ)·E_o / Σ_o v_o·E_o ]   [sesgo de señal: esperanza
+                 POR REALIZACIÓN con E_o~Exp(1) iid por órbita — REV 7.3, CR-4]
+                 + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²        [ruido]
     La función devuelve RMSE = sqrt(MSE esperada).
     Transmisión de señal T(D,λ)=D/(D+λ); error de reconstrucción
     H_est−H = −λ/(D+λ)·H; factor cuadrático de sesgo B(D,λ)=(λ/(D+λ))².
     El término de ruido permanece D/(D+λ)².
-    con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
-    Parseval de _parseval_weights (exacto para toda paridad). Régimen A
-    (noise_filtered=True): ruido sólo en banda; Régimen B (False): ruido
-    blanco en cada bin con D>0. Para λ>0 fijo, la suma converge a
-    noise_mse_limit(λ, σ); la fórmula log sólo es dominante cuando λ→0.
+    El sesgo exacto (v_o = 2·kn^{−(β+2)} por órbita, u_o = v_o·B(kn²,λ)) reemplaza
+    al cociente de esperanzas previo, que sobreestimaba ≈7.4% β=2 / ≈4.8% β=4.
+    La fórmula usa D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y
+    pesos de Parseval de _parseval_weights (exacto para toda paridad).
+    Regímenes de RUIDO (λ>0 fijo): A — ruido sólo en banda (noise_filtered=True):
+    converge a V_A(λ), el límite del disco r≤π/4 (forma cerrada; V_A(λ=1e-3,
+    σ=0.1)=0.004319357); B — ruido blanco en cada bin con D>0
+    (noise_filtered=False): converge a V∞(λ) = noise_mse_limit (cuadrado
+    completo; V∞(1e-3, σ=0.1)=0.006698379). La fórmula log sólo es dominante
+    cuando λ→0.
     En N par, un bin de Nyquist mixto puede tener D>0; D=0 requiere que ambos
     símbolos sean nulos. Con λ=0, el ruido blanco crece como (σ²/2π)·ln N
     (P1-2). include_signal=False expone sólo el término de ruido (MC puro)."""
@@ -822,23 +1029,18 @@ def analytic_curve(
             f"N={n} produce banda [2π/N, π/4] vacía; se requiere N>=8 para señal no vacía. "
             "Use include_signal=False para modos de sólo ruido."
         )
-    amp = np.zeros(band.shape)
-    amp[band] = k[band] ** (-(beta + 2) / 2)
-    eh = 2 * amp**2
     D = _D_matrix(n)
     w = _parseval_weights(n)
+    bias_exacto: np.ndarray | None = None
     if include_signal:
-        denom = (w * eh).sum()
-        if denom <= 0:
-            raise ValueError(f"Energía de señal nula o no positiva para N={n}")
-        eh *= n**4 / denom  # RMS(altura)=1: Σ w·eh = N⁴
+        # sesgo EXACTO por realización (REV 7.3, CR-4): E[Σ u_o E_o / Σ v_o E_o]
+        bias_exacto = _bias_exact_batch(n, beta, lams)
     out = []
-    for lam in lams:
+    for i_lam, lam in enumerate(lams):
         mse = 0.0
         if include_signal:
-            # sesgo = (ĥ_est − ĥ) = −λ/(D+λ)·ĥ  [NO la transmisión D/(D+λ)²]
-            bias_fac = np.where(D > 0, (lam / np.maximum(D + lam, 1e-300)) ** 2, 0.0)
-            mse += float(np.sum(w * bias_fac * eh)) / n**4
+            assert bias_exacto is not None
+            mse += float(bias_exacto[i_lam])
         if noise_filtered:
             nmask = band & (D > 0)
         else:
@@ -853,8 +1055,11 @@ def analytic_curve(
 
 
 def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
-    """Límite continuo EXACTO del término de ruido con λ>0 fijo (REV 6, P1 de la
-    ronda 6):
+    """Límite continuo EXACTO del término de ruido del régimen B (espectro
+    completo) con λ>0 fijo (REV 6, P1 de la ronda 6; scoping por régimen: REV 7.3,
+    CR-3). NO es el límite del régimen A: con ruido filtrado a la banda la suma
+    converge a V_A(λ) —disco r≤π/4, forma cerrada; V_A(1e-3)=0.004319357 vs
+    V∞(1e-3)=0.006698379 con σ=0.1 (ver analytic_curve)—:
 
         V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
 
@@ -893,11 +1098,25 @@ def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
 def lambda_star_continuous(
     n: int, beta: float, sigma: float, noise_filtered: bool = True
 ) -> tuple[float, float, float]:
-    fine = np.geomspace(1e-12, 1.0, 20000)
-    e = analytic_curve(n, beta, sigma, fine, noise_filtered)
+    """λ* de E(λ) con el sesgo EXACTO (REV 7.3): malla geométrica gruesa
+    (200 pts en [1e-12, 1]) + refinamiento local (80 pts × 3 rondas alrededor
+    del argmin vecinal). La malla densa previa (20000 pts) es inviable con la
+    cuadratura por evaluación; equivalencia con malla densa de 4000 pts
+    verificada en el gate (tolerancia 5e-3 relativa)."""
+    grid = np.geomspace(1e-12, 1.0, 200)
+    e = analytic_curve(n, beta, sigma, grid, noise_filtered)
     i = int(np.argmin(e))
-    e0 = analytic_curve(n, beta, sigma, [0.0], noise_filtered)[0]
-    return float(fine[i]), float(e[i]), float(e0)
+    lo, hi = float(grid[max(i - 1, 0)]), float(grid[min(i + 1, len(grid) - 1)])
+    lstar = float(grid[i])
+    for _ in range(3):
+        loc = np.geomspace(lo, hi, 80)
+        el = analytic_curve(n, beta, sigma, loc, noise_filtered)
+        j = int(np.argmin(el))
+        lstar = float(loc[j])
+        lo, hi = float(loc[max(j - 1, 0)]), float(loc[min(j + 1, len(loc) - 1)])
+    e_star = float(analytic_curve(n, beta, sigma, [lstar], noise_filtered)[0])
+    e0 = float(analytic_curve(n, beta, sigma, [0.0], noise_filtered)[0])
+    return lstar, e_star, e0
 
 
 # ---------------------------------------------------------------------------
@@ -993,7 +1212,22 @@ def selftest() -> int:
     print(f"[ok] campo integrable sin Nyquist: RMSE={e:.2e}")
     ok += 1
 
-    print(f"selftest: {ok}/9 recibos OK")
+    # 8. REV 7.3 (CR-4): el sesgo por realización medido con make_signal +
+    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). El
+    #    cociente de esperanzas previo daba ratio≈1.074 (fuera de la cota).
+    n_b, beta_b, lam_b = 64, 2.0, 1e-3
+    rng_b = np.random.default_rng(20261016)
+    vals_b = np.empty(400)
+    for i_b in range(400):
+        h_b, p_b, q_b = make_signal(n_b, beta_b, rng_b)
+        e_b = solve_screened(p_b, q_b, lam_b) - h_b
+        vals_b[i_b] = float(np.mean(e_b**2))
+    ratio_b = float(vals_b.mean()) / float(_bias_exact_batch(n_b, beta_b, [lam_b])[0])
+    assert 0.96 < ratio_b < 1.04, ratio_b
+    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (modelo previo ≈1.074)")
+    ok += 1
+
+    print(f"selftest: {ok}/10 recibos OK")
     return ok
 
 
@@ -1044,10 +1278,10 @@ if __name__ == "__main__":
 
 ## Apéndice B — Salida registrada (SEED=20261015)
 
-**B.1 `--check` (selftest, 9 recibos):**
+**B.1 `--check` (selftest, 10 recibos):**
 
 ```
-[ok] contraejemplo Nyquist-X recuperado por derivada-Y: RMSE=4.80e-16
+[ok] contraejemplo Nyquist-X recuperado por derivada-Y: RMSE=4.79e-16
 [ok] tablero (pendientes en bin nulo): std=0.0e+00
 [ok] h=(-1)^(x+y): pendientes≡0 ⇒ fracción pendiente-nula=0 — altura perdida UNKNOWN (requiere oráculo; separado en el manifest)
 [ok] MC(100, N=32, espectro completo) vs curva D: ratio=1.0087
@@ -1055,71 +1289,83 @@ if __name__ == "__main__":
 [ok] MC(100, N=128, espectro completo) vs curva D: ratio=0.9796
 [ok] λ=1e-3: V∞(λ)=0.006698379 es el límite continuo exacto; discreto 1024²=0.006849252 (+2.25%, exceso ∝1/N); la fórmula log σ²/(2π)·ln(π/√λ)=0.007318911 NO es el límite (+9.3%); λ=0 en 1024²: 0.012422
 [ok] Parseval rfft2 exacto (brute force vs fft2) N∈{4,5,8,33,64}
-[ok] campo integrable sin Nyquist: RMSE=3.05e-16
-selftest: 9/9 recibos OK
+[ok] campo integrable sin Nyquist: RMSE=3.59e-16
+[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto=0.9976 (modelo previo ≈1.074)
+selftest: 10/10 recibos OK
 ```
 
-**B.2 Estudio completo (28 celdas; idéntico a REV 4 en pares — los pesos no cambian
-para N par):**
+(Los RMSE ~e-16 de los recibos 1 y 9 son ruido de redondeo dependiente del
+BLAS/plataforma; los valores anclados del gate son los dorados de ruido y V∞.)
+
+**B.2 Estudio completo (28 celdas; columnas empíricas y de grilla idénticas a
+REV 4–7.2 — sólo cambian las columnas `λ*riesgo` al sesgo exacto REV 7.3):**
 
 ```
 SEED=20261015 · banda [2π/N, π/4] sin Nyquist estricto · RMS(altura)=1 · curva con operadores D del solver v3 + pesos Parseval rfft2 (col.0/Nyquist=1, resto=2) · regímenes A(filtrado)/B(espectro completo) separados · mallas CUADRADAS (toda paridad; rectangulares fuera de contrato)
-N= 256 β=2 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0099) λ=0: 0.0099 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0327) λ=0: 0.0327 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=0 (RMSE 0.0962) λ=0: 0.0962 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0023) λ=0: 0.0023 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=3e-05 (RMSE 0.3024) λ=0: 0.3065 (×1.014) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=2 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0040) λ=0: 3.2132 (×3.200) | E λ* A(filtr)=3e-05 B(compl)=3e-05 | λ*riesgo A(σ=.1)=1.3e-06 B=2.2e-06
-N= 256 β=4 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0096) λ=0: 0.0096 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0303) λ=0: 0.0303 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=0 (RMSE 0.0999) λ=0: 0.0999 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0079) λ=0: 0.0079 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=0 (RMSE 0.3058) λ=0: 0.3058 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 256 β=4 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0053) λ=0: 3.2801 (×3.263) | E λ* A(filtr)=3e-05 B(compl)=3e-05 | λ*riesgo A(σ=.1)=1.0e-06 B=1.8e-06
-N= 128 β=2 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0101) λ=0: 0.0101 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0296) λ=0: 0.0296 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=3e-05 (RMSE 0.1026) λ=0: 0.1033 (×1.007) | E λ* A(filtr)=1e-05 B(compl)=1e-05 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0020) λ=0: 0.0020 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=0.0001 (RMSE 0.1586) λ=0: 0.1600 (×1.009) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=2 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0083) λ=0: 1.6611 (×1.647) | E λ* A(filtr)=0.0001 B(compl)=0.0003 | λ*riesgo A(σ=.1)=5.2e-06 B=8.9e-06
-N= 128 β=4 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0087) λ=0: 0.0087 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0302) λ=0: 0.0302 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=3e-05 (RMSE 0.0889) λ=0: 0.0893 (×1.004) | E λ* A(filtr)=0 B(compl)=1e-05 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0021) λ=0: 0.0021 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=3e-05 (RMSE 0.1642) λ=0: 0.1647 (×1.003) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
-N= 128 β=4 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0131) λ=0: 1.6493 (×1.628) | E λ* A(filtr)=0.0001 B(compl)=0.0001 | λ*riesgo A(σ=.1)=4.1e-06 B=7.1e-06
+N= 256 β=2 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0099) λ=0: 0.0099 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0327) λ=0: 0.0327 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=0 (RMSE 0.0962) λ=0: 0.0962 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0023) λ=0: 0.0023 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=3e-05 (RMSE 0.3024) λ=0: 0.3065 (×1.014) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=2 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0040) λ=0: 3.2132 (×3.200) | E λ* A(filtr)=3e-05 B(compl)=3e-05 | λ*riesgo A(σ=.1)=1.4e-06 B=2.4e-06
+N= 256 β=4 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0096) λ=0: 0.0096 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0303) λ=0: 0.0303 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=0 (RMSE 0.0999) λ=0: 0.0999 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0079) λ=0: 0.0079 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=0 (RMSE 0.3058) λ=0: 0.3058 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 256 β=4 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0053) λ=0: 3.2801 (×3.263) | E λ* A(filtr)=3e-05 B(compl)=3e-05 | λ*riesgo A(σ=.1)=1.1e-06 B=1.9e-06
+N= 128 β=2 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0101) λ=0: 0.0101 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0296) λ=0: 0.0296 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=3e-05 (RMSE 0.1026) λ=0: 0.1033 (×1.007) | E λ* A(filtr)=1e-05 B(compl)=1e-05 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0020) λ=0: 0.0020 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=0.0001 (RMSE 0.1586) λ=0: 0.1600 (×1.009) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=2 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0083) λ=0: 1.6611 (×1.647) | E λ* A(filtr)=0.0001 B(compl)=0.0003 | λ*riesgo A(σ=.1)=5.6e-06 B=9.6e-06
+N= 128 β=4 gauss σ=0.01  σ_eff=0.0100 | λ_opt_emp=0 (RMSE 0.0087) λ=0: 0.0087 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 gauss σ=0.03  σ_eff=0.0300 | λ_opt_emp=0 (RMSE 0.0302) λ=0: 0.0302 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 gauss σ=0.1   σ_eff=0.1000 | λ_opt_emp=3e-05 (RMSE 0.0889) λ=0: 0.0893 (×1.004) | E λ* A(filtr)=0 B(compl)=1e-05 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 Q8 sintético  σ_eff=0.0023 | λ_opt_emp=0 (RMSE 0.0021) λ=0: 0.0021 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 limpio        σ_eff=0.0000 | λ_opt_emp=0 (RMSE 0.0000) λ=0: 0.0000 (×1.000) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 driftLF σ=.05 σ_eff=0.0500 | λ_opt_emp=3e-05 (RMSE 0.1642) λ=0: 0.1647 (×1.003) | E λ* A(filtr)=0 B(compl)=0 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
+N= 128 β=4 driftLF σ=.5  σ_eff=0.5000 | λ_opt_emp=1 (RMSE 1.0131) λ=0: 1.6493 (×1.628) | E λ* A(filtr)=0.0001 B(compl)=0.0001 | λ*riesgo A(σ=.1)=4.4e-06 B=7.5e-06
 ```
 
-**B.3 Barrido λ\* ≈ c/N² (β=2, σ=0.1; reproduce §4.2):**
+**B.3 Barrido λ\* ≈ c/N² (β=2, σ=0.1; reproduce §4.2; REV 7.3: sesgo exacto):**
 
 ```python
-# python -i  (con scripts/run_lambda_study_m6.py en el cwd)
+# Ejecutable desde la raíz del repo (scripts/ es un paquete con __init__.py):
+from scripts.run_lambda_study_m6 import lambda_star_continuous
+
 for n in (128, 256, 512, 1024):
     for filt in (True, False):
         lam, e_star, e0 = lambda_star_continuous(n, 2.0, 0.1, filt)
-        print(n, "A" if filt else "B", f"lambda*={lam:.3e} ganancia={e_star/e0-1:+.3e}")
+        print(n, "A" if filt else "B", f"lambda*={lam:.3e} ganancia={e_star / e0 - 1:+.3e}")
 ```
 
 ```
-128 A lambda*=5.166e-06 ganancia=-3.219e-04   128 B lambda*=8.891e-06 ganancia=-5.308e-04
-256 A lambda*=1.294e-06 ganancia=-2.653e-04   256 B lambda*=2.227e-06 ganancia=-4.734e-04
-512 A lambda*=3.241e-07 ganancia=-2.253e-04   512 B lambda*=5.570e-07 ganancia=-4.271e-04
-1024 A lambda*=8.096e-08 ganancia=-1.957e-04  1024 B lambda*=1.391e-07 ganancia=-3.891e-04
-lambda*/N^2 : c_A ∈ [0.0846, 0.0849]; c_B ∈ [0.1457, 0.1459]  (px²)  [escalado observado]
+128 A lambda*=5.579e-06 ganancia=-3.478e-04   128 B lambda*=9.606e-06 ganancia=-5.734e-04
+256 A lambda*=1.399e-06 ganancia=-2.867e-04   256 B lambda*=2.406e-06 ganancia=-5.115e-04
+512 A lambda*=3.501e-07 ganancia=-2.435e-04   512 B lambda*=6.017e-07 ganancia=-4.615e-04
+1024 A lambda*=8.755e-08 ganancia=-2.114e-04  1024 B lambda*=1.505e-07 ganancia=-4.204e-04
+c = λ*·N² : c_A ∈ [0.0914, 0.0918]; c_B ∈ [0.1574, 0.1578]  (px²)  [escalado observado; REV 7.3]
 ```
 
 **B.4 Gate (CI):** `pytest tests/test_native_parallax_m6_lambda_gate.py --noconftest -q`
-→ `7 passed` (<1 s). Runner ausente (prueba negativa, SIN variables de entorno):
-`1 failed, 6 skipped` — job rojo por el test de presencia incondicional (REV 6;
-antes: `5 skipped` silencioso). Mutaciones adversariales (todas restauradas, md5
-verificado): log-como-límite → 2 failed · conjugación errónea → 2 failed · pesos v4
-→ 2 failed · runner ausente → 1 failed · tolerancia relajada (1e-3) con curva
-corrupta (+1e-4) → 7 passed = falso verde demostrado ⇒ la tolerancia dorada ±5e-9
-es load-bearing.
+→ **31 passed** (<5 s). Runner ausente (prueba negativa, SIN variables de entorno):
+`9 failed, 5 passed, 17 skipped` — job rojo por el test de presencia incondicional
+(REV 6; antes REV 6.1: `1 failed, 6 skipped` sobre 7 tests). Mutaciones adversariales
+REV 7.3 (todas restauradas, md5 verificado): cociente de esperanzas reintroducido
+(la regresión CR-4) → **5 failed** · multiplicidad por bins en vez de órbitas →
+**4 failed** · cuadratura subconvergida (40 nodos) → **4 failed** · barrido sin
+refinamiento → **3 failed** · snippet B.3 sin import → **1 failed** · etiqueta
+invertida reintroducida → **1 failed** · §4.1 sin `V_A(λ)` → **1 failed**. Toda
+mutación del runner tumba además el snapshot del Apéndice A (segunda línea de
+defensa por igualdad). Histórico REV 6.1: log-como-límite → 2 failed · conjugación
+errónea → 2 failed · pesos v4 → 2 failed · runner ausente → 1 failed · tolerancia
+relajada (1e-3) con curva corrupta (+1e-4) → 7 passed = falso verde demostrado ⇒ la
+tolerancia dorada ±5e-9 es load-bearing.
 
 **B.5 Límite continuo V∞(λ=1e-3, σ=0.1) — dos vías independientes (REV 6):**
 

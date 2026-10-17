@@ -45,6 +45,8 @@ from __future__ import annotations
 import importlib.util
 import math
 import pathlib
+import re
+import subprocess
 import sys
 import warnings
 from decimal import ROUND_HALF_UP, Decimal
@@ -211,11 +213,11 @@ def test_ruido_lambda_positivo_acotado():
 
 
 def test_selftest_completo_del_runner():
-    """Los 9 recibos del runner (contraejemplo, null space, P1-3, MC×3,
+    """Los 10 recibos del runner (contraejemplo, null space, P1-3, MC×3,
     límite V∞ con separación log/límite, Parseval par/impar, exactitud
-    integrable)."""
+    integrable, sesgo por realización vs MC — REV 7.3)."""
     _requiere_runner()
-    assert _runner().selftest() == 9
+    assert _runner().selftest() == 10
 
 
 def _oraculo_derivadas_espectrales(altura: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -598,3 +600,209 @@ def test_apendice_a_snapshot_identico_al_runner_canonico() -> None:
                     f"Apéndice A divergió del runner en la línea {i + 1}:\n  snapshot: {a!r}\n  runner:   {b!r}"
                 )
         pytest.fail(f"Apéndice A y runner difieren en longitud: {len(lineas_snap)} vs {len(lineas_run)} líneas")
+
+
+# ---------------------------------------------------------------------------
+# REV 7.3 — reconciliación CodeRabbit (PR #738):
+#   CR-1: el snippet de B.3 debe ser ejecutable (import explícito).
+#   CR-2: la etiqueta de escalado es c = λ*·N² (no lambda*/N²) y sus rangos
+#         corresponden al modelo corregido.
+#   CR-3: V_A (régimen A, disco r≤π/4) ≠ V∞ (régimen B, cuadrado completo):
+#         `noise_mse_limit` sólo es el límite del régimen B.
+#   CR-4: E[MSE_sesgo] es la esperanza POR REALIZACIÓN (Σu·E_o/Σv·E_o con
+#         E_o~Exp(1) iid por órbita), NO el cociente de esperanzas
+#         Σu·E[v]/Σv·E[v] del modelo analítico previo (sobreestima ≈7.4% β=2 /
+#         ≈4.8% β=4 y arrastraba λ* ~7% alto).
+# ---------------------------------------------------------------------------
+
+# λ* y ganancia corregidos (modelo exacto, REV 7.3) impresos por el snippet
+# de B.3 con `:.3e`; tolerancia relativa 2e-3 en el test de ejecución.
+_LAMBDA_STAR_B3_FIJOS = {
+    (128, "A"): (5.578705e-06, -3.478051e-04),
+    (128, "B"): (9.606201e-06, -5.733645e-04),
+    (256, "A"): (1.399314e-06, -2.866929e-04),
+    (256, "B"): (2.405901e-06, -5.115104e-04),
+    (512, "A"): (3.501156e-07, -2.434519e-04),
+    (512, "B"): (6.017448e-07, -4.615184e-04),
+    (1024, "A"): (8.754688e-08, -2.114398e-04),
+    (1024, "B"): (1.504532e-07, -4.204384e-04),
+}
+
+
+def _orbitas_oraculo(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Radios únicos de la banda y multiplicidad de ÓRBITAS (±k), calculados
+    aquí sin usar el runner (referencia independiente)."""
+    idx = np.fft.fftfreq(n) * n
+    kx, ky = np.meshgrid(idx, idx, indexing="xy")
+    kn = np.sqrt(kx**2 + ky**2) * (2 * np.pi / n)
+    nyq = (np.abs(kx) == n // 2) | (np.abs(ky) == n // 2)
+    banda = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    radios, cuenta = np.unique(kn[banda], return_counts=True)
+    assert np.all(cuenta % 2 == 0), "bins auto-espejo en banda (imposible)"
+    return radios, cuenta // 2
+
+
+def test_snippet_b3_del_documento_es_ejecutable() -> None:
+    """CR-1: el bloque ```python de B.3 era un pseudo-fragmento
+    (`python -i` + llamada desnuda) que no define `lambda_star_continuous` ⇒
+    NameError. El fix lo hace ejecutable desde la raíz del repo y este test lo
+    corre en un subproceso real (no exec en proceso): prueba la receta tal como
+    la lee una persona, y sus 8 salidas contra los valores congelados."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    assert "**B.3" in doc, "sección B.3 ausente"
+    cola = doc.split("**B.3", maxsplit=1)[1]
+    assert "```python" in cola, "bloque python de B.3 ausente"
+    cuerpo = cola.split("```python", maxsplit=1)[1]
+    assert "```" in cuerpo, "cierre del bloque python de B.3 ausente"
+    codigo = cuerpo.split("```", maxsplit=1)[0]
+    assert "lambda_star_continuous(" in codigo, "B.3 debe usar el runner canónico"
+    assert "from scripts.run_lambda_study_m6 import" in codigo, (
+        "CR-1: el snippet debe importar explícitamente desde scripts/ (la receta "
+        "`python -i` desnuda no define los símbolos)"
+    )
+    repo_raiz = pathlib.Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "-c", codigo],
+        cwd=repo_raiz,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, f"snippet B.3 falló:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    medidos: dict[tuple[int, str], tuple[float, float]] = {}
+    patron = re.compile(r"^(\d+)\s+(A|B)\s+lambda\*=([\d.eE+-]+)\s+ganancia=([+-][\d.eE+-]+)\s*$")
+    for linea in proc.stdout.splitlines():
+        m = patron.match(linea.strip())
+        if m:
+            medidos[(int(m.group(1)), m.group(2))] = (float(m.group(3)), float(m.group(4)))
+    assert set(medidos) == set(_LAMBDA_STAR_B3_FIJOS), medidos
+    for clave, (lam_ref, ganancia_ref) in _LAMBDA_STAR_B3_FIJOS.items():
+        lam, ganancia = medidos[clave]
+        assert math.isclose(lam, lam_ref, rel_tol=2e-3), (clave, lam, lam_ref)
+        assert math.isclose(ganancia, ganancia_ref, rel_tol=2e-3, abs_tol=1e-8), (clave, ganancia, ganancia_ref)
+
+
+def test_sesgo_por_realizacion_vs_mc_end_to_end() -> None:
+    """CR-4: el término de sesgo de `analytic_curve` (include_signal=True) debe
+    reproducir la esperanza POR REALIZACIÓN medida con `make_signal` +
+    `solve_screened`, no el cociente de esperanzas del modelo previo.
+
+    Discriminación: el modelo previo sobreestimaba el sesgo ≈7.4% (β=2); la SE
+    del MC con 400 realizaciones es ≈1% ⇒ un predictor viejo queda fuera de 4σ
+    y este test lo rechaza. Semilla fija (resultado determinista)."""
+    _requiere_runner()
+    runner = _runner()
+    n, beta, lam = 64, 2.0, 1e-3
+    rng = np.random.default_rng(20261017)
+    n_mc = 400
+    vals = np.empty(n_mc)
+    for i in range(n_mc):
+        h, p, q = runner.make_signal(n, beta, rng)
+        e = runner.solve_screened(p, q, lam) - h
+        vals[i] = float(np.mean(e**2))
+    mc = float(vals.mean())
+    se = float(vals.std(ddof=1) / math.sqrt(n_mc))
+    exacto = float(runner._bias_exact_batch(n, beta, [lam])[0])
+    assert abs(mc - exacto) < 4.0 * se, (mc, exacto, se)
+
+
+def test_cuadratura_sesgo_convergida_en_nodos_y_rango() -> None:
+    """La cuadratura de E[X/Y] (GL sobre u=ln s) está convergida con los
+    parámetros por defecto: nodos m=300 vs 1200 y margen extendido (48, 20)
+    coinciden a nivel 1e-8/1e-9 contra el valor por defecto."""
+    _requiere_runner()
+    runner = _runner()
+    n, beta, lam = 64, 2.0, 1e-3
+    ref = float(runner._bias_exact_batch(n, beta, [lam])[0])
+    assert ref > 0.0
+    for m in (300, 1200):
+        v = float(runner._bias_exact_batch(n, beta, [lam], m_nodes=m)[0])
+        assert abs(v / ref - 1.0) < 1e-8, (m, v, ref)
+    v_amplio = float(runner._bias_exact_batch(n, beta, [lam], margen_lo=48.0, margen_hi=20.0)[0])
+    assert abs(v_amplio / ref - 1.0) < 1e-9, (v_amplio, ref)
+
+
+def test_orbitas_espectrales_enumeradas_y_congeladas() -> None:
+    """Estructura de órbitas ±k del modelo exacto. Fragmento congelado por
+    igualdad literal en unidades de índice (r² = i²+j² → órbitas) más
+    enumeración por FAMILIA contra el oráculo local para n ∈ {32..256}: una
+    convención de multiplicidad distinta (bins en vez de órbitas, o contar el
+    bin de kx=0 dos veces) rompe acá."""
+    _requiere_runner()
+    runner = _runner()
+    for n, esperado in ((8, {1.0: 2}), (16, {1.0: 2, 2.0: 2, 4.0: 2})):
+        radios, mult = runner._orbit_classes(n)
+        obtenido = {round((float(r) * n / (2 * np.pi)) ** 2, 9): int(m) for r, m in zip(radios, mult, strict=True)}
+        assert obtenido == esperado, (n, obtenido)
+    for n in (32, 64, 128, 256):
+        radios_o, mult_o = _orbitas_oraculo(n)
+        radios_r, mult_r = runner._orbit_classes(n)
+        assert np.allclose(radios_r, radios_o, rtol=1e-12, atol=0.0), n
+        assert np.array_equal(mult_o, mult_r), n
+    # Total de órbitas medido en Fase B (N=64, β=2): 98.
+    assert int(runner._orbit_classes(64)[1].sum()) == 98
+
+
+def test_cuadratura_vs_mc_de_orbitas_independiente() -> None:
+    """La cuadratura del runner contra un MC DIRECTO del modelo de órbitas
+    (E_o~Exp(1) iid, expansión por órbita — sin FFT ni cuadratura, oráculo
+    independiente). z-score de la media contra la SE muestral, semilla fija."""
+    _requiere_runner()
+    runner = _runner()
+    rng = np.random.default_rng(777)
+    for n in (16, 64):
+        radios, mult = _orbitas_oraculo(n)
+        v_or = np.repeat(2.0 * radios ** (-(2.0 + 2.0)), mult)
+        d_or = np.repeat(radios**2, mult)
+        for lam in (1e-4, 1e-3):
+            b_or = (lam / (d_or + lam)) ** 2
+            xa = np.empty(20000)
+            for i in range(0, 20000, 5000):
+                e = rng.standard_exponential((5000, len(v_or)))
+                xa[i : i + 5000] = (e @ (v_or * b_or)) / (e @ v_or)
+            exacto = float(runner._bias_exact_batch(n, 2.0, [lam])[0])
+            z = (float(xa.mean()) - exacto) / (float(xa.std(ddof=1)) / math.sqrt(len(xa)))
+            assert abs(z) < 3.5, (n, lam, z, exacto, float(xa.mean()))
+
+
+def test_lambda_star_coarse_refine_equivale_a_malla_fina() -> None:
+    """λ* por malla gruesa + refinamiento (necesario para el costo de la
+    cuadratura) debe coincidir con el argmin de una malla densa directa
+    (4000 puntos) dentro de 5e-3 relativo."""
+    _requiere_runner()
+    runner = _runner()
+    n, beta, sigma = 64, 2.0, 0.1
+    lam_c, _e_star, _e0 = runner.lambda_star_continuous(n, beta, sigma, True)
+    fina = np.geomspace(1e-12, 1.0, 4000)
+    ef = runner.analytic_curve(n, beta, sigma, fina, True)
+    lam_f = float(fina[int(np.argmin(ef))])
+    assert abs(lam_c / lam_f - 1.0) < 5e-3, (lam_c, lam_f)
+
+
+def test_etiqueta_escalado_c_lambda_n2_corregida() -> None:
+    """CR-2: la etiqueta era `lambda*/N²` (invertida) y sus rangos provienen
+    del modelo previo. Debe decir c = λ*·N² y declarar los rangos corregidos
+    (modelo exacto): c_A ∈ [0.0914, 0.0918]; c_B ∈ [0.1574, 0.1578]."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    assert "lambda*/N^2" not in doc, "CR-2: etiqueta invertida reintroducida"
+    assert "λ*·N²" in doc, "CR-2: falta la etiqueta corregida c = λ*·N²"
+    for rango in ("[0.0914, 0.0918]", "[0.1574, 0.1578]"):
+        assert rango in doc, f"CR-2: rango corregido {rango} ausente"
+
+
+def test_regimenes_va_vs_vinf_distinguidos() -> None:
+    """CR-3: `noise_mse_limit` es el límite del RÉGIMEN B (espectro completo);
+    el régimen A (filtrado) converge a V_A (disco r≤π/4). La distinción debe
+    estar en §4.1 y en los docstrings de analytic_curve y noise_mse_limit."""
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    s41 = _normalizado(_bloque_seccion_41(doc))
+    assert "V_A(λ)" in s41, "CR-3: §4.1 debe distinguir V_A(λ) (régimen A)"
+    assert "V∞(λ)" in s41, "CR-3: §4.1 debe mantener V∞(λ) (régimen B)"
+    runner = _runner()
+    docstr = runner.analytic_curve.__doc__ or ""
+    assert "V_A" in docstr, "CR-3: analytic_curve debe distinguir V_A en su docstring"
+    assert "V∞" in docstr, "CR-3: analytic_curve debe mantener V∞ en su docstring"
+    limit_doc = runner.noise_mse_limit.__doc__ or ""
+    assert "régimen B" in limit_doc, "CR-3: noise_mse_limit debe declararse límite del régimen B"
+    assert "V_A" in limit_doc, "CR-3: noise_mse_limit debe remitir a V_A del régimen A"

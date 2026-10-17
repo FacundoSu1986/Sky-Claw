@@ -14,6 +14,17 @@ dorados quedan intactos. P2-REV72-02: guardas documentales por ubicación
 semántica (introducción activa y §4.1) en el gate. P2-REV72-03: verificación
 estructural del snapshot del Apéndice A contra este archivo.
 
+REV 7.3 (2026-10-17, sesión NP-M6-REV7.3-CODERABBIT-RECONCILIATION): el término
+de SESGO de `analytic_curve` pasa del cociente de esperanzas Σu·E[v]/Σv·E[v]
+(modelo previo, sobreestimaba ≈7.4% β=2 / ≈4.8% β=4) al modelo EXACTO por
+realización E[Σu_o·E_o/Σv_o·E_o] con E_o=|z_o|²~Exp(1) iid por órbita ±k,
+evaluado por cuadratura Gauss-Legendre (m=600, márgenes (36,16); convergencia
+medida a 1e-10). La ruta de RUIDO (include_signal=False), el solver, los
+símbolos D y los valores dorados de ruido quedan intactos. `noise_mse_limit`
+queda scoped como límite del régimen B (V∞); el régimen A (filtrado) converge a
+V_A (disco r≤π/4). CR-1: snippet B.3 ejecutable; CR-2: c=λ*·N² corregido;
+recibo nuevo de sesgo por realización vs MC (CR-4).
+
 REV 5 (2026-10-15, ronda 5): reconciliación acotada tras la revisión de la REV 4.
 Cambios sobre v4 (commit 5c473d5), tres P2 aceptados:
 
@@ -196,6 +207,103 @@ def _bandpass_mask(n: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Modelo EXACTO del término de sesgo (REV 7.3, CR-4)
+# ---------------------------------------------------------------------------
+_BIAS_PREP_CACHE: dict[tuple[int, float, int, float, float], dict[str, np.ndarray]] = {}
+
+
+def _orbit_classes(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Radios únicos kn de la banda [2π/N, π/4] sin líneas Nyquist y
+    multiplicidad de ÓRBITAS ±k (cada órbita es el par de bins {k, −k}; en banda
+    no hay bins auto-espejo, así que la cuenta de bins por radio es par).
+
+    El sesgo exacto agrupa por radio: en banda D = kn² y v_o, D_o dependen sólo
+    del radio; las E_o = |z_o|² ~ Exp(1) iid de cada órbita son idénticas en ley."""
+    idx = np.fft.fftfreq(n) * n
+    kx, ky = np.meshgrid(idx, idx, indexing="xy")
+    kn = np.sqrt(kx**2 + ky**2) * (2 * np.pi / n)
+    nyq = (np.abs(kx) == n // 2) | (np.abs(ky) == n // 2)
+    band = (kn >= 2 * np.pi / n) & (kn <= np.pi / 4) & ~nyq
+    vals, counts = np.unique(kn[band], return_counts=True)
+    if np.any(counts % 2 != 0):
+        raise ValueError("hay bins auto-espejo en la banda (imposible con el reflejo de la grilla FFT)")
+    return vals, counts // 2
+
+
+def _bias_exact_prep(
+    n: int,
+    beta: float,
+    m_nodes: int = 600,
+    margen_lo: float = 36.0,
+    margen_hi: float = 16.0,
+) -> dict[str, np.ndarray]:
+    """Precómputo cached de la cuadratura de E[X/Y] (REV 7.3, CR-4).
+
+    Nodos Gauss-Legendre en u=ln s sobre [−ln v_max − margen_lo,
+    −ln v_min + margen_hi]: el integrando cae como 1/s² fuera del rango útil y
+    el margen medido (36,16) está convergido a 1e-10 (nodos m=600 vs 1200).
+    P(u) = Π_o (1+s·v_o)^{−mult_o} por suma de logs (estable); K(u,o) =
+    1/(1+s·v_o); v_o = 2·kn_o^{−(β+2)} por órbita."""
+    clave = (n, float(beta), int(m_nodes), float(margen_lo), float(margen_hi))
+    cached = _BIAS_PREP_CACHE.get(clave)
+    if cached is not None:
+        return cached
+    radios, mult = _orbit_classes(n)
+    v = 2.0 * radios ** (-(beta + 2.0))
+    if not bool(np.all(np.isfinite(v))):
+        raise ValueError(
+            f"N={n} β={beta}: la energía espectral es no finita; el modelo exacto de sesgo "
+            "no está definido (mismo dominio que make_signal)."
+        )
+    u_lo = -float(np.log(v.max())) - margen_lo
+    u_hi = -float(np.log(v.min())) + margen_hi
+    x, wx = np.polynomial.legendre.leggauss(m_nodes)
+    u = (u_hi - u_lo) / 2 * x + (u_hi + u_lo) / 2
+    wu = (u_hi - u_lo) / 2 * wx
+    s = np.exp(u)
+    prep: dict[str, np.ndarray] = {
+        "v": v,
+        "d": radios**2,
+        "mult": mult,
+        "u": u,
+        "wu": wu,
+        "prod": np.exp(-(mult[None, :] * np.log1p(s[:, None] * v[None, :])).sum(axis=1)),
+        "kern": 1.0 / (1.0 + s[:, None] * v[None, :]),
+    }
+    _BIAS_PREP_CACHE[clave] = prep
+    return prep
+
+
+def _bias_exact_batch(
+    n: int,
+    beta: float,
+    lams: np.ndarray | tuple[float, ...] | list[float],
+    m_nodes: int = 600,
+    margen_lo: float = 36.0,
+    margen_hi: float = 16.0,
+) -> np.ndarray:
+    """E[MSE_sesgo(λ)] EXACTO por realización (REV 7.3, CR-4):
+
+        MSE(λ, realización) = Σ_o u_o(λ)·E_o / Σ_o v_o·E_o,  E_o = |z_o|²~Exp(1) iid
+
+    con v_o = 2·kn_o^{−(β+2)} y u_o = v_o·(λ/(kn_o²+λ))² por órbita. La esperanza
+    es E[X/Y] con X, Y correlacionados; se calcula por la identidad de la
+    transformada de Laplace (E_o~Exp(1) iid, s≥0):
+
+        E[X/Y] = ∫₀^∞ Π_o (1+s·v_o)^{−1} · Σ_o u_o·(1+s·v_o)^{−1} ds.
+
+    NO es el cociente de esperanzas Σu·E[v]/Σv·E[v] del modelo previo: ese
+    sobreestima el sesgo ≈7.4% (β=2) / ≈4.8% (β=4) y arrastraba λ* ~7% alto."""
+    prep = _bias_exact_prep(n, beta, m_nodes=m_nodes, margen_lo=margen_lo, margen_hi=margen_hi)
+    lams_arr = np.atleast_1d(np.asarray(lams, dtype=float))
+    B = (lams_arr[:, None] / (prep["d"][None, :] + lams_arr[:, None])) ** 2
+    Q = prep["kern"] @ (prep["mult"][None, :] * prep["v"][None, :] * B).T
+    integ = (np.exp(prep["u"]) * prep["prod"])[:, None] * Q
+    resultado: np.ndarray = prep["wu"] @ integ
+    return resultado
+
+
+# ---------------------------------------------------------------------------
 # Curva analítica CORREGIDA: D(k) de los símbolos del solver
 # ---------------------------------------------------------------------------
 def analytic_curve(
@@ -206,17 +314,23 @@ def analytic_curve(
     noise_filtered: bool,
     include_signal: bool = True,
 ) -> np.ndarray:
-    """E[MSE(λ)] = (1/N⁴)·Σ_rfft w·(λ/(D+λ))²·E|ĥ|²  [sesgo de señal]
-                 + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²              [ruido]
+    """E[MSE(λ)] = E[ Σ_o u_o(λ)·E_o / Σ_o v_o·E_o ]   [sesgo de señal: esperanza
+                 POR REALIZACIÓN con E_o~Exp(1) iid por órbita — REV 7.3, CR-4]
+                 + (1/N²)·Σ_rfft w·(D/(D+λ)²)·σ²        [ruido]
     La función devuelve RMSE = sqrt(MSE esperada).
     Transmisión de señal T(D,λ)=D/(D+λ); error de reconstrucción
     H_est−H = −λ/(D+λ)·H; factor cuadrático de sesgo B(D,λ)=(λ/(D+λ))².
     El término de ruido permanece D/(D+λ)².
-    con D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y pesos de
-    Parseval de _parseval_weights (exacto para toda paridad). Régimen A
-    (noise_filtered=True): ruido sólo en banda; Régimen B (False): ruido
-    blanco en cada bin con D>0. Para λ>0 fijo, la suma converge a
-    noise_mse_limit(λ, σ); la fórmula log sólo es dominante cuando λ→0.
+    El sesgo exacto (v_o = 2·kn^{−(β+2)} por órbita, u_o = v_o·B(kn²,λ)) reemplaza
+    al cociente de esperanzas previo, que sobreestimaba ≈7.4% β=2 / ≈4.8% β=4.
+    La fórmula usa D(k)=|dx|²+|dy|² de los MISMOS símbolos del solver (P1-1) y
+    pesos de Parseval de _parseval_weights (exacto para toda paridad).
+    Regímenes de RUIDO (λ>0 fijo): A — ruido sólo en banda (noise_filtered=True):
+    converge a V_A(λ), el límite del disco r≤π/4 (forma cerrada; V_A(λ=1e-3,
+    σ=0.1)=0.004319357); B — ruido blanco en cada bin con D>0
+    (noise_filtered=False): converge a V∞(λ) = noise_mse_limit (cuadrado
+    completo; V∞(1e-3, σ=0.1)=0.006698379). La fórmula log sólo es dominante
+    cuando λ→0.
     En N par, un bin de Nyquist mixto puede tener D>0; D=0 requiere que ambos
     símbolos sean nulos. Con λ=0, el ruido blanco crece como (σ²/2π)·ln N
     (P1-2). include_signal=False expone sólo el término de ruido (MC puro)."""
@@ -231,23 +345,18 @@ def analytic_curve(
             f"N={n} produce banda [2π/N, π/4] vacía; se requiere N>=8 para señal no vacía. "
             "Use include_signal=False para modos de sólo ruido."
         )
-    amp = np.zeros(band.shape)
-    amp[band] = k[band] ** (-(beta + 2) / 2)
-    eh = 2 * amp**2
     D = _D_matrix(n)
     w = _parseval_weights(n)
+    bias_exacto: np.ndarray | None = None
     if include_signal:
-        denom = (w * eh).sum()
-        if denom <= 0:
-            raise ValueError(f"Energía de señal nula o no positiva para N={n}")
-        eh *= n**4 / denom  # RMS(altura)=1: Σ w·eh = N⁴
+        # sesgo EXACTO por realización (REV 7.3, CR-4): E[Σ u_o E_o / Σ v_o E_o]
+        bias_exacto = _bias_exact_batch(n, beta, lams)
     out = []
-    for lam in lams:
+    for i_lam, lam in enumerate(lams):
         mse = 0.0
         if include_signal:
-            # sesgo = (ĥ_est − ĥ) = −λ/(D+λ)·ĥ  [NO la transmisión D/(D+λ)²]
-            bias_fac = np.where(D > 0, (lam / np.maximum(D + lam, 1e-300)) ** 2, 0.0)
-            mse += float(np.sum(w * bias_fac * eh)) / n**4
+            assert bias_exacto is not None
+            mse += float(bias_exacto[i_lam])
         if noise_filtered:
             nmask = band & (D > 0)
         else:
@@ -262,8 +371,11 @@ def analytic_curve(
 
 
 def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
-    """Límite continuo EXACTO del término de ruido con λ>0 fijo (REV 6, P1 de la
-    ronda 6):
+    """Límite continuo EXACTO del término de ruido del régimen B (espectro
+    completo) con λ>0 fijo (REV 6, P1 de la ronda 6; scoping por régimen: REV 7.3,
+    CR-3). NO es el límite del régimen A: con ruido filtrado a la banda la suma
+    converge a V_A(λ) —disco r≤π/4, forma cerrada; V_A(1e-3)=0.004319357 vs
+    V∞(1e-3)=0.006698379 con σ=0.1 (ver analytic_curve)—:
 
         V∞(λ) = (σ²/(2π)²)·∫∫_{[-π,π]²} k²/(k²+λ)² dkx dky,
 
@@ -302,11 +414,25 @@ def noise_mse_limit(lam: float, sigma: float, m: int = 300) -> float:
 def lambda_star_continuous(
     n: int, beta: float, sigma: float, noise_filtered: bool = True
 ) -> tuple[float, float, float]:
-    fine = np.geomspace(1e-12, 1.0, 20000)
-    e = analytic_curve(n, beta, sigma, fine, noise_filtered)
+    """λ* de E(λ) con el sesgo EXACTO (REV 7.3): malla geométrica gruesa
+    (200 pts en [1e-12, 1]) + refinamiento local (80 pts × 3 rondas alrededor
+    del argmin vecinal). La malla densa previa (20000 pts) es inviable con la
+    cuadratura por evaluación; equivalencia con malla densa de 4000 pts
+    verificada en el gate (tolerancia 5e-3 relativa)."""
+    grid = np.geomspace(1e-12, 1.0, 200)
+    e = analytic_curve(n, beta, sigma, grid, noise_filtered)
     i = int(np.argmin(e))
-    e0 = analytic_curve(n, beta, sigma, [0.0], noise_filtered)[0]
-    return float(fine[i]), float(e[i]), float(e0)
+    lo, hi = float(grid[max(i - 1, 0)]), float(grid[min(i + 1, len(grid) - 1)])
+    lstar = float(grid[i])
+    for _ in range(3):
+        loc = np.geomspace(lo, hi, 80)
+        el = analytic_curve(n, beta, sigma, loc, noise_filtered)
+        j = int(np.argmin(el))
+        lstar = float(loc[j])
+        lo, hi = float(loc[max(j - 1, 0)]), float(loc[min(j + 1, len(loc) - 1)])
+    e_star = float(analytic_curve(n, beta, sigma, [lstar], noise_filtered)[0])
+    e0 = float(analytic_curve(n, beta, sigma, [0.0], noise_filtered)[0])
+    return lstar, e_star, e0
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +528,22 @@ def selftest() -> int:
     print(f"[ok] campo integrable sin Nyquist: RMSE={e:.2e}")
     ok += 1
 
-    print(f"selftest: {ok}/9 recibos OK")
+    # 8. REV 7.3 (CR-4): el sesgo por realización medido con make_signal +
+    #    solve_screened contra el modelo EXACTO E[ΣuE/ΣvE] (cuadratura). El
+    #    cociente de esperanzas previo daba ratio≈1.074 (fuera de la cota).
+    n_b, beta_b, lam_b = 64, 2.0, 1e-3
+    rng_b = np.random.default_rng(20261016)
+    vals_b = np.empty(400)
+    for i_b in range(400):
+        h_b, p_b, q_b = make_signal(n_b, beta_b, rng_b)
+        e_b = solve_screened(p_b, q_b, lam_b) - h_b
+        vals_b[i_b] = float(np.mean(e_b**2))
+    ratio_b = float(vals_b.mean()) / float(_bias_exact_batch(n_b, beta_b, [lam_b])[0])
+    assert 0.96 < ratio_b < 1.04, ratio_b
+    print(f"[ok] sesgo por realización (CR-4) N=64 β=2 λ=1e-3: MC(400)/exacto={ratio_b:.4f} (modelo previo ≈1.074)")
+    ok += 1
+
+    print(f"selftest: {ok}/10 recibos OK")
     return ok
 
 
