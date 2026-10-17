@@ -374,6 +374,12 @@ def _escritores_reales_del_paquete() -> set[str]:
 #: lista sola seria un silenciador, por eso el call site se ancla aparte
 #: (`test_s2_las_primitivas_bajo_lock_solo_se_invocan_bajo_lock`): declarar aca un
 #: mutador nuevo no lo salva si se lo invoca fuera de un lock.
+#:
+#: P4-S3 (`journal.py`) escribe SOLO por delegacion declarada
+#: (`state_module.write_json_atomic` / `reservar_ruta_json_exclusiva`): no tiene
+#: mutadores propios, pero sus funciones `_locked` SI invocan las primitivas del
+#: inventario, asi que se declaran aca y el ancla de call site las obliga a
+#: correr bajo el root lock (ver `test_s3_toda_escritura_del_journal_corre_bajo_el_lock`).
 _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
     {
         ("state.py", "write_json_atomic"),
@@ -388,6 +394,13 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("copying.py", "copiar_arbol_independiente"),
         ("copying.py", "copiar_archivo"),
         ("copying.py", "_materializar_directorio_del_destino"),
+        ("journal.py", "_reservar_seq_locked"),
+        ("journal.py", "_persistir_registro_locked"),
+        ("journal.py", "_rotar_journal_locked"),
+        ("journal.py", "_crear_pendiente_locked"),
+        ("journal.py", "_start_next_locked"),
+        ("journal.py", "_actualizar_locked"),
+        ("journal.py", "_finalizar_locked"),
     }
 )
 
