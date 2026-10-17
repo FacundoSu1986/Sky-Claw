@@ -206,6 +206,13 @@ hiddenimports = [
     # etapa 9 del exe quedaría fail-closed.
     "sky_claw.local.tools.dyndolod_uia_ejecutor",
     "sky_claw.local.tools.dyndolod_uia_helper",
+    # #661 P3: el driver MUTANTE de la etapa 9 desatendida corre en su propio
+    # worker (`--skyclaw-uia-driver-helper`), importado de forma perezosa y
+    # condicional en `__main__`: sin declararlo, el bundle congelado no lo trae y
+    # todo paso desatendido del release volvería SIN_RESPUESTA.
+    "sky_claw.local.tools.dyndolod_uia_driver_ejecutor",
+    "sky_claw.local.tools.dyndolod_uia_driver_helper",
+    "sky_claw.local.tools.dyndolod_uia_driver_windows",
 ]
 
 a = Analysis(
