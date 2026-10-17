@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.comms.interface import InterfaceAgent
 from sky_claw.app.core.contracts import PathValidatorProtocol
@@ -35,6 +35,9 @@ from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.xedit.conflict_analyzer import ConflictReport
+
+if TYPE_CHECKING:
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
 logger = logging.getLogger(__name__)
 
@@ -601,6 +604,16 @@ class SupervisorAgent:
     # y tests/harness BDD monkeypatchean ``scan_asset_conflicts*`` sobre la
     # instancia con late-binding.
     # =========================================================================
+
+    @property
+    def dyndolod_service(self) -> DynDOLODPipelineService:
+        """El servicio de etapa 9 del composition root, de solo lectura (#661).
+
+        Lo publica el bootloader de la GUI en el ``AppContext`` para que la tool
+        remota del agente (``generate_lods``) delegue en EXACTAMENTE este
+        servicio —mismo lock, coordinación y workspace— en vez de construir otro.
+        """
+        return self._dyndolod_service
 
     @property
     def event_bus(self) -> CoreEventBus:

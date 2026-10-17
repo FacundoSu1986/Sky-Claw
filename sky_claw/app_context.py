@@ -778,6 +778,23 @@ class AppContext:
         #: NO CONFIGURADO (estado normal y honesto: el resto de Sky-Claw
         #: funciona igual, sin fallback silencioso a ninguna raíz derivada).
         self.dyndolod_workspace = None
+        #: #661: servicio de etapa 9 que el `SupervisorAgent` armó en el
+        #: composition root, publicado por el bootloader de la GUI para que la
+        #: tool remota `generate_lods` delegue en ÉL (mismo lock y workspace).
+        #: `None` = la etapa 9 no está disponible en esta sesión (p. ej.
+        #: `--mode telegram`, que no levanta supervisor).
+        self.servicio_de_etapa9 = None
+        #: Gestor de los trabajos de etapa 9 lanzados desde la superficie remota.
+        self.lod_jobs = None
+
+    def publicar_servicio_de_etapa9(self, servicio) -> None:
+        """Publica EL servicio de etapa 9 del supervisor para la superficie remota (#661).
+
+        No construye nada: recibe la instancia del composition root. Llamarlo
+        con otro objeto reemplaza la referencia (un supervisor nuevo), nunca
+        crea un segundo servicio en paralelo.
+        """
+        self.servicio_de_etapa9 = servicio
 
     @staticmethod
     def _sonda_de_transaccion_pendiente(journal):
@@ -2077,6 +2094,22 @@ class AppContext:
                 ),
             )
 
+            # #661: la etapa 9 desde Telegram / `/api/chat` corre como TRABAJO en
+            # segundo plano (el round del router corta a 120 s) y delega en el
+            # servicio que la GUI publique después; el aviso de fin viaja por la
+            # superficie de avisos del guard (Telegram). El cleanup va DESPUÉS de
+            # la lease del workspace en el stack: corre antes de liberarla, así
+            # que un trabajo vivo se cancela y limpia con el ownership todavía
+            # tomado.
+            from sky_claw.app.agent.tools.lod_tools import GestorDeTrabajosDeLods
+
+            lod_jobs = GestorDeTrabajosDeLods(
+                proveedor_de_servicio=lambda: self.servicio_de_etapa9,
+                notificar=hitl.notify_operator,
+            )
+            self.lod_jobs = lod_jobs
+            self._push_startup_cleanup(lod_jobs.cerrar)
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -2107,6 +2140,7 @@ class AppContext:
                 allowed_tools=allowed_tools,
                 session_id=session_id,
                 mo2_profile=active_profile,
+                lod_jobs=lod_jobs,
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")

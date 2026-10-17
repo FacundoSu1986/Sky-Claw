@@ -146,9 +146,12 @@ TOOLS_CON_LAMBDA_EN_EL_REGISTRY: set[str] = {
     "detect_conflicts",
     "download_mod",
     "generate_bashed_patch",
+    # #661: etapa 9 desde la superficie remota (trabajo en segundo plano).
+    "generate_lods",
     "install_mod",
     "install_mod_from_archive",
     "launch_game",
+    "lods_status",
     "preview_mod_installer",
     "resolve_fomod",
     "run_bodyslide",

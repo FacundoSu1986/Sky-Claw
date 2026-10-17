@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pathlib
 import re
-from typing import Any
+from typing import Any, Literal
 
 import pydantic
 from pydantic import field_validator
@@ -272,6 +272,37 @@ class ToggleModParams(pydantic.BaseModel):
 
     mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=_EXISTING_MOD_NAME_PATTERN)
     enable: bool
+
+
+class GenerateLodsParams(pydantic.BaseModel):
+    """Parámetros de la tool ``generate_lods`` (etapa 9: TexGen + DynDOLOD, #661).
+
+    ``interaction_mode`` es OBLIGATORIO y sin default a propósito: el modo
+    desatendido opera la GUI por UI Automation y el asistido exige a alguien en
+    la PC, así que el modelo tiene que elegirlo explícitamente.
+    """
+
+    model_config = pydantic.ConfigDict(strict=True)
+
+    interaction_mode: Literal["desatendido", "asistido"] = pydantic.Field(
+        description=(
+            "'desatendido': Sky-Claw opera TexGen/DynDOLOD solo (por UI Automation) tras una aprobación remota "
+            "de la configuración por este mismo canal; es el modo para cuando el operador NO está frente a la PC. "
+            "'asistido': un humano tiene que operar la ventana de la herramienta en la PC."
+        ),
+    )
+    preset: Literal["Low", "Medium", "High"] = pydantic.Field(
+        default="Medium",
+        description=(
+            "Preset de calidad de DynDOLOD. En modo desatendido tiene que coincidir con el que la herramienta "
+            "tiene guardado (si no, la corrida se corta con PRESET_MISMATCH y el mensaje dice cuál es)."
+        ),
+    )
+    run_texgen: bool = pydantic.Field(default=True, description="Correr TexGen antes de DynDOLOD.")
+    create_snapshot: bool = pydantic.Field(
+        default=True,
+        description="Apartar los mods de LOD previos para poder revertir si la corrida falla.",
+    )
 
 
 class BodySlideBatchParams(pydantic.BaseModel):
