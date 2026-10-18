@@ -143,8 +143,14 @@ CALL_SITES_DE_RELEASE_CON_TOKEN: set[str] = {
 _RAIZ_DEL_REPO = Path(__file__).resolve().parent.parent
 
 
+def _es_llamada_de_release(nodo: ast.Call) -> bool:
+    if isinstance(nodo.func, ast.Attribute) and nodo.func.attr in {"release_lock", "liberar_lease_definitiva"}:
+        return True
+    return isinstance(nodo.func, ast.Name) and nodo.func.id == "liberar_lease_definitiva"
+
+
 def _call_sites_de_release_lock() -> tuple[dict[str, set[int]], set[str]]:
-    """Enumera por AST los ``*.release_lock(...)`` de ``sky_claw/``.
+    """Enumera por AST los ``*.release_lock(...)`` y ``liberar_lease_definitiva(...)`` de ``sky_claw/``.
 
     Returns
     -------
@@ -160,7 +166,7 @@ def _call_sites_de_release_lock() -> tuple[dict[str, set[int]], set[str]]:
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, ast.Call):
                 continue
-            if not (isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "release_lock"):
+            if not _es_llamada_de_release(nodo):
                 continue
             if any(kw.arg == "acquired_at" for kw in nodo.keywords):
                 con_token.add(relativo)
