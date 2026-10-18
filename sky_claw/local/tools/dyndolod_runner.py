@@ -16,6 +16,7 @@ import configparser
 import enum
 import hashlib
 import logging
+import ntpath
 import pathlib
 import re
 import shutil
@@ -262,6 +263,12 @@ _HERRAMIENTA_POR_TOOL: dict[str, HerramientaDynDOLOD] = {
     "TexGen": HerramientaDynDOLOD.TEXGEN,
     "DynDOLOD": HerramientaDynDOLOD.DYNDOLOD,
 }
+
+#: El artefacto que gatea la salida de DynDOLOD (U-06). Constante porque el
+#: veredicto (:meth:`DynDOLODRunner._validar_salida_dyndolod`) y el diagnóstico
+#: de artefacto ausente (Finding 4 de #592) nombran el MISMO archivo: escrito dos
+#: veces, un cambio en el gate dejaría al diagnóstico mintiendo sobre qué falta.
+_ARTEFACTO_DYNDOLOD = "DynDOLOD.esp"
 
 # Firma de un log AUSENTE. Distinto de ``None`` (= no se pudo sondear) a
 # propósito: colapsar los dos casos hace fail-open la atribución del log, porque
@@ -961,6 +968,214 @@ def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
 
 
 # =============================================================================
+# EVIDENCIA DE RUTAS DECLARADAS POR EL BINARIO (Findings 4 y 5 de #592)
+# =============================================================================
+#
+# Los dos binarios ecoan al arrancar las rutas que parsearon de su línea de
+# comandos. Formatos medidos sobre TexGenx64/DynDOLODx64 Alpha-209 reales
+# (``docs/validation/2026-09-13_pr580_real_rig/``: ``texgen-log.txt:8,11`` y
+# ``dyndolod-log.txt:8,12``; también ``docs/validation/2026-09-10_t5v2_dyndolod_stage9.md``):
+#
+#     Using Output Path: <ruta>
+#     Using Skyrim Special Edition Data Path: <ruta>
+#
+# **Qué prueba y qué NO prueba este eco.** Prueba que el binario PARSEÓ el
+# ``-o:``/``-d:`` tal como Sky-Claw los construyó — es el cierre de la
+# divergencia CRT↔Delphi de T5 (``_switch_de_ruta``): con rutas con espacios el
+# argv lleva el backslash final duplicado y el eco lo devuelve normalizado. NO
+# prueba dónde ESCRIBIÓ: el rig 2026-08-11 midió el eco igual al argv mientras
+# las escrituras iban al ``OutputPath`` del preset que la GUI había precargado
+# (``docs/pending_ooda_status.md``). Por eso el destino lo sigue decidiendo el
+# artefacto físico en el subroot born-empty, y esta evidencia NO autoriza nada:
+# sólo enriquece el diagnóstico cuando el artefacto falta y advierte cuando el
+# binario declaró una ruta distinta de la configurada.
+#
+# **Alcance de los formatos.** Sólo los dos medidos. Un binario que no los emita
+# no produce fallo: la ausencia es ``AUSENTE`` (UNKNOWN), nunca veredicto.
+
+#: ``Using Output Path:`` — el ``-o:``. El prefijo de timestamp es opcional
+#: (``[00:00:01] Using Output Path: …``) porque las fixtures sintéticas del repo
+#: usan esa forma y el binario real no.
+_PATRON_ECO_OUTPUT = re.compile(r"Using Output Path:\s*(?P<ruta>.+?)\s*$")
+
+#: ``Using Skyrim Special Edition Data Path:`` — el ``-d:``. La forma sin
+#: ``Skyrim Special Edition`` está en las fixtures del repo; el binario real de
+#: SSE emite la larga. ``Using Skyrim VR Data Path:`` NO se matchea a propósito:
+#: no hay rig que lo haya medido y adivinar un formato es lo que el issue #592
+#: prohíbe (extrapolar a configuraciones no verificadas).
+_PATRON_ECO_DATA = re.compile(r"Using (?:Skyrim Special Edition )?Data Path:\s*(?P<ruta>.+?)\s*$")
+
+
+class VeredictoRuta(enum.Enum):
+    """Qué se puede afirmar sobre una ruta declarada por el binario.
+
+    Espeja el vocabulario de tres valores de ``dyndolod_uia_preflight``
+    (``MATCH``/``MISMATCH``/``UNKNOWN``) en el dominio post-run: ``COINCIDE`` y
+    ``DIFIERE`` son los dos veredictos concluyentes y todo lo demás es UNKNOWN.
+    """
+
+    #: El eco coincide con la ruta configurada, con semántica Windows.
+    COINCIDE = "COINCIDE"
+    #: El eco declara una ruta distinta de la configurada. Evidencia verificable.
+    DIFIERE = "DIFIERE"
+    #: La corrida no emitió la línea. Evidencia insuficiente: no hay veredicto.
+    AUSENTE = "AUSENTE"
+    #: Hay líneas pero no se puede adjudicar (valores en conflicto, o sin target
+    #: configurado contra el cual contrastar).
+    INDETERMINADO = "INDETERMINADO"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenciaDeRuta:
+    """Veredicto sobre UNA clave (``output`` o ``data``) de la ventana de la corrida."""
+
+    veredicto: VeredictoRuta
+    #: El valor observado, sólo cuando hay exactamente uno (evidencia adjudicable).
+    declarada: str | None = None
+    #: El valor contra el cual se contrastó (``-o:`` o ``-d:`` de la config vigente).
+    configurada: pathlib.Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenciaDeRutas:
+    """Las dos claves del contrato, juntas: la salida (``-o:``) y los datos (``-d:``)."""
+
+    output: EvidenciaDeRuta
+    data: EvidenciaDeRuta
+
+    def discrepancias(self) -> tuple[str, ...]:
+        """Claves con veredicto ``DIFIERE``, en orden estable. Para el diagnóstico."""
+        return tuple(
+            clave
+            for clave, ev in (("output", self.output), ("data", self.data))
+            if ev.veredicto is VeredictoRuta.DIFIERE
+        )
+
+    def salida_desviada(self) -> bool:
+        """¿El eco del ``-o:`` difiere de la raíz administrada? Política: **advisory**.
+
+        El eco mide el parse del argv, no el destino de escritura, y el artefacto
+        presente en el subroot administrado ya prueba que hay salida donde debe:
+        el desvío se advierte, no tumba la corrida.
+        """
+        return self.output.veredicto is VeredictoRuta.DIFIERE
+
+    def datos_desviados(self) -> bool:
+        """¿El eco del ``-d:`` difiere del ``Data`` configurado? Política: **fail-closed**.
+
+        El artefacto prueba el destino y la FORMA de la salida, no la procedencia
+        de los datos: un ``-d:`` distinto del configurado significa que los LODs
+        podrían estar generados sobre otro árbol de datos. Es la única clave cuya
+        contradicción afirmativa impide aceptar —y empaquetar— el resultado.
+        """
+        return self.data.veredicto is VeredictoRuta.DIFIERE
+
+
+def extraer_rutas_declaradas(texto: str) -> dict[str, tuple[str, ...]]:
+    """Las rutas que el binario declaró en ``texto``, por clave, en orden de aparición.
+
+    Función de módulo y pura —igual que :func:`clasificar_log`—: el texto que
+    recibe es SIEMPRE la ventana atribuible a la corrida
+    (:meth:`DynDOLODRunner._validar_completitud_de_la_corrida`), nunca el archivo
+    completo. Un eco heredado de una sesión anterior no puede entrar por acá.
+
+    Los valores se devuelven CRUDOS (con su backslash final, duplicado o no): la
+    normalización vive en :func:`rutas_equivalentes`, que es donde está la
+    semántica de plataforma.
+
+    Returns:
+        ``{"output": (...), "data": (...)}``. Tuplas vacías cuando la corrida no
+        emitió la línea.
+    """
+    declaradas: dict[str, list[str]] = {"output": [], "data": []}
+    for linea in texto.splitlines():
+        for clave, patron in (("output", _PATRON_ECO_OUTPUT), ("data", _PATRON_ECO_DATA)):
+            coincidencia = patron.search(linea)
+            if coincidencia is not None:
+                declaradas[clave].append(coincidencia.group("ruta").strip())
+    return {clave: tuple(valores) for clave, valores in declaradas.items()}
+
+
+def rutas_equivalentes(declarada: str, configurada: pathlib.Path) -> bool:
+    """¿El eco y la ruta configurada apuntan al mismo path?
+
+    Comparación TEXTUAL normalizada, no contención física: ``normpath`` colapsa
+    separadores duplicados y ``.``/``..``, y ``normcase`` además baja mayúsculas
+    y unifica ``/`` con ``\\``. Es exactamente lo que hace falta para el vector
+    medido en T5 —``…\\DynDOLOD\\\\`` (duplicado por ``list2cmdline``) contra el
+    ``-o:`` configurado ``…\\DynDOLOD``— sin inventar equivalencias que el binario
+    no declaró.
+
+    **``ntpath`` y NO ``os.path``, y es la diferencia que hace correcta a la
+    función.** El eco de estos binarios es SIEMPRE una ruta Windows —son
+    ejecutables Windows leyendo su ``ParamStr``—, pero ``os.path`` es
+    ``ntpath`` sólo en Windows: en POSIX es ``posixpath``, que no trata ``\\``
+    como separador ni colapsa la barra final duplicada. Con ``os.path`` el vector
+    del rig se clasificaba ``DIFIERE`` en cualquier host POSIX —una discrepancia
+    FABRICADA por el host que corre los tests, que además disparaba la advertencia
+    estructurada sobre una corrida correcta— mientras en Windows daba
+    ``COINCIDE``. El contrato de estos logs es Windows: la semántica se declara,
+    no se hereda del host.
+
+    Lo que esta función NO hace: resolver junctions/symlinks ni afirmar
+    contención. Eso es :func:`~sky_claw.app.security.links.exigir_contencion_fisica`,
+    que sigue siendo el guard de la cadena física.
+    """
+    return _forma_canonica(declarada) == _forma_canonica(str(configurada))
+
+
+def _forma_canonica(ruta: str) -> str:
+    """La forma con la que dos rutas Windows se comparan (ver :func:`rutas_equivalentes`)."""
+    return ntpath.normcase(ntpath.normpath(ruta))
+
+
+def _veredicto_de_clave(declaradas: tuple[str, ...], configurada: pathlib.Path | None) -> EvidenciaDeRuta:
+    """Veredicto de UNA clave. Sin líneas ⇒ ``AUSENTE``; sin target ⇒ ``INDETERMINADO``."""
+    if not declaradas:
+        return EvidenciaDeRuta(veredicto=VeredictoRuta.AUSENTE, configurada=configurada)
+    # Se deduplica por la MISMA equivalencia que se usa contra lo configurado: dos
+    # ecos que difieren sólo en la escritura (mayúsculas, separador final) son el
+    # mismo path. Deduplicar por texto crudo los volvía un "conflicto" y un -d:
+    # desviado escrito dos veces de forma distinta quedaba INDETERMINADO, que no
+    # bloquea (revisión CodeRabbit, PR #739).
+    por_forma: dict[str, str] = {}
+    for declarada_cruda in declaradas:
+        por_forma.setdefault(_forma_canonica(declarada_cruda), declarada_cruda)
+    distintas = tuple(por_forma.values())
+    if len(distintas) > 1:
+        # El eco puede repetirse; si los valores difieren no hay con qué afirmar
+        # cuál rigió. Se devuelve el primero SÓLO como dato descriptivo — el
+        # veredicto no adjudica.
+        return EvidenciaDeRuta(veredicto=VeredictoRuta.INDETERMINADO, declarada=distintas[0], configurada=configurada)
+    declarada = distintas[0]
+    if configurada is None:
+        return EvidenciaDeRuta(veredicto=VeredictoRuta.INDETERMINADO, declarada=declarada, configurada=None)
+    veredicto = VeredictoRuta.COINCIDE if rutas_equivalentes(declarada, configurada) else VeredictoRuta.DIFIERE
+    return EvidenciaDeRuta(veredicto=veredicto, declarada=declarada, configurada=configurada)
+
+
+def evaluar_evidencia_de_rutas(
+    texto: str,
+    *,
+    raiz_de_salida: pathlib.Path | None,
+    data_dir: pathlib.Path | None,
+) -> EvidenciaDeRutas:
+    """Veredicto de las dos claves sobre ``texto``, contrastado contra los roots vigentes.
+
+    ``raiz_de_salida`` es el subroot EXCLUSIVO de la herramienta —el mismo path
+    que :meth:`DynDOLODRunner._build_xedit_args` pasa como ``-o:``— y ``data_dir``
+    el campo homónimo de la config (el ``-d:``). Nunca se hardcodea una ruta de
+    rig: los targets salen de la config viva, y por eso la comparación sirve en
+    cualquier workspace.
+    """
+    declaradas = extraer_rutas_declaradas(texto)
+    return EvidenciaDeRutas(
+        output=_veredicto_de_clave(declaradas["output"], raiz_de_salida),
+        data=_veredicto_de_clave(declaradas["data"], data_dir),
+    )
+
+
+# =============================================================================
 # EXCEPTIONS
 # =============================================================================
 
@@ -1342,6 +1557,35 @@ class _PostCheck:
     #: gatea el veredicto, no `errors` — que además lleva los diagnósticos que el
     #: post-check redacta para el operador (log ausente, staging no sondeable).
     terminales: list[str] = field(default_factory=list)
+    #: Rutas que el binario declaró en la ventana de ESTA corrida (Findings 4 y 5
+    #: de #592), o ``None`` cuando no hay ventana atribuible. Se expone para que
+    #: el diagnóstico de artefacto ausente pueda nombrar una ruta observada sin
+    #: volver a leer el log, para que los consumidores reciban las advertencias
+    #: estructuradas y para que los tests puedan anclarla.
+    #:
+    #: NO es "evidencia sin consecuencia": el desvío de ``-d:`` es fail-closed y
+    #: viaja por :attr:`procedencia_de_datos_es_confiable`. El desvío de ``-o:`` sí
+    #: queda advisory —el artefacto físico sigue siendo la autoridad del destino—
+    #: y sale por ``warnings``.
+    evidencia_rutas: EvidenciaDeRutas | None = None
+
+    @property
+    def procedencia_de_datos_es_confiable(self) -> bool:
+        """¿La evidencia de ESTA corrida autoriza aceptar el resultado por procedencia?
+
+        ``False`` sólo ante una contradicción AFIRMATIVA: el binario declaró un
+        ``-d:`` distinto del configurado (``DIFIERE``). ``None`` (sin ventana
+        atribuible), ``AUSENTE`` (la corrida no emitió la línea) e
+        ``INDETERMINADO`` (evidencia ambigua, o config sin ``data_dir``) NO
+        bloquean: convertir UNKNOWN en fallo sería un falso rechazo sobre un
+        binario que no emite el formato.
+
+        Vive acá —y no dentro de cada lanzador— porque es UNA política compartida
+        por las dos herramientas: escrita dos veces, el cambio en una dejaría a la
+        otra aceptando un resultado con procedencia incorrecta. Es la frontera que
+        los dos predicados de éxito consultan.
+        """
+        return self.evidencia_rutas is None or not self.evidencia_rutas.datos_desviados()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2016,14 +2260,23 @@ class DynDOLODRunner:
 
         post = await asyncio.to_thread(self._post_check, "TexGen", firma_log_previa)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
-        # Cuatro conjuntos, y ninguno es redundante: el exit code no alcanza en una
+        # Cinco conjuntos, y ninguno es redundante: el exit code no alcanza en una
         # app GUI, el artefacto prueba que la salida requerida existe en su subroot
         # exclusivo (born-empty por el servicio, así que es de esta corrida), el
-        # marcador prueba que la herramienta LLEGÓ AL FINAL, y la ausencia de
-        # terminales prueba que no abortó. Gatear por `not errors` —lo anterior—
-        # rechazaba todo éxito real: el rig midió 121 líneas `Error:` en una corrida
-        # buena. Ver `clasificar_log`. Idéntica a la de `run_dyndolod` a propósito.
-        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
+        # marcador prueba que la herramienta LLEGÓ AL FINAL, la ausencia de
+        # terminales prueba que no abortó, y `procedencia_de_datos_es_confiable`
+        # prueba que el binario NO declaró haber leído otro `-d:` — el artefacto
+        # acredita el destino y la forma de la salida, no el árbol de datos del que
+        # salió. Gatear por `not errors` —lo anterior— rechazaba todo éxito real: el
+        # rig midió 121 líneas `Error:` en una corrida buena. Ver `clasificar_log`.
+        # Idéntica a la de `run_dyndolod` a propósito.
+        success = (
+            return_code == 0
+            and post.artefacto
+            and post.completo
+            and not post.terminales
+            and post.procedencia_de_datos_es_confiable
+        )
 
         result = ToolExecutionResult(
             success=success,
@@ -2148,7 +2401,16 @@ class DynDOLODRunner:
         # literalmente iguales es el punto — los marcadores de completitud SÍ
         # difieren por herramienta (`MARCADORES_DE_COMPLETITUD`), y ahí es donde
         # el hermano se escapa si uno de los dos lanzadores no consulta el suyo.
-        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
+        # `procedencia_de_datos_es_confiable` es el conjunct que impide que un
+        # resultado generado sobre otro `-d:` llegue al empaquetado: el pipeline
+        # sólo empaqueta dentro de `if dyndolod_result.success`.
+        success = (
+            return_code == 0
+            and post.artefacto
+            and post.completo
+            and not post.terminales
+            and post.procedencia_de_datos_es_confiable
+        )
 
         result = ToolExecutionResult(
             success=success,
@@ -3892,18 +4154,34 @@ class DynDOLODRunner:
         backslash"*. Lo que sobra son las comillas: ``list2cmdline`` ya cita el
         argumento cuando hace falta.
 
-        **Pero el fix está verificado solo para rutas SIN espacios.** Cuando el
-        argumento trae espacios, ``list2cmdline`` lo cita y duplica el backslash
-        final para que no escape su propia comilla de cierre: correcto bajo las
-        reglas de la CRT, y **no** bajo las de Delphi, que nunca trata el backslash
-        como escape. Medido: el binario recibiría ``-d:...\\Data\\\\`` en vez de
-        ``-d:...\\Data\\``. Y esa es la rama que corre SIEMPRE en un rig real —el
+        **Cuando el argumento trae espacios, ``list2cmdline`` lo cita y duplica el
+        backslash final** para que no escape su propia comilla de cierre: correcto
+        bajo las reglas de la CRT, y **no** bajo las de Delphi, que nunca trata el
+        backslash como escape. Esa es la rama que corre SIEMPRE en un rig real —el
         juego vive en ``Skyrim Special Edition`` y los INI bajo ``My Games``—, así
-        que el caso sin espacios es el sintético. Si el binario no tolera el
-        separador duplicado, el síntoma ``Can not create path`` sigue en producción.
-        **Pendiente de T5**, que lo decide en una corrida porque la herramienta ecoa
-        la ruta parseada en su log (``Using Output Path:``): dejar el duplicado si lo
-        tolera, omitir el ``\\`` final, o línea verbatim. No lo damos por resuelto.
+        que el caso sin espacios es el sintético.
+
+        **Y T5 lo respondió una corrida real: el binario TOLERA el duplicado.** El
+        rig commiteado ``docs/validation/2026-09-13_pr580_real_rig/`` lanzó los dos
+        binarios por el runner con la raíz administrada con espacios. La línea real
+        enviada (``dyndolod-command.txt``; ``texgen-command.txt`` idéntico en forma):
+
+        ``"C:\\Modding\\DynDOLOD RigTest\\DynDOLODx64.exe" -sse "-o:E:\\Sky-Claw T5
+        Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\\\" "-d:C:\\Modding\\DynDOLOD
+        RigTest\\_rig_test\\data\\\\" …``
+
+        y lo que el binario parseó (``dyndolod-log.txt:12`` / ``texgen-log.txt:11``):
+
+        ``Using Output Path: E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\``
+
+        El backslash duplicado **desapareció en el eco** y las escrituras aterrizaron
+        en el root declarado, con espacios, en ``-o:``, ``-d:``, ``-m:`` y ``-t:``.
+        Es la opción A de las tres candidatas: **dejar el duplicado**, que es lo que
+        este método hace. El mismo vector está en el rig previo
+        (``docs/validation/2026-09-10_t5v2_dyndolod_stage9.md``, criterio 4: eco
+        exacto en ambos binarios). El eco del binario se consume además como
+        evidencia post-run en :func:`evaluar_evidencia_de_rutas` — ver el bloque
+        "EVIDENCIA DE RUTAS DECLARADAS POR EL BINARIO".
 
         Anclas, y su alcance exacto — los tests que solo miraban el string que
         Sky-Claw produce congelaron el defecto en vez de atajarlo:
@@ -3914,9 +4192,12 @@ class DynDOLODRunner:
         * ``test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi``: con
           espacios ``list2cmdline`` cita y **duplica el backslash final** (regla de
           la CRT que Delphi no implementa), así que el binario ve un ``\\`` de más.
-          **Pendiente de T5**, y es la rama que corre siempre en un rig real
-          (``Skyrim Special Edition``, ``My Games``). Ningún test afirma que ese
-          vector sea correcto: se ancla la divergencia medida.
+          El test sigue anclando esa divergencia de SERIALIZACIÓN —sigue siendo
+          cierta y es la rama que corre siempre en un rig real—, pero ya no la
+          declara pendiente: T5 la cerró midiendo que el binario normaliza el
+          duplicado (``docs/validation/2026-09-13_pr580_real_rig/``). Si alguien
+          cambia la serialización y los dos parsers pasan a coincidir, el test se
+          pone ROJO y obliga a releer esta decisión.
         """
         texto = str(ruta)
         if directorio and not texto.endswith("\\"):
@@ -4423,6 +4704,10 @@ class DynDOLODRunner:
             y los errores/warnings del log.
         """
         texto = self._leer_log(tool)
+        # Evidencia de rutas declaradas por el binario (Findings 4 y 5 de #592).
+        # Se computa SÓLO sobre la ventana atribuible a esta corrida y queda en
+        # ``None`` cuando no hay ventana (sin log, o frontera indeterminada).
+        evidencia: EvidenciaDeRutas | None = None
         if texto is None:
             # Sin log no hay marcador de completitud, y el gate de artefacto solo
             # prueba que la salida existe, no que la corrida haya terminado.
@@ -4451,6 +4736,10 @@ class DynDOLODRunner:
             # esta corrida difiere del archivo completo, se reclasifica sobre ella.
             if de_esta_corrida != texto:
                 terminales, warnings, _ = self._parse_log(de_esta_corrida, tool)
+            # La MISMA ventana delimita la evidencia de rutas: el eco de una
+            # sesión anterior que vive en el prefijo de un log que apendea no
+            # puede prestarse como declaración de esta corrida.
+            evidencia = self._evidencia_de_rutas(de_esta_corrida, tool)
             errors = list(terminales)
             if motivo:
                 errors.append(motivo)
@@ -4465,6 +4754,22 @@ class DynDOLODRunner:
                     "completitud). La corrida quedó a medias o el log no llegó a escribirse entero."
                 )
 
+            # FAIL-CLOSED DE PROCEDENCIA (P1 de la revisión de #592). El eco del
+            # `-d:` es evidencia ATRIBUIBLE a esta corrida —la delimitó
+            # `_validar_completitud_de_la_corrida`— y no ambigua (si lo fuera, el
+            # veredicto sería INDETERMINADO). Un `DIFIERE` afirma que el binario
+            # parseó un árbol de datos DISTINTO del configurado: los LODs podrían
+            # estar generados sobre otro `Data`, y el artefacto presente sólo prueba
+            # el destino y la FORMA de la salida, no su procedencia. Se emite en
+            # TODOS los desenlaces —con y sin artefacto— porque la contradicción no
+            # depende de que la salida haya aparecido, y sin el mensaje el lanzador
+            # registraría "Unknown error".
+            #
+            # NO se convierte AUSENTE/INDETERMINADO en fallo: un binario que no
+            # emita el formato, o una config sin `data_dir`, no declaran nada.
+            if evidencia is not None and evidencia.datos_desviados():
+                errors.append(self._diagnostico_de_datos_desviados(tool, evidencia.data))
+
         candidatos = self._candidatos_de_salida(tool)
         if not candidatos:
             return _PostCheck(
@@ -4474,21 +4779,36 @@ class DynDOLODRunner:
                 warnings=warnings,
                 completo=completo,
                 terminales=terminales,
+                evidencia_rutas=evidencia,
             )
 
         for candidato in candidatos:
             if self._tiene_artefacto(tool, candidato):
+                # El artefacto está: la autoridad del DESTINO es el artefacto físico,
+                # así que un desvío de `-o:` no tumba la corrida — se advierte, y la
+                # advertencia viaja además en el resultado estructurado para que GUI
+                # y agentes la vean sin mirar los logs de la aplicación.
+                #
+                # El desvío de `-d:` es otra cosa y ya quedó en `errors` unas líneas
+                # arriba: es fail-closed por procedencia, y lo aplica el predicado de
+                # éxito de los dos lanzadores vía
+                # `_PostCheck.procedencia_de_datos_es_confiable`.
+                advertencias = self._advertencias_de_evidencia_contradictoria(tool, evidencia)
                 return _PostCheck(
                     output_path=candidato,
                     artefacto=True,
                     errors=errors,
-                    warnings=warnings,
+                    warnings=[*warnings, *advertencias],
                     completo=completo,
                     terminales=terminales,
+                    evidencia_rutas=evidencia,
                 )
 
         # Ninguno pasó: se reporta el candidato primario para que el operador
-        # sepa dónde se buscó.
+        # sepa dónde se buscó, y se compone el diagnóstico de Finding 4 — qué
+        # artefacto falta, de qué herramienta, dónde se lo esperaba y, si hay
+        # evidencia verificable, qué ruta declaró el binario.
+        errors.append(self._diagnostico_de_artefacto_ausente(tool, candidatos, evidencia))
         return _PostCheck(
             output_path=candidatos[0],
             artefacto=False,
@@ -4496,7 +4816,156 @@ class DynDOLODRunner:
             warnings=warnings,
             completo=completo,
             terminales=terminales,
+            evidencia_rutas=evidencia,
         )
+
+    def _evidencia_de_rutas(self, ventana_de_la_corrida: str, tool: str) -> EvidenciaDeRutas | None:
+        """Rutas declaradas por el binario en la ventana ATRIBUIBLE a esta corrida.
+
+        Sin I/O: recibe el texto que ya aisló
+        :meth:`_validar_completitud_de_la_corrida` —por eso no pertenece a la
+        familia del post-check que el ancla congela, igual que
+        :func:`clasificar_log`—. Ventana vacía (frontera indeterminada: log
+        reescrito o truncado) devuelve ``None``, que es "no hay evidencia
+        atribuible" y NO "la corrida no declaró rutas": colapsar los dos haría
+        que un log reescrito preste evidencia que no le corresponde.
+        """
+        if not ventana_de_la_corrida:
+            return None
+        layout = self._config.output_layout
+        herramienta = _HERRAMIENTA_POR_TOOL.get(tool)
+        raiz = (
+            layout.raiz_de(herramienta)
+            if isinstance(layout, DynDOLODOutputLayout) and herramienta is not None
+            else None
+        )
+        return evaluar_evidencia_de_rutas(
+            ventana_de_la_corrida,
+            raiz_de_salida=raiz,
+            data_dir=self._config.data_dir,
+        )
+
+    def _advertencias_de_evidencia_contradictoria(self, tool: str, evidencia: EvidenciaDeRutas | None) -> list[str]:
+        """Advertencias ESTRUCTURADAS por el desvío de ``-o:``, con el artefacto presente.
+
+        Nivel WARNING y no error, por las tres razones que el handoff del PR
+        declara: (1) el eco mide el parse del argv, no el destino de escritura —
+        el rig 2026-08-11 lo midió divergente del preset—, así que no impugna al
+        artefacto, que es la autoridad del DESTINO; (2) el formato está medido sólo
+        sobre Alpha-209 y endurecerlo a fallo cerrado extrapolaría el rig a
+        versiones no verificadas; (3) el criterio del eco como condición ya fue
+        retirado una vez (roadmap v1).
+
+        **Sólo la clave ``output``.** El desvío de ``-d:`` es fail-closed: viaja
+        por ``errors`` y por :attr:`_PostCheck.procedencia_de_datos_es_confiable`.
+        Anunciarlo además como advertencia serían dos mensajes con consecuencias
+        distintas sobre la misma evidencia.
+
+        Devuelve las advertencias además de registrarlas. Hasta que esto devolvía
+        ``None``, ``_post_check`` entregaba los warnings parseados del log sin
+        tocar, así que GUI y agentes recibían un resultado exitoso sin ninguna
+        señal de la discrepancia salvo que alguien mirara los logs de la
+        aplicación — el hallazgo que motivó este cambio.
+        """
+        if evidencia is None or not evidencia.salida_desviada():
+            return []
+        ev = evidencia.output
+        mensaje = (
+            f"{tool} declaró en su arranque 'Using Output Path: {ev.declarada}', distinta de la raíz "
+            f"administrada '{ev.configurada}' que Sky-Claw le pasó por -o:. El artefacto está en el "
+            f"subroot administrado, así que la corrida no se tumba por esto: el eco refleja el argumento "
+            f"que el binario parseó, no el destino de escritura. Revisá la configuración y el campo "
+            f"Output de la GUI si la discrepancia se repite."
+        )
+        logger.warning(
+            "%s",
+            mensaje,
+            extra={
+                "operation_type": "dyndolod_ruta_declarada_discrepante",
+                "pipeline_stage": _ETAPA_DYNDOLOD,
+                "tx_id": _tx_id(),
+            },
+        )
+        return [mensaje]
+
+    def _diagnostico_de_datos_desviados(self, tool: str, ev: EvidenciaDeRuta) -> str:
+        """Error de procedencia: el binario declaró un ``-d:`` distinto del configurado.
+
+        Afirma la OBSERVACIÓN —qué declaró el binario y contra qué se lo contrastó—
+        y la consecuencia de aceptación, no una causa física: el eco acredita el
+        argumento que el binario parseó, no el árbol que terminó leyendo. Distinto
+        de una discrepancia de ``-o:``: acá no se afirma que el destino de escritura
+        haya cambiado, se afirma que los DATOS pueden no ser los configurados.
+
+        Va a ``errors`` y, con eso, al registro del lanzador: sin este mensaje una
+        corrida rechazada por procedencia se reportaba como "Unknown error".
+        """
+        return (
+            f"{tool} declaró en su arranque 'Using Skyrim Special Edition Data Path: {ev.declarada}', "
+            f"distinta del Data configurado '{ev.configurada}' que Sky-Claw le pasó por -d:. El artefacto "
+            f"en el subroot administrado acredita el destino y la forma de la salida, no que los LODs se "
+            f"hayan generado sobre el árbol de datos configurado: la corrida no se acepta y su resultado "
+            f"no se empaqueta."
+        )
+
+    def _diagnostico_de_artefacto_ausente(
+        self,
+        tool: str,
+        candidatos: list[pathlib.Path],
+        evidencia: EvidenciaDeRutas | None,
+    ) -> str:
+        """Mensaje de Finding 4: qué falta, dónde se lo esperaba y qué se sabe de la ruta.
+
+        Dos desenlaces, y ninguno inventa causa:
+
+        * **DIFIERE** — el binario declaró una ruta de salida distinta de la
+          administrada: la DISCREPANCIA queda confirmada por la evidencia de esta
+          corrida —las dos rutas nombradas—, pero la CAUSA del artefacto ausente
+          NO. El eco acredita el argumento parseado, no el destino físico de
+          escritura: afirmar causalidad manda al operador a accionar sobre algo
+          que la evidencia no sostiene.
+        * **COINCIDE / AUSENTE / sin ventana** — no hay evidencia de desvío: la
+          causa es POSIBLE y el mensaje sugiere revisar el campo Output de la
+          GUI, que es donde el rig midió la precarga del preset. No se afirma que
+          el preset haya causado el fallo: el valor efectivo no se conoce.
+
+        La categoría se conserva: esto va a ``errors`` y la corrida sigue siendo
+        fallo, porque el artefacto requerido no está.
+        """
+        if tool == "TexGen":
+            artefacto = f"el subárbol '{self.TEXGEN_OUTPUT_NAME}' no vacío"
+        else:
+            # Dos candidatos aceptados (`_candidatos_de_salida`): el subárbol y, por la
+            # interpretación B de `-o:`, el subroot exclusivo mismo.
+            artefacto = (
+                f"el archivo '{_ARTEFACTO_DYNDOLOD}' (en {self.DYNDOLLOD_OUTPUT_NAME}/ "
+                f"o directamente en el subroot de DynDOLOD)"
+            )
+        partes = [
+            f"No se encontró el artefacto de {tool}: falta {artefacto} en el subroot administrado "
+            f"({', '.join(str(c) for c in candidatos)})."
+        ]
+        if evidencia is not None and evidencia.salida_desviada():
+            ev = evidencia.output
+            partes.append(
+                f"Discrepancia CONFIRMADA en esta corrida: {tool} declaró "
+                f"'Using Output Path: {ev.declarada}', distinta de la raíz administrada "
+                f"'{ev.configurada}' que Sky-Claw le pasó por -o:. El eco acredita el argumento que el "
+                f"binario parseó, no el destino de escritura: la causa del artefacto ausente NO queda "
+                f"demostrada por esta evidencia."
+            )
+            if evidencia.datos_desviados():
+                partes.append(
+                    f"También declaró una ruta de datos distinta de la configurada: "
+                    f"'{evidencia.data.declarada}' != '{evidencia.data.configurada}'."
+                )
+        else:
+            partes.append(
+                f"No hay evidencia de una ruta de salida distinta de la administrada: revisá el campo "
+                f"Output en la GUI de {tool} —un preset persistido puede precargarlo con otro valor— "
+                f"y volvé a lanzar. Sin esa evidencia no se puede atribuir el fallo a una causa puntual."
+            )
+        return " ".join(partes)
 
     def _tiene_artefacto(self, tool: str, candidato: pathlib.Path) -> bool:
         """¿``candidato`` contiene una salida válida de ``tool``?
@@ -4796,7 +5265,7 @@ class DynDOLODRunner:
             # bueno y los stages siguientes construían sobre LODs inexistentes.
             # ``is_file()`` y no ``exists()``: un DIRECTORIO llamado DynDOLOD.esp
             # pasaría el chequeo de existencia y se empaquetaría sin el plugin.
-            dyndolod_esp = output_path / "DynDOLOD.esp"
+            dyndolod_esp = output_path / _ARTEFACTO_DYNDOLOD
             if not dyndolod_esp.is_file():
                 # El más tentador de etiquetar de los seis —suena a fallo
                 # definitivo— y sigue siendo el resultado de sondear UN candidato
