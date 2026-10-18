@@ -49,7 +49,13 @@ import aiosqlite
 import pytest
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
-from sky_claw.app.db.locks import DistributedLockManager, LockAcquisitionError, LockInfo, SnapshotTransactionLock
+from sky_claw.app.db.locks import (
+    DistributedLockManager,
+    LockAcquisitionError,
+    LockInfo,
+    LockReleaseError,
+    SnapshotTransactionLock,
+)
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 if TYPE_CHECKING:
@@ -128,6 +134,7 @@ def _contexto(
     snapshots: FileSnapshotManager,
     *,
     agent_id: str = AGENTE,
+    auto_renew: bool = False,
 ) -> SnapshotTransactionLock:
     return SnapshotTransactionLock(
         lock_manager=gestor,
@@ -135,7 +142,7 @@ def _contexto(
         resource_id=RECURSO,
         agent_id=agent_id,
         target_files=[],
-        auto_renew=False,
+        auto_renew=auto_renew,
     )
 
 
@@ -156,6 +163,23 @@ def _instalar_ventana(
     alcanzada = asyncio.Event()
     liberar = asyncio.Event()
     commit_ejecutado = asyncio.Event()
+
+    if ventana == "antes_del_insert":
+        # Cancelación antes de adquirir (antes del INSERT).
+        original_acquire = DistributedLockManager.acquire_lock
+
+        async def acquire_con_puerta_previa(
+            self: DistributedLockManager,
+            resource_id: str,
+            agent_id: str,
+            ttl: float | None = None,
+        ) -> LockInfo:
+            alcanzada.set()
+            await liberar.wait()
+            return await original_acquire(self, resource_id, agent_id, ttl)
+
+        monkeypatch.setattr(DistributedLockManager, "acquire_lock", acquire_con_puerta_previa)
+        return alcanzada, liberar, commit_ejecutado
 
     if ventana == "tras_el_retorno":
         # Reproducción del issue: la demora se inyecta DESPUÉS de que la
@@ -220,7 +244,7 @@ async def _cancelar_en_la_ventana(
 # =============================================================================
 
 
-@pytest.mark.parametrize("ventana", ["antes_del_commit", "tras_el_commit", "tras_el_retorno"])
+@pytest.mark.parametrize("ventana", ["antes_del_insert", "antes_del_commit", "tras_el_commit", "tras_el_retorno"])
 async def test_ninguna_ventana_de_cancelacion_deja_la_lease_viva(
     gestor: DistributedLockManager,
     snapshots: FileSnapshotManager,
@@ -230,10 +254,11 @@ async def test_ninguna_ventana_de_cancelacion_deja_la_lease_viva(
 ) -> None:
     """Cancelación en cualquier punto de la adquisición ⇒ cero lease residual.
 
-    Las tres ventanas comparten el invariante y difieren en el estado del
-    commit: en vuelo, persistido, y ya retornado. Enumerarlas (en vez de
-    muestrear una) es lo que impide que el fix cubra sólo el caso que el autor
-    tenía en la cabeza.
+    Las cuatro ventanas comparten el invariante y difieren en el estado de la
+    adquisición: antes del INSERT, con el INSERT ejecutado y el commit en vuelo,
+    con el commit persistido, y con el LockInfo ya retornado. Enumerarlas (en
+    vez de muestrear una) es lo que impide que el fix cubra sólo el caso que el
+    autor tenía en la cabeza.
     """
     alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, ventana)
     contexto = _contexto(gestor, snapshots)
@@ -360,6 +385,63 @@ async def test_la_compensacion_no_libera_una_lease_del_mismo_agente_con_otro_tok
     assert fila == (AGENTE, hermana.acquired_at)
 
 
+@pytest.mark.parametrize("reclamante", ["otro-proceso", AGENTE])
+async def test_la_compensacion_con_token_no_borra_lease_reclamada_antes_del_delete(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    db_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reclamante: str,
+) -> None:
+    """Si la lease adquirida expira y es reclamada antes del DELETE compensatorio, no se borra.
+
+    A diferencia de los dos casos anteriores (donde el tercero o hermano ya tenía
+    el lock antes de empezar), acá nuestra adquisición SÍ gana el lock (token T1),
+    se cancela tras el commit y, justo antes de que ``release_lock`` ejecute el
+    DELETE de compensación, otro propietario (o un hermano con el mismo ``agent_id``)
+    reclama la fila con un token nuevo T2 != T1. Como la compensación pasa T1 a
+    ``release_lock``, el DELETE no matchea T2 y la lease reclamada sobrevive.
+    """
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    original_release = DistributedLockManager.release_lock
+    token_reclamado = {"valor": 0.0}
+    token_enviado: list[float | None] = []
+
+    async def release_con_reclamo_previo(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        token_enviado.append(acquired_at)
+        assert acquired_at is not None
+        nuevo_token = acquired_at + 100.0
+        token_reclamado["valor"] = nuevo_token
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE resource_locks SET agent_id = ?, acquired_at = ?, expires_at = ? WHERE resource_id = ?",
+                (reclamante, nuevo_token, nuevo_token + 60.0, resource_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return await original_release(self, resource_id, agent_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_con_reclamo_previo)
+    contexto = _contexto(gestor, snapshots)
+
+    tarea = asyncio.create_task(contexto.__aenter__())
+    await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
+
+    assert len(token_enviado) == 1 and token_enviado[0] is not None
+    assert _fila_en_disco(db_path) == (reclamante, token_reclamado["valor"]), (
+        f"el DELETE compensatorio borró la lease reclamada por '{reclamante}' con otro token"
+    )
+    assert contexto.lock_info is None
+
+
 # =============================================================================
 # Cancelación durante el cleanup, idempotencia y heartbeat
 # =============================================================================
@@ -414,6 +496,51 @@ async def test_una_segunda_cancelacion_durante_el_cleanup_no_deja_lease(
         await asyncio.wait_for(tarea, timeout=10.0)
 
     assert _fila_en_disco(db_path) is None, "la segunda cancelación abandonó el cleanup"
+    assert contexto.lock_info is None, "la segunda cancelación dejó lock_info publicado"
+
+
+async def test_fallo_de_release_durante_cleanup_cancelado_no_se_traga_la_cancelacion(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si ``release_lock`` falla con ``LockReleaseError`` tras una segunda cancelación,
+    ``_safe_release`` propaga ``CancelledError`` y nunca deja ``lock_info`` publicado.
+    """
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    liberando = asyncio.Event()
+    puerta_del_release = asyncio.Event()
+
+    async def release_que_falla(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        liberando.set()
+        await puerta_del_release.wait()
+        raise LockReleaseError("simulated release failure")
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_que_falla)
+
+    contexto = _contexto(gestor, snapshots)
+    tarea = asyncio.create_task(contexto.__aenter__())
+
+    await asyncio.wait_for(alcanzada.wait(), timeout=10.0)
+    tarea.cancel()
+    await asyncio.sleep(0)
+    liberar.set()
+
+    await asyncio.wait_for(liberando.wait(), timeout=10.0)
+    tarea.cancel()
+    await asyncio.sleep(0)
+    puerta_del_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10.0)
+
+    assert contexto.lock_info is None
 
 
 async def test_la_liberacion_es_idempotente_y_no_borra_la_lease_readquirida(
@@ -453,9 +580,9 @@ async def test_la_cancelacion_no_deja_un_heartbeat_huerfano(
     db_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Una adquisición cancelada no puede dejar el heartbeat renovando la lease."""
+    """Una adquisición cancelada (con ``auto_renew=True``) no puede dejar el heartbeat vivo."""
     alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
-    contexto = _contexto(gestor, snapshots)
+    contexto = _contexto(gestor, snapshots, auto_renew=True)
 
     tarea = asyncio.create_task(contexto.__aenter__())
     await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
@@ -463,6 +590,7 @@ async def test_la_cancelacion_no_deja_un_heartbeat_huerfano(
     vivos = [t for t in asyncio.all_tasks() if (t.get_name() or "").startswith(f"lock-heartbeat-{RECURSO}")]
     assert vivos == [], f"quedó un heartbeat vivo para una adquisición cancelada: {vivos}"
     assert _fila_en_disco(db_path) is None
+    assert contexto.lock_info is None
 
 
 async def test_adquisicion_completa_y_luego_cancelacion_libera_la_lease(

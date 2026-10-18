@@ -976,9 +976,7 @@ class SnapshotTransactionLock:
         # resultado es una cancelación de la adquisición misma no hay token y no
         # hay nada que liberar (la fila, si llegó a escribirse, expira por TTL).
         if info is not None:
-            self.lock_info = info
-            if await self._safe_release():
-                self.lock_info = None
+            await self._safe_release(acquired_at=info.acquired_at)
         raise cancelacion
 
     async def __aenter__(self) -> SnapshotTransactionLock:
@@ -1011,7 +1009,10 @@ class SnapshotTransactionLock:
             # Includes asyncio.CancelledError: never leak the lock if snapshot
             # creation fails OR the task is cancelled before the context is
             # fully entered (in which case __aexit__ never runs to release it).
-            await self._safe_release()
+            try:
+                await self._safe_release()
+            finally:
+                self.lock_info = None
             raise
 
         if self._auto_renew:
@@ -1250,40 +1251,53 @@ class SnapshotTransactionLock:
             )
         )
         cancelacion: asyncio.CancelledError | None = None
-        while True:
-            try:
-                resultado = await asyncio.shield(tarea)
-                break
-            except asyncio.CancelledError as exc:
-                cancelacion = cancelacion or exc
-                if not tarea.done():
-                    # Cancelaron al que espera, no a la liberación: se vuelve a
-                    # esperar el MISMO task. Abandonarlo dejaría el DELETE a
-                    # medias, sin resultado definitivo.
-                    continue
-                if not tarea.cancelled():
-                    # La liberación terminó justo cuando llegó la cancelación:
-                    # el resultado ya está disponible (puede levantar LockReleaseError).
-                    resultado = tarea.result()
+        try:
+            while True:
+                try:
+                    resultado = await asyncio.shield(tarea)
                     break
-                logger.warning(
-                    "Liberación cancelada a mitad; reintentando el DELETE (idempotente)",
-                    extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
-                )
-                tarea = asyncio.ensure_future(
-                    self._lock_manager.release_lock(
-                        resource_id=self._resource_id,
-                        agent_id=self._agent_id,
-                        acquired_at=acquired_at,
+                except asyncio.CancelledError as exc:
+                    cancelacion = cancelacion or exc
+                    if not tarea.done():
+                        # Cancelaron al que espera, no a la liberación: se vuelve a
+                        # esperar el MISMO task. Abandonarlo dejaría el DELETE a
+                        # medias, sin resultado definitivo.
+                        continue
+                    if not tarea.cancelled():
+                        # La liberación terminó justo cuando llegó la cancelación:
+                        # el resultado ya está disponible (puede levantar LockReleaseError).
+                        resultado = tarea.result()
+                        break
+                    logger.warning(
+                        "Liberación cancelada a mitad; reintentando el DELETE (idempotente)",
+                        extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
                     )
+                    tarea = asyncio.ensure_future(
+                        self._lock_manager.release_lock(
+                            resource_id=self._resource_id,
+                            agent_id=self._agent_id,
+                            acquired_at=acquired_at,
+                        )
+                    )
+        except Exception as release_exc:
+            if cancelacion is not None:
+                logger.error(
+                    "Failed to release lock (will expire by TTL): %s",
+                    release_exc,
+                    extra={
+                        "resource_id": self._resource_id,
+                        "agent_id": self._agent_id,
+                    },
                 )
+                raise cancelacion from release_exc
+            raise
         if cancelacion is not None:
             # El DELETE ya terminó: la cancelación se propaga igual, porque el
             # llamador pidió terminar (el cleanup no se la traga).
             raise cancelacion
         return resultado
 
-    async def _safe_release(self) -> bool:
+    async def _safe_release(self, *, acquired_at: float | None = None) -> bool:
         """Release the lock, swallowing errors so the original exception wins.
 
         Returns ``True`` when the lease was released. Goes through
@@ -1293,7 +1307,11 @@ class SnapshotTransactionLock:
         to prevent.
         """
         try:
-            token = None if self.lock_info is None else self.lock_info.acquired_at
+            token = (
+                acquired_at
+                if acquired_at is not None
+                else (None if self.lock_info is None else self.lock_info.acquired_at)
+            )
             return await self._liberar_definitivo(token)
         except Exception as release_exc:
             logger.error(
