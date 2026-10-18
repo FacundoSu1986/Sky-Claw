@@ -1,0 +1,32 @@
+CI / GITHUB — ESTADO AL CIERRE DE LA CORRIDA (HEAD 761527cd, antes de este doc)
+
+PR #739: OPEN, no draft.
+  baseRefOid: 9fe88cb48ddbe01823da86da9eedc5dad7f260cd
+  headRefOid: 761527cd7d89303f1237f9d0386abb8376d6c568
+  origin/main al cierre: 1ddc8c8e0373c1366cea9fd3eaca701a522187ae
+  La rama está behind 18 respecto de main. No se hizo merge ni rebase.
+  Test-merge no destructivo: git merge-tree --write-tree --name-only origin/main HEAD
+    → tree c88dc1b817d045ae5b385c3ef435db1b79f83abb, exit 0, sin conflictos.
+    No se ejecutó un checkout del merge ni tests sobre el árbol fusionado.
+
+Checks observados (run 38963879043 / 38963873042, head 761527cd):
+  SUCCESS: Lint Ruff (3.11/3.12), Mypy (3.11/3.12), Tests Windows 3.11/3.12,
+           POSIX Core, Security Scan, Build, CodeQL, CodeRabbit, Qodo Auto-revisión.
+  FAILURE: Qodo Merge - Regression & Test Oracle
+           run 38963880570, job 117222684320, attempt 2, 2026-10-16T22:28:22Z.
+           Causa observada: litellm.Timeout contra OpenRouter y respuesta sin
+           mapping de review. Es un fallo de infraestructura del bot, NO un
+           fallo de pytest del PR. No se califica como SUCCESS ni se le concede
+           excepción.
+
+Threads:
+  GraphQL: 7 review threads; 6 resueltos/outdated; 1 ABIERTO:
+    PRRT_kwDOR1JjU86s_sXd — P1 "Fail runs that declare a different Data root"
+    (chatgpt-codex-connector), path sky_claw/local/tools/dyndolod_runner.py.
+    NO se resolvió por esta sesión; la decisión queda al Tech Lead.
+  El hilo P2 de warnings estructurados y los hilos de redacción quedaron
+  resueltos por el autor en commits anteriores.
+
+Post-push de este commit documental: se dispararán nuevos checks; no se
+declaran verdes por anticipado. El veredicto de la corrida no depende de que
+Qodo esté verde.

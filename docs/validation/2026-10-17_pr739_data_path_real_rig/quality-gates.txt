@@ -1,0 +1,26 @@
+QUALITY GATES — EJECUTADOS CON EL VENV DEL WORKTREE
+
+ruff check sky_claw/ scripts/ tests/      → All checks passed! (exit 0)
+ruff format --check sky_claw/ scripts/ tests/ → 869 files already formatted (exit 0)
+mypy sky_claw/ scripts/                  → Success: no issues found in 366 source files (exit 0)
+git diff --check                         → exit 0 (worktree limpio antes de este doc)
+
+pytest focalizado (18 archivos test_dyndolod*.py):
+  1206 passed, 2 failed, 10 skipped in 534.69 s (exit 1)
+
+Fallos:
+  1) tests/test_dyndolod_workspace.py::test_el_heartbeat_mantiene_viva_la_lease_de_ownership
+     → falló en la suite completa; PASÓ al reejecutarlo solo (flaky bajo carga).
+  2) tests/test_dyndolod_workspace.py::test_la_cancelacion_durante_la_resolucion_libera_la_lease
+     → falló también en aislamiento (consistente):
+     AssertionError: la cancelación dejó la lease viva
+     LockInfo(resource_id='dyndolod-ownership-...', acquired_at=..., expires_at=...)
+     El test espera get_lock_info(rid) is None tras cancelar resolver_workspace.
+     No se modificó el test ni el código; queda para Tech Lead.
+
+Cobertura de los 12 casos negativos del pedido:
+  Casos 1–10: evidence/negative-matrix.json (evaluador real del PR, logs sintéticos).
+  Casos 11–12: tests/test_dyndolod_service.py dentro de la suite focalizada
+  (TexGen fallido no arranca DynDOLOD; cancelación no publica éxito).
+
+No se crearon cambios de código artificiales para el rig.
