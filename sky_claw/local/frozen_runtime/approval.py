@@ -741,7 +741,7 @@ def _exigir_root_local(root_id: str, *, esperado: str, ruta: pathlib.Path) -> No
 
     Es exactamente la comprobación que el journal hace sobre sus reservas de
     ``finalization_seq`` (``root_id_esperado``): mismo mecanismo, misma razón. Se
-    verifica al LEER, no al escribir: un campo que sólo se escribe es decoración.
+    verifica al LEER y antes de escribir un witness: un campo que sólo se escribe es decoración.
     """
     if root_id != esperado:
         raise ApprovalRootAjenoError(
