@@ -210,7 +210,24 @@ async def test_cerrar_con_un_trabajo_vivo_avisa_la_cancelacion_al_operador():
     assert len(avisos.mensajes) == 1 and avisos.mensajes[0].startswith("⏹️")
 
 
-async def test_un_aviso_de_cancelacion_colgado_no_retiene_la_cancelacion():
+async def test_cerrar_antes_de_que_el_trabajo_arranque_avisa_la_cancelacion():
+    """Lanzado y cerrado en la misma vuelta del loop: la task se cancela antes de entrar
+    a `_correr`, así que su handler nunca corre. `cerrar` cierra el trabajo igual, y el
+    aviso sale UNA vez (review CodeRabbit, PR #740)."""
+    servicio = ServicioFalso(bloquear=True)
+    avisos = Avisos()
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: servicio, notificar=avisos)
+    await gestor.iniciar(preset="Medium", run_texgen=True, create_snapshot=True, interaction_mode="desatendido")
+
+    await gestor.cerrar()  # sin ceder el loop: la task todavía no arrancó
+
+    assert gestor.actual.estado == "cancelado"
+    assert not gestor.en_curso()
+    assert len(avisos.mensajes) == 1 and avisos.mensajes[0].startswith("⏹️")
+    assert servicio.llamadas == []
+
+
+async def test_cerrar_con_aviso_colgado_no_retiene_la_cancelacion():
     servicio = ServicioFalso(bloquear=True)
 
     async def _colgado(_mensaje: str) -> None:

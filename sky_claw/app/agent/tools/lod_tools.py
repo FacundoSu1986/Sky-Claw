@@ -244,16 +244,7 @@ class GestorDeTrabajosDeLods:
             trabajo.estado = "en_curso"
             resultado = await servicio.execute(**trabajo.parametros)
         except asyncio.CancelledError:
-            trabajo.estado = "cancelado"
-            trabajo.terminado_en = time.time()
-            # Quien lanzó la etapa 9 desde Telegram no está en la PC: sin este
-            # aviso, un apagado de la app lo deja esperando un veredicto que no
-            # llega. Acotado y best-effort; la cancelación se re-lanza igual.
-            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-                await asyncio.wait_for(
-                    self._avisar(resumen_para_el_operador(trabajo)),
-                    timeout=PLAZO_DEL_AVISO_DE_CANCELACION_S,
-                )
+            await self._registrar_cancelacion(trabajo)
             raise
         except Exception as exc:  # noqa: BLE001 -- boundary del trabajo: el servicio no debería lanzar
             logger.exception("la etapa 9 remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
@@ -283,6 +274,25 @@ class GestorDeTrabajosDeLods:
             ),
         }
         return False
+
+    async def _registrar_cancelacion(self, trabajo: TrabajoDeLods) -> None:
+        """Cierra el trabajo como ``cancelado`` y avisa al operador, UNA vez.
+
+        Quien lanzó la etapa 9 desde Telegram no está en la PC: sin este aviso, un
+        apagado de la app lo deja esperando un veredicto que no llega. Lo llaman
+        los DOS caminos de cancelación: el handler de ``_correr`` y ``cerrar``
+        (para una task cancelada antes de entrar a ``_correr``); el estado
+        terminal hace que el segundo no repita el aviso. Acotado y best-effort.
+        """
+        if trabajo.estado not in _ESTADOS_VIVOS:
+            return
+        trabajo.estado = "cancelado"
+        trabajo.terminado_en = time.time()
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(
+                self._avisar(resumen_para_el_operador(trabajo)),
+                timeout=PLAZO_DEL_AVISO_DE_CANCELACION_S,
+            )
 
     async def _terminar(self, trabajo: TrabajoDeLods, resultado: dict[str, Any]) -> None:
         trabajo.resultado = resultado
@@ -323,6 +333,9 @@ class GestorDeTrabajosDeLods:
                 raise
         except Exception:  # noqa: BLE001 -- shutdown best-effort
             logger.warning("el trabajo de etapa 9 terminó con error durante el cierre", exc_info=True)
+        # Una task cancelada ANTES de entrar a `_correr` nunca ejecuta su handler:
+        # el trabajo seguiría "vivo" y el operador sin aviso. No-op si ya cerró.
+        await self._registrar_cancelacion(trabajo)
 
 
 async def generate_lods(
