@@ -1590,3 +1590,69 @@ def test_crear_witness_ajeno_falla_antes_de_escribir(tmp_path: pathlib.Path) -> 
         approval_module._crear_witness(handle, destino, witness, ledger=approval_module._ledger_genesis(destino))
     assert _instantanea_state(destino) == antes
     assert not (issuances_state_dir(destino) / "1.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fuente de activación: el hermano del validador del journal
+# ---------------------------------------------------------------------------
+
+
+def test_una_fuente_parcial_no_se_puede_aprobar(tmp_path: pathlib.Path) -> None:
+    """§36.3: una fuente a medias no es una observación.
+
+    ``journal._validar_source_activation`` ya rechaza un ``SourceActivation`` con
+    tres de sus cuatro campos. El validador de la aprobación sólo miraba la forma
+    de los campos PRESENTES y aceptaba el parcial, así que la asimetría tenía un
+    costo concreto y asimétrico: la aprobación se emitía, se QUEMABA al consumirse
+    (burn-first) y recién el ``CREATE`` del journal la rechazaba por parcial — el
+    dueño quedaba sin aprobación y sin transición.
+    """
+    root = _root(tmp_path)
+    with pytest.raises(ApprovalSchemaError, match="PARCIAL"):
+        _proponer(root, source_activation=_fuente(effective_runtime_evidence=None))
+
+
+def test_la_fuente_vacia_sigue_siendo_legitima(tmp_path: pathlib.Path) -> None:
+    """El arranque limpio (§36.8) es los CUATRO en null: rechazar el parcial no
+    puede degenerar en rechazar el bootstrap."""
+    root = _root(tmp_path)
+    propuesta = _proponer(
+        root,
+        source_activation=SourceActivation(
+            generation_id=None,
+            clone_id=None,
+            runtime_setup_id=None,
+            effective_runtime_evidence=None,
+        ),
+    )
+    assert propuesta.scope.source_activation.generation_id is None
+
+
+def test_el_ledger_que_no_coincide_con_su_witness_se_reconstruye(tmp_path: pathlib.Path) -> None:
+    """La caché puede quedar ATRÁS, pero no puede CONTRADECIR a su autoridad.
+
+    Un ``approval.json`` restaurado con la misma ``approval_seq``, el mismo
+    lifecycle y una revisión alta —pero con OTRO ``approval_id``— satisface
+    ``max(H,T) == last_issued`` y la clasificación devolvía ``CONSISTENT``.
+
+    El daño no es de autorización sino de bloqueo permanente: la propuesta ve una
+    aprobación viva, el consumo rechaza tanto el id del ledger como el del
+    witness, y la reconciliación se niega a reconstruir una caché que §37.6
+    declara derivable de la evidencia durable. El witness es la autoridad; si
+    discrepan, la caché se reescribe.
+    """
+    root = _root(tmp_path)
+    propuesta, _ = _emitir_fixture(root)
+    ruta = approval_ledger_path(root)
+    payload = json.loads(ruta.read_text(encoding="utf-8"))
+    payload["last_issued_approval_id"] = T2
+    ruta.write_text(json.dumps(payload), encoding="utf-8")
+
+    veredicto, _motivo = clasificar_autoridad(cargar_ledger_aprobacion(root), derivar_autoridad_aprobacion(root))
+    assert veredicto is not VeredictoAutoridad.CONSISTENT
+
+    reconciliacion = reconciliar_aprobacion(root)
+    assert reconciliacion.cache_reconstruida is True
+    reconstruido = cargar_ledger_aprobacion(root).ledger
+    assert reconstruido is not None
+    assert reconstruido.last_issued_approval_id == propuesta.scope.approval_id

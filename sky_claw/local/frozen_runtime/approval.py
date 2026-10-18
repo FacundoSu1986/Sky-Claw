@@ -521,12 +521,13 @@ def calcular_approval_scope_digest(scope: ApprovalScope) -> str:
 def _validar_source_activation(fuente: object, *, etiqueta: str) -> SourceActivation:
     if not isinstance(fuente, SourceActivation):
         raise ApprovalSchemaError(f"{etiqueta}: 'source_activation' debe ser SourceActivation")
-    for campo, generacion in (
+    campos = (
         ("generation_id", True),
         ("clone_id", False),
         ("runtime_setup_id", False),
         ("effective_runtime_evidence", False),
-    ):
+    )
+    for campo, generacion in campos:
         valor = getattr(fuente, campo)
         if valor is None:
             # El source puede ser NONE (arranque limpio: §36.8). Un `None` es un
@@ -537,6 +538,21 @@ def _validar_source_activation(fuente: object, *, etiqueta: str) -> SourceActiva
             _exigir_generation_id(valor, campo=campo, etiqueta=etiqueta)
         else:
             _exigir_texto(valor, campo=campo, etiqueta=etiqueta)
+    # §36.3: o el bootstrap íntegramente vacío (los cuatro en null) o la terna
+    # completa con su `effective_runtime_evidence`. Es el MISMO contrato que
+    # `journal._validar_source_activation` ya hace cumplir en el `CREATE` del
+    # PENDING; sin este chequeo la asimetría costaba caro y en la dirección peor:
+    # la aprobación se emitía, se QUEMABA al consumirse (burn-first) y recién el
+    # journal la rechazaba por parcial, dejando al dueño sin aprobación y sin
+    # transición. Una fuente a medias no es una observación.
+    presentes = [campo for campo, _ in campos if getattr(fuente, campo) is not None]
+    if presentes and len(presentes) != len(campos):
+        faltantes = sorted({campo for campo, _ in campos} - set(presentes))
+        raise ApprovalSchemaError(
+            f"{etiqueta}: 'source_activation' PARCIAL: presentes {sorted(presentes)}, faltantes {faltantes}. "
+            "O el bootstrap íntegramente vacío (los cuatro en null) o la terna completa con su "
+            "effective_runtime_evidence (§36.3): una fuente a medias no es una observación."
+        )
     return fuente
 
 
@@ -1376,6 +1392,32 @@ def clasificar_autoridad(
             VeredictoAutoridad.INCONSISTENT_AUTHORITY,
             f"el lifecycle derivado es {autoridad.lifecycle.value} y el ledger declara {ledger.state.value}",
         )
+    # La caché DERIVA del witness (§37.6): si declara una emisión con otra
+    # identidad para la misma ``approval_seq``, no está «coherente» — está
+    # contradiciendo a su autoridad. No es un riesgo de autorización (el witness
+    # manda), pero clasificarlo CONSISTENT sí es un defecto: la propuesta ve una
+    # aprobación viva, el consumo rechaza el id del ledger Y el del witness, y la
+    # reconciliación se niega a reconstruir una caché que es derivable. El
+    # resultado es un root bloqueado para siempre sin diagnóstico para el
+    # operador. La evidencia durable es coherente, así que se repara HACIA
+    # ADELANTE, igual que S1.
+    if ledger.last_issued_approval_seq > 0:
+        witness = next(
+            (item for item in autoridad.witnesses if item.approval_seq == ledger.last_issued_approval_seq),
+            None,
+        )
+        if witness is not None and (
+            witness.approval_id != ledger.last_issued_approval_id
+            or witness.approval_scope_digest != ledger.last_issued_scope_digest
+            or witness.approval_provenance != ledger.last_issued_provenance
+        ):
+            return (
+                VeredictoAutoridad.LEDGER_RETROCEDIDO,
+                f"el ledger declara la emisión {ledger.last_issued_approval_seq} con identidad "
+                f"({ledger.last_issued_approval_id}, {ledger.last_issued_scope_digest}) y el witness inmutable "
+                f"dice ({witness.approval_id}, {witness.approval_scope_digest}): la caché contradice a su "
+                "autoridad y se reconstruye desde el store",
+            )
     # N6 — retrocede SÓLO la revisión, con evidencia coherente (§45.10.1).
     if ledger.approval_revision < autoridad.revision_minima:
         return (
