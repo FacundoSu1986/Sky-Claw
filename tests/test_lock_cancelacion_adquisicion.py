@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -51,10 +52,14 @@ import pytest
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.app.db.locks import (
     DistributedLockManager,
+    EstadoDeCleanupDeLease,
     LockAcquisitionError,
     LockInfo,
     LockReleaseError,
     SnapshotTransactionLock,
+    adquirir_lease_definitiva,
+    drenar_tareas_de_cleanup_pendientes,
+    tareas_de_cleanup_pendientes,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
@@ -1309,3 +1314,116 @@ async def test_el_teardown_del_fixture_ejecuta_shutdown_all_aunque_close_falle()
 
     mgr.close.assert_awaited_once()
     lifecycle.shutdown_all.assert_awaited_once()
+
+
+async def test_cancelar_durante_backoff_de_reintentos_aborta_de_inmediato_sin_esperar_cleanup_timeout(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CodeRabbit #742 (4309033415): si el recurso está tomado por otro propietario
+    y ``acquire_lock`` está durmiendo en backoff (p.ej. instalador con 180 reintentos
+    y backoff de 10 s), cancelar al llamador debe despertar de inmediato con
+    ``SIN_LEASE``, sin esperar ``cleanup_timeout`` ni dejar una tarea supervisada
+    reintentando en segundo plano.
+    """
+    db_path = tmp_path / "backoff_cancel.db"
+    mgr = DistributedLockManager(
+        db_path,
+        default_ttl=3600.0,
+        max_retries=180,
+        backoff_base=10.0,
+        backoff_max=10.0,
+    )
+    await mgr.initialize()
+    try:
+        dueño = await mgr.acquire_lock(RECURSO, "propietario-legitimo", ttl=3600.0)
+        en_backoff = asyncio.Event()
+        original_wait_for = asyncio.wait_for
+
+        async def wait_for_con_senal(fut: object, timeout: float | None = None) -> object:
+            if timeout == 10.0 and not en_backoff.is_set():
+                en_backoff.set()
+            return await original_wait_for(fut, timeout=timeout)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("sky_claw.app.db.locks.asyncio.wait_for", wait_for_con_senal)
+
+        estados: list[EstadoDeCleanupDeLease] = []
+        t0 = time.monotonic()
+        tarea = asyncio.create_task(
+            adquirir_lease_definitiva(
+                mgr,
+                RECURSO,
+                "instalador-en-espera",
+                ttl=3600.0,
+                cleanup_timeout=5.0,
+                on_estado=estados.append,
+            )
+        )
+        await asyncio.wait_for(en_backoff.wait(), timeout=2.0)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tarea, timeout=1.0)
+        demora = time.monotonic() - t0
+
+        assert demora < 1.0, f"cancelar en backoff no debe esperar cleanup_timeout=5.0s (tardó {demora:.3f}s)"
+        assert estados == [EstadoDeCleanupDeLease.SIN_LEASE]
+        assert tareas_de_cleanup_pendientes(mgr) == set()
+        vigente = await mgr.get_lock_info(RECURSO)
+        assert vigente is not None
+        assert vigente.agent_id == "propietario-legitimo"
+        assert vigente.acquired_at == dueño.acquired_at
+    finally:
+        await mgr.close()
+
+
+async def test_drenar_cleanup_cancela_supervisora_que_transito_de_acquire_a_release_bloqueado(
+    gestor: DistributedLockManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CodeRabbit #742 (4309033408): si ``_supervisar_adquisicion_tardia`` ya
+    completó el ``acquire_lock`` tardío y está bloqueada dentro del ``release_lock``
+    tardío cuando corre ``drenar_tareas_de_cleanup_pendientes(cancel_pending=True)``,
+    el drenado cancela la operación subyacente sin engendrar una segunda tarea
+    supervisora huérfana.
+    """
+    mgr = gestor
+    alcanzada_acq, liberar_acq, _ = _instalar_ventana(monkeypatch, "tras_el_commit")
+    en_release = asyncio.Event()
+    desbloquear_release = asyncio.Event()
+    original_release = DistributedLockManager.release_lock
+
+    async def release_bloqueado(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        en_release.set()
+        await desbloquear_release.wait()
+        return await original_release(self, resource_id, agent_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_bloqueado)
+
+    tarea = asyncio.create_task(
+        adquirir_lease_definitiva(
+            mgr,
+            RECURSO,
+            AGENTE,
+            ttl=30.0,
+            cleanup_timeout=0.05,
+        )
+    )
+    await asyncio.wait_for(alcanzada_acq.wait(), timeout=2.0)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=2.0)
+
+    # Ahora desbloqueamos el acquire tardío para que la supervisora transite al release bloqueado.
+    liberar_acq.set()
+    await asyncio.wait_for(en_release.wait(), timeout=2.0)
+    assert len(tareas_de_cleanup_pendientes(mgr)) == 1
+
+    await asyncio.wait_for(drenar_tareas_de_cleanup_pendientes(mgr, cancel_pending=True), timeout=1.0)
+    assert tareas_de_cleanup_pendientes(mgr) == set()
+    assert tareas_de_cleanup_pendientes() == set()

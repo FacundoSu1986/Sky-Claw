@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import math
 import pathlib
@@ -400,8 +401,15 @@ class DistributedLockManager:
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
         ttl_seconds = ttl if ttl is not None else self._default_ttl
+        cancel_event = _CANCELACION_ADQUISICION.get()
 
         for attempt in range(self._max_retries):
+            # Si el llamador de adquirir_lease_definitiva se canceló antes de
+            # abrir el intento SQLite (o tras un intento con rowcount == 0),
+            # abortar de inmediato sin iniciar una nueva transacción (#741).
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError
+
             # PR-1b2a (fix #473): cada INTENTO es su propia unidad. Con
             # lifecycle, ``transaction()`` es owner del commit/rollback/
             # cancelación y el reloj se captura DESPUÉS de adquirir el
@@ -480,6 +488,8 @@ class DistributedLockManager:
             # adquisición nueva válida), así que la recuperación es TTL + ON
             # CONFLICT reclamable (fail-safe). El CancelledError se propaga
             # naturalmente; nunca se devuelve LockInfo ni LockAcquisitionError.
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError
 
             # Exponential backoff with jitter-free cap
             if attempt < self._max_retries - 1:
@@ -493,7 +503,15 @@ class DistributedLockManager:
                     attempt + 1,
                     self._max_retries,
                 )
-                await asyncio.sleep(delay)
+                if cancel_event is not None:
+                    try:
+                        await asyncio.wait_for(cancel_event.wait(), timeout=delay)
+                    except TimeoutError:
+                        pass
+                    else:
+                        raise asyncio.CancelledError
+                else:
+                    await asyncio.sleep(delay)
 
         raise LockAcquisitionError(resource_id, agent_id)
 
@@ -773,6 +791,52 @@ class DistributedLockManager:
 
 _TAREAS_DE_CLEANUP_SUPERVISADAS: set[asyncio.Task[None]] = set()
 _SUBYACENTES_DE_CLEANUP: dict[asyncio.Task[None], asyncio.Future[Any]] = {}
+_CANCELACION_ADQUISICION: contextvars.ContextVar[asyncio.Event | None] = contextvars.ContextVar(
+    "_CANCELACION_ADQUISICION",
+    default=None,
+)
+
+
+def _invocar_release_lock(
+    lock_manager: Any,
+    resource_id: str,
+    agent_id: str,
+    *,
+    acquired_at: float | None,
+    usar_kwargs: bool,
+) -> Any:
+    if usar_kwargs:
+        return lock_manager.release_lock(
+            resource_id=resource_id,
+            agent_id=agent_id,
+            acquired_at=acquired_at,
+        )
+    return lock_manager.release_lock(
+        resource_id,
+        agent_id,
+        acquired_at=acquired_at,
+    )
+
+
+def _invocar_acquire_lock(
+    lock_manager: Any,
+    resource_id: str,
+    agent_id: str,
+    ttl: float | None,
+    *,
+    usar_kwargs: bool,
+) -> Any:
+    if usar_kwargs:
+        return lock_manager.acquire_lock(
+            resource_id=resource_id,
+            agent_id=agent_id,
+            ttl=ttl,
+        )
+    return lock_manager.acquire_lock(
+        resource_id,
+        agent_id,
+        ttl=ttl,
+    )
 
 
 def tareas_de_cleanup_pendientes(lock_manager: Any | None = None) -> set[asyncio.Task[None]]:
@@ -794,25 +858,32 @@ async def drenar_tareas_de_cleanup_pendientes(
     """Espera o cancela las tareas supervisoras de cleanup en vuelo.
 
     Si ``cancel_pending=True`` (usado en ``DistributedLockManager.close()``),
-    cancela tanto la tarea supervisora como la operación subyacente colgada
-    antes de esperar su terminación, garantizando cero tareas huérfanas al
-    apagar. Si ``cancel_pending=False``, espera hasta ``timeout`` a que las
-    tareas supervisoras terminen su recuperación tardía por sí mismas.
+    cancela en bucle tanto cada tarea supervisora como su operación subyacente
+    en vuelo hasta vaciar el conjunto pendiente, garantizando cero tareas
+    huérfanas al apagar incluso si una supervisión tardía transitó de acquire a
+    release durante el drenado. Si ``cancel_pending=False``, espera hasta
+    ``timeout`` a que las tareas supervisoras terminen por sí mismas.
     """
+    if cancel_pending:
+        vistas: set[asyncio.Task[None]] = set()
+        while True:
+            pendientes = [t for t in tareas_de_cleanup_pendientes(lock_manager) if t not in vistas]
+            if not pendientes:
+                break
+            vistas.update(pendientes)
+            subyacentes: list[asyncio.Future[Any]] = []
+            for tarea in pendientes:
+                subyacente = _SUBYACENTES_DE_CLEANUP.get(tarea)
+                if isinstance(subyacente, asyncio.Future) and not subyacente.done():
+                    subyacente.cancel()
+                    subyacentes.append(subyacente)
+                tarea.cancel()
+            await asyncio.gather(*pendientes, *subyacentes, return_exceptions=True)
+        return
+
     pendientes = list(tareas_de_cleanup_pendientes(lock_manager))
     if not pendientes:
         return
-    if cancel_pending:
-        subyacentes: list[asyncio.Future[Any]] = []
-        for tarea in pendientes:
-            subyacente = _SUBYACENTES_DE_CLEANUP.get(tarea)
-            if isinstance(subyacente, asyncio.Future) and not subyacente.done():
-                subyacente.cancel()
-                subyacentes.append(subyacente)
-            tarea.cancel()
-        await asyncio.gather(*pendientes, *subyacentes, return_exceptions=True)
-        return
-
     espera = asyncio.gather(*pendientes, return_exceptions=True)
     if timeout is not None:
         await asyncio.wait_for(espera, timeout=timeout)
@@ -885,6 +956,7 @@ async def liberar_lease_definitiva(
     propagar_cancelacion: bool = True,
     fallo_silencioso: bool = False,
     on_estado: Callable[[EstadoDeCleanupDeLease], None] | None = None,
+    _usar_kwargs: bool = False,
 ) -> bool:
     """Libera una lease por su token ``acquired_at`` con espera acotada ante cancelación.
 
@@ -895,10 +967,12 @@ async def liberar_lease_definitiva(
     operación en vuelo a una tarea supervisada antes de propagar ``CancelledError``.
     """
     tarea = asyncio.ensure_future(
-        lock_manager.release_lock(
+        _invocar_release_lock(
+            lock_manager,
             resource_id,
             agent_id,
             acquired_at=acquired_at,
+            usar_kwargs=_usar_kwargs,
         )
     )
     cancelacion: asyncio.CancelledError | None = None
@@ -963,10 +1037,12 @@ async def liberar_lease_definitiva(
                     extra={"resource_id": resource_id, "agent_id": agent_id},
                 )
                 tarea = asyncio.ensure_future(
-                    lock_manager.release_lock(
+                    _invocar_release_lock(
+                        lock_manager,
                         resource_id,
                         agent_id,
                         acquired_at=acquired_at,
+                        usar_kwargs=_usar_kwargs,
                     )
                 )
     except Exception as release_exc:
@@ -999,14 +1075,15 @@ async def _supervisar_adquisicion_tardia(
     tarea: asyncio.Task[LockInfo],
     resource_id: str,
     agent_id: str,
-    cleanup_timeout: float,
     on_estado: Callable[[EstadoDeCleanupDeLease], None] | None,
+    usar_kwargs: bool,
 ) -> None:
     """Supervisa un ``acquire_lock`` que superó ``cleanup_timeout`` tras cancelación.
 
     No cancela la adquisición a ciegas (lo que perdería ``acquired_at`` si el
     commit gana en SQLite): espera a que termine y, si obtuvo ``LockInfo``,
-    libera únicamente esa lease demostrando su token ``acquired_at``.
+    libera únicamente esa lease demostrando su token ``acquired_at`` dentro de
+    la misma tarea supervisora (sin engendrar una segunda tarea supervisora).
     """
     try:
         info = await asyncio.shield(tarea)
@@ -1029,14 +1106,22 @@ async def _supervisar_adquisicion_tardia(
             on_estado(EstadoDeCleanupDeLease.SIN_LEASE)
         return
 
-    await liberar_lease_definitiva(
-        lock_manager,
-        resource_id,
-        agent_id,
-        acquired_at=info.acquired_at,
-        cleanup_timeout=cleanup_timeout,
-        propagar_cancelacion=False,
-        fallo_silencioso=True,
+    tarea_release = asyncio.ensure_future(
+        _invocar_release_lock(
+            lock_manager,
+            resource_id,
+            agent_id,
+            acquired_at=info.acquired_at,
+            usar_kwargs=usar_kwargs,
+        )
+    )
+    tarea_actual = asyncio.current_task()
+    if tarea_actual is not None:
+        _SUBYACENTES_DE_CLEANUP[tarea_actual] = tarea_release
+    await _supervisar_liberacion_tardia(
+        tarea=tarea_release,
+        resource_id=resource_id,
+        agent_id=agent_id,
         on_estado=on_estado,
     )
 
@@ -1049,14 +1134,18 @@ async def adquirir_lease_definitiva(
     *,
     cleanup_timeout: float = DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS,
     on_estado: Callable[[EstadoDeCleanupDeLease], None] | None = None,
+    _usar_kwargs: bool = False,
 ) -> LockInfo:
     """Adquiere una lease garantizando compensación por token ante cancelación (#741).
 
-    Ejecuta ``lock_manager.acquire_lock(resource_id, agent_id, ttl=ttl)`` en una
-    tarea protegida. Si el llamador es cancelado mientras la adquisición está en
-    vuelo:
+    Ejecuta ``lock_manager.acquire_lock(...)`` en una tarea protegida con un
+    evento de cancelación cooperativa para los sleeps de backoff. Si el llamador
+    es cancelado mientras la adquisición está en vuelo:
 
-    - Espera hasta ``cleanup_timeout`` segundos por el resultado definitivo.
+    - Si ``acquire_lock`` estaba durmiendo en backoff entre reintentos (sin
+      transacción SQLite en curso), despierta de inmediato con ``SIN_LEASE``.
+    - Si había un intento SQLite en vuelo, espera hasta ``cleanup_timeout``
+      segundos por el resultado definitivo.
     - Si la adquisición completó y devolvió ``LockInfo(acquired_at=T)``, libera
       únicamente esa lease pasando ``acquired_at=T`` antes de re-lanzar
       ``CancelledError``.
@@ -1066,14 +1155,22 @@ async def adquirir_lease_definitiva(
       :func:`_supervisar_adquisicion_tardia` para que la libere por token apenas
       complete o deje que se recupere por TTL.
     """
-    tarea = asyncio.create_task(
-        lock_manager.acquire_lock(
-            resource_id,
-            agent_id,
-            ttl=ttl,
-        ),
-        name=f"lock-acquire-{resource_id}",
-    )
+    cancel_event = asyncio.Event()
+    token_ctx = _CANCELACION_ADQUISICION.set(cancel_event)
+    try:
+        tarea = asyncio.create_task(
+            _invocar_acquire_lock(
+                lock_manager,
+                resource_id,
+                agent_id,
+                ttl,
+                usar_kwargs=_usar_kwargs,
+            ),
+            name=f"lock-acquire-{resource_id}",
+        )
+    finally:
+        _CANCELACION_ADQUISICION.reset(token_ctx)
+
     cancelacion: asyncio.CancelledError | None = None
     plazo: float | None = None
     info: LockInfo | None = None
@@ -1113,8 +1210,8 @@ async def adquirir_lease_definitiva(
                     tarea=tarea,
                     resource_id=resource_id,
                     agent_id=agent_id,
-                    cleanup_timeout=cleanup_timeout,
                     on_estado=on_estado,
+                    usar_kwargs=_usar_kwargs,
                 ),
                 name=f"lock-cleanup-acquire-{resource_id}",
             )
@@ -1124,6 +1221,7 @@ async def adquirir_lease_definitiva(
             if cancelacion is None:
                 cancelacion = exc
                 plazo = time.monotonic() + max(0.0, cleanup_timeout)
+            cancel_event.set()
             if not tarea.done():
                 # Sigue en vuelo: NO se abandona dentro de cleanup_timeout.
                 continue
@@ -1163,6 +1261,7 @@ async def adquirir_lease_definitiva(
             propagar_cancelacion=True,
             fallo_silencioso=True,
             on_estado=on_estado,
+            _usar_kwargs=_usar_kwargs,
         )
     elif on_estado is not None:
         on_estado(EstadoDeCleanupDeLease.SIN_LEASE)
@@ -1361,6 +1460,7 @@ class SnapshotTransactionLock:
             ttl=self._ttl,
             cleanup_timeout=self._cleanup_timeout,
             on_estado=self._registrar_estado_cleanup,
+            _usar_kwargs=True,
         )
 
     async def __aenter__(self) -> SnapshotTransactionLock:
@@ -1626,6 +1726,7 @@ class SnapshotTransactionLock:
             propagar_cancelacion=True,
             fallo_silencioso=fallo_silencioso,
             on_estado=self._registrar_estado_cleanup,
+            _usar_kwargs=True,
         )
 
     async def _safe_release(self, *, acquired_at: float | None = None) -> bool:

@@ -41,11 +41,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
-from sky_claw.app.db.locks import (
-    LockAcquisitionError,
-    adquirir_lease_definitiva,
-    liberar_lease_definitiva,
-)
+from sky_claw.app.db.locks import LockAcquisitionError, adquirir_lease_definitiva, liberar_lease_definitiva
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
