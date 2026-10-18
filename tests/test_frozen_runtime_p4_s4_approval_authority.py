@@ -1583,10 +1583,10 @@ def test_crear_witness_ajeno_falla_antes_de_escribir(tmp_path: pathlib.Path) -> 
         ledger_revision_at_issue=0,
     )
     antes = _instantanea_state(destino)
-    with participant_lock(destino, timeout=0.0) as handle:
-        with pytest.raises(ApprovalRootAjenoError, match="root_id"):
-            approval_module._crear_witness(
-                handle, destino, witness, ledger=approval_module._ledger_genesis(destino)
-            )
+    with (
+        participant_lock(destino, timeout=0.0) as handle,
+        pytest.raises(ApprovalRootAjenoError, match="root_id"),
+    ):
+        approval_module._crear_witness(handle, destino, witness, ledger=approval_module._ledger_genesis(destino))
     assert _instantanea_state(destino) == antes
     assert not (issuances_state_dir(destino) / "1.json").exists()
