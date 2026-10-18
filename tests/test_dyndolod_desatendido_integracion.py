@@ -103,9 +103,13 @@ class AprobadorFalso:
         *,
         configuracion: ResultadoConfirmacion = ResultadoConfirmacion.APROBADA,
         modal: ResultadoConfirmacion = ResultadoConfirmacion.APROBADA,
+        modal_pendiente: asyncio.Event | None = None,
     ) -> None:
         self._configuracion = configuracion
         self._modal = modal
+        #: Si está, el operador "no contesta" el modal hasta que el test lo suelte.
+        self._modal_pendiente = modal_pendiente
+        self.esperando_modal = asyncio.Event()
         self.configuraciones: list[SolicitudAprobacionDesatendida] = []
         self.modales: list[object] = []
         self.avisos: list[str] = []
@@ -116,6 +120,9 @@ class AprobadorFalso:
 
     async def aprobar_modal(self, solicitud: object) -> ResultadoConfirmacion:
         self.modales.append(solicitud)
+        if self._modal_pendiente is not None:
+            self.esperando_modal.set()
+            await self._modal_pendiente.wait()
         return self._modal
 
     async def informar(self, *, tool: str, mensaje: str) -> None:
@@ -380,6 +387,150 @@ async def test_un_restore_fallido_no_se_declara_exito(tmp_path, sha_de_alpha209,
     assert len(GuardaDePresets(tmp_path / "estado").pendientes()) == 1
 
 
+# -----------------------------------------------------------------------------
+# Un restore fallido nunca queda sólo en el log (review Codex, PR #740)
+# -----------------------------------------------------------------------------
+#
+# La propiedad: *en TODA salida de `_execute_process` donde el preset no volvió a
+# su snapshot, el resultado de la corrida nombra PRESET_RESTORE_FAILED*. Las
+# salidas son tres: normal (arriba), por excepción después del spawn y por spawn
+# fallido; la cancelación manda sobre el veredicto, pero el código igual queda
+# registrado en la corrida.
+
+
+def _restore_roto(monkeypatch) -> None:
+    def _restaurar_roto(self, registro):
+        raise PresetError("disco de solo lectura")
+
+    monkeypatch.setattr(GuardaDePresets, "restaurar", _restaurar_roto)
+
+
+async def test_un_restore_fallido_tras_un_corte_del_driver_viaja_en_el_corte(tmp_path, sha_de_alpha209, monkeypatch):
+    instalacion = _instalacion(tmp_path)
+    gui = _gui(instalacion, modal_inicial=True)
+    runner = _runner(
+        instalacion, _capacidad(gui, tmp_path / "estado", AprobadorFalso(modal=ResultadoConfirmacion.DENEGADA))
+    )
+    interaccion = _interaccion(instalacion)
+    _restore_roto(monkeypatch)
+
+    with pytest.raises(DynDOLODDesatendidoError) as error:
+        await _ejecutar(runner, gui, instalacion, interaccion)
+
+    mensaje = str(error.value)
+    # Los DOS hechos llegan al operador: por qué cortó y que su preset quedó alterado.
+    assert "PRESET_RESTORE_FAILED" in mensaje and "KNOWN_MODAL_NOT_APPROVED" in mensaje
+    assert interaccion.codigos == [CodigoDesatendido.KNOWN_MODAL_NOT_APPROVED, CodigoDesatendido.PRESET_RESTORE_FAILED]
+    # El corte original queda como causa: la cadena que recorre el veto de rollback no cambia.
+    assert isinstance(error.value.__cause__, DynDOLODDesatendidoError)
+    assert error.value.__cause__.codigo is CodigoDesatendido.KNOWN_MODAL_NOT_APPROVED
+    assert len(GuardaDePresets(tmp_path / "estado").pendientes()) == 1
+
+
+async def test_un_restore_fallido_tras_un_spawn_fallido_viaja_en_el_corte(tmp_path, sha_de_alpha209, monkeypatch):
+    instalacion = _instalacion(tmp_path)
+    gui = _gui(instalacion)
+    runner = _runner(instalacion, _capacidad(gui, tmp_path / "estado", AprobadorFalso()))
+    interaccion = _interaccion(instalacion)
+    _restore_roto(monkeypatch)
+
+    with (
+        mock.patch.object(ddl.asyncio, "create_subprocess_exec", mock.AsyncMock(side_effect=OSError("acceso"))),
+        pytest.raises(DynDOLODDesatendidoError) as error,
+    ):
+        await runner._execute_process(  # noqa: SLF001
+            executable=EXE_LANZADO["TexGen"],
+            args=["-sse"],
+            tool_name="TexGen",
+            interaccion=interaccion,
+        )
+
+    assert error.value.codigo is CodigoDesatendido.PRESET_RESTORE_FAILED
+    assert "acceso" in str(error.value)
+    assert isinstance(error.value.__cause__, DynDOLODExecutionError)
+    assert interaccion.codigos == [CodigoDesatendido.PRESET_RESTORE_FAILED]
+
+
+async def test_un_restore_fallido_durante_una_cancelacion_no_tapa_la_cancelacion(
+    tmp_path, sha_de_alpha209, monkeypatch
+):
+    instalacion = _instalacion(tmp_path)
+    gui = _gui(instalacion, modal_inicial=True)
+    aprobador = AprobadorFalso(modal_pendiente=asyncio.Event())
+    runner = _runner(instalacion, _capacidad(gui, tmp_path / "estado", aprobador))
+    interaccion = _interaccion(instalacion)
+    _restore_roto(monkeypatch)
+
+    tarea = asyncio.create_task(_ejecutar(runner, gui, instalacion, interaccion))
+    await asyncio.wait_for(aprobador.esperando_modal.wait(), timeout=5)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert CodigoDesatendido.PRESET_RESTORE_FAILED in interaccion.codigos
+    assert not gui.proceso_vivo()
+
+
+def test_toda_salida_de_execute_process_pasa_por_la_politica_de_restauracion():
+    """Ancla enumerante: el restore crudo sólo lo llama la política, y la política
+    corre en las DOS salidas de `_execute_process` (spawn fallido y `finally`)."""
+    arbol = _arbol(RUNNER)
+    crudos = {
+        metodo.name
+        for metodo in ast.walk(arbol)
+        if isinstance(metodo, ast.FunctionDef | ast.AsyncFunctionDef)
+        and _llamadas_a(metodo, "_restaurar_preset_sin_gatear")
+    }
+    assert crudos == {"_restaurar_preset_al_salir"}
+    salidas = _llamadas_a(_metodo(arbol, "_execute_process"), "_restaurar_preset_al_salir")
+    assert len(salidas) == 2
+    # El `finally` distingue "salida normal" de "excepción propagándose" con el flag
+    # `salida_normal`, que sube al final del `else`. Eso sólo es verdad si ninguna
+    # rama del `try` retorna y todo `except` re-lanza: se congela acá.
+    proceso = next(
+        nodo
+        for nodo in ast.walk(_metodo(arbol, "_execute_process"))
+        if isinstance(nodo, ast.Try)
+        and any(isinstance(n, ast.Name) and n.id == "salida_normal" for n in ast.walk(nodo))
+    )
+    anidadas = {
+        id(r)
+        for f in ast.walk(proceso)
+        if isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef)
+        for r in ast.walk(f)
+        if isinstance(r, ast.Return)
+    }
+    ramas = [proceso.body, *(h.body for h in proceso.handlers), proceso.orelse]
+    retornos = [
+        r for rama in ramas for st in rama for r in ast.walk(st) if isinstance(r, ast.Return) and id(r) not in anidadas
+    ]
+    assert retornos == []
+    assert all(isinstance(h.body[-1], ast.Raise) for h in proceso.handlers)
+
+
+async def test_un_preset_editado_entre_la_verificacion_y_el_snapshot_no_spawnea(tmp_path, sha_de_alpha209, monkeypatch):
+    """El snapshot se toma de los bytes APROBADOS o no se toma (review Codex, PR #740)."""
+    instalacion = _instalacion(tmp_path)
+    gui = _gui(instalacion)
+    runner = _runner(instalacion, _capacidad(gui, tmp_path / "estado", AprobadorFalso()))
+    interaccion = _interaccion(instalacion)
+    leer = ddl.leer_estado_de_preset
+
+    def _leer_y_editar(ruta, **kwargs):
+        estado = leer(ruta, **kwargs)
+        # Un editor concurrente guarda OTRA configuración justo después de la verificación.
+        ruta.write_bytes(PRESET_TEXGEN.replace(b"StitchObjects=1", b"StitchObjects=0"))
+        return estado
+
+    monkeypatch.setattr(ddl, "leer_estado_de_preset", _leer_y_editar)
+    with pytest.raises(DynDOLODDesatendidoError) as error:
+        _salida, lanzar, _p = await _ejecutar(runner, gui, instalacion, interaccion)
+
+    assert error.value.codigo is CodigoDesatendido.PRESET_MISMATCH
+    assert gui.invocaciones == []
+    assert GuardaDePresets(tmp_path / "estado").pendientes() == []
+
+
 class ProcesoQueElHumanoTermina(ProcesoDeGui):
     """Modo asistido: el humano opera y cierra la herramienta; ``wait()`` lo modela."""
 
@@ -490,7 +641,9 @@ async def test_sin_texgen_la_aprobacion_cubre_solo_dyndolod(tmp_path, sha_de_alp
 async def test_un_residuo_de_preset_se_reconcilia_al_comienzo_de_cualquier_corrida(tmp_path, sha_de_alpha209, modo):
     instalacion = _instalacion(tmp_path)
     estado = tmp_path / "estado"
-    GuardaDePresets(estado).proteger(instalacion["preset_texgen"])
+    GuardaDePresets(estado).proteger(
+        instalacion["preset_texgen"], huella_aprobada=huella_de_configuracion(PRESET_TEXGEN)
+    )
     instalacion["preset_texgen"].write_bytes(b"pisado por una corrida que murio")
     runner = _runner(
         instalacion, _capacidad(None, estado, AprobadorFalso(configuracion=ResultadoConfirmacion.DENEGADA))
@@ -512,6 +665,77 @@ async def test_aprobada_la_configuracion_la_interaccion_lleva_huellas_y_contrato
     assert set(interaccion.aprobadas) == {"TexGen", "DynDOLOD"}
     assert interaccion.aprobadas["DynDOLOD"].huella_preset == huella_de_configuracion(PRESET_DYNDOLOD)
     assert interaccion.aprobadas["TexGen"].contrato is CONTRATO_TEXGEN
+
+
+# -----------------------------------------------------------------------------
+# La aprobación remota se toma ANTES del lock (review CodeRabbit, PR #740)
+# -----------------------------------------------------------------------------
+#
+# Esperar hasta 15 min la respuesta del operador con el lock de etapa 9 tomado y
+# los mods de LOD previos apartados dejaba el juego sin LODs durante la espera, a
+# la GUI bloqueada y, ante un "no", una TX PENDING por una corrida que nunca
+# lanzó nada. La preparación SIN efectos (contrato, huellas, aprobación) va antes;
+# la reconciliación de residuos sigue bajo el lock, porque restaura presets.
+
+
+async def test_la_preparacion_previa_al_lock_no_reconcilia_residuos(tmp_path, sha_de_alpha209):
+    instalacion = _instalacion(tmp_path)
+    estado = tmp_path / "estado"
+    GuardaDePresets(estado).proteger(
+        instalacion["preset_texgen"], huella_aprobada=huella_de_configuracion(PRESET_TEXGEN)
+    )
+    runner = _runner(instalacion, _capacidad(None, estado, AprobadorFalso()))
+
+    preparada = await runner.preparar_interaccion_desatendida(run_texgen=True, preset="Medium")
+
+    assert isinstance(preparada, InteraccionDeCorrida)
+    # Sin el lock, restaurar un preset podría pisar el de una corrida viva de otro proceso.
+    assert len(GuardaDePresets(estado).pendientes()) == 1
+
+
+async def test_una_interaccion_ya_aprobada_no_se_vuelve_a_preguntar(tmp_path, sha_de_alpha209):
+    instalacion = _instalacion(tmp_path)
+    estado = tmp_path / "estado"
+    aprobador = AprobadorFalso()
+    runner = _runner(instalacion, _capacidad(None, estado, aprobador))
+    preparada = await runner.preparar_interaccion_desatendida(run_texgen=True, preset="Medium")
+    GuardaDePresets(estado).proteger(
+        instalacion["preset_dyndolod"], huella_aprobada=huella_de_configuracion(PRESET_DYNDOLOD)
+    )
+
+    interaccion = await runner._preparar_interaccion(  # noqa: SLF001
+        ModoDeInteraccion.DESATENDIDO, run_texgen=True, preset="Medium", preparada=preparada
+    )
+
+    assert interaccion is preparada
+    assert len(aprobador.configuraciones) == 1
+    # Bajo el lock la reconciliación corre igual, con o sin interacción preparada.
+    assert GuardaDePresets(estado).pendientes() == []
+
+
+@pytest.mark.parametrize(
+    ("modo", "modo_preparado"),
+    [
+        (ModoDeInteraccion.ASISTIDO, ModoDeInteraccion.DESATENDIDO),
+        (ModoDeInteraccion.DESATENDIDO, ModoDeInteraccion.ASISTIDO),
+    ],
+    ids=["asistida_con_aprobacion", "desatendida_sin_aprobacion"],
+)
+async def test_una_interaccion_preparada_de_otro_modo_es_violacion_de_contrato(
+    tmp_path, sha_de_alpha209, modo, modo_preparado
+):
+    runner = _runner(_instalacion(tmp_path), _capacidad(None, tmp_path / "estado", AprobadorFalso()))
+    resultado = await runner._preparar_interaccion(  # noqa: SLF001
+        modo, run_texgen=True, preset="Medium", preparada=InteraccionDeCorrida(modo=modo_preparado)
+    )
+    assert isinstance(resultado, DynDOLODPipelineResult)
+    assert resultado.codigos_desatendido == ("UNATTENDED_CONTRACT_VIOLATION",)
+
+
+def test_run_full_pipeline_reenvia_la_interaccion_preparada():
+    pipeline = _metodo(_arbol(RUNNER), "run_full_pipeline")
+    (preparacion,) = _llamadas_a(pipeline, "_preparar_interaccion")
+    assert {kw.arg for kw in preparacion.keywords} >= {"preparada"}
 
 
 # =============================================================================
@@ -557,7 +781,8 @@ def test_todo_retorno_del_servicio_declara_el_modo_de_interaccion():
         for n in ast.walk(_arbol(SERVICIO))
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_attach_preflight"
     ]
-    assert len(llamadas) == 12, "el detector tiene que ver todos los retornos del servicio"
+    # 13: el corte desatendido previo al lock (#740) es un retorno más.
+    assert len(llamadas) == 13, "el detector tiene que ver todos los retornos del servicio"
     for llamada in llamadas:
         assert len(llamada.args) == 3, f"_attach_preflight sin modo en la línea {llamada.lineno}"
 
@@ -659,6 +884,9 @@ def servicio(bus):
 def _servicio_con_runner(servicio, tmp_path, resultado):
     runner = AsyncMock(spec=DynDOLODRunner)
     runner.run_full_pipeline = AsyncMock(return_value=resultado)
+    runner.preparar_interaccion_desatendida = AsyncMock(
+        return_value=InteraccionDeCorrida(modo=ModoDeInteraccion.DESATENDIDO)
+    )
     runner.validate_dyndolod_output = AsyncMock(return_value=True)
     config = _mock_config(tmp_path)
     config.mo2_mods_path = tmp_path / "mods"
@@ -666,6 +894,68 @@ def _servicio_con_runner(servicio, tmp_path, resultado):
     runner._config = config
     servicio._runner = runner
     return runner
+
+
+async def test_un_corte_desatendido_previo_no_toma_el_lock_ni_aparta_los_lods(servicio, bus, tmp_path):
+    """Un "no" del operador (o un build sin contrato) no muta nada ni deja TX PENDING."""
+    runner = _servicio_con_runner(servicio, tmp_path, _make_success_result())
+    corte = DynDOLODPipelineResult(
+        success=False,
+        texgen_result=None,
+        dyndolod_result=None,
+        errors=["UNATTENDED_CONFIGURATION_NOT_APPROVED: el operador no aprobó la configuración desatendida: denegada"],
+        codigos_desatendido=("UNATTENDED_CONFIGURATION_NOT_APPROVED",),
+    )
+    runner.preparar_interaccion_desatendida = AsyncMock(return_value=corte)
+
+    resultado = await servicio.execute(preset="Medium", create_snapshot=True, interaction_mode="desatendido")
+
+    assert resultado["success"] is False
+    assert resultado["unattended_error_codes"] == ["UNATTENDED_CONFIGURATION_NOT_APPROVED"]
+    assert resultado["interaction_mode"] == "desatendido"
+    servicio._lock_manager.acquire_lock.assert_not_awaited()
+    servicio._journal.begin_transaction.assert_not_awaited()
+    runner.run_full_pipeline.assert_not_awaited()
+    # El mod de LODs previo sigue donde estaba: no hubo move-aside.
+    assert (runner._config.mo2_mods_path / "DynDOLOD Output").is_dir()
+    # El ciclo de eventos se cierra igual: started → terminal.
+    temas = [llamada.args[0].topic for llamada in bus.publish.call_args_list]
+    assert temas[0] == "pipeline.dyndolod.started"
+    assert temas[-1] != "pipeline.dyndolod.started"
+
+
+async def test_la_aprobacion_desatendida_precede_al_lock_y_viaja_al_runner(servicio, tmp_path):
+    runner = _servicio_con_runner(servicio, tmp_path, _make_success_result())
+    orden: list[str] = []
+    preparada = InteraccionDeCorrida(modo=ModoDeInteraccion.DESATENDIDO)
+
+    async def _preparar(**_kwargs):
+        orden.append("aprobacion")
+        return preparada
+
+    adquirir = servicio._lock_manager.acquire_lock.side_effect
+    info = servicio._lock_manager.acquire_lock.return_value
+
+    async def _adquirir(*args, **kwargs):
+        orden.append("lock")
+        return info if adquirir is None else await adquirir(*args, **kwargs)
+
+    runner.preparar_interaccion_desatendida = AsyncMock(side_effect=_preparar)
+    servicio._lock_manager.acquire_lock = AsyncMock(side_effect=_adquirir)
+
+    resultado = await servicio.execute(preset="Medium", create_snapshot=False, interaction_mode="desatendido")
+
+    assert resultado["success"] is True
+    assert orden[:2] == ["aprobacion", "lock"]
+    runner.preparar_interaccion_desatendida.assert_awaited_once_with(run_texgen=True, preset="Medium")
+    assert runner.run_full_pipeline.await_args.kwargs["interaccion"] is preparada
+
+
+async def test_en_modo_asistido_no_hay_preparacion_desatendida(servicio, tmp_path):
+    runner = _servicio_con_runner(servicio, tmp_path, _make_success_result())
+    await servicio.execute(preset="Medium", create_snapshot=False)
+    runner.preparar_interaccion_desatendida.assert_not_awaited()
+    assert runner.run_full_pipeline.await_args.kwargs["interaccion"] is None
 
 
 @pytest.mark.parametrize("modo", ["unattended", "DESATENDIDO", "auto", 1])
@@ -779,7 +1069,7 @@ async def test_en_modo_desatendido_un_data_path_desviado_tampoco_es_exito(tmp_pa
     assert DATA_DESVIADA in " ".join(result.errors)
 
 
-def test_la_interaccion_de_la_corrida_no_se_declara_inmutable() -> None:
+def test_interaccion_de_corrida_al_acumular_codigos_no_se_declara_frozen() -> None:
     """``InteraccionDeCorrida.codigos`` ACUMULA los cortes de la corrida: no es frozen.
 
     Declararla frozen con una lista que se muta era un contrato mentiroso: el
@@ -797,14 +1087,17 @@ def test_la_interaccion_de_la_corrida_no_se_declara_inmutable() -> None:
 
 
 @pytest.mark.parametrize("modo", ["desatendido", "asistido"])
-async def test_la_estrategia_gui_reenvia_el_modo_al_servicio(modo: str) -> None:
+async def test_generate_lods_strategy_execute_con_cada_modo_lo_reenvia_al_servicio(modo: str) -> None:
     """Paridad de COMPORTAMIENTO, no sólo de claves: el dispatcher (GUI) pasa
     ``interaction_mode`` al MISMO ``execute`` del servicio (revisión Qodo, PR #740)."""
     from unittest.mock import AsyncMock
 
     from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy
+    from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias
 
     servicio = MagicMock()
     servicio.execute = AsyncMock(return_value={"success": True, "message": ""})
+    # Etapas previas completas: el guard del modo desatendido (SOP §5.2) deja pasar.
+    servicio.verificar_etapas_previas = MagicMock(return_value=EvidenciaDeEtapasPrevias(faltantes=()))
     await GenerateLodsStrategy(servicio).execute({"preset": "High", "interaction_mode": modo})
     servicio.execute.assert_awaited_once_with(preset="High", interaction_mode=modo)

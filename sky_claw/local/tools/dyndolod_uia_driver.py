@@ -1467,6 +1467,12 @@ class ConductorDesatendido:
                 )
             if pantalla.tipo is TipoDePantalla.MODAL_CONOCIDO and pantalla.modal is not None and admite_modales:
                 await self._atender_modal(ctx, ledger, pantalla.modal, modales_atendidos)
+                # La espera humana (hasta `aprobacion_timeout_segundos`) no cuenta
+                # contra el arranque de la GUI: lo que sigue al modal es una fase
+                # de arranque nueva. Acotado: cada modal se atiende una sola vez
+                # (`modales_atendidos`), así que el plazo se reinicia a lo sumo
+                # una vez por modal conocido del contrato.
+                limite = time.monotonic() + capacidad.arranque_timeout_segundos
                 continue
             if pantalla.tipo in {TipoDePantalla.MODAL_CONOCIDO, TipoDePantalla.DIALOGO_DESCONOCIDO}:
                 raise self._error(ctx, CodigoDesatendido.UNEXPECTED_MODAL, pantalla.describir_dialogo())

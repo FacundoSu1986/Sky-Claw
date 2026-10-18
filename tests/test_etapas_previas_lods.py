@@ -103,6 +103,45 @@ def test_sin_cache_de_grass_falta_la_etapa_8(tmp_path):
     assert [f.split(" ")[1] for f in evidencia.faltantes] == ["8"]
 
 
+def _grass_con(raiz: pathlib.Path, crear) -> dict[str, pathlib.Path]:
+    rutas = _perfil(raiz, plugins=_COMPLETO)
+    grass = rutas["overwrite_dir"] / "Grass"
+    grass.mkdir()
+    crear(grass)
+    return rutas
+
+
+def _symlink_o_skip(enlace: pathlib.Path, destino: pathlib.Path) -> None:
+    try:
+        enlace.symlink_to(destino)
+    except (OSError, NotImplementedError):
+        pytest.skip("el entorno no permite crear symlinks")
+
+
+@pytest.mark.parametrize(
+    "crear",
+    [
+        pytest.param(lambda g: (g / "Tamriel.cgid").mkdir(), id="directorio"),
+        pytest.param(lambda g: (g / "Tamriel.cgid").write_bytes(b""), id="vacio"),
+        pytest.param(lambda g: _symlink_o_skip(g / "Tamriel.cgid", g / "no-existe.bin"), id="enlace_colgado"),
+        pytest.param(
+            lambda g: ((g / "real.bin").write_bytes(b"cgid"), _symlink_o_skip(g / "Tamriel.cgid", g / "real.bin")),
+            id="enlace_a_archivo",
+        ),
+    ],
+)
+def test_solo_un_cgid_regular_y_no_vacio_prueba_la_etapa_8(tmp_path, crear):
+    """Un nombre ``*.cgid`` no es un cache: un directorio, un placeholder vacío o un
+    enlace no prueban que No Grass In Objects haya generado algo (review Codex, PR #740)."""
+    evidencia = verificar_etapas_previas_de_lods(**_grass_con(tmp_path, crear))
+    assert [f.split(" ")[1] for f in evidencia.faltantes] == ["8"]
+
+
+def test_la_extension_del_cache_se_compara_sin_mayusculas(tmp_path):
+    rutas = _grass_con(tmp_path, lambda g: (g / "Tamriel.CGID").write_bytes(b"cgid"))
+    assert verificar_etapas_previas_de_lods(**rutas).completas()
+
+
 def test_un_modlist_malformado_no_inventa_grass(tmp_path):
     """Una línea inválida en ``modlist.txt`` hace fallar cerrado a ``read_enabled_mods``:
     la etapa 8 sólo puede probarse por el overwrite."""
@@ -194,3 +233,107 @@ def test_sin_instancia_mo2_el_servicio_no_afirma_etapas(tmp_path):
     resolver.get_mo2_mods_path = MagicMock(side_effect=RuntimeError("sin instancia"))
     evidencia = _servicio(resolver).verificar_etapas_previas()
     assert len(evidencia.faltantes) == 2
+
+
+# =============================================================================
+# Toda superficie que puede pedir la etapa 9 DESATENDIDA pasa el guard
+# (review Codex P1, PR #740)
+# =============================================================================
+#
+# La propiedad: *una corrida desatendida nunca arranca sin probar las etapas 6–8
+# o sin la aprobación explícita del operador, por cualquier superficie*. El camino
+# remoto (``GestorDeTrabajosDeLods``) tiene el override HITL; el dispatcher
+# (``GenerateLodsStrategy``) no tiene canal remoto, así que corta. La corrida
+# ASISTIDA desde la GUI sigue sin guard: decisión del owner (SOP §5.2).
+
+import ast  # noqa: E402
+
+from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy  # noqa: E402
+from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: E402
+
+RAIZ = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _servicio_con_evidencia(evidencia: EvidenciaDeEtapasPrevias | Exception) -> MagicMock:
+    servicio = MagicMock()
+    servicio.execute = AsyncMock(return_value={"success": True, "message": ""})
+    if isinstance(evidencia, Exception):
+        servicio.verificar_etapas_previas = MagicMock(side_effect=evidencia)
+    else:
+        servicio.verificar_etapas_previas = MagicMock(return_value=evidencia)
+    return servicio
+
+
+@pytest.mark.parametrize(
+    "evidencia",
+    [EvidenciaDeEtapasPrevias(faltantes=("etapa 7 (Synthesis): falta",)), RuntimeError("metadata rota")],
+    ids=["falta_una_etapa", "no_se_pudo_verificar"],
+)
+async def test_el_dispatcher_no_lanza_una_corrida_desatendida_sin_etapas_previas(evidencia):
+    servicio = _servicio_con_evidencia(evidencia)
+    resultado = await GenerateLodsStrategy(servicio).execute({"preset": "Medium", "interaction_mode": "desatendido"})
+    servicio.execute.assert_not_awaited()
+    assert resultado["success"] is False
+    assert resultado["message"]
+    assert resultado["etapas_faltantes"]
+    assert resultado["interaction_mode"] == "desatendido"
+    assert resultado["assisted"] is False
+
+
+async def test_el_dispatcher_lanza_la_corrida_desatendida_con_las_etapas_completas():
+    servicio = _servicio_con_evidencia(EvidenciaDeEtapasPrevias(faltantes=()))
+    await GenerateLodsStrategy(servicio).execute({"preset": "Medium", "interaction_mode": "desatendido"})
+    servicio.execute.assert_awaited_once_with(preset="Medium", interaction_mode="desatendido")
+
+
+@pytest.mark.parametrize("payload", [{"preset": "Medium"}, {"preset": "Medium", "interaction_mode": "asistido"}])
+async def test_la_corrida_asistida_del_dispatcher_sigue_sin_guard(payload):
+    """La exclusión documentada (SOP §5.2): el owner decide si la GUI asistida lo suma."""
+    servicio = _servicio_con_evidencia(EvidenciaDeEtapasPrevias(faltantes=("etapa 6: falta",)))
+    await GenerateLodsStrategy(servicio).execute(payload)
+    servicio.verificar_etapas_previas.assert_not_called()
+    servicio.execute.assert_awaited_once()
+
+
+async def test_un_modo_invalido_lo_rechaza_el_servicio_no_el_guard():
+    servicio = _servicio_con_evidencia(EvidenciaDeEtapasPrevias(faltantes=()))
+    await GenerateLodsStrategy(servicio).execute({"interaction_mode": "unattended"})
+    servicio.verificar_etapas_previas.assert_not_called()
+    servicio.execute.assert_awaited_once_with(interaction_mode="unattended")
+
+
+def _superficies_que_reenvian_el_modo() -> set[str]:
+    """Módulos de producción que llevan ``interaction_mode`` hasta un ``.execute(...)``.
+
+    Detección por AST, no por lista: el literal ``"interaction_mode"`` en el módulo y
+    una llamada ``.execute(`` que lo pasa por nombre o por ``**``. El servicio mismo
+    sólo lo escribe en su resultado y no ejecuta a nadie con él.
+    """
+    encontradas: set[str] = set()
+    for archivo in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        if not any(isinstance(n, ast.Constant) and n.value == "interaction_mode" for n in ast.walk(arbol)):
+            continue
+        for nodo in ast.walk(arbol):
+            if (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Attribute)
+                and nodo.func.attr == "execute"
+                and any(kw.arg in {"interaction_mode", None} for kw in nodo.keywords)
+            ):
+                encontradas.add(archivo.relative_to(RAIZ).as_posix())
+                break
+    return encontradas
+
+
+def test_toda_superficie_que_reenvia_el_modo_pasa_por_el_guard_de_etapas_previas():
+    superficies = _superficies_que_reenvian_el_modo()
+    # Congelado por igualdad: una superficie nueva rompe el ancla hasta que pase el guard.
+    assert superficies == {
+        "sky_claw/app/agent/tools/lod_tools.py",
+        "sky_claw/app/orchestrator/tool_strategies/generate_lods.py",
+    }
+    for relativa in superficies:
+        arbol = ast.parse((RAIZ / relativa).read_text(encoding="utf-8"))
+        nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)}
+        assert "etapas_previas_faltantes" in nombres, f"{relativa} reenvía el modo sin el guard de etapas previas"

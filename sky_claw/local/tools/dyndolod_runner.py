@@ -38,7 +38,13 @@ from sky_claw.app.security.links import (
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
-from sky_claw.local.tools.dyndolod_presets import GuardaDePresets, PresetError, RegistroDePreset, leer_estado_de_preset
+from sky_claw.local.tools.dyndolod_presets import (
+    GuardaDePresets,
+    PresetCambiadoError,
+    PresetError,
+    RegistroDePreset,
+    leer_estado_de_preset,
+)
 from sky_claw.local.tools.dyndolod_uia_contrato import (
     CodigoDesatendido,
     ContratoDeUIHerramienta,
@@ -2687,12 +2693,14 @@ class DynDOLODRunner:
                     return_code=None,
                     stderr=str(e),
                 ) from e
-        except BaseException:
+        except BaseException as exc:
             # #661: el proceso no nació, así que la herramienta no reescribió su
             # preset; igual se devuelve el snapshot ya, en vez de dejarlo para la
-            # reconciliación de la próxima corrida. Síncrono y sin lanzar: no hay
-            # punto de cancelación entre el fallo del spawn y su propagación.
-            self._restaurar_preset_sin_gatear(preparacion, tool_name)
+            # reconciliación de la próxima corrida. Síncrono: no hay punto de
+            # cancelación entre el fallo del spawn y su propagación.
+            corte_de_restauracion = self._restaurar_preset_al_salir(preparacion, tool_name, exc)
+            if corte_de_restauracion is not None:
+                raise corte_de_restauracion from exc
             raise
 
         # Un solo presupuesto whole-process desde antes del spawn. El readiness
@@ -2739,6 +2747,9 @@ class DynDOLODRunner:
         drain_err = asyncio.create_task(_drain(proc.stderr, stderr_chunks))
         heartbeat = asyncio.create_task(_heartbeat_watcher())
 
+        # Sube al final del `else`: en el `finally`, False significa que una
+        # excepción se está propagando (todas las ramas `except` re-lanzan).
+        salida_normal = False
         try:
             # T5-v2: los drains y el heartbeat YA están vivos. El protocolo de
             # readiness espera a un humano con la GUI escribiendo su log a stderr;
@@ -2834,6 +2845,7 @@ class DynDOLODRunner:
             # Limpieza resistente a cancelación (R3): aísla y propaga la cancelación
             # del caller sin suprimirla, y asegura helpers_terminal antes de close_job.
             await _limpiar_helpers_en_salida_normal(tool_name, heartbeat, drain_out, drain_err)
+            salida_normal = True
         finally:
             # U-07: cerrar el job en TODA salida — y EXACTAMENTE una vez. Un
             # `finally` (y no una llamada por rama) es lo que hace que "toda
@@ -2846,19 +2858,18 @@ class DynDOLODRunner:
             # el job lo retiene por membresía.
             close_job(job)
             # #661 P8: con el proceso reapeado y el job cerrado, el preset vuelve a
-            # su snapshot. Síncrono a propósito (no es un punto de cancelación) y
-            # sin lanzar: en una salida por excepción la corrida ya falló y el
-            # registro durable queda para la reconciliación; en la salida normal
-            # el fallo se convierte en el corte de abajo.
-            fallo_de_restauracion = self._restaurar_preset_sin_gatear(preparacion, tool_name)
+            # su snapshot. Síncrono a propósito (no es un punto de cancelación). Un
+            # restore fallido se vuelve parte del resultado en las DOS salidas: con
+            # una excepción propagándose, `_restaurar_preset_al_salir` decide si la
+            # reemplaza por el corte combinado (que la lleva como causa); en la
+            # salida normal, el corte se lanza abajo.
+            propagando = None if salida_normal else sys.exception()
+            corte_de_restauracion = self._restaurar_preset_al_salir(preparacion, tool_name, propagando)
+            if corte_de_restauracion is not None and propagando is not None:
+                raise corte_de_restauracion from propagando
 
-        if preparacion is not None and fallo_de_restauracion is not None:
-            raise self._corte_desatendido(
-                preparacion.interaccion,
-                CodigoDesatendido.PRESET_RESTORE_FAILED,
-                f"{fallo_de_restauracion}; el snapshot durable queda para la reconciliación",
-                tool_name=tool_name,
-            )
+        if corte_de_restauracion is not None:
+            raise corte_de_restauracion
 
         duration = time.monotonic() - start_time
         stdout_text = b"".join(stdout_chunks).decode(errors="replace")
@@ -3246,13 +3257,17 @@ class DynDOLODRunner:
         *,
         run_texgen: bool,
         preset: str,
+        preparada: InteraccionDeCorrida | None = None,
     ) -> InteraccionDeCorrida | DynDOLODPipelineResult:
-        """Reconciliación de presets + (desatendido) contrato, presets y aprobación remota.
+        """Reconciliación de presets + la interacción de la corrida.
 
-        Devuelve la interacción de la corrida o el resultado fallido del corte. La
-        reconciliación de residuos corre en LOS DOS modos: un snapshot de una
-        corrida desatendida que murió se devuelve antes de que cualquier corrida
-        nueva deje que la herramienta reescriba el preset otra vez.
+        Corre dentro de ``run_full_pipeline``, o sea BAJO el lock de etapa 9 del
+        servicio. La reconciliación de residuos corre en LOS DOS modos: un
+        snapshot de una corrida desatendida que murió se devuelve antes de que
+        cualquier corrida nueva deje que la herramienta reescriba el preset otra
+        vez. ``preparada`` es la interacción que el servicio ya aprobó ANTES del
+        lock (:meth:`preparar_interaccion_desatendida`); sin ella —runner directo
+        de rig o tests— la aprobación se pide acá.
         """
         guarda = self._guarda_de_presets
         if guarda is not None:
@@ -3265,9 +3280,34 @@ class DynDOLODRunner:
                 )
             if restaurados:
                 logger.info("presets de una corrida anterior reconciliados: %s", [str(r) for r in restaurados])
+        if preparada is not None:
+            if modo is not ModoDeInteraccion.DESATENDIDO or preparada.modo is not ModoDeInteraccion.DESATENDIDO:
+                return self._resultado_de_corte(
+                    CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+                    f"la interacción preparada es {preparada.modo.value} y la corrida pidió {modo.value}",
+                )
+            return preparada
         if modo is ModoDeInteraccion.ASISTIDO:
             return InteraccionDeCorrida(modo=modo)
+        return await self.preparar_interaccion_desatendida(run_texgen=run_texgen, preset=preset)
 
+    async def preparar_interaccion_desatendida(
+        self,
+        *,
+        run_texgen: bool,
+        preset: str,
+    ) -> InteraccionDeCorrida | DynDOLODPipelineResult:
+        """Contrato por build, huellas de presets y aprobación remota. SIN efectos en disco.
+
+        Público porque el servicio lo llama ANTES de tomar el lock de etapa 9 y de
+        apartar los mods de LOD previos: la respuesta del operador puede tardar
+        hasta ``aprobacion_timeout_segundos`` y esa espera no puede retener el lock
+        ni dejar el juego sin LODs. Sólo lee (SHA de los exes, presets); el re-hash
+        anti-TOCTOU y el snapshot del preset siguen justo antes de cada spawn
+        (``_preparar_spawn_desatendido``). Devuelve la interacción aprobada o el
+        resultado fallido del corte.
+        """
+        guarda = self._guarda_de_presets
         capacidad = self._desatendido
         if capacidad is None or guarda is None:
             return self._resultado_de_corte(
@@ -3353,7 +3393,7 @@ class DynDOLODRunner:
                 CodigoDesatendido.UNATTENDED_CONFIGURATION_NOT_APPROVED,
                 f"el operador no aprobó la configuración desatendida: {decision.value}",
             )
-        return InteraccionDeCorrida(modo=modo, aprobadas=aprobadas)
+        return InteraccionDeCorrida(modo=ModoDeInteraccion.DESATENDIDO, aprobadas=aprobadas)
 
     async def _preparar_spawn_desatendido(
         self,
@@ -3406,7 +3446,20 @@ class DynDOLODRunner:
                 tool_name=tool_name,
             )
         try:
-            registro = await asyncio.to_thread(self._guarda_de_presets.proteger, aprobada.ruta_preset)
+            # La huella se compara contra los MISMOS bytes que se snapshotean: un
+            # cambio entre la verificación de arriba y este snapshot corta acá.
+            registro = await asyncio.to_thread(
+                self._guarda_de_presets.proteger,
+                aprobada.ruta_preset,
+                huella_aprobada=aprobada.huella_preset,
+            )
+        except PresetCambiadoError as exc:
+            raise self._corte_desatendido(
+                interaccion,
+                CodigoDesatendido.PRESET_MISMATCH,
+                f"el preset {aprobada.ruta_preset} cambió desde la aprobación: {exc}",
+                tool_name=tool_name,
+            ) from exc
         except PresetError as exc:
             raise self._corte_desatendido(
                 interaccion,
@@ -3442,6 +3495,47 @@ class DynDOLODRunner:
             )
             return exc
         return None
+
+    def _restaurar_preset_al_salir(
+        self,
+        preparacion: PreparacionDeSpawnDesatendido | None,
+        tool_name: str,
+        propagando: BaseException | None,
+    ) -> DynDOLODDesatendidoError | None:
+        """Restore del preset en TODA salida de ``_execute_process``, y su veredicto.
+
+        Un restore fallido nunca queda sólo en el log: el preset del usuario quedó
+        alterado y hay un registro durable pendiente, así que el resultado de la
+        corrida lo tiene que nombrar. Según cómo se esté saliendo:
+
+        * salida normal (``propagando`` es ``None``): el corte PRESET_RESTORE_FAILED;
+        * un fallo de herramienta propagándose (``DynDOLODExecutionError``): un corte
+          cuyo mensaje nombra LOS DOS códigos, con el fallo original como causa —la
+          cadena que recorre el veto de rollback no cambia— y su ``return_code``;
+        * cancelación u otra ``BaseException``: manda esa salida (la cancelación del
+          caller gana, como en F1); el código igual queda registrado en la corrida.
+
+        Devuelve el corte que el llamador tiene que lanzar, o ``None``.
+        """
+        fallo = self._restaurar_preset_sin_gatear(preparacion, tool_name)
+        if preparacion is None or fallo is None:
+            return None
+        detalle = f"{fallo}; el snapshot durable queda para la reconciliación"
+        if propagando is None:
+            return self._corte_desatendido(
+                preparacion.interaccion, CodigoDesatendido.PRESET_RESTORE_FAILED, detalle, tool_name=tool_name
+            )
+        if not isinstance(propagando, DynDOLODExecutionError):
+            preparacion.interaccion.codigos.append(CodigoDesatendido.PRESET_RESTORE_FAILED)
+            return None
+        corte = self._corte_desatendido(
+            preparacion.interaccion,
+            CodigoDesatendido.PRESET_RESTORE_FAILED,
+            f"{detalle}; corte original: {propagando}",
+            tool_name=tool_name,
+        )
+        corte.return_code = propagando.return_code
+        return corte
 
     async def _protocolo_desatendido(
         self,
@@ -3920,6 +4014,7 @@ class DynDOLODRunner:
         authorized_identity: TreeDigest | None = None,
         veto_de_rollback: Callable[[], bool] | None = None,
         modo_de_interaccion: ModoDeInteraccion = ModoDeInteraccion.ASISTIDO,
+        interaccion: InteraccionDeCorrida | None = None,
     ) -> DynDOLODPipelineResult:
         """
         Ejecuta el pipeline completo: TexGen → Empaquetado → DynDOLOD → Empaquetado.
@@ -3959,6 +4054,9 @@ class DynDOLODRunner:
             modo_de_interaccion: ASISTIDO (protocolo T5-v2, default histórico) o
                 DESATENDIDO (#661: contrato de build + aprobación remota de la
                 configuración + driver UIA). Sin fallback entre los dos.
+            interaccion: la interacción DESATENDIDA que el caller ya aprobó
+                antes de su lock (:meth:`preparar_interaccion_desatendida`).
+                ``None`` = se prepara acá (runner directo de rig/tests).
 
         Returns:
             DynDOLODPipelineResult con resultados completos.
@@ -3977,6 +4075,7 @@ class DynDOLODRunner:
             modo_de_interaccion,
             run_texgen=run_texgen,
             preset=preset,
+            preparada=interaccion,
         )
         if isinstance(preparacion_de_corrida, DynDOLODPipelineResult):
             return preparacion_de_corrida

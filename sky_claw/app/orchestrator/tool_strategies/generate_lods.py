@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.local.tools.dyndolod_uia_contrato import ModoDeInteraccion, modo_de_interaccion_desde
+from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
+
 if TYPE_CHECKING:
     from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
@@ -33,6 +36,28 @@ class GenerateLodsStrategy:
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         filtered = self._filter_payload(payload_dict)
+        if _pide_modo_desatendido(filtered.get("interaction_mode")):
+            # SOP §5.2 (#661, review Codex P1 en #740): el modo desatendido es un
+            # camino NUEVO de LODs también por el dispatcher, así que nace con el
+            # guard de etapas previas. Acá no hay canal remoto para el override del
+            # operador (eso es del camino remoto): sin las etapas 6–8, corta. La
+            # corrida ASISTIDA de la GUI sigue sin guard por decisión del owner.
+            faltantes = await etapas_previas_faltantes(self.service.verificar_etapas_previas)
+            if faltantes:
+                mensaje = (
+                    "la etapa 9 desatendida no se lanza: faltan etapas previas (SOP §5.2): "
+                    + "; ".join(faltantes)
+                    + ". Completalas, o corré la etapa 9 en modo asistido."
+                )
+                logger.warning("%s", mensaje, extra={"pipeline_stage": 9})
+                return {
+                    "success": False,
+                    "message": mensaje,
+                    "errors": [mensaje],
+                    "etapas_faltantes": list(faltantes),
+                    "assisted": False,
+                    "interaction_mode": ModoDeInteraccion.DESATENDIDO.value,
+                }
         return await self.service.execute(**filtered)
 
     def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
@@ -41,3 +66,13 @@ class GenerateLodsStrategy:
         if unexpected and warn:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
         return filtered
+
+
+def _pide_modo_desatendido(valor: object) -> bool:
+    """``True`` sólo para un modo DESATENDIDO válido; un valor inválido lo rechaza el servicio."""
+    if valor is None:
+        return False
+    try:
+        return modo_de_interaccion_desde(valor) is ModoDeInteraccion.DESATENDIDO
+    except ValueError:
+        return False

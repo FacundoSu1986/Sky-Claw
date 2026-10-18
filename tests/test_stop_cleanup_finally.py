@@ -138,3 +138,69 @@ async def test_stop_no_ejecuta_el_cleanup_dos_veces_tras_el_timeout(
     finally:
         liberar.set()
         await asyncio.gather(background, return_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# #661 — el trabajo remoto de etapa 9 se cierra ANTES que el supervisor
+# (review CodeRabbit, PR #740)
+# ---------------------------------------------------------------------------
+#
+# El trabajo de LODs no es una task de fondo de AppContext: lo cancela
+# `lod_jobs.cerrar()`. Si corría en el cleanup del AsyncExitStack, la task del
+# supervisor —que SÍ es de fondo— ya había cerrado event bus, locks, journal y DB,
+# y el rollback de la cancelación del pipeline corría contra recursos cerrados
+# (TX PENDING, lock hasta su TTL, evento terminal perdido).
+
+
+class _TrabajosDeLodsFalsos:
+    def __init__(self, orden: list[str], *, colgado: bool = False) -> None:
+        self._orden = orden
+        self._colgado = colgado
+
+    async def cerrar(self) -> None:
+        if self._colgado:
+            await asyncio.Event().wait()
+        self._orden.append("lods")
+
+
+async def test_stop_cierra_el_trabajo_de_lods_antes_que_las_tasks_de_fondo(
+    mock_args: argparse.Namespace,
+) -> None:
+    ctx = AppContext(mock_args)
+    orden: list[str] = []
+    ctx.lod_jobs = _TrabajosDeLodsFalsos(orden)
+    entro = asyncio.Event()
+
+    async def supervisor() -> None:
+        entro.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            orden.append("supervisor")
+
+    ctx._track_task(supervisor(), name="supervisor-daemon")
+    await asyncio.wait_for(entro.wait(), timeout=1.0)
+
+    await asyncio.wait_for(ctx.stop(), timeout=5.0)
+
+    assert orden[:2] == ["lods", "supervisor"]
+
+
+async def test_un_trabajo_de_lods_colgado_no_cuelga_el_stop(
+    mock_args: argparse.Namespace,
+) -> None:
+    """Acotado por el mismo plazo de stop(): el resto del apagado corre y el timeout se informa."""
+    ctx = AppContext(mock_args)
+    ctx._startup_shutdown_timeout_s = 0.05
+    orden: list[str] = []
+    ctx.lod_jobs = _TrabajosDeLodsFalsos(orden, colgado=True)
+    limpiezas: list[str] = []
+
+    async def _cleanup() -> None:
+        limpiezas.append("corrio")
+
+    ctx._push_startup_cleanup(_cleanup)
+
+    with pytest.raises(TimeoutError, match="etapa 9"):
+        await asyncio.wait_for(ctx.stop(), timeout=5.0)
+    assert limpiezas == ["corrio"]

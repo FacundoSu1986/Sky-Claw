@@ -602,10 +602,16 @@ def run_nicegui(
             patch_advisor_llm=ctx.make_patch_advisor_llm(),
         )
         _runtime["supervisor"] = supervisor
-        # #661: la tool remota `generate_lods` (Telegram / `/api/chat`) delega en
-        # ESTE servicio de etapa 9 —el del composition root del supervisor—, no en
-        # uno propio: mismo lock, coordinación y workspace que el ritual de la GUI.
-        ctx.publicar_servicio_de_etapa9(supervisor.dyndolod_service)
+
+        async def _publicar_etapa9_cuando_el_supervisor_este_listo() -> None:
+            # #661: la tool remota `generate_lods` (Telegram / `/api/chat`) delega
+            # en ESTE servicio de etapa 9 —el del composition root del supervisor—,
+            # no en uno propio: mismo lock, coordinación y workspace que el ritual
+            # de la GUI. Se publica recién con el supervisor listo (review Codex,
+            # PR #740): Telegram ya escucha durante el arranque, y antes de
+            # `supervisor.start()` el lock manager y el journal no existen.
+            await supervisor.esperar_listo()
+            ctx.publicar_servicio_de_etapa9(supervisor.dyndolod_service)
 
         # Phase 1: bridge the supervisor's telemetry onto the GUI store so the
         # Vitalidad bars + header HUD render real CPU/RAM/GPU. subscribe() only
@@ -619,6 +625,7 @@ def run_nicegui(
         _install_gui_hitl_bridge(ctx, store)
 
         ctx._track_task(supervisor.start(), name="supervisor-daemon")
+        ctx._track_task(_publicar_etapa9_cuando_el_supervisor_este_listo(), name="publicar-etapa9")
         ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")
         ctx._track_task(_gui_mod_update_loop(ctx), name="gui-mod-update")
 

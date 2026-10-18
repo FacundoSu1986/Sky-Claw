@@ -195,6 +195,34 @@ async def test_cerrar_cancela_el_trabajo_vivo():
     assert gestor.actual.tarea.done()
 
 
+async def test_cerrar_no_se_traga_la_cancelacion_de_quien_cierra():
+    """Si a ``cerrar()`` lo cancelan (``stop()`` con su plazo vencido), esa cancelación
+    es de quien cierra y se propaga; sólo la del trabajo que ``cerrar`` pidió se absorbe."""
+
+    class _LimpiezaLenta(ServicioFalso):
+        def __init__(self) -> None:
+            super().__init__(bloquear=True)
+            self.limpiando = asyncio.Event()
+
+        async def execute(self, **kwargs):
+            try:
+                return await super().execute(**kwargs)
+            except asyncio.CancelledError:
+                self.limpiando.set()
+                await asyncio.sleep(10)  # matar el árbol de procesos, rollback…
+                raise
+
+    servicio = _LimpiezaLenta()
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: servicio)
+    await gestor.iniciar(preset="Medium", run_texgen=True, create_snapshot=True, interaction_mode="desatendido")
+    await asyncio.sleep(0)
+    cierre = asyncio.create_task(gestor.cerrar())
+    await asyncio.wait_for(servicio.limpiando.wait(), timeout=5)
+    cierre.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(cierre, timeout=5)
+
+
 async def test_un_aviso_que_falla_no_cambia_el_veredicto():
     async def _roto(_mensaje: str) -> None:
         raise RuntimeError("Telegram caído")
@@ -433,6 +461,63 @@ def test_el_bootloader_publica_el_servicio_del_supervisor():
     assert len(publicaciones) == 1
     argumento = publicaciones[0].args[0]
     assert isinstance(argumento, ast.Attribute) and argumento.attr == "dyndolod_service"
+    # Y la publicación espera a que el supervisor haya inicializado locks, journal y
+    # bus (review Codex, PR #740): antes, un `generate_lods` que llegara por Telegram
+    # durante el arranque encontraba `LockManager not initialized`.
+    contenedoras = [
+        f
+        for f in ast.walk(arbol)
+        if isinstance(f, ast.AsyncFunctionDef) and any(n is publicaciones[0] for n in ast.walk(f))
+    ]
+    publicador = max(contenedoras, key=lambda f: f.lineno)  # la más interna
+    esperas = [
+        n.lineno
+        for n in ast.walk(publicador)
+        if isinstance(n, ast.Await)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Attribute)
+        and n.value.func.attr == "esperar_listo"
+    ]
+    assert esperas and min(esperas) < publicaciones[0].lineno
+
+
+async def test_el_supervisor_queda_listo_solo_con_sus_recursos_inicializados():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+
+    sup = SupervisorAgent.__new__(SupervisorAgent)
+    sup._listo = asyncio.Event()
+    orden: list[str] = []
+    listo = asyncio.create_task(sup.esperar_listo())
+
+    def _paso(nombre: str):
+        async def _registrar(*_a, **_k):
+            await asyncio.sleep(0)
+            assert not listo.done(), f"el supervisor se declaró listo antes de {nombre}"
+            orden.append(nombre)
+
+        return AsyncMock(side_effect=_registrar)
+
+    sup.db = MagicMock(init_db=_paso("db"), close=AsyncMock())
+    sup.journal = MagicMock(open=_paso("journal"), close=AsyncMock())
+    sup.snapshot_manager = MagicMock(initialize=_paso("snapshots"))
+    sup._lock_manager = MagicMock(initialize=_paso("locks"), close=AsyncMock())
+    sup._event_bus = MagicMock(start=_paso("bus"), stop=AsyncMock(), subscribe=MagicMock())
+    sup.interface = MagicMock()
+    sup._tool_dispatcher = MagicMock(drain=AsyncMock())
+    sup._cerrar_coordinacion_propia = AsyncMock()
+
+    async def _demonios() -> None:
+        await asyncio.sleep(0)
+        assert listo.done()
+        orden.append("demonios")
+
+    sup._run_daemons_and_interface = _demonios
+
+    await sup.start()
+
+    assert orden == ["db", "journal", "snapshots", "locks", "bus", "demonios"]
 
 
 def test_ningun_modulo_del_agente_construye_un_servicio_de_etapa9():

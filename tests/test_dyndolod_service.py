@@ -4301,6 +4301,16 @@ def test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa() -> 
     )
 
 
+#: Llamadas al runner que ocurren ANTES de que exista la transacción (#661, review
+#: CodeRabbit en PR #740): la aprobación remota de la corrida desatendida se toma
+#: antes del lock para no retenerlo durante la espera del operador. Sin TX,
+#: ``tx_id=None`` es el valor honesto — el mismo que llevan los registros del
+#: preflight. Congelado por igualdad y verificado por POSICIÓN: cada una tiene que
+#: estar antes de ``begin_transaction``, así que no puede usarse para sacar del
+#: ``with`` una llamada que ya tiene transacción.
+_LLAMADAS_PREVIAS_A_LA_TRANSACCION = frozenset({"preparar_interaccion_desatendida"})
+
+
 def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
     """El `with` cubre TODA la interacción con el runner, no la que hoy recordamos.
 
@@ -4355,7 +4365,20 @@ def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
         "vacía (¿se renombró la variable local?)."
     )
 
-    fuera = sorted(f"{c.func.attr}:{c.lineno}" for c in llamadas if not any(a <= c.lineno <= b for a, b in rangos))
+    inicio_tx = min(
+        c.lineno
+        for c in ast.walk(execute)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "begin_transaction"
+    )
+    previas = [c for c in llamadas if c.func.attr in _LLAMADAS_PREVIAS_A_LA_TRANSACCION]
+    assert {c.func.attr for c in previas} == _LLAMADAS_PREVIAS_A_LA_TRANSACCION
+    assert all(c.lineno < inicio_tx for c in previas), "una llamada exenta quedó después de abrir la TX"
+
+    fuera = sorted(
+        f"{c.func.attr}:{c.lineno}"
+        for c in llamadas
+        if c.func.attr not in _LLAMADAS_PREVIAS_A_LA_TRANSACCION and not any(a <= c.lineno <= b for a, b in rangos)
+    )
     assert fuera == [], (
         f"llamadas al runner fuera del `with correlacion_de_transaccion(...)`: {fuera}. "
         f"Todo lo que el runner haga por cuenta del servicio tiene que emitir sus registros "

@@ -423,6 +423,11 @@ class AppContext:
         # fallback que `_resolve_mo2_profile` para que nunca sea None.
         self.mo2_profile: str = PERFIL_MO2_POR_DEFECTO
         self.mo2: MO2Controller | None = None
+        # #661: declarados desde el constructor (y re-sanitizados en
+        # `_sanitize_full_references`) porque `stop()` los consulta aunque el
+        # arranque nunca haya llegado a armarlos.
+        self.servicio_de_etapa9 = None
+        self.lod_jobs = None
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -1594,7 +1599,11 @@ class AppContext:
                 if active_sender is None or operator_chat_id is None:
                     logger.info("HITL: sin canal de operador; aviso informativo no entregado")
                     return
-                await active_sender.send(operator_chat_id, mensaje)
+                # El aviso es TEXTO plano (paths, mensajes de excepción con `<`/`&`)
+                # y el sender usa parse_mode HTML por defecto: sin escapar, Telegram
+                # rechaza el mensaje y el guard se traga el fallo — el operador
+                # remoto nunca se entera de cómo terminó la corrida.
+                await active_sender.send(operator_chat_id, escape_html(mensaje))
 
             hitl = HITLGuard(
                 notify_fn=_hitl_notify,
@@ -2387,6 +2396,12 @@ class AppContext:
                         )
 
                 async with self._lifecycle_lock:
+                    # #661 (review CodeRabbit, PR #740): el trabajo remoto de etapa
+                    # 9 NO es una task de fondo de este contexto, y su cancelación
+                    # hace rollback y publica el evento terminal contra el journal,
+                    # los locks y el bus DEL SUPERVISOR — que sí es task de fondo y
+                    # los cierra al cancelarse. Por eso va primero.
+                    lods_timeout = await self._cerrar_trabajos_de_lods()
                     background_tasks = set(self._background_tasks)
                     for background_task in background_tasks:
                         background_task.cancel()
@@ -2396,7 +2411,7 @@ class AppContext:
                     # sin desenrollar: WAL sin checkpoint, locks distribuidos sin
                     # liberar, broker / sesión HTTP / vault abiertos. Se difiere:
                     # primero se libera lo que sí se puede, después se propaga.
-                    tasks_timeout: TimeoutError | None = None
+                    tasks_timeout: TimeoutError | None = lods_timeout
                     if background_tasks:
                         done, pending = await asyncio.wait(
                             background_tasks,
@@ -2432,6 +2447,26 @@ class AppContext:
             finally:
                 if self._active_stop_task is task:
                     self._active_stop_task = None
+
+    async def _cerrar_trabajos_de_lods(self) -> TimeoutError | None:
+        """Cancela el trabajo remoto de etapa 9 (#661) con el plazo de ``stop()``.
+
+        Devuelve el ``TimeoutError`` diferido si el trabajo no terminó a tiempo:
+        igual que con las tasks de fondo (P0-2), un trabajo que tarda en morir no
+        puede saltear el resto del apagado, pero quien llama tiene que enterarse.
+        """
+        lod_jobs = self.lod_jobs
+        if lod_jobs is None:
+            return None
+        try:
+            await asyncio.wait_for(lod_jobs.cerrar(), timeout=self._startup_shutdown_timeout_s)
+        except TimeoutError:
+            return TimeoutError(
+                f"el trabajo de etapa 9 no terminó en {self._startup_shutdown_timeout_s:.3f}s durante stop()"
+            )
+        except Exception:  # noqa: BLE001 -- shutdown best-effort: el resto del apagado sigue
+            logger.warning("el cierre del trabajo de etapa 9 falló durante stop()", exc_info=True)
+        return None
 
     def _resolve_config_path(self) -> None:
         """Always resolves to the canonical TOML config path."""

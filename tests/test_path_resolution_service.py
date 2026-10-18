@@ -1514,8 +1514,10 @@ class TestAnclaConstructoresManualesDeMods:
         # cleanup de cancelación).
         # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
         # #661 (servicio de etapa 9 publicado para la superficie remota) la movió
-        # (1409 → 1426); mismo constructor.
-        "sky_claw/app_context.py": (1426,),
+        # (1409 → 1426) y la declaración de `lod_jobs`/`servicio_de_etapa9` en el
+        # constructor, para que `stop()` los lea sin arranque (1426 → 1431);
+        # mismo constructor.
+        "sky_claw/app_context.py": (1431,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA; #665
         # (271 → 277) al extraer `_build_parser` y derivar el default de --mode.

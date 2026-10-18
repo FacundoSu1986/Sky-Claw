@@ -226,6 +226,10 @@ class SupervisorAgent:
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service
+        #: #661: sube cuando `start()` inicializó DB, journal, snapshots, locks y
+        #: bus. La superficie remota de etapa 9 no se publica antes (ver
+        #: `esperar_listo`).
+        self._listo = asyncio.Event()
         self._xedit_service = composition.xedit_service
         self._loot_service = composition.loot_service
         self._pandora_service = composition.pandora_service
@@ -327,6 +331,9 @@ class SupervisorAgent:
             "system.modlist.changed",
             self._trigger_proactive_analysis,
         )
+        # #661: los servicios ya tienen sus recursos; recién ahora una superficie
+        # que corre FUERA del supervisor (la tool remota de etapa 9) puede usarlos.
+        self._listo.set()
         # ARC-01 + SUP-05 + H-2: supervisar los loops de los demonios JUNTO con la
         # interfaz. Antes, el TaskGroup envolvía daemon.start() (fire-and-forget):
         # sus hijos completaban en microsegundos y los loops reales quedaban
@@ -350,6 +357,15 @@ class SupervisorAgent:
             # etapa 9 es el eslabón MÁS EXTERNO del orden fijo
             # (`dyndolod_workspace.ORDEN_DE_ADQUISICION`).
             await self._cerrar_coordinacion_propia()
+
+    async def esperar_listo(self) -> None:
+        """Espera a que ``start()`` haya inicializado los recursos de los servicios.
+
+        El bootloader publica el servicio de etapa 9 para la tool remota recién
+        después de esto: Telegram ya está escuchando durante el arranque, y un
+        pedido que llegara antes encontraría el lock manager sin inicializar.
+        """
+        await self._listo.wait()
 
     async def _cerrar_coordinacion_propia(self) -> None:
         """Cierra la coordinación de etapa 9 **sólo si la construyó este grafo**.

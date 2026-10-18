@@ -13,8 +13,8 @@ leer:
 
 * etapa 6 — ``Bashed Patch, 0.esp`` habilitado en el ``plugins.txt`` del perfil;
 * etapa 7 — ``Synthesis.esp`` habilitado en el mismo ``plugins.txt``;
-* etapa 8 — al menos un ``*.cgid`` bajo ``Grass/`` en el ``overwrite`` de MO2 o en
-  un mod habilitado del ``modlist.txt``.
+* etapa 8 — al menos un ``*.cgid`` (archivo regular, no vacío, no enlace) bajo
+  ``Grass/`` en el ``overwrite`` de MO2 o en un mod habilitado del ``modlist.txt``.
 
 **No** prueba que se hayan regenerado DESPUÉS del último cambio de load order:
 eso exige un registro de corridas por etapa que el repo no tiene. Un artefacto
@@ -27,10 +27,16 @@ nunca es "está".
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 import pathlib
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
+
+logger = logging.getLogger(__name__)
 
 #: Plugin que produce la etapa 6 (SOP §2.6) y el de la etapa 7 (SOP §2.7).
 PLUGIN_DE_WRYE_BASH = "Bashed Patch, 0.esp"
@@ -56,8 +62,22 @@ def _plugins_habilitados(plugins_txt: pathlib.Path) -> set[str] | None:
 
 
 def _tiene_cgid(carpeta: pathlib.Path) -> bool:
+    """Al menos un ``*.cgid`` que sea archivo REGULAR (no enlace, no carpeta) y no vacío.
+
+    El nombre solo no prueba un cache: un directorio, un placeholder de una corrida
+    fallida o un enlace colgado también matchean ``*.cgid``. La extensión se compara
+    sin mayúsculas (en Windows el filesystem tampoco las distingue).
+    """
     try:
-        return carpeta.is_dir() and any(carpeta.glob("*.cgid"))
+        if not carpeta.is_dir():
+            return False
+        with os.scandir(carpeta) as entradas:
+            return any(
+                entrada.name.lower().endswith(".cgid")
+                and entrada.is_file(follow_symlinks=False)
+                and entrada.stat(follow_symlinks=False).st_size > 0
+                for entrada in entradas
+            )
     except OSError:
         return False
 
@@ -95,3 +115,20 @@ def verificar_etapas_previas_de_lods(
             "etapa 8 (No Grass In Objects): no hay cache de grass (*.cgid) en overwrite/Grass ni en un mod habilitado"
         )
     return EvidenciaDeEtapasPrevias(faltantes=tuple(faltantes))
+
+
+async def etapas_previas_faltantes(verificar: Callable[[], EvidenciaDeEtapasPrevias]) -> tuple[str, ...]:
+    """Corre ``verificar`` (I/O de disco) fuera del loop y devuelve las etapas que faltan.
+
+    Es la ÚNICA puerta de las superficies que lanzan la etapa 9 sin un humano en la
+    PC (tool del agente y dispatcher en modo desatendido): las dos comparten así el
+    mismo fail-closed. Un error al verificar es una etapa faltante, nunca "está".
+    """
+    try:
+        evidencia = await asyncio.to_thread(verificar)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- el guard no puede abrirse por un error de lectura
+        logger.warning("no se pudieron verificar las etapas previas de la etapa 9", exc_info=True)
+        return (f"no se pudieron verificar las etapas previas: {exc}",)
+    return tuple(evidencia.faltantes)

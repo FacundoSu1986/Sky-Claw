@@ -51,6 +51,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
+    InteraccionDeCorrida,
     ReadinessMode,
     normalize_dyndolod_spawn_strategy,
     resolve_data_visibility_domain,
@@ -1495,6 +1496,9 @@ class DynDOLODPipelineService:
         # de fallo; asignado dentro del `try`, declarado acá por el mismo motivo
         # que `needs_deployment`.
         handoff_resume: DeploymentHandoff | None = None
+        # #661: la interacción DESATENDIDA se aprueba ANTES del lock (ver el
+        # bloque del gate de resume); ``None`` en modo asistido.
+        interaccion_desatendida: InteraccionDeCorrida | None = None
         handoff_en_supersede: DeploymentHandoff | None = None
         # R-002B: un handoff INDETERMINATE previo NO transiciona antes a
         # SUPERSEDING (el CHECK del esquema lo rechaza: expected_* NULL). El old
@@ -1670,6 +1674,43 @@ class DynDOLODPipelineService:
         # observabilidad publica el cierre pero no cambia el veredicto de
         # `execute`, que sigue propagando exactamente lo mismo que antes.
         try:
+            # #661 (review CodeRabbit, PR #740): la aprobación remota de la corrida
+            # desatendida puede tardar hasta `aprobacion_timeout_segundos`. Va acá,
+            # ANTES del lock y del move-aside: esa espera no puede retener el lock
+            # de etapa 9 (la GUI quedaría bloqueada) ni dejar el juego sin los mods
+            # de LOD previos, y un "no" no puede dejar una TX PENDING por una
+            # corrida que nunca lanzó nada. Sólo lee; el snapshot del preset y el
+            # re-hash siguen justo antes de cada spawn. Comparte el cinturón de
+            # este `try`: una cancelación durante la espera cierra el ciclo de
+            # eventos igual que una durante la consulta de resume.
+            if modo_de_interaccion is ModoDeInteraccion.DESATENDIDO:
+                preparada = await runner.preparar_interaccion_desatendida(run_texgen=run_texgen, preset=preset)
+                if isinstance(preparada, DynDOLODPipelineResult):
+                    msg = "; ".join(preparada.errors) or "corte desatendido antes del lock"
+                    duration = time.monotonic() - start_time
+                    await self._publicar_evento_terminal(
+                        estado=estado_de_publicacion,
+                        tx_id=tx_id,
+                        preset=preset,
+                        run_texgen=run_texgen,
+                        success=False,
+                        texgen_success=False,
+                        dyndolod_success=False,
+                        errors=tuple(preparada.errors) or (msg,),
+                        duration_seconds=duration,
+                        rolled_back=False,
+                    )
+                    return _attach_preflight(
+                        {
+                            "success": False,
+                            "message": msg,
+                            "errors": list(preparada.errors) or [msg],
+                            "duration_seconds": duration,
+                        },
+                        preflight_report,
+                        modo_de_interaccion,
+                    )
+                interaccion_desatendida = preparada
             if not run_texgen:
                 consulta = await self._consultar_resume(runner)
                 if isinstance(consulta, _ResumeBloqueado):
@@ -2141,6 +2182,7 @@ class DynDOLODPipelineService:
                         # Codex #399, reintroducido en una superficie nueva.
                         veto_de_rollback=_conserva_las_leases,
                         modo_de_interaccion=modo_de_interaccion,
+                        interaccion=interaccion_desatendida,
                     )
 
                     # Validar salida de DynDOLOD si fue exitoso

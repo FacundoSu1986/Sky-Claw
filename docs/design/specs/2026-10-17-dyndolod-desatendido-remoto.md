@@ -122,15 +122,23 @@ cada herramienta de su preset en `<exe>\Edit Scripts\DynDOLOD\Presets\`.
 1. calcula la huella normalizada de cada preset (SHA-256 sin las líneas
    `OutputPath=`, que es lo único que Sky-Claw corrige por UIA);
 2. exige `Preset=<preset pedido>` en el preset de DynDOLOD (`PRESET_MISMATCH`);
-3. pide la aprobación remota mostrando esa configuración;
+3. pide la aprobación remota mostrando esa configuración. En el servicio esto
+   corre ANTES del lock de etapa 9 y del move-aside
+   (`DynDOLODRunner.preparar_interaccion_desatendida`, sólo lectura): la espera
+   del operador no retiene el lock ni deja el juego sin LODs, y un "no" no muta
+   nada ni deja una TX PENDING;
 4. re-verifica la huella aprobada inmediatamente antes de cada spawn;
 5. guarda un snapshot DURABLE (bytes + SHA-256, o `ABSENT`) bajo
    `SystemPaths.runtime_state_dir()/dyndolod_presets` antes del spawn y lo
    restaura byte-exacto al terminar (P0-B midió que las dos herramientas
-   reescriben su preset al iniciar); un residuo de una corrida que murió se
-   reconcilia al comienzo de la próxima corrida, bajo el mismo lock de etapa 9.
-   `PRESET_RESTORE_FAILED` corta la corrida: no se declara éxito con el estado
-   del usuario sin restaurar.
+   reescriben su preset al iniciar). El snapshot se ata a la huella aprobada:
+   compara los MISMOS bytes que guarda, y si cambiaron es `PRESET_MISMATCH`
+   sin snapshot ni spawn. Un residuo de una corrida que murió se reconcilia al
+   comienzo de la próxima corrida, bajo el mismo lock de etapa 9; un directorio
+   de snapshot sin registro (el registro se escribe último) no protegió nada y
+   se descarta. `PRESET_RESTORE_FAILED` corta la corrida en TODA salida —normal,
+   por excepción o por spawn fallido, junto al código del corte original—: no
+   se declara éxito con el estado del usuario sin restaurar.
 
 **Límite declarado:** la lista de worldspaces y el preset de calidad NO se leen
 de la GUI por UIA (P0 no midió esos controles). Su autoridad es la huella del
@@ -159,9 +167,14 @@ existe en esta versión por ese motivo.
   override es una aprobación del operador por el canal remoto (misma categoría
   no auto-aprobable); la tool no tiene un parámetro para saltearlo. Sin canal,
   se corta antes de lanzar. Prueba que los artefactos existen y están activos,
-  no que se regeneraron después del último cambio de load order. El camino de la
-  GUI (`GenerateLodsStrategy`) conserva su deuda documentada: cablearlo cambia
-  el comportamiento para los usuarios actuales y es decisión del owner.
+  no que se regeneraron después del último cambio de load order. El dispatcher
+  (`GenerateLodsStrategy`) aplica el MISMO guard cuando le piden el modo
+  desatendido, sin override (no tiene canal remoto). La corrida ASISTIDA de la
+  GUI conserva su deuda documentada: cablearlo cambia el comportamiento para los
+  usuarios actuales y es decisión del owner.
+* El servicio se publica para la tool recién cuando el supervisor terminó de
+  inicializar sus recursos (`SupervisorAgent.esperar_listo`): Telegram ya
+  escucha durante el arranque.
 
 ## 7. Errores estables
 

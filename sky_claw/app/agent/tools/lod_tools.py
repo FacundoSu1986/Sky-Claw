@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
+from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
 logger = logging.getLogger(__name__)
 
@@ -228,14 +229,7 @@ class GestorDeTrabajosDeLods:
 
     async def _etapas_faltantes(self, servicio: Any) -> tuple[str, ...]:
         """Evidencia de las etapas 6–8 del servicio. Fail-closed: no poder verificar es faltar."""
-        try:
-            evidencia = await asyncio.to_thread(servicio.verificar_etapas_previas)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- el guard no puede abrirse por un error de lectura
-            logger.warning("no se pudieron verificar las etapas previas de la etapa 9", exc_info=True)
-            return (f"no se pudieron verificar las etapas previas: {exc}",)
-        return tuple(evidencia.faltantes)
+        return await etapas_previas_faltantes(servicio.verificar_etapas_previas)
 
     async def _correr(self, trabajo: TrabajoDeLods, servicio: Any) -> None:
         try:
@@ -308,7 +302,12 @@ class GestorDeTrabajosDeLods:
         try:
             await trabajo.tarea
         except asyncio.CancelledError:
-            pass
+            # Se absorbe sólo la cancelación que `cerrar` le pidió al trabajo. Si
+            # cancelaron a quien cierra (p. ej. `stop()` venció su plazo), es suya
+            # y se propaga.
+            actual = asyncio.current_task()
+            if actual is not None and actual.cancelling():
+                raise
         except Exception:  # noqa: BLE001 -- shutdown best-effort
             logger.warning("el trabajo de etapa 9 terminó con error durante el cierre", exc_info=True)
 

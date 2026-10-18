@@ -58,6 +58,10 @@ class PresetError(Exception):
     """Un preset no se pudo leer, proteger o restaurar de forma demostrable."""
 
 
+class PresetCambiadoError(PresetError):
+    """El preset en disco ya no es la configuración aprobada: no se snapshotea ni se lanza."""
+
+
 @dataclass(frozen=True, slots=True)
 class EstadoDePreset:
     """Lo que se sabe de un preset en un instante. ``presente=False`` es ``ABSENT``."""
@@ -229,16 +233,50 @@ class GuardaDePresets:
             directorios = sorted(p for p in self._directorio.iterdir() if p.is_dir())
         except OSError as exc:
             raise PresetError(f"no se pudo listar el estado de presets {self._directorio}: {exc}") from exc
-        return [self._leer_registro(directorio) for directorio in directorios]
+        registros: list[RegistroDePreset] = []
+        for directorio in directorios:
+            if not (directorio / _NOMBRE_DEL_REGISTRO).exists():
+                # El registro se escribe ÚLTIMO y `proteger` recién devuelve
+                # después: sin registro no hubo spawn, así que el directorio no
+                # protege nada (o es lo que dejó un restore ya verificado). Si
+                # bloqueara, toda corrida futura —asistida incluida— moriría en
+                # PRESET_RESTORE_FAILED hasta un borrado manual.
+                logger.warning(
+                    "snapshot de preset incompleto descartado (sin registro): %s",
+                    directorio,
+                    extra={"operation_type": "dyndolod_preset_snapshot_incompleto"},
+                )
+                self._descartar(directorio)
+                continue
+            registros.append(self._leer_registro(directorio))
+        return registros
 
-    def proteger(self, ruta: pathlib.Path) -> RegistroDePreset:
-        """Escribe el snapshot durable de ``ruta`` (bytes + SHA, o ABSENT). ANTES del spawn."""
+    @staticmethod
+    def _descartar(directorio: pathlib.Path) -> None:
+        try:
+            rmtree_link_aware(directorio)
+        except OSError as exc:
+            raise PresetError(f"no se pudo descartar el snapshot incompleto {directorio}: {exc}") from exc
+
+    def proteger(self, ruta: pathlib.Path, *, huella_aprobada: str | None) -> RegistroDePreset:
+        """Escribe el snapshot durable de ``ruta`` (bytes + SHA, o ABSENT). ANTES del spawn.
+
+        ``huella_aprobada`` es OBLIGATORIA: la huella que el operador aprobó, o
+        ``None`` si lo aprobado es un preset ABSENT. Se compara contra los MISMOS
+        bytes que se snapshotean; si no coinciden es :class:`PresetCambiadoError` y
+        no se escribe nada. Así un cambio entre la verificación y el snapshot no
+        termina snapshoteado —y después restaurado como estado del usuario— sin
+        que nadie lo haya aprobado.
+        """
         _exigir_archivo_real(ruta)
         directorio = self._directorio / _clave_de_ruta(ruta)
         if directorio.exists():
             raise PresetError(f"hay un snapshot sin reconciliar para {ruta}: se reconcilia antes de una corrida nueva")
         presente = ruta.exists()
         contenido = _leer_acotado(ruta) if presente else b""
+        huella_en_disco = huella_de_configuracion(contenido) if presente else None
+        if huella_en_disco != huella_aprobada:
+            raise PresetCambiadoError(f"el preset {ruta} ya no es la configuración aprobada: no se snapshotea")
         sha = hashlib.sha256(contenido).hexdigest() if presente else None
         registro = RegistroDePreset(
             directorio=directorio,
@@ -247,8 +285,10 @@ class GuardaDePresets:
             sha256=sha,
             tamano=len(contenido) if presente else None,
         )
+        creado = False
         try:
             directorio.mkdir(parents=True, exist_ok=False)
+            creado = True
             if presente:
                 _escribir_atomico(directorio / _NOMBRE_DEL_CONTENIDO, contenido)
             # El registro va DESPUÉS del contenido: un registro presente siempre
@@ -266,8 +306,16 @@ class GuardaDePresets:
                     ensure_ascii=False,
                 ).encode("utf-8"),
             )
-        except OSError as exc:
-            raise PresetError(f"no se pudo escribir el snapshot de {ruta}: {exc}") from exc
+        except BaseException as exc:
+            # Sin registro no hubo spawn: el directorio a medias no protege nada y
+            # bloquearía toda reconciliación futura. Sólo se borra lo que creó
+            # ESTA llamada (`creado`), nunca un directorio ajeno.
+            if creado:
+                with contextlib.suppress(OSError):
+                    rmtree_link_aware(directorio)
+            if isinstance(exc, OSError):
+                raise PresetError(f"no se pudo escribir el snapshot de {ruta}: {exc}") from exc
+            raise
         logger.info(
             "preset protegido antes del spawn: %s (%s)",
             ruta,

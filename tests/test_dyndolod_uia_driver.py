@@ -93,9 +93,11 @@ class AprobadorFalso:
         *,
         modal: ResultadoConfirmacion = ResultadoConfirmacion.APROBADA,
         al_aprobar_modal: object = None,
+        espera_modal_segundos: float = 0.0,
     ) -> None:
         self._modal = modal
         self._al_aprobar_modal = al_aprobar_modal
+        self._espera_modal = espera_modal_segundos
         self.modales: list[object] = []
         self.configuraciones: list[object] = []
         self.avisos: list[tuple[str, str]] = []
@@ -106,6 +108,8 @@ class AprobadorFalso:
 
     async def aprobar_modal(self, solicitud: object) -> ResultadoConfirmacion:
         self.modales.append(solicitud)
+        if self._espera_modal:
+            await asyncio.sleep(self._espera_modal)  # el operador tarda en contestar por Telegram
         if callable(self._al_aprobar_modal):
             self._al_aprobar_modal()
         return self._modal
@@ -586,6 +590,21 @@ async def test_modal_conocido_se_continua_solo_con_aprobacion_remota(tmp_path):
     assert aprobador.modales[0].modal_id == "texgen_stitched_lod_previo"
     assert gui.invocaciones[0] == "Ignore"
     assert gui.invocaciones.count("Ignore") == 1
+
+
+async def test_una_aprobacion_mas_lenta_que_el_plazo_de_arranque_no_corta_la_corrida(tmp_path):
+    """La espera humana no consume el plazo de arranque de la GUI (review CodeRabbit, PR #740).
+
+    El plazo de aprobación (default 900 s) es mayor que el de arranque (300 s): si
+    el reloj del arranque siguiera corriendo mientras el operador contesta, toda
+    aprobación más lenta que el arranque cortaría con UIA_CONTROL_MAP_MISMATCH
+    DESPUÉS de haber tocado la GUI, y la ventana real de aprobación sería 300 s.
+    """
+    aprobador = AprobadorFalso(espera_modal_segundos=0.4)
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    await _correr(gui, tmp_path, aprobador, arranque_timeout_segundos=0.2, aprobacion_timeout_segundos=2.0)
+    assert gui.invocaciones.count("Ignore") == 1
+    assert gui.invocaciones.count("Start") == 1
 
 
 async def test_modal_conocido_denegado_no_se_toca(tmp_path):
