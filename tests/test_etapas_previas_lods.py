@@ -130,14 +130,14 @@ def _symlink_o_skip(enlace: pathlib.Path, destino: pathlib.Path) -> None:
         ),
     ],
 )
-def test_solo_un_cgid_regular_y_no_vacio_prueba_la_etapa_8(tmp_path, crear):
+def test_verificar_etapas_previas_de_lods_con_cgid_no_regular_falta_la_etapa_8(tmp_path, crear):
     """Un nombre ``*.cgid`` no es un cache: un directorio, un placeholder vacío o un
     enlace no prueban que No Grass In Objects haya generado algo (review Codex, PR #740)."""
     evidencia = verificar_etapas_previas_de_lods(**_grass_con(tmp_path, crear))
     assert [f.split(" ")[1] for f in evidencia.faltantes] == ["8"]
 
 
-def test_la_extension_del_cache_se_compara_sin_mayusculas(tmp_path):
+def test_verificar_etapas_previas_de_lods_con_extension_en_mayusculas_cuenta_el_cache(tmp_path):
     rutas = _grass_con(tmp_path, lambda g: (g / "Tamriel.CGID").write_bytes(b"cgid"))
     assert verificar_etapas_previas_de_lods(**rutas).completas()
 

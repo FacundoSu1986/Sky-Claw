@@ -3315,6 +3315,15 @@ class DynDOLODRunner:
                 "este runner no tiene cableado el driver desatendido (o su estado durable de presets); "
                 "no hay fallback a modo asistido: lanzá la corrida asistida explícitamente",
             )
+        if self._config.output_layout is None:
+            # Estado normal sin DynDOLOD administrado. Sin layout no hay Output que
+            # aprobar ni que escribir por UIA, y como esto corre ANTES del lock del
+            # servicio, una excepción saldría de `execute` en vez de su resultado.
+            return self._resultado_de_corte(
+                CodigoDesatendido.UNATTENDED_CAPABILITY_UNAVAILABLE,
+                "DynDOLOD administrado no configurado (falta external_work_root): no hay Output administrado "
+                "que aprobar ni que escribir; configuralo o lanzá la corrida asistida explícitamente",
+            )
         herramientas: list[tuple[str, pathlib.Path]] = []
         if run_texgen and self._config.texgen_exe is not None:
             herramientas.append(("TexGen", self._config.texgen_exe))

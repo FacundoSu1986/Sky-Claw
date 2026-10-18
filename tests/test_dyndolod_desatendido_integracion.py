@@ -584,6 +584,25 @@ async def test_sin_capacidad_desatendida_no_hay_fallback_a_asistido(tmp_path, sh
     lanzar.assert_not_awaited()
 
 
+async def test_preparar_interaccion_desatendida_sin_layout_administrado_corta_con_codigo(tmp_path, sha_de_alpha209):
+    """Sin `external_work_root` no hay Output administrado que aprobar: corte con código, no excepción.
+
+    Es el estado NORMAL de una instalación sin DynDOLOD administrado. Desde que la
+    preparación corre antes del lock (#740), una excepción acá saldría de
+    `execute` en vez de su resultado con código (review CodeRabbit, PR #740).
+    """
+    instalacion = _instalacion(tmp_path)
+    aprobador = AprobadorFalso()
+    runner = _runner(instalacion, _capacidad(None, tmp_path / "estado", aprobador))
+    runner._config.output_layout = None  # noqa: SLF001
+
+    resultado = await runner.preparar_interaccion_desatendida(run_texgen=True, preset="Medium")
+
+    assert isinstance(resultado, DynDOLODPipelineResult)
+    assert resultado.codigos_desatendido == ("UNATTENDED_CAPABILITY_UNAVAILABLE",)
+    assert aprobador.configuraciones == []
+
+
 async def test_build_sin_contrato_corta_antes_de_preguntar(tmp_path, sha_de_alpha209):
     instalacion = _instalacion(tmp_path)
     aprobador = AprobadorFalso()

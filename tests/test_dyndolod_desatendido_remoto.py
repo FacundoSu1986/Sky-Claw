@@ -195,7 +195,7 @@ async def test_cerrar_cancela_el_trabajo_vivo():
     assert gestor.actual.tarea.done()
 
 
-async def test_cerrar_no_se_traga_la_cancelacion_de_quien_cierra():
+async def test_cerrar_cancelado_por_quien_cierra_propaga_la_cancelacion():
     """Si a ``cerrar()`` lo cancelan (``stop()`` con su plazo vencido), esa cancelación
     es de quien cierra y se propaga; sólo la del trabajo que ``cerrar`` pidió se absorbe."""
 
@@ -481,7 +481,7 @@ def test_el_bootloader_publica_el_servicio_del_supervisor():
     assert esperas and min(esperas) < publicaciones[0].lineno
 
 
-async def test_el_supervisor_queda_listo_solo_con_sus_recursos_inicializados():
+async def test_start_con_los_recursos_inicializados_recien_se_declara_listo():
     from unittest.mock import AsyncMock, MagicMock
 
     from sky_claw.app.orchestrator.supervisor import SupervisorAgent
