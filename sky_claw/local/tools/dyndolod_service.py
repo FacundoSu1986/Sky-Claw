@@ -1390,11 +1390,12 @@ class DynDOLODPipelineService:
                 f"modo de interacción desconocido: {interaction_mode!r}; "
                 f"valores admitidos: {[modo.value for modo in ModoDeInteraccion]}"
             )
+            # Sin modo válido no hubo corrida: nadie tiene que operar una ventana.
             return {
                 "success": False,
                 "message": detalle,
                 "errors": [detalle],
-                "assisted": True,
+                "assisted": False,
                 "interaction_mode": None,
             }
 

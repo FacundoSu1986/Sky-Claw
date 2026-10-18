@@ -1807,13 +1807,14 @@ class HerramientaAprobada:
     huella_preset: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class InteraccionDeCorrida:
     """El modo de ESTA corrida y, si es desatendida, lo aprobado por herramienta.
 
     Viaja EXPLÍCITO de ``run_full_pipeline`` a los dos lanzadores y de ahí a
     ``_execute_process`` (ancla: ``test_todo_spawn_recibe_la_interaccion_de_la_corrida``).
-    ``codigos`` acumula los cortes desatendidos de la corrida para el resultado.
+    ``codigos`` acumula los cortes desatendidos de la corrida para el resultado:
+    por eso NO es frozen (un frozen con una lista que se muta mentiría su contrato).
     """
 
     modo: ModoDeInteraccion

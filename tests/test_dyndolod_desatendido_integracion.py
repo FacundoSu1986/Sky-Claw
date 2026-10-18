@@ -674,6 +674,10 @@ async def test_el_servicio_rechaza_un_modo_desconocido_sin_efectos(servicio, bus
     resultado = await servicio.execute(preset="Medium", interaction_mode=modo)
     assert resultado["success"] is False
     assert resultado["message"]
+    # Sin modo válido no hubo corrida: nadie tiene que operar una ventana, así que
+    # el resultado no puede decir ASISTIDO (revisión Qodo, PR #740).
+    assert resultado["assisted"] is False
+    assert resultado["interaction_mode"] is None
     runner.run_full_pipeline.assert_not_awaited()
     bus.publish.assert_not_awaited()
 
@@ -773,3 +777,34 @@ async def test_en_modo_desatendido_un_data_path_desviado_tampoco_es_exito(tmp_pa
     assert modos_vistos == [ModoDeInteraccion.DESATENDIDO]
     assert result.success is False, "un -d: desviado no puede ser éxito tampoco en modo desatendido"
     assert DATA_DESVIADA in " ".join(result.errors)
+
+
+def test_la_interaccion_de_la_corrida_no_se_declara_inmutable() -> None:
+    """``InteraccionDeCorrida.codigos`` ACUMULA los cortes de la corrida: no es frozen.
+
+    Declararla frozen con una lista que se muta era un contrato mentiroso: el
+    ``__hash__`` generado fallaría con la lista y cualquier lector asumiría que no
+    cambia (revisión Qodo, PR #740).
+    """
+    import dataclasses
+
+    interaccion = InteraccionDeCorrida(modo=ModoDeInteraccion.DESATENDIDO)
+    interaccion.codigos.append(CodigoDesatendido.UIA_UNAVAILABLE)
+    # Un frozen levantaría FrozenInstanceError acá: el contrato declarado es mutable.
+    interaccion.modo = ModoDeInteraccion.DESATENDIDO
+    assert interaccion.codigos == [CodigoDesatendido.UIA_UNAVAILABLE]
+    assert [f.name for f in dataclasses.fields(InteraccionDeCorrida)] == ["modo", "aprobadas", "codigos"]
+
+
+@pytest.mark.parametrize("modo", ["desatendido", "asistido"])
+async def test_la_estrategia_gui_reenvia_el_modo_al_servicio(modo: str) -> None:
+    """Paridad de COMPORTAMIENTO, no sólo de claves: el dispatcher (GUI) pasa
+    ``interaction_mode`` al MISMO ``execute`` del servicio (revisión Qodo, PR #740)."""
+    from unittest.mock import AsyncMock
+
+    from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy
+
+    servicio = MagicMock()
+    servicio.execute = AsyncMock(return_value={"success": True, "message": ""})
+    await GenerateLodsStrategy(servicio).execute({"preset": "High", "interaction_mode": modo})
+    servicio.execute.assert_awaited_once_with(preset="High", interaction_mode=modo)
