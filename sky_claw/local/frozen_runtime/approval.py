@@ -730,7 +730,7 @@ def _opcional(valor: object, *, campo: str, etiqueta: str, validador: str) -> st
     return _exigir_texto(valor, campo=campo, etiqueta=etiqueta)
 
 
-def _exigir_root_local(root_id: str, *, esperado: str | None, ruta: pathlib.Path) -> None:
+def _exigir_root_local(root_id: str, *, esperado: str, ruta: pathlib.Path) -> None:
     """El artefacto declara a qué root pertenece; si no es éste, no es evidencia local.
 
     ``root_id`` es "el FrozenRuntimeRoot al que pertenece el ledger" (§37.3) y tanto
@@ -743,7 +743,7 @@ def _exigir_root_local(root_id: str, *, esperado: str | None, ruta: pathlib.Path
     ``finalization_seq`` (``root_id_esperado``): mismo mecanismo, misma razón. Se
     verifica al LEER, no al escribir: un campo que sólo se escribe es decoración.
     """
-    if esperado is not None and root_id != esperado:
+    if root_id != esperado:
         raise ApprovalRootAjenoError(
             f"{ruta}: 'root_id' no corresponde al root auditado "
             f"(declara {root_id!r}, el root canónico es {esperado!r}): "
@@ -755,7 +755,7 @@ def _parsear_ledger(
     payload: dict[str, object],
     ruta: pathlib.Path,
     *,
-    root_id_esperado: str | None = None,
+    root_id_esperado: str,
 ) -> ApprovalLedger:
     etiqueta = str(ruta)
     _exigir_campos_exactos(payload, requeridos=_CAMPOS_LEDGER, etiqueta=etiqueta)
@@ -880,7 +880,7 @@ def _parsear_witness(
     ruta: pathlib.Path,
     *,
     seq_esperada: int,
-    root_id_esperado: str | None = None,
+    root_id_esperado: str,
 ) -> IssuanceWitness:
     etiqueta = str(ruta)
     _exigir_campos_exactos(payload, requeridos=_CAMPOS_WITNESS, etiqueta=etiqueta)
@@ -1755,6 +1755,9 @@ def _crear_witness(
     """``CREATE`` no-clobber del witness; clasifica la colisión (§40.2/§40.3)."""
     handle.assert_owned()
     ruta = issuances_state_dir(root) / _nombre_witness(witness.approval_seq)
+    # Una ruta de escritura tampoco debe publicar un witness de otro root.
+    # Guard independiente del caller, antes del CREATE no-clobber.
+    _exigir_root_local(witness.root_id, esperado=_root_id(root), ruta=ruta)
     try:
         _crear_json_inmutable(ruta, _serializar_witness(witness))
     except FileExistsError:

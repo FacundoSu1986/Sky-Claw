@@ -1543,3 +1543,50 @@ def test_el_slice_no_toca_el_runtime_efectivo(tmp_path: pathlib.Path) -> None:
     # ``list()``, no ``iterdir()``: un generador es siempre truthy y la aserción
     # pasaría aunque el directorio tuviera generaciones.
     assert not list((root / "versions").iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Hardening de identidad: el root esperado no es opcional ni al escribir
+# ---------------------------------------------------------------------------
+
+
+def test_parsear_ledger_exige_root_esperado(tmp_path: pathlib.Path) -> None:
+    """Ningún caller nuevo puede parsear el ledger sin identidad de root."""
+    with pytest.raises(TypeError, match="root_id_esperado"):
+        approval_module._parsear_ledger({}, tmp_path / "approval.json")
+
+
+def test_parsear_witness_exige_root_esperado(tmp_path: pathlib.Path) -> None:
+    """El parser de emisiones no admite volver al modo fail-open."""
+    with pytest.raises(TypeError, match="root_id_esperado"):
+        approval_module._parsear_witness({}, tmp_path / "1.json", seq_esperada=1)
+
+
+def test_guard_root_no_admite_esperado_none(tmp_path: pathlib.Path) -> None:
+    """Incluso un caller Python no tipado que mande None debe fallar cerrado."""
+    with pytest.raises(ApprovalRootAjenoError, match="root_id"):
+        approval_module._exigir_root_local("root-ajeno", esperado=None, ruta=tmp_path / "approval.json")
+
+
+def test_crear_witness_ajeno_falla_antes_de_escribir(tmp_path: pathlib.Path) -> None:
+    """La escritura no confía en la identidad que le entrega su propio caller."""
+    destino = _root(tmp_path, "destino")
+    origen = _root(tmp_path, "origen")
+    witness = approval_module.IssuanceWitness(
+        schema_version=approval_module.ISSUANCE_WITNESS_SCHEMA_VERSION,
+        root_id=approval_module._root_id(origen),
+        approval_seq=1,
+        approval_id=T1,
+        approval_scope_digest="a" * 64,
+        approval_provenance="ui:solicitud-de-otro-root",
+        issued_at_ns=1,
+        ledger_revision_at_issue=0,
+    )
+    antes = _instantanea_state(destino)
+    with participant_lock(destino, timeout=0.0) as handle:
+        with pytest.raises(ApprovalRootAjenoError, match="root_id"):
+            approval_module._crear_witness(
+                handle, destino, witness, ledger=approval_module._ledger_genesis(destino)
+            )
+    assert _instantanea_state(destino) == antes
+    assert not (issuances_state_dir(destino) / "1.json").exists()
