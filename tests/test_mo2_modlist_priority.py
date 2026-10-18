@@ -362,6 +362,10 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/app/orchestrator/watcher_daemon.py",
         "sky_claw/local/discovery/scanner.py",
         "sky_claw/app/core/path_resolver.py",
+        # #661: guard de etapas previas. Usa `read_enabled_mods` (la primitive
+        # canónica) sólo como CONJUNTO de habilitados para buscar el grass cache
+        # (etapa 8); no interpreta prioridad, así que no es Family A.
+        "sky_claw/local/validators/etapas_previas_lods.py",
     },
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {

@@ -176,6 +176,12 @@ LANZADORES_ESPERADOS = {
     # [python, -m, sky_claw.local.tools.dyndolod_uia_helper, <dir>], sin flags
     # de ninguna herramienta de modding que verificar.
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": 1,
+    # #661 P3: hermano del de arriba para el driver MUTANTE de la etapa 9
+    # desatendida. Lanza SU worker descartable con el mismo patrón (mismo
+    # intérprete, módulo propio, deadline duro): argv
+    # [python, -m, sky_claw.local.tools.dyndolod_uia_driver_helper, <dir>], sin
+    # flags de herramientas de terceros. Infra, no CLI de modding.
+    "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": 1,
     # `subprocess.run(["7z", ...])` para listar/extraer archives descargados
     # (xEdit/Pandora) con sandbox de zip-slip — utilidad de archivado, no el
     # CLI propio de ninguna herramienta de modding. Aterrizó en `main` (#418)
