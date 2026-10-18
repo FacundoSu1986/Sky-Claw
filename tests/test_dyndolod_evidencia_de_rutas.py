@@ -281,6 +281,34 @@ def test_veredicto_valores_repetidos_e_iguales_no_son_conflicto() -> None:
     assert ev.output.veredicto is VeredictoRuta.COINCIDE
 
 
+def test_veredicto_la_misma_ruta_escrita_distinto_no_es_conflicto() -> None:
+    """Ecos que difieren SOLO en la escritura son el mismo path, no evidencia ambigua.
+
+    Deduplicar por texto crudo convertía ``D:\\Otra\\Data\\`` + ``d:\\otra\\data``
+    en "dos valores" ⇒ ``INDETERMINADO`` ⇒ la corrida se aceptaba con un ``-d:``
+    desviado (revisión CodeRabbit, PR #739). La equivalencia es la misma que usa el
+    contraste contra lo configurado (:func:`rutas_equivalentes`).
+    """
+    texto = (
+        "Using Skyrim Special Edition Data Path: D:\\Otra\\Data\\\n"
+        "Using Skyrim Special Edition Data Path: d:\\otra\\data\n"
+    )
+    ev = evaluar_evidencia_de_rutas(texto, raiz_de_salida=None, data_dir=pathlib.Path(r"C:\Rig\Data"))
+    assert ev.data.veredicto is VeredictoRuta.DIFIERE
+    assert ev.datos_desviados()
+
+
+def test_veredicto_la_ruta_configurada_escrita_distinto_coincide() -> None:
+    """La otra cara: variantes de forma del path CONFIGURADO siguen siendo COINCIDE."""
+    texto = (
+        "Using Skyrim Special Edition Data Path: C:\\Rig\\Data\\\\\n"
+        "Using Skyrim Special Edition Data Path: c:\\rig\\data\n"
+    )
+    ev = evaluar_evidencia_de_rutas(texto, raiz_de_salida=None, data_dir=pathlib.Path(r"C:\Rig\Data"))
+    assert ev.data.veredicto is VeredictoRuta.COINCIDE
+    assert not ev.datos_desviados()
+
+
 def test_discrepancias_enumera_solo_las_claves_desviadas_en_orden_estable() -> None:
     """``EvidenciaDeRutas.discrepancias()`` es la fuente del diagnóstico de Finding 4.
 

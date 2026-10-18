@@ -1121,14 +1121,27 @@ def rutas_equivalentes(declarada: str, configurada: pathlib.Path) -> bool:
     contención. Eso es :func:`~sky_claw.app.security.links.exigir_contencion_fisica`,
     que sigue siendo el guard de la cadena física.
     """
-    return ntpath.normcase(ntpath.normpath(declarada)) == ntpath.normcase(ntpath.normpath(str(configurada)))
+    return _forma_canonica(declarada) == _forma_canonica(str(configurada))
+
+
+def _forma_canonica(ruta: str) -> str:
+    """La forma con la que dos rutas Windows se comparan (ver :func:`rutas_equivalentes`)."""
+    return ntpath.normcase(ntpath.normpath(ruta))
 
 
 def _veredicto_de_clave(declaradas: tuple[str, ...], configurada: pathlib.Path | None) -> EvidenciaDeRuta:
     """Veredicto de UNA clave. Sin líneas ⇒ ``AUSENTE``; sin target ⇒ ``INDETERMINADO``."""
     if not declaradas:
         return EvidenciaDeRuta(veredicto=VeredictoRuta.AUSENTE, configurada=configurada)
-    distintas = tuple(dict.fromkeys(declaradas))
+    # Se deduplica por la MISMA equivalencia que se usa contra lo configurado: dos
+    # ecos que difieren sólo en la escritura (mayúsculas, separador final) son el
+    # mismo path. Deduplicar por texto crudo los volvía un "conflicto" y un -d:
+    # desviado escrito dos veces de forma distinta quedaba INDETERMINADO, que no
+    # bloquea (revisión CodeRabbit, PR #739).
+    por_forma: dict[str, str] = {}
+    for declarada_cruda in declaradas:
+        por_forma.setdefault(_forma_canonica(declarada_cruda), declarada_cruda)
+    distintas = tuple(por_forma.values())
     if len(distintas) > 1:
         # El eco puede repetirse; si los valores difieren no hay con qué afirmar
         # cuál rigió. Se devuelve el primero SÓLO como dato descriptivo — el
