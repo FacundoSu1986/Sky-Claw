@@ -714,3 +714,62 @@ async def test_un_fallo_desatendido_expone_sus_codigos_machine_readable(servicio
     assert resultado["success"] is False
     assert resultado["unattended_error_codes"] == ["BEGIN_OUTCOME_UNKNOWN"]
     assert resultado["interaction_mode"] == "desatendido"
+
+
+# =============================================================================
+# #661 × #739: el gate de procedencia de datos sobrevive al modo desatendido
+# =============================================================================
+
+
+@pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+async def test_en_modo_desatendido_un_data_path_desviado_tampoco_es_exito(tmp_path: pathlib.Path, tool: str) -> None:
+    """El modo desatendido cambia CÓMO se conduce la GUI, nunca QUÉ se acepta.
+
+    El quinto conjunct de éxito (``procedencia_de_datos_es_confiable``, #739) vive
+    en los lanzadores, DESPUÉS de ``_execute_process``: una corrida desatendida con
+    el artefacto presente y un ``-d:`` declarado distinto del administrado tiene
+    que terminar en fallo igual que una asistida. El fake verifica además que la
+    corrida viajó como DESATENDIDA, así que el test no puede pasar por el camino
+    asistido.
+    """
+    from tests.test_dyndolod_evidencia_de_rutas import DATA_DESVIADA, _log_con_eco, _raiz_de_salida
+    from tests.test_dyndolod_service import (
+        _corrida_que_completa,
+        _EjecucionFalsa,
+        _escribir_salida,
+        _runner_texgen,
+    )
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    raiz = _raiz_de_salida(config, tool)
+    if tool == "TexGen":
+        destino, artefacto = raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME, "a.dds"
+    else:
+        destino, artefacto = raiz / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, "DynDOLOD.esp"
+    log = _log_con_eco(
+        f"Using Output Path: {raiz}\\",
+        f"Using Skyrim Special Edition Data Path: {DATA_DESVIADA}",
+        tool=tool,
+    )
+    modos_vistos: list[object] = []
+    base = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(tmp_path, tool, lambda: _escribir_salida(destino, artefacto), log=log),
+    )
+
+    async def _fake(*args: object, **kwargs: object) -> tuple[str, str, int, float]:
+        interaccion = kwargs.get("interaccion")
+        modos_vistos.append(getattr(interaccion, "modo", None))
+        return await base(*args, **kwargs)
+
+    interaccion = InteraccionDeCorrida(modo=ModoDeInteraccion.DESATENDIDO)
+    with mock.patch.object(runner, "_execute_process", _fake):
+        if tool == "TexGen":
+            result = await runner.run_texgen(interaccion=interaccion)
+        else:
+            result = await runner.run_dyndolod(preset="Medium", interaccion=interaccion)
+
+    assert modos_vistos == [ModoDeInteraccion.DESATENDIDO]
+    assert result.success is False, "un -d: desviado no puede ser éxito tampoco en modo desatendido"
+    assert DATA_DESVIADA in " ".join(result.errors)
