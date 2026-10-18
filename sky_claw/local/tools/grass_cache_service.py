@@ -51,6 +51,8 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     LockReleaseError,
     SnapshotTransactionLock,
+    adquirir_lease_definitiva,
+    liberar_lease_definitiva,
 )
 from sky_claw.local.tools.grass_cache_runner import (
     _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
@@ -131,8 +133,8 @@ async def reconcile_orphan_precache_flag(
     # instancia arrancó un precache entre el chequeo de arriba y este punto,
     # acquire_lock falla (el ritual ya lo posee) y NO tocamos su flag legítimo.
     try:
-        lease = await lock_manager.acquire_lock(
-            GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS
+        lease = await adquirir_lease_definitiva(
+            lock_manager, GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS
         )
     except LockAcquisitionError:
         logger.info(
@@ -165,7 +167,12 @@ async def reconcile_orphan_precache_flag(
         return removed
     finally:
         try:
-            await lock_manager.release_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, acquired_at=lease.acquired_at)
+            await liberar_lease_definitiva(
+                lock_manager,
+                GRASS_CACHE_RESOURCE_ID,
+                _RECONCILE_AGENT_ID,
+                acquired_at=lease.acquired_at,
+            )
         except LockReleaseError:
             logger.warning(
                 "Fallo al liberar '%s' tras reconciliar (el TTL lo recupera).",

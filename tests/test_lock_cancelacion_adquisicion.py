@@ -73,6 +73,18 @@ def db_path(tmp_path: pathlib.Path) -> pathlib.Path:
     return tmp_path / "locks.db"
 
 
+async def _cerrar_gestor_y_lifecycle(
+    mgr: DistributedLockManager,
+    lifecycle: DatabaseLifecycleManager | None,
+) -> None:
+    """Teardown del fixture: ``shutdown_all()`` corre aunque ``mgr.close()`` falle."""
+    try:
+        await mgr.close()
+    finally:
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+
+
 @pytest.fixture(params=["legacy", "lifecycle"])
 async def gestor(
     request: pytest.FixtureRequest,
@@ -97,11 +109,7 @@ async def gestor(
     try:
         yield mgr
     finally:
-        # finally anidado: shutdown_all() tiene que correr aunque close() falle,
-        # o los hilos de aiosqlite cuelgan la sesión de pytest.
-        await mgr.close()
-        if lifecycle is not None:
-            await lifecycle.shutdown_all()
+        await _cerrar_gestor_y_lifecycle(mgr, lifecycle)
 
 
 @pytest.fixture
@@ -689,3 +697,615 @@ async def test_la_cancelacion_durante_el_cleanup_completa_el_delete(
         await asyncio.wait_for(tarea, timeout=10.0)
 
     assert _fila_en_disco(db_path) is None, "la cancelación abandonó el DELETE del __aexit__"
+
+
+# =============================================================================
+# FASE B — Cleanup acotado ante bloqueo de SQLite, estado indeterminado y
+# supervisión de tarea en vuelo
+# =============================================================================
+
+
+def _fila_en_disco_recurso(db_path: pathlib.Path, resource_id: str) -> tuple[str, float] | None:
+    """Lee ``resource_locks`` para un ``resource_id`` arbitrario con conexión independiente."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        fila = conn.execute(
+            "SELECT agent_id, acquired_at FROM resource_locks WHERE resource_id = ?",
+            (resource_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if fila is None else (fila[0], fila[1])
+
+
+async def test_adquisicion_bloqueada_acota_espera_marca_indeterminado_y_recupera_al_desbloquear(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    db_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si ``acquire_lock`` queda bloqueado en SQLite durante una cancelación:
+
+    1. El llamador no espera indefinidamente: sale con ``CancelledError`` tras
+       ``cleanup_timeout``.
+    2. Mientras la operación sigue en vuelo, el estado queda registrado como
+       ``INDETERMINADO`` (``cleanup_indeterminado is True``, ``lease_liberada is False``).
+    3. La operación en vuelo NO se cancela a ciegas (lo que perdería ``acquired_at``
+       si el commit gana), sino que queda retenida bajo supervisión con propietario.
+    4. Cuando el bloqueo cede y ``acquire_lock`` entrega el ``LockInfo``, la tarea
+       supervisora libera únicamente esa lease por su token ``acquired_at`` exacto.
+    """
+    from sky_claw.app.db import locks as locks_mod
+
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    contexto = SnapshotTransactionLock(
+        lock_manager=gestor,
+        snapshot_manager=snapshots,
+        resource_id=RECURSO,
+        agent_id=AGENTE,
+        target_files=[],
+        auto_renew=False,
+        cleanup_timeout=0.05,
+    )
+
+    tarea = asyncio.create_task(contexto.__aenter__())
+    await asyncio.wait_for(alcanzada.wait(), timeout=10.0)
+    tarea.cancel()
+
+    # No abrimos `liberar`: simulamos que el hilo de SQLite / lock de path sigue
+    # bloqueado más allá de cleanup_timeout. El caller debe desbloquearse rápido.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=0.5)
+
+    assert contexto.lock_info is None
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.INDETERMINADO
+    assert contexto.cleanup_indeterminado is True
+    assert contexto.lease_liberada is False, "prohibido afirmar lease liberada cuando el resultado es desconocido"
+
+    pendientes = locks_mod.tareas_de_cleanup_pendientes(gestor)
+    assert len(pendientes) == 1, "la operación en vuelo debe conservar propietario y seguimiento"
+
+    # Ahora el hilo de SQLite destraba y termina de retornar el LockInfo.
+    liberar.set()
+    await locks_mod.drenar_tareas_de_cleanup_pendientes(gestor, cancel_pending=False, timeout=5.0)
+
+    assert _fila_en_disco(db_path) is None, "la supervisión tardía debe liberar la lease con el token adquirido"
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.LIBERADA
+    assert contexto.cleanup_indeterminado is False
+    assert contexto.lease_liberada is True
+    assert locks_mod.tareas_de_cleanup_pendientes(gestor) == set()
+
+
+async def test_liberacion_bloqueada_acota_espera_marca_indeterminado_y_no_miente_lease_liberada(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    db_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si ``release_lock`` queda bloqueado durante una cancelación:
+
+    1. El llamador sale con ``CancelledError`` tras ``cleanup_timeout``.
+    2. ``estado_cleanup`` queda ``INDETERMINADO`` y ``lease_liberada`` es ``False``
+       (nunca afirma liberación no demostrada).
+    3. Cuando el DELETE bloqueado finalmente termina, la tarea supervisada cierra
+       limpiamente y actualiza el estado a ``LIBERADA``.
+    """
+    from sky_claw.app.db import locks as locks_mod
+
+    contexto = SnapshotTransactionLock(
+        lock_manager=gestor,
+        snapshot_manager=snapshots,
+        resource_id=RECURSO,
+        agent_id=AGENTE,
+        target_files=[],
+        auto_renew=False,
+        cleanup_timeout=0.05,
+    )
+    await contexto.__aenter__()
+    assert contexto.lock_info is not None
+
+    original_release = DistributedLockManager.release_lock
+    liberando = asyncio.Event()
+    puerta = asyncio.Event()
+
+    async def release_bloqueado(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        liberando.set()
+        await puerta.wait()
+        return await original_release(self, resource_id, agent_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_bloqueado)
+
+    tarea = asyncio.create_task(contexto.__aexit__(None, None, None))
+    await asyncio.wait_for(liberando.wait(), timeout=10.0)
+    tarea.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=0.5)
+
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.INDETERMINADO
+    assert contexto.cleanup_indeterminado is True
+    assert contexto.lease_liberada is False, "no puede reportar lease liberada mientras el DELETE sigue bloqueado"
+    assert len(locks_mod.tareas_de_cleanup_pendientes(gestor)) == 1
+
+    puerta.set()
+    await locks_mod.drenar_tareas_de_cleanup_pendientes(gestor, cancel_pending=False, timeout=5.0)
+
+    assert _fila_en_disco(db_path) is None
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.LIBERADA
+    assert contexto.lease_liberada is True
+    assert locks_mod.tareas_de_cleanup_pendientes(gestor) == set()
+
+
+@pytest.mark.parametrize("reclamante", ["otro-proceso", AGENTE])
+async def test_supervision_tardia_tras_timeout_no_borra_lease_reclamada_por_tercero_o_mismo_agent_id(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    db_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reclamante: str,
+) -> None:
+    """Si vence ``cleanup_timeout`` (estado ``INDETERMINADO``) y para cuando la
+    adquisición rezagada destraba la lease ya expiró por TTL y fue reclamada por
+    otro propietario (o por un segundo propietario con el MISMO ``agent_id``),
+    la liberación supervisada usa el ``acquired_at`` original y NUNCA borra la
+    lease del nuevo propietario.
+    """
+    from sky_claw.app.db import locks as locks_mod
+
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    original_release = DistributedLockManager.release_lock
+    token_reclamado = {"valor": 0.0}
+
+    async def release_con_reclamo_por_ttl(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        assert acquired_at is not None
+        nuevo_token = acquired_at + 200.0
+        token_reclamado["valor"] = nuevo_token
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE resource_locks SET agent_id = ?, acquired_at = ?, expires_at = ? WHERE resource_id = ?",
+                (reclamante, nuevo_token, nuevo_token + 60.0, resource_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return await original_release(self, resource_id, agent_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_con_reclamo_por_ttl)
+
+    contexto = SnapshotTransactionLock(
+        lock_manager=gestor,
+        snapshot_manager=snapshots,
+        resource_id=RECURSO,
+        agent_id=AGENTE,
+        target_files=[],
+        auto_renew=False,
+        cleanup_timeout=0.05,
+    )
+
+    tarea = asyncio.create_task(contexto.__aenter__())
+    await asyncio.wait_for(alcanzada.wait(), timeout=10.0)
+    tarea.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=0.5)
+
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.INDETERMINADO
+    assert contexto.lease_liberada is False
+
+    liberar.set()
+    await locks_mod.drenar_tareas_de_cleanup_pendientes(gestor, cancel_pending=False, timeout=5.0)
+
+    assert _fila_en_disco(db_path) == (reclamante, token_reclamado["valor"]), (
+        f"la supervisión tardía borró la lease reclamada por '{reclamante}'"
+    )
+    assert contexto.estado_cleanup == locks_mod.EstadoDeCleanupDeLease.YA_EXPIRADA_O_RECLAMADA
+    assert contexto.lease_liberada is False
+
+
+async def test_shutdown_close_drena_y_cancela_tareas_supervisadas_sin_dejar_huerfanas(
+    gestor: DistributedLockManager,
+    snapshots: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Al cerrar el ``DistributedLockManager``, cualquier tarea supervisada pendiente
+    se cancela y drena limpiamente sin dejar tareas huérfanas no supervisadas.
+    """
+    from sky_claw.app.db import locks as locks_mod
+
+    bloqueado = asyncio.Event()
+    nunca_abre = asyncio.Event()
+
+    async def acquire_colgado(
+        self: DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        ttl: float | None = None,
+    ) -> LockInfo:
+        bloqueado.set()
+        await nunca_abre.wait()
+        raise AssertionError("inmutable")
+
+    monkeypatch.setattr(DistributedLockManager, "acquire_lock", acquire_colgado)
+
+    contexto = SnapshotTransactionLock(
+        lock_manager=gestor,
+        snapshot_manager=snapshots,
+        resource_id=RECURSO,
+        agent_id=AGENTE,
+        target_files=[],
+        auto_renew=False,
+        cleanup_timeout=0.05,
+    )
+
+    tarea = asyncio.create_task(contexto.__aenter__())
+    await asyncio.wait_for(bloqueado.wait(), timeout=10.0)
+    tarea.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=0.5)
+
+    assert len(locks_mod.tareas_de_cleanup_pendientes(gestor)) == 1
+
+    await gestor.close()
+
+    assert locks_mod.tareas_de_cleanup_pendientes(gestor) == set()
+    huerfanas = [
+        t
+        for t in asyncio.all_tasks()
+        if not t.done()
+        and any(
+            (t.get_name() or "").startswith(prefijo)
+            for prefijo in (f"lock-acquire-{RECURSO}", f"lock-cleanup-{RECURSO}")
+        )
+    ]
+    assert huerfanas == [], f"quedaron tareas huérfanas tras close(): {huerfanas}"
+
+
+# =============================================================================
+# FASE C — Consumidores hermanos (tools_installer, grass_cache_service,
+# rollback_reconciler) y resolver_workspace
+# =============================================================================
+
+
+async def test_tools_installer_cancelacion_tras_commit_libera_lease_de_3600s_y_respeta_mismo_agent_id(
+    gestor: DistributedLockManager,
+    db_path: pathlib.Path,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_bajo_lock_de_instalacion`` (TTL=3600 s) no deja la lease viva si se cancela
+    tras el commit y antes de entrar al bloque ``try``, ni borra la lease readquirida
+    por otro instalador con el mismo ``_INSTALL_AGENT_ID``.
+    """
+    from sky_claw.local.tools_installer import (
+        _INSTALL_AGENT_ID,
+        _INSTALL_TTL_SECONDS,
+        _bajo_lock_de_instalacion,
+        _install_lock_resource_id,
+    )
+
+    assert _INSTALL_TTL_SECONDS == 3600.0
+    resource_id = _install_lock_resource_id(tmp_path / "LOOT")
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+
+    async def instalar() -> None:
+        async with _bajo_lock_de_instalacion(gestor, resource_id, ttl=_INSTALL_TTL_SECONDS):
+            pass
+
+    tarea = asyncio.create_task(instalar())
+    await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
+
+    assert _fila_en_disco_recurso(db_path, resource_id) is None, (
+        "la cancelación post-commit en tools_installer filtró una lease de 3600 s"
+    )
+
+    # Segundo escenario: si otra instancia con el MISMO _INSTALL_AGENT_ID reclama
+    # la lease antes del DELETE compensatorio, su token nuevo sobrevive.
+    alcanzada2, liberar2, _ = _instalar_ventana(monkeypatch, "tras_el_commit")
+    original_release = DistributedLockManager.release_lock
+    token_hermano = {"valor": 0.0}
+
+    async def release_con_hermano(
+        self: DistributedLockManager,
+        res_id: str,
+        ag_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        assert acquired_at is not None
+        nuevo = acquired_at + 100.0
+        token_hermano["valor"] = nuevo
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE resource_locks SET agent_id = ?, acquired_at = ?, expires_at = ? WHERE resource_id = ?",
+                (_INSTALL_AGENT_ID, nuevo, nuevo + 3600.0, res_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return await original_release(self, res_id, ag_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_con_hermano)
+    tarea2 = asyncio.create_task(instalar())
+    await _cancelar_en_la_ventana(tarea2, alcanzada2, liberar2)
+
+    assert _fila_en_disco_recurso(db_path, resource_id) == (_INSTALL_AGENT_ID, token_hermano["valor"])
+
+
+async def test_grass_cache_reconcile_cancelacion_tras_commit_libera_lease_y_respeta_mismo_agent_id(
+    gestor: DistributedLockManager,
+    db_path: pathlib.Path,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``reconcile_orphan_precache_flag`` no deja ``grass-cache`` tomado si se cancela
+    tras el commit de ``acquire_lock``, ni borra una lease reclamada con el mismo
+    ``_RECONCILE_AGENT_ID``.
+    """
+    from sky_claw.local.tools.grass_cache_service import (
+        _RECONCILE_AGENT_ID,
+        GRASS_CACHE_RESOURCE_ID,
+        reconcile_orphan_precache_flag,
+    )
+
+    game_path = tmp_path / "Skyrim"
+    game_path.mkdir()
+    flag = game_path / "PrecacheGrass.txt"
+    flag.write_text("1", encoding="utf-8")
+
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    tarea = asyncio.create_task(reconcile_orphan_precache_flag(game_path, gestor))
+    await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
+
+    assert _fila_en_disco_recurso(db_path, GRASS_CACHE_RESOURCE_ID) is None, (
+        "reconcile_orphan_precache_flag dejó la lease viva tras cancelarse post-commit"
+    )
+    assert flag.exists(), "la tarea cancelada durante acquire no debe haber borrado el flag"
+
+    # Y si un hermano con el mismo _RECONCILE_AGENT_ID reclama antes del DELETE, sobrevive.
+    alcanzada2, liberar2, _ = _instalar_ventana(monkeypatch, "tras_el_commit")
+    original_release = DistributedLockManager.release_lock
+    token_hermano = {"valor": 0.0}
+
+    async def release_con_hermano(
+        self: DistributedLockManager,
+        res_id: str,
+        ag_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        assert acquired_at is not None
+        nuevo = acquired_at + 100.0
+        token_hermano["valor"] = nuevo
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE resource_locks SET agent_id = ?, acquired_at = ?, expires_at = ? WHERE resource_id = ?",
+                (_RECONCILE_AGENT_ID, nuevo, nuevo + 60.0, res_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return await original_release(self, res_id, ag_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_con_hermano)
+    tarea2 = asyncio.create_task(reconcile_orphan_precache_flag(game_path, gestor))
+    await _cancelar_en_la_ventana(tarea2, alcanzada2, liberar2)
+
+    assert _fila_en_disco_recurso(db_path, GRASS_CACHE_RESOURCE_ID) == (_RECONCILE_AGENT_ID, token_hermano["valor"])
+
+
+async def test_rollback_reconciler_cancelacion_tras_commit_libera_lease_y_respeta_mismo_agent_id(
+    gestor: DistributedLockManager,
+    db_path: pathlib.Path,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_bajo_el_lock_del_ritual`` en ``rollback_reconciler`` no deja la lease del
+    ritual viva si se cancela tras el commit de ``acquire_lock``, ni borra la lease
+    readquirida por un hermano con el mismo ``_RECONCILE_AGENT_ID``.
+    """
+    from sky_claw.local.tools.rollback_reconciler import (
+        _RECONCILE_AGENT_ID,
+        ProductorDeMoveAside,
+        reconcile_orphan_rollback_backups,
+    )
+
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    backup = mods / "DynDOLOD Output.rollback-1753700000000000000"
+    backup.mkdir()
+    (backup / "DynDOLOD.esp").write_text("previo", encoding="utf-8")
+    productor = ProductorDeMoveAside(
+        nombre="dyndolod",
+        destinos=(mods / "DynDOLOD Output",),
+        lock_resource_id="dyndolod-pipeline",
+    )
+
+    alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+    tarea = asyncio.create_task(
+        reconcile_orphan_rollback_backups(
+            productores=[productor],
+            sandbox_root=None,
+            lock_manager=gestor,
+        )
+    )
+    await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
+
+    assert _fila_en_disco_recurso(db_path, "dyndolod-pipeline") is None, (
+        "rollback_reconciler dejó la lease del ritual viva tras cancelarse post-commit"
+    )
+    assert backup.exists(), "la reconciliación cancelada durante acquire no debe haber mutado el backup"
+
+    # Y si un hermano con el mismo _RECONCILE_AGENT_ID reclama antes del DELETE, sobrevive.
+    alcanzada2, liberar2, _ = _instalar_ventana(monkeypatch, "tras_el_commit")
+    original_release = DistributedLockManager.release_lock
+    token_hermano = {"valor": 0.0}
+
+    async def release_con_hermano(
+        self: DistributedLockManager,
+        res_id: str,
+        ag_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
+        assert acquired_at is not None
+        nuevo = acquired_at + 100.0
+        token_hermano["valor"] = nuevo
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "UPDATE resource_locks SET agent_id = ?, acquired_at = ?, expires_at = ? WHERE resource_id = ?",
+                (_RECONCILE_AGENT_ID, nuevo, nuevo + 60.0, res_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return await original_release(self, res_id, ag_id, acquired_at=acquired_at)
+
+    monkeypatch.setattr(DistributedLockManager, "release_lock", release_con_hermano)
+    tarea2 = asyncio.create_task(
+        reconcile_orphan_rollback_backups(
+            productores=[productor],
+            sandbox_root=None,
+            lock_manager=gestor,
+        )
+    )
+    await _cancelar_en_la_ventana(tarea2, alcanzada2, liberar2)
+
+    assert _fila_en_disco_recurso(db_path, "dyndolod-pipeline") == (_RECONCILE_AGENT_ID, token_hermano["valor"])
+
+
+def test_censo_ast_todos_los_consumidores_de_acquire_lock_usan_adquirir_lease_definitiva() -> None:
+    """Ancla AST: ningún consumidor productivo fuera de ``sky_claw/app/db/locks.py``
+    llama ``.acquire_lock(...)`` directo; los 4 consumidores pasan por
+    ``adquirir_lease_definitiva``.
+    """
+    import ast
+    import pathlib as _pathlib
+
+    raiz = _pathlib.Path(__file__).resolve().parent.parent
+    directos: set[str] = set()
+    definitivos: set[str] = set()
+    for archivo in sorted((raiz / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        relativo = archivo.relative_to(raiz).as_posix()
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            if isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "acquire_lock":
+                directos.add(relativo)
+            if (isinstance(nodo.func, ast.Name) and nodo.func.id == "adquirir_lease_definitiva") or (
+                isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "adquirir_lease_definitiva"
+            ):
+                definitivos.add(relativo)
+
+    assert directos == {"sky_claw/app/db/locks.py"}, (
+        f"Llamadas directas a .acquire_lock() fuera de locks.py (vulnerables a #741): {directos}"
+    )
+    assert definitivos == {
+        "sky_claw/app/db/locks.py",
+        "sky_claw/local/tools/grass_cache_service.py",
+        "sky_claw/local/tools/rollback_reconciler.py",
+        "sky_claw/local/tools_installer.py",
+    }
+
+
+async def test_cancelar_resolver_workspace_tras_commit_no_deja_lease_y_permite_reintento_inmediato(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end sobre ``resolver_workspace``: si la resolución del workspace se
+    cancela justo después del commit de la lease de propiedad de etapa 9, la lease
+    se compensa y la llamada inmediata siguiente obtiene ``WorkspaceResuelto`` en
+    vez de ser rechazada con ``OCUPADO``.
+    """
+    from sky_claw.local.tools import dyndolod_workspace as ws
+
+    game = tmp_path / "game"
+    datos = tmp_path / "mo2"
+    mods = datos / "mods"
+    for d in (game, datos, mods):
+        d.mkdir(parents=True, exist_ok=True)
+    recursos = ws.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=datos,
+        mo2_mods_path=mods,
+    )
+    prohibidas = ws.RaicesProhibidas.desde_entorno(
+        game=game,
+        mo2_install=tmp_path / "mo2_install",
+        mo2_instance_data_root=datos,
+        mo2_mods_path=mods,
+        dyndolod_exe=tmp_path / "tools" / "DynDOLOD" / "DynDOLODx64.exe",
+        texgen_exe=tmp_path / "tools" / "TexGen" / "TexGenx64.exe",
+        temp_dir=tmp_path / "temp",
+        known_folders_prohibidos=(),
+    )
+    registro = ws.RegistroDeRootActivo(tmp_path / "estado" / "dyndolod_active_roots.json")
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+    candidato = tmp_path / "Work Root"
+
+    try:
+        alcanzada, liberar, _commit_ejecutado = _instalar_ventana(monkeypatch, "tras_el_commit")
+        tarea = asyncio.create_task(
+            ws.resolver_workspace(
+                preferencia=str(candidato),
+                recursos=recursos,
+                prohibidas=prohibidas,
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        )
+        await _cancelar_en_la_ventana(tarea, alcanzada, liberar)
+        monkeypatch.undo()
+
+        # Reintento inmediato: no puede fallar con OCUPADO.
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(candidato),
+            recursos=recursos,
+            prohibidas=prohibidas,
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert resuelto is not None
+        assert resuelto.root == candidato.resolve()
+        await resuelto.ownership.liberar()
+    finally:
+        await coordinacion.close()
+
+
+# =============================================================================
+# FASE D — Garantía de teardown del fixture aunque mgr.close() falle
+# =============================================================================
+
+
+async def test_el_teardown_del_fixture_ejecuta_shutdown_all_aunque_close_falle() -> None:
+    """Si ``mgr.close()`` levanta una excepción, ``lifecycle.shutdown_all()``
+    corre igual gracias al ``try/finally`` anidado en ``_cerrar_gestor_y_lifecycle``.
+    """
+    from unittest.mock import AsyncMock
+
+    mgr = AsyncMock(spec=DistributedLockManager)
+    mgr.close.side_effect = RuntimeError("fallo simulado en mgr.close()")
+    lifecycle = AsyncMock(spec=DatabaseLifecycleManager)
+
+    with pytest.raises(RuntimeError, match="fallo simulado en mgr.close"):
+        await _cerrar_gestor_y_lifecycle(mgr, lifecycle)
+
+    mgr.close.assert_awaited_once()
+    lifecycle.shutdown_all.assert_awaited_once()

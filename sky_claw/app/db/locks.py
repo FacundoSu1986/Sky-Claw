@@ -55,8 +55,9 @@ import math
 import pathlib
 import sqlite3
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import aiosqlite
@@ -141,6 +142,25 @@ DEFAULT_BACKOFF_BASE: float = 0.1
 
 #: Maximum delay between retries (seconds).
 DEFAULT_BACKOFF_MAX: float = 5.0
+
+#: Bounded deadline (seconds) to wait for an in-flight SQLite acquire/release
+#: when the calling task has already been cancelled (#741). If the deadline
+#: expires while SQLite is still blocked, the state transitions to
+#: ``INDETERMINADO`` and the in-flight operation remains supervised in the
+#: background so the caller is never hung indefinitely.
+DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS: float = 5.0
+
+
+class EstadoDeCleanupDeLease(StrEnum):
+    """Resultado explícito de la compensación/liberación de una lease (#741)."""
+
+    NO_REQUERIDO = "no_requerido"
+    SIN_LEASE = "sin_lease"
+    LIBERADA = "liberada"
+    YA_EXPIRADA_O_RECLAMADA = "ya_expirada_o_reclamada"
+    FALLO_DE_LIBERACION = "fallo_de_liberacion"
+    INDETERMINADO = "indeterminado"
+
 
 _LOCKS_SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS resource_locks (
@@ -251,6 +271,7 @@ class DistributedLockManager:
         # (initialize vs close). Orden de locks de la familia:
         # _conn_lock → boundary del path (nunca al revés).
         self._conn_lock = asyncio.Lock()
+        self._pending_cleanup_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -313,6 +334,7 @@ class DistributedLockManager:
         Fix #473 (C5): corre bajo ``_conn_lock``: un ``initialize()`` en vuelo
         termina antes de que el close nulee ``_conn`` (sin resurrección).
         """
+        await drenar_tareas_de_cleanup_pendientes(self, cancel_pending=True)
         async with self._conn_lock:
             if self._conn is not None:
                 if self._owns_conn:
@@ -746,6 +768,408 @@ class DistributedLockManager:
 
 
 # =============================================================================
+# SHARED CANCELLATION-DURABLE ACQUIRE / RELEASE PRIMITIVES (#741)
+# =============================================================================
+
+_TAREAS_DE_CLEANUP_SUPERVISADAS: set[asyncio.Task[None]] = set()
+_SUBYACENTES_DE_CLEANUP: dict[asyncio.Task[None], asyncio.Future[Any]] = {}
+
+
+def tareas_de_cleanup_pendientes(lock_manager: Any | None = None) -> set[asyncio.Task[None]]:
+    """Devuelve las tareas supervisoras de cleanup en vuelo para ``lock_manager``."""
+    if lock_manager is not None:
+        conjunto = getattr(lock_manager, "_pending_cleanup_tasks", None)
+        if isinstance(conjunto, set):
+            return {t for t in conjunto if not t.done()}
+        return set()
+    return {t for t in _TAREAS_DE_CLEANUP_SUPERVISADAS if not t.done()}
+
+
+async def drenar_tareas_de_cleanup_pendientes(
+    lock_manager: Any | None = None,
+    *,
+    cancel_pending: bool = True,
+    timeout: float | None = 1.0,
+) -> None:
+    """Espera o cancela las tareas supervisoras de cleanup en vuelo.
+
+    Si ``cancel_pending=True`` (usado en ``DistributedLockManager.close()``),
+    cancela tanto la tarea supervisora como la operación subyacente colgada
+    antes de esperar su terminación, garantizando cero tareas huérfanas al
+    apagar. Si ``cancel_pending=False``, espera hasta ``timeout`` a que las
+    tareas supervisoras terminen su recuperación tardía por sí mismas.
+    """
+    pendientes = list(tareas_de_cleanup_pendientes(lock_manager))
+    if not pendientes:
+        return
+    if cancel_pending:
+        subyacentes: list[asyncio.Future[Any]] = []
+        for tarea in pendientes:
+            subyacente = _SUBYACENTES_DE_CLEANUP.get(tarea)
+            if isinstance(subyacente, asyncio.Future) and not subyacente.done():
+                subyacente.cancel()
+                subyacentes.append(subyacente)
+            tarea.cancel()
+        await asyncio.gather(*pendientes, *subyacentes, return_exceptions=True)
+        return
+
+    espera = asyncio.gather(*pendientes, return_exceptions=True)
+    if timeout is not None:
+        await asyncio.wait_for(espera, timeout=timeout)
+    else:
+        await espera
+
+
+def _registrar_tarea_supervisada(
+    lock_manager: Any,
+    tarea_supervisora: asyncio.Task[None],
+    *,
+    tarea_subyacente: asyncio.Future[Any] | None = None,
+) -> None:
+    """Registra una tarea supervisora para que conserve propietario y seguimiento."""
+    if tarea_subyacente is not None:
+        _SUBYACENTES_DE_CLEANUP[tarea_supervisora] = tarea_subyacente
+        tarea_supervisora.add_done_callback(lambda t: _SUBYACENTES_DE_CLEANUP.pop(t, None))
+    _TAREAS_DE_CLEANUP_SUPERVISADAS.add(tarea_supervisora)
+    tarea_supervisora.add_done_callback(_TAREAS_DE_CLEANUP_SUPERVISADAS.discard)
+    conjunto = getattr(lock_manager, "_pending_cleanup_tasks", None)
+    if not isinstance(conjunto, set):
+        with contextlib.suppress(Exception):
+            conjunto = set()
+            lock_manager._pending_cleanup_tasks = conjunto
+    if isinstance(conjunto, set):
+        conjunto.add(tarea_supervisora)
+        tarea_supervisora.add_done_callback(conjunto.discard)
+
+
+async def _supervisar_liberacion_tardia(
+    *,
+    tarea: asyncio.Future[bool],
+    resource_id: str,
+    agent_id: str,
+    on_estado: Callable[[EstadoDeCleanupDeLease], None] | None,
+) -> None:
+    """Supervisa un ``release_lock`` que superó ``cleanup_timeout`` tras cancelación."""
+    try:
+        liberada = await asyncio.shield(tarea)
+    except asyncio.CancelledError:
+        if not tarea.done():
+            tarea.cancel()
+            with contextlib.suppress(BaseException):
+                await tarea
+        elif not tarea.cancelled():
+            with contextlib.suppress(BaseException):
+                _ = tarea.exception()
+        return
+    except Exception as exc:
+        if on_estado is not None:
+            on_estado(EstadoDeCleanupDeLease.FALLO_DE_LIBERACION)
+        logger.error(
+            "Liberación tardía supervisada falló para '%s' (expira por TTL): %s",
+            resource_id,
+            exc,
+            extra={"resource_id": resource_id, "agent_id": agent_id},
+        )
+        return
+    if on_estado is not None:
+        on_estado(EstadoDeCleanupDeLease.LIBERADA if liberada else EstadoDeCleanupDeLease.YA_EXPIRADA_O_RECLAMADA)
+
+
+async def liberar_lease_definitiva(
+    lock_manager: Any,
+    resource_id: str,
+    agent_id: str,
+    *,
+    acquired_at: float | None,
+    cleanup_timeout: float = DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS,
+    propagar_cancelacion: bool = True,
+    fallo_silencioso: bool = False,
+    on_estado: Callable[[EstadoDeCleanupDeLease], None] | None = None,
+) -> bool:
+    """Libera una lease por su token ``acquired_at`` con espera acotada ante cancelación.
+
+    Si la tarea llamadora se cancela mientras el DELETE está en vuelo, espera
+    hasta ``cleanup_timeout`` segundos para obtener un resultado definitivo. Si
+    vence el plazo con la operación aún bloqueada en SQLite, registra estado
+    ``INDETERMINADO`` (nunca afirma que la lease fue liberada) y transfiere la
+    operación en vuelo a una tarea supervisada antes de propagar ``CancelledError``.
+    """
+    tarea = asyncio.ensure_future(
+        lock_manager.release_lock(
+            resource_id,
+            agent_id,
+            acquired_at=acquired_at,
+        )
+    )
+    cancelacion: asyncio.CancelledError | None = None
+    plazo: float | None = None
+    indeterminado = False
+    resultado = False
+    try:
+        while True:
+            try:
+                if cancelacion is None:
+                    resultado = await asyncio.shield(tarea)
+                else:
+                    assert plazo is not None
+                    restante = max(0.0, plazo - time.monotonic())
+                    resultado = await asyncio.wait_for(asyncio.shield(tarea), timeout=restante)
+                break
+            except TimeoutError:
+                if tarea.done() and not tarea.cancelled():
+                    resultado = tarea.result()
+                    break
+                indeterminado = True
+                if on_estado is not None:
+                    on_estado(EstadoDeCleanupDeLease.INDETERMINADO)
+                logger.warning(
+                    "Timeout (%.3fs) esperando release_lock de '%s' durante cancelación; "
+                    "estado INDETERMINADO (supervisando en segundo plano hasta completar o expirar por TTL)",
+                    cleanup_timeout,
+                    resource_id,
+                    extra={"resource_id": resource_id, "agent_id": agent_id},
+                )
+                supervisora = asyncio.create_task(
+                    _supervisar_liberacion_tardia(
+                        tarea=tarea,
+                        resource_id=resource_id,
+                        agent_id=agent_id,
+                        on_estado=on_estado,
+                    ),
+                    name=f"lock-cleanup-release-{resource_id}",
+                )
+                _registrar_tarea_supervisada(lock_manager, supervisora, tarea_subyacente=tarea)
+                break
+            except asyncio.CancelledError as exc:
+                if cancelacion is None:
+                    cancelacion = exc
+                    plazo = time.monotonic() + max(0.0, cleanup_timeout)
+                if not tarea.done():
+                    # Cancelaron al que espera, no a la liberación: se vuelve a
+                    # esperar el MISMO task hasta el plazo cleanup_timeout.
+                    continue
+                if not tarea.cancelled():
+                    # La liberación terminó justo cuando llegó la cancelación:
+                    # el resultado ya está disponible (puede levantar LockReleaseError).
+                    resultado = tarea.result()
+                    break
+                if plazo is not None and time.monotonic() >= plazo:
+                    indeterminado = True
+                    if on_estado is not None:
+                        on_estado(EstadoDeCleanupDeLease.INDETERMINADO)
+                    break
+                logger.warning(
+                    "Liberación cancelada a mitad; reintentando el DELETE (idempotente)",
+                    extra={"resource_id": resource_id, "agent_id": agent_id},
+                )
+                tarea = asyncio.ensure_future(
+                    lock_manager.release_lock(
+                        resource_id,
+                        agent_id,
+                        acquired_at=acquired_at,
+                    )
+                )
+    except Exception as release_exc:
+        if on_estado is not None:
+            on_estado(EstadoDeCleanupDeLease.FALLO_DE_LIBERACION)
+        if fallo_silencioso or (cancelacion is not None and propagar_cancelacion):
+            logger.error(
+                "Failed to release lock (will expire by TTL): %s",
+                release_exc,
+                extra={
+                    "resource_id": resource_id,
+                    "agent_id": agent_id,
+                },
+            )
+            if cancelacion is not None and propagar_cancelacion:
+                raise cancelacion from release_exc
+            return False
+        raise
+
+    if not indeterminado and on_estado is not None:
+        on_estado(EstadoDeCleanupDeLease.LIBERADA if resultado else EstadoDeCleanupDeLease.YA_EXPIRADA_O_RECLAMADA)
+    if cancelacion is not None and propagar_cancelacion:
+        raise cancelacion
+    return False if indeterminado else resultado
+
+
+async def _supervisar_adquisicion_tardia(
+    *,
+    lock_manager: Any,
+    tarea: asyncio.Task[LockInfo],
+    resource_id: str,
+    agent_id: str,
+    cleanup_timeout: float,
+    on_estado: Callable[[EstadoDeCleanupDeLease], None] | None,
+) -> None:
+    """Supervisa un ``acquire_lock`` que superó ``cleanup_timeout`` tras cancelación.
+
+    No cancela la adquisición a ciegas (lo que perdería ``acquired_at`` si el
+    commit gana en SQLite): espera a que termine y, si obtuvo ``LockInfo``,
+    libera únicamente esa lease demostrando su token ``acquired_at``.
+    """
+    try:
+        info = await asyncio.shield(tarea)
+    except asyncio.CancelledError:
+        if not tarea.done():
+            tarea.cancel()
+            with contextlib.suppress(BaseException):
+                await tarea
+            return
+        if tarea.cancelled() or tarea.exception() is not None:
+            if not tarea.cancelled():
+                with contextlib.suppress(BaseException):
+                    _ = tarea.exception()
+            if on_estado is not None:
+                on_estado(EstadoDeCleanupDeLease.SIN_LEASE)
+            return
+        info = tarea.result()
+    except BaseException:
+        if on_estado is not None:
+            on_estado(EstadoDeCleanupDeLease.SIN_LEASE)
+        return
+
+    await liberar_lease_definitiva(
+        lock_manager,
+        resource_id,
+        agent_id,
+        acquired_at=info.acquired_at,
+        cleanup_timeout=cleanup_timeout,
+        propagar_cancelacion=False,
+        fallo_silencioso=True,
+        on_estado=on_estado,
+    )
+
+
+async def adquirir_lease_definitiva(
+    lock_manager: Any,
+    resource_id: str,
+    agent_id: str,
+    ttl: float | None = None,
+    *,
+    cleanup_timeout: float = DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS,
+    on_estado: Callable[[EstadoDeCleanupDeLease], None] | None = None,
+) -> LockInfo:
+    """Adquiere una lease garantizando compensación por token ante cancelación (#741).
+
+    Ejecuta ``lock_manager.acquire_lock(resource_id, agent_id, ttl=ttl)`` en una
+    tarea protegida. Si el llamador es cancelado mientras la adquisición está en
+    vuelo:
+
+    - Espera hasta ``cleanup_timeout`` segundos por el resultado definitivo.
+    - Si la adquisición completó y devolvió ``LockInfo(acquired_at=T)``, libera
+      únicamente esa lease pasando ``acquired_at=T`` antes de re-lanzar
+      ``CancelledError``.
+    - Si vence ``cleanup_timeout`` con la adquisición aún bloqueada, NO cancela
+      la operación en vuelo (evitando perder ``acquired_at`` en ``COMMIT_WINS``):
+      registra estado ``INDETERMINADO`` y delega la tarea a
+      :func:`_supervisar_adquisicion_tardia` para que la libere por token apenas
+      complete o deje que se recupere por TTL.
+    """
+    tarea = asyncio.create_task(
+        lock_manager.acquire_lock(
+            resource_id,
+            agent_id,
+            ttl=ttl,
+        ),
+        name=f"lock-acquire-{resource_id}",
+    )
+    cancelacion: asyncio.CancelledError | None = None
+    plazo: float | None = None
+    info: LockInfo | None = None
+    fallo: BaseException | None = None
+    indeterminado = False
+    while True:
+        try:
+            if cancelacion is None:
+                info = await asyncio.shield(tarea)
+            else:
+                assert plazo is not None
+                restante = max(0.0, plazo - time.monotonic())
+                info = await asyncio.wait_for(asyncio.shield(tarea), timeout=restante)
+            break
+        except TimeoutError:
+            if tarea.done():
+                if not tarea.cancelled():
+                    exc_tardia = tarea.exception()
+                    if exc_tardia is None:
+                        info = tarea.result()
+                    else:
+                        fallo = exc_tardia
+                break
+            indeterminado = True
+            if on_estado is not None:
+                on_estado(EstadoDeCleanupDeLease.INDETERMINADO)
+            logger.warning(
+                "Timeout (%.3fs) esperando acquire_lock de '%s' durante cancelación; "
+                "estado INDETERMINADO (supervisando en segundo plano para liberar con acquired_at si completa)",
+                cleanup_timeout,
+                resource_id,
+                extra={"resource_id": resource_id, "agent_id": agent_id},
+            )
+            supervisora = asyncio.create_task(
+                _supervisar_adquisicion_tardia(
+                    lock_manager=lock_manager,
+                    tarea=tarea,
+                    resource_id=resource_id,
+                    agent_id=agent_id,
+                    cleanup_timeout=cleanup_timeout,
+                    on_estado=on_estado,
+                ),
+                name=f"lock-cleanup-acquire-{resource_id}",
+            )
+            _registrar_tarea_supervisada(lock_manager, supervisora, tarea_subyacente=tarea)
+            break
+        except asyncio.CancelledError as exc:
+            if cancelacion is None:
+                cancelacion = exc
+                plazo = time.monotonic() + max(0.0, cleanup_timeout)
+            if not tarea.done():
+                # Sigue en vuelo: NO se abandona dentro de cleanup_timeout.
+                continue
+            if not tarea.cancelled():
+                exc_interna = tarea.exception()
+                if exc_interna is None:
+                    # La adquisición terminó EXACTAMENTE cuando se entregó la
+                    # cancelación: el token existe y hay que liberar con él.
+                    info = tarea.result()
+                else:
+                    fallo = exc_interna
+            break
+        except BaseException as exc:
+            # Falla real de la adquisición: se re-propaga tal cual (el
+            # contrato LockAcquisitionError / LockError no cambia).
+            fallo = exc
+            break
+
+    if cancelacion is None:
+        if fallo is not None:
+            raise fallo
+        assert info is not None
+        if on_estado is not None:
+            on_estado(EstadoDeCleanupDeLease.NO_REQUERIDO)
+        return info
+
+    if indeterminado:
+        raise cancelacion
+
+    if info is not None:
+        await liberar_lease_definitiva(
+            lock_manager,
+            resource_id,
+            agent_id,
+            acquired_at=info.acquired_at,
+            cleanup_timeout=cleanup_timeout,
+            propagar_cancelacion=True,
+            fallo_silencioso=True,
+            on_estado=on_estado,
+        )
+    elif on_estado is not None:
+        on_estado(EstadoDeCleanupDeLease.SIN_LEASE)
+    raise cancelacion
+
+
+# =============================================================================
 # SNAPSHOT TRANSACTION LOCK (Context Manager)
 # =============================================================================
 
@@ -802,6 +1226,12 @@ class SnapshotTransactionLock:
         number >= 2.0 (a divisor of 1.0 would renew at exactly the TTL, racing
         expiry); the interval is floored so very large values cannot busy-loop
         the DB. Pair with :meth:`assert_owned` before critical writes for ~0 window.
+    cleanup_timeout:
+        Maximum seconds to wait for an in-flight SQLite acquire or release
+        operation when the calling task is cancelled (default
+        :data:`DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS`). If exceeded,
+        ``estado_cleanup`` becomes :attr:`EstadoDeCleanupDeLease.INDETERMINADO`
+        and the in-flight operation remains supervised in the background.
     """
 
     def __init__(
@@ -817,6 +1247,7 @@ class SnapshotTransactionLock:
         force_rollback: bool = False,
         auto_renew: bool = True,
         renew_divisor: float = 3.0,
+        cleanup_timeout: float = DEFAULT_CANCEL_CLEANUP_TIMEOUT_SECONDS,
     ) -> None:
         # Reject non-finite (NaN/inf would make the heartbeat interval non-finite:
         # asyncio.sleep(nan) crashes the task, sleep(inf) never renews) and any
@@ -828,6 +1259,8 @@ class SnapshotTransactionLock:
                 f"(got {renew_divisor!r}); lower values renew too close to (or "
                 "after) lease expiry, racing a concurrent writer"
             )
+        if not math.isfinite(cleanup_timeout) or cleanup_timeout < 0.0:
+            raise ValueError(f"cleanup_timeout must be a finite number >= 0.0 (got {cleanup_timeout!r})")
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._resource_id = resource_id
@@ -838,12 +1271,14 @@ class SnapshotTransactionLock:
         self._force_rollback = force_rollback
         self._auto_renew = auto_renew
         self._renew_divisor = renew_divisor
+        self._cleanup_timeout = cleanup_timeout
 
         # Populated during __aenter__
         self.lock_info: LockInfo | None = None
         self.snapshots: list[SnapshotInfo] = []
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_lost = False
+        self.estado_cleanup: EstadoDeCleanupDeLease = EstadoDeCleanupDeLease.NO_REQUERIDO
 
         # Resultado del rollback, poblado en __aexit__. En la ruta de excepción
         # un restore fallido solo se loguea (para no enmascarar el error
@@ -852,6 +1287,19 @@ class SnapshotTransactionLock:
         self.rollback_attempted: bool = False
         self.rollback_failures: list[str] = []
         self.rollback_vetoed_unknown_terminality: bool = False
+
+    def _registrar_estado_cleanup(self, estado: EstadoDeCleanupDeLease) -> None:
+        self.estado_cleanup = estado
+
+    @property
+    def lease_liberada(self) -> bool:
+        """True sólo cuando está demostrado que la lease fue borrada por su token."""
+        return self.estado_cleanup == EstadoDeCleanupDeLease.LIBERADA
+
+    @property
+    def cleanup_indeterminado(self) -> bool:
+        """True cuando el cleanup venció por timeout con la operación SQLite aún en vuelo."""
+        return self.estado_cleanup == EstadoDeCleanupDeLease.INDETERMINADO
 
     @property
     def lease_lost(self) -> bool:
@@ -905,79 +1353,15 @@ class SnapshotTransactionLock:
             )
 
     async def _adquirir_lease_definitiva(self) -> LockInfo:
-        """Acquire the lease with a DEFINITIVE outcome, even under cancellation.
-
-        ``acquire_lock`` persists the row and then returns. Between those two
-        points the task can be cancelled — the commit already completed in
-        aiosqlite's worker thread while the task was being cancelled — and
-        letting the ``CancelledError`` propagate there loses the only token that
-        proves ownership: the row survives until its TTL and the next instance
-        sees the resource as ``OCUPADO`` (#741).
-
-        So the acquisition runs as a SHIELDED task. A cancellation of the waiter
-        does not abandon it: it waits for the definitive result — ``LockInfo``,
-        a real failure, or cancellation of the acquisition itself — and only
-        then propagates. If the lease was acquired, it is released with ITS OWN
-        token (``acquired_at``), the same identity ``release_lock`` matches.
-
-        **Why not release by ``resource_id`` + ``agent_id``.** Services share a
-        constant ``agent_id``, so that predicate deletes a sibling's reacquired
-        lease. The token is the only demonstrable identity, and it only exists
-        once the acquisition has a result — hence waiting for it instead of
-        compensating blind.
-
-        The cost of waiting is bounded by the acquisition itself (``max_retries``
-        plus backoff), and it is deliberate: a cancelled caller that gives up
-        early leaves a lease nobody owns.
-        """
-        tarea = asyncio.create_task(
-            self._lock_manager.acquire_lock(
-                resource_id=self._resource_id,
-                agent_id=self._agent_id,
-                ttl=self._ttl,
-            ),
-            name=f"lock-acquire-{self._resource_id}",
+        """Acquire the lease with a DEFINITIVE outcome, even under cancellation (#741)."""
+        return await adquirir_lease_definitiva(
+            self._lock_manager,
+            self._resource_id,
+            self._agent_id,
+            ttl=self._ttl,
+            cleanup_timeout=self._cleanup_timeout,
+            on_estado=self._registrar_estado_cleanup,
         )
-        cancelacion: asyncio.CancelledError | None = None
-        info: LockInfo | None = None
-        fallo: BaseException | None = None
-        while True:
-            try:
-                info = await asyncio.shield(tarea)
-                break
-            except asyncio.CancelledError as exc:
-                cancelacion = cancelacion or exc
-                if not tarea.done():
-                    # Sigue en vuelo: NO se abandona. Abandonarla perdería la
-                    # fila que el commit pueda haber escrito, sin token para
-                    # liberarla.
-                    continue
-                if not tarea.cancelled() and tarea.exception() is None:
-                    # La adquisición terminó EXACTAMENTE cuando se entregó la
-                    # cancelación (el resultado estaba listo y la cancelación se
-                    # entregó antes de que este await lo consumiera): el token
-                    # existe y hay que liberar con él, no perderlo.
-                    info = tarea.result()
-                break
-            except BaseException as exc:
-                # Falla real de la adquisición: se re-propaga tal cual (el
-                # contrato LockAcquisitionError / LockError no cambia).
-                fallo = exc
-                break
-
-        if cancelacion is None:
-            if fallo is not None:
-                raise fallo
-            assert info is not None  # una adquisición sin resultado no sale del loop
-            return info
-
-        # Cancelados, pero la adquisición YA tiene resultado definitivo: si la
-        # lease es nuestra, se libera con su token antes de propagar. Si el
-        # resultado es una cancelación de la adquisición misma no hay token y no
-        # hay nada que liberar (la fila, si llegó a escribirse, expira por TTL).
-        if info is not None:
-            await self._safe_release(acquired_at=info.acquired_at)
-        raise cancelacion
 
     async def __aenter__(self) -> SnapshotTransactionLock:
         """Acquire the distributed lock, then create snapshots."""
@@ -1226,100 +1610,27 @@ class SnapshotTransactionLock:
         if failures and exc_val is None:
             raise SnapshotRollbackError(f"force_rollback failed to restore {len(failures)} file(s): {failures}")
 
-    async def _liberar_definitivo(self, acquired_at: float | None) -> bool:
-        """Release the lease, completing the DELETE even if the waiter is cancelled.
-
-        Same contract as :meth:`DistributedLockManager.release_lock` — the DELETE
-        matches the exact acquisition token, so it can never delete another
-        holder's lease — but the operation is not abandoned when the calling task
-        is cancelled: the cancellation is absorbed while the DELETE is in flight
-        and re-raised once the operation has a definitive outcome.
-
-        **Why this lives here and not in the manager (#741).** Releasing is the
-        LAST act of this context, so completing it despite a cancellation is a
-        policy of the context, not of the SQL primitive. ``release_lock`` keeps
-        its contract (and its duck-typed fakes keep working); what changes is
-        that this caller refuses to leave the DELETE half-done. Retrying is safe
-        *because* the predicate is the token: a repeated DELETE either removes
-        the row it already removed (a no-op) or matches nothing at all.
-        """
-        tarea = asyncio.ensure_future(
-            self._lock_manager.release_lock(
-                resource_id=self._resource_id,
-                agent_id=self._agent_id,
-                acquired_at=acquired_at,
-            )
+    async def _liberar_definitivo(
+        self,
+        acquired_at: float | None,
+        *,
+        fallo_silencioso: bool = False,
+    ) -> bool:
+        """Release the lease, completing the DELETE within ``cleanup_timeout`` (#741)."""
+        return await liberar_lease_definitiva(
+            self._lock_manager,
+            self._resource_id,
+            self._agent_id,
+            acquired_at=acquired_at,
+            cleanup_timeout=self._cleanup_timeout,
+            propagar_cancelacion=True,
+            fallo_silencioso=fallo_silencioso,
+            on_estado=self._registrar_estado_cleanup,
         )
-        cancelacion: asyncio.CancelledError | None = None
-        try:
-            while True:
-                try:
-                    resultado = await asyncio.shield(tarea)
-                    break
-                except asyncio.CancelledError as exc:
-                    cancelacion = cancelacion or exc
-                    if not tarea.done():
-                        # Cancelaron al que espera, no a la liberación: se vuelve a
-                        # esperar el MISMO task. Abandonarlo dejaría el DELETE a
-                        # medias, sin resultado definitivo.
-                        continue
-                    if not tarea.cancelled():
-                        # La liberación terminó justo cuando llegó la cancelación:
-                        # el resultado ya está disponible (puede levantar LockReleaseError).
-                        resultado = tarea.result()
-                        break
-                    logger.warning(
-                        "Liberación cancelada a mitad; reintentando el DELETE (idempotente)",
-                        extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
-                    )
-                    tarea = asyncio.ensure_future(
-                        self._lock_manager.release_lock(
-                            resource_id=self._resource_id,
-                            agent_id=self._agent_id,
-                            acquired_at=acquired_at,
-                        )
-                    )
-        except Exception as release_exc:
-            if cancelacion is not None:
-                logger.error(
-                    "Failed to release lock (will expire by TTL): %s",
-                    release_exc,
-                    extra={
-                        "resource_id": self._resource_id,
-                        "agent_id": self._agent_id,
-                    },
-                )
-                raise cancelacion from release_exc
-            raise
-        if cancelacion is not None:
-            # El DELETE ya terminó: la cancelación se propaga igual, porque el
-            # llamador pidió terminar (el cleanup no se la traga).
-            raise cancelacion
-        return resultado
 
     async def _safe_release(self, *, acquired_at: float | None = None) -> bool:
-        """Release the lock, swallowing errors so the original exception wins.
-
-        Returns ``True`` when the lease was released. Goes through
-        :meth:`_liberar_definitivo`: this is the LAST act of the context, and
-        abandoning it halfway (a second cancellation while the DELETE runs)
-        leaves the row alive until the TTL — the same leak this cleanup exists
-        to prevent.
-        """
-        try:
-            token = (
-                acquired_at
-                if acquired_at is not None
-                else (None if self.lock_info is None else self.lock_info.acquired_at)
-            )
-            return await self._liberar_definitivo(token)
-        except Exception as release_exc:
-            logger.error(
-                "Failed to release lock (will expire by TTL): %s",
-                release_exc,
-                extra={
-                    "resource_id": self._resource_id,
-                    "agent_id": self._agent_id,
-                },
-            )
-            return False
+        """Release the lock, swallowing non-cancellation errors so the original exception wins."""
+        token = (
+            acquired_at if acquired_at is not None else (None if self.lock_info is None else self.lock_info.acquired_at)
+        )
+        return await self._liberar_definitivo(token, fallo_silencioso=True)
