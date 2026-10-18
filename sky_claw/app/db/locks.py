@@ -32,6 +32,14 @@ PREVENCIÓN:
       A cancel mid-rollback is recorded in ``rollback_failures`` (so
       ``rollback_completed`` stays False) and re-raised; the lock is still
       released in ``__aexit__`` via ``finally``.
+    - A cancellation DURING acquisition does not leak the lease (#741): the
+      acquisition runs shielded and its definitive result is awaited, so the
+      token (``acquired_at``) is known and only that row is released. Releasing
+      by ``resource_id`` + ``agent_id`` is not an option — services share the
+      agent id, so it would delete a sibling's reacquired lease.
+    - Releasing is itself cancellation-durable (``_liberar_definitivo``): the
+      cleanup is the last act of the context and abandoning its DELETE halfway
+      leaves the row alive until the TTL.
     - ``renew_lock`` / ``release_lock`` match the acquisition token
       (``acquired_at``), not just ``agent_id``. Services share a constant
       agent id; without the token a stalled holder can renew or delete a
@@ -896,14 +904,91 @@ class SnapshotTransactionLock:
                 "lost — ownership check failed before mutation"
             )
 
+    async def _adquirir_lease_definitiva(self) -> LockInfo:
+        """Acquire the lease with a DEFINITIVE outcome, even under cancellation.
+
+        ``acquire_lock`` persists the row and then returns. Between those two
+        points the task can be cancelled — the commit already completed in
+        aiosqlite's worker thread while the task was being cancelled — and
+        letting the ``CancelledError`` propagate there loses the only token that
+        proves ownership: the row survives until its TTL and the next instance
+        sees the resource as ``OCUPADO`` (#741).
+
+        So the acquisition runs as a SHIELDED task. A cancellation of the waiter
+        does not abandon it: it waits for the definitive result — ``LockInfo``,
+        a real failure, or cancellation of the acquisition itself — and only
+        then propagates. If the lease was acquired, it is released with ITS OWN
+        token (``acquired_at``), the same identity ``release_lock`` matches.
+
+        **Why not release by ``resource_id`` + ``agent_id``.** Services share a
+        constant ``agent_id``, so that predicate deletes a sibling's reacquired
+        lease. The token is the only demonstrable identity, and it only exists
+        once the acquisition has a result — hence waiting for it instead of
+        compensating blind.
+
+        The cost of waiting is bounded by the acquisition itself (``max_retries``
+        plus backoff), and it is deliberate: a cancelled caller that gives up
+        early leaves a lease nobody owns.
+        """
+        tarea = asyncio.create_task(
+            self._lock_manager.acquire_lock(
+                resource_id=self._resource_id,
+                agent_id=self._agent_id,
+                ttl=self._ttl,
+            ),
+            name=f"lock-acquire-{self._resource_id}",
+        )
+        cancelacion: asyncio.CancelledError | None = None
+        info: LockInfo | None = None
+        fallo: BaseException | None = None
+        while True:
+            try:
+                info = await asyncio.shield(tarea)
+                break
+            except asyncio.CancelledError as exc:
+                cancelacion = cancelacion or exc
+                if not tarea.done():
+                    # Sigue en vuelo: NO se abandona. Abandonarla perdería la
+                    # fila que el commit pueda haber escrito, sin token para
+                    # liberarla.
+                    continue
+                if not tarea.cancelled() and tarea.exception() is None:
+                    # La adquisición terminó EXACTAMENTE cuando se entregó la
+                    # cancelación (el resultado estaba listo y la cancelación se
+                    # entregó antes de que este await lo consumiera): el token
+                    # existe y hay que liberar con él, no perderlo.
+                    info = tarea.result()
+                break
+            except BaseException as exc:
+                # Falla real de la adquisición: se re-propaga tal cual (el
+                # contrato LockAcquisitionError / LockError no cambia).
+                fallo = exc
+                break
+
+        if cancelacion is None:
+            if fallo is not None:
+                raise fallo
+            assert info is not None  # una adquisición sin resultado no sale del loop
+            return info
+
+        # Cancelados, pero la adquisición YA tiene resultado definitivo: si la
+        # lease es nuestra, se libera con su token antes de propagar. Si el
+        # resultado es una cancelación de la adquisición misma no hay token y no
+        # hay nada que liberar (la fila, si llegó a escribirse, expira por TTL).
+        if info is not None:
+            self.lock_info = info
+            if await self._safe_release():
+                self.lock_info = None
+        raise cancelacion
+
     async def __aenter__(self) -> SnapshotTransactionLock:
         """Acquire the distributed lock, then create snapshots."""
-        # Step 1: Acquire lock
-        self.lock_info = await self._lock_manager.acquire_lock(
-            resource_id=self._resource_id,
-            agent_id=self._agent_id,
-            ttl=self._ttl,
-        )
+        # Step 1: Acquire lock — con resultado DEFINITIVO ante cancelación (#741).
+        # La durabilidad vive acá y no dentro de ``acquire_lock`` porque la
+        # identidad que prueba la propiedad de la lease es el ``LockInfo`` que
+        # esa llamada devuelve: sin el token, la única liberación posible sería
+        # por ``resource_id + agent_id``, que borra la lease de un hermano.
+        self.lock_info = await self._adquirir_lease_definitiva()
 
         # Step 2: Create snapshots of target files
         try:
@@ -1140,15 +1225,76 @@ class SnapshotTransactionLock:
         if failures and exc_val is None:
             raise SnapshotRollbackError(f"force_rollback failed to restore {len(failures)} file(s): {failures}")
 
-    async def _safe_release(self) -> None:
-        """Release lock, swallowing errors to avoid masking the original exception."""
-        try:
-            token = None if self.lock_info is None else self.lock_info.acquired_at
-            await self._lock_manager.release_lock(
+    async def _liberar_definitivo(self, acquired_at: float | None) -> bool:
+        """Release the lease, completing the DELETE even if the waiter is cancelled.
+
+        Same contract as :meth:`DistributedLockManager.release_lock` — the DELETE
+        matches the exact acquisition token, so it can never delete another
+        holder's lease — but the operation is not abandoned when the calling task
+        is cancelled: the cancellation is absorbed while the DELETE is in flight
+        and re-raised once the operation has a definitive outcome.
+
+        **Why this lives here and not in the manager (#741).** Releasing is the
+        LAST act of this context, so completing it despite a cancellation is a
+        policy of the context, not of the SQL primitive. ``release_lock`` keeps
+        its contract (and its duck-typed fakes keep working); what changes is
+        that this caller refuses to leave the DELETE half-done. Retrying is safe
+        *because* the predicate is the token: a repeated DELETE either removes
+        the row it already removed (a no-op) or matches nothing at all.
+        """
+        tarea = asyncio.ensure_future(
+            self._lock_manager.release_lock(
                 resource_id=self._resource_id,
                 agent_id=self._agent_id,
-                acquired_at=token,
+                acquired_at=acquired_at,
             )
+        )
+        cancelacion: asyncio.CancelledError | None = None
+        while True:
+            try:
+                resultado = await asyncio.shield(tarea)
+                break
+            except asyncio.CancelledError as exc:
+                cancelacion = cancelacion or exc
+                if not tarea.done():
+                    # Cancelaron al que espera, no a la liberación: se vuelve a
+                    # esperar el MISMO task. Abandonarlo dejaría el DELETE a
+                    # medias, sin resultado definitivo.
+                    continue
+                if not tarea.cancelled():
+                    # La liberación terminó justo cuando llegó la cancelación:
+                    # el resultado ya está disponible (puede levantar LockReleaseError).
+                    resultado = tarea.result()
+                    break
+                logger.warning(
+                    "Liberación cancelada a mitad; reintentando el DELETE (idempotente)",
+                    extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
+                )
+                tarea = asyncio.ensure_future(
+                    self._lock_manager.release_lock(
+                        resource_id=self._resource_id,
+                        agent_id=self._agent_id,
+                        acquired_at=acquired_at,
+                    )
+                )
+        if cancelacion is not None:
+            # El DELETE ya terminó: la cancelación se propaga igual, porque el
+            # llamador pidió terminar (el cleanup no se la traga).
+            raise cancelacion
+        return resultado
+
+    async def _safe_release(self) -> bool:
+        """Release the lock, swallowing errors so the original exception wins.
+
+        Returns ``True`` when the lease was released. Goes through
+        :meth:`_liberar_definitivo`: this is the LAST act of the context, and
+        abandoning it halfway (a second cancellation while the DELETE runs)
+        leaves the row alive until the TTL — the same leak this cleanup exists
+        to prevent.
+        """
+        try:
+            token = None if self.lock_info is None else self.lock_info.acquired_at
+            return await self._liberar_definitivo(token)
         except Exception as release_exc:
             logger.error(
                 "Failed to release lock (will expire by TTL): %s",
@@ -1158,3 +1304,4 @@ class SnapshotTransactionLock:
                     "agent_id": self._agent_id,
                 },
             )
+            return False
