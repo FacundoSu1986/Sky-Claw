@@ -89,6 +89,36 @@ def finalization_seqs_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "finalization-seqs"
 
 
+def approval_ledger_path(root: pathlib.Path) -> pathlib.Path:
+    """Ledger de trabajo de la aprobación (``state/approval.json``; §37.3).
+
+    Es **caché reconciliable**, no autoridad: su contenido se deriva de los dos
+    stores inmutables (§37.6/§40.2) y ``approval_revision`` es un token de
+    concurrencia, no una barrera anti-replay.
+    """
+    return state_dir(root) / "approval.json"
+
+
+def issuances_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store INMUTABLE de witnesses de emisión (``state/issuances/``; §40.2).
+
+    Un archivo por ``approval_seq``. El ``CREATE`` del witness **es** la emisión:
+    sobrevive a la restauración del ledger y es lo que hace cumplir
+    ``MAX_ISSUED_APPROVALS_PER_ROOT = 1`` por no-clobber.
+    """
+    return state_dir(root) / "issuances"
+
+
+def approvals_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store INMUTABLE de tombstones terminales (``state/approvals/``; §38.2).
+
+    Un archivo por aprobación terminal (``<seq>-<id>.json``). Es la autoridad
+    anti-rollback: prueba que una aprobación TERMINÓ incluso si nunca finalizó una
+    transición. ``APPROVAL_TOMBSTONE_GC = PROHIBIDO``.
+    """
+    return state_dir(root) / "approvals"
+
+
 def generation_dir(root: pathlib.Path, generation_id: str) -> pathlib.Path:
     return versions_dir(root) / generation_id
 
@@ -286,6 +316,12 @@ def _initialize_frozen_runtime_storage_locked(
     # `state/finalization-seqs/`) se crea acá, bajo el lock y con la misma
     # admisión. El journal NO crea directorios en su camino de escritura: si el
     # store falta, falla cerrado con ``JournalStoreNoInicializadoError``.
+    #
+    # P4-S4: los dos stores INMUTABLES de la autoridad de aprobación
+    # (`state/issuances/` y `state/approvals/`) siguen la MISMA regla: los crea
+    # el storage bajo su admisión, y la autoridad falla cerrado si faltan. El
+    # ledger (`state/approval.json`) no necesita directorio propio — vive en
+    # `state/`, que ya está en la lista.
     componentes: tuple[pathlib.Path, ...] = (
         ruta,
         versions_dir(ruta),
@@ -294,6 +330,8 @@ def _initialize_frozen_runtime_storage_locked(
         generations_state_dir(ruta),
         transitions_state_dir(ruta),
         finalization_seqs_state_dir(ruta),
+        issuances_state_dir(ruta),
+        approvals_state_dir(ruta),
     )
     creados: list[pathlib.Path] = []
     try:

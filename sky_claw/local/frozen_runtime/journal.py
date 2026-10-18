@@ -392,6 +392,19 @@ def _digest_canonico(payload: object) -> str:
     return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
 
 
+def digest_canonico(payload: object) -> str:
+    """Forma pública del digest canónico del subsistema (P4-S4).
+
+    La autoridad durable de aprobación (``approval.py``) DEBE reusar esta
+    función en vez de reimplementarla: ``source_activation_digest`` viaja en el
+    ``ApprovalScope`` y el journal lo recomputa al crear el PENDING. Dos
+    implementaciones del mismo digest es el modo de falla clásico de este repo
+    —arreglar un hermano y dejar el otro— y acá produciría una aprobación que el
+    journal rechaza por «no ligar el contenido».
+    """
+    return _digest_canonico(payload)
+
+
 def _exigir_texto_valor(valor: object, *, campo: str, etiqueta: str) -> str:
     """String no vacío y SIN whitespace de borde (R3-01/R3-02).
 
@@ -673,6 +686,18 @@ def _leer_json_estricto(ruta: pathlib.Path) -> dict[str, object]:
     if not isinstance(data, dict):
         raise JournalCorruptError(f"{ruta}: el documento debe ser un objeto JSON")
     return data
+
+
+def leer_json_de_control(ruta: pathlib.Path) -> dict[str, object]:
+    """Lector estricto público de un JSON de control (lo comparten journal y
+    autoridad de aprobación).
+
+    Un enlace/reparse o un namespace redirigido NUNCA es «ausente»: se rechaza
+    fail-closed. La autoridad de aprobación lo reusa en vez de reimplementarlo
+    —misma doctrina que ``digest_canonico``— y traduce el error a su propia
+    familia para que el caller distinga el subsistema que falló.
+    """
+    return _leer_json_estricto(ruta)
 
 
 # ---------------------------------------------------------------------------
