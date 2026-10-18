@@ -503,6 +503,44 @@ def test_b_f01_identidad_y_resize_son_simetricos_en_la_norma() -> None:
         np.testing.assert_allclose(n_resize, 1.0, atol=TOL_F32, err_msg=f"resize L={largo}")
 
 
+@pytest.mark.parametrize(("factor", "degenerada"), [(0.96, True), (1.02, False)])
+def test_b_f01_el_umbral_rige_tambien_en_el_camino_identidad(factor: float, degenerada: bool) -> None:
+    """El borde del umbral se ancla en el camino IDENTIDAD, no sólo en `resize`.
+
+    Los tests de borde de la familia B (`0.96*T` / `1.02*T`) usan entradas 128 -> 64, es
+    decir sólo el camino `resize`. El camino identidad se probaba únicamente en `L = 0` y
+    `L >= 0.4`: un umbral distinto en el hermano (p. ej. `T/2` sólo en identidad) pasaba
+    toda la suite y publicaba como evaluable un campo de norma `0.25`.
+    """
+    largo = ad.DEGENERATE_THRESHOLD * factor
+    diag = ad.resize_normal_diagnostic(_campo_de_norma(8, largo), 8)  # H == W == size
+    assert diag.degenerate is degenerada, f"identidad: L={largo} degenerate={diag.degenerate}"
+    assert diag.degenerate_count == (64 if degenerada else 0)
+    if degenerada:
+        with pytest.raises(ad.DegenerateNormalError):
+            resize_normal(_campo_de_norma(8, largo), 8)
+    else:
+        np.testing.assert_allclose(np.linalg.norm(diag.array, axis=-1), 1.0, atol=TOL_F32)
+
+
+@pytest.mark.parametrize("largo", [0.17, 0.25, 0.30, 0.32, 0.40])
+def test_b_f01_identidad_y_resize_clasifican_igual_en_la_banda_del_umbral(largo: float) -> None:
+    """§5.3.4.7 enumerado sobre la banda donde el umbral decide (`T/2 <= L < 1.3*T`).
+
+    `test_b_f01_identidad_y_resize_son_simetricos_en_la_norma` sólo recorre `L > T`, donde
+    ambos caminos coinciden por construcción; acá se exige la MISMA clasificación en los
+    dos lados del umbral. Alcance (como en los tests de borde): el esperado lee
+    `ad.DEGENERATE_THRESHOLD`, así que verifica la clasificación de cada camino, no el
+    valor del umbral — ése lo deriva la familia G.
+    """
+    esperado = largo < ad.DEGENERATE_THRESHOLD
+    identidad = ad.resize_normal_diagnostic(_campo_de_norma(8, largo), 8)
+    escalada = np.repeat(np.repeat(_campo_de_norma(4, largo), 2, axis=0), 2, axis=1)
+    resize = ad.resize_normal_diagnostic(escalada, 4)
+    assert identidad.degenerate is esperado, f"identidad L={largo}"
+    assert resize.degenerate is esperado, f"resize L={largo}"
+
+
 def test_b_f01_la_tolerancia_de_identidad_se_deriva_de_float32() -> None:
     """§3.5: la tolerancia del camino identidad sale de la cota **analítica** de la
     ida/vuelta `float32 -> float64`, no de ninguna medición del corpus."""
