@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pydantic
 import pytest
 
-from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools import AsyncToolRegistry, lod_tools
 from sky_claw.app.agent.tools.lod_tools import (
     MOTIVO_SIN_SERVICIO,
     GestorDeTrabajosDeLods,
@@ -193,6 +193,37 @@ async def test_cerrar_cancela_el_trabajo_vivo():
     await gestor.cerrar()
     assert gestor.actual.estado == "cancelado"
     assert gestor.actual.tarea.done()
+
+
+async def test_cerrar_con_un_trabajo_vivo_avisa_la_cancelacion_al_operador():
+    """Quien lanzó la etapa 9 desde Telegram se entera si la app la cancela al cerrarse
+    (review Qodo, PR #740): sin el aviso, espera un veredicto que nunca llega."""
+    servicio = ServicioFalso(bloquear=True)
+    avisos = Avisos()
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: servicio, notificar=avisos)
+    await gestor.iniciar(preset="Medium", run_texgen=True, create_snapshot=True, interaction_mode="desatendido")
+    await asyncio.sleep(0)
+
+    await gestor.cerrar()
+
+    assert gestor.actual.estado == "cancelado"
+    assert len(avisos.mensajes) == 1 and avisos.mensajes[0].startswith("⏹️")
+
+
+async def test_un_aviso_de_cancelacion_colgado_no_retiene_la_cancelacion():
+    servicio = ServicioFalso(bloquear=True)
+
+    async def _colgado(_mensaje: str) -> None:
+        await asyncio.Event().wait()
+
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: servicio, notificar=_colgado)
+    await gestor.iniciar(preset="Medium", run_texgen=True, create_snapshot=True, interaction_mode="desatendido")
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(gestor.cerrar(), timeout=lod_tools.PLAZO_DEL_AVISO_DE_CANCELACION_S + 2)
+
+    assert gestor.actual.estado == "cancelado"
+    assert gestor.actual.tarea.cancelled()
 
 
 async def test_cerrar_cancelado_por_quien_cierra_propaga_la_cancelacion():

@@ -37,6 +37,7 @@ categoría no auto-aprobable, por el canal remoto.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 import logging
@@ -51,6 +52,10 @@ from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltant
 logger = logging.getLogger(__name__)
 
 EstadoDeTrabajo = Literal["iniciado", "esperando_aprobacion", "en_curso", "exitoso", "fallido", "cancelado"]
+
+#: Cota del aviso de cancelación. Corre DURANTE el apagado de la app (que le da
+#: 5 s a todo el cierre del trabajo): un Telegram lento no puede retenerlo.
+PLAZO_DEL_AVISO_DE_CANCELACION_S = 3.0
 
 #: Estados de un trabajo vivo (ocupa el único lugar del gestor).
 _ESTADOS_VIVOS = frozenset({"iniciado", "esperando_aprobacion", "en_curso"})
@@ -241,6 +246,14 @@ class GestorDeTrabajosDeLods:
         except asyncio.CancelledError:
             trabajo.estado = "cancelado"
             trabajo.terminado_en = time.time()
+            # Quien lanzó la etapa 9 desde Telegram no está en la PC: sin este
+            # aviso, un apagado de la app lo deja esperando un veredicto que no
+            # llega. Acotado y best-effort; la cancelación se re-lanza igual.
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(
+                    self._avisar(resumen_para_el_operador(trabajo)),
+                    timeout=PLAZO_DEL_AVISO_DE_CANCELACION_S,
+                )
             raise
         except Exception as exc:  # noqa: BLE001 -- boundary del trabajo: el servicio no debería lanzar
             logger.exception("la etapa 9 remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
