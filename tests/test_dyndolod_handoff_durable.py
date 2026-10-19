@@ -3599,7 +3599,13 @@ def test_los_callers_del_reconciler_de_orphan_estan_congelados() -> None:
     import ast
 
     raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
-    cuerpos: dict[tuple[str, str], str] = {}
+    # Se guarda (fuente, nodo) y el texto del cuerpo se extrae solo al consultarlo:
+    # `ast.get_source_segment` re-parte el archivo ENTERO en cada llamada (costo
+    # cuadrático), y materializarlo para las ~4500 funciones del árbol tardaba ~45 s
+    # (más que el --timeout=120 en el runner de Windows). La cadena de callers consulta
+    # unas pocas. Misma semántica que antes: si un nombre se repite en el archivo, gana
+    # la última definición.
+    definiciones: dict[tuple[str, str], tuple[str, ast.AST]] = {}
     sitios: dict[str, set[tuple[str, str]]] = {}
 
     for archivo in raiz.rglob("*.py"):
@@ -3612,8 +3618,7 @@ def test_los_callers_del_reconciler_de_orphan_estan_congelados() -> None:
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            cuerpo = ast.get_source_segment(fuente, nodo) or ""
-            cuerpos[(clave, nodo.name)] = cuerpo
+            definiciones[(clave, nodo.name)] = (fuente, nodo)
             for hijo in ast.walk(nodo):
                 if isinstance(hijo, ast.Call):
                     if isinstance(hijo.func, ast.Name):
@@ -3630,7 +3635,8 @@ def test_los_callers_del_reconciler_de_orphan_estan_congelados() -> None:
     def _cadena_nombra_texgen(clave: str, nombre: str, visitados: frozenset[tuple[str, str]]) -> bool:
         if (clave, nombre) in visitados:
             return False
-        if "TEXGEN_MOD_NAME" in cuerpos[(clave, nombre)]:
+        fuente_def, nodo_def = definiciones[(clave, nombre)]
+        if "TEXGEN_MOD_NAME" in (ast.get_source_segment(fuente_def, nodo_def) or ""):
             return True
         for sitio_clave, sitio_fn in sorted(sitios.get(nombre, set())):
             if _cadena_nombra_texgen(sitio_clave, sitio_fn, visitados | {(clave, nombre)}):
