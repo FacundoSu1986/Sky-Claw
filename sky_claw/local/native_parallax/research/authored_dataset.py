@@ -264,9 +264,10 @@ DEGENERATE_THRESHOLD = 5.0 / 16.0
 # cambia: `decode_normal_image` ya entrega normales unitarias, así que `load_asset` siempre
 # cae en el no-op exacto.
 #
-#     F01_RESOLUTION         = R2_LITE_IMPLEMENTED (decisión delegada; pendiente de ratificación)
-#     F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD   (el texto de la regla nueva de N-11 —"se
-#                              tolera el clip sólo si es observable"— falta ratificarlo)
+#     F01_RESOLUTION         = R2_LITE_IMPLEMENTED (decisión delegada; ratificada por el operador)
+#     F01_CONTRACT_AMENDMENT = RATIFIED            (el texto de la regla nueva de N-11 —"se
+#                              tolera el clip sólo si es observable"— lo ratificó el operador
+#                              el 2026-10-19)
 #
 # Matriz de alternativas y evidencia:
 # `docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md`.

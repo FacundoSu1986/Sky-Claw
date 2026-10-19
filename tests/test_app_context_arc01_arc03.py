@@ -21,6 +21,19 @@ import pytest
 
 from sky_claw.app_context import AppContext
 
+# Red de emergencia de las esperas del ciclo de vida (`wait_for` / `asyncio.wait`): ninguna ES el
+# comportamiento bajo prueba (lo que tiene que vencer es `_startup_shutdown_timeout_s`), así que un tope
+# corto solo hace fallar al test cuando el runner de Windows se pausa más que el tope. Espera de 1 s
+# alrededor de `ctx.stop()` falló en CI (ancla: tests/test_tiempos_de_tests_invariant.py, familia 4).
+_RED_DE_EMERGENCIA_S = 10.0
+
+# Presupuesto de cleanup que tiene que VENCER (el cleanup obstinado nunca se libera) pero que
+# supere cualquier pausa del loop en el runner de Windows. Con 0.01 s el presupuesto podía vencer
+# antes de que el cleanup alcanzara a arrancar, y `ejecuciones == 1` daba 0 (falla intermitente de
+# CI). Los tests con presupuestos más cortos esperan `entro.wait()` antes de depender del vencimiento
+# (ancla: tests/test_tiempos_de_tests_invariant.py).
+_PRESUPUESTO_QUE_VENCE_S = 0.25
+
 
 @pytest.fixture
 def mock_args(tmp_path: pathlib.Path):
@@ -248,9 +261,9 @@ class TestAppContextLifecycleCoordinator:
         ctx._start_full_inner = bloquear_full
         startup = asyncio.create_task(ctx.start_full())
         try:
-            await asyncio.wait_for(entro.wait(), timeout=1.0)
-            await asyncio.wait_for(ctx.stop(), timeout=1.0)
-            await asyncio.wait_for(rollback.wait(), timeout=1.0)
+            await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
+            await asyncio.wait_for(ctx.stop(), timeout=_RED_DE_EMERGENCIA_S)
+            await asyncio.wait_for(rollback.wait(), timeout=_RED_DE_EMERGENCIA_S)
             assert startup.cancelled()
             assert ctx.is_configured is False
         finally:
@@ -282,10 +295,10 @@ class TestAppContextLifecycleCoordinator:
         primero = asyncio.create_task(ctx.start())
         segundo: asyncio.Task[None] | None = None
         try:
-            await asyncio.wait_for(primera_fase.wait(), timeout=1.0)
+            await asyncio.wait_for(primera_fase.wait(), timeout=_RED_DE_EMERGENCIA_S)
             segundo = asyncio.create_task(ctx.start())
-            await asyncio.wait_for(ctx.stop(), timeout=1.0)
-            terminadas, _ = await asyncio.wait({primero, segundo}, timeout=0.1)
+            await asyncio.wait_for(ctx.stop(), timeout=_RED_DE_EMERGENCIA_S)
+            terminadas, _ = await asyncio.wait({primero, segundo}, timeout=_RED_DE_EMERGENCIA_S)
 
             assert terminadas == {primero, segundo}
             assert llamadas == 1
@@ -318,23 +331,23 @@ class TestAppContextLifecycleCoordinator:
                 await asyncio.wait_for(asyncio.Event().wait(), timeout=10.0)
             except asyncio.CancelledError:
                 ignoro_cancelacion.set()
-                await asyncio.wait_for(liberar.wait(), timeout=1.0)
+                await asyncio.wait_for(liberar.wait(), timeout=_RED_DE_EMERGENCIA_S)
             ctx.router = MagicMock()
 
         ctx._start_full_inner = full_obstinado
         startup = asyncio.create_task(ctx.start_full())
         try:
-            await asyncio.wait_for(entro.wait(), timeout=1.0)
+            await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
             with pytest.raises(TimeoutError):
-                await asyncio.wait_for(ctx.stop(), timeout=1.0)
-            await asyncio.wait_for(ignoro_cancelacion.wait(), timeout=1.0)
+                await asyncio.wait_for(ctx.stop(), timeout=_RED_DE_EMERGENCIA_S)
+            await asyncio.wait_for(ignoro_cancelacion.wait(), timeout=_RED_DE_EMERGENCIA_S)
             assert ctx.is_configured is False
 
             liberar.set()
             await asyncio.gather(startup, return_exceptions=True)
             assert startup.cancelled()
             assert ctx.router is None
-            await asyncio.wait_for(ctx.stop(), timeout=1.0)
+            await asyncio.wait_for(ctx.stop(), timeout=_RED_DE_EMERGENCIA_S)
         finally:
             liberar.set()
             if not startup.done():
@@ -355,7 +368,7 @@ class TestAppContextLifecycleCoordinator:
         async def cleanup_lento() -> None:
             cleanup_inicio.set()
             try:
-                await asyncio.wait_for(liberar_cleanup.wait(), timeout=1.0)
+                await asyncio.wait_for(liberar_cleanup.wait(), timeout=_RED_DE_EMERGENCIA_S)
             finally:
                 cleanup_fin.set()
 
@@ -368,17 +381,17 @@ class TestAppContextLifecycleCoordinator:
         startup = asyncio.create_task(ctx.start_full())
         stop_task: asyncio.Task[None] | None = None
         try:
-            await asyncio.wait_for(entro.wait(), timeout=1.0)
+            await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
             stop_task = asyncio.create_task(ctx.stop())
-            await asyncio.wait_for(cleanup_inicio.wait(), timeout=1.0)
+            await asyncio.wait_for(cleanup_inicio.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
             startup.cancel()
             await asyncio.sleep(0)
             assert cleanup_fin.is_set() is False
 
             liberar_cleanup.set()
-            await asyncio.wait_for(stop_task, timeout=1.0)
-            await asyncio.wait_for(cleanup_fin.wait(), timeout=1.0)
+            await asyncio.wait_for(stop_task, timeout=_RED_DE_EMERGENCIA_S)
+            await asyncio.wait_for(cleanup_fin.wait(), timeout=_RED_DE_EMERGENCIA_S)
             assert startup.cancelled()
         finally:
             liberar_cleanup.set()
@@ -386,7 +399,7 @@ class TestAppContextLifecycleCoordinator:
                 startup.cancel()
             await asyncio.gather(startup, return_exceptions=True)
             if stop_task is not None and not stop_task.done():
-                await asyncio.wait_for(stop_task, timeout=1.0)
+                await asyncio.wait_for(stop_task, timeout=_RED_DE_EMERGENCIA_S)
 
     @pytest.mark.asyncio
     async def test_stop_no_cuelga_si_background_task_ignora_cancelacion(self, mock_args):
@@ -402,30 +415,30 @@ class TestAppContextLifecycleCoordinator:
                 await asyncio.wait_for(asyncio.Event().wait(), timeout=10.0)
             except asyncio.CancelledError:
                 ignoro_cancelacion.set()
-                await asyncio.wait_for(liberar.wait(), timeout=1.0)
+                await asyncio.wait_for(liberar.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
         background = ctx._track_task(tarea_obstinada(), name="background-obstinado")
         stop_task: asyncio.Task[None] | None = None
         try:
-            await asyncio.wait_for(entro.wait(), timeout=1.0)
+            await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
             stop_task = asyncio.create_task(ctx.stop())
-            terminadas, _ = await asyncio.wait({stop_task}, timeout=0.1)
+            terminadas, _ = await asyncio.wait({stop_task}, timeout=_RED_DE_EMERGENCIA_S)
             assert stop_task in terminadas
             with pytest.raises(TimeoutError):
                 stop_task.result()
-            await asyncio.wait_for(ignoro_cancelacion.wait(), timeout=1.0)
+            await asyncio.wait_for(ignoro_cancelacion.wait(), timeout=_RED_DE_EMERGENCIA_S)
         finally:
             liberar.set()
             if stop_task is not None and not stop_task.done():
-                await asyncio.wait_for(stop_task, timeout=1.0)
+                await asyncio.wait_for(stop_task, timeout=_RED_DE_EMERGENCIA_S)
             await asyncio.gather(background, return_exceptions=True)
 
-        await asyncio.wait_for(ctx.stop(), timeout=1.0)
+        await asyncio.wait_for(ctx.stop(), timeout=_RED_DE_EMERGENCIA_S)
 
     @pytest.mark.asyncio
     async def test_stop_acota_cleanup_obstinado_sin_ejecutarlo_dos_veces(self, mock_args):
         ctx = AppContext(mock_args)
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         ejecuciones = 0
@@ -439,7 +452,7 @@ class TestAppContextLifecycleCoordinator:
         ctx._push_startup_cleanup(cleanup_obstinado)
 
         # Sin red de emergencia por reloj: lo único que tiene que vencer es el
-        # presupuesto (0.01 s), y `liberar` sigue sin setearse, así que el timeout
+        # presupuesto (`_PRESUPUESTO_QUE_VENCE_S`), y `liberar` sigue sin setearse, así que el timeout
         # es determinístico. Un cuelgue real lo ataja `--timeout=120` (pyproject).
         with pytest.raises(TimeoutError):
             await ctx.stop()
@@ -450,11 +463,11 @@ class TestAppContextLifecycleCoordinator:
             await asyncio.sleep(0)
             assert ejecuciones == 1
             liberar.set()
-            await asyncio.wait_for(segundo_stop, timeout=0.2)
+            await asyncio.wait_for(segundo_stop, timeout=_RED_DE_EMERGENCIA_S)
         finally:
             liberar.set()
             if not segundo_stop.done():
-                await asyncio.wait_for(segundo_stop, timeout=0.2)
+                await asyncio.wait_for(segundo_stop, timeout=_RED_DE_EMERGENCIA_S)
 
         assert ejecuciones == 1
 
@@ -472,7 +485,7 @@ class TestAppContextLifecycleCoordinator:
         ctx._push_startup_cleanup(cleanup_lento)
         stop_task = asyncio.create_task(ctx.stop())
         try:
-            await asyncio.wait_for(entro.wait(), timeout=0.2)
+            await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
             stop_task.cancel("cancelacion-primaria")
             await asyncio.sleep(0)
             stop_task.cancel("cancelacion-secundaria")
@@ -490,7 +503,7 @@ class TestAppContextLifecycleCoordinator:
     @pytest.mark.asyncio
     async def test_cleanup_falla_despues_del_timeout_y_conserva_retry(self, mock_args):
         ctx = AppContext(mock_args)
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         fallo_emitido = asyncio.Event()
@@ -517,7 +530,7 @@ class TestAppContextLifecycleCoordinator:
         assert ejecuciones == 1
 
         liberar.set()
-        await asyncio.wait_for(fallo_emitido.wait(), timeout=0.2)
+        await asyncio.wait_for(fallo_emitido.wait(), timeout=_RED_DE_EMERGENCIA_S)
         with pytest.raises(RuntimeError) as raised:
             await ctx.stop()
         assert raised.value is error
@@ -532,7 +545,7 @@ class TestAppContextLifecycleCoordinator:
         self._aislar_fase_minima(ctx)
         ctx.lifecycle.close = AsyncMock()
         ctx.network.close = AsyncMock()
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         error_primario = RuntimeError("startup primary failure")
@@ -557,8 +570,8 @@ class TestAppContextLifecycleCoordinator:
         # carga el rollback tarda más que la ventana, y su rama de rescate
         # (`if startup not in done`) no podía rescatar nada — el `assert startup in
         # done` de la línea siguiente miraba el `done` ya calculado, así que entrar
-        # ahí era fallar igual. El presupuesto (0.01 s) es lo único que tiene que
-        # vencer para que el cleanup se abandone y el error primario propague.
+        # ahí era fallar igual. El presupuesto (`_PRESUPUESTO_QUE_VENCE_S`) es lo único
+        # que tiene que vencer para que el cleanup se abandone y el error primario propague.
         with pytest.raises(RuntimeError) as raised:
             await ctx.start_full()
         assert raised.value is error_primario

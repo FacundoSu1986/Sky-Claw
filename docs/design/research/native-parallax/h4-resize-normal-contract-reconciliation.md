@@ -7,6 +7,25 @@
 > No cambia ninguna fila `FROZEN`, no recalibra `DEGENERATE_THRESHOLD`, no toca el Golden
 > Master #718, EXP-M6 #675, el corpus ni artefactos históricos, y no fusiona #723.
 
+> **Estado vigente (2026-10-19, tras el merge de #723 en `7150a47b`).** El operador ratificó
+> F01 = R2-lite —incluida la regla nueva de N-11, «el clip se tolera sólo si es observable»— y
+> aceptó que R7 siga siendo una heurística RMS (`DEGENERATE_THRESHOLD = 5/16`) hasta el censo por
+> asset del Slice 3, sabiendo que entre `L = 5/16` y `L = 1/2` un píxel se publica normalizado y
+> puede superar la tolerancia angular hasta 1,6× (respuesta textual: «Si autorizo»); además
+> autorizó el merge. Lo que ese merge **no** levanta: el bloqueo de M6 y el entregable del Slice 3
+> (censo por asset de `asin(delta_chord/L)` frente a `q`, sin función de puerta). Los bloques de
+> tokens de más abajo, y las menciones a «Draft» o «no se fusiona», son **fotos del PR en el
+> momento de cada registro** y se conservan como historial: donde digan `PENDING_TECH_LEAD` o
+> `H4_CODE_MERGE_AUTHORIZED = NO`, rige este bloque.
+>
+> ```text
+> F01_CONTRACT_AMENDMENT    = RATIFIED          (operador, 2026-10-19)
+> H4_CODE_MERGE_AUTHORIZED  = YES               (fusionado en 7150a47b, con autorización del operador)
+> R7_THRESHOLD_KIND         = HEURISTIC (RMS)   (aceptado por el operador; sin cambio de código)
+> R7_NUMERIC_DERIVATION     = BLOCKED           (SIN CAMBIO)
+> M6_IMPLEMENTATION_BLOCKED = YES               (SIN CAMBIO: espera el roster NON_EVALUABLE y el censo del Slice 3)
+> ```
+
 > **Actualización del 2026-10-19.** El Tech Lead (rol delegado) eligió la **opción B** para F01
 > (rechazar la entrada geométricamente inválida, con el carve-out observable del clip); ver el
 > banner superior de `h4-resize-normal-f01-f02-adjudication.md`. El análisis de abajo es el
