@@ -63,7 +63,7 @@ que esa marca pretende cubrir.
 | MO2/USVFS | `local/mo2/`, ADR 0007 |
 | DAG de modding | `sky_claw/local/AGENTS.md` |
 | Clean-room del generador nativo de parallax | `CLEAN_ROOM.md`, ADR 0013, `tests/test_clean_room_invariant.py` |
-| Generador nativo de parallax: design brief, layout de producto y dependencias | ADR 0014 (`Propuesta`: no tiene precedencia de ADR aceptado hasta que se acepte), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`, issue #676 |
+| Generador nativo de parallax: design brief, layout de producto y dependencias | ADR 0014 (`Aceptada`, 2026-10-19), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`, issue #676 |
 | CI | `.github/workflows/ci.yml` |
 | Packaging | `sky_claw.spec`, `build.bat`, workflow Build |
 
