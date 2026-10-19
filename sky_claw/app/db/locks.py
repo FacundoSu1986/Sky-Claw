@@ -180,8 +180,11 @@ ON CONFLICT(resource_id) DO UPDATE SET
     agent_id    = excluded.agent_id,
     acquired_at = excluded.acquired_at,
     expires_at  = excluded.expires_at
-WHERE resource_locks.expires_at < excluded.acquired_at
+WHERE resource_locks.expires_at < ?
 """
+# Parámetros: (resource_id, agent_id, token, expires_at, ahora). El token
+# (``acquired_at``) es la IDENTIDAD de la lease y puede quedar por delante del
+# reloj; el vencimiento se mide SIEMPRE con el reloj real (``ahora``).
 
 _RENEW_SQL = """\
 UPDATE resource_locks
@@ -236,7 +239,10 @@ class LockInfo:
 # (``DistributedLockManager._acuniar_token``) y es estrictamente creciente POR BASE
 # dentro del proceso. El estado es del módulo y no de la instancia porque varios
 # gestores (uno por servicio, con el mismo ``agent_id``) pueden apuntar a la misma
-# base. Límite: dos PROCESOS distintos no comparten este estado; cerrarlo exigiría
+# base. El token es SOLO identidad: tras un retroceso del reloj puede quedar por
+# delante de él, así que el vencimiento (``expires_at`` y el predicado de
+# ``_ACQUIRE_SQL``) se mide con la lectura real del reloj, nunca con el token.
+# Límite: dos PROCESOS distintos no comparten este estado; cerrarlo exigiría
 # una identidad persistida en ``resource_locks`` (cambio de esquema).
 _CERROJO_DE_TOKENS = threading.Lock()
 _ULTIMO_TOKEN_POR_BASE: dict[str, float] = {}
@@ -393,19 +399,23 @@ class DistributedLockManager:
     # Core operations
     # ------------------------------------------------------------------
 
-    def _acuniar_token(self) -> float:
+    def _acuniar_token(self, ahora: float) -> float:
         """Acuña el token de fencing (``acquired_at``) de una adquisición.
 
-        Devuelve ``time.time()`` cuando el reloj avanzó respecto del último token
-        emitido para esta base y, si no (reloj grueso o retroceso por NTP), el
-        siguiente flotante representable: el token es estrictamente creciente por
-        base dentro del proceso. En el caso normal no desplaza el valor del reloj.
+        ``ahora`` es la lectura del reloj de pared de esta adquisición. Devuelve
+        ``ahora`` cuando el reloj avanzó respecto del último token emitido para
+        esta base y, si no (reloj grueso o retroceso por NTP), el siguiente
+        flotante representable: el token es estrictamente creciente por base
+        dentro del proceso. En el caso normal no desplaza el valor del reloj.
+
+        El token es solo la identidad de la lease: puede quedar por delante del
+        reloj tras un retroceso, así que NO sirve para medir vencimientos (ese es
+        el trabajo de ``ahora``).
 
         Es síncrono y no cede el control: dos corrutinas del mismo loop no pueden
         intercalarse; el ``threading.Lock`` cubre gestores en otros hilos o loops.
         """
         with _CERROJO_DE_TOKENS:
-            ahora = time.time()
             ultimo = _ULTIMO_TOKEN_POR_BASE.get(self._clave_de_token)
             token = ahora if ultimo is None or ahora > ultimo else math.nextafter(ultimo, math.inf)
             _ULTIMO_TOKEN_POR_BASE[self._clave_de_token] = token
@@ -457,21 +467,23 @@ class DistributedLockManager:
             try:
                 if self._lifecycle is not None:
                     async with self._lifecycle.transaction(self._db_path) as conn:
-                        now = self._acuniar_token()
-                        expires_at = now + ttl_seconds
+                        ahora = time.time()
+                        token = self._acuniar_token(ahora)
+                        expires_at = ahora + ttl_seconds
                         async with conn.execute(
                             _ACQUIRE_SQL,
-                            (resource_id, agent_id, now, expires_at),
+                            (resource_id, agent_id, token, expires_at, ahora),
                         ) as cursor:
                             rowcount = cursor.rowcount
                     # commit del wrapper ya terminó acá
                 else:
-                    now = self._acuniar_token()
-                    expires_at = now + ttl_seconds
+                    ahora = time.time()
+                    token = self._acuniar_token(ahora)
+                    expires_at = ahora + ttl_seconds
                     conn = self._ensure_conn()
                     async with conn.execute(
                         _ACQUIRE_SQL,
-                        (resource_id, agent_id, now, expires_at),
+                        (resource_id, agent_id, token, expires_at, ahora),
                     ) as cursor:
                         rowcount = cursor.rowcount
                     await conn.commit()
@@ -499,7 +511,7 @@ class DistributedLockManager:
                         lock_info = LockInfo(
                             resource_id=resource_id,
                             agent_id=agent_id,
-                            acquired_at=now,
+                            acquired_at=token,
                             expires_at=expires_at,
                         )
                         logger.info(

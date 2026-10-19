@@ -35,7 +35,7 @@ import pytest
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.app.db import locks
-from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.locks import DistributedLockManager, LockAcquisitionError
 
 RECURSO = "recurso-token-creciente"
 AGENTE = "servicio-con-id-constante"
@@ -91,6 +91,30 @@ def _fila_en_disco(db_path: pathlib.Path, recurso: str = RECURSO) -> tuple[str, 
     return None if fila is None else (fila[0], fila[1])
 
 
+def _vence_en_disco(db_path: pathlib.Path, recurso: str = RECURSO) -> float | None:
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        fila = conn.execute("SELECT expires_at FROM resource_locks WHERE resource_id = ?", (recurso,)).fetchone()
+    finally:
+        conn.close()
+    return None if fila is None else fila[0]
+
+
+def _insertar_lease_ajena(
+    db_path: pathlib.Path, recurso: str, agente: str, *, acquired_at: float, expires_at: float
+) -> None:
+    """Simula la lease que dejó OTRO proceso: escribe la fila por una conexión independiente."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO resource_locks (resource_id, agent_id, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+            (recurso, agente, acquired_at, expires_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _congelar_reloj(monkeypatch: pytest.MonkeyPatch, valores: list[float] | float) -> None:
     """Fija ``time.time`` (reloj grueso). Una lista se consume en orden y repite el último valor."""
     secuencia = [valores] if isinstance(valores, float) else list(valores)
@@ -142,6 +166,47 @@ async def test_el_token_sigue_creciendo_aunque_el_reloj_retroceda(
     segunda = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
 
     assert segunda.acquired_at > primera.acquired_at
+
+
+async def test_tras_un_retroceso_del_reloj_la_expiracion_sigue_al_reloj_real(
+    gestor: DistributedLockManager, db_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El token puede quedar adelantado al reloj; la expiración NO: es el crash-recovery por TTL.
+
+    Si ``expires_at`` se derivara del token, una lease de 60 s tomada tras un retroceso de 1 h solo
+    sería reclamable ~1 h después de que su titular muriera.
+    """
+    _congelar_reloj(monkeypatch, [RELOJ_GRUESO, RELOJ_GRUESO - 3600.0])
+
+    primera = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+    assert await gestor.release_lock(RECURSO, AGENTE, acquired_at=primera.acquired_at)
+    segunda = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+
+    assert segunda.acquired_at > primera.acquired_at, "el token sigue creciendo"
+    assert segunda.expires_at == (RELOJ_GRUESO - 3600.0) + 60.0, "la expiración sale del reloj real"
+    assert _vence_en_disco(db_path) == segunda.expires_at
+
+
+async def test_un_token_adelantado_al_reloj_no_pisa_una_lease_viva_de_otro_proceso(
+    gestor: DistributedLockManager, db_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El predicado ``expires_at < ?`` se mide con el reloj real: un token adelantado no vence leases ajenas.
+
+    Otro proceso, con su propio estado de monotonía, tomó la lease con el reloj ya retrocedido. Este
+    proceso conserva el máximo de antes del retroceso; si usara ese token como "ahora" del predicado,
+    daría por vencida (y pisaría) una lease que sigue viva.
+    """
+    _congelar_reloj(monkeypatch, [RELOJ_GRUESO, RELOJ_GRUESO - 3600.0])
+    primera = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+    assert await gestor.release_lock(RECURSO, AGENTE, acquired_at=primera.acquired_at)
+
+    ahora = RELOJ_GRUESO - 3600.0
+    _insertar_lease_ajena(db_path, RECURSO, "otro-proceso", acquired_at=ahora - 1.0, expires_at=ahora + 60.0)
+
+    with pytest.raises(LockAcquisitionError):
+        await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+
+    assert _fila_en_disco(db_path) == ("otro-proceso", ahora - 1.0), "se pisó una lease viva de otro proceso"
 
 
 async def test_el_token_coincide_con_el_reloj_cuando_el_reloj_avanza(
@@ -234,21 +299,44 @@ def test_todo_sitio_que_acuna_un_token_pasa_por_acuniar_token() -> None:
     ]
     assert len(inserciones) == 2, "cambió la familia de sitios que insertan una lease: decidí la receta del nuevo"
 
+    # (resource_id, agent_id, token, expires_at, ahora): el token es la IDENTIDAD de la lease; el
+    # reloj real gobierna la expiración y el predicado de vencimiento (``expires_at < ?``).
     for insercion in inserciones:
         params = insercion.args[1]
-        assert isinstance(params, ast.Tuple) and len(params.elts) == 4
-        assert _nombre_punteado(params.elts[2]) == "now", "el token de la inserción no sale de la variable acuñada"
+        assert isinstance(params, ast.Tuple) and len(params.elts) == 5
+        assert _nombre_punteado(params.elts[2]) == "token", "el token de la inserción no sale de la variable acuñada"
+        assert _nombre_punteado(params.elts[3]) == "expires_at"
+        assert _nombre_punteado(params.elts[4]) == "ahora", (
+            "el predicado de vencimiento tiene que medirse con el reloj real, no con el token"
+        )
 
-    asignaciones = [
-        nodo
-        for nodo in ast.walk(funcion)
-        if isinstance(nodo, ast.Assign) and any(_nombre_punteado(t) == "now" for t in nodo.targets)
-    ]
-    assert len(asignaciones) == len(inserciones), "hay una asignación de `now` sin su inserción (o al revés)"
-    for asignacion in asignaciones:
+    def _asignaciones(nombre: str) -> list[ast.Assign]:
+        return [
+            nodo
+            for nodo in ast.walk(funcion)
+            if isinstance(nodo, ast.Assign) and any(_nombre_punteado(t) == nombre for t in nodo.targets)
+        ]
+
+    tokens = _asignaciones("token")
+    assert len(tokens) == len(inserciones), "hay una asignación de `token` sin su inserción (o al revés)"
+    for asignacion in tokens:
         valor = asignacion.value
         assert isinstance(valor, ast.Call) and _nombre_punteado(valor.func) == "self._acuniar_token", (
-            "el token se acuña con `time.time()` directo: usá `self._acuniar_token()`"
+            "el token se acuña con `time.time()` directo: usá `self._acuniar_token(ahora)`"
+        )
+
+    relojes = _asignaciones("ahora")
+    assert len(relojes) == len(inserciones), "hay una lectura del reloj sin su inserción (o al revés)"
+    for asignacion in relojes:
+        valor = asignacion.value
+        assert isinstance(valor, ast.Call) and _nombre_punteado(valor.func) == "time.time"
+
+    vencimientos = _asignaciones("expires_at")
+    assert len(vencimientos) == len(inserciones)
+    for asignacion in vencimientos:
+        valor = asignacion.value
+        assert isinstance(valor, ast.BinOp) and _nombre_punteado(valor.left) == "ahora", (
+            "`expires_at` se deriva del token: tras un retroceso del reloj la lease viviría de más"
         )
 
     construcciones = [
@@ -257,4 +345,4 @@ def test_todo_sitio_que_acuna_un_token_pasa_por_acuniar_token() -> None:
     assert construcciones, "acquire_lock dejó de construir LockInfo"
     for construccion in construcciones:
         token = next(p.value for p in construccion.keywords if p.arg == "acquired_at")
-        assert _nombre_punteado(token) == "now", "el LockInfo devuelto no lleva el token acuñado"
+        assert _nombre_punteado(token) == "token", "el LockInfo devuelto no lleva el token acuñado"
