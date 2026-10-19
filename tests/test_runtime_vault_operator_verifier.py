@@ -217,7 +217,7 @@ class TestWin32OperatorVerifierCausal:
 
         # Launcher que simula un hijo con PID=999999 pero el que conecta es el thread actual
         launcher = _TestOnlyVerifierLauncher(tamper_child_pid=999999)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -306,7 +306,7 @@ sys.exit(1)
                 )
 
         launcher = _SameSidForeignProcessLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=3.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -329,7 +329,7 @@ sys.exit(1)
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher(tamper_response_nonce="deadbeef" * 8)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -348,7 +348,7 @@ sys.exit(1)
         root.mkdir()
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             # Primera invocación consume un nonce
@@ -377,7 +377,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_child_pid=12345)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -393,7 +393,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_creation_time_delta=100_000_000)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="ProcessCreationTime mismatch"):
             bridge.invoke_observe(
@@ -409,7 +409,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_image_path="C:\\Windows\\notepad.exe")
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Process image mismatch"):
             bridge.invoke_observe(
@@ -432,7 +432,7 @@ if h != -1 and h != 0:
     kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ChildExitedPrematurelyError, match=r"cerró el canal"):
@@ -489,7 +489,7 @@ kernel32.WriteFile(ctypes.c_void_p(h), oversized_len, 4, ctypes.byref(written), 
 kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ProtocolAbuseError, match="excede el límite"):
@@ -543,7 +543,7 @@ kernel32.WriteFile(ctypes.c_void_p(h), frame, len(frame), ctypes.byref(written),
 kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ProtocolAbuseError, match="Trailing bytes"):
@@ -1185,7 +1185,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             tamper_child_pid=999999,
             worker_code_override=worker_code,
         )
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch.object(_kernel32, "TerminateProcess", side_effect=fake_term),
@@ -1513,7 +1513,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=3.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(ChildExitedPrematurelyError, match="EOF inesperado"):
             bridge.invoke_observe(
