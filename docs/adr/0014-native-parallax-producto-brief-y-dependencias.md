@@ -59,7 +59,8 @@ Verificado leyendo el repositorio (2026-10-19):
    `uv.lock` ya registra numpy y Pillow (por `dev`) y se actualiza al agregar el extra. El nombre del archivo
    y la forma del paso de CI son lo que NP-C0 tiene que demostrar ejecutando; este ADR no los da por
    verificados.
-4. **Escritura DDS/BC4.** Se usa `texconv` (herramienta externa, MIT) como `DYNAMIC_EXTERNAL_TOOL` con
+4. **Escritura DDS/BC4.** Se usa `texconv` (herramienta externa; el brief la registra como MIT, sin verificar para la versión
+   que se fije) como `DYNAMIC_EXTERNAL_TOOL` con
    versión fijada, según NP-E0. El encoder BC4 propio del patch se descarta salvo que el rig (NP-RIG) lo
    exija. Lectura DDS: Pillow. Con cualquiera de las dos vías el DoD de #676 exige validar BC4 y mips
    contra una implementación de referencia.
