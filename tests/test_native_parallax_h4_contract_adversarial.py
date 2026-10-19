@@ -22,8 +22,11 @@ Diseño:
   preservado, o postcondición de norma unitaria) debe sostenerse para TODAS las
   fases, con el censo predicho por la referencia independiente.
 
-En ``main`` (donde el contrato Slice 2 aún no está implementado) la suite se SALTEA
-completa: es un insumo para el PR #723, no un test del estado vigente.
+Estado vigente (2026-10-19): #723 está fusionado en ``main`` (``7150a47b``), así que el contrato
+Slice 2 existe y esta suite EJECUTA contra él. Ya no es un insumo de un PR abierto. El camino de
+salto de abajo queda sólo para un árbol anterior a #723; para que la desaparición de la API en
+``main`` no pase por un salto silencioso, ``test_la_api_del_slice_2_esta_en_el_arbol`` falla SIEMPRE,
+con o sin ``SKYCLAW_REQUIRE_H4_CONTRACT``.
 """
 
 from __future__ import annotations
@@ -37,8 +40,7 @@ import numpy as np
 import pytest
 
 _MODULE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "sky_claw" / "local" / "native_parallax" / "research" / "authored_dataset.py"
+    Path(__file__).resolve().parents[1] / "sky_claw" / "local" / "native_parallax" / "research" / "authored_dataset.py"
 )
 
 
@@ -48,9 +50,7 @@ def _load_contract_module():
     Debe registrarse en ``sys.modules`` ANTES de ``exec_module``: ``@dataclass``
     resuelve anotaciones vía ``sys.modules[cls.__module__]`` y sin el registro lanza
     ``AttributeError`` en el procesamiento de la clase."""
-    spec = importlib.util.spec_from_file_location(
-        "_h4_contract_authored_dataset", _MODULE_PATH
-    )
+    spec = importlib.util.spec_from_file_location("_h4_contract_authored_dataset", _MODULE_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -59,11 +59,12 @@ def _load_contract_module():
 
 
 # Politica de salto/fallo (adjudicacion de la revision externa del 2026-10-15,
-# hallazgo "skip silencioso"): la ausencia de la API del Slice 2 es el ESTADO VIGENTE
-# de main y se SALTA (esta suite es insumo del PR #723, no test de main). En cambio,
-# si el modulo EXISTE pero NO IMPORTA, eso es una regresion del PR y debe FALLAR, no
-# saltarse. Un modulo que importa pero no ofrece la API es indistinguible de main
-# desde afuera: se salta con la razon explicita (limitacion documentada).
+# hallazgo "skip silencioso"): la ausencia de la API del Slice 2 se SALTABA mientras
+# #723 estaba abierto (esta suite era su insumo). Con #723 fusionado ese estado ya no es
+# el de main: lo cubre `test_la_api_del_slice_2_esta_en_el_arbol`, que falla siempre. Si
+# el modulo EXISTE pero NO IMPORTA, eso es una regresion y debe FALLAR, no saltarse. Un
+# modulo que importa pero no ofrece la API, en un arbol anterior a #723, se salta con la
+# razon explicita (limitacion documentada).
 _API_NAMES = (
     "resize_normal_diagnostic",
     "resize_normal",
@@ -75,11 +76,12 @@ _API_NAMES = (
 )
 
 
-# Modo contrato obligatorio (adjudicacion revision REV-2-review): en la CI del
-# PR #723 la ausencia de la API debe ser FALLO, no skip. Exportar
+# Modo contrato obligatorio (adjudicacion revision REV-2-review): la ausencia de la API
+# debe ser FALLO, no skip. Exportar
 #   SKYCLAW_REQUIRE_H4_CONTRACT=1
-# para exigir el contrato (uso: CI de #723 y validaciones del slice); sin la
-# variable, main historico se salta con razon explicita (modo compatible).
+# para exigirlo en toda la suite (uso: validaciones del slice y arboles que deban llevar
+# el contrato); sin la variable, un arbol anterior a #723 se salta con razon explicita
+# (modo compatible, el documentado en exp-m6-screen-lambda-derivation-proposal.md §6.1).
 _REQUIRE_H4 = os.environ.get("SKYCLAW_REQUIRE_H4_CONTRACT", "").strip().lower() in (
     "1",
     "true",
@@ -92,8 +94,7 @@ def m():
     if not _MODULE_PATH.exists():
         if _REQUIRE_H4:
             pytest.fail(
-                "SKYCLAW_REQUIRE_H4_CONTRACT=1: authored_dataset.py no existe en "
-                "este arbol (se exigia el contrato H4)."
+                "SKYCLAW_REQUIRE_H4_CONTRACT=1: authored_dataset.py no existe en este arbol (se exigia el contrato H4)."
             )
         pytest.skip("authored_dataset.py no existe en este arbol.")
     try:
@@ -116,6 +117,18 @@ def m():
             "insumo del PR #723, no test del estado vigente."
         )
     return mod
+
+
+def test_la_api_del_slice_2_esta_en_el_arbol():
+    """#723 está fusionado: la API del Slice 2 tiene que estar, con o sin el modo obligatorio.
+
+    El fixture ``m`` SALTA si falta la API (modo compatible, para árboles anteriores a #723). Esta
+    guarda no usa el fixture: es la que impide que borrar la API de ``main`` deje toda la suite en
+    un salto silencioso."""
+    assert _MODULE_PATH.exists(), "authored_dataset.py no existe en este arbol"
+    mod = _load_contract_module()
+    faltantes = [name for name in _API_NAMES if not hasattr(mod, name)]
+    assert not faltantes, f"API del Slice 2 ausente: {faltantes}"
 
 
 # ============================================================================
@@ -141,10 +154,7 @@ def _down2_axis(a: np.ndarray, axis: int) -> np.ndarray:
     w = w / w.sum(axis=0, keepdims=True)  # renormalización de Pillow en los bordes
     bshape = [1] * a.ndim
     bshape[axis] = out_n  # pesos por-posición broadcastables al rango de `a`
-    return sum(
-        w[k].reshape(bshape) * np.take(a, np.where(valid[k], taps[k], 0), axis=axis)
-        for k in range(4)
-    )
+    return sum(w[k].reshape(bshape) * np.take(a, np.where(valid[k], taps[k], 0), axis=axis) for k in range(4))
 
 
 def _down2_kernel_reference(src: np.ndarray) -> np.ndarray:
@@ -185,9 +195,9 @@ def _unit(v: np.ndarray) -> np.ndarray:
 def _smooth_unit_field(n: int, seed: int = 7) -> np.ndarray:
     """Campo de normales unitarias suave y periódico (band-limited)."""
     i = np.arange(n)
-    X, Y = np.meshgrid(i, i, indexing="xy")
+    xs, ys = np.meshgrid(i, i, indexing="xy")
     k = 2 * np.pi / n
-    h = 0.2 * np.sin(2 * k * X) * np.cos(k * Y) + 0.1 * np.sin(3 * k * X + 2 * k * Y)
+    h = 0.2 * np.sin(2 * k * xs) * np.cos(k * ys) + 0.1 * np.sin(3 * k * xs + 2 * k * ys)
     p = np.gradient(h, axis=1)
     q = np.gradient(h, axis=0)
     return _unit(np.stack([-p, -q, np.ones_like(p)], axis=-1))
@@ -255,9 +265,7 @@ def test_b1_clip_en_identidad_tolera_y_renormaliza_con_direccion_preservada(m):
     n[..., 0] = 1000.0
     n[..., 2] = 0.5
     out = m.resize_normal(n, 8)  # identidad: clip -> (1, 0, 0.5) -> renormalizar
-    esperado = _unit(
-        np.stack([np.ones((8, 8)), np.zeros((8, 8)), np.full((8, 8), 0.5)], axis=-1)
-    )
+    esperado = _unit(np.stack([np.ones((8, 8)), np.zeros((8, 8)), np.full((8, 8), 0.5)], axis=-1))
     np.testing.assert_allclose(out, esperado, rtol=0, atol=1e-15)
     assert float(np.max(np.abs(np.linalg.norm(out, axis=-1) - 1.0))) <= m.UNIT_NORM_TOLERANCE
 
@@ -443,11 +451,11 @@ def test_f2_umbral_congelado_5_16_no_recalibrado(m):
     """§6.1: THRESHOLD_FIXED_HERE=NO fue cerrado por #723 con 5/16 (heurística RMS,
     prohibido recalibrar con corpus).
 
-    ALCANCE PROVISIONAL (adjudicación revisión externa 2026-10-15): este pin protege
-    el valor DECLARADO por #723 contra drift accidental; NO lo eleva a garantía
-    geométrica universal. La reconciliación F01/V-01 está
-    `F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD` en el propio PR: si el Tech Lead
-    adjudica otra lectura, este test cambia con el contrato (y sólo entonces)."""
+    ALCANCE (adjudicación revisión externa 2026-10-15, actualizado 2026-10-19): este pin
+    protege el valor DECLARADO por #723 contra drift accidental; NO lo eleva a garantía
+    geométrica universal (`R7_NUMERIC_DERIVATION = BLOCKED`, heurística RMS aceptada por el
+    operador). La reconciliación F01/V-01 quedó `F01_CONTRACT_AMENDMENT = RATIFIED`: si el
+    contrato cambia, este test cambia con él (y sólo entonces)."""
     assert m.DEGENERATE_THRESHOLD == 5.0 / 16.0
     assert m.UNIT_NORM_TOLERANCE == 1e-6
 
