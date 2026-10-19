@@ -114,7 +114,7 @@ FALLOS (nombre + mensaje + clasificación):
 3) tests/test_worktree_convention_invariant.py::
    test_los_worktrees_no_principales_viven_bajo_la_convencion
    AssertionError: Fuera de convención: ... 15 rutas ...
-   (C:/Worktrees/..., E:/SkyClaw_*..., E:/Skyclaw_Main_Sync/.claude/worktrees/...)
+   (<WORKTREE_AJENO> E:/SkyClaw_*..., E:/Skyclaw_Main_Sync/.claude/worktrees/...)
    El test censa el registro REAL de git del host; hay 15 worktrees de OTRAS sesiones
    fuera de la tabla LEGADOS de AGENTS.md.
    -> ESTADO DEL HOST, no del código del worktree; pasaría en CI (checkout limpio).
@@ -159,3 +159,26 @@ REAL vs SIMULADO (explícito):
   _dyndolod_gui_simulada): verifican contratos/orquestación, NO un end-to-end
   real con DynDOLOD/TexGen (prohibido en esta tarea).
 ================================================================================
+
+--------------------------------------------------------------------------------
+GATE 4-bis - git diff --check sobre el conjunto de evidencia FINAL (revision P2)
+--------------------------------------------------------------------------------
+El GATE 4 original se habia corrido ANTES de escribir la evidencia (ver nota de
+arriba). Se re-ejecuto al preparar el commit de correcciones de revision, con el
+arbol completo staged:
+
+$ git -C <worktree> add -A
+$ git -C <worktree> diff --check --cached
+(sin salida)
+exit code: 0
+
+Contexto del hallazgo (commit de evidencia previo, e5110a4c):
+$ git diff --check 6abf20d0..e5110a4c
+docs/validation/2026-10-19_pr661_unattended_windows_real_rig/final-report.md:375: new blank line at EOF.
+exit code: 2
+=> defecto real: linea en blanco final en final-report.md. Se elimino (el archivo
+termina en un unico LF) y el gate sobre el conjunto final da exit 0.
+
+Base de ejecucion de la suite: 6abf20d0. Despues del rig, main avanzo (PR #750
+mergeado como 99aaba03, #753, #755); los tests NO se re-ejecutaron sobre esos
+commits y este paquete no integra cambios de produccion.

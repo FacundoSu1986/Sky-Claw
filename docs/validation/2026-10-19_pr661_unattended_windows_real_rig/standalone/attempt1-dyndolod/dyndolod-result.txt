@@ -1,0 +1,15 @@
+duration_seconds=249.6
+success=False
+assisted=False
+interaction_mode=desatendido
+needs_deployment=None
+rolled_back=False
+message=DynDOLOD pipeline failed: DynDOLOD execution failed: DynDOLOD: UIA_CONTROL_MAP_MISMATCH: dyndolod_modal_ignore exige MODAL_CONOCIDO; pantalla=CARGANDO la ventana contractual no expone el campo Output
+errors=['DynDOLOD pipeline failed: DynDOLOD execution failed: DynDOLOD: UIA_CONTROL_MAP_MISMATCH: dyndolod_modal_ignore exige MODAL_CONOCIDO; pantalla=CARGANDO la ventana contractual no expone el campo Output']
+unattended_error_codes=['UIA_CONTROL_MAP_MISMATCH']
+status=None
+reason=None
+texgen_mod_path=None
+dyndolod_mod_path=None
+texgen_result=null
+dyndolod_result=null

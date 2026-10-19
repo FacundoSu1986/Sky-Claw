@@ -1,0 +1,29 @@
+2026-10-19 17:59:45,331 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-e99827c3fc43
+2026-10-19 18:00:01,880 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 18:00:14,642 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_start → OK (invocado=True hresult=S_OK)
+2026-10-19 18:01:06,952 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_exit → OK (invocado=True hresult=S_OK)
+2026-10-19 18:01:08,977 INFO sky_claw.local.tools.dyndolod_runner TexGen desatendido: ledger de acciones [('texgen_start', 'OK', 'S_OK'), ('texgen_exit', 'OK', 'S_OK')]
+2026-10-19 18:01:08,982 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini
+2026-10-19 18:01:08,982 INFO sky_claw.local.tools.dyndolod_runner TexGen finalizado: return_code=0, duration=67.1s
+2026-10-19 18:01:10,147 ERROR SkyClaw.TexGenVisibility Visibilidad de TexGen: 1362/1362 archivo(s) no verificables bajo C:\SkyClaw_Rigs\SW661 Unattended\game\Data\textures
+2026-10-19 18:01:15,227 INFO sky_claw.app.db.journal Transaction committed with deployment handoff
+2026-10-19 18:01:46,751 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-ef4eae792b10
+2026-10-19 18:04:59,384 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 18:05:05,656 INFO SkyClaw.TexGenVisibility Visibilidad de TexGen confirmada: 1362 archivo(s) idénticos bajo C:\SkyClaw_Rigs\SW661 Unattended\game\Data\textures
+2026-10-19 18:05:08,054 INFO SkyClaw.TexGenVisibility Visibilidad de TexGen confirmada: 1362 archivo(s) idénticos bajo C:\SkyClaw_Rigs\SW661 Unattended\game\Data\textures
+2026-10-19 18:05:17,807 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-modal-d11ad0883045
+2026-10-19 18:05:56,066 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_modal_ignore → PRECONDICION_FALLIDA (invocado=False hresult=None)
+2026-10-19 18:05:56,069 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD desatendido: ledger de acciones [('dyndolod_modal_ignore', 'PRECONDICION_FALLIDA', None)]
+2026-10-19 18:05:56,240 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_Default.ini
+2026-10-19 18:15:13,613 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-ec2bf1a93878
+2026-10-19 18:15:28,936 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 18:15:30,914 INFO SkyClaw.TexGenVisibility Visibilidad de TexGen confirmada: 1362 archivo(s) idénticos bajo C:\SkyClaw_Rigs\SW661 Unattended\game\Data\textures
+2026-10-19 18:15:33,572 INFO SkyClaw.TexGenVisibility Visibilidad de TexGen confirmada: 1362 archivo(s) idénticos bajo C:\SkyClaw_Rigs\SW661 Unattended\game\Data\textures
+2026-10-19 18:15:43,213 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-modal-86bf9e2fd920
+2026-10-19 18:15:55,232 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_modal_ignore → OK (invocado=True hresult=S_OK)
+2026-10-19 18:15:57,955 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_advanced → OK (invocado=True hresult=S_OK)
+2026-10-19 18:16:01,653 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_begin_ok → OK (invocado=True hresult=S_OK)
+2026-10-19 18:19:54,874 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_save_exit → OK (invocado=True hresult=S_OK)
+2026-10-19 18:20:00,971 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD desatendido: ledger de acciones [('dyndolod_modal_ignore', 'OK', 'S_OK'), ('dyndolod_advanced', 'OK', 'S_OK'), ('dyndolod_begin_ok', 'OK', 'S_OK'), ('dyndolod_save_exit', 'OK', 'S_OK')]
+2026-10-19 18:20:00,982 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_Default.ini
+2026-10-19 18:20:00,982 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD finalizado: return_code=0, duration=269.4s

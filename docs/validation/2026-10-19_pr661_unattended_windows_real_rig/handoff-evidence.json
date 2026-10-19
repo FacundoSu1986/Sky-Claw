@@ -15,10 +15,10 @@
     "interaction_mode": "desatendido",
     "unattended_error_codes": []
   },
-  "visibilidad": "state/run.log: 'Visibilidad de TexGen confirmada: 1362 archivo(s) idÃ©nticos bajo ...game\\Data\\textures'",
+  "visibilidad": "state/run.log: 'Visibilidad de TexGen confirmada: 1362 archivo(s) idénticos bajo ...game\\Data\\textures'",
   "materializacion_standalone": {
     "metodo": "robocopy mods\\TexGen Output\\textures -> game\\Data\\textures",
-    "motivo": "Sky-Claw standalone prueba visibilidad pero NO despliega (contrato SOP Â§2.9/Â§4)",
+    "motivo": "Sky-Claw standalone prueba visibilidad pero NO despliega (contrato SOP §2.9/§4)",
     "archivos": 1362,
     "sha256_origen_destino": "identidad byte a byte verificada por el gate del producto"
   },

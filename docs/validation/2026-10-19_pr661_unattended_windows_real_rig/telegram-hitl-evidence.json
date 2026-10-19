@@ -1,10 +1,10 @@
 {
-  "canal_productivo_esperado": "Telegram (HITLGuard.notify_fn) â€” NO CONFIGURADO en esta mÃ¡quina",
+  "canal_productivo_esperado": "Telegram (HITLGuard.notify_fn) — NO CONFIGURADO en esta máquina",
   "evidencia": {
     "config_toml_telegram": false,
     "keyring_telegram_token": false
   },
-  "transporte_usado": "chat de la sesiÃ³n de aceptaciÃ³n (sustituciÃ³n declarada del transporte; adapter/categorÃ­a/fail-closed productivos)",
+  "transporte_usado": "chat de la sesión de aceptación (sustitución declarada del transporte; adapter/categoría/fail-closed productivos)",
   "categoria_no_auto_aprobable": "dyndolod_desatendido",
   "pedidos": [
     {
