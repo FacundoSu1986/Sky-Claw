@@ -346,3 +346,55 @@ def test_todo_sitio_que_acuna_un_token_pasa_por_acuniar_token() -> None:
     for construccion in construcciones:
         token = next(p.value for p in construccion.keywords if p.arg == "acquired_at")
         assert _nombre_punteado(token) == "token", "el LockInfo devuelto no lleva el token acuñado"
+
+
+def _referencias_a(raiz: ast.AST, nombre: str) -> list[ast.Name]:
+    """Lecturas del identificador ``nombre`` bajo ``raiz`` (cualquier método, clase o función anidada)."""
+    return [
+        nodo
+        for nodo in ast.walk(raiz)
+        if isinstance(nodo, ast.Name) and nodo.id == nombre and isinstance(nodo.ctx, ast.Load)
+    ]
+
+
+def test_acquire_sql_solo_se_usa_en_los_dos_sitios_de_acquire_lock() -> None:
+    """Censo de TODO el módulo: un método hermano con su propio reloj reabriría el defecto en silencio.
+
+    El ancla de arriba mira únicamente ``acquire_lock``; un ``_adquirir_rapido`` que ejecute
+    ``_ACQUIRE_SQL`` con su propio ``time.time()`` le pasaba por al lado. Esta cuenta las lecturas de
+    ``_ACQUIRE_SQL`` en el archivo entero y exige que sean exactamente las dos de ``acquire_lock``.
+    Límite: no ve referencias dinámicas (``globals()["_ACQUIRE_SQL"]``, ``getattr``).
+    """
+    arbol = ast.parse(_LOCKS_PY.read_text(encoding="utf-8"))
+    acquire = next(
+        nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "acquire_lock"
+    )
+
+    en_el_modulo = len(_referencias_a(arbol, "_ACQUIRE_SQL"))
+    en_acquire_lock = len(_referencias_a(acquire, "_ACQUIRE_SQL"))
+
+    assert en_acquire_lock == 2, "cambió la familia de sitios que insertan una lease en acquire_lock"
+    assert en_el_modulo == en_acquire_lock, (
+        f"`_ACQUIRE_SQL` se usa {en_el_modulo - en_acquire_lock} vez/veces fuera de acquire_lock: un tercer "
+        "sitio que inserte una lease tiene que acuñar con `_acuniar_token` y medir el vencimiento con el "
+        "reloj real; decidí su receta y sumalo al ancla de arriba."
+    )
+
+
+def test_el_censo_de_referencias_ve_metodos_hermanos_clases_y_alias() -> None:
+    fuente = (
+        "X = 1\n"
+        "async def a():\n"
+        "    y = X\n"
+        "    return X\n"
+        "class C:\n"
+        "    async def b(self):\n"
+        "        return X\n"
+        "def otro():\n"
+        "    return X2\n"
+    )
+    arbol = ast.parse(fuente)
+
+    assert len(_referencias_a(arbol, "X")) == 3  # la asignación de la línea 1 es Store y no cuenta
+    assert len(_referencias_a(arbol, "X2")) == 1
+    assert len(_referencias_a(arbol, "Y")) == 0
