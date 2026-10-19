@@ -1,8 +1,8 @@
 """Ancla: los presupuestos de tiempo de tests que fallaron de forma intermitente en CI.
 
-Tres familias de tests, en tres archivos, dieron fallas que no eran del código
-bajo prueba sino de un tope de reloj demasiado ajustado para un runner de
-Windows cargado (el CI de Windows tarda ~30 min y comparte CPU):
+Cuatro familias de tests dieron fallas que no eran del código bajo prueba sino de
+un tope de reloj demasiado ajustado para un runner de Windows cargado (el CI de
+Windows tarda ~30 min y comparte CPU):
 
 * ``test_runtime_vault_operator_verifier.py``: el hijo verificador no alcanzaba a
   conectar el pipe en ``timeout_seconds=2.0``.
@@ -12,6 +12,11 @@ Windows cargado (el CI de Windows tarda ~30 min y comparte CPU):
 * ``test_app_context_arc01_arc03.py``: con ``_startup_shutdown_timeout_s=0.01`` el
   cleanup todavía no había arrancado cuando vencía el presupuesto, y
   ``ejecuciones == 1`` daba 0.
+* ``test_app_context_arc01_arc03.py`` y ``test_stop_cleanup_finally.py`` (cuarta
+  familia): ``asyncio.wait_for(ctx.stop(), timeout=1.0)`` vencía antes de que ``stop()``
+  terminara el rollback de ``start_full`` y el test fallaba con ``TimeoutError``. Las
+  esperas de esos archivos son redes de emergencia; el comportamiento bajo prueba es el
+  presupuesto de la familia anterior.
 
 Un caso escrito a mano para el hermano que falta no ataja al tercero, así que
 cada familia se **enumera** por AST (sin importar los módulos: el verificador
@@ -366,6 +371,115 @@ def test_los_presupuestos_de_reloj_del_appcontext_esperan_el_arranque_del_cleanu
 
 
 # ---------------------------------------------------------------------------
+# Familia 4: redes de emergencia de las esperas del ciclo de vida del AppContext
+# ---------------------------------------------------------------------------
+
+# Los tests que envuelven `stop()` / `start*()` del AppContext en `asyncio.wait_for(...)`. En ellos
+# ninguna espera es el comportamiento bajo prueba (lo que tiene que vencer es el presupuesto
+# `_startup_shutdown_timeout_s`, familia 3): un tope corto sólo hace fallar al test cuando el runner
+# de Windows se pausa más que el tope. Falla observada en CI (Windows py3.12):
+# `asyncio.wait_for(ctx.stop(), timeout=1.0)` de
+# `test_stop_cancela_start_full_antes_de_tomar_lifecycle_lock` -> `TimeoutError`, con otros 11924
+# tests en verde y el mismo test en verde en las corridas vecinas.
+_CICLO_DE_VIDA_ARCHIVOS = frozenset({"test_app_context_arc01_arc03.py", "test_stop_cleanup_finally.py"})
+_CICLO_DE_VIDA_METODOS = frozenset({"stop", "start", "start_full", "start_minimal"})
+# (archivo, test) cuya espera corta ES el comportamiento bajo prueba. Hoy ninguna: los presupuestos
+# que deben vencer se asignan a `_startup_shutdown_timeout_s`, no se esperan con `wait_for`.
+_ESPERAS_CORTAS_EXENTAS: frozenset[tuple[str, str]] = frozenset()
+
+
+def _llamadas_por_test(arbol: ast.Module) -> list[tuple[str, ast.Call]]:
+    """Cada llamada con el nombre del test que la contiene (la función más externa).
+
+    Los helpers anidados (``async def bloquear_full()`` dentro de un test) se atribuyen al test:
+    la receta se decide por test, no por helper.
+    """
+    salida: list[tuple[str, ast.Call]] = []
+
+    def visitar(nodo: ast.AST, test: str | None) -> None:
+        if test is None and isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            test = nodo.name
+        if isinstance(nodo, ast.Call):
+            salida.append((test or "<modulo>", nodo))
+        for hijo in ast.iter_child_nodes(nodo):
+            visitar(hijo, test)
+
+    visitar(arbol, None)
+    return salida
+
+
+def _topes_de_espera(arbol: ast.Module, constantes: dict[str, float]) -> list[tuple[str, str, float | None]]:
+    """``(test, espera, tope)`` de cada ``asyncio.wait_for`` / ``asyncio.wait`` con tope explícito.
+
+    Sólo asyncio: ``threading.Event.wait(timeout=...)`` no es una espera del loop. Una espera sin tope
+    no se cuenta (no tiene reloj); un tope que no se puede resolver (expresión, ``**kwargs``) da ``None``.
+    """
+    sitios: list[tuple[str, str, float | None]] = []
+    for test, llamada in _llamadas_por_test(arbol):
+        nombre = _nombre_punteado(llamada.func)
+        if nombre not in {"asyncio.wait_for", "asyncio.wait"}:
+            continue
+        espera = nombre.removeprefix("asyncio.")
+        if any(palabra.arg is None for palabra in llamada.keywords):  # `**kwargs`: no se ve el tope
+            sitios.append((test, espera, None))
+            continue
+        tope = next((p.value for p in llamada.keywords if p.arg == "timeout"), None)
+        if tope is None and espera == "wait_for" and len(llamada.args) > 1:
+            tope = llamada.args[1]
+        if tope is not None:
+            sitios.append((test, espera, _valor_numerico(tope, constantes)))
+    return sitios
+
+
+def _envuelve_ciclo_de_vida(arbol: ast.Module) -> bool:
+    """``asyncio.wait_for(<algo>.stop()/start()/start_full()/start_minimal(), ...)``."""
+    return any(
+        _nombre_punteado(llamada.func) == "asyncio.wait_for"
+        and llamada.args
+        and isinstance(llamada.args[0], ast.Call)
+        and isinstance(llamada.args[0].func, ast.Attribute)
+        and llamada.args[0].func.attr in _CICLO_DE_VIDA_METODOS
+        for _, llamada in _llamadas_por_test(arbol)
+    )
+
+
+def _archivos_del_ciclo_de_vida() -> frozenset[str]:
+    encontrados: set[str] = set()
+    for ruta in sorted(_TESTS.glob("test_*.py")):
+        texto = ruta.read_text(encoding="utf-8")
+        if "AppContext" in texto and _envuelve_ciclo_de_vida(ast.parse(texto)):
+            encontrados.add(ruta.name)
+    return frozenset(encontrados)
+
+
+def test_las_esperas_del_ciclo_de_vida_del_appcontext_son_red_de_emergencia() -> None:
+    assert _archivos_del_ciclo_de_vida() == _CICLO_DE_VIDA_ARCHIVOS, (
+        "cambió la familia de tests que envuelven el ciclo de vida del AppContext en `asyncio.wait_for`: "
+        "decidí la receta del archivo nuevo (sus esperas son red de emergencia y deben superar "
+        f"{_MARGEN_MINIMO_S}s) y actualizá _CICLO_DE_VIDA_ARCHIVOS"
+    )
+    sitios: list[tuple[str, str, str, float | None]] = []
+    for nombre in sorted(_CICLO_DE_VIDA_ARCHIVOS):
+        arbol = _arbol(nombre)
+        constantes = _constantes_del_modulo(arbol)
+        sitios.extend((nombre, test, espera, tope) for test, espera, tope in _topes_de_espera(arbol, constantes))
+    assert len(sitios) > 40, "el escáner dejó de ver las esperas del ciclo de vida del AppContext"
+
+    sin_resolver = _sin_resolver(sitios)
+    assert not sin_resolver, (
+        f"topes de espera que el escáner no puede resolver: {sin_resolver}. Usá un literal o una "
+        "constante numérica de módulo, o ampliá el escáner."
+    )
+    cortos = {(nombre, test) for nombre, test, _, tope in sitios if tope is not None and tope < _MARGEN_MINIMO_S}
+    assert cortos == _ESPERAS_CORTAS_EXENTAS, (
+        f"esperas por debajo de {_MARGEN_MINIMO_S}s en tests del ciclo de vida del AppContext: "
+        f"{sorted(cortos - _ESPERAS_CORTAS_EXENTAS)}. Son redes de emergencia: con el runner cargado "
+        "vencen antes de que `stop()` / el rollback terminen y el test falla con TimeoutError. Usá "
+        "`_RED_DE_EMERGENCIA_S`; si la espera corta ES lo que se prueba, agregá el test a _ESPERAS_CORTAS_EXENTAS."
+    )
+
+
+# ---------------------------------------------------------------------------
 # El escáner mismo: casos sintéticos para que los chequeos de arriba no puedan aflojarse en silencio
 # ---------------------------------------------------------------------------
 
@@ -400,6 +514,46 @@ def test_barrera_antes_del_stop_exige_orden_y_sin_stop_falla_cerrado() -> None:
     assert _barrera_antes_del_stop(
         _primera_funcion(f"async def t():\n{barrera}{parada.replace('ctx', 'app')}"), frozenset({"app"})
     )
+
+
+def test_topes_de_espera_cubren_wait_for_y_wait_resuelven_constantes_y_fallan_cerrado() -> None:
+    fuente = (
+        "async def test_a():\n"
+        "    await asyncio.wait_for(ctx.stop(), timeout=1.0)\n"
+        "    await asyncio.wait_for(ctx.stop(), 2.0)\n"
+        "    await asyncio.wait({t}, timeout=RED)\n"
+        "    await asyncio.wait_for(x, timeout=RED * 2)\n"
+        "    await asyncio.wait_for(x, **opciones)\n"
+        "    await asyncio.wait_for(x)\n"
+        "    await asyncio.wait({t})\n"
+        "    liberar.wait(timeout=2.0)\n"
+        "    async def helper():\n"
+        "        await asyncio.wait_for(y, timeout=3.0)\n"
+        "async def test_b():\n"
+        "    await asyncio.wait_for(z, timeout=RED)\n"
+    )
+
+    assert _topes_de_espera(ast.parse(fuente), {"RED": 0.5}) == [
+        ("test_a", "wait_for", 1.0),
+        ("test_a", "wait_for", 2.0),
+        ("test_a", "wait", 0.5),
+        ("test_a", "wait_for", None),  # expresión: el escáner no la resuelve
+        ("test_a", "wait_for", None),  # `**opciones`: no se ve el tope
+        ("test_a", "wait_for", 3.0),  # el helper anidado se atribuye al test que lo contiene
+        ("test_b", "wait_for", 0.5),
+    ]
+
+
+def test_envuelve_ciclo_de_vida_solo_con_wait_for_de_stop_o_start() -> None:
+    def detecta(llamada: str) -> bool:
+        return _envuelve_ciclo_de_vida(ast.parse(f"async def t():\n    await {llamada}\n"))
+
+    assert detecta("asyncio.wait_for(ctx.stop(), timeout=1.0)")
+    assert detecta("asyncio.wait_for(app.start_full(), timeout=1.0)")
+    assert detecta("asyncio.wait_for(self.ctx.start_minimal(), 1.0)")
+    assert not detecta("asyncio.wait_for(cola.get(), timeout=1.0)")  # no es el ciclo de vida
+    assert not detecta("asyncio.wait_for(ctx.stop, timeout=1.0)")  # sin llamar: no es una coroutine
+    assert not detecta("ctx.stop()")  # sin wait_for
 
 
 def test_escrituras_del_presupuesto_cualquier_receptor_y_formas_no_simples_fallan_cerrado() -> None:
