@@ -7,6 +7,27 @@
 > está `FROZEN` y su literal se respeta. La evidencia nueva de F02 se registra bajo su **propio
 > token** (`R7_NYQUIST_ATTAINMENT`), precisamente para no reescribir una fila congelada.
 
+> **Actualización del 2026-10-19 — F01 adjudicado como R2-lite (opción B de la reconciliación).**
+> Decisión delegada del Tech Lead, **pendiente de ratificación humana antes del merge**. La entrada
+> que **no** requirió clip y cuya norma se desvía de 1 más de `UNIT_NORM_TOLERANCE` se **rechaza**
+> (`InvalidNormalShapeError`, `campo="norma_de_entrada"`) en los **dos** caminos; lo que requirió
+> clip sigue tolerado (N-11) y `L < DEGENERATE_THRESHOLD` conserva la precedencia (D-06).
+> Motivos: es la lectura literal de V-01; no enmienda ninguna otra regla cerrada; cierra el riesgo
+> de aceptar en silencio una normal mal decodificada a `[0,1]` (reproducido: `(0.5, 0.5, 1.0)` salía
+> como `(0.408, 0.408, 0.816)`); y el pipeline real no cambia, porque `decode_normal_image` ya
+> entrega normales unitarias. Las secciones de F01 de abajo describen la lectura **anterior (R1,
+> renormalizar)** y se conservan como historial. R7 no cambia: `5/16` queda como heurística
+> declarada y la decisión de precisión angular se mueve al Slice 3 (censo de la cota por asset).
+>
+> ```text
+> F01_RESOLUTION             = R2_LITE_IMPLEMENTED  (decisión delegada; pendiente de ratificación)
+> F01_CONTRACT_AMENDMENT     = PENDING_TECH_LEAD    (falta ratificar la regla nueva de N-11)
+> F01_DIVERGES_FROM_V01_TEXT = NO                   (el código vigente coincide con V-01)
+> R7_THRESHOLD_KIND          = HEURISTIC (RMS)      (SIN CAMBIO)
+> R7_NUMERIC_DERIVATION      = BLOCKED              (SIN CAMBIO)
+> H4_CODE_MERGE_AUTHORIZED   = NO
+> ```
+
 ## 0. Procedencia
 
 | Campo | Valor |

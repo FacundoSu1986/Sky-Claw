@@ -55,8 +55,9 @@ class InvalidNormalShapeError(DatasetInvalidError):
     `DegenerateNormalError` explícitamente.
 
     Casos: `ndim != 3`, `shape[-1] != 3`, `H == 0`, `W == 0`, `size` no entero o `< 1`,
-    cualquier NaN/Inf en la entrada. Ninguno se difiere por V-03 (que cubre **sólo**
-    `H != W`, y sigue `DEFERRED`).
+    cualquier NaN/Inf en la entrada y —F01, adjudicado como R2-lite— un píxel de entrada
+    de norma no unitaria que no requirió clip (`campo="norma_de_entrada"`, `valor` = cuántos).
+    Ninguno se difiere por V-03 (que cubre **sólo** `H != W`, y sigue `DEFERRED`).
     """
 
     def __init__(self, message: str, *, campo: str, valor: object) -> None:
@@ -240,40 +241,34 @@ DEGENERATE_THRESHOLD = 5.0 / 16.0
 # esa cota) y se ancla con una medición sintética en
 # `tests/test_native_parallax_h4_resize_normal.py` (familia B).
 #
-# ADJUDICACIÓN H4-F01 — dominio geométrico del camino identidad.
-# §3.2 (salida: norma `≈ 1` **o** `NON_EVALUABLE`, nunca un valor intermedio
-# silencioso) y §3.4.1 paso (4) ("identidad: no-op, sin renormalizar") entran en
-# conflicto para una entrada de norma NO unitaria. Se resuelve a favor de §3.2 más
-# §5.3.4.7 (simetría de hermanos), por dos razones medidas:
-#   (a) rechazar el resultado del clip contradiría N-11
-#       (`FUERA_DE_RANGO_FINITO = CLIP, TOLERADO`), que es una regla `CONTRACT_CLOSED`
-#       con test exigido, y haría que el MISMO valor `1000.0` fuera tolerado por el
-#       camino `resize` y rechazado por el de identidad;
-#   (b) el hermano `resize` ya renormaliza una dirección confiable de norma no unitaria
-#       (`test_b_fuera_de_rango_finito_es_clip_no_rechazo`); dejar al camino identidad
-#       como excepción es exactamente la clase de defecto dominante del repo
-#       (AGENTS.md: "arreglar un hermano y no al otro").
-# El no-op bit a bit que D-07 protege se conserva para la entrada que realmente lo
-# justifica: la que YA es unitaria (la que produce `decode_normal_image`).
+# ADJUDICACIÓN H4-F01 — dominio geométrico de la ENTRADA (R2-lite, decisión delegada del
+# 2026-10-19, pendiente de ratificación humana antes del merge).
+# V-01 (#711) manda RECHAZAR la entrada "geométricamente inválida" y no corregirla por
+# renormalización silenciosa, y deja el término sin definir. Se lo define como
 #
-# ESTADO DEL CONTRATO (slice de RECONCILIACIÓN #711/#717/#723). Esta adjudicación es una
-# RESOLUCIÓN DE INGENIERÍA, no un cierre normativo: V-01 (#711) dice que la entrada
-# "geométricamente inválida" se RECHAZA y no se corrige por renormalización, y el término
-# queda sin definir. Lo implementado es la opción que sostiene §3.2 + N-11 + §5.3.4.7
-# simultáneamente, pero la DEFINICIÓN del término la adjudica el Tech Lead:
+#     invalida := píxel que NO requirió clip y con |L - 1| > UNIT_NORM_TOLERANCE   (P-ENTRADA)
 #
-#     F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD
+# Es la lectura literal de V-01 y sostiene a la vez, sin enmendar ninguna otra regla cerrada:
+#   - §3.2: la salida tiene norma `≈ 1` o `NON_EVALUABLE`, nunca un valor intermedio silencioso;
+#   - N-11 (`FUERA_DE_RANGO_FINITO = CLIP, TOLERADO`, CONTRACT_CLOSED): lo que requirió clip es
+#     OBSERVABLE y queda exento, por píxel; se recorta y se renormaliza;
+#   - D-06: `L < DEGENERATE_THRESHOLD` conserva la precedencia (NON_EVALUABLE) sobre el rechazo
+#     de entrada, en los dos caminos;
+#   - §5.3.4.7 (simetría de hermanos): identidad y resize aplican la MISMA regla.
+# El chequeo es sobre la ENTRADA, nunca sobre el intermediario interpolado, cuya norma no
+# unitaria la produce la operación y se renormaliza (D-06). Ojo con el argumento fácil: la
+# interpolación NO siempre baja la norma (un campo unitario constante la preserva).
 #
-# La lectura implementada es `geometricamente_invalida := no finito OR forma malformada
-# OR L < DEGENERATE_THRESHOLD`; bajo ella no hay divergencia con V-01 y el único defecto
-# era el vacío de `ADMISIBLE(n)` en §3.4.1 (omitía la norma). La lectura alternativa
-# —`invalida := L != 1`— es IMPLEMENTABLE para la entrada ya decodificada (P-ENTRADA), pero
-# no se puede aplicar al INTERMEDIARIO del camino `resize`, donde la norma no unitaria la
-# produce la operación. Ojo con el argumento fácil: la interpolación NO siempre baja la
-# norma (un campo unitario constante la preserva); baja la norma cuando el campo VARÍA. Y
-# el clip de `1000.0` da norma `sqrt(3)`, así que esa lectura exige además una regla nueva
-# en N-11 (tolerar el clip sólo si la entrada requirió clipping, que sí es observable).
-# Ninguna de las dos se implementa acá: la matriz está en
+# Antes (R1) se renormalizaba cualquier dirección "confiable" (`L >= T`), lo que aceptaba en
+# silencio una normal mal decodificada a [0,1] como `(0.5, 0.5, 1.0)`. El pipeline real no
+# cambia: `decode_normal_image` ya entrega normales unitarias, así que `load_asset` siempre
+# cae en el no-op exacto.
+#
+#     F01_RESOLUTION         = R2_LITE_IMPLEMENTED (decisión delegada; pendiente de ratificación)
+#     F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD   (el texto de la regla nueva de N-11 —"se
+#                              tolera el clip sólo si es observable"— falta ratificarlo)
+#
+# Matriz de alternativas y evidencia:
 # `docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md`.
 UNIT_NORM_TOLERANCE = 1e-6
 
@@ -523,6 +518,21 @@ def _validar_envolvente_normal(n: object, size: object) -> NDArray[np.float64]:
     return arr
 
 
+def _rechazo_por_norma_de_entrada(
+    no_unitarios: NDArray[np.bool_], largo_entrada: NDArray[np.float64]
+) -> InvalidNormalShapeError:
+    """Error de V-01 para una entrada no unitaria que NO requirió clip (F01 = R2-lite)."""
+    cuenta = int(np.count_nonzero(no_unitarios))
+    peor = float(np.max(np.abs(largo_entrada[no_unitarios] - 1.0)))
+    return InvalidNormalShapeError(
+        f"{cuenta} píxel(es) de entrada con norma != 1 (desvío máximo {peor:.3g} > "
+        f"{UNIT_NORM_TOLERANCE:g}) que no requirieron clip: no es una normal unitaria "
+        "(V-01: se rechaza, no se corrige por renormalización silenciosa)",
+        campo="norma_de_entrada",
+        valor=cuenta,
+    )
+
+
 def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeResult:
     """Resize vector-aware con evidencia: devuelve `NormalResizeResult`, NO lanza por degeneración.
 
@@ -533,14 +543,18 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
     2. **Finitud** (V-04) y **clip declarado a `[-1,1]`** (§3.4.1 paso 3): el rango es
        POSTCONDICIÓN, no precondición — se aplica **antes** de la bifurcación, de modo
        que vale en ambos caminos sin excepción.
-    3. **Bifurcación**: `H == W == size` omite el REMUESTREO (D-07), pero **mide la
-       norma** y aplica la misma política de degenerados (D-06) y la misma postcondición
-       de norma unitaria (§3.2) que el camino `resize`: no-op exacto si la entrada ya es
-       unitaria, renormalización si su dirección es confiable pero su norma no es 1, y
-       `degenerate=True` si algún píxel cae bajo `DEGENERATE_THRESHOLD`. En otro caso se
-       interpola canal por canal en **Pillow modo F** (float32), sin cuantización
-       intermedia a `uint8`, con `BILINEAR` explícito.
-    4. **Renormalización con política de degenerados** (D-06): si algún píxel tiene
+    3. **Norma de la ENTRADA** (V-01, F01 adjudicado como R2-lite): un píxel que NO
+       requirió clip y cuya norma se desvía de 1 más de `UNIT_NORM_TOLERANCE` se
+       RECHAZA con `InvalidNormalShapeError(campo="norma_de_entrada")`; no se corrige
+       por renormalización silenciosa. Lo que requirió clip (N-11) queda exento, por
+       píxel. `L < DEGENERATE_THRESHOLD` conserva la precedencia (D-06).
+    4. **Bifurcación**: `H == W == size` omite el REMUESTREO (D-07), pero **mide la
+       norma** y aplica la misma política que el camino `resize`: `degenerate=True` si
+       algún píxel cae bajo `DEGENERATE_THRESHOLD`, rechazo de entrada no unitaria,
+       no-op exacto si la entrada ya es unitaria y renormalización de lo que requirió
+       clip. En otro caso se interpola canal por canal en **Pillow modo F** (float32),
+       sin cuantización intermedia a `uint8`, con `BILINEAR` explícito.
+    5. **Renormalización con política de degenerados** (D-06): si algún píxel tiene
        `0 <= L < DEGENERATE_THRESHOLD` —donde `L` es la norma del vector **interpolado,
        antes de renormalizar**— el resultado se marca degenerado y **no se renormaliza**
        (renormalizar una dirección casi nula la inventa). `array` conserva entonces el
@@ -550,7 +564,12 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
     array crudo nunca se publica como normal.
     """
     arr = _validar_envolvente_normal(n, size)
+    # N-11: lo fuera de rango se recorta y se tolera. Es OBSERVABLE (`requirio_clip`) y por eso
+    # es lo único que queda exento del chequeo de norma de la ENTRADA (V-01, F01 = R2-lite).
+    requirio_clip = np.any(np.abs(arr) > 1.0, axis=-1)
     arr = np.clip(arr, -1.0, 1.0)
+    largo_entrada = np.linalg.norm(arr, axis=-1)
+    no_unitarios = ~requirio_clip & (np.abs(largo_entrada - 1.0) > UNIT_NORM_TOLERANCE)
 
     total_pixels = size * size
     if arr.shape[0] == size and arr.shape[1] == size:
@@ -560,7 +579,7 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
         # bypass histórico devolvía el vector nulo, `(1,1,1)` de norma `sqrt(3)`, o un
         # campo de norma 0.5, sin medir una sola norma. La corrección es mínima y
         # SIMÉTRICA con el hermano `resize`: el único paso que se omite es interpolar.
-        largo = np.linalg.norm(arr, axis=-1)
+        largo = largo_entrada
         degenerados = int(np.count_nonzero(largo < DEGENERATE_THRESHOLD))
         if degenerados:
             return NormalResizeResult(
@@ -570,6 +589,8 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
                 threshold=DEGENERATE_THRESHOLD,
                 degenerate=True,
             )
+        if bool(no_unitarios.any()):
+            raise _rechazo_por_norma_de_entrada(no_unitarios, largo_entrada)
         if bool(np.all(np.abs(largo - 1.0) <= UNIT_NORM_TOLERANCE)):
             # Entrada YA unitaria: no-op EXACTO — sin remuestrear, sin copiar y sin
             # renormalizar. Es el caso que `decode_normal_image` produce aguas arriba, y
@@ -581,10 +602,10 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
                 threshold=DEGENERATE_THRESHOLD,
                 degenerate=False,
             )
-        # Dirección confiable pero norma no unitaria (p. ej. el clip de un valor fuera de
-        # rango, que lleva `1000.0` a `(1,1,1)`, de norma `sqrt(3)`): se renormaliza con
-        # el MISMO paso que el camino `resize`, en vez de publicar un array cuya norma no
-        # es 1. No se inventa dirección — se conserva la de la entrada.
+        # Sólo llegan acá píxeles que REQUIRIERON clip (el resto no unitario se rechazó arriba):
+        # p. ej. `1000.0` lleva a `(1,1,1)`, de norma `sqrt(3)`. Se renormaliza con el MISMO
+        # paso que el camino `resize`, en vez de publicar un array cuya norma no es 1. No se
+        # inventa dirección — se conserva la de la entrada.
         return NormalResizeResult(
             array=np.asarray(arr / largo[..., None], dtype=np.float64),
             degenerate_count=0,
@@ -609,6 +630,11 @@ def resize_normal_diagnostic(n: NDArray[np.float64], size: int) -> NormalResizeR
             threshold=DEGENERATE_THRESHOLD,
             degenerate=True,
         )
+    if bool(no_unitarios.any()):
+        # Mismo rechazo que el camino identidad (hermanos). Va DESPUÉS del degenerado: D-06
+        # conserva la precedencia, y el chequeo es sobre la ENTRADA, nunca sobre `crudo`, cuya
+        # norma no unitaria la produce la operación y se renormaliza abajo.
+        raise _rechazo_por_norma_de_entrada(no_unitarios, largo_entrada)
     # `largo >= DEGENERATE_THRESHOLD > 0` en todo píxel: la división es segura y no hace
     # falta el piso `max(L, 1e-12)` que el histórico usaba como anti-ZeroDivision y que
     # no garantizaba norma unitaria (D-2 del preflight).

@@ -451,20 +451,20 @@ def test_b_f01_el_cero_del_camino_identidad_es_non_evaluable() -> None:
 
 
 def test_b_f01_la_norma_no_unitaria_no_es_un_noop_valido() -> None:
-    """H4-F01 (b): `L = 0.5` tiene dirección confiable pero **no** es un no-op válido.
+    """H4-F01 (b): `L = 0.5` **no** es un no-op válido ni se corrige en silencio.
 
-    La versión previa anclaba `assert_array_equal(out, n)` para esta entrada,
-    contradiciendo §3.2. La dirección es confiable (queda sobre el umbral), así que no
-    es degeneración: se renormaliza, igual que en el hermano `resize`.
+    Historia: la versión original anclaba `assert_array_equal(out, n)` para esta entrada
+    (contradice §3.2); la siguiente la renormalizaba (R1). F01 se adjudicó como R2-lite:
+    V-01 manda RECHAZAR la entrada geométricamente inválida. No es degeneración (queda sobre
+    el umbral), no requirió clip, y su norma se desvía de 1: se rechaza y no se publica nada.
     """
     n = _campo_de_norma(8, 0.5)
-    diag = ad.resize_normal_diagnostic(n, 8)
-    assert diag.degenerate is False
-    assert diag.degenerate_count == 0
-    np.testing.assert_allclose(np.linalg.norm(diag.array, axis=-1), 1.0, atol=TOL_F32)
-    out = resize_normal(n, 8)
-    np.testing.assert_allclose(out, np.broadcast_to(np.array([0.0, 0.0, 1.0]), out.shape), atol=TOL_F32)
-    assert not np.array_equal(out, n), "devolvió la entrada cruda de norma 0.5"
+    with pytest.raises(ad.InvalidNormalShapeError) as exc:
+        ad.resize_normal_diagnostic(n, 8)
+    assert exc.value.campo == "norma_de_entrada"
+    assert "V-01" in str(exc.value), "el mensaje debe decir por qué: no se renormaliza en silencio"
+    with pytest.raises(ad.InvalidNormalShapeError):
+        resize_normal(n, 8)
 
 
 def test_b_f01_el_clip_no_publica_norma_sqrt3() -> None:
@@ -492,53 +492,143 @@ def test_b_f01_la_entrada_unitaria_conserva_el_noop_exacto() -> None:
 
 
 def test_b_f01_identidad_y_resize_son_simetricos_en_la_norma() -> None:
-    """§5.3.4.7 (simetría de hermanos): la misma entrada, por los dos caminos, debe
-    publicar la misma postcondición de norma. El único paso que difiere es interpolar."""
-    for largo in (0.4, 0.5, 1.0, 1.7):
+    """§5.3.4.7 (simetría de hermanos): la misma entrada, por los dos caminos, debe tener
+    el MISMO desenlace. El único paso que difiere es interpolar.
+
+    Con F01 = R2-lite: `L = 1.0` (unitaria) y `L = 1.7` (la componente se recorta a 1.0, N-11)
+    publican norma 1; `L = 0.4` y `L = 0.5` (sin clip, no unitarias) se rechazan en ambos.
+    """
+    for largo in (1.0, 1.7):
         identidad = _campo_de_norma(8, largo)
         escalada = np.repeat(np.repeat(_campo_de_norma(4, largo), 2, axis=0), 2, axis=1)
         n_identidad = np.linalg.norm(resize_normal(identidad, 8), axis=-1)
         n_resize = np.linalg.norm(resize_normal(escalada, 4), axis=-1)
         np.testing.assert_allclose(n_identidad, 1.0, atol=TOL_F32, err_msg=f"identidad L={largo}")
         np.testing.assert_allclose(n_resize, 1.0, atol=TOL_F32, err_msg=f"resize L={largo}")
+    for largo in (0.4, 0.5):
+        identidad = _campo_de_norma(8, largo)
+        escalada = np.repeat(np.repeat(_campo_de_norma(4, largo), 2, axis=0), 2, axis=1)
+        with pytest.raises(ad.InvalidNormalShapeError):
+            resize_normal(identidad, 8)
+        with pytest.raises(ad.InvalidNormalShapeError):
+            resize_normal(escalada, 4)
 
 
-@pytest.mark.parametrize(("factor", "degenerada"), [(0.96, True), (1.02, False)])
-def test_b_f01_el_umbral_rige_tambien_en_el_camino_identidad(factor: float, degenerada: bool) -> None:
+@pytest.mark.parametrize(("factor", "desenlace"), [(0.96, "degenerado"), (1.02, "rechazado")])
+def test_b_f01_el_umbral_rige_tambien_en_el_camino_identidad(factor: float, desenlace: str) -> None:
     """El borde del umbral se ancla en el camino IDENTIDAD, no sólo en `resize`.
 
     Los tests de borde de la familia B (`0.96*T` / `1.02*T`) usan entradas 128 -> 64, es
     decir sólo el camino `resize`. El camino identidad se probaba únicamente en `L = 0` y
     `L >= 0.4`: un umbral distinto en el hermano (p. ej. `T/2` sólo en identidad) pasaba
     toda la suite y publicaba como evaluable un campo de norma `0.25`.
+
+    Bajo `0.96*T` -> `NON_EVALUABLE` (D-06). Sobre el umbral (`1.02*T`) la dirección es
+    confiable pero la entrada no es unitaria ni requirió clip -> se rechaza (V-01).
     """
     largo = ad.DEGENERATE_THRESHOLD * factor
-    diag = ad.resize_normal_diagnostic(_campo_de_norma(8, largo), 8)  # H == W == size
-    assert diag.degenerate is degenerada, f"identidad: L={largo} degenerate={diag.degenerate}"
-    assert diag.degenerate_count == (64 if degenerada else 0)
-    if degenerada:
+    campo = _campo_de_norma(8, largo)  # H == W == size
+    if desenlace == "degenerado":
+        diag = ad.resize_normal_diagnostic(campo, 8)
+        assert diag.degenerate is True, f"identidad: L={largo} degenerate={diag.degenerate}"
+        assert diag.degenerate_count == 64
         with pytest.raises(ad.DegenerateNormalError):
-            resize_normal(_campo_de_norma(8, largo), 8)
+            resize_normal(campo, 8)
     else:
-        np.testing.assert_allclose(np.linalg.norm(diag.array, axis=-1), 1.0, atol=TOL_F32)
+        with pytest.raises(ad.InvalidNormalShapeError):
+            ad.resize_normal_diagnostic(campo, 8)
 
 
 @pytest.mark.parametrize("largo", [0.17, 0.25, 0.30, 0.32, 0.40])
 def test_b_f01_identidad_y_resize_clasifican_igual_en_la_banda_del_umbral(largo: float) -> None:
     """§5.3.4.7 enumerado sobre la banda donde el umbral decide (`T/2 <= L < 1.3*T`).
 
-    `test_b_f01_identidad_y_resize_son_simetricos_en_la_norma` sólo recorre `L > T`, donde
-    ambos caminos coinciden por construcción; acá se exige la MISMA clasificación en los
-    dos lados del umbral. Alcance (como en los tests de borde): el esperado lee
-    `ad.DEGENERATE_THRESHOLD`, así que verifica la clasificación de cada camino, no el
-    valor del umbral — ése lo deriva la familia G.
+    `test_b_f01_identidad_y_resize_son_simetricos_en_la_norma` no recorre esta banda; acá se
+    exige el MISMO desenlace en los dos lados del umbral y en los dos caminos: `L < T` ->
+    degenerado (D-06); `L >= T` -> rechazo de entrada no unitaria (V-01). Alcance (como en los
+    tests de borde): el esperado lee `ad.DEGENERATE_THRESHOLD`, así que verifica la
+    clasificación de cada camino, no el valor del umbral — ése lo deriva la familia G.
     """
-    esperado = largo < ad.DEGENERATE_THRESHOLD
-    identidad = ad.resize_normal_diagnostic(_campo_de_norma(8, largo), 8)
+    identidad = _campo_de_norma(8, largo)
     escalada = np.repeat(np.repeat(_campo_de_norma(4, largo), 2, axis=0), 2, axis=1)
-    resize = ad.resize_normal_diagnostic(escalada, 4)
-    assert identidad.degenerate is esperado, f"identidad L={largo}"
-    assert resize.degenerate is esperado, f"resize L={largo}"
+    for campo, size, camino in ((identidad, 8, "identidad"), (escalada, 4, "resize")):
+        if largo < ad.DEGENERATE_THRESHOLD:
+            assert ad.resize_normal_diagnostic(campo, size).degenerate is True, f"{camino} L={largo}"
+        else:
+            with pytest.raises(ad.InvalidNormalShapeError):
+                ad.resize_normal_diagnostic(campo, size)
+
+
+# --- F01 adjudicado como R2-lite: la entrada no unitaria que NO requirió clip se rechaza ---
+# V-01 (#711): la entrada "geométricamente inválida" se RECHAZA y no se corrige por
+# renormalización silenciosa. Se define como `|L - 1| > UNIT_NORM_TOLERANCE` sobre un píxel
+# que no necesitó clip (N-11 sigue tolerando el clip de lo fuera de rango). Se aplica a la
+# ENTRADA, nunca al intermediario interpolado, y a los DOS caminos (hermanos).
+def _campo_8x8(valor: tuple[float, float, float]) -> NDArray[np.float64]:
+    campo = np.zeros((8, 8, 3), dtype=np.float64)
+    campo[...] = valor
+    return campo
+
+
+_CAMINOS_F01 = {"identidad": 8, "resize": 4}  # tamaño de salida sobre una entrada 8x8
+
+_ENTRADAS_NO_UNITARIAS_SIN_CLIP = [
+    pytest.param((0.0, 0.0, 0.32), id="norma_0.32_justo_sobre_el_umbral"),
+    pytest.param((0.0, 0.0, 0.5), id="norma_0.5"),
+    pytest.param((0.0, 0.0, 0.9999), id="norma_0.9999_fuera_de_tolerancia"),
+    pytest.param((0.8, 0.8, 0.8), id="norma_1.386_sin_componente_fuera_de_rango"),
+    pytest.param((0.5, 0.5, 1.0), id="plano_mal_decodificado_a_01"),
+]
+
+
+@pytest.mark.parametrize("camino", list(_CAMINOS_F01))
+@pytest.mark.parametrize("valor", _ENTRADAS_NO_UNITARIAS_SIN_CLIP)
+def test_b_f01_r2_la_entrada_no_unitaria_sin_clip_se_rechaza(camino: str, valor: tuple[float, float, float]) -> None:
+    """V-01: ni la fachada ni la API de diagnóstico corrigen en silencio una entrada inválida."""
+    campo, size = _campo_8x8(valor), _CAMINOS_F01[camino]
+    for superficie in (resize_normal, ad.resize_normal_diagnostic):
+        with pytest.raises(ad.InvalidNormalShapeError) as exc:
+            superficie(campo, size)
+        assert exc.value.campo == "norma_de_entrada"
+        assert exc.value.valor == 64, "debe contar los píxeles de ENTRADA inválidos"
+
+
+@pytest.mark.parametrize("camino", list(_CAMINOS_F01))
+def test_b_f01_r2_el_clip_sigue_tolerado_por_pixel(camino: str) -> None:
+    """N-11: lo fuera de rango se recorta y se renormaliza; sólo eso queda exento."""
+    size = _CAMINOS_F01[camino]
+    for fuera in ((1000.0, 0.0, 0.0), (1000.0, 1000.0, 1000.0), (-5.0, 2.0, 0.5)):
+        campo = _campo_8x8((0.0, 0.0, 1.0))
+        campo[0, 0] = fuera
+        salida = resize_normal(campo, size)
+        np.testing.assert_allclose(np.linalg.norm(salida, axis=-1), 1.0, atol=TOL_F32, err_msg=f"{camino} {fuera}")
+    # La exención es POR PÍXEL: un píxel inválido sin clip junto a uno recortado se rechaza.
+    mixto = _campo_8x8((0.0, 0.0, 1.0))
+    mixto[0, 0] = (1000.0, 0.0, 0.0)
+    mixto[3, 3] = (0.0, 0.0, 0.5)
+    with pytest.raises(ad.InvalidNormalShapeError) as exc:
+        resize_normal(mixto, size)
+    assert exc.value.valor == 1
+
+
+@pytest.mark.parametrize("camino", list(_CAMINOS_F01))
+def test_b_f01_r2_el_degenerado_conserva_la_precedencia(camino: str) -> None:
+    """D-06 primero: `L < T` sigue siendo NON_EVALUABLE (aborta en M3), no un rechazo de entrada."""
+    campo, size = _campo_8x8((0.0, 0.0, 0.30)), _CAMINOS_F01[camino]
+    assert ad.resize_normal_diagnostic(campo, size).degenerate is True
+    with pytest.raises(ad.DegenerateNormalError):
+        resize_normal(campo, size)
+    with pytest.raises(ad.DegenerateNormalError):
+        resize_normal(_campo_8x8((0.0, 0.0, 0.0)), size)
+
+
+@pytest.mark.parametrize("camino", list(_CAMINOS_F01))
+def test_b_f01_r2_la_tolerancia_discrimina_en_ambos_caminos(camino: str) -> None:
+    size = _CAMINOS_F01[camino]
+    dentro = resize_normal(_campo_8x8((0.0, 0.0, 1.0 - 5e-7)), size)
+    np.testing.assert_allclose(np.linalg.norm(dentro, axis=-1), 1.0, atol=TOL_F32)
+    with pytest.raises(ad.InvalidNormalShapeError):
+        resize_normal(_campo_8x8((0.0, 0.0, 1.0 - 2e-6)), size)
 
 
 def test_b_f01_la_tolerancia_de_identidad_se_deriva_de_float32() -> None:
@@ -604,11 +694,14 @@ def test_c_campo_afin_se_reproduce_analiticamente() -> None:
     escala = size_in / size_out
     idx = np.arange(size_out)
     centros = (idx + 0.5) * escala - 0.5
-    # Campo afín en x (no unitario a propósito: la reproducción afín es del filtro).
+    # Campo afín en x (no unitario a propósito: la reproducción afín es del filtro). `z = 2.0`
+    # requiere clip (N-11), lo único exento del rechazo de entrada no unitaria (V-01, F01 =
+    # R2-lite); tras el clip el campo es el mismo `z = 1.0` de siempre, y el oráculo lo recibe
+    # ya recortado para comparar la misma entrada.
     n = np.zeros((size_in, size_in, 3), dtype=np.float64)
     n[..., 0] = np.linspace(-0.8, 0.8, size_in)[None, :]
-    n[..., 2] = 1.0
-    crudo = _oraculo(n, size_out)
+    n[..., 2] = 2.0
+    crudo = _oraculo(np.clip(n, -1.0, 1.0), size_out)
     esperado = np.linspace(-0.8, 0.8, size_in)[np.clip(np.round(centros).astype(int), 0, size_in - 1)]
     # Se compara el oráculo contra la fórmula cerrada (error de discretización acotado).
     np.testing.assert_allclose(crudo[0, :, 0], esperado, atol=0.02)

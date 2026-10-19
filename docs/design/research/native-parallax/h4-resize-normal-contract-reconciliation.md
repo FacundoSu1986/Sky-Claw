@@ -7,6 +7,13 @@
 > No cambia ninguna fila `FROZEN`, no recalibra `DEGENERATE_THRESHOLD`, no toca el Golden
 > Master #718, EXP-M6 #675, el corpus ni artefactos históricos, y no fusiona #723.
 
+> **Actualización del 2026-10-19.** El Tech Lead (rol delegado) eligió la **opción B** para F01
+> (rechazar la entrada geométricamente inválida, con el carve-out observable del clip); ver el
+> banner superior de `h4-resize-normal-f01-f02-adjudication.md`. El análisis de abajo es el
+> previo y se conserva como historial: en particular `F01_IMPLEMENTATION_MATCHES = OPTION_A` y
+> las filas "renormaliza" de las tablas de §1 ya **no** describen el código vigente. La
+> ratificación humana sigue pendiente (`F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD`).
+
 ## 0. Procedencia
 
 | Campo | Valor |
