@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
-from sky_claw.app.db.locks import LockAcquisitionError
+from sky_claw.app.db.locks import LockAcquisitionError, adquirir_lease_definitiva, liberar_lease_definitiva
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
@@ -424,7 +424,12 @@ async def _bajo_el_lock_del_ritual(
         return
 
     try:
-        lease = await lock_manager.acquire_lock(resource_id, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS)
+        lease = await adquirir_lease_definitiva(
+            lock_manager,
+            resource_id,
+            _RECONCILE_AGENT_ID,
+            ttl=_RECONCILE_TTL_SECONDS,
+        )
     except LockAcquisitionError:
         logger.info(
             "Reconciliación de '%s' salteada: no se pudo adquirir '%s' (ritual activo).",
@@ -437,7 +442,12 @@ async def _bajo_el_lock_del_ritual(
     try:
         await accion()
     finally:
-        await lock_manager.release_lock(resource_id, _RECONCILE_AGENT_ID, acquired_at=lease.acquired_at)
+        await liberar_lease_definitiva(
+            lock_manager,
+            resource_id,
+            _RECONCILE_AGENT_ID,
+            acquired_at=lease.acquired_at,
+        )
 
 
 async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumulador) -> None:

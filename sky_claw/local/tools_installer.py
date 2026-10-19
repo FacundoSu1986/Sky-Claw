@@ -26,7 +26,11 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
-from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.locks import (
+    DistributedLockManager,
+    adquirir_lease_definitiva,
+    liberar_lease_definitiva,
+)
 from sky_claw.app.security.hitl import Decision, HITLGuard, new_hitl_request_id
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.network_gateway import (
@@ -157,15 +161,15 @@ async def _bajo_lock_de_instalacion(
         yield
         return
 
-    lease = await lock_manager.acquire_lock(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
+    lease = await adquirir_lease_definitiva(lock_manager, resource_id, _INSTALL_AGENT_ID, ttl=ttl)
     token = _cadena_de_locks.set(_cadena_de_locks.get() | {resource_id})
     heartbeat: asyncio.Task[None] | None = None
-    if getattr(lock_manager, "renew_lock", None) is not None:
-        heartbeat = asyncio.create_task(
-            _mantener_lock_vivo(lock_manager, resource_id, ttl, acquired_at=lease.acquired_at),
-            name=f"tools-installer-heartbeat-{resource_id}",
-        )
     try:
+        if getattr(lock_manager, "renew_lock", None) is not None:
+            heartbeat = asyncio.create_task(
+                _mantener_lock_vivo(lock_manager, resource_id, ttl, acquired_at=lease.acquired_at),
+                name=f"tools-installer-heartbeat-{resource_id}",
+            )
         yield
     finally:
         if heartbeat is not None:
@@ -188,13 +192,11 @@ async def _bajo_lock_de_instalacion(
         try:
             # El release también es cancelable (await + commit): una segunda
             # cancelación durante este await dejaría el lock retenido hasta TTL.
-            # Shield posterga la cancelación hasta que el release terminó.
-            await asyncio.shield(
-                lock_manager.release_lock(
-                    resource_id,
-                    _INSTALL_AGENT_ID,
-                    acquired_at=lease.acquired_at,
-                )
+            await liberar_lease_definitiva(
+                lock_manager,
+                resource_id,
+                _INSTALL_AGENT_ID,
+                acquired_at=lease.acquired_at,
             )
         except Exception as exc:  # noqa: BLE001 — nunca enmascarar el error original
             logger.error("Fallo al liberar el lock de instalación '%s': %s", resource_id, exc)
