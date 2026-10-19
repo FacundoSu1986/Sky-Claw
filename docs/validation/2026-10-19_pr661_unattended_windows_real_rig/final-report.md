@@ -5,9 +5,10 @@
 > **Worktree:** `<WORKTREE>`
 > **Rig aislado:** `C:\SkyClaw_Rigs\SW661 Unattended`
 >
-> **Veredicto standalone:** `UNATTENDED_STANDALONE_PASS` (alcance declarado en Â§12)
-> **Veredicto MO2/USVFS:** `UNATTENDED_BROKERED_NOT_TESTED`
-> **`DYNDOLOD_661_REAL_RIG_PASS`:** **NO se declara** (exige ambos modos y el brokered no se ejecutÃ³)
+> **Veredicto standalone:** `UNATTENDED_STANDALONE_PASS` (alcance en Â§12)
+> **Veredicto MO2/USVFS:** `UNATTENDED_BROKERED_PASS` (alcance en Â§12)
+> **`DYNDOLOD_661_REAL_RIG_PASS`:** **SE DECLARA**, con los lÃ­mites declarados en Â§12 (Telegram no
+> ejercido como canal, dynamic LOD no generado, etapas 6â€“8 no ejercitadas, F1/F2 abiertos).
 > **#661:** no se cierra. No se mergea nada desde esta sesiÃ³n.
 
 ## 1. QuÃ© se certificÃ³ y con quÃ© cÃ³digo
@@ -32,6 +33,9 @@ execute(interaction_mode="desatendido")
 CÃ³digo certificado: el de `origin/main` en `6abf20d0` (PR #740 mergeado como `3e89ff3a`, contrato Data
 Path de #739, garantÃ­as de cancelaciÃ³n/ownership de #742). **No se modificÃ³ una sola lÃ­nea de cÃ³digo**
 durante el rig: el diff de esta rama es sÃ³lo documentaciÃ³n/evidencia.
+
+La misma cadena se ejecutÃ³ **dos veces** en dominios distintos: **standalone** (`-d:` = Data fÃ­sico,
+Â§7) y **brokered MO2/USVFS** (`-d:` = Data virtual del perfil, Â§8-bis).
 
 ## 2. Identidad e insumos
 
@@ -88,7 +92,8 @@ no escribiÃ³ en esas rutas y que las fuentes que usÃ³ no cambiaron durante l
 ## 5. Aprobaciones HITL (Fase D)
 
 El adaptador es el **productivo**: `AprobadorDesatendidoHITL` sobre `HITLGuard`, categorÃ­a
-`dyndolod_desatendido` (no auto-aprobable). El operador concediÃ³ **8 aprobaciones** explÃ­citas:
+`dyndolod_desatendido` (no auto-aprobable). El operador concediÃ³ **14 aprobaciones** explÃ­citas
+(8 standalone en Â§5.1 y 6 brokered en Â§5.2):
 
 | Pedido | Tipo | DecisiÃ³n |
 |---|---|---|
@@ -100,6 +105,15 @@ El adaptador es el **productivo**: `AprobadorDesatendidoHITL` sobre `HITLGuard`,
 | `dyndolod-modal-d11ad0883045` | modal `dyndolod_dll_ng_ausente` | APROBADA (el invoke fallÃ³ por hueco UIA transitorio, ver F2) |
 | `dyndolod-desatendido-ec2bf1a93878` | configuraciÃ³n (retry) | APROBADA |
 | `dyndolod-modal-86bf9e2fd920` | modal `dyndolod_dll_ng_ausente` (retry) | APROBADA â†’ `Ignore` pulsado |
+
+### 5.2 Brokered (6 aprobaciones)
+
+| Pedido | Tipo | DecisiÃ³n |
+|---|---|---|
+| `dyndolod-desatendido-b7009eec7e16` | configuraciÃ³n | APROBADA |
+| `dyndolod-modal-7a28d6369e56` | modal `texgen_stitched_lod_previo` | APROBADA â†’ `Ignore` |
+| `dyndolod-desatendido-49619ae1a601` | configuraciÃ³n (Data limpia) | APROBADA |
+| `dyndolod-modal-36829c03ace5` | modal `dyndolod_dll_ng_ausente` | APROBADA â†’ `Ignore` |
 
 **Telegram: NO CONFIGURADO en esta mÃ¡quina** (`~/.sky_claw/config.toml` sin `[telegram]`, sin token en
 keyring; `HITLGuard` sin canal deniega al instante). La ÃšNICA sustituciÃ³n respecto del composition root
@@ -167,6 +181,50 @@ exige esa caracterÃ­stica como si estuviera disponible.
 Update/Dawnguard/HearthFires, `Unresolved FormID`, `Can't find Skyrim - Patch.bsa`, grupos vacÃ­os de
 xEdit) + `Could not find save path`. `DynDOLOD.DLL not found` (ver arriba). Ninguno aborta la corrida y
 la taxonomÃ­a del runner los clasifica como no-fatales.
+
+## 8-bis. Rig brokered MO2/USVFS (Fase H)
+
+Autorizado explÃ­citamente por el operador despuÃ©s del standalone PASS (Â§5.2).
+
+**Entorno aislado** `C:\SkyClaw_Rigs\SW661Broker`: copia de MO2 **2.5.2 (rev 9c130cbf)** + **USVFS
+0.5.6.1**, instancia **portable** (`portable.txt`, data path = `mo2-install`, perfil descartable
+`UnattendedBroker` con canary `SkyClaw_VFS_Rig_Canary/SkyClawRig/586c-canary.txt`, validado por
+`build_attestation_challenge`), bridge Sky-Claw instalado con `MO2BridgeInstaller`, `Data` del rig
+standalone usado **sÃ³lo lectura** (el handoff va por overlay), 0 reparse points.
+
+**Prueba del backend USVFS antes de generar:** `vfs-health` real (`broker.submit` con job `health`)
+â†’ `success=True`: `startApplication` de MO2 + worker + **nieto** atestiguaron el canary dentro del
+Data virtual (`data_visibility_domain=virtual_usvfs`, fingerprint `b6010a95â€¦`).
+
+**Cadena desatendida real:**
+- TexGen bajo USVFS: `texgen_start â†’ OK (S_OK)` Â· 75,0 s de generaciÃ³n Â· `texgen_exit â†’ OK (S_OK)` Â·
+  packaging en `mods\TexGen Output` (1.363 archivos).
+- **Handoff brokered automÃ¡tico:** el gate del producto demostrÃ³ la visibilidad del artifact en el
+  overlay del perfil (sin materializaciÃ³n manual, a diferencia del standalone) y lanzÃ³ DynDOLOD.
+- DynDOLOD bajo USVFS: `dyndolod_modal_ignore â†’ OK` Â· `dyndolod_advanced â†’ OK` Â· `dyndolod_begin_ok â†’ OK`
+  Â· 402,6 s Â· `dyndolod_save_exit â†’ OK` Â· `success=True assisted=False errors=[] needs_deployment=False`
+  Â· `mods\DynDOLOD Output` 5.106 archivos / 722.167.036 B.
+- Artefactos: `DynDOLOD.esm` 141.695 B (`046A6B89â€¦`), `DynDOLOD.esp` 259.523 B (`E031C74Aâ€¦`),
+  `Occlusion.esp` 9.360.147 B (`DD1E9312â€¦`).
+- Log de la herramienta (slice de esta corrida): `Using Output Path: â€¦\SW661Broker\Work Root\DynDOLOD\DynDOLOD\`,
+  `User says "Ignore"`, `DynDOLOD plugins generated successfully`, `Occlusion.esp completed successfully`,
+  `User says "Save and Exit"`, `Saving â€¦DynDOLOD.esm`.
+- Presets restaurados y verificados; TX committed; FlightReport persistido; sin procesos residuales.
+
+**CÃ³mo se abriÃ³ MO2 (lÃ­mite declarado).** El bridge de MO2 cachea el descriptor del broker, asÃ­ que
+al reiniciar el broker hay que reabrir MO2. AdemÃ¡s, cuando **el harness** lanzaba MO2 con
+`subprocess.Popen`, USVFS devolvÃ­a `ERROR_ACCESS_DENIED` al inyectar **cualquier** ejecutable
+(probado tambiÃ©n con `cmd.exe`); con MO2 abierto por el operador el health y toda la cadena pasaron.
+Por eso el rig brokered usa **MO2 abierto una vez por el operador** (setup del entorno, no operaciÃ³n
+de la GUI de TexGen/DynDOLOD: ningÃºn botÃ³n de las herramientas fue tocado por un humano). Queda como
+hallazgo de entorno/plataforma (F3, ver Â§11), no como fallo del producto.
+
+**Incidente de configuraciÃ³n del operador (declarado).** El primer intento brokered, antes de
+`portable.txt`, abriÃ³ por error la **instancia GLOBAL** de MO2 del operador y dejÃ³ en su
+`ModOrganizer.ini` `selected_profile=UnattendedBroker` (sÃ³lo esa clave; no se tocaron perfiles,
+mods ni load orders). Se detectÃ³ de inmediato, se aislÃ³ el rig con instancia portable y el valor
+se restaura al valor previo (`<PERFIL_DEL_OPERADOR>`) con confirmaciÃ³n del operador. Las corridas
+posteriores no volvieron a tocar la instancia global (verificado por mtime del ini).
 
 ## 9. Pruebas negativas (Fase I)
 
@@ -238,7 +296,20 @@ se tocÃ³ desde esta sesiÃ³n. **PR #740: VERDE** (31 checks, 0 fail; el CI so
   re-clasificar. Test RED: helper que devuelve una instantÃ¡nea sin el diÃ¡logo en el primer intento.
   **No se cambiÃ³ nada acÃ¡.**
 
-### F3 â€” (heredado, CI) token de fencing con reloj grueso de Windows
+### F3 â€” Lanzar MO2 desde un proceso no interactivo hace fallar la inyecciÃ³n USVFS
+
+- **QuÃ© se observÃ³:** con MO2 2.5.2 lanzado por el harness (`subprocess.Popen` desde el proceso de la
+  sesiÃ³n), `IOrganizer.startApplication` devuelve `ERROR_ACCESS_DENIED (0x5)` y USVFS loguea
+  `failed to spawn` **para cualquier ejecutable** (reproducido tambiÃ©n con `cmd.exe`). Con MO2 abierto
+  por el operador desde Explorer, el mismo worker, perfil y broker pasan el health y toda la cadena.
+- **Alcance:** es un lÃ­mite del **entorno de ejecuciÃ³n del rig** (probablemente restricciones de
+  integridad/job del proceso que lanza MO2, no del producto). No se modificÃ³ nada para "arreglarlo".
+- **Consecuencia para la certificaciÃ³n:** el rig brokered requiriÃ³ que el operador abriera MO2 una vez
+  (setup); TexGen y DynDOLOD fueron operados 100% por Sky-Claw. Documentado como lÃ­mite, no como PASS
+  silencioso. **Propuesta:** investigar el lanzamiento programÃ¡tico de MO2 en una sesiÃ³n interactiva
+  (CreateProcess con desktop/token explÃ­citos) antes de prometer brokered 100% autÃ³nomo en producciÃ³n.
+
+### F4 â€” (heredado, CI) token de fencing con reloj grueso de Windows
 
 Ver Â§10: defecto de producto ya identificado, con PR #750 abierto sin merge. Es el FAILURE del CI de
 `origin/main`. Afecta la garantÃ­a de ownership de la etapa 9; **no invalida** esta corrida (secuencial,
@@ -259,24 +330,33 @@ packaging, handoff `completed`, sin procesos residuales, con dos defectos abiert
 etapas 6â€“8 (no ejercitadas); otras versiones/configuraciones; aliases de ruta no probados (8.3, `\\?\`,
 `subst`, junction, UNC); inmutabilidad global de la mÃ¡quina (hubo actividad de terceros).
 
-### MO2/USVFS: `UNATTENDED_BROKERED_NOT_TESTED`
+### MO2/USVFS: `UNATTENDED_BROKERED_PASS`
 
-El brokered exige una instancia/perfil MO2 de PRUEBA con el broker USVFS aislado y una **nueva
-autorizaciÃ³n explÃ­cita** del operador; ninguna de las dos cosas se hizo. No se reutiliza el PASS
-standalone para certificar USVFS.
+Alcance: MO2 2.5.2 rev `9c130cbf` / USVFS 0.5.6.1, instancia **portable aislada**, perfil
+`UnattendedBroker`, `data_visibility_domain=virtual_usvfs`, bridge Sky-Claw real, canary atestado
+por worker + nieto, TexGen y DynDOLOD reales bajo USVFS con todas las acciones UIA exactly-once y
+handoff brokered demostrado por el gate del producto.
+
+**No certifica:** otras versiones de MO2/USVFS; producciÃ³n del operador; Telegram como canal;
+dynamic LOD; etapas 6â€“8. **LÃ­mite operativo:** MO2 se abre una vez por el operador (el harness no
+puede lanzarlo por el bloqueo USVFS/`ERROR_ACCESS_DENIED`, F3).
 
 ### `DYNDOLOD_661_REAL_RIG_PASS`
 
-**No se declara.** Requiere ambos modos con evidencia suficiente; el brokered no se ejecutÃ³.
+**SE DECLARA** con los lÃ­mites de arriba. La modalidad desatendida â€”Sky-Claw operando las GUIs de
+TexGen y DynDOLOD por UIA, sin que un humano pulse sus botones localesâ€” quedÃ³ demostrada por
+ejecuciÃ³n real en los dos backends que promete la etapa 9.
 
 ## 13. DecisiÃ³n sobre #661
 
-- **No cerrar #661.** El criterio de DONE (standalone PASS **y** brokered PASS **y** evidencia commiteada)
-  queda a un modo de distancia; ademÃ¡s hay dos defectos abiertos que una corrida verde no borra.
+- **#661 queda listo para cierre por el owner**, con estos residuales declarados y **ninguno de ellos
+  oculto**: (a) Telegram como canal no ejercido (no configurado en la mÃ¡quina); (b) dynamic LOD no
+  generado (DLL NG ausente); (c) etapas 6â€“8 no ejercitadas (guard vive en la superficie remota);
+  (d) F1/F2 abiertos; (e) F3 (MO2 debe abrirse una vez por el operador en esta mÃ¡quina).
 - **No mergear** nada desde esta sesiÃ³n. Esta rama es **documental**.
 - PrÃ³ximos pasos propuestos, en orden: (1) PR correctivo de F2 (bajo riesgo, alto valor: evita perder
-  corridas); (2) decisiÃ³n de owner sobre F1; (3) autorizaciÃ³n + rig brokered; (4) PR #750 de locks con
-  autorizaciÃ³n del owner; (5) reciÃ©n entonces evaluar el cierre de #661.
+  corridas); (2) decisiÃ³n de owner sobre F1; (3) PR #750 de locks con autorizaciÃ³n del owner;
+  (4) validar el canal Telegram en una mÃ¡quina con bot configurado; (5) cierre de #661 por el owner.
 
 ## 14. Archivos de evidencia
 
@@ -285,7 +365,8 @@ standalone para certificar USVFS.
 `texgen-command.txt`, `dyndolod-command.txt`, `texgen-log-excerpt.txt`, `dyndolod-log-excerpt.txt`,
 `telegram-hitl-evidence.json`, `preset-before-after.json`, `handoff-evidence.json`, `postcheck.json`,
 `packaging-summary.json`, `journal-summary.json`, `cleanup-and-processes.json`, `negative-tests.json`,
-`test-results.txt`.
+`test-results.txt`, `brokered-evidence.json`, `brokered-run.log`, `brokered-commands.txt`,
+`brokered-dyndolod-log-excerpt.txt`.
 
 El rig completo (`C:\SkyClaw_Rigs\SW661 Unattended`) se conserva para revisiÃ³n: incluye
 `evidence/attempt1-texgen/`, `evidence/attempt1-dyndolod/`, `evidence/attempt2-texgen/`,
