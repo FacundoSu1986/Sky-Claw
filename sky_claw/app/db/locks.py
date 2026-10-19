@@ -58,7 +58,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -135,6 +135,9 @@ _MIN_RENEW_DIVISOR: float = 2.0
 #: Floor for the heartbeat renewal interval so a very large ``renew_divisor``
 #: cannot collapse the cadence to ~0 and busy-loop the lock database.
 _MIN_HEARTBEAT_INTERVAL_SECONDS: float = 0.05
+
+#: Piso del TTL con el que renueva el latido: un TTL diminuto no puede dejar la renovación pegada al vencimiento.
+_MIN_HEARTBEAT_TTL_SECONDS: float = 0.15
 
 #: Maximum number of acquisition retry attempts.
 DEFAULT_MAX_RETRIES: int = 5
@@ -216,6 +219,11 @@ class LockInfo:
     agent_id: str
     acquired_at: float
     expires_at: float
+    #: TTL que se pidió al adquirir. ``acquired_at`` es el token de fencing (identidad de la lease) y
+    #: puede ir por delante del reloj, así que ``expires_at - acquired_at`` NO es el TTL: quien necesite la
+    #: duración la lee de acá. ``None`` cuando la lease se reconstruye desde la base (``get_lock_info``),
+    #: que no guarda el TTL. Es metadato: no entra en la igualdad ni en el hash.
+    lease_ttl_seconds: float | None = field(default=None, compare=False)
 
     @property
     def remaining_ttl(self) -> float:
@@ -513,6 +521,7 @@ class DistributedLockManager:
                             agent_id=agent_id,
                             acquired_at=token,
                             expires_at=expires_at,
+                            lease_ttl_seconds=ttl_seconds,
                         )
                         logger.info(
                             "Lock acquired",
@@ -1564,6 +1573,20 @@ class SnapshotTransactionLock:
         collapse it to ~0 and busy-loop the lock database."""
         return max(ttl_seconds / divisor, _MIN_HEARTBEAT_INTERVAL_SECONDS)
 
+    def _ttl_del_latido(self) -> float:
+        """TTL con el que renueva el latido: el que la lease declara, con piso.
+
+        ``acquired_at`` es el token de fencing y puede ir por delante del reloj (retroceso de NTP, ráfaga
+        dentro de un tick), así que ``expires_at - acquired_at`` se encoge —incluso da negativo— y el
+        latido renovaría de a ``_MIN_HEARTBEAT_TTL_SECONDS``. Solo si la lease no declara su TTL
+        (la que arma ``get_lock_info`` leyendo la base) se cae a esa resta.
+        """
+        assert self.lock_info is not None  # set by __aenter__ before the task starts
+        declarado = self.lock_info.lease_ttl_seconds
+        if declarado is None:
+            declarado = self.lock_info.expires_at - self.lock_info.acquired_at
+        return max(declarado, _MIN_HEARTBEAT_TTL_SECONDS)
+
     async def _heartbeat_loop(self) -> None:
         """Renew the lease at TTL/divisor intervals until cancelled or lost.
 
@@ -1574,7 +1597,7 @@ class SnapshotTransactionLock:
         to expiry degrades to lease-lost rather than crashing the heartbeat.
         """
         assert self.lock_info is not None  # set by __aenter__ before the task starts
-        ttl_seconds = max(self.lock_info.expires_at - self.lock_info.acquired_at, 0.15)
+        ttl_seconds = self._ttl_del_latido()
         interval = self._heartbeat_interval(ttl_seconds, self._renew_divisor)
         while True:
             await asyncio.sleep(interval)

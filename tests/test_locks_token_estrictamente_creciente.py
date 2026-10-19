@@ -27,15 +27,17 @@ de esquema y queda fuera de este PR.
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 import sqlite3
 from collections.abc import AsyncGenerator
+from unittest.mock import MagicMock
 
 import pytest
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.app.db import locks
-from sky_claw.app.db.locks import DistributedLockManager, LockAcquisitionError
+from sky_claw.app.db.locks import DistributedLockManager, LockAcquisitionError, LockInfo, SnapshotTransactionLock
 
 RECURSO = "recurso-token-creciente"
 AGENTE = "servicio-con-id-constante"
@@ -259,6 +261,81 @@ async def test_bases_distintas_no_se_acoplan(tmp_path: pathlib.Path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+# El TTL de la lease viaja con la lease: el token NO es un reloj (review CodeRabbit de #750)
+# ---------------------------------------------------------------------------
+
+
+async def test_la_lease_declara_su_ttl_aunque_el_token_este_adelantado_al_reloj(
+    gestor: DistributedLockManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tras un retroceso del reloj, `expires_at - acquired_at` deja de ser el TTL (incluso da negativo)."""
+    _congelar_reloj(monkeypatch, [RELOJ_GRUESO, RELOJ_GRUESO - 3600.0])
+    primera = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+    assert await gestor.release_lock(RECURSO, AGENTE, acquired_at=primera.acquired_at)
+
+    segunda = await gestor.acquire_lock(RECURSO, AGENTE, ttl=60.0)
+
+    assert segunda.expires_at - segunda.acquired_at < 0, "premisa: el token quedó adelantado al reloj"
+    assert segunda.lease_ttl_seconds == 60.0, "la lease tiene que declarar el TTL que se pidió"
+    # Es metadato de la lease, no identidad: no entra en la comparación de LockInfo.
+    assert segunda == LockInfo(
+        resource_id=RECURSO, agent_id=AGENTE, acquired_at=segunda.acquired_at, expires_at=segunda.expires_at
+    )
+
+
+class _GestorQueRegistraRenovaciones:
+    """Doble mínimo: solo registra con qué TTL renueva el latido."""
+
+    def __init__(self) -> None:
+        self.ttls: list[float] = []
+        self.renovado = asyncio.Event()
+
+    async def renew_lock(
+        self, resource_id: str, agent_id: str, ttl: float, *, acquired_at: float | None = None
+    ) -> bool:
+        self.ttls.append(ttl)
+        self.renovado.set()
+        return True
+
+
+async def _ttl_con_el_que_renueva_el_latido(lease: LockInfo) -> float:
+    gestor = _GestorQueRegistraRenovaciones()
+    candado = SnapshotTransactionLock(
+        lock_manager=gestor,  # type: ignore[arg-type]
+        snapshot_manager=MagicMock(),
+        resource_id=lease.resource_id,
+        agent_id=lease.agent_id,
+        ttl=0.9,
+    )
+    candado.lock_info = lease
+    tarea = asyncio.create_task(candado._heartbeat_loop())
+    try:
+        await asyncio.wait_for(gestor.renovado.wait(), timeout=10.0)
+    finally:
+        tarea.cancel()
+        await asyncio.gather(tarea, return_exceptions=True)
+    return gestor.ttls[0]
+
+
+async def test_el_latido_renueva_con_el_ttl_declarado_y_no_con_la_resta_del_token() -> None:
+    """Token 3600 s por delante del reloj: la resta da negativo y el latido renovaba de a 0,15 s."""
+    lease = LockInfo(
+        resource_id="r", agent_id="a", acquired_at=1000.0 + 3600.0, expires_at=1000.0 + 0.9, lease_ttl_seconds=0.9
+    )
+
+    assert await _ttl_con_el_que_renueva_el_latido(lease) == 0.9
+
+
+async def test_el_latido_cae_al_calculo_anterior_si_la_lease_no_declara_ttl() -> None:
+    """`get_lock_info` lee la fila de la base y no conoce el TTL: sin metadato queda la resta, con su piso."""
+    sin_declarar = LockInfo(resource_id="r", agent_id="a", acquired_at=1000.0, expires_at=1002.0)
+    diminuta = LockInfo(resource_id="r", agent_id="a", acquired_at=1000.0, expires_at=1000.01)
+
+    assert await _ttl_con_el_que_renueva_el_latido(sin_declarar) == 2.0
+    assert await _ttl_con_el_que_renueva_el_latido(diminuta) == 0.15
+
+
+# ---------------------------------------------------------------------------
 # Ancla: los sitios que acuñan un token se ENUMERAN, no se muestrean
 # ---------------------------------------------------------------------------
 
@@ -398,3 +475,79 @@ def test_el_censo_de_referencias_ve_metodos_hermanos_clases_y_alias() -> None:
     assert len(_referencias_a(arbol, "X")) == 3  # la asignación de la línea 1 es Store y no cuenta
     assert len(_referencias_a(arbol, "X2")) == 1
     assert len(_referencias_a(arbol, "Y")) == 0
+
+
+# ---------------------------------------------------------------------------
+# Ancla: ningún consumidor deriva una duración restando el token
+# ---------------------------------------------------------------------------
+
+_SKY_CLAW = _LOCKS_PY.parents[2]
+
+# Toda resta con `acquired_at` de `sky_claw/`. El token es la IDENTIDAD de la lease y puede ir por
+# delante del reloj (retroceso de NTP, ráfaga en un tick): una duración que se deriva de él se encoge.
+# Esa familia ya mordió una vez (`_heartbeat_loop` restaba `expires_at - acquired_at` para sacar el TTL y
+# tras un retroceso renovaba de a 0,15 s), y la búsqueda de consumidores había excluido `locks.py`.
+_RESTAS_CON_EL_TOKEN_ESPERADAS = frozenset(
+    {
+        # Respaldo para la lease que no declara su TTL (la que arma `get_lock_info` leyendo la fila de la base).
+        ("sky_claw/app/db/locks.py", "_ttl_del_latido"),
+        # Otro mecanismo: la identidad de ese lock es `session_id` y su `acquired_at` sale de su propio
+        # `time.time()`; compara dos instantes con una tolerancia de 1e-4, no deriva ninguna duración.
+        ("sky_claw/local/frozen_runtime/root_lock.py", "_validate_handle_ownership"),
+    }
+)
+
+
+def _restas_con_el_token(arbol: ast.Module) -> list[tuple[str, int]]:
+    """``(función más externa, línea)`` de cada ``a - b`` donde un operando es ``<algo>.acquired_at``."""
+    salida: list[tuple[str, int]] = []
+
+    def visitar(nodo: ast.AST, funcion: str | None) -> None:
+        if funcion is None and isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcion = nodo.name
+        if (
+            isinstance(nodo, ast.BinOp)
+            and isinstance(nodo.op, ast.Sub)
+            and (
+                _nombre_punteado(nodo.left).endswith("acquired_at")
+                or _nombre_punteado(nodo.right).endswith("acquired_at")
+            )
+        ):
+            salida.append((funcion or "<modulo>", nodo.lineno))
+        for hijo in ast.iter_child_nodes(nodo):
+            visitar(hijo, funcion)
+
+    visitar(arbol, None)
+    return salida
+
+
+def test_ningun_consumidor_deriva_una_duracion_restando_el_token() -> None:
+    encontradas: set[tuple[str, str]] = set()
+    for ruta in sorted(_SKY_CLAW.rglob("*.py")):
+        relativa = ruta.relative_to(_SKY_CLAW.parent).as_posix()
+        encontradas.update(
+            (relativa, funcion) for funcion, _ in _restas_con_el_token(ast.parse(ruta.read_text(encoding="utf-8")))
+        )
+
+    assert encontradas == _RESTAS_CON_EL_TOKEN_ESPERADAS, (
+        f"cambió la familia de restas con `acquired_at`: {sorted(encontradas ^ _RESTAS_CON_EL_TOKEN_ESPERADAS)}. "
+        "El token es identidad, no un reloj: una duración (TTL, tiempo retenido) se toma de "
+        "`LockInfo.lease_ttl_seconds` o del reloj real, nunca restándole el token a otro instante."
+    )
+
+
+def test_el_censo_de_restas_ve_ambos_lados_y_helpers_anidados() -> None:
+    fuente = (
+        "def a(info):\n"
+        "    return info.expires_at - info.acquired_at\n"
+        "def b(info, ahora):\n"
+        "    def interna():\n"
+        "        return ahora - info.acquired_at\n"
+        "    return interna\n"
+        "def c(info):\n"
+        "    return info.expires_at - info.otro\n"
+        "def d(acquired_at, x):\n"
+        "    return x + acquired_at\n"
+    )
+
+    assert [funcion for funcion, _ in _restas_con_el_token(ast.parse(fuente))] == ["a", "b"]
