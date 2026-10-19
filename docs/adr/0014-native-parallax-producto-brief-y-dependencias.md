@@ -9,8 +9,9 @@ respuesta a la pregunta explícita de si aceptaba este ADR, en este PR aparte. S
 —Synthesis C como design brief, layout separado de `research/`, extra opcional `native-parallax` con lock
 propio y `texconv` externo—, pero **no autoriza merges**: cada PR del orden de §2.5 (NP-D0, NP-C0, …) se
 revisa y se fusiona con autorización expresa, como cualquier cambio del repo. Lo que §6 marca como no
-verificado (receta del lock propio del extra, versión y licencia de `texconv`, decodificación de BC5/BC7
-reales) sigue sin verificar y lo demuestran NP-C0 y NP-E0 ejecutando.
+verificado sigue así salvo lo que NP-C0 demostró ejecutando (receta del lock propio del extra y el rango de
+Pillow que lo hace auditable; ver «Actualización de NP-C0» al final de §6): quedan abiertos la versión y
+licencia de `texconv` (NP-E0) y la decodificación de BC5/BC7 reales (EXP-003).
 **Contexto de origen:** `origin/main` `b0737e1f` (merge de #742).
 **Relacionados:** [ADR 0013](0013-clean-room-native-parallax.md) (clean-room), issue #676 (preview
 productivo: tracker y Definition of Done), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`
