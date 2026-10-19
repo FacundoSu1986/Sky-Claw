@@ -3,8 +3,10 @@
 **Fecha:** 2026-10-19
 **Estado:** Propuesta. Redactada por Claude Code como Tech Lead por delegación explícita del operador
 (instrucción en sesión, 2026-10-19: «tomá el rol de Tech Lead y hacé lo que sea necesario para avanzar
-[…] el objetivo es tener el generador de parallax nativo»). Entra en vigor al mergear a `main`; el merge
-requiere review y autorización expresa, como cualquier ADR.
+[…] el objetivo es tener el generador de parallax nativo»). Mergear este PR **registra la propuesta**, no
+la acepta: el ADR sigue en `Propuesta` (como lo declara el índice) hasta que una persona cambie el estado a
+`Aceptada` en un PR aparte. Hasta entonces el código de producto que dependa de estas decisiones (NP-C0 en
+adelante) puede prepararse como borrador, pero no se fusiona.
 **Contexto de origen:** `origin/main` `b0737e1f` (merge de #742).
 **Relacionados:** [ADR 0013](0013-clean-room-native-parallax.md) (clean-room), issue #676 (preview
 productivo: tracker y Definition of Done), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`
@@ -44,10 +46,19 @@ Verificado leyendo el repositorio (2026-10-19):
    de equivalencia lo compara contra research como oráculo. Importarlo acoplaría el producto a código que
    por contrato es dev-only y está sujeto a cambios de método.
 3. **Dependencias.** `numpy` y `Pillow` pasan a un **extra opcional `native-parallax`** en
-   `pyproject.toml`, con import perezoso y error tipado si faltan. **No** entran en `dependencies`, y por lo
-   tanto no entran al runtime base ni al ejecutable congelado, hasta que un ADR posterior lo decida con
-   medición de tamaño. El primer PR de código regenera `requirements.lock` y `uv.lock` con el gate de
-   hashes y CI instala el extra.
+   `pyproject.toml`, con import perezoso y error tipado si faltan; el extra `dev` los sigue incluyendo (los
+   tests los necesitan). **No** entran en `dependencies`, y por lo tanto no entran al runtime base ni al
+   ejecutable congelado, hasta que un ADR posterior lo decida con medición de tamaño.
+
+   **Lock del extra.** `requirements.lock` se compila sin extras (su cabecera: `uv pip compile pyproject.toml`)
+   y es el que CI instala con `--require-hashes` y audita con `pip-audit --strict`. Regenerarlo no cubre el
+   extra, y compilarlo con `--extra native-parallax` metería numpy y Pillow en el lock del runtime base, que
+   es justo lo que esta decisión evita. Por eso el extra tiene un **lock propio**
+   (`requirements-native-parallax.lock`, compilado con `--extra native-parallax`) y un paso de CI aparte que
+   lo instala con `--require-hashes` y lo audita con `pip-audit --strict`. `requirements.lock` no cambia.
+   `uv.lock` ya registra numpy y Pillow (por `dev`) y se actualiza al agregar el extra. El nombre del archivo
+   y la forma del paso de CI son lo que NP-C0 tiene que demostrar ejecutando; este ADR no los da por
+   verificados.
 4. **Escritura DDS/BC4.** Se usa `texconv` (herramienta externa, MIT) como `DYNAMIC_EXTERNAL_TOOL` con
    versión fijada, según NP-E0. El encoder BC4 propio del patch se descarta salvo que el rig (NP-RIG) lo
    exija. Lectura DDS: Pillow. Con cualquiera de las dos vías el DoD de #676 exige validar BC4 y mips
@@ -56,14 +67,18 @@ Verificado leyendo el repositorio (2026-10-19):
 
    | PR | Contenido | Estado |
    |---|---|---|
+   | NP-D0 | dataset spec + generador sintético + fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | siguiente (en paralelo con NP-C0) |
    | NP-C0 | `NormalDecoder` (DDS/PNG, convención DirectX, confianza por `nz`) | siguiente |
-   | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | pendiente |
-   | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | pendiente |
+   | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | pendiente (necesita NP-C0 y el dataset de NP-D0) |
+   | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | pendiente (necesita NP-I0 y el benchmark de NP-D0) |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | pendiente |
    | NP-E0 | `DdsExporter` (texconv) | pendiente |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
+
+   La tabla es el camino de MODE 0. El resto del roadmap de Synthesis C (NP-H0, NP-AI0, NP-AI2, NP-CM,
+   NP-DOC) sigue como lo define esa sección («Roadmap por PRs») y no se decide acá.
 
 6. **Independencia de los lanes de research.** H4/#723 y M6/#675 **no bloquean** NP-C0…NP-A0. Sí limitan lo
    que se puede *afirmar*: ninguna conclusión del producto puede apoyarse en `resize_normal` ni en el
@@ -85,9 +100,10 @@ Verificado leyendo el repositorio (2026-10-19):
 
 ## 4. Consecuencias
 
-- El primer PR de código (NP-C0) introduce el extra, el lock regenerado y dos anclas: (a) AST — ningún
-  módulo de producto de `native_parallax` importa `research`; (b) el extra `native-parallax` está declarado
-  y el import de `numpy`/`Pillow` es perezoso con error tipado.
+- El primer PR de código que toque dependencias (NP-C0) introduce el extra, su lock propio con el paso de
+  CI correspondiente y dos anclas: (a) AST — ningún módulo de producto de `native_parallax` importa
+  `research`; (b) el extra `native-parallax` está declarado y el import de `numpy`/`Pillow` es perezoso con
+  error tipado.
 - Cada PR del orden anterior se revisa como cualquier cambio del repo (Lint, tipos, tests en Windows,
   revisores automáticos). Este ADR no autoriza merges.
 - Queda abierta una decisión de producto que NO se toma acá: la normalización de altura por percentiles
@@ -106,7 +122,10 @@ Verificado leyendo el repositorio (2026-10-19):
 
 - **Verificado leyendo:** el estado del paquete, los extras y el lock, el gate de lockfile de CI, el
   texto del ADR 0013, Synthesis C y el issue #676.
-- **Verificado ejecutando:** Pillow 11.3.0 abre y guarda `.dds`, y su plugin DDS referencia BC4, BC5 y BC7.
+- **Verificado ejecutando:** Pillow 11.3.0 abre y guarda `.dds`, y su plugin DDS referencia BC4, BC5 y BC7;
+  `uv pip compile --help` indica que `--extra` es lo que incluye dependencias opcionales; `requirements.lock`
+  no contiene numpy ni Pillow y `uv.lock` sí.
 - **No verificado:** que Pillow decodifique correctamente BC5/BC7 reales de Skyrim (se cierra en NP-C0 con
   EXP-003); el costo en tamaño de numpy/Pillow en el ejecutable congelado (por eso queda fuera del runtime
-  base); la disponibilidad y licencia de la versión exacta de texconv a fijar (NP-E0).
+  base); la receta del lock propio del extra (nombre del archivo y paso de CI), que NP-C0 tiene que
+  demostrar ejecutando; la disponibilidad y licencia de la versión exacta de texconv a fijar (NP-E0).
