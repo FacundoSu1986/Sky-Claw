@@ -5,7 +5,9 @@ un tope de reloj demasiado ajustado para un runner de Windows cargado (el CI de
 Windows tarda ~30 min y comparte CPU):
 
 * ``test_runtime_vault_operator_verifier.py``: el hijo verificador no alcanzaba a
-  conectar el pipe en ``timeout_seconds=2.0``.
+  conectar el pipe en ``timeout_seconds=2.0``; y 5.0 tampoco alcanzó una vez
+  (``test_second_pass_real_independence``, Windows py3.11, un fallo en 11.936 tests, con el
+  mismo SHA verde en el run gemelo).
 * ``test_vfs_teardown_deadline.py``: ``asyncio.wait_for(sesion.cancel(),
   timeout=1.0)`` vencía antes de que el teardown terminara de propagar el
   ``VfsTeardownDeadlineError`` que el test espera (``deadline=0.2``).
@@ -50,6 +52,9 @@ _TESTS = pathlib.Path(__file__).resolve().parent
 # Un tope que sólo existe como red de emergencia (la prueba espera una excepción
 # distinta del timeout) no puede agotarse por una pausa del runner.
 _MARGEN_MINIMO_S = 5.0
+# El tope que espera la conexión de un PROCESO hijo real (arranque de Python + pipe) necesita más
+# margen que una espera de asyncio: 5.0 s ya venció en CI. Es el mismo valor de la serie w del archivo.
+_MARGEN_VERIFICADOR_S = 10.0
 # Umbral por debajo del cual un presupuesto del AppContext es "de reloj".
 _PRESUPUESTO_CORTO_S = 0.1
 
@@ -115,7 +120,7 @@ def _sin_resolver(sitios: Sequence[tuple[object, ...]]) -> list[tuple[object, ..
 
 # El presupuesto corto ES el comportamiento bajo prueba:
 # * w10: el worker duerme 2 s y el test espera `OperatorVerifierTimeoutError` con un tope de 0.5 s.
-# * s14: `io_timeout_seconds=0.4` < los 0.8 s que duerme el worker, pero el total (5.0 s) alcanza.
+# * s14: `io_timeout_seconds=0.4` < los 0.8 s que duerme el worker, pero el total (10 s) alcanza.
 # * s15: `operation_timeout_seconds=0.4` es el tope total que el test quiere vencer, y su
 #   `io_timeout_seconds=1.0` tiene que ser MAYOR que ése para que venza el total y no el de I/O.
 # Residual conocido: s14 es un camino feliz con un margen de 0.4 s por diseño; sin falla observada.
@@ -153,9 +158,11 @@ def test_el_verificador_no_tiene_topes_de_camino_feliz_por_debajo_del_margen() -
         f"topes del verificador que el escáner no puede resolver: {sin_resolver}. Usá un literal o una "
         "constante numérica de módulo, o ampliá el escáner."
     )
-    cortos = {(nombre, palabra) for nombre, palabra, valor in sitios if valor is not None and valor < _MARGEN_MINIMO_S}
+    cortos = {
+        (nombre, palabra) for nombre, palabra, valor in sitios if valor is not None and valor < _MARGEN_VERIFICADOR_S
+    }
     assert cortos == _VERIFICADOR_EXENTOS, (
-        f"topes por debajo de {_MARGEN_MINIMO_S}s fuera de la lista de exentos: "
+        f"topes por debajo de {_MARGEN_VERIFICADOR_S}s fuera de la lista de exentos: "
         f"{sorted(cortos - _VERIFICADOR_EXENTOS)}. Si la prueba espera una excepción que no es el "
         "timeout, el tope es una red de emergencia y debe superar el margen; si el tope corto ES lo "
         "que se prueba, agregá el test a _VERIFICADOR_EXENTOS."
