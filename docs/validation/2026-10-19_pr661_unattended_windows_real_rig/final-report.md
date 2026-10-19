@@ -195,7 +195,7 @@ Ejecutados sobre el worktree (`6abf20d0`, sin cambios de cÃ³digo; detalle crud
 | `mypy sky_claw/ scripts/` | **VERDE** (377 archivos; caveat: ~30 mÃ³dulos con `ignore_errors`) |
 | `git diff --check` / `git status --porcelain` | limpio |
 | Suite focalizada DynDOLOD/UIA/presets/handoff/locks | **1829 passed, 13 skipped, 0 failed** |
-| Suite completa | (ver `test-results.txt`) |
+| Suite completa (11937 tests) | **3 failed, 11809 passed, 125 skipped** (2332 s). Los 3 fallos **no tocan #661** y tienen causa ajena a este cambio: (1) `test_distributed_locks.py::test_renew_divisor_shrinks_detection_window` — flake bajo carga (pasa aislado en 1,59 s; la máquina tardó 38:52 vs 21:50 del CI); (2) `test_runtime_vault_mutation_executor.py::…::test_apply_real_con_fallo_dispara_rollback_exacto` — `CreateFileW` código 5 al restaurar ACL, **sesión no elevada** (el runner de CI corre elevado); (3) `test_worktree_convention_invariant.py::test_los_worktrees_no_principales_viven_bajo_la_convencion` — estado del host: 15 worktrees de otras sesiones fuera de la convención |
 
 **CI de `origin/main` 6abf20d0: ROJO â€” defecto de PRODUCTO, ajeno a #740.** Workflow *Sky-Claw CI/CD*,
 run `39314592197`, job `Tests / windows-latest / py3.11`: falla intermitente

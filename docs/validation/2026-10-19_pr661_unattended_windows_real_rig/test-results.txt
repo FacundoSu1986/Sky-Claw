@@ -82,19 +82,45 @@ FALLOS: ninguno.
 log crudo: pytest-focus.log
 
 --------------------------------------------------------------------------------
-GATE 6 — suite completa                                    EN CURSO (parcial)
+GATE 6 — suite completa                                    EXIT 1  ROJO (3 fallos)
 --------------------------------------------------------------------------------
 $ <qa>\venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider -rf
     --basetemp=<qa>\pytest-tmp-full
 
-ESTADO AL ESCRIBIR ESTE ARCHIVO (18:21 hora local): progreso 63%, sin fallos
-visibles hasta acá (solo puntos '.' y skips 's' en el log de progreso).
-Progreso: 24% @18:02:28 | 33% @18:07:41 | 44% @18:14:44 | 63% @18:21:47.
-exit code: PENDIENTE
-log crudo: pytest-full.log / pytest-full.exit
-Total esperado ~11937 tests (coincide con CI: 1 failed + 11912 passed + 24 skipped).
+3 failed, 11809 passed, 125 skipped, 135 warnings in 2332.23s (0:38:52)
+exit code: 1
+Total recolectado: 3 + 11809 + 125 = 11937 (mismo total que CI: 1+11912+24).
+log crudo: pytest-full.log / pytest-full.exit (24 KB; contiene bytes no-UTF8 por
+mojibake, leer con Get-Content).
 
---- [a completar si la corrida termina antes de cortar] ---
+FALLOS (nombre + mensaje + clasificación):
+1) tests/test_distributed_locks.py::test_renew_divisor_shrinks_detection_window
+   E  Failed: DID NOT RAISE <class 'sky_claw.app.db.locks.LockAcquisitionError'>
+   tests\test_distributed_locks.py:1437
+   Re-corrido AISLADO: 1 passed in 1.59s (pytest-rerun-renew.log).
+   -> FLAKE de timing/carga: esta máquina tarda 38:52 en la suite completa (CI: 21:50);
+      aislado no reproduce. No es defecto determinista.
+
+2) tests/test_runtime_vault_mutation_executor.py::TestRigRealSobreArbolDescartable::
+   test_apply_real_con_fallo_dispara_rollback_exacto
+   MutationRollbackError: Fallo restaurando 'Data/Scripts': CreateFileW falló al
+   abrir '...\Temp\SkyClaw-S4B-RIG-...\Data\Scripts' para seguridad: código 5
+   Re-corrido AISLADO: 1 failed in 0.34s (pytest-rerun-rig.log) -> determinista.
+   Causa: sesión con integridad Media (NO elevada; IsInRole(Administrator)=False,
+   whoami /groups -> S-1-16-8192). El runner windows-latest de GitHub corre elevado.
+   -> ENTORNO/PRIVILEGIOS del host, no código de #661. (El test no se auto-skipea
+      sin privilegios: debilidad del test.)
+
+3) tests/test_worktree_convention_invariant.py::
+   test_los_worktrees_no_principales_viven_bajo_la_convencion
+   AssertionError: Fuera de convención: ... 15 rutas ...
+   (C:/Worktrees/..., E:/SkyClaw_*..., E:/Skyclaw_Main_Sync/.claude/worktrees/...)
+   El test censa el registro REAL de git del host; hay 15 worktrees de OTRAS sesiones
+   fuera de la tabla LEGADOS de AGENTS.md.
+   -> ESTADO DEL HOST, no del código del worktree; pasaría en CI (checkout limpio).
+
+Ninguno de los 3 fallos pertenece a las suites DynDOLOD/UIA de #661: los tres quedan
+fuera de la expresión -k del gate 5, que quedó 100% verde.
 
 --------------------------------------------------------------------------------
 EXTRA — ROJO DE CI (no es gate local): causa y evidencia
