@@ -24,8 +24,9 @@ Dos propiedades del escáner, para que no se pueda esquivar sin querer:
   (``TOPE = 0.01``) se resuelven. Una expresión que el escáner no puede resolver
   (``TOPE * 2``, un argumento de helper, ``**kwargs``) **falla cerrado**: se
   reporta como sitio sin resolver en vez de contarse como "no es corto".
-* *la familia se enumera en todos los archivos*, no en uno: el presupuesto del
-  ``AppContext`` se escanea en cada ``tests/test_*.py`` que lo asigna.
+* *la familia se enumera en todos los archivos y con cualquier receptor*: el presupuesto
+  del ``AppContext`` se escanea en cada ``tests/test_*.py`` que escribe el atributo, se
+  llame ``ctx`` o no; ``+=`` y ``setattr(...)`` no se resuelven y fallan cerrado.
 
 **Límite:** el orden barrera→``stop()`` se verifica por posición en el fuente,
 no por dominancia de flujo de control (una barrera dentro de un ``if`` que no se
@@ -226,8 +227,8 @@ def test_el_wait_for_que_espera_el_deadline_del_teardown_tiene_margen() -> None:
 # ---------------------------------------------------------------------------
 
 # Estos presupuestos cortos son seguros porque el test espera `entro` (la task o el
-# startup que se niega a morir ya arrancó) ANTES de llamar a `ctx.stop()`, que es lo
-# que consume el presupuesto.
+# startup que se niega a morir ya arrancó) ANTES de llamar a `stop()`, que es lo que
+# consume el presupuesto.
 _APPCONTEXT_CON_BARRERA = frozenset(
     {
         ("test_app_context_arc01_arc03.py", "test_stop_agota_presupuesto_si_startup_ignora_cancelacion"),
@@ -259,44 +260,84 @@ def _espera_entro(funcion: _Funcion) -> list[tuple[int, int]]:
     ]
 
 
-def _llamadas_a_stop(funcion: _Funcion) -> list[tuple[int, int]]:
+def _llamadas_a_stop(funcion: _Funcion, receptores: frozenset[str]) -> list[tuple[int, int]]:
+    """Posiciones de ``<receptor>.stop(...)`` para cada receptor al que se le escribió el presupuesto."""
+    nombres = {f"{receptor}.stop" for receptor in receptores}
     return [
         (nodo.lineno, nodo.col_offset)
         for nodo in ast.walk(funcion)
-        if isinstance(nodo, ast.Call) and _nombre_punteado(nodo.func) == "ctx.stop"
+        if isinstance(nodo, ast.Call) and _nombre_punteado(nodo.func) in nombres
     ]
 
 
-def _barrera_antes_del_stop(funcion: _Funcion) -> bool:
+def _barrera_antes_del_stop(funcion: _Funcion, receptores: frozenset[str]) -> bool:
     """Hay barrera y hay ``stop()``, y la primera barrera precede al primer ``stop()``.
 
-    Falla cerrado: sin ``ctx.stop()`` visible la regla no se puede evaluar.
+    Falla cerrado: sin un ``<receptor>.stop()`` visible la regla no se puede evaluar.
     """
-    barreras, paradas = _espera_entro(funcion), _llamadas_a_stop(funcion)
+    barreras, paradas = _espera_entro(funcion), _llamadas_a_stop(funcion, receptores)
     return bool(barreras and paradas and min(barreras) < min(paradas))
 
 
-def _presupuestos_de_reloj() -> tuple[dict[tuple[str, str], _Funcion], list[tuple[str, str, float | None]]]:
-    """Tests que asignan ``ctx._startup_shutdown_timeout_s`` por debajo del umbral, en todos los archivos."""
-    cortos: dict[tuple[str, str], _Funcion] = {}
+_ATRIBUTO_PRESUPUESTO = "_startup_shutdown_timeout_s"
+
+
+def _escrituras_del_presupuesto(funcion: _Funcion, constantes: dict[str, float]) -> list[tuple[str, float | None]]:
+    """``(receptor, valor)`` de cada escritura del presupuesto en la función, con cualquier receptor.
+
+    La regla es sobre el atributo, no sobre cómo se llame la variable. Lo que no es una
+    asignación simple (``+=``, ``setattr(...)``) o no tiene valor numérico resoluble da
+    ``None``: falla cerrado.
+    """
+    escrituras: list[tuple[str, float | None]] = []
+    for nodo in ast.walk(funcion):
+        if isinstance(nodo, ast.Assign):
+            objetivos, valor = nodo.targets, _valor_numerico(nodo.value, constantes)
+        elif isinstance(nodo, ast.AnnAssign):
+            objetivos, valor = [nodo.target], _valor_numerico(nodo.value, constantes)
+        elif isinstance(nodo, ast.AugAssign):
+            objetivos, valor = [nodo.target], None
+        elif (
+            isinstance(nodo, ast.Call)
+            and _nombre_punteado(nodo.func).endswith("setattr")
+            and any(isinstance(a, ast.Constant) and a.value == _ATRIBUTO_PRESUPUESTO for a in nodo.args)
+        ):
+            escrituras.append((_nombre_punteado(nodo.args[0]) if nodo.args else "", None))
+            continue
+        else:
+            continue
+        escrituras.extend(
+            (_nombre_punteado(t.value), valor)
+            for t in objetivos
+            if isinstance(t, ast.Attribute) and t.attr == _ATRIBUTO_PRESUPUESTO
+        )
+    return escrituras
+
+
+def _presupuestos_de_reloj() -> tuple[
+    dict[tuple[str, str], tuple[_Funcion, frozenset[str]]], list[tuple[str, str, float | None]]
+]:
+    """Tests que escriben ``_startup_shutdown_timeout_s`` por debajo del umbral, en todos los archivos.
+
+    Devuelve los cortos con su función y los receptores a los que se les escribió, y todas las
+    escrituras (``None`` = no resoluble).
+    """
+    cortos: dict[tuple[str, str], tuple[_Funcion, frozenset[str]]] = {}
     todos: list[tuple[str, str, float | None]] = []
     for ruta in sorted(_TESTS.glob("test_*.py")):
         texto = ruta.read_text(encoding="utf-8")
-        if "_startup_shutdown_timeout_s" not in texto:
+        if _ATRIBUTO_PRESUPUESTO not in texto:
             continue
         arbol = ast.parse(texto)
         constantes = _constantes_del_modulo(arbol)
         for funcion in _funciones(arbol):
-            for nodo in ast.walk(funcion):
-                if not (
-                    isinstance(nodo, ast.Assign)
-                    and any(_nombre_punteado(t) == "ctx._startup_shutdown_timeout_s" for t in nodo.targets)
-                ):
-                    continue
-                valor = _valor_numerico(nodo.value, constantes)
+            receptores_cortos: set[str] = set()
+            for receptor, valor in _escrituras_del_presupuesto(funcion, constantes):
                 todos.append((ruta.name, funcion.name, valor))
                 if valor is not None and valor < _PRESUPUESTO_CORTO_S:
-                    cortos[(ruta.name, funcion.name)] = funcion
+                    receptores_cortos.add(receptor)
+            if receptores_cortos:
+                cortos[(ruta.name, funcion.name)] = (funcion, frozenset(receptores_cortos))
     return cortos, todos
 
 
@@ -318,12 +359,10 @@ def test_los_presupuestos_de_reloj_del_appcontext_esperan_el_arranque_del_cleanu
     )
     sin_barrera = sorted(
         clave
-        for clave, funcion in cortos.items()
-        if clave not in _APPCONTEXT_EXENTOS and not _barrera_antes_del_stop(funcion)
+        for clave, (funcion, receptores) in cortos.items()
+        if clave not in _APPCONTEXT_EXENTOS and not _barrera_antes_del_stop(funcion, receptores)
     )
-    assert not sin_barrera, (
-        f"presupuesto de reloj corto sin esperar `entro.wait()` ANTES de `ctx.stop()`: {sin_barrera}"
-    )
+    assert not sin_barrera, f"presupuesto de reloj corto sin esperar `entro.wait()` ANTES del `stop()`: {sin_barrera}"
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +374,7 @@ def _primera_funcion(fuente: str) -> _Funcion:
     return _funciones(ast.parse(fuente))[0]
 
 
-def test_una_constante_de_modulo_se_resuelve_y_lo_que_no_se_puede_resolver_da_none() -> None:
+def test_valor_numerico_constante_de_modulo_se_resuelve_e_irresoluble_da_none() -> None:
     arbol = ast.parse("TOPE = 0.01\nENTERO: int = 3\nFLAG = True\nCALCULADO = TOPE * 2\n")
     constantes = _constantes_del_modulo(arbol)
 
@@ -347,11 +386,37 @@ def test_una_constante_de_modulo_se_resuelve_y_lo_que_no_se_puede_resolver_da_no
     assert _valor_numerico(None, constantes) is None
 
 
-def test_la_barrera_tiene_que_preceder_al_stop_y_sin_stop_falla_cerrado() -> None:
+def test_barrera_antes_del_stop_exige_orden_y_sin_stop_falla_cerrado() -> None:
     barrera = "    await asyncio.wait_for(entro.wait(), timeout=1.0)\n"
     parada = "    await asyncio.wait_for(ctx.stop(), timeout=5.0)\n"
+    ctx = frozenset({"ctx"})
 
-    assert _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{barrera}{parada}"))
-    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{parada}{barrera}"))
-    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{parada}"))
-    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{barrera}"))
+    assert _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{barrera}{parada}"), ctx)
+    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{parada}{barrera}"), ctx)
+    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{parada}"), ctx)
+    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{barrera}"), ctx)
+    # El `stop()` que cuenta es el del receptor al que se le escribió el presupuesto, no el de otro.
+    assert not _barrera_antes_del_stop(_primera_funcion(f"async def t():\n{barrera}{parada}"), frozenset({"app"}))
+    assert _barrera_antes_del_stop(
+        _primera_funcion(f"async def t():\n{barrera}{parada.replace('ctx', 'app')}"), frozenset({"app"})
+    )
+
+
+def test_escrituras_del_presupuesto_cualquier_receptor_y_formas_no_simples_fallan_cerrado() -> None:
+    fuente = (
+        "def t(monkeypatch):\n"
+        "    ctx._startup_shutdown_timeout_s = 0.01\n"
+        "    self.app._startup_shutdown_timeout_s = TOPE\n"
+        "    otro._startup_shutdown_timeout_s: float = 0.2\n"
+        "    ctx._startup_shutdown_timeout_s += 1\n"
+        "    monkeypatch.setattr(ctx, '_startup_shutdown_timeout_s', 0.01)\n"
+        "    ctx._otro_atributo = 0.01\n"
+    )
+
+    assert _escrituras_del_presupuesto(_primera_funcion(fuente), {"TOPE": 0.05}) == [
+        ("ctx", 0.01),
+        ("self.app", 0.05),
+        ("otro", 0.2),
+        ("ctx", None),
+        ("ctx", None),
+    ]
