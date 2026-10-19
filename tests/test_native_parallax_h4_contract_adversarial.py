@@ -208,19 +208,27 @@ def _smooth_unit_field(n: int, seed: int = 7) -> np.ndarray:
 # ============================================================================
 
 
-def test_a1_forma_hw4_rechazada_sin_descartar_canal(m):
+# El tamaño destino recorre las DOS rutas hermanas: 4 reduce (8 -> 4) y 8 es la identidad. Una regresión
+# que restaure el atajo de identidad ANTES de validar la forma solo se ve con destino 8.
+_DESTINOS = pytest.mark.parametrize("destino", [4, 8], ids=["reduccion", "identidad"])
+
+
+@_DESTINOS
+def test_a1_forma_hw4_rechazada_sin_descartar_canal(m, destino):
     with pytest.raises(m.InvalidNormalShapeError):
-        m.resize_normal(np.zeros((8, 8, 4)), 4)
+        m.resize_normal(np.zeros((8, 8, 4)), destino)
 
 
-def test_a2_ndim2_rechazada(m):
+@_DESTINOS
+def test_a2_ndim2_rechazada(m, destino):
     with pytest.raises(m.InvalidNormalShapeError):
-        m.resize_normal(np.zeros((8, 8)), 4)
+        m.resize_normal(np.zeros((8, 8)), destino)
 
 
-def test_a3_dimensiones_vacias_rechazadas(m):
+@_DESTINOS
+def test_a3_dimensiones_vacias_rechazadas(m, destino):
     with pytest.raises(m.InvalidNormalShapeError):
-        m.resize_normal(np.zeros((0, 8, 3)), 4)
+        m.resize_normal(np.zeros((0, 8, 3)), destino)
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
@@ -305,6 +313,24 @@ def test_c2_identidad_direccion_confiable_norma_no_unitaria_renormaliza(m):
     res = m.resize_normal_diagnostic(n, 8)
     assert not res.degenerate
     assert float(np.max(np.abs(np.linalg.norm(res.array, axis=-1) - 1.0))) <= m.UNIT_NORM_TOLERANCE
+
+
+@pytest.mark.parametrize("api", ["resize_normal_diagnostic", "resize_normal"])
+@_DESTINOS
+def test_c2b_norma_no_unitaria_sin_clip_se_rechaza_en_las_dos_apis_y_rutas(m, api, destino):
+    """F01 = R2-lite (ratificada): una entrada cuyas componentes están DENTRO de [-1, 1], con norma por
+    encima del umbral de degeneración pero lejos de 1, no se renormaliza en silencio: se rechaza con
+    ``campo="norma_de_entrada"``. C2 (arriba) cubre el otro lado: componentes fuera de rango requieren
+    clip y quedan exentas de este rechazo."""
+    n = np.zeros((8, 8, 3))
+    n[..., 0] = 0.6
+    n[..., 2] = 0.6  # ‖·‖ ≈ 0.8485: > 5/16, en rango, no unitaria
+    assert 5.0 / 16.0 < float(np.linalg.norm(n[0, 0])) < 1.0 - 1e-3
+
+    with pytest.raises(m.InvalidNormalShapeError) as excinfo:
+        getattr(m, api)(n, destino)
+
+    assert getattr(excinfo.value, "campo", None) == "norma_de_entrada"
 
 
 def test_c3_identidad_subumbral_marca_y_preserva_crudo_bit_a_bit(m):
@@ -478,4 +504,7 @@ def test_f3_degeneracion_parcial_bandera_global_y_crudo_en_zonas_degeneradas(m):
     res = m.resize_normal_diagnostic(n, 8)
     assert res.degenerate == bool(mask_ref.any())
     assert res.degenerate_count == int(mask_ref.sum())
-    np.testing.assert_allclose(res.array[mask_ref], crudo_ref[mask_ref], rtol=0, atol=1e-6)
+    # Rama global fail-closed: con un solo píxel degenerado se devuelve TODO el crudo sin normalizar, no
+    # solo las zonas degeneradas (una implementación que renormalice el resto no debe pasar).
+    np.testing.assert_allclose(res.array, crudo_ref, rtol=0, atol=1e-6)
+    assert float(np.max(np.linalg.norm(res.array[~mask_ref], axis=-1))) < 1.0 - 1e-4  # el resto NO es unitario
