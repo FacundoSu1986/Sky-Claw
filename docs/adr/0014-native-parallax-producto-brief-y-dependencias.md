@@ -1,12 +1,16 @@
 # ADR 0014 — Generador nativo de parallax: Synthesis C como design brief, layout de producto y estrategia de dependencias
 
 **Fecha:** 2026-10-19
-**Estado:** Propuesta. Redactada por Claude Code como Tech Lead por delegación explícita del operador
+**Estado:** Aceptada el 2026-10-19 por el operador (instrucción en sesión: «Sí, aceptá el ADR 0014»),
+respuesta a la pregunta explícita de si aceptaba este ADR, en este PR aparte. Se propuso el mismo día
+(#748, merge `6319fb6c`), redactada por Claude Code como Tech Lead por delegación explícita del operador
 (instrucción en sesión, 2026-10-19: «tomá el rol de Tech Lead y hacé lo que sea necesario para avanzar
-[…] el objetivo es tener el generador de parallax nativo»). Mergear este PR **registra la propuesta**, no
-la acepta: el ADR sigue en `Propuesta` (como lo declara el índice) hasta que una persona cambie el estado a
-`Aceptada` en un PR aparte. Hasta entonces el código de producto que dependa de estas decisiones (NP-C0 en
-adelante) puede prepararse como borrador, pero no se fusiona.
+[…] el objetivo es tener el generador de parallax nativo»). Aceptar el ADR **adopta** las decisiones de §2
+—Synthesis C como design brief, layout separado de `research/`, extra opcional `native-parallax` con lock
+propio y `texconv` externo—, pero **no autoriza merges**: cada PR del orden de §2.5 (NP-D0, NP-C0, …) se
+revisa y se fusiona con autorización expresa, como cualquier cambio del repo. Lo que §6 marca como no
+verificado (receta del lock propio del extra, versión y licencia de `texconv`, decodificación de BC5/BC7
+reales) sigue sin verificar y lo demuestran NP-C0 y NP-E0 ejecutando.
 **Contexto de origen:** `origin/main` `b0737e1f` (merge de #742).
 **Relacionados:** [ADR 0013](0013-clean-room-native-parallax.md) (clean-room), issue #676 (preview
 productivo: tracker y Definition of Done), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`

@@ -5,7 +5,7 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0014 en este directorio (el 0014 está en estado `Propuesta`).
+> **Fuentes canónicas:** ADR 0001–0014 en este directorio (el 0014 está en estado `Aceptada`, desde 2026-10-19).
 >
 > **Última verificación:** 2026-10-10; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
 > con el diseño de P4 congelado (P4-D0)**. **El estado vigente es §45**; el índice de
