@@ -1628,31 +1628,60 @@ def test_la_fuente_vacia_sigue_siendo_legitima(tmp_path: pathlib.Path) -> None:
     assert propuesta.scope.source_activation.generation_id is None
 
 
-def test_el_ledger_que_no_coincide_con_su_witness_se_reconstruye(tmp_path: pathlib.Path) -> None:
+#: Campo del ledger ↔ campo del scope que lo sustenta. El guard compara los
+#: TRES; el test enumera los tres para que borrar cualquiera de las tres
+#: comparaciones rompa un caso, en vez de sobrevivir por muestreo (AGENTS.md:
+#: «anclala con un test que enumere, no que muestree»).
+_IDENTIDAD_EMISION = {
+    "last_issued_approval_id": "approval_id",
+    "last_issued_scope_digest": "approval_scope_digest",
+    "last_issued_provenance": "approval_provenance",
+}
+
+
+@pytest.mark.parametrize(
+    ("campo_ledger", "valor_ajeno"),
+    [
+        ("last_issued_approval_id", T2),
+        # ``"0" * 64`` es un digest con FORMA válida: el parseo lo acepta y sólo
+        # el cotejo contra el witness lo delata. Con un valor malformado el test
+        # pasaría por fail-closed del parser y no probaría el guard.
+        ("last_issued_scope_digest", "0" * 64),
+        ("last_issued_provenance", "ui:req-2"),
+    ],
+    ids=["approval_id", "scope_digest", "provenance"],
+)
+def test_el_ledger_que_no_coincide_con_su_witness_se_reconstruye(
+    tmp_path: pathlib.Path, campo_ledger: str, valor_ajeno: str
+) -> None:
     """La caché puede quedar ATRÁS, pero no puede CONTRADECIR a su autoridad.
 
     Un ``approval.json`` restaurado con la misma ``approval_seq``, el mismo
-    lifecycle y una revisión alta —pero con OTRO ``approval_id``— satisface
+    lifecycle y una revisión alta —pero con otra identidad de emisión— satisface
     ``max(H,T) == last_issued`` y la clasificación devolvía ``CONSISTENT``.
 
     El daño no es de autorización sino de bloqueo permanente: la propuesta ve una
-    aprobación viva, el consumo rechaza tanto el id del ledger como el del
+    aprobación viva, el consumo rechaza tanto la identidad del ledger como la del
     witness, y la reconciliación se niega a reconstruir una caché que §37.6
     declara derivable de la evidencia durable. El witness es la autoridad; si
     discrepan, la caché se reescribe.
+
+    Se parametriza sobre los TRES campos de identidad que el guard coteja: cada
+    caso es load-bearing por separado, así que quitar una sola de las tres
+    comparaciones deja un test en rojo.
     """
     root = _root(tmp_path)
     propuesta, _ = _emitir_fixture(root)
     ruta = approval_ledger_path(root)
     payload = json.loads(ruta.read_text(encoding="utf-8"))
-    payload["last_issued_approval_id"] = T2
+    payload[campo_ledger] = valor_ajeno
     ruta.write_text(json.dumps(payload), encoding="utf-8")
 
     veredicto, _motivo = clasificar_autoridad(cargar_ledger_aprobacion(root), derivar_autoridad_aprobacion(root))
-    assert veredicto is not VeredictoAutoridad.CONSISTENT
+    assert veredicto is VeredictoAutoridad.LEDGER_RETROCEDIDO
 
     reconciliacion = reconciliar_aprobacion(root)
     assert reconciliacion.cache_reconstruida is True
     reconstruido = cargar_ledger_aprobacion(root).ledger
     assert reconstruido is not None
-    assert reconstruido.last_issued_approval_id == propuesta.scope.approval_id
+    assert getattr(reconstruido, campo_ledger) == getattr(propuesta.scope, _IDENTIDAD_EMISION[campo_ledger])
