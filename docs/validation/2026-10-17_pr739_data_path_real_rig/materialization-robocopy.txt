@@ -1,0 +1,32 @@
+rc=3
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Herramienta para copia eficaz de archivos         
+-------------------------------------------------------------------------------
+
+  Inicio: sÃ¡bado, 17 de octubre de 202616:28:15
+   Origen : C:\SkyClaw_Rigs\PR739 Data Path\mo2-instance\mods\TexGen Output\textures\
+     Destino : C:\SkyClaw_Rigs\PR739 Data Path\game\Data\textures\
+
+    Archivos: *.*
+	    
+  Opciones: *.* /NDL /NFL /S /E /DCOPY:DAT /COPY:DAT /NP /IS /R:2 /W:2 
+
+------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------
+
+               Total   Copiado   OmitidoNo coincidencia     ERROR    Extras
+Director.:        28         9        19         0         0        14
+ Archivos:      1362      1362         0         0         0        94
+    Bytes:  132.04 m  132.04 m         0         0         0   38.70 m
+   Tiempo:   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+Velocidad:           193647300 Bytes/s
+Velocidad:           11080.587 Megabytes/min
+   Finalizado: sÃ¡bado, 17 de octubre de 2026 16:28:16
+
+
+

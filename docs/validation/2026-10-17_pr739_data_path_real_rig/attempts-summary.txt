@@ -1,0 +1,54 @@
+INTENTOS REALES — TRAZABILIDAD COMPLETA
+
+TexGen
+  Intento 1 (16:22–16:24): el initial gate observó MATCH; el driver escribió el
+    Output con LegacyIAccessible (el campo ya era equivalente con backslash
+    final) y el final gate no volvió a encontrar el TEdit
+    (CONTROL_NO_ENCONTRADO). El servicio terminó el tool; sin generación.
+    Evidencia local en evidence-attempt1-20261017_162506.
+  Intento 2 (16:25–16:27): el driver no mutó el campo (ya coincidía); initial
+    MATCH, HITL aprobado, final MATCH, Start y Exit TexGen. ÉXITO del tool.
+    Log: [01:29] TexGen completed successfully; exit code 0; terminal Exit TexGen.
+    Entrega: needs_deployment=true (corte standalone esperado), handoff creado.
+
+Handoff TexGen -> DynDOLOD
+  Materialización de TexGen Output\textures en game\Data\textures mediante
+  robocopy (rc=3: archivos copiados + extras; 1362/1362 archivos, 0 errores).
+  Validador real: RESULTADO: VISIBILIDAD_OK.
+  Journal final: deployment_handoffs.handoff_id=1, state=completed (19:58:53Z);
+  expected_digest 8fa39ec3c3091bcc0a10260642a32d39f3f1eb79d1a6fdeb75a5350817b563c2,
+  expected_files 1362, expected_bytes 138.457.820.
+  observed_digest/observed_files/observed_bytes quedaron NULL en la DB: el
+  validador externo sí pasó; el servicio no persistió los observados (gap de
+  evidencia durable, no de visibilidad).
+
+DynDOLOD
+  Intento 1 (16:29–16:35): el driver clasificó mal el modal DLL (typo
+    "dynodlod" vs "dyndolod") y no lo cerró; el operador lo cerró y operó la GUI.
+    El gate quedó en proceso_termino y el servicio hizo rollback de la salida.
+    El log real muestra generación y Save and Exit; el artefacto fue descartado
+    por el pipeline (TX2 pendiente).
+  Intento 2 (16:37–16:43): el driver cerró Ignore con Invoke UIA; el inicial
+    gate falló PID_NO_OBSERVABLE (una ventana transitoria sin ProcessId
+    legible). El operador operó Start/Save; el servicio hizo rollback (TX3
+    pendiente). Log real con generación/Save and Exit.
+  Intento 3 (16:46–16:52): el operador pulsó Start antes de que el driver
+    encontrara el TEdit; el driver terminó WIZARD_TIMEOUT; el gate quedó en
+    proceso_termino y el servicio hizo rollback (TX4 pendiente). Log real con
+    generación/Save and Exit.
+  Intento 4 (16:52–16:58): wizard simple sin preset/Advanced; Output ya
+    coincidía y el driver NO lo mutó; initial MATCH; HITL aprobado; final MATCH;
+    START_HABILITADO. El driver no encontró el botón Start (BOTON_INICIO_AMBIGUO,
+    candidates=[]); el OPERADOR pulsó Start (después de la habilitación) y Save
+    and Exit. El servicio cerró success=True, needs_deployment=False y empaquetó
+    DynDOLOD Output. TX5 committed.
+
+Diagnóstico UIA
+  uia-window-probe.py se ejecutó una vez para diagnosticar la ventana sin pid;
+  no pulsó Start ni generó LODs (proceso terminado en el wizard). No es
+  evidencia de aceptación.
+
+Estado durable final
+  TX1 committed (TexGen/handoff), TX2/TX3/TX4 pending (intentos fallidos),
+  TX5 committed (DynDOLOD final). No se ejecutó recuperación ni borrado de las
+  TX pendientes: quedan registradas para decisión del Tech Lead.

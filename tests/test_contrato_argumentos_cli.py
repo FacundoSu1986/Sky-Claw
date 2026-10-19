@@ -176,6 +176,12 @@ LANZADORES_ESPERADOS = {
     # [python, -m, sky_claw.local.tools.dyndolod_uia_helper, <dir>], sin flags
     # de ninguna herramienta de modding que verificar.
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": 1,
+    # #661 P3: hermano del de arriba para el driver MUTANTE de la etapa 9
+    # desatendida. Lanza SU worker descartable con el mismo patrón (mismo
+    # intérprete, módulo propio, deadline duro): argv
+    # [python, -m, sky_claw.local.tools.dyndolod_uia_driver_helper, <dir>], sin
+    # flags de herramientas de terceros. Infra, no CLI de modding.
+    "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": 1,
     # `subprocess.run(["7z", ...])` para listar/extraer archives descargados
     # (xEdit/Pandora) con sandbox de zip-slip — utilidad de archivado, no el
     # CLI propio de ninguna herramienta de modding. Aterrizó en `main` (#418)
@@ -266,7 +272,10 @@ PROCEDENCIA_DE_FLAGS = {
     "sky_claw/local/mo2/vfs.py": "SIN VERIFICAR — MO2 `-p` / `moshortcut://`",
     "sky_claw/local/tools/dyndolod_runner.py": (
         "DynDOLOD — dyndolod.info/Help/Command-Line-Argument + Docs/DynDOLOD-Shortcut.txt "
-        "del paquete + strings del binario (Subsystem=2, GUI)"
+        "del paquete + strings del binario (Subsystem=2, GUI); verificado por efecto en los "
+        "rigs commiteados docs/validation/2026-09-13_pr580_real_rig/ (T5: el backslash final "
+        "duplicado por list2cmdline se tolera y normaliza en -o:/-d:/-m:/-t:) y "
+        "docs/validation/2026-09-10_t5v2_dyndolod_stage9.md"
     ),
     "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
     "sky_claw/local/tools/vramr_service.py": "SIN VERIFICAR — VRAMr se distribuye como scripts PowerShell en Nexus",
@@ -834,7 +843,9 @@ def _argv_segun_delphi(cmdline: str) -> list[str]:
     strings) y en que xEdit lee sus parámetros con ``ParamStr``/``ParamCount``
     (``xeInit.pas``). Eso hace a esta función un oráculo **mucho** más cercano que
     ``CommandLineToArgvW``, pero sigue siendo INFERENCIA: el cierre autoritativo es
-    T5 leyendo el ``Using Output Path:`` que el binario imprime en su log.
+    la corrida real commiteada en ``docs/validation/2026-09-13_pr580_real_rig/``,
+    que leyó el ``Using Output Path:`` que el binario imprime en su log y confirmó
+    que el backslash duplicado se tolera y normaliza (T5, opción A).
     """
     argv: list[str] = []
     i, n = 0, len(cmdline)
@@ -955,7 +966,8 @@ def test_switch_de_ruta_round_trip_sintetico(etiqueta: str, base: str, duplica: 
         f"[{etiqueta}] Delphi no ve lo esperado.\n"
         f"  argv   : {arg!r}\n  cmdline: {cmdline}\n"
         f"  delphi : {delphi!r}\n  esperado: {esperado_delphi!r}\n"
-        "Si la divergencia con espacios desapareció, releé la decisión A/B/C de T5."
+        "Si la divergencia con espacios desapareció, releé la decisión de T5 ya tomada "
+        "(opción A: dejar el duplicado; rig 2026-09-13_pr580_real_rig) en vez de borrar el test."
     )
 
 
@@ -1012,7 +1024,7 @@ def test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers(tmp_path: pathlib.
 
 @pytest.mark.skipif(sys.platform != "win32", reason="serialización de línea de comandos de Windows")
 def test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi(tmp_path: pathlib.Path) -> None:
-    """Ruta CON espacios: los dos parsers **no** ven lo mismo. Pendiente de T5.
+    """Ruta CON espacios: los dos parsers **no** ven lo mismo. T5 respondido por el rig.
 
     Hallazgo del revisor adversarial en el PR #462, confirmado por medición:
     ``list2cmdline`` cita solo si el argumento tiene espacios, y al citar **duplica
@@ -1036,18 +1048,26 @@ def test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi(tmp_path: pathlib
     necesita un flag para fabricarla, y ese detalle es la evidencia: la rama que este
     test ancla es la que corre siempre.
 
-    Este test **no afirma que el vector sea correcto** —eso es justo lo que no está
-    verificado— sino que ancla la divergencia exacta que hoy existe, para que:
+    Este test **no afirma que el vector sea correcto** —esa pregunta la contestó el
+    rig, no este oráculo— sino que ancla la divergencia exacta de la serialización,
+    para que:
 
-    * nadie la lea como verificada (el test anterior la daba por buena);
+    * nadie la lea como verificada por el oráculo (el test anterior la daba por buena);
     * si alguien cambia la serialización y los dos parsers pasan a coincidir, este
       test se ponga ROJO y obligue a releer la decisión en vez de dejarla pasar.
 
-    Lo resuelve **T5** con una corrida contra Alpha-209 real: el binario ecoa la
-    ruta que parseó en su log (``Using Output Path: …``), así que una sola corrida
-    con un ``-o:`` que contenga espacios decide entre las tres formas candidatas
-    (dejar el backslash duplicado si el binario lo tolera / no emitir el ``\\``
-    final / línea verbatim). Hasta entonces queda declarado, no supuesto.
+    **T5 quedó respondido por una corrida real y commiteada**
+    (``docs/validation/2026-09-13_pr580_real_rig/``; también el rig previo
+    ``docs/validation/2026-09-10_t5v2_dyndolod_stage9.md``, criterio 4). La línea
+    realmente enviada lleva el duplicado —``"-o:E:\\Sky-Claw T5 Rig\\PR2
+    Work\\DynDOLOD\\DynDOLOD\\\\"``, ``dyndolod-command.txt``— y el eco del binario
+    (``dyndolod-log.txt:12``) devuelve el backslash **normalizado**:
+    ``Using Output Path: E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\``.
+    Las tres formas candidatas quedaron decididas por la opción A: **dejar el
+    duplicado**, que es lo que ``_switch_de_ruta`` hace, porque el binario lo
+    tolera y lo normaliza (verificado en ``-o:``, ``-d:``, ``-m:`` y ``-t:``, con
+    espacios). Este test conserva su valor como ancla de la serialización; ya no
+    declara una pregunta abierta.
     """
     runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Program Files Sky Claw")
 

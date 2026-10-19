@@ -1,0 +1,12 @@
+{
+  "handoff": {
+    "handoff_id": 1,
+    "state": "awaiting_deployment",
+    "expected_profile": "DataPathRig",
+    "expected_digest": "8fa39ec3c3091bcc0a10260642a32d39f3f1eb79d1a6fdeb75a5350817b563c2",
+    "expected_files": 1362,
+    "expected_bytes": 138457820
+  },
+  "texgen_result": null,
+  "needs_deployment": true
+}

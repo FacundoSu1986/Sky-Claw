@@ -12,6 +12,10 @@
 > **Sincronización parcial xEdit LLM:** 2026-09-04 sobre `main` `10354c2b` (#548);
 > limitada a la frontera read-only de `run_xedit_script`. No reverifica el resto.
 
+> **Sincronización parcial contrato `summary`:** 2026-10-12 sobre `main` `da738b7`
+> (#549); limitada a la lectura de `SUMMARY` en `run_xedit_script` y
+> `ConflictAnalyzer.analyze`. No reverifica el resto.
+
 ## Entradas y controles
 
 | Frontera | Control principal |
@@ -62,6 +66,17 @@ Esto **no** significa que todas las rutas internas de xEdit sean read-only: los
 rituales/orquestador ejecutan xEdit mutante por otra frontera
 (`XEditPipelineService`, con lock, journal y rollback), con contratos distintos.
 Ancla: `tests/test_xedit_agent_readonly_policy.py`.
+
+El contrato del payload `list_all_conflicts.pas` (#549) es coherente entre sus dos
+lectores: `ConflictAnalyzer.analyze` (superficie GUI/orquestador) y `run_xedit_script`
+(superficie del agente LLM) exigen que el `SUMMARY` exista y que su conteo cierre contra
+los conflictos parseados, y fallan cerrado si no. La diferencia deliberada es la
+compatibilidad: sólo la tool del agente acepta un `XEditResult` preparseado por un
+adapter heredado sin stdout, y ahí la ausencia de resumen se representa de forma
+explícita — `summary` es `None`, clave siempre presente, y no un `{}` que simule un
+resumen validado. La lectura de `parse_summary_line` está anclada por censo AST en
+`tests/test_xedit_summary_contract_invariant.py`: un consumidor nuevo del protocolo no
+puede heredar la rama ambigua en silencio.
 
 ## Secrets
 

@@ -16,7 +16,7 @@ from sky_claw.app.agent.tools.xedit_policy import (
     XEDIT_AGENT_SCRIPT_ALIASES,
 )
 from sky_claw.app.agent.tools.xedit_readonly_tool import run_xedit_script
-from sky_claw.local.xedit.output_parser import XEditResult
+from sky_claw.local.xedit.output_parser import XEditConflict, XEditResult
 
 _ESPERADOS_CANONICOS = frozenset(
     {
@@ -231,3 +231,169 @@ async def test_cancelled_error_se_propaga_sin_convertirse_en_json() -> None:
 
     assert runner.stageados == [["list_all_conflicts.pas"]]
     assert runner.ejecuciones == [("list_all_conflicts.pas", ["Skyrim.esm"])]
+
+
+# =============================================================================
+# Contrato de ``summary`` en las dos ramas de list_all_conflicts.pas (#549)
+# =============================================================================
+
+
+#: Juego de claves que la tool devuelve SIEMPRE, haya o no stdout de protocolo.
+#: Congelado por igualdad: una clave que aparece en una rama y no en la otra es
+#: exactamente la ambigüedad que este contrato existe para cerrar.
+_CLAVES_PAYLOAD_CONFLICTOS = frozenset(
+    {"success", "message", "script", "return_code", "processed_plugins", "conflicts", "summary"}
+)
+
+
+class _RunnerConStdout:
+    """Doble que devuelve un ``raw_stdout`` arbitrario (runner productivo real)."""
+
+    def __init__(self, raw_stdout: str) -> None:
+        self._raw_stdout = raw_stdout
+
+    async def ensure_scripts_staged(self, script_names: list[str]) -> list[Any]:
+        del script_names
+        return []
+
+    async def run_script(
+        self,
+        script_name: str,
+        plugins: list[str],
+        *,
+        timeout: int | None = None,
+    ) -> XEditResult:
+        del timeout, script_name
+        return XEditResult(return_code=0, processed_plugins=[], errors=[], raw_stdout=self._raw_stdout)
+
+
+class _RunnerLegacySinStdout:
+    """Doble de un adapter heredado: ``XEditResult`` preparseado y sin stdout."""
+
+    def __init__(self, conflictos: list[XEditConflict]) -> None:
+        self._conflictos = conflictos
+        self.stageados: list[list[str]] = []
+
+    async def ensure_scripts_staged(self, script_names: list[str]) -> list[Any]:
+        self.stageados.append(list(script_names))
+        return []
+
+    async def run_script(
+        self,
+        script_name: str,
+        plugins: list[str],
+        *,
+        timeout: int | None = None,
+    ) -> XEditResult:
+        del timeout, script_name
+        return XEditResult(
+            return_code=0,
+            processed_plugins=list(plugins),
+            errors=[],
+            conflicts=list(self._conflictos),
+            raw_stdout="",
+        )
+
+
+async def test_el_protocolo_validado_devuelve_el_summary_de_xedit() -> None:
+    """Con stdout de protocolo el resumen es el dict parseado, no una aproximación nuestra."""
+    # Preparar
+    stdout = "CONFLICT|00012345|IronSword|WEAP|Winner.esp|Loser.esp\nSUMMARY|total_conflicts=1|critical=0|minor=1\n"
+
+    # Actuar
+    resultado = json.loads(await run_xedit_script(_RunnerConStdout(stdout), "list_all_conflicts.pas", ["Skyrim.esm"]))
+
+    # Verificar
+    assert resultado["summary"] == {"total_conflicts": 1, "critical": 0, "minor": 1}
+    assert len(resultado["conflicts"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("stdout", "mensaje"),
+    [
+        pytest.param(
+            "CONFLICT|00012345|IronSword|WEAP|Winner.esp|Loser.esp\n",
+            "truncada",
+            id="sin-SUMMARY",
+        ),
+        pytest.param(
+            "CONFLICT|00012345|IronSword|WEAP|Winner.esp|Loser.esp\n"
+            "CONFLICT|00012346|IronAxe|WEAP|Winner.esp|Loser.esp\n"
+            "SUMMARY|total_conflicts=5|critical=0|minor=5\n",
+            "inconsistente",
+            id="conteo-no-cierra",
+        ),
+    ],
+)
+async def test_un_protocolo_desalineado_falla_cerrado_y_no_devuelve_un_summary_parcial(
+    stdout: str, mensaje: str
+) -> None:
+    """La ruta estricta sigue sin admitir resúmenes dudosos: error JSON, nunca éxito."""
+    # Preparar
+    runner = _RunnerConStdout(stdout)
+
+    # Actuar
+    resultado = json.loads(await run_xedit_script(runner, "list_all_conflicts.pas", ["Skyrim.esm"]))
+
+    # Verificar
+    assert resultado["success"] is False
+    assert mensaje in resultado["message"]
+    assert "summary" not in resultado
+
+
+async def test_adapter_legacy_sin_stdout_declara_la_ausencia_de_summary() -> None:
+    """Un runner preparseado conserva sus conflictos y marca el resumen como inexistente."""
+    # Preparar
+    runner = _RunnerLegacySinStdout([XEditConflict(plugin="Requiem.esp", record="WEAP", detail="Damage")])
+
+    # Actuar
+    resultado = json.loads(await run_xedit_script(runner, "list_all_conflicts.pas", ["Skyrim.esm"]))
+
+    # Verificar
+    assert resultado["success"] is True
+    assert resultado["conflicts"] == [{"plugin": "Requiem.esp", "record": "WEAP", "detail": "Damage"}]
+    assert resultado["summary"] is None, "sin protocolo no hay resumen: None, no un dict vacío"
+    assert runner.stageados == [["list_all_conflicts.pas"]]
+
+
+async def test_adapter_legacy_no_inventa_un_conteo_del_protocolo() -> None:
+    """``total_conflicts`` sólo puede venir de xEdit; la rama legacy no lo fabrica."""
+    # Preparar
+    runner = _RunnerLegacySinStdout([XEditConflict(plugin="A.esp", record="NPC_", detail="d")])
+
+    # Actuar
+    payload = await run_xedit_script(runner, "list_all_conflicts.pas", ["Skyrim.esm"])
+
+    # Verificar
+    assert "total_conflicts" not in payload
+    assert '"summary": null' in payload
+
+
+async def test_las_dos_rutas_comparten_el_mismo_juego_de_claves() -> None:
+    """El payload es estable entre la ruta validada y la legacy: cambia el valor, no la forma."""
+    # Preparar
+    stdout = "SUMMARY|total_conflicts=0|critical=0|minor=0\n"
+
+    # Actuar
+    estricto = json.loads(await run_xedit_script(_RunnerConStdout(stdout), "list_all_conflicts.pas", ["Skyrim.esm"]))
+    legacy = json.loads(
+        await run_xedit_script(
+            _RunnerLegacySinStdout([XEditConflict(plugin="A.esp", record="WEAP")]),
+            "list_all_conflicts.pas",
+            ["Skyrim.esm"],
+        )
+    )
+
+    # Verificar
+    assert frozenset(estricto) == _CLAVES_PAYLOAD_CONFLICTOS
+    assert frozenset(legacy) == _CLAVES_PAYLOAD_CONFLICTOS
+
+
+async def test_adapter_legacy_sin_stdout_y_sin_conflictos_sigue_fallando_cerrado() -> None:
+    """Cero conflictos preparseados no distingue "nada que reportar" de "xEdit no escribió"."""
+    # Preparar / Actuar
+    resultado = json.loads(await run_xedit_script(_RunnerLegacySinStdout([]), "list_all_conflicts.pas", ["Skyrim.esm"]))
+
+    # Verificar
+    assert resultado["success"] is False
+    assert "vacía: falta SUMMARY|total_conflicts" in resultado["message"]

@@ -169,10 +169,13 @@ class DynDOLODPipelineStartedPayload(BaseModel):
         preset: Nivel de calidad del preset (Low, Medium, High) — metadato:
             lo elige el humano en el asistente de la herramienta.
         run_texgen: Si se ejecutará TexGen antes de DynDOLOD.
-        assisted: La etapa 9 es ASISTIDA: los binarios no tienen modo
-            desatendido (preset y worldspaces son botones de la GUI), así que
-            el operador debe interactuar con la ventana del asistente.
-        operator_instructions: Qué debe hacer el operador en la ventana.
+        assisted: ``True`` cuando la corrida es ASISTIDA (el operador opera la
+            ventana del asistente en la PC); ``False`` cuando es DESATENDIDA
+            (#661: Sky-Claw opera la GUI por UI Automation tras una aprobación
+            remota de la configuración).
+        operator_instructions: Qué debe hacer (o no hacer) el operador.
+        interaction_mode: ``"asistido"`` / ``"desatendido"`` — el modo explícito
+            de la corrida, para que un consumidor no lo infiera del bool.
         started_at: Timestamp de inicio (epoch float, autogenerado).
     """
 
@@ -185,6 +188,7 @@ class DynDOLODPipelineStartedPayload(BaseModel):
         "La etapa 9 es asistida: seleccioná el preset y los worldspaces en la "
         "ventana de TexGen/DynDOLOD y completá el asistente; el pipeline espera."
     )
+    interaction_mode: str = "asistido"
     started_at: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:

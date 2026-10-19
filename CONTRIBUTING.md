@@ -89,13 +89,13 @@ El pipeline de CI tiene 5 gates bloqueantes. Antes de abrir un PR, verifica loca
 Ambos comandos deben pasar sin errores:
 
 ```bash
-ruff check sky_claw/ tests/
-ruff format --check sky_claw/ tests/
+ruff check sky_claw/ scripts/ tests/
+ruff format --check sky_claw/ scripts/ tests/
 ```
 
 Para formatear automáticamente:
 ```bash
-ruff format sky_claw/ tests/
+ruff format sky_claw/ scripts/ tests/
 ```
 
 ### 3.2 Tipado Estático (Mypy)
@@ -103,12 +103,12 @@ ruff format sky_claw/ tests/
 Mypy es **bloqueante** en CI. No es solo informativo.
 
 ```bash
-mypy sky_claw/
+mypy sky_claw/ scripts/
 ```
 
 ### 3.3 Seguridad (Bandit & pip-audit)
 
-El CI ejecuta `bandit`, `pip-audit --strict` y `npm audit`. Evita introducir dependencias con vulnerabilidades conocidas o patrones inseguros (ej. `eval()`, `subprocess` con `shell=True`).
+El CI ejecuta `bandit -r sky_claw/ scripts/ -ll`, `pip-audit --strict` y `npm audit`. Bandit cubre también los scripts de ingeniería. Evita introducir dependencias con vulnerabilidades conocidas o patrones inseguros (ej. `eval()`, `subprocess` con `shell=True`).
 
 ---
 
@@ -138,7 +138,7 @@ prohíbe — corregí la fuente, no agregues una tercera versión.
 ### 5.2 Creación del PR
 
 1.  Asegúrate de que todos los tests pasan localmente: `pytest`.
-2.  Ejecuta los linters: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/` (los tres, como en CI — ver §3).
+2.  Ejecuta los linters: `ruff check sky_claw/ scripts/ tests/`, `ruff format --check sky_claw/ scripts/ tests/` y `mypy sky_claw/ scripts/` (los tres, como en CI — ver §3).
 3.  Pushea tu rama y abre un PR en GitHub.
 4.  El título del PR debe ser claro y conciso (ej. "feat: Añadir soporte para BodySlide Batch Build").
 5.  En la descripción del PR, vincula el issue o ticket correspondiente (ej. "Cierra #123").

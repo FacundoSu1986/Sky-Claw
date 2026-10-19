@@ -7,6 +7,27 @@
 > está `FROZEN` y su literal se respeta. La evidencia nueva de F02 se registra bajo su **propio
 > token** (`R7_NYQUIST_ATTAINMENT`), precisamente para no reescribir una fila congelada.
 
+> **Actualización del 2026-10-19 — F01 adjudicado como R2-lite (opción B de la reconciliación).**
+> Decisión delegada del Tech Lead, **pendiente de ratificación humana antes del merge**. La entrada
+> que **no** requirió clip y cuya norma se desvía de 1 más de `UNIT_NORM_TOLERANCE` se **rechaza**
+> (`InvalidNormalShapeError`, `campo="norma_de_entrada"`) en los **dos** caminos; lo que requirió
+> clip sigue tolerado (N-11) y `L < DEGENERATE_THRESHOLD` conserva la precedencia (D-06).
+> Motivos: es la lectura literal de V-01; no enmienda ninguna otra regla cerrada; cierra el riesgo
+> de aceptar en silencio una normal mal decodificada a `[0,1]` (reproducido: `(0.5, 0.5, 1.0)` salía
+> como `(0.408, 0.408, 0.816)`); y el pipeline real no cambia, porque `decode_normal_image` ya
+> entrega normales unitarias. Las secciones de F01 de abajo describen la lectura **anterior (R1,
+> renormalizar)** y se conservan como historial. R7 no cambia: `5/16` queda como heurística
+> declarada y la decisión de precisión angular se mueve al Slice 3 (censo de la cota por asset).
+>
+> ```text
+> F01_RESOLUTION             = R2_LITE_IMPLEMENTED  (decisión delegada; pendiente de ratificación)
+> F01_CONTRACT_AMENDMENT     = PENDING_TECH_LEAD    (falta ratificar la regla nueva de N-11)
+> F01_DIVERGES_FROM_V01_TEXT = NO                   (el código vigente coincide con V-01)
+> R7_THRESHOLD_KIND          = HEURISTIC (RMS)      (SIN CAMBIO)
+> R7_NUMERIC_DERIVATION      = BLOCKED              (SIN CAMBIO)
+> H4_CODE_MERGE_AUTHORIZED   = NO
+> ```
+
 ## 0. Procedencia
 
 | Campo | Valor |
@@ -171,10 +192,11 @@ Pesos 1-D derivados del oráculo por respuesta a impulsos:
     k=8  -> 16 taps                         sum(w^2) = 0.0830078
     k=16 -> 32 taps                         sum(w^2) = 0.0416260
 
-Cruce RMS medido (criterio: RMS(delta_theta) <= q_ang, q = 2/255; malla de paso 0.02,
-así que son COTAS SUPERIORES del cruce real):
-    k=2 -> <= 0.10      k=4 -> <= 0.06      k=8 -> <= 0.04      k=16 -> <= 0.02
-Todos por debajo de DEGENERATE_THRESHOLD = 0.3125 (margen ~2.4x-3x).
+Cruce RMS medido (criterio: RMS(delta_theta) <= q_ang, q = 2/255; malla
+linspace(0.02, 0.60, 25), paso ~0.0242, así que son COTAS SUPERIORES del cruce real):
+    k=2 -> 0.0925      k=4 -> 0.0683      k=8 -> 0.0442      k=16 -> 0.0200
+Todos por debajo de DEGENERATE_THRESHOLD = 0.3125 (margen ~3.4x-15.6x, sólo bajo RMS;
+para k=16 el primer punto de la malla ya cumple, así que 15.6x es un mínimo).
 Criterio NO trivial: en L = 0.02 el RMS lo incumple, así que la prueba discrimina.
 ```
 
@@ -214,7 +236,8 @@ R7_THRESHOLD_VALUE         = 5/16  (CONSERVADO; prohibido recalibrarlo con corpu
 R7_WORST_CASE_PREMISE      = CONJECTURE_NOT_FALSIFIED  (SIN CAMBIO: gate #717 §6.1, FROZEN)
 R7_NYQUIST_ATTAINMENT      = ESTABLISHED_AS_ATTAINED_BOUND  (token NUEVO de este slice)
 R7_WORST_CASE_CROSSING     = 1/2   (token NUEVO del slice de RECONCILIACIÓN; ver §3.1)
-R7_VALUE_IS_CONSERVATIVE   = YES (medido, k en {2,4,8,16}, criterio predefinido)
+R7_VALUE_IS_CONSERVATIVE   = YES_UNDER_RMS_ONLY (medido, k en {2,4,8,16}, criterio predefinido);
+                             NO bajo el peor caso coherente (cruce 1/2, ver §3.1)
 R7_NUMERIC_VALUE_FROM_CORPUS = NO
 M6_IMPLEMENTATION_BLOCKED  = YES
 H4_CODE_MERGE_AUTHORIZED   = NO (queda a criterio del revisor)

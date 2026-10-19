@@ -1,0 +1,32 @@
+RUTAS PROTEGIDAS — ESCANEO READ-ONLY POSTERIOR
+
+Inicio de ventana: 2026-10-17T16:00:00 (local)
+
+Raíz                                  Archivos   Bytes          Último mtime        Reparse
+G:\Modding\MO2\SkyrimSE\profiles            256      33.208.397  2026-10-17T16:40:02  0
+G:\Modding\MO2\SkyrimSE\overwrite         3.618   4.801.130.862  2026-10-17T16:39:37  0
+G:\Modding\MO2\SkyrimSE\mods             14.965  15.180.417.069  2026-10-17T16:27:38  0
+G:\Modding\Skyrim_Stock_1.6.1170\Data    16.133  18.021.362.101  2026-08-22T11:35:43  0
+C:\steam\...\Skyrim Special Edition\Data 16.375   4.774.273.321  2026-08-01T22:15:19  0
+
+Escrituras recientes (>= 16:00) observadas:
+  profiles: 8 archivos (16:35–16:40)
+  overwrite: 5 archivos (16:36–16:39)
+  mods: 2 archivos .pex (16:27:36–38)
+  Stock Data / Steam Data: 0 archivos.
+
+Atribución: las tres primeras raíces son la instancia MO2 activa, que ESTA
+SESIÓN NO USÓ. Los comandos del rig sólo contienen rutas bajo
+C:\SkyClaw_Rigs\PR739 Data Path; el binding y el perfil de prueba son locales.
+No se puede afirmar que la máquina estuvo inmutable: se observaron escrituras
+de terceros. Se afirma que esta sesión no las produjo y que las fuentes usadas
+por el rig (Stock Data, INIs de SkyClaw-PR2-Rig, DynDOLOD Resources SE) no
+cambiaron en la ventana.
+
+Fuentes usadas — hashes:
+  skyrim.ini / copia: 4D7C9D67C6A159A93122D8557653484BDDBF43143E20C6A9AFB359BA1EE5EB5F
+  skyrimprefs.ini / copia: 7406F51239338E8CA0D19BE345D3C3A377E818532C87C3346509697184050DDF
+  DynDOLOD Resources SE: mtime 2026-10-10 22:01; 6.085 archivos.
+
+El escaneo completo con nombres (perfiles/mods activos) queda en el rig local:
+C:\SkyClaw_Rigs\PR739 Data Path\evidence\active-protected-scan.json

@@ -516,11 +516,14 @@ _CONSUMIDORES_GET_CONNECTION: dict[tuple[str, str], _Receta] = {
         "congelado en test_core_async_transactions.py; sus 4 lecturas ya pasan por "
         "operation() (PR-1b1). No auto-permite accesores futuros: cada uno se enumera.",
     ),
-    ("sky_claw/app/core/database.py", "DatabaseAgent.init_db"): _Receta(
+    # #719: el cuerpo de la inicialización vive en _init_db_con_lock, invocado
+    # por init_db bajo _ownership_lock (serializa init/close); el call-site de
+    # get_connection se movió con él, sin cambiar de naturaleza.
+    ("sky_claw/app/core/database.py", "DatabaseAgent._init_db_con_lock"): _Receta(
         "INIT_ALLOWED",
         1,
-        "Inicialización: guarda en caché self._conn tras init_all(); el DDL del esquema "
-        "corre bajo _write_transaction() (boundary transaccional), no suelto tras el get_connection.",
+        "Inicialización: publica self._conn SOLO tras completar el DDL; el DDL del esquema "
+        "corre bajo lifecycle.transaction() (boundary transaccional), no suelto tras el get_connection.",
     ),
 }
 
