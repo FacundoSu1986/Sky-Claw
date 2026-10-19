@@ -148,6 +148,16 @@ jobs:
           .\.lock-venv\Scripts\python -m pip install --require-hashes -r requirements.lock
       - name: Pip-audit (SCA — strict)
         run: pip-audit --strict --skip-editable -r requirements.lock
+      # ADR 0014 (decisión 3): el extra opcional native-parallax lleva numpy y Pillow, que
+      # requirements.lock NO fija (el runtime base no cambia). Su lock propio se instala con hashes y se
+      # audita aparte; tests/test_native_parallax_producto_invariant.py exige que estos dos pasos existan.
+      - name: Verify native-parallax extra lockfile install (hash enforced)
+        run: |
+          python -m venv .lock-venv-np
+          .\.lock-venv-np\Scripts\python -m pip install --upgrade pip
+          .\.lock-venv-np\Scripts\python -m pip install --require-hashes -r requirements-native-parallax.lock
+      - name: Pip-audit native-parallax extra (SCA — strict)
+        run: pip-audit --strict --skip-editable -r requirements-native-parallax.lock
       # P0.5 — Node gateway supply-chain audit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

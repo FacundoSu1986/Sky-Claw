@@ -470,9 +470,11 @@ def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     ``authored_dataset.py`` (EXP-M2+) importa ``PIL`` a nivel de módulo y su suite
     también: sin la declaración, ``test_native_parallax_exp_m2.py`` ni siquiera
     colecciona en un entorno donde Pillow no venga ya instalado. Espejo inverso
-    del ancla de ``pefile``: acá la dependencia es dev-only (ningún camino de
-    producción importa ``sky_claw.local.native_parallax.research``), así que NO
-    debe aparecer en runtime.
+    del ancla de ``pefile``: acá la dependencia es dev-only para research (ningún
+    camino de producción importa ``sky_claw.local.native_parallax.research``) y del
+    extra opcional ``native-parallax`` para el producto (ADR 0014), así que NO debe
+    aparecer en runtime. El rango del extra lo ancla
+    ``test_native_parallax_producto_invariant.py`` (igual al de ``[dev]``).
 
     *Historia: el hueco quedó invisible porque la rama de #620 nunca corrió CI
     (su base era una rama de feature, fuera del trigger ``pull_request``), y el
@@ -487,12 +489,17 @@ def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     pillow = [d for d in dev if d.name == "pillow"]
     assert len(pillow) == 1, f"se esperaba exactamente un pillow en [dev], hay {len(pillow)}"
 
-    # Compatible con pillow>=10,<12: cubre la línea 10.x/11.x y corta antes de 12.
-    assert pillow[0].specifier.contains(Version("10.0")), f"el rango de pillow no cubre 10.x: {pillow[0].specifier}"
-    assert pillow[0].specifier.contains(Version("11.9")), f"el rango de pillow no cubre 11.x: {pillow[0].specifier}"
-    assert not pillow[0].specifier.contains(Version("12.0")), (
-        f"el rango de pillow no corta en 12: {pillow[0].specifier}"
+    # pillow>=12.3,<13. Piso: pip-audit --strict reporta 35 avisos sobre 11.3.0 y todos están corregidos
+    # en 12.3.0 (el lock del extra native-parallax se audita en CI). Techo: Pillow 13 quita el parámetro
+    # ``mode`` de ``Image.fromarray``.
+    assert pillow[0].specifier.contains(Version("12.3")), f"el rango de pillow no cubre 12.3: {pillow[0].specifier}"
+    assert pillow[0].specifier.contains(Version("12.9")), f"el rango de pillow no cubre 12.x: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("12.2")), (
+        f"el rango de pillow admite una versión con avisos de seguridad: {pillow[0].specifier}"
+    )
+    assert not pillow[0].specifier.contains(Version("13.0")), (
+        f"el rango de pillow no corta en 13: {pillow[0].specifier}"
     )
 
     runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]
-    assert "pillow" not in runtime, "pillow es dev-only (research): no debe estar en runtime"
+    assert "pillow" not in runtime, "pillow es dev-only (research) o del extra opcional: no debe estar en runtime"

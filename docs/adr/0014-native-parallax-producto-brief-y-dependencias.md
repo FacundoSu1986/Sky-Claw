@@ -130,3 +130,27 @@ Verificado leyendo el repositorio (2026-10-19):
   EXP-003); el costo en tamaño de numpy/Pillow en el ejecutable congelado (por eso queda fuera del runtime
   base); la receta del lock propio del extra (nombre del archivo y paso de CI), que NP-C0 tiene que
   demostrar ejecutando; la disponibilidad y licencia de la versión exacta de texconv a fijar (NP-E0).
+
+### Actualización de NP-C0 (2026-10-19)
+
+NP-C0 ejecutó lo que este ADR dejaba abierto para el decodificador y el lock del extra. Verificado
+ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verificar se dice al final.
+
+- **Receta del lock propio.** `requirements-native-parallax.lock` se genera sembrando la salida con el lock
+  base y compilando con el extra: `cp requirements.lock requirements-native-parallax.lock` y
+  `uv pip compile pyproject.toml --extra native-parallax -o requirements-native-parallax.lock
+  --python-version 3.11 --python-platform windows --generate-hashes`. `uv` toma el archivo existente como
+  preferencias: el resultado **solo suma** `numpy` y `pillow` (0 líneas quitadas respecto de
+  `requirements.lock`; sin la siembra, una compilación nueva sube otras versiones y los dos locks
+  discreparían). `--python-platform windows` reproduce lo que CI instala (el lock base incluye
+  `comtypes`, que es de Windows). Un dry-run de `uv pip install --require-hashes` contra Windows lo acepta.
+- **Pillow tiene que ser ≥ 12.3.** `pip-audit` reporta 35 avisos sobre Pillow 11.3.0 (la versión que
+  fijaba `[dev]`), todos corregidos entre 12.1.1 y 12.3.0; con 12.3.0 no reporta ninguno. El paso de CI que
+  pide la decisión 3 no puede pasar con 11.3.0. El extra y `[dev]` quedan en `pillow>=12.3,<13` (rangos
+  disjuntos harían irresoluble `uv sync --extra dev --extra native-parallax`); `<13` porque Pillow 13
+  quita el parámetro `mode` de `Image.fromarray`. La suite de research (232 tests) pasa con 12.3.0.
+- **BC5 llega sin Z.** Pillow 11.3.0 y 12.3.0 decodifican BC5 como RGB con B = 0 (bloque armado a mano), así
+  que `NormalDecoder` reconstruye `Z = sqrt(1 − x² − y²)`. BC5 con signo (BC5S) se rechaza.
+- **No verificado:** que Pillow decodifique bien BC5/BC7 **reales** de Skyrim (EXP-003: las pruebas de
+  NP-C0 usan bloques sintéticos); el paso de CI de este extra sobre `windows-latest` hasta que corra el
+  CI de NP-C0; el costo en tamaño en el ejecutable congelado; `texconv` (NP-E0).
