@@ -738,11 +738,17 @@ def _tabla_allowlist_n10() -> dict[str, str]:
 # El censo congelado. Se compara por IGUALDAD DE CONJUNTOS contra el censo AST real y
 # contra la allowlist del documento: agregar un consumidor (producción, histórico o test)
 # rompe el ancla hasta que se le declare tratamiento.
-_SIMBOLOS_CONSUMIDOS = ("resize_normal", "load_asset")
+# Slice 2 (issue #721): la fachada `resize_normal` delega en `resize_normal_diagnostic`,
+# así que `authored_dataset.py` deja de referenciar el nombre `resize_normal` como
+# `ast.Name`. El censo NO se recorta: se amplía a la superficie que el contrato §5.4
+# manda enumerar ("el conjunto que llama a `resize_normal` **o a la varita
+# `resize_normal_diagnostic`**"), de modo que el módulo que define y ejerce el resizer
+# sigue cubierto.
+_SIMBOLOS_CONSUMIDOS = ("resize_normal", "resize_normal_diagnostic", "load_asset")
 
 _CENSO_PRODUCCION_ESPERADO = frozenset(
     {
-        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal"),
+        ("sky_claw/local/native_parallax/research/authored_dataset.py", "resize_normal_diagnostic"),
         ("sky_claw/local/native_parallax/research/run_exp_m2.py", "load_asset"),
         ("sky_claw/local/native_parallax/research/run_exp_m3.py", "load_asset"),
         ("sky_claw/local/native_parallax/research/run_exp_m4.py", "load_asset"),
@@ -792,6 +798,9 @@ _CENSO_TESTS_ESPERADO = frozenset(
     {
         ("tests/test_native_parallax_exp_m2.py", "resize_normal"),
         ("tests/test_native_parallax_exp_m3.py", "load_asset"),
+        # Slice 2 (issue #721): el ancla hace exactamente lo que fue diseñada a hacer —
+        # un consumidor nuevo rompe la igualdad hasta que se le declare tratamiento.
+        ("tests/test_native_parallax_h4_resize_normal.py", "resize_normal"),
     }
 )
 
