@@ -55,6 +55,7 @@ import logging
 import math
 import pathlib
 import sqlite3
+import threading
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
@@ -224,6 +225,24 @@ class LockInfo:
 
 
 # =============================================================================
+# TOKEN DE FENCING
+# =============================================================================
+
+# ``acquired_at`` es el token de fencing de la lease (``_RELEASE_SQL`` y
+# ``_RENEW_SQL`` lo matchean): tiene que distinguir una lease de la que la
+# reemplazó. ``time.time()`` no lo garantiza: en Windows con Python < 3.13 avanza
+# a saltos de ~15,6 ms y dos adquisiciones del mismo (recurso, agent_id) dentro del
+# mismo tick reciben el MISMO valor. Por eso el token se acuña en un único punto
+# (``DistributedLockManager._acuniar_token``) y es estrictamente creciente POR BASE
+# dentro del proceso. El estado es del módulo y no de la instancia porque varios
+# gestores (uno por servicio, con el mismo ``agent_id``) pueden apuntar a la misma
+# base. Límite: dos PROCESOS distintos no comparten este estado; cerrarlo exigiría
+# una identidad persistida en ``resource_locks`` (cambio de esquema).
+_CERROJO_DE_TOKENS = threading.Lock()
+_ULTIMO_TOKEN_POR_BASE: dict[str, float] = {}
+
+
+# =============================================================================
 # DISTRIBUTED LOCK MANAGER
 # =============================================================================
 
@@ -261,6 +280,8 @@ class DistributedLockManager:
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
     ) -> None:
         self._db_path = str(db_path)
+        # Misma clave canónica que usa el lifecycle para conexiones y locks de path.
+        self._clave_de_token = str(pathlib.Path(db_path).resolve())
         self._default_ttl = default_ttl
         self._max_retries = max_retries
         self._backoff_base = backoff_base
@@ -372,6 +393,24 @@ class DistributedLockManager:
     # Core operations
     # ------------------------------------------------------------------
 
+    def _acuniar_token(self) -> float:
+        """Acuña el token de fencing (``acquired_at``) de una adquisición.
+
+        Devuelve ``time.time()`` cuando el reloj avanzó respecto del último token
+        emitido para esta base y, si no (reloj grueso o retroceso por NTP), el
+        siguiente flotante representable: el token es estrictamente creciente por
+        base dentro del proceso. En el caso normal no desplaza el valor del reloj.
+
+        Es síncrono y no cede el control: dos corrutinas del mismo loop no pueden
+        intercalarse; el ``threading.Lock`` cubre gestores en otros hilos o loops.
+        """
+        with _CERROJO_DE_TOKENS:
+            ahora = time.time()
+            ultimo = _ULTIMO_TOKEN_POR_BASE.get(self._clave_de_token)
+            token = ahora if ultimo is None or ahora > ultimo else math.nextafter(ultimo, math.inf)
+            _ULTIMO_TOKEN_POR_BASE[self._clave_de_token] = token
+            return token
+
     async def acquire_lock(
         self,
         resource_id: str,
@@ -418,7 +457,7 @@ class DistributedLockManager:
             try:
                 if self._lifecycle is not None:
                     async with self._lifecycle.transaction(self._db_path) as conn:
-                        now = time.time()
+                        now = self._acuniar_token()
                         expires_at = now + ttl_seconds
                         async with conn.execute(
                             _ACQUIRE_SQL,
@@ -427,7 +466,7 @@ class DistributedLockManager:
                             rowcount = cursor.rowcount
                     # commit del wrapper ya terminó acá
                 else:
-                    now = time.time()
+                    now = self._acuniar_token()
                     expires_at = now + ttl_seconds
                     conn = self._ensure_conn()
                     async with conn.execute(
