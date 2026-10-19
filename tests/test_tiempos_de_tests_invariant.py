@@ -169,6 +169,59 @@ def test_el_verificador_no_tiene_topes_de_camino_feliz_por_debajo_del_margen() -
     )
 
 
+# Un constructor SIN tope de conexión hereda el default de producción (`DEFAULT_CONNECT_TIMEOUT_SECONDS`,
+# 5.0 s), por debajo del margen: el escáner de arriba solo ve los topes explícitos. Por eso se censa
+# aparte, por nombre de test. Exento: s20 construye el bridge con el launcher productivo, que se niega
+# ANTES de conectar (`VerifierImageNotProvisionedError`), así que ningún reloj interviene.
+_VERIFICADOR_SIN_TOPE_DE_CONEXION = frozenset({"test_s20_production_launcher_cannot_use_test_seam"})
+
+
+def _constructores_sin_tope_de_conexion(arbol: ast.Module) -> set[str]:
+    """Tests con un ``OperatorVerifierBridge(...)`` que no fija ``timeout_seconds`` ni ``connect_timeout_seconds``.
+
+    Un ``**kwargs`` no se cuenta acá: ya lo frena el fail-closed de ``_topes_del_verificador``.
+    """
+    sin_tope: set[str] = set()
+    for funcion in _funciones(arbol):
+        for nodo in ast.walk(funcion):
+            if not (isinstance(nodo, ast.Call) and _nombre_punteado(nodo.func) == "OperatorVerifierBridge"):
+                continue
+            claves = {palabra.arg for palabra in nodo.keywords}
+            if None not in claves and not claves & {"timeout_seconds", "connect_timeout_seconds"}:
+                sin_tope.add(funcion.name)
+    return sin_tope
+
+
+def test_el_verificador_no_hereda_el_default_de_conexion_salvo_los_exentos() -> None:
+    sin_tope = _constructores_sin_tope_de_conexion(_arbol("test_runtime_vault_operator_verifier.py"))
+
+    assert sin_tope == _VERIFICADOR_SIN_TOPE_DE_CONEXION, (
+        f"constructores del verificador sin `timeout_seconds` ni `connect_timeout_seconds`: "
+        f"{sorted(sin_tope - _VERIFICADOR_SIN_TOPE_DE_CONEXION)} heredan el default de 5.0 s. Fijá el tope "
+        f"(>= {_MARGEN_VERIFICADOR_S}s) o, si el test falla antes de conectar, agregalo a "
+        "_VERIFICADOR_SIN_TOPE_DE_CONEXION."
+    )
+
+
+def test_el_censo_de_constructores_ve_los_que_omiten_el_tope_de_conexion() -> None:
+    fuente = (
+        "def test_a():\n"
+        "    OperatorVerifierBridge(launcher=x)\n"
+        "def test_b():\n"
+        "    OperatorVerifierBridge(launcher=x, io_timeout_seconds=1.0, operation_timeout_seconds=2.0)\n"
+        "def test_c():\n"
+        "    OperatorVerifierBridge(launcher=x, timeout_seconds=10.0)\n"
+        "def test_d():\n"
+        "    OperatorVerifierBridge(launcher=x, connect_timeout_seconds=10.0)\n"
+        "def test_e():\n"
+        "    OperatorVerifierBridge(**opciones)\n"
+        "def test_f():\n"
+        "    Otra(launcher=x)\n"
+    )
+
+    assert _constructores_sin_tope_de_conexion(ast.parse(fuente)) == {"test_a", "test_b"}
+
+
 # ---------------------------------------------------------------------------
 # Familia 2: pytest.raises(VfsTeardownDeadlineError) + wait_for(sesion.cancel(), timeout=T)
 # ---------------------------------------------------------------------------
