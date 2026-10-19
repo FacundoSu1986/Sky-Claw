@@ -5,6 +5,24 @@ Investigación `H4_R7_DETERMINISTIC_BOUND_RESEARCH`, **reparada** en
 `H4_R7_DOCUMENTARY_CORRECTION`. **No** modifica producción, **no** cambia
 `DEGENERATE_THRESHOLD` y **no** declara cierre normativo. Corpus real **no** usado (§9).
 
+> **Estado vigente (2026-10-19, tras el merge de #723 en `7150a47b`).** El operador ratificó
+> F01 = R2-lite y aceptó que R7 siga siendo una heurística RMS (`DEGENERATE_THRESHOLD = 5/16`)
+> hasta el censo por asset del Slice 3 (respuesta textual: «Si autorizo»); además autorizó el merge
+> de #723, que ya está en `main`. Lo que ese merge **no** levanta: el bloqueo de M6 y la derivación
+> numérica de R7 (`R7_NUMERIC_DERIVATION = BLOCKED`). Este documento sigue sin cambiar producción ni
+> el umbral, y su propio merge (#733) no está autorizado. El bloque de tokens del final (§12) y las
+> menciones a `PENDING_TECH_LEAD`, a `H4_CODE_MERGE_AUTHORIZED = NO` o a #723 como no fusionado son
+> **fotos del PR en el momento de su registro** y se conservan como historial: donde digan eso,
+> rige este bloque.
+>
+> ```text
+> F01_CONTRACT_AMENDMENT    = RATIFIED          (operador, 2026-10-19)
+> H4_CODE_MERGE_AUTHORIZED  = YES               (#723 fusionado en 7150a47b, con autorización del operador)
+> R7_THRESHOLD_KIND         = HEURISTIC (RMS)   (aceptado por el operador; sin cambio de código)
+> R7_NUMERIC_DERIVATION     = BLOCKED           (SIN CAMBIO)
+> M6_IMPLEMENTATION_BLOCKED = YES               (SIN CAMBIO: espera el roster NON_EVALUABLE y el censo del Slice 3)
+> ```
+
 > **Corrección 1 (respecto de la primera versión).** La versión previa usaba
 > `delta = (q/2)*sqrt(3)` como cota del **desplazamiento** por píxel, es decir invocaba
 > `norm(n' - n) <= delta`. **Esa desigualdad es falsa**: la renormalización por píxel no es
