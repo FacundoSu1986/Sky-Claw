@@ -21,6 +21,13 @@ import pytest
 
 from sky_claw.app_context import AppContext
 
+# Presupuesto de cleanup que tiene que VENCER (el cleanup obstinado nunca se libera) pero que
+# supere cualquier pausa del loop en el runner de Windows. Con 0.01 s el presupuesto podía vencer
+# antes de que el cleanup alcanzara a arrancar, y `ejecuciones == 1` daba 0 (falla intermitente de
+# CI). Los tests con presupuestos más cortos esperan `entro.wait()` antes de depender del vencimiento
+# (ancla: tests/test_tiempos_de_tests_invariant.py).
+_PRESUPUESTO_QUE_VENCE_S = 0.25
+
 
 @pytest.fixture
 def mock_args(tmp_path: pathlib.Path):
@@ -425,7 +432,7 @@ class TestAppContextLifecycleCoordinator:
     @pytest.mark.asyncio
     async def test_stop_acota_cleanup_obstinado_sin_ejecutarlo_dos_veces(self, mock_args):
         ctx = AppContext(mock_args)
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         ejecuciones = 0
@@ -439,7 +446,7 @@ class TestAppContextLifecycleCoordinator:
         ctx._push_startup_cleanup(cleanup_obstinado)
 
         # Sin red de emergencia por reloj: lo único que tiene que vencer es el
-        # presupuesto (0.01 s), y `liberar` sigue sin setearse, así que el timeout
+        # presupuesto (`_PRESUPUESTO_QUE_VENCE_S`), y `liberar` sigue sin setearse, así que el timeout
         # es determinístico. Un cuelgue real lo ataja `--timeout=120` (pyproject).
         with pytest.raises(TimeoutError):
             await ctx.stop()
@@ -490,7 +497,7 @@ class TestAppContextLifecycleCoordinator:
     @pytest.mark.asyncio
     async def test_cleanup_falla_despues_del_timeout_y_conserva_retry(self, mock_args):
         ctx = AppContext(mock_args)
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         fallo_emitido = asyncio.Event()
@@ -532,7 +539,7 @@ class TestAppContextLifecycleCoordinator:
         self._aislar_fase_minima(ctx)
         ctx.lifecycle.close = AsyncMock()
         ctx.network.close = AsyncMock()
-        ctx._startup_shutdown_timeout_s = 0.01
+        ctx._startup_shutdown_timeout_s = _PRESUPUESTO_QUE_VENCE_S
         entro = asyncio.Event()
         liberar = asyncio.Event()
         error_primario = RuntimeError("startup primary failure")
@@ -557,8 +564,8 @@ class TestAppContextLifecycleCoordinator:
         # carga el rollback tarda más que la ventana, y su rama de rescate
         # (`if startup not in done`) no podía rescatar nada — el `assert startup in
         # done` de la línea siguiente miraba el `done` ya calculado, así que entrar
-        # ahí era fallar igual. El presupuesto (0.01 s) es lo único que tiene que
-        # vencer para que el cleanup se abandone y el error primario propague.
+        # ahí era fallar igual. El presupuesto (`_PRESUPUESTO_QUE_VENCE_S`) es lo único
+        # que tiene que vencer para que el cleanup se abandone y el error primario propague.
         with pytest.raises(RuntimeError) as raised:
             await ctx.start_full()
         assert raised.value is error_primario

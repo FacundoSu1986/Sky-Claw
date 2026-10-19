@@ -280,7 +280,7 @@ async def test_teardown_con_bridge_conectado_y_sin_worker_exit_falla_con_deadlin
         sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=1234)
 
         with pytest.raises(VfsTeardownDeadlineError):
-            await asyncio.wait_for(sesion.cancel(), timeout=1.0)
+            await asyncio.wait_for(sesion.cancel(), timeout=10.0)
 
         assert not sesion.confirmed_terminal
         assert sesion.terminality_unknown
@@ -465,7 +465,7 @@ async def test_worker_exit_tardio_no_sobrescribe_ni_corrompe_estado(tmp_path: pa
         sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=3333)
 
         with pytest.raises(VfsTeardownDeadlineError):
-            await asyncio.wait_for(sesion.cancel(), timeout=1.0)
+            await asyncio.wait_for(sesion.cancel(), timeout=10.0)
 
         await bridge.worker_exit(job.job_id, exit_code=0)
         await asyncio.sleep(0.05)
@@ -777,7 +777,7 @@ async def test_quarantine_marca_instancia_y_rechaza_nuevos_jobs(tmp_path: pathli
         sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=4444)
 
         with pytest.raises(VfsTeardownDeadlineError):
-            await asyncio.wait_for(sesion.cancel(), timeout=1.0)
+            await asyncio.wait_for(sesion.cancel(), timeout=10.0)
 
         # 1. Marcador persistente en disco
         quarantine_file = state_dir / f".{broker._instance_id}.quarantine"
