@@ -15,6 +15,10 @@
 > únicamente la frontera read-only de `run_xedit_script`. No reverifica el resto de
 > la referencia.
 
+> **Sincronización parcial:** 2026-10-12 sobre `main` `da738b7` (#549); cubre
+> únicamente el contrato de `summary` de `list_all_conflicts.pas`. No reverifica el
+> resto de la referencia.
+
 ## Ruta LLM
 
 `AsyncToolRegistry` registra descriptores con modelo Pydantic estricto, publica
@@ -48,6 +52,21 @@ lo que queda una ventana TOCTOU. Cada script se enruta a su parser/analyzer espe
 internas de xEdit sean read-only: los rituales del orquestador ejecutan xEdit mutante
 por otra frontera (`XEditPipelineService`, con lock/journal/rollback), con contratos
 distintos.
+
+**Contrato de `summary` en `list_all_conflicts.pas` (#549).** La clave `summary` está
+siempre presente y su tipo distingue las dos ramas de lectura. Con stdout de protocolo,
+`summary` es el dict validado de `SUMMARY|...` (`total_conflicts` presente y consistente
+con `conflicts`); un `SUMMARY` ausente o un conteo que no cierra es un error, no un éxito
+con payload dudoso. Si un adapter heredado entrega un `XEditResult` ya preparseado y sin
+stdout, no existió ningún resumen que describa esa corrida: `summary` es `None` —ausencia
+explícita y estable— y nunca un `{}` que se lea como un resumen estructurado con cero
+campos. El conteo no se deriva de `len(conflicts)` porque `total_conflicts` es la
+afirmación de xEdit de que el script llegó a `Finalize`, no un recuento nuestro. Ningún
+caller productivo cae en la rama legacy: el único `run_script` de producción
+(`XEditRunner`) construye su resultado con `XEditOutputParser.parse`, que siempre conserva
+`raw_stdout`. Anclas: `tests/test_xedit_agent_readonly_policy.py` (conducta en las dos
+ramas) y `tests/test_xedit_summary_contract_invariant.py` (censo AST de todo lector de
+`parse_summary_line`, congelado por igualdad literal).
 
 Ninguna tool acepta un perfil de MO2 como argumento. El perfil queda fijo durante la
 sesión (`--profile` / `MO2_PROFILE`, ver [configuración](../user/configuration.md)) y

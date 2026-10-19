@@ -51,7 +51,10 @@ PAQUETE = RAIZ / "sky_claw"
 # como 2, no colapsan a 1.
 ABRIDORES_ESPERADOS: Counter[tuple[str, str, str]] = Counter(
     {
-        ("sky_claw/app/core/database.py", "init_db", "BEGIN IMMEDIATE"): 1,
+        # #719: el BEGIN sigue siendo el mismo abridor de la inicialización de
+        # DatabaseAgent; su símbolo contenedor es _init_db_con_lock porque
+        # init_db lo invoca bajo _ownership_lock (serialización init/close).
+        ("sky_claw/app/core/database.py", "_init_db_con_lock", "BEGIN IMMEDIATE"): 1,
         ("sky_claw/app/core/dlq_manager.py", "_ensure_schema", "BEGIN IMMEDIATE"): 1,
         # #655: el boundary de migración del open() (reconstrucción de esquema
         # de artifact_evidence_resolutions + backfill legacy) declara su cuerpo

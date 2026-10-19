@@ -114,6 +114,12 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # observación no debe llevarse su destino. Que el árbol sea propio no
     # habilita una excepción a la regla "shutil.rmtree no existe en el paquete".
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "link-aware",
+    # #661: el ejecutor del driver desatendido borra su PROPIO canal (`mkdtemp`)
+    # y la guarda de presets borra el registro que ella misma escribió una vez
+    # que el preset quedó restaurado y re-verificado. Mismo criterio que el
+    # ejecutor de T5-v2.1: que el árbol sea propio no habilita `shutil.rmtree`.
+    "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": "link-aware",
+    "sky_claw/local/tools/dyndolod_presets.py": "link-aware",
     # `dyndolod_runner.py` SALIÓ de este censo con #592 finding 2: dejó de
     # borrar el mod previo y ahora lo aparta con un `DirectoryRollback`, que
     # delega en `_dir_rollback.py` (declarado acá). El barrido de la familia
@@ -442,6 +448,8 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/mo2/vfs.py": "requiere",
     "sky_claw/local/runtime_vault/clone.py": "requiere",
     "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "no-requiere",
+    "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": "no-requiere",
+    "sky_claw/local/tools/dyndolod_presets.py": "no-requiere",
     # `dyndolod_runner.py` SALIÓ de este censo con #592 finding 2: ya no invoca
     # `rmtree_link_aware`. El requisito NO se perdió — se mudó al parámetro
     # `limpiar_readonly_al_borrar=True` de la construcción de `DirectoryRollback`
@@ -472,6 +480,20 @@ MOTIVO_DE_NO_REQUIERE: dict[str, str] = {
         "el temp lo crea mkdtemp y sólo contiene el pedido/resultado JSON "
         "escritos por el mismo proceso: ninguna herramienta externa lo marca "
         "read-only."
+    ),
+    # #661: mismo canal que el ejecutor de T5-v2.1, para el driver mutante.
+    "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": (
+        "el temp lo crea mkdtemp y sólo contiene paso.json/resultado_paso.json "
+        "escritos por este proceso y por su helper: ninguna herramienta externa "
+        "lo marca read-only."
+    ),
+    # #661: el snapshot NO es una copia del preset (no hay copy2 que propague el
+    # modo de la fuente): son los bytes leídos y re-escritos con
+    # `_escribir_atomico` del mismo módulo, más el registro JSON.
+    "sky_claw/local/tools/dyndolod_presets.py": (
+        "contenido.bin y registro.json los escribe _escribir_atomico de este "
+        "mismo módulo con bytes leídos (no copy2): el modo read-only del preset "
+        "de origen no se propaga al snapshot."
     ),
 }
 

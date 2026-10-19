@@ -210,23 +210,31 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     generation_id = validar_generation_id(generacion_id_desde_evidencia(evidence))
     metadata = _metadata_de_evidencia(evidence, generation_id)
     destino = generations_state_dir(root) / f"{generation_id}.json"
-    if destino.exists():
-        existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
-        # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
-        # dependencia de orden: inventory_tree no promete orden estable de
-        # archivos, así que la idempotencia no puede depender del orden.
-        if (
-            existente.tree_digest == metadata.tree_digest
-            and existente.runtime_identity == metadata.runtime_identity
-            and _mismos_criticos(existente.critical_files, metadata.critical_files)
-        ):
-            return existente
-        raise GenerationCollisionError(
-            f"generation-id '{generation_id}' ya existe con identidad completa distinta "
-            "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
-        )
-    write_json_atomic(destino, _payload_de_metadata(metadata))
-    return metadata
+    # Exclusión (P4-S2): publicar una Generation muta `state/generations/`. El
+    # chequeo de idempotencia (leer→comparar→escribir) es un RMW que debe ser
+    # indivisible respecto de otro publicador del mismo root. Import diferido
+    # para no crear el ciclo generations → root_lock → storage → state.
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    with participant_lock(root, timeout=0.0) as handle:
+        handle.assert_owned()
+        if destino.exists():
+            existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
+            # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
+            # dependencia de orden: inventory_tree no promete orden estable de
+            # archivos, así que la idempotencia no puede depender del orden.
+            if (
+                existente.tree_digest == metadata.tree_digest
+                and existente.runtime_identity == metadata.runtime_identity
+                and _mismos_criticos(existente.critical_files, metadata.critical_files)
+            ):
+                return existente
+            raise GenerationCollisionError(
+                f"generation-id '{generation_id}' ya existe con identidad completa distinta "
+                "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
+            )
+        write_json_atomic(destino, _payload_de_metadata(metadata))
+        return metadata
 
 
 def _mismos_criticos(a: tuple[FileIdentity, ...], b: tuple[FileIdentity, ...]) -> bool:

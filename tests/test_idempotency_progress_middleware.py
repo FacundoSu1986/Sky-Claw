@@ -179,6 +179,71 @@ class TestIdempotencyMiddleware:
         # There should be a completed task in the state machine
         assert sm.active_task_count == 0
 
+    @pytest.mark.asyncio
+    async def test_releases_lock_and_marks_failed_on_error_status_dict(self) -> None:
+        """P2: IdempotencyMiddleware transiciona a FAILED si el resultado contiene status='error'."""
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"x": 1}
+
+        error_dict = {
+            "status": "error",
+            "reason": "PipelineFailed",
+            "details": "DynDOLOD abortado por timeout",
+        }
+        next_call_1 = await _make_next_call(error_dict)
+        result = await mw(strategy, payload, next_call_1)
+
+        assert result == error_dict
+        tasks = list(sm._tasks.values())
+        assert len(tasks) == 1
+        assert tasks[0].state == "FAILED"
+        assert tasks[0].error_message == "DynDOLOD abortado por timeout"
+        assert tasks[0].result == error_dict
+
+        # El lock debe liberarse inmediatamente tras la falla
+        next_call_2 = await _make_next_call({"status": "success"})
+        result_2 = await mw(strategy, payload, next_call_2)
+        assert result_2["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_and_marks_failed_on_success_false(self) -> None:
+        """P2: IdempotencyMiddleware transiciona a FAILED si el resultado contiene success=False."""
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"x": 2}
+
+        error_dict = {"success": False, "message": "Preflight en rojo"}
+        next_call = await _make_next_call(error_dict)
+        result = await mw(strategy, payload, next_call)
+
+        assert result == error_dict
+        tasks = list(sm._tasks.values())
+        assert len(tasks) == 1
+        assert tasks[0].state == "FAILED"
+        assert tasks[0].error_message == "Preflight en rojo"
+        assert tasks[0].result == error_dict
+
+    @pytest.mark.asyncio
+    async def test_releases_lock_and_marks_failed_on_invalid_non_dict_result(self) -> None:
+        """P2: IdempotencyMiddleware transiciona a FAILED si el resultado no es un diccionario."""
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"x": 3}
+
+        async def non_dict_call() -> Any:
+            return ["no", "es", "dict"]
+
+        result = await mw(strategy, payload, non_dict_call)
+        assert result == ["no", "es", "dict"]
+        tasks = list(sm._tasks.values())
+        assert len(tasks) == 1
+        assert tasks[0].state == "FAILED"
+        assert tasks[0].error_message == "Invalid result type: list"
+
 
 # ------------------------------------------------------------------
 # ProgressMiddleware

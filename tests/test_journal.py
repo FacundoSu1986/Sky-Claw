@@ -389,9 +389,9 @@ class TestJournalWriteLockCompartido:
 
         original_sweep = journal.sweep_stale_pending
 
-        async def sweep_espia():
+        async def sweep_espia(_conn=None):
             observado.append(journal._lock is compartido)
-            await original_sweep()
+            await original_sweep(_conn=_conn)
 
         journal.sweep_stale_pending = sweep_espia  # type: ignore[method-assign]
         try:

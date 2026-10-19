@@ -183,6 +183,63 @@ def _bloque_de_capa(nombre: str) -> str | None:
     return None
 
 
+def _reglas_de_bloque(bloque: str) -> list[tuple[str, str, bool]]:
+    """Ternas ``(selectores, cuerpo, condicional)`` de TODAS las reglas dentro de
+    ``bloque`` (el texto completo de ``@layer theme { ... }``), sobre CSS sin
+    comentarios y con conteo de llaves.
+
+    ``selectores`` es el texto crudo previo a ``{`` (puede ser una lista separada
+    por comas); ``cuerpo`` es lo entre ``{`` y su ``}``. Un at-rule anidado
+    (``@media``, ``@supports``...) se recorre hacia adentro y marca sus reglas
+    como ``condicional=True``: aplican sólo bajo esa condición, así que no pueden
+    sostener un contrato incondicional. El wrapper de la capa se descarta.
+    """
+    css = _sin_comentarios(bloque)
+    css = css[css.index("{") + 1 : css.rindex("}")]
+
+    def recorrer(texto: str, condicional: bool) -> list[tuple[str, str, bool]]:
+        reglas: list[tuple[str, str, bool]] = []
+        cursor = 0
+        while (abre := texto.find("{", cursor)) != -1:
+            profundidad = 0
+            for cierra in range(abre, len(texto)):
+                if texto[cierra] == "{":
+                    profundidad += 1
+                elif texto[cierra] == "}":
+                    profundidad -= 1
+                    if profundidad == 0:
+                        break
+            else:
+                raise AssertionError("llaves desbalanceadas en el bloque de capa")
+            prelude = texto[cursor:abre].strip()
+            contenido = texto[abre + 1 : cierra]
+            if prelude.startswith("@"):
+                reglas.extend(recorrer(contenido, True))
+            else:
+                reglas.append((prelude, contenido, condicional))
+            cursor = cierra + 1
+        return reglas
+
+    return recorrer(css, False)
+
+
+def _reglas_que_declaran_selector(bloque: str, selector: str) -> list[tuple[str, bool]]:
+    """Pares ``(cuerpo, condicional)`` de CADA regla de ``bloque`` que declara
+    ``selector`` como uno de sus selectores independientes.
+
+    La lista separada por comas se parte y se compara por igualdad exacta tras
+    ``strip`` (``.a:focus-visible, .b:focus-visible { ... }`` declara ambos).
+    Devuelve todas, no la primera: dos reglas con el mismo selector, capa y
+    especificidad se resuelven por orden de fuente, y muestrear sólo la primera
+    deja pasar una posterior que anula el contrato.
+    """
+    return [
+        (cuerpo, condicional)
+        for selectores, cuerpo, condicional in _reglas_de_bloque(bloque)
+        if selector in [parte.strip() for parte in selectores.split(",")]
+    ]
+
+
 def _pisas_important_unlayered_sobre_quasar(css: str) -> list[tuple[str, str, frozenset[str]]]:
     """Declaraciones !important UNLAYERED de una hoja de estilo cuyo selector toca
     una clase .q-*. Las de dentro de ``@layer {...}`` quedan EXCLUIDAS por
@@ -262,17 +319,145 @@ def test_foco_de_inputs_gana_por_capa_theme_no_por_important_unlayered() -> None
     ``outline: 2px solid``. El !important sigue siendo necesario dentro de la
     capa: una declaración normal jamás vence a un !important, esté donde esté.
 
-    El ancla vieja sólo grepeaba el string de la declaración y pasaba sobre CSS
-    roto — no veía la cascada de capas.
+    El ancla acopla cada selector a SU regla: las declaraciones se exigen en el
+    cuerpo de la regla que declara el selector dentro de ``@layer theme``, no en
+    cualquier parte de la capa. Una regla ajena con las mismas declaraciones NO
+    salva a la regla de foco si ésta las perdió (revisión #631).
     """
     bloque = _bloque_de_capa("theme")
     assert bloque is not None, "el fix de foco debe vivir dentro de @layer theme { ... }"
-    for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
-        assert clase in bloque, f"{clase} debe estar dentro de @layer theme"
-    assert re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", bloque), (
-        "el outline dorado debe conservar !important dentro de la capa"
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(bloque, clase) == [], f"{clase}: {_violaciones_de_foco(bloque, clase)}"
+
+
+_SELECTORES_DE_FOCO = (".q-field__native:focus-visible", ".q-field__input:focus-visible")
+_OUTLINE_DORADO = r"2px solid var\(--sky-gold-bright\)\s*!important"
+
+
+def _ultima_declaracion(cuerpo: str, propiedad: str) -> str | None:
+    """Valor de la ÚLTIMA declaración de ``propiedad`` en ``cuerpo`` (la que gana
+    dentro de una regla cuando se repite), o ``None`` si no se declara. Compara el
+    nombre de propiedad exacto: ``outline`` no matchea ``outline-offset``."""
+    valor = None
+    for declaracion in cuerpo.split(";"):
+        nombre, separador, resto = declaracion.partition(":")
+        if separador and nombre.strip().lower() == propiedad:
+            valor = resto.strip()
+    return valor
+
+
+def _violaciones_de_foco(bloque: str, selector: str) -> list[str]:
+    """Violaciones del contrato de foco de ``selector`` dentro de ``bloque``.
+
+    Enumera TODAS las reglas de la capa que declaran el selector (no la primera):
+    exige exactamente una —con el mismo selector, capa y especificidad gana la
+    última por orden de fuente, así que una segunda regla podría anular el
+    outline sin que el ancla lo viera— e incondicional —una regla bajo
+    ``@media``/``@supports`` no sostiene el foco fuera de esa condición, donde el
+    reset de Quasar vuelve a ganar—. Lista vacía = contrato cumplido.
+    """
+    reglas = _reglas_que_declaran_selector(bloque, selector)
+    if not reglas:
+        return ["no está declarado en @layer theme"]
+    if len(reglas) > 1:
+        return [f"declarado en {len(reglas)} reglas; debe ser exactamente una (gana la última por orden)"]
+    cuerpo, condicional = reglas[0]
+    violaciones = []
+    if condicional:
+        violaciones.append("su regla está bajo un at-rule condicional (@media/@supports)")
+    outline = _ultima_declaracion(cuerpo, "outline")
+    if outline is None or not re.fullmatch(_OUTLINE_DORADO, outline):
+        violaciones.append("su regla perdió el outline dorado !important")
+    if _ultima_declaracion(cuerpo, "outline-offset") is None:
+        violaciones.append("su regla perdió outline-offset")
+    return violaciones
+
+
+_REGLA_DE_FOCO_OK = (
+    ".q-field__native:focus-visible,\n"
+    ".q-field__input:focus-visible {\n"
+    "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+    "    outline-offset: 2px !important;\n"
+    "}\n"
+)
+
+
+def _capa(*reglas: str) -> str:
+    return "@layer theme {\n" + "".join(reglas) + "}"
+
+
+def test_ancla_de_foco_acepta_la_regla_sana_en_lista_de_selectores() -> None:
+    """Control positivo: la forma real (lista por comas, una regla) cumple."""
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(_REGLA_DE_FOCO_OK), clase) == []
+
+
+def test_ancla_de_foco_no_se_satisface_con_una_regla_ajena_en_la_capa() -> None:
+    """RED-proof del acoplamiento selector→regla (revisión #631): la regla de foco
+    PERDIÓ las declaraciones pero una regla ajena de la capa sí las tiene."""
+    bloque = _capa(
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible { color: red; }\n"
+        ".regla-ajena:focus-visible {\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "}\n"
     )
-    assert "outline-offset" in bloque
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(bloque, clase) == [
+            "su regla perdió el outline dorado !important",
+            "su regla perdió outline-offset",
+        ]
+
+
+def test_ancla_de_foco_rechaza_la_regla_bajo_at_rule_condicional() -> None:
+    """RED-proof (revisión de #730): mover la regla de foco bajo ``@media`` la deja
+    sin efecto fuera de la condición; el ancla no puede darla por incondicional."""
+    for at_rule in ("@media (min-width: 600px)", "@supports (outline: 1px solid red)"):
+        bloque = _capa(at_rule + " {\n" + _REGLA_DE_FOCO_OK + "}\n")
+        for clase in _SELECTORES_DE_FOCO:
+            assert _violaciones_de_foco(bloque, clase) == [
+                "su regla está bajo un at-rule condicional (@media/@supports)"
+            ]
+
+
+def test_ancla_de_foco_rechaza_un_selector_declarado_dos_veces() -> None:
+    """RED-proof (revisión de #730): una regla posterior con el mismo selector, capa
+    y especificidad gana por orden de fuente. El ancla enumera todas las reglas
+    del selector y exige exactamente una, no muestrea la primera."""
+    anula = ".q-field__native:focus-visible { outline: 0 !important; }\n"
+    for orden in ((_REGLA_DE_FOCO_OK, anula), (anula, _REGLA_DE_FOCO_OK)):
+        violaciones = _violaciones_de_foco(_capa(*orden), ".q-field__native:focus-visible")
+        assert len(violaciones) == 1 and "2 reglas" in violaciones[0]
+    # el hermano que sólo aparece en la lista por comas sigue sano
+    assert _violaciones_de_foco(_capa(_REGLA_DE_FOCO_OK, anula), ".q-field__input:focus-visible") == []
+
+
+def test_ancla_de_foco_evalua_la_ultima_declaracion_de_outline_de_la_regla() -> None:
+    """RED-proof (revisión de #730): dentro de UNA regla, ``outline`` repetido se
+    resuelve por orden de fuente. El dorado seguido de ``outline: 0 !important``
+    anula el foco aunque el dorado esté presente; el orden inverso lo conserva."""
+    anula_despues = (
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible {\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "    outline: 0 !important;\n"
+        "}\n"
+    )
+    dorado_despues = (
+        ".q-field__native:focus-visible,\n.q-field__input:focus-visible {\n"
+        "    outline: 0 !important;\n"
+        "    outline: 2px solid var(--sky-gold-bright) !important;\n"
+        "    outline-offset: 2px !important;\n"
+        "}\n"
+    )
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(anula_despues), clase) == ["su regla perdió el outline dorado !important"]
+        assert _violaciones_de_foco(_capa(dorado_despues), clase) == []
+
+
+def test_ancla_de_foco_falla_si_el_selector_desaparece_de_la_capa() -> None:
+    for clase in _SELECTORES_DE_FOCO:
+        assert _violaciones_de_foco(_capa(".otro { color: red; }\n"), clase) == ["no está declarado en @layer theme"]
 
 
 def test_ninguna_pisa_important_unlayered_la_tapa_quasar_en_silencio() -> None:

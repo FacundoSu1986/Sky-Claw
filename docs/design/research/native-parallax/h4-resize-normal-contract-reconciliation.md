@@ -7,6 +7,13 @@
 > No cambia ninguna fila `FROZEN`, no recalibra `DEGENERATE_THRESHOLD`, no toca el Golden
 > Master #718, EXP-M6 #675, el corpus ni artefactos históricos, y no fusiona #723.
 
+> **Actualización del 2026-10-19.** El Tech Lead (rol delegado) eligió la **opción B** para F01
+> (rechazar la entrada geométricamente inválida, con el carve-out observable del clip); ver el
+> banner superior de `h4-resize-normal-f01-f02-adjudication.md`. El análisis de abajo es el
+> previo y se conserva como historial: en particular `F01_IMPLEMENTATION_MATCHES = OPTION_A` y
+> las filas "renormaliza" de las tablas de §1 ya **no** describen el código vigente. La
+> ratificación humana sigue pendiente (`F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD`).
+
 ## 0. Procedencia
 
 | Campo | Valor |
@@ -325,6 +332,15 @@ reproducción auxiliar; las anclas que el gate ejecuta son las tres filas de arr
 
 ### 3.3 Reproducción
 
+> **Reproducibilidad (revisión del 2026-10-19).** Los probes de esta sección **no están
+> versionados** (`scratch/` está en `.gitignore`) y los comandos usan rutas de una sola máquina
+> (`E:/Skyclaw_Main_Sync/...`). Por lo tanto las tablas de §1.1, §2.3, §2.4 y §2.5 **no son
+> reproducibles desde el repositorio** en este head: son evidencia registrada por el autor y un
+> revisor no puede regenerarla sin los probes. Sí son reproducibles las anclas de tests
+> versionadas que cita este documento (p. ej. el contraejemplo coherente). Las tablas se conservan
+> como registro histórico; publicar los probes en una ubicación versionada, con comandos relativos
+> al repo, queda pendiente y es decisión del autor.
+
 Los probes que produjeron cada tabla viven en `scratch/h4-s2-reconciliation/` (directorio
 `gitignoreado`: **no** entra en el PR). Todos llevan el guard de procedencia y se corren desde el
 worktree, con el `PYTHONPATH` explícito — sin él, el `editable install` del venv importa el
@@ -345,7 +361,7 @@ PYTHONPATH="E:/Skyclaw_Main_Sync/.worktrees/h4-resize-normal-fix" \
 | `mutacion.py` | barrido de mutación con restauración verificada por `md5` |
 | `check_docs.py` | tablas de este documento con el checker **importado** del repo |
 
-Barrido de mutación ejecutado (4/4 muertos, restauración verificada por `md5` y
+Barrido de mutación ejecutado (5/5 muertos, restauración verificada por `md5` y
 `git status --porcelain` vacío tras cada uno):
 
 | Mutante | Cambio | Resultado |

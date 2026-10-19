@@ -39,6 +39,16 @@ if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_UIA:
 
     raise SystemExit(_main_helper_uia(sys.argv[2:]))
 
+# #661 P3: el driver MUTANTE de la etapa 9 desatendida corre en SU propio worker
+# descartable, con flag, módulo y puerta distintos del gate read-only. Mismo
+# motivo para despachar acá, antes de importar la app.
+from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import FLAG_HELPER_DRIVER_UIA  # noqa: E402
+
+if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_DRIVER_UIA:
+    from sky_claw.local.tools.dyndolod_uia_driver_helper import main as _main_helper_driver  # noqa: PLC0415
+
+    raise SystemExit(_main_helper_driver(sys.argv[2:]))
+
 from sky_claw.app.modes.cli_mode import _run_cli, _run_oneshot  # noqa: E402
 from sky_claw.app.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.app.modes.telegram_mode import _run_telegram  # noqa: E402

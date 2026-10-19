@@ -375,6 +375,24 @@ async def test_generate_lods_filters_extra_llm_keys(supervisor):
     assert result == {"status": "ok"}
 
 
+async def test_generate_lods_exception_wrapped(supervisor):
+    supervisor._dyndolod_service.execute.side_effect = RuntimeError("dyndolod crashed")
+
+    result = await supervisor.dispatch_tool("generate_lods", {"preset": "High"})
+
+    assert result["status"] == "error"
+    assert result["reason"] == "DynDOLODPipelineExecutionFailed"
+    assert "dyndolod crashed" in result["details"]
+
+
+async def test_generate_lods_non_dict_result(supervisor):
+    supervisor._dyndolod_service.execute.return_value = ["not", "a", "dict"]
+
+    result = await supervisor.dispatch_tool("generate_lods", {"preset": "High"})
+
+    assert result == {"status": "error", "reason": "InvalidDynDOLODResult"}
+
+
 # ---------------------------------------------------------------------------
 # generate_animations (Pandora) — Follow-up A
 # ---------------------------------------------------------------------------

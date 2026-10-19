@@ -1,0 +1,21 @@
+SO: Microsoft Windows 10 Pro 10.0.19045 (64 bits)
+Sesión de escritorio: interactiva, SessionId 1; UIAutomationClient disponible.
+Python de ejecución: C:\SkyClaw_Rigs\PR739 Data Path\venv\Scripts\python.exe
+  (venv dedicado del worktree; evita el editable install del venv principal)
+Shell: Windows PowerShell 5.1
+
+Rig aislado: C:\SkyClaw_Rigs\PR739 Data Path
+  game\Data — 22.556 archivos, 18.329.994.075 B (Stock Data + DynDOLOD Resources)
+  tools\DynDOLOD — Alpha-209 extraído; Logs propio
+  Game INI — copias de Skyrim.ini/SkyrimPrefs.ini (mismos SHA que origen)
+  mo2-install — ModOrganizer.ini portable de prueba
+  mo2-instance — perfiles/DataPathRig, mods, overwrite
+  Work Root — root externo administrado y binding
+  temp, state, evidence, snapshots — exclusivos de la sesión
+
+Preflight del servicio: status=green, blocks_mutations=False
+  vfs green, masters green, plugin_limits green (5/254 full, 0/4096 light),
+  master_order green, overwrite green, write_permissions green, vfs_visibility green.
+
+No se usó la instancia MO2 activa, ni el perfil activo, ni la modlist activa,
+ni el Overwrite activo. No se crearon junctions ni symlinks en el rig.

@@ -1,0 +1,12 @@
+{
+  "path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\.sky-claw-binding.json",
+  "contenido": {
+    "binding_id": "12f60f92-e0b5-4b10-afc2-8809c659cb71",
+    "resource_binding": {
+      "game_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\game",
+      "mo2_instance_data_root": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance",
+      "mo2_mods_path": "C:\\SkyClaw_Rigs\\PR739 Data Path\\mo2-instance\\mods"
+    },
+    "schema_version": 1
+  }
+}
