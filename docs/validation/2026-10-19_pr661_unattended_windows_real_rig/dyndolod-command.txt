@@ -1,0 +1,13 @@
+tool=DynDOLOD
+interaction_mode=desatendido
+exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+exe_sha256=b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0
+argv=["-sse", "-o:C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\\", "-d:C:\\SkyClaw_Rigs\\SW661 Unattended\\game\\Data\\", "-m:C:\\SkyClaw_Rigs\\SW661 Unattended\\Game INI\\", "-p:C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\profiles\\UnattendedRig\\plugins.txt", "-t:C:\\SkyClaw_Rigs\\SW661 Unattended\\temp\\"]
+command_line="C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\" "-p:C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt" "-t:C:\SkyClaw_Rigs\SW661 Unattended\temp\\"
+cwd=C:\SkyClaw_Rigs\SW661 Unattended
+data_dir=C:\SkyClaw_Rigs\SW661 Unattended\game\Data
+ini_dir=C:\SkyClaw_Rigs\SW661 Unattended\Game INI
+plugins_file=C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+temp_dir=C:\SkyClaw_Rigs\SW661 Unattended\temp
+external_work_root=C:\SkyClaw_Rigs\SW661 Unattended\Work Root
+output_root=C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD

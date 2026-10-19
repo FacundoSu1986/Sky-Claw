@@ -1,0 +1,48 @@
+{
+  "status": "green",
+  "blocks_mutations": false,
+  "checks": [
+    {
+      "name": "vfs",
+      "status": "green",
+      "summary": "Sin symlinks/junctions en rutas críticas.",
+      "details": []
+    },
+    {
+      "name": "masters",
+      "status": "green",
+      "summary": "Todos los masters presentes y habilitados.",
+      "details": []
+    },
+    {
+      "name": "plugin_limits",
+      "status": "green",
+      "summary": "5/254 full, 0/4096 light.",
+      "details": []
+    },
+    {
+      "name": "master_order",
+      "status": "green",
+      "summary": "Todos los masters cargan antes que sus dependientes.",
+      "details": []
+    },
+    {
+      "name": "overwrite",
+      "status": "green",
+      "summary": "Overwrite limpio.",
+      "details": []
+    },
+    {
+      "name": "write_permissions",
+      "status": "green",
+      "summary": "Escritura verificada en 5 ruta(s).",
+      "details": []
+    },
+    {
+      "name": "vfs_visibility",
+      "status": "green",
+      "summary": "El perfil no habilita plugins de mods.",
+      "details": []
+    }
+  ]
+}

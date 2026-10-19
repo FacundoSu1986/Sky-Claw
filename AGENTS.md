@@ -133,7 +133,7 @@ de `LEGADOS` en el test. Una ruta nueva o una rama distinta no hereda la exenci√
 | `C:/Worktrees/Sky-Claw-r1-packaging-cancel` | `fix/dyndolod-r1-packaging-cancel` |
 | `E:/Skyclaw_Frozen_Runtime_P3` | `feat/frozen-runtime-p3-candidate` |
 | `E:/Skyclaw_Steam_Frozen_Runtime` | `feat/steam-frozen-runtime` |
-| `C:/Users/Facu2/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082` | `workbuddy/main-d17cd082` |
+| `C:/Users/<USUARIO>/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082` | `workbuddy/main-d17cd082` |
 | `E:/Skyclaw_Main_Sync/.kilo/worktrees/broadleaf-professor` | `DETACHED` |
 <!-- worktree-legacy:end -->
 
