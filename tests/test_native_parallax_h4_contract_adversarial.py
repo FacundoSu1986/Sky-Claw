@@ -305,6 +305,10 @@ def test_c1_identidad_de_entrada_unitaria_es_noop_bit_a_bit(m):
     assert not res.degenerate and res.degenerate_count == 0
     assert np.array_equal(res.array, n64)  # valores bit a bit; sin renormalizar
     assert res.array.dtype == np.float64
+    # la fachada hermana devuelve lo mismo en el caso evaluable (no solo lanza ante degenerados)
+    fachada = m.resize_normal(n64, 8)
+    assert np.array_equal(fachada, n64)
+    assert fachada.dtype == np.float64
 
 
 def test_c2_identidad_direccion_confiable_norma_no_unitaria_renormaliza(m):
@@ -314,6 +318,8 @@ def test_c2_identidad_direccion_confiable_norma_no_unitaria_renormaliza(m):
     res = m.resize_normal_diagnostic(n, 8)
     assert not res.degenerate
     assert float(np.max(np.abs(np.linalg.norm(res.array, axis=-1) - 1.0))) <= m.UNIT_NORM_TOLERANCE
+    # y la fachada hermana renormaliza igual (misma salida que el diagnóstico)
+    np.testing.assert_array_equal(m.resize_normal(n, 8), res.array)
 
 
 @pytest.mark.parametrize("api", ["resize_normal_diagnostic", "resize_normal"])
