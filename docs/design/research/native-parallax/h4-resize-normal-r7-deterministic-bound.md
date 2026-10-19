@@ -261,8 +261,15 @@ longitud.
 L*(modelo completo) / L*(un canal)  =  (q/2)*sqrt(3) / (q/2)  =  sqrt(3)  =  1.7320508
 ```
 
-Es decir: **el `1/2` de #723 subestimaba el cruce por un factor `sqrt(3)`**, porque su
-adversario usaba un solo canal. Ninguno de los dos números es "el equivocado": miden familias
+**Precisión del `1/2`** (revisión de Codex, verificada ejecutando): la relación es exacta con el
+cruce ANALÍTICO de un canal, `(q/2)/tan(q) = 0.4999897474909546`, contra el cruce de la construcción
+`L = 0.8660076459178669` (cociente `1.7320508075688772 = sqrt(3)` a precisión de máquina). El `1/2` de
+#723 es ese valor redondeado: con él el cociente da `1.7320152918357339`, es decir `sqrt(3)` salvo un
+redondeo relativo de ~2×10⁻⁵, del orden de los desplazamientos de umbral que este documento
+distingue. Léase el `1/2` de #723 como aproximación, no como el cruce exacto.
+
+Es decir: **el `1/2` de #723 subestimaba el cruce por un factor `sqrt(3)`** (aproximadamente, en los
+términos de arriba), porque su adversario usaba un solo canal. Ninguno de los dos números es "el equivocado": miden familias
 distintas, y la del modelo completo es la de este documento.
 
 **Por qué la cota no es tight (y qué se sabe).** El sup de `norm(dv)` (`delta_chord`) **sí** es
@@ -299,7 +306,7 @@ alcanza**; se declara como riesgo abierto, no como demostración.
 | Afirmar que la construcción alcanza `delta_chord` en `norm(dv)` | **R7-REV-02** | el test exige `norm(dv) < delta` y el cierre analítico |
 | Recalcular cada fila de las tablas de §4, §8 y §9 con **su propio** `L` | **R7-REV-01** | el test parsea el documento y recomputa; una fila copiada de otra longitud falla |
 | No vacuidad | cota decorativa | la construcción alcanza `>= 0.99 * cota` en todo `L` |
-| Mutación del aparato | tests que no discriminan | **21/21 mutantes matados**: los **13/13** enumerados por el commit `e87a57888ed719f367cce1457320a195eee211b3` (barrido reproducible en este slice, `scratch/barrido_mutantes.py` → `scratch/log_barrido_mutantes.txt`, kill juzgado por `N failed` en el resumen y no por el returncode) más **8** de los gates nuevos: `N01`–`N04` de §8, `N05`/`N06` de esta corrección documental y `N07`/`N08` de los estados obligatorios. La cifra previa de esta fila era `8/8`, del barrido anterior a `e87a5788`; **§12 es trazabilidad de correcciones, no el log de mutación**, y por eso la cifra vivía aquí y quedó desactualizada |
+| Mutación del aparato | tests que no discriminan | **21/21 mutantes matados**: los **13/13** enumerados por el commit `e87a57888ed719f367cce1457320a195eee211b3` (barrido ejecutado en el worktree de este slice, `scratch/barrido_mutantes.py` → `scratch/log_barrido_mutantes.txt`, kill juzgado por `N failed` en el resumen y no por el returncode; **el arnés no está versionado, así que la cifra es evidencia registrada con su log (§13.1), no reproducible desde el repo ni desde CI**) más **8** de los gates nuevos: `N01`–`N04` de §8, `N05`/`N06` de esta corrección documental y `N07`/`N08` de los estados obligatorios. La cifra previa de esta fila era `8/8`, del barrido anterior a `e87a5788`; **§12 es trazabilidad de correcciones, no el log de mutación**, y por eso la cifra vivía aquí y quedó desactualizada |
 | Acumulador float32 en la sombra | el modelo de implementación sería otro | la sombra correcta es bit-exacta; la variante float32 difiere del binario en 1088–2475 px (§8.4) |
 | Pesos 2-tap en la sombra | el filtro no sería el de Pillow | ángulo de 95–400 `x q_ang`; el binario no se reproduce (§8.4) |
 
@@ -433,6 +440,31 @@ número de taps de forma medible: para `k = 4` (`m = n = 8`) da
 `0.8660770023311493` y para `k = 16` (`m = n = 32`), `0.8660770023335029` — la
 diferencia es `2.7e-12`, del orden de los términos `u_d`.
 
+**Alcance del valor publicado** (revisión de Codex): `0.8660770023307574` es el de `k = 2`
+(`m = n = 4`, `κ = 24`), el que usan el token y `_umbral_suficiente_num()` por defecto. Para
+`k = 4` y `k = 16` el umbral suficiente es **algo mayor**; el que cubre TODAS las escalas
+declaradas es el máximo, `0.8660770023335029` (+`2.75e-12` sobre el publicado, contra un margen
+numérico de `3.77e-5`). Los tres valores se recomputan en
+`test_r7_impl_el_umbral_depende_del_numero_de_taps_y_el_publicado_es_el_de_k2`. El token
+`R7_SUFICIENTE_THRESHOLD_NUM` sigue siendo el de `k = 2`; quien lo use para otra escala debe
+tomar el de esa escala.
+
+**Dos normas, no una** (revisión de Codex, verificada recomputando): la bisección de arriba usa el
+mismo `L` en los dos términos, pero el geométrico se prueba con la norma `L` del campo **limpio**
+interpolado y el de implementación acota `b - B*` contra la norma de `B*`, la interpolación del
+campo **cuantizado**. Como `||B* - v|| <= delta_chord`, se tiene `L - delta_chord <= ||B*|| <=
+L + delta_chord`. Con el denominador en `L - delta_chord` y `E_b` evaluado en `L + delta_chord`:
+
+```text
+L*_estricto (k = 2)  = 0.8660773906537476   (+3.88e-07 sobre L*_num; +3.81e-05 sobre L_SUFICIENTE ideal)
+L*_estricto (k = 16) = 0.8660773906565153
+```
+
+Es el umbral **estrictamente suficiente** del modelo; `0.8660770023307574` es la aproximación de
+mismo-`L`. La diferencia (~1% del margen numérico) no cambia la decisión, pero un lector que lo cite
+como suficiente debe usar el estricto. Anclado por
+`test_r7_impl_el_umbral_estricto_separa_las_dos_normas`.
+
 **Variante de dos términos.** Si se mide el ángulo entre las salidas reales del
 campo limpio y del campo perturbado (los dos pasan por el binario), la
 composición lleva **dos** términos de implementación y el umbral sube a
@@ -468,7 +500,7 @@ correcta para "dirección de salida vs. normal verdadera".
 |---|---|---|
 | A — `decode_normal_image` → `load_asset` → `resize_normal_diagnostic` | normal **unitaria** (`rgb/255*2-1` renormalizado; `apply_convention` sólo flipping Y) | **Sí**, con `L <= 1` |
 | B — API directa `resize_normal(n, size)` | admite normas distintas de 1 (clip + renormalización) | **No** por la cota geométrica; sí la de implementación (`E_b` escala con `L`). `F01_CONTRACT_AMENDMENT` sigue `PENDING_TECH_LEAD` |
-| C — escalas | `k = 2` (1024/2048→512, primaria): pesos diádicos exactos. `k = 4, 8, 16` y no enteras (100→37): verificados, cubiertos por los términos `u_d `. Identidad (D-07): no hay remuestreo, no hay redondeo | **Sí** |
+| C — escalas | `k = 2` (1024/2048→512, primaria): pesos diádicos exactos. `k = 4, 8, 16` y no enteras (100→37): la sombra reproduce el binario bit a bit en cada escala (`test_r7_impl_la_sombra_reproduce_el_binario_bit_a_bit`, 4 escalas) y el umbral suficiente crece solo ~`2.7e-12` (§8.2, «Alcance del valor publicado»). Identidad (D-07): no hay remuestreo, no hay redondeo | **Sí** |
 | D — convención geométrica | el resize es por canal: no altera RGB, normalización, DirectX/OpenGL ni el sentido de Y (eso vive en `apply_convention`, aguas arriba) | **Sí** |
 
 `F01` opción A no introduce una entrada admisible fuera del modelo de R7 **para
@@ -535,7 +567,7 @@ una cota que no se demostró tight era una atribución de optimalidad sin prueba
   demuestra que ningún adversario alcance `asin(delta_chord/L)`.
 - **Qué pasa en la banda indecidida.** `L in [0.8660076459178669, 0.8660392772765431)` no está
   resuelto en ninguna dirección.
-- **El margen numérico de la implementación.** Ahora **acotado** para Pillow `11.3.0` @ `89f1f462` en Windows/AMD64 (§8.2): `L*_num = 0.8660770023307574`. Lo que sigue abierto es la **tightness** de la cota (holgura medida `>= 4.4x`) y la certificación de **otras** versiones de Pillow, que no se extrapolan.
+- **El margen numérico de la implementación.** Ahora **acotado** para Pillow `11.3.0` @ `89f1f462` en Windows/AMD64 (§8.2): `L*_num = 0.8660770023307574` (mismo `L` en los dos términos) y `L*_estricto = 0.8660773906537476` (norma del campo cuantizado separada). Lo que sigue abierto es la **tightness** de la cota (holgura medida `>= 4.4x`) y la certificación de **otras** versiones de Pillow, que no se extrapolan.
 - **Que el modelo declarado sea el correcto.** La cota es condicional al modelo
   `abs(eps_c) <= q/2` con renormalización. Si el modelo cambia, la cota cambia (linealmente en
   `delta_chord`).
@@ -569,8 +601,8 @@ implementación (holgura `>= 4.4x`); la certificación de versiones de Pillow di
 **Consecuencia para la decisión.** Si el criterio es worst-case, el único valor sostenido por
 evidencia es `0.8660392772765431` — y su costo de cobertura es **desconocido** sin corpus, lo
 que probablemente lo vuelva inaceptable en la práctica. Con el margen de implementación ya
-acotado, el valor worst-case que la evidencia sostiene es `0.8660770023307574` (§8.2), no
-menor. Si el criterio es estadístico, hay que **declararlo** (hoy `5/16` se presenta como
+acotado, el valor worst-case que la evidencia sostiene es `0.8660773906537476` (§8.2, estricto;
+`0.8660770023307574` es la aproximación de mismo-`L`), no menor. Si el criterio es estadístico, hay que **declararlo** (hoy `5/16` se presenta como
 derivación, no como estadístico). En cualquier caso la decisión es del Tech Lead; este
 documento no la toma.
 
@@ -601,6 +633,7 @@ R7_IMPL_BOUND                      = asin(sqrt(3) * E_b / L)   (E_b = u*(2+L) + 
 R7_IMPL_CERTIFIED_VERSION          = Pillow 11.3.0 @ 89f1f4626a2aaf5f3d5ca6437f41def2998fbe09 (Windows/AMD64; NO extrapolar a otras versiones)
 R7_PILLOW_CERTIFICATION            = BOUND_COMPUTATIONALLY_CERTIFIED   (SOLO para 11.3.0 @ 89f1f462, Windows/AMD64; NO extrapolar; el certificado numerico GLOBAL sigue BLOCKED por R7_NUMERIC_DERIVATION)
 R7_SUFICIENTE_THRESHOLD_NUM        = 0.8660770023307574   (umbral peor caso CON margen de implementacion; +3.7725e-05 sobre el ideal)
+R7_SUFICIENTE_THRESHOLD_NUM_ESTRICTO = 0.8660773906537476 (normas del campo limpio y del cuantizado separadas, k = 2; +3.88e-07 sobre el anterior)
 R7_IMPL_TIGHTNESS                  = NOT_TIGHT   (holgura medida >= 4.4x; peor caso observado 1.37*u)
 F01_CONTRACT_AMENDMENT             = PENDING_TECH_LEAD
 H4_CODE_MERGE_AUTHORIZED           = NO
@@ -612,7 +645,7 @@ PR675_CHANGED                      = NO        (CONSERVADO; este slice no toca #
 ```
 ## 13. Verificacion de este slice (Fases 5 y 6)
 
-### 13.1 La cifra de mutantes pasa de *reportada* a *verificada*
+### 13.1 La cifra de mutantes pasa de *reportada* a *registrada con su log*
 
 El estado previo de la fila de mutacion de §7 era `8/8`; la ultima clausura declaraba `13/13`.
 **Ninguna de las dos cifras estaba reproducida por un log dentro del slice.** En esta corrida:
@@ -621,9 +654,11 @@ El estado previo de la fila de mutacion de §7 era `8/8`; la ultima clausura dec
   se reconstruyeron uno a uno y se ejecutaron: **13/13 muertos**;
 - se agregaron **8** mutantes de los gates nuevos — `N01`–`N04` de §8, `N05`/`N06` de esta
   correccion documental y `N07`/`N08` de los estados obligatorios del brief: **8/8 muertos**;
-- **total verificado: 21/21**. El arnes de reproduccion es
-  `scratch/barrido_mutantes.py` (no versionado: `scratch/` esta en `.gitignore`); la
-  tabla de abajo es el log, comprometida aca para que la evidencia sobreviva al commit.
+- **total registrado: 21/21**. El arnes que lo produjo es
+  `scratch/barrido_mutantes.py` (**no versionado**: `scratch/` esta en `.gitignore`), asi que esta
+  cifra NO se puede reproducir desde el repo ni la ejecuta CI (revision de Codex); la tabla de
+  abajo es el log, comprometida aca para que la evidencia sobreviva al commit. Versionar y correr el
+  arnes es trabajo pendiente, no algo que este documento afirme hecho.
 
 | id | mutante | resumen de pytest | kill |
 |---|---|---|---|

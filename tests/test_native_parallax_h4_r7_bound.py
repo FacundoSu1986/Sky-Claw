@@ -894,24 +894,55 @@ def _ideal_exacto(campo: np.ndarray, out_size: int) -> np.ndarray:
     return out
 
 
-def _cota_error_impl(largo: float) -> float:
-    """E_b: cota de `|b - B*|` por canal (M = 1 por el clip de produccion)."""
-    return U_F32 * 2.0 + U_F32 * largo + _KAPPA * U_F64
+def _kappa(taps_por_eje: int) -> float:
+    """(2m + 2n + 8) redondeos double con m = n = taps por eje (§8.2)."""
+    return 2.0 * taps_por_eje + 2.0 * taps_por_eje + 8.0
 
 
-def _cota_angulo_impl(largo: float) -> float:
+def _cota_error_impl(largo: float, taps_por_eje: int = _TAPS_K2) -> float:
+    """E_b: cota de `|b - B*|` por canal (M = 1 por el clip de produccion).
+
+    Por defecto es la del factor `k = 2` (4 taps por eje), la que fija los valores publicados.
+    """
+    return U_F32 * 2.0 + U_F32 * largo + _kappa(taps_por_eje) * U_F64
+
+
+def _cota_angulo_impl(largo: float, taps_por_eje: int = _TAPS_K2) -> float:
     """Mismo lema angular de §3.4, aplicado al desplazamiento de implementacion."""
     if largo <= 0.0:
         return float("inf")
-    return math.asin(min(1.0, math.sqrt(3.0) * _cota_error_impl(largo) / largo))
+    return math.asin(min(1.0, math.sqrt(3.0) * _cota_error_impl(largo, taps_por_eje) / largo))
 
 
-def _umbral_suficiente_num() -> float:
+def _umbral_suficiente_num(taps_por_eje: int = _TAPS_K2) -> float:
     """Minimo L con `asin(delta_chord/L) + asin(sqrt(3)*E_b/L) <= q_ang` (biseccion)."""
     lo, hi = 0.5, 1.0
     for _ in range(200):
         mid = 0.5 * (lo + hi)
-        cota = math.asin(min(1.0, DELTA_CHORD / mid)) + _cota_angulo_impl(mid)
+        cota = math.asin(min(1.0, DELTA_CHORD / mid)) + _cota_angulo_impl(mid, taps_por_eje)
+        if cota > Q_ANG:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _umbral_suficiente_estricto(taps_por_eje: int = _TAPS_K2) -> float:
+    """Umbral suficiente separando las DOS normas de la composición (revisión de Codex).
+
+    El término geométrico `asin(delta_chord/L)` usa la norma `L` del campo limpio interpolado; el de
+    implementación acota `b - B*` contra la norma de `B*`, la interpolación del campo CUANTIZADO. Como
+    `||B* - v|| <= delta_chord`, `L - delta_chord <= ||B*|| <= L + delta_chord`: el denominador del
+    término de implementación usa `L - delta_chord` y `E_b` se evalúa en `L + delta_chord`.
+    `_umbral_suficiente_num` usa el mismo `L` en los dos términos (aproximación).
+    """
+    lo, hi = 0.5, 1.0
+    for _ in range(300):
+        mid = 0.5 * (lo + hi)
+        impl = math.asin(
+            min(1.0, math.sqrt(3.0) * _cota_error_impl(mid + DELTA_CHORD, taps_por_eje) / (mid - DELTA_CHORD))
+        )
+        cota = math.asin(min(1.0, DELTA_CHORD / mid)) + impl
         if cota > Q_ANG:
             lo = mid
         else:
@@ -955,6 +986,26 @@ def _peor_angulo_impl(campo: np.ndarray, out_size: int) -> tuple[float, float]:
             peor_ang = max(peor_ang, _angulo(v, real[i, j]))
             peor_cota = max(peor_cota, _cota_angulo_impl(largo))
     return peor_ang, peor_cota
+
+
+def _peor_exceso_por_pixel(campo: np.ndarray, out_size: int) -> float:
+    """Máximo de ``angulo_i - cota(L_i)`` sobre píxeles con L >= 0.75 (<= 0 si la cota vale en TODOS).
+
+    ``_peor_angulo_impl`` agrega con dos máximos independientes, y ``max(angulo) <= max(cota)`` puede
+    cumplirse aunque un píxel de L alto supere SU cota (más chica) mientras otro de L bajo aporta la
+    cota más holgada. Acá cada píxel se compara con la suya antes de agregar.
+    """
+    ideal = _ideal_exacto(campo, out_size)
+    real = np.stack([_pillow_resize(campo[..., k], out_size) for k in range(3)], axis=-1)
+    peor = -float("inf")
+    for i in range(out_size):
+        for j in range(out_size):
+            v = ideal[i, j]
+            largo = float(np.linalg.norm(v))
+            if largo < 0.75:
+                continue
+            peor = max(peor, _angulo(v, real[i, j]) - _cota_angulo_impl(largo))
+    return peor
 
 
 def _pillow_resize(campo2d: np.ndarray, out_size: int) -> np.ndarray:
@@ -1021,7 +1072,35 @@ def test_r7_impl_version_certificada() -> None:
     assert PIL.__version__ == PILLOW_CERTIFICADA
 
 
-def test_r7_impl_la_sombra_reproduce_el_binario_bit_a_bit() -> None:
+# Escalas declaradas del certificado. Cada una se EJERCITA: los campos se generan al tamaño de entrada de
+# la escala (antes todos eran 64x64 y las otras tres se saltaban en silencio con ``continue``).
+_ESCALAS_SOMBRA = [(64, 32), (100, 37), (8, 16), (48, 13)]
+
+
+def _familias_de_campos(n: int) -> list[tuple[str, np.ndarray]]:
+    """Las familias de campos del gate de la sombra, generadas a tamaño ``n`` x ``n``."""
+    return [
+        ("extremo R7", _campo_extremo_r7(0.80, n)),
+        ("extremo R7 L=0.55", _campo_extremo_r7(0.55, n)),
+        ("midpoint", _campo_midpoint(n)),
+        ("aleatorio", np.random.default_rng(1).uniform(-1.0, 1.0, (n, n, 3))),
+        (
+            "polos",
+            _renorm(
+                np.concatenate(
+                    [
+                        0.15 * np.random.default_rng(3).uniform(-1, 1, (n, n, 2)),
+                        np.sign(np.random.default_rng(4).uniform(-1, 1, (n, n, 1))),
+                    ],
+                    axis=-1,
+                )
+            ),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(("n_in", "n_out"), _ESCALAS_SOMBRA, ids=[f"{a}a{b}" for a, b in _ESCALAS_SOMBRA])
+def test_r7_impl_la_sombra_reproduce_el_binario_bit_a_bit(n_in: int, n_out: int) -> None:
     """Gate load-bearing: la sombra (acumulador double, 3 redondeos float32) es
     identica al binario real, bit a bit, en todas las familias y escalas.
 
@@ -1029,49 +1108,32 @@ def test_r7_impl_la_sombra_reproduce_el_binario_bit_a_bit() -> None:
     intermedio fuera double o si los pesos fueran otros, la sombra diferiria.
     Que NO difiera es lo que autoriza a derivar la cota de esta secuencia.
     """
-    familias: list[tuple[str, np.ndarray]] = [
-        ("extremo R7", _campo_extremo_r7(0.80)),
-        ("extremo R7 L=0.55", _campo_extremo_r7(0.55)),
-        ("midpoint", _campo_midpoint()),
-        ("aleatorio", np.random.default_rng(1).uniform(-1.0, 1.0, (64, 64, 3))),
-        (
-            "polos",
-            _renorm(
-                np.concatenate(
-                    [
-                        0.15 * np.random.default_rng(3).uniform(-1, 1, (64, 64, 2)),
-                        np.sign(np.random.default_rng(4).uniform(-1, 1, (64, 64, 1))),
-                    ],
-                    axis=-1,
-                )
-            ),
-        ),
-    ]
-    escalas = [(64, 32), (100, 37), (8, 16), (48, 13)]
-    for nombre, campo in familias:
-        for n_in, n_out in escalas:
-            if campo.shape[0] != n_in:
-                continue
-            real = np.stack([_pillow_resize(campo[..., k], n_out) for k in range(3)], axis=-1)
-            sombra = np.stack([_shadow_resize_f32(campo[..., k], n_out) for k in range(3)], axis=-1)
-            assert np.array_equal(real.view(np.uint32), sombra.view(np.uint32)), (
-                f"{nombre} {n_in}->{n_out}: la sombra NO reproduce el binario"
-            )
+    for nombre, campo in _familias_de_campos(n_in):
+        assert campo.shape[:2] == (n_in, n_in), f"{nombre}: el campo no tiene el tamaño de la escala"
+        real = np.stack([_pillow_resize(campo[..., k], n_out) for k in range(3)], axis=-1)
+        sombra = np.stack([_shadow_resize_f32(campo[..., k], n_out) for k in range(3)], axis=-1)
+        assert np.array_equal(real.view(np.uint32), sombra.view(np.uint32)), (
+            f"{nombre} {n_in}->{n_out}: la sombra NO reproduce el binario"
+        )
 
 
 @pytest.mark.parametrize("largo", [0.80, 0.8660392772765431, 0.95])
 def test_r7_impl_la_cota_nunca_se_viola(largo: float) -> None:
     """El angulo entre el ideal exacto y la salida real no supera la cota, por pixel."""
-    ang, cota = _peor_angulo_impl(_campo_extremo_r7(largo), 32)
+    campo = _campo_extremo_r7(largo)
+    ang, cota = _peor_angulo_impl(campo, 32)
     assert ang <= cota
+    assert _peor_exceso_por_pixel(campo, 32) <= 0.0  # y cada píxel contra SU cota, no máximo contra máximo
     # y no es vacua: el angulo medido es del orden del redondeo, no cero
     assert ang >= 0.0
 
 
 def test_r7_impl_la_cota_aguanta_el_campo_de_saturacion() -> None:
     """Campo con redondeos float32 coherentes en el regimen del umbral."""
-    ang, cota = _peor_angulo_impl(_campo_midpoint(), 32)
+    campo = _campo_midpoint()
+    ang, cota = _peor_angulo_impl(campo, 32)
     assert ang <= cota
+    assert _peor_exceso_por_pixel(campo, 32) <= 0.0  # el midpoint tiene L variable: aquí importa el por píxel
     # el peor caso observado es del orden de u, muy por debajo de la cota: se
     # declara la holgura en vez de esconderla.
     assert cota >= 4.0 * ang
@@ -1096,6 +1158,44 @@ def test_r7_impl_controles_negativos_discriminan() -> None:
         _angulo(ideal[i, j], dos_taps[i, j]) for i in range(32) for j in range(32) if np.linalg.norm(ideal[i, j]) > 1e-6
     )
     assert peor > 10.0 * Q_ANG
+
+
+@pytest.mark.parametrize(
+    ("factor", "taps_por_eje", "umbral_documentado"),
+    [(2, 4, 0.8660770023307574), (4, 8, 0.8660770023311493), (16, 32, 0.8660770023335029)],
+    ids=["k2", "k4", "k16"],
+)
+def test_r7_impl_el_umbral_depende_del_numero_de_taps_y_el_publicado_es_el_de_k2(
+    factor: int, taps_por_eje: int, umbral_documentado: float
+) -> None:
+    """Revisión de Codex: `_KAPPA = 24` es el de `k = 2` (4 taps por eje). El documento da los umbrales de
+    `k = 4` (8 taps) y `k = 16` (32 taps); acá se RECOMPUTAN en lugar de citarse, y se fija que el
+    publicado (`0.8660770023307574`) es el de `k = 2` y que el máximo de las escalas declaradas lo supera
+    por ~2.7e-12 (despreciable frente al margen de 3.77e-5, pero no cero)."""
+    assert math.isclose(_umbral_suficiente_num(taps_por_eje), umbral_documentado, rel_tol=1e-12), factor
+    publicado = _umbral_suficiente_num(_TAPS_K2)
+    assert _umbral_suficiente_num(taps_por_eje) >= publicado
+    maximo = _umbral_suficiente_num(32)
+    assert 0.0 < maximo - publicado < 3e-12
+    assert maximo - L_SUFICIENTE < 3.8e-05  # el margen numérico sigue siendo ~3.77e-5
+
+
+@pytest.mark.parametrize(
+    ("taps_por_eje", "estricto_documentado"),
+    [(4, 0.8660773906537476), (32, 0.8660773906565153)],
+    ids=["k2", "k16"],
+)
+def test_r7_impl_el_umbral_estricto_separa_las_dos_normas(taps_por_eje: int, estricto_documentado: float) -> None:
+    """El publicado (`0.8660770023307574`, mismo `L` en los dos términos) NO es estrictamente suficiente:
+    separando la norma del campo limpio de la del cuantizado el umbral sube ~3.9e-7. Sigue siendo
+    ~1% del margen numérico (3.77e-5), pero la diferencia es real y queda pinada, no escondida."""
+    estricto = _umbral_suficiente_estricto(taps_por_eje)
+    publicado = _umbral_suficiente_num(taps_por_eje)
+
+    assert math.isclose(estricto, estricto_documentado, rel_tol=1e-12)
+    assert estricto > publicado
+    assert 3.0e-07 < estricto - _umbral_suficiente_num(_TAPS_K2) < 4.0e-07
+    assert estricto - L_SUFICIENTE < 4.2e-05  # el margen total sigue ~3.8e-5 sobre el ideal
 
 
 def test_r7_impl_el_umbral_numerico_certificado() -> None:
@@ -1192,6 +1292,10 @@ def test_r7_los_estados_obligatorios_del_brief_estan_y_no_se_autoriza_nada() -> 
 def test_r7_la_cifra_de_mutantes_apunta_al_commit_que_la_evidencia() -> None:
     """Fase 5: la fila de mutacion de §7 declara 13/13 y apunta al commit que la evidencia.
 
+    ALCANCE (revision de Codex): esto comprueba la CONSISTENCIA DOCUMENTAL del registro (cifras, commit y
+    nombre del arnes), NO ejecuta ni reproduce ninguna mutacion: `scratch/barrido_mutantes.py` no esta
+    versionado. La cifra 21/21 es evidencia registrada con su log, no un resultado que CI pueda reproducir.
+
     La cifra vieja era 8/8 (barrido anterior a `e87a5788`). §12 es trazabilidad de
     correcciones, NO el log de mutacion: por eso la cifra vivia en §7 y quedo
     desactualizada. Se corrige contra el commit, no contra una afirmacion.
@@ -1202,6 +1306,6 @@ def test_r7_la_cifra_de_mutantes_apunta_al_commit_que_la_evidencia() -> None:
     assert len(fila_mut) == 1, "debe haber exactamente una fila de mutantes en §7"
     assert "13/13" in fila_mut[0][2]
     assert "21/21" in fila_mut[0][2], "la cifra verificada en este slice es 13 + 8 nuevos"
-    assert "barrido_mutantes.py" in fila_mut[0][2], "la fila debe apuntar al barrido reproducible"
+    assert "barrido_mutantes.py" in fila_mut[0][2], "la fila debe nombrar el barrido que produjo el log (no versionado)"
     assert COMMIT_EVIDENCIA_MUTANTES in fila_mut[0][2]
     assert COMMIT_EVIDENCIA_MUTANTES in texto
