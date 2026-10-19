@@ -199,7 +199,8 @@ class DegenerateNormalError(DatasetInvalidError):
 #    `tests/test_native_parallax_h4_resize_normal.py`, familia G— es la
 #    CONSERVADURÍA del valor BAJO EL CRITERIO RMS: el cruce medido `delta_theta(L) =
 #    q_ang` cae muy por debajo de `5/16` en TODOS los factores soportados. Cruces RMS
-#    medidos (malla de paso 0.02, así que son cotas SUPERIORES del cruce real):
+#    medidos (malla `linspace(0.02, 0.60, 25)`, paso ~0.0242, así que son cotas
+#    SUPERIORES del cruce real):
 #    `k=2 -> 0.0925`, `k=4 -> 0.0683`, `k=8 -> 0.0442`, `k=16 -> 0.0200`, todos por
 #    debajo de `0.3125`.
 #    **Corrección de una segunda afirmación no medida (slice de RECONCILIACIÓN).** El

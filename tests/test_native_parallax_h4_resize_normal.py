@@ -784,27 +784,98 @@ def _tracked_py() -> list[str]:
     return [rel.strip() for rel in listado.stdout.splitlines() if rel.strip()]
 
 
+_MODULO_DATASET = "authored_dataset"
+
+
+def _nombre_punteado(nodo: ast.AST) -> str | None:
+    """`a.b.c` para una cadena de `Name`/`Attribute`; `None` si la base no es un nombre."""
+    if isinstance(nodo, ast.Name):
+        return nodo.id
+    if isinstance(nodo, ast.Attribute):
+        base = _nombre_punteado(nodo.value)
+        return None if base is None else f"{base}.{nodo.attr}"
+    return None
+
+
+def _imports_del_dataset(arbol: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """Resuelve cómo un módulo liga `authored_dataset`: `(nombres del módulo, alias -> símbolo)`.
+
+    Cubre `import p.authored_dataset [as ad]`, `from p import authored_dataset [as ad]` y
+    `from p.authored_dataset import load_asset [as la]` (también relativo).
+    """
+    modulos: set[str] = set()
+    alias: dict[str, str] = {}
+    for n in ast.walk(arbol):
+        if isinstance(n, ast.ImportFrom):
+            es_el_modulo = (n.module or "").split(".")[-1] == _MODULO_DATASET
+            for a in n.names:
+                if es_el_modulo and a.name in _SIMBOLOS:
+                    alias[a.asname or a.name] = a.name
+                elif a.name == _MODULO_DATASET:
+                    modulos.add(a.asname or a.name)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name.split(".")[-1] == _MODULO_DATASET:
+                    modulos.add(a.asname or a.name)
+    return modulos, alias
+
+
+def _simbolo_de(nodo: ast.AST, modulos: set[str], alias: dict[str, str]) -> str | None:
+    """Símbolo H4 que `nodo` nombra, o `None`.
+
+    Un `ast.Name` cuenta por nombre (conservador: una función propia llamada `load_asset`
+    también cuenta) o por alias de import. Un `ast.Attribute` cuenta sólo si su base es el
+    módulo `authored_dataset` (alias o cadena punteada): `otro.load_asset` no es un consumidor.
+    """
+    if isinstance(nodo, ast.Name):
+        return nodo.id if nodo.id in _SIMBOLOS else alias.get(nodo.id)
+    if isinstance(nodo, ast.Attribute) and nodo.attr in _SIMBOLOS:
+        base = _nombre_punteado(nodo.value)
+        if base is not None and (base in modulos or base.split(".")[-1] == _MODULO_DATASET):
+            return nodo.attr
+    return None
+
+
+def _simbolos_referenciados(arbol: ast.AST) -> set[str]:
+    """Símbolos H4 que un módulo referencia, resolviendo imports (N-13).
+
+    Antes el censo miraba sólo `ast.Name`: `import ...authored_dataset as ad; ad.load_asset(...)`,
+    `from ... import load_asset as la` y la cadena punteada completa quedaban verdes sin
+    exigir recetas de propagación (hallazgo de Codex sobre #723). Límite declarado: no se
+    resuelven `importlib.import_module(...)` ni `getattr` dinámico.
+    """
+    modulos, alias = _imports_del_dataset(arbol)
+    hallados = set(alias.values())  # el import ya es una referencia, aunque se use con otro nombre
+    for n in ast.walk(arbol):
+        simbolo = _simbolo_de(n, modulos, alias)
+        if simbolo is not None:
+            hallados.add(simbolo)
+    return hallados
+
+
+def _destino_del_censo(rel: str) -> str | None:
+    """`produccion` para `sky_claw/` y `scripts/` (CI los lintea y tipa), `historico` para
+    `docs/validation/`; `None` para el resto (los tests son consumidores por diseño)."""
+    if rel.startswith(("sky_claw/", "scripts/")):
+        return "produccion"
+    if rel.startswith("docs/validation/"):
+        return "historico"
+    return None
+
+
 def _censo_consumidores() -> dict[str, set[tuple[str, str]]]:
-    """Censo por AST de referencias (`ast.Name`), no sólo llamadas (N-13)."""
+    """Censo por AST de referencias resueltas (nombre, alias, atributo), no sólo llamadas (N-13)."""
     censo: dict[str, set[tuple[str, str]]] = {"produccion": set(), "historico": set()}
     for rel in _tracked_py():
+        destino = _destino_del_censo(rel)
         ruta = _REPO / rel
-        if not ruta.is_file():
+        if destino is None or not ruta.is_file():
             continue
         try:
             arbol = ast.parse(ruta.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        hallados = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name) and n.id in _SIMBOLOS}
-        if not hallados:
-            continue
-        if rel.startswith("sky_claw/"):
-            destino = "produccion"
-        elif rel.startswith("docs/validation/"):
-            destino = "historico"
-        else:
-            continue
-        for simbolo in hallados:
+        for simbolo in _simbolos_referenciados(arbol):
             censo[destino].add((rel, simbolo))
     return censo
 
@@ -830,21 +901,97 @@ def _contiene_continue(handler: ast.ExceptHandler) -> bool:
 _LLAMADAS_QUE_CARGAN_NORMALES = {"load_asset", "resize_normal", "resize_normal_diagnostic"}
 
 
-def _trys_que_cargan_normales(rel: str) -> list[ast.Try]:
-    """`try` cuyo cuerpo carga una normal — las únicas superficies donde el orden importa."""
-    arbol = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
+def _trys_en_arbol(arbol: ast.AST) -> list[ast.Try]:
+    """`try` cuyo cuerpo carga una normal, con la misma resolución de imports que el censo.
+
+    Una llamada calificada (`ad.load_asset(...)`) o con alias (`la(...)`) dentro de un
+    `except DatasetInvalidError: continue` evadía el chequeo de orden de handlers.
+    """
+    modulos, alias = _imports_del_dataset(arbol)
     objetivo: list[ast.Try] = []
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Try):
             continue
-        llamados = {n.func.id for n in ast.walk(nodo) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        llamados = {
+            simbolo
+            for n in ast.walk(nodo)
+            if isinstance(n, ast.Call) and (simbolo := _simbolo_de(n.func, modulos, alias)) is not None
+        }
         if llamados & _LLAMADAS_QUE_CARGAN_NORMALES:
             objetivo.append(nodo)
     return objetivo
 
 
+def _trys_que_cargan_normales(rel: str) -> list[ast.Try]:
+    """`try` cuyo cuerpo carga una normal — las únicas superficies donde el orden importa."""
+    return _trys_en_arbol(ast.parse((_REPO / rel).read_text(encoding="utf-8")))
+
+
 def _indices_de_handlers(t: ast.Try) -> list[str]:
     return [_nombre_de_handler(h) for h in t.handlers]
+
+
+_CASOS_DE_CENSO = [
+    pytest.param("from p.authored_dataset import load_asset\nload_asset(1)", {"load_asset"}, id="nombre_directo"),
+    pytest.param("from p.authored_dataset import load_asset as la\nla(1)", {"load_asset"}, id="alias_del_import"),
+    pytest.param("from .authored_dataset import resize_normal as rn\n", {"resize_normal"}, id="relativo_con_alias"),
+    pytest.param("import p.authored_dataset as ad\nad.resize_normal(1, 2)", {"resize_normal"}, id="modulo_con_alias"),
+    pytest.param("from p import authored_dataset as ad\nad.load_asset(1)", {"load_asset"}, id="from_paquete_el_modulo"),
+    pytest.param(
+        "import p.q.authored_dataset\np.q.authored_dataset.resize_normal_diagnostic(1, 2)",
+        {"resize_normal_diagnostic"},
+        id="cadena_punteada_completa",
+    ),
+    pytest.param("def load_asset():\n    pass\nload_asset()", {"load_asset"}, id="nombre_sin_import_es_conservador"),
+    pytest.param("import otro\notro.load_asset(1)", set(), id="negativo_atributo_de_otro_modulo"),
+    pytest.param("from p.otro import load_asset as la\nla(1)", set(), id="negativo_alias_de_otro_modulo"),
+]
+
+
+@pytest.mark.parametrize(("fuente", "esperado"), _CASOS_DE_CENSO)
+def test_e_el_censo_resuelve_nombre_alias_atributo_y_cadena_punteada(fuente: str, esperado: set[str]) -> None:
+    """Hallazgo de Codex: el censo sólo veía `ast.Name`. Se enumeran las formas de referencia."""
+    assert _simbolos_referenciados(ast.parse(fuente)) == esperado
+
+
+def test_e_el_scanner_de_handlers_ve_llamadas_calificadas_y_con_alias() -> None:
+    """Una carga calificada o con alias dentro de un `try` no puede evadir el chequeo de orden."""
+    fuente = "\n".join(
+        [
+            "import p.authored_dataset as ad",
+            "from p.authored_dataset import load_asset as la",
+            "def calificada(x):",
+            "    try:",
+            "        ad.load_asset(x)",
+            "    except DatasetInvalidError:",
+            "        pass",
+            "def con_alias(x):",
+            "    try:",
+            "        la(x)",
+            "    except DatasetInvalidError:",
+            "        pass",
+            "def ajena(x):",
+            "    try:",
+            "        otro.cargar(x)",
+            "    except DatasetInvalidError:",
+            "        pass",
+        ]
+    )
+    assert len(_trys_en_arbol(ast.parse(fuente))) == 2, "las dos cargas deben detectarse y la ajena no"
+
+
+@pytest.mark.parametrize(
+    ("rel", "destino"),
+    [
+        ("sky_claw/local/native_parallax/research/run_exp_m3.py", "produccion"),
+        ("scripts/run_lambda_study_m6.py", "produccion"),
+        ("docs/validation/x/scripts/y.py", "historico"),
+        ("tests/test_algo.py", None),
+    ],
+)
+def test_e_el_censo_trata_scripts_como_produccion_y_tests_como_ajenos(rel: str, destino: str | None) -> None:
+    """`scripts/` entra al censo (CI lo lintea y tipa); antes un script nuevo quedaba fuera."""
+    assert _destino_del_censo(rel) == destino
 
 
 def test_e_el_censo_productivo_esta_congelado() -> None:
@@ -869,7 +1016,7 @@ def test_e_ningun_handler_de_degeneracion_usa_continue() -> None:
     """D-06.e: `continue` está PROHIBIDO para la señal de degeneración."""
     ofensores: list[str] = []
     for rel in _tracked_py():
-        if not rel.startswith("sky_claw/"):
+        if _destino_del_censo(rel) != "produccion":
             continue
         try:
             handlers = _handlers_de_excepciones(rel)

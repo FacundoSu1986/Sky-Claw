@@ -171,10 +171,11 @@ Pesos 1-D derivados del oráculo por respuesta a impulsos:
     k=8  -> 16 taps                         sum(w^2) = 0.0830078
     k=16 -> 32 taps                         sum(w^2) = 0.0416260
 
-Cruce RMS medido (criterio: RMS(delta_theta) <= q_ang, q = 2/255; malla de paso 0.02,
-así que son COTAS SUPERIORES del cruce real):
-    k=2 -> <= 0.10      k=4 -> <= 0.06      k=8 -> <= 0.04      k=16 -> <= 0.02
-Todos por debajo de DEGENERATE_THRESHOLD = 0.3125 (margen ~2.4x-3x).
+Cruce RMS medido (criterio: RMS(delta_theta) <= q_ang, q = 2/255; malla
+linspace(0.02, 0.60, 25), paso ~0.0242, así que son COTAS SUPERIORES del cruce real):
+    k=2 -> 0.0925      k=4 -> 0.0683      k=8 -> 0.0442      k=16 -> 0.0200
+Todos por debajo de DEGENERATE_THRESHOLD = 0.3125 (margen ~3.4x-15.6x, sólo bajo RMS;
+para k=16 el primer punto de la malla ya cumple, así que 15.6x es un mínimo).
 Criterio NO trivial: en L = 0.02 el RMS lo incumple, así que la prueba discrimina.
 ```
 
@@ -214,7 +215,8 @@ R7_THRESHOLD_VALUE         = 5/16  (CONSERVADO; prohibido recalibrarlo con corpu
 R7_WORST_CASE_PREMISE      = CONJECTURE_NOT_FALSIFIED  (SIN CAMBIO: gate #717 §6.1, FROZEN)
 R7_NYQUIST_ATTAINMENT      = ESTABLISHED_AS_ATTAINED_BOUND  (token NUEVO de este slice)
 R7_WORST_CASE_CROSSING     = 1/2   (token NUEVO del slice de RECONCILIACIÓN; ver §3.1)
-R7_VALUE_IS_CONSERVATIVE   = YES (medido, k en {2,4,8,16}, criterio predefinido)
+R7_VALUE_IS_CONSERVATIVE   = YES_UNDER_RMS_ONLY (medido, k en {2,4,8,16}, criterio predefinido);
+                             NO bajo el peor caso coherente (cruce 1/2, ver §3.1)
 R7_NUMERIC_VALUE_FROM_CORPUS = NO
 M6_IMPLEMENTATION_BLOCKED  = YES
 H4_CODE_MERGE_AUTHORIZED   = NO (queda a criterio del revisor)

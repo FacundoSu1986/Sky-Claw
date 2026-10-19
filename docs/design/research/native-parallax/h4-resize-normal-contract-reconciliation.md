@@ -325,6 +325,15 @@ reproducción auxiliar; las anclas que el gate ejecuta son las tres filas de arr
 
 ### 3.3 Reproducción
 
+> **Reproducibilidad (revisión del 2026-10-19).** Los probes de esta sección **no están
+> versionados** (`scratch/` está en `.gitignore`) y los comandos usan rutas de una sola máquina
+> (`E:/Skyclaw_Main_Sync/...`). Por lo tanto las tablas de §1.1, §2.3, §2.4 y §2.5 **no son
+> reproducibles desde el repositorio** en este head: son evidencia registrada por el autor y un
+> revisor no puede regenerarla sin los probes. Sí son reproducibles las anclas de tests
+> versionadas que cita este documento (p. ej. el contraejemplo coherente). Las tablas se conservan
+> como registro histórico; publicar los probes en una ubicación versionada, con comandos relativos
+> al repo, queda pendiente y es decisión del autor.
+
 Los probes que produjeron cada tabla viven en `scratch/h4-s2-reconciliation/` (directorio
 `gitignoreado`: **no** entra en el PR). Todos llevan el guard de procedencia y se corren desde el
 worktree, con el `PYTHONPATH` explícito — sin él, el `editable install` del venv importa el
@@ -345,7 +354,7 @@ PYTHONPATH="E:/Skyclaw_Main_Sync/.worktrees/h4-resize-normal-fix" \
 | `mutacion.py` | barrido de mutación con restauración verificada por `md5` |
 | `check_docs.py` | tablas de este documento con el checker **importado** del repo |
 
-Barrido de mutación ejecutado (4/4 muertos, restauración verificada por `md5` y
+Barrido de mutación ejecutado (5/5 muertos, restauración verificada por `md5` y
 `git status --porcelain` vacío tras cada uno):
 
 | Mutante | Cambio | Resultado |
