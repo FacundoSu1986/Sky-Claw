@@ -10,9 +10,10 @@ Origen: revisión de código y matemáticas del 2026-10-15 (sesión Arena, rama
 Diseño:
 - Los casos son INDEPENDIENTES de la implementación: la referencia del kernel
   bilineal de Pillow para downscale 2× es el filtro triangular escalado de 4 taps
-  ``(1/8, 3/8, 3/8, 1/8)`` sobre las columnas ``(2j−1, 2j, 2j+1, 2j+2)`` con clamp de
-  borde (verificado con respuesta al impulso: un delta en la columna 5 de 16→8
-  reparte 3/8 y 1/8 en las salidas 2 y 3). Se deriva de la especificación del
+  ``(1/8, 3/8, 3/8, 1/8)`` sobre las columnas ``(2j−1, 2j, 2j+1, 2j+2)``; en el borde los
+  taps fuera de rango se DESCARTAN y los pesos restantes se renormalizan (no se clampea:
+  la salida 0 pesa 3/7, 3/7, 1/7). Verificado con respuesta al impulso: un delta en la
+  columna 5 de 16→8 reparte 3/8 y 1/8 en las salidas 2 y 3. Se deriva de la especificación del
   filtro, no de la implementación bajo contrato.
 - El hallazgo H4 (auditoría 2026-10-07, ``H4_IMPLEMENTATION_DEFECT = CONFIRMED``)
   queda fijado como caso RED permanente: normal plana ⇒ ``mean(nx)`` exactamente 0
@@ -387,8 +388,8 @@ def test_d3_resize_coincide_con_referencia_manual_del_kernel(m):
 
 def test_d4_checkerboard_ecuatorial_cancelacion_exacta_es_degenerada(m):
     """Vectores unitarios opuestos (±1,0,0) entrelazados por columna: el kernel los
-    cancela EXACTAMENTE en el interior (norma 0) y deja 1/4 en los bordes clampeados
-    (‖·‖ = 0.25 < 5/16). DEBE marcarse degenerado con crudo preservado, jamás
+    cancela EXACTAMENTE en el interior (norma 0) y deja 1/7 en los bordes (pesos
+    renormalizados 3/7, 3/7, 1/7 sobre +1, −1, +1; ‖·‖ = 1/7 < 5/16). DEBE marcarse degenerado con crudo preservado, jamás
     renormalizarse en silencio (D-06; la cancelación alcanzable es ancla de §6.1)."""
     n = np.zeros((16, 16, 3))
     patron = np.arange(16) % 2 == 0
@@ -443,6 +444,8 @@ def test_e1_transicion_barrida_por_fase_contrato_sostenido(m, c):
             m.resize_normal(n, 8)
     else:
         assert float(np.max(np.abs(np.linalg.norm(res.array, axis=-1) - 1.0))) <= 1e-12
+        # y la DIRECCIÓN es la de la referencia: una norma correcta con otra dirección no pasa
+        np.testing.assert_allclose(res.array, crudo_ref / normas_ref[..., None], rtol=0, atol=1e-6)
 
 
 def test_e2_fase_de_cruce_exacto_ancla_infimo_cero(m):
