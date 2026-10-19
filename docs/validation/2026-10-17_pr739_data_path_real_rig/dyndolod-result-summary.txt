@@ -1,0 +1,41 @@
+DynDOLOD — RESULTADO FINAL (intento 4, corrida aceptada por el servicio)
+
+Pipeline: success=True, needs_deployment=False, assisted=True, duration=348,6 s.
+Tool: success=True, return_code=0, output_path=...\Work Root\DynDOLOD\DynDOLOD,
+      tool errors=[], warnings=137 (no terminales).
+Log real: 10.953 líneas, 959.656 B.
+  Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\PR739 Data Path\game\Data\
+  Using Output Path: C:\SkyClaw_Rigs\PR739 Data Path\Work Root\DynDOLOD\DynDOLOD\
+  [03:46] DynDOLOD plugins generated successfully
+  [03:46] Occlusion.esp completed successfully
+  [03:50] User says "Save and Exit"
+  Saving ...\DynDOLOD.esm / .esp / Occlusion.esp
+
+Veredictos de procedencia (evaluar_evidencia_de_rutas del PR):
+  output: COINCIDE (declarada con backslash final; configurada sin él)
+  data:   COINCIDE
+  discrepancias=[]; datos_desviados=false; salida_desviada=false.
+
+Artefactos empaquetados en mo2-instance\mods\DynDOLOD Output:
+  DynDOLOD.esm   193.555 B  SHA256 EA95B05266A840A706D8AB50F34C02342F928B486D8DE92CF6E00302006312AB
+  DynDOLOD.esp   307.742 B  SHA256 34377E40716578A78BE8CED60A26EBF9035E57D9551B1B0189C72B832DCD1870
+  Occlusion.esp 9.368.071 B SHA256 4C9B5C66CF730B353A509B978B11F41B2A845229B885FE7F42D60F8D80E2EA8F
+  Paquete: 5.121 archivos, 897.631.366 B.
+
+Limitaciones del log (no terminales):
+  - Error: DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found! Dynamic LOD
+    can not be generated. → dynamic LOD deshabilitado; el output es válido para
+    object/static LOD, no para dynamic LOD.
+  - 117 líneas <Error: ...> no fatales (deleted references de Update/Dawnguard/
+    HearthFires, Unresolved FormID en Dawnguard.esm, etc.).
+  - Warning: Could not find save path; Can't find Skyrim - Patch.bsa; grupos
+    vacíos de xEdit.
+  - Estos warnings son esperables para el Data de Stock + DLC; no impidieron
+    los marcadores de completitud ni el return code 0.
+
+HITL / GUI:
+  - START_HABILITADO se emitió antes de la generación.
+  - El driver no encontró el botón Start (BOTON_INICIO_AMBIGUO, candidates=[]).
+  - El OPERADOR pulsó Start y Save and Exit (HITL humano; no hubo auto-Start).
+  - El driver sí operó el modal Ignore? NO: en el intento 4 el Ignore lo pulsó
+    el operador (el driver registró modal_benigno_espera_humano).

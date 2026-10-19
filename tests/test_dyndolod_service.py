@@ -1987,7 +1987,7 @@ def _corrida_que_completa(
     return _ejecutar
 
 
-def _log_completo(tool: str, extra: str = "") -> str:
+def _log_completo(tool: str, extra: str = "", *, raiz_de_salida: pathlib.Path | None = None) -> str:
     """Un log al que NO le falta el marcador de completitud de ``tool``.
 
     Desde T2 el veredicto exige que la herramienta declare que terminó: el gate
@@ -1996,10 +1996,20 @@ def _log_completo(tool: str, extra: str = "") -> str:
     este helper para no repetir el marcador —que es DISTINTO por herramienta— y,
     sobre todo, para que agregar una herramienta nueva no los deje pasando por
     omisión.
+
+    ``raiz_de_salida`` es el ``-o:`` administrado que el eco debe declarar. El
+    default (``C:\\out\\``) es SINTÉTICO y no coincide con el root del test: desde
+    que el desvío de ``-o:`` viaja al resultado estructurado, eso deja una
+    advertencia legítima en ``ToolExecutionResult.warnings``. Los tests que
+    asertan sobre ``warnings`` pasan el root real —el eco del binario real es el
+    argv que Sky-Claw le pasó, medido en el rig de T5— y así la corrida queda
+    COINCIDE; el resto conserva el default para no atarse al layout que elige
+    ``_runner_texgen``.
     """
     marcador = _MARCADOR_DE_FIN[tool]
     assert marcador in MARCADORES_DE_COMPLETITUD[tool], f"el runner dejó de reconocer el marcador de fin de {tool}"
-    return f"[00:00:01] Using Output Path: C:\\out\\\n{extra}[00:10:00] {marcador}\n"
+    eco = "C:\\out\\" if raiz_de_salida is None else f"{raiz_de_salida}\\"
+    return f"[00:00:01] Using Output Path: {eco}\n{extra}[00:10:00] {marcador}\n"
 
 
 @pytest.mark.asyncio
@@ -2115,7 +2125,14 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
 
     fake = _EjecucionFalsa(
         return_code=0,
-        al_ejecutar=_corrida_que_completa(tmp_path, "DynDOLOD", lambda: _escribir_salida(staging, "DynDOLOD.esp")),
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "DynDOLOD",
+            lambda: _escribir_salida(staging, "DynDOLOD.esp"),
+            # El eco declara el root ADMINISTRADO, como el binario real: la corrida
+            # es COINCIDE y `warnings == []` mide "log limpio", no un desvío.
+            log=_log_completo("DynDOLOD", raiz_de_salida=config.dyndolod_root),
+        ),
     )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="High")
@@ -2137,7 +2154,9 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
             tmp_path,
             "TexGen",
             lambda: _escribir_salida(staging, "a.dds"),
-            log=_log_completo("TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n"),
+            log=_log_completo(
+                "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n", raiz_de_salida=config.texgen_root
+            ),
         ),
     )
     with patch.object(runner, "_execute_process", fake):
@@ -3915,6 +3934,16 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
 #:    porque nombra el artefacto —`meta.ini`— que el mensaje del handler no
 #:    menciona; exento, no duplicado.
 _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
+    "dyndolod_preset_no_restaurado": {
+        "metodo": "_restaurar_preset_sin_gatear",
+        "motivo": (
+            "#661 P8: causa y no veredicto. El restore del preset corre en el finally de "
+            "_execute_process y NUNCA decide la etapa por sí mismo: en la salida normal su fallo "
+            "se convierte en el corte PRESET_RESTORE_FAILED (DynDOLODDesatendidoError) que "
+            "run_full_pipeline reporta CON etapa; en una salida por excepción la corrida ya falló "
+            "y esa excepción es la que lleva la etapa. Etiquetar acá duplicaría el incidente."
+        ),
+    },
     "dyndolod_drenaje_incompleto": {
         "metodo": "_limpiar_helpers_en_salida_normal",
         "motivo": (
@@ -4272,6 +4301,16 @@ def test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa() -> 
     )
 
 
+#: Llamadas al runner que ocurren ANTES de que exista la transacción (#661, review
+#: CodeRabbit en PR #740): la aprobación remota de la corrida desatendida se toma
+#: antes del lock para no retenerlo durante la espera del operador. Sin TX,
+#: ``tx_id=None`` es el valor honesto — el mismo que llevan los registros del
+#: preflight. Congelado por igualdad y verificado por POSICIÓN: cada una tiene que
+#: estar antes de ``begin_transaction``, así que no puede usarse para sacar del
+#: ``with`` una llamada que ya tiene transacción.
+_LLAMADAS_PREVIAS_A_LA_TRANSACCION = frozenset({"preparar_interaccion_desatendida"})
+
+
 def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
     """El `with` cubre TODA la interacción con el runner, no la que hoy recordamos.
 
@@ -4326,7 +4365,20 @@ def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
         "vacía (¿se renombró la variable local?)."
     )
 
-    fuera = sorted(f"{c.func.attr}:{c.lineno}" for c in llamadas if not any(a <= c.lineno <= b for a, b in rangos))
+    inicio_tx = min(
+        c.lineno
+        for c in ast.walk(execute)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "begin_transaction"
+    )
+    previas = [c for c in llamadas if c.func.attr in _LLAMADAS_PREVIAS_A_LA_TRANSACCION]
+    assert {c.func.attr for c in previas} == _LLAMADAS_PREVIAS_A_LA_TRANSACCION
+    assert all(c.lineno < inicio_tx for c in previas), "una llamada exenta quedó después de abrir la TX"
+
+    fuera = sorted(
+        f"{c.func.attr}:{c.lineno}"
+        for c in llamadas
+        if c.func.attr not in _LLAMADAS_PREVIAS_A_LA_TRANSACCION and not any(a <= c.lineno <= b for a, b in rangos)
+    )
     assert fuera == [], (
         f"llamadas al runner fuera del `with correlacion_de_transaccion(...)`: {fuera}. "
         f"Todo lo que el runner haga por cuenta del servicio tiene que emitir sus registros "

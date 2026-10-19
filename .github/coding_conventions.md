@@ -120,8 +120,8 @@ Si dos reglas colisionan, obedecé este orden:
 
 | Gate | Herramienta | Criterio |
 |------|-------------|----------|
-| Lint | Ruff | `ruff check` **y** `ruff format --check` sin errores |
-| Type Check | Mypy | **Bloqueante** (`mypy sky_claw/`) |
-| Test | Pytest | Suite completa con `--cov-fail-under=60` en Windows × py3.11/3.12 (**bloqueante**); subconjunto del core POSIX en Ubuntu py3.11 (**informativo**) |
-| Security | Bandit + pip-audit + npm audit | SAST sin high/critical; `pip-audit --strict` sobre `requirements.lock` (hashes enforced); `npm audit` del gateway de Telegram |
+| Lint | Ruff | `sky_claw/`, `scripts/` y `tests/`: `ruff check` **y** `ruff format --check` sin errores |
+| Type Check | Mypy | **Bloqueante** (`mypy sky_claw/ scripts/`) |
+| Test | Pytest | Suite completa con `--cov=sky_claw --cov=scripts --cov-fail-under=60` en Windows × py3.11/3.12 (**bloqueante**); subconjunto del core POSIX en Ubuntu py3.11 (**informativo**) |
+| Security | Bandit + pip-audit + npm audit | Bandit recorre `sky_claw/` y `scripts/`; SAST sin high/critical; `pip-audit --strict` sobre `requirements.lock` (hashes enforced); `npm audit` del gateway de Telegram |
 | Build | PyInstaller | `sky_claw.spec` (autoderiva el VERSIONINFO de la versión del paquete); depende de los gates anteriores |

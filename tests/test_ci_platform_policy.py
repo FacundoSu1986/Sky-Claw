@@ -38,6 +38,31 @@ def _paso_por_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
     return coincidencias[0]
 
 
+def _paso_por_nombre(job: dict[str, Any], nombre: str) -> dict[str, Any]:
+    coincidencias = [step for step in job["steps"] if step.get("name") == nombre]
+    assert len(coincidencias) == 1, f"se esperaba exactamente un step llamado {nombre!r}"
+    return coincidencias[0]
+
+
+def test_lint_typecheck_y_seguridad_incluyen_scripts_con_comandos_anclados() -> None:
+    jobs = _jobs()
+    lint = jobs["lint"]
+    typecheck = jobs["typecheck"]
+    security = jobs["security"]
+
+    assert _paso_por_nombre(lint, "Ruff check")["run"] == (
+        "ruff check sky_claw/ scripts/ tests/ --output-format=github"
+    )
+    assert _paso_por_nombre(lint, "Ruff format check")["run"] == "ruff format --check sky_claw/ scripts/ tests/"
+    assert _paso_por_nombre(typecheck, "Mypy check")["run"] == (
+        "python -m mypy sky_claw/ scripts/ --ignore-missing-imports --no-error-summary"
+    )
+    assert _paso_por_nombre(security, "Bandit (SAST)")["run"] == "bandit -r sky_claw/ scripts/ -ll"
+    assert _paso_por_nombre(jobs["test"], "Run tests with coverage")["run"] == (
+        "pytest --cov=sky_claw --cov=scripts --cov-report=xml --cov-fail-under=60 tests/"
+    )
+
+
 def test_la_suite_completa_solo_certifica_windows() -> None:
     jobs = _jobs()
     test = jobs["test"]

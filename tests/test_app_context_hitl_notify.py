@@ -328,3 +328,17 @@ def test_la_construccion_productiva_del_guard_cablea_notice_fn() -> None:
     for nodo in construcciones:
         kwargs = {kw.arg for kw in nodo.keywords if kw.arg is not None}
         assert "notice_fn" in kwargs, "el guard productivo quedó sin superficie de avisos de Telegram"
+
+
+@pytest.mark.asyncio
+async def test_el_aviso_viaja_como_texto_plano_aunque_traiga_marcado(tmp_path: Path) -> None:
+    """El aviso es texto (paths, mensajes de excepción) y el sender manda HTML por
+    defecto: sin escapar, un ``<Error: ...>`` o un ``&`` hacen que Telegram rechace el
+    mensaje y el guard se traga el fallo — el operador nunca se entera de cómo
+    terminó la corrida (review Codex, PR #740)."""
+    ctx, hitl, sender, _sent = await _build_productive_hitl(tmp_path)
+    sender.send = AsyncMock(return_value=TelegramMessage(chat_id=123, message_id=89))
+
+    await hitl.notify_operator("❌ Etapa 9 falló: <Error: Assertion failure> en C:\\Mods & Co")
+
+    assert sender.send.await_args.args[1] == "❌ Etapa 9 falló: &lt;Error: Assertion failure&gt; en C:\\Mods &amp; Co"

@@ -3094,6 +3094,84 @@ async def test_la_cancelacion_durante_la_resolucion_libera_la_lease(
         await coordinacion.close()
 
 
+async def test_la_cancelacion_dentro_de_la_adquisicion_no_deja_lease_de_ownership(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§21 / #741: cancelación DENTRO de `acquire_lock`, no después.
+
+    Es el escenario del rig de #739: la fila de la lease YA quedó persistida y
+    la tarea se cancela antes de que `acquire_lock` retorne. En ese punto
+    `ownership` sigue en `None`, así que el `except BaseException` de §21 no
+    tiene qué liberar — y la fila sobrevive hasta su TTL.
+
+    La ventana se fija con EVENTOS sobre `acquire_lock` (demora inyectada
+    *después* de persistir, como en la reproducción del issue), no con un
+    sleep: lo que se verifica es el ordenamiento, no el tiempo. El test de
+    arriba cancela durante la inspección del root viejo; éste, durante la
+    adquisición. Son dos ventanas distintas del mismo contrato.
+    """
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+
+    original = ws.DistributedLockManager.acquire_lock
+    adquirida = asyncio.Event()
+    liberar = asyncio.Event()
+    armada = {"valor": False}
+
+    async def acquire_con_puerta(
+        self: ws.DistributedLockManager,
+        resource_id: str,
+        agent_id: str,
+        ttl: float | None = None,
+    ) -> object:
+        info = await original(self, resource_id, agent_id, ttl)
+        if armada["valor"] and resource_id == rid:
+            adquirida.set()
+            await liberar.wait()
+        return info
+
+    monkeypatch.setattr(ws.DistributedLockManager, "acquire_lock", acquire_con_puerta)
+
+    try:
+        primero = await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert primero is not None
+        await primero.ownership.liberar()
+
+        armada["valor"] = True
+        tarea = asyncio.create_task(
+            ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        )
+        await asyncio.wait_for(adquirida.wait(), timeout=10.0)
+        tarea.cancel()
+        # Un solo yield: entrega la cancelación antes de abrir la puerta.
+        await asyncio.sleep(0)
+        liberar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tarea, timeout=10.0)
+
+        manager = await coordinacion.manager_del_ritual()
+        assert await manager.get_lock_info(rid) is None, "la cancelación durante la adquisición dejó la lease viva"
+    finally:
+        await coordinacion.close()
+
+
 async def test_perder_la_lease_de_ownership_aborta_la_resolucion_sin_escribir(
     tmp_path: pathlib.Path,
 ) -> None:

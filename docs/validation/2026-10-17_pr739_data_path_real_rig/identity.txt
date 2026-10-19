@@ -1,0 +1,31 @@
+Sesión: DYNDOLOD-739-REAL-RIG-DATA-PATH
+Fecha de corrida: 2026-10-17 (hora local, UTC-3)
+Repositorio: FacundoSu1986/Sky-Claw
+PR: #739 — https://github.com/FacundoSu1986/Sky-Claw/pull/739
+Issue: #592
+Rama: fix/dyndolod-592-f4-f5-output-evidence
+Worktree: E:\Skyclaw_Main_Sync\.worktrees\dyndolod-592-f4-f5-output-evidence
+
+HEAD del PR al iniciar: 761527cd7d89303f1237f9d0386abb8376d6c568
+origin/main al iniciar: d65baa1cdf9814d41b20430d71a89e4a5c9e8a00
+origin/main al cierre: 1ddc8c8e0373c1366cea9fd3eaca701a522187ae
+baseRefOid del PR: 9fe88cb48ddbe01823da86da9eedc5dad7f260cd
+Estado del worktree: limpio antes de este commit de evidencia; tras el avance de main,
+  ahead 2 / behind 18 (sin merge ni rebase).
+
+Binarios (Alpha-209 exactos, extraídos de archivo histórico):
+  TexGenx64.exe      35.794.432 B  FileVersion 3.0.0.209  SHA256 0939BC8F8CBAE2E1B38F17D56FECD1B7A941DADE0554E944886BD7F5C4807A62
+  DynDOLODx64.exe    35.794.432 B  FileVersion 3.0.0.209  SHA256 B67625EB7815111BA9AC232C626FF88B07BB64FF30FF5183C5A04B5F045C3BD0
+  Archivo fuente: DynDOLOD 3.00 68518 Alpha-209 2026-08-02T16-32Z zYsEpQCtt.7z
+  SHA256 del archivo: D59B09BD3671A1E825B81A14A97DDBEF160B83AEFAAEBD7B535F78BF67EEC736
+
+Juego aislado:
+  SkyrimSE.exe       37.157.144 B  FileVersion 1.6.1170.0  SHA256 C434208894F07F604B852F29B8EDC3A58C4DE63DE783373733E72B2B73F33BE9
+
+Data fuente (sólo lectura):
+  G:\Modding\Skyrim_Stock_1.6.1170\Data — 16.133 archivos, 18.021.362.101 B
+  G:\Modding\MO2\SkyrimSE\mods\DynDOLOD Resources SE — 6.085 archivos, 264.014.154 B
+  INIs fuente: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\{skyrim.ini,skyrimprefs.ini}
+    skyrim.ini       SHA256 4D7C9D67C6A159A93122D8557653484BDDBF43143E20C6A9AFB359BA1EE5EB5F
+    skyrimprefs.ini  SHA256 7406F51239338E8CA0D19BE345D3C3A377E818532C87C3346509697184050DDF
+  Los hashes de las copias en el rig son idénticos a los de origen.
