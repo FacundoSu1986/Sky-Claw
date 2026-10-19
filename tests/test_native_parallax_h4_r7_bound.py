@@ -609,11 +609,42 @@ def test_r7_la_implementacion_real_alcanza_la_cota() -> None:
     limpio = _filtro_pillow(campo, 32)[16, 16]
     perturbado = _filtro_pillow(pert, 32)[16, 16]
     largo_real = float(np.linalg.norm(limpio))  # ANTES de renormalizar
-    dt = _angulo(limpio, perturbado)
+
+    # Medido sobre la función REAL (revisión de pr-agent): ambos campos son unitarios, así que son
+    # entradas válidas, y con L ~ 0.8 > 5/16 la salida es la dirección renormalizada.
+    real_limpio = ad.resize_normal_diagnostic(campo, 32)
+    real_perturbado = ad.resize_normal_diagnostic(pert, 32)
+    assert not real_limpio.degenerate and not real_perturbado.degenerate
+    # el ayudante `_filtro_pillow` queda anclado a producción: misma dirección que la función real
+    np.testing.assert_allclose(real_limpio.array[16, 16], limpio / largo_real, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(
+        real_perturbado.array[16, 16], perturbado / np.linalg.norm(perturbado), rtol=0, atol=1e-12
+    )
+    dt = _angulo(real_limpio.array[16, 16], real_perturbado.array[16, 16])
 
     assert largo_real == pytest.approx(largo, abs=0.02)
     assert dt <= _cota_angular(largo_real) + 1e-9
     assert dt >= 0.95 * _cota_angular(largo_real)
+
+
+def test_r7_por_debajo_de_la_cuerda_la_cota_es_vacua_y_produccion_marca_degenerado() -> None:
+    """Revisión de pr-agent: `_cota_angular` devuelve `inf` si `L <= delta_chord`. Ahí la cota no dice nada,
+    y producción NO renormaliza: un campo con esa norma queda marcado degenerado (D-06) con el crudo
+    preservado, así que la región sin cota nunca produce una dirección publicada."""
+    import sky_claw.local.native_parallax.research.authored_dataset as ad
+
+    assert _cota_angular(DELTA_CHORD) == float("inf")
+    assert _cota_angular(0.5 * DELTA_CHORD) == float("inf")
+    assert _cota_angular(1e-12) == float("inf")
+
+    campo = np.zeros((64, 64, 3))
+    campo[..., 0] = 0.5 * DELTA_CHORD  # L = delta_chord / 2, mucho menor que 5/16
+    res = ad.resize_normal_diagnostic(campo, 32)
+
+    assert res.degenerate and res.degenerate_count == 32 * 32
+    np.testing.assert_allclose(res.array[..., 0], 0.5 * DELTA_CHORD, rtol=0, atol=1e-7)  # crudo, sin renormalizar
+    with pytest.raises(ad.DegenerateNormalError):
+        ad.resize_normal(campo, 32)
 
 
 def test_r7_el_error_numerico_de_pillow_modo_f_cabe_en_el_margen_estimado() -> None:
