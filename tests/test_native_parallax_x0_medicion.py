@@ -35,6 +35,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
 from sky_claw.local.native_parallax.experiments.medicion import (
     CorpusMedido,
     Escenario,
+    _huella_del_corpus_medido,
     escenarios_de_la_especificacion,
     medir_corpus_sintetico,
     medir_textura,
@@ -350,6 +351,28 @@ def test_la_huella_del_corpus_medido_identifica_lo_que_se_midio(corpus: CorpusMe
     assert medir_corpus_sintetico(N, N, bordes=Bordes.PERIODICOS).huella == corpus.huella
     assert medir_corpus_sintetico(N, N, bordes=Bordes.NEUMANN).huella != corpus.huella
     assert medir_corpus_sintetico(N, 2 * N, bordes=Bordes.PERIODICOS).huella != corpus.huella
+
+
+# Valores de referencia: cambiar cómo se define o se serializa el corpus medido invalida en silencio toda derivación
+# registrada contra su huella. Si este test falla, el cambio fue deliberado: actualizá el valor Y subí
+# ``VERSION_DE_LA_MEDICION``.
+HUELLA_DE_REFERENCIA_PERIODICOS_128 = "d1295758bfc99e2d69db2f7d0890c997089eb8d1a2a7074926c677f5130f6821"
+HUELLA_DE_REFERENCIA_NEUMANN_128 = "3195650f204b132967b7ecc251c863ddd1b0c2ad9e446a750cb51a1d7c784b8c"
+
+
+def test_la_huella_del_corpus_medido_tiene_un_valor_de_referencia_congelado(corpus: CorpusMedido) -> None:
+    assert corpus.huella == HUELLA_DE_REFERENCIA_PERIODICOS_128
+    escenarios = escenarios_de_la_especificacion()
+    assert _huella_del_corpus_medido(N, N, Bordes.NEUMANN, escenarios) == HUELLA_DE_REFERENCIA_NEUMANN_128
+
+
+def test_la_huella_depende_de_los_escenarios_que_se_midieron() -> None:
+    escenarios = escenarios_de_la_especificacion()
+
+    completa = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios)
+    sin_el_ultimo = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios[:-1])
+
+    assert completa != sin_el_ultimo
 
 
 def test_la_grilla_se_valida_antes_de_medir_nada() -> None:

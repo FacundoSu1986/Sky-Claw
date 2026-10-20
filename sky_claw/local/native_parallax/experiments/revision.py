@@ -280,6 +280,16 @@ class Conteo:
         return self.n_total - self.n_aceptadas
 
     @property
+    def n_malas_en_revision(self) -> int:
+        """Las malas que los límites detienen: la revisión que cumple su función."""
+        return self.n_malas - self.n_aceptadas_malas
+
+    @property
+    def n_buenas_en_revision(self) -> int:
+        """Las buenas que los límites detienen: el costo de la revisión (trabajo humano que no hacía falta)."""
+        return self.n_en_revision - self.n_malas_en_revision
+
+    @property
     def tasa_de_revision(self) -> float:
         """Un solo cociente de enteros, correctamente redondeado (igual que ``ValidacionContraCorpusReal``)."""
         return (self.n_total - self.n_aceptadas) / self.n_total
@@ -295,7 +305,8 @@ class Conteo:
 @dataclass(frozen=True, slots=True)
 class ReporteDeRevision:
     """Resultado de una simulación. ``motivos`` cuenta, en el orden del gate, las veces que cada motivo de la textura
-    apareció (una textura con varios motivos suma en cada uno); ``por_escenario`` conserva el orden de aparición.
+    apareció (una textura con varios motivos suma en cada uno); ``sobre_el_limite`` cuenta, por métrica y en el orden
+    de ``LimitesDeAutoaceptacion``, cuántas veces pasó su límite; ``por_escenario`` conserva el orden de aparición.
     """
 
     criterio_de_etiqueta: str
@@ -303,6 +314,7 @@ class ReporteDeRevision:
     total: Conteo
     por_escenario: tuple[tuple[str, Conteo], ...]
     motivos: tuple[tuple[Motivo, int], ...]
+    sobre_el_limite: tuple[tuple[str, int], ...]
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +327,7 @@ class _Evaluada:
     medicion: Medicion
     mala: bool
     motivos: tuple[Motivo, ...]  # solo los de la textura
+    sobre_el_limite: tuple[str, ...]  # las métricas que pasaron su límite
 
     @property
     def aceptada(self) -> bool:
@@ -327,7 +340,9 @@ def _evaluar(medicion: Medicion, umbrales: Umbrales, tolerancia: float) -> _Eval
     if del_registro:
         raise RevisionError(f"el registro de umbrales no es simulable: {', '.join(del_registro)}")
     de_la_textura = tuple(motivo for motivo in decision.motivos if motivo in MOTIVOS_DE_LA_TEXTURA)
-    return _Evaluada(medicion, es_mala(medicion, tolerancia_de_altura=tolerancia), de_la_textura)
+    return _Evaluada(
+        medicion, es_mala(medicion, tolerancia_de_altura=tolerancia), de_la_textura, decision.sobre_el_limite
+    )
 
 
 def _contar(evaluadas: list[_Evaluada]) -> Conteo:
@@ -345,15 +360,19 @@ def _reportar(evaluadas: list[_Evaluada], tolerancia: float) -> ReporteDeRevisio
     for evaluada in evaluadas:
         por_escenario.setdefault(evaluada.medicion.escenario, []).append(evaluada)
     cuentas = {motivo: 0 for motivo in _MOTIVOS_DE_LA_TEXTURA_EN_ORDEN}
+    pasadas = {campo.name: 0 for campo in fields(LimitesDeAutoaceptacion)}
     for evaluada in evaluadas:
         for motivo in evaluada.motivos:
             cuentas[motivo] += 1
+        for campo in evaluada.sobre_el_limite:
+            pasadas[campo] += 1
     return ReporteDeRevision(
         criterio_de_etiqueta=criterio_de_etiqueta(tolerancia),
         tolerancia_de_altura=tolerancia,
         total=_contar(evaluadas),
         por_escenario=tuple((nombre, _contar(grupo)) for nombre, grupo in por_escenario.items()),
         motivos=tuple(cuentas.items()),
+        sobre_el_limite=tuple(pasadas.items()),
     )
 
 

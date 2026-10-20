@@ -18,7 +18,9 @@ Límite declarado: son mediciones fabricadas, no una afirmación sobre texturas 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
+from dataclasses import fields
 
 import pytest
 
@@ -33,6 +35,7 @@ from sky_claw.local.native_parallax.experiments.revision import (
     ReporteDeRevision,
     RevisionError,
     SinMedicionesBuenasError,
+    _huella_del_pliegue,
     candidato_desde_limites,
     criterio_de_etiqueta,
     derivar_limites,
@@ -363,6 +366,8 @@ def test_el_conteo_de_una_simulacion_hecha_a_mano() -> None:
 
     assert reporte.total == Conteo(n_total=4, n_aceptadas=2, n_malas=2, n_aceptadas_malas=1)
     assert reporte.total.n_en_revision == 2
+    assert reporte.total.n_malas_en_revision == 1  # D: la revisión acertada
+    assert reporte.total.n_buenas_en_revision == 1  # C: la revisión innecesaria
     assert reporte.total.tasa_de_revision == 0.5
     assert reporte.total.tasa_de_falsos_aceptos == 0.5
     assert reporte.tolerancia_de_altura == TOLERANCIA
@@ -427,6 +432,34 @@ def test_una_textura_con_varios_motivos_cuenta_en_cada_uno() -> None:
     assert reporte.total.n_en_revision == 1  # una sola textura en revisión
 
 
+def test_el_reporte_cuenta_en_que_metrica_se_pasa_el_limite_en_el_orden_de_los_limites() -> None:
+    mediciones = [
+        _medicion(caso="A", acuerdo=50.0),  # solo el acuerdo
+        _medicion(caso="B", acuerdo=50.0, residuo=0.5),  # acuerdo y residuo
+        _medicion(caso="C", costura=9.0),  # solo la costura
+        _medicion(caso="D"),  # ninguna
+    ]
+
+    reporte = simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+
+    assert reporte.sobre_el_limite == (
+        ("acuerdo_p95_grados", 2),
+        ("residuo_de_integrabilidad", 1),
+        ("razon_de_costura", 1),
+    )
+    # Una sola fuente de verdad: las claves son exactamente los campos de LimitesDeAutoaceptacion.
+    assert tuple(campo for campo, _ in reporte.sobre_el_limite) == tuple(
+        campo.name for campo in fields(LimitesDeAutoaceptacion)
+    )
+
+
+def test_una_metrica_fuera_de_dominio_no_cuenta_como_pasada_de_limite() -> None:
+    reporte = simular_revision([_medicion(acuerdo=181.0)], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+
+    assert dict(reporte.sobre_el_limite)["acuerdo_p95_grados"] == 0
+    assert dict(reporte.motivos)[Motivo.METRICA_FUERA_DE_DOMINIO] == 1
+
+
 def test_los_motivos_de_la_validacion_no_cuentan_ni_siquiera_con_evidencia_insuficiente() -> None:
     limites = _limites()
     huella = huella_del_candidato(VERSION_DE_METRICAS, 1, limites)
@@ -466,7 +499,7 @@ def test_la_simulacion_exige_un_registro_de_umbrales(umbrales: object) -> None:
 
 
 def test_la_simulacion_exige_mediciones() -> None:
-    with pytest.raises(ParametroDeRevisionInvalidoError):
+    with pytest.raises(ParametroDeRevisionInvalidoError, match="al menos una medición"):
         simular_revision([], _umbrales(), tolerancia_de_altura=TOLERANCIA)
 
 
@@ -643,6 +676,17 @@ def test_la_huella_del_corpus_es_un_sha256_en_hexadecimal_minuscula(huella: obje
             signo_esperado=1,
             huella_del_corpus=huella,  # type: ignore[arg-type]
         )
+
+
+def test_la_huella_de_cada_pliegue_depende_del_corpus_y_del_caso_que_se_deja_fuera() -> None:
+    otra_huella_del_corpus = "d" * 64
+
+    de_a = _huella_del_pliegue(HUELLA_DEL_CORPUS, "A")
+
+    assert re.fullmatch(r"[0-9a-f]{64}", de_a)
+    assert de_a == _huella_del_pliegue(HUELLA_DEL_CORPUS, "A")
+    assert de_a != _huella_del_pliegue(HUELLA_DEL_CORPUS, "B")
+    assert de_a != _huella_del_pliegue(otra_huella_del_corpus, "A")
 
 
 def test_el_orden_de_las_mediciones_no_cambia_el_resultado_de_dejar_un_caso_fuera() -> None:
