@@ -172,7 +172,9 @@ def _mascaras_de_8_bits(args: object) -> bool:
     bits, mascaras = args
     if bits not in (24, 32) or not isinstance(mascaras, tuple) or len(mascaras) not in (3, 4):
         return False
-    un_byte_por_canal = all(isinstance(m, int) and m in _MASCARAS_DE_8_BITS for m in mascaras)
+    # Pillow lee ``bits // 8`` bytes por píxel: una máscara por encima de ese ancho deja su canal en 0, siempre.
+    ancho_del_pixel = 1 << bits
+    un_byte_por_canal = all(isinstance(m, int) and m in _MASCARAS_DE_8_BITS and m < ancho_del_pixel for m in mascaras)
     return un_byte_por_canal and len(set(mascaras)) == len(mascaras)
 
 
