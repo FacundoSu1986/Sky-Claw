@@ -210,6 +210,64 @@ def test_locks_no_conservan_dependencias_del_stategraph_retirado() -> None:
         assert f'name = "{dependencia}"' not in uv_lock, f"uv.lock todavía instala {dependencia}"
 
 
+def _versiones_pineadas(lock: str) -> dict[str, str]:
+    """Paquetes ``nombre==versión`` de un ``requirements*.lock`` (nombres normalizados)."""
+    return {
+        nombre.lower().replace("_", "-"): version_pineada
+        for nombre, version_pineada in re.findall(r"(?m)^([A-Za-z0-9_.\-]+)==([^\s\\]+)", lock)
+    }
+
+
+def _divergencias_entre_locks(a: str, b: str) -> dict[str, tuple[str, str]]:
+    """Paquetes presentes en ambos locks con distinta versión: ``{nombre: (versión_a, versión_b)}``."""
+    pines_a, pines_b = _versiones_pineadas(a), _versiones_pineadas(b)
+    return {
+        nombre: (pines_a[nombre], pines_b[nombre])
+        for nombre in pines_a.keys() & pines_b.keys()
+        if pines_a[nombre] != pines_b[nombre]
+    }
+
+
+def _faltantes_en_el_extra(base: str, extra: str) -> set[str]:
+    """Paquetes del lock base que el lock del extra no trae: el extra es un superconjunto por construcción."""
+    return _versiones_pineadas(base).keys() - _versiones_pineadas(extra).keys()
+
+
+def test_los_dos_locks_de_requirements_pinean_las_mismas_versiones() -> None:
+    """Subir un paquete en un lock y no en su gemelo deja a CI auditando solo uno de los dos.
+
+    ``requirements.lock`` y ``requirements-native-parallax.lock`` salen del mismo ``pyproject.toml``
+    (el segundo con ``--extra native-parallax``) y CI los audita en pasos separados con ``pip-audit
+    --strict``: el segundo paso no corre si el primero falla. Un aviso nuevo sobre un paquete común
+    (certifi, GHSA-6q48-6c7w-9gw2) obliga a subirlo en los dos; si solo se sube uno, el otro falla
+    recién en la corrida siguiente. Se enumeran TODOS los paquetes del lock base, no solo certifi.
+    """
+    base = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    extra = (REPO_ROOT / "requirements-native-parallax.lock").read_text(encoding="utf-8")
+
+    pines_base = _versiones_pineadas(base)
+
+    # guarda contra el pase vacío: si el formato de los locks cambiara y el parseo no devolviera nada, las
+    # dos aserciones de abajo pasarían sin comparar un solo paquete
+    assert pines_base, "no se leyó ningún paquete pineado de requirements.lock"
+    # el extra solo AGREGA (numpy, pillow): si una regeneración le suelta un paquete base, la intersección lo
+    # excluiría en silencio y la instalación del extra quedaría incompleta con todo lo demás en verde
+    assert _faltantes_en_el_extra(base, extra) == set()
+    assert _divergencias_entre_locks(base, extra) == {}
+
+
+def test_el_ancla_de_locks_detecta_una_divergencia() -> None:
+    """Sin este caso el ancla de arriba podría pasar vacía (regex que no matchea nada)."""
+    viejo = "certifi==2026.2.25 \\\n    --hash=sha256:aa\nidna==3.15 \\\n    --hash=sha256:bb\n"
+    nuevo = "certifi==2026.10.19 \\\n    --hash=sha256:cc\nidna==3.15 \\\n    --hash=sha256:bb\nnumpy==2.4.6\n"
+
+    assert _divergencias_entre_locks(viejo, nuevo) == {"certifi": ("2026.2.25", "2026.10.19")}
+    assert _divergencias_entre_locks(viejo, viejo) == {}
+    # un paquete base que el extra no trae no es una «divergencia» (no está en la intersección): lo atrapa el otro
+    assert _faltantes_en_el_extra(viejo, nuevo) == set()
+    assert _faltantes_en_el_extra(nuevo, "certifi==2026.10.19\n") == {"idna", "numpy"}
+
+
 def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
@@ -462,6 +520,42 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
     )
     version_uv = Version(paquetes_multidict[0]["version"])
     assert version_uv in req.specifier, f"uv.lock tiene multidict {version_uv} fuera del rango {req.specifier}"
+
+
+def test_certifi_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """certifi debe mantener el piso seguro >=2026.10.19 ante GHSA-6q48-6c7w-9gw2.
+
+    Sin el piso en ``pyproject.toml``, un ``pip install -e .`` sobre un entorno existente queda satisfecho
+    por la 2026.2.25 vulnerable aunque los locks ya estén subidos. Se verifican los TRES locks que pinean
+    certifi (los tests de anyio y multidict no miran ``requirements-native-parallax.lock``).
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("2026.10.19")
+
+    # 1. pyproject.toml
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "certifi"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un certifi en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert not req.specifier.contains(Version("2026.2.25")), f"el rango de certifi admite la versión vulnerable: {req}"
+    assert req.specifier.contains(piso_minimo), f"el rango de certifi no cubre el piso {piso_minimo}: {req}"
+
+    # 2. los dos requirements*.lock
+    for nombre in ("requirements.lock", "requirements-native-parallax.lock"):
+        pines = _versiones_pineadas((REPO_ROOT / nombre).read_text(encoding="utf-8"))
+        assert "certifi" in pines, f"certifi no está pineado en {nombre}"
+        assert Version(pines["certifi"]) >= piso_minimo, f"{nombre} tiene certifi {pines['certifi']} < {piso_minimo}"
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_certifi = [p for p in uv_data.get("package", []) if p.get("name") == "certifi"]
+    assert len(paquetes_certifi) == 1, f"se esperaba 1 paquete certifi en uv.lock, hay {len(paquetes_certifi)}"
+    version_uv = Version(paquetes_certifi[0]["version"])
+    assert version_uv >= piso_minimo, f"uv.lock tiene certifi {version_uv} < {piso_minimo}"
 
 
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
