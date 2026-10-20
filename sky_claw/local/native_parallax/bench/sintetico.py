@@ -22,7 +22,7 @@ Lo que NO está acá y por qué:
   decisión 4: texconv externo, NP-E0). Las variantes con error de bloque llegan con NP-E0.
 - El fixture MatSynth CC0 (ver ``bench/__init__.py``).
 - La inversa N → H y el integrador: son de ``integrate.py`` (NP-I0), que comparte con este módulo la
-  convención de frecuencias (``espectral.ejes_de_frecuencia``): una sola definición, congelada por un ancla
+  convención de frecuencias (``espectral.gradientes_espectrales``): una sola definición, congelada por un ancla
   de AST, porque un solver con otra daría gradientes escalados por la resolución (bug real de NP-M0).
 
 Reproducibilidad: ``huella_especificacion`` fija la DEFINICIÓN del corpus (ids, clases, grillas, ruido y
@@ -47,7 +47,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
 from sky_claw.local.native_parallax._extra import importar_numpy
-from sky_claw.local.native_parallax.espectral import ejes_de_frecuencia
+from sky_claw.local.native_parallax.espectral import gradientes_espectrales
 
 if TYPE_CHECKING:
     import numpy as np
@@ -484,13 +484,16 @@ def razon_borde(altura: NDArray[np.float64]) -> float:
     """
     _np = importar_numpy()
     campo = _exigir_campo_2d(_np, altura, "altura")
+    # Un paso es nulo RELATIVO a la escala del campo (no con un épsilon absoluto, que hacía colapsar a 1.0 una altura
+    # de amplitud menor que ~1e-11: revisión de Codex en #760). Mismo criterio que ``metrics.razon_de_costura``.
+    paso_nulo = 1e-12 * float(_np.abs(campo).max())
     razones: list[float] = []
     for eje in (0, 1):
         salto = float(_np.abs(_np.take(campo, 0, axis=eje) - _np.take(campo, -1, axis=eje)).mean())
         vecino = float(_np.abs(_np.take(campo, 1, axis=eje) - _np.take(campo, 0, axis=eje)).mean())
-        if vecino < 1e-12:
+        if vecino <= paso_nulo:
             vecino = float(_np.abs(_np.diff(campo, axis=eje)).mean())
-        if vecino < 1e-12:
+        if vecino <= paso_nulo:
             razones.append(1.0)
             continue
         razones.append(salto / vecino)
@@ -512,11 +515,7 @@ def normal_desde_altura(
     for nombre, escala in (("escala_x", escala_x), ("escala_y", escala_y)):
         if not _es_real_finito(escala):
             raise ParametroInvalidoError(f"{nombre} debe ser un real finito, no {escala!r}")
-    n_filas, n_cols = campo.shape
-    wy, wx = ejes_de_frecuencia(_np, n_filas, n_cols)
-    h_hat = _np.fft.fft2(campo)
-    p = _np.real(_np.fft.ifft2(1j * wx * h_hat))
-    q = _np.real(_np.fft.ifft2(1j * wy * h_hat))
+    p, q = gradientes_espectrales(_np, campo)
     nx = -escala_x * p
     ny = -escala_y * q
     nz = _np.ones_like(p)

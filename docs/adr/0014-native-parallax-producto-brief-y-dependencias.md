@@ -256,3 +256,49 @@ NP-I0 entrega el integrador normal → altura. Verificado ejecutando en Linux (P
   test acota el pico con `tracemalloc` como múltiplo del campo resuelto.
 - **Equivalente declarado.** En el solver, fijar a cero el espectro en los bins donde el denominador se anula es
   redundante con el numerador nulo en esos bins; se conserva por fidelidad con research.
+
+### Actualización de NP-Q0a (2026-10-20)
+
+NP-Q0 se divide en dos PRs chicos (§2.5): **NP-Q0a** entrega las métricas (este PR) y **NP-Q0b** el mecanismo de
+umbrales derivados. Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 12.3.0); el CI de Windows lo
+confirma en el PR.
+
+- **Qué entra.** `native_parallax/metrics.py`: seis de las diez métricas de la tabla §I de la arquitectura A, las
+  que se calculan SIN ground truth de altura (sirven igual en producción y sobre el benchmark de NP-D0):
+  `acuerdo_normal`, `residuo_de_integrabilidad`, `razon_de_costura`, `rango_dinamico`, `razon_de_recorte` y
+  `contar_no_finitos`, más el resultado `AcuerdoNormal`. Sin umbrales ni gates, y sin percentiles por defecto
+  (`rango_dinamico` los pide, igual que `normalizar_altura`).
+- **Definiciones propias (la tabla deja huecos).** El **acuerdo de normal** re-deriva la normal de la altura y la
+  compara con la de entrada; la altura sale con escala y signo arbitrarios, así que se ajusta el escalar `a` de
+  `a·∇h ≈ ∇h_normal` por mínimos cuadrados PONDERADOS por `(nz·s)²` (equivale a ajustar en el espacio de la
+  normal: un píxel con `nz → 0` pesa ~0 en vez de arrastrar la escala de toda la imagen, y la inversa vale ~1e6
+  ahí). El signo de `a` se reporta aparte porque un flip global de gradientes produce `-altura` exacto y solo el
+  signo lo delata. El ángulo usa `atan2(|n × m|, n · m)`, no `arccos`, que pierde la mitad de las cifras para
+  errores diminutos. El **residuo de integrabilidad** normaliza por el Hessiano completo del campo de gradientes. La
+  **razón de costura** es la misma matemática que `bench.razon_borde` (un test enumera los 17 casos para que no se
+  separen). Su umbral de "paso nulo" es **relativo a la escala del campo** (`1e-12 · max|altura|`), no absoluto:
+  con un `1e-12` fijo, el mismo campo multiplicado por 1e-20 se leía como plano y la razón cambiaba de valor sin
+  que la costura cambiara. Es el mismo defecto en dos funciones hermanas y se corrigió en las dos (Codex, #760).
+- **Dos defectos de definición que los tests atraparon antes de commitear.** (1) Normalizar el residuo por
+  `|∂p/∂y| + |∂q/∂x|` daba ~0.5 en campos separables (`h = f(x) + g(y)`, derivada cruzada nula): era el cociente de dos
+  ruidos de redondeo, y el campo más perfecto salía peor evaluado. (2) `continuidad_de_mosaico` (coseno entre
+  gradientes de bordes opuestos) **no se publica**: no distingue un salto de valor puro, porque la derivada
+  espectral de una rampa periodizada es simétrica respecto de la costura y da 1.0; esa falla ya la mide
+  `razon_de_costura`, y no hay un caso que haga fallar a la otra.
+- **Fuera y declaradas pendientes.** `banding_index` y `mip_consistency` necesitan la altura codificada a BC4 y los
+  mips (NP-E0); `flatness_hf` no está definida con precisión en la tabla; `tileability_continuity`, por lo anterior.
+- **Una sola definición de la derivada y de la inversa.** Las métricas necesitan las dos cosas, y cada una vivía
+  en línea en un solo sitio. Se promovieron a `espectral.gradientes_espectrales` (igual a
+  `research.spectral_gradients` bit a bit en 17 casos × 3 grillas; `bench.normal_desde_altura` la usa) y a
+  `integrate.gradientes_de_normal` (igual a `research.gradients_from_normal` bit a bit en 17 casos × 3 escalas;
+  `integrar` la usa). `integrar` sigue siendo bit a bit igual a la versión anterior en 42 combinaciones. El ancla de
+  AST de la convención de frecuencias pasó a ENUMERAR los módulos que importan de `espectral` y la función que usa
+  cada uno, en vez de una lista escrita a mano.
+- **Lo que esto NO justifica: un `AUTO_ACCEPT` calibrado con el benchmark sintético.** EXP-M2, sobre texturas
+  authored reales, midió que la predicción de riesgo solo-normal FALLÓ (mejor AUC 0.62, `REVIEW_RATE` no viable,
+  falsos aceptos ≥ 30 %) y que nada de eso es promovible a política automática. Derivar umbrales del corpus
+  sintético daría confianza que los datos reales no respaldan. Por eso NP-Q0b parte de que el mecanismo sea
+  **fail-closed**: sin umbrales validados contra un corpus con texturas reales (fixture MatSynth de NP-D0, aún
+  ausente) todo va a revisión.
+- **Límite declarado.** Las pruebas son sobre normales sintéticas y limpias. No hay call site de producción
+  todavía (lo consumen NP-Q0b y posteriores). Las métricas describen; no predicen riesgo.

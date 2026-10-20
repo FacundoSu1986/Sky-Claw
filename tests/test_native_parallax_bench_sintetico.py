@@ -384,6 +384,15 @@ def test_un_campo_constante_sigue_siendo_periodico() -> None:
     assert razon_borde(constante_en_un_eje) == pytest.approx(7.0)  # el eje que varía es una rampa: wrap = 7 pasos
 
 
+@pytest.mark.parametrize("escala", [1e-20, 1e-13, 1e-11, 1e-6, 1.0, 1e6])
+def test_razon_borde_no_depende_de_la_amplitud(escala: float) -> None:
+    # Revisión de Codex en #760: con un épsilon ABSOLUTO de 1e-12, una rampa con razón de costura 15 escalada a una
+    # amplitud menor que ~1e-11 colapsaba a 1.0 (los pasos pasaban a contar como cero) aunque la razón es adimensional.
+    rampa = np.tile(np.arange(16) / 15.0, (16, 1))
+
+    assert razon_borde(rampa * escala) == pytest.approx(15.0, rel=1e-9)
+
+
 def test_razon_borde_rechaza_lo_que_no_es_un_campo_2d_finito() -> None:
     # (1, 8) y (8, 1): con un eje de largo 1 no hay "paso interior" y np.take(campo, 1) se saldría del arreglo.
     for malo in (

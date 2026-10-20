@@ -43,6 +43,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "decode.py",
         "espectral.py",
         "integrate.py",
+        "metrics.py",
     }
 )
 # Los únicos módulos donde se importa numpy DENTRO de una función (perezoso): ``_extra`` es el punto único para
@@ -51,6 +52,14 @@ PUNTOS_DE_IMPORTACION_PEREZOSA_DE_NUMPY = frozenset({"_extra.py", "decode.py"})
 # El único módulo de producto que calcula frecuencias espectrales: una segunda definición daría gradientes
 # escalados por la resolución (bug real de NP-M0).
 MODULOS_QUE_DEFINEN_FRECUENCIAS = frozenset({"espectral.py"})
+# Los módulos que consumen la convención y la función de ``espectral`` que usa cada uno: el conjunto se detecta por
+# AST (``test_los_consumidores_de_espectral_son_los_congelados``), así que un consumidor nuevo rompe el ancla hasta
+# que se le escribe su receta acá.
+CONSUMIDORES_DE_ESPECTRAL = {
+    "bench/sintetico.py": "gradientes_espectrales",
+    "integrate.py": "ejes_de_frecuencia",
+    "metrics.py": "gradientes_espectrales",
+}
 FUNCIONES_DE_FRECUENCIA = ("fftfreq", "rfftfreq")
 PESADOS = ("numpy", "PIL")
 EXTRA = "native-parallax"
@@ -258,7 +267,40 @@ def test_solo_un_modulo_de_producto_define_los_ejes_de_frecuencia() -> None:
     assert _modulos_que(_define_ejes_de_frecuencia) == MODULOS_QUE_DEFINEN_FRECUENCIAS
 
 
-@pytest.mark.parametrize("modulo", ["bench/sintetico.py", "integrate.py"])
+ESPECTRAL = "sky_claw.local.native_parallax.espectral"
+
+
+def _importa_de_espectral(codigo: str) -> bool:
+    """``True`` si el código importa el módulo ``espectral`` por CUALQUIER forma de sentencia de importación.
+
+    Absolutas (``from ...espectral import f``, ``from ...native_parallax import espectral``,
+    ``import ...espectral``) y relativas. Las relativas no se resuelven contra el paquete del módulo escaneado:
+    se detecta por el nombre, así que puede sobre-detectar (un ``from .x import espectral`` ajeno), y eso es
+    deliberado. Sobre-detectar rompe el ancla y obliga a escribir la receta del consumidor; sub-detectar lo deja
+    pasar sin que nadie lo vea. Límite: una importación dinámica (``importlib.import_module``) no es una sentencia
+    de importación y este escáner no la ve.
+    """
+    paquete, nombre = ESPECTRAL.rsplit(".", 1)
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.Import):
+            if any(alias.name == ESPECTRAL for alias in nodo.names):
+                return True
+        elif isinstance(nodo, ast.ImportFrom):
+            modulo = nodo.module or ""
+            importa_el_nombre = any(alias.name == nombre for alias in nodo.names)
+            if nodo.level == 0:
+                if modulo == ESPECTRAL or (modulo == paquete and importa_el_nombre):
+                    return True
+            elif modulo.rsplit(".", 1)[-1] == nombre or importa_el_nombre:
+                return True
+    return False
+
+
+def test_los_consumidores_de_espectral_son_los_congelados() -> None:
+    assert _modulos_que(_importa_de_espectral) == frozenset(CONSUMIDORES_DE_ESPECTRAL)
+
+
+@pytest.mark.parametrize("modulo", sorted(CONSUMIDORES_DE_ESPECTRAL))
 def test_los_consumidores_de_frecuencias_las_importan_de_espectral(modulo: str) -> None:
     arbol = ast.parse((PAQUETE / modulo).read_text(encoding="utf-8"))
     importados = {
@@ -268,7 +310,7 @@ def test_los_consumidores_de_frecuencias_las_importan_de_espectral(modulo: str) 
         for alias in nodo.names
     }
 
-    assert ("sky_claw.local.native_parallax.espectral", "ejes_de_frecuencia") in importados
+    assert (ESPECTRAL, CONSUMIDORES_DE_ESPECTRAL[modulo]) in importados
 
 
 @pytest.mark.parametrize(
@@ -308,6 +350,35 @@ def test_el_escaner_de_importacion_perezosa_de_numpy_distingue_funcion_y_modulo(
 )
 def test_el_escaner_de_frecuencias_ve_todas_las_formas_de_llamada(codigo: str, esperado: bool) -> None:
     assert _usa_funcion_de_frecuencia(codigo) is esperado
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("from sky_claw.local.native_parallax.espectral import gradientes_espectrales\n", True),
+        ("from sky_claw.local.native_parallax.espectral import gradientes_espectrales as g\n", True),
+        ("from sky_claw.local.native_parallax import espectral\n", True),
+        ("from sky_claw.local.native_parallax import espectral as e\n", True),
+        ("from sky_claw.local.native_parallax import decode, espectral\n", True),
+        ("import sky_claw.local.native_parallax.espectral\n", True),
+        ("import sky_claw.local.native_parallax.espectral as e\n", True),
+        ("from . import espectral\n", True),
+        ("from .espectral import gradientes_espectrales\n", True),
+        ("from .. import espectral\n", True),
+        ("from ..espectral import gradientes_espectrales\n", True),
+        ("def f():\n    from sky_claw.local.native_parallax import espectral\n", True),
+        ("from sky_claw.local.native_parallax import decode\n", False),
+        ("from sky_claw.local.native_parallax.integrate import integrar\n", False),
+        ("from . import decode\n", False),
+        ("from .decode import decodificar\n", False),
+        ("import sky_claw.local.native_parallax.decode\n", False),
+        ("from sky_claw.local.native_parallax.espectral_otro import algo\n", False),
+        ("from otro_paquete import espectral\n", False),
+        ("import numpy as np\n", False),
+    ],
+)
+def test_el_escaner_de_consumidores_de_espectral_ve_todas_las_formas_de_importar(codigo: str, esperado: bool) -> None:
+    assert _importa_de_espectral(codigo) is esperado
 
 
 @pytest.mark.parametrize(
