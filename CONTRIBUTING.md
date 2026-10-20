@@ -150,6 +150,11 @@ prohíbe — corregí la fuente, no agregues una tercera versión.
 - Los PRs requieren revisión antes de merge.
 - El CI debe pasar (5 gates: Lint, Mypy, Tests, Security, Build).
 - Usa `/review uncommitted` o `/review branch` si utilizas el agente de code review local.
+- **Integración y conflictos:** si la rama quedó atrás de `main` o hay conflictos, la norma
+  es [docs/development/merge_and_conflict_resolution.md](docs/development/merge_and_conflict_resolution.md).
+  `main` no exige que el PR esté al día (`strict: false`), así que lo exige el proceso:
+  sincronizar con `merge` (nunca `rebase`), clasificar cada conflicto y registrar la tabla
+  de resolución en el cuerpo del PR.
 
 ---
 
