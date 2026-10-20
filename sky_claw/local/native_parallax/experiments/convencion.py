@@ -7,9 +7,11 @@ integra con la convención equivocada, el campo de gradientes deja de ser un gra
 **Es un indicio, no una detección.** Para una superficie integrable, el residuo con la convención equivocada es
 ``2m / (a + 2m + b)``, con ``m = media|h_xy|`` y ``a``, ``b`` las medias de ``|h_xx|`` y ``|h_yy|``: depende de cuánta
 derivada MIXTA tiene la superficie. Si no tiene (planos, un solo eje, separables) las dos hipótesis dan lo mismo y
-no hay nada que leer; con ruido o con cuantización de dos canales, el margen cae al nivel de esos casos
-(``tests/test_native_parallax_x0_convencion.py`` mide dónde). Por eso este módulo no corrige nada y ``elegida`` puede
-ser ``None``: la convención la fija la fuente del archivo, y una lectura ambigua es motivo de revisión.
+no hay nada que leer: ambos residuos quedan en el piso numérico (``PISO_NUMERICO``) y la lectura se abstiene (el
+margen RELATIVO solo no alcanza: dos residuos de ruido de redondeo, ~1e-15, daban un margen de hasta 0.8). Con ruido o
+con cuantización de dos canales, el margen cae al nivel de esos casos (``tests/test_native_parallax_x0_convencion.py``
+mide dónde). Por eso este módulo no corrige nada y ``elegida`` puede ser ``None``: la convención la fija la fuente
+del archivo, y una lectura ambigua es motivo de revisión.
 
 Dos cosas que NINGUNA métrica puede resolver y que el mismo archivo de tests demuestra: la inversión global (X e Y a
 la vez) niega la altura exactamente, y una escala uniforme equivocada no cambia la altura normalizada.

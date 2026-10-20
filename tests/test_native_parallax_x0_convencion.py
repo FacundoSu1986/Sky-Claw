@@ -13,6 +13,8 @@ Qué se ancla (y con qué):
   una brecha de más de 10 órdenes de magnitud entre unos y otros.
 - **Las dos ambigüedades que ninguna métrica puede resolver**: la inversión global (X e Y a la vez niega la altura
   EXACTAMENTE y deja idénticas todas las métricas) y la escala uniforme (no cambia la altura normalizada).
+- **El piso numérico**: los no detectables, con datos exactos, dan residuos de ~1e-15 DISTINTOS entre sí (margen
+  relativo de hasta 0.8). Sin un piso absoluto esa diferencia de redondeo se leería como una convención.
 - **Qué pasa con ruido y cuantización**, como afirmaciones cualitativas con margen holgado: no se congelan conteos de
   casos marginales.
 
@@ -130,9 +132,9 @@ def test_la_convencion_elegida_es_la_de_menor_residuo_y_un_empate_no_elige(
 
 
 def test_el_piso_numerico_es_la_raiz_del_epsilon_de_float64() -> None:
-    # No es un umbral de calidad: es la definicion estandar de "cero numerico" (el error de un residuo
-    # calculado con FFT en float64 queda varios ordenes por debajo).
-    assert PISO_NUMERICO == math.sqrt(sys.float_info.epsilon)
+    # No es un umbral de calidad: es la definición estándar de "cero numérico" (el error de un residuo
+    # calculado con FFT en float64 queda varios órdenes por debajo).
+    assert math.sqrt(sys.float_info.epsilon) == PISO_NUMERICO
 
 
 def test_dos_residuos_en_el_piso_numerico_no_son_una_lectura_aunque_difieran_entre_si() -> None:
@@ -245,8 +247,8 @@ def test_los_casos_detectables_son_los_que_tienen_derivada_mixta_y_la_brecha_es_
 
 @pytest.mark.parametrize("caso", sorted(NO_DETECTABLES))
 def test_los_no_detectables_limpios_se_abstienen_aunque_el_redondeo_los_separe(caso: str) -> None:
-    # S04, S10, S11 y S14 dan residuos ~1e-15 distintos entre si (margen relativo de hasta 0.8): sin un piso
-    # absoluto, esa diferencia de redondeo se leeria como una convencion con mucha confianza.
+    # S04, S10, S11 y S14 dan residuos ~1e-15 distintos entre sí (margen relativo de hasta 0.8): sin un piso
+    # absoluto, esa diferencia de redondeo se leería como una convención con mucha confianza.
     for archivo in (_directx(caso), _con_g_invertido(_directx(caso))):
         lectura = leer_convencion(archivo, bordes=Bordes.PERIODICOS)
 
