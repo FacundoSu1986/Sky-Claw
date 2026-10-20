@@ -220,13 +220,18 @@ def razon_de_costura(altura: NDArray[np.float64]) -> float:
     """
     _np = importar_numpy()
     campo = _exigir_campo(_np, altura, "altura")
+    # "Paso nulo" se decide RELATIVO a la escala del campo: con un épsilon absoluto, una altura de amplitud menor que
+    # ~1e-11 perdía su costura y reportaba 1.0 aunque la razón es adimensional (revisión de Codex en #760). Un eje
+    # constante que sale de una FFT trae pasos del orden del redondeo de la escala del campo, y esos siguen contando
+    # como cero.
+    paso_nulo = _EPS * float(_np.abs(campo).max())
     razones: list[float] = []
     for eje in (0, 1):
         salto = float(_np.abs(_np.take(campo, 0, axis=eje) - _np.take(campo, -1, axis=eje)).mean())
         vecino = float(_np.abs(_np.take(campo, 1, axis=eje) - _np.take(campo, 0, axis=eje)).mean())
-        if vecino < _EPS:
+        if vecino <= paso_nulo:
             vecino = float(_np.abs(_np.diff(campo, axis=eje)).mean())
-        if vecino < _EPS:
+        if vecino <= paso_nulo:
             razones.append(1.0)
             continue
         razones.append(salto / vecino)

@@ -475,6 +475,27 @@ def test_una_rampa_tiene_una_costura_de_n_menos_uno_veces_el_paso() -> None:
     assert razon_de_costura(rampa) == pytest.approx(n - 1, rel=1e-12)
 
 
+@pytest.mark.parametrize("escala", [1e-20, 1e-13, 1e-11, 1e-6, 1.0, 1e6])
+def test_la_razon_de_costura_no_depende_de_la_amplitud(escala: float) -> None:
+    # Revisión de Codex en #760: la razón es adimensional (así se documenta), pero un épsilon ABSOLUTO de 1e-12 hacía
+    # que una altura de amplitud menor que ~1e-11 pasara a contar sus pasos como cero y reportara 1.0 aunque la
+    # costura fuera 15 veces el paso interior. El corpus de NP-D0 tiene el mismo código y se mueve con éste.
+    rampa = np.tile(np.arange(16) / 15.0, (16, 1)) * escala
+
+    assert razon_de_costura(rampa) == pytest.approx(15.0, rel=1e-9)
+    assert razon_borde(rampa) == razon_de_costura(rampa)
+
+
+def test_el_ruido_de_redondeo_de_un_eje_constante_no_se_toma_por_costura() -> None:
+    # Lo que el épsilon SÍ resuelve y un "comparar con cero exacto" rompería: un campo constante en y que sale de
+    # una FFT trae pasos ~1e-17 en ese eje, y el cociente de dos ruidos no es una costura (cuenta como constante).
+    fila = np.sin(2.0 * np.pi * 3.0 * np.arange(64) / 64)
+    limpio = np.tile(fila, (64, 1))
+    ruidoso = limpio + 1e-17 * np.random.default_rng(0).standard_normal((64, 64))
+
+    assert razon_de_costura(ruidoso) == pytest.approx(razon_de_costura(limpio), rel=1e-6)
+
+
 def test_una_altura_constante_tiene_razon_uno() -> None:
     assert razon_de_costura(np.full((16, 16), 0.3)) == 1.0
 
