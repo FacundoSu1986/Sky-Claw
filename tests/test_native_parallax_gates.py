@@ -514,6 +514,14 @@ def test_la_huella_del_candidato_es_un_sha256_estable_y_distingue_cada_ingredien
     assert len({base, *otras}) == 1 + len(otras)
 
 
+def test_la_huella_del_candidato_tiene_un_formato_congelado() -> None:
+    """Valor de referencia: cambiar CÓMO se serializa el candidato (orden de claves, tipos, separadores) invalidaría
+    en silencio toda validación ya registrada, que dejaría de coincidir con su registro."""
+    assert huella_del_candidato("np-q0a.v1", 1, LimitesDeAutoaceptacion(2.0, 0.05, 2.0)) == (
+        "9bed50a78ed5115bb0b8fb537ae377811eea91559be93fb0e1f4f5cb2d6c96d1"
+    )
+
+
 def test_la_huella_del_candidato_no_distingue_un_entero_de_su_flotante() -> None:
     assert huella_del_candidato(VERSION_DE_METRICAS, 1, _limites(razon_de_costura=2)) == huella_del_candidato(
         VERSION_DE_METRICAS, 1, _limites(razon_de_costura=2.0)
