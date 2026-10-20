@@ -73,11 +73,11 @@ Verificado leyendo el repositorio (2026-10-19):
 
    | PR | Contenido | Estado |
    |---|---|---|
-   | NP-D0 | dataset spec + generador sintético + fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | siguiente (en paralelo con NP-C0) |
-   | NP-C0 | `NormalDecoder` (DDS/PNG, convención DirectX, confianza por `nz`) | siguiente |
-   | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | pendiente (necesita NP-C0 y el dataset de NP-D0) |
-   | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | pendiente (necesita NP-I0 y el benchmark de NP-D0) |
-   | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | pendiente |
+   | NP-D0 | dataset spec + generador sintético + fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | **parcial** (#758): generador sintético y especificación hechos; falta el fixture MatSynth (descarga externa) |
+   | NP-C0 | `NormalDecoder` (DDS/PNG, convención DirectX, confianza por `nz`) | hecho (#756) |
+   | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
+   | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
+   | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | pendiente |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
@@ -428,3 +428,122 @@ PR.
   cuantización es un modelo propio; el ruido de compresión por bloques de BC5/BC7 (y `texconv`, NP-E0) no está simulado.
   (3) Una sola realización del ruido, 14 lecturas por escenario. (4) No hay umbrales, ni runner del benchmark, ni call
   site de producción (NP-X0b).
+
+### Actualización de NP-X0b (2026-10-20)
+
+NP-X0b entrega el **runner del benchmark y la `REVIEW_RATE` simulada**, no umbrales: `UMBRALES_VIGENTES` sigue en `None` y
+en el producto toda textura sigue yendo a `REVIEW`. Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de
+Windows lo confirma en el PR.
+
+- **Qué entra.** `experiments/medicion.py` (numpy perezoso) mide una textura (`medir_textura`: integra con `integrar` y
+  calcula las métricas del gate con los MISMOS bordes) y el corpus sintético completo (`medir_corpus_sintetico`: 17 casos ×
+  11 escenarios de la especificación de NP-D0 = 187 mediciones a 128²). `experiments/revision.py` (puro, sin numpy) deriva
+  límites por cuantil (`derivar_limites`), simula la revisión (`simular_revision`) y la simula sin fuga
+  (`simular_dejando_un_caso_fuera`). Sin call site de producción.
+- **El corpus se mide solo con bordes periódicos** (Codex, #763). Los controles negativos (N01, N02) lo son porque violan la
+  periodicidad: son del integrador periódico. Bajo Neumann son representables y etiquetarlos «malos» corrompería las tasas;
+  qué significa «mala» con otros bordes no está decidido, así que `medir_corpus_sintetico` se niega en vez de adivinarlo.
+- **La huella del corpus medido es la de la especificación de NP-D0** (Codex, #763). Una huella propia del corpus medido
+  habría sido un segundo hash sintético que el guard del gate no conoce (el gate solo rechaza
+  `huella_especificacion(ESPECIFICACION_V1)`): reproduje que con ella una validación con conteos favorables daba `alcanza`
+  verdadero. El corpus medido es un subconjunto del de NP-D0, así que lleva SU huella y un test ancla que el gate la
+  rechaza como validación. Lo que distingue una medición de otra (grilla, bordes, versión de las métricas y de la
+  medición, escenarios) va en `CorpusMedido.descripcion`, un JSON canónico con valor de referencia congelado que NO es un
+  hash, para que no se preste a usarlo como `huella_del_corpus`.
+- **Cada `Medicion` declara los bordes con que se hizo y no se mezclan mediciones de bordes distintos** (pr-agent, #763).
+  Un límite derivado (o evaluado) sobre una mezcla de periódicos y Neumann no vale para ninguno de los dos, y el producto
+  podría elegir bordes por textura (teselable o no). La regla vive en un solo validador que usan las tres funciones que
+  consumen mediciones (`derivar_limites`, `simular_revision` y `simular_dejando_un_caso_fuera`), enumeradas en el test.
+  `razon_de_costura` no recibe bordes (`metrics.py` la define sobre el salto de wrap de la altura): mide la costura al
+  teselar, sea cual sea el integrador. Además `Umbrales` no guarda los bordes de la derivación, así que
+  `simular_revision` exige `bordes_de_los_limites` y rechaza aplicar límites de un dominio a mediciones de otro (Codex,
+  #763); `simular_dejando_un_caso_fuera` no lo necesita porque deriva y evalúa sobre las mismas mediciones, homogéneas.
+- **La derivación valida el dominio de TODA medición buena** (Codex, #763). Una fila buena con una métrica no finita o
+  imposible (un ángulo negativo, un residuo > 1) ocupa un rango de la muestra y mueve el límite sin que nada falle (con un
+  ángulo de -5° el límite del cuantil 0.5 pasó de 2.0 a 1.0): es un error, igual que en el gate, donde esa medición va a
+  `REVIEW`.
+- **No compara límites por su cuenta.** Un candidato sin validación manda toda textura a `REVIEW` en el gate, así que
+  «qué haría con estos límites» se lee de los motivos que `decidir_con` informa para la textura, descartando los del
+  registro (invalidan la simulación) y los de la validación (evidencia que este código no pretende tener). La partición
+  de `Motivo` en registro / validación / textura se congela por igualdad: un motivo nuevo rompe el ancla hasta que se lo
+  clasifica.
+- **Derivar no es validar.** El candidato derivado nunca trae `validacion`, y un ancla por AST congela que solo `gates.py`
+  nombra `ValidacionContraCorpusReal`: ningún módulo de medición puede fabricar esa evidencia con sus propios números.
+- **La etiqueta «mala» es declarada** (`criterio_de_etiqueta` la registra en el reporte): un control negativo lo es por
+  construcción (NP-D0: violan la periodicidad a propósito), una altura sin rango también, y el resto por el RMSE entre las
+  alturas normalizadas min-max contra el ground truth, con una tolerancia SIN valor por defecto. Se usó `0.05`, la cifra de
+  EXP-001 de la síntesis; no es un hallazgo sino una elección declarada.
+- **Dejar un caso fuera.** Los escenarios de un caso son la misma superficie, así que cada caso se evalúa con límites
+  derivados SIN él. Evaluar con límites derivados de los mismos casos subestima la revisión (a 128², 43.3 % → 47.6 % con
+  el cuantil 0.95; a 256², 43.3 % → 44.9 %).
+
+**Resultado sobre el corpus sintético** (128², 187 mediciones, 71 malas = 38 % por construcción; límites por cuantil,
+estimación sin fuga):
+
+| Cuantil | Revisión (misma muestra → sin el caso) | Malas aceptadas / aceptadas | Buenas en revisión |
+|---:|---:|---:|---:|
+| 0.90 | 51.3 % → 52.9 % | 2 / 88 (2.3 %) | 30 |
+| 0.95 | 43.3 % → 47.6 % | 2 / 98 (2.0 %) | 20 |
+| 0.99 | 36.4 % → 40.6 % | 6 / 111 (5.4 %) | 11 |
+| 1.00 | 34.8 % → 36.4 % | 6 / 119 (5.0 %) | 3 |
+
+A 256² los valores difieren en pocos puntos (cuantil 0.95: 43.3 % → 44.9 %, 2 malas aceptadas), así que la conclusión no
+depende de la grilla.
+
+- **Ningún candidato se acerca al objetivo de NP-H0 (`REVIEW_RATE` < 15 %), ni siquiera en el corpus sintético.** Con
+  los cuantiles ≥ 0.95 se manda ~36-48 % a revisión y se dejan pasar ~2-5 % de malas. Esa tasa **no es la del producto**: depende de
+  la mezcla del corpus (38 % de malas por construcción, con ruido de hasta 8/255 y dos controles negativos). En los
+  escenarios benignos (limpio, 16 bits y tres canales) la revisión baja a 12-24 %, de los cuales los dos controles
+  negativos son 12 %. El número de NP-H0 solo se puede contestar con texturas reales.
+- **Hay falsos aceptos incluso aquí, y son de la misma clase que EXP-M2 midió en texturas reales.** Con el cuantil 0.95,
+  los dos son `S08_ridges` con cuantización de dos canales (BC5-like): error de altura 0.051 y 0.094 con el p95 de acuerdo
+  de normal en 0.22° y 0.06° y residuo 0.007 y 0.001. El error está en la altura y las métricas solo-normal no lo ven.
+  Con el cuantil ≥ 0.99 se suman `S01_flat` con ruido (un relieve espurio sobre una verdad plana, «mala» por convención) y
+  `S09_bricks` con ruido 1/255.
+- **El costo de la revisión lo pagan las buenas con ruido.** Con el cuantil 0.95 las 20 buenas en revisión son sobre todo
+  de los escenarios con ruido; `residuo_de_integrabilidad` vale 0.2-0.35 en texturas con error de altura pequeño (p. ej.
+  `S02_sine_x` con ruido 1/255: residuo 0.27, error 0.0075; no se investigó la causa). Las tres métricas pasan su límite
+  con frecuencia comparable (sin el caso, cuantil 0.95: 61, 52 y 40 veces sobre 187 mediciones).
+
+**Dos hallazgos sobre el gate** (ancladas en `tests/test_native_parallax_x0_medicion.py`, sin cambiar el gate):
+
+- **El signo no delata una inversión global cuando la altura sale de la misma normal.** `acuerdo_normal` ajusta la escala
+  entre la altura y la normal; si la altura es la `integrar` de esa normal, la escala es `+1` por construcción. Con X e Y
+  invertidos a la vez el signo da `+1` en los 14 casos periódicos no planos, y solo da `-1` contra una altura
+  independiente (14 de 14). `SIGNO_DISTINTO_DEL_ESPERADO` apareció una sola vez por grilla y nunca por una inversión
+  (128²: `S07_bumps` con ruido 8/255; 256²: `N01_ramp` con cuantización de dos canales a 8 bits; no se investigó por qué
+  el ajuste da negativo ahí). Consecuencia: el gate no detecta una
+  normal con X e Y invertidos; hace falta una fuente independiente de la altura (NP-RIG). Es la misma conclusión de NP-X0a
+  vista desde el otro lado: la inversión global no se distingue por los píxeles.
+- **`NO_FINITOS_EN_LA_ALTURA` no puede dispararse con este cableado**: `integrar` rechaza normales no finitas y
+  `acuerdo_normal` / `razon_de_costura` rechazan alturas no finitas, así que el conteo vale 0 siempre (0 en las 187).
+  Se conserva la llamada porque documenta la intención; el mutante que la reemplaza por `0` es equivalente.
+
+**Decisión sobre `REVIEW`.** (1) Ningún candidato se promueve: la `REVIEW_RATE` del producto sigue en 100 % hasta que
+exista un registro validado contra un corpus real. (2) La justificación pedida por NP-H0 es esta: con métricas solo-normal
+ni el corpus sintético llega al 15 %, y los falsos aceptos de la clase EXP-M2 aparecen aunque el ruido sea gaussiano. (3) El
+runner queda listo para el corpus real: `medir_textura` mide cualquier textura que tenga una altura de referencia (MatSynth
+trae alturas authored) y el reporte da los conteos (`n_total`, `n_aceptadas`, `n_aceptadas_malas`) que pide
+`ValidacionContraCorpusReal`; armar esa evidencia, con la tolerancia, la confianza y la tasa de revisión máxima, sigue
+siendo del operador.
+
+**Mutantes.** 117 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
+simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **111 mueren**
+(uno sobrevivió porque el test comparaba el JSON parseado y no su forma canónica; se ancló el texto exacto). Los 6
+sobrevivientes: **5 eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el
+`max(posicion, 1)`; dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y un chequeo previo de los bordes
+que `integrar` repetía; este último volvió después con otro propósito, el de arriba, y sus mutantes mueren) y **1 es
+equivalente** (el conteo de no finitos, ver arriba). Al escribir los tests
+resultó falsa mi premisa de memoria sobre el redondeo del cuantil (`0.7 * 10` es exacto): el contraejemplo real, hallado
+ejecutando, es `0.28 * 25 == 7.000000000000001`.
+
+**Límites declarados.** (1) Es el corpus **sintético**: nada de esto valida un umbral (EXP-M2). (2) La etiqueta mide la
+altura (más los controles), no la calidad percibida: es un proxy, y la tolerancia de 0.05 es una elección. (3) Ruido
+gaussiano, una realización, cuantización modelada y sin compresión por bloques (NP-E0). (4) Solo bordes periódicos (el runner se niega con otros) y
+convención DirectX. (5) Las cifras de arriba son de 128² (con el chequeo a 256²); la especificación tiene más grillas.
+(6) La tasa de revisión depende de la mezcla del corpus: no es la del producto.
+
+**Reproducir.** `corpus = medir_corpus_sintetico(128, 128, bordes=Bordes.PERIODICOS)`, luego
+`simular_dejando_un_caso_fuera(corpus.mediciones, cuantil=0.95, tolerancia_de_altura=0.05, signo_esperado=1,
+huella_del_corpus=corpus.huella)` y `derivar_limites` + `candidato_desde_limites` + `simular_revision(...,
+bordes_de_los_limites=Bordes.PERIODICOS, ...)` para «la misma muestra». Es determinista; la huella de referencia del corpus medido está congelada en el test.
