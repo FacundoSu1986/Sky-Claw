@@ -493,7 +493,7 @@ correcta para "dirección de salida vs. normal verdadera".
 | Acumulador **float32** en vez de `double` | difiere del binario en 1088–2475 de 3072 píxeles de salida; el ángulo que produciría es `2.4x` el real |
 | **Sin** redondeo del buffer intermedio | difiere del binario en 1425–2475 píxeles (en las familias diádicas de R7 el redondeo es exacto y no diferencia: es la excepción, no la regla) |
 | **Una** sola pasada (omitir la vertical) | difiere en 5120–6080 píxeles; ángulo de 82–383 `x q_ang` |
-| Pesos "bilineales de verdad" (2 taps, promedio simple) | **no** reproduce el binario (`max |diff| = 0.56`); ángulo de 95–400 `x q_ang` |
+| Pesos "bilineales de verdad" (2 taps, promedio simple) | **no** reproduce el binario (`max abs(diff) = 0.56`); ángulo de 95–400 `x q_ang` |
 | Medir `L` después de renormalizar | da `1` exacto: el falso verde ya anclado en §7 |
 | Campo de norma **no** unitaria (`x3`, `L = 2.40`) | `E_b` sigue acotado (`u*(2+L)`), pero el cuantizador de §3.1 presupone unitarias: la cota geométrica **no** es transferible |
 | Monotonía del kernel (pesos `>= 0`) | 40 cajas aleatorias: 0 violaciones. Para toda caja de entradas, la salida real vive en `[f(caja_lo), f(caja_hi)]` |
