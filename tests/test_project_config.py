@@ -240,14 +240,16 @@ def test_los_dos_locks_de_requirements_pinean_las_mismas_versiones() -> None:
     (el segundo con ``--extra native-parallax``) y CI los audita en pasos separados con ``pip-audit
     --strict``: el segundo paso no corre si el primero falla. Un aviso nuevo sobre un paquete común
     (certifi, GHSA-6q48-6c7w-9gw2) obliga a subirlo en los dos; si solo se sube uno, el otro falla
-    recién en la corrida siguiente. Se enumeran TODOS los paquetes comunes, no solo certifi.
+    recién en la corrida siguiente. Se enumeran TODOS los paquetes del lock base, no solo certifi.
     """
     base = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
     extra = (REPO_ROOT / "requirements-native-parallax.lock").read_text(encoding="utf-8")
 
-    comunes = _versiones_pineadas(base).keys() & _versiones_pineadas(extra).keys()
+    pines_base = _versiones_pineadas(base)
 
-    assert len(comunes) >= 50, f"se esperaban decenas de paquetes comunes entre los dos locks, hay {len(comunes)}"
+    # guarda contra el pase vacío: si el formato de los locks cambiara y el parseo no devolviera nada, las
+    # dos aserciones de abajo pasarían sin comparar un solo paquete
+    assert pines_base, "no se leyó ningún paquete pineado de requirements.lock"
     # el extra solo AGREGA (numpy, pillow): si una regeneración le suelta un paquete base, la intersección lo
     # excluiría en silencio y la instalación del extra quedaría incompleta con todo lo demás en verde
     assert _faltantes_en_el_extra(base, extra) == set()
