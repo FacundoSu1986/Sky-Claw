@@ -10,7 +10,11 @@ Investigación `H4_R7_DETERMINISTIC_BOUND_RESEARCH`, **reparada** en
 > hasta el censo por asset del Slice 3 (respuesta textual: «Si autorizo»); además autorizó el merge
 > de #723, que ya está en `main`. Lo que ese merge **no** levanta: el bloqueo de M6 y la derivación
 > numérica de R7 (`R7_NUMERIC_DERIVATION = BLOCKED`). Este documento sigue sin cambiar producción ni
-> el umbral, y su propio merge (#733) no está autorizado. El bloque de tokens del final (§12) y las
+> el umbral. Su propio merge (#733) lo autorizó el operador el 2026-10-20 (respuesta textual: «Tratame de
+> vos, si hace todo lo que sea necesario con buenas prácticas, total autorización para hacer todo lo
+> correcto y necesario», a la pregunta explícita de si autorizaba el merge de #733); ese merge, igual
+> que el de #723, tampoco levanta el bloqueo de M6 ni la derivación numérica de R7. El bloque de tokens
+> del final (§12), con su `PR733_MERGE_AUTHORIZED = NO`, y las
 > menciones a `PENDING_TECH_LEAD`, a `H4_CODE_MERGE_AUTHORIZED = NO` o a #723 como no fusionado son
 > **fotos del PR en el momento de su registro** y se conservan como historial: donde digan eso,
 > rige este bloque.
