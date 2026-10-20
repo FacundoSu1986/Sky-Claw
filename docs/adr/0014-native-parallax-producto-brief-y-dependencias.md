@@ -263,7 +263,7 @@ NP-Q0 se divide en dos PRs chicos (§2.5): **NP-Q0a** entrega las métricas (est
 umbrales derivados. Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 12.3.0); el CI de Windows lo
 confirma en el PR.
 
-- **Qué entra.** `native_parallax/metrics.py`: siete de las diez métricas de la tabla §I de la arquitectura A, las
+- **Qué entra.** `native_parallax/metrics.py`: seis de las diez métricas de la tabla §I de la arquitectura A, las
   que se calculan SIN ground truth de altura (sirven igual en producción y sobre el benchmark de NP-D0):
   `acuerdo_normal`, `residuo_de_integrabilidad`, `razon_de_costura`, `rango_dinamico`, `razon_de_recorte` y
   `contar_no_finitos`, más el resultado `AcuerdoNormal`. Sin umbrales ni gates, y sin percentiles por defecto
