@@ -15,7 +15,7 @@ Contenedores y formatos (todo lo demás se RECHAZA con ``FormatoNoSoportadoError
   que Pillow informa: en un PNG el ``rawmode`` del tile (``RGB;16B`` es de 16 bits y Pillow lo abre como
   ``RGB``), y en un DDS sin comprimir las máscaras de canal (565, 1555 y 4444 serían cuantizados en
   silencio, y R16G16 deja un canal en cero). Grises, paleta y 16 bits se rechazan.
-- **BC5**: guarda solo X e Y. Pillow 11.3.0 y 12.3.0 lo devuelven como RGB con B = 0 (verificado
+- **BC5**: guarda solo X e Y. Pillow 11.3.0, 12.3.0 y 13.0.0 lo devuelven como RGB con B = 0 (verificado
   ejecutando con un bloque armado a mano, NP-C0), así que Z se reconstruye como
   ``sqrt(1 − x² − y²)``. Los píxeles con ``x² + y² > 1`` quedan con Z = 0, se renormalizan y se
   cuentan en ``clamped_pixels``.
@@ -134,7 +134,7 @@ def _exigir_dependencias() -> None:
 # verificados para normales (los formatos con pérdida las deforman).
 _CONTENEDORES_ADMITIDOS = ("PNG", "DDS")
 
-# Códecs del plugin DDS de Pillow (11.3.0 y 12.3.0, verificado ejecutando): ``dds_rgb`` (DDS sin comprimir
+# Códecs del plugin DDS de Pillow (11.3.0, 12.3.0 y 13.0.0, verificado ejecutando): ``dds_rgb`` (DDS sin comprimir
 # con máscaras de la cabecera clásica) y ``raw`` (sin comprimir con cabecera DX10), ambos SIN pixel_format;
 # ``bcn`` para los de bloques, con pixel_format. Cualquier otro se rechaza: no está verificado.
 _CODECS_DDS_SIN_COMPRIMIR = frozenset({"dds_rgb", "raw"})
@@ -143,7 +143,7 @@ _CODEC_DDS_BLOQUES = "bcn"
 _FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC5", "BC7"})
 
 
-# Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0): el
+# Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0 y 13.0.0): el
 # ``rawmode`` del tile de un PNG y de un DDS DX10 sin comprimir, y las máscaras de un DDS sin comprimir de
 # cabecera clásica (el códec ``dds_rgb`` acepta CUALQUIER máscara y reescala cada canal a 8 bits sin avisar).
 _RAWMODES_DE_8_BITS = frozenset({"RGB", "RGBA"})
