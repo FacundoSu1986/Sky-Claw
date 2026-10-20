@@ -583,16 +583,21 @@ def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     pillow = [d for d in dev if d.name == "pillow"]
     assert len(pillow) == 1, f"se esperaba exactamente un pillow en [dev], hay {len(pillow)}"
 
-    # pillow>=12.3,<13. Piso: pip-audit --strict reporta 35 avisos sobre 11.3.0 y todos están corregidos
-    # en 12.3.0 (el lock del extra native-parallax se audita en CI). Techo: Pillow 13 quita el parámetro
-    # ``mode`` de ``Image.fromarray``.
-    assert pillow[0].specifier.contains(Version("12.3")), f"el rango de pillow no cubre 12.3: {pillow[0].specifier}"
-    assert pillow[0].specifier.contains(Version("12.9")), f"el rango de pillow no cubre 12.x: {pillow[0].specifier}"
-    assert not pillow[0].specifier.contains(Version("12.2")), (
+    # pillow>=13,<14. Piso: pip-audit --strict reporta 8 avisos sobre 12.3.0 (CVE-2026-112395,
+    # -112397, -112400, -112404, -112895..-112899), todos corregidos en 13.0.0. Techo: la línea 14
+    # todavía no está validada por la suite de research.
+    #
+    # El techo <13 anterior se apoyaba en que Pillow 13 quitaría el parámetro ``mode`` de
+    # ``Image.fromarray``. Es falso en 13.0.0: solo se removió el uso de ``mode`` que CAMBIA el dtype,
+    # y las seis fixtures que lo pasan usan RGB/L/F sobre arrays cuyo dtype ya infiere ese modo.
+    # Verificado ejecutando ambas versiones (mismo mode, mismo sha256 del archivo guardado).
+    assert pillow[0].specifier.contains(Version("13.0")), f"el rango de pillow no cubre 13.0: {pillow[0].specifier}"
+    assert pillow[0].specifier.contains(Version("13.9")), f"el rango de pillow no cubre 13.x: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("12.3")), (
         f"el rango de pillow admite una versión con avisos de seguridad: {pillow[0].specifier}"
     )
-    assert not pillow[0].specifier.contains(Version("13.0")), (
-        f"el rango de pillow no corta en 13: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("14.0")), (
+        f"el rango de pillow no corta en 14: {pillow[0].specifier}"
     )
 
     runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]

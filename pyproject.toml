@@ -84,12 +84,16 @@ dependencies = [
 native-parallax = [
     # <2.5: ver el comentario de ``dev`` (la línea 2.5.x exige Python >=3.12).
     "numpy>=1.26,<2.5",
-    # >=12.3: pip-audit --strict reporta 35 avisos sobre Pillow 11.3.0 (PYSEC-2026-165, -2249..-2257,
-    # -2874, -3451..-3496...), todos corregidos entre 12.1.1 y 12.3.0; el lock del extra se audita en CI.
-    # <13: Pillow 13 quita el parámetro ``mode`` de ``Image.fromarray`` (DeprecationWarning ya visible
-    # en tests/test_native_parallax_exp_m4.py). Verificado con 12.3.0: la suite de research (232 tests)
-    # y los de NormalDecoder pasan.
-    "pillow>=12.3,<13",
+    # >=13: pip-audit --strict reporta 8 avisos sobre Pillow 12.3.0 (CVE-2026-112395, -112397,
+    # -112400, -112404, -112895, -112896, -112897, -112899), todos corregidos en 13.0.0. El lock del
+    # extra se audita en CI (paso "Pip-audit native-parallax extra").
+    # El techo <13 que estaba acá se apoyaba en que Pillow 13 quitaría el parámetro ``mode`` de
+    # ``Image.fromarray``. No es así: 13.0.0 solo removió el uso de ``mode`` que CAMBIA el dtype
+    # (notas de release, "Image.fromarray mode parameter"); la reinterpretación dentro del mismo
+    # dtype sigue soportada. Las seis fixtures que pasan ``mode=`` usan RGB/L/F sobre arrays cuyo
+    # dtype ya infiere ese modo, así que no cambian. Verificado ejecutando 12.3.0 y 13.0.0: mismo
+    # mode y mismo sha256 del archivo guardado. La suite de research y NormalDecoder pasan con 13.0.0.
+    "pillow>=13,<14",
 ]
 dev = [
     "pytest>=7.4,<9",
@@ -126,7 +130,7 @@ dev = [
     # Mismo límite que el extra ``native-parallax`` (ver su comentario): los tests deben correr con
     # la misma versión de Pillow que el producto, y dos rangos disjuntos harían irresoluble
     # ``uv sync --extra dev --extra native-parallax``.
-    "pillow>=12.3,<13",
+    "pillow>=13,<14",
 ]
 
 [tool.pytest.ini_options]

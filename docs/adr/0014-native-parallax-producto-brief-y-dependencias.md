@@ -547,3 +547,29 @@ convención DirectX. (5) Las cifras de arriba son de 128² (con el chequeo a 256
 `simular_dejando_un_caso_fuera(corpus.mediciones, cuantil=0.95, tolerancia_de_altura=0.05, signo_esperado=1,
 huella_del_corpus=corpus.huella)` y `derivar_limites` + `candidato_desde_limites` + `simular_revision(...,
 bordes_de_los_limites=Bordes.PERIODICOS, ...)` para «la misma muestra». Es determinista; la huella de referencia del corpus medido está congelada en el test.
+
+### Actualización 2026-10-20: Pillow 13
+
+El techo `<13` de este ADR se apoyaba en una premisa **falsa**. Decía que «Pillow 13 quita el parámetro `mode` de
+`Image.fromarray`»; 13.0.0 **no lo quita**. Las notas de release solo remueven el uso de `mode` que **cambia el dtype**;
+la reinterpretación dentro del mismo dtype sigue soportada. Verificado ejecutando: la firma en 12.3.0 y en 13.0.0 es la
+misma (`mode: str | None = None`), no emite warning, y para las tres formas que usan las seis fixtures (uint8 `HxWx3` →
+`RGB`, uint8 `HxW` → `L`, float32 `HxW` → `F`) el modo inferido y el sha256 del archivo guardado son **idénticos** en
+ambas versiones. Las fixtures no cambiaron.
+
+Lo que sí obligó a mover el rango fue `pip-audit`: **8 avisos sobre 12.3.0** (CVE-2026-112395, -112397, -112400,
+-112404, -112895..-112899), todos corregidos en 13.0.0. Los encontró el paso `Pip-audit native-parallax extra` de CI el
+mismo día que se agregó (#763), y quedaron tapados un rato porque el `certifi` de `requirements.lock` fallaba antes y
+dejaba ese paso en `skipped` (#765 lo destrabó). Es el patrón de siempre: el hermano que no corre no reporta.
+
+Cambios: `pillow>=13,<14` en el extra y en `[dev]` (siguen iguales entre sí, como exige
+`test_native_parallax_producto_invariant.py`); `requirements-native-parallax.lock` y `uv.lock` regenerados con las
+recetas de la sección anterior — cambia **solo** la línea de `pillow` (93 paquetes en el lock del extra, 137 en
+`uv.lock`, mismos conjuntos). `tests/test_project_config.py` mueve su ancla de `12.3`/`13.0` a `13.0`/`14.0`.
+
+**Verificado ejecutando:** la suite de `native_parallax` y los tests de `NormalDecoder` pasan con 13.0.0;
+`pip-audit --strict` sobre el lock nuevo no reporta nada y sobre el viejo reproduce los 8 avisos.
+
+**Límite:** el corpus real de texturas (NP-C0/EXP-003) sigue sin correrse, así que la decodificación de BC5/BC7 reales de
+Skyrim con Pillow 13 no está verificada — el mismo límite que ya declaraba este ADR, con una versión más de Pillow.
+
