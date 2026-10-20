@@ -43,6 +43,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "decode.py",
         "espectral.py",
         "integrate.py",
+        "metrics.py",
     }
 )
 # Los únicos módulos donde se importa numpy DENTRO de una función (perezoso): ``_extra`` es el punto único para
@@ -57,6 +58,7 @@ MODULOS_QUE_DEFINEN_FRECUENCIAS = frozenset({"espectral.py"})
 CONSUMIDORES_DE_ESPECTRAL = {
     "bench/sintetico.py": "gradientes_espectrales",
     "integrate.py": "ejes_de_frecuencia",
+    "metrics.py": "gradientes_espectrales",
 }
 FUNCIONES_DE_FRECUENCIA = ("fftfreq", "rfftfreq")
 PESADOS = ("numpy", "PIL")
