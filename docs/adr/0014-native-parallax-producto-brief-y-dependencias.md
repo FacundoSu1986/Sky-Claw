@@ -9,8 +9,9 @@ respuesta a la pregunta explícita de si aceptaba este ADR, en este PR aparte. S
 —Synthesis C como design brief, layout separado de `research/`, extra opcional `native-parallax` con lock
 propio y `texconv` externo—, pero **no autoriza merges**: cada PR del orden de §2.5 (NP-D0, NP-C0, …) se
 revisa y se fusiona con autorización expresa, como cualquier cambio del repo. Lo que §6 marca como no
-verificado (receta del lock propio del extra, versión y licencia de `texconv`, decodificación de BC5/BC7
-reales) sigue sin verificar y lo demuestran NP-C0 y NP-E0 ejecutando.
+verificado sigue así salvo lo que NP-C0 demostró ejecutando (receta del lock propio del extra y el rango de
+Pillow que lo hace auditable; ver «Actualización de NP-C0» al final de §6): quedan abiertos la versión y
+licencia de `texconv` (NP-E0) y la decodificación de BC5/BC7 reales (EXP-003).
 **Contexto de origen:** `origin/main` `b0737e1f` (merge de #742).
 **Relacionados:** [ADR 0013](0013-clean-room-native-parallax.md) (clean-room), issue #676 (preview
 productivo: tracker y Definition of Done), `docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`
@@ -134,3 +135,38 @@ Verificado leyendo el repositorio (2026-10-19):
   EXP-003); el costo en tamaño de numpy/Pillow en el ejecutable congelado (por eso queda fuera del runtime
   base); la receta del lock propio del extra (nombre del archivo y paso de CI), que NP-C0 tiene que
   demostrar ejecutando; la disponibilidad y licencia de la versión exacta de texconv a fijar (NP-E0).
+
+### Actualización de NP-C0 (2026-10-19)
+
+NP-C0 ejecutó lo que este ADR dejaba abierto para el decodificador y el lock del extra. Verificado
+ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verificar se dice al final.
+
+- **Receta del lock propio.** `requirements-native-parallax.lock` se genera sembrando la salida con el lock
+  base y compilando con el extra: `cp requirements.lock requirements-native-parallax.lock` y
+  `uv pip compile pyproject.toml --extra native-parallax -o requirements-native-parallax.lock
+  --python-version 3.11 --python-platform windows --generate-hashes`. `uv` toma el archivo existente como
+  preferencias: el resultado **solo suma** `numpy` y `pillow` (0 líneas quitadas respecto de
+  `requirements.lock`; sin la siembra, una compilación nueva sube otras versiones y los dos locks
+  discreparían). `--python-platform windows` reproduce lo que CI instala (el lock base incluye
+  `comtypes`, que es de Windows). Un dry-run de `uv pip install --require-hashes` contra Windows lo acepta.
+- **Pillow tiene que ser ≥ 12.3.** `pip-audit` reporta 35 avisos sobre Pillow 11.3.0 (la versión que
+  fijaba `[dev]`), todos corregidos entre 12.1.1 y 12.3.0; con 12.3.0 no reporta ninguno. El paso de CI que
+  pide la decisión 3 no puede pasar con 11.3.0. El extra y `[dev]` quedan en `pillow>=12.3,<13` (rangos
+  disjuntos harían irresoluble `uv sync --extra dev --extra native-parallax`); `<13` porque Pillow 13
+  quita el parámetro `mode` de `Image.fromarray`. La suite de research (232 tests) pasa con 12.3.0.
+- **BC5 llega sin Z.** Pillow 11.3.0 y 12.3.0 decodifican BC5 como RGB con B = 0 (bloque armado a mano), así
+  que `NormalDecoder` reconstruye `Z = sqrt(1 − x² − y²)`. BC5 con signo (BC5S) se rechaza.
+- **Entrada no confiable** (revisión de Codex en #756; los archivos vienen de mods). `NormalDecoder` solo
+  acepta PNG y DDS; de los DDS de bloques, DXT1, BC5 y BC7 (los que tienen prueba), más los sin comprimir con
+  cabecera clásica o DX10. Rechaza BC5 con signo, BC6H, DXT3 y DXT5 (DXT5nm guarda X en el alfa: leerlo como
+  RGB daría normales incorrectas sin ningún error). Un DDS que Pillow no implementa (`NotImplementedError` al
+  abrir) y la advertencia de bomba de descompresión (Pillow solo advierte entre `MAX_IMAGE_PIXELS` y su
+  doble) terminan en errores tipados antes de reservar los arrays. No hay tope de memoria propio: la salida
+  ocupa 32 bytes por píxel. Solo se aceptan **8 bits por canal**, comprobados sobre el layout real y no sobre
+  el modo que Pillow informa (revisión de CodeRabbit): un PNG de 16 bits se abre como `RGB` con `rawmode`
+  `RGB;16B` y se reducía en silencio; en un DDS sin comprimir de cabecera clásica el códec `dds_rgb` acepta
+  cualquier máscara (565, 1555, 4444, R16G16 con un canal en cero). Se enumeraron y se rechazan; verificado
+  ejecutando con Pillow 12.3.0.
+- **No verificado:** que Pillow decodifique bien BC5/BC7 **reales** de Skyrim (EXP-003: las pruebas de
+  NP-C0 usan bloques sintéticos); el paso de CI de este extra sobre `windows-latest` hasta que corra el
+  CI de NP-C0; el costo en tamaño en el ejecutable congelado; `texconv` (NP-E0).
