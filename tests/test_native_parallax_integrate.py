@@ -465,9 +465,12 @@ def test_el_pico_de_memoria_del_solver_sigue_acotado(bordes: Bordes, tope: float
     ],
     ids=["2d", "dos-canales", "float32", "nan", "una-fila", "una-columna", "lista", "none"],
 )
-def test_una_normal_invalida_se_rechaza(malo: object) -> None:
+@pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.name.lower())
+def test_una_normal_invalida_se_rechaza(malo: object, bordes: Bordes) -> None:
+    # Sobre TODOS los modos de bordes: con periódicos, la guarda de 3 muestras enmascara el mínimo general de 2
+    # (un mutante que lo bajaba a 1 sobrevivió mientras este test solo corría con PERIODICOS).
     with pytest.raises(EntradaInvalidaError):
-        integrar(malo, bordes=Bordes.PERIODICOS)  # type: ignore[arg-type]
+        integrar(malo, bordes=bordes)  # type: ignore[arg-type]
 
 
 def _normal_con_escalon_en_y(pendientes_por_fila: list[float], ancho: int) -> np.ndarray:
