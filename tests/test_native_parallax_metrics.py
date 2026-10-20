@@ -239,11 +239,13 @@ def test_media_mediana_y_p95_son_las_de_una_mezcla_angular_conocida() -> None:
     assert resultado.p95_grados == pytest.approx(30.0, abs=1e-9)
 
 
-def test_neumann_reconoce_un_campo_de_derivada_normal_nula_en_los_dos_ejes() -> None:
+@pytest.mark.parametrize("forma", [(64, 64), (48, 96), (96, 48)], ids=lambda f: f"{f[0]}x{f[1]}")
+def test_neumann_reconoce_un_campo_de_derivada_normal_nula_en_los_dos_ejes(forma: tuple[int, int]) -> None:
     # h = a·cos(πx)·cos(πy): la extensión par la cierra en un toro de período 2, y las dos derivadas son exactas.
-    n = 64
-    x = ((np.arange(n) + 0.5) / n)[None, :]
-    y = ((np.arange(n) + 0.5) / n)[:, None]
+    # Las formas rectangulares en los dos sentidos distinguen filas de columnas en las muestras por unidad.
+    n_filas, n_cols = forma
+    x = ((np.arange(n_cols) + 0.5) / n_cols)[None, :]
+    y = ((np.arange(n_filas) + 0.5) / n_filas)[:, None]
     a = 0.05
     altura = a * np.cos(np.pi * x) * np.cos(np.pi * y)
     p = -a * np.pi * np.sin(np.pi * x) * np.cos(np.pi * y)
@@ -257,6 +259,20 @@ def test_neumann_reconoce_un_campo_de_derivada_normal_nula_en_los_dos_ejes() -> 
     assert neumann.escala == pytest.approx(1.0, abs=2e-2)
     assert periodico.media_grados > 10 * neumann.media_grados
     assert residuo_de_integrabilidad(normal, bordes=Bordes.NEUMANN) < 1e-6
+
+
+@pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.name.lower())
+def test_una_normal_no_unitaria_da_el_mismo_acuerdo_que_su_version_unitaria(bordes: Bordes) -> None:
+    # Las normales cuantizadas a 2 canales (el contrato de BC5) pueden no ser unitarias: el ángulo es de DIRECCIÓN.
+    altura_verdad = generar_altura("S06_multifreq", 128, 128)
+    normal = normal_desde_altura(altura_verdad)
+    altura = integrar(normal, bordes=bordes).altura + 0.003 * np.random.default_rng(9).standard_normal((128, 128))
+
+    unitaria = acuerdo_normal(normal, altura, bordes=bordes)
+    triple = acuerdo_normal(3.0 * normal, altura, bordes=bordes)
+
+    assert triple.media_grados == pytest.approx(unitaria.media_grados, rel=1e-9)
+    assert triple.escala == pytest.approx(unitaria.escala, rel=1e-9)
 
 
 @pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.name.lower())
