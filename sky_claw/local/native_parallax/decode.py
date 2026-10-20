@@ -31,7 +31,9 @@ fija un tope de memoria propio: los arrays de salida ocupan 32 bytes por píxel 
 ``confidence`` 8), más temporales.
 
 Convención: la salida es DirectX. Una fuente OpenGL se pasa a DirectX invirtiendo Y. Decidir cuál es la
-convención REAL de un asset (diagnóstico por signo, EXP-005) es de NP-X0: este módulo no la adivina.
+convención REAL de un asset (diagnóstico por signo, EXP-005) es de NP-X0: este módulo no la adivina. NP-X0a midió que
+solo hay un indicio con abstención (``experiments/convencion.py``; ADR 0014, "Actualización de NP-X0a"): la
+convención la fija la fuente del archivo y quien llama la declara en ``source_convention``.
 
 Confianza: ``confidence = clip(nz, 0, 1)`` por píxel. Es una SEÑAL, no una puerta: los umbrales de
 aceptación/revisión/rechazo se derivan del benchmark y se versionan (ADR 0014 §6), nunca se fijan acá.

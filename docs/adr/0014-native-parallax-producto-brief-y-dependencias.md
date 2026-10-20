@@ -367,3 +367,64 @@ numpy 2.4.6); el CI de Windows lo confirma en el PR.
   de `test_native_parallax_metrics.py` fijan las definiciones, pero nada las liga mecánicamente a la versión. (3) **No hay
   derivación de umbrales ni runner del benchmark**: es NP-X0, que además reporta `REVIEW_RATE`. (4) No hay call site de
   producción. (5) Las métricas se calcularon sobre normales sintéticas.
+
+### Actualización de NP-X0a (2026-10-20)
+
+NP-X0a mide **hasta dónde se puede saber la convención del canal G mirando solo los píxeles** (EXP-005, mecánico). No
+corrige ni decide nada. Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo confirma en el
+PR.
+
+- **Qué entra.** `native_parallax/experiments/convencion.py` (paquete nuevo `experiments/`: código de medición, sin
+  umbrales de calidad ni call site de producción; está en el censo del producto, no importa `research`).
+  `leer_convencion(normal, bordes=...)` integra el MISMO archivo con `escala_y = +1` (DirectX) y `-1` (OpenGL) y devuelve
+  los dos residuos de integrabilidad (`LecturaDeConvencion`, con `margen_relativo`, `tiene_senal` y `elegida`).
+- **El mecanismo, en forma cerrada.** Leída con la convención equivocada, una superficie integrable da un residuo de
+  `2m / (a + 2m + b)`, con `m = media|h_xy|` y `a`, `b` las medias de `|h_xx|` y `|h_yy|`: **la detectabilidad es la
+  derivada mixta**. El test contrasta la fórmula con el residuo medido en los 15 casos periódicos (tolerancia `1e-12`).
+- **Resultado: 7 de 15 casos son detectables.** Los 8 restantes (plano, senos en un solo eje, crestas, separables y
+  similares) dan residuos de ~`1e-15` bajo las dos hipótesis: no hay nada que leer. Los detectables dan `>= 0.15` con
+  la convención equivocada. La brecha es de más de 10 órdenes de magnitud, y el test enumera la partición.
+- **Qué sobrevive a la degradación** (14 lecturas por escenario: 7 casos × archivo DirectX y el mismo con G invertido;
+  una realización del ruido, no un promedio):
+
+  | Escenario | Convención acertada | Margen mínimo (detectables) | Margen máximo (no detectables) |
+  |---|---|---|---|
+  | Limpio | 14/14 | 1.000 | — (abstención por el piso numérico) |
+  | Ruido σ = 1/255 | 14/14 | 0.290 | 0.002 |
+  | Ruido σ = 2/255 | 14/14 | 0.001 | 0.004 |
+  | Ruido σ = 4/255 | 10/14 (71 %) | 0.001 | 0.007 |
+  | Cuantización 8 bits, 3 canales | 14/14 | 0.474 | 0.001 |
+  | Cuantización 8 bits, 2 canales (tipo BC5) | 12/14 (86 %) | 0.001 | 0.002 |
+
+  El acierto solo no es la métrica correcta: con σ = 2/255 la convención «acierta» 14/14, pero con un margen del mismo
+  orden que el de los no detectables, así que **ningún umbral de margen separa una lectura útil de ruido**. El rango
+  utilizable medido es σ <= 1/255 y cuantización de tres canales. El criterio de EXP-005 (>= 95 %) se cumple **solo en el
+  subconjunto detectable** y solo en esos escenarios; falla con σ = 4/255 y con la cuantización de dos canales.
+  Los tests afirman esto de forma cualitativa y con margen holgado, no congelan conteos de casos marginales.
+- **Dos ambigüedades que ninguna métrica resuelve** (demostradas en el mismo archivo de tests): (1) la inversión global
+  —X e Y a la vez— produce la `-altura` exacta y deja idénticas todas las métricas (es la razón por la que `gates.py` lleva
+  el signo esperado); (2) una escala uniforme equivocada no cambia la altura una vez normalizada. Una relación equivocada
+  entre las escalas de X e Y sí cambia la forma, salvo que todos los modos de Fourier compartan dirección (senos en un eje,
+  onda plana diagonal, crestas: se enumeran).
+- **Decisión para los consumidores.** (a) **No hay auto-flip**: la convención la fija la fuente del archivo (cabecera,
+  metadatos, herramienta, el operador); esta lectura puede corroborarla, no reemplazarla. (b) Un indicio solo vale con
+  abstención: `tiene_senal` falso o margen bajo ⇒ no dice nada. (c) El umbral del margen **no se fija acá**: se deriva
+  contra el benchmark en NP-X0b y, como todo umbral de este ADR, solo se valida con texturas reales. (d) Una discrepancia
+  entre la fuente y una lectura CON señal es motivo de `REVIEW`; una lectura ambigua nunca autoacepta.
+- **El piso numérico lo encontró la medición, no el barrido de mutantes.** La primera versión elegía por el margen
+  relativo; al medir cada caso limpio, S04, S10, S11 y S14 (no detectables) daban residuos de ~`1e-15` distintos entre sí y
+  un margen de hasta 0.806, es decir, una convención «elegida» por ruido de redondeo. Ahora `tiene_senal` exige que algún
+  residuo supere `PISO_NUMERICO = sqrt(eps)` de float64 (definición de «cero numérico», no un umbral de calidad); sin
+  señal el margen es 0 y `elegida` es `None`. En todos los escenarios degradados medidos el residuo mayor de cada
+  lectura es `>= 3e-3` (el piso vale `1.5e-8`): el piso solo actúa sobre datos exactos y, con datos de 8 bits, manda el
+  margen relativo.
+- **Mutantes.** 24 definidos sobre `convencion.py` (validación de residuos, margen, piso numérico, elección, escalas y
+  bordes de las dos lecturas). **Los 24 mueren.** Un primer barrido (16 mutantes, antes del piso) dejó vivos dos: uno
+  equivalente (`total <= 0.0` en lugar de `== 0.0`, imposible porque los residuos se validan `>= 0`; ese código dejó de
+  existir con el piso) y **un hueco real de test** (los bordes solo estaban anclados en la lectura OpenGL: fijar
+  `Bordes.PERIODICOS` en la DirectX sobrevivía).
+- **Límites declarados.** (1) Es el corpus **sintético** de NP-D0: EXP-M2 midió que lo sintético no predice texturas
+  authored reales, y la fracción de texturas reales sin derivada mixta se desconoce. (2) El ruido es gaussiano i.i.d. y la
+  cuantización es un modelo propio; el ruido de compresión por bloques de BC5/BC7 (y `texconv`, NP-E0) no está simulado.
+  (3) Una sola realización del ruido, 14 lecturas por escenario. (4) No hay umbrales, ni runner del benchmark, ni call
+  site de producción (NP-X0b).
