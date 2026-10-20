@@ -34,7 +34,7 @@ from packaging.version import Version
 RAIZ = Path(__file__).resolve().parents[1]
 PAQUETE = RAIZ / "sky_claw" / "local" / "native_parallax"
 
-MODULOS_DE_PRODUCTO_ESPERADOS = frozenset({"__init__.py", "decode.py"})
+MODULOS_DE_PRODUCTO_ESPERADOS = frozenset({"__init__.py", "decode.py", "bench/__init__.py", "bench/sintetico.py"})
 PESADOS = ("numpy", "PIL")
 EXTRA = "native-parallax"
 DEPENDENCIAS_DEL_EXTRA = frozenset({"numpy", "pillow"})

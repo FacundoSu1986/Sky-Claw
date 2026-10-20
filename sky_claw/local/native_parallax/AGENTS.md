@@ -21,10 +21,14 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
-- El producto (todo lo que no es `research/`; hoy `decode.py`) **no importa** `research` y carga `numpy` y
+- El producto (todo lo que no es `research/`; hoy `decode.py` y `bench/`) **no importa** `research` y carga `numpy` y
   Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
   `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
   `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
+- `bench/sintetico.py` (NP-D0) reimplementa las fórmulas de `research/synthetic_height.py` y
+  `research/normal_from_height.py`; `tests/test_native_parallax_bench_sintetico.py` las compara con research
+  como oráculo y congela la especificación del corpus. Cambiar una fórmula en un lado sin el otro rompe ese
+  test a propósito: decidí cuál manda.
 
 ## Verificación segura
 
