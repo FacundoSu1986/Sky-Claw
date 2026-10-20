@@ -220,7 +220,6 @@ def _poisson(
     del denominador
     h_hat[nulo] = 0.0
     h_complejo = _np.fft.ifft2(h_hat)
-    del h_hat
     residuo = float(_np.max(_np.abs(h_complejo.imag)))
     return cast("NDArray[np.float64]", _np.ascontiguousarray(h_complejo.real)), residuo
 
