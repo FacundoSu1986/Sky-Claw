@@ -437,9 +437,17 @@ Windows lo confirma en el PR.
 
 - **Qué entra.** `experiments/medicion.py` (numpy perezoso) mide una textura (`medir_textura`: integra con `integrar` y
   calcula las métricas del gate con los MISMOS bordes) y el corpus sintético completo (`medir_corpus_sintetico`: 17 casos ×
-  11 escenarios de la especificación de NP-D0 = 187 mediciones a 128², con una huella de referencia congelada).
-  `experiments/revision.py` (puro, sin numpy) deriva límites por cuantil (`derivar_limites`), simula la revisión
-  (`simular_revision`) y la simula sin fuga (`simular_dejando_un_caso_fuera`). Sin call site de producción.
+  11 escenarios de la especificación de NP-D0 = 187 mediciones a 128²), con una huella de referencia congelada que incluye
+  la versión de las métricas: subir `VERSION_DE_METRICAS` la cambia. `experiments/revision.py` (puro, sin numpy) deriva
+  límites por cuantil (`derivar_limites`), simula la revisión (`simular_revision`) y la simula sin fuga
+  (`simular_dejando_un_caso_fuera`). Sin call site de producción.
+- **El corpus se mide solo con bordes periódicos** (Codex, #763). Los controles negativos (N01, N02) lo son porque violan la
+  periodicidad: son del integrador periódico. Bajo Neumann son representables y etiquetarlos «malos» corrompería las tasas;
+  qué significa «mala» con otros bordes no está decidido, así que `medir_corpus_sintetico` se niega en vez de adivinarlo.
+- **La derivación valida el dominio de TODA medición buena** (Codex, #763). Una fila buena con una métrica no finita o
+  imposible (un ángulo negativo, un residuo > 1) ocupa un rango de la muestra y mueve el límite sin que nada falle (con un
+  ángulo de -5° el límite del cuantil 0.5 pasó de 2.0 a 1.0): es un error, igual que en el gate, donde esa medición va a
+  `REVIEW`.
 - **No compara límites por su cuenta.** Un candidato sin validación manda toda textura a `REVIEW` en el gate, así que
   «qué haría con estos límites» se lee de los motivos que `decidir_con` informa para la textura, descartando los del
   registro (invalidan la simulación) y los de la validación (evidencia que este código no pretende tener). La partición
@@ -505,17 +513,18 @@ trae alturas authored) y el reporte da los conteos (`n_total`, `n_aceptadas`, `n
 `ValidacionContraCorpusReal`; armar esa evidencia, con la tolerancia, la confianza y la tasa de revisión máxima, sigue
 siendo del operador.
 
-**Mutantes.** 86 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación, conteo, simulación,
-dejar un caso fuera, escenarios, error de altura, cableado de bordes y huella). **80 mueren.** Los 6 sobrevivientes: **5
-eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el `max(posicion, 1)`;
-dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y el chequeo previo de los bordes, porque `integrar`
-lanza el mismo error en la primera medición) y **1 es equivalente** (el conteo de no finitos, ver arriba). Al escribir los tests
+**Mutantes.** 97 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
+simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y huella). **91 mueren.** Los 6
+sobrevivientes: **5 eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el
+`max(posicion, 1)`; dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y un chequeo previo de los bordes
+que `integrar` repetía; este último volvió después con otro propósito, el de arriba, y sus mutantes mueren) y **1 es
+equivalente** (el conteo de no finitos, ver arriba). Al escribir los tests
 resultó falsa mi premisa de memoria sobre el redondeo del cuantil (`0.7 * 10` es exacto): el contraejemplo real, hallado
 ejecutando, es `0.28 * 25 == 7.000000000000001`.
 
 **Límites declarados.** (1) Es el corpus **sintético**: nada de esto valida un umbral (EXP-M2). (2) La etiqueta mide la
 altura (más los controles), no la calidad percibida: es un proxy, y la tolerancia de 0.05 es una elección. (3) Ruido
-gaussiano, una realización, cuantización modelada y sin compresión por bloques (NP-E0). (4) Solo bordes periódicos y
+gaussiano, una realización, cuantización modelada y sin compresión por bloques (NP-E0). (4) Solo bordes periódicos (el runner se niega con otros) y
 convención DirectX. (5) Las cifras de arriba son de 128² (con el chequeo a 256²); la especificación tiene más grillas.
 (6) La tasa de revisión depende de la mezcla del corpus: no es la del producto.
 
