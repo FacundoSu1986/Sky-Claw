@@ -1,7 +1,8 @@
 """Ancla: el estado vigente de H4 (ratificación de F01, aceptación de R7) no queda a medias.
 
 Defecto que ancla: el estado de la ratificación se declara en tres lugares —el comentario de
-producción de ``authored_dataset.py`` y los dos documentos de H4 del PR #723—. Tras ratificar el
+producción de ``authored_dataset.py`` y los dos documentos de H4 del PR #723—, más el documento de la
+cota de R7 (#733), que llegó después y nombra los mismos tokens. Tras ratificar el
 operador F01 = R2-lite y fusionarse #723, los tres siguieron diciendo
 ``F01_CONTRACT_AMENDMENT = PENDING_TECH_LEAD`` y ``H4_CODE_MERGE_AUTHORIZED = NO``: nada obligaba a
 actualizar los hermanos juntos.
@@ -35,6 +36,7 @@ TOKENS_DE_ESTADO = ("F01_CONTRACT_AMENDMENT", "PENDING_TECH_LEAD", "H4_CODE_MERG
 DOCUMENTOS = (
     "docs/design/research/native-parallax/h4-resize-normal-contract-reconciliation.md",
     "docs/design/research/native-parallax/h4-resize-normal-f01-f02-adjudication.md",
+    "docs/design/research/native-parallax/h4-resize-normal-r7-deterministic-bound.md",
 )
 CODIGO = "sky_claw/local/native_parallax/research/authored_dataset.py"
 
