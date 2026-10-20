@@ -495,10 +495,13 @@ parseó exacto en los dos binarios y el acceptance gate de quoting quedó cerrad
 
 ### Avance parcial — diagnóstico y política de procedencia (Findings 4 y 5 de #592)
 
-> **Estado del ítem: sin cambios (`OPEN / FOLLOW-UP`).** Lo de abajo es un avance
-> de la mitad *diagnóstico/UX* del bullet "el diagnóstico no nombra al preset",
-> NO el mecanismo de precedencia (sin diseñar en modo asistido; candidato sin
-> validar en rig para el desatendido, #661).
+> **Estado del ítem: `OPEN / FOLLOW-UP`, sólo por el modo ASISTIDO.** Lo de abajo es un avance
+> de la mitad *diagnóstico/UX* del bullet "el diagnóstico no nombra al preset", NO el mecanismo
+> de precedencia (sin diseñar en modo asistido: lo corrige el operador). El **modo desatendido**
+> ya quedó validado en rig real (2026-10-19, standalone y brokered; evidencia en
+> `docs/validation/2026-10-19_pr661_unattended_windows_real_rig/`), incluido el snapshot/restore
+> del preset y el readback del Output: esta nota histórica **no** debe leerse como "candidato sin
+> validar".
 
 El post-check consume el eco de rutas del propio binario
 (`Using Output Path:`, `Using Skyrim Special Edition Data Path:`) **sobre la

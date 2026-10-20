@@ -136,8 +136,10 @@ _ITEMS = frozenset(
         # sí lo tienen), para que nadie la lea como "tres escapes demostrados".
         "Contrato de errores de las estrategias destructivas restantes (#726)",
         # #661: etapa 9 desatendida (driver UIA por build medido) y operable desde
-        # Telegram. Parcial a propósito: la cadena real en rig no corrió todavía,
-        # y la fila lo dice en vez de dejar que el título del PR lo cierre.
+        # Telegram. Parcial a propósito: el desatendido ya se validó en rig real
+        # (2026-10-19, standalone y brokered; evidencia versionada en
+        # docs/validation/2026-10-19_pr661_unattended_windows_real_rig/) y lo que queda
+        # abierto son los residuales (Telegram, dynamic LOD, etapas 6–8) a adjudicar.
         "Etapa 9 desatendida y operable en remoto (#661)",
         # Fila del rig real 2026-10-19: sus dos PASS (standalone y brokered), los
         # defectos F1/F2/F3 que destapó y los residuales declarados. La evidencia está

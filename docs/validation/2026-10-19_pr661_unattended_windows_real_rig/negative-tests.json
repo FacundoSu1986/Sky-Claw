@@ -14,7 +14,7 @@
       "estado": "MEDIDO_EN_RIG",
       "resultado": "FAIL_CLOSED",
       "codigo": "UNATTENDED_CONFIGURATION_NOT_APPROVED",
-      "evidencia": "state/hitl/dyndolod-desatendido-77ec7467df0b.{resp,answered}: el .resp escrito con BOM UTF-8 (EF BB BF 41 50 52) no parseó como APROBADA; el guard recibió DENEGADA. Journal de la época: [] (sin TX), sin spawn, sin handoff. El result.json de esa corrida fue sobreescrito por el reintento; el pedido y la decisión quedan conservados.",
+      "evidencia": "standalone/hitl/dyndolod-desatendido-77ec7467df0b.{resp,answered}: el .resp escrito con BOM UTF-8 (EF BB BF 41 50 52) no parseó como APROBADA; el guard recibió DENEGADA. Journal de la época: [] (sin TX), sin spawn, sin handoff. El result.json de esa corrida fue sobreescrito por el reintento; el pedido y la decisión quedan conservados.",
       "mutation": false
     },
     {
@@ -23,7 +23,7 @@
       "estado": "MEDIDO_EN_RIG",
       "resultado": "FAIL (post-check)",
       "codigo": "sin código desatendido; el pipeline falla por taxonomía de log",
-      "evidencia": "evidence/attempt1-texgen/texgen-result.json + TexGen_SSE_log.txt: TexGen generó 1.362 archivos y escribió 'TexGen completed successfully', pero la línea 'Error: Found stitched object LOD textures...' (emitida al mostrar el modal) se clasifica terminal (dyndolod_runner.clasificar_log, _ERROR_SUELTO). TX 1 queda pending; preset restaurado byte-exacto. Ver DEFECTO F1.",
+      "evidencia": "standalone/attempt1-texgen/texgen-result.json + TexGen_SSE_log.txt: TexGen generó 1.362 archivos y escribió 'TexGen completed successfully', pero la línea 'Error: Found stitched object LOD textures...' (emitida al mostrar el modal) se clasifica terminal (dyndolod_runner.clasificar_log, _ERROR_SUELTO). TX 1 queda pending; preset restaurado byte-exacto. Ver DEFECTO F1.",
       "mutation": "artefacto generado y revertido por el rollback del pipeline"
     },
     {
@@ -32,7 +32,7 @@
       "estado": "MEDIDO_EN_RIG",
       "resultado": "FAIL_CLOSED_ANTES_DEL_SPAWN",
       "codigo": "needs_deployment=true (corte documentado)",
-      "evidencia": "evidence/attempt2-texgen/texgen-result.json: DynDOLOD no se lanza; 'TexGen Output' queda PRESERVADO y certificado bajo lease; TX 2 committed con handoff AWAITING_DEPLOYMENT.",
+      "evidencia": "standalone/attempt2-texgen/texgen-result.json: DynDOLOD no se lanza; 'TexGen Output' queda PRESERVADO y certificado bajo lease; TX 2 committed con handoff AWAITING_DEPLOYMENT.",
       "mutation": false
     },
     {
@@ -41,7 +41,7 @@
       "estado": "MEDIDO_EN_RIG",
       "resultado": "FAIL_CLOSED",
       "codigo": "UIA_CONTROL_MAP_MISMATCH (detalle: dyndolod_modal_ignore exige MODAL_CONOCIDO; pantalla=CARGANDO)",
-      "evidencia": "state/run.log intento D2 (18:05:56): 'dyndolod_modal_ignore -> PRECONDICION_FALLIDA (invocado=False)'; ledger de una sola acción. Sondas posteriores: modal estable >=100 s y 10/10 observaciones MODAL_CONOCIDO con el ejecutor productivo (evidence/dyndolod-modal-survival.json, dyndolod-flake.json). Reintento D4 con el mismo código: OK. Ver DEFECTO F2.",
+      "evidencia": "standalone/run-log.txt intento D2 (18:05:56): 'dyndolod_modal_ignore -> PRECONDICION_FALLIDA (invocado=False)'; ledger de una sola acción. Sondas posteriores: modal estable >=100 s y 10/10 observaciones MODAL_CONOCIDO (publicadas en `uia-control-evidence.json`) con el ejecutor productivo (evidence/dyndolod-modal-survival.json, dyndolod-flake.json). Reintento D4 con el mismo código: OK. Ver DEFECTO F2.",
       "mutation": false
     },
     {
@@ -50,7 +50,7 @@
       "estado": "MEDIDO_EN_SONDA + MEDIDO_EN_RIG",
       "resultado": "DETECTADO_Y_CORREGIDO",
       "codigo": "n/a (convergencia)",
-      "evidencia": "Fase C: lectura inicial = C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen (rancia) != -o:; LegacyIAccessiblePattern.SetValue devuelve S_OK y readback exacto; observación posterior coincide canónicamente. En la corrida real el driver convergió el Output antes del Begin (state/run.log).",
+      "evidencia": "Fase C: lectura inicial = C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen (rancia) != -o:; LegacyIAccessiblePattern.SetValue devuelve S_OK y readback exacto; observación posterior coincide canónicamente. En la corrida real el driver convergió el Output antes del Begin (standalone/run-log.txt).",
       "mutation": "solo el campo Output de la GUI del rig"
     },
     {
@@ -139,7 +139,7 @@
       "estado": "MEDIDO_EN_SONDA",
       "resultado": "NO_OBSERVADO: todas las ventanas del pid tuvieron UIA_ProcessIdPropertyId legible; el modal #32770 aparece como descendiente de TfrmMain. El backend solo acepta ventanas del pid pedido (FindAll con ProcessId), así que una ventana sin identidad no se adivina.",
       "codigo": "n/a",
-      "evidencia": "evidence/uia-control-evidence.json (root_windows) + clases TfrmMain/#32770 medidas"
+      "evidencia": "uia-control-evidence.json (root_windows) + clases TfrmMain/#32770 medidas"
     },
     {
       "id": "N17",

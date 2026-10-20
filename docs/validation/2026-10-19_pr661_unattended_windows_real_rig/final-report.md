@@ -101,8 +101,9 @@ no escribió en esas rutas y que las fuentes que usó no cambiaron durante la ve
 ## 5. Aprobaciones HITL (Fase D)
 
 El adaptador es el **productivo**: `AprobadorDesatendidoHITL` sobre `HITLGuard`, categoría
-`dyndolod_desatendido` (no auto-aprobable). El operador concedió **14 aprobaciones** explícitas
-(8 standalone en §5.1 y 6 brokered en §5.2):
+`dyndolod_desatendido` (no auto-aprobable). Se registraron **14 pedidos HITL**: **13 aprobados** y **1 denegado** (fail-closed por un `.resp`
+con BOM que no parseó). El desglose es 8 pedidos standalone en §5.1 (7 aprobados + 1 denegado) y
+6 pedidos brokered, todos aprobados, en §5.2:
 
 ### 5.1 Standalone (8 aprobaciones)
 
@@ -169,6 +170,12 @@ journal y los 8 pares HITL pedido/decisión. Los logs crudos multi-MB de TexGen/
 publican (sólo sus extractos en `texgen-log-excerpt.txt` / `dyndolod-log-excerpt.txt`); el rig
 original se conserva offline. Con eso un revisor puede distinguir el intento aceptado de los
 reintentos y auditar los fail-closed sin depender de la máquina del operador.
+
+**Cobertura del log del harness:** el `run-log.txt` del rig arranca en 2026-10-19 17:59:45 porque el
+log del harness se reinicia por corrida. El **primer intento de TexGen (17:55:24)** está evidenciado
+por `attempt1-texgen/` (result JSON, comando, presets antes/después y extracto del log de la
+herramienta), pero **sin ledger del harness**: la auditoría exactly-once del log cubre los intentos
+de 17:59:45 a 18:20, que son los que declaran el PASS.
 
 ## 8. Aceptación del standalone (Fase G)
 
@@ -379,15 +386,18 @@ ejecución real en los dos backends que promete la etapa 9.
 
 ## 13. Decisión sobre #661
 
-- **#661 queda listo para cierre por el owner**, con estos residuales declarados y **ninguno de ellos
-  oculto**: (a) Telegram como canal no ejercido (no configurado en la máquina); (b) dynamic LOD no
-  generado (DLL NG ausente); (c) etapas 6–8 no ejercitadas (guard vive en la superficie remota);
-  (d) F1/F2 abiertos; (e) F3 (MO2 debe abrirse una vez por el operador en esta máquina).
+- **El cierre de #661 queda pendiente de adjudicación de alcance por el owner.** Este PR **no
+  propone cerrarlo**: los residuales quedan declarados y **ninguno oculto** — (a) Telegram como
+  canal no ejercido (no configurado en la máquina); (b) dynamic LOD no generado (DLL NG ausente);
+  (c) etapas 6–8 no ejercitadas (guard vive en la superficie remota); (d) F1/F2 abiertos;
+  (e) F3 (MO2 debe abrirse una vez por el operador en esta máquina). El owner debe adjudicar ese
+  alcance o crear los issues de seguimiento antes de un cierre.
 - **No mergear** nada desde esta sesión. Esta rama es **documental**.
 - Próximos pasos propuestos, en orden: (1) PR correctivo de F2 (bajo riesgo, alto valor: evita perder
   corridas); (2) decisión de owner sobre F1; (3) validar el canal Telegram en una máquina con bot
   configurado; (4) cerrar F3 (lanzamiento programático de MO2) si se promete brokered 100% autónomo;
-  (5) cierre de #661 por el owner. PR #750 (locks) ya fue mergeado por el owner.
+  (5) adjudicación de alcance de #661 por el owner (o issues de seguimiento). PR #750 (locks) ya
+  fue mergeado por el owner.
 
 ## 14. Archivos de evidencia
 

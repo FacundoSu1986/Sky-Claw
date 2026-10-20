@@ -7,6 +7,11 @@ journal y los pedidos/decisiones HITL. Se publican para que un revisor pueda aud
 las acciones exactly-once, distinguir el intento aceptado de los reintentos y verificar
 los cortes fail-closed, sin depender de la máquina del operador.
 
+**Cobertura:** `run-log.txt` arranca en 2026-10-19 17:59:45 (el harness reinicia su log por
+corrida). El primer intento de TexGen (17:55:24) está en `attempt1-texgen/` con result JSON,
+comando, presets y extracto del log de la herramienta, pero **sin ledger del harness**; la
+auditoría exactly-once del log cubre 17:59:45–18:20.
+
 **No se publican** los logs crudos completos de TexGen/DynDOLOD (multi-MB y sin valor
 probatorio adicional): sus extractos están en `../texgen-log-excerpt.txt` y
 `../dyndolod-log-excerpt.txt`. El rig original se conserva para revisión offline.
