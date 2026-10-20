@@ -25,6 +25,7 @@ import sys
 import warnings
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -498,6 +499,9 @@ _DDS_CLASICOS_QUE_NO_SON_DE_8_BITS = [
     ("mascaras-repetidas", _DDPF_RGB, 24, 0xFF, 0xFF, 0xFF, 0),
     ("mascara-de-dos-bytes", _DDPF_RGB, 24, 0xFFFF, 0xFF0000, 0xFF, 0),
     ("8-bits-por-pixel", _DDPF_RGB, 8, 0xFF, 0xFF, 0xFF, 0),
+    # máscaras de un byte pero bits por píxel que no cuadran con ellas: la lectura sería otra
+    ("16-bits-con-mascaras-de-24", _DDPF_RGB, 16, 0xFF, 0xFF00, 0xFF0000, 0),
+    ("8-bits-con-mascaras-distintas", _DDPF_RGB, 8, 0xFF, 0xFF00, 0xFF0000, 0),
 ]
 
 
@@ -557,6 +561,7 @@ def test_dds_clasico_que_no_es_de_8_bits_por_canal_se_rechaza(
         (("?", None),),
         (("zip", None),),
         (("zip", ("RGB",)),),
+        (("zip", ["RGB"]),),
         (("zip", "RGB;16B"),),
         (("raw", "L"),),
         (("dds_rgb", None),),
@@ -571,6 +576,15 @@ def test_dds_clasico_que_no_es_de_8_bits_por_canal_se_rechaza(
 )
 def test_lo_que_no_se_reconoce_cuenta_como_que_no_es_de_8_bits(tiles: tuple[tuple[str, object], ...]) -> None:
     assert decode._ocho_bits_por_canal(tiles) is False
+
+
+def test_un_tile_ilegible_falla_cerrado() -> None:
+    # Si Pillow cambiara la forma de ``tile`` o de sus elementos, el decodificador debe rechazar y no suponer.
+    assert decode._tiles(object()) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=None)) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=[object()])) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=[SimpleNamespace(codec_name="zip", args="RGB")])) == (("zip", "RGB"),)
+    assert decode._ocho_bits_por_canal(decode._tiles(object())) is False
 
 
 def test_la_lista_cerrada_de_layouts_de_8_bits_esta_congelada() -> None:

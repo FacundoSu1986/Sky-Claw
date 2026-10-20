@@ -172,9 +172,8 @@ def _mascaras_de_8_bits(args: object) -> bool:
     bits, mascaras = args
     if bits not in (24, 32) or not isinstance(mascaras, tuple) or len(mascaras) not in (3, 4):
         return False
-    return all(isinstance(m, int) and m in _MASCARAS_DE_8_BITS for m in mascaras) and len(set(mascaras)) == len(
-        mascaras
-    )
+    un_byte_por_canal = all(isinstance(m, int) and m in _MASCARAS_DE_8_BITS for m in mascaras)
+    return un_byte_por_canal and len(set(mascaras)) == len(mascaras)
 
 
 def _ocho_bits_por_canal(tiles: tuple[tuple[str, object], ...]) -> bool:
