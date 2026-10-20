@@ -21,7 +21,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
-- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `integrate.py`, `metrics.py`, `_extra.py` y `bench/`) **no importa** `research` y carga `numpy` y
+- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `gates.py`, `integrate.py`, `metrics.py`, `_extra.py` y `bench/`) **no importa** `research` y carga `numpy` y
   Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
   `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
   `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
@@ -40,6 +40,16 @@ La política clean-room, `docs/design/research/native-parallax/` y
   normal → gradientes tienen UNA definición (`espectral.gradientes_espectrales`, `integrate.gradientes_de_normal`):
   no las copies, importalas. Un módulo nuevo que importe de `espectral` rompe el ancla hasta que se le escribe su
   receta en `CONSUMIDORES_DE_ESPECTRAL`.
+- `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
+  corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
+  evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia
+  va atada por huella al candidato que midió (si tocás límites, signo o versión, hay que volver a validar); una
+  medición fuera de su dominio (`DOMINIO_DE_LAS_METRICAS`) es `REVIEW`; la confianza va en `[0.5, 1)`; el signo
+  esperado y `VERSION_DE_METRICAS` viajan en el registro. No hay `REJECT`. Una métrica pública nueva en `metrics.py`
+  rompe el ancla hasta que se la clasifica en `METRICAS_GATEADAS` o `METRICAS_NO_GATEADAS` (con motivo); si cambiás
+  la definición de una métrica, subí `VERSION_DE_METRICAS`. Solo `gates.py` conoce `UMBRALES_VIGENTES`: los demás
+  llaman a `decidir`, no comparan por su cuenta. Publicar el primer registro es una decisión de política del
+  operador (tolerancia, confianza, tasa de revisión máxima) y cambia el ancla: no lo hagas de pasada.
 
 ## Verificación segura
 

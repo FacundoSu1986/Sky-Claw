@@ -42,6 +42,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "bench/sintetico.py",
         "decode.py",
         "espectral.py",
+        "gates.py",
         "integrate.py",
         "metrics.py",
     }
@@ -60,6 +61,10 @@ CONSUMIDORES_DE_ESPECTRAL = {
     "integrate.py": "ejes_de_frecuencia",
     "metrics.py": "gradientes_espectrales",
 }
+# El único módulo de producto que conoce el registro de umbrales vigentes: la decisión de qué umbrales aplican se
+# toma UNA vez (``gates.decidir``); un segundo módulo que los lea y compare por su cuenta contestaría distinto.
+MODULOS_QUE_CONOCEN_LOS_UMBRALES_VIGENTES = frozenset({"gates.py"})
+NOMBRE_DE_LOS_UMBRALES_VIGENTES = "UMBRALES_VIGENTES"
 FUNCIONES_DE_FRECUENCIA = ("fftfreq", "rfftfreq")
 PESADOS = ("numpy", "PIL")
 EXTRA = "native-parallax"
@@ -257,6 +262,45 @@ def _modulos_que(predicado) -> frozenset[str]:  # type: ignore[no-untyped-def]
 
 def test_numpy_se_importa_dentro_de_funciones_solo_en_los_puntos_congelados() -> None:
     assert _modulos_que(_importa_numpy_dentro_de_funciones) == PUNTOS_DE_IMPORTACION_PEREZOSA_DE_NUMPY
+
+
+def _menciona_los_umbrales_vigentes(codigo: str) -> bool:
+    """El nombre aparece como variable, atributo (``gates.UMBRALES_VIGENTES``), importación o texto exacto
+    (``getattr(gates, "UMBRALES_VIGENTES")``). Límite: un nombre armado en tiempo de ejecución no se ve."""
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.Name) and nodo.id == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+            return True
+        if isinstance(nodo, ast.Attribute) and nodo.attr == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+            return True
+        if isinstance(nodo, ast.ImportFrom) and any(a.name == NOMBRE_DE_LOS_UMBRALES_VIGENTES for a in nodo.names):
+            return True
+        if isinstance(nodo, ast.Constant) and nodo.value == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+            return True
+    return False
+
+
+def test_solo_gates_conoce_los_umbrales_vigentes() -> None:
+    assert _modulos_que(_menciona_los_umbrales_vigentes) == MODULOS_QUE_CONOCEN_LOS_UMBRALES_VIGENTES
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("UMBRALES_VIGENTES = None\n", True),
+        ("x = UMBRALES_VIGENTES\n", True),
+        ("from sky_claw.local.native_parallax.gates import UMBRALES_VIGENTES\n", True),
+        ("from sky_claw.local.native_parallax.gates import UMBRALES_VIGENTES as u\n", True),
+        ("from sky_claw.local.native_parallax import gates\nx = gates.UMBRALES_VIGENTES\n", True),
+        ('x = getattr(gates, "UMBRALES_VIGENTES")\n', True),
+        ("def f():\n    return UMBRALES_VIGENTES\n", True),
+        ("from sky_claw.local.native_parallax.gates import decidir\n", False),
+        ("x = 'los UMBRALES_VIGENTES son None'\n", False),
+        ("UMBRALES = None\n", False),
+        ("x = gates.UMBRALES_VIGENTES_OTROS\n", False),
+    ],
+)
+def test_el_escaner_de_umbrales_vigentes_ve_todas_las_formas_de_nombrarlos(codigo: str, esperado: bool) -> None:
+    assert _menciona_los_umbrales_vigentes(codigo) is esperado
 
 
 def test_solo_un_modulo_de_producto_calcula_frecuencias_espectrales() -> None:
