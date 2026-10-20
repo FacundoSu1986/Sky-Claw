@@ -6,6 +6,7 @@ consulta fallida no equivale a una lista vacía que deja pasar la sesión.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -30,7 +31,6 @@ LEGADOS: dict[str, str | None] = {
     "C:/Worktrees/Sky-Claw-r1-packaging-cancel": "fix/dyndolod-r1-packaging-cancel",
     "E:/Skyclaw_Frozen_Runtime_P3": "feat/frozen-runtime-p3-candidate",
     "E:/Skyclaw_Steam_Frozen_Runtime": "feat/steam-frozen-runtime",
-    f"{Path.home().as_posix()}/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082": "workbuddy/main-d17cd082",
     "E:/Skyclaw_Main_Sync/.kilo/worktrees/broadleaf-professor": None,
 }
 
@@ -38,6 +38,23 @@ LEGADOS: dict[str, str | None] = {
 def _normalizar(ruta: str | Path) -> str:
     """Comparable entre plataformas: resuelve symlinks y normaliza mayúsculas en Windows."""
     return os.path.normcase(os.path.realpath(str(ruta)))
+
+
+def _huella(ruta_normalizada: str) -> str:
+    """Huella estable de una ruta canónica, sin publicar la ruta.
+
+    El binding legado con datos de cuenta se publica como `sha256:<hex>`: la
+    exención sigue siendo exacta (huella + rama) y NO depende del home de la
+    máquina que corre el test, así que otra cuenta no puede heredarla.
+    """
+    return hashlib.sha256(ruta_normalizada.encode("utf-8")).hexdigest()
+
+
+# Bindings de transición redactados: el de WorkBuddy llevaba la cuenta del
+# operador en la ruta, así que se congela por huella de la ruta canónica.
+LEGADOS_REDACTADOS: dict[str, str | None] = {
+    "sha256:7a80af3873644758202fd3534cc91b01d5696af4d00b7f97ab8e1603612cf788": "workbuddy/main-d17cd082",
+}
 
 
 def listar_worktrees() -> list[tuple[str, str | None]]:
@@ -92,6 +109,9 @@ def auditar_registro(
             continue
         if normalizada in legados and legados[normalizada] == rama:
             continue
+        huella = f"sha256:{_huella(normalizada)}"
+        if huella in legados and legados[huella] == rama:
+            continue
         errores.append(f"Fuera de convención: {ruta} ({rama})")
     return errores
 
@@ -105,7 +125,9 @@ def test_los_worktrees_no_principales_viven_bajo_la_convencion() -> None:
     assert not ausentes, f"Worktrees registrados sin directorio; revisar y podar: {ausentes}"
     raiz_codex = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "worktrees"
     rol = "ci" if os.environ.get("GITHUB_ACTIONS") == "true" else os.environ.get("SKYCLAW_WORKTREE_ROLE", "agente")
-    errores = auditar_registro(registros, RAIZ, raiz_codex, {_normalizar(r): b for r, b in LEGADOS.items()}, rol=rol)
+    legados = {_normalizar(r): b for r, b in LEGADOS.items()}
+    legados.update(LEGADOS_REDACTADOS)
+    errores = auditar_registro(registros, RAIZ, raiz_codex, legados, rol=rol)
     assert not errores, "\n".join(errores)
 
 
@@ -193,6 +215,19 @@ def test_cada_binding_de_transicion_participa_del_gate(tmp_path: Path, ruta: str
     assert auditar_registro(registros, Path(ruta), tmp_path / "codex", legados)
 
 
+def test_el_binding_redactado_admite_por_huella_y_rechaza_otro_worktree(tmp_path: Path) -> None:
+    """La huella es exacta: admite la ruta real y no otra, ni con otra rama."""
+    rama = "workbuddy/main-d17cd082"
+    ruta = tmp_path / "legado"
+    legados = {f"sha256:{_huella(_normalizar(ruta))}": rama}
+    registros = [(str(tmp_path), "main"), (str(ruta), rama)]
+    assert not auditar_registro(registros, Path(ruta), tmp_path / "codex", legados)
+    registros[1] = (str(ruta), "otra/rama")
+    assert auditar_registro(registros, Path(ruta), tmp_path / "codex", legados)
+    otro = tmp_path / "otro"
+    assert auditar_registro([(str(tmp_path), "main"), (str(otro), rama)], Path(otro), tmp_path / "codex", legados)
+
+
 def test_transicion_documentada_coincide_con_bindings() -> None:
     """Ninguna exención puede aparecer sólo en el texto o sólo en el código."""
     contenido = AGENTS_MD.read_text(encoding="utf-8")
@@ -200,13 +235,10 @@ def test_transicion_documentada_coincide_con_bindings() -> None:
     bindings = {
         ruta: None if rama == "DETACHED" else rama for ruta, rama in re.findall(r"\| `([^`]+)` \| `([^`]+)` \|", bloque)
     }
-    # Los bindings del doc se publican sin la cuenta del operador: `~/` se expande
-    # con el home de la máquina que corre el test, y el resto queda literal.
-    bindings = {
-        f"{Path.home().as_posix()}/{ruta[2:]}" if ruta.startswith("~/") else ruta: rama
-        for ruta, rama in bindings.items()
-    }
-    assert bindings == LEGADOS
+    redactados = {ruta: rama for ruta, rama in bindings.items() if ruta.startswith("sha256:")}
+    exactos = {ruta: rama for ruta, rama in bindings.items() if not ruta.startswith("sha256:")}
+    assert exactos == LEGADOS
+    assert redactados == LEGADOS_REDACTADOS
 
 
 @pytest.mark.parametrize("relativa", [".worktrees-intruso/sesion", ".codex/worktrees-intruso/sesion", "otra/sesion"])
