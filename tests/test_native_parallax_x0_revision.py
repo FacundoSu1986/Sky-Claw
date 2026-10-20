@@ -49,7 +49,6 @@ from sky_claw.local.native_parallax.gates import (
     MetricasDeCalidad,
     Motivo,
     Umbrales,
-    UmbralesInvalidosError,
     ValidacionContraCorpusReal,
     Veredicto,
     decidir_con,
@@ -280,21 +279,64 @@ def test_el_cuantil_esta_en_cero_uno_abierto_por_abajo(cuantil: object) -> None:
         derivar_limites(_buenas([1.0, 2.0]), cuantil=cuantil, tolerancia_de_altura=TOLERANCIA)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("campo", ["acuerdo", "residuo", "costura"])
-@pytest.mark.parametrize("valor", [math.nan, math.inf])
-def test_una_medicion_buena_con_una_metrica_no_finita_no_se_deriva_en_silencio(campo: str, valor: float) -> None:
+# Cada métrica gateada con sus valores IMPOSIBLES por definición (el dominio de ``DOMINIO_DE_LAS_METRICAS``) y los no
+# finitos. Una medición buena corrupta no se puede dejar en la muestra: movería el rango del cuantil sin fallar.
+_MEDICIONES_IMPOSIBLES = [
+    ("acuerdo", math.nan),
+    ("acuerdo", math.inf),
+    ("acuerdo", -1.0),  # un error angular negativo
+    ("acuerdo", 181.0),  # más de media vuelta
+    ("residuo", math.nan),
+    ("residuo", math.inf),
+    ("residuo", -0.1),
+    ("residuo", 1.5),  # el residuo normalizado por el Hessiano vive en [0, 1]
+    ("costura", math.nan),
+    ("costura", math.inf),
+    ("costura", -0.5),
+]
+
+
+@pytest.mark.parametrize(("campo", "valor"), _MEDICIONES_IMPOSIBLES)
+def test_una_medicion_buena_imposible_no_se_deriva_en_silencio(campo: str, valor: float) -> None:
     mediciones = [*_buenas([1.0, 2.0]), _medicion(caso="X", **{campo: valor})]
 
+    with pytest.raises(MedicionInvalidaError, match="dominio"):
+        derivar_limites(mediciones, cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+
+
+def test_una_fila_corrupta_no_cambia_en_silencio_el_rango_aunque_el_cuantil_caiga_en_otro_valor() -> None:
+    # Con la fila corrupta (-5) el cuantil 0.5 de 4 valores cae en el 1.0 en vez de en el 2.0: el límite se movería.
+    sanas = _buenas([1.0, 2.0, 3.0])
+
+    assert derivar_limites(sanas, cuantil=0.5, tolerancia_de_altura=TOLERANCIA).acuerdo_p95_grados == 2.0
     with pytest.raises(MedicionInvalidaError):
-        derivar_limites(mediciones, cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+        derivar_limites([*sanas, _medicion(caso="D", acuerdo=-5.0)], cuantil=0.5, tolerancia_de_altura=TOLERANCIA)
 
 
-def test_un_limite_derivado_fuera_del_dominio_lo_rechaza_el_registro() -> None:
-    # Un p95 de 200° es una medición imposible: el dominio del gate lo rechaza al construir los límites.
-    mediciones = [_medicion(acuerdo=200.0)]
+def test_las_mediciones_malas_imposibles_no_impiden_derivar_porque_no_entran_en_la_muestra() -> None:
+    sanas = _buenas([1.0, 2.0, 3.0])
+    mala_e_imposible = _medicion(caso="M", acuerdo=-5.0, error=0.4)
 
-    with pytest.raises(UmbralesInvalidosError, match="acuerdo_p95_grados"):
-        derivar_limites(mediciones, cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+    limites = derivar_limites([*sanas, mala_e_imposible], cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+
+    assert limites.acuerdo_p95_grados == 3.0
+
+
+def test_los_extremos_del_dominio_son_mediciones_validas_y_se_derivan() -> None:
+    # 0° (una normal perfecta), 180° (la opuesta), residuo 0 y 1, costura 0: están DENTRO del dominio (inclusivo).
+    abajo = _medicion(caso="A", acuerdo=0.0, residuo=0.0, costura=0.0)
+    arriba = _medicion(caso="B", acuerdo=180.0, residuo=1.0, costura=1.0)
+
+    limites = derivar_limites([abajo, arriba], cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+
+    assert (limites.acuerdo_p95_grados, limites.residuo_de_integrabilidad) == (180.0, 1.0)
+    assert derivar_limites([abajo], cuantil=1.0, tolerancia_de_altura=TOLERANCIA).acuerdo_p95_grados == 0.0
+
+
+def test_los_valores_imposibles_cubren_cada_campo_gateado() -> None:
+    cubiertos = {campo for campo, _ in _MEDICIONES_IMPOSIBLES}
+
+    assert len(fields(LimitesDeAutoaceptacion)) == len(cubiertos) == 3  # uno por cada campo de LimitesDeAutoaceptacion
 
 
 def test_la_derivacion_no_depende_del_orden_de_las_mediciones() -> None:

@@ -12,6 +12,10 @@ Decisiones de definición (nuestras, ancladas por ``tests/test_native_parallax_x
   (NP-X0a: la fija la fuente del archivo).
 - **Los bordes son un parámetro obligatorio** y viajan IGUALES a ``integrar`` y a las tres métricas que los usan: un
   cableado que fijara los bordes en una sola llamada mezclaría dos dominios en una misma medición.
+- **El corpus se mide solo con bordes periódicos.** Los controles negativos (N01, N02) lo son porque violan la
+  periodicidad: son del integrador periódico. Bajo Neumann son representables, y etiquetarlos «malos» corrompería las
+  tasas; qué significa «mala» con otros bordes no está decidido, así que ``medir_corpus_sintetico`` se niega en vez de
+  adivinarlo (``medir_textura`` sí es genérico: quien llama dice si la textura es un control).
 - **Plano contra plano no tiene error** (vale 0); **plano contra relieve no tiene valor** (``None``): el relieve que
   aparece sobre una verdad plana (ruido integrado) o la altura plana que no recupera un relieve no se pueden comparar
   normalizados, y ``revision.es_mala`` los llama malos.
@@ -43,8 +47,8 @@ from sky_claw.local.native_parallax.bench.sintetico import (
     iterar_corpus,
     perturbar_normal,
 )
-from sky_claw.local.native_parallax.experiments.revision import Medicion
-from sky_claw.local.native_parallax.gates import MetricasDeCalidad
+from sky_claw.local.native_parallax.experiments.revision import Medicion, ParametroDeRevisionInvalidoError
+from sky_claw.local.native_parallax.gates import VERSION_DE_METRICAS, MetricasDeCalidad
 from sky_claw.local.native_parallax.integrate import (
     AlturaPlanaError,
     Bordes,
@@ -176,6 +180,7 @@ def medir_textura(
 def _huella_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenarios: tuple[Escenario, ...]) -> str:
     contenido = {
         "version_de_la_medicion": VERSION_DE_LA_MEDICION,
+        "version_de_metricas": VERSION_DE_METRICAS,
         "especificacion": huella_especificacion(ESPECIFICACION_V1),
         "grilla": [n_filas, n_cols],
         "bordes": bordes.value,
@@ -189,10 +194,15 @@ def _huella_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenar
 def medir_corpus_sintetico(n_filas: int, n_cols: int, *, bordes: Bordes) -> CorpusMedido:
     """Mide cada caso de ``ESPECIFICACION_V1`` en cada escenario, en grilla ``(n_filas, n_cols)``.
 
-    La grilla se valida ANTES de generar nada; los ``bordes`` los valida ``integrar`` en la primera medición. Un caso
-    que no se puede medir (una normal inválida) detiene el benchmark en vez de omitirse: un corpus medido con huecos
-    silenciosos daría tasas de revisión engañosas.
+    Solo con bordes periódicos (ver el docstring del módulo). La grilla y los bordes se validan ANTES de generar nada.
+    Un caso que no se puede medir (una normal inválida) detiene el benchmark en vez de omitirse: un corpus medido con
+    huecos silenciosos daría tasas de revisión engañosas.
     """
+    if bordes is not Bordes.PERIODICOS:
+        raise ParametroDeRevisionInvalidoError(
+            "el corpus se mide solo con bordes periódicos (Bordes.PERIODICOS): los controles negativos lo son del "
+            f"integrador periódico y qué significa «mala» con otros bordes no está decidido, no {bordes!r}"
+        )
     elementos = iterar_corpus(n_filas, n_cols)
     escenarios = escenarios_de_la_especificacion()
     mediciones: list[Medicion] = []

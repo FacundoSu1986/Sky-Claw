@@ -32,6 +32,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
     normal_desde_altura,
     perturbar_normal,
 )
+from sky_claw.local.native_parallax.experiments import medicion
 from sky_claw.local.native_parallax.experiments.medicion import (
     CorpusMedido,
     Escenario,
@@ -40,7 +41,7 @@ from sky_claw.local.native_parallax.experiments.medicion import (
     medir_corpus_sintetico,
     medir_textura,
 )
-from sky_claw.local.native_parallax.experiments.revision import Medicion
+from sky_claw.local.native_parallax.experiments.revision import Medicion, ParametroDeRevisionInvalidoError
 from sky_claw.local.native_parallax.integrate import (
     Bordes,
     EntradaInvalidaError,
@@ -347,23 +348,34 @@ def test_medir_dos_veces_da_el_mismo_corpus(corpus: CorpusMedido) -> None:
 
 
 def test_la_huella_del_corpus_medido_identifica_lo_que_se_midio(corpus: CorpusMedido) -> None:
+    escenarios = escenarios_de_la_especificacion()
+
     assert re.fullmatch(r"[0-9a-f]{64}", corpus.huella)
     assert medir_corpus_sintetico(N, N, bordes=Bordes.PERIODICOS).huella == corpus.huella
-    assert medir_corpus_sintetico(N, N, bordes=Bordes.NEUMANN).huella != corpus.huella
     assert medir_corpus_sintetico(N, 2 * N, bordes=Bordes.PERIODICOS).huella != corpus.huella
+    # Los bordes entran en la huella (el runner hoy solo mide los periódicos: ver el test de más abajo).
+    assert _huella_del_corpus_medido(N, N, Bordes.NEUMANN, escenarios) != corpus.huella
+
+
+def test_la_huella_cambia_si_cambia_la_version_de_las_metricas(
+    corpus: CorpusMedido, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Al subir ``VERSION_DE_METRICAS`` (cambió una definición) las mediciones cambian: la huella tiene que decirlo."""
+    monkeypatch.setattr(medicion, "VERSION_DE_METRICAS", "np-q0a.vX")
+
+    nueva = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios_de_la_especificacion())
+
+    assert nueva != corpus.huella
 
 
 # Valores de referencia: cambiar cómo se define o se serializa el corpus medido invalida en silencio toda derivación
 # registrada contra su huella. Si este test falla, el cambio fue deliberado: actualizá el valor Y subí
 # ``VERSION_DE_LA_MEDICION``.
-HUELLA_DE_REFERENCIA_PERIODICOS_128 = "d1295758bfc99e2d69db2f7d0890c997089eb8d1a2a7074926c677f5130f6821"
-HUELLA_DE_REFERENCIA_NEUMANN_128 = "3195650f204b132967b7ecc251c863ddd1b0c2ad9e446a750cb51a1d7c784b8c"
+HUELLA_DE_REFERENCIA_PERIODICOS_128 = "eab838947d4278d35ff683a96c880825bf9d5356360e2ca43d97b23d2b1d96cc"
 
 
 def test_la_huella_del_corpus_medido_tiene_un_valor_de_referencia_congelado(corpus: CorpusMedido) -> None:
     assert corpus.huella == HUELLA_DE_REFERENCIA_PERIODICOS_128
-    escenarios = escenarios_de_la_especificacion()
-    assert _huella_del_corpus_medido(N, N, Bordes.NEUMANN, escenarios) == HUELLA_DE_REFERENCIA_NEUMANN_128
 
 
 def test_la_huella_depende_de_los_escenarios_que_se_midieron() -> None:
@@ -380,7 +392,10 @@ def test_la_grilla_se_valida_antes_de_medir_nada() -> None:
         medir_corpus_sintetico(64, 64, bordes=Bordes.PERIODICOS)
 
 
-@pytest.mark.parametrize("bordes", [None, "periodicos", 1])
-def test_los_bordes_son_un_miembro_de_bordes(bordes: object) -> None:
-    with pytest.raises(EntradaInvalidaError):
+@pytest.mark.parametrize("bordes", [Bordes.NEUMANN, None, "periodicos", 1])
+def test_el_corpus_solo_se_mide_con_bordes_periodicos(bordes: object) -> None:
+    """Los controles negativos (N01/N02) lo son PORQUE violan la periodicidad: son del integrador periódico. Bajo
+    Neumann son representables, así que etiquetarlos «malos» corrompería las tasas. Qué significa «mala» con otros
+    bordes no está decidido: el runner se niega en vez de adivinarlo."""
+    with pytest.raises(ParametroDeRevisionInvalidoError, match="peri"):
         medir_corpus_sintetico(N, N, bordes=bordes)  # type: ignore[arg-type]

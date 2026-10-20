@@ -36,6 +36,7 @@ from decimal import Decimal
 from typing import TypeGuard
 
 from sky_claw.local.native_parallax.gates import (
+    DOMINIO_DE_LAS_METRICAS,
     VERSION_DE_METRICAS,
     LimitesDeAutoaceptacion,
     MetricasDeCalidad,
@@ -216,8 +217,9 @@ def derivar_limites(
 ) -> LimitesDeAutoaceptacion:
     """Un límite por métrica gateada: el valor de rango más próximo del ``cuantil`` entre las mediciones BUENAS.
 
-    Con ``cuantil = 1`` el límite es el máximo observado entre las buenas. Una métrica no finita en una medición
-    buena no se deriva en silencio: es un error. Los límites los valida el dominio del gate (``LimitesDeAutoaceptacion``).
+    Con ``cuantil = 1`` el límite es el máximo observado entre las buenas. Una medición buena con una métrica no finita
+    o fuera de su dominio (``DOMINIO_DE_LAS_METRICAS``) es un error, no una fila más: al ocupar un rango de la muestra
+    movería el límite derivado sin que nada fallara, y el gate manda esa medición a ``REVIEW``, no la deja pasar.
     """
     cuantil_valido = _exigir_cuantil(cuantil)
     tolerancia = _exigir_tolerancia(tolerancia_de_altura)
@@ -226,9 +228,13 @@ def derivar_limites(
         raise SinMedicionesBuenasError("no hay mediciones buenas de las que derivar límites")
     limites: dict[str, float] = {}
     for campo in fields(LimitesDeAutoaceptacion):
+        bajo, alto = DOMINIO_DE_LAS_METRICAS[campo.name]
         valores = [float(getattr(m.metricas, campo.name)) for m in buenas]
-        if not all(math.isfinite(valor) for valor in valores):
-            raise MedicionInvalidaError(f"hay una medición buena con {campo.name} no finito: no se puede derivar")
+        if not all(math.isfinite(valor) and bajo <= valor <= alto for valor in valores):
+            raise MedicionInvalidaError(
+                f"hay una medición buena con {campo.name} no finita o fuera de su dominio [{bajo}, {alto}]: "
+                "no se puede derivar"
+            )
         limites[campo.name] = _rango_mas_proximo(sorted(valores), cuantil_valido)
     return LimitesDeAutoaceptacion(**limites)
 
