@@ -22,6 +22,7 @@ import importlib
 import re
 import struct
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -335,14 +336,6 @@ def test_png_corrupto_en_los_datos_da_error_tipado(tmp_path: Path) -> None:
         NormalDecoder().decode(ruta)
 
 
-def test_bomba_de_descompresion_da_error_tipado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ruta = _png(tmp_path, np.zeros((4, 4, 3), dtype=np.uint8))
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)  # 16 píxeles > 2 * 1: Pillow lo trata como bomba
-
-    with pytest.raises(ArchivoNormalInvalidoError):
-        NormalDecoder().decode(ruta)
-
-
 def test_value_error_de_pillow_se_traduce_a_error_tipado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ruta = _png(tmp_path, np.zeros((4, 4, 3), dtype=np.uint8))
 
@@ -378,6 +371,84 @@ def test_paleta_se_rechaza(tmp_path: Path) -> None:
 
     with pytest.raises(FormatoNoSoportadoError, match=re.escape("modo 'P'")):
         NormalDecoder().decode(ruta)
+
+
+# ---------------------------------------------------------------------------
+# Entradas no verificadas (revisión de Codex en #756)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("contenedor", ["JPEG", "BMP", "WEBP"])
+def test_contenedores_fuera_de_png_y_dds_se_rechazan(tmp_path: Path, contenedor: str) -> None:
+    ruta = tmp_path / f"n.{contenedor.lower()}"
+    Image.fromarray(np.full((8, 8, 3), (128, 128, 255), dtype=np.uint8)).save(ruta, format=contenedor)
+
+    with pytest.raises(FormatoNoSoportadoError, match=contenedor):
+        NormalDecoder().decode(ruta)
+
+
+@pytest.mark.parametrize(
+    ("fourcc", "dxgi"),
+    [(b"XXXX", None), (b"DX10", 9999)],
+    ids=["fourcc-desconocido", "dxgi-desconocido"],
+)
+def test_dds_con_formato_que_pillow_no_implementa_da_error_tipado(
+    tmp_path: Path, fourcc: bytes, dxgi: int | None
+) -> None:
+    ruta = _escribir(tmp_path, "n.dds", _dds(4, 4, b"\0" * 16, fourcc=fourcc, dxgi=dxgi))
+
+    with pytest.raises(FormatoNoSoportadoError):
+        NormalDecoder().decode(ruta)
+
+
+@pytest.mark.parametrize(
+    ("fourcc", "dxgi", "formato"),
+    [
+        (b"DXT3", None, "DXT3"),
+        (b"DXT5", None, "DXT5"),  # DXT5nm guarda X en el alfa: leerlo como RGB daría normales incorrectas
+        (b"DX10", 95, "BC6H"),
+        (b"DX10", 96, "BC6HS"),
+    ],
+    ids=["bc2", "bc3", "bc6h", "bc6h-con-signo"],
+)
+def test_dds_de_bloques_fuera_de_la_lista_verificada_se_rechaza(
+    tmp_path: Path, fourcc: bytes, dxgi: int | None, formato: str
+) -> None:
+    ruta = _escribir(tmp_path, "n.dds", _dds(4, 4, b"\0" * 16, fourcc=fourcc, dxgi=dxgi))
+
+    with pytest.raises(FormatoNoSoportadoError, match=formato):
+        NormalDecoder().decode(ruta)
+
+
+def test_dds_sin_comprimir_con_cabecera_dx10_se_acepta(tmp_path: Path) -> None:
+    # DXGI_FORMAT_R8G8B8A8_UNORM (28): Pillow lo entrega como RGBA por el códec ``raw`` y sin pixel_format
+    pixeles = bytes((200, 64, 230, 255)) * 16
+    ruta = _escribir(tmp_path, "n.dds", _dds(4, 4, pixeles, fourcc=b"DX10", dxgi=28))
+
+    resultado = NormalDecoder().decode(ruta)
+
+    np.testing.assert_allclose(resultado.normal[2, 1], _vector((200, 64, 230)), rtol=0, atol=1e-12)
+    assert resultado.dds_pixel_format is None
+    assert resultado.z_reconstructed is False
+
+
+@pytest.mark.parametrize("tope", [10, 7], ids=["entre-1x-y-2x", "mas-de-2x"])
+def test_bomba_de_descompresion_en_las_dos_zonas_de_pillow_da_error_tipado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tope: int
+) -> None:
+    """Con 16 píxeles: tope 10 cae entre 1x y 2x (Pillow solo ADVIERTE y seguiría decodificando); tope 7
+    supera 2x (Pillow lanza). Las dos deben terminar en el error tipado antes de reservar los arrays."""
+    ruta = _png(tmp_path, np.zeros((4, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", tope)
+
+    # ``DecompressionBombWarning`` hereda de ``RuntimeWarning`` y pyproject ya eleva los RuntimeWarning a error
+    # dentro de pytest: sin esta línea la prueba pasaría aunque el decodificador no hiciera nada (el mutante
+    # «la bomba solo advierte» sobrevivía). Acá el filtro es el del proceso real: la advertencia se ignora, y
+    # solo el filtro propio del decodificador puede convertirla en error.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        with pytest.raises(ArchivoNormalInvalidoError):
+            NormalDecoder().decode(ruta)
 
 
 # ---------------------------------------------------------------------------

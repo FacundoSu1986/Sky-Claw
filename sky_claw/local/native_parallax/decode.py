@@ -5,17 +5,27 @@ más una señal de confianza por píxel. Es PURO: no escribe, no consulta el ent
 ``research`` (ADR 0014, decisión 2: lo probado en research se reimplementa y un test lo compara como
 oráculo).
 
-Formatos:
+Contenedores y formatos (todo lo demás se RECHAZA con ``FormatoNoSoportadoError``, no se adivina):
 
-- **Camino RGB** (PNG, DDS sin comprimir, BC1, BC7 y cualquier formato que Pillow entregue como RGB/RGBA
-  de 8 bits): ``v = rgb / 255 * 2 − 1`` y renormalización a longitud 1. El canal alfa se ignora
-  (en un ``_n.dds`` de Skyrim suele llevar otra señal).
+- Solo **PNG y DDS**. JPEG, WebP, BMP y cualquier otro contenedor que Pillow sepa leer se rechazan: un
+  formato con pérdida o sin verificar alimentaría normales incorrectas al resto del pipeline.
+- **Camino RGB** (PNG, DDS sin comprimir —cabecera clásica o DX10—, BC1/DXT1 y BC7): ``v = rgb / 255 * 2 − 1``
+  y renormalización a longitud 1. El canal alfa se ignora (en un ``_n.dds`` de Skyrim suele llevar otra
+  señal). Solo RGB/RGBA de 8 bits; grises, paleta y 16 bits se rechazan.
 - **BC5**: guarda solo X e Y. Pillow 11.3.0 y 12.3.0 lo devuelven como RGB con B = 0 (verificado
   ejecutando con un bloque armado a mano, NP-C0), así que Z se reconstruye como
   ``sqrt(1 − x² − y²)``. Los píxeles con ``x² + y² > 1`` quedan con Z = 0, se renormalizan y se
   cuentan en ``clamped_pixels``.
-- **BC5 con signo (BC5S)** y los modos que no son RGB/RGBA (grises, paleta, 16 bits) se RECHAZAN con
-  un error tipado: no hay evidencia de que decodifiquen bien.
+- **Lista cerrada de DDS de bloques**: ``DXT1``, ``BC5`` y ``BC7``, que son los que tienen prueba. Se rechazan
+  BC5 con signo, BC6H (HDR), y DXT3/DXT5: DXT5nm guarda X en el alfa, así que leerlo como RGB daría
+  normales incorrectas sin ningún error.
+
+Entrada no confiable: los archivos vienen de mods. Las advertencias de descompresión-bomba de Pillow
+(entre ``MAX_IMAGE_PIXELS`` y el doble, que solo advierte) se elevan a error ANTES de reservar los arrays,
+y un formato que Pillow no implementa (``NotImplementedError`` al abrir) se traduce a un error tipado. El
+filtro de advertencias es global al proceso: no se llama a ``decode`` concurrentemente desde hilos. No se
+fija un tope de memoria propio: los arrays de salida ocupan 32 bytes por píxel (``normal`` 24 y
+``confidence`` 8), más temporales.
 
 Convención: la salida es DirectX. Una fuente OpenGL se pasa a DirectX invirtiendo Y. Decidir cuál es la
 convención REAL de un asset (diagnóstico por signo, EXP-005) es de NP-X0: este módulo no la adivina.
@@ -33,6 +43,7 @@ Skyrim no está verificado (EXP-003). Solo se lee el primer nivel de mip.
 from __future__ import annotations
 
 import enum
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -114,10 +125,17 @@ def _exigir_dependencias() -> None:
         raise DependenciaNoDisponibleError(_MENSAJE_EXTRA) from exc
 
 
-# Códecs del plugin DDS de Pillow (11.3.0 y 12.3.0, verificado ejecutando): ``dds_rgb`` para DDS sin
-# comprimir y ``bcn`` para los de bloques (BC1-BC7). Cualquier otro se rechaza: no está verificado.
-_CODEC_DDS_SIN_COMPRIMIR = "dds_rgb"
+# Contenedores admitidos. Pillow lee muchos más (JPEG, WebP, BMP...) y los entrega como RGB, pero no están
+# verificados para normales (los formatos con pérdida las deforman).
+_CONTENEDORES_ADMITIDOS = ("PNG", "DDS")
+
+# Códecs del plugin DDS de Pillow (11.3.0 y 12.3.0, verificado ejecutando): ``dds_rgb`` (DDS sin comprimir
+# con máscaras de la cabecera clásica) y ``raw`` (sin comprimir con cabecera DX10), ambos SIN pixel_format;
+# ``bcn`` para los de bloques, con pixel_format. Cualquier otro se rechaza: no está verificado.
+_CODECS_DDS_SIN_COMPRIMIR = frozenset({"dds_rgb", "raw"})
 _CODEC_DDS_BLOQUES = "bcn"
+# Formatos de bloques con prueba en tests/test_native_parallax_decode.py (bloques sintéticos armados a mano).
+_FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC5", "BC7"})
 
 
 def _codecs(imagen: object) -> frozenset[str]:
@@ -144,10 +162,24 @@ def _formato_de_pixel_dds(imagen: object) -> str | None:
 
 
 def _dds_verificado(codecs: frozenset[str], formato_dds: str | None) -> bool:
-    """Un DDS se acepta si es sin comprimir, o de bloques con el formato de píxel informado por Pillow."""
-    if codecs == {_CODEC_DDS_SIN_COMPRIMIR}:
-        return True
-    return codecs == {_CODEC_DDS_BLOQUES} and formato_dds is not None
+    """DDS sin comprimir (sin formato de píxel), o de bloques con un formato de la lista verificada."""
+    if formato_dds is None:
+        return len(codecs) == 1 and codecs <= _CODECS_DDS_SIN_COMPRIMIR
+    return codecs == {_CODEC_DDS_BLOQUES} and formato_dds in _FORMATOS_DDS_DE_BLOQUES_VERIFICADOS
+
+
+def _exigir_formato_verificado(
+    nombre: str, formato: str, modo: str, codecs: frozenset[str], formato_dds: str | None
+) -> None:
+    """Rechaza lo no verificado ANTES de decodificar los píxeles (``load()`` es lo caro y lo riesgoso)."""
+    if formato not in _CONTENEDORES_ADMITIDOS:
+        raise FormatoNoSoportadoError(f"{nombre}: contenedor '{formato}' no soportado (solo PNG y DDS)")
+    if modo not in _MODOS_ADMITIDOS:
+        raise FormatoNoSoportadoError(f"{nombre}: modo '{modo}' no soportado (se espera RGB o RGBA de 8 bits)")
+    if formato == "DDS" and not _dds_verificado(codecs, formato_dds):
+        raise FormatoNoSoportadoError(
+            f"{nombre}: DDS con códec {sorted(codecs)} y formato de píxel {formato_dds!r} no verificado"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,28 +195,25 @@ class NormalDecoder:
 
         ruta = Path(path)
         try:
-            with Image.open(ruta) as imagen:
-                codecs = _codecs(imagen)
-                imagen.load()
-                formato = imagen.format or "DESCONOCIDO"
-                modo = imagen.mode
-                formato_dds = _formato_de_pixel_dds(imagen) if formato == "DDS" else None
-                if modo in _MODOS_ADMITIDOS:
+            with warnings.catch_warnings():
+                # Entre MAX_IMAGE_PIXELS y el doble Pillow solo ADVIERTE y seguiría decodificando: se eleva a error.
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(ruta) as imagen:
+                    formato = imagen.format or "DESCONOCIDO"
+                    modo = imagen.mode
+                    codecs = _codecs(imagen)
+                    formato_dds = _formato_de_pixel_dds(imagen) if formato == "DDS" else None
+                    _exigir_formato_verificado(ruta.name, formato, modo, codecs, formato_dds)
+                    imagen.load()
                     pixeles = np.asarray(imagen)
+        # Un DDS con FourCC o formato DXGI que Pillow no implementa lanza NotImplementedError al abrir.
+        except NotImplementedError as exc:
+            raise FormatoNoSoportadoError(f"{ruta.name}: Pillow no implementa este formato ({exc})") from exc
         # Excepciones de Pillow: OSError (FileNotFoundError, UnidentifiedImageError y los fallos de
-        # decodificación, verificado ejecutando), ValueError (documentada en Image.open) y
-        # DecompressionBombError, que NO es un OSError.
-        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        # decodificación, verificado ejecutando), ValueError (documentada en Image.open),
+        # DecompressionBombError (NO es un OSError) y la advertencia de bomba elevada a error.
+        except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
             raise ArchivoNormalInvalidoError(f"{ruta.name}: no se pudo leer como imagen ({exc})") from exc
-
-        if modo not in _MODOS_ADMITIDOS:
-            raise FormatoNoSoportadoError(f"{ruta.name}: modo '{modo}' no soportado (se espera RGB o RGBA de 8 bits)")
-        if formato == "DDS" and not _dds_verificado(codecs, formato_dds):
-            raise FormatoNoSoportadoError(
-                f"{ruta.name}: DDS con códec {sorted(codecs)} y formato de píxel {formato_dds!r} no verificado"
-            )
-        if formato_dds == "BC5S":
-            raise FormatoNoSoportadoError(f"{ruta.name}: BC5S (BC5 con signo) no está verificado")
 
         vector = pixeles[..., :3].astype(np.float64) / 255.0 * 2.0 - 1.0
         reconstruye_z = formato_dds == "BC5"

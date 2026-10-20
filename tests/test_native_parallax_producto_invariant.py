@@ -73,14 +73,40 @@ def _importa_research(codigo: str) -> bool:
     return any("research" in nombre.split(".") for nombre in _nombres_importados(ast.parse(codigo)))
 
 
+def _es_type_checking(prueba: ast.expr) -> bool:
+    """``TYPE_CHECKING`` o ``typing.TYPE_CHECKING`` como condición de un ``if``."""
+    return (isinstance(prueba, ast.Name) and prueba.id == "TYPE_CHECKING") or (
+        isinstance(prueba, ast.Attribute) and prueba.attr == "TYPE_CHECKING"
+    )
+
+
 def _importa_pesados_al_cargar(codigo: str) -> list[str]:
-    """Imports de ``numpy``/``PIL`` en el nivel del módulo, salvo bajo ``if TYPE_CHECKING:``."""
-    arbol = ast.parse(codigo)
+    """Imports de ``numpy``/``PIL`` que se EJECUTAN al cargar el módulo.
+
+    Recorre las sentencias de nivel de módulo y entra en ``try``/``with``/``if``/``for``/``while``/``match`` y
+    en el cuerpo de las clases (todo eso corre al cargar). Excluye el cuerpo de las funciones y el cuerpo
+    de ``if TYPE_CHECKING:`` (su ``else`` sí corre).
+    """
     encontrados: list[str] = []
-    for nodo in arbol.body:
-        if isinstance(nodo, (ast.Import, ast.ImportFrom)):
-            nombres = _nombres_importados(ast.Module(body=[nodo], type_ignores=[]))
-            encontrados.extend(n for n in nombres if n.split(".")[0] in PESADOS)
+
+    def visitar(sentencias: list[ast.stmt]) -> None:
+        for nodo in sentencias:
+            if isinstance(nodo, (ast.Import, ast.ImportFrom)):
+                nombres = _nombres_importados(ast.Module(body=[nodo], type_ignores=[]))
+                encontrados.extend(n for n in nombres if n.split(".")[0] in PESADOS)
+            elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            elif isinstance(nodo, ast.If) and _es_type_checking(nodo.test):
+                visitar(nodo.orelse)
+            else:
+                for campo in ("body", "orelse", "finalbody"):
+                    visitar(getattr(nodo, campo, []))
+                for manejador in getattr(nodo, "handlers", []):
+                    visitar(manejador.body)
+                for caso in getattr(nodo, "cases", []):
+                    visitar(caso.body)
+
+    visitar(ast.parse(codigo).body)
     return encontrados
 
 
@@ -137,6 +163,22 @@ def test_el_escaner_de_research_ve_todas_las_formas_de_import(codigo: str, esper
         ("def f():\n    import numpy as np\n", []),
         ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import numpy as np\n", []),
         ("import json\nimport os", []),
+        # imports condicionales o protegidos: corren al cargar el módulo (revisión de Codex en #756)
+        ("try:\n    import numpy as np\nexcept ImportError:\n    np = None\n", ["numpy"]),
+        ("try:\n    pass\nexcept ImportError:\n    import numpy as np\n", ["numpy"]),
+        ("try:\n    pass\nfinally:\n    import numpy as np\n", ["numpy"]),
+        ("import sys\nif sys.platform == 'win32':\n    from PIL import Image\n", ["PIL", "PIL.Image"]),
+        ("import contextlib\nwith contextlib.suppress(ImportError):\n    import numpy\n", ["numpy"]),
+        ("class A:\n    import numpy\n", ["numpy"]),
+        ("if False:\n    pass\nelse:\n    import numpy\n", ["numpy"]),
+        # el `else` de TYPE_CHECKING corre al cargar; el cuerpo no
+        (
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    pass\nelse:\n    import numpy as np\n",
+            ["numpy"],
+        ),
+        ("import typing\nif typing.TYPE_CHECKING:\n    import numpy as np\n", []),
+        ("def f():\n    try:\n        import numpy\n    except ImportError:\n        pass\n", []),
+        ("async def f():\n    import numpy\n", []),
     ],
 )
 def test_el_escaner_de_imports_pesados_distingue_modulo_de_funcion_y_type_checking(
