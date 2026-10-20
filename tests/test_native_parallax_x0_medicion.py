@@ -405,6 +405,12 @@ def test_la_descripcion_del_corpus_medido_tiene_un_valor_de_referencia_congelado
     assert VERSION_DE_METRICAS == "np-q0a.v1"  # si sube, esta referencia sube con ella (a propósito)
 
 
+def test_la_descripcion_es_json_canonico_para_poder_compararla_como_texto(corpus: CorpusMedido) -> None:
+    reserializada = json.dumps(json.loads(corpus.descripcion), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+    assert corpus.descripcion == reserializada
+
+
 def test_la_descripcion_cambia_si_cambia_la_version_de_las_metricas(
     corpus: CorpusMedido, monkeypatch: pytest.MonkeyPatch
 ) -> None:
