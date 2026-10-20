@@ -37,6 +37,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
     CasoDesconocidoError,
     CasoSintetico,
     EspecificacionDataset,
+    ModeloCuantizacion,
     ParametroInvalidoError,
     cuantizar_normal,
     generar_altura,
@@ -49,6 +50,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
 )
 from sky_claw.local.native_parallax.decode import DependenciaNoDisponibleError
 from sky_claw.local.native_parallax.research import normal_from_height as r_normal
+from sky_claw.local.native_parallax.research import nz_policies as r_nz
 from sky_claw.local.native_parallax.research import run_np_m0 as r_corrida
 from sky_claw.local.native_parallax.research import synthetic_height as r_altura
 
@@ -178,6 +180,7 @@ def test_la_grilla_el_ruido_y_los_bits_de_la_especificacion_estan_congelados() -
     assert ESPECIFICACION_V1.resoluciones == ((128, 128), (256, 256), (512, 512), (128, 256), (256, 128))
     assert ESPECIFICACION_V1.sigmas_ruido == (1 / 255, 2 / 255, 4 / 255, 8 / 255)
     assert ESPECIFICACION_V1.bits_cuantizacion == (8, 10, 16)
+    assert ESPECIFICACION_V1.modelos_cuantizacion == ("TRES_CANALES", "DOS_CANALES_RECONSTRUYE_Z")
 
 
 def test_la_especificacion_incluye_grillas_rectangulares_en_los_dos_sentidos() -> None:
@@ -208,11 +211,12 @@ TEXTO_CANONICO_V1 = (
     '["S10_asymmetric","periodico"],["S11_highfreq","periodico"],["S12_mixed_scale","periodico"],'
     '["S13_near_flat","periodico"],["S14_steep","periodico"],["S15_periodic_noise","periodico"],'
     '["N01_ramp","control_negativo"],["N02_bump_boundary","control_negativo"]],'
+    '"modelos_cuantizacion":["TRES_CANALES","DOS_CANALES_RECONSTRUYE_Z"],'
     '"resoluciones":[[128,128],[256,256],[512,512],[128,256],[256,128]],'
     '"sigmas_ruido":[0.00392156862745098,0.00784313725490196,0.01568627450980392,0.03137254901960784],'
     '"version":"np-d0.v1"}'
 )
-HUELLA_V1 = "4c5e46f43b1ae97a2e23587ffc99da00963a366f4257cc015334184880d9a62a"
+HUELLA_V1 = "6ca1573be23f132234e8c9aad3dedef11c00a5db8261b10a13a467e3009a61be"
 
 
 def test_la_huella_de_la_especificacion_esta_fijada() -> None:
@@ -230,6 +234,7 @@ def test_cambiar_cualquier_campo_de_la_especificacion_cambia_la_huella() -> None
         dataclasses.replace(ESPECIFICACION_V1, resoluciones=ESPECIFICACION_V1.resoluciones[:-1]),
         dataclasses.replace(ESPECIFICACION_V1, sigmas_ruido=ESPECIFICACION_V1.sigmas_ruido[:-1]),
         dataclasses.replace(ESPECIFICACION_V1, bits_cuantizacion=ESPECIFICACION_V1.bits_cuantizacion[:-1]),
+        dataclasses.replace(ESPECIFICACION_V1, modelos_cuantizacion=ESPECIFICACION_V1.modelos_cuantizacion[:-1]),
         dataclasses.replace(ESPECIFICACION_V1, casos=ESPECIFICACION_V1.casos[:-1]),
         dataclasses.replace(
             ESPECIFICACION_V1,
@@ -342,6 +347,41 @@ def test_los_periodicos_quedan_dentro_de_la_banda_y_los_controles_fuera() -> Non
         assert 0.2 <= razon_borde(generar_altura(caso_id, 256, 256)) <= 5.0, caso_id
     for caso_id in IDS_CONTROLES_LITERAL:
         assert razon_borde(generar_altura(caso_id, 256, 256)) > 5.0, caso_id
+
+
+def _campo_que_arranca_plano(n: int = 16) -> np.ndarray:
+    """Plano en las primeras filas y con una subida al final: el paso del borde a su vecino es nulo."""
+    campo = np.zeros((n, n))
+    campo[n - 4 :, :] = np.arange(1, 5, dtype=np.float64)[:, None]
+    return campo
+
+
+def test_un_campo_que_arranca_plano_no_se_declara_periodico_por_tener_un_primer_paso_nulo() -> None:
+    # Revisión de Codex en #758: con el paso 0→1 nulo la razón valía 1.0 sin mirar el resto del interior ni el
+    # salto de wrap, y un control no periódico entraba al banco periódico. Acá el wrap vale 4 y el paso medio ~0.27.
+    campo = _campo_que_arranca_plano()
+
+    assert razon_borde(campo) > 5.0
+    assert razon_borde(campo.T.copy()) > 5.0  # el mismo defecto por el otro eje
+
+
+def test_el_primer_paso_nulo_usa_el_promedio_de_todos_los_pasos_interiores() -> None:
+    campo = _campo_que_arranca_plano()
+    esperado = float(np.abs(campo[0] - campo[-1]).mean()) / float(np.abs(np.diff(campo, axis=0)).mean())
+
+    assert razon_borde(campo) == pytest.approx(esperado, rel=1e-12)
+
+
+def test_el_defecto_latente_de_research_queda_documentado() -> None:
+    # research devuelve 1.0 para ese campo (el mismo caso especial). El producto lo corrige; si research se
+    # corrige, este test falla y obliga a sincronizar el comentario y el oráculo.
+    assert r_altura.boundary_wrap_ratio(_campo_que_arranca_plano()) == 1.0
+
+
+def test_un_campo_constante_sigue_siendo_periodico() -> None:
+    assert razon_borde(np.full((8, 8), 3.0)) == 1.0
+    constante_en_un_eje = np.tile(np.arange(8, dtype=np.float64)[None, :], (8, 1))
+    assert razon_borde(constante_en_un_eje) == pytest.approx(7.0)  # el eje que varía es una rampa: wrap = 7 pasos
 
 
 def test_razon_borde_rechaza_lo_que_no_es_un_campo_2d_finito() -> None:
@@ -543,29 +583,98 @@ def test_perturbar_rechaza_una_normal_con_forma_o_tipo_incorrecto() -> None:
             perturbar_normal(malo, 1 / 255, "S06_multifreq")
 
 
+TRES = ModeloCuantizacion.TRES_CANALES
+DOS = ModeloCuantizacion.DOS_CANALES_RECONSTRUYE_Z
+
+
+def test_los_modelos_de_cuantizacion_de_la_especificacion_son_los_del_enum() -> None:
+    assert tuple(m.name for m in ModeloCuantizacion) == ESPECIFICACION_V1.modelos_cuantizacion
+
+
 @pytest.mark.parametrize("bits", ESPECIFICACION_V1.bits_cuantizacion)
-def test_la_cuantizacion_es_la_de_research(bits: int) -> None:
+def test_la_cuantizacion_de_tres_canales_es_la_de_research(bits: int) -> None:
     normal = _normal_de_prueba()
 
-    obtenida = cuantizar_normal(normal, bits)
+    obtenida = cuantizar_normal(normal, bits, modelo=TRES)
 
     np.testing.assert_array_equal(obtenida, r_normal.quantize_decode(normal, bits=bits))
     np.testing.assert_allclose(np.linalg.norm(obtenida, axis=-1), 1.0, atol=1e-12)
     assert not obtenida.flags.writeable
 
 
-def test_mas_bits_dan_menos_error_de_cuantizacion() -> None:
+@pytest.mark.parametrize("bits", ESPECIFICACION_V1.bits_cuantizacion)
+@pytest.mark.parametrize("caso_id", ["S06_multifreq", "S09_bricks", "S11_highfreq", "S14_steep"])
+def test_la_cuantizacion_de_dos_canales_es_la_de_research(caso_id: str, bits: int) -> None:
+    # El modelo de almacenamiento de BC5 (el shader reconstruye Z): lo identificó EXP-M1 como el que desplaza la
+    # frontera de riesgo (revisión de Codex en #758: el de tres canales es una cota optimista).
+    normal = normal_desde_altura(generar_altura(caso_id, 128, 128))
+
+    obtenida = cuantizar_normal(normal, bits, modelo=DOS)
+
+    np.testing.assert_array_equal(obtenida, r_nz.quantize_xy_reconstruct_z(np.array(normal), bits))
+    assert not obtenida.flags.writeable
+    assert obtenida.shape == normal.shape
+
+
+def test_dos_canales_reconstruye_z_sin_renormalizar_y_deja_nz_cero_fuera_del_disco_unidad() -> None:
+    normal = normal_desde_altura(generar_altura("S14_steep", 128, 128))
+
+    obtenida = cuantizar_normal(normal, 8, modelo=DOS)
+
+    x, y, z = obtenida[..., 0], obtenida[..., 1], obtenida[..., 2]
+    suma = x * x + y * y
+    np.testing.assert_array_equal(z, np.sqrt(np.maximum(0.0, 1.0 - suma)))
+    assert bool(np.all(z >= 0.0))
+    # fuera del disco unidad no hay Z: queda exactamente 0 y el vector deja de ser unitario
+    fuera = suma > 1.0
+    assert bool(np.all(z[fuera] == 0.0))
+    assert bool(np.all(np.linalg.norm(obtenida, axis=-1)[fuera] > 1.0))
+    # donde SÍ hay Z, el vector es unitario (sin renormalizar, por construcción)
+    np.testing.assert_allclose(np.linalg.norm(obtenida, axis=-1)[~fuera], 1.0, atol=1e-12)
+
+
+def test_en_pendientes_empinadas_dos_canales_pierde_nz_y_tres_canales_no() -> None:
+    # Por esto el de tres canales es una cota optimista: sobre S14 a Q8 el de dos canales deja la mitad de los
+    # píxeles con nz == 0 y el de tres, ninguno. Calibrar umbrales con el segundo solo sería optimista para BC5.
+    normal = normal_desde_altura(generar_altura("S14_steep", 128, 128))
+
+    tres = cuantizar_normal(normal, 8, modelo=TRES)
+    dos = cuantizar_normal(normal, 8, modelo=DOS)
+
+    assert int(np.count_nonzero(tres[..., 2] == 0.0)) == 0
+    assert int(np.count_nonzero(dos[..., 2] == 0.0)) > normal.shape[0] * normal.shape[1] // 4
+
+
+@pytest.mark.parametrize("modelo", [TRES, DOS], ids=lambda m: m.name)
+def test_mas_bits_dan_menos_error_de_cuantizacion(modelo: ModeloCuantizacion) -> None:
     normal = _normal_de_prueba()
-    errores = [float(np.abs(cuantizar_normal(normal, b) - normal).max()) for b in ESPECIFICACION_V1.bits_cuantizacion]
+    errores = [
+        float(np.abs(cuantizar_normal(normal, b, modelo=modelo) - normal).max())
+        for b in ESPECIFICACION_V1.bits_cuantizacion
+    ]
 
     assert errores[0] > errores[1] > errores[2]
 
 
-def test_los_bits_fuera_de_la_especificacion_se_rechazan() -> None:
+def test_el_modelo_de_cuantizacion_es_obligatorio_y_no_hay_default() -> None:
+    normal = _normal_de_prueba()
+
+    with pytest.raises(TypeError):
+        cuantizar_normal(normal, 8)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("modelo", ["TRES_CANALES", "tres_canales", None, 1, True])
+def test_un_modelo_de_cuantizacion_invalido_se_rechaza(modelo: object) -> None:
+    with pytest.raises(ParametroInvalidoError, match="modelo"):
+        cuantizar_normal(_normal_de_prueba(), 8, modelo=modelo)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("modelo", [TRES, DOS], ids=lambda m: m.name)
+def test_los_bits_fuera_de_la_especificacion_se_rechazan(modelo: ModeloCuantizacion) -> None:
     normal = _normal_de_prueba()
     for malo in (0, 1, 7, 9, 12, 17, 32, -8, True, 8.0, "8", None):
         with pytest.raises(ParametroInvalidoError):
-            cuantizar_normal(normal, malo)  # type: ignore[arg-type]
+            cuantizar_normal(normal, malo, modelo=modelo)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
