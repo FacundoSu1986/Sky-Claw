@@ -286,6 +286,16 @@ def integrar(
 
     ``escala_x``/``escala_y`` parametrizan la convención de signos (``N = normalize(-sx·p, -sy·q, 1)``): este
     módulo no declara cuál es la de Skyrim (eso es de NP-X0). La salida es de solo lectura.
+
+    Costo: es CPU-bound y SÍNCRONA, y bloquea al hilo que la llama durante toda la integración. Orden de
+    magnitud medido UNA vez (ni contrato ni experimento versionado): a 4096² (float64, 4 núcleos, numpy 2.4.6)
+    ``PERIODICOS`` ~5 s con ~1.8 GiB de pico del proceso y ``NEUMANN`` ~24 s con ~4.7 GiB (la extensión por
+    espejo a ``2H × 2W`` cuadruplica los píxeles). Desde código ``async`` se delega con ``asyncio.to_thread``
+    (a 2048² con ``NEUMANN``, la llamada directa dejó el loop 4.3 s sin latir; con ``to_thread``, el mayor hueco
+    fue de 46 ms), pero cancelar el ``await`` NO interrumpe el hilo: la integración sigue consumiendo CPU y
+    memoria hasta terminar (cancelada a los 0.3 s, el hilo siguió hasta los 6.5 s). Quien la llame con timeout
+    o reintentos debe acotar la concurrencia (por ejemplo, un semáforo) y no lanzar otra mientras la anterior
+    corre, o aislarla en un proceso. Acá no se fija un tope de tamaño ni de concurrencia: lo decide quien llama.
     """
     _np = importar_numpy()
     campo = _exigir_normal(_np, normal)
