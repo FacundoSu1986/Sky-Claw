@@ -21,6 +21,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
+- El producto (todo lo que no es `research/`; hoy `decode.py`) **no importa** `research` y carga `numpy` y
+  Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
+  `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
+  `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
 
 ## Verificación segura
 

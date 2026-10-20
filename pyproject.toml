@@ -76,6 +76,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ADR 0014 (decisión 3): extra OPCIONAL del generador nativo de parallax. numpy y Pillow NO entran en
+# ``dependencies`` ni en requirements.lock (el runtime base y el ejecutable congelado no cambian) hasta que
+# un ADR posterior lo decida con medición de tamaño. Los límites son los mismos que en ``dev`` (los tests
+# del producto los necesitan): tests/test_native_parallax_producto_invariant.py exige que coincidan.
+# Lock propio: requirements-native-parallax.lock (ver su cabecera para regenerarlo).
+native-parallax = [
+    # <2.5: ver el comentario de ``dev`` (la línea 2.5.x exige Python >=3.12).
+    "numpy>=1.26,<2.5",
+    # >=12.3: pip-audit --strict reporta 35 avisos sobre Pillow 11.3.0 (PYSEC-2026-165, -2249..-2257,
+    # -2874, -3451..-3496...), todos corregidos entre 12.1.1 y 12.3.0; el lock del extra se audita en CI.
+    # <13: Pillow 13 quita el parámetro ``mode`` de ``Image.fromarray`` (DeprecationWarning ya visible
+    # en tests/test_native_parallax_exp_m4.py). Verificado con 12.3.0: la suite de research (232 tests)
+    # y los de NormalDecoder pasan.
+    "pillow>=12.3,<13",
+]
 dev = [
     "pytest>=7.4,<9",
     # Piso en 1.4: hasta 1.3.0 inclusive, `_temporary_event_loop_policy` abría con
@@ -108,7 +123,10 @@ dev = [
     # EXP-M2+ research/native_parallax decodifica authored height/normal
     # mediante Pillow. Research es dev-only; ningún camino de producción
     # importa sky_claw.local.native_parallax.research.
-    "pillow>=10,<12",
+    # Mismo límite que el extra ``native-parallax`` (ver su comentario): los tests deben correr con
+    # la misma versión de Pillow que el producto, y dos rangos disjuntos harían irresoluble
+    # ``uv sync --extra dev --extra native-parallax``.
+    "pillow>=12.3,<13",
 ]
 
 [tool.pytest.ini_options]
