@@ -790,6 +790,27 @@ _KAPPA = 2.0 * _TAPS_K2 + 2.0 * _TAPS_K2 + 8.0
 # Version certificada. NO extrapolar a otra: habria que recertificar.
 PILLOW_CERTIFICADA = "11.3.0"
 PILLOW_COMMIT = "89f1f4626a2aaf5f3d5ca6437f41def2998fbe09"
+# Versiones de Pillow contra las que este archivo corre y que se afirma de cada una. Solo una esta CERTIFICADA:
+# la sombra es la traduccion de SU ``Resample.c`` y el certificado se audita contra ese codigo. Las demas solo
+# pueden estar OBSERVADAS: el gate de bit-exactitud corre contra el binario instalado y pasa, pero eso no prueba
+# que su ``Resample.c`` tenga la misma secuencia de redondeos (el de 12.3.0 difiere del de 11.3.0), asi que no
+# se extrapola el certificado. Una version que no figure aca hace fallar el test.
+PILLOW_ESTADOS = {
+    "11.3.0": "CERTIFICADA",
+    "12.3.0": "OBSERVADA_NO_CERTIFICADA",
+}
+
+
+def _estado_de_pillow(version: str) -> str:
+    try:
+        return PILLOW_ESTADOS[version]
+    except KeyError:
+        raise AssertionError(
+            f"Pillow {version} no esta declarada en PILLOW_ESTADOS {sorted(PILLOW_ESTADOS)}: "
+            "recertificar contra su Resample.c o declararla como observada, no extrapolar"
+        ) from None
+
+
 COMMIT_EVIDENCIA_MUTANTES = "e87a57888ed719f367cce1457320a195eee211b3"
 
 
@@ -1096,11 +1117,38 @@ def _shadow_pesos_2tap(campo2d: np.ndarray, out_size: int) -> np.ndarray:
     return out
 
 
-def test_r7_impl_version_certificada() -> None:
-    """El certificado vale para la version instalada, no para 'Pillow' en abstracto."""
+def test_r7_impl_la_version_instalada_esta_declarada() -> None:
+    """El certificado vale para una version concreta, no para 'Pillow' en abstracto.
+
+    Antes este test exigia que la version instalada FUERA la certificada. Desde #756 el CI corre con Pillow
+    12.3.0 (``pip-audit`` no deja pasar 11.3.0), asi que esa igualdad no puede sostenerse sin dejar la suite
+    en rojo. Lo que se conserva es el contrato real: la version instalada tiene que estar en una tabla
+    CERRADA que dice que se afirma de ella. Una version fuera de la tabla falla: hay que decidir a mano si se
+    recertifica o se declara observada.
+    """
     import PIL
 
-    assert PIL.__version__ == PILLOW_CERTIFICADA
+    assert _estado_de_pillow(PIL.__version__) in {"CERTIFICADA", "OBSERVADA_NO_CERTIFICADA"}
+
+
+def test_r7_impl_la_tabla_de_versiones_de_pillow_esta_congelada_y_solo_una_esta_certificada() -> None:
+    assert PILLOW_ESTADOS == {"11.3.0": "CERTIFICADA", "12.3.0": "OBSERVADA_NO_CERTIFICADA"}
+    assert [v for v, estado in PILLOW_ESTADOS.items() if estado == "CERTIFICADA"] == [PILLOW_CERTIFICADA]
+
+
+@pytest.mark.parametrize("version", ["10.4.0", "11.3.1", "11.4.0", "12.3.1", "13.0.0", ""])
+def test_r7_impl_una_version_de_pillow_no_declarada_se_rechaza(version: str) -> None:
+    # Ni siquiera un parche de la certificada se extrapola: 11.3.1 podria tocar Resample.c.
+    with pytest.raises(AssertionError, match="no esta declarada"):
+        _estado_de_pillow(version)
+
+
+def test_r7_impl_el_documento_declara_el_estado_de_cada_version_de_pillow() -> None:
+    tokens = _bloque_de_tokens(_DOC.read_text(encoding="utf-8"))
+    esperado = "; ".join(f"{version} {estado}" for version, estado in PILLOW_ESTADOS.items())
+    assert tokens["R7_PILLOW_VERSIONES"].startswith(esperado)
+    # la observada NO se presenta como certificada
+    assert "NO extrapolar" in tokens["R7_PILLOW_VERSIONES"]
 
 
 # Escalas declaradas del certificado. Cada una se EJERCITA: los campos se generan al tamaño de entrada de

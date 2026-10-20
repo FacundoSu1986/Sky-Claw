@@ -516,7 +516,14 @@ desajuste queda registrado como decisión pendiente, no enmendado.
 - **Nada sobre otras versiones de Pillow.** La cota está certificada para
   `11.3.0` @ `89f1f462` en Windows/AMD64. Otra versión puede cambiar
   `precompute_coeffs`, el acumulador o el buffer intermedio: **hay que
-  recertificar**, no extrapolar.
+  recertificar**, no extrapolar. Desde #756 el CI corre con Pillow `12.3.0`
+  (`pip-audit` no deja pasar `11.3.0`): el gate de bit-exactitud de la sombra se
+  ejecuta contra ese binario y pasa en las cuatro escalas (verificado
+  ejecutando en Linux; el CI de Windows lo confirma en este PR), pero eso es
+  una **observación** (`OBSERVADA_NO_CERTIFICADA`) y no una certificación: el
+  `Resample.c` de `12.3.0` difiere del de `11.3.0` y no se auditó. El test fija
+  la tabla de versiones (`PILLOW_ESTADOS`) y rechaza cualquier otra, parches
+  incluidos.
 - **Nada sobre JPEG.** El modelo trata la RGB decodificada como la verdad; el
   error de compresión JPEG no está acotado por `q/2`.
 - **La banda entre `L` medido y `L` ideal del campo verdadero.** Producción
@@ -632,6 +639,7 @@ R7_WORST_CASE_PREMISE              = CONJECTURE_NOT_FALSIFIED   (gate #717 §6.1
 R7_IMPL_BOUND                      = asin(sqrt(3) * E_b / L)   (E_b = u*(2+L) + (2m+2n+8)*u_d, u = 2**-24)
 R7_IMPL_CERTIFIED_VERSION          = Pillow 11.3.0 @ 89f1f4626a2aaf5f3d5ca6437f41def2998fbe09 (Windows/AMD64; NO extrapolar a otras versiones)
 R7_PILLOW_CERTIFICATION            = BOUND_COMPUTATIONALLY_CERTIFIED   (SOLO para 11.3.0 @ 89f1f462, Windows/AMD64; NO extrapolar; el certificado numerico GLOBAL sigue BLOCKED por R7_NUMERIC_DERIVATION)
+R7_PILLOW_VERSIONES                = 11.3.0 CERTIFICADA; 12.3.0 OBSERVADA_NO_CERTIFICADA   (el CI corre 12.3.0 desde #756; NO extrapolar: solo 11.3.0 esta certificada; otra version = recertificar o declararla)
 R7_SUFICIENTE_THRESHOLD_NUM        = 0.8660770023307574   (umbral peor caso CON margen de implementacion; +3.7725e-05 sobre el ideal)
 R7_SUFICIENTE_THRESHOLD_NUM_ESTRICTO = 0.8660773906537476 (normas del campo limpio y del cuantizado separadas, k = 2; +3.88e-07 sobre el anterior)
 R7_IMPL_TIGHTNESS                  = NOT_TIGHT   (holgura medida >= 4.4x; peor caso observado 1.37*u)
