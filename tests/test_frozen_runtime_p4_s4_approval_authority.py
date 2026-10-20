@@ -57,6 +57,7 @@ from sky_claw.local.frozen_runtime.approval import (
     consumir_aprobacion,
     derivar_autoridad_aprobacion,
     emitir_aprobacion,
+    payload_scope_sin_digest,
     proponer_aprobacion,
     reconciliar_aprobacion,
     revocar_aprobacion,
@@ -168,11 +169,17 @@ def _emitir_fixture(root: pathlib.Path, **overrides: object) -> tuple[PropuestaA
 
 
 def _consumir(root: pathlib.Path, propuesta: PropuestaAprobacion, transition_id: str = T1, **overrides: object):
+    """Consume con la transición LEGÍTIMA: la que proyecta exactamente el scope.
+
+    P4-S5 hizo ``transicion`` obligatoria en ``consumir_aprobacion``: el consumo
+    es burn-first, así que el binding tiene que comprobarse antes del tombstone.
+    """
     datos = {
         "approval_id": propuesta.scope.approval_id,
         "approval_seq": propuesta.scope.approval_seq,
         "approval_scope_digest": propuesta.scope.approval_scope_digest,
         "transition_id": transition_id,
+        "transicion": _propuesta_transicion(propuesta, transition_id),
     }
     datos.update(overrides)
     return consumir_aprobacion(root, **datos)  # type: ignore[arg-type]
@@ -638,6 +645,7 @@ def test_el_consumo_sin_aprobacion_emitida_falla_cerrado(tmp_path: pathlib.Path)
             approval_seq=1,
             approval_scope_digest="a" * 64,
             transition_id=T2,
+            transicion=_propuesta_transicion(_proponer(root), T2),
         )
     assert not list(approvals_state_dir(root).iterdir())
 
@@ -1185,13 +1193,23 @@ def test_el_create_del_witness_es_no_clobber(tmp_path: pathlib.Path) -> None:
     propuesta, _ = _emitir_fixture(root)
     ruta = issuances_state_dir(root) / f"{propuesta.scope.approval_seq}.json"
     antes = ruta.read_bytes()
+    # El intruso es un witness COHERENTE (su payload recomputa su digest) con
+    # OTRO contenido: un digest suelto sin payload lo rechazaría el parser antes
+    # de llegar al no-clobber, y el test dejaría de medir lo que dice medir.
+    id_intruso = str(uuid.uuid4())
+    payload_intruso = {
+        **payload_scope_sin_digest(propuesta.scope),
+        "clone_id": "clone-intruso",
+        "approval_id": id_intruso,
+    }
     intruso = approval_module.IssuanceWitness(
         schema_version=approval_module.ISSUANCE_WITNESS_SCHEMA_VERSION,
         root_id=approval_module._root_id(root),
         approval_seq=propuesta.scope.approval_seq,
-        approval_id=str(uuid.uuid4()),
-        approval_scope_digest="a" * 64,
+        approval_id=id_intruso,
+        approval_scope_digest=approval_module.digest_canonico(payload_intruso),
         approval_provenance="ui:req-intruso",
+        scope_payload=payload_intruso,
         issued_at_ns=1,
         ledger_revision_at_issue=0,
     )
@@ -1265,6 +1283,10 @@ def test_dos_procesos_consumiendo_solo_uno_gana(tmp_path: pathlib.Path) -> None:
         "approval_seq": propuesta.scope.approval_seq,
         "digest": propuesta.scope.approval_scope_digest,
         "lock_timeout": 60.0,
+        # P4-S5: el hijo reconstruye la transición legítima desde el payload
+        # canónico del scope. Sin él no habría con qué ligar, y el caso mediría
+        # el binding en vez del single-use.
+        "scope": payload_scope_sin_digest(propuesta.scope),
     }
     resultados = _lanzar_concurrentes(
         "consumir",
@@ -1416,6 +1438,7 @@ def test_verificar_consumo_sin_evidencia_terminal_falla_cerrado(tmp_path: pathli
             approval_seq=propuesta.scope.approval_seq,
             approval_scope_digest=propuesta.scope.approval_scope_digest,
             transition_id=T1,
+            transicion=_propuesta_transicion(propuesta, T1),
         )
 
 
@@ -1436,6 +1459,7 @@ def test_verificar_consumo_de_una_aprobacion_revocada_falla_cerrado(tmp_path: pa
             approval_seq=propuesta.scope.approval_seq,
             approval_scope_digest=propuesta.scope.approval_scope_digest,
             transition_id=T1,
+            transicion=_propuesta_transicion(propuesta, T1),
         )
 
 
@@ -1450,6 +1474,7 @@ def test_verificar_consumo_con_otra_transicion_falla_cerrado(tmp_path: pathlib.P
             approval_seq=propuesta.scope.approval_seq,
             approval_scope_digest=propuesta.scope.approval_scope_digest,
             transition_id=T2,
+            transicion=_propuesta_transicion(propuesta, T2),
         )
 
 
@@ -1467,6 +1492,7 @@ def _propuesta_transicion(propuesta: PropuestaAprobacion, transition_id: str = T
         target_generation_id=propuesta.scope.generation_id,
         target_clone_id=propuesta.scope.clone_id,
         target_runtime_setup_id=propuesta.scope.runtime_setup_id,
+        candidate_id=propuesta.scope.candidate_id,
         approval_scope_digest=propuesta.scope.approval_scope_digest,
         evidence_digests=journal_module.EvidenceDigests(
             clone_evidence=propuesta.scope.clone_evidence,
@@ -1494,6 +1520,7 @@ def test_la_evidencia_de_consumo_alimenta_el_create_del_journal(tmp_path: pathli
         approval_seq=resultado.approval_seq,
         approval_scope_digest=resultado.scope_digest,
         transition_id=T1,
+        transicion=_propuesta_transicion(propuesta, T1),
     )
     doc = journal_module._crear_pendiente_bajo_lock(root, _propuesta_transicion(propuesta), evidencia)
     assert doc.state is journal_module.JournalState.PENDING_PROMOTION
@@ -1512,6 +1539,7 @@ def test_el_journal_rechaza_una_aprobacion_no_consumida(tmp_path: pathlib.Path) 
             approval_seq=propuesta.scope.approval_seq,
             approval_scope_digest=propuesta.scope.approval_scope_digest,
             transition_id=T1,
+            transicion=_propuesta_transicion(propuesta, T1),
         )
 
 
@@ -1572,13 +1600,15 @@ def test_crear_witness_ajeno_falla_antes_de_escribir(tmp_path: pathlib.Path) -> 
     """La escritura no confía en la identidad que le entrega su propio caller."""
     destino = _root(tmp_path, "destino")
     origen = _root(tmp_path, "origen")
+    propuesta_origen, _ = _emitir_fixture(origen)
     witness = approval_module.IssuanceWitness(
         schema_version=approval_module.ISSUANCE_WITNESS_SCHEMA_VERSION,
         root_id=approval_module._root_id(origen),
-        approval_seq=1,
-        approval_id=T1,
-        approval_scope_digest="a" * 64,
+        approval_seq=propuesta_origen.scope.approval_seq,
+        approval_id=propuesta_origen.scope.approval_id,
+        approval_scope_digest=propuesta_origen.scope.approval_scope_digest,
         approval_provenance="ui:solicitud-de-otro-root",
+        scope_payload=payload_scope_sin_digest(propuesta_origen.scope),
         issued_at_ns=1,
         ledger_revision_at_issue=0,
     )

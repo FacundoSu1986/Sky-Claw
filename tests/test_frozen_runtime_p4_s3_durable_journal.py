@@ -119,7 +119,7 @@ def _payload_pendiente(
 ) -> dict:
     fuente = _fuente() if fuente is None else fuente
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "state": f"PENDING_{operation}",
         "journal_revision": revision,
         "operation": operation,
@@ -129,6 +129,7 @@ def _payload_pendiente(
         "target_generation_id": GEN_OBJETIVO,
         "target_clone_id": "clone-objetivo",
         "target_runtime_setup_id": "setup-objetivo",
+        "candidate_id": "cand-1" if operation == "PROMOTION" else None,
         "approval_scope_digest": scope_digest,
         "consumed_approval_id": APROBACION,
         "consumed_approval_seq": 12,
@@ -146,7 +147,7 @@ def _payload_pendiente(
 
 def _payload_none(*, revision: int = 1, witness: str | None = T1) -> dict:
     payload: dict = {
-        "schema_version": 1,
+        "schema_version": 2,
         "state": "NONE",
         "journal_revision": revision,
         "created_at_ns": 1_700_000_000_000_000_000,
@@ -169,7 +170,7 @@ def _payload_registro(
 ) -> dict:
     fuente = _fuente()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_state": "FINALIZED",
         "transition_id": transition_id,
         "finalization_seq": seq,
@@ -181,6 +182,7 @@ def _payload_registro(
         "target_generation_id": GEN_OBJETIVO,
         "target_clone_id": "clone-objetivo",
         "target_runtime_setup_id": "setup-objetivo",
+        "candidate_id": "cand-1",
         "approval_scope_digest": scope_digest,
         "consumed_approval_id": APROBACION,
         "consumed_approval_seq": 12,
@@ -303,6 +305,7 @@ def _propuesta(transition_id: str = T1, *, operation: str = "PROMOTION") -> obje
         target_generation_id=GEN_OBJETIVO,
         target_clone_id="clone-objetivo",
         target_runtime_setup_id="setup-objetivo",
+        candidate_id="cand-1" if operation == "PROMOTION" else None,
         approval_scope_digest="c" * 64,
         evidence_digests=EvidenceDigests(
             clone_evidence="d" * 64,
@@ -348,6 +351,7 @@ def _propuesta_hacia(
         target_generation_id=target_generation,
         target_clone_id=target_clone,
         target_runtime_setup_id=target_setup,
+        candidate_id="cand-1",
         approval_scope_digest="c" * 64,
         evidence_digests=EvidenceDigests(
             clone_evidence="d" * 64,
@@ -359,14 +363,29 @@ def _propuesta_hacia(
     )
 
 
-def _aprobacion(transition_id: str = T1) -> object:
+def _proyeccion(propuesta: object) -> object:
+    """Proyección del scope que la propuesta declara ligar (P4-S5).
+
+    En P4-S3 no hay autoridad de aprobación: la evidencia se fabrica. Lo que NO
+    se puede fabricar es la proyección — tiene que salir de la MISMA propuesta
+    que el journal va a comparar, o el binding rechazaría el caso por un motivo
+    distinto del que el test quiere ejercitar.
+    """
+    from sky_claw.local.frozen_runtime.journal import proyectar_propuesta
+
+    return proyectar_propuesta(propuesta, approval_id=APROBACION, approval_seq=12)  # type: ignore[arg-type]
+
+
+def _aprobacion(transition_id: str = T1, propuesta: object | None = None) -> object:
     from sky_claw.local.frozen_runtime.journal import AprobacionConsumida
 
+    propuesta = _propuesta(transition_id) if propuesta is None else propuesta
     return AprobacionConsumida(
         approval_id=APROBACION,
         approval_seq=12,
         scope_digest="c" * 64,
         consumed_by_transition_id=transition_id,
+        proyeccion=_proyeccion(propuesta),  # type: ignore[arg-type]
     )
 
 
@@ -427,7 +446,8 @@ def _crear_pendiente(root: pathlib.Path, propuesta: object = None, aprobacion: o
     """Driver de test: crea el PENDING vía la maquinaria interna bajo el lock."""
     from sky_claw.local.frozen_runtime.journal import _crear_pendiente_bajo_lock
 
-    return _crear_pendiente_bajo_lock(root, propuesta or _propuesta(), aprobacion or _aprobacion())
+    propuesta = propuesta or _propuesta()
+    return _crear_pendiente_bajo_lock(root, propuesta, aprobacion or _aprobacion(propuesta.transition_id, propuesta))
 
 
 def _finalizar(root: pathlib.Path, evidencia: object = None) -> object:
@@ -440,7 +460,8 @@ def _finalizar(root: pathlib.Path, evidencia: object = None) -> object:
 def _start_next(root: pathlib.Path, propuesta: object = None, aprobacion: object = None) -> object:
     from sky_claw.local.frozen_runtime.journal import _start_next_bajo_lock
 
-    return _start_next_bajo_lock(root, propuesta or _propuesta(T2), aprobacion or _aprobacion(T2))
+    propuesta = propuesta or _propuesta(T2)
+    return _start_next_bajo_lock(root, propuesta, aprobacion or _aprobacion(propuesta.transition_id, propuesta))
 
 
 def _dump_estado(root: pathlib.Path) -> dict:
@@ -490,7 +511,7 @@ def test_journal_corrupto_nunca_se_lee_como_none(tmp_path: pathlib.Path) -> None
 def test_esquema_desconocido_falla_cerrado(tmp_path: pathlib.Path) -> None:
     root = _root(tmp_path)
     payload = _payload_none(revision=3, witness=None)
-    payload["schema_version"] = 2
+    payload["schema_version"] = 3
     _escribir_json(transition_journal_path(root), payload)
     with pytest.raises(JournalSchemaError):
         journal_module.cargar_journal_transicion(root)
@@ -822,6 +843,7 @@ def test_crear_pendiente_exige_aprobacion_consumida_coherente(tmp_path: pathlib.
         approval_seq=aprobacion.approval_seq,
         scope_digest=OTRO_DIGEST_64,
         consumed_by_transition_id=T1,
+        proyeccion=aprobacion.proyeccion,
     )
     with pytest.raises(JournalIdentityError):
         _crear_pendiente_bajo_lock(root, _propuesta(), aprobacion)
@@ -835,6 +857,7 @@ def test_crear_pendiente_exige_aprobacion_consumida_coherente(tmp_path: pathlib.
         approval_seq=0,
         scope_digest=aprobacion.scope_digest,
         consumed_by_transition_id=T1,
+        proyeccion=aprobacion.proyeccion,
     )
     with pytest.raises(JournalSchemaError):
         _crear_pendiente_bajo_lock(root, _propuesta(), aprobacion)
@@ -1358,10 +1381,13 @@ def test_f10_tip_de_otra_generation_no_prueba_el_clone_activo(tmp_path: pathlib.
     from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState
 
     # El tip queda en GEN_ORIGEN: ninguna autoridad registra el Clone de GEN_OBJETIVO.
+    propuesta_origen = _propuesta_hacia(
+        T1, target_generation=GEN_ORIGEN, target_clone="clone-origen", target_setup="setup-origen"
+    )
     _crear_pendiente(
         root,
-        _propuesta_hacia(T1, target_generation=GEN_ORIGEN, target_clone="clone-origen", target_setup="setup-origen"),
-        _aprobacion(T1),
+        propuesta_origen,
+        _aprobacion(T1, propuesta_origen),
     )
     _finalizar(
         root,
@@ -1767,6 +1793,12 @@ def test_s3_superficie_publica_no_expone_mutacion() -> None:
         # clasificación más la entrada de creación bloqueada.
         "digest_canonico",
         "leer_json_de_control",
+        # P4-S5: la proyección scope→transición y su comparación. Son PURAS
+        # (no escriben, no adquieren el lock): existen para que la autoridad de
+        # aprobación y el journal comparen contra la MISMA definición de
+        # «los artefactos aprobados» en vez de reimplementarla cada uno.
+        "proyectar_propuesta",
+        "exigir_proyeccion_ligada",
     }
     assert publicas == esperadas, f"superficie pública inesperada: {sorted(publicas)}"
     assert modulo.iniciar_transicion_pendiente.__module__ == modulo.__name__
@@ -1976,6 +2008,9 @@ def test_f7_registro_finalizado_de_otro_estado_no_rota(tmp_path: pathlib.Path, m
     ruta = transitions_state_dir(root) / f"{T1}.json"
     payload = json.loads(ruta.read_text(encoding="utf-8"))
     payload["operation"] = "ROLLBACK"  # forma válida; identidad inmutable distinta
+    # ROLLBACK es operation-aware: un Candidate lo volvería formalmente INVÁLIDO
+    # y el rechazo llegaría por esquema, no por identidad. El caso mide identidad.
+    payload["candidate_id"] = None
     _escribir_json(ruta, payload)
     with pytest.raises(JournalIdentityError):
         _finalizar(root)
