@@ -36,6 +36,7 @@ Dependencias: ``numpy`` pertenece al extra opcional ``native-parallax`` y se imp
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import json
 import math
@@ -61,6 +62,7 @@ __all__ = [
     "CasoSintetico",
     "ElementoCorpus",
     "EspecificacionDataset",
+    "ModeloCuantizacion",
     "ParametroInvalidoError",
     "cuantizar_normal",
     "generar_altura",
@@ -99,6 +101,22 @@ class CasoDesconocidoError(BenchError):
 
 class ParametroInvalidoError(BenchError, ValueError):
     """Dimensión, escala, sigma, bits o array fuera de contrato."""
+
+
+class ModeloCuantizacion(enum.Enum):
+    """Cómo se almacena la normal entera.
+
+    ``TRES_CANALES``: cuantiza X, Y y Z y renormaliza. Es una cota OPTIMISTA: conserva un Z positivo donde el
+    almacenamiento real ya lo perdió.
+    ``DOS_CANALES_RECONSTRUYE_Z``: cuantiza solo X e Y y RECONSTRUYE ``Z = sqrt(max(0, 1 − x² − y²))`` sin
+    renormalizar. Es el contrato de BC5 y de los mapas de dos canales (el shader reconstruye Z; ver
+    ``decode.py``). En pendientes pronunciadas deja ``nz == 0`` exacto, y por eso desplaza la frontera de riesgo
+    (EXP-M1, ``exp-m1-nz-trust-policy.md``): calibrar umbrales solo con el de tres canales sería optimista para BC5.
+    NO es una simulación de la compresión por bloques (eso espera a NP-E0).
+    """
+
+    TRES_CANALES = "tres_canales"
+    DOS_CANALES_RECONSTRUYE_Z = "dos_canales_reconstruye_z"
 
 
 def _numpy() -> ModuleType:
@@ -365,6 +383,7 @@ class EspecificacionDataset:
     ``resoluciones``: grillas ``(n_filas, n_cols)``, incluidas las rectangulares en los dos sentidos.
     ``sigmas_ruido``: desvíos del ruido gaussiano sobre la normal (en unidades de la normal, ``k / 255``).
     ``bits_cuantizacion``: profundidades de la cuantización entera de la normal.
+    ``modelos_cuantizacion``: nombres de los miembros de ``ModeloCuantizacion`` con los que se cuantiza.
     """
 
     version: str
@@ -372,6 +391,7 @@ class EspecificacionDataset:
     resoluciones: tuple[tuple[int, int], ...]
     sigmas_ruido: tuple[float, ...]
     bits_cuantizacion: tuple[int, ...]
+    modelos_cuantizacion: tuple[str, ...]
 
 
 ESPECIFICACION_V1 = EspecificacionDataset(
@@ -380,11 +400,12 @@ ESPECIFICACION_V1 = EspecificacionDataset(
     resoluciones=((128, 128), (256, 256), (512, 512), (128, 256), (256, 128)),
     sigmas_ruido=(1 / 255, 2 / 255, 4 / 255, 8 / 255),
     bits_cuantizacion=(8, 10, 16),
+    modelos_cuantizacion=tuple(modelo.name for modelo in ModeloCuantizacion),
 )
 
 
 def huella_especificacion(especificacion: EspecificacionDataset) -> str:
-    """SHA-256 de la definición del corpus (versión, ids, clases, grillas, ruido y bits).
+    """SHA-256 de la definición del corpus (versión, ids, clases, grillas, ruido, bits y modelos de cuantización).
 
     La descripción NO entra: corregir un typo no debe invalidar el corpus. Las fórmulas tampoco: las
     congela la tabla de huellas numéricas del test (ver el docstring del módulo).
@@ -395,6 +416,7 @@ def huella_especificacion(especificacion: EspecificacionDataset) -> str:
         "resoluciones": [list(grilla) for grilla in especificacion.resoluciones],
         "sigmas_ruido": list(especificacion.sigmas_ruido),
         "bits_cuantizacion": list(especificacion.bits_cuantizacion),
+        "modelos_cuantizacion": list(especificacion.modelos_cuantizacion),
     }
     texto = json.dumps(contenido, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(texto.encode("ascii")).hexdigest()
@@ -466,18 +488,25 @@ def razon_borde(altura: NDArray[np.float64]) -> float:
 
     Una superficie muestreada de un campo suave del toro da una razón cercana a 1 (se acepta [0.2, 5] por
     el contenido con pliegues de S08/S09); una no periódica da una razón mucho mayor (rampa) o localizada
-    (N02). Devuelve el máximo de ambos ejes. Un eje constante cuenta como periódico (razón 1).
+    (N02). Devuelve el máximo de ambos ejes.
+
+    El paso interior es el del borde a su vecino (como en research). Si ese paso es nulo —un campo que arranca
+    plano— no se puede dividir y research declara el eje periódico sin mirar nada más (defecto latente: revisión
+    de Codex en #758). Acá se usa entonces el promedio de TODOS los pasos adyacentes; solo un eje realmente
+    constante (todos los pasos nulos, y por lo tanto el wrap también) cuenta como periódico (razón 1).
     """
     _np = _numpy()
     campo = _exigir_campo_2d(_np, altura, "altura")
     razones: list[float] = []
     for eje in (0, 1):
-        salto = _np.abs(_np.take(campo, 0, axis=eje) - _np.take(campo, -1, axis=eje))
-        interior = _np.abs(_np.take(campo, 1, axis=eje) - _np.take(campo, 0, axis=eje))
-        if float(interior.mean()) < 1e-12:
+        salto = float(_np.abs(_np.take(campo, 0, axis=eje) - _np.take(campo, -1, axis=eje)).mean())
+        vecino = float(_np.abs(_np.take(campo, 1, axis=eje) - _np.take(campo, 0, axis=eje)).mean())
+        if vecino < 1e-12:
+            vecino = float(_np.abs(_np.diff(campo, axis=eje)).mean())
+        if vecino < 1e-12:
             razones.append(1.0)
             continue
-        razones.append(float(salto.mean()) / float(interior.mean()))
+        razones.append(salto / vecino)
     return max(razones)
 
 
@@ -554,20 +583,30 @@ def perturbar_normal(normal: NDArray[np.float64], sigma: float, caso_id: str) ->
     return _congelar(_np, cast("NDArray[np.float64]", resultado))
 
 
-def cuantizar_normal(normal: NDArray[np.float64], bits: int) -> NDArray[np.float64]:
-    """Simula el almacenamiento entero de la normal (sin DDS): codifica a ``bits`` bits, decodifica y renormaliza.
+def cuantizar_normal(normal: NDArray[np.float64], bits: int, *, modelo: ModeloCuantizacion) -> NDArray[np.float64]:
+    """Simula el almacenamiento entero de la normal (sin DDS) según ``modelo``; de solo lectura.
 
-    Solo se admiten las profundidades de la especificación (8, 10 y 16). Q8 es el caso relevante para
-    texturas de 8 bits; Q10 y Q16 son controles.
+    ``modelo`` es OBLIGATORIO y no tiene valor por defecto: elegir el de tres canales por omisión daría una
+    calibración optimista para BC5 (ver ``ModeloCuantizacion``). Solo se admiten las profundidades de la
+    especificación (8, 10 y 16); Q8 es el caso relevante para texturas de 8 bits y Q10/Q16 son controles.
     """
     _np = _numpy()
     base = _exigir_normal(_np, normal)
+    if not isinstance(modelo, ModeloCuantizacion):
+        raise ParametroInvalidoError(f"modelo debe ser un miembro de ModeloCuantizacion, no {modelo!r}")
     if not _es_entero(bits) or bits not in ESPECIFICACION_V1.bits_cuantizacion:
         raise ParametroInvalidoError(f"bits debe ser uno de {ESPECIFICACION_V1.bits_cuantizacion}, no {bits!r}")
     niveles = float(2**bits - 1)
-    q01 = _np.rint((base + 1.0) * 0.5 * niveles) / niveles
-    decodificada = q01 * 2.0 - 1.0
-    resultado = decodificada / _np.linalg.norm(decodificada, axis=-1, keepdims=True)
+    if modelo is ModeloCuantizacion.DOS_CANALES_RECONSTRUYE_Z:
+        q01 = _np.rint((base[..., :2] + 1.0) * 0.5 * niveles) / niveles
+        x = q01[..., 0] * 2.0 - 1.0
+        y = q01[..., 1] * 2.0 - 1.0
+        z = _np.sqrt(_np.maximum(0.0, 1.0 - (x * x + y * y)))
+        resultado = _np.stack((x, y, z), axis=-1)
+    else:
+        q01 = _np.rint((base + 1.0) * 0.5 * niveles) / niveles
+        decodificada = q01 * 2.0 - 1.0
+        resultado = decodificada / _np.linalg.norm(decodificada, axis=-1, keepdims=True)
     return _congelar(_np, cast("NDArray[np.float64]", _np.asarray(resultado, dtype=_np.float64)))
 
 
