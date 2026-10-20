@@ -583,16 +583,17 @@ def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     pillow = [d for d in dev if d.name == "pillow"]
     assert len(pillow) == 1, f"se esperaba exactamente un pillow en [dev], hay {len(pillow)}"
 
-    # pillow>=12.3,<13. Piso: pip-audit --strict reporta 35 avisos sobre 11.3.0 y todos están corregidos
-    # en 12.3.0 (el lock del extra native-parallax se audita en CI). Techo: Pillow 13 quita el parámetro
-    # ``mode`` de ``Image.fromarray``.
-    assert pillow[0].specifier.contains(Version("12.3")), f"el rango de pillow no cubre 12.3: {pillow[0].specifier}"
-    assert pillow[0].specifier.contains(Version("12.9")), f"el rango de pillow no cubre 12.x: {pillow[0].specifier}"
-    assert not pillow[0].specifier.contains(Version("12.2")), (
+    # pillow>=13.0,<14. Piso: pip-audit --strict reporta 8 avisos nuevos sobre 12.3.0 (CVE-2026-112395, -112397,
+    # -112400, -112404, -112895, -112896, -112897, -112899) y todos están corregidos en 13.0.0 (antes, 35 avisos
+    # sobre 11.3.0 corregidos en 12.3.0; el lock del extra native-parallax se audita en CI). Techo: la próxima
+    # mayor no está verificada (la suite de native_parallax se corrió contra 13.0.0).
+    assert pillow[0].specifier.contains(Version("13.0")), f"el rango de pillow no cubre 13.0: {pillow[0].specifier}"
+    assert pillow[0].specifier.contains(Version("13.9")), f"el rango de pillow no cubre 13.x: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("12.3")), (
         f"el rango de pillow admite una versión con avisos de seguridad: {pillow[0].specifier}"
     )
-    assert not pillow[0].specifier.contains(Version("13.0")), (
-        f"el rango de pillow no corta en 13: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("14.0")), (
+        f"el rango de pillow no corta en 14: {pillow[0].specifier}"
     )
 
     runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]
