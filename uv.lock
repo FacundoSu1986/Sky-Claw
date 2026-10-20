@@ -3106,7 +3106,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.4,<4" },
     { name = "aiosqlite", specifier = ">=0.19,<1" },
     { name = "anyio", specifier = ">=4.14.2,<5" },
-    { name = "certifi" },
+    { name = "certifi", specifier = ">=2026.10.19" },
     { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4.16,<2" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "defusedxml", specifier = ">=0.7.1,<1" },
