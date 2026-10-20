@@ -162,7 +162,11 @@ ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verif
   RGB daría normales incorrectas sin ningún error). Un DDS que Pillow no implementa (`NotImplementedError` al
   abrir) y la advertencia de bomba de descompresión (Pillow solo advierte entre `MAX_IMAGE_PIXELS` y su
   doble) terminan en errores tipados antes de reservar los arrays. No hay tope de memoria propio: la salida
-  ocupa 32 bytes por píxel.
+  ocupa 32 bytes por píxel. Solo se aceptan **8 bits por canal**, comprobados sobre el layout real y no sobre
+  el modo que Pillow informa (revisión de CodeRabbit): un PNG de 16 bits se abre como `RGB` con `rawmode`
+  `RGB;16B` y se reducía en silencio; en un DDS sin comprimir de cabecera clásica el códec `dds_rgb` acepta
+  cualquier máscara (565, 1555, 4444, R16G16 con un canal en cero). Se enumeraron y se rechazan; verificado
+  ejecutando con Pillow 12.3.0.
 - **No verificado:** que Pillow decodifique bien BC5/BC7 **reales** de Skyrim (EXP-003: las pruebas de
   NP-C0 usan bloques sintéticos); el paso de CI de este extra sobre `windows-latest` hasta que corra el
   CI de NP-C0; el costo en tamaño en el ejecutable congelado; `texconv` (NP-E0).
