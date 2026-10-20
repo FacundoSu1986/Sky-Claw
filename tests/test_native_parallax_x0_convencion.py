@@ -144,9 +144,14 @@ def test_leer_la_convencion_respeta_los_bordes() -> None:
     normal = _directx("S05_diagonal")
 
     lectura = leer_convencion(normal, bordes=Bordes.NEUMANN)
+    periodica = leer_convencion(normal, bordes=Bordes.PERIODICOS)
 
+    # Los DOS residuos respetan los bordes: si una lectura fijara los bordes por su
+    # cuenta, la comparacion directx/opengl mezclaria dos dominios distintos.
+    assert lectura.residuo_directx == residuo_de_integrabilidad(normal, bordes=Bordes.NEUMANN, escala_y=1.0)
     assert lectura.residuo_opengl == residuo_de_integrabilidad(normal, bordes=Bordes.NEUMANN, escala_y=-1.0)
-    assert lectura.residuo_opengl != leer_convencion(normal, bordes=Bordes.PERIODICOS).residuo_opengl
+    assert lectura.residuo_directx != periodica.residuo_directx
+    assert lectura.residuo_opengl != periodica.residuo_opengl
 
 
 def test_leer_la_convencion_rechaza_una_normal_invalida_con_el_error_del_integrador() -> None:
