@@ -37,6 +37,11 @@ convención la fija la fuente del archivo y quien llama la declara en ``source_c
 
 Confianza: ``confidence = clip(nz, 0, 1)`` por píxel. Es una SEÑAL, no una puerta: los umbrales de
 aceptación/revisión/rechazo se derivan del benchmark y se versionan (ADR 0014 §6), nunca se fijan acá.
+NO es comparable entre formatos: en RGB sale del canal B (un dato propio, con su cuantización y capaz de
+discrepar de X e Y); en BC5 Z se reconstruye de X e Y, así que ``confidence`` es función exacta de ellos y
+nunca los contradice (fuera del disco unidad vale 0). Con el mismo (X, Y) = (200, 64) dio 0.655 en BC5 y 0.80,
+0.60 y 0.005 en RGB con B = 255, 200 y 128 (verificado ejecutando): un mismo umbral no mide lo mismo en ambos
+casos, y ``z_reconstructed`` dice cuál es el caso.
 
 Dependencias: ``numpy`` y ``Pillow`` pertenecen al extra opcional ``native-parallax`` y se importan de
 forma perezosa; sin ellas el uso lanza ``DependenciaNoDisponibleError``.
@@ -107,7 +112,8 @@ class DecodedNormal:
     """Resultado inmutable de ``NormalDecoder.decode`` (los arrays son de solo lectura).
 
     ``normal``: (alto, ancho, 3) float64, vectores unitarios en convención DirectX.
-    ``confidence``: (alto, ancho) float64 en [0, 1], ``clip(nz, 0, 1)``. Señal, no puerta.
+    ``confidence``: (alto, ancho) float64 en [0, 1], ``clip(nz, 0, 1)``. Señal, no puerta, y no comparable
+    entre BC5 (``z_reconstructed``: función exacta de X e Y) y RGB (viene del canal B): ver el docstring del módulo.
     ``source_format``: formato del contenedor según Pillow (``PNG``, ``DDS``...).
     ``dds_pixel_format``: formato de píxel del DDS (``BC5``, ``BC7``, ``DXT1``...), ``None`` si no es DDS.
     ``z_reconstructed``: ``True`` si Z se reconstruyó (BC5).
