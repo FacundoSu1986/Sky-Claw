@@ -125,7 +125,8 @@ def _exigir_tolerancia(valor: object) -> float:
 
 
 def _exigir_cuantil(valor: object) -> float:
-    if not _es_numero(valor) or not math.isfinite(valor) or not 0.0 < valor <= 1.0:
+    # El rango (0, 1] ya rechaza NaN e infinitos: las comparaciones con ellos dan falso.
+    if not _es_numero(valor) or not 0.0 < valor <= 1.0:
         raise ParametroDeRevisionInvalidoError(f"cuantil debe estar en (0, 1], no {valor!r}")
     return float(valor)
 
@@ -207,7 +208,7 @@ def _rango_mas_proximo(valores_ordenados: list[float], cuantil: float) -> float:
     es 7 y sale el séptimo valor, que es lo que quien llama escribió.
     """
     posicion = math.ceil(Decimal(repr(float(cuantil))) * len(valores_ordenados))
-    return valores_ordenados[max(posicion, 1) - 1]
+    return valores_ordenados[posicion - 1]  # cuantil > 0 y n >= 1 ⇒ posicion >= 1
 
 
 def derivar_limites(
@@ -267,11 +268,10 @@ class Conteo:
                 raise ParametroDeRevisionInvalidoError(f"{nombre} debe ser un entero >= 0, no {valor!r}")
         if self.n_total < 1:
             raise ParametroDeRevisionInvalidoError(f"n_total debe ser >= 1, no {self.n_total!r}")
-        if self.n_aceptadas > self.n_total or self.n_malas > self.n_total:
-            raise ParametroDeRevisionInvalidoError("n_aceptadas y n_malas no pueden superar a n_total")
         if self.n_aceptadas_malas > min(self.n_aceptadas, self.n_malas):
             raise ParametroDeRevisionInvalidoError("n_aceptadas_malas no puede superar a las aceptadas ni a las malas")
-        # Las malas que NO se aceptaron están todas en revisión: no pueden ser más que las texturas en revisión.
+        # Las malas que NO se aceptaron están todas en revisión: no pueden ser más que las texturas en revisión. Con la
+        # condición anterior esto implica n_aceptadas <= n_total y n_malas <= n_total (no hace falta pedirlos aparte).
         if self.n_malas - self.n_aceptadas_malas > self.n_total - self.n_aceptadas:
             raise ParametroDeRevisionInvalidoError("hay más malas en revisión que texturas en revisión")
 
@@ -306,7 +306,8 @@ class Conteo:
 class ReporteDeRevision:
     """Resultado de una simulación. ``motivos`` cuenta, en el orden del gate, las veces que cada motivo de la textura
     apareció (una textura con varios motivos suma en cada uno); ``sobre_el_limite`` cuenta, por métrica y en el orden
-    de ``LimitesDeAutoaceptacion``, cuántas veces pasó su límite; ``por_escenario`` conserva el orden de aparición.
+    de ``LimitesDeAutoaceptacion``, cuántas veces pasó su límite; ``por_escenario`` conserva el orden de aparición;
+    ``falsos_aceptos`` identifica, como ``(caso, escenario)``, cada textura mala que se habría aceptado.
     """
 
     criterio_de_etiqueta: str
@@ -315,6 +316,7 @@ class ReporteDeRevision:
     por_escenario: tuple[tuple[str, Conteo], ...]
     motivos: tuple[tuple[Motivo, int], ...]
     sobre_el_limite: tuple[tuple[str, int], ...]
+    falsos_aceptos: tuple[tuple[str, str], ...]
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +375,7 @@ def _reportar(evaluadas: list[_Evaluada], tolerancia: float) -> ReporteDeRevisio
         por_escenario=tuple((nombre, _contar(grupo)) for nombre, grupo in por_escenario.items()),
         motivos=tuple(cuentas.items()),
         sobre_el_limite=tuple(pasadas.items()),
+        falsos_aceptos=tuple((e.medicion.caso, e.medicion.escenario) for e in evaluadas if e.aceptada and e.mala),
     )
 
 

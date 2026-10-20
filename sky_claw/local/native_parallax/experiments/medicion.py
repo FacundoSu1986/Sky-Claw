@@ -189,11 +189,10 @@ def _huella_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenar
 def medir_corpus_sintetico(n_filas: int, n_cols: int, *, bordes: Bordes) -> CorpusMedido:
     """Mide cada caso de ``ESPECIFICACION_V1`` en cada escenario, en grilla ``(n_filas, n_cols)``.
 
-    La grilla se valida ANTES de generar nada. Un caso que no se puede medir (una normal inválida) detiene el
-    benchmark en vez de omitirse: un corpus medido con huecos silenciosos daría tasas de revisión engañosas.
+    La grilla se valida ANTES de generar nada; los ``bordes`` los valida ``integrar`` en la primera medición. Un caso
+    que no se puede medir (una normal inválida) detiene el benchmark en vez de omitirse: un corpus medido con huecos
+    silenciosos daría tasas de revisión engañosas.
     """
-    if not isinstance(bordes, Bordes):
-        raise EntradaInvalidaError(f"bordes debe ser un miembro de Bordes, no {bordes!r}")
     elementos = iterar_corpus(n_filas, n_cols)
     escenarios = escenarios_de_la_especificacion()
     mediciones: list[Medicion] = []

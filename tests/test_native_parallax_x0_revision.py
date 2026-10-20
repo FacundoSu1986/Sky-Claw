@@ -368,6 +368,7 @@ def test_el_conteo_de_una_simulacion_hecha_a_mano() -> None:
     assert reporte.total.n_en_revision == 2
     assert reporte.total.n_malas_en_revision == 1  # D: la revisión acertada
     assert reporte.total.n_buenas_en_revision == 1  # C: la revisión innecesaria
+    assert reporte.falsos_aceptos == (("B", "limpio"),)  # quién se coló, para poder mirarlo
     assert reporte.total.tasa_de_revision == 0.5
     assert reporte.total.tasa_de_falsos_aceptos == 0.5
     assert reporte.tolerancia_de_altura == TOLERANCIA
@@ -640,6 +641,24 @@ def test_un_control_negativo_dejado_fuera_se_evalua_contra_limites_derivados_de_
     # El control (costura 127) se evalúa con límite de costura 1.1: queda en revisión y es una mala bien detectada.
     assert reporte.total.n_malas == 1
     assert reporte.total.n_aceptadas_malas == 0
+
+
+def test_un_control_invisible_para_las_metricas_queda_identificado_como_falso_aceptado() -> None:
+    mediciones = [
+        _medicion(caso="A", costura=1.0),
+        _medicion(caso="B", costura=1.1),
+        _medicion(caso="N", costura=1.0, control=True),  # un control cuyas métricas parecen las de un caso bueno
+    ]
+
+    reporte = simular_dejando_un_caso_fuera(
+        mediciones,
+        cuantil=1.0,
+        tolerancia_de_altura=TOLERANCIA,
+        signo_esperado=1,
+        huella_del_corpus=HUELLA_DEL_CORPUS,
+    )
+
+    assert reporte.falsos_aceptos == (("N", "limpio"),)
 
 
 def test_dejar_un_caso_fuera_necesita_al_menos_dos_casos() -> None:
