@@ -56,6 +56,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   la derivada mixta), la inversión global X+Y no se distingue por ninguna métrica y con ruido σ >= 2/255 o cuantización
   de dos canales el margen cae al de los no detectables (ADR 0014, "Actualización de NP-X0a"). No fijes un umbral de
   margen de pasada: se deriva contra el benchmark y se valida con texturas reales.
+- `experiments/medicion.py` y `experiments/revision.py` (NP-X0b) miden y simulan: derivar un candidato NO es validarlo.
+  La simulación no compara límites por su cuenta, se apoya en los motivos de `decidir_con` (la partición de `Motivo` está
+  congelada por igualdad), y solo `gates.py` puede nombrar `ValidacionContraCorpusReal` (ancla por AST). La etiqueta «mala»
+  y su tolerancia son declaradas, sin valor por defecto; para estimar sin fuga usá `simular_dejando_un_caso_fuera`. Los
+  números salen del corpus sintético y no son la tasa de revisión del producto (que es 100 % sin registro validado). El
+  gate no detecta una inversión global X+Y cuando la altura sale de la misma normal; ver ADR 0014, "Actualización de NP-X0b".
 
 ## Verificación segura
 
