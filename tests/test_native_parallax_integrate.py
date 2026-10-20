@@ -158,7 +158,15 @@ def test_los_gradientes_espectrales_aceptan_las_muestras_por_unidad_de_una_exten
 
 
 def test_los_gradientes_espectrales_rechazan_campos_invalidos() -> None:
-    for malo in (np.zeros((8,)), np.zeros((8, 8, 3)), np.zeros((1, 8)), [[0.0] * 8] * 8, None):
+    for malo in (
+        np.zeros((8,)),
+        np.zeros((8, 8, 3)),
+        np.zeros((1, 8)),
+        np.zeros((8, 8), dtype=np.float32),
+        np.zeros((8, 8), dtype=np.int64),
+        [[0.0] * 8] * 8,
+        None,
+    ):
         with pytest.raises(ValueError, match="campo"):
             espectral.gradientes_espectrales(np, malo)  # type: ignore[arg-type]
 

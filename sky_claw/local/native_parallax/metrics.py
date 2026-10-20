@@ -109,13 +109,6 @@ def _exigir_bordes(bordes: object) -> Bordes:
     return bordes
 
 
-def _exigir_altura(_np: ModuleType, valor: object) -> NDArray[np.float64]:
-    campo = _exigir_campo(_np, valor, "altura")
-    if not bool(_np.all(_np.isfinite(campo))):
-        raise EntradaInvalidaError("altura tiene valores no finitos")
-    return campo
-
-
 # ---------------------------------------------------------------------------
 # Derivadas según el borde
 # ---------------------------------------------------------------------------
@@ -150,14 +143,12 @@ def acuerdo_normal(
     _np = importar_numpy()
     modo = _exigir_bordes(bordes)
     gradientes = gradientes_de_normal(normal, escala_x=escala_x, escala_y=escala_y)
-    campo_altura = _exigir_altura(_np, altura)
+    campo_altura = _exigir_campo(_np, altura, "altura")
     if campo_altura.shape != normal.shape[:2]:
         raise EntradaInvalidaError(f"altura {campo_altura.shape} no tiene la forma de la normal {normal.shape[:2]}")
     _exigir_ejes_representables(campo_altura.shape, modo)
-    norma = _np.sqrt(_np.sum(normal * normal, axis=-1))
-    if bool(_np.any(norma <= 0.0)):
+    if bool(_np.any(_np.all(normal == 0.0, axis=-1))):
         raise EntradaInvalidaError("normal tiene vectores de norma cero")
-    unitaria = normal / norma[..., None]
 
     p_alt, q_alt = _gradientes_de_altura(_np, campo_altura, modo)
     peso = _np.maximum(normal[..., 2], NZ_PISO_NUMERICO) ** 2
@@ -170,8 +161,10 @@ def acuerdo_normal(
     ny = -escala_y * escala * q_alt
     norma_rec = _np.sqrt(nx * nx + ny * ny + 1.0)
     reconstruida = _np.stack((nx / norma_rec, ny / norma_rec, 1.0 / norma_rec), axis=-1)
-    producto_cruzado = _np.linalg.norm(_np.cross(reconstruida, unitaria), axis=-1)
-    producto_punto = _np.sum(reconstruida * unitaria, axis=-1)
+    # ``atan2`` es homogénea en el vector de entrada (|n × m| y n · m escalan igual): una normal NO unitaria, como las
+    # cuantizadas a 2 canales, da el mismo ángulo sin normalizarla.
+    producto_cruzado = _np.linalg.norm(_np.cross(reconstruida, normal), axis=-1)
+    producto_punto = _np.sum(reconstruida * normal, axis=-1)
     grados = _np.degrees(_np.arctan2(producto_cruzado, producto_punto))
     return AcuerdoNormal(
         media_grados=float(grados.mean()),
@@ -202,7 +195,8 @@ def residuo_de_integrabilidad(
         n_filas, n_cols = gradientes.p.shape
         p_x, p_y = gradientes_espectrales(_np, _extender_p_por_espejo(_np, gradientes.p), n_filas, n_cols)
         q_x, q_y = gradientes_espectrales(_np, _extender_q_por_espejo(_np, gradientes.q), n_filas, n_cols)
-        p_x, p_y, q_x, q_y = (d[:n_filas, :n_cols] for d in (p_x, p_y, q_x, q_y))
+    # Con bordes Neumann los cuatro términos se promedian sobre la grilla EXTENDIDA: el espejo hace simétrico a cada
+    # uno de ellos, así que su media vale lo mismo que en el cuadrante de la textura original (verificado a 15 dígitos).
     # Se normaliza por la escala del Hessiano COMPLETO y no por |p_y| + |q_x|: en un campo separable
     # (h = f(x) + g(y)) la derivada cruzada es 0 y esas dos magnitudes son ruido de redondeo, así que el cociente
     # 0/0 daba ~0.5 justo en los campos más perfectos.
@@ -225,7 +219,7 @@ def razon_de_costura(altura: NDArray[np.float64]) -> float:
     constante cuenta como periódico (razón 1).
     """
     _np = importar_numpy()
-    campo = _exigir_altura(_np, altura)
+    campo = _exigir_campo(_np, altura, "altura")
     razones: list[float] = []
     for eje in (0, 1):
         salto = float(_np.abs(_np.take(campo, 0, axis=eje) - _np.take(campo, -1, axis=eje)).mean())
@@ -246,7 +240,7 @@ def rango_dinamico(altura: NDArray[np.float64], *, percentil_bajo: float, percen
     (ADR 0014 §4 y §6), no de la matemática.
     """
     _np = importar_numpy()
-    campo = _exigir_altura(_np, altura)
+    campo = _exigir_campo(_np, altura, "altura")
     p_bajo, p_alto = _exigir_percentiles(percentil_bajo, percentil_alto)
     bajo, alto = (float(v) for v in _np.percentile(campo, [p_bajo, p_alto]))
     return alto - bajo
@@ -255,7 +249,7 @@ def rango_dinamico(altura: NDArray[np.float64], *, percentil_bajo: float, percen
 def razon_de_recorte(altura: NDArray[np.float64]) -> float:
     """Fracción de píxeles EXACTAMENTE en 0 o en 1; exige una altura ya normalizada a ``[0, 1]``."""
     _np = importar_numpy()
-    campo = _exigir_altura(_np, altura)
+    campo = _exigir_campo(_np, altura, "altura")
     if float(campo.min()) < 0.0 or float(campo.max()) > 1.0:
         raise EntradaInvalidaError("altura debe estar normalizada en [0, 1]")
     return int(_np.count_nonzero((campo == 0.0) | (campo == 1.0))) / campo.size

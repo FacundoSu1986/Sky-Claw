@@ -189,8 +189,8 @@ def test_neumann_reconoce_un_coseno_de_derivada_normal_nula() -> None:
     neumann = acuerdo_normal(normal, altura, bordes=Bordes.NEUMANN)
     periodico = acuerdo_normal(normal, altura, bordes=Bordes.PERIODICOS)
 
-    assert neumann.escala == pytest.approx(1.0, abs=2e-2)
-    assert neumann.media_grados < 0.1
+    assert neumann.escala == pytest.approx(1.0, abs=1e-9)
+    assert neumann.media_grados < 1e-9
     # Con la hipótesis de borde equivocada la derivada periódica del coseno (que no cierra el toro) se ensucia.
     assert periodico.media_grados > 10 * neumann.media_grados
 
@@ -255,9 +255,9 @@ def test_neumann_reconoce_un_campo_de_derivada_normal_nula_en_los_dos_ejes(forma
     neumann = acuerdo_normal(normal, altura, bordes=Bordes.NEUMANN)
     periodico = acuerdo_normal(normal, altura, bordes=Bordes.PERIODICOS)
 
-    assert neumann.media_grados < 0.1
-    assert neumann.escala == pytest.approx(1.0, abs=2e-2)
-    assert periodico.media_grados > 10 * neumann.media_grados
+    assert neumann.media_grados < 1e-9
+    assert neumann.escala == pytest.approx(1.0, abs=1e-9)
+    assert periodico.media_grados > 1e6 * neumann.media_grados
     assert residuo_de_integrabilidad(normal, bordes=Bordes.NEUMANN) < 1e-6
 
 
