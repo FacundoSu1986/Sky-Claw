@@ -169,8 +169,9 @@ def _exigir_conteo(valor: object, nombre: str) -> None:
 
 def _exigir_probabilidad(valor: object, nombre: str, *, abierta: bool) -> None:
     """``(0, 1)`` si ``abierta`` y ``[0, 1]`` si no."""
-    if not _es_numero(valor) or not math.isfinite(valor):  # type: ignore[arg-type]
-        raise UmbralesInvalidosError(f"{nombre} debe ser un real finito, no {valor!r}")
+    if not _es_numero(valor):
+        raise UmbralesInvalidosError(f"{nombre} debe ser un real, no {valor!r}")
+    # NaN e infinitos caen fuera del rango: las comparaciones con ellos dan falso.
     minimo_ok = valor > 0.0 if abierta else valor >= 0.0  # type: ignore[operator]
     maximo_ok = valor < 1.0 if abierta else valor <= 1.0  # type: ignore[operator]
     if not (minimo_ok and maximo_ok):
@@ -196,7 +197,7 @@ def _cdf_binomial(fallos: int, n: int, p: float) -> float:
     for i in range(fallos + 1):
         log_pmf = log_n_factorial - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * log_p + (n - i) * log_q
         total += math.exp(log_pmf)
-    return min(total, 1.0)
+    return total
 
 
 def cota_superior_binomial(fallos: int, n: int, confianza: float) -> float:
@@ -297,10 +298,13 @@ class ValidacionContraCorpusReal:
 
     @property
     def alcanza(self) -> bool:
-        """``True`` si la evidencia cumple lo que el propio registro declara."""
+        """``True`` si la evidencia cumple lo que el propio registro declara.
+
+        Si no se aceptó ninguna textura la cota vale 1 y no puede ser ``<= alpha_objetivo`` (que es ``< 1``): sin
+        aceptadas no hay evidencia, y no hace falta preguntarlo aparte.
+        """
         return (
-            self.n_aceptadas >= 1
-            and self.cota_superior_de_aceptadas_malas <= self.alpha_objetivo
+            self.cota_superior_de_aceptadas_malas <= self.alpha_objetivo
             and self.tasa_de_revision <= self.tasa_de_revision_maxima
         )
 

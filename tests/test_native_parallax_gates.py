@@ -250,6 +250,14 @@ def test_una_validacion_que_no_alcanza_la_evidencia_va_a_revision(cambios: dict[
     assert decision == Decision(Veredicto.REVIEW, (Motivo.VALIDACION_INSUFICIENTE,), ())
 
 
+def test_la_validacion_justo_en_la_cota_declarada_alcanza() -> None:
+    # ``alpha_objetivo`` igual a la cota calculada: el límite es inclusivo (``<=``, no ``<``).
+    alpha = cota_superior_binomial(0, 600, 0.95)
+
+    assert _validacion(alpha_objetivo=alpha).alcanza
+    assert not _validacion(alpha_objetivo=math.nextafter(alpha, 0.0)).alcanza
+
+
 def test_la_validacion_justo_en_la_tasa_de_revision_maxima_alcanza() -> None:
     # 500 de 1000 aceptadas = 50 % de revisión, el máximo declarado (``<=``, no ``<``).
     validacion = _validacion(n_aceptadas=500, tasa_de_revision_maxima=0.5)
@@ -351,6 +359,10 @@ def test_las_metricas_de_calidad_toman_el_p95_del_acuerdo_y_no_otro_estadistico(
         pytest.param({"alpha_objetivo": 0.0}, id="alpha_cero"),
         pytest.param({"alpha_objetivo": 1.0}, id="alpha_uno"),
         pytest.param({"alpha_objetivo": math.nan}, id="alpha_nan"),
+        pytest.param({"confianza": "0.95"}, id="confianza_texto"),
+        pytest.param({"alpha_objetivo": None}, id="alpha_none"),
+        pytest.param({"tasa_de_revision_maxima": True}, id="tasa_booleana"),
+        pytest.param({"confianza": math.inf}, id="confianza_infinita"),
         pytest.param({"tasa_de_revision_maxima": -0.1}, id="tasa_negativa"),
         pytest.param({"tasa_de_revision_maxima": 1.1}, id="tasa_mayor_que_uno"),
         pytest.param({"tasa_de_revision_maxima": math.inf}, id="tasa_infinita"),
@@ -484,6 +496,11 @@ def test_con_una_confianza_extrema_la_cota_no_revienta_en_el_borde_del_intervalo
 
 def test_la_cota_de_todo_fallo_es_uno() -> None:
     assert cota_superior_binomial(7, 7, 0.95) == 1.0
+
+
+def test_la_cota_de_todo_fallo_es_uno_aun_con_una_confianza_absurda() -> None:
+    # Con confianza 1e-17, ``1 - confianza`` redondea a 1.0 y la bisección sola no llegaría a 1: el atajo sí.
+    assert cota_superior_binomial(7, 7, 1e-17) == 1.0
 
 
 def test_la_cota_crece_con_los_fallos_baja_con_la_muestra_y_sube_con_la_confianza() -> None:
