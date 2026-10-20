@@ -60,8 +60,10 @@ __all__ = [
     "AlturaPlanaError",
     "Bordes",
     "EntradaInvalidaError",
+    "GradientesDeNormal",
     "IntegracionError",
     "ModoNormalizacion",
+    "gradientes_de_normal",
     "integrar",
     "normalizar_altura",
 ]
@@ -115,6 +117,20 @@ class AlturaIntegrada:
     nz_bajo_piso: int
     nz_minimo: float
     residuo_imaginario_max: float
+
+
+@dataclass(frozen=True, slots=True)
+class GradientesDeNormal:
+    """Inversa normal → gradientes, de solo lectura: ``p = ∂h/∂x`` y ``q = ∂h/∂y`` (alto, ancho) float64.
+
+    ``nz_bajo_piso``: píxeles con ``nz < nz_piso`` (su gradiente se calculó con el piso).
+    ``nz_minimo``: el ``nz`` más bajo de la entrada (puede ser negativo).
+    """
+
+    p: NDArray[np.float64]
+    q: NDArray[np.float64]
+    nz_bajo_piso: int
+    nz_minimo: float
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +191,40 @@ def _exigir_piso(valor: object) -> float:
 # ---------------------------------------------------------------------------
 # Solver
 # ---------------------------------------------------------------------------
+
+
+def _invertir_normal(
+    _np: ModuleType, campo: NDArray[np.float64], sx: float, sy: float, piso: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64], int, float]:
+    """``p = -nx / (sx · nz)`` y ``q = -ny / (sy · nz)`` con ``nz`` llevado al piso: la ÚNICA copia de la inversa."""
+    nx, ny, nz = campo[..., 0], campo[..., 1], campo[..., 2]
+    nz_efectivo = _np.maximum(nz, piso)
+    bajo_piso = int(_np.count_nonzero(nz < piso))
+    p = -nx / (sx * nz_efectivo)
+    q = -ny / (sy * nz_efectivo)
+    return p, q, bajo_piso, float(nz.min())
+
+
+def gradientes_de_normal(
+    normal: NDArray[np.float64],
+    *,
+    escala_x: float = 1.0,
+    escala_y: float = 1.0,
+    nz_piso: float = NZ_PISO_NUMERICO,
+) -> GradientesDeNormal:
+    """Gradientes ``(p, q)`` que producen ``normal`` (``N = normalize(-sx·p, -sy·q, 1)``), de solo lectura.
+
+    Es la inversa que usa ``integrar``; las métricas de calidad la reutilizan para no tener una segunda copia.
+    """
+    _np = importar_numpy()
+    campo = _exigir_normal(_np, normal)
+    sx = _exigir_escala("escala_x", escala_x)
+    sy = _exigir_escala("escala_y", escala_y)
+    piso = _exigir_piso(nz_piso)
+    p, q, bajo_piso, nz_minimo = _invertir_normal(_np, campo, sx, sy, piso)
+    p.setflags(write=False)
+    q.setflags(write=False)
+    return GradientesDeNormal(p=p, q=q, nz_bajo_piso=bajo_piso, nz_minimo=nz_minimo)
 
 
 def _extender_p_por_espejo(_np: ModuleType, p: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -246,11 +296,7 @@ def integrar(
     sy = _exigir_escala("escala_y", escala_y)
     piso = _exigir_piso(nz_piso)
 
-    nx, ny, nz = campo[..., 0], campo[..., 1], campo[..., 2]
-    nz_efectivo = _np.maximum(nz, piso)
-    bajo_piso = int(_np.count_nonzero(nz < piso))
-    p = -nx / (sx * nz_efectivo)
-    q = -ny / (sy * nz_efectivo)
+    p, q, bajo_piso, nz_minimo = _invertir_normal(_np, campo, sx, sy, piso)
 
     n_filas, n_cols = p.shape
     altura, residuo = _poisson(_np, p, q, bordes)
@@ -264,7 +310,7 @@ def integrar(
         altura=altura,
         algoritmo=algoritmo,
         nz_bajo_piso=bajo_piso,
-        nz_minimo=float(nz.min()),
+        nz_minimo=nz_minimo,
         residuo_imaginario_max=residuo,
     )
 

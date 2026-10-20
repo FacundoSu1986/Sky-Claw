@@ -22,7 +22,7 @@ Lo que NO está acá y por qué:
   decisión 4: texconv externo, NP-E0). Las variantes con error de bloque llegan con NP-E0.
 - El fixture MatSynth CC0 (ver ``bench/__init__.py``).
 - La inversa N → H y el integrador: son de ``integrate.py`` (NP-I0), que comparte con este módulo la
-  convención de frecuencias (``espectral.ejes_de_frecuencia``): una sola definición, congelada por un ancla
+  convención de frecuencias (``espectral.gradientes_espectrales``): una sola definición, congelada por un ancla
   de AST, porque un solver con otra daría gradientes escalados por la resolución (bug real de NP-M0).
 
 Reproducibilidad: ``huella_especificacion`` fija la DEFINICIÓN del corpus (ids, clases, grillas, ruido y
@@ -47,7 +47,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
 from sky_claw.local.native_parallax._extra import importar_numpy
-from sky_claw.local.native_parallax.espectral import ejes_de_frecuencia
+from sky_claw.local.native_parallax.espectral import gradientes_espectrales
 
 if TYPE_CHECKING:
     import numpy as np
@@ -512,11 +512,7 @@ def normal_desde_altura(
     for nombre, escala in (("escala_x", escala_x), ("escala_y", escala_y)):
         if not _es_real_finito(escala):
             raise ParametroInvalidoError(f"{nombre} debe ser un real finito, no {escala!r}")
-    n_filas, n_cols = campo.shape
-    wy, wx = ejes_de_frecuencia(_np, n_filas, n_cols)
-    h_hat = _np.fft.fft2(campo)
-    p = _np.real(_np.fft.ifft2(1j * wx * h_hat))
-    q = _np.real(_np.fft.ifft2(1j * wy * h_hat))
+    p, q = gradientes_espectrales(_np, campo)
     nx = -escala_x * p
     ny = -escala_y * q
     nz = _np.ones_like(p)

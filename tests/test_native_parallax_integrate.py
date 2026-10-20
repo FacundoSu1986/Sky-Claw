@@ -45,6 +45,7 @@ from sky_claw.local.native_parallax.integrate import (
     EntradaInvalidaError,
     IntegracionError,
     ModoNormalizacion,
+    gradientes_de_normal,
     integrar,
     normalizar_altura,
 )
@@ -117,6 +118,49 @@ def test_los_ejes_rechazan_tamanos_invalidos() -> None:
             espectral.ejes_de_frecuencia(np, 8, 8, malo, 8)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="entero"):
             espectral.ejes_de_frecuencia(np, 8, 8, 8, malo)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("grilla", GRILLAS, ids=lambda g: f"{g[0]}x{g[1]}")
+@pytest.mark.parametrize("caso_id", TODOS)
+def test_los_gradientes_espectrales_son_los_de_research_bit_a_bit(caso_id: str, grilla: tuple[int, int]) -> None:
+    altura = generar_altura(caso_id, *grilla)
+    p_esperado, q_esperado = r_normal.spectral_gradients(altura)
+
+    p, q = espectral.gradientes_espectrales(np, altura)
+
+    assert np.array_equal(p, p_esperado)
+    assert np.array_equal(q, q_esperado)
+
+
+def test_los_gradientes_espectrales_derivan_respecto_de_la_coordenada_de_textura() -> None:
+    # h = sin(2π·3·x) con x en [0, 1): ∂h/∂x = 2π·3·cos(2π·3·x), SIN dividir por la resolución, y ∂h/∂y = 0.
+    n_filas, n_cols = 32, 64
+    x = np.arange(n_cols) / n_cols
+    altura = np.tile(np.sin(2.0 * np.pi * 3.0 * x), (n_filas, 1))
+
+    p, q = espectral.gradientes_espectrales(np, altura)
+
+    assert np.allclose(p, np.tile(2.0 * np.pi * 3.0 * np.cos(2.0 * np.pi * 3.0 * x), (n_filas, 1)), atol=1e-10)
+    assert np.allclose(q, 0.0, atol=1e-10)
+
+
+def test_los_gradientes_espectrales_aceptan_las_muestras_por_unidad_de_una_extension() -> None:
+    # El coseno par extendido a 2W tiene la misma derivada por unidad de textura que en W si se pasan las muestras
+    # por unidad de la textura original (así lo usa la variante Neumann).
+    n_cols = 32
+    x = (np.arange(n_cols) + 0.5) / n_cols
+    mitad = np.cos(np.pi * x)[None, :].repeat(8, axis=0)
+    extendida = np.concatenate([mitad, mitad[:, ::-1]], axis=1)
+
+    p, _ = espectral.gradientes_espectrales(np, extendida, 8, n_cols)
+
+    assert np.allclose(p[:, :n_cols], -np.pi * np.sin(np.pi * x)[None, :].repeat(8, axis=0), atol=1e-2)
+
+
+def test_los_gradientes_espectrales_rechazan_campos_invalidos() -> None:
+    for malo in (np.zeros((8,)), np.zeros((8, 8, 3)), np.zeros((1, 8)), [[0.0] * 8] * 8, None):
+        with pytest.raises(ValueError, match="campo"):
+            espectral.gradientes_espectrales(np, malo)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +294,76 @@ def test_la_altura_no_depende_de_la_resolucion() -> None:
     grande = integrar(normal_desde_altura(generar_altura("S02_sine_x", 256, 256)), bordes=Bordes.PERIODICOS)
 
     np.testing.assert_allclose(chica.altura[0, :], grande.altura[0, ::2], atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Inversa normal → gradientes: UNA sola definición (la usan el integrador y las métricas)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("escalas", [(1.0, 1.0), (0.5, 2.0), (-1.0, 1.0)], ids=["unitarias", "anisotropicas", "signo"])
+@pytest.mark.parametrize("caso_id", TODOS)
+def test_los_gradientes_de_normal_son_los_de_research_bit_a_bit(caso_id: str, escalas: tuple[float, float]) -> None:
+    normal = normal_desde_altura(generar_altura(caso_id, 128, 128), *escalas)
+    p_esperado, q_esperado, golpes = r_normal.gradients_from_normal(
+        normal, sx=escalas[0], sy=escalas[1], nz_floor=NZ_PISO_NUMERICO
+    )
+
+    resultado = gradientes_de_normal(normal, escala_x=escalas[0], escala_y=escalas[1])
+
+    assert np.array_equal(resultado.p, p_esperado)
+    assert np.array_equal(resultado.q, q_esperado)
+    assert resultado.nz_bajo_piso == golpes
+
+
+def test_los_gradientes_de_normal_cuentan_los_pixeles_bajo_el_piso_y_reportan_el_nz_minimo() -> None:
+    normal = _normal_plana(16, 16)
+    normal[2:4, 5:9] = (1.0, 0.0, 0.0)  # nz = 0 exacto: 8 píxeles
+    normal[10, 10] = (0.6, 0.0, -0.8)  # nz < 0
+
+    resultado = gradientes_de_normal(normal)
+
+    assert resultado.nz_bajo_piso == 9
+    assert resultado.nz_minimo == -0.8
+    assert np.all(np.isfinite(resultado.p)) and np.all(np.isfinite(resultado.q))
+
+
+def test_los_gradientes_de_normal_son_de_solo_lectura() -> None:
+    resultado = gradientes_de_normal(_normal_plana(8, 8))
+
+    assert not resultado.p.flags.writeable and not resultado.q.flags.writeable
+
+
+def test_integrar_usa_los_mismos_gradientes_que_la_inversa_publica() -> None:
+    # El integrador no puede tener su propia copia de p = -nx/(sx·nz): se verifica que su resultado sea el de
+    # resolver Poisson sobre los gradientes que devuelve la función pública.
+    normal = normal_desde_altura(generar_altura("S10_asymmetric", 128, 128), 0.5, 2.0)
+    gradientes = gradientes_de_normal(normal, escala_x=0.5, escala_y=2.0)
+    esperada, _ = r_solver.integrate_periodic(gradientes.p, gradientes.q)
+
+    resultado = integrar(normal, bordes=Bordes.PERIODICOS, escala_x=0.5, escala_y=2.0)
+
+    assert np.array_equal(resultado.altura, esperada)
+    assert resultado.nz_bajo_piso == gradientes.nz_bajo_piso
+    assert resultado.nz_minimo == gradientes.nz_minimo
+
+
+@pytest.mark.parametrize(
+    "malo", [np.zeros((8, 8)), np.zeros((8, 8, 3), dtype=np.float32), np.full((8, 8, 3), np.nan), None], ids=str
+)
+def test_los_gradientes_de_normal_rechazan_normales_invalidas(malo: object) -> None:
+    with pytest.raises(EntradaInvalidaError):
+        gradientes_de_normal(malo)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("malo", [0.0, math.nan, math.inf, True, "1", None])
+def test_los_gradientes_de_normal_rechazan_escalas_y_pisos_invalidos(malo: object) -> None:
+    with pytest.raises(EntradaInvalidaError):
+        gradientes_de_normal(_normal_plana(8, 8), escala_x=malo)  # type: ignore[arg-type]
+    with pytest.raises(EntradaInvalidaError):
+        gradientes_de_normal(_normal_plana(8, 8), escala_y=malo)  # type: ignore[arg-type]
+    with pytest.raises(EntradaInvalidaError):
+        gradientes_de_normal(_normal_plana(8, 8), nz_piso=malo)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
