@@ -69,6 +69,10 @@ CONSUMIDORES_DE_ESPECTRAL = {
 # toma UNA vez (``gates.decidir``); un segundo módulo que los lea y compare por su cuenta contestaría distinto.
 MODULOS_QUE_CONOCEN_LOS_UMBRALES_VIGENTES = frozenset({"gates.py"})
 NOMBRE_DE_LOS_UMBRALES_VIGENTES = "UMBRALES_VIGENTES"
+# La evidencia contra un corpus real solo se construye en el gate y la aporta el operador: ningún módulo de medición
+# (``experiments/``) puede fabricarla a partir de sus propios números.
+MODULOS_QUE_CONOCEN_LA_VALIDACION = frozenset({"gates.py"})
+NOMBRE_DE_LA_VALIDACION = "ValidacionContraCorpusReal"
 FUNCIONES_DE_FRECUENCIA = ("fftfreq", "rfftfreq")
 PESADOS = ("numpy", "PIL")
 EXTRA = "native-parallax"
@@ -268,19 +272,27 @@ def test_numpy_se_importa_dentro_de_funciones_solo_en_los_puntos_congelados() ->
     assert _modulos_que(_importa_numpy_dentro_de_funciones) == PUNTOS_DE_IMPORTACION_PEREZOSA_DE_NUMPY
 
 
-def _menciona_los_umbrales_vigentes(codigo: str) -> bool:
-    """El nombre aparece como variable, atributo (``gates.UMBRALES_VIGENTES``), importación o texto exacto
-    (``getattr(gates, "UMBRALES_VIGENTES")``). Límite: un nombre armado en tiempo de ejecución no se ve."""
+def _menciona_el_nombre(codigo: str, nombre: str) -> bool:
+    """El nombre aparece como variable, atributo (``gates.NOMBRE``), importación o texto exacto
+    (``getattr(gates, "NOMBRE")``). Límite: un nombre armado en tiempo de ejecución no se ve."""
     for nodo in ast.walk(ast.parse(codigo)):
-        if isinstance(nodo, ast.Name) and nodo.id == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+        if isinstance(nodo, ast.Name) and nodo.id == nombre:
             return True
-        if isinstance(nodo, ast.Attribute) and nodo.attr == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+        if isinstance(nodo, ast.Attribute) and nodo.attr == nombre:
             return True
-        if isinstance(nodo, ast.ImportFrom) and any(a.name == NOMBRE_DE_LOS_UMBRALES_VIGENTES for a in nodo.names):
+        if isinstance(nodo, ast.ImportFrom) and any(a.name == nombre for a in nodo.names):
             return True
-        if isinstance(nodo, ast.Constant) and nodo.value == NOMBRE_DE_LOS_UMBRALES_VIGENTES:
+        if isinstance(nodo, ast.Constant) and nodo.value == nombre:
             return True
     return False
+
+
+def _menciona_los_umbrales_vigentes(codigo: str) -> bool:
+    return _menciona_el_nombre(codigo, NOMBRE_DE_LOS_UMBRALES_VIGENTES)
+
+
+def _menciona_la_validacion(codigo: str) -> bool:
+    return _menciona_el_nombre(codigo, NOMBRE_DE_LA_VALIDACION)
 
 
 def test_solo_gates_conoce_los_umbrales_vigentes() -> None:
@@ -305,6 +317,29 @@ def test_solo_gates_conoce_los_umbrales_vigentes() -> None:
 )
 def test_el_escaner_de_umbrales_vigentes_ve_todas_las_formas_de_nombrarlos(codigo: str, esperado: bool) -> None:
     assert _menciona_los_umbrales_vigentes(codigo) is esperado
+
+
+def test_solo_gates_conoce_la_validacion_contra_corpus_real() -> None:
+    assert _modulos_que(_menciona_la_validacion) == MODULOS_QUE_CONOCEN_LA_VALIDACION
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("v = ValidacionContraCorpusReal(id_del_corpus='x')\n", True),
+        ("from sky_claw.local.native_parallax.gates import ValidacionContraCorpusReal\n", True),
+        ("from sky_claw.local.native_parallax.gates import ValidacionContraCorpusReal as V\n", True),
+        ("from sky_claw.local.native_parallax import gates\nv = gates.ValidacionContraCorpusReal()\n", True),
+        ('v = getattr(gates, "ValidacionContraCorpusReal")\n', True),
+        ("def f(v: ValidacionContraCorpusReal) -> None: ...\n", True),
+        ("from sky_claw.local.native_parallax.gates import Umbrales\n", False),
+        ("x = 'una ValidacionContraCorpusReal real'\n", False),
+        ("x = gates.ValidacionContraCorpusRealOtra\n", False),
+        ("validacion = None\n", False),
+    ],
+)
+def test_el_escaner_de_la_validacion_ve_todas_las_formas_de_nombrarla(codigo: str, esperado: bool) -> None:
+    assert _menciona_la_validacion(codigo) is esperado
 
 
 def test_solo_un_modulo_de_producto_calcula_frecuencias_espectrales() -> None:
