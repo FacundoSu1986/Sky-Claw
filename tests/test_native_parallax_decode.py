@@ -323,6 +323,40 @@ def test_la_confianza_es_nz_acotado_a_cero_uno(tmp_path: Path) -> None:
     assert resultado.confidence.min() >= 0.0 and resultado.confidence.max() <= 1.0
 
 
+def test_la_confianza_no_es_comparable_entre_bc5_y_rgb(tmp_path: Path) -> None:
+    """Ancla de la nota «NO es comparable entre formatos» del docstring del módulo (experimento versionado).
+
+    En BC5 Z se reconstruye de X e Y: ``confidence`` es función exacta de ellos. En RGB es ``z / ‖(x, y, z)‖``
+    con Z tomado del canal B: depende de los TRES canales y puede discrepar del plano XY. Con el mismo (X, Y)
+    los dos caminos dan señales distintas, así que un mismo umbral no significa lo mismo en ambos.
+    """
+    x, y = 200 / 255 * 2 - 1, 64 / 255 * 2 - 1
+    bc5 = NormalDecoder().decode(_escribir(tmp_path, "n.dds", _dds(4, 4, _bloque_bc5(200, 64), fourcc=b"ATI2")))
+
+    # BC5: función exacta de (X, Y), sin ningún dato propio que pueda discrepar de ellos
+    assert bc5.confidence[0, 0] == pytest.approx(np.sqrt(1.0 - x * x - y * y), abs=1e-12)
+
+    # RGB con el mismo (X, Y): la confianza depende de B (y, vía la renormalización, también de R y G)
+    por_b = {}
+    for b in (255, 200, 128):
+        por_b[b] = (
+            NormalDecoder().decode(_png(tmp_path, np.full((2, 2, 3), (200, 64, b), dtype=np.uint8))).confidence[0, 0]
+        )
+        z = b / 255 * 2 - 1
+        assert por_b[b] == pytest.approx(z / np.sqrt(x * x + y * y + z * z), abs=1e-12)
+    assert por_b[255] > por_b[200] > por_b[128]
+    assert len({round(float(v), 6) for v in (*por_b.values(), bc5.confidence[0, 0])}) == 4
+
+    # cambiar solo R con B fijo también mueve la confianza RGB: no viene «solo del canal B»
+    otro_r = NormalDecoder().decode(_png(tmp_path, np.full((2, 2, 3), (100, 64, 200), dtype=np.uint8)))
+    assert otro_r.confidence[0, 0] != pytest.approx(por_b[200], abs=1e-6)
+
+    # BC5 fuera del disco unidad: Z se fija en 0 y la confianza vale 0
+    fuera = NormalDecoder().decode(_escribir(tmp_path, "f.dds", _dds(4, 4, _bloque_bc5(255, 255), fourcc=b"ATI2")))
+    assert fuera.confidence[0, 0] == 0.0
+    assert fuera.clamped_pixels == 16
+
+
 def test_el_resultado_es_inmutable_y_determinista(tmp_path: Path) -> None:
     ruta = _png(tmp_path, np.random.default_rng(1).integers(0, 256, size=(4, 4, 3), dtype=np.uint8))
 
