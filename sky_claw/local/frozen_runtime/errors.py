@@ -250,3 +250,123 @@ class JournalStoreNoInicializadoError(JournalError):
     No se crea el directorio en el camino de escritura: la inicialización del
     layout es del storage, bajo su propia admisión.
     """
+
+
+# ============================================================================
+# Autoridad durable de aprobación (P4-S4)
+# ============================================================================
+
+
+class ApprovalError(FrozenRuntimeError):
+    """Base de errores de la autoridad durable de aprobación (ADR 0012 §36.5/§37)."""
+
+
+class ApprovalCorruptError(ApprovalError):
+    """El ledger, un witness de emisión o un tombstone terminal es ilegible.
+
+    JSON malformado, truncado, vacío, no UTF-8, no-objeto, nombre de archivo que
+    no matchea el contrato o contenido incoherente con su nombre. Fail-closed en
+    el sentido fuerte: la corrupción NUNCA se degrada a ``ABSENT`` (§38.2 R4,
+    §40.2 S4). Un tombstone parcial es ``FAIL_CLOSED``, no «ausente».
+    """
+
+
+class ApprovalSchemaError(ApprovalError):
+    """Esquema desconocido, campo obligatorio ausente, tipo inválido o
+    ``ApprovalScope`` que no satisface los 14 campos canónicos (§38.5)."""
+
+
+class ApprovalIdentityError(ApprovalError):
+    """Identidad incoherente: ``approval_scope_digest`` que no recomputa,
+    ``source_activation_digest`` que no liga el contenido, witness o tombstone
+    que no coincide con el ``(approval_seq, approval_id)`` de su nombre, o
+    consumo cuyo ``approval_id``/``approval_seq``/digest no coincide con la
+    emisión registrada. Siempre fail-closed.
+    """
+
+
+class ApprovalRootAjenoError(ApprovalIdentityError):
+    """El ledger o un witness declara un ``root_id`` que NO es el del root auditado.
+
+    ``root_id`` es "el FrozenRuntimeRoot al que pertenece el ledger" (§37.3) y el
+    lock, la secuencia y la propiedad de la aprobación son root-keyed. Sin este
+    cross-check, un ``state/`` copiado o restaurado desde OTRO root —con su
+    ledger, sus witnesses y sus tombstones— pasaría la auditoría entera: la
+    aprobación que el dueño dio para el root A autorizaría una transición en el
+    root B. Es la misma comprobación que el journal hace sobre sus reservas de
+    ``finalization_seq`` (``root_id_esperado``), y por la misma razón.
+
+    No se clasifica como corrupción: el archivo está bien formado y su contenido
+    es coherente consigo mismo; lo que no corresponde es el root. La distinción
+    importa para el operador —«este archivo es ilegible» invita a borrarlo,
+    «esta evidencia es de otro root» invita a buscar de dónde salió—.
+    """
+
+
+class ApprovalCasError(ApprovalError):
+    """Violación de CAS sobre ``approval_revision`` (§37.3/§37.6).
+
+    Toda escritura del ledger presenta la revisión esperada y la incrementa. Un
+    CAS fallido DESCARTa la propuesta; nunca la adapta, nunca reasigna la
+    secuencia y nunca publica un scope distinto del aprobado.
+    """
+
+
+class ApprovalLedgerRetrocedidoError(ApprovalError):
+    """La evidencia durable está por delante del ledger (``max(H, T) > L``) o el
+    ledger presenta como ``ISSUED`` una aprobación que ya es terminal (§38.2 R1,
+    §40.2 S1). ``LEDGER_RETROCEDIDO`` ⇒ ``FAIL_CLOSED``; la única salida es la
+    reconciliación explícita, nunca una re-propuesta ni un salto de secuencia.
+    """
+
+
+class ApprovalMintingDefectError(ApprovalError):
+    """Colisión de ``approval_id`` (UUID v4 ya usado por otro registro durable) o
+    cadena de witnesses con hueco interior / duplicados (§38.2 R3, §40.2 S3,
+    §40.3). Un RNG que colisiona NO se reintenta a ciegas: ``FAIL_CLOSED``.
+    """
+
+
+class ApprovalMaxIssuedError(ApprovalError):
+    """Ya existe una aprobación ``ISSUED`` para este root
+    (``MAX_ISSUED_APPROVALS_PER_ROOT = 1``; §37.4). El dueño debe consumirla o
+    revocarla antes de emitir otra: una aprobación abandonada BLOQUEA, no expira
+    por reloj (``TIME_BASED_EXPIRATION_REQUIRED = NO``).
+    """
+
+
+class ApprovalCarreraNormalError(ApprovalError):
+    """Otra emisión legítima ganó la misma ``approval_seq`` y el ledger YA la
+    conoce (``max(H, T) == L_now``). No es un defecto: se descarta la propuesta y
+    se re-presenta (§40.3). Es el único caso en que se permite re-proponer.
+    """
+
+
+class ApprovalStoreNoInicializadoError(ApprovalError):
+    """``state/issuances/`` o ``state/approvals/`` no existen: el store de la
+    autoridad no fue inicializado (``initialize_frozen_runtime_storage``). El
+    camino de escritura no crea directorios: el layout es del storage, bajo su
+    propia admisión.
+    """
+
+
+class ApprovalConsentimientoError(ApprovalError):
+    """El consentimiento presentado no liga el scope que se va a publicar.
+
+    ``WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED`` (§39.3 C2): si el digest o el
+    ``approval_provenance`` aprobados no son EXACTAMENTE los del scope propuesto,
+    el ``ISSUE`` no ocurre. Adaptar el scope para que coincida es el defecto que
+    esta excepción impide.
+    """
+
+
+class ApprovalHitolNoDisponibleError(ApprovalError):
+    """La EMISIÓN exige una superficie HITL real y el producto no la tiene.
+
+    ``APPROVAL_AUTHORITY = la superficie HITL del producto`` (§35.2/§36.5) y
+    ``SELF_ISSUED_APPROVAL_IS_AUTHORIZATION = NO``. Ninguna otra cosa —un lock,
+    un booleano, un mensaje del agente LLM, un objeto construido en código— se
+    interpreta como consentimiento humano. La entrada productiva de emisión falla
+    cerrado con este error hasta que exista la superficie real; el núcleo durable
+    se ejercita con fixtures explícitas en los tests.
+    """
