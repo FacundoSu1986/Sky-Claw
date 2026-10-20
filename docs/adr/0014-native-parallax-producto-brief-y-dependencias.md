@@ -201,3 +201,37 @@ confirma en el PR.
   codificador y el producto no tiene uno (decisión 4; texconv, NP-E0). (3) La inversa N → H y el integrador:
   NP-I0. Debe compartir con `bench/sintetico.py` la convención de frecuencias (`_ejes_de_frecuencia`); un
   solver con otra daría gradientes escalados por la resolución.
+
+### Actualización de NP-I0 (2026-10-20)
+
+NP-I0 entrega el integrador normal → altura. Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow
+12.3.0); el CI de Windows lo confirma en el PR.
+
+- **Qué entra.** `native_parallax/integrate.py`: `normal_fft_periodic_v1` (solver de Poisson por FFT sobre el
+  toro, reimplementado y comparado bit a bit con `research/normal_fft_periodic.py` en los 17 casos del corpus de
+  NP-D0, tres grillas y varias escalas) y la variante `normal_fft_neumann_v1` (derivada normal nula en los
+  bordes, por extensión de espejo a 2H×2W con el mismo solver; sin dependencias nuevas). La inversa divide por la
+  escala (PR-MATH-A §8).
+- **Una sola convención de frecuencias.** `espectral.ejes_de_frecuencia` es la única definición, la usan el corpus
+  sintético y el integrador, y un ancla de AST congela que ningún otro módulo de producto llame a `fftfreq`
+  (el bug de unidades de NP-M0 —`2π · fftfreq` a secas deriva respecto de la muestra, no de la textura— es el que
+  esto evita). `_extra.importar_numpy` es el punto único de importación perezosa de numpy, también congelado.
+- **EXP-001 y EXP-002 del brief, sobre el corpus limpio.** Error crudo centrado (el ajuste afín no puede esconder
+  un error de escala) ≤ 2.5·10⁻⁵ en los 15 casos periódicos; los 12 de banda limitada se recuperan al redondeo
+  (< 10⁻¹²); el criterio literal del brief (RMSE alineado < 0.05) se cumple con tres órdenes de margen; el salto de
+  costura es < 0.01. La variante Neumann recupera el coseno con derivada normal nula al redondeo, y se demuestra que
+  el periódico no lo reproduce (error > 10⁻²). **Límite:** son normales sintéticas y limpias; nada de esto dice
+  cómo se comporta con ruido, cuantización o normales reales (NP-Q0 y EXP-001b).
+- **Normalización de altura: decisión de §4.** El estudio de amplitud relativa sobre el corpus sintético (256×256)
+  compara el rango completo con p2–p98: el desvío de la altura normalizada crece entre 1.00× y 1.75×, y casi nada
+  en las superficies suaves (senos, 1.00×; bultos 1.69× y ruido periódico 1.75× son los que cambian). Lo que
+  esto SÍ muestra es que elegir uno u otro altera la amplitud relativa entre texturas cuando hay picos o ruido
+  (el caso realista de authoring). Lo que NO puede mostrar es cuál se percibe mejor en el juego, así que el
+  producto **no fija un valor por defecto**: `normalizar_altura` exige elegir el modo y, si son percentiles,
+  indicarlos (nada de p2/p98 escritos a mano en el código, ADR §6). El default lo decide NP-RIG con evidencia
+  in-game.
+- **El piso de `nz`** (`1e-6`, el de NP-M0) es una guarda numérica contra `1/0` que CUENTA los píxeles afectados;
+  no es una política de confianza. Las políticas de EXP-M1 (REVIEW/REJECT, regularización de Tikhonov) siguen en
+  `EXP_M1_GO_WAITING_REVIEW` y esperan a los thresholds derivados del benchmark (NP-Q0).
+- **Equivalente declarado.** En el solver, fijar a cero el espectro en los bins donde el denominador se anula es
+  redundante con el numerador nulo en esos bins; se conserva por fidelidad con research.

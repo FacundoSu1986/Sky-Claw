@@ -22,7 +22,8 @@ __all__ = ["ejes_de_frecuencia"]
 
 
 def _exigir_entero(nombre: str, valor: object) -> int:
-    if not isinstance(valor, int) or isinstance(valor, bool) or valor < 2:
+    # ``bool`` es subclase de ``int``, pero True/False (1/0) nunca llegan al mínimo: los rechaza la comparación.
+    if not isinstance(valor, int) or valor < 2:
         raise ValueError(f"{nombre} debe ser un entero >= 2, no {valor!r}")
     return valor
 
