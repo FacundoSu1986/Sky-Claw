@@ -319,6 +319,21 @@ numpy 2.4.6); el CI de Windows lo confirma en el PR.
   distribución binomial exacta en aritmética racional. Es la lección de EXP-M2 (las señales solo-normal no predijeron el
   riesgo en texturas reales, mejor AUC 0.62) hecha mecanismo: derivar en el sintético se puede y queda registrado
   (`huella_de_derivacion`); **validar con él, no**: la huella del corpus de NP-D0 se rechaza como corpus de validación.
+- **La evidencia va atada al candidato que validó** (Codex, #761). Sin esto, la validación de un candidato estricto se
+  podía reusar con límites más flojos y el gate aceptaba métricas que nunca estuvieron entre las aceptadas medidas. La
+  validación lleva la `huella_del_candidato` (SHA-256 de la versión de las métricas, el signo esperado y cada límite) y
+  `Umbrales` se niega a construirse si no coincide con la suya. El formato de la huella tiene un valor de referencia
+  congelado: cambiar cómo se serializa invalidaría en silencio toda validación ya registrada.
+- **Una medición fuera de su dominio es `REVIEW`, no un valor que «pasa»** (Codex, #761). Un error angular o un residuo
+  negativos quedaban bajo cualquier límite `>= 0` y producían `AUTO_ACCEPT` (fail-open). `DOMINIO_DE_LAS_METRICAS`
+  fija el rango de cada una por su definición (ángulo en [0, 180], residuo en [0, 1], razón >= 0); fuera de él el motivo
+  es `METRICA_FUERA_DE_DOMINIO` y no se compara con el límite. Los límites del registro también tienen que caer en ese
+  rango.
+- **La confianza de la cota es `>= 0.5`** (Codex, #761). Con menos, la «cota superior» puede quedar por DEBAJO de la
+  tasa observada (confianza 0.3 sobre 5 de 10 daba 0.4675, bajo el 0.5 observado) y deja de ser una cota; además
+  `1 - confianza` pierde toda precisión para valores diminutos (con `1e-17` la bisección devolvía `~8e-31` donde la
+  cota real ronda `1e-17`, y un `alpha_objetivo` de `1e-20` pasaba sin cumplirse). Desde 0.5 la resta es exacta
+  (Sterbenz). Un único validador sirve a `cota_superior_binomial` y a `ValidacionContraCorpusReal`.
 - **El signo cuenta.** Un flip global de gradientes produce `-altura` exacta y el error angular lo absorbe; solo el
   signo del ajuste lo delata. Sin él, un `AUTO_ACCEPT` futuro podría aceptar un relieve invertido. El registro
   declara `signo_esperado` y cualquier otro va a `REVIEW`. Cuál es el correcto para Skyrim lo fija la evidencia de
@@ -334,18 +349,19 @@ numpy 2.4.6); el CI de Windows lo confirma en el PR.
 - **Los umbrales se versionan con la definición de las métricas** (`VERSION_DE_METRICAS = "np-q0a.v1"`): un registro
   derivado con otra definición va a `REVIEW`.
 - **Decisión de política ABIERTA, que NO se toma acá.** La tolerancia `alpha_objetivo` de falsos aceptos, la `confianza`
-  de la cota y la `tasa_de_revision_maxima` son del operador y viven en el registro que declara la validación; el código
+  de la cota (dentro de `[0.5, 1)`) y la `tasa_de_revision_maxima` son del operador y viven en el registro que declara la validación; el código
   garantiza que la evidencia cumple lo declarado, no que lo declarado sea sensato. Se fijan en el PR que publique el
   primer registro, que además tiene que cambiar el ancla `UMBRALES_VIGENTES is None` (por eso es imposible hacerlo sin que
   se vea). Solo `gates.py` conoce `UMBRALES_VIGENTES` (ancla por AST): los demás módulos llaman a `decidir`.
-- **Mutantes.** 100 definidos sobre `gates.py` (cota binomial, validadores, registros, métricas, decisión):
-  **96 murieron** y sobreviven **4, equivalentes**: `>` → `>=` en la bisección (igualdad exacta de flotantes),
-  devolver el extremo bajo del intervalo (1 ulp), 60 en vez de 100 iteraciones (converge a los 53 bits) y `> 0` en vez de
-  `!= 0` sobre un conteo ya validado no negativo. El barrido encontró **tres piezas de código redundante que se
-  eliminaron** (el tope `min(total, 1.0)`, el `isfinite` de las probabilidades —el rango ya rechaza NaN e
-  infinitos— y el `n_aceptadas >= 1` de `alcanza` —sin aceptadas la cota vale 1 y `alpha < 1`—) y **cuatro huecos reales
-  de test** (el atajo de todo-fallo con una confianza absurda, el borde inclusivo `cota == alpha`, el tipo de las
-  probabilidades y una confianza extrema donde el punto medio de la bisección redondea a 1.0).
+- **Mutantes.** 119 definidos sobre `gates.py` (cota binomial, validadores, registros, acople de la evidencia, dominio,
+  métricas, decisión). **116 murieron**; sobreviven **3, equivalentes**: `>` → `>=` en la bisección (igualdad exacta de
+  flotantes), 60 en vez de 100 iteraciones (converge a los 53 bits) y `> 0` en vez de `!= 0` sobre un conteo ya validado
+  no negativo. El barrido encontró **tres piezas de código redundante que se eliminaron** (el tope `min(total, 1.0)`, el
+  `isfinite` de las probabilidades —el rango ya rechaza NaN e infinitos— y el `n_aceptadas >= 1` de `alcanza` —sin
+  aceptadas la cota vale 1 y `alpha < 1`—; el atajo `fallos == n` también pasó a redundante cuando la confianza se
+  fijó en `>= 0.5`) y **huecos reales de test** (el borde inclusivo `cota == alpha`, el tipo de las probabilidades, una
+  confianza extrema donde el punto medio de la bisección redondea a 1.0 y el formato de la huella, que quedó sin valor
+  de referencia hasta que el mutante `sort_keys=False` sobrevivió).
 - **Límites declarados.** (1) Que un corpus declarado «real» lo sea no se puede verificar: el código solo excluye el
   sintético que conoce. (2) Subir `VERSION_DE_METRICAS` al cambiar una definición es una convención; los valores analíticos
   de `test_native_parallax_metrics.py` fijan las definiciones, pero nada las liga mecánicamente a la versión. (3) **No hay

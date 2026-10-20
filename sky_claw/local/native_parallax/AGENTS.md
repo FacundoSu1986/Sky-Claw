@@ -42,7 +42,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   receta en `CONSUMIDORES_DE_ESPECTRAL`.
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
-  evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; el signo
+  evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia
+  va atada por huella al candidato que midió (si tocás límites, signo o versión, hay que volver a validar); una
+  medición fuera de su dominio (`DOMINIO_DE_LAS_METRICAS`) es `REVIEW`; la confianza va en `[0.5, 1)`; el signo
   esperado y `VERSION_DE_METRICAS` viajan en el registro. No hay `REJECT`. Una métrica pública nueva en `metrics.py`
   rompe el ancla hasta que se la clasifica en `METRICAS_GATEADAS` o `METRICAS_NO_GATEADAS` (con motivo); si cambiás
   la definición de una métrica, subí `VERSION_DE_METRICAS`. Solo `gates.py` conoce `UMBRALES_VIGENTES`: los demás
