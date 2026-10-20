@@ -23,6 +23,9 @@ no valida ningún umbral.
 
 from __future__ import annotations
 
+import math
+import sys
+
 import numpy as np
 import pytest
 
@@ -35,7 +38,11 @@ from sky_claw.local.native_parallax.bench.sintetico import (
     perturbar_normal,
 )
 from sky_claw.local.native_parallax.espectral import gradientes_espectrales
-from sky_claw.local.native_parallax.experiments.convencion import LecturaDeConvencion, leer_convencion
+from sky_claw.local.native_parallax.experiments.convencion import (
+    PISO_NUMERICO,
+    LecturaDeConvencion,
+    leer_convencion,
+)
 from sky_claw.local.native_parallax.integrate import (
     Bordes,
     EntradaInvalidaError,
@@ -122,6 +129,41 @@ def test_la_convencion_elegida_es_la_de_menor_residuo_y_un_empate_no_elige(
     assert LecturaDeConvencion(directx, opengl).elegida == esperada
 
 
+def test_el_piso_numerico_es_la_raiz_del_epsilon_de_float64() -> None:
+    # No es un umbral de calidad: es la definicion estandar de "cero numerico" (el error de un residuo
+    # calculado con FFT en float64 queda varios ordenes por debajo).
+    assert PISO_NUMERICO == math.sqrt(sys.float_info.epsilon)
+
+
+def test_dos_residuos_en_el_piso_numerico_no_son_una_lectura_aunque_difieran_entre_si() -> None:
+    # Con datos float64 exactos, ambos residuos son ruido de redondeo; su cociente relativo no dice nada.
+    lectura = LecturaDeConvencion(9.9e-16, 9.3e-15)
+
+    assert lectura.tiene_senal is False
+    assert lectura.margen_relativo == 0.0
+    assert lectura.elegida is None
+
+
+def test_el_piso_numerico_es_inclusivo_y_un_residuo_apenas_por_encima_es_senal() -> None:
+    arriba = math.nextafter(PISO_NUMERICO, math.inf)
+
+    assert LecturaDeConvencion(PISO_NUMERICO, 0.0).tiene_senal is False
+    assert LecturaDeConvencion(0.0, PISO_NUMERICO).tiene_senal is False
+    assert LecturaDeConvencion(PISO_NUMERICO, PISO_NUMERICO / 2.0).tiene_senal is False
+    con_directx_alto = LecturaDeConvencion(arriba, 0.0)
+    con_opengl_alto = LecturaDeConvencion(0.0, arriba)
+    assert (con_directx_alto.tiene_senal, con_directx_alto.elegida, con_directx_alto.margen_relativo) == (
+        True,
+        "opengl",
+        1.0,
+    )
+    assert (con_opengl_alto.tiene_senal, con_opengl_alto.elegida, con_opengl_alto.margen_relativo) == (
+        True,
+        "directx",
+        1.0,
+    )
+
+
 @pytest.mark.parametrize("valor", [-1e-9, float("nan"), float("inf")])
 @pytest.mark.parametrize("campo", ["residuo_directx", "residuo_opengl"])
 def test_un_residuo_negativo_o_no_finito_no_es_una_lectura(campo: str, valor: float) -> None:
@@ -199,6 +241,25 @@ def test_los_casos_detectables_son_los_que_tienen_derivada_mixta_y_la_brecha_es_
     assert detectables == DETECTABLES
     assert max(participacion[caso] for caso in NO_DETECTABLES) < 1e-12
     assert min(participacion[caso] for caso in DETECTABLES) > 1e-2
+
+
+@pytest.mark.parametrize("caso", sorted(NO_DETECTABLES))
+def test_los_no_detectables_limpios_se_abstienen_aunque_el_redondeo_los_separe(caso: str) -> None:
+    # S04, S10, S11 y S14 dan residuos ~1e-15 distintos entre si (margen relativo de hasta 0.8): sin un piso
+    # absoluto, esa diferencia de redondeo se leeria como una convencion con mucha confianza.
+    for archivo in (_directx(caso), _con_g_invertido(_directx(caso))):
+        lectura = leer_convencion(archivo, bordes=Bordes.PERIODICOS)
+
+        assert max(lectura.residuo_directx, lectura.residuo_opengl) <= PISO_NUMERICO
+        assert (lectura.tiene_senal, lectura.margen_relativo, lectura.elegida) == (False, 0.0, None)
+
+
+@pytest.mark.parametrize("caso", sorted(DETECTABLES))
+def test_el_piso_numerico_deja_pasar_la_senal_de_los_detectables(caso: str) -> None:
+    lectura = leer_convencion(_directx(caso), bordes=Bordes.PERIODICOS)
+
+    assert lectura.tiene_senal is True
+    assert max(lectura.residuo_directx, lectura.residuo_opengl) > 1e6 * PISO_NUMERICO
 
 
 # ---------------------------------------------------------------------------

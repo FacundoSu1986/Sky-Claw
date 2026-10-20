@@ -18,6 +18,7 @@ la vez) niega la altura exactamente, y una escala uniforme equivocada no cambia 
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,7 +29,12 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-__all__ = ["LecturaDeConvencion", "leer_convencion"]
+__all__ = ["PISO_NUMERICO", "LecturaDeConvencion", "leer_convencion"]
+
+# "Cero numérico" de un residuo calculado con FFT en float64. NO es un umbral de calidad: sin un piso absoluto,
+# dos residuos de ~1e-15 (ruido de redondeo) darían un margen RELATIVO de hasta 0.8 y se leerían como una
+# convención con confianza. Los casos sintéticos exactos caen ~1e-15 (no detectables) o >= 0.15 (detectables).
+PISO_NUMERICO = math.sqrt(sys.float_info.epsilon)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,14 +51,22 @@ class LecturaDeConvencion:
                 raise EntradaInvalidaError(f"{nombre} debe ser un real finito >= 0, no {valor!r}")
 
     @property
+    def tiene_senal(self) -> bool:
+        """``True`` si algún residuo supera el piso numérico; si no, la lectura es ruido de redondeo."""
+        return max(self.residuo_directx, self.residuo_opengl) > PISO_NUMERICO
+
+    @property
     def margen_relativo(self) -> float:
-        """``|r_directx - r_opengl| / (r_directx + r_opengl)`` en ``[0, 1]``: 0 = empate, 1 = una lectura perfecta."""
-        total = self.residuo_directx + self.residuo_opengl
-        return 0.0 if total == 0.0 else abs(self.residuo_directx - self.residuo_opengl) / total
+        """``|r_directx - r_opengl| / (r_directx + r_opengl)`` en ``[0, 1]``: 0 = empate o sin señal, 1 = perfecta."""
+        if not self.tiene_senal:
+            return 0.0
+        return abs(self.residuo_directx - self.residuo_opengl) / (self.residuo_directx + self.residuo_opengl)
 
     @property
     def elegida(self) -> str | None:
-        """``"directx"`` u ``"opengl"`` según el menor residuo; ``None`` si empatan (no hay nada que leer)."""
+        """``"directx"`` u ``"opengl"`` según el menor residuo; ``None`` si no hay señal o empatan."""
+        if not self.tiene_senal:
+            return None
         if self.residuo_directx < self.residuo_opengl:
             return "directx"
         if self.residuo_opengl < self.residuo_directx:
