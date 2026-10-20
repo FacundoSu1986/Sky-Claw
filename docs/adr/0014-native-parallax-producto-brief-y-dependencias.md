@@ -519,8 +519,9 @@ trae alturas authored) y el reporte da los conteos (`n_total`, `n_aceptadas`, `n
 `ValidacionContraCorpusReal`; armar esa evidencia, con la tolerancia, la confianza y la tasa de revisión máxima, sigue
 siendo del operador.
 
-**Mutantes.** 97 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
-simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y huella). **91 mueren.** Los 6
+**Mutantes.** 107 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
+simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **101 mueren**
+(uno sobrevivió porque el test comparaba el JSON parseado y no su forma canónica; se ancló el texto exacto). Los 6
 sobrevivientes: **5 eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el
 `max(posicion, 1)`; dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y un chequeo previo de los bordes
 que `integrar` repetía; este último volvió después con otro propósito, el de arriba, y sus mutantes mueren) y **1 es
