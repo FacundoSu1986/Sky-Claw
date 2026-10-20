@@ -20,7 +20,7 @@ Decisiones de definición (nuestras, ancladas por ``tests/test_native_parallax_x
   aparece sobre una verdad plana (ruido integrado) o la altura plana que no recupera un relieve no se pueden comparar
   normalizados, y ``revision.es_mala`` los llama malos.
 - **Los escenarios salen de la especificación** de NP-D0 (limpio, ruido gaussiano de cada sigma y cuantización de cada
-  profundidad × modelo): cambiar la especificación cambia el benchmark, y la huella del corpus medido lo registra.
+  profundidad × modelo): cambiar la especificación cambia el benchmark, y la descripción del corpus medido lo registra.
 
 Límite declarado: el corpus es sintético. Estas mediciones no validan ningún umbral (EXP-M2) y no incluyen compresión
 por bloques (llega con NP-E0).
@@ -31,7 +31,6 @@ Dependencias: ``numpy`` pertenece al extra opcional ``native-parallax`` y se imp
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,7 +77,7 @@ __all__ = [
 ]
 
 VERSION_DE_LA_MEDICION = "np-x0b.v1"
-"""Definición de lo que se mide (métricas del gate y ``error_de_altura``); entra en la huella del corpus medido."""
+"""Definición de lo que se mide (métricas del gate y ``error_de_altura``); entra en la descripción del corpus medido."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,10 +90,18 @@ class Escenario:
 
 @dataclass(frozen=True, slots=True)
 class CorpusMedido:
-    """Las mediciones de todo el corpus y la huella (SHA-256) de lo que se midió y cómo."""
+    """Las mediciones del corpus sintético, su huella y la descripción exacta de lo que se midió.
+
+    ``huella`` es la de la ESPECIFICACIÓN de NP-D0 (``huella_especificacion(ESPECIFICACION_V1)``): el corpus medido es un
+    subconjunto de ese corpus, y esa es la huella que ``gates.py`` rechaza como corpus de validación. Una huella propia
+    del corpus medido habría sido un segundo hash sintético que el guard no conoce (Codex, #763). Lo que distingue una
+    medición de otra (grilla, bordes, versiones, escenarios) va en ``descripcion``, un JSON canónico que NO es un hash
+    y por lo tanto no se presta a usarlo como ``huella_del_corpus``.
+    """
 
     mediciones: tuple[Medicion, ...]
     huella: str
+    descripcion: str
 
 
 def _sin_degradar(normal: NDArray[np.float64], caso_id: str) -> NDArray[np.float64]:
@@ -177,7 +184,8 @@ def medir_textura(
     )
 
 
-def _huella_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenarios: tuple[Escenario, ...]) -> str:
+def _descripcion_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenarios: tuple[Escenario, ...]) -> str:
+    """JSON canónico de lo que se midió y cómo (incluye la versión de las métricas y la de la medición)."""
     contenido = {
         "version_de_la_medicion": VERSION_DE_LA_MEDICION,
         "version_de_metricas": VERSION_DE_METRICAS,
@@ -187,8 +195,7 @@ def _huella_del_corpus_medido(n_filas: int, n_cols: int, bordes: Bordes, escenar
         "convencion": "directx",
         "escenarios": [escenario.nombre for escenario in escenarios],
     }
-    texto = json.dumps(contenido, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(texto.encode("ascii")).hexdigest()
+    return json.dumps(contenido, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def medir_corpus_sintetico(n_filas: int, n_cols: int, *, bordes: Bordes) -> CorpusMedido:
@@ -220,5 +227,7 @@ def medir_corpus_sintetico(n_filas: int, n_cols: int, *, bordes: Bordes) -> Corp
                 )
             )
     return CorpusMedido(
-        mediciones=tuple(mediciones), huella=_huella_del_corpus_medido(n_filas, n_cols, bordes, escenarios)
+        mediciones=tuple(mediciones),
+        huella=huella_especificacion(ESPECIFICACION_V1),
+        descripcion=_descripcion_del_corpus_medido(n_filas, n_cols, bordes, escenarios),
     )

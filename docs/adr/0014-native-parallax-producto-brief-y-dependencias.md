@@ -437,13 +437,19 @@ Windows lo confirma en el PR.
 
 - **Qué entra.** `experiments/medicion.py` (numpy perezoso) mide una textura (`medir_textura`: integra con `integrar` y
   calcula las métricas del gate con los MISMOS bordes) y el corpus sintético completo (`medir_corpus_sintetico`: 17 casos ×
-  11 escenarios de la especificación de NP-D0 = 187 mediciones a 128²), con una huella de referencia congelada que incluye
-  la versión de las métricas: subir `VERSION_DE_METRICAS` la cambia. `experiments/revision.py` (puro, sin numpy) deriva
+  11 escenarios de la especificación de NP-D0 = 187 mediciones a 128²). `experiments/revision.py` (puro, sin numpy) deriva
   límites por cuantil (`derivar_limites`), simula la revisión (`simular_revision`) y la simula sin fuga
   (`simular_dejando_un_caso_fuera`). Sin call site de producción.
 - **El corpus se mide solo con bordes periódicos** (Codex, #763). Los controles negativos (N01, N02) lo son porque violan la
   periodicidad: son del integrador periódico. Bajo Neumann son representables y etiquetarlos «malos» corrompería las tasas;
   qué significa «mala» con otros bordes no está decidido, así que `medir_corpus_sintetico` se niega en vez de adivinarlo.
+- **La huella del corpus medido es la de la especificación de NP-D0** (Codex, #763). Una huella propia del corpus medido
+  habría sido un segundo hash sintético que el guard del gate no conoce (el gate solo rechaza
+  `huella_especificacion(ESPECIFICACION_V1)`): reproduje que con ella una validación con conteos favorables daba `alcanza`
+  verdadero. El corpus medido es un subconjunto del de NP-D0, así que lleva SU huella y un test ancla que el gate la
+  rechaza como validación. Lo que distingue una medición de otra (grilla, bordes, versión de las métricas y de la
+  medición, escenarios) va en `CorpusMedido.descripcion`, un JSON canónico con valor de referencia congelado que NO es un
+  hash, para que no se preste a usarlo como `huella_del_corpus`.
 - **La derivación valida el dominio de TODA medición buena** (Codex, #763). Una fila buena con una métrica no finita o
   imposible (un ángulo negativo, un residuo > 1) ocupa un rango de la muestra y mueve el límite sin que nada falle (con un
   ángulo de -5° el límite del cuantil 0.5 pasó de 2.0 a 1.0): es un error, igual que en el gate, donde esa medición va a

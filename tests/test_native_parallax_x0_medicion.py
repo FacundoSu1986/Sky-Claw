@@ -16,6 +16,7 @@ Límite declarado: es el corpus sintético. Estos números no validan ningún um
 
 from __future__ import annotations
 
+import json
 import re
 
 import numpy as np
@@ -29,6 +30,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
     ParametroInvalidoError,
     cuantizar_normal,
     generar_altura,
+    huella_especificacion,
     normal_desde_altura,
     perturbar_normal,
 )
@@ -36,12 +38,17 @@ from sky_claw.local.native_parallax.experiments import medicion
 from sky_claw.local.native_parallax.experiments.medicion import (
     CorpusMedido,
     Escenario,
-    _huella_del_corpus_medido,
+    _descripcion_del_corpus_medido,
     escenarios_de_la_especificacion,
     medir_corpus_sintetico,
     medir_textura,
 )
 from sky_claw.local.native_parallax.experiments.revision import Medicion, ParametroDeRevisionInvalidoError
+from sky_claw.local.native_parallax.gates import (
+    VERSION_DE_METRICAS,
+    UmbralesInvalidosError,
+    ValidacionContraCorpusReal,
+)
 from sky_claw.local.native_parallax.integrate import (
     Bordes,
     EntradaInvalidaError,
@@ -347,44 +354,75 @@ def test_medir_dos_veces_da_el_mismo_corpus(corpus: CorpusMedido) -> None:
     assert otra_vez == corpus
 
 
-def test_la_huella_del_corpus_medido_identifica_lo_que_se_midio(corpus: CorpusMedido) -> None:
-    escenarios = escenarios_de_la_especificacion()
-
+def test_la_huella_del_corpus_medido_es_la_de_la_especificacion_de_np_d0(corpus: CorpusMedido) -> None:
+    assert corpus.huella == huella_especificacion(ESPECIFICACION_V1)
     assert re.fullmatch(r"[0-9a-f]{64}", corpus.huella)
-    assert medir_corpus_sintetico(N, N, bordes=Bordes.PERIODICOS).huella == corpus.huella
-    assert medir_corpus_sintetico(N, 2 * N, bordes=Bordes.PERIODICOS).huella != corpus.huella
-    # Los bordes entran en la huella (el runner hoy solo mide los periódicos: ver el test de más abajo).
-    assert _huella_del_corpus_medido(N, N, Bordes.NEUMANN, escenarios) != corpus.huella
 
 
-def test_la_huella_cambia_si_cambia_la_version_de_las_metricas(
+def test_el_gate_rechaza_como_validacion_la_huella_del_corpus_medido(corpus: CorpusMedido) -> None:
+    """Codex, #763: la huella del corpus medido era un hash sintético NUEVO que el guard del gate no conocía, y con
+    ella una validación con conteos favorables daba ``alcanza`` verdadero. El corpus medido ES un subconjunto del de
+    NP-D0 (que el gate ya rechaza), así que lleva SU huella y el guard lo cubre."""
+    with pytest.raises(UmbralesInvalidosError, match="sintético"):
+        ValidacionContraCorpusReal(
+            id_del_corpus="corpus-medido",
+            huella_del_corpus=corpus.huella,
+            criterio_de_etiqueta="x",
+            huella_del_candidato="a" * 64,
+            n_total=1000,
+            n_aceptadas=900,
+            n_aceptadas_malas=0,
+            confianza=0.9,
+            alpha_objetivo=0.05,
+            tasa_de_revision_maxima=0.5,
+        )
+
+
+def test_la_huella_es_la_misma_en_cualquier_grilla_y_la_descripcion_distingue_lo_medido(corpus: CorpusMedido) -> None:
+    otra = medir_corpus_sintetico(N, 2 * N, bordes=Bordes.PERIODICOS)
+
+    assert otra.huella == corpus.huella  # el mismo corpus de NP-D0, medido en otra grilla
+    assert otra.descripcion != corpus.descripcion
+
+
+# Valor de referencia de lo que se mide y cómo: cambiar cualquier elemento invalida en silencio toda derivación
+# registrada contra esta descripción. Si este test falla, el cambio fue deliberado: actualizá el valor Y subí
+# ``VERSION_DE_LA_MEDICION``.
+def _descripcion_de_referencia() -> dict[str, object]:
+    return {
+        "version_de_la_medicion": "np-x0b.v1",
+        "version_de_metricas": VERSION_DE_METRICAS,
+        "especificacion": huella_especificacion(ESPECIFICACION_V1),
+        "grilla": [N, N],
+        "bordes": "periodicos",
+        "convencion": "directx",
+        "escenarios": list(NOMBRES_DE_LOS_ESCENARIOS),
+    }
+
+
+def test_la_descripcion_del_corpus_medido_tiene_un_valor_de_referencia_congelado(corpus: CorpusMedido) -> None:
+    assert json.loads(corpus.descripcion) == _descripcion_de_referencia()
+    assert VERSION_DE_METRICAS == "np-q0a.v1"  # si sube, esta referencia sube con ella (a propósito)
+
+
+def test_la_descripcion_cambia_si_cambia_la_version_de_las_metricas(
     corpus: CorpusMedido, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Al subir ``VERSION_DE_METRICAS`` (cambió una definición) las mediciones cambian: la huella tiene que decirlo."""
+    """Al subir ``VERSION_DE_METRICAS`` (cambió una definición) las mediciones cambian: la descripción tiene que decirlo."""
     monkeypatch.setattr(medicion, "VERSION_DE_METRICAS", "np-q0a.vX")
 
-    nueva = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios_de_la_especificacion())
+    nueva = _descripcion_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios_de_la_especificacion())
 
-    assert nueva != corpus.huella
-
-
-# Valores de referencia: cambiar cómo se define o se serializa el corpus medido invalida en silencio toda derivación
-# registrada contra su huella. Si este test falla, el cambio fue deliberado: actualizá el valor Y subí
-# ``VERSION_DE_LA_MEDICION``.
-HUELLA_DE_REFERENCIA_PERIODICOS_128 = "eab838947d4278d35ff683a96c880825bf9d5356360e2ca43d97b23d2b1d96cc"
+    assert nueva != corpus.descripcion
 
 
-def test_la_huella_del_corpus_medido_tiene_un_valor_de_referencia_congelado(corpus: CorpusMedido) -> None:
-    assert corpus.huella == HUELLA_DE_REFERENCIA_PERIODICOS_128
-
-
-def test_la_huella_depende_de_los_escenarios_que_se_midieron() -> None:
+def test_la_descripcion_depende_de_los_bordes_y_de_los_escenarios_que_se_midieron() -> None:
     escenarios = escenarios_de_la_especificacion()
 
-    completa = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios)
-    sin_el_ultimo = _huella_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios[:-1])
+    base = _descripcion_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios)
 
-    assert completa != sin_el_ultimo
+    assert _descripcion_del_corpus_medido(N, N, Bordes.NEUMANN, escenarios) != base
+    assert _descripcion_del_corpus_medido(N, N, Bordes.PERIODICOS, escenarios[:-1]) != base
 
 
 def test_la_grilla_se_valida_antes_de_medir_nada() -> None:
