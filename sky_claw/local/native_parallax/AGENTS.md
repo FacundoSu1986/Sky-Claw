@@ -21,7 +21,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
-- El producto (todo lo que no es `research/`; hoy `decode.py` y `bench/`) **no importa** `research` y carga `numpy` y
+- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `integrate.py`, `_extra.py` y `bench/`) **no importa** `research` y carga `numpy` y
   Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
   `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
   `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
@@ -29,6 +29,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   `research/normal_from_height.py`; `tests/test_native_parallax_bench_sintetico.py` las compara con research
   como oráculo y congela la especificación del corpus. Cambiar una fórmula en un lado sin el otro rompe ese
   test a propósito: decidí cuál manda.
+
+- `integrate.py` (NP-I0) reimplementa el solver de research; `tests/test_native_parallax_integrate.py` lo compara
+  con research como oráculo. La convención de frecuencias vive SOLO en `espectral.py` y numpy se importa de forma
+  perezosa SOLO por `_extra.py` (y `decode.py`, que además necesita Pillow): ambos puntos están congelados por AST
+  en `tests/test_native_parallax_producto_invariant.py`. No agregues otra llamada a `fftfreq` ni otro
+  `import numpy` dentro de una función: rompe el ancla a propósito.
 
 ## Verificación segura
 

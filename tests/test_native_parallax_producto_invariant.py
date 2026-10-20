@@ -34,7 +34,24 @@ from packaging.version import Version
 RAIZ = Path(__file__).resolve().parents[1]
 PAQUETE = RAIZ / "sky_claw" / "local" / "native_parallax"
 
-MODULOS_DE_PRODUCTO_ESPERADOS = frozenset({"__init__.py", "decode.py", "bench/__init__.py", "bench/sintetico.py"})
+MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
+    {
+        "__init__.py",
+        "_extra.py",
+        "bench/__init__.py",
+        "bench/sintetico.py",
+        "decode.py",
+        "espectral.py",
+        "integrate.py",
+    }
+)
+# Los únicos módulos donde se importa numpy DENTRO de una función (perezoso): ``_extra`` es el punto único para
+# los que solo lo necesitan a él; ``decode`` necesita además Pillow y verifica las dos dependencias por su cuenta.
+PUNTOS_DE_IMPORTACION_PEREZOSA_DE_NUMPY = frozenset({"_extra.py", "decode.py"})
+# El único módulo de producto que calcula frecuencias espectrales: una segunda definición daría gradientes
+# escalados por la resolución (bug real de NP-M0).
+MODULOS_QUE_DEFINEN_FRECUENCIAS = frozenset({"espectral.py"})
+FUNCIONES_DE_FRECUENCIA = ("fftfreq", "rfftfreq")
 PESADOS = ("numpy", "PIL")
 EXTRA = "native-parallax"
 DEPENDENCIAS_DEL_EXTRA = frozenset({"numpy", "pillow"})
@@ -185,6 +202,127 @@ def test_el_escaner_de_imports_pesados_distingue_modulo_de_funcion_y_type_checki
     codigo: str, esperado: list[str]
 ) -> None:
     assert _importa_pesados_al_cargar(codigo) == esperado
+
+
+# ---------------------------------------------------------------------------
+# Puntos únicos: importación perezosa de numpy y convención de frecuencias (NP-I0)
+# ---------------------------------------------------------------------------
+
+
+def _importa_numpy_dentro_de_funciones(codigo: str) -> bool:
+    """``True`` si alguna función (de cualquier profundidad) importa ``numpy``; el import de módulo no cuenta."""
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for interno in ast.walk(nodo):
+                if isinstance(interno, (ast.Import, ast.ImportFrom)):
+                    nombres = _nombres_importados(ast.Module(body=[interno], type_ignores=[]))
+                    if any(n.split(".")[0] == "numpy" for n in nombres):
+                        return True
+    return False
+
+
+def _usa_funcion_de_frecuencia(codigo: str) -> bool:
+    """``np.fft.fftfreq(...)``, ``fftfreq(...)`` o ``from numpy.fft import fftfreq`` (y ``rfftfreq``)."""
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.Attribute) and nodo.attr in FUNCIONES_DE_FRECUENCIA:
+            return True
+        if isinstance(nodo, ast.Name) and nodo.id in FUNCIONES_DE_FRECUENCIA:
+            return True
+        if isinstance(nodo, ast.ImportFrom) and any(a.name in FUNCIONES_DE_FRECUENCIA for a in nodo.names):
+            return True
+    return False
+
+
+def _define_ejes_de_frecuencia(codigo: str) -> bool:
+    return any(
+        isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and "ejes_de_frecuencia" in nodo.name
+        for nodo in ast.walk(ast.parse(codigo))
+    )
+
+
+def _modulos_que(predicado) -> frozenset[str]:  # type: ignore[no-untyped-def]
+    return frozenset(
+        modulo for modulo in _modulos_de_producto() if predicado((PAQUETE / modulo).read_text(encoding="utf-8"))
+    )
+
+
+def test_numpy_se_importa_dentro_de_funciones_solo_en_los_puntos_congelados() -> None:
+    assert _modulos_que(_importa_numpy_dentro_de_funciones) == PUNTOS_DE_IMPORTACION_PEREZOSA_DE_NUMPY
+
+
+def test_solo_un_modulo_de_producto_calcula_frecuencias_espectrales() -> None:
+    assert _modulos_que(_usa_funcion_de_frecuencia) == MODULOS_QUE_DEFINEN_FRECUENCIAS
+
+
+def test_solo_un_modulo_de_producto_define_los_ejes_de_frecuencia() -> None:
+    assert _modulos_que(_define_ejes_de_frecuencia) == MODULOS_QUE_DEFINEN_FRECUENCIAS
+
+
+@pytest.mark.parametrize("modulo", ["bench/sintetico.py", "integrate.py"])
+def test_los_consumidores_de_frecuencias_las_importan_de_espectral(modulo: str) -> None:
+    arbol = ast.parse((PAQUETE / modulo).read_text(encoding="utf-8"))
+    importados = {
+        (nodo.module, alias.name)
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names
+    }
+
+    assert ("sky_claw.local.native_parallax.espectral", "ejes_de_frecuencia") in importados
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("def f():\n    import numpy\n", True),
+        ("def f():\n    import numpy as np\n", True),
+        ("def f():\n    from numpy import fft\n", True),
+        ("def f():\n    import numpy.typing\n", True),
+        ("async def f():\n    import numpy\n", True),
+        ("def f():\n    def g():\n        import numpy\n", True),
+        ("class A:\n    def m(self):\n        import numpy\n", True),
+        ("import numpy\n", False),
+        ("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import numpy as np\n", False),
+        ("def f():\n    import json\n", False),
+        ("def f():\n    import numpyish\n", False),
+    ],
+)
+def test_el_escaner_de_importacion_perezosa_de_numpy_distingue_funcion_y_modulo(codigo: str, esperado: bool) -> None:
+    assert _importa_numpy_dentro_de_funciones(codigo) is esperado
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("import numpy as np\nx = np.fft.fftfreq(8)", True),
+        ("import numpy as np\nx = np.fft.rfftfreq(8)", True),
+        ("from numpy.fft import fftfreq\n", True),
+        ("from numpy.fft import fftfreq as f\n", True),
+        ("from numpy.fft import rfftfreq\n", True),
+        ("x = fftfreq(8)", True),
+        ("import scipy.fft as sf\nx = sf.fftfreq(8)", True),
+        ("import numpy as np\nx = np.fft.fft2(a)", False),
+        ("x = 2.0 * np.pi", False),
+        ("def ejes_de_frecuencia(): pass", False),
+    ],
+)
+def test_el_escaner_de_frecuencias_ve_todas_las_formas_de_llamada(codigo: str, esperado: bool) -> None:
+    assert _usa_funcion_de_frecuencia(codigo) is esperado
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("def ejes_de_frecuencia(): pass", True),
+        ("def _ejes_de_frecuencia(): pass", True),
+        ("async def mis_ejes_de_frecuencia_v2(): pass", True),
+        ("class A:\n    def ejes_de_frecuencia(self): pass", True),
+        ("def otra_cosa(): pass", False),
+        ("from x import ejes_de_frecuencia", False),
+    ],
+)
+def test_el_escaner_de_definiciones_de_ejes_ve_las_variantes_de_nombre(codigo: str, esperado: bool) -> None:
+    assert _define_ejes_de_frecuencia(codigo) is esperado
 
 
 def test_el_censo_de_modulos_de_producto_ignora_research_y_caches(tmp_path: Path) -> None:
