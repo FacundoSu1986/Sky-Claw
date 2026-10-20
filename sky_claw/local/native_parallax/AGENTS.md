@@ -21,7 +21,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
-- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `integrate.py`, `_extra.py` y `bench/`) **no importa** `research` y carga `numpy` y
+- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `integrate.py`, `metrics.py`, `_extra.py` y `bench/`) **no importa** `research` y carga `numpy` y
   Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
   `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
   `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
@@ -35,6 +35,11 @@ La política clean-room, `docs/design/research/native-parallax/` y
   perezosa SOLO por `_extra.py` (y `decode.py`, que además necesita Pillow): ambos puntos están congelados por AST
   en `tests/test_native_parallax_producto_invariant.py`. No agregues otra llamada a `fftfreq` ni otro
   `import numpy` dentro de una función: rompe el ancla a propósito.
+- `metrics.py` (NP-Q0a) son métricas que DESCRIBEN, no deciden: no hay umbrales ni gates ahí (se derivan del
+  benchmark, ADR 0014 §6) y `rango_dinamico` exige los percentiles. La derivada H → gradientes y la inversa
+  normal → gradientes tienen UNA definición (`espectral.gradientes_espectrales`, `integrate.gradientes_de_normal`):
+  no las copies, importalas. Un módulo nuevo que importe de `espectral` rompe el ancla hasta que se le escribe su
+  receta en `CONSUMIDORES_DE_ESPECTRAL`.
 
 ## Verificación segura
 
