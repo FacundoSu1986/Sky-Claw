@@ -798,6 +798,7 @@ PILLOW_COMMIT = "89f1f4626a2aaf5f3d5ca6437f41def2998fbe09"
 PILLOW_ESTADOS = {
     "11.3.0": "CERTIFICADA",
     "12.3.0": "OBSERVADA_NO_CERTIFICADA",
+    "13.0.0": "OBSERVADA_NO_CERTIFICADA",
 }
 
 
@@ -1132,11 +1133,15 @@ def test_r7_impl_la_version_instalada_esta_declarada() -> None:
 
 
 def test_r7_impl_la_tabla_de_versiones_de_pillow_esta_congelada_y_solo_una_esta_certificada() -> None:
-    assert PILLOW_ESTADOS == {"11.3.0": "CERTIFICADA", "12.3.0": "OBSERVADA_NO_CERTIFICADA"}
+    assert PILLOW_ESTADOS == {
+        "11.3.0": "CERTIFICADA",
+        "12.3.0": "OBSERVADA_NO_CERTIFICADA",
+        "13.0.0": "OBSERVADA_NO_CERTIFICADA",
+    }
     assert [v for v, estado in PILLOW_ESTADOS.items() if estado == "CERTIFICADA"] == [PILLOW_CERTIFICADA]
 
 
-@pytest.mark.parametrize("version", ["10.4.0", "11.3.1", "11.4.0", "12.3.1", "13.0.0", ""])
+@pytest.mark.parametrize("version", ["10.4.0", "11.3.1", "11.4.0", "12.3.1", "13.0.1", "13.1.0", "14.0.0", ""])
 def test_r7_impl_una_version_de_pillow_no_declarada_se_rechaza(version: str) -> None:
     # Ni siquiera un parche de la certificada se extrapola: 11.3.1 podria tocar Resample.c.
     with pytest.raises(AssertionError, match="no esta declarada"):

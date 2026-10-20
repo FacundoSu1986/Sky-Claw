@@ -149,12 +149,18 @@ ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verif
   `requirements.lock`; sin la siembra, una compilación nueva sube otras versiones y los dos locks
   discreparían). `--python-platform windows` reproduce lo que CI instala (el lock base incluye
   `comtypes`, que es de Windows). Un dry-run de `uv pip install --require-hashes` contra Windows lo acepta.
-- **Pillow tiene que ser ≥ 12.3.** `pip-audit` reporta 35 avisos sobre Pillow 11.3.0 (la versión que
-  fijaba `[dev]`), todos corregidos entre 12.1.1 y 12.3.0; con 12.3.0 no reporta ninguno. El paso de CI que
-  pide la decisión 3 no puede pasar con 11.3.0. El extra y `[dev]` quedan en `pillow>=12.3,<13` (rangos
-  disjuntos harían irresoluble `uv sync --extra dev --extra native-parallax`); `<13` porque Pillow 13
-  quita el parámetro `mode` de `Image.fromarray`. La suite de research (232 tests) pasa con 12.3.0.
-- **BC5 llega sin Z.** Pillow 11.3.0 y 12.3.0 decodifican BC5 como RGB con B = 0 (bloque armado a mano), así
+- **Pillow tiene que ser ≥ 13.0.** `pip-audit` reportó 35 avisos sobre Pillow 11.3.0 (la versión que
+  fijaba `[dev]`), todos corregidos entre 12.1.1 y 12.3.0, y después 8 avisos nuevos sobre 12.3.0
+  (CVE-2026-112395, -112397, -112400, -112404, -112895, -112896, -112897 y -112899) corregidos solo en
+  13.0.0, sin backport a 12.x; con 13.0.0 no reporta ninguno. El paso de CI que pide la decisión 3 no puede
+  pasar con 12.3.0. El extra y `[dev]` quedan en `pillow>=13.0,<14` (rangos disjuntos harían irresoluble
+  `uv sync --extra dev --extra native-parallax`). El techo anterior `<13` se había puesto porque se esperaba
+  que Pillow 13 quitara el parámetro `mode` de `Image.fromarray`; verificado ejecutando con 13.0.0, sigue
+  aceptado (con `L` y `RGB` sobre `uint8`, los usos del repo) y sin advertencia. Ahora el techo `<14` es
+  porque la próxima mayor no está verificada. Con 13.0.0 pasan los tests que tocan PIL o
+  `native_parallax` (2761 corridos en Linux; el CI de Windows lo confirma) y el único cambio necesario fue
+  declararla en `PILLOW_ESTADOS` de R7 como `OBSERVADA_NO_CERTIFICADA`.
+- **BC5 llega sin Z.** Pillow 11.3.0, 12.3.0 y 13.0.0 decodifican BC5 como RGB con B = 0 (bloque armado a mano), así
   que `NormalDecoder` reconstruye `Z = sqrt(1 − x² − y²)`. BC5 con signo (BC5S) se rechaza.
 - **Entrada no confiable** (revisión de Codex en #756; los archivos vienen de mods). `NormalDecoder` solo
   acepta PNG y DDS; de los DDS de bloques, DXT1, BC5 y BC7 (los que tienen prueba), más los sin comprimir con
