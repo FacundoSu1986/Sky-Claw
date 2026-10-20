@@ -502,6 +502,9 @@ _DDS_CLASICOS_QUE_NO_SON_DE_8_BITS = [
     # máscaras de un byte pero bits por píxel que no cuadran con ellas: la lectura sería otra
     ("16-bits-con-mascaras-de-24", _DDPF_RGB, 16, 0xFF, 0xFF00, 0xFF0000, 0),
     ("8-bits-con-mascaras-distintas", _DDPF_RGB, 8, 0xFF, 0xFF00, 0xFF0000, 0),
+    # una máscara por encima del ancho del píxel: Pillow lee ``bits // 8`` bytes, así que ese canal vale 0 siempre
+    ("24-bits-con-azul-fuera-del-pixel", _DDPF_RGB, 24, 0xFF, 0xFF00, 0xFF000000, 0),
+    ("24-bits-con-alfa-fuera-del-pixel", _DDPF_RGB_ALFA, 24, 0xFF0000, 0xFF00, 0xFF, 0xFF000000),
 ]
 
 
