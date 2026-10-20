@@ -368,7 +368,10 @@ def _derivar(mediciones: list[Medicion]) -> object:
 
 
 def _simular(mediciones: list[Medicion]) -> object:
-    return simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    # Límites declarados con los bordes de la primera medición: lo que se prueba acá es la homogeneidad del conjunto.
+    return simular_revision(
+        mediciones, _umbrales(), bordes_de_los_limites=mediciones[0].bordes, tolerancia_de_altura=TOLERANCIA
+    )
 
 
 def _simular_sin_un_caso(mediciones: list[Medicion]) -> object:
@@ -452,7 +455,7 @@ def test_un_candidato_sin_validacion_manda_todo_a_revision_en_el_gate_pero_la_si
     ok = _medicion(caso="A", acuerdo=1.0)
 
     decision = decidir_con(ok.metricas, umbrales)
-    reporte = simular_revision([ok], umbrales, tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision([ok], umbrales, bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA)
 
     assert decision.veredicto is Veredicto.REVIEW
     assert Motivo.SIN_VALIDACION_CONTRA_CORPUS_REAL in decision.motivos
@@ -467,7 +470,9 @@ def test_el_conteo_de_una_simulacion_hecha_a_mano() -> None:
         _medicion(caso="D", acuerdo=50.0, error=0.4),  # fuera, mala: revisión acertada
     ]
 
-    reporte = simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        mediciones, _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert reporte.total == Conteo(n_total=4, n_aceptadas=2, n_malas=2, n_aceptadas_malas=1)
     assert reporte.total.n_en_revision == 2
@@ -481,7 +486,9 @@ def test_el_conteo_de_una_simulacion_hecha_a_mano() -> None:
 
 
 def test_sin_aceptadas_la_tasa_de_falsos_aceptos_no_esta_definida() -> None:
-    reporte = simular_revision([_medicion(acuerdo=50.0)], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [_medicion(acuerdo=50.0)], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert reporte.total.n_aceptadas == 0
     assert reporte.total.tasa_de_falsos_aceptos is None
@@ -492,7 +499,12 @@ def test_un_limite_es_inclusivo_en_la_simulacion_igual_que_en_el_gate() -> None:
     en_el_borde = _medicion(acuerdo=5.0)
     apenas_arriba = _medicion(acuerdo=math.nextafter(5.0, math.inf))
 
-    reporte = simular_revision([en_el_borde, apenas_arriba], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [en_el_borde, apenas_arriba],
+        _umbrales(),
+        bordes_de_los_limites=Bordes.PERIODICOS,
+        tolerancia_de_altura=TOLERANCIA,
+    )
 
     assert reporte.total.n_aceptadas == 1
 
@@ -513,7 +525,9 @@ def test_hay_un_caso_de_revision_por_cada_motivo_de_la_textura() -> None:
 def test_cada_motivo_de_la_textura_manda_a_revision_y_se_cuenta(motivo: Motivo) -> None:
     medicion = _CASOS_POR_MOTIVO[motivo]()
 
-    reporte = simular_revision([medicion], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [medicion], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert reporte.total.n_aceptadas == 0
     assert dict(reporte.motivos)[motivo] == 1
@@ -521,7 +535,9 @@ def test_cada_motivo_de_la_textura_manda_a_revision_y_se_cuenta(motivo: Motivo) 
 
 
 def test_los_motivos_del_reporte_cubren_todos_los_de_la_textura_en_el_orden_del_gate() -> None:
-    reporte = simular_revision([_medicion()], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [_medicion()], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     esperado = tuple(m for m in Motivo if m in MOTIVOS_DE_LA_TEXTURA)
     assert tuple(motivo for motivo, _ in reporte.motivos) == esperado
@@ -531,7 +547,9 @@ def test_los_motivos_del_reporte_cubren_todos_los_de_la_textura_en_el_orden_del_
 def test_una_textura_con_varios_motivos_cuenta_en_cada_uno() -> None:
     medicion = _medicion(acuerdo=50.0, signo=-1)
 
-    reporte = simular_revision([medicion], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [medicion], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert dict(reporte.motivos)[Motivo.SOBRE_EL_LIMITE] == 1
     assert dict(reporte.motivos)[Motivo.SIGNO_DISTINTO_DEL_ESPERADO] == 1
@@ -546,7 +564,9 @@ def test_el_reporte_cuenta_en_que_metrica_se_pasa_el_limite_en_el_orden_de_los_l
         _medicion(caso="D"),  # ninguna
     ]
 
-    reporte = simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        mediciones, _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert reporte.sobre_el_limite == (
         ("acuerdo_p95_grados", 2),
@@ -560,7 +580,12 @@ def test_el_reporte_cuenta_en_que_metrica_se_pasa_el_limite_en_el_orden_de_los_l
 
 
 def test_una_metrica_fuera_de_dominio_no_cuenta_como_pasada_de_limite() -> None:
-    reporte = simular_revision([_medicion(acuerdo=181.0)], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [_medicion(acuerdo=181.0)],
+        _umbrales(),
+        bordes_de_los_limites=Bordes.PERIODICOS,
+        tolerancia_de_altura=TOLERANCIA,
+    )
 
     assert dict(reporte.sobre_el_limite)["acuerdo_p95_grados"] == 0
     assert dict(reporte.motivos)[Motivo.METRICA_FUERA_DE_DOMINIO] == 1
@@ -586,7 +611,7 @@ def test_los_motivos_de_la_validacion_no_cuentan_ni_siquiera_con_evidencia_insuf
     ok = _medicion(acuerdo=1.0)
     assert Motivo.VALIDACION_INSUFICIENTE in decidir_con(ok.metricas, umbrales).motivos
 
-    reporte = simular_revision([ok], umbrales, tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision([ok], umbrales, bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA)
 
     assert reporte.total.n_aceptadas == 1
 
@@ -595,23 +620,29 @@ def test_un_registro_con_otra_version_de_metricas_no_se_simula() -> None:
     umbrales = _umbrales(version_de_metricas="np-q0a.v0")
 
     with pytest.raises(RevisionError, match="registro"):
-        simular_revision([_medicion()], umbrales, tolerancia_de_altura=TOLERANCIA)
+        simular_revision(
+            [_medicion()], umbrales, bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+        )
 
 
 @pytest.mark.parametrize("umbrales", [None, "x", 3])
 def test_la_simulacion_exige_un_registro_de_umbrales(umbrales: object) -> None:
     with pytest.raises(ParametroDeRevisionInvalidoError):
-        simular_revision([_medicion()], umbrales, tolerancia_de_altura=TOLERANCIA)  # type: ignore[arg-type]
+        simular_revision(
+            [_medicion()], umbrales, bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+        )  # type: ignore[arg-type]
 
 
 def test_la_simulacion_exige_mediciones() -> None:
     with pytest.raises(ParametroDeRevisionInvalidoError, match="al menos una medición"):
-        simular_revision([], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+        simular_revision([], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA)
 
 
 def test_la_simulacion_rechaza_elementos_que_no_son_mediciones() -> None:
     with pytest.raises(ParametroDeRevisionInvalidoError):
-        simular_revision([_metricas()], _umbrales(), tolerancia_de_altura=TOLERANCIA)  # type: ignore[list-item]
+        simular_revision(
+            [_metricas()], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+        )  # type: ignore[list-item]
 
 
 def test_el_reporte_por_escenario_suma_el_total_y_conserva_el_orden_de_aparicion() -> None:
@@ -622,7 +653,9 @@ def test_el_reporte_por_escenario_suma_el_total_y_conserva_el_orden_de_aparicion
         _medicion(caso="B", escenario="limpio", acuerdo=1.0, error=0.0),
     ]
 
-    reporte = simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        mediciones, _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert tuple(nombre for nombre, _ in reporte.por_escenario) == ("ruido", "limpio")
     por = dict(reporte.por_escenario)
@@ -679,7 +712,12 @@ def test_con_los_limites_de_los_mismos_casos_todo_se_acepta_y_dejando_uno_fuera_
     mediciones = _tres_casos_con_acuerdo_creciente()
 
     limites_de_todos = derivar_limites(mediciones, cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
-    en_la_muestra = simular_revision(mediciones, _umbrales(limites_de_todos), tolerancia_de_altura=TOLERANCIA)
+    en_la_muestra = simular_revision(
+        mediciones,
+        _umbrales(limites_de_todos),
+        bordes_de_los_limites=Bordes.PERIODICOS,
+        tolerancia_de_altura=TOLERANCIA,
+    )
     fuera_de_la_muestra = simular_dejando_un_caso_fuera(
         mediciones,
         cuantil=1.0,
@@ -813,6 +851,41 @@ def test_la_huella_de_cada_pliegue_depende_del_corpus_y_del_caso_que_se_deja_fue
     assert de_a != _huella_del_pliegue(otra_huella_del_corpus, "A")
 
 
+@pytest.mark.parametrize(
+    ("derivados_con", "mediciones_con"),
+    [(Bordes.PERIODICOS, Bordes.NEUMANN), (Bordes.NEUMANN, Bordes.PERIODICOS)],
+)
+def test_los_limites_derivados_con_otros_bordes_no_se_aplican_a_las_mediciones(
+    derivados_con: Bordes, mediciones_con: Bordes
+) -> None:
+    """Codex, #763: ``Umbrales`` no guarda los bordes de la derivación, así que una simulación podía aplicar límites de un
+    dominio a mediciones de otro sin error. Ahora quien simula declara con qué bordes se derivaron y se contrasta."""
+    mediciones = [_medicion(caso="A", bordes=mediciones_con), _medicion(caso="B", bordes=mediciones_con)]
+
+    with pytest.raises(ParametroDeRevisionInvalidoError, match="bordes"):
+        simular_revision(mediciones, _umbrales(), bordes_de_los_limites=derivados_con, tolerancia_de_altura=TOLERANCIA)
+
+
+@pytest.mark.parametrize("bordes", list(Bordes))
+def test_los_limites_y_las_mediciones_del_mismo_borde_si_se_simulan(bordes: Bordes) -> None:
+    mediciones = [_medicion(caso="A", bordes=bordes)]
+
+    reporte = simular_revision(mediciones, _umbrales(), bordes_de_los_limites=bordes, tolerancia_de_altura=TOLERANCIA)
+
+    assert reporte.total.n_total == 1
+
+
+@pytest.mark.parametrize("valor", [None, "periodicos", 1])
+def test_los_bordes_de_los_limites_son_un_miembro_de_bordes(valor: object) -> None:
+    with pytest.raises(ParametroDeRevisionInvalidoError, match="bordes"):
+        simular_revision(
+            [_medicion()],
+            _umbrales(),
+            bordes_de_los_limites=valor,  # type: ignore[arg-type]
+            tolerancia_de_altura=TOLERANCIA,
+        )
+
+
 def test_el_orden_de_las_mediciones_no_cambia_el_resultado_de_dejar_un_caso_fuera() -> None:
     mediciones = _tres_casos_con_acuerdo_creciente()
     argumentos = {
@@ -829,7 +902,9 @@ def test_el_orden_de_las_mediciones_no_cambia_el_resultado_de_dejar_un_caso_fuer
 
 
 def test_el_reporte_es_inmutable() -> None:
-    reporte = simular_revision([_medicion()], _umbrales(), tolerancia_de_altura=TOLERANCIA)
+    reporte = simular_revision(
+        [_medicion()], _umbrales(), bordes_de_los_limites=Bordes.PERIODICOS, tolerancia_de_altura=TOLERANCIA
+    )
 
     assert isinstance(reporte, ReporteDeRevision)
     with pytest.raises(AttributeError):

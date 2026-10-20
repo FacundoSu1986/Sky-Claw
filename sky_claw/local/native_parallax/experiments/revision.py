@@ -400,22 +400,38 @@ def _reportar(evaluadas: list[_Evaluada], tolerancia: float) -> ReporteDeRevisio
 
 
 def simular_revision(
-    mediciones: Iterable[Medicion], umbrales: Umbrales, *, tolerancia_de_altura: float
+    mediciones: Iterable[Medicion],
+    umbrales: Umbrales,
+    *,
+    bordes_de_los_limites: Bordes,
+    tolerancia_de_altura: float,
 ) -> ReporteDeRevision:
     """Aplica los límites de ``umbrales`` a ``mediciones`` y cuenta (ver el docstring del módulo).
 
     Mide los LÍMITES, no la evidencia: un registro con ``validacion`` insuficiente (o sin ella) sigue mandando toda
     textura a ``REVIEW`` en el gate (``VALIDACION_INSUFICIENTE`` / ``SIN_VALIDACION_CONTRA_CORPUS_REAL``) y la simulación
     no lo refleja a propósito: la tasa que devuelve es la de los límites, no la del producto. Un registro con otra
-    versión de métricas no se simula. Los límites se evalúan sobre las MISMAS mediciones de las que
-    pudieron derivarse: para una estimación sin fuga, ``simular_dejando_un_caso_fuera``.
+    versión de métricas no se simula. Los límites se evalúan sobre las MISMAS mediciones de las que pudieron derivarse:
+    para una estimación sin fuga, ``simular_dejando_un_caso_fuera``.
+
+    ``bordes_de_los_limites`` declara con qué bordes se derivaron los límites (``Umbrales`` no los guarda) y tiene que
+    coincidir con los de las mediciones: aplicar límites de un dominio a mediciones de otro no vale (Codex, #763).
     """
     tolerancia = _exigir_tolerancia(tolerancia_de_altura)
     if not isinstance(umbrales, Umbrales):
         raise ParametroDeRevisionInvalidoError(f"umbrales debe ser un registro Umbrales, no {umbrales!r}")
+    if not isinstance(bordes_de_los_limites, Bordes):
+        raise ParametroDeRevisionInvalidoError(
+            f"bordes_de_los_limites debe ser un miembro de Bordes, no {bordes_de_los_limites!r}"
+        )
     lista = _exigir_mediciones(mediciones)
     if not lista:
         raise ParametroDeRevisionInvalidoError("se necesita al menos una medición")
+    if lista[0].bordes is not bordes_de_los_limites:  # ya son homogéneas: alcanza con mirar la primera
+        raise ParametroDeRevisionInvalidoError(
+            f"los límites se derivaron con bordes {bordes_de_los_limites.value} y las mediciones usan "
+            f"{lista[0].bordes.value}: no se aplican"
+        )
     return _reportar([_evaluar(m, umbrales, tolerancia) for m in lista], tolerancia)
 
 
