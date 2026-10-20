@@ -210,6 +210,51 @@ def test_locks_no_conservan_dependencias_del_stategraph_retirado() -> None:
         assert f'name = "{dependencia}"' not in uv_lock, f"uv.lock todavía instala {dependencia}"
 
 
+def _versiones_pineadas(lock: str) -> dict[str, str]:
+    """Paquetes ``nombre==versión`` de un ``requirements*.lock`` (nombres normalizados)."""
+    return {
+        nombre.lower().replace("_", "-"): version_pineada
+        for nombre, version_pineada in re.findall(r"(?m)^([A-Za-z0-9_.\-]+)==([^\s\\]+)", lock)
+    }
+
+
+def _divergencias_entre_locks(a: str, b: str) -> dict[str, tuple[str, str]]:
+    """Paquetes presentes en ambos locks con distinta versión: ``{nombre: (versión_a, versión_b)}``."""
+    pines_a, pines_b = _versiones_pineadas(a), _versiones_pineadas(b)
+    return {
+        nombre: (pines_a[nombre], pines_b[nombre])
+        for nombre in pines_a.keys() & pines_b.keys()
+        if pines_a[nombre] != pines_b[nombre]
+    }
+
+
+def test_los_dos_locks_de_requirements_pinean_las_mismas_versiones() -> None:
+    """Subir un paquete en un lock y no en su gemelo deja a CI auditando solo uno de los dos.
+
+    ``requirements.lock`` y ``requirements-native-parallax.lock`` salen del mismo ``pyproject.toml``
+    (el segundo con ``--extra native-parallax``) y CI los audita en pasos separados con ``pip-audit
+    --strict``: el segundo paso no corre si el primero falla. Un aviso nuevo sobre un paquete común
+    (certifi, GHSA-6q48-6c7w-9gw2) obliga a subirlo en los dos; si solo se sube uno, el otro falla
+    recién en la corrida siguiente. Se enumeran TODOS los paquetes comunes, no solo certifi.
+    """
+    base = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    extra = (REPO_ROOT / "requirements-native-parallax.lock").read_text(encoding="utf-8")
+
+    comunes = _versiones_pineadas(base).keys() & _versiones_pineadas(extra).keys()
+
+    assert len(comunes) >= 50, f"se esperaban decenas de paquetes comunes entre los dos locks, hay {len(comunes)}"
+    assert _divergencias_entre_locks(base, extra) == {}
+
+
+def test_el_ancla_de_locks_detecta_una_divergencia() -> None:
+    """Sin este caso el ancla de arriba podría pasar vacía (regex que no matchea nada)."""
+    viejo = "certifi==2026.2.25 \\\n    --hash=sha256:aa\nidna==3.15 \\\n    --hash=sha256:bb\n"
+    nuevo = "certifi==2026.10.19 \\\n    --hash=sha256:cc\nidna==3.15 \\\n    --hash=sha256:bb\nnumpy==2.4.6\n"
+
+    assert _divergencias_entre_locks(viejo, nuevo) == {"certifi": ("2026.2.25", "2026.10.19")}
+    assert _divergencias_entre_locks(viejo, viejo) == {}
+
+
 def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
