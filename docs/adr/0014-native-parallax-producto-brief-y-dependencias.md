@@ -450,6 +450,12 @@ Windows lo confirma en el PR.
   rechaza como validación. Lo que distingue una medición de otra (grilla, bordes, versión de las métricas y de la
   medición, escenarios) va en `CorpusMedido.descripcion`, un JSON canónico con valor de referencia congelado que NO es un
   hash, para que no se preste a usarlo como `huella_del_corpus`.
+- **Cada `Medicion` declara los bordes con que se hizo y no se mezclan mediciones de bordes distintos** (pr-agent, #763).
+  Un límite derivado (o evaluado) sobre una mezcla de periódicos y Neumann no vale para ninguno de los dos, y el producto
+  podría elegir bordes por textura (teselable o no). La regla vive en un solo validador que usan las tres funciones que
+  consumen mediciones (`derivar_limites`, `simular_revision` y `simular_dejando_un_caso_fuera`), enumeradas en el test.
+  `razon_de_costura` no recibe bordes (`metrics.py` la define sobre el salto de wrap de la altura): mide la costura al
+  teselar, sea cual sea el integrador.
 - **La derivación valida el dominio de TODA medición buena** (Codex, #763). Una fila buena con una métrica no finita o
   imposible (un ángulo negativo, un residuo > 1) ocupa un rango de la muestra y mueve el límite sin que nada falle (con un
   ángulo de -5° el límite del cuantil 0.5 pasó de 2.0 a 1.0): es un error, igual que en el gate, donde esa medición va a
@@ -519,8 +525,8 @@ trae alturas authored) y el reporte da los conteos (`n_total`, `n_aceptadas`, `n
 `ValidacionContraCorpusReal`; armar esa evidencia, con la tolerancia, la confianza y la tasa de revisión máxima, sigue
 siendo del operador.
 
-**Mutantes.** 107 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
-simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **101 mueren**
+**Mutantes.** 113 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
+simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **107 mueren**
 (uno sobrevivió porque el test comparaba el JSON parseado y no su forma canónica; se ancló el texto exacto). Los 6
 sobrevivientes: **5 eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el
 `max(posicion, 1)`; dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y un chequeo previo de los bordes
