@@ -84,12 +84,13 @@ dependencies = [
 native-parallax = [
     # <2.5: ver el comentario de ``dev`` (la línea 2.5.x exige Python >=3.12).
     "numpy>=1.26,<2.5",
-    # >=12.3: pip-audit --strict reporta 35 avisos sobre Pillow 11.3.0 (PYSEC-2026-165, -2249..-2257,
-    # -2874, -3451..-3496...), todos corregidos entre 12.1.1 y 12.3.0; el lock del extra se audita en CI.
-    # <13: Pillow 13 quita el parámetro ``mode`` de ``Image.fromarray`` (DeprecationWarning ya visible
-    # en tests/test_native_parallax_exp_m4.py). Verificado con 12.3.0: la suite de research (232 tests)
-    # y los de NormalDecoder pasan.
-    "pillow>=12.3,<13",
+    # >=13.0: pip-audit --strict reporta 8 avisos sobre Pillow 12.3.0 (CVE-2026-112395, -112397, -112400,
+    # -112404, -112895, -112896, -112897, -112899) cuya única versión corregida es 13.0.0 (antes, 35 avisos
+    # sobre 11.3.0 corregidos entre 12.1.1 y 12.3.0); el lock del extra se audita en CI.
+    # <14: la próxima mayor no está verificada. Verificado con 13.0.0 en Linux: pasan los 2761 tests que
+    # tocan PIL o native_parallax, ``Image.fromarray(..., mode=...)`` sigue aceptado y mypy da lo mismo que
+    # con 12.3.0 (ADR 0014).
+    "pillow>=13.0,<14",
 ]
 dev = [
     "pytest>=7.4,<9",
@@ -126,7 +127,7 @@ dev = [
     # Mismo límite que el extra ``native-parallax`` (ver su comentario): los tests deben correr con
     # la misma versión de Pillow que el producto, y dos rangos disjuntos harían irresoluble
     # ``uv sync --extra dev --extra native-parallax``.
-    "pillow>=12.3,<13",
+    "pillow>=13.0,<14",
 ]
 
 [tool.pytest.ini_options]
