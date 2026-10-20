@@ -276,7 +276,9 @@ confirma en el PR.
   signo lo delata. El ángulo usa `atan2(|n × m|, n · m)`, no `arccos`, que pierde la mitad de las cifras para
   errores diminutos. El **residuo de integrabilidad** normaliza por el Hessiano completo del campo de gradientes. La
   **razón de costura** es la misma matemática que `bench.razon_borde` (un test enumera los 17 casos para que no se
-  separen).
+  separen). Su umbral de "paso nulo" es **relativo a la escala del campo** (`1e-12 · max|altura|`), no absoluto:
+  con un `1e-12` fijo, el mismo campo multiplicado por 1e-20 se leía como plano y la razón cambiaba de valor sin
+  que la costura cambiara. Es el mismo defecto en dos funciones hermanas y se corrigió en las dos (Codex, #760).
 - **Dos defectos de definición que los tests atraparon antes de commitear.** (1) Normalizar el residuo por
   `|∂p/∂y| + |∂q/∂x|` daba ~0.5 en campos separables (`h = f(x) + g(y)`, derivada cruzada nula): era el cociente de dos
   ruidos de redondeo, y el campo más perfecto salía peor evaluado. (2) `continuidad_de_mosaico` (coseno entre
