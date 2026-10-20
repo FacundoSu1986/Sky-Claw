@@ -18,12 +18,14 @@ decodifique correctamente BC5/BC7 REALES de Skyrim sigue sin verificarse (EXP-00
 from __future__ import annotations
 
 import dataclasses
-import importlib
+import importlib.util
 import re
 import struct
 import sys
 import warnings
+import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -92,6 +94,31 @@ def _png(tmp_path: Path, pixeles: np.ndarray, nombre: str = "n.png") -> Path:
     ruta = tmp_path / nombre
     Image.fromarray(pixeles).save(ruta)
     return ruta
+
+
+def _png_16_bits(tmp_path: Path, tipo_de_color: int) -> Path:
+    """PNG de 16 bits por canal armado a mano (Pillow no escribe RGB de 16 bits): ``2`` = RGB, ``6`` = RGBA."""
+
+    def trozo(tipo: bytes, datos: bytes) -> bytes:
+        return struct.pack(">I", len(datos)) + tipo + datos + struct.pack(">I", zlib.crc32(tipo + datos) & 0xFFFFFFFF)
+
+    canales = {2: 3, 6: 4}[tipo_de_color]
+    fila = b"\x00" + b"\x80\x00" * (canales * 2)
+    contenido = (
+        b"\x89PNG\r\n\x1a\n"
+        + trozo(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 16, tipo_de_color, 0, 0, 0))
+        + trozo(b"IDAT", zlib.compress(fila * 2))
+        + trozo(b"IEND", b"")
+    )
+    return _escribir(tmp_path, "n16.png", contenido)
+
+
+def _dds_clasico(flags: int, bits: int, masc_r: int, masc_g: int, masc_b: int, masc_a: int, payload: bytes) -> bytes:
+    """DDS sin comprimir de cabecera clásica: el formato de píxel lo describen las máscaras de canal."""
+    formato_de_pixel = struct.pack("<II4sIIIII", 32, flags, b"\0\0\0\0", bits, masc_r, masc_g, masc_b, masc_a)
+    cabecera = struct.pack("<7I", 124, _DDSD_BASICO, 4, 4, len(payload), 0, 1)
+    cabecera += b"\0" * 44 + formato_de_pixel + struct.pack("<5I", 0x1000, 0, 0, 0, 0)
+    return b"DDS " + cabecera + payload
 
 
 def _vector(valor8: tuple[int, int, int]) -> np.ndarray:
@@ -451,6 +478,120 @@ def test_bomba_de_descompresion_en_las_dos_zonas_de_pillow_da_error_tipado(
             NormalDecoder().decode(ruta)
 
 
+_DDPF_RGB = 0x40
+_DDPF_RGB_ALFA = 0x41
+
+# (nombre, flags, bits, máscaras R, G, B, A). Un DDS sin comprimir de cabecera clásica lo describen sus máscaras
+# y Pillow acepta cualquiera (verificado ejecutando): estas son TODAS las familias que importan, enumeradas.
+_DDS_CLASICOS_DE_8_BITS = [
+    ("rgb24-bgr", _DDPF_RGB, 24, 0xFF0000, 0xFF00, 0xFF, 0),
+    ("rgb24-rgb", _DDPF_RGB, 24, 0xFF, 0xFF00, 0xFF0000, 0),
+    ("rgba32-bgra", _DDPF_RGB_ALFA, 32, 0xFF0000, 0xFF00, 0xFF, 0xFF000000),
+    ("rgba32-rgba", _DDPF_RGB_ALFA, 32, 0xFF, 0xFF00, 0xFF0000, 0xFF000000),
+    ("x8r8g8b8", _DDPF_RGB, 32, 0xFF0000, 0xFF00, 0xFF, 0),
+]
+_DDS_CLASICOS_QUE_NO_SON_DE_8_BITS = [
+    ("r5g6b5", _DDPF_RGB, 16, 0xF800, 0x07E0, 0x001F, 0),
+    ("a1r5g5b5", _DDPF_RGB_ALFA, 16, 0x7C00, 0x03E0, 0x001F, 0x8000),
+    ("a4r4g4b4", _DDPF_RGB_ALFA, 16, 0x0F00, 0x00F0, 0x000F, 0xF000),
+    ("r16g16-sin-azul", _DDPF_RGB, 32, 0xFFFF, 0xFFFF0000, 0, 0),
+    ("rgba64", _DDPF_RGB_ALFA, 64, 0xFFFF, 0xFFFF0000, 0, 0),
+    ("mascaras-repetidas", _DDPF_RGB, 24, 0xFF, 0xFF, 0xFF, 0),
+    ("mascara-de-dos-bytes", _DDPF_RGB, 24, 0xFFFF, 0xFF0000, 0xFF, 0),
+    ("8-bits-por-pixel", _DDPF_RGB, 8, 0xFF, 0xFF, 0xFF, 0),
+    # máscaras de un byte pero bits por píxel que no cuadran con ellas: la lectura sería otra
+    ("16-bits-con-mascaras-de-24", _DDPF_RGB, 16, 0xFF, 0xFF00, 0xFF0000, 0),
+    ("8-bits-con-mascaras-distintas", _DDPF_RGB, 8, 0xFF, 0xFF00, 0xFF0000, 0),
+]
+
+
+@pytest.mark.parametrize("tipo_de_color", [2, 6], ids=["rgb16", "rgba16"])
+def test_png_de_16_bits_por_canal_se_rechaza(tmp_path: Path, tipo_de_color: int) -> None:
+    # Pillow abre estos PNG como modo RGB/RGBA (con rawmode ``RGB;16B``) y los reduce a 8 bits al cargar: sin
+    # este rechazo darían normales cuantizadas sin ningún error (revisión de CodeRabbit en #756).
+    ruta = _png_16_bits(tmp_path, tipo_de_color)
+    with Image.open(ruta) as leida:
+        assert leida.mode in ("RGB", "RGBA")
+
+    with pytest.raises(FormatoNoSoportadoError, match="8 bits"):
+        NormalDecoder().decode(ruta)
+
+
+@pytest.mark.parametrize(
+    ("flags", "bits", "mr", "mg", "mb", "ma"),
+    [caso[1:] for caso in _DDS_CLASICOS_DE_8_BITS],
+    ids=[caso[0] for caso in _DDS_CLASICOS_DE_8_BITS],
+)
+def test_dds_clasico_de_8_bits_por_canal_se_acepta_con_el_valor_correcto(
+    tmp_path: Path, flags: int, bits: int, mr: int, mg: int, mb: int, ma: int
+) -> None:
+    # Cada pixel vale R=200, G=64, B=230 (+ alfa 255 si hay máscara): se arma según las máscaras.
+    valores = {mr: 200, mg: 64, mb: 230, ma: 255}
+    palabra = sum(valor * (mascara & -mascara) for mascara, valor in valores.items() if mascara)
+    pixeles = palabra.to_bytes(bits // 8, "little") * 16
+    ruta = _escribir(tmp_path, "n.dds", _dds_clasico(flags, bits, mr, mg, mb, ma, pixeles))
+
+    resultado = NormalDecoder().decode(ruta)
+
+    np.testing.assert_allclose(resultado.normal[1, 2], _vector((200, 64, 230)), rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("flags", "bits", "mr", "mg", "mb", "ma"),
+    [caso[1:] for caso in _DDS_CLASICOS_QUE_NO_SON_DE_8_BITS],
+    ids=[caso[0] for caso in _DDS_CLASICOS_QUE_NO_SON_DE_8_BITS],
+)
+def test_dds_clasico_que_no_es_de_8_bits_por_canal_se_rechaza(
+    tmp_path: Path, flags: int, bits: int, mr: int, mg: int, mb: int, ma: int
+) -> None:
+    # Hermano del PNG de 16 bits: el códec ``dds_rgb`` de Pillow acepta cualquier máscara y escala cada canal a
+    # 8 bits en silencio (565, 1555, 4444) o deja un canal en cero (R16G16 sin azul).
+    ruta = _escribir(tmp_path, "n.dds", _dds_clasico(flags, bits, mr, mg, mb, ma, b"\0" * (bits // 8) * 16))
+    with Image.open(ruta) as leida:
+        assert leida.mode in ("RGB", "RGBA")
+
+    with pytest.raises(FormatoNoSoportadoError, match="8 bits"):
+        NormalDecoder().decode(ruta)
+
+
+@pytest.mark.parametrize(
+    "tiles",
+    [
+        (),
+        (("?", None),),
+        (("zip", None),),
+        (("zip", ("RGB",)),),
+        (("zip", ["RGB"]),),
+        (("zip", "RGB;16B"),),
+        (("raw", "L"),),
+        (("dds_rgb", None),),
+        (("dds_rgb", (32,)),),
+        (("dds_rgb", (32, "mascaras")),),
+        (("dds_rgb", (32, ([1], 2, 3))),),
+        (("dds_rgb", (32, (0xFF, 0xFF00))),),
+        (("codec-desconocido", "RGB"),),
+        (("zip", "RGB"), ("codec-desconocido", None)),
+    ],
+    ids=lambda tiles: repr(tiles)[:48],
+)
+def test_lo_que_no_se_reconoce_cuenta_como_que_no_es_de_8_bits(tiles: tuple[tuple[str, object], ...]) -> None:
+    assert decode._ocho_bits_por_canal(tiles) is False
+
+
+def test_un_tile_ilegible_falla_cerrado() -> None:
+    # Si Pillow cambiara la forma de ``tile`` o de sus elementos, el decodificador debe rechazar y no suponer.
+    assert decode._tiles(object()) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=None)) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=[object()])) == (("?", None),)
+    assert decode._tiles(SimpleNamespace(tile=[SimpleNamespace(codec_name="zip", args="RGB")])) == (("zip", "RGB"),)
+    assert decode._ocho_bits_por_canal(decode._tiles(object())) is False
+
+
+def test_la_lista_cerrada_de_layouts_de_8_bits_esta_congelada() -> None:
+    assert frozenset({"RGB", "RGBA"}) == decode._RAWMODES_DE_8_BITS
+    assert frozenset({0xFF, 0xFF00, 0xFF0000, 0xFF000000}) == decode._MASCARAS_DE_8_BITS
+
+
 # ---------------------------------------------------------------------------
 # Dependencias perezosas
 # ---------------------------------------------------------------------------
@@ -467,17 +608,22 @@ def test_sin_la_dependencia_el_uso_da_error_tipado_con_instrucciones(
         NormalDecoder().decode(ruta)
 
 
-def test_importar_el_modulo_no_requiere_numpy_ni_pillow() -> None:
-    previos = {nombre: sys.modules.get(nombre) for nombre in ("numpy", "PIL")}
-    try:
-        sys.modules["numpy"] = None  # type: ignore[assignment]
-        sys.modules["PIL"] = None  # type: ignore[assignment]
-        recargado = importlib.reload(decode)
-        assert hasattr(recargado, "NormalDecoder")
-    finally:
-        for nombre, modulo in previos.items():
-            if modulo is None:
-                sys.modules.pop(nombre, None)
-            else:
-                sys.modules[nombre] = modulo
-        importlib.reload(decode)
+def test_importar_el_modulo_no_requiere_numpy_ni_pillow(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Se carga una COPIA aislada del archivo. Recargar ``decode`` en el lugar rehace sus clases de error en el
+    # mismo espacio de nombres y deja a los demás tests comparando contra clases viejas (CodeRabbit, #756).
+    nombre = "decode_sin_el_extra"
+    spec = importlib.util.spec_from_file_location(nombre, Path(decode.__file__))
+    assert spec is not None
+    assert spec.loader is not None
+    copia = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    monkeypatch.setitem(sys.modules, nombre, copia)  # ``dataclass`` necesita el módulo registrado
+
+    spec.loader.exec_module(copia)
+
+    assert hasattr(copia, "NormalDecoder")
+    assert copia.NormalDecoder is not NormalDecoder
+    # El módulo real quedó intacto: sus clases son las que importó este archivo.
+    assert decode.FormatoNoSoportadoError is FormatoNoSoportadoError
+    assert decode.NormalDecoder is NormalDecoder

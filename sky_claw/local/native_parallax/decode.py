@@ -11,7 +11,10 @@ Contenedores y formatos (todo lo demás se RECHAZA con ``FormatoNoSoportadoError
   formato con pérdida o sin verificar alimentaría normales incorrectas al resto del pipeline.
 - **Camino RGB** (PNG, DDS sin comprimir —cabecera clásica o DX10—, BC1/DXT1 y BC7): ``v = rgb / 255 * 2 − 1``
   y renormalización a longitud 1. El canal alfa se ignora (en un ``_n.dds`` de Skyrim suele llevar otra
-  señal). Solo RGB/RGBA de 8 bits; grises, paleta y 16 bits se rechazan.
+  señal). Solo RGB/RGBA de **8 bits por canal**, comprobado sobre el layout real y no solo sobre el modo
+  que Pillow informa: en un PNG el ``rawmode`` del tile (``RGB;16B`` es de 16 bits y Pillow lo abre como
+  ``RGB``), y en un DDS sin comprimir las máscaras de canal (565, 1555 y 4444 serían cuantizados en
+  silencio, y R16G16 deja un canal en cero). Grises, paleta y 16 bits se rechazan.
 - **BC5**: guarda solo X e Y. Pillow 11.3.0 y 12.3.0 lo devuelven como RGB con B = 0 (verificado
   ejecutando con un bloque armado a mano, NP-C0), así que Z se reconstruye como
   ``sqrt(1 − x² − y²)``. Los píxeles con ``x² + y² > 1`` quedan con Z = 0, se renormalizan y se
@@ -138,16 +141,56 @@ _CODEC_DDS_BLOQUES = "bcn"
 _FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC5", "BC7"})
 
 
-def _codecs(imagen: object) -> frozenset[str]:
-    """Nombres de códec de ``imagen.tile``. Se lee ANTES de ``load()``, que vacía la lista.
+# Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0): el
+# ``rawmode`` del tile de un PNG y de un DDS DX10 sin comprimir, y las máscaras de un DDS sin comprimir de
+# cabecera clásica (el códec ``dds_rgb`` acepta CUALQUIER máscara y reescala cada canal a 8 bits sin avisar).
+_RAWMODES_DE_8_BITS = frozenset({"RGB", "RGBA"})
+_MASCARAS_DE_8_BITS = frozenset({0xFF, 0xFF00, 0xFF0000, 0xFF000000})
+_CODECS_CON_RAWMODE = frozenset({"zip", "raw"})  # ``zip``: PNG; ``raw``: DDS DX10 sin comprimir
+_CODEC_DDS_MASCARAS = "dds_rgb"
+
+
+def _tiles(imagen: object) -> tuple[tuple[str, object], ...]:
+    """Pares ``(códec, args)`` de ``imagen.tile``. Se lee ANTES de ``load()``, que vacía la lista.
 
     Un elemento sin nombre de códec legible cuenta como ``"?"``: así un cambio en Pillow falla cerrado.
     """
     tile = getattr(imagen, "tile", None)
     if not isinstance(tile, list):
-        return frozenset({"?"})
-    nombres = (getattr(elemento, "codec_name", None) for elemento in tile)
-    return frozenset(nombre if isinstance(nombre, str) else "?" for nombre in nombres)
+        return (("?", None),)
+    pares: list[tuple[str, object]] = []
+    for elemento in tile:
+        nombre = getattr(elemento, "codec_name", None)
+        pares.append((nombre if isinstance(nombre, str) else "?", getattr(elemento, "args", None)))
+    return tuple(pares)
+
+
+def _mascaras_de_8_bits(args: object) -> bool:
+    """``args`` del códec ``dds_rgb``: ``(bits por píxel, máscaras)`` con un byte entero por canal."""
+    if not isinstance(args, tuple) or len(args) != 2:
+        return False
+    bits, mascaras = args
+    if bits not in (24, 32) or not isinstance(mascaras, tuple) or len(mascaras) not in (3, 4):
+        return False
+    un_byte_por_canal = all(isinstance(m, int) and m in _MASCARAS_DE_8_BITS for m in mascaras)
+    return un_byte_por_canal and len(set(mascaras)) == len(mascaras)
+
+
+def _ocho_bits_por_canal(tiles: tuple[tuple[str, object], ...]) -> bool:
+    """``True`` si TODOS los tiles son de 8 bits por canal. Lo que no se reconoce cuenta como que no lo es."""
+    if not tiles:
+        return False
+    for codec, args in tiles:
+        if codec in _CODECS_CON_RAWMODE:
+            verificado = isinstance(args, str) and args in _RAWMODES_DE_8_BITS
+        elif codec == _CODEC_DDS_MASCARAS:
+            verificado = _mascaras_de_8_bits(args)
+        else:
+            # Los DDS de bloques salen de Pillow a 8 bits; qué formato de bloques vale lo decide ``_dds_verificado``.
+            verificado = codec == _CODEC_DDS_BLOQUES
+        if not verificado:
+            return False
+    return True
 
 
 def _formato_de_pixel_dds(imagen: object) -> str | None:
@@ -169,13 +212,18 @@ def _dds_verificado(codecs: frozenset[str], formato_dds: str | None) -> bool:
 
 
 def _exigir_formato_verificado(
-    nombre: str, formato: str, modo: str, codecs: frozenset[str], formato_dds: str | None
+    nombre: str, formato: str, modo: str, tiles: tuple[tuple[str, object], ...], formato_dds: str | None
 ) -> None:
     """Rechaza lo no verificado ANTES de decodificar los píxeles (``load()`` es lo caro y lo riesgoso)."""
     if formato not in _CONTENEDORES_ADMITIDOS:
         raise FormatoNoSoportadoError(f"{nombre}: contenedor '{formato}' no soportado (solo PNG y DDS)")
     if modo not in _MODOS_ADMITIDOS:
         raise FormatoNoSoportadoError(f"{nombre}: modo '{modo}' no soportado (se espera RGB o RGBA de 8 bits)")
+    if not _ocho_bits_por_canal(tiles):
+        raise FormatoNoSoportadoError(
+            f"{nombre}: {formato} con canales que no son de 8 bits ({list(tiles)!r}); se espera RGB o RGBA de 8 bits"
+        )
+    codecs = frozenset(codec for codec, _ in tiles)
     if formato == "DDS" and not _dds_verificado(codecs, formato_dds):
         raise FormatoNoSoportadoError(
             f"{nombre}: DDS con códec {sorted(codecs)} y formato de píxel {formato_dds!r} no verificado"
@@ -201,9 +249,9 @@ class NormalDecoder:
                 with Image.open(ruta) as imagen:
                     formato = imagen.format or "DESCONOCIDO"
                     modo = imagen.mode
-                    codecs = _codecs(imagen)
+                    tiles = _tiles(imagen)
                     formato_dds = _formato_de_pixel_dds(imagen) if formato == "DDS" else None
-                    _exigir_formato_verificado(ruta.name, formato, modo, codecs, formato_dds)
+                    _exigir_formato_verificado(ruta.name, formato, modo, tiles, formato_dds)
                     imagen.load()
                     pixeles = np.asarray(imagen)
         # Un DDS con FourCC o formato DXGI que Pillow no implementa lanza NotImplementedError al abrir.
