@@ -30,7 +30,7 @@ LEGADOS: dict[str, str | None] = {
     "C:/Worktrees/Sky-Claw-r1-packaging-cancel": "fix/dyndolod-r1-packaging-cancel",
     "E:/Skyclaw_Frozen_Runtime_P3": "feat/frozen-runtime-p3-candidate",
     "E:/Skyclaw_Steam_Frozen_Runtime": "feat/steam-frozen-runtime",
-    "C:/Users/Facu2/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082": "workbuddy/main-d17cd082",
+    f"{Path.home().as_posix()}/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082": "workbuddy/main-d17cd082",
     "E:/Skyclaw_Main_Sync/.kilo/worktrees/broadleaf-professor": None,
 }
 
@@ -199,6 +199,12 @@ def test_transicion_documentada_coincide_con_bindings() -> None:
     bloque = contenido.split("<!-- worktree-legacy:start -->")[1].split("<!-- worktree-legacy:end -->")[0]
     bindings = {
         ruta: None if rama == "DETACHED" else rama for ruta, rama in re.findall(r"\| `([^`]+)` \| `([^`]+)` \|", bloque)
+    }
+    # Los bindings del doc se publican sin la cuenta del operador: `~/` se expande
+    # con el home de la máquina que corre el test, y el resto queda literal.
+    bindings = {
+        f"{Path.home().as_posix()}/{ruta[2:]}" if ruta.startswith("~/") else ruta: rama
+        for ruta, rama in bindings.items()
     }
     assert bindings == LEGADOS
 
