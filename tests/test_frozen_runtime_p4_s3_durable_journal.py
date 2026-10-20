@@ -1799,6 +1799,15 @@ def test_s3_superficie_publica_no_expone_mutacion() -> None:
         # «los artefactos aprobados» en vez de reimplementarla cada uno.
         "proyectar_propuesta",
         "exigir_proyeccion_ligada",
+        # P4-S5 (revisión): la validación de FORMA de la propuesta, pública porque
+        # la autoridad de aprobación tiene que ejercerla ANTES de escribir el
+        # tombstone. El binding liga los campos del scope, pero ``source_activation``
+        # se liga por su digest: el binding no puede ver si el contenido corresponde.
+        # Tampoco ve un ``evidence_digests`` del tipo equivocado. Sin este gate el
+        # consumo quema la aprobación y recién el CREATE rechaza. Es pura: no escribe,
+        # no adquiere el lock, no lee estado — la superficie sigue siendo
+        # lectura/validación/clasificación más la entrada de creación bloqueada.
+        "validar_propuesta_transicion",
     }
     assert publicas == esperadas, f"superficie pública inesperada: {sorted(publicas)}"
     assert modulo.iniciar_transicion_pendiente.__module__ == modulo.__name__

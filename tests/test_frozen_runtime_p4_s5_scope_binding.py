@@ -23,6 +23,7 @@ Se verifica en dos niveles, y ambos se ejercitan acá:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -236,6 +237,17 @@ ADULTERACIONES: dict[str, dict[str, object]] = {
     },
 }
 
+#: Excepción con la que se espera el rechazo, por campo adulterado.
+#:
+#: El default es el binding. La excepción es ``source_activation_digest``: el gate
+#: de forma del journal comprueba ``source_activation_digest == digest(contenido)``,
+#: así que adulterar ese campo lo desliga de su propia fuente antes de que el
+#: binding tenga nada que comparar. El invariante —no se consume, no se escribe—
+#: es el mismo; cambia cuál de las dos barreras dispara primero.
+ERROR_ESPERADO: dict[str, type[Exception]] = {
+    "source_activation_digest": journal_module.JournalIdentityError,
+}
+
 
 @pytest.mark.parametrize("campo", sorted(ADULTERACIONES))
 def test_una_transicion_adulterada_no_consume_la_aprobacion(tmp_path: pathlib.Path, campo: str) -> None:
@@ -251,7 +263,12 @@ def test_una_transicion_adulterada_no_consume_la_aprobacion(tmp_path: pathlib.Pa
     propuesta = _emitir_fixture(root)
     adulterada = _transicion(propuesta, **ADULTERACIONES[campo])
 
-    with pytest.raises(ScopeBindingError, match=campo):
+    # Para ``source_activation_digest`` el rechazo lo produce el gate de FORMA y no
+    # el binding: ese digest liga el CONTENIDO de la activación, así que al
+    # adulterarlo deja de ligar su propia fuente antes de que exista nada que
+    # comparar contra el scope. El binding sigue atajando los otros ocho.
+    esperado = ERROR_ESPERADO.get(campo, ScopeBindingError)
+    with pytest.raises(esperado, match=campo):
         _consumir(root, propuesta, adulterada)
 
     # El rechazo ocurre ANTES del write-ahead: no hay evidencia terminal.
@@ -396,6 +413,65 @@ def test_el_reintento_idempotente_tambien_verifica_el_binding(tmp_path: pathlib.
 
     with pytest.raises(ScopeBindingError):
         _consumir(root, propuesta, _transicion(propuesta, T1, target_generation_id=GEN_AJENA), T1)
+
+
+# ---------------------------------------------------------------------------
+# Burn-first: la propuesta se valida ANTES del tombstone, no después
+# ---------------------------------------------------------------------------
+#
+# El binding liga los campos del scope, pero ``source_activation`` queda fuera de
+# la proyección a propósito: se liga por su digest, que es lo correcto. La
+# consecuencia es que el binding NO puede ver si el CONTENIDO de la activación
+# corresponde al digest declarado. Esa comprobación es de forma, y vive en el
+# journal. Si no corre antes del consumo irreversible, el tombstone se escribe y
+# recién el CREATE rechaza: la aprobación quedó terminal sin PENDING, y
+# recuperarla exige una propuesta nueva con el mismo ``transition_id``.
+#
+# Es el contrato que el propio módulo declara: «validación precede al tombstone:
+# un request stale o malformado NO terminaliza» (approval.py, cabecera).
+
+
+def test_una_propuesta_invalida_no_quema_la_aprobacion(tmp_path: pathlib.Path) -> None:
+    """Un ``source_activation`` incoherente con su digest no debe consumir.
+
+    El llamador conserva el digest aprobado —el binding pasa, porque compara
+    digests— y cambia el contenido. Sin validación de forma previa, el consumo
+    escribe el tombstone y el PENDING nunca se crea.
+    """
+    root = _root(tmp_path)
+    propuesta = _emitir_fixture(root)
+    fuente_incoherente = dataclasses.replace(
+        propuesta.scope.source_activation,
+        effective_runtime_evidence="c" * 64,
+    )
+    transicion = _transicion(propuesta, source_activation=fuente_incoherente)
+
+    with pytest.raises(journal_module.JournalIdentityError):
+        _consumir(root, propuesta, transicion, T1)
+
+    # La aprobación NO puede quedar quemada por una propuesta que el journal
+    # rechazaría: burn-first exige validar antes, no después.
+    ledger = approval_module.cargar_ledger_aprobacion(root).ledger
+    assert ledger is not None
+    assert ledger.state is approval_module.ApprovalLifecycle.ISSUED
+
+
+def test_una_propuesta_malformada_da_error_de_dominio(tmp_path: pathlib.Path) -> None:
+    """``evidence_digests`` del tipo equivocado no debe reventar con ``AttributeError``.
+
+    ``proyectar_propuesta`` lee atributos del objeto; si el tipo es otro, el
+    llamador recibe un error de Python en vez de un rechazo del dominio.
+    """
+    root = _root(tmp_path)
+    propuesta = _emitir_fixture(root)
+    transicion = _transicion(propuesta, evidence_digests="no-es-un-EvidenceDigests")
+
+    with pytest.raises(journal_module.JournalSchemaError):
+        _consumir(root, propuesta, transicion, T1)
+
+    ledger = approval_module.cargar_ledger_aprobacion(root).ledger
+    assert ledger is not None
+    assert ledger.state is approval_module.ApprovalLifecycle.ISSUED
 
 
 def _trasplantar_evidencia(origen: pathlib.Path, destino: pathlib.Path) -> None:

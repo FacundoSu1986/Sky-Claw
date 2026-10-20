@@ -110,6 +110,7 @@ from sky_claw.local.frozen_runtime.journal import (
     exigir_proyeccion_ligada,
     leer_json_de_control,
     proyectar_propuesta,
+    validar_propuesta_transicion,
 )
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle, participant_lock
 from sky_claw.local.frozen_runtime.storage import (
@@ -2024,6 +2025,14 @@ def consumir_aprobacion(
         raise ApprovalIdentityError(
             f"consumo: la transición declarada es {transicion.transition_id}, no {transition_id}"
         )
+    # P4-S5 / burn-first: la FORMA de la propuesta se valida acá, antes del lock y
+    # por lo tanto antes del tombstone. El binding de más abajo liga los campos del
+    # scope, pero no puede ver si el CONTENIDO de ``source_activation`` corresponde
+    # a su digest —se liga por digest, que es lo correcto— ni si ``evidence_digests``
+    # es del tipo declarado. Sin este gate, el tombstone se escribe y recién el
+    # CREATE rechaza: la aprobación queda terminal sin PENDING, y el consumo es
+    # irreversible. Un request malformado NO terminaliza.
+    validar_propuesta_transicion(transicion)
     with participant_lock(ruta, timeout=timeout) as handle:
         handle.assert_owned()
         _exigir_dirs_store(ruta)
@@ -2326,6 +2335,10 @@ def verificar_consumo_aprobacion(
         raise ApprovalIdentityError(
             f"verificación: la transición declarada es {transicion.transition_id}, no {transition_id}"
         )
+    # Mismo gate de forma que el consumo, y por la misma razón: la verificación es
+    # el puente hacia el CREATE, así que una propuesta que el journal rechazaría no
+    # debe llegar a producir evidencia de consumo.
+    validar_propuesta_transicion(transicion)
     autoridad = derivar_autoridad_aprobacion(ruta)
     tombstone = _tombstone_de(autoridad, approval_seq, approval_id)
     if tombstone is None:

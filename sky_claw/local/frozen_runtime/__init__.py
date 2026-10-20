@@ -158,6 +158,7 @@ from sky_claw.local.frozen_runtime.journal import (
     iniciar_transicion_rollback,
     proyectar_propuesta,
     reconciliar_journal,
+    validar_propuesta_transicion,
 )
 from sky_claw.local.frozen_runtime.membership import (
     DirectoryMembershipError,
@@ -279,6 +280,7 @@ __all__ = [
     "proyectar_scope",
     "exigir_proyeccion_ligada",
     "proyectar_propuesta",
+    "validar_propuesta_transicion",
     "reconciliar_aprobacion",
     "revocar_aprobacion",
     "validar_scope",

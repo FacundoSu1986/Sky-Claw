@@ -1373,6 +1373,25 @@ def _validar_candidate_id(valor: object, *, operation: JournalOperation, etiquet
     return None
 
 
+def validar_propuesta_transicion(propuesta: PropuestaTransicion) -> None:
+    """Valida la FORMA de una propuesta sin tocar el journal.
+
+    Existe por el protocolo *burn-first* del consumo de la aprobación: la
+    autoridad tiene que rechazar una propuesta que el journal rechazaría **antes**
+    de escribir el tombstone, porque el tombstone es irreversible y deja la
+    aprobación terminal sin PENDING.
+
+    El binding de P4-S5 no cubre esto y no puede cubrirlo: liga los campos del
+    scope, pero ``source_activation`` se liga por su digest —que es lo correcto—
+    y por lo tanto el binding no puede ver si el CONTENIDO corresponde a ese
+    digest. Tampoco ve un ``evidence_digests`` del tipo equivocado. Las dos cosas
+    son validación de forma, y viven acá.
+
+    Es pura: no escribe, no adquiere el lock, no lee estado.
+    """
+    _validar_propuesta(propuesta)
+
+
 def _validar_propuesta(propuesta: PropuestaTransicion) -> None:
     _exigir_uuid_v4(propuesta.transition_id, campo="transition_id", etiqueta="propuesta")
     if not isinstance(propuesta.operation, JournalOperation):
