@@ -26,6 +26,7 @@ import zlib
 import numpy as np
 import pytest
 
+from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.bench import sintetico
 from sky_claw.local.native_parallax.bench.sintetico import (
     ESPECIFICACION_V1,
@@ -665,7 +666,7 @@ def test_sin_numpy_se_lanza_el_error_tipado_con_la_receta(monkeypatch: pytest.Mo
         generar_altura("S01_flat", 128, 128)
 
 
-def test_la_unica_importacion_de_numpy_del_modulo_es_la_perezosa() -> None:
-    # El ancla de producto prohíbe importar numpy al cargar el módulo; acá se verifica el otro lado:
-    # que el módulo de verdad tenga UN solo punto de importación perezosa.
-    assert callable(sintetico._numpy)
+def test_el_corpus_usa_el_punto_unico_de_importacion_perezosa_de_numpy() -> None:
+    # No tiene un acceso propio a numpy: el ancla de producto congela quiénes lo importan dentro de funciones.
+    assert sintetico.importar_numpy is importar_numpy
+    assert not hasattr(sintetico, "_numpy")

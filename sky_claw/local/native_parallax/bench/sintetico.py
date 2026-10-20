@@ -21,17 +21,17 @@ Lo que NO está acá y por qué:
 - Compresión por bloques (BC): hace falta un codificador y el producto no tiene uno propio (ADR 0014,
   decisión 4: texconv externo, NP-E0). Las variantes con error de bloque llegan con NP-E0.
 - El fixture MatSynth CC0 (ver ``bench/__init__.py``).
-- La inversa N → H y el integrador: son de NP-I0. Cuando exista, debe compartir con este módulo la
-  convención de frecuencias (``_ejes_de_frecuencia``): un solver que use otra daría gradientes escalados por
-  la resolución, un bug real que ya apareció en NP-M0.
+- La inversa N → H y el integrador: son de ``integrate.py`` (NP-I0), que comparte con este módulo la
+  convención de frecuencias (``espectral.ejes_de_frecuencia``): una sola definición, congelada por un ancla
+  de AST, porque un solver con otra daría gradientes escalados por la resolución (bug real de NP-M0).
 
 Reproducibilidad: ``huella_especificacion`` fija la DEFINICIÓN del corpus (ids, clases, grillas, ruido y
 bits). Las fórmulas las congela una tabla de huellas numéricas con tolerancia en el test, no un hash de los
 bytes de ``float64``: ``np.sin``/``np.exp`` no garantizan los mismos bits entre CPUs y rutas SIMD (no
 verificado entre plataformas), así que ese hash no sería un contrato.
 
-Dependencias: ``numpy`` pertenece al extra opcional ``native-parallax`` y se importa de forma perezosa en un
-único punto (``_numpy``); sin él se lanza ``DependenciaNoDisponibleError`` (la misma clase del decodificador).
+Dependencias: ``numpy`` pertenece al extra opcional ``native-parallax`` y se importa de forma perezosa por
+``_extra.importar_numpy``; sin él se lanza ``DependenciaNoDisponibleError`` (la misma clase del decodificador).
 """
 
 from __future__ import annotations
@@ -45,7 +45,8 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
-from sky_claw.local.native_parallax.decode import DependenciaNoDisponibleError
+from sky_claw.local.native_parallax._extra import importar_numpy
+from sky_claw.local.native_parallax.espectral import ejes_de_frecuencia
 
 if TYPE_CHECKING:
     import numpy as np
@@ -72,11 +73,6 @@ __all__ = [
     "semilla_estable",
 ]
 
-_MENSAJE_EXTRA = (
-    "El corpus sintético necesita numpy, que pertenece al extra opcional: instalá "
-    "'sky-claw[native-parallax]' (o pip install --require-hashes -r requirements-native-parallax.lock)."
-)
-
 # Con 32 ciclos en S11, 64 muestras serían exactamente Nyquist (el seno vale 0 en cada muestra). 128 deja
 # esa frecuencia por debajo de Nyquist y es el piso de las grillas de la especificación.
 TAMANO_MINIMO = 128
@@ -99,15 +95,6 @@ class CasoDesconocidoError(BenchError):
 
 class ParametroInvalidoError(BenchError, ValueError):
     """Dimensión, escala, sigma, bits o array fuera de contrato."""
-
-
-def _numpy() -> ModuleType:
-    """Único punto de importación de numpy: lo perezoso permite cargar el módulo sin el extra."""
-    try:
-        import numpy
-    except ImportError as exc:
-        raise DependenciaNoDisponibleError(_MENSAJE_EXTRA) from exc
-    return numpy
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +444,7 @@ def generar_altura(caso_id: str, n_filas: int, n_cols: int) -> NDArray[np.float6
     """Superficie de altura ``float64`` de forma ``(n_filas, n_cols)``, de solo lectura."""
     clave = _exigir_caso(caso_id)
     _exigir_grilla(n_filas, n_cols)
-    _np = _numpy()
+    _np = importar_numpy()
     return _congelar(_np, _GENERADORES[clave](_np, n_filas, n_cols))
 
 
@@ -468,7 +455,7 @@ def razon_borde(altura: NDArray[np.float64]) -> float:
     el contenido con pliegues de S08/S09); una no periódica da una razón mucho mayor (rampa) o localizada
     (N02). Devuelve el máximo de ambos ejes. Un eje constante cuenta como periódico (razón 1).
     """
-    _np = _numpy()
+    _np = importar_numpy()
     campo = _exigir_campo_2d(_np, altura, "altura")
     razones: list[float] = []
     for eje in (0, 1):
@@ -481,25 +468,6 @@ def razon_borde(altura: NDArray[np.float64]) -> float:
     return max(razones)
 
 
-def _ejes_de_frecuencia(_np: ModuleType, n_filas: int, n_cols: int) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Frecuencias angulares para derivar respecto de la coordenada de textura: ``(wy (H,1), wx (1,W))``.
-
-    ``wx = 2π · fftfreq(W) · W`` está en radianes por UNIDAD de x, no por muestra: con ``2π · fftfreq`` a
-    secas el gradiente queda escalado por 1/W y depende de la resolución. La derivada se anula en los bins de
-    Nyquist (extensión par), porque multiplicarlos por ``i·w`` rompe la simetría hermitiana.
-    """
-    fx = _np.fft.fftfreq(n_cols)
-    fy = _np.fft.fftfreq(n_filas)
-    wx = 2.0 * _np.pi * fx * n_cols
-    wy = 2.0 * _np.pi * fy * n_filas
-    wx[_np.abs(_np.abs(fx) - 0.5) < 1e-12] = 0.0
-    wy[_np.abs(_np.abs(fy) - 0.5) < 1e-12] = 0.0
-    return (
-        cast("NDArray[np.float64]", wy.reshape(n_filas, 1)),
-        cast("NDArray[np.float64]", wx.reshape(1, n_cols)),
-    )
-
-
 def normal_desde_altura(
     altura: NDArray[np.float64], escala_x: float = 1.0, escala_y: float = 1.0
 ) -> NDArray[np.float64]:
@@ -510,13 +478,13 @@ def normal_desde_altura(
     integrador periódico. Los signos ``escala_x``/``escala_y`` parametrizan la convención: este módulo no
     declara cuál es la de Skyrim (eso es de NP-X0).
     """
-    _np = _numpy()
+    _np = importar_numpy()
     campo = _exigir_campo_2d(_np, altura, "altura")
     for nombre, escala in (("escala_x", escala_x), ("escala_y", escala_y)):
         if not _es_real_finito(escala):
             raise ParametroInvalidoError(f"{nombre} debe ser un real finito, no {escala!r}")
     n_filas, n_cols = campo.shape
-    wy, wx = _ejes_de_frecuencia(_np, n_filas, n_cols)
+    wy, wx = ejes_de_frecuencia(_np, n_filas, n_cols)
     h_hat = _np.fft.fft2(campo)
     p = _np.real(_np.fft.ifft2(1j * wx * h_hat))
     q = _np.real(_np.fft.ifft2(1j * wy * h_hat))
@@ -542,7 +510,7 @@ def perturbar_normal(normal: NDArray[np.float64], sigma: float, caso_id: str) ->
     La semilla sale de ``semilla_estable(caso_id, f"noise{sigma:.6f}")``: misma entrada, mismo ruido, en
     cualquier proceso. No modifica ``normal``.
     """
-    _np = _numpy()
+    _np = importar_numpy()
     base = _exigir_normal(_np, normal)
     if not _es_real_finito(sigma) or sigma <= 0:
         raise ParametroInvalidoError(f"sigma debe ser un real finito > 0, no {sigma!r}")
@@ -560,7 +528,7 @@ def cuantizar_normal(normal: NDArray[np.float64], bits: int) -> NDArray[np.float
     Solo se admiten las profundidades de la especificación (8, 10 y 16). Q8 es el caso relevante para
     texturas de 8 bits; Q10 y Q16 son controles.
     """
-    _np = _numpy()
+    _np = importar_numpy()
     base = _exigir_normal(_np, normal)
     if not _es_entero(bits) or bits not in ESPECIFICACION_V1.bits_cuantizacion:
         raise ParametroInvalidoError(f"bits debe ser uno de {ESPECIFICACION_V1.bits_cuantizacion}, no {bits!r}")
