@@ -170,3 +170,42 @@ ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verif
 - **No verificado:** que Pillow decodifique bien BC5/BC7 **reales** de Skyrim (EXP-003: las pruebas de
   NP-C0 usan bloques sintéticos); el paso de CI de este extra sobre `windows-latest` hasta que corra el
   CI de NP-C0; el costo en tamaño en el ejecutable congelado; `texconv` (NP-E0).
+
+### Actualización de NP-D0 (2026-10-20)
+
+NP-D0 queda **PARCIAL**: este PR entrega el corpus sintético y su especificación; el fixture MatSynth CC0 no
+está (ver «No incluido»). Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo
+confirma en el PR.
+
+- **Qué entra.** `native_parallax/bench/sintetico.py` reimplementa en el producto los 15 casos periódicos
+  (`S01`–`S15`) y los 2 controles negativos (`N01`, `N02`) de `research/synthetic_height.py`, la normal de
+  referencia H → N por derivada espectral periódica, el ruido gaussiano con semilla CRC32 por (caso, sigma) y
+  la cuantización entera a 8, 10 y 16 bits. `ESPECIFICACION_V1` (`np-d0.v1`) congela ids, clases, las cinco
+  grillas (incluidas 128×256 y 256×128), los cuatro sigmas y los bits; `huella_especificacion` la resume.
+- **Cómo se ancla.** `tests/test_native_parallax_bench_sintetico.py` compara el producto con research como
+  oráculo, bit a bit, sobre los 17 casos y tres grillas (altura) y sobre 17 casos × 4 pares de escalas
+  (normal); congela la especificación por igualdad literal; y agrega una tabla de huellas numéricas por caso
+  que no depende del oráculo (si research cambiara una fórmula, oráculo y copia se moverían juntos y solo
+  esa tabla lo vería) y la inversa analítica de un seno puro.
+- **Dos modelos de cuantización, a propósito** (revisión de Codex en #758). `cuantizar_normal` exige elegir entre
+  `TRES_CANALES` (cuantiza X, Y y Z y renormaliza) y `DOS_CANALES_RECONSTRUYE_Z` (cuantiza X e Y y reconstruye Z, el
+  contrato de BC5): el primero es una cota optimista. Sobre `S14_steep` a Q8 (256×256) el de dos canales deja 33 112 de
+  65 536 píxeles con `nz == 0` y el de tres, ninguno; calibrar los thresholds de NP-Q0 solo con el optimista sería
+  optimista para BC5. No hay modelo por defecto. Ninguno simula la compresión por bloques (NP-E0).
+- **`razon_borde` y los campos que arrancan planos.** research devuelve 1.0 si el paso del borde a su vecino es nulo,
+  sin mirar el resto; el producto cae al promedio de todos los pasos adyacentes (defecto latente de research,
+  documentado en un test; el oráculo sigue igualando a los 17 casos del corpus).
+- **Reproducibilidad: qué se promete y qué no.** El criterio de Synthesis C («reproducible por hash») se
+  cumple para la DEFINICIÓN del corpus (huella SHA-256 de la especificación) y, para los datos, con una tabla
+  de huellas con tolerancia 1e-9. NO se fija un hash de los bytes de `float64`: `np.sin` y `np.exp` no
+  garantizan los mismos bits entre CPUs y rutas SIMD, y eso no está verificado entre plataformas, así que un
+  hash exacto sería frágil y no un contrato.
+- **Tamaño mínimo.** Las grillas deben ser de al menos 128: con 32 ciclos en `S11`, 64 muestras serían
+  exactamente Nyquist y el seno valdría cero en cada una.
+- **No incluido.** (1) El fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada): necesita
+  que el operador decida qué subconjunto, qué hashes y desde dónde descargar; `research/` ya tiene fetchers y
+  un manifiesto (`exp-m3-clean-authored-manifest.json`) que son el punto de partida, pero promoverlos al
+  producto trae egress de red y es otro PR. (2) Variantes con error de compresión por bloques: hace falta un
+  codificador y el producto no tiene uno (decisión 4; texconv, NP-E0). (3) La inversa N → H y el integrador:
+  NP-I0. Debe compartir con `bench/sintetico.py` la convención de frecuencias (`_ejes_de_frecuencia`); un
+  solver con otra daría gradientes escalados por la resolución.
