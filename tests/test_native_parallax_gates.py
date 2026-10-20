@@ -276,9 +276,17 @@ def test_los_motivos_se_acumulan_en_el_orden_del_enum() -> None:
     assert list(decision.motivos) == sorted(decision.motivos, key=list(Motivo).index)
 
 
-def test_auto_accept_no_puede_traer_motivos() -> None:
+@pytest.mark.parametrize(
+    ("motivos", "sobre_el_limite"),
+    [
+        pytest.param((Motivo.SOBRE_EL_LIMITE,), (), id="solo_motivos"),
+        pytest.param((), ("razon_de_costura",), id="solo_sobre_el_limite"),
+        pytest.param((Motivo.SOBRE_EL_LIMITE,), ("razon_de_costura",), id="ambos"),
+    ],
+)
+def test_auto_accept_no_puede_traer_motivos(motivos: tuple[Motivo, ...], sobre_el_limite: tuple[str, ...]) -> None:
     with pytest.raises(ValueError, match="AUTO_ACCEPT"):
-        Decision(Veredicto.AUTO_ACCEPT, (Motivo.SOBRE_EL_LIMITE,), ("razon_de_costura",))
+        Decision(Veredicto.AUTO_ACCEPT, motivos, sobre_el_limite)
 
 
 def test_review_tiene_que_decir_por_que() -> None:
@@ -322,12 +330,16 @@ def test_las_metricas_de_calidad_toman_el_p95_del_acuerdo_y_no_otro_estadistico(
     "cambios",
     [
         pytest.param({"id_del_corpus": ""}, id="id_vacio"),
+        pytest.param({"id_del_corpus": None}, id="id_none"),
+        pytest.param({"criterio_de_etiqueta": 5}, id="criterio_no_es_texto"),
+        pytest.param({"huella_del_corpus": "ab" * 32 + "a"}, id="huella_de_65_caracteres"),
+        pytest.param({"huella_del_corpus": None}, id="huella_none"),
         pytest.param({"criterio_de_etiqueta": "  "}, id="criterio_en_blanco"),
         pytest.param({"huella_del_corpus": "abc"}, id="huella_corta"),
         pytest.param({"huella_del_corpus": "AB" * 32}, id="huella_en_mayusculas"),
         pytest.param({"huella_del_corpus": "zz" * 32}, id="huella_no_hex"),
         pytest.param({"huella_del_corpus": huella_especificacion(ESPECIFICACION_V1)}, id="corpus_sintetico_conocido"),
-        pytest.param({"n_total": 0}, id="n_total_cero"),
+        pytest.param({"n_total": 0, "n_aceptadas": 0, "n_aceptadas_malas": 0}, id="n_total_cero_divide_por_cero"),
         pytest.param({"n_aceptadas": 1001}, id="mas_aceptadas_que_total"),
         pytest.param({"n_aceptadas": -1}, id="aceptadas_negativas"),
         pytest.param({"n_aceptadas_malas": 601}, id="mas_malas_que_aceptadas"),
@@ -356,6 +368,32 @@ def test_un_limite_negativo_no_finito_o_de_otro_tipo_no_se_puede_construir(campo
         _limites(**{campo: valor})  # type: ignore[arg-type]
 
 
+def test_los_bordes_de_las_probabilidades_y_de_los_conteos_son_validos() -> None:
+    # Tasa de revisión máxima 0 y 1 son tolerancias extremas pero coherentes; los conteos pueden ser todos iguales.
+    assert _validacion(tasa_de_revision_maxima=0.0).tasa_de_revision_maxima == 0.0
+    assert _validacion(tasa_de_revision_maxima=1.0).tasa_de_revision_maxima == 1.0
+    todos_iguales = _validacion(n_total=10, n_aceptadas=10, n_aceptadas_malas=10)
+    assert todos_iguales.cota_superior_de_aceptadas_malas == 1.0
+    assert not todos_iguales.alcanza
+    assert _validacion(n_total=1, n_aceptadas=1, n_aceptadas_malas=0).n_total == 1
+
+
+def test_con_tolerancia_de_revision_cero_solo_alcanza_si_se_acepta_todo() -> None:
+    aceptando_todo = _validacion(n_total=600, n_aceptadas=600, tasa_de_revision_maxima=0.0)
+    revisando_una = _validacion(n_total=601, n_aceptadas=600, tasa_de_revision_maxima=0.0)
+
+    assert aceptando_todo.alcanza
+    assert not revisando_una.alcanza
+
+
+def test_si_no_se_acepta_nada_la_cota_es_uno_y_la_validacion_no_alcanza() -> None:
+    sin_aceptar = _validacion(n_aceptadas=0, tasa_de_revision_maxima=1.0)
+
+    assert sin_aceptar.cota_superior_de_aceptadas_malas == 1.0
+    assert sin_aceptar.tasa_de_revision == 1.0
+    assert not sin_aceptar.alcanza
+
+
 def test_un_limite_en_cero_es_valido() -> None:
     assert _limites(razon_de_costura=0.0).razon_de_costura == 0.0
 
@@ -364,6 +402,9 @@ def test_un_limite_en_cero_es_valido() -> None:
     "cambios",
     [
         pytest.param({"etiqueta": ""}, id="etiqueta_vacia"),
+        pytest.param({"etiqueta": None}, id="etiqueta_none"),
+        pytest.param({"version_de_metricas": 1}, id="version_no_es_texto"),
+        pytest.param({"huella_de_derivacion": "cd" * 32 + "c"}, id="huella_de_derivacion_de_65"),
         pytest.param({"version_de_metricas": " "}, id="version_en_blanco"),
         pytest.param({"huella_de_derivacion": "xyz"}, id="huella_invalida"),
         pytest.param({"signo_esperado": 0}, id="signo_esperado_cero"),
@@ -432,6 +473,13 @@ def test_la_cota_binomial_cumple_su_definicion_contra_la_distribucion_exacta(k: 
 @pytest.mark.parametrize("n", [1, 2, 10, 600, 100_000])
 def test_sin_fallos_la_cota_es_la_forma_cerrada(n: int) -> None:
     assert cota_superior_binomial(0, n, 0.95) == pytest.approx(1.0 - 0.05 ** (1.0 / n), rel=1e-9)
+
+
+def test_con_una_confianza_extrema_la_cota_no_revienta_en_el_borde_del_intervalo() -> None:
+    # 1 - 1.1e-16: la bisección converge pegada a 1 y el punto medio redondea a 1.0, donde ``log1p(-p)`` no existe.
+    cota = cota_superior_binomial(0, 1, 1.0 - 2.0**-53)
+
+    assert 0.999999999999999 < cota <= 1.0
 
 
 def test_la_cota_de_todo_fallo_es_uno() -> None:
