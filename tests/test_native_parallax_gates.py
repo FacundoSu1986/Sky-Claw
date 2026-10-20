@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from decimal import Decimal
 from fractions import Fraction
 
 import pytest
@@ -258,11 +259,26 @@ def test_la_validacion_justo_en_la_cota_declarada_alcanza() -> None:
     assert not _validacion(alpha_objetivo=math.nextafter(alpha, 0.0)).alcanza
 
 
-def test_la_validacion_justo_en_la_tasa_de_revision_maxima_alcanza() -> None:
-    # 500 de 1000 aceptadas = 50 % de revisión, el máximo declarado (``<=``, no ``<``).
-    validacion = _validacion(n_aceptadas=500, tasa_de_revision_maxima=0.5)
+@pytest.mark.parametrize(("n_aceptadas", "maxima"), [(500, 0.5), (700, 0.3), (900, 0.1)])
+def test_la_validacion_justo_en_la_tasa_de_revision_maxima_alcanza(n_aceptadas: int, maxima: float) -> None:
+    # 50 %, 30 % y 10 % de revisión sobre 1000 texturas, cada uno igual al máximo declarado (``<=``, no ``<``). 700 y
+    # 900 no son exactos en binario: ``1.0 - 700 / 1000`` da 0.30000000000000004, que es MAYOR que el literal 0.3.
+    validacion = _validacion(n_aceptadas=n_aceptadas, tasa_de_revision_maxima=maxima)
 
     assert decidir_con(_metricas(), _umbrales(validacion=validacion)).veredicto is Veredicto.AUTO_ACCEPT
+
+
+@pytest.mark.parametrize("n_total", [10, 100, 1000])
+def test_la_tasa_de_revision_es_el_literal_decimal_que_declara_el_operador_en_toda_la_grilla(n_total: int) -> None:
+    """ENUMERA todas las aceptadas posibles: una tasa que cae justo en un decimal tiene que ser ese decimal."""
+    desviaciones = []
+    for n_aceptadas in range(n_total + 1):
+        literal = float(Decimal(n_total - n_aceptadas) / Decimal(n_total))  # lo que el operador escribiría
+        validacion = _validacion(n_total=n_total, n_aceptadas=n_aceptadas, tasa_de_revision_maxima=literal)
+        if validacion.tasa_de_revision != literal:
+            desviaciones.append((n_aceptadas, validacion.tasa_de_revision, literal))
+
+    assert not desviaciones
 
 
 def test_los_motivos_se_acumulan_en_el_orden_del_enum() -> None:

@@ -286,8 +286,13 @@ class ValidacionContraCorpusReal:
 
     @property
     def tasa_de_revision(self) -> float:
-        """Fracción de las texturas del corpus que los límites mandarían a revisión."""
-        return 1.0 - self.n_aceptadas / self.n_total
+        """Fracción de las texturas del corpus que los límites mandarían a revisión.
+
+        Un solo cociente de enteros exactos, correctamente redondeado: coincide con el literal decimal que escribe el
+        operador (``300 / 1000 == 0.3``). Restar de 1.0 redondea dos veces y deja ``0.30000000000000004``, que
+        rompería el límite inclusivo de ``alcanza`` justo en el borde.
+        """
+        return (self.n_total - self.n_aceptadas) / self.n_total
 
     @property
     def cota_superior_de_aceptadas_malas(self) -> float:
