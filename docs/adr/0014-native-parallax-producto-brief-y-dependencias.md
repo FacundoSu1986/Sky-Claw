@@ -455,7 +455,9 @@ Windows lo confirma en el PR.
   podría elegir bordes por textura (teselable o no). La regla vive en un solo validador que usan las tres funciones que
   consumen mediciones (`derivar_limites`, `simular_revision` y `simular_dejando_un_caso_fuera`), enumeradas en el test.
   `razon_de_costura` no recibe bordes (`metrics.py` la define sobre el salto de wrap de la altura): mide la costura al
-  teselar, sea cual sea el integrador.
+  teselar, sea cual sea el integrador. Además `Umbrales` no guarda los bordes de la derivación, así que
+  `simular_revision` exige `bordes_de_los_limites` y rechaza aplicar límites de un dominio a mediciones de otro (Codex,
+  #763); `simular_dejando_un_caso_fuera` no lo necesita porque deriva y evalúa sobre las mismas mediciones, homogéneas.
 - **La derivación valida el dominio de TODA medición buena** (Codex, #763). Una fila buena con una métrica no finita o
   imposible (un ángulo negativo, un residuo > 1) ocupa un rango de la muestra y mueve el límite sin que nada falle (con un
   ángulo de -5° el límite del cuantil 0.5 pasó de 2.0 a 1.0): es un error, igual que en el gate, donde esa medición va a
@@ -525,8 +527,8 @@ trae alturas authored) y el reporte da los conteos (`n_total`, `n_aceptadas`, `n
 `ValidacionContraCorpusReal`; armar esa evidencia, con la tolerancia, la confianza y la tasa de revisión máxima, sigue
 siendo del operador.
 
-**Mutantes.** 113 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
-simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **107 mueren**
+**Mutantes.** 117 ejecutados sobre `revision.py` y `medicion.py` (validadores, etiqueta, derivación y su dominio, conteo,
+simulación, dejar un caso fuera, escenarios, error de altura, cableado de bordes y descripción del corpus). **111 mueren**
 (uno sobrevivió porque el test comparaba el JSON parseado y no su forma canónica; se ancló el texto exacto). Los 6
 sobrevivientes: **5 eran código redundante y se eliminaron** (el `isfinite` del cuantil, que el rango ya implica; el
 `max(posicion, 1)`; dos condiciones de `Conteo` que la de «malas en revisión» ya implica; y un chequeo previo de los bordes
@@ -543,5 +545,5 @@ convención DirectX. (5) Las cifras de arriba son de 128² (con el chequeo a 256
 
 **Reproducir.** `corpus = medir_corpus_sintetico(128, 128, bordes=Bordes.PERIODICOS)`, luego
 `simular_dejando_un_caso_fuera(corpus.mediciones, cuantil=0.95, tolerancia_de_altura=0.05, signo_esperado=1,
-huella_del_corpus=corpus.huella)` y `derivar_limites` + `candidato_desde_limites` + `simular_revision` para «la misma
-muestra». Es determinista; la huella de referencia del corpus medido está congelada en el test.
+huella_del_corpus=corpus.huella)` y `derivar_limites` + `candidato_desde_limites` + `simular_revision(...,
+bordes_de_los_limites=Bordes.PERIODICOS, ...)` para «la misma muestra». Es determinista; la huella de referencia del corpus medido está congelada en el test.
