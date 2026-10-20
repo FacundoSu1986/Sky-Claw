@@ -139,6 +139,11 @@ _ITEMS = frozenset(
         # Telegram. Parcial a propósito: la cadena real en rig no corrió todavía,
         # y la fila lo dice en vez de dejar que el título del PR lo cierre.
         "Etapa 9 desatendida y operable en remoto (#661)",
+        # Fila del rig real 2026-10-19: sus dos PASS (standalone y brokered), los
+        # defectos F1/F2/F3 que destapó y los residuales declarados. La evidencia está
+        # commiteada en docs/validation/2026-10-19_pr661_unattended_windows_real_rig/,
+        # así que la fila NO se declara como evidencia externa (`fuera del repo`).
+        "Etapa 9 desatendida — defectos medidos en la corrida real 2026-10-19 (F1/F2/F3)",
     }
 )
 
