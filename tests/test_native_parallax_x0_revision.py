@@ -54,6 +54,7 @@ from sky_claw.local.native_parallax.gates import (
     decidir_con,
     huella_del_candidato,
 )
+from sky_claw.local.native_parallax.integrate import Bordes
 
 TOLERANCIA = 0.05
 HUELLA_A = "a" * 64
@@ -79,11 +80,13 @@ def _medicion(
     *,
     control: bool = False,
     error: float | None = 0.0,
+    bordes: Bordes = Bordes.PERIODICOS,
     **metricas: float,
 ) -> Medicion:
     return Medicion(
         caso=caso,
         escenario=escenario,
+        bordes=bordes,
         es_control_negativo=control,
         metricas=_metricas(**metricas),  # type: ignore[arg-type]
         error_de_altura=error,
@@ -121,8 +124,22 @@ def test_una_medicion_exige_caso_y_escenario_como_texto_no_vacio(campo: str, val
 
     with pytest.raises(MedicionInvalidaError):
         Medicion(
+            bordes=Bordes.PERIODICOS,
             caso=argumentos["caso"],  # type: ignore[arg-type]
             escenario=argumentos["escenario"],  # type: ignore[arg-type]
+            es_control_negativo=False,
+            metricas=_metricas(),
+            error_de_altura=0.0,
+        )
+
+
+@pytest.mark.parametrize("valor", [None, "periodicos", 1, "neumann"])
+def test_una_medicion_exige_los_bordes_como_miembro_de_bordes(valor: object) -> None:
+    with pytest.raises(MedicionInvalidaError, match="bordes"):
+        Medicion(
+            caso="A",
+            escenario="limpio",
+            bordes=valor,  # type: ignore[arg-type]
             es_control_negativo=False,
             metricas=_metricas(),
             error_de_altura=0.0,
@@ -133,6 +150,7 @@ def test_una_medicion_exige_caso_y_escenario_como_texto_no_vacio(campo: str, val
 def test_un_control_negativo_es_un_booleano_de_verdad(valor: object) -> None:
     with pytest.raises(MedicionInvalidaError):
         Medicion(
+            bordes=Bordes.PERIODICOS,
             caso="A",
             escenario="limpio",
             es_control_negativo=valor,  # type: ignore[arg-type]
@@ -144,6 +162,7 @@ def test_un_control_negativo_es_un_booleano_de_verdad(valor: object) -> None:
 def test_una_medicion_exige_metricas_de_calidad() -> None:
     with pytest.raises(MedicionInvalidaError):
         Medicion(
+            bordes=Bordes.PERIODICOS,
             caso="A",
             escenario="limpio",
             es_control_negativo=False,
@@ -156,6 +175,7 @@ def test_una_medicion_exige_metricas_de_calidad() -> None:
 def test_el_error_de_altura_es_none_o_un_real_finito_no_negativo(valor: object) -> None:
     with pytest.raises(MedicionInvalidaError):
         Medicion(
+            bordes=Bordes.PERIODICOS,
             caso="A",
             escenario="limpio",
             es_control_negativo=False,
@@ -337,6 +357,49 @@ def test_los_valores_imposibles_cubren_cada_campo_gateado() -> None:
     cubiertos = {campo for campo, _ in _MEDICIONES_IMPOSIBLES}
 
     assert len(fields(LimitesDeAutoaceptacion)) == len(cubiertos) == 3  # uno por cada campo de LimitesDeAutoaceptacion
+
+
+def _mezcla_de_bordes() -> list[Medicion]:
+    return [_medicion(caso="A", bordes=Bordes.PERIODICOS), _medicion(caso="B", bordes=Bordes.NEUMANN)]
+
+
+def _derivar(mediciones: list[Medicion]) -> object:
+    return derivar_limites(mediciones, cuantil=1.0, tolerancia_de_altura=TOLERANCIA)
+
+
+def _simular(mediciones: list[Medicion]) -> object:
+    return simular_revision(mediciones, _umbrales(), tolerancia_de_altura=TOLERANCIA)
+
+
+def _simular_sin_un_caso(mediciones: list[Medicion]) -> object:
+    return simular_dejando_un_caso_fuera(
+        mediciones,
+        cuantil=1.0,
+        tolerancia_de_altura=TOLERANCIA,
+        signo_esperado=1,
+        huella_del_corpus=HUELLA_DEL_CORPUS,
+    )
+
+
+# Las TRES funciones públicas que consumen mediciones: la regla vive en un solo validador y se enumera acá.
+_CONSUMIDORES_DE_MEDICIONES = [_derivar, _simular, _simular_sin_un_caso]
+
+
+@pytest.mark.parametrize("consumidor", _CONSUMIDORES_DE_MEDICIONES, ids=lambda f: f.__name__)
+def test_no_se_mezclan_mediciones_de_bordes_distintos(consumidor: Callable[[list[Medicion]], object]) -> None:
+    """pr-agent, #763: un límite derivado con bordes periódicos y Neumann mezclados no vale para ninguno de los dos."""
+    with pytest.raises(ParametroDeRevisionInvalidoError, match="bordes"):
+        consumidor(_mezcla_de_bordes())
+
+
+@pytest.mark.parametrize("consumidor", _CONSUMIDORES_DE_MEDICIONES, ids=lambda f: f.__name__)
+@pytest.mark.parametrize("bordes", list(Bordes))
+def test_mediciones_de_los_mismos_bordes_si_se_consumen(
+    consumidor: Callable[[list[Medicion]], object], bordes: Bordes
+) -> None:
+    homogeneas = [_medicion(caso="A", bordes=bordes), _medicion(caso="B", bordes=bordes)]
+
+    assert consumidor(homogeneas) is not None
 
 
 def test_la_derivacion_no_depende_del_orden_de_las_mediciones() -> None:

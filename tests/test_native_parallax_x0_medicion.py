@@ -186,6 +186,7 @@ def test_medir_cablea_las_metricas_del_gate_con_los_mismos_bordes(bordes: Bordes
 
     integrada = integrar(normal, bordes=bordes)
     acuerdo = acuerdo_normal(normal, integrada.altura, bordes=bordes)
+    assert medicion.bordes is bordes  # la medición declara con qué bordes se hizo
     assert medicion.metricas.acuerdo_p95_grados == acuerdo.p95_grados
     assert medicion.metricas.signo == acuerdo.signo
     assert medicion.metricas.residuo_de_integrabilidad == residuo_de_integrabilidad(normal, bordes=bordes)

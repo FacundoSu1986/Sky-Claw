@@ -166,7 +166,12 @@ def medir_textura(
     altura_verdadera: NDArray[np.float64],
     bordes: Bordes,
 ) -> Medicion:
-    """Integra ``normal``, calcula las métricas del gate con los MISMOS ``bordes`` y el error contra la verdad."""
+    """Integra ``normal``, calcula las métricas del gate con los MISMOS ``bordes`` y el error contra la verdad.
+
+    ``razon_de_costura`` no recibe bordes (``metrics.py`` la define sobre el salto de wrap de la altura): mide cuánto se
+    vería la costura al TESELAR la altura, sea cual sea el integrador que la produjo. La ``Medicion`` declara los bordes
+    con que se hizo para que no se mezclen mediciones de bordes distintos en una misma derivación.
+    """
     integrada = integrar(normal, bordes=bordes)
     acuerdo = acuerdo_normal(normal, integrada.altura, bordes=bordes)
     metricas = MetricasDeCalidad.desde_metricas(
@@ -178,6 +183,7 @@ def medir_textura(
     return Medicion(
         caso=caso,
         escenario=escenario,
+        bordes=bordes,
         es_control_negativo=es_control_negativo,
         metricas=metricas,
         error_de_altura=_error_de_altura(integrada.altura, altura_verdadera),

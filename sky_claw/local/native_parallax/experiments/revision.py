@@ -44,6 +44,7 @@ from sky_claw.local.native_parallax.gates import (
     Umbrales,
     decidir_con,
 )
+from sky_claw.local.native_parallax.integrate import Bordes
 
 __all__ = [
     "MOTIVOS_DEL_REGISTRO",
@@ -145,6 +146,13 @@ def _exigir_mediciones(mediciones: Iterable[Medicion]) -> tuple[Medicion, ...]:
     for elemento in lista:
         if not isinstance(elemento, Medicion):
             raise ParametroDeRevisionInvalidoError(f"cada elemento debe ser una Medicion, no {elemento!r}")
+    # Un solo validador para los tres consumidores (derivar, simular, dejar un caso fuera): las métricas medidas con
+    # bordes distintos no son comparables, y un límite derivado o evaluado sobre una mezcla no vale para ninguno.
+    usados = sorted({elemento.bordes.value for elemento in lista})
+    if len(usados) > 1:
+        raise ParametroDeRevisionInvalidoError(
+            f"las mediciones usan bordes distintos ({', '.join(usados)}): no se mezclan"
+        )
     return lista
 
 
@@ -157,13 +165,15 @@ def _exigir_mediciones(mediciones: Iterable[Medicion]) -> tuple[Medicion, ...]:
 class Medicion:
     """Lo que el gate mira de una textura (``metricas``) y lo que el ground truth dice de ella.
 
-    ``caso``: la superficie de origen (se agrupa por él al dejar un caso fuera); ``escenario``: la degradación aplicada.
+    ``caso``: la superficie de origen (se agrupa por él al dejar un caso fuera); ``escenario``: la degradación aplicada;
+    ``bordes``: con los que se integró y se midió (no se mezclan mediciones de bordes distintos).
     ``es_control_negativo``: el caso viola la periodicidad a propósito. ``error_de_altura``: RMSE entre la altura
     integrada y la verdadera, ambas normalizadas a [0, 1]; ``None`` si alguna no tiene rango y la otra sí.
     """
 
     caso: str
     escenario: str
+    bordes: Bordes
     es_control_negativo: bool
     metricas: MetricasDeCalidad
     error_de_altura: float | None
@@ -171,6 +181,8 @@ class Medicion:
     def __post_init__(self) -> None:
         _exigir_texto(self.caso, "caso")
         _exigir_texto(self.escenario, "escenario")
+        if not isinstance(self.bordes, Bordes):
+            raise MedicionInvalidaError(f"bordes debe ser un miembro de Bordes, no {self.bordes!r}")
         if not isinstance(self.es_control_negativo, bool):
             raise MedicionInvalidaError(f"es_control_negativo debe ser un bool, no {self.es_control_negativo!r}")
         if not isinstance(self.metricas, MetricasDeCalidad):
