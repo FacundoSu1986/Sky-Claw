@@ -1756,6 +1756,17 @@ def test_s3_superficie_publica_no_expone_mutacion() -> None:
         "reconciliar_journal",
         "iniciar_transicion_pendiente",
         "iniciar_transicion_rollback",
+        # P4-S4: dos primitivas PURAS que la autoridad de aprobación reusa en vez
+        # de reimplementarlas. `digest_canonico` es el mismo digest con el que el
+        # journal sella el `source_activation_digest` que viaja en el
+        # `ApprovalScope`: dos implementaciones del mismo digest producirían una
+        # aprobación que el journal rechaza por «no ligar el contenido».
+        # `leer_json_de_control` es el lector estricto de un JSON de control (un
+        # enlace o un namespace redirigido NUNCA se degrada a «ausente»). Ninguna
+        # de las dos muta: la superficie sigue siendo lectura/validación/
+        # clasificación más la entrada de creación bloqueada.
+        "digest_canonico",
+        "leer_json_de_control",
     }
     assert publicas == esperadas, f"superficie pública inesperada: {sorted(publicas)}"
     assert modulo.iniciar_transicion_pendiente.__module__ == modulo.__name__

@@ -21,6 +21,47 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
+- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `gates.py`, `integrate.py`, `metrics.py`, `_extra.py`, `bench/` y `experiments/`) **no importa** `research` y carga `numpy` y
+  Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
+  `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
+  `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
+- `bench/sintetico.py` (NP-D0) reimplementa las fórmulas de `research/synthetic_height.py` y
+  `research/normal_from_height.py`; `tests/test_native_parallax_bench_sintetico.py` las compara con research
+  como oráculo y congela la especificación del corpus. Cambiar una fórmula en un lado sin el otro rompe ese
+  test a propósito: decidí cuál manda.
+
+- `integrate.py` (NP-I0) reimplementa el solver de research; `tests/test_native_parallax_integrate.py` lo compara
+  con research como oráculo. La convención de frecuencias vive SOLO en `espectral.py` y numpy se importa de forma
+  perezosa SOLO por `_extra.py` (y `decode.py`, que además necesita Pillow): ambos puntos están congelados por AST
+  en `tests/test_native_parallax_producto_invariant.py`. No agregues otra llamada a `fftfreq` ni otro
+  `import numpy` dentro de una función: rompe el ancla a propósito.
+- `metrics.py` (NP-Q0a) son métricas que DESCRIBEN, no deciden: no hay umbrales ni gates ahí (se derivan del
+  benchmark, ADR 0014 §6) y `rango_dinamico` exige los percentiles. La derivada H → gradientes y la inversa
+  normal → gradientes tienen UNA definición (`espectral.gradientes_espectrales`, `integrate.gradientes_de_normal`):
+  no las copies, importalas. Un módulo nuevo que importe de `espectral` rompe el ancla hasta que se le escribe su
+  receta en `CONSUMIDORES_DE_ESPECTRAL`.
+- `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
+  corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
+  evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia
+  va atada por huella al candidato que midió (si tocás límites, signo o versión, hay que volver a validar); una
+  medición fuera de su dominio (`DOMINIO_DE_LAS_METRICAS`) es `REVIEW`; la confianza va en `[0.5, 1)`; el signo
+  esperado y `VERSION_DE_METRICAS` viajan en el registro. No hay `REJECT`. Una métrica pública nueva en `metrics.py`
+  rompe el ancla hasta que se la clasifica en `METRICAS_GATEADAS` o `METRICAS_NO_GATEADAS` (con motivo); si cambiás
+  la definición de una métrica, subí `VERSION_DE_METRICAS`. Solo `gates.py` conoce `UMBRALES_VIGENTES`: los demás
+  llaman a `decidir`, no comparan por su cuenta. Publicar el primer registro es una decisión de política del
+  operador (tolerancia, confianza, tasa de revisión máxima) y cambia el ancla: no lo hagas de pasada.
+- `experiments/convencion.py` (NP-X0a) MIDE la convención del canal G leyendo solo píxeles y no corrige nada: la
+  convención la fija la fuente del archivo y la lectura solo puede corroborarla. Es un indicio con abstención
+  (`tiene_senal`, `elegida` puede ser `None`): solo 7 de los 15 casos sintéticos son detectables (la detectabilidad es
+  la derivada mixta), la inversión global X+Y no se distingue por ninguna métrica y con ruido σ >= 2/255 o cuantización
+  de dos canales el margen cae al de los no detectables (ADR 0014, "Actualización de NP-X0a"). No fijes un umbral de
+  margen de pasada: se deriva contra el benchmark y se valida con texturas reales.
+- `experiments/medicion.py` y `experiments/revision.py` (NP-X0b) miden y simulan: derivar un candidato NO es validarlo.
+  La simulación no compara límites por su cuenta, se apoya en los motivos de `decidir_con` (la partición de `Motivo` está
+  congelada por igualdad), y solo `gates.py` puede nombrar `ValidacionContraCorpusReal` (ancla por AST). La etiqueta «mala»
+  y su tolerancia son declaradas, sin valor por defecto; para estimar sin fuga usá `simular_dejando_un_caso_fuera`. Los
+  números salen del corpus sintético y no son la tasa de revisión del producto (que es 100 % sin registro validado). El
+  gate no detecta una inversión global X+Y cuando la altura sale de la misma normal; ver ADR 0014, "Actualización de NP-X0b".
 
 ## Verificación segura
 

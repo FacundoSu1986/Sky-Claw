@@ -55,9 +55,10 @@ import logging
 import math
 import pathlib
 import sqlite3
+import threading
 import time
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
@@ -135,6 +136,9 @@ _MIN_RENEW_DIVISOR: float = 2.0
 #: cannot collapse the cadence to ~0 and busy-loop the lock database.
 _MIN_HEARTBEAT_INTERVAL_SECONDS: float = 0.05
 
+#: Piso del TTL con el que renueva el latido: un TTL diminuto no puede dejar la renovación pegada al vencimiento.
+_MIN_HEARTBEAT_TTL_SECONDS: float = 0.15
+
 #: Maximum number of acquisition retry attempts.
 DEFAULT_MAX_RETRIES: int = 5
 
@@ -179,8 +183,11 @@ ON CONFLICT(resource_id) DO UPDATE SET
     agent_id    = excluded.agent_id,
     acquired_at = excluded.acquired_at,
     expires_at  = excluded.expires_at
-WHERE resource_locks.expires_at < excluded.acquired_at
+WHERE resource_locks.expires_at < ?
 """
+# Parámetros: (resource_id, agent_id, token, expires_at, ahora). El token
+# (``acquired_at``) es la IDENTIDAD de la lease y puede quedar por delante del
+# reloj; el vencimiento se mide SIEMPRE con el reloj real (``ahora``).
 
 _RENEW_SQL = """\
 UPDATE resource_locks
@@ -212,6 +219,11 @@ class LockInfo:
     agent_id: str
     acquired_at: float
     expires_at: float
+    #: TTL que se pidió al adquirir. ``acquired_at`` es el token de fencing (identidad de la lease) y
+    #: puede ir por delante del reloj, así que ``expires_at - acquired_at`` NO es el TTL: quien necesite la
+    #: duración la lee de acá. ``None`` cuando la lease se reconstruye desde la base (``get_lock_info``),
+    #: que no guarda el TTL. Es metadato: no entra en la igualdad ni en el hash.
+    lease_ttl_seconds: float | None = field(default=None, compare=False)
 
     @property
     def remaining_ttl(self) -> float:
@@ -221,6 +233,27 @@ class LockInfo:
     @property
     def is_expired(self) -> bool:
         return time.time() >= self.expires_at
+
+
+# =============================================================================
+# TOKEN DE FENCING
+# =============================================================================
+
+# ``acquired_at`` es el token de fencing de la lease (``_RELEASE_SQL`` y
+# ``_RENEW_SQL`` lo matchean): tiene que distinguir una lease de la que la
+# reemplazó. ``time.time()`` no lo garantiza: en Windows con Python < 3.13 avanza
+# a saltos de ~15,6 ms y dos adquisiciones del mismo (recurso, agent_id) dentro del
+# mismo tick reciben el MISMO valor. Por eso el token se acuña en un único punto
+# (``DistributedLockManager._acuniar_token``) y es estrictamente creciente POR BASE
+# dentro del proceso. El estado es del módulo y no de la instancia porque varios
+# gestores (uno por servicio, con el mismo ``agent_id``) pueden apuntar a la misma
+# base. El token es SOLO identidad: tras un retroceso del reloj puede quedar por
+# delante de él, así que el vencimiento (``expires_at`` y el predicado de
+# ``_ACQUIRE_SQL``) se mide con la lectura real del reloj, nunca con el token.
+# Límite: dos PROCESOS distintos no comparten este estado; cerrarlo exigiría
+# una identidad persistida en ``resource_locks`` (cambio de esquema).
+_CERROJO_DE_TOKENS = threading.Lock()
+_ULTIMO_TOKEN_POR_BASE: dict[str, float] = {}
 
 
 # =============================================================================
@@ -261,6 +294,8 @@ class DistributedLockManager:
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
     ) -> None:
         self._db_path = str(db_path)
+        # Misma clave canónica que usa el lifecycle para conexiones y locks de path.
+        self._clave_de_token = str(pathlib.Path(db_path).resolve())
         self._default_ttl = default_ttl
         self._max_retries = max_retries
         self._backoff_base = backoff_base
@@ -372,6 +407,28 @@ class DistributedLockManager:
     # Core operations
     # ------------------------------------------------------------------
 
+    def _acuniar_token(self, ahora: float) -> float:
+        """Acuña el token de fencing (``acquired_at``) de una adquisición.
+
+        ``ahora`` es la lectura del reloj de pared de esta adquisición. Devuelve
+        ``ahora`` cuando el reloj avanzó respecto del último token emitido para
+        esta base y, si no (reloj grueso o retroceso por NTP), el siguiente
+        flotante representable: el token es estrictamente creciente por base
+        dentro del proceso. En el caso normal no desplaza el valor del reloj.
+
+        El token es solo la identidad de la lease: puede quedar por delante del
+        reloj tras un retroceso, así que NO sirve para medir vencimientos (ese es
+        el trabajo de ``ahora``).
+
+        Es síncrono y no cede el control: dos corrutinas del mismo loop no pueden
+        intercalarse; el ``threading.Lock`` cubre gestores en otros hilos o loops.
+        """
+        with _CERROJO_DE_TOKENS:
+            ultimo = _ULTIMO_TOKEN_POR_BASE.get(self._clave_de_token)
+            token = ahora if ultimo is None or ahora > ultimo else math.nextafter(ultimo, math.inf)
+            _ULTIMO_TOKEN_POR_BASE[self._clave_de_token] = token
+            return token
+
     async def acquire_lock(
         self,
         resource_id: str,
@@ -418,21 +475,23 @@ class DistributedLockManager:
             try:
                 if self._lifecycle is not None:
                     async with self._lifecycle.transaction(self._db_path) as conn:
-                        now = time.time()
-                        expires_at = now + ttl_seconds
+                        ahora = time.time()
+                        token = self._acuniar_token(ahora)
+                        expires_at = ahora + ttl_seconds
                         async with conn.execute(
                             _ACQUIRE_SQL,
-                            (resource_id, agent_id, now, expires_at),
+                            (resource_id, agent_id, token, expires_at, ahora),
                         ) as cursor:
                             rowcount = cursor.rowcount
                     # commit del wrapper ya terminó acá
                 else:
-                    now = time.time()
-                    expires_at = now + ttl_seconds
+                    ahora = time.time()
+                    token = self._acuniar_token(ahora)
+                    expires_at = ahora + ttl_seconds
                     conn = self._ensure_conn()
                     async with conn.execute(
                         _ACQUIRE_SQL,
-                        (resource_id, agent_id, now, expires_at),
+                        (resource_id, agent_id, token, expires_at, ahora),
                     ) as cursor:
                         rowcount = cursor.rowcount
                     await conn.commit()
@@ -460,8 +519,9 @@ class DistributedLockManager:
                         lock_info = LockInfo(
                             resource_id=resource_id,
                             agent_id=agent_id,
-                            acquired_at=now,
+                            acquired_at=token,
                             expires_at=expires_at,
+                            lease_ttl_seconds=ttl_seconds,
                         )
                         logger.info(
                             "Lock acquired",
@@ -1513,6 +1573,20 @@ class SnapshotTransactionLock:
         collapse it to ~0 and busy-loop the lock database."""
         return max(ttl_seconds / divisor, _MIN_HEARTBEAT_INTERVAL_SECONDS)
 
+    def _ttl_del_latido(self) -> float:
+        """TTL con el que renueva el latido: el que la lease declara, con piso.
+
+        ``acquired_at`` es el token de fencing y puede ir por delante del reloj (retroceso de NTP, ráfaga
+        dentro de un tick), así que ``expires_at - acquired_at`` se encoge —incluso da negativo— y el
+        latido renovaría de a ``_MIN_HEARTBEAT_TTL_SECONDS``. Solo si la lease no declara su TTL
+        (la que arma ``get_lock_info`` leyendo la base) se cae a esa resta.
+        """
+        assert self.lock_info is not None  # set by __aenter__ before the task starts
+        declarado = self.lock_info.lease_ttl_seconds
+        if declarado is None:
+            declarado = self.lock_info.expires_at - self.lock_info.acquired_at
+        return max(declarado, _MIN_HEARTBEAT_TTL_SECONDS)
+
     async def _heartbeat_loop(self) -> None:
         """Renew the lease at TTL/divisor intervals until cancelled or lost.
 
@@ -1523,7 +1597,7 @@ class SnapshotTransactionLock:
         to expiry degrades to lease-lost rather than crashing the heartbeat.
         """
         assert self.lock_info is not None  # set by __aenter__ before the task starts
-        ttl_seconds = max(self.lock_info.expires_at - self.lock_info.acquired_at, 0.15)
+        ttl_seconds = self._ttl_del_latido()
         interval = self._heartbeat_interval(ttl_seconds, self._renew_divisor)
         while True:
             await asyncio.sleep(interval)
