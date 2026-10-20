@@ -302,3 +302,52 @@ confirma en el PR.
   ausente) todo va a revisión.
 - **Límite declarado.** Las pruebas son sobre normales sintéticas y limpias. No hay call site de producción
   todavía (lo consumen NP-Q0b y posteriores). Las métricas describen; no predicen riesgo.
+
+### Actualización de NP-Q0b (2026-10-20)
+
+NP-Q0b entrega el **contrato fail-closed** del gate, no los umbrales. Verificado ejecutando en Linux (Python 3.11,
+numpy 2.4.6); el CI de Windows lo confirma en el PR.
+
+- **Qué entra.** `native_parallax/gates.py`, puro (no importa `numpy` ni `research`): `decidir(metricas)` resuelve con
+  `UMBRALES_VIGENTES` y `decidir_con(metricas, umbrales)` deja inyectar un registro (lo usará NP-X0 para medir
+  candidatos). Hoy `UMBRALES_VIGENTES is None`, congelado por igualdad en el test: **toda textura va a `REVIEW`**, también
+  la normal sintética más limpia (hay un test de punta a punta).
+- **`AUTO_ACCEPT` exige evidencia calculada, no declarada.** El registro (`Umbrales`) lleva una
+  `ValidacionContraCorpusReal` con los CONTEOS (texturas, aceptadas, aceptadas malas) y el gate calcula la cota
+  superior binomial de Clopper-Pearson de la tasa de malas entre las aceptadas; tiene que ser `<= alpha_objetivo`, y la
+  tasa de revisión `<= tasa_de_revision_maxima`. No hay un booleano `validado`. La cota se contrasta con la
+  distribución binomial exacta en aritmética racional. Es la lección de EXP-M2 (las señales solo-normal no predijeron el
+  riesgo en texturas reales, mejor AUC 0.62) hecha mecanismo: derivar en el sintético se puede y queda registrado
+  (`huella_de_derivacion`); **validar con él, no**: la huella del corpus de NP-D0 se rechaza como corpus de validación.
+- **El signo cuenta.** Un flip global de gradientes produce `-altura` exacta y el error angular lo absorbe; solo el
+  signo del ajuste lo delata. Sin él, un `AUTO_ACCEPT` futuro podría aceptar un relieve invertido. El registro
+  declara `signo_esperado` y cualquier otro va a `REVIEW`. Cuál es el correcto para Skyrim lo fija la evidencia de
+  NP-X0/NP-RIG, no este PR.
+- **Cada métrica pública de `metrics.py` está gateada o excluida con motivo** (`METRICAS_GATEADAS` y
+  `METRICAS_NO_GATEADAS`), y el test enumera `metrics.__all__`: una métrica nueva rompe el ancla hasta que se
+  decide. Gateadas: el p95 del acuerdo de normal y su signo, el residuo de integrabilidad, la razón de costura y el
+  conteo de no finitos. **Excluidas:** `rango_dinamico` (depende de percentiles de authoring y no mide un error) y
+  `razon_de_recorte` (depende del modo de normalización, que decide NP-RIG).
+- **Solo `REVIEW` y `AUTO_ACCEPT`; no hay `REJECT`.** No existe base para derivar un umbral de rechazo y `REVIEW` ya impide
+  el auto-aceptado. Si aparece, aparece con sus umbrales y su evidencia. Un `REVIEW` siempre dice por qué (`Motivo`) y
+  todos los motivos aplicables se acumulan, en orden estable.
+- **Los umbrales se versionan con la definición de las métricas** (`VERSION_DE_METRICAS = "np-q0a.v1"`): un registro
+  derivado con otra definición va a `REVIEW`.
+- **Decisión de política ABIERTA, que NO se toma acá.** La tolerancia `alpha_objetivo` de falsos aceptos, la `confianza`
+  de la cota y la `tasa_de_revision_maxima` son del operador y viven en el registro que declara la validación; el código
+  garantiza que la evidencia cumple lo declarado, no que lo declarado sea sensato. Se fijan en el PR que publique el
+  primer registro, que además tiene que cambiar el ancla `UMBRALES_VIGENTES is None` (por eso es imposible hacerlo sin que
+  se vea). Solo `gates.py` conoce `UMBRALES_VIGENTES` (ancla por AST): los demás módulos llaman a `decidir`.
+- **Mutantes.** 100 definidos sobre `gates.py` (cota binomial, validadores, registros, métricas, decisión):
+  **96 murieron** y sobreviven **4, equivalentes**: `>` → `>=` en la bisección (igualdad exacta de flotantes),
+  devolver el extremo bajo del intervalo (1 ulp), 60 en vez de 100 iteraciones (converge a los 53 bits) y `> 0` en vez de
+  `!= 0` sobre un conteo ya validado no negativo. El barrido encontró **tres piezas de código redundante que se
+  eliminaron** (el tope `min(total, 1.0)`, el `isfinite` de las probabilidades —el rango ya rechaza NaN e
+  infinitos— y el `n_aceptadas >= 1` de `alcanza` —sin aceptadas la cota vale 1 y `alpha < 1`—) y **cuatro huecos reales
+  de test** (el atajo de todo-fallo con una confianza absurda, el borde inclusivo `cota == alpha`, el tipo de las
+  probabilidades y una confianza extrema donde el punto medio de la bisección redondea a 1.0).
+- **Límites declarados.** (1) Que un corpus declarado «real» lo sea no se puede verificar: el código solo excluye el
+  sintético que conoce. (2) Subir `VERSION_DE_METRICAS` al cambiar una definición es una convención; los valores analíticos
+  de `test_native_parallax_metrics.py` fijan las definiciones, pero nada las liga mecánicamente a la versión. (3) **No hay
+  derivación de umbrales ni runner del benchmark**: es NP-X0, que además reporta `REVIEW_RATE`. (4) No hay call site de
+  producción. (5) Las métricas se calcularon sobre normales sintéticas.
