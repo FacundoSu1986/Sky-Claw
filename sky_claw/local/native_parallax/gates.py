@@ -21,6 +21,15 @@ Propiedades del mecanismo (cada una con su ancla en ``tests/test_native_parallax
   (``huella_de_derivacion``); lo que el código rechaza es que su huella aparezca como corpus de VALIDACIÓN.
 - **El signo cuenta.** Un flip global de gradientes produce ``-altura`` exacta y el error angular lo absorbe: solo el
   signo del ajuste lo delata. El registro declara el ``signo_esperado`` y cualquier otro va a ``REVIEW``.
+- **La evidencia va atada al candidato que validó.** La validación lleva la ``huella_del_candidato`` (versión de las
+  métricas, signo esperado y cada límite) y ``Umbrales`` se niega a construirse si no coincide con la suya: no se puede
+  reusar la evidencia de un candidato estricto para avalar límites más flojos (Codex, #761).
+- **Una medición fuera de su dominio es ``REVIEW``, no un valor que «pasa».** Un error angular o un residuo negativos,
+  o un ángulo de más de 180°, son una medición corrupta: compararlos con un límite ``>= 0`` los dejaría pasar. Cada
+  métrica tiene su rango en ``DOMINIO_DE_LAS_METRICAS`` y los límites también tienen que caer ahí.
+- **La confianza de la cota es ``>= 0.5``.** Con menos, la «cota superior» puede quedar por DEBAJO de la tasa observada
+  (confianza 0.3 sobre 5 de 10 daba 0.4675) y deja de ser una cota; además ``1 - confianza`` pierde toda precisión para
+  confianzas diminutas (con ``1e-17`` la bisección devolvía ``~8e-31``). Desde 0.5 la resta es exacta.
 - **Los umbrales se versionan junto con la definición de las métricas** (``VERSION_DE_METRICAS``): un registro derivado
   con otra definición va a ``REVIEW``.
 - **No hay ``REJECT``.** No existe base para derivar un umbral de rechazo, y ``REVIEW`` ya impide el auto-aceptado. Si
@@ -42,6 +51,8 @@ umbrales ni runner del benchmark (NP-X0); y las métricas se calcularon sobre no
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass, fields
@@ -51,6 +62,7 @@ from sky_claw.local.native_parallax.bench.sintetico import ESPECIFICACION_V1, hu
 from sky_claw.local.native_parallax.metrics import AcuerdoNormal
 
 __all__ = [
+    "DOMINIO_DE_LAS_METRICAS",
     "METRICAS_GATEADAS",
     "METRICAS_NO_GATEADAS",
     "UMBRALES_VIGENTES",
@@ -69,6 +81,7 @@ __all__ = [
     "cota_superior_binomial",
     "decidir",
     "decidir_con",
+    "huella_del_candidato",
 ]
 
 VERSION_DE_METRICAS = "np-q0a.v1"
@@ -77,6 +90,17 @@ VERSION_DE_METRICAS = "np-q0a.v1"
 _HUELLA = re.compile(r"[0-9a-f]{64}")
 _HUELLA_DEL_CORPUS_SINTETICO = huella_especificacion(ESPECIFICACION_V1)
 _ITERACIONES_DE_BISECCION = 100
+_CONFIANZA_MINIMA = 0.5
+
+DOMINIO_DE_LAS_METRICAS = MappingProxyType(
+    {
+        "acuerdo_p95_grados": (0.0, 180.0),
+        "residuo_de_integrabilidad": (0.0, 1.0),
+        "razon_de_costura": (0.0, math.inf),
+    }
+)
+"""Campo con límite → rango que puede tomar por su definición (un ángulo en grados, un cociente normalizado por el
+Hessiano ∈ [0, 1] y una razón de promedios de módulos). Fuera de él la medición es imposible, no «buena»."""
 
 METRICAS_GATEADAS = MappingProxyType(
     {
@@ -133,7 +157,7 @@ class Motivo(enum.Enum):
     VERSION_DE_METRICAS_DISTINTA = "version_de_metricas_distinta"
     SIN_VALIDACION_CONTRA_CORPUS_REAL = "sin_validacion_contra_corpus_real"
     VALIDACION_INSUFICIENTE = "validacion_insuficiente"
-    METRICA_NO_FINITA = "metrica_no_finita"
+    METRICA_FUERA_DE_DOMINIO = "metrica_fuera_de_dominio"
     NO_FINITOS_EN_LA_ALTURA = "no_finitos_en_la_altura"
     SIGNO_DISTINTO_DEL_ESPERADO = "signo_distinto_del_esperado"
     SOBRE_EL_LIMITE = "sobre_el_limite"
@@ -179,6 +203,21 @@ def _exigir_probabilidad(valor: object, nombre: str, *, abierta: bool) -> None:
         raise UmbralesInvalidosError(f"{nombre} debe estar en {rango}, no {valor!r}")
 
 
+def _exigir_confianza(valor: object) -> None:
+    """``[0.5, 1)``: con menos, la cota no es una cota superior y ``1 - confianza`` pierde la precisión."""
+    _exigir_probabilidad(valor, "confianza", abierta=True)
+    if valor < _CONFIANZA_MINIMA:  # type: ignore[operator]
+        raise UmbralesInvalidosError(
+            f"confianza debe ser >= {_CONFIANZA_MINIMA}: con menos la cota superior puede quedar bajo la tasa observada, "
+            f"no {valor!r}"
+        )
+
+
+def _en_dominio(campo: str, valor: float) -> bool:
+    bajo, alto = DOMINIO_DE_LAS_METRICAS[campo]
+    return math.isfinite(valor) and bajo <= valor <= alto
+
+
 def _exigir_signo(valor: object, nombre: str, error: type[GateError]) -> None:
     if not _es_entero(valor) or valor not in (1, -1):
         raise error(f"{nombre} debe ser +1 o -1, no {valor!r}")
@@ -205,16 +244,14 @@ def cota_superior_binomial(fallos: int, n: int, confianza: float) -> float:
 
     Es el ``p`` tal que ``P(X <= fallos | n, p) = 1 - confianza``: el mayor valor que, con esa confianza, no se
     descarta con la evidencia. Con ``fallos == n`` vale 1. Se resuelve por bisección (la distribución acumulada es
-    decreciente en ``p``) sin dependencias externas.
+    decreciente en ``p``) sin dependencias externas. ``confianza`` va en ``[0.5, 1)``.
     """
     if not _es_entero(n) or n < 1:
         raise UmbralesInvalidosError(f"n debe ser un entero >= 1, no {n!r}")
     if not _es_entero(fallos) or not 0 <= fallos <= n:
         raise UmbralesInvalidosError(f"fallos debe ser un entero en [0, n], no {fallos!r}")
-    _exigir_probabilidad(confianza, "confianza", abierta=True)
-    if fallos == n:
-        return 1.0
-    objetivo = 1.0 - confianza
+    _exigir_confianza(confianza)
+    objetivo = 1.0 - confianza  # exacto para confianza >= 0.5 (Sterbenz)
     bajo, alto = 0.0, 1.0
     for _ in range(_ITERACIONES_DE_BISECCION):
         medio = (bajo + alto) / 2.0
@@ -243,8 +280,27 @@ class LimitesDeAutoaceptacion:
     def __post_init__(self) -> None:
         for campo in fields(self):
             valor = getattr(self, campo.name)
-            if not _es_numero(valor) or not math.isfinite(valor) or valor < 0.0:
-                raise UmbralesInvalidosError(f"el límite {campo.name} debe ser un real finito >= 0, no {valor!r}")
+            if not _es_numero(valor) or not _en_dominio(campo.name, valor):
+                bajo, alto = DOMINIO_DE_LAS_METRICAS[campo.name]
+                raise UmbralesInvalidosError(
+                    f"el límite {campo.name} debe ser un real finito en [{bajo}, {alto}], no {valor!r}"
+                )
+
+
+def huella_del_candidato(version_de_metricas: str, signo_esperado: int, limites: LimitesDeAutoaceptacion) -> str:
+    """SHA-256 de lo que decide un candidato: la versión de las métricas, el signo esperado y cada límite.
+
+    Es lo que una validación mide y lo que ``Umbrales`` exige que coincida. No entran la etiqueta ni la procedencia de
+    la derivación: no cambian ninguna decisión. Los límites se serializan como ``float``, así que ``2`` y ``2.0`` son
+    el mismo candidato.
+    """
+    contenido = {
+        "version_de_metricas": version_de_metricas,
+        "signo_esperado": signo_esperado,
+        "limites": {campo.name: float(getattr(limites, campo.name)) for campo in fields(limites)},
+    }
+    texto = json.dumps(contenido, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,13 +308,15 @@ class ValidacionContraCorpusReal:
     """Evidencia de que los límites aceptan poco malo, medida sobre un corpus REAL con etiquetas.
 
     ``n_total`` texturas; los límites habrían aceptado ``n_aceptadas`` y de esas ``n_aceptadas_malas`` eran malas
-    según ``criterio_de_etiqueta``. La cota superior de la tasa de malas entre las aceptadas, con ``confianza``, tiene
+    según ``criterio_de_etiqueta``. ``huella_del_candidato`` identifica el candidato (versión, signo y límites) que se
+    midió: ``Umbrales`` solo acepta esta evidencia para ESE candidato. La cota superior de la tasa de malas entre las aceptadas, con ``confianza``, tiene
     que ser ``<= alpha_objetivo``, y la tasa de revisión (las no aceptadas) ``<= tasa_de_revision_maxima``.
     """
 
     id_del_corpus: str
     huella_del_corpus: str
     criterio_de_etiqueta: str
+    huella_del_candidato: str
     n_total: int
     n_aceptadas: int
     n_aceptadas_malas: int
@@ -270,6 +328,7 @@ class ValidacionContraCorpusReal:
         _exigir_texto(self.id_del_corpus, "id_del_corpus")
         _exigir_texto(self.criterio_de_etiqueta, "criterio_de_etiqueta")
         _exigir_huella(self.huella_del_corpus, "huella_del_corpus")
+        _exigir_huella(self.huella_del_candidato, "huella_del_candidato")
         if self.huella_del_corpus == _HUELLA_DEL_CORPUS_SINTETICO:
             raise UmbralesInvalidosError(
                 "el corpus sintético de NP-D0 no puede validar: EXP-M2 mostró que no representa texturas reales"
@@ -280,7 +339,7 @@ class ValidacionContraCorpusReal:
             raise UmbralesInvalidosError(f"n_total debe ser >= 1, no {self.n_total!r}")
         if not self.n_aceptadas_malas <= self.n_aceptadas <= self.n_total:
             raise UmbralesInvalidosError("deben cumplirse n_aceptadas_malas <= n_aceptadas <= n_total")
-        _exigir_probabilidad(self.confianza, "confianza", abierta=True)
+        _exigir_confianza(self.confianza)
         _exigir_probabilidad(self.alpha_objetivo, "alpha_objetivo", abierta=True)
         _exigir_probabilidad(self.tasa_de_revision_maxima, "tasa_de_revision_maxima", abierta=False)
 
@@ -338,6 +397,12 @@ class Umbrales:
             raise UmbralesInvalidosError("limites debe ser una LimitesDeAutoaceptacion")
         if self.validacion is not None and not isinstance(self.validacion, ValidacionContraCorpusReal):
             raise UmbralesInvalidosError("validacion debe ser una ValidacionContraCorpusReal o None")
+        if self.validacion is not None and self.validacion.huella_del_candidato != huella_del_candidato(
+            self.version_de_metricas, self.signo_esperado, self.limites
+        ):
+            raise UmbralesInvalidosError(
+                "la validación se midió con otros límites, otro signo o otra versión de métricas que los de este registro"
+            )
 
 
 UMBRALES_VIGENTES: Umbrales | None = None
@@ -417,16 +482,15 @@ def decidir_con(metricas: MetricasDeCalidad, umbrales: Umbrales | None) -> Decis
         motivos.append(Motivo.VALIDACION_INSUFICIENTE)
     campos = [campo.name for campo in fields(LimitesDeAutoaceptacion)]
     valores = {campo: getattr(metricas, campo) for campo in campos}
-    if not all(math.isfinite(valor) for valor in valores.values()):
-        motivos.append(Motivo.METRICA_NO_FINITA)
+    en_dominio = {campo: _en_dominio(campo, valor) for campo, valor in valores.items()}
+    if not all(en_dominio.values()):
+        motivos.append(Motivo.METRICA_FUERA_DE_DOMINIO)
     if metricas.no_finitos != 0:
         motivos.append(Motivo.NO_FINITOS_EN_LA_ALTURA)
     if metricas.signo != umbrales.signo_esperado:
         motivos.append(Motivo.SIGNO_DISTINTO_DEL_ESPERADO)
-    # Una métrica no finita no se compara con el límite: ya tiene su propio motivo.
-    sobre = tuple(
-        campo for campo in campos if math.isfinite(valores[campo]) and valores[campo] > getattr(umbrales.limites, campo)
-    )
+    # Una métrica fuera de su dominio no se compara con el límite: ya tiene su propio motivo.
+    sobre = tuple(campo for campo in campos if en_dominio[campo] and valores[campo] > getattr(umbrales.limites, campo))
     if sobre:
         motivos.append(Motivo.SOBRE_EL_LIMITE)
     if motivos:
