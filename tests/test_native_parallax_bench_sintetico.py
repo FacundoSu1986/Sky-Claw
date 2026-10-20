@@ -344,7 +344,15 @@ def test_los_periodicos_quedan_dentro_de_la_banda_y_los_controles_fuera() -> Non
 
 
 def test_razon_borde_rechaza_lo_que_no_es_un_campo_2d_finito() -> None:
-    for malo in (np.zeros(8), np.zeros((4, 4, 3)), np.full((4, 4), np.nan), [[0.0, 1.0], [1.0, 0.0]]):
+    # (1, 8) y (8, 1): con un eje de largo 1 no hay "paso interior" y np.take(campo, 1) se saldría del arreglo.
+    for malo in (
+        np.zeros(8),
+        np.zeros((4, 4, 3)),
+        np.full((4, 4), np.nan),
+        np.zeros((1, 8)),
+        np.zeros((8, 1)),
+        [[0.0, 1.0], [1.0, 0.0]],
+    ):
         with pytest.raises(ParametroInvalidoError):
             razon_borde(malo)  # type: ignore[arg-type]
 
@@ -435,7 +443,14 @@ def test_las_escalas_invalidas_se_rechazan() -> None:
 
 
 def test_normal_desde_altura_rechaza_lo_que_no_es_un_campo_2d_finito() -> None:
-    for malo in (np.zeros(8), np.zeros((4, 4, 3)), np.full((128, 128), np.nan), np.zeros((128, 128), dtype=np.float32)):
+    for malo in (
+        np.zeros(8),
+        np.zeros((4, 4, 3)),
+        np.full((128, 128), np.nan),
+        np.zeros((128, 128), dtype=np.float32),
+        np.zeros((1, 8)),
+        np.zeros((8, 1)),
+    ):
         with pytest.raises(ParametroInvalidoError):
             normal_desde_altura(malo)
 
@@ -633,8 +648,9 @@ def test_iterar_corpus_entrega_lo_mismo_que_las_funciones_sueltas() -> None:
 
 
 def test_iterar_corpus_valida_la_grilla_antes_de_generar_nada() -> None:
+    # Sin ``next``: la validación es al llamar, no al empezar a iterar.
     with pytest.raises(ParametroInvalidoError):
-        next(iterar_corpus(64, 64))
+        iterar_corpus(64, 64)
 
 
 # ---------------------------------------------------------------------------

@@ -125,7 +125,7 @@ def _malla(_np: ModuleType, n_filas: int, n_cols: int) -> tuple[NDArray[np.float
 
 def _distancia_toroidal(_np: ModuleType, u: NDArray[np.float64], c: float) -> NDArray[np.float64]:
     """Distancia a ``c`` en [0, 0.5] considerando el wrap del toro."""
-    d = _np.abs(u - c) % 1.0
+    d = _np.abs(u - c) % 1.0  # en [0, 1) el módulo es neutro: se conserva por fidelidad con research
     return cast("NDArray[np.float64]", _np.minimum(d, 1.0 - d))
 
 
@@ -406,7 +406,9 @@ def huella_especificacion(especificacion: EspecificacionDataset) -> str:
 
 
 def _es_entero(valor: object) -> bool:
-    return isinstance(valor, int) and not isinstance(valor, bool)
+    # ``bool`` es subclase de ``int``, pero True/False (1/0) nunca llegan a ser una dimensión >= TAMANO_MINIMO ni
+    # una profundidad de la especificación: los rechazan las comparaciones que siguen, sin excluirlos acá.
+    return isinstance(valor, int)
 
 
 def _es_real_finito(valor: object) -> bool:
