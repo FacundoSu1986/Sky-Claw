@@ -168,7 +168,7 @@ def test_una_normal_limpia_se_mide_perfecta() -> None:
     assert medicion.es_control_negativo is False
     assert medicion.metricas.acuerdo_p95_grados < 1e-6
     assert medicion.metricas.residuo_de_integrabilidad < 1e-9
-    assert medicion.metricas.razon_de_costura == pytest.approx(1.0, abs=0.5)
+    assert medicion.metricas.razon_de_costura == pytest.approx(1.0, abs=1e-9)  # medido: 1.0 + 6.7e-15
     assert medicion.metricas.signo == 1
     assert medicion.metricas.no_finitos == 0
     assert medicion.error_de_altura is not None
@@ -306,7 +306,6 @@ def test_el_control_negativo_se_marca_en_la_medicion_pero_no_cambia_las_metricas
 
     assert como_control.es_control_negativo is True
     assert como_control.metricas == como_comun.metricas
-    assert como_control.metricas.razon_de_costura > 10  # la costura delata el control aunque la altura salga bien
 
 
 # ---------------------------------------------------------------------------

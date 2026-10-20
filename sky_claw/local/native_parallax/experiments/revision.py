@@ -322,10 +322,12 @@ class Conteo:
 
 @dataclass(frozen=True, slots=True)
 class ReporteDeRevision:
-    """Resultado de una simulación. ``motivos`` cuenta, en el orden del gate, las veces que cada motivo de la textura
-    apareció (una textura con varios motivos suma en cada uno); ``sobre_el_limite`` cuenta, por métrica y en el orden
-    de ``LimitesDeAutoaceptacion``, cuántas veces pasó su límite; ``por_escenario`` conserva el orden de aparición;
-    ``falsos_aceptos`` identifica, como ``(caso, escenario)``, cada textura mala que se habría aceptado.
+    """Resultado de una simulación de los LÍMITES (no de la evidencia de validación: no es la tasa de revisión del gate).
+
+    ``motivos`` cuenta, en el orden del gate, las veces que cada motivo de la textura apareció (una textura con varios
+    motivos suma en cada uno); ``sobre_el_limite`` cuenta, por métrica y en el orden de ``LimitesDeAutoaceptacion``,
+    cuántas veces pasó su límite; ``por_escenario`` conserva el orden de aparición; ``falsos_aceptos`` identifica, como
+    ``(caso, escenario)``, cada textura mala que se habría aceptado.
     """
 
     criterio_de_etiqueta: str
@@ -402,7 +404,10 @@ def simular_revision(
 ) -> ReporteDeRevision:
     """Aplica los límites de ``umbrales`` a ``mediciones`` y cuenta (ver el docstring del módulo).
 
-    Un registro con otra versión de métricas no se simula. Los límites se evalúan sobre las MISMAS mediciones de las que
+    Mide los LÍMITES, no la evidencia: un registro con ``validacion`` insuficiente (o sin ella) sigue mandando toda
+    textura a ``REVIEW`` en el gate (``VALIDACION_INSUFICIENTE`` / ``SIN_VALIDACION_CONTRA_CORPUS_REAL``) y la simulación
+    no lo refleja a propósito: la tasa que devuelve es la de los límites, no la del producto. Un registro con otra
+    versión de métricas no se simula. Los límites se evalúan sobre las MISMAS mediciones de las que
     pudieron derivarse: para una estimación sin fuga, ``simular_dejando_un_caso_fuera``.
     """
     tolerancia = _exigir_tolerancia(tolerancia_de_altura)
