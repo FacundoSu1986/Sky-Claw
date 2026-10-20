@@ -140,6 +140,17 @@ def _exigir_normal(_np: ModuleType, valor: object) -> NDArray[np.float64]:
     return cast("NDArray[np.float64]", valor)
 
 
+def _exigir_ejes_representables(forma: tuple[int, ...], bordes: Bordes) -> None:
+    # El solver resuelve sobre el toro: con 2 muestras el único bin no continuo es Nyquist, cuya derivada es nula
+    # por convención, así que la altura saldría plana SIN avisar. Neumann resuelve sobre 2n muestras, donde 2 sí
+    # alcanzan: el umbral sigue al largo de la grilla que se resuelve, no al de la entrada.
+    if bordes is Bordes.PERIODICOS and min(forma[:2]) < 3:
+        raise EntradaInvalidaError(
+            f"con bordes periódicos cada eje necesita al menos 3 muestras (con 2 solo queda Nyquist, de derivada nula), "
+            f"no {forma[0]}x{forma[1]}"
+        )
+
+
 def _exigir_campo(_np: ModuleType, valor: object, nombre: str) -> NDArray[np.float64]:
     if not isinstance(valor, _np.ndarray) or valor.dtype != _np.float64 or valor.ndim != 2 or min(valor.shape) < 2:
         raise EntradaInvalidaError(f"{nombre} debe ser un ndarray float64 2D de al menos 2x2")
@@ -166,33 +177,52 @@ def _exigir_piso(valor: object) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _poisson_periodico(
-    _np: ModuleType, p: NDArray[np.float64], q: NDArray[np.float64], muestras_filas: int, muestras_cols: int
+def _extender_p_por_espejo(_np: ModuleType, p: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``∂h/∂x`` de la extensión par de ``h`` a ``2H × 2W``: impar en x y par en y."""
+    return cast("NDArray[np.float64]", _np.block([[p, -p[:, ::-1]], [p[::-1, :], -p[::-1, ::-1]]]))
+
+
+def _extender_q_por_espejo(_np: ModuleType, q: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``∂h/∂y`` de la extensión par de ``h`` a ``2H × 2W``: par en x e impar en y."""
+    return cast("NDArray[np.float64]", _np.block([[q, q[:, ::-1]], [-q[::-1, :], -q[::-1, ::-1]]]))
+
+
+def _poisson(
+    _np: ModuleType, p: NDArray[np.float64], q: NDArray[np.float64], bordes: Bordes
 ) -> tuple[NDArray[np.float64], float]:
-    """``h`` de media cero con ``Δh = ∂p/∂x + ∂q/∂y`` sobre el toro: ``ĥ = (-i·wx·p̂ - i·wy·q̂) / (wx² + wy²)``."""
+    """``h`` de media cero con ``Δh = ∂p/∂x + ∂q/∂y``: ``ĥ = (-i·wx·p̂ - i·wy·q̂) / (wx² + wy²)``.
+
+    Sobre el toro de la entrada (``PERIODICOS``) o de su extensión par a ``2H × 2W`` (``NEUMANN``). Devuelve la
+    altura de la grilla RESUELTA (en Neumann, la extendida) y el residuo imaginario máximo.
+    """
     n_filas, n_cols = p.shape
-    wy, wx = ejes_de_frecuencia(_np, n_filas, n_cols, muestras_filas, muestras_cols)
-    p_hat = _np.fft.fft2(p)
-    q_hat = _np.fft.fft2(q)
+    if bordes is Bordes.PERIODICOS:
+        h_hat, q_hat = _np.fft.fft2(p), _np.fft.fft2(q)
+    else:
+        # De a UN campo: cada extensión 2H×2W (512 MiB en 4K) se libera al transformarse, en vez de convivir las
+        # dos con los espectros (hallazgo de Codex en #759: el pico en 4K era de ~7 GiB).
+        h_hat = _np.fft.fft2(_extender_p_por_espejo(_np, p))
+        q_hat = _np.fft.fft2(_extender_q_por_espejo(_np, q))
+    filas_resueltas, cols_resueltas = h_hat.shape
+    wy, wx = ejes_de_frecuencia(_np, filas_resueltas, cols_resueltas, n_filas, n_cols)
     denominador = wx * wx + wy * wy
     # El denominador se anula en CUATRO bins: DC y los tres Nyquist autoparejados (la derivada se anula allí).
     # En todos el numerador también es 0 → 0/0 = NaN que contaminaría el espectro entero: se fijan a modo nulo.
     nulo = denominador == 0.0
     denominador[nulo] = 1.0
-    h_hat = (-1j * wx * p_hat - 1j * wy * q_hat) / denominador
+    # ĥ = (-i·wx·p̂ - i·wy·q̂) / (wx² + wy²) operado IN SITU sobre p̂: son las mismas operaciones elemento a
+    # elemento que con temporales, pero sin materializar tres espectros complejos más (en 4K Neumann son GiB).
+    h_hat *= -1j * wx
+    q_hat *= 1j * wy
+    h_hat -= q_hat
+    del q_hat
+    h_hat /= denominador
+    del denominador
     h_hat[nulo] = 0.0
     h_complejo = _np.fft.ifft2(h_hat)
+    del h_hat
     residuo = float(_np.max(_np.abs(h_complejo.imag)))
     return cast("NDArray[np.float64]", _np.ascontiguousarray(h_complejo.real)), residuo
-
-
-def _extender_por_espejo(
-    _np: ModuleType, p: NDArray[np.float64], q: NDArray[np.float64]
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Gradiente de la extensión par de ``h`` a ``2H × 2W``: ``p`` es impar en x y par en y; ``q``, al revés."""
-    p_ext = _np.block([[p, -p[:, ::-1]], [p[::-1, :], -p[::-1, ::-1]]])
-    q_ext = _np.block([[q, q[:, ::-1]], [-q[::-1, :], -q[::-1, ::-1]]])
-    return cast("NDArray[np.float64]", p_ext), cast("NDArray[np.float64]", q_ext)
 
 
 def integrar(
@@ -212,6 +242,7 @@ def integrar(
     campo = _exigir_normal(_np, normal)
     if not isinstance(bordes, Bordes):
         raise EntradaInvalidaError(f"bordes debe ser un miembro de Bordes, no {bordes!r}")
+    _exigir_ejes_representables(campo.shape, bordes)
     sx = _exigir_escala("escala_x", escala_x)
     sy = _exigir_escala("escala_y", escala_y)
     piso = _exigir_piso(nz_piso)
@@ -223,13 +254,11 @@ def integrar(
     q = -ny / (sy * nz_efectivo)
 
     n_filas, n_cols = p.shape
+    altura, residuo = _poisson(_np, p, q, bordes)
     if bordes is Bordes.PERIODICOS:
-        altura, residuo = _poisson_periodico(_np, p, q, n_filas, n_cols)
         algoritmo = ALGORITMO_PERIODICO
     else:
-        p_ext, q_ext = _extender_por_espejo(_np, p, q)
-        altura_ext, residuo = _poisson_periodico(_np, p_ext, q_ext, n_filas, n_cols)
-        altura = cast("NDArray[np.float64]", _np.ascontiguousarray(altura_ext[:n_filas, :n_cols]))
+        altura = cast("NDArray[np.float64]", _np.ascontiguousarray(altura[:n_filas, :n_cols]))
         algoritmo = ALGORITMO_NEUMANN
     altura.setflags(write=False)
     return AlturaIntegrada(

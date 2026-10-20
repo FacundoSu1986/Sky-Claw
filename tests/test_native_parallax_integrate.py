@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import sys
+import tracemalloc
 
 import numpy as np
 import pytest
@@ -416,6 +417,35 @@ def test_neumann_de_una_normal_plana_es_plana() -> None:
     assert resultado.nz_bajo_piso == 0
 
 
+@pytest.mark.parametrize(
+    ("bordes", "tope"),
+    [(Bordes.PERIODICOS, 11.5), (Bordes.NEUMANN, 10.0)],
+    ids=["periodicos", "neumann"],
+)
+def test_el_pico_de_memoria_del_solver_sigue_acotado(bordes: Bordes, tope: float) -> None:
+    # Hallazgo de Codex en #759: en 4K con Neumann el pico llegaba a ~7 GiB. Se mide con tracemalloc (numpy registra
+    # sus asignaciones; es determinista, sin tiempos) como múltiplo de UN campo float64 de la grilla que se resuelve.
+    # Medido: periódico 9.1 y Neumann 7.8; la estructura anterior daba 14.1 y 13.9 (el periódico incluye lo que
+    # `integrar` reserva antes del solver: p, q y los temporales de la inversa). Los topes dejan margen para otras
+    # versiones de numpy y fallan si el solver vuelve a materializar espectros y extensiones al mismo tiempo.
+    n = 256
+    lado_resuelto = n if bordes is Bordes.PERIODICOS else 2 * n
+    campo_resuelto = lado_resuelto * lado_resuelto * 8
+    normal = _normal_plana(n, n)
+    ya_trazaba = tracemalloc.is_tracing()
+    if not ya_trazaba:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        integrar(normal, bordes=bordes)
+        _, pico = tracemalloc.get_traced_memory()
+    finally:
+        if not ya_trazaba:
+            tracemalloc.stop()
+
+    assert pico <= tope * campo_resuelto
+
+
 # ---------------------------------------------------------------------------
 # Entradas inválidas y dependencias
 # ---------------------------------------------------------------------------
@@ -438,6 +468,38 @@ def test_neumann_de_una_normal_plana_es_plana() -> None:
 def test_una_normal_invalida_se_rechaza(malo: object) -> None:
     with pytest.raises(EntradaInvalidaError):
         integrar(malo, bordes=Bordes.PERIODICOS)  # type: ignore[arg-type]
+
+
+def _normal_con_escalon_en_y(pendientes_por_fila: list[float], ancho: int) -> np.ndarray:
+    """Normal cuya pendiente en Y cambia por fila (sin alternar) y es constante en X: tiene contenido NO Nyquist."""
+    ny = np.tile(np.asarray(pendientes_por_fila, dtype=np.float64)[:, None], (1, ancho))
+    nx = np.zeros_like(ny)
+    return np.stack([nx, ny, np.sqrt(1.0 - ny * ny)], axis=-1)
+
+
+@pytest.mark.parametrize("forma", [(2, 8, 3), (8, 2, 3), (2, 2, 3)], ids=["dos-filas", "dos-columnas", "dos-por-dos"])
+def test_los_bordes_periodicos_rechazan_ejes_de_dos_muestras(forma: tuple[int, int, int]) -> None:
+    # Con 2 muestras el único bin no continuo es Nyquist, cuya derivada se anula por convención: el solver
+    # devolvería una altura plana SIN avisar, sea cual sea la normal (hallazgo de Codex en #759).
+    normal = np.zeros(forma)
+    normal[..., 2] = 1.0
+
+    with pytest.raises(EntradaInvalidaError, match="Nyquist"):
+        integrar(normal, bordes=Bordes.PERIODICOS)
+
+
+def test_los_bordes_periodicos_aceptan_tres_muestras_y_no_dan_plano() -> None:
+    # El umbral es exactamente 3: con 3 muestras el eje tiene un bin no continuo que NO es Nyquist.
+    resultado = integrar(_normal_con_escalon_en_y([0.3, 0.1, -0.2], 8), bordes=Bordes.PERIODICOS)
+
+    assert np.ptp(resultado.altura) > 1e-2
+
+
+def test_neumann_acepta_ejes_de_dos_muestras_porque_su_extension_tiene_cuatro() -> None:
+    # El umbral depende de la grilla que resuelve el solver (2n en Neumann): rechazar 2 aquí sería de más.
+    resultado = integrar(_normal_con_escalon_en_y([0.3, 0.1], 8), bordes=Bordes.NEUMANN)
+
+    assert np.ptp(resultado.altura) > 1e-2
 
 
 @pytest.mark.parametrize("bordes", ["periodicos", "NEUMANN", None, 1])

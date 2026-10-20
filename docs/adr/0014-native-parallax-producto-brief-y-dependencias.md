@@ -241,5 +241,18 @@ NP-I0 entrega el integrador normal → altura. Verificado ejecutando en Linux (P
 - **El piso de `nz`** (`1e-6`, el de NP-M0) es una guarda numérica contra `1/0` que CUENTA los píxeles afectados;
   no es una política de confianza. Las políticas de EXP-M1 (REVIEW/REJECT, regularización de Tikhonov) siguen en
   `EXP_M1_GO_WAITING_REVIEW` y esperan a los thresholds derivados del benchmark (NP-Q0).
+- **Ejes mínimos.** Con bordes periódicos cada eje necesita al menos 3 muestras: con 2, el único bin no continuo
+  es Nyquist, cuya derivada es nula por convención, y el solver devolvía una altura plana SIN avisar (medido: un
+  escalón de pendiente en Y da rango 0.0 con 2 filas y 0.049 con 3). Neumann resuelve sobre 2n muestras, donde 2
+  alcanzan (mismo escalón: 0.13), así que el umbral sigue al largo de la grilla que se resuelve y no al de la
+  entrada.
+- **Memoria.** El solver opera el espectro in situ, extiende por espejo de a un campo y libera cada espectro al
+  dejar de usarlo, con las mismas operaciones elemento a elemento (bit a bit igual a la versión anterior en 42
+  combinaciones de forma, escala y bordes). Medido en Linux con numpy 2.4.6: pico de RSS en 4096×4096 de 4422 MiB
+  en Neumann (antes 7558 MiB, 33 s → 25 s) y 1622 MiB en periódico (antes 2262 MiB), ambos con 384 MiB de
+  entrada. **Límite declarado:** hoy no hay presupuesto de memoria ni call site que lo acote. Una transformada
+  real o una DCT bajarían más el pico, pero no se evaluaron (la primera podría no igualar bit a bit a research y la
+  segunda exige una dependencia nueva); se decide cuando NP-O0/NP-A0 fijen el tamaño máximo y la RAM objetivo. Un
+  test acota el pico con `tracemalloc` como múltiplo del campo resuelto.
 - **Equivalente declarado.** En el solver, fijar a cero el espectro en los bins donde el denominador se anula es
   redundante con el numerador nulo en esos bins; se conserva por fidelidad con research.
