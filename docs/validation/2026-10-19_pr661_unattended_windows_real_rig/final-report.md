@@ -2,7 +2,8 @@
 
 > **Sesión:** `DYNDOLOD-661-UNATTENDED-WINDOWS-ACCEPTANCE` · **Fecha:** 2026-10-19 · **SO:** Windows 10 Pro 19045
 > **Rama:** `validation/dyndolod-661-unattended-windows-rig` · **Base de EJECUCIÓN:** `origin/main` = `6abf20d06d908a6c3bc8f4648cb4cd7bb4111c37`
-> **Base actual del PR:** `main` avanzó a `a3b5e441` (incluye PR #750 mergeado como `99aaba03`, más #753/#755);
+> **Referencia histórica de `main` (2026-10-19):** `a3b5e441` (PR #750 como `99aaba03`, más #753/#755).
+> **Base de integración documental del PR #754 (2026-10-21):** `main` en `7a79c24b` integrado mediante `8e16b88`; la ejecución del rig NO se repitió sobre esta base.
 > **los rigs NO se re-ejecutaron sobre esos commits** — el código certificado es el de la base de ejecución.
 > **Worktree:** `<WORKTREE>`
 > **Rig aislado:** `C:\SkyClaw_Rigs\SW661 Unattended`
@@ -15,7 +16,7 @@
 
 ## 1. Qué se certificó y con qué código
 
-Se ejecutó la cadena completa del pipeline productivo sobre los binarios reales Alpha-209,
+Se ejecutó la cadena de la **etapa 9** del pipeline productivo sobre los binarios reales Alpha-209 (sin ejecutar las etapas 6–8),
 en un rig físicamente aislado, **sin que ningún humano pulsara un botón local**:
 
 ```text
