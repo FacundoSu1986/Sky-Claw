@@ -31,7 +31,8 @@ Límites declarados:
   0700; en Windows hereda las ACL del padre (el temporal del usuario). No fija ACL propias.
 - No es un tool del registro ni tiene superficie GUI/agente todavía (NP-A0): por eso no emite ``success``/``message``.
   Cuando se cablee, el borde traduce con ``normalize_tool_result`` y las dos superficies pasan por esta función.
-- ``mypy`` no cubre este módulo (``sky_claw.local.tools.*`` está exento en ``pyproject.toml``).
+- ``sky_claw.local.tools.*`` está exento de ``mypy`` en ``pyproject.toml``; este módulo está en la lista de opt-in estricto de
+  esa misma sección (``nace estricto``), así que el gate de CI sí lo cubre.
 """
 
 from __future__ import annotations

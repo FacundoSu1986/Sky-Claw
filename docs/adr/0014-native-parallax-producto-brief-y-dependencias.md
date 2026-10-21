@@ -642,8 +642,9 @@ ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver �
   decodificador BC4 de tests se valida contra Pillow) y ampliaciones de `tests/test_native_parallax_export.py`. **Mutación
   manual**: 75 mutantes sobre el ejecutor y 22 más sobre `export.py` (136 en total), 0 vivos reales; la primera pasada del
   ejecutor dejó 7 vivos que eran huecos reales (rutas relativas, verificar el original en vez de la copia, tope exacto,
-  dimensiones transpuestas, códigos negativos) y se cerraron. `mypy --strict` sobre el ejecutor, forzado fuera de la exención de CI:
-  sin errores. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
+  dimensiones transpuestas, códigos negativos) y se cerraron. El ejecutor **nace estricto en el gate de `mypy` de CI**
+  (lista de opt-in de `pyproject.toml`, observación del revisor automático: `sky_claw.local.tools.*` está exento); comprobé que el gate
+  muerde inyectando un error de tipos, que CI reportó. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
   ingenuo): prueba la plomería real de procesos, plazo vencido incluido, **no** al binario.
 
 **Verificado ejecutando el binario real** (PC con Windows, commit `177ffd39`, 2026-10-21; Python 3.11.9, numpy 2.4.6, Pillow 13.0.0;
@@ -673,8 +674,8 @@ de Windows es sobre `177ffd39`; los commits posteriores del PR tocan solo el man
 EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
 
 **Límites declarados.** (1) El directorio privado hereda los permisos del temporal del usuario: `mkdtemp` es 0700 en POSIX; en Windows
-hereda las ACL del padre, no fija ACL propias. (2) `sky_claw.local.tools.*` está exento de `mypy` en CI: la tipificación del
-ejecutor se verificó a mano. (3) No hay registro ni detección de `texconv` en el tool registry (la ruta se pasa explícita) ni
+hereda las ACL del padre, no fija ACL propias. (2) El módulo vive en `sky_claw.local.tools.*`, exento de `mypy` y de BLE001 por carpeta;
+se lo saca de la exención de `mypy` con el opt-in estricto de `pyproject.toml` y no tiene `except Exception`. (3) No hay registro ni detección de `texconv` en el tool registry (la ruta se pasa explícita) ni
 el contrato `success`/`message` (aún no es un tool): se cablea en NP-A0, donde las dos superficies deben pasar por
 `exportar_altura_bc4`. (4) `ResultadoDeExportacion` no lleva todavía el `encoder_id` del manifest: NP-O0 arma el manifest con
 `texconv_version`, `texconv_sha256` y `argumentos`.
