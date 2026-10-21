@@ -23,6 +23,7 @@ from sky_claw.local.tools.dyndolod_uia_driver import (
     ContextoDeConduccion,
     ContratoDePasoError,
     DesatendidoError,
+    EjecutorDePasoUIA,
     ElementoUI,
     EstadoDePaso,
     FaseDeObservacion,
@@ -45,7 +46,7 @@ from sky_claw.local.tools.dyndolod_uia_driver import (
 )
 from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import EjecutorDePasoEnProceso
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
-from sky_claw.local.tools.dyndolod_uia_preflight import UIANoDisponibleError
+from sky_claw.local.tools.dyndolod_uia_preflight import ProcesoObservado, UIANoDisponibleError
 from tests._dyndolod_gui_simulada import (
     CONTRATO_DYNDOLOD,
     CONTRATO_TEXGEN,
@@ -118,10 +119,16 @@ class AprobadorFalso:
         self.avisos.append((tool, mensaje))
 
 
-def _capacidad(gui: GuiSimulada, aprobador: AprobadorFalso | None = None, **plazos: float) -> CapacidadDesatendidaUIA:
+def _capacidad(
+    gui: GuiSimulada,
+    aprobador: AprobadorFalso | None = None,
+    *,
+    localizador: object = None,
+    **plazos: float,
+) -> CapacidadDesatendidaUIA:
     ejecutor = EjecutorDePasoEnProceso(
         fabrica_backend=lambda: gui,
-        localizador=gui,
+        localizador=localizador if localizador is not None else gui,
         dormir=lambda s: time.sleep(min(s, 0.002)),
         gracia_externa_segundos=2.0,
     )
@@ -319,8 +326,10 @@ class _BackendFijo:
         self._instantanea = instantanea
         self._valor = valor
         self.mutaciones: list[str] = []
+        self.lecturas = 0
 
     def instantanea(self, pid: int) -> InstantaneaUI:
+        self.lecturas += 1
         return self._instantanea
 
     def leer_output(self, elemento_ui: ElementoUI) -> str | None:
@@ -852,6 +861,10 @@ def test_la_capacidad_rechaza_plazos_invalidos():
     with pytest.raises(ValueError):
         _capacidad(gui, cierre_timeout_segundos=float("nan"))
     with pytest.raises(ValueError):
+        _capacidad(gui, reobservacion_timeout_segundos=0.0)
+    with pytest.raises(ValueError):
+        _capacidad(gui, reobservacion_timeout_segundos=float("inf"))
+    with pytest.raises(ValueError):
         dataclasses.replace(_capacidad(gui), fallos_de_observacion_tolerados=0)
 
 
@@ -859,3 +872,330 @@ def test_elemento_ui_compara_sin_referencia():
     assert elemento("Button", "TButton", "Start") == dataclasses.replace(
         elemento("Button", "TButton", "Start"), referencia=object()
     )
+
+
+# =============================================================================
+# F2 (#773): hueco de observación UIA antes del Invoke
+# =============================================================================
+#
+# La corrida D1 del rig Alpha-209 aprobó el modal conocido y abortó con
+# UIA_CONTROL_MAP_MISMATCH: la ÚNICA lectura que hacía el paso INVOCAR cayó
+# mientras la ventana se repintaba (`pantalla=CARGANDO`, `invocado=False`). D2,
+# con el mismo código, pasó. Lo que estos tests fijan es la reparación acotada:
+# volver a LEER sólo cuando la instantánea no muestra ninguna pantalla
+# contractual, revalidando identidad y modal en cada lectura, e invocando como
+# máximo una vez.
+
+MODAL_TEXGEN = "texgen_stitched_lod_previo"
+
+
+def _hueco_de_repintado() -> tuple[VentanaUI, ...]:
+    """Instantánea de un repintado: la ventana contractual todavía no expone Output.
+
+    Es la lectura que ``clasificar_pantalla`` devuelve como ``CARGANDO`` y la que
+    abortó D1. No muestra el ``#32770`` del modal ni el campo Output.
+    """
+    return (ventana_principal([]),)
+
+
+def _otro_modal() -> tuple[VentanaUI, ...]:
+    return (
+        ventana_principal(elementos_de_dialogo("Something else happened", [("Ignore", "CommandButton_5")], "TexGen")),
+    )
+
+
+def _pedido_de_modal(gui: GuiSimulada, **campos: object) -> PedidoDePaso:
+    return _pedido(gui, TipoDePaso.INVOCAR, accion_id="texgen_modal_ignore", modal_id=MODAL_TEXGEN, **campos)
+
+
+class _LocalizadorQueDriftea:
+    """El pid autorizado hasta cierta llamada; después, otra instalación del exe."""
+
+    def __init__(self, gui: GuiSimulada, *, ruta_ajena: str, desde_la_llamada: int | None = None) -> None:
+        self._gui = gui
+        self._ruta_ajena = ruta_ajena
+        self._desde = desde_la_llamada
+        self.llamadas = 0
+
+    def procesos(self):
+        self.llamadas += 1
+        ruta = self._ruta_ajena if self._desde is not None and self.llamadas >= self._desde else self._gui.exe
+        return (ProcesoObservado(pid=self._gui.pid, nombre_ejecutable="TexGenx64.exe", ruta_ejecutable=ruta),)
+
+    def driftar_desde_la_proxima(self) -> None:
+        """Deja pasar la próxima lectura y cambia el ejecutable en la siguiente."""
+        self._desde = self.llamadas + 2
+
+
+class _ContadorDePasos:
+    """Envuelve al ejecutor y registra cada pedido del padre."""
+
+    def __init__(self, real: EjecutorDePasoUIA, registro: list[tuple[TipoDePaso, str | None]]) -> None:
+        self._real = real
+        self._registro = registro
+
+    async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+        self._registro.append((pedido.tipo, pedido.accion_id))
+        return await self._real.ejecutar(pedido)
+
+
+async def _correr_con_contador(gui: GuiSimulada, tmp_path, aprobador: AprobadorFalso, **plazos: float):
+    capacidad = _capacidad(gui, aprobador, **plazos)
+    registro: list[tuple[TipoDePaso, str | None]] = []
+    conductor = ConductorDesatendido(
+        dataclasses.replace(capacidad, ejecutor=_ContadorDePasos(capacidad.ejecutor, registro)), dormir=_sin_dormir
+    )
+    ctx = _contexto(gui, tmp_path)
+    ledger = LedgerDeAcciones()
+    await conductor.conducir_hasta_inicio(ctx, ledger, proceso_vivo=gui.proceso_vivo)
+    await conductor.esperar_fin_y_cerrar(ctx, ledger, proceso_vivo=gui.proceso_vivo)
+    return ledger, registro
+
+
+# -- Caso A: el hueco se recupera y se invoca una sola vez --------------------
+
+
+def test_f2_el_hueco_de_repintado_no_aborta_el_invoke_del_modal_aprobado():
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([_hueco_de_repintado()])
+    resultado = _paso(gui, _pedido_de_modal(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert gui.invocaciones == ["Ignore"]
+    assert gui.lecturas == 2, "un hueco cuesta UNA lectura extra, no un bucle"
+
+
+async def test_f2_el_padre_reserva_una_vez_y_pide_un_solo_invoke_tras_el_hueco(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    aprobador = AprobadorFalso(al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado()]))
+    ledger, registro = await _correr_con_contador(gui, tmp_path, aprobador)
+
+    invocaciones_del_modal = [p for p in registro if p == (TipoDePaso.INVOCAR, "texgen_modal_ignore")]
+    assert invocaciones_del_modal == [(TipoDePaso.INVOCAR, "texgen_modal_ignore")]
+    assert gui.invocaciones.count("Ignore") == 1
+    assert len(aprobador.modales) == 1, "la reobservación no pide una aprobación nueva"
+
+    entradas = [entrada for entrada in ledger.entradas if entrada.accion_id == "texgen_modal_ignore"]
+    assert len(entradas) == 1
+    assert entradas[0].estado is EstadoDePaso.OK and entradas[0].invocado
+    assert ledger.intentadas() == ("texgen_modal_ignore", "texgen_start", "texgen_exit")
+
+    with pytest.raises(DesatendidoError) as error:
+        ledger.reservar("texgen_modal_ignore", tool="TexGen")
+    assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+
+
+# -- Caso B: el hueco no autoriza otro modal ----------------------------------
+
+
+async def test_f2_tras_el_hueco_un_modal_distinto_corta_sin_invocar(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    aprobador = AprobadorFalso(al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado(), _otro_modal()]))
+    with pytest.raises(DesatendidoError) as error:
+        await _correr(gui, tmp_path, aprobador)
+    assert error.value.codigo is CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH
+    assert gui.invocaciones == []
+
+
+def test_f2_una_pantalla_decisiva_distinta_no_se_relee():
+    # El asistente a la vista donde se esperaba el modal: el mundo cambió, y una
+    # segunda lectura no aporta nada. Se corta con UNA lectura.
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    resultado = _paso(gui, _pedido_de_modal(gui, timeout_segundos=0.5))
+    assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
+    assert gui.lecturas == 1
+    assert gui.invocaciones == []
+
+
+# -- Caso D: presupuesto finito ----------------------------------------------
+
+
+async def test_f2_un_hueco_que_nunca_cierra_agota_el_presupuesto_sin_invocar(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    aprobador = AprobadorFalso(al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True))
+    with pytest.raises(DesatendidoError) as error:
+        await _correr(gui, tmp_path, aprobador, reobservacion_timeout_segundos=0.05)
+    assert error.value.codigo is CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH
+    assert gui.invocaciones == []
+
+
+@pytest.mark.timeout(30)
+def test_f2_el_presupuesto_de_lecturas_es_finito_aunque_el_reloj_no_avance():
+    """Sin tope de lecturas, un reloj que no avanza convierte "presupuesto finito" en bucle."""
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: gui,
+        localizador=gui,
+        reloj=lambda: 0.0,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
+    assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
+    assert 1 < gui.lecturas <= 32, f"lecturas={gui.lecturas}: ni una sola ni sin tope"
+    assert gui.invocaciones == []
+
+
+# -- Caso E: la identidad se revalida en cada lectura ------------------------
+
+
+def test_f2_la_identidad_del_proceso_se_revalida_en_cada_lectura():
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([_hueco_de_repintado()])
+    localizador = _LocalizadorQueDriftea(gui, ruta_ajena=r"D:\Otra\TexGenx64.exe", desde_la_llamada=2)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=0.5),
+        fabrica_backend=lambda: gui,
+        localizador=localizador,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE
+    assert resultado.invocado is False
+    assert gui.invocaciones == []
+
+
+async def test_f2_el_drift_de_identidad_durante_la_reobservacion_corta_cerrado(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    localizador = _LocalizadorQueDriftea(gui, ruta_ajena=r"D:\Otra\TexGenx64.exe")
+
+    def _armar():
+        gui.armar_guion([_hueco_de_repintado()])
+        localizador.driftar_desde_la_proxima()
+
+    aprobador = AprobadorFalso(al_aprobar_modal=_armar)
+    capacidad = _capacidad(gui, aprobador, localizador=localizador)
+    conductor = ConductorDesatendido(capacidad, dormir=_sin_dormir)
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+    assert gui.invocaciones == []
+
+
+# -- Caso F: un control no inequívoco no se invoca ni se relee ----------------
+
+
+def test_f2_un_control_deshabilitado_no_se_invoca_ni_se_relee():
+    modal = CONTRATO_TEXGEN.modales_conocidos[0]
+    elementos = [
+        dataclasses.replace(elemento_ui, habilitado=False) if elemento_ui.nombre == "Ignore" else elemento_ui
+        for elemento_ui in elementos_de_dialogo(modal.firma.instruccion, sorted(modal.firma.botones), "TexGen")
+    ]
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    backend = _BackendFijo(_inst(ventana_principal(elementos)))
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=0.5), fabrica_backend=lambda: backend, localizador=gui
+    )
+    assert resultado.motivo is MotivoDePrecondicion.CONTROL_DESHABILITADO
+    assert backend.mutaciones == []
+    assert backend.lecturas == 1
+
+
+# -- Caso G: el ledger, y el pedido que el padre hace UNA sola vez --------------
+
+
+async def test_f2_el_padre_no_repite_el_pedido_de_un_invoke_que_no_llego_a_invocar(tmp_path):
+    """El paso mutante se PIDE una vez, aun cuando corta sin invocar.
+
+    El ledger ya impide la segunda llamada a ``_invocar``; lo que este test fija
+    es que nadie re-emita el pedido por la puerta de atrás (copiar el bloque
+    ``ejecutor.ejecutar(...)`` en vez de llamar a ``_invocar``). Un reintento en
+    el padre fue la primera idea para F2 y es la que el exactly-once prohíbe:
+    liberar la reserva ante una respuesta "no invocada" es abrir esa puerta.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    aprobador = AprobadorFalso(
+        al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True)
+    )
+    capacidad = _capacidad(gui, aprobador, reobservacion_timeout_segundos=0.05)
+    registro: list[tuple[TipoDePaso, str | None]] = []
+    conductor = ConductorDesatendido(
+        dataclasses.replace(capacidad, ejecutor=_ContadorDePasos(capacidad.ejecutor, registro)), dormir=_sin_dormir
+    )
+    with pytest.raises(DesatendidoError):
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert registro.count((TipoDePaso.INVOCAR, "texgen_modal_ignore")) == 1
+    assert gui.invocaciones == []
+
+
+# -- Caso C: el desenlace ambiguo sigue siendo no-retry ----------------------
+
+
+async def test_f2_un_desenlace_ambiguo_del_modal_no_se_reintenta(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    capacidad = _capacidad(gui)
+    real = capacidad.ejecutor
+    registro: list[tuple[TipoDePaso, str | None]] = []
+
+    class _Ambiguo:
+        async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+            registro.append((pedido.tipo, pedido.accion_id))
+            if pedido.tipo is TipoDePaso.INVOCAR and pedido.accion_id == "texgen_modal_ignore":
+                return ResultadoDePaso(estado=EstadoDePaso.SIN_RESPUESTA, detalle="helper colgado")
+            return await real.ejecutar(pedido)
+
+    conductor = ConductorDesatendido(dataclasses.replace(capacidad, ejecutor=_Ambiguo()), dormir=_sin_dormir)
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+    assert registro.count((TipoDePaso.INVOCAR, "texgen_modal_ignore")) == 1
+    assert gui.invocaciones == []
+
+
+# -- El corte por identidad tiene UN código en todo el conductor -------------
+
+
+class _IdentidadPerdidaEn:
+    """El paso indicado responde IDENTIDAD_NO_COINCIDE; los demás corren de verdad."""
+
+    def __init__(self, real: EjecutorDePasoUIA, accion_id: str) -> None:
+        self._real = real
+        self._accion_id = accion_id
+
+    async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+        if pedido.tipo is TipoDePaso.INVOCAR and pedido.accion_id == self._accion_id:
+            return ResultadoDePaso(
+                estado=EstadoDePaso.IDENTIDAD_NO_COINCIDE, detalle="el pid ya no es el ejecutable autorizado"
+            )
+        return await self._real.ejecutar(pedido)
+
+
+@pytest.mark.parametrize(
+    ("contrato", "accion_id", "boton", "modal_inicial"),
+    [
+        (CONTRATO_TEXGEN, "texgen_modal_ignore", "Ignore", True),
+        (CONTRATO_TEXGEN, "texgen_start", "Start", False),
+        (CONTRATO_TEXGEN, "texgen_exit", "Exit TexGen", False),
+        (CONTRATO_DYNDOLOD, "dyndolod_advanced", "Advanced >>>", False),
+    ],
+    ids=["modal", "begin", "terminal", "accion_previa"],
+)
+async def test_el_corte_por_identidad_tiene_el_mismo_codigo_en_todo_el_conductor(
+    tmp_path, contrato, accion_id, boton, modal_inicial
+):
+    """El código del corte no puede depender de por dónde llegó el paso.
+
+    Siete sitios interpretan un ``ResultadoDePaso``; tres mapeaban
+    ``IDENTIDAD_NO_COINCIDE`` a ``UNATTENDED_CONTRACT_VIOLATION`` y cuatro no.
+    Un drift de identidad no es "el mapa de controles cambió": es que el proceso
+    que se está tocando ya no es el autorizado.
+    """
+    gui = GuiSimulada(contrato, modal_inicial=modal_inicial)
+    capacidad = _capacidad(gui)
+    conductor = ConductorDesatendido(
+        dataclasses.replace(capacidad, ejecutor=_IdentidadPerdidaEn(capacidad.ejecutor, accion_id)),
+        dormir=_sin_dormir,
+    )
+    ctx = _contexto(gui, tmp_path)
+    ledger = LedgerDeAcciones()
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(ctx, ledger, proceso_vivo=gui.proceso_vivo)
+        await conductor.esperar_fin_y_cerrar(ctx, ledger, proceso_vivo=gui.proceso_vivo)
+    assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+    assert boton not in gui.invocaciones

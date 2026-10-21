@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **La etapa 9 desatendida abortaba cuando UIA leía la ventana mientras se
+  repintaba (F2, #773).** En la corrida D1 del rig Alpha-209 el operador aprobó el
+  modal conocido de DynDOLOD DLL NG y el conductor cortó con
+  `UIA_CONTROL_MAP_MISMATCH`: `_paso_invocar` tomaba UNA sola instantánea y esa
+  lectura cayó en `pantalla=CARGANDO` con `invocado=False`; D2, con el mismo
+  código, pasó. Reintentar desde el conductor no era una opción —`_invocar`
+  reserva la acción en el ledger ANTES de pedir el paso, así que la segunda
+  llamada es `UNATTENDED_CONTRACT_VIOLATION` por diseño— y la reobservación vive
+  ahora dentro del MISMO paso `INVOCAR`: si la instantánea no muestra ninguna
+  pantalla contractual (`CARGANDO`, `SIN_VENTANA`) se vuelve a leer con
+  presupuesto finito (`reobservacion_timeout_segundos`, 15 s, más un tope de 16
+  lecturas), revalidando en cada vuelta pid, ruta canónica del ejecutable,
+  pantalla requerida, identidad del modal, precondición de Output y
+  unicidad/habilitación del control. `backend.invocar` se ejecuta como máximo una
+  vez y su desenlace —incluido un HRESULT de error— no se reintenta. Una pantalla
+  decisiva DISTINTA de la esperada (otro modal, diálogo desconocido, `AMBIGUA`,
+  control duplicado o deshabilitado) corta cerrado sin releer. El corte por
+  identidad, además, tenía dos códigos según el camino: `_atender_modal`,
+  `accion_previa`, Begin y terminal reportaban `IDENTIDAD_NO_COINCIDE` como
+  `UIA_CONTROL_MAP_MISMATCH`/`TERMINAL_CONTROL_MISMATCH` mientras la observación y
+  la escritura del Output ya usaban `UNATTENDED_CONTRACT_VIOLATION`; ahora los
+  siete sitios comparten un único mapeo. Anclas:
+  `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el censo parametrizado
+  de los cuatro caminos del corte por identidad y el test que fija que el padre
+  pide el Invoke UNA vez aunque el paso corte sin invocar) y
+  `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas con el que
+  se reproduce el hueco de repintado.
 - **El adapter legacy de `run_xedit_script` devolvía un resumen vacío como si fuera
   el resumen validado (#549).** La tool del agente lee `list_all_conflicts.pas` y
   verifica que `SUMMARY|total_conflicts` exista y cierre contra los conflictos

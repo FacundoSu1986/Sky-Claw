@@ -135,7 +135,11 @@ class GuiSimulada:
         self.vivo = True
         self.escrituras: list[tuple[MecanismoDeEscritura, str]] = []
         self.invocaciones: list[str] = []
+        #: Cuántas instantáneas se sirvieron (F2: cuántas lecturas costó un paso).
+        self.lecturas = 0
         self._polls = 0
+        self._guion: list[tuple[VentanaUI, ...]] = []
+        self._repetir_ultima = False
         self._lock = threading.Lock()
 
     # -- estado observable ------------------------------------------------------
@@ -190,6 +194,33 @@ class GuiSimulada:
         else:
             self.estado = "terminal"
 
+    # -- guion de instantáneas (huecos de observación de F2) --------------------
+
+    def armar_guion(
+        self,
+        instantaneas: Sequence[tuple[VentanaUI, ...]],
+        *,
+        repetir_ultima: bool = False,
+    ) -> None:
+        """Sirve estas instantáneas, en orden, ANTES de la real.
+
+        Modela el hueco de observación medido en el rig Alpha-209 (F2, #773): la
+        aprobación del modal ya ocurrió y el árbol UIA todavía no muestra el
+        ``#32770`` porque la ventana está repintando. ``repetir_ultima`` deja el
+        hueco abierto indefinidamente (el caso "nunca cierra").
+        """
+        with self._lock:
+            self._guion = list(instantaneas)
+            self._repetir_ultima = repetir_ultima
+
+    def _siguiente_guion(self) -> tuple[VentanaUI, ...] | None:
+        """La próxima instantánea forzada, o ``None`` si el guion se agotó."""
+        if not self._guion:
+            return None
+        if self._repetir_ultima and len(self._guion) == 1:
+            return self._guion[0]
+        return self._guion.pop(0)
+
     # -- LocalizadorDeProcesos --------------------------------------------------
 
     def procesos(self) -> Sequence[ProcesoObservado]:
@@ -207,7 +238,9 @@ class GuiSimulada:
     def instantanea(self, pid: int) -> InstantaneaUI:
         with self._lock:
             self._avanzar_generacion()
-            ventanas = self._ventanas() if self.vivo and pid == self.pid else ()
+            self.lecturas += 1
+            forzadas = self._siguiente_guion()
+            ventanas = forzadas if forzadas is not None else (self._ventanas() if self.vivo and pid == self.pid else ())
             return InstantaneaUI(
                 pid=pid,
                 ventanas=tuple(

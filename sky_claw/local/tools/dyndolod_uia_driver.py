@@ -28,6 +28,16 @@ DESCONOCIDO y NO se reintenta: ``BEGIN_OUTCOME_UNKNOWN`` /
 ``TERMINAL_OUTCOME_UNKNOWN``. Una acción que el helper NO llegó a invocar (la
 precondición no se cumplía) es un corte limpio con su código propio.
 
+**Hueco de observación antes del Invoke (F2, #773).** El rig Alpha-209 aprobó un
+modal conocido y abortó con ``UIA_CONTROL_MAP_MISMATCH``: la única lectura del
+paso ``INVOCAR`` cayó mientras la ventana se repintaba (``pantalla=CARGANDO``,
+``invocado=False``). Un hueco así no se recupera desde el padre —la reserva del
+ledger ya está hecha y un segundo ``_invocar`` es
+``UNATTENDED_CONTRACT_VIOLATION``— sino DENTRO del paso: el helper vuelve a
+leer, con presupuesto finito, sólo cuando la instantánea no muestra NINGUNA
+pantalla contractual, y ejecuta la primitiva como máximo una vez. Ver
+:func:`_paso_invocar`.
+
 **Durante la generación, cero mutaciones** (P7): entre el Begin aceptado y el
 diálogo terminal contractual el conductor sólo pide pasos ``OBSERVAR``.
 
@@ -947,12 +957,66 @@ def _pantalla_requerida(contrato: ContratoDeUIHerramienta, accion: AccionDeUI) -
     return TipoDePantalla.ASISTENTE
 
 
+#: Tope de lecturas de un paso ``INVOCAR``. El límite PRODUCTIVO es el
+#: presupuesto temporal (``PedidoDePaso.timeout_segundos``); este tope es el
+#: riel anti-giro para cuando el reloj no avanza (reloj falso de test, o un
+#: ``dormir`` que retorna de inmediato): sin él, un presupuesto "finito" podría
+#: no vencer nunca y el paso giraría para siempre dentro del helper.
+MAXIMO_DE_LECTURAS_POR_INVOCACION = 16
+
+
+def _es_hueco_de_observacion(pantalla: Pantalla) -> bool:
+    """¿La instantánea no muestra NINGUNA pantalla contractual? (hueco de repintado)
+
+    La distinción es la que hace segura la reobservación: un snapshot sin
+    pantalla decisiva (``CARGANDO``, ``SIN_VENTANA``) es un hueco de
+    OBSERVACIÓN —el árbol UIA se leyó mientras la ventana se repintaba— y volver
+    a leer no muta nada. Un snapshot que sí muestra una pantalla decisiva
+    DISTINTA de la esperada (otro modal, un diálogo desconocido, el asistente
+    donde se esperaba el modal, ``AMBIGUA``) es un DESACUERDO real: el mundo
+    cambió y no se reintenta.
+    """
+    return pantalla.tipo in {TipoDePantalla.CARGANDO, TipoDePantalla.SIN_VENTANA}
+
+
 def _paso_invocar(
     pedido: PedidoDePaso,
     contrato: ContratoDeUIHerramienta,
     backend: BackendDeConduccion,
     localizador: LocalizadorDeProcesos,
+    reloj: Callable[[], float],
+    dormir: Callable[[float], None],
 ) -> ResultadoDePaso:
+    """Invoca la acción UNA vez, releyendo sólo los huecos de observación (F2).
+
+    **Por qué la reobservación vive acá y no en el conductor.** El padre reserva
+    la acción en el ledger antes de pedir el paso; una segunda llamada a
+    ``_invocar`` con el mismo ``accion.id`` es ``UNATTENDED_CONTRACT_VIOLATION``.
+    Reintentar desde arriba exigiría liberar la reserva ante una respuesta
+    "no invocada", que es exactamente la puerta que el exactly-once no abre.
+    Dentro del paso, en cambio, la reserva es una sola y ``backend.invocar`` se
+    ejecuta como máximo una vez: lo único que se repite es la LECTURA.
+
+    **Qué se revalida en cada lectura** (nunca se saltea un chequeo, sólo se
+    repite): pid vivo y ruta canónica del ejecutable (:func:`_identidad`), la
+    instantánea fresca, la pantalla requerida por la acción, la identidad del
+    modal pedido, la precondición de Output y la unicidad/habilitación del
+    control. El SHA-256 y la versión del build son la CLAVE del contrato, que se
+    resolvió al entrar al paso (``ejecutar_paso_sincrono``) y no cambia: el
+    hash se midió sobre el archivo que el runner lanzó, y re-leerlo del disco en
+    cada vuelta no agregaría información sobre lo que la GUI muestra.
+
+    **Presupuesto.** ``timeout_segundos`` es el techo temporal y
+    :data:`MAXIMO_DE_LECTURAS_POR_INVOCACION` el tope de lecturas; lo que venza
+    primero corta. Agotado el presupuesto el desenlace es
+    ``PRECONDICION_FALLIDA``/``PANTALLA_INCORRECTA`` con ``invocado=False``: el
+    padre lo ve como un corte limpio, no como un desenlace desconocido.
+
+    **Nunca se reintenta la primitiva.** Cualquier desvío que no sea un hueco
+    —incluido un control no inequívoco— corta antes de invocar, y una vez
+    llamado ``backend.invocar`` el resultado se devuelve tal cual, con su
+    HRESULT, sin segunda llamada.
+    """
     accion = contrato.accion_por_id(pedido.accion_id or "")
     if accion is None:
         return _precondicion(
@@ -960,58 +1024,72 @@ def _paso_invocar(
             f"la acción {pedido.accion_id!r} no está en el contrato del build",
             None,
         )
-    identidad = _identidad(pedido, localizador)
-    if identidad is not None:
-        return ResultadoDePaso(estado=identidad, detalle="identidad no demostrada antes de invocar")
-    instantanea = _con_output(contrato, backend.instantanea(pedido.pid), backend)
-    pantalla = clasificar_pantalla(contrato, instantanea)
     requerida = _pantalla_requerida(contrato, accion)
-    if pantalla.tipo is not requerida:
-        return _precondicion(
-            MotivoDePrecondicion.PANTALLA_INCORRECTA,
-            f"{accion.id} exige {requerida.value}; pantalla={pantalla.tipo.value} {pantalla.detalle}".strip(),
-            instantanea,
+    limite = reloj() + pedido.timeout_segundos
+    lecturas = 0
+    while True:
+        identidad = _identidad(pedido, localizador)
+        if identidad is not None:
+            return ResultadoDePaso(estado=identidad, detalle="identidad no demostrada antes de invocar")
+        instantanea = _con_output(contrato, backend.instantanea(pedido.pid), backend)
+        pantalla = clasificar_pantalla(contrato, instantanea)
+        lecturas += 1
+        if pantalla.tipo is not requerida:
+            detalle = f"{accion.id} exige {requerida.value}; pantalla={pantalla.tipo.value} {pantalla.detalle}".strip()
+            if not _es_hueco_de_observacion(pantalla):
+                return _precondicion(MotivoDePrecondicion.PANTALLA_INCORRECTA, detalle, instantanea)
+            restante = limite - reloj()
+            if lecturas >= MAXIMO_DE_LECTURAS_POR_INVOCACION or restante <= 0:
+                return _precondicion(
+                    MotivoDePrecondicion.PANTALLA_INCORRECTA,
+                    f"{detalle} — {lecturas} lecturas en {pedido.timeout_segundos:.1f}s: la pantalla "
+                    "contractual no apareció y no se invocó nada",
+                    instantanea,
+                )
+            dormir(min(pedido.intervalo_segundos, restante))
+            continue
+        if requerida is TipoDePantalla.MODAL_CONOCIDO and (
+            pantalla.modal is None or pantalla.modal.id != pedido.modal_id
+        ):
+            return _precondicion(
+                MotivoDePrecondicion.PANTALLA_INCORRECTA,
+                f"el modal a la vista no es {pedido.modal_id!r}",
+                instantanea,
+            )
+        if pedido.precondicion_output is not None and not output_coincide(
+            instantanea.valor_output, pedido.precondicion_output
+        ):
+            return _precondicion(
+                MotivoDePrecondicion.OUTPUT_DIFIERE,
+                f"el Output muestra {instantanea.valor_output!r} y se esperaba {pedido.precondicion_output!r}",
+                instantanea,
+            )
+        ventana = (
+            _ventana_principal(contrato, instantanea)
+            if accion.contexto is ContextoDeAccion.VENTANA_PRINCIPAL
+            else _ventana_del_dialogo(instantanea)
         )
-    if requerida is TipoDePantalla.MODAL_CONOCIDO and (pantalla.modal is None or pantalla.modal.id != pedido.modal_id):
-        return _precondicion(
-            MotivoDePrecondicion.PANTALLA_INCORRECTA,
-            f"el modal a la vista no es {pedido.modal_id!r}",
-            instantanea,
+        candidatos = elementos_que_coinciden(ventana.elementos, accion.selector) if ventana is not None else []
+        if len(candidatos) != 1:
+            return _precondicion(
+                MotivoDePrecondicion.CONTROL_NO_UNICO,
+                f"{accion.id}: {len(candidatos)} candidatos al control",
+                instantanea,
+            )
+        if not candidatos[0].habilitado:
+            return _precondicion(
+                MotivoDePrecondicion.CONTROL_DESHABILITADO,
+                f"{accion.id}: el control no está habilitado",
+                instantanea,
+            )
+        hresult = backend.invocar(candidatos[0])
+        return ResultadoDePaso(
+            estado=EstadoDePaso.OK if hresult == HRESULT_OK else EstadoDePaso.MECANISMO_FALLO,
+            detalle="" if hresult == HRESULT_OK else f"{accion.id}: Invoke devolvió {hresult}",
+            instantanea=_sin_referencias(instantanea),
+            invocado=True,
+            hresult=hresult,
         )
-    if pedido.precondicion_output is not None and not output_coincide(
-        instantanea.valor_output, pedido.precondicion_output
-    ):
-        return _precondicion(
-            MotivoDePrecondicion.OUTPUT_DIFIERE,
-            f"el Output muestra {instantanea.valor_output!r} y se esperaba {pedido.precondicion_output!r}",
-            instantanea,
-        )
-    ventana = (
-        _ventana_principal(contrato, instantanea)
-        if accion.contexto is ContextoDeAccion.VENTANA_PRINCIPAL
-        else _ventana_del_dialogo(instantanea)
-    )
-    candidatos = elementos_que_coinciden(ventana.elementos, accion.selector) if ventana is not None else []
-    if len(candidatos) != 1:
-        return _precondicion(
-            MotivoDePrecondicion.CONTROL_NO_UNICO,
-            f"{accion.id}: {len(candidatos)} candidatos al control",
-            instantanea,
-        )
-    if not candidatos[0].habilitado:
-        return _precondicion(
-            MotivoDePrecondicion.CONTROL_DESHABILITADO,
-            f"{accion.id}: el control no está habilitado",
-            instantanea,
-        )
-    hresult = backend.invocar(candidatos[0])
-    return ResultadoDePaso(
-        estado=EstadoDePaso.OK if hresult == HRESULT_OK else EstadoDePaso.MECANISMO_FALLO,
-        detalle="" if hresult == HRESULT_OK else f"{accion.id}: Invoke devolvió {hresult}",
-        instantanea=_sin_referencias(instantanea),
-        invocado=True,
-        hresult=hresult,
-    )
 
 
 def ejecutar_paso_sincrono(
@@ -1044,7 +1122,7 @@ def ejecutar_paso_sincrono(
             return _paso_observar(pedido, contrato, backend, localizador, reloj, dormir)
         if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT:
             return _paso_escribir_output(pedido, contrato, backend, localizador)
-        return _paso_invocar(pedido, contrato, backend, localizador)
+        return _paso_invocar(pedido, contrato, backend, localizador, reloj, dormir)
     except ObservacionUIAError as exc:
         # Sólo llega acá un fallo de LECTURA previo a la primitiva (las primitivas
         # devuelven su HRESULT): no se actuó, y el veredicto honesto es el sensor.
@@ -1182,6 +1260,12 @@ class CapacidadDesatendidaUIA:
     cierre_timeout_segundos: float = 180.0
     aprobacion_timeout_segundos: float = 900.0
     gracia_externa_segundos: float = 15.0
+    #: Presupuesto de la reobservación acotada previa al ÚNICO Invoke de un paso
+    #: ``INVOCAR`` (F2, #773). Es el plazo del paso: el helper lo gasta releyendo
+    #: huecos de repintado y el ejecutor lo usa como base de su deadline duro.
+    #: 15 s cubren de sobra un repintado; lo que no cubre es un ``CARGANDO``
+    #: persistente, y eso corta cerrado.
+    reobservacion_timeout_segundos: float = 15.0
     fallos_de_observacion_tolerados: int = 3
 
     def __post_init__(self) -> None:
@@ -1196,6 +1280,7 @@ class CapacidadDesatendidaUIA:
         exigir_plazo_positivo_finito(self.cierre_timeout_segundos, "cierre_timeout_segundos")
         exigir_plazo_positivo_finito(self.aprobacion_timeout_segundos, "aprobacion_timeout_segundos")
         exigir_plazo_positivo_finito(self.gracia_externa_segundos, "gracia_externa_segundos")
+        exigir_plazo_positivo_finito(self.reobservacion_timeout_segundos, "reobservacion_timeout_segundos")
         if isinstance(self.fallos_de_observacion_tolerados, bool) or self.fallos_de_observacion_tolerados < 1:
             raise ValueError("fallos_de_observacion_tolerados tiene que ser un entero >= 1")
 
@@ -1322,6 +1407,20 @@ class ConductorDesatendido:
     def _error(self, ctx: ContextoDeConduccion, codigo: CodigoDesatendido, detalle: str) -> DesatendidoError:
         return DesatendidoError(codigo, detalle, tool=ctx.contrato.tool)
 
+    def _error_de_identidad(self, ctx: ContextoDeConduccion) -> DesatendidoError:
+        """El corte por identidad, con UN código y UN texto en todo el conductor.
+
+        Siete sitios interpretan un ``ResultadoDePaso``. Un drift del proceso no
+        es "el mapa de controles cambió": es que el proceso que se está tocando
+        ya no es el autorizado. Que el código dependiera de por dónde llegó el
+        paso era un defecto de familia, no una decisión (F2, #773).
+        """
+        return self._error(
+            ctx,
+            CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+            "el pid observado no es el ejecutable autorizado",
+        )
+
     def _pantalla(self, ctx: ContextoDeConduccion, resultado: ResultadoDePaso) -> Pantalla | None:
         """El padre RE-CLASIFICA: el veredicto del helper no es autoridad."""
         if resultado.instantanea is None:
@@ -1371,7 +1470,9 @@ class ConductorDesatendido:
                 accion_id=accion.id,
                 precondicion_output=precondicion_output,
                 modal_id=modal_id,
-                timeout_segundos=self._capacidad.observacion_intervalo_segundos,
+                # El paso puede gastar este plazo releyendo huecos de observación
+                # antes del ÚNICO Invoke (F2, #773); no es un reintento del padre.
+                timeout_segundos=self._capacidad.reobservacion_timeout_segundos,
             )
         )
         ledger.registrar(accion.id, resultado)
@@ -1423,11 +1524,7 @@ class ConductorDesatendido:
             if resultado.estado is EstadoDePaso.PROCESO_AUSENTE:
                 raise self._error(ctx, CodigoDesatendido.PROCESS_DIED_PRE_BEGIN, "el proceso terminó antes del Begin")
             if resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
-                raise self._error(
-                    ctx,
-                    CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
-                    "el pid observado no es el ejecutable autorizado",
-                )
+                raise self._error_de_identidad(ctx)
             if resultado.estado in {EstadoDePaso.UIA_NO_DISPONIBLE, EstadoDePaso.SIN_RESPUESTA}:
                 raise self._error(ctx, CodigoDesatendido.UIA_UNAVAILABLE, resultado.detalle or "sensor UIA caído")
             if resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA:
@@ -1522,6 +1619,8 @@ class ConductorDesatendido:
             return
         if resultado.estado is EstadoDePaso.PROCESO_AUSENTE:
             raise self._error(ctx, CodigoDesatendido.PROCESS_DIED_PRE_BEGIN, "el proceso terminó con el modal abierto")
+        if resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
+            raise self._error_de_identidad(ctx)
         if self._desenlace_desconocido(resultado):
             raise self._error(
                 ctx,
@@ -1545,7 +1644,7 @@ class ConductorDesatendido:
         if resultado.estado is EstadoDePaso.PROCESO_AUSENTE:
             raise self._error(ctx, CodigoDesatendido.PROCESS_DIED_PRE_BEGIN, "el proceso terminó antes de escribir")
         if resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
-            raise self._error(ctx, CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION, "identidad no demostrada")
+            raise self._error_de_identidad(ctx)
         if resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA:
             raise self._error(ctx, CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH, resultado.detalle)
         if resultado.estado is EstadoDePaso.MECANISMO_FALLO:
@@ -1614,6 +1713,8 @@ class ConductorDesatendido:
             previa = await self._invocar(ctx, ledger, contrato.accion_previa)
             if previa.estado is EstadoDePaso.PROCESO_AUSENTE:
                 raise self._error(ctx, CodigoDesatendido.PROCESS_DIED_PRE_BEGIN, "el proceso terminó antes del Begin")
+            if previa.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
+                raise self._error_de_identidad(ctx)
             if previa.estado is not EstadoDePaso.OK:
                 codigo = (
                     CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
@@ -1637,6 +1738,8 @@ class ConductorDesatendido:
         if inicio.estado is not EstadoDePaso.OK:
             if inicio.estado is EstadoDePaso.PROCESO_AUSENTE and not inicio.invocado:
                 raise self._error(ctx, CodigoDesatendido.PROCESS_DIED_PRE_BEGIN, "el proceso terminó antes del Begin")
+            if inicio.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
+                raise self._error_de_identidad(ctx)
             if self._desenlace_desconocido(inicio):
                 raise self._error(
                     ctx,
@@ -1673,7 +1776,7 @@ class ConductorDesatendido:
             if resultado.estado is EstadoDePaso.PROCESO_AUSENTE:
                 return
             if resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
-                raise self._error(ctx, CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION, "identidad no demostrada")
+                raise self._error_de_identidad(ctx)
             if resultado.estado in {EstadoDePaso.UIA_NO_DISPONIBLE, EstadoDePaso.SIN_RESPUESTA}:
                 fallos += 1
                 if fallos >= capacidad.fallos_de_observacion_tolerados:
@@ -1712,6 +1815,8 @@ class ConductorDesatendido:
         terminal = await self._invocar(ctx, ledger, ctx.contrato.accion_terminal)
         if terminal.estado is EstadoDePaso.PROCESO_AUSENTE and not terminal.invocado:
             return
+        if terminal.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE:
+            raise self._error_de_identidad(ctx)
         if terminal.estado is not EstadoDePaso.OK:
             if self._desenlace_desconocido(terminal):
                 raise self._error(
