@@ -1,0 +1,153 @@
+{
+  "sesion": "DYNDOLOD-661-UNATTENDED-WINDOWS-ACCEPTANCE",
+  "fecha": "2026-10-19",
+  "leyenda": {
+    "MEDIDO_EN_RIG": "se ejecutó contra los binarios reales con el pipeline productivo",
+    "MEDIDO_EN_SONDA": "se ejecutó contra los binarios reales con los pasos/backend productivos, fuera del pipeline transaccional",
+    "CUBIERTO_POR_TESTS": "no se forzó en el rig; lo cubren tests deterministas/simulados de la suite (se listan en test-results.txt)",
+    "NO_EJECUTADO": "no se ejecutó en esta sesión"
+  },
+  "casos": [
+    {
+      "id": "N01",
+      "caso": "Aprobación de configuración ilegible/rechazada por el transporte HITL",
+      "estado": "MEDIDO_EN_RIG",
+      "resultado": "FAIL_CLOSED",
+      "codigo": "UNATTENDED_CONFIGURATION_NOT_APPROVED",
+      "evidencia": "standalone/hitl/dyndolod-desatendido-77ec7467df0b.{resp,answered}: el .resp escrito con BOM UTF-8 (EF BB BF 41 50 52) no parseó como APROBADA; el guard recibió DENEGADA. Journal de la época: [] (sin TX), sin spawn, sin handoff. El result.json de esa corrida fue sobreescrito por el reintento; el pedido y la decisión quedan conservados.",
+      "mutation": false
+    },
+    {
+      "id": "N02",
+      "caso": "Data con output de TexGen previo + operador aprueba Ignore del modal conocido",
+      "estado": "MEDIDO_EN_RIG",
+      "resultado": "FAIL (post-check)",
+      "codigo": "sin código desatendido; el pipeline falla por taxonomía de log",
+      "evidencia": "standalone/attempt1-texgen/texgen-result.json + TexGen_SSE_log.txt: TexGen generó 1.362 archivos y escribió 'TexGen completed successfully', pero la línea 'Error: Found stitched object LOD textures...' (emitida al mostrar el modal) se clasifica terminal (dyndolod_runner.clasificar_log, _ERROR_SUELTO). TX 1 queda pending; preset restaurado byte-exacto. Ver DEFECTO F1.",
+      "mutation": "artefacto generado y revertido por el rollback del pipeline"
+    },
+    {
+      "id": "N03",
+      "caso": "Handoff TexGen no visible en el Data físico (standalone, sin USVFS)",
+      "estado": "MEDIDO_EN_RIG",
+      "resultado": "FAIL_CLOSED_ANTES_DEL_SPAWN",
+      "codigo": "needs_deployment=true (corte documentado)",
+      "evidencia": "standalone/attempt2-texgen/texgen-result.json: DynDOLOD no se lanza; 'TexGen Output' queda PRESERVADO y certificado bajo lease; TX 2 committed con handoff AWAITING_DEPLOYMENT.",
+      "mutation": false
+    },
+    {
+      "id": "N04",
+      "caso": "Hueco transitorio de observación UIA en el paso INVOCAR del modal (acción NO ejecutada)",
+      "estado": "MEDIDO_EN_RIG",
+      "resultado": "FAIL_CLOSED",
+      "codigo": "UIA_CONTROL_MAP_MISMATCH (detalle: dyndolod_modal_ignore exige MODAL_CONOCIDO; pantalla=CARGANDO)",
+      "evidencia": "standalone/run-log.txt intento D2 (18:05:56): 'dyndolod_modal_ignore -> PRECONDICION_FALLIDA (invocado=False)'; ledger de una sola acción. Sondas posteriores: modal estable >=100 s y 10/10 observaciones MODAL_CONOCIDO (publicadas en `uia-control-evidence.json`) con el ejecutor productivo (evidence/dyndolod-modal-survival.json, dyndolod-flake.json). Reintento D4 con el mismo código: OK. Ver DEFECTO F2.",
+      "mutation": false
+    },
+    {
+      "id": "N05",
+      "caso": "Output precargado con ruta ranciа del preset (RIESGO 1)",
+      "estado": "MEDIDO_EN_SONDA + MEDIDO_EN_RIG",
+      "resultado": "DETECTADO_Y_CORREGIDO",
+      "codigo": "n/a (convergencia)",
+      "evidencia": "Fase C: lectura inicial = C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen (rancia) != -o:; LegacyIAccessiblePattern.SetValue devuelve S_OK y readback exacto; observación posterior coincide canónicamente. En la corrida real el driver convergió el Output antes del Begin (standalone/run-log.txt).",
+      "mutation": "solo el campo Output de la GUI del rig"
+    },
+    {
+      "id": "N06",
+      "caso": "SHA de ejecutable desconocido",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "UNATTENDED_BUILD_UNSUPPORTED (fail-closed, sin spawn)",
+      "codigo": "UNATTENDED_BUILD_UNSUPPORTED",
+      "evidencia": "tests/test_dyndolod_uia_contrato.py, tests/test_dyndolod_desatendido_integracion.py"
+    },
+    {
+      "id": "N07",
+      "caso": "Preset ausente (DynDOLOD_SSE_Default.ini)",
+      "estado": "CONDICION_MEDIDA + CUBIERTO_POR_TESTS",
+      "resultado": "En el archivo Alpha-209 el preset Default NO existe; el runner corta con PRESET_ABSENT antes del spawn",
+      "codigo": "PRESET_ABSENT",
+      "evidencia": "La extracción de Alpha-209 solo trae DynDOLOD_SSE_TexGen.ini (medido). El rig usó el preset del operador (SHA E728F1F3...) copiado byte-exacto. Test del corte: tests/test_dyndolod_desatendido_integracion.py"
+    },
+    {
+      "id": "N08",
+      "caso": "Preset de calidad distinto al pedido / preset cambiado después de la aprobación",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "PRESET_MISMATCH antes del spawn (re-hash anti-TOCTOU)",
+      "codigo": "PRESET_MISMATCH",
+      "evidencia": "tests/test_dyndolod_desatendido_integracion.py, tests/test_dyndolod_presets.py"
+    },
+    {
+      "id": "N09",
+      "caso": "Readback del Output no coincide",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "OUTPUT_READBACK_MISMATCH (fail-closed)",
+      "codigo": "OUTPUT_READBACK_MISMATCH",
+      "evidencia": "tests/test_dyndolod_uia_driver.py"
+    },
+    {
+      "id": "N10",
+      "caso": "Begin deshabilitado",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "BEGIN_NOT_ENABLED",
+      "codigo": "BEGIN_NOT_ENABLED",
+      "evidencia": "tests/test_dyndolod_uia_driver.py"
+    },
+    {
+      "id": "N11",
+      "caso": "Desenlace ambiguo de Begin/Exit (sin reintento)",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "BEGIN_OUTCOME_UNKNOWN / TERMINAL_OUTCOME_UNKNOWN",
+      "codigo": "BEGIN_OUTCOME_UNKNOWN, TERMINAL_OUTCOME_UNKNOWN",
+      "evidencia": "tests/test_dyndolod_uia_driver.py (ledger exactly-once)"
+    },
+    {
+      "id": "N12",
+      "caso": "Helper COM colgado / timeout de IPC",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "SIN_RESPUESTA -> UIA_UNAVAILABLE / corte tipado",
+      "codigo": "SIN_RESPUESTA (EstadoDePaso) + deadline duro con Job Object",
+      "evidencia": "tests/test_dyndolod_uia_driver_ejecutor.py"
+    },
+    {
+      "id": "N13",
+      "caso": "Modal desconocido / diálogo inesperado durante la generación",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "UNEXPECTED_MODAL / UNEXPECTED_DIALOG_DURING_GENERATION",
+      "codigo": "UNEXPECTED_MODAL, UNEXPECTED_DIALOG_DURING_GENERATION",
+      "evidencia": "tests/test_dyndolod_uia_driver.py"
+    },
+    {
+      "id": "N14",
+      "caso": "Restauración de preset fallida",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "PRESET_RESTORE_FAILED corta toda salida",
+      "codigo": "PRESET_RESTORE_FAILED",
+      "evidencia": "tests/test_dyndolod_presets.py, tests/test_dyndolod_desatendido_integracion.py"
+    },
+    {
+      "id": "N15",
+      "caso": "Cancelación durante generación / pérdida de lease / reinicio de Sky-Claw",
+      "estado": "CUBIERTO_POR_TESTS",
+      "resultado": "cancelación-safe y veto de rollback por lease",
+      "codigo": "n/a (oscila entre cortes tipados)",
+      "evidencia": "tests/test_db_locks.py, tests/test_dyndolod_service.py, tests/test_dyndolod_workspace.py. Nota: la suite hereda el fallo conocido de #739 en test_la_cancelacion_durante_la_resolucion_libera_la_lease"
+    },
+    {
+      "id": "N16",
+      "caso": "Ventana/modal sin ProcessId atribuible (RIESGO 2)",
+      "estado": "MEDIDO_EN_SONDA",
+      "resultado": "NO_OBSERVADO: todas las ventanas del pid tuvieron UIA_ProcessIdPropertyId legible; el modal #32770 aparece como descendiente de TfrmMain. El backend solo acepta ventanas del pid pedido (FindAll con ProcessId), así que una ventana sin identidad no se adivina.",
+      "codigo": "n/a",
+      "evidencia": "uia-control-evidence.json (root_windows) + clases TfrmMain/#32770 medidas"
+    },
+    {
+      "id": "N17",
+      "caso": "Etapas 6-8 (Bashed Patch / Synthesis / grass cache) ausentes",
+      "estado": "NO_EJECUTADO",
+      "resultado": "El guard vive en la superficie remota (generate_lods/GestorDeTrabajosDeLods) y en GenerateLodsStrategy; esta sesión invocó el SERVICIO directamente (mismo boundary que el rig #739), así que el guard no se ejerció. No se fabricaron artefactos de 6-8.",
+      "codigo": "guard SOP §5.2 (no disparado)",
+      "evidencia": "tests/test_etapas_previas_lods.py (ancla por AST de todas las superficies)"
+    }
+  ]
+}

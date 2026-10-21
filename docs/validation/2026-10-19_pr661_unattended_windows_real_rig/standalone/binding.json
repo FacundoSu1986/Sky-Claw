@@ -1,0 +1,12 @@
+{
+  "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\.sky-claw-binding.json",
+  "contenido": {
+    "binding_id": "5b14cd20-61c1-4528-aabf-54115e072605",
+    "resource_binding": {
+      "game_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\game",
+      "mo2_instance_data_root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance",
+      "mo2_mods_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods"
+    },
+    "schema_version": 1
+  }
+}

@@ -1,0 +1,9 @@
+8: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+12: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\
+70: User says "Ignore"
+10916: [03:32] Occlusion.esp completed successfully
+10931: [03:47] Save DynDOLOD plugins, save plugins and zip output, exit DynDOLOD without saving, check the log? The zip option will only pack the relevant files into the zip file and permanently delete everything in the dedicated output folder C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD! If 'Check log' is selected, the DynDOLOD plugins will be saved and the log can be checked.
+10932: [03:53] User says "Save and Exit"
+10933: [03:53] Saving C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\DynDOLOD.esm
+10934: [03:53] Saving C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\DynDOLOD.esp
+10935: [03:53] Saving C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\Occlusion.esp

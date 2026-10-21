@@ -1,0 +1,37 @@
+{
+  "TexGen Output": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods\\TexGen Output",
+    "existe": true,
+    "archivos": 1363,
+    "bytes": 138457918
+  },
+  "DynDOLOD Output": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods\\DynDOLOD Output",
+    "existe": true,
+    "archivos": 5106,
+    "bytes": 722206775
+  },
+  "artefactos": [
+    {
+      "archivo": "DynDOLOD.esm",
+      "bytes": 141695,
+      "sha256": "0333cd62ab848b79d5939876331d6912d392f47ae52039fc1cd96108682de312"
+    },
+    {
+      "archivo": "DynDOLOD.esp",
+      "bytes": 259523,
+      "sha256": "365f40973f7afea96b5d8965fb452a6c40f39c754e2eb184b248c5bc0e941fd4"
+    },
+    {
+      "archivo": "Occlusion.esp",
+      "bytes": 9360147,
+      "sha256": "e6565070b45a29a0db0b34eb5bb669a4d8db724671549070654b3a21c9ff034a"
+    }
+  ],
+  "root_administrado": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD",
+    "existe": true,
+    "archivos": 5105,
+    "bytes": 722206676
+  }
+}

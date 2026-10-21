@@ -1,0 +1,8 @@
+{
+  "request_id": "dyndolod-modal-d11ad0883045",
+  "category": "dyndolod_desatendido",
+  "reason": "DynDOLOD (pid=20416) mostró un aviso de arranque conocido. Aprobá para que Sky-Claw pulse 'Ignore' y continúe; denegá para cortar la corrida.",
+  "detail": "aviso: DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!\nqué significa: DynDOLOD no encontró DynDOLOD.DLL de 'DynDOLOD DLL NG and Scripts'. Sin ese plugin SKSE el LOD dinámico no funciona en juego (SOP §2.9: requerido para 1.6.1170); 'Ignore' genera igual.\nid: dyndolod_dll_ng_ausente · timeout: 900s",
+  "url": null,
+  "created_at": "2026-10-19T18:05:17-0300"
+}

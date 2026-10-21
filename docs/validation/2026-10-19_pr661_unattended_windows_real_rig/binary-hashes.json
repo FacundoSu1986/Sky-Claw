@@ -1,0 +1,84 @@
+{
+  "generado_en": "2026-10-19T18:04:11.5384047-03:00",
+  "generado_por": "subagente rig-env",
+  "rig": "C:\\SkyClaw_Rigs\\SW661 Unattended",
+  "binarios": [
+    {
+      "rol": "TexGenx64.exe",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\TexGenx64.exe",
+      "sha256": "0939BC8F8CBAE2E1B38F17D56FECD1B7A941DADE0554E944886BD7F5C4807A62",
+      "bytes": 35794432,
+      "esperado": "0939BC8F8CBAE2E1B38F17D56FECD1B7A941DADE0554E944886BD7F5C4807A62",
+      "coincide": true
+    },
+    {
+      "rol": "DynDOLODx64.exe",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\DynDOLODx64.exe",
+      "sha256": "B67625EB7815111BA9AC232C626FF88B07BB64FF30FF5183C5A04B5F045C3BD0",
+      "bytes": 35794432,
+      "esperado": "B67625EB7815111BA9AC232C626FF88B07BB64FF30FF5183C5A04B5F045C3BD0",
+      "coincide": true
+    },
+    {
+      "rol": "SkyrimSE.exe",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\game\\SkyrimSE.exe",
+      "sha256": "C434208894F07F604B852F29B8EDC3A58C4DE63DE783373733E72B2B73F33BE9",
+      "bytes": 37157144,
+      "esperado": "C434208894F07F604B852F29B8EDC3A58C4DE63DE783373733E72B2B73F33BE9",
+      "coincide": true
+    }
+  ],
+  "presets": [
+    {
+      "rol": "DynDOLOD_SSE_Default.ini",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+      "sha256_destino": "E728F1F36171C50F4DB386AC56DB24B4DFCE726261A2D55911EE4A8736209DC4",
+      "bytes": 24061,
+      "origen": "E:\\Sectores\\Sector_Skyclaw_evidencia\\Modding\\DynDOLOD RigTest\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+      "sha256_origen": "E728F1F36171C50F4DB386AC56DB24B4DFCE726261A2D55911EE4A8736209DC4",
+      "coincide_origen_destino": true,
+      "nota": "preset del operador, no editado; copiado al rig por el Lead (rig-env no lo duplicó ni modificó)",
+      "preset_line": "Preset=Medium",
+      "outputpath_line": "OutputPath=E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD",
+      "outputpath_rancio": "SI (a proposito, caso RIESGO 1)"
+    },
+    {
+      "rol": "DynDOLOD_SSE_TexGen.ini",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+      "sha256_destino": "75C4AA4A5746D24F32BB2BE455C5EE13B0DB1F87E3412A9EB463C90F5E87BA8E",
+      "bytes": 1705,
+      "origen": "C:\\SkyClaw_Rigs\\PR739 Data Path\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+      "sha256_origen": "75C4AA4A5746D24F32BB2BE455C5EE13B0DB1F87E3412A9EB463C90F5E87BA8E",
+      "coincide_origen_destino": true,
+      "nota": "copiado byte-exacto del rig #739; NO editado",
+      "outputpath_line": "OutputPath=C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen",
+      "outputpath_rancio": "SI (a proposito, caso RIESGO 1)"
+    }
+  ],
+  "inis": [
+    {
+      "rol": "Skyrim.ini",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Game INI\\Skyrim.ini",
+      "sha256": "4D7C9D67C6A159A93122D8557653484BDDBF43143E20C6A9AFB359BA1EE5EB5F",
+      "bytes": 1895,
+      "origen": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Game INI\\Skyrim.ini",
+      "sha256_origen": "4D7C9D67C6A159A93122D8557653484BDDBF43143E20C6A9AFB359BA1EE5EB5F",
+      "byte_exacto_origen": true,
+      "sha256_skyclaw_pr2": "4D7C9D67C6A159A93122D8557653484BDDBF43143E20C6A9AFB359BA1EE5EB5F",
+      "byte_exacto_pr2": true
+    },
+    {
+      "rol": "SkyrimPrefs.ini",
+      "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Game INI\\SkyrimPrefs.ini",
+      "sha256": "7406F51239338E8CA0D19BE345D3C3A377E818532C87C3346509697184050DDF",
+      "bytes": 4080,
+      "origen": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Game INI\\SkyrimPrefs.ini",
+      "sha256_origen": "7406F51239338E8CA0D19BE345D3C3A377E818532C87C3346509697184050DDF",
+      "byte_exacto_origen": true,
+      "sha256_skyclaw_pr2": "7406F51239338E8CA0D19BE345D3C3A377E818532C87C3346509697184050DDF",
+      "byte_exacto_pr2": true
+    }
+  ],
+  "veredicto": "PASS",
+  "nota": "Los SHA256 de los 3 ejecutables coinciden con los esperados. INIs byte-exactos respecto de PR739 y del perfil SkyClaw-PR2-Rig (sin hash esperado provisto). El preset Default lo materializó el Lead; rig-env sólo verificó y registró."
+}
