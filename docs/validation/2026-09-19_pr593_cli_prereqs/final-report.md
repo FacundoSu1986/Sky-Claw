@@ -98,7 +98,7 @@ Cierre (`04-resultado-dyndolod.json`): `rc=0`, `cierre.cerrado=true`, `pid=11036
   bajo `2026-09-20_final` en ambos `03-log-nuevo-*.txt`; los `04-*` registran la
   firma previa del log (`log_bytes_antes`/`log_sha256_antes`) para delimitar el
   tramo nuevo (166 y 154 líneas).
-- **[OBSERVADO]** privacidad: sin `<USUARIO>` ni rutas del repo/checkout en ningún
+- **[OBSERVADO]** privacidad: sin el identificador real de la cuenta del operador ni rutas del repo/checkout en ningún
   artefacto; `%USERPROFILE%` sustituye al home en `-t:` (argv y ecos) y en los logs.
 - **[OBSERVADO]** subroots de salida `...\PR593 Work\DynDOLOD\{TexGen,DynDOLOD}`
   vacíos: sin Start no hay escritura de salida (sólo el binding del work root).

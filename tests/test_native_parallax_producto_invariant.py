@@ -46,6 +46,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "experiments/convencion.py",
         "experiments/medicion.py",
         "experiments/revision.py",
+        "export.py",
         "gates.py",
         "integrate.py",
         "metrics.py",

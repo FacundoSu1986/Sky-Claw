@@ -15,7 +15,7 @@ Contenedores y formatos (todo lo demás se RECHAZA con ``FormatoNoSoportadoError
   que Pillow informa: en un PNG el ``rawmode`` del tile (``RGB;16B`` es de 16 bits y Pillow lo abre como
   ``RGB``), y en un DDS sin comprimir las máscaras de canal (565, 1555 y 4444 serían cuantizados en
   silencio, y R16G16 deja un canal en cero). Grises, paleta y 16 bits se rechazan.
-- **BC5**: guarda solo X e Y. Pillow 11.3.0 y 12.3.0 lo devuelven como RGB con B = 0 (verificado
+- **BC5**: guarda solo X e Y. Pillow 11.3.0, 12.3.0 y 13.0.0 lo devuelven como RGB con B = 0 (verificado
   ejecutando con un bloque armado a mano, NP-C0), así que Z se reconstruye como
   ``sqrt(1 − x² − y²)``. Los píxeles con ``x² + y² > 1`` quedan con Z = 0, se renormalizan y se
   cuentan en ``clamped_pixels``.
@@ -37,6 +37,12 @@ convención la fija la fuente del archivo y quien llama la declara en ``source_c
 
 Confianza: ``confidence = clip(nz, 0, 1)`` por píxel. Es una SEÑAL, no una puerta: los umbrales de
 aceptación/revisión/rechazo se derivan del benchmark y se versionan (ADR 0014 §6), nunca se fijan acá.
+NO es comparable entre formatos: en RGB es ``z / ‖(x, y, z)‖`` con Z tomado del canal B (depende de los tres
+canales y puede discrepar del plano XY); en BC5 Z se reconstruye de X e Y, así que ``confidence`` es función
+exacta de ellos y nunca los contradice (fuera del disco unidad vale 0). Con el mismo (X, Y) = (200, 64) dio
+0.655 en BC5 y 0.80, 0.60 y 0.005 en RGB con B = 255, 200 y 128: un mismo umbral no mide lo mismo en ambos
+casos, y ``z_reconstructed`` dice cuál es el caso. Ancla: ``test_la_confianza_no_es_comparable_entre_bc5_y_rgb``
+(``tests/test_native_parallax_decode.py``).
 
 Dependencias: ``numpy`` y ``Pillow`` pertenecen al extra opcional ``native-parallax`` y se importan de
 forma perezosa; sin ellas el uso lanza ``DependenciaNoDisponibleError``.
@@ -107,7 +113,9 @@ class DecodedNormal:
     """Resultado inmutable de ``NormalDecoder.decode`` (los arrays son de solo lectura).
 
     ``normal``: (alto, ancho, 3) float64, vectores unitarios en convención DirectX.
-    ``confidence``: (alto, ancho) float64 en [0, 1], ``clip(nz, 0, 1)``. Señal, no puerta.
+    ``confidence``: (alto, ancho) float64 en [0, 1], ``clip(nz, 0, 1)``. Señal, no puerta, y no comparable
+    entre BC5 (``z_reconstructed``: función exacta de X e Y) y RGB (Z del canal B renormalizado con los tres
+    canales): ver el docstring del módulo.
     ``source_format``: formato del contenedor según Pillow (``PNG``, ``DDS``...).
     ``dds_pixel_format``: formato de píxel del DDS (``BC5``, ``BC7``, ``DXT1``...), ``None`` si no es DDS.
     ``z_reconstructed``: ``True`` si Z se reconstruyó (BC5).
@@ -134,7 +142,7 @@ def _exigir_dependencias() -> None:
 # verificados para normales (los formatos con pérdida las deforman).
 _CONTENEDORES_ADMITIDOS = ("PNG", "DDS")
 
-# Códecs del plugin DDS de Pillow (11.3.0 y 12.3.0, verificado ejecutando): ``dds_rgb`` (DDS sin comprimir
+# Códecs del plugin DDS de Pillow (11.3.0, 12.3.0 y 13.0.0, verificado ejecutando): ``dds_rgb`` (DDS sin comprimir
 # con máscaras de la cabecera clásica) y ``raw`` (sin comprimir con cabecera DX10), ambos SIN pixel_format;
 # ``bcn`` para los de bloques, con pixel_format. Cualquier otro se rechaza: no está verificado.
 _CODECS_DDS_SIN_COMPRIMIR = frozenset({"dds_rgb", "raw"})
@@ -143,7 +151,7 @@ _CODEC_DDS_BLOQUES = "bcn"
 _FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC5", "BC7"})
 
 
-# Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0): el
+# Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0 y 13.0.0): el
 # ``rawmode`` del tile de un PNG y de un DDS DX10 sin comprimir, y las máscaras de un DDS sin comprimir de
 # cabecera clásica (el códec ``dds_rgb`` acepta CUALQUIER máscara y reescala cada canal a 8 bits sin avisar).
 _RAWMODES_DE_8_BITS = frozenset({"RGB", "RGBA"})

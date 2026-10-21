@@ -26,7 +26,17 @@ RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
 
-PINNED_ACTION_REF_ESPERADA = "8e5a9295973b24af4b70cafd0b660a230811ef9e"
+# SHA del tag v0.48.0 de Codium-ai/pr-agent (el repo upstream ahora se llama
+# The-PR-Agent/pr-agent y GitHub redirige). Verificado con
+# `gh api repos/Codium-ai/pr-agent/git/ref/tags/v0.48.0`: el objeto del tag es
+# este commit, del 2026-10-16.
+#
+# Este congelamiento es deliberado y es el motivo por el que un bump de
+# Dependabot NO puede aterrizar solo: mover el pin exige una decisión humana que
+# audite el release contra `.pr_agent.toml` y contra las recetas de routing de
+# los workflows. Al subir la versión, actualizar este SHA junto con los tres
+# `uses:` de .github/workflows/qodo-*.yml.
+PINNED_ACTION_REF_ESPERADA = "981344be2755e303df501e18e3f60b848a188a80"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
