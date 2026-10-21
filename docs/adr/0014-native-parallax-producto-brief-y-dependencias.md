@@ -73,7 +73,7 @@ Verificado leyendo el repositorio (2026-10-19):
 
    | PR | Contenido | Estado |
    |---|---|---|
-   | NP-D0 | dataset spec + generador sintético + fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | **parcial** (#758): generador sintético y especificación hechos; falta el fixture MatSynth (descarga externa) |
+   | NP-D0 | dataset spec + generador sintético + fixture MatSynth (solo los materiales con licencia CC0 **por material**; descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | **parcial** (#758): generador sintético y especificación hechos; falta el fixture MatSynth (descarga externa; ver «Actualización de NP-D0b») |
    | NP-C0 | `NormalDecoder` (DDS/PNG, convención DirectX, confianza por `nz`) | hecho (#756) |
    | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
@@ -179,8 +179,8 @@ ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verif
 
 ### Actualización de NP-D0 (2026-10-20)
 
-NP-D0 queda **PARCIAL**: este PR entrega el corpus sintético y su especificación; el fixture MatSynth CC0 no
-está (ver «No incluido»). Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo
+NP-D0 queda **PARCIAL**: este PR entrega el corpus sintético y su especificación; el fixture MatSynth (solo
+materiales CC0) no está (ver «No incluido» y «Actualización de NP-D0b»). Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo
 confirma en el PR.
 
 - **Qué entra.** `native_parallax/bench/sintetico.py` reimplementa en el producto los 15 casos periódicos
@@ -208,7 +208,7 @@ confirma en el PR.
   hash exacto sería frágil y no un contrato.
 - **Tamaño mínimo.** Las grillas deben ser de al menos 128: con 32 ciclos en `S11`, 64 muestras serían
   exactamente Nyquist y el seno valdría cero en cada una.
-- **No incluido.** (1) El fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada): necesita
+- **No incluido.** (1) El fixture MatSynth (solo materiales CC0; descarga externa, hash-pinned, nunca commiteada): necesita
   que el operador decida qué subconjunto, qué hashes y desde dónde descargar; `research/` ya tiene fetchers y
   un manifiesto (`exp-m3-clean-authored-manifest.json`) que son el punto de partida, pero promoverlos al
   producto trae egress de red y es otro PR. (2) Variantes con error de compresión por bloques: hace falta un
@@ -591,3 +591,26 @@ terceros no puedan escribir. **Requisito para NP-E0b:** verificar inmediatamente
 el binario desde un directorio que terceros no puedan escribir; la API de E0a no ofrece verificación y uso atómicos
 (observación del revisor automático, #771). (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
 medirse (EXP-010).
+
+### Actualización de NP-D0b (2026-10-21)
+
+Corrige una premisa de este ADR: **la licencia de MatSynth es POR MATERIAL, no del conjunto**. Los textos anteriores que hablaban
+del «fixture MatSynth CC0» (tabla de §2, «Actualización de NP-D0», `bench/__init__.py`, `bench/sintetico.py`) se ajustaron a «solo
+materiales CC0». Las notas de investigación de `docs/design/research/` (p. ej. «~95 % CC0») son fotografías de lo que se sabía
+entonces y no se reescriben: sobre la licencia manda esta sección.
+
+- **Fuente.** Informe de la PC con Windows (consulta a los metadatos del conjunto en Hugging Face): cada material trae su
+  `metadata.license`; en el subconjunto de prueba consultado, 24 de 89 materiales eran CC BY-NC-ND (no comercial y sin derivadas, que
+  no sirve para derivar nada). **No lo reverifiqué desde esta sesión**: es dato del informe, no verificado ejecutando por mí.
+- **Decisión técnica (mía).** El fixture admite únicamente materiales cuya licencia sea exactamente `CC0`. CC BY queda fuera aunque
+  `CLEAN_ROOM.md` lo permita con atribución: exigiría arrastrar créditos por archivo, y el corpus CC0 alcanza para el benchmark.
+  CC BY-NC-ND y cualquier otra, excluidas.
+- **Tamaño.** El informe encontró únicamente originales de 4096²; no hay variantes de 1024. El original de 4096² queda como fuente
+  fijada por hash (nunca commiteada) y el 1024 se **deriva después** con un procedimiento determinista propio (promedio de área,
+  el mismo de `generar_mips`), nunca descargado.
+- **Qué NO se hizo.** No se descargó ni se versionó ningún material; no hay fixture. Los hashes de los 20 materiales CC0 que
+  listó el informe todavía no están en el repo: antes de fijarlos hay que reverificar la licencia de cada uno en la descarga.
+- **Política provisional del gate (decisión técnica, no validada).** Falsos aceptos ≤ 5 %, confianza 95 %, revisión manual ≤ 15 %.
+  Son números del Tech Lead para tener un objetivo, no evidencia: **no pasan a `UMBRALES_VIGENTES`** (hoy `None`, congelado por
+  igualdad en `tests/test_native_parallax_gates.py`) hasta validarlos contra un corpus real. Cambiar esa constante rompe el ancla
+  a propósito.
