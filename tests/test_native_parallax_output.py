@@ -1163,6 +1163,382 @@ def test_el_plan_resume_si_hay_cambios_en_el_disco() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bordes: lo último que entra y lo primero que no (huecos que mostró la mutación manual)
+# ---------------------------------------------------------------------------
+
+
+def _ruta_de_largo(largo: int) -> str:
+    return "textures/" + "x" * (largo - len("textures/") - len("_p.dds")) + "_p.dds"
+
+
+def test_el_largo_de_la_ruta_se_prueba_en_su_borde() -> None:
+    assert validar_ruta_de_salida(_ruta_de_largo(200)) == _ruta_de_largo(200)
+    with pytest.raises(RutaDeSalidaInvalidaError):
+        validar_ruta_de_salida(_ruta_de_largo(201))
+
+
+@pytest.mark.parametrize("ruta", ["textures/a~b!c_p.dds", "textures/a b_p.dds"])
+def test_los_extremos_del_rango_ascii_imprimible_se_aceptan(ruta: str) -> None:
+    # '~' (0x7E) es el último imprimible, '!' (0x21) el primero tras el espacio (0x20).
+    assert validar_ruta_de_salida(ruta) == ruta
+
+
+@pytest.mark.parametrize("ruta", ["textures/a\\b_p.dds", "textures/ap.dds", "textures/a_p.dd", "textures/a.dds"])
+def test_mas_rutas_invalidas(ruta: str) -> None:
+    # La barra invertida en el medio (sin ella la ruta sería válida) y un sufijo sin el guion bajo.
+    with pytest.raises(RutaDeSalidaInvalidaError):
+        validar_ruta_de_salida(ruta)
+
+
+_RESERVADOS = ["con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))]
+
+
+@pytest.mark.parametrize("nombre", _RESERVADOS)
+def test_cada_nombre_reservado_de_windows_se_rechaza_en_cualquier_capitalizacion(nombre: str) -> None:
+    for variante in (nombre, nombre.upper(), nombre.capitalize()):
+        with pytest.raises(RutaDeSalidaInvalidaError):
+            validar_ruta_de_salida(f"textures/{variante}/a_p.dds")
+        with pytest.raises(RutaDeSalidaInvalidaError):
+            validar_ruta_de_salida(f"textures/{variante}.txt/a_p.dds")
+
+
+def test_un_nombre_que_solo_empieza_como_uno_reservado_es_valido() -> None:
+    assert validar_ruta_de_salida("textures/console/lpt10/comx/a_p.dds")
+
+
+def test_el_largo_de_los_parametros_se_prueba_en_su_borde() -> None:
+    assert len(parametros_canonicos({"v": "x" * 65_528})) == 65_536
+    with pytest.raises(ProcedenciaInvalidaError):
+        parametros_canonicos({"v": "x" * 65_529})
+
+
+def _anidado(contenedores: int, *, listas: bool) -> dict[str, Any]:
+    """Un objeto con EXACTAMENTE ``contenedores`` niveles de lista u objeto contando el de arriba."""
+    valor: Any = 1
+    for _ in range(contenedores - 1):
+        valor = [valor] if listas else {"a": valor}
+    return {"a": valor}
+
+
+@pytest.mark.parametrize("listas", [False, True], ids=["objetos", "listas"])
+def test_la_profundidad_de_los_parametros_se_prueba_en_su_borde(listas: bool) -> None:
+    assert parametros_canonicos(_anidado(8, listas=listas))
+    with pytest.raises(ProcedenciaInvalidaError):
+        parametros_canonicos(_anidado(9, listas=listas))
+
+
+def test_los_enteros_de_64_bits_se_aceptan_en_sus_dos_extremos() -> None:
+    assert parametros_canonicos({"a": -(2**63), "b": 2**63 - 1}) == '{"a":-9223372036854775808,"b":9223372036854775807}'
+
+
+def test_una_clave_de_parametros_no_ascii_se_rechaza() -> None:
+    with pytest.raises(ProcedenciaInvalidaError):
+        parametros_canonicos({"ñ": 1})
+
+
+def test_un_texto_con_el_caracter_de_borrado_se_escapa_de_forma_canonica() -> None:
+    assert parametros_canonicos({"v": "\x7f"}) == '{"v":"\\u007f"}'
+
+
+def test_el_cargador_estricto_rechaza_claves_repetidas_en_cualquier_nivel_y_constantes_no_finitas() -> None:
+    for texto in ('{"a":1,"a":2}', '{"a":{"b":1,"b":2}}', '[{"a":1,"a":1}]'):
+        with pytest.raises(ValueError, match="repetida"):
+            output._cargar_json_estricto(texto)
+    for constante in ("NaN", "Infinity", "-Infinity"):
+        with pytest.raises(ValueError, match="no finita"):
+            output._cargar_json_estricto(f'{{"a":{constante}}}')
+    assert output._cargar_json_estricto('{"a":{"b":[1,2.5,null,true]}}') == {"a": {"b": [1, 2.5, None, True]}}
+
+
+def test_el_volcado_canonico_no_acepta_no_finitos_y_escapa_lo_no_imprimible() -> None:
+    with pytest.raises(ValueError, match="Out of range"):
+        output._volcar_canonico(float("nan"))
+    assert output._volcar_canonico("\x7f") == '"\\u007f"'
+
+
+@pytest.mark.parametrize(
+    ("cantidad", "valido"),
+    [(1, True), (64, True), (65, False)],
+)
+def test_la_cantidad_de_origenes_se_prueba_en_su_borde(cantidad: int, valido: bool) -> None:
+    origenes = tuple(OrigenDeEntrada(rol=f"o{i:02d}", sha256=H_A) for i in range(cantidad))
+    if valido:
+        assert len(_procedencia(origenes=origenes).origenes) == cantidad
+    else:
+        with pytest.raises(ProcedenciaInvalidaError):
+            _procedencia(origenes=origenes)
+
+
+@pytest.mark.parametrize(("cantidad", "valido"), [(1, True), (32, True), (33, False)])
+def test_la_cantidad_de_variables_de_entorno_se_prueba_en_su_borde(cantidad: int, valido: bool) -> None:
+    entorno = tuple((f"v{i:02d}", "1") for i in range(cantidad))
+    if valido:
+        assert len(_procedencia(entorno=entorno).entorno) == cantidad
+    else:
+        with pytest.raises(ProcedenciaInvalidaError):
+            _procedencia(entorno=entorno)
+
+
+@pytest.mark.parametrize("entorno", [[("numpy", "2.4.6")], (["numpy", "2.4.6"],), (("numpy", "2.4.6", "x"),)])
+def test_el_entorno_exige_una_tupla_de_pares_en_tupla(entorno: object) -> None:
+    with pytest.raises(ProcedenciaInvalidaError):
+        _procedencia(entorno=entorno)
+
+
+@pytest.mark.parametrize(("cantidad", "valido"), [(0, True), (64, True), (65, False)])
+def test_la_cantidad_de_argumentos_se_prueba_en_su_borde(cantidad: int, valido: bool) -> None:
+    argumentos = ("-x",) * cantidad
+    if valido:
+        assert len(_encoder(argumentos=argumentos).argumentos) == cantidad
+    else:
+        with pytest.raises(ProcedenciaInvalidaError):
+            _encoder(argumentos=argumentos)
+
+
+@pytest.mark.parametrize(("largo", "valido"), [(1, True), (256, True), (257, False)])
+def test_el_largo_de_un_argumento_se_prueba_en_su_borde(largo: int, valido: bool) -> None:
+    if valido:
+        assert _encoder(argumentos=("a" * largo,)).argumentos == ("a" * largo,)
+    else:
+        with pytest.raises(ProcedenciaInvalidaError):
+            _encoder(argumentos=("a" * largo,))
+
+
+@pytest.mark.parametrize(
+    ("caracter", "valido"), [(" ", True), ("~", True), ("\x1f", False), ("\x7f", False), ("\t", False)]
+)
+def test_un_argumento_admite_imprimibles_y_rechaza_controles(caracter: str, valido: bool) -> None:
+    argumento = f"a{caracter}b"
+    if valido:
+        assert _encoder(argumentos=(argumento,)).argumentos == (argumento,)
+    else:
+        with pytest.raises(ProcedenciaInvalidaError):
+            _encoder(argumentos=(argumento,))
+
+
+def _origen(rol: str) -> OrigenDeEntrada:
+    return OrigenDeEntrada(rol=rol, sha256=H_A)
+
+
+@pytest.mark.parametrize(
+    ("construir", "maximo", "caracteres_validos", "caracteres_invalidos"),
+    [
+        pytest.param(lambda s: _procedencia(algoritmo_id=s), 64, "a_b9", "-A ", id="algoritmo_id"),
+        pytest.param(lambda s: _encoder(exportador_id=s), 64, "a_b9", "-A ", id="exportador_id"),
+        pytest.param(lambda s: _origen(s), 32, "a_b9", "-A ", id="rol"),
+        pytest.param(lambda s: _procedencia(entorno=((s, "1"),)), 32, "a_b9", "-A ", id="nombre_de_entorno"),
+    ],
+)
+def test_los_identificadores_se_prueban_en_su_borde_y_en_su_alfabeto(
+    construir: Any, maximo: int, caracteres_validos: str, caracteres_invalidos: str
+) -> None:
+    assert construir("a")  # un solo carácter
+    assert construir("a" + "b" * (maximo - 1))  # el largo máximo
+    with pytest.raises(ProcedenciaInvalidaError):
+        construir("a" + "b" * maximo)  # un carácter más
+    with pytest.raises(ProcedenciaInvalidaError):
+        construir("")
+    for caracter in caracteres_validos[1:]:
+        assert construir(f"a{caracter}")
+    for caracter in caracteres_invalidos:
+        with pytest.raises(ProcedenciaInvalidaError):
+            construir(f"a{caracter}b")
+    with pytest.raises(ProcedenciaInvalidaError):
+        construir("9a")  # no puede empezar con un dígito
+    with pytest.raises(ProcedenciaInvalidaError):
+        construir("_a")
+
+
+def test_la_version_de_texconv_se_prueba_en_su_borde_y_en_su_alfabeto() -> None:
+    assert _encoder(texconv_version="a")
+    assert _encoder(texconv_version="a" * 32)
+    assert _encoder(texconv_version="A.b_c-9")
+    for malo in ("", "a" * 33, "a+b", "a b", "a/b"):
+        with pytest.raises(ProcedenciaInvalidaError):
+            _encoder(texconv_version=malo)
+
+
+def test_el_valor_de_una_variable_de_entorno_se_prueba_en_su_borde_y_en_su_alfabeto() -> None:
+    assert _procedencia(entorno=(("numpy", "1"),))
+    assert _procedencia(entorno=(("numpy", "a" * 64),))
+    assert _procedencia(entorno=(("numpy", "1.2.3+local_build-x"),))
+    for malo in ("", "a" * 65, "1 2", "a/b", "ñ"):
+        with pytest.raises(ProcedenciaInvalidaError):
+            _procedencia(entorno=(("numpy", malo),))
+
+
+class _ConTextoDeHuella:
+    """No es un texto, pero ``str()`` de él SÍ es una huella válida: el tipo se comprueba, no el texto."""
+
+    def __str__(self) -> str:
+        return H_A
+
+
+class _ConTextoDeRol:
+    def __str__(self) -> str:
+        return "normal"
+
+
+def test_un_objeto_que_se_ve_como_huella_o_rol_pero_no_es_texto_se_rechaza() -> None:
+    with pytest.raises(ProcedenciaInvalidaError):
+        OrigenDeEntrada(rol="normal", sha256=_ConTextoDeHuella())  # type: ignore[arg-type]
+    with pytest.raises(ProcedenciaInvalidaError):
+        OrigenDeEntrada(rol=_ConTextoDeRol(), sha256=H_A)  # type: ignore[arg-type]
+
+
+def test_un_json_anidado_hasta_agotar_la_recursion_se_rechaza_con_el_error_del_modulo() -> None:
+    profundo = "[" * 200_000
+    with pytest.raises(ManifiestoInvalidoError):
+        leer_manifiesto(profundo.encode("ascii"))
+    with pytest.raises(ProcedenciaInvalidaError):
+        _procedencia(parametros=profundo)
+
+
+def test_clave_de_cache_exige_una_procedencia() -> None:
+    with pytest.raises(ProcedenciaInvalidaError):
+        clave_de_cache("no es una procedencia")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("tamano", "valido"), [(1, True), (2**30, True), (2**30 + 1, False), (0, False)])
+def test_el_tamano_de_una_entrada_se_prueba_en_su_borde(tamano: int, valido: bool) -> None:
+    if valido:
+        assert _entrada(tamano=tamano).tamano == tamano
+    else:
+        with pytest.raises(ManifiestoInvalidoError):
+            _entrada(tamano=tamano)
+
+
+def test_el_constructor_de_una_entrada_valida_el_tipo_de_la_procedencia() -> None:
+    with pytest.raises(ManifiestoInvalidoError):
+        EntradaDeManifiesto(ruta=RUTA, sha256=H_B, tamano=10, clave_de_cache=H_D, procedencia="x")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("clave", ["", "no es una huella", "A" * 64, H_D[:-1]])
+def test_una_clave_de_cache_mal_formada_o_equivocada_se_rechaza(clave: str) -> None:
+    with pytest.raises(ManifiestoInvalidoError):
+        EntradaDeManifiesto(ruta=RUTA, sha256=H_B, tamano=10, clave_de_cache=clave, procedencia=_procedencia())
+
+
+def test_las_rutas_repetidas_se_detectan_ignorando_mayusculas_en_cualquier_orden_crudo() -> None:
+    mayuscula, minuscula = _entrada("Textures/A_P.dds"), _entrada("textures/a_p.dds")
+
+    for entradas in ((mayuscula, minuscula), (minuscula, mayuscula)):
+        with pytest.raises(ManifiestoInvalidoError, match="repetidas"):
+            Manifiesto(entradas=entradas)
+        with pytest.raises(ManifiestoInvalidoError, match="repetidas"):
+            Manifiesto.ordenado(entradas)
+
+
+def test_ordenado_ordena_por_la_clave_plegada_y_no_por_la_ruta_cruda() -> None:
+    # Crudo: 'B' < 'a'. Plegado: 'a' < 'b'. El orden canónico es el plegado.
+    mayuscula, minuscula = _entrada("textures/B_p.dds"), _entrada("textures/a_p.dds")
+
+    manifiesto = Manifiesto.ordenado([mayuscula, minuscula])
+
+    assert [e.ruta for e in manifiesto.entradas] == ["textures/a_p.dds", "textures/B_p.dds"]
+    with pytest.raises(ManifiestoInvalidoError):
+        Manifiesto(entradas=(mayuscula, minuscula))
+
+
+def test_ordenado_exige_entradas() -> None:
+    with pytest.raises(ManifiestoInvalidoError):
+        Manifiesto.ordenado(["no es una entrada"])  # type: ignore[list-item]
+
+
+def test_el_caracter_de_borrado_en_los_parametros_se_serializa_escapado_y_ida_y_vuelta() -> None:
+    manifiesto = _manifiesto(_entrada(parametros=parametros_canonicos({"v": "\x7f"})))
+
+    datos = serializar_manifiesto(manifiesto)
+
+    assert b"\\u007f" in datos
+    assert b"\x7f" not in datos
+    assert leer_manifiesto(datos) == manifiesto
+
+
+def test_leer_acepta_un_bytearray() -> None:
+    manifiesto = _manifiesto(_entrada())
+
+    assert leer_manifiesto(bytearray(serializar_manifiesto(manifiesto))) == manifiesto
+
+
+def test_el_tamano_maximo_del_manifiesto_esta_congelado_y_se_prueba_en_su_borde(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert output.TAMANO_MAXIMO_DEL_MANIFIESTO == 32 * 1024 * 1024
+    datos = serializar_manifiesto(_manifiesto(_entrada()))
+
+    monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", len(datos))
+    assert leer_manifiesto(datos)  # justo en el tope: entra
+
+    monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", len(datos) - 1)
+    with pytest.raises(ManifiestoInvalidoError, match="supera"):
+        leer_manifiesto(datos)  # un byte más: se rechaza ANTES de decodificar
+
+
+def test_los_mensajes_distinguen_esquema_y_mod_equivocados() -> None:
+    documento = _documento_de_referencia()
+    documento["esquema"] = "otro/1"
+    with pytest.raises(ManifiestoInvalidoError, match="esquema desconocido"):
+        leer_manifiesto(_bytes(documento))
+
+    documento = _documento_de_referencia()
+    documento["mod"] = "Otro Mod"
+    with pytest.raises(ManifiestoInvalidoError, match="otro mod"):
+        leer_manifiesto(_bytes(documento))
+
+
+def test_una_observacion_con_un_tipo_que_no_es_el_enum_se_rechaza_aunque_no_lleve_huella() -> None:
+    with pytest.raises(PlanInvalidoError, match="TipoObservado"):
+        Observacion("archivo", None)  # type: ignore[arg-type]
+
+
+def _accion(ruta: str) -> AccionPlanificada:
+    return AccionPlanificada(ruta, AccionDeSalida.CONSTRUIR, MotivoDeSalida.NUEVA, None)
+
+
+def test_el_plan_exige_acciones_ordenadas_unicas_y_en_tupla() -> None:
+    a, b = _accion("textures/a_p.dds"), _accion("textures/b_p.dds")
+    assert PlanDeSalida(acciones=(a, b)).acciones == (a, b)
+
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=(b, a))  # fuera de orden
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=(a, a))  # repetida
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=[a])  # type: ignore[arg-type]
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=("no es una acción",))  # type: ignore[arg-type]
+
+
+def test_el_plan_ordena_y_detecta_repetidas_por_la_clave_plegada() -> None:
+    mayuscula, minuscula = _accion("textures/B_p.dds"), _accion("textures/a_p.dds")
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=(mayuscula, minuscula))  # crudo: ordenado; plegado: desordenado
+    assert PlanDeSalida(acciones=(minuscula, mayuscula)).acciones == (minuscula, mayuscula)
+    with pytest.raises(PlanInvalidoError):
+        PlanDeSalida(acciones=(_accion("Textures/A_p.dds"), _accion("textures/a_p.dds")))  # misma ruta plegada
+
+
+def test_la_ruta_del_plan_conserva_la_capitalizacion_de_la_salida_deseada() -> None:
+    ruta = "Textures/Muro_P.dds"
+    observado = {clave_de_ruta(ruta): Observacion(TipoObservado.AUSENTE, None)}
+
+    plan = planificar([SalidaDeseada(ruta, H_A)], None, observado)
+
+    assert [a.ruta for a in plan.acciones] == [ruta]
+    assert plan.acciones[0].accion is AccionDeSalida.CONSTRUIR
+
+
+def test_una_huerfana_conserva_la_capitalizacion_del_manifiesto() -> None:
+    entrada = _entrada("Textures/Huerfana_P.dds", sha256=H_B)
+    observado = {clave_de_ruta(entrada.ruta): Observacion(TipoObservado.ARCHIVO, H_B)}
+
+    plan = planificar([], _manifiesto(entrada), observado)
+
+    assert [(a.ruta, a.accion) for a in plan.acciones] == [("Textures/Huerfana_P.dds", AccionDeSalida.RETIRAR)]
+
+
+# ---------------------------------------------------------------------------
 # Anclas del módulo
 # ---------------------------------------------------------------------------
 

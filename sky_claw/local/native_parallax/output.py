@@ -161,13 +161,13 @@ def validar_ruta_de_salida(ruta: str) -> str:
             raise RutaDeSalidaInvalidaError(f"carácter no admitido en la ruta {ruta!r}: {caracter!r}")
     segmentos = ruta.split("/")
     for segmento in segmentos:
-        if segmento in ("", ".", ".."):
-            raise RutaDeSalidaInvalidaError(f"segmento vacío o relativo en la ruta {ruta!r}")
-        if segmento.endswith((".", " ")):
-            raise RutaDeSalidaInvalidaError(f"Windows recorta el punto o el espacio final: {ruta!r}")
+        if not segmento:
+            raise RutaDeSalidaInvalidaError(f"segmento vacío en la ruta {ruta!r}")
+        if segmento.endswith((".", " ")):  # incluye los segmentos relativos '.' y '..'
+            raise RutaDeSalidaInvalidaError(f"punto o espacio final (Windows lo recorta) en la ruta {ruta!r}")
         if segmento.split(".")[0].casefold() in _NOMBRES_RESERVADOS_DE_WINDOWS:
             raise RutaDeSalidaInvalidaError(f"nombre reservado de Windows en la ruta {ruta!r}")
-    if len(segmentos) < 2 or segmentos[0].casefold() != _CARPETA_RAIZ:
+    if segmentos[0].casefold() != _CARPETA_RAIZ:
         raise RutaDeSalidaInvalidaError(f"la ruta debe estar bajo {_CARPETA_RAIZ}/: {ruta!r}")
     nombre = segmentos[-1].casefold()
     if not nombre.endswith(_SUFIJO) or len(nombre) == len(_SUFIJO):
@@ -416,7 +416,6 @@ class EntradaDeManifiesto:
             )
         if not isinstance(self.procedencia, Procedencia):
             raise ManifiestoInvalidoError("la procedencia de la entrada debe ser una Procedencia")
-        _exigir_huella(self.clave_de_cache, "la clave de caché de la entrada", ManifiestoInvalidoError)
         if self.clave_de_cache != clave_de_cache(self.procedencia):
             raise ManifiestoInvalidoError(f"la clave de caché de {self.ruta!r} no coincide con su procedencia")
 
@@ -514,8 +513,8 @@ def _procedencia_de(documento: object, donde: str) -> Procedencia:
         OrigenDeEntrada(**_objeto(o, frozenset({"rol", "sha256"}), f"{donde}.origenes[{i}]"))
         for i, o in enumerate(_lista(campos["origenes"], f"{donde}.origenes"))
     )
-    if not isinstance(campos["entorno"], dict) or not all(isinstance(v, str) for v in campos["entorno"].values()):
-        raise ManifiestoInvalidoError(f"{donde}.entorno debe ser un objeto de texto a texto")
+    if not isinstance(campos["entorno"], dict):
+        raise ManifiestoInvalidoError(f"{donde}.entorno debe ser un objeto JSON")
     try:
         nivel = NivelDeReproducibilidad(campos["nivel"])
     except ValueError as exc:
@@ -530,7 +529,7 @@ def _procedencia_de(documento: object, donde: str) -> Procedencia:
             texconv_sha256=encoder["texconv_sha256"],
             argumentos=tuple(_lista(encoder["argumentos"], f"{donde}.encoder.argumentos")),
         ),
-        entorno=tuple(sorted(campos["entorno"].items())),
+        entorno=tuple(campos["entorno"].items()),
         nivel=nivel,
     )
 
