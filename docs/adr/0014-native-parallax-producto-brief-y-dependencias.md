@@ -224,8 +224,10 @@ materiales CC0». Las notas de investigación de `docs/design/research/` (p. ej.
 entonces y no se reescriben: sobre la licencia manda esta sección.
 
 - **Fuente.** Informe de la PC con Windows (consulta a los metadatos del conjunto en Hugging Face): cada material trae su
-  `metadata.license`; en el subconjunto de prueba consultado, 24 de 89 materiales eran CC BY-NC-ND (no comercial y sin derivadas, que
-  no sirve para derivar nada). **No lo reverifiqué desde esta sesión**: es dato del informe, no verificado ejecutando por mí.
+  `metadata.license`; en el subconjunto de prueba consultado, 24 de 89 materiales eran CC BY-NC-ND (no comercial y sin
+  obras derivadas). Por la cláusula «NoDerivatives» de CC BY-NC-ND 4.0, no se puede compartir material adaptado: si el fixture de
+  1024 derivado de una fuente de 4096 llegara a distribuirse, no podría hacerlo bajo esa licencia (lectura mía del texto de la
+  licencia, no asesoramiento legal). **No lo reverifiqué desde esta sesión**: es dato del informe, no verificado ejecutando por mí.
 - **Decisión técnica (mía).** El fixture admite únicamente materiales cuya licencia sea exactamente `CC0`. CC BY queda fuera aunque
   `CLEAN_ROOM.md` lo permita con atribución: exigiría arrastrar créditos por archivo, y el corpus CC0 alcanza para el benchmark.
   CC BY-NC-ND y cualquier otra, excluidas.
@@ -249,9 +251,11 @@ entonces y no se reescriben: sobre la licencia manda esta sección.
   igualdad en `tests/test_native_parallax_gates.py`) hasta validarlos contra un corpus real. Cambiar esa constante rompe el ancla
   a propósito. **El tamaño del corpus condiciona el objetivo:** el gate usa la cota superior de Clopper-Pearson a un lado
   (`gates.py`); con 0 malas entre `n` aceptadas esa cota es `1 − 0,05^(1/n)`, o sea 13,9 % con `n = 20` y recién 4,95 % con
-  `n = 59`. Los 20 materiales del informe **no alcanzan** ni para un candidato perfecto: con un objetivo de 5 % hacen falta al menos
-  59 muestras aceptadas independientes (unas 70 en total si hasta el 15 % va a revisión), así que NP-D0b debe ampliar el subconjunto
-  CC0 o dejar abiertos estos valores.
+  `n = 59`. El gate cuenta **texturas** (`n_total`, `n_aceptadas`), no materiales: si cada material aporta una sola muestra
+  aceptada, los 20 materiales del informe **no alcanzan** ni para un candidato perfecto; con un objetivo de 5 % hacen falta al menos
+  59 muestras aceptadas independientes (unas 70 en total si hasta el 15 % va a revisión). Varias muestras del mismo material no las
+  trato como independientes, así que más recortes de los mismos materiales no sustituyen a más materiales: NP-D0b debe ampliar el
+  subconjunto CC0 o dejar abiertos estos valores.
 
 ### Actualización de NP-I0 (2026-10-20)
 
