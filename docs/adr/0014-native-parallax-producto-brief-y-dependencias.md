@@ -78,7 +78,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
-   | NP-E0 | `DdsExporter` (texconv) | pendiente |
+   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a hecho (núcleo puro: candado de versión, mips en float, cuantización y validador del contenedor BC4, ver la actualización de NP-E0a); falta NP-E0b (flags y ejecución de `texconv`, contra el binario real) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
@@ -553,3 +553,39 @@ convención DirectX. (5) Las cifras de arriba son de 128² (con el chequeo a 256
 `simular_dejando_un_caso_fuera(corpus.mediciones, cuantil=0.95, tolerancia_de_altura=0.05, signo_esperado=1,
 huella_del_corpus=corpus.huella)` y `derivar_limites` + `candidato_desde_limites` + `simular_revision(...,
 bordes_de_los_limites=Bordes.PERIODICOS, ...)` para «la misma muestra». Es determinista; la huella de referencia del corpus medido está congelada en el test.
+
+### Actualización de NP-E0a (2026-10-21)
+
+NP-E0a entrega el **núcleo puro del exportador DDS**, no el exportador: no ejecuta `texconv`, no escribe archivos y no tiene
+call site de producción. `TEXCONV_PIN_VIGENTE` sigue en `None` (congelado por igualdad): sin una versión y una huella fijadas por
+el operador con evidencia del binario oficial, el exportador no corre nada. Verificado ejecutando en Linux (Python 3.11,
+numpy 2.4.6, Pillow 13.0.0); el CI de Windows lo confirma en el PR.
+
+- **Qué entra** (`export.py`, numpy perezoso). (1) `TexconvPin` + `verificar_texconv`: versión, huella SHA-256 y origen (solo
+  la sección Releases de `microsoft/DirectXTex`); falla cerrado si no hay pin, si el archivo no es regular (un dispositivo
+  cuyo contenido hashea al pin tampoco pasa), si no se puede leer o si la huella difiere en un byte. (2) `generar_mips`:
+  promedio de área exacto 2x2, calculado en float64 desde la altura original y redondeado UNA vez a float32 por nivel;
+  potencia de 2 y lado mínimo 4 (un bloque BC). (3) `cuantizar_a_8_bits`: `rint(x · 255)` con empate al par. (4)
+  `inspeccionar_dds_bc4`: valida marca, tamaños de cabecera, BC4 UNORM (`BC4U`, `ATI1` o DX10 con `DXGI_FORMAT_BC4_UNORM`),
+  2-D sin cubemap, volumen ni arreglo, conteo de mips coherente con las dimensiones y un payload de tamaño EXACTO.
+- **Los tests no confirman al módulo contra sí mismo.** El helper que arma los DDS sigue la disposición pública de Microsoft
+  por su cuenta (no reusa código del módulo) y Pillow, un lector independiente, decodifica el nivel base de los tres
+  contenedores aceptados. Salvedad: Pillow solo lee el nivel base; el conteo de mips y el tamaño del payload salen de la
+  fórmula de la disposición, no de un segundo lector.
+- **Una cabecera con varios mips y sin la bandera de mipmaps se rechaza** (decisión mía, más estricta que un lector
+  tolerante). No verifiqué cómo la leería DirectXTex; rechazarla es lo único que no puede aceptar algo que otro lector
+  interprete distinto.
+- **Mutación manual** (109 mutantes sobre `export.py`: operadores, constantes, offsets, ramas y guardas). La primera
+  pasada dejó 25 vivos: eran huecos reales de los tests (bool aceptado como dimensión, acumulación en float32 indistinguible
+  de float64, redondeo a cada lado del empate, `ndarray` de solo lectura, extensión DX10 truncada, bandera cubemap de la
+  extensión DX10, banderas de alto/ancho/FourCC, `os.devnull` hasheando al pin), un helper redundante que eliminé y un
+  mutante mal elegido por mí. Con los tests reforzados quedan **0 vivos reales y 2 equivalentes** documentados: `<` contra
+  `<=` en el largo mínimo (ambas ramas lanzan la misma excepción) y el tamaño del bloque de lectura del hash (solo cambia la
+  velocidad).
+
+**Límites declarados.** (1) Ningún flag de `texconv` está fijado ni probado: NP-E0b los verifica contra el binario real en
+Windows (versión, URL, huella, licencia, ayuda y determinismo se piden en el prompt de insumos). (2) Que lo que devuelva
+`texconv` pase este validador no prueba que Skyrim cargue el archivo (NP-RIG). (3) `verificar_texconv` compara la huella del
+archivo en ese instante: no impide que alguien lo reemplace después; quien lo ejecute debe hacerlo desde una ubicación que
+terceros no puedan escribir. (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
+medirse (EXP-010).
