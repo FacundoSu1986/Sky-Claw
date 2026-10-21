@@ -649,7 +649,7 @@ ejecutó en este entorno**: ver «Qué NO está verificado».
 pase el validador: solo está leído en el código fuente. Lo ejecuta `tests/test_texconv_real.py` en Windows con
 `SKYCLAW_TEXCONV_EXE` (huella, validador, determinismo, mips decodificados contra la cadena propia, tamaños chicos y no
 cuadrados, plazo vencido). (2) La tolerancia de ese test de mips es PROVISIONAL (el doble del error de un codificador ingenuo
-más un margen); si un codificador bueno quedara por encima, el dato manda. (3) Si `texconv` emite cabecera legacy `BC4U` o con
+más un margen); si un codificador bueno quedara por encima, el dato manda. Que NO sea un oráculo ciego está medido y anclado (`tests/test_bc4_helper.py`, corre en CI): sobre el campo del smoke, un filtro POINT falla desde el nivel 2, una curva sRGB falla en los niveles 4x4, 2x2 y 1x1 (a media escala y bajo contraste casi no se nota antes), una cadena BOX redondeada a 8 bits por nivel —lo que daría `texconv` si regenerara los mips— pasa, y un bloque corrupto lo detecta el límite del error máximo; aflojar la tolerancia hasta que uno de esos filtros pase rompe el test (señalado por el revisor automático en #772). (3) Si `texconv` emite cabecera legacy `BC4U` o con
 extensión DX10 a partir de una entrada DDS (con PNG fue `BC4U`); el validador acepta ambas, pero cuál carga Skyrim es de NP-RIG.
 (4) La hipótesis EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
 

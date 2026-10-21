@@ -73,3 +73,73 @@ def partir_niveles(carga: bytes, ancho: int, alto: int, niveles: int) -> list[by
     if inicio != len(carga):
         raise ValueError(f"la carga mide {len(carga)} bytes y los {niveles} niveles suman {inicio}")
     return partes
+
+
+# ---------------------------------------------------------------------------
+# Oráculo de mips: ¿esta cadena sigue la cadena propia (promedio de área) o usó otro filtro?
+# ---------------------------------------------------------------------------
+
+
+def campo_sintetico(lado_alto: int, lado_ancho: int, semilla: int = 11) -> np.ndarray:
+    """Altura sintética con relieve a varias escalas (ondas suaves más ruido suavizado), en [0, 1]."""
+    rng = np.random.default_rng(semilla)
+    y, x = np.mgrid[0:lado_alto, 0:lado_ancho] / np.array([[[lado_alto]], [[lado_ancho]]])
+    ruido = rng.random((lado_alto, lado_ancho))
+    nucleo = np.ones(5) / 5
+    for eje in (0, 1):  # promedio móvil circular de 5: conserva la longitud aun en lados menores que el núcleo
+        ruido = np.apply_along_axis(lambda v: np.convolve(np.pad(v, 2, mode="wrap"), nucleo, mode="valid"), eje, ruido)
+    return np.clip(0.5 + 0.18 * np.sin(6 * np.pi * x) * np.cos(4 * np.pi * y) + 0.25 * (ruido - 0.5), 0.0, 1.0)
+
+
+def limites_de_tolerancia(esperado: np.ndarray) -> tuple[float, float]:
+    """(error medio, error máximo) admisibles para un nivel: el doble del error de un codificador ingenuo más un margen.
+
+    PROVISIONAL: calibrado contra un codificador ingenuo porque no hay un ``texconv`` real en CI. Si un codificador
+    bueno quedara por encima, el dato manda. ``tests/test_bc4_helper.py`` comprueba que el oráculo SIGUE distinguiendo
+    los filtros equivocados, para que aflojar este número no pase inadvertido.
+    """
+    alto, ancho = esperado.shape
+    ingenuo = np.abs(decodificar_nivel(codificar_nivel_ingenuo(esperado), ancho, alto) - esperado.astype(np.float64))
+    return 2.0 * float(ingenuo.mean()) + 1.0, 2.0 * float(ingenuo.max()) + 3.0
+
+
+def dentro_de_tolerancia(obtenido: np.ndarray, esperado: np.ndarray) -> bool:
+    error = np.abs(obtenido.astype(np.float64) - esperado.astype(np.float64))
+    limite_medio, limite_maximo = limites_de_tolerancia(esperado)
+    return bool(error.mean() <= limite_medio and error.max() <= limite_maximo)
+
+
+def _reducir(actual: np.ndarray) -> np.ndarray:
+    if actual.shape[0] > 1:
+        actual = (actual[0::2, :] + actual[1::2, :]) / 2.0
+    if actual.shape[1] > 1:
+        actual = (actual[:, 0::2] + actual[:, 1::2]) / 2.0
+    return actual
+
+
+def cadena_con_filtro_point(base: np.ndarray) -> list[np.ndarray]:
+    """Mips por submuestreo (filtro POINT): descarta información en vez de promediarla."""
+    niveles = max(base.shape).bit_length()
+    return [base[:: 2**k, :: 2**k] for k in range(niveles)]
+
+
+def cadena_con_curva_srgb(base: np.ndarray) -> list[np.ndarray]:
+    """Mips promediados en espacio lineal tratando el byte como sRGB: el error clásico de filtrar una altura."""
+    a_lineal = lambda c: np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)  # noqa: E731
+    a_srgb = lambda lin: np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * np.power(np.maximum(lin, 0), 1 / 2.4) - 0.055)  # noqa: E731
+    actual = a_lineal(base / 255.0)
+    niveles = [base]
+    for _ in range(max(base.shape).bit_length() - 1):
+        actual = _reducir(actual)
+        niveles.append(np.rint(a_srgb(actual) * 255.0).astype(np.uint8))
+    return niveles
+
+
+def cadena_box_con_redondeo_a_8_bits(base: np.ndarray) -> list[np.ndarray]:
+    """Mips por promedio de área REDONDEANDO a 8 bits en cada nivel: lo que daría ``texconv`` si regenerara la cadena."""
+    actual = base.astype(np.float64)
+    niveles = [base]
+    for _ in range(max(base.shape).bit_length() - 1):
+        actual = np.rint(_reducir(actual))
+        niveles.append(actual.astype(np.uint8))
+    return niveles

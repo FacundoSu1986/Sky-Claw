@@ -12,7 +12,18 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from tests._bc4 import codificar_nivel_ingenuo, decodificar_nivel, paleta, partir_niveles
+from sky_claw.local.native_parallax.export import cuantizar_a_8_bits, generar_mips
+from tests._bc4 import (
+    cadena_box_con_redondeo_a_8_bits,
+    cadena_con_curva_srgb,
+    cadena_con_filtro_point,
+    campo_sintetico,
+    codificar_nivel_ingenuo,
+    decodificar_nivel,
+    dentro_de_tolerancia,
+    paleta,
+    partir_niveles,
+)
 
 
 def _dds_bc4(ancho: int, alto: int, carga: bytes, niveles: int = 1) -> bytes:
@@ -81,3 +92,47 @@ def test_partir_niveles_respeta_el_piso_de_un_bloque_y_la_suma_exacta() -> None:
 def test_decodificar_rechaza_una_carga_de_tamano_equivocado() -> None:
     with pytest.raises(ValueError):
         decodificar_nivel(b"\0" * 7, 4, 4)
+
+
+def _niveles_dentro_de_tolerancia(cadena: list[np.ndarray], referencia: list[np.ndarray]) -> list[bool]:
+    return [dentro_de_tolerancia(obtenido, esperado) for obtenido, esperado in zip(cadena, referencia, strict=True)]
+
+
+def test_el_oraculo_de_mips_distingue_los_filtros_equivocados_de_los_legitimos() -> None:
+    # Es lo que sostiene el smoke real del texconv: si alguien afloja la tolerancia hasta que un filtro POINT o una
+    # curva sRGB pasen, este test falla. Los extremos 1x1..4x4 son los que delatan la curva sRGB en este campo.
+    referencia = [cuantizar_a_8_bits(nivel) for nivel in generar_mips(campo_sintetico(256, 256, semilla=3))]
+    base = referencia[0]
+
+    assert all(_niveles_dentro_de_tolerancia(referencia, referencia))  # la cadena propia, trivialmente
+    assert all(_niveles_dentro_de_tolerancia(cadena_box_con_redondeo_a_8_bits(base), referencia))  # legítima
+    assert not all(_niveles_dentro_de_tolerancia(cadena_con_filtro_point(base), referencia))
+    assert not all(_niveles_dentro_de_tolerancia(cadena_con_curva_srgb(base), referencia))
+
+
+def test_el_oraculo_detecta_el_filtro_point_desde_los_niveles_intermedios() -> None:
+    referencia = [cuantizar_a_8_bits(nivel) for nivel in generar_mips(campo_sintetico(256, 256, semilla=3))]
+
+    veredicto = _niveles_dentro_de_tolerancia(cadena_con_filtro_point(referencia[0]), referencia)
+
+    assert veredicto[:2] == [True, True]  # los dos primeros niveles se parecen aunque se submuestree
+    assert not any(veredicto[2:])  # del nivel 2 en adelante POINT se aleja de la cadena de promedio de área
+
+
+def test_el_oraculo_detecta_la_curva_srgb_en_los_niveles_chicos() -> None:
+    referencia = [cuantizar_a_8_bits(nivel) for nivel in generar_mips(campo_sintetico(256, 256, semilla=3))]
+
+    veredicto = _niveles_dentro_de_tolerancia(cadena_con_curva_srgb(referencia[0]), referencia)
+
+    assert all(veredicto[:6])  # a media escala y bajo contraste la curva casi no se nota...
+    assert not any(veredicto[6:])  # ...pero en 4x4, 2x2 y 1x1 sí
+
+
+def test_el_oraculo_detecta_un_bloque_corrupto_aunque_el_error_medio_sea_bajo() -> None:
+    # El límite del error MÁXIMO existe para esto: un bloque entero mal comprimido apenas mueve el promedio.
+    referencia = [cuantizar_a_8_bits(nivel) for nivel in generar_mips(campo_sintetico(256, 256, semilla=3))]
+    corrupto = referencia[3].astype(np.int64)
+    corrupto[0:4, 0:4] += 60
+
+    assert dentro_de_tolerancia(referencia[3], referencia[3])
+    assert not dentro_de_tolerancia(np.clip(corrupto, 0, 255).astype(np.uint8), referencia[3])
