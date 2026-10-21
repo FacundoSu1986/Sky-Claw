@@ -9386,3 +9386,265 @@ mientras la superficie de revisión no aporte material nuevo.
 tombstones, ni store de emisiones, ni rollback, ni promoción, ni nada de P5. **No se inició la
 implementación de P4.** El próximo paso es el **re-gate externo del Tech Lead** sobre la ronda 11;
 `PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa verificación.
+
+## 46. P4-S6 — consentimiento HITL del propietario y binding de identidad (2026-10-21)
+
+**Slice:** `P4-S6_OWNER_HITL`. **PR:** #776 (Draft). **Rama:**
+`feat/frozen-runtime-p4-s6-owner-hitl`.
+
+Cierra el bloqueante `OWNER_IDENTITY_BINDING = DEFERRED` de §35.2. **No** cierra
+`P4_APPROVAL_SCOPE` completo ni habilita promoción: lo que se implementa es la
+**superficie que prueba quién aprobó**, no el consumidor que ejecuta la transición.
+
+### 46.1 El defecto, con las citas
+
+§35.2 dejó escrito el hueco y por qué no se cerraba:
+
+```text
+APPROVAL_AUTHORITY   = la superficie HITL del producto (quién dijo que sí)
+LOCK_OWNERSHIP       = el session_id del lock P4 (proceso, NO identidad humana)
+lock_session_id == human_authorization_identity  ⇒ NO (no demostrado)
+OWNER_IDENTITY_BINDING = DEFERRED
+```
+
+La consecuencia en código era verificable y se reprodujo antes de diseñar:
+`ConsentimientoAprobacion` tenía **tres campos de texto** —digest, procedencia y
+superficie— y ningún camino que los ligara a un hecho del transporte. Cualquier
+módulo podía escribir:
+
+```python
+ConsentimientoAprobacion(
+    approval_scope_digest=propuesta.scope.approval_scope_digest,
+    approval_provenance=propuesta.scope.approval_provenance,
+    surface="fixture",
+)
+```
+
+y `_validar_consentimiento` lo aceptaba, porque **compara el digest que el
+llamador aporta contra el digest que el llamador aportó**. Es la misma tautología
+que P4-S5 cerró para el binding del journal, mudada al consentimiento: un campo
+controlado por el llamador no es una prueba.
+
+Por eso `emitir_aprobacion` fallaba cerrado con `ApprovalHitolNoDisponibleError`.
+El error era correcto; lo que faltaba era el mecanismo.
+
+### 46.2 Censo de superficies — quién puede aprobar, y con qué prueba
+
+Se auditaron las superficies HITL existentes (`sky_claw/app/security/hitl.py`,
+`sky_claw/app/comms/telegram.py`, `sky_claw/app/gui/sky_claw_gui.py`,
+`sky_claw/app_context.py`, `sky_claw/app/orchestrator/*`, `sky_claw/local/tools_installer.py`)
+y **una sola** emite una identidad humana verificable:
+
+| Superficie | Mecanismo | ¿Prueba identidad? | Por qué |
+|---|---|---|---|
+| **Telegram** | `telegram_from_id` | **SÍ** | El update llega autenticado por el bot token + `secret_token` del webhook; `from.id` lo fija el servidor de Telegram, no el cliente. Se compara contra el operador configurado y se exige chat **privado** (`chat.id == from.id`), no reenviado. |
+| **GUI** | `presencia_local` | **NO** | No hay login ni credencial: cualquiera con la sesión de escritorio pulsa el botón. `_dispatch_hitl_response` valida **ownership de pestaña** (`resolve_pending_hitl_request(store, tab_id, request_id)`), que es propiedad de UI, no identidad. |
+
+```text
+SUPERFICIES_DE_CONSENTIMIENTO = censo CERRADO (MappingProxyType)
+SUPERFICIE_CON_IDENTIDAD_VERIFICADA = TELEGRAM
+SUPERFICIE_SIN_IDENTIDAD           = GUI   ⇒ no puede producir consentimiento
+GUI_BUTTON_IS_IDENTITY             = NO
+```
+
+**La GUI no se degrada a «casi identidad»: se rechaza.** `presentar` levanta
+`SuperficieSinIdentidadVerificadaError` y el censo declara
+`verifica_identidad = False` en vez de omitir el caso. Un botón no es una
+prueba, y tratarlo como tal es exactamente lo que §35.2 prohíbe.
+
+**Hermano del transporte.** `verificar_identidad_telegram` reimplementa las
+condiciones de `TelegramWebhook._validate_private_operator` (el guard que ya usan
+las tools mutantes) porque `sky_claw/local/**` no puede importar `sky_claw/app/**`
+sin invertir la dependencia. Para que las dos no se separen hay un **test
+diferencial**: la misma matriz de updates —operador, ajeno, grupo, reenviado,
+`forward_from`, sin `from.id`— se pasa por las dos implementaciones y se exige el
+mismo veredicto. Un cambio en cualquiera de las dos rompe el test.
+
+### 46.3 Protocolo congelado
+
+```text
+FASE B — PRESENTACIÓN (SIN lock; §39.4 se mantiene)
+  B1  _exigir_identidad_verificada: superficie del censo ∧ mecanismo del censo
+      ∧ verifica_identidad = True
+  B2  validar_scope(propuesta.scope)   ← recomputa el digest desde los 14 campos
+  B3  acuñar solicitud_id (UUID v4) y registrar la solicitud ABIERTA (memoria)
+  B4  devolver PresentacionConsentimiento con los 14 campos + digest + texto
+
+FASE B' — DECISIÓN (sin lock)
+  responder(solicitud_id, decision, identidad)
+      solicitud inexistente / ya resuelta ⇒ error, NO se emite
+      (superficie, sujeto, sesión) distintos de los de la presentación ⇒ error
+      APROBAR  ⇒ ConsentimientoAprobacion(digest PRESENTADO, provenance, surface,
+                   root_id, solicitud_id, session_id, owner_subject, mecanismo)
+      RECHAZAR ⇒ None      CANCELAR ⇒ None
+      la solicitud queda RESUELTA (single-use)
+
+FASE C — EMISIÓN (bajo lock; lo toma emitir_aprobacion_autorizada)
+  _exigir_binding_completo(consentimiento)
+  participant_lock(root) → _emitir_aprobacion_bajo_lock(handle, root, propuesta, consentimiento)
+      (witness no-clobber → CAS del ledger → reconciliación hacia adelante; §39.3/§40.2)
+```
+
+```text
+PROPOSAL_IS_IMMUTABLE_BETWEEN_PRESENTATION_AND_ISSUE = YES
+  (el consentimiento liga el digest; cualquier cambio material lo invalida y
+   NO se «adapta» el scope para que encaje — §39.6)
+CONSENT_IS_SINGLE_USE                               = YES  (la solicitud se resuelve una vez)
+CONSENT_BINDS_SESSION                               = YES  (superficie + sujeto + sesión)
+CONSENT_BINDS_ROOT                                  = YES  (root_id revalidado ANTES del CREATE)
+CONSENT_BINDS_REQUEST                               = YES  (solicitud_id en el consentimiento)
+CONSENT_CARRIES_EXPLICIT_DECISION                   = YES  (APROBAR | RECHAZAR | CANCELAR)
+ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION             = NO   (test: presentar completa con el lock tomado)
+PROPOSAL_REGISTRY_IS_DURABLE                        = NO   (memoria; un reinicio la extingue)
+SECOND_LEDGER_OR_SECOND_AUTHORITY                   = NO   (se reusa approval.py tal cual)
+```
+
+**Por qué el registro de propuestas es en memoria y no durable.** Un registro
+durable de propuestas sería una **segunda autoridad** —el defecto que §36.5 y
+§40.2 prohíben— y además dejaría solicitudes aprobables después de un reinicio.
+En memoria, el cierre del proceso extingue toda propuesta
+(`SESSION_CLOSE_INVALIDATES_PENDING = YES`) y el fail-closed sale gratis: sin
+solicitud abierta no hay consentimiento, aunque el `solicitud_id` siga existiendo
+como string.
+
+### 46.4 Adjudicación: esquema v1 → v2
+
+**No hay artefactos de producción previos.** Verificado en la máquina de
+desarrollo: `~/.sky_claw/frozen-runtime` **no existe** (la emisión productiva
+nunca estuvo habilitada, así que nunca se escribió un witness ni un tombstone
+fuera de tests).
+
+```text
+PRODUCTION_WITNESSES_V1 = 0   (verificado: el root no existe)
+PRODUCTION_WITNESSES_V2 = 0
+SCHEMA_UPGRADE_REQUIRED = NO
+V1_ARTIFACT_TREATMENT   = FAIL_CLOSED  (el parser v2 exige scope_payload;
+                                        un v1 se rechaza con ApprovalSchemaError)
+MIGRATION_THAT_FABRICATES_CANDIDATE_ID = PROHIBITED
+AUTO_DELETE_OF_state/   = NO
+```
+
+Inventar el `candidate_id` ausente produciría una aprobación que nadie dio sobre
+un candidato que nadie eligió; borrar `state/` automáticamente destruiría la
+única evidencia de una emisión legítima. Ancla:
+`test_un_witness_v1_no_se_migra_ni_se_acepta`.
+
+### 46.5 Adjudicación: modelo de amenaza del witness
+
+```text
+WITNESS_IS_SIGNED_OR_SEALED_EXTERNALLY = NO
+FILESYSTEM_IS_INSIDE_TRUST_BOUNDARY    = YES
+CRYPTOGRAPHIC_SECURITY_AGAINST_ARBITRARY_WRITE = NOT_CLAIMED
+```
+
+El witness es un archivo con `open(path, "x")` + `fsync`. No hay firma ni sellado
+externo, y **no se declara seguridad criptográfica frente a un atacante con
+escritura arbitraria en el root**: quien puede escribir en `state/` puede escribir
+cualquier witness, y ningún HMAC local cambiaría eso (la clave viviría al lado).
+Lo que el diseño sí da —y es lo que §38.2/§40.2 ya congelaron— es
+**no-clobber + detección de manipulación parcial + root_id verificado al leer**:
+un `state/` trasplantado desde otro root o un tombstone reescrito se detectan,
+porque la evidencia es coherente consigo misma pero no con el root auditado.
+
+**Y la identidad del sujeto no es durable.** `approval_provenance` (dentro del
+digest) lleva superficie + `solicitud_id`; el `owner_subject` viaja en el
+consentimiento, que es memoria. Agregarlo al witness exigiría un esquema v3 y no
+aportaría frente al atacante que importa —quien fabrique el campo fabrica también
+el sujeto—. Frente al atacante externo la prueba está en el log del transporte,
+que sí la registra y es indexable por `solicitud_id`.
+
+```text
+OWNER_SUBJECT_IS_DURABLE = NO   (limitación ELEGIDA y declarada)
+OWNER_SURFACE_AND_REQUEST_ARE_DURABLE = YES   (vía approval_provenance)
+```
+
+### 46.6 Adjudicación: rollback y la igualdad de operaciones
+
+`ApprovalOperation` y `JournalOperation` son dos `StrEnum` con los mismos
+literales. Como `StrEnum` hereda de `str`, `ApprovalOperation.PROMOTION ==
+JournalOperation.PROMOTION` es `True` **por comparación de texto**, no porque
+alguien haya verificado que las dos familias cubren las mismas operaciones: si
+mañana una enumera `ROLLBACK` y la otra no, la comparación sigue dando `True` y
+el defecto pasa inadvertido hasta el consumo.
+
+Ancla agregada (`test_las_operaciones_de_aprobacion_y_de_journal_son_iguales`):
+se compara el conjunto de **nombres** en las dos direcciones y se exige
+`{"PROMOTION", "ROLLBACK"}`. Una operación nueva en una sola de las dos rompe el
+test.
+
+### 46.7 Límites de activación (FASE F)
+
+```text
+EMISION_PRODUCTIVA_HABILITADA = False   (approval.py y owner_consent.py)
+HITL_PRODUCTIVE               = ENABLED (la superficie obtiene y verifica decisiones)
+PROMOTION_PRODUCTIVA          = DISABLED
+ROLLBACK_PRODUCTIVA           = DISABLED
+EFFECTIVE_RUNTIME_MUTATED     = NO
+```
+
+**Por qué la emisión sigue cerrada aunque el consentimiento ya sea verificable.**
+Emitir crea una autorización durable de un solo uso con
+`MAX_ISSUED_APPROVALS_PER_ROOT = 1`. Ningún módulo de producción llama a
+`consumir_aprobacion` —hay un ancla enumerativa que lo congela—, así que la
+aprobación quedaría `ISSUED` **sin salida operativa** y bloquearía la emisión
+siguiente hasta que el dueño revoque. La FASE F del brief pide no habilitar por
+arrastre el flujo de promoción: falta el consumidor, no la superficie.
+
+El interruptor es **uno** y su test lo fija en `False`: abrirlo obliga a adjudicar
+el consumidor en el mismo cambio.
+
+### 46.8 Estado
+
+```text
+SLICE                                  = P4-S6_OWNER_HITL
+OWNER_IDENTITY_BINDING                 = VERIFIED (TELEGRAM) / BLOCKED (GUI)
+HUMAN_CONSENT                          = VERIFIED
+FULL_SCOPE_PRESENTED                   = YES   (14/14 campos, test enumerativo)
+SCOPE_IMMUTABLE                        = YES
+SESSION_BINDING                        = YES
+DURABLE_ISSUE                          = VERIFIED (núcleo P4-S4/S5 reusado, sin segundo ledger)
+REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root + digest)
+GUI_LLM_SURFACES                       = VERIFIED (censo + anclas AST)
+
+SCHEMA_V1_V2                           = NO_ARTIFACTS · FAIL_CLOSED · NO_MIGRATION
+WITNESS_TRUST_MODEL                    = FILESYSTEM_IN_TRUST_BOUNDARY · NO_SIGNATURE · NOT_CLAIMED_CRYPTO
+
+HITL_PRODUCTIVE                        = ENABLED
+EMISION_PRODUCTIVA                     = DISABLED
+PROMOTION_PRODUCTIVE                   = DISABLED
+ROLLBACK_PRODUCTIVE                    = DISABLED
+EFFECTIVE_RUNTIME_MUTATED              = NO
+ISSUE_672                              = OPEN
+MERGED                                 = NO
+```
+
+### 46.9 Verificación de esta ronda
+
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: 47 tests.
+- Regresión: P4-S4 **92 passed**; P4-S3 + P4-S5 + P4-S6 **196 passed**; P4-S2
+  (anclas de wiring del lock) **25 passed**. `test_f06_inspect_applies_anti_reparse_admission_boundary`
+  falla en esta máquina **también en el baseline** (`9fe88cb4`): crear un symlink
+  de archivo sin privilegio no produce reparse ⇒ el guard no tiene nada que
+  rechazar. `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
+- Mutantes: **11/11 matados**. El primer pase dejó **un superviviente** (M7,
+  quitar `chat.id == from.id`) porque el caso de grupo ya lo tapaba la
+  comprobación de `type`; se agregaron los dos casos que faltaban —chat ajeno
+  **sin** `type` y chat ajeno con `type: private` mentido— y el mutante murió.
+  Ese es el valor del gate: el test que faltaba no era el del caso feliz.
+- Anclas enumerativas: censo de superficies, constructores de
+  `ConsentimientoAprobacion` (solo `owner_consent.py`), llamadores de
+  `_emitir_aprobacion_bajo_lock` (`approval.py` + `owner_consent.py`), llamadores
+  de `consumir_aprobacion` (ninguno de producción), igualdad de operaciones,
+  superficies del agente sin acceso a la autoridad.
+- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/`; `mypy`
+  sobre `sky_claw/ scripts/`.
+
+**Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,errors,owner_consent,__init__}.py`,
+`tests/test_frozen_runtime_p4_s6_owner_hitl.py` y este ADR. **No** se tocó Steam,
+Skyrim, MO2, SKSE, DynDOLOD, Parallax ni Runtime Vault. `P5_IMPLEMENTED = NO`.
+
+`docs/pending_ooda_status.md` **no se modifica**: la regla de `AGENTS.md` aplica al
+cierre de una `T-XX` de `TECHNICAL_REVIEW_TASKS.md`, y ese inventario no tiene
+ninguna fila de Frozen Runtime (verificado por búsqueda: 0 coincidencias de
+«Frozen Runtime» en el archivo). P4-S6 cierra un bloqueante del ADR 0012
+rastreado en el issue #672, que sigue **OPEN**.
