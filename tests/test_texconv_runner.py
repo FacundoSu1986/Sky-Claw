@@ -797,3 +797,70 @@ def test_la_superficie_publica_del_ejecutor_esta_congelada() -> None:
         "TimeoutInvalidoError",
         "exportar_altura_bc4",
     ]
+
+
+# ---------------------------------------------------------------------------
+# El borrado del espacio de trabajo: link-aware, tolera solo lectura y NO lanza (corre en un ``finally``)
+# ---------------------------------------------------------------------------
+
+
+def test_borrar_espacio_borra_el_arbol_con_subdirectorios_y_archivos_de_solo_lectura(tmp_path: Path) -> None:
+    espacio = tmp_path / "espacio"
+    (espacio / "bin").mkdir(parents=True)
+    (espacio / "salida").mkdir()
+    solo_lectura = espacio / "bin" / "texconv.exe"
+    solo_lectura.write_bytes(b"binario")
+    solo_lectura.chmod(0o444)  # la copia con copy2 hereda el modo de la fuente
+    (espacio / "entrada.dds").write_bytes(b"entrada")
+
+    texconv_runner._borrar_espacio(espacio)
+
+    assert not espacio.exists()
+
+
+def test_borrar_espacio_no_atraviesa_un_symlink_a_un_directorio_ajeno(tmp_path: Path) -> None:
+    if not _puede_crear_symlinks(tmp_path):
+        pytest.skip("este sistema no permite crear symlinks (privilegios)")
+    ajeno = tmp_path / "ajeno"
+    ajeno.mkdir()
+    (ajeno / "dato.bin").write_bytes(b"del usuario")
+    espacio = tmp_path / "espacio"
+    espacio.mkdir()
+    os.symlink(ajeno, espacio / "enlace", target_is_directory=True)
+
+    texconv_runner._borrar_espacio(espacio)
+
+    assert not espacio.exists()
+    assert (ajeno / "dato.bin").read_bytes() == b"del usuario"  # se quitó el enlace, no su destino
+
+
+def test_borrar_espacio_no_lanza_si_el_borrado_falla_y_lo_avisa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    espacio = tmp_path / "espacio"
+    espacio.mkdir()
+
+    def _falla(*_args: object, **_kwargs: object) -> int:
+        raise PermissionError("archivo en uso")
+
+    monkeypatch.setattr(texconv_runner, "rmtree_link_aware", _falla)
+
+    with caplog.at_level("WARNING", logger=texconv_runner.logger.name):
+        texconv_runner._borrar_espacio(espacio)  # no debe lanzar: taparía el error original del ``finally``
+
+    assert any("no se pudo borrar" in registro.getMessage() for registro in caplog.records)
+    assert espacio.exists()
+
+
+def test_borrar_espacio_pide_siempre_limpiar_el_solo_lectura(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pedidos: list[dict[str, object]] = []
+
+    def _registra(ruta: Path, **kwargs: object) -> int:
+        pedidos.append({"ruta": ruta, **kwargs})
+        return 0
+
+    monkeypatch.setattr(texconv_runner, "rmtree_link_aware", _registra)
+
+    texconv_runner._borrar_espacio(tmp_path / "x")
+
+    assert pedidos == [{"ruta": tmp_path / "x", "limpiar_readonly": True}]

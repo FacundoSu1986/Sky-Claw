@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax.export import (
     ContenedorDdsInvalidoError,
     ExportError,
@@ -199,9 +200,16 @@ def _crear_espacio(base: Path | str | None) -> Path:
 
 
 def _borrar_espacio(espacio: Path) -> None:
-    shutil.rmtree(espacio, ignore_errors=True)
-    if espacio.exists():
-        logger.warning("no se pudo borrar por completo el directorio de trabajo de texconv: %s", espacio)
+    """Borra el espacio de trabajo propio sin atravesar enlaces y SIN lanzar: corre en un ``finally``.
+
+    Usa la primitiva del repo (``rmtree_link_aware``) y no ``shutil.rmtree``, que en Windows atraviesa un junction
+    y borra su destino; que el árbol sea propio (``mkdtemp``) no habilita la excepción. ``limpiar_readonly`` porque la
+    copia del binario conserva el modo del original y un archivo de solo lectura impediría el borrado en Windows.
+    """
+    try:
+        rmtree_link_aware(espacio, limpiar_readonly=True)
+    except OSError as exc:
+        logger.warning("no se pudo borrar por completo el directorio de trabajo de texconv %s: %s", espacio, exc)
 
 
 def _copiar_y_verificar(
