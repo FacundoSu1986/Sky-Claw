@@ -16,8 +16,8 @@ import hashlib
 import io
 import os
 import struct
-import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -588,6 +588,45 @@ async def test_en_hilo_cancelado_espera_al_hilo_y_no_deja_excepciones_sin_recoge
     assert reportes == []  # la excepción tardía del hilo se recogió: asyncio no avisa "never retrieved"
 
 
+async def test_en_hilo_cancelado_no_espera_para_siempre_a_un_hilo_colgado(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Un hilo bloqueado (disco en red, archivo retenido) no puede colgar la cancelación: pasado el tope se sigue sin él.
+    monkeypatch.setattr(texconv_runner, "_ESPERA_MAXIMA_DEL_HILO_S", 0.1)
+    liberar = threading.Event()
+    tarea = asyncio.create_task(texconv_runner._en_hilo(lambda: liberar.wait(timeout=30)))
+    await asyncio.sleep(0.05)
+    tarea.cancel()
+    inicio = time.monotonic()
+
+    with caplog.at_level("WARNING", logger=texconv_runner.logger.name), pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    liberar.set()  # suelta al hilo: el test no deja trabajo colgado
+    assert time.monotonic() - inicio < 10  # propagó la cancelación sin esperar los 30 s del hilo
+    assert any("sigue en curso" in registro.getMessage() for registro in caplog.records)
+
+
+def test_el_tope_de_espera_del_hilo_es_finito_y_acotado() -> None:
+    # Sin tope, un hilo colgado cuelga la cancelación; con un tope enorme es lo mismo en la práctica.
+    assert 0 < texconv_runner._ESPERA_MAXIMA_DEL_HILO_S <= 120
+
+
+async def test_en_hilo_cancelado_no_registra_aviso_si_el_hilo_termina_a_tiempo(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    liberar = threading.Event()
+    tarea = asyncio.create_task(texconv_runner._en_hilo(lambda: liberar.wait(timeout=10)))
+    await asyncio.sleep(0.05)
+    tarea.cancel()
+    asyncio.get_running_loop().call_later(0.05, liberar.set)
+
+    with caplog.at_level("WARNING", logger=texconv_runner.logger.name), pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert not [registro for registro in caplog.records if "sigue en curso" in registro.getMessage()]
+
+
 # ---------------------------------------------------------------------------
 # Validación de la salida (cada defecto, enumerado)
 # ---------------------------------------------------------------------------
@@ -661,10 +700,25 @@ async def test_una_salida_desmesurada_se_rechaza_sin_leerla_entera(
     assert leidos == []  # el tamaño se compara antes de abrir el archivo
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="crear symlinks exige privilegios en Windows")
+def _puede_crear_symlinks(carpeta: Path) -> bool:
+    """Prueba real en vez de suponer por plataforma: en Windows con Modo desarrollador o como administrador sí se puede."""
+    destino, enlace = carpeta / "destino-de-prueba", carpeta / "enlace-de-prueba"
+    destino.write_bytes(b"x")
+    try:
+        os.symlink(destino, enlace)
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        enlace.unlink(missing_ok=True)
+        destino.unlink(missing_ok=True)
+    return True
+
+
 async def test_una_salida_que_es_un_symlink_se_rechaza(
     texconv_falso_exe: Path, zona: Path, falso: TexconvFalso, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    if not _puede_crear_symlinks(tmp_path):
+        pytest.skip("este sistema no permite crear symlinks (privilegios)")
     ajeno = tmp_path / "ajeno.dds"
     ajeno.write_bytes(_dds_bc4(8, 16, 5))
 

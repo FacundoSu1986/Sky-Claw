@@ -96,6 +96,11 @@ ARGUMENTOS_BC4: tuple[str, ...] = ("-f", "BC4_UNORM", "-m", "0", "-y", "-o")
 #: Plazo por defecto de una ejecución de ``texconv`` (segundos): un BC4 de 4096x4096 tarda una fracción de esto.
 TIMEOUT_POR_DEFECTO_S = 120.0
 
+#: Cuánto espera la cancelación a un hilo que sigue en curso (segundos) antes de seguir sin él. Un hilo de copia o de
+#: lectura local termina en milisegundos; pasado este tope el disco está colgado (red, archivo retenido) y es mejor
+#: devolver la cancelación y dejar constancia en el log que bloquear a quien cancela.
+_ESPERA_MAXIMA_DEL_HILO_S = 30.0
+
 _NOMBRE_DE_ENTRADA = "entrada.dds"
 _NOMBRE_DEL_BINARIO = "texconv.exe"
 _BYTES_DE_CABECERA_MAXIMOS = 4 + 124 + 20  # marca + DDS_HEADER + extensión DX10 (opcional)
@@ -159,13 +164,20 @@ async def _en_hilo(funcion: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwarg
 
     Un hilo no se puede interrumpir. Sin esto, el ``finally`` del llamador borraría el directorio de trabajo mientras
     el hilo todavía copia o lee dentro de él (en Windows un archivo abierto ni siquiera se deja borrar) y la
-    cancelación terminaría dejando restos. Una segunda cancelación durante la espera sí se propaga de inmediato.
+    cancelación terminaría dejando restos. La espera tiene tope (``_ESPERA_MAXIMA_DEL_HILO_S``): un hilo colgado no
+    puede colgar la cancelación, y una segunda cancelación durante la espera se propaga de inmediato.
     """
     trabajo = asyncio.ensure_future(asyncio.to_thread(funcion, *args, **kwargs))
     try:
         return await asyncio.shield(trabajo)
     except asyncio.CancelledError:
-        await asyncio.wait([trabajo])  # ``shield`` ya marca como recogida una excepción tardía del hilo
+        _, pendientes = await asyncio.wait([trabajo], timeout=_ESPERA_MAXIMA_DEL_HILO_S)
+        if pendientes:  # ``shield`` ya marca como recogida una excepción tardía del hilo
+            logger.warning(
+                "el hilo %s sigue en curso %.0f s después de la cancelación: se sigue sin esperarlo",
+                getattr(funcion, "__name__", funcion),
+                _ESPERA_MAXIMA_DEL_HILO_S,
+            )
         raise
 
 

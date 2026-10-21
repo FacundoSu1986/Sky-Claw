@@ -631,7 +631,8 @@ ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver �
   `inspeccionar_dds_bc4` acepta, con las mismas dimensiones y la cadena completa de mips. El proceso lo supervisa
   `_process.run_capture` (timeout, kill del árbol y reap, Job Object en Windows); el directorio de trabajo se borra en toda
   salida, también al cancelar, y la cancelación espera a que termine el hilo que lo estaba usando antes de borrarlo (hallazgo de
-  Codex en #772: un hilo no se interrumpe y en Windows un archivo abierto impide el borrado). Un código de salida distinto de cero —incluidos los negativos con que Windows reporta un
+  Codex en #772: un hilo no se interrumpe y en Windows un archivo abierto impide el borrado), con un tope de 30 s para que un hilo
+  colgado no cuelgue la cancelación (observación del revisor automático: pasado el tope se registra un aviso y se sigue). Un código de salida distinto de cero —incluidos los negativos con que Windows reporta un
   crash— es un fallo.
 - **Ancla de la clase «segundo camino a texconv»** (`tests/test_texconv_invariant.py`): el conjunto de módulos `.py` que nombran
   `texconv` está congelado por igualdad (hoy tres) y, entre ellos, solo `texconv_runner.py` lanza procesos; un camino nuevo
@@ -639,7 +640,7 @@ ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver �
 - **Verificación hecha.** `tests/test_texconv_runner.py` (borde de proceso reemplazado por un `texconv` falso: argumentos,
   verificación de la copia, errores, salida defectuosa enumerada, limpieza, cancelación), `tests/test_bc4_helper.py` (el
   decodificador BC4 de tests se valida contra Pillow) y ampliaciones de `tests/test_native_parallax_export.py`. **Mutación
-  manual**: 70 mutantes sobre el ejecutor y 22 más sobre `export.py` (136 en total), 0 vivos reales; la primera pasada del
+  manual**: 75 mutantes sobre el ejecutor y 22 más sobre `export.py` (136 en total), 0 vivos reales; la primera pasada del
   ejecutor dejó 7 vivos que eran huecos reales (rutas relativas, verificar el original en vez de la copia, tope exacto,
   dimensiones transpuestas, códigos negativos) y se cerraron. `mypy --strict` sobre el ejecutor, forzado fuera de la exención de CI:
   sin errores. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
