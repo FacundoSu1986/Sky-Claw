@@ -11,11 +11,13 @@ errores y la limpieza. NO prueba que el ``texconv`` real haga lo que el falso ha
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import io
 import os
 import struct
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -460,6 +462,130 @@ async def test_la_cancelacion_propaga_y_deja_el_directorio_limpio(
         await _exportar(texconv_falso_exe, zona)
 
     assert list(zona.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Cancelación con hilos de trabajo en vuelo (hallazgo de Codex en #772)
+# ---------------------------------------------------------------------------
+
+
+class _HiloEnVuelo:
+    """Bloquea una función que corre en un hilo hasta que el test la libere, y registra si ya terminó."""
+
+    def __init__(self, original: object) -> None:
+        self.original = original
+        self.entro = threading.Event()
+        self.liberar = threading.Event()
+        self.termino = threading.Event()
+        self.estado_al_borrar: list[bool] = []
+
+    def envolver(self, *args: object, **kwargs: object) -> object:
+        self.entro.set()
+        assert self.liberar.wait(timeout=10), "el test no liberó al hilo"
+        try:
+            return self.original(*args, **kwargs)  # type: ignore[operator]
+        finally:
+            self.termino.set()
+
+
+async def _cancelar_con_el_hilo_en_vuelo(
+    texconv_falso_exe: Path, zona: Path, hilo: _HiloEnVuelo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    borrar_original = texconv_runner._borrar_espacio
+
+    def _borrar_registrando(espacio: Path) -> None:
+        hilo.estado_al_borrar.append(hilo.termino.is_set())
+        borrar_original(espacio)
+
+    monkeypatch.setattr(texconv_runner, "_borrar_espacio", _borrar_registrando)
+    tarea = asyncio.create_task(_exportar(texconv_falso_exe, zona))
+    assert await asyncio.to_thread(hilo.entro.wait, 10), "el hilo de trabajo nunca arrancó"
+
+    tarea.cancel()
+    asyncio.get_running_loop().call_later(0.1, hilo.liberar.set)  # el hilo sigue vivo un rato tras la cancelación
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+
+async def test_cancelar_mientras_se_copia_espera_al_hilo_antes_de_borrar_el_espacio(
+    texconv_falso_exe: Path, zona: Path, falso: TexconvFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hilo = _HiloEnVuelo(texconv_runner._copiar_y_verificar)
+    monkeypatch.setattr(texconv_runner, "_copiar_y_verificar", hilo.envolver)
+
+    await _cancelar_con_el_hilo_en_vuelo(texconv_falso_exe, zona, hilo, monkeypatch)
+
+    # El borrado ocurrió DESPUÉS de que el hilo terminó: nada se borra bajo los pies de quien todavía escribe.
+    assert hilo.estado_al_borrar == [True]
+    assert falso.llamadas == []
+    assert list(zona.iterdir()) == []
+
+
+async def test_cancelar_mientras_se_lee_la_salida_espera_al_hilo_antes_de_borrar_el_espacio(
+    texconv_falso_exe: Path, zona: Path, falso: TexconvFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hilo = _HiloEnVuelo(texconv_runner._leer_salida)
+    monkeypatch.setattr(texconv_runner, "_leer_salida", hilo.envolver)
+
+    await _cancelar_con_el_hilo_en_vuelo(texconv_falso_exe, zona, hilo, monkeypatch)
+
+    assert hilo.estado_al_borrar == [True]
+    assert list(zona.iterdir()) == []
+
+
+async def test_el_espacio_de_trabajo_se_crea_sin_ceder_el_control_al_bucle(
+    texconv_falso_exe: Path, zona: Path, falso: TexconvFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Si se creara en un hilo, una cancelación a mitad de la espera dejaría el directorio creado y nunca asignado
+    # (nadie lo borraría). Creado de forma síncrona no hay punto de cancelación entre crearlo y protegerlo.
+    crear_original = texconv_runner._crear_espacio
+    en_el_bucle: list[bool] = []
+
+    def _crear_registrando(base: object) -> Path:
+        try:
+            asyncio.get_running_loop()
+            en_el_bucle.append(True)
+        except RuntimeError:
+            en_el_bucle.append(False)
+        return crear_original(base)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(texconv_runner, "_crear_espacio", _crear_registrando)
+
+    await _exportar(texconv_falso_exe, zona)
+
+    assert en_el_bucle == [True]
+
+
+async def test_en_hilo_devuelve_el_valor_reenvia_los_argumentos_y_propaga_las_excepciones() -> None:
+    assert await texconv_runner._en_hilo(lambda a, b: a + b, 2, 3) == 5
+    assert await texconv_runner._en_hilo(lambda a, b=0: a + b, 2, b=5) == 7
+    with pytest.raises(ZeroDivisionError):
+        await texconv_runner._en_hilo(lambda: 1 / 0)
+
+
+async def test_en_hilo_cancelado_espera_al_hilo_y_no_deja_excepciones_sin_recoger() -> None:
+    liberar, termino = threading.Event(), threading.Event()
+
+    def _trabajo() -> None:
+        liberar.wait(timeout=10)
+        termino.set()
+        raise RuntimeError("falló después de la cancelación")
+
+    reportes: list[dict[str, object]] = []
+    asyncio.get_running_loop().set_exception_handler(lambda _bucle, contexto: reportes.append(contexto))
+    tarea = asyncio.create_task(texconv_runner._en_hilo(_trabajo))
+    await asyncio.sleep(0.05)
+    tarea.cancel()
+    asyncio.get_running_loop().call_later(0.05, liberar.set)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    del tarea
+    gc.collect()
+
+    assert termino.is_set()  # la cancelación solo se propagó cuando el hilo ya había terminado
+    assert reportes == []  # la excepción tardía del hilo se recogió: asyncio no avisa "never retrieved"
 
 
 # ---------------------------------------------------------------------------

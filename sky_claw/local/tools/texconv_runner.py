@@ -44,7 +44,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from sky_claw.local.native_parallax.export import (
     ContenedorDdsInvalidoError,
@@ -62,6 +62,8 @@ from sky_claw.local.native_parallax.export import (
 from sky_claw.local.tools._process import run_capture
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import numpy as np
     from numpy.typing import NDArray
 
@@ -80,6 +82,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 #: Flags de ``texconv`` verificados ejecutando el binario real (informe de Windows del 2026-10-21): formato BC4
 #: UNORM, cadena completa de mips (con una entrada DDS que ya trae mips se conservan), sobrescribir y directorio de
@@ -145,6 +150,21 @@ def _validar_plazo(timeout_s: object) -> float:
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         raise TimeoutInvalidoError(f"el plazo debe ser finito y positivo, no {timeout_s!r}")
     return float(timeout_s)
+
+
+async def _en_hilo(funcion: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs) -> _T:
+    """``asyncio.to_thread`` que, si lo cancelan, ESPERA a que el hilo termine antes de propagar la cancelación.
+
+    Un hilo no se puede interrumpir. Sin esto, el ``finally`` del llamador borraría el directorio de trabajo mientras
+    el hilo todavía copia o lee dentro de él (en Windows un archivo abierto ni siquiera se deja borrar) y la
+    cancelación terminaría dejando restos. Una segunda cancelación durante la espera sí se propaga de inmediato.
+    """
+    trabajo = asyncio.ensure_future(asyncio.to_thread(funcion, *args, **kwargs))
+    try:
+        return await asyncio.shield(trabajo)
+    except asyncio.CancelledError:
+        await asyncio.wait([trabajo])  # ``shield`` ya marca como recogida una excepción tardía del hilo
+        raise
 
 
 def _preparar_entrada(altura: NDArray[np.floating]) -> tuple[bytes, int, int, int]:
@@ -258,9 +278,11 @@ async def exportar_altura_bc4(
     """
     plazo = _validar_plazo(timeout_s)
     entrada_dds, ancho, alto, niveles = await asyncio.to_thread(_preparar_entrada, altura)
-    espacio = await asyncio.to_thread(_crear_espacio, directorio_temporal)
+    # Síncrono a propósito (un ``mkdir``): no hay punto de cancelación entre crear el directorio y protegerlo con el
+    # ``try``; en un hilo, cancelar a mitad de la espera lo dejaría creado y sin dueño.
+    espacio = _crear_espacio(directorio_temporal)
     try:
-        binario, pin_usado = await asyncio.to_thread(_copiar_y_verificar, Path(texconv), espacio, entrada_dds, pin)
+        binario, pin_usado = await _en_hilo(_copiar_y_verificar, Path(texconv), espacio, entrada_dds, pin)
         argv = _construir_argumentos(binario, espacio / _NOMBRE_DE_ENTRADA, espacio / "salida")
         try:
             stdout, stderr, codigo = await run_capture(argv, timeout=plazo, cwd=str(espacio))
@@ -270,7 +292,7 @@ async def exportar_altura_bc4(
             raise TexconvNoEjecutadoError(f"no se pudo ejecutar texconv: {exc}") from exc
         if codigo != 0:
             raise TexconvCodigoDeSalidaError(f"texconv terminó con código {codigo}: {_cola(stdout, stderr)}")
-        datos, info = await asyncio.to_thread(_leer_salida, espacio / "salida", ancho, alto, niveles)
+        datos, info = await _en_hilo(_leer_salida, espacio / "salida", ancho, alto, niveles)
     finally:
         _borrar_espacio(espacio)
     logger.info(
