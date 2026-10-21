@@ -562,9 +562,9 @@ el operador con evidencia del binario oficial, el exportador no corre nada. Veri
 numpy 2.4.6, Pillow 13.0.0); el CI de Windows lo confirma en el PR.
 
 - **Qué entra** (`export.py`, numpy perezoso). (1) `TexconvPin` + `verificar_texconv`: versión, huella SHA-256 y origen (solo
-  la sección Releases de `microsoft/DirectXTex`); falla cerrado si no hay pin, si el archivo no es regular (un dispositivo
+  la sección Releases de `microsoft/DirectXTex`, sin `%` ni `..`: no se decodifica); falla cerrado si no hay pin, si el archivo no es regular (un dispositivo
   cuyo contenido hashea al pin tampoco pasa), si no se puede leer o si la huella difiere en un byte. (2) `generar_mips`:
-  promedio de área exacto 2x2, calculado en float64 desde la altura original y redondeado UNA vez a float32 por nivel;
+  promedio de área exacto 2x2, la cadena entera en float64 y cada nivel redondeado UNA vez a float32 (los redondeos de float32 no se acumulan);
   potencia de 2 y lado mínimo 4 (un bloque BC). (3) `cuantizar_a_8_bits`: `rint(x · 255)` con empate al par. (4)
   `inspeccionar_dds_bc4`: valida marca, tamaños de cabecera, BC4 UNORM (`BC4U`, `ATI1` o DX10 con `DXGI_FORMAT_BC4_UNORM`),
   2-D sin cubemap, volumen ni arreglo, conteo de mips coherente con las dimensiones y un payload de tamaño EXACTO.
@@ -575,7 +575,7 @@ numpy 2.4.6, Pillow 13.0.0); el CI de Windows lo confirma en el PR.
 - **Una cabecera con varios mips y sin la bandera de mipmaps se rechaza** (decisión mía, más estricta que un lector
   tolerante). No verifiqué cómo la leería DirectXTex; rechazarla es lo único que no puede aceptar algo que otro lector
   interprete distinto.
-- **Mutación manual** (109 mutantes sobre `export.py`: operadores, constantes, offsets, ramas y guardas). La primera
+- **Mutación manual** (110 mutantes sobre `export.py`: operadores, constantes, offsets, ramas y guardas). La primera
   pasada dejó 25 vivos: eran huecos reales de los tests (bool aceptado como dimensión, acumulación en float32 indistinguible
   de float64, redondeo a cada lado del empate, `ndarray` de solo lectura, extensión DX10 truncada, bandera cubemap de la
   extensión DX10, banderas de alto/ancho/FourCC, `os.devnull` hasheando al pin), un helper redundante que eliminé y un
@@ -587,5 +587,7 @@ numpy 2.4.6, Pillow 13.0.0); el CI de Windows lo confirma en el PR.
 Windows (versión, URL, huella, licencia, ayuda y determinismo se piden en el prompt de insumos). (2) Que lo que devuelva
 `texconv` pase este validador no prueba que Skyrim cargue el archivo (NP-RIG). (3) `verificar_texconv` compara la huella del
 archivo en ese instante: no impide que alguien lo reemplace después; quien lo ejecute debe hacerlo desde una ubicación que
-terceros no puedan escribir. (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
+terceros no puedan escribir. **Requisito para NP-E0b:** verificar inmediatamente antes de lanzar el proceso y ejecutar
+el binario desde un directorio que terceros no puedan escribir; la API de E0a no ofrece verificación y uso atómicos
+(observación del revisor automático, #771). (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
 medirse (EXP-010).

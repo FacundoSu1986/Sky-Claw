@@ -124,7 +124,8 @@ class TexconvNoCoincideError(ExportError):
 class TexconvPin:
     """Versión de ``texconv`` aceptada: tag oficial, huella SHA-256 del binario y de dónde salió.
 
-    ``origen`` solo puede ser una URL de la sección Releases de ``microsoft/DirectXTex``.
+    ``origen`` solo puede ser una URL de la sección Releases de ``microsoft/DirectXTex``, sin espacios, sin segmentos
+    ``..`` y sin ``%`` (no se decodifica: ``%2e%2e`` sería un ``..`` que un cliente sí resolvería).
     """
 
     version: str
@@ -141,6 +142,7 @@ class TexconvPin:
             or not self.origen.startswith(_ORIGEN_OFICIAL)
             or any(c.isspace() for c in self.origen)
             or ".." in self.origen.split("/")
+            or "%" in self.origen
         ):
             raise PinInvalidoError(f"el origen del pin de texconv debe ser una URL bajo {_ORIGEN_OFICIAL}")
 
@@ -215,9 +217,10 @@ def _exigir_valores_en_0_1(campo: NDArray[np.floating], nombre: str) -> None:
 def generar_mips(altura: NDArray[np.floating]) -> tuple[NDArray[np.float32], ...]:
     """Cadena de mips por promedio de área exacto, del nivel base hasta 1x1 (float32, solo lectura).
 
-    ``altura``: (alto, ancho) float finito en [0, 1], ambos lados potencia de 2 y >= 4. Cada nivel se calcula en
-    float64 desde la altura original (sin acumular redondeos de float32) y se redondea a float32 al final; cuando un
-    lado llega a 1 solo se reduce el otro. El promedio de la textura se conserva en todos los niveles.
+    ``altura``: (alto, ancho) float finito en [0, 1], ambos lados potencia de 2 y >= 4. La cadena entera se promedia
+    en float64 (cada nivel sale del anterior) y solo la SALIDA de cada nivel se redondea a float32, así que los
+    redondeos de float32 no se acumulan entre niveles; cuando un lado llega a 1 solo se reduce el otro. El promedio de
+    la textura se conserva en todos los niveles.
     """
     np_ = importar_numpy()
     campo = _exigir_campo_float(altura, "la altura")

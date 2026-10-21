@@ -307,6 +307,8 @@ def test_un_pin_valido_se_construye() -> None:
         {"version": "oct2026", "sha256": _SHA + "\n", "origen": _ORIGEN_OFICIAL},
         {"version": "oct2026", "sha256": _SHA, "origen": _ORIGEN_OFICIAL + " x"},
         {"version": "oct2026", "sha256": _SHA, "origen": _ORIGEN_OFICIAL + "\nx"},
+        {"version": "oct2026", "sha256": _SHA, "origen": _ORIGEN_OFICIAL + "%2e%2e/%2e%2e/x"},
+        {"version": "oct2026", "sha256": _SHA, "origen": _ORIGEN_OFICIAL + "tag/%2E%2E"},
         {"version": "oct2026", "sha256": "", "origen": _ORIGEN_OFICIAL},
         {"version": "oct2026", "sha256": "A" * 64, "origen": _ORIGEN_OFICIAL},
         {"version": "oct2026", "sha256": "a" * 63, "origen": _ORIGEN_OFICIAL},
