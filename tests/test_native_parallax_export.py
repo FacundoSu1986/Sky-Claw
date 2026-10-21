@@ -35,6 +35,7 @@ from sky_claw.local.native_parallax.export import (
     TexconvNoFijadoError,
     TexconvPin,
     cantidad_de_niveles,
+    construir_dds_l8,
     cuantizar_a_8_bits,
     generar_mips,
     inspeccionar_dds_bc4,
@@ -288,10 +289,16 @@ def test_la_cuantizacion_rechaza_un_nivel_vacio_o_que_no_es_un_ndarray() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_sin_pin_vigente_el_exportador_no_puede_correr_texconv() -> None:
-    # Congelado por igualdad, igual que UMBRALES_VIGENTES: fijarlo es una decisión del operador con evidencia
-    # (versión + huella del binario oficial) y cambia este test a propósito.
-    assert TEXCONV_PIN_VIGENTE is None
+def test_el_pin_vigente_es_el_texconv_oficial_may2026_verificado() -> None:
+    # Congelado por igualdad: cambiar la versión de texconv es una decisión con evidencia (huella del binario
+    # oficial verificada por dos vías independientes, ver ADR 0014 «Actualización de NP-E0b») y cambia este test.
+    esperado = TexconvPin(
+        version="may2026",
+        sha256="dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06",
+        origen="https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe",
+    )
+
+    assert esperado == TEXCONV_PIN_VIGENTE
 
 
 def test_un_pin_valido_se_construye() -> None:
@@ -330,7 +337,8 @@ def test_un_pin_con_version_huella_u_origen_no_oficial_se_rechaza(campos: dict[s
         TexconvPin(**campos)  # type: ignore[arg-type]
 
 
-def test_verificar_texconv_sin_pin_vigente_falla_cerrado(tmp_path: Path) -> None:
+def test_verificar_texconv_sin_pin_vigente_falla_cerrado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(export, "TEXCONV_PIN_VIGENTE", None)
     exe = tmp_path / "texconv.exe"
     exe.write_bytes(b"cualquier cosa")
 
@@ -343,7 +351,7 @@ def test_verificar_texconv_acepta_el_binario_cuya_huella_coincide(tmp_path: Path
     exe.write_bytes(b"binario de prueba")
     pin = TexconvPin("oct2026", hashlib.sha256(b"binario de prueba").hexdigest(), _ORIGEN_OFICIAL)
 
-    verificar_texconv(exe, pin=pin)
+    assert verificar_texconv(exe, pin=pin) is pin
 
 
 def test_verificar_texconv_rechaza_un_binario_que_cambio_un_solo_byte(tmp_path: Path) -> None:
@@ -413,7 +421,7 @@ def test_verificar_texconv_usa_el_pin_vigente_cuando_existe(tmp_path: Path, monk
     pin = TexconvPin("oct2026", hashlib.sha256(b"binario de prueba").hexdigest(), _ORIGEN_OFICIAL)
     monkeypatch.setattr(export, "TEXCONV_PIN_VIGENTE", pin)
 
-    verificar_texconv(exe)
+    assert verificar_texconv(exe) is pin
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +452,155 @@ def test_tamano_y_niveles_rechazan_dimensiones_que_no_son_enteros_positivos(dime
         tamano_de_nivel_bc4(*dimensiones)  # type: ignore[arg-type]
     with pytest.raises(DimensionesNoExportablesError):
         cantidad_de_niveles(*dimensiones)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# construir_dds_l8: la entrada sin comprimir que se le entrega a texconv
+# ---------------------------------------------------------------------------
+
+
+def _cadena_de_uint8(lado_alto: int, lado_ancho: int, semilla: int = 0) -> list[np.ndarray]:
+    rng = np.random.default_rng(semilla)
+    niveles = []
+    for i in range(cantidad_de_niveles(lado_ancho, lado_alto)):
+        niveles.append(rng.integers(0, 256, size=(max(1, lado_alto >> i), max(1, lado_ancho >> i)), dtype=np.uint8))
+    return niveles
+
+
+def _leer_cabecera_l8(datos: bytes) -> dict[str, int]:
+    """Lectura independiente de la cabecera legacy: no usa nada del módulo bajo prueba."""
+    tamano, banderas, alto, ancho, pitch, profundidad, mips = struct.unpack_from("<7I", datos, 4)
+    tamano_pf, banderas_pf, fourcc, bits, mascara_r, mascara_g, mascara_b, mascara_a = struct.unpack_from(
+        "<II4sIIIII", datos, 76
+    )
+    capacidades, capacidades_2 = struct.unpack_from("<2I", datos, 108)
+    return {
+        "tamano": tamano,
+        "banderas": banderas,
+        "alto": alto,
+        "ancho": ancho,
+        "pitch": pitch,
+        "profundidad": profundidad,
+        "mips": mips,
+        "tamano_pf": tamano_pf,
+        "banderas_pf": banderas_pf,
+        "fourcc": int.from_bytes(fourcc, "little"),
+        "bits": bits,
+        "mascara_r": mascara_r,
+        "mascara_g": mascara_g,
+        "mascara_b": mascara_b,
+        "mascara_a": mascara_a,
+        "capacidades": capacidades,
+        "capacidades_2": capacidades_2,
+    }
+
+
+def test_el_dds_l8_tiene_la_cabecera_de_luminancia_de_8_bits_y_los_niveles_en_orden() -> None:
+    niveles = _cadena_de_uint8(8, 16)
+
+    datos = construir_dds_l8(niveles)
+
+    cab = _leer_cabecera_l8(datos)
+    assert datos[:4] == b"DDS "
+    assert (cab["tamano"], cab["tamano_pf"]) == (124, 32)
+    assert (cab["ancho"], cab["alto"], cab["pitch"], cab["mips"]) == (16, 8, 16, 5)
+    # CAPS | HEIGHT | WIDTH | PITCH | PIXELFORMAT | MIPMAPCOUNT
+    assert cab["banderas"] == 0x1 | 0x2 | 0x4 | 0x8 | 0x1000 | 0x20000
+    # DDPF_LUMINANCE (0x20000), 8 bits, máscara de luminancia 0xFF en el canal R
+    assert (cab["banderas_pf"], cab["fourcc"], cab["bits"], cab["mascara_r"]) == (0x20000, 0, 8, 0xFF)
+    assert (cab["mascara_g"], cab["mascara_b"], cab["mascara_a"]) == (0, 0, 0)
+    # TEXTURE | COMPLEX | MIPMAP, sin cubemap ni volumen
+    assert (cab["capacidades"], cab["capacidades_2"]) == (0x1000 | 0x8 | 0x400000, 0)
+    assert datos[128:] == b"".join(nivel.tobytes() for nivel in niveles)
+    assert len(datos) == 128 + sum(nivel.size for nivel in niveles)
+
+
+def test_el_dds_l8_de_un_solo_nivel_no_declara_mips() -> None:
+    # La única cadena completa de un solo nivel es la de una textura de 1x1.
+    nivel = np.array([[7]], dtype=np.uint8)
+
+    datos = construir_dds_l8([nivel])
+
+    cab = _leer_cabecera_l8(datos)
+    assert (cab["ancho"], cab["alto"], cab["mips"]) == (1, 1, 0)
+    assert cab["banderas"] & 0x20000 == 0
+    assert cab["capacidades"] == 0x1000
+    assert datos[128:] == nivel.tobytes()
+
+
+def test_el_dds_l8_de_dos_niveles_declara_los_mips() -> None:
+    niveles = [np.arange(2, dtype=np.uint8).reshape(2, 1), np.array([[9]], dtype=np.uint8)]
+
+    cab = _leer_cabecera_l8(construir_dds_l8(niveles))
+
+    assert (cab["ancho"], cab["alto"], cab["mips"]) == (1, 2, 2)
+    assert cab["banderas"] & 0x20000 and cab["capacidades"] == 0x1000 | 0x8 | 0x400000
+
+
+def test_pillow_lee_el_nivel_base_del_dds_l8_igual_que_lo_entregado() -> None:
+    niveles = _cadena_de_uint8(8, 8, semilla=4)
+
+    datos = construir_dds_l8(niveles)
+
+    with Image.open(io.BytesIO(datos)) as imagen:
+        assert (imagen.mode, imagen.size) == ("L", (8, 8))
+        imagen.load()
+        assert np.array_equal(np.asarray(imagen), niveles[0])
+
+
+def test_construir_dds_l8_es_determinista_y_no_modifica_la_entrada() -> None:
+    niveles = _cadena_de_uint8(16, 16, semilla=9)
+    copia = [nivel.copy() for nivel in niveles]
+
+    assert construir_dds_l8(niveles) == construir_dds_l8(tuple(niveles))
+    assert all(np.array_equal(a, b) for a, b in zip(niveles, copia, strict=True))
+
+
+def test_el_dds_l8_se_arma_a_partir_de_la_cadena_real_de_mips_cuantizados() -> None:
+    altura = np.random.default_rng(2).random((16, 8))
+
+    niveles = [cuantizar_a_8_bits(nivel) for nivel in generar_mips(altura)]
+    datos = construir_dds_l8(niveles)
+
+    assert _leer_cabecera_l8(datos)["mips"] == cantidad_de_niveles(8, 16) == len(niveles)
+
+
+@pytest.mark.parametrize(
+    "niveles",
+    [
+        [],
+        [np.zeros((4, 4), dtype=np.uint8)] * 2,  # el segundo no es 2x2
+        [np.zeros((4, 4), dtype=np.uint8), np.zeros((2, 2), dtype=np.uint8)],  # falta la cola hasta 1x1
+        [np.zeros((4, 4), dtype=np.uint8), np.zeros((2, 2), dtype=np.uint8), np.zeros((1, 1), dtype=np.uint8)] * 2,
+        [np.zeros((4, 4), dtype=np.uint16), np.zeros((2, 2), dtype=np.uint16), np.zeros((1, 1), dtype=np.uint16)],
+        [np.zeros((4, 4), dtype=np.float32), np.zeros((2, 2), dtype=np.float32), np.zeros((1, 1), dtype=np.float32)],
+        np.zeros((3, 4, 4), dtype=np.uint8),
+        "abc",
+        [np.zeros((4, 4, 1), dtype=np.uint8)],
+        [np.zeros(16, dtype=np.uint8)],
+        [np.zeros((0, 4), dtype=np.uint8)],
+        [[[0, 1], [2, 3]]],
+        [None],
+    ],
+    ids=[
+        "vacio",
+        "segundo-nivel-con-forma-equivocada",
+        "cadena-incompleta",
+        "cadena-repetida",
+        "uint16-con-cadena-completa",
+        "float32-con-cadena-completa",
+        "un-solo-arreglo-3d",
+        "cadena-de-texto",
+        "tres-dimensiones",
+        "una-dimension",
+        "sin-filas",
+        "lista-de-listas",
+        "none",
+    ],
+)
+def test_construir_dds_l8_rechaza_cadenas_que_no_son_una_cadena_de_mips_uint8_completa(niveles: list) -> None:
+    with pytest.raises(ExportError):
+        construir_dds_l8(niveles)
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +773,7 @@ def test_la_superficie_publica_del_modulo_esta_congelada() -> None:
         "TexconvNoFijadoError",
         "TexconvPin",
         "cantidad_de_niveles",
+        "construir_dds_l8",
         "cuantizar_a_8_bits",
         "generar_mips",
         "inspeccionar_dds_bc4",

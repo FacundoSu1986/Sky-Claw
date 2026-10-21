@@ -51,10 +51,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   llaman a `decidir`, no comparan por su cuenta. Publicar el primer registro es una decisión de política del
   operador (tolerancia, confianza, tasa de revisión máxima) y cambia el ancla: no lo hagas de pasada.
 - `export.py` (NP-E0a) es el núcleo puro del exportador DDS y **fail-closed**: sin `TEXCONV_PIN_VIGENTE` (versión + SHA-256
-  del binario oficial, congelado en `None` por igualdad) no se ejecuta `texconv`; fijarlo es una decisión del operador con
-  evidencia, y cambia el ancla. Los mips son promedio de área en float64 redondeado una vez a float32 (nunca POINT ni
-  curva sRGB sobre la altura); el validador de contenedor acepta SOLO BC4 UNORM 2-D con payload exacto. NP-E0b (flags y
-  ejecución de `texconv`) NO existe todavía: no inventes flags, verificalos contra el binario real. Tests en
+  del binario oficial; hoy el `texconv` `may2026`, congelado por igualdad) no se ejecuta `texconv`; cambiarlo es una decisión
+  del operador con evidencia nueva, y cambia el ancla. Los mips son promedio de área en float64 redondeado una vez a float32 (nunca POINT ni
+  curva sRGB sobre la altura); el validador de contenedor acepta SOLO BC4 UNORM 2-D con payload exacto. El ÚNICO módulo que
+  ejecuta `texconv` es `sky_claw/local/tools/texconv_runner.py` (NP-E0b; ancla `tests/test_texconv_invariant.py`), con los
+  flags verificados ejecutando (`ARGUMENTOS_BC4`): no inventes flags, verificalos contra el binario real
+  (`tests/test_texconv_real.py`, Windows, con `SKYCLAW_TEXCONV_EXE`). Tests en
   `tests/test_native_parallax_export.py` (el helper de DDS es independiente del módulo; no lo reemplaces por código de `export.py`).
 - `experiments/convencion.py` (NP-X0a) MIDE la convención del canal G leyendo solo píxeles y no corrige nada: la
   convención la fija la fuente del archivo y la lectura solo puede corroborarla. Es un indicio con abstención
