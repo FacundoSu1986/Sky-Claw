@@ -759,6 +759,42 @@ def test_el_validador_acepta_un_bytearray_igual_que_un_bytes() -> None:
     assert inspeccionar_dds_bc4(bytearray(datos)) == inspeccionar_dds_bc4(datos)
 
 
+# Primeros 148 bytes de la salida REAL de ``texconv`` ``may2026`` (informe de la PC con Windows, 2026-10-21): entrada DDS L8
+# de 64x64 con 7 mips, ``-f BC4_UNORM -m 0 -y``; salida de 2872 bytes = 128 de cabecera + 2744 de carga. Es la única
+# cabecera real de la que hay constancia; los 20 bytes finales son el comienzo de la carga del primer nivel.
+_SALIDA_REAL_DE_TEXCONV_MAY2026 = bytes.fromhex(
+    "444453207c00000007100a004000000040000000000800000100000007000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000200000000400000042433455000000000000000000000000"
+    "00000000000000000810400000000000000000000000000000000000ee07c4217fb659a5f421b62ca498e6e6e9088c88"
+)
+
+
+def test_la_constante_de_la_salida_real_tiene_el_largo_y_la_marca_esperados() -> None:
+    assert len(_SALIDA_REAL_DE_TEXCONV_MAY2026) == 148
+    assert _SALIDA_REAL_DE_TEXCONV_MAY2026[:4] == b"DDS "
+
+
+def test_el_validador_acepta_la_cabecera_real_que_escribe_texconv_may2026() -> None:
+    cabecera = _SALIDA_REAL_DE_TEXCONV_MAY2026[:128]
+    datos = cabecera + _BLOQUE_BC4 * (2744 // 8)
+
+    info = inspeccionar_dds_bc4(datos)
+
+    assert (info.ancho, info.alto, info.niveles) == (64, 64, 7)
+    assert info.formato == "BC4_UNORM" and info.con_extension_dx10 is False
+    assert len(datos) == 2872
+
+
+def test_texconv_escribe_dwdepth_igual_a_1_sin_la_bandera_de_profundidad_en_una_2d() -> None:
+    # Por eso el validador rechaza la BANDERA DDSD_DEPTH y no el valor de dwDepth: mirar dwDepth habría descartado la
+    # salida válida del binario real. Este test congela la observación (no es una regla de negocio nuestra).
+    cabecera = _SALIDA_REAL_DE_TEXCONV_MAY2026[:128]
+    banderas, profundidad = struct.unpack_from("<I", cabecera, 8)[0], struct.unpack_from("<I", cabecera, 24)[0]
+
+    assert profundidad == 1
+    assert banderas & _DDSD_DEPTH == 0
+
+
 def test_la_superficie_publica_del_modulo_esta_congelada() -> None:
     esperado = [
         "AlturaNoExportableError",

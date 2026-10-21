@@ -78,7 +78,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
-   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos, ver «Actualización de NP-E0b»; faltan el smoke con el binario real (`tests/test_texconv_real.py`, Windows) y el registro/detección de `texconv` en el tool registry (NP-A0) |
+   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
@@ -597,8 +597,8 @@ medirse (EXP-010).
 NP-E0b entrega el **ejecutor del `texconv` fijado** (`sky_claw/local/tools/texconv_runner.py`) y fija el pin. Toma una altura
 en float, arma la cadena de mips propia, se la da a `texconv` y devuelve los bytes del `*_p.dds` BC4 ya validados. No escribe
 en ningún destino (eso es de NP-O0) y no tiene call site de producción ni superficie GUI/agente (NP-A0). Verificado
-ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 13.0.0); el CI de Windows lo confirma en el PR. **El binario real NO se
-ejecutó en este entorno**: ver «Qué NO está verificado».
+ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 13.0.0) y el CI de Windows lo confirma en el PR. **El binario real no se
+ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver «Verificado ejecutando el binario real».
 
 - **Evidencia del pin (`TEXCONV_PIN_VIGENTE`, tag `may2026`).** (1) Informe de la PC con Windows (2026-10-21): release
   «May 7, 2026» publicada 2026-05-08T21:01:12Z (ninguna de las 20 últimas está marcada pre-release), `texconv.exe` x64 de
@@ -617,7 +617,7 @@ ejecutó en este entorno**: ver «Qué NO está verificado».
 - **Corrección al diseño de investigación.** El documento de A (§H) mencionaba un `--mipmap-mode` custom para pasar mips
   hechos: esa opción NO existe en `texconv` `may2026` (no figura en las tablas de opciones de su código fuente). La vía
   real es entregar un DDS que ya traiga la cadena de mips.
-- **Los mips son los propios (leído en el código fuente del tag, NO ejecutado).** El ejecutor entrega un DDS de luminancia de
+- **Los mips son los propios (leído en el código fuente del tag; confirmado en parte por la ejecución, ver abajo).** El ejecutor entrega un DDS de luminancia de
   8 bits (`construir_dds_l8`, cabecera legacy que `DirectXTex` carga como `R8_UNORM`) con la cadena de `generar_mips`
   cuantizada, y llama con `-m 0`. En `texconv.cpp` (tag `may2026`): `tMips = (!mipLevels && info.mipLevels > 1) ? info.mipLevels : mipLevels`
   y los mips solo se regeneran si `!tMips || info.mipLevels != tMips`: con `-m 0` y una entrada DDS con mips, se conservan y
@@ -645,13 +645,31 @@ ejecutó en este entorno**: ver «Qué NO está verificado».
   sin errores. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
   ingenuo): prueba la plomería real de procesos, plazo vencido incluido, **no** al binario.
 
-**Qué NO está verificado.** (1) Que el `texconv` real, alimentado con un DDS que ya trae mips, los conserve y devuelva un BC4 que
-pase el validador: solo está leído en el código fuente. Lo ejecuta `tests/test_texconv_real.py` en Windows con
-`SKYCLAW_TEXCONV_EXE` (huella, validador, determinismo, mips decodificados contra la cadena propia, tamaños chicos y no
-cuadrados, plazo vencido). (2) La tolerancia de ese test de mips es PROVISIONAL (el doble del error de un codificador ingenuo
-más un margen); si un codificador bueno quedara por encima, el dato manda. Que NO sea un oráculo ciego está medido y anclado (`tests/test_bc4_helper.py`, corre en CI): sobre el campo del smoke, un filtro POINT falla desde el nivel 2, una curva sRGB falla en los niveles 4x4, 2x2 y 1x1 (a media escala y bajo contraste casi no se nota antes), una cadena BOX redondeada a 8 bits por nivel —lo que daría `texconv` si regenerara los mips— pasa, y un bloque corrupto lo detecta el límite del error máximo; aflojar la tolerancia hasta que uno de esos filtros pase rompe el test (señalado por el revisor automático en #772). (3) Si `texconv` emite cabecera legacy `BC4U` o con
-extensión DX10 a partir de una entrada DDS (con PNG fue `BC4U`); el validador acepta ambas, pero cuál carga Skyrim es de NP-RIG.
-(4) La hipótesis EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
+**Verificado ejecutando el binario real** (PC con Windows, commit `177ffd39`, 2026-10-21; Python 3.11.9, numpy 2.4.6, Pillow 13.0.0;
+`texconv` 2026.5.8.1 con la huella del pin). `tests/test_texconv_real.py`: **9 de 9**. (1) El binario verifica contra el pin. (2) Con una
+entrada DDS L8 de 64x64 con 7 mips, `texconv` imprime `reading ... (64x64,7 R8_UNORM 2D) as (64x64,7 BC4_UNORM 2D)`: **lee los 7 mips**
+de la entrada y los trata como `R8_UNORM`. La salida (2872 bytes = 128 de cabecera + 2744 de carga, la suma exacta de 7 niveles BC4) tiene
+cabecera legacy `BC4U` sin extensión DX10, banderas `0xA1007`, `mipMapCount` 7 y `caps` `0x401008`; **`dwDepth` vale 1 sin la bandera
+`DDSD_DEPTH`**, por eso el validador rechaza la bandera y no el valor (límite (0) de NP-E0a, ahora confirmado con la cabecera real, que
+quedó como test de regresión). (3) 256x256 → 43832 bytes y 9 niveles, sin DX10; 4x4 → 152 bytes y 3 niveles; 4x8 → 168 y 4; 64x16 → 840 y 7;
+32x128 → 2888 y 8. (4) Dos exportaciones idénticas byte a byte. (5) Cada nivel decodificado sigue la cadena propia: error medio ≤ 2.37 y
+máximo ≤ 5.4 en el peor nivel (límites 5.93 y 14.1); el de `texconv` es comparable al de un codificador ingenuo (0.41 contra 0.33 en el
+nivel 0, 1.54 contra 1.58 en el 3). (6) Un plazo vencido (2048x2048, 0.02 s) mata el proceso real en Windows, se traduce a
+`TexconvTimeoutError` y no deja restos. Los otros tests nuevos corrieron en esa PC: **222 pasaron y 2 se saltaron** (los dos skips son de POSIX).
+En la corrida literal fallaron 19 por un artefacto del entorno de esa máquina (un guard de borrado masivo inyectado por `PYTHONPATH` que
+lanza `SystemExit` al borrar el directorio de trabajo): sin ese guard, mismo commit y mismo entorno virtual, 222 pasan; no es un defecto del repo.
+
+**Qué NO está verificado.** (1) Que `texconv` CONSERVE los mips de la entrada en vez de regenerarlos con BOX: lo dice su código fuente y el binario
+los lee, pero el oráculo no lo distingue (ambas cadenas son promedio de área dentro de la tolerancia) ni importa para el producto; un experimento
+decisivo sería entregar mips deliberadamente distintos del promedio y ver si salen intactos (pendiente, junto con la próxima corrida en Windows). (2) La
+tolerancia de ese test de mips es PROVISIONAL (el doble del error de un codificador ingenuo más un margen); el dato real quedó por debajo en
+todos los niveles. Que NO sea un oráculo ciego está medido y anclado (`tests/test_bc4_helper.py`, corre en CI): sobre el campo del smoke, un
+filtro POINT falla desde el nivel 2, una curva sRGB falla en los niveles 4x4, 2x2 y 1x1 (a media escala y bajo contraste casi no se nota antes),
+una cadena BOX redondeada a 8 bits por nivel —lo que daría `texconv` si regenerara los mips— pasa, y un bloque corrupto lo detecta el límite
+del error máximo; aflojar la tolerancia hasta que uno de esos filtros pase rompe el test (señalado por el revisor automático en #772). (3)
+Cuál cabecera (`BC4U` legacy, la que emite hoy `texconv`, o DX10) carga Skyrim es de NP-RIG; el validador acepta ambas. (4) La evidencia
+de Windows es sobre `177ffd39`; los commits posteriores del PR tocan solo el manejo de la cancelación del ejecutor y tests. (5) La hipótesis
+EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
 
 **Límites declarados.** (1) El directorio privado hereda los permisos del temporal del usuario: `mkdtemp` es 0700 en POSIX; en Windows
 hereda las ACL del padre, no fija ACL propias. (2) `sky_claw.local.tools.*` está exento de `mypy` en CI: la tipificación del

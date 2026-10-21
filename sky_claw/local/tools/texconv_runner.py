@@ -16,7 +16,9 @@ Propiedades del mecanismo, cada una con su ancla en ``tests/test_texconv_runner.
   idéntico byte a byte en dos corridas. Cualquier flag extra necesita su propia verificación con el binario real.
 - **Los mips son los propios.** La entrada es un DDS con la cadena ya hecha y ``-m 0``: el código fuente de
   ``texconv`` (tag ``may2026``) conserva los mips de una entrada DDS en vez de regenerarlos, así que ``texconv`` solo
-  comprime. Eso está leído en el código fuente, NO ejecutado: lo verifica ``tests/test_texconv_real.py`` en Windows.
+  comprime. Leído en el código fuente; el binario real, ejecutado en Windows, LEE los mips de la entrada («64x64,7
+  R8_UNORM» → «64x64,7 BC4_UNORM») y su salida sigue la cadena propia dentro de la tolerancia (``tests/test_texconv_real.py``).
+  Distinguir «los conserva» de «los regenera con BOX» no es posible con ese oráculo: ambos son promedio de área.
 - **Toda salida se valida.** Exactamente un archivo regular ``entrada.dds`` bajo un tope de tamaño calculado de las
   dimensiones, que ``export.inspeccionar_dds_bc4`` acepta como BC4 UNORM 2-D, con las MISMAS dimensiones y la cadena
   completa de mips. Cualquier otra cosa es ``SalidaDeTexconvInvalidaError``.
