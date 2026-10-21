@@ -78,7 +78,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
-   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a hecho (núcleo puro: candado de versión, mips en float, cuantización y validador del contenedor BC4, ver la actualización de NP-E0a); falta NP-E0b (flags y ejecución de `texconv`, contra el binario real) |
+   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
@@ -591,3 +591,91 @@ terceros no puedan escribir. **Requisito para NP-E0b:** verificar inmediatamente
 el binario desde un directorio que terceros no puedan escribir; la API de E0a no ofrece verificación y uso atómicos
 (observación del revisor automático, #771). (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
 medirse (EXP-010).
+
+### Actualización de NP-E0b (2026-10-21)
+
+NP-E0b entrega el **ejecutor del `texconv` fijado** (`sky_claw/local/tools/texconv_runner.py`) y fija el pin. Toma una altura
+en float, arma la cadena de mips propia, se la da a `texconv` y devuelve los bytes del `*_p.dds` BC4 ya validados. No escribe
+en ningún destino (eso es de NP-O0) y no tiene call site de producción ni superficie GUI/agente (NP-A0). Verificado
+ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 13.0.0) y el CI de Windows lo confirma en el PR. **El binario real no se
+ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver «Verificado ejecutando el binario real».
+
+- **Evidencia del pin (`TEXCONV_PIN_VIGENTE`, tag `may2026`).** (1) Informe de la PC con Windows (2026-10-21): release
+  «May 7, 2026» publicada 2026-05-08T21:01:12Z (ninguna de las 20 últimas está marcada pre-release), `texconv.exe` x64 de
+  966480 bytes, SHA-256 `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`, versión que reporta 2026.5.8.1,
+  licencia MIT («Copyright (c) Microsoft Corporation.», leída del LICENSE del tag). (2) Descargué aparte, desde esta sesión,
+  `https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe`: mismos 966480 bytes y mismo SHA-256, y el
+  LICENSE del tag (1141 bytes, MIT). **Las dos vías descargan de GitHub Releases**: coinciden entre sí, pero no prueban la
+  autenticidad más allá de la integridad de ese canal; la firma minisign publicada es la del zip de fuentes, no la del exe,
+  y no tengo una clave pública verificada, así que la firma NO está verificada. Cambiar de versión es una decisión nueva
+  con evidencia nueva y cambia el ancla (`tests/test_native_parallax_export.py`, igualdad literal del pin).
+- **Flags verificados ejecutando** (informe de Windows): `texconv -f BC4_UNORM -m 0 -y -o <dir> <archivo.png>` → código 0,
+  BC4 con cabecera legacy `BC4U` y cadena completa de mips (256x256: 43832 bytes y 9 niveles; 512x512 con ruido: 174904
+  bytes y 10 niveles), **idéntico byte a byte en dos corridas independientes**. Esos son los únicos flags que usa el ejecutor
+  (`ARGUMENTOS_BC4`, congelado por igualdad). `texconv -?` ya no existe en esta versión (código 1, «Unknown option»): la
+  ayuda es `--help`; el ejecutor no sondea versiones con `-?`.
+- **Corrección al diseño de investigación.** El documento de A (§H) mencionaba un `--mipmap-mode` custom para pasar mips
+  hechos: esa opción NO existe en `texconv` `may2026` (no figura en las tablas de opciones de su código fuente). La vía
+  real es entregar un DDS que ya traiga la cadena de mips.
+- **Los mips son los propios (leído en el código fuente del tag; confirmado en parte por la ejecución, ver abajo).** El ejecutor entrega un DDS de luminancia de
+  8 bits (`construir_dds_l8`, cabecera legacy que `DirectXTex` carga como `R8_UNORM`) con la cadena de `generar_mips`
+  cuantizada, y llama con `-m 0`. En `texconv.cpp` (tag `may2026`): `tMips = (!mipLevels && info.mipLevels > 1) ? info.mipLevels : mipLevels`
+  y los mips solo se regeneran si `!tMips || info.mipLevels != tMips`: con `-m 0` y una entrada DDS con mips, se conservan y
+  `texconv` solo comprime. Si se regenerara, el filtro por defecto para potencias de 2 es BOX (`DirectXTexMipmaps.cpp`),
+  sin curva sRGB para `R8_UNORM`. **BC4 se comprime en CPU**: la GPU solo se usa para BC6H/BC7, así que el resultado no
+  depende de la tarjeta de video. Esto asume que el binario release corresponde al código del tag (no lo compilé).
+- **Solo corre el binario fijado.** `texconv` se COPIA a un directorio de trabajo privado (`mkdtemp`, 0700 en POSIX) y se verifica
+  la huella de la COPIA contra el pin; lo que se ejecuta es esa copia. Cierra la ventana verificar-y-después-ejecutar que
+  señaló el revisor automático en #771 (requisito dejado para este PR). Sin pin, o con otra huella, no se ejecuta nada.
+- **Toda salida se valida**: exactamente un archivo regular `entrada.dds` bajo un tope calculado de las dimensiones, que
+  `inspeccionar_dds_bc4` acepta, con las mismas dimensiones y la cadena completa de mips. El proceso lo supervisa
+  `_process.run_capture` (timeout, kill del árbol y reap, Job Object en Windows); el directorio de trabajo se borra en toda
+  salida, también al cancelar, y la cancelación espera a que termine el hilo que lo estaba usando antes de borrarlo (hallazgo de
+  Codex en #772: un hilo no se interrumpe y en Windows un archivo abierto impide el borrado), con un tope de 30 s para que un hilo
+  colgado no cuelgue la cancelación (observación del revisor automático: pasado el tope se registra un aviso y se sigue). Un código de salida distinto de cero —incluidos los negativos con que Windows reporta un
+  crash— es un fallo.
+- **Ancla de la clase «segundo camino a texconv»** (`tests/test_texconv_invariant.py`): el conjunto de módulos `.py` que nombran
+  `texconv` está congelado por igualdad (hoy tres) y, entre ellos, solo `texconv_runner.py` lanza procesos; un camino nuevo
+  rompe el test hasta que se decida su receta (lo demostré agregando uno).
+- **Verificación hecha.** `tests/test_texconv_runner.py` (borde de proceso reemplazado por un `texconv` falso: argumentos,
+  verificación de la copia, errores, salida defectuosa enumerada, limpieza, cancelación), `tests/test_bc4_helper.py` (el
+  decodificador BC4 de tests se valida contra Pillow) y ampliaciones de `tests/test_native_parallax_export.py`. **Mutación
+  manual**: 75 mutantes sobre el ejecutor y 22 más sobre `export.py` (136 en total), 0 vivos reales; la primera pasada del
+  ejecutor dejó 7 vivos que eran huecos reales (rutas relativas, verificar el original en vez de la copia, tope exacto,
+  dimensiones transpuestas, códigos negativos) y se cerraron. El ejecutor **nace estricto en el gate de `mypy` de CI**
+  (lista de opt-in de `pyproject.toml`, observación del revisor automático: `sky_claw.local.tools.*` está exento); comprobé que el gate
+  muerde inyectando un error de tipos, que CI reportó. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
+  ingenuo): prueba la plomería real de procesos, plazo vencido incluido, **no** al binario.
+
+**Verificado ejecutando el binario real** (PC con Windows, commit `177ffd39`, 2026-10-21; Python 3.11.9, numpy 2.4.6, Pillow 13.0.0;
+`texconv` 2026.5.8.1 con la huella del pin). `tests/test_texconv_real.py`: **9 de 9**. (1) El binario verifica contra el pin. (2) Con una
+entrada DDS L8 de 64x64 con 7 mips, `texconv` imprime `reading ... (64x64,7 R8_UNORM 2D) as (64x64,7 BC4_UNORM 2D)`: **lee los 7 mips**
+de la entrada y los trata como `R8_UNORM`. La salida (2872 bytes = 128 de cabecera + 2744 de carga, la suma exacta de 7 niveles BC4) tiene
+cabecera legacy `BC4U` sin extensión DX10, banderas `0xA1007`, `mipMapCount` 7 y `caps` `0x401008`; **`dwDepth` vale 1 sin la bandera
+`DDSD_DEPTH`**, por eso el validador rechaza la bandera y no el valor (límite (0) de NP-E0a, ahora confirmado con la cabecera real, que
+quedó como test de regresión). (3) 256x256 → 43832 bytes y 9 niveles, sin DX10; 4x4 → 152 bytes y 3 niveles; 4x8 → 168 y 4; 64x16 → 840 y 7;
+32x128 → 2888 y 8. (4) Dos exportaciones idénticas byte a byte. (5) Cada nivel decodificado sigue la cadena propia: error medio ≤ 2.37 y
+máximo ≤ 5.4 en el peor nivel (límites 5.93 y 14.1); el de `texconv` es comparable al de un codificador ingenuo (0.41 contra 0.33 en el
+nivel 0, 1.54 contra 1.58 en el 3). (6) Un plazo vencido (2048x2048, 0.02 s) mata el proceso real en Windows, se traduce a
+`TexconvTimeoutError` y no deja restos. Los otros tests nuevos corrieron en esa PC: **222 pasaron y 2 se saltaron** (los dos skips son de POSIX).
+En la corrida literal fallaron 19 por un artefacto del entorno de esa máquina (un guard de borrado masivo inyectado por `PYTHONPATH` que
+lanza `SystemExit` al borrar el directorio de trabajo): sin ese guard, mismo commit y mismo entorno virtual, 222 pasan; no es un defecto del repo.
+
+**Qué NO está verificado.** (1) Que `texconv` CONSERVE los mips de la entrada en vez de regenerarlos con BOX: lo dice su código fuente y el binario
+los lee, pero el oráculo no lo distingue (ambas cadenas son promedio de área dentro de la tolerancia) ni importa para el producto; un experimento
+decisivo sería entregar mips deliberadamente distintos del promedio y ver si salen intactos (pendiente, junto con la próxima corrida en Windows). (2) La
+tolerancia de ese test de mips es PROVISIONAL (el doble del error de un codificador ingenuo más un margen); el dato real quedó por debajo en
+todos los niveles. Que NO sea un oráculo ciego está medido y anclado (`tests/test_bc4_helper.py`, corre en CI): sobre el campo del smoke, un
+filtro POINT falla desde el nivel 2, una curva sRGB falla en los niveles 4x4, 2x2 y 1x1 (a media escala y bajo contraste casi no se nota antes),
+una cadena BOX redondeada a 8 bits por nivel —lo que daría `texconv` si regenerara los mips— pasa, y un bloque corrupto lo detecta el límite
+del error máximo; aflojar la tolerancia hasta que uno de esos filtros pase rompe el test (señalado por el revisor automático en #772). (3)
+Cuál cabecera (`BC4U` legacy, la que emite hoy `texconv`, o DX10) carga Skyrim es de NP-RIG; el validador acepta ambas. (4) La evidencia
+de Windows es sobre `177ffd39`; los commits posteriores del PR tocan solo el manejo de la cancelación del ejecutor y tests. (5) La hipótesis
+EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
+
+**Límites declarados.** (1) El directorio privado hereda los permisos del temporal del usuario: `mkdtemp` es 0700 en POSIX; en Windows
+hereda las ACL del padre, no fija ACL propias. (2) El módulo vive en `sky_claw.local.tools.*`, exento de `mypy` y de BLE001 por carpeta;
+se lo saca de la exención de `mypy` con el opt-in estricto de `pyproject.toml` y no tiene `except Exception`. (3) No hay registro ni detección de `texconv` en el tool registry (la ruta se pasa explícita) ni
+el contrato `success`/`message` (aún no es un tool): se cablea en NP-A0, donde las dos superficies deben pasar por
+`exportar_altura_bc4`. (4) `ResultadoDeExportacion` no lleva todavía el `encoder_id` del manifest: NP-O0 arma el manifest con
+`texconv_version`, `texconv_sha256` y `argumentos`.

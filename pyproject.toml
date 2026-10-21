@@ -381,6 +381,9 @@ module = [
     # SKSE runtime catalog: módulo nuevo en `sky_claw.local.tools.*`, que está en
     # la lista `ignore_errors` de arriba — sin este opt-in sale sin type-check.
     "sky_claw.local.tools.skse_catalog",
+    # NP-E0b: ejecutor del `texconv` fijado (verifica una huella, lanza un proceso, limpia directorios):
+    # módulo nuevo en `sky_claw.local.tools.*`, exento por la lista de arriba. Nace estricto.
+    "sky_claw.local.tools.texconv_runner",
     # P2 Pre-LOD: registro canónico de herramientas externas (nace estricto)
     "sky_claw.local.discovery.registry",
     # P1 Frozen Runtime: paquete nuevo (models/discovery/observation/stabilization),
