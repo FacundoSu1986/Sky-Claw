@@ -37,6 +37,19 @@ OUTPUT_ADMINISTRADO = r"E:\SkyClawWork\DynDOLOD\TexGen"
 OUTPUT_RANCIO = r"E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\\"
 
 
+class LecturaIlegible:
+    """Entrada del guion que hace FALLAR la lectura: el hermano-excepción del hueco.
+
+    Un elemento stale a mitad de un repaint levanta ``ObservacionUIAError`` en vez
+    de devolver una instantánea sin pantalla contractual. El paso ``INVOCAR``
+    tiene que tratar ese fallo como el hueco que es —releer dentro del mismo
+    presupuesto— y no como un sensor caído (F2, #773).
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
 def elemento(tipo: str, clase: str, nombre: str = "", automation_id: str = "", habilitado: bool = True) -> ElementoUI:
     return ElementoUI(
         tipo_de_control=tipo,
@@ -198,7 +211,7 @@ class GuiSimulada:
 
     def armar_guion(
         self,
-        instantaneas: Sequence[tuple[VentanaUI, ...]],
+        instantaneas: Sequence[tuple[VentanaUI, ...] | LecturaIlegible],
         *,
         repetir_ultima: bool = False,
     ) -> None:
@@ -213,7 +226,7 @@ class GuiSimulada:
             self._guion = list(instantaneas)
             self._repetir_ultima = repetir_ultima
 
-    def _siguiente_guion(self) -> tuple[VentanaUI, ...] | None:
+    def _siguiente_guion(self) -> tuple[VentanaUI, ...] | LecturaIlegible | None:
         """La próxima instantánea forzada, o ``None`` si el guion se agotó."""
         if not self._guion:
             return None
@@ -240,6 +253,10 @@ class GuiSimulada:
             self._avanzar_generacion()
             self.lecturas += 1
             forzadas = self._siguiente_guion()
+            if isinstance(forzadas, LecturaIlegible):
+                # La lectura se sirvió (cuenta en ``lecturas``) pero no devolvió
+                # árbol: es el fallo de observación, no un sensor caído.
+                raise forzadas.error
             ventanas = forzadas if forzadas is not None else (self._ventanas() if self.vivo and pid == self.pid else ())
             return InstantaneaUI(
                 pid=pid,

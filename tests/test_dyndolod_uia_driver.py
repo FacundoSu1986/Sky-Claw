@@ -18,6 +18,7 @@ import pytest
 
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, MecanismoDeEscritura
 from sky_claw.local.tools.dyndolod_uia_driver import (
+    MAXIMO_DE_LECTURAS_POR_INVOCACION,
     CapacidadDesatendidaUIA,
     ConductorDesatendido,
     ContextoDeConduccion,
@@ -46,13 +47,18 @@ from sky_claw.local.tools.dyndolod_uia_driver import (
 )
 from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import EjecutorDePasoEnProceso
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
-from sky_claw.local.tools.dyndolod_uia_preflight import ProcesoObservado, UIANoDisponibleError
+from sky_claw.local.tools.dyndolod_uia_preflight import (
+    ObservacionUIAError,
+    ProcesoObservado,
+    UIANoDisponibleError,
+)
 from tests._dyndolod_gui_simulada import (
     CONTRATO_DYNDOLOD,
     CONTRATO_TEXGEN,
     OUTPUT_ADMINISTRADO,
     OUTPUT_RANCIO,
     GuiSimulada,
+    LecturaIlegible,
     boton,
     elemento,
     elementos_de_dialogo,
@@ -1071,6 +1077,55 @@ async def test_f2_el_drift_de_identidad_durante_la_reobservacion_corta_cerrado(t
             _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
         )
     assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+    assert gui.invocaciones == []
+
+
+# -- Caso I: el hueco en forma de excepción (elemento stale a mitad de repaint) --
+
+
+def test_f2_una_lectura_ilegible_se_reintenta_y_el_invoke_sigue_siendo_uno():
+    """El hermano-excepción de ``CARGANDO``: la lectura falla y el modal está.
+
+    ``_paso_observar`` ya distingue ``UIANoDisponibleError`` (el sensor) de
+    ``ObservacionUIAError`` (un elemento stale a mitad de repaint). Si el paso
+    ``INVOCAR`` no hace la misma distinción, F2 se reproduce por la puerta de la
+    excepción: la primera lectura muere y la corrida desatendida se corta con el
+    modal aprobado en pantalla.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([LecturaIlegible(ObservacionUIAError("elemento stale a mitad de repaint"))])
+    resultado = _paso(gui, _pedido_de_modal(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert gui.invocaciones == ["Ignore"]
+    assert gui.lecturas == 2, "una lectura ilegible cuesta UNA relectura, no un bucle"
+
+
+def test_f2_el_sensor_caido_no_se_reintenta():
+    """``UIANoDisponibleError`` no es un repintado: corta en la PRIMERA lectura."""
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([LecturaIlegible(UIANoDisponibleError("sin UIA")), _hueco_de_repintado()])
+    resultado = _paso(gui, _pedido_de_modal(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.UIA_NO_DISPONIBLE
+    assert resultado.invocado is False
+    assert gui.lecturas == 1
+    assert gui.invocaciones == []
+
+
+def test_f2_lecturas_ilegibles_agotan_el_presupuesto_sin_invocar():
+    """Sin una sola lectura legible el veredicto es el sensor, no la pantalla."""
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([LecturaIlegible(ObservacionUIAError("stale"))], repetir_ultima=True)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: gui,
+        localizador=gui,
+        reloj=lambda: 0.0,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.UIA_NO_DISPONIBLE
+    assert resultado.invocado is False
+    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_INVOCACION
     assert gui.invocaciones == []
 
 

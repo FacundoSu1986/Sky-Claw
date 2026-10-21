@@ -24,17 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unicidad/habilitación del control. `backend.invocar` se ejecuta como máximo una
   vez y su desenlace —incluido un HRESULT de error— no se reintenta. Una pantalla
   decisiva DISTINTA de la esperada (otro modal, diálogo desconocido, `AMBIGUA`,
-  control duplicado o deshabilitado) corta cerrado sin releer. El corte por
-  identidad, además, tenía dos códigos según el camino: `_atender_modal`,
+  control duplicado o deshabilitado) corta cerrado sin releer. El mismo hueco
+  tiene una forma en excepción: una lectura que levanta `ObservacionUIAError`
+  (elemento stale a mitad de repaint) también se relee con ese presupuesto,
+  mientras que `UIANoDisponibleError` —el sensor— sigue cortando en la primera
+  lectura, la misma distinción que ya hacía la observación; si no hubo ni una
+  sola lectura legible el veredicto es `UIA_NO_DISPONIBLE`, no la pantalla. El
+  corte por identidad, además, tenía dos códigos según el camino: `_atender_modal`,
   `accion_previa`, Begin y terminal reportaban `IDENTIDAD_NO_COINCIDE` como
   `UIA_CONTROL_MAP_MISMATCH`/`TERMINAL_CONTROL_MISMATCH` mientras la observación y
   la escritura del Output ya usaban `UNATTENDED_CONTRACT_VIOLATION`; ahora los
   siete sitios comparten un único mapeo. Anclas:
-  `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el censo parametrizado
-  de los cuatro caminos del corte por identidad y el test que fija que el padre
-  pide el Invoke UNA vez aunque el paso corte sin invocar) y
-  `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas con el que
-  se reproduce el hueco de repintado.
+  `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el caso I de la lectura
+  ilegible, el censo parametrizado de los cuatro caminos del corte por identidad y
+  el test que fija que el padre pide el Invoke UNA vez aunque el paso corte sin
+  invocar) y `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas
+  —y de lecturas que fallan— con el que se reproduce el hueco de repintado.
 - **El adapter legacy de `run_xedit_script` devolvía un resumen vacío como si fuera
   el resumen validado (#549).** La tool del agente lee `list_all_conflicts.pas` y
   verifica que `SUMMARY|total_conflicts` exista y cierre contra los conflictos

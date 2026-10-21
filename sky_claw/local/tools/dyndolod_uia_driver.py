@@ -979,6 +979,44 @@ def _es_hueco_de_observacion(pantalla: Pantalla) -> bool:
     return pantalla.tipo in {TipoDePantalla.CARGANDO, TipoDePantalla.SIN_VENTANA}
 
 
+def _esperar_otra_lectura(
+    *,
+    detalle: str,
+    lecturas: int,
+    limite: float,
+    ultima: InstantaneaUI | None,
+    pedido: PedidoDePaso,
+    reloj: Callable[[], float],
+    dormir: Callable[[float], None],
+) -> ResultadoDePaso | None:
+    """Espera la próxima lectura, o devuelve el corte: UN solo sitio de presupuesto.
+
+    ``None`` significa "todavía hay presupuesto": se durmió y se puede releer. Un
+    corte devuelto es siempre con ``invocado=False`` — nunca se llegó a la
+    primitiva. Que el presupuesto viva en una sola función es deliberado: el
+    hueco por pantalla (``CARGANDO``) y el hueco por excepción (elemento stale)
+    tienen que agotarse con el MISMO criterio, o el segundo se queda sin riel.
+
+    Sin una sola lectura legible el veredicto es el sensor (``UIA_NO_DISPONIBLE``),
+    no la pantalla: mismo criterio que ``_paso_observar``.
+    """
+    restante = limite - reloj()
+    if lecturas < MAXIMO_DE_LECTURAS_POR_INVOCACION and restante > 0:
+        dormir(min(pedido.intervalo_segundos, restante))
+        return None
+    if ultima is None:
+        return ResultadoDePaso(
+            estado=EstadoDePaso.UIA_NO_DISPONIBLE,
+            detalle=f"no hubo una sola lectura legible en {pedido.timeout_segundos:.1f}s: {detalle}",
+        )
+    return _precondicion(
+        MotivoDePrecondicion.PANTALLA_INCORRECTA,
+        f"{detalle} — {lecturas} lecturas en {pedido.timeout_segundos:.1f}s: la pantalla "
+        "contractual no apareció y no se invocó nada",
+        ultima,
+    )
+
+
 def _paso_invocar(
     pedido: PedidoDePaso,
     contrato: ContratoDeUIHerramienta,
@@ -1006,11 +1044,27 @@ def _paso_invocar(
     hash se midió sobre el archivo que el runner lanzó, y re-leerlo del disco en
     cada vuelta no agregaría información sobre lo que la GUI muestra.
 
+    **Dos formas del mismo hueco.** El hueco medido en el rig fue una pantalla sin
+    nada contractual (``CARGANDO``/``SIN_VENTANA``); el hermano es la lectura que
+    ni siquiera devuelve árbol porque el elemento quedó stale a mitad del
+    repaint (``ObservacionUIAError``). Las dos se releen con el MISMO presupuesto
+    (:func:`_esperar_otra_lectura`), porque las dos son "todavía no se pudo
+    observar" y ninguna mutó nada. ``UIANoDisponibleError`` NO se relee: ése es
+    el sensor, y corta en la primera lectura — la misma distinción que ya hacía
+    ``_paso_observar``.
+
     **Presupuesto.** ``timeout_segundos`` es el techo temporal y
     :data:`MAXIMO_DE_LECTURAS_POR_INVOCACION` el tope de lecturas; lo que venza
     primero corta. Agotado el presupuesto el desenlace es
     ``PRECONDICION_FALLIDA``/``PANTALLA_INCORRECTA`` con ``invocado=False``: el
-    padre lo ve como un corte limpio, no como un desenlace desconocido.
+    padre lo ve como un corte limpio, no como un desenlace desconocido. Si no
+    hubo ni una sola lectura legible, el desenlace es ``UIA_NO_DISPONIBLE``: el
+    veredicto honesto es el sensor.
+
+    El plazo acota la ESPERA, no la acción: si la pantalla contractual aparece en
+    la última lectura, se invoca (misma semántica que ``_paso_observar``, que
+    devuelve en cuanto ve la pantalla decisiva). Lo que el plazo impide es seguir
+    esperando.
 
     **Nunca se reintenta la primitiva.** Cualquier desvío que no sea un hueco
     —incluido un control no inequívoco— corta antes de invocar, y una vez
@@ -1027,26 +1081,51 @@ def _paso_invocar(
     requerida = _pantalla_requerida(contrato, accion)
     limite = reloj() + pedido.timeout_segundos
     lecturas = 0
+    ultima: InstantaneaUI | None = None
     while True:
         identidad = _identidad(pedido, localizador)
         if identidad is not None:
             return ResultadoDePaso(estado=identidad, detalle="identidad no demostrada antes de invocar")
-        instantanea = _con_output(contrato, backend.instantanea(pedido.pid), backend)
-        pantalla = clasificar_pantalla(contrato, instantanea)
         lecturas += 1
+        try:
+            instantanea = _con_output(contrato, backend.instantanea(pedido.pid), backend)
+        except UIANoDisponibleError as exc:
+            # El SENSOR, no el repintado: reintentar no aporta y sólo retrasa el
+            # corte que de todos modos hay que dar.
+            return ResultadoDePaso(estado=EstadoDePaso.UIA_NO_DISPONIBLE, detalle=str(exc))
+        except ObservacionUIAError as exc:
+            # Hermano-excepción del hueco: un elemento stale a mitad de repaint. La
+            # lectura no ocurrió, así que no hay instantánea que clasificar, pero
+            # tampoco se mutó nada: es exactamente el caso que se puede releer.
+            corte = _esperar_otra_lectura(
+                detalle=f"{accion.id}: lectura ilegible ({exc})",
+                lecturas=lecturas,
+                limite=limite,
+                ultima=ultima,
+                pedido=pedido,
+                reloj=reloj,
+                dormir=dormir,
+            )
+            if corte is not None:
+                return corte
+            continue
+        ultima = instantanea
+        pantalla = clasificar_pantalla(contrato, instantanea)
         if pantalla.tipo is not requerida:
             detalle = f"{accion.id} exige {requerida.value}; pantalla={pantalla.tipo.value} {pantalla.detalle}".strip()
             if not _es_hueco_de_observacion(pantalla):
                 return _precondicion(MotivoDePrecondicion.PANTALLA_INCORRECTA, detalle, instantanea)
-            restante = limite - reloj()
-            if lecturas >= MAXIMO_DE_LECTURAS_POR_INVOCACION or restante <= 0:
-                return _precondicion(
-                    MotivoDePrecondicion.PANTALLA_INCORRECTA,
-                    f"{detalle} — {lecturas} lecturas en {pedido.timeout_segundos:.1f}s: la pantalla "
-                    "contractual no apareció y no se invocó nada",
-                    instantanea,
-                )
-            dormir(min(pedido.intervalo_segundos, restante))
+            corte = _esperar_otra_lectura(
+                detalle=detalle,
+                lecturas=lecturas,
+                limite=limite,
+                ultima=ultima,
+                pedido=pedido,
+                reloj=reloj,
+                dormir=dormir,
+            )
+            if corte is not None:
+                return corte
             continue
         if requerida is TipoDePantalla.MODAL_CONOCIDO and (
             pantalla.modal is None or pantalla.modal.id != pedido.modal_id
