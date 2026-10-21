@@ -1106,9 +1106,7 @@ async def test_f2_el_padre_no_repite_el_pedido_de_un_invoke_que_no_llego_a_invoc
     liberar la reserva ante una respuesta "no invocada" es abrir esa puerta.
     """
     gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
-    aprobador = AprobadorFalso(
-        al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True)
-    )
+    aprobador = AprobadorFalso(al_aprobar_modal=lambda: gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True))
     capacidad = _capacidad(gui, aprobador, reobservacion_timeout_segundos=0.05)
     registro: list[tuple[TipoDePaso, str | None]] = []
     conductor = ConductorDesatendido(
