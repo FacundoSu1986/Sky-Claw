@@ -80,6 +80,7 @@ _INICIO_DEL_PAYLOAD = 4 + _TAMANO_DE_CABECERA  # marca + DDS_HEADER
 _TAMANO_DE_EXTENSION_DX10 = 20
 _DDSD_ALTO_Y_ANCHO = 0x2 | 0x4
 _DDSD_MIPMAPCOUNT = 0x20000
+_DDSD_PROFUNDIDAD = 0x800000  # marca de textura de volumen en cabeceras viejas
 _DDPF_FOURCC = 0x4
 _DDSCAPS2_CUBEMAP = 0x200
 _DDSCAPS2_VOLUMEN = 0x200000
@@ -163,10 +164,11 @@ def verificar_texconv(ruta: Path | str, *, pin: TexconvPin | None = None) -> Non
             "no hay una versión de texconv fijada (TEXCONV_PIN_VIGENTE es None): el exportador no ejecuta nada"
         )
     archivo = Path(ruta)
-    if not archivo.is_file():
-        raise TexconvNoCoincideError(f"texconv no existe o no es un archivo: {archivo}")
     resumen = hashlib.sha256()
     try:
+        # is_file() también puede lanzar OSError (p. ej. ENAMETOOLONG): va dentro de la traducción al contrato
+        if not archivo.is_file():
+            raise TexconvNoCoincideError(f"texconv no existe o no es un archivo: {archivo}")
         with archivo.open("rb") as fuente:
             while bloque := fuente.read(TAMANO_DE_BLOQUE_DE_LECTURA):
                 resumen.update(bloque)
@@ -303,8 +305,8 @@ def inspeccionar_dds_bc4(datos: bytes | bytearray) -> InfoDds:
         raise ContenedorDdsInvalidoError("los tamaños de la cabecera o del formato de píxel no son los del estándar")
     if banderas & _DDSD_ALTO_Y_ANCHO != _DDSD_ALTO_Y_ANCHO or ancho == 0 or alto == 0:
         raise ContenedorDdsInvalidoError("el DDS no declara un alto y un ancho positivos")
-    if capacidades_2 & (_DDSCAPS2_CUBEMAP | _DDSCAPS2_VOLUMEN):
-        raise ContenedorDdsInvalidoError("cubemaps y volúmenes no están soportados")
+    if capacidades_2 & (_DDSCAPS2_CUBEMAP | _DDSCAPS2_VOLUMEN) or banderas & _DDSD_PROFUNDIDAD:
+        raise ContenedorDdsInvalidoError("cubemaps y volúmenes (incluida la marca de profundidad) no están soportados")
     if banderas_pf & _DDPF_FOURCC == 0:
         raise ContenedorDdsInvalidoError("el formato de píxel no es un FourCC")
 

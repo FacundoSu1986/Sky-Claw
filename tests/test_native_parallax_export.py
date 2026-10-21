@@ -52,6 +52,7 @@ _SHA = "a" * 64
 _DDSD_BASICO = 0x1 | 0x2 | 0x4 | 0x1000  # CAPS | HEIGHT | WIDTH | PIXELFORMAT
 _DDSD_HEIGHT = 0x2
 _DDSD_WIDTH = 0x4
+_DDSD_DEPTH = 0x800000
 _DDSD_MIPMAPCOUNT = 0x20000
 _DDSD_LINEARSIZE = 0x80000
 _DDPF_FOURCC = 0x4
@@ -87,15 +88,19 @@ def _dds(
     dimension: int = 3,
     misc: int = 0,
     quitar_banderas: int = 0,
+    agregar_banderas: int = 0,
+    profundidad: int = 0,
     banderas_pf: int = _DDPF_FOURCC,
 ) -> bytes:
     tamanos = [_bytes_de_nivel(max(1, ancho >> i), max(1, alto >> i)) for i in range(niveles)]
     hay_mips = niveles > 1 if con_bandera_de_mips is None else con_bandera_de_mips
-    banderas = (_DDSD_BASICO | _DDSD_LINEARSIZE | (_DDSD_MIPMAPCOUNT if hay_mips else 0)) & ~quitar_banderas
+    banderas = (
+        _DDSD_BASICO | _DDSD_LINEARSIZE | (_DDSD_MIPMAPCOUNT if hay_mips else 0)
+    ) & ~quitar_banderas | agregar_banderas
     caps = _DDSCAPS_TEXTURE | ((_DDSCAPS_COMPLEX | _DDSCAPS_MIPMAP) if hay_mips else 0)
     contados = niveles if mipmapcount_declarado is None else mipmapcount_declarado
     formato_de_pixel = struct.pack("<II4sIIIII", tamano_pf, banderas_pf, fourcc, 0, 0, 0, 0, 0)
-    cabecera = struct.pack("<7I", tamano_cabecera, banderas, alto, ancho, tamanos[0], 0, contados)
+    cabecera = struct.pack("<7I", tamano_cabecera, banderas, alto, ancho, tamanos[0], profundidad, contados)
     cabecera += b"\0" * 44 + formato_de_pixel + struct.pack("<5I", caps, caps2, 0, 0, 0)
     extension = struct.pack("<5I", dxgi, dimension, misc, array_size, 0) if dxgi is not None else b""
     payload = _BLOQUE_BC4 * (sum(tamanos) // 8) + b"\0" * payload_extra
@@ -368,6 +373,15 @@ def test_verificar_texconv_no_acepta_un_dispositivo_aunque_su_contenido_coincida
         verificar_texconv(os.devnull, pin=pin)
 
 
+def test_verificar_texconv_traduce_un_error_al_consultar_la_ruta_en_un_fallo_cerrado(tmp_path: Path) -> None:
+    # Un componente de 300 caracteres supera NAME_MAX en POSIX y hace fallar el stat con OSError (ENAMETOOLONG);
+    # el contrato es que el llamador solo necesita atrapar ExportError.
+    pin = TexconvPin("oct2026", _SHA, _ORIGEN_OFICIAL)
+
+    with pytest.raises(TexconvNoCoincideError):
+        verificar_texconv(tmp_path / ("a" * 300), pin=pin)
+
+
 def test_verificar_texconv_traduce_un_error_de_lectura_en_un_fallo_cerrado(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -507,6 +521,8 @@ def test_un_mipmapcount_en_cero_con_la_bandera_puesta_cuenta_como_un_nivel() -> 
         _dds(16, 8, 5, quitar_banderas=_DDSD_WIDTH),
         _dds(16, 8, 5, quitar_banderas=_DDSD_HEIGHT),
         _dds(16, 8, 5, banderas_pf=0),
+        _dds(16, 8, 5, agregar_banderas=_DDSD_DEPTH, profundidad=4),
+        _dds(16, 8, 5, agregar_banderas=_DDSD_DEPTH),
         _dds(0, 8, 1),
         _dds(16, 0, 1),
         _dds(16, 8, 5, fourcc=b"DXT5"),
@@ -541,6 +557,8 @@ def test_un_mipmapcount_en_cero_con_la_bandera_puesta_cuenta_como_un_nivel() -> 
         "sin-bandera-de-ancho",
         "sin-bandera-de-alto",
         "pixelformat-sin-bandera-fourcc",
+        "bandera-de-profundidad-con-dwdepth",
+        "bandera-de-profundidad-sin-dwdepth",
         "ancho-cero",
         "alto-cero",
         "fourcc-dxt5",
