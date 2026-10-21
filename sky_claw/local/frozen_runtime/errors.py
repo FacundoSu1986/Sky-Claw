@@ -285,6 +285,22 @@ class ApprovalIdentityError(ApprovalError):
     """
 
 
+class ScopeBindingError(FrozenRuntimeError):
+    """La transición NO liga el ``ApprovalScope`` autorizado (P4-S5).
+
+    Vive fuera de las familias ``ApprovalError`` y ``JournalError`` a propósito:
+    el binding es el contrato **entre** la autoridad de aprobación y el journal,
+    y lo ejercen los dos. Colgarlo de una sola familia obligaría al otro módulo a
+    importar el error del vecino para poder declararlo, que es el ciclo de imports
+    que el subsistema evita.
+
+    Un ``ScopeBindingError`` significa que el conjunto de artefactos que la
+    transición declara —operación, source, target, candidate y evidencia de
+    contenido— no es el que el propietario aprobó. Siempre fail-closed: no se
+    consume la aprobación, no se escribe el PENDING y no se aplica nada.
+    """
+
+
 class ApprovalRootAjenoError(ApprovalIdentityError):
     """El ledger o un witness declara un ``root_id`` que NO es el del root auditado.
 
