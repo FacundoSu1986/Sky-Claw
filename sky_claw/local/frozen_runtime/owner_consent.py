@@ -60,10 +60,12 @@ prueba está en el transporte, que sí la registra.
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import logging
 import pathlib
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -109,6 +111,12 @@ MECANISMO_TELEGRAM = "telegram_from_id"
 #: valor no es ``None`` para que el censo sea exhaustivo y la ausencia de prueba
 #: quede escrita, en vez de inferida por omisión.
 MECANISMO_PRESENCIA_LOCAL = "presencia_local"
+
+#: Tope de ids resueltos que el registro recuerda para distinguir «ya respondida»
+#: de «no existe». Acotado a propósito: el registro vive lo que vive el proceso y
+#: un tope evita crecimiento sin cota. Pasado el tope, la solicitud vieja cae a
+#: «desconocida» — las dos respuestas son fail-closed.
+MAX_SOLICITUDES_RESUELTAS = 64
 
 
 class SuperficieConsentimiento(StrEnum):
@@ -281,6 +289,14 @@ def verificar_identidad_telegram(
     3. el chat es privado (``chat.id == from.id``), y si el update declara
        ``type``, es ``private``;
     4. hay operador configurado: sin él, nadie está autorizado (fail-closed).
+
+    Acepta **las dos formas** en que llega una decisión real: un mensaje
+    (``/aprobar <solicitud>``) y un ``callback_query`` (botón). En el callback el
+    remitente vive en ``callback_query.from`` y el chat en
+    ``callback_query.message.chat``; leer sólo el nivel superior rechazaría todos
+    los botones —fail-closed, pero con la superficie inservible—. El guard del
+    transporte recibe el mismo diccionario en los dos casos, así que la
+    equivalencia se mantiene.
     """
     if not isinstance(update, Mapping):
         raise IdentidadPropietarioNoVerificadaError("el update de Telegram no es un objeto")
@@ -289,7 +305,10 @@ def verificar_identidad_telegram(
             "no hay operador configurado: sin identidad de referencia nadie está autorizado (fail-closed)"
         )
 
-    remitente = update.get("from")
+    consulta = update.get("callback_query")
+    carga: Mapping[str, object] = consulta if isinstance(consulta, Mapping) else update
+
+    remitente = carga.get("from")
     if not isinstance(remitente, Mapping):
         raise IdentidadPropietarioNoVerificadaError("el update no trae remitente")
     sujeto = _entero_de_identidad(remitente.get("id"))
@@ -300,19 +319,22 @@ def verificar_identidad_telegram(
             f"el remitente {sujeto} no es el operador configurado: no hay consentimiento del propietario"
         )
 
-    mensaje = update.get("message")
+    mensaje = carga.get("message")
     mensaje = mensaje if isinstance(mensaje, Mapping) else {}
-    for candidato in (update, mensaje):
+    for candidato in (update, carga, mensaje):
         if candidato.get("forward_date") is not None or candidato.get("forward_from") is not None:
             raise IdentidadPropietarioNoVerificadaError("el mensaje es reenviado: un reenvío no prueba quién respondió")
-    respuesta = update.get("reply_to_message") or mensaje.get("reply_to_message")
+    respuesta = update.get("reply_to_message") or carga.get("reply_to_message") or mensaje.get("reply_to_message")
     if isinstance(respuesta, Mapping) and (
         respuesta.get("forward_date") is not None or respuesta.get("forward_from") is not None
     ):
         raise IdentidadPropietarioNoVerificadaError("la respuesta cita un mensaje reenviado")
 
     chat = update.get("chat")
-    chat = chat if isinstance(chat, Mapping) else mensaje.get("chat")
+    if not isinstance(chat, Mapping):
+        chat = carga.get("chat")
+    if not isinstance(chat, Mapping):
+        chat = mensaje.get("chat")
     if not isinstance(chat, Mapping):
         raise IdentidadPropietarioNoVerificadaError("el update no trae chat")
     chat_id = _entero_de_identidad(chat.get("id"))
@@ -367,12 +389,6 @@ def _exigir_identidad_verificada(identidad: IdentidadPropietario) -> MecanismoId
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(slots=True)
-class _SolicitudAbierta:
-    presentacion: PresentacionConsentimiento
-    resuelta: bool = False
-
-
 class RegistroConsentimientos:
     """Solicitudes abiertas de este proceso. No persiste nada, a propósito.
 
@@ -390,7 +406,36 @@ class RegistroConsentimientos:
     ) -> None:
         self._clock_ns = clock_ns
         self._solicitud_id_factory = solicitud_id_factory
-        self._abiertas: dict[str, _SolicitudAbierta] = {}
+        self._abiertas: dict[str, PresentacionConsentimiento] = {}
+        #: Ids ya resueltos, en orden de llegada. Se conservan ACOTADOS para poder
+        #: distinguir «ya respondida» (``ConsentimientoDuplicadoError``) de «no
+        #: existe» (``SolicitudConsentimientoDesconocidaError``) sin que el
+        #: registro crezca sin cota en un proceso largo. Pasado el tope, la
+        #: solicitud vieja cae a «desconocida»: las dos respuestas son fail-closed
+        #: (ninguna produce consentimiento), así que el desalojo no abre nada.
+        self._resueltas: collections.deque[str] = collections.deque(maxlen=MAX_SOLICITUDES_RESUELTAS)
+        #: El registro se toca desde el hilo de la GUI y desde el del webhook de
+        #: Telegram. El lock cubre SÓLO el estado del registro: nunca se sostiene
+        #: durante la interacción humana ni se anida con el root lock.
+        self._mutex = threading.Lock()
+
+    def _resolver(self, solicitud_id: str) -> PresentacionConsentimiento:
+        """Devuelve la solicitud abierta o falla cerrado. Debe llamarse con el mutex."""
+        presentacion = self._abiertas.get(solicitud_id)
+        if presentacion is not None:
+            return presentacion
+        if solicitud_id in self._resueltas:
+            raise ConsentimientoDuplicadoError(
+                f"la solicitud {solicitud_id} ya fue respondida: una decisión terminal no se reabre"
+            )
+        raise SolicitudConsentimientoDesconocidaError(
+            f"no hay ninguna solicitud abierta con id {solicitud_id!r}: no se inventa un consentimiento"
+        )
+
+    def _marcar_resuelta(self, solicitud_id: str) -> None:
+        """Retira la solicitud y la recuerda como resuelta. Debe llamarse con el mutex."""
+        self._abiertas.pop(solicitud_id, None)
+        self._resueltas.append(solicitud_id)
 
     # -- FASE B ------------------------------------------------------------
 
@@ -431,7 +476,8 @@ class RegistroConsentimientos:
             texto="",
         )
         presentacion = dataclasses.replace(presentacion, texto=_texto_de_presentacion(presentacion))
-        self._abiertas[solicitud_id] = _SolicitudAbierta(presentacion=presentacion)
+        with self._mutex:
+            self._abiertas[solicitud_id] = presentacion
         logger.info(
             "consentimiento: solicitud %s presentada por %s/%s para la aprobación %s (seq %s)",
             solicitud_id,
@@ -458,32 +504,26 @@ class RegistroConsentimientos:
         digest que viaja al núcleo durable es el que se presentó, no uno que el
         llamador elija.
         """
-        abierta = self._abiertas.get(solicitud_id)
-        if abierta is None:
-            raise SolicitudConsentimientoDesconocidaError(
-                f"no hay ninguna solicitud abierta con id {solicitud_id!r}: no se inventa un consentimiento"
-            )
-        if abierta.resuelta:
-            raise ConsentimientoDuplicadoError(
-                f"la solicitud {solicitud_id} ya fue respondida: una decisión terminal no se reabre"
-            )
         if not isinstance(decision, DecisionConsentimiento):
             raise IdentidadPropietarioNoVerificadaError(f"decisión desconocida: {decision!r}")
         _exigir_identidad_verificada(identidad)
 
-        presentacion = abierta.presentacion
-        if identidad.superficie is not presentacion.superficie:
-            raise SesionConsentimientoNoCoincideError(
-                f"la solicitud {solicitud_id} se presentó en {presentacion.superficie.value!r} y la respuesta "
-                f"llega desde {identidad.superficie.value!r}: otra superficie es otra sesión"
-            )
-        if identidad.sujeto != presentacion.propietario or identidad.sesion != presentacion.sesion:
-            raise SesionConsentimientoNoCoincideError(
-                f"la solicitud {solicitud_id} se presentó a {presentacion.propietario} en la sesión "
-                f"{presentacion.sesion!r}; la respuesta llega de {identidad.sujeto} en {identidad.sesion!r}"
-            )
+        with self._mutex:
+            presentacion = self._resolver(solicitud_id)
+            if identidad.superficie is not presentacion.superficie:
+                raise SesionConsentimientoNoCoincideError(
+                    f"la solicitud {solicitud_id} se presentó en {presentacion.superficie.value!r} y la respuesta "
+                    f"llega desde {identidad.superficie.value!r}: otra superficie es otra sesión"
+                )
+            if identidad.sujeto != presentacion.propietario or identidad.sesion != presentacion.sesion:
+                raise SesionConsentimientoNoCoincideError(
+                    f"la solicitud {solicitud_id} se presentó a {presentacion.propietario} en la sesión "
+                    f"{presentacion.sesion!r}; la respuesta llega de {identidad.sujeto} en {identidad.sesion!r}"
+                )
+            # Resolver es terminal: se hace bajo el mutex para que dos respuestas
+            # concurrentes no puedan pasar las dos la comprobación de estado.
+            self._marcar_resuelta(solicitud_id)
 
-        abierta.resuelta = True
         if decision is not DecisionConsentimiento.APROBAR:
             logger.info(
                 "consentimiento: %s %s la solicitud %s — no se emite nada",
@@ -513,21 +553,25 @@ class RegistroConsentimientos:
         No produce consentimiento. Una solicitud ya resuelta no se toca: la
         decisión del propietario no la revierte un timeout tardío.
         """
-        abierta = self._abiertas.get(solicitud_id)
-        if abierta is None:
-            raise SolicitudConsentimientoDesconocidaError(f"no hay ninguna solicitud abierta con id {solicitud_id!r}")
-        if abierta.resuelta:
-            return
-        abierta.resuelta = True
+        with self._mutex:
+            if solicitud_id not in self._abiertas:
+                if solicitud_id in self._resueltas:
+                    return
+                raise SolicitudConsentimientoDesconocidaError(
+                    f"no hay ninguna solicitud abierta con id {solicitud_id!r}"
+                )
+            self._marcar_resuelta(solicitud_id)
         logger.info("consentimiento: solicitud %s cancelada por el sistema (%s)", solicitud_id, motivo)
 
     def descartar_todo(self) -> None:
         """Cierre ordenado: ninguna solicitud sobrevive al proceso que la presentó."""
-        self._abiertas.clear()
+        with self._mutex:
+            self._abiertas.clear()
 
     def pendientes(self) -> tuple[PresentacionConsentimiento, ...]:
         """Solicitudes todavía abiertas (para la UI de la superficie)."""
-        return tuple(abierta.presentacion for abierta in self._abiertas.values() if not abierta.resuelta)
+        with self._mutex:
+            return tuple(self._abiertas.values())
 
 
 # ---------------------------------------------------------------------------

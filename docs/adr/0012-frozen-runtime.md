@@ -9457,8 +9457,17 @@ condiciones de `TelegramWebhook._validate_private_operator` (el guard que ya usa
 las tools mutantes) porque `sky_claw/local/**` no puede importar `sky_claw/app/**`
 sin invertir la dependencia. Para que las dos no se separen hay un **test
 diferencial**: la misma matriz de updates —operador, ajeno, grupo, reenviado,
-`forward_from`, sin `from.id`— se pasa por las dos implementaciones y se exige el
-mismo veredicto. Un cambio en cualquiera de las dos rompe el test.
+`forward_from`, sin `from.id`, chat ajeno sin `type`, y la forma
+`callback_query`— se pasa por las dos implementaciones y se exige el mismo
+veredicto. Un cambio en cualquiera de las dos rompe el test.
+
+**Las dos formas de una decisión real.** Un mensaje llega con `from` y `chat` en
+el nivel superior; un **botón** llega como `callback_query`, con el remitente en
+`callback_query.from` y el chat en `callback_query.message.chat`. El verificador
+acepta las dos. Leer sólo el nivel superior habría rechazado todos los botones:
+fail-closed, pero con la superficie inservible. El guard del transporte recibe el
+`callback_query` ya desenvuelto por el dispatcher, así que el test diferencial
+compara **al mismo nivel de envoltorio**.
 
 ### 46.3 Protocolo congelado
 
@@ -9506,6 +9515,16 @@ En memoria, el cierre del proceso extingue toda propuesta
 (`SESSION_CLOSE_INVALIDATES_PENDING = YES`) y el fail-closed sale gratis: sin
 solicitud abierta no hay consentimiento, aunque el `solicitud_id` siga existiendo
 como string.
+
+**Concurrencia y memoria.** El registro se toca desde el hilo de la GUI y desde el
+del webhook de Telegram, así que el estado está bajo un `threading.Lock` que
+**nunca** se sostiene durante la interacción humana ni se anida con el root lock:
+resolver una solicitud es terminal y ocurre dentro del mutex, de modo que dos
+respuestas concurrentes no pueden pasar las dos la comprobación de estado. Los
+ids ya resueltos se recuerdan en un `deque(maxlen=64)` para poder distinguir «ya
+respondida» (`ConsentimientoDuplicadoError`) de «no existe»
+(`SolicitudConsentimientoDesconocidaError`) sin crecimiento sin cota; un id
+desalojado cae a «desconocida», y las dos respuestas son fail-closed.
 
 ### 46.4 Adjudicación: esquema v1 → v2
 
@@ -9620,17 +9639,19 @@ MERGED                                 = NO
 
 ### 46.9 Verificación de esta ronda
 
-- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: 47 tests.
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: 53 tests.
 - Regresión: P4-S4 **92 passed**; P4-S3 + P4-S5 + P4-S6 **196 passed**; P4-S2
   (anclas de wiring del lock) **25 passed**. `test_f06_inspect_applies_anti_reparse_admission_boundary`
   falla en esta máquina **también en el baseline** (`9fe88cb4`): crear un symlink
   de archivo sin privilegio no produce reparse ⇒ el guard no tiene nada que
   rechazar. `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
-- Mutantes: **11/11 matados**. El primer pase dejó **un superviviente** (M7,
-  quitar `chat.id == from.id`) porque el caso de grupo ya lo tapaba la
-  comprobación de `type`; se agregaron los dos casos que faltaban —chat ajeno
-  **sin** `type` y chat ajeno con `type: private` mentido— y el mutante murió.
-  Ese es el valor del gate: el test que faltaba no era el del caso feliz.
+- Mutantes: **13/13 matados**. Dos pases previos dejaron ver dos cosas. (1) M7
+  —quitar `chat.id == from.id`— sobrevivió porque el caso de grupo ya lo tapaba
+  la comprobación de `type`: se agregaron los dos casos que faltaban —chat ajeno
+  **sin** `type` y chat ajeno con `type: private` mentido— y murió. (2) M12
+  —no desenvolver `callback_query`— obligó a cubrir la forma en que llega
+  realmente un botón. Ese es el valor del gate: los tests que faltaban no eran
+  los del caso feliz.
 - Anclas enumerativas: censo de superficies, constructores de
   `ConsentimientoAprobacion` (solo `owner_consent.py`), llamadores de
   `_emitir_aprobacion_bajo_lock` (`approval.py` + `owner_consent.py`), llamadores

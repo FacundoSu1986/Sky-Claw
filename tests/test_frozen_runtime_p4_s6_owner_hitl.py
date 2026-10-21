@@ -434,6 +434,45 @@ def test_la_verificacion_de_telegram_rechaza_lo_que_el_transporte_rechaza(update
         verificar_identidad_telegram(update, operador_configurado=OPERADOR)
 
 
+def test_la_identidad_de_telegram_acepta_un_callback_query() -> None:
+    """La decisión real llega por botón: el remitente vive en ``callback_query.from``.
+
+    Leer sólo el nivel superior rechazaría TODOS los botones —fail-closed, pero
+    con la superficie inservible—. El chat viene del mensaje que originó el botón.
+    """
+    update = {
+        "callback_query": {
+            "from": {"id": OPERADOR, "is_bot": False},
+            "message": {"chat": {"id": OPERADOR, "type": "private"}, "message_id": 7},
+            "data": "aprobar:solicitud-1",
+        }
+    }
+    identidad = verificar_identidad_telegram(update, operador_configurado=OPERADOR)
+    assert identidad.sujeto == str(OPERADOR)
+    assert identidad.sesion == str(OPERADOR)
+
+
+@pytest.mark.parametrize(
+    "callback",
+    [
+        pytest.param({"from": {"id": 999}, "message": {"chat": {"id": 999, "type": "private"}}}, id="otro-usuario"),
+        pytest.param(
+            {"from": {"id": OPERADOR}, "message": {"chat": {"id": -100123, "type": "supergroup"}}}, id="grupo"
+        ),
+        pytest.param(
+            {"from": {"id": OPERADOR}, "message": {"chat": {"id": -100123, "type": "private"}}}, id="chat-ajeno"
+        ),
+        pytest.param(
+            {"from": {"id": OPERADOR}, "message": {"forward_date": 1, "chat": {"id": OPERADOR}}}, id="reenviado"
+        ),
+    ],
+)
+def test_un_callback_query_no_autorizado_se_rechaza(callback: dict) -> None:
+    """Misma matriz de ataques, por la vía del botón."""
+    with pytest.raises(IdentidadPropietarioNoVerificadaError):
+        verificar_identidad_telegram({"callback_query": callback}, operador_configurado=OPERADOR)
+
+
 def test_la_verificacion_concuerda_con_el_guard_del_transporte() -> None:
     """Ancla del HERMANO: dos implementaciones del mismo contrato no pueden divergir.
 
@@ -454,6 +493,21 @@ def test_la_verificacion_concuerda_con_el_guard_del_transporte() -> None:
         {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR}, "forward_date": 1},
         {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR}, "forward_from": {"id": 1}},
         {"from": {}, "chat": {"id": OPERADOR}},
+        # La forma en que llega un botón: el guard del transporte recibe el
+        # callback_query entero, así que las dos implementaciones tienen que
+        # aceptar y rechazar exactamente lo mismo.
+        {
+            "callback_query": {
+                "from": {"id": OPERADOR},
+                "message": {"chat": {"id": OPERADOR, "type": "private"}},
+            }
+        },
+        {
+            "callback_query": {
+                "from": {"id": 999},
+                "message": {"chat": {"id": 999, "type": "private"}},
+            }
+        },
     ]
     for update in casos:
         try:
@@ -461,7 +515,11 @@ def test_la_verificacion_concuerda_con_el_guard_del_transporte() -> None:
             aceptado_por_consentimiento = True
         except IdentidadPropietarioNoVerificadaError:
             aceptado_por_consentimiento = False
-        assert aceptado_por_consentimiento is guard._validate_private_operator(update), update
+        # El guard recibe el ``callback_query`` YA desenvuelto por el dispatcher
+        # de Telegram; el verificador acepta las dos formas. Se comparan al mismo
+        # nivel de envoltorio para que la diferencia no sea del test.
+        carga = update.get("callback_query", update)
+        assert aceptado_por_consentimiento is guard._validate_private_operator(carga), update
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +627,27 @@ def test_el_consentimiento_es_single_use(tmp_path: pathlib.Path) -> None:
 
     with pytest.raises(ConsentimientoDuplicadoError):
         registro.responder(presentacion.solicitud_id, decision=DecisionConsentimiento.APROBAR, identidad=_identidad())
+
+
+def test_el_registro_acota_los_ids_resueltos(tmp_path: pathlib.Path) -> None:
+    """El registro no crece sin cota, y el desalojo NO abre nada.
+
+    Un id desalojado cae a «desconocida» en vez de «ya respondida»: cambia el
+    diagnóstico, no la consecuencia — ninguna de las dos produce consentimiento.
+    """
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    primera = _presentar(root, propuesta, registro)
+    registro.responder(primera.solicitud_id, decision=DecisionConsentimiento.RECHAZAR, identidad=_identidad())
+
+    for _ in range(owner_consent.MAX_SOLICITUDES_RESUELTAS):
+        presentacion = _presentar(root, propuesta, registro)
+        registro.responder(presentacion.solicitud_id, decision=DecisionConsentimiento.RECHAZAR, identidad=_identidad())
+
+    assert registro.pendientes() == ()
+    with pytest.raises(SolicitudConsentimientoDesconocidaError):
+        registro.responder(primera.solicitud_id, decision=DecisionConsentimiento.APROBAR, identidad=_identidad())
 
 
 def test_una_solicitud_desconocida_no_produce_consentimiento(tmp_path: pathlib.Path) -> None:
