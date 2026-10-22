@@ -833,7 +833,9 @@ async def _en_hilo(funcion: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kw
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait((tarea,))
         if not tarea.cancelled():
-            tarea.exception()  # manda la cancelación; se lee para no dejar una excepción sin recuperar
+            # ``asyncio.shield`` ya la marca como leída cuando se cancela el externo (3.11 y 3.12); se repite acá solo por si
+            # ese detalle interno cambia: sin leerla, asyncio avisaría «exception was never retrieved» al recolectar.
+            tarea.exception()
         raise
 
 

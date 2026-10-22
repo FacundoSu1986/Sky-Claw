@@ -1000,6 +1000,25 @@ Los tests que cierran vivos se escribieron **después** del código (el escritor
 evidencia es la mutación, porque cada uno mata el mutante que lo motivó. Los tests de los arreglos de la revisión de #779 sí tuvieron
 su rojo observado antes del cambio.
 
+**Segunda pasada, tras la revisión de #782.** Sobre las 15 funciones y clases que tocaron los seis arreglos: **369 mutantes**, con el
+mutante nulo de cada una en verde. Las 343 muertes son todas por un test que falla (ninguna por timeout ni por error interno). La primera
+pasada dejó **26 vivos**; **cuatro eran huecos de test** y se cerraron (cada test mata el mutante que lo motivó): la recuperación que sigue
+cuando lo que iba a descartar desaparece antes de borrarlo; el aviso por log cuando un reemplazo no puede borrar el original; retirar un
+archivo que no se deja borrar cuando la ruta se ocupó (`CONFLICTO`); y que un lote completo deja la sesión usable. Sobre la versión final:
+**347 muertos y 22 vivos, todos clasificados**:
+
+- **Equivalentes (20).** `permitir_raiz` por defecto y en `_preparar_padre`/`_restaurar_desde_papelera` (3): ni la carpeta de control, ni
+  `staging/`, ni `trash/`, ni la carpeta madre de una ruta (siempre bajo `textures/`) son la raíz. `exigir_existencia` tras `makedirs` y en el
+  chequeo de `staging/`/`trash/` (2): la carpeta acaba de crearse, o `lexists` ya dijo que está. `return None` en lugar de `False` (2): el
+  único uso es un `if`. `is_file(follow_symlinks=…)` en `staging/` (1): `or is_symlink()` cubre los dos casos. El aviso de sobrantes con la
+  lista vacía (1): la papelera vacía se borra antes. El `unlink` previo de la etapa (1): la sesión abre con `staging/` vacía.
+  `O_BINARY` (2): en POSIX `O_WRONLY == 1`. `_asegurar_lock` con `lock is None` (3): inalcanzable, la única construcción pasa un lock.
+  La lectura de la excepción del hilo en `_en_hilo` (4): `asyncio.shield` ya la marca como leída cuando se cancela el externo (verificado
+  en el código de 3.11); las dos líneas son defensa por si ese detalle interno cambia. El bucle que espera al hilo **no** tiene vivos.
+- **Solo observable en Windows (1).** La comprobación de contención antes de borrar `trash/` vacía en `_limpiar_control`: en POSIX el
+  `rmdir` de un enlace falla igual; en Windows borraría el junction (el enlace, no su destino).
+- **No observable en un test (1).** `flush` de la copia a la etapa: la durabilidad ante un corte de luz (ver el límite 2).
+
 **Límites declarados.** (1) No se ejecutó en Windows aquí (ver arriba). (2) La durabilidad ante un corte de luz alcanza al contenido de los archivos
 (`fsync`), no a los directorios. (3) Entre apartar y publicar la ruta está vacía un instante; si el proceso muere ahí, la recuperación devuelve el
 original. (4) En Windows un antivirus o el juego que tengan el archivo abierto hacen fallar esa ruta (`FALLIDA`/`CONFLICTO`); no hay reintento.

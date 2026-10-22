@@ -2556,8 +2556,9 @@ async def test_si_no_se_puede_borrar_lo_que_se_retira_vuelve_a_su_ruta_y_el_lote
 
 
 async def test_si_no_se_puede_borrar_el_original_de_un_reemplazo_el_reemplazo_queda_y_se_dice(
-    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
     fallados = _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
 
@@ -2570,6 +2571,7 @@ async def test_si_no_se_puede_borrar_el_original_de_un_reemplazo_el_reemplazo_qu
     assert [e.sha256 for e in escenario.manifiesto_en_disco().entradas] == [_sha(b"DDS-A2")]
     apartados = list((escenario.control() / "trash").iterdir())
     assert [p.read_bytes() for p in apartados] == [b"DDS-A"]  # el original no se perdió: quedó en la papelera
+    assert "No se pudo borrar el original apartado" in caplog.text
 
 
 async def test_si_la_recuperacion_no_puede_descartar_avisa_y_la_sesion_abre_igual(
@@ -2809,3 +2811,68 @@ async def test_un_lote_rechazado_antes_de_tocar_el_disco_no_inutiliza_la_sesion(
 
     assert resultado.completo
     assert {e.ruta for e in escenario.manifiesto_en_disco().entradas} == {RUTA_A, RUTA_C}
+
+
+# ---------------------------------------------------------------------------
+# Mutación de la revisión de #782: huecos de test que quedaron vivos
+# ---------------------------------------------------------------------------
+
+
+async def test_si_lo_que_se_iba_a_descartar_desaparece_antes_de_borrarlo_la_recuperacion_sigue(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Entre calcular la huella y borrar, otro proceso quitó el archivo: ya no queda nada que descartar. La recuperación
+    no se detiene ni avisa por algo que ya está resuelto."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DDS-A")
+    real = os.unlink
+    quitados: list[str] = []
+
+    def unlink(ruta: Any, *args: Any, **kwargs: Any) -> None:
+        if pathlib.Path(ruta) == apartado and not quitados:
+            real(ruta)  # lo quita el otro proceso justo antes de que lo borremos nosotros
+            quitados.append(str(ruta))
+        real(ruta, *args, **kwargs)  # y esto ya falla con FileNotFoundError
+
+    monkeypatch.setattr(output_writer.os, "unlink", unlink)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert quitados
+    assert not (escenario.control() / "pending.json").exists()
+    assert caplog.text == ""
+
+
+async def test_si_no_se_puede_borrar_lo_que_se_retira_y_la_ruta_se_ocupo_queda_en_la_papelera_y_se_dice(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, interponer: Any
+) -> None:
+    """Retirar un archivo nuestro que no se deja borrar lo devuelve a su ruta; pero si en ese instante alguien ocupó la
+    ruta, no se pisa: queda en la papelera, la ruta da CONFLICTO y el detalle dice las dos cosas."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A"), RUTA_C: escenario.fuente(b"DDS-C")})
+    fallados = _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+    interponer("tras_apartar", lambda: escenario.disco(RUTA_A).write_bytes(b"LLEGO-OTRO"))
+
+    resultado = await escenario.lote({RUTA_C: escenario.fuente(b"DDS-C")})  # A se retira
+
+    assert fallados
+    assert _efectos(resultado)[RUTA_A] is EfectoDeSalida.CONFLICTO
+    assert "no se pudo borrar" in _detalles(resultado)[RUTA_A]
+    assert "se ocupó" in _detalles(resultado)[RUTA_A]
+    assert escenario.leer(RUTA_A) == b"LLEGO-OTRO"  # lo de otro no se pisó
+    assert [p.read_bytes() for p in (escenario.control() / "trash").iterdir()] == [b"DDS-A"]
+    assert {e.ruta for e in escenario.manifiesto_en_disco().entradas} == {RUTA_C}
+
+
+async def test_una_sesion_admite_un_segundo_lote_despues_de_uno_completo(escenario: Escenario) -> None:
+    """Solo un lote INTERRUMPIDO inutiliza la sesión: uno que termina deja la marca limpia y el siguiente funciona."""
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        primero = await aplicar_lote(sesion, {RUTA_A: escenario.fuente(b"DDS-A")})
+        segundo = await aplicar_lote(sesion, {RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)})
+
+    assert _efectos(primero) == {RUTA_A: EfectoDeSalida.PUBLICADA}
+    assert _efectos(segundo) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
