@@ -85,7 +85,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
   escritor vio en disco y en su papelera, decide qué manifiesto queda, qué devolver y qué descartar. Su tabla de 60 estados se enumera
   por igualdad literal en `tests/test_native_parallax_output_recuperacion.py`; no agregues una dimensión sin ampliarla. Parte del
   protocolo del escritor (intención antes de tocar, apartar y verificar, compromiso al final, pendiente borrado último, nunca borrar de la
-  papelera lo que no sea una huella vigente): ver ADR 0014, "Actualización de NP-O0b1".
+  papelera lo que no sea una huella vigente y volver a calcularla justo antes de borrar, devolver a su ruta vacía lo apartado aunque no
+  sea nuestro, y rechazar antes de tocar nada el lote cuya `cota_del_manifiesto_tras_un_corte` no quepa): ver ADR 0014,
+  "Actualización de NP-O0b1". La propiedad de la papelera es una sola para el camino sin corte y para la recuperación: lo apartado que
+  no es lo autorizado vuelve a su ruta si está vacía y no se borra nunca; arreglar uno sin el otro es el defecto del hermano.
 - `output_writer.py` (NP-O0b2) es el **único** módulo que toca el mod de salida y cumple ese protocolo. Todo cambio al mod pasa por una
   `SesionDeSalida` (`abrir_sesion_de_salida`: toma el lock cross-process, recupera y recién ahí deja planificar y aplicar); no hay otra puerta, y
   el ancla `tests/test_native_parallax_output_writer.py` lo enumera por AST: una función nueva que toque el disco, o una que nombre una unidad
