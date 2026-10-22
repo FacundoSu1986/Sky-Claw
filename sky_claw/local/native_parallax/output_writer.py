@@ -405,19 +405,43 @@ def _interpretar(datos: bytes | None, que: str) -> Manifiesto | None:
         ) from exc
 
 
+def _crear_carpeta_contenida(raiz: pathlib.Path, carpeta: pathlib.Path, *, permitir_raiz: bool = False) -> None:
+    """Crea *carpeta* (y las intermedias) dentro de *raiz*, validando la contención física antes y después de crearla.
+
+    Antes: un enlace o junction ya puesto en el camino se rechaza sin crear nada. Después: si el camino cambió mientras se
+    creaba, se rechaza antes de que el caller escriba debajo. Es la ÚNICA forma en que el escritor crea carpetas dentro
+    del mod (la raíz misma la crea ``_recuperar``): las de salida, al publicar y al devolver, y las de control (la
+    carpeta de control, las etapas y la papelera).
+    """
+    exigir_contencion_fisica(raiz, carpeta, permitir_raiz=permitir_raiz)
+    os.makedirs(carpeta, exist_ok=True)
+    exigir_contencion_fisica(raiz, carpeta, permitir_raiz=permitir_raiz, exigir_existencia=True)
+
+
+def _es_carpeta_contenida(raiz: pathlib.Path, carpeta: pathlib.Path) -> bool:
+    """True si *carpeta* existe y es una carpeta REAL dentro de *raiz*: ni enlace ni junction en todo el camino."""
+    try:
+        exigir_contencion_fisica(raiz, carpeta, exigir_existencia=True)
+    except ContencionFisicaVioladaError:
+        return False
+    return True
+
+
 def _asegurar_directorio_de_control(raiz: pathlib.Path) -> pathlib.Path:
     control = raiz / _CARPETA_DE_CONTROL
-    if not control.exists() and not control.is_symlink():
-        os.mkdir(control)
-    exigir_contencion_fisica(raiz, control, exigir_existencia=True)
+    _crear_carpeta_contenida(raiz, control)
+    for nombre in (_ETAPAS, _PAPELERA):  # copiar, apartar o limpiar en una que fuera un enlace lo haría afuera del mod
+        if os.path.lexists(control / nombre):
+            exigir_contencion_fisica(raiz, control / nombre, exigir_existencia=True)
     return control
 
 
 def _limpiar_control(control: pathlib.Path) -> None:
     """Borra lo que es nuestro por construcción y quedó de una sesión anterior: las copias de trabajo, los temporales de
-    una escritura atómica cortada y la papelera si quedó vacía. Nunca toca un archivo de la papelera."""
+    una escritura atómica cortada y la papelera si quedó vacía. Nunca toca un archivo de la papelera, ni recorre una
+    carpeta que no sea real y contenida (un junction no es un symlink para ``is_symlink()``, pero lleva afuera igual)."""
     etapas = control / _ETAPAS
-    if etapas.is_dir() and not etapas.is_symlink():
+    if _es_carpeta_contenida(control.parent, etapas):
         for entrada in os.scandir(etapas):
             if entrada.is_file(follow_symlinks=False) or entrada.is_symlink():
                 os.unlink(entrada.path)
@@ -426,8 +450,9 @@ def _limpiar_control(control: pathlib.Path) -> None:
     for entrada in os.scandir(control):
         if entrada.name.startswith(".") and entrada.name.endswith(".tmp") and entrada.is_file(follow_symlinks=False):
             os.unlink(entrada.path)
-    with contextlib.suppress(OSError):
-        os.rmdir(control / _PAPELERA)  # solo prospera si está vacía
+    if _es_carpeta_contenida(control.parent, control / _PAPELERA):
+        with contextlib.suppress(OSError):
+            os.rmdir(control / _PAPELERA)  # solo prospera si está vacía
 
 
 def _borrar_pendiente(control: pathlib.Path) -> None:
@@ -454,9 +479,7 @@ def _restaurar_desde_papelera(raiz: pathlib.Path, control: pathlib.Path, ruta: s
     destino = _destino(raiz, ruta)
     apartado = control / _PAPELERA / _id_de_ruta(ruta)
     try:
-        exigir_contencion_fisica(raiz, destino.parent, permitir_raiz=True)
-        os.makedirs(destino.parent, exist_ok=True)
-        exigir_contencion_fisica(raiz, destino.parent, permitir_raiz=True, exigir_existencia=True)
+        _crear_carpeta_contenida(raiz, destino.parent, permitir_raiz=True)
         _mover_sin_reemplazar(apartado, destino)
     except FileExistsError:
         return False
@@ -503,7 +526,7 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
     _punto_de_corte("recuperacion_tras_manifiesto")
     _limpiar_control(control)
     papelera = control / _PAPELERA
-    if papelera.is_dir():
+    if _es_carpeta_contenida(raiz, papelera):
         sobrantes = sorted(p.name for p in papelera.iterdir())
         if sobrantes:
             logger.warning(
@@ -548,7 +571,7 @@ def _huella_y_tamano_de_la_fuente(fuente: pathlib.Path) -> tuple[str, int]:
 def _copiar_a_etapa(control: pathlib.Path, trabajo: _Trabajo) -> pathlib.Path:
     """Copia la fuente a la etapa (en el mismo volumen que el mod) verificando que sigue siendo lo que se hasheó."""
     etapas = control / _ETAPAS
-    os.makedirs(etapas, exist_ok=True)
+    _crear_carpeta_contenida(control.parent, etapas)
     etapa = etapas / _id_de_ruta(trabajo.entrada.ruta)
     with contextlib.suppress(FileNotFoundError):
         os.unlink(etapa)
@@ -581,9 +604,7 @@ class _FuenteCambioError(Exception):
 
 def _preparar_padre(raiz: pathlib.Path, ruta: str) -> pathlib.Path:
     destino = _destino(raiz, ruta)
-    exigir_contencion_fisica(raiz, destino.parent, permitir_raiz=True)
-    os.makedirs(destino.parent, exist_ok=True)
-    exigir_contencion_fisica(raiz, destino.parent, permitir_raiz=True, exigir_existencia=True)
+    _crear_carpeta_contenida(raiz, destino.parent, permitir_raiz=True)
     return destino
 
 
@@ -603,7 +624,7 @@ def _podar_directorios_vacios(raiz: pathlib.Path, ruta: str) -> None:
 def _apartar(control: pathlib.Path, destino: pathlib.Path, ruta: str) -> pathlib.Path:
     """Mueve *destino* a la papelera sin pisar nada (si la casilla ya está ocupada, falla)."""
     papelera = control / _PAPELERA
-    os.makedirs(papelera, exist_ok=True)
+    _crear_carpeta_contenida(control.parent, papelera)
     apartado = papelera / _id_de_ruta(ruta)
     _mover_sin_reemplazar(destino, apartado)
     return apartado

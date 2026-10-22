@@ -63,6 +63,7 @@ from sky_claw.local.native_parallax.output_writer import (
     abrir_sesion_de_salida,
     construir_coordinacion_de_salida,
 )
+from tests._symlink_guard import crear_junction
 
 H_X = "c" * 64
 RUTA_A = "textures/architecture/whiterun/muro01_p.dds"
@@ -1418,21 +1419,21 @@ def test_las_funciones_que_mutan_el_disco_estan_enumeradas_y_son_todas_privadas(
     """Agregar una función que toque el disco sin pasar por acá rompe el ancla: decidí si participa del lock."""
     mutadores = set(_recorrer().mutadores)
 
+    # Las que crean carpetas lo hacen a través de ``_crear_carpeta_contenida`` (ver el ancla de contención), así que
+    # ``_apartar``, ``_preparar_padre``, ``_restaurar_desde_papelera`` y ``_asegurar_directorio_de_control`` ya no llaman
+    # al sistema de archivos directamente.
     assert mutadores == {
-        "_apartar",
-        "_asegurar_directorio_de_control",
         "_borrar_pendiente",
         "_borrar_si_es_el_autorizado",
         "_construir",
         "_copiar_a_etapa",
+        "_crear_carpeta_contenida",
         "_escribir_atomico",
         "_limpiar_control",
         "_mover_sin_reemplazar",
         "_podar_directorios_vacios",
-        "_preparar_padre",
         "_recuperar",
         "_reemplazar",
-        "_restaurar_desde_papelera",
         "_retirar",
         # Crea el directorio de estado de los locks (el del usuario), no toca el mod de salida.
         "construir_coordinacion_de_salida",
@@ -2405,3 +2406,89 @@ async def test_si_se_pierde_el_lock_antes_de_un_compromiso_sin_disco_no_se_escri
         monkeypatch.undo()
 
     assert manifiesto.read_bytes() == antes
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: las carpetas de control también están contenidas
+# ---------------------------------------------------------------------------
+
+
+def _enlazar_carpeta(tipo: str, destino: pathlib.Path, enlace: pathlib.Path) -> None:
+    """Crea *enlace* → *destino* como symlink o como junction (que ``is_symlink()`` no ve y solo existe en Windows)."""
+    if tipo == "symlink":
+        _enlazar_o_saltear(destino, enlace)
+        return
+    if os.name != "nt":
+        pytest.skip("los junctions solo existen en Windows")
+    # Sin skip en Windows: crear un junction no pide privilegios, así que un fallo es el helper roto, no el entorno.
+    if (motivo := crear_junction(enlace, destino)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+
+@pytest.mark.parametrize("tipo", ["symlink", "junction"])
+@pytest.mark.parametrize("carpeta", ["staging", "trash"])
+async def test_una_carpeta_de_control_interna_que_es_un_enlace_hacia_afuera_se_rechaza_al_abrir(
+    escenario: Escenario, tmp_path: pathlib.Path, carpeta: str, tipo: str
+) -> None:
+    """Las dos carpetas donde el escritor copia y aparta: si ya son un enlace (o un junction), copiar, apartar o limpiar
+    ahí lo haría AFUERA del mod. Se rechazan al abrir la sesión, sin tocar nada de afuera."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    afuera = tmp_path / "afuera_del_mod"
+    afuera.mkdir()
+    (afuera / "copia").write_bytes(b"NO ES NUESTRO")
+    _enlazar_carpeta(tipo, afuera, escenario.control() / carpeta)
+
+    with pytest.raises(ContencionFisicaVioladaError):
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            pytest.fail("no debería entrar")
+
+    assert sorted(p.name for p in afuera.iterdir()) == ["copia"]
+    assert (afuera / "copia").read_bytes() == b"NO ES NUESTRO"
+
+
+@pytest.mark.parametrize("carpeta", ["staging", "trash"])
+async def test_una_carpeta_de_control_interna_que_se_vuelve_enlace_durante_la_sesion_no_recibe_nada(
+    escenario: Escenario, tmp_path: pathlib.Path, carpeta: str
+) -> None:
+    """Entre planificar y aplicar, la carpeta de copias (o la papelera) se vuelve un enlace hacia afuera: un reemplazo
+    copia a la etapa y aparta el original, así que pasa por las dos. La ruta falla, el original sigue en su lugar y su
+    entrada en el manifiesto, y afuera no aparece nada."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    afuera = tmp_path / "afuera_del_mod"
+    afuera.mkdir()
+
+    resultado = await _planificar_y_aplicar(
+        escenario,
+        {RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)},
+        entre=lambda: _enlazar_o_saltear(afuera, escenario.control() / carpeta),
+    )
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
+    assert list(afuera.iterdir()) == []
+    assert escenario.leer(RUTA_A) == b"DDS-A"
+    assert [e.sha256 for e in escenario.manifiesto_en_disco().entradas] == [_sha(b"DDS-A")]
+
+
+def test_toda_carpeta_se_crea_con_la_contencion_validada_antes_y_despues() -> None:
+    """Toda carpeta que el escritor crea dentro del mod, de salida o de control, pasa por UN helper que valida la
+    contención física antes y después de crearla. Quedan afuera, con su motivo: la raíz misma (la validó
+    ``_validar_raiz`` y su carpeta madre puede vivir legítimamente bajo un junction, como MO2 en otro disco) y el estado
+    de los locks, que vive en el directorio del usuario y no en el mod."""
+    crean = {f for f, usos in _recorrer().mutadores.items() if usos & {"os.makedirs", "os.mkdir", ".mkdir"}}
+    assert crean == {"_crear_carpeta_contenida", "_recuperar", "construir_coordinacion_de_salida"}
+
+    recuperar = next(n for n in ast.walk(_arbol()) if isinstance(n, ast.FunctionDef) and n.name == "_recuperar")
+    creaciones = [
+        c
+        for c in ast.walk(recuperar)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr in {"mkdir", "makedirs"}
+    ]
+    assert [ast.unparse(c) for c in creaciones] == ["os.mkdir(raiz)"]  # solo la raíz
+
+    helper = next(
+        n for n in ast.walk(_arbol()) if isinstance(n, ast.FunctionDef) and n.name == "_crear_carpeta_contenida"
+    )
+    llamadas = [
+        ast.unparse(s.value.func) for s in helper.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+    ]
+    assert llamadas == ["exigir_contencion_fisica", "os.makedirs", "exigir_contencion_fisica"]
