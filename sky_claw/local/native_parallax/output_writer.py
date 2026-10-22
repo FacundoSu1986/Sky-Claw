@@ -875,6 +875,7 @@ class SesionDeSalida:
         self._vigente = vigente
         self._ultimo: tuple[PlanDeSalida, dict[str, SalidaDeseada]] | None = None
         self._ocupada = False
+        self._a_medias = False  # un lote escribió su intención y no llegó a borrarla: hace falta recuperar
 
     @contextlib.contextmanager
     def _una_operacion_a_la_vez(self) -> Iterator[None]:
@@ -886,6 +887,14 @@ class SesionDeSalida:
             yield
         finally:
             self._ocupada = False
+
+    def _exigir_entera(self) -> None:
+        """Después de un lote interrumpido (tras escribir la intención), el disco quedó a medias y solo la recuperación
+        sabe dejarlo consistente: la sesión no acepta nada más hasta que se reabra."""
+        if self._a_medias:
+            raise SalidaNoEscribibleError(
+                "un lote de esta sesión quedó a medias: cerrá la sesión y abrí otra (al abrirla se recupera)"
+            )
 
     async def _asegurar_lock(self) -> None:
         if self._lock is None:
@@ -900,6 +909,7 @@ class SesionDeSalida:
     async def planificar(self, deseadas: Iterable[SalidaDeseada]) -> PlanDeSalida:
         """Observa el disco y decide qué hacer con cada ruta (ver ``output.planificar``). No modifica nada."""
         with self._una_operacion_a_la_vez():
+            self._exigir_entera()
             await self._asegurar_lock()
             lista = list(deseadas)
             rutas = {d.ruta for d in lista if isinstance(d, SalidaDeseada)}
@@ -912,20 +922,24 @@ class SesionDeSalida:
     async def aplicar(self, plan: PlanDeSalida, fuentes: Mapping[str, FuenteDeSalida]) -> ResultadoDeAplicacion:
         """Aplica *plan* (el último que devolvió ``planificar``) con las *fuentes* de las rutas que hay que construir.
 
+        Un plan se aplica UNA vez, salga como salga: para reintentar hay que volver a planificar. Si el lote se
+        interrumpe después de escribir su intención (por una excepción o una cancelación), la sesión no acepta nada más:
+        hay que reabrirla para que la recuperación deje el disco consistente.
+
         Raises:
             SalidaNoEscribibleError: el plan no es el último, faltan o sobran fuentes, o una fuente no es válida. No se
                 tocó el disco. Una ruta cuya acción falla o encuentra al disco cambiado NO levanta: queda en el resultado.
             LockLeaseLostError: se perdió el lock durante la sesión (se aborta antes de la siguiente mutación).
         """
         with self._una_operacion_a_la_vez():
+            self._exigir_entera()
             await self._asegurar_lock()
             if self._ultimo is None or plan != self._ultimo[0]:
                 raise SalidaNoEscribibleError("el plan no es el último que devolvió planificar() en esta sesión")
             deseadas = self._ultimo[1]
             trabajos, fallos_previos = await _en_hilo(self._preparar_trabajos, plan, deseadas, fuentes)
-            resultado = await self._ejecutar(plan, trabajos, fallos_previos)
             self._ultimo = None
-            return resultado
+            return await self._ejecutar(plan, trabajos, fallos_previos)
 
     # --- validación previa (no muta el disco) --------------------------------------------------------------------
 
@@ -998,6 +1012,7 @@ class SesionDeSalida:
                 f"{TAMANO_MAXIMO_DEL_MANIFIESTO}: dividí el lote. No se tocó nada"
             )
         await self._asegurar_lock()
+        self._a_medias = True  # desde acá, si el lote no termina, solo la recuperación deja el disco consistente
         await _en_hilo(_escribir_atomico, control / _PENDIENTE, serializar_manifiesto(pendiente))
         await _en_hilo(_punto_de_corte, "tras_pendiente")
 
@@ -1034,6 +1049,7 @@ class SesionDeSalida:
         await self._asegurar_lock()
         await _en_hilo(_borrar_pendiente, control)  # lo último
         self._vigente = final
+        self._a_medias = False
         return ResultadoDeAplicacion(rutas=_ordenadas(rutas), manifiesto=final)
 
     async def _comprometer_sin_disco(

@@ -2747,3 +2747,65 @@ async def test_cancelar_con_un_hilo_escribiendo_no_suelta_el_lock_hasta_que_el_h
     finally:
         seguir.set()
         await impaciente.close()
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: un lote que quedó a medias inutiliza la sesión hasta reabrirla
+# ---------------------------------------------------------------------------
+
+
+async def test_un_lote_que_falla_despues_de_la_intencion_exige_reabrir_la_sesion(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si el lote falla después de escribir el pendiente (acá, al comprometer el manifiesto), el disco quedó a medias:
+    reintentar el plan viejo en la misma sesión compararía contra huellas que ya no valen y soltaría lo recién publicado.
+    La sesión no acepta nada más, y reabrirla recupera."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    nueva = escenario.fuente(b"DDS-A2", escala=2.0)
+    deseadas = [SalidaDeseada(RUTA_A, clave_de_cache(nueva.procedencia))]
+    escribir = output_writer._escribir_atomico
+
+    def falla_al_comprometer(destino: pathlib.Path, datos: bytes) -> None:
+        if destino.name == "manifest.json":
+            raise OSError(28, "no queda espacio (simulado)")
+        escribir(destino, datos)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        plan = await sesion.planificar(deseadas)
+        monkeypatch.setattr(output_writer, "_escribir_atomico", falla_al_comprometer)
+        with pytest.raises(OSError, match="no queda espacio"):
+            await sesion.aplicar(plan, {RUTA_A: nueva})
+        monkeypatch.undo()
+
+        with pytest.raises(SalidaNoEscribibleError, match="a medias"):
+            await sesion.aplicar(plan, {RUTA_A: nueva})
+        with pytest.raises(SalidaNoEscribibleError, match="a medias"):
+            await sesion.planificar(deseadas)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:  # recupera
+        assert [e.sha256 for e in sesion.manifiesto.entradas] == [_sha(b"DDS-A2")]
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+async def test_un_lote_rechazado_antes_de_tocar_el_disco_no_inutiliza_la_sesion(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El rechazo por la cota del manifiesto no tocó nada: la sesión sigue sirviendo. El plan, en cambio, se aplica una
+    sola vez: para volver a intentarlo hay que planificar de nuevo."""
+    fuentes = {RUTA_A: escenario.fuente(b"DDS-A"), RUTA_C: escenario.fuente(b"DDS-C")}
+    deseadas = [SalidaDeseada(r, clave_de_cache(f.procedencia)) for r, f in fuentes.items()]
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        plan = await sesion.planificar(deseadas)
+        monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_MANIFIESTO", 10)
+        with pytest.raises(SalidaNoEscribibleError, match="dividí el lote"):
+            await sesion.aplicar(plan, fuentes)
+        monkeypatch.undo()
+
+        with pytest.raises(SalidaNoEscribibleError, match="no es el último"):
+            await sesion.aplicar(plan, fuentes)
+        resultado = await sesion.aplicar(await sesion.planificar(deseadas), fuentes)
+
+    assert resultado.completo
+    assert {e.ruta for e in escenario.manifiesto_en_disco().entradas} == {RUTA_A, RUTA_C}
