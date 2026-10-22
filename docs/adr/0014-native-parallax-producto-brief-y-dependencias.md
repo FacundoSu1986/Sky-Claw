@@ -938,6 +938,13 @@ siempre **antes** de tocar el disco.
   ruta, fuera del manifiesto. Lo ajeno con la ruta ocupada se queda en la papelera. Los dos borrados con hueco rehacen la huella: el helper
   está en el censo de mutadores y lo nombran exactamente `_recuperar` y `_reemplazar`, y cada uno tiene su test que cambia el archivo en el hueco.
 - *El tope en el borde.* Con el tope igual a la cota del (vigente, pendiente) el lote pasa; con uno menos se rechaza sin tocar el disco.
+- *Los censos del repo lo cuentan como a cualquier otro.* `construir_coordinacion_de_salida` entra al inventario de construcciones
+  productivas de `DistributedLockManager` (`tests/test_m011_lifecycle_migration.py`), que exige `lifecycle=`. `output_writer.py` entra al
+  censo de rollback de salida de U-04 (`tests/test_rollback_salida.py`) con un mecanismo propio, `papelera`: no es `snapshot` (toma el lock
+  con `target_files=[]`) ni `pendiente`, porque cada ruta se publica entera o vuelve su original, y la que falla queda nombrada en el
+  resultado. La clasificación se cruza con el código: figuran como `papelera` exactamente los módulos que ejecutan
+  `reconciliar_tras_corte`. Así, un módulo que recuperara la salida sin el lock también rompe el ancla. La unidad del rollback es la
+  **ruta**, no el lote: decidir qué hacer con un lote incompleto (`completo` falso) es de NP-A0.
 
 **Mutación** (automática por AST sobre todo el módulo: comparaciones, `and`/`or`, `not`, aritmética, constantes, condiciones, retornos,
 llamadas, `raise` y `continue`; las anotaciones no se mutan porque con `from __future__ import annotations` no se evalúan; antes de
