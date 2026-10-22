@@ -1183,7 +1183,9 @@ def test_los_extremos_del_rango_ascii_imprimible_se_aceptan(ruta: str) -> None:
     assert validar_ruta_de_salida(ruta) == ruta
 
 
-@pytest.mark.parametrize("ruta", ["textures/a\\b_p.dds", "textures/ap.dds", "textures/a_p.dd", "textures/a.dds"])
+@pytest.mark.parametrize(
+    "ruta", ["textures/a\\b_p.dds", "textures/ap.dds", "textures/abp.dds", "textures/a_p.dd", "textures/a.dds"]
+)
 def test_mas_rutas_invalidas(ruta: str) -> None:
     # La barra invertida en el medio (sin ella la ruta sería válida) y un sufijo sin el guion bajo.
     with pytest.raises(RutaDeSalidaInvalidaError):
@@ -1473,6 +1475,16 @@ def test_el_tamano_maximo_del_manifiesto_esta_congelado_y_se_prueba_en_su_borde(
     monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", len(datos) - 1)
     with pytest.raises(ManifiestoInvalidoError, match="supera"):
         leer_manifiesto(datos)  # un byte más: se rechaza ANTES de decodificar
+
+
+def test_la_decodificacion_es_estricta_y_rechaza_el_bom_en_su_propia_capa() -> None:
+    # Las capas de abajo (validación de campos, comparación canónica) también rechazarían estos contenidos, así que
+    # se distingue la CAPA por el mensaje: un decodificador que tolera o ignora el BOM los dejaría pasar a ellas.
+    valido = serializar_manifiesto(_manifiesto(_entrada()))
+    with pytest.raises(ManifiestoInvalidoError, match="utf-8"):
+        leer_manifiesto(b"\xff" + valido)
+    with pytest.raises(ManifiestoInvalidoError, match="BOM"):
+        leer_manifiesto(b"\xef\xbb\xbf" + valido)
 
 
 def test_los_mensajes_distinguen_esquema_y_mod_equivocados() -> None:
