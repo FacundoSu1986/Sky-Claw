@@ -790,7 +790,9 @@ por sentadas. Verificado ejecutando en Linux (Python 3.11); el módulo es solo b
 observar y tocar hay una ventana (TOCTOU) que NO cierra este módulo. (2) **Requisitos para NP-O0b**: tomar el lock cross-process
 (solo protege si TODOS los mutadores participan, ver «Propiedad del `external_work_root`» en `AGENTS.md`), volver a comprobar
 `sha256_autorizado` inmediatamente antes de reemplazar o borrar, publicar por etapas y escribir el manifiesto **al final** (es el punto
-de compromiso), y recuperarse de un corte a mitad. El escritor también decide cómo se crea el mod de salida para MO2 (`meta.ini`).
+de compromiso), y recuperarse de un corte a mitad. También debe comprobar el largo de la ruta COMPLETA (raíz del mod de salida + ruta
+relativa) antes de publicar: los 200 caracteres de este módulo son un prefiltro de la parte relativa, no garantizan que la ruta final
+quepa en `MAX_PATH`. El escritor también decide cómo se crea el mod de salida para MO2 (`meta.ini`).
 (3) De dónde salen las salidas deseadas, los orígenes y los valores concretos del `entorno` (versiones de `numpy`, Python,
 plataforma) es de NP-A0; el `exportador_id` y `ResultadoDeExportacion` (`texconv_version`, `texconv_sha256`, `argumentos`) se
 unen en el `EncoderUsado` ahí. (4) El plegado de mayúsculas con `casefold` aproxima la tabla de Windows solo para ASCII; por eso las rutas
