@@ -86,6 +86,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   por igualdad literal en `tests/test_native_parallax_output_recuperacion.py`; no agregues una dimensión sin ampliarla. Parte del
   protocolo del escritor (intención antes de tocar, apartar y verificar, compromiso al final, pendiente borrado último, nunca borrar de la
   papelera lo que no sea una huella vigente): ver ADR 0014, "Actualización de NP-O0b1".
+- `output_writer.py` (NP-O0b2) es el **único** módulo que toca el mod de salida y cumple ese protocolo. Todo cambio al mod pasa por una
+  `SesionDeSalida` (`abrir_sesion_de_salida`: toma el lock cross-process, recupera y recién ahí deja planificar y aplicar); no hay otra puerta, y
+  el ancla `tests/test_native_parallax_output_writer.py` lo enumera por AST: una función nueva que toque el disco, o una que nombre una unidad
+  que escribe fuera de la sesión, rompe el test a propósito (decidí si participa del lock). Una ruta cuyo disco cambió entre planificar y aplicar
+  no levanta: queda `CONFLICTO` y no se pisa. Los puntos de corte (`_punto_de_corte`) están congelados y el test corta el proceso en cada uno;
+  agregar uno sin cubrirlo rompe el ancla. No crea `meta.ini` ni habilita el mod (es de NP-A0). Ver ADR 0014, "Actualización de NP-O0b2".
 
 ## Verificación segura
 

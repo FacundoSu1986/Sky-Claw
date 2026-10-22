@@ -79,7 +79,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
-   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; falta NP-O0b2 (el escritor sobre el disco) |
+   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; NP-O0b2 (el escritor sobre el disco) hecho, ver «Actualización de NP-O0b2»; falta cablearlo al lote y al adaptador de MO2 (NP-A0) |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
@@ -845,3 +845,61 @@ con un test. Los tests y la función se escribieron en este orden: tests → roj
 la ventana de la ruta vacía del punto 3, solo la recupera. (3) Un manifiesto pendiente ilegible **no** se interpreta: el escritor tiene
 que fallar cerrado y pedir intervención (borrar el pendiente a mano equivale a declarar que no se publicó nada, y lo publicado quedará
 como ajeno). (4) No se ejercitó contra un disco ni en Windows real.
+
+### Actualización de NP-O0b2 (2026-10-22)
+
+NP-O0b2 entrega **el escritor**: `sky_claw/local/native_parallax/output_writer.py`, el ÚNICO módulo que toca el mod de salida. No tiene todavía
+call site de producción (lo cablea NP-A0 al lote y al adaptador de MO2). Cumple el protocolo de «Actualización de NP-O0b1» punto por punto
+y se verificó ejecutando en Linux (Python 3.11) sobre un disco real (`tmp_path`); **no se ejecutó en Windows en esta sesión**: la CI de Windows
+corre estos mismos tests, y las ramas propias de Windows (`os.rename` como movimiento que no reemplaza) solo las ejerce esa corrida.
+
+**Cómo se usa.** `abrir_sesion_de_salida(raiz, coordinacion=...)` es la única forma de obtener una `SesionDeSalida`. Al entrar toma el lock
+de esa raíz, crea la raíz si no existe (su carpeta madre debe existir y el nombre debe ser el del mod de salida) y **recupera** cualquier corte
+anterior. `sesion.planificar(deseadas)` observa el disco (sin seguir enlaces) y devuelve el plan de `output.planificar`; `sesion.aplicar(plan,
+fuentes)` ejecuta ese plan con los archivos ya generados (`FuenteDeSalida`) de las rutas que hay que construir o reemplazar. Devuelve un
+resultado por ruta (`PUBLICADA`, `REEMPLAZADA`, `RETIRADA`, `OMITIDA`, `PRESERVADA`, `SOLTADA`, `CONFLICTO`, `FALLIDA`) y el manifiesto que quedó
+comprometido. Un error de entrada o salida en una ruta, o un tercero que cambió el disco entre planificar y aplicar, **no levanta**: queda en
+el resultado de esa ruta y no pisa nada. Levanta solo lo que invalida el lote entero (plan que no es el último, fuentes que no coinciden con el
+plan, fuente inexistente, vacía o enlace, manifiesto ilegible) y siempre **antes** de tocar el disco.
+
+**Decisiones.**
+
+- **Dónde vive el control.** Dentro del propio mod, en `.skyclaw-output/` (`manifest.json`, `pending.json`, `staging/`, `trash/`): el manifiesto
+  viaja con la carpeta si el usuario la copia o la mueve, y queda en el mismo volumen que las texturas (condición para renombrar de forma atómica).
+  El costo es una carpeta oculta más en el árbol virtual de MO2; no la lee el juego. **No se crea `meta.ini` ni se habilita el mod en el perfil**:
+  no pude verificar el comportamiento de MO2 en esta sesión y es de NP-A0, que es quien integra con MO2.
+- **El lock.** Reutiliza `DistributedLockManager`/`SnapshotTransactionLock` del árbol (lease con TTL de 60 s y latido de renovación,
+  `assert_owned` antes de cada unidad que escribe). Su base vive en `SystemPaths.runtime_state_dir()/native_parallax_output`, **no relativa al
+  `cwd`**, y el recurso se deriva de la raíz normalizada: dos ortografías de la misma ruta compiten por el mismo recurso. Una segunda sesión
+  recibe `SalidaOcupadaError` (reintentable), no una espera indefinida. Si el proceso muere sin soltarlo, la lease vence en ≤ 60 s: un
+  reintento inmediato puede ver «ocupada» ese rato.
+- **Apartar y verificar.** Reemplazar o retirar un archivo nuestro lo **mueve** a la papelera sin pisar nada y recién ahí compara su huella con
+  la autorizada. En Windows el movimiento es `os.rename` (que no reemplaza); en POSIX es un enlace duro seguido de `unlink` (que falla si el
+  destino existe), así que un sistema de archivos sin enlaces duros hace fallar esa ruta con un mensaje y no la pisa.
+- **Lo ilegible nunca se toca.** Lo que no se puede inspeccionar o leer se observa como `OTRO` (se preserva). Un manifiesto o pendiente ilegible
+  detiene la sesión sin tocar nada: sin él no se sabe qué es nuestro.
+- **Ruta completa.** Una ruta cuya longitud absoluta supere 259 caracteres falla esa ruta antes de copiar nada (cumple el requisito de NP-O0a).
+
+**Anclas** (`tests/test_native_parallax_output_writer.py`, enumeran la familia):
+
+- *El lock solo excluye si TODOS los mutadores participan.* Las funciones que tocan el disco se enumeran por AST y se congelan por igualdad
+  (todas privadas); `_recuperar` solo se nombra dentro del bloque que sostiene el lock; las cuatro unidades que escriben solo se nombran desde la
+  sesión y la recuperación; `SesionDeSalida` solo se construye desde `abrir_sesion_de_salida`; y una traza sobre un lote con las tres acciones
+  verifica que **antes de cada unidad que escribe** `assert_owned` acaba de pasar. Solo `output_writer.py` usa el lock en el paquete.
+- *Un lock solo excluye si está abierto.* La coordinación no expone el manager por ninguna vía síncrona y su estado no depende del `cwd`.
+- *Dos procesos reales* (no dos corrutinas): una segunda sesión en otro intérprete recibe `SalidaOcupadaError` mientras la primera sostiene la
+  raíz, y entra cuando se libera.
+- *Cortes enumerados, no muestreados.* Se corta el proceso en **cada** llamada a un punto de corte del lote de referencia (13) y, por cada una,
+  en cada punto de la recuperación (2); después se comprueba que lo de un tercero sigue intacto, que cada entrada del manifiesto describe un
+  archivo que existe con esos bytes, que nada nuestro quedó huérfano y que no quedan pendiente, etapas ni papelera, y que repetir el lote
+  converge al mismo estado final que una corrida sin cortes. Los puntos que nombra el código se congelan por igualdad.
+
+**Mutación** (automática por AST sobre todo el módulo: comparaciones, `and`/`or`, `not`, constantes, condiciones, retornos, llamadas y `raise`):
+RESULTADOS_DE_MUTACION
+
+**Límites declarados.** (1) No se ejecutó en Windows aquí (ver arriba). (2) La durabilidad ante un corte de luz alcanza al contenido de los archivos
+(`fsync`), no a los directorios. (3) Entre apartar y publicar la ruta está vacía un instante; si el proceso muere ahí, la recuperación devuelve el
+original. (4) En Windows un antivirus o el juego que tengan el archivo abierto hacen fallar esa ruta (`FALLIDA`/`CONFLICTO`); no hay reintento.
+(5) Un original verificado que queda en la papelera porque un tercero ocupó la ruta en ese instante **no se borra nunca**: se avisa por log y en el
+resultado, y se limpia a mano. (6) Una copia de trabajo por archivo ocupa espacio extra mientras dura la acción. (7) Una sesión atiende una
+operación por vez. (8) No hay `meta.ini`, ni habilitación del mod, ni de dónde salen las salidas, orígenes y `entorno`: es NP-A0.
