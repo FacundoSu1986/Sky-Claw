@@ -22,8 +22,10 @@ tocar el disco, tres cosas que el escritor (NP-O0b) va a dar por sentadas:
   manifiesto «pendiente» ANTES de tocar el disco y escribe el definitivo AL FINAL (el punto de compromiso). Si el
   proceso muere en el medio, esta función decide, sin tocar nada, qué manifiesto queda y qué hacer con el archivo que el
   escritor había apartado a una «papelera» para verificarlo: devolverlo a su ruta (``restaurar``) o borrarlo
-  (``descartar``). Solo se adopta lo que ya está en disco con los bytes que la intención declaraba, y solo se descarta
-  un archivo apartado cuya huella es la de una entrada NUESTRA; nada ajeno se borra ni se adopta.
+  (``descartar``, con la huella que lo autoriza). Solo se adopta lo que ya está en disco con los bytes que la intención
+  declaraba, y solo se descarta un archivo apartado cuya huella es la de una entrada NUESTRA; nada ajeno se borra ni se
+  adopta, y lo ajeno apartado vuelve a su ruta si está vacía. ``cota_del_manifiesto_tras_un_corte`` acota lo que puede
+  quedar en pie, para que el escritor rechace ANTES de tocar nada un lote cuyo resultado no se podría escribir.
 
 Límites declarados (qué NO hace este módulo):
 
@@ -57,6 +59,7 @@ __all__ = [
     "TAMANO_MAXIMO_DEL_MANIFIESTO",
     "AccionDeSalida",
     "AccionPlanificada",
+    "DescarteDePapelera",
     "EncoderUsado",
     "EntradaDeManifiesto",
     "EstadoTrasCorte",
@@ -77,6 +80,7 @@ __all__ = [
     "TipoObservado",
     "clave_de_cache",
     "clave_de_ruta",
+    "cota_del_manifiesto_tras_un_corte",
     "crear_entrada",
     "huella_del_manifiesto",
     "leer_manifiesto",
@@ -816,33 +820,50 @@ class EstadoTrasCorte:
 
 
 @dataclass(frozen=True, slots=True)
+class DescarteDePapelera:
+    """Un archivo apartado que es nuestro y ya no hace falta, con la huella que autoriza borrarlo.
+
+    Borrar es lo único de la recuperación que no se deshace: el escritor vuelve a calcular la huella de lo apartado justo
+    antes de borrarlo y, si no es ``sha256_autorizado``, no lo toca (como ``AccionPlanificada.sha256_autorizado``).
+    """
+
+    ruta: str
+    sha256_autorizado: str
+
+    def __post_init__(self) -> None:
+        validar_ruta_de_salida(self.ruta)
+        _exigir_huella(self.sha256_autorizado, "la huella que autoriza el descarte", PlanInvalidoError)
+
+
+@dataclass(frozen=True, slots=True)
 class RecuperacionDeCorte:
     """El manifiesto que queda en pie y qué hacer con la papelera, ambos por ruta y en orden canónico.
 
-    ``restaurar``: rutas cuyo archivo apartado hay que devolver a su sitio (siguen en el manifiesto). ``descartar``:
-    rutas cuyo archivo apartado es nuestro y ya no hace falta.
+    ``restaurar``: rutas cuyo archivo apartado vuelve a su sitio, que está vacío; no hace falta huella porque devolver no
+    pisa nada. La ruta sigue en el manifiesto solo si lo apartado era nuestro: si lo había tocado un tercero, vuelve
+    igual (es lo que hace el escritor sin corte) y deja de ser asunto nuestro. ``descartar``: archivos apartados que son
+    nuestros y ya no hacen falta.
     """
 
     manifiesto: Manifiesto
     restaurar: tuple[str, ...]
-    descartar: tuple[str, ...]
+    descartar: tuple[DescarteDePapelera, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.manifiesto, Manifiesto):
             raise PlanInvalidoError("el manifiesto de la recuperación debe ser un Manifiesto")
-        for nombre, rutas in (("restaurar", self.restaurar), ("descartar", self.descartar)):
-            if not isinstance(rutas, tuple) or not all(isinstance(r, str) for r in rutas):
-                raise PlanInvalidoError(f"{nombre} debe ser una tupla de rutas")
-            for ruta in rutas:
-                validar_ruta_de_salida(ruta)
-            claves = [clave_de_ruta(r) for r in rutas]
+        if not isinstance(self.restaurar, tuple) or not all(isinstance(r, str) for r in self.restaurar):
+            raise PlanInvalidoError("restaurar debe ser una tupla de rutas")
+        for ruta in self.restaurar:
+            validar_ruta_de_salida(ruta)
+        if not isinstance(self.descartar, tuple) or not all(isinstance(d, DescarteDePapelera) for d in self.descartar):
+            raise PlanInvalidoError("descartar debe ser una tupla de DescarteDePapelera")
+        a_restaurar = [clave_de_ruta(r) for r in self.restaurar]
+        a_descartar = [clave_de_ruta(d.ruta) for d in self.descartar]
+        for nombre, claves in (("restaurar", a_restaurar), ("descartar", a_descartar)):
             if claves != sorted(set(claves)):
                 raise PlanInvalidoError(f"{nombre} debe estar ordenado por ruta y sin rutas repetidas")
-        en_el_manifiesto = {clave_de_ruta(e.ruta) for e in self.manifiesto.entradas}
-        a_restaurar = {clave_de_ruta(r) for r in self.restaurar}
-        if not a_restaurar <= en_el_manifiesto:
-            raise PlanInvalidoError("solo se restaura una ruta que sigue en el manifiesto")
-        if a_restaurar & {clave_de_ruta(r) for r in self.descartar}:
+        if set(a_restaurar) & set(a_descartar):
             raise PlanInvalidoError("una ruta no se restaura y se descarta a la vez")
 
 
@@ -879,7 +900,8 @@ def reconciliar_tras_corte(
     como manifiesto vigente no cambia nada.
 
     Una huella en la papelera solo cuenta como «nuestra» si es la de la entrada VIGENTE de esa ruta: así un archivo
-    apartado que resultó ser de un tercero no se borra ni se devuelve nunca.
+    apartado que resultó ser de un tercero no se borra nunca. Si su ruta está vacía vuelve a ella (el escritor aparta
+    antes de verificar: sin corte, lo habría devuelto él), y si está ocupada se queda en la papelera.
     """
     if previo is not None and not isinstance(previo, Manifiesto):
         raise PlanInvalidoError(f"el manifiesto previo debe ser un Manifiesto o None, no {type(previo).__name__}")
@@ -892,10 +914,13 @@ def reconciliar_tras_corte(
 
     por_vigente = {clave_de_ruta(e.ruta): e for e in (previo.entradas if previo is not None else ())}
     por_pendiente = {clave_de_ruta(e.ruta): e for e in pendiente.entradas}
+    # Lo apartado salió de la ruta con la que se publicó la entrada vigente; sin vigente, solo queda la del pendiente.
+    rutas = {clave: e.ruta for clave, e in por_pendiente.items()}
+    rutas.update({clave: e.ruta for clave, e in por_vigente.items()})
     quedan: list[EntradaDeManifiesto] = []
     restaurar: list[str] = []
-    descartar: list[str] = []
-    for clave in sorted({*por_vigente, *por_pendiente}):
+    descartar: list[DescarteDePapelera] = []
+    for clave in sorted(rutas):
         if clave not in observado:
             raise PlanInvalidoError(f"falta el estado de {clave!r}: el mapa se indexa por clave_de_ruta")
         estado = observado[clave]
@@ -903,11 +928,39 @@ def reconciliar_tras_corte(
         queda = _entrada_que_queda(vigente, intencion, estado)
         if queda is not None:
             quedan.append(queda)
-        if vigente is not None and estado.papelera == vigente.sha256:  # el archivo apartado es nuestro
-            if queda is vigente and estado.disco.tipo is TipoObservado.AUSENTE:
-                restaurar.append(vigente.ruta)
-            else:
-                descartar.append(vigente.ruta)
+        if estado.papelera is None:
+            continue
+        ruta_vacia = estado.disco.tipo is TipoObservado.AUSENTE
+        if vigente is not None and estado.papelera == vigente.sha256 and not (queda is vigente and ruta_vacia):
+            descartar.append(DescarteDePapelera(vigente.ruta, vigente.sha256))  # nuestro y ya no hace falta
+        elif ruta_vacia:
+            # Vuelve a su ruta: si es nuestro, porque su entrada sigue en pie; si no, porque lo tocó un tercero y es lo
+            # que el escritor hace sin corte. Con la ruta ocupada, lo ajeno se queda en la papelera: nunca se borra.
+            restaurar.append(rutas[clave])
     return RecuperacionDeCorte(
         manifiesto=Manifiesto.ordenado(quedan), restaurar=tuple(restaurar), descartar=tuple(descartar)
     )
+
+
+def cota_del_manifiesto_tras_un_corte(previo: Manifiesto | None, pendiente: Manifiesto) -> int:
+    """Cota superior, en bytes serializados, de todo manifiesto que pueda quedar en pie al cortar un lote de *previo* a
+    *pendiente*.
+
+    Tanto ``reconciliar_tras_corte`` como el compromiso del escritor (con rutas fallidas) toman, por ruta, a lo sumo UNA
+    entrada de alguno de los dos manifiestos: la unión puede pesar más que cada uno por separado. La cota suma, por
+    ruta, lo que agrega la entrada más pesada a un manifiesto vacío; la segunda entrada en adelante agrega un poco menos
+    (comparte los corchetes de la lista), así que la suma nunca se queda corta. El escritor la compara con
+    ``TAMANO_MAXIMO_DEL_MANIFIESTO`` ANTES de escribir el pendiente: un lote que no cabe dejaría, tras un corte, un
+    manifiesto que no se puede escribir, y la recuperación fallaría en cada arranque.
+    """
+    if previo is not None and not isinstance(previo, Manifiesto):
+        raise PlanInvalidoError(f"el manifiesto previo debe ser un Manifiesto o None, no {type(previo).__name__}")
+    if not isinstance(pendiente, Manifiesto):
+        raise PlanInvalidoError(f"el manifiesto pendiente debe ser un Manifiesto, no {type(pendiente).__name__}")
+    vacio = len(serializar_manifiesto(Manifiesto(entradas=())))
+    peso_por_ruta: dict[str, int] = {}
+    for entrada in (*(previo.entradas if previo is not None else ()), *pendiente.entradas):
+        clave = clave_de_ruta(entrada.ruta)
+        peso = len(serializar_manifiesto(Manifiesto(entradas=(entrada,)))) - vacio
+        peso_por_ruta[clave] = max(peso_por_ruta.get(clave, 0), peso)
+    return vacio + sum(peso_por_ruta.values())
