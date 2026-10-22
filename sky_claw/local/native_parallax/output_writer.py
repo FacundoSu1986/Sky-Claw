@@ -20,7 +20,8 @@ momento (ver ADR 0014, «Actualización de NP-O0b1» y «Actualización de NP-O0
 
 Qué NO hace: no genera texturas ni ejecuta el codificador de DDS (es del lote, NP-A0), no crea ``meta.ini`` ni habilita el mod en
 MO2 (lo hace el adaptador de MO2, NP-A0) y no decide de dónde sale el ``entorno`` de la procedencia. Escribe
-bloqueando solo el hilo de trabajo (``asyncio.to_thread``), nunca el loop.
+bloqueando solo el hilo de trabajo, nunca el loop, y sin abandonar ese hilo si la tarea se cancela (``_en_hilo``: el
+lock se suelta recién cuando el hilo terminó).
 
 Límites: la durabilidad ante un corte de luz se limita al contenido de los archivos (``fsync``); no se hace ``fsync`` de
 los directorios. Entre «apartar» y «publicar» la ruta está vacía un instante; si el proceso muere ahí, la recuperación
@@ -37,10 +38,10 @@ import os
 import pathlib
 import stat
 import uuid
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Final
+from typing import Any, Final, ParamSpec, TypeVar
 
 from sky_claw.app.db.locks import (
     DEFAULT_BACKOFF_BASE,
@@ -131,6 +132,9 @@ _PUNTOS_DE_CORTE: Final = (
 )
 
 _FICHA: Final = object()
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 
 class SalidaNoEscribibleError(SalidaGestionadaError):
@@ -812,6 +816,27 @@ def _validar_raiz(raiz: pathlib.Path) -> pathlib.Path:
     return raiz
 
 
+async def _en_hilo(funcion: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
+    """Corre *funcion* en un hilo sin abandonarlo: si cancelan a quien espera, espera igual a que el hilo termine y recién
+    ahí deja seguir la cancelación.
+
+    ``asyncio.to_thread`` no detiene el hilo al cancelarse. Sin esto, la cancelación desarmaría la sesión y soltaría el lock
+    mientras el hilo todavía copia o mueve archivos, y otro proceso podría entrar a recuperar en paralelo. Todo lo que el
+    escritor corre en un hilo pasa por acá (ancla en los tests); lo que el lote dejó a medias lo recupera la sesión
+    siguiente.
+    """
+    tarea = asyncio.ensure_future(asyncio.to_thread(funcion, *args, **kwargs))
+    try:
+        return await asyncio.shield(tarea)
+    except asyncio.CancelledError:
+        while not tarea.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait((tarea,))
+        if not tarea.cancelled():
+            tarea.exception()  # manda la cancelación; se lee para no dejar una excepción sin recuperar
+        raise
+
+
 @contextlib.asynccontextmanager
 async def abrir_sesion_de_salida(
     raiz: pathlib.Path, *, coordinacion: CoordinacionDeSalida
@@ -828,7 +853,7 @@ async def abrir_sesion_de_salida(
     raiz = _validar_raiz(raiz)
     agent_id = f"native-parallax-output-{uuid.uuid4().hex}"
     async with coordinacion.sostener(raiz=raiz, agent_id=agent_id) as lock:
-        vigente = await asyncio.to_thread(_recuperar, raiz)
+        vigente = await _en_hilo(_recuperar, raiz)
         yield SesionDeSalida(_FICHA, raiz=raiz, lock=lock, vigente=vigente)
 
 
@@ -879,7 +904,7 @@ class SesionDeSalida:
             lista = list(deseadas)
             rutas = {d.ruta for d in lista if isinstance(d, SalidaDeseada)}
             rutas |= {e.ruta for e in self.manifiesto.entradas}
-            observado = await asyncio.to_thread(_observar_rutas, self._raiz, sorted(rutas))
+            observado = await _en_hilo(_observar_rutas, self._raiz, sorted(rutas))
             plan = planificar(lista, self._vigente, observado)
             self._ultimo = (plan, {clave_de_ruta(d.ruta): d for d in lista})
             return plan
@@ -897,7 +922,7 @@ class SesionDeSalida:
             if self._ultimo is None or plan != self._ultimo[0]:
                 raise SalidaNoEscribibleError("el plan no es el último que devolvió planificar() en esta sesión")
             deseadas = self._ultimo[1]
-            trabajos, fallos_previos = await asyncio.to_thread(self._preparar_trabajos, plan, deseadas, fuentes)
+            trabajos, fallos_previos = await _en_hilo(self._preparar_trabajos, plan, deseadas, fuentes)
             resultado = await self._ejecutar(plan, trabajos, fallos_previos)
             self._ultimo = None
             return resultado
@@ -966,15 +991,15 @@ class SesionDeSalida:
         pendiente = Manifiesto.ordenado(optimista.values())
         # Tras un corte (o con rutas fallidas) queda, por ruta, la entrada vigente o la pendiente: si esa mezcla no se
         # pudiera serializar, ni el compromiso ni la recuperación podrían escribirla. Se rechaza ANTES de tocar nada.
-        cota = await asyncio.to_thread(cota_del_manifiesto_tras_un_corte, self._vigente, pendiente)
+        cota = await _en_hilo(cota_del_manifiesto_tras_un_corte, self._vigente, pendiente)
         if cota > TAMANO_MAXIMO_DEL_MANIFIESTO:
             raise SalidaNoEscribibleError(
                 f"tras un corte, este lote podría dejar un manifiesto de hasta {cota} bytes y el máximo es "
                 f"{TAMANO_MAXIMO_DEL_MANIFIESTO}: dividí el lote. No se tocó nada"
             )
         await self._asegurar_lock()
-        await asyncio.to_thread(_escribir_atomico, control / _PENDIENTE, serializar_manifiesto(pendiente))
-        await asyncio.to_thread(_punto_de_corte, "tras_pendiente")
+        await _en_hilo(_escribir_atomico, control / _PENDIENTE, serializar_manifiesto(pendiente))
+        await _en_hilo(_punto_de_corte, "tras_pendiente")
 
         quedan = dict(vigente)
         rutas: list[ResultadoPorRuta] = []
@@ -988,7 +1013,7 @@ class SesionDeSalida:
                 _aplicar_sin_disco(accion, quedan, rutas)
             else:
                 await self._asegurar_lock()
-                resultado, nueva = await asyncio.to_thread(
+                resultado, nueva = await _en_hilo(
                     _actuar_en_disco, self._raiz, accion, trabajos.get(clave), vigente.get(clave)
                 )
                 rutas.append(resultado)
@@ -997,17 +1022,17 @@ class SesionDeSalida:
                 else:
                     quedan[clave] = nueva
 
-        await asyncio.to_thread(_punto_de_corte, "antes_del_compromiso")
+        await _en_hilo(_punto_de_corte, "antes_del_compromiso")
         final = Manifiesto.ordenado(quedan.values())
         await self._asegurar_lock()
-        await asyncio.to_thread(_escribir_atomico, control / _MANIFIESTO, serializar_manifiesto(final))
-        await asyncio.to_thread(_punto_de_corte, "tras_compromiso")
+        await _en_hilo(_escribir_atomico, control / _MANIFIESTO, serializar_manifiesto(final))
+        await _en_hilo(_punto_de_corte, "tras_compromiso")
         # Limpiar y borrar el pendiente también exigen el lock: si se perdió, otra sesión puede estar usando esas carpetas.
         await self._asegurar_lock()
-        await asyncio.to_thread(_limpiar_control, control)
-        await asyncio.to_thread(_punto_de_corte, "tras_limpieza")
+        await _en_hilo(_limpiar_control, control)
+        await _en_hilo(_punto_de_corte, "tras_limpieza")
         await self._asegurar_lock()
-        await asyncio.to_thread(_borrar_pendiente, control)  # lo último
+        await _en_hilo(_borrar_pendiente, control)  # lo último
         self._vigente = final
         return ResultadoDeAplicacion(rutas=_ordenadas(rutas), manifiesto=final)
 
@@ -1028,7 +1053,7 @@ class SesionDeSalida:
         final = Manifiesto.ordenado(quedan.values())
         if final != self.manifiesto:
             await self._asegurar_lock()
-            await asyncio.to_thread(
+            await _en_hilo(
                 _escribir_atomico, self._raiz / _CARPETA_DE_CONTROL / _MANIFIESTO, serializar_manifiesto(final)
             )
             self._vigente = final

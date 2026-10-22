@@ -21,6 +21,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -1537,13 +1538,13 @@ def test_los_puntos_de_corte_nombrados_en_el_codigo_son_los_congelados() -> None
         and c.args
         and isinstance(c.args[0], ast.Constant)
     }
-    # Los que nombra el código van por el asyncio.to_thread(_punto_de_corte, "x") además de la llamada directa:
+    # Los que nombra el código van por el _en_hilo(_punto_de_corte, "x") además de la llamada directa:
     nombrados |= {
         c.args[1].value
         for c in ast.walk(_arbol())
         if isinstance(c, ast.Call)
-        and isinstance(c.func, ast.Attribute)
-        and c.func.attr == "to_thread"
+        and isinstance(c.func, ast.Name)
+        and c.func.id == "_en_hilo"
         and len(c.args) > 1
         and isinstance(c.args[0], ast.Name)
         and c.args[0].id == "_punto_de_corte"
@@ -2680,4 +2681,69 @@ async def test_toda_ortografia_de_la_misma_carpeta_fisica_compite_por_un_solo_lo
                 async with abrir_sesion_de_salida(por_el_alias, coordinacion=impaciente):
                     pytest.fail("no debería entrar por el alias mientras la otra sesión sostiene la carpeta")
     finally:
+        await impaciente.close()
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: la lease dura lo que dura el hilo que escribe
+# ---------------------------------------------------------------------------
+
+
+def test_todo_lo_que_corre_en_un_hilo_pasa_por_en_hilo() -> None:
+    """``asyncio.to_thread`` aparece solo dentro de ``_en_hilo``: una llamada directa nueva podría abandonar su hilo al
+    cancelarse y dejar que la sesión suelte el lock con el hilo todavía escribiendo."""
+    duenos = {
+        funcion.name
+        for funcion in ast.walk(_arbol())
+        if isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef)
+        and any(isinstance(n, ast.Attribute) and n.attr == "to_thread" for n in ast.walk(funcion))
+    }
+    assert duenos == {"_en_hilo"}
+
+
+async def test_cancelar_con_un_hilo_escribiendo_no_suelta_el_lock_hasta_que_el_hilo_termina(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """``asyncio.to_thread`` no frena el hilo al cancelarse: si la sesión soltara el lock en ese momento, otro proceso
+    entraría a recuperar mientras el hilo todavía mueve archivos. La lease tiene que durar lo que dura el hilo."""
+    adentro, seguir = threading.Event(), threading.Event()
+    actuar = output_writer._actuar_en_disco
+
+    def actuar_lento(*args: Any) -> Any:
+        adentro.set()
+        seguir.wait(timeout=30)
+        return actuar(*args)
+
+    monkeypatch.setattr(output_writer, "_actuar_en_disco", actuar_lento)
+    tarea = asyncio.create_task(escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")}))
+    impaciente = construir_coordinacion_de_salida(
+        base=tmp_path / "estado", max_retries=2, backoff_base=0.01, backoff_max=0.02
+    )
+    try:
+        for _ in range(500):
+            if adentro.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert adentro.is_set()
+        tarea.cancel()
+        await asyncio.sleep(0.1)
+
+        try:
+            with pytest.raises(SalidaOcupadaError):
+                async with abrir_sesion_de_salida(escenario.raiz, coordinacion=impaciente):
+                    pytest.fail("entró mientras el hilo del lote cancelado seguía escribiendo")
+            assert not tarea.done()
+        finally:
+            seguir.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        # Con el hilo terminado, la lease se soltó y la sesión siguiente recupera el lote cortado.
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=impaciente) as sesion:
+            assert {e.ruta for e in sesion.manifiesto.entradas} <= {RUTA_A}
+        for entrada in escenario.manifiesto_en_disco().entradas:  # lo que el manifiesto dice nuestro existe así
+            assert _sha(escenario.leer(entrada.ruta)) == entrada.sha256
+        assert not (escenario.control() / "pending.json").exists()
+    finally:
+        seguir.set()
         await impaciente.close()
