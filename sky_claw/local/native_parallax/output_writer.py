@@ -72,6 +72,7 @@ from sky_claw.local.native_parallax.output import (
     TipoObservado,
     clave_de_cache,
     clave_de_ruta,
+    cota_del_manifiesto_tras_un_corte,
     crear_entrada,
     leer_manifiesto,
     planificar,
@@ -484,9 +485,14 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
     for ruta in recuperacion.restaurar:
         if not _restaurar_desde_papelera(raiz, control, ruta):
             logger.warning("No se pudo devolver %s desde la papelera: la ruta ya está ocupada", ruta)
-    for ruta in recuperacion.descartar:
+    for descarte in recuperacion.descartar:
         with contextlib.suppress(FileNotFoundError):
-            os.unlink(control / _PAPELERA / _id_de_ruta(ruta))
+            apartado = control / _PAPELERA / _id_de_ruta(descarte.ruta)
+            if not _borrar_si_es_el_autorizado(apartado, descarte.sha256_autorizado):
+                logger.warning(
+                    "No se descartó %s de la papelera: ya no tiene la huella que se observó (cambió o desapareció)",
+                    descarte.ruta,
+                )
     _punto_de_corte("recuperacion_tras_papelera")
     actual = serializar_manifiesto(vigente) if vigente is not None else serializar_manifiesto(Manifiesto(entradas=()))
     resultante = serializar_manifiesto(recuperacion.manifiesto)
@@ -609,6 +615,18 @@ def _huella_del_apartado(apartado: pathlib.Path) -> str | None:
         return None
 
 
+def _borrar_si_es_el_autorizado(apartado: pathlib.Path, autorizado: str) -> bool:
+    """Borra lo apartado solo si su huella, calculada AHORA, es *autorizado*; si no (o no se pudo leer), no lo toca.
+
+    Borrar es lo único que no se deshace: lo usan los borrados de la papelera que tienen un hueco entre la verificación y
+    el borrado (el descarte de la recuperación y el original de un reemplazo, con la publicación en el medio).
+    """
+    if _huella_del_apartado(apartado) != autorizado:
+        return False
+    os.unlink(apartado)
+    return True
+
+
 def _devolver(apartado: pathlib.Path, destino: pathlib.Path) -> bool:
     """Devuelve lo apartado a su ruta sin pisar nada. False si la ruta quedó ocupada (lo apartado se conserva)."""
     try:
@@ -686,7 +704,13 @@ def _reemplazar(
             ruta, EfectoDeSalida.CONFLICTO, f"la ruta quedó ocupada; el original está en {apartado}"
         ), None
     _punto_de_corte("tras_publicar")
-    os.unlink(apartado)  # era nuestro y estaba verificado
+    if not _borrar_si_es_el_autorizado(apartado, autorizado):  # cambió en la papelera después de verificarlo
+        logger.warning("El original apartado de %s cambió después de verificarlo; quedó en %s", ruta, apartado)
+        return ResultadoPorRuta(
+            ruta,
+            EfectoDeSalida.REEMPLAZADA,
+            f"el original apartado cambió después de verificarlo y quedó en {apartado}",
+        ), trabajo.entrada
     return ResultadoPorRuta(ruta, EfectoDeSalida.REEMPLAZADA, ""), trabajo.entrada
 
 
@@ -890,10 +914,17 @@ class SesionDeSalida:
                 optimista[clave] = trabajos[clave].entrada
             elif accion.accion is not AccionDeSalida.OMITIR and not _conserva_si_falla(accion, fallos_previos):
                 optimista.pop(clave, None)
+        pendiente = Manifiesto.ordenado(optimista.values())
+        # Tras un corte (o con rutas fallidas) queda, por ruta, la entrada vigente o la pendiente: si esa mezcla no se
+        # pudiera serializar, ni el compromiso ni la recuperación podrían escribirla. Se rechaza ANTES de tocar nada.
+        cota = await asyncio.to_thread(cota_del_manifiesto_tras_un_corte, self._vigente, pendiente)
+        if cota > TAMANO_MAXIMO_DEL_MANIFIESTO:
+            raise SalidaNoEscribibleError(
+                f"tras un corte, este lote podría dejar un manifiesto de hasta {cota} bytes y el máximo es "
+                f"{TAMANO_MAXIMO_DEL_MANIFIESTO}: dividí el lote. No se tocó nada"
+            )
         await self._asegurar_lock()
-        await asyncio.to_thread(
-            _escribir_atomico, control / _PENDIENTE, serializar_manifiesto(Manifiesto.ordenado(optimista.values()))
-        )
+        await asyncio.to_thread(_escribir_atomico, control / _PENDIENTE, serializar_manifiesto(pendiente))
         await asyncio.to_thread(_punto_de_corte, "tras_pendiente")
 
         quedan = dict(vigente)

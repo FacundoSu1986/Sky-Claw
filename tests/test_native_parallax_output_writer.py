@@ -36,6 +36,8 @@ from sky_claw.local.native_parallax.output import (
     SalidaDeseada,
     clave_de_cache,
     clave_de_ruta,
+    cota_del_manifiesto_tras_un_corte,
+    crear_entrada,
     leer_manifiesto,
     parametros_canonicos,
     serializar_manifiesto,
@@ -1082,25 +1084,172 @@ async def test_la_recuperacion_borra_los_temporales_y_las_etapas_huerfanas_pero_
     assert (control / "trash" / "desconocido").read_bytes() == b"NO ES NUESTRO"
 
 
-async def test_lo_que_un_tercero_dejo_en_la_papelera_nunca_se_borra_ni_se_devuelve(escenario: Escenario) -> None:
-    """Una huella en la papelera solo es nuestra si es la de la entrada vigente: lo demás se queda donde está."""
+def _apartar_a_mano(escenario: Escenario, ruta: str, contenido: bytes) -> pathlib.Path:
+    """Deja en la casilla de *ruta* de la papelera un archivo con *contenido* (lo que dejaría un corte tras apartar)."""
+    papelera = escenario.control() / "trash"
+    papelera.mkdir(exist_ok=True)
+    apartado = papelera / output_writer._id_de_ruta(ruta)
+    apartado.write_bytes(contenido)
+    return apartado
+
+
+async def test_lo_apartado_que_no_es_nuestro_nunca_se_borra_y_con_la_ruta_vacia_vuelve_a_su_lugar(
+    escenario: Escenario,
+) -> None:
+    """Una huella en la papelera solo es nuestra si es la de la entrada vigente; lo demás no se borra nunca.
+
+    Con la ruta vacía, lo apartado vuelve a ella: es lo que el escritor hace sin corte cuando lo que apartó no era lo
+    autorizado (``_devolver``). La recuperación es el camino gemelo y cumple la misma propiedad.
+    """
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
-    antes = escenario.manifiesto_en_disco()
     (escenario.control() / "pending.json").write_bytes(
         serializar_manifiesto(Manifiesto(entradas=()))  # intención: retirar A
     )
-    escenario.disco(RUTA_A).unlink()  # y A ya no está
-    papelera = escenario.control() / "trash"
-    papelera.mkdir()
-    apartado = papelera / output_writer._id_de_ruta(RUTA_A)
-    apartado.write_bytes(b"DE-OTRO-QUE-NO-ES-A")
+    escenario.disco(RUTA_A).unlink()  # y A ya no está en su ruta...
+    _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO-QUE-NO-ES-A")  # ...sino en la papelera, con bytes de un tercero
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert escenario.leer(RUTA_A) == b"DE-OTRO-QUE-NO-ES-A"
+    assert escenario.manifiesto_en_disco().entradas == ()  # vuelve, pero no es nuestro
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+async def test_lo_apartado_que_no_es_nuestro_con_la_ruta_ocupada_se_queda_en_la_papelera(escenario: Escenario) -> None:
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).write_bytes(b"LO-QUE-HAY-AHORA")
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO-QUE-NO-ES-A")
 
     async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
         assert sesion.manifiesto.entradas == ()
 
     assert apartado.read_bytes() == b"DE-OTRO-QUE-NO-ES-A"
-    assert not escenario.disco(RUTA_A).exists()
-    assert antes.entradas[0].ruta == RUTA_A
+    assert escenario.leer(RUTA_A) == b"LO-QUE-HAY-AHORA"
+    assert not (escenario.control() / "pending.json").exists()
+
+
+@pytest.mark.parametrize("accion", ["reconstruir", "retirar"])
+async def test_un_corte_tras_apartar_lo_que_edito_un_tercero_se_lo_devuelve_al_recuperar(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, accion: str
+) -> None:
+    """El escritor aparta ANTES de verificar. Si un tercero editó el archivo después de planificar y el proceso muere
+    justo después de apartarlo, la recuperación tiene que devolverlo: si no, el archivo del usuario queda encerrado en la
+    papelera y su ruta vacía. Se enumeran las dos acciones que apartan (reemplazar y retirar), no una muestra."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-viejo", 1.5)})
+    lote = {RUTA_A: escenario.fuente(b"DDS-nuevo", 9.5)} if accion == "reconstruir" else {}
+
+    def punto(nombre: str) -> None:
+        if nombre == "tras_apartar":
+            raise CorteSimulado(nombre)
+
+    monkeypatch.setattr(output_writer, "_punto_de_corte", punto)
+    with pytest.raises(CorteSimulado):
+        await _planificar_y_aplicar(
+            escenario, lote, entre=lambda: escenario.disco(RUTA_A).write_bytes(b"EDITADO-A-MANO")
+        )
+    monkeypatch.undo()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert escenario.leer(RUTA_A) == b"EDITADO-A-MANO"
+    assert escenario.manifiesto_en_disco().entradas == ()
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+# ---------------------------------------------------------------------------
+# Borrar de la papelera: la huella se vuelve a calcular justo antes
+# ---------------------------------------------------------------------------
+
+
+async def test_la_recuperacion_no_descarta_lo_que_cambio_en_la_papelera_despues_de_observarlo(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Entre que la recuperación observa la papelera y borra lo que decidió descartar, el archivo puede cambiar."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DDS-A")  # retiro cortado: lo apartado es nuestro
+    original = output_writer.reconciliar_tras_corte
+
+    def reconciliar(*args: Any) -> Any:
+        recuperacion = original(*args)
+        apartado.write_bytes(b"LLEGO-OTRO-A-LA-PAPELERA")  # después de observar, antes de descartar
+        return recuperacion
+
+    monkeypatch.setattr(output_writer, "reconciliar_tras_corte", reconciliar)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert apartado.read_bytes() == b"LLEGO-OTRO-A-LA-PAPELERA"
+
+
+async def test_el_reemplazo_no_borra_el_original_si_cambio_en_la_papelera_despues_de_verificarlo(
+    escenario: Escenario, interponer: Any
+) -> None:
+    """Entre verificar el original apartado y borrarlo se publica el reemplazo: el borrado vuelve a mirar la huella."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-viejo", 1.5)})
+    apartado = escenario.control() / "trash" / output_writer._id_de_ruta(RUTA_A)
+    interponer("tras_publicar", lambda: apartado.write_bytes(b"LLEGO-OTRO-A-LA-PAPELERA"))
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-nuevo", 9.5)})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
+    assert escenario.leer(RUTA_A) == b"DDS-nuevo"
+    assert apartado.read_bytes() == b"LLEGO-OTRO-A-LA-PAPELERA"
+
+
+# ---------------------------------------------------------------------------
+# Un lote cuyo resultado tras un corte no se podría escribir se rechaza antes de tocar nada
+# ---------------------------------------------------------------------------
+
+
+RUTA_A2 = "textures/architecture/whiterun/muro03_p.dds"
+RUTA_B2 = "textures/architecture/whiterun/muro04_p.dds"
+
+
+async def test_un_lote_cuya_union_con_el_vigente_no_cabe_se_rechaza_sin_tocar_nada(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El vigente y el pendiente caben cada uno por su lado, pero un corte puede dejar la UNIÓN (A y B todavía sin
+    retirar, A2 y B2 ya publicadas): si esa unión no se puede serializar, la recuperación fallaría en cada arranque."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A", 1.5), RUTA_B: escenario.fuente(b"DDS-B", 2.5)})
+    tope = len((escenario.control() / "manifest.json").read_bytes())  # el pendiente pesa exactamente lo mismo
+    monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_MANIFIESTO", tope)
+    antes = _instantanea(escenario.raiz)
+
+    with pytest.raises(SalidaNoEscribibleError, match="dividí el lote"):
+        await escenario.lote({RUTA_A2: escenario.fuente(b"DDS-C", 3.5), RUTA_B2: escenario.fuente(b"DDS-D", 4.5)})
+
+    assert _instantanea(escenario.raiz) == antes
+
+
+async def test_el_tope_se_compara_con_la_cota_del_vigente_y_el_pendiente_del_lote(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En el borde: un tope igual a la cota del (vigente, pendiente) alcanza y uno menos no."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A", 1.5), RUTA_B: escenario.fuente(b"DDS-B", 2.5)})
+    pendiente = Manifiesto.ordenado(
+        [
+            crear_entrada(RUTA_A2, _sha(b"DDS-C"), len(b"DDS-C"), _procedencia(3.5)),
+            crear_entrada(RUTA_B2, _sha(b"DDS-D"), len(b"DDS-D"), _procedencia(4.5)),
+        ]
+    )
+    cota = cota_del_manifiesto_tras_un_corte(escenario.manifiesto_en_disco(), pendiente)
+    lote = {RUTA_A2: escenario.fuente(b"DDS-C", 3.5), RUTA_B2: escenario.fuente(b"DDS-D", 4.5)}
+
+    monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_MANIFIESTO", cota - 1)
+    with pytest.raises(SalidaNoEscribibleError, match=f"hasta {cota} bytes"):
+        await escenario.lote(lote)
+
+    monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_MANIFIESTO", cota)
+    resultado = await escenario.lote(lote)
+
+    assert resultado.completo
+    assert escenario.manifiesto_en_disco() == pendiente
 
 
 # ---------------------------------------------------------------------------
@@ -1205,6 +1354,7 @@ def test_las_funciones_que_mutan_el_disco_estan_enumeradas_y_son_todas_privadas(
         "_apartar",
         "_asegurar_directorio_de_control",
         "_borrar_pendiente",
+        "_borrar_si_es_el_autorizado",
         "_construir",
         "_copiar_a_etapa",
         "_escribir_atomico",
@@ -1234,6 +1384,8 @@ def test_cada_mutador_solo_se_alcanza_desde_donde_el_lock_esta_tomado() -> None:
     assert quien_nombra["_actuar_en_disco"] == {"_ejecutar"}
     assert quien_nombra["_limpiar_control"] == {"_ejecutar", "_recuperar"}
     assert quien_nombra["_borrar_pendiente"] == {"_ejecutar", "_recuperar"}
+    # Los borrados de la papelera con un hueco entre verificar y borrar vuelven a mirar la huella: los dos, no uno.
+    assert quien_nombra["_borrar_si_es_el_autorizado"] == {"_recuperar", "_reemplazar"}
     assert quien_nombra["SesionDeSalida"] >= {"abrir_sesion_de_salida"}
     assert {f for f in quien_nombra["SesionDeSalida"] if f != "<módulo>"} <= {"abrir_sesion_de_salida"}
 
