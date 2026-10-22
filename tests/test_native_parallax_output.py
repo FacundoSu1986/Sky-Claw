@@ -1192,7 +1192,16 @@ def test_mas_rutas_invalidas(ruta: str) -> None:
         validar_ruta_de_salida(ruta)
 
 
-_RESERVADOS = ["con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))]
+_RESERVADOS = [
+    "con",
+    "conin$",
+    "conout$",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{i}" for i in range(10)),
+    *(f"lpt{i}" for i in range(10)),
+]
 
 
 @pytest.mark.parametrize("nombre", _RESERVADOS)
@@ -1205,7 +1214,7 @@ def test_cada_nombre_reservado_de_windows_se_rechaza_en_cualquier_capitalizacion
 
 
 def test_un_nombre_que_solo_empieza_como_uno_reservado_es_valido() -> None:
-    assert validar_ruta_de_salida("textures/console/lpt10/comx/a_p.dds")
+    assert validar_ruta_de_salida("textures/console/lpt10/com10/conin/conout$x/a_p.dds")
 
 
 def test_el_largo_de_los_parametros_se_prueba_en_su_borde() -> None:
@@ -1466,7 +1475,7 @@ def test_leer_acepta_un_bytearray() -> None:
 def test_el_tamano_maximo_del_manifiesto_esta_congelado_y_se_prueba_en_su_borde(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert output.TAMANO_MAXIMO_DEL_MANIFIESTO == 32 * 1024 * 1024
+    assert output.TAMANO_MAXIMO_DEL_MANIFIESTO == 128 * 1024 * 1024
     datos = serializar_manifiesto(_manifiesto(_entrada()))
 
     monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", len(datos))
@@ -1485,6 +1494,44 @@ def test_la_decodificacion_es_estricta_y_rechaza_el_bom_en_su_propia_capa() -> N
         leer_manifiesto(b"\xff" + valido)
     with pytest.raises(ManifiestoInvalidoError, match="BOM"):
         leer_manifiesto(b"\xef\xbb\xbf" + valido)
+
+
+def test_el_serializador_aplica_el_mismo_tope_que_el_lector(monkeypatch: pytest.MonkeyPatch) -> None:
+    manifiesto = _manifiesto(_entrada())
+    largo = len(serializar_manifiesto(manifiesto))
+
+    monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", largo)
+    assert leer_manifiesto(serializar_manifiesto(manifiesto)) == manifiesto  # justo en el tope: se escribe y se lee
+
+    monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", largo - 1)
+    with pytest.raises(ManifiestoInvalidoError, match="supera"):
+        serializar_manifiesto(manifiesto)
+    with pytest.raises(ManifiestoInvalidoError, match="supera"):
+        huella_del_manifiesto(manifiesto)  # la huella pasa por el mismo serializador
+
+
+def test_todo_manifiesto_que_se_puede_escribir_se_puede_leer(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Propiedad, no un caso: para CADA tope entre «no cabe nada» y «cabe todo», o el serializador se niega, o lo que
+    # escribe lo lee el lector. Nunca un manifiesto que se escribe y después no se puede cargar.
+    manifiesto = _manifiesto(_entrada("textures/a_p.dds"), _entrada("textures/b_p.dds"), _entrada("textures/c_p.dds"))
+    largo = len(serializar_manifiesto(manifiesto))
+    for tope in range(largo - 40, largo + 40):
+        monkeypatch.setattr(output, "TAMANO_MAXIMO_DEL_MANIFIESTO", tope)
+        try:
+            datos = serializar_manifiesto(manifiesto)
+        except ManifiestoInvalidoError:
+            assert tope < largo
+        else:
+            assert tope >= largo
+            assert leer_manifiesto(datos) == manifiesto
+
+
+def test_el_tope_real_alcanza_para_un_lote_grande() -> None:
+    # Un lote de 50.000 salidas con procedencia mínima tiene que caber: el costo por entrada se mide, no se supone.
+    uno = len(serializar_manifiesto(_manifiesto(_entrada("textures/arch/a_p.dds"))))
+    dos = len(serializar_manifiesto(_manifiesto(_entrada("textures/arch/a_p.dds"), _entrada("textures/arch/b_p.dds"))))
+
+    assert (dos - uno) * 50_000 < output.TAMANO_MAXIMO_DEL_MANIFIESTO
 
 
 def test_los_mensajes_distinguen_esquema_y_mod_equivocados() -> None:

@@ -27,6 +27,8 @@ Límites declarados (qué NO hace este módulo):
 - Las rutas son solo ASCII imprimible: la normalización de Unicode y el plegado de mayúsculas cambian entre sistemas
   de archivos. La comparación de rutas ignora mayúsculas (``clave_de_ruta``), como Windows.
 - Cambiar el formato de la clave o del manifiesto exige subir ``ESQUEMA_DEL_MANIFIESTO``: invalida toda caché.
+- El manifiesto serializado no puede superar ``TAMANO_MAXIMO_DEL_MANIFIESTO`` (128 MiB, unas 100.000 entradas típicas): el
+  serializador falla con el MISMO tope que usa el lector, así que todo lo que se puede escribir se puede leer.
 
 Puro: solo biblioteca estándar; no importa ``numpy`` ni ``research`` (ancla en
 ``tests/test_native_parallax_output.py``).
@@ -78,7 +80,7 @@ __all__ = [
 
 ESQUEMA_DEL_MANIFIESTO = "sky-claw.native-parallax.output-manifest/1"
 NOMBRE_DEL_MOD_DE_SALIDA = "Sky-Claw - Native Parallax Output"
-TAMANO_MAXIMO_DEL_MANIFIESTO = 32 * 1024 * 1024
+TAMANO_MAXIMO_DEL_MANIFIESTO = 128 * 1024 * 1024
 
 # Dominios separados: la misma entrada hasheada para dos fines distintos no puede dar la misma huella.
 _DOMINIO_DE_LA_CLAVE = b"sky-claw/native-parallax/clave-de-cache/1\n"
@@ -95,8 +97,19 @@ _LARGO_MAXIMO_DE_RUTA = 200  # con la raíz del mod dentro de MAX_PATH (260) de 
 _CARPETA_RAIZ = "textures"
 _SUFIJO = "_p.dds"
 _CARACTERES_PROHIBIDOS_EN_RUTAS = frozenset('<>:"|?*\\')
+# Lista conservadora: rechazar de más es seguro (la ruta sale de una textura de la modlist y se puede renombrar),
+# aceptar de más hace fallar al escritor DESPUÉS de validar. Incluye COM0/LPT0 y los dispositivos de consola.
 _NOMBRES_RESERVADOS_DE_WINDOWS = frozenset(
-    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+    {
+        "con",
+        "conin$",
+        "conout$",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(10)),
+        *(f"lpt{i}" for i in range(10)),
+    }
 )
 
 _LARGO_MAXIMO_DE_PARAMETROS = 65_536
@@ -475,7 +488,14 @@ def serializar_manifiesto(manifiesto: Manifiesto) -> bytes:
     texto = json.dumps(
         _documento_de_manifiesto(manifiesto), sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False
     )
-    return (texto + "\n").encode("ascii")
+    datos = (texto + "\n").encode("ascii")
+    if len(datos) > TAMANO_MAXIMO_DEL_MANIFIESTO:
+        # El MISMO tope que aplica ``leer_manifiesto``: un manifiesto que el lector rechaza dejaría sin registro de
+        # propiedad (y sin caché) a todo el lote. Se falla al escribir, no al leer en la corrida siguiente.
+        raise ManifiestoInvalidoError(
+            f"el manifiesto serializado ({len(datos)} bytes) supera {TAMANO_MAXIMO_DEL_MANIFIESTO} bytes: dividí el lote"
+        )
+    return datos
 
 
 def huella_del_manifiesto(manifiesto: Manifiesto) -> str:
