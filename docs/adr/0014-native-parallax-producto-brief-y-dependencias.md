@@ -762,8 +762,8 @@ por sentadas. Verificado ejecutando en Linux (Python 3.11); el módulo es solo b
   (`sha256_autorizado`) para que el escritor la vuelva a comprobar justo antes de tocar. `CONSTRUIR` solo ocurre donde no hay nada.
 - **Rutas.** Relativas al mod de salida (`Sky-Claw - Native Parallax Output`), con `/`, solo ASCII imprimible, bajo `textures/` y de la
   forma `*_p.dds`; sin `:` (flujos alternos de NTFS), sin segmentos vacíos o con punto o espacio final (incluidos `.` y `..`), sin
-  nombres reservados de Windows y de hasta 200 caracteres. Se **rechaza en vez de normalizar**. Se comparan ignorando mayúsculas
-  (`casefold`). La lista de nombres reservados sale de la documentación pública de Windows y **no la reverifiqué en esta sesión**.
+  nombres reservados de Windows (lista conservadora: incluye `COM0`/`LPT0`, `CONIN$` y `CONOUT$`) y de hasta 200 caracteres. Se **rechaza en vez de normalizar**. Se comparan ignorando mayúsculas
+  (`casefold`). La lista de nombres reservados sale de la documentación pública de Windows y **no la reverifiqué en esta sesión**; por eso es un superconjunto deliberado (rechazar de más es seguro, aceptar de más hace fallar al escritor después de validar).
 - **Ancla de familia.** Solo `output.py` nombra `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports y por llamadas (ambos por AST);
   los campos de `Procedencia`, `EncoderUsado` y `OrigenDeEntrada` se enumeran por introspección contra las variantes que cambian la
   clave: un campo nuevo que no entre a la clave rompe el test. El manifiesto y la clave de referencia están congelados.
@@ -785,4 +785,7 @@ de compromiso), y recuperarse de un corte a mitad. El escritor también decide c
 (3) De dónde salen las salidas deseadas, los orígenes y los valores concretos del `entorno` (versiones de `numpy`, Python,
 plataforma) es de NP-A0; el `exportador_id` y `ResultadoDeExportacion` (`texconv_version`, `texconv_sha256`, `argumentos`) se
 unen en el `EncoderUsado` ahí. (4) El plegado de mayúsculas con `casefold` aproxima la tabla de Windows solo para ASCII; por eso las rutas
-son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica pura, probada con entradas sintéticas.
+son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica pura, probada con entradas sintéticas. (6) **Tope del manifiesto**: 128 MiB, el mismo para
+leer y para escribir (el serializador falla en vez de producir un manifiesto que el lector rechazaría y que dejaría al lote sin
+registro de propiedad ni caché). Con rutas cortas una entrada pesa ≈1,1 KiB (medido), o sea unas 100.000 entradas; un lote mayor se
+tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memoria: el tope es una cota, no una promesa de velocidad.
