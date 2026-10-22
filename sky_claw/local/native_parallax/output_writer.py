@@ -35,7 +35,7 @@ import os
 import pathlib
 import stat
 import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Final
@@ -546,15 +546,16 @@ def _copiar_a_etapa(control: pathlib.Path, trabajo: _Trabajo) -> pathlib.Path:
         os.unlink(etapa)
     digest = hashlib.sha256()
     total = 0
-    fd = os.open(etapa, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
     try:
-        with trabajo.fuente.open("rb") as origen, os.fdopen(fd, "wb") as destino:
-            while bloque := origen.read(_BLOQUE):
-                digest.update(bloque)
-                total += len(bloque)
-                destino.write(bloque)
-            destino.flush()
-            os.fsync(destino.fileno())
+        with trabajo.fuente.open("rb") as origen:
+            fd = os.open(etapa, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
+            with os.fdopen(fd, "wb") as destino:
+                while bloque := origen.read(_BLOQUE):
+                    digest.update(bloque)
+                    total += len(bloque)
+                    destino.write(bloque)
+                destino.flush()
+                os.fsync(destino.fileno())
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(etapa)
@@ -623,8 +624,8 @@ def _construir(
     ruta = trabajo.entrada.ruta
     try:
         etapa = _copiar_a_etapa(control, trabajo)
-    except _FuenteCambioError as exc:
-        return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, str(exc)), None
+    except (_FuenteCambioError, OSError) as exc:
+        return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, f"no se pudo copiar la fuente: {exc}"), None
     _punto_de_corte("tras_etapa")
     try:
         destino = _preparar_padre(raiz, ruta)
@@ -651,8 +652,8 @@ def _reemplazar(
     ruta = trabajo.entrada.ruta
     try:
         etapa = _copiar_a_etapa(control, trabajo)
-    except _FuenteCambioError as exc:
-        return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, str(exc)), vigente
+    except (_FuenteCambioError, OSError) as exc:
+        return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, f"no se pudo copiar la fuente: {exc}"), vigente
     _punto_de_corte("tras_etapa")
     try:
         destino = _preparar_padre(raiz, ruta)
@@ -775,6 +776,18 @@ class SesionDeSalida:
         self._lock = lock
         self._vigente = vigente
         self._ultimo: tuple[PlanDeSalida, dict[str, SalidaDeseada]] | None = None
+        self._ocupada = False
+
+    @contextlib.contextmanager
+    def _una_operacion_a_la_vez(self) -> Iterator[None]:
+        """Una sesión atiende UNA operación por vez: dos ``aplicar`` superpuestos se pisarían el pendiente y la papelera."""
+        if self._ocupada:
+            raise SalidaNoEscribibleError("la sesión está ocupada con otra operación: esperá a que termine")
+        self._ocupada = True
+        try:
+            yield
+        finally:
+            self._ocupada = False
 
     async def _asegurar_lock(self) -> None:
         if self._lock is None:
@@ -788,14 +801,15 @@ class SesionDeSalida:
 
     async def planificar(self, deseadas: Iterable[SalidaDeseada]) -> PlanDeSalida:
         """Observa el disco y decide qué hacer con cada ruta (ver ``output.planificar``). No modifica nada."""
-        await self._asegurar_lock()
-        lista = list(deseadas)
-        rutas = {d.ruta for d in lista if isinstance(d, SalidaDeseada)}
-        rutas |= {e.ruta for e in self.manifiesto.entradas}
-        observado = await asyncio.to_thread(_observar_rutas, self._raiz, sorted(rutas))
-        plan = planificar(lista, self._vigente, observado)
-        self._ultimo = (plan, {clave_de_ruta(d.ruta): d for d in lista})
-        return plan
+        with self._una_operacion_a_la_vez():
+            await self._asegurar_lock()
+            lista = list(deseadas)
+            rutas = {d.ruta for d in lista if isinstance(d, SalidaDeseada)}
+            rutas |= {e.ruta for e in self.manifiesto.entradas}
+            observado = await asyncio.to_thread(_observar_rutas, self._raiz, sorted(rutas))
+            plan = planificar(lista, self._vigente, observado)
+            self._ultimo = (plan, {clave_de_ruta(d.ruta): d for d in lista})
+            return plan
 
     async def aplicar(self, plan: PlanDeSalida, fuentes: Mapping[str, FuenteDeSalida]) -> ResultadoDeAplicacion:
         """Aplica *plan* (el último que devolvió ``planificar``) con las *fuentes* de las rutas que hay que construir.
@@ -805,14 +819,15 @@ class SesionDeSalida:
                 tocó el disco. Una ruta cuya acción falla o encuentra al disco cambiado NO levanta: queda en el resultado.
             LockLeaseLostError: se perdió el lock durante la sesión (se aborta antes de la siguiente mutación).
         """
-        await self._asegurar_lock()
-        if self._ultimo is None or plan != self._ultimo[0]:
-            raise SalidaNoEscribibleError("el plan no es el último que devolvió planificar() en esta sesión")
-        deseadas = self._ultimo[1]
-        trabajos, fallos_previos = await asyncio.to_thread(self._preparar_trabajos, plan, deseadas, fuentes)
-        resultado = await self._ejecutar(plan, trabajos, fallos_previos)
-        self._ultimo = None
-        return resultado
+        with self._una_operacion_a_la_vez():
+            await self._asegurar_lock()
+            if self._ultimo is None or plan != self._ultimo[0]:
+                raise SalidaNoEscribibleError("el plan no es el último que devolvió planificar() en esta sesión")
+            deseadas = self._ultimo[1]
+            trabajos, fallos_previos = await asyncio.to_thread(self._preparar_trabajos, plan, deseadas, fuentes)
+            resultado = await self._ejecutar(plan, trabajos, fallos_previos)
+            self._ultimo = None
+            return resultado
 
     # --- validación previa (no muta el disco) --------------------------------------------------------------------
 

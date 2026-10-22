@@ -663,6 +663,34 @@ async def test_una_fuente_que_cambia_mientras_se_copia_no_se_publica(escenario: 
     assert "cambió" in resultado.rutas[0].detalle
 
 
+async def test_una_fuente_que_desaparece_antes_de_copiarse_falla_esa_ruta_sin_filtrar_descriptores(
+    escenario: Escenario, interponer: Any
+) -> None:
+    perdida = escenario.fuente(b"DDS-A")
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass  # calienta: la base de locks ya queda abierta y su descriptor no cuenta
+    interponer("tras_pendiente", lambda: perdida.archivo.unlink())
+    fds_antes = len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else None
+
+    resultado = await escenario.lote({RUTA_A: perdida, RUTA_C: escenario.fuente(b"DDS-C", 2.5)})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA, RUTA_C: EfectoDeSalida.PUBLICADA}
+    assert escenario.archivos_bajo_textures() == {RUTA_C}
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+    if fds_antes is not None:
+        assert len(os.listdir("/proc/self/fd")) <= fds_antes
+
+
+async def test_una_sesion_no_admite_dos_operaciones_a_la_vez(escenario: Escenario) -> None:
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        resultados = await asyncio.gather(sesion.planificar([]), sesion.planificar([]), return_exceptions=True)
+
+        rechazadas = [r for r in resultados if isinstance(r, SalidaNoEscribibleError)]
+        assert len(rechazadas) == 1
+        assert "ocupada" in str(rechazadas[0])
+        await sesion.planificar([])  # y la sesión sigue sirviendo cuando la operación terminó
+
+
 # ---------------------------------------------------------------------------
 # El lock
 # ---------------------------------------------------------------------------
