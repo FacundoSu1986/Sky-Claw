@@ -22,6 +22,7 @@ import json
 import random
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -225,6 +226,13 @@ def test_los_parametros_no_serializables_se_rechazan(parametros: dict[Any, Any])
 def test_los_parametros_deben_ser_un_objeto() -> None:
     with pytest.raises(ProcedenciaInvalidaError):
         parametros_canonicos([1, 2])  # type: ignore[arg-type]
+
+
+def test_un_mapping_que_no_es_dict_se_rechaza_y_la_firma_lo_dice() -> None:
+    # La firma pide ``dict``: un ``Mapping`` cualquiera pasaría mypy y fallaría recién en ejecución. El ``type: ignore``
+    # es la prueba de que mypy lo ve (con ``warn_unused_ignores`` sobraría si la firma volviera a decir ``Mapping``).
+    with pytest.raises(ProcedenciaInvalidaError, match="mappingproxy"):
+        parametros_canonicos(MappingProxyType({"a": 1}))  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1132,8 @@ def test_las_observaciones_de_mas_se_ignoran() -> None:
 
 def test_el_mapa_de_observaciones_se_indexa_por_la_clave_de_ruta() -> None:
     # Una observación guardada con la ruta cruda (sin ``clave_de_ruta``) no cuenta: se falla en vez de adivinar.
-    with pytest.raises(PlanInvalidoError):
+    # El mensaje nombra la clave que había que usar, no solo la ruta: es lo que permite diagnosticar un error de mayúsculas.
+    with pytest.raises(PlanInvalidoError, match="'textures/a_p.dds'"):
         planificar([SalidaDeseada("Textures/A_p.dds", H_A)], None, {"Textures/A_p.dds": Observacion(T.AUSENTE, None)})
 
 

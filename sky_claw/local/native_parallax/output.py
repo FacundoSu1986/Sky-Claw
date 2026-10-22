@@ -249,8 +249,11 @@ def _validar_valor_json(valor: Any, profundidad: int) -> None:
     raise ProcedenciaInvalidaError(f"tipo no admitido en los parámetros: {type(valor).__name__}")
 
 
-def parametros_canonicos(parametros: Mapping[str, Any]) -> str:
+def parametros_canonicos(parametros: dict[str, Any]) -> str:
     """JSON canónico (claves ordenadas, sin espacios, solo ASCII) de un objeto de parámetros.
+
+    Pide un ``dict`` (o subclase), no cualquier ``Mapping``: un ``MappingProxyType`` se rechaza en ejecución, y la firma lo
+    dice para que mypy lo vea antes.
 
     Solo ``None``, booleanos, enteros de 64 bits, flotantes finitos, texto ASCII, listas y objetos con claves de
     texto; las tuplas no entran (que el llamador decida si son listas). ``True``, ``1`` y ``1.0`` dan texto
@@ -772,7 +775,9 @@ def planificar(
         deseada = por_deseada.get(clave)
         entrada = por_entrada.get(clave)
         if clave not in observado:
-            raise PlanInvalidoError(f"falta la observación de {ruta!r} (indexada por clave_de_ruta)")
+            raise PlanInvalidoError(
+                f"falta la observación de {ruta!r}: el mapa se indexa por clave_de_ruta, o sea {clave!r}"
+            )
         accion, motivo, autorizada = _decidir(deseada, entrada, observado[clave])
         acciones.append(AccionPlanificada(ruta, accion, motivo, autorizada))
     return PlanDeSalida(acciones=tuple(acciones))
