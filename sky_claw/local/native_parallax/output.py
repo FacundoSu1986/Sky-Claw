@@ -883,7 +883,10 @@ def _entrada_que_queda(
     if es_archivo and disco.sha256 == vigente.sha256:  # no se llegó a tocar (o se deshizo): sigue siendo nuestro
         return vigente
     if pendiente is not None and disco.tipo is TipoObservado.AUSENTE and estado.papelera == vigente.sha256:
-        return vigente  # el reemplazo apartó el original y se cortó antes de publicar: el original se devuelve
+        # El reemplazo apartó el original y se cortó antes de publicar: el original se devuelve. Si sus bytes son los que
+        # declaraba la intención (otra procedencia, mismos bytes), devolverlo ES publicar la pendiente: se adopta ya, o el
+        # arranque siguiente la adoptaría y la recuperación no sería idempotente.
+        return pendiente if pendiente.sha256 == vigente.sha256 else vigente
     return None  # lo tocó un tercero, o ya no está: deja de ser asunto nuestro
 
 
@@ -931,11 +934,12 @@ def reconciliar_tras_corte(
         if estado.papelera is None:
             continue
         ruta_vacia = estado.disco.tipo is TipoObservado.AUSENTE
-        if vigente is not None and estado.papelera == vigente.sha256 and not (queda is vigente and ruta_vacia):
+        if vigente is not None and estado.papelera == vigente.sha256 and not (queda is not None and ruta_vacia):
             descartar.append(DescarteDePapelera(vigente.ruta, vigente.sha256))  # nuestro y ya no hace falta
         elif ruta_vacia:
-            # Vuelve a su ruta: si es nuestro, porque su entrada sigue en pie; si no, porque lo tocó un tercero y es lo
-            # que el escritor hace sin corte. Con la ruta ocupada, lo ajeno se queda en la papelera: nunca se borra.
+            # Vuelve a su ruta: si es nuestro, porque una entrada con sus bytes sigue en pie (descartarlo borraría la
+            # única copia); si no, porque lo tocó un tercero y es lo que el escritor hace sin corte. Con la ruta ocupada,
+            # lo ajeno se queda en la papelera: nunca se borra.
             restaurar.append(rutas[clave])
     return RecuperacionDeCorte(
         manifiesto=Manifiesto.ordenado(quedan), restaurar=tuple(restaurar), descartar=tuple(descartar)

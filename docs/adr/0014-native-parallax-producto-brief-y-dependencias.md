@@ -805,7 +805,7 @@ tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memor
 
 NP-O0b1 es la **parte pura de la recuperación** del escritor, no el escritor: `reconciliar_tras_corte` en
 `sky_claw/local/native_parallax/output.py` no lee ni escribe archivos, no toma locks y todavía no tiene call site (lo tiene NP-O0b2).
-Se separó del escritor porque es lo único que se puede probar **entera** (60 estados enumerados) sin disco, y porque el escritor
+Se separó del escritor porque es lo único que se puede probar **entera** (75 estados enumerados) sin disco, y porque el escritor
 tiene que cumplir el protocolo que esta función da por sentado. Verificado ejecutando en Linux (Python 3.11).
 
 **Protocolo que NP-O0b2 tiene que cumplir** (si no lo cumple, esta función decide sobre supuestos falsos):
@@ -829,18 +829,20 @@ tiene que cumplir el protocolo que esta función da por sentado. Verificado ejec
    `TAMANO_MAXIMO_DEL_MANIFIESTO`; si la supera, rechaza el lote sin tocar nada («dividí el lote»).
 
 **Qué decide** (`reconciliar_tras_corte(previo, pendiente, observado)`, con `observado[clave_de_ruta]` = `EstadoTrasCorte(disco, papelera)`).
-Por cada ruta que figure en alguno de los dos manifiestos, 4 relaciones (solo en el pendiente = una creación; solo en el vigente = un
-retiro o una suelta; la misma entrada en ambos; una entrada distinta = un reemplazo) × 5 estados de disco (ausente, archivo con los
-bytes vigentes, archivo con los bytes pendientes, archivo con otros bytes, otra cosa) × 3 de papelera (nada, un archivo con la huella
-vigente, uno con otra huella) = **60 estados**, enumerados y comparados por igualdad literal contra una tabla escrita a mano
+Por cada ruta que figure en alguno de los dos manifiestos, 5 relaciones (solo en el pendiente = una creación; solo en el vigente = un
+retiro o una suelta; la misma entrada en ambos; una entrada distinta = un reemplazo; una entrada distinta con los **mismos bytes** = un
+reemplazo que solo cambia la procedencia) × 5 estados de disco (ausente, archivo con los bytes vigentes, archivo con los bytes
+pendientes, archivo con otros bytes, otra cosa) × 3 de papelera (nada, un archivo con la huella vigente, uno con otra huella) =
+**75 estados**, enumerados y comparados por igualdad literal contra una tabla escrita a mano
 (`tests/test_native_parallax_output_recuperacion.py`). En resumen: se **adopta** (pasa al manifiesto) solo lo que ya está en disco con
 los bytes que la intención declaraba; un reemplazo que apartó el original y se cortó antes de publicar **devuelve el original**
-(`restaurar`); un archivo apartado que es nuestro y ya no hace falta se **descarta** (con la huella que lo autoriza); todo lo que tocó
+(`restaurar`; si el original tiene los bytes que declaraba la intención, devolverlo es publicar la pendiente y se adopta esa); un
+archivo apartado que es nuestro y ya no hace falta se **descarta** (con la huella que lo autoriza); todo lo que tocó
 un tercero deja de ser asunto nuestro (sale del manifiesto) sin borrarse. Una huella en la papelera solo cuenta como nuestra si es la
 de la entrada **vigente** de esa ruta; lo apartado que no es nuestro **vuelve a su ruta si está vacía** (el escritor aparta antes de
 verificar: si un tercero había editado el archivo y el proceso murió antes de verificarlo, sin esto el archivo del usuario quedaba
 encerrado en la papelera) y, si la ruta está ocupada, se queda. Es idempotente: reconciliar otra vez con el resultado como manifiesto
-vigente no cambia nada (anclado sobre los 60 estados), así que un segundo corte durante la recuperación es seguro.
+vigente no cambia nada (anclado sobre los 75 estados), así que un segundo corte durante la recuperación es seguro.
 
 **La cota del manifiesto que puede quedar en pie** (`cota_del_manifiesto_tras_un_corte(previo, pendiente)`). Tras un corte, y también
 al comprometer un lote con rutas fallidas, queda por ruta a lo sumo **una** entrada de alguno de los dos manifiestos: la unión puede
@@ -853,7 +855,7 @@ mismas rutas no ve reducido el tope.
 **Mutación** (automática por AST sobre `_entrada_que_queda`, `reconciliar_tras_corte`, `cota_del_manifiesto_tras_un_corte` y las tres
 clases: comparaciones, `and`/`or`, `not`, aritmética, constantes, condiciones, retornos, llamadas, `raise` y `continue`; las anotaciones
 no se mutan porque con `from __future__ import annotations` no se evalúan; cada mutante corre con un "mutante nulo" previo que valida el
-empalme). Sobre la versión final: **147 mutantes, 146 muertos y 1 vivo equivalente** (`peso_por_ruta.get(clave, 0)` → `1`: el peso de
+empalme). Sobre la versión final: **150 mutantes, 149 muertos y 1 vivo equivalente** (`peso_por_ruta.get(clave, 0)` → `1`: el peso de
 una entrada serializada siempre supera 1 byte, así que `max(1, peso) == peso`). La pasada anterior dejó vivos 9 textos de mensajes de
 error, cerrados haciendo que los tests de validación comprueben con `match=` qué chequeo se dispara. En la primera versión (antes de la
 revisión) se hicieron además 6 mutantes a mano sobre el orden de las ramas, la unión de rutas y la ortografía de la ruta a restaurar:
@@ -864,6 +866,10 @@ revisión, 10 fallas de comportamiento con la huella y la cota ya implementadas 
 **Revisión.** La primera versión tenía tres defectos que señaló la revisión automática (Codex) y que se verificaron leyendo el código:
 lo ajeno apartado quedaba varado en la papelera si el corte caía entre apartar y verificar (era el camino gemelo de `_devolver`, que
 sí lo devuelve sin corte), `descartar` no llevaba la huella que autoriza el borrado, y nada acotaba la unión de los dos manifiestos.
+Una segunda revisión (CodeRabbit) encontró que un reemplazo con los mismos bytes y otra procedencia, cortado con el original en la
+papelera, se recuperaba con la entrada vigente y el arranque siguiente adoptaba la pendiente: la recuperación no era idempotente. La
+tabla de 60 no tenía esa relación y por ese hueco se escapó; entró como quinta relación (75 estados) y el rojo se observó en sus dos
+anclas (la tabla y la idempotencia) antes de corregir.
 
 **Límites declarados.** (1) Es lógica pura: la papelera y el disco los observa el escritor; esta función no sabe cómo. (2) No cierra
 la ventana de la ruta vacía del punto 3, solo la recupera. (3) Un manifiesto pendiente ilegible **no** se interpreta: el escritor tiene

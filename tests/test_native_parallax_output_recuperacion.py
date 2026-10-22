@@ -5,8 +5,10 @@ definitivo AL FINAL (el punto de compromiso). Si el proceso muere en el medio, e
 manifiesto vigente, el pendiente y lo que hay en disco (más una «papelera» donde el escritor aparta un archivo antes de
 verificarlo). `reconciliar_tras_corte` decide, sin tocar nada, qué manifiesto queda en pie y qué hacer con la papelera.
 
-La tabla se ENUMERA entera (4 relaciones × 5 estados de disco × 3 de papelera = 60 estados) y se compara por igualdad
-literal contra una tabla escrita a mano: agregar una dimensión sin ampliarla rompe el test.
+La tabla se ENUMERA entera (5 relaciones × 5 estados de disco × 3 de papelera = 75 estados) y se compara por igualdad
+literal contra una tabla escrita a mano: agregar una dimensión sin ampliarla rompe el test. La idempotencia se prueba
+sobre los 75: la relación MISMOS_BYTES (un reemplazo con otra procedencia y los mismos bytes) entró porque la tabla de 60
+no la tenía y por ese hueco se escapó una recuperación que cambiaba de entrada en el segundo arranque.
 
 `cota_del_manifiesto_tras_un_corte` acota el manifiesto que puede quedar en pie: se verifica contra TODAS las elecciones
 posibles por ruta (la entrada vigente, la pendiente o ninguna), no contra un caso elegido.
@@ -36,6 +38,7 @@ from sky_claw.local.native_parallax.output import (
     RecuperacionDeCorte,
     RutaDeSalidaInvalidaError,
     TipoObservado,
+    clave_de_cache,
     clave_de_ruta,
     cota_del_manifiesto_tras_un_corte,
     crear_entrada,
@@ -105,13 +108,14 @@ class Rel(Enum):
     SOLO_P = "solo_p"  # se quería crear: m no la tiene
     SOLO_M = "solo_m"  # se quería soltar o retirar: p no la tiene
     IGUAL = "igual"  # m y p tienen la MISMA entrada
-    DISTINTO = "distinto"  # se quería reemplazar: p tiene otra entrada
+    DISTINTO = "distinto"  # se quería reemplazar: p tiene otra entrada, con otros bytes
+    MISMOS_BYTES = "mismos_bytes"  # se quería reemplazar: p tiene otra entrada (otra procedencia) con los MISMOS bytes
 
 
 class Disco(Enum):
     AUSENTE = "ausente"
     ARCHIVO_M = "archivo_m"  # un archivo con los bytes de m
-    ARCHIVO_P = "archivo_p"  # un archivo con los bytes de p
+    ARCHIVO_P = "archivo_p"  # un archivo con los bytes H_P (en MISMOS_BYTES no son los de p: p tiene los de m)
     ARCHIVO_X = "archivo_x"  # un archivo con otros bytes
     OTRO = "otro"  # un directorio, un enlace...
 
@@ -132,7 +136,9 @@ class Efecto(Enum):
 # pasa con una papelera ajena). «m» y «p» nombran la entrada vigente y la pendiente. Escrita a mano, fila por fila, sin
 # mirar la implementación. Una papelera ajena nunca cambia el manifiesto ni se descarta; si la ruta está vacía, vuelve:
 # es lo mismo que hace el escritor sin corte cuando lo apartado no era lo autorizado. En una creación (SOLO_P) no hay
-# entrada vigente, así que la papelera «de m» tampoco es nuestra y se comporta como una ajena.
+# entrada vigente, así que la papelera «de m» tampoco es nuestra y se comporta como una ajena. En MISMOS_BYTES el archivo
+# con los bytes de m TIENE los bytes que la intención declaraba: está publicado (se adopta p), y devolver el original
+# apartado también es publicar p.
 _FILAS: dict[tuple[Rel, Disco], tuple[str | None, str | None, Efecto, Efecto]] = {
     (Rel.SOLO_P, Disco.AUSENTE): (None, None, Efecto.RESTAURAR, Efecto.RESTAURAR),
     (Rel.SOLO_P, Disco.ARCHIVO_M): (None, None, Efecto.NADA, Efecto.NADA),
@@ -154,11 +160,16 @@ _FILAS: dict[tuple[Rel, Disco], tuple[str | None, str | None, Efecto, Efecto]] =
     (Rel.DISTINTO, Disco.ARCHIVO_P): ("p", "p", Efecto.DESCARTAR, Efecto.NADA),
     (Rel.DISTINTO, Disco.ARCHIVO_X): (None, None, Efecto.DESCARTAR, Efecto.NADA),
     (Rel.DISTINTO, Disco.OTRO): (None, None, Efecto.DESCARTAR, Efecto.NADA),
+    (Rel.MISMOS_BYTES, Disco.AUSENTE): (None, "p", Efecto.RESTAURAR, Efecto.RESTAURAR),
+    (Rel.MISMOS_BYTES, Disco.ARCHIVO_M): ("p", "p", Efecto.DESCARTAR, Efecto.NADA),
+    (Rel.MISMOS_BYTES, Disco.ARCHIVO_P): (None, None, Efecto.DESCARTAR, Efecto.NADA),
+    (Rel.MISMOS_BYTES, Disco.ARCHIVO_X): (None, None, Efecto.DESCARTAR, Efecto.NADA),
+    (Rel.MISMOS_BYTES, Disco.OTRO): (None, None, Efecto.DESCARTAR, Efecto.NADA),
 }
 
 
 def _tabla_esperada() -> dict[tuple[Rel, Disco, Papelera], tuple[str | None, bool, bool]]:
-    """Expande las 20 filas a los 60 estados: (manifiesto que queda, ¿restaurar?, ¿descartar?)."""
+    """Expande las 25 filas a los 75 estados: (manifiesto que queda, ¿restaurar?, ¿descartar?)."""
     tabla: dict[tuple[Rel, Disco, Papelera], tuple[str | None, bool, bool]] = {}
     for (rel, disco), (sin_papelera, con_papelera, efecto, efecto_ajena) in _FILAS.items():
         assert efecto_ajena is not Efecto.DESCARTAR, "una papelera ajena no se descarta nunca"
@@ -177,11 +188,13 @@ TABLA_ESPERADA = _tabla_esperada()
 
 def _escenario(rel: Rel, disco: Disco, papelera: Papelera) -> tuple[Manifiesto | None, Manifiesto, EstadoTrasCorte]:
     m, p = _entrada_m(), _entrada_p()
+    p_con_los_bytes_de_m = crear_entrada(RUTA, H_M, 1000, _procedencia(2.5))
     previo, pendiente = {
         Rel.SOLO_P: (None, _manifiesto(p)),
         Rel.SOLO_M: (_manifiesto(m), _manifiesto()),
         Rel.IGUAL: (_manifiesto(m), _manifiesto(m)),
         Rel.DISTINTO: (_manifiesto(m), _manifiesto(p)),
+        Rel.MISMOS_BYTES: (_manifiesto(m), _manifiesto(p_con_los_bytes_de_m)),
     }[rel]
     observacion = {
         Disco.AUSENTE: AUSENTE,
@@ -195,18 +208,19 @@ def _escenario(rel: Rel, disco: Disco, papelera: Papelera) -> tuple[Manifiesto |
 
 
 def _quien(manifiesto: Manifiesto) -> str | None:
-    """«m», «p» o None según qué entrada quedó para ``RUTA`` (se distinguen por sus bytes)."""
+    """«m», «p» o None según qué entrada quedó para ``RUTA`` (se distinguen por su procedencia, no por sus bytes:
+    en MISMOS_BYTES las dos tienen los mismos)."""
     por_ruta = {clave_de_ruta(e.ruta): e for e in manifiesto.entradas}
     entrada = por_ruta.get(clave_de_ruta(RUTA))
     if entrada is None:
         return None
-    return {H_M: "m", H_P: "p"}[entrada.sha256]
+    return {clave_de_cache(_procedencia(1.5)): "m", clave_de_cache(_procedencia(2.5)): "p"}[entrada.clave_de_cache]
 
 
 def test_la_tabla_enumera_todas_las_combinaciones() -> None:
     todas = set(itertools.product(Rel, Disco, Papelera))
     assert set(TABLA_ESPERADA) == todas
-    assert len(todas) == 60
+    assert len(todas) == 75
 
 
 @pytest.mark.parametrize(("rel", "disco", "papelera"), sorted(TABLA_ESPERADA, key=lambda k: tuple(x.value for x in k)))
