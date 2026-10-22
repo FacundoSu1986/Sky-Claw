@@ -846,9 +846,7 @@ ifaddr==0.2.0 \
 importlib-metadata==8.7.1 \
     --hash=sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb \
     --hash=sha256:5a1f80bf1daa489495071efbb095d75a634cf28a8bc299581244063b53176151
-    # via
-    #   keyring
-    #   opentelemetry-api
+    # via keyring
 inflate64==1.0.4 \
     --hash=sha256:067af498c34a8b69b2957d20dbce4d72affda23aed37ea231b1ea5ad9aab5731 \
     --hash=sha256:0d173a7a0e865bb7d19685c5b1ad2994712b8361b24136d7e94abeff58505647 \
@@ -1447,37 +1445,42 @@ numpy==2.4.6 \
     --hash=sha256:f407cb6b8e9d6d8c626bc73c945db1706035af8fd632295547bf1c9e46d092d6 \
     --hash=sha256:f74a575920ab21fe304421a3fc28793d82e299cae9eccb37084e9fc7f3617c20
     # via sky-claw (pyproject.toml)
-opentelemetry-api==1.41.1 \
-    --hash=sha256:0ad1814d73b875f84494387dae86ce0b12c68556331ce6ce8fe789197c949621 \
-    --hash=sha256:a22df900e75c76dc08440710e51f52f1aa6b451b429298896023e60db5b3139f
+opentelemetry-api==1.45.1 \
+    --hash=sha256:aa38ed19bcc084ba42782a73255b3582283eced7ad6dddbd6695189e69adfb75 \
+    --hash=sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb
     # via
     #   sky-claw (pyproject.toml)
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-otlp-proto-common==1.41.1 \
-    --hash=sha256:0e253156ea9c36b0bd3d2440c5c9ba7dd1f3fb64ba7a08fc85fbac536b56e1fb \
-    --hash=sha256:10da74dad6a49344b9b7b21b6182e3060373a235fde1528616d5f01f92e66aa9
+opentelemetry-exporter-otlp-common==0.66b1 \
+    --hash=sha256:00ff8592c3a7cb729ff3fdc7ffa12372c243bdf2163e80c180994d0c7bd83ee9 \
+    --hash=sha256:6b1403487a2185ac1feb45fd5546fdf8630ce71c36bcefaadf51e2130e9e23f9
     # via opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-exporter-otlp-proto-grpc==1.41.1 \
-    --hash=sha256:537926dcef951136992479af1d9cd88f25e33d56c530e9f020ed57774dca2f94 \
-    --hash=sha256:b05df8fa1333dc9a3fda36b676b96b5095ab6016d3f0c3296d430d629ba1443b
+opentelemetry-exporter-otlp-proto-common==1.45.1 \
+    --hash=sha256:2e4adcc3a67bcf57804fc49514f0ef64974ca7590aa3491da389852b4a0628f6 \
+    --hash=sha256:2f446183ae7047b036226f1d846c41a834b0e8755ad13b51a51dd38952eb466c
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.45.1 \
+    --hash=sha256:3b3dcfbfdcb4e35149fcf309972282054b45228f5c10547d0095d6578510a9a0 \
+    --hash=sha256:e42ecb789d2fc5d8145e3dadc3e2991c9f18cd166d7c7514e234702540274b76
     # via sky-claw (pyproject.toml)
-opentelemetry-proto==1.41.1 \
-    --hash=sha256:0496713b804d127a4147e32849fbaf5683fac8ee98550e8e7679cd706c289720 \
-    --hash=sha256:4b9d2eb631237ea43b80e16c073af438554e32bc7e9e3f8ca4a9582f900020e5
+opentelemetry-proto==1.45.1 \
+    --hash=sha256:79e0fb95e4616691a469439238aa9224d75779b3e108e895d1aa125ab29ca77c \
+    --hash=sha256:f38e2a8413053c180cd3d2637fbb279673ec2f6a6e09c995aafa2f452c52b46e
     # via
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-sdk==1.41.1 \
-    --hash=sha256:724b615e1215b5aeacda0abb8a6a8922c9a1853068948bd0bd225a56d0c792e6 \
-    --hash=sha256:edee379c126c1bce952b0c812b48fe8ff35b30df0eecf17e98afa4d598b7d85d
+opentelemetry-sdk==1.45.1 \
+    --hash=sha256:63d24a6ca645019a631e6a51999c73e93adcac1196ca640b8ae78a7cc4762bf3 \
+    --hash=sha256:c604c11dc429810812348989115fa44bd558772a3d7442afc43d024f2c250ca4
     # via
     #   sky-claw (pyproject.toml)
+    #   opentelemetry-exporter-otlp-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-semantic-conventions==0.62b1 \
-    --hash=sha256:c5cc6e04a7f8c7cdd30be2ed81499fa4e75bfbd52c9cb70d40af1f9cd3619802 \
-    --hash=sha256:cf506938103d331fbb78eded0d9788095f7fd59016f2bda813c3324e5a74a93c
+opentelemetry-semantic-conventions==0.66b1 \
+    --hash=sha256:497ca63bf383723411e8eaf60c8779e9877633c936bb641080adab59d0eb6ec8 \
+    --hash=sha256:d4cddeb4315490b35213f55e2bdc9ac54bb1e4d318927475bed62b35545e581b
     # via opentelemetry-sdk
 orjson==3.11.9 \
     --hash=sha256:011382e2a60fda9d46f1cdee31068cfc52ffe952b587d683ec0463002802a0f4 \

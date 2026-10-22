@@ -558,6 +558,55 @@ def test_certifi_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert version_uv >= piso_minimo, f"uv.lock tiene certifi {version_uv} < {piso_minimo}"
 
 
+#: Los paquetes de OpenTelemetry que declara el runtime; el resto de la familia lo arrastran ellos.
+_OPENTELEMETRY_DECLARADOS = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-grpc")
+
+
+def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """La familia OpenTelemetry debe mantener el piso seguro >=1.45.1 ante CVE-2026-114603 (opentelemetry-api).
+
+    La familia versiona junta (api, sdk, exporters, proto y common salen con el mismo número), así que se enumeran
+    TODOS los ``opentelemetry-*`` de la serie 1.x de los TRES locks, no solo el paquete del aviso: un gemelo que quedara
+    atrás dejaría instalada otra versión vieja de la misma familia. ``semantic-conventions`` va en su propia serie 0.x y
+    no entra en la comparación.
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("1.45.1")
+    vulnerable = Version("1.41.1")
+
+    # 1. pyproject.toml: el piso en los tres declarados
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    for nombre in _OPENTELEMETRY_DECLARADOS:
+        candidatos = [d for d in runtime_deps if d.name == nombre]
+        assert len(candidatos) == 1, f"se esperaba exactamente un {nombre} en runtime, hay {candidatos}"
+        req = candidatos[0]
+        assert not req.specifier.contains(vulnerable), f"el rango de {nombre} admite la versión vulnerable: {req}"
+        assert req.specifier.contains(piso_minimo), f"el rango de {nombre} no cubre el piso {piso_minimo}: {req}"
+
+    # 2. los dos requirements*.lock: toda la familia 1.x
+    for archivo in ("requirements.lock", "requirements-native-parallax.lock"):
+        pines = _versiones_pineadas((REPO_ROOT / archivo).read_text(encoding="utf-8"))
+        familia = {n: Version(v) for n, v in pines.items() if n.startswith("opentelemetry-") and Version(v).major >= 1}
+        assert set(_OPENTELEMETRY_DECLARADOS) <= set(familia), f"{archivo} no pinea toda la familia declarada"
+        viejos = {n: str(v) for n, v in familia.items() if v < piso_minimo}
+        assert viejos == {}, f"{archivo} tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos}"
+
+    # 3. uv.lock: toda la familia 1.x
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    familia_uv = [
+        (p["name"], Version(p["version"]))
+        for p in uv_data.get("package", [])
+        if p.get("name", "").startswith("opentelemetry-") and Version(p["version"]).major >= 1
+    ]
+    assert set(_OPENTELEMETRY_DECLARADOS) <= {n for n, _ in familia_uv}, "uv.lock no resuelve toda la familia declarada"
+    viejos_uv = {n: str(v) for n, v in familia_uv if v < piso_minimo}
+    assert viejos_uv == {}, f"uv.lock tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos_uv}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 
