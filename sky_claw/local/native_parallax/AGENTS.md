@@ -94,7 +94,13 @@ La política clean-room, `docs/design/research/native-parallax/` y
   el ancla `tests/test_native_parallax_output_writer.py` lo enumera por AST: una función nueva que toque el disco, o una que nombre una unidad
   que escribe fuera de la sesión, rompe el test a propósito (decidí si participa del lock). Una ruta cuyo disco cambió entre planificar y aplicar
   no levanta: queda `CONFLICTO` y no se pisa. Los puntos de corte (`_punto_de_corte`) están congelados y el test corta el proceso en cada uno;
-  agregar uno sin cubrirlo rompe el ancla. No crea `meta.ini` ni habilita el mod (es de NP-A0). Ver ADR 0014, "Actualización de NP-O0b2".
+  agregar uno sin cubrirlo rompe el ancla. Cuatro propiedades más, de la revisión de #782 y con su ancla en el mismo archivo: toda carpeta que
+  crea dentro del mod, de salida o de control, pasa por `_crear_carpeta_contenida` (contención antes y después; al abrir se rechaza una
+  `staging/` o `trash/` que sea un enlace o un junction); todo borrado de la papelera rehace la huella en ese instante
+  (`_borrar_si_es_el_autorizado`) y no poder borrar no aborta el lote; todo lo que corre en un hilo pasa por `_en_hilo`, que no suelta el lock
+  hasta que el hilo termina aunque cancelen la tarea; y toda ortografía de la misma carpeta física compite por un solo lock (`realpath`). Un
+  lote interrumpido después de escribir su intención inutiliza la sesión hasta reabrirla. No crea `meta.ini` ni habilita el mod (es de NP-A0).
+  Ver ADR 0014, "Actualización de NP-O0b2".
 
 ## Verificación segura
 
