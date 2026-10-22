@@ -9639,9 +9639,11 @@ MERGED                                 = NO
 
 ### 46.9 Verificación de esta ronda
 
-- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: 53 tests.
-- Regresión: P4-S4 **92 passed**; P4-S3 + P4-S5 + P4-S6 **196 passed**; P4-S2
-  (anclas de wiring del lock) **25 passed**. `test_f06_inspect_applies_anti_reparse_admission_boundary`
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **53 passed**.
+- Regresión: P4-S4 **92 passed**; P4-S3 + P4-S5 + P4-S6 **205 passed**; P4-S2
+  (anclas de wiring del lock) **25 passed**. Las tres cifras se remidieron sobre
+  el **merge sintético con `aff9908d`** (árbol `7d9f6ba7`, idéntico al que produce
+  `git merge-tree`), no sólo sobre la base de la rama. `test_f06_inspect_applies_anti_reparse_admission_boundary`
   falla en esta máquina **también en el baseline** (`9fe88cb4`): crear un symlink
   de archivo sin privilegio no produce reparse ⇒ el guard no tiene nada que
   rechazar. `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
