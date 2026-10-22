@@ -1808,8 +1808,9 @@ def emitir_aprobacion(
     por arrastre todo el flujo de promoción.
 
     El camino productivo completo (presentar → decidir → emitir bajo lock) es
-    ``owner_consent.emitir_aprobacion_autorizada``, con su propio interruptor
-    (``owner_consent.EMISION_PRODUCTIVA_HABILITADA``, hoy ``False``).
+    ``owner_consent.emitir_aprobacion_autorizada``, cuya puerta LEE el único
+    interruptor ``EMISION_PRODUCTIVA_HABILITADA`` —el definido arriba en este
+    módulo, hoy ``False``—. ``owner_consent`` no declara un segundo interruptor.
     """
     raise ApprovalHitolNoDisponibleError(
         "la emisión productiva de aprobaciones sigue cerrada en P4-S6: la superficie HITL y el binding del "

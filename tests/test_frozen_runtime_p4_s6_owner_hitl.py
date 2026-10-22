@@ -177,6 +177,25 @@ def _modulos_bajo(directorio: pathlib.Path) -> list[pathlib.Path]:
     return sorted(ruta for ruta in directorio.rglob("*.py") if "__pycache__" not in ruta.parts)
 
 
+def _modulos_importados(ruta: pathlib.Path) -> set[str]:
+    """Módulos que el archivo importa, resueltos por AST.
+
+    ``import a.b`` aporta ``a.b``. ``from a.b import c`` aporta ``a.b`` **y**
+    ``a.b.c``: las dos formas alcanzan el símbolo, y un escaneo por substring de
+    ``import a.b`` sólo ve la primera — ``from sky_claw.local.frozen_runtime
+    import approval`` es la forma natural de importarlo y se le escapaba.
+    """
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    modulos: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            modulos.update(alias.name for alias in nodo.names)
+        elif isinstance(nodo, ast.ImportFrom) and not nodo.level and nodo.module:
+            modulos.add(nodo.module)
+            modulos.update(f"{nodo.module}.{alias.name}" for alias in nodo.names)
+    return modulos
+
+
 def _nombres_llamados(ruta: pathlib.Path) -> set[str]:
     """Nombres de función invocados en un archivo, sin resolver el binding."""
     arbol = ast.parse(ruta.read_text(encoding="utf-8"))
@@ -322,6 +341,27 @@ def test_una_sesion_distinta_no_puede_responder(tmp_path: pathlib.Path) -> None:
             presentacion.solicitud_id,
             decision=DecisionConsentimiento.APROBAR,
             identidad=_identidad(sesion="chat-OTRO"),
+        )
+    assert not list(issuances_state_dir(root).iterdir())
+
+
+def test_un_sujeto_distinto_en_la_misma_sesion_no_puede_responder(tmp_path: pathlib.Path) -> None:
+    """El hermano del test anterior: la sesión queda igual y cambia el SUJETO.
+
+    ``responder`` compara sujeto y sesión de forma independiente. El test de
+    sesión cambia sólo la sesión, así que pasaría igual si la comprobación de
+    sujeto desapareciera; éste la aísla.
+    """
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    presentacion = _presentar(root, propuesta, registro)
+
+    with pytest.raises(SesionConsentimientoNoCoincideError):
+        registro.responder(
+            presentacion.solicitud_id,
+            decision=DecisionConsentimiento.APROBAR,
+            identidad=_identidad(sujeto="999"),
         )
     assert not list(issuances_state_dir(root).iterdir())
 
@@ -1029,6 +1069,24 @@ def test_solo_el_modulo_de_consentimiento_construye_consentimientos() -> None:
     assert constructores == {"sky_claw/local/frozen_runtime/owner_consent.py"}
 
 
+def test_solo_el_modulo_de_consentimiento_construye_identidades() -> None:
+    """El hermano del censo anterior: quién construye ``IdentidadPropietario``.
+
+    ``IdentidadPropietario`` es un dataclass público con campos que pone el
+    llamador. ``_exigir_identidad_verificada`` comprueba tipo, superficie,
+    mecanismo y campos no vacíos, pero **no** que lo haya creado
+    ``verificar_identidad_telegram``. Un módulo de producción que lo construya
+    por su cuenta puede saltarse la verificación del transporte; este censo lo
+    detecta. No hace el tipo opaco ni prueba procedencia en runtime: congela la
+    familia de constructores, igual que el censo de consentimientos.
+    """
+    constructores: set[str] = set()
+    for ruta in _modulos_bajo(RAIZ_REPO / "sky_claw"):
+        if "IdentidadPropietario(" in ruta.read_text(encoding="utf-8"):
+            constructores.add(ruta.relative_to(RAIZ_REPO).as_posix())
+    assert constructores == {"sky_claw/local/frozen_runtime/owner_consent.py"}
+
+
 def test_ninguna_superficie_del_agente_puede_emitir_aprobaciones() -> None:
     """El agente LLM y sus tools no pueden alcanzar la autoridad ni el consentimiento.
 
@@ -1036,7 +1094,22 @@ def test_ninguna_superficie_del_agente_puede_emitir_aprobaciones() -> None:
     ``owner_consent``, el modelo podría presentarse su propia solicitud y
     aprobarla en el mismo turno.
     """
-    prohibidos = {"owner_consent", "frozen_runtime.approval", "frozen_runtime.owner_consent"}
+    # La autoridad se alcanza por MÓDULO y por los SÍMBOLOS que el paquete
+    # reexporta. Se resuelve por AST, no por substring: `from
+    # sky_claw.local.frozen_runtime import approval` y `import
+    # sky_claw.local.frozen_runtime.approval` se le escapaban al escaneo
+    # anterior, y son la forma natural de importarlo.
+    prohibidos = {
+        "sky_claw.local.frozen_runtime.approval",
+        "sky_claw.local.frozen_runtime.owner_consent",
+        "sky_claw.local.frozen_runtime.ConsentimientoAprobacion",
+        "sky_claw.local.frozen_runtime.PropuestaAprobacion",
+        "sky_claw.local.frozen_runtime.consumir_aprobacion",
+        "sky_claw.local.frozen_runtime.emitir_aprobacion",
+        "sky_claw.local.frozen_runtime.RegistroConsentimientos",
+        "sky_claw.local.frozen_runtime.emitir_aprobacion_autorizada",
+        "sky_claw.local.frozen_runtime.verificar_identidad_telegram",
+    }
     superficies = [
         RAIZ_REPO / "sky_claw" / "app" / "agent",
         RAIZ_REPO / "sky_claw" / "local",
@@ -1047,9 +1120,8 @@ def test_ninguna_superficie_del_agente_puede_emitir_aprobaciones() -> None:
             posix = ruta.as_posix()
             if "/frozen_runtime/" in posix or posix.endswith("__init__.py"):
                 continue
-            texto = ruta.read_text(encoding="utf-8")
-            for modulo in prohibidos:
-                if f"import {modulo}" in texto or f"from {modulo} import" in texto:
+            for modulo in _modulos_importados(ruta):
+                if modulo in prohibidos:
                     infractores.append(f"{ruta.relative_to(RAIZ_REPO).as_posix()} -> {modulo}")
     assert infractores == [], f"superficies del agente alcanzan la autoridad de aprobación: {infractores}"
 

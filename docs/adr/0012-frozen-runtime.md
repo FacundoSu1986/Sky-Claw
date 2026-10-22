@@ -9565,16 +9565,21 @@ Lo que el diseño sí da —y es lo que §38.2/§40.2 ya congelaron— es
 un `state/` trasplantado desde otro root o un tombstone reescrito se detectan,
 porque la evidencia es coherente consigo misma pero no con el root auditado.
 
-**Y la identidad del sujeto no es durable.** `approval_provenance` (dentro del
-digest) lleva superficie + `solicitud_id`; el `owner_subject` viaja en el
-consentimiento, que es memoria. Agregarlo al witness exigiría un esquema v3 y no
-aportaría frente al atacante que importa —quien fabrique el campo fabrica también
-el sujeto—. Frente al atacante externo la prueba está en el log del transporte,
-que sí la registra y es indexable por `solicitud_id`.
+**Ni la identidad del sujeto ni el id de la solicitud son durables.** El scope
+persiste `surface` como campo propio, ligado por el digest. `approval_provenance`
+es un string **opaco que pone el llamador**: se persiste y el digest lo cubre,
+pero **nada verifica que contenga el `solicitud_id`** — es convención, no binding.
+El registro autoritativo de solicitudes es en memoria a propósito (§46.3), y el
+`owner_subject` viaja en el consentimiento, que también es memoria. Agregarlos al
+witness exigiría un esquema v3 y no aportaría frente al atacante que importa
+—quien fabrique el campo fabrica también el sujeto—. Frente al atacante externo
+la prueba está en el log del transporte, que sí los registra y es indexable.
 
 ```text
 OWNER_SUBJECT_IS_DURABLE = NO   (limitación ELEGIDA y declarada)
-OWNER_SURFACE_AND_REQUEST_ARE_DURABLE = YES   (vía approval_provenance)
+OWNER_SURFACE_IS_DURABLE = YES  (campo del scope, ligado por digest)
+OWNER_REQUEST_ID_IS_DURABLE = NO   (viaja en approval_provenance, string opaco:
+                                    nada verifica que lo contenga)
 ```
 
 ### 46.6 Adjudicación: rollback y la igualdad de operaciones

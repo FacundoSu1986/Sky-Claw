@@ -46,8 +46,12 @@ TRANSPORT_IS_TRUSTED                = TELEGRAM (el ``from.id`` lo pone Telegram,
                                              cliente; el webhook se autentica con
                                              ``secret_token``)
 GUI_BUTTON_IS_IDENTITY              = NO    (no hay login: presencia local ≠ identidad)
-OWNER_SUBJECT_IS_DURABLE            = NO    (el witness durable registra superficie y
-                                             ``solicitud_id`` vía ``approval_provenance``;
+OWNER_SUBJECT_IS_DURABLE            = NO    (el witness durable registra la superficie
+                                             como campo del scope; el ``solicitud_id``
+                                             viaja dentro de ``approval_provenance``, que
+                                             es un string OPACO del llamador — nada
+                                             verifica que lo contenga. El registro
+                                             autoritativo de solicitudes es en memoria;
                                              el sujeto se reconstruye del log del
                                              transporte)
 ```
