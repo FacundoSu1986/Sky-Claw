@@ -82,7 +82,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
   comprobar la huella `sha256_autorizado` justo antes de tocar un archivo, publicar por etapas y escribir el manifiesto al
   final, y recuperarse de un corte a mitad. Ver ADR 0014, "Actualización de NP-O0a".
   **`reconciliar_tras_corte` (NP-O0b1)** es la mitad pura de «recuperarse de un corte»: dado el manifiesto vigente, el pendiente y lo que el
-  escritor vio en disco y en su papelera, decide qué manifiesto queda, qué devolver y qué descartar. Su tabla de 60 estados se enumera
+  escritor vio en disco y en su papelera, decide qué manifiesto queda, qué devolver y qué descartar. Su tabla de 75 estados se enumera
   por igualdad literal en `tests/test_native_parallax_output_recuperacion.py`; no agregues una dimensión sin ampliarla. Parte del
   protocolo del escritor (intención antes de tocar, apartar y verificar, compromiso al final, pendiente borrado último, nunca borrar de la
   papelera lo que no sea una huella vigente y volver a calcularla justo antes de borrar, devolver a su ruta vacía lo apartado aunque no
