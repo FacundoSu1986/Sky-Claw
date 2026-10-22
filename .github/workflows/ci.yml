@@ -73,7 +73,12 @@ jobs:
     # mantiene en 1334-1392 s) y el job suma ~90 s de instalacion. Con 30 min quedo
     # al 88-96 % del limite en 6 de 8 corridas muestreadas y se cancelo aunque el
     # paso de tests habia devuelto 0. 40 min deja el peor caso observado al 76 %.
-    timeout-minutes: 40
+    # 2026-10-22: 40 min dejo de alcanzar porque la suite crecio. Pytest ya tarda
+    # 1829-2322 s y varia segun el runner en las dos versiones (py3.11: 1829 y
+    # 2322 s; py3.12: 1852 y 2165 s), y el job suma ~80 s de preparacion. En #779 y
+    # #780 el job de py3.11 se cancelo al tocar el limite con el paso de tests ya
+    # devuelto en 0. 60 min deja el peor caso observado al ~67 %.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

@@ -73,13 +73,13 @@ Verificado leyendo el repositorio (2026-10-19):
 
    | PR | Contenido | Estado |
    |---|---|---|
-   | NP-D0 | dataset spec + generador sintético + fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | **parcial** (#758): generador sintético y especificación hechos; falta el fixture MatSynth (descarga externa) |
+   | NP-D0 | dataset spec + generador sintético + fixture MatSynth (solo los materiales con licencia CC0 **por material**; descarga externa, hash-pinned, nunca commiteada) en `native_parallax/bench/`: el benchmark del que se derivan los thresholds | **parcial** (#758): generador sintético y especificación hechos; falta el fixture MatSynth (descarga externa; ver «Actualización de NP-D0b») |
    | NP-C0 | `NormalDecoder` (DDS/PNG, convención DirectX, confianza por `nz`) | hecho (#756) |
    | NP-I0 | `normal_fft_periodic_v1` + variante Neumann + normalización | hecho (#759) |
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
-   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a hecho (núcleo puro: candado de versión, mips en float, cuantización y validador del contenedor BC4, ver la actualización de NP-E0a); falta NP-E0b (flags y ejecución de `texconv`, contra el binario real) |
-   | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
+   | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
+   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b) |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
@@ -179,8 +179,8 @@ ejecutando (Linux, `uv 0.11.32`, Pillow 11.3.0 y 12.3.0); lo que sigue sin verif
 
 ### Actualización de NP-D0 (2026-10-20)
 
-NP-D0 queda **PARCIAL**: este PR entrega el corpus sintético y su especificación; el fixture MatSynth CC0 no
-está (ver «No incluido»). Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo
+NP-D0 queda **PARCIAL**: este PR entrega el corpus sintético y su especificación; el fixture MatSynth (solo
+materiales CC0) no está (ver «No incluido» y «Actualización de NP-D0b»). Verificado ejecutando en Linux (Python 3.11, numpy 2.4.6); el CI de Windows lo
 confirma en el PR.
 
 - **Qué entra.** `native_parallax/bench/sintetico.py` reimplementa en el producto los 15 casos periódicos
@@ -208,13 +208,54 @@ confirma en el PR.
   hash exacto sería frágil y no un contrato.
 - **Tamaño mínimo.** Las grillas deben ser de al menos 128: con 32 ciclos en `S11`, 64 muestras serían
   exactamente Nyquist y el seno valdría cero en cada una.
-- **No incluido.** (1) El fixture MatSynth CC0 (descarga externa, hash-pinned, nunca commiteada): necesita
+- **No incluido.** (1) El fixture MatSynth (solo materiales CC0; descarga externa, hash-pinned, nunca commiteada): necesita
   que el operador decida qué subconjunto, qué hashes y desde dónde descargar; `research/` ya tiene fetchers y
   un manifiesto (`exp-m3-clean-authored-manifest.json`) que son el punto de partida, pero promoverlos al
   producto trae egress de red y es otro PR. (2) Variantes con error de compresión por bloques: hace falta un
   codificador y el producto no tiene uno (decisión 4; texconv, NP-E0). (3) La inversa N → H y el integrador:
   NP-I0. Debe compartir con `bench/sintetico.py` la convención de frecuencias (`_ejes_de_frecuencia`); un
   solver con otra daría gradientes escalados por la resolución.
+
+### Actualización de NP-D0b (2026-10-21)
+
+Corrige una premisa de este ADR: **la licencia de MatSynth es POR MATERIAL, no del conjunto**. Los textos anteriores que hablaban
+del «fixture MatSynth CC0» (tabla de §2, «Actualización de NP-D0», `bench/__init__.py`, `bench/sintetico.py`) se ajustaron a «solo
+materiales CC0». Las notas de investigación de `docs/design/research/` (p. ej. «~95 % CC0») son fotografías de lo que se sabía
+entonces y no se reescriben: sobre la licencia manda esta sección.
+
+- **Fuente.** Informe de la PC con Windows (consulta a los metadatos del conjunto en Hugging Face): cada material trae su
+  `metadata.license`; en el subconjunto de prueba consultado, 24 de 89 materiales eran CC BY-NC-ND (no comercial y sin
+  obras derivadas). Por la cláusula «NoDerivatives» de CC BY-NC-ND 4.0, no se puede compartir material adaptado: si el fixture de
+  1024 derivado de una fuente de 4096 llegara a distribuirse, no podría hacerlo bajo esa licencia (lectura mía del texto de la
+  licencia, no asesoramiento legal). **No lo reverifiqué desde esta sesión**: es dato del informe, no verificado ejecutando por mí.
+- **Decisión técnica (mía).** El fixture admite únicamente materiales cuya licencia sea exactamente `CC0`. CC BY queda fuera aunque
+  `CLEAN_ROOM.md` lo permita con atribución: exigiría arrastrar créditos por archivo, y el corpus CC0 alcanza para el benchmark.
+  CC BY-NC-ND y cualquier otra, excluidas.
+- **Tamaño.** El informe encontró únicamente originales de 4096²; no hay variantes de 1024. El original de 4096² queda como fuente
+  fijada por hash (nunca commiteada) y el 1024 se **deriva después** con un procedimiento determinista propio, nunca descargado.
+  Para la **altura** sirve `generar_mips` (promedio de área sobre un campo 2-D). La **normal** necesita una reducción propia:
+  `generar_mips` no se le aplica, y promediar componentes da vectores que no son unitarios, así que hay que decodificar, promediar y
+  renormalizar. Esa reducción se define y se testea en NP-D0b.
+- **Qué NO se hizo.** No se descargó ni se versionó ningún material; no hay fixture. Los hashes de los 20 materiales CC0 que
+  listó el informe todavía no están en el repo: antes de fijarlos hay que reverificar la licencia de cada uno en la descarga.
+- **Qué debe fijar el manifiesto del fixture (NP-D0b).** (1) La **evidencia de la licencia**, no solo los bytes: la revisión del
+  conjunto de datos y, por material, el valor de `metadata.license` con una huella o referencia inmutable de ese metadato; la huella
+  de la imagen no prueba con qué licencia se admitió el material. (2) La **convención de la normal declarada**, `OPENGL` o
+  `DIRECTX`, nunca inferida: el decodificador produce DirectX y su `source_convention` vale `DIRECTX` por defecto (`decode.py`), así que una fuente OpenGL cargada sin declararlo queda con la Y sin invertir. La revisión
+  automática señala que la tarjeta del conjunto la declara OpenGL: **no lo verifiqué**; NP-D0b debe leer la tarjeta y registrar lo
+  que diga. (3) Una **huella del corpus** (`huella_del_corpus` de la validación contra corpus real) que cubra lo que se mide y no
+  solo las fuentes: la versión del procedimiento de reducción y los hashes de los arrays derivados (normal y altura a 1024); si
+  cambia `generar_mips` o la conversión, los píxeles medidos cambian aunque las huellas de origen sigan iguales.
+- **Política provisional del gate (decisión técnica, no validada).** Falsos aceptos ≤ 5 %, confianza 95 %, revisión manual ≤ 15 %.
+  Son números del Tech Lead para tener un objetivo, no evidencia: **no pasan a `UMBRALES_VIGENTES`** (hoy `None`, congelado por
+  igualdad en `tests/test_native_parallax_gates.py`) hasta validarlos contra un corpus real. Cambiar esa constante rompe el ancla
+  a propósito. **El tamaño del corpus condiciona el objetivo:** el gate usa la cota superior de Clopper-Pearson a un lado
+  (`gates.py`); con 0 malas entre `n` aceptadas esa cota es `1 − 0,05^(1/n)`, o sea 13,9 % con `n = 20` y recién 4,95 % con
+  `n = 59`. El gate cuenta **texturas** (`n_total`, `n_aceptadas`), no materiales: si cada material aporta una sola muestra
+  aceptada, los 20 materiales del informe **no alcanzan** ni para un candidato perfecto; con un objetivo de 5 % hacen falta al menos
+  59 muestras aceptadas independientes (unas 70 en total si hasta el 15 % va a revisión). Varias muestras del mismo material no las
+  trato como independientes, así que más recortes de los mismos materiales no sustituyen a más materiales: NP-D0b debe ampliar el
+  subconjunto CC0 o dejar abiertos estos valores.
 
 ### Actualización de NP-I0 (2026-10-20)
 
@@ -591,3 +632,171 @@ terceros no puedan escribir. **Requisito para NP-E0b:** verificar inmediatamente
 el binario desde un directorio que terceros no puedan escribir; la API de E0a no ofrece verificación y uso atómicos
 (observación del revisor automático, #771). (4) La hipótesis de que el promedio de área sea el filtro correcto para la altura sigue sin
 medirse (EXP-010).
+
+### Actualización de NP-E0b (2026-10-21)
+
+NP-E0b entrega el **ejecutor del `texconv` fijado** (`sky_claw/local/tools/texconv_runner.py`) y fija el pin. Toma una altura
+en float, arma la cadena de mips propia, se la da a `texconv` y devuelve los bytes del `*_p.dds` BC4 ya validados. No escribe
+en ningún destino (eso es de NP-O0) y no tiene call site de producción ni superficie GUI/agente (NP-A0). Verificado
+ejecutando en Linux (Python 3.11, numpy 2.4.6, Pillow 13.0.0) y el CI de Windows lo confirma en el PR. **El binario real no se
+ejecutó en el entorno de desarrollo (Linux)**; sí en una PC con Windows: ver «Verificado ejecutando el binario real».
+
+- **Evidencia del pin (`TEXCONV_PIN_VIGENTE`, tag `may2026`).** (1) Informe de la PC con Windows (2026-10-21): release
+  «May 7, 2026» publicada 2026-05-08T21:01:12Z (ninguna de las 20 últimas está marcada pre-release), `texconv.exe` x64 de
+  966480 bytes, SHA-256 `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`, versión que reporta 2026.5.8.1,
+  licencia MIT («Copyright (c) Microsoft Corporation.», leída del LICENSE del tag). (2) Descargué aparte, desde esta sesión,
+  `https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe`: mismos 966480 bytes y mismo SHA-256, y el
+  LICENSE del tag (1141 bytes, MIT). **Las dos vías descargan de GitHub Releases**: coinciden entre sí, pero no prueban la
+  autenticidad más allá de la integridad de ese canal; la firma minisign publicada es la del zip de fuentes, no la del exe,
+  y no tengo una clave pública verificada, así que la firma NO está verificada. Cambiar de versión es una decisión nueva
+  con evidencia nueva y cambia el ancla (`tests/test_native_parallax_export.py`, igualdad literal del pin).
+- **Flags verificados ejecutando** (informe de Windows): `texconv -f BC4_UNORM -m 0 -y -o <dir> <archivo.png>` → código 0,
+  BC4 con cabecera legacy `BC4U` y cadena completa de mips (256x256: 43832 bytes y 9 niveles; 512x512 con ruido: 174904
+  bytes y 10 niveles), **idéntico byte a byte en dos corridas independientes**. Esos son los únicos flags que usa el ejecutor
+  (`ARGUMENTOS_BC4`, congelado por igualdad). `texconv -?` ya no existe en esta versión (código 1, «Unknown option»): la
+  ayuda es `--help`; el ejecutor no sondea versiones con `-?`.
+- **Corrección al diseño de investigación.** El documento de A (§H) mencionaba un `--mipmap-mode` custom para pasar mips
+  hechos: esa opción NO existe en `texconv` `may2026` (no figura en las tablas de opciones de su código fuente). La vía
+  real es entregar un DDS que ya traiga la cadena de mips.
+- **Los mips son los propios (leído en el código fuente del tag; confirmado en parte por la ejecución, ver abajo).** El ejecutor entrega un DDS de luminancia de
+  8 bits (`construir_dds_l8`, cabecera legacy que `DirectXTex` carga como `R8_UNORM`) con la cadena de `generar_mips`
+  cuantizada, y llama con `-m 0`. En `texconv.cpp` (tag `may2026`): `tMips = (!mipLevels && info.mipLevels > 1) ? info.mipLevels : mipLevels`
+  y los mips solo se regeneran si `!tMips || info.mipLevels != tMips`: con `-m 0` y una entrada DDS con mips, se conservan y
+  `texconv` solo comprime. Si se regenerara, el filtro por defecto para potencias de 2 es BOX (`DirectXTexMipmaps.cpp`),
+  sin curva sRGB para `R8_UNORM`. **BC4 se comprime en CPU**: la GPU solo se usa para BC6H/BC7, así que el resultado no
+  depende de la tarjeta de video. Esto asume que el binario release corresponde al código del tag (no lo compilé).
+- **Solo corre el binario fijado.** `texconv` se COPIA a un directorio de trabajo privado (`mkdtemp`, 0700 en POSIX) y se verifica
+  la huella de la COPIA contra el pin; lo que se ejecuta es esa copia. Cierra la ventana verificar-y-después-ejecutar que
+  señaló el revisor automático en #771 (requisito dejado para este PR). Sin pin, o con otra huella, no se ejecuta nada.
+- **Toda salida se valida**: exactamente un archivo regular `entrada.dds` bajo un tope calculado de las dimensiones, que
+  `inspeccionar_dds_bc4` acepta, con las mismas dimensiones y la cadena completa de mips. El proceso lo supervisa
+  `_process.run_capture` (timeout, kill del árbol y reap, Job Object en Windows); el directorio de trabajo se borra en toda
+  salida, también al cancelar, y la cancelación espera a que termine el hilo que lo estaba usando antes de borrarlo (hallazgo de
+  Codex en #772: un hilo no se interrumpe y en Windows un archivo abierto impide el borrado), con un tope de 30 s para que un hilo
+  colgado no cuelgue la cancelación (observación del revisor automático: pasado el tope se registra un aviso y se sigue). Un código de salida distinto de cero —incluidos los negativos con que Windows reporta un
+  crash— es un fallo.
+- **Ancla de la clase «segundo camino a texconv»** (`tests/test_texconv_invariant.py`): el conjunto de módulos `.py` que nombran
+  `texconv` está congelado por igualdad (hoy tres) y, entre ellos, solo `texconv_runner.py` lanza procesos; un camino nuevo
+  rompe el test hasta que se decida su receta (lo demostré agregando uno).
+- **Verificación hecha.** `tests/test_texconv_runner.py` (borde de proceso reemplazado por un `texconv` falso: argumentos,
+  verificación de la copia, errores, salida defectuosa enumerada, limpieza, cancelación), `tests/test_bc4_helper.py` (el
+  decodificador BC4 de tests se valida contra Pillow) y ampliaciones de `tests/test_native_parallax_export.py`. **Mutación
+  manual**: 75 mutantes sobre el ejecutor y 22 más sobre `export.py` (136 en total), 0 vivos reales; la primera pasada del
+  ejecutor dejó 7 vivos que eran huecos reales (rutas relativas, verificar el original en vez de la copia, tope exacto,
+  dimensiones transpuestas, códigos negativos) y se cerraron. El ejecutor **nace estricto en el gate de `mypy` de CI**
+  (lista de opt-in de `pyproject.toml`, observación del revisor automático: `sky_claw.local.tools.*` está exento); comprobé que el gate
+  muerde inyectando un error de tipos, que CI reportó. Ensayo de punta a punta de `tests/test_texconv_real.py` contra un `texconv` SIMULADO por un script (codificador
+  ingenuo): prueba la plomería real de procesos, plazo vencido incluido, **no** al binario.
+
+**Verificado ejecutando el binario real** (PC con Windows, commit `177ffd39`, 2026-10-21; Python 3.11.9, numpy 2.4.6, Pillow 13.0.0;
+`texconv` 2026.5.8.1 con la huella del pin). `tests/test_texconv_real.py`: **9 de 9**. (1) El binario verifica contra el pin. (2) Con una
+entrada DDS L8 de 64x64 con 7 mips, `texconv` imprime `reading ... (64x64,7 R8_UNORM 2D) as (64x64,7 BC4_UNORM 2D)`: **lee los 7 mips**
+de la entrada y los trata como `R8_UNORM`. La salida (2872 bytes = 128 de cabecera + 2744 de carga, la suma exacta de 7 niveles BC4) tiene
+cabecera legacy `BC4U` sin extensión DX10, banderas `0xA1007`, `mipMapCount` 7 y `caps` `0x401008`; **`dwDepth` vale 1 sin la bandera
+`DDSD_DEPTH`**, por eso el validador rechaza la bandera y no el valor (límite (0) de NP-E0a, ahora confirmado con la cabecera real, que
+quedó como test de regresión). (3) 256x256 → 43832 bytes y 9 niveles, sin DX10; 4x4 → 152 bytes y 3 niveles; 4x8 → 168 y 4; 64x16 → 840 y 7;
+32x128 → 2888 y 8. (4) Dos exportaciones idénticas byte a byte. (5) Cada nivel decodificado sigue la cadena propia: error medio ≤ 2.37 y
+máximo ≤ 5.4 en el peor nivel (límites 5.93 y 14.1); el de `texconv` es comparable al de un codificador ingenuo (0.41 contra 0.33 en el
+nivel 0, 1.54 contra 1.58 en el 3). (6) Un plazo vencido (2048x2048, 0.02 s) mata el proceso real en Windows, se traduce a
+`TexconvTimeoutError` y no deja restos. Los otros tests nuevos corrieron en esa PC: **222 pasaron y 2 se saltaron** (los dos skips son de POSIX).
+En la corrida literal fallaron 19 por un artefacto del entorno de esa máquina (un guard de borrado masivo inyectado por `PYTHONPATH` que
+lanza `SystemExit` al borrar el directorio de trabajo): sin ese guard, mismo commit y mismo entorno virtual, 222 pasan; no es un defecto del repo.
+
+**Qué NO está verificado.** (1) Que `texconv` CONSERVE los mips de la entrada en vez de regenerarlos con BOX: lo dice su código fuente y el binario
+los lee, pero el oráculo no lo distingue (ambas cadenas son promedio de área dentro de la tolerancia) ni importa para el producto; un experimento
+decisivo sería entregar mips deliberadamente distintos del promedio y ver si salen intactos (pendiente, junto con la próxima corrida en Windows). (2) La
+tolerancia de ese test de mips es PROVISIONAL (el doble del error de un codificador ingenuo más un margen); el dato real quedó por debajo en
+todos los niveles. Que NO sea un oráculo ciego está medido y anclado (`tests/test_bc4_helper.py`, corre en CI): sobre el campo del smoke, un
+filtro POINT falla desde el nivel 2, una curva sRGB falla en los niveles 4x4, 2x2 y 1x1 (a media escala y bajo contraste casi no se nota antes),
+una cadena BOX redondeada a 8 bits por nivel —lo que daría `texconv` si regenerara los mips— pasa, y un bloque corrupto lo detecta el límite
+del error máximo; aflojar la tolerancia hasta que uno de esos filtros pase rompe el test (señalado por el revisor automático en #772). (3)
+Cuál cabecera (`BC4U` legacy, la que emite hoy `texconv`, o DX10) carga Skyrim es de NP-RIG; el validador acepta ambas. (4) La evidencia
+de Windows es sobre `177ffd39`; los commits posteriores del PR tocan solo el manejo de la cancelación del ejecutor y tests. (5) La hipótesis
+EXP-010 (promedio de área como filtro correcto de la altura) sigue sin medirse.
+
+**Límites declarados.** (1) El directorio privado hereda los permisos del temporal del usuario: `mkdtemp` es 0700 en POSIX; en Windows
+hereda las ACL del padre, no fija ACL propias. (2) El módulo vive en `sky_claw.local.tools.*`, exento de `mypy` y de BLE001 por carpeta;
+se lo saca de la exención de `mypy` con el opt-in estricto de `pyproject.toml` y no tiene `except Exception`. (3) No hay registro ni detección de `texconv` en el tool registry (la ruta se pasa explícita) ni
+el contrato `success`/`message` (aún no es un tool): se cablea en NP-A0, donde las dos superficies deben pasar por
+`exportar_altura_bc4`. (4) `ResultadoDeExportacion` no lleva todavía el `encoder_id` del manifest: NP-O0 arma el manifest con
+`texconv_version`, `texconv_sha256` y `argumentos`.
+
+### Actualización de NP-O0a (2026-10-21)
+
+NP-O0a entrega el **núcleo puro de la salida gestionada**, no la salida: `sky_claw/local/native_parallax/output.py` no lee ni escribe
+archivos, no toma locks y no tiene call site de producción. Decide tres cosas que el escritor (NP-O0b) y el lote (NP-A0) van a dar
+por sentadas. Verificado ejecutando en Linux (Python 3.11); el módulo es solo biblioteca estándar, no importa `numpy`.
+
+- **Quién es dueño de qué.** El **manifiesto es la única prueba de propiedad** (`PRESERVE_EXISTING`). Un archivo que no figura en él
+  no es nuestro; uno que figura pero cambió de contenido tampoco: lo tocó un tercero. Ninguno de los dos se pisa. Un directorio, un
+  enlace o un dispositivo en la ruta no se toca nunca. El formato es JSON canónico y de **esquema cerrado**: leerlo falla cerrado ante
+  un campo de más o de menos, claves repetidas, constantes no finitas, una clave de caché que no coincide con la procedencia o
+  cualquier forma que no sea byte a byte la canónica (así lo que se validó es lo que está guardado).
+- **Cuándo se saltea un archivo.** `clave_de_cache` es una huella SHA-256 de TODA la procedencia: algoritmo, parámetros, orígenes
+  (rol + huella), encoder (identidad de nuestra tubería, versión y huella de `texconv`, argumentos), entorno y nivel de
+  reproducibilidad, con el esquema del manifiesto y un dominio propio. **El entorno es obligatorio**: sin él la clave sería portable
+  entre máquinas por error, y np.sin/np.exp no garantizan los mismos bits entre CPUs. Una clave que incluya de más solo reconstruye de
+  más; una que incluya de menos sirve resultados viejos. El único nivel de reproducibilidad es «determinista en el MISMO entorno»;
+  ampliar el vocabulario es una decisión deliberada, no un valor libre.
+- **Qué hacer con cada ruta.** `planificar(deseadas, manifiesto_previo, observado)` es una función pura. La tabla estado → acción
+  tiene 15 estados y está **enumerada** (producto cartesiano de las cinco dimensiones, comparado por igualdad literal contra una tabla
+  escrita a mano):
+
+  | Deseada | En el manifiesto | Qué hay en disco | Acción |
+  |---|---|---|---|
+  | sí | no | nada | `CONSTRUIR` |
+  | sí | no | un archivo | `PRESERVAR` (ajeno) |
+  | sí | no | otra cosa | `PRESERVAR` (ocupado por otro tipo) |
+  | sí | sí | nada | `CONSTRUIR` (falta en disco) |
+  | sí | sí | otra cosa | `PRESERVAR` |
+  | sí | sí | archivo intacto, misma clave | `OMITIR` (caché vigente) |
+  | sí | sí | archivo intacto, otra clave | `RECONSTRUIR` |
+  | sí | sí | archivo modificado | `PRESERVAR` (modificado por terceros) |
+  | no | sí | nada | `SOLTAR` |
+  | no | sí | otra cosa | `SOLTAR` |
+  | no | sí | archivo intacto | `RETIRAR` |
+  | no | sí | archivo modificado | `SOLTAR` |
+
+  `PRESERVAR` y `SOLTAR` no tocan el disco: el archivo preservado **no entra** al manifiesto (no reclamamos propiedad) y el soltado
+  sale de él. Solo `CONSTRUIR`, `RECONSTRUIR` y `RETIRAR` modifican el disco, y las dos últimas llevan la huella que las autoriza
+  (`sha256_autorizado`) para que el escritor la vuelva a comprobar justo antes de tocar. `CONSTRUIR` solo ocurre donde no hay nada.
+- **Rutas.** Relativas al mod de salida (`Sky-Claw - Native Parallax Output`), con `/`, solo ASCII imprimible, bajo `textures/` y de la
+  forma `*_p.dds`; sin `:` (flujos alternos de NTFS), sin segmentos vacíos o con punto o espacio final (incluidos `.` y `..`), sin
+  nombres reservados de Windows (lista conservadora: incluye `COM0`/`LPT0`, `CONIN$` y `CONOUT$`) y de hasta 200 caracteres. Se **rechaza en vez de normalizar**. Se comparan ignorando mayúsculas
+  (`casefold`). La lista de nombres reservados sale de la documentación pública de Windows y **no la reverifiqué en esta sesión**; por eso es un superconjunto deliberado (rechazar de más es seguro, aceptar de más hace fallar al escritor después de validar).
+  **De dónde sale cada exclusión** (regla de `sky_claw/local/native_parallax/AGENTS.md`: toda exclusión o umbral cita fuente pública o
+  experimento propio; ninguna es una heurística medida sobre datos):
+  `/` como separador, los caracteres `< > : " | ? * \`, los caracteres de control, los nombres reservados y el punto o espacio final
+  salen de la documentación pública de Microsoft «Naming Files, Paths, and Namespaces» (`learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file`),
+  que **no reverifiqué en esta sesión**; `:` además abre un flujo de datos alterno en NTFS. `textures/` y `*_p.dds` son la convención
+  pública del mapa de altura legacy que Skyrim lee (`CLEAN_ROOM.md`, formato «naming `_p`», y NP-E0 de este ADR). **Solo ASCII imprimible** y
+  **200 caracteres** son decisiones de diseño MÍAS, no medidas: ASCII porque la normalización Unicode y el plegado de mayúsculas
+  cambian entre sistemas de archivos; 200 es `MAX_PATH` (260, misma documentación) menos un margen de 60 para la raíz del mod de salida,
+  un margen que **no medí** sobre rutas reales de MO2 (si resulta chico, es una constante que se sube con su test de borde).
+- **Ancla de familia.** Solo `output.py` nombra `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports y por llamadas (ambos por AST);
+  los campos de `Procedencia`, `EncoderUsado` y `OrigenDeEntrada` se enumeran por introspección contra las variantes que cambian la
+  clave: un campo nuevo que no entre a la clave rompe el test. El manifiesto y la clave de referencia están congelados.
+- **Mutación manual** (329 mutantes sobre `output.py`: constantes, regex, límites, ramas, guardas y la tabla). La primera pasada dejó
+  **90 vivos**, todos huecos reales de los tests o código redundante: topes numéricos sin prueba de borde, la profundidad de listas,
+  claves no ASCII, el orden por la clave plegada y no por la ruta cruda, constructores directos del plan y de la entrada, la recursión
+  agotada, `bytearray`, el tope de lectura, y capas de defensa que se tapaban entre sí (la comparación canónica byte a byte hacía que la
+  clave repetida y el `NaN` parecieran cubiertos). Se cerraron con tests (388 en total) y se borró código redundante (12 mutantes
+  dejaron de aplicar). Quedan **3 equivalentes documentados**: `allow_nan` del serializador del manifiesto (inalcanzable: los parámetros
+  llegan como texto canónico ya validado), `observacion.sha256` por `entrada.sha256` en la rama «intacto» (son iguales por definición)
+  y `entrada and deseada` en `_decidir` (con `entrada` ausente esa rama no lee `deseada`). Los tests y el módulo se escribieron juntos y
+  **no observé el rojo previo**: la evidencia de que los tests ven los defectos es esta mutación.
+
+**Límites declarados.** (1) Es un núcleo puro: las huellas de lo que hay en disco las trae el llamador como `Observacion`; entre
+observar y tocar hay una ventana (TOCTOU) que NO cierra este módulo. (2) **Requisitos para NP-O0b**: tomar el lock cross-process
+(solo protege si TODOS los mutadores participan, ver «Propiedad del `external_work_root`» en `AGENTS.md`), volver a comprobar
+`sha256_autorizado` inmediatamente antes de reemplazar o borrar, publicar por etapas y escribir el manifiesto **al final** (es el punto
+de compromiso), y recuperarse de un corte a mitad. También debe comprobar el largo de la ruta COMPLETA (raíz del mod de salida + ruta
+relativa) antes de publicar: los 200 caracteres de este módulo son un prefiltro de la parte relativa, no garantizan que la ruta final
+quepa en `MAX_PATH`. El escritor también decide cómo se crea el mod de salida para MO2 (`meta.ini`).
+(3) De dónde salen las salidas deseadas, los orígenes y los valores concretos del `entorno` (versiones de `numpy`, Python,
+plataforma) es de NP-A0; el `exportador_id` y `ResultadoDeExportacion` (`texconv_version`, `texconv_sha256`, `argumentos`) se
+unen en el `EncoderUsado` ahí. (4) El plegado de mayúsculas con `casefold` aproxima la tabla de Windows solo para ASCII; por eso las rutas
+son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica pura, probada con entradas sintéticas. (6) **Tope del manifiesto**: 128 MiB, el mismo para
+leer y para escribir (el serializador falla en vez de producir un manifiesto que el lector rechazaría y que dejaría al lote sin
+registro de propiedad ni caché). Con rutas cortas una entrada pesa ≈1,1 KiB (medido), o sea unas 100.000 entradas; un lote mayor se
+tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memoria: el tope es una cota, no una promesa de velocidad.

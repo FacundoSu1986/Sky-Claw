@@ -41,6 +41,16 @@ que toda razón nueva se declare en vez de reciclar una existente.
 frontera sí debe cumplir el contrato. La traducción se hace en el borde; el enum
 de tres valores no se aplana a un booleano para conseguirlo.
 
+## texconv (generador nativo de parallax, NP-E0b)
+
+`texconv_runner.py` es el **único** camino que ejecuta `texconv`, y siempre sobre una COPIA verificada contra el pin
+(`native_parallax/export.py`, `TEXCONV_PIN_VIGENTE`) en un directorio privado. Un segundo camino a `texconv` rompe
+`tests/test_texconv_invariant.py`: decidí su receta antes de agregarlo. Sus tests usan un `texconv` FALSO; el smoke con
+el binario real es `tests/test_texconv_real.py` (Windows, `SKYCLAW_TEXCONV_EXE`) y es lo único que sostiene afirmaciones
+sobre el binario. Detalle y límites: ADR 0014, «Actualización de NP-E0b». El directorio de trabajo se borra con
+`rmtree_link_aware(limpiar_readonly=True)` y nunca con `shutil.rmtree` (`tests/test_borrado_recursivo.py`, junto a la
+tabla de procedencia de flags de `tests/test_contrato_argumentos_cli.py`: un lanzador nuevo entra en las dos anclas).
+
 ## Verificación segura
 
 Tests unitarios para argumentos y contratos; integración para lifecycle; rig

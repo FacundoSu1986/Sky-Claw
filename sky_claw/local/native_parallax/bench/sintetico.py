@@ -20,7 +20,7 @@ Lo que NO está acá y por qué:
 
 - Compresión por bloques (BC): hace falta un codificador y el producto no tiene uno propio (ADR 0014,
   decisión 4: texconv externo, NP-E0). Las variantes con error de bloque llegan con NP-E0.
-- El fixture MatSynth CC0 (ver ``bench/__init__.py``).
+- El fixture MatSynth, solo materiales CC0 (ver ``bench/__init__.py``).
 - La inversa N → H y el integrador: son de ``integrate.py`` (NP-I0), que comparte con este módulo la
   convención de frecuencias (``espectral.gradientes_espectrales``): una sola definición, congelada por un ancla
   de AST, porque un solver con otra daría gradientes escalados por la resolución (bug real de NP-M0).
