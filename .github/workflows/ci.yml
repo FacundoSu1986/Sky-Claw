@@ -1,8 +1,14 @@
 name: Sky-Claw CI/CD
 
 on:
+  # Solo main/master en push: las ramas feat/fix/etc. con PR disparaban la matriz
+  # completa dos veces (push + pull_request) porque concurrency usa github.ref
+  # (refs/heads vs refs/pull/N/merge) y no se cancelan entre sí. Con 2 Pythons
+  # eso eran 4 jobs Windows de ~35-40 min compitiendo por runners y cancelándose
+  # por timeout. El control que importa (incluido el revisor adversarial) corre
+  # en pull_request. Ramas sin PR no corren CI hasta abrir el PR.
   push:
-    branches: [main, master, "feature/**", "feat/**", "claude/**", "copilot/**", "fix/**", "hotfix/**"]
+    branches: [main, master]
   pull_request:
     branches: [main, master]
 
@@ -19,7 +25,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Gate 1: Code Quality ─────────────────────────────
+  # ── Gate 1: Code Quality ─────────────────────────────────────
   lint:
     name: "🔍 Lint (Ruff) / py${{ matrix.python-version }}"
     runs-on: windows-latest
@@ -44,7 +50,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check sky_claw/ scripts/ tests/
 
-  # ── Gate 2: Type Safety ──────────────────────────────
+  # ── Gate 2: Type Safety ───────────────────────────────────────
   typecheck:
     name: "🏷️ Type Check (Mypy) / py${{ matrix.python-version }}"
     runs-on: windows-latest
@@ -64,16 +70,18 @@ jobs:
       - name: Mypy check
         run: python -m mypy sky_claw/ scripts/ --ignore-missing-imports --no-error-summary
 
-  # ── Gate 3: Test Suite ───────────────────────────────
+  # ── Gate 3: Test Suite ───────────────────────────────────────
   test:
     name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
-    # 2026-10-09: 30 min era insuficiente. Medido en las corridas recientes, pytest
-    # tarda 1057-1719 s segun el runner asignado (py3.11 es el volatil; py3.12 se
-    # mantiene en 1334-1392 s) y el job suma ~90 s de instalacion. Con 30 min quedo
-    # al 88-96 % del limite en 6 de 8 corridas muestreadas y se cancelo aunque el
-    # paso de tests habia devuelto 0. 40 min deja el peor caso observado al 76 %.
-    timeout-minutes: 40
+    # 2026-10-22: suite creció. En PR #777 (commit 073053c0):
+    # - push: py3.11 paso tests 37 min 47 s, job 39 min 20 s; py3.12 ~35 min.
+    # - pull_request: py3.11 cancelado a 40 min 6 s.
+    # Duplicación push+PR + 2 Pythons = 4 jobs Windows compitiendo. Con push
+    # restringido a main/master la carga baja. 70 min deja el peor caso medido
+    # (~40 min) al ~57 % y da margen real >40 % ante variabilidad de runners.
+    # No se bajó --cov-fail-under ni se deshabilitaron tests.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +132,7 @@ jobs:
             tests/test_dyndolod_uia_preflight.py::test_el_modulo_no_importa_nada_de_windows \
             tests/test_frozen_runtime_p4_root_lock.py
 
-  # ── Gate 4: Security ─────────────────────────────────
+  # ── Gate 4: Security ────────────────────────────────────────────
   security:
     name: "🛡️ Security Scan"
     runs-on: windows-latest
@@ -214,7 +222,7 @@ jobs:
             exit 1
           fi
 
-  # ── Gate 5: Build ────────────────────────────────────
+  # ── Gate 5: Build ──────────────────────────────────────────────
   build:
     name: "📦 Build"
     needs: [lint-summary, typecheck-summary, test-summary, security]
