@@ -18,6 +18,12 @@ tocar el disco, tres cosas que el escritor (NP-O0b) va a dar por sentadas:
   del disco). Solo se crea donde no hay nada, y solo se reconstruye o se borra un archivo que es nuestro Y sigue
   intacto; esas acciones llevan la huella que las autoriza para que el escritor la vuelva a comprobar justo antes de
   tocar el disco. Todo lo demás se preserva o se suelta del manifiesto.
+- **Qué queda en pie tras un corte** (``reconciliar_tras_corte``, NP-O0b1). El escritor guarda su intención en un
+  manifiesto «pendiente» ANTES de tocar el disco y escribe el definitivo AL FINAL (el punto de compromiso). Si el
+  proceso muere en el medio, esta función decide, sin tocar nada, qué manifiesto queda y qué hacer con el archivo que el
+  escritor había apartado a una «papelera» para verificarlo: devolverlo a su ruta (``restaurar``) o borrarlo
+  (``descartar``). Solo se adopta lo que ya está en disco con los bytes que la intención declaraba, y solo se descarta
+  un archivo apartado cuya huella es la de una entrada NUESTRA; nada ajeno se borra ni se adopta.
 
 Límites declarados (qué NO hace este módulo):
 
@@ -53,6 +59,7 @@ __all__ = [
     "AccionPlanificada",
     "EncoderUsado",
     "EntradaDeManifiesto",
+    "EstadoTrasCorte",
     "Manifiesto",
     "ManifiestoInvalidoError",
     "MotivoDeSalida",
@@ -63,6 +70,7 @@ __all__ = [
     "PlanInvalidoError",
     "Procedencia",
     "ProcedenciaInvalidaError",
+    "RecuperacionDeCorte",
     "RutaDeSalidaInvalidaError",
     "SalidaDeseada",
     "SalidaGestionadaError",
@@ -74,6 +82,7 @@ __all__ = [
     "leer_manifiesto",
     "parametros_canonicos",
     "planificar",
+    "reconciliar_tras_corte",
     "serializar_manifiesto",
     "validar_ruta_de_salida",
 ]
@@ -781,3 +790,124 @@ def planificar(
         accion, motivo, autorizada = _decidir(deseada, entrada, observado[clave])
         acciones.append(AccionPlanificada(ruta, accion, motivo, autorizada))
     return PlanDeSalida(acciones=tuple(acciones))
+
+
+# ---------------------------------------------------------------------------
+# Recuperación tras un corte
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EstadoTrasCorte:
+    """Lo que el escritor vio en UNA ruta al arrancar tras un corte: el disco y la papelera.
+
+    ``papelera`` es la huella del archivo que el escritor había apartado ahí (aparta antes de verificar que es el que
+    creía), o ``None`` si no hay ninguno.
+    """
+
+    disco: Observacion
+    papelera: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disco, Observacion):
+            raise PlanInvalidoError(f"lo observado en disco debe ser una Observacion: {self.disco!r}")
+        if self.papelera is not None:
+            _exigir_huella(self.papelera, "la huella de la papelera", PlanInvalidoError)
+
+
+@dataclass(frozen=True, slots=True)
+class RecuperacionDeCorte:
+    """El manifiesto que queda en pie y qué hacer con la papelera, ambos por ruta y en orden canónico.
+
+    ``restaurar``: rutas cuyo archivo apartado hay que devolver a su sitio (siguen en el manifiesto). ``descartar``:
+    rutas cuyo archivo apartado es nuestro y ya no hace falta.
+    """
+
+    manifiesto: Manifiesto
+    restaurar: tuple[str, ...]
+    descartar: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifiesto, Manifiesto):
+            raise PlanInvalidoError("el manifiesto de la recuperación debe ser un Manifiesto")
+        for nombre, rutas in (("restaurar", self.restaurar), ("descartar", self.descartar)):
+            if not isinstance(rutas, tuple) or not all(isinstance(r, str) for r in rutas):
+                raise PlanInvalidoError(f"{nombre} debe ser una tupla de rutas")
+            for ruta in rutas:
+                validar_ruta_de_salida(ruta)
+            claves = [clave_de_ruta(r) for r in rutas]
+            if claves != sorted(set(claves)):
+                raise PlanInvalidoError(f"{nombre} debe estar ordenado por ruta y sin rutas repetidas")
+        en_el_manifiesto = {clave_de_ruta(e.ruta) for e in self.manifiesto.entradas}
+        a_restaurar = {clave_de_ruta(r) for r in self.restaurar}
+        if not a_restaurar <= en_el_manifiesto:
+            raise PlanInvalidoError("solo se restaura una ruta que sigue en el manifiesto")
+        if a_restaurar & {clave_de_ruta(r) for r in self.descartar}:
+            raise PlanInvalidoError("una ruta no se restaura y se descarta a la vez")
+
+
+def _entrada_que_queda(
+    vigente: EntradaDeManifiesto | None, pendiente: EntradaDeManifiesto | None, estado: EstadoTrasCorte
+) -> EntradaDeManifiesto | None:
+    disco = estado.disco
+    es_archivo = disco.tipo is TipoObservado.ARCHIVO
+    if vigente is None:  # una creación: se adopta solo si el archivo ya está publicado con los bytes declarados
+        if pendiente is not None and es_archivo and disco.sha256 == pendiente.sha256:
+            return pendiente
+        return None
+    if pendiente == vigente:  # la intención no cambiaba esta ruta: lo que valga lo decide el próximo plan
+        return vigente
+    if pendiente is not None and es_archivo and disco.sha256 == pendiente.sha256:  # el reemplazo se alcanzó a publicar
+        return pendiente
+    if es_archivo and disco.sha256 == vigente.sha256:  # no se llegó a tocar (o se deshizo): sigue siendo nuestro
+        return vigente
+    if pendiente is not None and disco.tipo is TipoObservado.AUSENTE and estado.papelera == vigente.sha256:
+        return vigente  # el reemplazo apartó el original y se cortó antes de publicar: el original se devuelve
+    return None  # lo tocó un tercero, o ya no está: deja de ser asunto nuestro
+
+
+def reconciliar_tras_corte(
+    previo: Manifiesto | None,
+    pendiente: Manifiesto,
+    observado: Mapping[str, EstadoTrasCorte],
+) -> RecuperacionDeCorte:
+    """Decide qué manifiesto queda en pie tras un corte, y qué hacer con la papelera (ver el docstring del módulo).
+
+    ``previo`` es el manifiesto vigente (el último que se escribió completo) y ``pendiente`` el que el escritor dejó
+    como intención antes de tocar el disco. ``observado`` se indexa por ``clave_de_ruta`` y debe tener el estado de TODA
+    ruta que figure en alguno de los dos; las demás se ignoran. Es idempotente: reconciliar de nuevo con el resultado
+    como manifiesto vigente no cambia nada.
+
+    Una huella en la papelera solo cuenta como «nuestra» si es la de la entrada VIGENTE de esa ruta: así un archivo
+    apartado que resultó ser de un tercero no se borra ni se devuelve nunca.
+    """
+    if previo is not None and not isinstance(previo, Manifiesto):
+        raise PlanInvalidoError(f"el manifiesto previo debe ser un Manifiesto o None, no {type(previo).__name__}")
+    if not isinstance(pendiente, Manifiesto):
+        raise PlanInvalidoError(f"el manifiesto pendiente debe ser un Manifiesto, no {type(pendiente).__name__}")
+    if not isinstance(observado, Mapping):
+        raise PlanInvalidoError(f"las observaciones deben ser un mapa, no {type(observado).__name__}")
+    if not all(isinstance(e, EstadoTrasCorte) for e in observado.values()):
+        raise PlanInvalidoError("cada observación debe ser un EstadoTrasCorte")
+
+    por_vigente = {clave_de_ruta(e.ruta): e for e in (previo.entradas if previo is not None else ())}
+    por_pendiente = {clave_de_ruta(e.ruta): e for e in pendiente.entradas}
+    quedan: list[EntradaDeManifiesto] = []
+    restaurar: list[str] = []
+    descartar: list[str] = []
+    for clave in sorted({*por_vigente, *por_pendiente}):
+        if clave not in observado:
+            raise PlanInvalidoError(f"falta el estado de {clave!r}: el mapa se indexa por clave_de_ruta")
+        estado = observado[clave]
+        vigente, intencion = por_vigente.get(clave), por_pendiente.get(clave)
+        queda = _entrada_que_queda(vigente, intencion, estado)
+        if queda is not None:
+            quedan.append(queda)
+        if vigente is not None and estado.papelera == vigente.sha256:  # el archivo apartado es nuestro
+            if queda is vigente and estado.disco.tipo is TipoObservado.AUSENTE:
+                restaurar.append(vigente.ruta)
+            else:
+                descartar.append(vigente.ruta)
+    return RecuperacionDeCorte(
+        manifiesto=Manifiesto.ordenado(quedan), restaurar=tuple(restaurar), descartar=tuple(descartar)
+    )

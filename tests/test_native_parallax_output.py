@@ -1623,6 +1623,7 @@ def test_all_esta_congelado() -> None:
         "AccionPlanificada",
         "EncoderUsado",
         "EntradaDeManifiesto",
+        "EstadoTrasCorte",
         "Manifiesto",
         "ManifiestoInvalidoError",
         "MotivoDeSalida",
@@ -1633,6 +1634,7 @@ def test_all_esta_congelado() -> None:
         "PlanInvalidoError",
         "Procedencia",
         "ProcedenciaInvalidaError",
+        "RecuperacionDeCorte",
         "RutaDeSalidaInvalidaError",
         "SalidaDeseada",
         "SalidaGestionadaError",
@@ -1644,6 +1646,7 @@ def test_all_esta_congelado() -> None:
         "leer_manifiesto",
         "parametros_canonicos",
         "planificar",
+        "reconciliar_tras_corte",
         "serializar_manifiesto",
         "validar_ruta_de_salida",
     }
