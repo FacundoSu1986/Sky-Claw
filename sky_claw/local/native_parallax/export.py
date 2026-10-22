@@ -21,9 +21,14 @@ El exportador escribe el mapa de altura como ``*_p.dds`` BC4 con mips. Este mód
   pública de Microsoft. Acepta ``BC4U``, ``ATI1`` y la extensión DX10 con ``DXGI_FORMAT_BC4_UNORM``; rechaza BC4
   con signo, cubemaps, volúmenes, arreglos y cualquier otro formato.
 
+- **Entrada sin comprimir** (``construir_dds_l8``): la cadena de mips cuantizada se entrega a ``texconv`` como un
+  DDS de luminancia de 8 bits (cabecera legacy, que ``DirectXTex`` lee como ``R8_UNORM``) para que ``texconv`` solo
+  COMPRIMA y no regenere los mips con su filtro (el código fuente del tag ``may2026`` conserva los mips de un DDS de
+  entrada cuando se pasa ``-m 0``). Pillow, un lector independiente, decodifica el nivel base.
+
 Límites declarados (qué NO está verificado):
 
-- Ningún flag de ``texconv`` está fijado ni probado acá (NP-E0b, contra el binario real en Windows).
+- Los flags y la ejecución de ``texconv`` viven en ``sky_claw/local/tools/texconv_runner.py`` (NP-E0b).
 - El validador cuenta los niveles con la fórmula de la disposición pública; Pillow (lector independiente en los
   tests) decodifica solo el nivel base.
 - Que Skyrim cargue el archivo no está verificado (NP-RIG).
@@ -44,6 +49,8 @@ from typing import TYPE_CHECKING, cast
 from sky_claw.local.native_parallax._extra import importar_numpy
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import numpy as np
     from numpy.typing import NDArray
 
@@ -60,6 +67,7 @@ __all__ = [
     "TexconvNoFijadoError",
     "TexconvPin",
     "cantidad_de_niveles",
+    "construir_dds_l8",
     "cuantizar_a_8_bits",
     "generar_mips",
     "inspeccionar_dds_bc4",
@@ -79,9 +87,16 @@ _TAMANO_DE_FORMATO_DE_PIXEL = 32
 _INICIO_DEL_PAYLOAD = 4 + _TAMANO_DE_CABECERA  # marca + DDS_HEADER
 _TAMANO_DE_EXTENSION_DX10 = 20
 _DDSD_ALTO_Y_ANCHO = 0x2 | 0x4
+_DDSD_CAPS = 0x1
+_DDSD_PITCH = 0x8
+_DDSD_PIXELFORMAT = 0x1000
 _DDSD_MIPMAPCOUNT = 0x20000
 _DDSD_PROFUNDIDAD = 0x800000  # marca de textura de volumen en cabeceras viejas
 _DDPF_FOURCC = 0x4
+_DDPF_LUMINANCIA = 0x20000
+_DDSCAPS_TEXTURA = 0x1000
+_DDSCAPS_COMPLEJA = 0x8
+_DDSCAPS_MIPMAP = 0x400000
 _DDSCAPS2_CUBEMAP = 0x200
 _DDSCAPS2_VOLUMEN = 0x200000
 _DXGI_BC4_UNORM = 80
@@ -148,15 +163,22 @@ class TexconvPin:
             raise PinInvalidoError(f"el origen del pin de texconv debe ser una URL bajo {_ORIGEN_OFICIAL}")
 
 
-# Sin versión fijada el exportador no ejecuta texconv. Congelado por igualdad en los tests: fijarlo es una
-# decisión del operador con evidencia (versión + huella del binario oficial) y cambia el ancla a propósito.
-TEXCONV_PIN_VIGENTE: TexconvPin | None = None
+# ``texconv`` oficial de DirectXTex, tag ``may2026`` (binario x64, 966480 bytes, MIT). La huella se verificó por dos
+# vías independientes: la descargada por el operador en su PC y la descargada aparte de la URL oficial de GitHub
+# Releases; coinciden. NO está verificada la firma minisign de la release (no hay clave pública verificada).
+# Congelado por igualdad en los tests: cambiar de versión es una decisión con evidencia y cambia el ancla a propósito.
+TEXCONV_PIN_VIGENTE: TexconvPin | None = TexconvPin(
+    version="may2026",
+    sha256="dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06",
+    origen="https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe",
+)
 
 
-def verificar_texconv(ruta: Path | str, *, pin: TexconvPin | None = None) -> None:
+def verificar_texconv(ruta: Path | str, *, pin: TexconvPin | None = None) -> TexconvPin:
     """Exige que el archivo ``ruta`` tenga la huella SHA-256 del pin; falla cerrado en cualquier otro caso.
 
-    Sin ``pin`` usa ``TEXCONV_PIN_VIGENTE``; si tampoco hay, lanza ``TexconvNoFijadoError``.
+    Sin ``pin`` usa ``TEXCONV_PIN_VIGENTE``; si tampoco hay, lanza ``TexconvNoFijadoError``. Devuelve el pin contra
+    el que verificó, para que quien lo ejecute registre la versión exacta.
     """
     efectivo = pin if pin is not None else TEXCONV_PIN_VIGENTE
     if efectivo is None:
@@ -178,6 +200,7 @@ def verificar_texconv(ruta: Path | str, *, pin: TexconvPin | None = None) -> Non
         raise TexconvNoCoincideError(
             f"la huella de {archivo.name} no coincide con la del pin {efectivo.version} (sha256 {efectivo.sha256})"
         )
+    return efectivo
 
 
 def _entero_positivo(valor: object, nombre: str) -> int:
@@ -260,6 +283,39 @@ def cuantizar_a_8_bits(nivel: NDArray[np.floating]) -> NDArray[np.uint8]:
     cuantizado = np_.rint(campo.astype(np_.float64) * 255.0).astype(np_.uint8)
     cuantizado.setflags(write=False)
     return cast("NDArray[np.uint8]", cuantizado)
+
+
+def construir_dds_l8(niveles: Sequence[NDArray[np.uint8]]) -> bytes:
+    """DDS de luminancia de 8 bits con la cadena de mips completa, listo para entregarlo a ``texconv``.
+
+    ``niveles``: del nivel base al 1x1 (la salida de ``cuantizar_a_8_bits`` sobre ``generar_mips``), arreglos 2-D
+    ``uint8`` cuyas formas siguen la regla ``max(1, lado >> i)``. Cabecera legacy sin extensión DX10, un
+    ``DDPF_LUMINANCE`` de 8 bits con máscara ``0xFF``, que ``DirectXTex`` carga como ``R8_UNORM``. Es puro y
+    determinista: mismos niveles, mismos bytes.
+    """
+    np_ = importar_numpy()
+    if not isinstance(niveles, (list, tuple)) or not niveles:
+        raise DimensionesNoExportablesError("se necesita al menos un nivel de mips (lista o tupla)")
+    for i, nivel in enumerate(niveles):
+        if not isinstance(nivel, np_.ndarray) or nivel.dtype != np_.uint8 or nivel.ndim != 2:
+            raise AlturaNoExportableError(f"el nivel {i} debe ser un arreglo 2-D uint8")
+    alto, ancho = niveles[0].shape
+    esperadas = [(max(1, alto >> i), max(1, ancho >> i)) for i in range(cantidad_de_niveles(ancho, alto))]
+    if [nivel.shape for nivel in niveles] != esperadas:
+        raise DimensionesNoExportablesError(
+            f"la cadena de {alto}x{ancho} debe tener las formas {esperadas}, no {[n.shape for n in niveles]}"
+        )
+    cantidad = len(niveles)
+    banderas = _DDSD_CAPS | _DDSD_ALTO_Y_ANCHO | _DDSD_PITCH | _DDSD_PIXELFORMAT
+    capacidades = _DDSCAPS_TEXTURA
+    if cantidad > 1:
+        banderas |= _DDSD_MIPMAPCOUNT
+        capacidades |= _DDSCAPS_COMPLEJA | _DDSCAPS_MIPMAP
+    cabecera = struct.pack("<7I", _TAMANO_DE_CABECERA, banderas, alto, ancho, ancho, 0, cantidad if cantidad > 1 else 0)
+    cabecera += b"\0" * 44  # dwReserved1[11]
+    cabecera += struct.pack("<8I", _TAMANO_DE_FORMATO_DE_PIXEL, _DDPF_LUMINANCIA, 0, 8, 0xFF, 0, 0, 0)
+    cabecera += struct.pack("<5I", capacidades, 0, 0, 0, 0)  # caps, caps2, caps3, caps4, reserved2
+    return _MARCA + cabecera + b"".join(nivel.tobytes() for nivel in niveles)
 
 
 @dataclass(frozen=True, slots=True)

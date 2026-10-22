@@ -221,6 +221,7 @@ LANZADORES_ESPERADOS = {
     "sky_claw/local/tools/dyndolod_runner.py": 1,
     "sky_claw/local/tools/pandora_runner.py": 1,
     "sky_claw/local/tools/synthesis_runner.py": 1,
+    "sky_claw/local/tools/texconv_runner.py": 1,
     "sky_claw/local/tools/vramr_service.py": 1,
     "sky_claw/local/xedit/runner.py": 1,
 }
@@ -241,6 +242,7 @@ LANZADORES_DE_HERRAMIENTA = frozenset(
         "sky_claw/local/tools/dyndolod_runner.py",
         "sky_claw/local/tools/pandora_runner.py",
         "sky_claw/local/tools/synthesis_runner.py",
+        "sky_claw/local/tools/texconv_runner.py",
         "sky_claw/local/tools/vramr_service.py",
         "sky_claw/local/xedit/runner.py",
         "sky_claw/local/tools/wrye_bash_runner.py",
@@ -278,6 +280,11 @@ PROCEDENCIA_DE_FLAGS = {
         "docs/validation/2026-09-10_t5v2_dyndolod_stage9.md"
     ),
     "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
+    "sky_claw/local/tools/texconv_runner.py": (
+        "microsoft/DirectXTex, tag may2026 — Texconv/texconv.cpp (tabla de opciones: -f, -m, -y, -o; "
+        "no existe --mipmap-mode) y EJECUTADO con el binario oficial en Windows "
+        "(tests/test_texconv_real.py, ADR 0014 «Actualización de NP-E0b»)"
+    ),
     "sky_claw/local/tools/vramr_service.py": "SIN VERIFICAR — VRAMr se distribuye como scripts PowerShell en Nexus",
     "sky_claw/local/xedit/runner.py": (
         "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode); tes5edit.github.io/docs "

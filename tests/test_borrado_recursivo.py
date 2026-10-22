@@ -125,6 +125,10 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # delega en `_dir_rollback.py` (declarado acá). El barrido de la familia
     # sigue enumerando al borrador real, no al que delega.
     "sky_claw/local/tools/rollback_reconciler.py": "link-aware",
+    # NP-E0b: el ejecutor de texconv borra su PROPIO espacio de trabajo (lo creó
+    # `mkdtemp`: copia del binario, entrada y salida). Mismo criterio que los
+    # ejecutores UIA: que el árbol sea propio no habilita `shutil.rmtree`.
+    "sky_claw/local/tools/texconv_runner.py": "link-aware",
     "sky_claw/local/tools/vramr_service.py": "link-aware",
     "sky_claw/local/tools_installer.py": "link-aware",
 }
@@ -458,6 +462,10 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     # keyword se cae, el descarte del backup vuelve a fallar en silencio sobre un
     # árbol read-only en el camino de ÉXITO.
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
+    # NP-E0b: el espacio de texconv contiene una COPIA del binario hecha con `copy2`,
+    # que propaga el modo de la fuente: si el original está en solo lectura, la copia
+    # también y sin el flag el borrado de Windows fallaría dejando restos.
+    "sky_claw/local/tools/texconv_runner.py": "requiere",
     "sky_claw/local/tools/vramr_service.py": "requiere",
     "sky_claw/local/tools_installer.py": "requiere",
 }

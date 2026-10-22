@@ -51,10 +51,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   llaman a `decidir`, no comparan por su cuenta. Publicar el primer registro es una decisión de política del
   operador (tolerancia, confianza, tasa de revisión máxima) y cambia el ancla: no lo hagas de pasada.
 - `export.py` (NP-E0a) es el núcleo puro del exportador DDS y **fail-closed**: sin `TEXCONV_PIN_VIGENTE` (versión + SHA-256
-  del binario oficial, congelado en `None` por igualdad) no se ejecuta `texconv`; fijarlo es una decisión del operador con
-  evidencia, y cambia el ancla. Los mips son promedio de área en float64 redondeado una vez a float32 (nunca POINT ni
-  curva sRGB sobre la altura); el validador de contenedor acepta SOLO BC4 UNORM 2-D con payload exacto. NP-E0b (flags y
-  ejecución de `texconv`) NO existe todavía: no inventes flags, verificalos contra el binario real. Tests en
+  del binario oficial; hoy el `texconv` `may2026`, congelado por igualdad) no se ejecuta `texconv`; cambiarlo es una decisión
+  del operador con evidencia nueva, y cambia el ancla. Los mips son promedio de área en float64 redondeado una vez a float32 (nunca POINT ni
+  curva sRGB sobre la altura); el validador de contenedor acepta SOLO BC4 UNORM 2-D con payload exacto. El ÚNICO módulo que
+  ejecuta `texconv` es `sky_claw/local/tools/texconv_runner.py` (NP-E0b; ancla `tests/test_texconv_invariant.py`), con los
+  flags verificados ejecutando (`ARGUMENTOS_BC4`): no inventes flags, verificalos contra el binario real
+  (`tests/test_texconv_real.py`, Windows, con `SKYCLAW_TEXCONV_EXE`). Tests en
   `tests/test_native_parallax_export.py` (el helper de DDS es independiente del módulo; no lo reemplaces por código de `export.py`).
 - `experiments/convencion.py` (NP-X0a) MIDE la convención del canal G leyendo solo píxeles y no corrige nada: la
   convención la fija la fuente del archivo y la lectura solo puede corroborarla. Es un indicio con abstención
@@ -68,6 +70,17 @@ La política clean-room, `docs/design/research/native-parallax/` y
   y su tolerancia son declaradas, sin valor por defecto; para estimar sin fuga usá `simular_dejando_un_caso_fuera`. Los
   números salen del corpus sintético y no son la tasa de revisión del producto (que es 100 % sin registro validado). El
   gate no detecta una inversión global X+Y cuando la altura sale de la misma normal; ver ADR 0014, "Actualización de NP-X0b".
+- `output.py` (NP-O0a) es el núcleo puro de la salida gestionada: decide, sin tocar el disco, quién es dueño de qué
+  (`Manifiesto`), cuándo se saltea un archivo (`clave_de_cache`) y qué hacer con cada ruta (`planificar`). **El manifiesto es
+  la única prueba de propiedad**: un archivo que no figura en él, o que figura pero cambió de contenido, no se pisa
+  (`PRESERVE_EXISTING`). La tabla estado → acción se enumera entera (15 estados) por igualdad literal en
+  `tests/test_native_parallax_output.py`; no agregues una dimensión de estado sin ampliarla. Solo `output.py` puede nombrar
+  `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports (ambos anclados por AST): el disco, la hora y el entorno los trae el
+  llamador. Todo campo nuevo de `Procedencia` o de `EncoderUsado` tiene que entrar a la clave (el test lo enumera por
+  introspección), y cambiar el formato de la clave o del manifiesto exige subir `ESQUEMA_DEL_MANIFIESTO`. **Lo que NO hace** y
+  debe resolver el escritor (NP-O0b): tomar el lock cross-process (solo protege si TODOS los mutadores participan), volver a
+  comprobar la huella `sha256_autorizado` justo antes de tocar un archivo, publicar por etapas y escribir el manifiesto al
+  final, y recuperarse de un corte a mitad. Ver ADR 0014, "Actualización de NP-O0a".
 
 ## Verificación segura
 
