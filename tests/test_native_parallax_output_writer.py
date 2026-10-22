@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import hashlib
 import inspect
+import logging
 import os
 import pathlib
+import re
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -24,16 +27,22 @@ from typing import Any
 import pytest
 
 from sky_claw.app.db.locks import LockLeaseLostError, SnapshotTransactionLock
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.security.links import ContencionFisicaVioladaError
 from sky_claw.local.native_parallax import output_writer
 from sky_claw.local.native_parallax.output import (
     NOMBRE_DEL_MOD_DE_SALIDA,
     AccionDeSalida,
+    AccionPlanificada,
     EncoderUsado,
     Manifiesto,
+    MotivoDeSalida,
     NivelDeReproducibilidad,
+    Observacion,
     OrigenDeEntrada,
     Procedencia,
     SalidaDeseada,
+    TipoObservado,
     clave_de_cache,
     clave_de_ruta,
     cota_del_manifiesto_tras_un_corte,
@@ -47,6 +56,7 @@ from sky_claw.local.native_parallax.output_writer import (
     EfectoDeSalida,
     FuenteDeSalida,
     ResultadoDeAplicacion,
+    ResultadoPorRuta,
     SalidaNoEscribibleError,
     SalidaOcupadaError,
     SesionDeSalida,
@@ -156,6 +166,23 @@ def _efectos(resultado: ResultadoDeAplicacion) -> dict[str, EfectoDeSalida]:
     return {r.ruta: r.efecto for r in resultado.rutas}
 
 
+def _detalles(resultado: ResultadoDeAplicacion) -> dict[str, str]:
+    return {r.ruta: r.detalle for r in resultado.rutas}
+
+
+def _identidad(archivo: pathlib.Path) -> tuple[int, int]:
+    """Inodo y ``mtime_ns``: cambian si el archivo se reescribe, aunque sea con el mismo contenido."""
+    datos = archivo.stat()
+    return datos.st_ino, datos.st_mtime_ns
+
+
+def _enlazar_o_saltear(destino: pathlib.Path, enlace: pathlib.Path) -> None:
+    try:
+        os.symlink(destino, enlace, target_is_directory=destino.is_dir())
+    except (OSError, NotImplementedError):
+        pytest.skip("este sistema no permite crear symlinks")
+
+
 # ---------------------------------------------------------------------------
 # Primer lote: crea el mod, publica y compromete el manifiesto
 # ---------------------------------------------------------------------------
@@ -208,12 +235,15 @@ async def test_un_segundo_lote_igual_omite_todo_y_no_toca_los_archivos(escenario
     await escenario.lote(lote)
     antes = {r: escenario.disco(r).stat().st_ino for r in (RUTA_A, RUTA_C)}
     manifiesto_antes = (escenario.control() / "manifest.json").read_bytes()
+    identidad_antes = _identidad(escenario.control() / "manifest.json")
 
     resultado = await escenario.lote(lote)
 
     assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.OMITIDA, RUTA_C: EfectoDeSalida.OMITIDA}
     assert {r: escenario.disco(r).stat().st_ino for r in (RUTA_A, RUTA_C)} == antes
     assert (escenario.control() / "manifest.json").read_bytes() == manifiesto_antes
+    # Ni siquiera se reescribe con el mismo contenido (un reemplazo atómico cambiaría el inodo).
+    assert _identidad(escenario.control() / "manifest.json") == identidad_antes
 
 
 async def test_un_cambio_de_procedencia_reemplaza_el_archivo_y_actualiza_el_manifiesto(escenario: Escenario) -> None:
@@ -222,6 +252,7 @@ async def test_un_cambio_de_procedencia_reemplaza_el_archivo_y_actualiza_el_mani
     resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-nuevo", 9.5)})
 
     assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
+    assert resultado.rutas[0].detalle == ""
     assert escenario.leer(RUTA_A) == b"DDS-nuevo"
     assert escenario.manifiesto_en_disco().entradas[0].sha256 == _sha(b"DDS-nuevo")
     assert not (escenario.control() / "trash").exists() or not list((escenario.control() / "trash").iterdir())
@@ -359,7 +390,7 @@ async def test_una_raiz_que_es_un_enlace_se_rechaza(escenario: Escenario, tmp_pa
     except OSError:
         pytest.skip("este sistema no permite crear symlinks")
 
-    with pytest.raises(SalidaNoEscribibleError, match="enlace"):
+    with pytest.raises(SalidaNoEscribibleError, match="es un enlace"):
         async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
             pytest.fail("no debería entrar")
 
@@ -423,15 +454,25 @@ async def test_un_plan_que_no_es_el_ultimo_de_la_sesion_se_rechaza(escenario: Es
             await sesion.aplicar(plan_viejo, {RUTA_A: f})
 
 
+@pytest.mark.parametrize(
+    ("caso", "mensaje"),
+    [("no_existe", "no existe"), ("enlace", "no es un archivo regular"), ("directorio", "no es un archivo regular")],
+)
 async def test_una_fuente_que_no_existe_o_es_un_enlace_se_rechaza_antes_de_tocar_nada(
-    escenario: Escenario, tmp_path: pathlib.Path
+    escenario: Escenario, tmp_path: pathlib.Path, caso: str, mensaje: str
 ) -> None:
     async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
         f = escenario.fuente(b"DDS-A")
         plan = await sesion.planificar([SalidaDeseada(RUTA_A, clave_de_cache(f.procedencia))])
         f.archivo.unlink()
+        if caso == "enlace":  # un enlace a un archivo con los mismos bytes: igual se rechaza, no se sigue
+            real = tmp_path / "real.dds"
+            real.write_bytes(b"DDS-A")
+            _enlazar_o_saltear(real, f.archivo)
+        elif caso == "directorio":
+            f.archivo.mkdir()
 
-        with pytest.raises(SalidaNoEscribibleError, match="fuente"):
+        with pytest.raises(SalidaNoEscribibleError, match=f"la fuente .* {mensaje}"):
             await sesion.aplicar(plan, {RUTA_A: f})
 
     assert escenario.archivos_bajo_textures() == set()
@@ -594,8 +635,9 @@ async def test_retirar_un_archivo_que_un_tercero_edito_despues_de_planificar_lo_
 
 
 async def test_si_alguien_ocupa_la_ruta_en_el_instante_vacio_de_un_reemplazo_no_se_pisa_y_el_original_se_conserva(
-    escenario: Escenario, interponer: Any
+    escenario: Escenario, interponer: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-viejo", 1.5)})
     interponer("tras_verificar", lambda: escenario.disco(RUTA_A).write_bytes(b"LLEGO-OTRO"))
 
@@ -608,6 +650,7 @@ async def test_si_alguien_ocupa_la_ruta_en_el_instante_vacio_de_un_reemplazo_no_
     assert escenario.manifiesto_en_disco().entradas == ()
     detalle = resultado.rutas[0].detalle
     assert str(apartados[0]) in detalle
+    assert "quedó ocupada" in caplog.text  # lo que queda en la papelera se avisa
 
 
 async def test_si_el_reemplazo_no_se_puede_publicar_se_devuelve_el_original_y_queda_como_nuestro(
@@ -653,9 +696,13 @@ async def test_un_error_de_disco_al_publicar_una_ruta_nueva_falla_esa_ruta_y_lim
     assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
 
 
-async def test_una_fuente_que_cambia_mientras_se_copia_no_se_publica(escenario: Escenario, interponer: Any) -> None:
+@pytest.mark.parametrize("contenido", [b"OTRO-CONTENIDO", b"DDS-B"], ids=["otro_tamano", "mismo_tamano"])
+async def test_una_fuente_que_cambia_mientras_se_copia_no_se_publica(
+    escenario: Escenario, interponer: Any, contenido: bytes
+) -> None:
+    """Se compara la huella Y el tamaño de lo copiado: un cambio que conserva el tamaño también se detecta."""
     fuente = escenario.fuente(b"DDS-A")
-    interponer("tras_pendiente", lambda: fuente.archivo.write_bytes(b"OTRO-CONTENIDO"))
+    interponer("tras_pendiente", lambda: fuente.archivo.write_bytes(contenido))
 
     resultado = await escenario.lote({RUTA_A: fuente})
 
@@ -742,7 +789,7 @@ async def test_una_segunda_sesion_en_otro_proceso_no_entra_mientras_la_primera_s
             base=tmp_path / "estado", max_retries=2, backoff_base=0.01, backoff_max=0.02
         )
         try:
-            with pytest.raises(SalidaOcupadaError):
+            with pytest.raises(SalidaOcupadaError, match="otro proceso"):
                 async with abrir_sesion_de_salida(escenario.raiz, coordinacion=impaciente):
                     pytest.fail("no debería entrar mientras otro proceso sostiene la raíz")
         finally:
@@ -776,7 +823,8 @@ def test_el_recurso_del_lock_depende_de_la_raiz_normalizada(tmp_path: pathlib.Pa
     recurso = CoordinacionDeSalida.resource_id_de_la_raiz
     assert recurso(raiz) == recurso(con_puntos)
     assert recurso(raiz) != recurso(otra)
-    assert recurso(raiz).startswith("native-parallax-output-")
+    # El formato es estable entre versiones: dos versiones de Sky-Claw sobre la misma raíz compiten por el MISMO recurso.
+    assert re.fullmatch(r"native-parallax-output-[0-9a-f]{32}", recurso(raiz))
 
 
 def test_el_estado_de_la_coordinacion_no_depende_del_cwd(
@@ -915,6 +963,14 @@ async def test_el_lote_de_referencia_pasa_por_todos_los_puntos_de_corte_del_lote
         "recuperacion_tras_papelera",
         "recuperacion_tras_manifiesto",
     }
+    # Y en este orden, uno por paso: el test de cortes corta en CADA uno, así que perder una llamada achicaría el test.
+    assert vistos == [
+        "tras_pendiente",
+        *("tras_etapa", "tras_apartar", "tras_verificar", "tras_publicar"),  # A se reemplaza
+        *("tras_apartar", "tras_verificar", "tras_borrar"),  # B se retira
+        *("tras_etapa", "tras_publicar"),  # C es nueva
+        *("antes_del_compromiso", "tras_compromiso", "tras_limpieza"),
+    ]
     _comprobar_invariantes(escenario, nuestros={RUTA_A, RUTA_C})
 
 
@@ -1019,6 +1075,10 @@ async def test_un_segundo_corte_durante_la_recuperacion_tambien_se_recupera(
 # ---------------------------------------------------------------------------
 
 
+#: Cómo nombra el escritor a cada archivo de control en sus mensajes.
+_QUE = {"manifest.json": "el manifiesto", "pending.json": "el manifiesto pendiente"}
+
+
 def _instantanea(raiz: pathlib.Path) -> dict[str, bytes | None]:
     return {p.relative_to(raiz).as_posix(): (p.read_bytes() if p.is_file() else None) for p in sorted(raiz.rglob("*"))}
 
@@ -1036,7 +1096,7 @@ async def test_un_archivo_de_control_ilegible_se_rechaza_sin_tocar_nada(
     (escenario.control() / nombre).write_bytes(contenido)
     antes = _instantanea(escenario.raiz)
 
-    with pytest.raises(SalidaNoEscribibleError, match="ilegible"):
+    with pytest.raises(SalidaNoEscribibleError, match=f"^{_QUE[nombre]} es ilegible"):
         async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
             pytest.fail("no debería entrar")
 
@@ -1050,7 +1110,7 @@ async def test_un_archivo_de_control_que_es_un_directorio_se_rechaza(escenario: 
         (escenario.control() / nombre).unlink()
     (escenario.control() / nombre).mkdir()
 
-    with pytest.raises(SalidaNoEscribibleError, match="regular"):
+    with pytest.raises(SalidaNoEscribibleError, match=f"^{_QUE[nombre]} no es un archivo regular"):
         async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
             pytest.fail("no debería entrar")
 
@@ -1094,7 +1154,7 @@ def _apartar_a_mano(escenario: Escenario, ruta: str, contenido: bytes) -> pathli
 
 
 async def test_lo_apartado_que_no_es_nuestro_nunca_se_borra_y_con_la_ruta_vacia_vuelve_a_su_lugar(
-    escenario: Escenario,
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Una huella en la papelera solo es nuestra si es la de la entrada vigente; lo demás no se borra nunca.
 
@@ -1114,9 +1174,13 @@ async def test_lo_apartado_que_no_es_nuestro_nunca_se_borra_y_con_la_ruta_vacia_
     assert escenario.leer(RUTA_A) == b"DE-OTRO-QUE-NO-ES-A"
     assert escenario.manifiesto_en_disco().entradas == ()  # vuelve, pero no es nuestro
     assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+    assert "No se pudo devolver" not in caplog.text  # se devolvió: no hay nada que avisar
 
 
-async def test_lo_apartado_que_no_es_nuestro_con_la_ruta_ocupada_se_queda_en_la_papelera(escenario: Escenario) -> None:
+async def test_lo_apartado_que_no_es_nuestro_con_la_ruta_ocupada_se_queda_en_la_papelera(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
     (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
     escenario.disco(RUTA_A).write_bytes(b"LO-QUE-HAY-AHORA")
@@ -1128,6 +1192,7 @@ async def test_lo_apartado_que_no_es_nuestro_con_la_ruta_ocupada_se_queda_en_la_
     assert apartado.read_bytes() == b"DE-OTRO-QUE-NO-ES-A"
     assert escenario.leer(RUTA_A) == b"LO-QUE-HAY-AHORA"
     assert not (escenario.control() / "pending.json").exists()
+    assert "1 archivo(s) que no son nuestros" in caplog.text  # lo que queda en la papelera se avisa
 
 
 @pytest.mark.parametrize("accion", ["reconstruir", "retirar"])
@@ -1165,7 +1230,7 @@ async def test_un_corte_tras_apartar_lo_que_edito_un_tercero_se_lo_devuelve_al_r
 
 
 async def test_la_recuperacion_no_descarta_lo_que_cambio_en_la_papelera_despues_de_observarlo(
-    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Entre que la recuperación observa la papelera y borra lo que decidió descartar, el archivo puede cambiar."""
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
@@ -1185,10 +1250,11 @@ async def test_la_recuperacion_no_descarta_lo_que_cambio_en_la_papelera_despues_
         assert sesion.manifiesto.entradas == ()
 
     assert apartado.read_bytes() == b"LLEGO-OTRO-A-LA-PAPELERA"
+    assert "No se descartó" in caplog.text
 
 
 async def test_el_reemplazo_no_borra_el_original_si_cambio_en_la_papelera_despues_de_verificarlo(
-    escenario: Escenario, interponer: Any
+    escenario: Escenario, interponer: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Entre verificar el original apartado y borrarlo se publica el reemplazo: el borrado vuelve a mirar la huella."""
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-viejo", 1.5)})
@@ -1198,8 +1264,10 @@ async def test_el_reemplazo_no_borra_el_original_si_cambio_en_la_papelera_despue
     resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-nuevo", 9.5)})
 
     assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
+    assert "cambió después de verificarlo" in resultado.rutas[0].detalle
     assert escenario.leer(RUTA_A) == b"DDS-nuevo"
     assert apartado.read_bytes() == b"LLEGO-OTRO-A-LA-PAPELERA"
+    assert "cambió después de verificarlo" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1409,11 +1477,20 @@ def test_la_recuperacion_corre_dentro_del_bloque_que_sostiene_el_lock() -> None:
     assert "_recuperar" not in afuera
 
 
+@pytest.mark.parametrize("camino", ["con_disco", "sin_disco"])
 async def test_cada_unidad_que_escribe_va_precedida_de_una_comprobacion_del_lock(
-    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, camino: str
 ) -> None:
-    """Sobre una corrida con las tres acciones: antes de CADA unidad que escribe, ``assert_owned`` acaba de pasar."""
-    lote = await _armar_el_estado_previo(escenario)
+    """En los DOS caminos que escriben (un lote con las tres acciones sobre el disco, y uno que solo cambia el manifiesto):
+    antes de CADA unidad que escribe, ``assert_owned`` acaba de pasar. Son hermanos: el lock tiene que estar en los dos."""
+    if camino == "con_disco":
+        lote = await _armar_el_estado_previo(escenario)
+        minimo = 7  # pendiente, 3 acciones, manifiesto, limpieza y borrado del pendiente
+    else:
+        await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+        escenario.disco(RUTA_A).unlink()  # el lote que sigue la suelta: solo cambia el manifiesto
+        lote = {}
+        minimo = 1
     traza: list[str] = []
     asercion = SnapshotTransactionLock.assert_owned
 
@@ -1439,7 +1516,7 @@ async def test_cada_unidad_que_escribe_va_precedida_de_una_comprobacion_del_lock
     # ``assert_owned``; lo que se mide es el lote que viene después de planificar.
     lote_aplicado = traza[traza.index("lock") :]
     escritoras = [i for i, evento in enumerate(lote_aplicado) if evento in unidades]
-    assert len(escritoras) >= 7  # pendiente, 3 acciones, manifiesto, limpieza y borrado del pendiente
+    assert len(escritoras) >= minimo
     assert [lote_aplicado[i - 1] for i in escritoras] == ["lock"] * len(escritoras), traza
 
 
@@ -1503,3 +1580,800 @@ def test_la_coordinacion_no_expone_el_manager_por_ninguna_via_sincrona() -> None
     assert not any(isinstance(v, property) for v in vars(CoordinacionDeSalida).values())
     assert inspect.iscoroutinefunction(CoordinacionDeSalida.initialize)
     assert inspect.isasyncgenfunction(CoordinacionDeSalida.sostener.__wrapped__)  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Contratos que la mutación encontró sin probar (agrupados por propiedad, no por mutante)
+# ---------------------------------------------------------------------------
+
+
+def test_los_efectos_estan_congelados() -> None:
+    """Los valores viajan al resultado que verá NP-A0: cambiar uno sin querer rompe a quien lo lea."""
+    assert {e.name: e.value for e in EfectoDeSalida} == {
+        "PUBLICADA": "publicada",
+        "REEMPLAZADA": "reemplazada",
+        "RETIRADA": "retirada",
+        "OMITIDA": "omitida",
+        "PRESERVADA": "preservada",
+        "SOLTADA": "soltada",
+        "CONFLICTO": "conflicto",
+        "FALLIDA": "fallida",
+    }
+
+
+@pytest.mark.parametrize(
+    "objeto",
+    [
+        ResultadoPorRuta(RUTA_A, EfectoDeSalida.PUBLICADA, ""),
+        ResultadoDeAplicacion(rutas=(), manifiesto=Manifiesto(entradas=())),
+        FuenteDeSalida(archivo=pathlib.Path("fuente.dds"), procedencia=_procedencia()),
+        output_writer._Trabajo(
+            entrada=crear_entrada(RUTA_A, H_X, 1, _procedencia()), fuente=pathlib.Path("fuente.dds")
+        ),
+    ],
+    ids=["ResultadoPorRuta", "ResultadoDeAplicacion", "FuenteDeSalida", "_Trabajo"],
+)
+def test_los_valores_del_escritor_son_inmutables_y_sin_diccionario(objeto: Any) -> None:
+    campo = dataclasses.fields(objeto)[0].name
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        setattr(objeto, campo, None)
+    assert not hasattr(objeto, "__dict__")
+
+
+def test_una_fuente_valida_sus_campos() -> None:
+    with pytest.raises(SalidaNoEscribibleError, match=r"debe ser una ruta \(Path\)"):
+        FuenteDeSalida(archivo="fuente.dds", procedencia=_procedencia())  # type: ignore[arg-type]
+    with pytest.raises(SalidaNoEscribibleError, match="la procedencia de la fuente"):
+        FuenteDeSalida(archivo=pathlib.Path("fuente.dds"), procedencia="p")  # type: ignore[arg-type]
+
+
+async def test_una_fuente_que_no_es_una_fuente_de_salida_se_rechaza(escenario: Escenario) -> None:
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        f = escenario.fuente(b"DDS-A")
+        plan = await sesion.planificar([SalidaDeseada(RUTA_A, clave_de_cache(f.procedencia))])
+
+        with pytest.raises(SalidaNoEscribibleError, match="debe ser una FuenteDeSalida"):
+            await sesion.aplicar(plan, {RUTA_A: f.archivo})  # type: ignore[dict-item]
+
+    assert escenario.archivos_bajo_textures() == set()
+
+
+@pytest.mark.parametrize("caso", ["desmedida", "no_se_puede_inspeccionar", "no_se_puede_leer"])
+async def test_una_fuente_que_no_se_puede_hashear_se_rechaza_antes_de_tocar_nada(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caso: str
+) -> None:
+    f = escenario.fuente(b"DDS-A")
+    if caso == "desmedida":
+        monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", len(b"DDS-A") - 1)
+        mensaje = "pesa más de 4 bytes"
+    elif caso == "no_se_puede_inspeccionar":
+        real = output_writer.link_kind_and_identity_or_raise_with_retry
+
+        def inspeccionar(ruta: pathlib.Path) -> Any:
+            if ruta == f.archivo:
+                raise PermissionError("bloqueado (simulado)")
+            return real(ruta)
+
+        monkeypatch.setattr(output_writer, "link_kind_and_identity_or_raise_with_retry", inspeccionar)
+        mensaje = "no se pudo inspeccionar la fuente"
+    else:
+        real_huella = output_writer._huella_de_archivo
+
+        def huella(ruta: pathlib.Path) -> str:
+            if ruta == f.archivo:
+                raise PermissionError("bloqueado (simulado)")
+            return real_huella(ruta)
+
+        monkeypatch.setattr(output_writer, "_huella_de_archivo", huella)
+        mensaje = "no se pudo leer la fuente"
+
+    with pytest.raises(SalidaNoEscribibleError, match=mensaje):
+        await escenario.lote({RUTA_A: f})
+
+    assert escenario.archivos_bajo_textures() == set()
+
+
+async def test_una_fuente_exactamente_en_el_tamano_maximo_se_publica(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", len(b"DDS-A"))
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.PUBLICADA}
+    assert escenario.manifiesto_en_disco().entradas[0].sha256 == _sha(b"DDS-A")
+
+
+def test_la_huella_de_un_archivo_desmedido_no_es_la_de_ninguna_entrada(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", 4)
+    justo, de_mas = tmp_path / "justo.dds", tmp_path / "de_mas.dds"
+    justo.write_bytes(b"1234")
+    de_mas.write_bytes(b"12345")
+
+    assert output_writer._huella_de_archivo(justo) == _sha(b"1234")
+    assert output_writer._huella_de_archivo(de_mas) == output_writer._HUELLA_DE_ARCHIVO_DESMEDIDO
+
+
+def test_observar_una_ruta_no_sigue_enlaces_y_ante_la_duda_dice_otro(
+    escenario: Escenario, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raiz = escenario.raiz
+    for ruta in (RUTA_A, RUTA_B, RUTA_C):
+        escenario.disco(ruta).parent.mkdir(parents=True, exist_ok=True)
+    assert output_writer._observar_ruta(raiz, RUTA_A) == Observacion(TipoObservado.AUSENTE, None)
+    escenario.disco(RUTA_A).write_bytes(b"DDS-A")
+    assert output_writer._observar_ruta(raiz, RUTA_A) == Observacion(TipoObservado.ARCHIVO, _sha(b"DDS-A"))
+    escenario.disco(RUTA_B).mkdir()
+    assert output_writer._observar_ruta(raiz, RUTA_B) == Observacion(TipoObservado.OTRO, None)
+    real = tmp_path / "real.dds"
+    real.write_bytes(b"DDS-A")
+    _enlazar_o_saltear(real, escenario.disco(RUTA_C))
+    assert output_writer._observar_ruta(raiz, RUTA_C) == Observacion(TipoObservado.OTRO, None)  # no se sigue
+
+    def ilegible(ruta: pathlib.Path) -> str:
+        raise PermissionError("bloqueado (simulado)")
+
+    monkeypatch.setattr(output_writer, "_huella_de_archivo", ilegible)
+    assert output_writer._observar_ruta(raiz, RUTA_A) == Observacion(TipoObservado.OTRO, None)
+
+
+# --- La intención y el compromiso de un lote con TODAS las acciones (y los fallos previos) ---------------------------
+
+_LARGA = "x" * 60
+RUTA_E = "textures/e/editado_p.dds"  # nuestra, la edita un tercero: se preserva
+RUTA_F = f"textures/f/{_LARGA}_p.dds"  # se quiere reemplazar pero su ruta ya no cabe: conserva su entrada
+RUTA_G = "textures/g/borrado_p.dds"  # nuestra, la borra un tercero y ya no se desea: se suelta
+RUTA_H = f"textures/h/{_LARGA}_p.dds"  # nuestra, la borra un tercero, se quiere de nuevo y no cabe: sale
+RUTA_L = f"textures/l/{_LARGA}_p.dds"  # nueva y no cabe: nunca entra
+RUTA_N = "textures/n/nuevo_p.dds"  # nueva: se publica
+
+
+async def test_la_intencion_y_el_compromiso_de_un_lote_con_todas_las_acciones(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, interponer: Any
+) -> None:
+    """El pendiente es EXACTAMENTE lo que quedaría si todo sale bien, y el manifiesto final es lo que quedó.
+
+    El lote tiene las seis acciones del plan más tres fallos previos (rutas que no caben): un reemplazo que falla
+    conserva su entrada y una construcción que falla no deja nada, aunque la ruta ya tuviera una entrada.
+    """
+    e = escenario
+    await e.lote(
+        {
+            RUTA_A: e.fuente(b"A", 1.5),
+            RUTA_B: e.fuente(b"B", 2.5),
+            RUTA_C: e.fuente(b"C", 3.5),
+            RUTA_E: e.fuente(b"E", 4.5),
+            RUTA_F: e.fuente(b"F", 5.5),
+            RUTA_G: e.fuente(b"G", 6.5),
+            RUTA_H: e.fuente(b"H", 7.5),
+        }
+    )
+    previo = {entrada.ruta: entrada for entrada in e.manifiesto_en_disco().entradas}
+    e.disco(RUTA_E).write_bytes(b"EDITADO-A-MANO")
+    e.disco(RUTA_G).unlink()
+    e.disco(RUTA_H).unlink()
+    cortas = (RUTA_A, RUTA_B, RUTA_C, RUTA_E, RUTA_G, RUTA_N)
+    monkeypatch.setattr(
+        output_writer, "_LARGO_MAXIMO_DE_RUTA_COMPLETA", max(len(os.fspath(e.disco(r))) for r in cortas)
+    )
+    pendientes: list[Manifiesto] = []
+    interponer(
+        "tras_pendiente", lambda: pendientes.append(leer_manifiesto((e.control() / "pending.json").read_bytes()))
+    )
+
+    resultado = await e.lote(
+        {
+            RUTA_A: e.fuente(b"A", 1.5),  # omitir
+            RUTA_B: e.fuente(b"B2", 8.5),  # reemplazar
+            RUTA_E: e.fuente(b"E2", 9.5),  # preservar (la editó un tercero)
+            RUTA_F: e.fuente(b"F2", 10.5),  # reemplazar, pero no cabe
+            RUTA_H: e.fuente(b"H", 7.5),  # construir (falta en disco), pero no cabe
+            RUTA_L: e.fuente(b"L", 12.5),  # construir, pero no cabe
+            RUTA_N: e.fuente(b"N", 11.5),  # construir
+        }  # C se retira y G se suelta
+    )
+
+    assert _efectos(resultado) == {
+        RUTA_A: EfectoDeSalida.OMITIDA,
+        RUTA_B: EfectoDeSalida.REEMPLAZADA,
+        RUTA_C: EfectoDeSalida.RETIRADA,
+        RUTA_E: EfectoDeSalida.PRESERVADA,
+        RUTA_F: EfectoDeSalida.FALLIDA,
+        RUTA_G: EfectoDeSalida.SOLTADA,
+        RUTA_H: EfectoDeSalida.FALLIDA,
+        RUTA_L: EfectoDeSalida.FALLIDA,
+        RUTA_N: EfectoDeSalida.PUBLICADA,
+    }
+    esperado = Manifiesto.ordenado(
+        [
+            previo[RUTA_A],
+            crear_entrada(RUTA_B, _sha(b"B2"), 2, _procedencia(8.5)),
+            previo[RUTA_F],
+            crear_entrada(RUTA_N, _sha(b"N"), 1, _procedencia(11.5)),
+        ]
+    )
+    assert pendientes == [esperado]
+    assert e.manifiesto_en_disco() == esperado == resultado.manifiesto
+
+
+async def test_un_lote_sin_disco_con_una_construccion_que_no_cabe_saca_su_entrada(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El mismo fallo previo por el camino que no toca archivos: la entrada de un archivo que ya no está sale."""
+    await escenario.lote({RUTA_H: escenario.fuente(b"H", 7.5)})
+    escenario.disco(RUTA_H).unlink()
+    monkeypatch.setattr(output_writer, "_LARGO_MAXIMO_DE_RUTA_COMPLETA", 10)
+
+    resultado = await escenario.lote({RUTA_H: escenario.fuente(b"H", 7.5)})
+
+    assert _efectos(resultado) == {RUTA_H: EfectoDeSalida.FALLIDA}
+    assert escenario.manifiesto_en_disco().entradas == ()
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+async def test_una_recuperacion_que_no_cambia_nada_no_reescribe_el_manifiesto(escenario: Escenario) -> None:
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    manifiesto = escenario.control() / "manifest.json"
+    (escenario.control() / "pending.json").write_bytes(manifiesto.read_bytes())  # una intención que no cambiaba nada
+    antes = _identidad(manifiesto)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert _identidad(manifiesto) == antes
+    assert not (escenario.control() / "pending.json").exists()
+
+
+async def test_planificar_sin_el_lock_no_observa_nada(escenario: Escenario, monkeypatch: pytest.MonkeyPatch) -> None:
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+
+        async def perdida(*args: Any, **kwargs: Any) -> None:
+            raise LockLeaseLostError("lease perdida (simulada)")
+
+        monkeypatch.setattr(sesion._lock, "assert_owned", perdida)
+        with pytest.raises(LockLeaseLostError):
+            await sesion.planificar([])
+        monkeypatch.undo()
+
+
+# --- Ninguna rama que falla deja su copia de trabajo, y cada una dice por qué ---------------------------------------
+
+
+def _fallar_al_mover(monkeypatch: pytest.MonkeyPatch, cuando: Any) -> None:
+    original = output_writer._mover_sin_reemplazar
+
+    def mover(origen: pathlib.Path, destino: pathlib.Path) -> None:
+        if cuando(origen, destino):
+            raise PermissionError("sharing violation simulada")
+        original(origen, destino)
+
+    monkeypatch.setattr(output_writer, "_mover_sin_reemplazar", mover)
+
+
+def _fallar_el_fsync_de_la_etapa(escenario: Escenario, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = os.fsync
+    etapa = escenario.control() / "staging" / output_writer._id_de_ruta(RUTA_A)
+
+    def fsync(fd: int) -> None:
+        if etapa.exists() and os.fstat(fd).st_ino == etapa.stat().st_ino:
+            raise OSError(28, "disco lleno (simulado)")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+
+_RAMAS_QUE_FALLAN = {
+    # caso: (hay un archivo previo, efecto, parte del detalle, la entrada previa se conserva)
+    "construir_ruta_ocupada": (False, EfectoDeSalida.CONFLICTO, "apareció algo en la ruta", False),
+    "construir_error_al_publicar": (False, EfectoDeSalida.FALLIDA, "no se pudo publicar", False),
+    "copia_que_falla_a_mitad": (False, EfectoDeSalida.FALLIDA, "no se pudo copiar la fuente", False),
+    "fuente_que_cambia": (False, EfectoDeSalida.FALLIDA, "cambió mientras se copiaba", False),
+    "reemplazar_desaparecido": (True, EfectoDeSalida.CONFLICTO, "desapareció antes de reemplazarlo", False),
+    "reemplazar_tocado_por_un_tercero": (True, EfectoDeSalida.CONFLICTO, "lo modificó un tercero", False),
+    "reemplazar_error_al_publicar": (True, EfectoDeSalida.CONFLICTO, "no se pudo publicar el reemplazo", True),
+    "reemplazar_fuente_que_desaparece": (True, EfectoDeSalida.FALLIDA, "no se pudo copiar la fuente", True),
+}
+
+
+@pytest.mark.parametrize("caso", sorted(_RAMAS_QUE_FALLAN))
+async def test_ninguna_rama_que_falla_deja_su_copia_de_trabajo(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, interponer: Any, caso: str
+) -> None:
+    """Se enumeran TODAS las ramas que fallan con una etapa ya copiada: cada una la borra en el acto (un lote con muchos
+    fallos no acumula copias hasta el compromiso) y su detalle nombra la causa."""
+    previo, efecto, detalle, se_conserva = _RAMAS_QUE_FALLAN[caso]
+    e = escenario
+    if previo:
+        await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+    fuente = e.fuente(b"DDS-nuevo", 9.5)
+    etapas: list[list[str]] = []
+    interponer("antes_del_compromiso", lambda: etapas.append(sorted(os.listdir(e.control() / "staging"))))
+    entre: Any = None
+    if caso == "construir_ruta_ocupada":
+
+        def entre() -> None:
+            e.disco(RUTA_A).parent.mkdir(parents=True)
+            e.disco(RUTA_A).write_bytes(b"DEL-USUARIO")
+
+    elif caso in ("construir_error_al_publicar", "reemplazar_error_al_publicar"):
+        _fallar_al_mover(monkeypatch, lambda o, d: d == e.disco(RUTA_A) and o.parent.name == "staging")
+    elif caso == "copia_que_falla_a_mitad":
+        _fallar_el_fsync_de_la_etapa(e, monkeypatch)
+    elif caso == "fuente_que_cambia":
+        interponer("tras_pendiente", lambda: fuente.archivo.write_bytes(b"DDS-NUEVA"))  # mismo tamaño
+    elif caso == "reemplazar_desaparecido":
+
+        def entre() -> None:
+            e.disco(RUTA_A).unlink()
+
+    elif caso == "reemplazar_tocado_por_un_tercero":
+
+        def entre() -> None:
+            e.disco(RUTA_A).write_bytes(b"EDITADO-A-MANO")
+
+    elif caso == "reemplazar_fuente_que_desaparece":
+        interponer("tras_pendiente", lambda: fuente.archivo.unlink())
+
+    resultado = await _planificar_y_aplicar(e, {RUTA_A: fuente}, entre=entre)
+
+    assert _efectos(resultado) == {RUTA_A: efecto}
+    assert detalle in _detalles(resultado)[RUTA_A]
+    assert etapas == [[]]
+    entradas = e.manifiesto_en_disco().entradas
+    assert [x.sha256 for x in entradas] == ([_sha(b"DDS-viejo")] if se_conserva else [])
+    if se_conserva:
+        assert e.leer(RUTA_A) == b"DDS-viejo"
+
+
+@pytest.mark.parametrize("accion", ["reconstruir", "retirar"])
+async def test_lo_apartado_que_no_se_puede_devolver_porque_la_ruta_se_ocupo_queda_en_la_papelera(
+    escenario: Escenario, interponer: Any, accion: str
+) -> None:
+    """Un tercero editó el archivo (no es lo autorizado) y además ocupó la ruta antes de que se le devolviera: no se pisa
+    nada, lo apartado queda en la papelera y el resultado dice dónde. Se enumeran las dos acciones que apartan."""
+    e = escenario
+    await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+    apartado = e.control() / "trash" / output_writer._id_de_ruta(RUTA_A)
+
+    def tercero() -> None:
+        apartado.write_bytes(b"EDITADO-A-MANO")
+        e.disco(RUTA_A).write_bytes(b"LLEGO-OTRO")
+
+    interponer("tras_apartar", tercero)
+
+    resultado = await e.lote({RUTA_A: e.fuente(b"DDS-nuevo", 9.5)} if accion == "reconstruir" else {})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.CONFLICTO}
+    assert f"quedó en {apartado}" in _detalles(resultado)[RUTA_A]
+    assert e.leer(RUTA_A) == b"LLEGO-OTRO"
+    assert apartado.read_bytes() == b"EDITADO-A-MANO"
+    assert e.manifiesto_en_disco().entradas == ()
+
+
+@pytest.mark.parametrize("accion", ["reconstruir", "retirar"])
+async def test_un_error_al_apartar_falla_la_ruta_y_conserva_el_archivo_y_su_entrada(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, interponer: Any, accion: str
+) -> None:
+    e = escenario
+    await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+
+    def apartar(*args: Any) -> pathlib.Path:
+        raise PermissionError("el juego tiene el archivo abierto (simulado)")
+
+    monkeypatch.setattr(output_writer, "_apartar", apartar)
+    etapas: list[list[str]] = []
+    interponer(
+        "antes_del_compromiso",
+        lambda: etapas.append(
+            sorted(os.listdir(e.control() / "staging")) if (e.control() / "staging").exists() else []
+        ),
+    )
+
+    resultado = await e.lote({RUTA_A: e.fuente(b"DDS-nuevo", 9.5)} if accion == "reconstruir" else {})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
+    assert "no se pudo apartar" in _detalles(resultado)[RUTA_A]
+    assert e.leer(RUTA_A) == b"DDS-viejo"
+    assert [x.sha256 for x in e.manifiesto_en_disco().entradas] == [_sha(b"DDS-viejo")]
+    assert etapas == [[]]
+
+
+@pytest.mark.parametrize(
+    ("accion", "detalle"),
+    [("retirar", "ya no estaba"), ("retirar_editado", "lo modificó un tercero: no se borró")],
+)
+async def test_el_detalle_de_un_retiro_que_no_borra_dice_por_que(
+    escenario: Escenario, accion: str, detalle: str
+) -> None:
+    e = escenario
+    await e.lote({RUTA_A: e.fuente(b"DDS-A")})
+
+    def entre() -> None:
+        if accion == "retirar":
+            e.disco(RUTA_A).unlink()
+        else:
+            e.disco(RUTA_A).write_bytes(b"EDITADO-A-MANO")
+
+    resultado = await _planificar_y_aplicar(e, {}, entre=entre)
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.SOLTADA}
+    assert _detalles(resultado)[RUTA_A] == detalle
+
+
+async def test_retirar_lo_ultimo_no_poda_ni_textures_ni_la_raiz(escenario: Escenario) -> None:
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+
+    await escenario.lote({})
+
+    assert escenario.archivos_bajo_textures() == set()
+    assert (escenario.raiz / "textures").is_dir()
+    assert list((escenario.raiz / "textures").iterdir()) == []
+
+
+# --- Archivos de control: todo lo que no se puede leer detiene la sesión, y el mensaje dice cuál ---------------------
+
+
+@pytest.mark.parametrize("nombre", ["manifest.json", "pending.json"])
+@pytest.mark.parametrize("caso", ["desmedido", "no_se_puede_inspeccionar", "no_se_puede_leer"])
+async def test_un_archivo_de_control_que_no_se_puede_leer_detiene_la_sesion(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, nombre: str, caso: str
+) -> None:
+    control = escenario.control()
+    control.mkdir(parents=True)
+    vacio = serializar_manifiesto(Manifiesto(entradas=()))
+    con_una = serializar_manifiesto(Manifiesto(entradas=(crear_entrada(RUTA_A, H_X, 1, _procedencia()),)))
+    (control / "manifest.json").write_bytes(vacio if nombre == "pending.json" else con_una)
+    if nombre == "pending.json":
+        (control / "pending.json").write_bytes(con_una)
+    antes = _instantanea(escenario.raiz)
+    que = _QUE[nombre]
+    if caso == "desmedido":
+        monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_MANIFIESTO", len(vacio))  # el vacío cabe, el otro no
+        mensaje = f"^{que} supera {len(vacio)} bytes"
+    elif caso == "no_se_puede_inspeccionar":
+        real = output_writer.link_kind_and_identity_or_raise_with_retry
+
+        def inspeccionar(ruta: pathlib.Path) -> Any:
+            if ruta == control / nombre:
+                raise PermissionError("bloqueado (simulado)")
+            return real(ruta)
+
+        monkeypatch.setattr(output_writer, "link_kind_and_identity_or_raise_with_retry", inspeccionar)
+        mensaje = f"^no se pudo inspeccionar {que}:"
+    else:
+        real_leer = pathlib.Path.read_bytes
+
+        def leer(ruta: pathlib.Path) -> bytes:
+            if ruta == control / nombre:
+                raise PermissionError("bloqueado (simulado)")
+            return real_leer(ruta)
+
+        monkeypatch.setattr(pathlib.Path, "read_bytes", leer)
+        mensaje = f"^no se pudo leer {que}:"
+
+    with pytest.raises(SalidaNoEscribibleError, match=mensaje):
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            pytest.fail("no debería entrar")
+
+    monkeypatch.undo()
+    assert _instantanea(escenario.raiz) == antes
+
+
+async def test_una_carpeta_de_control_que_es_un_enlace_hacia_afuera_se_rechaza(
+    escenario: Escenario, tmp_path: pathlib.Path
+) -> None:
+    afuera = tmp_path / "afuera_del_mod"
+    afuera.mkdir()
+    (afuera / ".algo.tmp").write_bytes(b"NO ES NUESTRO")
+    escenario.raiz.mkdir()
+    _enlazar_o_saltear(afuera, escenario.raiz / ".skyclaw-output")
+
+    with pytest.raises(ContencionFisicaVioladaError):
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            pytest.fail("no debería entrar")
+
+    assert sorted(p.name for p in afuera.iterdir()) == [".algo.tmp"]
+
+
+async def test_la_limpieza_solo_borra_lo_que_es_suyo_por_construccion(
+    escenario: Escenario, tmp_path: pathlib.Path
+) -> None:
+    """Las copias de trabajo y los temporales ``.<nombre>.<hex>.tmp`` (archivos regulares) son nuestros por construcción;
+    nada más lo es: ni un ``.tmp`` sin punto, ni un archivo oculto sin ``.tmp``, ni un enlace, ni una carpeta."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    control = escenario.control()
+    (control / "staging").mkdir()
+    (control / "staging" / "copia").write_bytes(b"x")
+    (control / "staging" / "carpeta").mkdir()
+    (control / ".manifest.json.abc.tmp").write_bytes(b"x")
+    (control / "ajeno.tmp").write_bytes(b"x")
+    (control / ".ajeno").write_bytes(b"x")
+    afuera = tmp_path / "afuera.dds"
+    afuera.write_bytes(b"x")
+    _enlazar_o_saltear(afuera, control / ".enlace.tmp")
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert sorted(p.name for p in control.iterdir()) == [
+        ".ajeno",
+        ".enlace.tmp",
+        "ajeno.tmp",
+        "manifest.json",
+        "staging",
+    ]
+    assert sorted(p.name for p in (control / "staging").iterdir()) == ["carpeta"]
+    assert (control / ".enlace.tmp").is_symlink()
+    assert afuera.read_bytes() == b"x"
+
+
+async def test_un_enlace_en_la_papelera_no_cuenta_como_apartado(
+    escenario: Escenario, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Aunque apunte a un archivo con la huella vigente: no se devuelve (publicaría un enlace) ni se borra."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    afuera = tmp_path / "afuera.dds"
+    afuera.write_bytes(b"DDS-A")
+    (escenario.control() / "trash").mkdir()
+    casilla = escenario.control() / "trash" / output_writer._id_de_ruta(RUTA_A)
+    _enlazar_o_saltear(afuera, casilla)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert casilla.is_symlink()
+    assert afuera.read_bytes() == b"DDS-A"
+    assert not escenario.disco(RUTA_A).exists()
+    assert "no son nuestros" in caplog.text
+
+
+async def test_la_recuperacion_descarta_lo_nuestro_apartado_sin_avisar(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    _apartar_a_mano(escenario, RUTA_A, b"DDS-A")  # un retiro cortado entre verificar y borrar
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+    assert caplog.text == ""
+
+
+async def test_si_la_ruta_se_ocupa_antes_de_devolver_lo_apartado_se_avisa_y_se_conserva(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO")
+    original = output_writer.reconciliar_tras_corte
+
+    def reconciliar(*args: Any) -> Any:
+        recuperacion = original(*args)
+        escenario.disco(RUTA_A).write_bytes(b"LLEGO-OTRO")  # después de observar la ruta vacía, antes de devolver
+        return recuperacion
+
+    monkeypatch.setattr(output_writer, "reconciliar_tras_corte", reconciliar)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert escenario.leer(RUTA_A) == b"LLEGO-OTRO"
+    assert apartado.read_bytes() == b"DE-OTRO"
+    assert "No se pudo devolver" in caplog.text
+
+
+# --- Contención en los dos sitios que crean carpetas para escribir (hermanos) ----------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="sin symlinks")
+async def test_una_carpeta_que_se_vuelve_enlace_despues_de_planificar_no_crea_nada_afuera(
+    escenario: Escenario, tmp_path: pathlib.Path
+) -> None:
+    afuera = tmp_path / "afuera"
+    afuera.mkdir()
+
+    def enlazar() -> None:
+        (escenario.raiz / "textures").mkdir(parents=True, exist_ok=True)
+        _enlazar_o_saltear(afuera, escenario.raiz / "textures" / "architecture")
+
+    resultado = await _planificar_y_aplicar(escenario, {RUTA_A: escenario.fuente(b"DDS-A")}, entre=enlazar)
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
+    assert list(afuera.rglob("*")) == []  # ni la carpeta que faltaba se creó afuera
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="sin symlinks")
+async def test_al_devolver_una_carpeta_que_se_vuelve_enlace_no_crea_nada_afuera(
+    escenario: Escenario, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    afuera = tmp_path / "afuera"
+    afuera.mkdir()
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    escenario.disco(RUTA_A).parent.rmdir()
+    escenario.disco(RUTA_A).parent.parent.rmdir()  # textures/architecture
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO")
+    original = output_writer.reconciliar_tras_corte
+
+    def reconciliar(*args: Any) -> Any:
+        recuperacion = original(*args)
+        _enlazar_o_saltear(afuera, escenario.raiz / "textures" / "architecture")
+        return recuperacion
+
+    monkeypatch.setattr(output_writer, "reconciliar_tras_corte", reconciliar)
+
+    with pytest.raises(ContencionFisicaVioladaError):
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            pytest.fail("no debería entrar")
+
+    assert list(afuera.rglob("*")) == []
+    assert apartado.read_bytes() == b"DE-OTRO"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="sin symlinks")
+@pytest.mark.parametrize("sitio", ["publicar", "devolver"])
+async def test_si_la_carpeta_recien_creada_se_vuelve_enlace_no_se_escribe_afuera(
+    escenario: Escenario, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, sitio: str
+) -> None:
+    """Entre crear la carpeta madre y usarla, alguien la cambia por un enlace hacia afuera: la segunda comprobación lo
+    ataja. Se enumeran los dos sitios que crean carpetas para escribir en el mod (publicar y devolver), no uno."""
+    afuera = tmp_path / "afuera"
+    afuera.mkdir()
+    objetivo = escenario.disco(RUTA_A).parent
+    if sitio == "devolver":
+        await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+        (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+        escenario.disco(RUTA_A).unlink()
+        objetivo.rmdir()
+        apartado = _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO")
+    real = os.makedirs
+
+    def makedirs(nombre: Any, *args: Any, **kwargs: Any) -> None:
+        real(nombre, *args, **kwargs)
+        if pathlib.Path(nombre) == objetivo and not objetivo.is_symlink():
+            os.rmdir(objetivo)
+            os.symlink(afuera, objetivo, target_is_directory=True)
+
+    monkeypatch.setattr(os, "makedirs", makedirs)
+
+    if sitio == "publicar":
+        resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+        assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
+    else:
+        with pytest.raises(ContencionFisicaVioladaError):
+            async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+                pytest.fail("no debería entrar")
+        assert apartado.read_bytes() == b"DE-OTRO"
+
+    assert list(afuera.rglob("*")) == []
+
+
+# --- La raíz y la coordinación ---------------------------------------------------------------------------------------
+
+
+async def test_la_raiz_debe_ser_una_ruta_y_poder_inspeccionarse(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(SalidaNoEscribibleError, match=r"la raíz debe ser una ruta \(Path\)"):
+        async with abrir_sesion_de_salida(str(escenario.raiz), coordinacion=escenario.coordinacion):  # type: ignore[arg-type]
+            pytest.fail("no debería entrar")
+    real = output_writer.link_kind_and_identity_or_raise_with_retry
+
+    def inspeccionar(ruta: pathlib.Path) -> Any:
+        if ruta == escenario.raiz:
+            raise PermissionError("bloqueado (simulado)")
+        return real(ruta)
+
+    monkeypatch.setattr(output_writer, "link_kind_and_identity_or_raise_with_retry", inspeccionar)
+    with pytest.raises(SalidaNoEscribibleError, match="no se pudo inspeccionar la raíz"):
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            pytest.fail("no debería entrar")
+    assert not escenario.raiz.exists()
+
+
+class _ManagerQueCuenta:
+    """Un ``DistributedLockManager`` de mentira que solo cuenta aperturas y cierres."""
+
+    def __init__(self) -> None:
+        self.aperturas = 0
+        self.cierres = 0
+
+    async def initialize(self) -> None:
+        self.aperturas += 1
+
+    async def close(self) -> None:
+        self.cierres += 1
+
+
+async def test_la_coordinacion_abre_una_vez_cierra_solo_lo_abierto_y_puede_reabrir(tmp_path: pathlib.Path) -> None:
+    manager = _ManagerQueCuenta()
+    coordinacion = CoordinacionDeSalida(
+        lock_manager=manager,  # type: ignore[arg-type]
+        snapshot_manager=FileSnapshotManager(snapshot_dir=tmp_path / "snapshots"),
+    )
+
+    await coordinacion.close()
+    assert (manager.aperturas, manager.cierres) == (0, 0)
+    await coordinacion.initialize()
+    await coordinacion.initialize()
+    assert (manager.aperturas, manager.cierres) == (1, 0)
+    await coordinacion.close()
+    await coordinacion.close()
+    assert (manager.aperturas, manager.cierres) == (1, 1)
+    await coordinacion.initialize()
+    assert (manager.aperturas, manager.cierres) == (2, 1)
+
+
+# --- Defensas de la ejecución (el plan las garantiza; si no, no se toca nada) ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("accion", "con_trabajo", "con_vigente", "mensaje"),
+    [
+        (AccionDeSalida.CONSTRUIR, False, False, "no trae la huella que la autoriza"),
+        (AccionDeSalida.RETIRAR, False, False, "no trae la huella que la autoriza"),
+        (AccionDeSalida.RECONSTRUIR, False, True, "no tiene su trabajo"),
+    ],
+)
+def test_una_accion_incoherente_no_toca_el_disco(
+    escenario: Escenario, accion: AccionDeSalida, con_trabajo: bool, con_vigente: bool, mensaje: str
+) -> None:
+    escenario.disco(RUTA_A).parent.mkdir(parents=True)
+    escenario.disco(RUTA_A).write_bytes(b"DDS-A")
+    vigente = crear_entrada(RUTA_A, _sha(b"DDS-A"), 5, _procedencia()) if con_vigente else None
+    autorizado = _sha(b"DDS-A") if accion is not AccionDeSalida.CONSTRUIR else None
+    motivo = {
+        AccionDeSalida.CONSTRUIR: MotivoDeSalida.NUEVA,
+        AccionDeSalida.RETIRAR: MotivoDeSalida.HUERFANO_PROPIO,
+        AccionDeSalida.RECONSTRUIR: MotivoDeSalida.CLAVE_CAMBIO,
+    }[accion]
+    plan = AccionPlanificada(RUTA_A, accion, motivo, autorizado)
+    antes = _instantanea(escenario.raiz)
+
+    with pytest.raises(SalidaNoEscribibleError, match=mensaje):
+        output_writer._actuar_en_disco(escenario.raiz, plan, None, vigente)
+
+    assert _instantanea(escenario.raiz) == antes
+
+
+@pytest.mark.skipif(os.name == "nt", reason="los bits de permiso POSIX no aplican en Windows")
+async def test_lo_publicado_y_el_manifiesto_tienen_los_permisos_de_siempre(escenario: Escenario) -> None:
+    mascara = os.umask(0)
+    os.umask(mascara)
+
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+
+    esperado = 0o644 & ~mascara
+    assert escenario.disco(RUTA_A).stat().st_mode & 0o777 == esperado
+    assert (escenario.control() / "manifest.json").stat().st_mode & 0o777 == esperado
+
+
+async def test_una_escritura_atomica_que_falla_levanta_y_no_deja_temporales(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destino = tmp_path / "manifest.json"
+    destino.write_bytes(b"VIEJO")
+
+    def reemplazar(*args: Any) -> None:
+        raise PermissionError("bloqueado (simulado)")
+
+    monkeypatch.setattr(os, "replace", reemplazar)
+
+    with pytest.raises(PermissionError):
+        output_writer._escribir_atomico(destino, b"NUEVO")
+
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["manifest.json"]
+    assert destino.read_bytes() == b"VIEJO"
