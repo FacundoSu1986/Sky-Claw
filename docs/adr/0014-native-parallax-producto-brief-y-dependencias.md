@@ -820,7 +820,13 @@ tiene que cumplir el protocolo que esta función da por sentado. Verificado ejec
    decide devolver el original.
 4. El archivo apartado y verificado se borra **dentro de la propia acción**, antes del compromiso.
 5. El manifiesto definitivo se escribe **al final** (punto de compromiso); después se limpia; el pendiente se borra **último**.
-6. Nunca se borra de la papelera nada cuya huella no sea la de una entrada vigente.
+6. Nunca se borra de la papelera nada cuya huella no sea la de una entrada vigente, y la huella se **vuelve a calcular justo antes de
+   borrar** (`DescarteDePapelera.sha256_autorizado`): borrar es lo único que no se deshace, y entre la observación y el borrado puede
+   pasar algo.
+7. Lo apartado que **no** es lo autorizado vuelve a su ruta si está vacía (sin pisar nada), en el camino sin corte **y** en la
+   recuperación: es una sola propiedad de la papelera, no dos. Si la ruta quedó ocupada, se queda en la papelera y se avisa.
+8. **Antes de escribir el pendiente**, el escritor comprueba que `cota_del_manifiesto_tras_un_corte(vigente, pendiente)` no supera
+   `TAMANO_MAXIMO_DEL_MANIFIESTO`; si la supera, rechaza el lote sin tocar nada («dividí el lote»).
 
 **Qué decide** (`reconciliar_tras_corte(previo, pendiente, observado)`, con `observado[clave_de_ruta]` = `EstadoTrasCorte(disco, papelera)`).
 Por cada ruta que figure en alguno de los dos manifiestos, 4 relaciones (solo en el pendiente = una creación; solo en el vigente = un
@@ -829,19 +835,39 @@ bytes vigentes, archivo con los bytes pendientes, archivo con otros bytes, otra 
 vigente, uno con otra huella) = **60 estados**, enumerados y comparados por igualdad literal contra una tabla escrita a mano
 (`tests/test_native_parallax_output_recuperacion.py`). En resumen: se **adopta** (pasa al manifiesto) solo lo que ya está en disco con
 los bytes que la intención declaraba; un reemplazo que apartó el original y se cortó antes de publicar **devuelve el original**
-(`restaurar`); un archivo apartado que es nuestro y ya no hace falta se **descarta**; todo lo que tocó un tercero deja de ser asunto
-nuestro (sale del manifiesto) sin tocarse. Una huella en la papelera solo cuenta como nuestra si es la de la entrada **vigente** de esa
-ruta. Es idempotente: reconciliar otra vez con el resultado como manifiesto vigente no cambia nada (anclado sobre los 60 estados), así
-que un segundo corte durante la recuperación es seguro.
+(`restaurar`); un archivo apartado que es nuestro y ya no hace falta se **descarta** (con la huella que lo autoriza); todo lo que tocó
+un tercero deja de ser asunto nuestro (sale del manifiesto) sin borrarse. Una huella en la papelera solo cuenta como nuestra si es la
+de la entrada **vigente** de esa ruta; lo apartado que no es nuestro **vuelve a su ruta si está vacía** (el escritor aparta antes de
+verificar: si un tercero había editado el archivo y el proceso murió antes de verificarlo, sin esto el archivo del usuario quedaba
+encerrado en la papelera) y, si la ruta está ocupada, se queda. Es idempotente: reconciliar otra vez con el resultado como manifiesto
+vigente no cambia nada (anclado sobre los 60 estados), así que un segundo corte durante la recuperación es seguro.
 
-**Mutación** (automática por AST sobre `_entrada_que_queda`, `reconciliar_tras_corte` y las dos clases nuevas: comparaciones, `and`/`or`,
-`not`, constantes, condiciones, retornos, llamadas y `raise`): **109 mutantes**, la primera pasada dejó 6 vivos: 4 eran `frozen`/`slots`
-de las dos clases (sin prueba; se agregó) y 2 son equivalentes (`return None` por `return None`). Además 6 mutantes escritos a mano
-sobre el orden de las ramas, la unión de rutas y la ortografía de la ruta a restaurar: uno vivo (la ortografía que se devuelve en
-`restaurar`: tiene que ser la de la entrada vigente, porque en un sistema que distingue mayúsculas es donde estaba el archivo), cerrado
-con un test. Los tests y la función se escribieron en este orden: tests → rojo observado (`ImportError` del símbolo nuevo) → función → verde.
+**La cota del manifiesto que puede quedar en pie** (`cota_del_manifiesto_tras_un_corte(previo, pendiente)`). Tras un corte, y también
+al comprometer un lote con rutas fallidas, queda por ruta a lo sumo **una** entrada de alguno de los dos manifiestos: la unión puede
+pesar más que cada uno (un lote que cambia casi todas las rutas). Si superara los 128 MiB, `serializar_manifiesto` fallaría en cada
+arranque y la sesión no se podría abrir más. La cota suma, por ruta, lo que agrega la entrada más pesada a un manifiesto vacío; se
+verifica contra **todas** las elecciones posibles por ruta (72 sobre cinco rutas que cubren cada relación): nunca se queda corta y
+sobra a lo sumo 2 bytes por ruta. Las entradas iguales en ambos manifiestos pesan una vez, así que un lote que reconstruye las
+mismas rutas no ve reducido el tope.
+
+**Mutación** (automática por AST sobre `_entrada_que_queda`, `reconciliar_tras_corte`, `cota_del_manifiesto_tras_un_corte` y las tres
+clases: comparaciones, `and`/`or`, `not`, aritmética, constantes, condiciones, retornos, llamadas, `raise` y `continue`; las anotaciones
+no se mutan porque con `from __future__ import annotations` no se evalúan; cada mutante corre con un "mutante nulo" previo que valida el
+empalme). Sobre la versión final: **147 mutantes, 146 muertos y 1 vivo equivalente** (`peso_por_ruta.get(clave, 0)` → `1`: el peso de
+una entrada serializada siempre supera 1 byte, así que `max(1, peso) == peso`). La pasada anterior dejó vivos 9 textos de mensajes de
+error, cerrados haciendo que los tests de validación comprueben con `match=` qué chequeo se dispara. En la primera versión (antes de la
+revisión) se hicieron además 6 mutantes a mano sobre el orden de las ramas, la unión de rutas y la ortografía de la ruta a restaurar:
+uno vivo (la ortografía que se devuelve en `restaurar`: tiene que ser la de la entrada vigente, porque en un sistema que distingue
+mayúsculas es donde estaba el archivo), cerrado con un test. Orden: tests → rojo observado (`ImportError` del símbolo nuevo; y en la
+revisión, 10 fallas de comportamiento con la huella y la cota ya implementadas y la devolución de lo ajeno todavía no) → función → verde.
+
+**Revisión.** La primera versión tenía tres defectos que señaló la revisión automática (Codex) y que se verificaron leyendo el código:
+lo ajeno apartado quedaba varado en la papelera si el corte caía entre apartar y verificar (era el camino gemelo de `_devolver`, que
+sí lo devuelve sin corte), `descartar` no llevaba la huella que autoriza el borrado, y nada acotaba la unión de los dos manifiestos.
 
 **Límites declarados.** (1) Es lógica pura: la papelera y el disco los observa el escritor; esta función no sabe cómo. (2) No cierra
 la ventana de la ruta vacía del punto 3, solo la recupera. (3) Un manifiesto pendiente ilegible **no** se interpreta: el escritor tiene
 que fallar cerrado y pedir intervención (borrar el pendiente a mano equivale a declarar que no se publicó nada, y lo publicado quedará
-como ajeno). (4) No se ejercitó contra un disco ni en Windows real.
+como ajeno). (4) No se ejercitó contra un disco ni en Windows real. (5) La cota serializa cada entrada por separado: es lineal en el
+número de entradas (medido en Linux: 2,5 s para 20.000 + 20.000 entradas distintas, contra 1,1 s de serializar el manifiesto), y el
+escritor la paga una vez por lote que toca el disco.
