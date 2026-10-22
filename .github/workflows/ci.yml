@@ -76,13 +76,22 @@ jobs:
   test:
     name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
-    # 2026-10-22: suite creció. En PR #777 (commit 073053c0):
-    # - push: py3.11 paso tests 37 min 47 s, job 39 min 20 s; py3.12 ~35 min.
-    # - pull_request: py3.11 cancelado a 40 min 6 s.
-    # Duplicación push+PR + 2 Pythons = 4 jobs Windows compitiendo. Con push
-    # restringido a main/master la carga baja. 70 min deja el peor caso medido
-    # (~40 min) al ~57 % y da margen real >40 % ante variabilidad de runners.
-    # No se bajó --cov-fail-under ni se deshabilitaron tests.
+    # 2026-10-09: 30 min era insuficiente. Medido en las corridas recientes, pytest
+    # tarda 1057-1719 s segun el runner asignado (py3.11 es el volatil; py3.12 se
+    # mantiene en 1334-1392 s) y el job suma ~90 s de instalacion. Con 30 min quedo
+    # al 88-96 % del limite en 6 de 8 corridas muestreadas y se cancelo aunque el
+    # paso de tests habia devuelto 0. 40 min deja el peor caso observado al 76 %.
+    # 2026-10-22: 40 min dejo de alcanzar porque la suite crecio. Pytest ya tarda
+    # 1829-2322 s y varia segun el runner en las dos versiones (py3.11: 1829 y
+    # 2322 s; py3.12: 1852 y 2165 s), y el job suma ~80 s de preparacion. En #779 y
+    # #780 el job de py3.11 se cancelo al tocar el limite con el paso de tests ya
+    # devuelto en 0.
+    # 2026-10-22 (reconciliacion de #778 sobre main): se conservan 70 min, el mayor
+    # de los dos valores propuestos, porque las dos mediciones anteriores se tomaron
+    # CON la duplicacion push+PR todavia activa (4 jobs Windows compitiendo). Al
+    # restringir push a main/master la contencion baja y los tiempos deberian
+    # mejorar, no empeorar; 70 min deja el peor caso medido (~40 min) al ~57 %.
+    # Bajar el limite ahora seria reintroducir un valor inferior al ya justificado.
     timeout-minutes: 70
     strategy:
       fail-fast: false
