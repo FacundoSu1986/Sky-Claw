@@ -12,7 +12,9 @@ momento (ver ADR 0014, «Actualización de NP-O0b1» y «Actualización de NP-O0
   todo sale bien), con escritura atómica.
 3. **Apartar y verificar.** Un archivo nuestro que se reemplaza o se retira se MUEVE a una papelera y recién ahí se
   calcula su huella: la huella verificada es la del archivo que salió de la ruta, no la de un instante anterior. Si no
-  es la autorizada lo tocó un tercero y se devuelve; nunca se pisa ni se borra.
+  es la autorizada lo tocó un tercero y se devuelve; nunca se pisa ni se borra. Es UNA propiedad para los dos caminos: si
+  el proceso muere antes de verificar, la recuperación lo devuelve igual (si la ruta sigue vacía). Todo borrado de la
+  papelera con un hueco desde la verificación rehace la huella justo antes de borrar.
 4. **Compromiso al final.** El manifiesto definitivo se escribe al final; después se limpia y el pendiente se borra
   ÚLTIMO. Un archivo que no figura en el manifiesto no es nuestro (``PRESERVE_EXISTING``).
 
