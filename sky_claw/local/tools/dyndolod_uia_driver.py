@@ -1055,16 +1055,20 @@ def _paso_invocar(
 
     **Presupuesto.** ``timeout_segundos`` es el techo temporal y
     :data:`MAXIMO_DE_LECTURAS_POR_INVOCACION` el tope de lecturas; lo que venza
-    primero corta. Agotado el presupuesto el desenlace es
-    ``PRECONDICION_FALLIDA``/``PANTALLA_INCORRECTA`` con ``invocado=False``: el
-    padre lo ve como un corte limpio, no como un desenlace desconocido. Si no
-    hubo ni una sola lectura legible, el desenlace es ``UIA_NO_DISPONIBLE``: el
-    veredicto honesto es el sensor.
+    primero corta. Agotado el presupuesto sin pantalla contractual el desenlace
+    es ``PRECONDICION_FALLIDA``/``PANTALLA_INCORRECTA`` con ``invocado=False``.
+    Si no hubo ni una sola lectura legible, el desenlace es ``UIA_NO_DISPONIBLE``:
+    el veredicto honesto es el sensor. En los tres casos el padre lo ve como un
+    corte limpio, no como un desenlace desconocido.
 
-    El plazo acota la ESPERA, no la acción: si la pantalla contractual aparece en
-    la última lectura, se invoca (misma semántica que ``_paso_observar``, que
-    devuelve en cuanto ve la pantalla decisiva). Lo que el plazo impide es seguir
-    esperando.
+    **El plazo acota la ESPERA y la ACCIÓN.** Si la lectura que habilita el
+    Invoke llega después de ``limite`` —una lectura LENTA, no una pantalla
+    ausente— el paso no invoca: devuelve ``PLAZO_AGOTADO`` con
+    ``invocado=False``. El modal puede estar a la vista y la instantánea ser
+    válida; actuar fuera del presupuesto que el operador aprobó no es un
+    desenlace aceptable, y el corte es limpio (se puede re-lanzar), no ambiguo.
+    Esto es deliberadamente MÁS estricto que ``_paso_observar``, que devuelve en
+    cuanto ve la pantalla decisiva: observar de más no muta, invocar de más sí.
 
     **Nunca se reintenta la primitiva.** Cualquier desvío que no sea un hueco
     —incluido un control no inequívoco— corta antes de invocar, y una vez
@@ -1160,6 +1164,19 @@ def _paso_invocar(
                 MotivoDePrecondicion.CONTROL_DESHABILITADO,
                 f"{accion.id}: el control no está habilitado",
                 instantanea,
+            )
+        # El presupuesto acota también la ACCIÓN (P1 del Tech Lead). Va pegado a
+        # la primitiva a propósito: es el ÚNICO punto de mutación del paso, así
+        # que ninguna ruta puede invocar sin pasar por este chequeo.
+        if reloj() > limite:
+            return ResultadoDePaso(
+                estado=EstadoDePaso.PLAZO_AGOTADO,
+                detalle=(
+                    f"{accion.id}: el presupuesto de {pedido.timeout_segundos:.1f}s venció durante la "
+                    f"lectura ({lecturas} lecturas); la pantalla contractual está a la vista pero no se "
+                    "invocó nada"
+                ),
+                instantanea=_sin_referencias(instantanea),
             )
         hresult = backend.invocar(candidatos[0])
         return ResultadoDePaso(

@@ -19,6 +19,7 @@ import pytest
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, MecanismoDeEscritura
 from sky_claw.local.tools.dyndolod_uia_driver import (
     MAXIMO_DE_LECTURAS_POR_INVOCACION,
+    BackendDeConduccion,
     CapacidadDesatendidaUIA,
     ConductorDesatendido,
     ContextoDeConduccion,
@@ -1040,6 +1041,92 @@ def test_f2_el_presupuesto_de_lecturas_es_finito_aunque_el_reloj_no_avance():
     assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
     assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
     assert 1 < gui.lecturas <= 32, f"lecturas={gui.lecturas}: ni una sola ni sin tope"
+    assert gui.invocaciones == []
+
+
+# -- Caso J: el presupuesto acota la ACCIÓN, no sólo la espera ---------------
+
+
+class _RelojManual:
+    """Reloj de test: sólo avanza cuando una lectura lo mueve."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _BackendQueCobraLaLectura:
+    """Backend que delega y, si la lectura PROSPERA, mueve el reloj.
+
+    Modela el P1 del Tech Lead: un ``instantanea()`` que tarda más que el
+    presupuesto y devuelve una instantánea perfectamente válida. La lectura
+    ilegible NO cobra: no llegó a leer, así que no gastó el plazo.
+    """
+
+    def __init__(self, real: BackendDeConduccion, reloj: _RelojManual, *, costo: float) -> None:
+        self._real = real
+        self._reloj = reloj
+        self._costo = costo
+
+    def instantanea(self, pid: int) -> InstantaneaUI:
+        instantanea = self._real.instantanea(pid)
+        self._reloj.t += self._costo
+        return instantanea
+
+    def leer_output(self, elemento: ElementoUI) -> str | None:
+        return self._real.leer_output(elemento)
+
+    def escribir_output(self, elemento: ElementoUI, mecanismo: MecanismoDeEscritura, valor: str) -> str:
+        return self._real.escribir_output(elemento, mecanismo, valor)
+
+    def invocar(self, elemento: ElementoUI) -> str:
+        return self._real.invocar(elemento)
+
+    def liberar(self) -> None:
+        self._real.liberar()
+
+
+def test_f2_el_presupuesto_vencido_impide_la_mutacion_aunque_el_modal_este():
+    """P1: la lectura LLEGA TARDE, con el modal contractual a la vista.
+
+    El modal está y la instantánea es válida, pero se obtuvo después de vencer
+    ``timeout_segundos``. Invocar ahí sería mutar fuera del presupuesto que el
+    operador aprobó: el paso corta con ``PLAZO_AGOTADO`` y CERO invocaciones.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=10.0)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert gui.lecturas == 1, "el corte no es por falta de lectura: se leyó una vez"
+    assert resultado.estado is EstadoDePaso.PLAZO_AGOTADO
+    assert resultado.invocado is False
+    assert gui.invocaciones == [], "no se muta con el presupuesto vencido"
+
+
+def test_f2_la_lectura_ilegible_lenta_tampoco_muta_fuera_del_presupuesto():
+    """Hermano del anterior por la puerta de la excepción: ilegible y después lenta."""
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    gui.armar_guion([LecturaIlegible(ObservacionUIAError("elemento stale a mitad de repaint"))])
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=10.0)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert gui.lecturas == 2, "una ilegible y una válida: el modal estaba"
+    assert resultado.estado is EstadoDePaso.PLAZO_AGOTADO
+    assert resultado.invocado is False
     assert gui.invocaciones == []
 
 

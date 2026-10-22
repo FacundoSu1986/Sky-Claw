@@ -30,13 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mientras que `UIANoDisponibleError` —el sensor— sigue cortando en la primera
   lectura, la misma distinción que ya hacía la observación; si no hubo ni una
   sola lectura legible el veredicto es `UIA_NO_DISPONIBLE`, no la pantalla. El
+  presupuesto acota también la ACCIÓN, no sólo la espera: si la lectura que
+  habilita el Invoke llega después de vencer `timeout_segundos` —una lectura
+  lenta, con el modal contractual a la vista y la instantánea válida— el paso
+  devuelve `PLAZO_AGOTADO` con `invocado=False` en vez de mutar fuera del
+  presupuesto que el operador aprobó. Es deliberadamente más estricto que la
+  observación: observar de más no muta, invocar de más sí. El
   corte por identidad, además, tenía dos códigos según el camino: `_atender_modal`,
   `accion_previa`, Begin y terminal reportaban `IDENTIDAD_NO_COINCIDE` como
   `UIA_CONTROL_MAP_MISMATCH`/`TERMINAL_CONTROL_MISMATCH` mientras la observación y
   la escritura del Output ya usaban `UNATTENDED_CONTRACT_VIOLATION`; ahora los
   siete sitios comparten un único mapeo. Anclas:
   `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el caso I de la lectura
-  ilegible, el censo parametrizado de los cuatro caminos del corte por identidad y
+  ilegible, el caso J del presupuesto vencido —pantalla transitoria y excepción—,
+  el censo parametrizado de los cuatro caminos del corte por identidad y
   el test que fija que el padre pide el Invoke UNA vez aunque el paso corte sin
   invocar) y `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas
   —y de lecturas que fallan— con el que se reproduce el hueco de repintado.
