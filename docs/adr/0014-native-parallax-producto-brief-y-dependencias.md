@@ -939,8 +939,32 @@ siempre **antes** de tocar el disco.
   está en el censo de mutadores y lo nombran exactamente `_recuperar` y `_reemplazar`, y cada uno tiene su test que cambia el archivo en el hueco.
 - *El tope en el borde.* Con el tope igual a la cota del (vigente, pendiente) el lote pasa; con uno menos se rechaza sin tocar el disco.
 
-**Mutación** (automática por AST sobre todo el módulo: comparaciones, `and`/`or`, `not`, constantes, condiciones, retornos, llamadas y `raise`):
-RESULTADOS_DE_MUTACION
+**Mutación** (automática por AST sobre todo el módulo: comparaciones, `and`/`or`, `not`, aritmética, constantes, condiciones, retornos,
+llamadas, `raise` y `continue`; las anotaciones no se mutan porque con `from __future__ import annotations` no se evalúan; antes de
+mutar, un «mutante nulo» por función valida que el empalme no rompe nada). **569 mutantes.** La primera pasada dejó **168 vivos** y
+ninguno resultó ser un defecto del código: eran huecos de los tests, que se cerraron agrupados por **propiedad** y no por mutante. Entre
+ellos: el orden de los 13 puntos de corte congelado por igualdad de lista; el pendiente y el compromiso EXACTOS de un lote con las seis
+acciones más tres fallos previos (y el mismo fallo por el camino sin disco); no reescribir lo que no cambió; la traza del lock y la pérdida
+del lock en los DOS caminos que escriben; las 8 ramas que fallan con una etapa ya copiada (ninguna deja su copia, y cada detalle nombra
+la causa); devolver con la ruta re-ocupada y el error al apartar, en reemplazar **y** retirar; la fuente que es un enlace o un directorio
+(el test ya lo nombraba y no lo probaba) y la que cambia conservando el tamaño; la contención en los dos sitios que crean carpetas para
+escribir (publicar y devolver), con la carpeta que se vuelve enlace antes y después de crearla; y los avisos por log que este ADR
+declara contrato. Sobre la versión final: **540 muertos y 29 vivos**, todos clasificados:
+
+- **Equivalentes (24).** `permitir_raiz` y `exigir_existencia` (8): la carpeta madre de una ruta de salida nunca es la raíz, y en esos
+  puntos la carpeta ya existe. `O_BINARY` / `getattr(…, 0)` (4): en POSIX `O_WRONLY == 1`. `os.name == "nt"` (2): en POSIX ya es falso,
+  y las dos ramas son movimientos que no reemplazan. `follow_symlinks` en `staging/` (1): `or is_symlink()` cubre los dos casos.
+  `return None` en lugar de `False` (3): el único uso es `if`/`if not`. `'snapshots'` (1): con `target_files=[]` el
+  `FileSnapshotManager` nunca se inicializa ni escribe. El `unlink` previo de la etapa (1): la sesión abre con `staging/` vacía. El aviso
+  de sobrantes con la lista vacía (1): la papelera solo sigue existiendo si no está vacía. `_asegurar_lock` con `lock is None` (3):
+  inalcanzable, porque la única construcción pasa un lock.
+- **Solo observables en Windows (2).** La rama `os.rename` de `_mover_sin_reemplazar` (la ejerce la CI de Windows) y la comprobación de
+  contención antes de `rmdir` en `_podar_directorios_vacios`: en POSIX el `rmdir` de un enlace falla igual; en Windows borraría un junction.
+- **No observables en un test (3).** `flush`/`fsync` de las escrituras: la durabilidad ante un corte de luz (ver el límite 2).
+
+Los tests que cierran vivos se escribieron **después** del código (el escritor ya existía): para ellos no hay un rojo previo y la
+evidencia es la mutación, porque cada uno mata el mutante que lo motivó. Los tests de los arreglos de la revisión de #779 sí tuvieron
+su rojo observado antes del cambio.
 
 **Límites declarados.** (1) No se ejecutó en Windows aquí (ver arriba). (2) La durabilidad ante un corte de luz alcanza al contenido de los archivos
 (`fsync`), no a los directorios. (3) Entre apartar y publicar la ruta está vacía un instante; si el proceso muere ahí, la recuperación devuelve el
