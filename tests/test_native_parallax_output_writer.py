@@ -968,7 +968,7 @@ async def test_el_lote_de_referencia_pasa_por_todos_los_puntos_de_corte_del_lote
     assert vistos == [
         "tras_pendiente",
         *("tras_etapa", "tras_apartar", "tras_verificar", "tras_publicar"),  # A se reemplaza
-        *("tras_apartar", "tras_verificar", "tras_borrar"),  # B se retira
+        *("tras_apartar", "tras_borrar"),  # B se retira: verificar y borrar son una sola unidad (rehace la huella)
         *("tras_etapa", "tras_publicar"),  # C es nueva
         *("antes_del_compromiso", "tras_compromiso", "tras_limpieza"),
     ]
@@ -1421,7 +1421,8 @@ def test_las_funciones_que_mutan_el_disco_estan_enumeradas_y_son_todas_privadas(
 
     # Las que crean carpetas lo hacen a través de ``_crear_carpeta_contenida`` (ver el ancla de contención), así que
     # ``_apartar``, ``_preparar_padre``, ``_restaurar_desde_papelera`` y ``_asegurar_directorio_de_control`` ya no llaman
-    # al sistema de archivos directamente.
+    # al sistema de archivos directamente. Lo mismo ``_retirar``, que borra de la papelera a través de
+    # ``_borrar_si_es_el_autorizado`` (ver el censo de ``os.unlink``).
     assert mutadores == {
         "_borrar_pendiente",
         "_borrar_si_es_el_autorizado",
@@ -1434,7 +1435,6 @@ def test_las_funciones_que_mutan_el_disco_estan_enumeradas_y_son_todas_privadas(
         "_podar_directorios_vacios",
         "_recuperar",
         "_reemplazar",
-        "_retirar",
         # Crea el directorio de estado de los locks (el del usuario), no toca el mod de salida.
         "construir_coordinacion_de_salida",
     }
@@ -1453,8 +1453,9 @@ def test_cada_mutador_solo_se_alcanza_desde_donde_el_lock_esta_tomado() -> None:
     assert quien_nombra["_actuar_en_disco"] == {"_ejecutar"}
     assert quien_nombra["_limpiar_control"] == {"_ejecutar", "_recuperar"}
     assert quien_nombra["_borrar_pendiente"] == {"_ejecutar", "_recuperar"}
-    # Los borrados de la papelera con un hueco entre verificar y borrar vuelven a mirar la huella: los dos, no uno.
-    assert quien_nombra["_borrar_si_es_el_autorizado"] == {"_recuperar", "_reemplazar"}
+    # TODO borrado de la papelera mira la huella en ese mismo instante: los tres (descartar en la recuperación, el
+    # original de un reemplazo y lo que se retira), no uno ni dos. El tercero lo encontró la revisión de #782.
+    assert quien_nombra["_borrar_si_es_el_autorizado"] == {"_recuperar", "_reemplazar", "_retirar"}
     assert quien_nombra["SesionDeSalida"] >= {"abrir_sesion_de_salida"}
     assert {f for f in quien_nombra["SesionDeSalida"] if f != "<módulo>"} <= {"abrir_sesion_de_salida"}
 
@@ -2492,3 +2493,95 @@ def test_toda_carpeta_se_crea_con_la_contencion_validada_antes_y_despues() -> No
         ast.unparse(s.value.func) for s in helper.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
     ]
     assert llamadas == ["exigir_contencion_fisica", "os.makedirs", "exigir_contencion_fisica"]
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: todo borrado de la papelera rehace la huella, y no poder borrar no aborta el lote
+# ---------------------------------------------------------------------------
+
+
+def test_solo_el_helper_que_rehace_la_huella_borra_de_la_papelera() -> None:
+    """El censo de quién llama a ``os.unlink`` está congelado. De la papelera borra únicamente
+    ``_borrar_si_es_el_autorizado``; el resto borra lo propio por construcción (temporales, copias de trabajo, el
+    pendiente y el nombre viejo de un movimiento sin reemplazo en POSIX)."""
+    borran = {f for f, usos in _recorrer().mutadores.items() if "os.unlink" in usos}
+    assert borran == {
+        "_borrar_pendiente",
+        "_borrar_si_es_el_autorizado",
+        "_construir",
+        "_copiar_a_etapa",
+        "_escribir_atomico",
+        "_limpiar_control",
+        "_mover_sin_reemplazar",
+        "_reemplazar",
+    }
+
+
+def _que_el_primer_borrado_en_la_papelera_falle(monkeypatch: pytest.MonkeyPatch, control: pathlib.Path) -> list[str]:
+    """El primer ``os.unlink`` de algo en la papelera falla como con un antivirus o un archivo de solo lectura en Windows;
+    los siguientes funcionan. Devuelve la lista de lo que no se pudo borrar."""
+    real = os.unlink
+    fallados: list[str] = []
+
+    def unlink(ruta: Any, *args: Any, **kwargs: Any) -> None:
+        if pathlib.Path(ruta).parent == control / "trash" and not fallados:
+            fallados.append(str(ruta))
+            raise PermissionError(13, "lo tiene abierto otro proceso (simulado)", str(ruta))
+        real(ruta, *args, **kwargs)
+
+    monkeypatch.setattr(output_writer.os, "unlink", unlink)
+    return fallados
+
+
+async def test_si_no_se_puede_borrar_lo_que_se_retira_vuelve_a_su_ruta_y_el_lote_sigue(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A"), RUTA_C: escenario.fuente(b"DDS-C")})
+    fallados = _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    resultado = await escenario.lote({RUTA_C: escenario.fuente(b"DDS-C")})  # A se retira
+
+    assert fallados
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA, RUTA_C: EfectoDeSalida.OMITIDA}
+    assert "no se pudo borrar" in _detalles(resultado)[RUTA_A]
+    assert escenario.leer(RUTA_A) == b"DDS-A"  # volvió a su ruta y sigue siendo nuestro
+    assert {e.ruta for e in escenario.manifiesto_en_disco().entradas} == {RUTA_A, RUTA_C}
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+async def test_si_no_se_puede_borrar_el_original_de_un_reemplazo_el_reemplazo_queda_y_se_dice(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    fallados = _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)})
+
+    assert fallados
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
+    assert "no se pudo borrar el original" in _detalles(resultado)[RUTA_A]
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
+    assert [e.sha256 for e in escenario.manifiesto_en_disco().entradas] == [_sha(b"DDS-A2")]
+    apartados = list((escenario.control() / "trash").iterdir())
+    assert [p.read_bytes() for p in apartados] == [b"DDS-A"]  # el original no se perdió: quedó en la papelera
+
+
+async def test_si_la_recuperacion_no_puede_descartar_avisa_y_la_sesion_abre_igual(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Con un archivo de solo lectura en Windows el borrado falla SIEMPRE: si la recuperación levantara, la sesión no
+    volvería a abrir nunca. Avisa, lo deja en la papelera (es nuestro y está verificado) y sigue."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    escenario.disco(RUTA_A).unlink()
+    apartado = _apartar_a_mano(escenario, RUTA_A, b"DDS-A")  # un retiro cortado entre apartar y borrar
+    fallados = _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        assert sesion.manifiesto.entradas == ()
+
+    assert fallados
+    assert apartado.read_bytes() == b"DDS-A"
+    assert not (escenario.control() / "pending.json").exists()
+    assert "No se pudo descartar" in caplog.text

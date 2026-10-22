@@ -511,13 +511,21 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
         if not _restaurar_desde_papelera(raiz, control, ruta):
             logger.warning("No se pudo devolver %s desde la papelera: la ruta ya está ocupada", ruta)
     for descarte in recuperacion.descartar:
-        with contextlib.suppress(FileNotFoundError):
-            apartado = control / _PAPELERA / _id_de_ruta(descarte.ruta)
-            if not _borrar_si_es_el_autorizado(apartado, descarte.sha256_autorizado):
-                logger.warning(
-                    "No se descartó %s de la papelera: ya no tiene la huella que se observó (cambió o desapareció)",
-                    descarte.ruta,
-                )
+        apartado = control / _PAPELERA / _id_de_ruta(descarte.ruta)
+        try:
+            borrado = _borrar_si_es_el_autorizado(apartado, descarte.sha256_autorizado)
+        except FileNotFoundError:
+            continue  # desapareció entre verificarlo y borrarlo: no queda nada que descartar
+        except (
+            OSError
+        ) as exc:  # nuestro y verificado, pero no se deja borrar (solo lectura, antivirus): no bloquea la sesión
+            logger.warning("No se pudo descartar %s de la papelera (%s); queda ahí", descarte.ruta, exc)
+            continue
+        if not borrado:
+            logger.warning(
+                "No se descartó %s de la papelera: ya no tiene la huella que se observó (cambió o desapareció)",
+                descarte.ruta,
+            )
     _punto_de_corte("recuperacion_tras_papelera")
     actual = serializar_manifiesto(vigente) if vigente is not None else serializar_manifiesto(Manifiesto(entradas=()))
     resultante = serializar_manifiesto(recuperacion.manifiesto)
@@ -641,8 +649,9 @@ def _huella_del_apartado(apartado: pathlib.Path) -> str | None:
 def _borrar_si_es_el_autorizado(apartado: pathlib.Path, autorizado: str) -> bool:
     """Borra lo apartado solo si su huella, calculada AHORA, es *autorizado*; si no (o no se pudo leer), no lo toca.
 
-    Borrar es lo único que no se deshace: lo usan los borrados de la papelera que tienen un hueco entre la verificación y
-    el borrado (el descarte de la recuperación y el original de un reemplazo, con la publicación en el medio).
+    Borrar es lo único que no se deshace: es la ÚNICA forma de borrar de la papelera (el descarte de la recuperación, el
+    original de un reemplazo, con la publicación en el medio, y lo que se retira). Si el sistema no deja borrar (solo
+    lectura, antivirus), el ``OSError`` sube: cada caller lo convierte en el resultado de su ruta o en un aviso.
     """
     if _huella_del_apartado(apartado) != autorizado:
         return False
@@ -727,7 +736,14 @@ def _reemplazar(
             ruta, EfectoDeSalida.CONFLICTO, f"la ruta quedó ocupada; el original está en {apartado}"
         ), None
     _punto_de_corte("tras_publicar")
-    if not _borrar_si_es_el_autorizado(apartado, autorizado):  # cambió en la papelera después de verificarlo
+    try:
+        borrado = _borrar_si_es_el_autorizado(apartado, autorizado)
+    except OSError as exc:  # el reemplazo ya está publicado; el original (nuestro y verificado) queda en la papelera
+        logger.warning("No se pudo borrar el original apartado de %s (%s); quedó en %s", ruta, exc, apartado)
+        return ResultadoPorRuta(
+            ruta, EfectoDeSalida.REEMPLAZADA, f"no se pudo borrar el original apartado ({exc}); quedó en {apartado}"
+        ), trabajo.entrada
+    if not borrado:  # cambió en la papelera después de verificarlo
         logger.warning("El original apartado de %s cambió después de verificarlo; quedó en %s", ruta, apartado)
         return ResultadoPorRuta(
             ruta,
@@ -748,12 +764,19 @@ def _retirar(
     except (ContencionFisicaVioladaError, OSError) as exc:
         return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, f"no se pudo apartar: {exc}"), vigente
     _punto_de_corte("tras_apartar")
-    if _huella_del_apartado(apartado) != autorizado:  # lo tocó un tercero (o no se pudo leer): es suyo, no lo borramos
+    try:
+        # Verificar y borrar son UNA unidad: la huella se calcula justo antes del borrado, sin un hueco en el medio.
+        borrado = _borrar_si_es_el_autorizado(apartado, autorizado)
+    except OSError as exc:  # era nuestro, pero no se deja borrar (solo lectura, antivirus): vuelve a su ruta
+        if _devolver(apartado, destino):
+            return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, f"no se pudo borrar: {exc}"), vigente
+        return ResultadoPorRuta(
+            ruta, EfectoDeSalida.CONFLICTO, f"no se pudo borrar ({exc}) y la ruta se ocupó; quedó en {apartado}"
+        ), None
+    if not borrado:  # lo tocó un tercero (o no se pudo leer): es suyo, no lo borramos
         if _devolver(apartado, destino):
             return ResultadoPorRuta(ruta, EfectoDeSalida.SOLTADA, "lo modificó un tercero: no se borró"), None
         return ResultadoPorRuta(ruta, EfectoDeSalida.CONFLICTO, f"lo modificó un tercero y quedó en {apartado}"), None
-    _punto_de_corte("tras_verificar")
-    os.unlink(apartado)
     _punto_de_corte("tras_borrar")
     _podar_directorios_vacios(raiz, ruta)
     return ResultadoPorRuta(ruta, EfectoDeSalida.RETIRADA, ""), None
