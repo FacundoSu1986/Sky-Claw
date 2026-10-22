@@ -2377,3 +2377,31 @@ async def test_una_escritura_atomica_que_falla_levanta_y_no_deja_temporales(
     monkeypatch.undo()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["manifest.json"]
     assert destino.read_bytes() == b"VIEJO"
+
+
+async def test_si_se_pierde_el_lock_antes_de_un_compromiso_sin_disco_no_se_escribe_el_manifiesto(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El camino que solo cambia el manifiesto vuelve a comprobar el lock justo antes de escribirlo (la traza no lo puede
+    distinguir: el chequeo al entrar a ``aplicar`` ya dejó «lock» antes de esa escritura)."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    escenario.disco(RUTA_A).unlink()  # el lote que sigue la suelta: solo cambia el manifiesto
+    manifiesto = escenario.control() / "manifest.json"
+    antes = manifiesto.read_bytes()
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion) as sesion:
+        plan = await sesion.planificar([])
+        llamadas = {"n": 0}
+        real = sesion._lock.assert_owned
+
+        async def se_pierde_en_la_segunda(*args: Any, **kwargs: Any) -> None:
+            llamadas["n"] += 1
+            if llamadas["n"] >= 2:  # 1 al entrar a aplicar, 1 antes de escribir el manifiesto
+                raise LockLeaseLostError("lease perdida (simulada)")
+            await real(*args, **kwargs)
+
+        monkeypatch.setattr(sesion._lock, "assert_owned", se_pierde_en_la_segunda)
+        with pytest.raises(LockLeaseLostError):
+            await sesion.aplicar(plan, {})
+        monkeypatch.undo()
+
+    assert manifiesto.read_bytes() == antes
