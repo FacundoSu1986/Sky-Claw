@@ -79,7 +79,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
-   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b) |
+   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; falta NP-O0b2 (el escritor sobre el disco) |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
@@ -800,3 +800,48 @@ son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica p
 leer y para escribir (el serializador falla en vez de producir un manifiesto que el lector rechazaría y que dejaría al lote sin
 registro de propiedad ni caché). Con rutas cortas una entrada pesa ≈1,1 KiB (medido), o sea unas 100.000 entradas; un lote mayor se
 tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memoria: el tope es una cota, no una promesa de velocidad.
+
+### Actualización de NP-O0b1 (2026-10-22)
+
+NP-O0b1 es la **parte pura de la recuperación** del escritor, no el escritor: `reconciliar_tras_corte` en
+`sky_claw/local/native_parallax/output.py` no lee ni escribe archivos, no toma locks y todavía no tiene call site (lo tiene NP-O0b2).
+Se separó del escritor porque es lo único que se puede probar **entera** (60 estados enumerados) sin disco, y porque el escritor
+tiene que cumplir el protocolo que esta función da por sentado. Verificado ejecutando en Linux (Python 3.11).
+
+**Protocolo que NP-O0b2 tiene que cumplir** (si no lo cumple, esta función decide sobre supuestos falsos):
+
+1. Todo corre bajo el lock cross-process, **y la recuperación corre primero**, bajo ese mismo lock.
+2. Antes de tocar el disco, el escritor guarda su intención como un manifiesto **pendiente** (mismo formato canónico, escritura
+   atómica): el manifiesto que quedaría si todo sale bien.
+3. Un archivo nuestro que se va a reemplazar o retirar **se aparta primero a una papelera y se verifica después**: se mueve (atómico) y
+   se calcula la huella de lo que realmente se movió. Si coincide con la autorizada, se continúa; si no, lo tocó un tercero y se
+   devuelve. Así la huella verificada es la del archivo que salió de la ruta, no la de un instante anterior (cierra el TOCTOU de
+   contenido que NP-O0a dejaba abierto). El costo es una ventana en la que la ruta está vacía; si el proceso muere ahí, esta función
+   decide devolver el original.
+4. El archivo apartado y verificado se borra **dentro de la propia acción**, antes del compromiso.
+5. El manifiesto definitivo se escribe **al final** (punto de compromiso); después se limpia; el pendiente se borra **último**.
+6. Nunca se borra de la papelera nada cuya huella no sea la de una entrada vigente.
+
+**Qué decide** (`reconciliar_tras_corte(previo, pendiente, observado)`, con `observado[clave_de_ruta]` = `EstadoTrasCorte(disco, papelera)`).
+Por cada ruta que figure en alguno de los dos manifiestos, 4 relaciones (solo en el pendiente = una creación; solo en el vigente = un
+retiro o una suelta; la misma entrada en ambos; una entrada distinta = un reemplazo) × 5 estados de disco (ausente, archivo con los
+bytes vigentes, archivo con los bytes pendientes, archivo con otros bytes, otra cosa) × 3 de papelera (nada, un archivo con la huella
+vigente, uno con otra huella) = **60 estados**, enumerados y comparados por igualdad literal contra una tabla escrita a mano
+(`tests/test_native_parallax_output_recuperacion.py`). En resumen: se **adopta** (pasa al manifiesto) solo lo que ya está en disco con
+los bytes que la intención declaraba; un reemplazo que apartó el original y se cortó antes de publicar **devuelve el original**
+(`restaurar`); un archivo apartado que es nuestro y ya no hace falta se **descarta**; todo lo que tocó un tercero deja de ser asunto
+nuestro (sale del manifiesto) sin tocarse. Una huella en la papelera solo cuenta como nuestra si es la de la entrada **vigente** de esa
+ruta. Es idempotente: reconciliar otra vez con el resultado como manifiesto vigente no cambia nada (anclado sobre los 60 estados), así
+que un segundo corte durante la recuperación es seguro.
+
+**Mutación** (automática por AST sobre `_entrada_que_queda`, `reconciliar_tras_corte` y las dos clases nuevas: comparaciones, `and`/`or`,
+`not`, constantes, condiciones, retornos, llamadas y `raise`): **109 mutantes**, la primera pasada dejó 6 vivos: 4 eran `frozen`/`slots`
+de las dos clases (sin prueba; se agregó) y 2 son equivalentes (`return None` por `return None`). Además 6 mutantes escritos a mano
+sobre el orden de las ramas, la unión de rutas y la ortografía de la ruta a restaurar: uno vivo (la ortografía que se devuelve en
+`restaurar`: tiene que ser la de la entrada vigente, porque en un sistema que distingue mayúsculas es donde estaba el archivo), cerrado
+con un test. Los tests y la función se escribieron en este orden: tests → rojo observado (`ImportError` del símbolo nuevo) → función → verde.
+
+**Límites declarados.** (1) Es lógica pura: la papelera y el disco los observa el escritor; esta función no sabe cómo. (2) No cierra
+la ventana de la ruta vacía del punto 3, solo la recupera. (3) Un manifiesto pendiente ilegible **no** se interpreta: el escritor tiene
+que fallar cerrado y pedir intervención (borrar el pendiente a mano equivale a declarar que no se publicó nada, y lo publicado quedará
+como ajeno). (4) No se ejercitó contra un disco ni en Windows real.

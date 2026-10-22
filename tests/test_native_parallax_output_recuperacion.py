@@ -11,6 +11,7 @@ literal contra una tabla escrita a mano: agregar una dimensión sin ampliarla ro
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from enum import Enum
 from typing import Any
@@ -267,6 +268,21 @@ def test_la_ortografia_de_la_ruta_es_la_de_la_entrada_y_las_observaciones_se_ind
         reconciliar_tras_corte(_manifiesto(m), _manifiesto(), {en_mayusculas: _estado(AUSENTE, H_M)})
 
 
+def test_restaurar_usa_la_ortografia_de_la_entrada_vigente_que_es_donde_estaba_el_archivo() -> None:
+    """En un sistema que distingue mayúsculas, el archivo apartado vuelve a la ruta con la que se publicó."""
+    como_se_publico = "Textures/Muro_P.dds"
+    como_se_pide_ahora = "textures/muro_p.dds"
+    vieja = crear_entrada(como_se_publico, H_M, 1000, _procedencia(1.5))
+    nueva = crear_entrada(como_se_pide_ahora, H_P, 2000, _procedencia(2.5))
+
+    recuperacion = reconciliar_tras_corte(
+        _manifiesto(vieja), _manifiesto(nueva), {clave_de_ruta(como_se_publico): _estado(AUSENTE, H_M)}
+    )
+
+    assert recuperacion.restaurar == (como_se_publico,)
+    assert recuperacion.manifiesto == _manifiesto(vieja)
+
+
 def test_varias_rutas_a_la_vez_salen_ordenadas_por_clave_y_cada_una_con_su_decision() -> None:
     ruta_a, ruta_b, ruta_c, ruta_d = (f"textures/{n}_p.dds" for n in "abcd")
     previo = _manifiesto(
@@ -368,6 +384,22 @@ def test_la_recuperacion_valida_sus_campos() -> None:
         RecuperacionDeCorte(manifiesto=_manifiesto(), restaurar=(), descartar=("textures/b_p.dds", "textures/a_p.dds"))
     with pytest.raises(RutaDeSalidaInvalidaError):  # ruta inválida
         RecuperacionDeCorte(manifiesto=_manifiesto(), restaurar=(), descartar=("../a_p.dds",))
+
+
+@pytest.mark.parametrize(
+    "objeto",
+    [
+        EstadoTrasCorte(disco=AUSENTE, papelera=None),
+        RecuperacionDeCorte(manifiesto=_manifiesto(), restaurar=(), descartar=()),
+    ],
+    ids=["EstadoTrasCorte", "RecuperacionDeCorte"],
+)
+def test_los_resultados_son_inmutables_y_sin_diccionario(objeto: Any) -> None:
+    """Son valores que viajan entre el planificador y el escritor: nadie los muta por el camino."""
+    campo = dataclasses.fields(objeto)[0].name
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        setattr(objeto, campo, None)
+    assert not hasattr(objeto, "__dict__")
 
 
 # ---------------------------------------------------------------------------
