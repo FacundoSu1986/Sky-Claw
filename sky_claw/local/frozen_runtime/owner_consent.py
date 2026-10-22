@@ -179,7 +179,32 @@ SUPERFICIES_DE_CONSENTIMIENTO: Mapping[SuperficieConsentimiento, MecanismoIdenti
 )
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+class _SelloDeVerificacion:
+    """Capacidad OPACA: poseer este objeto ES la prueba de verificación.
+
+    No se exporta ni se reexporta. Lo que cierra no es la posibilidad teórica de
+    fabricarlo —código en proceso alcanza cualquier nombre privado, y el modelo de
+    amenaza ya declara ``IN_PROCESS_CODE_IS_TRUSTED = YES``—, sino la vía
+    ACCIDENTAL y la documentada: hasta este cambio ``IdentidadPropietario`` era un
+    dataclass público de cinco campos que ponía el llamador, así que «identidad
+    verificada» era una afirmación sobre strings del propio llamador. Es la misma
+    tautología que P4-S5 cerró para el journal (``digest_canonico`` recalculado) y
+    P4-S4 para ``root_id`` (verificado al leer): **un campo que sólo escribe el
+    llamador no prueba nada**.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # no revelar nada útil a quien lo imprima
+        return "<sello-de-verificacion>"
+
+
+#: Instancia única. Se compara por IDENTIDAD (``is``), no por valor: una copia no
+#: es el sello.
+_SELLO_VERIFICADO = _SelloDeVerificacion()
+
+
+@dataclasses.dataclass(frozen=True, slots=True, init=False)
 class IdentidadPropietario:
     """Quién responde, probado por un mecanismo del censo.
 
@@ -187,6 +212,13 @@ class IdentidadPropietario:
     Telegram, el ``user id``); ``sesion`` es la conversación que originó la
     solicitud. Los dos se comparan al responder: ligar sólo el sujeto dejaría
     pasar el replay entre dos sesiones del mismo propietario.
+
+    ``__init__`` está CERRADO a propósito. La única forma de obtener una instancia
+    es :func:`verificar_identidad_telegram`, que la acuña desde el update del
+    transporte con :func:`_acuñar_identidad` y le estampa el sello.
+    ``IdentidadPropietario(superficie=..., sujeto=..., mecanismo="telegram_from_id")``
+    —que antes era un one-liner que cualquier módulo podía escribir y que
+    ``_exigir_identidad_verificada`` aceptaba— ya no produce un objeto utilizable.
     """
 
     superficie: SuperficieConsentimiento
@@ -194,6 +226,42 @@ class IdentidadPropietario:
     sesion: str
     mecanismo: str
     verificado_en_ns: int
+    #: Procedencia. ``compare=False``/``repr=False``: no es un dato del propietario
+    #: sino la prueba de que hubo verificación, y no debe filtrarse al imprimir.
+    _sello: _SelloDeVerificacion = dataclasses.field(repr=False, compare=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise IdentidadPropietarioNoVerificadaError(
+            "IdentidadPropietario no se construye a mano: la acuña verificar_identidad_telegram a partir del "
+            "update del transporte. Una identidad cuyos campos los pone el llamador no prueba quién respondió "
+            "— es exactamente el defecto que P4-S6 cierra (§35.2)."
+        )
+
+
+def _acuñar_identidad(
+    *,
+    superficie: SuperficieConsentimiento,
+    sujeto: str,
+    sesion: str,
+    mecanismo: str,
+    verificado_en_ns: int,
+) -> IdentidadPropietario:
+    """Único productor de instancias. Privado: lo llama un VERIFICADOR.
+
+    En producción el único llamador es :func:`verificar_identidad_telegram` y un
+    test enumerativo por AST lo congela. Los tests adversariales lo usan para
+    fabricar identidades que el verificador **no puede** producir —una superficie
+    GUI, un mecanismo inventado— y comprobar que se rechazan: sin esa vía no
+    habría forma de ejercitar los rechazos sin abrir la puerta que se cierra.
+    """
+    instancia = object.__new__(IdentidadPropietario)
+    object.__setattr__(instancia, "superficie", superficie)
+    object.__setattr__(instancia, "sujeto", sujeto)
+    object.__setattr__(instancia, "sesion", sesion)
+    object.__setattr__(instancia, "mecanismo", mecanismo)
+    object.__setattr__(instancia, "verificado_en_ns", verificado_en_ns)
+    object.__setattr__(instancia, "_sello", _SELLO_VERIFICADO)
+    return instancia
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -229,36 +297,61 @@ class DecisionConsentimiento(StrEnum):
     CANCELAR = "cancelar"
 
 
-def render_valor_scope(valor: object) -> str:
-    """Render canónico de un valor del scope para la presentación.
+#: Separadores de línea que ``json.dumps`` NO escapa con ``ensure_ascii=False``
+#: pero que un renderizador (consola, HTML, cliente de Telegram) puede tratar como
+#: salto de línea. Se escapan a mano: la garantía que se busca es «un valor no
+#: puede aportar una línea», y dejarlos fuera la rompería en el último tramo.
+_SEPARADORES_DE_LINEA = {"\u0085": "\\u0085", "\u2028": "\\u2028", "\u2029": "\\u2029"}
 
-    Los contenedores se muestran como JSON con claves ordenadas —el mismo orden
-    que usa el digest— para que lo presentado y lo comprometido no puedan leerse
-    distinto.
+
+def render_valor_scope(valor: object) -> str:
+    """Render canónico y NO AMBIGUO de un valor para la presentación.
+
+    Todo valor sale por ``json.dumps``: las cadenas quedan entrecomilladas y con
+    los caracteres de control escapados, los contenedores con claves ordenadas
+    —el mismo orden que usa el digest— y los escalares con su forma JSON. La
+    consecuencia que importa es estructural: **ningún valor puede aportar un
+    salto de línea**, así que el número de líneas de la presentación no depende
+    del contenido y un scope no puede dibujar la fila que quiera.
+
+    Hasta este cambio las cadenas se devolvían con ``str()``, y
+    ``approval_provenance`` es un string OPACO del llamador: bastaba
+    ``"x\\napproval_scope_digest: <otro>"`` para que el propietario viera el
+    digest dos veces, una de ellas falsa. El digest aprobado no cambiaba —lo que
+    se emite sigue siendo lo que se presentó—, pero la superficie MENTÍA sobre lo
+    aprobado, que es justo lo que ``WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED``
+    prohíbe. Un campo del llamador no puede gobernar la forma de la presentación.
     """
-    if isinstance(valor, (dict, list, tuple)):
-        return json.dumps(valor, ensure_ascii=False, sort_keys=True)
-    return str(valor)
+    texto = json.dumps(valor, ensure_ascii=False, sort_keys=True, default=str)
+    for separador, escapado in _SEPARADORES_DE_LINEA.items():
+        texto = texto.replace(separador, escapado)
+    return texto
 
 
 def _texto_de_presentacion(presentacion: PresentacionConsentimiento) -> str:
-    """Presentación legible: TODOS los campos, con nombre y valor."""
+    """Presentación legible: TODOS los campos, con nombre y valor.
+
+    Cada valor pasa por :func:`render_valor_scope`, incluidos los de cabecera
+    (``solicitud_id``, ``root_id``, ``sesion``, ``propietario``): la etiqueta la
+    pone este módulo y sólo este módulo. Renderizar unos campos y otros no sería
+    dejar la puerta abierta en la mitad de las filas.
+    """
     lineas = [
         "APROBACIÓN DE TRANSICIÓN — FROZEN RUNTIME",
-        f"solicitud_id: {presentacion.solicitud_id}",
-        f"root_id: {presentacion.root_id}",
-        f"superficie: {presentacion.superficie.value}",
-        f"sesion: {presentacion.sesion}",
-        f"propietario: {presentacion.propietario}",
-        f"mecanismo_identidad: {presentacion.mecanismo}",
+        f"solicitud_id: {render_valor_scope(presentacion.solicitud_id)}",
+        f"root_id: {render_valor_scope(presentacion.root_id)}",
+        f"superficie: {render_valor_scope(presentacion.superficie.value)}",
+        f"sesion: {render_valor_scope(presentacion.sesion)}",
+        f"propietario: {render_valor_scope(presentacion.propietario)}",
+        f"mecanismo_identidad: {render_valor_scope(presentacion.mecanismo)}",
     ]
     for campo in dataclasses.fields(ApprovalScope):
         if campo.name == "approval_scope_digest":
             continue
         lineas.append(f"{campo.name}: {render_valor_scope(presentacion.scope_payload.get(campo.name))}")
-    lineas.append(f"approval_scope_digest: {presentacion.approval_scope_digest}")
+    lineas.append(f"approval_scope_digest: {render_valor_scope(presentacion.approval_scope_digest)}")
     lineas.append(
-        f"Responde APROBAR, RECHAZAR o CANCELAR citando la solicitud {presentacion.solicitud_id}. "
+        f"Responde APROBAR, RECHAZAR o CANCELAR citando la solicitud {render_valor_scope(presentacion.solicitud_id)}. "
         "Apruebas el digest, no una intención."
     )
     return "\n".join(lineas)
@@ -297,13 +390,20 @@ def verificar_identidad_telegram(
        ``type``, es ``private``;
     4. hay operador configurado: sin él, nadie está autorizado (fail-closed).
 
-    Acepta **las dos formas** en que llega una decisión real: un mensaje
-    (``/aprobar <solicitud>``) y un ``callback_query`` (botón). En el callback el
-    remitente vive en ``callback_query.from`` y el chat en
-    ``callback_query.message.chat``; leer sólo el nivel superior rechazaría todos
-    los botones —fail-closed, pero con la superficie inservible—. El guard del
-    transporte recibe el mismo diccionario en los dos casos, así que la
-    equivalencia se mantiene.
+    Acepta **las tres formas** en que llega una decisión real:
+
+    ```text
+    update crudo con ``message``          remitente/chat en ``message``
+    update crudo con ``callback_query``   remitente en ``callback_query.from``,
+                                          chat en ``callback_query.message.chat``
+    mensaje YA desenvuelto                remitente/chat en la raíz (es la forma
+                                          que el dispatcher le pasa al guard)
+    ```
+
+    La forma del envoltorio no puede cambiar el veredicto: hay un test que
+    compara la identidad producida por el update crudo y por su mensaje
+    desenvuelto, y el ancla diferencial contra ``_validate_private_operator``
+    cubre las tres.
     """
     if not isinstance(update, Mapping):
         raise IdentidadPropietarioNoVerificadaError("el update de Telegram no es un objeto")
@@ -313,7 +413,18 @@ def verificar_identidad_telegram(
         )
 
     consulta = update.get("callback_query")
-    carga: Mapping[str, object] = consulta if isinstance(consulta, Mapping) else update
+    if isinstance(consulta, Mapping):
+        carga: Mapping[str, object] = consulta
+    else:
+        # El update CRUDO envuelve el mensaje en ``message``; el dispatcher, en
+        # cambio, entrega al guard del transporte el mensaje YA desenvuelto. Las
+        # dos formas son el mismo objeto lógico y tienen que verificar igual: leer
+        # sólo la plana rechazaba TODOS los mensajes de texto reales
+        # (``/aprobar <solicitud>``) —fail-closed, pero con la superficie
+        # inservible—, que es el mismo error que ya se había corregido para los
+        # botones.
+        crudo = update.get("message")
+        carga = crudo if isinstance(crudo, Mapping) else update
 
     remitente = carga.get("from")
     if not isinstance(remitente, Mapping):
@@ -355,7 +466,7 @@ def verificar_identidad_telegram(
             "el chat no es privado del operador (chat.id != from.id): un grupo no identifica a una persona"
         )
 
-    return IdentidadPropietario(
+    return _acuñar_identidad(
         superficie=SuperficieConsentimiento.TELEGRAM,
         sujeto=str(sujeto),
         sesion=str(chat_id),
@@ -365,9 +476,19 @@ def verificar_identidad_telegram(
 
 
 def _exigir_identidad_verificada(identidad: IdentidadPropietario) -> MecanismoIdentidad:
-    """La identidad tiene que venir de un mecanismo del censo que verifique."""
+    """La identidad tiene que venir de un mecanismo del censo que verifique.
+
+    El orden importa. El **sello** se comprueba primero: es la procedencia, y sin
+    procedencia los campos de abajo no dicen nada — comprobar el mecanismo antes
+    sería preguntarle al llamador si él mismo es de fiar.
+    """
     if not isinstance(identidad, IdentidadPropietario):
         raise IdentidadPropietarioNoVerificadaError("se esperaba una IdentidadPropietario")
+    if getattr(identidad, "_sello", None) is not _SELLO_VERIFICADO:
+        raise IdentidadPropietarioNoVerificadaError(
+            "la identidad no fue acuñada por un verificador del transporte: los campos por sí solos no prueban "
+            "quién respondió. Se obtiene con verificar_identidad_telegram, no construyéndola."
+        )
     if not isinstance(identidad.superficie, SuperficieConsentimiento):
         raise IdentidadPropietarioNoVerificadaError(f"superficie desconocida: {identidad.superficie!r}")
     mecanismo = SUPERFICIES_DE_CONSENTIMIENTO.get(identidad.superficie)
@@ -587,10 +708,17 @@ class RegistroConsentimientos:
 
 
 def _exigir_binding_completo(consentimiento: ConsentimientoAprobacion) -> None:
-    """Un consentimiento sin binding de propietario no autoriza nada."""
+    """Un consentimiento sin binding de propietario no autoriza nada.
+
+    Los seis campos, no cinco: ``decided_at_ns`` entra en la lista porque el
+    núcleo durable lo VUELVE A LEER (``approval._validar_consentimiento``) para
+    ordenar la decisión respecto de la propuesta. Un campo que se exige en la
+    puerta y no se verifica después sería el mismo ornamento que se está
+    cerrando.
+    """
     faltantes = [
         nombre
-        for nombre in ("root_id", "solicitud_id", "session_id", "owner_subject", "mecanismo")
+        for nombre in ("root_id", "solicitud_id", "session_id", "owner_subject", "mecanismo", "decided_at_ns")
         if getattr(consentimiento, nombre, None) is None
     ]
     if faltantes:

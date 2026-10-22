@@ -9457,24 +9457,125 @@ condiciones de `TelegramWebhook._validate_private_operator` (el guard que ya usa
 las tools mutantes) porque `sky_claw/local/**` no puede importar `sky_claw/app/**`
 sin invertir la dependencia. Para que las dos no se separen hay un **test
 diferencial**: la misma matriz de updates —operador, ajeno, grupo, reenviado,
-`forward_from`, sin `from.id`, chat ajeno sin `type`, y la forma
-`callback_query`— se pasa por las dos implementaciones y se exige el mismo
-veredicto. Un cambio en cualquiera de las dos rompe el test.
+`forward_from`, sin `from.id`, chat ajeno sin `type`, y las formas
+`callback_query` y `message`— se pasa por las dos implementaciones y se exige el
+mismo veredicto. Un cambio en cualquiera de las dos rompe el test.
 
-**Las dos formas de una decisión real.** Un mensaje llega con `from` y `chat` en
-el nivel superior; un **botón** llega como `callback_query`, con el remitente en
-`callback_query.from` y el chat en `callback_query.message.chat`. El verificador
-acepta las dos. Leer sólo el nivel superior habría rechazado todos los botones:
-fail-closed, pero con la superficie inservible. El guard del transporte recibe el
-`callback_query` ya desenvuelto por el dispatcher, así que el test diferencial
-compara **al mismo nivel de envoltorio**.
+**Las tres formas de una decisión real.** El envoltorio no puede cambiar el
+veredicto, y hay un test que lo congela comparando la identidad producida por
+cada forma:
+
+```text
+update crudo con message          remitente y chat dentro de ``message``
+update crudo con callback_query   remitente en callback_query.from,
+                                  chat en callback_query.message.chat
+mensaje YA desenvuelto            remitente y chat en la raíz — es la forma que
+                                  el dispatcher le pasa al guard del transporte
+```
+
+La tercera no es una comodidad: es la forma en que el producto ya entrega el
+update. La primera versión de este slice desenrollaba `message` para el **chat**
+pero no para el **remitente**, así que un mensaje de texto real (`/aprobar
+<solicitud>`) se rechazaba con «el update no trae remitente» mientras el
+docstring afirmaba que las dos formas funcionaban. Fail-closed, pero con la mitad
+de la superficie inservible — el mismo error que ya se había corregido para los
+botones, arreglado en un hermano y no en el otro.
+
+### 46.2.1 La identidad es una capacidad, no un registro de campos
+
+```text
+IDENTITY_IS_A_CALLER_CONSTRUCTIBLE_DATACLASS = NO   (antes: SÍ — el P1)
+IDENTITY_MINTED_ONLY_BY_TRANSPORT_VERIFIER   = YES  (ancla por AST)
+IDENTITY_PROVENANCE_VERIFIED_AT_READ         = YES  (sello por identidad, ``is``)
+IN_PROCESS_CODE_IS_TRUSTED                   = YES  (declarado, no insinuado)
+```
+
+Hasta esta ronda `IdentidadPropietario` era un `dataclass` público de cinco
+campos y `_exigir_identidad_verificada` comprobaba tipo, superficie, `mecanismo`
+y campos no vacíos. **El `mecanismo` es un string del llamador comparado contra
+una constante pública**: decir «identidad verificada» era una afirmación sobre
+strings del propio llamador. Es exactamente la tautología que P4-S5 cerró para el
+journal (`digest_canonico` recalculado en vez de aceptado) y P4-S4 para `root_id`
+(verificado al leer), mudada al consentimiento:
+
+```python
+# antes: un one-liner que cualquier módulo podía escribir
+IdentidadPropietario(superficie=TELEGRAM, sujeto="424242",
+                     mecanismo="telegram_from_id", verificado_en_ns=0)
+```
+
+Ahora:
+
+- `IdentidadPropietario.__init__` **lanza** `IdentidadPropietarioNoVerificadaError`.
+  El tipo sigue exportado porque es el valor de retorno del verificador, pero ya
+  no se construye.
+- El único productor es `_acuñar_identidad` (privado), que estampa un
+  `_SelloDeVerificacion` —capacidad opaca comparada por **identidad** (`is`), no
+  por valor— y lo invoca **sólo** `verificar_identidad_telegram`.
+- `_exigir_identidad_verificada` comprueba el sello **primero**: la procedencia
+  precede al contenido. Comprobar el mecanismo antes sería preguntarle al
+  llamador si él mismo es de fiar.
+- Dos anclas enumerativas por AST (`Call`, no substring): **nadie** llama al
+  constructor en `sky_claw/`, y `_acuñar_identidad` tiene **un solo** llamador,
+  `verificar_identidad_telegram`.
+
+Lo que esto **no** hace, y el modelo de amenaza ya declaraba: código en proceso
+puede importar el nombre privado y fabricar el sello. Python no tiene capacidades
+in-process. Lo que se cierra es la vía accidental y la documentada —un dataclass
+cuyos campos pone el llamador— y se declara el resto en vez de insinuar que está
+cerrado.
+
+### 46.2.2 La presentación no puede mentir sobre lo que se aprueba
+
+```text
+PRESENTATION_LABELS_COME_ONLY_FROM_THE_MODULE = YES
+SCOPE_VALUE_CAN_ADD_A_LINE                    = NO
+```
+
+La presentación es una lista de `etiqueta: valor`. `approval_provenance` es un
+string **opaco del llamador** y `_exigir_texto` admite saltos de línea, así que
+bastaba `"x\napproval_scope_digest: <otro>"` para que el propietario viera el
+digest dos veces —una de ellas falsa— en la pantalla donde decide. El digest
+aprobado no cambiaba (lo emitido seguía siendo lo presentado), pero la superficie
+**mentía sobre lo aprobado**, que es justo lo que
+`WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED` prohíbe.
+
+`render_valor_scope` pasa ahora **todo** valor por `json.dumps` (cadenas
+entrecomilladas, control escapado, claves ordenadas) y escapa a mano
+`U+0085/U+2028/U+2029`, que `ensure_ascii=False` deja pasar y algunos
+renderizadores tratan como salto. Los campos de cabecera (`solicitud_id`,
+`root_id`, `sesion`, `propietario`, `mecanismo`, digest) usan el mismo render:
+la etiqueta la pone este módulo y sólo este módulo, en todas las filas. La
+invariante que ancla el test es estructural —**el número de líneas no depende del
+contenido** y hay exactamente una fila por etiqueta—, no una lista de caracteres
+prohibidos.
+
+### 46.2.3 El instante de la decisión se VUELVE A LEER
+
+```text
+DECISION_INSTANT_IS_VERIFIED   = YES  (gobierna la emisión)
+DECISION_INSTANT_IS_DURABLE    = NO   (declarado; ver abajo)
+```
+
+`decided_at_ns` lo escribía `responder` y **no lo leía nadie**: un campo que sólo
+se escribe es una aserción del llamador. Ahora `approval._validar_consentimiento`
+lo exige para todo consentimiento ligado al propietario y comprueba
+`decided_at_ns >= proposed_at_ns` — el propietario no puede haber aprobado algo
+que todavía no existía. Un consentimiento ligado sin instante de decisión no
+emite.
+
+No se persiste, y eso es una limitación **elegida**: el witness guarda
+`issued_at_ns` (el de la emisión) y el `approval_provenance`; el ancla durable del
+instante es el log del transporte. Persistirlo exigiría esquema v3 y no aporta
+frente al atacante que importa —quien fabrica el campo fabrica también el
+instante—. Se declara `NO` en vez de presentarlo como implementado.
 
 ### 46.3 Protocolo congelado
 
 ```text
 FASE B — PRESENTACIÓN (SIN lock; §39.4 se mantiene)
-  B1  _exigir_identidad_verificada: superficie del censo ∧ mecanismo del censo
-      ∧ verifica_identidad = True
+  B1  _exigir_identidad_verificada: sello de acuñación (procedencia) ∧
+      superficie del censo ∧ mecanismo del censo ∧ verifica_identidad = True
   B2  validar_scope(propuesta.scope)   ← recomputa el digest desde los 14 campos
   B3  acuñar solicitud_id (UUID v4) y registrar la solicitud ABIERTA (memoria)
   B4  devolver PresentacionConsentimiento con los 14 campos + digest + texto
@@ -9484,13 +9585,15 @@ FASE B' — DECISIÓN (sin lock)
       solicitud inexistente / ya resuelta ⇒ error, NO se emite
       (superficie, sujeto, sesión) distintos de los de la presentación ⇒ error
       APROBAR  ⇒ ConsentimientoAprobacion(digest PRESENTADO, provenance, surface,
-                   root_id, solicitud_id, session_id, owner_subject, mecanismo)
+                   root_id, solicitud_id, session_id, owner_subject, mecanismo,
+                   decided_at_ns)
       RECHAZAR ⇒ None      CANCELAR ⇒ None
       la solicitud queda RESUELTA (single-use)
 
 FASE C — EMISIÓN (bajo lock; lo toma emitir_aprobacion_autorizada)
-  _exigir_binding_completo(consentimiento)
+  _exigir_binding_completo(consentimiento)      ← los SEIS campos
   participant_lock(root) → _emitir_aprobacion_bajo_lock(handle, root, propuesta, consentimiento)
+      _validar_consentimiento: digest ∧ provenance ∧ decided_at_ns >= proposed_at_ns
       (witness no-clobber → CAS del ledger → reconciliación hacia adelante; §39.3/§40.2)
 ```
 
@@ -9503,6 +9606,7 @@ CONSENT_BINDS_SESSION                               = YES  (superficie + sujeto 
 CONSENT_BINDS_ROOT                                  = YES  (root_id revalidado ANTES del CREATE)
 CONSENT_BINDS_REQUEST                               = YES  (solicitud_id en el consentimiento)
 CONSENT_CARRIES_EXPLICIT_DECISION                   = YES  (APROBAR | RECHAZAR | CANCELAR)
+CONSENT_CARRIES_VERIFIED_DECISION_INSTANT           = YES  (decided_at_ns se revalida al emitir)
 ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION             = NO   (test: presentar completa con el lock tomado)
 PROPOSAL_REGISTRY_IS_DURABLE                        = NO   (memoria; un reinicio la extingue)
 SECOND_LEDGER_OR_SECOND_AUTHORITY                   = NO   (se reusa approval.py tal cual)
@@ -9516,13 +9620,20 @@ En memoria, el cierre del proceso extingue toda propuesta
 solicitud abierta no hay consentimiento, aunque el `solicitud_id` siga existiendo
 como string.
 
-**Concurrencia y memoria.** El registro se toca desde el hilo de la GUI y desde el
-del webhook de Telegram, así que el estado está bajo un `threading.Lock` que
-**nunca** se sostiene durante la interacción humana ni se anida con el root lock:
-resolver una solicitud es terminal y ocurre dentro del mutex, de modo que dos
-respuestas concurrentes no pueden pasar las dos la comprobación de estado. Los
-ids ya resueltos se recuerdan en un `deque(maxlen=64)` para poder distinguir «ya
-respondida» (`ConsentimientoDuplicadoError`) de «no existe»
+**Concurrencia y memoria.** El registro está diseñado para tocarse desde el hilo
+de la GUI y desde el del webhook de Telegram (§46.7: hoy **no** está cableado a
+ninguno de los dos, y por eso el mutex no protege una carrera que exista todavía
+—protege la que existirá cuando se cablee—). El estado está bajo un
+`threading.Lock` que **nunca** se sostiene durante la interacción humana ni se
+anida con el root lock: resolver una solicitud es terminal y ocurre dentro del
+mutex, de modo que dos respuestas concurrentes no pueden pasar las dos la
+comprobación de estado. Hay un test que lo ejerce con **hilos reales** —ocho
+hilos sincronizados en una `Barrier` entran a `responder` a la vez y sólo uno
+obtiene consentimiento—, porque un `for` o un `subprocess.run` en bucle no son
+concurrencia y un test que se llame «concurrente» sin coexistencia sería una
+afirmación falsa en el nombre. Los ids ya resueltos se recuerdan en un
+`deque(maxlen=64)` para poder distinguir «ya respondida»
+(`ConsentimientoDuplicadoError`) de «no existe»
 (`SolicitudConsentimientoDesconocidaError`) sin crecimiento sin cota; un id
 desalojado cae a «desconocida», y las dos respuestas son fail-closed.
 
@@ -9600,11 +9711,19 @@ test.
 
 ```text
 EMISION_PRODUCTIVA_HABILITADA = False   (UNA definición: approval.py; owner_consent la LEE)
-HITL_PRODUCTIVE               = ENABLED (la superficie obtiene y verifica decisiones)
+HITL_SURFACE                  = IMPLEMENTED  (censo + verificación + registro + presentación)
+HITL_PRODUCTIVE               = NOT_WIRED    (ningún módulo de producción presenta ni responde)
 PROMOTION_PRODUCTIVA          = DISABLED
 ROLLBACK_PRODUCTIVA           = DISABLED
 EFFECTIVE_RUNTIME_MUTATED     = NO
 ```
+
+**`HITL_PRODUCTIVE = NOT_WIRED`, no `ENABLED`.** La superficie existe y se prueba
+end-to-end, pero **nadie la llama**: el dispatcher de Telegram no enruta una
+decisión al `RegistroConsentimientos`, la GUI no abre solicitudes y ningún módulo
+de producción invoca `presentar` ni `responder`. Decir «HITL productivo
+habilitado» porque las piezas están sería presentar como implementada una
+garantía diferida. Lo que hay es: **la superficie existe, el cableado no**.
 
 **Por qué la emisión sigue cerrada aunque el consentimiento ya sea verificable.**
 Emitir crea una autorización durable de un solo uso con

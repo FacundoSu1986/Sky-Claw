@@ -1847,6 +1847,36 @@ def _validar_consentimiento(propuesta: PropuestaAprobacion, consentimiento: Cons
             "aprobado (§39.6)"
         )
     _exigir_texto(consentimiento.surface, campo="surface", etiqueta="consentimiento")
+    # P4-S6 — el instante de la DECISIÓN no es decoración.
+    #
+    # Hasta acá ``decided_at_ns`` lo escribía ``owner_consent.responder`` y no lo
+    # leía nadie: un campo que sólo se escribe es una aserción del llamador, el
+    # mismo patrón que ``root_id`` (P4-S4) y ``digest_canonico`` (P4-S5) — y los
+    # dos se cerraron VERIFICANDO al leer, no escribiendo más. Acá se vuelve a
+    # leer y gobierna la emisión: un consentimiento ligado al propietario sin
+    # instante de decisión no es un consentimiento, y una decisión anterior a la
+    # propuesta es imposible, porque el propietario no puede haber aprobado algo
+    # que todavía no existía.
+    #
+    # Lo que este chequeo NO hace, y el ADR declara: el instante no se persiste.
+    # El witness guarda ``issued_at_ns`` (el de la emisión, que hoy es el de la
+    # propuesta) y el ``approval_provenance``; el ancla durable del instante de
+    # decisión es el log del transporte. Persistirlo exigiría esquema v3 y no
+    # aporta frente a quien puede escribir el campo: fabricaría el instante igual
+    # que fabrica el sujeto.
+    ligado_al_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
+    if ligado_al_propietario:
+        decidido_en = consentimiento.decided_at_ns
+        if not isinstance(decidido_en, int) or isinstance(decidido_en, bool) or decidido_en < 0:
+            raise ApprovalConsentimientoError(
+                "el consentimiento ligado al propietario no trae un 'decided_at_ns' válido: sin el instante de "
+                "la decisión no se puede ordenar la aprobación respecto de la propuesta que se aprobó"
+            )
+        if decidido_en < propuesta.proposed_at_ns:
+            raise ApprovalConsentimientoError(
+                f"la decisión ({decidido_en}) precede a la propuesta ({propuesta.proposed_at_ns}): el propietario "
+                "no puede haber aprobado algo que todavía no existía"
+            )
 
 
 def _emitir_aprobacion_bajo_lock(

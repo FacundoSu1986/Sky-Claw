@@ -36,10 +36,12 @@ autorizaciones ``ISSUED`` sin salida operativa. El interruptor es UNO
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import dataclasses
 import json
 import pathlib
 import re
+import threading
 
 import pytest
 
@@ -54,6 +56,7 @@ from sky_claw.local.frozen_runtime.approval import (
     _emitir_aprobacion_bajo_lock,
     cargar_ledger_aprobacion,
     emitir_aprobacion,
+    payload_scope_sin_digest,
     proponer_aprobacion,
     revocar_aprobacion,
 )
@@ -71,9 +74,11 @@ from sky_claw.local.frozen_runtime.errors import (
 )
 from sky_claw.local.frozen_runtime.journal import SourceActivation
 from sky_claw.local.frozen_runtime.owner_consent import (
+    MECANISMO_TELEGRAM,
     SUPERFICIES_DE_CONSENTIMIENTO,
     DecisionConsentimiento,
     IdentidadPropietario,
+    PresentacionConsentimiento,
     RegistroConsentimientos,
     SuperficieConsentimiento,
     verificar_identidad_telegram,
@@ -143,7 +148,14 @@ def _identidad(
     superficie: SuperficieConsentimiento = SuperficieConsentimiento.TELEGRAM,
     mecanismo: str | None = None,
 ) -> IdentidadPropietario:
-    return IdentidadPropietario(
+    """Identidad ACUÑADA por el productor privado del módulo.
+
+    No se usa el constructor público —está cerrado— ni ``verificar_identidad_telegram``
+    para todos los casos: hay fixtures que el verificador **no puede** producir
+    (una superficie GUI, un mecanismo inventado) y son justamente las que tienen
+    que rechazarse. La acuñación privada es la única vía de fabricarlas.
+    """
+    return owner_consent._acuñar_identidad(
         superficie=superficie,
         sujeto=sujeto,
         sesion=sesion,
@@ -152,8 +164,38 @@ def _identidad(
     )
 
 
+def _identidad_falsificada(
+    *,
+    sesion: str = "chat-424242",
+    sujeto: str = str(OPERADOR),
+) -> IdentidadPropietario:
+    """La falsificación MÁS CORTA que permite Python: sin el sello.
+
+    Es lo que un módulo de producción escribiría si el tipo volviera a ser un
+    dataclass de campos públicos: ``object.__new__`` + ``object.__setattr__``.
+    """
+    falsa = object.__new__(IdentidadPropietario)
+    object.__setattr__(falsa, "superficie", SuperficieConsentimiento.TELEGRAM)
+    object.__setattr__(falsa, "sujeto", sujeto)
+    object.__setattr__(falsa, "sesion", sesion)
+    object.__setattr__(falsa, "mecanismo", MECANISMO_TELEGRAM)
+    object.__setattr__(falsa, "verificado_en_ns", 1_700_000_000_000_000_000)
+    return falsa
+
+
+def _identidad_telegram(operador: int = OPERADOR) -> IdentidadPropietario:
+    """La identidad que produce el verificador real, desde un update real."""
+    return verificar_identidad_telegram(
+        {"from": {"id": operador}, "chat": {"id": operador, "type": "private"}},
+        operador_configurado=OPERADOR,
+    )
+
+
 def _presentar(root: pathlib.Path, propuesta, registro: RegistroConsentimientos, **overrides: object):
-    datos: dict[str, object] = {"identidad": _identidad()}
+    # La identidad por defecto se acuña SÓLO si el test no trae la suya: acuñarla
+    # igual sería trabajo inútil y, en el test de la identidad falsificada, ruido
+    # que esconde el rechazo que se quiere medir.
+    datos: dict[str, object] = {"identidad": _identidad()} if "identidad" not in overrides else {}
     datos.update(overrides)
     return registro.presentar(root, propuesta, **datos)  # type: ignore[arg-type]
 
@@ -206,6 +248,28 @@ def _nombres_llamados(ruta: pathlib.Path) -> set[str]:
         elif isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute):
             nombres.add(nodo.func.attr)
     return nombres
+
+
+def _llamadas_a(nombre: str) -> set[tuple[str, str]]:
+    """Dónde se invoca ``nombre`` en ``sky_claw/``: ``(archivo, función contenedora)``.
+
+    Un censo de *constructores por substring* dice dónde aparece el texto; éste
+    dice **quién llama**, que es lo que hace falta para congelar la familia de
+    productores de una capacidad privada. Una llamada a nivel de módulo cae en
+    ``"<module>"`` y también se ve.
+    """
+    encontradas: set[tuple[str, str]] = set()
+    for ruta in _modulos_bajo(RAIZ_REPO / "sky_claw"):
+        arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+        contenedor: dict[int, str] = {}
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for hijo in ast.walk(nodo):
+                    contenedor.setdefault(id(hijo), nodo.name)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == nombre:
+                encontradas.add((ruta.relative_to(RAIZ_REPO).as_posix(), contenedor.get(id(nodo), "<module>")))
+    return encontradas
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +329,62 @@ def test_la_presentacion_muestra_los_14_campos_del_scope(tmp_path: pathlib.Path)
             continue
         visible = owner_consent.render_valor_scope(presentacion.scope_payload[nombre])
         assert visible in presentacion.texto, f"la presentación no muestra el valor de {nombre}"
+
+
+def test_el_scope_no_puede_inventar_lineas_en_la_presentacion(tmp_path: pathlib.Path) -> None:
+    """``approval_provenance`` es un string OPACO del llamador: no puede dibujar filas.
+
+    La presentación es una lista de ``etiqueta: valor``. Si un valor pudiera
+    aportar un ``\\n``, el llamador podría hacer que el propietario viera
+    ``approval_scope_digest: <uno falso>`` —el digest real no cambia, pero la
+    superficie mentiría sobre lo que se aprueba—. La invariante que se ancla es
+    estructural: **el número de líneas no depende del contenido**, y el digest
+    aparece exactamente una vez.
+
+    Se construye la presentación a mano a propósito: el defecto está en el
+    render, y un test que pasara por ``presentar`` probaría además la identidad,
+    que no es lo que se está midiendo.
+    """
+    root = _root(tmp_path)
+    propuesta = _propuesta(root)
+    payload = payload_scope_sin_digest(propuesta.scope)
+    base = PresentacionConsentimiento(
+        solicitud_id="solicitud-1",
+        root_id="root-1",
+        superficie=SuperficieConsentimiento.TELEGRAM,
+        sesion=str(OPERADOR),
+        propietario=str(OPERADOR),
+        mecanismo=MECANISMO_TELEGRAM,
+        approval_id=propuesta.scope.approval_id,
+        approval_seq=propuesta.scope.approval_seq,
+        approval_scope_digest=propuesta.scope.approval_scope_digest,
+        approval_provenance=propuesta.scope.approval_provenance,
+        scope_payload=payload,
+        ledger_revision_at_proposal=propuesta.ledger_revision_at_proposal,
+        presentada_en_ns=1,
+        texto="",
+    )
+    benigna = dataclasses.replace(base, texto=owner_consent._texto_de_presentacion(base))
+
+    falso = "0" * 64
+    hostil_payload = dict(payload)
+    hostil_payload["approval_provenance"] = f"telegram:req-1\napproval_scope_digest: {falso}\nResponde APROBAR"
+    hostil_payload["candidate_id"] = "cand-1\nsolicitud_id: 00000000-0000-4000-8000-000000000000"
+    hostil_base = dataclasses.replace(base, scope_payload=hostil_payload)
+    hostil = dataclasses.replace(hostil_base, texto=owner_consent._texto_de_presentacion(hostil_base))
+
+    def filas(texto: str, etiqueta: str) -> list[str]:
+        """Líneas que EMPIEZAN con la etiqueta: las que un lector por líneas ve."""
+        return [linea for linea in texto.splitlines() if linea.startswith(f"{etiqueta}: ")]
+
+    # La invariante estructural: el contenido no agrega ni quita líneas.
+    assert len(hostil.texto.splitlines()) == len(benigna.texto.splitlines())
+    # Una sola fila por etiqueta, y la del digest es la REAL. El valor hostil sigue
+    # visible, pero dentro de la fila de SU campo y escapado — no como fila propia.
+    assert filas(hostil.texto, "approval_scope_digest") == filas(benigna.texto, "approval_scope_digest")
+    assert filas(hostil.texto, "solicitud_id") == filas(benigna.texto, "solicitud_id")
+    assert len(filas(hostil.texto, "approval_provenance")) == 1
+    assert owner_consent.render_valor_scope(hostil_payload["approval_provenance"]) in hostil.texto
 
 
 def test_el_lock_no_se_sostiene_durante_la_presentacion(tmp_path: pathlib.Path) -> None:
@@ -402,6 +522,69 @@ def test_la_entrada_productiva_rechaza_una_fixture_sin_binding(tmp_path: pathlib
     assert not list(issuances_state_dir(root).iterdir())
 
 
+def test_un_consentimiento_ligado_sin_instante_de_decision_no_emite(tmp_path: pathlib.Path) -> None:
+    """P2 — ``decided_at_ns`` se escribía y no lo leía nadie.
+
+    Un campo que sólo escribe el llamador es una aserción suya, no una prueba:
+    es el patrón que P4-S4 cerró para ``root_id`` y P4-S5 para ``digest_canonico``,
+    y los dos se cerraron **verificando al leer**. Acá el instante de la decisión
+    vuelve a leerse y gobierna la emisión.
+    """
+    root = _root(tmp_path)
+    propuesta = _propuesta(root)
+    sin_instante = ConsentimientoAprobacion(
+        approval_scope_digest=propuesta.scope.approval_scope_digest,
+        approval_provenance=propuesta.scope.approval_provenance,
+        surface="telegram",
+        root_id=approval_module._root_id(root),
+        solicitud_id="solicitud-1",
+        session_id=str(OPERADOR),
+        owner_subject=str(OPERADOR),
+        mecanismo=MECANISMO_TELEGRAM,
+    )
+    with pytest.raises(ApprovalConsentimientoError, match="decided_at_ns"):
+        _emitir_verificado(root, propuesta, sin_instante)
+    assert not list(issuances_state_dir(root).iterdir())
+
+
+def test_una_decision_anterior_a_la_propuesta_no_emite(tmp_path: pathlib.Path) -> None:
+    """El propietario no puede haber aprobado algo que todavía no existía."""
+    root = _root(tmp_path)
+    propuesta = _propuesta(root)
+    anterior = ConsentimientoAprobacion(
+        approval_scope_digest=propuesta.scope.approval_scope_digest,
+        approval_provenance=propuesta.scope.approval_provenance,
+        surface="telegram",
+        root_id=approval_module._root_id(root),
+        solicitud_id="solicitud-1",
+        session_id=str(OPERADOR),
+        owner_subject=str(OPERADOR),
+        mecanismo=MECANISMO_TELEGRAM,
+        decided_at_ns=propuesta.proposed_at_ns - 1,
+    )
+    with pytest.raises(ApprovalConsentimientoError, match="precede a la propuesta"):
+        _emitir_verificado(root, propuesta, anterior)
+    assert not list(issuances_state_dir(root).iterdir())
+
+
+def test_el_consentimiento_verificado_sella_su_instante_de_decision(tmp_path: pathlib.Path) -> None:
+    """El camino real: ``responder`` estampa un instante posterior a la propuesta."""
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    presentacion = _presentar(root, propuesta, registro)
+    consentimiento = registro.responder(
+        presentacion.solicitud_id,
+        decision=DecisionConsentimiento.APROBAR,
+        identidad=_identidad(),
+    )
+    assert consentimiento is not None
+    assert consentimiento.decided_at_ns is not None
+    assert consentimiento.decided_at_ns >= propuesta.proposed_at_ns
+    _emitir_verificado(root, propuesta, consentimiento)
+    assert len(list(issuances_state_dir(root).iterdir())) == 1
+
+
 # ---------------------------------------------------------------------------
 # 4. Solicitud sin propietario verificable
 # ---------------------------------------------------------------------------
@@ -429,6 +612,98 @@ def test_un_mecanismo_fuera_del_censo_no_consiente(tmp_path: pathlib.Path) -> No
 
     with pytest.raises(IdentidadPropietarioNoVerificadaError, match="censo"):
         _presentar(root, propuesta, registro, identidad=_identidad(mecanismo="confio_en_el_llamador"))
+
+
+def test_la_identidad_no_se_construye_a_mano() -> None:
+    """P1 — el constructor está CERRADO: los campos ya no fabrican una identidad.
+
+    Hasta este cambio ``IdentidadPropietario(superficie=TELEGRAM,
+    sujeto="424242", mecanismo="telegram_from_id", ...)`` era un one-liner que
+    ``_exigir_identidad_verificada`` aceptaba, porque comparaba el mecanismo
+    —un string del llamador— contra una constante pública. Decir «identidad
+    verificada» era una afirmación sobre strings del propio llamador: la misma
+    tautología que P4-S5 cerró para el journal.
+    """
+    with pytest.raises(IdentidadPropietarioNoVerificadaError, match="no se construye a mano"):
+        IdentidadPropietario(
+            superficie=SuperficieConsentimiento.TELEGRAM,
+            sujeto=str(OPERADOR),
+            sesion=str(OPERADOR),
+            mecanismo=MECANISMO_TELEGRAM,
+            verificado_en_ns=1_700_000_000_000_000_000,
+        )
+
+
+def test_una_identidad_falsificada_no_presenta_ni_responde(tmp_path: pathlib.Path) -> None:
+    """P1 — la falsificación más corta (``object.__new__``) se rechaza en las DOS puertas.
+
+    Se prueban las dos entradas que exigen identidad —``presentar`` y
+    ``responder``— porque arreglar una y no la otra es el defecto dominante: las
+    dos llaman a ``_exigir_identidad_verificada``, y eso es lo que el test
+    comprueba de hecho, no que una copia del chequeo esté en cada una.
+    """
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    falsa = _identidad_falsificada()
+
+    with pytest.raises(IdentidadPropietarioNoVerificadaError, match="no fue acuñada"):
+        _presentar(root, propuesta, registro, identidad=falsa)
+
+    abierta = registro.presentar(root, propuesta, identidad=_identidad_telegram())
+    with pytest.raises(IdentidadPropietarioNoVerificadaError, match="no fue acuñada"):
+        registro.responder(abierta.solicitud_id, decision=DecisionConsentimiento.APROBAR, identidad=falsa)
+
+    # Y la solicitud sigue abierta: el intento no la consumió.
+    assert registro.pendientes() == (abierta,)
+
+
+def test_la_identidad_de_telegram_acepta_un_mensaje_crudo() -> None:
+    """P2 — ``/aprobar <solicitud>`` llega envuelto en ``message``, no en la raíz.
+
+    El verificador aceptaba ``callback_query`` (botón) pero exigía el remitente en
+    la raíz del update: un mensaje de texto real se rechazaba con «el update no
+    trae remitente». Fail-closed, pero con la mitad de la superficie inservible y
+    el docstring afirmando que las dos formas funcionaban.
+    """
+    update = {
+        "update_id": 11,
+        "message": {
+            "message_id": 7,
+            "from": {"id": OPERADOR, "is_bot": False},
+            "chat": {"id": OPERADOR, "type": "private"},
+            "text": "/aprobar solicitud-1",
+        },
+    }
+    identidad = verificar_identidad_telegram(update, operador_configurado=OPERADOR)
+    assert identidad.superficie is SuperficieConsentimiento.TELEGRAM
+    assert identidad.sujeto == str(OPERADOR)
+    assert identidad.sesion == str(OPERADOR)
+
+
+def test_el_envoltorio_del_update_no_cambia_el_veredicto() -> None:
+    """Las tres formas del MISMO hecho tienen que producir la misma identidad.
+
+    El dispatcher entrega al guard el mensaje YA desenvuelto; el webhook entrega
+    el update crudo. Si el envoltorio cambiara el veredicto, la misma persona
+    aprobaría o no según por dónde entró el update.
+    """
+    mensaje = {
+        "message_id": 7,
+        "from": {"id": OPERADOR},
+        "chat": {"id": OPERADOR, "type": "private"},
+        "text": "/aprobar solicitud-1",
+    }
+    formas = [
+        {"update_id": 11, "message": mensaje},
+        mensaje,
+        {"callback_query": {"from": {"id": OPERADOR}, "message": {"chat": {"id": OPERADOR, "type": "private"}}}},
+    ]
+    huellas = {
+        (identidad.superficie, identidad.sujeto, identidad.sesion, identidad.mecanismo)
+        for identidad in (verificar_identidad_telegram(forma, operador_configurado=OPERADOR) for forma in formas)
+    }
+    assert huellas == {(SuperficieConsentimiento.TELEGRAM, str(OPERADOR), str(OPERADOR), MECANISMO_TELEGRAM)}
 
 
 def test_la_identidad_de_telegram_se_verifica_contra_el_transporte() -> None:
@@ -549,6 +824,20 @@ def test_la_verificacion_concuerda_con_el_guard_del_transporte() -> None:
                 "message": {"chat": {"id": 999, "type": "private"}},
             }
         },
+        # La forma en que llega un mensaje: el update crudo lo envuelve en
+        # ``message`` y el dispatcher se lo pasa desenvuelto al guard.
+        {
+            "update_id": 11,
+            "message": {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR, "type": "private"}, "text": "/aprobar x"},
+        },
+        {
+            "update_id": 12,
+            "message": {"from": {"id": 999}, "chat": {"id": 999, "type": "private"}, "text": "/aprobar x"},
+        },
+        {
+            "update_id": 13,
+            "message": {"from": {"id": OPERADOR}, "chat": {"id": -100123, "type": "group"}, "text": "/aprobar x"},
+        },
     ]
     for update in casos:
         try:
@@ -556,10 +845,11 @@ def test_la_verificacion_concuerda_con_el_guard_del_transporte() -> None:
             aceptado_por_consentimiento = True
         except IdentidadPropietarioNoVerificadaError:
             aceptado_por_consentimiento = False
-        # El guard recibe el ``callback_query`` YA desenvuelto por el dispatcher
-        # de Telegram; el verificador acepta las dos formas. Se comparan al mismo
-        # nivel de envoltorio para que la diferencia no sea del test.
-        carga = update.get("callback_query", update)
+        # El guard recibe el ``callback_query`` o el ``message`` YA desenvuelto por
+        # el dispatcher de Telegram; el verificador acepta las tres formas. Se
+        # comparan al mismo nivel de envoltorio para que la diferencia no sea del
+        # test.
+        carga = update.get("callback_query") or update.get("message") or update
         assert aceptado_por_consentimiento is guard._validate_private_operator(carga), update
 
 
@@ -668,6 +958,47 @@ def test_el_consentimiento_es_single_use(tmp_path: pathlib.Path) -> None:
 
     with pytest.raises(ConsentimientoDuplicadoError):
         registro.responder(presentacion.solicitud_id, decision=DecisionConsentimiento.APROBAR, identidad=_identidad())
+
+
+def test_dos_respuestas_concurrentes_no_producen_dos_consentimientos(tmp_path: pathlib.Path) -> None:
+    """La carrera REAL: ocho hilos responden a la vez y sólo uno gana.
+
+    ``subprocess.run`` en bucle o un ``for`` no son concurrencia: lo que se prueba
+    acá es que los hilos **coexisten** —se sincronizan en una ``Barrier`` para
+    entrar a ``responder`` a la vez— y que el mutex hace que «resolver es
+    terminal» sea cierto también bajo carrera. Si la comprobación de estado y la
+    marca de resuelta no fueran atómicas, dos hilos pasarían los dos y habría dos
+    consentimientos para el mismo ``solicitud_id``: un replay.
+    """
+    hilos = 8
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    presentacion = _presentar(root, propuesta, registro)
+    identidad = _identidad()
+    barrera = threading.Barrier(hilos)
+
+    def responder() -> object:
+        barrera.wait(timeout=30.0)
+        try:
+            return registro.responder(
+                presentacion.solicitud_id,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=identidad,
+            )
+        except (ConsentimientoDuplicadoError, SolicitudConsentimientoDesconocidaError) as exc:
+            return exc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=hilos) as pool:
+        resultados = list(pool.map(lambda _: responder(), range(hilos)))
+
+    consentimientos = [r for r in resultados if isinstance(r, ConsentimientoAprobacion)]
+    rechazos = [
+        r for r in resultados if isinstance(r, (ConsentimientoDuplicadoError, SolicitudConsentimientoDesconocidaError))
+    ]
+    assert len(consentimientos) == 1, f"se emitieron {len(consentimientos)} consentimientos para una solicitud"
+    assert len(rechazos) == hilos - 1
+    assert registro.pendientes() == ()
 
 
 def test_el_registro_acota_los_ids_resueltos(tmp_path: pathlib.Path) -> None:
@@ -1072,19 +1403,25 @@ def test_solo_el_modulo_de_consentimiento_construye_consentimientos() -> None:
 def test_solo_el_modulo_de_consentimiento_construye_identidades() -> None:
     """El hermano del censo anterior: quién construye ``IdentidadPropietario``.
 
-    ``IdentidadPropietario`` es un dataclass público con campos que pone el
-    llamador. ``_exigir_identidad_verificada`` comprueba tipo, superficie,
-    mecanismo y campos no vacíos, pero **no** que lo haya creado
-    ``verificar_identidad_telegram``. Un módulo de producción que lo construya
-    por su cuenta puede saltarse la verificación del transporte; este censo lo
-    detecta. No hace el tipo opaco ni prueba procedencia en runtime: congela la
-    familia de constructores, igual que el censo de consentimientos.
+    ``IdentidadPropietario`` es un dataclass público con campos que ponía el
+    llamador, y ``_exigir_identidad_verificada`` comprobaba tipo, superficie,
+    mecanismo y campos no vacíos — pero **no** que la hubiera acuñado
+    ``verificar_identidad_telegram``. Un módulo de producción que la construyera
+    por su cuenta se saltaba la verificación del transporte.
+
+    Ahora el constructor está cerrado y la acuñación pasa por
+    ``_acuñar_identidad``, así que el censo tiene dos mitades: nadie LLAMA al
+    constructor (que lanzaría) y **el único llamador de la acuñación es el
+    verificador**. Las dos se resuelven por AST sobre ``Call``, no por substring:
+    el nombre del tipo aparece en docstrings y prosa, y un censo que cuente texto
+    cuenta comentarios.
     """
-    constructores: set[str] = set()
-    for ruta in _modulos_bajo(RAIZ_REPO / "sky_claw"):
-        if "IdentidadPropietario(" in ruta.read_text(encoding="utf-8"):
-            constructores.add(ruta.relative_to(RAIZ_REPO).as_posix())
-    assert constructores == {"sky_claw/local/frozen_runtime/owner_consent.py"}
+    # Ni siquiera ``owner_consent``: la acuñación usa ``object.__new__`` porque el
+    # constructor está cerrado a propósito.
+    assert _llamadas_a("IdentidadPropietario") == set()
+    assert _llamadas_a("_acuñar_identidad") == {
+        ("sky_claw/local/frozen_runtime/owner_consent.py", "verificar_identidad_telegram")
+    }
 
 
 def test_ninguna_superficie_del_agente_puede_emitir_aprobaciones() -> None:
