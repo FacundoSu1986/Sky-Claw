@@ -764,6 +764,15 @@ por sentadas. Verificado ejecutando en Linux (Python 3.11); el módulo es solo b
   forma `*_p.dds`; sin `:` (flujos alternos de NTFS), sin segmentos vacíos o con punto o espacio final (incluidos `.` y `..`), sin
   nombres reservados de Windows (lista conservadora: incluye `COM0`/`LPT0`, `CONIN$` y `CONOUT$`) y de hasta 200 caracteres. Se **rechaza en vez de normalizar**. Se comparan ignorando mayúsculas
   (`casefold`). La lista de nombres reservados sale de la documentación pública de Windows y **no la reverifiqué en esta sesión**; por eso es un superconjunto deliberado (rechazar de más es seguro, aceptar de más hace fallar al escritor después de validar).
+  **De dónde sale cada exclusión** (regla de `sky_claw/local/native_parallax/AGENTS.md`: toda exclusión o umbral cita fuente pública o
+  experimento propio; ninguna es una heurística medida sobre datos):
+  `/` como separador, los caracteres `< > : " | ? * \`, los caracteres de control, los nombres reservados y el punto o espacio final
+  salen de la documentación pública de Microsoft «Naming Files, Paths, and Namespaces» (`learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file`),
+  que **no reverifiqué en esta sesión**; `:` además abre un flujo de datos alterno en NTFS. `textures/` y `*_p.dds` son la convención
+  pública del mapa de altura legacy que Skyrim lee (`CLEAN_ROOM.md`, formato «naming `_p`», y NP-E0 de este ADR). **Solo ASCII imprimible** y
+  **200 caracteres** son decisiones de diseño MÍAS, no medidas: ASCII porque la normalización Unicode y el plegado de mayúsculas
+  cambian entre sistemas de archivos; 200 es `MAX_PATH` (260, misma documentación) menos un margen de 60 para la raíz del mod de salida,
+  un margen que **no medí** sobre rutas reales de MO2 (si resulta chico, es una constante que se sube con su test de borde).
 - **Ancla de familia.** Solo `output.py` nombra `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports y por llamadas (ambos por AST);
   los campos de `Procedencia`, `EncoderUsado` y `OrigenDeEntrada` se enumeran por introspección contra las variantes que cambian la
   clave: un campo nuevo que no entre a la clave rompe el test. El manifiesto y la clave de referencia están congelados.
