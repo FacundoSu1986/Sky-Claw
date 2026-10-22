@@ -79,7 +79,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
-   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b) |
+   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; falta NP-O0b2 (el escritor sobre el disco) |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
@@ -800,3 +800,80 @@ son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica p
 leer y para escribir (el serializador falla en vez de producir un manifiesto que el lector rechazaría y que dejaría al lote sin
 registro de propiedad ni caché). Con rutas cortas una entrada pesa ≈1,1 KiB (medido), o sea unas 100.000 entradas; un lote mayor se
 tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memoria: el tope es una cota, no una promesa de velocidad.
+
+### Actualización de NP-O0b1 (2026-10-22)
+
+NP-O0b1 es la **parte pura de la recuperación** del escritor, no el escritor: `reconciliar_tras_corte` en
+`sky_claw/local/native_parallax/output.py` no lee ni escribe archivos, no toma locks y todavía no tiene call site (lo tiene NP-O0b2).
+Se separó del escritor porque es lo único que se puede probar **entera** (75 estados enumerados) sin disco, y porque el escritor
+tiene que cumplir el protocolo que esta función da por sentado. Verificado ejecutando en Linux (Python 3.11).
+
+**Protocolo que NP-O0b2 tiene que cumplir** (si no lo cumple, esta función decide sobre supuestos falsos):
+
+1. Todo corre bajo el lock cross-process, **y la recuperación corre primero**, bajo ese mismo lock.
+2. Antes de tocar el disco, el escritor guarda su intención como un manifiesto **pendiente** (mismo formato canónico, escritura
+   atómica): el manifiesto que quedaría si todo sale bien.
+3. Un archivo nuestro que se va a reemplazar o retirar **se aparta primero a una papelera y se verifica después**: se mueve (atómico) y
+   se calcula la huella de lo que realmente se movió. Si coincide con la autorizada, se continúa; si no, lo tocó un tercero y se
+   devuelve. Así la huella verificada es la del archivo que salió de la ruta, no la de un instante anterior (cierra el TOCTOU de
+   contenido que NP-O0a dejaba abierto). El costo es una ventana en la que la ruta está vacía; si el proceso muere ahí, esta función
+   decide devolver el original.
+4. El archivo apartado y verificado se borra **dentro de la propia acción**, antes del compromiso.
+5. El manifiesto definitivo se escribe **al final** (punto de compromiso); después se limpia; el pendiente se borra **último**.
+6. Nunca se borra de la papelera nada cuya huella no sea la de una entrada vigente, y la huella se **vuelve a calcular justo antes de
+   borrar** (`DescarteDePapelera.sha256_autorizado`): borrar es lo único que no se deshace, y entre la observación y el borrado puede
+   pasar algo.
+7. Lo apartado que **no** es lo autorizado vuelve a su ruta si está vacía (sin pisar nada), en el camino sin corte **y** en la
+   recuperación: es una sola propiedad de la papelera, no dos. Si la ruta quedó ocupada, se queda en la papelera y se avisa.
+8. **Antes de escribir el pendiente**, el escritor comprueba que `cota_del_manifiesto_tras_un_corte(vigente, pendiente)` no supera
+   `TAMANO_MAXIMO_DEL_MANIFIESTO`; si la supera, rechaza el lote sin tocar nada («dividí el lote»).
+
+**Qué decide** (`reconciliar_tras_corte(previo, pendiente, observado)`, con `observado[clave_de_ruta]` = `EstadoTrasCorte(disco, papelera)`).
+Por cada ruta que figure en alguno de los dos manifiestos, 5 relaciones (solo en el pendiente = una creación; solo en el vigente = un
+retiro o una suelta; la misma entrada en ambos; una entrada distinta = un reemplazo; una entrada distinta con los **mismos bytes** = un
+reemplazo que solo cambia la procedencia) × 5 estados de disco (ausente, archivo con los bytes vigentes, archivo con los bytes
+pendientes, archivo con otros bytes, otra cosa) × 3 de papelera (nada, un archivo con la huella vigente, uno con otra huella) =
+**75 estados**, enumerados y comparados por igualdad literal contra una tabla escrita a mano
+(`tests/test_native_parallax_output_recuperacion.py`). En resumen: se **adopta** (pasa al manifiesto) solo lo que ya está en disco con
+los bytes que la intención declaraba; un reemplazo que apartó el original y se cortó antes de publicar **devuelve el original**
+(`restaurar`; si el original tiene los bytes que declaraba la intención, devolverlo es publicar la pendiente y se adopta esa); un
+archivo apartado que es nuestro y ya no hace falta se **descarta** (con la huella que lo autoriza); todo lo que tocó
+un tercero deja de ser asunto nuestro (sale del manifiesto) sin borrarse. Una huella en la papelera solo cuenta como nuestra si es la
+de la entrada **vigente** de esa ruta; lo apartado que no es nuestro **vuelve a su ruta si está vacía** (el escritor aparta antes de
+verificar: si un tercero había editado el archivo y el proceso murió antes de verificarlo, sin esto el archivo del usuario quedaba
+encerrado en la papelera) y, si la ruta está ocupada, se queda. Es idempotente: reconciliar otra vez con el resultado como manifiesto
+vigente no cambia nada (anclado sobre los 75 estados), así que un segundo corte durante la recuperación es seguro.
+
+**La cota del manifiesto que puede quedar en pie** (`cota_del_manifiesto_tras_un_corte(previo, pendiente)`). Tras un corte, y también
+al comprometer un lote con rutas fallidas, queda por ruta a lo sumo **una** entrada de alguno de los dos manifiestos: la unión puede
+pesar más que cada uno (un lote que cambia casi todas las rutas). Si superara los 128 MiB, `serializar_manifiesto` fallaría en cada
+arranque y la sesión no se podría abrir más. La cota suma, por ruta, lo que agrega la entrada más pesada a un manifiesto vacío; se
+verifica contra **todas** las elecciones posibles por ruta (72 sobre cinco rutas que cubren cada relación): nunca se queda corta y
+sobra a lo sumo 2 bytes por ruta. Las entradas iguales en ambos manifiestos pesan una vez, así que un lote que reconstruye las
+mismas rutas no ve reducido el tope.
+
+**Mutación** (automática por AST sobre `_entrada_que_queda`, `reconciliar_tras_corte`, `cota_del_manifiesto_tras_un_corte` y las tres
+clases: comparaciones, `and`/`or`, `not`, aritmética, constantes, condiciones, retornos, llamadas, `raise` y `continue`; las anotaciones
+no se mutan porque con `from __future__ import annotations` no se evalúan; cada mutante corre con un "mutante nulo" previo que valida el
+empalme). Sobre la versión final: **150 mutantes, 149 muertos y 1 vivo equivalente** (`peso_por_ruta.get(clave, 0)` → `1`: el peso de
+una entrada serializada siempre supera 1 byte, así que `max(1, peso) == peso`). La pasada anterior dejó vivos 9 textos de mensajes de
+error, cerrados haciendo que los tests de validación comprueben con `match=` qué chequeo se dispara. En la primera versión (antes de la
+revisión) se hicieron además 6 mutantes a mano sobre el orden de las ramas, la unión de rutas y la ortografía de la ruta a restaurar:
+uno vivo (la ortografía que se devuelve en `restaurar`: tiene que ser la de la entrada vigente, porque en un sistema que distingue
+mayúsculas es donde estaba el archivo), cerrado con un test. Orden: tests → rojo observado (`ImportError` del símbolo nuevo; y en la
+revisión, 10 fallas de comportamiento con la huella y la cota ya implementadas y la devolución de lo ajeno todavía no) → función → verde.
+
+**Revisión.** La primera versión tenía tres defectos que señaló la revisión automática (Codex) y que se verificaron leyendo el código:
+lo ajeno apartado quedaba varado en la papelera si el corte caía entre apartar y verificar (era el camino gemelo de `_devolver`, que
+sí lo devuelve sin corte), `descartar` no llevaba la huella que autoriza el borrado, y nada acotaba la unión de los dos manifiestos.
+Una segunda revisión (CodeRabbit) encontró que un reemplazo con los mismos bytes y otra procedencia, cortado con el original en la
+papelera, se recuperaba con la entrada vigente y el arranque siguiente adoptaba la pendiente: la recuperación no era idempotente. La
+tabla de 60 no tenía esa relación y por ese hueco se escapó; entró como quinta relación (75 estados) y el rojo se observó en sus dos
+anclas (la tabla y la idempotencia) antes de corregir.
+
+**Límites declarados.** (1) Es lógica pura: la papelera y el disco los observa el escritor; esta función no sabe cómo. (2) No cierra
+la ventana de la ruta vacía del punto 3, solo la recupera. (3) Un manifiesto pendiente ilegible **no** se interpreta: el escritor tiene
+que fallar cerrado y pedir intervención (borrar el pendiente a mano equivale a declarar que no se publicó nada, y lo publicado quedará
+como ajeno). (4) No se ejercitó contra un disco ni en Windows real. (5) La cota serializa cada entrada por separado: es lineal en el
+número de entradas (medido en Linux: 2,5 s para 20.000 + 20.000 entradas distintas, contra 1,1 s de serializar el manifiesto), y el
+escritor la paga una vez por lote que toca el disco.
