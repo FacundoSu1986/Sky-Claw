@@ -583,8 +583,10 @@ def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
         candidatos = [d for d in runtime_deps if d.name == nombre]
         assert len(candidatos) == 1, f"se esperaba exactamente un {nombre} en runtime, hay {candidatos}"
         req = candidatos[0]
+        # Igualdad exacta (como anyio y multidict): probar dos puntos del rango no alcanza, porque el aviso afecta
+        # hasta 1.45.0 y un piso >=1.42 rechazaría 1.41.1 y aceptaría 1.45.1 dejando pasar 1.45.0.
+        assert req.specifier == SpecifierSet(">=1.45.1,<2"), f"rango de {nombre} inesperado: {req.specifier}"
         assert not req.specifier.contains(vulnerable), f"el rango de {nombre} admite la versión vulnerable: {req}"
-        assert req.specifier.contains(piso_minimo), f"el rango de {nombre} no cubre el piso {piso_minimo}: {req}"
 
     # 2. los dos requirements*.lock: toda la familia 1.x
     for archivo in ("requirements.lock", "requirements-native-parallax.lock"):
