@@ -697,11 +697,16 @@ async def test_un_error_de_disco_al_publicar_una_ruta_nueva_falla_esa_ruta_y_lim
     assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
 
 
-@pytest.mark.parametrize("contenido", [b"OTRO-CONTENIDO", b"DDS-B"], ids=["otro_tamano", "mismo_tamano"])
+@pytest.mark.parametrize(
+    ("contenido", "dice"),
+    [(b"OTRO-CONTENIDO", "creció"), (b"DDS-B", "cambió")],
+    ids=["mas_grande", "mismo_tamano"],
+)
 async def test_una_fuente_que_cambia_mientras_se_copia_no_se_publica(
-    escenario: Escenario, interponer: Any, contenido: bytes
+    escenario: Escenario, interponer: Any, contenido: bytes, dice: str
 ) -> None:
-    """Se compara la huella Y el tamaño de lo copiado: un cambio que conserva el tamaño también se detecta."""
+    """Se compara la huella Y el tamaño de lo copiado: un cambio que conserva el tamaño también se detecta, y uno que
+    agranda la fuente se corta apenas pasa el tamaño validado."""
     fuente = escenario.fuente(b"DDS-A")
     interponer("tras_pendiente", lambda: fuente.archivo.write_bytes(contenido))
 
@@ -710,7 +715,7 @@ async def test_una_fuente_que_cambia_mientras_se_copia_no_se_publica(
     assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
     assert escenario.archivos_bajo_textures() == set()
     assert escenario.manifiesto_en_disco().entradas == ()
-    assert "cambió" in resultado.rutas[0].detalle
+    assert dice in resultado.rutas[0].detalle
 
 
 async def test_una_fuente_que_desaparece_antes_de_copiarse_falla_esa_ruta_sin_filtrar_descriptores(
@@ -2585,3 +2590,64 @@ async def test_si_la_recuperacion_no_puede_descartar_avisa_y_la_sesion_abre_igua
     assert apartado.read_bytes() == b"DDS-A"
     assert not (escenario.control() / "pending.json").exists()
     assert "No se pudo descartar" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: la copia a la etapa no pasa del tamaño validado
+# ---------------------------------------------------------------------------
+
+
+class _LecturaContada:
+    """Envuelve un archivo abierto y cuenta los bytes que se leen (un ``BufferedReader`` no deja reemplazar ``read``)."""
+
+    def __init__(self, archivo: Any) -> None:
+        self._archivo = archivo
+        self.total = 0
+
+    def __enter__(self) -> _LecturaContada:
+        return self
+
+    def __exit__(self, *excepcion: object) -> None:
+        self._archivo.close()
+
+    def read(self, n: int = -1) -> bytes:
+        datos: bytes = self._archivo.read(n)
+        self.total += len(datos)
+        return datos
+
+
+async def test_una_fuente_que_crece_despues_de_validarse_se_corta_sin_copiar_de_mas(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si la fuente crece después de validarla (otro proceso la sigue escribiendo), la copia corta en cuanto supera el
+    tamaño validado; no sigue hasta el final del archivo, que podría llenar el volumen del mod."""
+    fuente = escenario.fuente(b"DDS-A")
+    validar = output_writer._huella_y_tamano_de_la_fuente
+    lecturas: list[_LecturaContada] = []
+    abrir = pathlib.Path.open
+
+    def validar_y_crecer(archivo: pathlib.Path) -> tuple[str, int]:
+        resultado = validar(archivo)
+        with abrir(archivo, "ab") as f:
+            f.write(b"X" * 1_000_000)
+        monkeypatch.setattr(pathlib.Path, "open", abrir_contando)  # de acá en adelante, solo cuenta la copia
+        return resultado
+
+    def abrir_contando(self: pathlib.Path, *args: Any, **kwargs: Any) -> Any:
+        archivo = abrir(self, *args, **kwargs)
+        if self != fuente.archivo:
+            return archivo
+        lecturas.append(_LecturaContada(archivo))
+        return lecturas[-1]
+
+    monkeypatch.setattr(output_writer, "_huella_y_tamano_de_la_fuente", validar_y_crecer)
+    monkeypatch.setattr(output_writer, "_BLOQUE", 4)
+
+    resultado = await escenario.lote({RUTA_A: fuente})
+
+    monkeypatch.undo()
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.FALLIDA}
+    assert "creció" in _detalles(resultado)[RUTA_A]
+    assert [lectura.total for lectura in lecturas] == [8]  # dos bloques de 4: el segundo ya pasa los 5 validados
+    assert escenario.archivos_bajo_textures() == set()
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]

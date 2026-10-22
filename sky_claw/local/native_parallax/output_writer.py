@@ -590,8 +590,10 @@ def _copiar_a_etapa(control: pathlib.Path, trabajo: _Trabajo) -> pathlib.Path:
             fd = os.open(etapa, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o644)
             with os.fdopen(fd, "wb") as destino:
                 while bloque := origen.read(_BLOQUE):
-                    digest.update(bloque)
                     total += len(bloque)
+                    if total > trabajo.entrada.tamano:  # creció después de validarla: se corta acá, sin copiar de más
+                        raise _FuenteCambioError(f"la fuente {trabajo.fuente} creció mientras se copiaba")
+                    digest.update(bloque)
                     destino.write(bloque)
                 destino.flush()
                 os.fsync(destino.fileno())
