@@ -207,8 +207,8 @@ class CoordinacionDeSalida:
     """El lock cross-process de las sesiones de salida, sobre el ``DistributedLockManager`` del árbol.
 
     El acceso al manager es ``async`` y único (``sostener``): un lock sin abrir no excluye a nadie y no tiene que poder
-    sostenerse. El recurso se deriva de la raíz del mod, normalizada: dos ortografías de la misma ruta compiten por el
-    MISMO recurso.
+    sostenerse. El recurso se deriva de la raíz FÍSICA del mod: toda ortografía de la misma carpeta (con ``..``, o a
+    través de un enlace o un junction en un ancestro) compite por el MISMO recurso.
     """
 
     def __init__(self, *, lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager) -> None:
@@ -219,7 +219,8 @@ class CoordinacionDeSalida:
 
     @staticmethod
     def resource_id_de_la_raiz(raiz: pathlib.Path) -> str:
-        normalizada = os.path.normcase(os.path.abspath(os.fspath(raiz)))
+        # La ruta resuelta es SOLO la identidad del lock: se escribe siempre por la ruta validada, nunca por la resuelta.
+        normalizada = os.path.normcase(os.path.realpath(os.fspath(raiz)))
         return "native-parallax-output-" + hashlib.sha256(normalizada.encode("utf-8")).hexdigest()[:32]
 
     async def initialize(self) -> None:

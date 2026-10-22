@@ -2651,3 +2651,33 @@ async def test_una_fuente_que_crece_despues_de_validarse_se_corta_sin_copiar_de_
     assert [lectura.total for lectura in lecturas] == [8]  # dos bloques de 4: el segundo ya pasa los 5 validados
     assert escenario.archivos_bajo_textures() == set()
     assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #782: toda ortografía de la misma carpeta física compite por un solo lock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tipo", ["symlink", "junction"])
+async def test_toda_ortografia_de_la_misma_carpeta_fisica_compite_por_un_solo_lock(
+    escenario: Escenario, tmp_path: pathlib.Path, tipo: str
+) -> None:
+    """Un ancestro enlazado (la carpeta de mods de MO2 en otro disco por un junction es común) da otra ortografía de la
+    MISMA carpeta: tiene que competir por el mismo recurso, o dos procesos la mutarían a la vez."""
+    alias = tmp_path / "alias_de_mods"
+    _enlazar_carpeta(tipo, escenario.mods, alias)
+    por_el_alias = alias / NOMBRE_DEL_MOD_DE_SALIDA
+
+    recurso = CoordinacionDeSalida.resource_id_de_la_raiz
+    assert recurso(por_el_alias) == recurso(escenario.raiz)
+
+    impaciente = construir_coordinacion_de_salida(
+        base=tmp_path / "estado", max_retries=2, backoff_base=0.01, backoff_max=0.02
+    )
+    try:
+        async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+            with pytest.raises(SalidaOcupadaError):
+                async with abrir_sesion_de_salida(por_el_alias, coordinacion=impaciente):
+                    pytest.fail("no debería entrar por el alias mientras la otra sesión sostiene la carpeta")
+    finally:
+        await impaciente.close()
