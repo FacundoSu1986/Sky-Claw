@@ -30,8 +30,11 @@ FASE C — EMISIÓN (bajo el lock; la toma ``emitir_aprobacion_autorizada``)
   segunda autoridad
 ```
 
-**Qué NO agrega.** No hay TTL, no hay firma criptográfica y no hay un segundo
-store durable. La solicitud vive en memoria a propósito: si el proceso muere, la
+**Qué NO agrega.** No hay TTL, no hay firma criptográfica, no hay un segundo store
+durable y **no hay cableado**: ningún módulo de producción llama a ``presentar`` ni
+a ``responder`` (``HITL_PRODUCTIVE = NOT_WIRED``), porque cablear la superficie sin
+un consumidor de la aprobación dejaría autorizaciones ``ISSUED`` sin salida
+operativa. La solicitud vive en memoria a propósito: si el proceso muere, la
 solicitud muere con él y no queda nada aprobable — el fail-closed es más barato
 que un registro durable de propuestas, que sería una segunda autoridad.
 
@@ -46,6 +49,12 @@ TRANSPORT_IS_TRUSTED                = TELEGRAM (el ``from.id`` lo pone Telegram,
                                              cliente; el webhook se autentica con
                                              ``secret_token``)
 GUI_BUTTON_IS_IDENTITY              = NO    (no hay login: presencia local ≠ identidad)
+IDENTITY_IS_A_CAPABILITY            = YES   (constructor cerrado; sello acuñado por el
+                                             verificador y comprobado por identidad)
+PRESENTATION_IS_NON_AMBIGUOUS       = YES   (ningún valor del scope aporta una línea)
+HITL_PRODUCTIVE                     = NOT_WIRED (ningún módulo de producción presenta
+                                             ni responde: la superficie existe, el
+                                             cableado no)
 OWNER_SUBJECT_IS_DURABLE            = NO    (el witness durable registra la superficie
                                              como campo del scope; el ``solicitud_id``
                                              viaja dentro de ``approval_provenance``, que
@@ -54,12 +63,16 @@ OWNER_SUBJECT_IS_DURABLE            = NO    (el witness durable registra la supe
                                              autoritativo de solicitudes es en memoria;
                                              el sujeto se reconstruye del log del
                                              transporte)
+DECISION_INSTANT_IS_DURABLE         = NO    (``decided_at_ns`` se VERIFICA al emitir
+                                             —``>= proposed_at_ns``—, pero no se
+                                             persiste; el ancla durable del instante es
+                                             el log del transporte)
 ```
 
-La última línea es una limitación **elegida**, no un olvido: agregar el sujeto al
-witness exigiría un esquema v3 y no aporta frente al atacante que importa —quien
-fabrique el campo fabrica también el sujeto—. Frente al atacante externo la
-prueba está en el transporte, que sí la registra.
+Las dos últimas líneas son limitaciones **elegidas**, no olvidos: agregar el sujeto
+o el instante al witness exigiría un esquema v3 y no aporta frente al atacante que
+importa —quien fabrique el campo fabrica también el sujeto y el instante—. Frente
+al atacante externo la prueba está en el transporte, que sí la registra.
 """
 
 from __future__ import annotations

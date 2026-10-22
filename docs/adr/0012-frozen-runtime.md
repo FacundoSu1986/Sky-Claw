@@ -9754,18 +9754,24 @@ adjudicar el consumidor en el mismo cambio.
 ```text
 SLICE                                  = P4-S6_OWNER_HITL
 OWNER_IDENTITY_BINDING                 = VERIFIED (TELEGRAM) / BLOCKED (GUI)
+IDENTITY_IS_A_CAPABILITY               = YES   (constructor cerrado + sello; anclas AST)
 HUMAN_CONSENT                          = VERIFIED
 FULL_SCOPE_PRESENTED                   = YES   (14/14 campos, test enumerativo)
+PRESENTATION_IS_NON_AMBIGUOUS          = YES   (ningún valor aporta una línea)
 SCOPE_IMMUTABLE                        = YES
 SESSION_BINDING                        = YES
+DECISION_INSTANT_IS_VERIFIED           = YES
+DECISION_INSTANT_IS_DURABLE            = NO    (declarado; §46.2.3)
 DURABLE_ISSUE                          = VERIFIED (núcleo P4-S4/S5 reusado, sin segundo ledger)
-REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root + digest)
+REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root + digest;
+                                                  carrera real de 8 hilos probada)
 GUI_LLM_SURFACES                       = VERIFIED (censo + anclas AST)
 
 SCHEMA_V1_V2                           = NO_ARTIFACTS · FAIL_CLOSED · NO_MIGRATION
 WITNESS_TRUST_MODEL                    = FILESYSTEM_IN_TRUST_BOUNDARY · NO_SIGNATURE · NOT_CLAIMED_CRYPTO
 
-HITL_PRODUCTIVE                        = ENABLED
+HITL_SURFACE                           = IMPLEMENTED
+HITL_PRODUCTIVE                        = NOT_WIRED
 EMISION_PRODUCTIVA                     = DISABLED
 PROMOTION_PRODUCTIVE                   = DISABLED
 ROLLBACK_PRODUCTIVE                    = DISABLED
@@ -9776,38 +9782,59 @@ MERGED                                 = NO
 
 ### 46.9 Verificación de esta ronda
 
-- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **54 passed**.
-- Regresión, combinada: **323 passed**, 0 fallos — P4-S2 **25**, P4-S3 **125**,
-  P4-S4 **92**, P4-S5 **27**, P4-S6 **54**. Las cifras de `P4-S3 + P4-S5 + P4-S6`
-  suman **206**.
-- El merge con `main` se validó **sin mover refs**: `git merge-tree --write-tree`
-  sobre `aff9908d` dio el árbol `7d9f6ba7`, `git commit-tree` con ambos padres dio
-  `7e7ee48d` (**mismo árbol**), y sobre ese checkout se corrió la focal (53
-  passed) y la regresión (322 passed). El verde de CI del head se había medido
-  contra `f04eaf78`; `main` avanzó a `aff9908d` con commits de `native_parallax`
-  y **cero solape** de archivos con esta slice. `test_f06_inspect_applies_anti_reparse_admission_boundary`
-  falla en esta máquina **también en el baseline** (`9fe88cb4`): crear un symlink
-  de archivo sin privilegio no produce reparse ⇒ el guard no tiene nada que
-  rechazar. `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
-- Mutantes: **13/13 matados**. Tres pases dejaron ver tres cosas. (1) M7
-  —quitar `chat.id == from.id`— sobrevivió porque el caso de grupo ya lo tapaba
-  la comprobación de `type`: se agregaron los dos casos que faltaban —chat ajeno
-  **sin** `type` y chat ajeno con `type: private` mentido— y murió. (2) M12
-  —no desenvolver `callback_query`— obligó a cubrir la forma en que llega
-  realmente un botón. (3) M11 —flipar `EMISION_PRODUCTIVA_HABILITADA`— moría
-  **por tautología**: el test afirmaba el valor de la constante, no que la
-  constante gobernara algo, y la constante que flipaba no la leía ningún módulo
-  de producción. Se unificó la definición y el test pasó a probar la clausura por
-  conducta; M11 muere ahora porque la puerta se abre y emite. Ese es el valor del
-  gate: los tests que faltaban no eran los del caso feliz.
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **65 passed**
+  (eran 56; +9 con la ronda de Codex, uno de ellos la carrera real de 8 hilos).
+- `P4-S4 + P4-S5 + P4-S6`: **184 passed**, 0 fallos.
+- `P4-S1/S2/S3` (root lock, wiring del participante, journal durable, huérfanas):
+  **203 passed**, 2 skipped, **1 fallo de baseline**.
+- Total P4 sobre el árbol integrado (7 archivos): **387 passed**, 2 skipped, 1
+  fallo de baseline. El fallo es
+  `test_f06_inspect_applies_anti_reparse_admission_boundary`, que falla en esta
+  máquina **también en el baseline** (`9fe88cb4`): crear un symlink de archivo sin
+  privilegio no produce reparse ⇒ el guard no tiene nada que rechazar.
+  `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
+- **Integración sin mover refs.** `git merge-tree --write-tree origin/main HEAD`
+  predijo el árbol `d4488a01`; el `merge --no-ff` real (`fb3e0142`, padres
+  `74028635` + `18775fd0`) produjo **ese mismo árbol**. Como el árbol del merge
+  real coincide con el sintético, la evidencia local aplica al merge, y sobre el
+  árbol mergeado se corrieron las tres tandas. Sin rebase y sin force push.
+- **Los ocho tests nuevos son ROJOS en `ef39ac04`, por la razón correcta** —no por
+  `ImportError` ni por `AttributeError` del helper—:
+
+  ```text
+  test_el_scope_no_puede_inventar_lineas_en_la_presentacion   assert 25 == 22
+  test_la_identidad_no_se_construye_a_mano                    DID NOT RAISE
+  test_una_identidad_falsificada_no_presenta_ni_responde      DID NOT RAISE
+  test_la_identidad_de_telegram_acepta_un_mensaje_crudo       el update no trae remitente
+  test_el_envoltorio_del_update_no_cambia_el_veredicto        el update no trae remitente
+  test_un_consentimiento_ligado_sin_instante_de_decision…     DID NOT RAISE
+  test_una_decision_anterior_a_la_propuesta_no_emite          DID NOT RAISE
+  test_solo_el_modulo_de_consentimiento_construye_identidades llama al constructor
+  ```
+
+- Mutantes: **17/17 matados** (eran 13; +4 para los gates nuevos: sello,
+  escape de presentación, desenvuelto de `message`, instante de decisión). Tres
+  pases dejaron ver tres cosas. (1) M7 —quitar `chat.id == from.id`— sobrevivió
+  porque el caso de grupo ya lo tapaba la comprobación de `type`: se agregaron los
+  dos casos que faltaban —chat ajeno **sin** `type` y chat ajeno con `type:
+  private` mentido— y murió. (2) M12 —no desenvolver `callback_query`— obligó a
+  cubrir la forma en que llega realmente un botón. (3) M11 —flipar
+  `EMISION_PRODUCTIVA_HABILITADA`— moría **por tautología**: el test afirmaba el
+  valor de la constante, no que la constante gobernara algo, y la constante que
+  flipaba no la leía ningún módulo de producción. Se unificó la definición y el
+  test pasó a probar la clausura por conducta; M11 muere ahora con `DID NOT RAISE`
+  porque la puerta se abre y emite. Ese es el valor del gate: los tests que
+  faltaban no eran los del caso feliz.
 - Anclas enumerativas: censo de superficies, constructores de
-  `ConsentimientoAprobacion` (solo `owner_consent.py`), llamadores de
-  `_emitir_aprobacion_bajo_lock` (`approval.py` + `owner_consent.py`), llamadores
-  de `consumir_aprobacion` (ninguno de producción), igualdad de operaciones,
-  superficies del agente sin acceso a la autoridad, y **una sola definición** de
+  `ConsentimientoAprobacion` (solo `owner_consent.py`), **llamadores del
+  constructor de `IdentidadPropietario` (ninguno) y de `_acuñar_identidad` (solo
+  `verificar_identidad_telegram`)**, llamadores de `_emitir_aprobacion_bajo_lock`
+  (`approval.py` + `owner_consent.py`), llamadores de `consumir_aprobacion`
+  (ninguno de producción), igualdad de operaciones, superficies del agente sin
+  acceso a la autoridad, y **una sola definición** de
   `EMISION_PRODUCTIVA_HABILITADA`.
-- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/`; `mypy`
-  sobre `sky_claw/ scripts/`.
+- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` (941
+  archivos); `mypy` sobre `sky_claw/ scripts/` (394 archivos).
 
 **Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,errors,owner_consent,__init__}.py`,
 `tests/test_frozen_runtime_p4_s6_owner_hitl.py` y este ADR. **No** se tocó Steam,
@@ -9818,3 +9845,23 @@ cierre de una `T-XX` de `TECHNICAL_REVIEW_TASKS.md`, y ese inventario no tiene
 ninguna fila de Frozen Runtime (verificado por búsqueda: 0 coincidencias de
 «Frozen Runtime» en el archivo). P4-S6 cierra un bloqueante del ADR 0012
 rastreado en el issue #672, que sigue **OPEN**.
+
+### 46.10 Ronda de revisión — los seis hallazgos de Codex
+
+Se auditaron contra el código, no contra el comentario del bot: cada uno se
+falsificó con una sonda antes de aceptarlo. Cuatro eran defectos reales; dos eran
+limitaciones que el ADR contaba mal.
+
+| # | Hallazgo | Veredicto | Resolución |
+|---|---|---|---|
+| P1 | `IdentidadPropietario` es público y el chequeo sólo compara `mecanismo` | **Confirmado** | §46.2.1 — constructor cerrado, sello de acuñación, dos anclas AST. Mutante M14. |
+| P2 | El update crudo con `message` se rechaza | **Confirmado por sonda** | §46.2 — tres formas aceptadas; el envoltorio no cambia el veredicto. Mutante M16. |
+| P2 | La presentación no escapa saltos de línea | **Confirmado** | §46.2.2 — todo valor por `json.dumps`. Mutante M15. |
+| P2 | `decided_at_ns` no se lee nunca | **Confirmado** | §46.2.3 — gobierna la emisión. Mutante M17. |
+| P2 | El binding de la solicitud no llega al witness | **Confirmado, DIFERIDO** | Exigiría esquema v3; el ancla durable del *quién* es el transporte, no el artefacto. `OWNER_REQUEST_ID_IS_DURABLE = NO`. |
+| P2 | El registro no está cableado a producción | **Confirmado, DIFERIDO** | §46.7 — `HITL_PRODUCTIVE = NOT_WIRED`. Cablear sin consumidor deja `ISSUED` sin salida. |
+
+La distinción entre las dos columnas de la derecha importa: **un diferimiento
+declarado es una decisión; uno presentado como implementado es un defecto.** Los
+dos diferidos están escritos como límites con nombre y valor, y el PR no se
+considera mergeable hasta que el dueño los acepte como tales.
