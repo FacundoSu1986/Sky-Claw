@@ -31,10 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lectura, la misma distinción que ya hacía la observación; si no hubo ni una
   sola lectura legible el veredicto es `UIA_NO_DISPONIBLE`, no la pantalla. El
   presupuesto acota también la ACCIÓN, no sólo la espera: si la lectura que
-  habilita el Invoke llega después de vencer `timeout_segundos` —una lectura
+  habilita el Invoke llega a `timeout_segundos` o después —una lectura
   lenta, con el modal contractual a la vista y la instantánea válida— el paso
   devuelve `PLAZO_AGOTADO` con `invocado=False` en vez de mutar fuera del
-  presupuesto que el operador aprobó. Es deliberadamente más estricto que la
+  presupuesto que el operador aprobó. El borde es `reloj() >= limite`: el
+  presupuesto se agota EN el límite, la misma convención que la observación y
+  las esperas del cierre. Es deliberadamente más estricto que la
   observación: observar de más no muta, invocar de más sí. El
   corte por identidad, además, tenía dos códigos según el camino: `_atender_modal`,
   `accion_previa`, Begin y terminal reportaban `IDENTIDAD_NO_COINCIDE` como
@@ -42,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   la escritura del Output ya usaban `UNATTENDED_CONTRACT_VIOLATION`; ahora los
   siete sitios comparten un único mapeo. Anclas:
   `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el caso I de la lectura
-  ilegible, el caso J del presupuesto vencido —pantalla transitoria y excepción—,
+  ilegible, el caso J del presupuesto vencido —pantalla transitoria, excepción y
+  el borde exacto del vencimiento con su contracara un instante antes—,
   el censo parametrizado de los cuatro caminos del corte por identidad y
   el test que fija que el padre pide el Invoke UNA vez aunque el paso corte sin
   invocar) y `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas

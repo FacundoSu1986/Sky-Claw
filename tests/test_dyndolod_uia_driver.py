@@ -1130,6 +1130,49 @@ def test_f2_la_lectura_ilegible_lenta_tampoco_muta_fuera_del_presupuesto():
     assert gui.invocaciones == []
 
 
+def test_f2_en_el_instante_exacto_de_vencimiento_no_invoca():
+    """El borde del presupuesto: ``reloj() == limite`` YA está vencido.
+
+    Es la convención que el archivo usa en los otros cinco sitios que comparan
+    contra un límite —``restante <= 0`` en la observación y en la espera del
+    helper, ``>=`` en la confirmación del cierre—: el presupuesto se agota EN el
+    límite, no después. Con un ``>`` el paso invocaría en el único instante en
+    que el resto del archivo ya cortó.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=1.0)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert reloj.t == 1.0, "la lectura dejó el reloj EXACTAMENTE en el límite"
+    assert resultado.estado is EstadoDePaso.PLAZO_AGOTADO
+    assert resultado.invocado is False
+    assert gui.invocaciones == [], "en el instante de vencimiento no se muta"
+
+
+def test_f2_un_instante_antes_del_vencimiento_todavia_invoca():
+    """El otro lado del borde: con presupuesto restante se invoca UNA vez."""
+    gui = GuiSimulada(CONTRATO_TEXGEN, modal_inicial=True)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=0.999)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_modal(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert reloj.t < 1.0
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert gui.invocaciones == ["Ignore"]
+
+
 # -- Caso E: la identidad se revalida en cada lectura ------------------------
 
 

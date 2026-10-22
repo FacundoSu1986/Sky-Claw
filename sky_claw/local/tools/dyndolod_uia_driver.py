@@ -1062,9 +1062,11 @@ def _paso_invocar(
     corte limpio, no como un desenlace desconocido.
 
     **El plazo acota la ESPERA y la ACCIÓN.** Si la lectura que habilita el
-    Invoke llega después de ``limite`` —una lectura LENTA, no una pantalla
+    Invoke llega a ``limite`` o después —una lectura LENTA, no una pantalla
     ausente— el paso no invoca: devuelve ``PLAZO_AGOTADO`` con
-    ``invocado=False``. El modal puede estar a la vista y la instantánea ser
+    ``invocado=False``. El borde es ``reloj() >= limite``: el presupuesto se
+    agota EN el límite, igual que en la observación y en las esperas del cierre.
+    El modal puede estar a la vista y la instantánea ser
     válida; actuar fuera del presupuesto que el operador aprobó no es un
     desenlace aceptable, y el corte es limpio (se puede re-lanzar), no ambiguo.
     Esto es deliberadamente MÁS estricto que ``_paso_observar``, que devuelve en
@@ -1168,7 +1170,14 @@ def _paso_invocar(
         # El presupuesto acota también la ACCIÓN (P1 del Tech Lead). Va pegado a
         # la primitiva a propósito: es el ÚNICO punto de mutación del paso, así
         # que ninguna ruta puede invocar sin pasar por este chequeo.
-        if reloj() > limite:
+        #
+        # ``>=`` y no ``>``: el presupuesto se agota EN el límite, no después. Es
+        # la convención de los otros cinco sitios del archivo que comparan contra
+        # un límite (``restante <= 0`` en la observación y en
+        # ``_esperar_otra_lectura``, ``time.monotonic() >= limite`` en las dos
+        # esperas del cierre). Con ``>`` este paso invocaría en el único instante
+        # en que el resto del archivo ya cortó.
+        if reloj() >= limite:
             return ResultadoDePaso(
                 estado=EstadoDePaso.PLAZO_AGOTADO,
                 detalle=(
