@@ -145,7 +145,12 @@ CROSS_FILE_ATOMICITY = False
 #: ``consumir_aprobacion`` —hay un ancla enumerativa que lo congela—, así que
 #: emitir dejaría autorizaciones ``ISSUED`` sin salida operativa y, con
 #: ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``, bloquearía la emisión siguiente hasta
-#: que el dueño revoque. El interruptor es UNO y su test lo fija en ``False``.
+#: que el dueño revoque.
+#:
+#: Es la ÚNICA definición del interruptor: ``owner_consent`` lo LEE y su puerta
+#: de emisión depende de este valor. Un test enumera el árbol y exige una sola
+#: definición, y otro prueba la clausura por conducta —no por el literal—, para
+#: que abrirlo obligue a adjudicar el consumidor en el mismo cambio.
 EMISION_PRODUCTIVA_HABILITADA = False
 
 _HEX_DIGEST = 64

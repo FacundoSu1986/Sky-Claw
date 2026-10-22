@@ -9594,7 +9594,7 @@ test.
 ### 46.7 Límites de activación (FASE F)
 
 ```text
-EMISION_PRODUCTIVA_HABILITADA = False   (approval.py y owner_consent.py)
+EMISION_PRODUCTIVA_HABILITADA = False   (UNA definición: approval.py; owner_consent la LEE)
 HITL_PRODUCTIVE               = ENABLED (la superficie obtiene y verifica decisiones)
 PROMOTION_PRODUCTIVA          = DISABLED
 ROLLBACK_PRODUCTIVA           = DISABLED
@@ -9609,8 +9609,21 @@ aprobación quedaría `ISSUED` **sin salida operativa** y bloquearía la emisió
 siguiente hasta que el dueño revoque. La FASE F del brief pide no habilitar por
 arrastre el flujo de promoción: falta el consumidor, no la superficie.
 
-El interruptor es **uno** y su test lo fija en `False`: abrirlo obliga a adjudicar
-el consumidor en el mismo cambio.
+El interruptor es **uno** y tiene **dos** anclas, porque una sola no alcanzaba:
+
+- **Enumerativa** — cuenta las definiciones de `EMISION_PRODUCTIVA_HABILITADA`
+  en todo `sky_claw/` y exige exactamente una. Antes había dos: la de
+  `approval.py` no la leía ningún módulo de producción, así que era un flag que
+  sólo afirmaba un test; el mutante que la flipaba moría por el literal, no por
+  un cambio de conducta. Dos constantes homónimas pueden divergir en silencio.
+- **Conductual** — un consentimiento **válido y completo** llega hasta
+  `emitir_aprobacion_autorizada` y no emite nada. El test **no** afirma el valor
+  de la constante: lo que prueba es que la constante gobierna la puerta. Abrirla
+  sin integrar el consumidor lo rompe por comportamiento.
+
+Es la misma lección de `root_id` (§35) y del binding de P4-S5, mudada a un flag
+de capacidad: **un símbolo que sólo se afirma es decoración**. Abrirlo obliga a
+adjudicar el consumidor en el mismo cambio.
 
 ### 46.8 Estado
 
@@ -9639,26 +9652,36 @@ MERGED                                 = NO
 
 ### 46.9 Verificación de esta ronda
 
-- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **53 passed**.
-- Regresión: P4-S4 **92 passed**; P4-S3 + P4-S5 + P4-S6 **205 passed**; P4-S2
-  (anclas de wiring del lock) **25 passed**. Las tres cifras se remidieron sobre
-  el **merge sintético con `aff9908d`** (árbol `7d9f6ba7`, idéntico al que produce
-  `git merge-tree`), no sólo sobre la base de la rama. `test_f06_inspect_applies_anti_reparse_admission_boundary`
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **54 passed**.
+- Regresión, combinada: **323 passed**, 0 fallos — P4-S2 **25**, P4-S3 **125**,
+  P4-S4 **92**, P4-S5 **27**, P4-S6 **54**. Las cifras de `P4-S3 + P4-S5 + P4-S6`
+  suman **206**.
+- El merge con `main` se validó **sin mover refs**: `git merge-tree --write-tree`
+  sobre `aff9908d` dio el árbol `7d9f6ba7`, `git commit-tree` con ambos padres dio
+  `7e7ee48d` (**mismo árbol**), y sobre ese checkout se corrió la focal (53
+  passed) y la regresión (322 passed). El verde de CI del head se había medido
+  contra `f04eaf78`; `main` avanzó a `aff9908d` con commits de `native_parallax`
+  y **cero solape** de archivos con esta slice. `test_f06_inspect_applies_anti_reparse_admission_boundary`
   falla en esta máquina **también en el baseline** (`9fe88cb4`): crear un symlink
   de archivo sin privilegio no produce reparse ⇒ el guard no tiene nada que
   rechazar. `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
-- Mutantes: **13/13 matados**. Dos pases previos dejaron ver dos cosas. (1) M7
+- Mutantes: **13/13 matados**. Tres pases dejaron ver tres cosas. (1) M7
   —quitar `chat.id == from.id`— sobrevivió porque el caso de grupo ya lo tapaba
   la comprobación de `type`: se agregaron los dos casos que faltaban —chat ajeno
   **sin** `type` y chat ajeno con `type: private` mentido— y murió. (2) M12
   —no desenvolver `callback_query`— obligó a cubrir la forma en que llega
-  realmente un botón. Ese es el valor del gate: los tests que faltaban no eran
-  los del caso feliz.
+  realmente un botón. (3) M11 —flipar `EMISION_PRODUCTIVA_HABILITADA`— moría
+  **por tautología**: el test afirmaba el valor de la constante, no que la
+  constante gobernara algo, y la constante que flipaba no la leía ningún módulo
+  de producción. Se unificó la definición y el test pasó a probar la clausura por
+  conducta; M11 muere ahora porque la puerta se abre y emite. Ese es el valor del
+  gate: los tests que faltaban no eran los del caso feliz.
 - Anclas enumerativas: censo de superficies, constructores de
   `ConsentimientoAprobacion` (solo `owner_consent.py`), llamadores de
   `_emitir_aprobacion_bajo_lock` (`approval.py` + `owner_consent.py`), llamadores
   de `consumir_aprobacion` (ninguno de producción), igualdad de operaciones,
-  superficies del agente sin acceso a la autoridad.
+  superficies del agente sin acceso a la autoridad, y **una sola definición** de
+  `EMISION_PRODUCTIVA_HABILITADA`.
 - `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/`; `mypy`
   sobre `sky_claw/ scripts/`.
 

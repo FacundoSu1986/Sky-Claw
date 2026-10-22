@@ -39,6 +39,7 @@ import ast
 import dataclasses
 import json
 import pathlib
+import re
 
 import pytest
 
@@ -919,14 +920,47 @@ def test_emitir_no_escribe_fuera_del_root(tmp_path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_la_emision_productiva_sigue_cerrada() -> None:
+def test_la_emision_productiva_sigue_cerrada(tmp_path: pathlib.Path) -> None:
     """FASE F: sin consumidor seguro, emitir dejaría ``ISSUED`` sin salida operativa.
 
-    El interruptor es UNO. Si alguien lo abre, este test falla y obliga a
-    adjudicar el consumidor en el mismo cambio.
+    Se verifica por CONDUCTA, no por el literal de la constante. Un
+    ``assert CONSTANTE is False`` mata al mutante que la flipa sin probar que la
+    constante gobierna algo: es el patrón «campo que sólo se escribe es
+    decoración», mudado a un flag de capacidad. Por eso acá NO se afirma el
+    valor: un consentimiento VÁLIDO y completo llega hasta la puerta de emisión y
+    no emite nada. Abrir el interruptor sin integrar el consumidor rompe este
+    test por comportamiento.
     """
-    assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
-    assert owner_consent.EMISION_PRODUCTIVA_HABILITADA is False
+    root = _root(tmp_path)
+    registro = RegistroConsentimientos()
+    propuesta = _propuesta(root)
+    presentacion = _presentar(root, propuesta, registro)
+    consentimiento = registro.responder(
+        presentacion.solicitud_id,
+        decision=DecisionConsentimiento.APROBAR,
+        identidad=_identidad(),
+    )
+    assert consentimiento is not None
+
+    with pytest.raises(ApprovalHitolNoDisponibleError, match="emisión productiva sigue cerrada"):
+        owner_consent.emitir_aprobacion_autorizada(root, propuesta, consentimiento)
+    assert not list(issuances_state_dir(root).iterdir())
+
+
+def test_el_interruptor_de_emision_tiene_una_sola_definicion() -> None:
+    """«El interruptor es UNO» es una afirmación verificable, no un comentario.
+
+    Dos constantes homónimas en módulos distintos pueden divergir en silencio:
+    una gobierna la conducta y la otra sólo la afirma un test. Esta ancla
+    enumera el árbol y exige una única definición; reintroducir la segunda
+    rompe el test antes de que las dos se separen.
+    """
+    patron = re.compile(r"^EMISION_PRODUCTIVA_HABILITADA\s*=", re.MULTILINE)
+    definiciones: list[str] = []
+    for ruta in _modulos_bajo(RAIZ_REPO / "sky_claw"):
+        if patron.search(ruta.read_text(encoding="utf-8")):
+            definiciones.append(ruta.relative_to(RAIZ_REPO).as_posix())
+    assert definiciones == ["sky_claw/local/frozen_runtime/approval.py"]
 
 
 def test_ningun_modulo_de_produccion_consume_aprobaciones() -> None:

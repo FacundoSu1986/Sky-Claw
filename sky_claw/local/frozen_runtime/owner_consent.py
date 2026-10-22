@@ -98,8 +98,11 @@ logger = logging.getLogger(__name__)
 #: producción llama a ``consumir_aprobacion``), así que emitir dejaría
 #: autorizaciones ``ISSUED`` sin salida operativa y —con
 #: ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``— bloquearían la emisión siguiente hasta
-#: que el dueño revoque. El interruptor es UNO y este test lo congela.
-EMISION_PRODUCTIVA_HABILITADA = False
+#: que el dueño revoque.
+#:
+#: El interruptor NO se declara acá: es ``approval.EMISION_PRODUCTIVA_HABILITADA``
+#: y este módulo lo LEE. Una segunda constante homónima gobernaría nada y podría
+#: divergir de la que sí gobierna; un test enumera el árbol y exige una sola.
 
 #: Nombre del mecanismo de identidad del propietario en Telegram. Es el valor que
 #: ``verificar_identidad_telegram`` estampa en la identidad y el que el censo
@@ -608,7 +611,7 @@ def emitir_aprobacion_autorizada(
     invoca tal cual, con el witness y el CAS que P4-S4/P4-S5 ya congelaron.
     """
     _exigir_binding_completo(consentimiento)
-    if not EMISION_PRODUCTIVA_HABILITADA:
+    if not approval_module.EMISION_PRODUCTIVA_HABILITADA:
         raise ApprovalHitolNoDisponibleError(
             "P4-S6 deja el consentimiento verificado implementado, pero la emisión productiva sigue cerrada "
             "(FASE F): ningún consumidor seguro de la aprobación está integrado, así que emitir dejaría "
