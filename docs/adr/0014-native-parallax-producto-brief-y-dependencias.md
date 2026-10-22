@@ -79,7 +79,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-Q0 | métricas y gates con thresholds **derivados** del benchmark | métricas hechas (#760) y gate fail-closed sin umbrales vigentes (#761); los umbrales validados esperan al corpus real |
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
-   | NP-O0 | `ManagedOutput` + manifest + cache por hash | pendiente |
+   | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b) |
    | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
@@ -720,3 +720,83 @@ se lo saca de la exención de `mypy` con el opt-in estricto de `pyproject.toml` 
 el contrato `success`/`message` (aún no es un tool): se cablea en NP-A0, donde las dos superficies deben pasar por
 `exportar_altura_bc4`. (4) `ResultadoDeExportacion` no lleva todavía el `encoder_id` del manifest: NP-O0 arma el manifest con
 `texconv_version`, `texconv_sha256` y `argumentos`.
+
+### Actualización de NP-O0a (2026-10-21)
+
+NP-O0a entrega el **núcleo puro de la salida gestionada**, no la salida: `sky_claw/local/native_parallax/output.py` no lee ni escribe
+archivos, no toma locks y no tiene call site de producción. Decide tres cosas que el escritor (NP-O0b) y el lote (NP-A0) van a dar
+por sentadas. Verificado ejecutando en Linux (Python 3.11); el módulo es solo biblioteca estándar, no importa `numpy`.
+
+- **Quién es dueño de qué.** El **manifiesto es la única prueba de propiedad** (`PRESERVE_EXISTING`). Un archivo que no figura en él
+  no es nuestro; uno que figura pero cambió de contenido tampoco: lo tocó un tercero. Ninguno de los dos se pisa. Un directorio, un
+  enlace o un dispositivo en la ruta no se toca nunca. El formato es JSON canónico y de **esquema cerrado**: leerlo falla cerrado ante
+  un campo de más o de menos, claves repetidas, constantes no finitas, una clave de caché que no coincide con la procedencia o
+  cualquier forma que no sea byte a byte la canónica (así lo que se validó es lo que está guardado).
+- **Cuándo se saltea un archivo.** `clave_de_cache` es una huella SHA-256 de TODA la procedencia: algoritmo, parámetros, orígenes
+  (rol + huella), encoder (identidad de nuestra tubería, versión y huella de `texconv`, argumentos), entorno y nivel de
+  reproducibilidad, con el esquema del manifiesto y un dominio propio. **El entorno es obligatorio**: sin él la clave sería portable
+  entre máquinas por error, y np.sin/np.exp no garantizan los mismos bits entre CPUs. Una clave que incluya de más solo reconstruye de
+  más; una que incluya de menos sirve resultados viejos. El único nivel de reproducibilidad es «determinista en el MISMO entorno»;
+  ampliar el vocabulario es una decisión deliberada, no un valor libre.
+- **Qué hacer con cada ruta.** `planificar(deseadas, manifiesto_previo, observado)` es una función pura. La tabla estado → acción
+  tiene 15 estados y está **enumerada** (producto cartesiano de las cinco dimensiones, comparado por igualdad literal contra una tabla
+  escrita a mano):
+
+  | Deseada | En el manifiesto | Qué hay en disco | Acción |
+  |---|---|---|---|
+  | sí | no | nada | `CONSTRUIR` |
+  | sí | no | un archivo | `PRESERVAR` (ajeno) |
+  | sí | no | otra cosa | `PRESERVAR` (ocupado por otro tipo) |
+  | sí | sí | nada | `CONSTRUIR` (falta en disco) |
+  | sí | sí | otra cosa | `PRESERVAR` |
+  | sí | sí | archivo intacto, misma clave | `OMITIR` (caché vigente) |
+  | sí | sí | archivo intacto, otra clave | `RECONSTRUIR` |
+  | sí | sí | archivo modificado | `PRESERVAR` (modificado por terceros) |
+  | no | sí | nada | `SOLTAR` |
+  | no | sí | otra cosa | `SOLTAR` |
+  | no | sí | archivo intacto | `RETIRAR` |
+  | no | sí | archivo modificado | `SOLTAR` |
+
+  `PRESERVAR` y `SOLTAR` no tocan el disco: el archivo preservado **no entra** al manifiesto (no reclamamos propiedad) y el soltado
+  sale de él. Solo `CONSTRUIR`, `RECONSTRUIR` y `RETIRAR` modifican el disco, y las dos últimas llevan la huella que las autoriza
+  (`sha256_autorizado`) para que el escritor la vuelva a comprobar justo antes de tocar. `CONSTRUIR` solo ocurre donde no hay nada.
+- **Rutas.** Relativas al mod de salida (`Sky-Claw - Native Parallax Output`), con `/`, solo ASCII imprimible, bajo `textures/` y de la
+  forma `*_p.dds`; sin `:` (flujos alternos de NTFS), sin segmentos vacíos o con punto o espacio final (incluidos `.` y `..`), sin
+  nombres reservados de Windows (lista conservadora: incluye `COM0`/`LPT0`, `CONIN$` y `CONOUT$`) y de hasta 200 caracteres. Se **rechaza en vez de normalizar**. Se comparan ignorando mayúsculas
+  (`casefold`). La lista de nombres reservados sale de la documentación pública de Windows y **no la reverifiqué en esta sesión**; por eso es un superconjunto deliberado (rechazar de más es seguro, aceptar de más hace fallar al escritor después de validar).
+  **De dónde sale cada exclusión** (regla de `sky_claw/local/native_parallax/AGENTS.md`: toda exclusión o umbral cita fuente pública o
+  experimento propio; ninguna es una heurística medida sobre datos):
+  `/` como separador, los caracteres `< > : " | ? * \`, los caracteres de control, los nombres reservados y el punto o espacio final
+  salen de la documentación pública de Microsoft «Naming Files, Paths, and Namespaces» (`learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file`),
+  que **no reverifiqué en esta sesión**; `:` además abre un flujo de datos alterno en NTFS. `textures/` y `*_p.dds` son la convención
+  pública del mapa de altura legacy que Skyrim lee (`CLEAN_ROOM.md`, formato «naming `_p`», y NP-E0 de este ADR). **Solo ASCII imprimible** y
+  **200 caracteres** son decisiones de diseño MÍAS, no medidas: ASCII porque la normalización Unicode y el plegado de mayúsculas
+  cambian entre sistemas de archivos; 200 es `MAX_PATH` (260, misma documentación) menos un margen de 60 para la raíz del mod de salida,
+  un margen que **no medí** sobre rutas reales de MO2 (si resulta chico, es una constante que se sube con su test de borde).
+- **Ancla de familia.** Solo `output.py` nombra `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports y por llamadas (ambos por AST);
+  los campos de `Procedencia`, `EncoderUsado` y `OrigenDeEntrada` se enumeran por introspección contra las variantes que cambian la
+  clave: un campo nuevo que no entre a la clave rompe el test. El manifiesto y la clave de referencia están congelados.
+- **Mutación manual** (329 mutantes sobre `output.py`: constantes, regex, límites, ramas, guardas y la tabla). La primera pasada dejó
+  **90 vivos**, todos huecos reales de los tests o código redundante: topes numéricos sin prueba de borde, la profundidad de listas,
+  claves no ASCII, el orden por la clave plegada y no por la ruta cruda, constructores directos del plan y de la entrada, la recursión
+  agotada, `bytearray`, el tope de lectura, y capas de defensa que se tapaban entre sí (la comparación canónica byte a byte hacía que la
+  clave repetida y el `NaN` parecieran cubiertos). Se cerraron con tests (388 en total) y se borró código redundante (12 mutantes
+  dejaron de aplicar). Quedan **3 equivalentes documentados**: `allow_nan` del serializador del manifiesto (inalcanzable: los parámetros
+  llegan como texto canónico ya validado), `observacion.sha256` por `entrada.sha256` en la rama «intacto» (son iguales por definición)
+  y `entrada and deseada` en `_decidir` (con `entrada` ausente esa rama no lee `deseada`). Los tests y el módulo se escribieron juntos y
+  **no observé el rojo previo**: la evidencia de que los tests ven los defectos es esta mutación.
+
+**Límites declarados.** (1) Es un núcleo puro: las huellas de lo que hay en disco las trae el llamador como `Observacion`; entre
+observar y tocar hay una ventana (TOCTOU) que NO cierra este módulo. (2) **Requisitos para NP-O0b**: tomar el lock cross-process
+(solo protege si TODOS los mutadores participan, ver «Propiedad del `external_work_root`» en `AGENTS.md`), volver a comprobar
+`sha256_autorizado` inmediatamente antes de reemplazar o borrar, publicar por etapas y escribir el manifiesto **al final** (es el punto
+de compromiso), y recuperarse de un corte a mitad. También debe comprobar el largo de la ruta COMPLETA (raíz del mod de salida + ruta
+relativa) antes de publicar: los 200 caracteres de este módulo son un prefiltro de la parte relativa, no garantizan que la ruta final
+quepa en `MAX_PATH`. El escritor también decide cómo se crea el mod de salida para MO2 (`meta.ini`).
+(3) De dónde salen las salidas deseadas, los orígenes y los valores concretos del `entorno` (versiones de `numpy`, Python,
+plataforma) es de NP-A0; el `exportador_id` y `ResultadoDeExportacion` (`texconv_version`, `texconv_sha256`, `argumentos`) se
+unen en el `EncoderUsado` ahí. (4) El plegado de mayúsculas con `casefold` aproxima la tabla de Windows solo para ASCII; por eso las rutas
+son solo ASCII. (5) No se ejercitó en un disco ni en Windows real: es lógica pura, probada con entradas sintéticas. (6) **Tope del manifiesto**: 128 MiB, el mismo para
+leer y para escribir (el serializador falla en vez de producir un manifiesto que el lector rechazaría y que dejaría al lote sin
+registro de propiedad ni caché). Con rutas cortas una entrada pesa ≈1,1 KiB (medido), o sea unas 100.000 entradas; un lote mayor se
+tiene que dividir. Leer un manifiesto de ese tamaño carga todo el JSON en memoria: el tope es una cota, no una promesa de velocidad.

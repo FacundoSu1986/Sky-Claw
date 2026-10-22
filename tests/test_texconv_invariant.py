@@ -30,6 +30,9 @@ MODULOS_QUE_NOMBRAN_TEXCONV = {
     "sky_claw/local/tools/texconv_runner.py",
     # una mención en un comentario de la especificación del corpus sintético
     "sky_claw/local/native_parallax/bench/sintetico.py",
+    # NP-O0a: nombra texconv solo como DATO (versión, huella y argumentos del encoder dentro de la procedencia del
+    # manifiesto). No lo ejecuta ni lo verifica: es puro, y el test de abajo comprueba por AST que no lanza procesos.
+    "sky_claw/local/native_parallax/output.py",
 }
 MODULOS_QUE_LANZAN_PROCESOS = {"sky_claw/local/tools/texconv_runner.py"}
 
