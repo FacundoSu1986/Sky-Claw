@@ -32,11 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escritura deja de reportarse como `UIA_UNAVAILABLE` —que afirmaba "no pude
   mirar" sobre un paso que quizá ya mutó el campo del usuario— y pasa a
   `UNATTENDED_CONTRACT_VIOLATION` con `la escritura pudo haberse ejecutado y no se
-  reintenta`; el resto de los códigos no cambia. Validado con 12/12 mutantes
-  muertos (sin reobservación, dos escrituras por readback ilegible, sin guard de
-  deadline, `>=` por `>`, sin identidad, pantalla desconocida recuperable,
-  HRESULT que reintenta, hermano sin presupuesto, desenlace desconocido mudo,
-  excepción no recuperada, readback mentiroso y tope de lecturas infinito).
+  reintenta`. Son DOS los desenlaces que ya no caen en `UIA_UNAVAILABLE`: el de
+  arriba y el del plazo vencido antes de escribir, que responde
+  `UIA_CONTROL_MAP_MISMATCH` —el mismo que ya usa `_esperar_asistente` cuando
+  vence su plazo de arranque— en lugar de caer al fallback `UIA_UNAVAILABLE`, que
+  describía como "no pude mirar" un paso que no escribió nada. Los desenlaces
+  restantes conservan el código que ya tenían y el mapa completo está enumerado en
+  `test_f2b_el_mapa_de_codigos_de_la_escritura_enumera_todos_los_estados`.
+  Validado con 13/13 mutantes muertos (sin reobservación, dos escrituras por
+  readback ilegible, sin guard de deadline, `>=` por `>`, sin identidad, pantalla
+  desconocida recuperable, HRESULT que reintenta, hermano sin presupuesto,
+  desenlace desconocido mudo, excepción no recuperada, readback mentiroso, tope de
+  lecturas infinito y plazo agotado cayendo al fallback genérico).
   *No hay validación en rig Windows: la corrección se probó con backends
   simulados deterministas y relojes falsos.*
 - **La etapa 9 desatendida abortaba cuando UIA leía la ventana mientras se
