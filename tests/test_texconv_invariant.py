@@ -33,6 +33,12 @@ MODULOS_QUE_NOMBRAN_TEXCONV = {
     # NP-O0a: nombra texconv solo como DATO (versión, huella y argumentos del encoder dentro de la procedencia del
     # manifiesto). No lo ejecuta ni lo verifica: es puro, y el test de abajo comprueba por AST que no lanza procesos.
     "sky_claw/local/native_parallax/output.py",
+    # NP-A0a: nombra texconv solo como DATO (``texconv_version``/``texconv_sha256`` que devolvió el exportador, para armar
+    # el ``EncoderUsado`` de la procedencia). No lo ejecuta ni lo verifica; el exportador se le inyecta.
+    "sky_claw/local/native_parallax/lote.py",
+    # NP-A0a: el borde de línea de comandos. Recibe la ruta (``--texconv``), la verifica con ``export.verificar_texconv`` y
+    # ata el exportador al ejecutor fijado (``texconv_runner.exportar_altura_bc4``); no lanza ningún proceso por su cuenta.
+    "sky_claw/local/native_parallax/cli.py",
 }
 MODULOS_QUE_LANZAN_PROCESOS = {"sky_claw/local/tools/texconv_runner.py"}
 
@@ -62,10 +68,24 @@ def _nombre_de_la_llamada(nodo: ast.Call) -> str | None:
     return None
 
 
+def _es_asyncio_run(nodo: ast.Call) -> bool:
+    """``asyncio.run(...)`` arranca un bucle de eventos, no un proceso: el nombre ``run`` solo lo confunde con ``subprocess.run``."""
+    return (
+        isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "run"
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "asyncio"
+    )
+
+
 def _lanza_procesos(codigo: str) -> bool:
     arbol = ast.parse(codigo)
     for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.Call) and _nombre_de_la_llamada(nodo) in _LLAMADAS_DE_PROCESO:
+        if (
+            isinstance(nodo, ast.Call)
+            and _nombre_de_la_llamada(nodo) in _LLAMADAS_DE_PROCESO
+            and not _es_asyncio_run(nodo)
+        ):
             return True
     return False
 
@@ -117,3 +137,8 @@ def test_el_detector_de_lanzamientos_reconoce_las_formas_habituales() -> None:
     ):
         assert _lanza_procesos(codigo), codigo
     assert not _lanza_procesos("import hashlib\nhashlib.sha256(b'x')\nprint('texconv')")
+    # ``asyncio.run`` no es un proceso (NP-A0a: el borde de línea de comandos lo usa para arrancar su bucle)...
+    assert not _lanza_procesos("import asyncio\nasyncio.run(main())")
+    # ...pero la excepción es exactamente esa: ``run`` sobre cualquier otro objeto, o el nombre pelado, sigue contando.
+    assert _lanza_procesos("import asyncio\nasyncio.run(main())\nimport subprocess\nsubprocess.run(['x'])")
+    assert _lanza_procesos("from algo import run\nrun(['x'])")
