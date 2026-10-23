@@ -754,6 +754,12 @@ def emitir_aprobacion_autorizada(
     propietario ocurrieron antes, sin lock (§39.4). El núcleo durable
     (``_emitir_aprobacion_bajo_lock``) no se reimplementa ni se duplica: se
     invoca tal cual, con el witness y el CAS que P4-S4/P4-S5 ya congelaron.
+
+    ``timeout`` es **fail-fast a propósito** (0.0): si el root lock está tomado,
+    esto falla y no emite —fail-closed— en vez de atar el hilo del transporte a
+    una espera que el dueño del lock no controla. El llamador que prefiera
+    esperar pasa su propio valor; elegirlo acá sería decidir por un cableado que
+    todavía no existe (``HITL_PRODUCTIVE = NOT_WIRED``, §46.7).
     """
     _exigir_binding_completo(consentimiento)
     if not approval_module.EMISION_PRODUCTIVA_HABILITADA:

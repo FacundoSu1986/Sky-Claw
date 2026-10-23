@@ -9764,6 +9764,9 @@ SCOPE_IMMUTABLE                        = YES
 SESSION_BINDING                        = YES
 DECISION_INSTANT_IS_VERIFIED           = YES
 DECISION_INSTANT_IS_DURABLE            = NO    (declarado; §46.2.3)
+IDENTITY_VERIFICATION_INSTANT_IS_DURABLE = NO  (declarado; §46.11 — viaja en
+                                                  IdentidadPropietario y no se
+                                                  propaga al consentimiento)
 DURABLE_ISSUE                          = VERIFIED (núcleo P4-S4/S5 reusado, sin segundo ledger)
 REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root + digest;
                                                   carrera real de 8 hilos probada)
@@ -9922,3 +9925,56 @@ propietario, el núcleo exige los cinco campos antes de mirar el instante. Un
 consentimiento sin ninguno de los dos campos de identidad sigue siendo la fixture
 de tres cadenas que P4-S4/P4-S5 necesitan para ejercitar la autoridad durable sin
 superficie —eso no cambia—, pero ya no se puede tener *medio* binding.
+
+### 46.11 Tres observaciones del revisor que NO son defectos
+
+El mismo revisor dejó tres "focus areas" sobre `69f150be`. Se adjudican una por
+una porque **una adjudicación sin evidencia es otra opinión**.
+
+**1. `timeout: float = 0.0` en `emitir_aprobacion_autorizada` — es política, no
+defecto.** El revisor propone 5–10 s para que un holder que libera en milisegundos
+no haga fallar la adquisición. Es cierto que `0.0` falla en vez de esperar. Pero
+fallar acá es **fail-closed**: no se emite nada y el llamador decide la política
+de reintento, mientras que bloquear el hilo del webhook durante 10 s ata un
+recurso del transporte a una espera que el dueño del lock no controla. El
+parámetro existe justamente para que el llamador lo fije; fijarlo en el
+`owner_consent` sería decidir por el cableado que todavía no existe
+(`HITL_PRODUCTIVE = NOT_WIRED`). Queda documentado en el docstring y sin cambiar
+el default.
+
+**2. `threading.Lock` en `RegistroConsentimientos` — el primitivo es el correcto,
+y el escenario de bloqueo del loop no puede ocurrir.** El webhook es aiohttp
+(`sky_claw/app/comms/telegram.py`), o sea asyncio, y la GUI es NiceGUI: la
+observación tiene base real. Pero se resuelve con dos hechos verificados en el
+código:
+
+- La sección crítica **no contiene ningún `await`** (`responder`: `with
+  self._mutex:` abre en 652 y el `return` está en 677, sin suspensión en medio).
+  Un `threading.Lock` sostenido por una corrutina que nunca cede no puede bloquear
+  el loop más que una operación de diccionario.
+- Si el registro se toca desde **varios hilos** —que es lo que ejercita el test de
+  8 hilos con `Barrier`—, `asyncio.Lock` sería **incorrecto**: no es thread-safe y
+  no protege nada entre hilos. `threading.Lock` es el único de los dos que sirve
+  en los dos mundos.
+
+En un solo hilo no hay contención posible; en varios, `asyncio.Lock` no aplica. No
+se cambia.
+
+**3. `verificado_en_ns` no se propaga al consentimiento — cierto, y se declara.**
+`IdentidadPropietario.verificado_en_ns` marca cuándo el transporte probó la
+identidad; el consentimiento lleva `decided_at_ns`, que es la decisión. Son dos
+eventos distintos y el segundo no arrastra al primero. Propagarlo no aporta frente
+al atacante que importa —quien fabrica el consentimiento fabrica el instante, igual
+que fabrica el sujeto— y el ancla durable de *cuándo se verificó* es el log del
+transporte, que sí lo registra. Se declara con nombre y valor:
+
+```text
+IDENTITY_VERIFICATION_INSTANT_IS_DURABLE = NO
+```
+
+Que es la misma decisión, y el mismo motivo, que `DECISION_INSTANT_IS_DURABLE = NO`
+(§46.2.3) y `OWNER_REQUEST_ID_IS_DURABLE = NO`: los tres son datos que el
+consentimiento **no** lleva al witness porque agregarlos exigiría esquema v3 sin
+cerrar ninguna amenaza que el transporte no cierre ya. Los tres están escritos.
+Ninguno se presenta como implementado.
+
