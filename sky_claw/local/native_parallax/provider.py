@@ -22,7 +22,9 @@ Propiedades (cada una con su test, y las familias con su ancla que enumera):
   autoral con la misma ruta de salida, ruta inadmisible, vacío, demasiado grande, duplicado) no son errores de lectura y no la
   afectan.
 - **El autoral no se pisa y se compara como la salida.** Una normal se omite si en CUALQUIER carpeta del árbol hay una
-  ``*_p.dds`` con su misma ``clave_de_ruta`` (sin distinguir mayúsculas, que es como Windows y Skyrim resuelven el destino):
+  ``*_p.dds`` con su misma ``clave_de_ruta`` (de cualquier tipo de entrada: una carpeta o un enlace con ese nombre también
+  cuenta, porque puede ser el autoral de alguien y la salida lo taparía; sin distinguir mayúsculas, que es como Windows y Skyrim
+  resuelven el destino):
   ``Muros/x_n.dds`` y ``muros/x_p.dds`` son el mismo destino aunque un sistema que distingue mayúsculas los guarde en carpetas
   distintas. Se decide después del recorrido, así que el orden en que se visitaron las carpetas no cuenta.
 - **Acotado por el tamaño validado.** La huella se calcula en bloques y no lee más de un byte pasado el tamaño con el que se

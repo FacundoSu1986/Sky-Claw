@@ -218,6 +218,33 @@ def test_ya_tiene_parallax_una_normal_con_su_p_al_lado_no_se_pisa(raiz: pathlib.
     assert d.completo is True  # es una decisión de la política, no algo que no se pudo ver
 
 
+@pytest.mark.parametrize("tipo", ["carpeta", "symlink"])
+def test_ya_tiene_parallax_cualquier_entrada_llamada_p_cuenta_aunque_no_sea_un_archivo_regular(
+    tmp_path: pathlib.Path, raiz: pathlib.Path, tipo: str
+) -> None:
+    """Fail-closed por diseño: una carpeta o un enlace llamado ``x_p.dds`` puede ser el autoral de alguien (p. ej. un enlace a
+    su copia), y escribir la salida en esa ruta lo taparía; la normal se omite y la omisión lo dice. Es lo que ya hacía la
+    enumeración por carpeta (todos los nombres), ahora global. Se fija para que nadie lo «corrija» a favor de procesar
+    (Reviewer Guide, #784)."""
+    carpeta = raiz / "textures" / "a"
+    _tocar(carpeta / "x_n.dds")
+    if tipo == "carpeta":
+        (carpeta / "x_p.dds").mkdir()
+    else:
+        _tocar(tmp_path / "fuera" / "copia.dds")
+        _enlazar("symlink", tmp_path / "fuera" / "copia.dds", carpeta / "x_p.dds")
+    _tocar(carpeta / "y_n.dds")  # sin nada llamado y_p.dds: se procesa
+
+    d = descubrir_normales(raiz)
+
+    assert _origenes(d) == ["textures/a/y_n.dds"]
+    esperadas = [("textures/a/x_n.dds", M.YA_TIENE_PARALLAX)]
+    if tipo == "symlink":
+        esperadas.append(("textures/a/x_p.dds", M.ENLACE))  # el enlace en sí también se informa
+    assert _omitidas(d) == esperadas
+    assert d.completo is True
+
+
 def test_ya_tiene_parallax_una_p_en_otra_carpeta_que_solo_difiere_en_mayusculas_tambien_cuenta(
     raiz: pathlib.Path,
 ) -> None:

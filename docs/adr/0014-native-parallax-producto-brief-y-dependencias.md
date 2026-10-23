@@ -1204,7 +1204,8 @@ y sus tests, que son el contrato de comportamiento que este módulo iguala o mej
   fueran reales; los ancestros los elige el operador (MO2 puede vivir bajo un junction en otro disco, y `validar_raiz_de_salida` del escritor ya los
   acepta), a diferencia de lo de adentro, que puede ser ajeno. Un test lo ancla con symlink y con junction.
 - **El autoral no se pisa, y se compara como la salida.** Una normal se omite (`YA_TIENE_PARALLAX`) si en **cualquier** carpeta del árbol hay una
-  `*_p.dds` con su misma `clave_de_ruta` (sin distinguir mayúsculas, como resuelven el destino Windows y Skyrim), y no solo en su carpeta física:
+  `*_p.dds` con su misma `clave_de_ruta` (sin distinguir mayúsculas, como resuelven el destino Windows y Skyrim, y **de cualquier tipo de entrada**: una carpeta o un
+  enlace llamado así también cuenta, por fail-closed, porque puede ser el autoral de alguien; un test lo fija), y no solo en su carpeta física:
   `Muros/x_n.dds` y `muros/x_p.dds` son el mismo destino aunque un sistema que distingue mayúsculas los guarde aparte. Se decide **después** del
   recorrido (el orden en que se visitan las carpetas no cuenta) y es el mismo criterio con el que ya se detectan los duplicados. Consecuencia
   menor: una normal vacía, demasiado grande o de ruta inválida que además tenga su `_p` al lado se informa por ese motivo y no por `YA_TIENE_PARALLAX`
