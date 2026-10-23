@@ -1164,7 +1164,7 @@ porque el enlace se descarta antes; después de la segunda ronda, `_exigir_infor
 `_generar`: **23 de 23**); `lote.py` (`procesar_lote`, `_fase_de_calculo`) **30 de 30**; `validar_raiz_de_salida` **28 de 28**.
 
 **No verificado, por orden de importancia:** (1) **nada se ejecutó con el `texconv` real ni en Windows ni sobre NTFS desde el desarrollo**: la
-CI de Windows ejerce los tests con el doble, y `autoprueba` es la primera corrida real; (2) cómo muestra MO2 el mod de salida (no hay `meta.ini`
+CI de Windows ejerce los tests con el doble, y `autoprueba` es la primera corrida real *(hecha el 2026-10-23: ver «Primera corrida en un rig real»)*; (2) cómo muestra MO2 el mod de salida (no hay `meta.ini`
 ni se habilita solo); (3) que los parámetros por defecto (DirectX, escalas 1, bordes periódicos, min-max) den un relieve correcto en Skyrim:
 son los de la referencia sintética y nada se miró en el juego; (4) el comportamiento con texturas de 4096² (costo medido una vez en
 `integrar`, no en esta tubería).
@@ -1179,6 +1179,51 @@ el informe: el manifiesto no distingue una salida autoaceptada de una en revisi�
 **Qué falta de NP-A0.** (El `provider.py` endurecido se entregó después: ver «Actualización de NP-A0b».) El adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
 en el registro de tools, las superficies GUI y agente (con el `lifecycle` de la app), qué hacer con un lote incompleto, y saltear el cálculo de
 lo que la caché ya cubre.
+
+### Primera corrida en un rig real (2026-10-23)
+
+**Quién la ejecutó y qué es esta evidencia.** La corrió el agente asistente en la PC del propietario (Windows, con su MO2 de 91 mods), siguiendo la guía de
+operador de NP-A0a. **El Tech Lead no la ejecutó ni vio los archivos**: lo que sigue es lo que mostraron la consola y `informe_parallax.json`, pegados por el
+propietario. Los originales (`log_autoprueba.txt`, `log_generar.txt`, `informe_parallax.json`) están en su PC y no en el repo. El `texconv.exe` se bajó de la URL
+del pin (`TEXCONV_PIN_VIGENTE.origen`), pesó 966 480 bytes (el tamaño que declara el pin) y su huella SHA-256 coincidió con `dcfdec10…` por dos vías.
+
+**Qué se verificó, ejecutando (reportado):** (1) `autoprueba` terminó en `AUTOPRUEBA OK`: textura sintética de 128², `texconv` real, escritor y disco NTFS reales, BC4
+válido del lado esperado y manifiesto que describe la salida. (2) `generar --incluir-revision` sobre 8 `*_n.dds` reales (2048² y 1024²): **8 de 8 `ESCRITA`/`PUBLICADA`**,
+código de salida 0, cada `*_p.dds` es un BC4 del mismo lado que su normal, el manifiesto está en `.skyclaw-output/` y el informe registra `texconv may2026` con la
+huella del pin. `signo = +1` y `no_finitos = 0` en las ocho; el gate mandó las ocho a `REVIEW (SIN_UMBRALES)`, como debe sin umbrales validados. Esto cierra, para
+esas 8 texturas, el «nada se ejecutó con el `texconv` real ni sobre NTFS» de «Actualización de NP-A0a».
+
+| textura (en la normal) | acuerdo p95 (°) | residuo de integrabilidad | razón de costura |
+|---|---|---|---|
+| `mrkmetala01_n` (metal de Markarth) | 5,36 | 0,279 | 1,332 |
+| `farmhouse01_n` (madera de granjas) | 7,54 | 0,235 | 1,479 |
+| `stoneedgetrim01_n` (piedra) | 10,21 | 0,163 | 1,009 |
+| `AspenBark_n` (corteza) | 21,51 | 0,321 | 1,037 |
+| `blackreachsun01_n` (clutter de Blackreach) | 47,11 | 0,453 | 0,811 |
+| `dwarvenspidercenturion_n` (orgánico) | 49,22 | 0,410 | 0,981 |
+| `fallforestrocks01_n` (roca del Bosque Otoñal) | 65,25 | 0,433 | 1,029 |
+| `fallforestdirt01_n` (tierra del Bosque Otoñal) | 65,39 | 0,430 | 1,022 |
+
+**Cómo leerla, y qué NO concluir.**
+- **n = 8 y ningún veredicto visual.** Nada se miró en el juego: no se sabe si el relieve es correcto con los parámetros por defecto (DirectX, escalas 1, bordes
+  periódicos, min-max).
+- **La tabla no es un veredicto de calidad ni calibra umbrales.** Las métricas de solo-normal NO predijeron el riesgo en texturas reales en EXP-M2 (mejor AUC 0,62; ver el
+  docstring de `metrics.py`). Lo que sí se ve es coherente con su definición: el acuerdo empeora cuando el residuo de integrabilidad sube (0,16–0,32 ⇒ 5–22°; 0,41–0,45 ⇒
+  47–65°), es decir, las normales que menos se parecen a un gradiente de una altura. Los umbrales se derivan de un corpus con veredicto, nunca de 8 muestras (NP-Q0b/NP-X0).
+- **La coincidencia con Skyland es una hipótesis sin sostener.** Las dos peores (65°) tenían un `*_p.dds` autoral en `Skyland AIO Complex Parallax`, pero las otras dos «malas»
+  (47–49°) no lo tenían: son 2 casos de 4 y la herramienta nunca comparó contra la altura de Skyland (el acuerdo compara la normal de entrada con la que sale de la altura
+  integrada). Se puede probar fuera del repo comparando nuestra salida con la de Skyland en esas dos rutas; no se hizo.
+- **Costura:** `farmhouse01` (1,479) y `mrkmetala01` (1,332) superan 1 con bordes periódicos; son las candidatas a probar con `--bordes neumann`.
+
+**Lo que la corrida mostró del proceso** (cada punto es una corrección de la guía, ya aplicada en el mismo PR, o un requisito de diseño):
+(a) el generador no estaba en el `main` local del propietario (327 commits atrás): la guía ahora pide partir del código actual de `origin/main`; (b) `uv sync --extra dev` no hizo
+falta porque `numpy` y `Pillow` ya estaban: la guía lo dice como «solo si faltan»; (c) no había `texconv.exe` en la máquina: la guía ahora dice de dónde bajarlo y cómo
+comprobarlo; (d) el entorno del propietario tiene un `.pth` con una ruta muerta (`C:\Worktrees\Sky-Claw-586c`): `sky_claw` se resolvió desde el directorio actual, así que hay
+que correr los comandos desde la carpeta del repo; (e) **requisito de diseño para el adaptador de MO2 (NP-A0):** la herramienta solo ve los `*_p.dds` de la carpeta de entrada y no los
+de otros mods que MO2 resuelve por su sistema virtual de archivos; el orden de los mods decide qué `*_p.dds` gana, y el adaptador tiene que consultarlo antes de proponer una salida.
+
+**Qué sigue.** El veredicto visual del propietario, textura por textura, con el parámetro que corresponda al síntoma (relieve invertido ⇒ escalas −1; canal verde invertido ⇒
+`--convencion opengl`; costura ⇒ `--bordes neumann`; plano o con picos ⇒ percentiles); más texturas y un corpus con veredicto antes de proponer cualquier umbral.
 
 ### Actualización de NP-A0b (2026-10-23)
 
