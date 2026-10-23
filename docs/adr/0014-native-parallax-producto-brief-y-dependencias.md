@@ -1176,7 +1176,7 @@ tienen un `*_p.dds` al lado; la reemplaza `provider.py`. Con `--retirar-no-inclu
 satisfecha por el lock cross-process, pero las superficies son de NP-A0. (6) `escribir_revision` escribe salidas marcadas «sin validar» solo en
 el informe: el manifiesto no distingue una salida autoaceptada de una en revisión.
 
-**Qué falta de NP-A0.** El `provider.py` endurecido, el adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
+**Qué falta de NP-A0.** (El `provider.py` endurecido se entregó después: ver «Actualización de NP-A0b».) El adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
 en el registro de tools, las superficies GUI y agente (con el `lifecycle` de la app), qué hacer con un lote incompleto, y saltear el cálculo de
 lo que la caché ya cubre.
 
@@ -1199,10 +1199,16 @@ y sus tests, que son el contrato de comportamiento que este módulo iguala o mej
   vacío, demasiado grande, duplicado) no la afectan, y una entrada borrada a mitad del recorrido está ausente, no «no vista».
 - **Nunca sigue enlaces, pero acepta los ancestros de la raíz.** Un symlink o junction dentro del árbol se omite (`ENLACE`) sin entrar a su
   destino; una raíz o una `textures` que sea un enlace se rechaza (`RaizInvalidaError`). Todo se inspecciona con
-  `link_kind_and_identity_or_raise` (que lee el `reparse tag`: en Windows `DirEntry.is_dir(follow_symlinks=False)` acepta un junction) y cada carpeta
-  se **revalida después de abrirla**, como `iter_archivos_propios`. **Se aparta del brief en un punto:** el brief pedía que «la raíz y cada ancestro»
+  `link_kind_and_identity_or_raise` (que lee el `reparse tag`: en Windows `DirEntry.is_dir(follow_symlinks=False)` acepta un junction) y cada carpeta,
+  **la raíz incluida**, se revalida después de abrirla, como `iter_archivos_propios`. **Se aparta del brief en un punto:** el brief pedía que «la raíz y cada ancestro»
   fueran reales; los ancestros los elige el operador (MO2 puede vivir bajo un junction en otro disco, y `validar_raiz_de_salida` del escritor ya los
   acepta), a diferencia de lo de adentro, que puede ser ajeno. Un test lo ancla con symlink y con junction.
+- **El autoral no se pisa, y se compara como la salida.** Una normal se omite (`YA_TIENE_PARALLAX`) si en **cualquier** carpeta del árbol hay una
+  `*_p.dds` con su misma `clave_de_ruta` (sin distinguir mayúsculas, como resuelven el destino Windows y Skyrim), y no solo en su carpeta física:
+  `Muros/x_n.dds` y `muros/x_p.dds` son el mismo destino aunque un sistema que distingue mayúsculas los guarde aparte. Se decide **después** del
+  recorrido (el orden en que se visitan las carpetas no cuenta) y es el mismo criterio con el que ya se detectan los duplicados. Consecuencia
+  menor: una normal vacía, demasiado grande o de ruta inválida que además tenga su `_p` al lado se informa por ese motivo y no por `YA_TIENE_PARALLAX`
+  (se omite igual).
 - **No reutiliza `iter_archivos_propios`, y dice por qué.** Ese generador omite los enlaces en silencio y aborta todo el recorrido ante una carpeta
   ilegible; el proveedor necesita un motivo por cada omisión y tolerar una carpeta que falla. Conserva lo que sí le aporta: la revalidación tras abrir.
 - **Huella acotada por el tamaño validado, y solo de lo que sobrevive.** Se lee en bloques y nunca más de un byte pasado el tamaño con el que se
@@ -1241,7 +1247,22 @@ enlaces): es de solo lectura (a lo sumo se hashea el destino) y el lote vuelve a
 usa `O_NOFOLLOW` porque no existe en Windows. (2) La función es síncrona y puede tardar: se la corre con `asyncio.to_thread`. (3) La lectura acotada
 está duplicada con `lote._huella_acotada`; el cableado las unifica con un ancla que enumere. (4) Los nombres que Windows no admite (`:`, `|`…) no se
 fabrican en disco en los tests (en NTFS un `:` crea un flujo alternativo): la reacción a una ruta inválida se prueba sustituyendo el validador, y el
-validador real, con un nombre no ASCII.
+validador real, con un nombre no ASCII. (5) Una carpeta (o un ancestro) que otro proceso reemplace por un enlace **después** de revalidarla, mientras
+se inspecciona lo que hay adentro o antes de que se calcule la huella (que va tras el recorrido completo), no se detecta: las llamadas van por ruta y no
+por descriptor, y en Windows la biblioteca estándar no permite atar los hijos a la carpeta abierta (no hay `dir_fd`); revalidar al terminar cada carpeta
+solo achicaría la ventana. Exige otro proceso con permiso de escritura sobre la carpeta del operador y el efecto es de solo lectura. (6) Un archivo
+regular reemplazado por un FIFO entre su inspección y su lectura bloquearía el `open` (solo POSIX); lo que ya es un FIFO al recorrer se omite como
+`ILEGIBLE`.
+
+**Revisión de #784 (Codex y CodeRabbit), con el veredicto de cada hallazgo.** (a) *Codex, la raíz no se revalida tras abrirla:* **real**, un hermano en
+el mismo archivo (el docstring prometía «cada carpeta» y la raíz era la excepción); ahora se lista con la misma `_listar` y se rechaza con
+`RaizInvalidaError`. (b) *Codex, el autoral entre carpetas que solo difieren en mayúsculas:* **real**, el criterio de la salida es `clave_de_ruta` y el
+del autoral era la carpeta física; ahora es global (ver arriba). (c) *Codex, atar los hijos a la carpeta validada:* **no se corrige y queda como límite
+declarado (5)**: cerrarlo pide `dir_fd`, que Windows no tiene, y lo que se puede hacer (revalidar al terminar cada carpeta) no lo cierra, solo lo
+achica, a cambio de código que sugeriría una garantía que no existe. (d) *CodeRabbit, la lista «Qué falta de NP-A0» seguía nombrando a `provider.py`:*
+**real**, corregido. (e) *CodeRabbit, un FIFO entre el `lstat` y el `open`:* **no se corrige y queda como límite declarado (6)**: lo que ya es un FIFO
+se omite antes de abrirlo; la carrera exige un proceso con permiso de escritura que lo coloque, no existe en Windows (la plataforma de entrega) y la
+solución propuesta (`O_NONBLOCK`/`O_NOFOLLOW` y `fstat`) es de POSIX, cambia las anclas por AST y no la pude verificar en Windows.
 
 **Qué falta.** Cablear la CLI (y con ella el lote) a `provider.py` conservando los tests de la enumeración provisoria como contrato, y usar
 `completo` para decidir si `--retirar-no-incluidas` puede correr; unificar la lectura acotada con la del lote; el adaptador de MO2; la detección y el

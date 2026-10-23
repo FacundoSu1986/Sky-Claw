@@ -115,9 +115,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
   Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
-  `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Ocho
-  propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta después de
-  abrirla; **lo no observado no se da por ausente** (`Descubrimiento.completo` es `False` si hubo `CARPETA_ILEGIBLE` o `ILEGIBLE`: quien retira salidas
+  `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
+  propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
+  incluida, después de abrirla; un `*_p.dds` autoral no se pisa y se compara por `clave_de_ruta` en TODO el árbol, no por carpeta física; **lo no observado no se da por ausente** (`Descubrimiento.completo` es `False` si hubo `CARPETA_ILEGIBLE` o `ILEGIBLE`: quien retira salidas
   por «ya no figura» la necesita completa); la huella se lee acotada por el tamaño validado y solo de lo que sobrevive; un archivo que falla no aborta
   pero un exceso de entradas sí (nunca trunca); es determinista (orden por `clave_de_ruta`); el vocabulario de `MotivoDeOmision` está cerrado y clasificado
   por igualdad literal (un motivo nuevo obliga a decidir si deja lo no observado). `NormalDescubierta` cumple `lote.NormalAProcesar`. Todavía NO está

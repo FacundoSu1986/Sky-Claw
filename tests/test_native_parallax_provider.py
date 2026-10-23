@@ -218,6 +218,33 @@ def test_ya_tiene_parallax_una_normal_con_su_p_al_lado_no_se_pisa(raiz: pathlib.
     assert d.completo is True  # es una decisión de la política, no algo que no se pudo ver
 
 
+def test_ya_tiene_parallax_una_p_en_otra_carpeta_que_solo_difiere_en_mayusculas_tambien_cuenta(
+    raiz: pathlib.Path,
+) -> None:
+    """La salida no distingue mayúsculas (``clave_de_ruta``): ``Muros/x_n.dds`` y ``muros/x_p.dds`` son el MISMO destino en
+    Windows y en Skyrim. Mirar solo la carpeta física dejaría pisar el autoral en un sistema que sí distingue mayúsculas
+    (Codex, #784). Se prueba en las dos direcciones: el orden en que se recorren las carpetas no puede decidir el resultado."""
+    muros = raiz / "textures" / "Muros"
+    if not _distingue_mayusculas(raiz / "textures"):
+        pytest.skip("este sistema no distingue mayúsculas en los nombres")
+    (raiz / "textures" / "sonda_a").unlink()
+    (raiz / "textures" / "SONDA_A").unlink()
+    _tocar(muros / "x_n.dds")
+    _tocar(raiz / "textures" / "muros" / "x_p.dds", b"AUTORAL")  # la p está en la carpeta que se escribe distinto
+    _tocar(raiz / "textures" / "muros" / "y_n.dds")
+    _tocar(muros / "Y_P.DDS")  # y la inversa, y con el nombre del archivo también en otras mayúsculas
+    _tocar(muros / "z_n.dds")  # sin ninguna p en ninguna de las dos: se procesa
+
+    d = descubrir_normales(raiz)
+
+    assert _origenes(d) == ["textures/Muros/z_n.dds"]
+    assert _omitidas(d) == [
+        ("textures/Muros/x_n.dds", M.YA_TIENE_PARALLAX),
+        ("textures/muros/y_n.dds", M.YA_TIENE_PARALLAX),
+    ]
+    assert d.completo is True
+
+
 @pytest.mark.parametrize("tipo", ["symlink", "junction"])
 def test_enlace_un_enlace_a_un_archivo_o_a_una_carpeta_se_omite_y_no_se_sigue(
     tmp_path: pathlib.Path, raiz: pathlib.Path, tipo: str
@@ -595,6 +622,38 @@ def test_una_textures_que_desaparece_mientras_se_abre_la_raiz_se_rechaza(
 
     with pytest.raises(RaizInvalidaError, match="'textures' desapareció mientras se abría la raíz"):
         descubrir_normales(raiz)
+
+
+@pytest.mark.parametrize("cambio", ["ahora_es_un_enlace", "es_otra_carpeta"])
+def test_una_raiz_que_cambia_mientras_se_abre_se_rechaza(
+    raiz: pathlib.Path, monkeypatch: pytest.MonkeyPatch, cambio: str
+) -> None:
+    """La raíz se revalida DESPUÉS de abrirla, igual que cada carpeta que se recorre (Codex, #784): reemplazada por un
+    enlace entre su ``lstat`` y su ``scandir``, el escaneo seguiría el reemplazo y la identidad de ``textures`` se
+    tomaría del árbol de afuera."""
+    _tocar(raiz / "textures" / "a" / "alfa_n.dds")
+    real = provider.link_kind_and_identity_or_raise
+    veces = {"raiz": 0}
+
+    def inspeccionar(ruta: pathlib.Path) -> Any:
+        tipo, info = real(ruta)
+        if ruta != raiz or info is None:
+            return tipo, info
+        veces["raiz"] += 1
+        if veces["raiz"] < 2:  # la primera inspección es la previa a abrirla; la segunda, la de después
+            return tipo, info
+        if cambio == "ahora_es_un_enlace":
+            return "symlink", info
+        mutada = list(info)
+        mutada[1] = info.st_ino + 1
+        return None, os.stat_result(tuple(mutada))
+
+    monkeypatch.setattr(provider, "link_kind_and_identity_or_raise", inspeccionar)
+
+    with pytest.raises(RaizInvalidaError, match="no se pudo leer la carpeta.*cambió mientras se abría"):
+        descubrir_normales(raiz)
+
+    assert veces["raiz"] == 2
 
 
 def test_textures_que_es_un_archivo_se_rechaza(tmp_path: pathlib.Path) -> None:

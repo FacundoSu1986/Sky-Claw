@@ -13,13 +13,18 @@ Propiedades (cada una con su test, y las familias con su ancla que enumera):
 - **Nunca sigue enlaces.** Un symlink o un junction dentro del árbol se omite (``ENLACE``) sin entrar a su destino; una raíz
   o una carpeta ``textures`` que sea un enlace se rechaza. En Windows ``DirEntry.is_dir(follow_symlinks=False)`` acepta un
   junction, así que TODO se inspecciona con ``link_kind_and_identity_or_raise`` (que lee el ``reparse tag``), igual que en
-  ``iter_archivos_propios``. Cada carpeta se revalida DESPUÉS de abrirla: una carpeta reemplazada por un enlace entre su
-  ``lstat`` y su ``scandir`` haría entrar al árbol de afuera. Los ANCESTROS de la raíz sí se aceptan: los elige el operador
+  ``iter_archivos_propios``. Cada carpeta, la raíz incluida, se revalida DESPUÉS de abrirla: una carpeta reemplazada por un
+  enlace entre su ``lstat`` y su ``scandir`` haría entrar al árbol de afuera. Los ANCESTROS de la raíz sí se aceptan: los elige el operador
   (MO2 puede vivir bajo un junction en otro disco), a diferencia de lo que hay adentro, que puede ser ajeno.
 - **Lo no observado no se da por ausente.** Una carpeta que no se pudo listar o un archivo que no se pudo inspeccionar ni leer
   quedan como omisiones (``CARPETA_ILEGIBLE``, ``ILEGIBLE``) y dejan ``completo=False``: quien retira salidas por «ya no
   figura» (el lote, con ``--retirar-no-incluidas``) la necesita completa. Las omisiones deliberadas (enlace, un ``*_p.dds``
-  autoral al lado, ruta inadmisible, vacío, demasiado grande, duplicado) no son errores de lectura y no la afectan.
+  autoral con la misma ruta de salida, ruta inadmisible, vacío, demasiado grande, duplicado) no son errores de lectura y no la
+  afectan.
+- **El autoral no se pisa y se compara como la salida.** Una normal se omite si en CUALQUIER carpeta del árbol hay una
+  ``*_p.dds`` con su misma ``clave_de_ruta`` (sin distinguir mayúsculas, que es como Windows y Skyrim resuelven el destino):
+  ``Muros/x_n.dds`` y ``muros/x_p.dds`` son el mismo destino aunque un sistema que distingue mayúsculas los guarde en carpetas
+  distintas. Se decide después del recorrido, así que el orden en que se visitaron las carpetas no cuenta.
 - **Acotado por el tamaño validado.** La huella se calcula en bloques y no lee más de un byte pasado el tamaño con el que se
   validó el archivo; si el archivo crece o se achica mientras se lee, queda ``ILEGIBLE``. Solo se hashea lo que SOBREVIVE a los
   demás filtros y a la detección de duplicados (hashear lo que se va a omitir sería leerlo, hasta 1 GiB, para nada).
@@ -36,6 +41,15 @@ Límites declarados:
   enlaces). Es de solo lectura (a lo sumo se hashea el destino) y el lote vuelve a inspeccionar el origen, antes y después de
   decodificarlo, con su propia huella; no se cierra con ``O_NOFOLLOW`` porque no existe en Windows y no pude verificar acá una
   alternativa.
+- Lo mismo vale para una carpeta (o un ancestro) que otro proceso reemplace por un enlace DESPUÉS de revalidarla, mientras se
+  inspecciona lo que hay adentro o antes de que se calcule la huella, que ocurre tras el recorrido completo: las llamadas van
+  por ruta y no por descriptor, y la biblioteca estándar no permite atar los hijos a la carpeta abierta en Windows (no hay
+  ``dir_fd``). Revalidar al terminar cada carpeta solo achicaría la ventana, no la cierra. Exige otro proceso con permiso de
+  escritura sobre la carpeta del operador mientras corre, y el efecto es el de arriba (de solo lectura).
+- Un archivo regular que se reemplace por un FIFO entre su inspección y su lectura bloquearía el ``open`` (solo POSIX; en
+  Windows no existen). Lo que YA es un FIFO (o cualquier cosa que no sea un archivo regular) al recorrer se omite como
+  ``ILEGIBLE`` antes de abrirlo. Cerrar la ventana pide ``O_NONBLOCK``/``fstat`` sobre el descriptor, que no pude verificar en
+  Windows.
 - La huella se lee en el hilo que llama: es una función SÍNCRONA y puede tardar (lee todo lo que va a procesar el lote). Quien
   la use desde código ``async`` la corre con ``asyncio.to_thread``.
 - La lectura acotada está hoy duplicada con ``lote._huella_acotada`` (el lote la hace antes y después de decodificar); el
@@ -117,7 +131,7 @@ class LimiteInvalidoError(ProveedorError, ValueError):
 class MotivoDeOmision(Enum):
     """Por qué una textura (o una carpeta) quedó fuera. Vocabulario CERRADO: cada miembro tiene su caso en los tests."""
 
-    #: Existe ``<nombre>_p.dds`` en la misma carpeta (puede ser autoral): nunca se pisa.
+    #: Existe una ``*_p.dds`` con la misma ruta de salida, sin distinguir mayúsculas y en cualquier carpeta (puede ser autoral).
     YA_TIENE_PARALLAX = auto()
     #: Symlink o junction (archivo o carpeta): no se sigue.
     ENLACE = auto()
@@ -191,10 +205,10 @@ def _resolver_textures(raiz: pathlib.Path) -> tuple[pathlib.Path, str, os.stat_r
     if not stat.S_ISDIR(identidad.st_mode):
         raise RaizInvalidaError(f"la raíz no es una carpeta: {absoluta}")
     try:
-        with os.scandir(absoluta) as entradas:
-            nombres = sorted(entrada.name for entrada in entradas if entrada.name.casefold() == _NOMBRE_DE_TEXTURES)
+        entradas = _listar(absoluta, identidad)
     except OSError as exc:
         raise RaizInvalidaError(f"no se pudo leer la carpeta {absoluta}: {exc}") from exc
+    nombres = sorted(entrada.name for entrada in entradas if entrada.name.casefold() == _NOMBRE_DE_TEXTURES)
     if not nombres:
         raise RaizInvalidaError(f"la raíz debe tener una subcarpeta '{_NOMBRE_DE_TEXTURES}': {absoluta}")
     if len(nombres) > 1:
@@ -238,6 +252,8 @@ class _Acumulador:
         self._maximo = maximo_de_archivos
         self.candidatas: list[_Candidata] = []
         self.omitidas: list[Omitida] = []
+        #: ``clave_de_ruta`` de CADA ``*_p.dds`` del árbol (de cualquier tipo de entrada): puede ser autoral y no se pisa.
+        self.claves_de_parallax: set[str] = set()
 
     def _contar(self) -> None:
         if len(self.candidatas) + len(self.omitidas) > self._maximo:
@@ -269,7 +285,6 @@ def _listar(carpeta: pathlib.Path, identidad_antes: os.stat_result) -> list[os.D
 def _examinar(
     entrada: os.DirEntry[str],
     relativa_de_carpeta: str,
-    hermanos: set[str],
     pendientes: list[tuple[pathlib.Path, str, os.stat_result]],
     acumulador: _Acumulador,
 ) -> None:
@@ -295,12 +310,7 @@ def _examinar(
         acumulador.omitir(relativa, MotivoDeOmision.ILEGIBLE, "no es un archivo regular")
         return
     tamano = identidad.st_size
-    base = nombre[: -len(_SUFIJO_DE_ENTRADA)]
-    if (base + _SUFIJO_DE_SALIDA).casefold() in hermanos:
-        acumulador.omitir(
-            relativa, MotivoDeOmision.YA_TIENE_PARALLAX, f"ya hay un {_SUFIJO_DE_SALIDA} al lado (puede ser autoral)"
-        )
-    elif tamano == 0:
+    if tamano == 0:
         acumulador.omitir(relativa, MotivoDeOmision.ARCHIVO_VACIO, "el archivo está vacío")
     elif tamano > TAMANO_MAXIMO_DEL_ARCHIVO:
         acumulador.omitir(
@@ -330,9 +340,10 @@ def _recorrer(
                 relativa_de_carpeta, MotivoDeOmision.CARPETA_ILEGIBLE, f"no se pudo leer la carpeta ({exc})"
             )
             continue
-        hermanos = {entrada.name.casefold() for entrada in contenido}
         for entrada in contenido:
-            _examinar(entrada, relativa_de_carpeta, hermanos, pendientes, acumulador)
+            if entrada.name.casefold().endswith(_SUFIJO_DE_SALIDA):
+                acumulador.claves_de_parallax.add(clave_de_ruta(f"{relativa_de_carpeta}/{entrada.name}"))
+            _examinar(entrada, relativa_de_carpeta, pendientes, acumulador)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +377,29 @@ def _huella_acotada(ruta: pathlib.Path, tamano_esperado: int) -> str:
 
 def _es_completo(omitidas: tuple[Omitida, ...]) -> bool:
     return not any(omitida.motivo in MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO for omitida in omitidas)
+
+
+def _sin_parallax_autoral(
+    candidatas: list[_Candidata], claves_de_parallax: set[str], omitidas: list[Omitida]
+) -> list[_Candidata]:
+    """Las candidatas cuya salida no existe ya en el árbol, comparando como la salida (``clave_de_ruta``) y no por carpeta física.
+
+    Es global y se decide DESPUÉS del recorrido: ``Muros/x_n.dds`` y ``muros/x_p.dds`` son el mismo destino aunque el sistema
+    de archivos los guarde en carpetas distintas, y el orden en que se visitaron no puede decidir el resultado.
+    """
+    sobreviven: list[_Candidata] = []
+    for candidata in candidatas:
+        if clave_de_ruta(candidata.ruta_de_salida) in claves_de_parallax:
+            omitidas.append(
+                Omitida(
+                    candidata.ruta_de_origen,
+                    MotivoDeOmision.YA_TIENE_PARALLAX,
+                    f"ya hay un {_SUFIJO_DE_SALIDA} con esa ruta de salida (puede ser autoral)",
+                )
+            )
+        else:
+            sobreviven.append(candidata)
+    return sobreviven
 
 
 def _sin_duplicadas(candidatas: list[_Candidata], omitidas: list[Omitida]) -> list[_Candidata]:
@@ -404,7 +438,8 @@ def descubrir_normales(
     acumulador = _Acumulador(maximo)
     _recorrer(textures, nombre_de_textures, identidad_de_textures, acumulador)
     omitidas = acumulador.omitidas
-    sobreviven = _sin_duplicadas(acumulador.candidatas, omitidas)
+    sin_autoral = _sin_parallax_autoral(acumulador.candidatas, acumulador.claves_de_parallax, omitidas)
+    sobreviven = _sin_duplicadas(sin_autoral, omitidas)
     normales: list[NormalDescubierta] = []
     for candidata in sorted(sobreviven, key=lambda c: (clave_de_ruta(c.ruta_de_salida), c.ruta_de_salida)):
         try:
