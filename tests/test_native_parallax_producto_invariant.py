@@ -55,6 +55,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "metrics.py",
         "output.py",
         "output_writer.py",
+        "provider.py",
     }
 )
 # Los únicos módulos donde se importa numpy DENTRO de una función (perezoso): ``_extra`` es el punto único para
