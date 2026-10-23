@@ -609,6 +609,47 @@ def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert viejos_uv == {}, f"uv.lock tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos_uv}"
 
 
+def test_brotli_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """brotli debe mantener el piso seguro >=1.2.1 ante PYSEC-2026-4322 (``pip-audit --strict`` sobre 1.2.0).
+
+    brotli llega por ``py7zr`` (solo en CPython; en PyPy lo reemplaza ``brotlicffi``), así que sin el piso en
+    ``pyproject.toml`` un ``pip install -e .`` sobre un entorno existente queda satisfecho por la 1.2.0 vulnerable aunque
+    los locks ya estén subidos. Se verifican los TRES locks que lo pinean, igual que certifi.
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("1.2.1")
+    vulnerable = Version("1.2.0")
+
+    # 1. pyproject.toml: igualdad exacta del rango (como anyio y multidict) y el marcador que lo limita a CPython
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "brotli"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un brotli en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert req.specifier == SpecifierSet(">=1.2.1,<2"), f"rango de brotli inesperado: {req.specifier}"
+    assert not req.specifier.contains(vulnerable), f"el rango de brotli admite la versión vulnerable: {req}"
+    assert req.marker is not None and req.marker.evaluate({"platform_python_implementation": "CPython"})
+    assert not req.marker.evaluate({"platform_python_implementation": "PyPy"}), (
+        "brotli no puede exigirse en PyPy: py7zr usa brotlicffi ahí"
+    )
+
+    # 2. los dos requirements*.lock
+    for nombre in ("requirements.lock", "requirements-native-parallax.lock"):
+        pines = _versiones_pineadas((REPO_ROOT / nombre).read_text(encoding="utf-8"))
+        assert "brotli" in pines, f"brotli no está pineado en {nombre}"
+        assert Version(pines["brotli"]) >= piso_minimo, f"{nombre} tiene brotli {pines['brotli']} < {piso_minimo}"
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_brotli = [p for p in uv_data.get("package", []) if p.get("name") == "brotli"]
+    assert len(paquetes_brotli) == 1, f"se esperaba 1 paquete brotli en uv.lock, hay {len(paquetes_brotli)}"
+    version_uv = Version(paquetes_brotli[0]["version"])
+    assert version_uv >= piso_minimo, f"uv.lock tiene brotli {version_uv} < {piso_minimo}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 
