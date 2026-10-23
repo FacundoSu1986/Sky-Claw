@@ -609,6 +609,77 @@ def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert viejos_uv == {}, f"uv.lock tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos_uv}"
 
 
+#: Los dos respaldos de Brotli que ``py7zr`` elige según el intérprete: paquete -> (piso, versión vulnerable, implementación en
+#: la que se usa, aviso). Son hermanos: ambos empaquetan el mismo decodificador de referencia y cada uno tiene su propio aviso.
+_RESPALDOS_DE_BROTLI = {
+    "brotli": ("1.2.1", "1.2.0", "CPython", "PYSEC-2026-4322"),
+    "brotlicffi": ("1.2.1.0", "1.2.0.1", "PyPy", "PYSEC-2026-4323"),
+}
+
+
+def test_brotli_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """Los DOS respaldos de Brotli deben mantener su piso seguro: ``brotli`` >=1.2.1 (PYSEC-2026-4322) y ``brotlicffi``
+    >=1.2.1.0 (PYSEC-2026-4323).
+
+    ``py7zr`` pide ``brotli`` en CPython y ``brotlicffi`` en PyPy. Sin el piso en ``pyproject.toml``, un ``pip install -e .``
+    sobre un entorno existente queda satisfecho por la versión vulnerable aunque los locks ya estén subidos, y subir solo uno
+    de los dos respaldos dejaría el otro camino vulnerable (Codex, #785). Se enumeran TODOS los respaldos que ``py7zr``
+    declara en ``uv.lock`` y los TRES locks.
+    """
+    from packaging.version import Version
+
+    # 0. el conjunto de respaldos que py7zr puede elegir es exactamente el que este test cubre
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    py7zr = [p for p in uv_data.get("package", []) if p.get("name") == "py7zr"]
+    assert len(py7zr) == 1, f"se esperaba 1 paquete py7zr en uv.lock, hay {len(py7zr)}"
+    respaldos_de_py7zr = {d["name"] for d in py7zr[0].get("dependencies", []) if d["name"].startswith("brotli")}
+    assert respaldos_de_py7zr == set(_RESPALDOS_DE_BROTLI), (
+        f"py7zr declara otros respaldos de Brotli: {respaldos_de_py7zr}"
+    )
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    pines_por_lock = {
+        nombre: _versiones_pineadas((REPO_ROOT / nombre).read_text(encoding="utf-8"))
+        for nombre in ("requirements.lock", "requirements-native-parallax.lock")
+    }
+
+    for paquete, (piso, vulnerable, implementacion, aviso) in _RESPALDOS_DE_BROTLI.items():
+        piso_minimo = Version(piso)
+        otra = "PyPy" if implementacion == "CPython" else "CPython"
+
+        # 1. pyproject.toml: igualdad exacta del rango (como anyio y multidict) y el marcador que lo limita a su intérprete
+        candidatos = [d for d in runtime_deps if d.name == paquete]
+        assert len(candidatos) == 1, f"se esperaba exactamente un {paquete} en runtime, hay {candidatos}"
+        req = candidatos[0]
+        assert req.specifier == SpecifierSet(f">={piso},<2"), f"rango de {paquete} inesperado: {req.specifier}"
+        assert not req.specifier.contains(Version(vulnerable)), (
+            f"el rango de {paquete} admite {vulnerable} ({aviso}): {req}"
+        )
+        assert req.marker is not None and req.marker.evaluate({"platform_python_implementation": implementacion})
+        assert not req.marker.evaluate({"platform_python_implementation": otra}), (
+            f"{paquete} no puede exigirse en {otra}: py7zr usa el otro respaldo ahí"
+        )
+
+        # 2. los dos requirements*.lock (se generan para CPython): el respaldo de CPython tiene que estar y el otro no se
+        #    instala, pero si apareciera tiene que estar por encima del piso
+        for nombre, pines in pines_por_lock.items():
+            if implementacion == "CPython":
+                assert paquete in pines, f"{paquete} no está pineado en {nombre}"
+            if paquete in pines:
+                assert Version(pines[paquete]) >= piso_minimo, (
+                    f"{nombre} tiene {paquete} {pines[paquete]} < {piso_minimo}"
+                )
+
+        # 3. uv.lock (resuelve todos los marcadores): el respaldo tiene que estar, una sola vez, por encima del piso
+        paquetes_uv = [p for p in uv_data.get("package", []) if p.get("name") == paquete]
+        assert len(paquetes_uv) == 1, f"se esperaba 1 paquete {paquete} en uv.lock, hay {len(paquetes_uv)}"
+        version_uv = Version(paquetes_uv[0]["version"])
+        assert version_uv >= piso_minimo, f"uv.lock tiene {paquete} {version_uv} < {piso_minimo}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 

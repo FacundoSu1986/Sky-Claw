@@ -1,10 +1,18 @@
 name: Sky-Claw CI/CD
 
 on:
+  # Solo main/master en push: las ramas feat/fix/etc. con PR disparaban la matriz
+  # completa dos veces (push + pull_request) porque concurrency usa github.ref
+  # (refs/heads vs refs/pull/N/merge) y no se cancelan entre sí. Con 2 Pythons
+  # eso eran 4 jobs Windows de ~35-40 min compitiendo por runners y cancelándose
+  # por timeout. El control que importa (incluido el revisor adversarial) corre
+  # en pull_request. Ramas sin PR no corren CI hasta abrir el PR.
   push:
-    branches: [main, master, "feature/**", "feat/**", "claude/**", "copilot/**", "fix/**", "hotfix/**"]
-  pull_request:
     branches: [main, master]
+  # pull_request sin filtro de branches: corre en todo PR, incluyendo stacked
+  # (base = feature branch). Como push ya no dispara en feature, no hay
+  # duplicación. Cubre el caso señalado en revisión (PR a feature sin CI).
+  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +27,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Gate 1: Code Quality ─────────────────────────────
+  # ── Gate 1: Code Quality ─────────────────────────────────────
   lint:
     name: "🔍 Lint (Ruff) / py${{ matrix.python-version }}"
     runs-on: windows-latest
@@ -44,7 +52,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check sky_claw/ scripts/ tests/
 
-  # ── Gate 2: Type Safety ──────────────────────────────
+  # ── Gate 2: Type Safety ───────────────────────────────────────
   typecheck:
     name: "🏷️ Type Check (Mypy) / py${{ matrix.python-version }}"
     runs-on: windows-latest
@@ -64,7 +72,7 @@ jobs:
       - name: Mypy check
         run: python -m mypy sky_claw/ scripts/ --ignore-missing-imports --no-error-summary
 
-  # ── Gate 3: Test Suite ───────────────────────────────
+  # ── Gate 3: Test Suite ───────────────────────────────────────
   test:
     name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
@@ -77,8 +85,14 @@ jobs:
     # 1829-2322 s y varia segun el runner en las dos versiones (py3.11: 1829 y
     # 2322 s; py3.12: 1852 y 2165 s), y el job suma ~80 s de preparacion. En #779 y
     # #780 el job de py3.11 se cancelo al tocar el limite con el paso de tests ya
-    # devuelto en 0. 60 min deja el peor caso observado al ~67 %.
-    timeout-minutes: 60
+    # devuelto en 0.
+    # 2026-10-22 (reconciliacion de #778 sobre main): se conservan 70 min, el mayor
+    # de los dos valores propuestos, porque las dos mediciones anteriores se tomaron
+    # CON la duplicacion push+PR todavia activa (4 jobs Windows compitiendo). Al
+    # restringir push a main/master la contencion baja y los tiempos deberian
+    # mejorar, no empeorar; 70 min deja el peor caso medido (~40 min) al ~57 %.
+    # Bajar el limite ahora seria reintroducir un valor inferior al ya justificado.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -129,7 +143,7 @@ jobs:
             tests/test_dyndolod_uia_preflight.py::test_el_modulo_no_importa_nada_de_windows \
             tests/test_frozen_runtime_p4_root_lock.py
 
-  # ── Gate 4: Security ─────────────────────────────────
+  # ── Gate 4: Security ────────────────────────────────────────────
   security:
     name: "🛡️ Security Scan"
     runs-on: windows-latest
@@ -219,7 +233,7 @@ jobs:
             exit 1
           fi
 
-  # ── Gate 5: Build ────────────────────────────────────
+  # ── Gate 5: Build ──────────────────────────────────────────────
   build:
     name: "📦 Build"
     needs: [lint-summary, typecheck-summary, test-summary, security]

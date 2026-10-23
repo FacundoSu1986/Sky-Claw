@@ -89,6 +89,31 @@ La política clean-room, `docs/design/research/native-parallax/` y
   sea nuestro, y rechazar antes de tocar nada el lote cuya `cota_del_manifiesto_tras_un_corte` no quepa): ver ADR 0014,
   "Actualización de NP-O0b1". La propiedad de la papelera es una sola para el camino sin corte y para la recuperación: lo apartado que
   no es lo autorizado vuelve a su ruta si está vacía y no se borra nunca; arreglar uno sin el otro es el defecto del hermano.
+- `output_writer.py` (NP-O0b2) es el **único** módulo que toca el mod de salida y cumple ese protocolo. Todo cambio al mod pasa por una
+  `SesionDeSalida` (`abrir_sesion_de_salida`: toma el lock cross-process, recupera y recién ahí deja planificar y aplicar); no hay otra puerta, y
+  el ancla `tests/test_native_parallax_output_writer.py` lo enumera por AST: una función nueva que toque el disco, o una que nombre una unidad
+  que escribe fuera de la sesión, rompe el test a propósito (decidí si participa del lock). Una ruta cuyo disco cambió entre planificar y aplicar
+  no levanta: queda `CONFLICTO` y no se pisa. Los puntos de corte (`_punto_de_corte`) están congelados y el test corta el proceso en cada uno;
+  agregar uno sin cubrirlo rompe el ancla. Cuatro propiedades más, de la revisión de #782 y con su ancla en el mismo archivo: toda carpeta que
+  crea dentro del mod, de salida o de control, pasa por `_crear_carpeta_contenida` (contención antes y después; al abrir se rechaza una
+  `staging/` o `trash/` que sea un enlace o un junction); todo borrado de la papelera rehace la huella en ese instante
+  (`_borrar_si_es_el_autorizado`) y no poder borrar no aborta el lote; todo lo que corre en un hilo pasa por `_en_hilo`, que no suelta el lock
+  hasta que el hilo termina aunque cancelen la tarea; y toda ortografía de la misma carpeta física compite por un solo lock (`realpath`). Un
+  lote interrumpido después de escribir su intención inutiliza la sesión hasta reabrirla. Lo que queda en la papelera no se borra solo y se
+  avisa en toda apertura (`_avisar_de_sobrantes`); el tope de 1 GiB por archivo es uno solo (`output.TAMANO_MAXIMO_DEL_ARCHIVO`). No crea
+  `meta.ini` ni habilita el mod (es de NP-A0).
+  Ver ADR 0014, "Actualización de NP-O0b2".
+- `lote.py` y `cli.py` (NP-A0a) arman la tubería completa sobre las piezas de arriba (leer → integrar → medir → gate → exportar → escritor) y NO
+  agregan matemática: componen. Cuatro propiedades, con su ancla en `tests/test_native_parallax_lote.py` y `tests/test_native_parallax_cli.py`:
+  el lote es de DOS FASES (se calcula todo sin tocar la salida y recién después se abre UNA sesión del escritor, se planifica y se aplica); el gate
+  sigue siendo fail-closed y la política es explícita (una salida en `REVIEW` no se escribe salvo `escribir_revision`, que NO entra a la clave
+  de caché); la procedencia es la de lo que corrió (huella de la normal antes y después de decodificar, encoder que DEVOLVIÓ el exportador, parámetros
+  que cambian los bytes) y `bordes`/`escala_x`/`escala_y` viajan IGUALES a `integrar` y a cada métrica; las salidas de corridas anteriores se
+  conservan salvo `retirar_no_incluidas` (que exige una enumeración COMPLETA: lo no visto no se da por ausente). La raíz de salida se valida
+  ANTES de procesar nada (`validar_raiz_de_salida`), y el informe nunca se escribe dentro del mod. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La enumeración de la
+  carpeta de `cli.py` es PROVISORIA (la reemplaza `provider.py`); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
+  `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
+  Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
 
 ## Verificación segura
 

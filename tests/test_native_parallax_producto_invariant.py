@@ -40,6 +40,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "_extra.py",
         "bench/__init__.py",
         "bench/sintetico.py",
+        "cli.py",
         "decode.py",
         "espectral.py",
         "experiments/__init__.py",
@@ -49,8 +50,10 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "export.py",
         "gates.py",
         "integrate.py",
+        "lote.py",
         "metrics.py",
         "output.py",
+        "output_writer.py",
     }
 )
 # Los únicos módulos donde se importa numpy DENTRO de una función (perezoso): ``_extra`` es el punto único para
