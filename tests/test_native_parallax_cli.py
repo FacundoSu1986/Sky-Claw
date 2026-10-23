@@ -427,6 +427,30 @@ def test_la_autoprueba_falla_si_la_salida_no_es_un_bc4_valido(tmp_path: pathlib.
     assert "BC4" in salida.getvalue()
 
 
+def test_sin_base_de_estado_la_cli_coordina_en_la_base_durable_por_usuario_y_no_en_el_cwd(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El lock cross-process solo excluye a la app y a la CLI si las dos lo toman en la MISMA base (la durable)."""
+    from sky_claw.config import SystemPaths
+
+    estado = tmp_path / "estado_durable"
+    otro_cwd = tmp_path / "otro_cwd"
+    otro_cwd.mkdir()
+    monkeypatch.setattr(SystemPaths, "runtime_state_dir", classmethod(lambda cls: estado))
+    monkeypatch.chdir(otro_cwd)
+
+    codigo = main(
+        ["autoprueba", "--informe", str(tmp_path / "i.json")],
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(),
+        salida=io.StringIO(),
+    )
+
+    assert codigo == CODIGO_OK
+    assert (estado / "native_parallax_output").is_dir()
+    assert list(otro_cwd.iterdir()) == []
+
+
 def test_el_png_de_la_autoprueba_es_un_png_valido_con_los_pixeles_pedidos(tmp_path: pathlib.Path) -> None:
     ruta = tmp_path / "prueba.png"
 
