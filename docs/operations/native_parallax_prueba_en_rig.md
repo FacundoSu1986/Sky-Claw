@@ -28,12 +28,18 @@
 
 ## Preparación (una sola vez)
 
-1. Windows, con el repo y su entorno: en la carpeta del repo, `uv sync --extra dev` (instala numpy y Pillow).
-2. El `texconv.exe` oficial **fijado por el proyecto** (DirectXTex, versión `may2026`). La herramienta verifica su huella
-   SHA-256 y se niega a correr con cualquier otro. Para comprobarla vos:
+1. Windows, con el repo **al día**: el comando vive en `main` desde el PR #783, y una copia vieja del repo da
+   `No module named sky_claw.local.native_parallax.cli`. Hacé `git fetch origin` y trabajá desde una copia de `origin/main` (lo más
+   seguro es una carpeta aparte, por ejemplo `git worktree add .worktrees\rig -b rig/prueba origin/main`, para no mover tu copia de trabajo).
+   Corré todos los comandos **desde la carpeta de esa copia**.
+2. El entorno: `uv sync --extra dev` (instala numpy y Pillow). Solo hace falta si faltan: si `.venv\Scripts\python -c "import numpy, PIL"`
+   no da error, ya están.
+3. El `texconv.exe` oficial **fijado por el proyecto** (DirectXTex, versión `may2026`). Bajalo de
+   `https://github.com/microsoft/DirectXTex/releases/download/may2026/texconv.exe` (es el origen que fija el proyecto: `TEXCONV_PIN_VIGENTE`
+   en `export.py`; pesa 966 480 bytes). La herramienta verifica su huella SHA-256 y se niega a correr con cualquier otro. Para comprobarla vos:
    `certutil -hashfile C:\ruta\a\texconv.exe SHA256` (con la ruta completa del archivo que vas a usar) tiene que dar
    `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`.
-3. Decile dónde está (en la misma ventana de consola, antes de los comandos):
+4. Decile dónde está (en la misma ventana de consola, antes de los comandos):
    `set SKYCLAW_TEXCONV_EXE=C:\ruta\a\texconv.exe`
 
 En los comandos de abajo, `python` es `.venv\Scripts\python` (desde la carpeta del repo).
