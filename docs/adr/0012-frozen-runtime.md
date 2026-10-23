@@ -9786,18 +9786,37 @@ MERGED                                 = NO
   (eran 56; +9 con la ronda de Codex, uno de ellos la carrera real de 8 hilos).
 - `P4-S4 + P4-S5 + P4-S6`: **184 passed**, 0 fallos.
 - `P4-S1/S2/S3` (root lock, wiring del participante, journal durable, huérfanas):
-  **203 passed**, 2 skipped, **1 fallo de baseline**.
-- Total P4 sobre el árbol integrado (7 archivos): **387 passed**, 2 skipped, 1
-  fallo de baseline. El fallo es
-  `test_f06_inspect_applies_anti_reparse_admission_boundary`, que falla en esta
-  máquina **también en el baseline** (`9fe88cb4`): crear un symlink de archivo sin
-  privilegio no produce reparse ⇒ el guard no tiene nada que rechazar.
-  `OUT_OF_SCOPE` verificado por reproducción, no por razonamiento.
-- **Integración sin mover refs.** `git merge-tree --write-tree origin/main HEAD`
-  predijo el árbol `d4488a01`; el `merge --no-ff` real (`fb3e0142`, padres
-  `74028635` + `18775fd0`) produjo **ese mismo árbol**. Como el árbol del merge
-  real coincide con el sintético, la evidencia local aplica al merge, y sobre el
-  árbol mergeado se corrieron las tres tandas. Sin rebase y sin force push.
+  **202 passed**, 2 skipped, **2 fallos** — los dos clasificados, ninguno de esta
+  slice, que **no toca** `root_lock.py` ni `durable_journal.py` (0 archivos en el
+  diff).
+  - `test_f06_inspect_applies_anti_reparse_admission_boundary`: falla en esta
+    máquina **también en el baseline** (`9fe88cb4`). Crear un symlink de archivo
+    sin privilegio no produce reparse ⇒ el guard no tiene nada que rechazar.
+    `OUT_OF_SCOPE` **verificado por reproducción**, no por razonamiento.
+  - `test_f10_tip_de_otra_generation_no_prueba_el_clone_activo`: murió con
+    `Blocked by Security Center rules: write …\state\frozen-runtime.lock` ⇒
+    `UNKNOWN != OWNED`, que es el sandbox del entorno, no el código. Pasa aislado
+    con basetemp limpio (`1 passed` en 1.93 s). Residuo de carga, no regresión.
+- Total P4 sobre el árbol integrado: **386 passed**, 2 skipped, 2 fallos (uno de
+  baseline, uno de sandbox). Se reportan los dos en vez de restar el segundo: un
+  número que no reproduce es decoración, y el que reproduce aislado igual hay que
+  declararlo.
+- **Integración sin mover refs, revalidada dos veces.** La primera contra
+  `18775fd0`: `merge-tree` predijo `d4488a01` y el merge real (`fb3e0142`, padres
+  `74028635` + `18775fd0`) reprodujo ese árbol. Después `main` avanzó a
+  `bb663d51` (#775, #778, #782, #783 y el bump de brotli de #785) y la evidencia
+  quedó vieja, así que se repitió: `merge-tree` predijo `d08a48d6` y el merge real
+  (`f3783308`, padres `52c89a01` + `bb663d51`) reprodujo **ese mismo árbol**. El
+  solape de archivos entre `18775fd0..bb663d51` y esta slice es **vacío**
+  (`comm -12` sobre los dos `diff --name-only`). Sin rebase y sin force push.
+- **El modelo de CI cambió con #778, y hay que leerlo distinto.** `ci.yml` ahora
+  dispara `push` **solo** en `main`/`master` y `pull_request` sin filtro. Un PR
+  produce **un** run, no dos: la duplicación `push`+`pull_request` era la que
+  hacía competir 4 jobs Windows por los mismos runners. El timeout de tests
+  Windows quedó en **70** min. La reconciliación local de #778 (`e9904429`) es
+  **byte-idéntica** a lo que aterrizó en `112ca524` — verificado con
+  `git diff e9904429 bb663d51 -- .github/workflows/ci.yml` vacío—, así que ese
+  worktree quedó sin objeto.
 - **Los ocho tests nuevos son ROJOS en `ef39ac04`, por la razón correcta** —no por
   `ImportError` ni por `AttributeError` del helper—:
 
@@ -9833,8 +9852,10 @@ MERGED                                 = NO
   (ninguno de producción), igualdad de operaciones, superficies del agente sin
   acceso a la autoridad, y **una sola definición** de
   `EMISION_PRODUCTIVA_HABILITADA`.
-- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` (941
-  archivos); `mypy` sobre `sky_claw/ scripts/` (394 archivos).
+- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` (947
+  archivos, `All checks passed!`); `mypy` sobre `sky_claw/ scripts/` (397
+  archivos, `Success: no issues found`). Las dos cifras subieron respecto de la
+  ronda anterior porque `main` sumó el escritor de Native Parallax.
 
 **Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,errors,owner_consent,__init__}.py`,
 `tests/test_frozen_runtime_p4_s6_owner_hitl.py` y este ADR. **No** se tocó Steam,
