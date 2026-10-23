@@ -80,7 +80,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; NP-O0b2 (el escritor sobre el disco) hecho, ver «Actualización de NP-O0b2»; falta cablearlo al lote y al adaptador de MO2 (NP-A0) |
-   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | **parcial**: NP-A0a (lote de carpeta plana y línea de comandos, con una enumeración provisoria) hecho, ver «Actualización de NP-A0a»; falta el `provider.py` endurecido, el adaptador de MO2, la detección de `texconv` en el registro de tools y las superficies GUI/agente |
+   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | **parcial**: NP-A0a (lote de carpeta plana y línea de comandos, con una enumeración provisoria) hecho, ver «Actualización de NP-A0a»; NP-A0b (`provider.py` endurecido, todavía sin cablear a la CLI) hecho, ver «Actualización de NP-A0b»; falta el adaptador de MO2, la detección de `texconv` en el registro de tools y las superficies GUI/agente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
    La tabla es el camino de MODE 0. El resto del roadmap de Synthesis C (NP-H0, NP-AI0, NP-AI2, NP-CM,
@@ -1179,3 +1179,70 @@ el informe: el manifiesto no distingue una salida autoaceptada de una en revisi�
 **Qué falta de NP-A0.** El `provider.py` endurecido, el adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
 en el registro de tools, las superficies GUI y agente (con el `lifecycle` de la app), qué hacer con un lote incompleto, y saltear el cálculo de
 lo que la caché ya cubre.
+
+### Actualización de NP-A0b (2026-10-23)
+
+NP-A0b entrega `sky_claw/local/native_parallax/provider.py`: el descubrimiento de normales de una carpeta (o de un mod) con una subcarpeta
+`textures/`, **endurecido**, para reemplazar a la enumeración provisoria de `cli.py`. Es un módulo **puro y de solo lectura**: dada una raíz,
+devuelve por cada `*_n.dds` apto su ruta de origen, su ruta de salida ya validada, el archivo, el tamaño y la huella del contenido (los tres
+primeros son lo que consume `lote.NormalAProcesar`) y, aparte, qué omitió y por qué. **No está cableado todavía**: la CLI sigue con su enumeración
+y sus tests, que son el contrato de comportamiento que este módulo iguala o mejora (el cableado es el próximo paso).
+
+**Decisiones (nuestras, ancladas por `tests/test_native_parallax_provider.py`):**
+
+- **Vocabulario cerrado y clasificado.** `MotivoDeOmision` (`YA_TIENE_PARALLAX`, `ENLACE`, `RUTA_INVALIDA`, `ARCHIVO_VACIO`, `DEMASIADO_GRANDE`,
+  `ILEGIBLE`, `CARPETA_ILEGIBLE`, `DUPLICADA_POR_MAYUSCULAS`) tiene un caso por miembro (un test falla si se agrega uno sin caso) y
+  `MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO` clasifica cuáles dejan algo sin ver; el vocabulario y la clasificación están congelados por igualdad literal.
+- **Lo no observado no se da por ausente** (la lección de #783). `Descubrimiento.completo` es `False` si hubo una carpeta que no se pudo listar o un
+  archivo que no se pudo inspeccionar ni leer. Es una propiedad nueva respecto del brief original (`CARPETA_ILEGIBLE` y `completo` no estaban): quien
+  retira salidas por «ya no figura» necesita una enumeración completa. Las omisiones deliberadas (enlace, un `*_p.dds` autoral, ruta inadmisible,
+  vacío, demasiado grande, duplicado) no la afectan, y una entrada borrada a mitad del recorrido está ausente, no «no vista».
+- **Nunca sigue enlaces, pero acepta los ancestros de la raíz.** Un symlink o junction dentro del árbol se omite (`ENLACE`) sin entrar a su
+  destino; una raíz o una `textures` que sea un enlace se rechaza (`RaizInvalidaError`). Todo se inspecciona con
+  `link_kind_and_identity_or_raise` (que lee el `reparse tag`: en Windows `DirEntry.is_dir(follow_symlinks=False)` acepta un junction) y cada carpeta
+  se **revalida después de abrirla**, como `iter_archivos_propios`. **Se aparta del brief en un punto:** el brief pedía que «la raíz y cada ancestro»
+  fueran reales; los ancestros los elige el operador (MO2 puede vivir bajo un junction en otro disco, y `validar_raiz_de_salida` del escritor ya los
+  acepta), a diferencia de lo de adentro, que puede ser ajeno. Un test lo ancla con symlink y con junction.
+- **No reutiliza `iter_archivos_propios`, y dice por qué.** Ese generador omite los enlaces en silencio y aborta todo el recorrido ante una carpeta
+  ilegible; el proveedor necesita un motivo por cada omisión y tolerar una carpeta que falla. Conserva lo que sí le aporta: la revalidación tras abrir.
+- **Huella acotada por el tamaño validado, y solo de lo que sobrevive.** Se lee en bloques y nunca más de un byte pasado el tamaño con el que se
+  validó el archivo (un origen que no termina nunca se corta: un test cuenta los bytes pedidos); si el archivo crece o se achica mientras se lee,
+  queda `ILEGIBLE`. Se hashea después de los filtros y de la detección de duplicados, en orden: hashear lo que se va a omitir sería leerlo, hasta
+  1 GiB, para nada (un test registra qué se leyó).
+- **Un archivo que falla no aborta; un exceso sí.** El tope (`maximo_de_archivos`, 100 000 por defecto, cota de cordura propia) cuenta normales
+  candidatas y omisiones juntas, porque las dos ocupan memoria, y se rechaza con `DemasiadosArchivosError` en vez de truncar. Un límite que no es un
+  entero positivo se rechaza antes de mirar el disco.
+- **Determinista y compatible con el lote.** Normales y omisiones van ordenadas por `clave_de_ruta` (no por el orden del sistema): el mismo árbol
+  creado en otro orden da la misma salida. `NormalDescubierta` cumple `lote.NormalAProcesar` (un test lo comprueba por atributos).
+- **Solo lectura y sin política, por AST.** Los imports están congelados por igualdad (biblioteca estándar, `output.py` y `links.py`: ni numpy,
+  ni Pillow, ni nada que sepa del exportador, del gate, del escritor o de MO2); las únicas llamadas a `os` y la única apertura (`open(..., "rb")`) están
+  enumeradas, y ninguna operación de escritura (`write*`, `unlink`, `mkdir`, `rename`, `replace`…) puede aparecer. Un test aparte toma una foto del
+  árbol antes y después y no encuentra diferencias.
+- **Anclas del repo tocadas, con su motivo.** `provider.py` entra al censo de módulos de producto (`tests/test_native_parallax_producto_invariant.py`).
+  No nombra el binario del exportador, así que `tests/test_texconv_invariant.py` no cambia, y no borra nada, así que las tablas de
+  `tests/test_borrado_recursivo.py` tampoco.
+
+**Verificado ejecutando (Linux, Python 3.11):** 77 tests del módulo (73 pasan y 4 se saltan: los junctions solo existen en Windows), lint, `mypy --strict`, los
+censos del repo y la suite completa en la línea base. **Mutación** automática por AST sobre todo el módulo (el nulo de cada función en verde):
+**153 mutantes, 152 muertos y 1 vivo equivalente** (`while True` mutado a `while True`, como en `lote._huella_acotada`). La primera pasada dejó
+8 vivos: 7 eran huecos de test y se cerraron (el tope mínimo de 1, una `textures` que no se puede inspeccionar y una que desaparece, una entrada
+borrada entre el listado y su inspección, y el texto del motivo de un archivo vacío) y el octavo es el equivalente. Rojo observado: el del módulo ausente (`ImportError`,
+colectivo); **para el resto de las propiedades no hubo un rojo individual previo** (los tests se escribieron antes que el código, pero con el módulo
+inexistente todos fallan por lo mismo): su evidencia es la mutación.
+
+**No verificado, por orden de importancia:** (1) **nada se ejecutó sobre NTFS ni en Windows reales desde el desarrollo**: la CI de Windows corre los
+tests, incluidos los de junction (con `mklink /J`, sin `skip`); (2) el costo con carpetas muy grandes (100 000 entradas, archivos de cientos de MiB):
+la huella lee todo lo que después procesa el lote; (3) que `st_ino` y `st_dev` sean estables en todos los sistemas de archivos de Windows para la
+revalidación tras abrir (`same_file_identity` los exige positivos; un sistema que no los dé hará que cada carpeta quede `CARPETA_ILEGIBLE`, que falla
+cerrado).
+
+**Límites declarados.** (1) Entre el `lstat` de un archivo y su lectura hay una ventana en la que podría reemplazarse por un enlace (`open` sigue
+enlaces): es de solo lectura (a lo sumo se hashea el destino) y el lote vuelve a inspeccionar el origen, antes y después de decodificarlo; no se
+usa `O_NOFOLLOW` porque no existe en Windows. (2) La función es síncrona y puede tardar: se la corre con `asyncio.to_thread`. (3) La lectura acotada
+está duplicada con `lote._huella_acotada`; el cableado las unifica con un ancla que enumere. (4) Los nombres que Windows no admite (`:`, `|`…) no se
+fabrican en disco en los tests (en NTFS un `:` crea un flujo alternativo): la reacción a una ruta inválida se prueba sustituyendo el validador, y el
+validador real, con un nombre no ASCII.
+
+**Qué falta.** Cablear la CLI (y con ella el lote) a `provider.py` conservando los tests de la enumeración provisoria como contrato, y usar
+`completo` para decidir si `--retirar-no-incluidas` puede correr; unificar la lectura acotada con la del lote; el adaptador de MO2; la detección y el
+diagnóstico de `texconv`; las superficies GUI y agente.
