@@ -38,6 +38,17 @@ leer, con presupuesto finito, sólo cuando la instantánea no muestra NINGUNA
 pantalla contractual, y ejecuta la primitiva como máximo una vez. Ver
 :func:`_paso_invocar`.
 
+**El mismo hueco, en la otra operación mutante (F2b, #781).** ``ESCRIBIR_OUTPUT``
+tenía el defecto hermano: UNA sola lectura, y si caía en un repintado el paso
+abortaba sin escribir el campo Output aunque la pantalla contractual volviera un
+instante después. Ahí no hay ledger que reservar (la escritura no es una acción
+del contrato), pero el criterio es el mismo: se repite la LECTURA con el
+presupuesto de :func:`_esperar_otra_lectura`, se revalida identidad en cada
+vuelta, y ``backend.escribir_output`` se ejecuta por UN solo camino, con el
+deadline verificado inmediatamente antes. Los dos pasos comparten el
+presupuesto, NO el contrato: la pantalla requerida, las precondiciones y el
+readback posterior son distintos. Ver :func:`_paso_escribir_output`.
+
 **Durante la generación, cero mutaciones** (P7): entre el Begin aceptado y el
 diálogo terminal contractual el conductor sólo pide pasos ``OBSERVAR``.
 
@@ -896,57 +907,169 @@ def _paso_escribir_output(
     contrato: ContratoDeUIHerramienta,
     backend: BackendDeConduccion,
     localizador: LocalizadorDeProcesos,
+    reloj: Callable[[], float],
+    dormir: Callable[[float], None],
 ) -> ResultadoDePaso:
-    identidad = _identidad(pedido, localizador)
-    if identidad is not None:
-        return ResultadoDePaso(estado=identidad, detalle="identidad no demostrada antes de escribir")
-    instantanea = backend.instantanea(pedido.pid)
-    pantalla = clasificar_pantalla(contrato, instantanea)
-    if pantalla.tipo is not TipoDePantalla.ASISTENTE:
-        return _precondicion(
-            MotivoDePrecondicion.PANTALLA_INCORRECTA,
-            f"sólo se escribe el Output con el asistente a la vista; pantalla={pantalla.tipo.value}",
-            instantanea,
-        )
-    ventana = _ventana_principal(contrato, instantanea)
-    salida = elementos_que_coinciden(ventana.elementos, contrato.selector_output) if ventana is not None else []
-    if len(salida) != 1:
-        return _precondicion(MotivoDePrecondicion.CONTROL_NO_UNICO, "el campo Output no es único", instantanea)
-    if not salida[0].habilitado:
-        return _precondicion(
-            MotivoDePrecondicion.CONTROL_DESHABILITADO, "el campo Output no está habilitado", instantanea
-        )
-    valor = pedido.valor or ""
-    hresult = backend.escribir_output(salida[0], contrato.mecanismo_output, valor)
-    if hresult != HRESULT_OK:
-        return ResultadoDePaso(
-            estado=EstadoDePaso.MECANISMO_FALLO,
-            detalle=f"{contrato.mecanismo_output.value} rechazó la escritura",
-            instantanea=_sin_referencias(instantanea),
-            invocado=True,
-            hresult=hresult,
-        )
-    # El readback va DESPUÉS de la primitiva: si falla, la escritura ya ocurrió y
-    # el resultado lo dice (``invocado=True`` sin valor leído), en vez de dejar
-    # que la red general lo reporte como "no se actuó".
-    try:
-        leido = backend.leer_output(salida[0])
-    except ObservacionUIAError as exc:
+    """Escribe el Output UNA vez, releyendo sólo los huecos de observación (F2b).
+
+    **Por qué el paso relee.** El paso hacía UNA sola lectura. Si TexGen o
+    DynDOLOD estaban repintando, esa lectura devolvía ``CARGANDO``/
+    ``SIN_VENTANA`` —o moría con ``ObservacionUIAError`` por un elemento stale a
+    mitad de repaint— y el paso abortaba sin escribir, aunque la pantalla
+    contractual volviera un instante después. Es el mismo hueco que F2 (#773)
+    arregló para ``INVOCAR``, por la otra puerta.
+
+    **Por qué la reobservación vive acá y no en el conductor.** El padre no
+    reserva la escritura en el ledger (no es una acción del contrato), así que
+    podría reintentar el paso entero desde arriba. No se hace: un reintento del
+    paso completo, después de una respuesta ambigua, es exactamente el segundo
+    ``escribir_output`` que I1 prohíbe. Dentro del paso la lectura es lo único
+    que se repite y la primitiva se alcanza por UN solo camino.
+
+    **Qué se revalida en cada vuelta** (nunca se saltea un chequeo, sólo se
+    repite): pid vivo y ruta canónica del ejecutable (:func:`_identidad`), la
+    instantánea fresca, que la pantalla sea ``ASISTENTE``, y que el campo Output
+    sea ÚNICO y esté HABILITADO. El SHA-256 y la versión del build son la CLAVE
+    del contrato, que se resolvió al entrar al paso
+    (``ejecutar_paso_sincrono``) y no cambia.
+
+    **Qué NO se comparte con ``_paso_invocar``, aunque el presupuesto sí.** Los
+    dos pasos mutan, pero sus contratos no son el mismo y tratarlos como
+    iguales sería el defecto, no el arreglo:
+
+    * la pantalla requerida de la escritura es SIEMPRE ``ASISTENTE``; la de una
+      invocación depende de la acción (asistente, modal medido o terminal);
+    * la invocación tiene precondiciones propias (identidad del modal,
+      ``precondicion_output``); la escritura no tiene ninguna;
+    * la escritura tiene READBACK después de la primitiva y la invocación no, y
+      el readback corre con la mutación YA hecha: un readback ilegible no
+      autoriza reintentar nada (se reporta ``invocado=True`` sin valor leído).
+
+    **Sólo se recuperan huecos.** ``CARGANDO``/``SIN_VENTANA`` y
+    ``ObservacionUIAError`` se releen; cualquier pantalla decisiva distinta
+    (otro modal, un diálogo desconocido, ``AMBIGUA``) y un control no
+    inequívoco o deshabilitado cortan en la PRIMERA lectura. ``UIANoDisponibleError``
+    es el sensor, no un repintado: corta en la primera lectura, igual que en
+    ``_paso_observar``.
+
+    **El plazo acota también la ACCIÓN.** ``reloj() >= limite`` se verifica
+    pegado a la primitiva, después de todas las precondiciones: si la lectura
+    que habilita la escritura llega a ``limite`` o después, el paso NO escribe y
+    devuelve ``PLAZO_AGOTADO`` con ``invocado=False``. ``>=`` y no ``>``: el
+    presupuesto se agota EN el límite, la misma convención que los otros seis
+    sitios del archivo que comparan contra uno.
+
+    **Una sola escritura.** Después de ``backend.escribir_output`` no hay
+    ``continue`` ni reintento: el HRESULT fallido y el readback ilegible o
+    distinto se devuelven tal cual, con ``invocado=True``, para que el padre
+    sepa que la mutación pudo haber ocurrido.
+    """
+    limite = reloj() + pedido.timeout_segundos
+    lecturas = 0
+    ultima: InstantaneaUI | None = None
+    while True:
+        identidad = _identidad(pedido, localizador)
+        if identidad is not None:
+            return ResultadoDePaso(estado=identidad, detalle="identidad no demostrada antes de escribir")
+        lecturas += 1
+        try:
+            instantanea = backend.instantanea(pedido.pid)
+        except UIANoDisponibleError as exc:
+            # El SENSOR, no el repintado: reintentar no aporta y sólo retrasa el
+            # corte que de todos modos hay que dar.
+            return ResultadoDePaso(estado=EstadoDePaso.UIA_NO_DISPONIBLE, detalle=str(exc))
+        except ObservacionUIAError as exc:
+            # Hermano-excepción del hueco: un elemento stale a mitad de repaint.
+            # La lectura no ocurrió, pero tampoco se mutó nada.
+            corte = _esperar_otra_lectura(
+                detalle=f"lectura ilegible antes de escribir el Output ({exc})",
+                efecto="no se escribió nada",
+                lecturas=lecturas,
+                limite=limite,
+                ultima=ultima,
+                pedido=pedido,
+                reloj=reloj,
+                dormir=dormir,
+            )
+            if corte is not None:
+                return corte
+            continue
+        ultima = instantanea
+        pantalla = clasificar_pantalla(contrato, instantanea)
+        if pantalla.tipo is not TipoDePantalla.ASISTENTE:
+            detalle = (
+                f"sólo se escribe el Output con el asistente a la vista; pantalla={pantalla.tipo.value} "
+                f"{pantalla.detalle}"
+            ).strip()
+            if not _es_hueco_de_observacion(pantalla):
+                return _precondicion(MotivoDePrecondicion.PANTALLA_INCORRECTA, detalle, instantanea)
+            corte = _esperar_otra_lectura(
+                detalle=detalle,
+                efecto="no se escribió nada",
+                lecturas=lecturas,
+                limite=limite,
+                ultima=ultima,
+                pedido=pedido,
+                reloj=reloj,
+                dormir=dormir,
+            )
+            if corte is not None:
+                return corte
+            continue
+        ventana = _ventana_principal(contrato, instantanea)
+        salida = elementos_que_coinciden(ventana.elementos, contrato.selector_output) if ventana is not None else []
+        if len(salida) != 1:
+            return _precondicion(MotivoDePrecondicion.CONTROL_NO_UNICO, "el campo Output no es único", instantanea)
+        if not salida[0].habilitado:
+            return _precondicion(
+                MotivoDePrecondicion.CONTROL_DESHABILITADO, "el campo Output no está habilitado", instantanea
+            )
+        # El presupuesto acota la ACCIÓN, no sólo la espera, y va pegado a la
+        # primitiva a propósito: es el ÚNICO punto de mutación del paso, así que
+        # ninguna ruta puede escribir sin pasar por este chequeo. ``>=`` porque el
+        # presupuesto se agota EN el límite (misma convención que ``_paso_invocar``
+        # y las esperas del cierre).
+        if reloj() >= limite:
+            return ResultadoDePaso(
+                estado=EstadoDePaso.PLAZO_AGOTADO,
+                detalle=(
+                    f"el presupuesto de {pedido.timeout_segundos:.1f}s venció durante la lectura "
+                    f"({lecturas} lecturas); el campo Output está a la vista y habilitado pero no se "
+                    "escribió nada"
+                ),
+                instantanea=_sin_referencias(instantanea),
+            )
+        valor = pedido.valor or ""
+        hresult = backend.escribir_output(salida[0], contrato.mecanismo_output, valor)
+        if hresult != HRESULT_OK:
+            return ResultadoDePaso(
+                estado=EstadoDePaso.MECANISMO_FALLO,
+                detalle=f"{contrato.mecanismo_output.value} rechazó la escritura",
+                instantanea=_sin_referencias(instantanea),
+                invocado=True,
+                hresult=hresult,
+            )
+        # El readback va DESPUÉS de la primitiva: si falla, la escritura ya ocurrió y
+        # el resultado lo dice (``invocado=True`` sin valor leído), en vez de dejar
+        # que la red general lo reporte como "no se actuó".
+        try:
+            leido = backend.leer_output(salida[0])
+        except ObservacionUIAError as exc:
+            return ResultadoDePaso(
+                estado=EstadoDePaso.OK,
+                detalle=f"readback ilegible tras escribir: {exc}",
+                instantanea=_sin_referencias(instantanea),
+                valor_leido=None,
+                invocado=True,
+                hresult=hresult,
+            )
         return ResultadoDePaso(
             estado=EstadoDePaso.OK,
-            detalle=f"readback ilegible tras escribir: {exc}",
             instantanea=_sin_referencias(instantanea),
-            valor_leido=None,
+            valor_leido=leido,
             invocado=True,
             hresult=hresult,
         )
-    return ResultadoDePaso(
-        estado=EstadoDePaso.OK,
-        instantanea=_sin_referencias(instantanea),
-        valor_leido=leido,
-        invocado=True,
-        hresult=hresult,
-    )
 
 
 def _pantalla_requerida(contrato: ContratoDeUIHerramienta, accion: AccionDeUI) -> TipoDePantalla:
@@ -957,12 +1080,14 @@ def _pantalla_requerida(contrato: ContratoDeUIHerramienta, accion: AccionDeUI) -
     return TipoDePantalla.ASISTENTE
 
 
-#: Tope de lecturas de un paso ``INVOCAR``. El límite PRODUCTIVO es el
-#: presupuesto temporal (``PedidoDePaso.timeout_segundos``); este tope es el
-#: riel anti-giro para cuando el reloj no avanza (reloj falso de test, o un
-#: ``dormir`` que retorna de inmediato): sin él, un presupuesto "finito" podría
-#: no vencer nunca y el paso giraría para siempre dentro del helper.
-MAXIMO_DE_LECTURAS_POR_INVOCACION = 16
+#: Tope de lecturas de UN paso que reobserva (``INVOCAR`` desde F2, ``ESCRIBIR_OUTPUT``
+#: desde F2b). El límite PRODUCTIVO es el presupuesto temporal
+#: (``PedidoDePaso.timeout_segundos``); este tope es el riel anti-giro para cuando
+#: el reloj no avanza (reloj falso de test, o un ``dormir`` que retorna de
+#: inmediato): sin él, un presupuesto "finito" podría no vencer nunca y el paso
+#: giraría para siempre dentro del helper. Es UN solo tope y no uno por tipo de
+#: paso: el riel protege al helper, y el helper es el mismo proceso.
+MAXIMO_DE_LECTURAS_POR_PASO = 16
 
 
 def _es_hueco_de_observacion(pantalla: Pantalla) -> bool:
@@ -982,6 +1107,7 @@ def _es_hueco_de_observacion(pantalla: Pantalla) -> bool:
 def _esperar_otra_lectura(
     *,
     detalle: str,
+    efecto: str,
     lecturas: int,
     limite: float,
     ultima: InstantaneaUI | None,
@@ -997,11 +1123,17 @@ def _esperar_otra_lectura(
     hueco por pantalla (``CARGANDO``) y el hueco por excepción (elemento stale)
     tienen que agotarse con el MISMO criterio, o el segundo se queda sin riel.
 
+    ``efecto`` es lo que el corte tiene que declarar que NO pasó, y es
+    obligatorio a propósito: ``INVOCAR`` y ``ESCRIBIR_OUTPUT`` comparten el
+    presupuesto, pero no comparten el verbo, y un texto heredado del hermano
+    diría "no se invocó nada" sobre un paso que escribe. Cada llamador nombra su
+    propio efecto; ninguno lo hereda por defecto.
+
     Sin una sola lectura legible el veredicto es el sensor (``UIA_NO_DISPONIBLE``),
     no la pantalla: mismo criterio que ``_paso_observar``.
     """
     restante = limite - reloj()
-    if lecturas < MAXIMO_DE_LECTURAS_POR_INVOCACION and restante > 0:
+    if lecturas < MAXIMO_DE_LECTURAS_POR_PASO and restante > 0:
         dormir(min(pedido.intervalo_segundos, restante))
         return None
     if ultima is None:
@@ -1012,7 +1144,7 @@ def _esperar_otra_lectura(
     return _precondicion(
         MotivoDePrecondicion.PANTALLA_INCORRECTA,
         f"{detalle} — {lecturas} lecturas en {pedido.timeout_segundos:.1f}s: la pantalla "
-        "contractual no apareció y no se invocó nada",
+        f"contractual no apareció y {efecto}",
         ultima,
     )
 
@@ -1054,7 +1186,7 @@ def _paso_invocar(
     ``_paso_observar``.
 
     **Presupuesto.** ``timeout_segundos`` es el techo temporal y
-    :data:`MAXIMO_DE_LECTURAS_POR_INVOCACION` el tope de lecturas; lo que venza
+    :data:`MAXIMO_DE_LECTURAS_POR_PASO` el tope de lecturas; lo que venza
     primero corta. Agotado el presupuesto sin pantalla contractual el desenlace
     es ``PRECONDICION_FALLIDA``/``PANTALLA_INCORRECTA`` con ``invocado=False``.
     Si no hubo ni una sola lectura legible, el desenlace es ``UIA_NO_DISPONIBLE``:
@@ -1105,6 +1237,7 @@ def _paso_invocar(
             # tampoco se mutó nada: es exactamente el caso que se puede releer.
             corte = _esperar_otra_lectura(
                 detalle=f"{accion.id}: lectura ilegible ({exc})",
+                efecto="no se invocó nada",
                 lecturas=lecturas,
                 limite=limite,
                 ultima=ultima,
@@ -1123,6 +1256,7 @@ def _paso_invocar(
                 return _precondicion(MotivoDePrecondicion.PANTALLA_INCORRECTA, detalle, instantanea)
             corte = _esperar_otra_lectura(
                 detalle=detalle,
+                efecto="no se invocó nada",
                 lecturas=lecturas,
                 limite=limite,
                 ultima=ultima,
@@ -1226,7 +1360,7 @@ def ejecutar_paso_sincrono(
         if pedido.tipo is TipoDePaso.OBSERVAR:
             return _paso_observar(pedido, contrato, backend, localizador, reloj, dormir)
         if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT:
-            return _paso_escribir_output(pedido, contrato, backend, localizador)
+            return _paso_escribir_output(pedido, contrato, backend, localizador, reloj, dormir)
         return _paso_invocar(pedido, contrato, backend, localizador, reloj, dormir)
     except ObservacionUIAError as exc:
         # Sólo llega acá un fallo de LECTURA previo a la primitiva (las primitivas
@@ -1365,10 +1499,11 @@ class CapacidadDesatendidaUIA:
     cierre_timeout_segundos: float = 180.0
     aprobacion_timeout_segundos: float = 900.0
     gracia_externa_segundos: float = 15.0
-    #: Presupuesto de la reobservación acotada previa al ÚNICO Invoke de un paso
-    #: ``INVOCAR`` (F2, #773). Es el plazo del paso: el helper lo gasta releyendo
-    #: huecos de repintado y el ejecutor lo usa como base de su deadline duro.
-    #: 15 s cubren de sobra un repintado; lo que no cubre es un ``CARGANDO``
+    #: Presupuesto de la reobservación acotada previa a la ÚNICA primitiva mutante
+    #: de un paso: el Invoke de ``INVOCAR`` (F2, #773) y la escritura de
+    #: ``ESCRIBIR_OUTPUT`` (F2b, #781). Es el plazo del paso: el helper lo gasta
+    #: releyendo huecos de repintado y el ejecutor lo usa como base de su deadline
+    #: duro. 15 s cubren de sobra un repintado; lo que no cubre es un ``CARGANDO``
     #: persistente, y eso corta cerrado.
     reobservacion_timeout_segundos: float = 15.0
     fallos_de_observacion_tolerados: int = 3
@@ -1743,7 +1878,13 @@ class ConductorDesatendido:
                 ctx,
                 TipoDePaso.ESCRIBIR_OUTPUT,
                 valor=ctx.output_esperado,
-                timeout_segundos=self._capacidad.observacion_intervalo_segundos,
+                # El paso puede gastar este plazo releyendo huecos de observación
+                # antes de la ÚNICA escritura (F2b, #781). Es el MISMO presupuesto
+                # que el hermano ``_invocar`` recibe desde F2 (#773): hasta F2b acá
+                # se pasaba ``observacion_intervalo_segundos`` (1 s), así que aun
+                # con la reobservación implementada el hueco de repintado no
+                # entraba y el fix no servía.
+                timeout_segundos=self._capacidad.reobservacion_timeout_segundos,
             )
         )
         if resultado.estado is EstadoDePaso.PROCESO_AUSENTE:
@@ -1757,6 +1898,18 @@ class ConductorDesatendido:
                 ctx,
                 CodigoDesatendido.OUTPUT_WRITE_UNSUPPORTED,
                 f"{ctx.contrato.mecanismo_output.value} devolvió {resultado.hresult}; no se prueba otro mecanismo",
+            )
+        if self._desenlace_desconocido(resultado):
+            # Sin respuesta del helper (o invocado con estado no-OK) la escritura
+            # PUDO haber ocurrido: el corte lo dice y no se reintenta. Antes caía
+            # en el ``UIA_UNAVAILABLE`` de abajo, que afirma "no pude mirar" sobre
+            # un paso que quizá ya mutó el campo del usuario (F2b, #781).
+            raise self._error(
+                ctx,
+                CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+                f"desenlace desconocido al escribir el Output ({resultado.estado.value} "
+                f"{resultado.hresult or ''} {resultado.detalle}".strip()
+                + "); la escritura pudo haberse ejecutado y no se reintenta",
             )
         if resultado.estado is not EstadoDePaso.OK:
             raise self._error(ctx, CodigoDesatendido.UIA_UNAVAILABLE, resultado.detalle or resultado.estado.value)

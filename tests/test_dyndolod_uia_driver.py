@@ -18,7 +18,7 @@ import pytest
 
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, MecanismoDeEscritura
 from sky_claw.local.tools.dyndolod_uia_driver import (
-    MAXIMO_DE_LECTURAS_POR_INVOCACION,
+    MAXIMO_DE_LECTURAS_POR_PASO,
     BackendDeConduccion,
     CapacidadDesatendidaUIA,
     ConductorDesatendido,
@@ -1255,7 +1255,7 @@ def test_f2_lecturas_ilegibles_agotan_el_presupuesto_sin_invocar():
     )
     assert resultado.estado is EstadoDePaso.UIA_NO_DISPONIBLE
     assert resultado.invocado is False
-    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_INVOCACION
+    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_PASO
     assert gui.invocaciones == []
 
 
@@ -1535,7 +1535,7 @@ def test_f2b_i_el_presupuesto_de_lecturas_es_finito_aunque_el_reloj_no_avance():
         dormir=lambda _s: None,
     )
     assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
-    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_INVOCACION
+    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_PASO
     assert gui.escrituras == []
 
 
