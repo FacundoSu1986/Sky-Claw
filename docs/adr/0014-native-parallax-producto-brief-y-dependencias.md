@@ -940,7 +940,8 @@ siempre **antes** de tocar el disco.
 - **Lo que queda en la papelera se ve.** La papelera tiene una casilla estable por ruta (así la recuperación encuentra lo apartado sin un
   registro aparte) y lo que queda ahí **nunca se borra solo**: es un original verificado que no se pudo devolver o algo que un tercero cambió.
   Por eso `_avisar_de_sobrantes` avisa por log, con la ruta de la papelera, en **toda** apertura de sesión, con o sin pendiente que
-  recuperar. Y si una ruta falla porque su casilla sigue ocupada por un resto de otra sesión, el detalle de la ruta dice que es la casilla
+  recuperar. El aviso es un diagnóstico y no puede impedir abrir: si `trash/` no se puede listar (permisos, un antivirus, un error de E/S) se
+  avisa de eso por log y la sesión abre igual. Y si una ruta falla porque su casilla sigue ocupada por un resto de otra sesión, el detalle de la ruta dice que es la casilla
   de la papelera, cuál es y que se revise antes de borrarla a mano (la ruta conserva su archivo y su entrada).
 - **Un lote a medias inutiliza la sesión.** Un plan se aplica una sola vez. Si el lote se interrumpe después de escribir su intención (una
   excepción o una cancelación), `planificar` y `aplicar` rechazan todo hasta reabrir la sesión, porque solo la recuperación sabe dejar ese disco
@@ -1034,10 +1035,13 @@ archivo que no se deja borrar cuando la ruta se ocupó (`CONFLICTO`); y que un l
 - **No observable en un test (1).** `flush` de la copia a la etapa: la durabilidad ante un corte de luz (ver el límite 2).
 
 **Tercera pasada, tras la segunda ronda de revisión de #782.** Sobre las tres funciones que cambió esa ronda (`_apartar`, `_recuperar` y el
-helper nuevo `_avisar_de_sobrantes`): **54 mutantes**, con el nulo de cada una en verde. **Murieron 53 y quedó 1 vivo**, y era un hueco de test:
-la guarda «hay sobrantes» del aviso no se ejercía, porque `_limpiar_control` ya había quitado la papelera vacía antes de avisar y el test de la
-papelera vacía no llegaba a ella. Se cerró con un test donde esa limpieza falla (la papelera queda ahí, vacía) y no debe avisar nada; mata
-el mutante que lo motivó (sin rojo previo: el código ya existía). Resultado final: **54 muertos, 0 vivos**.
+helper nuevo `_avisar_de_sobrantes`): con la primera versión del helper, **54 mutantes** y el nulo de cada función en verde. **Murieron 53 y
+quedó 1 vivo**, y era un hueco de test: la guarda «hay sobrantes» del aviso no se ejercía, porque `_limpiar_control` ya había quitado la
+papelera vacía antes de avisar y el test de la papelera vacía no llegaba a ella. Se cerró con un test donde esa limpieza falla (la papelera
+queda ahí, vacía) y no debe avisar nada; mata el mutante que lo motivó (sin rojo previo: el código ya existía). Después la revisión señaló
+que listar `trash/` podía abortar la apertura de la sesión (una regresión del propio helper, que antes no listaba nada sin pendiente): se
+arregló con un `except OSError` que avisa y sigue, con el rojo observado en los dos caminos que llaman al helper (con y sin pendiente), y se
+repitió la pasada sobre la versión final: **56 mutantes, 56 muertos, 0 vivos**.
 
 **Límites declarados.** (1) No se ejecutó en Windows aquí (ver arriba). (2) La durabilidad ante un corte de luz alcanza al contenido de los archivos
 (`fsync`), no a los directorios. (3) Entre apartar y publicar la ruta está vacía un instante; si el proceso muere ahí, la recuperación devuelve el
