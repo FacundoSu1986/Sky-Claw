@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **La etapa 9 desatendida abortaba sin escribir el Output si UIA leía la ventana
+  mientras se repintaba (F2b, #781).** Hermano de F2 (#773) por la otra operación
+  mutante: `_paso_escribir_output` tomaba UNA sola instantánea antes de escribir
+  el campo Output, así que un `CARGANDO`/`SIN_VENTANA` transitorio —o una lectura
+  que moría con `ObservacionUIAError` por un elemento stale a mitad de repaint—
+  abortaba el paso aunque la pantalla contractual volviera un instante después.
+  La reobservación vive dentro del MISMO paso y reutiliza el presupuesto de F2
+  (`reobservacion_timeout_segundos`, 15 s, más el tope de 16 lecturas), pero NO
+  copia el contrato del Invoke: la pantalla requerida es siempre `ASISTENTE`, no
+  hay precondiciones propias y hay readback posterior. En cada vuelta se
+  revalidan pid, ruta canónica del ejecutable, pantalla, unicidad y habilitación
+  del campo Output; `backend.escribir_output` se ejecuta como máximo UNA vez y
+  su desenlace —HRESULT fallido o readback ilegible— no se reintenta, porque la
+  mutación pudo haber ocurrido. El plazo se verifica pegado a la primitiva con
+  `reloj() >= limite`: en el instante de vencimiento no se escribe. Sólo se
+  releen huecos de observación; otro modal, un diálogo desconocido, `AMBIGUA`, un
+  control duplicado o deshabilitado y `UIANoDisponibleError` cortan en la PRIMERA
+  lectura. **El hermano que F2 dejó sin cablear:** `_converger_output` pedía el
+  paso con `observacion_intervalo_segundos` (1 s) mientras `_invocar` ya recibía
+  el presupuesto de reobservación desde #773, así que aun con la reobservación
+  implementada el hueco no entraba. Un desenlace desconocido tras la posible
+  escritura deja de reportarse como `UIA_UNAVAILABLE` —que afirmaba "no pude
+  mirar" sobre un paso que quizá ya mutó el campo del usuario— y pasa a
+  `UNATTENDED_CONTRACT_VIOLATION` con `la escritura pudo haberse ejecutado y no se
+  reintenta`; el resto de los códigos no cambia. Validado con 12/12 mutantes
+  muertos (sin reobservación, dos escrituras por readback ilegible, sin guard de
+  deadline, `>=` por `>`, sin identidad, pantalla desconocida recuperable,
+  HRESULT que reintenta, hermano sin presupuesto, desenlace desconocido mudo,
+  excepción no recuperada, readback mentiroso y tope de lecturas infinito).
+  *No hay validación en rig Windows: la corrección se probó con backends
+  simulados deterministas y relojes falsos.*
 - **La etapa 9 desatendida abortaba cuando UIA leía la ventana mientras se
   repintaba (F2, #773).** En la corrida D1 del rig Alpha-209 el operador aprobó el
   modal conocido de DynDOLOD DLL NG y el conductor cortó con
