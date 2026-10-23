@@ -1,0 +1,45 @@
+{
+  "procesos_residuales_consulta": [],
+  "procesos_herramientas_tras_cierre": [],
+  "locks": {
+    "stage9_locks_db": "C:\\SkyClaw_Rigs\\SW661 Unattended\\state\\stage9\\dyndolod\\stage9_locks.db",
+    "transacciones_restantes": [
+      {
+        "transaction_id": 1,
+        "status": "pending",
+        "created_at": "2026-10-19 20:56:08"
+      },
+      {
+        "transaction_id": 2,
+        "status": "committed",
+        "created_at": "2026-10-19 21:00:01"
+      },
+      {
+        "transaction_id": 3,
+        "status": "pending",
+        "created_at": "2026-10-19 21:04:59"
+      },
+      {
+        "transaction_id": 4,
+        "status": "committed",
+        "created_at": "2026-10-19 21:15:28"
+      }
+    ]
+  },
+  "workspace": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root",
+    "binding": {
+      "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\.sky-claw-binding.json",
+      "contenido": {
+        "binding_id": "5b14cd20-61c1-4528-aabf-54115e072605",
+        "resource_binding": {
+          "game_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\game",
+          "mo2_instance_data_root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance",
+          "mo2_mods_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods"
+        },
+        "schema_version": 1
+      }
+    }
+  },
+  "nota": "las TX pending (1 y 3) son el fail-closed documentado tras un fallo posterior al spawn; no se forzaron transiciones"
+}

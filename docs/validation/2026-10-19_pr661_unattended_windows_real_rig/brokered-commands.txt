@@ -1,0 +1,9 @@
+TexGen argv=["-sse", "-o:C:\\SkyClaw_Rigs\\SW661Broker\\Work Root\\DynDOLOD\\TexGen\\", "-d:C:\\SkyClaw_Rigs\\SW661 Unattended\\game\\Data\\", "-m:C:\\SkyClaw_Rigs\\SW661Broker\\Game INI\\", "-p:C:\\SkyClaw_Rigs\\SW661Broker\\mo2-install\\profiles\\UnattendedBroker\\plugins.txt", "-t:C:\\SkyClaw_Rigs\\SW661Broker\\temp\\"]
+DynDOLOD argv=["-sse", "-o:C:\\SkyClaw_Rigs\\SW661Broker\\Work Root\\DynDOLOD\\DynDOLOD\\", "-d:C:\\SkyClaw_Rigs\\SW661 Unattended\\game\\Data\\", "-m:C:\\SkyClaw_Rigs\\SW661Broker\\Game INI\\", "-p:C:\\SkyClaw_Rigs\\SW661Broker\\mo2-install\\profiles\\UnattendedBroker\\plugins.txt", "-t:C:\\SkyClaw_Rigs\\SW661Broker\\temp\\"]
+data_dir=C:\SkyClaw_Rigs\SW661 Unattended\game\Data (virtual via USVFS)
+ini_dir=C:\SkyClaw_Rigs\SW661Broker\Game INI
+plugins_file=C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+temp_dir=C:\SkyClaw_Rigs\SW661Broker\temp
+external_work_root=C:\SkyClaw_Rigs\SW661Broker\Work Root
+output_roots={"texgen": "C:\\SkyClaw_Rigs\\SW661Broker\\Work Root\\DynDOLOD\\TexGen", "dyndolod": "C:\\SkyClaw_Rigs\\SW661Broker\\Work Root\\DynDOLOD\\DynDOLOD"}
+instance_id=mo2-200670d10c88efb3

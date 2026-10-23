@@ -46,7 +46,7 @@ es compartido y fue tomado por otro carril durante esta sesión: pasó de estar 
 tracked sin commitear (`path_resolver.py`, `tests/test_contrato_argumentos_cli.py`,
 `tests/test_dyndolod_service.py`). Para no competir por la rama ni tocar estado ajeno, la
 investigación y el commit se hicieron en un **worktree aislado**
-(`C:\Users\Facu2\AppData\Local\Temp\kilo\pre-lod-p0`, rama `docs/pre-lod-p0-evidence-20260919`).
+(`C:\Users\<USUARIO>\AppData\Local\Temp\kilo\pre-lod-p0`, rama `docs/pre-lod-p0-evidence-20260919`).
 Ningún archivo del checkout compartido fue modificado por esta sesión.
 
 **Write-set efectivo de esta sesión:**

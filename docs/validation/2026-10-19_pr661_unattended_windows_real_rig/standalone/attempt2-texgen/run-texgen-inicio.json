@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-19T17:59:45-0300",
+  "fase": "texgen",
+  "python": "C:\\SkyClaw_Rigs\\SW661 Unattended\\venv\\Scripts\\python.exe",
+  "cwd": "C:\\SkyClaw_Rigs\\SW661 Unattended",
+  "binarios": {
+    "TexGen": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\TexGenx64.exe",
+    "DynDOLOD": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\DynDOLODx64.exe"
+  },
+  "sha256": {
+    "TexGen": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+    "DynDOLOD": "b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0"
+  },
+  "presets_antes": {
+    "TexGen": {
+      "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+      "existe": true,
+      "sha256": "75c4aa4a5746d24f32bb2be455c5ee13b0db1f87e3412a9eb463c90f5e87ba8e",
+      "bytes": 1705
+    },
+    "DynDOLOD": {
+      "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+      "existe": true,
+      "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4",
+      "bytes": 24061
+    }
+  }
+}

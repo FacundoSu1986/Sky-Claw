@@ -1,0 +1,6 @@
+8: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+11: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen\
+59: Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.
+623: [00:37] TexGen completed successfully
+624: [00:37] Exit TexGen, zip and exit, check log or restart? The zip option will only pack the relevant files into the zip file and permanently delete everything in the dedicated output folder C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen!
+633: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\

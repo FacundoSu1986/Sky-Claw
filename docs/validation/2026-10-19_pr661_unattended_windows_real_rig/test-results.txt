@@ -1,0 +1,184 @@
+================================================================================
+QUALITY GATES — worktree dyndolod-661-unattended-windows-rig (SHA 6abf20d0)
+================================================================================
+Fecha: 2026-10-19 (America/Montevideo)   Windows 10.0.19045
+Worktree: <WORKTREE>
+SHA: 6abf20d06d908a6c3bc8f4648cb4cd7bb4111c37 (= origin/main, merge PR #751)
+Rama: validation/dyndolod-661-unattended-windows-rig
+Scratch de logs crudos: E:\Skyclaw_Main_Sync\_TEMPORALES\dyndolod661\qa\
+No se modificó el repo (ver gate 4). No se lanzó TexGen/DynDOLOD. No hubo commit/checkout.
+
+ENTORNO (venv propio, NO el .venv del repo principal):
+  C:\SkyClaw_Rigs\SW661 Unattended\venv NO EXISTE en esta máquina.
+  venv: E:\Skyclaw_Main_Sync\_TEMPORALES\dyndolod661\qa\venv
+  instalado con: uv pip install -e "<worktree>[dev]"
+  import sky_claw -> <worktree>\sky_claw\__init__.py
+  Python 3.11.9 | ruff 0.17.1 | mypy 2.4.0 | pytest 8.4.2 (pytest-timeout 2.4.0)
+  (mismas versiones que resolvió el CI en el run rojo de 6abf20d0)
+
+COMANDOS CORRIDOS CON CWD = WORKTREE. "--basetemp" redirigido al scratch para no
+dejar .pytest-tmp dentro del worktree; "-p no:cacheprovider" evita .pytest_cache.
+
+--------------------------------------------------------------------------------
+GATE 1 — ruff check                                        EXIT 0  VERDE
+--------------------------------------------------------------------------------
+$ <qa>\venv\Scripts\ruff.exe check sky_claw/ scripts/ tests/
+All checks passed!
+exit code: 0
+log crudo: ruff-check.log
+
+--------------------------------------------------------------------------------
+GATE 2 — ruff format --check                               EXIT 0  VERDE
+--------------------------------------------------------------------------------
+$ <qa>\venv\Scripts\ruff.exe format --check sky_claw/ scripts/ tests/
+908 files already formatted
+exit code: 0
+log crudo: ruff-format.log
+
+--------------------------------------------------------------------------------
+GATE 3 — mypy sky_claw/ scripts/                           EXIT 0  VERDE
+--------------------------------------------------------------------------------
+$ <qa>\venv\Scripts\python.exe -m mypy sky_claw/ scripts/
+Success: no issues found in 377 source files
+exit code: 0
+log crudo: mypy-task.log
+
+Variante exacta del CI (python -m mypy sky_claw/ scripts/ --ignore-missing-imports
+--no-error-summary): exit code 0, salida vacía por --no-error-summary.
+log crudo: mypy-ci.log
+
+CAVEAT: pyproject.toml tiene ignore_errors = true para ~30 módulos
+(sky_claw.app.gui.*, sky_claw.app.web.*, sky_claw.local.tools.*, etc.). Mypy verde
+NO implica type-check de todo el repo.
+
+--------------------------------------------------------------------------------
+GATE 4 — git diff --check / git status --porcelain         EXIT 0  VERDE
+--------------------------------------------------------------------------------
+$ git -C <worktree> diff --check
+(sin salida)
+exit code: 0
+log crudo: git-diff-check.log
+
+$ git -C <worktree> status --porcelain
+(sin salida; árbol limpio)
+exit code: 0
+log crudo: git-status.log
+
+NOTA: este test-results.txt es un archivo NUEVO dentro del worktree pedido por el
+Lead (docs/validation/2026-10-19_pr661_unattended_windows_real_rig/, directorio no
+trackeado). El gate 4 se corrió ANTES de escribirlo. No toqué ningún otro archivo
+de ese directorio.
+
+--------------------------------------------------------------------------------
+GATE 5 — suite focalizada                                  EXIT 0  VERDE
+--------------------------------------------------------------------------------
+$ <qa>\venv\Scripts\python.exe -m pytest tests/ -k "dyndolod or uia or desatendid
+    or unattended or preset or handoff or stage9 or workspace" -q
+    -p no:cacheprovider --basetemp=<qa>\pytest-tmp-focus
+
+1829 passed, 13 skipped, 10095 deselected in 667.48s (0:11:07)
+exit code: 0
+FALLOS: ninguno.
+log crudo: pytest-focus.log
+
+--------------------------------------------------------------------------------
+GATE 6 — suite completa                                    EXIT 1  ROJO (3 fallos)
+--------------------------------------------------------------------------------
+$ <qa>\venv\Scripts\python.exe -m pytest tests/ -q -p no:cacheprovider -rf
+    --basetemp=<qa>\pytest-tmp-full
+
+3 failed, 11809 passed, 125 skipped, 135 warnings in 2332.23s (0:38:52)
+exit code: 1
+Total recolectado: 3 + 11809 + 125 = 11937 (mismo total que CI: 1+11912+24).
+log crudo: pytest-full.log / pytest-full.exit (24 KB; contiene bytes no-UTF8 por
+mojibake, leer con Get-Content).
+
+FALLOS (nombre + mensaje + clasificación):
+1) tests/test_distributed_locks.py::test_renew_divisor_shrinks_detection_window
+   E  Failed: DID NOT RAISE <class 'sky_claw.app.db.locks.LockAcquisitionError'>
+   tests\test_distributed_locks.py:1437
+   Re-corrido AISLADO: 1 passed in 1.59s (pytest-rerun-renew.log).
+   -> FLAKE de timing/carga: esta máquina tarda 38:52 en la suite completa (CI: 21:50);
+      aislado no reproduce. No es defecto determinista.
+
+2) tests/test_runtime_vault_mutation_executor.py::TestRigRealSobreArbolDescartable::
+   test_apply_real_con_fallo_dispara_rollback_exacto
+   MutationRollbackError: Fallo restaurando 'Data/Scripts': CreateFileW falló al
+   abrir '...\Temp\SkyClaw-S4B-RIG-...\Data\Scripts' para seguridad: código 5
+   Re-corrido AISLADO: 1 failed in 0.34s (pytest-rerun-rig.log) -> determinista.
+   Causa: sesión con integridad Media (NO elevada; IsInRole(Administrator)=False,
+   whoami /groups -> S-1-16-8192). El runner windows-latest de GitHub corre elevado.
+   -> ENTORNO/PRIVILEGIOS del host, no código de #661. (El test no se auto-skipea
+      sin privilegios: debilidad del test.)
+
+3) tests/test_worktree_convention_invariant.py::
+   test_los_worktrees_no_principales_viven_bajo_la_convencion
+   AssertionError: Fuera de convención: ... 15 rutas ...
+   (<WORKTREE_AJENO> E:/SkyClaw_*..., E:/Skyclaw_Main_Sync/.claude/worktrees/...)
+   El test censa el registro REAL de git del host; hay 15 worktrees de OTRAS sesiones
+   fuera de la tabla LEGADOS de AGENTS.md.
+   -> ESTADO DEL HOST, no del código del worktree; pasaría en CI (checkout limpio).
+
+Ninguno de los 3 fallos pertenece a las suites DynDOLOD/UIA de #661: los tres quedan
+fuera de la expresión -k del gate 5, que quedó 100% verde.
+
+--------------------------------------------------------------------------------
+EXTRA — ROJO DE CI (no es gate local): causa y evidencia
+--------------------------------------------------------------------------------
+Workflow: Sky-Claw CI/CD | Job: "🧪 Tests / windows-latest / py3.11"
+Run: 39314592197 (push main, 6abf20d0) | Job id: 118272660074
+Test que falló:
+  tests/test_lock_cancelacion_adquisicion.py::test_la_liberacion_es_idempotente_y_no_borra_la_lease_readquirida[legacy]
+    AssertionError: assert 1792440151.8032343 != 1792440151.8032343
+Resumen pytest: 1 failed, 11912 passed, 24 skipped, 135 warnings in 1310.24s
+Pata py3.12 del MISMO commit: success (falla intermitente dependiente del reloj).
+Causa: producto. acquired_at (token de fencing) se acuña con time.time()
+  (sky_claw/app/db/locks.py:421,430) y en Windows py<3.13 el reloj avanza a saltos
+  de ~15,6 ms; dos adquisiciones en el mismo tick comparten token y el release/renew
+  tardío de un titular viejo matchea la lease readquirida (_RELEASE_SQL/_RENEW_SQL
+  matchean acquired_at). El test afirma el invariante de fencing correcto.
+Fix: PR #750 abierto, NO fusionado en 6abf20d0 ("No fusionar sin autorización").
+  Su run de pull_request (39317300446) está VERDE 12/12; su run de push
+  (39317292117) está ROJO por OTRO test (timeout de 5 s en
+  test_runtime_vault_operator_verifier.py::…::test_second_pass_real_independence)
+  -> flake de infra/performance, no del fix.
+PR #740 (merge commit 3e89ff3ad42e1fdca73058c67359bfaf129dc305):
+  MERGED 2026-10-18T09:55:40Z. gh pr checks 740 -> 31 checks, 0 fail.
+  Push CI sobre 3e89ff3a (run 39117250106) -> success 12/12 jobs.
+Detalle completo: ci-audit.md (mismo scratch).
+
+REAL vs SIMULADO (explícito):
+- REAL: todos los gates de arriba son ejecuciones reales en esta máquina.
+- REAL: tests/test_lock_cancelacion_adquisicion.py corrido local -> 56 passed in
+  49.17s (el test pasa acá porque el reloj local tiene ~1,0 ms de granularidad).
+- SIMULADO: repro_token_fencing_reloj_grueso.py cuantiza time.time() a 15,625 ms
+  (condición del runner, NO la de esta máquina) y corre el manager REAL:
+  178/200 tokens colisionados y 178/178 releases tardíos borraron la lease
+  readquirida. Es simulación de la condición de reloj, no una corrida en GitHub.
+- Las suites de DynDOLOD/UIA usan dobles (COM falsificado, procesos mockeados,
+  _dyndolod_gui_simulada): verifican contratos/orquestación, NO un end-to-end
+  real con DynDOLOD/TexGen (prohibido en esta tarea).
+================================================================================
+
+--------------------------------------------------------------------------------
+GATE 4-bis - git diff --check sobre el conjunto de evidencia FINAL (revision P2)
+--------------------------------------------------------------------------------
+El GATE 4 original se habia corrido ANTES de escribir la evidencia (ver nota de
+arriba). Se re-ejecuto al preparar el commit de correcciones de revision, con el
+arbol completo staged:
+
+$ git -C <worktree> add -A
+$ git -C <worktree> diff --check --cached
+(sin salida)
+exit code: 0
+
+Contexto del hallazgo (commit de evidencia previo, e5110a4c):
+$ git diff --check 6abf20d0..e5110a4c
+docs/validation/2026-10-19_pr661_unattended_windows_real_rig/final-report.md:375: new blank line at EOF.
+exit code: 2
+=> defecto real: linea en blanco final en final-report.md. Se elimino (el archivo
+termina en un unico LF) y el gate sobre el conjunto final da exit 0.
+
+Base de ejecucion de la suite: 6abf20d0. Despues del rig, main avanzo (PR #750
+mergeado como 99aaba03, #753, #755); los tests NO se re-ejecutaron sobre esos
+commits y este paquete no integra cambios de produccion.

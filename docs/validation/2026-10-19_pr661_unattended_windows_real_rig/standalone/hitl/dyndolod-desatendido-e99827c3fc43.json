@@ -1,0 +1,8 @@
+{
+  "request_id": "dyndolod-desatendido-e99827c3fc43",
+  "category": "dyndolod_desatendido",
+  "reason": "Etapa 9 DESATENDIDA (TexGen → DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+  "detail": "preset pedido: Medium\nTexGen 3.0.0.209 (sha256 0939bc8f8cba…) · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini (huella d01afd101da9…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\TexGen\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+  "url": null,
+  "created_at": "2026-10-19T17:59:45-0300"
+}

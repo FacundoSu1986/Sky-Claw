@@ -1,0 +1,62 @@
+{
+  "texgen": {
+    "antes": {
+      "TexGen": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+        "existe": true,
+        "sha256": "75c4aa4a5746d24f32bb2be455c5ee13b0db1f87e3412a9eb463c90f5e87ba8e",
+        "bytes": 1705
+      },
+      "DynDOLOD": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+        "existe": true,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4",
+        "bytes": 24061
+      }
+    },
+    "despues": {
+      "TexGen": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+        "existe": true,
+        "sha256": "75c4aa4a5746d24f32bb2be455c5ee13b0db1f87e3412a9eb463c90f5e87ba8e",
+        "bytes": 1705
+      },
+      "DynDOLOD": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+        "existe": true,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4",
+        "bytes": 24061
+      }
+    }
+  },
+  "dyndolod": {
+    "antes": {
+      "TexGen": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+        "existe": true,
+        "sha256": "75c4aa4a5746d24f32bb2be455c5ee13b0db1f87e3412a9eb463c90f5e87ba8e",
+        "bytes": 1705
+      },
+      "DynDOLOD": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+        "existe": true,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4",
+        "bytes": 24061
+      }
+    },
+    "despues": {
+      "TexGen": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini",
+        "existe": true,
+        "sha256": "75c4aa4a5746d24f32bb2be455c5ee13b0db1f87e3412a9eb463c90f5e87ba8e",
+        "bytes": 1705
+      },
+      "DynDOLOD": {
+        "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini",
+        "existe": true,
+        "sha256": "e728f1f36171c50f4db386ac56db24b4dfce726261a2d55911ee4a8736209dc4",
+        "bytes": 24061
+      }
+    }
+  }
+}

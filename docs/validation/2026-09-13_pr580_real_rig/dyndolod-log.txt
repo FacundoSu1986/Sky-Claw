@@ -59,7 +59,7 @@ Loading active plugin list: C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
 [00:03] xEdit Background Loader: finished
 <Error: File not found C:\Modding\DynDOLOD RigTest\_rig_test\SkyrimSE.exe>
 Program: C:\Modding\DynDOLOD RigTest\DynDOLODx64.exe, Version: 3.0.0.209, Date: 2026-08-02 18:26:31
-Started by: C:\Users\Facu2\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
+Started by: C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
 External: C:\Modding\DynDOLOD RigTest\Edit Scripts\Texconvx64.exe, Version: 1.0.0.0, Date: 2026-05-07 22:00:00
 External: C:\Modding\DynDOLOD RigTest\Edit Scripts\LODGenx64Win6.exe, Version: 3.1.5, Date: 2026-08-01 22:00:00
 DynDOLOD Resources SE: 3.00 <= 3.00 <= 3.00

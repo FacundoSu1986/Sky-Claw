@@ -101,10 +101,16 @@ from sky_claw.local.frozen_runtime.errors import (
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace, exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.journal import (
+    CAMPOS_DEL_SCOPE_LIGADOS,
     AprobacionConsumida,
+    PropuestaTransicion,
+    ProyeccionScope,
     SourceActivation,
     digest_canonico,
+    exigir_proyeccion_ligada,
     leer_json_de_control,
+    proyectar_propuesta,
+    validar_propuesta_transicion,
 )
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle, participant_lock
 from sky_claw.local.frozen_runtime.storage import (
@@ -115,7 +121,7 @@ from sky_claw.local.frozen_runtime.storage import (
 )
 
 APPROVAL_LEDGER_SCHEMA_VERSION = 1
-ISSUANCE_WITNESS_SCHEMA_VERSION = 1
+ISSUANCE_WITNESS_SCHEMA_VERSION = 2
 TERMINAL_TOMBSTONE_SCHEMA_VERSION = 1
 
 #: Censo normativo del ``ApprovalScope`` (§38.5). Es una constante, no un
@@ -298,6 +304,12 @@ class IssuanceWitness:
     ``ledger_revision_at_issue`` permite reparar un ledger atrasado de forma
     determinista: el witness guarda la terna completa y la revisión sobre la que
     se emitió.
+
+    ``scope_payload`` (P4-S5) son los 13 campos canónicos que el digest
+    compromete. Hasta P4-S4 el witness sólo guardaba el digest, así que la única
+    forma de saber qué se había aprobado era preguntárselo a quien lo
+    presentaba — y un digest no se puede comparar campo por campo contra una
+    transición. Con el payload durable el binding compara contra lo EMITIDO.
     """
 
     schema_version: int
@@ -306,6 +318,7 @@ class IssuanceWitness:
     approval_id: str
     approval_scope_digest: str
     approval_provenance: str
+    scope_payload: dict[str, object]
     issued_at_ns: int
     ledger_revision_at_issue: int
 
@@ -391,6 +404,7 @@ class ResultadoConsumo:
     approval_seq: int
     scope_digest: str
     consumed_by_transition_id: str
+    proyeccion: ProyeccionScope
     terminal_path: pathlib.Path
     cache_reconciled: bool
 
@@ -401,6 +415,7 @@ class ResultadoConsumo:
             approval_seq=self.approval_seq,
             scope_digest=self.scope_digest,
             consumed_by_transition_id=self.consumed_by_transition_id,
+            proyeccion=self.proyeccion,
         )
 
 
@@ -516,6 +531,35 @@ def payload_scope_sin_digest(scope: ApprovalScope) -> dict[str, object]:
 def calcular_approval_scope_digest(scope: ApprovalScope) -> str:
     """SHA-256 del scope sin el propio digest (§38.5)."""
     return digest_canonico(payload_scope_sin_digest(scope))
+
+
+def proyectar_scope(scope: ApprovalScope) -> ProyeccionScope:
+    """Proyecta el scope al espacio comparable con una transición (P4-S5).
+
+    Itera ``CAMPOS_DEL_SCOPE_LIGADOS`` en vez de listar los campos a mano: el
+    mismo mapa gobierna la comparación, así que un campo nuevo del scope entra en
+    los dos lados o rompe el ancla de censo. Una lista paralela se desactualiza
+    sin ruido, que es exactamente cómo se pierde cobertura.
+    """
+    valores: dict[str, object] = {}
+    for campo_scope, campo_proyeccion in CAMPOS_DEL_SCOPE_LIGADOS.items():
+        valor = getattr(scope, campo_scope)
+        valores[campo_proyeccion] = valor.value if campo_scope == "operation" else valor
+    return ProyeccionScope(**valores)  # type: ignore[arg-type]
+
+
+def proyeccion_desde_witness(witness: IssuanceWitness) -> ProyeccionScope:
+    """Proyección del scope DURABLE, ya verificado contra su payload (§38.5).
+
+    Es la fuente que el journal compara contra la transición declarada. Que salga
+    del witness y no del llamador es lo que hace que el chequeo no sea
+    tautológico: el llamador no puede influir en este lado de la comparación.
+    """
+    payload = witness.scope_payload
+    valores = {
+        campo_proyeccion: payload[campo_scope] for campo_scope, campo_proyeccion in CAMPOS_DEL_SCOPE_LIGADOS.items()
+    }
+    return ProyeccionScope(**valores)  # type: ignore[arg-type]
 
 
 def _validar_source_activation(fuente: object, *, etiqueta: str) -> SourceActivation:
@@ -717,10 +761,37 @@ _CAMPOS_WITNESS = frozenset(
         "approval_id",
         "approval_scope_digest",
         "approval_provenance",
+        "scope_payload",
         "issued_at_ns",
         "ledger_revision_at_issue",
     }
 )
+
+#: Los 13 campos que el ``approval_scope_digest`` compromete (§38.5), en la forma
+#: canónica que produce ``payload_scope_sin_digest``. Es un ``frozenset`` literal
+#: y no una derivación de ``payload_scope_sin_digest`` porque el parser valida un
+#: payload CRUDO: derivarlo de una función que exige un ``ApprovalScope`` ya
+#: construido sería circular (para construir el scope hay que haberlo parseado).
+_CAMPOS_SCOPE_PAYLOAD = frozenset(
+    {
+        "operation",
+        "source_activation",
+        "source_activation_digest",
+        "generation_id",
+        "clone_id",
+        "clone_evidence",
+        "runtime_setup_id",
+        "runtime_setup_evidence",
+        "compatibility_evidence_id",
+        "candidate_id",
+        "approval_id",
+        "approval_seq",
+        "approval_provenance",
+    }
+)
+
+#: Campos de ``SourceActivation`` tal como los serializa ``dataclasses.asdict``.
+_CAMPOS_SOURCE_ACTIVATION = frozenset({"generation_id", "clone_id", "runtime_setup_id", "effective_runtime_evidence"})
 
 _CAMPOS_TOMBSTONE = frozenset(
     {
@@ -886,9 +957,44 @@ def _serializar_witness(witness: IssuanceWitness) -> dict[str, object]:
         "approval_id": witness.approval_id,
         "approval_scope_digest": witness.approval_scope_digest,
         "approval_provenance": witness.approval_provenance,
+        "scope_payload": witness.scope_payload,
         "issued_at_ns": witness.issued_at_ns,
         "ledger_revision_at_issue": witness.ledger_revision_at_issue,
     }
+
+
+def _validar_scope_payload(payload: object, *, etiqueta: str, digest_esperado: str) -> dict[str, object]:
+    """Valida el payload canónico del scope y RECOMPUTA su digest (§38.5).
+
+    ``root_id`` ya se verificaba al leer (P4-S4): un campo durable que sólo se
+    escribe es decoración. El scope hace lo mismo. Sin esta revalidación el
+    witness sería un lugar donde el digest viaja junto a un payload que no lo
+    produce, y el binding compararía contra un scope que nadie aprobó.
+
+    Se compara contra el digest del PROPIO payload (no contra el del nombre ni el
+    del ledger): los tres tienen que coincidir, y eso lo chequea el caller.
+    """
+    if not isinstance(payload, dict):
+        raise ApprovalSchemaError(f"{etiqueta}: 'scope_payload' debe ser un objeto JSON")
+    faltantes = sorted(set(_CAMPOS_SCOPE_PAYLOAD) - set(payload))
+    sobrantes = sorted(set(payload) - set(_CAMPOS_SCOPE_PAYLOAD))
+    if faltantes or sobrantes:
+        raise ApprovalSchemaError(
+            f"{etiqueta}: 'scope_payload' no es el conjunto canónico de 13 campos "
+            f"(faltantes {faltantes}, sobrantes {sobrantes})"
+        )
+    fuente = payload["source_activation"]
+    if not isinstance(fuente, dict) or set(fuente) != set(_CAMPOS_SOURCE_ACTIVATION):
+        raise ApprovalSchemaError(
+            f"{etiqueta}: 'scope_payload.source_activation' debe tener exactamente {sorted(_CAMPOS_SOURCE_ACTIVATION)}"
+        )
+    calculado = digest_canonico(payload)
+    if calculado != digest_esperado:
+        raise ApprovalIdentityError(
+            f"{etiqueta}: 'scope_payload' no recomputa el approval_scope_digest declarado "
+            f"(calculado {calculado}, declarado {digest_esperado}): el scope durable fue adulterado"
+        )
+    return payload
 
 
 def _parsear_witness(
@@ -910,17 +1016,17 @@ def _parsear_witness(
         )
     root_id = _exigir_texto(payload["root_id"], campo="root_id", etiqueta=etiqueta)
     _exigir_root_local(root_id, esperado=root_id_esperado, ruta=ruta)
+    digest = _exigir_digest(payload["approval_scope_digest"], campo="approval_scope_digest", etiqueta=etiqueta)
     return IssuanceWitness(
         schema_version=version,
         root_id=root_id,
         approval_seq=seq,
         approval_id=_exigir_uuid_v4(payload["approval_id"], campo="approval_id", etiqueta=etiqueta),
-        approval_scope_digest=_exigir_digest(
-            payload["approval_scope_digest"], campo="approval_scope_digest", etiqueta=etiqueta
-        ),
+        approval_scope_digest=digest,
         approval_provenance=_exigir_texto(
             payload["approval_provenance"], campo="approval_provenance", etiqueta=etiqueta
         ),
+        scope_payload=_validar_scope_payload(payload["scope_payload"], etiqueta=etiqueta, digest_esperado=digest),
         issued_at_ns=_exigir_entero(payload["issued_at_ns"], campo="issued_at_ns", etiqueta=etiqueta, minimo=0),
         ledger_revision_at_issue=_exigir_entero(
             payload["ledger_revision_at_issue"], campo="ledger_revision_at_issue", etiqueta=etiqueta, minimo=0
@@ -1753,6 +1859,12 @@ def _emitir_aprobacion_bajo_lock(
         approval_id=scope.approval_id,
         approval_scope_digest=scope.approval_scope_digest,
         approval_provenance=scope.approval_provenance,
+        # Se sella el payload CANÓNICO desde el scope ya validado, no desde el
+        # que trajo el llamador: `validar_scope` recomputó el digest sobre estos
+        # mismos 13 campos, así que lo que queda durable es lo que el digest
+        # compromete. Guardarlo sin recomputar sería el mismo defecto P2, mudado
+        # del journal al witness.
+        scope_payload=payload_scope_sin_digest(scope),
         issued_at_ns=propuesta.proposed_at_ns,
         ledger_revision_at_issue=propuesta.ledger_revision_at_proposal,
     )
@@ -1881,6 +1993,7 @@ def consumir_aprobacion(
     approval_seq: int,
     approval_scope_digest: str,
     transition_id: str,
+    transicion: PropuestaTransicion,
     timeout: float = 0.0,
     clock_ns: Callable[[], int] = time.time_ns,
 ) -> ResultadoConsumo:
@@ -1891,6 +2004,12 @@ def consumir_aprobacion(
     puede terminalizar una aprobación válida ni dejar el root fail-closed para
     siempre (§37.2/R11.2).
 
+    ``transicion`` (P4-S5) es OBLIGATORIA y no tiene default: el consumo es
+    burn-first, así que si el binding no se comprueba acá, comprobarlo después
+    llega tarde — la aprobación ya está quemada y el dueño se queda sin
+    aprobación y sin transición. La igualdad se verifica en la fase [V] contra el
+    scope DURABLE del witness, no contra el digest que aporta el llamador.
+
     Es una entrada PRODUCTIVA de la maquinaria de transición, no una
     autorización: exige una aprobación ``ISSUED`` que sólo la superficie HITL
     podría emitir. Sin emisión previa falla cerrado.
@@ -1900,6 +2019,20 @@ def consumir_aprobacion(
     _exigir_entero(approval_seq, campo="approval_seq", etiqueta="consumo", minimo=1)
     _exigir_digest(approval_scope_digest, campo="approval_scope_digest", etiqueta="consumo")
     _exigir_uuid_v4(transition_id, campo="transition_id", etiqueta="consumo")
+    if not isinstance(transicion, PropuestaTransicion):
+        raise ApprovalSchemaError("consumo: 'transicion' debe ser PropuestaTransicion (el binding es obligatorio)")
+    if transicion.transition_id != transition_id:
+        raise ApprovalIdentityError(
+            f"consumo: la transición declarada es {transicion.transition_id}, no {transition_id}"
+        )
+    # P4-S5 / burn-first: la FORMA de la propuesta se valida acá, antes del lock y
+    # por lo tanto antes del tombstone. El binding de más abajo liga los campos del
+    # scope, pero no puede ver si el CONTENIDO de ``source_activation`` corresponde
+    # a su digest —se liga por digest, que es lo correcto— ni si ``evidence_digests``
+    # es del tipo declarado. Sin este gate, el tombstone se escribe y recién el
+    # CREATE rechaza: la aprobación queda terminal sin PENDING, y el consumo es
+    # irreversible. Un request malformado NO terminaliza.
+    validar_propuesta_transicion(transicion)
     with participant_lock(ruta, timeout=timeout) as handle:
         handle.assert_owned()
         _exigir_dirs_store(ruta)
@@ -1954,6 +2087,22 @@ def consumir_aprobacion(
             raise ApprovalIdentityError(
                 f"el witness de la seq {approval_seq} no coincide con la aprobación presentada: FAIL_CLOSED"
             )
+        # P4-S5 — BINDING, y va ACÁ a propósito: después de confirmar que la
+        # aprobación es la emitida (así se liga contra el scope correcto) y ANTES
+        # del branch de estado, para que el reintento idempotente verifique lo
+        # mismo que el consumo nuevo. Si estuviera debajo, un reintento con otro
+        # material se colaría por la rama «ya consumido».
+        #
+        # El lado izquierdo sale del WITNESS (payload durable con digest
+        # recomputado al leer); el derecho, de la transición declarada. Comparar
+        # el digest del llamador contra el digest durable —lo que hacía P4-S4—
+        # no probaba nada sobre los campos.
+        proyeccion = proyeccion_desde_witness(witness)
+        exigir_proyeccion_ligada(
+            proyeccion,
+            proyectar_propuesta(transicion, approval_id=approval_id, approval_seq=approval_seq),
+            etiqueta=f"consumo de {approval_seq} por {transition_id}",
+        )
         if ledger.state is ApprovalLifecycle.CONSUMED:
             # REINTENTO IDEMPOTENTE: el consumo YA ocurrió y la respuesta se
             # perdió. Sólo es idempotente para la MISMA transición; otra
@@ -1975,6 +2124,7 @@ def consumir_aprobacion(
                 approval_seq=approval_seq,
                 scope_digest=approval_scope_digest,
                 consumed_by_transition_id=transition_id,
+                proyeccion=proyeccion,
                 terminal_path=approvals_state_dir(ruta) / _nombre_tombstone(approval_seq, approval_id),
                 cache_reconciled=False,
             )
@@ -1998,6 +2148,7 @@ def consumir_aprobacion(
                 approval_seq=approval_seq,
                 scope_digest=approval_scope_digest,
                 consumed_by_transition_id=transition_id,
+                proyeccion=proyeccion,
                 terminal_path=approvals_state_dir(ruta) / _nombre_tombstone(approval_seq, approval_id),
                 cache_reconciled=reconciliado is not None and reconciliado.state is ApprovalLifecycle.CONSUMED,
             )
@@ -2043,6 +2194,7 @@ def consumir_aprobacion(
             approval_seq=approval_seq,
             scope_digest=approval_scope_digest,
             consumed_by_transition_id=transition_id,
+            proyeccion=proyeccion,
             terminal_path=terminal_path,
             cache_reconciled=cache_reconciled,
         )
@@ -2160,6 +2312,7 @@ def verificar_consumo_aprobacion(
     approval_seq: int,
     approval_scope_digest: str,
     transition_id: str,
+    transicion: PropuestaTransicion,
 ) -> AprobacionConsumida:
     """Cross-check de LECTURA que el ``CREATE`` del journal exige (§36.6).
 
@@ -2168,8 +2321,24 @@ def verificar_consumo_aprobacion(
     consumidora sea exactamente la que va a crear el PENDING. Es el puente
     P4-S3 ↔ P4-S4: la autoridad durable existe, la transición todavía no se
     habilita.
+
+    ``transicion`` (P4-S5) se verifica acá también, y la evidencia devuelta lleva
+    la proyección del scope DURABLE —leída del witness de emisión, con su digest
+    recomputado—. Esa proyección es la que el journal compara después contra la
+    propuesta: si saliera de la transición del llamador, el chequeo del journal
+    compararía al llamador consigo mismo.
     """
     ruta = pathlib.Path(root)
+    if not isinstance(transicion, PropuestaTransicion):
+        raise ApprovalSchemaError("verificación: 'transicion' debe ser PropuestaTransicion (el binding es obligatorio)")
+    if transicion.transition_id != transition_id:
+        raise ApprovalIdentityError(
+            f"verificación: la transición declarada es {transicion.transition_id}, no {transition_id}"
+        )
+    # Mismo gate de forma que el consumo, y por la misma razón: la verificación es
+    # el puente hacia el CREATE, así que una propuesta que el journal rechazaría no
+    # debe llegar a producir evidencia de consumo.
+    validar_propuesta_transicion(transicion)
     autoridad = derivar_autoridad_aprobacion(ruta)
     tombstone = _tombstone_de(autoridad, approval_seq, approval_id)
     if tombstone is None:
@@ -2188,11 +2357,21 @@ def verificar_consumo_aprobacion(
             f"la aprobación fue consumida por la transición {tombstone.consumed_by_transition_id}, "
             f"no por {transition_id}: no puede crear una segunda transición (§35.2)"
         )
+    witness = next((item for item in autoridad.witnesses if item.approval_seq == approval_seq), None)
+    if witness is None:
+        raise ApprovalIdentityError(f"no hay witness de emisión para la seq {approval_seq}")
+    proyeccion = proyeccion_desde_witness(witness)
+    exigir_proyeccion_ligada(
+        proyeccion,
+        proyectar_propuesta(transicion, approval_id=approval_id, approval_seq=approval_seq),
+        etiqueta=f"verificación de {approval_seq} por {transition_id}",
+    )
     return AprobacionConsumida(
         approval_id=tombstone.approval_id,
         approval_seq=tombstone.approval_seq,
         scope_digest=tombstone.approval_scope_digest,
         consumed_by_transition_id=transition_id,
+        proyeccion=proyeccion,
     )
 
 

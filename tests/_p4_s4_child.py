@@ -99,6 +99,40 @@ def _modo_emitir(root: pathlib.Path, args: dict) -> dict:
     }
 
 
+def _transicion_desde_scope(scope: dict, digest: str, transition_id: str) -> object:
+    """Transición LEGÍTIMA: proyecta exactamente el scope emitido (P4-S5).
+
+    Se reconstruye desde el payload canónico del scope durable en vez de
+    repetir constantes: si el scope cambia, la transición lo sigue, y el caso de
+    concurrencia sigue midiendo el single-use y no un desajuste de material.
+    """
+    from sky_claw.local.frozen_runtime.journal import (
+        EvidenceDigests,
+        JournalOperation,
+        PropuestaTransicion,
+        SourceActivation,
+    )
+
+    return PropuestaTransicion(
+        transition_id=transition_id,
+        operation=JournalOperation(scope["operation"]),
+        source_activation=SourceActivation(**scope["source_activation"]),
+        source_activation_digest=scope["source_activation_digest"],
+        target_generation_id=scope["generation_id"],
+        target_clone_id=scope["clone_id"],
+        target_runtime_setup_id=scope["runtime_setup_id"],
+        candidate_id=scope["candidate_id"],
+        approval_scope_digest=digest,
+        evidence_digests=EvidenceDigests(
+            clone_evidence=scope["clone_evidence"],
+            runtime_setup_evidence=scope["runtime_setup_evidence"],
+            compatibility_evidence=scope["compatibility_evidence_id"],
+        ),
+        expected_effective_path=f"E:/rt/versions/{scope['generation_id']}",
+        created_at_ns=1_700_000_000_000_000_000,
+    )
+
+
 def _modo_consumir(root: pathlib.Path, args: dict) -> dict:
     from sky_claw.local.frozen_runtime.approval import consumir_aprobacion
 
@@ -108,6 +142,7 @@ def _modo_consumir(root: pathlib.Path, args: dict) -> dict:
         approval_seq=args["approval_seq"],
         approval_scope_digest=args["digest"],
         transition_id=args["transition_id"],
+        transicion=_transicion_desde_scope(args["scope"], args["digest"], args["transition_id"]),
         timeout=args.get("lock_timeout", 30.0),
     )
     return {

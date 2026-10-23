@@ -21,7 +21,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - Comparar contra la salida de una herramienta cerrada es **evaluación** y nunca retroalimenta el
   diseño; usarla como etiqueta de entrenamiento o para ajustar umbrales está prohibido.
 - Hoy ningún camino de producción importa `native_parallax.research`.
-- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `gates.py`, `integrate.py`, `metrics.py`, `_extra.py`, `bench/` y `experiments/`) **no importa** `research` y carga `numpy` y
+- El producto (todo lo que no es `research/`; hoy `decode.py`, `espectral.py`, `export.py`, `gates.py`, `integrate.py`, `metrics.py`, `_extra.py`, `bench/` y `experiments/`) **no importa** `research` y carga `numpy` y
   Pillow de forma perezosa: pertenecen al extra opcional `native-parallax` (lock propio
   `requirements-native-parallax.lock`, ver su cabecera para regenerarlo), no al runtime base. Ancla:
   `tests/test_native_parallax_producto_invariant.py` (ADR 0014, decisiones 2 y 3).
@@ -50,6 +50,14 @@ La política clean-room, `docs/design/research/native-parallax/` y
   la definición de una métrica, subí `VERSION_DE_METRICAS`. Solo `gates.py` conoce `UMBRALES_VIGENTES`: los demás
   llaman a `decidir`, no comparan por su cuenta. Publicar el primer registro es una decisión de política del
   operador (tolerancia, confianza, tasa de revisión máxima) y cambia el ancla: no lo hagas de pasada.
+- `export.py` (NP-E0a) es el núcleo puro del exportador DDS y **fail-closed**: sin `TEXCONV_PIN_VIGENTE` (versión + SHA-256
+  del binario oficial; hoy el `texconv` `may2026`, congelado por igualdad) no se ejecuta `texconv`; cambiarlo es una decisión
+  del operador con evidencia nueva, y cambia el ancla. Los mips son promedio de área en float64 redondeado una vez a float32 (nunca POINT ni
+  curva sRGB sobre la altura); el validador de contenedor acepta SOLO BC4 UNORM 2-D con payload exacto. El ÚNICO módulo que
+  ejecuta `texconv` es `sky_claw/local/tools/texconv_runner.py` (NP-E0b; ancla `tests/test_texconv_invariant.py`), con los
+  flags verificados ejecutando (`ARGUMENTOS_BC4`): no inventes flags, verificalos contra el binario real
+  (`tests/test_texconv_real.py`, Windows, con `SKYCLAW_TEXCONV_EXE`). Tests en
+  `tests/test_native_parallax_export.py` (el helper de DDS es independiente del módulo; no lo reemplaces por código de `export.py`).
 - `experiments/convencion.py` (NP-X0a) MIDE la convención del canal G leyendo solo píxeles y no corrige nada: la
   convención la fija la fuente del archivo y la lectura solo puede corroborarla. Es un indicio con abstención
   (`tiene_senal`, `elegida` puede ser `None`): solo 7 de los 15 casos sintéticos son detectables (la detectabilidad es
@@ -62,6 +70,69 @@ La política clean-room, `docs/design/research/native-parallax/` y
   y su tolerancia son declaradas, sin valor por defecto; para estimar sin fuga usá `simular_dejando_un_caso_fuera`. Los
   números salen del corpus sintético y no son la tasa de revisión del producto (que es 100 % sin registro validado). El
   gate no detecta una inversión global X+Y cuando la altura sale de la misma normal; ver ADR 0014, "Actualización de NP-X0b".
+- `output.py` (NP-O0a) es el núcleo puro de la salida gestionada: decide, sin tocar el disco, quién es dueño de qué
+  (`Manifiesto`), cuándo se saltea un archivo (`clave_de_cache`) y qué hacer con cada ruta (`planificar`). **El manifiesto es
+  la única prueba de propiedad**: un archivo que no figura en él, o que figura pero cambió de contenido, no se pisa
+  (`PRESERVE_EXISTING`). La tabla estado → acción se enumera entera (15 estados) por igualdad literal en
+  `tests/test_native_parallax_output.py`; no agregues una dimensión de estado sin ampliarla. Solo `output.py` puede nombrar
+  `NOMBRE_DEL_MOD_DE_SALIDA` y es puro por imports (ambos anclados por AST): el disco, la hora y el entorno los trae el
+  llamador. Todo campo nuevo de `Procedencia` o de `EncoderUsado` tiene que entrar a la clave (el test lo enumera por
+  introspección), y cambiar el formato de la clave o del manifiesto exige subir `ESQUEMA_DEL_MANIFIESTO`. **Lo que NO hace** y
+  debe resolver el escritor (NP-O0b): tomar el lock cross-process (solo protege si TODOS los mutadores participan), volver a
+  comprobar la huella `sha256_autorizado` justo antes de tocar un archivo, publicar por etapas y escribir el manifiesto al
+  final, y recuperarse de un corte a mitad. Ver ADR 0014, "Actualización de NP-O0a".
+  **`reconciliar_tras_corte` (NP-O0b1)** es la mitad pura de «recuperarse de un corte»: dado el manifiesto vigente, el pendiente y lo que el
+  escritor vio en disco y en su papelera, decide qué manifiesto queda, qué devolver y qué descartar. Su tabla de 75 estados se enumera
+  por igualdad literal en `tests/test_native_parallax_output_recuperacion.py`; no agregues una dimensión sin ampliarla. Parte del
+  protocolo del escritor (intención antes de tocar, apartar y verificar, compromiso al final, pendiente borrado último, nunca borrar de la
+  papelera lo que no sea una huella vigente y volver a calcularla justo antes de borrar, devolver a su ruta vacía lo apartado aunque no
+  sea nuestro, y rechazar antes de tocar nada el lote cuya `cota_del_manifiesto_tras_un_corte` no quepa): ver ADR 0014,
+  "Actualización de NP-O0b1". La propiedad de la papelera es una sola para el camino sin corte y para la recuperación: lo apartado que
+  no es lo autorizado vuelve a su ruta si está vacía y no se borra nunca; arreglar uno sin el otro es el defecto del hermano.
+- `output_writer.py` (NP-O0b2) es el **único** módulo que toca el mod de salida y cumple ese protocolo. Todo cambio al mod pasa por una
+  `SesionDeSalida` (`abrir_sesion_de_salida`: toma el lock cross-process, recupera y recién ahí deja planificar y aplicar); no hay otra puerta, y
+  el ancla `tests/test_native_parallax_output_writer.py` lo enumera por AST: una función nueva que toque el disco, o una que nombre una unidad
+  que escribe fuera de la sesión, rompe el test a propósito (decidí si participa del lock). Una ruta cuyo disco cambió entre planificar y aplicar
+  no levanta: queda `CONFLICTO` y no se pisa. Los puntos de corte (`_punto_de_corte`) están congelados y el test corta el proceso en cada uno;
+  agregar uno sin cubrirlo rompe el ancla. Cuatro propiedades más, de la revisión de #782 y con su ancla en el mismo archivo: toda carpeta que
+  crea dentro del mod, de salida o de control, pasa por `_crear_carpeta_contenida` (contención antes y después; al abrir se rechaza una
+  `staging/` o `trash/` que sea un enlace o un junction); todo borrado de la papelera rehace la huella en ese instante
+  (`_borrar_si_es_el_autorizado`) y no poder borrar no aborta el lote; todo lo que corre en un hilo pasa por `_en_hilo`, que no suelta el lock
+  hasta que el hilo termina aunque cancelen la tarea; y toda ortografía de la misma carpeta física compite por un solo lock (`realpath`). Un
+  lote interrumpido después de escribir su intención inutiliza la sesión hasta reabrirla. Lo que queda en la papelera no se borra solo y se
+  avisa en toda apertura (`_avisar_de_sobrantes`); el tope de 1 GiB por archivo es uno solo (`output.TAMANO_MAXIMO_DEL_ARCHIVO`). No crea
+  `meta.ini` ni habilita el mod (es de NP-A0).
+  Ver ADR 0014, "Actualización de NP-O0b2".
+- `lote.py` y `cli.py` (NP-A0a) arman la tubería completa sobre las piezas de arriba (leer → integrar → medir → gate → exportar → escritor) y NO
+  agregan matemática: componen. Cuatro propiedades, con su ancla en `tests/test_native_parallax_lote.py` y `tests/test_native_parallax_cli.py`:
+  el lote es de DOS FASES (se calcula todo sin tocar la salida y recién después se abre UNA sesión del escritor, se planifica y se aplica); el gate
+  sigue siendo fail-closed y la política es explícita (una salida en `REVIEW` no se escribe salvo `escribir_revision`, que NO entra a la clave
+  de caché); la procedencia es la de lo que corrió (huella de la normal antes y después de decodificar, encoder que DEVOLVIÓ el exportador, parámetros
+  que cambian los bytes) y `bordes`/`escala_x`/`escala_y` viajan IGUALES a `integrar` y a cada métrica; las salidas de corridas anteriores se
+  conservan salvo `retirar_no_incluidas` (que exige una enumeración COMPLETA: lo no visto no se da por ausente). La raíz de salida se valida
+  ANTES de procesar nada (`validar_raiz_de_salida`), y el informe nunca se escribe dentro del mod. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La carpeta de
+  entrada la enumera `provider.py` (`cli.descubrir_normales_de_carpeta` es un adaptador delgado); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
+  `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
+  Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
+- `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
+  `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
+  propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
+  incluida, después de abrirla; un `*_p.dds` autoral no se pisa y se compara por `clave_de_ruta` en TODO el árbol, no por carpeta física; **lo no observado no se da por ausente** (`Descubrimiento.completo` es `False` si hubo `CARPETA_ILEGIBLE` o `ILEGIBLE`: quien retira salidas
+  por «ya no figura» la necesita completa); la huella se lee acotada por el tamaño validado y solo de lo que sobrevive; un archivo que falla no aborta
+  pero un exceso de entradas sí (nunca trunca); es determinista (orden por `clave_de_ruta`); el vocabulario de `MotivoDeOmision` está cerrado y clasificado
+  por igualdad literal (un motivo nuevo obliga a decidir si deja lo no observado). `NormalDescubierta` cumple `lote.NormalAProcesar`. La CLI lo usa (los tests de
+  su sección «Enumeración» son el contrato que cumple) y el lote le delega la lectura acotada (`huella_acotada`, UNA sola; la del lote se borró). Anclas por AST en
+  `tests/test_native_parallax_producto_invariant.py`: solo `provider.py` y `output_writer.py` enumeran carpetas y los lectores de archivo con huella están
+  congelados. Ver ADR 0014, "Actualización de NP-A0b" y "Cableado del proveedor a la CLI".
+- `diagnostico_texconv.py` (NP-A0c) es el diagnóstico PREVIO del `texconv` configurado: dice, en español y antes de exportar, si el binario
+  existe, si es un archivo, si se puede leer y si su huella es la del pin. Es puro y **no calcula ninguna huella**: delega en
+  `export.verificar_texconv` y traduce sus cuatro fallos (más «sin versión fijada») a un vocabulario CERRADO de siete estados con un mensaje
+  accionable. La ruta sale del argumento o de `SKYCLAW_TEXCONV_EXE` (el mismo nombre que lee `cli._resolver_texconv`), solo un valor vacío
+  cuenta como no configurado (la misma regla que la CLI; una tabla de entradas ancla que las dos elijan la misma ruta) y **la ruta no se recorta**: se usa como la escribió el llamador y el mensaje la muestra entre comillas angulares
+  con los controles escapados (recortarla aprobaría rutas que el exportador rechaza). `EstadoDeTexconv`, la superficie pública y las dos
+  validaciones del dato están congeladas por igualdad en `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario
+  rompe el test), y el módulo está en el censo de `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos.
+  Todavía NO está cableado a la CLI ni al registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c".
 
 ## Verificación segura
 

@@ -1,0 +1,49 @@
+{
+  "rig": "C:\\SkyClaw_Rigs\\SW661 Unattended",
+  "binding": {
+    "path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\.sky-claw-binding.json",
+    "contenido": {
+      "binding_id": "5b14cd20-61c1-4528-aabf-54115e072605",
+      "resource_binding": {
+        "game_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\game",
+        "mo2_instance_data_root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance",
+        "mo2_mods_path": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods"
+      },
+      "schema_version": 1
+    }
+  },
+  "data_aislado": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\game\\Data",
+    "existe": true,
+    "archivos": 22556,
+    "bytes": 18329994076
+  },
+  "tools": {
+    "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD",
+    "existe": true,
+    "archivos": 1226,
+    "bytes": 371444243
+  },
+  "game_ini": [
+    "Skyrim.ini",
+    "SkyrimPrefs.ini"
+  ],
+  "perfil_mo2": "UnattendedRig",
+  "decoys": {
+    "TexGen Output": {
+      "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods\\TexGen Output",
+      "existe": true,
+      "archivos": 1363,
+      "bytes": 138457918
+    },
+    "DynDOLOD Output": {
+      "root": "C:\\SkyClaw_Rigs\\SW661 Unattended\\mo2-instance\\mods\\DynDOLOD Output",
+      "existe": true,
+      "archivos": 5106,
+      "bytes": 722206775
+    }
+  },
+  "reparse_points_rig": 0,
+  "fuente_intocada": "C:\\SkyClaw_Rigs\\PR739 Data Path (solo lectura; conteos/bytes/mtime sin cambios)",
+  "nota": "Data del rig derivada de la composicion Stock 1.6.1170 + DynDOLOD Resources SE ya aislada en #739"
+}
