@@ -80,7 +80,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; NP-O0b2 (el escritor sobre el disco) hecho, ver «Actualización de NP-O0b2»; falta cablearlo al lote y al adaptador de MO2 (NP-A0) |
-   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | pendiente |
+   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | **parcial**: NP-A0a (lote de carpeta plana y línea de comandos, con una enumeración provisoria) hecho, ver «Actualización de NP-A0a»; falta el `provider.py` endurecido, el adaptador de MO2, la detección de `texconv` en el registro de tools y las superficies GUI/agente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
    La tabla es el camino de MODE 0. El resto del roadmap de Synthesis C (NP-H0, NP-AI0, NP-AI2, NP-CM,
@@ -1060,3 +1060,122 @@ crear enlaces dentro de la carpeta del mod ya puede mover o borrar esos mismos a
 despliegue no cumple esa suposición, esto es un riesgo real, y cerrarlo del todo pide operaciones por handle, que Windows no ofrece. (11) `clave_de_ruta` ignora mayúsculas (decisión de NP-O0a: Windows y Skyrim no las
 distinguen). En NTFS dos ortografías son el mismo archivo; en un sistema que sí las distingue (Linux no es plataforma de entrega) un cambio
 solo de mayúsculas no se reconcilia.
+
+### Actualización de NP-A0a (2026-10-23)
+
+NP-A0a entrega **la primera tubería de punta a punta**: `sky_claw/local/native_parallax/lote.py` (la composición, con el exportador inyectado) y
+`sky_claw/local/native_parallax/cli.py` (el borde de línea de comandos: `autoprueba` y `generar`), más la guía de operador
+`docs/operations/native_parallax_prueba_en_rig.md`. Existe para que el operador pueda correrla en un rig real con `texconv` de verdad: hasta acá,
+todo el producto se había verificado con datos sintéticos y tests. **No agrega matemática**: compone `decode`, `integrate`, `metrics`, `gates`,
+el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
+
+**Decisiones (nuestras, ancladas por `tests/test_native_parallax_lote.py` y `tests/test_native_parallax_cli.py`):**
+
+- **Dos fases.** (1) Se calcula todo sin tocar la salida (leer, integrar, normalizar, medir, decidir, exportar a un directorio de trabajo privado que
+  se borra siempre). (2) Se abre UNA sesión del escritor y se planifica y aplica el conjunto. La salida se toca una vez y bajo el lock; un archivo
+  que falla en (1) no frena a los demás. La lectura y la medición corren en un hilo (`asyncio.to_thread`) para que el latido del lock no se
+  detenga; cancelar el `await` no interrumpe ese hilo (límite ya documentado en `integrate.integrar`), pero ese hilo no toca el directorio de
+  trabajo. La escritura de la salida intermedia, que sí lo toca, espera al hilo aunque cancelen (`esperar_hilo_ininterrumpible`): el borrado del
+  trabajo no corre contra un archivo abierto.
+- **El gate sigue fail-closed y la política es explícita.** Sin umbrales validados todo es `REVIEW`, y una salida en `REVIEW` **no se escribe**
+  salvo `escribir_revision=True` (`--incluir-revision`). Sus métricas se miden y se informan igual: son los datos con los que se calibran los
+  umbrales. `escribir_revision` y `retirar_no_incluidas` son política y **no entran** a los bytes ni a la clave de caché (un test lo ancla: cambiarlas
+  deja la caché vigente). **Esta política es una decisión del operador, no una calibración**: publicar el primer registro de umbrales sigue
+  siendo de `gates.py` y no se hizo de pasada.
+- **La procedencia es la de lo que corrió.** La huella de la normal se calcula antes y después de decodificar y tienen que coincidir (si no, falla
+  esa ruta: «cambió mientras se procesaba»); el `EncoderUsado` sale de lo que DEVOLVIÓ el exportador, no de lo esperado; los parámetros que cambian
+  los bytes (`ParametrosDelLote.a_parametros_de_procedencia`, versión de la tubería incluida: `np-a0a.v1`) están congelados por igualdad literal,
+  y el entorno registra numpy, Pillow, plataforma y Python. La huella se lee acotada por `TAMANO_MAXIMO_DEL_ARCHIVO` (nunca más de `tope + 1`
+  bytes, aunque el origen no termine nunca: un test lo cuenta).
+- **Los parámetros viajan iguales.** `bordes`, `escala_x` y `escala_y` llegan idénticos a `integrar`, `acuerdo_normal` y
+  `residuo_de_integrabilidad` (un test espía las tres llamadas): mezclarlos mezclaría dos dominios en una misma medición, que es lo que
+  `experiments/medicion.py` ya había fijado para el corpus. La convención de la fuente (`directx` u `opengl`) es un parámetro del lote y entra a
+  la procedencia: **no hay auto-flip** (NP-X0a); la fija quien conoce el origen del archivo.
+- **Se conserva lo anterior.** Una salida de una corrida previa que esta corrida no regenera se declara como deseada con su clave vigente (queda
+  como está). `retirar_no_incluidas` retira solo las de texturas que NO figuran en la entrada; una que figura pero falló o quedó en revisión
+  conserva su salida anterior. Si no hay nada que escribir ni que retirar, **no se abre la sesión** (ni se crea el mod de salida).
+  Retirar actúa sobre lo que NO figura, así que exige una enumeración **completa**: una carpeta que no se pudo leer o una entrada que no se
+  pudo inspeccionar aborta la corrida con código 2 (sin ver no se sabe si está). Las omisiones deliberadas (un enlace, un `*_p.dds` autoral al
+  lado, una ruta inadmisible, un duplicado) no son errores de lectura y cuentan como «no incluidas».
+- **Errores tipados.** `ERRORES_POR_ARCHIVO` enumera lo que hace fallar UNA ruta (los de decodificación, integración, gate, exportación, procedencia,
+  origen y `OSError`); un test por AST prohíbe cualquier `except` desnudo o de `Exception`. Lo demás es un bug y sube. Una entrada que viola el
+  contrato (dos rutas de salida iguales sin distinguir mayúsculas) se rechaza entera antes de tocar nada (`LoteInvalidoError`).
+- **Vocabulario cerrado de estados** (`EstadoDeArchivo`: `ESCRITA`, `EN_REVISION`, `NO_PROCESADA`, `NO_ESCRITA`): un test falla si se agrega uno sin caso.
+- **La línea de comandos es un borde delgado.** Los códigos de salida están anclados (0 bien, 1 alguna textura falló, 2 uso o configuración, 3 salida
+  ocupada por otra instancia, 130 interrumpido). El test del 3 **encontró un defecto real** al escribirlo: `SalidaOcupadaError` es subclase de
+  `SalidaNoEscribibleError` y su `except` estaba detrás, así que una salida ocupada salía como error de configuración (código 2). Orden corregido.
+  `autoprueba` fabrica una textura sintética y corre la tubería COMPLETA en un mod temporal; **falla** si lo escrito no es un BC4 válido de las
+  dimensiones pedidas o si el manifiesto no describe exactamente esa salida (cada rama tiene su test).
+- **Anclas del repo tocadas, con su motivo.** `lote.py` y `cli.py` entran al censo de módulos de producto y al de módulos que nombran `texconv`
+  (`tests/test_texconv_invariant.py`): `lote.py` lo nombra solo como dato de la procedencia, `cli.py` por el argumento `--texconv` y para atar el
+  exportador al ejecutor fijado; ninguno lanza procesos. Ese test confundía `asyncio.run` con `subprocess.run` (detectaba el nombre `run`): ahora
+  distingue `asyncio.run` y sigue contando `subprocess.run` y un `run` pelado (casos en el propio test). La suite completa encontró además tres anclas que los módulos nuevos rompían, todas de la clase «un hermano sin declarar»: `tests/test_borrado_recursivo.py` (`shutil.rmtree` está prohibido: el lote borra su directorio de trabajo con `rmtree_link_aware` y se declara `link-aware` / `no-requiere` `limpiar_readonly`, con su motivo: solo contiene lo que este proceso escribe con `write_bytes`), `tests/test_native_parallax_output.py` (el nombre del mod de salida solo lo conoce `output.py`: la CLI usa la constante y no repite el texto) y `tests/test_path_resolution_service.py` (ninguna construcción `<expr> / "mods"` nueva en producción: la carpeta temporal de la autoprueba no se llama `mods`).
+- **Revisión de #783 (Codex, seis hallazgos P2, verificados contra el código; cinco arreglados con su rojo observado).** (1) La raíz de salida se
+  valida **antes** de procesar ninguna textura (`validar_raiz_de_salida`, que es la validación del escritor hecha pública; el escritor la repite
+  al abrir): un `--mods` que no existe ya no cuesta minutos de un 4K antes de fallar. Está en `procesar_lote` y no en la CLI, para que toda
+  superficie futura la tenga. (2) Retirar exige enumeración completa (arriba). (3) La escritura intermedia espera al hilo (arriba). (4) `--informe`
+  no puede apuntar dentro del mod de salida ni dentro del árbol `textures` de la entrada (se resuelven los enlaces antes de comparar): se escribe después de
+  cerrar la sesión y saltearía el lock, la procedencia y la recuperación. (5) `textures` también se inspecciona con el helper que reconoce
+  junctions: en Windows `DirEntry.is_dir(follow_symlinks=False)` lo acepta como carpeta. (6) **No se cambia:** `ResultadoDeExportacion.argumentos`
+  omite el `-o` final de `ARGUMENTOS_BC4`. Ese flag solo introduce la ruta temporal, que es lo único que queda afuera; cualquier cambio de los
+  flags reales cambia los cinco que sí se registran, y modificar solo el último dejaría la línea sin argumento. Arreglarlo toca el módulo del
+  ejecutor (fuera de este PR) y un test congelado por igualdad. Queda anotado para quien lo cambie.
+  CodeRabbit, en la misma revisión: (7) **el hermano del directorio de trabajo**: `autoprueba` borraba su carpeta temporal con
+  `tempfile.TemporaryDirectory`, que usa `shutil.rmtree` (atraviesa un junction en Windows) y, si un antivirus tenía abierto un archivo recién
+  escrito, levantaba `PermissionError` sin que `main` lo atrapara: el operador veía un traceback en lugar de `AUTOPRUEBA OK`/`FALLÓ`. Ahora
+  es `mkdtemp` + `rmtree_link_aware` en un `finally` que no lanza y avisa; `cli.py` entra a las tres tablas de
+  `tests/test_borrado_recursivo.py` («link-aware», «no-requiere» con su motivo); (8) la guía decía «escribe únicamente» en el mod y también
+  deja el informe, la carpeta temporal y el estado del bloqueo: ahora los lista; (9) el `certutil` de la guía usa la ruta completa.
+  Segunda ronda de CodeRabbit sobre `cd21cb6`: (10) el informe protegía solo las normales a procesar; una textura omitida (por tener un `*_p.dds`
+  autoral al lado) o el propio `*_p.dds` autoral seguían siendo pisables, así que ahora se prohíbe **todo** el árbol `textures` de la entrada
+  (más simple que la comparación exacta con las normales, que quedó subsumida); (11) **no se cambia:** con `--retirar-no-incluidas` una carpeta
+  sin normales sigue siendo un error de uso. Una `--carpeta` equivocada (vacía) retiraría de una vez TODO lo generado antes; frenar es la
+  opción segura y, para limpiar de verdad, está documentado desactivar el mod o borrar su carpeta. Un test lo ancla (nada se retira).
+  **Lo encontró la CI de Windows** (primera corrida completa sobre `cd21cb6`; era el único fallo de 14987): (12) el test de la ruta de salida
+  inadmisible fabricaba en disco un archivo `mala:rara_n.dds`; en NTFS un `:` en el nombre no crea un archivo con ese nombre sino un flujo de
+  datos alternativo de otro, así que la enumeración no veía nada que omitir. La CLI estaba bien; el fixture no podía existir en Windows. Ahora el
+  test deja el nombre en disco normal y sustituye `validar_ruta_de_salida` (qué nombre es inadmisible lo decide `output.py`, con sus propios
+  tests): verifica la REACCIÓN de la enumeración, que es lo que importa, y es igual en las dos plataformas.
+- **`lifecycle=None` en la CLI, a propósito.** Es un proceso aparte, sin el boundary de la app; el `DistributedLockManager` abre su propia
+  conexión (semántica previa a M-01). Cuando la GUI y el agente lo cableen (NP-A0), pasan el `lifecycle` de la app. El lock es el mismo
+  cross-process por usuario: la CLI y la app se excluyen entre sí sobre la misma salida.
+
+**Verificado ejecutando (Linux, Python 3.11, numpy 2.4.6):** los tests de `lote.py` y `cli.py` con un exportador de prueba; lint, tipos
+(`mypy --strict` limpio sobre los dos módulos) y los censos. **Mutación** automática por AST sobre los dos módulos (nulo en verde):
+`lote.py` **216 mutantes**, 148 muertos y 68 vivos en la primera pasada (huecos de test: el JSON del informe, los validadores, los bordes de la
+lectura acotada y el progreso no estaban anclados por igualdad literal); con los tests de la segunda pasada **215 muertos y 1 vivo equivalente**
+(`while True` mutado a `while True`). `cli.py` **221 mutantes**, 156 muertos y 65 vivos en la primera pasada; con los tests de la segunda
+**214 muertos y 7 vivos, todos clasificados**: 5 sin efecto observable (2 por `entrada.is_dir`/`is_file` con `follow_symlinks`: el enlace ya se
+descartó antes con `link_kind_or_raise`, defensa en profundidad; `print(..., file=None)` escribe en `sys.stdout` igual que el valor por defecto; la
+rama `if repetidas` con el conjunto vacío no cambia nada; y la subcarpeta `salida` en la ruta del mod temporal de la autoprueba, que solo necesita
+existir dentro de un directorio que se borra) y 2 puramente cosméticos o de E/S (`flush=True` y el prefijo del directorio temporal, que desde la
+revisión de #783 mata un test). Rojo observado: el del módulo `lote.py` ausente
+(`ImportError`, colectivo) y el del código de salida 3; **para el resto de las propiedades no hubo un rojo individual previo** (los tests de la
+CLI se escribieron después del código): su evidencia es la mutación. Las últimas ediciones (borrado del directorio de trabajo con
+`rmtree_link_aware` y el renombre de la carpeta temporal de la autoprueba) llegaron después de esa pasada: se repitió sobre
+`_borrar_trabajo` y `procesar_lote` (10 mutantes, 10 muertos) y sobre `_autoprueba` (23 mutantes, 21 muertos y los dos vivos ya
+clasificados arriba: el prefijo del directorio temporal y la subcarpeta `salida`). Tras la revisión de #783, sobre `_autoprueba` y
+`_borrar_temporal`: 26 mutantes, 25 muertos y 1 vivo equivalente (la subcarpeta `salida`).
+
+Los arreglos de la revisión de #783 tuvieron rojo observado en cada propiedad (19 tests nuevos fallaban antes: 15 de la CLI y 4 del lote) y su propia
+pasada de mutación: `cli.py` (`descubrir_normales_de_carpeta`, `_no_se_pudo_observar`, `_clave_fisica`, `_exigir_informe_fuera_de_la_salida`,
+`_generar`) **81 mutantes, 78 muertos y 3 vivos ya clasificados** (`if repetidas` con el conjunto vacío y los dos `follow_symlinks=True`, sin efecto
+porque el enlace se descarta antes; después de la segunda ronda, `_exigir_informe_fuera_de_la_salida`, `_esta_dentro_de`, `_clave_fisica` y
+`_generar`: **23 de 23**); `lote.py` (`procesar_lote`, `_fase_de_calculo`) **30 de 30**; `validar_raiz_de_salida` **28 de 28**.
+
+**No verificado, por orden de importancia:** (1) **nada se ejecutó con el `texconv` real ni en Windows ni sobre NTFS desde el desarrollo**: la
+CI de Windows ejerce los tests con el doble, y `autoprueba` es la primera corrida real; (2) cómo muestra MO2 el mod de salida (no hay `meta.ini`
+ni se habilita solo); (3) que los parámetros por defecto (DirectX, escalas 1, bordes periódicos, min-max) den un relieve correcto en Skyrim:
+son los de la referencia sintética y nada se miró en el juego; (4) el comportamiento con texturas de 4096² (costo medido una vez en
+`integrar`, no en esta tubería).
+
+**Límites declarados.** (1) Se recalcula todo aunque la caché esté vigente (el escritor la deja `OMITIDA`); evitarlo exige planificar antes de
+calcular. (2) De a una textura, sin concurrencia. (3) Los lados tienen que ser potencia de 2 (lo exige el exportador): los demás fallan su ruta con
+ese motivo. (4) La enumeración de `cli.py` es **provisoria**: solo `*_n.dds` bajo `textures/`, sin seguir enlaces, y omite (y dice) las que ya
+tienen un `*_p.dds` al lado; la reemplaza `provider.py`. Con `--retirar-no-incluidas` esas omisiones deliberadas cuentan como «no incluidas». (5) No hay superficie GUI ni agente: la regla «dos superficies, un recurso» queda
+satisfecha por el lock cross-process, pero las superficies son de NP-A0. (6) `escribir_revision` escribe salidas marcadas «sin validar» solo en
+el informe: el manifiesto no distingue una salida autoaceptada de una en revisión.
+
+**Qué falta de NP-A0.** El `provider.py` endurecido, el adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
+en el registro de tools, las superficies GUI y agente (con el `lifecycle` de la app), qué hacer con un lote incompleto, y saltear el cálculo de
+lo que la caché ya cubre.

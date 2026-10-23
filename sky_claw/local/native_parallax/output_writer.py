@@ -96,6 +96,7 @@ __all__ = [
     "abrir_sesion_de_salida",
     "construir_coordinacion_de_salida",
     "ruta_de_estado_de_salida",
+    "validar_raiz_de_salida",
 ]
 
 logger = logging.getLogger(__name__)
@@ -821,7 +822,16 @@ def _retirar(
 # ---------------------------------------------------------------------------
 
 
-def _validar_raiz(raiz: pathlib.Path) -> pathlib.Path:
+def validar_raiz_de_salida(raiz: pathlib.Path) -> pathlib.Path:
+    """Comprueba, sin tocar el disco, que *raiz* es admisible como mod de salida y la devuelve.
+
+    ``abrir_sesion_de_salida`` lo repite al abrir (el disco puede cambiar en el medio). Quien va a gastar cómputo antes de escribir
+    (el lote) lo llama primero para fallar por una configuración mala antes de procesar la primera textura.
+
+    Raises:
+        SalidaNoEscribibleError: la raíz no es una ``Path`` absoluta con el nombre del mod, su carpeta madre no existe,
+            o es un enlace o algo que no es un directorio.
+    """
     if not isinstance(raiz, pathlib.Path):
         raise SalidaNoEscribibleError(f"la raíz debe ser una ruta (Path), no {type(raiz).__name__}")
     if not raiz.is_absolute():
@@ -879,7 +889,7 @@ async def abrir_sesion_de_salida(
         SalidaOcupadaError: otro proceso tiene el lock de esta raíz.
         SalidaNoEscribibleError: la raíz no es admisible, o un manifiesto de control es ilegible (no se tocó nada).
     """
-    raiz = _validar_raiz(raiz)
+    raiz = validar_raiz_de_salida(raiz)
     agent_id = f"native-parallax-output-{uuid.uuid4().hex}"
     async with coordinacion.sostener(raiz=raiz, agent_id=agent_id) as lock:
         vigente = await _en_hilo(_recuperar, raiz)
