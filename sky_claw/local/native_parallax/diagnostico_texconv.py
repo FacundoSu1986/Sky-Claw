@@ -10,15 +10,14 @@ delega entera en ``export.verificar_texconv`` (la única implementación del pin
 resultado a un vocabulario cerrado de estados con un mensaje accionable. Por eso ``hashlib`` no se importa.
 
 De dónde sale la ruta: el argumento ``ruta`` gana sobre la variable de entorno ``SKYCLAW_TEXCONV_EXE`` (la misma que
-lee ``cli._resolver_texconv``). Un valor vacío o solo con espacios **no cuenta como ruta**: si el argumento viene en
-blanco se mira la variable y, si las dos están en blanco, el estado es ``NO_CONFIGURADO``. La ruta NO se recorta: se usa
+lee ``cli._resolver_texconv``) y la regla de qué valor es «la ruta» es LA MISMA que la de la CLI
+(``argumento or entorno.get(...)``): solo la cadena vacía deja paso, así que si el argumento viene vacío se mira la
+variable y, si las dos están vacías, el estado es ``NO_CONFIGURADO``. Un valor de solo espacios ES una ruta (inválida):
+la CLI la usaría y fallaría, y el diagnóstico dice lo mismo en vez de caer a la variable. La ruta NO se recorta: se usa
 tal como la escribió el llamador (normalizada por ``pathlib``, sin resolverla ni hacerla absoluta) y en el mensaje se
-muestra entre comillas angulares. Recortarla haría que el diagnóstico dijera «correcto» con una ruta que la exportación
-va a rechazar —la CLI no recorta nada—, y un diagnóstico que aprueba lo que el exportador rechaza no sirve de nada.
-
-Divergencia declarada con ``cli._resolver_texconv``: la CLI solo deja caer la cadena vacía
-(``argumento or entorno.get(...)``), así que un argumento de SOLO espacios lo usa como ruta y falla por huella, mientras
-que acá ese blanco cuenta como no configurado (contrato de NP-A0c). Todo lo demás coincide.
+muestra entre comillas angulares. Recortarla, o elegir otra ruta que la CLI, haría que el diagnóstico dijera «correcto»
+con una configuración que la exportación va a rechazar, y un diagnóstico que aprueba lo que el exportador rechaza no
+sirve de nada. Una tabla de entradas del test exige que los dos elijan la misma ruta.
 
 El pin se lee de ``export.TEXCONV_PIN_VIGENTE`` **en el momento de la llamada** (no se copia al importar): ``pin=None``
 significa «usá el vigente», no «no hay pin». Para diagnosticar sin pin se pasa uno explícito o se corre con el vigente en
@@ -101,22 +100,22 @@ class DiagnosticoDeTexconv:
 def _ruta_configurada(
     ruta: pathlib.Path | str | None, variables: Mapping[str, str]
 ) -> tuple[str | None, OrigenDeLaRuta | None]:
-    """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente, vacía o solo espacios).
+    """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente o vacía).
 
-    El blanco decide si HAY valor; no recorta el valor. Se usa tal como lo escribió el llamador porque eso es lo que la
-    exportación va a usar (``cli._resolver_texconv`` tampoco recorta): aprobar una ruta recortada sería aprobar una ruta
-    que el exportador rechaza.
+    Es la misma regla que ``argumento or entorno.get(...)`` de ``cli._resolver_texconv``: solo lo vacío deja paso, y el
+    valor no se recorta. Se usa tal como lo escribió el llamador porque eso es lo que la exportación va a usar: aprobar
+    una ruta recortada, o caer a la variable cuando la CLI usaría el argumento, sería aprobar una configuración que el
+    exportador rechaza. ``tests/test_native_parallax_diagnostico_texconv.py`` enumera entradas y exige que las dos
+    elijan la misma ruta.
     """
     candidatas: tuple[tuple[pathlib.Path | str | None, OrigenDeLaRuta], ...] = (
         (ruta, "argumento"),
         (variables.get(ENTORNO_TEXCONV), "entorno"),
     )
     for candidata, origen in candidatas:
-        if candidata is None:
+        if not candidata:
             continue
-        texto = str(candidata)
-        if texto.strip():
-            return str(pathlib.Path(texto)), origen
+        return str(pathlib.Path(candidata)), origen
     return None, None
 
 

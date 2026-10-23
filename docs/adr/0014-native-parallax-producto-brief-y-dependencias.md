@@ -1299,14 +1299,17 @@ pendiente.
   encontrado, cualquier otro `OSError` ⇒ no se pudo leer. Un nombre que el sistema no puede interpretar (byte NUL, que llega como
   `ValueError`) se informa como no encontrado en vez de explotar en la cara del operador.
 - **La ruta sale del argumento o de la variable de entorno, con la misma precedencia que la CLI y SIN recortarla.** `SKYCLAW_TEXCONV_EXE` es
-  el mismo nombre que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Un valor vacío o
-  solo con espacios no cuenta como ruta, así que un `--texconv ""` deja paso a la variable y solo las dos en blanco dan `NO_CONFIGURADO`.
+  el mismo nombre que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Solo un valor
+  **vacío** deja paso —la regla `argumento or entorno.get(...)` de la CLI—, así que un `--texconv ""` cae a la variable y solo las dos
+  vacías dan `NO_CONFIGURADO`; un valor de solo espacios **es** una ruta (inválida), como lo es para la CLI.
   **La ruta no se recorta**: se usa tal como la escribió el llamador (normalizada por `pathlib`, sin resolverla ni hacerla absoluta) y en el
   mensaje se muestra entre comillas angulares, con los caracteres de control escapados, para que los espacios de más se vean y un salto de
   línea no pueda dibujar una línea falsa. Recortarla haría que el diagnóstico dijera `CORRECTO` con una ruta que la exportación rechaza —la
-  CLI pasa el valor crudo a `Path`—, y un pre-chequeo que aprueba lo que el exportador rechaza no sirve de nada. Queda **una** divergencia
-  declarada con la CLI: un argumento de SOLO espacios cae a la variable (la CLI lo usaría como ruta). Es lo que pide el contrato de NP-A0c y
-  está preguntado al TL.
+  CLI pasa el valor crudo a `Path`—, y un pre-chequeo que aprueba lo que el exportador rechaza no sirve de nada. **Decisión del TL sobre la
+  única divergencia que la primera versión declaraba** (un argumento de solo espacios caía a la variable, la CLI lo usaría como ruta): se
+  cierra, porque era el mismo defecto en su forma residual —con `--texconv "   "` y una variable válida el diagnóstico decía `CORRECTO` y la
+  exportación fallaba—. Ancla: una tabla de 15 entradas (blancos, espacios en los extremos, argumento contra variable) exige que el
+  diagnóstico y `cli._resolver_texconv` elijan la misma ruta, y la tabla está congelada por cantidad.
 - **El pin se lee en la llamada, no al importar.** `export.TEXCONV_PIN_VIGENTE` se consulta en cada diagnóstico (un test lo fija distinto y
   el módulo lo ve) y un `pin` explícito gana. `pin=None` significa «usá el vigente», no «no hay pin»: para diagnosticar sin pin se pasa uno
   explícito o se corre con el vigente en `None`. `version_esperada` es la del pin con el que se comparó y es `None` solo cuando no hay pin.
@@ -1329,10 +1332,20 @@ worktrees legados), no de este PR.
 
 **Revisión de #786 (CodeRabbit, dos hallazgos menores, verificados contra el código; los dos arreglados con su test).** (1) *El diagnóstico
 podía aprobar una ruta que el exportador rechaza*: recortaba los espacios del valor, así que un `--texconv " C:\...\texconv.exe"` daba
-`CORRECTO` mientras `_resolver_texconv` pasa el valor crudo a `Path` y falla. Ahora el blanco solo decide si HAY valor y la ruta se usa tal
-cual; el mensaje la muestra entre comillas angulares con los controles escapados. (2) *Se perdía el motivo del sistema operativo cuando el que
+`CORRECTO` mientras `_resolver_texconv` pasa el valor crudo a `Path` y falla. Ahora la ruta se usa tal cual y solo lo vacío deja paso a la
+variable (la regla de la CLI); el mensaje la muestra entre comillas angulares con los controles escapados. (2) *Se perdía el motivo del sistema operativo cuando el que
 fallaba era el `stat`* (un `ELOOP`, que `Path.is_file()` ignora): `_clasificar_fallo` devuelve el estado **y** el detalle, y el mensaje dice el
 motivo en vez de «el sistema no dio un motivo». Ninguno de los dos cambió el vocabulario de estados.
+
+**Segunda pasada del TL sobre #786 (Linux, Python 3.11; ejecutado).** Cerró la divergencia que quedaba con la CLI (ver arriba) y tapó huecos que
+una **mutación automática por AST de las seis funciones del módulo** mostró y que el conjunto de 23 mutantes de la primera versión no tocaba:
+la rama por defecto `os.environ` de `diagnosticar_texconv` no tenía ningún test, y el escapado de controles solo se probaba con `\n`. Rojo
+observado antes de cambiar el módulo: 6 tests de la tabla de resolución y de los blancos. Después: 66 tests del módulo y 224 entre el módulo y
+las dos anclas de censo, `ruff check` y `ruff format --check` limpios y ninguna de las 669 líneas base de `mypy` en `native_parallax/`. La
+mutación da **66 mutantes: 60 muertos y 6 vivos, los 6 justificados, ninguno es un hueco**: tres sobre la rama `ruta is None` de `_como_se_ve`
+(inalcanzable: los estados cuyo mensaje usa la ruta siempre la tienen, y `NO_CONFIGURADO` no la imprime), `Lt->LtE` (escapar el espacio da el
+espacio), el `raise AssertionError` posterior al `match` exhaustivo (inalcanzable) y el texto de `esperado` sin pin (los dos estados sin pin no
+lo imprimen).
 
 **No verificado, por orden de importancia:** (1) nada se corrió con el `texconv` real: el diagnóstico no lo ejecuta y la huella se compara
 contra archivos de prueba; (2) el estado «no se pudo leer» por permisos reales: en Windows `chmod` no quita la lectura, así que se ejerció
