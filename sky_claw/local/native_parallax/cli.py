@@ -11,9 +11,9 @@ Uso (desde la raíz del repo, con el entorno del extra instalado)::
 - ``generar`` procesa los ``*_n.dds`` bajo ``<carpeta>/textures`` y deja los ``*_p.dds`` en el mod de salida
   ``<mods>/<mod de salida gestionado>`` (el nombre lo fija ``output.NOMBRE_DEL_MOD_DE_SALIDA``). La carpeta de entrada solo se LEE.
 
-Es un borde delgado sobre ``lote.procesar_lote``: parsea, valida, arma el exportador y muestra el informe. La enumeración de
-la carpeta es PROVISORIA (la reemplaza ``provider.py`` de NP-A0): no sigue enlaces, ignora lo que no es ``*_n.dds`` y
-omite (y dice) lo que ya tiene un ``*_p.dds`` al lado.
+Es un borde delgado sobre ``lote.procesar_lote``: parsea, valida, arma el exportador y muestra el informe. La carpeta de
+entrada la enumera ``provider.py`` (NP-A0b): no sigue enlaces, ignora lo que no es ``*_n.dds`` y omite (y dice) lo que ya
+tiene un ``*_p.dds`` autoral con la misma ruta de salida. Acá solo se traducen sus errores y sus omisiones a mensajes.
 
 Códigos de salida: 0 todo bien; 1 alguna textura falló; 2 uso o configuración incorrectos; 3 otra instancia está
 escribiendo esa salida; 130 interrumpido.
@@ -35,11 +35,10 @@ import struct
 import sys
 import tempfile
 import zlib
-from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, TextIO
 
-from sky_claw.app.security.links import link_kind_or_raise, rmtree_link_aware
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.decode import ConvencionNormal, DependenciaNoDisponibleError
 from sky_claw.local.native_parallax.export import (
@@ -58,18 +57,20 @@ from sky_claw.local.native_parallax.lote import (
     ResultadoDelExportador,
     procesar_lote,
 )
-from sky_claw.local.native_parallax.output import (
-    NOMBRE_DEL_MOD_DE_SALIDA,
-    RutaDeSalidaInvalidaError,
-    clave_de_ruta,
-    leer_manifiesto,
-    validar_ruta_de_salida,
-)
+from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA, leer_manifiesto
 from sky_claw.local.native_parallax.output_writer import (
     CoordinacionDeSalida,
     SalidaNoEscribibleError,
     SalidaOcupadaError,
     construir_coordinacion_de_salida,
+)
+from sky_claw.local.native_parallax.provider import (
+    MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO,
+    DemasiadosArchivosError,
+    NormalDescubierta,
+    RaizInvalidaError,
+    carpeta_de_textures,
+    descubrir_normales,
 )
 
 if TYPE_CHECKING:
@@ -102,7 +103,6 @@ ENTORNO_TEXCONV: Final = "SKYCLAW_TEXCONV_EXE"
 INFORME_POR_DEFECTO: Final = "informe_parallax.json"
 _MAXIMO_DE_ARCHIVOS_DE_ENTRADA: Final = 10_000
 _SUFIJO_DE_ENTRADA: Final = "_n.dds"
-_SUFIJO_DE_SALIDA: Final = "_p.dds"
 _LADO_DE_LA_AUTOPRUEBA: Final = 128
 
 FabricaDeExportador = Callable[[pathlib.Path], ExportadorDeAltura]
@@ -113,118 +113,53 @@ class UsoIncorrectoError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Enumeración PROVISORIA de la carpeta de entrada (la reemplaza provider.py)
+# La carpeta de entrada: la enumera ``provider.py``
 # ---------------------------------------------------------------------------
 
 
 @dataclasses.dataclass(frozen=True)
 class NormalDeCarpeta:
+    """Una normal que NO viene del proveedor: la textura sintética de la autoprueba (un PNG que el proveedor no descubriría)."""
+
     ruta_de_origen: str
     ruta_de_salida: str
     ruta_absoluta: pathlib.Path
 
 
-def _hijo_sin_distinguir_mayusculas(carpeta: pathlib.Path, nombre: str) -> pathlib.Path | None:
-    try:
-        with os.scandir(carpeta) as entradas:
-            for entrada in entradas:
-                if entrada.name.casefold() == nombre and entrada.is_dir(follow_symlinks=False):
-                    return pathlib.Path(entrada.path)
-    except OSError as exc:
-        raise UsoIncorrectoError(f"no se pudo leer la carpeta {carpeta}: {exc}") from exc
-    return None
-
-
-def _no_se_pudo_observar(omitidas: list[str], motivo: str, *, exigir_completa: bool) -> None:
-    """Lo que un error de E/S no dejó ver: se omite y se dice, salvo que quien llama necesite una enumeración completa."""
-    if exigir_completa:
-        raise UsoIncorrectoError(
-            f"la enumeración quedó incompleta (lo que no se pudo ver no se puede dar por ausente): {motivo}"
-        )
-    omitidas.append(motivo)
+def _texto_de_omision(ruta: str, detalle: str) -> str:
+    return f"{ruta}: {detalle}"
 
 
 def descubrir_normales_de_carpeta(
     carpeta: pathlib.Path, *, exigir_completa: bool = False
-) -> tuple[list[NormalDeCarpeta], list[str]]:
+) -> tuple[list[NormalDescubierta], list[str]]:
     """Los ``*_n.dds`` bajo ``<carpeta>/textures`` y los motivos por los que se omitió algo. Solo lee.
+
+    Adaptador delgado de ``provider.descubrir_normales``: traduce sus errores a ``UsoIncorrectoError`` (se muestran sin
+    traceback) y sus omisiones a una línea de texto cada una. La CLI pone su propio tope de entradas (más bajo que el del
+    proveedor: es una herramienta experimental para probar en un rig).
 
     ``exigir_completa``: una carpeta que no se pudo leer o una entrada que no se pudo inspeccionar levanta
     ``UsoIncorrectoError`` en vez de omitirse. Lo pide quien actúa sobre lo que NO figura (retirar salidas): sin ver una
-    carpeta no se sabe qué hay en ella. Las omisiones deliberadas (enlaces, un ``*_p.dds`` autoral al lado, rutas
-    inadmisibles, duplicados) no son errores de lectura y no la hacen fallar.
+    carpeta no se sabe qué hay en ella. Las omisiones deliberadas (enlaces, un ``*_p.dds`` autoral, rutas inadmisibles,
+    duplicados) no son errores de lectura y no la hacen fallar (``Descubrimiento.completo``).
     """
-    if not carpeta.is_dir() or link_kind_or_raise(carpeta) is not None:
-        raise UsoIncorrectoError(f"la carpeta de entrada no existe o es un enlace: {carpeta}")
-    textures = _hijo_sin_distinguir_mayusculas(carpeta, "textures")
-    if textures is None:
-        raise UsoIncorrectoError(f"la carpeta de entrada debe tener una subcarpeta 'textures': {carpeta}")
     try:
-        enlace_de_textures = link_kind_or_raise(
-            textures
-        )  # en Windows ``is_dir(follow_symlinks=False)`` acepta un junction
-    except OSError as exc:
-        raise UsoIncorrectoError(f"no se pudo inspeccionar {textures}: {exc}") from exc
-    if enlace_de_textures is not None:
-        raise UsoIncorrectoError(f"'textures' es un enlace ({enlace_de_textures}) y no se sigue: {textures}")
-    encontradas: list[NormalDeCarpeta] = []
-    omitidas: list[str] = []
-    pendientes = [textures]
-    while pendientes:
-        actual = pendientes.pop()
-        try:
-            with os.scandir(actual) as entradas:
-                contenido = sorted(entradas, key=lambda e: e.name.casefold())
-        except OSError as exc:
-            _no_se_pudo_observar(
-                omitidas,
-                f"{actual.relative_to(carpeta).as_posix()}: no se pudo leer la carpeta ({exc})",
-                exigir_completa=exigir_completa,
-            )
-            continue
-        nombres = {e.name.casefold() for e in contenido}
-        for entrada in contenido:
-            ruta = pathlib.Path(entrada.path)
-            relativa = ruta.relative_to(carpeta).as_posix()
-            try:
-                enlace = link_kind_or_raise(ruta)
-            except OSError as exc:
-                _no_se_pudo_observar(
-                    omitidas, f"{relativa}: no se pudo inspeccionar ({exc})", exigir_completa=exigir_completa
-                )
-                continue
-            if enlace is not None:
-                omitidas.append(f"{relativa}: es un enlace ({enlace}) y no se sigue")
-            elif entrada.is_dir(follow_symlinks=False):
-                pendientes.append(ruta)
-            elif entrada.is_file(follow_symlinks=False) and entrada.name.casefold().endswith(_SUFIJO_DE_ENTRADA):
-                base = entrada.name[: -len(_SUFIJO_DE_ENTRADA)]
-                if (base + _SUFIJO_DE_SALIDA).casefold() in nombres:
-                    omitidas.append(
-                        f"{relativa}: ya hay un {_SUFIJO_DE_SALIDA} al lado (puede ser autoral) y no se pisa"
-                    )
-                    continue
-                try:
-                    salida = validar_ruta_de_salida(relativa[: -len(_SUFIJO_DE_ENTRADA)] + _SUFIJO_DE_SALIDA)
-                except RutaDeSalidaInvalidaError as exc:
-                    omitidas.append(f"{relativa}: la ruta de salida no es admisible ({exc})")
-                    continue
-                encontradas.append(NormalDeCarpeta(relativa, salida, ruta))
-        if len(encontradas) > _MAXIMO_DE_ARCHIVOS_DE_ENTRADA:
-            raise UsoIncorrectoError(
-                f"demasiados archivos de entrada (más de {_MAXIMO_DE_ARCHIVOS_DE_ENTRADA}): dividí la carpeta"
-            )
-    encontradas.sort(key=lambda n: clave_de_ruta(n.ruta_de_salida))
-    repetidas = {
-        clave for clave, veces in Counter(clave_de_ruta(n.ruta_de_salida) for n in encontradas).items() if veces > 1
-    }
-    if repetidas:
-        omitidas.extend(
-            f"{c}: dos archivos de entrada dan la misma salida (mayúsculas): se omiten los dos"
-            for c in sorted(repetidas)
+        descubrimiento = descubrir_normales(carpeta, maximo_de_archivos=_MAXIMO_DE_ARCHIVOS_DE_ENTRADA)
+    except (RaizInvalidaError, DemasiadosArchivosError) as exc:
+        raise UsoIncorrectoError(str(exc)) from exc
+    if exigir_completa and not descubrimiento.completo:
+        sin_ver = "; ".join(
+            _texto_de_omision(o.ruta_de_origen, o.detalle)
+            for o in descubrimiento.omitidas
+            if o.motivo in MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO
         )
-        encontradas = [n for n in encontradas if clave_de_ruta(n.ruta_de_salida) not in repetidas]
-    return encontradas, omitidas
+        raise UsoIncorrectoError(
+            f"la enumeración quedó incompleta (lo que no se pudo ver no se puede dar por ausente): {sin_ver}"
+        )
+    return list(descubrimiento.normales), [
+        _texto_de_omision(o.ruta_de_origen, o.detalle) for o in descubrimiento.omitidas
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +330,11 @@ def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, carpeta
     destino = _clave_fisica(pathlib.Path(informe))
     if _esta_dentro_de(destino, _clave_fisica(raiz)):
         raise UsoIncorrectoError(f"--informe no puede apuntar dentro del mod de salida ({raiz}): elegí otra ubicación")
-    textures = _hijo_sin_distinguir_mayusculas(carpeta, "textures")
-    if textures is not None and _esta_dentro_de(destino, _clave_fisica(textures)):
+    try:
+        textures = carpeta_de_textures(carpeta)
+    except RaizInvalidaError as exc:  # la entrada cambió desde que se enumeró: no se puede garantizar nada, se corta
+        raise UsoIncorrectoError(str(exc)) from exc
+    if _esta_dentro_de(destino, _clave_fisica(textures)):
         raise UsoIncorrectoError(
             f"--informe no puede apuntar dentro de las texturas de entrada ({textures}): elegí otra ubicación"
         )

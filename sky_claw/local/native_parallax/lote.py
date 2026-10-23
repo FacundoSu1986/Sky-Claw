@@ -43,7 +43,6 @@ Dependencias: ``numpy`` y Pillow pertenecen al extra opcional ``native-parallax`
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.metadata
 import logging
 import math
@@ -97,6 +96,7 @@ from sky_claw.local.native_parallax.output_writer import (
     abrir_sesion_de_salida,
     validar_raiz_de_salida,
 )
+from sky_claw.local.native_parallax.provider import huella_acotada
 from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible
 
 if TYPE_CHECKING:
@@ -127,8 +127,6 @@ VERSION_DEL_LOTE: Final = "np-a0a.v1"
 EXPORTADOR_ID: Final = "legacy_parallax_bc4_v1"
 
 logger = logging.getLogger(__name__)
-
-_BLOQUE: Final = 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +381,12 @@ class _Medida:
 
 
 def _huella_acotada(ruta: pathlib.Path) -> str:
-    """SHA-256 de un archivo regular, leyendo como máximo el tope de tamaño (nunca más, aunque el archivo crezca)."""
+    """SHA-256 de un archivo regular, acotado por el tamaño con el que se lo validó (nunca más, aunque el archivo crezca).
+
+    Valida el origen (regular y entre 1 byte y el tope) y delega la lectura en ``provider.huella_acotada``: es LA lectura
+    acotada de las texturas de entrada, no una copia propia (``tests/test_native_parallax_producto_invariant.py`` enumera los
+    lectores con huella del paquete). Que el archivo crezca O se achique entre la medida y la lectura es ``OrigenInvalidoError``.
+    """
     try:
         info = os.lstat(ruta)
     except OSError as exc:
@@ -396,18 +399,10 @@ def _huella_acotada(ruta: pathlib.Path) -> str:
         raise OrigenInvalidoError(
             f"el origen debe pesar entre 1 y {TAMANO_MAXIMO_DEL_ARCHIVO} bytes, no {info.st_size}"
         )
-    hasher = hashlib.sha256()
-    leidos = 0
-    with open(ruta, "rb") as archivo:
-        while True:
-            bloque = archivo.read(min(_BLOQUE, TAMANO_MAXIMO_DEL_ARCHIVO + 1 - leidos))
-            if not bloque:
-                break
-            leidos += len(bloque)
-            if leidos > TAMANO_MAXIMO_DEL_ARCHIVO:
-                raise OrigenInvalidoError("el origen creció mientras se leía y pasó el tope de tamaño")
-            hasher.update(bloque)
-    return hasher.hexdigest()
+    try:
+        return huella_acotada(ruta, info.st_size)
+    except OSError as exc:
+        raise OrigenInvalidoError(f"el origen {exc}") from exc
 
 
 def _medir(ruta: pathlib.Path, parametros: ParametrosDelLote, decisor: Decisor) -> _Medida:

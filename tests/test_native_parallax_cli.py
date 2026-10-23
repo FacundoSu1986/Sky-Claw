@@ -1,7 +1,7 @@
 """NP-A0a: la línea de comandos del lote (``cli.py``) es un borde delgado sobre ``lote.procesar_lote``.
 
-Qué se verifica: la enumeración provisoria de la carpeta (no sigue enlaces, no pisa lo autoral, no deja pasar rutas
-inadmisibles ni duplicados), el mapeo de argumentos a ``ParametrosDelLote``, los códigos de salida, la política del gate
+Qué se verifica: el adaptador de la enumeración de la carpeta (la hace ``provider.py``; acá se verifica lo que el operador
+ve: no sigue enlaces, no pisa lo autoral, no deja pasar rutas inadmisibles ni duplicados, y qué errores son de uso), el mapeo de argumentos a ``ParametrosDelLote``, los códigos de salida, la política del gate
 (sin ``--incluir-revision`` no se escribe), que ``autoprueba`` falla cuando la salida no es un BC4 válido, y que el
 exportador real se ata al ``texconv`` verificado. El ``texconv`` real solo corre en Windows (``tests/test_texconv_real.py``):
 acá el exportador es un doble.
@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from sky_claw.local.native_parallax import cli
+from sky_claw.local.native_parallax import cli, provider
 from sky_claw.local.native_parallax.cli import (
     CODIGO_CON_FALLOS,
     CODIGO_DE_USO,
@@ -126,7 +126,7 @@ def _generar(mundo: pathlib.Path, *extra: str, **kwargs: Any) -> tuple[int, str]
 
 
 # ---------------------------------------------------------------------------
-# Enumeración provisoria
+# Enumeración de la carpeta (adaptador de provider.py)
 # ---------------------------------------------------------------------------
 
 
@@ -150,6 +150,18 @@ def test_la_enumeracion_devuelve_las_normales_ordenadas_con_su_ruta_de_salida(tm
         ("textures/b/zeta_N.DDS", "textures/b/zeta_p.dds"),
     ]
     assert omitidas == []
+
+
+def test_el_adaptador_entrega_lo_que_descubre_el_proveedor_con_su_huella(tmp_path: pathlib.Path) -> None:
+    """La CLI no tiene su propia idea de «una normal»: devuelve las ``NormalDescubierta`` del proveedor, con el tamaño y la
+    huella del contenido que éste calculó."""
+    _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
+
+    normales, _ = descubrir_normales_de_carpeta(tmp_path)
+
+    assert isinstance(normales[0], provider.NormalDescubierta)
+    assert normales[0].tamano == 1
+    assert normales[0].origen.sha256 == hashlib.sha256(b"x").hexdigest()
 
 
 def test_una_normal_con_su_parallax_al_lado_no_se_pisa(tmp_path: pathlib.Path) -> None:
@@ -210,14 +222,14 @@ def test_una_ruta_de_salida_inadmisible_se_omite_y_se_dice(
     con ese nombre sino un flujo de datos alternativo de otro (el CI de Windows lo mostró)."""
     _tocar(tmp_path / "textures" / "a" / "buena_n.dds")
     _tocar(tmp_path / "textures" / "a" / "mala_n.dds")
-    real = cli.validar_ruta_de_salida
+    real = provider.validar_ruta_de_salida
 
     def validar(ruta: str) -> str:
         if "mala" in ruta:
             raise RutaDeSalidaInvalidaError("caracter no admitido")
         return real(ruta)
 
-    monkeypatch.setattr(cli, "validar_ruta_de_salida", validar)
+    monkeypatch.setattr(provider, "validar_ruta_de_salida", validar)
 
     normales, omitidas = descubrir_normales_de_carpeta(tmp_path)
 
@@ -235,7 +247,10 @@ def test_dos_normales_que_dan_la_misma_salida_se_omiten_las_dos(tmp_path: pathli
     normales, omitidas = descubrir_normales_de_carpeta(tmp_path)
 
     assert [n.ruta_de_origen for n in normales] == ["textures/a/beta_n.dds"]
-    assert len(omitidas) == 1 and "misma salida" in omitidas[0]
+    # Diferencia con la enumeración provisoria (una línea por PAR): el proveedor informa una omisión por ARCHIVO, y el
+    # informe nombra las dos rutas de entrada en vez de una salida.
+    assert len(omitidas) == 2 and all("misma salida" in o for o in omitidas)
+    assert sorted(o.split(":")[0] for o in omitidas) == ["textures/a/Alfa_n.dds", "textures/a/alfa_n.dds"]
 
 
 # ---------------------------------------------------------------------------
@@ -444,12 +459,13 @@ def test_un_textures_que_es_un_junction_se_rechaza_aunque_is_dir_lo_vea_como_car
     """En Windows ``DirEntry.is_dir(follow_symlinks=False)`` es verdadero para un junction: se mira con el helper que lo
     reconoce, igual que a todo lo que está debajo."""
     _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
-    real = cli.link_kind_or_raise
+    real = provider.link_kind_and_identity_or_raise
 
     def inspeccionar(ruta: pathlib.Path) -> Any:
-        return "junction" if ruta.name == "textures" else real(ruta)
+        tipo, identidad = real(ruta)
+        return ("junction", identidad) if ruta.name == "textures" else (tipo, identidad)
 
-    monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+    monkeypatch.setattr(provider, "link_kind_and_identity_or_raise", inspeccionar)
 
     with pytest.raises(cli.UsoIncorrectoError, match=r"'textures' es un enlace \(junction\)"):
         descubrir_normales_de_carpeta(tmp_path)
@@ -459,14 +475,14 @@ def test_un_textures_que_no_se_puede_inspeccionar_es_un_error_de_uso(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
-    real = cli.link_kind_or_raise
+    real = provider.link_kind_and_identity_or_raise
 
     def inspeccionar(ruta: pathlib.Path) -> Any:
         if ruta.name == "textures":
             raise PermissionError("bloqueado por el antivirus")
         return real(ruta)
 
-    monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+    monkeypatch.setattr(provider, "link_kind_and_identity_or_raise", inspeccionar)
 
     with pytest.raises(cli.UsoIncorrectoError, match="no se pudo inspeccionar .*textures.*bloqueado por el antivirus"):
         descubrir_normales_de_carpeta(tmp_path)
@@ -482,17 +498,53 @@ def test_exigir_completa_aborta_si_algo_no_se_pudo_observar(
     if fallo == "carpeta_ilegible":
         _con_scandir_que_falla_en(monkeypatch, "b")
     else:
-        real = cli.link_kind_or_raise
+        real = provider.link_kind_and_identity_or_raise
 
         def inspeccionar(ruta: pathlib.Path) -> Any:
             if ruta.name == "beta_n.dds":
                 raise PermissionError("bloqueado por el antivirus")
             return real(ruta)
 
-        monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+        monkeypatch.setattr(provider, "link_kind_and_identity_or_raise", inspeccionar)
 
     with pytest.raises(cli.UsoIncorrectoError, match="enumeración quedó incompleta.*acceso denegado|bloqueado"):
         descubrir_normales_de_carpeta(tmp_path, exigir_completa=True)
+
+
+def test_exigir_completa_nombra_todo_lo_que_no_se_pudo_ver_separado_por_punto_y_coma(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El operador tiene que saber QUÉ carpetas no se vieron, todas, para arreglarlas antes de pedir que se retire algo."""
+    for nombre in ("a", "b", "c"):
+        _tocar(tmp_path / "textures" / nombre / f"{nombre}_n.dds")
+    real = os.scandir
+
+    def scandir(ruta: Any = ".") -> Any:
+        if pathlib.Path(ruta).name in {"b", "c"}:
+            raise PermissionError("acceso denegado")
+        return real(ruta)
+
+    monkeypatch.setattr(cli.os, "scandir", scandir)
+
+    with pytest.raises(cli.UsoIncorrectoError) as error:
+        descubrir_normales_de_carpeta(tmp_path, exigir_completa=True)
+
+    assert (
+        "textures/b: no se pudo leer la carpeta (acceso denegado); textures/c: no se pudo leer la carpeta (acceso denegado)"
+        in str(error.value)
+    )
+    assert "textures/a" not in str(error.value)  # lo que sí se vio no se acusa
+
+
+def test_si_textures_cambia_despues_de_enumerar_el_informe_no_se_da_por_seguro(tmp_path: pathlib.Path) -> None:
+    """``--informe`` se compara contra las texturas de entrada con la MISMA resolución del descubrimiento; si ésta ya no
+    puede resolverlas (la entrada cambió desde que se enumeró), se corta en vez de suponer que el informe es seguro."""
+    (tmp_path / "entrada").mkdir()  # sin ``textures``: lo que vio el descubrimiento ya no está
+
+    with pytest.raises(cli.UsoIncorrectoError, match="subcarpeta 'textures'"):
+        cli._exigir_informe_fuera_de_la_salida(
+            str(tmp_path / "informe.json"), tmp_path / "mods" / NOMBRE_DEL_MOD_DE_SALIDA, tmp_path / "entrada"
+        )
 
 
 def test_exigir_completa_no_aborta_por_omisiones_deliberadas(tmp_path: pathlib.Path) -> None:
@@ -849,14 +901,14 @@ def test_un_archivo_que_no_se_puede_inspeccionar_se_omite_y_se_dice(
 ) -> None:
     _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
     _tocar(tmp_path / "textures" / "a" / "beta_n.dds")
-    real = cli.link_kind_or_raise
+    real = provider.link_kind_and_identity_or_raise
 
     def inspeccionar(ruta: pathlib.Path) -> Any:
         if ruta.name == "beta_n.dds":
             raise PermissionError("bloqueado por el antivirus")
         return real(ruta)
 
-    monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+    monkeypatch.setattr(provider, "link_kind_and_identity_or_raise", inspeccionar)
 
     normales, omitidas = descubrir_normales_de_carpeta(tmp_path)
 
@@ -864,8 +916,11 @@ def test_un_archivo_que_no_se_puede_inspeccionar_se_omite_y_se_dice(
     assert omitidas == ["textures/a/beta_n.dds: no se pudo inspeccionar (bloqueado por el antivirus)"]
 
 
-@pytest.mark.parametrize("como", ["archivo", "enlace"])
-def test_textures_que_no_es_una_carpeta_real_no_cuenta(tmp_path: pathlib.Path, como: str) -> None:
+@pytest.mark.parametrize(
+    ("como", "mensaje"),
+    [("archivo", "'textures' no es una carpeta"), ("enlace", "'textures' es un enlace")],
+)
+def test_textures_que_no_es_una_carpeta_real_no_cuenta(tmp_path: pathlib.Path, como: str, mensaje: str) -> None:
     if como == "archivo":
         _tocar(tmp_path / "textures")
     else:
@@ -876,7 +931,9 @@ def test_textures_que_no_es_una_carpeta_real_no_cuenta(tmp_path: pathlib.Path, c
         except (OSError, NotImplementedError):
             pytest.skip("este sistema no permite crear symlinks")
 
-    with pytest.raises(cli.UsoIncorrectoError, match="subcarpeta 'textures'"):
+    # Diferencia con la enumeración provisoria (que decía «debe tener una subcarpeta 'textures'» en ambos casos): el
+    # proveedor distingue el caso, y el operador sabe qué arreglar.
+    with pytest.raises(cli.UsoIncorrectoError, match=mensaje):
         descubrir_normales_de_carpeta(tmp_path)
 
 
@@ -891,7 +948,7 @@ def test_mas_archivos_que_el_tope_se_rechazan_y_justo_el_tope_pasa(
     assert len(normales) == 2
 
     _tocar(tmp_path / "textures" / "c_n.dds")
-    with pytest.raises(cli.UsoIncorrectoError, match="demasiados archivos"):
+    with pytest.raises(cli.UsoIncorrectoError, match="más de 2 entradas relevantes"):
         descubrir_normales_de_carpeta(tmp_path)
 
 

@@ -486,6 +486,122 @@ def test_el_escaner_de_definiciones_de_ejes_ve_las_variantes_de_nombre(codigo: s
     assert _define_ejes_de_frecuencia(codigo) is esperado
 
 
+# ---------------------------------------------------------------------------
+# NP-A0 (cableado): una sola enumeración de la entrada y una sola lectura acotada con huella
+# ---------------------------------------------------------------------------
+
+# Los módulos de producto que ENUMERAN carpetas. La entrada se descubre en UN lugar (``provider.py``): dos enumeraciones
+# contestarían distinto a «¿qué normales hay?» (era el defecto declarado de NP-A0a, cuando ``cli.py`` tenía la suya
+# provisoria). ``output_writer.py`` enumera solo las carpetas de CONTROL del mod de salida (etapas y papelera), un recurso
+# propio y distinto del árbol de entrada. Un módulo nuevo que enumere rompe el ancla hasta que se le escribe su receta.
+MODULOS_QUE_ENUMERAN_CARPETAS = frozenset({"output_writer.py", "provider.py"})
+_LLAMADAS_QUE_ENUMERAN = frozenset({"scandir", "iterdir", "walk", "glob", "rglob", "listdir"})
+
+# Las funciones de producto que calculan una huella SHA-256 LEYENDO un archivo (``sha256`` y ``read`` en el mismo cuerpo),
+# cada una con su motivo: ``verificar_texconv`` hashea el binario fijado (no una textura); las dos del escritor hashean lo que
+# el escritor publica (su propia fuente y su copia a la etapa, con sus propias reglas de «cambió mientras se copiaba»);
+# ``huella_acotada`` es LA lectura de una textura de entrada acotada por el tamaño validado, que usan el proveedor y el lote.
+# El lote tenía una copia propia (``lote._huella_acotada``): ahora delega. Un lector nuevo rompe el ancla.
+LECTORES_DE_ARCHIVO_CON_HUELLA = frozenset(
+    {
+        "export.py::verificar_texconv",
+        "output_writer.py::_copiar_a_etapa",
+        "output_writer.py::_huella_de_archivo",
+        "provider.py::huella_acotada",
+    }
+)
+
+
+def _nombre_llamado(nodo: ast.Call) -> str | None:
+    if isinstance(nodo.func, ast.Name):
+        return nodo.func.id
+    if isinstance(nodo.func, ast.Attribute):
+        return nodo.func.attr
+    return None
+
+
+def _enumera_carpetas(codigo: str) -> bool:
+    return any(
+        isinstance(nodo, ast.Call) and _nombre_llamado(nodo) in _LLAMADAS_QUE_ENUMERAN
+        for nodo in ast.walk(ast.parse(codigo))
+    )
+
+
+def _funciones_que_hashean_leyendo(codigo: str) -> frozenset[str]:
+    """Nombres de las funciones cuyo cuerpo (anidadas incluidas) llama a ``sha256`` y a ``read``."""
+    encontradas: set[str] = set()
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            llamadas = {_nombre_llamado(n) for n in ast.walk(nodo) if isinstance(n, ast.Call)}
+            if {"sha256", "read"} <= llamadas:
+                encontradas.add(nodo.name)
+    return frozenset(encontradas)
+
+
+def test_solo_el_proveedor_y_el_escritor_enumeran_carpetas() -> None:
+    assert _modulos_que(_enumera_carpetas) == MODULOS_QUE_ENUMERAN_CARPETAS
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("import os\nos.scandir(x)", True),
+        ("from os import scandir\nscandir(x)", True),
+        ("p.iterdir()", True),
+        ("import os\nfor a in os.walk(x): pass", True),
+        ("p.glob('*.dds')", True),
+        ("p.rglob('*')", True),
+        ("import os\nos.listdir(x)", True),
+        ("def f():\n    return sorted(p.iterdir())", True),
+        ("p.is_dir()", False),
+        ("import shutil\nshutil.rmtree(x)", False),
+        ("x = 'scandir'", False),
+        ("def scandir_falso(): pass", False),
+    ],
+)
+def test_el_escaner_de_enumeracion_ve_todas_las_formas_de_listar_una_carpeta(codigo: str, esperado: bool) -> None:
+    assert _enumera_carpetas(codigo) is esperado
+
+
+def test_los_lectores_de_archivo_con_huella_son_los_congelados() -> None:
+    encontrados = {
+        f"{modulo}::{funcion}"
+        for modulo in _modulos_de_producto()
+        for funcion in _funciones_que_hashean_leyendo((PAQUETE / modulo).read_text(encoding="utf-8"))
+    }
+
+    assert encontrados == LECTORES_DE_ARCHIVO_CON_HUELLA
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("import hashlib\ndef f(a):\n    h = hashlib.sha256()\n    return a.read()", {"f"}),
+        ("from hashlib import sha256\ndef f(a):\n    return sha256(a.read(5))", {"f"}),
+        ("import hashlib\nasync def f(a):\n    return hashlib.sha256(a.read())", {"f"}),
+        ("import hashlib\ndef f(a):\n    def g():\n        return hashlib.sha256(a.read())", {"f", "g"}),
+        ("import hashlib\ndef f(t):\n    return hashlib.sha256(t)", set()),
+        ("def f(a):\n    return a.read()", set()),
+        ("x = 'sha256 read'", set()),
+    ],
+)
+def test_el_escaner_de_lectores_ve_todas_las_formas_de_hashear_leyendo(codigo: str, esperado: set[str]) -> None:
+    assert _funciones_que_hashean_leyendo(codigo) == frozenset(esperado)
+
+
+def test_el_lote_lee_el_origen_con_la_lectura_acotada_del_proveedor() -> None:
+    """Receta del consumidor: ``lote.py`` importa ``huella_acotada`` del proveedor en vez de tener su propia copia."""
+    arbol = ast.parse((PAQUETE / "lote.py").read_text(encoding="utf-8"))
+    importados = {
+        (nodo.module, alias.name)
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names
+    }
+
+    assert ("sky_claw.local.native_parallax.provider", "huella_acotada") in importados
+
+
 def test_el_censo_de_modulos_de_producto_ignora_research_y_caches(tmp_path: Path) -> None:
     (tmp_path / "research").mkdir()
     (tmp_path / "research" / "metrics.py").write_text("x = 1\n", encoding="utf-8")
