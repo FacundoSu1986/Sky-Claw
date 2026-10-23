@@ -29,7 +29,8 @@ Límites declarados:
   y ``autoprueba`` de la CLI).
 - Un archivo que desaparece entre la comprobación del delegado y su lectura se informa como ``NO_SE_PUDO_LEER`` con el
   mensaje del sistema operativo: el diagnóstico no adivina una carrera, la reporta.
-- Todavía no está cableado a la CLI ni al registro de herramientas (eso es NP-A0): hoy se usa desde código.
+- La CLI ya lo usa (``crear_exportador_texconv`` diagnostica antes de exportar y ``_resolver_texconv`` delega en
+  ``ruta_configurada``); el registro de herramientas todavía no (eso es NP-A0).
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ __all__ = [
     "EstadoDeTexconv",
     "OrigenDeLaRuta",
     "diagnosticar_texconv",
+    "ruta_configurada",
 ]
 
 #: La misma variable que leen ``cli._resolver_texconv`` y el smoke real: una sola forma de decir dónde está el binario.
@@ -97,7 +99,7 @@ class DiagnosticoDeTexconv:
             raise ValueError("la ruta y su origen van juntos: una ruta sin origen no dice de dónde salió")
 
 
-def _ruta_configurada(
+def ruta_configurada(
     ruta: pathlib.Path | str | None, variables: Mapping[str, str]
 ) -> tuple[str | None, OrigenDeLaRuta | None]:
     """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente o vacía).
@@ -229,7 +231,7 @@ def diagnosticar_texconv(
     estado, la ruta usada, de dónde salió, la versión esperada y un mensaje en español para el operador.
     """
     variables = os.environ if entorno is None else entorno
-    elegida, origen = _ruta_configurada(ruta, variables)
+    elegida, origen = ruta_configurada(ruta, variables)
     efectivo = pin if pin is not None else export.TEXCONV_PIN_VIGENTE
     if elegida is None:
         return _resultado(EstadoDeTexconv.NO_CONFIGURADO, ruta=None, origen=None, pin=efectivo)

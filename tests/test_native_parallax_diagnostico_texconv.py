@@ -134,6 +134,7 @@ def test_la_superficie_publica_es_exactamente_la_congelada() -> None:
         "EstadoDeTexconv",
         "OrigenDeLaRuta",
         "diagnosticar_texconv",
+        "ruta_configurada",
     }
 
 
@@ -406,6 +407,45 @@ def test_sin_entorno_explicito_ni_variable_del_proceso_no_hay_nada_configurado(m
 def test_la_variable_de_entorno_es_la_misma_que_lee_la_cli() -> None:
     """El diagnóstico explica la variable que la CLI lee: dos nombres distintos serían dos verdades."""
     assert ENTORNO_TEXCONV == cli.ENTORNO_TEXCONV
+
+
+def test_el_nombre_de_la_variable_vive_en_un_solo_modulo_del_proyecto() -> None:
+    """ENUMERA por AST todo ``sky_claw/``: el literal solo puede escribirse donde se define. Un segundo módulo que lo
+    repita (como tenía la CLI) es una segunda verdad que el día que cambie el nombre se queda atrás.
+
+    Quedan fuera los tests (``tests/test_texconv_real.py`` lee la variable del entorno para el smoke real, a propósito)
+    y los docstrings (el literal exacto no coincide con un texto más largo)."""
+    donde_aparece = {
+        archivo.relative_to(RAIZ).as_posix()
+        for archivo in (RAIZ / "sky_claw").rglob("*.py")
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8")))
+        if isinstance(nodo, ast.Constant) and nodo.value == "SKYCLAW_TEXCONV_EXE"
+    }
+
+    assert donde_aparece == {MODULO}
+
+
+def test_renombrar_la_variable_en_un_solo_lugar_la_mueve_en_el_diagnostico_y_en_la_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prueba de comportamiento de la misma propiedad: si la CLI conservara su propia copia del nombre o de la regla,
+    seguiría leyendo la variable vieja."""
+    monkeypatch.setattr(diagnostico_texconv, "ENTORNO_TEXCONV", "OTRA_VARIABLE_DEL_TEXCONV")
+    entorno = {"OTRA_VARIABLE_DEL_TEXCONV": "C:/tools/texconv.exe", "SKYCLAW_TEXCONV_EXE": "C:/vieja/texconv.exe"}
+
+    de_la_cli = cli._resolver_texconv(None, entorno)
+    del_diagnostico = diagnosticar_texconv(None, entorno=entorno, pin=_pin())
+
+    assert str(de_la_cli) == del_diagnostico.ruta == str(Path("C:/tools/texconv.exe"))
+
+
+def test_ruta_configurada_es_la_unica_regla_de_que_valor_es_la_ruta() -> None:
+    assert diagnostico_texconv.ruta_configurada("A/x.exe", {ENTORNO_TEXCONV: "B/x.exe"}) == (
+        str(Path("A/x.exe")),
+        "argumento",
+    )
+    assert diagnostico_texconv.ruta_configurada("", {ENTORNO_TEXCONV: "B/x.exe"}) == (str(Path("B/x.exe")), "entorno")
+    assert diagnostico_texconv.ruta_configurada(None, {}) == (None, None)
 
 
 # ---------------------------------------------------------------------------

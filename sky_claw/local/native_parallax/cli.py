@@ -41,10 +41,15 @@ from typing import TYPE_CHECKING, Any, Final, TextIO
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.decode import ConvencionNormal, DependenciaNoDisponibleError
+from sky_claw.local.native_parallax.diagnostico_texconv import (
+    ENTORNO_TEXCONV,
+    EstadoDeTexconv,
+    diagnosticar_texconv,
+    ruta_configurada,
+)
 from sky_claw.local.native_parallax.export import (
     ExportError,
     inspeccionar_dds_bc4,
-    verificar_texconv,
 )
 from sky_claw.local.native_parallax.integrate import Bordes, ModoNormalizacion
 from sky_claw.local.native_parallax.lote import (
@@ -98,8 +103,6 @@ CODIGO_DE_USO: Final = 2
 CODIGO_SALIDA_OCUPADA: Final = 3
 CODIGO_INTERRUMPIDO: Final = 130
 
-#: Misma variable que usa el smoke real (``tests/test_texconv_real.py``): una sola forma de decir dónde está el binario.
-ENTORNO_TEXCONV: Final = "SKYCLAW_TEXCONV_EXE"
 INFORME_POR_DEFECTO: Final = "informe_parallax.json"
 _MAXIMO_DE_ARCHIVOS_DE_ENTRADA: Final = 10_000
 _SUFIJO_DE_ENTRADA: Final = "_n.dds"
@@ -168,8 +171,15 @@ def descubrir_normales_de_carpeta(
 
 
 def crear_exportador_texconv(texconv: pathlib.Path) -> ExportadorDeAltura:
-    """El exportador real: verifica el binario contra el pin ANTES de empezar y lo ejecuta con el ejecutor fijado."""
-    verificar_texconv(texconv)  # falla cerrado y temprano, con un mensaje que dice qué huella se esperaba
+    """El exportador real: diagnostica el binario contra el pin ANTES de empezar y lo ejecuta con el ejecutor fijado.
+
+    Falla cerrado y temprano, y con la frase del diagnóstico (qué le pasa al binario y qué hacer) en vez del error seco
+    de la verificación. Recibe la ruta ya resuelta: el entorno va vacío para que la variable se lea UNA vez, en
+    ``_resolver_texconv``.
+    """
+    diagnostico = diagnosticar_texconv(texconv, entorno={})
+    if diagnostico.estado is not EstadoDeTexconv.CORRECTO:
+        raise UsoIncorrectoError(diagnostico.mensaje)
     from sky_claw.local.tools.texconv_runner import exportar_altura_bc4
 
     async def exportar(altura: NDArray[np.floating[Any]]) -> ResultadoDelExportador:
@@ -302,13 +312,12 @@ def construir_parser() -> argparse.ArgumentParser:
 
 
 def _resolver_texconv(argumento: str | None, entorno: Mapping[str, str]) -> pathlib.Path:
-    valor = argumento or entorno.get(ENTORNO_TEXCONV)
-    if not valor:
-        raise UsoIncorrectoError(
-            f"falta el texconv.exe: pasá --texconv RUTA o definí la variable {ENTORNO_TEXCONV} "
-            "(tiene que ser el binario oficial fijado por el proyecto: se verifica su huella SHA-256)"
-        )
-    return pathlib.Path(valor)
+    """La ruta del ``texconv`` según la regla ÚNICA del diagnóstico (argumento, si no la variable; solo lo vacío cae)."""
+    ruta, _origen = ruta_configurada(argumento, entorno)
+    if ruta is None:
+        # Sin ruta el diagnóstico no toca el disco: solo arma la frase de «no configurado», la misma para todas las superficies.
+        raise UsoIncorrectoError(diagnosticar_texconv(argumento, entorno=entorno).mensaje)
+    return pathlib.Path(ruta)
 
 
 def _clave_fisica(ruta: pathlib.Path) -> pathlib.PurePath:
