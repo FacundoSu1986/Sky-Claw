@@ -39,6 +39,10 @@ MODULOS_QUE_NOMBRAN_TEXCONV = {
     # NP-A0a: el borde de línea de comandos. Recibe la ruta (``--texconv``), la verifica con ``export.verificar_texconv`` y
     # ata el exportador al ejecutor fijado (``texconv_runner.exportar_altura_bc4``); no lanza ningún proceso por su cuenta.
     "sky_claw/local/native_parallax/cli.py",
+    # NP-A0c: nombra ``texconv`` solo como DATO (el estado del binario configurado y el mensaje para el operador). No lo
+    # ejecuta ni calcula su huella: delega en ``export.verificar_texconv``, y el test de abajo comprueba por AST que no
+    # lanza procesos.
+    "sky_claw/local/native_parallax/diagnostico_texconv.py",
 }
 MODULOS_QUE_LANZAN_PROCESOS = {"sky_claw/local/tools/texconv_runner.py"}
 
