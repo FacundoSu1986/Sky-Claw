@@ -1298,11 +1298,15 @@ pendiente.
   causa y se separan con un `stat`: `S_ISREG` ⇒ huella distinta, otra cosa ⇒ no es un archivo, `FileNotFoundError`/`NotADirectoryError` ⇒ no
   encontrado, cualquier otro `OSError` ⇒ no se pudo leer. Un nombre que el sistema no puede interpretar (byte NUL, que llega como
   `ValueError`) se informa como no encontrado en vez de explotar en la cara del operador.
-- **La ruta sale del argumento o de la variable de entorno, con la misma precedencia que la CLI.** `SKYCLAW_TEXCONV_EXE` es el mismo nombre
-  que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Un valor vacío o solo con
-  espacios cuenta como no configurado en ese nivel —igual que el `argumento or entorno.get(...)` de la CLI—, así que un `--texconv ""` deja
-  paso a la variable y solo las dos en blanco dan `NO_CONFIGURADO`. La ruta devuelta va sin espacios en los extremos y normalizada por
-  `pathlib`; no se resuelve ni se hace absoluta, porque el diagnóstico no debe ocultar lo que el operador escribió.
+- **La ruta sale del argumento o de la variable de entorno, con la misma precedencia que la CLI y SIN recortarla.** `SKYCLAW_TEXCONV_EXE` es
+  el mismo nombre que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Un valor vacío o
+  solo con espacios no cuenta como ruta, así que un `--texconv ""` deja paso a la variable y solo las dos en blanco dan `NO_CONFIGURADO`.
+  **La ruta no se recorta**: se usa tal como la escribió el llamador (normalizada por `pathlib`, sin resolverla ni hacerla absoluta) y en el
+  mensaje se muestra entre comillas angulares, con los caracteres de control escapados, para que los espacios de más se vean y un salto de
+  línea no pueda dibujar una línea falsa. Recortarla haría que el diagnóstico dijera `CORRECTO` con una ruta que la exportación rechaza —la
+  CLI pasa el valor crudo a `Path`—, y un pre-chequeo que aprueba lo que el exportador rechaza no sirve de nada. Queda **una** divergencia
+  declarada con la CLI: un argumento de SOLO espacios cae a la variable (la CLI lo usaría como ruta). Es lo que pide el contrato de NP-A0c y
+  está preguntado al TL.
 - **El pin se lee en la llamada, no al importar.** `export.TEXCONV_PIN_VIGENTE` se consulta en cada diagnóstico (un test lo fija distinto y
   el módulo lo ve) y un `pin` explícito gana. `pin=None` significa «usá el vigente», no «no hay pin»: para diagnosticar sin pin se pasa uno
   explícito o se corre con el vigente en `None`. `version_esperada` es la del pin con el que se comparó y es `None` solo cuando no hay pin.
@@ -1313,14 +1317,22 @@ pendiente.
   crear el archivo, como corresponde, y se actualizaron después.
 
 **Verificado ejecutando (Windows 11, Python 3.11):** rojo observado del módulo ausente (`ImportError` al colectar el test nuevo) y de las dos
-anclas de censo (`Extra items in the left set: 'diagnostico_texconv.py'`); después, los 41 tests del módulo en verde, las dos anclas en verde
-(197 tests entre las tres), `ruff check` y `ruff format --check` limpios sobre `sky_claw/ scripts/ tests/`, `mypy sky_claw/ scripts/` limpio
-(397 archivos) y **mutación dirigida de 19 mutantes sobre el módulo: 19 matados, 0 vivos** (condiciones de cada estado, precedencia
-argumento/variable, limpieza de espacios, `S_ISREG`, las cuatro causas del delegado, el pin explícito contra el vigente, `version_esperada`,
-las dos validaciones del dato, el detalle del `OSError` y el pin que se le pasa al delegado). Los siete fallos que aparecen al correr la
-vecindad del paquete (`test_borrado_recursivo`, `test_path_resolution_service`, `test_worktree_convention_invariant` y tres de
-`test_native_parallax_cli`) se reprodujeron IDÉNTICOS en un worktree del commit base (`bb663d51`) sin estos cambios: son del entorno de esta
-máquina (sin privilegio para crear enlaces; censo de worktrees legados), no de este PR.
+anclas de censo (`Extra items in the left set: 'diagnostico_texconv.py'`); después, los 43 tests del módulo en verde, las dos anclas en verde
+(201 tests entre las tres), `ruff check` y `ruff format --check` limpios sobre `sky_claw/ scripts/ tests/`, `mypy sky_claw/ scripts/` limpio
+(398 archivos) y **mutación dirigida de 23 mutantes sobre el módulo: 23 matados, 0 vivos** (condiciones de cada estado, precedencia
+argumento/variable, el recorte que no se hace, `S_ISREG`, las cuatro causas del delegado, el pin explícito contra el vigente,
+`version_esperada`, las dos validaciones del dato, el detalle del `OSError` del delegado y del `stat`, el escapado de controles y el pin que se
+le pasa al delegado). Los siete fallos que aparecen al correr la vecindad del paquete (`test_borrado_recursivo`,
+`test_path_resolution_service`, `test_worktree_convention_invariant` y tres de `test_native_parallax_cli`) se reprodujeron IDÉNTICOS en un
+worktree del commit base (`bb663d51`) sin estos cambios: son del entorno de esta máquina (sin privilegio para crear enlaces; censo de
+worktrees legados), no de este PR.
+
+**Revisión de #786 (CodeRabbit, dos hallazgos menores, verificados contra el código; los dos arreglados con su test).** (1) *El diagnóstico
+podía aprobar una ruta que el exportador rechaza*: recortaba los espacios del valor, así que un `--texconv " C:\...\texconv.exe"` daba
+`CORRECTO` mientras `_resolver_texconv` pasa el valor crudo a `Path` y falla. Ahora el blanco solo decide si HAY valor y la ruta se usa tal
+cual; el mensaje la muestra entre comillas angulares con los controles escapados. (2) *Se perdía el motivo del sistema operativo cuando el que
+fallaba era el `stat`* (un `ELOOP`, que `Path.is_file()` ignora): `_clasificar_fallo` devuelve el estado **y** el detalle, y el mensaje dice el
+motivo en vez de «el sistema no dio un motivo». Ninguno de los dos cambió el vocabulario de estados.
 
 **No verificado, por orden de importancia:** (1) nada se corrió con el `texconv` real: el diagnóstico no lo ejecuta y la huella se compara
 contra archivos de prueba; (2) el estado «no se pudo leer» por permisos reales: en Windows `chmod` no quita la lectura, así que se ejerció
