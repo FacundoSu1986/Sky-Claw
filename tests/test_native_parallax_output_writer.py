@@ -2940,6 +2940,37 @@ async def test_una_papelera_vacia_que_no_se_pudo_quitar_tampoco_avisa(
     assert caplog.text == ""
 
 
+@pytest.mark.parametrize("camino", ["sin_pendiente", "con_pendiente"])
+async def test_una_papelera_que_no_se_puede_listar_avisa_pero_no_impide_abrir_la_sesion(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, camino: str
+) -> None:
+    """El aviso de sobrantes es un diagnóstico: si no se puede listar ``trash/`` (permisos, un antivirus, un error de E/S)
+    la sesión abre igual y lo dice por log. Se enumeran los dos caminos que llaman al helper (con y sin pendiente que
+    recuperar), no uno solo."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    papelera = escenario.control() / "trash"
+    if camino == "con_pendiente":
+        (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+        escenario.disco(RUTA_A).write_bytes(b"LO-QUE-HAY-AHORA")  # la ruta se ocupó: lo apartado no puede volver
+    sobrante = _apartar_a_mano(escenario, RUTA_A, b"DE-OTRO-QUE-NO-ES-A")
+    iterdir_real = pathlib.Path.iterdir
+
+    def iterdir_que_falla_en_la_papelera(self: pathlib.Path) -> Any:
+        if self == papelera:
+            raise PermissionError("la papelera no se puede listar")
+        return iterdir_real(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", iterdir_que_falla_en_la_papelera)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert sobrante.read_bytes() == b"DE-OTRO-QUE-NO-ES-A"  # avisar no es borrar, y no listar tampoco
+    assert "No se pudo inspeccionar la papelera de la salida" in caplog.text
+    assert str(papelera) in caplog.text
+
+
 @pytest.mark.parametrize("accion", ["retirar", "reemplazar"])
 async def test_una_casilla_de_la_papelera_ocupada_hace_fallar_la_ruta_y_dice_cual_es(
     escenario: Escenario, accion: str

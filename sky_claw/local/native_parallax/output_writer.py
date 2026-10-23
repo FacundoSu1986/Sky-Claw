@@ -470,7 +470,11 @@ def _avisar_de_sobrantes(raiz: pathlib.Path, control: pathlib.Path) -> None:
     papelera = control / _PAPELERA
     if not _es_carpeta_contenida(raiz, papelera):
         return
-    sobrantes = sorted(p.name for p in papelera.iterdir())
+    try:
+        sobrantes = sorted(p.name for p in papelera.iterdir())
+    except OSError as exc:  # es un diagnóstico: que no se pueda listar no debe impedir abrir la sesión
+        logger.warning("No se pudo inspeccionar la papelera de la salida (%s): %s", papelera, exc)
+        return
     if sobrantes:
         logger.warning(
             "La papelera de la salida (%s) tiene %d archivo(s) que no se borran solos; revisalos y, si no los "
