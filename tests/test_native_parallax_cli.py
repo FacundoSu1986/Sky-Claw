@@ -551,6 +551,55 @@ def test_el_informe_no_puede_escribirse_dentro_de_la_salida_gestionada_ni_sobre_
     assert (destino.read_bytes() if destino.exists() else None) == antes
 
 
+@pytest.mark.parametrize("donde", ["textura_omitida_por_tener_un_p_autoral", "archivo_nuevo_en_textures"])
+def test_el_informe_no_puede_apuntar_dentro_de_las_texturas_de_entrada_aunque_esa_textura_se_omita(
+    mundo: pathlib.Path, donde: str
+) -> None:
+    """Una normal con un ``*_p.dds`` autoral al lado se omite de la lista a procesar, pero sigue siendo del operador."""
+    carpeta = mundo / "entrada" / _CARPETA
+    _tocar(carpeta / "autoral_n.dds")
+    _tocar(carpeta / "autoral_p.dds")
+    destino = {
+        "textura_omitida_por_tener_un_p_autoral": carpeta / "autoral_p.dds",
+        "archivo_nuevo_en_textures": mundo / "entrada" / "textures" / "informe.json",
+    }[donde]
+    antes = destino.read_bytes() if destino.exists() else None
+    llamadas: list[Any] = []
+
+    codigo, texto = _generar(mundo, "--informe", str(destino), fabrica=_fabrica(_exportador_que_cuenta(llamadas)))
+
+    assert codigo == CODIGO_DE_USO and "--informe" in texto
+    assert llamadas == []
+    assert (destino.read_bytes() if destino.exists() else None) == antes
+
+
+def test_con_retirar_una_carpeta_sin_normales_sigue_siendo_un_error_de_uso_y_no_retira_nada(
+    mundo: pathlib.Path,
+) -> None:
+    """Una ``--carpeta`` equivocada (vacía) con ``--retirar-no-incluidas`` retiraría TODO lo generado antes: se frena."""
+    assert _generar(mundo, "--incluir-revision")[0] == CODIGO_OK
+    raiz = mundo / "mods" / NOMBRE_DEL_MOD_DE_SALIDA
+    previas = sorted(raiz.rglob("*_p.dds"))
+    assert len(previas) == 2
+    vacia = mundo / "vacia" / "textures"
+    vacia.mkdir(parents=True)
+
+    codigo, texto = _correr(
+        mundo,
+        "generar",
+        "--carpeta",
+        str(vacia.parent),
+        "--mods",
+        str(mundo / "mods"),
+        "--informe",
+        str(mundo / "i.json"),
+        "--retirar-no-incluidas",
+    )
+
+    assert codigo == CODIGO_DE_USO and "no encontré ningún" in texto
+    assert all(p.is_file() for p in previas)
+
+
 def test_un_informe_junto_al_mod_pero_fuera_de_el_sigue_funcionando(mundo: pathlib.Path) -> None:
     codigo, _ = _generar(mundo, "--incluir-revision", "--informe", str(mundo / "mods" / "informe_parallax.json"))
 

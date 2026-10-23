@@ -381,15 +381,25 @@ def _clave_fisica(ruta: pathlib.Path) -> pathlib.PurePath:
     return pathlib.PurePath(os.path.normcase(os.path.realpath(ruta)))
 
 
-def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, normales: Sequence[NormalDeCarpeta]) -> None:
+def _esta_dentro_de(destino: pathlib.PurePath, contenedor: pathlib.PurePath) -> bool:
+    return destino == contenedor or contenedor in destino.parents
+
+
+def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, carpeta: pathlib.Path) -> None:
     """El informe se escribe DESPUÉS de cerrar la sesión: dentro del mod saltearía el lock, la procedencia y la recuperación
-    (``output_writer`` es el único que toca el mod), y sobre una textura de entrada la pisaría."""
+    (``output_writer`` es el único que toca el mod), y dentro de las texturas de entrada pisaría algo del operador.
+
+    Se prohíbe TODO el árbol ``textures`` de la entrada y no solo las normales a procesar: una textura omitida (por tener un
+    ``*_p.dds`` autoral al lado, por ejemplo) o el propio ``*_p.dds`` autoral siguen siendo del operador.
+    """
     destino = _clave_fisica(pathlib.Path(informe))
-    contenedor = _clave_fisica(raiz)
-    if destino == contenedor or contenedor in destino.parents:
+    if _esta_dentro_de(destino, _clave_fisica(raiz)):
         raise UsoIncorrectoError(f"--informe no puede apuntar dentro del mod de salida ({raiz}): elegí otra ubicación")
-    if destino in {_clave_fisica(n.ruta_absoluta) for n in normales}:
-        raise UsoIncorrectoError(f"--informe no puede ser una de las texturas de entrada: {informe}")
+    textures = _hijo_sin_distinguir_mayusculas(carpeta, "textures")
+    if textures is not None and _esta_dentro_de(destino, _clave_fisica(textures)):
+        raise UsoIncorrectoError(
+            f"--informe no puede apuntar dentro de las texturas de entrada ({textures}): elegí otra ubicación"
+        )
 
 
 def _escribir_informe(informe: InformeDelLote, destino: str, salida: TextIO) -> None:
@@ -441,7 +451,7 @@ async def _generar(
         raise UsoIncorrectoError(f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {args.carpeta}/textures")
     mods = pathlib.Path(args.mods)
     raiz_de_salida = (mods / NOMBRE_DEL_MOD_DE_SALIDA).absolute()
-    _exigir_informe_fuera_de_la_salida(args.informe, raiz_de_salida, normales)
+    _exigir_informe_fuera_de_la_salida(args.informe, raiz_de_salida, pathlib.Path(args.carpeta))
     print(f"{len(normales)} texturas por procesar; salida: {mods / NOMBRE_DEL_MOD_DE_SALIDA}", file=salida)
     informe = await procesar_lote(
         normales,

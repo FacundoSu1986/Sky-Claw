@@ -1114,7 +1114,7 @@ el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
   valida **antes** de procesar ninguna textura (`validar_raiz_de_salida`, que es la validación del escritor hecha pública; el escritor la repite
   al abrir): un `--mods` que no existe ya no cuesta minutos de un 4K antes de fallar. Está en `procesar_lote` y no en la CLI, para que toda
   superficie futura la tenga. (2) Retirar exige enumeración completa (arriba). (3) La escritura intermedia espera al hilo (arriba). (4) `--informe`
-  no puede apuntar dentro del mod de salida ni sobre una textura de entrada (se resuelven los enlaces antes de comparar): se escribe después de
+  no puede apuntar dentro del mod de salida ni dentro del árbol `textures` de la entrada (se resuelven los enlaces antes de comparar): se escribe después de
   cerrar la sesión y saltearía el lock, la procedencia y la recuperación. (5) `textures` también se inspecciona con el helper que reconoce
   junctions: en Windows `DirEntry.is_dir(follow_symlinks=False)` lo acepta como carpeta. (6) **No se cambia:** `ResultadoDeExportacion.argumentos`
   omite el `-o` final de `ARGUMENTOS_BC4`. Ese flag solo introduce la ruta temporal, que es lo único que queda afuera; cualquier cambio de los
@@ -1126,6 +1126,11 @@ el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
   es `mkdtemp` + `rmtree_link_aware` en un `finally` que no lanza y avisa; `cli.py` entra a las tres tablas de
   `tests/test_borrado_recursivo.py` («link-aware», «no-requiere» con su motivo); (8) la guía decía «escribe únicamente» en el mod y también
   deja el informe, la carpeta temporal y el estado del bloqueo: ahora los lista; (9) el `certutil` de la guía usa la ruta completa.
+  Segunda ronda de CodeRabbit sobre `cd21cb6`: (10) el informe protegía solo las normales a procesar; una textura omitida (por tener un `*_p.dds`
+  autoral al lado) o el propio `*_p.dds` autoral seguían siendo pisables, así que ahora se prohíbe **todo** el árbol `textures` de la entrada
+  (más simple que la comparación exacta con las normales, que quedó subsumida); (11) **no se cambia:** con `--retirar-no-incluidas` una carpeta
+  sin normales sigue siendo un error de uso. Una `--carpeta` equivocada (vacía) retiraría de una vez TODO lo generado antes; frenar es la
+  opción segura y, para limpiar de verdad, está documentado desactivar el mod o borrar su carpeta. Un test lo ancla (nada se retira).
 - **`lifecycle=None` en la CLI, a propósito.** Es un proceso aparte, sin el boundary de la app; el `DistributedLockManager` abre su propia
   conexión (semántica previa a M-01). Cuando la GUI y el agente lo cableen (NP-A0), pasan el `lifecycle` de la app. El lock es el mismo
   cross-process por usuario: la CLI y la app se excluyen entre sí sobre la misma salida.
@@ -1150,7 +1155,8 @@ clasificados arriba: el prefijo del directorio temporal y la subcarpeta `salida`
 Los arreglos de la revisión de #783 tuvieron rojo observado en cada propiedad (19 tests nuevos fallaban antes: 15 de la CLI y 4 del lote) y su propia
 pasada de mutación: `cli.py` (`descubrir_normales_de_carpeta`, `_no_se_pudo_observar`, `_clave_fisica`, `_exigir_informe_fuera_de_la_salida`,
 `_generar`) **81 mutantes, 78 muertos y 3 vivos ya clasificados** (`if repetidas` con el conjunto vacío y los dos `follow_symlinks=True`, sin efecto
-porque el enlace se descarta antes); `lote.py` (`procesar_lote`, `_fase_de_calculo`) **30 de 30**; `validar_raiz_de_salida` **28 de 28**.
+porque el enlace se descarta antes; después de la segunda ronda, `_exigir_informe_fuera_de_la_salida`, `_esta_dentro_de`, `_clave_fisica` y
+`_generar`: **23 de 23**); `lote.py` (`procesar_lote`, `_fase_de_calculo`) **30 de 30**; `validar_raiz_de_salida` **28 de 28**.
 
 **No verificado, por orden de importancia:** (1) **nada se ejecutó con el `texconv` real ni en Windows ni sobre NTFS desde el desarrollo**: la
 CI de Windows ejerce los tests con el doble, y `autoprueba` es la primera corrida real; (2) cómo muestra MO2 el mod de salida (no hay `meta.ini`

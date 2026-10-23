@@ -21,7 +21,7 @@
   fuera del mod: el informe `informe_parallax.json` (en la carpeta actual o donde le indiques con `--informe`), una carpeta
   temporal propia que borra al terminar (si no puede, te avisa) y el estado del bloqueo que evita que dos instancias escriban a
   la vez, en la carpeta de datos de tu usuario.
-- **El informe** (`--informe`) se escribe fuera del mod: la herramienta se niega si lo apuntás adentro del mod de salida o sobre una de tus texturas.
+- **El informe** (`--informe`) se escribe fuera del mod: la herramienta se niega si lo apuntás adentro del mod de salida o adentro de la carpeta `textures` de tu entrada.
 - **Para deshacer todo**: desactivá ese mod en MO2 o borrá su carpeta. No toca tus otros mods ni la carpeta `Data`.
 - **No crea `meta.ini` ni lo habilita en MO2**: tenés que refrescar MO2 (F5) y activarlo a mano. No verifiqué cómo lo
   muestra MO2; si no aparece, avisá.
