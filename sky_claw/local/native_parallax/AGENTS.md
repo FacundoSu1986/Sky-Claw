@@ -103,6 +103,16 @@ La política clean-room, `docs/design/research/native-parallax/` y
   avisa en toda apertura (`_avisar_de_sobrantes`); el tope de 1 GiB por archivo es uno solo (`output.TAMANO_MAXIMO_DEL_ARCHIVO`). No crea
   `meta.ini` ni habilita el mod (es de NP-A0).
   Ver ADR 0014, "Actualización de NP-O0b2".
+- `lote.py` y `cli.py` (NP-A0a) arman la tubería completa sobre las piezas de arriba (leer → integrar → medir → gate → exportar → escritor) y NO
+  agregan matemática: componen. Cuatro propiedades, con su ancla en `tests/test_native_parallax_lote.py` y `tests/test_native_parallax_cli.py`:
+  el lote es de DOS FASES (se calcula todo sin tocar la salida y recién después se abre UNA sesión del escritor, se planifica y se aplica); el gate
+  sigue siendo fail-closed y la política es explícita (una salida en `REVIEW` no se escribe salvo `escribir_revision`, que NO entra a la clave
+  de caché); la procedencia es la de lo que corrió (huella de la normal antes y después de decodificar, encoder que DEVOLVIÓ el exportador, parámetros
+  que cambian los bytes) y `bordes`/`escala_x`/`escala_y` viajan IGUALES a `integrar` y a cada métrica; las salidas de corridas anteriores se
+  conservan salvo `retirar_no_incluidas`. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La enumeración de la
+  carpeta de `cli.py` es PROVISORIA (la reemplaza `provider.py`); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
+  `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
+  Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
 
 ## Verificación segura
 
