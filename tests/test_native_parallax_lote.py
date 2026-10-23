@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from sky_claw.local.native_parallax import lote
+from sky_claw.local.native_parallax import lote, provider
 from sky_claw.local.native_parallax.decode import ArchivoNormalInvalidoError, ConvencionNormal, NormalDecoder
 from sky_claw.local.native_parallax.export import ExportError, generar_mips
 from sky_claw.local.native_parallax.gates import Decision, MetricasDeCalidad, Motivo, Veredicto
@@ -815,9 +815,11 @@ def test_completo_conservadas_y_retiradas_se_derivan_de_los_estados_y_los_efecto
 
 @pytest.fixture
 def tope_chico(monkeypatch: pytest.MonkeyPatch) -> int:
-    """Un tope de 8 bytes y bloques de 3: los bordes del tope y los bloques se ejercen con archivos de unos bytes."""
+    """Un tope de 8 bytes y bloques de 3: los bordes del tope y los bloques se ejercen con archivos de unos bytes.
+
+    El tope lo valida el lote; los bloques de lectura son de la lectura acotada, que es del proveedor (``provider.huella_acotada``)."""
     monkeypatch.setattr(lote, "TAMANO_MAXIMO_DEL_ARCHIVO", 8)
-    monkeypatch.setattr(lote, "_BLOQUE", 3)
+    monkeypatch.setattr(provider, "_BLOQUE", 3)
     return 8
 
 
@@ -856,6 +858,25 @@ def test_la_huella_acotada_no_lee_mas_que_el_tope_aunque_el_archivo_crezca(
     monkeypatch.setattr(lote.os, "lstat", lstat_que_miente)
 
     with pytest.raises(lote.OrigenInvalidoError, match="creció mientras se leía"):
+        lote._huella_acotada(archivo)
+
+
+def test_la_huella_acotada_detecta_un_origen_que_se_achico_despues_de_medirlo(
+    tmp_path: pathlib.Path, tope_chico: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Antes el lote solo cortaba lo que CRECÍA; un origen que pierde bytes entre ``lstat`` y la lectura es igual de
+    sospechoso (otro proceso lo está reescribiendo) y la lectura acotada del proveedor lo rechaza."""
+    archivo = tmp_path / "a.bin"
+    archivo.write_bytes(b"x" * 3)
+    real = os.lstat
+
+    def lstat_que_miente(ruta: Any) -> Any:
+        info = real(ruta)
+        return os.stat_result((info.st_mode, 0, 0, 0, 0, 0, 7, 0, 0, 0))  # dice 7 bytes: el archivo se achicó después
+
+    monkeypatch.setattr(lote.os, "lstat", lstat_que_miente)
+
+    with pytest.raises(lote.OrigenInvalidoError, match="cambió mientras se leía"):
         lote._huella_acotada(archivo)
 
 
@@ -944,12 +965,14 @@ async def test_sin_parametros_el_lote_usa_los_de_la_referencia_y_no_escribe_revi
     assert informe.archivos[0].estado is EstadoDeArchivo.EN_REVISION
 
 
-def test_la_huella_acotada_pide_como_maximo_un_byte_mas_que_el_tope_aunque_el_origen_no_termine_nunca(
+def test_la_huella_acotada_pide_como_maximo_un_byte_mas_que_lo_que_midio_aunque_el_origen_no_termine_nunca(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """La propiedad es de memoria y de tiempo: un origen que crece sin parar no se lee más allá de ``tope + 1`` bytes."""
+    """La propiedad es de memoria y de tiempo: un origen que crece sin parar no se lee más allá del tamaño con el que se
+    validó (lo que midió ``lstat``) más un byte. Es MÁS estricta que el tope de 1 GiB con el que el lote leía antes: la lectura
+    acotada es ahora la del proveedor, que se acota por el tamaño de CADA archivo."""
     monkeypatch.setattr(lote, "TAMANO_MAXIMO_DEL_ARCHIVO", 8)
-    monkeypatch.setattr(lote, "_BLOQUE", 5)
+    monkeypatch.setattr(provider, "_BLOQUE", 5)
     pedidos: list[int] = []
 
     class OrigenInfinito:
@@ -964,13 +987,13 @@ def test_la_huella_acotada_pide_como_maximo_un_byte_mas_que_el_tope_aunque_el_or
             return b"x" * cuanto
 
     archivo = tmp_path / "a.bin"
-    archivo.write_bytes(b"12345")  # lo que ve ``lstat``: dentro del tope
-    monkeypatch.setattr(lote, "open", lambda *_a, **_k: OrigenInfinito(), raising=False)
+    archivo.write_bytes(b"12345")  # lo que ve ``lstat``: 5 bytes, dentro del tope
+    monkeypatch.setattr(provider, "open", lambda *_a, **_k: OrigenInfinito(), raising=False)
 
     with pytest.raises(lote.OrigenInvalidoError, match="creció mientras se leía"):
         lote._huella_acotada(archivo)
 
-    assert pedidos == [5, 4] and sum(pedidos) == 8 + 1
+    assert pedidos == [5, 1] and sum(pedidos) == 5 + 1
 
 
 # ---------------------------------------------------------------------------
