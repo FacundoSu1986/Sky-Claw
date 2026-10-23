@@ -39,7 +39,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, TextIO
 
-from sky_claw.app.security.links import link_kind_or_raise
+from sky_claw.app.security.links import link_kind_or_raise, rmtree_link_aware
 from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.decode import ConvencionNormal, DependenciaNoDisponibleError
 from sky_claw.local.native_parallax.export import (
@@ -456,14 +456,26 @@ async def _generar(
     return _codigo(informe)
 
 
+def _borrar_temporal(carpeta: pathlib.Path, salida: TextIO) -> None:
+    """Borra la carpeta temporal PROPIA sin atravesar enlaces y SIN lanzar: corre en un ``finally`` y no debe tapar el
+    resultado de la prueba. Usa la primitiva del repo (``rmtree_link_aware``), no ``tempfile.TemporaryDirectory`` (que borra con
+    ``shutil.rmtree``): que el árbol sea propio no habilita la excepción (``tests/test_borrado_recursivo.py``). No pide
+    ``limpiar_readonly``: solo contiene lo que este proceso y el escritor crearon. Un fallo (en Windows, un antivirus con un
+    archivo abierto) se avisa al operador y no cambia el resultado."""
+    try:
+        rmtree_link_aware(carpeta)
+    except OSError as exc:
+        print(f"Aviso: no se pudo borrar la carpeta temporal {carpeta}: {exc}", file=salida)
+
+
 async def _autoprueba(
     args: argparse.Namespace,
     coordinacion: CoordinacionDeSalida,
     exportador: ExportadorDeAltura,
     salida: TextIO,
 ) -> int:
-    with tempfile.TemporaryDirectory(prefix="skyclaw-autoprueba-") as temporal:
-        base = pathlib.Path(temporal)
+    base = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw-autoprueba-"))
+    try:
         (base / "salida").mkdir()
         origen = base / "entrada" / "prueba_n.png"
         origen.parent.mkdir()
@@ -485,6 +497,8 @@ async def _autoprueba(
         _resumen(informe, [], salida)
         _escribir_informe(informe, args.informe, salida)
         fallos = _verificar_autoprueba(raiz, ruta_de_salida, informe)
+    finally:
+        _borrar_temporal(base, salida)
     if fallos:
         print("\nAUTOPRUEBA FALLÓ:", file=salida)
         for fallo in fallos:

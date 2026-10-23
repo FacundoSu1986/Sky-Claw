@@ -132,6 +132,8 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # NP-A0a: el lote borra su PROPIO directorio de trabajo (lo creó `mkdtemp`: las salidas intermedias).
     # Mismo criterio que el ejecutor de texconv: que el árbol sea propio no habilita `shutil.rmtree`.
     "sky_claw/local/native_parallax/lote.py": "link-aware",
+    # NP-A0a: la autoprueba de la CLI borra su PROPIA carpeta temporal (hermana del directorio de trabajo del lote).
+    "sky_claw/local/native_parallax/cli.py": "link-aware",
     "sky_claw/local/tools/vramr_service.py": "link-aware",
     "sky_claw/local/tools_installer.py": "link-aware",
 }
@@ -458,6 +460,7 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_uia_driver_ejecutor.py": "no-requiere",
     "sky_claw/local/tools/dyndolod_presets.py": "no-requiere",
     "sky_claw/local/native_parallax/lote.py": "no-requiere",
+    "sky_claw/local/native_parallax/cli.py": "no-requiere",
     # `dyndolod_runner.py` SALIÓ de este censo con #592 finding 2: ya no invoca
     # `rmtree_link_aware`. El requisito NO se perdió — se mudó al parámetro
     # `limpiar_readonly_al_borrar=True` de la construcción de `DirectoryRollback`
@@ -516,6 +519,14 @@ MOTIVO_DE_NO_REQUIERE: dict[str, str] = {
         "el temp lo crea mkdtemp y sólo contiene los `*_p.dds` que este proceso "
         "escribe con write_bytes (sin copy2 de un archivo ajeno): ninguna "
         "herramienta externa los marca read-only."
+    ),
+    # NP-A0a: la carpeta temporal de la autoprueba la crea mkdtemp y solo lleva lo
+    # que este proceso escribe (la normal sintética con write_bytes) más lo que crea
+    # el escritor de la salida gestionada: nada se copia con copy2 de un archivo ajeno.
+    "sky_claw/local/native_parallax/cli.py": (
+        "el temp lo crea mkdtemp y sólo contiene la normal sintética (write_bytes) "
+        "y lo que crea el escritor de la salida gestionada, sin copy2 de un archivo "
+        "ajeno: ninguna herramienta externa lo marca read-only."
     ),
 }
 

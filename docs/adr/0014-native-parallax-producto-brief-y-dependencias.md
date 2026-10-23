@@ -1120,6 +1120,12 @@ el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
   omite el `-o` final de `ARGUMENTOS_BC4`. Ese flag solo introduce la ruta temporal, que es lo único que queda afuera; cualquier cambio de los
   flags reales cambia los cinco que sí se registran, y modificar solo el último dejaría la línea sin argumento. Arreglarlo toca el módulo del
   ejecutor (fuera de este PR) y un test congelado por igualdad. Queda anotado para quien lo cambie.
+  CodeRabbit, en la misma revisión: (7) **el hermano del directorio de trabajo**: `autoprueba` borraba su carpeta temporal con
+  `tempfile.TemporaryDirectory`, que usa `shutil.rmtree` (atraviesa un junction en Windows) y, si un antivirus tenía abierto un archivo recién
+  escrito, levantaba `PermissionError` sin que `main` lo atrapara: el operador veía un traceback en lugar de `AUTOPRUEBA OK`/`FALLÓ`. Ahora
+  es `mkdtemp` + `rmtree_link_aware` en un `finally` que no lanza y avisa; `cli.py` entra a las tres tablas de
+  `tests/test_borrado_recursivo.py` («link-aware», «no-requiere» con su motivo); (8) la guía decía «escribe únicamente» en el mod y también
+  deja el informe, la carpeta temporal y el estado del bloqueo: ahora los lista; (9) el `certutil` de la guía usa la ruta completa.
 - **`lifecycle=None` en la CLI, a propósito.** Es un proceso aparte, sin el boundary de la app; el `DistributedLockManager` abre su propia
   conexión (semántica previa a M-01). Cuando la GUI y el agente lo cableen (NP-A0), pasan el `lifecycle` de la app. El lock es el mismo
   cross-process por usuario: la CLI y la app se excluyen entre sí sobre la misma salida.
@@ -1132,14 +1138,16 @@ lectura acotada y el progreso no estaban anclados por igualdad literal); con los
 **214 muertos y 7 vivos, todos clasificados**: 5 sin efecto observable (2 por `entrada.is_dir`/`is_file` con `follow_symlinks`: el enlace ya se
 descartó antes con `link_kind_or_raise`, defensa en profundidad; `print(..., file=None)` escribe en `sys.stdout` igual que el valor por defecto; la
 rama `if repetidas` con el conjunto vacío no cambia nada; y la subcarpeta `salida` en la ruta del mod temporal de la autoprueba, que solo necesita
-existir dentro de un directorio que se borra) y 2 puramente cosméticos o de E/S (`flush=True` y el prefijo del directorio temporal). Rojo observado: el del módulo `lote.py` ausente
+existir dentro de un directorio que se borra) y 2 puramente cosméticos o de E/S (`flush=True` y el prefijo del directorio temporal, que desde la
+revisión de #783 mata un test). Rojo observado: el del módulo `lote.py` ausente
 (`ImportError`, colectivo) y el del código de salida 3; **para el resto de las propiedades no hubo un rojo individual previo** (los tests de la
 CLI se escribieron después del código): su evidencia es la mutación. Las últimas ediciones (borrado del directorio de trabajo con
 `rmtree_link_aware` y el renombre de la carpeta temporal de la autoprueba) llegaron después de esa pasada: se repitió sobre
 `_borrar_trabajo` y `procesar_lote` (10 mutantes, 10 muertos) y sobre `_autoprueba` (23 mutantes, 21 muertos y los dos vivos ya
-clasificados arriba: el prefijo del directorio temporal y la subcarpeta `salida`).
+clasificados arriba: el prefijo del directorio temporal y la subcarpeta `salida`). Tras la revisión de #783, sobre `_autoprueba` y
+`_borrar_temporal`: 26 mutantes, 25 muertos y 1 vivo equivalente (la subcarpeta `salida`).
 
-Los arreglos de la revisión de #783 tuvieron rojo observado en cada propiedad (16 tests nuevos fallaban antes: 12 de la CLI y 4 del lote) y su propia
+Los arreglos de la revisión de #783 tuvieron rojo observado en cada propiedad (19 tests nuevos fallaban antes: 15 de la CLI y 4 del lote) y su propia
 pasada de mutación: `cli.py` (`descubrir_normales_de_carpeta`, `_no_se_pudo_observar`, `_clave_fisica`, `_exigir_informe_fuera_de_la_salida`,
 `_generar`) **81 mutantes, 78 muertos y 3 vivos ya clasificados** (`if repetidas` con el conjunto vacío y los dos `follow_symlinks=True`, sin efecto
 porque el enlace se descarta antes); `lote.py` (`procesar_lote`, `_fase_de_calculo`) **30 de 30**; `validar_raiz_de_salida` **28 de 28**.

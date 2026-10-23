@@ -617,6 +617,78 @@ def test_sin_base_de_estado_la_cli_coordina_en_la_base_durable_por_usuario_y_no_
     assert list(otro_cwd.iterdir()) == []
 
 
+def test_la_autoprueba_borra_su_carpeta_temporal_sin_atravesar_enlaces(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Es el hermano del directorio de trabajo del lote: ``TemporaryDirectory`` borra con ``shutil.rmtree``, que en
+    Windows atraviesa un junction. Que el árbol sea propio no habilita la excepción."""
+    creadas: list[pathlib.Path] = []
+    mkdtemp_real = cli.tempfile.mkdtemp
+
+    def mkdtemp(*args: Any, **kwargs: Any) -> str:
+        ruta = mkdtemp_real(*args, **kwargs)
+        if pathlib.Path(ruta).name.startswith("skyclaw-autoprueba-"):
+            creadas.append(pathlib.Path(ruta))
+        return ruta
+
+    borradas: list[pathlib.Path] = []
+    borrar_real = cli.rmtree_link_aware
+
+    def borrar(ruta: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        borradas.append(pathlib.Path(ruta))
+        borrar_real(ruta, *args, **kwargs)
+
+    monkeypatch.setattr(cli.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(cli, "rmtree_link_aware", borrar)
+
+    codigo = main(
+        ["autoprueba", "--informe", str(tmp_path / "i.json")],
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(),
+        base_de_estado=tmp_path / "estado",
+        salida=io.StringIO(),
+    )
+
+    assert codigo == CODIGO_OK
+    assert len(creadas) == 1 and borradas == creadas and not creadas[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("exportador", "codigo_esperado", "titulo"),
+    [
+        (_exportador_falso, CODIGO_OK, "AUTOPRUEBA OK"),
+        (_exportador_que_devuelve_basura, CODIGO_CON_FALLOS, "AUTOPRUEBA FALLÓ"),
+    ],
+)
+def test_un_fallo_al_borrar_la_carpeta_temporal_no_tapa_el_resultado_de_la_autoprueba(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exportador: Any,
+    codigo_esperado: int,
+    titulo: str,
+) -> None:
+    """En Windows un antivirus puede tener abierto un archivo recién escrito: el operador tiene que ver el resultado
+    de la prueba, no un traceback."""
+
+    def borrar(_ruta: pathlib.Path, *_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("el antivirus lo tiene abierto")
+
+    monkeypatch.setattr(cli, "rmtree_link_aware", borrar)
+    salida = io.StringIO()
+
+    codigo = main(
+        ["autoprueba", "--informe", str(tmp_path / "i.json")],
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(exportador),
+        base_de_estado=tmp_path / "estado",
+        salida=salida,
+    )
+
+    texto = salida.getvalue()
+    assert codigo == codigo_esperado and titulo in texto
+    assert "Aviso: no se pudo borrar la carpeta temporal" in texto and "el antivirus lo tiene abierto" in texto
+
+
 def test_el_png_de_la_autoprueba_es_un_png_valido_con_los_pixeles_pedidos(tmp_path: pathlib.Path) -> None:
     ruta = tmp_path / "prueba.png"
 

@@ -16,8 +16,11 @@
 ## Qué toca y qué no
 
 - **Lee** la carpeta de entrada que le indiques. Nunca la modifica.
-- **Escribe** únicamente en `<mods>\Sky-Claw - Native Parallax Output` (el mod de salida) y en su subcarpeta de control
-  `.skyclaw-output`. Si se corta a la mitad (cierre, Ctrl+C, corte de luz), la próxima corrida lo recupera sola.
+- **Escribe** las texturas solo en `<mods>\Sky-Claw - Native Parallax Output` (el mod de salida) y en su subcarpeta de control
+  `.skyclaw-output`. Si se corta a la mitad (cierre, Ctrl+C, corte de luz), la próxima corrida lo recupera sola. Además deja,
+  fuera del mod: el informe `informe_parallax.json` (en la carpeta actual o donde le indiques con `--informe`), una carpeta
+  temporal propia que borra al terminar (si no puede, te avisa) y el estado del bloqueo que evita que dos instancias escriban a
+  la vez, en la carpeta de datos de tu usuario.
 - **El informe** (`--informe`) se escribe fuera del mod: la herramienta se niega si lo apuntás adentro del mod de salida o sobre una de tus texturas.
 - **Para deshacer todo**: desactivá ese mod en MO2 o borrá su carpeta. No toca tus otros mods ni la carpeta `Data`.
 - **No crea `meta.ini` ni lo habilita en MO2**: tenés que refrescar MO2 (F5) y activarlo a mano. No verifiqué cómo lo
@@ -28,7 +31,8 @@
 1. Windows, con el repo y su entorno: en la carpeta del repo, `uv sync --extra dev` (instala numpy y Pillow).
 2. El `texconv.exe` oficial **fijado por el proyecto** (DirectXTex, versión `may2026`). La herramienta verifica su huella
    SHA-256 y se niega a correr con cualquier otro. Para comprobarla vos:
-   `certutil -hashfile texconv.exe SHA256` tiene que dar `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`.
+   `certutil -hashfile C:\ruta\a\texconv.exe SHA256` (con la ruta completa del archivo que vas a usar) tiene que dar
+   `dcfdec10244e02cf5037fba089c55fb7e1326b1c8181742d77d15fa5cb5eef06`.
 3. Decile dónde está (en la misma ventana de consola, antes de los comandos):
    `set SKYCLAW_TEXCONV_EXE=C:\ruta\a\texconv.exe`
 
