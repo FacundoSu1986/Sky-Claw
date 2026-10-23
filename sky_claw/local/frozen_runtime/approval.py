@@ -1866,6 +1866,25 @@ def _validar_consentimiento(propuesta: PropuestaAprobacion, consentimiento: Cons
     # que fabrica el sujeto.
     ligado_al_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
     if ligado_al_propietario:
+        # Detectar la PRETENSIÓN de ser del propietario y validar uno solo de los
+        # seis campos es media comprobación. El wrapper
+        # ``owner_consent.emitir_aprobacion_autorizada`` exige los seis, pero esta
+        # función tiene más de un llamador (los tests del núcleo durable y
+        # ``_p4_s4_child`` la invocan directo), y el chequeo del root de más abajo
+        # es ``if consentimiento.root_id is not None``: un ``None`` lo salteaba
+        # entero, y con él la atadura al root FÍSICO. Un chequeo que vive sólo en
+        # el llamador es bypassable por el segundo llamador — es el mismo defecto
+        # que el P1 de esta ronda cerró para la identidad.
+        faltantes = [
+            nombre
+            for nombre in ("root_id", "solicitud_id", "session_id", "owner_subject", "mecanismo")
+            if not getattr(consentimiento, nombre)
+        ]
+        if faltantes:
+            raise ApprovalConsentimientoError(
+                "el consentimiento pretende ser del propietario pero le faltan campos de binding "
+                f"({', '.join(faltantes)}): un consentimiento a medias no autoriza nada"
+            )
         decidido_en = consentimiento.decided_at_ns
         if not isinstance(decidido_en, int) or isinstance(decidido_en, bool) or decidido_en < 0:
             raise ApprovalConsentimientoError(

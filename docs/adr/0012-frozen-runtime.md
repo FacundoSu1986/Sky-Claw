@@ -9594,6 +9594,8 @@ FASE C — EMISIÓN (bajo lock; lo toma emitir_aprobacion_autorizada)
   _exigir_binding_completo(consentimiento)      ← los SEIS campos
   participant_lock(root) → _emitir_aprobacion_bajo_lock(handle, root, propuesta, consentimiento)
       _validar_consentimiento: digest ∧ provenance ∧ decided_at_ns >= proposed_at_ns
+        ∧ si PRETENDE ser del propietario: los cinco campos de binding completos
+          (§46.10.1 — el núcleo no delega esa comprobación al wrapper)
       (witness no-clobber → CAS del ledger → reconciliación hacia adelante; §39.3/§40.2)
 ```
 
@@ -9881,8 +9883,42 @@ limitaciones que el ADR contaba mal.
 | P2 | `decided_at_ns` no se lee nunca | **Confirmado** | §46.2.3 — gobierna la emisión. Mutante M17. |
 | P2 | El binding de la solicitud no llega al witness | **Confirmado, DIFERIDO** | Exigiría esquema v3; el ancla durable del *quién* es el transporte, no el artefacto. `OWNER_REQUEST_ID_IS_DURABLE = NO`. |
 | P2 | El registro no está cableado a producción | **Confirmado, DIFERIDO** | §46.7 — `HITL_PRODUCTIVE = NOT_WIRED`. Cablear sin consumidor deja `ISSUED` sin salida. |
+| P1 | `_emitir_aprobacion_bajo_lock` sólo revalida `decided_at_ns` para un consentimiento ligado; los otros cinco campos de binding no | **Confirmado por sonda** | §46.10.1 — el núcleo exige los cinco campos cuando detecta la pretensión. Mutante M18. |
 
 La distinción entre las dos columnas de la derecha importa: **un diferimiento
 declarado es una decisión; uno presentado como implementado es un defecto.** Los
 dos diferidos están escritos como límites con nombre y valor, y el PR no se
 considera mergeable hasta que el dueño los acepte como tales.
+
+#### 46.10.1 El séptimo hallazgo — el binding del núcleo, a medias
+
+Llegó del revisor de PR después de la tabla, sobre `086a628b`, y se falsificó
+antes de aceptarlo. `_validar_consentimiento` detecta la pretensión de ser del
+propietario con
+
+```python
+ligado_al_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
+```
+
+y en esa rama validaba **uno** de los seis campos: `decided_at_ns`. Los otros
+cinco quedaban a cargo de `owner_consent._exigir_binding_completo`, que vive en
+el wrapper. Y el chequeo del root de más abajo es `if consentimiento.root_id is
+not None`: un `None` lo **salteaba entero**, con lo que la atadura al root físico
+—la que §46.3 declara `CONSENT_BINDS_ROOT = YES`— desaparecía.
+
+La sonda: un `ConsentimientoAprobacion` con `owner_subject`, `mecanismo` e
+instante válidos, y `root_id`/`solicitud_id`/`session_id` en `None`, invocado
+directo sobre el núcleo bajo lock. Resultado: **`DID NOT RAISE`** — emitió.
+
+¿Por qué importa si el wrapper los exige? Porque el núcleo **no tiene un solo
+llamador**: los tests del bloque durable y `tests/_p4_s4_child.py` lo invocan
+directo, y esa es la definición de "un chequeo que vive sólo en el llamador". Es
+el mismo defecto que el P1 de esta ronda, un piso más abajo. Que hoy no exista un
+segundo llamador *productivo* es una propiedad del árbol de llamadas de hoy, no
+del mecanismo.
+
+La resolución no relaja nada: cuando el consentimiento **pretende** ser del
+propietario, el núcleo exige los cinco campos antes de mirar el instante. Un
+consentimiento sin ninguno de los dos campos de identidad sigue siendo la fixture
+de tres cadenas que P4-S4/P4-S5 necesitan para ejercitar la autoridad durable sin
+superficie —eso no cambia—, pero ya no se puede tener *medio* binding.

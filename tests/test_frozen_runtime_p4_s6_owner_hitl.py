@@ -567,6 +567,37 @@ def test_una_decision_anterior_a_la_propuesta_no_emite(tmp_path: pathlib.Path) -
     assert not list(issuances_state_dir(root).iterdir())
 
 
+def test_un_consentimiento_a_medias_no_emite_aunque_traiga_el_instante(tmp_path: pathlib.Path) -> None:
+    """Un consentimiento que PRETENDE ser del propietario tiene que estar completo.
+
+    ``_validar_consentimiento`` detecta la pretensión con
+    ``owner_subject is not None or mecanismo is not None``. Detectar la pretensión
+    y validar **uno** de los seis campos es media comprobación: un consentimiento
+    con ``owner_subject`` e instante válidos pero sin
+    ``root_id``/``solicitud_id``/``session_id`` pasaba el núcleo y emitía —el
+    chequeo del root es ``if consentimiento.root_id is not None``, así que un
+    ``None`` lo salteaba entero, y con él la atadura al root físico—.
+
+    El wrapper ``emitir_aprobacion_autorizada`` exige los seis, pero un chequeo
+    que vive **sólo en el llamador** es exactamente lo que el P1 de esta ronda
+    cerró: la puerta tiene que valer por sí misma, porque tiene más de un
+    llamador (los tests de P4-S4/P4-S5 y ``_p4_s4_child`` la invocan directo).
+    """
+    root = _root(tmp_path)
+    propuesta = _propuesta(root)
+    a_medias = ConsentimientoAprobacion(
+        approval_scope_digest=propuesta.scope.approval_scope_digest,
+        approval_provenance=propuesta.scope.approval_provenance,
+        surface="telegram",
+        owner_subject=str(OPERADOR),
+        mecanismo=MECANISMO_TELEGRAM,
+        decided_at_ns=propuesta.proposed_at_ns + 1,
+    )
+    with pytest.raises(ApprovalConsentimientoError, match="binding"):
+        _emitir_verificado(root, propuesta, a_medias)
+    assert not list(issuances_state_dir(root).iterdir())
+
+
 def test_el_consentimiento_verificado_sella_su_instante_de_decision(tmp_path: pathlib.Path) -> None:
     """El camino real: ``responder`` estampa un instante posterior a la propuesta."""
     root = _root(tmp_path)
