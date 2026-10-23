@@ -80,7 +80,7 @@ Verificado leyendo el repositorio (2026-10-19):
    | NP-X0 | experimentos de signo/escala/inversión y `REVIEW_RATE` | NP-X0a hecho (#762); NP-X0b: runner y `REVIEW_RATE` simulada sobre el corpus sintético hechos, sin validar nada (ver la actualización de NP-X0b) |
    | NP-E0 | `DdsExporter` (texconv) | **parcial**: NP-E0a (núcleo puro, #771) y NP-E0b (ejecutor del texconv fijado) hechos (con smoke real en Windows), ver «Actualización de NP-E0b»; falta el registro/detección de `texconv` en el tool registry (NP-A0) |
    | NP-O0 | `ManagedOutput` + manifest + cache por hash | **parcial**: NP-O0a (núcleo puro: manifiesto, clave de caché y planificador) hecho, ver «Actualización de NP-O0a»; falta el escritor (NP-O0b): NP-O0b1 (reconciliación pura tras un corte) hecho, ver «Actualización de NP-O0b1»; NP-O0b2 (el escritor sobre el disco) hecho, ver «Actualización de NP-O0b2»; falta cablearlo al lote y al adaptador de MO2 (NP-A0) |
-   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | **parcial**: NP-A0a (lote de carpeta plana y línea de comandos, con una enumeración provisoria) hecho, ver «Actualización de NP-A0a»; NP-A0b (`provider.py` endurecido, todavía sin cablear a la CLI) hecho, ver «Actualización de NP-A0b»; falta el adaptador de MO2, la detección de `texconv` en el registro de tools y las superficies GUI/agente |
+   | NP-A0 | `AssetProvider` (carpeta plana y adapter MO2) + batch | **parcial**: NP-A0a (lote de carpeta plana y línea de comandos) hecho, ver «Actualización de NP-A0a»; NP-A0b (`provider.py` endurecido) hecho y cableado a la CLI y al lote, ver «Actualización de NP-A0b» y «Cableado del proveedor a la CLI»; falta el adaptador de MO2, la detección de `texconv` en el registro de tools y las superficies GUI/agente |
    | NP-V0 / NP-RIG | preview offline y rig in-game (requiere Windows y Skyrim reales) | pendiente |
 
    La tabla es el camino de MODE 0. El resto del roadmap de Synthesis C (NP-H0, NP-AI0, NP-AI2, NP-CM,
@@ -1171,8 +1171,8 @@ son los de la referencia sintética y nada se miró en el juego; (4) el comporta
 
 **Límites declarados.** (1) Se recalcula todo aunque la caché esté vigente (el escritor la deja `OMITIDA`); evitarlo exige planificar antes de
 calcular. (2) De a una textura, sin concurrencia. (3) Los lados tienen que ser potencia de 2 (lo exige el exportador): los demás fallan su ruta con
-ese motivo. (4) La enumeración de `cli.py` es **provisoria**: solo `*_n.dds` bajo `textures/`, sin seguir enlaces, y omite (y dice) las que ya
-tienen un `*_p.dds` al lado; la reemplaza `provider.py`. Con `--retirar-no-incluidas` esas omisiones deliberadas cuentan como «no incluidas». (5) No hay superficie GUI ni agente: la regla «dos superficies, un recurso» queda
+ese motivo. (4) *(Superado por «Cableado del proveedor a la CLI».)* La enumeración de `cli.py` era **provisoria**: solo `*_n.dds` bajo `textures/`, sin seguir enlaces, y omitía (y decía) las que ya
+tenían un `*_p.dds` al lado; la reemplazó `provider.py`. Con `--retirar-no-incluidas` esas omisiones deliberadas cuentan como «no incluidas». (5) No hay superficie GUI ni agente: la regla «dos superficies, un recurso» queda
 satisfecha por el lock cross-process, pero las superficies son de NP-A0. (6) `escribir_revision` escribe salidas marcadas «sin validar» solo en
 el informe: el manifiesto no distingue una salida autoaceptada de una en revisión.
 
@@ -1230,8 +1230,8 @@ de otros mods que MO2 resuelve por su sistema virtual de archivos; el orden de l
 NP-A0b entrega `sky_claw/local/native_parallax/provider.py`: el descubrimiento de normales de una carpeta (o de un mod) con una subcarpeta
 `textures/`, **endurecido**, para reemplazar a la enumeración provisoria de `cli.py`. Es un módulo **puro y de solo lectura**: dada una raíz,
 devuelve por cada `*_n.dds` apto su ruta de origen, su ruta de salida ya validada, el archivo, el tamaño y la huella del contenido (los tres
-primeros son lo que consume `lote.NormalAProcesar`) y, aparte, qué omitió y por qué. **No está cableado todavía**: la CLI sigue con su enumeración
-y sus tests, que son el contrato de comportamiento que este módulo iguala o mejora (el cableado es el próximo paso).
+primeros son lo que consume `lote.NormalAProcesar`) y, aparte, qué omitió y por qué. Al abrirse #784 **no estaba cableado**: la CLI seguía con su enumeración
+y sus tests, que eran el contrato de comportamiento que este módulo igualaba o mejoraba; el cableado es la sección siguiente («Cableado del proveedor a la CLI»).
 
 **Decisiones (nuestras, ancladas por `tests/test_native_parallax_provider.py`):**
 
@@ -1299,8 +1299,8 @@ cerrado).
 
 **Límites declarados.** (1) Entre el `lstat` de un archivo y su lectura hay una ventana en la que podría reemplazarse por un enlace (`open` sigue
 enlaces): es de solo lectura (a lo sumo se hashea el destino) y el lote vuelve a inspeccionar el origen, antes y después de decodificarlo; no se
-usa `O_NOFOLLOW` porque no existe en Windows. (2) La función es síncrona y puede tardar: se la corre con `asyncio.to_thread`. (3) La lectura acotada
-está duplicada con `lote._huella_acotada`; el cableado las unifica con un ancla que enumere. (4) Los nombres que Windows no admite (`:`, `|`…) no se
+usa `O_NOFOLLOW` porque no existe en Windows. (2) La función es síncrona y puede tardar: se la corre con `asyncio.to_thread`. (3) *(Superado: la lectura acotada se unificó al cablear.)* La lectura acotada
+estaba duplicada con `lote._huella_acotada`; el cableado las unifica con un ancla que enumere. (4) Los nombres que Windows no admite (`:`, `|`…) no se
 fabrican en disco en los tests (en NTFS un `:` crea un flujo alternativo): la reacción a una ruta inválida se prueba sustituyendo el validador, y el
 validador real, con un nombre no ASCII. (5) Una carpeta (o un ancestro) que otro proceso reemplace por un enlace **después** de revalidarla, mientras
 se inspecciona lo que hay adentro o antes de que se calcule la huella (que va tras el recorrido completo), no se detecta: las llamadas van por ruta y no
@@ -1319,6 +1319,52 @@ achica, a cambio de código que sugeriría una garantía que no existe. (d) *Cod
 se omite antes de abrirlo; la carrera exige un proceso con permiso de escritura que lo coloque, no existe en Windows (la plataforma de entrega) y la
 solución propuesta (`O_NONBLOCK`/`O_NOFOLLOW` y `fstat`) es de POSIX, cambia las anclas por AST y no la pude verificar en Windows.
 
-**Qué falta.** Cablear la CLI (y con ella el lote) a `provider.py` conservando los tests de la enumeración provisoria como contrato, y usar
-`completo` para decidir si `--retirar-no-incluidas` puede correr; unificar la lectura acotada con la del lote; el adaptador de MO2; la detección y el
+**Qué falta.** (Cablear la CLI y unificar la lectura acotada se hizo en la sección siguiente.) El adaptador de MO2; la detección y el
 diagnóstico de `texconv`; las superficies GUI y agente.
+
+### Cableado del proveedor a la CLI (NP-A0b, 2026-10-23)
+
+La CLI deja de tener su propia enumeración: `cli.descubrir_normales_de_carpeta` es ahora un **adaptador delgado** de
+`provider.descubrir_normales` (traduce `RaizInvalidaError`/`DemasiadosArchivosError` a `UsoIncorrectoError`, arma una línea de texto por omisión y, con
+`exigir_completa`, rechaza una enumeración con `completo=False`: es lo que usa `--retirar-no-incluidas`). Se conserva con su nombre y su firma **a
+propósito**: sus tests (la sección «Enumeración» de `tests/test_native_parallax_cli.py`) fueron el contrato que el proveedor tenía que igualar o mejorar, y
+siguen corriendo. Lo que cambia:
+
+- **Se borró la enumeración provisoria** (`_hijo_sin_distinguir_mayusculas`, `_no_se_pudo_observar` y el recorrido de `cli.py`). La CLI conserva su propio tope de
+  entradas (10 000, más bajo que el 100 000 del proveedor: es una herramienta experimental para probar en un rig).
+- **El informe no puede apuntar dentro de las texturas de entrada** se decide con `provider.carpeta_de_textures`, que es LA misma resolución de `textures` que
+  usa el descubrimiento (antes eran dos búsquedas con su propia idea de mayúsculas y enlaces).
+- **Una sola lectura acotada.** `lote._huella_acotada` valida el origen (regular, entre 1 byte y el tope) y **delega la lectura** en `provider.huella_acotada`,
+  que ahora es pública. Es MÁS estricta que la copia que tenía el lote: se acota por el tamaño de CADA archivo (lo que midió `lstat`) y no por el tope de 1 GiB,
+  y un origen que se **achica** entre la medida y la lectura también es `OrigenInvalidoError` (antes solo se cortaba lo que crecía).
+- **Anclas nuevas** (`tests/test_native_parallax_producto_invariant.py`, por AST, con su escáner probado sobre una tabla de formas): (1) solo `provider.py` y
+  `output_writer.py` enumeran carpetas (el escritor, las de CONTROL del mod de salida): una segunda enumeración de la entrada rompe el ancla; (2) los lectores de
+  archivo con huella son exactamente cuatro (`export.verificar_texconv`, las dos del escritor y `provider.huella_acotada`); el lote ya no tiene el suyo; (3) el lote
+  importa `huella_acotada` del proveedor.
+
+**Diferencias de comportamiento respecto de la enumeración provisoria** (cada una con su test adaptado, ninguna silenciosa): (a) los duplicados por mayúsculas se
+informan **una vez por archivo** (antes una línea por par); (b) un `*_p.dds` autoral cuenta si está en **cualquier** carpeta del árbol con la misma `clave_de_ruta`
+y **de cualquier tipo de entrada** (antes, solo en la misma carpeta física); (c) la raíz y cada carpeta se revalidan después de abrirlas y los ancestros de la raíz
+se aceptan; (d) los mensajes de `textures` distinguen «no es una carpeta», «es un enlace» y «falta»; (e) el tope cuenta normales **y** omisiones, con otro mensaje;
+(f) el texto de las omisiones usa «enlace (symlink|junction)» y paréntesis para el detalle, como antes. La CLI ya **no** dice «debe tener una subcarpeta
+'textures'» cuando `textures` es un archivo o un enlace: dice cuál de los dos casos es.
+
+**Verificado ejecutando (Linux, Python 3.11):** rojo observado antes del cambio en las anclas nuevas (`cli.py` aparecía como segundo enumerador; el lote y el
+proveedor aparecían como dos lectores con huella; `huella_acotada` no era pública), en los tests del proveedor y del lote (la lectura delegada y el origen que se achica),
+y, después de cablear, las **diez** diferencias de contrato de la CLI fallaron una por una y se adaptaron a propósito (ver la lista de arriba). Suite completa corrida sola:
+14 613 pasan y 402 se saltan, con el **mismo** conjunto de fallos que la línea base de `main` (77 y 1 error de colección, de `runtime_vault`, `test_process_helper` y `test_schemas`);
+`ruff` limpio, `mypy sky_claw/ scripts/` en 669 errores como la línea base y ninguno en `native_parallax/`. **Mutación** por AST sobre lo que cambió (nulo de cada función en verde):
+`cli` (`descubrir_normales_de_carpeta`, `_texto_de_omision`, `_exigir_informe_fuera_de_la_salida`) 18 mutantes y **18 muertos** (la primera pasada dejó 2 vivos: el separador del mensaje
+de lo no visto y la rama «la entrada cambió desde que se enumeró»; se cerraron con tests), `lote._huella_acotada` 15 y **15 muertos**, `provider` (`carpeta_de_textures`, `huella_acotada`) 25 con
+24 muertos y 1 vivo equivalente (`while True` mutado a `while True`). **No se ejecutó en Windows ni con el `texconv` real desde este PR** (la CI de Windows corre los tests); la
+corrida real del propietario (sección anterior) es **previa** a este cableado y usó la enumeración provisoria.
+
+**Costo y límites declarados.** (1) El proveedor calcula la huella de cada normal apta al descubrir y el lote la vuelve a calcular antes y después de decodificar:
+**tres lecturas por textura** (antes eran dos). No se midió; con texturas de 1024²–2048² es despreciable frente a la integración, y con miles de texturas habría que
+usar la huella del proveedor como referencia del lote (compararla en la lectura posterior y saltear la previa): queda anotado, no hecho. (2) El descubrimiento es
+síncrono y corre dentro del bucle de eventos de `asyncio.run`: mientras hashea, un primer Ctrl+C se atiende al terminar (no verificado; el segundo interrumpe).
+(3) El autoral que vale es el de la **carpeta de entrada**: la herramienta no ve los `*_p.dds` de OTROS mods que MO2 resuelve por su sistema virtual de archivos.
+Para el adaptador de MO2 (NP-A0) es un requisito de diseño: sin saber qué `*_p.dds` gana el conflicto, la salida podría tapar parallax autoral de otro mod.
+
+**Qué falta.** El adaptador de MO2 (con la regla del punto 3); la detección y el diagnóstico de `texconv`; las superficies GUI y agente; usar la huella del proveedor
+como referencia en el lote; saltear el cálculo de lo que la caché ya cubre.

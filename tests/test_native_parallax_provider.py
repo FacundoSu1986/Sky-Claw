@@ -340,7 +340,7 @@ def test_ruta_invalida_el_detalle_trae_el_error_del_validador(
 
     assert _origenes(d) == ["textures/a/buena_n.dds"]
     assert d.omitidas == (
-        Omitida("textures/a/mala_n.dds", M.RUTA_INVALIDA, "la ruta de salida no es admisible: caracter no admitido"),
+        Omitida("textures/a/mala_n.dds", M.RUTA_INVALIDA, "la ruta de salida no es admisible (caracter no admitido)"),
     )
     assert d.completo is True
 
@@ -404,14 +404,14 @@ def test_ilegible_un_archivo_que_no_se_puede_leer_no_aborta_y_deja_la_enumeracio
 ) -> None:
     _tocar(raiz / "textures" / "a" / "alfa_n.dds", b"ALFA")
     _tocar(raiz / "textures" / "a" / "beta_n.dds", b"BETA")
-    real = provider._huella_acotada
+    real = provider.huella_acotada
 
     def huella(ruta: pathlib.Path, tamano_esperado: int) -> str:
         if ruta.name == "beta_n.dds":
             raise PermissionError("acceso denegado")
         return real(ruta, tamano_esperado)
 
-    monkeypatch.setattr(provider, "_huella_acotada", huella)
+    monkeypatch.setattr(provider, "huella_acotada", huella)
 
     d = descubrir_normales(raiz)
 
@@ -712,6 +712,32 @@ def test_dos_carpetas_textures_que_solo_difieren_en_mayusculas_son_ambiguas(
         descubrir_normales(raiz)
 
 
+def test_la_carpeta_de_textures_es_la_real_con_su_nombre_en_disco(tmp_path: pathlib.Path) -> None:
+    """La CLI la pide para prohibir el informe dentro de las texturas de entrada: es LA misma resolución que usa el
+    descubrimiento (no una segunda búsqueda de ``textures`` con su propia idea de mayúsculas y enlaces)."""
+    (tmp_path / "mod" / "Textures").mkdir(parents=True)
+
+    assert provider.carpeta_de_textures(tmp_path / "mod") == tmp_path / "mod" / "Textures"
+
+
+@pytest.mark.parametrize("preparar", ["no_existe", "sin_textures", "textures_es_enlace"])
+def test_la_carpeta_de_textures_rechaza_lo_mismo_que_el_descubrimiento(tmp_path: pathlib.Path, preparar: str) -> None:
+    raiz = tmp_path / "mod"
+    if preparar == "sin_textures":
+        raiz.mkdir()
+    elif preparar == "textures_es_enlace":
+        (tmp_path / "fuera").mkdir()
+        raiz.mkdir()
+        _enlazar("symlink", tmp_path / "fuera", raiz / "textures")
+
+    with pytest.raises(RaizInvalidaError) as por_descubrimiento:
+        descubrir_normales(raiz)
+    with pytest.raises(RaizInvalidaError) as por_textures:
+        provider.carpeta_de_textures(raiz)
+
+    assert str(por_textures.value) == str(por_descubrimiento.value)
+
+
 def test_una_raiz_invalida_no_toca_nada(tmp_path: pathlib.Path) -> None:
     (tmp_path / "mod").mkdir()
     antes = _foto(tmp_path)
@@ -850,21 +876,21 @@ def test_la_huella_es_el_sha256_del_contenido_con_bloques_de_cualquier_tamano(
 ) -> None:
     archivo = _tocar(tmp_path / "a.bin", bytes(range(tamano)))
 
-    assert provider._huella_acotada(archivo, tamano) == hashlib.sha256(bytes(range(tamano))).hexdigest()
+    assert provider.huella_acotada(archivo, tamano) == hashlib.sha256(bytes(range(tamano))).hexdigest()
 
 
 def test_un_archivo_que_creció_despues_de_medirlo_se_rechaza(tmp_path: pathlib.Path, bloque_chico: None) -> None:
     archivo = _tocar(tmp_path / "a.bin", b"x" * 20)
 
     with pytest.raises(OSError, match="creció mientras se leía"):
-        provider._huella_acotada(archivo, 5)  # se midió en 5 bytes
+        provider.huella_acotada(archivo, 5)  # se midió en 5 bytes
 
 
 def test_un_archivo_que_se_achico_despues_de_medirlo_se_rechaza(tmp_path: pathlib.Path, bloque_chico: None) -> None:
     archivo = _tocar(tmp_path / "a.bin", b"x" * 3)
 
     with pytest.raises(OSError, match="cambió mientras se leía.*3.*5"):
-        provider._huella_acotada(archivo, 5)
+        provider.huella_acotada(archivo, 5)
 
 
 def test_la_huella_no_lee_mas_de_un_byte_pasado_lo_que_midio_aunque_el_origen_no_termine_nunca(
@@ -889,7 +915,7 @@ def test_la_huella_no_lee_mas_de_un_byte_pasado_lo_que_midio_aunque_el_origen_no
     monkeypatch.setattr(provider, "open", lambda *_a, **_k: OrigenInfinito(), raising=False)
 
     with pytest.raises(OSError, match="creció mientras se leía"):
-        provider._huella_acotada(archivo, 8)
+        provider.huella_acotada(archivo, 8)
 
     assert pedidos == [5, 4] and sum(pedidos) == 8 + 1
 
@@ -905,13 +931,13 @@ def test_la_huella_se_calcula_solo_de_lo_que_sobrevive_y_en_orden(
     _tocar(carpeta / "c_p.dds")  # se omite: ya tiene parallax
     _tocar(carpeta / "vacia_n.dds", b"")  # se omite
     leidos: list[str] = []
-    real = provider._huella_acotada
+    real = provider.huella_acotada
 
     def huella(ruta: pathlib.Path, tamano_esperado: int) -> str:
         leidos.append(ruta.name)
         return real(ruta, tamano_esperado)
 
-    monkeypatch.setattr(provider, "_huella_acotada", huella)
+    monkeypatch.setattr(provider, "huella_acotada", huella)
 
     d = descubrir_normales(raiz)
 
@@ -990,7 +1016,9 @@ def test_el_all_del_proveedor_esta_congelado() -> None:
         "Omitida",
         "ProveedorError",
         "RaizInvalidaError",
+        "carpeta_de_textures",
         "descubrir_normales",
+        "huella_acotada",
     }
 
 

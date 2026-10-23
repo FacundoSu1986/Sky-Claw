@@ -2,8 +2,8 @@
 
 Es la mitad «qué texturas hay» del lote: dada la raíz de una carpeta (o de un mod), devuelve por cada normal lo que el lote
 necesita para planificar la salida (ruta de origen, ruta de salida ya validada, archivo, tamaño y huella del contenido) y,
-aparte, qué omitió y por qué. Reemplaza a la enumeración PROVISORIA de ``cli.py`` (que sigue en uso hasta que se la cablee a
-este módulo) y es lo que reutilizará el adaptador de MO2.
+aparte, qué omitió y por qué. Reemplazó a la enumeración PROVISORIA de ``cli.py`` (la CLI ya lo usa) y es lo que reutilizará el
+adaptador de MO2.
 
 Propiedades (cada una con su test, y las familias con su ancla que enumera):
 
@@ -54,9 +54,9 @@ Límites declarados:
   Windows.
 - La huella se lee en el hilo que llama: es una función SÍNCRONA y puede tardar (lee todo lo que va a procesar el lote). Quien
   la use desde código ``async`` la corre con ``asyncio.to_thread``.
-- La lectura acotada está hoy duplicada con ``lote._huella_acotada`` (el lote la hace antes y después de decodificar); el
-  cableado de NP-A0 las unifica con un ancla que enumere. Nada de esto se ejerció sobre NTFS real ni con un junction real
-  desde el desarrollo: la CI de Windows corre los tests (el junction, con ``mklink /J``).
+- La huella se calcula acá al descubrir y el lote la vuelve a calcular antes y después de decodificar (tres lecturas por
+  textura): el lote todavía no usa la del proveedor como referencia. Nada de esto se ejerció sobre NTFS real ni con un
+  junction real desde el desarrollo: la CI de Windows corre los tests (el junction, con ``mklink /J``).
 
 Ver ADR 0014, «Actualización de NP-A0b».
 """
@@ -91,7 +91,9 @@ __all__ = [
     "Omitida",
     "ProveedorError",
     "RaizInvalidaError",
+    "carpeta_de_textures",
     "descubrir_normales",
+    "huella_acotada",
 ]
 
 #: Tope por defecto de entradas relevantes (normales candidatas y omisiones). Es una cota de cordura PROPIA, no un umbral de
@@ -232,6 +234,15 @@ def _resolver_textures(raiz: pathlib.Path) -> tuple[pathlib.Path, str, os.stat_r
     return textures, nombres[0], identidad
 
 
+def carpeta_de_textures(raiz: pathlib.Path) -> pathlib.Path:
+    """La carpeta ``textures`` REAL de *raiz*, con su nombre en disco: LA misma resolución que usa ``descubrir_normales``.
+
+    Existe para que quien necesite saber qué es «la entrada» (la CLI, que prohíbe escribir su informe adentro) no haga su
+    propia búsqueda de ``textures`` con otra idea de mayúsculas y de enlaces. Levanta lo mismo que el descubrimiento.
+    """
+    return _resolver_textures(raiz)[0]
+
+
 # ---------------------------------------------------------------------------
 # El recorrido
 # ---------------------------------------------------------------------------
@@ -296,12 +307,12 @@ def _examinar(
     try:
         tipo_de_enlace, identidad = link_kind_and_identity_or_raise(ruta)
     except OSError as exc:
-        acumulador.omitir(relativa, MotivoDeOmision.ILEGIBLE, f"no se pudo inspeccionar: {exc}")
+        acumulador.omitir(relativa, MotivoDeOmision.ILEGIBLE, f"no se pudo inspeccionar ({exc})")
         return
     if identidad is None:  # desapareció entre el listado y la inspección: ya no está
         return
     if tipo_de_enlace is not None:
-        acumulador.omitir(relativa, MotivoDeOmision.ENLACE, f"es un {tipo_de_enlace} y no se sigue")
+        acumulador.omitir(relativa, MotivoDeOmision.ENLACE, f"es un enlace ({tipo_de_enlace}) y no se sigue")
         return
     if stat.S_ISDIR(identidad.st_mode):
         pendientes.append((ruta, relativa, identidad))
@@ -324,7 +335,7 @@ def _examinar(
         try:
             salida = validar_ruta_de_salida(relativa[: -len(_SUFIJO_DE_ENTRADA)] + _SUFIJO_DE_SALIDA)
         except RutaDeSalidaInvalidaError as exc:
-            acumulador.omitir(relativa, MotivoDeOmision.RUTA_INVALIDA, f"la ruta de salida no es admisible: {exc}")
+            acumulador.omitir(relativa, MotivoDeOmision.RUTA_INVALIDA, f"la ruta de salida no es admisible ({exc})")
         else:
             acumulador.agregar(_Candidata(relativa, salida, ruta, tamano))
 
@@ -353,11 +364,12 @@ def _recorrer(
 # ---------------------------------------------------------------------------
 
 
-def _huella_acotada(ruta: pathlib.Path, tamano_esperado: int) -> str:
+def huella_acotada(ruta: pathlib.Path, tamano_esperado: int) -> str:
     """SHA-256 de *ruta*, leyendo como máximo ``tamano_esperado + 1`` bytes (nunca más, aunque el archivo crezca).
 
-    ``tamano_esperado`` es el tamaño con el que se validó el archivo. Si lo leído no coincide, el archivo cambió mientras se
-    leía y se lanza ``OSError`` (el llamador lo traduce a ``ILEGIBLE``).
+    Es LA lectura acotada de una textura de entrada: la usan este módulo (al descubrir) y el lote (antes y después de
+    decodificar). ``tamano_esperado`` es el tamaño con el que se validó el archivo. Si lo leído no coincide, el archivo cambió
+    mientras se leía y se lanza ``OSError`` (el llamador lo traduce: ``ILEGIBLE`` acá, ``OrigenInvalidoError`` en el lote).
     """
     hasher = hashlib.sha256()
     leidos = 0
@@ -445,9 +457,9 @@ def descubrir_normales(
     normales: list[NormalDescubierta] = []
     for candidata in sorted(sobreviven, key=lambda c: (clave_de_ruta(c.ruta_de_salida), c.ruta_de_salida)):
         try:
-            huella = _huella_acotada(candidata.ruta, candidata.tamano)
+            huella = huella_acotada(candidata.ruta, candidata.tamano)
         except OSError as exc:
-            omitidas.append(Omitida(candidata.ruta_de_origen, MotivoDeOmision.ILEGIBLE, f"no se pudo leer: {exc}"))
+            omitidas.append(Omitida(candidata.ruta_de_origen, MotivoDeOmision.ILEGIBLE, f"no se pudo leer ({exc})"))
             continue
         normales.append(
             NormalDescubierta(

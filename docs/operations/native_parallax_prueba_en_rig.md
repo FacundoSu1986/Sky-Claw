@@ -108,6 +108,8 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
 - No hay interfaz gráfica ni agente: solo esta línea de comandos. La integración con MO2 (habilitar el mod solo) viene después.
-- La enumeración de la carpeta es provisoria: solo `*_n.dds` bajo `textures\`, sin seguir enlaces.
+- La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
+  ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
+  archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.
 - Códigos de salida: `0` bien, `1` alguna textura falló, `2` mala configuración (falta el `texconv`, carpeta inválida…),
   `3` otra instancia está escribiendo esa misma salida, `130` interrumpido.

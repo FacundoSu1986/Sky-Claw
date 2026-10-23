@@ -110,8 +110,8 @@ La política clean-room, `docs/design/research/native-parallax/` y
   de caché); la procedencia es la de lo que corrió (huella de la normal antes y después de decodificar, encoder que DEVOLVIÓ el exportador, parámetros
   que cambian los bytes) y `bordes`/`escala_x`/`escala_y` viajan IGUALES a `integrar` y a cada métrica; las salidas de corridas anteriores se
   conservan salvo `retirar_no_incluidas` (que exige una enumeración COMPLETA: lo no visto no se da por ausente). La raíz de salida se valida
-  ANTES de procesar nada (`validar_raiz_de_salida`), y el informe nunca se escribe dentro del mod. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La enumeración de la
-  carpeta de `cli.py` es PROVISORIA (la reemplaza `provider.py`); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
+  ANTES de procesar nada (`validar_raiz_de_salida`), y el informe nunca se escribe dentro del mod. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La carpeta de
+  entrada la enumera `provider.py` (`cli.descubrir_normales_de_carpeta` es un adaptador delgado); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
   `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
   Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
@@ -120,8 +120,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
   incluida, después de abrirla; un `*_p.dds` autoral no se pisa y se compara por `clave_de_ruta` en TODO el árbol, no por carpeta física; **lo no observado no se da por ausente** (`Descubrimiento.completo` es `False` si hubo `CARPETA_ILEGIBLE` o `ILEGIBLE`: quien retira salidas
   por «ya no figura» la necesita completa); la huella se lee acotada por el tamaño validado y solo de lo que sobrevive; un archivo que falla no aborta
   pero un exceso de entradas sí (nunca trunca); es determinista (orden por `clave_de_ruta`); el vocabulario de `MotivoDeOmision` está cerrado y clasificado
-  por igualdad literal (un motivo nuevo obliga a decidir si deja lo no observado). `NormalDescubierta` cumple `lote.NormalAProcesar`. Todavía NO está
-  cableado a la CLI: la enumeración provisoria de `cli.py` y sus tests son el contrato que iguala. Ver ADR 0014, "Actualización de NP-A0b".
+  por igualdad literal (un motivo nuevo obliga a decidir si deja lo no observado). `NormalDescubierta` cumple `lote.NormalAProcesar`. La CLI lo usa (los tests de
+  su sección «Enumeración» son el contrato que cumple) y el lote le delega la lectura acotada (`huella_acotada`, UNA sola; la del lote se borró). Anclas por AST en
+  `tests/test_native_parallax_producto_invariant.py`: solo `provider.py` y `output_writer.py` enumeran carpetas y los lectores de archivo con huella están
+  congelados. Ver ADR 0014, "Actualización de NP-A0b" y "Cableado del proveedor a la CLI".
 
 ## Verificación segura
 
