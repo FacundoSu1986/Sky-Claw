@@ -139,8 +139,13 @@ base se probó.
 El ciclo TDD deja un commit `test(...)` deliberadamente rojo. La evidencia queda en el PR;
 `main` no hereda un commit que rompe `git bisect`.
 
-**Verificación:** `git log --format='%P' -1 origin/main` devuelve **un solo** padre. Dos
-padres significan merge commit.
+**Verificación:** `git log --format='%P%x09%s' -1 origin/main` devuelve **un solo** padre
+**y** un asunto que termina en `(#<N>)`. Dos padres significan merge commit. Un padre sin el
+sufijo significa rebase merge: reescribió los SHAs de los commits y deja la historia roja en
+`main`. Sólo el sufijo que agrega GitHub al squash lo distingue; el número de padres solo
+no. **Límite:** un rebase merge de un PR de un solo commit con asunto ya terminado en
+`(#<N>)` es indistinguible de un squash por forma; lo previene `--squash` en §5.4, no esta
+verificación.
 
 ### R4 — Antes de mergear, `origin/main` es ancestro del head del PR
 
@@ -172,9 +177,14 @@ descartado desaparece sin que nadie lo nombre.
 Si el otro lado tocó una primitiva que este PR consume, o si este PR arregla un camino que
 tiene hermano, el inventario se corre igual, haya conflicto o no (§3.1).
 
-**Verificación:** `git diff --name-only $(git merge-base origin/main HEAD) origin/main`
-muestra los archivos que trajo el otro lado; si alguno define o consume la primitiva tocada,
-el inventario de R10 se corre antes de mergear.
+**Verificación:** `git diff --name-only "$BASE" origin/main` con la `BASE` que §5.1 captura
+**antes** de sincronizar. Lista los archivos que trajo el otro lado; si alguno define o
+consume la primitiva tocada, el inventario de R10 se corre antes de mergear.
+
+**Trampa:** después de sincronizar (R1/R4), `git merge-base origin/main HEAD` devuelve
+`origin/main` y el diff contra `origin/main` es **vacío siempre**: una verificación que no
+puede fallar. Si no guardaste la `BASE`, se recupera del propio commit de sincronización
+(`HEAD`, con dos padres): `git diff --name-only "$(git merge-base HEAD^1 HEAD^2)" HEAD^2`.
 
 **Resolución**
 
@@ -255,18 +265,31 @@ conflicto y cuáles.
 
 ```bash
 git fetch origin --prune
-BASE=$(git merge-base origin/main HEAD)
+BASE=$(git merge-base origin/main HEAD)    # guardala: tras sincronizar ya no se recupera así (R7)
 git merge-tree --write-tree --name-only HEAD origin/main    # exit 1 + lista si hay conflicto
 ```
 
-Si hay conflicto y querés el árbol completo para correr tests sin ensuciar el worktree:
+Si el merge sintético es **limpio** (exit 0), se materializa el árbol para correr tests sin
+ensuciar el worktree. Con exit 0 la salida es **sólo** el tree OID; con conflicto la salida
+trae además la lista de archivos y mensajes (por eso no se captura con `$(...)` sin mirar el
+exit) y el árbol lleva marcadores de conflicto: no sirve para probar. El conflicto se resuelve
+en el worktree propio (§5.2).
 
 ```bash
-TREE=$(git merge-tree --write-tree HEAD origin/main)        # primera línea = tree OID
-COMMIT=$(git commit-tree "$TREE" -p HEAD -p origin/main -m "merge sintetico")
-git worktree add --detach /tmp/skyclaw-merge-preflight "$COMMIT"
-# correr los tests acá; si el árbol sintético coincide con el merge real, la evidencia aplica
+RAIZ=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+if TREE=$(git merge-tree --write-tree HEAD origin/main); then
+  COMMIT=$(git commit-tree "$TREE" -p HEAD -p origin/main -m "merge sintetico")
+  git worktree add --detach "$RAIZ/.worktrees/merge-preflight" "$COMMIT"
+  # correr los tests ahi; si el arbol sintetico coincide con el merge real, la evidencia aplica
+  git worktree remove --force "$RAIZ/.worktrees/merge-preflight"
+else
+  echo "hay conflicto: resolverlo en el worktree propio (5.2)"
+fi
 ```
+
+El worktree vive bajo `<repo>/.worktrees/` (`AGENTS.md`, "Una sesión, un worktree"): uno en
+`/tmp` rompe el ancla `test_los_worktrees_no_principales_viven_bajo_la_convencion` mientras
+exista. Se retira al terminar.
 
 Si el `tree` del merge real coincide con el sintético, la evidencia local aplica al merge de
 verdad. Si no coincide, la evidencia **no** aplica: hay que repetirla sobre el árbol real.
@@ -297,7 +320,8 @@ Un verde por lado no reemplaza a este paso. El árbol que se prueba acá es el q
 2. Gate de merge: `MERGEABLE=YES`, `BEHIND_MAIN=0` (R4), `UNRESOLVED_THREADS=0`,
    `FAILED_CHECKS=0` sobre los required checks.
 3. `gh pr merge <N> --squash --match-head-commit <sha-validado>` (R3).
-4. Verificar que fue squash: `git log --format='%P' -1 origin/main` → un padre.
+4. Verificar que fue squash (R3): `git log --format='%P%x09%s' -1 origin/main` → un padre y
+   asunto terminado en `(#<N>)`.
 
 ## 6. Tabla de registro
 
