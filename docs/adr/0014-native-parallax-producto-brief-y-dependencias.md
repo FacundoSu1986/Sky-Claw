@@ -883,9 +883,10 @@ escritor la paga una vez por lote que toca el disco.
 NP-O0b2 entrega **el escritor**: `sky_claw/local/native_parallax/output_writer.py`, el ÚNICO módulo que toca el mod de salida. No tiene todavía
 call site de producción (lo cablea NP-A0 al lote y al adaptador de MO2). Cumple el protocolo de «Actualización de NP-O0b1» punto por punto
 y se verificó ejecutando en Linux (Python 3.11) sobre un disco real (`tmp_path`). **No se ejecutó en una máquina Windows desde esta sesión**;
-la CI de Windows (py3.11 y py3.12) corrió estos mismos tests en verde sobre `417d737`, antes de la revisión de #782, y sobre la versión final
-los corre la CI del PR. Esa corrida es la única que ejerce las ramas propias de Windows (`os.rename` como movimiento que no reemplaza, los
-junctions).
+la CI de Windows (py3.11 y py3.12) corrió estos mismos tests en verde sobre `6641fa2` (con los seis arreglos de la revisión de #782), y sobre la
+versión final los corre la CI del PR. Esa corrida es la única que ejerce las ramas propias de Windows (`os.rename` como movimiento que no
+reemplaza, los junctions). Los tests de junction no tienen `skip` en Windows (fallan si `mklink /J` no funciona), así que un job verde los
+ejerció de verdad; lo deduzco leyendo el código de los tests, no el log del job.
 
 **Cómo se usa.** `abrir_sesion_de_salida(raiz, coordinacion=...)` es la única forma de obtener una `SesionDeSalida`. Al entrar toma el lock
 de esa raíz, crea la raíz si no existe (su carpeta madre debe existir y el nombre debe ser el del mod de salida) y **recupera** cualquier corte
@@ -894,7 +895,8 @@ fuentes)` ejecuta ese plan con los archivos ya generados (`FuenteDeSalida`) de l
 resultado por ruta (`PUBLICADA`, `REEMPLAZADA`, `RETIRADA`, `OMITIDA`, `PRESERVADA`, `SOLTADA`, `CONFLICTO`, `FALLIDA`) y el manifiesto que quedó
 comprometido. Un error de entrada o salida en una ruta, o un tercero que cambió el disco entre planificar y aplicar, **no levanta**: queda en
 el resultado de esa ruta y no pisa nada. Levanta solo lo que invalida el lote entero (plan que no es el último, fuentes que no coinciden con el
-plan, fuente inexistente, vacía o enlace, manifiesto ilegible, o un lote cuyo manifiesto tras un corte podría no caber en el tope) y
+plan, fuente inexistente, vacía, enlace o que no se puede inspeccionar o leer, manifiesto ilegible, o un lote cuyo manifiesto tras un corte
+podría no caber en el tope) y
 siempre **antes** de tocar el disco.
 
 **Decisiones.**
@@ -908,7 +910,10 @@ siempre **antes** de tocar el disco.
   `cwd`**, y el recurso se deriva de la raíz **física** (`realpath`): toda ortografía de la misma carpeta, también a través de un enlace o un
   junction en un ancestro (la carpeta de mods de MO2 en otro disco), compite por el mismo recurso; la ruta resuelta es solo la identidad del
   lock, se escribe siempre por la validada. Una segunda sesión recibe `SalidaOcupadaError` (reintentable), no una espera indefinida. Si el
-  proceso muere sin soltarlo, la lease vence en ≤ 60 s: un reintento inmediato puede ver «ocupada» ese rato.
+  proceso muere sin soltarlo (por ejemplo, un `kill -9`), la lease vence en ≤ 60 s: un reintento inmediato puede ver «ocupada» ese rato. Una
+  excepción o una cancelación DENTRO del proceso, en cambio, sí suelta la lease al salir de la sesión, y el `pending.json` que quedó en disco
+  es justamente el registro que la sesión siguiente recupera: no se borra al fallar, porque sería destruir lo único que dice cómo dejar
+  consistente un lote a medias.
 - **La lease dura lo que dura el hilo.** Todo lo que el escritor corre en un hilo pasa por `_en_hilo`: si cancelan la tarea, espera a que el
   hilo termine antes de dejar seguir la cancelación. `asyncio.to_thread` no detiene el hilo, y sin esto la sesión soltaría el lock con el hilo
   todavía copiando o moviendo archivos. Lo que el lote dejó a medias lo recupera la sesión siguiente.
@@ -924,10 +929,19 @@ siempre **antes** de tocar el disco.
 - **Las carpetas de control también están contenidas.** Toda carpeta que el escritor crea dentro del mod, de salida o de control (la carpeta
   de control, `staging/` y `trash/`), pasa por `_crear_carpeta_contenida`, que valida la contención física antes y después de crearla. Al
   abrir la sesión, una `staging/` o `trash/` que sea un enlace o un junction se rechaza (`ContencionFisicaVioladaError`, como la carpeta de
-  control); una que se vuelve enlace a mitad de sesión hace fallar la ruta sin escribir afuera; y la limpieza no recorre lo que no sea una
-  carpeta real contenida (`is_symlink()` es falso para un junction).
+  control); una que se vuelve enlace a mitad de sesión hace fallar la ruta; la carrera de creación (límite 10) puede dejar carpetas vacías afuera,
+  pero no archivos; y la limpieza no recorre lo que no sea una carpeta real contenida (`is_symlink()` es falso para un junction).
 - **La copia no pasa del tamaño validado.** Si la fuente crece después de validarla, la copia a la etapa corta en el primer bloque que pasa
   el tamaño validado (que ya está acotado por el máximo de 1 GiB) y la ruta da `FALLIDA` («creció mientras se copiaba»).
+- **Un solo tope de tamaño por archivo.** `TAMANO_MAXIMO_DEL_ARCHIVO` (1 GiB) vive en `output.py`, junto a `TAMANO_MAXIMO_DEL_MANIFIESTO`; el
+  escritor lo importa y la entrada del manifiesto lo usa para validar. Es una cota de cordura propia de NP-O0a, **no** un umbral de calidad ni
+  una cifra de una fuente externa. Supuesto de diseño, no medido: una textura de parallax BC7 de 16384×16384 con todos sus mipmaps pesa
+  16384² · 4/3 bytes, 1/3 GiB, y 1 GiB deja 3 veces de margen. Un test ancla que el escritor no define ningún tope propio.
+- **Lo que queda en la papelera se ve.** La papelera tiene una casilla estable por ruta (así la recuperación encuentra lo apartado sin un
+  registro aparte) y lo que queda ahí **nunca se borra solo**: es un original verificado que no se pudo devolver o algo que un tercero cambió.
+  Por eso `_avisar_de_sobrantes` avisa por log, con la ruta de la papelera, en **toda** apertura de sesión, con o sin pendiente que
+  recuperar. Y si una ruta falla porque su casilla sigue ocupada por un resto de otra sesión, el detalle de la ruta dice que es la casilla
+  de la papelera, cuál es y que se revise antes de borrarla a mano (la ruta conserva su archivo y su entrada).
 - **Un lote a medias inutiliza la sesión.** Un plan se aplica una sola vez. Si el lote se interrumpe después de escribir su intención (una
   excepción o una cancelación), `planificar` y `aplicar` rechazan todo hasta reabrir la sesión, porque solo la recuperación sabe dejar ese disco
   consistente; reintentar el plan viejo compararía contra huellas que ya no valen. Un rechazo que no tocó el disco (la cota) no la inutiliza.
@@ -1011,7 +1025,7 @@ archivo que no se deja borrar cuando la ruta se ocupó (`CONFLICTO`); y que un l
   `staging/`, ni `trash/`, ni la carpeta madre de una ruta (siempre bajo `textures/`) son la raíz. `exigir_existencia` tras `makedirs` y en el
   chequeo de `staging/`/`trash/` (2): la carpeta acaba de crearse, o `lexists` ya dijo que está. `return None` en lugar de `False` (2): el
   único uso es un `if`. `is_file(follow_symlinks=…)` en `staging/` (1): `or is_symlink()` cubre los dos casos. El aviso de sobrantes con la
-  lista vacía (1): la papelera vacía se borra antes. El `unlink` previo de la etapa (1): la sesión abre con `staging/` vacía.
+  lista vacía (1): la papelera vacía se borra antes (al moverlo a su propio helper se cerró con un test: ver la tercera pasada). El `unlink` previo de la etapa (1): la sesión abre con `staging/` vacía.
   `O_BINARY` (2): en POSIX `O_WRONLY == 1`. `_asegurar_lock` con `lock is None` (3): inalcanzable, la única construcción pasa un lock.
   La lectura de la excepción del hilo en `_en_hilo` (4): `asyncio.shield` ya la marca como leída cuando se cancela el externo (verificado
   en el código de 3.11); las dos líneas son defensa por si ese detalle interno cambia. El bucle que espera al hilo **no** tiene vivos.
@@ -1019,11 +1033,17 @@ archivo que no se deja borrar cuando la ruta se ocupó (`CONFLICTO`); y que un l
   `rmdir` de un enlace falla igual; en Windows borraría el junction (el enlace, no su destino).
 - **No observable en un test (1).** `flush` de la copia a la etapa: la durabilidad ante un corte de luz (ver el límite 2).
 
+**Tercera pasada, tras la segunda ronda de revisión de #782.** Sobre las tres funciones que cambió esa ronda (`_apartar`, `_recuperar` y el
+helper nuevo `_avisar_de_sobrantes`): **54 mutantes**, con el nulo de cada una en verde. **Murieron 53 y quedó 1 vivo**, y era un hueco de test:
+la guarda «hay sobrantes» del aviso no se ejercía, porque `_limpiar_control` ya había quitado la papelera vacía antes de avisar y el test de la
+papelera vacía no llegaba a ella. Se cerró con un test donde esa limpieza falla (la papelera queda ahí, vacía) y no debe avisar nada; mata
+el mutante que lo motivó (sin rojo previo: el código ya existía). Resultado final: **54 muertos, 0 vivos**.
+
 **Límites declarados.** (1) No se ejecutó en Windows aquí (ver arriba). (2) La durabilidad ante un corte de luz alcanza al contenido de los archivos
 (`fsync`), no a los directorios. (3) Entre apartar y publicar la ruta está vacía un instante; si el proceso muere ahí, la recuperación devuelve el
 original. (4) En Windows un antivirus o el juego que tengan el archivo abierto hacen fallar esa ruta (`FALLIDA`/`CONFLICTO`); no hay reintento.
-(5) Un original verificado que queda en la papelera porque un tercero ocupó la ruta en ese instante **no se borra nunca**: se avisa por log y en el
-resultado, y se limpia a mano. (6) Una copia de trabajo por archivo ocupa espacio extra mientras dura la acción. (7) Una sesión atiende una
+(5) Un original verificado que queda en la papelera porque un tercero ocupó la ruta en ese instante **no se borra nunca**: se avisa por log
+(en cada apertura de sesión) y en el resultado, y se limpia a mano. (6) Una copia de trabajo por archivo ocupa espacio extra mientras dura la acción. (7) Una sesión atiende una
 operación por vez. (8) No hay `meta.ini`, ni habilitación del mod, ni de dónde salen las salidas, orígenes y `entorno`: es NP-A0. (9) Lo que
 cambie DENTRO de la papelera después de verificarse no se borra: queda ahí y se avisa por log (y en el resultado, si fue un reemplazo).
 (10) La ventana entre validar la contención y crear una carpeta queda del lado de quien llama (lo documenta `exigir_contencion_fisica`) y
