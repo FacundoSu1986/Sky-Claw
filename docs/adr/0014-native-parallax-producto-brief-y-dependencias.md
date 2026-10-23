@@ -1179,3 +1179,58 @@ el informe: el manifiesto no distingue una salida autoaceptada de una en revisi�
 **Qué falta de NP-A0.** El `provider.py` endurecido, el adaptador de MO2 (`meta.ini`, habilitar el mod), la detección y el diagnóstico de `texconv`
 en el registro de tools, las superficies GUI y agente (con el `lifecycle` de la app), qué hacer con un lote incompleto, y saltear el cálculo de
 lo que la caché ya cubre.
+
+### Actualización de NP-A0c (2026-10-23)
+
+NP-A0c entrega `sky_claw/local/native_parallax/diagnostico_texconv.py`: el diagnóstico **previo** del `texconv.exe` configurado. Hasta acá, un
+`texconv` equivocado se descubría tarde —después de decodificar, integrar y medir una textura— y seco (`TexconvNoCoincideError`). Este módulo
+contesta antes, en español simple, qué le pasa al binario, y **no agrega verificación nueva**: delega entera la comparación de la huella en
+`export.verificar_texconv`, que sigue siendo la única implementación del pin. No importa `hashlib`, no lanza procesos y no usa la red (anclado por
+AST en su propio test). Es la mitad «diagnóstico» del ítem que «Qué falta de NP-A0» reclamaba para el registro de tools; el cableado sigue
+pendiente.
+
+**Decisiones (nuestras, ancladas por `tests/test_native_parallax_diagnostico_texconv.py`):**
+
+- **Vocabulario cerrado de siete estados** (`EstadoDeTexconv`: `CORRECTO`, `NO_CONFIGURADO`, `NO_ENCONTRADO`, `NO_ES_UN_ARCHIVO`,
+  `NO_SE_PUDO_LEER`, `HUELLA_DISTINTA`, `SIN_VERSION_FIJADA`). Un helper construye UN diagnóstico por estado y el test compara el conjunto
+  contra el vocabulario entero: agregar un estado sin escenario ni mensaje rompe el archivo. La superficie pública (`__all__`) está congelada
+  por igualdad, y el dato es `frozen`/`slots` (un test lo comprueba).
+- **Los cuatro fallos que `verificar_texconv` mete en un mismo tipo de error se separan por el archivo, no por el texto del mensaje.** El
+  delegado distingue «no se pudo leer» con `raise ... from OSError`; las otras tres (no existe, no es un archivo, huella distinta) llegan sin
+  causa y se separan con un `stat`: `S_ISREG` ⇒ huella distinta, otra cosa ⇒ no es un archivo, `FileNotFoundError`/`NotADirectoryError` ⇒ no
+  encontrado, cualquier otro `OSError` ⇒ no se pudo leer. Un nombre que el sistema no puede interpretar (byte NUL, que llega como
+  `ValueError`) se informa como no encontrado en vez de explotar en la cara del operador.
+- **La ruta sale del argumento o de la variable de entorno, con la misma precedencia que la CLI.** `SKYCLAW_TEXCONV_EXE` es el mismo nombre
+  que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Un valor vacío o solo con
+  espacios cuenta como no configurado en ese nivel —igual que el `argumento or entorno.get(...)` de la CLI—, así que un `--texconv ""` deja
+  paso a la variable y solo las dos en blanco dan `NO_CONFIGURADO`. La ruta devuelta va sin espacios en los extremos y normalizada por
+  `pathlib`; no se resuelve ni se hace absoluta, porque el diagnóstico no debe ocultar lo que el operador escribió.
+- **El pin se lee en la llamada, no al importar.** `export.TEXCONV_PIN_VIGENTE` se consulta en cada diagnóstico (un test lo fija distinto y
+  el módulo lo ve) y un `pin` explícito gana. `pin=None` significa «usá el vigente», no «no hay pin»: para diagnosticar sin pin se pasa uno
+  explícito o se corre con el vigente en `None`. `version_esperada` es la del pin con el que se comparó y es `None` solo cuando no hay pin.
+- **El dato se valida al construirse.** `DiagnosticoDeTexconv.__post_init__` rechaza un mensaje en blanco y una ruta sin origen: «el mensaje
+  nunca está vacío» y «la ruta y su origen van juntos» son propiedades del tipo, no costumbres de los llamadores.
+- **Anclas del repo tocadas, con su motivo.** El módulo entra al censo de módulos de producto y al de módulos que nombran `texconv`
+  (`tests/test_texconv_invariant.py`), donde se declara que lo nombra como DATO y que no lanza procesos. Las dos anclas se pusieron rojas al
+  crear el archivo, como corresponde, y se actualizaron después.
+
+**Verificado ejecutando (Windows 11, Python 3.11):** rojo observado del módulo ausente (`ImportError` al colectar el test nuevo) y de las dos
+anclas de censo (`Extra items in the left set: 'diagnostico_texconv.py'`); después, los 41 tests del módulo en verde, las dos anclas en verde
+(197 tests entre las tres), `ruff check` y `ruff format --check` limpios sobre `sky_claw/ scripts/ tests/`, `mypy sky_claw/ scripts/` limpio
+(397 archivos) y **mutación dirigida de 19 mutantes sobre el módulo: 19 matados, 0 vivos** (condiciones de cada estado, precedencia
+argumento/variable, limpieza de espacios, `S_ISREG`, las cuatro causas del delegado, el pin explícito contra el vigente, `version_esperada`,
+las dos validaciones del dato, el detalle del `OSError` y el pin que se le pasa al delegado). Los siete fallos que aparecen al correr la
+vecindad del paquete (`test_borrado_recursivo`, `test_path_resolution_service`, `test_worktree_convention_invariant` y tres de
+`test_native_parallax_cli`) se reprodujeron IDÉNTICOS en un worktree del commit base (`bb663d51`) sin estos cambios: son del entorno de esta
+máquina (sin privilegio para crear enlaces; censo de worktrees legados), no de este PR.
+
+**No verificado, por orden de importancia:** (1) nada se corrió con el `texconv` real: el diagnóstico no lo ejecuta y la huella se compara
+contra archivos de prueba; (2) el estado «no se pudo leer» por permisos reales: en Windows `chmod` no quita la lectura, así que se ejerció
+simulando el contrato del delegado (`raise ... from OSError`) y no con un archivo ilegible de verdad; (3) el cableado a la CLI y al registro
+de herramientas, que no existe todavía.
+
+**Límites declarados.** (1) Un archivo que desaparece entre la comprobación del delegado y su lectura se informa como `NO_SE_PUDO_LEER` con el
+mensaje del sistema operativo: el diagnóstico reporta la carrera, no la adivina. (2) La ruta no se resuelve: dos ortografías del mismo archivo
+se informan como el operador las escribió. (3) Es un módulo de biblioteca: **no hay todavía superficie** que lo muestre (ni `cli.py` ni el
+registro de tools lo llaman), así que el operador sigue viendo el error seco de `verificar_texconv` hasta que se cablee. (4) No arregla nada:
+informa el estado y qué hacer.

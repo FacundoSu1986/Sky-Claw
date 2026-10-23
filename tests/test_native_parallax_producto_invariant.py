@@ -42,6 +42,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "bench/sintetico.py",
         "cli.py",
         "decode.py",
+        "diagnostico_texconv.py",
         "espectral.py",
         "experiments/__init__.py",
         "experiments/convencion.py",
