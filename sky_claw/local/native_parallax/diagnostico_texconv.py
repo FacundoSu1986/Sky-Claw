@@ -10,12 +10,15 @@ delega entera en ``export.verificar_texconv`` (la única implementación del pin
 resultado a un vocabulario cerrado de estados con un mensaje accionable. Por eso ``hashlib`` no se importa.
 
 De dónde sale la ruta: el argumento ``ruta`` gana sobre la variable de entorno ``SKYCLAW_TEXCONV_EXE`` (la misma que
-lee ``cli._resolver_texconv``), y solo un valor VACÍO cuenta como no configurado en ese nivel: si el argumento viene
-vacío se mira la variable, y si las dos están vacías el estado es ``NO_CONFIGURADO``. Un valor de solo espacios, o con
-espacios en los extremos, se usa tal cual: es lo que haría la CLI, y un pre-chequeo que recortara lo que el exportador
-no recorta declararía correcta una configuración que el exportador rechaza. La ruta que se devuelve es la que se usó,
-normalizada por ``pathlib``; no se resuelve ni se hace absoluta, porque el diagnóstico no debe ocultar lo que el operador
-escribió.
+lee ``cli._resolver_texconv``). Un valor vacío o solo con espacios **no cuenta como ruta**: si el argumento viene en
+blanco se mira la variable y, si las dos están en blanco, el estado es ``NO_CONFIGURADO``. La ruta NO se recorta: se usa
+tal como la escribió el llamador (normalizada por ``pathlib``, sin resolverla ni hacerla absoluta) y en el mensaje se
+muestra entre comillas angulares. Recortarla haría que el diagnóstico dijera «correcto» con una ruta que la exportación
+va a rechazar —la CLI no recorta nada—, y un diagnóstico que aprueba lo que el exportador rechaza no sirve de nada.
+
+Divergencia declarada con ``cli._resolver_texconv``: la CLI solo deja caer la cadena vacía
+(``argumento or entorno.get(...)``), así que un argumento de SOLO espacios lo usa como ruta y falla por huella, mientras
+que acá ese blanco cuenta como no configurado (contrato de NP-A0c). Todo lo demás coincide.
 
 El pin se lee de ``export.TEXCONV_PIN_VIGENTE`` **en el momento de la llamada** (no se copia al importar): ``pin=None``
 significa «usá el vigente», no «no hay pin». Para diagnosticar sin pin se pasa uno explícito o se corre con el vigente en
@@ -98,27 +101,44 @@ class DiagnosticoDeTexconv:
 def _ruta_configurada(
     ruta: pathlib.Path | str | None, variables: Mapping[str, str]
 ) -> tuple[str | None, OrigenDeLaRuta | None]:
-    """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente, vacía o solo espacios)."""
+    """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente, vacía o solo espacios).
+
+    El blanco decide si HAY valor; no recorta el valor. Se usa tal como lo escribió el llamador porque eso es lo que la
+    exportación va a usar (``cli._resolver_texconv`` tampoco recorta): aprobar una ruta recortada sería aprobar una ruta
+    que el exportador rechaza.
+    """
     candidatas: tuple[tuple[pathlib.Path | str | None, OrigenDeLaRuta], ...] = (
         (ruta, "argumento"),
         (variables.get(ENTORNO_TEXCONV), "entorno"),
     )
     for candidata, origen in candidatas:
-        # Mismo criterio que ``argumento or entorno.get(...)`` de la CLI: solo lo vacío deja paso. No se recorta nada.
-        if not candidata:
+        if candidata is None:
             continue
-        return str(pathlib.Path(candidata)), origen
+        texto = str(candidata)
+        if texto.strip():
+            return str(pathlib.Path(texto)), origen
     return None, None
 
 
+def _como_se_ve(ruta: str | None) -> str:
+    """La ruta entre comillas angulares y con los caracteres de control escapados.
+
+    Los espacios de más se ven (el operador tiene que poder ver qué ruta va a usar la exportación) y un salto de línea
+    del llamador no puede dibujar una línea falsa delante de él.
+    """
+    if ruta is None:
+        return "sin ruta"
+    visible = "".join(repr(caracter)[1:-1] if caracter < " " or caracter == "\x7f" else caracter for caracter in ruta)
+    return f"«{visible}»"
+
+
 def _clasificar_fallo(archivo: pathlib.Path, exc: export.TexconvNoCoincideError) -> tuple[EstadoDeTexconv, str | None]:
-    """Separa las cuatro causas que ``verificar_texconv`` mete en un mismo tipo de error; devuelve el estado y, si el
-    sistema operativo dio un motivo, su texto.
+    """Separa las cuatro causas que ``verificar_texconv`` mete en un mismo tipo de error.
 
     El delegado distingue «no se pudo leer» con ``raise ... from OSError``; las otras (no existe, no es un archivo,
-    huella distinta) llegan sin causa y se separan mirando el archivo, no adivinando por el texto del mensaje. Si ese
-    ``stat`` falla por algo que no es «no existe» (p. ej. ``ELOOP``, que el delegado no ve), el motivo del sistema no se
-    pierde.
+    huella distinta) llegan sin causa y se separan mirando el archivo, no adivinando por el texto del mensaje. El
+    segundo valor es el motivo del sistema operativo, cuando lo hubo: un `ELOOP` o un `EACCES` del ``stat`` no se
+    esconden detrás de «el sistema no dio un motivo».
     """
     if isinstance(exc.__cause__, OSError):
         return EstadoDeTexconv.NO_SE_PUDO_LEER, str(exc.__cause__)
@@ -127,10 +147,11 @@ def _clasificar_fallo(archivo: pathlib.Path, exc: export.TexconvNoCoincideError)
     except (FileNotFoundError, NotADirectoryError, ValueError):
         # ``ValueError``: un nombre que el sistema no puede interpretar (p. ej. con un byte NUL) no nombra ningún archivo.
         return EstadoDeTexconv.NO_ENCONTRADO, None
-    except OSError as error:
-        return EstadoDeTexconv.NO_SE_PUDO_LEER, str(error)
-    estado = EstadoDeTexconv.HUELLA_DISTINTA if stat.S_ISREG(modo) else EstadoDeTexconv.NO_ES_UN_ARCHIVO
-    return estado, None
+    except OSError as err:
+        return EstadoDeTexconv.NO_SE_PUDO_LEER, str(err)
+    if stat.S_ISREG(modo):
+        return EstadoDeTexconv.HUELLA_DISTINTA, None
+    return EstadoDeTexconv.NO_ES_UN_ARCHIVO, None
 
 
 def _mensaje(
@@ -148,28 +169,28 @@ def _mensaje(
     )
     match estado:
         case EstadoDeTexconv.CORRECTO:
-            return f"El texconv configurado es {esperado}: {ruta}. No hay nada que corregir."
+            return f"El texconv configurado es {esperado}: {_como_se_ve(ruta)}. No hay nada que corregir."
         case EstadoDeTexconv.NO_CONFIGURADO:
             return (
                 "No me dijeron dónde está el texconv: pasá --texconv RUTA o definí la variable "
                 f"{ENTORNO_TEXCONV} con la ruta del binario oficial."
             )
         case EstadoDeTexconv.NO_ENCONTRADO:
-            return f"No existe ningún archivo en {ruta}: revisá la ruta y descargá {esperado}."
+            return f"No existe ningún archivo en {_como_se_ve(ruta)}: revisá la ruta y descargá {esperado}."
         case EstadoDeTexconv.NO_ES_UN_ARCHIVO:
             return (
-                f"{ruta} existe pero no es un archivo (¿es una carpeta?): apuntá al texconv.exe, no a la carpeta que "
-                "lo contiene."
+                f"{_como_se_ve(ruta)} existe pero no es un archivo (¿es una carpeta?): apuntá al texconv.exe, no a la "
+                "carpeta que lo contiene."
             )
         case EstadoDeTexconv.NO_SE_PUDO_LEER:
             return (
-                f"No se pudo leer {ruta}: {detalle or 'el sistema no dio un motivo'}. Revisá los permisos y que ningún "
-                "programa lo tenga tomado."
+                f"No se pudo leer {_como_se_ve(ruta)}: {detalle or 'el sistema no dio un motivo'}. Revisá los permisos "
+                "y que ningún programa lo tenga tomado."
             )
         case EstadoDeTexconv.HUELLA_DISTINTA:
             return (
-                f"El archivo {ruta} no es {esperado}: su huella SHA-256 es otra. Descargá el binario oficial de esa "
-                "versión y volvé a apuntar la ruta; con un texconv distinto no se exporta nada."
+                f"El archivo {_como_se_ve(ruta)} no es {esperado}: su huella SHA-256 es otra. Descargá el binario "
+                "oficial de esa versión y volvé a apuntar la ruta; con un texconv distinto no se exporta nada."
             )
         case EstadoDeTexconv.SIN_VERSION_FIJADA:
             return (
