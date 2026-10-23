@@ -1893,6 +1893,18 @@ class ConductorDesatendido:
             raise self._error_de_identidad(ctx)
         if resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA:
             raise self._error(ctx, CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH, resultado.detalle)
+        if resultado.estado is EstadoDePaso.PLAZO_AGOTADO:
+            # Corte LIMPIO: el plazo venció antes de la primitiva, así que no se
+            # escribió nada y no hay desenlace desconocido que reportar. Va ANTES
+            # del chequeo de desenlace desconocido a propósito: si algún día ese
+            # predicado se ampliara, este estado no puede quedar rotulado como
+            # "la escritura pudo haberse ejecutado". El código es el mismo que usa
+            # ``_esperar_asistente`` cuando vence su propio plazo de arranque.
+            raise self._error(
+                ctx,
+                CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH,
+                f"plazo agotado antes de escribir el Output: {resultado.detalle}",
+            )
         if resultado.estado is EstadoDePaso.MECANISMO_FALLO:
             raise self._error(
                 ctx,

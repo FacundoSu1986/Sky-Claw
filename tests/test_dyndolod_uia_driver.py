@@ -1669,6 +1669,85 @@ async def test_f2b_n_un_desenlace_ambiguo_de_la_escritura_no_se_reintenta(tmp_pa
     assert gui.invocaciones == []
 
 
+# -- El mapa de códigos de la escritura, enumerado (no muestreado) ------------
+
+
+#: Código con el que el conductor reporta CADA desenlace del paso de escritura.
+#: Es un dict literal y no una cadena de ``if`` sueltos: agregar un estado nuevo a
+#: ``EstadoDePaso`` rompe ``test_f2b_el_mapa_de_codigos_..._enumera_...`` hasta
+#: que se le asigne un código, en vez de caer en el fallback genérico sin que
+#: nadie lo note.
+CODIGOS_DE_LA_ESCRITURA: dict[EstadoDePaso, CodigoDesatendido] = {
+    EstadoDePaso.PROCESO_AUSENTE: CodigoDesatendido.PROCESS_DIED_PRE_BEGIN,
+    EstadoDePaso.IDENTIDAD_NO_COINCIDE: CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+    EstadoDePaso.UIA_NO_DISPONIBLE: CodigoDesatendido.UIA_UNAVAILABLE,
+    EstadoDePaso.PRECONDICION_FALLIDA: CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH,
+    EstadoDePaso.PLAZO_AGOTADO: CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH,
+    EstadoDePaso.MECANISMO_FALLO: CodigoDesatendido.OUTPUT_WRITE_UNSUPPORTED,
+    EstadoDePaso.SIN_RESPUESTA: CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+}
+
+#: Desenlaces en los que NUNCA se llegó a la primitiva: el corte no puede decir
+#: "la escritura pudo haberse ejecutado".
+ESTADOS_SIN_MUTACION_POSIBLE = frozenset(
+    {
+        EstadoDePaso.PROCESO_AUSENTE,
+        EstadoDePaso.IDENTIDAD_NO_COINCIDE,
+        EstadoDePaso.UIA_NO_DISPONIBLE,
+        EstadoDePaso.PRECONDICION_FALLIDA,
+        EstadoDePaso.PLAZO_AGOTADO,
+    }
+)
+
+
+def test_f2b_el_mapa_de_codigos_de_la_escritura_enumera_todos_los_estados():
+    assert set(CODIGOS_DE_LA_ESCRITURA) == set(EstadoDePaso) - {EstadoDePaso.OK}
+
+
+@pytest.mark.parametrize(
+    ("estado", "codigo"),
+    sorted(CODIGOS_DE_LA_ESCRITURA.items(), key=lambda par: par[0].value),
+    ids=lambda valor: valor.value if isinstance(valor, EstadoDePaso) else str(valor),
+)
+async def test_f2b_cada_desenlace_de_la_escritura_tiene_su_codigo(tmp_path, estado, codigo):
+    """Un estado por caso, y el corte por deadline no se disfraza de ambigüedad.
+
+    ``PLAZO_AGOTADO`` y ``UIA_NO_DISPONIBLE`` son cortes LIMPIOS: el plazo venció
+    o el sensor no respondió, pero la primitiva no se alcanzó. Rotularlos como
+    ``UNATTENDED_CONTRACT_VIOLATION`` ("la escritura pudo haberse ejecutado")
+    sería una afirmación falsa sobre el campo del usuario.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    capacidad = _capacidad(gui)
+    real = capacidad.ejecutor
+
+    class _DesenlaceFijo:
+        async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+            if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT:
+                return ResultadoDePaso(
+                    estado=estado,
+                    detalle=f"{estado.value} simulado",
+                    motivo=(
+                        MotivoDePrecondicion.PANTALLA_INCORRECTA
+                        if estado is EstadoDePaso.PRECONDICION_FALLIDA
+                        else None
+                    ),
+                    invocado=estado is EstadoDePaso.MECANISMO_FALLO,
+                    hresult="COMError 0x80004005" if estado is EstadoDePaso.MECANISMO_FALLO else None,
+                )
+            return await real.ejecutar(pedido)
+
+    conductor = ConductorDesatendido(dataclasses.replace(capacidad, ejecutor=_DesenlaceFijo()), dormir=_sin_dormir)
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert error.value.codigo is codigo
+    if estado in ESTADOS_SIN_MUTACION_POSIBLE:
+        assert "pudo haberse ejecutado" not in error.value.detalle
+    assert gui.invocaciones == []
+
+
 # -- Caso O: sin hueco no hay lecturas de más --------------------------------
 
 
