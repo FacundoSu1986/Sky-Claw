@@ -1131,6 +1131,11 @@ el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
   (más simple que la comparación exacta con las normales, que quedó subsumida); (11) **no se cambia:** con `--retirar-no-incluidas` una carpeta
   sin normales sigue siendo un error de uso. Una `--carpeta` equivocada (vacía) retiraría de una vez TODO lo generado antes; frenar es la
   opción segura y, para limpiar de verdad, está documentado desactivar el mod o borrar su carpeta. Un test lo ancla (nada se retira).
+  **Lo encontró la CI de Windows** (primera corrida completa sobre `cd21cb6`; era el único fallo de 14987): (12) el test de la ruta de salida
+  inadmisible fabricaba en disco un archivo `mala:rara_n.dds`; en NTFS un `:` en el nombre no crea un archivo con ese nombre sino un flujo de
+  datos alternativo de otro, así que la enumeración no veía nada que omitir. La CLI estaba bien; el fixture no podía existir en Windows. Ahora el
+  test deja el nombre en disco normal y sustituye `validar_ruta_de_salida` (qué nombre es inadmisible lo decide `output.py`, con sus propios
+  tests): verifica la REACCIÓN de la enumeración, que es lo que importa, y es igual en las dos plataformas.
 - **`lifecycle=None` en la CLI, a propósito.** Es un proceso aparte, sin el boundary de la app; el `DistributedLockManager` abre su propia
   conexión (semántica previa a M-01). Cuando la GUI y el agente lo cableen (NP-A0), pasan el `lifecycle` de la app. El lock es el mismo
   cross-process por usuario: la CLI y la app se excluyen entre sí sobre la misma salida.

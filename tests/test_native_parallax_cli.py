@@ -34,7 +34,7 @@ from sky_claw.local.native_parallax.cli import (
 from sky_claw.local.native_parallax.export import ExportError, TexconvNoCoincideError, generar_mips
 from sky_claw.local.native_parallax.integrate import Bordes
 from sky_claw.local.native_parallax.lote import EstadoDeArchivo, InformeDelLote, ParametrosDelLote
-from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
+from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA, RutaDeSalidaInvalidaError
 from sky_claw.local.native_parallax.output_writer import SalidaOcupadaError
 from tests.test_native_parallax_export import _dds as _dds_bc4
 
@@ -202,14 +202,27 @@ def test_una_carpeta_sin_textures_o_inexistente_se_rechaza(tmp_path: pathlib.Pat
         descubrir_normales_de_carpeta(carpeta)
 
 
-def test_una_ruta_de_salida_inadmisible_se_omite_y_se_dice(tmp_path: pathlib.Path) -> None:
+def test_una_ruta_de_salida_inadmisible_se_omite_y_se_dice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Qué nombre es inadmisible lo decide ``output.validar_ruta_de_salida`` (con sus propios tests); acá se verifica la
+    REACCIÓN de la enumeración. No se fabrica un nombre malo en disco: en Windows un ``:`` en el nombre no crea un archivo
+    con ese nombre sino un flujo de datos alternativo de otro (el CI de Windows lo mostró)."""
     _tocar(tmp_path / "textures" / "a" / "buena_n.dds")
-    _tocar(tmp_path / "textures" / "a" / "mala:rara_n.dds")  # los dos puntos no existen en rutas de Windows
+    _tocar(tmp_path / "textures" / "a" / "mala_n.dds")
+    real = cli.validar_ruta_de_salida
+
+    def validar(ruta: str) -> str:
+        if "mala" in ruta:
+            raise RutaDeSalidaInvalidaError("caracter no admitido")
+        return real(ruta)
+
+    monkeypatch.setattr(cli, "validar_ruta_de_salida", validar)
 
     normales, omitidas = descubrir_normales_de_carpeta(tmp_path)
 
     assert [n.ruta_de_origen for n in normales] == ["textures/a/buena_n.dds"]
-    assert len(omitidas) == 1 and "no es admisible" in omitidas[0]
+    assert omitidas == ["textures/a/mala_n.dds: la ruta de salida no es admisible (caracter no admitido)"]
 
 
 def test_dos_normales_que_dan_la_misma_salida_se_omiten_las_dos(tmp_path: pathlib.Path) -> None:
