@@ -29,7 +29,8 @@ Límites declarados:
   y ``autoprueba`` de la CLI).
 - Un archivo que desaparece entre la comprobación del delegado y su lectura se informa como ``NO_SE_PUDO_LEER`` con el
   mensaje del sistema operativo: el diagnóstico no adivina una carrera, la reporta.
-- Todavía no está cableado a la CLI ni al registro de herramientas (eso es NP-A0): hoy se usa desde código.
+- La CLI ya lo usa (``crear_exportador_texconv`` diagnostica antes de exportar y ``_resolver_texconv`` delega en
+  ``ruta_configurada``); el registro de herramientas todavía no (eso es NP-A0).
 """
 
 from __future__ import annotations
