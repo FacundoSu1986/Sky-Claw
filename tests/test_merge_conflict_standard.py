@@ -297,8 +297,27 @@ def test_toda_receta_que_crea_un_worktree_vive_bajo_la_convencion() -> None:
     ]
 
     assert altas, "el estándar ya no documenta ninguna receta con worktree"
-    fuera = [linea for linea in altas if ".worktrees/" not in linea]
+    fuera = [linea for linea in altas if ".worktrees/" not in linea and "$DESTINO" not in linea]
     assert not fuera, f"recetas que crean un worktree fuera de <repo>/.worktrees/: {fuera}"
+
+    # Un nombre fijo lo comparten todas las sesiones, y `remove --force` borra aunque haya
+    # trabajo sin commitear: el path es único por proceso y el remove sólo corre si el
+    # `add` de ESTA invocación tuvo éxito (va dentro del `if`).
+    assert all("$$" in linea or "$DESTINO" in linea for linea in altas), altas
+    assert 'DESTINO="$RAIZ/.worktrees/merge-preflight-$$"' in texto
+    assert 'if git worktree add --detach "$DESTINO" "$COMMIT"; then' in texto
+    bajas = [
+        linea.strip()
+        for bloque in re.findall(r"```bash\n(.*?)```", texto, flags=re.DOTALL)
+        for linea in bloque.splitlines()
+        if "git worktree remove" in linea
+    ]
+    assert bajas, "la receta ya no retira el worktree temporal"
+    for baja in bajas:
+        assert '"$DESTINO"' in baja, f"remove sobre un path que no es el propio: {baja}"
+        assert texto.index(baja) > texto.index('if git worktree add --detach "$DESTINO"'), (
+            "el remove --force tiene que ir después (dentro) del add protegido"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -437,4 +456,13 @@ def test_r3_distingue_squash_de_rebase_merge_y_de_merge_commit(tmp_path: Path) -
     _git(repo, "merge", "--no-ff", "-m", "Merge pull request #770", "pr")
     assert not _es_squash(repo, "como-merge", 770)
 
-    assert "git log --format='%P%x09%s' -1 origin/main" in _texto()
+    texto = _texto()
+    # El commit se resuelve por PR (no por `origin/main`, que tras `gh pr merge` sigue
+    # apuntando al fetch del pre-flight) y después de un fetch. Se enumeran TODAS las
+    # recetas que inspeccionan el squash: ninguna puede quedar mirando `origin/main`.
+    inspecciones = [linea for linea in texto.splitlines() if "git log --format='%P%x09%s'" in linea]
+    assert inspecciones, "el estándar ya no documenta cómo inspeccionar el squash"
+    assert all('"$MERGED"' in linea for linea in inspecciones), inspecciones
+    assert "MERGED=$(gh pr view <N> --json mergeCommit --jq .mergeCommit.oid)" in texto
+    receta = re.search(r"git fetch origin\n\s*MERGED=", texto)
+    assert receta is not None, "la receta de §5.4 tiene que hacer fetch antes de resolver MERGED"

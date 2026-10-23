@@ -139,7 +139,8 @@ base se probó.
 El ciclo TDD deja un commit `test(...)` deliberadamente rojo. La evidencia queda en el PR;
 `main` no hereda un commit que rompe `git bisect`.
 
-**Verificación:** `git log --format='%P%x09%s' -1 origin/main` devuelve **un solo** padre
+**Verificación:** con `MERGED=$(gh pr view <N> --json mergeCommit --jq .mergeCommit.oid)` y
+un `git fetch origin` previo, `git log --format='%P%x09%s' -1 "$MERGED"` devuelve **un solo** padre
 **y** un asunto que termina en `(#<N>)`. Dos padres significan merge commit. Un padre sin el
 sufijo significa rebase merge: reescribió los SHAs de los commits y deja la historia roja en
 `main`. Sólo el sufijo que agrega GitHub al squash lo distingue; el número de padres solo
@@ -279,9 +280,11 @@ en el worktree propio (§5.2).
 RAIZ=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 if TREE=$(git merge-tree --write-tree HEAD origin/main); then
   COMMIT=$(git commit-tree "$TREE" -p HEAD -p origin/main -m "merge sintetico")
-  git worktree add --detach "$RAIZ/.worktrees/merge-preflight" "$COMMIT"
-  # correr los tests ahi; si el arbol sintetico coincide con el merge real, la evidencia aplica
-  git worktree remove --force "$RAIZ/.worktrees/merge-preflight"
+  DESTINO="$RAIZ/.worktrees/merge-preflight-$$"    # unico por invocacion: nunca el de otra sesion
+  if git worktree add --detach "$DESTINO" "$COMMIT"; then
+    # correr los tests ahi; si el arbol sintetico coincide con el merge real, la evidencia aplica
+    git worktree remove --force "$DESTINO"         # solo si ESTA invocacion lo creo
+  fi
 else
   echo "hay conflicto: resolverlo en el worktree propio (5.2)"
 fi
@@ -289,7 +292,10 @@ fi
 
 El worktree vive bajo `<repo>/.worktrees/` (`AGENTS.md`, "Una sesión, un worktree"): uno en
 `/tmp` rompe el ancla `test_los_worktrees_no_principales_viven_bajo_la_convencion` mientras
-exista. Se retira al terminar.
+exista. Se retira al terminar, **sólo si esta invocación lo creó**: el nombre es único por proceso
+(`$$`) y el `remove --force` va dentro del `if` del `add`, porque `--force` borra aunque el
+worktree tenga trabajo sin commitear y un `add` fallido (nombre ocupado) no debe terminar
+borrando el de otra sesión.
 
 Si el `tree` del merge real coincide con el sintético, la evidencia local aplica al merge de
 verdad. Si no coincide, la evidencia **no** aplica: hay que repetirla sobre el árbol real.
@@ -320,8 +326,14 @@ Un verde por lado no reemplaza a este paso. El árbol que se prueba acá es el q
 2. Gate de merge: `MERGEABLE=YES`, `BEHIND_MAIN=0` (R4), `UNRESOLVED_THREADS=0`,
    `FAILED_CHECKS=0` sobre los required checks.
 3. `gh pr merge <N> --squash --match-head-commit <sha-validado>` (R3).
-4. Verificar que fue squash (R3): `git log --format='%P%x09%s' -1 origin/main` → un padre y
-   asunto terminado en `(#<N>)`.
+4. Verificar que fue squash (R3), sobre el commit de **este** PR y no sobre `origin/main`,
+   que sigue apuntando al fetch del pre-flight (el PR anterior):
+
+   ```bash
+   git fetch origin
+   MERGED=$(gh pr view <N> --json mergeCommit --jq .mergeCommit.oid)
+   git log --format='%P%x09%s' -1 "$MERGED"    # un padre y asunto terminado en (#<N>)
+   ```
 
 ## 6. Tabla de registro
 
