@@ -554,6 +554,24 @@ def test_el_modulo_solo_importa_la_stdlib_y_export() -> None:
     assert importados == IMPORTS_PERMITIDOS
 
 
+def test_lo_unico_que_importa_del_proyecto_es_export() -> None:
+    """El nombre ``sky_claw`` solo no alcanza: ``sky_claw.config`` o ``cli`` también empiezan así. Se enumera el módulo y
+    el nombre importado, y se exige que no haya ninguna importación relativa (que el ancla de arriba no mira)."""
+    del_proyecto: set[tuple[str, str]] = set()
+    relativas: list[int] = []
+    for nodo in ast.walk(_arbol_del_modulo()):
+        if isinstance(nodo, ast.Import):
+            del_proyecto.update((alias.name, "") for alias in nodo.names if alias.name.split(".")[0] == "sky_claw")
+        elif isinstance(nodo, ast.ImportFrom):
+            if nodo.level:
+                relativas.append(nodo.lineno)
+            elif (nodo.module or "").split(".")[0] == "sky_claw":
+                del_proyecto.update((nodo.module or "", alias.name) for alias in nodo.names)
+
+    assert relativas == []
+    assert del_proyecto == {("sky_claw.local.native_parallax", "export")}
+
+
 def test_el_modulo_no_lanza_procesos() -> None:
     llamadas = {_nombre_de_la_llamada(nodo) for nodo in ast.walk(_arbol_del_modulo()) if isinstance(nodo, ast.Call)}
 
