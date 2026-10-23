@@ -1046,8 +1046,13 @@ original. (4) En Windows un antivirus o el juego que tengan el archivo abierto h
 (en cada apertura de sesión) y en el resultado, y se limpia a mano. (6) Una copia de trabajo por archivo ocupa espacio extra mientras dura la acción. (7) Una sesión atiende una
 operación por vez. (8) No hay `meta.ini`, ni habilitación del mod, ni de dónde salen las salidas, orígenes y `entorno`: es NP-A0. (9) Lo que
 cambie DENTRO de la papelera después de verificarse no se borra: queda ahí y se avisa por log (y en el resultado, si fue un reemplazo).
-(10) La ventana entre validar la contención y crear una carpeta queda del lado de quien llama (lo documenta `exigir_contencion_fisica`) y
-Windows no tiene `dir_fd` para cerrarla: un tercero que gane esa carrera puede hacer crear carpetas **vacías** afuera, nunca un archivo, porque
-la validación posterior frena antes de escribir. (11) `clave_de_ruta` ignora mayúsculas (decisión de NP-O0a: Windows y Skyrim no las
+(10) La ventana entre validar la contención de una carpeta y usarla queda del lado de quien llama (lo documenta `exigir_contencion_fisica`) y
+Windows no tiene `dir_fd` para cerrarla. Son dos casos y no son iguales. Al **crear** una carpeta, un tercero que gane la carrera puede hacer
+crear carpetas **vacías** afuera, nunca un archivo, porque la validación posterior frena antes de escribir. Al **mover** (apartar a `trash/`,
+publicar desde `staging/`, devolver) no hay validación después del movimiento: si un tercero cambia esa carpeta por un enlace justo entre la
+validación y el movimiento, un archivo del mod (el que se iba a mover igual) puede terminar afuera. No pisa nada, porque todos los
+movimientos se niegan a reemplazar, y la sesión siguiente no abre con una carpeta de control convertida en enlace. Se asume que quien puede
+crear enlaces dentro de la carpeta del mod ya puede mover o borrar esos mismos archivos (es la carpeta del usuario que corre Sky-Claw); si un
+despliegue no cumple esa suposición, esto es un riesgo real, y cerrarlo del todo pide operaciones por handle, que Windows no ofrece. (11) `clave_de_ruta` ignora mayúsculas (decisión de NP-O0a: Windows y Skyrim no las
 distinguen). En NTFS dos ortografías son el mismo archivo; en un sistema que sí las distingue (Linux no es plataforma de entrega) un cambio
 solo de mayúsculas no se reconcilia.
