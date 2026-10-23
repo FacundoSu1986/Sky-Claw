@@ -762,7 +762,11 @@ async def principal(raiz, base, listo, soltar):
     try:
         async with abrir_sesion_de_salida(pathlib.Path(raiz), coordinacion=coordinacion):
             pathlib.Path(listo).write_text("1")
-            while not pathlib.Path(soltar).exists():
+            # Espera ACOTADA: si matan al proceso de test, nadie escribe ``soltar`` y un bucle sin tope dejaría a este hijo
+            # huérfano, renovando la lease para siempre. A los 120 s sale solo y suelta el lock.
+            for _ in range(2400):
+                if pathlib.Path(soltar).exists():
+                    break
                 await asyncio.sleep(0.05)
     finally:
         await coordinacion.close()
@@ -1199,7 +1203,7 @@ async def test_lo_apartado_que_no_es_nuestro_con_la_ruta_ocupada_se_queda_en_la_
     assert apartado.read_bytes() == b"DE-OTRO-QUE-NO-ES-A"
     assert escenario.leer(RUTA_A) == b"LO-QUE-HAY-AHORA"
     assert not (escenario.control() / "pending.json").exists()
-    assert "1 archivo(s) que no son nuestros" in caplog.text  # lo que queda en la papelera se avisa
+    assert "tiene 1 archivo(s) que no se borran solos" in caplog.text  # lo que queda en la papelera se avisa
 
 
 @pytest.mark.parametrize("accion", ["reconstruir", "retirar"])
@@ -1652,7 +1656,7 @@ async def test_una_fuente_que_no_se_puede_hashear_se_rechaza_antes_de_tocar_nada
 ) -> None:
     f = escenario.fuente(b"DDS-A")
     if caso == "desmedida":
-        monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", len(b"DDS-A") - 1)
+        monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_ARCHIVO", len(b"DDS-A") - 1)
         mensaje = "pesa más de 4 bytes"
     elif caso == "no_se_puede_inspeccionar":
         real = output_writer.link_kind_and_identity_or_raise_with_retry
@@ -1684,7 +1688,7 @@ async def test_una_fuente_que_no_se_puede_hashear_se_rechaza_antes_de_tocar_nada
 async def test_una_fuente_exactamente_en_el_tamano_maximo_se_publica(
     escenario: Escenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", len(b"DDS-A"))
+    monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_ARCHIVO", len(b"DDS-A"))
 
     resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
 
@@ -1695,7 +1699,7 @@ async def test_una_fuente_exactamente_en_el_tamano_maximo_se_publica(
 def test_la_huella_de_un_archivo_desmedido_no_es_la_de_ninguna_entrada(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(output_writer, "_TAMANO_MAXIMO_DE_ARCHIVO", 4)
+    monkeypatch.setattr(output_writer, "TAMANO_MAXIMO_DEL_ARCHIVO", 4)
     justo, de_mas = tmp_path / "justo.dds", tmp_path / "de_mas.dds"
     justo.write_bytes(b"1234")
     de_mas.write_bytes(b"12345")
@@ -2137,7 +2141,7 @@ async def test_un_enlace_en_la_papelera_no_cuenta_como_apartado(
     assert casilla.is_symlink()
     assert afuera.read_bytes() == b"DDS-A"
     assert not escenario.disco(RUTA_A).exists()
-    assert "no son nuestros" in caplog.text
+    assert "no se borran solos" in caplog.text
 
 
 async def test_la_recuperacion_descarta_lo_nuestro_apartado_sin_avisar(
@@ -2876,3 +2880,104 @@ async def test_una_sesion_admite_un_segundo_lote_despues_de_uno_completo(escenar
     assert _efectos(primero) == {RUTA_A: EfectoDeSalida.PUBLICADA}
     assert _efectos(segundo) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}
     assert escenario.leer(RUTA_A) == b"DDS-A2"
+
+
+# ---------------------------------------------------------------------------
+# Segunda ronda de revisión de #782: lo que se queda en la papelera se ve
+# ---------------------------------------------------------------------------
+
+
+async def test_la_papelera_con_sobrantes_se_avisa_aunque_no_haya_pendiente(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Un archivo que quedó en la papelera (un original que no se pudo devolver porque la ruta se ocupó) no se borra solo:
+    se avisa en CADA apertura, también cuando no hay pendiente que recuperar. Antes el aviso solo salía tras recuperar."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    assert not (escenario.control() / "pending.json").exists()
+    sobrante = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert sobrante.read_bytes() == b"RESTO-DE-UNA-SESION-ANTERIOR"  # avisar no es borrar
+    assert str(escenario.control() / "trash") in caplog.text
+    assert "no se borran solos" in caplog.text
+
+
+async def test_una_papelera_vacia_no_avisa_nada(escenario: Escenario, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert caplog.text == ""
+
+
+async def test_una_papelera_vacia_que_no_se_pudo_quitar_tampoco_avisa(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_limpiar_control`` quita la papelera vacía antes del aviso, así que el test de arriba no ejerce la guarda de «hay
+    sobrantes». Si no puede quitarla (un antivirus la tiene abierta), queda ahí vacía y avisar de «0 archivos» sería ruido."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    papelera = escenario.control() / "trash"
+    papelera.mkdir()
+    rmdir_real = os.rmdir
+
+    def rmdir_que_falla_en_la_papelera(ruta: Any, *args: Any, **kwargs: Any) -> None:
+        if pathlib.Path(ruta) == papelera:
+            raise PermissionError("la papelera está abierta por otro proceso")
+        rmdir_real(ruta, *args, **kwargs)
+
+    monkeypatch.setattr(output_writer.os, "rmdir", rmdir_que_falla_en_la_papelera)
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert papelera.is_dir()  # el parche surtió efecto: sin esto el test sería vacuo
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("accion", ["retirar", "reemplazar"])
+async def test_una_casilla_de_la_papelera_ocupada_hace_fallar_la_ruta_y_dice_cual_es(
+    escenario: Escenario, accion: str
+) -> None:
+    """Los dos que apartan (retirar y reemplazar) comparten ``_apartar``: con la casilla de la papelera ocupada por un resto
+    de otra sesión, la ruta falla SIN tocar nada y el detalle explica qué pasa y qué archivo hay que revisar."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A"), RUTA_C: escenario.fuente(b"DDS-C")})
+    resto = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
+    if accion == "retirar":
+        resultado = await escenario.lote({RUTA_C: escenario.fuente(b"DDS-C")})  # A se retira
+    else:
+        resultado = await escenario.lote(
+            {RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0), RUTA_C: escenario.fuente(b"DDS-C")}
+        )
+
+    assert _efectos(resultado)[RUTA_A] is EfectoDeSalida.FALLIDA
+    assert "casilla de la papelera" in _detalles(resultado)[RUTA_A]
+    assert str(resto) in _detalles(resultado)[RUTA_A]
+    assert resto.read_bytes() == b"RESTO-DE-UNA-SESION-ANTERIOR"  # el resto no se toca
+    assert escenario.leer(RUTA_A) == b"DDS-A"  # el archivo sigue en su ruta
+    assert {e.ruta for e in escenario.manifiesto_en_disco().entradas} == {RUTA_A, RUTA_C}  # y sigue siendo nuestro
+    assert sorted(p.name for p in escenario.control().iterdir()) == [
+        "manifest.json",
+        "trash",
+    ]  # sin etapas ni pendiente
+
+
+def test_el_tope_de_tamano_de_archivo_tiene_una_sola_fuente() -> None:
+    """El escritor y la entrada del manifiesto comparten UN tope de tamaño por archivo, el de ``output.py``: dos copias del
+    mismo número pueden separarse, y entonces el escritor aceptaría una fuente que la entrada rechaza con otro error."""
+    from sky_claw.local.native_parallax import output  # noqa: PLC0415 - solo este test lo necesita
+
+    assert output_writer.TAMANO_MAXIMO_DEL_ARCHIVO is output.TAMANO_MAXIMO_DEL_ARCHIVO
+    definiciones = [
+        destino.id
+        for nodo in ast.walk(_arbol())
+        if isinstance(nodo, ast.Assign | ast.AnnAssign)
+        for destino in (nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target])
+        if isinstance(destino, ast.Name) and "TAMANO_MAXIMO" in destino.id
+    ]
+    assert definiciones == []  # el escritor importa los topes de tamaño; no define ninguno

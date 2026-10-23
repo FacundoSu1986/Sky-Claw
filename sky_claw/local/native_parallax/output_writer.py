@@ -60,6 +60,7 @@ from sky_claw.app.security.links import (
 )
 from sky_claw.local.native_parallax.output import (
     NOMBRE_DEL_MOD_DE_SALIDA,
+    TAMANO_MAXIMO_DEL_ARCHIVO,
     TAMANO_MAXIMO_DEL_MANIFIESTO,
     AccionDeSalida,
     AccionPlanificada,
@@ -112,7 +113,6 @@ _BLOQUE: Final = 1024 * 1024
 #: Huella que se le asigna a un archivo más grande que cualquiera de los nuestros: no se lee entero, y no puede ser la de
 #: ninguna entrada (nunca coincide con una huella real salvo una preimagen de SHA-256).
 _HUELLA_DE_ARCHIVO_DESMEDIDO: Final = hashlib.sha256(b"sky-claw/native-parallax/archivo-desmedido/1\n").hexdigest()
-_TAMANO_MAXIMO_DE_ARCHIVO: Final = 2**30
 #: TTL nominal del lock de la sesión: lo renueva el latido mientras la sesión esté viva, no es un plazo de vida.
 _TTL_DE_LA_SESION: Final = 60.0
 
@@ -316,7 +316,7 @@ def _id_de_ruta(ruta: str) -> str:
 
 def _huella_de_archivo(ruta: pathlib.Path) -> str:
     """SHA-256 del contenido, o la huella de «desmedido» si pesa más que cualquiera de las nuestras."""
-    if ruta.stat().st_size > _TAMANO_MAXIMO_DE_ARCHIVO:
+    if ruta.stat().st_size > TAMANO_MAXIMO_DEL_ARCHIVO:
         return _HUELLA_DE_ARCHIVO_DESMEDIDO
     digest = hashlib.sha256()
     with ruta.open("rb") as f:
@@ -460,6 +460,26 @@ def _limpiar_control(control: pathlib.Path) -> None:
             os.rmdir(control / _PAPELERA)  # solo prospera si está vacía
 
 
+def _avisar_de_sobrantes(raiz: pathlib.Path, control: pathlib.Path) -> None:
+    """Avisa de lo que quedó en la papelera. Se llama en TODA apertura, con o sin pendiente que recuperar.
+
+    Lo que queda ahí es un original nuestro verificado que no se pudo devolver (la ruta se ocupó) o algo que cambió
+    después de verificarlo: nunca se borra solo, así que sin este aviso nadie sabría que sigue ahí hasta que una ruta
+    falle contra su casilla.
+    """
+    papelera = control / _PAPELERA
+    if not _es_carpeta_contenida(raiz, papelera):
+        return
+    sobrantes = sorted(p.name for p in papelera.iterdir())
+    if sobrantes:
+        logger.warning(
+            "La papelera de la salida (%s) tiene %d archivo(s) que no se borran solos; revisalos y, si no los "
+            "necesitás, borralos a mano",
+            papelera,
+            len(sobrantes),
+        )
+
+
 def _borrar_pendiente(control: pathlib.Path) -> None:
     """Quita la intención: es lo ÚLTIMO que hace una sesión, y solo después de que el manifiesto quedó comprometido."""
     os.unlink(control / _PENDIENTE)
@@ -502,6 +522,7 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
     )
     if pendiente is None:
         _limpiar_control(control)
+        _avisar_de_sobrantes(raiz, control)
         return vigente
 
     rutas = {e.ruta for e in pendiente.entradas} | {e.ruta for e in (vigente.entradas if vigente else ())}
@@ -538,13 +559,7 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
         _escribir_atomico(control / _MANIFIESTO, resultante)
     _punto_de_corte("recuperacion_tras_manifiesto")
     _limpiar_control(control)
-    papelera = control / _PAPELERA
-    if _es_carpeta_contenida(raiz, papelera):
-        sobrantes = sorted(p.name for p in papelera.iterdir())
-        if sobrantes:
-            logger.warning(
-                "La papelera de la salida tiene %d archivo(s) que no son nuestros; no se tocan", len(sobrantes)
-            )
+    _avisar_de_sobrantes(raiz, control)
     _borrar_pendiente(control)  # lo último: hasta acá, un segundo corte vuelve a reconciliar
     return recuperacion.manifiesto
 
@@ -573,8 +588,8 @@ def _huella_y_tamano_de_la_fuente(fuente: pathlib.Path) -> tuple[str, int]:
         raise SalidaNoEscribibleError(f"la fuente {fuente} no es un archivo regular")
     if identidad.st_size == 0:
         raise SalidaNoEscribibleError(f"la fuente {fuente} está vacía")
-    if identidad.st_size > _TAMANO_MAXIMO_DE_ARCHIVO:
-        raise SalidaNoEscribibleError(f"la fuente {fuente} pesa más de {_TAMANO_MAXIMO_DE_ARCHIVO} bytes")
+    if identidad.st_size > TAMANO_MAXIMO_DEL_ARCHIVO:
+        raise SalidaNoEscribibleError(f"la fuente {fuente} pesa más de {TAMANO_MAXIMO_DEL_ARCHIVO} bytes")
     try:
         return _huella_de_archivo(fuente), identidad.st_size
     except OSError as exc:
@@ -641,7 +656,15 @@ def _apartar(control: pathlib.Path, destino: pathlib.Path, ruta: str) -> pathlib
     papelera = control / _PAPELERA
     _crear_carpeta_contenida(control.parent, papelera)
     apartado = papelera / _id_de_ruta(ruta)
-    _mover_sin_reemplazar(destino, apartado)
+    try:
+        _mover_sin_reemplazar(destino, apartado)
+    except FileExistsError as exc:
+        # La casilla es estable por ruta (así la recuperación encuentra lo apartado sin un registro aparte): una ocupada es
+        # un resto de otra sesión que nunca se borra solo. Se dice cuál es, para que se revise en vez de reintentar a ciegas.
+        raise FileExistsError(
+            f"la casilla de la papelera ya está ocupada por un archivo de una sesión anterior ({apartado}): "
+            "revisalo y, si no lo necesitás, borralo a mano"
+        ) from exc
     return apartado
 
 

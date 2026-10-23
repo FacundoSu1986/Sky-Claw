@@ -56,6 +56,7 @@ from typing import Any
 __all__ = [
     "ESQUEMA_DEL_MANIFIESTO",
     "NOMBRE_DEL_MOD_DE_SALIDA",
+    "TAMANO_MAXIMO_DEL_ARCHIVO",
     "TAMANO_MAXIMO_DEL_MANIFIESTO",
     "AccionDeSalida",
     "AccionPlanificada",
@@ -94,6 +95,12 @@ __all__ = [
 ESQUEMA_DEL_MANIFIESTO = "sky-claw.native-parallax.output-manifest/1"
 NOMBRE_DEL_MOD_DE_SALIDA = "Sky-Claw - Native Parallax Output"
 TAMANO_MAXIMO_DEL_MANIFIESTO = 128 * 1024 * 1024
+#: Tope de tamaño de CADA archivo de salida (1 GiB). Es una cota de cordura PROPIA de NP-O0a, no un umbral de calidad ni un
+#: límite de una fuente externa. Supuesto de diseño, no medido: una textura de parallax BC7 (1 byte por texel) de 16384×16384
+#: con toda su cadena de mipmaps pesa 16384² · 4/3 bytes, o sea 1/3 GiB; 1 GiB deja 3 veces de margen y acota lo que el
+#: escritor copia y hashea. Lo comparten el escritor (`output_writer`) y la entrada del manifiesto: una sola fuente, para que
+#: no se separen. Ver ADR 0014, «Actualización de NP-O0b2».
+TAMANO_MAXIMO_DEL_ARCHIVO = 2**30
 
 # Dominios separados: la misma entrada hasheada para dos fines distintos no puede dar la misma huella.
 _DOMINIO_DE_LA_CLAVE = b"sky-claw/native-parallax/clave-de-cache/1\n"
@@ -129,7 +136,6 @@ _LARGO_MAXIMO_DE_PARAMETROS = 65_536
 _PROFUNDIDAD_MAXIMA_DE_PARAMETROS = 8
 _ENTERO_MINIMO = -(2**63)
 _ENTERO_MAXIMO = 2**63 - 1
-_TAMANO_MAXIMO_DE_ARCHIVO = 2**30
 _MAXIMO_DE_ORIGENES = 64
 _MAXIMO_DE_VARIABLES_DE_ENTORNO = 32
 _MAXIMO_DE_ARGUMENTOS = 64
@@ -438,10 +444,10 @@ class EntradaDeManifiesto:
         if (
             isinstance(self.tamano, bool)
             or not isinstance(self.tamano, int)
-            or not 1 <= self.tamano <= _TAMANO_MAXIMO_DE_ARCHIVO
+            or not 1 <= self.tamano <= TAMANO_MAXIMO_DEL_ARCHIVO
         ):
             raise ManifiestoInvalidoError(
-                f"el tamaño debe ser un entero entre 1 y {_TAMANO_MAXIMO_DE_ARCHIVO}: {self.tamano!r}"
+                f"el tamaño debe ser un entero entre 1 y {TAMANO_MAXIMO_DEL_ARCHIVO}: {self.tamano!r}"
             )
         if not isinstance(self.procedencia, Procedencia):
             raise ManifiestoInvalidoError("la procedencia de la entrada debe ser una Procedencia")

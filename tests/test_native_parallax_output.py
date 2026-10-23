@@ -1618,6 +1618,7 @@ def test_all_esta_congelado() -> None:
     assert set(output.__all__) == {
         "ESQUEMA_DEL_MANIFIESTO",
         "NOMBRE_DEL_MOD_DE_SALIDA",
+        "TAMANO_MAXIMO_DEL_ARCHIVO",
         "TAMANO_MAXIMO_DEL_MANIFIESTO",
         "AccionDeSalida",
         "AccionPlanificada",
