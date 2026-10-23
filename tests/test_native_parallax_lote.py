@@ -16,6 +16,7 @@ El exportador es un doble: el ``texconv`` real solo corre en Windows (su smoke v
 from __future__ import annotations
 
 import ast
+import asyncio
 import dataclasses
 import hashlib
 import importlib.metadata
@@ -25,6 +26,7 @@ import pathlib
 import platform
 import sys
 import tempfile
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -55,6 +57,7 @@ from sky_claw.local.native_parallax.output import (
 from sky_claw.local.native_parallax.output_writer import (
     CoordinacionDeSalida,
     EfectoDeSalida,
+    SalidaNoEscribibleError,
     construir_coordinacion_de_salida,
 )
 
@@ -968,3 +971,73 @@ def test_la_huella_acotada_pide_como_maximo_un_byte_mas_que_el_tope_aunque_el_or
         lote._huella_acotada(archivo)
 
     assert pedidos == [5, 4] and sum(pedidos) == 8 + 1
+
+
+# ---------------------------------------------------------------------------
+# Revisión de #783: validar antes de gastar y no abandonar el hilo que escribe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raiz", ["sin_carpeta_madre", "otro_nombre", "relativa"])
+async def test_una_raiz_inadmisible_se_rechaza_antes_de_procesar_ninguna_textura(
+    escenario: Escenario, raiz: str
+) -> None:
+    """Un 4K tarda minutos y varios GiB: una configuración mala (``--mods`` que no existe) se dice antes, no después."""
+    malas = {
+        "sin_carpeta_madre": escenario.base / "no_existe" / NOMBRE_DEL_MOD_DE_SALIDA,
+        "otro_nombre": escenario.base / "mods" / "otro_mod",
+        "relativa": pathlib.Path("mods") / NOMBRE_DEL_MOD_DE_SALIDA,
+    }
+    normal = escenario.normal("muro01")
+
+    with pytest.raises(SalidaNoEscribibleError):
+        await procesar_lote(
+            [normal],
+            raiz_de_salida=malas[raiz],
+            coordinacion=escenario.coordinacion,
+            exportador=escenario.exportador,
+            parametros=ParametrosDelLote(escribir_revision=True),
+        )
+
+    assert escenario.exportador.alturas == []
+    assert not (escenario.base / "no_existe").exists()
+
+
+async def test_cancelar_mientras_se_escribe_la_salida_intermedia_espera_al_hilo_antes_de_borrar_el_trabajo(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``asyncio.to_thread`` no detiene el hilo al cancelarse: sin esperarlo, el borrado correría contra el archivo abierto
+    (en Windows falla y el resto queda en el temporal)."""
+    entro, liberar, termino = threading.Event(), threading.Event(), threading.Event()
+    escribir_de_verdad = pathlib.Path.write_bytes
+
+    def escribir(self: pathlib.Path, datos: Any, *args: Any, **kwargs: Any) -> int:
+        if not self.name.endswith("_p.dds"):
+            return escribir_de_verdad(self, datos, *args, **kwargs)
+        entro.set()
+        liberar.wait(10)
+        resultado = escribir_de_verdad(self, datos, *args, **kwargs)
+        termino.set()
+        return resultado
+
+    visto_al_borrar: list[bool] = []
+    borrar_de_verdad = lote._borrar_trabajo
+
+    def borrar(trabajo: pathlib.Path) -> None:
+        visto_al_borrar.append(termino.is_set())
+        borrar_de_verdad(trabajo)
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", escribir)
+    monkeypatch.setattr(lote, "_borrar_trabajo", borrar)
+    normal = escenario.normal("muro01")
+    tarea = asyncio.ensure_future(escenario.lote([normal]))
+    try:
+        assert await asyncio.to_thread(entro.wait, 10)
+        tarea.cancel()
+        asyncio.get_running_loop().call_later(0.2, liberar.set)
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+    finally:
+        liberar.set()
+
+    assert visto_al_borrar == [True]

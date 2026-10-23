@@ -135,13 +135,38 @@ def _hijo_sin_distinguir_mayusculas(carpeta: pathlib.Path, nombre: str) -> pathl
     return None
 
 
-def descubrir_normales_de_carpeta(carpeta: pathlib.Path) -> tuple[list[NormalDeCarpeta], list[str]]:
-    """Los ``*_n.dds`` bajo ``<carpeta>/textures`` y los motivos por los que se omitió algo. Solo lee."""
+def _no_se_pudo_observar(omitidas: list[str], motivo: str, *, exigir_completa: bool) -> None:
+    """Lo que un error de E/S no dejó ver: se omite y se dice, salvo que quien llama necesite una enumeración completa."""
+    if exigir_completa:
+        raise UsoIncorrectoError(
+            f"la enumeración quedó incompleta (lo que no se pudo ver no se puede dar por ausente): {motivo}"
+        )
+    omitidas.append(motivo)
+
+
+def descubrir_normales_de_carpeta(
+    carpeta: pathlib.Path, *, exigir_completa: bool = False
+) -> tuple[list[NormalDeCarpeta], list[str]]:
+    """Los ``*_n.dds`` bajo ``<carpeta>/textures`` y los motivos por los que se omitió algo. Solo lee.
+
+    ``exigir_completa``: una carpeta que no se pudo leer o una entrada que no se pudo inspeccionar levanta
+    ``UsoIncorrectoError`` en vez de omitirse. Lo pide quien actúa sobre lo que NO figura (retirar salidas): sin ver una
+    carpeta no se sabe qué hay en ella. Las omisiones deliberadas (enlaces, un ``*_p.dds`` autoral al lado, rutas
+    inadmisibles, duplicados) no son errores de lectura y no la hacen fallar.
+    """
     if not carpeta.is_dir() or link_kind_or_raise(carpeta) is not None:
         raise UsoIncorrectoError(f"la carpeta de entrada no existe o es un enlace: {carpeta}")
     textures = _hijo_sin_distinguir_mayusculas(carpeta, "textures")
     if textures is None:
         raise UsoIncorrectoError(f"la carpeta de entrada debe tener una subcarpeta 'textures': {carpeta}")
+    try:
+        enlace_de_textures = link_kind_or_raise(
+            textures
+        )  # en Windows ``is_dir(follow_symlinks=False)`` acepta un junction
+    except OSError as exc:
+        raise UsoIncorrectoError(f"no se pudo inspeccionar {textures}: {exc}") from exc
+    if enlace_de_textures is not None:
+        raise UsoIncorrectoError(f"'textures' es un enlace ({enlace_de_textures}) y no se sigue: {textures}")
     encontradas: list[NormalDeCarpeta] = []
     omitidas: list[str] = []
     pendientes = [textures]
@@ -151,7 +176,11 @@ def descubrir_normales_de_carpeta(carpeta: pathlib.Path) -> tuple[list[NormalDeC
             with os.scandir(actual) as entradas:
                 contenido = sorted(entradas, key=lambda e: e.name.casefold())
         except OSError as exc:
-            omitidas.append(f"{actual.relative_to(carpeta).as_posix()}: no se pudo leer la carpeta ({exc})")
+            _no_se_pudo_observar(
+                omitidas,
+                f"{actual.relative_to(carpeta).as_posix()}: no se pudo leer la carpeta ({exc})",
+                exigir_completa=exigir_completa,
+            )
             continue
         nombres = {e.name.casefold() for e in contenido}
         for entrada in contenido:
@@ -160,7 +189,9 @@ def descubrir_normales_de_carpeta(carpeta: pathlib.Path) -> tuple[list[NormalDeC
             try:
                 enlace = link_kind_or_raise(ruta)
             except OSError as exc:
-                omitidas.append(f"{relativa}: no se pudo inspeccionar ({exc})")
+                _no_se_pudo_observar(
+                    omitidas, f"{relativa}: no se pudo inspeccionar ({exc})", exigir_completa=exigir_completa
+                )
                 continue
             if enlace is not None:
                 omitidas.append(f"{relativa}: es un enlace ({enlace}) y no se sigue")
@@ -345,6 +376,22 @@ def _resolver_texconv(argumento: str | None, entorno: Mapping[str, str]) -> path
     return pathlib.Path(valor)
 
 
+def _clave_fisica(ruta: pathlib.Path) -> pathlib.PurePath:
+    """La ruta con los enlaces resueltos y normalizada para comparar, aunque todavía no exista."""
+    return pathlib.PurePath(os.path.normcase(os.path.realpath(ruta)))
+
+
+def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, normales: Sequence[NormalDeCarpeta]) -> None:
+    """El informe se escribe DESPUÉS de cerrar la sesión: dentro del mod saltearía el lock, la procedencia y la recuperación
+    (``output_writer`` es el único que toca el mod), y sobre una textura de entrada la pisaría."""
+    destino = _clave_fisica(pathlib.Path(informe))
+    contenedor = _clave_fisica(raiz)
+    if destino == contenedor or contenedor in destino.parents:
+        raise UsoIncorrectoError(f"--informe no puede apuntar dentro del mod de salida ({raiz}): elegí otra ubicación")
+    if destino in {_clave_fisica(n.ruta_absoluta) for n in normales}:
+        raise UsoIncorrectoError(f"--informe no puede ser una de las texturas de entrada: {informe}")
+
+
 def _escribir_informe(informe: InformeDelLote, destino: str, salida: TextIO) -> None:
     ruta = pathlib.Path(destino)
     try:
@@ -386,14 +433,19 @@ async def _generar(
         escribir_revision=args.incluir_revision,
         retirar_no_incluidas=args.retirar_no_incluidas,
     )
-    normales, omitidas = descubrir_normales_de_carpeta(pathlib.Path(args.carpeta))
+    # Retirar actúa sobre lo que NO figura: con una enumeración incompleta, «no visto» se confundiría con «ausente».
+    normales, omitidas = descubrir_normales_de_carpeta(
+        pathlib.Path(args.carpeta), exigir_completa=args.retirar_no_incluidas
+    )
     if not normales:
         raise UsoIncorrectoError(f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {args.carpeta}/textures")
     mods = pathlib.Path(args.mods)
+    raiz_de_salida = (mods / NOMBRE_DEL_MOD_DE_SALIDA).absolute()
+    _exigir_informe_fuera_de_la_salida(args.informe, raiz_de_salida, normales)
     print(f"{len(normales)} texturas por procesar; salida: {mods / NOMBRE_DEL_MOD_DE_SALIDA}", file=salida)
     informe = await procesar_lote(
         normales,
-        raiz_de_salida=(mods / NOMBRE_DEL_MOD_DE_SALIDA).absolute(),
+        raiz_de_salida=raiz_de_salida,
         coordinacion=coordinacion,
         exportador=exportador,
         parametros=parametros,

@@ -18,6 +18,7 @@
 - **Lee** la carpeta de entrada que le indiques. Nunca la modifica.
 - **Escribe** únicamente en `<mods>\Sky-Claw - Native Parallax Output` (el mod de salida) y en su subcarpeta de control
   `.skyclaw-output`. Si se corta a la mitad (cierre, Ctrl+C, corte de luz), la próxima corrida lo recupera sola.
+- **El informe** (`--informe`) se escribe fuera del mod: la herramienta se niega si lo apuntás adentro del mod de salida o sobre una de tus texturas.
 - **Para deshacer todo**: desactivá ese mod en MO2 o borrá su carpeta. No toca tus otros mods ni la carpeta `Data`.
 - **No crea `meta.ini` ni lo habilita en MO2**: tenés que refrescar MO2 (F5) y activarlo a mano. No verifiqué cómo lo
   muestra MO2; si no aparece, avisá.
@@ -91,7 +92,7 @@ parámetro (abajo), esa salida se reemplaza sola.
 
 Cada cambio de parámetro cambia la clave de caché: la salida anterior de esa textura se reemplaza sola (solo si no la
 editaste a mano). Con `--retirar-no-incluidas` también se borran las salidas de texturas que ya no están en la carpeta de
-entrada.
+entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código 2), porque no sabría qué hay ahí.
 
 ## Límites conocidos
 

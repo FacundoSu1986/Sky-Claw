@@ -95,7 +95,9 @@ from sky_claw.local.native_parallax.output_writer import (
     EfectoDeSalida,
     FuenteDeSalida,
     abrir_sesion_de_salida,
+    validar_raiz_de_salida,
 )
+from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible
 
 if TYPE_CHECKING:
     import numpy as np
@@ -518,7 +520,8 @@ async def _fase_de_calculo(
         try:
             exportado = await exportador(medida.altura)
             archivo = trabajo / f"{indice:05d}_p.dds"
-            await asyncio.to_thread(archivo.write_bytes, exportado.datos)
+            # Sin esperar al hilo, cancelar (Ctrl+C) dejaría que el borrado del trabajo corra contra el archivo abierto.
+            await esperar_hilo_ininterrumpible(archivo.write_bytes, exportado.datos)
             procedencia = Procedencia(
                 algoritmo_id=medida.algoritmo,
                 parametros=texto_de_parametros,
@@ -628,10 +631,13 @@ async def procesar_lote(
 
     Raises:
         LoteInvalidoError: dos entradas apuntan a la misma ruta de salida (no se tocó nada).
-        SalidaOcupadaError / SalidaNoEscribibleError: del escritor (otra sesión tiene el lock, o el plan no es válido).
+        SalidaNoEscribibleError: la raíz de salida no es admisible (se comprueba ANTES de procesar ninguna textura; el escritor
+            lo repite al abrir) o el plan no es válido.
+        SalidaOcupadaError: otra sesión tiene el lock.
     """
     lista = list(normales)
     _exigir_entradas(lista)
+    validar_raiz_de_salida(raiz_de_salida)  # una configuración mala se dice antes de gastar minutos y GiB por textura
     efectivos = parametros if parametros is not None else ParametrosDelLote()
     trabajo = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw-parallax-", dir=directorio_de_trabajo))
     try:

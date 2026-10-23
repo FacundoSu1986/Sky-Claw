@@ -109,7 +109,8 @@ La política clean-room, `docs/design/research/native-parallax/` y
   sigue siendo fail-closed y la política es explícita (una salida en `REVIEW` no se escribe salvo `escribir_revision`, que NO entra a la clave
   de caché); la procedencia es la de lo que corrió (huella de la normal antes y después de decodificar, encoder que DEVOLVIÓ el exportador, parámetros
   que cambian los bytes) y `bordes`/`escala_x`/`escala_y` viajan IGUALES a `integrar` y a cada métrica; las salidas de corridas anteriores se
-  conservan salvo `retirar_no_incluidas`. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La enumeración de la
+  conservan salvo `retirar_no_incluidas` (que exige una enumeración COMPLETA: lo no visto no se da por ausente). La raíz de salida se valida
+  ANTES de procesar nada (`validar_raiz_de_salida`), y el informe nunca se escribe dentro del mod. Solo `ERRORES_POR_ARCHIVO` (tipados) hace fallar UNA ruta: nunca `except Exception`. La enumeración de la
   carpeta de `cli.py` es PROVISORIA (la reemplaza `provider.py`); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
   `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
   Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".

@@ -1422,6 +1422,7 @@ def test_all_esta_congelado() -> None:
         "abrir_sesion_de_salida",
         "construir_coordinacion_de_salida",
         "ruta_de_estado_de_salida",
+        "validar_raiz_de_salida",
     }
 
 
@@ -2483,7 +2484,7 @@ async def test_una_carpeta_de_control_interna_que_se_vuelve_enlace_durante_la_se
 def test_toda_carpeta_se_crea_con_la_contencion_validada_antes_y_despues() -> None:
     """Toda carpeta que el escritor crea dentro del mod, de salida o de control, pasa por UN helper que valida la
     contención física antes y después de crearla. Quedan afuera, con su motivo: la raíz misma (la validó
-    ``_validar_raiz`` y su carpeta madre puede vivir legítimamente bajo un junction, como MO2 en otro disco) y el estado
+    ``validar_raiz_de_salida`` y su carpeta madre puede vivir legítimamente bajo un junction, como MO2 en otro disco) y el estado
     de los locks, que vive en el directorio del usuario y no en el mod."""
     crean = {f for f, usos in _recorrer().mutadores.items() if usos & {"os.makedirs", "os.mkdir", ".mkdir"}}
     assert crean == {"_crear_carpeta_contenida", "_recuperar", "construir_coordinacion_de_salida"}

@@ -393,6 +393,172 @@ def test_el_parser_exige_lo_que_no_tiene_valor_por_defecto() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Revisión de #783: validar antes de gastar, no tomar lo no observado por ausente, y el informe fuera de la salida
+# ---------------------------------------------------------------------------
+
+
+def _exportador_que_cuenta(llamadas: list[Any]) -> Any:
+    async def exportar(altura: Any) -> _Resultado:
+        llamadas.append(altura.shape)
+        return await _exportador_falso(altura)
+
+    return exportar
+
+
+def test_un_mods_que_no_existe_se_rechaza_antes_de_procesar_ninguna_textura(mundo: pathlib.Path) -> None:
+    llamadas: list[Any] = []
+
+    codigo, texto = _correr(
+        mundo,
+        "generar",
+        "--carpeta",
+        str(mundo / "entrada"),
+        "--mods",
+        str(mundo / "no_existe"),
+        "--informe",
+        str(mundo / "i.json"),
+        fabrica=_fabrica(_exportador_que_cuenta(llamadas)),
+    )
+
+    assert codigo == CODIGO_DE_USO and "debe existir" in texto
+    assert llamadas == []
+    assert not (mundo / "no_existe").exists()
+
+
+def test_un_textures_que_es_un_junction_se_rechaza_aunque_is_dir_lo_vea_como_carpeta(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En Windows ``DirEntry.is_dir(follow_symlinks=False)`` es verdadero para un junction: se mira con el helper que lo
+    reconoce, igual que a todo lo que está debajo."""
+    _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
+    real = cli.link_kind_or_raise
+
+    def inspeccionar(ruta: pathlib.Path) -> Any:
+        return "junction" if ruta.name == "textures" else real(ruta)
+
+    monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+
+    with pytest.raises(cli.UsoIncorrectoError, match=r"'textures' es un enlace \(junction\)"):
+        descubrir_normales_de_carpeta(tmp_path)
+
+
+def test_un_textures_que_no_se_puede_inspeccionar_es_un_error_de_uso(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
+    real = cli.link_kind_or_raise
+
+    def inspeccionar(ruta: pathlib.Path) -> Any:
+        if ruta.name == "textures":
+            raise PermissionError("bloqueado por el antivirus")
+        return real(ruta)
+
+    monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+
+    with pytest.raises(cli.UsoIncorrectoError, match="no se pudo inspeccionar .*textures.*bloqueado por el antivirus"):
+        descubrir_normales_de_carpeta(tmp_path)
+
+
+@pytest.mark.parametrize("fallo", ["carpeta_ilegible", "archivo_sin_inspeccionar"])
+def test_exigir_completa_aborta_si_algo_no_se_pudo_observar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, fallo: str
+) -> None:
+    """Sin verlo no se sabe si está: retirar salidas por «no figura» sería tomar lo no observado por ausente."""
+    _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
+    _tocar(tmp_path / "textures" / "b" / "beta_n.dds")
+    if fallo == "carpeta_ilegible":
+        _con_scandir_que_falla_en(monkeypatch, "b")
+    else:
+        real = cli.link_kind_or_raise
+
+        def inspeccionar(ruta: pathlib.Path) -> Any:
+            if ruta.name == "beta_n.dds":
+                raise PermissionError("bloqueado por el antivirus")
+            return real(ruta)
+
+        monkeypatch.setattr(cli, "link_kind_or_raise", inspeccionar)
+
+    with pytest.raises(cli.UsoIncorrectoError, match="enumeración quedó incompleta.*acceso denegado|bloqueado"):
+        descubrir_normales_de_carpeta(tmp_path, exigir_completa=True)
+
+
+def test_exigir_completa_no_aborta_por_omisiones_deliberadas(tmp_path: pathlib.Path) -> None:
+    """Un ``*_p.dds`` autoral al lado es una decisión de la política, no algo que no se pudo ver."""
+    _tocar(tmp_path / "textures" / "a" / "alfa_n.dds")
+    _tocar(tmp_path / "textures" / "a" / "alfa_p.dds")
+    _tocar(tmp_path / "textures" / "a" / "beta_n.dds")
+
+    normales, omitidas = descubrir_normales_de_carpeta(tmp_path, exigir_completa=True)
+
+    assert [n.ruta_de_origen for n in normales] == ["textures/a/beta_n.dds"]
+    assert len(omitidas) == 1 and "alfa_n.dds" in omitidas[0]
+
+
+def test_con_retirar_una_enumeracion_incompleta_aborta_y_no_borra_las_salidas_anteriores(
+    mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _escribir_normal(mundo / "entrada" / "textures" / "otra" / "extra_n.dds", fase=2.0)
+    codigo, _ = _generar(mundo, "--incluir-revision")
+    raiz = mundo / "mods" / NOMBRE_DEL_MOD_DE_SALIDA
+    previas = sorted(raiz.rglob("*_p.dds"))
+    assert codigo == CODIGO_OK and len(previas) == 3
+    real = os.scandir
+
+    def scandir(ruta: Any = ".") -> Any:
+        if pathlib.Path(ruta) == mundo / "entrada" / _CARPETA:
+            raise PermissionError("acceso denegado")
+        return real(ruta)
+
+    monkeypatch.setattr(cli.os, "scandir", scandir)
+
+    codigo, texto = _generar(mundo, "--incluir-revision", "--retirar-no-incluidas")
+
+    assert codigo == CODIGO_DE_USO and "incompleta" in texto
+    assert all(p.is_file() for p in previas)
+
+
+@pytest.mark.parametrize(
+    "donde", ["manifiesto", "salida_generada", "ruta_nueva_dentro_del_mod", "por_un_enlace", "origen"]
+)
+def test_el_informe_no_puede_escribirse_dentro_de_la_salida_gestionada_ni_sobre_una_textura_de_origen(
+    mundo: pathlib.Path, donde: str
+) -> None:
+    """Escribirlo después de cerrar la sesión saltearía el lock, la procedencia y la recuperación."""
+    assert _generar(mundo, "--incluir-revision")[0] == CODIGO_OK
+    raiz = mundo / "mods" / NOMBRE_DEL_MOD_DE_SALIDA
+    if donde == "por_un_enlace":
+        enlace = mundo / "enlace_al_mod"
+        try:
+            os.symlink(raiz, enlace, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("este sistema no permite crear symlinks")
+    destino = {
+        "manifiesto": raiz / ".skyclaw-output" / "manifest.json",
+        "salida_generada": raiz / _CARPETA / "muro01_p.dds",
+        "ruta_nueva_dentro_del_mod": raiz / "informe.json",
+        "por_un_enlace": mundo / "enlace_al_mod" / ".skyclaw-output" / "manifest.json",
+        "origen": mundo / "entrada" / _CARPETA / "muro01_n.dds",
+    }[donde]
+    antes = destino.read_bytes() if destino.exists() else None
+    llamadas: list[Any] = []
+
+    codigo, texto = _generar(
+        mundo, "--incluir-revision", "--informe", str(destino), fabrica=_fabrica(_exportador_que_cuenta(llamadas))
+    )
+
+    assert codigo == CODIGO_DE_USO and "--informe" in texto
+    assert llamadas == []
+    assert (destino.read_bytes() if destino.exists() else None) == antes
+
+
+def test_un_informe_junto_al_mod_pero_fuera_de_el_sigue_funcionando(mundo: pathlib.Path) -> None:
+    codigo, _ = _generar(mundo, "--incluir-revision", "--informe", str(mundo / "mods" / "informe_parallax.json"))
+
+    assert codigo == CODIGO_OK
+    assert (mundo / "mods" / "informe_parallax.json").is_file()
+
+
+# ---------------------------------------------------------------------------
 # autoprueba
 # ---------------------------------------------------------------------------
 
