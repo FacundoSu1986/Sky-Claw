@@ -31,7 +31,8 @@ from sky_claw.local.native_parallax.cli import (
     descubrir_normales_de_carpeta,
     main,
 )
-from sky_claw.local.native_parallax.export import ExportError, TexconvNoCoincideError, generar_mips
+from sky_claw.local.native_parallax.diagnostico_texconv import DiagnosticoDeTexconv, EstadoDeTexconv
+from sky_claw.local.native_parallax.export import TexconvNoCoincideError, generar_mips
 from sky_claw.local.native_parallax.integrate import Bordes
 from sky_claw.local.native_parallax.lote import EstadoDeArchivo, InformeDelLote, ParametrosDelLote
 from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA, RutaDeSalidaInvalidaError
@@ -823,8 +824,64 @@ def test_un_texconv_con_otra_huella_no_crea_el_exportador(tmp_path: pathlib.Path
     falso = tmp_path / "texconv.exe"
     falso.write_bytes(b"no soy el texconv oficial")
 
-    with pytest.raises(ExportError, match="no coincide"):
+    with pytest.raises(cli.UsoIncorrectoError, match="su huella SHA-256 es otra"):
         crear_exportador_texconv(falso)
+
+
+def _diagnostico(estado: EstadoDeTexconv) -> DiagnosticoDeTexconv:
+    configurado = estado is not EstadoDeTexconv.NO_CONFIGURADO
+    return DiagnosticoDeTexconv(
+        estado=estado,
+        ruta="C:/tools/texconv.exe" if configurado else None,
+        origen_de_la_ruta="argumento" if configurado else None,
+        version_esperada="may2026",
+        mensaje=f"mensaje propio de {estado.name}",
+    )
+
+
+@pytest.mark.parametrize("estado", [e for e in EstadoDeTexconv if e is not EstadoDeTexconv.CORRECTO])
+def test_todo_estado_que_no_es_correcto_corta_el_exportador_con_el_mensaje_del_diagnostico(
+    estado: EstadoDeTexconv, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENUMERA el vocabulario del diagnóstico: un estado nuevo queda cableado solo (todo lo que no es CORRECTO corta), y
+    el operador lee la frase del diagnóstico y no una propia de la CLI."""
+    monkeypatch.setattr(cli, "diagnosticar_texconv", lambda ruta, **_kw: _diagnostico(estado))
+
+    with pytest.raises(cli.UsoIncorrectoError) as excepcion:
+        crear_exportador_texconv(tmp_path / "texconv.exe")
+
+    assert str(excepcion.value) == f"mensaje propio de {estado.name}"
+
+
+def test_la_cli_diagnostica_el_binario_que_resolvio_y_no_lee_el_entorno_del_proceso(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Se le pasa la ruta ya resuelta y un entorno vacío: la variable la lee UNA vez, al resolver, no otra vez adentro."""
+    pedidos: list[tuple[Any, Any]] = []
+
+    def diagnostico(ruta: Any, **kwargs: Any) -> DiagnosticoDeTexconv:
+        pedidos.append((ruta, kwargs.get("entorno")))
+        return _diagnostico(EstadoDeTexconv.CORRECTO)
+
+    monkeypatch.setattr(cli, "diagnosticar_texconv", diagnostico)
+
+    crear_exportador_texconv(tmp_path / "texconv.exe")
+
+    assert pedidos == [(tmp_path / "texconv.exe", {})]
+
+
+def test_con_el_exportador_real_un_texconv_equivocado_se_explica_antes_de_tocar_la_salida(
+    mundo: pathlib.Path,
+) -> None:
+    falso = mundo / "texconv.exe"
+    falso.write_bytes(b"no soy el texconv oficial")
+
+    codigo, texto = _generar(mundo, "--texconv", str(falso), fabrica=crear_exportador_texconv)
+
+    assert codigo == CODIGO_DE_USO
+    assert texto.startswith("Error: El archivo ")
+    assert "su huella SHA-256 es otra" in texto
+    assert not (mundo / "mods" / NOMBRE_DEL_MOD_DE_SALIDA).exists()
 
 
 async def test_el_exportador_real_llama_al_ejecutor_fijado_con_el_binario_verificado(
@@ -840,7 +897,11 @@ async def test_el_exportador_real_llama_al_ejecutor_fijado_con_el_binario_verifi
         llamadas.append((altura, texconv))
         return "resultado del ejecutor"
 
-    monkeypatch.setattr(cli, "verificar_texconv", lambda ruta: verificados.append(ruta))
+    def diagnostico(ruta: pathlib.Path, **_kwargs: Any) -> DiagnosticoDeTexconv:
+        verificados.append(ruta)
+        return _diagnostico(EstadoDeTexconv.CORRECTO)
+
+    monkeypatch.setattr(cli, "diagnosticar_texconv", diagnostico)
     monkeypatch.setattr(texconv_runner, "exportar_altura_bc4", ejecutor)
 
     exportador = crear_exportador_texconv(binario)
@@ -1219,7 +1280,8 @@ def test_los_mensajes_de_una_salida_ocupada_y_de_una_interrupcion_dicen_que_pasa
 def test_un_error_de_uso_se_muestra_sin_traceback_con_el_prefijo_error(mundo: pathlib.Path) -> None:
     _, texto = _generar(mundo, entorno={})
 
-    assert texto.startswith("Error: falta el texconv.exe")
+    assert texto.startswith("Error: No me dijeron dónde está el texconv")
+    assert "--texconv" in texto and ENTORNO_TEXCONV in texto
 
 
 def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_path: pathlib.Path) -> None:
