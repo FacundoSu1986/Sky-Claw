@@ -125,8 +125,8 @@ La política clean-room, `docs/design/research/native-parallax/` y
 - `diagnostico_texconv.py` (NP-A0c) es el diagnóstico PREVIO del `texconv` configurado: dice, en español y antes de exportar, si el binario
   existe, si es un archivo, si se puede leer y si su huella es la del pin. Es puro y **no calcula ninguna huella**: delega en
   `export.verificar_texconv` y traduce sus cuatro fallos (más «sin versión fijada») a un vocabulario CERRADO de siete estados con un mensaje
-  accionable. La ruta sale del argumento o de `SKYCLAW_TEXCONV_EXE` (el mismo nombre que lee `cli._resolver_texconv`) y un valor en blanco
-  cuenta como no configurado. `EstadoDeTexconv`, la superficie pública y las dos validaciones del dato están congeladas por igualdad en
+  accionable. La ruta sale del argumento o de `SKYCLAW_TEXCONV_EXE` (el mismo nombre que lee `cli._resolver_texconv`) y solo un valor vacío
+  cuenta como no configurado: no recorta nada que la CLI no recorte (una tabla de entradas ancla que las dos elijan la misma ruta). `EstadoDeTexconv`, la superficie pública y las dos validaciones del dato están congeladas por igualdad en
   `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario rompe el test), y el módulo está en el censo de
   `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos. Todavía NO está cableado a la CLI ni al registro de
   herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c".

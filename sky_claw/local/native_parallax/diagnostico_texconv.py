@@ -10,10 +10,12 @@ delega entera en ``export.verificar_texconv`` (la única implementación del pin
 resultado a un vocabulario cerrado de estados con un mensaje accionable. Por eso ``hashlib`` no se importa.
 
 De dónde sale la ruta: el argumento ``ruta`` gana sobre la variable de entorno ``SKYCLAW_TEXCONV_EXE`` (la misma que
-lee ``cli._resolver_texconv``), y un valor vacío o solo con espacios cuenta como no configurado en ese nivel: si el
-argumento viene en blanco se mira la variable, y si las dos están en blanco el estado es ``NO_CONFIGURADO``. La ruta que
-se devuelve es la que se usó, sin los espacios de los extremos y normalizada por ``pathlib``; no se resuelve ni se hace
-absoluta, porque el diagnóstico no debe ocultar lo que el operador escribió.
+lee ``cli._resolver_texconv``), y solo un valor VACÍO cuenta como no configurado en ese nivel: si el argumento viene
+vacío se mira la variable, y si las dos están vacías el estado es ``NO_CONFIGURADO``. Un valor de solo espacios, o con
+espacios en los extremos, se usa tal cual: es lo que haría la CLI, y un pre-chequeo que recortara lo que el exportador
+no recorta declararía correcta una configuración que el exportador rechaza. La ruta que se devuelve es la que se usó,
+normalizada por ``pathlib``; no se resuelve ni se hace absoluta, porque el diagnóstico no debe ocultar lo que el operador
+escribió.
 
 El pin se lee de ``export.TEXCONV_PIN_VIGENTE`` **en el momento de la llamada** (no se copia al importar): ``pin=None``
 significa «usá el vigente», no «no hay pin». Para diagnosticar sin pin se pasa uno explícito o se corre con el vigente en
@@ -102,30 +104,33 @@ def _ruta_configurada(
         (variables.get(ENTORNO_TEXCONV), "entorno"),
     )
     for candidata, origen in candidatas:
-        if candidata is None:
+        # Mismo criterio que ``argumento or entorno.get(...)`` de la CLI: solo lo vacío deja paso. No se recorta nada.
+        if not candidata:
             continue
-        texto = str(candidata).strip()
-        if texto:
-            return str(pathlib.Path(texto)), origen
+        return str(pathlib.Path(candidata)), origen
     return None, None
 
 
-def _clasificar_fallo(archivo: pathlib.Path, exc: export.TexconvNoCoincideError) -> EstadoDeTexconv:
-    """Separa las cuatro causas que ``verificar_texconv`` mete en un mismo tipo de error.
+def _clasificar_fallo(archivo: pathlib.Path, exc: export.TexconvNoCoincideError) -> tuple[EstadoDeTexconv, str | None]:
+    """Separa las cuatro causas que ``verificar_texconv`` mete en un mismo tipo de error; devuelve el estado y, si el
+    sistema operativo dio un motivo, su texto.
 
     El delegado distingue «no se pudo leer» con ``raise ... from OSError``; las otras (no existe, no es un archivo,
-    huella distinta) llegan sin causa y se separan mirando el archivo, no adivinando por el texto del mensaje.
+    huella distinta) llegan sin causa y se separan mirando el archivo, no adivinando por el texto del mensaje. Si ese
+    ``stat`` falla por algo que no es «no existe» (p. ej. ``ELOOP``, que el delegado no ve), el motivo del sistema no se
+    pierde.
     """
     if isinstance(exc.__cause__, OSError):
-        return EstadoDeTexconv.NO_SE_PUDO_LEER
+        return EstadoDeTexconv.NO_SE_PUDO_LEER, str(exc.__cause__)
     try:
         modo = archivo.stat().st_mode
     except (FileNotFoundError, NotADirectoryError, ValueError):
         # ``ValueError``: un nombre que el sistema no puede interpretar (p. ej. con un byte NUL) no nombra ningún archivo.
-        return EstadoDeTexconv.NO_ENCONTRADO
-    except OSError:
-        return EstadoDeTexconv.NO_SE_PUDO_LEER
-    return EstadoDeTexconv.HUELLA_DISTINTA if stat.S_ISREG(modo) else EstadoDeTexconv.NO_ES_UN_ARCHIVO
+        return EstadoDeTexconv.NO_ENCONTRADO, None
+    except OSError as error:
+        return EstadoDeTexconv.NO_SE_PUDO_LEER, str(error)
+    estado = EstadoDeTexconv.HUELLA_DISTINTA if stat.S_ISREG(modo) else EstadoDeTexconv.NO_ES_UN_ARCHIVO
+    return estado, None
 
 
 def _mensaje(
@@ -214,13 +219,6 @@ def diagnosticar_texconv(
     try:
         export.verificar_texconv(archivo, pin=efectivo)
     except export.TexconvNoCoincideError as exc:
-        causa = exc.__cause__
-        estado = _clasificar_fallo(archivo, exc)
-        return _resultado(
-            estado,
-            ruta=elegida,
-            origen=origen,
-            pin=efectivo,
-            detalle=str(causa) if isinstance(causa, OSError) else None,
-        )
+        estado, detalle = _clasificar_fallo(archivo, exc)
+        return _resultado(estado, ruta=elegida, origen=origen, pin=efectivo, detalle=detalle)
     return _resultado(EstadoDeTexconv.CORRECTO, ruta=elegida, origen=origen, pin=efectivo)

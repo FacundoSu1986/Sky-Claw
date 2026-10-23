@@ -1296,13 +1296,17 @@ pendiente.
 - **Los cuatro fallos que `verificar_texconv` mete en un mismo tipo de error se separan por el archivo, no por el texto del mensaje.** El
   delegado distingue «no se pudo leer» con `raise ... from OSError`; las otras tres (no existe, no es un archivo, huella distinta) llegan sin
   causa y se separan con un `stat`: `S_ISREG` ⇒ huella distinta, otra cosa ⇒ no es un archivo, `FileNotFoundError`/`NotADirectoryError` ⇒ no
-  encontrado, cualquier otro `OSError` ⇒ no se pudo leer. Un nombre que el sistema no puede interpretar (byte NUL, que llega como
+  encontrado, cualquier otro `OSError` ⇒ no se pudo leer **con el texto del sistema en el mensaje** (p. ej. un bucle de enlaces, que
+  `is_file` del delegado toma por «no es un archivo» y no deja causa: el `stat` del diagnóstico es el único que lo ve). Un nombre que el sistema no puede interpretar (byte NUL, que llega como
   `ValueError`) se informa como no encontrado en vez de explotar en la cara del operador.
 - **La ruta sale del argumento o de la variable de entorno, con la misma precedencia que la CLI.** `SKYCLAW_TEXCONV_EXE` es el mismo nombre
-  que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Un valor vacío o solo con
-  espacios cuenta como no configurado en ese nivel —igual que el `argumento or entorno.get(...)` de la CLI—, así que un `--texconv ""` deja
-  paso a la variable y solo las dos en blanco dan `NO_CONFIGURADO`. La ruta devuelta va sin espacios en los extremos y normalizada por
-  `pathlib`; no se resuelve ni se hace absoluta, porque el diagnóstico no debe ocultar lo que el operador escribió.
+  que lee `cli._resolver_texconv` (un test los compara: dos nombres serían dos verdades) y el argumento gana. Solo un valor **vacío** cuenta
+  como no configurado en ese nivel —igual que el `argumento or entorno.get(...)` de la CLI—, así que un `--texconv ""` deja paso a la
+  variable y solo las dos vacías dan `NO_CONFIGURADO`. Un valor de solo espacios, o con espacios en los extremos, **se usa tal cual**, como
+  lo usaría la CLI: un pre-chequeo que recortara lo que el exportador no recorta declararía `CORRECTO` una configuración que el exportador
+  rechaza (lo señaló CodeRabbit en la primera versión, que recortaba). Una tabla de 15 entradas ancla que el diagnóstico y
+  `cli._resolver_texconv` elijan la misma ruta. La ruta devuelta va normalizada por `pathlib`; no se resuelve ni se hace absoluta, porque el
+  diagnóstico no debe ocultar lo que el operador escribió.
 - **El pin se lee en la llamada, no al importar.** `export.TEXCONV_PIN_VIGENTE` se consulta en cada diagnóstico (un test lo fija distinto y
   el módulo lo ve) y un `pin` explícito gana. `pin=None` significa «usá el vigente», no «no hay pin»: para diagnosticar sin pin se pasa uno
   explícito o se corre con el vigente en `None`. `version_esperada` es la del pin con el que se comparó y es `None` solo cuando no hay pin.

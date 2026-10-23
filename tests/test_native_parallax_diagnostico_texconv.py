@@ -8,8 +8,11 @@ Qué ancla, enumerando y no muestreando:
   leer, huella distinta) se distinguen acá, más el quinto (no hay versión fijada);
 - la huella NO se recalcula acá: el módulo delega en ``export.verificar_texconv`` y no importa ``hashlib``, ni lanza
   procesos, ni usa la red (por AST). El censo de ``tests/test_texconv_invariant.py`` lo tiene registrado;
-- el argumento gana sobre la variable de entorno (igual que ``cli._resolver_texconv``), un valor en blanco cuenta como
-  no configurado, y el nombre de la variable es el mismo que lee la CLI.
+- el argumento gana sobre la variable de entorno (igual que ``cli._resolver_texconv``), solo un valor VACÍO cuenta como
+  no configurado, y el nombre de la variable es el mismo que lee la CLI. Una tabla ENUMERA entradas y exige que el
+  diagnóstico y la CLI elijan la misma ruta: un pre-chequeo que normaliza lo que el exportador no normaliza declararía
+  CORRECTA una configuración que el exportador rechaza;
+- un ``OSError`` inesperado al mirar el archivo (p. ej. ``ELOOP``) llega al mensaje con el texto del sistema.
 
 Límite: nada de esto ejecuta ``texconv``. Que el binario fijado exporte de verdad se mide en Windows con
 ``tests/test_texconv_real.py``; el diagnóstico solo mira el archivo y delega la huella.
@@ -19,8 +22,11 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import errno
 import hashlib
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -220,19 +226,63 @@ def test_el_mensaje_de_no_configurado_dice_las_dos_formas_de_configurarlo() -> N
     [
         (None, {}),
         ("", {}),
-        ("   ", {}),
-        ("\t\n", {}),
         (None, {ENTORNO_TEXCONV: ""}),
-        (None, {ENTORNO_TEXCONV: "   "}),
-        ("  ", {ENTORNO_TEXCONV: "  "}),
+        ("", {ENTORNO_TEXCONV: ""}),
     ],
 )
-def test_un_valor_en_blanco_cuenta_como_no_configurado(ruta: str | None, entorno: dict[str, str]) -> None:
+def test_solo_un_valor_vacio_cuenta_como_no_configurado(ruta: str | None, entorno: dict[str, str]) -> None:
     diagnostico = diagnosticar_texconv(ruta, entorno=entorno, pin=_pin())
 
     assert diagnostico.estado is EstadoDeTexconv.NO_CONFIGURADO
     assert diagnostico.ruta is None
     assert diagnostico.origen_de_la_ruta is None
+
+
+#: Entradas que la CLI y el diagnóstico tienen que resolver IGUAL. ``None`` en la salida de la CLI es «falta el texconv».
+#: Incluye los blancos: el pre-chequeo no puede normalizar (recortar) lo que ``cli._resolver_texconv`` pasa tal cual.
+_ENTRADAS_DE_RESOLUCION = [
+    (None, {}),
+    ("", {}),
+    ("   ", {}),
+    ("\t", {}),
+    ("  C:/tools/texconv.exe", {}),
+    ("C:/tools/texconv.exe  ", {}),
+    ("C:/tools/texconv.exe", {}),
+    (None, {ENTORNO_TEXCONV: ""}),
+    (None, {ENTORNO_TEXCONV: "   "}),
+    (None, {ENTORNO_TEXCONV: "  C:/tools/texconv.exe"}),
+    (None, {ENTORNO_TEXCONV: "C:/tools/texconv.exe"}),
+    ("", {ENTORNO_TEXCONV: "C:/tools/texconv.exe"}),
+    ("   ", {ENTORNO_TEXCONV: "C:/tools/texconv.exe"}),
+    ("A/texconv.exe", {ENTORNO_TEXCONV: "B/texconv.exe"}),
+    ("  ", {ENTORNO_TEXCONV: "  "}),
+]
+
+
+@pytest.mark.parametrize(("argumento", "entorno"), _ENTRADAS_DE_RESOLUCION)
+def test_el_diagnostico_y_la_cli_eligen_la_misma_ruta(argumento: str | None, entorno: dict[str, str]) -> None:
+    """ENUMERA las entradas: dos resoluciones distintas serían dos verdades (la CLI rechazaría lo que el diagnóstico dio
+    por bueno)."""
+    try:
+        de_la_cli: str | None = str(cli._resolver_texconv(argumento, entorno))
+    except cli.UsoIncorrectoError:
+        de_la_cli = None
+
+    diagnostico = diagnosticar_texconv(argumento, entorno=entorno, pin=_pin())
+
+    assert diagnostico.ruta == de_la_cli
+    assert (diagnostico.estado is EstadoDeTexconv.NO_CONFIGURADO) == (de_la_cli is None)
+
+
+def test_una_ruta_con_espacios_al_principio_no_se_da_por_correcta(tmp_path: Path) -> None:
+    """La CLI le pasa al exportador la ruta SIN recortar: si el diagnóstico la recortara diría «correcto» para una
+    configuración que el exportador rechaza, que es justo lo que un pre-chequeo no puede hacer."""
+    archivo = _archivo(tmp_path)
+
+    diagnostico = diagnosticar_texconv(f"  {archivo}", entorno={}, pin=_pin())
+
+    assert diagnostico.estado is not EstadoDeTexconv.CORRECTO
+    assert diagnostico.ruta == f"  {archivo}"
 
 
 def test_el_argumento_gana_sobre_la_variable_de_entorno(tmp_path: Path) -> None:
@@ -256,14 +306,24 @@ def test_la_variable_de_entorno_se_usa_cuando_no_hay_argumento(tmp_path: Path) -
     assert diagnostico.estado is EstadoDeTexconv.CORRECTO
 
 
-def test_un_argumento_en_blanco_deja_paso_a_la_variable_de_entorno(tmp_path: Path) -> None:
-    """Igual que ``cli._resolver_texconv`` (``argumento or entorno.get(...)``): un blanco no es una ruta."""
+def test_un_argumento_vacio_deja_paso_a_la_variable_de_entorno(tmp_path: Path) -> None:
+    """Igual que ``cli._resolver_texconv`` (``argumento or entorno.get(...)``): solo el vacío no es una ruta."""
+    archivo = _archivo(tmp_path)
+
+    diagnostico = diagnosticar_texconv("", entorno={ENTORNO_TEXCONV: str(archivo)}, pin=_pin())
+
+    assert diagnostico.ruta == str(archivo)
+    assert diagnostico.origen_de_la_ruta == "entorno"
+
+
+def test_un_argumento_de_solo_espacios_se_usa_y_no_deja_paso_a_la_variable(tmp_path: Path) -> None:
+    """Es truthy: la CLI lo usaría como ruta (y fallaría). El diagnóstico dice lo mismo en vez de «arreglarlo»."""
     archivo = _archivo(tmp_path)
 
     diagnostico = diagnosticar_texconv("   ", entorno={ENTORNO_TEXCONV: str(archivo)}, pin=_pin())
 
-    assert diagnostico.ruta == str(archivo)
-    assert diagnostico.origen_de_la_ruta == "entorno"
+    assert diagnostico.origen_de_la_ruta == "argumento"
+    assert diagnostico.estado is not EstadoDeTexconv.CORRECTO
 
 
 def test_otras_variables_del_entorno_no_se_confunden_con_la_del_texconv(tmp_path: Path) -> None:
@@ -273,15 +333,6 @@ def test_otras_variables_del_entorno_no_se_confunden_con_la_del_texconv(tmp_path
     diagnostico = diagnosticar_texconv(None, entorno=entorno, pin=_pin())
 
     assert diagnostico.ruta == str(archivo)
-
-
-def test_la_ruta_se_devuelve_sin_los_espacios_del_llamador(tmp_path: Path) -> None:
-    archivo = _archivo(tmp_path)
-
-    diagnostico = diagnosticar_texconv(f"  {archivo}\t", entorno={}, pin=_pin())
-
-    assert diagnostico.ruta == str(archivo)
-    assert diagnostico.estado is EstadoDeTexconv.CORRECTO
 
 
 def test_la_variable_de_entorno_es_la_misma_que_lee_la_cli() -> None:
@@ -377,6 +428,30 @@ def test_un_oserror_al_leer_es_no_se_pudo_leer(tmp_path: Path, monkeypatch: pyte
     assert diagnostico.estado is EstadoDeTexconv.NO_SE_PUDO_LEER
     assert str(archivo) in diagnostico.mensaje
     assert "acceso denegado" in diagnostico.mensaje
+
+
+def test_un_oserror_inesperado_al_mirar_el_archivo_llega_al_mensaje(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un bucle de enlaces (``ELOOP``) no lo ve ``verificar_texconv`` (``is_file`` lo toma por «no es un archivo» y no
+    deja causa): el ``stat`` del diagnóstico es el único que lo ve, y su texto no puede perderse en «sin motivo».
+
+    No se arma un bucle real: crear enlaces exige un privilegio que la CI de Windows y varias máquinas no tienen."""
+    bucle = tmp_path / "bucle" / "texconv.exe"
+    stat_original = Path.stat
+
+    def stat_con_bucle(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if self == bucle:
+            raise OSError(errno.ELOOP, "Demasiados niveles de enlaces simbólicos", str(self))
+        return stat_original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_con_bucle)
+
+    diagnostico = diagnosticar_texconv(bucle, entorno={}, pin=_pin())
+
+    assert diagnostico.estado is EstadoDeTexconv.NO_SE_PUDO_LEER
+    assert "Demasiados niveles de enlaces simbólicos" in diagnostico.mensaje
+    assert "no dio un motivo" not in diagnostico.mensaje
 
 
 def test_huella_distinta_dice_la_version_y_la_huella_esperadas(tmp_path: Path) -> None:
