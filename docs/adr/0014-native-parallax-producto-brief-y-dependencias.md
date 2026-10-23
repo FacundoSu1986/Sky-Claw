@@ -1236,6 +1236,15 @@ borrada entre el listado y su inspección, y el texto del motivo de un archivo v
 colectivo); **para el resto de las propiedades no hubo un rojo individual previo** (los tests se escribieron antes que el código, pero con el módulo
 inexistente todos fallan por lo mismo): su evidencia es la mutación.
 
+**Tras la revisión de #784 (ejecutado):** 80 tests del módulo (76 pasan y 4 se saltan), lint, `mypy --strict` sobre `provider.py` y la suite completa
+corrida sola: 14579 pasan y 402 se saltan, con el mismo conjunto de fallos que la línea base (77 y 1 error de colección, de `runtime_vault`, `test_process_helper` y
+`test_schemas`) más uno que puse yo al lanzar la suite con `SKYCLAW_WORKTREE_ROLE` definida pero vacía (el test de worktrees la lee como «rol desconocido» y,
+sin definirla, pasa). Rojo observado en los dos hallazgos reales (la raíz que cambia al abrirse: `DID NOT RAISE`; el autoral entre carpetas que solo difieren
+en mayúsculas: la normal se procesaba). **Mutación** repetida sobre las funciones que cambiaron (`_resolver_textures`, `_recorrer`, `_examinar`,
+`_sin_parallax_autoral`, `_Acumulador`; el nulo de cada una en verde): **99 mutantes, 98 muertos y 1 vivo equivalente** (`if True` en vez de
+`if nombre.endswith('_p.dds')` al juntar las claves del autoral: una clave que no termina en `_p.dds` nunca coincide con una ruta de salida, así que solo
+cambia cuántas claves se guardan).
+
 **No verificado, por orden de importancia:** (1) **nada se ejecutó sobre NTFS ni en Windows reales desde el desarrollo**: la CI de Windows corre los
 tests, incluidos los de junction (con `mklink /J`, sin `skip`); (2) el costo con carpetas muy grandes (100 000 entradas, archivos de cientos de MiB):
 la huella lee todo lo que después procesa el lote; (3) que `st_ino` y `st_dev` sean estables en todos los sistemas de archivos de Windows para la
