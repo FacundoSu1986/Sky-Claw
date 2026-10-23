@@ -132,7 +132,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
   con los controles escapados (recortarla aprobaría rutas que el exportador rechaza). `EstadoDeTexconv`, la superficie pública y las dos
   validaciones del dato están congeladas por igualdad en `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario
   rompe el test), y el módulo está en el censo de `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos.
-  Todavía NO está cableado a la CLI ni al registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c".
+  La CLI ya lo usa (`crear_exportador_texconv` diagnostica antes de exportar y `_resolver_texconv` delega en `ruta_configurada`: el nombre de la variable y la regla de la ruta viven SOLO en este módulo, con un ancla por AST); todavía NO lo usa el registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c" y "Cableado del diagnóstico a la CLI".
 
 ## Verificación segura
 

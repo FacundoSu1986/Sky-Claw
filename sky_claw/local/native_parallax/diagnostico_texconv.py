@@ -50,6 +50,7 @@ __all__ = [
     "EstadoDeTexconv",
     "OrigenDeLaRuta",
     "diagnosticar_texconv",
+    "ruta_configurada",
 ]
 
 #: La misma variable que leen ``cli._resolver_texconv`` y el smoke real: una sola forma de decir dónde está el binario.
@@ -97,7 +98,7 @@ class DiagnosticoDeTexconv:
             raise ValueError("la ruta y su origen van juntos: una ruta sin origen no dice de dónde salió")
 
 
-def _ruta_configurada(
+def ruta_configurada(
     ruta: pathlib.Path | str | None, variables: Mapping[str, str]
 ) -> tuple[str | None, OrigenDeLaRuta | None]:
     """La ruta a diagnosticar y de dónde salió; ``(None, None)`` si no hay ninguna (ausente o vacía).
@@ -229,7 +230,7 @@ def diagnosticar_texconv(
     estado, la ruta usada, de dónde salió, la versión esperada y un mensaje en español para el operador.
     """
     variables = os.environ if entorno is None else entorno
-    elegida, origen = _ruta_configurada(ruta, variables)
+    elegida, origen = ruta_configurada(ruta, variables)
     efectivo = pin if pin is not None else export.TEXCONV_PIN_VIGENTE
     if elegida is None:
         return _resultado(EstadoDeTexconv.NO_CONFIGURADO, ruta=None, origen=None, pin=efectivo)
