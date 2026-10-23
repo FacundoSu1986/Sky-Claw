@@ -68,6 +68,11 @@ _LO_CONSTRUYEN_POR_ENCARGO: dict[str, str] = {
 #:
 #: ``"snapshot"``    — ``target_files`` reales en el ``SnapshotTransactionLock``.
 #: ``"directorio"``  — move-aside O(1) de ``DirectoryRollback``.
+#: ``"papelera"``    — move-aside POR RUTA del protocolo de salida gestionada (ADR
+#:                     0014, NP-O0b): cada ruta se publica entera o su original
+#:                     vuelve; la que falla queda nombrada en el resultado (no hay
+#:                     "salida limpia" que esconda un fallo) y tras un corte la
+#:                     recuperación (``reconciliar_tras_corte``) devuelve lo apartado.
 #: ``"no-muta"``     — no produce salida propia que revertir (motivo nombrado).
 #: ``"pendiente"``   — U-04 sigue ABIERTO acá, con el motivo nombrado. NO es un
 #:                     "ya lo miramos": es deuda declarada, y el test de abajo
@@ -81,6 +86,10 @@ MECANISMO_DE_ROLLBACK: dict[str, str] = {
     "sky_claw/local/tools/pandora_service.py": "directorio",
     "sky_claw/local/tools/vramr_service.py": "no-muta",
     "sky_claw/app/agent/tools/system_tools.py": "directorio",
+    # NP-O0b2: el escritor de la salida del generador nativo de parallax toma el
+    # lock con target_files=[] porque su rollback no es el snapshot: es el
+    # protocolo propio de papelera + pendiente, que el lote no puede saltear.
+    "sky_claw/local/native_parallax/output_writer.py": "papelera",
 }
 
 #: Motivo, para los que no revierten su salida. Escribir el racional NO cuenta como
@@ -138,6 +147,22 @@ def test_quien_dice_revertir_por_directorio_usa_el_move_aside() -> None:
         - {"sky_claw/local/tools/_dir_rollback.py"}  # define la clase
         - set(_LO_CONSTRUYEN_POR_ENCARGO)  # por encargo de un mutador, con motivo escrito
     )
+
+    assert declarados == reales
+
+
+def test_quien_dice_revertir_por_papelera_ejecuta_la_recuperacion_del_protocolo() -> None:
+    """Igual que ``"directorio"``, ``"papelera"`` no es prosa: quien figura así tiene
+    que ejecutar la recuperación del protocolo de salida gestionada
+    (``reconciliar_tras_corte``), y quien la ejecuta tiene que estar clasificado así.
+    Como todo clasificado toma el lock (``test_la_enumeracion_cubre_todos_los_mutadores``),
+    un módulo que recuperara la salida SIN el lock también rompe este ancla."""
+    declarados = {m for m, mecanismo in MECANISMO_DE_ROLLBACK.items() if mecanismo == "papelera"}
+    reales = {
+        ruta.relative_to(_PAQUETE.parent).as_posix()
+        for ruta in _PAQUETE.rglob("*.py")
+        if "reconciliar_tras_corte(" in ruta.read_text(encoding="utf-8")
+    } - {"sky_claw/local/native_parallax/output.py"}  # define la reconciliación pura
 
     assert declarados == reales
 
