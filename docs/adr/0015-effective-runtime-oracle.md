@@ -243,8 +243,26 @@ ancla AST read-only del paquete lo rechazó (colisiona con `Path.replace`) —
 el ancla hizo su trabajo sobre código recién escrito; se eliminó la
 transformación en vez de debilitar el ancla.
 
-Verificación de la ronda: 43 tests verdes (7 nuevos), ruff/mypy limpios,
-4/4 mutantes muertos por su propia sonda, regresiones sin cambios respecto de
-`origin/main`. Ready for Review habilita Codex/Qodo/CodeRabbit; sus hallazgos
-se adjudican aparte. Ready for Review NO autoriza el merge.
+Verificación de la ronda: 44 tests verdes (7 nuevos + `test_4f` del hallazgo
+Qodo), ruff/mypy limpios, 5/5 mutantes muertos por su propia sonda,
+regresiones sin cambios respecto de `origin/main`. Ready for Review habilita
+Codex/Qodo/CodeRabbit; sus hallazgos se adjudican aparte. Ready for Review
+NO autoriza el merge.
 
+## 8. Hallazgos del Revisor Adversarial Qodo (sobre `7754545a`)
+
+5 hallazgos, adjudicados con evidencia en el PR: **1 CONFIRMED + FIXED** —
+`assess_runtime_compatibility` indexaba `dlls[0]` sin guard en la rama donde
+el campo `skse_dll` ya usaba ternario; con una identidad cuyo `game_version`
+matchea un DLL sin build codificado (los dos filtros divergen: el scanner
+excluye auxiliares por nombre, este módulo exige build por regex) era un
+`IndexError` que tumbaba al oráculo. Fix `4a4eea63`: `dlls` vacío ⇒ UNKNOWN.
+Inalcanzable con la identidad real del PE (numérica); la puerta pública
+acepta identidad inyectada y el contrato del gate es NUNCA lanzar.
+**4 FALSE_POSITIVE** con premisa falsada por medición o prueba conductual:
+`except Exception` no captura KeyboardInterrupt (derivan de `BaseException`);
+`ntpath.basename` sí separa `/` (`altsep`); `link_kind_or_raise` no propaga
+`FileNotFoundError` (un componente inexistente corta como `"none"`, lo que
+`test_5` afirma conductualmente); `AE` y `SE` comparten la misma tupla de
+loaders en `_SKSE_LOADERS_BY_EDITION`, así que el AE hardcodeado es
+conductualmente idéntico y está documentado.
