@@ -9695,6 +9695,14 @@ OWNER_REQUEST_ID_IS_DURABLE = NO   (viaja en approval_provenance, string opaco:
                                     nada verifica que lo contenga)
 ```
 
+> **SUPERSEDIDO por §47 (P4-S7).** Las tres líneas describen el esquema v2. El
+> witness v3 persiste `solicitud_binding` y las tres pasan a: `OWNER_REQUEST_ID_IS_DURABLE
+> = YES`, `OWNER_SUBJECT_IS_DURABLE = YES`, `DECISION_INSTANT_IS_DURABLE = YES`, con
+> `OWNER_IDENTITY_IS_DURABLE = NO` (el binding dice *quién* según el censo, pero no
+> transporta la prueba del transporte). Se deja el texto original porque el
+> diferimiento **fue real** y su condición de resolución era exactamente ésta:
+> esquema v3 con binding verificado al leer.
+
 ### 46.6 Adjudicación: rollback y la igualdad de operaciones
 
 `ApprovalOperation` y `JournalOperation` son dos `StrEnum` con los mismos
@@ -9763,7 +9771,8 @@ PRESENTATION_IS_NON_AMBIGUOUS          = YES   (ningún valor aporta una línea)
 SCOPE_IMMUTABLE                        = YES
 SESSION_BINDING                        = YES
 DECISION_INSTANT_IS_VERIFIED           = YES
-DECISION_INSTANT_IS_DURABLE            = NO    (declarado; §46.2.3)
+DECISION_INSTANT_IS_DURABLE            = YES   (P4-S7: viaja en solicitud_binding,
+                                                  §47; en v2 era NO)
 IDENTITY_VERIFICATION_INSTANT_IS_DURABLE = NO  (declarado; §46.11 — viaja en
                                                   IdentidadPropietario y no se
                                                   propaga al consentimiento)
@@ -9773,6 +9782,7 @@ REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root +
 GUI_LLM_SURFACES                       = VERIFIED (censo + anclas AST)
 
 SCHEMA_V1_V2                           = NO_ARTIFACTS · FAIL_CLOSED · NO_MIGRATION
+WITNESS_SCHEMA                         = 3 (P4-S7: + solicitud_binding; §47)
 WITNESS_TRUST_MODEL                    = FILESYSTEM_IN_TRUST_BOUNDARY · NO_SIGNATURE · NOT_CLAIMED_CRYPTO
 
 HITL_SURFACE                           = IMPLEMENTED
@@ -9978,3 +9988,233 @@ consentimiento **no** lleva al witness porque agregarlos exigiría esquema v3 si
 cerrar ninguna amenaza que el transporte no cierre ya. Los tres están escritos.
 Ninguno se presenta como implementado.
 
+> **Corrección (P4-S7, §47).** Este párrafo valía para el esquema v2. El v3 sí los
+> lleva: `solicitud_id`, `owner_subject` y `decided_at_ns` viajan en
+> `solicitud_binding`, comprometidos por `binding_digest` y verificados al leer. Lo
+> que sigue sin cerrarse —y por eso `OWNER_IDENTITY_IS_DURABLE = NO`— es la
+> *prueba* de identidad: el artefacto dice quién según el mecanismo del censo, pero
+> no transporta el `from.id` del transporte. La afirmación correcta es «qué
+> solicitud se aprobó es durable», no «la identidad está autenticada
+> criptográficamente».
+
+
+## 47. P4-S7 — binding durable de la solicitud HITL (witness v3)
+
+Cierra `OWNER_REQUEST_ID_IS_DURABLE = NO` (§46.5). Hasta P4-S6 el `solicitud_id`
+viajaba dentro de `approval_provenance`, un string **opaco que pone el llamador**:
+se persistía y el digest lo cubría, pero **nada verificaba que lo contuviera**.
+Después de un reinicio no había forma de responder «qué solicitud HITL se aprobó»
+sin consultar `RegistroConsentimientos`, que vive en memoria y muere con el
+proceso.
+
+### 47.1 La propiedad, y por qué copiar el string no alcanza
+
+```text
+REQUEST_PRESENTED == REQUEST_APPROVED == REQUEST_PERSISTED
+```
+
+El camino obvio —agregar `solicitud_id` al witness tomándolo de
+`ConsentimientoAprobacion`— **no cierra nada**: ese dataclass es público y su campo
+lo pone el llamador, así que el defecto se mudaría un nivel más abajo. Es
+exactamente la tautología que P4-S4 cerró para `root_id` (verificar al leer) y
+P4-S5 para `digest_canonico` (recomputar), y la misma que P4-S6 cerró para la
+identidad del propietario (constructor cerrado + sello).
+
+Por eso el binding durable no es un string:
+
+1. **Lo acuña el registro**, no el llamador. `RegistroConsentimientos.responder`
+   lo construye desde la `PresentacionConsentimiento` que el propio registro tiene
+   abierta —`solicitud_id`, `root_id` y el resto de los campos salen de ahí, no de
+   los argumentos— mediante `approval._acuñar_binding_solicitud`, un productor
+   privado que estampa un sello comparado por identidad.
+2. **La puerta lo verifica campo por campo** antes del `CREATE`, contra el scope
+   propuesto, el root físico y el consentimiento.
+3. **El lector lo revalida y recomputa su digest** sin consultar el registro.
+
+### 47.2 Esquema v3
+
+`ISSUANCE_WITNESS_SCHEMA_VERSION = 3`. El witness agrega **un** campo:
+
+```text
+solicitud_binding = {
+  solicitud_id, root_id, approval_id, approval_seq, approval_scope_digest,
+  surface, session_id, owner_subject, mecanismo, decided_at_ns, binding_digest
+} | null
+```
+
+- `binding_digest` = SHA-256 del JSON canónico de los otros diez. Misma
+  construcción que `approval_scope_digest` (13 de 14): no se inventa una segunda
+  forma de comprometer un payload. Un solo constructor del payload
+  (`_payload_binding_solicitud`) lo usan el acuñador, el serializador, el parser y
+  la puerta — dos literales del mismo diccionario es el modo de falla clásico de
+  este repo.
+- **Autoridad de origen**: el registro de consentimiento. Ni la superficie, ni el
+  agente, ni el transporte pueden acuñarlo.
+- **`null` no es ausencia**: un witness de una fixture del núcleo durable
+  (P4-S4/P4-S5) declara `null`, y la clave existe siempre. Confundir «no hubo
+  solicitud» con «el campo falta» es lo que permitiría que un artefacto v2 se
+  colara como v3.
+- Los **14 campos canónicos del `ApprovalScope` y su algoritmo de digest NO
+  cambian**. El binding es hermano del `scope_payload`, no parte de él: meterlo
+  dentro habría cambiado el digest y con él la identidad de todas las aprobaciones.
+- El **registro de propuestas sigue siendo efímero**. Este slice no crea una
+  segunda autoridad durable: el binding viaja dentro del witness que ya existía.
+
+### 47.3 Dónde vive la comprobación
+
+En `approval._exigir_binding_consistente`, llamada por
+`_emitir_aprobacion_bajo_lock` **antes** del `CREATE`, y no en
+`owner_consent.emitir_aprobacion_autorizada`. Es la cuarta vez que este repo paga
+la misma lección: **un chequeo que vive sólo en el llamador es bypassable por el
+segundo llamador**, y el núcleo bajo lock tiene más de uno (los tests de P4-S4/P4-S5
+y `_p4_s4_child`).
+
+Orden, y por qué:
+
+```text
+1. sello            la PROCEDENCIA primero: sin sello los campos no dicen nada
+2. digest           recomputado; el binding se compromete a sí mismo
+3. campo por campo  contra el consentimiento, el scope y el root FÍSICO
+```
+
+La puerta compara los diez campos: `solicitud_id`, `root_id`, `approval_id`,
+`approval_seq`, `approval_scope_digest`, `surface`, `session_id`, `owner_subject`,
+`mecanismo`, `decided_at_ns`. Cada uno tiene su mutante (§47.6).
+
+### 47.4 Compatibilidad: censo y política
+
+```text
+WITNESS_SCHEMA                    = 3
+LEGACY_WITNESS_POLICY             = FAIL_CLOSED · NO_MIGRATION
+SCHEMA_V1_V2_ARTIFACTS_ON_THIS_MACHINE = 0  (censo abajo)
+AUTO_DELETE_OF_state/             = NO
+MIGRATION_THAT_FABRICATES_A_BINDING = PROHIBITED
+```
+
+**Censo, y su alcance exacto.** Se buscaron directorios `state/issuances` y
+archivos `approval.json` en `E:/` (profundidad 5, incluye todos los worktrees bajo
+`E:/Skyclaw_Main_Sync/.worktrees/`), en `C:/Worktrees` (profundidad 5) y en los
+roots conocidos (`E:/Skyclaw_Frozen_Runtime_P3`, `E:/SkyClaw_REVAL1_PUBLISH`,
+`C:/Worktrees/Sky-Claw-T2-baseline`): **0 artefactos**. El root de producción
+tampoco existe. Esto es un censo de **esta** máquina y no una afirmación
+universal: por eso la política no depende del censo.
+
+- Un **v2 completo** se rechaza por `schema_version` —aunque su cuerpo parsearía
+  como v3—: aceptarlo «porque los campos comunes coinciden» es `UNKNOWN !=
+  COMPATIBLE`.
+- Un **v2 auténtico** (sin `solicitud_binding`) se rechaza por el esquema cerrado.
+- Ninguna de las dos rutas **fabrica un binding sintético**, y el lector no
+  modifica el archivo (ancla: bytes idénticos antes y después).
+- No se sustituye autoridad histórica ni se reinician secuencias. Si algún día
+  apareciera un v2 real, la decisión correcta —migrar con evidencia explícita o
+  dejar el root fail-closed— exige un slice propio; **no se implementa acá un
+  migrador para un problema que el censo dice que no existe**.
+
+### 47.5 Límites declarados
+
+```text
+WITNESS_IS_SIGNED_OR_SEALED_EXTERNALLY = NO      (sin cambios)
+FILESYSTEM_IS_INSIDE_TRUST_BOUNDARY    = YES     (sin cambios)
+CRYPTOGRAPHIC_SECURITY_AGAINST_ARBITRARY_WRITE = NOT_CLAIMED
+STORING_solicitud_id_IS_OWNER_AUTHENTICATION   = NO
+IN_PROCESS_CODE_IS_TRUSTED             = YES     (sin cambios)
+```
+
+Almacenar el `solicitud_id` **no** es autenticación criptográfica del propietario.
+El binding dice *quién* respondió según el mecanismo del censo, pero **no
+transporta la prueba** del transporte: quien puede escribir `state/` escribe
+también el sujeto. `OWNER_IDENTITY_IS_DURABLE = NO` sigue vigente.
+
+Lo que sí queda demostrado, y es lo que el slice prometía: **qué solicitud se
+aprobó** está escrito, atado a la aprobación emitida, y el lector lo recomputa sin
+el registro en memoria.
+
+### 47.6 Verificación de esta ronda
+
+- **Focal** `tests/test_frozen_runtime_p4_s7_witness_request_binding.py`:
+  **32 passed**. Los 20 tests nuevos eran **ROJOS** en `d2e8ff13` por la razón
+  correcta —no por `ImportError` del helper—:
+
+  ```text
+  test_sustituir_la_solicitud_en_el_consentimiento_no_emite   DID NOT RAISE
+  test_un_consentimiento_ligado_sin_binding_no_emite          DID NOT RAISE
+  test_la_solicitud_presentada_es_la_que_se_persiste          el witness no persiste
+                                                              el binding (claves: …)
+  test_el_parser_v3_rechaza_un_campo_faltante                 KeyError: 'solicitud_binding'
+  test_un_witness_v2_no_se_declara_v3                         DID NOT RAISE
+  test_el_witness_emitido_declara_esquema_v3                  assert 2 == 3
+  test_solo_el_consentimiento_y_el_lector_acunan_bindings     set() != {…'responder'}
+  ```
+
+  Ocho tests pasaban ya y son de **preservación** (rechazo/cancelación/consumo,
+  root ajeno, escritura fallida, censo de superficies): se conservan para probar
+  que el cambio no las rompió.
+- **Regresión P4-S1/S2/S3/S4/S5/S6/S7**: **415 passed**, 2 skipped, 6 fallos
+  clasificados por separado:
+  - `test_f06_inspect_applies_anti_reparse_admission_boundary`: falla en esta
+    máquina **también en el baseline** (`9fe88cb4`, §46.9). `OUT_OF_SCOPE`
+    verificado por reproducción.
+  - 5 tests de `test_frozen_runtime_p4_s3_durable_journal.py` murieron con
+    `Blocked by Security Center rules: write …\state\frozen-runtime.lock` ⇒ el
+    sandbox del entorno, no el código. **Pasan los cinco aislados en 3.57 s**
+    (`5 passed`). `UNKNOWN != OWNED`; este slice no toca `durable_journal.py` ni
+    `root_lock.py` (0 archivos en el diff).
+- **Mutantes: 13/13 matados**, con **control M00** (la suite tiene que estar verde
+  sin mutar) y **cierre M99** (tiene que volver a estarlo tras restaurar). Dos
+  supervivientes de la primera pasada se auditaron en vez de aceptarse:
+  - `M09_parser_acepta_v2` sobrevivía porque el test quitaba además
+    `solicitud_binding` y lo rechazaba el esquema cerrado **antes** de mirar la
+    versión. El test se corrigió para dejar el cuerpo completo y aislar la
+    versión.
+  - `M10` (leer la clave con `.get()`) sobrevivía porque `_CAMPOS_WITNESS` la
+    exigía antes: capa **redundante**. Se redefinió como mutante coordinado
+    (dejar de exigirla *y* tolerar su ausencia), que es el defecto real, y muere.
+- **Ruff** `check` + `format --check` sobre `sky_claw/ scripts/ tests/`: `All
+  checks passed!`, 954 archivos ya formateados. **Mypy** sobre
+  `sky_claw/ scripts/`: `Success: no issues found in 399 source files`.
+- **Anclas enumerativas nuevas**: llamadores de `_acuñar_binding_solicitud`
+  (exactamente dos: `owner_consent.responder` —autoridad— y
+  `approval._parsear_binding_solicitud` —reconstrucción desde un artefacto ya
+  validado—), llamadores del constructor público de `BindingSolicitud` (ninguno),
+  y la clave `solicitud_binding` obligatoria en el esquema cerrado.
+- **Concurrencia real entre procesos** (`tests/_p4_s7_child.py`, hijo autónomo):
+  dos procesos acuñan su propia solicitud y emiten a la vez ⇒ **un solo witness**,
+  **un solo éxito**, y el `solicitud_id` persistido es el del ganador.
+
+**Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,owner_consent,__init__}.py`,
+`tests/test_frozen_runtime_p4_s7_witness_request_binding.py`,
+`tests/_p4_s7_child.py` y este ADR. **No** se tocó Steam, Skyrim, MO2, SKSE,
+DynDOLOD, Parallax ni Runtime Vault. No se introdujo consumidor productivo y no se
+cableó Telegram ni la GUI.
+
+### 47.7 Estado
+
+```text
+SLICE                                  = P4-S7_WITNESS_REQUEST_BINDING
+WITNESS_SCHEMA                         = 3
+REQUEST_PRESENTED_EQUALS_APPROVED      = PASS
+REQUEST_APPROVED_EQUALS_PERSISTED      = PASS
+REQUEST_ID_FROM_TRUSTED_REGISTRY       = PASS  (acuñado por responder desde la
+                                                 presentación abierta; la puerta lo
+                                                 contrasta campo por campo)
+OWNER_REQUEST_ID_IS_DURABLE            = YES
+OWNER_SUBJECT_IS_DURABLE               = YES
+DECISION_INSTANT_IS_DURABLE            = YES
+OWNER_IDENTITY_IS_DURABLE              = NO    (declarado: el binding no lleva la
+                                                 prueba del transporte)
+LEGACY_WITNESS_POLICY                  = FAIL_CLOSED · NO_MIGRATION
+RECOVERY                               = PASS  (crash tras el witness: el binding
+                                                 sobrevive y se reconcilia)
+ANTI_REPLAY                            = PASS  (single-use + sesión + root + digest)
+CROSS_PROCESS                          = PASS  (dos procesos, un witness)
+MUTANTS                                = 13/13
+
+EMISION_PRODUCTIVA_HABILITADA          = False (una definición, approval.py)
+HITL_SURFACE                           = IMPLEMENTED
+HITL_PRODUCTIVE                        = NOT_WIRED
+PROMOTION_PRODUCTIVA                   = DISABLED
+ROLLBACK_PRODUCTIVA                    = DISABLED
+EFFECTIVE_RUNTIME_MUTATED              = NO
+ISSUE_672                              = OPEN
+MERGED                                 = NO
+```
