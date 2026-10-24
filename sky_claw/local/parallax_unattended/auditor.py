@@ -62,6 +62,11 @@ BYTES_DE_CABECERA_DX10: Final[int] = 20
 LADO_MINIMO: Final[int] = 4
 LADO_MAXIMO: Final[int] = 8192
 
+#: Tope de lectura por artefacto. Una textura de 8192² con la cadena completa de BC4 ronda los
+#: 33 MB, así que 256 MB no rechaza nada legítimo y evita que un archivo corrupto o ajeno al
+#: pipeline se lleve la memoria del runner.
+MAXIMO_DE_BYTES: Final[int] = 256 * 1024 * 1024
+
 _FIRMA: Final[bytes] = b"DDS "
 _TAMANO_DE_CABECERA_DDS: Final[int] = 124
 _TAMANO_DEL_PIXELFORMAT: Final[int] = 32
@@ -72,8 +77,11 @@ class CodigoDeHallazgo(enum.StrEnum):
     """Qué está mal en un artefacto. Vocabulario cerrado."""
 
     INFORME_INVALIDO = "informe_invalido"
+    SIN_ARTEFACTOS_AUDITABLES = "sin_artefactos_auditables"
     RUTA_FUERA_DE_LA_SALIDA = "ruta_fuera_de_la_salida"
     NO_EXISTE = "no_existe"
+    NO_LEGIBLE = "no_legible"
+    TAMANO_EXCESIVO = "tamano_excesivo"
     NO_ES_DDS = "no_es_dds"
     DIMENSIONES_INVALIDAS = "dimensiones_invalidas"
     TAMANO_INCOHERENTE = "tamano_incoherente"
@@ -146,10 +154,16 @@ def _leer_cabecera(datos: bytes) -> CabeceraDDS:
 
 
 def _dimensiones_plausibles(cabecera: CabeceraDDS) -> bool:
+    """Rango de lados y cadena de mips. **No** se exige potencia de dos.
+
+    Exigir POT rechazaría salida legítima: ``--escala-x 0.75`` sobre una normal de 2048 produce
+    1536, que DDS y BC4 aceptan sin problema. El formato no lo pide, el motor tampoco, y una
+    comprobación más estricta que el formato sólo agrega falsos positivos que bloquean una
+    corrida desatendida por una razón que no es un defecto.
+    """
+
     lados = (cabecera.ancho, cabecera.alto)
     if any(lado < LADO_MINIMO or lado > LADO_MAXIMO for lado in lados):
-        return False
-    if any(lado & (lado - 1) for lado in lados):
         return False
     return cabecera.mips <= int(math.log2(max(lados))) + 1
 
@@ -233,29 +247,49 @@ def _resolver(raiz: pathlib.Path, relativa: str) -> pathlib.Path:
 
 
 def _rutas_declaradas(informe: Mapping[str, object]) -> tuple[str, ...]:
-    """Rutas que el informe dice haber dejado en la salida. No se confía en ``conteos``."""
+    """Rutas que el informe dice haber dejado en la salida. No se confía en ``conteos``.
+
+    Una entrada con forma inválida **corta** la auditoría en vez de saltearse: saltearla dejaría
+    el resto auditado y el lote aprobado con un artefacto que nadie miró.
+    """
 
     crudo = informe.get("archivos")
     if not isinstance(crudo, list):
         raise _RutaRechazadaError("falta 'archivos' o no es una lista")
     rutas: list[str] = []
-    for entrada in crudo:
+    for posicion, entrada in enumerate(crudo):
         if not isinstance(entrada, Mapping):
-            continue
+            raise _RutaRechazadaError(f"archivos[{posicion}] no es un objeto")
         if entrada.get("estado") != "ESCRITA":
             continue
         if entrada.get("efecto") not in EFECTOS_QUE_DEJAN_ARCHIVO:
             continue
         ruta = entrada.get("ruta_de_salida")
-        if isinstance(ruta, str) and ruta:
-            rutas.append(ruta)
+        if not isinstance(ruta, str) or not ruta:
+            raise _RutaRechazadaError(f"archivos[{posicion}] se declara escrito y no trae ruta_de_salida")
+        rutas.append(ruta)
     return tuple(rutas)
 
 
 def _auditar_una(ruta: str, destino: pathlib.Path) -> tuple[Hallazgo | None, bool]:
-    """Devuelve (hallazgo o None, verificado). Un formato no medible NO es verificado."""
+    """Devuelve (hallazgo o None, verificado). Un formato no medible NO es verificado.
 
-    datos = destino.read_bytes()
+    La lectura va dentro de ``try``: entre ``is_file()`` y ``read_bytes()`` el archivo puede
+    desaparecer o quedar bloqueado por otro proceso (el juego, el antivirus, MO2). Eso no puede
+    tumbar la auditoría de los demás artefactos, así que se traduce a hallazgo.
+    """
+
+    try:
+        tamano = destino.stat().st_size
+        if tamano > MAXIMO_DE_BYTES:
+            return (
+                Hallazgo(ruta, CodigoDeHallazgo.TAMANO_EXCESIVO, f"{tamano} bytes, tope {MAXIMO_DE_BYTES}"),
+                False,
+            )
+        datos = destino.read_bytes()
+    except OSError as exc:
+        return Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo leer: {exc}"), False
+
     try:
         cabecera = _leer_cabecera(datos)
     except _DdsInvalidoError as exc:
@@ -304,6 +338,21 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
         return InformeDeAuditoria(
             verificados=(),
             hallazgos=(Hallazgo("", CodigoDeHallazgo.INFORME_INVALIDO, str(exc)),),
+            no_verificados=(),
+        )
+
+    if not rutas:
+        # Cero artefactos declarados NO es "todo bien": es una auditoría que no verificó nada, y
+        # un `ok` acá sería exactamente el falso verde que esta capa existe para cerrar.
+        return InformeDeAuditoria(
+            verificados=(),
+            hallazgos=(
+                Hallazgo(
+                    "",
+                    CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES,
+                    "el informe no declara ningún artefacto escrito que se pueda releer",
+                ),
+            ),
             no_verificados=(),
         )
 

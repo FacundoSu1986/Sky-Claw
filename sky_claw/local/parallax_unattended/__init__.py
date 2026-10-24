@@ -4,11 +4,16 @@ Esta capa **consume artefactos** —el informe del generador y los archivos de s
 importa nada de ``sky_claw.local.native_parallax``: el generador puede cambiar por dentro sin
 redefinir en silencio qué significa "listo" (ver ``AGENTS.md``).
 
-El orden de uso en una corrida desatendida es siempre el mismo:
+El orden de uso en una corrida desatendida es siempre el mismo, y las piezas no son
+intercambiables:
 
 1. ``dictar(informe)`` — ¿el informe se sostiene y nada quedó en revisión?
-2. ``codigo_de_salida(decision)`` — 0 sólo con ``PASS``.
-3. ``auditar(informe, raiz)`` — ¿cada artefacto declarado está en disco y tiene relieve?
+2. ``auditar(informe, raiz)`` — ¿cada artefacto declarado está en disco y tiene relieve?
+3. ``combinar(decision, auditoria)`` — veredicto final: el del informe, degradado por el disco.
+4. ``codigo_de_salida(final)`` — 0 sólo con ``PASS``.
+
+Saltearse el paso 3 deja un lote ``PASS`` con artefactos planos, que es el defecto que esta
+capa existe para cerrar.
 """
 
 from __future__ import annotations
@@ -22,11 +27,13 @@ from .auditor import (
     auditar,
     codigos,
 )
+from .composicion import combinar
 from .veredicto import (
     CODIGOS_DE_SALIDA,
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
     MOTIVOS_DE_INCONSISTENCIA,
+    MOTIVOS_DE_REVISION,
     DecisionDelLote,
     MotivoDelLote,
     VeredictoDelLote,
@@ -39,6 +46,7 @@ __all__ = [
     "ESTADOS_CONOCIDOS",
     "MOTIVOS_DE_FALLA",
     "MOTIVOS_DE_INCONSISTENCIA",
+    "MOTIVOS_DE_REVISION",
     "SD_MINIMA",
     "CabeceraDDS",
     "CodigoDeHallazgo",
@@ -50,5 +58,6 @@ __all__ = [
     "auditar",
     "codigo_de_salida",
     "codigos",
+    "combinar",
     "dictar",
 ]

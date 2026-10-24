@@ -30,6 +30,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from sky_claw.local.parallax_unattended import auditor as modulo_auditor
 from sky_claw.local.parallax_unattended.auditor import (
     SD_MINIMA,
     CodigoDeHallazgo,
@@ -214,3 +215,102 @@ def test_un_informe_sin_archivos_es_hallazgo(tmp_path: pathlib.Path) -> None:
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.INFORME_INVALIDO,)
     assert not auditoria.ok
+
+
+# ---------------------------------------------------------------------------
+# El auditor no puede aprobar por no haber mirado nada
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "informe",
+    [
+        {"archivos": []},
+        {"archivos": ["basura"]},
+        {"archivos": [None, 3]},
+        {"archivos": [{"estado": "ESCRITA", "efecto": "PUBLICADA"}]},
+        {"archivos": [{"estado": "EN_REVISION", "efecto": None, "veredicto": "REVIEW"}]},
+    ],
+)
+def test_cero_artefactos_auditados_nunca_es_ok(tmp_path: pathlib.Path, informe: dict[str, object]) -> None:
+    """Un ``ok`` sin nada verificado sería el mismo falso verde que esta capa cierra."""
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert not auditoria.ok
+    assert auditoria.verificados == ()
+
+
+def test_una_entrada_que_no_es_objeto_corta_la_auditoria(tmp_path: pathlib.Path) -> None:
+    """Saltear la entrada rota dejaría el resto auditado y el lote aprobado."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = {
+        "archivos": [
+            "basura",
+            {"ruta_de_salida": "textures/a_p.dds", "estado": "ESCRITA", "efecto": "PUBLICADA"},
+        ]
+    }
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.INFORME_INVALIDO,)
+    assert auditoria.verificados == ()
+
+
+def test_una_entrada_escrita_sin_ruta_corta_la_auditoria(tmp_path: pathlib.Path) -> None:
+    """Un artefacto que se declara escrito y no dice dónde no se puede auditar ni ignorar."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = {
+        "archivos": [
+            {"ruta_de_salida": "textures/a_p.dds", "estado": "ESCRITA", "efecto": "PUBLICADA"},
+            {"estado": "ESCRITA", "efecto": "PUBLICADA"},
+        ]
+    }
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.INFORME_INVALIDO,)
+    assert auditoria.verificados == ()
+
+
+# ---------------------------------------------------------------------------
+# Lo que el formato permite no se rechaza
+# ---------------------------------------------------------------------------
+
+
+def test_una_textura_que_no_es_potencia_de_dos_se_acepta(tmp_path: pathlib.Path) -> None:
+    """``--escala-x 0.75`` produce 1536: DDS y BC4 lo aceptan y el formato no pide POT."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(12, 12, 1, _payload(12, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert auditoria.ok
+    assert auditoria.verificados == ("textures/a_p.dds",)
+
+
+def test_un_archivo_ilegible_no_tumba_la_auditoria(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Entre ``is_file()`` y ``read_bytes()`` otro proceso puede llevarse el archivo."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    def bloqueado(self: pathlib.Path) -> bytes:
+        raise PermissionError("bloqueado por otro proceso")
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", bloqueado)
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.NO_LEGIBLE,)
+    assert not auditoria.ok
+
+
+def test_un_artefacto_demasiado_grande_no_se_lee(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    monkeypatch.setattr(modulo_auditor, "MAXIMO_DE_BYTES", 100)
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.TAMANO_EXCESIVO,)

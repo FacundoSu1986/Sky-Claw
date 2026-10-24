@@ -69,6 +69,8 @@ class MotivoDelLote(enum.StrEnum):
     CONTEO_DIVERGENTE = "conteo_divergente"
     ENCODER_NO_REGISTRADO = "encoder_no_registrado"
     ARCHIVO_SIN_VEREDICTO = "archivo_sin_veredicto"
+    VEREDICTO_INCOHERENTE = "veredicto_incoherente"
+    ARTEFACTO_NO_CONFIABLE = "artefacto_no_confiable"
     ARCHIVO_NO_PROCESADO = "archivo_no_procesado"
     ARCHIVO_NO_ESCRITO = "archivo_no_escrito"
     ARCHIVO_EN_REVISION = "archivo_en_revision"
@@ -81,6 +83,7 @@ MOTIVOS_DE_INCONSISTENCIA: Final[frozenset[MotivoDelLote]] = frozenset(
         MotivoDelLote.CONTEO_DIVERGENTE,
         MotivoDelLote.ENCODER_NO_REGISTRADO,
         MotivoDelLote.ARCHIVO_SIN_VEREDICTO,
+        MotivoDelLote.VEREDICTO_INCOHERENTE,
     }
 )
 
@@ -90,6 +93,16 @@ MOTIVOS_DE_FALLA: Final[frozenset[MotivoDelLote]] = frozenset(
         MotivoDelLote.LOTE_VACIO,
         MotivoDelLote.ARCHIVO_NO_PROCESADO,
         MotivoDelLote.ARCHIVO_NO_ESCRITO,
+    }
+)
+
+#: Motivos que dejan el lote en revisión (precedencia 3). ``ARTEFACTO_NO_CONFIABLE`` lo pone
+#: ``composicion.combinar`` cuando el post-check del artefacto encontró algo: un mapa plano es
+#: indistinguible de una superficie lisa mirando sólo el archivo, así que no puede ser ``FAIL``.
+MOTIVOS_DE_REVISION: Final[frozenset[MotivoDelLote]] = frozenset(
+    {
+        MotivoDelLote.ARCHIVO_EN_REVISION,
+        MotivoDelLote.ARTEFACTO_NO_CONFIABLE,
     }
 )
 
@@ -265,6 +278,9 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
             # No se escribió porque el gate la retuvo: es una decisión, pero no es éxito.
             _agregar(motivos, MotivoDelLote.ARCHIVO_EN_REVISION)
             _agregar_ruta(rutas, archivo.ruta)
+            if archivo.veredicto != "REVIEW":
+                # "En revisión" con veredicto PASS se contradice: o el gate lo retuvo, o pasó.
+                _agregar(motivos, MotivoDelLote.VEREDICTO_INCOHERENTE)
         elif archivo.estado == "ESCRITA":
             if archivo.efecto not in EFECTOS_QUE_DEJAN_ARCHIVO:
                 # Un estado de escritura con un efecto que no deja archivo es un informe que miente.
@@ -283,7 +299,7 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
         veredicto = VeredictoDelLote.INCONSISTENTE
     elif any(m in MOTIVOS_DE_FALLA for m in motivos):
         veredicto = VeredictoDelLote.FAIL
-    elif MotivoDelLote.ARCHIVO_EN_REVISION in motivos:
+    elif any(m in MOTIVOS_DE_REVISION for m in motivos):
         veredicto = VeredictoDelLote.REVIEW
     else:
         veredicto = VeredictoDelLote.PASS

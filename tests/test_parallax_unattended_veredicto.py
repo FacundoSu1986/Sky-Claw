@@ -28,6 +28,7 @@ from sky_claw.local.parallax_unattended.veredicto import (
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
     MOTIVOS_DE_INCONSISTENCIA,
+    MOTIVOS_DE_REVISION,
     MotivoDelLote,
     VeredictoDelLote,
     codigo_de_salida,
@@ -209,6 +210,16 @@ def test_sin_artefacto_el_codificador_no_hace_falta() -> None:
     assert MotivoDelLote.ENCODER_NO_REGISTRADO not in decision.motivos
 
 
+def test_en_revision_con_veredicto_pass_es_incoherente() -> None:
+    """El estado dice que el gate la retuvo y el veredicto dice que pasó: una de las dos miente."""
+
+    archivos = [_archivo("textures/a_p.dds", estado="EN_REVISION", efecto=None, veredicto="PASS")]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.VEREDICTO_INCOHERENTE in decision.motivos
+
+
 # ---------------------------------------------------------------------------
 # Forma
 # ---------------------------------------------------------------------------
@@ -254,9 +265,10 @@ def test_informe_sin_archivos_es_forma_invalida() -> None:
 def test_todo_motivo_pertenece_a_exactamente_un_grupo() -> None:
     """Un motivo nuevo sin grupo deja el veredicto sin precedencia definida."""
 
-    de_revision = {MotivoDelLote.ARCHIVO_EN_REVISION}
     for motivo in MotivoDelLote:
-        grupos = sum(1 for grupo in (MOTIVOS_DE_INCONSISTENCIA, MOTIVOS_DE_FALLA, de_revision) if motivo in grupo)
+        grupos = sum(
+            1 for grupo in (MOTIVOS_DE_INCONSISTENCIA, MOTIVOS_DE_FALLA, MOTIVOS_DE_REVISION) if motivo in grupo
+        )
         assert grupos == 1, f"{motivo} está en {grupos} grupos"
 
 
