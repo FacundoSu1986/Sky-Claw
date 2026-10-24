@@ -20,6 +20,7 @@ FASE B' — DECISIÓN
   responder(solicitud_id, decision, identidad):
       la identidad tiene que ser la MISMA (superficie, sujeto, sesión)
       APROBAR  ⇒ ConsentimientoAprobacion con el digest PRESENTADO
+                 + BindingSolicitud acuñado desde la presentación (§47)
       RECHAZAR ⇒ None
       CANCELAR ⇒ None
       la solicitud queda RESUELTA: no se reabre (single-use)
@@ -55,24 +56,30 @@ PRESENTATION_IS_NON_AMBIGUOUS       = YES   (ningún valor del scope aporta una 
 HITL_PRODUCTIVE                     = NOT_WIRED (ningún módulo de producción presenta
                                              ni responde: la superficie existe, el
                                              cableado no)
-OWNER_SUBJECT_IS_DURABLE            = NO    (el witness durable registra la superficie
-                                             como campo del scope; el ``solicitud_id``
-                                             viaja dentro de ``approval_provenance``, que
-                                             es un string OPACO del llamador — nada
-                                             verifica que lo contenga. El registro
-                                             autoritativo de solicitudes es en memoria;
-                                             el sujeto se reconstruye del log del
-                                             transporte)
-DECISION_INSTANT_IS_DURABLE         = NO    (``decided_at_ns`` se VERIFICA al emitir
-                                             —``>= proposed_at_ns``—, pero no se
-                                             persiste; el ancla durable del instante es
-                                             el log del transporte)
+OWNER_REQUEST_ID_IS_DURABLE         = YES   (witness v3, ``solicitud_binding``: lo
+                                             acuña ``responder`` desde la presentación
+                                             abierta y la puerta durable lo contrasta
+                                             campo por campo. NO es autenticación
+                                             criptográfica — ver la línea siguiente)
+OWNER_SUBJECT_IS_DURABLE            = YES   (viaja en el MISMO binding durable, ligado
+                                             por ``binding_digest``)
+DECISION_INSTANT_IS_DURABLE         = YES   (``decided_at_ns`` viaja en el binding; el
+                                             lector recomputa el digest)
+OWNER_IDENTITY_IS_DURABLE           = NO    (el binding dice QUIÉN según el mecanismo
+                                             del censo, pero no transporta la prueba:
+                                             quien escribe el filesystem escribe el
+                                             sujeto. La prueba del ``from.id`` sigue en
+                                             el log de Telegram, que sí la registra)
 ```
 
-Las dos últimas líneas son limitaciones **elegidas**, no olvidos: agregar el sujeto
-o el instante al witness exigiría un esquema v3 y no aporta frente al atacante que
-importa —quien fabrique el campo fabrica también el sujeto y el instante—. Frente
-al atacante externo la prueba está en el transporte, que sí la registra.
+La última línea sigue siendo una limitación **elegida**, y P4-S7 no la disfraza:
+persistir el sujeto no convierte el artefacto en prueba de identidad, porque quien
+fabrica el campo fabrica también el sujeto. Lo que P4-S7 cierra es otra cosa, y es
+verificable: **qué solicitud se aprobó** queda escrito, atado a la aprobación
+emitida, y el lector lo recomputa sin consultar este registro. El modelo de amenaza
+no cambia —``WITNESS_IS_SIGNED_OR_SEALED_EXTERNALLY = NO`` y
+``FILESYSTEM_IS_INSIDE_TRUST_BOUNDARY = YES``—, y almacenar el ``solicitud_id`` no
+se declara autenticación criptográfica del propietario.
 """
 
 from __future__ import annotations
@@ -94,6 +101,7 @@ from sky_claw.local.frozen_runtime.approval import (
     ApprovalScope,
     ConsentimientoAprobacion,
     PropuestaAprobacion,
+    _acuñar_binding_solicitud,
     payload_scope_sin_digest,
     validar_scope,
 )
@@ -674,6 +682,26 @@ class RegistroConsentimientos:
             )
             return None
 
+        decidido_en = int(self._clock_ns())
+        # P4-S7 — el binding durable se acuña ACÁ, desde la PRESENTACIÓN que el
+        # registro tiene abierta, no desde los argumentos del llamador. Es lo que
+        # hace que el ``solicitud_id`` persistido sea el que el propietario vio y
+        # no un string que alguien eligió: ``REQUEST_PRESENTED == REQUEST_APPROVED
+        # == REQUEST_PERSISTED`` (§47.1). Los diez campos salen de ``presentacion``
+        # —incluido ``root_id``, que fijó ``presentar``— y el único dato nuevo es
+        # el instante de la decisión.
+        binding = _acuñar_binding_solicitud(
+            solicitud_id=presentacion.solicitud_id,
+            root_id=presentacion.root_id,
+            approval_id=presentacion.approval_id,
+            approval_seq=presentacion.approval_seq,
+            approval_scope_digest=presentacion.approval_scope_digest,
+            surface=presentacion.superficie.value,
+            session_id=presentacion.sesion,
+            owner_subject=presentacion.propietario,
+            mecanismo=presentacion.mecanismo,
+            decided_at_ns=decidido_en,
+        )
         return ConsentimientoAprobacion(
             approval_scope_digest=presentacion.approval_scope_digest,
             approval_provenance=presentacion.approval_provenance,
@@ -683,7 +711,8 @@ class RegistroConsentimientos:
             session_id=presentacion.sesion,
             owner_subject=presentacion.propietario,
             mecanismo=presentacion.mecanismo,
-            decided_at_ns=int(self._clock_ns()),
+            decided_at_ns=decidido_en,
+            binding=binding,
         )
 
     # -- Cancelación / cierre ---------------------------------------------
@@ -723,17 +752,24 @@ class RegistroConsentimientos:
 def _exigir_binding_completo(consentimiento: ConsentimientoAprobacion) -> None:
     """Un consentimiento sin binding de propietario no autoriza nada.
 
-    Los seis campos, no cinco: ``decided_at_ns`` entra en la lista porque el
-    núcleo durable lo VUELVE A LEER (``approval._validar_consentimiento``) para
-    ordenar la decisión respecto de la propuesta. Un campo que se exige en la
-    puerta y no se verifica después sería el mismo ornamento que se está
-    cerrando.
+    Los seis campos más el ``binding`` acuñado, no cinco: ``decided_at_ns`` entra
+    en la lista porque el núcleo durable lo VUELVE A LEER
+    (``approval._validar_consentimiento``) para ordenar la decisión respecto de la
+    propuesta, y ``binding`` porque el ``solicitud_id`` suelto es exactamente el
+    string del llamador que P4-S7 dejó de aceptar. Un campo que se exige en la
+    puerta y no se verifica después sería el mismo ornamento que se está cerrando.
+
+    Esta comprobación es la de la ENTRADA PRODUCTIVA. La que gobierna de verdad
+    está en ``approval._exigir_binding_consistente``: un chequeo que vive sólo en
+    el llamador es bypassable por el segundo llamador.
     """
     faltantes = [
         nombre
         for nombre in ("root_id", "solicitud_id", "session_id", "owner_subject", "mecanismo", "decided_at_ns")
         if getattr(consentimiento, nombre, None) is None
     ]
+    if consentimiento.binding is None:
+        faltantes.append("binding")
     if faltantes:
         raise ApprovalHitolNoDisponibleError(
             "el consentimiento no liga al propietario verificado (faltan "
