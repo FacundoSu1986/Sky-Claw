@@ -229,7 +229,7 @@ async def test_la_procedencia_del_manifiesto_describe_lo_que_de_verdad_corrio(es
 
     entrada = escenario.manifiesto().entradas[0]
     procedencia = entrada.procedencia
-    assert procedencia.algoritmo_id == "normal_fft_neumann_v1"
+    assert procedencia.algoritmo_id == "normal_wls_nz_neumann_v1"  # la integración ponderada del producto
     assert [(o.rol, o.sha256) for o in procedencia.origenes] == [("normal", huella_de_la_normal)]
     assert json.loads(procedencia.parametros) == parametros.a_parametros_de_procedencia()
     assert json.loads(procedencia.parametros)["bordes"] == "neumann"

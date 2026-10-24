@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -36,7 +38,7 @@ import sys
 import tempfile
 import zlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Final, TextIO
+from typing import TYPE_CHECKING, Any, Final, TextIO, cast
 
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax._extra import importar_numpy
@@ -237,6 +239,52 @@ def _linea_de_archivo(a: ResultadoDeArchivo) -> str:
     return linea
 
 
+# Lo que lanza una consola que ya no acepta texto: cerrada (``ValueError``) o rota (``OSError``: tubería cortada,
+# ventana cerrada). ``UnicodeEncodeError`` también es un ``ValueError``, pero ese se escapa y se vuelve a intentar.
+_ERRORES_DE_LA_CONSOLA = (OSError, ValueError)
+
+
+class _SalidaSinCodepage(io.TextIOBase):
+    """Escribe en ``flujo`` sin que la consola pueda abortar la corrida.
+
+    Dos propiedades (rig 2026-10-24: «→» en cp1252 tiraba ``UnicodeEncodeError`` después de escribir la salida y antes
+    del informe JSON, y la corrida quedaba sin evidencia):
+
+    - **No depende de la codificación:** lo que el flujo no representa se escapa visible (``\\u2192``) en vez de reventar.
+    - **Imprimir nunca aborta:** si la consola deja de aceptar texto, lo que no se pudo mostrar se descarta. El informe
+      JSON y el código de salida no pasan por acá. Un error que no es de E/S (un bug) sigue subiendo.
+
+    No se reconfigura el ``sys.stdout`` del proceso: solo cambia lo que ESTA herramienta escribe. Es un flujo de texto
+    de solo escritura: lo demás de ``TextIOBase`` (``read``, ``fileno``...) lanza ``io.UnsupportedOperation``.
+    """
+
+    def __init__(self, flujo: TextIO) -> None:
+        super().__init__()
+        self._flujo = flujo
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, texto: str) -> int:
+        # Si la consola ya no muestra nada, se descarta: la corrida y su informe siguen.
+        with contextlib.suppress(*_ERRORES_DE_LA_CONSOLA):
+            try:
+                self._flujo.write(texto)
+            except UnicodeEncodeError:
+                codificacion = getattr(self._flujo, "encoding", None) or "utf-8"
+                self._flujo.write(texto.encode(codificacion, errors="backslashreplace").decode(codificacion))
+        return len(texto)
+
+    def flush(self) -> None:
+        with contextlib.suppress(*_ERRORES_DE_LA_CONSOLA):
+            self._flujo.flush()
+
+
+def _sin_codepage(flujo: TextIO) -> TextIO:
+    # ``TextIOBase`` es un flujo de texto completo, pero para mypy no es ``typing.TextIO``.
+    return cast("TextIO", _SalidaSinCodepage(flujo))
+
+
 def _resumen(informe: InformeDelLote, omitidas: Sequence[str], salida: TextIO) -> None:
     print("", file=salida)
     for archivo in informe.archivos:
@@ -362,6 +410,16 @@ def _escribir_informe(informe: InformeDelLote, destino: str, salida: TextIO) -> 
     print(f"Informe: {ruta.resolve()}", file=salida)
 
 
+def _informar(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> None:
+    """El informe primero y el resumen después: mostrar es lo último que puede fallar y no se lleva la evidencia.
+
+    Es la ÚNICA salida de los dos comandos (``generar`` y ``autoprueba``): antes cada uno mostraba el resumen y recién
+    después escribía el informe, y un fallo de la consola lo perdía (rig 2026-10-24).
+    """
+    _escribir_informe(informe, destino, salida)
+    _resumen(informe, omitidas, salida)
+
+
 def _progreso(salida: TextIO) -> Callable[[int, int, str], None]:
     def mostrar(indice: int, total: int, ruta: str) -> None:
         print(f"[{indice}/{total}] {ruta}", file=salida, flush=True)
@@ -408,8 +466,7 @@ async def _generar(
         parametros=parametros,
         progreso=_progreso(salida),
     )
-    _resumen(informe, omitidas, salida)
-    _escribir_informe(informe, args.informe, salida)
+    _informar(informe, omitidas, args.informe, salida)
     return _codigo(informe)
 
 
@@ -451,8 +508,7 @@ async def _autoprueba(
             parametros=ParametrosDelLote(escribir_revision=True),
             progreso=_progreso(salida),
         )
-        _resumen(informe, [], salida)
-        _escribir_informe(informe, args.informe, salida)
+        _informar(informe, [], args.informe, salida)
         fallos = _verificar_autoprueba(raiz, ruta_de_salida, informe)
     finally:
         _borrar_temporal(base, salida)
@@ -499,7 +555,7 @@ def main(
     salida: TextIO | None = None,
 ) -> int:
     """Punto de entrada. Los argumentos con nombre existen para los tests; en uso normal van todos por defecto."""
-    destino = salida if salida is not None else sys.stdout
+    destino = _sin_codepage(salida if salida is not None else sys.stdout)
     variables = entorno if entorno is not None else os.environ
     fabrica = fabrica_de_exportador if fabrica_de_exportador is not None else crear_exportador_texconv
     args = construir_parser().parse_args(argv)
