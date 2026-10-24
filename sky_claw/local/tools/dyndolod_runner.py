@@ -887,6 +887,42 @@ NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
     ("No TexGen output detected",),
     ("DynDOLOD.DLL", "not found"),
     ("File not found", "SkyrimSE.exe"),
+    # F1: el binario escribe la INSTRUCCIÓN de un modal de arranque CONOCIDO como
+    # `Error:` en su propio log, aunque el operador haya autorizado continuar
+    # (`texgen_stitched_lod_previo` en `CONTRATOS_DE_UI`, política
+    # `APROBACION_DEL_OPERADOR`). El mecanismo está medido dos veces, no inferido:
+    # el mismo binario hace lo mismo con `dyndolod_dll_ng_ausente`
+    # (`docs/validation/2026-09-13_pr580_real_rig/dyndolod-log.txt:69`), y a ese
+    # sí lo exentaba `("DynDOLOD.DLL", "not found")`. La taxonomía cubría a un
+    # hermano y no al otro, y la corrida del rig 2026-10-19 —1.362 archivos,
+    # `TexGen completed successfully`, exit 0— salía roja y se revertía
+    # (`docs/validation/2026-10-19_pr661_unattended_windows_real_rig/
+    # standalone/attempt1-texgen/tool-log-excerpt.txt:3`).
+    #
+    # La categoría es la instrucción COMPLETA y no un prefijo: `("Found stitched",)`
+    # declararía no-fatal a `Error: Found stitched object LOD textures in the game
+    # folder.` y a un fallo de escritura de las mismas texturas.
+    #
+    # Y lleva el `Error:` del ENCABEZADO, no sólo la instrucción: el match es por
+    # substring, así que sin él una línea como `Error: Could not write textures;
+    # Found stitched object LOD textures …` —texto de error AJENO delante de la
+    # instrucción— se tragaba como ruido de dominio y, con artefacto, marcador y
+    # `rc == 0`, el runner aceptaba la corrida (revisor CodeRabbit, PR #793). El
+    # binario escribe el modal como `Error: <instrucción>` en los DOS rigs
+    # medidos, así que exigir el encabezado no cuesta cobertura: si un build lo
+    # emitiera sin `Error:` el veredicto sería rojo revisable, que es la dirección
+    # correcta. Efecto lateral deseable: una variante `Warning: …` deja de ser
+    # «no-fatal de dominio» y pasa a ignorarse, que es lo que corresponde a un
+    # warning. Las seis categorías de arriba son de UNA parte por otra razón
+    # —su texto es variable en el medio— y no se tocan acá.
+    #
+    # Tool-agnóstica, igual que las seis de arriba: la lista no distingue
+    # herramienta. El ancla que impide el TERCER modal no vive acá sino en
+    # `tests/test_dyndolod_taxonomia_log.py::
+    # test_todo_modal_conocido_del_contrato_es_no_fatal_en_el_log_de_su_herramienta`,
+    # que enumera `CONTRATOS_DE_UI`: agregar un modal al contrato sin exentarlo
+    # rompe ese test, que es el único lugar donde el conocimiento ya está escrito.
+    ("Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder.",),
 )
 
 #: Lo que aborta la corrida. Se evalúa ANTES que los no-fatales para que un
