@@ -1546,3 +1546,57 @@ esa normal no es integrable y la textura queda fuera del dominio (el gate la man
 diagnóstico de la decodificación y la convención sobre `wrcitywall01_n`. **Sigue congelado** todo NP-A0 posterior (adaptador de MO2, GUI/agente, política de lote incompleto) y cualquier umbral hasta que (a) tenga veredicto.
 
 **No verificado.** Todo lo visual; que el mod de salida del generador gane en el juego; que BC4 se vea; que la amplitud sea la única diferencia entre E3/E5 y lo invisible (la forma se conservó en E5, pero es un solo caso); el criterio de Auto Parallax; que la salida plana de `stonewall01` venga de `min_max`.
+
+### Actualización: integración ponderada (2026-10-24)
+
+**Hallazgo del rig** (`VERIFIED`: medido ejecutando sobre el archivo real; una sola textura). `cli generar` sobre `textures/architecture/whiterun/wrcitywall01_n.dds` (Skyland AIO, DX10 BC7 2048²) daba
+un `_p` inservible: acuerdo p95 44.8° (igual en DirectX y OpenGL), correlación con el difuso −0.015 y, con min-max, una altura casi
+plana. Hipótesis descartadas midiendo: la decodificación BC7 (R y G centrados en 126/127, B entre 125 y 255, longitud media 1.05;
+intercambiar R y G empeora el residuo de 0.40 a 0.58), el canal alfa (0–105, especular; se ignora) y el mip (se lee el nivel 0,
+2048²). **Causa:** 7 píxeles de 4,2 millones con `nz < 0`. La inversa `p = −nx / max(nz, 1e-6)` les da un gradiente ~1e6, y
+Frankot–Chellappa lo reparte como dipolos sobre toda la textura (altura en ±179 con p2…p98 en ±1.2). Eso explica los tres síntomas:
+los dipolos dominan el error angular (por eso invertir Y no lo mueve), tapan las piedras y, con min-max, se comen el rango.
+
+**Decisión** (método `SUPPORTED_BY_LITERATURE`: la fuente citada abajo; la elección de `nz` y del relleno sale del experimento
+siguiente). `integrar` gana `ponderacion` (`Ponderacion.UNIFORME`, por defecto y oráculo de research, o `Ponderacion.NZ`) y el
+producto usa `PONDERACION_DEL_PRODUCTO = Ponderacion.NZ` en sus dos llamadores (el lote y la medición de NP-X0b, cuya versión sube a
+`np-x0b.v2`). Mínimos cuadrados ponderados por `nz` (Quéau, Durou y Aujol 2018, «Normal Integration: A Survey»): como
+`nz · p = −nx / sx`, el aporte de cada píxel queda acotado por su `nx`. Bajo el piso, pendiente nula con el peso medio (relleno
+suave). Se resuelve con gradiente conjugado precondicionado por el Poisson uniforme; `TOLERANCIA_RELATIVA = 1e-8` y
+`MAX_ITERACIONES = 500` son guardas numéricas, y sin converger se lanza `SinConvergenciaError` (un `IntegracionError`: el lote
+lo cuenta como `NO_PROCESADA`). Algoritmos nuevos: `normal_wls_nz_periodic_v1` y `normal_wls_nz_neumann_v1` (entran a la clave de
+caché: las salidas viejas se regeneran).
+
+**Por qué `nz` y por qué el relleno (experimento propio, corpus sintético de NP-D0 a 128², 187 normales con ruido y cuantización;
+`VERIFIED` sobre ese corpus, `INFERRED` para texturas reales).**
+Con peso `nz²` y peso cero bajo el piso, 6 de 187 no convergían en 3000 iteraciones; con `nz` y peso cero, 3. Con relleno, ninguna:
+máximo 117 iteraciones con `nz` y 815 con `nz²`. Sobre wrcitywall01 las dos dan casi lo mismo (p95 10.2° y 10.0°). En una normal
+integrable y todo definida la altura es la de la uniforme (p95 limpio < 1e-6°).
+
+**Contra los criterios de aceptación del TL (sección NP-V0).** (1)–(3) `VERIFIED` ejecutando (tests y una textura real); (4)
+`REAL_RIG_REQUIRED`.
+1. *Rojo observado antes:* los siete formatos de entrada aceptados × las dos normalizaciones daban correlación con la altura
+   VERDADERA (sintética) de 0.18–0.41 y p95 ~35°; las cuatro clases de píxel fuera del dominio, < 0.5 con la uniforme.
+2. *El acuerdo no se baja por decreto:* `metrics.py` y `gates.py` no cambian (ni la definición de `acuerdo_normal` ni
+   `VERSION_DE_METRICAS`). El p95 de wrcitywall01 pasa de 44.8° a **10.2°** porque la altura reproduce la normal que antes no
+   reproducía: la métrica es la misma, cambió lo que mide.
+3. *¿La normal es integrable?* Decodificación y convención están bien (arriba). Por bandas de frecuencia, la energía del rotor de
+   los gradientes sobre la de su divergencia es 3 % por debajo de 256 ciclos por textura —donde están las piedras—, 6 % entre 256 y
+   512, 20 % entre 512 y 1024 y 66 % por encima. El residuo de integrabilidad (0.40, sin cambios: es de la entrada, no del integrador) es
+   ruido de alta frecuencia, no la forma. El gate la sigue mandando a `REVIEW` (fail-closed, sin umbrales). **No se fabrica
+   relieve:** el relleno solo actúa en los 7 píxeles indefinidos, y les pide pendiente NULA.
+4. *Prueba final en el juego con BC4:* **pendiente.** La salida no se instaló.
+
+**Resultado medido (Windows, `texconv` del pin `may2026`; `VERIFIED` sobre una textura).** Con el default `min_max`, que este cambio NO toca: acuerdo p95 10.2°,
+altura normalizada con p2/p98 en 0.16/0.74 y desviación 0.132 (33.8 sobre 255). Antes, los extremos de los dipolos la dejaban
+casi plana. Con `--normalizacion percentiles 2 98`: p95 10.2°, desviación 0.219 (55.8 sobre 255), 24 iteraciones (~9 s). Como
+síntoma, y no como criterio (decisión del TL en NP-V0): la correlación del `_p` con el difuso pasa de −0.01 a +0.18.
+
+**Anclas.** `tests/test_native_parallax_normales_fuera_de_dominio.py`: cada formato de entrada aceptado (la familia se congela
+contra las listas cerradas de `decode.py`) × cada normalización por `lote._medir` con un bloque fuera del dominio; cada clase de
+píxel fuera del dominio (negativo, cero, bajo el piso, diminuto sobre el piso) con los dos bordes; y por AST, que todo llamador de
+producto de `integrar` pase `PONDERACION_DEL_PRODUCTO`. `tests/test_native_parallax_cli.py`: si la integración no converge, la
+textura queda `NO_PROCESADA` y el lote sigue. La CLI con cp1252 va en un PR aparte.
+
+**No verificado.** El `_p` nuevo en el juego (`REAL_RIG_REQUIRED`: hipótesis D de NP-V0, BC4, sigue abierta); la integración
+ponderada a 4096² con `NEUMANN` (cuadruplica los píxeles resueltos; `NO VERIFIED`: ni tiempo ni memoria medidos).

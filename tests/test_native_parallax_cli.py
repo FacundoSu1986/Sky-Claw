@@ -1303,3 +1303,19 @@ def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_pat
     assert zlib.decompress(trozos[1][1]) == b"".join(
         b"\x00" + (bytes(range(12)) * 4)[f * 12 : (f + 1) * 12] for f in range(4)
     )
+
+
+def test_si_la_integracion_no_converge_la_textura_queda_no_procesada_y_el_lote_sigue(
+    mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``SinConvergenciaError`` es un ``IntegracionError``: falla UNA ruta (``ERRORES_POR_ARCHIVO``), no la corrida entera.
+    from sky_claw.local.native_parallax import integrate
+
+    monkeypatch.setattr(integrate, "MAX_ITERACIONES", 0)
+
+    codigo, texto = _generar(mundo, "--incluir-revision")
+
+    assert codigo == CODIGO_CON_FALLOS
+    assert texto.count("NO_PROCESADA") >= 2 and "SinConvergenciaError" in texto
+    informe = json.loads((mundo / "informe.json").read_text(encoding="utf-8"))
+    assert informe["conteos"]["NO_PROCESADA"] == 2
