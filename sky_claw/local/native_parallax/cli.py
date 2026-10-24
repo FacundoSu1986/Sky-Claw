@@ -36,7 +36,7 @@ import sys
 import tempfile
 import zlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Final, TextIO
+from typing import TYPE_CHECKING, Any, Final, TextIO, cast
 
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax._extra import importar_numpy
@@ -237,6 +237,33 @@ def _linea_de_archivo(a: ResultadoDeArchivo) -> str:
     return linea
 
 
+class _SalidaSinCodepage:
+    """Escribe en ``flujo`` sin depender de su codificación: lo que no entra se escapa visible (``\\u2192``).
+
+    La consola de Windows (o una redirección) impone cp1252/cp437 y los mensajes tienen «→», «°», tildes y rutas del
+    usuario: con ``errors="strict"`` un solo carácter tiraba ``UnicodeEncodeError`` a mitad del resumen (rig 2026-10-24).
+    No se reconfigura el ``sys.stdout`` del proceso: solo cambia lo que ESTA herramienta escribe.
+    """
+
+    def __init__(self, flujo: TextIO) -> None:
+        self._flujo = flujo
+
+    def write(self, texto: str) -> int:
+        try:
+            return self._flujo.write(texto)
+        except UnicodeEncodeError:
+            codificacion = getattr(self._flujo, "encoding", None) or "utf-8"
+            return self._flujo.write(texto.encode(codificacion, errors="backslashreplace").decode(codificacion))
+
+    def flush(self) -> None:
+        self._flujo.flush()
+
+
+def _sin_codepage(flujo: TextIO) -> TextIO:
+    # ``print`` solo necesita ``write`` y ``flush``.
+    return cast("TextIO", _SalidaSinCodepage(flujo))
+
+
 def _resumen(informe: InformeDelLote, omitidas: Sequence[str], salida: TextIO) -> None:
     print("", file=salida)
     for archivo in informe.archivos:
@@ -362,6 +389,16 @@ def _escribir_informe(informe: InformeDelLote, destino: str, salida: TextIO) -> 
     print(f"Informe: {ruta.resolve()}", file=salida)
 
 
+def _informar(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> None:
+    """El informe primero y el resumen después: mostrar es lo último que puede fallar y no se lleva la evidencia.
+
+    Es la ÚNICA salida de los dos comandos (``generar`` y ``autoprueba``): antes cada uno mostraba el resumen y recién
+    después escribía el informe, y un fallo de la consola lo perdía (rig 2026-10-24).
+    """
+    _escribir_informe(informe, destino, salida)
+    _resumen(informe, omitidas, salida)
+
+
 def _progreso(salida: TextIO) -> Callable[[int, int, str], None]:
     def mostrar(indice: int, total: int, ruta: str) -> None:
         print(f"[{indice}/{total}] {ruta}", file=salida, flush=True)
@@ -408,8 +445,7 @@ async def _generar(
         parametros=parametros,
         progreso=_progreso(salida),
     )
-    _resumen(informe, omitidas, salida)
-    _escribir_informe(informe, args.informe, salida)
+    _informar(informe, omitidas, args.informe, salida)
     return _codigo(informe)
 
 
@@ -451,8 +487,7 @@ async def _autoprueba(
             parametros=ParametrosDelLote(escribir_revision=True),
             progreso=_progreso(salida),
         )
-        _resumen(informe, [], salida)
-        _escribir_informe(informe, args.informe, salida)
+        _informar(informe, [], args.informe, salida)
         fallos = _verificar_autoprueba(raiz, ruta_de_salida, informe)
     finally:
         _borrar_temporal(base, salida)
@@ -499,7 +534,7 @@ def main(
     salida: TextIO | None = None,
 ) -> int:
     """Punto de entrada. Los argumentos con nombre existen para los tests; en uso normal van todos por defecto."""
-    destino = salida if salida is not None else sys.stdout
+    destino = _sin_codepage(salida if salida is not None else sys.stdout)
     variables = entorno if entorno is not None else os.environ
     fabrica = fabrica_de_exportador if fabrica_de_exportador is not None else crear_exportador_texconv
     args = construir_parser().parse_args(argv)

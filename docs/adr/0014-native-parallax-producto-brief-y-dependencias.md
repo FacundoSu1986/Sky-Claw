@@ -1484,3 +1484,45 @@ texto «No me dijeron dónde está el texconv» es el que escribió NP-A0c: no l
 
 **Qué falta.** El registro de tools y las superficies GUI y agente todavía no llaman al diagnóstico; cuando lo hagan, `ruta_configurada` y
 `diagnosticar_texconv` son la única forma de resolver y juzgar el binario, y el ancla de «un solo módulo» las cubre.
+
+### Actualización: integración ponderada (2026-10-24)
+
+**Hallazgo del rig.** `cli generar` sobre `textures/architecture/whiterun/wrcitywall01_n.dds` (Skyland AIO, DX10 BC7 2048²) daba
+un `_p` inservible: acuerdo p95 44.8° (igual en DirectX y OpenGL), correlación con el difuso −0.015 y, con min-max, una altura casi
+plana. Hipótesis descartadas midiendo: la decodificación BC7 (R y G centrados en 126/127, B entre 125 y 255, longitud media 1.05;
+intercambiar R y G empeora el residuo de 0.40 a 0.58), el canal alfa (0–105, especular; se ignora) y el mip (se lee el nivel 0,
+2048²). **Causa:** 7 píxeles de 4,2 millones con `nz < 0`. La inversa `p = −nx / max(nz, 1e-6)` les da un gradiente ~1e6, y
+Frankot–Chellappa lo reparte como dipolos sobre toda la textura (altura en ±179 con p2…p98 en ±1.2). Eso explica los tres síntomas:
+los dipolos dominan el error angular (por eso invertir Y no lo mueve), tapan las piedras y, con min-max, se comen el rango.
+
+**Decisión.** `integrar` gana `ponderacion` (`Ponderacion.UNIFORME`, por defecto y oráculo de research, o `Ponderacion.NZ`) y el
+producto usa `PONDERACION_DEL_PRODUCTO = Ponderacion.NZ` en sus dos llamadores (el lote y la medición de NP-X0b, cuya versión sube a
+`np-x0b.v2`). Mínimos cuadrados ponderados por `nz` (Quéau, Durou y Aujol 2018, «Normal Integration: A Survey»): como
+`nz · p = −nx / sx`, el aporte de cada píxel queda acotado por su `nx`. Bajo el piso, pendiente nula con el peso medio (relleno
+suave). Se resuelve con gradiente conjugado precondicionado por el Poisson uniforme; `TOLERANCIA_RELATIVA = 1e-8` y
+`MAX_ITERACIONES = 500` son guardas numéricas, y sin converger se lanza `SinConvergenciaError` (un `IntegracionError`: el lote
+lo cuenta como `NO_PROCESADA`). Algoritmos nuevos: `normal_wls_nz_periodic_v1` y `normal_wls_nz_neumann_v1` (entran a la clave de
+caché: las salidas viejas se regeneran).
+
+**Por qué `nz` y por qué el relleno (experimento propio, corpus sintético de NP-D0 a 128², 187 normales con ruido y cuantización).**
+Con peso `nz²` y peso cero bajo el piso, 6 de 187 no convergían en 3000 iteraciones; con `nz` y peso cero, 3. Con relleno, ninguna:
+máximo 117 iteraciones con `nz` y 815 con `nz²`. Sobre wrcitywall01 las dos dan casi lo mismo (p95 10.2° y 10.0°). En una normal
+integrable y todo definida la altura es la de la uniforme (p95 limpio < 1e-6°).
+
+**Resultado medido (Windows, `texconv` del pin `may2026`, `--normalizacion percentiles 2 98`).** wrcitywall01: acuerdo p95
+**10.20°**, correlación del `_p` (BC4, decodificado con Pillow) con el difuso **+0.178**, sd 55.8, 24 iteraciones (~9 s). Comparar
+con el `_p` de Skyland (correlación 0.82) fue solo evaluación: ningún número de este cambio sale de esa salida. El residuo de
+integrabilidad no cambia (0.40): es una propiedad de la normal de entrada, no del integrador.
+
+**CLI.** `_resumen` reventaba con `UnicodeEncodeError` («→» en cp1252) y el informe JSON se escribía después, así que se perdía.
+Toda la salida pasa por `_SalidaSinCodepage` (escapa lo que el flujo no representa, sin tocar el `sys.stdout` del proceso) y
+`generar` y `autoprueba` informan por `_informar`: el informe primero y el resumen después.
+
+**Anclas.** `tests/test_native_parallax_normales_fuera_de_dominio.py`: cada formato de entrada aceptado (la familia se congela
+contra las listas cerradas de `decode.py`) × cada normalización por `lote._medir` con un bloque fuera del dominio; cada clase de
+píxel fuera del dominio (negativo, cero, bajo el piso, diminuto sobre el piso) con los dos bordes; y por AST, que todo llamador de
+producto de `integrar` pase `PONDERACION_DEL_PRODUCTO`. `tests/test_native_parallax_cli.py`: cuatro codificaciones estrictas
+(cp1252, cp437, cp850, ascii) × los dos comandos, y el informe antes del resumen en los dos.
+
+**No verificado.** Cómo se ve el `_p` nuevo en el juego (Community Shaders) sobre el pozo de Whiterun; la integración ponderada a
+4096² con `NEUMANN` (cuadruplica los píxeles resueltos) no se midió.

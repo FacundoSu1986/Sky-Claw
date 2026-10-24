@@ -1303,3 +1303,65 @@ def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_pat
     assert zlib.decompress(trozos[1][1]) == b"".join(
         b"\x00" + (bytes(range(12)) * 4)[f * 12 : (f + 1) * 12] for f in range(4)
     )
+
+
+# ---------------------------------------------------------------------------
+# La salida no depende del codepage de la consola (rig 2026-10-24: «→» en cp1252 tiraba UnicodeEncodeError)
+# ---------------------------------------------------------------------------
+
+# Codificaciones ESTRICTAS que la consola de Windows o una redirección pueden imponer: la ANSI (cp1252), las OEM
+# (cp437, cp850) y la más pobre (ascii). Cada una tiene caracteres de los mensajes que no puede representar.
+_CODIFICACIONES_ESTRICTAS = ("cp1252", "cp437", "cp850", "ascii")
+
+
+def _comando(nombre: str, mundo: pathlib.Path) -> list[str]:
+    informe = str(mundo / "informe.json")
+    if nombre == "autoprueba":
+        return ["autoprueba", "--informe", informe]
+    carpetas = ["--carpeta", str(mundo / "entrada"), "--mods", str(mundo / "mods")]
+    return ["generar", *carpetas, "--informe", informe, "--incluir-revision"]
+
+
+def _correr_con(mundo: pathlib.Path, argv: list[str], salida: Any) -> int:
+    return main(
+        argv,
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(),
+        base_de_estado=mundo / "estado",
+        salida=salida,
+    )
+
+
+@pytest.mark.parametrize("codificacion", _CODIFICACIONES_ESTRICTAS)
+@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
+def test_ningun_comando_revienta_por_el_codepage_y_el_informe_se_escribe(
+    mundo: pathlib.Path, comando: str, codificacion: str
+) -> None:
+    crudo = io.BytesIO()
+    salida = io.TextIOWrapper(crudo, encoding=codificacion, errors="strict", newline="")
+
+    codigo = _correr_con(mundo, _comando(comando, mundo), salida)
+
+    salida.flush()
+    texto = crudo.getvalue().decode(codificacion)
+    assert codigo == CODIGO_OK
+    assert "Resumen:" in texto and "Informe:" in texto
+    # Ninguna de las cuatro representa «→»: se escapa visible, no se pierde ni se inventa.
+    assert "\\u2192" in texto
+    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1
+
+
+class _SalidaQueRevientaEnElResumen(io.StringIO):
+    def write(self, texto: str) -> int:
+        if "Resumen:" in texto:
+            raise RuntimeError("la consola se cayó al mostrar el resumen")
+        return super().write(texto)
+
+
+@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
+def test_el_informe_se_escribe_antes_de_mostrar_el_resumen(mundo: pathlib.Path, comando: str) -> None:
+    # Mostrar es lo último que puede fallar: el informe (la evidencia de la corrida) no puede depender de la consola.
+    with pytest.raises(RuntimeError, match="resumen"):
+        _correr_con(mundo, _comando(comando, mundo), _SalidaQueRevientaEnElResumen())
+
+    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1

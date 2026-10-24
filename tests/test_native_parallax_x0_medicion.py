@@ -50,6 +50,7 @@ from sky_claw.local.native_parallax.gates import (
     ValidacionContraCorpusReal,
 )
 from sky_claw.local.native_parallax.integrate import (
+    PONDERACION_DEL_PRODUCTO,
     Bordes,
     EntradaInvalidaError,
     ModoNormalizacion,
@@ -184,7 +185,7 @@ def test_medir_cablea_las_metricas_del_gate_con_los_mismos_bordes(bordes: Bordes
 
     medicion = _medir(normal, caso, bordes, escenario)
 
-    integrada = integrar(normal, bordes=bordes)
+    integrada = integrar(normal, bordes=bordes, ponderacion=PONDERACION_DEL_PRODUCTO)
     acuerdo = acuerdo_normal(normal, integrada.altura, bordes=bordes)
     assert medicion.bordes is bordes  # la medición declara con qué bordes se hizo
     assert medicion.metricas.acuerdo_p95_grados == acuerdo.p95_grados
@@ -207,7 +208,7 @@ def test_los_bordes_cambian_las_mediciones_de_una_normal_con_ruido() -> None:
 def test_el_error_de_altura_es_el_rmse_de_las_alturas_normalizadas_min_max() -> None:
     caso = "S06_multifreq"
     normal = perturbar_normal(_normal(caso), 4 / 255, caso)
-    integrada = integrar(normal, bordes=Bordes.PERIODICOS)
+    integrada = integrar(normal, bordes=Bordes.PERIODICOS, ponderacion=PONDERACION_DEL_PRODUCTO)
     a = normalizar_altura(integrada.altura, ModoNormalizacion.MIN_MAX)
     b = normalizar_altura(generar_altura(caso, N, N), ModoNormalizacion.MIN_MAX)
     esperado = float(np.sqrt(np.mean((a - b) ** 2)))
@@ -390,7 +391,7 @@ def test_la_huella_es_la_misma_en_cualquier_grilla_y_la_descripcion_distingue_lo
 # ``VERSION_DE_LA_MEDICION``.
 def _descripcion_de_referencia() -> dict[str, object]:
     return {
-        "version_de_la_medicion": "np-x0b.v1",
+        "version_de_la_medicion": "np-x0b.v2",
         "version_de_metricas": VERSION_DE_METRICAS,
         "especificacion": huella_especificacion(ESPECIFICACION_V1),
         "grilla": [N, N],
