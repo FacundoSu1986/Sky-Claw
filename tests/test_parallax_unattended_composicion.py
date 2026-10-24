@@ -23,6 +23,7 @@ import pytest
 
 from sky_claw.local.parallax_unattended.auditor import (
     HALLAZGOS_DE_FALLA,
+    HALLAZGOS_DE_INCONSISTENCIA,
     HALLAZGOS_DE_REVISION,
     CodigoDeHallazgo,
     Hallazgo,
@@ -104,15 +105,17 @@ def test_lo_que_ya_esta_mal_no_se_rescata_y_suma_los_hallazgos_del_disco(veredic
 
 
 # ---------------------------------------------------------------------------
-# Evidencia dura (FAIL) vs juicio de relieve (REVIEW)
+# Evidencia dura (FAIL) vs inconsistencia (INCONSISTENTE) vs juicio de relieve (REVIEW)
 # ---------------------------------------------------------------------------
 
 
 def test_todo_codigo_de_hallazgo_pertenece_a_exactamente_una_severidad() -> None:
-    """Un código de hallazgo nuevo rompe el test hasta que se clasifique en falla o revisión."""
+    """Un código de hallazgo nuevo rompe el test hasta que se clasifique en inconsistencia, falla o revisión."""
 
     assert not (HALLAZGOS_DE_FALLA & HALLAZGOS_DE_REVISION)
-    assert set(CodigoDeHallazgo) == (HALLAZGOS_DE_FALLA | HALLAZGOS_DE_REVISION)
+    assert not (HALLAZGOS_DE_FALLA & HALLAZGOS_DE_INCONSISTENCIA)
+    assert not (HALLAZGOS_DE_REVISION & HALLAZGOS_DE_INCONSISTENCIA)
+    assert set(CodigoDeHallazgo) == (HALLAZGOS_DE_FALLA | HALLAZGOS_DE_REVISION | HALLAZGOS_DE_INCONSISTENCIA)
 
 
 @pytest.mark.parametrize("codigo", sorted(HALLAZGOS_DE_REVISION))
@@ -127,20 +130,7 @@ def test_un_hallazgo_de_relieve_degrada_a_review_y_nunca_a_fail(codigo: CodigoDe
     assert MotivoDelLote.ARTEFACTO_NO_CONFIABLE in final.motivos
 
 
-@pytest.mark.parametrize(
-    "codigo",
-    [
-        CodigoDeHallazgo.INFORME_INVALIDO,
-        CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES,
-        CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,
-        CodigoDeHallazgo.NO_EXISTE,
-        CodigoDeHallazgo.NO_LEGIBLE,
-        CodigoDeHallazgo.TAMANO_EXCESIVO,
-        CodigoDeHallazgo.NO_ES_DDS,
-        CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
-        CodigoDeHallazgo.TAMANO_INCOHERENTE,
-    ],
-)
+@pytest.mark.parametrize("codigo", sorted(HALLAZGOS_DE_FALLA))
 def test_un_hallazgo_duro_de_disco_degrada_a_fail(codigo: CodigoDeHallazgo) -> None:
     """Un archivo ausente, truncado o corrupto cuando el informe declaró ``ESCRITA`` es fallo duro, no revisión."""
 
@@ -150,6 +140,38 @@ def test_un_hallazgo_duro_de_disco_degrada_a_fail(codigo: CodigoDeHallazgo) -> N
 
     assert final.veredicto is VeredictoDelLote.FAIL
     assert MotivoDelLote.ARTEFACTO_INVALIDO in final.motivos
+
+
+@pytest.mark.parametrize("codigo", sorted(HALLAZGOS_DE_INCONSISTENCIA))
+def test_un_hallazgo_de_inconsistencia_degrada_a_inconsistente(codigo: CodigoDeHallazgo) -> None:
+    final = combinar(_decision(VeredictoDelLote.PASS), _auditoria(hallazgos=(Hallazgo("", codigo, ""),)))
+
+    assert final.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in final.motivos
+
+
+def test_lote_en_revision_sin_escritas_no_se_degrada_a_fail_por_cero_artefactos() -> None:
+    """C-2: el default ``escribir_revision=False`` deja ``ESCRITA=0`` y ``auditar`` emite ``SIN_ARTEFACTOS_AUDITABLES``.
+
+    El veredicto final DEBE seguir siendo ``REVIEW`` (código 3), no degradar a ``FAIL`` (código 1).
+    """
+    decision_en_revision = DecisionDelLote(
+        veredicto=VeredictoDelLote.REVIEW,
+        motivos=(MotivoDelLote.ARCHIVO_EN_REVISION,),
+        rutas=("textures/t0_p.dds",),
+        conteos={"EN_REVISION": 8, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0},
+    )
+    auditoria_sin_artefactos = InformeDeAuditoria(
+        verificados=(),
+        hallazgos=(Hallazgo("", CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES, "sin artefactos"),),
+        no_verificados=(),
+    )
+
+    final = combinar(decision_en_revision, auditoria_sin_artefactos)
+
+    assert final.veredicto is VeredictoDelLote.REVIEW
+    assert final.motivos == (MotivoDelLote.ARCHIVO_EN_REVISION,)
+    assert final.rutas == ("textures/t0_p.dds",)
 
 
 # ---------------------------------------------------------------------------

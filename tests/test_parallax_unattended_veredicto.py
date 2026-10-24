@@ -28,6 +28,8 @@ from sky_claw.local.native_parallax.lote import VERSION_DEL_LOTE, EstadoDeArchiv
 from sky_claw.local.native_parallax.output_writer import EfectoDeSalida
 from sky_claw.local.parallax_unattended.veredicto import (
     CODIGOS_DE_SALIDA,
+    EFECTOS_CONOCIDOS,
+    EFECTOS_FALLIDOS,
     EFECTOS_QUE_DEJAN_ARCHIVO,
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
@@ -279,6 +281,109 @@ def test_estado_escrito_con_efecto_que_no_deja_archivo_es_inconsistente() -> Non
     assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
 
 
+@pytest.mark.parametrize(
+    ("estado", "efecto", "veredicto"),
+    [
+        ("EN_REVISION", "PUBLICADA", "REVIEW"),
+        ("EN_REVISION", "RETIRADA", "REVIEW"),
+        ("NO_PROCESADA", "PUBLICADA", None),
+        ("NO_PROCESADA", "FALLIDA", None),
+        ("NO_ESCRITA", "PUBLICADA", "AUTO_ACCEPT"),
+        ("NO_ESCRITA", "REEMPLAZADA", "AUTO_ACCEPT"),
+        ("NO_ESCRITA", "OMITIDA", "AUTO_ACCEPT"),
+        ("ESCRITA", "INVENTADO", "AUTO_ACCEPT"),
+    ],
+)
+def test_par_estado_efecto_contradictorio_o_desconocido_es_inconsistente(
+    estado: str, efecto: str, veredicto: str | None
+) -> None:
+    decision = dictar(_informe([_archivo("textures/a_p.dds", estado=estado, efecto=efecto, veredicto=veredicto)]))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
+
+
+def test_rutas_de_salida_duplicadas_sin_distinguir_mayusculas_son_forma_invalida() -> None:
+    archivos = [_archivo("textures/Stone_p.dds"), _archivo("textures/stone_p.dds")]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
+@pytest.mark.parametrize(
+    "encoder_invalido",
+    [
+        {"texconv_version": "may2026", "texconv_sha256": "d" * 63},
+        {"texconv_version": "may2026", "texconv_sha256": "d" * 65},
+        {"texconv_version": "may2026", "texconv_sha256": "D" * 64},
+        {"texconv_version": "may2026", "texconv_sha256": "z" * 64},
+        {"texconv_version": "may2026", "texconv_sha256": ("d" * 64) + "\n"},
+        {"texconv_version": "", "texconv_sha256": _HUELLA},
+        {"texconv_version": "   ", "texconv_sha256": _HUELLA},
+        {"texconv_sha256": _HUELLA},
+    ],
+)
+def test_encoder_con_huella_o_version_invalida_no_cuenta_como_registrado(encoder_invalido: dict[str, str]) -> None:
+    decision = dictar(_informe([_archivo("textures/a_p.dds")], encoder=encoder_invalido))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.ENCODER_NO_REGISTRADO in decision.motivos
+
+
+@pytest.mark.parametrize("efecto_fallido", ["CONFLICTO", "FALLIDA"])
+def test_otras_rutas_con_conflicto_o_fallida_degradan_a_fail(efecto_fallido: str) -> None:
+    informe = _informe([_archivo("textures/a_p.dds")])
+    informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": efecto_fallido, "detalle": "fallo"}]
+
+    decision = dictar(informe)
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert MotivoDelLote.ARCHIVO_NO_ESCRITO in decision.motivos
+    assert "textures/vieja_p.dds" in decision.rutas
+
+
+@pytest.mark.parametrize(
+    "otras_invalidas",
+    [
+        "no-es-lista",
+        ["no-es-objeto"],
+        [{"ruta": "textures/A_p.dds", "efecto": "OMITIDA"}],
+        [{"ruta": "textures/vieja_p.dds", "efecto": "PUBLICADA"}],
+        [{"ruta": "textures/vieja_p.dds", "efecto": "DESCONOCIDO"}],
+    ],
+)
+def test_otras_rutas_con_forma_o_colision_invalida_es_inconsistente(otras_invalidas: object) -> None:
+    informe = _informe([_archivo("textures/a_p.dds")])
+    informe["otras_rutas"] = otras_invalidas
+
+    decision = dictar(informe)
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
+@pytest.mark.parametrize(
+    "amplitud_invalida",
+    [
+        "no-es-objeto",
+        {"desviacion": None},
+        {"desviacion": True},
+        {"desviacion": -0.01},
+        {"desviacion": 1.01},
+        {"desviacion": float("nan")},
+    ],
+)
+def test_amplitud_con_desviacion_invalida_es_forma_invalida(amplitud_invalida: object) -> None:
+    entrada = _archivo("textures/a_p.dds")
+    entrada["amplitud"] = amplitud_invalida
+
+    decision = dictar(_informe([entrada]))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
 def test_estado_desconocido_es_forma_invalida() -> None:
     """El vocabulario de estados es cerrado: uno nuevo se rechaza antes de mirar los conteos."""
 
@@ -325,8 +430,10 @@ def test_los_veredictos_conocidos_son_los_del_generador() -> None:
 def test_las_versiones_y_efectos_conocidos_coinciden_con_el_generador() -> None:
     assert {"np-a0a.v1"} == VERSIONES_DEL_LOTE_CONOCIDAS
     assert VERSION_DEL_LOTE in VERSIONES_DEL_LOTE_CONOCIDAS
+    assert {e.name for e in EfectoDeSalida} == EFECTOS_CONOCIDOS
     assert {"PUBLICADA", "REEMPLAZADA", "OMITIDA"} == EFECTOS_QUE_DEJAN_ARCHIVO
-    assert EFECTOS_QUE_DEJAN_ARCHIVO.issubset({e.name for e in EfectoDeSalida})
+    assert {"CONFLICTO", "FALLIDA"} == EFECTOS_FALLIDOS
+    assert {"RETIRADA", "PRESERVADA", "SOLTADA"} == (EFECTOS_CONOCIDOS - EFECTOS_QUE_DEJAN_ARCHIVO - EFECTOS_FALLIDOS)
 
 
 @pytest.mark.parametrize("veredicto", list(VeredictoDelLote))

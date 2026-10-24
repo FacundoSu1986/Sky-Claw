@@ -46,6 +46,8 @@ revisión", no "la textura está bien".
 from __future__ import annotations
 
 import enum
+import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -118,9 +120,19 @@ ESTADOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"ESCRITA", "EN_REVISION", 
 #: Veredictos que declara el generador. Vocabulario cerrado (``gates.Veredicto``).
 VEREDICTOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"AUTO_ACCEPT", "REVIEW"})
 
+#: Efectos que declara el escritor (``output_writer.EfectoDeSalida``). Vocabulario cerrado.
+EFECTOS_CONOCIDOS: Final[frozenset[str]] = frozenset(
+    {"PUBLICADA", "REEMPLAZADA", "OMITIDA", "RETIRADA", "PRESERVADA", "SOLTADA", "CONFLICTO", "FALLIDA"}
+)
+
 #: Efectos del escritor que dejan un archivo en la salida (``output_writer.EfectoDeSalida``).
 #: ``OMITIDA`` cuenta: la caché vigente dejó el archivo de una corrida anterior.
 EFECTOS_QUE_DEJAN_ARCHIVO: Final[frozenset[str]] = frozenset({"PUBLICADA", "REEMPLAZADA", "OMITIDA"})
+
+#: Efectos del escritor que reportan fallo al aplicar sobre la salida.
+EFECTOS_FALLIDOS: Final[frozenset[str]] = frozenset({"CONFLICTO", "FALLIDA"})
+
+_PATRON_SHA256_HEX: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}\Z")
 
 #: Códigos de salida. Distintos a propósito: ``PASS`` es el único 0.
 CODIGOS_DE_SALIDA: Final[Mapping[VeredictoDelLote, int]] = MappingProxyType(
@@ -145,6 +157,14 @@ class _Archivo:
     estado: str
     efecto: str | None
     veredicto: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _OtraRuta:
+    """Entrada de ``otras_rutas``: salidas previas conservadas, retiradas o con conflicto."""
+
+    ruta: str
+    efecto: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +194,22 @@ def _opcional(valor: object, campo: str) -> str | None:
     return _texto(valor, campo)
 
 
-def _leer_archivos(informe: Mapping[str, object]) -> tuple[_Archivo, ...]:
+def _validar_amplitud(valor: object, campo: str) -> None:
+    if valor is None:
+        return
+    if not isinstance(valor, Mapping):
+        raise InformeInvalidoError(f"{campo} debe ser un objeto o None")
+    desviacion = valor.get("desviacion")
+    if (
+        isinstance(desviacion, bool)
+        or not isinstance(desviacion, (int, float))
+        or not math.isfinite(desviacion)
+        or not (0.0 <= float(desviacion) <= 1.0)
+    ):
+        raise InformeInvalidoError(f"{campo}.desviacion = {desviacion!r} debe ser un número finito en [0, 1]")
+
+
+def _leer_archivos(informe: Mapping[str, object], vistas: set[str]) -> tuple[_Archivo, ...]:
     crudo = informe.get("archivos")
     if not isinstance(crudo, list):
         raise InformeInvalidoError("falta 'archivos' o no es una lista")
@@ -183,25 +218,58 @@ def _leer_archivos(informe: Mapping[str, object]) -> tuple[_Archivo, ...]:
     for posicion, entrada in enumerate(crudo):
         if not isinstance(entrada, Mapping):
             raise InformeInvalidoError(f"archivos[{posicion}] no es un objeto")
+        ruta = _texto(entrada.get("ruta_de_salida"), f"archivos[{posicion}].ruta_de_salida")
+        clave = ruta.casefold()
+        if clave in vistas:
+            raise InformeInvalidoError(f"archivos[{posicion}].ruta_de_salida = {ruta!r} está duplicada")
+        vistas.add(clave)
         estado = _texto(entrada.get("estado"), f"archivos[{posicion}].estado")
         if estado not in ESTADOS_CONOCIDOS:
             raise InformeInvalidoError(
                 f"archivos[{posicion}].estado = {estado!r} no está en {sorted(ESTADOS_CONOCIDOS)}"
+            )
+        efecto = _opcional(entrada.get("efecto"), f"archivos[{posicion}].efecto")
+        if efecto is not None and efecto not in EFECTOS_CONOCIDOS:
+            raise InformeInvalidoError(
+                f"archivos[{posicion}].efecto = {efecto!r} no está en {sorted(EFECTOS_CONOCIDOS)}"
             )
         veredicto = _opcional(entrada.get("veredicto"), f"archivos[{posicion}].veredicto")
         if veredicto is not None and veredicto not in VEREDICTOS_CONOCIDOS:
             raise InformeInvalidoError(
                 f"archivos[{posicion}].veredicto = {veredicto!r} no está en {sorted(VEREDICTOS_CONOCIDOS)}"
             )
+        _validar_amplitud(entrada.get("amplitud"), f"archivos[{posicion}].amplitud")
         archivos.append(
             _Archivo(
-                ruta=_texto(entrada.get("ruta_de_salida"), f"archivos[{posicion}].ruta_de_salida"),
+                ruta=ruta,
                 estado=estado,
-                efecto=_opcional(entrada.get("efecto"), f"archivos[{posicion}].efecto"),
+                efecto=efecto,
                 veredicto=veredicto,
             )
         )
     return tuple(archivos)
+
+
+def _leer_otras_rutas(informe: Mapping[str, object], vistas: set[str]) -> tuple[_OtraRuta, ...]:
+    if "otras_rutas" not in informe or informe.get("otras_rutas") is None:
+        return ()
+    crudo = informe.get("otras_rutas")
+    if not isinstance(crudo, list):
+        raise InformeInvalidoError("'otras_rutas' debe ser una lista")
+    otras: list[_OtraRuta] = []
+    for posicion, entrada in enumerate(crudo):
+        if not isinstance(entrada, Mapping):
+            raise InformeInvalidoError(f"otras_rutas[{posicion}] no es un objeto")
+        ruta = _texto(entrada.get("ruta"), f"otras_rutas[{posicion}].ruta")
+        clave = ruta.casefold()
+        if clave in vistas:
+            raise InformeInvalidoError(f"otras_rutas[{posicion}].ruta = {ruta!r} colisiona con otra ruta del informe")
+        vistas.add(clave)
+        efecto = _texto(entrada.get("efecto"), f"otras_rutas[{posicion}].efecto")
+        if efecto not in EFECTOS_CONOCIDOS or efecto in ("PUBLICADA", "REEMPLAZADA"):
+            raise InformeInvalidoError(f"otras_rutas[{posicion}].efecto = {efecto!r} no es válido para una ruta previa")
+        otras.append(_OtraRuta(ruta=ruta, efecto=efecto))
+    return tuple(otras)
 
 
 def _leer_conteos(informe: Mapping[str, object]) -> Mapping[str, int]:
@@ -231,8 +299,14 @@ def _encoder_registrado(informe: Mapping[str, object]) -> bool:
     crudo = informe.get("encoder")
     if not isinstance(crudo, Mapping):
         return False
+    version = crudo.get("texconv_version")
     huella = crudo.get("texconv_sha256")
-    return isinstance(huella, str) and len(huella) == 64
+    return (
+        isinstance(version, str)
+        and bool(version.strip())
+        and isinstance(huella, str)
+        and _PATRON_SHA256_HEX.fullmatch(huella) is not None
+    )
 
 
 def _agregar(motivos: list[MotivoDelLote], motivo: MotivoDelLote) -> None:
@@ -259,7 +333,9 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
         if not isinstance(informe, Mapping):
             raise InformeInvalidoError("el informe debe ser un objeto")
         _leer_version(informe)
-        archivos = _leer_archivos(informe)
+        vistas: set[str] = set()
+        archivos = _leer_archivos(informe, vistas)
+        otras_rutas = _leer_otras_rutas(informe, vistas)
         declarados = _leer_conteos(informe)
     except InformeInvalidoError as exc:
         return DecisionDelLote(
@@ -285,17 +361,23 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
 
     for archivo in archivos:
         if archivo.estado == "NO_PROCESADA":
+            if archivo.efecto is not None:
+                _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
             _agregar(motivos, MotivoDelLote.ARCHIVO_NO_PROCESADO)
             _agregar_ruta(rutas, archivo.ruta)
         elif archivo.estado == "NO_ESCRITA":
+            if archivo.efecto in EFECTOS_QUE_DEJAN_ARCHIVO:
+                _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
             _agregar(motivos, MotivoDelLote.ARCHIVO_NO_ESCRITO)
             _agregar_ruta(rutas, archivo.ruta)
         elif archivo.estado == "EN_REVISION":
+            if archivo.efecto is not None:
+                _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
             # No se escribió porque el gate la retuvo: es una decisión, pero no es éxito.
             _agregar(motivos, MotivoDelLote.ARCHIVO_EN_REVISION)
             _agregar_ruta(rutas, archivo.ruta)
             if archivo.veredicto != "REVIEW":
-                # "En revisión" con veredicto PASS se contradice: o el gate lo retuvo, o pasó.
+                # "En revisión" con veredicto AUTO_ACCEPT se contradice: o el gate lo retuvo, o pasó.
                 _agregar(motivos, MotivoDelLote.VEREDICTO_INCOHERENTE)
         elif archivo.estado == "ESCRITA":
             if archivo.efecto not in EFECTOS_QUE_DEJAN_ARCHIVO:
@@ -310,6 +392,11 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
                 # EL CASO QUE EL CÓDIGO DE SALIDA DEL GENERADOR NO VE: escrito y en revisión.
                 _agregar(motivos, MotivoDelLote.ARCHIVO_EN_REVISION)
                 _agregar_ruta(rutas, archivo.ruta)
+
+    for otra in otras_rutas:
+        if otra.efecto in EFECTOS_FALLIDOS:
+            _agregar(motivos, MotivoDelLote.ARCHIVO_NO_ESCRITO)
+            _agregar_ruta(rutas, otra.ruta)
 
     if any(m in MOTIVOS_DE_INCONSISTENCIA for m in motivos):
         veredicto = VeredictoDelLote.INCONSISTENTE

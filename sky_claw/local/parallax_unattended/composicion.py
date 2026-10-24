@@ -21,7 +21,14 @@ Regla única, y por qué es asimétrica
 
 from __future__ import annotations
 
-from .auditor import HALLAZGOS_DE_FALLA, HALLAZGOS_DE_REVISION, InformeDeAuditoria
+from .auditor import (
+    HALLAZGOS_DE_FALLA,
+    HALLAZGOS_DE_INCONSISTENCIA,
+    HALLAZGOS_DE_REVISION,
+    CodigoDeHallazgo,
+    Hallazgo,
+    InformeDeAuditoria,
+)
 from .veredicto import (
     MOTIVOS_DE_FALLA,
     MOTIVOS_DE_INCONSISTENCIA,
@@ -31,43 +38,47 @@ from .veredicto import (
 )
 
 
-def _rutas_dudosas(auditoria: InformeDeAuditoria) -> tuple[str, ...]:
+def _rutas_dudosas(hallazgos: tuple[Hallazgo, ...], no_verificados: tuple[str, ...]) -> tuple[str, ...]:
     """Rutas que el post-check no pudo aprobar, con hallazgo o sin verificar."""
 
     rutas: list[str] = []
-    for ruta in [h.ruta for h in auditoria.hallazgos] + list(auditoria.no_verificados):
+    for ruta in [h.ruta for h in hallazgos] + list(no_verificados):
         if ruta and ruta not in rutas:
             rutas.append(ruta)
     return tuple(rutas)
 
 
-def _detalle(auditoria: InformeDeAuditoria) -> str:
+def _detalle(verificados: tuple[str, ...], hallazgos: tuple[Hallazgo, ...], no_verificados: tuple[str, ...]) -> str:
     return (
-        f"{len(auditoria.verificados)} artefactos verificados, "
-        f"{len(auditoria.hallazgos)} con hallazgo, "
-        f"{len(auditoria.no_verificados)} sin verificar"
+        f"{len(verificados)} artefactos verificados, {len(hallazgos)} con hallazgo, {len(no_verificados)} sin verificar"
     )
 
 
 def combinar(decision: DecisionDelLote, auditoria: InformeDeAuditoria) -> DecisionDelLote:
     """Veredicto final de la corrida: el del informe, degradado por lo que el disco diga."""
 
-    if not auditoria.hallazgos and not auditoria.no_verificados:
+    sin_escritas_esperadas = decision.veredicto is not VeredictoDelLote.PASS and decision.conteos.get("ESCRITA", 0) == 0
+    hallazgos = tuple(
+        h
+        for h in auditoria.hallazgos
+        if not (sin_escritas_esperadas and h.codigo is CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES)
+    )
+
+    if not hallazgos and not auditoria.no_verificados:
         return decision
 
     motivos = list(decision.motivos)
-    if (
-        any(h.codigo in HALLAZGOS_DE_FALLA for h in auditoria.hallazgos)
-        and MotivoDelLote.ARTEFACTO_INVALIDO not in motivos
-    ):
+    if any(h.codigo in HALLAZGOS_DE_INCONSISTENCIA for h in hallazgos) and MotivoDelLote.FORMA_INVALIDA not in motivos:
+        motivos.append(MotivoDelLote.FORMA_INVALIDA)
+    if any(h.codigo in HALLAZGOS_DE_FALLA for h in hallazgos) and MotivoDelLote.ARTEFACTO_INVALIDO not in motivos:
         motivos.append(MotivoDelLote.ARTEFACTO_INVALIDO)
     if (
-        any(h.codigo in HALLAZGOS_DE_REVISION for h in auditoria.hallazgos) or auditoria.no_verificados
+        any(h.codigo in HALLAZGOS_DE_REVISION for h in hallazgos) or auditoria.no_verificados
     ) and MotivoDelLote.ARTEFACTO_NO_CONFIABLE not in motivos:
         motivos.append(MotivoDelLote.ARTEFACTO_NO_CONFIABLE)
 
     rutas = list(decision.rutas)
-    for ruta in _rutas_dudosas(auditoria):
+    for ruta in _rutas_dudosas(hallazgos, auditoria.no_verificados):
         if ruta not in rutas:
             rutas.append(ruta)
 
@@ -78,7 +89,7 @@ def combinar(decision: DecisionDelLote, auditoria: InformeDeAuditoria) -> Decisi
     else:
         veredicto = VeredictoDelLote.REVIEW
 
-    resumen = _detalle(auditoria)
+    resumen = _detalle(auditoria.verificados, hallazgos, auditoria.no_verificados)
     detalle = f"{decision.detalle}; {resumen}" if decision.detalle else resumen
 
     return DecisionDelLote(

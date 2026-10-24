@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from .auditor import (
     HALLAZGOS_DE_FALLA,
+    HALLAZGOS_DE_INCONSISTENCIA,
     HALLAZGOS_DE_REVISION,
     SD_MINIMA,
     CabeceraDDS,
@@ -32,6 +33,8 @@ from .auditor import (
 from .composicion import combinar
 from .veredicto import (
     CODIGOS_DE_SALIDA,
+    EFECTOS_CONOCIDOS,
+    EFECTOS_FALLIDOS,
     EFECTOS_QUE_DEJAN_ARCHIVO,
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
@@ -48,9 +51,12 @@ from .veredicto import (
 
 __all__ = [
     "CODIGOS_DE_SALIDA",
+    "EFECTOS_CONOCIDOS",
+    "EFECTOS_FALLIDOS",
     "EFECTOS_QUE_DEJAN_ARCHIVO",
     "ESTADOS_CONOCIDOS",
     "HALLAZGOS_DE_FALLA",
+    "HALLAZGOS_DE_INCONSISTENCIA",
     "HALLAZGOS_DE_REVISION",
     "MOTIVOS_DE_FALLA",
     "MOTIVOS_DE_INCONSISTENCIA",

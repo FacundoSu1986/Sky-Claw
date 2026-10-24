@@ -102,6 +102,38 @@ def test_el_decodificador_devuelve_los_ocho_niveles_de_la_especificacion() -> No
     assert _valores_del_bloque(_bloque(255, 0, 0)) == (255,) * 16
     assert _valores_del_bloque(_bloque(255, 0, 1)) == (0,) * 16
     assert _valores_del_bloque(_bloque(255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)) == _NIVELES_DE_255_A_0 * 2
+    # Modo de 6 valores interpolados + 0 y 255 (cuando extremo_alto <= extremo_bajo).
+    assert _valores_del_bloque(_bloque(0, 255, [0, 1, 2, 3, 4, 5, 6, 7] * 2)) == (0, 255, 51, 102, 153, 204, 0, 255) * 2
+    assert (
+        _valores_del_bloque(_bloque(128, 128, [0, 1, 2, 3, 4, 5, 6, 7] * 2))
+        == (
+            128,
+            128,
+            128,
+            128,
+            128,
+            128,
+            0,
+            255,
+        )
+        * 2
+    )
+
+
+def test_el_muestreo_coprimo_no_sufre_aliasing_en_grillas_periodicas_de_2048() -> None:
+    """C-3: en una 2048² (512×512 bloques) con juntas planas cada 8 bloques (32 px), el paso coprimo mide el relieve."""
+
+    bloques_lado = 512
+    bloque_plano = _bloque(128, 128, 0)
+    bloque_relieve = _bloque(255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)
+    fila_junta = bloque_plano * bloques_lado
+    fila_ladrillo = b"".join(bloque_plano if col % 8 == 0 else bloque_relieve for col in range(bloques_lado))
+    payload = b"".join(fila_junta if fila % 8 == 0 else fila_ladrillo for fila in range(bloques_lado))
+    dds = _dds(2048, 2048, 1, payload)
+
+    sd = _sd_bc4(dds, _leer_cabecera(dds))
+
+    assert sd > 50.0 / 255.0
 
 
 def test_la_sd_del_plano_es_cero_y_la_del_relieve_supera_el_umbral() -> None:
@@ -165,7 +197,9 @@ def test_un_archivo_que_no_es_dds_es_hallazgo(tmp_path: pathlib.Path) -> None:
 
 
 def test_un_formato_que_no_se_puede_medir_no_se_aprueba(tmp_path: pathlib.Path) -> None:
-    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, 0), fourcc=b"DX10"))
+    dx10_bc3 = struct.pack("<5I", 77, 3, 0, 1, 0)  # DXGI_FORMAT_BC3_UNORM (77), 2D simple
+    base_dx10 = _dds(16, 16, 1, b"", fourcc=b"DX10")
+    _escribir(tmp_path, "textures/a_p.dds", base_dx10 + dx10_bc3 + _payload(16, 255, 0, 0))
 
     auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
 
@@ -316,14 +350,14 @@ def test_una_textura_que_no_es_potencia_de_dos_se_acepta(tmp_path: pathlib.Path)
 
 
 def test_un_archivo_ilegible_no_tumba_la_auditoria(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Entre ``is_file()`` y ``read_bytes()`` otro proceso puede llevarse el archivo."""
+    """Entre ``is_file()`` y ``open()`` otro proceso puede llevarse o bloquear el archivo."""
 
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
 
-    def bloqueado(self: pathlib.Path) -> bytes:
+    def bloqueado(self: pathlib.Path, *args: object, **kwargs: object) -> object:
         raise PermissionError("bloqueado por otro proceso")
 
-    monkeypatch.setattr(pathlib.Path, "read_bytes", bloqueado)
+    monkeypatch.setattr(pathlib.Path, "open", bloqueado)
 
     auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
 
@@ -368,6 +402,159 @@ def test_mips_cero_o_profundidad_volumen_son_dimensiones_invalidas(tmp_path: pat
         CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
         CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
     ]
+
+
+def test_cadena_completa_de_mips_y_bordes_de_dimensiones(tmp_path: pathlib.Path) -> None:
+    """Mata mutantes en ``_bytes_de_bc4`` (niveles 16→8→4→2→1 = 23 bloques) y en ``LADO_MINIMO``/``LADO_MAXIMO``."""
+
+    bloque = _bloque(255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)
+    # 16x16 con 5 mips: 16 + 4 + 1 + 1 + 1 = 23 bloques
+    _escribir(tmp_path, "textures/mips5_p.dds", _dds(16, 16, 5, bloque * 23))
+    # 16x16 con 6 mips (supera bit_length = 5): dimensiones inválidas
+    _escribir(tmp_path, "textures/mips6_p.dds", _dds(16, 16, 6, bloque * 24))
+    # 4x4 (LADO_MINIMO exacto): válido
+    _escribir(tmp_path, "textures/min_p.dds", _dds(4, 4, 1, bloque))
+    # 8192x4 (LADO_MAXIMO exacto): 2048x1 bloques = 2048 bloques
+    _escribir(tmp_path, "textures/max_p.dds", _dds(8192, 4, 1, bloque * 2048))
+    # 2x4 (< LADO_MINIMO) y 16384x4 (> LADO_MAXIMO): dimensiones inválidas
+    _escribir(tmp_path, "textures/chica_p.dds", _dds(2, 4, 1, bloque))
+    _escribir(tmp_path, "textures/grande_p.dds", _dds(16384, 4, 1, bloque * 4096))
+
+    auditoria = auditar(
+        _informe(
+            [
+                "textures/mips5_p.dds",
+                "textures/mips6_p.dds",
+                "textures/min_p.dds",
+                "textures/max_p.dds",
+                "textures/chica_p.dds",
+                "textures/grande_p.dds",
+            ]
+        ),
+        tmp_path,
+    )
+
+    assert auditoria.verificados == ("textures/mips5_p.dds", "textures/min_p.dds", "textures/max_p.dds")
+    assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
+        ("textures/mips6_p.dds", CodigoDeHallazgo.DIMENSIONES_INVALIDAS),
+        ("textures/chica_p.dds", CodigoDeHallazgo.DIMENSIONES_INVALIDAS),
+        ("textures/grande_p.dds", CodigoDeHallazgo.DIMENSIONES_INVALIDAS),
+    ]
+
+
+def test_dx10_no_2d_y_cabeceras_sin_banderas_obligatorias_se_rechazan(tmp_path: pathlib.Path) -> None:
+    payload = _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)
+    base_dx10 = _dds(16, 16, 1, b"", fourcc=b"DX10")
+    # DX10 con formato distinto de 80 pero array_size=6 (no es 2D simple): DIMENSIONES_INVALIDAS
+    _escribir(tmp_path, "textures/dx10_array_p.dds", base_dx10 + struct.pack("<5I", 77, 3, 0, 6, 0) + payload)
+    # Cabecera sin DDPF_FOURCC
+    sin_fourcc = bytearray(_dds(16, 16, 1, payload))
+    struct.pack_into("<I", sin_fourcc, 80, 0x0)
+    _escribir(tmp_path, "textures/sin_fourcc_p.dds", bytes(sin_fourcc))
+    # Cabecera sin DDSD_HEIGHT | DDSD_WIDTH
+    sin_wh = bytearray(_dds(16, 16, 1, payload))
+    struct.pack_into("<I", sin_wh, 8, 0x1001)
+    _escribir(tmp_path, "textures/sin_wh_p.dds", bytes(sin_wh))
+
+    auditoria = auditar(
+        _informe(["textures/dx10_array_p.dds", "textures/sin_fourcc_p.dds", "textures/sin_wh_p.dds"]),
+        tmp_path,
+    )
+
+    assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
+        ("textures/dx10_array_p.dds", CodigoDeHallazgo.DIMENSIONES_INVALIDAS),
+        ("textures/sin_fourcc_p.dds", CodigoDeHallazgo.NO_ES_DDS),
+        ("textures/sin_wh_p.dds", CodigoDeHallazgo.NO_ES_DDS),
+    ]
+
+
+def test_colapso_frente_a_amplitud_declarada_es_altura_plana(tmp_path: pathlib.Path) -> None:
+    """ADR 0014 (#797): si ``amplitud.desviacion`` era 0.20 (51/255) y el BC4 cayó a ~10/255, es ``ALTURA_PLANA``."""
+
+    # Extremos 140 y 115 con índices 0 y 1 alternados dan sd = 12.5/255 (> SD_MINIMA = 8/255),
+    # pero mucho menor que el 50 % de la amplitud declarada (0.20 -> 25.5/255).
+    bloque_suave = _bloque(140, 115, [0, 1] * 8)
+    _escribir(tmp_path, "textures/colapsada_p.dds", _dds(16, 16, 1, bloque_suave * 16))
+    informe = {
+        "version_del_lote": "np-a0a.v1",
+        "archivos": [
+            {
+                "ruta_de_salida": "textures/colapsada_p.dds",
+                "estado": "ESCRITA",
+                "efecto": "PUBLICADA",
+                "veredicto": "AUTO_ACCEPT",
+                "amplitud": {"desviacion": 0.20},
+            }
+        ],
+    }
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.ALTURA_PLANA,)
+
+
+def test_otras_rutas_omitidas_por_cache_se_auditan_desde_disco(tmp_path: pathlib.Path) -> None:
+    """C-4: una salida previa conservada en ``otras_rutas`` con ``OMITIDA`` también se relee en disco."""
+
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/previa_p.dds", _dds(16, 16, 1, _payload(16, 128, 128, 0)))
+    informe = {
+        "version_del_lote": "np-a0a.v1",
+        "archivos": [
+            {
+                "ruta_de_salida": "textures/nueva_p.dds",
+                "estado": "ESCRITA",
+                "efecto": "PUBLICADA",
+                "veredicto": "AUTO_ACCEPT",
+            }
+        ],
+        "otras_rutas": [{"ruta": "textures/previa_p.dds", "efecto": "OMITIDA", "detalle": "caché"}],
+    }
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert auditoria.verificados == ("textures/nueva_p.dds",)
+    assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
+        ("textures/previa_p.dds", CodigoDeHallazgo.ALTURA_PLANA)
+    ]
+
+
+@pytest.mark.parametrize(
+    "ruta_ntfs_invalida",
+    [
+        "textures\\a_p.dds",
+        "textures/CON.dds",
+        "textures/nul_p.dds.",
+        "textures/a_p.dds ",
+        "textures//a_p.dds",
+    ],
+)
+def test_rutas_con_nombres_reservados_o_sintaxis_ntfs_invalida_se_rechazan(
+    tmp_path: pathlib.Path, ruta_ntfs_invalida: str
+) -> None:
+    auditoria = auditar(_informe([ruta_ntfs_invalida]), tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
+
+
+def test_enlace_dentro_de_la_raiz_se_rechaza_sin_atravesarlo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-2: un symlink o junction dentro de la salida se rechaza como ``RUTA_FUERA_DE_LA_SALIDA``."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    real = modulo_auditor.link_kind_and_identity_or_raise
+
+    def simular_junction(ruta: pathlib.Path) -> tuple[str | None, object]:
+        if ruta.name == "textures":
+            return "junction", ruta.lstat()
+        return real(ruta)
+
+    monkeypatch.setattr(modulo_auditor, "link_kind_and_identity_or_raise", simular_junction)
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
 
 
 def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(

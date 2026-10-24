@@ -74,9 +74,20 @@ def test_la_api_publica_esta_completa() -> None:
         ("from ..native_parallax import lote", ReglaDeContrato.IMPORTA_GENERADOR),
         ("from ..native_parallax.lote import InformeDelLote", ReglaDeContrato.IMPORTA_GENERADOR),
         ("from .. import native_parallax", ReglaDeContrato.IMPORTA_GENERADOR),
+        ("from ...local.native_parallax import lote", ReglaDeContrato.IMPORTA_GENERADOR),
+        ("from ...local import native_parallax", ReglaDeContrato.IMPORTA_GENERADOR),
+        ("from ....sky_claw.local.native_parallax import lote", ReglaDeContrato.IMPORTA_GENERADOR),
         ('open(ruta, "w")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ('open(ruta, mode="a")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ('open(ruta, "r+")', ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ('ruta.open("w")', ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ('ruta.open(mode="a")', ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ('io.open(ruta, "w")', ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("os.open(ruta, os.O_RDWR)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("os.remove(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("os.makedirs(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("shutil.copy(origen, destino)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("shutil.rmtree(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ('ruta.write_text("x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ('ruta.write_bytes(b"x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("ruta.unlink()", ReglaDeContrato.ESCRIBE_EN_DISCO),
@@ -115,11 +126,21 @@ def test_una_sintaxis_invalida_se_reporta_y_no_rompe() -> None:
 
 def test_el_archivo_que_viola_se_detecta_desde_el_disco(tmp_path: pathlib.Path) -> None:
     (tmp_path / "limpio.py").write_text("import ast\n", encoding="utf-8", newline="\n")
-    (tmp_path / "sucio.py").write_text("import numpy\n", encoding="utf-8", newline="\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "sucio.py").write_text("import numpy\n", encoding="utf-8", newline="\n")
 
     hallazgos = verificar(tmp_path)
 
-    assert [(h.archivo, h.regla) for h in hallazgos] == [("sucio.py", ReglaDeContrato.IMPORTA_DEPENDENCIA_OPCIONAL)]
+    assert [(h.archivo, h.regla) for h in hallazgos] == [("sub/sucio.py", ReglaDeContrato.IMPORTA_DEPENDENCIA_OPCIONAL)]
+
+
+def test_verificar_api_detecta_simbolo_publico_ausente(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sky_claw.local.parallax_unattended as paquete
+
+    monkeypatch.setattr(paquete, "SIMBOLO_FANTASMA", 42, raising=False)
+    hallazgos = verificar_api()
+
+    assert any(h.regla is ReglaDeContrato.API_INCOMPLETA and "SIMBOLO_FANTASMA" in h.detalle for h in hallazgos)
 
 
 def test_el_detector_reporta_la_linea_exacta() -> None:

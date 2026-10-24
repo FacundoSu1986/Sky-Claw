@@ -109,10 +109,11 @@ MARCAS_DE_IDENTIDAD = {
 PERIMETRO_DE_IDENTIDAD = frozenset({P0_V3, P0_EVIDENCIA, SPEC_ASISTIDO, TEST_ASISTIDO})
 
 # La zona limpia se define por PATRÓN y no por lista: toda ruta trackeada que nombre el generador
-# nativo queda adentro, también los directorios que se creen mañana.
-PATRON_DE_ZONA_LIMPIA = re.compile(r"native[-_]parallax", re.IGNORECASE)
+# nativo o su capa desatendida queda adentro, también los directorios que se creen mañana.
+PATRON_DE_ZONA_LIMPIA = re.compile(r"(?:native[-_]parallax|parallax[-_]unattended)", re.IGNORECASE)
 RUTAS_CONOCIDAS_DE_LA_ZONA = (
     "sky_claw/local/native_parallax/__init__.py",
+    "sky_claw/local/parallax_unattended/__init__.py",
     "docs/design/research/native-parallax/np-m0-results.md",
     "docs/design/research/2026-09-21-native-parallax-battle/README.md",
     "tests/test_native_parallax_math_spike.py",
