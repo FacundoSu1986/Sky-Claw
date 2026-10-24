@@ -18,7 +18,7 @@ import pytest
 
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, MecanismoDeEscritura
 from sky_claw.local.tools.dyndolod_uia_driver import (
-    MAXIMO_DE_LECTURAS_POR_INVOCACION,
+    MAXIMO_DE_LECTURAS_POR_PASO,
     BackendDeConduccion,
     CapacidadDesatendidaUIA,
     ConductorDesatendido,
@@ -1255,7 +1255,7 @@ def test_f2_lecturas_ilegibles_agotan_el_presupuesto_sin_invocar():
     )
     assert resultado.estado is EstadoDePaso.UIA_NO_DISPONIBLE
     assert resultado.invocado is False
-    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_INVOCACION
+    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_PASO
     assert gui.invocaciones == []
 
 
@@ -1382,3 +1382,409 @@ async def test_el_corte_por_identidad_tiene_el_mismo_codigo_en_todo_el_conductor
         await conductor.esperar_fin_y_cerrar(ctx, ledger, proceso_vivo=gui.proceso_vivo)
     assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
     assert boton not in gui.invocaciones
+
+
+# =============================================================================
+# F2b (#781): recuperación acotada de la observación ANTES de escribir Output
+# =============================================================================
+#
+# El paso ``ESCRIBIR_OUTPUT`` hacía UNA sola lectura. Si TexGen/DynDOLOD estaban
+# repintando, esa lectura devolvía ``CARGANDO``/``SIN_VENTANA`` o moría con
+# ``ObservacionUIAError`` y el paso abortaba sin escribir, aunque la pantalla
+# contractual volviera un instante después. La reparación es la de F2 —releer
+# con presupuesto finito— pero el contrato NO es el mismo: acá el paso MUTA el
+# campo del usuario, así que además el plazo tiene que acotar la escritura y
+# ``backend.escribir_output`` no puede ejecutarse dos veces por ninguna vía.
+#
+# Los casos A–O del brief de #781 están enumerados en los nombres para que
+# falte uno se note leyendo el archivo.
+
+
+def _pedido_de_output(gui: GuiSimulada, **campos: object) -> PedidoDePaso:
+    return _pedido(gui, TipoDePaso.ESCRIBIR_OUTPUT, valor=OUTPUT_ADMINISTRADO, **campos)
+
+
+def _una_escritura(gui: GuiSimulada) -> list[tuple[MecanismoDeEscritura, str]]:
+    return [(MecanismoDeEscritura.LEGACY_IACCESSIBLE, OUTPUT_ADMINISTRADO)]
+
+
+# -- Caso A: el hueco se recupera y se escribe UNA sola vez -------------------
+
+
+def test_f2b_a_un_hueco_de_repintado_no_aborta_la_escritura_del_output():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([_hueco_de_repintado()])
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert resultado.valor_leido == OUTPUT_ADMINISTRADO
+    assert gui.escrituras == _una_escritura(gui)
+    assert gui.lecturas == 2, "un hueco cuesta UNA lectura extra, no un bucle"
+
+
+# -- Caso B: el hueco en forma de excepción ----------------------------------
+
+
+def test_f2b_b_una_lectura_ilegible_se_reintenta_y_la_escritura_sigue_siendo_una():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([LecturaIlegible(ObservacionUIAError("elemento stale a mitad de repaint"))])
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert gui.escrituras == _una_escritura(gui)
+    assert gui.lecturas == 2
+
+
+# -- Caso C: el sensor caído no es un repintado ------------------------------
+
+
+def test_f2b_c_el_sensor_caido_no_se_reintenta_ni_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([LecturaIlegible(UIANoDisponibleError("sin UIA")), _hueco_de_repintado()])
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.UIA_NO_DISPONIBLE
+    assert resultado.invocado is False
+    assert gui.lecturas == 1, "UIANoDisponibleError corta en la PRIMERA lectura"
+    assert gui.escrituras == []
+
+
+# -- Caso D: una pantalla decisiva distinta no se relee ----------------------
+
+
+def test_f2b_d_un_modal_desconocido_no_se_relee_ni_se_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([_otro_modal()])
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
+    assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
+    assert resultado.invocado is False
+    assert gui.lecturas == 1
+    assert gui.escrituras == []
+
+
+# -- Caso E: la identidad se revalida en cada lectura ------------------------
+
+
+def test_f2b_e_la_identidad_se_revalida_en_cada_lectura_antes_de_escribir():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([_hueco_de_repintado()])
+    localizador = _LocalizadorQueDriftea(gui, ruta_ajena=r"D:\Otra\TexGenx64.exe", desde_la_llamada=2)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=0.5),
+        fabrica_backend=lambda: gui,
+        localizador=localizador,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.IDENTIDAD_NO_COINCIDE
+    assert resultado.invocado is False
+    assert gui.escrituras == []
+
+
+# -- Casos F y G: control no inequívoco / deshabilitado ----------------------
+
+
+def test_f2b_f_un_output_duplicado_no_se_relee_ni_se_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    backend = _BackendFijo(_inst(ventana_principal([output_edit(), output_edit(), boton("Start")])))
+    resultado = ejecutar_paso_sincrono(_pedido_de_output(gui), fabrica_backend=lambda: backend, localizador=gui)
+    assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
+    assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
+    assert backend.lecturas == 1, "una pantalla AMBIGUA es decisiva: no se relee"
+    assert backend.mutaciones == []
+
+
+def test_f2b_g_un_output_deshabilitado_no_se_relee_ni_se_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    backend = _BackendFijo(_inst(ventana_principal([output_edit(habilitado=False), boton("Start")])))
+    resultado = ejecutar_paso_sincrono(_pedido_de_output(gui), fabrica_backend=lambda: backend, localizador=gui)
+    assert resultado.motivo is MotivoDePrecondicion.CONTROL_DESHABILITADO
+    assert backend.lecturas == 1
+    assert backend.mutaciones == []
+
+
+# -- Casos H e I: los dos presupuestos son finitos ---------------------------
+
+
+def test_f2b_h_un_hueco_que_no_cierra_agota_el_plazo_sin_escribir():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=0.6)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
+    assert resultado.motivo is MotivoDePrecondicion.PANTALLA_INCORRECTA
+    assert resultado.invocado is False
+    assert gui.escrituras == []
+
+
+@pytest.mark.timeout(30)
+def test_f2b_i_el_presupuesto_de_lecturas_es_finito_aunque_el_reloj_no_avance():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    gui.armar_guion([_hueco_de_repintado()], repetir_ultima=True)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: gui,
+        localizador=gui,
+        reloj=lambda: 0.0,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.PRECONDICION_FALLIDA
+    assert 1 < gui.lecturas <= MAXIMO_DE_LECTURAS_POR_PASO
+    assert gui.escrituras == []
+
+
+# -- Casos J y K: el borde exacto del deadline -------------------------------
+
+
+def test_f2b_j_en_el_instante_exacto_de_vencimiento_no_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=1.0)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert reloj.t == 1.0, "la lectura dejó el reloj EXACTAMENTE en el límite"
+    assert resultado.estado is EstadoDePaso.PLAZO_AGOTADO
+    assert resultado.invocado is False
+    assert gui.escrituras == [], "en el instante de vencimiento no se escribe"
+
+
+def test_f2b_k_un_instante_antes_del_vencimiento_todavia_escribe():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    reloj = _RelojManual()
+    backend = _BackendQueCobraLaLectura(gui, reloj, costo=0.999)
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=1.0),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        reloj=reloj,
+        dormir=lambda _s: None,
+    )
+    assert reloj.t < 1.0
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert gui.escrituras == _una_escritura(gui)
+
+
+# -- Casos L y M: ni el HRESULT ambiguo ni el readback autorizan reintento ----
+
+
+def test_f2b_l_un_hresult_fallido_no_produce_una_segunda_escritura():
+    gui = GuiSimulada(CONTRATO_TEXGEN, hresult_escritura="COMError -0x7feceaf7")
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.MECANISMO_FALLO
+    assert resultado.invocado is True
+    assert len(gui.escrituras) == 1, "un HRESULT fallido no autoriza otro mecanismo ni otra escritura"
+    assert gui.lecturas == 1, "tampoco se relee para 'ver si quedó'"
+
+
+def test_f2b_m_un_readback_que_no_persiste_no_reintenta_la_escritura():
+    gui = GuiSimulada(CONTRATO_TEXGEN, escritura_no_persiste=True)
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert resultado.valor_leido == OUTPUT_RANCIO, "la escritura ya ocurrió y el readback lo dice"
+    assert len(gui.escrituras) == 1
+    assert gui.lecturas == 1
+
+
+def test_f2b_m_un_readback_ilegible_no_autoriza_una_segunda_escritura():
+    """El readback corre con la mutación YA hecha: ilegible no es "no pasó nada".
+
+    Es el hermano del anterior por la puerta de la excepción, y el que ataja el
+    reintento del paso completo: si el readback falla y el paso vuelve a
+    observar, la segunda vuelta escribe OTRA VEZ el campo del usuario.
+    """
+
+    class _Backend(_BackendFijo):
+        def leer_output(self, elemento_ui: ElementoUI) -> str | None:
+            if self.mutaciones:
+                raise ObservacionUIAError("elemento stale justo después de escribir")
+            return OUTPUT_RANCIO
+
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    backend = _Backend(_inst(ventana_principal([output_edit(), boton("Start")])))
+    resultado = ejecutar_paso_sincrono(
+        _pedido_de_output(gui, timeout_segundos=0.5),
+        fabrica_backend=lambda: backend,
+        localizador=gui,
+        dormir=lambda _s: None,
+    )
+    assert resultado.estado is EstadoDePaso.OK
+    assert resultado.invocado is True
+    assert resultado.valor_leido is None
+    assert backend.mutaciones == [f"escribir:{OUTPUT_ADMINISTRADO}"], "UNA escritura, ni dos ni tres"
+    assert backend.lecturas == 1, "tampoco se vuelve a observar la pantalla"
+
+
+async def test_f2b_m_el_padre_corta_por_readback_sin_segundo_intento(tmp_path):
+    gui = GuiSimulada(CONTRATO_TEXGEN, escritura_no_persiste=True)
+    with pytest.raises(DesatendidoError) as error:
+        await _correr(gui, tmp_path)
+    assert error.value.codigo is CodigoDesatendido.OUTPUT_READBACK_MISMATCH
+    assert len(gui.escrituras) == 1
+    assert gui.invocaciones == []
+
+
+# -- Caso N: un desenlace desconocido tras una posible escritura no se reintenta
+
+
+async def test_f2b_n_un_desenlace_ambiguo_de_la_escritura_no_se_reintenta(tmp_path):
+    """Si el helper deja de responder, la escritura PUDO haber ocurrido.
+
+    El padre ya no re-emite el pedido (no hay ledger que libere), pero el código
+    del corte tiene que decirlo: ``UIA_UNAVAILABLE`` afirmaba "no pude mirar"
+    sobre un paso que quizá ya había mutado el campo del usuario.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    capacidad = _capacidad(gui)
+    real = capacidad.ejecutor
+    pedidos: list[TipoDePaso] = []
+
+    class _Ambiguo:
+        async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+            pedidos.append(pedido.tipo)
+            if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT:
+                return ResultadoDePaso(estado=EstadoDePaso.SIN_RESPUESTA, detalle="helper colgado tras escribir")
+            return await real.ejecutar(pedido)
+
+    conductor = ConductorDesatendido(dataclasses.replace(capacidad, ejecutor=_Ambiguo()), dormir=_sin_dormir)
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert pedidos.count(TipoDePaso.ESCRIBIR_OUTPUT) == 1, "el pedido mutante se emite UNA vez"
+    assert error.value.codigo is CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION
+    assert "no se reintenta" in error.value.detalle
+    assert gui.invocaciones == []
+
+
+# -- El mapa de códigos de la escritura, enumerado (no muestreado) ------------
+
+
+#: Código con el que el conductor reporta CADA desenlace del paso de escritura.
+#: Es un dict literal y no una cadena de ``if`` sueltos: agregar un estado nuevo a
+#: ``EstadoDePaso`` rompe ``test_f2b_el_mapa_de_codigos_..._enumera_...`` hasta
+#: que se le asigne un código, en vez de caer en el fallback genérico sin que
+#: nadie lo note.
+CODIGOS_DE_LA_ESCRITURA: dict[EstadoDePaso, CodigoDesatendido] = {
+    EstadoDePaso.PROCESO_AUSENTE: CodigoDesatendido.PROCESS_DIED_PRE_BEGIN,
+    EstadoDePaso.IDENTIDAD_NO_COINCIDE: CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+    EstadoDePaso.UIA_NO_DISPONIBLE: CodigoDesatendido.UIA_UNAVAILABLE,
+    EstadoDePaso.PRECONDICION_FALLIDA: CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH,
+    EstadoDePaso.PLAZO_AGOTADO: CodigoDesatendido.UIA_CONTROL_MAP_MISMATCH,
+    EstadoDePaso.MECANISMO_FALLO: CodigoDesatendido.OUTPUT_WRITE_UNSUPPORTED,
+    EstadoDePaso.SIN_RESPUESTA: CodigoDesatendido.UNATTENDED_CONTRACT_VIOLATION,
+}
+
+#: Desenlaces en los que NUNCA se llegó a la primitiva: el corte no puede decir
+#: "la escritura pudo haberse ejecutado".
+ESTADOS_SIN_MUTACION_POSIBLE = frozenset(
+    {
+        EstadoDePaso.PROCESO_AUSENTE,
+        EstadoDePaso.IDENTIDAD_NO_COINCIDE,
+        EstadoDePaso.UIA_NO_DISPONIBLE,
+        EstadoDePaso.PRECONDICION_FALLIDA,
+        EstadoDePaso.PLAZO_AGOTADO,
+    }
+)
+
+
+def test_f2b_el_mapa_de_codigos_de_la_escritura_enumera_todos_los_estados():
+    assert set(CODIGOS_DE_LA_ESCRITURA) == set(EstadoDePaso) - {EstadoDePaso.OK}
+
+
+@pytest.mark.parametrize(
+    ("estado", "codigo"),
+    sorted(CODIGOS_DE_LA_ESCRITURA.items(), key=lambda par: par[0].value),
+    ids=lambda valor: valor.value if isinstance(valor, EstadoDePaso) else str(valor),
+)
+async def test_f2b_cada_desenlace_de_la_escritura_tiene_su_codigo(tmp_path, estado, codigo):
+    """Un estado por caso, y el corte por deadline no se disfraza de ambigüedad.
+
+    ``PLAZO_AGOTADO`` y ``UIA_NO_DISPONIBLE`` son cortes LIMPIOS: el plazo venció
+    o el sensor no respondió, pero la primitiva no se alcanzó. Rotularlos como
+    ``UNATTENDED_CONTRACT_VIOLATION`` ("la escritura pudo haberse ejecutado")
+    sería una afirmación falsa sobre el campo del usuario.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    capacidad = _capacidad(gui)
+    real = capacidad.ejecutor
+
+    class _DesenlaceFijo:
+        async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+            if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT:
+                return ResultadoDePaso(
+                    estado=estado,
+                    detalle=f"{estado.value} simulado",
+                    motivo=(
+                        MotivoDePrecondicion.PANTALLA_INCORRECTA
+                        if estado is EstadoDePaso.PRECONDICION_FALLIDA
+                        else None
+                    ),
+                    invocado=estado is EstadoDePaso.MECANISMO_FALLO,
+                    hresult="COMError 0x80004005" if estado is EstadoDePaso.MECANISMO_FALLO else None,
+                )
+            return await real.ejecutar(pedido)
+
+    conductor = ConductorDesatendido(dataclasses.replace(capacidad, ejecutor=_DesenlaceFijo()), dormir=_sin_dormir)
+    with pytest.raises(DesatendidoError) as error:
+        await conductor.conducir_hasta_inicio(
+            _contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo
+        )
+    assert error.value.codigo is codigo
+    if estado in ESTADOS_SIN_MUTACION_POSIBLE:
+        assert "pudo haberse ejecutado" not in error.value.detalle
+    assert gui.invocaciones == []
+
+
+# -- Caso O: sin hueco no hay lecturas de más --------------------------------
+
+
+def test_f2b_o_una_observacion_siempre_valida_escribe_una_vez_sin_lecturas_de_mas():
+    gui = GuiSimulada(CONTRATO_TEXGEN)
+    resultado = _paso(gui, _pedido_de_output(gui, timeout_segundos=0.5))
+    assert resultado.estado is EstadoDePaso.OK
+    assert gui.lecturas == 1, "el camino feliz no paga ni una lectura extra"
+    assert gui.escrituras == _una_escritura(gui)
+
+
+# -- El hermano: el paso ESCRIBIR_OUTPUT también recibe el presupuesto de F2 --
+
+
+async def test_f2b_el_padre_le_da_a_la_escritura_el_presupuesto_de_reobservacion(tmp_path):
+    """``_converger_output`` pedía el paso con UN intervalo de observación (1 s).
+
+    ``_invocar`` ya recibía ``reobservacion_timeout_segundos`` desde F2 (#773);
+    su hermano de escritura quedó con ``observacion_intervalo_segundos``, así
+    que aun con la reobservación implementada el presupuesto habría sido un
+    solo intervalo: el hueco de repintado no entraba y el fix no servía.
+    """
+    gui = GuiSimulada(CONTRATO_TEXGEN, output_inicial=OUTPUT_RANCIO)
+    capacidad = _capacidad(gui, reobservacion_timeout_segundos=0.75, observacion_intervalo_segundos=0.005)
+    real = capacidad.ejecutor
+    pedidos: list[PedidoDePaso] = []
+
+    class _Espia:
+        async def ejecutar(self, pedido: PedidoDePaso) -> ResultadoDePaso:
+            pedidos.append(pedido)
+            return await real.ejecutar(pedido)
+
+    conductor = ConductorDesatendido(dataclasses.replace(capacidad, ejecutor=_Espia()), dormir=_sin_dormir)
+    await conductor.conducir_hasta_inicio(_contexto(gui, tmp_path), LedgerDeAcciones(), proceso_vivo=gui.proceso_vivo)
+
+    escrituras = [pedido for pedido in pedidos if pedido.tipo is TipoDePaso.ESCRIBIR_OUTPUT]
+    assert len(escrituras) == 1
+    assert escrituras[0].timeout_segundos == 0.75, "el plazo del paso es el de reobservación, no un intervalo"
+    assert escrituras[0].intervalo_segundos == 0.005
+    assert gui.escrituras == _una_escritura(gui)
