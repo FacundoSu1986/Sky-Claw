@@ -204,10 +204,13 @@ veredicto* habría ocultado la divergencia; `MISMATCH` la nombra.
   equivocada, cota hex, MATCH sin compatibilidad, reparse, Managed Source, clone
   equivocado, persistido sobre vivo, ini stale, divergencia tolerada, Desired
   fantasma, versión ausente).
-- Regresiones: `frozen_runtime or path_resolution or output_targets` ⇒
-  1114 passed, 3 skipped, 6 failed — **los mismos 6 en `origin/main`** (fallos de
-  entorno por symlink/privilegio, incluido el flake conocido de
-  `test_f06_inspect_applies_anti_reparse_admission_boundary`). Cero regresiones.
+- Regresiones (`-k "frozen_runtime or path_resolution or output_targets"`):
+  1139 passed, 3 skipped, 7 failed. Seis de los siete fallan **idéntico** en
+  `origin/main` (`df9bb79b`): son symlink/junction sin privilegio en esta
+  máquina. El séptimo (`test_s04_archivo_eliminado_unstable`) pasa aislado en
+  los dos worktrees y `test_frozen_runtime_p1.py` no tiene ninguna arista de
+  importación hacia este paquete: interferencia de corrida pesada, no
+  regresión. Cero regresiones.
 ## 7. Auditoría adversarial del HEAD (2026-10-24, misma sesión)
 
 Cuatro intentos de falsificar el MATCH con evidencia incompleta. Los cuatro
