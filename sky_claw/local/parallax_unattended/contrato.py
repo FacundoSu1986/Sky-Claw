@@ -117,9 +117,12 @@ def _modo_escribe(nodo: ast.Call) -> bool:
     candidatos: list[ast.expr] = list(nodo.args[1:2])
     candidatos += [palabra.value for palabra in nodo.keywords if palabra.arg == "mode"]
     for candidato in candidatos:
-        if isinstance(candidato, ast.Constant) and isinstance(candidato.value, str):
-            if any(caracter in _MODOS_DE_ESCRITURA for caracter in candidato.value):
-                return True
+        if (
+            isinstance(candidato, ast.Constant)
+            and isinstance(candidato.value, str)
+            and any(caracter in _MODOS_DE_ESCRITURA for caracter in candidato.value)
+        ):
+            return True
     return False
 
 
@@ -127,9 +130,7 @@ def _revisar_llamada(nodo: ast.Call) -> bool:
     funcion = nodo.func
     if isinstance(funcion, ast.Name) and funcion.id == "open":
         return _modo_escribe(nodo)
-    if isinstance(funcion, ast.Attribute) and funcion.attr in METODOS_QUE_ESCRIBEN:
-        return True
-    return False
+    return isinstance(funcion, ast.Attribute) and funcion.attr in METODOS_QUE_ESCRIBEN
 
 
 def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, ...]:

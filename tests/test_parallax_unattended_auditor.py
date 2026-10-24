@@ -82,7 +82,7 @@ def _informe(rutas: Sequence[str], *, estado: str = "ESCRITA", efecto: str | Non
         "version_del_lote": "np-a0a.v1",
         "conteos": {estado: len(rutas)},
         "archivos": [
-            {"ruta_de_salida": ruta, "estado": estado, "efecto": efecto, "veredicto": "PASS"} for ruta in rutas
+            {"ruta_de_salida": ruta, "estado": estado, "efecto": efecto, "veredicto": "AUTO_ACCEPT"} for ruta in rutas
         ],
     }
 
@@ -211,7 +211,26 @@ def test_una_ruta_que_sale_de_la_raiz_se_rechaza(tmp_path: pathlib.Path, ruta: s
 
 
 def test_un_informe_sin_archivos_es_hallazgo(tmp_path: pathlib.Path) -> None:
-    auditoria = auditar({"conteos": {}}, tmp_path)
+    auditoria = auditar({"version_del_lote": "np-a0a.v1", "conteos": {}}, tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.INFORME_INVALIDO,)
+    assert not auditoria.ok
+
+
+@pytest.mark.parametrize(
+    "informe",
+    [
+        None,
+        [],
+        "texto",
+        {"archivos": []},
+        {"version_del_lote": "unknown-v99", "archivos": []},
+    ],
+)
+def test_un_informe_no_mapeo_o_con_version_desconocida_no_lanza_y_es_hallazgo(
+    tmp_path: pathlib.Path, informe: object
+) -> None:
+    auditoria = auditar(informe, tmp_path)  # type: ignore[arg-type]
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.INFORME_INVALIDO,)
     assert not auditoria.ok
@@ -225,11 +244,14 @@ def test_un_informe_sin_archivos_es_hallazgo(tmp_path: pathlib.Path) -> None:
 @pytest.mark.parametrize(
     "informe",
     [
-        {"archivos": []},
-        {"archivos": ["basura"]},
-        {"archivos": [None, 3]},
-        {"archivos": [{"estado": "ESCRITA", "efecto": "PUBLICADA"}]},
-        {"archivos": [{"estado": "EN_REVISION", "efecto": None, "veredicto": "REVIEW"}]},
+        {"version_del_lote": "np-a0a.v1", "archivos": []},
+        {"version_del_lote": "np-a0a.v1", "archivos": ["basura"]},
+        {"version_del_lote": "np-a0a.v1", "archivos": [None, 3]},
+        {"version_del_lote": "np-a0a.v1", "archivos": [{"estado": "ESCRITA", "efecto": "PUBLICADA"}]},
+        {
+            "version_del_lote": "np-a0a.v1",
+            "archivos": [{"estado": "EN_REVISION", "efecto": None, "veredicto": "REVIEW"}],
+        },
     ],
 )
 def test_cero_artefactos_auditados_nunca_es_ok(tmp_path: pathlib.Path, informe: dict[str, object]) -> None:
@@ -246,10 +268,11 @@ def test_una_entrada_que_no_es_objeto_corta_la_auditoria(tmp_path: pathlib.Path)
 
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
     informe = {
+        "version_del_lote": "np-a0a.v1",
         "archivos": [
             "basura",
             {"ruta_de_salida": "textures/a_p.dds", "estado": "ESCRITA", "efecto": "PUBLICADA"},
-        ]
+        ],
     }
 
     auditoria = auditar(informe, tmp_path)
@@ -263,10 +286,11 @@ def test_una_entrada_escrita_sin_ruta_corta_la_auditoria(tmp_path: pathlib.Path)
 
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
     informe = {
+        "version_del_lote": "np-a0a.v1",
         "archivos": [
             {"ruta_de_salida": "textures/a_p.dds", "estado": "ESCRITA", "efecto": "PUBLICADA"},
             {"estado": "ESCRITA", "efecto": "PUBLICADA"},
-        ]
+        ],
     }
 
     auditoria = auditar(informe, tmp_path)
@@ -314,3 +338,54 @@ def test_un_artefacto_demasiado_grande_no_se_lee(tmp_path: pathlib.Path, monkeyp
     auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.TAMANO_EXCESIVO,)
+
+
+def test_ati1_y_dx10_bc4_unorm_se_verifican(tmp_path: pathlib.Path) -> None:
+    """El validador del generador acepta ``BC4U``, ``ATI1`` y ``DX10`` con ``DXGI_FORMAT_BC4_UNORM`` (80)."""
+
+    payload = _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)
+    _escribir(tmp_path, "textures/ati1_p.dds", _dds(16, 16, 1, payload, fourcc=b"ATI1"))
+    dx10_ext = struct.pack("<5I", 80, 3, 0, 1, 0)
+    base_dx10 = _dds(16, 16, 1, b"", fourcc=b"DX10")
+    _escribir(tmp_path, "textures/dx10_p.dds", base_dx10 + dx10_ext + payload)
+
+    auditoria = auditar(_informe(["textures/ati1_p.dds", "textures/dx10_p.dds"]), tmp_path)
+
+    assert auditoria.ok
+    assert auditoria.verificados == ("textures/ati1_p.dds", "textures/dx10_p.dds")
+
+
+def test_mips_cero_o_profundidad_volumen_son_dimensiones_invalidas(tmp_path: pathlib.Path) -> None:
+    payload = _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)
+    _escribir(tmp_path, "textures/mips0_p.dds", _dds(16, 16, 0, payload))
+    volumen = bytearray(_dds(16, 16, 1, payload))
+    struct.pack_into("<I", volumen, 24, 4)  # profundidad = 4
+    _escribir(tmp_path, "textures/vol_p.dds", bytes(volumen))
+
+    auditoria = auditar(_informe(["textures/mips0_p.dds", "textures/vol_p.dds"]), tmp_path)
+
+    assert [h.codigo for h in auditoria.hallazgos] == [
+        CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
+        CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
+    ]
+
+
+def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2: ``resolve()`` con bucle de enlaces o ``is_file()`` con ``OSError`` se traduce a hallazgo por archivo."""
+
+    _escribir(tmp_path, "textures/sana_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    original_is_file = pathlib.Path.is_file
+
+    def is_file_con_fallo(self: pathlib.Path) -> bool:
+        if self.name == "rota_p.dds":
+            raise RuntimeError("Symlink loop from 'rota_p.dds'")
+        return original_is_file(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_file", is_file_con_fallo)
+
+    auditoria = auditar(_informe(["textures/rota_p.dds", "textures/sana_p.dds"]), tmp_path)
+
+    assert [h.codigo for h in auditoria.hallazgos] == [CodigoDeHallazgo.NO_LEGIBLE]
+    assert auditoria.verificados == ("textures/sana_p.dds",)

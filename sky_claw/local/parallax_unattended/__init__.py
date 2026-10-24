@@ -19,6 +19,8 @@ capa existe para cerrar.
 from __future__ import annotations
 
 from .auditor import (
+    HALLAZGOS_DE_FALLA,
+    HALLAZGOS_DE_REVISION,
     SD_MINIMA,
     CabeceraDDS,
     CodigoDeHallazgo,
@@ -30,10 +32,13 @@ from .auditor import (
 from .composicion import combinar
 from .veredicto import (
     CODIGOS_DE_SALIDA,
+    EFECTOS_QUE_DEJAN_ARCHIVO,
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
     MOTIVOS_DE_INCONSISTENCIA,
     MOTIVOS_DE_REVISION,
+    VEREDICTOS_CONOCIDOS,
+    VERSIONES_DEL_LOTE_CONOCIDAS,
     DecisionDelLote,
     MotivoDelLote,
     VeredictoDelLote,
@@ -43,11 +48,16 @@ from .veredicto import (
 
 __all__ = [
     "CODIGOS_DE_SALIDA",
+    "EFECTOS_QUE_DEJAN_ARCHIVO",
     "ESTADOS_CONOCIDOS",
+    "HALLAZGOS_DE_FALLA",
+    "HALLAZGOS_DE_REVISION",
     "MOTIVOS_DE_FALLA",
     "MOTIVOS_DE_INCONSISTENCIA",
     "MOTIVOS_DE_REVISION",
     "SD_MINIMA",
+    "VEREDICTOS_CONOCIDOS",
+    "VERSIONES_DEL_LOTE_CONOCIDAS",
     "CabeceraDDS",
     "CodigoDeHallazgo",
     "DecisionDelLote",

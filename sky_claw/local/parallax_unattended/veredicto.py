@@ -9,7 +9,7 @@ no son intercambiables:
 eje              pregunta que contesta                      valores
 ===============  ==========================================  ==============================
 ``estado``       ¿dónde terminó el archivo?                  ESCRITA / EN_REVISION / NO_*
-``veredicto``    ¿el resultado sirve?                        PASS / REVIEW
+``veredicto``    ¿el resultado sirve?                        AUTO_ACCEPT / REVIEW
 ===============  ==========================================  ==============================
 
 ``conteos`` agrega el PRIMERO, y el código de salida del generador se deriva de ``completo``,
@@ -70,6 +70,7 @@ class MotivoDelLote(enum.StrEnum):
     ENCODER_NO_REGISTRADO = "encoder_no_registrado"
     ARCHIVO_SIN_VEREDICTO = "archivo_sin_veredicto"
     VEREDICTO_INCOHERENTE = "veredicto_incoherente"
+    ARTEFACTO_INVALIDO = "artefacto_invalido"
     ARTEFACTO_NO_CONFIABLE = "artefacto_no_confiable"
     ARCHIVO_NO_PROCESADO = "archivo_no_procesado"
     ARCHIVO_NO_ESCRITO = "archivo_no_escrito"
@@ -87,18 +88,20 @@ MOTIVOS_DE_INCONSISTENCIA: Final[frozenset[MotivoDelLote]] = frozenset(
     }
 )
 
-#: Motivos de trabajo perdido (precedencia 2).
+#: Motivos de trabajo perdido o artefacto corrupto/ausente en disco (precedencia 2).
 MOTIVOS_DE_FALLA: Final[frozenset[MotivoDelLote]] = frozenset(
     {
         MotivoDelLote.LOTE_VACIO,
         MotivoDelLote.ARCHIVO_NO_PROCESADO,
         MotivoDelLote.ARCHIVO_NO_ESCRITO,
+        MotivoDelLote.ARTEFACTO_INVALIDO,
     }
 )
 
 #: Motivos que dejan el lote en revisión (precedencia 3). ``ARTEFACTO_NO_CONFIABLE`` lo pone
-#: ``composicion.combinar`` cuando el post-check del artefacto encontró algo: un mapa plano es
-#: indistinguible de una superficie lisa mirando sólo el archivo, así que no puede ser ``FAIL``.
+#: ``composicion.combinar`` cuando el post-check del artefacto encontró altura plana o un formato
+#: no medible: un mapa plano es indistinguible de una superficie lisa mirando sólo el archivo,
+#: así que no puede ser ``FAIL``.
 MOTIVOS_DE_REVISION: Final[frozenset[MotivoDelLote]] = frozenset(
     {
         MotivoDelLote.ARCHIVO_EN_REVISION,
@@ -106,11 +109,14 @@ MOTIVOS_DE_REVISION: Final[frozenset[MotivoDelLote]] = frozenset(
     }
 )
 
+#: Versiones del contrato del informe que esta capa sabe interpretar (``lote.VERSION_DEL_LOTE``).
+VERSIONES_DEL_LOTE_CONOCIDAS: Final[frozenset[str]] = frozenset({"np-a0a.v1"})
+
 #: Estados que declara el generador. Vocabulario cerrado (``lote.EstadoDeArchivo``).
 ESTADOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA"})
 
 #: Veredictos que declara el generador. Vocabulario cerrado (``gates.Veredicto``).
-VEREDICTOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"PASS", "REVIEW"})
+VEREDICTOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"AUTO_ACCEPT", "REVIEW"})
 
 #: Efectos del escritor que dejan un archivo en la salida (``output_writer.EfectoDeSalida``).
 #: ``OMITIDA`` cuenta: la caché vigente dejó el archivo de una corrida anterior.
@@ -239,10 +245,20 @@ def _agregar_ruta(rutas: list[str], ruta: str) -> None:
         rutas.append(ruta)
 
 
+def _leer_version(informe: Mapping[str, object]) -> str:
+    version = _texto(informe.get("version_del_lote"), "version_del_lote")
+    if version not in VERSIONES_DEL_LOTE_CONOCIDAS:
+        raise InformeInvalidoError(f"version_del_lote = {version!r} no está en {sorted(VERSIONES_DEL_LOTE_CONOCIDAS)}")
+    return version
+
+
 def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
     """Decide si el lote sirve. Fail-closed: ante la duda, nunca ``PASS``."""
 
     try:
+        if not isinstance(informe, Mapping):
+            raise InformeInvalidoError("el informe debe ser un objeto")
+        _leer_version(informe)
         archivos = _leer_archivos(informe)
         declarados = _leer_conteos(informe)
     except InformeInvalidoError as exc:

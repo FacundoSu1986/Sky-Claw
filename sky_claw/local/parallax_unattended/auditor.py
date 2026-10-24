@@ -45,7 +45,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from .veredicto import EFECTOS_QUE_DEJAN_ARCHIVO
+from .veredicto import EFECTOS_QUE_DEJAN_ARCHIVO, VERSIONES_DEL_LOTE_CONOCIDAS
 
 #: Desviación estándar mínima del campo de altura, sobre 255. Ver el docstring del módulo.
 SD_MINIMA: Final[float] = 8.0 / 255.0
@@ -71,6 +71,12 @@ _FIRMA: Final[bytes] = b"DDS "
 _TAMANO_DE_CABECERA_DDS: Final[int] = 124
 _TAMANO_DEL_PIXELFORMAT: Final[int] = 32
 _BYTES_POR_BLOQUE_BC4: Final[int] = 8
+_FOURCC_BC4_DIRECTO: Final[frozenset[str]] = frozenset({"BC4U", "ATI1"})
+_DXGI_FORMAT_BC4_UNORM: Final[int] = 80
+_DIMENSION_TEXTURA_2D: Final[int] = 3
+_DX10_MISC_CUBEMAP: Final[int] = 0x4
+_DDSCAPS2_CUBEMAP_O_VOLUMEN: Final[int] = 0x200 | 0x200000
+_DDSD_PROFUNDIDAD: Final[int] = 0x800000
 
 
 class CodigoDeHallazgo(enum.StrEnum):
@@ -88,6 +94,25 @@ class CodigoDeHallazgo(enum.StrEnum):
     ALTURA_PLANA = "altura_plana"
 
 
+#: Hallazgos que piden revisión humana porque los bytes no distinguen defecto de superficie lisa.
+HALLAZGOS_DE_REVISION: Final[frozenset[CodigoDeHallazgo]] = frozenset({CodigoDeHallazgo.ALTURA_PLANA})
+
+#: Hallazgos donde el artefacto está ausente, corrupto o fuera de contrato (falla dura).
+HALLAZGOS_DE_FALLA: Final[frozenset[CodigoDeHallazgo]] = frozenset(
+    {
+        CodigoDeHallazgo.INFORME_INVALIDO,
+        CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES,
+        CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,
+        CodigoDeHallazgo.NO_EXISTE,
+        CodigoDeHallazgo.NO_LEGIBLE,
+        CodigoDeHallazgo.TAMANO_EXCESIVO,
+        CodigoDeHallazgo.NO_ES_DDS,
+        CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
+        CodigoDeHallazgo.TAMANO_INCOHERENTE,
+    }
+)
+
+
 class _DdsInvalidoError(Exception):
     """El archivo no tiene una cabecera DDS que este módulo sepa leer."""
 
@@ -103,6 +128,8 @@ class CabeceraDDS:
     mips: int
     fourcc: str
     profundidad: int
+    dxgi_format: int | None = None
+    es_2d_simple: bool = True
 
     @property
     def bytes_de_cabecera(self) -> int:
@@ -136,25 +163,50 @@ def _leer_cabecera(datos: bytes) -> CabeceraDDS:
         raise _DdsInvalidoError(f"el archivo tiene {len(datos)} bytes, menos que una cabecera DDS")
     if datos[:4] != _FIRMA:
         raise _DdsInvalidoError(f"la firma es {datos[:4]!r}, no {_FIRMA!r}")
-    tamano_de_cabecera = struct.unpack("<I", datos[4:8])[0]
+    tamano_de_cabecera, banderas, alto, ancho = struct.unpack("<4I", datos[4:20])
     if tamano_de_cabecera != _TAMANO_DE_CABECERA_DDS:
         raise _DdsInvalidoError(f"dwSize = {tamano_de_cabecera}, se esperaba 124")
-    alto, ancho = struct.unpack("<II", datos[12:20])
     profundidad, mips = struct.unpack("<II", datos[24:32])
     if struct.unpack("<I", datos[76:80])[0] != _TAMANO_DEL_PIXELFORMAT:
         raise _DdsInvalidoError("ddspf.dwSize != 32")
     fourcc = datos[84:88].decode("latin-1")
+    caps2 = struct.unpack("<I", datos[112:116])[0]
+    es_2d_simple = not bool(caps2 & _DDSCAPS2_CUBEMAP_O_VOLUMEN or banderas & _DDSD_PROFUNDIDAD)
+    dxgi_format: int | None = None
+    if fourcc == "DX10":
+        if len(datos) < BYTES_DE_CABECERA + BYTES_DE_CABECERA_DX10:
+            raise _DdsInvalidoError("el archivo declara DX10 y no trae la extensión de 20 bytes")
+        dxgi_format, dimension, misc_flag, array_size, _ = struct.unpack(
+            "<5I", datos[BYTES_DE_CABECERA : BYTES_DE_CABECERA + BYTES_DE_CABECERA_DX10]
+        )
+        if dxgi_format == _DXGI_FORMAT_BC4_UNORM:
+            es_2d_simple = (
+                es_2d_simple
+                and dimension == _DIMENSION_TEXTURA_2D
+                and array_size == 1
+                and not bool(misc_flag & _DX10_MISC_CUBEMAP)
+            )
     return CabeceraDDS(
         ancho=ancho,
         alto=alto,
-        mips=max(1, mips),
+        mips=mips,
         fourcc=fourcc,
-        profundidad=max(1, profundidad),
+        profundidad=1 if profundidad == 0 and not (banderas & _DDSD_PROFUNDIDAD) else profundidad,
+        dxgi_format=dxgi_format,
+        es_2d_simple=es_2d_simple,
     )
 
 
+def _es_bc4_unorm(cabecera: CabeceraDDS) -> bool:
+    """``BC4U``, ``ATI1`` o ``DX10`` con ``DXGI_FORMAT_BC4_UNORM`` (80), igual que ``export.py``."""
+
+    if cabecera.fourcc in _FOURCC_BC4_DIRECTO:
+        return True
+    return cabecera.fourcc == "DX10" and cabecera.dxgi_format == _DXGI_FORMAT_BC4_UNORM
+
+
 def _dimensiones_plausibles(cabecera: CabeceraDDS) -> bool:
-    """Rango de lados y cadena de mips. **No** se exige potencia de dos.
+    """Rango de lados, textura 2D simple y cadena de mips. **No** se exige potencia de dos.
 
     Exigir POT rechazaría salida legítima: ``--escala-x 0.75`` sobre una normal de 2048 produce
     1536, que DDS y BC4 aceptan sin problema. El formato no lo pide, el motor tampoco, y una
@@ -162,10 +214,12 @@ def _dimensiones_plausibles(cabecera: CabeceraDDS) -> bool:
     corrida desatendida por una razón que no es un defecto.
     """
 
+    if not cabecera.es_2d_simple or cabecera.profundidad != 1:
+        return False
     lados = (cabecera.ancho, cabecera.alto)
     if any(lado < LADO_MINIMO or lado > LADO_MAXIMO for lado in lados):
         return False
-    return cabecera.mips <= int(math.log2(max(lados))) + 1
+    return 1 <= cabecera.mips <= max(lados).bit_length()
 
 
 def _bytes_de_bc4(ancho: int, alto: int, mips: int) -> int:
@@ -233,6 +287,8 @@ def _resolver(raiz: pathlib.Path, relativa: str) -> pathlib.Path:
     porque el costo es nulo. La garantía la da ``is_relative_to``; las otras son diagnóstico.
     """
 
+    if "\x00" in relativa:
+        raise _RutaRechazadaError(f"{relativa!r} contiene un byte nulo")
     pura = pathlib.PureWindowsPath(relativa)
     if pura.drive or pura.root or pura.is_absolute():
         raise _RutaRechazadaError(f"{relativa!r} es absoluta o trae unidad")
@@ -253,6 +309,11 @@ def _rutas_declaradas(informe: Mapping[str, object]) -> tuple[str, ...]:
     el resto auditado y el lote aprobado con un artefacto que nadie miró.
     """
 
+    if not isinstance(informe, Mapping):
+        raise _RutaRechazadaError("el informe debe ser un objeto")
+    version = informe.get("version_del_lote")
+    if not isinstance(version, str) or version not in VERSIONES_DEL_LOTE_CONOCIDAS:
+        raise _RutaRechazadaError(f"version_del_lote = {version!r} no está en {sorted(VERSIONES_DEL_LOTE_CONOCIDAS)}")
     crudo = informe.get("archivos")
     if not isinstance(crudo, list):
         raise _RutaRechazadaError("falta 'archivos' o no es una lista")
@@ -303,7 +364,7 @@ def _auditar_una(ruta: str, destino: pathlib.Path) -> tuple[Hallazgo | None, boo
             ),
             False,
         )
-    if cabecera.fourcc != "BC4U":
+    if not _es_bc4_unorm(cabecera):
         return None, False
     esperado = _bytes_de_bc4(cabecera.ancho, cabecera.alto, cabecera.mips)
     real = len(datos) - cabecera.bytes_de_cabecera
@@ -356,7 +417,17 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
             no_verificados=(),
         )
 
-    raiz = raiz_de_salida.resolve()
+    try:
+        raiz = raiz_de_salida.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return InformeDeAuditoria(
+            verificados=(),
+            hallazgos=tuple(
+                Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo resolver la raíz de salida: {exc}")
+                for ruta in rutas
+            ),
+            no_verificados=(),
+        )
     verificados: list[str] = []
     hallazgos: list[Hallazgo] = []
     no_verificados: list[str] = []
@@ -367,7 +438,15 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
         except _RutaRechazadaError as exc:
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA, str(exc)))
             continue
-        if not destino.is_file():
+        except (OSError, RuntimeError, ValueError) as exc:
+            hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo resolver la ruta: {exc}"))
+            continue
+        try:
+            existe = destino.is_file()
+        except (OSError, RuntimeError, ValueError) as exc:
+            hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo inspeccionar: {exc}"))
+            continue
+        if not existe:
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_EXISTE, f"el informe la declara y no está en {raiz}"))
             continue
         hallazgo, verificado = _auditar_una(ruta, destino)

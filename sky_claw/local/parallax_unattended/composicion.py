@@ -9,22 +9,26 @@ ahí es donde se pierde. Un lote no está bien porque cada mitad esté bien por 
 
 Regla única, y por qué es asimétrica
 ------------------------------------
-- ``INCONSISTENTE`` y ``FAIL`` **no se rescatan**. Si el informe se contradice o se perdió
-  trabajo, que el disco se vea bien no cambia el veredicto.
-- Cualquier hallazgo o artefacto no verificado degrada a ``REVIEW``, **nunca a ``FAIL``**. Un
-  mapa plano es indistinguible de una superficie genuinamente lisa mirando sólo el archivo: la
-  diferencia entre "el generador falló" y "esta pared no tiene relieve" no está en los bytes.
-  Declarar ``FAIL`` ahí sería inventar evidencia, y en desatendido eso cuesta tanto como el
-  falso verde opuesto: un runner que grita lobo se termina ignorando.
+- ``INCONSISTENTE`` y ``FAIL`` **no se rescatan**, pero sí incorporan los motivos y las rutas del
+  post-check para que el operador vea el cuadro completo y no sólo la primera capa que habló.
+- Los hallazgos de relieve o formatos no medibles (``ALTURA_PLANA``, ``no_verificados``) degradan
+  a ``REVIEW``, **nunca a ``FAIL``**: un mapa plano es indistinguible de una superficie
+  genuinamente lisa mirando sólo el archivo.
+- Los hallazgos duros de disco (``NO_EXISTE``, ``TAMANO_INCOHERENTE``, ``NO_ES_DDS``, etc.) sobre
+  un archivo que el informe declaró ``ESCRITA`` degradan a ``FAIL`` (``ARTEFACTO_INVALIDO``): que
+  el archivo falte o esté truncado no es una duda de relieve, es trabajo perdido.
 """
 
 from __future__ import annotations
 
-from .auditor import InformeDeAuditoria
-from .veredicto import DecisionDelLote, MotivoDelLote, VeredictoDelLote
-
-#: Veredictos que el post-check no puede mejorar: ya son peores que ``REVIEW``.
-_IRRESCATABLES = frozenset({VeredictoDelLote.INCONSISTENTE, VeredictoDelLote.FAIL})
+from .auditor import HALLAZGOS_DE_FALLA, HALLAZGOS_DE_REVISION, InformeDeAuditoria
+from .veredicto import (
+    MOTIVOS_DE_FALLA,
+    MOTIVOS_DE_INCONSISTENCIA,
+    DecisionDelLote,
+    MotivoDelLote,
+    VeredictoDelLote,
+)
 
 
 def _rutas_dudosas(auditoria: InformeDeAuditoria) -> tuple[str, ...]:
@@ -48,13 +52,18 @@ def _detalle(auditoria: InformeDeAuditoria) -> str:
 def combinar(decision: DecisionDelLote, auditoria: InformeDeAuditoria) -> DecisionDelLote:
     """Veredicto final de la corrida: el del informe, degradado por lo que el disco diga."""
 
-    if decision.veredicto in _IRRESCATABLES:
-        return decision
     if not auditoria.hallazgos and not auditoria.no_verificados:
         return decision
 
     motivos = list(decision.motivos)
-    if MotivoDelLote.ARTEFACTO_NO_CONFIABLE not in motivos:
+    if (
+        any(h.codigo in HALLAZGOS_DE_FALLA for h in auditoria.hallazgos)
+        and MotivoDelLote.ARTEFACTO_INVALIDO not in motivos
+    ):
+        motivos.append(MotivoDelLote.ARTEFACTO_INVALIDO)
+    if (
+        any(h.codigo in HALLAZGOS_DE_REVISION for h in auditoria.hallazgos) or auditoria.no_verificados
+    ) and MotivoDelLote.ARTEFACTO_NO_CONFIABLE not in motivos:
         motivos.append(MotivoDelLote.ARTEFACTO_NO_CONFIABLE)
 
     rutas = list(decision.rutas)
@@ -62,10 +71,20 @@ def combinar(decision: DecisionDelLote, auditoria: InformeDeAuditoria) -> Decisi
         if ruta not in rutas:
             rutas.append(ruta)
 
+    if decision.veredicto is VeredictoDelLote.INCONSISTENTE or any(m in MOTIVOS_DE_INCONSISTENCIA for m in motivos):
+        veredicto = VeredictoDelLote.INCONSISTENTE
+    elif decision.veredicto is VeredictoDelLote.FAIL or any(m in MOTIVOS_DE_FALLA for m in motivos):
+        veredicto = VeredictoDelLote.FAIL
+    else:
+        veredicto = VeredictoDelLote.REVIEW
+
+    resumen = _detalle(auditoria)
+    detalle = f"{decision.detalle}; {resumen}" if decision.detalle else resumen
+
     return DecisionDelLote(
-        veredicto=VeredictoDelLote.REVIEW,
+        veredicto=veredicto,
         motivos=tuple(motivos),
         rutas=tuple(rutas),
         conteos=decision.conteos,
-        detalle=_detalle(auditoria),
+        detalle=detalle,
     )

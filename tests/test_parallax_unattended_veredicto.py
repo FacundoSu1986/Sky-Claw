@@ -23,12 +23,18 @@ from __future__ import annotations
 
 import pytest
 
+from sky_claw.local.native_parallax.gates import Veredicto as VeredictoDelGenerador
+from sky_claw.local.native_parallax.lote import VERSION_DEL_LOTE, EstadoDeArchivo
+from sky_claw.local.native_parallax.output_writer import EfectoDeSalida
 from sky_claw.local.parallax_unattended.veredicto import (
     CODIGOS_DE_SALIDA,
+    EFECTOS_QUE_DEJAN_ARCHIVO,
     ESTADOS_CONOCIDOS,
     MOTIVOS_DE_FALLA,
     MOTIVOS_DE_INCONSISTENCIA,
     MOTIVOS_DE_REVISION,
+    VEREDICTOS_CONOCIDOS,
+    VERSIONES_DEL_LOTE_CONOCIDAS,
     MotivoDelLote,
     VeredictoDelLote,
     codigo_de_salida,
@@ -44,7 +50,7 @@ def _archivo(
     *,
     estado: str = "ESCRITA",
     efecto: str | None = "PUBLICADA",
-    veredicto: str | None = "PASS",
+    veredicto: str | None = "AUTO_ACCEPT",
 ) -> dict[str, object]:
     return {
         "ruta_de_origen": "textures/a_n.dds",
@@ -210,19 +216,51 @@ def test_sin_artefacto_el_codificador_no_hace_falta() -> None:
     assert MotivoDelLote.ENCODER_NO_REGISTRADO not in decision.motivos
 
 
-def test_en_revision_con_veredicto_pass_es_incoherente() -> None:
-    """El estado dice que el gate la retuvo y el veredicto dice que pasó: una de las dos miente."""
+def test_en_revision_con_veredicto_auto_accept_es_incoherente() -> None:
+    """El estado dice que el gate la retuvo y el veredicto dice que se auto-aceptó: una de las dos miente."""
 
-    archivos = [_archivo("textures/a_p.dds", estado="EN_REVISION", efecto=None, veredicto="PASS")]
+    archivos = [_archivo("textures/a_p.dds", estado="EN_REVISION", efecto=None, veredicto="AUTO_ACCEPT")]
     decision = dictar(_informe(archivos))
 
     assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
     assert MotivoDelLote.VEREDICTO_INCOHERENTE in decision.motivos
 
 
+def test_veredicto_pass_en_archivo_se_rechaza_como_forma_invalida() -> None:
+    """El generador emite ``AUTO_ACCEPT``, nunca ``PASS``, en ``archivos[i].veredicto``."""
+
+    archivos = [_archivo("textures/a_p.dds", veredicto="PASS")]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
 # ---------------------------------------------------------------------------
-# Forma
+# Forma y versión del contrato
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("version", [None, "", 123, "unknown-v99"])
+def test_version_del_lote_ausente_o_desconocida_es_forma_invalida(version: object) -> None:
+    informe = _informe([_archivo("textures/a_p.dds")])
+    if version is None:
+        del informe["version_del_lote"]
+    else:
+        informe["version_del_lote"] = version
+
+    decision = dictar(informe)
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
+@pytest.mark.parametrize("no_mapeo", [None, [], "texto", 42])
+def test_informe_que_no_es_mapping_no_lanza_y_es_forma_invalida(no_mapeo: object) -> None:
+    decision = dictar(no_mapeo)  # type: ignore[arg-type]
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
 
 
 def test_archivo_escrito_sin_veredicto_es_inconsistente() -> None:
@@ -274,6 +312,21 @@ def test_todo_motivo_pertenece_a_exactamente_un_grupo() -> None:
 
 def test_los_estados_conocidos_son_los_cuatro_del_generador() -> None:
     assert {"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA"} == ESTADOS_CONOCIDOS
+    assert {e.name for e in EstadoDeArchivo} == ESTADOS_CONOCIDOS
+
+
+def test_los_veredictos_conocidos_son_los_del_generador() -> None:
+    """Ancla contra drift: el paquete no importa ``native_parallax``, pero el test congela que coincidan."""
+
+    assert {"AUTO_ACCEPT", "REVIEW"} == VEREDICTOS_CONOCIDOS
+    assert {v.name for v in VeredictoDelGenerador} == VEREDICTOS_CONOCIDOS
+
+
+def test_las_versiones_y_efectos_conocidos_coinciden_con_el_generador() -> None:
+    assert {"np-a0a.v1"} == VERSIONES_DEL_LOTE_CONOCIDAS
+    assert VERSION_DEL_LOTE in VERSIONES_DEL_LOTE_CONOCIDAS
+    assert {"PUBLICADA", "REEMPLAZADA", "OMITIDA"} == EFECTOS_QUE_DEJAN_ARCHIVO
+    assert EFECTOS_QUE_DEJAN_ARCHIVO.issubset({e.name for e in EfectoDeSalida})
 
 
 @pytest.mark.parametrize("veredicto", list(VeredictoDelLote))

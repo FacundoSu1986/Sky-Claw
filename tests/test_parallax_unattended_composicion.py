@@ -21,7 +21,13 @@ from __future__ import annotations
 
 import pytest
 
-from sky_claw.local.parallax_unattended.auditor import CodigoDeHallazgo, Hallazgo, InformeDeAuditoria
+from sky_claw.local.parallax_unattended.auditor import (
+    HALLAZGOS_DE_FALLA,
+    HALLAZGOS_DE_REVISION,
+    CodigoDeHallazgo,
+    Hallazgo,
+    InformeDeAuditoria,
+)
 from sky_claw.local.parallax_unattended.composicion import combinar
 from sky_claw.local.parallax_unattended.veredicto import (
     DecisionDelLote,
@@ -84,27 +90,66 @@ def test_un_artefacto_no_verificado_tambien_degrada() -> None:
 
 
 @pytest.mark.parametrize("veredicto", [VeredictoDelLote.FAIL, VeredictoDelLote.INCONSISTENTE])
-def test_lo_que_ya_esta_mal_no_se_rescata(veredicto: VeredictoDelLote) -> None:
-    original = _decision(veredicto, MotivoDelLote.ARCHIVO_NO_ESCRITO)
+def test_lo_que_ya_esta_mal_no_se_rescata_y_suma_los_hallazgos_del_disco(veredicto: VeredictoDelLote) -> None:
+    original = _decision(veredicto, MotivoDelLote.ARCHIVO_NO_ESCRITO, rutas=("textures/perdida_p.dds",))
 
     assert combinar(original, _auditoria()) is original
-    assert combinar(original, _auditoria(hallazgos=(Hallazgo("x", CodigoDeHallazgo.NO_EXISTE, ""),))) is original
+    con_disco = combinar(
+        original, _auditoria(hallazgos=(Hallazgo("textures/plana_p.dds", CodigoDeHallazgo.ALTURA_PLANA, ""),))
+    )
+    assert con_disco.veredicto is veredicto
+    assert MotivoDelLote.ARCHIVO_NO_ESCRITO in con_disco.motivos
+    assert MotivoDelLote.ARTEFACTO_NO_CONFIABLE in con_disco.motivos
+    assert con_disco.rutas == ("textures/perdida_p.dds", "textures/plana_p.dds")
 
 
 # ---------------------------------------------------------------------------
-# Nunca FAIL por un hallazgo de artefacto
+# Evidencia dura (FAIL) vs juicio de relieve (REVIEW)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("codigo", list(CodigoDeHallazgo))
-def test_ningun_hallazgo_convierte_un_pass_en_fail(codigo: CodigoDeHallazgo) -> None:
-    """Un artefacto dudoso pide ojos, no sentencia: la diferencia no está en los bytes."""
+def test_todo_codigo_de_hallazgo_pertenece_a_exactamente_una_severidad() -> None:
+    """Un código de hallazgo nuevo rompe el test hasta que se clasifique en falla o revisión."""
+
+    assert not (HALLAZGOS_DE_FALLA & HALLAZGOS_DE_REVISION)
+    assert set(CodigoDeHallazgo) == (HALLAZGOS_DE_FALLA | HALLAZGOS_DE_REVISION)
+
+
+@pytest.mark.parametrize("codigo", sorted(HALLAZGOS_DE_REVISION))
+def test_un_hallazgo_de_relieve_degrada_a_review_y_nunca_a_fail(codigo: CodigoDeHallazgo) -> None:
+    """Un mapa plano es indistinguible de una superficie lisa mirando sólo los bytes: pide revisión."""
 
     final = combinar(
         _decision(VeredictoDelLote.PASS), _auditoria(hallazgos=(Hallazgo("textures/a_p.dds", codigo, ""),))
     )
 
     assert final.veredicto is VeredictoDelLote.REVIEW
+    assert MotivoDelLote.ARTEFACTO_NO_CONFIABLE in final.motivos
+
+
+@pytest.mark.parametrize(
+    "codigo",
+    [
+        CodigoDeHallazgo.INFORME_INVALIDO,
+        CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES,
+        CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,
+        CodigoDeHallazgo.NO_EXISTE,
+        CodigoDeHallazgo.NO_LEGIBLE,
+        CodigoDeHallazgo.TAMANO_EXCESIVO,
+        CodigoDeHallazgo.NO_ES_DDS,
+        CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
+        CodigoDeHallazgo.TAMANO_INCOHERENTE,
+    ],
+)
+def test_un_hallazgo_duro_de_disco_degrada_a_fail(codigo: CodigoDeHallazgo) -> None:
+    """Un archivo ausente, truncado o corrupto cuando el informe declaró ``ESCRITA`` es fallo duro, no revisión."""
+
+    final = combinar(
+        _decision(VeredictoDelLote.PASS), _auditoria(hallazgos=(Hallazgo("textures/a_p.dds", codigo, ""),))
+    )
+
+    assert final.veredicto is VeredictoDelLote.FAIL
+    assert MotivoDelLote.ARTEFACTO_INVALIDO in final.motivos
 
 
 # ---------------------------------------------------------------------------
