@@ -38,6 +38,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 import uuid
 
 import pytest
@@ -726,45 +727,90 @@ def test_un_crash_tras_el_witness_conserva_el_binding(tmp_path: pathlib.Path, mo
 
 
 def test_la_carrera_entre_procesos_conserva_single_use_y_no_clobber(tmp_path: pathlib.Path) -> None:
-    """Dos procesos emiten a la vez: UN witness, y es el de la solicitud que ganó.
+    """Dos procesos COMPITEN de verdad: coexisten y arrancan al mismo tiempo.
 
-    Cada proceso acuña su propia solicitud (su propio ``solicitud_id``). El
-    perdedor no puede publicar un segundo witness ni reescribir el del ganador, y
-    el binding persistido tiene que ser el del ganador — no el del perdedor.
+    ``subprocess.run`` en un bucle no es concurrencia —espera a que cada hijo
+    TERMINE antes de lanzar el siguiente—, así que un test escrito así mide el
+    estado durable, no la contención. Acá los hijos se lanzan con ``Popen``,
+    anuncian que están listos en una barrera de archivos y el padre abre la
+    señal de salida sólo cuando los DOS están vivos y esperando.
+
+    Además de la propiedad durable (un ganador, un witness, el binding del
+    ganador), el test afirma que los intervalos de competición se **solapan**.
+    Sin ese assert, volver a ``run`` secuencial dejaría el test verde y la
+    propiedad sin medir: el nombre del test es una afirmación y tiene que
+    romperse cuando deja de ser cierta.
     """
     root = _root(tmp_path)
     guion = RAIZ_REPO / "tests" / "_p4_s7_child.py"
     assert guion.is_file(), "falta el hijo autónomo de concurrencia"
+    barrera = tmp_path / "barrera"
+    barrera.mkdir()
+
+    entorno = {
+        **os.environ,
+        # El hijo corre como script: ``sys.path[0]`` es ``tests/``, así que el
+        # worktree tiene que entrar por PYTHONPATH o importaría el
+        # editable-install del repo principal (o nada).
+        "PYTHONPATH": str(RAIZ_REPO),
+        "SKYCLAW_P4_S7_WORKTREE": str(RAIZ_REPO),
+        "SKYCLAW_P4_S7_BARRIER": str(barrera),
+    }
+    procesos = [
+        subprocess.Popen(
+            [sys.executable, str(guion), str(root)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=entorno,
+        )
+        for _ in range(2)
+    ]
+    salidas: list[tuple[str, str]] = []
+    try:
+        limite = time.monotonic() + 120.0
+        while len(list(barrera.glob("ready-*"))) < 2:
+            assert time.monotonic() < limite, "los hijos no llegaron a la barrera: no habría carrera"
+            assert all(proceso.poll() is None for proceso in procesos), (
+                f"un hijo murió antes de la barrera: {[proceso.returncode for proceso in procesos]}"
+            )
+            time.sleep(0.01)
+        # Los dos están VIVOS y esperando. Recién ahora compiten.
+        (barrera / "go").write_text("1", encoding="utf-8")
+        salidas = [proceso.communicate(timeout=180) for proceso in procesos]
+    finally:
+        for proceso in procesos:
+            if proceso.poll() is None:
+                proceso.kill()
 
     resultados = []
-    for _ in range(2):
-        proceso = subprocess.run(
-            [sys.executable, str(guion), str(root)],
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-            env={
-                **os.environ,
-                # El hijo corre como script: ``sys.path[0]`` es ``tests/``, así que
-                # el worktree tiene que entrar por PYTHONPATH o importaría el
-                # editable-install del repo principal (o nada).
-                "PYTHONPATH": str(RAIZ_REPO),
-                "SKYCLAW_P4_S7_WORKTREE": str(RAIZ_REPO),
-            },
-        )
-        assert proceso.returncode == 0, proceso.stderr[-2000:]
-        resultados.append(json.loads(proceso.stdout.strip().splitlines()[-1]))
+    for (stdout, stderr), proceso in zip(salidas, procesos, strict=True):
+        assert proceso.returncode == 0, stderr[-2000:]
+        resultados.append(json.loads(stdout.strip().splitlines()[-1]))
 
+    # 0. La carrera fue REAL: los intervalos de competición se solapan.
+    assert all(item.get("inicio_ns") for item in resultados), f"falta la medición de tiempo: {resultados}"
+    primero, segundo = sorted(resultados, key=lambda item: item["inicio_ns"])
+    assert primero["inicio_ns"] < segundo["fin_ns"], (
+        "los procesos no coexistieron (solape nulo): la carrera fue secuencial "
+        f"{[(item['inicio_ns'], item['fin_ns']) for item in resultados]}"
+    )
+
+    # 1. Exclusividad: un solo ganador.
     exitos = [item for item in resultados if item.get("ok")]
     fallos = [item for item in resultados if not item.get("ok")]
     assert len(exitos) == 1, f"la emisión no es exclusiva: {resultados}"
     assert len(fallos) == 1, f"los dos procesos emitieron: {resultados}"
 
+    # 2. No-clobber: un solo witness.
     archivos = sorted(issuances_state_dir(root).iterdir())
     assert len(archivos) == 1, f"no-clobber violado: {[ruta.name for ruta in archivos]}"
+
+    # 3. El binding persistido es el del GANADOR, no el del perdedor.
     binding = _binding_crudo(root, 1)
-    assert binding["solicitud_id"] == exitos[0]["solicitud_id"]
+    assert binding["solicitud_id"] == exitos[0]["solicitud_id"], (
+        f"se persistió el binding del perdedor: {binding['solicitud_id']} != {exitos[0]['solicitud_id']}"
+    )
 
 
 # ---------------------------------------------------------------------------

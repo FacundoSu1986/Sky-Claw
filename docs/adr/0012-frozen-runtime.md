@@ -10179,7 +10179,9 @@ el registro en memoria.
   y la clave `solicitud_binding` obligatoria en el esquema cerrado.
 - **Concurrencia real entre procesos** (`tests/_p4_s7_child.py`, hijo autónomo):
   dos procesos acuñan su propia solicitud y emiten a la vez ⇒ **un solo witness**,
-  **un solo éxito**, y el `solicitud_id` persistido es el del ganador.
+  **un solo éxito**, y el `solicitud_id` persistido es el del ganador. **Ver
+  §47.8**: la primera versión de este test era secuencial y la afirmación «a la
+  vez» era falsa hasta la corrección de la auditoría R1.
 
 **Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,owner_consent,__init__}.py`,
 `tests/test_frozen_runtime_p4_s7_witness_request_binding.py`,
@@ -10218,3 +10220,49 @@ EFFECTIVE_RUNTIME_MUTATED              = NO
 ISSUE_672                              = OPEN
 MERGED                                 = NO
 ```
+
+### 47.8 Auditoría R1 — la verificación de concurrencia no era concurrente
+
+La primera versión de
+`test_la_carrera_entre_procesos_conserva_single_use_y_no_clobber` afirmaba en su
+docstring «dos procesos emiten a la vez», y **era falso**. El bucle era:
+
+```python
+for _ in range(2):
+    proceso = subprocess.run([...])   # espera a que el hijo TERMINE
+```
+
+`subprocess.run` bloquea hasta que el hijo termina, así que el segundo proceso no
+existía cuando el primero competía. El test medía el **estado durable** (que es
+correcto), no la **contención**. Es la trampa que el repo ya tiene catalogada: el
+nombre de un test es una afirmación, y un `subprocess.run` en bucle no es
+concurrencia.
+
+**Medición, no argumento.** Los mismos dos hijos, midiendo el intervalo en que
+cada uno compite (`inicio_ns` después de la barrera, `fin_ns` al terminar):
+
+```text
+SECUENCIAL   solape =   0.000 ms   ok = [True, False]
+CONCURRENTE  solape = 375.120 ms   ok = [True, False]
+```
+
+El resultado durable es **idéntico** en los dos modos. Ésa es exactamente la
+razón por la que el test anterior pasaba: acertaba el veredicto sin ejercitar la
+propiedad.
+
+**Corrección.** El hijo gana una barrera de archivos (`SKYCLAW_P4_S7_BARRIER`):
+anuncia `ready-<pid>` y espera `go`. El padre lanza los dos con `Popen`, espera a
+que **los dos** estén vivos y esperando, y sólo entonces abre la barrera. Además
+de la propiedad durable, el test afirma que los intervalos se **solapan**, así
+que volver a `run` secuencial lo rompe en vez de dejarlo verde.
+
+**Lo que no cambia.** El producto no se tocó: el `CREATE` no-clobber del witness
+ya garantizaba un solo witness con independencia del lock. Este hallazgo era de
+**verificación**, no de implementación — y por eso importa igual: una propiedad
+que nadie mide es una propiedad que nadie tiene.
+
+**Límite declarado.** No existe un mutante de una línea que distinga concurrencia
+de secuencia, porque las capas son redundantes a propósito (lock + `MAX_ISSUED` +
+CAS + `CREATE`). El valor del test corregido no es matar un mutante extra: es que
+la contención ocurre y queda medida. Decir lo contrario sería vender una métrica
+que no existe.

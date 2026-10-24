@@ -23,11 +23,40 @@ import json
 import os
 import pathlib
 import sys
+import time
 import traceback
 
 GEN_ORIGEN = "1.6.1170.0__a1b2c3d4e5f6"
 GEN_OBJETIVO = "1.6.640.0__0f1e2d3c4b5a"
 OPERADOR = 424242
+
+#: Instante en que el hijo EMPIEZA a competir (después de la barrera). Lo lee
+#: ``main`` tanto en el camino feliz como en el de error para que el padre pueda
+#: medir si los intervalos de los procesos se solapan de verdad.
+MEDICION: dict[str, int] = {}
+
+
+def _esperar_barrera() -> None:
+    """Barrera entre procesos: sin esto la «carrera» es una secuencia.
+
+    ``subprocess.run`` en un bucle espera a que cada hijo TERMINE antes de lanzar
+    el siguiente, así que los procesos nunca coexisten y el test mide el estado
+    durable, no la contención. Acá el hijo anuncia que está listo y espera la
+    señal del padre; el padre abre la barrera sólo cuando TODOS anunciaron.
+
+    Sin ``SKYCLAW_P4_S7_BARRIER`` no hace nada: el hijo sigue sirviendo para uso
+    manual.
+    """
+    directorio = os.environ.get("SKYCLAW_P4_S7_BARRIER")
+    if not directorio:
+        return
+    base = pathlib.Path(directorio)
+    (base / f"ready-{os.getpid()}").write_text("1", encoding="utf-8")
+    limite = time.monotonic() + 120.0
+    while not (base / "go").exists():
+        if time.monotonic() > limite:
+            raise TimeoutError("la barrera entre procesos no se abrió en 120 s")
+        time.sleep(0.005)
 
 
 def _assert_worktree() -> None:
@@ -64,6 +93,10 @@ def _emitir(root: pathlib.Path) -> dict:
         verificar_identidad_telegram,
     )
     from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    # Antes de tocar el estado: los dos procesos tienen que estar vivos a la vez.
+    _esperar_barrera()
+    MEDICION["inicio_ns"] = time.time_ns()
 
     # `timeout` acotado: la concurrencia es legítima, así que el perdedor debe
     # ESPERAR el lock y fallar por la semántica de la aprobación (MAX_ISSUED /
@@ -122,6 +155,8 @@ def main() -> int:
             "detalle": f"{type(exc).__name__}: {exc}",
             "traza": traceback.format_exc()[-2000:],
         }
+    resultado["inicio_ns"] = MEDICION.get("inicio_ns")
+    resultado["fin_ns"] = time.time_ns()
     sys.stdout.write(json.dumps(resultado) + "\n")
     sys.stdout.flush()
     return 0
