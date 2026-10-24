@@ -36,7 +36,7 @@ _PAQUETE = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "local"
 # ---------------------------------------------------------------------------
 
 
-def test_el_escaneo_ve_todos_los_modulos() -> None:
+def test_verificar_paquete_completo_incluye_modulos() -> None:
     """Sin esto, una ruta mal escrita haría pasar el contrato sobre cero archivos."""
 
     vistos = {ruta.name for ruta in _PAQUETE.glob("*.py")}
@@ -44,13 +44,13 @@ def test_el_escaneo_ve_todos_los_modulos() -> None:
     assert {"__init__.py", "auditor.py", "composicion.py", "contrato.py", "veredicto.py"} <= vistos
 
 
-def test_el_paquete_cumple_su_contrato() -> None:
+def test_verificar_paquete_real_cumple_todas_las_reglas() -> None:
     hallazgos = verificar(_PAQUETE)
 
     assert hallazgos == (), "\n".join(f"{h.archivo}:{h.linea} {h.regla} — {h.detalle}" for h in hallazgos)
 
 
-def test_la_api_publica_esta_completa() -> None:
+def test_verificar_api_paquete_real_exporta_simbolos_completos() -> None:
     hallazgos = verificar_api()
 
     assert hallazgos == (), "\n".join(f"{h.regla} — {h.detalle}" for h in hallazgos)
@@ -86,6 +86,8 @@ def test_la_api_publica_esta_completa() -> None:
         ("os.open(ruta, os.O_RDWR)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("os.remove(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("os.makedirs(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("os.symlink(origen, destino)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("os.link(origen, destino)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("shutil.copy(origen, destino)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("shutil.rmtree(ruta)", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ('ruta.write_text("x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
@@ -94,7 +96,7 @@ def test_la_api_publica_esta_completa() -> None:
         ("ruta.mkdir(parents=True)", ReglaDeContrato.ESCRIBE_EN_DISCO),
     ],
 )
-def test_cada_regla_tiene_su_caso(fuente: str, regla: ReglaDeContrato) -> None:
+def test_revisar_fuente_violacion_sintetica_reporta_regla_esperada(fuente: str, regla: ReglaDeContrato) -> None:
     hallazgos = revisar_fuente(fuente, "sintetico.py")
 
     assert [h.regla for h in hallazgos] == [regla]
@@ -115,17 +117,25 @@ def test_cada_regla_tiene_su_caso(fuente: str, regla: ReglaDeContrato) -> None:
         "os.open(ruta, os.O_RDONLY)",
     ],
 )
-def test_lo_permitido_no_es_hallazgo(fuente: str) -> None:
+def test_revisar_fuente_codigo_permitido_devuelve_cero_hallazgos(fuente: str) -> None:
     assert revisar_fuente(fuente, "sintetico.py") == ()
 
 
-def test_una_sintaxis_invalida_se_reporta_y_no_rompe() -> None:
+def test_revisar_fuente_sintaxis_invalida_reporta_error_sin_excepcion() -> None:
     hallazgos = revisar_fuente("def (: pass", "roto.py")
 
     assert [h.regla for h in hallazgos] == [ReglaDeContrato.SINTAXIS_INVALIDA]
 
 
-def test_el_archivo_que_viola_se_detecta_desde_el_disco(tmp_path: pathlib.Path) -> None:
+def test_revisar_fuente_subpaquete_anidado_resuelve_import_relativo_prohibido() -> None:
+    fuente = "from ... import native_parallax"
+    hallazgos = revisar_fuente(fuente, "sub/anidado.py")
+
+    assert [h.regla for h in hallazgos] == [ReglaDeContrato.IMPORTA_GENERADOR]
+    assert hallazgos[0].detalle == "importa 'sky_claw.local.native_parallax'"
+
+
+def test_verificar_archivo_en_subdirectorio_detecta_violacion_en_disco(tmp_path: pathlib.Path) -> None:
     (tmp_path / "limpio.py").write_text("import ast\n", encoding="utf-8", newline="\n")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "sucio.py").write_text("import numpy\n", encoding="utf-8", newline="\n")
@@ -135,7 +145,7 @@ def test_el_archivo_que_viola_se_detecta_desde_el_disco(tmp_path: pathlib.Path) 
     assert [(h.archivo, h.regla) for h in hallazgos] == [("sub/sucio.py", ReglaDeContrato.IMPORTA_DEPENDENCIA_OPCIONAL)]
 
 
-def test_verificar_api_detecta_simbolo_publico_ausente(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verificar_api_simbolo_publico_no_exportado_reporta_api_incompleta(monkeypatch: pytest.MonkeyPatch) -> None:
     import sky_claw.local.parallax_unattended as paquete
 
     monkeypatch.setattr(paquete, "SIMBOLO_FANTASMA", 42, raising=False)
@@ -144,7 +154,7 @@ def test_verificar_api_detecta_simbolo_publico_ausente(monkeypatch: pytest.Monke
     assert any(h.regla is ReglaDeContrato.API_INCOMPLETA and "SIMBOLO_FANTASMA" in h.detalle for h in hallazgos)
 
 
-def test_el_detector_reporta_la_linea_exacta() -> None:
+def test_revisar_fuente_violaciones_multiples_reporta_lineas_y_reglas_exactas() -> None:
     fuente = 'import ast\nimport numpy\n\ndef f():\n    open("x", "w")\n'
     hallazgos = revisar_fuente(fuente, "sintetico.py")
 

@@ -54,6 +54,7 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "copyfile",
         "copytree",
         "hardlink_to",
+        "link",
         "link_to",
         "makedirs",
         "mkdir",
@@ -64,6 +65,7 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "replace",
         "rmdir",
         "rmtree",
+        "symlink",
         "symlink_to",
         "touch",
         "truncate",
@@ -101,15 +103,28 @@ class Hallazgo:
     detalle: str
 
 
-def _nombre_importado(nodo: ast.Import | ast.ImportFrom) -> Iterable[tuple[int, str]]:
+def _paquete_de_archivo(archivo: str) -> tuple[str, ...]:
+    """Calcula el paquete que contiene al archivo inspeccionado para resolver imports relativos."""
+
+    if archivo == "<memoria>":
+        return PAQUETE_PROPIO
+    partes_padre = pathlib.PurePosixPath(archivo).parent.parts
+    subdirectorios = tuple(p for p in partes_padre if p and p != ".")
+    return PAQUETE_PROPIO + subdirectorios
+
+
+def _nombre_importado(
+    nodo: ast.Import | ast.ImportFrom,
+    paquete_origen: tuple[str, ...] = PAQUETE_PROPIO,
+) -> Iterable[tuple[int, str]]:
     if isinstance(nodo, ast.Import):
         for alias in nodo.names:
             yield nodo.lineno, alias.name
         return
     modulo = nodo.module or ""
     if nodo.level:
-        subida = max(0, len(PAQUETE_PROPIO) - nodo.level + 1)
-        base_relativa = ".".join(PAQUETE_PROPIO[:subida])
+        subida = max(0, len(paquete_origen) - nodo.level + 1)
+        base_relativa = ".".join(paquete_origen[:subida])
         modulo = f"{base_relativa}.{modulo}".strip(".") if modulo else base_relativa
     if modulo:
         if _es_prohibido(modulo) is not None:
@@ -187,10 +202,11 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
     except SyntaxError as exc:
         return (Hallazgo(archivo, exc.lineno or 0, ReglaDeContrato.SINTAXIS_INVALIDA, str(exc.msg)),)
 
+    paquete_origen = _paquete_de_archivo(archivo)
     hallazgos: list[Hallazgo] = []
     for nodo in ast.walk(arbol):
         if isinstance(nodo, (ast.Import, ast.ImportFrom)):
-            for linea, nombre in _nombre_importado(nodo):
+            for linea, nombre in _nombre_importado(nodo, paquete_origen):
                 regla = _es_prohibido(nombre)
                 if regla is not None:
                     hallazgos.append(Hallazgo(archivo, linea, regla, f"importa {nombre!r}"))
