@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -237,16 +238,21 @@ def _linea_de_archivo(a: ResultadoDeArchivo) -> str:
     return linea
 
 
-class _SalidaSinCodepage:
+class _SalidaSinCodepage(io.TextIOBase):
     """Escribe en ``flujo`` sin depender de su codificación: lo que no entra se escapa visible (``\\u2192``).
 
     La consola de Windows (o una redirección) impone cp1252/cp437 y los mensajes tienen «→», «°», tildes y rutas del
     usuario: con ``errors="strict"`` un solo carácter tiraba ``UnicodeEncodeError`` a mitad del resumen (rig 2026-10-24).
-    No se reconfigura el ``sys.stdout`` del proceso: solo cambia lo que ESTA herramienta escribe.
+    No se reconfigura el ``sys.stdout`` del proceso: solo cambia lo que ESTA herramienta escribe. Es un flujo de texto
+    de solo escritura: lo demás de ``TextIOBase`` (``read``, ``fileno``...) lanza ``io.UnsupportedOperation``.
     """
 
     def __init__(self, flujo: TextIO) -> None:
+        super().__init__()
         self._flujo = flujo
+
+    def writable(self) -> bool:
+        return True
 
     def write(self, texto: str) -> int:
         try:
@@ -260,7 +266,7 @@ class _SalidaSinCodepage:
 
 
 def _sin_codepage(flujo: TextIO) -> TextIO:
-    # ``print`` solo necesita ``write`` y ``flush``.
+    # ``TextIOBase`` es un flujo de texto completo, pero para mypy no es ``typing.TextIO``.
     return cast("TextIO", _SalidaSinCodepage(flujo))
 
 

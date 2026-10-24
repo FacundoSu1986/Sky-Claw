@@ -334,4 +334,7 @@ def test_todo_llamador_de_producto_integra_con_la_ponderacion_del_producto() -> 
         for nodo in nodos:
             argumento = next((k.value for k in nodo.keywords if k.arg == "ponderacion"), None)
             assert argumento is not None, f"{sitio} llama a integrar sin ponderacion= (la uniforme es solo el oráculo)"
-            assert ast.unparse(argumento) == "PONDERACION_DEL_PRODUCTO", sitio
+            # El nombre canónico, importado directo o calificado (``integrate.PONDERACION_DEL_PRODUCTO``). Un literal
+            # (``Ponderacion.NZ``) o un alias no cuentan: cambiar la del producto tiene que moverlos a todos a la vez.
+            nombre = argumento.id if isinstance(argumento, ast.Name) else getattr(argumento, "attr", None)
+            assert nombre == "PONDERACION_DEL_PRODUCTO", sitio
