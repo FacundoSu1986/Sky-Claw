@@ -76,8 +76,8 @@ resumen, y escribe `informe_parallax.json`. Los `*_p.dds` quedan en `D:\MO2\mods
 Volver a correr el mismo comando recalcula todo pero **no reescribe** lo que no cambió (el informe lo marca `OMITIDA`). Si cambiás un
 parámetro (abajo), esa salida se reemplaza sola.
 
-Sin `--incluir-revision` **no se escribe ningún archivo**: el gate no tiene umbrales validados, manda todas las texturas a revisión y solo las deja en la
-salida si se lo pedís. Es lo esperado, no un error.
+Sin `--incluir-revision` **no se escribe ninguna textura en el mod de salida** (el informe `informe_parallax.json` sí se escribe): el gate no tiene umbrales validados, manda
+todas las texturas a revisión y solo las deja en la salida si se lo pedís. Es lo esperado, no un error.
 
 ### Cómo leer el informe
 
@@ -104,7 +104,8 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
    el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
-5. Para ubicar qué textura usa un objeto en el juego, abrí la consola (`~`), hacé clic en el objeto y leé su identificador: la malla y sus texturas salen de ahí. No supongas
+5. Para ubicar qué textura usa un objeto en el juego, abrí la consola (`~`) y hacé clic en el objeto: la consola de Skyrim sin mods solo muestra su identificador. Con ese identificador lo buscás en
+   xEdit para ver qué malla usa y abrís la malla en NifSkope para ver sus texturas (un mod como More Informative Console muestra más datos en la consola; no verifiqué cuántos). No supongas
    cuál es por el nombre del objeto (el aro de piedra de un pozo de Whiterun usaba `WRCityWall01`, no la textura de piedra que parecía obvia).
 
 ## Qué mandarme
