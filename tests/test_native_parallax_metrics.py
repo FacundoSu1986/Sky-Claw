@@ -593,7 +593,9 @@ def test_la_amplitud_no_trae_percentiles_por_defecto() -> None:
         amplitud(np.zeros((8, 8)))  # type: ignore[call-arg]
 
 
-@pytest.mark.parametrize(("bajo", "alto"), [(None, 98.0), (50.0, 50.0), (2.0, 101.0), (math.nan, 98.0)])
+@pytest.mark.parametrize(
+    ("bajo", "alto"), [(None, 98.0), (50.0, 50.0), (98.0, 2.0), (-1.0, 98.0), (2.0, 101.0), (math.nan, 98.0)]
+)
 def test_la_amplitud_rechaza_percentiles_invalidos(bajo: object, alto: object) -> None:
     with pytest.raises(EntradaInvalidaError):
         amplitud(np.zeros((8, 8)), percentil_bajo=bajo, percentil_alto=alto)  # type: ignore[arg-type]
