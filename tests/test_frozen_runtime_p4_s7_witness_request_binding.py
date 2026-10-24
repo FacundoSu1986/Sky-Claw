@@ -789,9 +789,15 @@ def test_la_carrera_entre_procesos_conserva_single_use_y_no_clobber(tmp_path: pa
         resultados.append(json.loads(stdout.strip().splitlines()[-1]))
 
     # 0. La carrera fue REAL: los intervalos de competición se solapan.
+    #
+    # El orden importa. Comparar `primero["inicio_ns"] < segundo["fin_ns"]` es
+    # TAUTOLÓGICO: ordenados por inicio, y con duraciones positivas, siempre se
+    # cumple — incluso con intervalos disjuntos como [100, 200] y [300, 400].
+    # Lo que hay que afirmar es que el SEGUNDO empieza antes de que el PRIMERO
+    # termine, que es la definición de solape.
     assert all(item.get("inicio_ns") for item in resultados), f"falta la medición de tiempo: {resultados}"
     primero, segundo = sorted(resultados, key=lambda item: item["inicio_ns"])
-    assert primero["inicio_ns"] < segundo["fin_ns"], (
+    assert segundo["inicio_ns"] < primero["fin_ns"], (
         "los procesos no coexistieron (solape nulo): la carrera fue secuencial "
         f"{[(item['inicio_ns'], item['fin_ns']) for item in resultados]}"
     )

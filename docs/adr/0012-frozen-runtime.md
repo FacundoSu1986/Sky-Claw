@@ -10266,3 +10266,22 @@ de secuencia, porque las capas son redundantes a propósito (lock + `MAX_ISSUED`
 CAS + `CREATE`). El valor del test corregido no es matar un mutante extra: es que
 la contención ocurre y queda medida. Decir lo contrario sería vender una métrica
 que no existe.
+
+**Corrección R1b — el assert de solape era tautológico (hallazgo P2 de Codex).**
+La primera versión de la corrección comparaba `primero["inicio_ns"] <
+segundo["fin_ns"]` con los resultados ya ordenados por `inicio_ns`. Eso se cumple
+**siempre** que la duración sea positiva, se solapen o no: con `[100, 200]` y
+`[300, 400]` también pasa. La expresión correcta es `segundo["inicio_ns"] <
+primero["fin_ns"]` — que el segundo empiece antes de que el primero termine.
+
+Medido sobre los datos reales de los dos modos:
+
+```text
+SECUENCIAL   solape =   0.000 ms   assert viejo PASA   assert nuevo FALLA
+CONCURRENTE  solape = 340.194 ms   assert viejo PASA   assert nuevo PASA
+```
+
+Es la misma lección del §47.8, un nivel más abajo: primero un test que no medía
+concurrencia, después un assert que tampoco la medía. **Un assert que no puede
+fallar no es una verificación; es una anotación.** Lo encontró el revisor
+externo, no la suite.
