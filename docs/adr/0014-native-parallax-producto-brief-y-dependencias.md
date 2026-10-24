@@ -1600,3 +1600,59 @@ textura queda `NO_PROCESADA` y el lote sigue. La CLI con cp1252 va en un PR apar
 
 **No verificado.** El `_p` nuevo en el juego (`REAL_RIG_REQUIRED`: hipótesis D de NP-V0, BC4, sigue abierta); la integración
 ponderada a 4096² con `NEUMANN` (cuadruplica los píxeles resueltos; `NO VERIFIED`: ni tiempo ni memoria medidos).
+
+### Prueba en el juego con la salida real del generador (NP-V0c y NP-V0d, 2026-10-24)
+
+**Quién la ejecutó y qué es esta evidencia.** Igual que en «Primera prueba visual en el juego»: la ejecutó el agente asistente en la PC del propietario, con el propietario mirando el juego. **El Tech Lead no la ejecutó ni vio capturas.** Lo visual es lo que dijo el propietario, a ojo, y es una persona, una textura y una superficie. Las cifras son las que midió el agente.
+
+**NP-V0c (hipótesis D, el motor acepta BC4): sí, con un tablero.** Un tablero 8x8 de contraste máximo, en escala de grises de 8 bits y 2048², convertido con el `texconv` fijado (`-f BC4_UNORM -m 0`): BC4 con cabecera clásica `BC4U`, 12 mips y 2 796 344 bytes (el tamaño teórico). Con el mod ganando en la pestaña Datos y la textura cargada (`WRCityWall01_p`, 39 veces en el registro del plugin), el propietario vio **«se ven los cuadros»** en el aro del pozo. Cierra D para ese formato en esa superficie.
+
+**NP-V0d (la salida real, de punta a punta).** Código: la rama de #794 (integración ponderada) con la de #797 (amplitud en el informe) combinadas en una copia local, sin empujar. Sobre `wrcitywall01_n` de Skyland, con `--incluir-revision` (el gate manda todo a `REVIEW` por `SIN_UMBRALES` y, sin esa opción, no escribe ninguna textura):
+
+| | V1 (`min_max`, por defecto) | V2 (percentiles 2/98) |
+|---|---|---|
+| acuerdo p95 | 10,20° | 10,20° |
+| amplitud del informe (p2 / p98 / desviación) | 0,164 / 0,741 / 0,132 | 0,0 / 1,0 / 0,219 |
+| medido con Pillow | desviación 33,8 de 255, 0 % saturado | desviación 55,8 de 255, 4,3 % saturado |
+| archivo | BC4U, 2048², 12 mips, 2 796 344 B | igual |
+| tiempo | 11,3 s | 11,2 s |
+| lo que dijo el propietario | «Sí» (con volumen), «igual que E5», «nada raro» | «Sí», «más que E5», «nada raro» |
+
+**Lo que esto matiza de la sección anterior.** Allí se leyó que «la palanca es la amplitud del mapa». V1 tiene una desviación de 33,8 y un p2/p98 de 41/189 y se ve como E5 (desviación 47,9), mientras que el `_p` autoral de Skyland (desviación 31,8, p1/p99 de 54/222) se había reportado como invisible. **La desviación sola no predice lo que se ve**: algo del contenido del mapa pesa. Una hipótesis sin medir es que una altura integrada desde una normal es de baja frecuencia y un mapa autoral es más rico en detalle fino. No hay medida que la sostenga (`INFERRED`). Consecuencia: no se fija ninguna meta de amplitud; el informe sigue describiéndola sin decidir.
+
+**Parte A: las 8 texturas de la primera corrida, con la integración ponderada (opciones por defecto; reportado).**
+
+| textura | acuerdo p95 nuevo (viejo) | residuo | costura | amplitud (p2 / p98 / desviación) |
+|---|---|---|---|---|
+| `mrkmetala01` | 5,32° (5,36) | 0,279 | 1,331 | 0,196 / 0,868 / 0,169 |
+| `farmhouse01` | 7,49° (7,54) | 0,235 | 1,482 | 0,152 / 0,828 / 0,178 |
+| `stoneedgetrim01` | 10,07° (10,21) | 0,163 | 1,016 | 0,155 / 0,896 / 0,184 |
+| `AspenBark` | 21,16° (21,51) | 0,321 | 1,074 | 0,357 / 0,748 / 0,079 |
+| `blackreachsun01` | **7,98° (47,11)** | 0,453 | 1,127 | 0,205 / 0,893 / 0,233 |
+| `dwarvenspidercenturion` | **21,80° (49,22)** | 0,410 | 0,906 | 0,419 / 0,945 / 0,111 |
+| `fallforestrocks01` | **31,16° (65,25)** | 0,433 | 1,010 | 0,286 / 0,654 / 0,091 |
+| `fallforestdirt01` | **32,38° (65,39)** | 0,430 | 1,025 | 0,253 / 0,648 / 0,097 |
+
+Las cuatro que ya estaban bien no cambiaron (±0,4°) y las cuatro de 47–65° bajaron mucho. **Hipótesis de que parte de esos valores eran píxeles bajo el horizonte: confirmada en parte** (`VERIFIED` sobre estas 8; no se sabe nada de otras). Pero solo `blackreachsun01` entró al rango de las sanas; las otras tres siguen en 22–32° y con poca amplitud (desviación ~0,09–0,11).
+
+**Dos lecturas anteriores quedan en duda.**
+1. En «Primera corrida en un rig real» se leyó que «el acuerdo empeora cuando el residuo de integrabilidad sube». `blackreachsun01` tiene el residuo más alto (0,453, sin cambios porque es de la entrada) y un acuerdo de 8°: **esa lectura estaba confundida por el defecto de los píxeles bajo el horizonte** y no sirve como regla.
+2. Las métricas solo-normal de research (EXP-M2/M3, mejor AUC 0,62) y cualquier lectura de «desajuste» sobre normales reales usaron el integrador uniforme. Si esas normales tenían píxeles con `nz ≤ 0`, el acuerdo estaba contaminado por el mismo mecanismo. **Hipótesis a revalidar; no se tocó research** (#675 sigue parado).
+
+**Los «mapas planos» y el acuerdo malo eran un solo defecto (issue #792).** El auditor del rig contó 5 mapas planos en la salida de la primera corrida (`dwarvenspidercenturion`, `blackreachsun01`, `fallforestdirt01`, `fallforestrocks01`, `stonewall01`, con desviación de 0,7 a 4,1 sobre 255): **cuatro de las cinco son las que tenían el acuerdo de 47–65° en la tabla de la Parte A; `stonewall01` no figura en esa tabla**, así que su acuerdo no se conoce desde esta fuente. Con la integración ponderada las cuatro que se volvieron a correr pasan a una desviación de 23–59 sobre 255 (`blackreachsun01` 59,4; `dwarvenspidercenturion` 28,3; `fallforestdirt01` 24,7; `fallforestrocks01` 23,2; cifras del rig, medidas sobre la altura normalizada antes de cuantizar). `stonewall01` (informe de granja) **falta volver a correrla**. La conclusión práctica es que el defecto de los píxeles bajo el horizonte explicaba a la vez la falta de relieve y el desacuerdo (`VERIFIED` sobre estas cuatro; `NO VERIFIED` para `stonewall01`).
+
+**Triaje del issue #792 (decisiones del TL).** No se adoptan umbrales fijos (`sd ≥ 8/255`, acuerdo ≤ 20°): salen de 15 archivos que además tenían ese defecto y hoy cortarían texturas que no se sabe si se ven mal. `percentil_bajo/alto = null` es el modo `min_max`, no «umbrales sin configurar»; `SIN_UMBRALES` es el gate fail-closed. Los contadores del informe no se contradicen con los veredictos: `conteos` sale de la misma lista de archivos, `veredicto` (gate) y `estado` (qué pasó con el archivo) son dimensiones distintas y `ESCRITA` incluye «con la caché vigente»; falta explicarlo en la guía de operador. **Backlog aceptado:** releer el BC4 escrito desde el disco y compararlo con la altura cuantizada (hoy el exportador valida el contenedor, no el contenido); la huella del perfil de MO2 al empezar y al terminar, y avisar qué `_p` gana por prioridad (incluido un mod de control que tape la salida), dentro del resolvedor de VFS de MO2; y la idea de mandar a un mod aparte lo que quedó en revisión.
+
+**Operación.** El cambio de prioridad hecho desde la ventana de MO2 no se aplicó en una corrida (Datos seguía mostrando V1 y esa corrida no cuenta como prueba de V2); se resolvió cerrando MO2 y editando `modlist.txt` con respaldo. Regla: **confirmar en Datos la columna «Mod» antes de cada corrida**.
+
+**Gate.** Con las opciones por defecto el generador no escribe ninguna textura en el mod de salida (el informe sí se escribe): es el comportamiento fail-closed vigente. Los umbrales siguen sin derivarse (hay un veredicto visual de una textura; hacen falta decenas con veredicto).
+
+**Lo que dejó la revisión del TL de #794, #796 y #797 (ya en `main`; Linux, Python 3.11, los números son míos).**
+- **#794 (integración ponderada).** Sondas propias, sin los helpers de la suite del autor: en un campo integrable limpio la ponderada coincide con la uniforme a ~1e-11 (periódicos) y ~1e-7 (Neumann) en 63x97, 64x96, 65x64, 33x33 y 128x100; con 0,05 %, 1 %, 5 % y 20 % de píxeles con `nz < 0` mantiene correlación ≈ 1,000 con la verdad donde la uniforme da entre −0,03 y 0,19; con pendientes fuertes (`nz` mínimo 0,03) converge en 56 iteraciones de un tope de 500. Recursos medidos (4 núcleos, 16 GB): 2048² periódicos 12,7 s y ~0,6 GB de pico; 2048² Neumann 72 s y ~1,9 GB; 4096² periódicos 64 s y ~2,2 GB. **Neumann a 4096² no se midió** (extrapolando serían ~6 GB y ~5 min; `NO VERIFIED`). Mutación por AST de la integración ponderada: 94 mutantes, 70 muertos; los 24 vivos son anotaciones de tipo, mensajes de error, límites de iteración o guardas redundantes, salvo uno **real**: el relleno de los píxeles indefinidos (pendiente nula con el peso medio) no lo ejercía ningún test, porque un píxel o un bloque de 4x4 convergen igual con peso cero. Medido: sin el relleno un hueco de 8x8 tarda 296 iteraciones y uno de 24x24 da `SinConvergenciaError`; con él, 8. Un test nuevo (huecos de 8x8 y 24x24, los dos bordes) lo cubre y falla con el relleno desactivado.
+- **#796 (consola).** El informe se escribe antes que el resumen y la salida nunca aborta una corrida (`_SalidaSinCodepage`). Mutación: 15 mutantes, 11 muertos y 4 marginales. **Límite conocido:** si el proceso corre sin consola (`sys.stdout is None`, por ejemplo con `pythonw`), `_SalidaSinCodepage(None).write` lanza `AttributeError`; la CLI está pensada para una terminal. `write()` devuelve `len(texto)` **a propósito**, como `os.devnull`: un sumidero que devolviera 0 haría girar sin fin a un consumidor que reintente hasta escribir todo.
+- **#797 (amplitud).** Describe, no decide: el gate no cambia y la amplitud sale de la altura ya normalizada que recibe el exportador (no de `integrada.altura`, la salida cruda de la integración). Mutación de la serialización del informe: 62 de 62.
+- **Proceso.** Cada push a un PR cancela y reinicia ~40 min de CI de Windows, y las guías automáticas comentan cada cabeza nueva, lo que invita a otro push. Los reparos de los bots se verifican ejecutando y se responden en el PR sin empujar si el código ya los cubre. Un rojo de «Tests (Pytest)» sobre una cabeza vieja es la cancelación por push (el job de Windows termina `cancelled`), no un fallo.
+
+**No verificado.** Que el pozo vuelva a verse como E5 después de destildar V1 y V2; la calidad en el juego de las 8 texturas de la Parte A (no se generaron archivos); cualquier otra superficie u otro propietario; la explicación de por qué V1 se ve y el `_p` de Skyland no.
+
+**Qué sigue.** (a) *Hecho:* #794, #796 y #797 están en `main` (más abajo, lo que dejó su revisión). (b) NP-V0e: veredicto en el juego de cuatro texturas más, generado contra sin generar, empezando por las que quedaron en 22–32°. (c) Reanudar NP-A0 con el resolvedor de VFS de MO2 (solo lectura). **Siguen congelados los umbrales.**
