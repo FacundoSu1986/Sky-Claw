@@ -1509,20 +1509,29 @@ Con peso `nz²` y peso cero bajo el piso, 6 de 187 no convergían en 3000 iterac
 máximo 117 iteraciones con `nz` y 815 con `nz²`. Sobre wrcitywall01 las dos dan casi lo mismo (p95 10.2° y 10.0°). En una normal
 integrable y todo definida la altura es la de la uniforme (p95 limpio < 1e-6°).
 
-**Resultado medido (Windows, `texconv` del pin `may2026`, `--normalizacion percentiles 2 98`).** wrcitywall01: acuerdo p95
-**10.20°**, correlación del `_p` (BC4, decodificado con Pillow) con el difuso **+0.178**, sd 55.8, 24 iteraciones (~9 s). Comparar
-con el `_p` de Skyland (correlación 0.82) fue solo evaluación: ningún número de este cambio sale de esa salida. El residuo de
-integrabilidad no cambia (0.40): es una propiedad de la normal de entrada, no del integrador.
+**Contra los criterios de aceptación del TL (sección NP-V0).**
+1. *Rojo observado antes:* los siete formatos de entrada aceptados × las dos normalizaciones daban correlación con la altura
+   VERDADERA (sintética) de 0.18–0.41 y p95 ~35°; las cuatro clases de píxel fuera del dominio, < 0.5 con la uniforme.
+2. *El acuerdo no se baja por decreto:* `metrics.py` y `gates.py` no cambian (ni la definición de `acuerdo_normal` ni
+   `VERSION_DE_METRICAS`). El p95 de wrcitywall01 pasa de 44.8° a **10.2°** porque la altura reproduce la normal que antes no
+   reproducía: la métrica es la misma, cambió lo que mide.
+3. *¿La normal es integrable?* Decodificación y convención están bien (arriba). Por bandas de frecuencia, la energía del rotor de
+   los gradientes sobre la de su divergencia es 3 % por debajo de 256 ciclos por textura —donde están las piedras—, 6 % entre 256 y
+   512, 20 % entre 512 y 1024 y 66 % por encima. El residuo de integrabilidad (0.40, sin cambios: es de la entrada, no del integrador) es
+   ruido de alta frecuencia, no la forma. El gate la sigue mandando a `REVIEW` (fail-closed, sin umbrales). **No se fabrica
+   relieve:** el relleno solo actúa en los 7 píxeles indefinidos, y les pide pendiente NULA.
+4. *Prueba final en el juego con BC4:* **pendiente.** La salida no se instaló.
 
-**CLI.** `_resumen` reventaba con `UnicodeEncodeError` («→» en cp1252) y el informe JSON se escribía después, así que se perdía.
-Toda la salida pasa por `_SalidaSinCodepage` (escapa lo que el flujo no representa, sin tocar el `sys.stdout` del proceso) y
-`generar` y `autoprueba` informan por `_informar`: el informe primero y el resumen después.
+**Resultado medido (Windows, `texconv` del pin `may2026`).** Con el default `min_max`, que este cambio NO toca: acuerdo p95 10.2°,
+altura normalizada con p2/p98 en 0.16/0.74 y desviación 0.132 (33.8 sobre 255). Antes, los extremos de los dipolos la dejaban
+casi plana. Con `--normalizacion percentiles 2 98`: p95 10.2°, desviación 0.219 (55.8 sobre 255), 24 iteraciones (~9 s). Como
+síntoma, y no como criterio (decisión del TL en NP-V0): la correlación del `_p` con el difuso pasa de −0.01 a +0.18.
 
 **Anclas.** `tests/test_native_parallax_normales_fuera_de_dominio.py`: cada formato de entrada aceptado (la familia se congela
 contra las listas cerradas de `decode.py`) × cada normalización por `lote._medir` con un bloque fuera del dominio; cada clase de
 píxel fuera del dominio (negativo, cero, bajo el piso, diminuto sobre el piso) con los dos bordes; y por AST, que todo llamador de
-producto de `integrar` pase `PONDERACION_DEL_PRODUCTO`. `tests/test_native_parallax_cli.py`: cuatro codificaciones estrictas
-(cp1252, cp437, cp850, ascii) × los dos comandos, y el informe antes del resumen en los dos.
+producto de `integrar` pase `PONDERACION_DEL_PRODUCTO`. `tests/test_native_parallax_cli.py`: si la integración no converge, la
+textura queda `NO_PROCESADA` y el lote sigue. La CLI con cp1252 va en un PR aparte.
 
-**No verificado.** Cómo se ve el `_p` nuevo en el juego (Community Shaders) sobre el pozo de Whiterun; la integración ponderada a
-4096² con `NEUMANN` (cuadruplica los píxeles resueltos) no se midió.
+**No verificado.** El `_p` nuevo en el juego (hipótesis D de NP-V0, BC4, sigue abierta); la integración ponderada a 4096² con
+`NEUMANN` (cuadruplica los píxeles resueltos) no se midió.

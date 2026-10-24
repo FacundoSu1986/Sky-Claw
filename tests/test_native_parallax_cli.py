@@ -1305,68 +1305,6 @@ def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_pat
     )
 
 
-# ---------------------------------------------------------------------------
-# La salida no depende del codepage de la consola (rig 2026-10-24: «→» en cp1252 tiraba UnicodeEncodeError)
-# ---------------------------------------------------------------------------
-
-# Codificaciones ESTRICTAS que la consola de Windows o una redirección pueden imponer: la ANSI (cp1252), las OEM
-# (cp437, cp850) y la más pobre (ascii). Cada una tiene caracteres de los mensajes que no puede representar.
-_CODIFICACIONES_ESTRICTAS = ("cp1252", "cp437", "cp850", "ascii")
-
-
-def _comando(nombre: str, mundo: pathlib.Path) -> list[str]:
-    informe = str(mundo / "informe.json")
-    if nombre == "autoprueba":
-        return ["autoprueba", "--informe", informe]
-    carpetas = ["--carpeta", str(mundo / "entrada"), "--mods", str(mundo / "mods")]
-    return ["generar", *carpetas, "--informe", informe, "--incluir-revision"]
-
-
-def _correr_con(mundo: pathlib.Path, argv: list[str], salida: Any) -> int:
-    return main(
-        argv,
-        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
-        fabrica_de_exportador=_fabrica(),
-        base_de_estado=mundo / "estado",
-        salida=salida,
-    )
-
-
-@pytest.mark.parametrize("codificacion", _CODIFICACIONES_ESTRICTAS)
-@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
-def test_ningun_comando_revienta_por_el_codepage_y_el_informe_se_escribe(
-    mundo: pathlib.Path, comando: str, codificacion: str
-) -> None:
-    crudo = io.BytesIO()
-    salida = io.TextIOWrapper(crudo, encoding=codificacion, errors="strict", newline="")
-
-    codigo = _correr_con(mundo, _comando(comando, mundo), salida)
-
-    salida.flush()
-    texto = crudo.getvalue().decode(codificacion)
-    assert codigo == CODIGO_OK
-    assert "Resumen:" in texto and "Informe:" in texto
-    # Ninguna de las cuatro representa «→»: se escapa visible, no se pierde ni se inventa.
-    assert "\\u2192" in texto
-    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1
-
-
-class _SalidaQueRevientaEnElResumen(io.StringIO):
-    def write(self, texto: str) -> int:
-        if "Resumen:" in texto:
-            raise RuntimeError("la consola se cayó al mostrar el resumen")
-        return super().write(texto)
-
-
-@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
-def test_el_informe_se_escribe_antes_de_mostrar_el_resumen(mundo: pathlib.Path, comando: str) -> None:
-    # Mostrar es lo último que puede fallar: el informe (la evidencia de la corrida) no puede depender de la consola.
-    with pytest.raises(RuntimeError, match="resumen"):
-        _correr_con(mundo, _comando(comando, mundo), _SalidaQueRevientaEnElResumen())
-
-    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1
-
-
 def test_si_la_integracion_no_converge_la_textura_queda_no_procesada_y_el_lote_sigue(
     mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1381,15 +1319,3 @@ def test_si_la_integracion_no_converge_la_textura_queda_no_procesada_y_el_lote_s
     assert texto.count("NO_PROCESADA") >= 2 and "SinConvergenciaError" in texto
     informe = json.loads((mundo / "informe.json").read_text(encoding="utf-8"))
     assert informe["conteos"]["NO_PROCESADA"] == 2
-
-
-def test_la_salida_sin_codepage_es_un_flujo_de_texto_de_solo_escritura() -> None:
-    crudo = io.BytesIO()
-    salida = cli._sin_codepage(io.TextIOWrapper(crudo, encoding="cp1252", errors="strict", newline=""))
-
-    assert salida.writable() and not salida.readable()
-    with pytest.raises(io.UnsupportedOperation):
-        salida.read()
-    salida.write("a → b\n")
-    salida.flush()
-    assert crudo.getvalue() == b"a \\u2192 b\n"
