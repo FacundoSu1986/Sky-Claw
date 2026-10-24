@@ -124,7 +124,10 @@ def assess_runtime_compatibility(
             reason=f"SKSE {skse_dll_game_version(dlls[0].name)} sirve al build {version}",
             game_version=version,
             skse_loader=loader.name,
-            skse_dll=dlls[0].name if dlls else None,
+            # La rama vacía retornó UNKNOWN arriba: acá ``dlls`` no puede estar
+            # vacía y el ternario previo (herencia del IndexError) era un
+            # conditionality muerto que sugería lo contrario.
+            skse_dll=dlls[0].name,
         )
 
     # ``find_skse_installation`` devolvió None: se explica el motivo, no se
