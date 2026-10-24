@@ -1249,7 +1249,7 @@ _LOG_DEL_RIG_CON_MODAL_STITCHED = (
 )
 
 
-def test_f1_la_linea_del_modal_stitched_del_rig_no_es_terminal() -> None:
+def test_clasificar_log_la_linea_del_modal_stitched_del_rig_no_es_terminal() -> None:
     """RED de F1 en el clasificador: la línea real sale terminal sobre `main`.
 
     La corrida del rig 2026-10-19 generó **1.362 archivos / 138 MB**, escribió
@@ -1268,7 +1268,7 @@ def test_f1_la_linea_del_modal_stitched_del_rig_no_es_terminal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_f1_la_corrida_texgen_con_modal_stitched_aprobado_es_exito(tmp_path: pathlib.Path) -> None:
+async def test_run_texgen_la_corrida_con_modal_stitched_aprobado_es_exito(tmp_path: pathlib.Path) -> None:
     """RED de F1 END-TO-END: el clasificador solo no prueba el veredicto.
 
     Es el caso que el rig midió: artefacto presente, `rc == 0`, marcador presente,
@@ -1348,7 +1348,7 @@ _CASOS_ADVERSARIALES_MODAL_STITCHED = [
 
 
 @pytest.mark.parametrize(("linea", "es_terminal"), _CASOS_ADVERSARIALES_MODAL_STITCHED)
-def test_f1_la_exencion_del_modal_no_amplia_el_fail_closed(linea: str, es_terminal: bool) -> None:
+def test_clasificar_log_la_exencion_del_modal_no_amplia_el_fail_closed(linea: str, es_terminal: bool) -> None:
     """La exención es la instrucción exacta, y no le gana a la severidad.
 
     Los casos B–D son la razón por la que la categoría lleva la instrucción
