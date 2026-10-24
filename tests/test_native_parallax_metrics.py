@@ -578,7 +578,7 @@ def test_la_amplitud_de_una_rampa_son_sus_percentiles_y_su_desviacion() -> None:
     )
 
 
-def test_una_altura_casi_plana_se_ve_casi_plana() -> None:
+def test_la_amplitud_de_una_altura_casi_plana_se_ve_casi_plana() -> None:
     # El síntoma de NP-V0: un `_p` con extremos BC4 131–132 es una altura que apenas se mueve alrededor de 0.5.
     casi_plana = 0.515 + 0.002 * np.random.default_rng(7).standard_normal((64, 64))
 
