@@ -49,6 +49,7 @@ from sky_claw.local.native_parallax.bench.sintetico import (
 from sky_claw.local.native_parallax.experiments.revision import Medicion, ParametroDeRevisionInvalidoError
 from sky_claw.local.native_parallax.gates import VERSION_DE_METRICAS, MetricasDeCalidad
 from sky_claw.local.native_parallax.integrate import (
+    PONDERACION_DEL_PRODUCTO,
     AlturaPlanaError,
     Bordes,
     EntradaInvalidaError,
@@ -76,8 +77,10 @@ __all__ = [
     "medir_textura",
 ]
 
-VERSION_DE_LA_MEDICION = "np-x0b.v1"
-"""Definición de lo que se mide (métricas del gate y ``error_de_altura``); entra en la descripción del corpus medido."""
+VERSION_DE_LA_MEDICION = "np-x0b.v2"
+"""Definición de lo que se mide (métricas del gate y ``error_de_altura``); entra en la descripción del corpus medido.
+
+v2: la altura sale de la integración ponderada (``PONDERACION_DEL_PRODUCTO``), la misma que publica el lote."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +175,8 @@ def medir_textura(
     vería la costura al TESELAR la altura, sea cual sea el integrador que la produjo. La ``Medicion`` declara los bordes
     con que se hizo para que no se mezclen mediciones de bordes distintos en una misma derivación.
     """
-    integrada = integrar(normal, bordes=bordes)
+    # La MISMA integración que publica el lote: si no, los límites derivados medirían otro algoritmo.
+    integrada = integrar(normal, bordes=bordes, ponderacion=PONDERACION_DEL_PRODUCTO)
     acuerdo = acuerdo_normal(normal, integrada.altura, bordes=bordes)
     metricas = MetricasDeCalidad.desde_metricas(
         acuerdo,
