@@ -62,6 +62,7 @@ from sky_claw.local.native_parallax.decode import ConvencionNormal, NormalDecode
 from sky_claw.local.native_parallax.export import ExportError
 from sky_claw.local.native_parallax.gates import Decision, GateError, MetricasDeCalidad, Veredicto, decidir
 from sky_claw.local.native_parallax.integrate import (
+    PONDERACION_DEL_PRODUCTO,
     Bordes,
     IntegracionError,
     ModoNormalizacion,
@@ -412,7 +413,14 @@ def _medir(ruta: pathlib.Path, parametros: ParametrosDelLote, decisor: Decisor) 
     if _huella_acotada(ruta) != antes:
         raise OrigenInvalidoError("el origen cambió mientras se procesaba: no se sabe qué bytes se decodificaron")
     normal = decodificada.normal
-    integrada = integrar(normal, bordes=parametros.bordes, escala_x=parametros.escala_x, escala_y=parametros.escala_y)
+    # Ponderada: un píxel con nz ~ 0 (un borde que BC7 cuantizó bajo el horizonte) no decide la altura de toda la textura.
+    integrada = integrar(
+        normal,
+        bordes=parametros.bordes,
+        escala_x=parametros.escala_x,
+        escala_y=parametros.escala_y,
+        ponderacion=PONDERACION_DEL_PRODUCTO,
+    )
     altura = normalizar_altura(
         integrada.altura,
         parametros.normalizacion,

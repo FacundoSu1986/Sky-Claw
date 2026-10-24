@@ -1305,6 +1305,22 @@ def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_pat
     )
 
 
+def test_si_la_integracion_no_converge_la_textura_queda_no_procesada_y_el_lote_sigue(
+    mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``SinConvergenciaError`` es un ``IntegracionError``: falla UNA ruta (``ERRORES_POR_ARCHIVO``), no la corrida entera.
+    from sky_claw.local.native_parallax import integrate
+
+    monkeypatch.setattr(integrate, "MAX_ITERACIONES", 0)
+
+    codigo, texto = _generar(mundo, "--incluir-revision")
+
+    assert codigo == CODIGO_CON_FALLOS
+    assert texto.count("NO_PROCESADA") >= 2 and "SinConvergenciaError" in texto
+    informe = json.loads((mundo / "informe.json").read_text(encoding="utf-8"))
+    assert informe["conteos"]["NO_PROCESADA"] == 2
+
+
 # ---------------------------------------------------------------------------
 # La salida no depende del codepage de la consola (rig 2026-10-24: «→» en cp1252 tiraba UnicodeEncodeError)
 # ---------------------------------------------------------------------------
