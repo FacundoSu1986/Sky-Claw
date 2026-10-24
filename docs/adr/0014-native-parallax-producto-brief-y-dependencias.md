@@ -1484,3 +1484,65 @@ texto «No me dijeron dónde está el texconv» es el que escribió NP-A0c: no l
 
 **Qué falta.** El registro de tools y las superficies GUI y agente todavía no llaman al diagnóstico; cuando lo hagan, `ruta_configurada` y
 `diagnosticar_texconv` son la única forma de resolver y juzgar el binario, y el ancla de «un solo módulo» las cubre.
+
+### Primera prueba visual en el juego (NP-V0, 2026-10-24)
+
+**Quién la ejecutó y qué es esta evidencia.** La ejecutó el agente asistente en la PC del propietario (Skyrim SE 1.6.1170 con MO2), con el propietario mirando el
+juego. **El Tech Lead no la ejecutó ni vio capturas ni archivos**: lo que sigue sale del informe que escribió el agente y pegó el propietario. Los registros, los
+scripts y el informe completo están en su PC y no en el repo. Lo visual es lo que dijo el propietario, a ojo: una persona, una superficie, un juego. Las cifras
+(desviaciones, huellas, tamaños) son las que el agente midió y **no las reprodujo nadie más**.
+
+**La pregunta.** Tras «con el mod de salida activo y desactivado no noté diferencia» (puesto debajo de todo en MO2): ¿el motor no aplica relieve en esa malla, o lo
+aplica y no se ve?
+
+**Resultado (reportado).** Lo aplica y no se ve: **la palanca es la amplitud del mapa de altura**. Tres pruebas decisivas sobre el aro de piedra del pozo de Whiterun:
+
+| Prueba | Qué se puso (mod de control aparte, archivo nuevo) | Qué vio el propietario |
+|---|---|---|
+| E1 | rampa diagonal como `stonewall01_p` | «igual que antes» — **no era la textura del pozo** (ver hallazgo 1) |
+| E3 | tablero 8×8 de contraste máximo como `wrcitywall01_p` (y `wrstonebase02_p`) | pozo: **«cuadros / deformada»** ⇒ el relieve corre. Pared de la Yegua Abanderada: igual (probablemente miró una textura sin `_p`; no confirmado) |
+| E5 | el `_p` autoral de Skyland de `wrcitywall01` con el contraste estirado ×1,5 (de p1–p99 a 0–255; misma forma, correlación 0,995) | **«Sí, con volumen»**. Queda instalado por decisión del propietario (también afecta a la muralla) |
+
+**Hallazgos que corrigen supuestos anteriores (reportados).**
+1. **El pozo no usa `stonewall01`.** La consola dio la referencia `0001A460`, base `0001941B` (`WRMainRoadMarket`, malla vanilla del BSA); el aro usa
+   `WRCityWall01`. Todo lo probado antes sobre `farmhouse\stonewall01_p` (cuadrícula, rampa, `_m`) no tocaba el pozo.
+2. **La malla del pozo es vanilla, con shader por defecto y sin `_p`; el relieve lo activa en tiempo de ejecución el plugin Auto Parallax** cuando existe un `_p`
+   de esa textura (su registro muestra la carga de `WRCityWall01_p`). Si se sostiene, un `_p` generado puede dar relieve en mallas vanilla sin editarlas. El criterio
+   con que el plugin apaga objetos **no se pudo determinar** (no hay código fuente local).
+3. **El tiling no es la causa:** 1,0 de UV ≈ 2,6–3,1 m en el aro, o sea un desplazamiento posible de 26–31 cm con la altura máxima fija en 0,1.
+4. **Ni la granja, ni la muralla, ni el pozo tienen mapa de entorno ni `_m` referenciado** en la malla: el `_m.dds` no se carga. Eso explica la prueba «inerte» de
+   `_m` de la mañana por una razón más básica que la del shader.
+
+**Las hipótesis del hand-off de causas (A–D), con su estado.**
+- **A** (el motor no aplica relieve ahí): refutada para el aro del pozo (E3).
+- **B** (MO2 no sirve el archivo): para los controles, descartada (el registro del plugin muestra su carga). **Para los archivos del mod de salida del generador, no verificado.**
+- **C** (relieve demasiado suave): explica la invisibilidad del `_p` autoral de Skyland en el pozo (n = 1). **Para el generador hay un dato aparte y sin causa probada:** el `stonewall01_p` del mod de salida
+  gestionado es casi plano (extremos BC4 131–132, desviación 0,7 sobre 255, medida con Pillow por el agente). El default `--normalizacion min_max` se arruina con unos pocos
+  píxeles extremos y sería consistente con eso, pero **nadie comprobó que esa salida se hizo con ese default ni que ese sea el mecanismo**.
+- **D** (el motor no acepta BC4): **ABIERTA, y es la que importa.** Los controles E3 y E5 fueron DXT5; el generador solo exporta BC4 (`export.py`). Hasta que un BC4 muestre relieve en el
+  juego, **no está probado que la salida real del generador sea utilizable**, por buena que sea su altura.
+
+**Lo que NO se puede concluir.** «×1,5 se ve y ×1 no» es un solo par de observaciones sobre una textura: no es un umbral ni una receta de amplitud. Tampoco prueba que los `_p` del generador
+funcionen (D abierta) ni que la altura integrada sea correcta.
+
+**Defectos de la herramienta que el rig encontró (abiertos al momento de escribir).**
+1. **La CLI revienta en consola cp1252.** Sin `PYTHONIOENCODING=utf-8`, el resumen lanza `UnicodeEncodeError` (la flecha `→` de `_linea_de_archivo`) **después** de escribir la salida y **antes** de escribir
+   `informe_parallax.json`: la corrida deja archivos y ningún informe. Propiedad que debe cumplirse: el informe no depende de lo que la consola sepa imprimir, e imprimir nunca aborta una corrida que ya escribió.
+2. **`wrcitywall01_n` (BC7, 2048²) sale mal.** El gate la mandó a `REVIEW` (acuerdo p95 44,81°, igual con `--convencion opengl`); la salida es reproducible (misma huella en dos corridas) pero a la vista es una mancha de baja
+   frecuencia con rayado de cuadrícula, sin piedras. Se corrió con `--incluir-revision` y **no se instaló**. **El gate hizo lo que debe: la marcó.** Es el patrón de la primera corrida (acuerdo alto cuando el residuo de integrabilidad es alto) y un dato más
+   para la hipótesis de Skyland, que sigue **sin sostener**.
+3. El default `min_max` y la salida casi plana (arriba, C).
+
+**Decisión del TL sobre el criterio de «arreglado».** El informe propone: «un `_p` con correlación positiva clara con el difuso y amplitud comparable a E5 (desviación ~45–50)». **No lo adopto**, por dos razones:
+- **El pipeline no usa el difuso** (ningún módulo de `native_parallax/` lo lee: es normal → altura). La correlación con el difuso no es una propiedad que el código pueda garantizar, y la de Skyland (0,25–0,37) es un accidente del flujo de un artista. Tomarla como objetivo invita a
+  mezclar el difuso en la altura o a retocar hasta que el número salga. Sirve como **síntoma** (≈ 0 junto con acuerdo alto), no como criterio de aceptación.
+- **Una desviación objetivo sacada de la altura autoral de un mod es ajustar un umbral a la salida de un tercero con n = 1.** Lo legítimo es que la normalización no dependa de unos pocos píxeles extremos (percentiles) y que el informe declare la **amplitud efectiva** del mapa exportado,
+  para que un mapa casi plano se vea como tal antes de llegar al juego. La escala final la decide el operador mirando el juego.
+
+Aceptación de cualquier arreglo del generador: (1) rojo observado antes; (2) el acuerdo sigue siendo la métrica de consistencia y **no se «mejora» bajándolo por decreto**; (3) si tras corregir decodificación y convención el acuerdo de `wrcitywall01` sigue alto, la conclusión legítima es que
+esa normal no es integrable y la textura queda fuera del dominio (el gate la manda a revisión): no se arregla fabricando relieve; (4) la prueba final es en el juego, **con BC4**.
+
+**Qué sigue, por costo.** (a) **Prueba de BC4 en el juego** (barata y decide D): el mismo tablero de contraste máximo, codificado con el `texconv` fijado como `BC4_UNORM` con mips, en un mod de control aparte con más prioridad que el instalado; si se ve en el aro del pozo, BC4 sirve. (b) Los dos defectos de la CLI. (c) El
+diagnóstico de la decodificación y la convención sobre `wrcitywall01_n`. **Sigue congelado** todo NP-A0 posterior (adaptador de MO2, GUI/agente, política de lote incompleto) y cualquier umbral hasta que (a) tenga veredicto.
+
+**No verificado.** Todo lo visual; que el mod de salida del generador gane en el juego; que BC4 se vea; que la amplitud sea la única diferencia entre E3/E5 y lo invisible (la forma se conservó en E5, pero es un solo caso); el criterio de Auto Parallax; que la salida plana de `stonewall01` venga de `min_max`.
