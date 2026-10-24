@@ -76,6 +76,24 @@ resumen, y escribe `informe_parallax.json`. Los `*_p.dds` quedan en `D:\MO2\mods
 Volver a correr el mismo comando recalcula todo pero **no reescribe** lo que no cambió (el informe lo marca `OMITIDA`). Si cambiás un
 parámetro (abajo), esa salida se reemplaza sola.
 
+Sin `--incluir-revision` **no se escribe ninguna textura en el mod de salida** (el informe `informe_parallax.json` sí se escribe): el gate no tiene umbrales validados, manda
+todas las texturas a revisión y solo las deja en la salida si se lo pedís. Es lo esperado, no un error.
+
+### Cómo leer el informe
+
+El informe describe cada textura con tres campos que se confunden fácil. Son cosas distintas:
+
+| Campo | Qué dice |
+|---|---|
+| `veredicto` | lo que decidió el gate con las métricas: `REVIEW` mientras no haya umbrales validados |
+| `estado` | qué pasó con el archivo: `ESCRITA` (quedó en la salida: publicada, reemplazada **o con la caché vigente**), `EN_REVISION` (el gate la mandó a revisión y no pediste escribirla), `NO_PROCESADA` (falló antes de tener algo que escribir) o `NO_ESCRITA` |
+| `efecto` | qué hizo el escritor con esa ruta: `PUBLICADA`, `REEMPLAZADA`, `OMITIDA` (la caché estaba vigente), `PRESERVADA`, `CONFLICTO`, `FALLIDA`… |
+
+Por eso una textura puede tener `veredicto: REVIEW`, `estado: ESCRITA` y `efecto: OMITIDA` sin que nada se contradiga, y `conteos` se calcula de la misma lista de archivos.
+
+`amplitud` (p2, p98 y desviación estándar de la altura que se exporta, en la escala [0, 1]) dice qué tan plano quedó el mapa. **Describe, no decide**: no hay un valor «bueno»
+ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada en el juego; fuera de ese caso, qué tan fuerte se ve lo decide el juego (y tus ojos), no este número.
+
 ## Paso 4 — Mirarlo en el juego
 
 1. En MO2, refrescá (F5), activá el mod «Sky-Claw - Native Parallax Output» y ponelo **por debajo del mod de texturas
@@ -83,6 +101,12 @@ parámetro (abajo), esa salida se reemplaza sola.
 2. Para que el parallax **se vea**, la malla o el terreno tiene que usar parallax (depende de tu ENB / preset / Community
    Shaders). No verifiqué cuál es tu caso: contame qué usás.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas.
+4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
+   encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
+   el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
+5. Para ubicar qué textura usa un objeto en el juego, abrí la consola (`~`) y hacé clic en el objeto: la consola de Skyrim sin mods solo muestra su identificador. Con ese identificador lo buscás en
+   xEdit para ver qué malla usa y abrís la malla en NifSkope para ver sus texturas (un mod como More Informative Console muestra más datos en la consola; no verifiqué cuántos). No supongas
+   cuál es por el nombre del objeto (el aro de piedra de un pozo de Whiterun usaba `WRCityWall01`, no la textura de piedra que parecía obvia).
 
 ## Qué mandarme
 
@@ -107,6 +131,10 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 ## Límites conocidos
 
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
+- Lo que está probado en el juego (una persona, a ojo): un `*_p.dds` en BC4 lo usa el juego, y la salida real del generador sobre una textura (`wrcitywall01`, el aro de piedra del
+  pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
+  desviación cercana a 0), mandame la textura de entrada.
 - No hay interfaz gráfica ni agente: solo esta línea de comandos. La integración con MO2 (habilitar el mod solo) viene después.
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
