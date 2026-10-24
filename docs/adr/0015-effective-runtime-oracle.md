@@ -372,3 +372,9 @@ Dos barreras, ninguna ficticia:
 2. **La omisión se declara.** `ABSENT` a secas no distinguía "medí y no hay" de
    "nunca pregunté"; la observación `CONFIG_SKYRIM_PATH` ahora lleva un
    `detail` explícito cuando la superficie no se suministró.
+
+La misma vara para el resto de la superficie: `decode_qt_scalar` (lectura de
+`[Settings] base_directory`, que es texto plano y no debe decodificarse) se
+exporta y se prueba pero **tampoco tiene consumidor productivo** en este
+slice. Se declara acá en vez de presentarse como cableada; su consumidor
+natural es el mismo P5-B que el de `config_skyrim_path`.
