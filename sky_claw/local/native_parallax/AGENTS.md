@@ -35,11 +35,19 @@ La política clean-room, `docs/design/research/native-parallax/` y
   perezosa SOLO por `_extra.py` (y `decode.py`, que además necesita Pillow): ambos puntos están congelados por AST
   en `tests/test_native_parallax_producto_invariant.py`. No agregues otra llamada a `fftfreq` ni otro
   `import numpy` dentro de una función: rompe el ancla a propósito.
+  **El producto no integra con la uniforme** (Frankot–Chellappa, la del oráculo): usa `PONDERACION_DEL_PRODUCTO`
+  (`Ponderacion.NZ`, mínimos cuadrados ponderados por `nz`, relleno suave donde `nz` cae bajo el piso). Con la uniforme, 7
+  píxeles con `nz < 0` de un `_n` BC7 real (wrcitywall01) bastaban para borrar las piedras. Todo llamador de producto de
+  `integrar` pasa `ponderacion=PONDERACION_DEL_PRODUCTO` (hoy el lote y la medición: lo que se publica y lo que mide el gate
+  salen del MISMO integrador); el ancla por AST y la enumeración de los formatos de entrada aceptados están en
+  `tests/test_native_parallax_normales_fuera_de_dominio.py`. Ver ADR 0014, "Actualización: integración ponderada".
 - `metrics.py` (NP-Q0a) son métricas que DESCRIBEN, no deciden: no hay umbrales ni gates ahí (se derivan del
   benchmark, ADR 0014 §6) y `rango_dinamico` exige los percentiles. La derivada H → gradientes y la inversa
   normal → gradientes tienen UNA definición (`espectral.gradientes_espectrales`, `integrate.gradientes_de_normal`):
   no las copies, importalas. Un módulo nuevo que importe de `espectral` rompe el ancla hasta que se le escribe su
-  receta en `CONSUMIDORES_DE_ESPECTRAL`.
+  receta en `CONSUMIDORES_DE_ESPECTRAL`. `amplitud` (NP-V0) declara en el informe del lote los percentiles 2/98 y la
+  desviación de la altura que se exporta (`lote.PERCENTILES_DE_LA_AMPLITUD`): describe, sin umbral ni objetivo, y no
+  cambia el default `min_max` (ese default se decide con más de una textura juzgada en el juego).
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
   evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia

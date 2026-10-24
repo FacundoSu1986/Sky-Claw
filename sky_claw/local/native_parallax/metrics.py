@@ -12,6 +12,9 @@ Qué entra y qué no, con el motivo:
 - ``acuerdo_normal`` (``normal_agreement``), ``residuo_de_integrabilidad`` (``integrability_residual``),
   ``razon_de_costura`` (``seam_score``), ``rango_dinamico`` (``dynamic_range``), ``razon_de_recorte``
   (``clip_ratio``) y ``contar_no_finitos`` (``nan_inf``).
+- ``amplitud`` (NP-V0, decisión del TL): los percentiles y la desviación de la altura que se exporta, para que un mapa
+  casi plano se vea en el informe antes de llegar al juego. Es DESCRIPTIVA: no tiene umbral ni objetivo (una amplitud
+  «buena» sacada de un mod sería ajustar a una sola muestra) y no entra al gate.
 - Quedan FUERA y declaradas pendientes: ``banding_index`` (necesita la altura ya codificada a BC4, es de NP-E0),
   ``mip_consistency`` (necesita mips, también de NP-E0), ``flatness_hf`` (la tabla no la define con precisión) y
   ``tileability_continuity``: el coseno entre gradientes de bordes opuestos NO distingue un salto de valor puro
@@ -69,7 +72,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AcuerdoNormal",
+    "Amplitud",
     "acuerdo_normal",
+    "amplitud",
     "contar_no_finitos",
     "rango_dinamico",
     "razon_de_costura",
@@ -249,6 +254,31 @@ def rango_dinamico(altura: NDArray[np.float64], *, percentil_bajo: float, percen
     p_bajo, p_alto = _exigir_percentiles(percentil_bajo, percentil_alto)
     bajo, alto = (float(v) for v in _np.percentile(campo, [p_bajo, p_alto]))
     return alto - bajo
+
+
+@dataclass(frozen=True, slots=True)
+class Amplitud:
+    """Resultado de ``amplitud``: los dos percentiles pedidos, sus valores y la desviación estándar de la altura."""
+
+    percentil_bajo: float
+    valor_bajo: float
+    percentil_alto: float
+    valor_alto: float
+    desviacion: float
+
+
+def amplitud(altura: NDArray[np.float64], *, percentil_bajo: float, percentil_alto: float) -> Amplitud:
+    """Cuánto se mueve la altura: sus percentiles ``percentil_bajo``/``percentil_alto`` y su desviación estándar.
+
+    Describe, no decide (ver el docstring del módulo). Los percentiles son obligatorios, como en ``rango_dinamico``.
+    """
+    _np = importar_numpy()
+    campo = _exigir_campo(_np, altura, "altura")
+    p_bajo, p_alto = _exigir_percentiles(percentil_bajo, percentil_alto)
+    bajo, alto = (float(v) for v in _np.percentile(campo, [p_bajo, p_alto]))
+    return Amplitud(
+        percentil_bajo=p_bajo, valor_bajo=bajo, percentil_alto=p_alto, valor_alto=alto, desviacion=float(campo.std())
+    )
 
 
 def razon_de_recorte(altura: NDArray[np.float64]) -> float:

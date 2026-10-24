@@ -48,6 +48,7 @@ from sky_claw.local.native_parallax.lote import (
     ResultadoDeRuta,
     procesar_lote,
 )
+from sky_claw.local.native_parallax.metrics import Amplitud, amplitud
 from sky_claw.local.native_parallax.output import (
     NOMBRE_DEL_MOD_DE_SALIDA,
     NivelDeReproducibilidad,
@@ -186,6 +187,39 @@ async def test_el_lote_publica_las_salidas_y_las_describe_en_el_informe(escenari
     assert {e.ruta for e in escenario.manifiesto().entradas} == {a.ruta_de_salida, b.ruta_de_salida}
 
 
+@pytest.mark.parametrize(
+    "parametros",
+    [
+        ParametrosDelLote(escribir_revision=True),
+        ParametrosDelLote(
+            normalizacion=ModoNormalizacion.PERCENTILES, percentil_bajo=5.0, percentil_alto=95.0, escribir_revision=True
+        ),
+    ],
+    ids=["min_max", "percentiles"],
+)
+async def test_el_informe_declara_la_amplitud_de_la_altura_que_se_exporto(
+    escenario: Escenario, parametros: ParametrosDelLote
+) -> None:
+    # NP-V0 (TL): que un mapa casi plano se vea en el informe antes de llegar al juego. Describe, no decide: sin umbrales,
+    # con los percentiles fijos de la descripción (no los de la normalización) y sobre el MISMO arreglo que se exportó.
+    a, b = escenario.normal("muro01"), escenario.normal("muro02", fase=1.0)
+
+    informe = await escenario.lote([a, b], parametros=parametros)
+
+    assert lote.PERCENTILES_DE_LA_AMPLITUD == (2.0, 98.0)
+    for resultado, exportada in zip(informe.archivos, escenario.exportador.alturas, strict=True):
+        assert resultado.amplitud == amplitud(exportada, percentil_bajo=2.0, percentil_alto=98.0)
+    assert [a["amplitud"]["percentil_bajo"] for a in informe.a_diccionario()["archivos"]] == [2.0, 2.0]
+
+
+async def test_la_amplitud_se_declara_aunque_la_revision_no_se_escriba(escenario: Escenario) -> None:
+    informe = await escenario.lote([escenario.normal("muro01")], parametros=ParametrosDelLote())
+
+    (resultado,) = informe.archivos
+    assert resultado.estado is EstadoDeArchivo.EN_REVISION
+    assert resultado.amplitud is not None and resultado.amplitud.desviacion > 0.0
+
+
 async def test_la_procedencia_del_manifiesto_describe_lo_que_de_verdad_corrio(escenario: Escenario) -> None:
     normal = escenario.normal("muro01")
     huella_de_la_normal = hashlib.sha256(normal.ruta_absoluta.read_bytes()).hexdigest()
@@ -195,7 +229,7 @@ async def test_la_procedencia_del_manifiesto_describe_lo_que_de_verdad_corrio(es
 
     entrada = escenario.manifiesto().entradas[0]
     procedencia = entrada.procedencia
-    assert procedencia.algoritmo_id == "normal_fft_neumann_v1"
+    assert procedencia.algoritmo_id == "normal_wls_nz_neumann_v1"  # la integración ponderada del producto
     assert [(o.rol, o.sha256) for o in procedencia.origenes] == [("normal", huella_de_la_normal)]
     assert json.loads(procedencia.parametros) == parametros.a_parametros_de_procedencia()
     assert json.loads(procedencia.parametros)["bordes"] == "neumann"
@@ -688,6 +722,7 @@ def _informe_a_mano() -> InformeDelLote:
         ("SIN_UMBRALES",),
         metricas,
         "",
+        Amplitud(percentil_bajo=2.0, valor_bajo=0.25, percentil_alto=98.0, valor_alto=0.75, desviacion=0.125),
     )
     fallida = ResultadoDeArchivo(
         "textures/a/y_n.dds",
@@ -738,6 +773,13 @@ def test_el_informe_en_json_esta_congelado_por_igualdad_literal() -> None:
                     "razon_de_costura": 1.5,
                     "no_finitos": 0,
                 },
+                "amplitud": {
+                    "percentil_bajo": 2.0,
+                    "valor_bajo": 0.25,
+                    "percentil_alto": 98.0,
+                    "valor_alto": 0.75,
+                    "desviacion": 0.125,
+                },
                 "detalle": "",
             },
             {
@@ -748,6 +790,7 @@ def test_el_informe_en_json_esta_congelado_por_igualdad_literal() -> None:
                 "veredicto": None,
                 "motivos": [],
                 "metricas": None,
+                "amplitud": None,
                 "detalle": "ArchivoNormalInvalidoError: roto",
             },
         ],
