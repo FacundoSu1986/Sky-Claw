@@ -33,6 +33,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     clasificar_log,
 )
+from sky_claw.local.tools.dyndolod_uia_contrato import CONTRATOS_DE_UI, ModalConocido
 from tests.test_dyndolod_service import (
     _MARCADOR_DE_FIN,
     _clase_runner_ast,
@@ -156,6 +157,9 @@ def test_las_tres_cajas_estan_congeladas() -> None:
     # no-fatal a `Critical: DynDOLOD.DLL is corrupt` (revisor Codex, PR #488).
     # La de SkyrimSE.exe también: `"File not found"` suelto volvía no-fatal a
     # cualquier archivo faltante (rig Alpha-209).
+    # La de F1 es de UNA parte porque es la instrucción LITERAL de un modal del
+    # contrato, sin texto variable en el medio: no hay nada que acotar con una
+    # segunda parte, y recortarla a un prefijo sí ampliaría el fail-closed.
     assert NO_FATALES_DEL_DOMINIO == (
         ("Deleted reference",),
         ("Unresolved FormID",),
@@ -163,6 +167,7 @@ def test_las_tres_cajas_estan_congeladas() -> None:
         ("No TexGen output detected",),
         ("DynDOLOD.DLL", "not found"),
         ("File not found", "SkyrimSE.exe"),
+        ("Found stitched object LOD textures from earlier TexGen generation installed in game folder.",),
     )
     assert PATRONES_TERMINALES == (
         "Fatal:",
@@ -1195,3 +1200,210 @@ def test_todo_lanzador_que_pide_veredicto_firma_el_log_antes_de_lanzar() -> None
         # `_llamadas` da un rojo falso. Se aceptan las dos formas.
         firma = _corre_en_hilo(miembro, "_firma_del_log") or "_firma_del_log" in _llamadas(miembro)
         assert firma, f"{nombre} no firma el log antes de lanzar"
+
+
+# ---------------------------------------------------------------------------
+# F1 — el `Error:` del modal de arranque CONOCIDO no puede tumbar la corrida
+# ---------------------------------------------------------------------------
+#
+# El defecto, medido dos veces en el árbol y no inferido:
+#
+#   `CONTRATOS_DE_UI` sabe qué modales de arranque son benignos y que el
+#   operador autoriza continuar (`PoliticaDeModal.APROBACION_DEL_OPERADOR`), y el
+#   binario escribe la INSTRUCCIÓN de ese diálogo como `Error: …` en su propio
+#   log. Hay dos modales medidos y la taxonomía exentaba a uno solo:
+#
+#     · `dyndolod_dll_ng_ausente`  → `Error: DynDOLOD.DLL … not found!`  → no-fatal
+#       (lo cubre la categoría `("DynDOLOD.DLL", "not found")`).
+#       Evidencia: `docs/validation/2026-09-13_pr580_real_rig/dyndolod-log.txt:69`.
+#     · `texgen_stitched_lod_previo` → `Error: Found stitched object LOD textures …`
+#       → TERMINAL, y el pipeline hacía rollback de una corrida que el operador
+#       autorizó y que el binario declaró completa.
+#       Evidencia: `docs/validation/2026-10-19_pr661_unattended_windows_real_rig/`
+#       `standalone/attempt1-texgen/tool-log-excerpt.txt:3`.
+#
+# Es el defecto dominante de `AGENTS.md` —arreglar un hermano y no al otro— con
+# el gemelo medido. Y NO es del modo desatendido: `clasificar_log` no recibe el
+# modo, así que pega en ASSISTED y en UNATTENDED por construcción.
+
+#: La línea REAL del log de TexGen, transcripta del excerpt commiteado (sin el
+#: prefijo `59: ` que agrega el recorte). Se congela la línea COMPLETA y no un
+#: prefijo: es la instrucción que el contrato declara, con la recomendación que
+#: el binario le agrega en el log.
+_LINEA_DEL_MODAL_STITCHED = (
+    "Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. "
+    "It is recommended to uninstall all stitched object LOD textures generated earlier before generating "
+    "new stitched object LOD textures."
+)
+
+#: El log de esa corrida, con el eco de rutas y el cierre reales. El modal se
+#: mostró al arrancar (línea 59 del log) y el operador autorizó `Ignore`.
+_LOG_DEL_RIG_CON_MODAL_STITCHED = (
+    "Using Skyrim Special Edition Data Path: C://SkyClaw_Rigs//SW661 Unattended\\game\\Data\\\n"
+    "Using Output Path: C://SkyClaw_Rigs//SW661 Unattended\\Work Root\\DynDOLOD\\TexGen\\\n"
+    f"{_LINEA_DEL_MODAL_STITCHED}\n"
+    'User says "Ignore"\n'
+    "[00:37] TexGen completed successfully\n"
+)
+
+
+def test_f1_la_linea_del_modal_stitched_del_rig_no_es_terminal() -> None:
+    """RED de F1 en el clasificador: la línea real sale terminal sobre `main`.
+
+    La corrida del rig 2026-10-19 generó **1.362 archivos / 138 MB**, escribió
+    `TexGen completed successfully` y salió con código 0. Aun así el pipeline
+    falló y revirtió el output: el `Error:` del modal —que el propio operador
+    había autorizado ignorar por HITL— caía en `_ERROR_SUELTO`.
+
+    La completitud NO es el sujeto: `completo` ya era `True` antes del fix. Lo que
+    estaba mal era la caja.
+    """
+    terminales, no_fatales, completo = clasificar_log(_LOG_DEL_RIG_CON_MODAL_STITCHED, "TexGen")
+
+    assert completo is True, "el marcador de TexGen está en el log: la completitud no es el sujeto"
+    assert terminales == [], f"la línea del modal conocido sigue saliendo terminal: {terminales}"
+    assert no_fatales == [_LINEA_DEL_MODAL_STITCHED]
+
+
+@pytest.mark.asyncio
+async def test_f1_la_corrida_texgen_con_modal_stitched_aprobado_es_exito(tmp_path: pathlib.Path) -> None:
+    """RED de F1 END-TO-END: el clasificador solo no prueba el veredicto.
+
+    Es el caso que el rig midió: artefacto presente, `rc == 0`, marcador presente,
+    y el único terminal era el `Error:` del modal autorizado. El runner devolvía
+    `success=False` y el servicio hacía rollback de 138 MB de texturas.
+
+    El log lo escribe LA CORRIDA (`_corrida_que_completa`): escrito antes del
+    `patch`, el rojo vendría de la continuidad —"el log no creció"— y el test
+    pasaría por la razón equivocada, que es el error que ya se pagó en
+    `test_falta_solo_el_marcador_y_la_corrida_sale_roja`.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    staging = config.texgen_root / "textures"
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(staging, "lod_01.dds"),
+            log=(f'{_LINEA_DEL_MODAL_STITCHED}\nUser says "Ignore"\n[00:37] {_MARCADOR_DE_FIN["TexGen"]}\n'),
+        ),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.return_code == 0, "el exit code era 0: lo que falla es la taxonomía"
+    assert result.success is True, f"el modal autorizado tumbó la corrida: {result.errors}"
+
+
+#: Casos adversarios de la exención nueva. `es_terminal` es el veredicto esperado.
+#:
+#: La categoría es la instrucción COMPLETA y no un prefijo (`"Found stitched"`):
+#: un prefijo exentaría cualquier línea que empiece igual, incluida una que
+#: describa un fallo real de escritura de las mismas texturas.
+_CASOS_ADVERSARIALES_MODAL_STITCHED = [
+    # A: la línea exacta → no-fatal (el hueco cerrado).
+    pytest.param(_LINEA_DEL_MODAL_STITCHED, False, id="A_linea_real"),
+    # B: parecida pero TRUNCADA (falta el final de la instrucción) → terminal.
+    pytest.param(
+        "Error: Found stitched object LOD textures from earlier TexGen generation",
+        True,
+        id="B_instruccion_incompleta",
+    ),
+    # C: parecida pero con OTRAS palabras en el medio → terminal.
+    pytest.param(
+        "Error: Found stitched object LOD textures in the game folder.",
+        True,
+        id="C_parecido_no_contrato",
+    ),
+    # D: ajeno al contrato aunque hable de lo mismo → terminal.
+    pytest.param(
+        "Error: Stitched object LOD textures could not be written to the output path.",
+        True,
+        id="D_ajeno_al_contrato",
+    ),
+    # E: severidad terminal sobre la instrucción completa → terminal (la severidad manda).
+    pytest.param(f"Critical: {_LINEA_DEL_MODAL_STITCHED}", True, id="E_critical"),
+    # F: FAIL sobre la instrucción completa → terminal (ídem).
+    pytest.param(f"FAIL: {_LINEA_DEL_MODAL_STITCHED}", True, id="F_fail"),
+    # G: Fatal sobre la instrucción completa → terminal (ídem).
+    pytest.param(f"Fatal: {_LINEA_DEL_MODAL_STITCHED}", True, id="G_fatal"),
+]
+
+
+@pytest.mark.parametrize(("linea", "es_terminal"), _CASOS_ADVERSARIALES_MODAL_STITCHED)
+def test_f1_la_exencion_del_modal_no_amplia_el_fail_closed(linea: str, es_terminal: bool) -> None:
+    """La exención es la instrucción exacta, y no le gana a la severidad.
+
+    Los casos B–D son la razón por la que la categoría lleva la instrucción
+    completa: con `("Found stitched",)` los tres serían no-fatales, y el D es un
+    fallo de escritura de verdad. Los casos E–G son la precedencia ya existente
+    —la severidad dice si la corrida se rompió y se evalúa ANTES de las
+    categorías—, verificada acá sobre ESTA categoría.
+    """
+    terminales, no_fatales, _ = clasificar_log(linea + "\n", "TexGen")
+
+    if es_terminal:
+        assert terminales == [linea]
+        assert no_fatales == []
+    else:
+        assert terminales == []
+        assert no_fatales == [linea]
+
+
+#: Cada modal medido del registro de contratos, como par (tool, modal). Se
+#: enumera el REGISTRO, no una lista escrita a mano: un tercer modal aparece acá
+#: solo y rompe el ancla hasta que se le escriba su categoría.
+_MODALES_DEL_CONTRATO = [
+    pytest.param(tool, modal, id=f"{tool}-{modal.id}")
+    for (tool, _sha256), contrato in CONTRATOS_DE_UI.items()
+    for modal in contrato.modales_conocidos
+]
+
+
+@pytest.mark.parametrize(("tool", "modal"), _MODALES_DEL_CONTRATO)
+def test_todo_modal_conocido_del_contrato_es_no_fatal_en_el_log_de_su_herramienta(
+    tool: str, modal: ModalConocido
+) -> None:
+    """ANCLA ENUMERATIVA: todo modal que el contrato autoriza es ruido en su log.
+
+    `AGENTS.md` es explícito en que un caso escrito a mano para el hermano que
+    faltó no ataja al tercero. Acá el oráculo no es una lista de líneas: es el
+    registro de contratos, que es el ÚNICO lugar donde vive el conocimiento de
+    "este diálogo es benigno y el operador puede autorizarlo". Si mañana se mide
+    un tercer modal y se lo agrega a `CONTRATOS_DE_UI`, este test lo exige
+    no-fatal para SU herramienta antes de que pueda tumbar una corrida.
+
+    La aserción es sobre la línea con el prefijo `Error: ` porque es la forma en
+    que el binario la escribe en el log —medida en los dos modales del registro,
+    no supuesta—.
+
+    **Lo que este test NO repite a propósito:** la precedencia de severidad
+    (`Critical:` sobre la misma instrucción tiene que seguir siendo terminal) ya
+    la cubre, exhaustiva y no por muestreo, el producto
+    `test_la_severidad_terminal_le_gana_a_la_categoria_de_dominio`, que
+    parametriza TODA categoría de `NO_FATALES_DEL_DOMINIO` —la de F1 incluida—
+    contra TODA severidad terminal. Acá se había escrito esa contracara de nuevo
+    y el mutante que la borra **sobrevivía** (medido: 91 passed): era una
+    aserción que ningún mutante mata, o sea decoración. Queda en el producto, que
+    es el que la gobierna.
+    """
+    linea = f"Error: {modal.firma.instruccion}"
+    terminales, no_fatales, _ = clasificar_log(linea + "\n", tool)
+
+    assert terminales == [], f"{tool}/{modal.id}: el modal autorizado sale terminal en el log"
+    assert no_fatales == [linea]
+
+
+def test_el_ancla_enumerativa_cubre_todos_los_contratos_y_no_esta_vacia() -> None:
+    """Sin esto el ancla de arriba pasaría por VACÍO y no ataría nada.
+
+    `pytest.mark.parametrize` sobre una lista vacía no genera casos: el test no
+    corre y nadie se entera. Es el modo de falla silenciosa de todo ancla
+    derivada, y por eso se afirma explícitamente que hay modales y que cada
+    herramienta del registro está representada.
+    """
+    assert _MODALES_DEL_CONTRATO, "el registro de contratos no aportó ni un modal al ancla"
+    assert {param.values[0] for param in _MODALES_DEL_CONTRATO} == {tool for (tool, _sha256) in CONTRATOS_DE_UI}
