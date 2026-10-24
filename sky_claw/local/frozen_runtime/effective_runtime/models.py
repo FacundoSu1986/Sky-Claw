@@ -60,8 +60,13 @@ class EvidenceSource(StrEnum):
     #: ``[Settings] gamePath`` de ``modorganizer.ini``, serializado como
     #: ``@ByteArray`` de Qt. Es la superficie que MO2 resuelve al arrancar.
     MO2_GAME_PATH = "mo2_game_path"
-    #: ``[customExecutables] N\\binary``: el ejecutable que MO2 lanza de verdad.
-    #: Puede contradecir a ``gamePath`` y entonces el que manda es éste.
+    #: ``[customExecutables] N\\binary``: ejecutables REGISTRADOS en la
+    #: instancia. Registrar no es seleccionar (auditoría B3/Oracle): un
+    #: lanzador del juego registrado fuera de la raíz efectiva deja la
+    #: selección sin prueba (``EXECUTABLE_SELECTION_UNPROVEN``), pero jamás
+    #: se usa como fuente de ruta efectiva — inventar la selección sería
+    #: aceptar una ruta declarada como prueba. Lo que MO2 lanza de verdad lo
+    #: prueba únicamente un proceso vivo (``LIVE_GAME_PROCESS``).
     MO2_EXECUTABLE = "mo2_executable"
     #: Imagen de un ``SkyrimSE.exe`` VIVO: la única evidencia de qué se está
     #: ejecutando *ahora*. Gana sobre cualquier valor persistido.

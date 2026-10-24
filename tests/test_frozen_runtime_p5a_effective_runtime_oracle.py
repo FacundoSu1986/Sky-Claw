@@ -1035,6 +1035,55 @@ class TestAuditoriaAdversarial:
 
         assert _SKSE_LOADERS_BY_EDITION[SkyrimEdition.AE] == _SKSE_LOADERS_BY_EDITION[SkyrimEdition.SE]
 
+    def test_o4b_raiz_de_la_imagen_sube_un_solo_nivel_contrato_declarado(self) -> None:
+        """Oracle #4b (auditoría): el contrato de UN nivel, congelado.
+
+        ``raiz_de_la_imagen`` sube exactamente un nivel: un loader lanzado
+        desde un subdirectorio reporta el SUBDIRECTORIO como raíz. Es una
+        limitación declarada (comentario de la función), y este ancla la
+        vuelve explícita: si alguien "corrige" la semántica, el cambio es
+        visible y se decide, no se cuela.
+        """
+        from sky_claw.local.frozen_runtime.effective_runtime import raiz_de_la_imagen
+
+        raiz = raiz_de_la_imagen("G:\\Juego\\tools\\skse64_loader.exe")
+        assert raiz is not None
+        assert os.path.normcase(str(raiz)) == os.path.normcase("G:\\Juego\\tools")
+        raiz_directa = raiz_de_la_imagen("G:\\Juego\\SkyrimSE.exe")
+        assert raiz_directa is not None
+        assert os.path.normcase(str(raiz_directa)) == os.path.normcase("G:\\Juego")
+
+    def test_o5b_proceso_vivo_gana_al_lanzador_registrado_ambiguo(self, tmp_path: pathlib.Path) -> None:
+        """Oracle #5b (auditoría): el contrato de la fuente viva, congelado.
+
+        Con un proceso vivo en el Desired y un lanzador del juego registrado
+        fuera de la raíz, el veredicto es MATCH: la selección ya ocurrió —el
+        proceso prueba lo que se ejecuta AHORA— y el chequeo de selección
+        aplica sólo a la evidencia configurada. Congela la decisión para que
+        el "próximo arranque" ambiguo no se resuelva ensanchando el chequeo
+        sin decidirlo.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        clone_b = _root_juego(tmp_path / "clone-b")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE", f"{clone_b.as_posix()}/skse64_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(
+                procesos=LiveProcessSnapshot(
+                    processes=(_vivo(LiveProcessKind.GAME, image_path=clone_a / "SkyrimSE.exe"),),
+                    indeterminate=False,
+                )
+            ),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN not in resultado.reasons
+
     def test_o5_el_ancla_ast_tambien_caza_llamadas_por_nombre_importado(self, tmp_path: pathlib.Path) -> None:
         """Oracle #5 (auditoría): ``from os import remove; remove(...)`` no pasa.
 
