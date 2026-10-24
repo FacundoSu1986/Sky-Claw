@@ -72,6 +72,7 @@ from sky_claw.local.frozen_runtime.errors import (
     JournalObservacionEffectiveError,
     JournalSchemaError,
     JournalStoreNoInicializadoError,
+    ScopeBindingError,
     StateCorruptError,
     StateSchemaError,
 )
@@ -91,8 +92,12 @@ from sky_claw.local.frozen_runtime.storage_models import (
     FrozenRuntimeStateLoadResult,
 )
 
-JOURNAL_SCHEMA_VERSION = 1
-RECORD_SCHEMA_VERSION = 1
+#: P4-S5 sube la versión porque ``candidate_id`` es un campo REQUERIDO del
+#: esquema cerrado del PENDING y del registro. Un documento v1 no lo tiene, así
+#: que se rechaza con «schema_version desconocido» —fail-closed explícito— en vez
+#: de reinterpretarlo agregando un campo que el emisor nunca declaró.
+JOURNAL_SCHEMA_VERSION = 2
+RECORD_SCHEMA_VERSION = 2
 RESERVATION_SCHEMA_VERSION = 1
 
 logger = logging.getLogger(__name__)
@@ -189,7 +194,14 @@ class EvidenceDigests:
 @dataclasses.dataclass(frozen=True, slots=True)
 class PropuestaTransicion:
     """Propuesta completa de PENDING: la aprueba la autoridad de aprobación
-    (ausente en P4-S3) y la consume el journal."""
+    (ausente en P4-S3) y la consume el journal.
+
+    ``candidate_id`` (P4-S5) es el campo 10 del ``ApprovalScope`` (§38.5):
+    REQUIRED en ``PROMOTION`` y ``NOT_APPLICABLE`` (``None``) en ``ROLLBACK``.
+    Sin él la proyección no podía cubrir el candidate, y una aprobación para un
+    Candidate habilitaba una transición que no declaraba ninguno — el journal no
+    tenía con qué comparar.
+    """
 
     transition_id: str
     operation: JournalOperation
@@ -198,10 +210,138 @@ class PropuestaTransicion:
     target_generation_id: str
     target_clone_id: str
     target_runtime_setup_id: str
+    candidate_id: str | None
     approval_scope_digest: str
     evidence_digests: EvidenceDigests
     expected_effective_path: str
     created_at_ns: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProyeccionScope:
+    """Los campos del ``ApprovalScope`` que una TRANSICIÓN puede reclamar.
+
+    Es el espacio común donde se comparan las dos fuentes independientes: la
+    proyección del scope DURABLE (leída del witness de emisión, con su digest
+    recomputado) y la proyección de la transición DECLARADA por el llamador.
+    Comparar los dos objetos es lo que reemplaza a comparar un digest durable
+    contra un digest aportado por el llamador — que es el defecto P2 de P4-S4.
+
+    Los nombres son los del lado transición (``target_*``) porque es ahí donde se
+    aplica el material; la correspondencia con los nombres del scope está en
+    ``CAMPOS_DEL_SCOPE_LIGADOS``, que es la única fuente de verdad del mapeo.
+    """
+
+    operation: str
+    source_activation_digest: str
+    target_generation_id: str
+    target_clone_id: str
+    target_runtime_setup_id: str
+    candidate_id: str | None
+    clone_evidence: str
+    runtime_setup_evidence: str
+    compatibility_evidence_id: str
+    approval_id: str
+    approval_seq: int
+
+
+#: Correspondencia NORMATIVA ``ApprovalScope`` (campo del payload canónico) →
+#: ``ProyeccionScope`` (campo de la transición).
+#:
+#: Es un mapa y no una lista de comparaciones a mano porque el censo de §38.5 lo
+#: necesita enumerable: ``test_ancla_la_proyeccion_cubre_todo_campo_del_scope``
+#: recorre el payload canónico del scope y exige que cada campo esté acá o en
+#: ``CAMPOS_DEL_SCOPE_SIN_TRANSICION``. Un campo nuevo del scope rompe el ancla
+#: hasta que se decida —y se cablee— cómo se liga; una comparación escrita a mano
+#: se habría olvidado en silencio, que es la clase de defecto dominante del repo.
+#:
+#: ``proyectar_scope`` y ``exigir_proyeccion_ligada`` iteran ESTE mapa, así que
+#: agregar una entrada liga el campo en los dos lados a la vez.
+CAMPOS_DEL_SCOPE_LIGADOS: dict[str, str] = {
+    "operation": "operation",
+    "source_activation_digest": "source_activation_digest",
+    "generation_id": "target_generation_id",
+    "clone_id": "target_clone_id",
+    "clone_evidence": "clone_evidence",
+    "runtime_setup_id": "target_runtime_setup_id",
+    "runtime_setup_evidence": "runtime_setup_evidence",
+    "compatibility_evidence_id": "compatibility_evidence_id",
+    "candidate_id": "candidate_id",
+    "approval_id": "approval_id",
+    "approval_seq": "approval_seq",
+}
+
+#: Campos del scope SIN contraparte en la transición. La exclusión NO se justifica
+#: con prosa: cada una tiene un chequeo real que la cubre, y
+#: ``test_ancla_las_exclusiones_estan_verificadas_no_justificadas`` lo ejerce.
+#:
+#: - ``source_activation``: ligado TRANSITIVAMENTE por ``source_activation_digest``,
+#:   que ambos lados recomputan desde el contenido (``validar_scope`` y
+#:   ``_validar_propuesta``). Cambiar el source conservando el digest se rechaza.
+#: - ``approval_provenance``: no es un artefacto de la transición sino la
+#:   referencia de la superficie emisora; el consumo la cruza contra el ledger
+#:   (``witness.approval_provenance != ledger.last_issued_provenance``).
+CAMPOS_DEL_SCOPE_SIN_TRANSICION: frozenset[str] = frozenset({"source_activation", "approval_provenance"})
+
+
+def proyectar_propuesta(
+    propuesta: PropuestaTransicion,
+    *,
+    approval_id: str,
+    approval_seq: int,
+) -> ProyeccionScope:
+    """Proyecta la transición DECLARADA al espacio del scope.
+
+    ``approval_id``/``approval_seq`` los aporta el llamador porque la transición
+    no declara qué aprobación invoca: los presenta al consumir. Se incluyen en la
+    proyección igual, para que la cobertura sea total y el censo no tenga que
+    justificar otra exclusión.
+    """
+    assert propuesta.evidence_digests is not None  # invariante de la propuesta
+    return ProyeccionScope(
+        operation=propuesta.operation.value,
+        source_activation_digest=propuesta.source_activation_digest,
+        target_generation_id=propuesta.target_generation_id,
+        target_clone_id=propuesta.target_clone_id,
+        target_runtime_setup_id=propuesta.target_runtime_setup_id,
+        candidate_id=propuesta.candidate_id,
+        clone_evidence=propuesta.evidence_digests.clone_evidence,
+        runtime_setup_evidence=propuesta.evidence_digests.runtime_setup_evidence,
+        compatibility_evidence_id=propuesta.evidence_digests.compatibility_evidence,
+        approval_id=approval_id,
+        approval_seq=approval_seq,
+    )
+
+
+def exigir_proyeccion_ligada(
+    aprobado: ProyeccionScope,
+    transicion: ProyeccionScope,
+    *,
+    etiqueta: str,
+) -> None:
+    """``aprobado == actual``, campo por campo (§38.5; D0-R1).
+
+    Reporta TODAS las discrepancias, no la primera: un diagnóstico que nombra un
+    solo campo hace pensar que el resto está bien, y en un ataque real el
+    llamador suele cambiar más de uno. Los nombres del mensaje son los del
+    payload del scope, que es el vocabulario con el que el propietario aprobó.
+
+    La comparación se itera desde ``CAMPOS_DEL_SCOPE_LIGADOS``: no hay una lista
+    paralela que pueda quedar desactualizada respecto del censo.
+    """
+    discrepancias: list[str] = []
+    for campo_scope, campo_proyeccion in CAMPOS_DEL_SCOPE_LIGADOS.items():
+        valor_aprobado = getattr(aprobado, campo_proyeccion)
+        valor_transicion = getattr(transicion, campo_proyeccion)
+        if valor_aprobado != valor_transicion:
+            discrepancias.append(f"{campo_scope} (aprobado {valor_aprobado!r} != transición {valor_transicion!r})")
+    if discrepancias:
+        raise ScopeBindingError(
+            f"{etiqueta}: la transición NO liga el ApprovalScope autorizado. "
+            f"Discrepancias: {'; '.join(discrepancias)}. "
+            "Una aprobación sólo autoriza los artefactos EXACTOS que el propietario aprobó "
+            "(§38.5; §34.7 ANY_APPROVED_MATERIAL_CHANGE = NO BIND)."
+        )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -211,12 +351,19 @@ class AprobacionConsumida:
     El journal la VERIFICA (cross-checks de identidad y digest); no la produce.
     La autoridad que la emite de forma durable (``state/approval.json`` +
     witnesses + tombstones, §36.5/§37.3/§38.2) es dependencia diferida.
+
+    ``proyeccion`` (P4-S5) es el scope aprobado, LEÍDO DEL WITNESS y con su
+    digest recomputado, no lo que el llamador dice haber aprobado. Es lo que hace
+    que el chequeo del journal no sea tautológico: sin él, comparar
+    ``scope_digest`` contra ``approval_scope_digest`` compara dos valores que
+    aporta la misma parte.
     """
 
     approval_id: str
     approval_seq: int
     scope_digest: str
     consumed_by_transition_id: str
+    proyeccion: ProyeccionScope
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -264,6 +411,7 @@ class TransitionJournal:
     target_generation_id: str | None = None
     target_clone_id: str | None = None
     target_runtime_setup_id: str | None = None
+    candidate_id: str | None = None
     approval_scope_digest: str | None = None
     consumed_approval_id: str | None = None
     consumed_approval_seq: int | None = None
@@ -299,6 +447,7 @@ class FinalizedTransitionRecord:
     target_generation_id: str
     target_clone_id: str
     target_runtime_setup_id: str
+    candidate_id: str | None
     approval_scope_digest: str
     consumed_approval_id: str
     consumed_approval_seq: int
@@ -370,6 +519,7 @@ _REGISTRO_VACIO = FinalizedTransitionRecord(
     target_generation_id="",
     target_clone_id="",
     target_runtime_setup_id="",
+    candidate_id=None,
     approval_scope_digest="0" * 64,
     consumed_approval_id="00000000-0000-4000-8000-000000000000",
     consumed_approval_seq=1,
@@ -390,6 +540,19 @@ def _digest_canonico(payload: object) -> str:
         payload = dataclasses.asdict(payload)
     canonico = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonico.encode("utf-8")).hexdigest()
+
+
+def digest_canonico(payload: object) -> str:
+    """Forma pública del digest canónico del subsistema (P4-S4).
+
+    La autoridad durable de aprobación (``approval.py``) DEBE reusar esta
+    función en vez de reimplementarla: ``source_activation_digest`` viaja en el
+    ``ApprovalScope`` y el journal lo recomputa al crear el PENDING. Dos
+    implementaciones del mismo digest es el modo de falla clásico de este repo
+    —arreglar un hermano y dejar el otro— y acá produciría una aprobación que el
+    journal rechaza por «no ligar el contenido».
+    """
+    return _digest_canonico(payload)
 
 
 def _exigir_texto_valor(valor: object, *, campo: str, etiqueta: str) -> str:
@@ -675,6 +838,18 @@ def _leer_json_estricto(ruta: pathlib.Path) -> dict[str, object]:
     return data
 
 
+def leer_json_de_control(ruta: pathlib.Path) -> dict[str, object]:
+    """Lector estricto público de un JSON de control (lo comparten journal y
+    autoridad de aprobación).
+
+    Un enlace/reparse o un namespace redirigido NUNCA es «ausente»: se rechaza
+    fail-closed. La autoridad de aprobación lo reusa en vez de reimplementarlo
+    —misma doctrina que ``digest_canonico``— y traduce el error a su propia
+    familia para que el caller distinga el subsistema que falló.
+    """
+    return _leer_json_estricto(ruta)
+
+
 # ---------------------------------------------------------------------------
 # Parseo del journal vigente (esquema cerrado por estado)
 # ---------------------------------------------------------------------------
@@ -689,6 +864,7 @@ _CAMPOS_JOURNAL_PENDIENTE = frozenset(
         "target_generation_id",
         "target_clone_id",
         "target_runtime_setup_id",
+        "candidate_id",
         "approval_scope_digest",
         "consumed_approval_id",
         "consumed_approval_seq",
@@ -783,6 +959,7 @@ def _parsear_journal(payload: dict[str, object], ruta: object) -> TransitionJour
         target_generation_id=_exigir_generation_id(payload, "target_generation_id", etiqueta=etiqueta),
         target_clone_id=_exigir_texto(payload, "target_clone_id", etiqueta=etiqueta),
         target_runtime_setup_id=_exigir_texto(payload, "target_runtime_setup_id", etiqueta=etiqueta),
+        candidate_id=_validar_candidate_id(payload["candidate_id"], operation=operation, etiqueta=etiqueta),
         approval_scope_digest=scope_digest,
         consumed_approval_id=_exigir_uuid_v4(
             _exigir_texto(payload, "consumed_approval_id", etiqueta=etiqueta),
@@ -819,6 +996,7 @@ def _serializar_journal(doc: TransitionJournal) -> dict[str, object]:
             "target_generation_id": doc.target_generation_id,
             "target_clone_id": doc.target_clone_id,
             "target_runtime_setup_id": doc.target_runtime_setup_id,
+            "candidate_id": doc.candidate_id,
             "approval_scope_digest": doc.approval_scope_digest,
             "consumed_approval_id": doc.consumed_approval_id,
             "consumed_approval_seq": doc.consumed_approval_seq,
@@ -844,6 +1022,7 @@ def _serializar_registro(record: FinalizedTransitionRecord) -> dict[str, object]
         "target_generation_id": record.target_generation_id,
         "target_clone_id": record.target_clone_id,
         "target_runtime_setup_id": record.target_runtime_setup_id,
+        "candidate_id": record.candidate_id,
         "approval_scope_digest": record.approval_scope_digest,
         "consumed_approval_id": record.consumed_approval_id,
         "consumed_approval_seq": record.consumed_approval_seq,
@@ -950,19 +1129,21 @@ def _validar_registro(payload: dict[str, object], ruta: pathlib.Path) -> Finaliz
         raise JournalIdentityError(
             f"{etiqueta}: previous_activation_target debe ser el source_activation del registro (§36.8)"
         )
+    operation = JournalOperation(operation_raw)
     return FinalizedTransitionRecord(
         schema_version=version,
         record_state=RecordState.FINALIZED,
         transition_id=transition_id,
         finalization_seq=seq,
         finalized_from_transition_id=previa,
-        operation=JournalOperation(operation_raw),
+        operation=operation,
         source_activation=fuente,
         source_activation_digest=fuente_digest,
         previous_activation_target=previo_target,
         target_generation_id=_exigir_generation_id(payload, "target_generation_id", etiqueta=etiqueta),
         target_clone_id=_exigir_texto(payload, "target_clone_id", etiqueta=etiqueta),
         target_runtime_setup_id=_exigir_texto(payload, "target_runtime_setup_id", etiqueta=etiqueta),
+        candidate_id=_validar_candidate_id(payload["candidate_id"], operation=operation, etiqueta=etiqueta),
         approval_scope_digest=_exigir_digest(
             payload["approval_scope_digest"], campo="approval_scope_digest", etiqueta=etiqueta
         ),
@@ -1172,6 +1353,45 @@ def _exigir_sin_reservas_huerfanas(root: pathlib.Path, historial: HistorialFinal
         )
 
 
+def _validar_candidate_id(valor: object, *, operation: JournalOperation, etiqueta: str) -> str | None:
+    """``candidate_id`` operation-aware (§38.5 campo 10; R3-F4).
+
+    ``PROMOTION`` exige un Candidate; ``ROLLBACK`` exige ``None`` — «ni string
+    vacío, ni Candidate falso». Es el MISMO contrato que ``approval.validar_scope``
+    aplica sobre el scope: si los dos lados no coinciden, una transición coherente
+    consigo misma sería rechazada por el otro lado y el binding fallaría por una
+    asimetría de validación, no por un ataque.
+    """
+    if operation is JournalOperation.PROMOTION:
+        if valor is None:
+            raise JournalSchemaError(f"{etiqueta}: PROMOTION exige candidate_id (REQUIRED, §38.5 campo 10)")
+        return _exigir_texto_valor(valor, campo="candidate_id", etiqueta=etiqueta)
+    if valor is not None:
+        raise JournalSchemaError(
+            f"{etiqueta}: ROLLBACK exige candidate_id = NOT_APPLICABLE (null); se recibió {valor!r} (§38.5 campo 10)"
+        )
+    return None
+
+
+def validar_propuesta_transicion(propuesta: PropuestaTransicion) -> None:
+    """Valida la FORMA de una propuesta sin tocar el journal.
+
+    Existe por el protocolo *burn-first* del consumo de la aprobación: la
+    autoridad tiene que rechazar una propuesta que el journal rechazaría **antes**
+    de escribir el tombstone, porque el tombstone es irreversible y deja la
+    aprobación terminal sin PENDING.
+
+    El binding de P4-S5 no cubre esto y no puede cubrirlo: liga los campos del
+    scope, pero ``source_activation`` se liga por su digest —que es lo correcto—
+    y por lo tanto el binding no puede ver si el CONTENIDO corresponde a ese
+    digest. Tampoco ve un ``evidence_digests`` del tipo equivocado. Las dos cosas
+    son validación de forma, y viven acá.
+
+    Es pura: no escribe, no adquiere el lock, no lee estado.
+    """
+    _validar_propuesta(propuesta)
+
+
 def _validar_propuesta(propuesta: PropuestaTransicion) -> None:
     _exigir_uuid_v4(propuesta.transition_id, campo="transition_id", etiqueta="propuesta")
     if not isinstance(propuesta.operation, JournalOperation):
@@ -1188,6 +1408,7 @@ def _validar_propuesta(propuesta: PropuestaTransicion) -> None:
     for campo in ("target_clone_id", "target_runtime_setup_id", "expected_effective_path"):
         _exigir_texto_valor(getattr(propuesta, campo), campo=campo, etiqueta="propuesta")
     _exigir_digest(propuesta.approval_scope_digest, campo="approval_scope_digest", etiqueta="propuesta")
+    _validar_candidate_id(propuesta.candidate_id, operation=propuesta.operation, etiqueta="propuesta")
     if not isinstance(propuesta.evidence_digests, EvidenceDigests):
         raise JournalSchemaError("propuesta: evidence_digests debe ser EvidenceDigests")
     for campo in ("clone_evidence", "runtime_setup_evidence", "compatibility_evidence"):
@@ -1210,6 +1431,21 @@ def _validar_aprobacion(aprobacion: AprobacionConsumida) -> None:
         or aprobacion.approval_seq < 1
     ):
         raise JournalSchemaError("aprobación: approval_seq debe ser un entero >= 1")
+    if not isinstance(aprobacion.proyeccion, ProyeccionScope):
+        raise JournalSchemaError("aprobación: proyeccion debe ser ProyeccionScope")
+    # La proyección es del scope DURABLE; si su identidad no coincide con la de
+    # la evidencia que la transporta, una de las dos fue fabricada. Se rechaza
+    # acá y no en el binding, para no reportar como «discrepancia de artefactos»
+    # lo que es una evidencia incoherente consigo misma.
+    if (
+        aprobacion.proyeccion.approval_id != aprobacion.approval_id
+        or aprobacion.proyeccion.approval_seq != aprobacion.approval_seq
+    ):
+        raise JournalIdentityError(
+            "aprobación: la proyección del scope declara otra aprobación "
+            f"({aprobacion.proyeccion.approval_seq}-{aprobacion.proyeccion.approval_id}) que la evidencia "
+            f"({aprobacion.approval_seq}-{aprobacion.approval_id})"
+        )
 
 
 def _exigir_digest_post(valor: object, *, campo: str) -> str:
@@ -1416,6 +1652,7 @@ def _construir_doc_pendiente(
         target_generation_id=propuesta.target_generation_id,
         target_clone_id=propuesta.target_clone_id,
         target_runtime_setup_id=propuesta.target_runtime_setup_id,
+        candidate_id=propuesta.candidate_id,
         approval_scope_digest=propuesta.approval_scope_digest,
         consumed_approval_id=aprobacion.approval_id,
         consumed_approval_seq=aprobacion.approval_seq,
@@ -1440,6 +1677,22 @@ def _exigir_precondiciones_comunes(
         raise JournalIdentityError(
             "el scope consumido difiere del approval_scope_digest de la propuesta (cross-check §37.6)"
         )
+    # P4-S5 — la igualdad que el digest NO probaba. El chequeo de arriba compara
+    # dos valores que aporta la misma parte; éste compara el scope DURABLE
+    # (proyección leída del witness, con su digest recomputado) contra los campos
+    # que la transición declara. §38.5 "Cobertura del digest": el
+    # ``approval_scope_digest`` compromete los 13 campos, así que consumirlo y
+    # después escribir un PENDING con otros artefactos es exactamente lo que el
+    # digest prohíbe — y lo que hasta P4-S4 no se comprobaba.
+    exigir_proyeccion_ligada(
+        aprobacion.proyeccion,
+        proyectar_propuesta(
+            propuesta,
+            approval_id=aprobacion.approval_id,
+            approval_seq=aprobacion.approval_seq,
+        ),
+        etiqueta=f"CREATE/START_NEXT de {propuesta.transition_id}",
+    )
 
 
 def _crear_pendiente_locked(
@@ -1680,6 +1933,7 @@ def _exigir_registro_coherente_con_pending(
         ("target_generation_id", registro.target_generation_id, journal.target_generation_id),
         ("target_clone_id", registro.target_clone_id, journal.target_clone_id),
         ("target_runtime_setup_id", registro.target_runtime_setup_id, journal.target_runtime_setup_id),
+        ("candidate_id", registro.candidate_id, journal.candidate_id),
         ("approval_scope_digest", registro.approval_scope_digest, journal.approval_scope_digest),
         ("consumed_approval_id", registro.consumed_approval_id, journal.consumed_approval_id),
         ("consumed_approval_seq", registro.consumed_approval_seq, journal.consumed_approval_seq),
@@ -1782,6 +2036,7 @@ def _finalizar_locked(
         target_generation_id=journal.target_generation_id,
         target_clone_id=journal.target_clone_id,
         target_runtime_setup_id=journal.target_runtime_setup_id,
+        candidate_id=journal.candidate_id,
         approval_scope_digest=journal.approval_scope_digest,
         consumed_approval_id=journal.consumed_approval_id,
         consumed_approval_seq=journal.consumed_approval_seq,

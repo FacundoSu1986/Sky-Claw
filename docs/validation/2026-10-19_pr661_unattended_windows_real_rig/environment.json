@@ -1,0 +1,54 @@
+{
+  "generado_en": "2026-10-19T17:48:40.3266484-03:00",
+  "generado_por": "subagente rig-env (sesión DSH)",
+  "host": {
+    "so": "Microsoft Windows 10 Pro",
+    "version": "10.0.19045",
+    "build": "19045",
+    "arquitectura": "64 bits",
+    "equipo": "<HOSTNAME>",
+    "fabricante": "<FABRICANTE>",
+    "modelo": "<MODELO>",
+    "cpu": "AMD Ryzen 5 9600X 6-Core Processor",
+    "nucleos": 6,
+    "hilos": 12,
+    "ram_bytes": 33396523008,
+    "ram_gib": 31.1,
+    "zona_horaria": "Montevideo Standard Time",
+    "powershell": "5.1.19041.7802"
+  },
+  "sesion": {
+    "user_interactive": true,
+    "process_session_id": 1,
+    "explorer_session_id": 1,
+    "consola_activa": "<USUARIO> / console / sesion 1 / Activo",
+    "sid_proceso": "<SID>",
+    "usuario": "<HOSTNAME>\\<USUARIO>"
+  },
+  "disco": {
+    "unidad": "C:",
+    "sistema_archivos": "NTFS",
+    "libre_bytes": 324623151104,
+    "total_bytes": 994404917248
+  },
+  "python": {
+    "venv": "C:\\SkyClaw_Rigs\\SW661 Unattended\\venv",
+    "version": "3.11.9",
+    "ejecutable": "C:\\SkyClaw_Rigs\\SW661 Unattended\\venv\\Scripts\\python.exe",
+    "sky_claw_file": "<WORKTREE>\\sky_claw\\__init__.py",
+    "sky_claw_version_pkg": "0.2.5.dev1156+g6abf20d06",
+    "comtypes": "1.4.17",
+    "uiautomation": "AUSENTE",
+    "uv": "uv 0.12.5 (210d1f678 2026-08-14 x86_64-pc-windows-msvc)",
+    "instalacion": "uv pip install --python <rig>\\venv\\Scripts\\python.exe -e \"<worktree>[dev]\"",
+    "editable_pth": "<WORKTREE>"
+  },
+  "repo": {
+    "worktree": "<WORKTREE>",
+    "sha": "6abf20d06d908a6c3bc8f4648cb4cd7bb4111c37",
+    "rama": "dyndolod-661-unattended-windows-rig"
+  },
+  "rig": {
+    "ruta": "C:\\SkyClaw_Rigs\\SW661 Unattended"
+  }
+}

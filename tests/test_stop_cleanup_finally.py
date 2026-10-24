@@ -30,6 +30,12 @@ import pytest
 
 from sky_claw.app_context import AppContext
 
+# Red de emergencia de las esperas del ciclo de vida (`wait_for` / `asyncio.wait`): ninguna ES el
+# comportamiento bajo prueba (lo que tiene que vencer es `_startup_shutdown_timeout_s`), así que un tope
+# corto solo hace fallar al test cuando el runner de Windows se pausa más que el tope. Espera de 1 s
+# alrededor de `ctx.stop()` falló en CI (ancla: tests/test_tiempos_de_tests_invariant.py, familia 4).
+_RED_DE_EMERGENCIA_S = 10.0
+
 
 @pytest.fixture
 def mock_args(tmp_path: pathlib.Path) -> argparse.Namespace:
@@ -74,11 +80,11 @@ async def test_stop_corre_el_cleanup_aunque_una_task_de_fondo_ignore_la_cancelac
         except asyncio.CancelledError:
             # Ignora la cancelación el tiempo suficiente para agotar el
             # presupuesto de stop(): el caso que disparaba el bug.
-            await asyncio.wait_for(liberar.wait(), timeout=1.0)
+            await asyncio.wait_for(liberar.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
     background = ctx._track_task(tarea_obstinada(), name="background-obstinado")
     try:
-        await asyncio.wait_for(entro.wait(), timeout=1.0)
+        await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
         # ``match`` distingue el TimeoutError de stop() del que levantaría un
         # wait_for de guarda si el fix introdujera un cuelgue.
@@ -121,11 +127,11 @@ async def test_stop_no_ejecuta_el_cleanup_dos_veces_tras_el_timeout(
         try:
             await asyncio.wait_for(asyncio.Event().wait(), timeout=10.0)
         except asyncio.CancelledError:
-            await asyncio.wait_for(liberar.wait(), timeout=1.0)
+            await asyncio.wait_for(liberar.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
     background = ctx._track_task(tarea_obstinada(), name="background-obstinado")
     try:
-        await asyncio.wait_for(entro.wait(), timeout=1.0)
+        await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
         with pytest.raises(TimeoutError, match="background tasks did not stop"):
             await asyncio.wait_for(ctx.stop(), timeout=5.0)
         assert ejecuciones == 1
@@ -179,7 +185,7 @@ async def test_stop_cierra_el_trabajo_de_lods_antes_que_las_tasks_de_fondo(
             orden.append("supervisor")
 
     ctx._track_task(supervisor(), name="supervisor-daemon")
-    await asyncio.wait_for(entro.wait(), timeout=1.0)
+    await asyncio.wait_for(entro.wait(), timeout=_RED_DE_EMERGENCIA_S)
 
     await asyncio.wait_for(ctx.stop(), timeout=5.0)
 

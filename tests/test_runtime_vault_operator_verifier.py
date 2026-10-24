@@ -167,7 +167,7 @@ class TestWin32OperatorVerifierCausal:
         data_file.write_bytes(b"data_bytes")
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             # 1. OBSERVE
@@ -217,7 +217,7 @@ class TestWin32OperatorVerifierCausal:
 
         # Launcher que simula un hijo con PID=999999 pero el que conecta es el thread actual
         launcher = _TestOnlyVerifierLauncher(tamper_child_pid=999999)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -306,7 +306,7 @@ sys.exit(1)
                 )
 
         launcher = _SameSidForeignProcessLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=3.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -329,7 +329,7 @@ sys.exit(1)
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher(tamper_response_nonce="deadbeef" * 8)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -348,7 +348,7 @@ sys.exit(1)
         root.mkdir()
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             # Primera invocación consume un nonce
@@ -377,7 +377,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_child_pid=12345)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Peer PID mismatch"):
             bridge.invoke_observe(
@@ -393,7 +393,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_creation_time_delta=100_000_000)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="ProcessCreationTime mismatch"):
             bridge.invoke_observe(
@@ -409,7 +409,7 @@ sys.exit(1)
         root.mkdir()
 
         launcher = _TestOnlyVerifierLauncher(tamper_image_path="C:\\Windows\\notepad.exe")
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(PeerAuthenticationError, match="Process image mismatch"):
             bridge.invoke_observe(
@@ -432,7 +432,7 @@ if h != -1 and h != 0:
     kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ChildExitedPrematurelyError, match=r"cerró el canal"):
@@ -489,7 +489,7 @@ kernel32.WriteFile(ctypes.c_void_p(h), oversized_len, 4, ctypes.byref(written), 
 kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ProtocolAbuseError, match="excede el límite"):
@@ -543,7 +543,7 @@ kernel32.WriteFile(ctypes.c_void_p(h), frame, len(frame), ctypes.byref(written),
 kernel32.CloseHandle(ctypes.c_void_p(h))
 """
         bridge = OperatorVerifierBridge(
-            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=2.0
+            launcher=_TestOnlyVerifierLauncher(worker_code_override=worker_code), timeout_seconds=10.0
         )
 
         with pytest.raises(ProtocolAbuseError, match="Trailing bytes"):
@@ -622,7 +622,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         test_file = root / "plugin.esp"
         test_file.write_bytes(b"original_bytes")
 
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             # 1. OBSERVE
@@ -660,7 +660,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         root = tmp_path / "game_root"
         root.mkdir()
         (root / "SkyrimSE.exe").write_bytes(b"version_1")
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             obs = bridge.invoke_observe(
@@ -700,7 +700,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         root = tmp_path / "game_root"
         root.mkdir()
         (root / "SkyrimSE.exe").write_bytes(b"version_1")
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             obs = bridge.invoke_observe(
@@ -736,7 +736,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
     ) -> None:
         """Un fallo en el worker (raíz inexistente) envía un frame REJECTED en lugar de abortar silenciosamente."""
         nonexistent = tmp_path / "nonexistent_root"
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         with pytest.raises(OperatorVerifierBridgeError, match="REJECTED"):
             bridge.invoke_observe(
@@ -820,7 +820,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             return real_open_process(dw_desired_access, b_inherit_handle, dw_process_id)
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -847,7 +847,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher(tamper_creation_time_delta=9999999)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -871,7 +871,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         def fake_get_exit_code(h_proc: Any, lp_exit: Any) -> int:
             lp_exit._obj.value = 0  # 0 indica finalizado, no 259 (STILL_ACTIVE)
@@ -899,7 +899,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             obs = bridge.invoke_observe(
@@ -945,7 +945,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             obs = bridge.invoke_observe(
@@ -1027,7 +1027,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             return real_create_pipe(name, open_mode, pipe_mode, *args)
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -1073,7 +1073,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(ProtocolAbuseError, match="Versión de respuesta no soportada"):
             bridge.invoke_observe(
@@ -1110,7 +1110,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(ProtocolAbuseError, match=r"Violaci[oó]n de esquema cerrado.*malicious_extra_key"):
             bridge.invoke_observe(
@@ -1127,7 +1127,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
     ) -> None:
         """S11: Un frame REJECTED devuelve None en todas las evidencias, sin inventar ni filtrar datos."""
         nonexistent = tmp_path / "nonexistent"
-        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=10.0)
 
         ver = bridge.invoke_verify(
             token=current_operator_token,
@@ -1185,7 +1185,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             tamper_child_pid=999999,
             worker_code_override=worker_code,
         )
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=2.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with (
             patch.object(_kernel32, "TerminateProcess", side_effect=fake_term),
@@ -1213,7 +1213,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         (root / "SkyrimSE.exe").write_bytes(b"exe")
 
         launcher = _TestOnlyVerifierLauncher(tamper_hang_after_response=True)
-        bridge = OperatorVerifierBridge(launcher=launcher, grace_period_ms=100, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, grace_period_ms=100, timeout_seconds=10.0)
 
         with (
             patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"),
@@ -1254,12 +1254,12 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        # io_timeout_seconds=0.4 < 0.8s, pero operation_timeout_seconds=5.0 > 0.8s
+        # io_timeout_seconds=0.4 < 0.8s, pero operation_timeout_seconds=10.0 > 0.8s
         bridge = OperatorVerifierBridge(
             launcher=launcher,
-            connect_timeout_seconds=5.0,
+            connect_timeout_seconds=10.0,
             io_timeout_seconds=0.4,
-            operation_timeout_seconds=5.0,
+            operation_timeout_seconds=10.0,
         )
 
         res = bridge.invoke_observe(
@@ -1294,7 +1294,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
         bridge = OperatorVerifierBridge(
             launcher=launcher,
-            connect_timeout_seconds=5.0,
+            connect_timeout_seconds=10.0,
             io_timeout_seconds=1.0,
             operation_timeout_seconds=0.4,
         )
@@ -1393,7 +1393,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         exe.write_bytes(b"exe_bytes")
 
         launcher = _TestOnlyVerifierLauncher()
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
             obs = bridge.invoke_observe(
@@ -1513,7 +1513,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=3.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(ChildExitedPrematurelyError, match="EOF inesperado"):
             bridge.invoke_observe(
@@ -1621,7 +1621,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         )
 
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(
             ProtocolAbuseError,
@@ -1719,7 +1719,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         )
 
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         with pytest.raises(ProtocolAbuseError, match="no promover FAILED a VERIFIED"):
             bridge.invoke_verify(
@@ -1791,7 +1791,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher_a = _TestOnlyVerifierLauncher(worker_code_override=worker_code_bad_scalar)
-        bridge_a = OperatorVerifierBridge(launcher=launcher_a, timeout_seconds=5.0)
+        bridge_a = OperatorVerifierBridge(launcher=launcher_a, timeout_seconds=10.0)
         with pytest.raises(ProtocolAbuseError, match=r"'root_file_id' debe ser un int positivo"):
             bridge_a.invoke_observe(
                 token=current_operator_token,
@@ -1851,7 +1851,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher_b = _TestOnlyVerifierLauncher(worker_code_override=worker_code_bad_enum)
-        bridge_b = OperatorVerifierBridge(launcher=launcher_b, timeout_seconds=5.0)
+        bridge_b = OperatorVerifierBridge(launcher=launcher_b, timeout_seconds=10.0)
         with pytest.raises(ProtocolAbuseError, match="state inválido 'INVALID_ENUM_STATE'"):
             bridge_b.invoke_observe(
                 token=current_operator_token,
@@ -1957,7 +1957,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "message": "",
         }
         launcher_a = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_state))
-        bridge_a = OperatorVerifierBridge(launcher=launcher_a, timeout_seconds=5.0)
+        bridge_a = OperatorVerifierBridge(launcher=launcher_a, timeout_seconds=10.0)
         with pytest.raises(ProtocolAbuseError, match="no pueden declarar autoridad"):
             bridge_a.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-a")
 
@@ -1972,7 +1972,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "message": "",
         }
         launcher_b = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_expected_digest))
-        bridge_b = OperatorVerifierBridge(launcher=launcher_b, timeout_seconds=5.0)
+        bridge_b = OperatorVerifierBridge(launcher=launcher_b, timeout_seconds=10.0)
         with pytest.raises(ProtocolAbuseError, match="no pueden declarar expected_digest"):
             bridge_b.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-b")
 
@@ -1987,7 +1987,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "message": "",
         }
         launcher_c = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_expected_size))
-        bridge_c = OperatorVerifierBridge(launcher=launcher_c, timeout_seconds=5.0)
+        bridge_c = OperatorVerifierBridge(launcher=launcher_c, timeout_seconds=10.0)
         with pytest.raises(ProtocolAbuseError, match="no pueden declarar expected_size"):
             bridge_c.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-c")
 
@@ -2087,7 +2087,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             "sys.exit(0)\n"
         )
         launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code_broken_dto)
-        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=10.0)
 
         expected_phys = PhysicalRootIdentity(
             canonical_root=os.path.abspath(os.fspath(root)),

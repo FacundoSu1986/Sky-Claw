@@ -1,0 +1,517 @@
+2026-10-19 18:46:14,168 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:46:14,170 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:46:14,172 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:46:14,175 INFO sky_claw.local.tools.dyndolod_workspace external_work_root inicializado: binding publicado.
+2026-10-19 18:46:14,180 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:46:14,190 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:46:14,204 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 18:46:14,204 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 18:46:14,214 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt
+2026-10-19 18:46:14,216 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 18:46:14,216 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 18:46:14,432 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 18:46:14,432 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:46:14,435 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 18:46:14,436 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:46:14,439 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 18:46:14,442 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:47:03,793 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:47:03,796 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:47:03,797 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:47:03,808 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:47:03,809 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:47:03,813 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 18:47:03,813 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 18:47:03,819 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt
+2026-10-19 18:47:03,820 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 18:47:03,820 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 18:47:03,995 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 18:47:03,995 INFO SkyClaw.DynDOLODPipelineService Iniciando pipeline DynDOLOD: preset=Medium, texgen=True, snapshot=True
+2026-10-19 18:47:04,044 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-9069f342f468
+2026-10-19 18:48:01,551 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:48:01,554 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:48:01,556 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 18:48:01,583 INFO sky_claw.app.db.journal ActionManifest persisted
+2026-10-19 18:48:01,599 INFO sky_claw.local.tools.dyndolod_runner Iniciando pipeline DynDOLOD completo: run_texgen=True, preset=Medium, modo=desatendido
+2026-10-19 18:48:01,600 INFO sky_claw.local.tools.dyndolod_runner Iniciando TexGen para generación de texturas LOD
+2026-10-19 18:48:01,600 INFO sky_claw.local.tools.dyndolod_runner Ejecutando TexGen: "C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661Broker\Game INI\\" -p:C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt -t:C:\SkyClaw_Rigs\SW661Broker\temp\ (timeout: 14400s)
+2026-10-19 18:48:01,631 INFO sky_claw.local.tools.dyndolod_presets preset protegido antes del spawn: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini (PRESENT 75c4aa4a5746)
+2026-10-19 18:48:01,789 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini
+2026-10-19 18:48:01,789 ERROR sky_claw.local.tools.dyndolod_runner Error inesperado ejecutando TexGen: No profile set
+Traceback (most recent call last):
+  File "<WORKTREE>\sky_claw\local\tools\dyndolod_runner.py", line 2356, in run_texgen
+    stdout, stderr, return_code, duration = await self._execute_process(
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\tools\dyndolod_runner.py", line 2666, in _execute_process
+    proc = await asyncio.wait_for(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\Lib\asyncio\tasks.py", line 489, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\brokered_dyndolod.py", line 339, in spawn
+    session = await self._broker.open_session(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 836, in open_session
+    await sesion._esperar_tool_started()
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_session.py", line 275, in _esperar_tool_started
+    raise error
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 868, in _conducir_sesion
+    return await self._await_job_completion(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 985, in _await_job_completion
+    result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\Lib\asyncio\tasks.py", line 489, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+sky_claw.local.mo2.vfs_broker.VfsBridgeLaunchError: No profile set
+2026-10-19 18:48:01,798 ERROR sky_claw.local.tools.dyndolod_runner DynDOLOD no se lanza: TexGen no completó su corrida con éxito. La etapa se corta ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.
+2026-10-19 18:48:01,798 ERROR sky_claw.local.tools.dyndolod_runner Pipeline DynDOLOD falló: No profile set
+2026-10-19 18:48:01,801 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-instance\mods\TexGen Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 18:48:01,802 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-instance\mods\DynDOLOD Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 18:48:01,803 INFO SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): 'TexGen Output' restaurado byte-exact bajo lease intacta: evidencia (TX 1, artifact) resuelta como restored_byte_exact. La TX global sigue PENDING (Logs/INI/temp no inventariados por el rollback).
+2026-10-19 18:48:01,805 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 18:48:01,806 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:48:01,806 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 18:48:01,807 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:48:01,807 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): error de dominio del pipeline: DynDOLOD pipeline failed: No profile set
+2026-10-19 18:48:01,807 WARNING SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): cobertura de staging no demostrada tras error de dominio (TX 1): la TX queda PENDIENTE hasta aislar los targets crudos.
+2026-10-19 18:48:01,807 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD pipeline failed
+2026-10-19 18:48:01,811 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:48:01,811 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 18:48:01,813 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:48:01,816 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 18:48:01,817 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:49:53,318 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:49:53,320 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:49:53,321 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:49:53,332 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:49:53,335 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:49:53,337 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 18:49:53,337 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 18:49:53,347 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:49:53,347 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 18:49:53,348 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:49:53,348 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 18:49:53,350 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:50:19,392 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:50:19,395 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:19,396 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:19,402 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:19,403 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:50:19,406 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 18:50:19,406 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 18:50:19,414 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt
+2026-10-19 18:50:19,415 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 18:50:19,415 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 18:50:19,445 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 18:50:19,447 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:19,447 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 18:50:19,448 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:50:19,448 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 18:50:19,450 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:50:26,275 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:50:26,278 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:26,278 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:26,284 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:26,285 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 18:50:26,288 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 18:50:26,288 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 18:50:26,294 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt
+2026-10-19 18:50:26,295 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 18:50:26,295 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 18:50:26,377 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 18:50:26,377 INFO SkyClaw.DynDOLODPipelineService Iniciando pipeline DynDOLOD: preset=Medium, texgen=True, snapshot=True
+2026-10-19 18:50:26,427 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-5b20f07143e8
+2026-10-19 18:50:42,722 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:42,725 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 18:50:42,726 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 18:50:42,735 INFO sky_claw.app.db.journal ActionManifest persisted
+2026-10-19 18:50:42,742 INFO sky_claw.local.tools.dyndolod_runner Iniciando pipeline DynDOLOD completo: run_texgen=True, preset=Medium, modo=desatendido
+2026-10-19 18:50:42,743 INFO sky_claw.local.tools.dyndolod_runner Iniciando TexGen para generación de texturas LOD
+2026-10-19 18:50:42,744 INFO sky_claw.local.tools.dyndolod_runner Ejecutando TexGen: "C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661Broker\Game INI\\" -p:C:\SkyClaw_Rigs\SW661Broker\mo2-instance\profiles\UnattendedBroker\plugins.txt -t:C:\SkyClaw_Rigs\SW661Broker\temp\ (timeout: 14400s)
+2026-10-19 18:50:42,772 INFO sky_claw.local.tools.dyndolod_presets preset protegido antes del spawn: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini (PRESENT 75c4aa4a5746)
+2026-10-19 18:50:42,912 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini
+2026-10-19 18:50:42,912 ERROR sky_claw.local.tools.dyndolod_runner Error inesperado ejecutando TexGen: No profile set
+Traceback (most recent call last):
+  File "<WORKTREE>\sky_claw\local\tools\dyndolod_runner.py", line 2356, in run_texgen
+    stdout, stderr, return_code, duration = await self._execute_process(
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\tools\dyndolod_runner.py", line 2666, in _execute_process
+    proc = await asyncio.wait_for(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\Lib\asyncio\tasks.py", line 489, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\brokered_dyndolod.py", line 339, in spawn
+    session = await self._broker.open_session(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 836, in open_session
+    await sesion._esperar_tool_started()
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_session.py", line 275, in _esperar_tool_started
+    raise error
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 868, in _conducir_sesion
+    return await self._await_job_completion(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<WORKTREE>\sky_claw\local\mo2\vfs_broker.py", line 985, in _await_job_completion
+    result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\Lib\asyncio\tasks.py", line 489, in wait_for
+    return fut.result()
+           ^^^^^^^^^^^^
+sky_claw.local.mo2.vfs_broker.VfsBridgeLaunchError: No profile set
+2026-10-19 18:50:42,914 ERROR sky_claw.local.tools.dyndolod_runner DynDOLOD no se lanza: TexGen no completó su corrida con éxito. La etapa se corta ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.
+2026-10-19 18:50:42,914 ERROR sky_claw.local.tools.dyndolod_runner Pipeline DynDOLOD falló: No profile set
+2026-10-19 18:50:42,917 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-instance\mods\TexGen Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 18:50:42,918 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-instance\mods\DynDOLOD Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 18:50:42,919 INFO SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): 'TexGen Output' restaurado byte-exact bajo lease intacta: evidencia (TX 2, artifact) resuelta como restored_byte_exact. La TX global sigue PENDING (Logs/INI/temp no inventariados por el rollback).
+2026-10-19 18:50:42,921 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 18:50:42,922 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:42,922 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 18:50:42,923 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:42,923 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): error de dominio del pipeline: DynDOLOD pipeline failed: No profile set
+2026-10-19 18:50:42,923 WARNING SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): cobertura de staging no demostrada tras error de dominio (TX 2): la TX queda PENDIENTE hasta aislar los targets crudos.
+2026-10-19 18:50:42,923 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD pipeline failed
+2026-10-19 18:50:42,926 INFO sky_claw.app.db.locks Lock released
+2026-10-19 18:50:42,926 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 18:50:42,927 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 18:50:42,929 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 18:50:42,931 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:09:43,106 WARNING sky_claw.local.mo2.vfs_broker El worker VFS 5f46c04f-d9dc-446a-ade1-512ffdde7d82 no confirmó worker_exit en 30.0s con el bridge MO2 conectado; la terminalidad del proceso es indeterminada
+2026-10-19 19:09:43,137 CRITICAL sky_claw.local.mo2.vfs_broker Instancia mo2-200670d10c88efb3 puesta en CUARENTENA por terminalidad desconocida del job 5f46c04f-d9dc-446a-ade1-512ffdde7d82: teardown sin confirmación de worker_exit tras 30.0s con bridge conectado
+2026-10-19 19:15:46,453 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:15:46,456 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:15:46,457 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:15:46,462 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:15:46,463 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:15:46,464 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:22:22,318 WARNING sky_claw.local.mo2.vfs_broker Conexión del MO2 bridge terminada: conexión cerrada antes del prefijo del frame
+2026-10-19 19:24:16,364 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:24:16,371 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:24:16,374 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:24:16,374 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:24:16,377 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:24:16,378 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:29:37,592 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:29:37,859 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:29:38,088 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:29:38,088 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:29:38,317 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:29:38,543 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:33:56,850 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:33:56,855 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:33:56,856 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:33:56,857 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:33:56,857 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:33:56,857 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:37:17,111 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:37:17,116 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:37:17,116 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:37:17,117 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:37:17,117 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:37:17,120 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:39:21,241 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:39:21,241 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:39:21,241 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:39:21,245 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:39:21,246 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:39:21,246 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:40:15,141 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:40:15,143 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:40:15,144 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:40:15,145 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:40:15,146 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:40:15,148 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:40:55,415 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:40:55,415 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:40:55,418 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:40:55,418 INFO sky_claw.local.tools.dyndolod_workspace external_work_root inicializado: binding publicado.
+2026-10-19 19:40:55,422 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:40:55,422 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:41:03,973 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:41:03,975 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:41:05,500 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:41:05,500 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:45:49,839 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:45:49,840 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:45:49,842 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:45:49,850 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:45:49,852 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:45:54,851 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:45:54,854 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:45:56,366 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:45:56,367 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:45:56,370 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:54:05,137 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:54:05,138 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:05,139 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:05,145 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:54:05,146 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:54:05,149 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:54:05,897 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:54:05,902 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:05,902 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:05,913 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:54:05,913 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:54:05,922 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:54:10,539 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:54:10,539 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:10,542 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:54:10,546 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:54:10,553 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 19:54:10,560 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 19:54:10,560 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 19:54:13,253 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 19:54:13,254 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 19:54:13,254 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 19:54:13,352 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 19:54:13,352 INFO SkyClaw.DynDOLODPipelineService Iniciando pipeline DynDOLOD: preset=Medium, texgen=True, snapshot=True
+2026-10-19 19:54:13,404 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-b7009eec7e16
+2026-10-19 19:54:33,585 WARNING sky_claw.local.mo2.vfs_broker Conexión del MO2 bridge terminada: conexión cerrada antes del prefijo del frame
+2026-10-19 19:55:09,389 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:55:09,389 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 19:55:09,396 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 19:55:09,406 INFO sky_claw.app.db.journal ActionManifest persisted
+2026-10-19 19:55:09,410 INFO sky_claw.local.tools.dyndolod_runner Iniciando pipeline DynDOLOD completo: run_texgen=True, preset=Medium, modo=desatendido
+2026-10-19 19:55:09,410 INFO sky_claw.local.tools.dyndolod_runner Iniciando TexGen para generación de texturas LOD
+2026-10-19 19:55:09,414 INFO sky_claw.local.tools.dyndolod_runner Ejecutando TexGen: "C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661Broker\Game INI\\" -p:C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt -t:C:\SkyClaw_Rigs\SW661Broker\temp\ (timeout: 14400s)
+2026-10-19 19:55:09,444 INFO sky_claw.local.tools.dyndolod_presets preset protegido antes del spawn: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini (PRESENT 75c4aa4a5746)
+2026-10-19 19:55:20,405 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-modal-7a28d6369e56
+2026-10-19 19:56:00,255 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_modal_ignore → OK (invocado=True hresult=S_OK)
+2026-10-19 19:56:11,410 INFO sky_claw.local.tools.dyndolod_runner TexGen heartbeat: 62.0s elapsed, process still running
+2026-10-19 19:56:11,479 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_start → OK (invocado=True hresult=S_OK)
+2026-10-19 19:57:11,427 INFO sky_claw.local.tools.dyndolod_runner TexGen heartbeat: 122.0s elapsed, process still running
+2026-10-19 19:58:11,470 INFO sky_claw.local.tools.dyndolod_runner TexGen heartbeat: 182.0s elapsed, process still running
+2026-10-19 19:58:33,169 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_exit → OK (invocado=True hresult=S_OK)
+2026-10-19 19:58:36,183 INFO sky_claw.local.tools.dyndolod_runner TexGen desatendido: ledger de acciones [('texgen_modal_ignore', 'OK', 'S_OK'), ('texgen_start', 'OK', 'S_OK'), ('texgen_exit', 'OK', 'S_OK')]
+2026-10-19 19:58:36,191 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini
+2026-10-19 19:58:36,191 INFO sky_claw.local.tools.dyndolod_runner TexGen finalizado: return_code=0, duration=206.8s
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661 Unattended\temp\\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\Skyrim.ini
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\Saves\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 19:58:36,204 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661 Unattended\temp\\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\Skyrim.ini
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\Saves\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,205 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,210 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 19:58:36,211 ERROR sky_claw.local.tools.dyndolod_runner TexGen falló (code 0): Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.
+2026-10-19 19:58:36,211 ERROR sky_claw.local.tools.dyndolod_runner DynDOLOD no se lanza: TexGen no completó su corrida con éxito. La etapa se corta ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.
+2026-10-19 19:58:36,211 ERROR sky_claw.local.tools.dyndolod_runner Pipeline DynDOLOD falló: Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.
+2026-10-19 19:58:36,447 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\TexGen Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 19:58:36,448 WARNING SkyClaw.DirectoryRollback Rollback: 'C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\DynDOLOD Output' restaurado desde backup tras fallo del pipeline
+2026-10-19 19:58:36,450 INFO SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): 'TexGen Output' restaurado byte-exact bajo lease intacta: evidencia (TX 3, artifact) resuelta como restored_byte_exact. La TX global sigue PENDING (Logs/INI/temp no inventariados por el rollback).
+2026-10-19 19:58:36,452 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:58:36,453 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:58:36,453 WARNING sky_claw.app.db.locks Exception detected — rolling back 0 snapshot(s)
+2026-10-19 19:58:36,454 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:58:36,454 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): error de dominio del pipeline: DynDOLOD pipeline failed: Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.
+2026-10-19 19:58:36,454 WARNING SkyClaw.DynDOLODPipelineService DynDOLOD (stage 9): cobertura de staging no demostrada tras error de dominio (TX 3): la TX queda PENDIENTE hasta aislar los targets crudos.
+2026-10-19 19:58:36,454 ERROR SkyClaw.DynDOLODPipelineService DynDOLOD pipeline failed
+2026-10-19 19:58:36,458 INFO sky_claw.app.db.locks Lock released
+2026-10-19 19:58:36,458 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 19:58:36,460 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 19:58:36,462 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 19:58:36,463 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 20:02:38,398 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 20:02:38,398 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 20:02:38,401 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 20:02:38,407 INFO sky_claw.app.db.locks Lock released
+2026-10-19 20:02:38,407 INFO sky_claw.app.db.locks DistributedLockManager initialized
+2026-10-19 20:02:38,411 INFO sky_claw.app.db.journal Journal database opened
+2026-10-19 20:02:38,411 INFO sky_claw.app.core.event_bus CoreEventBus iniciado (queue_max=1024)
+2026-10-19 20:02:41,357 INFO SkyClaw.DynDOLODPipelineService DynDOLOD -p: plugins.txt del perfil activo 'UnattendedBroker': C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:02:41,357 INFO sky_claw.local.tools.dyndolod_runner DynDOLODRunner inicializado: dyndolod_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe, texgen_exe=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe, timeout=14400s, readiness_uia=disabled_for_test, spawn=BrokeredDynDOLODSpawnStrategy
+2026-10-19 20:02:41,357 INFO SkyClaw.DynDOLODPipelineService DynDOLODRunner inicializado: game=C:\SkyClaw_Rigs\SW661 Unattended\game, dyndolod=C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe
+2026-10-19 20:02:41,436 INFO sky_claw.local.validators.preflight Preflight: green (vfs=green; masters=green; plugin_limits=green; master_order=green; overwrite=green; write_permissions=green)
+2026-10-19 20:02:41,436 INFO SkyClaw.DynDOLODPipelineService Iniciando pipeline DynDOLOD: preset=Medium, texgen=True, snapshot=True
+2026-10-19 20:02:41,481 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-desatendido-49619ae1a601
+2026-10-19 20:03:00,236 WARNING sky_claw.local.mo2.vfs_broker Conexión del MO2 bridge terminada: conexión cerrada antes del prefijo del frame
+2026-10-19 20:03:25,587 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 20:03:25,589 INFO sky_claw.app.db.locks Lock acquired
+2026-10-19 20:03:25,590 INFO sky_claw.app.db.journal Transaction started
+2026-10-19 20:03:25,600 INFO sky_claw.app.db.journal ActionManifest persisted
+2026-10-19 20:03:25,607 INFO sky_claw.local.tools.dyndolod_runner Iniciando pipeline DynDOLOD completo: run_texgen=True, preset=Medium, modo=desatendido
+2026-10-19 20:03:25,607 INFO sky_claw.local.tools.dyndolod_runner Iniciando TexGen para generación de texturas LOD
+2026-10-19 20:03:25,607 INFO sky_claw.local.tools.dyndolod_runner Ejecutando TexGen: "C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\TexGenx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661Broker\Game INI\\" -p:C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt -t:C:\SkyClaw_Rigs\SW661Broker\temp\ (timeout: 14400s)
+2026-10-19 20:03:25,634 INFO sky_claw.local.tools.dyndolod_presets preset protegido antes del spawn: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini (PRESENT 75c4aa4a5746)
+2026-10-19 20:03:41,272 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_start → OK (invocado=True hresult=S_OK)
+2026-10-19 20:04:27,490 INFO sky_claw.local.tools.dyndolod_runner TexGen heartbeat: 61.9s elapsed, process still running
+2026-10-19 20:04:38,624 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: TexGen texgen_exit → OK (invocado=True hresult=S_OK)
+2026-10-19 20:04:40,648 INFO sky_claw.local.tools.dyndolod_runner TexGen desatendido: ledger de acciones [('texgen_start', 'OK', 'S_OK'), ('texgen_exit', 'OK', 'S_OK')]
+2026-10-19 20:04:40,652 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini
+2026-10-19 20:04:40,652 INFO sky_claw.local.tools.dyndolod_runner TexGen finalizado: return_code=0, duration=75.0s
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661 Unattended\temp\\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\Skyrim.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\Saves\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661 Unattended\temp\\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\TexGen\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\Skyrim.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\Saves\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,671 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,673 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\TexGen.ini
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,675 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:04:40,679 INFO sky_claw.local.tools.dyndolod_runner TexGen completado exitosamente en 75.0s: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\textures
+2026-10-19 20:04:40,679 INFO sky_claw.local.tools.dyndolod_runner Empaquetando mod: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\TexGen\textures -> C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\TexGen Output
+2026-10-19 20:04:41,624 INFO sky_claw.local.tools.dyndolod_runner Mod empaquetado exitosamente: C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\TexGen Output
+2026-10-19 20:04:49,821 INFO sky_claw.local.tools.dyndolod_runner Iniciando DynDOLOD con preset: Medium
+2026-10-19 20:04:49,821 INFO sky_claw.local.tools.dyndolod_runner Ejecutando DynDOLOD: "C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\DynDOLODx64.exe" -sse "-o:C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD\\" "-d:C:\SkyClaw_Rigs\SW661 Unattended\game\Data\\" "-m:C:\SkyClaw_Rigs\SW661Broker\Game INI\\" -p:C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt -t:C:\SkyClaw_Rigs\SW661Broker\temp\ (timeout: 14400s)
+2026-10-19 20:04:49,981 INFO sky_claw.local.tools.dyndolod_presets preset protegido antes del spawn: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_Default.ini (PRESENT e728f1f36171)
+2026-10-19 20:05:02,732 INFO sky_claw.app.security.hitl HITL: awaiting operator decision for dyndolod-modal-36829c03ace5
+2026-10-19 20:05:34,280 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_modal_ignore → OK (invocado=True hresult=S_OK)
+2026-10-19 20:05:37,713 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_advanced → OK (invocado=True hresult=S_OK)
+2026-10-19 20:05:42,317 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_begin_ok → OK (invocado=True hresult=S_OK)
+2026-10-19 20:05:52,554 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD heartbeat: 62.6s elapsed, process still running
+2026-10-19 20:06:52,546 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD heartbeat: 122.6s elapsed, process still running
+2026-10-19 20:07:52,543 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD heartbeat: 182.6s elapsed, process still running
+2026-10-19 20:08:52,565 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD heartbeat: 242.6s elapsed, process still running
+2026-10-19 20:09:13,993 INFO sky_claw.local.tools.dyndolod_uia_driver UIA desatendido: DynDOLOD dyndolod_save_exit → OK (invocado=True hresult=S_OK)
+2026-10-19 20:09:20,029 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD desatendido: ledger de acciones [('dyndolod_modal_ignore', 'OK', 'S_OK'), ('dyndolod_advanced', 'OK', 'S_OK'), ('dyndolod_begin_ok', 'OK', 'S_OK'), ('dyndolod_save_exit', 'OK', 'S_OK')]
+2026-10-19 20:09:20,043 INFO sky_claw.local.tools.dyndolod_presets preset restaurado y verificado: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_Default.ini
+2026-10-19 20:09:20,043 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD finalizado: return_code=0, duration=270.1s
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Cache Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661 Unattended\temp\\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661 Unattended\Work Root\DynDOLOD\DynDOLOD\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\\Skyrim.ini
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661 Unattended\Game INI\Saves\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661 Unattended\mo2-instance\profiles\UnattendedRig\plugins.txt
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Cache Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,151 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Skyrim Special Edition Data Path: C:\SkyClaw_Rigs\SW661 Unattended\game\Data\
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Scripts Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Cache Path: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Temp Path: C:\SkyClaw_Rigs\SW661Broker\temp\
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using Output Path: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD\
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using ini: C:\SkyClaw_Rigs\SW661Broker\Game INI\\Skyrim.ini
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using save path: C:\SkyClaw_Rigs\SW661Broker\Game INI\Saves\
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using plugin list: C:\SkyClaw_Rigs\SW661Broker\mo2-install\profiles\UnattendedBroker\plugins.txt
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using settings file: C:\SkyClaw_Rigs\SW661 Unattended\tools\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using language: spanish
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using general string encoding: 1252  (ANSI - Latín I)
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using translatable string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,206 INFO sky_claw.local.tools.dyndolod_runner Rutas resueltas por la herramienta: Using VMAD string encoding: 65001 (UTF-8)
+2026-10-19 20:09:20,210 WARNING sky_claw.local.tools.dyndolod_runner Directorio de salida no existe: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD\DynDOLOD_Output
+2026-10-19 20:09:20,210 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD output validado: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD (5 items)
+2026-10-19 20:09:20,210 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD completado exitosamente en 270.1s: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD
+2026-10-19 20:09:20,210 INFO sky_claw.local.tools.dyndolod_runner Empaquetando mod: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD -> C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\DynDOLOD Output
+2026-10-19 20:09:23,891 INFO sky_claw.local.tools.dyndolod_runner Mod empaquetado exitosamente: C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\DynDOLOD Output
+2026-10-19 20:09:23,891 INFO sky_claw.local.tools.dyndolod_runner Pipeline DynDOLOD completado exitosamente: TexGen=C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\TexGen Output, DynDOLOD=C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\DynDOLOD Output
+2026-10-19 20:09:23,891 INFO sky_claw.local.tools.dyndolod_runner DynDOLOD output validado: C:\SkyClaw_Rigs\SW661Broker\Work Root\DynDOLOD\DynDOLOD (5 items)
+2026-10-19 20:09:23,891 INFO sky_claw.app.db.journal Transaction committed
+2026-10-19 20:09:23,909 INFO sky_claw.app.db.journal FlightReport persisted
+2026-10-19 20:09:23,909 INFO SkyClaw.DynDOLODPipelineService DynDOLOD pipeline result
+2026-10-19 20:09:23,912 INFO SkyClaw.DynDOLODPipelineService Pipeline DynDOLOD exitoso: texgen=C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\TexGen Output, dyndolod=C:\SkyClaw_Rigs\SW661Broker\mo2-install\mods\DynDOLOD Output (402.5s)
+2026-10-19 20:09:23,919 INFO sky_claw.app.db.locks Lock released
+2026-10-19 20:09:23,919 INFO sky_claw.app.db.locks Lock released
+2026-10-19 20:09:27,303 INFO sky_claw.app.db.locks Lock released
+2026-10-19 20:09:27,303 INFO sky_claw.app.core.event_bus CoreEventBus detenido
+2026-10-19 20:09:28,624 INFO sky_claw.app.db.locks DistributedLockManager closed
+2026-10-19 20:09:29,999 INFO sky_claw.app.db.journal Journal database closed
+2026-10-19 20:09:30,906 INFO sky_claw.app.db.locks DistributedLockManager closed

@@ -9386,3 +9386,595 @@ mientras la superficie de revisión no aporte material nuevo.
 tombstones, ni store de emisiones, ni rollback, ni promoción, ni nada de P5. **No se inició la
 implementación de P4.** El próximo paso es el **re-gate externo del Tech Lead** sobre la ronda 11;
 `PR_SAFE_TO_MERGE = NO` y `MERGE = NO` hasta esa verificación.
+
+## 46. P4-S6 — consentimiento HITL del propietario y binding de identidad (2026-10-21)
+
+**Slice:** `P4-S6_OWNER_HITL`. **PR:** #776 (Draft). **Rama:**
+`feat/frozen-runtime-p4-s6-owner-hitl`.
+
+Cierra el bloqueante `OWNER_IDENTITY_BINDING = DEFERRED` de §35.2. **No** cierra
+`P4_APPROVAL_SCOPE` completo ni habilita promoción: lo que se implementa es la
+**superficie que prueba quién aprobó**, no el consumidor que ejecuta la transición.
+
+### 46.1 El defecto, con las citas
+
+§35.2 dejó escrito el hueco y por qué no se cerraba:
+
+```text
+APPROVAL_AUTHORITY   = la superficie HITL del producto (quién dijo que sí)
+LOCK_OWNERSHIP       = el session_id del lock P4 (proceso, NO identidad humana)
+lock_session_id == human_authorization_identity  ⇒ NO (no demostrado)
+OWNER_IDENTITY_BINDING = DEFERRED
+```
+
+La consecuencia en código era verificable y se reprodujo antes de diseñar:
+`ConsentimientoAprobacion` tenía **tres campos de texto** —digest, procedencia y
+superficie— y ningún camino que los ligara a un hecho del transporte. Cualquier
+módulo podía escribir:
+
+```python
+ConsentimientoAprobacion(
+    approval_scope_digest=propuesta.scope.approval_scope_digest,
+    approval_provenance=propuesta.scope.approval_provenance,
+    surface="fixture",
+)
+```
+
+y `_validar_consentimiento` lo aceptaba, porque **compara el digest que el
+llamador aporta contra el digest que el llamador aportó**. Es la misma tautología
+que P4-S5 cerró para el binding del journal, mudada al consentimiento: un campo
+controlado por el llamador no es una prueba.
+
+Por eso `emitir_aprobacion` fallaba cerrado con `ApprovalHitolNoDisponibleError`.
+El error era correcto; lo que faltaba era el mecanismo.
+
+### 46.2 Censo de superficies — quién puede aprobar, y con qué prueba
+
+Se auditaron las superficies HITL existentes (`sky_claw/app/security/hitl.py`,
+`sky_claw/app/comms/telegram.py`, `sky_claw/app/gui/sky_claw_gui.py`,
+`sky_claw/app_context.py`, `sky_claw/app/orchestrator/*`, `sky_claw/local/tools_installer.py`)
+y **una sola** emite una identidad humana verificable:
+
+| Superficie | Mecanismo | ¿Prueba identidad? | Por qué |
+|---|---|---|---|
+| **Telegram** | `telegram_from_id` | **SÍ** | El update llega autenticado por el bot token + `secret_token` del webhook; `from.id` lo fija el servidor de Telegram, no el cliente. Se compara contra el operador configurado y se exige chat **privado** (`chat.id == from.id`), no reenviado. |
+| **GUI** | `presencia_local` | **NO** | No hay login ni credencial: cualquiera con la sesión de escritorio pulsa el botón. `_dispatch_hitl_response` valida **ownership de pestaña** (`resolve_pending_hitl_request(store, tab_id, request_id)`), que es propiedad de UI, no identidad. |
+
+```text
+SUPERFICIES_DE_CONSENTIMIENTO = censo CERRADO (MappingProxyType)
+SUPERFICIE_CON_IDENTIDAD_VERIFICADA = TELEGRAM
+SUPERFICIE_SIN_IDENTIDAD           = GUI   ⇒ no puede producir consentimiento
+GUI_BUTTON_IS_IDENTITY             = NO
+```
+
+**La GUI no se degrada a «casi identidad»: se rechaza.** `presentar` levanta
+`SuperficieSinIdentidadVerificadaError` y el censo declara
+`verifica_identidad = False` en vez de omitir el caso. Un botón no es una
+prueba, y tratarlo como tal es exactamente lo que §35.2 prohíbe.
+
+**Hermano del transporte.** `verificar_identidad_telegram` reimplementa las
+condiciones de `TelegramWebhook._validate_private_operator` (el guard que ya usan
+las tools mutantes) porque `sky_claw/local/**` no puede importar `sky_claw/app/**`
+sin invertir la dependencia. Para que las dos no se separen hay un **test
+diferencial**: la misma matriz de updates —operador, ajeno, grupo, reenviado,
+`forward_from`, sin `from.id`, chat ajeno sin `type`, y las formas
+`callback_query` y `message`— se pasa por las dos implementaciones y se exige el
+mismo veredicto. Un cambio en cualquiera de las dos rompe el test.
+
+**Las tres formas de una decisión real.** El envoltorio no puede cambiar el
+veredicto, y hay un test que lo congela comparando la identidad producida por
+cada forma:
+
+```text
+update crudo con message          remitente y chat dentro de ``message``
+update crudo con callback_query   remitente en callback_query.from,
+                                  chat en callback_query.message.chat
+mensaje YA desenvuelto            remitente y chat en la raíz — es la forma que
+                                  el dispatcher le pasa al guard del transporte
+```
+
+La tercera no es una comodidad: es la forma en que el producto ya entrega el
+update. La primera versión de este slice desenrollaba `message` para el **chat**
+pero no para el **remitente**, así que un mensaje de texto real (`/aprobar
+<solicitud>`) se rechazaba con «el update no trae remitente» mientras el
+docstring afirmaba que las dos formas funcionaban. Fail-closed, pero con la mitad
+de la superficie inservible — el mismo error que ya se había corregido para los
+botones, arreglado en un hermano y no en el otro.
+
+### 46.2.1 La identidad es una capacidad, no un registro de campos
+
+```text
+IDENTITY_IS_A_CALLER_CONSTRUCTIBLE_DATACLASS = NO   (antes: SÍ — el P1)
+IDENTITY_MINTED_ONLY_BY_TRANSPORT_VERIFIER   = YES  (ancla por AST)
+IDENTITY_PROVENANCE_VERIFIED_AT_READ         = YES  (sello por identidad, ``is``)
+IN_PROCESS_CODE_IS_TRUSTED                   = YES  (declarado, no insinuado)
+```
+
+Hasta esta ronda `IdentidadPropietario` era un `dataclass` público de cinco
+campos y `_exigir_identidad_verificada` comprobaba tipo, superficie, `mecanismo`
+y campos no vacíos. **El `mecanismo` es un string del llamador comparado contra
+una constante pública**: decir «identidad verificada» era una afirmación sobre
+strings del propio llamador. Es exactamente la tautología que P4-S5 cerró para el
+journal (`digest_canonico` recalculado en vez de aceptado) y P4-S4 para `root_id`
+(verificado al leer), mudada al consentimiento:
+
+```python
+# antes: un one-liner que cualquier módulo podía escribir
+IdentidadPropietario(superficie=TELEGRAM, sujeto="424242",
+                     mecanismo="telegram_from_id", verificado_en_ns=0)
+```
+
+Ahora:
+
+- `IdentidadPropietario.__init__` **lanza** `IdentidadPropietarioNoVerificadaError`.
+  El tipo sigue exportado porque es el valor de retorno del verificador, pero ya
+  no se construye.
+- El único productor es `_acuñar_identidad` (privado), que estampa un
+  `_SelloDeVerificacion` —capacidad opaca comparada por **identidad** (`is`), no
+  por valor— y lo invoca **sólo** `verificar_identidad_telegram`.
+- `_exigir_identidad_verificada` comprueba el sello **primero**: la procedencia
+  precede al contenido. Comprobar el mecanismo antes sería preguntarle al
+  llamador si él mismo es de fiar.
+- Dos anclas enumerativas por AST (`Call`, no substring): **nadie** llama al
+  constructor en `sky_claw/`, y `_acuñar_identidad` tiene **un solo** llamador,
+  `verificar_identidad_telegram`.
+
+Lo que esto **no** hace, y el modelo de amenaza ya declaraba: código en proceso
+puede importar el nombre privado y fabricar el sello. Python no tiene capacidades
+in-process. Lo que se cierra es la vía accidental y la documentada —un dataclass
+cuyos campos pone el llamador— y se declara el resto en vez de insinuar que está
+cerrado.
+
+### 46.2.2 La presentación no puede mentir sobre lo que se aprueba
+
+```text
+PRESENTATION_LABELS_COME_ONLY_FROM_THE_MODULE = YES
+SCOPE_VALUE_CAN_ADD_A_LINE                    = NO
+```
+
+La presentación es una lista de `etiqueta: valor`. `approval_provenance` es un
+string **opaco del llamador** y `_exigir_texto` admite saltos de línea, así que
+bastaba `"x\napproval_scope_digest: <otro>"` para que el propietario viera el
+digest dos veces —una de ellas falsa— en la pantalla donde decide. El digest
+aprobado no cambiaba (lo emitido seguía siendo lo presentado), pero la superficie
+**mentía sobre lo aprobado**, que es justo lo que
+`WHAT_HUMAN_APPROVED == WHAT_WAS_ISSUED` prohíbe.
+
+`render_valor_scope` pasa ahora **todo** valor por `json.dumps` (cadenas
+entrecomilladas, control escapado, claves ordenadas) y escapa a mano
+`U+0085/U+2028/U+2029`, que `ensure_ascii=False` deja pasar y algunos
+renderizadores tratan como salto. Los campos de cabecera (`solicitud_id`,
+`root_id`, `sesion`, `propietario`, `mecanismo`, digest) usan el mismo render:
+la etiqueta la pone este módulo y sólo este módulo, en todas las filas. La
+invariante que ancla el test es estructural —**el número de líneas no depende del
+contenido** y hay exactamente una fila por etiqueta—, no una lista de caracteres
+prohibidos.
+
+### 46.2.3 El instante de la decisión se VUELVE A LEER
+
+```text
+DECISION_INSTANT_IS_VERIFIED   = YES  (gobierna la emisión)
+DECISION_INSTANT_IS_DURABLE    = NO   (declarado; ver abajo)
+```
+
+`decided_at_ns` lo escribía `responder` y **no lo leía nadie**: un campo que sólo
+se escribe es una aserción del llamador. Ahora `approval._validar_consentimiento`
+lo exige para todo consentimiento ligado al propietario y comprueba
+`decided_at_ns >= proposed_at_ns` — el propietario no puede haber aprobado algo
+que todavía no existía. Un consentimiento ligado sin instante de decisión no
+emite.
+
+No se persiste, y eso es una limitación **elegida**: el witness guarda
+`issued_at_ns` (el de la emisión) y el `approval_provenance`; el ancla durable del
+instante es el log del transporte. Persistirlo exigiría esquema v3 y no aporta
+frente al atacante que importa —quien fabrica el campo fabrica también el
+instante—. Se declara `NO` en vez de presentarlo como implementado.
+
+### 46.3 Protocolo congelado
+
+```text
+FASE B — PRESENTACIÓN (SIN lock; §39.4 se mantiene)
+  B1  _exigir_identidad_verificada: sello de acuñación (procedencia) ∧
+      superficie del censo ∧ mecanismo del censo ∧ verifica_identidad = True
+  B2  validar_scope(propuesta.scope)   ← recomputa el digest desde los 14 campos
+  B3  acuñar solicitud_id (UUID v4) y registrar la solicitud ABIERTA (memoria)
+  B4  devolver PresentacionConsentimiento con los 14 campos + digest + texto
+
+FASE B' — DECISIÓN (sin lock)
+  responder(solicitud_id, decision, identidad)
+      solicitud inexistente / ya resuelta ⇒ error, NO se emite
+      (superficie, sujeto, sesión) distintos de los de la presentación ⇒ error
+      APROBAR  ⇒ ConsentimientoAprobacion(digest PRESENTADO, provenance, surface,
+                   root_id, solicitud_id, session_id, owner_subject, mecanismo,
+                   decided_at_ns)
+      RECHAZAR ⇒ None      CANCELAR ⇒ None
+      la solicitud queda RESUELTA (single-use)
+
+FASE C — EMISIÓN (bajo lock; lo toma emitir_aprobacion_autorizada)
+  _exigir_binding_completo(consentimiento)      ← los SEIS campos
+  participant_lock(root) → _emitir_aprobacion_bajo_lock(handle, root, propuesta, consentimiento)
+      _validar_consentimiento: digest ∧ provenance ∧ decided_at_ns >= proposed_at_ns
+        ∧ si PRETENDE ser del propietario: los cinco campos de binding completos
+          (§46.10.1 — el núcleo no delega esa comprobación al wrapper)
+      (witness no-clobber → CAS del ledger → reconciliación hacia adelante; §39.3/§40.2)
+```
+
+```text
+PROPOSAL_IS_IMMUTABLE_BETWEEN_PRESENTATION_AND_ISSUE = YES
+  (el consentimiento liga el digest; cualquier cambio material lo invalida y
+   NO se «adapta» el scope para que encaje — §39.6)
+CONSENT_IS_SINGLE_USE                               = YES  (la solicitud se resuelve una vez)
+CONSENT_BINDS_SESSION                               = YES  (superficie + sujeto + sesión)
+CONSENT_BINDS_ROOT                                  = YES  (root_id revalidado ANTES del CREATE)
+CONSENT_BINDS_REQUEST                               = YES  (solicitud_id en el consentimiento)
+CONSENT_CARRIES_EXPLICIT_DECISION                   = YES  (APROBAR | RECHAZAR | CANCELAR)
+CONSENT_CARRIES_VERIFIED_DECISION_INSTANT           = YES  (decided_at_ns se revalida al emitir)
+ROOT_LOCK_HELD_ACROSS_HUMAN_INTERACTION             = NO   (test: presentar completa con el lock tomado)
+PROPOSAL_REGISTRY_IS_DURABLE                        = NO   (memoria; un reinicio la extingue)
+SECOND_LEDGER_OR_SECOND_AUTHORITY                   = NO   (se reusa approval.py tal cual)
+```
+
+**Por qué el registro de propuestas es en memoria y no durable.** Un registro
+durable de propuestas sería una **segunda autoridad** —el defecto que §36.5 y
+§40.2 prohíben— y además dejaría solicitudes aprobables después de un reinicio.
+En memoria, el cierre del proceso extingue toda propuesta
+(`SESSION_CLOSE_INVALIDATES_PENDING = YES`) y el fail-closed sale gratis: sin
+solicitud abierta no hay consentimiento, aunque el `solicitud_id` siga existiendo
+como string.
+
+**Concurrencia y memoria.** El registro está diseñado para tocarse desde el hilo
+de la GUI y desde el del webhook de Telegram (§46.7: hoy **no** está cableado a
+ninguno de los dos, y por eso el mutex no protege una carrera que exista todavía
+—protege la que existirá cuando se cablee—). El estado está bajo un
+`threading.Lock` que **nunca** se sostiene durante la interacción humana ni se
+anida con el root lock: resolver una solicitud es terminal y ocurre dentro del
+mutex, de modo que dos respuestas concurrentes no pueden pasar las dos la
+comprobación de estado. Hay un test que lo ejerce con **hilos reales** —ocho
+hilos sincronizados en una `Barrier` entran a `responder` a la vez y sólo uno
+obtiene consentimiento—, porque un `for` o un `subprocess.run` en bucle no son
+concurrencia y un test que se llame «concurrente» sin coexistencia sería una
+afirmación falsa en el nombre. Los ids ya resueltos se recuerdan en un
+`deque(maxlen=64)` para poder distinguir «ya respondida»
+(`ConsentimientoDuplicadoError`) de «no existe»
+(`SolicitudConsentimientoDesconocidaError`) sin crecimiento sin cota; un id
+desalojado cae a «desconocida», y las dos respuestas son fail-closed.
+
+### 46.4 Adjudicación: esquema v1 → v2
+
+**No hay artefactos de producción previos.** Verificado en la máquina de
+desarrollo: `~/.sky_claw/frozen-runtime` **no existe** (la emisión productiva
+nunca estuvo habilitada, así que nunca se escribió un witness ni un tombstone
+fuera de tests).
+
+```text
+PRODUCTION_WITNESSES_V1 = 0   (verificado: el root no existe)
+PRODUCTION_WITNESSES_V2 = 0
+SCHEMA_UPGRADE_REQUIRED = NO
+V1_ARTIFACT_TREATMENT   = FAIL_CLOSED  (el parser v2 exige scope_payload;
+                                        un v1 se rechaza con ApprovalSchemaError)
+MIGRATION_THAT_FABRICATES_CANDIDATE_ID = PROHIBITED
+AUTO_DELETE_OF_state/   = NO
+```
+
+Inventar el `candidate_id` ausente produciría una aprobación que nadie dio sobre
+un candidato que nadie eligió; borrar `state/` automáticamente destruiría la
+única evidencia de una emisión legítima. Ancla:
+`test_un_witness_v1_no_se_migra_ni_se_acepta`.
+
+### 46.5 Adjudicación: modelo de amenaza del witness
+
+```text
+WITNESS_IS_SIGNED_OR_SEALED_EXTERNALLY = NO
+FILESYSTEM_IS_INSIDE_TRUST_BOUNDARY    = YES
+CRYPTOGRAPHIC_SECURITY_AGAINST_ARBITRARY_WRITE = NOT_CLAIMED
+```
+
+El witness es un archivo con `open(path, "x")` + `fsync`. No hay firma ni sellado
+externo, y **no se declara seguridad criptográfica frente a un atacante con
+escritura arbitraria en el root**: quien puede escribir en `state/` puede escribir
+cualquier witness, y ningún HMAC local cambiaría eso (la clave viviría al lado).
+Lo que el diseño sí da —y es lo que §38.2/§40.2 ya congelaron— es
+**no-clobber + detección de manipulación parcial + root_id verificado al leer**:
+un `state/` trasplantado desde otro root o un tombstone reescrito se detectan,
+porque la evidencia es coherente consigo misma pero no con el root auditado.
+
+**Ni la identidad del sujeto ni el id de la solicitud son durables.** El scope
+persiste `surface` como campo propio, ligado por el digest. `approval_provenance`
+es un string **opaco que pone el llamador**: se persiste y el digest lo cubre,
+pero **nada verifica que contenga el `solicitud_id`** — es convención, no binding.
+El registro autoritativo de solicitudes es en memoria a propósito (§46.3), y el
+`owner_subject` viaja en el consentimiento, que también es memoria. Agregarlos al
+witness exigiría un esquema v3 y no aportaría frente al atacante que importa
+—quien fabrique el campo fabrica también el sujeto—. Frente al atacante externo
+la prueba está en el log del transporte, que sí los registra y es indexable.
+
+```text
+OWNER_SUBJECT_IS_DURABLE = NO   (limitación ELEGIDA y declarada)
+OWNER_SURFACE_IS_DURABLE = YES  (campo del scope, ligado por digest)
+OWNER_REQUEST_ID_IS_DURABLE = NO   (viaja en approval_provenance, string opaco:
+                                    nada verifica que lo contenga)
+```
+
+### 46.6 Adjudicación: rollback y la igualdad de operaciones
+
+`ApprovalOperation` y `JournalOperation` son dos `StrEnum` con los mismos
+literales. Como `StrEnum` hereda de `str`, `ApprovalOperation.PROMOTION ==
+JournalOperation.PROMOTION` es `True` **por comparación de texto**, no porque
+alguien haya verificado que las dos familias cubren las mismas operaciones: si
+mañana una enumera `ROLLBACK` y la otra no, la comparación sigue dando `True` y
+el defecto pasa inadvertido hasta el consumo.
+
+Ancla agregada (`test_las_operaciones_de_aprobacion_y_de_journal_son_iguales`):
+se compara el conjunto de **nombres** en las dos direcciones y se exige
+`{"PROMOTION", "ROLLBACK"}`. Una operación nueva en una sola de las dos rompe el
+test.
+
+### 46.7 Límites de activación (FASE F)
+
+```text
+EMISION_PRODUCTIVA_HABILITADA = False   (UNA definición: approval.py; owner_consent la LEE)
+HITL_SURFACE                  = IMPLEMENTED  (censo + verificación + registro + presentación)
+HITL_PRODUCTIVE               = NOT_WIRED    (ningún módulo de producción presenta ni responde)
+PROMOTION_PRODUCTIVA          = DISABLED
+ROLLBACK_PRODUCTIVA           = DISABLED
+EFFECTIVE_RUNTIME_MUTATED     = NO
+```
+
+**`HITL_PRODUCTIVE = NOT_WIRED`, no `ENABLED`.** La superficie existe y se prueba
+end-to-end, pero **nadie la llama**: el dispatcher de Telegram no enruta una
+decisión al `RegistroConsentimientos`, la GUI no abre solicitudes y ningún módulo
+de producción invoca `presentar` ni `responder`. Decir «HITL productivo
+habilitado» porque las piezas están sería presentar como implementada una
+garantía diferida. Lo que hay es: **la superficie existe, el cableado no**.
+
+**Por qué la emisión sigue cerrada aunque el consentimiento ya sea verificable.**
+Emitir crea una autorización durable de un solo uso con
+`MAX_ISSUED_APPROVALS_PER_ROOT = 1`. Ningún módulo de producción llama a
+`consumir_aprobacion` —hay un ancla enumerativa que lo congela—, así que la
+aprobación quedaría `ISSUED` **sin salida operativa** y bloquearía la emisión
+siguiente hasta que el dueño revoque. La FASE F del brief pide no habilitar por
+arrastre el flujo de promoción: falta el consumidor, no la superficie.
+
+El interruptor es **uno** y tiene **dos** anclas, porque una sola no alcanzaba:
+
+- **Enumerativa** — cuenta las definiciones de `EMISION_PRODUCTIVA_HABILITADA`
+  en todo `sky_claw/` y exige exactamente una. Antes había dos: la de
+  `approval.py` no la leía ningún módulo de producción, así que era un flag que
+  sólo afirmaba un test; el mutante que la flipaba moría por el literal, no por
+  un cambio de conducta. Dos constantes homónimas pueden divergir en silencio.
+- **Conductual** — un consentimiento **válido y completo** llega hasta
+  `emitir_aprobacion_autorizada` y no emite nada. El test **no** afirma el valor
+  de la constante: lo que prueba es que la constante gobierna la puerta. Abrirla
+  sin integrar el consumidor lo rompe por comportamiento.
+
+Es la misma lección de `root_id` (§35) y del binding de P4-S5, mudada a un flag
+de capacidad: **un símbolo que sólo se afirma es decoración**. Abrirlo obliga a
+adjudicar el consumidor en el mismo cambio.
+
+### 46.8 Estado
+
+```text
+SLICE                                  = P4-S6_OWNER_HITL
+OWNER_IDENTITY_BINDING                 = VERIFIED (TELEGRAM) / BLOCKED (GUI)
+IDENTITY_IS_A_CAPABILITY               = YES   (constructor cerrado + sello; anclas AST)
+HUMAN_CONSENT                          = VERIFIED
+FULL_SCOPE_PRESENTED                   = YES   (14/14 campos, test enumerativo)
+PRESENTATION_IS_NON_AMBIGUOUS          = YES   (ningún valor aporta una línea)
+SCOPE_IMMUTABLE                        = YES
+SESSION_BINDING                        = YES
+DECISION_INSTANT_IS_VERIFIED           = YES
+DECISION_INSTANT_IS_DURABLE            = NO    (declarado; §46.2.3)
+IDENTITY_VERIFICATION_INSTANT_IS_DURABLE = NO  (declarado; §46.11 — viaja en
+                                                  IdentidadPropietario y no se
+                                                  propaga al consentimiento)
+DURABLE_ISSUE                          = VERIFIED (núcleo P4-S4/S5 reusado, sin segundo ledger)
+REPLAY_PROTECTION                      = VERIFIED (single-use + sesión + root + digest;
+                                                  carrera real de 8 hilos probada)
+GUI_LLM_SURFACES                       = VERIFIED (censo + anclas AST)
+
+SCHEMA_V1_V2                           = NO_ARTIFACTS · FAIL_CLOSED · NO_MIGRATION
+WITNESS_TRUST_MODEL                    = FILESYSTEM_IN_TRUST_BOUNDARY · NO_SIGNATURE · NOT_CLAIMED_CRYPTO
+
+HITL_SURFACE                           = IMPLEMENTED
+HITL_PRODUCTIVE                        = NOT_WIRED
+EMISION_PRODUCTIVA                     = DISABLED
+PROMOTION_PRODUCTIVE                   = DISABLED
+ROLLBACK_PRODUCTIVE                    = DISABLED
+EFFECTIVE_RUNTIME_MUTATED              = NO
+ISSUE_672                              = OPEN
+MERGED                                 = NO
+```
+
+### 46.9 Verificación de esta ronda
+
+- Suite focal `tests/test_frozen_runtime_p4_s6_owner_hitl.py`: **65 passed**
+  (eran 56; +9 con la ronda de Codex, uno de ellos la carrera real de 8 hilos).
+- `P4-S4 + P4-S5 + P4-S6`: **184 passed**, 0 fallos.
+- `P4-S1/S2/S3` (root lock, wiring del participante, journal durable, huérfanas):
+  **202 passed**, 2 skipped, **2 fallos** — los dos clasificados, ninguno de esta
+  slice, que **no toca** `root_lock.py` ni `durable_journal.py` (0 archivos en el
+  diff).
+  - `test_f06_inspect_applies_anti_reparse_admission_boundary`: falla en esta
+    máquina **también en el baseline** (`9fe88cb4`). Crear un symlink de archivo
+    sin privilegio no produce reparse ⇒ el guard no tiene nada que rechazar.
+    `OUT_OF_SCOPE` **verificado por reproducción**, no por razonamiento.
+  - `test_f10_tip_de_otra_generation_no_prueba_el_clone_activo`: murió con
+    `Blocked by Security Center rules: write …\state\frozen-runtime.lock` ⇒
+    `UNKNOWN != OWNED`, que es el sandbox del entorno, no el código. Pasa aislado
+    con basetemp limpio (`1 passed` en 1.93 s). Residuo de carga, no regresión.
+- Total P4 sobre el árbol integrado: **386 passed**, 2 skipped, 2 fallos (uno de
+  baseline, uno de sandbox). Se reportan los dos en vez de restar el segundo: un
+  número que no reproduce es decoración, y el que reproduce aislado igual hay que
+  declararlo.
+- **Integración sin mover refs, revalidada dos veces.** La primera contra
+  `18775fd0`: `merge-tree` predijo `d4488a01` y el merge real (`fb3e0142`, padres
+  `74028635` + `18775fd0`) reprodujo ese árbol. Después `main` avanzó a
+  `bb663d51` (#775, #778, #782, #783 y el bump de brotli de #785) y la evidencia
+  quedó vieja, así que se repitió: `merge-tree` predijo `d08a48d6` y el merge real
+  (`f3783308`, padres `52c89a01` + `bb663d51`) reprodujo **ese mismo árbol**. El
+  solape de archivos entre `18775fd0..bb663d51` y esta slice es **vacío**
+  (`comm -12` sobre los dos `diff --name-only`). Sin rebase y sin force push.
+- **El modelo de CI cambió con #778, y hay que leerlo distinto.** `ci.yml` ahora
+  dispara `push` **solo** en `main`/`master` y `pull_request` sin filtro. Un PR
+  produce **un** run, no dos: la duplicación `push`+`pull_request` era la que
+  hacía competir 4 jobs Windows por los mismos runners. El timeout de tests
+  Windows quedó en **70** min. La reconciliación local de #778 (`e9904429`) es
+  **byte-idéntica** a lo que aterrizó en `112ca524` — verificado con
+  `git diff e9904429 bb663d51 -- .github/workflows/ci.yml` vacío—, así que ese
+  worktree quedó sin objeto.
+- **Los ocho tests nuevos son ROJOS en `ef39ac04`, por la razón correcta** —no por
+  `ImportError` ni por `AttributeError` del helper—:
+
+  ```text
+  test_el_scope_no_puede_inventar_lineas_en_la_presentacion   assert 25 == 22
+  test_la_identidad_no_se_construye_a_mano                    DID NOT RAISE
+  test_una_identidad_falsificada_no_presenta_ni_responde      DID NOT RAISE
+  test_la_identidad_de_telegram_acepta_un_mensaje_crudo       el update no trae remitente
+  test_el_envoltorio_del_update_no_cambia_el_veredicto        el update no trae remitente
+  test_un_consentimiento_ligado_sin_instante_de_decision…     DID NOT RAISE
+  test_una_decision_anterior_a_la_propuesta_no_emite          DID NOT RAISE
+  test_solo_el_modulo_de_consentimiento_construye_identidades llama al constructor
+  ```
+
+- Mutantes: **17/17 matados** (eran 13; +4 para los gates nuevos: sello,
+  escape de presentación, desenvuelto de `message`, instante de decisión). Tres
+  pases dejaron ver tres cosas. (1) M7 —quitar `chat.id == from.id`— sobrevivió
+  porque el caso de grupo ya lo tapaba la comprobación de `type`: se agregaron los
+  dos casos que faltaban —chat ajeno **sin** `type` y chat ajeno con `type:
+  private` mentido— y murió. (2) M12 —no desenvolver `callback_query`— obligó a
+  cubrir la forma en que llega realmente un botón. (3) M11 —flipar
+  `EMISION_PRODUCTIVA_HABILITADA`— moría **por tautología**: el test afirmaba el
+  valor de la constante, no que la constante gobernara algo, y la constante que
+  flipaba no la leía ningún módulo de producción. Se unificó la definición y el
+  test pasó a probar la clausura por conducta; M11 muere ahora con `DID NOT RAISE`
+  porque la puerta se abre y emite. Ese es el valor del gate: los tests que
+  faltaban no eran los del caso feliz.
+- Anclas enumerativas: censo de superficies, constructores de
+  `ConsentimientoAprobacion` (solo `owner_consent.py`), **llamadores del
+  constructor de `IdentidadPropietario` (ninguno) y de `_acuñar_identidad` (solo
+  `verificar_identidad_telegram`)**, llamadores de `_emitir_aprobacion_bajo_lock`
+  (`approval.py` + `owner_consent.py`), llamadores de `consumir_aprobacion`
+  (ninguno de producción), igualdad de operaciones, superficies del agente sin
+  acceso a la autoridad, y **una sola definición** de
+  `EMISION_PRODUCTIVA_HABILITADA`.
+- `Ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` (947
+  archivos, `All checks passed!`); `mypy` sobre `sky_claw/ scripts/` (397
+  archivos, `Success: no issues found`). Las dos cifras subieron respecto de la
+  ronda anterior porque `main` sumó el escritor de Native Parallax.
+
+**Alcance.** Se tocaron `sky_claw/local/frozen_runtime/{approval,errors,owner_consent,__init__}.py`,
+`tests/test_frozen_runtime_p4_s6_owner_hitl.py` y este ADR. **No** se tocó Steam,
+Skyrim, MO2, SKSE, DynDOLOD, Parallax ni Runtime Vault. `P5_IMPLEMENTED = NO`.
+
+`docs/pending_ooda_status.md` **no se modifica**: la regla de `AGENTS.md` aplica al
+cierre de una `T-XX` de `TECHNICAL_REVIEW_TASKS.md`, y ese inventario no tiene
+ninguna fila de Frozen Runtime (verificado por búsqueda: 0 coincidencias de
+«Frozen Runtime» en el archivo). P4-S6 cierra un bloqueante del ADR 0012
+rastreado en el issue #672, que sigue **OPEN**.
+
+### 46.10 Ronda de revisión — los seis hallazgos de Codex
+
+Se auditaron contra el código, no contra el comentario del bot: cada uno se
+falsificó con una sonda antes de aceptarlo. Cuatro eran defectos reales; dos eran
+limitaciones que el ADR contaba mal.
+
+| # | Hallazgo | Veredicto | Resolución |
+|---|---|---|---|
+| P1 | `IdentidadPropietario` es público y el chequeo sólo compara `mecanismo` | **Confirmado** | §46.2.1 — constructor cerrado, sello de acuñación, dos anclas AST. Mutante M14. |
+| P2 | El update crudo con `message` se rechaza | **Confirmado por sonda** | §46.2 — tres formas aceptadas; el envoltorio no cambia el veredicto. Mutante M16. |
+| P2 | La presentación no escapa saltos de línea | **Confirmado** | §46.2.2 — todo valor por `json.dumps`. Mutante M15. |
+| P2 | `decided_at_ns` no se lee nunca | **Confirmado** | §46.2.3 — gobierna la emisión. Mutante M17. |
+| P2 | El binding de la solicitud no llega al witness | **Confirmado, DIFERIDO** | Exigiría esquema v3; el ancla durable del *quién* es el transporte, no el artefacto. `OWNER_REQUEST_ID_IS_DURABLE = NO`. |
+| P2 | El registro no está cableado a producción | **Confirmado, DIFERIDO** | §46.7 — `HITL_PRODUCTIVE = NOT_WIRED`. Cablear sin consumidor deja `ISSUED` sin salida. |
+| P1 | `_emitir_aprobacion_bajo_lock` sólo revalida `decided_at_ns` para un consentimiento ligado; los otros cinco campos de binding no | **Confirmado por sonda** | §46.10.1 — el núcleo exige los cinco campos cuando detecta la pretensión. Mutante M18. |
+
+La distinción entre las dos columnas de la derecha importa: **un diferimiento
+declarado es una decisión; uno presentado como implementado es un defecto.** Los
+dos diferidos están escritos como límites con nombre y valor, y el PR no se
+considera mergeable hasta que el dueño los acepte como tales.
+
+#### 46.10.1 El séptimo hallazgo — el binding del núcleo, a medias
+
+Llegó del revisor de PR después de la tabla, sobre `086a628b`, y se falsificó
+antes de aceptarlo. `_validar_consentimiento` detecta la pretensión de ser del
+propietario con
+
+```python
+ligado_al_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
+```
+
+y en esa rama validaba **uno** de los seis campos: `decided_at_ns`. Los otros
+cinco quedaban a cargo de `owner_consent._exigir_binding_completo`, que vive en
+el wrapper. Y el chequeo del root de más abajo es `if consentimiento.root_id is
+not None`: un `None` lo **salteaba entero**, con lo que la atadura al root físico
+—la que §46.3 declara `CONSENT_BINDS_ROOT = YES`— desaparecía.
+
+La sonda: un `ConsentimientoAprobacion` con `owner_subject`, `mecanismo` e
+instante válidos, y `root_id`/`solicitud_id`/`session_id` en `None`, invocado
+directo sobre el núcleo bajo lock. Resultado: **`DID NOT RAISE`** — emitió.
+
+¿Por qué importa si el wrapper los exige? Porque el núcleo **no tiene un solo
+llamador**: los tests del bloque durable y `tests/_p4_s4_child.py` lo invocan
+directo, y esa es la definición de "un chequeo que vive sólo en el llamador". Es
+el mismo defecto que el P1 de esta ronda, un piso más abajo. Que hoy no exista un
+segundo llamador *productivo* es una propiedad del árbol de llamadas de hoy, no
+del mecanismo.
+
+La resolución no relaja nada: cuando el consentimiento **pretende** ser del
+propietario, el núcleo exige los cinco campos antes de mirar el instante. Un
+consentimiento sin ninguno de los dos campos de identidad sigue siendo la fixture
+de tres cadenas que P4-S4/P4-S5 necesitan para ejercitar la autoridad durable sin
+superficie —eso no cambia—, pero ya no se puede tener *medio* binding.
+
+### 46.11 Tres observaciones del revisor que NO son defectos
+
+El mismo revisor dejó tres "focus areas" sobre `69f150be`. Se adjudican una por
+una porque **una adjudicación sin evidencia es otra opinión**.
+
+**1. `timeout: float = 0.0` en `emitir_aprobacion_autorizada` — es política, no
+defecto.** El revisor propone 5–10 s para que un holder que libera en milisegundos
+no haga fallar la adquisición. Es cierto que `0.0` falla en vez de esperar. Pero
+fallar acá es **fail-closed**: no se emite nada y el llamador decide la política
+de reintento, mientras que bloquear el hilo del webhook durante 10 s ata un
+recurso del transporte a una espera que el dueño del lock no controla. El
+parámetro existe justamente para que el llamador lo fije; fijarlo en el
+`owner_consent` sería decidir por el cableado que todavía no existe
+(`HITL_PRODUCTIVE = NOT_WIRED`). Queda documentado en el docstring y sin cambiar
+el default.
+
+**2. `threading.Lock` en `RegistroConsentimientos` — el primitivo es el correcto,
+y el escenario de bloqueo del loop no puede ocurrir.** El webhook es aiohttp
+(`sky_claw/app/comms/telegram.py`), o sea asyncio, y la GUI es NiceGUI: la
+observación tiene base real. Pero se resuelve con dos hechos verificados en el
+código:
+
+- La sección crítica **no contiene ningún `await`** (`responder`: `with
+  self._mutex:` abre en 652 y el `return` está en 677, sin suspensión en medio).
+  Un `threading.Lock` sostenido por una corrutina que nunca cede no puede bloquear
+  el loop más que una operación de diccionario.
+- Si el registro se toca desde **varios hilos** —que es lo que ejercita el test de
+  8 hilos con `Barrier`—, `asyncio.Lock` sería **incorrecto**: no es thread-safe y
+  no protege nada entre hilos. `threading.Lock` es el único de los dos que sirve
+  en los dos mundos.
+
+En un solo hilo no hay contención posible; en varios, `asyncio.Lock` no aplica. No
+se cambia.
+
+**3. `verificado_en_ns` no se propaga al consentimiento — cierto, y se declara.**
+`IdentidadPropietario.verificado_en_ns` marca cuándo el transporte probó la
+identidad; el consentimiento lleva `decided_at_ns`, que es la decisión. Son dos
+eventos distintos y el segundo no arrastra al primero. Propagarlo no aporta frente
+al atacante que importa —quien fabrica el consentimiento fabrica el instante, igual
+que fabrica el sujeto— y el ancla durable de *cuándo se verificó* es el log del
+transporte, que sí lo registra. Se declara con nombre y valor:
+
+```text
+IDENTITY_VERIFICATION_INSTANT_IS_DURABLE = NO
+```
+
+Que es la misma decisión, y el mismo motivo, que `DECISION_INSTANT_IS_DURABLE = NO`
+(§46.2.3) y `OWNER_REQUEST_ID_IS_DURABLE = NO`: los tres son datos que el
+consentimiento **no** lleva al witness porque agregarlos exigiría esquema v3 sin
+cerrar ninguna amenaza que el transporte no cierre ya. Los tres están escritos.
+Ninguno se presenta como implementado.
+

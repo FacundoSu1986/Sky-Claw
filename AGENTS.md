@@ -123,6 +123,9 @@ bindings exactos de ruta y rama hasta que termine cada sesión. No mover ni borr
 checkouts ajenos durante otra tarea. Al cerrar una sesión, su responsable migra
 el worktree o lo retira conservando su trabajo, y quita el binding de esta tabla y
 de `LEGADOS` en el test. Una ruta nueva o una rama distinta no hereda la exención.
+El binding publicado como `sha256:<huella>` es una ruta con datos de cuenta: se conserva
+exacto por huella canónica (huella + rama), no por el `home` de la máquina que corre el test,
+así que ninguna otra cuenta puede heredarlo.
 
 <!-- worktree-legacy:start -->
 | Ruta existente | Rama |
@@ -133,7 +136,7 @@ de `LEGADOS` en el test. Una ruta nueva o una rama distinta no hereda la exenci�
 | `C:/Worktrees/Sky-Claw-r1-packaging-cancel` | `fix/dyndolod-r1-packaging-cancel` |
 | `E:/Skyclaw_Frozen_Runtime_P3` | `feat/frozen-runtime-p3-candidate` |
 | `E:/Skyclaw_Steam_Frozen_Runtime` | `feat/steam-frozen-runtime` |
-| `C:/Users/Facu2/WorkBuddy/Worktrees/Skyclaw_Main_Sync/main-d17cd082` | `workbuddy/main-d17cd082` |
+| `sha256:7a80af3873644758202fd3534cc91b01d5696af4d00b7f97ab8e1603612cf788` | `workbuddy/main-d17cd082` |
 | `E:/Skyclaw_Main_Sync/.kilo/worktrees/broadleaf-professor` | `DETACHED` |
 <!-- worktree-legacy:end -->
 
@@ -154,6 +157,26 @@ de `LEGADOS` en el test. Una ruta nueva o una rama distinta no hereda la exenci�
 `C:\Worktrees`, `E:\`, `E:\Sectores\...`, `.claude/worktrees` y `.kilo/worktrees`.
 El registro de git era consistente, pero no había forma de auditarlo. Sin ancla,
 esto vuelve.*
+
+## Integración: merge, rebase y conflictos
+
+La propiedad, en una frase: **el árbol que se prueba es el que se mergea, y un conflicto se
+resuelve nombrando el invariante de cada lado, no eligiendo un lado.**
+
+- Sincronizar con `git merge origin/main --no-ff`. **Nunca `rebase`**: reescribe los SHAs que
+  ya revisaron los bots y el PR pierde la trazabilidad de qué árbol se revisó.
+- `main` **no** exige estar al día (`strict: false` en la protección). Verificarlo a mano
+  antes de mergear: `git merge-base --is-ancestor origin/main HEAD`.
+- `main` recibe **squash**. Verificar un solo padre: `git log --format='%P' -1 origin/main`.
+- **Un merge limpio no es evidencia de un merge correcto.** El conflicto peligroso es el que
+  git no reporta: contrato cambiado de un lado y consumidor nuevo del otro, o el hermano que
+  nadie tocó (§3.1 del estándar). Si el otro lado tocó una primitiva que consumís, auditá los
+  call sites del árbol **mergeado** aunque no haya un solo marcador.
+- `--ours` / `--theirs` sobre un archivo entero está prohibido salvo en diffs de forma: es
+  "arreglar un hermano y no al otro" ejecutado con un comando.
+- Norma completa, clases de conflicto y tabla de registro por PR:
+  [docs/development/merge_and_conflict_resolution.md](docs/development/merge_and_conflict_resolution.md)
+  (reglas R1–R15, ancladas en `tests/test_merge_conflict_standard.py`).
 
 ## Antes de tocar el pipeline de modding
 

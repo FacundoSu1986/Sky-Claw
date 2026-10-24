@@ -5,7 +5,7 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0013 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0014 en este directorio (el 0014 está en estado `Aceptada`, desde 2026-10-19).
 >
 > **Última verificación:** 2026-10-10; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
 > con el diseño de P4 congelado (P4-D0)**. **El estado vigente es §45**; el índice de
@@ -119,6 +119,7 @@
 - [0011 — DynDOLOD PR-2: external_work_root y binding de propiedad](0011-dyndolod-external-work-root.md)
 - [0012 — Frozen Runtime: promoción aislada de versiones](0012-frozen-runtime.md)
 - [0013 — Clean-room del generador nativo de parallax](0013-clean-room-native-parallax.md)
+- [0014 — Generador nativo de parallax: design brief, layout de producto y dependencias](0014-native-parallax-producto-brief-y-dependencias.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.

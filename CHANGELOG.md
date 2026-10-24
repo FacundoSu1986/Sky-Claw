@@ -8,6 +8,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **La etapa 9 desatendida abortaba sin escribir el Output si UIA leía la ventana
+  mientras se repintaba (F2b, #781).** Hermano de F2 (#773) por la otra operación
+  mutante: `_paso_escribir_output` tomaba UNA sola instantánea antes de escribir
+  el campo Output, así que un `CARGANDO`/`SIN_VENTANA` transitorio —o una lectura
+  que moría con `ObservacionUIAError` por un elemento stale a mitad de repaint—
+  abortaba el paso aunque la pantalla contractual volviera un instante después.
+  La reobservación vive dentro del MISMO paso y reutiliza el presupuesto de F2
+  (`reobservacion_timeout_segundos`, 15 s, más el tope de 16 lecturas), pero NO
+  copia el contrato del Invoke: la pantalla requerida es siempre `ASISTENTE`, no
+  hay precondiciones propias y hay readback posterior. En cada vuelta se
+  revalidan pid, ruta canónica del ejecutable, pantalla, unicidad y habilitación
+  del campo Output; `backend.escribir_output` se ejecuta como máximo UNA vez y
+  su desenlace —HRESULT fallido o readback ilegible— no se reintenta, porque la
+  mutación pudo haber ocurrido. El plazo se verifica pegado a la primitiva con
+  `reloj() >= limite`: en el instante de vencimiento no se escribe. Sólo se
+  releen huecos de observación; otro modal, un diálogo desconocido, `AMBIGUA`, un
+  control duplicado o deshabilitado y `UIANoDisponibleError` cortan en la PRIMERA
+  lectura. **El hermano que F2 dejó sin cablear:** `_converger_output` pedía el
+  paso con `observacion_intervalo_segundos` (1 s) mientras `_invocar` ya recibía
+  el presupuesto de reobservación desde #773, así que aun con la reobservación
+  implementada el hueco no entraba. Un desenlace desconocido tras la posible
+  escritura deja de reportarse como `UIA_UNAVAILABLE` —que afirmaba "no pude
+  mirar" sobre un paso que quizá ya mutó el campo del usuario— y pasa a
+  `UNATTENDED_CONTRACT_VIOLATION` con `la escritura pudo haberse ejecutado y no se
+  reintenta`. Son DOS los desenlaces que ya no caen en `UIA_UNAVAILABLE`: el de
+  arriba y el del plazo vencido antes de escribir, que responde
+  `UIA_CONTROL_MAP_MISMATCH` —el mismo que ya usa `_esperar_asistente` cuando
+  vence su plazo de arranque— en lugar de caer al fallback `UIA_UNAVAILABLE`, que
+  describía como "no pude mirar" un paso que no escribió nada. Los desenlaces
+  restantes conservan el código que ya tenían y el mapa completo está enumerado en
+  `test_f2b_el_mapa_de_codigos_de_la_escritura_enumera_todos_los_estados`.
+  Validado con 13/13 mutantes muertos (sin reobservación, dos escrituras por
+  readback ilegible, sin guard de deadline, `>=` por `>`, sin identidad, pantalla
+  desconocida recuperable, HRESULT que reintenta, hermano sin presupuesto,
+  desenlace desconocido mudo, excepción no recuperada, readback mentiroso, tope de
+  lecturas infinito y plazo agotado cayendo al fallback genérico).
+  *No hay validación en rig Windows: la corrección se probó con backends
+  simulados deterministas y relojes falsos.*
+- **La etapa 9 desatendida abortaba cuando UIA leía la ventana mientras se
+  repintaba (F2, #773).** En la corrida D1 del rig Alpha-209 el operador aprobó el
+  modal conocido de DynDOLOD DLL NG y el conductor cortó con
+  `UIA_CONTROL_MAP_MISMATCH`: `_paso_invocar` tomaba UNA sola instantánea y esa
+  lectura cayó en `pantalla=CARGANDO` con `invocado=False`; D2, con el mismo
+  código, pasó. Reintentar desde el conductor no era una opción —`_invocar`
+  reserva la acción en el ledger ANTES de pedir el paso, así que la segunda
+  llamada es `UNATTENDED_CONTRACT_VIOLATION` por diseño— y la reobservación vive
+  ahora dentro del MISMO paso `INVOCAR`: si la instantánea no muestra ninguna
+  pantalla contractual (`CARGANDO`, `SIN_VENTANA`) se vuelve a leer con
+  presupuesto finito (`reobservacion_timeout_segundos`, 15 s, más un tope de 16
+  lecturas), revalidando en cada vuelta pid, ruta canónica del ejecutable,
+  pantalla requerida, identidad del modal, precondición de Output y
+  unicidad/habilitación del control. `backend.invocar` se ejecuta como máximo una
+  vez y su desenlace —incluido un HRESULT de error— no se reintenta. Una pantalla
+  decisiva DISTINTA de la esperada (otro modal, diálogo desconocido, `AMBIGUA`,
+  control duplicado o deshabilitado) corta cerrado sin releer. El mismo hueco
+  tiene una forma en excepción: una lectura que levanta `ObservacionUIAError`
+  (elemento stale a mitad de repaint) también se relee con ese presupuesto,
+  mientras que `UIANoDisponibleError` —el sensor— sigue cortando en la primera
+  lectura, la misma distinción que ya hacía la observación; si no hubo ni una
+  sola lectura legible el veredicto es `UIA_NO_DISPONIBLE`, no la pantalla. El
+  presupuesto acota también la ACCIÓN, no sólo la espera: si la lectura que
+  habilita el Invoke llega a `timeout_segundos` o después —una lectura
+  lenta, con el modal contractual a la vista y la instantánea válida— el paso
+  devuelve `PLAZO_AGOTADO` con `invocado=False` en vez de mutar fuera del
+  presupuesto que el operador aprobó. El borde es `reloj() >= limite`: el
+  presupuesto se agota EN el límite, la misma convención que la observación y
+  las esperas del cierre. Es deliberadamente más estricto que la
+  observación: observar de más no muta, invocar de más sí. El
+  corte por identidad, además, tenía dos códigos según el camino: `_atender_modal`,
+  `accion_previa`, Begin y terminal reportaban `IDENTIDAD_NO_COINCIDE` como
+  `UIA_CONTROL_MAP_MISMATCH`/`TERMINAL_CONTROL_MISMATCH` mientras la observación y
+  la escritura del Output ya usaban `UNATTENDED_CONTRACT_VIOLATION`; ahora los
+  siete sitios comparten un único mapeo. Anclas:
+  `tests/test_dyndolod_uia_driver.py` (casos A–G de #773, el caso I de la lectura
+  ilegible, el caso J del presupuesto vencido —pantalla transitoria, excepción y
+  el borde exacto del vencimiento con su contracara un instante antes—,
+  el censo parametrizado de los cuatro caminos del corte por identidad y
+  el test que fija que el padre pide el Invoke UNA vez aunque el paso corte sin
+  invocar) y `tests/_dyndolod_gui_simulada.py`, que gana el guion de instantáneas
+  —y de lecturas que fallan— con el que se reproduce el hueco de repintado.
 - **El adapter legacy de `run_xedit_script` devolvía un resumen vacío como si fuera
   el resumen validado (#549).** La tool del agente lee `list_all_conflicts.pas` y
   verifica que `SUMMARY|total_conflicts` exista y cierre contra los conflictos

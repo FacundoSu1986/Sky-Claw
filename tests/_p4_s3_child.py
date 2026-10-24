@@ -79,6 +79,7 @@ def _propuesta(transition_id: str) -> object:
         target_generation_id=GEN_OBJETIVO,
         target_clone_id="clone-objetivo",
         target_runtime_setup_id="setup-objetivo",
+        candidate_id="cand-1",
         approval_scope_digest="c" * 64,
         evidence_digests=EvidenceDigests(
             clone_evidence="d" * 64,
@@ -91,13 +92,14 @@ def _propuesta(transition_id: str) -> object:
 
 
 def _aprobacion(transition_id: str) -> object:
-    from sky_claw.local.frozen_runtime.journal import AprobacionConsumida
+    from sky_claw.local.frozen_runtime.journal import AprobacionConsumida, proyectar_propuesta
 
     return AprobacionConsumida(
         approval_id=APROBACION,
         approval_seq=12,
         scope_digest="c" * 64,
         consumed_by_transition_id=transition_id,
+        proyeccion=proyectar_propuesta(_propuesta(transition_id), approval_id=APROBACION, approval_seq=12),
     )
 
 

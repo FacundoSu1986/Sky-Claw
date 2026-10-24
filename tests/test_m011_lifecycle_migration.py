@@ -153,6 +153,11 @@ _SITIOS_LOCK_MANAGER_PRODUCTIVOS: set[tuple[str, str, str]] = {
     # `lifecycle=` para participar del boundary (WAL recovery + pragmas
     # hardenizadas + shutdown coordinado), y no queda exento por ser nuevo.
     ("sky_claw/local/tools/dyndolod_workspace.py", "construir_coordinacion_de_etapa9", "<sin-variable>"),
+    # NP-O0b2 de ADR 0014: el lock de las sesiones de salida del generador nativo
+    # de parallax, también sobre estado durable POR USUARIO. Mismo criterio que
+    # la etapa 9: recibe `lifecycle=` y no queda exento por ser nuevo (NP-A0, que
+    # lo cablea, es quien le pasa el lifecycle de la app).
+    ("sky_claw/local/native_parallax/output_writer.py", "construir_coordinacion_de_salida", "<sin-variable>"),
 }
 
 

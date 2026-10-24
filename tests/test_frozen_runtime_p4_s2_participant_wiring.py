@@ -401,6 +401,24 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("journal.py", "_start_next_locked"),
         ("journal.py", "_actualizar_locked"),
         ("journal.py", "_finalizar_locked"),
+        # P4-S4 (`approval.py`): la autoridad de aprobación escribe por DOS
+        # caminos, y ninguno adquiere el lock por su cuenta — reciben el
+        # `FrozenRuntimeRootLockHandle` ya adquirido y lo verifican con
+        # `handle.assert_owned()`. Declararlos acá los somete al ancla de call
+        # site: si alguna vez se los invoca fuera de una sección crítica, el
+        # test falla. Se declaran también `_crear_witness`, `_crear_tombstone` y
+        # `_reconciliar_hacia_adelante` aunque el censo por AST no los vea
+        # (llaman funciones del proyecto, no mutadores del inventario): el censo
+        # NO es transitivo —límite declarado arriba— y esas tres son justamente
+        # las que crean el witness y el tombstone, es decir la emisión y la
+        # terminalización.
+        ("approval.py", "_crear_json_inmutable"),
+        ("approval.py", "_escribir_ledger"),
+        ("approval.py", "_escribir_ledger_cas"),
+        ("approval.py", "_emitir_aprobacion_bajo_lock"),
+        ("approval.py", "_crear_witness"),
+        ("approval.py", "_crear_tombstone"),
+        ("approval.py", "_reconciliar_hacia_adelante"),
     }
 )
 

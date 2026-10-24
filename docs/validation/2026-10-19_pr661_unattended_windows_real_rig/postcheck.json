@@ -1,0 +1,33 @@
+{
+  "texgen": {
+    "success": false,
+    "needs_deployment": true,
+    "rolled_back": false,
+    "interaction_mode": "desatendido",
+    "assisted": false,
+    "duration_seconds": 90.1880000000001,
+    "completion_marker": "TexGen completed successfully (Logs/TexGen_SSE_log.txt)",
+    "terminal_actions": "Exit TexGen (CommandButton_7) exactly-once",
+    "return_code": 0,
+    "runner_log": "state/run.log: TexGen finalizado: return_code=0, duration=67.1s + TexGen completado exitosamente",
+    "artefacto": "Work Root/DynDOLOD/TexGen/textures: 1362 archivos / 138.457.821 B"
+  },
+  "dyndolod": {
+    "success": true,
+    "needs_deployment": false,
+    "interaction_mode": "desatendido",
+    "assisted": false,
+    "duration_seconds": 291.625,
+    "errors": [],
+    "tool_return_code": 0,
+    "completion_markers": [
+      "DynDOLOD plugins generated successfully",
+      "Occlusion.esp completed successfully"
+    ],
+    "terminal_action": "User says \"Save and Exit\" (CommandButton_6) exactly-once",
+    "unattended_error_codes": null,
+    "return_code": 0,
+    "runner_log": "state/run.log: DynDOLOD finalizado: return_code=0, duration=269.4s",
+    "artefacto": "Work Root/DynDOLOD/DynDOLOD: 5105 archivos / 722.206.676 B"
+  }
+}

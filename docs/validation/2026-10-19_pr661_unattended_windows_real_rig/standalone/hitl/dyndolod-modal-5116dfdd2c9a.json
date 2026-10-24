@@ -1,0 +1,8 @@
+{
+  "request_id": "dyndolod-modal-5116dfdd2c9a",
+  "category": "dyndolod_desatendido",
+  "reason": "TexGen (pid=22928) mostró un aviso de arranque conocido. Aprobá para que Sky-Claw pulse 'Ignore' y continúe; denegá para cortar la corrida.",
+  "detail": "aviso: Found stitched object LOD textures from earlier TexGen generation installed in game folder.\nqué significa: TexGen encontró texturas stitched de una generación anterior instaladas en la carpeta del juego. Lo recomendado por DynDOLOD es desinstalar el output viejo antes de regenerar; 'Ignore' continúa igual (dyndolod.info/Messages/TexGen-Output).\nid: texgen_stitched_lod_previo · timeout: 900s",
+  "url": null,
+  "created_at": "2026-10-19T17:56:16-0300"
+}

@@ -1,0 +1,15 @@
+duration_seconds=172.4
+success=False
+assisted=False
+interaction_mode=desatendido
+needs_deployment=None
+rolled_back=False
+message=DynDOLOD pipeline failed: Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.
+errors=['DynDOLOD pipeline failed: Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder. It is recommended to uninstall all stitched object LOD textures generated earlier before generating new stitched object LOD textures.']
+unattended_error_codes=[]
+status=None
+reason=None
+texgen_mod_path=None
+dyndolod_mod_path=None
+texgen_result=null
+dyndolod_result=null

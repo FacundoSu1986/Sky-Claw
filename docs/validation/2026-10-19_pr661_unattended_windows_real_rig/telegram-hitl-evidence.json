@@ -1,0 +1,89 @@
+{
+  "canal_productivo_esperado": "Telegram (HITLGuard.notify_fn) — NO CONFIGURADO en esta máquina",
+  "evidencia": {
+    "config_toml_telegram": false,
+    "keyring_telegram_token": false
+  },
+  "transporte_usado": "chat de la sesión de aceptación (sustitución declarada del transporte; adapter/categoría/fail-closed productivos)",
+  "categoria_no_auto_aprobable": "dyndolod_desatendido",
+  "pedidos": [
+    {
+      "request_id": "dyndolod-desatendido-0d8699165a6f",
+      "category": "dyndolod_desatendido",
+      "reason": "Etapa 9 DESATENDIDA (TexGen → DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+      "detail": "preset pedido: Medium\nTexGen 3.0.0.209 (sha256 0939bc8f8cba…) · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini (huella d01afd101da9…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\TexGen\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+      "created_at": "2026-10-19T17:55:24-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR (SESION DE ACEPTACION #661) RE-APRUEBA LA MISMA CONFIGURACION DEL PEDIDO ANTERIOR (DETAIL BYTE-IDENTICO). entregada=True 2026-10-19T17:56:08-0300"
+    },
+    {
+      "request_id": "dyndolod-desatendido-77ec7467df0b",
+      "category": "dyndolod_desatendido",
+      "reason": "Etapa 9 DESATENDIDA (TexGen → DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+      "detail": "preset pedido: Medium\nTexGen 3.0.0.209 (sha256 0939bc8f8cba…) · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini (huella d01afd101da9…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\TexGen\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+      "created_at": "2026-10-19T17:53:59-0300",
+      "decision": "DENEGADA (fail-closed)",
+      "answered": "﻿APROBADA\nOPERADOR (SESIÓN DE ACEPTACIÓN #661) APRUEBA LA CONFIGURACIÓN DECLARADA EN EL PEDIDO. entregada=True 2026-10-19T17:54:50-0300",
+      "decision_efectiva_en_el_guard": "DENEGADA",
+      "nota": "el archivo .resp fue escrito con BOM UTF-8 (EF BB BF 41 50 52) y el guion del transporte no lo parseo como APROBADA; el HITLGuard recibio DENEGADA y la corrida corto antes del spawn. Se conserva el .resp crudo en state/hitl/attempt1/."
+    },
+    {
+      "request_id": "dyndolod-desatendido-e99827c3fc43",
+      "category": "dyndolod_desatendido",
+      "reason": "Etapa 9 DESATENDIDA (TexGen → DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+      "detail": "preset pedido: Medium\nTexGen 3.0.0.209 (sha256 0939bc8f8cba…) · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_TexGen.ini (huella d01afd101da9…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\TexGen\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+      "created_at": "2026-10-19T17:59:45-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR APRUEBA CONFIGURACION IDENTICA PARA EL REINTENTO LIMPIO (T2). entregada=True 2026-10-19T18:00:01-0300"
+    },
+    {
+      "request_id": "dyndolod-desatendido-ec2bf1a93878",
+      "category": "dyndolod_desatendido",
+      "reason": "Etapa 9 DESATENDIDA (DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+      "detail": "preset pedido: Medium\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+      "created_at": "2026-10-19T18:15:13-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR APRUEBA REINTENTO DE DYNDOLOD CON LA MISMA CONFIGURACION. entregada=True 2026-10-19T18:15:28-0300"
+    },
+    {
+      "request_id": "dyndolod-desatendido-ef4eae792b10",
+      "category": "dyndolod_desatendido",
+      "reason": "Etapa 9 DESATENDIDA (DynDOLOD): Sky-Claw va a operar las ventanas por UI Automation, sin intervención en la PC, con la configuración que cada herramienta tiene guardada en su preset (Sky-Claw no la edita y restaura el preset al terminar). Aprobá sólo si esa es la configuración que querés generar.",
+      "detail": "preset pedido: Medium\nDynDOLOD 3.0.0.209 (sha256 b67625eb7815…) · Preset=Medium · preset C:\\SkyClaw_Rigs\\SW661 Unattended\\tools\\DynDOLOD\\Edit Scripts\\DynDOLOD\\Presets\\DynDOLOD_SSE_Default.ini (huella 48843821348b…) · Output C:\\SkyClaw_Rigs\\SW661 Unattended\\Work Root\\DynDOLOD\\DynDOLOD\ntimeout de esta aprobación: 900s",
+      "created_at": "2026-10-19T18:01:46-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR APRUEBA CONFIGURACION DE DYNDOLOD (RUN_TEXGEN=FALSE) EN EL RIG AISLADO #661. entregada=True 2026-10-19T18:04:58-0300"
+    },
+    {
+      "request_id": "dyndolod-modal-5116dfdd2c9a",
+      "category": "dyndolod_desatendido",
+      "reason": "TexGen (pid=22928) mostró un aviso de arranque conocido. Aprobá para que Sky-Claw pulse 'Ignore' y continúe; denegá para cortar la corrida.",
+      "detail": "aviso: Found stitched object LOD textures from earlier TexGen generation installed in game folder.\nqué significa: TexGen encontró texturas stitched de una generación anterior instaladas en la carpeta del juego. Lo recomendado por DynDOLOD es desinstalar el output viejo antes de regenerar; 'Ignore' continúa igual (dyndolod.info/Messages/TexGen-Output).\nid: texgen_stitched_lod_previo · timeout: 900s",
+      "created_at": "2026-10-19T17:56:16-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR AUTORIZA IGNORE DEL MODAL TEXGEN_STITCHED_LOD_PREVIO. entregada=True 2026-10-19T17:57:12-0300"
+    },
+    {
+      "request_id": "dyndolod-modal-86bf9e2fd920",
+      "category": "dyndolod_desatendido",
+      "reason": "DynDOLOD (pid=21076) mostró un aviso de arranque conocido. Aprobá para que Sky-Claw pulse 'Ignore' y continúe; denegá para cortar la corrida.",
+      "detail": "aviso: DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!\nqué significa: DynDOLOD no encontró DynDOLOD.DLL de 'DynDOLOD DLL NG and Scripts'. Sin ese plugin SKSE el LOD dinámico no funciona en juego (SOP §2.9: requerido para 1.6.1170); 'Ignore' genera igual.\nid: dyndolod_dll_ng_ausente · timeout: 900s",
+      "created_at": "2026-10-19T18:15:43-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR AUTORIZA IGNORE DEL MODAL DLL_NG_AUSENTE (RETRY). entregada=True 2026-10-19T18:15:54-0300"
+    },
+    {
+      "request_id": "dyndolod-modal-d11ad0883045",
+      "category": "dyndolod_desatendido",
+      "reason": "DynDOLOD (pid=20416) mostró un aviso de arranque conocido. Aprobá para que Sky-Claw pulse 'Ignore' y continúe; denegá para cortar la corrida.",
+      "detail": "aviso: DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!\nqué significa: DynDOLOD no encontró DynDOLOD.DLL de 'DynDOLOD DLL NG and Scripts'. Sin ese plugin SKSE el LOD dinámico no funciona en juego (SOP §2.9: requerido para 1.6.1170); 'Ignore' genera igual.\nid: dyndolod_dll_ng_ausente · timeout: 900s",
+      "created_at": "2026-10-19T18:05:17-0300",
+      "decision": "APROBADA",
+      "answered": "APROBADA\nOPERADOR AUTORIZA IGNORE DEL MODAL DYNODLOD_DLL_NG_AUSENTE. entregada=True 2026-10-19T18:05:55-0300"
+    }
+  ],
+  "telegram_verificado": false,
+  "canal": "chat de la sesion de aceptacion (sustitucion declarada del TRANSPORTE)",
+  "adaptador_productivo": "AprobadorDesatendidoHITL",
+  "guard_productivo": "HITLGuard.request_approval(category=dyndolod_desatendido)"
+}

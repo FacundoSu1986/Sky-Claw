@@ -69,6 +69,12 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     "copying.py": frozenset({"flush", "fsync", "mkdir"}),
     "candidates.py": frozenset({"mkdir"}),
     "root_lock.py": frozenset({"flush", "fsync", "mkdir", "write"}),
+    # P4-S4: los dos stores INMUTABLES de la autoridad de aprobación
+    # (`state/issuances/` y `state/approvals/`) se crean con `open(..., "x")` y se
+    # escriben completos sobre ese descriptor antes de cerrarlo. No hay `mkdir`
+    # (el layout es del storage), ni `replace`/`unlink`: un store inmutable no se
+    # reemplaza ni se borra (§38.2: `TOMBSTONE_STORE_IS_APPEND_ONLY_AND_IMMUTABLE`).
+    "approval.py": frozenset({"flush", "fsync", "write"}),
 }
 
 
@@ -100,6 +106,11 @@ MODULOS_CON_OPEN_ESCRITURA: dict[str, frozenset[str]] = {
     # P4-S1: root_lock.py abre con `x+b` exclusivo para creacion atomica y con `r+b`
     # para adquisicion y lectura/escritura del lockfile persistente bajo root/state/.
     "root_lock.py": frozenset({"r+b", "x+b"}),
+    # P4-S4: `x` es el no-clobber que el propio §38.2 nombra para el tombstone
+    # terminal ("`open(path, \"x\")` (reserva exclusiva)"). Nunca `os.replace` sobre
+    # un tombstone existente: el contenido se escribe sobre el descriptor recien
+    # creado, con flush + fsync antes de cerrar.
+    "approval.py": frozenset({"x"}),
 }
 
 

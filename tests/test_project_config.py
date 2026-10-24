@@ -210,6 +210,64 @@ def test_locks_no_conservan_dependencias_del_stategraph_retirado() -> None:
         assert f'name = "{dependencia}"' not in uv_lock, f"uv.lock todavía instala {dependencia}"
 
 
+def _versiones_pineadas(lock: str) -> dict[str, str]:
+    """Paquetes ``nombre==versión`` de un ``requirements*.lock`` (nombres normalizados)."""
+    return {
+        nombre.lower().replace("_", "-"): version_pineada
+        for nombre, version_pineada in re.findall(r"(?m)^([A-Za-z0-9_.\-]+)==([^\s\\]+)", lock)
+    }
+
+
+def _divergencias_entre_locks(a: str, b: str) -> dict[str, tuple[str, str]]:
+    """Paquetes presentes en ambos locks con distinta versión: ``{nombre: (versión_a, versión_b)}``."""
+    pines_a, pines_b = _versiones_pineadas(a), _versiones_pineadas(b)
+    return {
+        nombre: (pines_a[nombre], pines_b[nombre])
+        for nombre in pines_a.keys() & pines_b.keys()
+        if pines_a[nombre] != pines_b[nombre]
+    }
+
+
+def _faltantes_en_el_extra(base: str, extra: str) -> set[str]:
+    """Paquetes del lock base que el lock del extra no trae: el extra es un superconjunto por construcción."""
+    return _versiones_pineadas(base).keys() - _versiones_pineadas(extra).keys()
+
+
+def test_los_dos_locks_de_requirements_pinean_las_mismas_versiones() -> None:
+    """Subir un paquete en un lock y no en su gemelo deja a CI auditando solo uno de los dos.
+
+    ``requirements.lock`` y ``requirements-native-parallax.lock`` salen del mismo ``pyproject.toml``
+    (el segundo con ``--extra native-parallax``) y CI los audita en pasos separados con ``pip-audit
+    --strict``: el segundo paso no corre si el primero falla. Un aviso nuevo sobre un paquete común
+    (certifi, GHSA-6q48-6c7w-9gw2) obliga a subirlo en los dos; si solo se sube uno, el otro falla
+    recién en la corrida siguiente. Se enumeran TODOS los paquetes del lock base, no solo certifi.
+    """
+    base = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    extra = (REPO_ROOT / "requirements-native-parallax.lock").read_text(encoding="utf-8")
+
+    pines_base = _versiones_pineadas(base)
+
+    # guarda contra el pase vacío: si el formato de los locks cambiara y el parseo no devolviera nada, las
+    # dos aserciones de abajo pasarían sin comparar un solo paquete
+    assert pines_base, "no se leyó ningún paquete pineado de requirements.lock"
+    # el extra solo AGREGA (numpy, pillow): si una regeneración le suelta un paquete base, la intersección lo
+    # excluiría en silencio y la instalación del extra quedaría incompleta con todo lo demás en verde
+    assert _faltantes_en_el_extra(base, extra) == set()
+    assert _divergencias_entre_locks(base, extra) == {}
+
+
+def test_el_ancla_de_locks_detecta_una_divergencia() -> None:
+    """Sin este caso el ancla de arriba podría pasar vacía (regex que no matchea nada)."""
+    viejo = "certifi==2026.2.25 \\\n    --hash=sha256:aa\nidna==3.15 \\\n    --hash=sha256:bb\n"
+    nuevo = "certifi==2026.10.19 \\\n    --hash=sha256:cc\nidna==3.15 \\\n    --hash=sha256:bb\nnumpy==2.4.6\n"
+
+    assert _divergencias_entre_locks(viejo, nuevo) == {"certifi": ("2026.2.25", "2026.10.19")}
+    assert _divergencias_entre_locks(viejo, viejo) == {}
+    # un paquete base que el extra no trae no es una «divergencia» (no está en la intersección): lo atrapa el otro
+    assert _faltantes_en_el_extra(viejo, nuevo) == set()
+    assert _faltantes_en_el_extra(nuevo, "certifi==2026.10.19\n") == {"idna", "numpy"}
+
+
 def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
@@ -464,15 +522,175 @@ def test_multidict_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert version_uv in req.specifier, f"uv.lock tiene multidict {version_uv} fuera del rango {req.specifier}"
 
 
+def test_certifi_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """certifi debe mantener el piso seguro >=2026.10.19 ante GHSA-6q48-6c7w-9gw2.
+
+    Sin el piso en ``pyproject.toml``, un ``pip install -e .`` sobre un entorno existente queda satisfecho
+    por la 2026.2.25 vulnerable aunque los locks ya estén subidos. Se verifican los TRES locks que pinean
+    certifi (los tests de anyio y multidict no miran ``requirements-native-parallax.lock``).
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("2026.10.19")
+
+    # 1. pyproject.toml
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "certifi"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un certifi en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert not req.specifier.contains(Version("2026.2.25")), f"el rango de certifi admite la versión vulnerable: {req}"
+    assert req.specifier.contains(piso_minimo), f"el rango de certifi no cubre el piso {piso_minimo}: {req}"
+
+    # 2. los dos requirements*.lock
+    for nombre in ("requirements.lock", "requirements-native-parallax.lock"):
+        pines = _versiones_pineadas((REPO_ROOT / nombre).read_text(encoding="utf-8"))
+        assert "certifi" in pines, f"certifi no está pineado en {nombre}"
+        assert Version(pines["certifi"]) >= piso_minimo, f"{nombre} tiene certifi {pines['certifi']} < {piso_minimo}"
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_certifi = [p for p in uv_data.get("package", []) if p.get("name") == "certifi"]
+    assert len(paquetes_certifi) == 1, f"se esperaba 1 paquete certifi en uv.lock, hay {len(paquetes_certifi)}"
+    version_uv = Version(paquetes_certifi[0]["version"])
+    assert version_uv >= piso_minimo, f"uv.lock tiene certifi {version_uv} < {piso_minimo}"
+
+
+#: Los paquetes de OpenTelemetry que declara el runtime; el resto de la familia lo arrastran ellos.
+_OPENTELEMETRY_DECLARADOS = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-grpc")
+
+
+def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """La familia OpenTelemetry debe mantener el piso seguro >=1.45.1 ante CVE-2026-114603 (opentelemetry-api).
+
+    La familia versiona junta (api, sdk, exporters, proto y common salen con el mismo número), así que se enumeran
+    TODOS los ``opentelemetry-*`` de la serie 1.x de los TRES locks, no solo el paquete del aviso: un gemelo que quedara
+    atrás dejaría instalada otra versión vieja de la misma familia. ``semantic-conventions`` va en su propia serie 0.x y
+    no entra en la comparación.
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("1.45.1")
+    vulnerable = Version("1.41.1")
+
+    # 1. pyproject.toml: el piso en los tres declarados
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    for nombre in _OPENTELEMETRY_DECLARADOS:
+        candidatos = [d for d in runtime_deps if d.name == nombre]
+        assert len(candidatos) == 1, f"se esperaba exactamente un {nombre} en runtime, hay {candidatos}"
+        req = candidatos[0]
+        # Igualdad exacta (como anyio y multidict): probar dos puntos del rango no alcanza, porque el aviso afecta
+        # hasta 1.45.0 y un piso >=1.42 rechazaría 1.41.1 y aceptaría 1.45.1 dejando pasar 1.45.0.
+        assert req.specifier == SpecifierSet(">=1.45.1,<2"), f"rango de {nombre} inesperado: {req.specifier}"
+        assert not req.specifier.contains(vulnerable), f"el rango de {nombre} admite la versión vulnerable: {req}"
+
+    # 2. los dos requirements*.lock: toda la familia 1.x
+    for archivo in ("requirements.lock", "requirements-native-parallax.lock"):
+        pines = _versiones_pineadas((REPO_ROOT / archivo).read_text(encoding="utf-8"))
+        familia = {n: Version(v) for n, v in pines.items() if n.startswith("opentelemetry-") and Version(v).major >= 1}
+        assert set(_OPENTELEMETRY_DECLARADOS) <= set(familia), f"{archivo} no pinea toda la familia declarada"
+        viejos = {n: str(v) for n, v in familia.items() if v < piso_minimo}
+        assert viejos == {}, f"{archivo} tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos}"
+
+    # 3. uv.lock: toda la familia 1.x
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    familia_uv = [
+        (p["name"], Version(p["version"]))
+        for p in uv_data.get("package", [])
+        if p.get("name", "").startswith("opentelemetry-") and Version(p["version"]).major >= 1
+    ]
+    assert set(_OPENTELEMETRY_DECLARADOS) <= {n for n, _ in familia_uv}, "uv.lock no resuelve toda la familia declarada"
+    viejos_uv = {n: str(v) for n, v in familia_uv if v < piso_minimo}
+    assert viejos_uv == {}, f"uv.lock tiene paquetes de OpenTelemetry por debajo de {piso_minimo}: {viejos_uv}"
+
+
+#: Los dos respaldos de Brotli que ``py7zr`` elige según el intérprete: paquete -> (piso, versión vulnerable, implementación en
+#: la que se usa, aviso). Son hermanos: ambos empaquetan el mismo decodificador de referencia y cada uno tiene su propio aviso.
+_RESPALDOS_DE_BROTLI = {
+    "brotli": ("1.2.1", "1.2.0", "CPython", "PYSEC-2026-4322"),
+    "brotlicffi": ("1.2.1.0", "1.2.0.1", "PyPy", "PYSEC-2026-4323"),
+}
+
+
+def test_brotli_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """Los DOS respaldos de Brotli deben mantener su piso seguro: ``brotli`` >=1.2.1 (PYSEC-2026-4322) y ``brotlicffi``
+    >=1.2.1.0 (PYSEC-2026-4323).
+
+    ``py7zr`` pide ``brotli`` en CPython y ``brotlicffi`` en PyPy. Sin el piso en ``pyproject.toml``, un ``pip install -e .``
+    sobre un entorno existente queda satisfecho por la versión vulnerable aunque los locks ya estén subidos, y subir solo uno
+    de los dos respaldos dejaría el otro camino vulnerable (Codex, #785). Se enumeran TODOS los respaldos que ``py7zr``
+    declara en ``uv.lock`` y los TRES locks.
+    """
+    from packaging.version import Version
+
+    # 0. el conjunto de respaldos que py7zr puede elegir es exactamente el que este test cubre
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    py7zr = [p for p in uv_data.get("package", []) if p.get("name") == "py7zr"]
+    assert len(py7zr) == 1, f"se esperaba 1 paquete py7zr en uv.lock, hay {len(py7zr)}"
+    respaldos_de_py7zr = {d["name"] for d in py7zr[0].get("dependencies", []) if d["name"].startswith("brotli")}
+    assert respaldos_de_py7zr == set(_RESPALDOS_DE_BROTLI), (
+        f"py7zr declara otros respaldos de Brotli: {respaldos_de_py7zr}"
+    )
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    pines_por_lock = {
+        nombre: _versiones_pineadas((REPO_ROOT / nombre).read_text(encoding="utf-8"))
+        for nombre in ("requirements.lock", "requirements-native-parallax.lock")
+    }
+
+    for paquete, (piso, vulnerable, implementacion, aviso) in _RESPALDOS_DE_BROTLI.items():
+        piso_minimo = Version(piso)
+        otra = "PyPy" if implementacion == "CPython" else "CPython"
+
+        # 1. pyproject.toml: igualdad exacta del rango (como anyio y multidict) y el marcador que lo limita a su intérprete
+        candidatos = [d for d in runtime_deps if d.name == paquete]
+        assert len(candidatos) == 1, f"se esperaba exactamente un {paquete} en runtime, hay {candidatos}"
+        req = candidatos[0]
+        assert req.specifier == SpecifierSet(f">={piso},<2"), f"rango de {paquete} inesperado: {req.specifier}"
+        assert not req.specifier.contains(Version(vulnerable)), (
+            f"el rango de {paquete} admite {vulnerable} ({aviso}): {req}"
+        )
+        assert req.marker is not None and req.marker.evaluate({"platform_python_implementation": implementacion})
+        assert not req.marker.evaluate({"platform_python_implementation": otra}), (
+            f"{paquete} no puede exigirse en {otra}: py7zr usa el otro respaldo ahí"
+        )
+
+        # 2. los dos requirements*.lock (se generan para CPython): el respaldo de CPython tiene que estar y el otro no se
+        #    instala, pero si apareciera tiene que estar por encima del piso
+        for nombre, pines in pines_por_lock.items():
+            if implementacion == "CPython":
+                assert paquete in pines, f"{paquete} no está pineado en {nombre}"
+            if paquete in pines:
+                assert Version(pines[paquete]) >= piso_minimo, (
+                    f"{nombre} tiene {paquete} {pines[paquete]} < {piso_minimo}"
+                )
+
+        # 3. uv.lock (resuelve todos los marcadores): el respaldo tiene que estar, una sola vez, por encima del piso
+        paquetes_uv = [p for p in uv_data.get("package", []) if p.get("name") == paquete]
+        assert len(paquetes_uv) == 1, f"se esperaba 1 paquete {paquete} en uv.lock, hay {len(paquetes_uv)}"
+        version_uv = Version(paquetes_uv[0]["version"])
+        assert version_uv >= piso_minimo, f"uv.lock tiene {paquete} {version_uv} < {piso_minimo}"
+
+
 def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
 
     ``authored_dataset.py`` (EXP-M2+) importa ``PIL`` a nivel de módulo y su suite
     también: sin la declaración, ``test_native_parallax_exp_m2.py`` ni siquiera
     colecciona en un entorno donde Pillow no venga ya instalado. Espejo inverso
-    del ancla de ``pefile``: acá la dependencia es dev-only (ningún camino de
-    producción importa ``sky_claw.local.native_parallax.research``), así que NO
-    debe aparecer en runtime.
+    del ancla de ``pefile``: acá la dependencia es dev-only para research (ningún
+    camino de producción importa ``sky_claw.local.native_parallax.research``) y del
+    extra opcional ``native-parallax`` para el producto (ADR 0014), así que NO debe
+    aparecer en runtime. El rango del extra lo ancla
+    ``test_native_parallax_producto_invariant.py`` (igual al de ``[dev]``).
 
     *Historia: el hueco quedó invisible porque la rama de #620 nunca corrió CI
     (su base era una rama de feature, fuera del trigger ``pull_request``), y el
@@ -487,12 +705,18 @@ def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
     pillow = [d for d in dev if d.name == "pillow"]
     assert len(pillow) == 1, f"se esperaba exactamente un pillow en [dev], hay {len(pillow)}"
 
-    # Compatible con pillow>=10,<12: cubre la línea 10.x/11.x y corta antes de 12.
-    assert pillow[0].specifier.contains(Version("10.0")), f"el rango de pillow no cubre 10.x: {pillow[0].specifier}"
-    assert pillow[0].specifier.contains(Version("11.9")), f"el rango de pillow no cubre 11.x: {pillow[0].specifier}"
-    assert not pillow[0].specifier.contains(Version("12.0")), (
-        f"el rango de pillow no corta en 12: {pillow[0].specifier}"
+    # pillow>=13.0,<14. Piso: pip-audit --strict reporta 8 avisos nuevos sobre 12.3.0 (CVE-2026-112395, -112397,
+    # -112400, -112404, -112895, -112896, -112897, -112899) y todos están corregidos en 13.0.0 (antes, 35 avisos
+    # sobre 11.3.0 corregidos en 12.3.0; el lock del extra native-parallax se audita en CI). Techo: la próxima
+    # mayor no está verificada (la suite de native_parallax se corrió contra 13.0.0).
+    assert pillow[0].specifier.contains(Version("13.0")), f"el rango de pillow no cubre 13.0: {pillow[0].specifier}"
+    assert pillow[0].specifier.contains(Version("13.9")), f"el rango de pillow no cubre 13.x: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("12.3")), (
+        f"el rango de pillow admite una versión con avisos de seguridad: {pillow[0].specifier}"
+    )
+    assert not pillow[0].specifier.contains(Version("14.0")), (
+        f"el rango de pillow no corta en 14: {pillow[0].specifier}"
     )
 
     runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]
-    assert "pillow" not in runtime, "pillow es dev-only (research): no debe estar en runtime"
+    assert "pillow" not in runtime, "pillow es dev-only (research) o del extra opcional: no debe estar en runtime"

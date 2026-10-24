@@ -66,7 +66,7 @@ Loading configuration files
 	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dragonbornesm.txt
 <Error: File not found C:\Modding\DynDOLOD RigTest\_rig_test\SkyrimSE.exe>
 Program: C:\Modding\DynDOLOD RigTest\TexGenx64.exe, Version: 3.0.0.209, Date: 2026-08-02 18:26:31
-Started by: C:\Users\Facu2\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
+Started by: C:\Users\<USUARIO>\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
 External: C:\Modding\DynDOLOD RigTest\Edit Scripts\Texconvx64.exe, Version: 1.0.0.0, Date: 2026-05-07 22:00:00
 Gathering base records for billboards
 [00:01] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_skyrimesm.txt with 28

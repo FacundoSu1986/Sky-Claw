@@ -1,0 +1,289 @@
+{
+  "fase_c_texgen_ventana": {
+    "pid_atribuido_por_processid": true,
+    "clase_ventana": "TfrmMain",
+    "titulo": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+    "exe_sha256": "0939bc8f8cbae2e1b38f17d56fecd1b7a941dade0554e944886bd7f5c4807a62",
+    "controles_edit": [
+      {
+        "nombre": "",
+        "class_name": "TEdit",
+        "tipo": "Edit",
+        "automation_id": "788022",
+        "habilitado": true,
+        "valor_leido": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen"
+      }
+    ],
+    "controles_extraidos_de": "probe_texgen.py (backend productivo BackendUIAWindows)"
+  },
+  "fase_c_texgen_pasos_productivos": [
+    {
+      "paso": "OBSERVAR_ARRANQUE",
+      "estado": "OK",
+      "detalle": "",
+      "valor_leido": null,
+      "output_leido_en_instantanea": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen",
+      "hresult": null,
+      "invocado": false,
+      "pantalla": "ASISTENTE",
+      "ventanas": 1
+    },
+    {
+      "paso": "ESCRIBIR_OUTPUT",
+      "estado": "OK",
+      "detalle": "",
+      "hresult": "S_OK",
+      "invocado": true,
+      "valor_leido": "C:\\SkyClaw_Rigs\\SW661 Probe\\out\\TexGenWizard",
+      "motivo": null
+    },
+    {
+      "paso": "OBSERVAR_POST_ESCRITURA",
+      "estado": "OK",
+      "detalle": "",
+      "valor_leido": null,
+      "output_leido_en_instantanea": "C:\\SkyClaw_Rigs\\SW661 Probe\\out\\TexGenWizard",
+      "hresult": null
+    }
+  ],
+  "fase_c_texgen_output": {
+    "observado_inicial_rancio": "C:\\SkyClaw_Rigs\\PR739 Data Path\\Work Root\\DynDOLOD\\TexGen",
+    "coincide_antes": false,
+    "coincide_despues": true
+  },
+  "fase_c_dyndolod_modal_dll_ng": {
+    "instruccion_exacta": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+    "estable_sin_interaccion_hasta_s": 100.0,
+    "observaciones": [
+      {
+        "t": 1.0,
+        "pantalla": "SIN_VENTANA",
+        "detalle": "el proceso no tiene ventanas top-level",
+        "instruccion": null,
+        "acciones": [],
+        "modal": null,
+        "ventanas": []
+      },
+      {
+        "t": 9.5,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ]
+      },
+      {
+        "t": 19.6,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ],
+        "vivo": true,
+        "espera": 10
+      },
+      {
+        "t": 39.7,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ],
+        "vivo": true,
+        "espera": 30
+      },
+      {
+        "t": 54.8,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ],
+        "vivo": true,
+        "espera": 45
+      },
+      {
+        "t": 69.9,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ],
+        "vivo": true,
+        "espera": 60
+      },
+      {
+        "t": 100.0,
+        "pantalla": "MODAL_CONOCIDO",
+        "detalle": "",
+        "instruccion": "DynDOLOD.DLL from DynDOLOD DLL NG and Scripts not found!",
+        "acciones": [
+          "dyndolod_modal_ignore"
+        ],
+        "modal": "dyndolod_dll_ng_ausente",
+        "ventanas": [
+          [
+            "TfrmMain",
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)",
+            34
+          ]
+        ],
+        "vivo": true,
+        "espera": 90
+      }
+    ]
+  },
+  "fase_c_dyndolod_tras_ignore_y_observaciones_frescas": {
+    "flake_conteo_pantallas": {
+      "MODAL_CONOCIDO": 10
+    },
+    "invocacion_productiva": {
+      "estado": "OK",
+      "detalle": "",
+      "hresult": "S_OK",
+      "invocado": true,
+      "motivo": null
+    },
+    "asistente_detras_del_modal": {
+      "estado": "PLAZO_AGOTADO",
+      "pantalla": "ASISTENTE",
+      "detalle": "",
+      "acciones_visibles": [
+        "dyndolod_advanced"
+      ],
+      "acciones_habilitadas": [
+        "dyndolod_advanced"
+      ],
+      "output": "C:\\SkyClaw_Rigs\\SW661 Probe\\out\\DynDOLODFlake\\",
+      "elementos": {
+        "total": 52,
+        "botones": [
+          [
+            "High",
+            "TButton",
+            "Button"
+          ],
+          [
+            "Medium",
+            "TButton",
+            "Button"
+          ],
+          [
+            "Low",
+            "TButton",
+            "Button"
+          ],
+          [
+            "...",
+            "TButton",
+            "Button"
+          ],
+          [
+            "Help",
+            "TButton",
+            "Button"
+          ],
+          [
+            "Cancel",
+            "TButton",
+            "Button"
+          ],
+          [
+            "Advanced >>>",
+            "TButton",
+            "Button"
+          ]
+        ]
+      }
+    }
+  },
+  "acciones_reales_corridas": {
+    "texgen": [
+      [
+        "texgen_start",
+        "OK",
+        "S_OK"
+      ],
+      [
+        "texgen_exit",
+        "OK",
+        "S_OK"
+      ]
+    ],
+    "dyndolod_intento_1": [
+      [
+        "dyndolod_modal_ignore",
+        "PRECONDICION_FALLIDA",
+        null
+      ]
+    ],
+    "dyndolod_intento_2": [
+      [
+        "dyndolod_modal_ignore",
+        "OK",
+        "S_OK"
+      ],
+      [
+        "dyndolod_advanced",
+        "OK",
+        "S_OK"
+      ],
+      [
+        "dyndolod_begin_ok",
+        "OK",
+        "S_OK"
+      ],
+      [
+        "dyndolod_save_exit",
+        "OK",
+        "S_OK"
+      ]
+    ],
+    "fuente": "state/run.log (logger del producto: 'UIA desatendido: <tool> <accion> -> ...') + ledger del runner"
+  }
+}
