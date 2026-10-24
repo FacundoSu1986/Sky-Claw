@@ -69,6 +69,7 @@ from sky_claw.local.frozen_runtime.effective_runtime import (
     decode_qt_scalar,
     leer_ejecutables_de_mo2,
     leer_game_path_de_mo2,
+    probe_live_processes,
 )
 from sky_claw.local.runtime_vault.models import RuntimeIdentity
 
@@ -647,10 +648,68 @@ class TestEscenariosFaseC:
         assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
         assert resultado.authorizes_activation is False
 
+    def test_o1_proceso_skse64_exe_vivo_prueba_su_raiz(self, tmp_path: pathlib.Path) -> None:
+        """Oracle #1 (auditoría): un ``skse64.exe`` vivo es evidencia de proceso.
 
-# ===========================================================================
-# Contratos de FASE C y anclas estructurales
-# ===========================================================================
+        El oráculo cuenta ``skse64.exe`` como lanzador del juego en
+        ``_NOMBRES_LANZADOR``, pero el probe de procesos NO lo clasificaba:
+        la evidencia viva se perdía, el oráculo caía en la ruta configurada
+        y un MATCH falso quedaba al alcance. El probe se ejercita por la vía
+        REAL (``_clasificar`` sobre el nombre de imagen), no inyectando el
+        ``kind`` ya clasificado — que es exactamente como el desajuste
+        escapó a la suite.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        clone_b = _root_juego(tmp_path / "clone-b")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(clone_a))
+
+        class _ProcesoFalso:
+            pid = 77
+            info = {
+                "pid": 77,
+                "name": "skse64.exe",
+                "exe": str(clone_b / "skse64.exe"),
+                "create_time": 1.0,
+            }
+
+        snapshot = probe_live_processes(process_iter=lambda: iter([_ProcesoFalso()]))
+        assert snapshot.processes[0].kind is LiveProcessKind.SKSE_LOADER
+
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(procesos=snapshot),
+        )
+        assert resultado.effective_source is EvidenceSource.LIVE_GAME_PROCESS
+        assert resultado.effective_path is not None
+        assert os.path.normcase(resultado.effective_path) == os.path.normcase(str(clone_b))
+        assert resultado.verdict is EffectiveRuntimeVerdict.MISMATCH
+
+    def test_o2_loader_le_registrado_fuera_del_efectivo_tambien_cuenta(self, tmp_path: pathlib.Path) -> None:
+        """Oracle #2 (auditoría): simetría probe/lanzadores sin hueco de edición.
+
+        Un ``skse_loader.exe`` (LE) registrado fuera de la raíz efectiva puede
+        lanzar OTRO juego: la afirmación "el runtime efectivo es A" queda sin
+        prueba igual que con un loader SE. El set de lanzadores es la unión de
+        los sets del probe — una sola fuente de verdad, no dos listas que
+        divergen.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        otro = _root_juego(tmp_path / "runtime-le")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE LE", f"{otro.as_posix()}/skse_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN in resultado.reasons
 
 
 class TestContratosYAnclas:
@@ -710,7 +769,13 @@ class TestContratosYAnclas:
         assert not any("MANAGED" in nombre or "STEAM" in nombre for nombre in nombres)
 
     def test_el_paquete_no_contiene_operaciones_mutantes(self) -> None:
-        """El oráculo es de SOLO lectura: se congela por AST, no por comentario."""
+        """El oráculo es de SOLO lectura: se congela por AST, no por comentario.
+
+        Oracle #5 (auditoría): además de ``open`` por nombre y métodos
+        prohibidos por atributo, se cazan llamadas por NOMBRE importado
+        directo (``from os import remove; remove(...)``), que el ancla
+        original dejaba pasar.
+        """
         prohibidas_attr = {
             "write_text",
             "write_bytes",
@@ -739,8 +804,8 @@ class TestContratosYAnclas:
             arbol = ast.parse(archivo.read_text(encoding="utf-8"))
             for nodo in ast.walk(arbol):
                 if isinstance(nodo, ast.Call):
-                    if isinstance(nodo.func, ast.Name) and nodo.func.id == "open":
-                        ofensas.append(f"{archivo}:{nodo.lineno}: open()")
+                    if isinstance(nodo.func, ast.Name) and (nodo.func.id == "open" or nodo.func.id in prohibidas_attr):
+                        ofensas.append(f"{archivo}:{nodo.lineno}: {nodo.func.id}()")
                     if isinstance(nodo.func, ast.Attribute) and nodo.func.attr in prohibidas_attr:
                         ofensas.append(f"{archivo}:{nodo.lineno}: .{nodo.func.attr}()")
         assert ofensas == [], f"el oráculo debe ser read-only; mutaciones encontradas: {ofensas}"
@@ -924,6 +989,75 @@ class TestAuditoriaAdversarial:
         assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
         assert ReasonCode.REPARSE_INSPECTION_FAILED in resultado.reasons
         assert resultado.authorizes_activation is False
+
+    def test_o4_componente_inexistente_no_es_inspeccion_fallida(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Oracle #4 (auditoría): ``FileNotFoundError`` es corte, no duda.
+
+        Hoy ``link_kind_or_raise`` NO propaga ``FileNotFoundError`` (lo trata
+        en ``links.py`` como "la ruta no existe"), pero el contrato de
+        ``_primer_reparse`` no depende de ese detalle: si el componente no
+        existe, el recorrido corta como "no hay reparse" y la ausencia la
+        reporta ``EFFECTIVE_PATH_MISSING``. Se congela simulando la
+        propagación futura, para que un cambio en ``links.py`` no degrade
+        rutas inexistentes a "inspección fallida".
+        """
+        import sky_claw.local.frozen_runtime.effective_runtime.oracle as modulo_oraculo
+
+        def faltante(_ruta: pathlib.Path) -> None:
+            raise FileNotFoundError(2, "El sistema no puede encontrar el archivo", str(_ruta))
+
+        monkeypatch.setattr(modulo_oraculo, "link_kind_or_raise", faltante)
+
+        fantasma = tmp_path / "no-existe"
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(fantasma))
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=fantasma),
+            probes=_probes(),
+        )
+        assert ReasonCode.REPARSE_INSPECTION_FAILED not in resultado.reasons
+        assert ReasonCode.EFFECTIVE_PATH_MISSING in resultado.reasons
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+
+    def test_o3_la_edicion_ae_y_se_comparten_loaders_invariante_documentada(self) -> None:
+        """Oracle #3 (auditoría): ancla del invariante AE ≡ SE en loaders.
+
+        ``assess_runtime_compatibility`` hardcodea ``SkyrimEdition.AE``; es
+        conductualmente idéntico a SE HOY porque ``_SKSE_LOADERS_BY_EDITION``
+        mapea ambos a la misma tupla. Este ancla rompe si el scanner
+        llega a diferenciarlas sin que el gate se entere.
+        """
+        from sky_claw.local.discovery.environment import SkyrimEdition
+        from sky_claw.local.discovery.scanner import _SKSE_LOADERS_BY_EDITION
+
+        assert _SKSE_LOADERS_BY_EDITION[SkyrimEdition.AE] == _SKSE_LOADERS_BY_EDITION[SkyrimEdition.SE]
+
+    def test_o5_el_ancla_ast_tambien_caza_llamadas_por_nombre_importado(self, tmp_path: pathlib.Path) -> None:
+        """Oracle #5 (auditoría): ``from os import remove; remove(...)`` no pasa.
+
+        El ancla de sólo-lectura chequeaba ``open`` por nombre y el resto por
+        atributo; una mutación vía nombre importado directo quedaba fuera.
+        El ancla ahora aplica el MISMO set prohibido a los dos formas.
+        """
+        arbol = ast.parse("from os import remove\nremove('x')\n")
+        ofensas = _nombres_mutantes_en(arbol)
+        assert ofensas == ["remove"]
+        # y el paquete real sigue limpio (la aserción fuerte vive en el ancla)
+        paquete = ast.parse((PAQUETE / "oracle.py").read_text(encoding="utf-8"))
+        assert _nombres_mutantes_en(paquete) == []
+
+
+def _nombres_mutantes_en(arbol: ast.AST) -> list[str]:
+    """Nombres prohibidos llamados como función por nombre directo."""
+    prohibidos = {"remove", "unlink", "rmdir", "makedirs", "rmtree", "copy", "copy2", "copytree", "move", "rename"}
+    return [
+        nodo.func.id
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id in prohibidos
+    ]
 
 
 def _assessment_minimo(

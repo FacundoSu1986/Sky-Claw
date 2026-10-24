@@ -71,6 +71,8 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
     SurfaceObservation,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.processes import (
+    _NOMBRES_DE_JUEGO,
+    _NOMBRES_DE_LOADER,
     probe_live_processes,
     raiz_de_la_imagen,
 )
@@ -136,6 +138,15 @@ def _primer_reparse(ruta: pathlib.Path) -> tuple[str, str | None]:
     while True:
         try:
             tipo = link_kind_or_raise(actual)
+        except FileNotFoundError:
+            # Oracle #4 de la auditoría: hoy ``link_kind_or_raise`` ya trata
+            # FileNotFoundError como "la ruta no existe" (no propaga), pero el
+            # contrato de ESTA función no depende de ese detalle: un componente
+            # inexistente corta el recorrido como "no hay reparse" y la
+            # ausencia la reporta EFFECTIVE_PATH_MISSING. Si mañana
+            # ``links.py`` cambiara a propagarla, una ruta simplemente
+            # inexistente NO debe degradar a "inspección fallida".
+            return _REPARSE_NONE, None
         except OSError as exc:
             return _REPARSE_INDETERMINADO, f"no se pudo inspeccionar '{actual}' como reparse point: {exc}"
         if tipo is not None:
@@ -683,7 +694,12 @@ def assess_effective_runtime(
 #: puede arrancar el juego desde otro árbol y ninguna evidencia prueba cuál se
 #: seleccionará. LOOT, xEdit, DynDOLOD, etc. NO están acá: son herramientas
 #: legítimas y no prueban nada sobre el runtime del juego.
-_NOMBRES_LANZADOR = frozenset({"skyrimse.exe", "skse64_loader.exe", "skse64.exe"})
+#:
+#: Es la UNIÓN de los sets del probe de procesos (Oracle #2 de la auditoría):
+#: una sola fuente de verdad. Duplicar la lista fue exactamente el hueco que
+#: el Oracle detectó — un loader que el probe clasifica pero el chequeo de
+#: selección ignoraba (o viceversa) deja una de las dos audiciones coja.
+_NOMBRES_LANZADOR = _NOMBRES_DE_JUEGO | _NOMBRES_DE_LOADER
 
 
 def _lanzadores_del_juego_fuera_de(

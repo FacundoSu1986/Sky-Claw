@@ -31,7 +31,13 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
 _NOMBRES_DE_JUEGO: frozenset[str] = frozenset({"skyrimse.exe", "skyrim.exe", "skyrimvr.exe"})
 #: Loaders de SKSE por edición: los tres son binarios DISTINTOS, pero para el
 #: oráculo todos significan "alguien lanzó el juego vía SKSE desde algún root".
-_NOMBRES_DE_LOADER: frozenset[str] = frozenset({"skse64_loader.exe", "skse_loader.exe", "sksevr_loader.exe"})
+#: ``skse64.exe`` no es un binario canónico de la distribución de SKSE, pero
+#: el oráculo lo audita como lanzador registrado (Oracle #1 de la auditoría):
+#: si algún setup lo usa como nombre de loader, el proceso vivo debe clasificarse
+#: o la evidencia de la raíz real se pierde.
+_NOMBRES_DE_LOADER: frozenset[str] = frozenset(
+    {"skse64_loader.exe", "skse_loader.exe", "sksevr_loader.exe", "skse64.exe"}
+)
 _NOMBRE_DE_MO2 = "modorganizer.exe"
 
 
