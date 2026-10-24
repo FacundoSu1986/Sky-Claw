@@ -728,7 +728,7 @@ def test_la_clasificacion_de_las_metricas_esta_congelada() -> None:
         "razon_de_costura": ("razon_de_costura",),
         "contar_no_finitos": ("no_finitos",),
     }
-    assert set(METRICAS_NO_GATEADAS) == {"rango_dinamico", "razon_de_recorte"}
+    assert set(METRICAS_NO_GATEADAS) == {"amplitud", "rango_dinamico", "razon_de_recorte"}
 
 
 def test_los_campos_de_las_metricas_de_calidad_son_los_de_las_metricas_gateadas() -> None:
