@@ -166,20 +166,27 @@ def test_hay_una_receta_por_cada_formato_que_el_decodificador_acepta() -> None:
     assert decode._CONTENEDORES_ADMITIDOS == ("PNG", "DDS")
 
 
-def _parametros(modo: ModoNormalizacion) -> ParametrosDelLote:
+def _parametros(modo: ModoNormalizacion, bordes: Bordes = Bordes.PERIODICOS) -> ParametrosDelLote:
     if modo is ModoNormalizacion.PERCENTILES:
-        return ParametrosDelLote(normalizacion=modo, percentil_bajo=2.0, percentil_alto=98.0)
-    return ParametrosDelLote(normalizacion=modo)
+        return ParametrosDelLote(bordes=bordes, normalizacion=modo, percentil_bajo=2.0, percentil_alto=98.0)
+    return ParametrosDelLote(bordes=bordes, normalizacion=modo)
+
+
+_ALGORITMO_DEL_PRODUCTO = {
+    Bordes.PERIODICOS: ALGORITMO_PONDERADO_PERIODICO,
+    Bordes.NEUMANN: ALGORITMO_PONDERADO_NEUMANN,
+}
 
 
 def _correlacion(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.corrcoef(np.asarray(a, dtype=np.float64).ravel(), b.ravel())[0, 1])
 
 
+@pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.value)
 @pytest.mark.parametrize("modo", list(ModoNormalizacion), ids=lambda m: m.value)
 @pytest.mark.parametrize("formato", sorted(_RECETAS))
 def test_un_bloque_fuera_del_dominio_no_borra_la_altura_en_ningun_formato_aceptado(
-    tmp_path: pathlib.Path, formato: str, modo: ModoNormalizacion
+    tmp_path: pathlib.Path, formato: str, modo: ModoNormalizacion, bordes: Bordes
 ) -> None:
     ruta = tmp_path / "muro_n.dds"
     _RECETAS[formato](ruta)
@@ -187,13 +194,13 @@ def test_un_bloque_fuera_del_dominio_no_borra_la_altura_en_ningun_formato_acepta
     # La receta de verdad deja un bloque fuera del dominio (si no, el test no prueba nada).
     assert float(decodificada.normal[..., 2].min()) <= 0.0
 
-    medida = _medir(ruta, _parametros(modo), decidir)
+    medida = _medir(ruta, _parametros(modo, bordes), decidir)
 
-    # Medido antes del arreglo: correlación ≈ 0 (el dipolo del bloque se comía la textura) y p95 de ~40-80°.
-    # Con la integración ponderada: correlación > 0.99 y p95 de 4-9° (la escalera de bloques de 4x4 es lo que queda).
+    # Medido antes del arreglo (bordes periódicos): correlación 0.18–0.41 (el dipolo del bloque se comía la textura) y
+    # p95 ~35°. Con la integración ponderada la escalera de bloques de 4x4 es lo que queda.
     assert _correlacion(medida.altura, _altura_verdadera()) > 0.95
     assert medida.metricas.acuerdo_p95_grados < 15.0
-    assert medida.algoritmo == ALGORITMO_PONDERADO_PERIODICO
+    assert medida.algoritmo == _ALGORITMO_DEL_PRODUCTO[bordes]
     # Con min-max los extremos del dipolo dejaban todo en un hilo alrededor de 0.5 (el _p "plano" del rig).
     assert float(np.percentile(medida.altura, 98) - np.percentile(medida.altura, 2)) > 0.5
 
