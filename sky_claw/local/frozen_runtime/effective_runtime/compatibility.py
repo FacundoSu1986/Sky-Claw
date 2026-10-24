@@ -107,6 +107,18 @@ def assess_runtime_compatibility(
     loader = find_skse_installation(raiz, edition=SkyrimEdition.AE, game_version=version)
     if loader is not None:
         dlls = _dlls_de_runtime(raiz)
+        if not dlls:
+            # Los dos filtros divergen: el scanner excluye auxiliares por
+            # nombre, este módulo exige build codificado en el nombre. Con
+            # una identidad cuyo game_version matchea un DLL sin build
+            # (audit Qodo #2), ``dlls[0]`` sobre la lista vacía era un
+            # IndexError que tumbaba al oráculo: el gate nunca lanza.
+            return CompatibilityResult(
+                state=RuntimeCompatibility.UNKNOWN,
+                reason="loader de SKSE presente pero sin DLL de runtime con build codificado en el nombre",
+                game_version=version,
+                skse_loader=loader.name,
+            )
         return CompatibilityResult(
             state=RuntimeCompatibility.COMPATIBLE,
             reason=f"SKSE {skse_dll_game_version(dlls[0].name)} sirve al build {version}",

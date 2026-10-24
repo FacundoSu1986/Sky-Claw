@@ -412,6 +412,29 @@ class TestEscenariosFaseC:
         assert resultado.state is RuntimeCompatibility.UNKNOWN
         assert resultado.state is not RuntimeCompatibility.COMPATIBLE
 
+    def test_4f_loader_con_dll_sin_build_codificado_no_explota(self, tmp_path: pathlib.Path) -> None:
+        """Qodo #2 (auditoría): el gate NUNCA lanza.
+
+        ``find_skse_installation`` y ``_dlls_de_runtime`` filtran con criterios
+        distintos (exclusión de auxiliares vs. regex de build). Con una
+        identidad inyectada cuyo ``game_version`` matchea un DLL cuyo nombre no
+        codifica build, el camino original indexaba ``dlls[0]`` sobre una lista
+        vacía (IndexError) en la MISMA línea donde el campo ``skse_dll`` ya se
+        guardaba con ternario: la inconsistencia era la evidencia. Contrato:
+        el desenlace es UNKNOWN, no una excepción que tumba al oráculo.
+        """
+        raiz = _root_juego(tmp_path / "runtime")
+        (raiz / "skse64_loader.exe").write_bytes(b"MZ")
+        (raiz / "skse64_beta.dll").write_bytes(b"MZ")
+
+        resultado = assess_runtime_compatibility(
+            raiz,
+            identity=lambda _root: RuntimeIdentity(game_key="skyrimse", game_version="skse64.beta"),
+        )
+        assert resultado.state is RuntimeCompatibility.UNKNOWN
+        assert resultado.state is not RuntimeCompatibility.COMPATIBLE
+        assert resultado.skse_loader == "skse64_loader.exe"
+
     def test_4d_compatibilidad_incompatible_no_autoriza_aunque_el_path_coincida(self, tmp_path: pathlib.Path) -> None:
         """El path correcto con SKSE roto NO es MATCH: el gate manda."""
         clone = _root_juego(tmp_path / "clone")
