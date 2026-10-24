@@ -7,13 +7,21 @@ no requiere decidir el binding: **leerlo**. Nada acá escribe.
 
 Formato, verificado contra un ``modorganizer.ini`` real (no inferido)::
 
-    [Settings]
+    [General]
     gamePath=@ByteArray(G:\\\\Modding\\\\Skyrim_Runtime_1.6.1170)
 
 El interior de ``@ByteArray(...)`` es una cadena con escapes de Qt, no un path
 de Windows: ``\\\\`` es una barra literal y ``\\\\n`` es **barra + ene**, no un
 salto de línea. Confundir ambos rompe cualquier ruta que contenga ``n``, ``t``
 o ``r`` — es decir, casi todas (``\\\\nueva``, ``\\\\runtime``, ``\\\\temp``).
+
+El desescape NO se implementa "según lo que parece razonable": se implementa
+según el autómata de Qt, porque MO2 lee con Qt y una diferencia de un byte
+produce una ruta que MO2 nunca resolvería. Referencia exacta:
+``qtbase 5.15`` ``src/corelib/io/qsettings.cpp`` —
+``QSettingsPrivate::iniUnescapedStringList`` (líneas 728-900, ``StHexEscape``
+en 854, ``StOctEscape`` en 873) y ``stringToVariant`` (línea 477, que angosta
+el resultado con ``toLatin1()``).
 
 ``[customExecutables]`` es distinto: sus claves son ``N\\\\binary`` /
 ``N\\\\title`` / ``N\\\\workingDirectory`` y los valores son **texto plano** con
@@ -43,7 +51,11 @@ _SECCION_EJECUTABLES = "customExecutables"
 _CLAVE_GAME_PATH = "gamePath"
 
 #: Escapes de una letra que Qt interpreta dentro de un byte array. El valor es
-#: el byte que representa (``\\a`` = BEL, no la letra ``a``).
+#: el byte que representa (``\\a`` = BEL, no la letra ``a``). Es la tabla
+#: ``escapeCodes`` de ``qsettings.cpp`` completa: ``"``, ``?``, ``'`` y ``\\``
+#: también están, y no son decorativas — todo escape que NO esté acá se
+#: DESCARTA (Qt: "the character is skipped"), así que sacar una entrada cambia
+#: el resultado de un ``@ByteArray`` con esa secuencia.
 _ESCAPES_DE_UNA_LETRA: dict[str, int] = {
     "a": 0x07,
     "b": 0x08,
@@ -52,19 +64,64 @@ _ESCAPES_DE_UNA_LETRA: dict[str, int] = {
     "r": 0x0D,
     "t": 0x09,
     "v": 0x0B,
+    '"': 0x22,
+    "?": 0x3F,
+    "'": 0x27,
+    "\\": 0x5C,
 }
 _DIGITOS_HEX = frozenset("0123456789abcdefABCDEF")
+_DIGITOS_OCT = frozenset("01234567")
+
+
+class QtByteArrayIrrecuperableError(ValueError):
+    """Escape que Qt angostaría con pérdida (``toLatin1()`` lo vuelve ``?``).
+
+    No es "malformado": es un valor que Qt SÍ decodifica, pero a un byte que no
+    es el que el acumulador representa. Presentarlo como ruta sería inventar
+    una ruta que MO2 no usa; el caller lo traduce a ``UNREADABLE``.
+    """
+
+
+def _acumular_escape(
+    interior: str,
+    indice: int,
+    *,
+    base: int,
+    desplazamiento: int,
+    digitos: frozenset[str],
+    inicial: int = 0,
+) -> tuple[int, int]:
+    """Consume dígitos sucesivos como ``char16_t``: 16 bits, con wrap.
+
+    Qt acumula en un ``char16_t`` y no se detiene en dos dígitos hex ni en tres
+    octales. El wrap es observable (``\\x10041`` da 0x41), así que se emula en
+    vez de suponer que no ocurre.
+    """
+    valor = inicial
+    while indice < len(interior) and interior[indice] in digitos:
+        valor = (valor << desplazamiento) & 0xFFFF
+        valor = (valor + int(interior[indice], base)) & 0xFFFF
+        indice += 1
+    return valor, indice
 
 
 def _desescapar_bytes(interior: str) -> bytes:
-    """Aplica la semántica de desescape de byte array de Qt a *interior*.
+    """Desescape de byte array con la semántica EXACTA de Qt 5.15.
 
-    Reglas (las tres importan y las tres tienen test propio):
+    Reglas, todas verificadas contra ``iniUnescapedStringList`` y no inferidas:
 
-    - ``\\\\`` seguido de una letra de ``_ESCAPES_DE_UNA_LETRA`` produce ese byte;
-    - ``\\\\x`` consume **hasta dos** dígitos hexadecimales y se detiene en el
-      primero que no lo sea — por eso ``\\\\x1\\\\xd9`` son dos bytes y no uno;
-    - ``\\\\`` seguido de cualquier otra cosa produce ese carácter literal.
+    - ``\\\\`` + letra de ``_ESCAPES_DE_UNA_LETRA`` ⇒ ese byte;
+    - ``\\\\x`` + dígitos hex ⇒ **todos** los dígitos sucesivos, sin tope
+      (``StHexEscape``); ``\\\\x1\\\\xd9`` son dos bytes y ``\\\\x0d9`` es UNO
+      (0xD9);
+    - ``\\\\`` + dígito octal ⇒ **todos** los octales sucesivos (``StOctEscape``);
+      ``\\\\0`` es NUL, que es justo lo que el escritor de Qt emite para un NUL;
+    - ``\\\\`` + cualquier otra cosa ⇒ **nada**: Qt descarta el carácter;
+    - ``\\\\`` al final ⇒ nada.
+
+    Raises:
+        QtByteArrayIrrecuperableError: el acumulador pasa de 0xFF y ``toLatin1()``
+            lo sustituiría por ``?``. ``UNKNOWN`` antes que una ruta inventada.
     """
     salida = bytearray()
     indice = 0
@@ -77,49 +134,71 @@ def _desescapar_bytes(interior: str) -> bytes:
             continue
         indice += 1
         if indice >= largo:
-            # Barra final sin nada que escape: se conserva (no se inventa).
-            salida.extend(b"\\")
+            # Qt: ``goto end`` sin añadir nada. Conservar la barra fabricaría
+            # ``C:\\`` (con barra) donde Qt resuelve ``C:``.
             break
         caracter = interior[indice]
+        indice += 1
         if caracter in _ESCAPES_DE_UNA_LETRA:
             salida.append(_ESCAPES_DE_UNA_LETRA[caracter])
-            indice += 1
             continue
         if caracter == "x":
-            indice += 1
-            valor = 0
-            digitos = 0
-            while indice < largo and digitos < 2 and interior[indice] in _DIGITOS_HEX:
-                valor = valor * 16 + int(interior[indice], 16)
-                indice += 1
-                digitos += 1
-            if digitos == 0:
-                # ``\\x`` sin dígitos: no es un byte, se preserva literal.
-                salida.extend(b"\\x")
-            else:
-                salida.append(valor)
+            if indice >= largo:
+                break
+            if interior[indice] not in _DIGITOS_HEX:
+                # ``\\\\x`` sin dígitos: se descarta el escape y el carácter
+                # siguiente se procesa normal (``\\\\xZ`` ⇒ ``Z``).
+                continue
+            valor, indice = _acumular_escape(interior, indice, base=16, desplazamiento=4, digitos=_DIGITOS_HEX)
+            if valor > 0xFF:
+                raise QtByteArrayIrrecuperableError(f"\\x con valor U+{valor:04X} fuera de Latin-1")
+            salida.append(valor)
             continue
-        salida.extend(caracter.encode("utf-8", "surrogateescape"))
-        indice += 1
+        if caracter in _DIGITOS_OCT:
+            valor, indice = _acumular_escape(
+                interior,
+                indice,
+                base=8,
+                desplazamiento=3,
+                digitos=_DIGITOS_OCT,
+                inicial=int(caracter, 8),
+            )
+            if valor > 0xFF:
+                raise QtByteArrayIrrecuperableError(f"escape octal con valor U+{valor:04X} fuera de Latin-1")
+            salida.append(valor)
+            continue
+        # Incluye ``\\\\n``/``\\\\r`` (continuación de línea) y todo escape
+        # desconocido: Qt no añade nada.
     return bytes(salida)
 
 
-def decode_qt_byte_array(raw: str) -> bytes | None:
-    """Bytes de un valor ``@ByteArray(...)``, o ``None`` si no lo es o está truncado.
-
-    ``None`` **no** significa "vacío": significa "no es un byte array" o "está
-    malformado". El caller distingue ambos por ``decode_qt_scalar`` y por el
-    ``ObservationState`` que construye; devolver ``b""`` para un valor truncado
-    convertiría un ini corrupto en "ruta vacía" y el oráculo diría ``ABSENT``
-    donde debe decir ``UNREADABLE``.
-    """
+def _interior_del_byte_array(raw: str) -> str | None:
+    """Interior de ``@ByteArray(...)``, o ``None`` si no lo es o está truncado."""
     texto = raw.strip()
     if not texto.startswith(_PREFIJO_BYTE_ARRAY):
         return None
     if not texto.endswith(")"):
         return None
-    interior = texto[len(_PREFIJO_BYTE_ARRAY) : -1]
-    return _desescapar_bytes(interior)
+    return texto[len(_PREFIJO_BYTE_ARRAY) : -1]
+
+
+def decode_qt_byte_array(raw: str) -> bytes | None:
+    """Bytes de un valor ``@ByteArray(...)``, o ``None`` si no se puede leer.
+
+    ``None`` **no** significa "vacío": significa "no es un byte array", "está
+    malformado" o "usa un escape que Qt angostaría con pérdida". El caller
+    distingue los casos por ``decode_qt_scalar`` y por el ``ObservationState``
+    que construye; devolver ``b""`` para un valor truncado convertiría un ini
+    corrupto en "ruta vacía" y el oráculo diría ``ABSENT`` donde debe decir
+    ``UNREADABLE``.
+    """
+    interior = _interior_del_byte_array(raw)
+    if interior is None:
+        return None
+    try:
+        return _desescapar_bytes(interior)
+    except QtByteArrayIrrecuperableError:
+        return None
 
 
 def decode_qt_scalar(raw: str) -> str:
@@ -259,14 +338,25 @@ def leer_game_path_de_mo2(ini_path: pathlib.Path) -> Mo2GamePathEvidence:
         )
 
     if crudo.strip().startswith(_PREFIJO_BYTE_ARRAY):
-        bytes_ruta = decode_qt_byte_array(crudo)
-        if bytes_ruta is None:
+        interior = _interior_del_byte_array(crudo)
+        if interior is None:
             return Mo2GamePathEvidence(
                 state=ObservationState.UNREADABLE,
                 raw=crudo,
                 detail="gamePath es un @ByteArray malformado (truncado o sin cerrar)",
             )
-        ruta = bytes_ruta.decode("utf-8", "surrogateescape")
+        try:
+            ruta = _desescapar_bytes(interior).decode("utf-8", "surrogateescape")
+        except QtByteArrayIrrecuperableError as exc:
+            # No es un ini corrupto: es un valor que Qt decodifica a '?' vía
+            # ``toLatin1()``. Devolverlo como ruta daría OBSERVED sobre una
+            # ruta que MO2 jamás resolvería, y el oráculo compararía contra
+            # ella. Se declara ilegible y el veredicto queda en UNKNOWN.
+            return Mo2GamePathEvidence(
+                state=ObservationState.UNREADABLE,
+                raw=crudo,
+                detail=f"gamePath usa un escape que Qt angostaría a Latin-1 con pérdida: {exc}",
+            )
     else:
         ruta = crudo
 

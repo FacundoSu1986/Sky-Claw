@@ -347,8 +347,19 @@ def assess_effective_runtime(
             )
         )
     else:
+        # ``ABSENT`` sin más no distingue "medí y no hay" de "nunca pregunté".
+        # El detalle es lo único que el consumidor puede leer para saberlo, y
+        # el riesgo es concreto: un llamador que omita el parámetro apaga
+        # ``CONFIG_DIVERGES_FROM_EFFECTIVE`` sin que nada lo delate.
         observaciones.append(
-            SurfaceObservation(source=EvidenceSource.CONFIG_SKYRIM_PATH, state=ObservationState.ABSENT)
+            SurfaceObservation(
+                source=EvidenceSource.CONFIG_SKYRIM_PATH,
+                state=ObservationState.ABSENT,
+                detail=(
+                    "no se suministró config_skyrim_path: la divergencia entre las tools de "
+                    "Sky-Claw y el runtime efectivo NO se pudo verificar"
+                ),
+            )
         )
 
     ruta_del_entorno = (entorno.get("SKYRIM_PATH") or "").strip()
@@ -706,14 +717,34 @@ def _lanzadores_del_juego_fuera_de(
     efectiva: str,
     ejecutables: Sequence[Mo2Executable],
 ) -> list[str]:
-    """Lanzadores registrados cuyo binario NO cuelga de la raíz efectiva."""
+    """Lanzadores registrados cuya CARPETA no es la raíz efectiva.
+
+    La comparación es de carpeta, no de "cuelga de": ``_es_igual_o_hijo``
+    aceptaba cualquier descendiente, así que un ``skse64_loader.exe``
+    registrado en ``<efectiva>/tools`` contaba como "mismo árbol" y habilitaba
+    MATCH. Pero SKSE resuelve el juego relativo a SU directorio: si MO2 lanza
+    ese loader, el runtime ejecutado es ``tools``, no la raíz. "Dentro de" no
+    es "en la raíz".
+
+    Un binario SIN componente de directorio (``skse64_loader.exe`` a secas) es
+    la forma en que MO2 registra un ejecutable del propio juego, y significa
+    "en la raíz": normalizarlo con ``abspath`` lo resolvería contra el CWD del
+    proceso —que no es la instancia— y toda instancia normal caería en UNKNOWN
+    por un artefacto del fixture. Un binario relativo CON directorio no se
+    puede resolver sin la instancia, así que no prueba nada y cuenta como fuera.
+    """
     fuera: list[str] = []
     for ejecutable in ejecutables:
         # ntpath.basename separa por / y \\ a la vez: MO2 escribe el binario
         # con barras hacia adelante y acá no se transforma la cadena (el ancla
         # AST del paquete prohíbe cualquier .replace() que parezca mutación).
         nombre = os.path.basename(ejecutable.binary).lower()
-        if nombre in _NOMBRES_LANZADOR and not _es_igual_o_hijo(ejecutable.binary, efectiva):
+        if nombre not in _NOMBRES_LANZADOR:
+            continue
+        carpeta = os.path.dirname(ejecutable.binary)
+        if not carpeta:
+            continue
+        if _normalizar(carpeta) != _normalizar(efectiva):
             fuera.append(f"{ejecutable.title} -> {ejecutable.binary}")
     return fuera
 

@@ -45,6 +45,7 @@ anterior mezclaba en un solo ``str | None``:
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import pathlib
 import subprocess
@@ -88,6 +89,53 @@ def _byte_array(ruta: str) -> str:
     ``gamePath=@ByteArray(G:\\\\Modding\\\\Skyrim_Runtime_1.6.1170)``.
     """
     return "@ByteArray(" + ruta.replace("\\", "\\\\") + ")"
+
+
+#: Escapes de una letra del escritor de Qt (``iniEscapedString``), con el byte
+#: que producen al releer. ``"`` y ``\\`` van aparte porque Qt los escribe como
+#: ``\\"`` / ``\\\\`` sin marcar ``escapeNextIfDigit``.
+_ESCRITURA_DE_QT: dict[int, str] = {
+    0x07: "\\a",
+    0x08: "\\b",
+    0x0C: "\\f",
+    0x0A: "\\n",
+    0x0D: "\\r",
+    0x09: "\\t",
+    0x0B: "\\v",
+}
+_DIGITOS_HEX_QT = "0123456789abcdefABCDEF"
+
+
+def _interior_como_lo_escribe_qt(datos: bytes) -> str:
+    """``iniEscapedString`` de Qt 5.15 aplicado al interior de un ``@ByteArray``.
+
+    Es el ORÁCULO del escritor, no del lector: reproduce ``qsettings.cpp``
+    líneas 617-697, incluida la regla ``escapeNextIfDigit`` —después de un
+    escape, un carácter que sea dígito hex se vuelve a escapar para que el
+    lector ávido de Qt no se lo trague—. Sirve para exigir ida y vuelta sobre
+    exactamente lo que MO2 puede llegar a escribir.
+    """
+    piezas: list[str] = []
+    escape_next_if_digit = False
+    for byte in datos:
+        caracter = chr(byte)
+        if escape_next_if_digit and caracter in _DIGITOS_HEX_QT:
+            piezas.append("\\x" + format(byte, "x"))
+            continue
+        escape_next_if_digit = False
+        if byte == 0x00:
+            piezas.append("\\0")
+            escape_next_if_digit = True
+        elif byte in _ESCRITURA_DE_QT:
+            piezas.append(_ESCRITURA_DE_QT[byte])
+        elif byte in (0x22, 0x5C):  # '"' y '\'
+            piezas.append("\\" + caracter)
+        elif byte <= 0x1F or byte >= 0x7F:
+            piezas.append("\\x" + format(byte, "x"))
+            escape_next_if_digit = True
+        else:
+            piezas.append(caracter)
+    return "".join(piezas)
 
 
 def _ini_mo2(
@@ -202,16 +250,65 @@ class TestDecodificadorQt:
         assert decode_qt_scalar(crudo) == "G:\\Modding\\Skyrim_Runtime_1.6.1170"
 
     def test_decodifica_escapes_hex_de_longitud_variable(self) -> None:
-        """Qt consume hasta DOS dígitos hex: ``\\x1\\xd9\\x0`` no es ``\\x1d\\x90``.
+        """Qt consume TODOS los dígitos hex sucesivos (``StHexEscape``), sin tope.
 
-        El caso ``\\x1234`` congela la cota por el lado que sí discrimina: sin
-        cota, el acumulador pasa de 255 y ``bytearray.append`` explota. La
-        primera versión de este test sólo usaba ``\\x1\\xd9\\x0\\x0\\xff``, que el
-        mutante "sin cota" pasaba igual — un test que no mata al mutante no
-        gobierna la propiedad.
+        Verificado contra ``qtbase 5.15`` (``src/corelib/io/qsettings.cpp``,
+        ``QSettingsPrivate::iniUnescapedStringList`` líneas 854-871): el
+        autómata acumula dígitos hex en un ``char16_t`` hasta el primer carácter
+        que no lo sea. El tope de DOS dígitos que tenía esta función no era una
+        lectura de Qt sino una suposición: coincide por casualidad en
+        ``\\x1\\xd9`` y decodifica 0x0D + '9' donde Qt lee 0xD9 en ``\\x0d9``.
         """
         assert decode_qt_byte_array("@ByteArray(\\x1\\xd9\\x0\\x0\\xff)") == b"\x01\xd9\x00\x00\xff"
-        assert decode_qt_byte_array("@ByteArray(\\x1234)") == b"\x12" + b"34"
+        # Tres dígitos cuyo valor SÍ entra en un byte: Qt produce UN byte.
+        assert decode_qt_byte_array("@ByteArray(\\x0d9)") == b"\xd9"
+        # Ceros a la izquierda: el acumulador no se satura, el valor es 0x41.
+        assert decode_qt_byte_array("@ByteArray(\\x000041)") == b"A"
+        # El acumulador es un ``char16_t``: 0x10041 desborda y queda 0x41. Sin
+        # el wrap, este caso se declararía ilegible donde Qt lee 'A'.
+        assert decode_qt_byte_array("@ByteArray(\\x10041)") == b"A"
+
+    def test_hex_que_qt_angosta_con_perdida_no_se_adivina(self) -> None:
+        """``\\x1234`` es U+1234: ``toLatin1()`` lo vuelve '?', no dos bytes.
+
+        ``stringToVariant`` angosta el ``QString`` acumulado con ``toLatin1()``,
+        que sustituye por '?' todo lo que no entra en Latin-1. Devolver
+        ``b"\\x12" + b"34"`` —lo que hacía el tope de dos dígitos— es inventar
+        una ruta que Qt no produce: exactamente lo que el brief prohíbe.
+        """
+        assert decode_qt_byte_array("@ByteArray(\\x1234)") is None
+        assert decode_qt_byte_array("@ByteArray(\\x100)") is None
+
+    def test_escapes_octales_y_el_descarte_de_qt(self) -> None:
+        """``\\0``-``\\7`` son OCTALES, y un escape desconocido DESCARTA el carácter.
+
+        ``\\0`` no es teórico: es lo que escribe el propio ``iniEscapedString``
+        de Qt para un byte NUL dentro de un ``@ByteArray``. Y ``\\z`` no produce
+        'z' sino nada (``qsettings.cpp`` línea 795: "the character is
+        skipped"), así que reportar ``C:\\zModding`` sería reportar una ruta que
+        MO2 no usa.
+        """
+        assert decode_qt_byte_array("@ByteArray(\\101)") == b"A"
+        assert decode_qt_byte_array("@ByteArray(\\0)") == b"\x00"
+        assert decode_qt_byte_array("@ByteArray(C:\\zModding)") == b"C:Modding"
+        assert decode_qt_byte_array("@ByteArray(C:\\x)") == b"C:"
+        # Barra final suelta: Qt la descarta. Conservarla fabricaría ``C:\\``,
+        # que no es lo que MO2 resuelve.
+        assert decode_qt_byte_array("@ByteArray(C:\\)") == b"C:"
+
+    def test_ida_y_vuelta_de_los_256_bytes_que_escribe_qt(self) -> None:
+        """Invariante de compatibilidad: lo que MO2 escribe se relee idéntico.
+
+        Escribe los 256 bytes con el algoritmo de ``iniEscapedString`` y exige
+        ida y vuelta exacta. Es la red que prueba que hacer ávido al lector NO
+        rompe los ini reales: el escritor de Qt nunca emite tres dígitos hex y
+        además escapa el dígito que siga a un escape, así que el tope viejo y
+        el consumo ávido coincidían SOBRE CONTENIDO ESCRITO POR QT. También
+        mata al lector sin octales, porque el NUL se escribe ``\\0``.
+        """
+        todos = bytes(range(256))
+        interior = _interior_como_lo_escribe_qt(todos)
+        assert decode_qt_byte_array("@ByteArray(" + interior + ")") == todos
 
     def test_una_barra_escapada_no_se_come_el_resto(self) -> None:
         """``\\\\n`` es barra + ene, no salto de línea (trampa del path de Windows)."""
@@ -285,6 +382,23 @@ class TestLecturaDelIniDeMo2:
         evidencia = leer_game_path_de_mo2(instancia / "modorganizer.ini")
         assert evidencia.state is ObservationState.UNREADABLE
         assert evidencia.path is None
+
+    def test_gamepath_con_escape_fuera_de_latin1_es_unreadable(self, tmp_path: pathlib.Path) -> None:
+        """Un escape que Qt angostaría con pérdida no produce una ruta: es UNREADABLE.
+
+        ``\\x1234`` es U+1234 y ``toLatin1()`` lo vuelve '?'. Aceptarlo como
+        bytes (0x12 + "34") daría ``OBSERVED`` con una ruta que MO2 jamás
+        resolvería, y el oráculo compararía contra ella. Se declara ilegible.
+        """
+        instancia = tmp_path / "instancia"
+        instancia.mkdir(parents=True)
+        (instancia / "modorganizer.ini").write_bytes(
+            b"[General]\r\ngameName=Skyrim Special Edition\r\ngamePath=@ByteArray(G:\\x1234)\r\n"
+        )
+        evidencia = leer_game_path_de_mo2(instancia / "modorganizer.ini")
+        assert evidencia.state is ObservationState.UNREADABLE
+        assert evidencia.path is None
+        assert "Latin-1" in evidencia.detail
 
     def test_lee_los_ejecutables_seleccionados(self, tmp_path: pathlib.Path) -> None:
         """El ejecutable de ``[customExecutables]`` puede contradecir a ``gamePath``."""
@@ -1034,6 +1148,9 @@ class TestAuditoriaAdversarial:
         from sky_claw.local.discovery.scanner import _SKSE_LOADERS_BY_EDITION
 
         assert _SKSE_LOADERS_BY_EDITION[SkyrimEdition.AE] == _SKSE_LOADERS_BY_EDITION[SkyrimEdition.SE]
+        # Y LE NO comparte la tupla: si alguien colapsara las tres, el ancla de
+        # arriba seguiría verde y el gate buscaría el loader equivocado.
+        assert _SKSE_LOADERS_BY_EDITION[SkyrimEdition.LE] != _SKSE_LOADERS_BY_EDITION[SkyrimEdition.AE]
 
     def test_o4b_raiz_de_la_imagen_sube_un_solo_nivel_contrato_declarado(self) -> None:
         """Oracle #4b (auditoría): el contrato de UN nivel, congelado.
@@ -1097,6 +1214,202 @@ class TestAuditoriaAdversarial:
         # y el paquete real sigue limpio (la aserción fuerte vive en el ancla)
         paquete = ast.parse((PAQUETE / "oracle.py").read_text(encoding="utf-8"))
         assert _nombres_mutantes_en(paquete) == []
+
+    def test_o6_ningun_llamador_productivo_omite_config_skyrim_path(self) -> None:
+        """Contrato de la DEUDA DE CABLEADO de P5, no un consumidor ficticio.
+
+        Censo verificado: ``assess_effective_runtime`` no tiene llamadores
+        productivos (el consumidor de P4 acepta un ``observador_effective``,
+        pero nadie lo cablea todavía). El riesgo no es la ausencia —es deuda
+        declarada, ADR 0015 §9— sino el llamador FUTURO que olvide
+        ``config_skyrim_path``: apagaría ``CONFIG_DIVERGES_FROM_EFFECTIVE`` sin
+        que nada lo delate, y el split-brain medido en este rig
+        (``skyrim_path`` → Steam, ``gamePath`` → runtime independiente) quedaría
+        invisible con un veredicto potencialmente MATCH.
+
+        El chequeo se prueba sobre una fuente SINTÉTICA porque sobre el árbol
+        real la lista de llamadas está vacía: un bucle sobre cero casos no
+        verifica nada y daría verde para siempre.
+        """
+        sintetico = ast.parse(
+            "assess_effective_runtime(mo2_instance_dir=x, desired=y)\n"
+            "assess_effective_runtime(mo2_instance_dir=x, desired=y, config_skyrim_path=z)\n"
+            "modulo.assess_effective_runtime(mo2_instance_dir=x, desired=y)\n"
+        )
+        assert _llamadas_sin_la_superficie_de_config(sintetico) == [1, 3]
+
+        # Un rename del parámetro apagaría el contrato en silencio.
+        firma = inspect.signature(assess_effective_runtime)
+        assert "config_skyrim_path" in firma.parameters
+        assert firma.parameters["config_skyrim_path"].kind is inspect.Parameter.KEYWORD_ONLY
+
+        violaciones: dict[str, list[int]] = {}
+        for base in (pathlib.Path("sky_claw"), pathlib.Path("scripts")):
+            for archivo in base.rglob("*.py"):
+                arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+                ofensas = _llamadas_sin_la_superficie_de_config(arbol)
+                if ofensas:
+                    violaciones[str(archivo)] = ofensas
+        assert violaciones == {}
+
+    def test_o6b_omitir_la_superficie_de_config_se_declara_no_medida(self) -> None:
+        """Omitir el parámetro NO es lo mismo que "la config no declara ruta".
+
+        Los dos desenlaces producían una observación ``ABSENT`` idéntica, así
+        que el reporte no distinguía "medí y no hay" de "nunca pregunté" — la
+        misma clase de defecto que confundir ``UNKNOWN`` con ``COMPATIBLE``.
+        El ``detail`` de la observación es lo único que el consumidor puede
+        leer para saberlo.
+        """
+        sin_superficie = assess_effective_runtime(mo2_instance_dir=None, desired=None, probes=_probes())
+        observacion = next(
+            obs for obs in sin_superficie.observations if obs.source is EvidenceSource.CONFIG_SKYRIM_PATH
+        )
+        assert observacion.state is ObservationState.ABSENT
+        assert "no se suministr" in observacion.detail
+
+        con_superficie = assess_effective_runtime(
+            mo2_instance_dir=None, desired=None, config_skyrim_path="G:\\Modding\\Runtime_A", probes=_probes()
+        )
+        medida = next(obs for obs in con_superficie.observations if obs.source is EvidenceSource.CONFIG_SKYRIM_PATH)
+        assert medida.state is ObservationState.OBSERVED
+        assert medida.detail == ""
+
+    def test_o7_lanzador_registrado_en_subdirectorio_no_prueba_seleccion(self, tmp_path: pathlib.Path) -> None:
+        """Un loader registrado en ``<efectiva>/tools`` NO prueba la selección.
+
+        ``_es_igual_o_hijo`` aceptaba cualquier descendiente, así que un
+        ``skse64_loader.exe`` registrado en un subdirectorio del root efectivo
+        pasaba como "mismo árbol" y habilitaba MATCH. Pero SKSE resuelve el
+        juego relativo a SU directorio: si MO2 lanza ese loader, el runtime
+        ejecutado es el subdirectorio, no la raíz. "Dentro de" no es "en la
+        raíz", y sin prueba de la selección el veredicto es UNKNOWN.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        subdirectorio = clone_a / "tools"
+        subdirectorio.mkdir()
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE", f"{subdirectorio.as_posix()}/skse64_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN in resultado.reasons
+        assert resultado.authorizes_activation is False
+
+    def test_o7b_binario_relativo_sin_directorio_esta_en_la_raiz(self, tmp_path: pathlib.Path) -> None:
+        """Hermano positivo: ``skse64_loader.exe`` a secas es relativo a la raíz.
+
+        Es la forma que MO2 escribe para un ejecutable del propio juego.
+        Tratarlo como "sin directorio ⇒ no resuelto ⇒ UNKNOWN" bloquearía toda
+        instancia normal, así que la excepción es parte del contrato.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE", "skse64_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN not in resultado.reasons
+
+    def test_o8_loader_vivo_en_subdirectorio_no_puede_dar_match(self, tmp_path: pathlib.Path) -> None:
+        """Rechazo SEGURO del loader en subdirectorio, no sólo documentado.
+
+        ``raiz_de_la_imagen`` sube un nivel, así que un ``skse64_loader.exe``
+        vivo en ``<clone>/tools`` reporta ``<clone>/tools`` como raíz efectiva.
+        El comentario de la función lo declara fuera de alcance; este test
+        prueba que el desenlace es un rechazo y no un MATCH: la raíz reportada
+        no es el Desired, y ``authorizes_activation`` queda en ``False``.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        subdirectorio = clone_a / "tools"
+        subdirectorio.mkdir()
+        (subdirectorio / "skse64_loader.exe").write_bytes(b"MZ")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(clone_a))
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(
+                procesos=LiveProcessSnapshot(
+                    processes=(_vivo(LiveProcessKind.SKSE_LOADER, image_path=subdirectorio / "skse64_loader.exe"),),
+                    indeterminate=False,
+                )
+            ),
+        )
+        assert resultado.verdict is not EffectiveRuntimeVerdict.MATCH
+        assert resultado.authorizes_activation is False
+        assert resultado.effective_path is not None
+        assert os.path.normcase(resultado.effective_path) == os.path.normcase(str(subdirectorio))
+
+    def test_o9_un_proceso_ilegible_no_fabrica_ausencia_de_juego(self) -> None:
+        """``psutil`` que falla a mitad del barrido ⇒ indeterminado, nunca "no hay".
+
+        Dos capturas distintas: ``.info`` de un proceso concreto y el iterador
+        entero. Las dos degradan a ``indeterminate=True``. Si alguna colapsara
+        en "lista vacía", un juego corriendo desde el runtime saliente se
+        leería como "no hay juego vivo" y el oráculo podría autorizar sobre un
+        runtime en uso.
+        """
+
+        class _Ilegible:
+            @property
+            def info(self):  # noqa: ANN201 - doble de psutil, sin tipo útil
+                raise RuntimeError("AccessDenied")
+
+        foto = probe_live_processes(process_iter=lambda: iter([_Ilegible()]))
+        assert foto.indeterminate is True
+        assert foto.processes == ()
+
+        def _iterador_roto():  # noqa: ANN202 - generador que muere a mitad
+            class _Proceso:
+                info = {"pid": 5, "name": "SkyrimSE.exe", "exe": "G:\\Modding\\Runtime_A\\SkyrimSE.exe"}
+
+            yield _Proceso()
+            raise RuntimeError("la tabla se cortó")
+
+        foto_rota = probe_live_processes(process_iter=_iterador_roto)
+        assert foto_rota.indeterminate is True
+        # La evidencia ya recogida NO se usa para afirmar nada: el veredicto
+        # aguas arriba es UNKNOWN porque `indeterminate` manda.
+        assert foto_rota.detail
+
+
+_ENTRADA_DEL_ORACULO = "assess_effective_runtime"
+
+
+def _llamadas_sin_la_superficie_de_config(arbol: ast.AST) -> list[int]:
+    """Líneas de llamadas a ``assess_effective_runtime`` que OMITEN la config.
+
+    El parámetro es opcional a propósito (el oráculo también responde "no sé"
+    sin config declarada), pero un consumidor que lo omita apaga
+    ``CONFIG_DIVERGES_FROM_EFFECTIVE`` sin que nada lo delate. Esta función es
+    el predicado del contrato; el test lo prueba sobre fuente sintética y sobre
+    el árbol real, porque hoy no hay ningún llamador productivo que auditar.
+    """
+    ofensas: list[int] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", None)
+        if nombre != _ENTRADA_DEL_ORACULO:
+            continue
+        if not any(clave.arg == "config_skyrim_path" for clave in nodo.keywords):
+            ofensas.append(nodo.lineno)
+    return ofensas
 
 
 def _nombres_mutantes_en(arbol: ast.AST) -> list[str]:

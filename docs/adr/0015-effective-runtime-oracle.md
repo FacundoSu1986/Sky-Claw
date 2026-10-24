@@ -196,9 +196,10 @@ veredicto* habría ocultado la divergencia; `MISMATCH` la nombra.
 
 ## 6. Verificación
 
-- Tests: `tests/test_frozen_runtime_p5a_effective_runtime_oracle.py` (36 casos),
+- Tests: `tests/test_frozen_runtime_p5a_effective_runtime_oracle.py` (61 casos),
   incluidos los diez escenarios de FASE C, el ancla de enum por igualdad
-  literal, el ancla AST read-only y el ancla "sin fuente para la Managed Source".
+  literal, el ancla AST read-only, el ancla "sin fuente para la Managed Source",
+  el diferencial de fidelidad Qt (§9) y el contrato de cableado (§11).
 - Mutación: 12/12 mutantes muertos (`M1`–`M12`: byte array truncado, sección
   equivocada, cota hex, MATCH sin compatibilidad, reparse, Managed Source, clone
   equivocado, persistido sobre vivo, ini stale, divergencia tolerada, Desired
@@ -266,3 +267,105 @@ acepta identidad inyectada y el contrato del gate es NUNCA lanzar.
 `test_5` afirma conductualmente); `AE` y `SE` comparten la misma tupla de
 loaders en `_SKSE_LOADERS_BY_EDITION`, así que el AE hardcodeado es
 conductualmente idéntico y está documentado.
+
+## 9. Fidelidad del desescape `@ByteArray` contra Qt (gate final, 2026-10-24)
+
+El decodificador se escribió "según lo que parece razonable" y quedó con una
+suposición: **`\x` consume hasta dos dígitos hex**. No era una lectura de Qt.
+
+**Medición.** Se descargó `qtbase` 5.15 (`src/corelib/io/qsettings.cpp`,
+md5 `b2500ed4da48b951935ceee001568413`) y se leyó el autómata:
+
+- `QSettingsPrivate::iniUnescapedStringList` (líneas 728-900), `StHexEscape`
+  en 854: acumula dígitos hex **sucesivos, sin tope**, en un `char16_t`
+  (`escapeVal <<= 4`), hasta el primer carácter que no sea hex.
+- `StOctEscape` (873): lo mismo para `\0`-`\7`.
+- `iniEscapedString` (617): el escritor emite `\x` + `QByteArray::number(ch,16)`
+  —1 o 2 dígitos, sin cero a la izquierda— y activa `escapeNextIfDigit` para
+  que el lector ávido no se coma un dígito hex que venga después. Escribe `\0`
+  para el byte NUL.
+- `stringToVariant` (477): `s.midRef(11, size-12).toLatin1()` — angosta el
+  `QString` acumulado, sustituyendo por `?` todo lo que no entra en Latin-1.
+
+**Experimento diferencial** (`.tmp_p5a_probe/diferencial_qt_hex.py`, puerto
+fiel del autómata contra el módulo real, corpus exhaustivo de `\x` con 1, 2, 3
+y 4 dígitos = 69.919 casos): **69.646 divergencias** antes del fix, en 6 clases.
+
+| Caso | Qt | Antes | Clase |
+|---|---|---|---|
+| `\x0d9` | `D9` | `0D` + `'9'` | valor ≤ 0xFF mal decodificado |
+| `\x1234` | `?` (pierde) | `12` + `"34"` | ruta inventada |
+| `\0` | NUL | `'0'` | octal ignorado |
+| `\101` | `A` | `101` | octal ignorado |
+| `C:\z` | `C:` | `C:\z` | escape desconocido conservado |
+| `C:\` | `C:` | `C:\` | barra final conservada |
+
+**Fix.** `_desescapar_bytes` reproduce el autómata: hex y octal ávidos, wrap de
+16 bits emulado (`& 0xFFFF`, observable en `\x10041` → `A`), escapes
+desconocidos y barra final descartados. Cuando el acumulador pasa de `0xFF`,
+Qt angostaría con pérdida: se lanza `QtByteArrayIrrecuperable` y el
+`gamePath` queda **`UNREADABLE`**, nunca una ruta inventada.
+
+**Post-fix:** divergencia **cero** sobre los mismos 69.919 casos, con 69.121
+negativas legítimas (exactamente los casos donde Qt pierde). El
+`modorganizer.ini` real de esta máquina sigue decodificando a
+`G:\Modding\Skyrim_Runtime_1.6.1170`.
+
+**Invariante de compatibilidad.** `test_ida_y_vuelta_de_los_256_bytes_que_escribe_qt`
+implementa el escritor de Qt y exige ida y vuelta exacta para los 256 bytes.
+Es la prueba de que hacer ávido al lector **no** rompe los ini reales: para
+contenido escrito por Qt el tope viejo y el consumo ávido coinciden, porque el
+escritor nunca emite tres dígitos y escapa el dígito que siga a un escape.
+
+## 10. La carpeta del lanzador, no su descendencia (gate final)
+
+`_lanzadores_del_juego_fuera_de` usaba `_es_igual_o_hijo`, que acepta cualquier
+descendiente. Dos síntomas del mismo defecto:
+
+- **Demasiado permisivo:** un `skse64_loader.exe` registrado en
+  `<efectiva>/tools` contaba como "mismo árbol" y habilitaba MATCH. Pero SKSE
+  resuelve el juego relativo a SU directorio: si MO2 lanza ese loader, el
+  runtime ejecutado es `tools`. "Dentro de" no es "en la raíz" ⇒ ahora UNKNOWN
+  con `EXECUTABLE_SELECTION_UNPROVEN`.
+- **Demasiado estricto:** un binario sin componente de directorio
+  (`skse64_loader.exe` a secas, la forma en que MO2 registra un ejecutable del
+  propio juego) se normalizaba con `abspath` contra el CWD del proceso —que no
+  es la instancia— y toda instancia normal caía en UNKNOWN por un artefacto.
+  Ahora "sin carpeta" significa "en la raíz".
+
+Un binario relativo **con** directorio no se puede resolver sin la instancia:
+no prueba nada y cuenta como fuera (falla cerrado).
+
+El caso del **proceso vivo** en subdirectorio (`raiz_de_la_imagen` sube un
+nivel) sigue fuera de alcance declarado, pero ahora está probado como rechazo
+seguro y no sólo documentado: la raíz reportada es el subdirectorio, que no es
+el Desired ⇒ MISMATCH y `authorizes_activation is False`
+(`test_o8_loader_vivo_en_subdirectorio_no_puede_dar_match`).
+
+## 11. Deuda de cableado de P5 (declarada, no disimulada)
+
+Censo verificado en el gate final: `assess_effective_runtime` **no tiene
+llamadores productivos**. El consumidor existe
+(`journal.reconciliar_journal(observador_effective=...)`) pero nadie lo cablea
+todavía, y `desired_runtime_from_storage` devuelve `clone_root=None` por falta
+del store de `RuntimeCloneRecord`. En producción, por lo tanto, el veredicto es
+`UNKNOWN` por construcción.
+
+El riesgo no es la ausencia —es deuda declarada para P5-B— sino el llamador
+**futuro** que omita `config_skyrim_path`: apagaría
+`CONFIG_DIVERGES_FROM_EFFECTIVE` sin que nada lo delate, y el split-brain
+medido en este rig (`skyrim_path` → Steam, `gamePath` → runtime independiente)
+quedaría invisible con un veredicto potencialmente MATCH.
+
+Dos barreras, ninguna ficticia:
+
+1. **Contrato por AST** (`test_o6_ningun_llamador_productivo_omite_config_skyrim_path`):
+   toda llamada a `assess_effective_runtime` bajo `sky_claw/` o `scripts/` debe
+   pasar `config_skyrim_path`. El predicado se prueba sobre fuente sintética
+   (porque hoy la lista de llamadas está vacía y un bucle sobre cero casos no
+   verifica nada) y se falsificó plantando un llamador que lo omite: el test
+   falla nombrando archivo y línea. También se ancla que el parámetro siga
+   existiendo y sea keyword-only.
+2. **La omisión se declara.** `ABSENT` a secas no distinguía "medí y no hay" de
+   "nunca pregunté"; la observación `CONFIG_SKYRIM_PATH` ahora lleva un
+   `detail` explícito cuando la superficie no se suministró.
