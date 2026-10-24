@@ -29,6 +29,7 @@
 
 - [Arquitectura](architecture/README.md)
 - [Contribución](../CONTRIBUTING.md)
+- [Desarrollo: normas de proceso](development/README.md)
 - [Referencia técnica](api/README.md)
 - [Guías para agentes](agents/README.md)
 - [Clean-room del generador nativo de parallax](../CLEAN_ROOM.md)

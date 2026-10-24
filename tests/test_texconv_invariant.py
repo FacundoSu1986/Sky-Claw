@@ -36,8 +36,9 @@ MODULOS_QUE_NOMBRAN_TEXCONV = {
     # NP-A0a: nombra texconv solo como DATO (``texconv_version``/``texconv_sha256`` que devolvió el exportador, para armar
     # el ``EncoderUsado`` de la procedencia). No lo ejecuta ni lo verifica; el exportador se le inyecta.
     "sky_claw/local/native_parallax/lote.py",
-    # NP-A0a: el borde de línea de comandos. Recibe la ruta (``--texconv``), la verifica con ``export.verificar_texconv`` y
-    # ata el exportador al ejecutor fijado (``texconv_runner.exportar_altura_bc4``); no lanza ningún proceso por su cuenta.
+    # NP-A0a: el borde de línea de comandos. Recibe la ruta (``--texconv``), la diagnostica con
+    # ``diagnostico_texconv.diagnosticar_texconv`` (que delega la huella en ``export.verificar_texconv``) y ata el
+    # exportador al ejecutor fijado (``texconv_runner.exportar_altura_bc4``); no lanza ningún proceso por su cuenta.
     "sky_claw/local/native_parallax/cli.py",
     # NP-A0c: nombra ``texconv`` solo como DATO (el estado del binario configurado y el mensaje para el operador). No lo
     # ejecuta ni calcula su huella: delega en ``export.verificar_texconv``, y el test de abajo comprueba por AST que no

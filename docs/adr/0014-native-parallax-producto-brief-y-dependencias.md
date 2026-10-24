@@ -1366,7 +1366,7 @@ síncrono y corre dentro del bucle de eventos de `asyncio.run`: mientras hashea,
 (3) El autoral que vale es el de la **carpeta de entrada**: la herramienta no ve los `*_p.dds` de OTROS mods que MO2 resuelve por su sistema virtual de archivos.
 Para el adaptador de MO2 (NP-A0) es un requisito de diseño: sin saber qué `*_p.dds` gana el conflicto, la salida podría tapar parallax autoral de otro mod.
 
-**Qué falta.** El adaptador de MO2 (con la regla del punto 3); la detección de `texconv` (su diagnóstico previo es la «Actualización de NP-A0c», todavía sin cablear); las superficies GUI y agente; usar la huella del proveedor
+**Qué falta.** El adaptador de MO2 (con la regla del punto 3); la detección de `texconv` (su diagnóstico previo es la «Actualización de NP-A0c»; la CLI ya lo usa, ver «Cableado del diagnóstico a la CLI»); las superficies GUI y agente; usar la huella del proveedor
 como referencia en el lote; saltear el cálculo de lo que la caché ya cubre.
 
 ### Actualización de NP-A0c (2026-10-23)
@@ -1375,8 +1375,8 @@ NP-A0c entrega `sky_claw/local/native_parallax/diagnostico_texconv.py`: el diagn
 `texconv` equivocado se descubría tarde —después de decodificar, integrar y medir una textura— y seco (`TexconvNoCoincideError`). Este módulo
 contesta antes, en español simple, qué le pasa al binario, y **no agrega verificación nueva**: delega entera la comparación de la huella en
 `export.verificar_texconv`, que sigue siendo la única implementación del pin. No importa `hashlib`, no lanza procesos y no usa la red (anclado por
-AST en su propio test). Es la mitad «diagnóstico» del ítem que «Qué falta de NP-A0» reclamaba para el registro de tools; el cableado sigue
-pendiente.
+AST en su propio test). Es la mitad «diagnóstico» del ítem que «Qué falta de NP-A0» reclamaba para el registro de tools; el cableado a la CLI se hizo en «Cableado del diagnóstico a la CLI»; el
+registro de tools sigue pendiente.
 
 **Decisiones (nuestras, ancladas por `tests/test_native_parallax_diagnostico_texconv.py`):**
 
@@ -1445,6 +1445,42 @@ de herramientas, que no existe todavía.
 
 **Límites declarados.** (1) Un archivo que desaparece entre la comprobación del delegado y su lectura se informa como `NO_SE_PUDO_LEER` con el
 mensaje del sistema operativo: el diagnóstico reporta la carrera, no la adivina. (2) La ruta no se resuelve: dos ortografías del mismo archivo
-se informan como el operador las escribió. (3) Es un módulo de biblioteca: **no hay todavía superficie** que lo muestre (ni `cli.py` ni el
-registro de tools lo llaman), así que el operador sigue viendo el error seco de `verificar_texconv` hasta que se cablee. (4) No arregla nada:
-informa el estado y qué hacer.
+se informan como el operador las escribió. (3) Cuando se entregó era un módulo de biblioteca sin superficie; la CLI lo usa desde «Cableado del
+diagnóstico a la CLI» y el registro de tools todavía no. (4) No arregla nada: informa el estado y qué hacer.
+
+### Cableado del diagnóstico a la CLI (NP-A0c, 2026-10-23)
+
+La CLI deja de tener su propia verdad sobre el `texconv`. Antes había dos implementaciones del mismo recurso: `cli._resolver_texconv` (qué valor es
+«la ruta», con el nombre de la variable repetido) y `export.verificar_texconv` llamada en seco desde `crear_exportador_texconv`; el diagnóstico de NP-A0c
+era una tercera lectura, anclada a la CLI solo por una tabla de comparación que *detecta* la divergencia pero no la *previene* (el hallazgo de la
+guía automática sobre #786: «dos superficies, un recurso»). Ahora:
+
+- **La regla de la ruta y el nombre de la variable viven UNA vez**, en `diagnostico_texconv`: `ruta_configurada` (pública) y `ENTORNO_TEXCONV`. La CLI
+  los importa; `cli.ENTORNO_TEXCONV` sigue existiendo como reexportación. `_resolver_texconv` delega en `ruta_configurada`.
+- **`crear_exportador_texconv` pasa por `diagnosticar_texconv`** en vez de llamar a `verificar_texconv`: todo estado que no es `CORRECTO` corta con
+  `UsoIncorrectoError(diagnostico.mensaje)`, así que el operador lee qué le pasa al binario y qué hacer (código de salida 2, sin traceback) y no el error
+  seco de la huella. Recibe la ruta ya resuelta y un entorno vacío: la variable se lee una sola vez.
+- **Diferencias de comportamiento, todas con su test adaptado:** (a) un `texconv` equivocado deja de ser `TexconvNoCoincideError` (un `ExportError`) y es
+  `UsoIncorrectoError`: el mismo código de salida, otro texto; (b) «no configurado» dice la frase del diagnóstico («No me dijeron dónde está el
+  texconv: pasá --texconv RUTA o definí la variable …») en lugar de «falta el texconv.exe …»; (c) se distinguen siete estados con su frase y qué hacer, donde
+  antes llegaba el mensaje seco de `verificar_texconv` (no existe o no es un archivo / no se pudo leer / la huella no coincide / sin versión fijada). `main` sigue sin diagnosticar antes de la fábrica inyectada: los tests y cualquier otra fábrica reciben la ruta tal
+  cual, porque diagnosticar toca el disco.
+
+**Anclas.** `test_el_nombre_de_la_variable_vive_en_un_solo_modulo_del_proyecto` ENUMERA por AST todo `sky_claw/` y exige que el literal exista en un solo
+módulo (rojo observado: aparecía en dos). `test_renombrar_la_variable_en_un_solo_lugar_la_mueve_en_el_diagnostico_y_en_la_cli` prueba lo mismo por
+comportamiento (si la CLI conservara su copia del nombre o de la regla, seguiría leyendo la variable vieja). `test_todo_estado_que_no_es_correcto_corta_…`
+se parametriza sobre `EstadoDeTexconv`: un estado nuevo queda cableado solo. `test_la_cli_diagnostica_el_binario_que_resolvio_…` ancla que se le pasa la
+ruta resuelta y un entorno vacío. `tests/test_texconv_real.py` (el smoke real) lee la variable del entorno a propósito y queda fuera: es un test.
+
+**Verificado ejecutando (Linux, Python 3.11):** rojo observado antes de implementar (15 tests: los de la superficie pública, las dos anclas, el estado por
+estado, el exportador real con un binario equivocado y los tres que fijaban el contrato viejo); después, 146 tests de la CLI y del diagnóstico en verde,
+708 en las anclas relacionadas (exportador, lote, proveedor, ejecutor de `texconv`, censos, ADR y clean-room), `ruff check` y `ruff format --check`
+limpios, y `mypy sky_claw/ scripts/` en la línea base de Linux (669, ninguna en `native_parallax/`). **Mutación automática por AST** de lo que cambió:
+`cli._resolver_texconv` y `cli.crear_exportador_texconv` 11 mutantes y 11 muertos, `diagnostico_texconv.ruta_configurada` 8 y 8; el nulo de cada función
+en verde.
+
+**No verificado.** Nada se corrió con el `texconv` real ni en Windows desde este cambio (la CI de Windows corre los tests con un binario de prueba). El
+texto «No me dijeron dónde está el texconv» es el que escribió NP-A0c: no lo revisó nadie que no sea quien lo escribió y quien lo adaptó.
+
+**Qué falta.** El registro de tools y las superficies GUI y agente todavía no llaman al diagnóstico; cuando lo hagan, `ruta_configurada` y
+`diagnosticar_texconv` son la única forma de resolver y juzgar el binario, y el ancla de «un solo módulo» las cubre.

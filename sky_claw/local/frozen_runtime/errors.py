@@ -386,3 +386,69 @@ class ApprovalHitolNoDisponibleError(ApprovalError):
     cerrado con este error hasta que exista la superficie real; el núcleo durable
     se ejercita con fixtures explícitas en los tests.
     """
+
+
+# ============================================================================
+# Consentimiento HITL del propietario (P4-S6)
+# ============================================================================
+
+
+class ConsentimientoError(FrozenRuntimeError):
+    """Base de errores del consentimiento verificado del propietario (ADR 0012 §46).
+
+    Vive fuera de ``ApprovalError`` a propósito: la autoridad durable de aprobación
+    y la superficie que obtiene el consentimiento son módulos distintos con
+    contratos distintos, y colgar el error del consentimiento de la familia de la
+    autoridad haría que ``approval.py`` tuviera que importar el error del módulo
+    que lo consume (el ciclo de imports que el subsistema evita). El punto donde
+    ambos contratos se tocan —la emisión— sí habla ``ApprovalConsentimientoError``.
+    """
+
+
+class IdentidadPropietarioNoVerificadaError(ConsentimientoError):
+    """No hay prueba verificable de que quien responde sea el propietario.
+
+    Un ``mecanismo`` que no está en ``SUPERFICIES_DE_CONSENTIMIENTO``, un
+    ``from.id`` que no coincide con el operador configurado, un mensaje
+    reenviado, un chat de grupo o un ``id`` con el tipo equivocado (texto,
+    booleano) caen acá. ``SELF_ISSUED_APPROVAL_IS_AUTHORIZATION = NO``: la
+    identidad no se toma de un campo que el llamador controla.
+    """
+
+
+class SuperficieSinIdentidadVerificadaError(ConsentimientoError):
+    """La superficie no tiene mecanismo que demuestre identidad del propietario.
+
+    ``GUI`` es presencia local, no identidad: no hay login ni credencial, así que
+    aceptarla equivaldría a tratar un clic como prueba de quién lo dio. Queda
+    registrada como blocker (``OWNER_IDENTITY_BINDING`` por superficie), no
+    silenciada como si el botón fuera suficiente.
+    """
+
+
+class SolicitudConsentimientoDesconocidaError(ConsentimientoError):
+    """No hay solicitud ABIERTA con ese ``solicitud_id``.
+
+    Cubre tres casos que se tratan igual porque exigen la misma respuesta —no
+    emitir nada—: un id inventado, una solicitud ya resuelta y una solicitud que
+    vivía en otro proceso (el registro es en memoria; un reinicio la extingue,
+    ``SESSION_CLOSE_INVALIDATES_PENDING = YES``).
+    """
+
+
+class ConsentimientoDuplicadoError(ConsentimientoError):
+    """La solicitud ya fue respondida (aprobada, rechazada o cancelada).
+
+    Una decisión terminal no se reabre: sin esto, un primer ``RECHAZAR`` podría
+    convertirse en ``APROBAR`` con un segundo mensaje y la decisión registrada no
+    sería la que el propietario tomó.
+    """
+
+
+class SesionConsentimientoNoCoincideError(ConsentimientoError):
+    """Quien responde no es el propietario de ESA solicitud, en ESA sesión.
+
+    La solicitud liga ``(superficie, sujeto, sesión)``. Comparar sólo el sujeto
+    dejaría pasar el replay entre sesiones del mismo propietario —dos ventanas,
+    dos conversaciones— y el consentimiento de una autorizaría la otra.
+    """

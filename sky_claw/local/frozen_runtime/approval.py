@@ -140,6 +140,19 @@ APPROVAL_TOMBSTONE_GC_PERMITIDO = False
 #: §37.2: dos archivos no forman una transacción.
 CROSS_FILE_ATOMICITY = False
 
+#: P4-S6 (FASE F del brief): el consentimiento verificado existe y está probado,
+#: pero la EMISIÓN productiva sigue cerrada. Ningún módulo de producción llama a
+#: ``consumir_aprobacion`` —hay un ancla enumerativa que lo congela—, así que
+#: emitir dejaría autorizaciones ``ISSUED`` sin salida operativa y, con
+#: ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``, bloquearía la emisión siguiente hasta
+#: que el dueño revoque.
+#:
+#: Es la ÚNICA definición del interruptor: ``owner_consent`` lo LEE y su puerta
+#: de emisión depende de este valor. Un test enumera el árbol y exige una sola
+#: definición, y otro prueba la clausura por conducta —no por el literal—, para
+#: que abrirlo obligue a adjudicar el consumidor en el mismo cambio.
+EMISION_PRODUCTIVA_HABILITADA = False
+
 _HEX_DIGEST = 64
 
 #: §38.2 — filename safety del tombstone. ``approval_seq`` decimal SIN signo y
@@ -285,16 +298,36 @@ class PropuestaAprobacion:
 class ConsentimientoAprobacion:
     """Consentimiento HUMANO sobre un digest concreto (§39.3 B2).
 
-    En este slice es una **fixture explícita**: no existe superficie HITL, así
-    que la única vía productiva de emisión (``emitir_aprobacion``) falla cerrado.
     El objeto liga exactamente lo que el propietario aprobó —el digest y la
     procedencia de la presentación— para que ``WHAT_HUMAN_APPROVED ==
     WHAT_WAS_ISSUED`` sea verificable y no una intención.
+
+    **P4-S6 — binding del propietario.** Los seis campos opcionales los estampa
+    ``owner_consent.RegistroConsentimientos.responder`` cuando la decisión viene
+    de una solicitud abierta y de una identidad verificada. Siguen siendo
+    opcionales porque el núcleo durable se ejercita con fixtures explícitas en
+    los tests de P4-S4/P4-S5 (que no tienen superficie), pero la entrada
+    PRODUCTIVA los exige: ``owner_consent.emitir_aprobacion_autorizada`` rechaza
+    un consentimiento sin ellos con ``ApprovalHitolNoDisponibleError``. Un
+    consentimiento de tres cadenas ya no es un consentimiento humano: es una
+    fixture, y el código no puede distinguirlos salvo por estos campos.
     """
 
     approval_scope_digest: str
     approval_provenance: str
     surface: str
+    #: P4-S6 — root FÍSICO al que pertenece la aprobación (se revalida al emitir).
+    root_id: str | None = None
+    #: P4-S6 — solicitud abierta que originó la decisión.
+    solicitud_id: str | None = None
+    #: P4-S6 — sesión del propietario que respondió (no la del proceso).
+    session_id: str | None = None
+    #: P4-S6 — sujeto identificado en la superficie, según el mecanismo del censo.
+    owner_subject: str | None = None
+    #: P4-S6 — mecanismo de identidad que produjo la prueba.
+    mecanismo: str | None = None
+    #: P4-S6 — instante de la decisión (no el de la emisión).
+    decided_at_ns: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1756,23 +1789,35 @@ def proponer_aprobacion(
 def emitir_aprobacion(
     root: pathlib.Path, propuesta: PropuestaAprobacion, consentimiento: ConsentimientoAprobacion
 ) -> None:
-    """BLOQUEADA en P4-S4: no hay superficie HITL que autorice la emisión.
+    """BLOQUEADA también en P4-S6 — ahora por una razón distinta y más específica.
 
-    ``APPROVAL_AUTHORITY = la superficie HITL del producto`` (§35.2/§36.5) y el
-    producto **no la tiene**: la solicitud HITL es efímera y
-    ``OWNER_IDENTITY_BINDING = DEFERRED``. Emitir desde código convertiría la
-    aprobación en una auto-autorización, que es exactamente lo que
-    ``SELF_ISSUED_APPROVAL_IS_AUTHORIZATION = NO`` prohíbe.
+    Hasta P4-S5 la emisión estaba cerrada porque ``APPROVAL_AUTHORITY`` es la
+    superficie HITL del producto y **no existía**: el consentimiento era un objeto
+    de tres cadenas que cualquiera podía construir, así que emitir desde código
+    era una auto-autorización.
 
-    El núcleo durable está implementado y probado en
-    ``_emitir_aprobacion_bajo_lock`` con fixtures explícitas; esta frontera
-    productiva permanece cerrada hasta que exista la superficie real.
+    P4-S6 cambia el hecho, no la conclusión: la superficie existe
+    (``owner_consent``), la identidad del propietario se prueba contra el
+    transporte y el consentimiento liga root, sesión, solicitud y digest. Lo que
+    falta es el **consumidor**: ningún módulo de producción llama a
+    ``consumir_aprobacion`` (ancla enumerativa en
+    ``tests/test_frozen_runtime_p4_s6_owner_hitl.py``), así que una aprobación
+    emitida quedaría ``ISSUED`` sin salida operativa y —con
+    ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``— bloquearía la emisión siguiente hasta
+    que el dueño revoque. La FASE F del brief pide exactamente esto: no habilitar
+    por arrastre todo el flujo de promoción.
+
+    El camino productivo completo (presentar → decidir → emitir bajo lock) es
+    ``owner_consent.emitir_aprobacion_autorizada``, cuya puerta LEE el único
+    interruptor ``EMISION_PRODUCTIVA_HABILITADA`` —el definido arriba en este
+    módulo, hoy ``False``—. ``owner_consent`` no declara un segundo interruptor.
     """
     raise ApprovalHitolNoDisponibleError(
-        "P4-S4 no habilita la emisión productiva de aprobaciones: el producto no tiene superficie HITL que "
-        "emita el consentimiento (§35.2/§36.5). Un lock, un booleano, un mock o un mensaje del agente LLM no "
-        "son consentimiento humano. La autoridad durable está implementada y probada con fixtures explícitas; "
-        "la entrada productiva sigue cerrada."
+        "la emisión productiva de aprobaciones sigue cerrada en P4-S6: la superficie HITL y el binding del "
+        "propietario ya existen (owner_consent), pero ningún consumidor seguro de la aprobación está "
+        "integrado. Emitir acá dejaría autorizaciones ISSUED sin salida operativa (FASE F). El camino "
+        "productivo es owner_consent.emitir_aprobacion_autorizada; el núcleo durable se ejercita con "
+        "fixtures explícitas en los tests."
     )
 
 
@@ -1802,6 +1847,55 @@ def _validar_consentimiento(propuesta: PropuestaAprobacion, consentimiento: Cons
             "aprobado (§39.6)"
         )
     _exigir_texto(consentimiento.surface, campo="surface", etiqueta="consentimiento")
+    # P4-S6 — el instante de la DECISIÓN no es decoración.
+    #
+    # Hasta acá ``decided_at_ns`` lo escribía ``owner_consent.responder`` y no lo
+    # leía nadie: un campo que sólo se escribe es una aserción del llamador, el
+    # mismo patrón que ``root_id`` (P4-S4) y ``digest_canonico`` (P4-S5) — y los
+    # dos se cerraron VERIFICANDO al leer, no escribiendo más. Acá se vuelve a
+    # leer y gobierna la emisión: un consentimiento ligado al propietario sin
+    # instante de decisión no es un consentimiento, y una decisión anterior a la
+    # propuesta es imposible, porque el propietario no puede haber aprobado algo
+    # que todavía no existía.
+    #
+    # Lo que este chequeo NO hace, y el ADR declara: el instante no se persiste.
+    # El witness guarda ``issued_at_ns`` (el de la emisión, que hoy es el de la
+    # propuesta) y el ``approval_provenance``; el ancla durable del instante de
+    # decisión es el log del transporte. Persistirlo exigiría esquema v3 y no
+    # aporta frente a quien puede escribir el campo: fabricaría el instante igual
+    # que fabrica el sujeto.
+    ligado_al_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
+    if ligado_al_propietario:
+        # Detectar la PRETENSIÓN de ser del propietario y validar uno solo de los
+        # seis campos es media comprobación. El wrapper
+        # ``owner_consent.emitir_aprobacion_autorizada`` exige los seis, pero esta
+        # función tiene más de un llamador (los tests del núcleo durable y
+        # ``_p4_s4_child`` la invocan directo), y el chequeo del root de más abajo
+        # es ``if consentimiento.root_id is not None``: un ``None`` lo salteaba
+        # entero, y con él la atadura al root FÍSICO. Un chequeo que vive sólo en
+        # el llamador es bypassable por el segundo llamador — es el mismo defecto
+        # que el P1 de esta ronda cerró para la identidad.
+        faltantes = [
+            nombre
+            for nombre in ("root_id", "solicitud_id", "session_id", "owner_subject", "mecanismo")
+            if not getattr(consentimiento, nombre)
+        ]
+        if faltantes:
+            raise ApprovalConsentimientoError(
+                "el consentimiento pretende ser del propietario pero le faltan campos de binding "
+                f"({', '.join(faltantes)}): un consentimiento a medias no autoriza nada"
+            )
+        decidido_en = consentimiento.decided_at_ns
+        if not isinstance(decidido_en, int) or isinstance(decidido_en, bool) or decidido_en < 0:
+            raise ApprovalConsentimientoError(
+                "el consentimiento ligado al propietario no trae un 'decided_at_ns' válido: sin el instante de "
+                "la decisión no se puede ordenar la aprobación respecto de la propuesta que se aprobó"
+            )
+        if decidido_en < propuesta.proposed_at_ns:
+            raise ApprovalConsentimientoError(
+                f"la decisión ({decidido_en}) precede a la propuesta ({propuesta.proposed_at_ns}): el propietario "
+                "no puede haber aprobado algo que todavía no existía"
+            )
 
 
 def _emitir_aprobacion_bajo_lock(
@@ -1821,6 +1915,11 @@ def _emitir_aprobacion_bajo_lock(
     _exigir_dirs_store(root)
     scope = validar_scope(propuesta.scope)
     _validar_consentimiento(propuesta, consentimiento)
+    # P4-S6: el consentimiento liga el root FÍSICO sobre el que se presentó. Un
+    # consentimiento del root A no autoriza nada en el root B, y el chequeo va
+    # ANTES del CREATE: después del witness llega tarde.
+    if consentimiento.root_id is not None:
+        _exigir_root_local(consentimiento.root_id, esperado=_root_id(root), ruta=approval_ledger_path(root))
     actual = cargar_ledger_aprobacion(root)
     if actual.disposition is ApprovalLedgerDisposition.CORRUPT:
         raise ApprovalCorruptError(f"{actual.path}: ledger corrupto: no se emite (fail-closed)")

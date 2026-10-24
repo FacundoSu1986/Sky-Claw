@@ -187,6 +187,20 @@ from sky_claw.local.frozen_runtime.models import (
     StableSourceObservation,
 )
 from sky_claw.local.frozen_runtime.observation import observe_source_snapshot
+from sky_claw.local.frozen_runtime.owner_consent import (
+    MECANISMO_PRESENCIA_LOCAL,
+    MECANISMO_TELEGRAM,
+    SUPERFICIES_DE_CONSENTIMIENTO,
+    DecisionConsentimiento,
+    IdentidadPropietario,
+    MecanismoIdentidad,
+    PresentacionConsentimiento,
+    RegistroConsentimientos,
+    SuperficieConsentimiento,
+    describir_superficies,
+    emitir_aprobacion_autorizada,
+    verificar_identidad_telegram,
+)
 from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation
 from sky_claw.local.frozen_runtime.root_lock import (
     LOCK_FILE_NAME,
@@ -422,6 +436,18 @@ __all__ = [
     "observar_arbol_sellado",
     "observe_source_snapshot",
     "obtain_stable_source_snapshot",
+    "MECANISMO_PRESENCIA_LOCAL",
+    "MECANISMO_TELEGRAM",
+    "SUPERFICIES_DE_CONSENTIMIENTO",
+    "DecisionConsentimiento",
+    "IdentidadPropietario",
+    "MecanismoIdentidad",
+    "PresentacionConsentimiento",
+    "RegistroConsentimientos",
+    "SuperficieConsentimiento",
+    "describir_superficies",
+    "emitir_aprobacion_autorizada",
+    "verificar_identidad_telegram",
     "payload_dir",
     "registrar_generation_metadata",
     "same_volume",
