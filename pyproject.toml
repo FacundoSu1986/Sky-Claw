@@ -396,6 +396,7 @@ module = [
     # P1 Frozen Runtime: paquete nuevo (models/discovery/observation/stabilization),
     # nace estricto por la misma convención que los módulos nuevos de la lista.
     "sky_claw.local.frozen_runtime.*",
+    "sky_claw.local.parallax_unattended.*",
 ]
 strict = true
 ignore_errors = false
