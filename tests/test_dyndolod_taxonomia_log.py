@@ -159,7 +159,9 @@ def test_las_tres_cajas_estan_congeladas() -> None:
     # cualquier archivo faltante (rig Alpha-209).
     # La de F1 es de UNA parte porque es la instrucción LITERAL de un modal del
     # contrato, sin texto variable en el medio: no hay nada que acotar con una
-    # segunda parte, y recortarla a un prefijo sí ampliaría el fail-closed.
+    # segunda parte, y recortarla a un prefijo sí ampliaría el fail-closed. Lleva
+    # el `Error:` del encabezado para que el match por substring no trague una
+    # línea con texto de error AJENO delante de la instrucción (CodeRabbit, #793).
     assert NO_FATALES_DEL_DOMINIO == (
         ("Deleted reference",),
         ("Unresolved FormID",),
@@ -167,7 +169,7 @@ def test_las_tres_cajas_estan_congeladas() -> None:
         ("No TexGen output detected",),
         ("DynDOLOD.DLL", "not found"),
         ("File not found", "SkyrimSE.exe"),
-        ("Found stitched object LOD textures from earlier TexGen generation installed in game folder.",),
+        ("Error: Found stitched object LOD textures from earlier TexGen generation installed in game folder.",),
     )
     assert PATRONES_TERMINALES == (
         "Fatal:",
@@ -1330,6 +1332,18 @@ _CASOS_ADVERSARIALES_MODAL_STITCHED = [
     pytest.param(f"FAIL: {_LINEA_DEL_MODAL_STITCHED}", True, id="F_fail"),
     # G: Fatal sobre la instrucción completa → terminal (ídem).
     pytest.param(f"Fatal: {_LINEA_DEL_MODAL_STITCHED}", True, id="G_fatal"),
+    # H: texto de error AJENO antes de la instrucción → terminal. La exención
+    #    matchea por substring, así que sin anclar el `Error:` del encabezado una
+    #    línea como ésta se tragaba como ruido de dominio y, con artefacto,
+    #    marcador y `rc == 0`, el runner aceptaba la corrida (revisor CodeRabbit,
+    #    PR #793). El binario escribe el modal como `Error: <instrucción>`, así
+    #    que exigir ese encabezado no cuesta cobertura medida.
+    pytest.param(
+        "Error: Could not write textures; "
+        "Found stitched object LOD textures from earlier TexGen generation installed in game folder.",
+        True,
+        id="H_error_ajeno_antes_de_la_instruccion",
+    ),
 ]
 
 

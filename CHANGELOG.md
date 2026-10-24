@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Una corrida de TexGen que el operador autorizó continuar se revertía entera por
   el `Error:` de un modal de arranque CONOCIDO (F1).** El binario escribe la
   instrucción de sus diálogos de arranque como `Error: <instrucción>` en su propio
-  log, y la taxonomía del veredicto (`dyndolod_runner.NO_FATALES_DOMINIO`) exentaba
+  log, y la taxonomía del veredicto (`dyndolod_runner.NO_FATALES_DEL_DOMINIO`) exentaba
   a uno de los dos modales medidos y no al otro: `dyndolod_dll_ng_ausente` quedaba
   cubierto por la categoría `("DynDOLOD.DLL", "not found")`, y
   `texgen_stitched_lod_previo` —`Error: Found stitched object LOD textures from
@@ -22,8 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HITL; afectaba por igual a los dos modos, porque `clasificar_log` no recibe el
   modo. La entrada nueva es la instrucción **COMPLETA** del modal y no un prefijo
   (`("Found stitched",)` habría exentado también un fallo de escritura de las
-  mismas texturas), y la severidad terminal sigue ganándole: `Critical:`/`FAIL:`/
-  `Fatal:` sobre esa misma línea siguen siendo terminales. El ancla que impide el
+  mismas texturas), y lleva el `Error:` del encabezado: como el match es por
+  substring, sin él una línea con texto de error AJENO delante de la instrucción
+  —`Error: Could not write textures; Found stitched object LOD textures …`— se
+  tragaba como ruido de dominio y, con artefacto, marcador y `rc == 0`, el runner
+  aceptaba la corrida (revisor CodeRabbit, PR #793). La severidad terminal sigue
+  ganándole: `Critical:`/`FAIL:`/`Fatal:` sobre esa misma línea siguen siendo
+  terminales. El ancla que impide el
   tercer modal es enumerativa sobre `CONTRATOS_DE_UI`
   (`test_todo_modal_conocido_del_contrato_es_no_fatal_en_el_log_de_su_herramienta`):
   un modal nuevo en el contrato rompe el test hasta que se le escriba su categoría,
