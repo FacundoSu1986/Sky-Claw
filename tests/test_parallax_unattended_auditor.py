@@ -365,6 +365,25 @@ def test_un_archivo_ilegible_no_tumba_la_auditoria(tmp_path: pathlib.Path, monke
     assert not auditoria.ok
 
 
+def test_error_en_sd_bc4_no_tumba_la_auditoria(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si la decodificación de bloques falla en un archivo, no debe abortar la auditoría del lote."""
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/b_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    def decodificacion_rota(datos: bytes, cabecera: object) -> float:
+        raise modulo_auditor._DdsInvalidoError("bloque corrupto simulado")
+
+    monkeypatch.setattr(modulo_auditor, "_sd_bc4", decodificacion_rota)
+
+    auditoria = auditar(_informe(["textures/a_p.dds", "textures/b_p.dds"]), tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.NO_LEGIBLE,)
+    assert [h.codigo for h in auditoria.hallazgos] == [CodigoDeHallazgo.NO_LEGIBLE, CodigoDeHallazgo.NO_LEGIBLE]
+    assert not auditoria.ok
+    assert "no se pudo decodificar BC4" in auditoria.hallazgos[0].detalle
+
+
 def test_un_artefacto_demasiado_grande_no_se_lee(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
     monkeypatch.setattr(modulo_auditor, "MAXIMO_DE_BYTES", 100)

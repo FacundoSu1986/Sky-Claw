@@ -76,6 +76,7 @@ def _conteos(archivos: list[dict[str, object]]) -> dict[str, int]:
 def _informe(
     archivos: list[dict[str, object]],
     *,
+    otras_rutas: list[dict[str, object]] | None = None,
     conteos: dict[str, int] | None = None,
     encoder: dict[str, str] | None = _ENCODER,
 ) -> dict[str, object]:
@@ -85,7 +86,7 @@ def _informe(
         "encoder": encoder,
         "conteos": _conteos(archivos) if conteos is None else conteos,
         "archivos": archivos,
-        "otras_rutas": [],
+        "otras_rutas": [] if otras_rutas is None else otras_rutas,
     }
 
 
@@ -216,6 +217,17 @@ def test_sin_artefacto_el_codificador_no_hace_falta() -> None:
 
     assert decision.veredicto is VeredictoDelLote.REVIEW
     assert MotivoDelLote.ENCODER_NO_REGISTRADO not in decision.motivos
+
+
+def test_encoder_ausente_con_otras_rutas_omitida_marca_inconsistente() -> None:
+    """Si no hay archivos nuevos pero otras_rutas declara un artefacto omitido por caché, el encoder se exige."""
+
+    archivos = [_archivo("textures/a_p.dds", estado="EN_REVISION", efecto=None, veredicto="REVIEW")]
+    otras_rutas = [{"ruta": "textures/previa_p.dds", "efecto": "OMITIDA", "detalle": "caché"}]
+    decision = dictar(_informe(archivos, otras_rutas=otras_rutas, encoder=None))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.ENCODER_NO_REGISTRADO in decision.motivos
 
 
 def test_en_revision_con_veredicto_auto_accept_es_incoherente() -> None:

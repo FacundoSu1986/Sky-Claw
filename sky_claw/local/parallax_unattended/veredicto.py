@@ -355,7 +355,9 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
     if dict(declarados) != conteos:
         _agregar(motivos, MotivoDelLote.CONTEO_DIVERGENTE)
 
-    hay_artefacto = any(a.efecto in EFECTOS_QUE_DEJAN_ARCHIVO for a in archivos)
+    hay_artefacto = any(a.efecto in EFECTOS_QUE_DEJAN_ARCHIVO for a in archivos) or any(
+        o.efecto in EFECTOS_QUE_DEJAN_ARCHIVO for o in otras_rutas
+    )
     if hay_artefacto and not _encoder_registrado(informe):
         _agregar(motivos, MotivoDelLote.ENCODER_NO_REGISTRADO)
 

@@ -532,7 +532,10 @@ def _auditar_una(objetivo: _ObjetivoDeAuditoria, destino: pathlib.Path) -> tuple
             ),
             False,
         )
-    sd = _sd_bc4(datos, cabecera)
+    try:
+        sd = _sd_bc4(datos, cabecera)
+    except (_DdsInvalidoError, ValueError, ArithmeticError) as exc:
+        return Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo decodificar BC4: {exc}"), False
     if sd < SD_MINIMA:
         return (
             Hallazgo(
@@ -633,7 +636,13 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
         if not existe:
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_EXISTE, f"el informe la declara y no está en {raiz}"))
             continue
-        hallazgo, verificado = _auditar_una(objetivo, destino)
+        try:
+            hallazgo, verificado = _auditar_una(objetivo, destino)
+        except (OSError, RuntimeError, ValueError, _DdsInvalidoError) as exc:
+            hallazgo, verificado = (
+                Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"fallo inesperado auditando artefacto: {exc}"),
+                False,
+            )
         if hallazgo is not None:
             hallazgos.append(hallazgo)
         if verificado:
