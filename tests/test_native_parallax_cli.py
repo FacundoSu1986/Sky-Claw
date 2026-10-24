@@ -1303,3 +1303,102 @@ def test_el_png_de_la_autoprueba_tiene_el_encabezado_y_los_crc_correctos(tmp_pat
     assert zlib.decompress(trozos[1][1]) == b"".join(
         b"\x00" + (bytes(range(12)) * 4)[f * 12 : (f + 1) * 12] for f in range(4)
     )
+
+
+# ---------------------------------------------------------------------------
+# La salida no depende del codepage de la consola (rig 2026-10-24: «→» en cp1252 tiraba UnicodeEncodeError)
+# ---------------------------------------------------------------------------
+
+# Codificaciones ESTRICTAS que la consola de Windows o una redirección pueden imponer: la ANSI (cp1252), las OEM
+# (cp437, cp850) y la más pobre (ascii). Cada una tiene caracteres de los mensajes que no puede representar.
+_CODIFICACIONES_ESTRICTAS = ("cp1252", "cp437", "cp850", "ascii")
+
+
+def _comando(nombre: str, mundo: pathlib.Path) -> list[str]:
+    informe = str(mundo / "informe.json")
+    if nombre == "autoprueba":
+        return ["autoprueba", "--informe", informe]
+    carpetas = ["--carpeta", str(mundo / "entrada"), "--mods", str(mundo / "mods")]
+    return ["generar", *carpetas, "--informe", informe, "--incluir-revision"]
+
+
+def _correr_con(mundo: pathlib.Path, argv: list[str], salida: Any) -> int:
+    return main(
+        argv,
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(),
+        base_de_estado=mundo / "estado",
+        salida=salida,
+    )
+
+
+@pytest.mark.parametrize("codificacion", _CODIFICACIONES_ESTRICTAS)
+@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
+def test_ningun_comando_revienta_por_el_codepage_y_el_informe_se_escribe(
+    mundo: pathlib.Path, comando: str, codificacion: str
+) -> None:
+    crudo = io.BytesIO()
+    salida = io.TextIOWrapper(crudo, encoding=codificacion, errors="strict", newline="")
+
+    codigo = _correr_con(mundo, _comando(comando, mundo), salida)
+
+    salida.flush()
+    texto = crudo.getvalue().decode(codificacion)
+    assert codigo == CODIGO_OK
+    assert "Resumen:" in texto and "Informe:" in texto
+    # Ninguna de las cuatro representa «→»: se escapa visible, no se pierde ni se inventa.
+    assert "\\u2192" in texto
+    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1
+
+
+class _ConsolaQueSeCae(io.StringIO):
+    """Una consola que deja de aceptar texto: en el resumen (después de escribir la salida) o desde el principio."""
+
+    def __init__(self, desde: str) -> None:
+        super().__init__()
+        self._desde = desde
+        self._caida = False
+
+    def write(self, texto: str) -> int:
+        if self._desde in texto or self._caida:
+            self._caida = True
+            raise OSError(22, "la consola se cerró")
+        return super().write(texto)
+
+
+# Dónde se cae la consola: en el resumen (la corrida ya escribió la salida) o en la primera línea que se imprime.
+_CAIDAS_DE_LA_CONSOLA = {"en-el-resumen": "Resumen:", "desde-el-principio": ""}
+
+
+@pytest.mark.parametrize("caida", sorted(_CAIDAS_DE_LA_CONSOLA))
+@pytest.mark.parametrize("comando", ["generar", "autoprueba"])
+def test_una_consola_que_se_cae_no_aborta_la_corrida_ni_se_lleva_el_informe(
+    mundo: pathlib.Path, comando: str, caida: str
+) -> None:
+    # Imprimir es lo único que depende de la consola: el informe (la evidencia de la corrida) y el código de salida, no.
+    codigo = _correr_con(mundo, _comando(comando, mundo), _ConsolaQueSeCae(_CAIDAS_DE_LA_CONSOLA[caida]))
+
+    assert codigo == CODIGO_OK
+    assert json.loads((mundo / "informe.json").read_text(encoding="utf-8"))["conteos"]["ESCRITA"] >= 1
+
+
+def test_un_error_que_no_es_de_la_consola_no_se_esconde(mundo: pathlib.Path) -> None:
+    # La salida tolera la consola, no los bugs: un error que no es de E/S sigue subiendo.
+    class _Rota(io.StringIO):
+        def write(self, texto: str) -> int:
+            raise RuntimeError("bug")
+
+    with pytest.raises(RuntimeError, match="bug"):
+        _correr_con(mundo, _comando("generar", mundo), _Rota())
+
+
+def test_la_salida_sin_codepage_es_un_flujo_de_texto_de_solo_escritura() -> None:
+    crudo = io.BytesIO()
+    salida = cli._sin_codepage(io.TextIOWrapper(crudo, encoding="cp1252", errors="strict", newline=""))
+
+    assert salida.writable() and not salida.readable()
+    with pytest.raises(io.UnsupportedOperation):
+        salida.read()
+    salida.write("a → b\n")
+    salida.flush()
+    assert crudo.getvalue() == b"a \\u2192 b\n"
