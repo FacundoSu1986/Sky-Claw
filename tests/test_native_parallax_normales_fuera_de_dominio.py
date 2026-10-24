@@ -236,6 +236,29 @@ def test_un_solo_pixel_fuera_del_dominio_no_decide_la_altura(nz: float, bordes: 
     assert acuerdo_normal(normal, ponderada.altura, bordes=bordes).p95_grados < 2.0
 
 
+@pytest.mark.parametrize("lado", [8, 24])
+@pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.value)
+def test_un_hueco_grande_fuera_del_dominio_converge_gracias_al_relleno(lado: int, bordes: Bordes) -> None:
+    # Región indefinida (un bloque de normales bajo el horizonte, como el exterior del disco de un BC5): sin el relleno
+    # (peso CERO ahí) el sistema queda casi singular. Medido en 64x64 con periódicos: un hueco de 8x8 tardaba 296
+    # iteraciones y uno de 24x24 no convergía en el tope; con el relleno (pendiente nula con el peso medio) tardan 8.
+    # Los tests de un píxel o de un bloque de 4x4 no lo notan: ahí el peso cero converge igual.
+    verdad = _altura_verdadera()
+    normal = _normal_de_altura(verdad).copy()
+    inicio = 32 - lado // 2
+    hueco = (slice(inicio, inicio + lado),) * 2
+    normal[hueco] = (0.8, 0.0, -0.6)
+
+    resultado = integrar(normal, bordes=bordes, ponderacion=Ponderacion.NZ)
+
+    assert resultado.nz_bajo_piso == lado * lado
+    assert resultado.iteraciones < 50  # medido: 7-8; sin el relleno, 296 o ``SinConvergenciaError``
+    fuera = np.ones(verdad.shape, dtype=bool)
+    fuera[hueco] = False
+    # Medido: 0.9999 (8x8) y 0.989-0.992 (24x24); el hueco pide pendiente nula, no relieve inventado.
+    assert _correlacion(resultado.altura[fuera], verdad[fuera]) > 0.97
+
+
 @pytest.mark.parametrize("bordes", list(Bordes), ids=lambda b: b.value)
 def test_en_un_campo_integrable_la_ponderada_coincide_con_la_uniforme(bordes: Bordes) -> None:
     # Si el campo ES un gradiente, cualquier ponderación positiva tiene el mismo mínimo: la ponderada no inventa nada.
