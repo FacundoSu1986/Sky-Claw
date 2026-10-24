@@ -36,7 +36,9 @@ from sky_claw.local.native_parallax.bench.sintetico import (
 from sky_claw.local.native_parallax.integrate import Bordes, EntradaInvalidaError, integrar
 from sky_claw.local.native_parallax.metrics import (
     AcuerdoNormal,
+    Amplitud,
     acuerdo_normal,
+    amplitud,
     contar_no_finitos,
     rango_dinamico,
     razon_de_costura,
@@ -551,6 +553,56 @@ def test_el_rango_dinamico_rechaza_alturas_invalidas() -> None:
     for malo in (np.zeros(8), np.full((8, 8), np.inf), np.zeros((8, 8), dtype=np.float32), None):
         with pytest.raises(EntradaInvalidaError):
             rango_dinamico(malo, percentil_bajo=2.0, percentil_alto=98.0)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# amplitud (NP-V0: describe el mapa que se exporta; no decide nada)
+# ---------------------------------------------------------------------------
+
+
+def test_la_amplitud_de_una_rampa_son_sus_percentiles_y_su_desviacion() -> None:
+    rampa = np.linspace(0.0, 1.0, 100 * 100).reshape(100, 100)
+
+    resultado = amplitud(rampa, percentil_bajo=2.0, percentil_alto=98.0)
+
+    assert resultado == Amplitud(
+        percentil_bajo=2.0,
+        valor_bajo=pytest.approx(0.02, abs=1e-6),
+        percentil_alto=98.0,
+        valor_alto=pytest.approx(0.98, abs=1e-6),
+        desviacion=pytest.approx(1.0 / math.sqrt(12.0), abs=1e-4),  # uniforme en [0, 1]
+    )
+    # Es lo mismo que el rango dinámico, más la desviación: no hay una segunda definición de los percentiles.
+    assert resultado.valor_alto - resultado.valor_bajo == pytest.approx(
+        rango_dinamico(rampa, percentil_bajo=2.0, percentil_alto=98.0), abs=1e-15
+    )
+
+
+def test_una_altura_casi_plana_se_ve_casi_plana() -> None:
+    # El síntoma de NP-V0: un `_p` con extremos BC4 131–132 es una altura que apenas se mueve alrededor de 0.5.
+    casi_plana = 0.515 + 0.002 * np.random.default_rng(7).standard_normal((64, 64))
+
+    resultado = amplitud(casi_plana, percentil_bajo=2.0, percentil_alto=98.0)
+
+    assert resultado.valor_alto - resultado.valor_bajo < 0.01
+    assert resultado.desviacion < 0.003
+
+
+def test_la_amplitud_no_trae_percentiles_por_defecto() -> None:
+    with pytest.raises(TypeError):
+        amplitud(np.zeros((8, 8)))  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(("bajo", "alto"), [(None, 98.0), (50.0, 50.0), (2.0, 101.0), (math.nan, 98.0)])
+def test_la_amplitud_rechaza_percentiles_invalidos(bajo: object, alto: object) -> None:
+    with pytest.raises(EntradaInvalidaError):
+        amplitud(np.zeros((8, 8)), percentil_bajo=bajo, percentil_alto=alto)  # type: ignore[arg-type]
+
+
+def test_la_amplitud_rechaza_alturas_invalidas() -> None:
+    for malo in (np.zeros(8), np.full((8, 8), np.nan), np.zeros((8, 8), dtype=np.float32), None):
+        with pytest.raises(EntradaInvalidaError):
+            amplitud(malo, percentil_bajo=2.0, percentil_alto=98.0)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

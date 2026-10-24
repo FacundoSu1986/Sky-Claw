@@ -114,6 +114,10 @@ METRICAS_GATEADAS = MappingProxyType(
 
 METRICAS_NO_GATEADAS = MappingProxyType(
     {
+        "amplitud": (
+            "Descriptiva (NP-V0, decisión del TL): declara la amplitud efectiva del mapa exportado en el informe; un "
+            "umbral sacado de la altura de un mod sería ajustar a una sola muestra. La escala la decide el operador en el juego."
+        ),
         "rango_dinamico": (
             "Descriptiva: depende de los percentiles que se elijan al authorizar (ADR 0014 §4 y §6, los decide "
             "NP-RIG) y no mide un error."

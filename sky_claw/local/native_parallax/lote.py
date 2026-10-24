@@ -71,7 +71,9 @@ from sky_claw.local.native_parallax.integrate import (
     normalizar_altura,
 )
 from sky_claw.local.native_parallax.metrics import (
+    Amplitud,
     acuerdo_normal,
+    amplitud,
     contar_no_finitos,
     razon_de_costura,
     residuo_de_integrabilidad,
@@ -106,6 +108,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ERRORES_POR_ARCHIVO",
     "EXPORTADOR_ID",
+    "PERCENTILES_DE_LA_AMPLITUD",
     "VERSION_DEL_LOTE",
     "EstadoDeArchivo",
     "ExportadorDeAltura",
@@ -125,6 +128,9 @@ __all__ = [
 VERSION_DEL_LOTE: Final = "np-a0a.v1"
 #: Identidad de nuestra tubería de exportación (altura → mips propios → BC4 con el ``texconv`` fijado), para el manifiesto.
 EXPORTADOR_ID: Final = "legacy_parallax_bc4_v1"
+#: Percentiles con que el informe DESCRIBE la amplitud de la altura exportada (NP-V0, decisión del TL: p2, p98 y la
+#: desviación). No son los de la normalización ni un umbral: no deciden nada y no entran a la procedencia.
+PERCENTILES_DE_LA_AMPLITUD: Final = (2.0, 98.0)
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +295,8 @@ class ResultadoDeArchivo:
     motivos: tuple[str, ...]
     metricas: MetricasDeCalidad | None
     detalle: str
+    # La de la altura que se calculó para exportar (se escriba o no); ``None`` si no se llegó a calcular.
+    amplitud: Amplitud | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,6 +350,17 @@ class InformeDelLote:
                 "no_finitos": m.no_finitos,
             }
 
+        def descripcion_de_la_amplitud(a: Amplitud | None) -> dict[str, Any] | None:
+            if a is None:
+                return None
+            return {
+                "percentil_bajo": a.percentil_bajo,
+                "valor_bajo": _numero_seguro(a.valor_bajo),
+                "percentil_alto": a.percentil_alto,
+                "valor_alto": _numero_seguro(a.valor_alto),
+                "desviacion": _numero_seguro(a.desviacion),
+            }
+
         return {
             "version_del_lote": VERSION_DEL_LOTE,
             "parametros": self.parametros.a_diccionario(),
@@ -358,6 +377,7 @@ class InformeDelLote:
                     "veredicto": None if a.veredicto is None else a.veredicto.name,
                     "motivos": list(a.motivos),
                     "metricas": metricas(a.metricas),
+                    "amplitud": descripcion_de_la_amplitud(a.amplitud),
                     "detalle": a.detalle,
                 }
                 for a in self.archivos
@@ -378,6 +398,7 @@ class _Medida:
     huella_de_la_normal: str
     metricas: MetricasDeCalidad
     decision: Decision
+    amplitud: Amplitud
 
 
 def _huella_acotada(ruta: pathlib.Path) -> str:
@@ -430,7 +451,9 @@ def _medir(ruta: pathlib.Path, parametros: ParametrosDelLote, decisor: Decisor) 
         razon_de_costura=razon_de_costura(integrada.altura),
         no_finitos=contar_no_finitos(integrada.altura),
     )
-    return _Medida(altura, integrada.algoritmo, antes, metricas, decisor(metricas))
+    bajo, alto = PERCENTILES_DE_LA_AMPLITUD
+    descripcion = amplitud(altura, percentil_bajo=bajo, percentil_alto=alto)
+    return _Medida(altura, integrada.algoritmo, antes, metricas, decisor(metricas), descripcion)
 
 
 def _entorno() -> tuple[tuple[str, str], ...]:
@@ -464,6 +487,7 @@ class _Parcial:
     veredicto: Veredicto | None = None
     motivos: tuple[str, ...] = ()
     metricas: MetricasDeCalidad | None = None
+    amplitud: Amplitud | None = None
     fuente: FuenteDeSalida | None = None
     efecto: EfectoDeSalida | None = None
 
@@ -507,6 +531,7 @@ async def _fase_de_calculo(
             veredicto=decision.veredicto,
             motivos=tuple(m.name for m in decision.motivos),
             metricas=medida.metricas,
+            amplitud=medida.amplitud,
         )
         if decision.veredicto is not Veredicto.AUTO_ACCEPT and not parametros.escribir_revision:
             parcial.detalle = "el gate la mandó a revisión y no se pidió escribir las salidas en revisión"
@@ -650,6 +675,7 @@ async def procesar_lote(
             motivos=p.motivos,
             metricas=p.metricas,
             detalle=p.detalle,
+            amplitud=p.amplitud,
         )
         for p in parciales
     )

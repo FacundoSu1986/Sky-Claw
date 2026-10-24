@@ -39,7 +39,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   benchmark, ADR 0014 §6) y `rango_dinamico` exige los percentiles. La derivada H → gradientes y la inversa
   normal → gradientes tienen UNA definición (`espectral.gradientes_espectrales`, `integrate.gradientes_de_normal`):
   no las copies, importalas. Un módulo nuevo que importe de `espectral` rompe el ancla hasta que se le escribe su
-  receta en `CONSUMIDORES_DE_ESPECTRAL`.
+  receta en `CONSUMIDORES_DE_ESPECTRAL`. `amplitud` (NP-V0) declara en el informe del lote los percentiles 2/98 y la
+  desviación de la altura que se exporta (`lote.PERCENTILES_DE_LA_AMPLITUD`): describe, sin umbral ni objetivo, y no
+  cambia el default `min_max` (ese default se decide con más de una textura juzgada en el juego).
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
   evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia
