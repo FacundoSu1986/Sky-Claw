@@ -1,0 +1,286 @@
+"""NP-UA-1: el veredicto de un lote se decide por ``veredicto``, nunca por ``estado``.
+
+Qué se verifica y con qué:
+
+- **El caso que el código de salida del generador no ve.** Ocho texturas con
+  ``estado: ESCRITA``, ``efecto: PUBLICADA`` y ``veredicto: REVIEW`` son exactamente la forma
+  del informe real del rig (issue #792). El contador del generador dice ``EN_REVISION = 0``;
+  este módulo dice ``REVIEW`` y devuelve un código distinto de 0. El test afirma **las dos
+  cosas a la vez** para que quede escrito que no se contradicen: son dos preguntas distintas.
+- **``conteos`` no es fuente de verdad.** Se recalcula desde ``archivos`` y una divergencia es
+  ``INCONSISTENTE``, no un ``PASS``.
+- **La precedencia está enumerada.** Inconsistente gana sobre fallo, y fallo sobre revisión,
+  porque un informe que se contradice no certifica ni siquiera el fallo.
+- **Cada motivo pertenece a exactamente un grupo.** Un motivo nuevo rompe la enumeración
+  hasta que se decida si es de inconsistencia, de falla o de revisión.
+- **Los códigos de salida son distintos y sólo ``PASS`` es 0.**
+
+Límite declarado: este módulo no abre archivos. Que el artefacto exista y tenga relieve lo
+verifica ``test_parallax_unattended_auditor.py``.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from sky_claw.local.parallax_unattended.veredicto import (
+    CODIGOS_DE_SALIDA,
+    ESTADOS_CONOCIDOS,
+    MOTIVOS_DE_FALLA,
+    MOTIVOS_DE_INCONSISTENCIA,
+    MotivoDelLote,
+    VeredictoDelLote,
+    codigo_de_salida,
+    dictar,
+)
+
+_HUELLA = "d" * 64
+_ENCODER = {"texconv_version": "may2026", "texconv_sha256": _HUELLA}
+
+
+def _archivo(
+    ruta: str = "textures/a_p.dds",
+    *,
+    estado: str = "ESCRITA",
+    efecto: str | None = "PUBLICADA",
+    veredicto: str | None = "PASS",
+) -> dict[str, object]:
+    return {
+        "ruta_de_origen": "textures/a_n.dds",
+        "ruta_de_salida": ruta,
+        "estado": estado,
+        "efecto": efecto,
+        "veredicto": veredicto,
+        "motivos": [],
+        "metricas": None,
+        "detalle": "",
+    }
+
+
+def _conteos(archivos: list[dict[str, object]]) -> dict[str, int]:
+    cuenta = {estado: 0 for estado in sorted(ESTADOS_CONOCIDOS)}
+    for archivo in archivos:
+        cuenta[str(archivo["estado"])] += 1
+    return cuenta
+
+
+def _informe(
+    archivos: list[dict[str, object]],
+    *,
+    conteos: dict[str, int] | None = None,
+    encoder: dict[str, str] | None = _ENCODER,
+) -> dict[str, object]:
+    return {
+        "version_del_lote": "np-a0a.v1",
+        "parametros": {},
+        "encoder": encoder,
+        "conteos": _conteos(archivos) if conteos is None else conteos,
+        "archivos": archivos,
+        "otras_rutas": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# El defecto que este módulo existe para cerrar
+# ---------------------------------------------------------------------------
+
+
+def test_ocho_texturas_en_revision_escritas_no_son_pass() -> None:
+    """La forma exacta del informe real: todo escrito, todo en revisión, contador en cero."""
+
+    archivos = [_archivo(f"textures/t{i}_p.dds", veredicto="REVIEW") for i in range(8)]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.REVIEW
+    assert decision.conteos["EN_REVISION"] == 0, "el contador del generador cuenta estado, no veredicto"
+    assert decision.conteos["ESCRITA"] == 8
+    assert len(decision.rutas) == 8
+    assert codigo_de_salida(decision) != 0
+
+
+def test_una_sola_en_revision_alcanza_para_no_ser_pass() -> None:
+    archivos = [_archivo("textures/a_p.dds"), _archivo("textures/b_p.dds", veredicto="REVIEW")]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.REVIEW
+    assert decision.rutas == ("textures/b_p.dds",)
+
+
+def test_lote_limpio_es_pass() -> None:
+    decision = dictar(_informe([_archivo("textures/a_p.dds"), _archivo("textures/b_p.dds")]))
+
+    assert decision.veredicto is VeredictoDelLote.PASS
+    assert decision.motivos == ()
+    assert codigo_de_salida(decision) == 0
+
+
+# ---------------------------------------------------------------------------
+# conteos no es fuente de verdad
+# ---------------------------------------------------------------------------
+
+
+def test_conteos_que_no_cuadran_son_inconsistentes() -> None:
+    archivos = [_archivo("textures/a_p.dds")]
+    mentira = {"EN_REVISION": 0, "ESCRITA": 7, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    decision = dictar(_informe(archivos, conteos=mentira))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.CONTEO_DIVERGENTE in decision.motivos
+    assert decision.conteos["ESCRITA"] == 1, "los conteos devueltos son los recalculados"
+
+
+def test_un_estado_nuevo_en_el_informe_rompe_el_conteo() -> None:
+    archivos = [_archivo("textures/a_p.dds")]
+    con_estado_extra = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "ARCHIVADA": 3}
+    decision = dictar(_informe(archivos, conteos=con_estado_extra))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.CONTEO_DIVERGENTE in decision.motivos
+
+
+# ---------------------------------------------------------------------------
+# Precedencia
+# ---------------------------------------------------------------------------
+
+
+def test_inconsistente_gana_sobre_falla() -> None:
+    """Si el informe se contradice, ni siquiera el fallo es certificable."""
+
+    archivos = [_archivo("textures/a_p.dds", estado="NO_ESCRITA", efecto=None, veredicto=None)]
+    mentira = {"EN_REVISION": 0, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    decision = dictar(_informe(archivos, conteos=mentira))
+
+    assert MotivoDelLote.ARCHIVO_NO_ESCRITO in decision.motivos
+    assert MotivoDelLote.CONTEO_DIVERGENTE in decision.motivos
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+
+
+def test_falla_gana_sobre_revision() -> None:
+    archivos = [
+        _archivo("textures/a_p.dds", veredicto="REVIEW"),
+        _archivo("textures/b_p.dds", estado="NO_ESCRITA", efecto=None, veredicto=None),
+    ]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert decision.rutas == ("textures/a_p.dds", "textures/b_p.dds")
+
+
+# ---------------------------------------------------------------------------
+# Trabajo perdido
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("estado", ["NO_PROCESADA", "NO_ESCRITA"])
+def test_un_archivo_perdido_es_falla(estado: str) -> None:
+    archivos = [_archivo("textures/a_p.dds", estado=estado, efecto=None, veredicto=None)]
+    decision = dictar(_informe(archivos))
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert decision.motivos
+
+
+def test_lote_vacio_es_falla() -> None:
+    decision = dictar(_informe([]))
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert MotivoDelLote.LOTE_VACIO in decision.motivos
+
+
+# ---------------------------------------------------------------------------
+# Codificador no registrado
+# ---------------------------------------------------------------------------
+
+
+def test_artefacto_publicado_sin_registro_del_codificador_es_inconsistente() -> None:
+    decision = dictar(_informe([_archivo("textures/a_p.dds")], encoder=None))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.ENCODER_NO_REGISTRADO in decision.motivos
+
+
+def test_sin_artefacto_el_codificador_no_hace_falta() -> None:
+    """Nada se escribió: no hay artefacto que atribuir a un binario."""
+
+    archivos = [_archivo("textures/a_p.dds", estado="EN_REVISION", efecto=None, veredicto="REVIEW")]
+    decision = dictar(_informe(archivos, encoder=None))
+
+    assert decision.veredicto is VeredictoDelLote.REVIEW
+    assert MotivoDelLote.ENCODER_NO_REGISTRADO not in decision.motivos
+
+
+# ---------------------------------------------------------------------------
+# Forma
+# ---------------------------------------------------------------------------
+
+
+def test_archivo_escrito_sin_veredicto_es_inconsistente() -> None:
+    decision = dictar(_informe([_archivo("textures/a_p.dds", veredicto=None)]))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.ARCHIVO_SIN_VEREDICTO in decision.motivos
+
+
+def test_estado_escrito_con_efecto_que_no_deja_archivo_es_inconsistente() -> None:
+    """``ESCRITA`` + ``RETIRADA`` se contradicen: o está, o se retiró."""
+
+    decision = dictar(_informe([_archivo("textures/a_p.dds", efecto="RETIRADA")]))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
+
+
+def test_estado_desconocido_es_forma_invalida() -> None:
+    """El vocabulario de estados es cerrado: uno nuevo se rechaza antes de mirar los conteos."""
+
+    decision = dictar(_informe([_archivo("textures/a_p.dds", estado="ARCHIVADA")], conteos={}))
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert decision.motivos == (MotivoDelLote.FORMA_INVALIDA,)
+
+
+def test_informe_sin_archivos_es_forma_invalida() -> None:
+    decision = dictar({"conteos": {}, "encoder": None})
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
+
+
+# ---------------------------------------------------------------------------
+# Anclas enumerativas
+# ---------------------------------------------------------------------------
+
+
+def test_todo_motivo_pertenece_a_exactamente_un_grupo() -> None:
+    """Un motivo nuevo sin grupo deja el veredicto sin precedencia definida."""
+
+    de_revision = {MotivoDelLote.ARCHIVO_EN_REVISION}
+    for motivo in MotivoDelLote:
+        grupos = sum(1 for grupo in (MOTIVOS_DE_INCONSISTENCIA, MOTIVOS_DE_FALLA, de_revision) if motivo in grupo)
+        assert grupos == 1, f"{motivo} está en {grupos} grupos"
+
+
+def test_los_estados_conocidos_son_los_cuatro_del_generador() -> None:
+    assert {"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA"} == ESTADOS_CONOCIDOS
+
+
+@pytest.mark.parametrize("veredicto", list(VeredictoDelLote))
+def test_solo_pass_devuelve_cero(veredicto: VeredictoDelLote) -> None:
+    if veredicto is VeredictoDelLote.PASS:
+        assert CODIGOS_DE_SALIDA[veredicto] == 0
+    else:
+        assert CODIGOS_DE_SALIDA[veredicto] != 0
+
+
+def test_no_hay_dos_veredictos_con_el_mismo_codigo() -> None:
+    codigos = list(CODIGOS_DE_SALIDA.values())
+
+    assert len(codigos) == len(set(codigos))
+    assert codigos.count(0) == 1
+
+
+def test_los_motivos_no_se_repiten() -> None:
+    archivos = [_archivo(f"textures/t{i}_p.dds", veredicto="REVIEW") for i in range(5)]
+    decision = dictar(_informe(archivos))
+
+    assert len(decision.motivos) == len(set(decision.motivos))
