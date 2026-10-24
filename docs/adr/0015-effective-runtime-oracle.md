@@ -207,4 +207,44 @@ veredicto* habría ocultado la divergencia; `MISMATCH` la nombra.
   1114 passed, 3 skipped, 6 failed — **los mismos 6 en `origin/main`** (fallos de
   entorno por symlink/privilegio, incluido el flake conocido de
   `test_f06_inspect_applies_anti_reparse_admission_boundary`). Cero regresiones.
-- Ruff (check + format --check) y mypy sobre `sky_claw/ scripts/`: limpios.
+## 7. Auditoría adversarial del HEAD (2026-10-24, misma sesión)
+
+Cuatro intentos de falsificar el MATCH con evidencia incompleta. Los cuatro
+confirmaron un defecto real del HEAD `06aad479`; los cuatro corregidos con
+sonda RED por la razón exacta, fix mínimo, GREEN y mutante que reintroduce el
+defecto y muere **por su propia sonda**:
+
+- **B1 — tabla de procesos parcialmente ilegible con un juego observado.** Con
+  `indeterminate=True` y un `SkyrimSE.exe` legible en el Clone A, el oráculo
+  devolvía MATCH: una raíz observada no permite DESCARTAR otra cuyo pid no se
+  pudo leer. Ahora: UNKNOWN con `OTHER_ROOT_NOT_RULED_OUT`. El test anterior de
+  tabla ilegible usaba cero procesos; el nuevo usa uno.
+- **B2 — instancias MO2 mixtas.** `all(started_at < mtime_ini)` sólo
+  disparaba UNKNOWN si TODAS las instancias MO2 eran anteriores al ini; con
+  una vieja y una nueva, la mezcla pasaba y el ini persistido se daba por
+  vigente aunque la vieja pudiera retener otro gamePath. Ahora `any(...)`
+  (y no se identifica de forma fiable qué instancia posee ESTE ini).
+- **B3 — selección del ejecutable no probada.** Con `gamePath` → Clone A,
+  Desired → A y un `skse64_loader.exe` registrado desde el Clone B, el oráculo
+  devolvía MATCH presuponiendo la selección. Ahora: UNKNOWN con
+  `EXECUTABLE_SELECTION_UNPROVEN`. Sólo cuentan los basenames que lanzan el
+  juego (`SkyrimSE.exe`/`skse64_loader.exe`/`skse64.exe`): LOOT y xEdit son
+  herramientas externas legítimas y no disparan nada. No es MISMATCH —no se
+  inventa una selección— y no aplica cuando un proceso vivo ya probó la ruta.
+- **B4 — `OSError` en la inspección de reparse.** El recorrido colapsaba el
+  error de inspección en "no hay reparse" (`except OSError: return None`) y
+  fabricaba una inspección exitosa sobre una duda: con todo lo demás apuntando
+  al Desired, daba MATCH. Ahora el contrato es tri-estado (hay / no hay / no
+  se pudo determinar) y el tercer caso produce UNKNOWN con
+  `REPARSE_INSPECTION_FAILED`.
+
+Hallazgo adicional de la corrección: el helper nuevo usaba `str.replace` y el
+ancla AST read-only del paquete lo rechazó (colisiona con `Path.replace`) —
+el ancla hizo su trabajo sobre código recién escrito; se eliminó la
+transformación en vez de debilitar el ancla.
+
+Verificación de la ronda: 43 tests verdes (7 nuevos), ruff/mypy limpios,
+4/4 mutantes muertos por su propia sonda, regresiones sin cambios respecto de
+`origin/main`. Ready for Review habilita Codex/Qodo/CodeRabbit; sus hallazgos
+se adjudican aparte. Ready for Review NO autoriza el merge.
+

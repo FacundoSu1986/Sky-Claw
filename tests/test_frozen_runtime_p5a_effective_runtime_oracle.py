@@ -723,6 +723,186 @@ class TestContratosYAnclas:
         assert ofensas == [], f"el oráculo debe ser read-only; mutaciones encontradas: {ofensas}"
 
 
+class TestAuditoriaAdversarial:
+    """Cuatro intentos de falsificar el MATCH con evidencia incompleta.
+
+    Cada sonda reproduce una forma de que el oráculo afirme de más:
+
+    - B1: tabla de procesos PARCIALMENTE ilegible con un juego observado —
+      el test anterior de tabla ilegible usaba cero procesos.
+    - B2: dos instancias MO2, una anterior y otra posterior al ini — el
+      ``all(...)`` deja pasar la mezcla.
+    - B3: un lanzador del juego registrado fuera de la raíz efectiva — la
+      selección del ejecutable no está probada y el MATCH la presupone.
+    - B4: ``OSError`` durante la inspección de reparse points — el contrato es
+      tri-estado (no hay / hay / no se pudo determinar) y colapsar el tercer
+      caso en el primero fabrica una "inspección exitosa".
+    """
+
+    def test_b1_tabla_parcial_ilegible_con_juego_observado_no_hay_match(self, tmp_path: pathlib.Path) -> None:
+        """Un juego observado NO permite descartar otro cuyo pid no se pudo leer."""
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(clone_a))
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(
+                procesos=LiveProcessSnapshot(
+                    processes=(_vivo(LiveProcessKind.GAME, image_path=clone_a / "SkyrimSE.exe"),),
+                    indeterminate=True,
+                    detail="2 procesos denegados al leer exe",
+                )
+            ),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.OTHER_ROOT_NOT_RULED_OUT in resultado.reasons
+        assert resultado.authorizes_activation is False
+
+    def test_b1b_tabla_completa_con_juego_en_el_desired_si_hay_match(self, tmp_path: pathlib.Path) -> None:
+        """Hermano positivo: snapshot determinado + juego vivo en el Desired ⇒ MATCH."""
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(clone_a))
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(
+                procesos=LiveProcessSnapshot(
+                    processes=(_vivo(LiveProcessKind.GAME, image_path=clone_a / "SkyrimSE.exe"),),
+                    indeterminate=False,
+                )
+            ),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert ReasonCode.OTHER_ROOT_NOT_RULED_OUT not in resultado.reasons
+
+    def test_b2_instancia_mo2_anterior_al_ini_entre_varias_no_deja_pasar(self, tmp_path: pathlib.Path) -> None:
+        """Una MO2 vieja + una nueva: la vieja puede retener otro gamePath.
+
+        El ``all(p.started_at_ns < mtime_ini ...)`` original sólo disparaba
+        UNKNOWN si TODAS las instancias eran anteriores; con una vieja y una
+        nueva la mezcla pasaba y el ini persistido se daba por vigente.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        ini = _ini_mo2(instancia, game_path=str(clone_a))
+        mtime_ns = ini.stat().st_mtime_ns
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(
+                procesos=LiveProcessSnapshot(
+                    processes=(
+                        _vivo(
+                            LiveProcessKind.MO2,
+                            image_path=instancia / "ModOrganizer.exe",
+                            pid=101,
+                            started_at_ns=mtime_ns - 60 * 10**9,
+                        ),
+                        _vivo(
+                            LiveProcessKind.MO2,
+                            image_path=tmp_path / "otra-instancia" / "ModOrganizer.exe",
+                            pid=102,
+                            started_at_ns=mtime_ns + 60 * 10**9,
+                        ),
+                    ),
+                    indeterminate=False,
+                )
+            ),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.MO2_IN_MEMORY_MAY_DIVERGE in resultado.reasons
+        assert resultado.authorizes_activation is False
+
+    def test_b3_lanzador_del_juego_registrado_fuera_del_efectivo_es_unknown(self, tmp_path: pathlib.Path) -> None:
+        """SKSE registrado en el Clone B: la selección NO está probada ⇒ UNKNOWN.
+
+        No es MISMATCH (no se sabe qué ejecutará MO2) pero el MATCH presupone
+        que se elegirá el ejecutable del Clone A, y nada lo prueba.
+        """
+        clone_a = _root_juego(tmp_path / "clone-a")
+        clone_b = _root_juego(tmp_path / "clone-b")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE", f"{clone_b.as_posix()}/skse64_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN in resultado.reasons
+        assert resultado.authorizes_activation is False
+
+    def test_b3b_lanzador_registrado_dentro_del_efectivo_no_afecta(self, tmp_path: pathlib.Path) -> None:
+        """Hermano positivo: el SKSE registrado vive en la misma raíz ⇒ MATCH."""
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(("SKSE", f"{clone_a.as_posix()}/skse64_loader.exe"),),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN not in resultado.reasons
+
+    def test_b3c_herramienta_externa_registrada_no_rechaza_nada(self, tmp_path: pathlib.Path) -> None:
+        """LOOT y xEdit son herramientas legítimas: no son lanzadores del juego."""
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(
+            instancia,
+            game_path=str(clone_a),
+            ejecutables=(
+                ("LOOT", "G:/Herramientas/LOOT/LOOT.exe"),
+                ("xEdit", "G:/Herramientas/xEdit/SSEEdit.exe"),
+            ),
+        )
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert ReasonCode.EXECUTABLE_SELECTION_UNPROVEN not in resultado.reasons
+
+    def test_b4_error_de_inspeccion_reparse_es_unknown_y_no_match(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un OSError inspeccionando reparse NO es "no hay reparse".
+
+        Todas las demás evidencias apuntan al Desired: si la inspección
+        fallara y se reportara como exitosa, este escenario daría MATCH.
+        """
+        import sky_claw.local.frozen_runtime.effective_runtime.oracle as modulo_oraculo
+
+        def romper(_ruta: pathlib.Path) -> None:
+            raise OSError("la inspección del reparse point falló")
+
+        monkeypatch.setattr(modulo_oraculo, "link_kind_or_raise", romper)
+
+        clone_a = _root_juego(tmp_path / "clone-a")
+        instancia = tmp_path / "instancia"
+        _ini_mo2(instancia, game_path=str(clone_a))
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=DesiredRuntime(clone_id="clone-a", clone_root=clone_a),
+            probes=_probes(),
+        )
+        assert resultado.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.REPARSE_INSPECTION_FAILED in resultado.reasons
+        assert resultado.authorizes_activation is False
+
+
 def _assessment_minimo(
     verdict: EffectiveRuntimeVerdict,
     *,

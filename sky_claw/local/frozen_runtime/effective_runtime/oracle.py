@@ -16,8 +16,14 @@ persistido** y de que la duda nunca se resuelve a favor del camino feliz::
     5. nada                          → UNKNOWN
 
     y luego, sobre la ruta efectiva:
-    reparse → Managed Source → Generation → Desired ausente → no existe →
+    reparse (tri-estado: hay / no hay / no se pudo determinar) → Managed Source
+    → Generation → lanzador del juego fuera de la raíz (selección no probada) →
+    divergencia de superficies de Sky-Claw → Desired ausente → no existe →
     != Desired → identidad → compatibilidad
+
+    y sobre la resolución misma:
+    con un juego vivo observado pero tabla PARCIALMENTE ilegible, tampoco hay
+    ruta afirmable (un pid denegado podría ser otro juego desde otra raíz).
 
 Por qué el orden importa y no es arbitrario: los cuatro primeros rechazos son
 **decidibles sin el Desired** (una junction no es un Clone, la Managed Source no
@@ -46,6 +52,7 @@ from sky_claw.local.frozen_runtime.effective_runtime.compatibility import (
     assess_runtime_compatibility,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
+    Mo2Executable,
     Mo2GamePathEvidence,
     leer_ejecutables_de_mo2,
     leer_game_path_de_mo2,
@@ -101,26 +108,41 @@ def _es_igual_o_hijo(candidato: str | pathlib.Path, contenedor: str | pathlib.Pa
     return hijo.startswith(padre + os.sep)
 
 
-def _primer_reparse(ruta: pathlib.Path) -> str | None:
-    """Componente más alto de *ruta* que es symlink/junction, o ``None``.
+#: Resultado de ``_primer_reparse``: clase de desenlace + detalle.
+#:
+#: - ``"reparse"`` — hay symlink/junction: rechazo decidible.
+#: - ``"none"`` — recorrido completo sin encontrar reparse.
+#: - ``"indeterminado"`` — un componente existente dio ``OSError``: NO se
+#:   colapsa en ``"none"``. Presentarlo como "inspección exitosa sin reparse"
+#:   cuando la inspección falló es exactamente el defecto que la auditoría
+#:   adversarial B4 demostró (MATCH fabricado sobre una duda).
+_REPARSE_NONE = "none"
+_REPARSE_HAY = "reparse"
+_REPARSE_INDETERMINADO = "indeterminado"
+
+
+def _primer_reparse(ruta: pathlib.Path) -> tuple[str, str | None]:
+    """Clase de reparse del componente más alto de *ruta*, en tres estados.
 
     Recorre la ruta completa hasta la raíz de la unidad: una junction puede estar
     en cualquier nivel, y comprobar sólo el último componente deja pasar el caso
     ``<padre-junction>/Clone`` (el patrón que P3-T encontró en la materialización
-    de directorios). Un componente inexistente corta el recorrido sin veredicto:
-    la ausencia se reporta aparte como ``EFFECTIVE_PATH_MISSING``.
+    de directorios). Un componente inexistente corta el recorrido sin veredicto
+    (``"none"``): la ausencia se reporta aparte como ``EFFECTIVE_PATH_MISSING``.
+    Un componente EXISTENTE que da ``OSError`` es ``"indeterminado"``: no se pudo
+    determinar, y el veredicto será UNKNOWN, nunca una inspección "exitosa".
     """
     actual = pathlib.Path(ruta)
     while True:
         try:
             tipo = link_kind_or_raise(actual)
-        except OSError:
-            return None
+        except OSError as exc:
+            return _REPARSE_INDETERMINADO, f"no se pudo inspeccionar '{actual}' como reparse point: {exc}"
         if tipo is not None:
-            return f"'{actual}' es {tipo}"
+            return _REPARSE_HAY, f"'{actual}' es {tipo}"
         padre = actual.parent
         if padre == actual:
-            return None
+            return _REPARSE_NONE, None
         actual = padre
 
 
@@ -212,6 +234,20 @@ def _resolver_efectiva(
         notas.append(f"dos raíces de juego vivas: {sorted(normalizadas)}")
         return None, None, [ReasonCode.AMBIGUOUS_LIVE_GAME], notas
     if len(normalizadas) == 1:
+        if procesos.indeterminate:
+            # Auditoría adversarial B1: la tabla es parcialmente ilegible. Hay
+            # UNA raíz probada, pero un pid denegado podría ser otro juego
+            # desde otra raíz — y una raíz que no se puede descartar impide
+            # afirmar "el runtime efectivo es ÉSTA".
+            notas.append(
+                procesos.detail or "tabla de procesos parcialmente ilegible: no se puede descartar otra raíz de juego"
+            )
+            return (
+                None,
+                None,
+                [ReasonCode.LIVE_GAME_PRESENT, ReasonCode.OTHER_ROOT_NOT_RULED_OUT],
+                notas,
+            )
         razones.append(ReasonCode.LIVE_GAME_PRESENT)
         if procedencia:
             notas.append(procedencia)
@@ -236,9 +272,15 @@ def _resolver_efectiva(
             mtime_ini = ini_path.stat().st_mtime_ns
         except OSError:
             mtime_ini = 0
-        if mtime_ini and all(p.started_at_ns < mtime_ini for p in vivos_mo2):
+        if mtime_ini and any(p.started_at_ns < mtime_ini for p in vivos_mo2):
+            # Auditoría adversarial B2: ``all(...)`` sólo disparaba UNKNOWN si
+            # TODAS las instancias eran anteriores al ini. Con una vieja y una
+            # nueva, la mezcla pasaba y el ini persistido se daba por vigente
+            # aunque la instancia vieja pudiera retener otro gamePath. Tampoco
+            # se identifica de forma fiable qué instancia posee ESTE ini: si
+            # ALGUNA es anterior, la evidencia persistida no se puede afirmar.
             notas.append(
-                "MO2 arrancó antes de la última escritura del ini: puede retener "
+                "hay una instancia MO2 viva anterior a la última escritura del ini: puede retener "
                 "en memoria un gamePath distinto del persistido"
             )
             return None, None, [ReasonCode.MO2_IN_MEMORY_MAY_DIVERGE], notas
@@ -325,16 +367,16 @@ def assess_effective_runtime(
     )
     observaciones.append(game_path_obs)
 
-    if ini_path is not None:
-        for ejecutable in leer_ejecutables_de_mo2(ini_path):
-            observaciones.append(
-                _observacion_de_ruta(
-                    EvidenceSource.MO2_EXECUTABLE,
-                    ruta=ejecutable.binary,
-                    state=ObservationState.OBSERVED,
-                    label=f"{ejecutable.index}\\binary ({ejecutable.title})",
-                )
+    ejecutables_mo2 = leer_ejecutables_de_mo2(ini_path) if ini_path is not None else []
+    for ejecutable in ejecutables_mo2:
+        observaciones.append(
+            _observacion_de_ruta(
+                EvidenceSource.MO2_EXECUTABLE,
+                ruta=ejecutable.binary,
+                state=ObservationState.OBSERVED,
+                label=f"{ejecutable.index}\\binary ({ejecutable.title})",
             )
+        )
 
     # ── Procesos vivos ──
     procesos = observadores.processes()
@@ -382,8 +424,8 @@ def assess_effective_runtime(
     ruta = pathlib.Path(efectiva)
 
     # 1. Reparse: no es un Clone aunque el string coincida con el Desired.
-    reparse = _primer_reparse(ruta)
-    if reparse is not None:
+    clase_reparse, detalle_reparse = _primer_reparse(ruta)
+    if clase_reparse == _REPARSE_HAY:
         return _assessment(
             verdict=EffectiveRuntimeVerdict.MISMATCH,
             reasons=[*razones, ReasonCode.REPARSE_NOT_ALLOWED],
@@ -395,7 +437,23 @@ def assess_effective_runtime(
             compatibilidad=compatibilidad,
             motivo_compatibilidad=motivo_compatibilidad,
             sello=sello,
-            notas=[*notas, reparse],
+            notas=[*notas, detalle_reparse or "reparse point"],
+        )
+    if clase_reparse == _REPARSE_INDETERMINADO:
+        # Auditoría adversarial B4: no se pudo DETERMINAR si hay reparse.
+        # Presentarlo como "no hay" fabricaría una inspección exitosa.
+        return _assessment(
+            verdict=EffectiveRuntimeVerdict.UNKNOWN,
+            reasons=[*razones, ReasonCode.REPARSE_INSPECTION_FAILED],
+            efectiva=efectiva,
+            fuente=fuente_efectiva,
+            desired=desired,
+            observaciones=observaciones,
+            identidad=None,
+            compatibilidad=compatibilidad,
+            motivo_compatibilidad=motivo_compatibilidad,
+            sello=sello,
+            notas=[*notas, detalle_reparse or "inspección de reparse indeterminada"],
         )
 
     # 2. La Managed Source nunca es el runtime efectivo (SFR-05/SFR-19).
@@ -429,6 +487,34 @@ def assess_effective_runtime(
                 motivo_compatibilidad=motivo_compatibilidad,
                 sello=sello,
                 notas=[*notas, f"la ruta efectiva cuelga de la Generation '{raiz_generacion}'"],
+            )
+
+    # 3b. La SELECCIÓN del ejecutable no está probada (auditoría adversarial
+    #     B3): con la ruta efectiva resuelta de la configuración, un lanzador
+    #     del juego registrado fuera de esa raíz significa que MO2 puede
+    #     arrancar desde otro árbol. No es MISMATCH —no se sabe qué elegirá—
+    #     pero el MATCH presupone una selección sin prueba. Sólo aplica a la
+    #     evidencia configurada: un proceso vivo ya probó qué se está
+    #     ejecutando, y las herramientas externas (LOOT/xEdit) no cuentan.
+    if fuente_efectiva is EvidenceSource.MO2_GAME_PATH:
+        lanzadores = _lanzadores_del_juego_fuera_de(efectiva, ejecutables_mo2)
+        if lanzadores:
+            return _assessment(
+                verdict=EffectiveRuntimeVerdict.UNKNOWN,
+                reasons=[*razones, ReasonCode.EXECUTABLE_SELECTION_UNPROVEN],
+                efectiva=efectiva,
+                fuente=fuente_efectiva,
+                desired=desired,
+                observaciones=observaciones,
+                identidad=None,
+                compatibilidad=compatibilidad,
+                motivo_compatibilidad=motivo_compatibilidad,
+                sello=sello,
+                notas=[
+                    *notas,
+                    "hay un lanzador del juego registrado fuera de la raíz efectiva "
+                    "y la selección no está probada: " + "; ".join(lanzadores),
+                ],
             )
 
     # 4. Las superficies de Sky-Claw deben apuntar al mismo árbol que el runtime
@@ -590,6 +676,30 @@ def assess_effective_runtime(
         sello=sello,
         notas=notas,
     )
+
+
+#: Basenames que LANZAN el juego (con SKSE) — no herramientas externas. Si uno
+#: está registrado en ``[customExecutables]`` fuera de la raíz efectiva, MO2
+#: puede arrancar el juego desde otro árbol y ninguna evidencia prueba cuál se
+#: seleccionará. LOOT, xEdit, DynDOLOD, etc. NO están acá: son herramientas
+#: legítimas y no prueban nada sobre el runtime del juego.
+_NOMBRES_LANZADOR = frozenset({"skyrimse.exe", "skse64_loader.exe", "skse64.exe"})
+
+
+def _lanzadores_del_juego_fuera_de(
+    efectiva: str,
+    ejecutables: Sequence[Mo2Executable],
+) -> list[str]:
+    """Lanzadores registrados cuyo binario NO cuelga de la raíz efectiva."""
+    fuera: list[str] = []
+    for ejecutable in ejecutables:
+        # ntpath.basename separa por / y \\ a la vez: MO2 escribe el binario
+        # con barras hacia adelante y acá no se transforma la cadena (el ancla
+        # AST del paquete prohíbe cualquier .replace() que parezca mutación).
+        nombre = os.path.basename(ejecutable.binary).lower()
+        if nombre in _NOMBRES_LANZADOR and not _es_igual_o_hijo(ejecutable.binary, efectiva):
+            fuera.append(f"{ejecutable.title} -> {ejecutable.binary}")
+    return fuera
 
 
 def _assessment(

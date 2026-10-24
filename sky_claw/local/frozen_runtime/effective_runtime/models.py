@@ -153,6 +153,21 @@ class ReasonCode(StrEnum):
     LIVE_GAME_PRESENT = "live_game_present"
     #: La tabla de procesos no se pudo leer: no se puede probar ausencia.
     PROCESS_TABLE_UNREADABLE = "process_table_unreadable"
+    #: Tabla de procesos PARCIALMENTE ilegible con un juego observado: hay una
+    #: raíz probada, pero un pid denegado podría ser otro juego desde otra raíz,
+    #: y no se puede descartar (auditoría adversarial B1). El MATCH exige poder
+    #: afirmar que NO hay otra raíz; con ``indeterminate=True`` no se puede.
+    OTHER_ROOT_NOT_RULED_OUT = "other_root_not_ruled_out"
+    #: Hay registrado un lanzador del juego (``SkyrimSE.exe``/``skse64_loader.exe``/
+    #: ``skse64.exe``) fuera de la raíz efectiva y ninguna evidencia prueba cuál
+    #: se seleccionará (auditoría adversarial B3). No es MISMATCH —no se sabe qué
+    #: ejecutará MO2— pero el MATCH presupone una selección sin prueba. Las
+    #: herramientas externas (LOOT, xEdit) no disparan este motivo.
+    EXECUTABLE_SELECTION_UNPROVEN = "executable_selection_unproven"
+    #: La inspección de reparse points falló (``OSError``): no se pudo determinar
+    #: si la ruta es symlink/junction (auditoría adversarial B4). Colapsar este
+    #: caso en "no hay reparse" fabrica una inspección exitosa sobre una duda.
+    REPARSE_INSPECTION_FAILED = "reparse_inspection_failed"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
