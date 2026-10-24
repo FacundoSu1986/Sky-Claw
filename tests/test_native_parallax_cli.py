@@ -1108,7 +1108,7 @@ def test_el_informe_json_queda_legible_ordenado_y_con_acentos(tmp_path: pathlib.
 
     texto = destino.read_text(encoding="utf-8")
     assert texto.endswith("}\n") and not texto.endswith("\n\n")
-    assert texto.startswith('{\n  "archivos": [\n    {\n      "detalle": "listo"')  # indent=2 y claves ordenadas
+    assert texto.startswith('{\n  "archivos": [\n    {\n      "amplitud": null,\n      "detalle": "listo"')  # ordenadas
     assert json.loads(texto)["otras_rutas"][0]["detalle"] == "caché vigente"
     assert "caché vigente" in texto  # ensure_ascii=False: los acentos no se escapan
     assert salida.getvalue() == f"Informe: {destino.resolve()}\n"
