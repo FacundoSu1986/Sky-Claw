@@ -1402,3 +1402,19 @@ def test_la_salida_sin_codepage_es_un_flujo_de_texto_de_solo_escritura() -> None
     salida.write("a → b\n")
     salida.flush()
     assert crudo.getvalue() == b"a \\u2192 b\n"
+
+
+def test_si_la_integracion_no_converge_la_textura_queda_no_procesada_y_el_lote_sigue(
+    mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``SinConvergenciaError`` es un ``IntegracionError``: falla UNA ruta (``ERRORES_POR_ARCHIVO``), no la corrida entera.
+    from sky_claw.local.native_parallax import integrate
+
+    monkeypatch.setattr(integrate, "MAX_ITERACIONES", 0)
+
+    codigo, texto = _generar(mundo, "--incluir-revision")
+
+    assert codigo == CODIGO_CON_FALLOS
+    assert texto.count("NO_PROCESADA") >= 2 and "SinConvergenciaError" in texto
+    informe = json.loads((mundo / "informe.json").read_text(encoding="utf-8"))
+    assert informe["conteos"]["NO_PROCESADA"] == 2
