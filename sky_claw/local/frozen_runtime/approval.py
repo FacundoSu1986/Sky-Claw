@@ -121,7 +121,11 @@ from sky_claw.local.frozen_runtime.storage import (
 )
 
 APPROVAL_LEDGER_SCHEMA_VERSION = 1
-ISSUANCE_WITNESS_SCHEMA_VERSION = 2
+#: P4-S7 — el witness v3 agrega ``solicitud_binding``: la identidad DURABLE de la
+#: solicitud HITL que se aprobó. Cierra ``OWNER_REQUEST_ID_IS_DURABLE = NO``
+#: (§46.5). v1/v2 se rechazan fail-closed: no se declaran v3 por añadir valores
+#: sintéticos ni se migran en silencio (§47.4).
+ISSUANCE_WITNESS_SCHEMA_VERSION = 3
 TERMINAL_TOMBSTONE_SCHEMA_VERSION = 1
 
 #: Censo normativo del ``ApprovalScope`` (§38.5). Es una constante, no un
@@ -294,6 +298,183 @@ class PropuestaAprobacion:
     proposed_at_ns: int
 
 
+class _SelloDeBinding:
+    """Capacidad OPACA: poseer este objeto ES la prueba de acuñación (P4-S7).
+
+    Mismo patrón que el sello de ``owner_consent._SelloDeVerificacion``, y por la
+    misma razón: lo que cierra no es la posibilidad teórica de fabricarlo —código
+    en proceso alcanza cualquier nombre privado, y el modelo de amenaza declara
+    ``IN_PROCESS_CODE_IS_TRUSTED = YES``— sino la vía ACCIDENTAL y la documentada.
+    Un ``BindingSolicitud`` con campos públicos haría que «binding acuñado por el
+    registro» fuera una afirmación sobre strings del llamador: el defecto que
+    P4-S4 cerró para ``root_id``, P4-S5 para ``digest_canonico`` y P4-S6 para la
+    identidad del propietario.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<sello-de-binding>"
+
+
+#: Instancia única. Se compara por IDENTIDAD (``is``), no por valor.
+_SELLO_BINDING = _SelloDeBinding()
+
+
+@dataclasses.dataclass(frozen=True, slots=True, init=False)
+class BindingSolicitud:
+    """Identidad DURABLE de la solicitud HITL que el propietario aprobó (P4-S7).
+
+    Es lo que el witness v3 persiste en ``solicitud_binding``. Hasta P4-S6 el
+    ``solicitud_id`` viajaba dentro de ``approval_provenance``, un string **opaco
+    que pone el llamador**: se persistía y el digest lo cubría, pero nada
+    verificaba que lo contuviera. Después de un reinicio no había forma de
+    responder «qué solicitud se aprobó» sin consultar el registro en memoria, que
+    muere con el proceso.
+
+    ``binding_digest`` es SHA-256 del JSON canónico de los otros diez campos —
+    misma construcción que ``approval_scope_digest`` (13 de 14), para no inventar
+    una segunda forma de comprometer un payload. El lector lo RECOMPUTA: un campo
+    que sólo se escribe es decoración.
+
+    ``__init__`` está CERRADO: la única vía de obtener una instancia en producción
+    es :func:`_acuñar_binding_solicitud`, que llama
+    ``owner_consent.RegistroConsentimientos.responder`` con la presentación que el
+    propio registro tiene abierta. Un ``solicitud_id`` que el llamador elige no
+    pasa por ahí.
+    """
+
+    #: Id acuñado por el registro de consentimiento al ABRIR la solicitud.
+    solicitud_id: str
+    #: Root físico sobre el que se presentó (no el que declare el llamador).
+    root_id: str
+    #: Aprobación emitida a la que esta solicitud queda atada.
+    approval_id: str
+    approval_seq: int
+    approval_scope_digest: str
+    #: Superficie, sesión, sujeto y mecanismo: QUIÉN respondió, según el censo.
+    surface: str
+    session_id: str
+    owner_subject: str
+    mecanismo: str
+    #: Instante de la DECISIÓN (no el de la emisión).
+    decided_at_ns: int
+    #: SHA-256 del JSON canónico de los diez campos anteriores.
+    binding_digest: str
+    #: Procedencia. No es un dato de la solicitud: es la prueba de que la acuñó
+    #: el registro. ``repr=False``/``compare=False`` para que no se filtre al
+    #: imprimir ni participe de la igualdad estructural.
+    _sello: _SelloDeBinding = dataclasses.field(repr=False, compare=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise ApprovalConsentimientoError(
+            "BindingSolicitud no se construye a mano: lo acuña el registro de consentimiento al responder una "
+            "solicitud abierta. Un binding cuyos campos pone el llamador no prueba qué solicitud se aprobó — es "
+            "el mismo defecto que P4-S6 cerró para la identidad del propietario (§47.2)."
+        )
+
+
+def _payload_binding_solicitud(
+    *,
+    solicitud_id: str,
+    root_id: str,
+    approval_id: str,
+    approval_seq: int,
+    approval_scope_digest: str,
+    surface: str,
+    session_id: str,
+    owner_subject: str,
+    mecanismo: str,
+    decided_at_ns: int,
+) -> dict[str, object]:
+    """Los DIEZ campos que el ``binding_digest`` compromete, en forma canónica.
+
+    Un solo constructor del payload para el acuñador y para el serializador: dos
+    literales del mismo diccionario es el modo de falla clásico de este repo
+    —arreglar un hermano y dejar el otro— y acá produciría un digest que no cubre
+    lo que se persiste.
+    """
+    return {
+        "solicitud_id": solicitud_id,
+        "root_id": root_id,
+        "approval_id": approval_id,
+        "approval_seq": approval_seq,
+        "approval_scope_digest": approval_scope_digest,
+        "surface": surface,
+        "session_id": session_id,
+        "owner_subject": owner_subject,
+        "mecanismo": mecanismo,
+        "decided_at_ns": decided_at_ns,
+    }
+
+
+def _acuñar_binding_solicitud(
+    *,
+    solicitud_id: str,
+    root_id: str,
+    approval_id: str,
+    approval_seq: int,
+    approval_scope_digest: str,
+    surface: str,
+    session_id: str,
+    owner_subject: str,
+    mecanismo: str,
+    decided_at_ns: int,
+) -> BindingSolicitud:
+    """ÚNICO productor de ``BindingSolicitud``. Privado: lo llama el registro.
+
+    En producción el único llamador es
+    ``owner_consent.RegistroConsentimientos.responder`` y un test enumerativo por
+    AST lo congela. Los tests adversariales lo usan para fabricar bindings que el
+    registro **no puede** producir —un id inventado, un root ajeno— y comprobar
+    que la puerta los rechaza: sin esa vía no habría forma de ejercitar los
+    rechazos sin abrir la puerta que se cierra.
+    """
+    payload = _payload_binding_solicitud(
+        solicitud_id=solicitud_id,
+        root_id=root_id,
+        approval_id=approval_id,
+        approval_seq=approval_seq,
+        approval_scope_digest=approval_scope_digest,
+        surface=surface,
+        session_id=session_id,
+        owner_subject=owner_subject,
+        mecanismo=mecanismo,
+        decided_at_ns=decided_at_ns,
+    )
+    # El id lo acuña el registro como UUID v4 (``uuid.uuid4``); se exige la forma
+    # ACÁ, en la acuñación, para que un registro con una fábrica distinta falle
+    # ruidosamente en vez de escribir un artefacto que el lector rechazará.
+    _exigir_uuid_v4(solicitud_id, campo="solicitud_id", etiqueta="binding de solicitud")
+    _exigir_texto(root_id, campo="root_id", etiqueta="binding de solicitud")
+    _exigir_uuid_v4(approval_id, campo="approval_id", etiqueta="binding de solicitud")
+    _exigir_entero(approval_seq, campo="approval_seq", etiqueta="binding de solicitud", minimo=1)
+    _exigir_digest(approval_scope_digest, campo="approval_scope_digest", etiqueta="binding de solicitud")
+    for campo, valor in (
+        ("surface", surface),
+        ("session_id", session_id),
+        ("owner_subject", owner_subject),
+        ("mecanismo", mecanismo),
+    ):
+        _exigir_texto(valor, campo=campo, etiqueta="binding de solicitud")
+    _exigir_entero(decided_at_ns, campo="decided_at_ns", etiqueta="binding de solicitud", minimo=0)
+
+    instancia = object.__new__(BindingSolicitud)
+    object.__setattr__(instancia, "solicitud_id", solicitud_id)
+    object.__setattr__(instancia, "root_id", root_id)
+    object.__setattr__(instancia, "approval_id", approval_id)
+    object.__setattr__(instancia, "approval_seq", approval_seq)
+    object.__setattr__(instancia, "approval_scope_digest", approval_scope_digest)
+    object.__setattr__(instancia, "surface", surface)
+    object.__setattr__(instancia, "session_id", session_id)
+    object.__setattr__(instancia, "owner_subject", owner_subject)
+    object.__setattr__(instancia, "mecanismo", mecanismo)
+    object.__setattr__(instancia, "decided_at_ns", decided_at_ns)
+    object.__setattr__(instancia, "binding_digest", digest_canonico(payload))
+    object.__setattr__(instancia, "_sello", _SELLO_BINDING)
+    return instancia
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConsentimientoAprobacion:
     """Consentimiento HUMANO sobre un digest concreto (§39.3 B2).
@@ -328,6 +509,12 @@ class ConsentimientoAprobacion:
     mecanismo: str | None = None
     #: P4-S6 — instante de la decisión (no el de la emisión).
     decided_at_ns: int | None = None
+    #: P4-S7 — identidad DURABLE de la solicitud que se aprobó. Lo acuña
+    #: ``owner_consent.RegistroConsentimientos.responder`` desde la presentación
+    #: abierta, y la puerta durable lo contrasta campo por campo antes del
+    #: ``CREATE`` del witness. Sin él, ``solicitud_id`` sería otra vez un string
+    #: del llamador: ``REQUEST_PRESENTED != REQUEST_PERSISTED`` (§47.2).
+    binding: BindingSolicitud | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -343,6 +530,12 @@ class IssuanceWitness:
     forma de saber qué se había aprobado era preguntárselo a quien lo
     presentaba — y un digest no se puede comparar campo por campo contra una
     transición. Con el payload durable el binding compara contra lo EMITIDO.
+
+    ``solicitud_binding`` (P4-S7) es la identidad durable de la solicitud HITL:
+    ``None`` cuando la emisión vino de una fixture del núcleo durable —sin
+    superficie de consentimiento, y el artefacto lo DECLARA en vez de fabricar un
+    id—, y el objeto canónico de :class:`BindingSolicitud` cuando vino de una
+    solicitud abierta y respondida.
     """
 
     schema_version: int
@@ -354,6 +547,7 @@ class IssuanceWitness:
     scope_payload: dict[str, object]
     issued_at_ns: int
     ledger_revision_at_issue: int
+    solicitud_binding: dict[str, object] | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -797,6 +991,29 @@ _CAMPOS_WITNESS = frozenset(
         "scope_payload",
         "issued_at_ns",
         "ledger_revision_at_issue",
+        # P4-S7 — presente SIEMPRE en un v3, con ``null`` cuando la emisión no
+        # tuvo superficie HITL. Que el campo exista y valga ``null`` es distinto
+        # de que falte: lo primero declara «no hubo solicitud», lo segundo sería
+        # un artefacto de otro esquema.
+        "solicitud_binding",
+    }
+)
+
+#: Los once campos del ``solicitud_binding``: los diez comprometidos por el
+#: ``binding_digest`` más el digest mismo. Esquema CERRADO, igual que el scope.
+_CAMPOS_BINDING_SOLICITUD = frozenset(
+    {
+        "solicitud_id",
+        "root_id",
+        "approval_id",
+        "approval_seq",
+        "approval_scope_digest",
+        "surface",
+        "session_id",
+        "owner_subject",
+        "mecanismo",
+        "decided_at_ns",
+        "binding_digest",
     }
 )
 
@@ -982,6 +1199,24 @@ def _validar_coherencia_ledger(ledger: ApprovalLedger, *, etiqueta: str) -> None
             raise ApprovalSchemaError(f"{etiqueta}: state=CONSUMED sin consumed_by_transition_id (incoherente)")
 
 
+def _serializar_binding_solicitud(binding: BindingSolicitud) -> dict[str, object]:
+    """Forma durable del binding: los diez campos comprometidos más su digest."""
+    payload = _payload_binding_solicitud(
+        solicitud_id=binding.solicitud_id,
+        root_id=binding.root_id,
+        approval_id=binding.approval_id,
+        approval_seq=binding.approval_seq,
+        approval_scope_digest=binding.approval_scope_digest,
+        surface=binding.surface,
+        session_id=binding.session_id,
+        owner_subject=binding.owner_subject,
+        mecanismo=binding.mecanismo,
+        decided_at_ns=binding.decided_at_ns,
+    )
+    payload["binding_digest"] = binding.binding_digest
+    return payload
+
+
 def _serializar_witness(witness: IssuanceWitness) -> dict[str, object]:
     return {
         "schema_version": witness.schema_version,
@@ -993,6 +1228,7 @@ def _serializar_witness(witness: IssuanceWitness) -> dict[str, object]:
         "scope_payload": witness.scope_payload,
         "issued_at_ns": witness.issued_at_ns,
         "ledger_revision_at_issue": witness.ledger_revision_at_issue,
+        "solicitud_binding": witness.solicitud_binding,
     }
 
 
@@ -1030,6 +1266,99 @@ def _validar_scope_payload(payload: object, *, etiqueta: str, digest_esperado: s
     return payload
 
 
+def _parsear_binding_solicitud(
+    payload: object,
+    *,
+    etiqueta: str,
+    root_id: str,
+    approval_seq: int,
+    approval_id: str,
+    approval_scope_digest: str,
+) -> BindingSolicitud:
+    """Valida ``solicitud_binding`` al LEER y lo re-acuña como capacidad (P4-S7).
+
+    Tres capas, y las tres hacen falta:
+
+    1. **Esquema cerrado y tipos**: faltar o sobrar un campo, o traer un
+       ``approval_seq`` en texto, es un artefacto de otro esquema o manipulado.
+    2. **Digest recomputado**: el binding trae su propio SHA-256 y se recalcula.
+       Sin esto el campo sería decoración — el mismo defecto que P4-S5 cerró para
+       ``scope_payload``.
+    3. **Coherencia con el witness que lo contiene**: un binding íntegro que
+       apunta a OTRA aprobación pasa (1) y (2) y aun así mentiría sobre esta
+       emisión. La comparación va contra la identidad ya validada del witness, no
+       contra sí mismo.
+
+    Devuelve el objeto acuñado, no el dict: el lector obtiene la misma capacidad
+    sellada que tendría en proceso, así que ``leer_binding_solicitud`` no puede
+    devolver algo que la puerta de emisión rechazaría por procedencia.
+    """
+    if not isinstance(payload, dict):
+        raise ApprovalSchemaError(f"{etiqueta}: 'solicitud_binding' debe ser un objeto JSON o null")
+    _exigir_campos_exactos(payload, requeridos=_CAMPOS_BINDING_SOLICITUD, etiqueta=f"{etiqueta} · solicitud_binding")
+    solicitud_id = _exigir_uuid_v4(payload["solicitud_id"], campo="solicitud_id", etiqueta=etiqueta)
+    binding_root = _exigir_texto(payload["root_id"], campo="root_id", etiqueta=etiqueta)
+    binding_approval_id = _exigir_uuid_v4(payload["approval_id"], campo="approval_id", etiqueta=etiqueta)
+    binding_seq = _exigir_entero(payload["approval_seq"], campo="approval_seq", etiqueta=etiqueta, minimo=1)
+    binding_digest_scope = _exigir_digest(
+        payload["approval_scope_digest"], campo="approval_scope_digest", etiqueta=etiqueta
+    )
+    surface = _exigir_texto(payload["surface"], campo="surface", etiqueta=etiqueta)
+    session_id = _exigir_texto(payload["session_id"], campo="session_id", etiqueta=etiqueta)
+    owner_subject = _exigir_texto(payload["owner_subject"], campo="owner_subject", etiqueta=etiqueta)
+    mecanismo = _exigir_texto(payload["mecanismo"], campo="mecanismo", etiqueta=etiqueta)
+    decided_at_ns = _exigir_entero(payload["decided_at_ns"], campo="decided_at_ns", etiqueta=etiqueta, minimo=0)
+    declarado = _exigir_digest(payload["binding_digest"], campo="binding_digest", etiqueta=etiqueta)
+    calculado = digest_canonico(
+        _payload_binding_solicitud(
+            solicitud_id=solicitud_id,
+            root_id=binding_root,
+            approval_id=binding_approval_id,
+            approval_seq=binding_seq,
+            approval_scope_digest=binding_digest_scope,
+            surface=surface,
+            session_id=session_id,
+            owner_subject=owner_subject,
+            mecanismo=mecanismo,
+            decided_at_ns=decided_at_ns,
+        )
+    )
+    if calculado != declarado:
+        raise ApprovalIdentityError(
+            f"{etiqueta}: 'solicitud_binding' no recomputa su binding_digest (calculado {calculado}, declarado "
+            f"{declarado}): el binding durable fue adulterado"
+        )
+    # Coherencia con el witness: un binding íntegro de OTRA emisión no describe
+    # ésta. Se comparan las cuatro identidades, no una.
+    contradicciones = [
+        f"{campo}: {en_binding!r} != {en_witness!r}"
+        for campo, en_binding, en_witness in (
+            ("root_id", binding_root, root_id),
+            ("approval_seq", binding_seq, approval_seq),
+            ("approval_id", binding_approval_id, approval_id),
+            ("approval_scope_digest", binding_digest_scope, approval_scope_digest),
+        )
+        if en_binding != en_witness
+    ]
+    if contradicciones:
+        raise ApprovalIdentityError(
+            f"{etiqueta}: 'solicitud_binding' contradice al witness que lo contiene ({'; '.join(contradicciones)}): "
+            "el binding describe otra emisión"
+        )
+    return _acuñar_binding_solicitud(
+        solicitud_id=solicitud_id,
+        root_id=binding_root,
+        approval_id=binding_approval_id,
+        approval_seq=binding_seq,
+        approval_scope_digest=binding_digest_scope,
+        surface=surface,
+        session_id=session_id,
+        owner_subject=owner_subject,
+        mecanismo=mecanismo,
+        decided_at_ns=decided_at_ns,
+    )
+
+
 def _parsear_witness(
     payload: dict[str, object],
     ruta: pathlib.Path,
@@ -1050,11 +1379,31 @@ def _parsear_witness(
     root_id = _exigir_texto(payload["root_id"], campo="root_id", etiqueta=etiqueta)
     _exigir_root_local(root_id, esperado=root_id_esperado, ruta=ruta)
     digest = _exigir_digest(payload["approval_scope_digest"], campo="approval_scope_digest", etiqueta=etiqueta)
+    ident = _exigir_uuid_v4(payload["approval_id"], campo="approval_id", etiqueta=etiqueta)
+    # P4-S7 — el binding se valida y se re-serializa en forma canónica: el dict
+    # que queda en memoria es el que pasó las tres capas, no el que vino del
+    # disco. ``None`` es una declaración («esta emisión no tuvo solicitud HITL»),
+    # no un campo ausente: el esquema cerrado ya exigió que la clave existiera.
+    binding_crudo = payload["solicitud_binding"]
+    binding: dict[str, object] | None
+    if binding_crudo is None:
+        binding = None
+    else:
+        binding = _serializar_binding_solicitud(
+            _parsear_binding_solicitud(
+                binding_crudo,
+                etiqueta=etiqueta,
+                root_id=root_id,
+                approval_seq=seq,
+                approval_id=ident,
+                approval_scope_digest=digest,
+            )
+        )
     return IssuanceWitness(
         schema_version=version,
         root_id=root_id,
         approval_seq=seq,
-        approval_id=_exigir_uuid_v4(payload["approval_id"], campo="approval_id", etiqueta=etiqueta),
+        approval_id=ident,
         approval_scope_digest=digest,
         approval_provenance=_exigir_texto(
             payload["approval_provenance"], campo="approval_provenance", etiqueta=etiqueta
@@ -1064,6 +1413,7 @@ def _parsear_witness(
         ledger_revision_at_issue=_exigir_entero(
             payload["ledger_revision_at_issue"], campo="ledger_revision_at_issue", etiqueta=etiqueta, minimo=0
         ),
+        solicitud_binding=binding,
     )
 
 
@@ -1782,6 +2132,46 @@ def proponer_aprobacion(
 
 
 # ---------------------------------------------------------------------------
+# Lectura del binding de la solicitud (P4-S7)
+# ---------------------------------------------------------------------------
+
+
+def leer_binding_solicitud(root: pathlib.Path, approval_seq: int) -> BindingSolicitud:
+    """Devuelve la solicitud HITL que se aprobó, leída del witness durable.
+
+    Es la API que responde la pregunta del slice **después de un reinicio**: no
+    consulta ``RegistroConsentimientos`` —que vive en memoria y murió con el
+    proceso anterior— ni acepta el ``solicitud_id`` de ningún llamador. Lee el
+    store inmutable, revalida el witness completo con
+    :func:`derivar_autoridad_aprobacion` y re-acuña el binding con las tres capas
+    de :func:`_parsear_binding_solicitud`.
+
+    Falla cerrado cuando no hay witness o cuando el witness declara que la
+    emisión **no** tuvo solicitud (``solicitud_binding = null``): devolver ``None``
+    ahí invitaría a tratar «no hubo solicitud» como un valor más.
+    """
+    ruta = pathlib.Path(root)
+    _exigir_entero(approval_seq, campo="approval_seq", etiqueta="lectura de binding", minimo=1)
+    autoridad = derivar_autoridad_aprobacion(ruta)
+    witness = next((item for item in autoridad.witnesses if item.approval_seq == approval_seq), None)
+    if witness is None:
+        raise ApprovalIdentityError(f"{ruta}: no hay witness de emisión para la seq {approval_seq}")
+    if witness.solicitud_binding is None:
+        raise ApprovalIdentityError(
+            f"{ruta}: el witness de la seq {approval_seq} no registra ninguna solicitud HITL — la emisión no vino "
+            "de una superficie de consentimiento (REQUEST_PERSISTED = ABSENT)"
+        )
+    return _parsear_binding_solicitud(
+        witness.solicitud_binding,
+        etiqueta=str(issuances_state_dir(ruta) / _nombre_witness(approval_seq)),
+        root_id=witness.root_id,
+        approval_seq=witness.approval_seq,
+        approval_id=witness.approval_id,
+        approval_scope_digest=witness.approval_scope_digest,
+    )
+
+
+# ---------------------------------------------------------------------------
 # FASE C — emisión (burn: witness primero, caché después)
 # ---------------------------------------------------------------------------
 
@@ -1898,6 +2288,91 @@ def _validar_consentimiento(propuesta: PropuestaAprobacion, consentimiento: Cons
             )
 
 
+def _exigir_binding_consistente(
+    consentimiento: ConsentimientoAprobacion,
+    *,
+    scope: ApprovalScope,
+    root_id: str,
+) -> None:
+    """La solicitud aprobada tiene que ser una solicitud que el registro ACUÑÓ.
+
+    ``REQUEST_PRESENTED == REQUEST_APPROVED == REQUEST_PERSISTED`` (§47.1). El
+    chequeo vive acá —en la puerta durable— y no en
+    ``owner_consent.emitir_aprobacion_autorizada``, por la razón que este repo ya
+    pagó tres veces: **un chequeo que vive sólo en el llamador es bypassable por
+    el segundo llamador**, y ``_emitir_aprobacion_bajo_lock`` tiene más de uno
+    (los tests del núcleo y ``_p4_s4_child``).
+
+    Orden deliberado. Primero la PROCEDENCIA (el sello), después el contenido: sin
+    sello los campos no dicen nada, y comprobar el contenido antes sería
+    preguntarle al llamador si él mismo es de fiar. Después el digest —el binding
+    se compromete a sí mismo— y por último la igualdad campo por campo contra el
+    scope propuesto, el root físico y el propio consentimiento.
+
+    Que el binding falte NO es un rechazo universal: una fixture del núcleo
+    durable (P4-S4/P4-S5) no tiene superficie HITL y el witness lo declara con
+    ``null``. Lo que no se admite es un consentimiento que **pretende** ser del
+    propietario sin el binding que lo prueba: ahí ``solicitud_id`` volvería a ser
+    un string del llamador.
+    """
+    binding = consentimiento.binding
+    pretende_ser_del_propietario = consentimiento.owner_subject is not None or consentimiento.mecanismo is not None
+    if binding is None:
+        if pretende_ser_del_propietario:
+            raise ApprovalConsentimientoError(
+                "el consentimiento ligado al propietario no trae el binding acuñado de la solicitud: un "
+                "solicitud_id que pone el llamador es una aserción suya, no la identidad de una solicitud que el "
+                "registro emitió (REQUEST_PRESENTED != REQUEST_PERSISTED)"
+            )
+        return
+    if not isinstance(binding, BindingSolicitud):
+        raise ApprovalConsentimientoError(
+            f"el binding de la solicitud no es un BindingSolicitud: {type(binding).__name__}"
+        )
+    if getattr(binding, "_sello", None) is not _SELLO_BINDING:
+        raise ApprovalConsentimientoError(
+            "el binding de la solicitud no fue acuñado por el registro de consentimiento: los campos por sí solos "
+            "no prueban qué solicitud se aprobó. Se obtiene respondiendo una solicitud abierta, no construyéndolo."
+        )
+    recomputado = digest_canonico(
+        _payload_binding_solicitud(
+            solicitud_id=binding.solicitud_id,
+            root_id=binding.root_id,
+            approval_id=binding.approval_id,
+            approval_seq=binding.approval_seq,
+            approval_scope_digest=binding.approval_scope_digest,
+            surface=binding.surface,
+            session_id=binding.session_id,
+            owner_subject=binding.owner_subject,
+            mecanismo=binding.mecanismo,
+            decided_at_ns=binding.decided_at_ns,
+        )
+    )
+    if recomputado != binding.binding_digest:
+        raise ApprovalConsentimientoError(
+            "el binding de la solicitud no recomputa su propio digest: fue manipulado después de acuñarlo"
+        )
+    esperado: dict[str, object] = {
+        "solicitud_id": consentimiento.solicitud_id,
+        "root_id": root_id,
+        "approval_id": scope.approval_id,
+        "approval_seq": scope.approval_seq,
+        "approval_scope_digest": scope.approval_scope_digest,
+        "surface": consentimiento.surface,
+        "session_id": consentimiento.session_id,
+        "owner_subject": consentimiento.owner_subject,
+        "mecanismo": consentimiento.mecanismo,
+        "decided_at_ns": consentimiento.decided_at_ns,
+    }
+    for campo, valor in esperado.items():
+        real = getattr(binding, campo)
+        if real != valor:
+            raise ApprovalConsentimientoError(
+                f"el binding de la solicitud no coincide en '{campo}' ({real!r} != {valor!r}): la solicitud que se "
+                "aprobó no es la que se pretende emitir (WHAT_HUMAN_APPROVED != WHAT_WAS_ISSUED)"
+            )
+
+
 def _emitir_aprobacion_bajo_lock(
     handle: FrozenRuntimeRootLockHandle,
     root: pathlib.Path,
@@ -1918,8 +2393,13 @@ def _emitir_aprobacion_bajo_lock(
     # P4-S6: el consentimiento liga el root FÍSICO sobre el que se presentó. Un
     # consentimiento del root A no autoriza nada en el root B, y el chequeo va
     # ANTES del CREATE: después del witness llega tarde.
+    root_id_actual = _root_id(root)
     if consentimiento.root_id is not None:
-        _exigir_root_local(consentimiento.root_id, esperado=_root_id(root), ruta=approval_ledger_path(root))
+        _exigir_root_local(consentimiento.root_id, esperado=root_id_actual, ruta=approval_ledger_path(root))
+    # P4-S7: la solicitud aprobada es la solicitud ACUÑADA por el registro, no el
+    # string que traiga el consentimiento. Va acá —en la puerta— y no en el
+    # wrapper, y también antes del CREATE.
+    _exigir_binding_consistente(consentimiento, scope=scope, root_id=root_id_actual)
     actual = cargar_ledger_aprobacion(root)
     if actual.disposition is ApprovalLedgerDisposition.CORRUPT:
         raise ApprovalCorruptError(f"{actual.path}: ledger corrupto: no se emite (fail-closed)")
@@ -1953,7 +2433,7 @@ def _emitir_aprobacion_bajo_lock(
         )
     witness = IssuanceWitness(
         schema_version=ISSUANCE_WITNESS_SCHEMA_VERSION,
-        root_id=_root_id(root),
+        root_id=root_id_actual,
         approval_seq=scope.approval_seq,
         approval_id=scope.approval_id,
         approval_scope_digest=scope.approval_scope_digest,
@@ -1966,6 +2446,13 @@ def _emitir_aprobacion_bajo_lock(
         scope_payload=payload_scope_sin_digest(scope),
         issued_at_ns=propuesta.proposed_at_ns,
         ledger_revision_at_issue=propuesta.ledger_revision_at_proposal,
+        # P4-S7: el binding que ya pasó `_exigir_binding_consistente`. Se
+        # serializa el objeto VERIFICADO, no se reconstruye desde el
+        # consentimiento: reconstruirlo volvería a copiar strings del llamador y
+        # desharía la comprobación que se acaba de hacer.
+        solicitud_binding=(
+            _serializar_binding_solicitud(consentimiento.binding) if consentimiento.binding is not None else None
+        ),
     )
     _crear_witness(handle, root, witness, ledger=ledger)
     nuevo = dataclasses.replace(
