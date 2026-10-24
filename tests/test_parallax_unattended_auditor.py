@@ -491,6 +491,31 @@ def test_colapso_frente_a_amplitud_declarada_es_altura_plana(tmp_path: pathlib.P
     auditoria = auditar(informe, tmp_path)
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.ALTURA_PLANA,)
+    assert "cayó frente a la amplitud declarada" in auditoria.hallazgos[0].detalle
+
+
+def test_amplitud_declarada_por_debajo_del_minimo_da_mensaje_exacto(tmp_path: pathlib.Path) -> None:
+    """Si el relieve en disco mide sd >= 8/255 pero la amplitud previa ya era plana, el mensaje no dice 'cayó'."""
+
+    bloque_suave = _bloque(140, 115, [0, 1] * 8)
+    _escribir(tmp_path, "textures/plana_de_origen_p.dds", _dds(16, 16, 1, bloque_suave * 16))
+    informe = {
+        "version_del_lote": "np-a0a.v1",
+        "archivos": [
+            {
+                "ruta_de_salida": "textures/plana_de_origen_p.dds",
+                "estado": "ESCRITA",
+                "efecto": "PUBLICADA",
+                "veredicto": "AUTO_ACCEPT",
+                "amplitud": {"desviacion": 0.01},  # 2.55/255 < SD_MINIMA
+            }
+        ],
+    }
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.ALTURA_PLANA,)
+    assert "amplitud declarada = 2.55/255 por debajo de 8/255" in auditoria.hallazgos[0].detalle
 
 
 def test_otras_rutas_omitidas_por_cache_se_auditan_desde_disco(tmp_path: pathlib.Path) -> None:

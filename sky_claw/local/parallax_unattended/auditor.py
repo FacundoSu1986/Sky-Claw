@@ -542,17 +542,25 @@ def _auditar_una(objetivo: _ObjetivoDeAuditoria, destino: pathlib.Path) -> tuple
             ),
             False,
         )
-    if objetivo.desviacion_declarada is not None and (
-        objetivo.desviacion_declarada < SD_MINIMA or sd < objetivo.desviacion_declarada * _FACTOR_MINIMO_DE_AMPLITUD
-    ):
-        return (
-            Hallazgo(
-                ruta,
-                CodigoDeHallazgo.ALTURA_PLANA,
-                f"sd = {sd * 255:.2f}/255 cayó frente a la amplitud declarada ({objetivo.desviacion_declarada * 255:.2f}/255)",
-            ),
-            False,
-        )
+    if objetivo.desviacion_declarada is not None:
+        if objetivo.desviacion_declarada < SD_MINIMA:
+            return (
+                Hallazgo(
+                    ruta,
+                    CodigoDeHallazgo.ALTURA_PLANA,
+                    f"amplitud declarada = {objetivo.desviacion_declarada * 255:.2f}/255 por debajo de {SD_MINIMA * 255:.0f}/255",
+                ),
+                False,
+            )
+        if sd < objetivo.desviacion_declarada * _FACTOR_MINIMO_DE_AMPLITUD:
+            return (
+                Hallazgo(
+                    ruta,
+                    CodigoDeHallazgo.ALTURA_PLANA,
+                    f"sd = {sd * 255:.2f}/255 cayó frente a la amplitud declarada ({objetivo.desviacion_declarada * 255:.2f}/255)",
+                ),
+                False,
+            )
     return None, True
 
 

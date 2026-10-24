@@ -112,6 +112,7 @@ def test_cada_regla_tiene_su_caso(fuente: str, regla: ReglaDeContrato) -> None:
         "from .auditor import Hallazgo",
         "from .veredicto import dictar",
         "from sky_claw.local.parallax_unattended import auditar",
+        "os.open(ruta, os.O_RDONLY)",
     ],
 )
 def test_lo_permitido_no_es_hallazgo(fuente: str) -> None:

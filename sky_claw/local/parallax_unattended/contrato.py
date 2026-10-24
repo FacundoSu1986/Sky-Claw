@@ -77,6 +77,11 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
 #: Caracteres de modo de ``open`` que implican escritura.
 _MODOS_DE_ESCRITURA: Final[frozenset[str]] = frozenset("wax+")
 
+#: Banderas de ``os.open`` que abren con permiso de mutación o creación.
+_BANDERAS_DE_ESCRITURA_OS: Final[frozenset[str]] = frozenset(
+    {"O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC", "O_EXCL"}
+)
+
 
 class ReglaDeContrato(enum.StrEnum):
     """Qué regla se rompió. Vocabulario cerrado."""
@@ -141,6 +146,24 @@ def _modo_escribe(nodo: ast.Call, *, indices_posicionales: Sequence[int] = (1,))
     return False
 
 
+def _es_escritura_os_open(nodo: ast.Call) -> bool:
+    """``os.open(ruta, flags)``: sólo es escritura si pide mutación; ``os.O_RDONLY`` es lectura."""
+
+    candidatos: list[ast.expr] = list(nodo.args[1:2])
+    candidatos += [palabra.value for palabra in nodo.keywords if palabra.arg == "flags"]
+    if not candidatos:
+        return True
+    nombres: set[str] = set()
+    for subnodo in ast.walk(candidatos[0]):
+        if isinstance(subnodo, ast.Attribute):
+            nombres.add(subnodo.attr)
+        elif isinstance(subnodo, ast.Name):
+            nombres.add(subnodo.id)
+    if any(b in _BANDERAS_DE_ESCRITURA_OS for b in nombres):
+        return True
+    return "O_RDONLY" not in nombres
+
+
 def _revisar_llamada(nodo: ast.Call) -> bool:
     funcion = nodo.func
     if isinstance(funcion, ast.Name) and funcion.id == "open":
@@ -148,7 +171,7 @@ def _revisar_llamada(nodo: ast.Call) -> bool:
     if isinstance(funcion, ast.Attribute):
         if funcion.attr == "open":
             if isinstance(funcion.value, ast.Name) and funcion.value.id == "os":
-                return True
+                return _es_escritura_os_open(nodo)
             if isinstance(funcion.value, ast.Name) and funcion.value.id in ("io", "codecs", "builtins"):
                 return _modo_escribe(nodo, indices_posicionales=(1,))
             return _modo_escribe(nodo, indices_posicionales=(0, 1))
