@@ -32,6 +32,7 @@ import pytest
 
 from sky_claw.local.parallax_unattended import auditor as modulo_auditor
 from sky_claw.local.parallax_unattended.auditor import (
+    HALLAZGOS_DE_FALLA,
     SD_MINIMA,
     CodigoDeHallazgo,
     _leer_cabecera,
@@ -561,6 +562,53 @@ def test_otras_rutas_omitidas_por_cache_se_auditan_desde_disco(tmp_path: pathlib
     assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
         ("textures/previa_p.dds", CodigoDeHallazgo.ALTURA_PLANA)
     ]
+
+
+def _informe_con_retirada(ruta_retirada: str) -> dict[str, object]:
+    informe = _informe(["textures/nueva_p.dds"])
+    informe["otras_rutas"] = [{"ruta": ruta_retirada, "efecto": "RETIRADA", "detalle": "ya no se desea"}]
+    return informe
+
+
+def test_una_ruta_declarada_retirada_que_sigue_en_disco_es_hallazgo_duro(tmp_path: pathlib.Path) -> None:
+    """Una ``_p.dds`` obsoleta que el juego carga con el log en verde es el falso verde que esta capa existe para cerrar."""
+
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    auditoria = auditar(_informe_con_retirada("textures/vieja_p.dds"), tmp_path)
+
+    assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
+        ("textures/vieja_p.dds", CodigoDeHallazgo.RETIRADA_PRESENTE)
+    ]
+    assert auditoria.verificados == ("textures/nueva_p.dds",)
+    assert CodigoDeHallazgo.RETIRADA_PRESENTE in HALLAZGOS_DE_FALLA
+
+
+def test_una_ruta_declarada_retirada_y_ausente_no_es_hallazgo(tmp_path: pathlib.Path) -> None:
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    auditoria = auditar(_informe_con_retirada("textures/vieja_p.dds"), tmp_path)
+
+    assert auditoria.hallazgos == ()
+    assert auditoria.verificados == ("textures/nueva_p.dds",)
+
+
+def test_una_retirada_que_sigue_en_disco_degrada_el_veredicto_final_a_fail(tmp_path: pathlib.Path) -> None:
+    """De punta a punta: informe + disco → ``combinar`` → código de salida distinto de 0."""
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, codigo_de_salida, dictar
+
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = _informe_con_retirada("textures/vieja_p.dds")
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+
+    final = combinar(dictar(informe), auditar(informe, tmp_path))
+
+    assert final.veredicto in (VeredictoDelLote.FAIL, VeredictoDelLote.INCONSISTENTE)
+    assert codigo_de_salida(final) != 0
 
 
 @pytest.mark.parametrize(

@@ -128,6 +128,7 @@ class CodigoDeHallazgo(enum.StrEnum):
     DIMENSIONES_INVALIDAS = "dimensiones_invalidas"
     TAMANO_INCOHERENTE = "tamano_incoherente"
     ALTURA_PLANA = "altura_plana"
+    RETIRADA_PRESENTE = "retirada_presente"
 
 
 #: Hallazgos donde el propio informe no cumple el contrato (degradan a ``INCONSISTENTE``).
@@ -147,6 +148,7 @@ HALLAZGOS_DE_FALLA: Final[frozenset[CodigoDeHallazgo]] = frozenset(
         CodigoDeHallazgo.NO_ES_DDS,
         CodigoDeHallazgo.DIMENSIONES_INVALIDAS,
         CodigoDeHallazgo.TAMANO_INCOHERENTE,
+        CodigoDeHallazgo.RETIRADA_PRESENTE,
     }
 )
 
@@ -163,6 +165,8 @@ class _RutaRechazadaError(Exception):
 class _ObjetivoDeAuditoria:
     ruta: str
     desviacion_declarada: float | None = None
+    #: ``RETIRADA``: el informe dice que el archivo ya no está; se exige su ausencia, no su contenido.
+    debe_estar_ausente: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +469,8 @@ def _objetivos_declarados(informe: Mapping[str, object]) -> tuple[_ObjetivoDeAud
                 raise _RutaRechazadaError(f"otras_rutas[{posicion}].efecto = {efecto!r} es inválido")
             if efecto in EFECTOS_QUE_DEJAN_ARCHIVO:
                 objetivos.append(_ObjetivoDeAuditoria(ruta=ruta))
+            elif efecto == "RETIRADA":
+                objetivos.append(_ObjetivoDeAuditoria(ruta=ruta, debe_estar_ausente=True))
 
     return tuple(objetivos)
 
@@ -579,7 +585,7 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
             no_verificados=(),
         )
 
-    if not objetivos:
+    if not any(not obj.debe_estar_ausente for obj in objetivos):
         # Cero artefactos declarados NO es "todo bien": es una auditoría que no verificó nada, y
         # un `ok` acá sería exactamente el falso verde que esta capa existe para cerrar.
         return InformeDeAuditoria(
@@ -629,9 +635,17 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo resolver la ruta: {exc}"))
             continue
         try:
-            existe = destino.is_file()
+            existe = os.path.lexists(destino) if objetivo.debe_estar_ausente else destino.is_file()
         except (OSError, RuntimeError, ValueError) as exc:
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_LEGIBLE, f"no se pudo inspeccionar: {exc}"))
+            continue
+        if objetivo.debe_estar_ausente:
+            if existe:
+                hallazgos.append(
+                    Hallazgo(
+                        ruta, CodigoDeHallazgo.RETIRADA_PRESENTE, f"el informe la declara RETIRADA y sigue en {raiz}"
+                    )
+                )
             continue
         if not existe:
             hallazgos.append(Hallazgo(ruta, CodigoDeHallazgo.NO_EXISTE, f"el informe la declara y no está en {raiz}"))
