@@ -272,7 +272,7 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
                 if regla is not None:
                     hallazgos.append(Hallazgo(archivo, linea, regla, f"importa {nombre!r}"))
         elif isinstance(nodo, ast.Call) and _revisar_llamada(nodo, escritores_importados, alias_de_os):
-            nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else "open"
+            nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "<llamada>")
             hallazgos.append(Hallazgo(archivo, nodo.lineno, ReglaDeContrato.ESCRIBE_EN_DISCO, f"llama a {nombre}()"))
     return tuple(sorted(hallazgos, key=lambda h: (h.archivo, h.linea)))
 

@@ -173,14 +173,14 @@ def test_revisar_fuente_violaciones_multiples_reporta_lineas_y_reglas_exactas() 
     ]
 
 
-def test_escribir_en_un_buffer_en_memoria_no_es_escribir_en_disco() -> None:
+def test_revisar_fuente_buffer_en_memoria_sin_hallazgos() -> None:
     """``os.write`` es disco; ``.write`` de un buffer en memoria no: sin esta frontera el contrato sería ruido."""
 
     assert revisar_fuente('buffer = io.StringIO()\nbuffer.write("x")\n', "sintetico.py") == ()
 
 
 @pytest.mark.parametrize("fuente", ["f()()\n", "tabla[0](x)\n", "(lambda: 1)()\n"])
-def test_llamadas_cuyo_callee_no_es_nombre_ni_atributo_no_se_confunden_con_escrituras(fuente: str) -> None:
+def test_revisar_fuente_callee_indirecto_sin_hallazgos(fuente: str) -> None:
     """El callee que no es ``Name`` ni ``Attribute`` (otra llamada, un subíndice) no puede lanzar ni contar como disco."""
 
     assert revisar_fuente(fuente, "sintetico.py") == ()
@@ -234,3 +234,12 @@ def test_lo_que_no_es_un_escritor_importado_no_se_marca(fuente: str) -> None:
 )
 def test_el_modulo_os_importado_con_alias_se_reconoce(fuente: str, esperadas: list[ReglaDeContrato]) -> None:
     assert [h.regla for h in revisar_fuente(fuente, "sintetico.py")] == esperadas
+
+
+@pytest.mark.parametrize("nombre", ["mkdtemp", "NamedTemporaryFile", "TemporaryDirectory"])
+def test_revisar_fuente_llamada_por_nombre_reporta_el_nombre_real(nombre: str) -> None:
+    """El diagnóstico nombra la llamada que lo causó, no un ``open()`` fijo."""
+
+    (hallazgo,) = revisar_fuente(f"{nombre}()\n", "sintetico.py")
+
+    assert hallazgo.detalle == f"llama a {nombre}()"

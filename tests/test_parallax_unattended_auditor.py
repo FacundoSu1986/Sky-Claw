@@ -626,10 +626,14 @@ def test_una_retirada_que_sigue_en_disco_degrada_el_veredicto_final_a_fail(tmp_p
     _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
     informe = _informe_con_retirada("textures/vieja_p.dds")
     informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
 
     final = combinar(dictar(informe), auditar(informe, tmp_path))
 
-    assert final.veredicto in (VeredictoDelLote.FAIL, VeredictoDelLote.INCONSISTENTE)
+    # Informe válido: solo la salida retirada que sigue en disco puede producir FAIL (INCONSISTENTE lo taparía).
+    assert dictar(informe).veredicto is not VeredictoDelLote.INCONSISTENTE
+    assert final.veredicto is VeredictoDelLote.FAIL
     assert codigo_de_salida(final) != 0
 
 
