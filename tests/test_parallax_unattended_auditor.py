@@ -32,6 +32,7 @@ import pytest
 
 from sky_claw.local.parallax_unattended import auditor as modulo_auditor
 from sky_claw.local.parallax_unattended.auditor import (
+    HALLAZGOS_DE_FALLA,
     SD_MINIMA,
     CodigoDeHallazgo,
     _leer_cabecera,
@@ -563,6 +564,79 @@ def test_otras_rutas_omitidas_por_cache_se_auditan_desde_disco(tmp_path: pathlib
     ]
 
 
+def _informe_con_retirada(ruta_retirada: str) -> dict[str, object]:
+    informe = _informe(["textures/nueva_p.dds"])
+    informe["otras_rutas"] = [{"ruta": ruta_retirada, "efecto": "RETIRADA", "detalle": "ya no se desea"}]
+    return informe
+
+
+def test_una_ruta_declarada_retirada_que_sigue_en_disco_es_hallazgo_duro(tmp_path: pathlib.Path) -> None:
+    """Una ``_p.dds`` obsoleta que el juego carga con el log en verde es el falso verde que esta capa existe para cerrar."""
+
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    auditoria = auditar(_informe_con_retirada("textures/vieja_p.dds"), tmp_path)
+
+    assert [(h.ruta, h.codigo) for h in auditoria.hallazgos] == [
+        ("textures/vieja_p.dds", CodigoDeHallazgo.RETIRADA_PRESENTE)
+    ]
+    assert auditoria.verificados == ("textures/nueva_p.dds",)
+    assert CodigoDeHallazgo.RETIRADA_PRESENTE in HALLAZGOS_DE_FALLA
+
+
+def test_una_ruta_declarada_retirada_y_ausente_no_es_hallazgo(tmp_path: pathlib.Path) -> None:
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+
+    auditoria = auditar(_informe_con_retirada("textures/vieja_p.dds"), tmp_path)
+
+    assert auditoria.hallazgos == ()
+    assert auditoria.verificados == ("textures/nueva_p.dds",)
+
+
+def test_una_retirada_presente_se_audita_aunque_no_quede_ningun_artefacto_escrito(tmp_path: pathlib.Path) -> None:
+    """Todo en revisión + una salida anterior retirada que sigue en disco: el chequeo de ausencia no puede saltearse."""
+
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = _informe(["textures/nueva_p.dds"], estado="EN_REVISION", efecto=None)
+    informe["archivos"][0]["veredicto"] = "REVIEW"  # type: ignore[index]
+    informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": "RETIRADA", "detalle": "x"}]
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert CodigoDeHallazgo.RETIRADA_PRESENTE in codigos(auditoria.hallazgos)
+    assert CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES in codigos(auditoria.hallazgos)
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, dictar
+
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    assert combinar(dictar(informe), auditoria).veredicto is VeredictoDelLote.FAIL
+
+
+def test_una_retirada_que_sigue_en_disco_degrada_el_veredicto_final_a_fail(tmp_path: pathlib.Path) -> None:
+    """De punta a punta: informe + disco → ``combinar`` → código de salida distinto de 0."""
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, codigo_de_salida, dictar
+
+    _escribir(tmp_path, "textures/nueva_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = _informe_con_retirada("textures/vieja_p.dds")
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+
+    final = combinar(dictar(informe), auditar(informe, tmp_path))
+
+    # Informe válido: solo la salida retirada que sigue en disco puede producir FAIL (INCONSISTENTE lo taparía).
+    assert dictar(informe).veredicto is not VeredictoDelLote.INCONSISTENTE
+    assert final.veredicto is VeredictoDelLote.FAIL
+    assert codigo_de_salida(final) != 0
+
+
 @pytest.mark.parametrize(
     "ruta_ntfs_invalida",
     [
@@ -587,18 +661,85 @@ def test_enlace_dentro_de_la_raiz_se_rechaza_sin_atravesarlo(
     """M-2: un symlink o junction dentro de la salida se rechaza como ``RUTA_FUERA_DE_LA_SALIDA``."""
 
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
-    real = modulo_auditor.link_kind_and_identity_or_raise
+    real = modulo_auditor.link_kind_and_identity_or_raise_with_retry
 
     def simular_junction(ruta: pathlib.Path) -> tuple[str | None, object]:
         if ruta.name == "textures":
             return "junction", ruta.lstat()
         return real(ruta)
 
-    monkeypatch.setattr(modulo_auditor, "link_kind_and_identity_or_raise", simular_junction)
+    monkeypatch.setattr(modulo_auditor, "link_kind_and_identity_or_raise_with_retry", simular_junction)
 
     auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
+
+
+def test_un_symlink_real_dentro_de_la_raiz_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """El mock de junction no prueba el enlace de verdad: acá hay un symlink en disco (se omite si el SO no deja crearlo)."""
+
+    afuera = tmp_path / "afuera"
+    _escribir(afuera, "a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    salida = tmp_path / "salida"
+    salida.mkdir()
+    try:
+        (salida / "textures").symlink_to(afuera, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("este SO no permite crear symlinks sin privilegios")
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), salida)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
+
+
+def test_un_error_transitorio_al_inspeccionar_un_enlace_se_reintenta(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermano de ``output_writer``: un antivirus que suelta el archivo a los pocos ms no debe dar un falso NO_LEGIBLE."""
+
+    from sky_claw.app.security import links
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    real = links.link_kind_and_identity_or_raise
+    fallos = {"pendientes": 1}
+
+    def inestable(ruta: pathlib.Path) -> tuple[str | None, object]:
+        if fallos["pendientes"] > 0:
+            fallos["pendientes"] -= 1
+            raise OSError("sharing violation transitoria")
+        return real(ruta)
+
+    monkeypatch.setattr(links, "link_kind_and_identity_or_raise", inestable)
+    monkeypatch.setattr(links.time, "sleep", lambda _s: None)
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert auditoria.hallazgos == ()
+    assert fallos["pendientes"] == 0
+
+
+def test_el_auditor_solo_inspecciona_enlaces_con_la_variante_con_reintento() -> None:
+    """Ancla por AST: ninguna llamada ni importación de la variante SIN reintento (el hermano que se olvida)."""
+
+    import ast
+    import inspect
+
+    arbol = ast.parse(inspect.getsource(modulo_auditor))
+    usos = {
+        nodo.id
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Name) and nodo.id.startswith("link_kind_and_identity")
+    }
+    importados = {
+        alias.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names
+        if alias.name.startswith("link_kind_and_identity")
+    }
+
+    assert usos == {"link_kind_and_identity_or_raise_with_retry"}
+    assert importados == {"link_kind_and_identity_or_raise_with_retry"}
 
 
 def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(
@@ -620,3 +761,23 @@ def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(
 
     assert [h.codigo for h in auditoria.hallazgos] == [CodigoDeHallazgo.NO_LEGIBLE]
     assert auditoria.verificados == ("textures/sana_p.dds",)
+
+
+def test_un_informe_solo_con_retiradas_ausentes_no_se_vuelve_falla_por_no_tener_artefactos(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Qodo/#801: ``SIN_ARTEFACTOS`` no degrada a INCONSISTENTE ni a FAIL cuando el chequeo de ausencia *es* la verificación."""
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, dictar
+
+    informe = _informe(["textures/nueva_p.dds"], estado="EN_REVISION", efecto=None)
+    informe["archivos"][0]["veredicto"] = "REVIEW"  # type: ignore[index]
+    informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": "RETIRADA", "detalle": "x"}]
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+
+    final = combinar(dictar(informe), auditar(informe, tmp_path))
+
+    assert final.veredicto is VeredictoDelLote.REVIEW

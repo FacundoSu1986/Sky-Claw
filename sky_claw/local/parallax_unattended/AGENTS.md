@@ -35,6 +35,27 @@ también mira el primero. Medido en el rig real: con `--incluir-revision`, ocho 
 `veredicto: REVIEW` quedaron `estado: ESCRITA`, `conteos.EN_REVISION` dio 0 y el proceso salió
 0. Esta capa contesta la pregunta que faltaba.
 
+## Lo que el informe tiene que traer (y qué pasa si falta)
+
+- `omitidas_al_enumerar` (lista de textos): lo que la enumeración dejó afuera. **Obligatorio**:
+  sin el censo no se puede probar que no se omitió nada, así que su ausencia o una forma
+  inválida es `INCONSISTENTE`, y un censo no vacío es `REVIEW` (`RUTAS_OMITIDAS`). Lo escribe
+  `native_parallax/cli.py`; no se subió `VERSION_DEL_LOTE` porque entra a la procedencia e
+  invalidaría todas las cachés.
+- `otras_rutas` con efecto `RETIRADA`: el auditor exige **ausencia** en disco
+  (`RETIRADA_PRESENTE` es falla dura). Una `_p.dds` obsoleta que el juego sigue cargando con el
+  log en verde es exactamente el falso verde de esta capa.
+
+## Lo que esta capa todavía no verifica (declarado, no resuelto)
+
+- `PASS` es **inalcanzable** con el generador vigente: sin umbrales calibrados todo archivo sale
+  `REVIEW`. No se "arregla" acá; se documenta.
+- No hay punto de entrada de producción (nada importa esta capa ni hay `python -m`).
+- La desviación estándar del auditor es global: un relieve que ocupa una fracción chica de la
+  textura puede quedar enmascarado.
+- `dictar` y `auditar` validan cada uno la matriz `(estado, efecto)`; el ancla
+  `test_dictar_y_auditar_coinciden_en_la_matriz_estado_efecto` congela la matriz legal.
+
 ## Cómo extender
 
 - Un **estado** nuevo del generador: agregarlo a `ESTADOS_CONOCIDOS` **y** darle su rama en

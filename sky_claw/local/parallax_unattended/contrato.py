@@ -58,6 +58,8 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "link_to",
         "makedirs",
         "mkdir",
+        "mkdtemp",
+        "mkstemp",
         "move",
         "remove",
         "removedirs",
@@ -75,6 +77,19 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "write_text",
     }
 )
+
+#: Constructores de ``tempfile`` que crean un archivo o carpeta en disco (se invocan por nombre o como atributo).
+_CONSTRUCTORES_TEMPORALES: Final[frozenset[str]] = frozenset(
+    {
+        "NamedTemporaryFile",
+        "SpooledTemporaryFile",
+        "TemporaryDirectory",
+        "TemporaryFile",
+    }
+)
+
+#: Módulos de la biblioteca estándar cuyos escritores se pueden importar por nombre (``from os import remove``).
+_MODULOS_CON_ESCRITORES: Final[frozenset[str]] = frozenset({"os", "shutil", "tempfile"})
 
 #: Caracteres de modo de ``open`` que implican escritura.
 _MODOS_DE_ESCRITURA: Final[frozenset[str]] = frozenset("wax+")
@@ -179,13 +194,57 @@ def _es_escritura_os_open(nodo: ast.Call) -> bool:
     return "O_RDONLY" not in nombres
 
 
-def _revisar_llamada(nodo: ast.Call) -> bool:
+def _escritores_importados(arbol: ast.AST) -> frozenset[str]:
+    """Nombres locales que son un escritor de ``os``/``shutil``/``tempfile`` importado por nombre (con o sin alias).
+
+    ``from os import remove as r`` hace que ``r(x)`` sea ``os.remove(x)``: sin esto el contrato sólo veía el atributo.
+    """
+
+    nombres: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom) and nodo.level == 0 and nodo.module in _MODULOS_CON_ESCRITORES:
+            for alias in nodo.names:
+                if (
+                    alias.name in METODOS_QUE_ESCRIBEN
+                    or alias.name in _CONSTRUCTORES_TEMPORALES
+                    or alias.name == "write"
+                ):
+                    nombres.add(alias.asname or alias.name)
+    return frozenset(nombres)
+
+
+def _alias_de_os(arbol: ast.AST) -> frozenset[str]:
+    """Nombres locales con que se ve el módulo ``os``: ``os`` y todo ``import os as <alias>``."""
+
+    nombres = {"os"}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            nombres.update(alias.asname for alias in nodo.names if alias.name == "os" and alias.asname)
+    return frozenset(nombres)
+
+
+def _revisar_llamada(
+    nodo: ast.Call,
+    escritores_importados: frozenset[str] = frozenset(),
+    alias_de_os: frozenset[str] = frozenset({"os"}),
+) -> bool:
     funcion = nodo.func
     if isinstance(funcion, ast.Name) and funcion.id == "open":
         return _modo_escribe(nodo, indices_posicionales=(1,))
+    if isinstance(funcion, ast.Name):
+        return (
+            funcion.id in escritores_importados
+            or funcion.id in _CONSTRUCTORES_TEMPORALES
+            or funcion.id in ("mkdtemp", "mkstemp")
+        )
     if isinstance(funcion, ast.Attribute):
+        if funcion.attr in _CONSTRUCTORES_TEMPORALES:
+            return True
+        if funcion.attr == "write":
+            # Solo ``os.write(fd, ...)`` es disco: ``.write`` de un buffer en memoria o de un manejador ya revisado no.
+            return isinstance(funcion.value, ast.Name) and funcion.value.id in alias_de_os
         if funcion.attr == "open":
-            if isinstance(funcion.value, ast.Name) and funcion.value.id == "os":
+            if isinstance(funcion.value, ast.Name) and funcion.value.id in alias_de_os:
                 return _es_escritura_os_open(nodo)
             if isinstance(funcion.value, ast.Name) and funcion.value.id in ("io", "codecs", "builtins"):
                 return _modo_escribe(nodo, indices_posicionales=(1,))
@@ -203,6 +262,8 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
         return (Hallazgo(archivo, exc.lineno or 0, ReglaDeContrato.SINTAXIS_INVALIDA, str(exc.msg)),)
 
     paquete_origen = _paquete_de_archivo(archivo)
+    escritores_importados = _escritores_importados(arbol)
+    alias_de_os = _alias_de_os(arbol)
     hallazgos: list[Hallazgo] = []
     for nodo in ast.walk(arbol):
         if isinstance(nodo, (ast.Import, ast.ImportFrom)):
@@ -210,8 +271,8 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
                 regla = _es_prohibido(nombre)
                 if regla is not None:
                     hallazgos.append(Hallazgo(archivo, linea, regla, f"importa {nombre!r}"))
-        elif isinstance(nodo, ast.Call) and _revisar_llamada(nodo):
-            nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else "open"
+        elif isinstance(nodo, ast.Call) and _revisar_llamada(nodo, escritores_importados, alias_de_os):
+            nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "<llamada>")
             hallazgos.append(Hallazgo(archivo, nodo.lineno, ReglaDeContrato.ESCRIBE_EN_DISCO, f"llama a {nombre}()"))
     return tuple(sorted(hallazgos, key=lambda h: (h.archivo, h.linea)))
 

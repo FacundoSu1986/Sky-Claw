@@ -94,6 +94,15 @@ def test_verificar_api_paquete_real_exporta_simbolos_completos() -> None:
         ('ruta.write_bytes(b"x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("ruta.unlink()", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("ruta.mkdir(parents=True)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.mkdtemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.mkstemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.NamedTemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.TemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.TemporaryDirectory()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("NamedTemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("mkdtemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("TemporaryDirectory()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ('os.write(fd, b"x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
     ],
 )
 def test_revisar_fuente_violacion_sintetica_reporta_regla_esperada(fuente: str, regla: ReglaDeContrato) -> None:
@@ -162,3 +171,75 @@ def test_revisar_fuente_violaciones_multiples_reporta_lineas_y_reglas_exactas() 
         (2, ReglaDeContrato.IMPORTA_DEPENDENCIA_OPCIONAL),
         (5, ReglaDeContrato.ESCRIBE_EN_DISCO),
     ]
+
+
+def test_revisar_fuente_buffer_en_memoria_sin_hallazgos() -> None:
+    """``os.write`` es disco; ``.write`` de un buffer en memoria no: sin esta frontera el contrato sería ruido."""
+
+    assert revisar_fuente('buffer = io.StringIO()\nbuffer.write("x")\n', "sintetico.py") == ()
+
+
+@pytest.mark.parametrize("fuente", ["f()()\n", "tabla[0](x)\n", "(lambda: 1)()\n"])
+def test_revisar_fuente_callee_indirecto_sin_hallazgos(fuente: str) -> None:
+    """El callee que no es ``Name`` ni ``Attribute`` (otra llamada, un subíndice) no puede lanzar ni contar como disco."""
+
+    assert revisar_fuente(fuente, "sintetico.py") == ()
+
+
+_MODULOS_CON_ESCRITORES = ("os", "shutil", "tempfile")
+
+
+def _nombres_que_escriben() -> list[str]:
+    """Todo lo que el contrato ya trata como escritura por atributo, más ``write`` (solo ``os.write`` es disco)."""
+
+    from sky_claw.local.parallax_unattended import contrato
+
+    return sorted({*contrato.METODOS_QUE_ESCRIBEN, *contrato._CONSTRUCTORES_TEMPORALES, "write"})
+
+
+@pytest.mark.parametrize("nombre", _nombres_que_escriben())
+@pytest.mark.parametrize("modulo", _MODULOS_CON_ESCRITORES)
+def test_un_escritor_importado_por_nombre_o_con_alias_se_detecta(modulo: str, nombre: str) -> None:
+    """``from os import remove; remove(x)`` es la misma escritura que ``os.remove(x)``: se enumera la familia entera."""
+
+    directo = revisar_fuente(f"from {modulo} import {nombre}\n{nombre}(x)\n", "sintetico.py")
+    con_alias = revisar_fuente(f"from {modulo} import {nombre} as otro\notro(x)\n", "sintetico.py")
+
+    assert [h.regla for h in directo] == [ReglaDeContrato.ESCRIBE_EN_DISCO]
+    assert [h.regla for h in con_alias] == [ReglaDeContrato.ESCRIBE_EN_DISCO]
+
+
+@pytest.mark.parametrize(
+    "fuente",
+    [
+        "from os import getcwd\ngetcwd()\n",
+        "from os.path import join\njoin(a, b)\n",
+        "from shutil import which\nwhich(x)\n",
+        "write(x)\n",  # sin importarlo de os no es evidencia de disco
+        "def write(x): ...\nwrite(1)\n",
+    ],
+)
+def test_lo_que_no_es_un_escritor_importado_no_se_marca(fuente: str) -> None:
+    assert revisar_fuente(fuente, "sintetico.py") == ()
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperadas"),
+    [
+        ('import os as o\no.write(fd, b"x")\n', [ReglaDeContrato.ESCRIBE_EN_DISCO]),
+        ("import os as o\no.open(ruta, o.O_RDWR)\n", [ReglaDeContrato.ESCRIBE_EN_DISCO]),
+        ("import os as o\no.open(ruta, o.O_RDONLY)\n", []),
+        ("import os, io as o\no.write(1)\n", []),  # `o` es io acá, no os: un buffer no es disco
+    ],
+)
+def test_el_modulo_os_importado_con_alias_se_reconoce(fuente: str, esperadas: list[ReglaDeContrato]) -> None:
+    assert [h.regla for h in revisar_fuente(fuente, "sintetico.py")] == esperadas
+
+
+@pytest.mark.parametrize("nombre", ["mkdtemp", "NamedTemporaryFile", "TemporaryDirectory"])
+def test_revisar_fuente_llamada_por_nombre_reporta_el_nombre_real(nombre: str) -> None:
+    """El diagnóstico nombra la llamada que lo causó, no un ``open()`` fijo."""
+
+    (hallazgo,) = revisar_fuente(f"{nombre}()\n", "sintetico.py")
+
+    assert hallazgo.detalle == f"llama a {nombre}()"

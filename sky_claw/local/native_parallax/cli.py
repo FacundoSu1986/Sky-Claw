@@ -397,12 +397,19 @@ def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, carpeta
         )
 
 
-def _escribir_informe(informe: InformeDelLote, destino: str, salida: TextIO) -> None:
+def _escribir_informe(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> None:
     ruta = pathlib.Path(destino)
     try:
         ruta.parent.mkdir(parents=True, exist_ok=True)
         ruta.write_text(
-            json.dumps(informe.a_diccionario(), indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
+            json.dumps(
+                {**informe.a_diccionario(), "omitidas_al_enumerar": list(omitidas)},
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
         )
     except OSError as exc:
         print(f"No se pudo escribir el informe en {ruta}: {exc}", file=salida)
@@ -416,7 +423,7 @@ def _informar(informe: InformeDelLote, omitidas: Sequence[str], destino: str, sa
     Es la ÚNICA salida de los dos comandos (``generar`` y ``autoprueba``): antes cada uno mostraba el resumen y recién
     después escribía el informe, y un fallo de la consola lo perdía (rig 2026-10-24).
     """
-    _escribir_informe(informe, destino, salida)
+    _escribir_informe(informe, omitidas, destino, salida)
     _resumen(informe, omitidas, salida)
 
 

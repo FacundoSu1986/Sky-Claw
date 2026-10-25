@@ -77,6 +77,7 @@ class MotivoDelLote(enum.StrEnum):
     ARCHIVO_NO_PROCESADO = "archivo_no_procesado"
     ARCHIVO_NO_ESCRITO = "archivo_no_escrito"
     ARCHIVO_EN_REVISION = "archivo_en_revision"
+    RUTAS_OMITIDAS = "rutas_omitidas"
 
 
 #: Motivos que hacen que el informe no se pueda creer (precedencia 1).
@@ -108,6 +109,7 @@ MOTIVOS_DE_REVISION: Final[frozenset[MotivoDelLote]] = frozenset(
     {
         MotivoDelLote.ARCHIVO_EN_REVISION,
         MotivoDelLote.ARTEFACTO_NO_CONFIABLE,
+        MotivoDelLote.RUTAS_OMITIDAS,
     }
 )
 
@@ -272,6 +274,15 @@ def _leer_otras_rutas(informe: Mapping[str, object], vistas: set[str]) -> tuple[
     return tuple(otras)
 
 
+def _leer_omitidas(informe: Mapping[str, object]) -> tuple[str, ...]:
+    """Censo de lo que la enumeración dejó afuera. Obligatorio: sin él no se prueba que no se omitió nada."""
+
+    crudo = informe.get("omitidas_al_enumerar")
+    if not isinstance(crudo, list) or not all(isinstance(m, str) for m in crudo):
+        raise InformeInvalidoError("falta 'omitidas_al_enumerar' o no es una lista de textos")
+    return tuple(crudo)
+
+
 def _leer_conteos(informe: Mapping[str, object]) -> Mapping[str, int]:
     crudo = informe.get("conteos")
     if not isinstance(crudo, Mapping):
@@ -337,6 +348,7 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
         archivos = _leer_archivos(informe, vistas)
         otras_rutas = _leer_otras_rutas(informe, vistas)
         declarados = _leer_conteos(informe)
+        omitidas = _leer_omitidas(informe)
     except InformeInvalidoError as exc:
         return DecisionDelLote(
             veredicto=VeredictoDelLote.INCONSISTENTE,
@@ -394,6 +406,9 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
                 # EL CASO QUE EL CÓDIGO DE SALIDA DEL GENERADOR NO VE: escrito y en revisión.
                 _agregar(motivos, MotivoDelLote.ARCHIVO_EN_REVISION)
                 _agregar_ruta(rutas, archivo.ruta)
+
+    if omitidas:
+        _agregar(motivos, MotivoDelLote.RUTAS_OMITIDAS)
 
     for otra in otras_rutas:
         if otra.efecto in EFECTOS_FALLIDOS:
