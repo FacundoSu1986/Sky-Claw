@@ -44,6 +44,9 @@ MODULOS_QUE_NOMBRAN_TEXCONV = {
     # ejecuta ni calcula su huella: delega en ``export.verificar_texconv``, y el test de abajo comprueba por AST que no
     # lanza procesos.
     "sky_claw/local/native_parallax/diagnostico_texconv.py",
+    # NP-UA: capa de decisión desatendida. Lee ``encoder.texconv_version`` y ``encoder.texconv_sha256`` del
+    # ``informe_parallax.json`` solo como DATO para exigir trazabilidad del binario; no ejecuta procesos.
+    "sky_claw/local/parallax_unattended/veredicto.py",
 }
 MODULOS_QUE_LANZAN_PROCESOS = {"sky_claw/local/tools/texconv_runner.py"}
 
