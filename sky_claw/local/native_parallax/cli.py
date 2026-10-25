@@ -307,7 +307,12 @@ def _resumen(informe: InformeDelLote, omitidas: Sequence[str], salida: TextIO) -
             f"{sin_contenido} sin contenido: la altura no se mueve lo bastante y no se escribe nunca, ni con --incluir-revision.",
             file=salida,
         )
-    if conteos[EstadoDeArchivo.EN_REVISION] and not informe.parametros.escribir_revision:
+    escribibles_en_revision = sum(
+        1
+        for archivo in informe.archivos
+        if archivo.estado is EstadoDeArchivo.EN_REVISION and MOTIVO_SIN_CONTENIDO not in archivo.motivos
+    )
+    if escribibles_en_revision and not informe.parametros.escribir_revision:
         print(
             "Nada en revisión se escribió: hoy no hay umbrales validados y el gate manda todo a revisión. "
             "Agregá --incluir-revision para escribirlas igual (quedan registradas como sin validar).",
