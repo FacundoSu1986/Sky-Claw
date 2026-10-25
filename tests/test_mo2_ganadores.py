@@ -316,3 +316,143 @@ def test_el_modulo_no_lee_el_modlist_por_su_cuenta() -> None:
 
     assert llamadas.isdisjoint({"read_text", "open", "readlines", "read_bytes"})
     assert "read_enabled_mods" not in definidas
+
+
+# ---------------------------------------------------------------------------
+# Revisión de Codex en #806: raíz de capa que es un enlace, carpetas ocultas, identidad en Windows
+# ---------------------------------------------------------------------------
+
+
+def _enlace_a_directorio(enlace: pathlib.Path, destino: pathlib.Path) -> None:
+    try:
+        enlace.symlink_to(destino, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("este SO no permite crear symlinks sin privilegios")
+
+
+def test_un_mod_cuya_carpeta_es_un_enlace_no_se_recorre(perfil: Perfil, tmp_path: pathlib.Path) -> None:
+    """``is_dir()`` sigue enlaces: sin validar la raíz de la capa, el recorrido arrancaba DENTRO del árbol ajeno."""
+    afuera = tmp_path / "ajeno"
+    _archivo(afuera, "", "textures/foreign_n.dds")
+    _enlace_a_directorio(perfil.mods / "ModEnlazado", afuera)
+
+    with pytest.raises(GanadoresError, match=r"ModEnlazado.*es un enlace"):
+        perfil.indexar("ModEnlazado")
+
+
+def test_overwrite_que_es_un_enlace_no_se_recorre(perfil: Perfil, tmp_path: pathlib.Path) -> None:
+    afuera = tmp_path / "ajeno"
+    _archivo(afuera, "", "textures/foreign_n.dds")
+    _enlace_a_directorio(perfil.overwrite, afuera)
+
+    with pytest.raises(GanadoresError, match=r"overwrite es un enlace"):
+        perfil.indexar()
+
+
+def test_una_carpeta_oculta_con_mohidden_saca_a_todos_sus_descendientes_del_overlay(perfil: Perfil) -> None:
+    """Mismo criterio que ``vfs_attestation._iter_mod_files``, que poda las carpetas ``*.mohidden``."""
+    perfil.mod("Base", "textures/visible_n.dds", "textures/apagada.mohidden/oculta_n.dds")
+
+    indice = perfil.indexar("Base")
+
+    assert indice.ganador("textures/apagada.mohidden/oculta_n.dds") is None
+    assert [g.ruta_virtual for g in indice.con_sufijo("_n.dds")] == ["textures/visible_n.dds"]
+
+
+def test_dos_nombres_que_casefold_unifica_y_windows_distingue_son_rutas_distintas(perfil: Perfil) -> None:
+    """``casefold`` colapsa «ß» con «ss»; NTFS no: serían dos archivos. ``vfs_attestation`` documenta el mismo choque."""
+    perfil.mod("Base", "textures/Straße_n.dds")
+    perfil.mod("Retextura", "textures/Strasse_n.dds")
+
+    indice = perfil.indexar("Base", "Retextura")
+
+    primera = indice.ganador("textures/Straße_n.dds")
+    segunda = indice.ganador("textures/Strasse_n.dds")
+    assert primera is not None and primera.capa == "Base"
+    assert segunda is not None and segunda.capa == "Retextura"
+    assert len(indice) == 2
+
+
+def test_dos_mods_con_nombres_que_casefold_unifica_no_son_un_duplicado(perfil: Perfil) -> None:
+    perfil.mod("Straße", "textures/a_n.dds")
+    perfil.mod("Strasse", "textures/b_n.dds")
+
+    assert len(perfil.indexar("Straße", "Strasse")) == 2
+
+
+def test_un_mod_que_es_un_archivo_y_no_una_carpeta_se_rechaza(perfil: Perfil) -> None:
+    (perfil.mods / "Archivo").write_bytes(b"no soy una carpeta")
+
+    with pytest.raises(GanadoresError, match="no es una carpeta"):
+        perfil.indexar("Archivo")
+
+
+def test_un_error_al_inspeccionar_la_raiz_de_una_capa_es_un_error_tipado(
+    perfil: Perfil, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.mo2 import ganadores
+
+    perfil.mod("Base", _RUTA)
+
+    def fallar(_ruta: pathlib.Path) -> object:
+        raise PermissionError("acceso denegado")
+
+    monkeypatch.setattr(ganadores, "link_kind_and_identity_or_raise", fallar)
+
+    with pytest.raises(GanadoresError, match="no se pudo inspeccionar"):
+        perfil.indexar("Base")
+
+
+def test_se_rechaza_un_punto_de_reanalisis_no_clasificado_de_una_carpeta_propia(
+    perfil: Perfil, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En Windows hay puntos de reanálisis que no son symlink ni junction; ``links`` los rechaza y acá se traduce a error tipado."""
+    from sky_claw.local.mo2 import ganadores
+
+    perfil.mod("Base", _RUTA)
+    llamadas: list[pathlib.Path] = []
+
+    def rechazar(ruta: pathlib.Path, _identidad: object) -> None:
+        llamadas.append(ruta)
+        raise PermissionError("punto de reanálisis no clasificado")
+
+    monkeypatch.setattr(ganadores, "reject_unclassified_reparse_point", rechazar)
+
+    with pytest.raises(GanadoresError, match="no se pudo inspeccionar"):
+        perfil.indexar("Base")
+    assert llamadas == [perfil.mods / "Base"]
+
+
+def test_el_chequeo_de_reanalisis_se_hace_una_vez_por_capa_y_no_para_los_enlaces(
+    perfil: Perfil, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    from sky_claw.local.mo2 import ganadores
+
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Otro", "textures/otro_n.dds")
+    perfil.en_overwrite("textures/ov_n.dds")
+    llamadas: list[pathlib.Path] = []
+    monkeypatch.setattr(ganadores, "reject_unclassified_reparse_point", lambda ruta, _i: llamadas.append(ruta))
+
+    perfil.indexar("Base", "Otro")
+
+    assert llamadas == [perfil.mods / "Base", perfil.mods / "Otro", perfil.overwrite]
+
+
+def test_el_chequeo_de_reanalisis_no_corre_ni_para_un_enlace_ni_para_una_capa_que_no_existe(
+    perfil: Perfil, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    from sky_claw.local.mo2 import ganadores
+
+    afuera = tmp_path / "ajeno"
+    _archivo(afuera, "", "textures/foreign_n.dds")
+    _enlace_a_directorio(perfil.mods / "ModEnlazado", afuera)
+    llamadas: list[pathlib.Path] = []
+    monkeypatch.setattr(ganadores, "reject_unclassified_reparse_point", lambda ruta, _i: llamadas.append(ruta))
+
+    with pytest.raises(GanadoresError):
+        perfil.indexar("ModEnlazado")
+    with pytest.raises(GanadoresError):
+        perfil.indexar("NoExiste")
+
+    assert llamadas == []

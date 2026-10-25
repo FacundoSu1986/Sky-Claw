@@ -22,11 +22,16 @@ gana) y no prueba que USVFS mapee lo que acá se resuelve (eso lo aporta el cana
 from __future__ import annotations
 
 import pathlib
+import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from sky_claw.app.security.links import iter_archivos_propios
+from sky_claw.app.security.links import (
+    iter_archivos_propios,
+    link_kind_and_identity_or_raise,
+    reject_unclassified_reparse_point,
+)
 
 __all__ = [
     "TOPE_DE_ARCHIVOS_POR_DEFECTO",
@@ -65,7 +70,7 @@ def _clave(ruta: str) -> tuple[str, str]:
     partes = normalizada.split("/")
     if not normalizada or normalizada.startswith("/") or any(p in ("", ".", "..") for p in partes) or ":" in partes[0]:
         raise GanadoresError(f"ruta virtual inválida: {ruta!r}")
-    return normalizada.casefold(), normalizada
+    return normalizada.lower(), normalizada
 
 
 class GanadoresDelPerfil:
@@ -84,7 +89,7 @@ class GanadoresDelPerfil:
 
     def con_sufijo(self, sufijo: str) -> tuple[GanadorDeRuta, ...]:
         """Los ganadores cuya ruta termina en *sufijo* (sin distinguir mayúsculas), ordenados por ruta."""
-        buscado = sufijo.casefold()
+        buscado = sufijo.lower()
         return tuple(self._ganadores[clave] for clave in sorted(self._ganadores) if clave.endswith(buscado))
 
 
@@ -97,12 +102,33 @@ def _exigir_tope(valor: object) -> int:
 def _exigir_enabled(enabled: Sequence[str]) -> tuple[str, ...]:
     vistos: set[str] = set()
     for nombre in enabled:
-        if nombre.casefold() in vistos:
+        if nombre.lower() in vistos:
             raise GanadoresError(
                 f"el modlist repite el mod {nombre!r}: la prioridad efectiva es ambigua y no se puede afirmar"
             )
-        vistos.add(nombre.casefold())
+        vistos.add(nombre.lower())
     return tuple(enabled)
+
+
+def _es_carpeta_propia(raiz: pathlib.Path, *, etiqueta: str) -> bool:
+    """``True`` si *raiz* es una carpeta propia; ``False`` si no existe; ``GanadoresError`` si es un enlace o no es carpeta.
+
+    ``is_dir()`` sigue enlaces: sin esto, un mod que es un symlink o un junction hace que el recorrido arranque DENTRO del árbol
+    ajeno (``iter_archivos_propios`` solo mira lo que cuelga de la ruta que se le da) e indexe archivos que el overlay no entrega.
+    """
+    try:
+        tipo, identidad = link_kind_and_identity_or_raise(raiz)
+        if identidad is not None and tipo is None:
+            reject_unclassified_reparse_point(raiz, identidad)
+    except OSError as exc:
+        raise GanadoresError(f"no se pudo inspeccionar {etiqueta}: {exc}") from exc
+    if identidad is None:
+        return False
+    if tipo is not None:
+        raise GanadoresError(f"{etiqueta} es un enlace ({tipo}): no se recorre")
+    if not stat.S_ISDIR(identidad.st_mode):
+        raise GanadoresError(f"{etiqueta} no es una carpeta")
+    return True
 
 
 def indexar_ganadores(
@@ -130,11 +156,11 @@ def indexar_ganadores(
     capas: list[tuple[str, pathlib.Path]] = []
     for nombre in mods:
         raiz = mods_dir / nombre
-        if not raiz.is_dir():
+        if not _es_carpeta_propia(raiz, etiqueta=f"el mod {nombre!r}"):
             raise GanadoresError(f"el mod habilitado {nombre!r} no existe en {mods_dir}")
         capas.append((nombre, raiz))
     overwrite = data_root / CAPA_OVERWRITE
-    if overwrite.is_dir():
+    if _es_carpeta_propia(overwrite, etiqueta=CAPA_OVERWRITE):
         capas.append((CAPA_OVERWRITE, overwrite))
 
     ganadores: dict[str, GanadorDeRuta] = {}
@@ -148,10 +174,11 @@ def indexar_ganadores(
                     raise GanadoresError(
                         f"el árbol de {prefijo!r} supera el tope de {tope} archivos: no se resuelve a medias"
                     )
-                if archivo.name.casefold().endswith(_SUFIJO_OCULTO):
-                    continue
-                relativa = "/".join((prefijo, *archivo.relative_to(base).parts))
-                ganadores[relativa.casefold()] = GanadorDeRuta(ruta_virtual=relativa, capa=capa, archivo=archivo)
+                partes = archivo.relative_to(base).parts
+                if any(parte.lower().endswith(_SUFIJO_OCULTO) for parte in partes):
+                    continue  # un archivo o una carpeta ocultos: nada de lo que cuelga de ahí está en el overlay
+                relativa = "/".join((prefijo, *partes))
+                ganadores[relativa.lower()] = GanadorDeRuta(ruta_virtual=relativa, capa=capa, archivo=archivo)
     except OSError as exc:
         raise GanadoresError(f"no se pudo recorrer el perfil: {exc}") from exc
     return GanadoresDelPerfil(ganadores)
