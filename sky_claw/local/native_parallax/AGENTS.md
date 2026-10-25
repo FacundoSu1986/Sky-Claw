@@ -122,6 +122,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
   entrada la enumera `provider.py` (`cli.descubrir_normales_de_carpeta` es un adaptador delgado); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
   `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
   Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
+  `cli.py perfil` (NP-A0e) es un diagnóstico de SOLO lectura sobre el `modlist.txt` de un perfil MO2 (usa `mo2/ganadores.py`): dice si
+  otro mod, `overwrite` o un mod de control tapa la entrada que se mediría o la salida que se publicaría (#792 H12). No pide `texconv`,
+  no coordina ni escribe, y no nombra `procesar_lote` ni `exportar_altura_bc4` (el censo de llamadores sigue siendo solo `cli.py`). Sale con
+  4 si hay algo tapado. Ancla: `tests/test_native_parallax_cli_perfil.py` (congela los subcomandos y cuáles piden `texconv`).
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
