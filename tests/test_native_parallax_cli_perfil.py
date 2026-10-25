@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from sky_claw.local.native_parallax import cli
+from sky_claw.local.native_parallax import cli, provider
 from sky_claw.local.native_parallax.cli import (
     CODIGO_CON_TAPADOS,
     CODIGO_DE_USO,
@@ -280,6 +280,34 @@ def test_el_mod_de_salida_habilitado_pero_sin_carpeta_falla_cerrado_y_se_nombra(
 
     assert codigo == CODIGO_DE_USO
     assert NOMBRE_DEL_MOD_DE_SALIDA in texto
+
+
+def test_una_textura_ilegible_hace_fallar_el_diagnostico_en_vez_de_darlo_por_limpio(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lo que no se pudo leer no se puede dar por «no tapado»: sin verlo no se sabe qué gana (revisión de Codex en #809).
+
+    La textura ilegible está además tapada por otro mod, así que el diagnóstico completo marcaría un tapado; si la omisión se
+    descartara, el resultado sería «Sin texturas tapadas» con código 0.
+    """
+    mundo.mod_vacio(NOMBRE_DEL_MOD_DE_SALIDA)
+    mundo.archivo(_MOD, _ENTRADA)
+    mundo.archivo("Retexture", _ENTRADA)
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", "+Retexture", f"+{_MOD}")
+    real = provider.huella_acotada
+
+    def huella(ruta: pathlib.Path, tamano: int) -> str:
+        if ruta.parts[-len(_ENTRADA.split("/")) - 1] == _MOD:
+            raise PermissionError("bloqueado por el antivirus")
+        return real(ruta, tamano)
+
+    monkeypatch.setattr(provider, "huella_acotada", huella)
+
+    codigo, texto = _perfil(mundo)
+
+    assert codigo == CODIGO_DE_USO
+    assert "incompleta" in texto
+    assert "Sin texturas tapadas" not in texto
 
 
 def test_un_mod_habilitado_sin_carpeta_es_un_error_de_uso(mundo: Mundo) -> None:

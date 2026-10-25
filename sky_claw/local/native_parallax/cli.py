@@ -556,7 +556,8 @@ def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
             )
         indice = indexar_ganadores(mods_dir=mods_dir, data_root=data_root, enabled=enabled)
         # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
-        normales, _omitidas = descubrir_normales_de_carpeta(mods_dir / elegido)
+        # Completa o nada: una textura que no se pudo leer no se puede dar por «no tapada» (#809).
+        normales, _omitidas = descubrir_normales_de_carpeta(mods_dir / elegido, exigir_completa=True)
     except (VfsAttestationError, GanadoresError) as exc:
         raise UsoIncorrectoError(str(exc)) from exc
     hallazgos = _hallazgos_del_perfil(indice, enabled, elegido, normales)
