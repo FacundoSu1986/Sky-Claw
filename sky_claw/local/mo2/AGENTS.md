@@ -16,6 +16,11 @@ raíz.
 - Si falla el rollback, preservar el backup.
 - Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
   procesos descendientes.
+- `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
+  normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
+  `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y
+  falla cerrado ante un mod habilitado sin carpeta, un nombre repetido o un árbol que pasa el tope. Es una vista ESTRUCTURAL:
+  no prueba que USVFS mapee lo resuelto (eso es el canary del broker) ni considera el game data físico.
 
 ## Verificación segura
 

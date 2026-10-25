@@ -294,6 +294,12 @@ MECANISMO_DE_MEDICION: dict[str, str] = {
     # DirectoryRollback sobre el mismo mod empaquetado (medir con una política
     # y borrar con otra es cómo la cuenta y el efecto divergen).
     "sky_claw/local/mo2/mod_effectivity.py": "link-aware",
+    # Indexa los archivos de cada capa del perfil (mods y ``overwrite``) para resolver qué ruta
+    # virtual gana. Mide link-aware (``iter_archivos_propios``) porque su respuesta es la que el
+    # generador usa para elegir sobre qué textura trabajar: si el recorrido entrara por un
+    # junction a un árbol ajeno, daría por ganadora una textura que el overlay no entrega. No
+    # tiene contraparte que borre: solo lee.
+    "sky_claw/local/mo2/ganadores.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
     "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }
