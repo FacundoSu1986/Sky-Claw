@@ -711,3 +711,58 @@ def test_ci_instala_el_lock_del_extra_con_hashes_y_lo_audita_en_modo_estricto() 
 
     assert len(instala) == 1, "CI debe instalar el lock del extra con --require-hashes"
     assert len(audita) == 1, "CI debe auditar el lock del extra con pip-audit --strict"
+
+
+# ---------------------------------------------------------------------------
+# Las puertas de entrada a la exportación y a la escritura (regla del hermano de AGENTS.md)
+# ---------------------------------------------------------------------------
+
+
+def _nombra(codigo: str, nombre: str) -> bool:
+    """``True`` si el código importa, accede a o lee ``nombre`` (un ``def`` que lo define no cuenta como uso).
+
+    Cuenta ``from x import nombre [as alias]``, ``algo.nombre`` y el nombre suelto, para que un alias no esconda al llamador.
+    """
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.ImportFrom) and any(alias.name == nombre for alias in nodo.names):
+            return True
+        if isinstance(nodo, ast.Attribute) and nodo.attr == nombre:
+            return True
+        if isinstance(nodo, ast.Name) and nodo.id == nombre and isinstance(nodo.ctx, ast.Load):
+            return True
+    return False
+
+
+def _modulos_que_nombran(nombre: str) -> frozenset[str]:
+    """Rutas (relativas a la raíz del repo) de los módulos de ``sky_claw/`` que nombran ``nombre``."""
+    return frozenset(
+        ruta.relative_to(RAIZ).as_posix()
+        for ruta in sorted((RAIZ / "sky_claw").rglob("*.py"))
+        if _nombra(ruta.read_text(encoding="utf-8"), nombre)
+    )
+
+
+@pytest.mark.parametrize("nombre", ["procesar_lote", "exportar_altura_bc4"])
+def test_solo_la_linea_de_comandos_llega_a_la_exportacion_y_a_la_escritura_del_generador(nombre: str) -> None:
+    """El piso de contenido (NP-NO-EMPTY) vive en ``lote._fase_de_calculo``: protege a toda superficie que pase por ``procesar_lote``.
+
+    Si la GUI (``SupervisorAgent`` → ``tool_dispatcher``) o el agente LLM (``AsyncToolRegistry`` → ``LLMRouter``) se cablean
+    (NP-A0) o alguien llama a ``exportar_altura_bc4`` por su cuenta, este censo se rompe a propósito: hay que agregarlos acá y
+    probar que pasan por el mismo piso, en vez de descubrir un camino que publica mapas sin contenido.
+    """
+    assert _modulos_que_nombran(nombre) == frozenset({"sky_claw/local/native_parallax/cli.py"})
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [
+        ("from x import procesar_lote\n", True),
+        ("from x import procesar_lote as p\np()\n", True),
+        ("import x\nx.procesar_lote()\n", True),
+        ("procesar_lote()\n", True),
+        ("def procesar_lote():\n    pass\n", False),  # definirla no es llamarla
+        ("from x import otra\n", False),
+    ],
+)
+def test_el_censo_de_puertas_ve_importes_alias_y_atributos_pero_no_la_definicion(codigo: str, esperado: bool) -> None:
+    assert _nombra(codigo, "procesar_lote") is esperado
