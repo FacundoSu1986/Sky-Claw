@@ -456,3 +456,47 @@ def test_el_chequeo_de_reanalisis_no_corre_ni_para_un_enlace_ni_para_una_capa_qu
         perfil.indexar("NoExiste")
 
     assert llamadas == []
+
+
+# ---------------------------------------------------------------------------
+# Revisión de CodeRabbit en #806: raíces de la instancia y nombres que se escapan de la capa
+# ---------------------------------------------------------------------------
+
+
+def test_un_mods_dir_que_no_existe_no_es_un_perfil_vacio(tmp_path: pathlib.Path) -> None:
+    """Una instancia equivocada no puede presentarse como un perfil válido sin mods."""
+    with pytest.raises(GanadoresError, match="mods_dir"):
+        indexar_ganadores(mods_dir=tmp_path / "no_existe", data_root=tmp_path, enabled=())
+
+
+def test_un_data_root_que_no_existe_no_es_un_overwrite_ausente(perfil: Perfil, tmp_path: pathlib.Path) -> None:
+    perfil.mod("Base", _RUTA)
+
+    with pytest.raises(GanadoresError, match="data_root"):
+        indexar_ganadores(mods_dir=perfil.mods, data_root=tmp_path / "no_existe", enabled=("Base",))
+
+
+def test_un_overwrite_ausente_bajo_un_data_root_valido_sigue_siendo_valido(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+
+    assert not perfil.overwrite.exists()
+    assert len(perfil.indexar("Base")) == 1
+
+
+@pytest.mark.parametrize("nombre", ["../afuera", "..", ".", "a/b", "a\\b", "/abs", "C:\\x", "", "x\x00y"])
+def test_un_nombre_de_mod_que_no_es_una_sola_carpeta_se_rechaza(perfil: Perfil, nombre: str) -> None:
+    """``read_enabled_mods`` valida la sintaxis de la línea, no que el nombre sea un componente: acá no se confía."""
+    with pytest.raises(GanadoresError, match="nombre de mod"):
+        perfil.indexar(nombre)
+
+
+@pytest.mark.parametrize("prefijo", ["", "..", "../x", "/textures", "a/../b", "C:/x", "textures//x", "."])
+def test_un_prefijo_que_se_escapa_de_la_capa_se_rechaza(perfil: Perfil, prefijo: str) -> None:
+    with pytest.raises(GanadoresError, match="prefijo"):
+        perfil.indexar(prefijo=prefijo)
+
+
+def test_un_prefijo_de_varios_componentes_es_valido(perfil: Perfil) -> None:
+    perfil.mod("Base", "textures/architecture/a_n.dds")
+
+    assert len(perfil.indexar("Base", prefijo="textures/architecture")) == 1

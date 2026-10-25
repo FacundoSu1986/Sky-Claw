@@ -99,9 +99,24 @@ def _exigir_tope(valor: object) -> int:
     return valor
 
 
+def _exigir_nombre_de_mod(nombre: str) -> None:
+    """Un mod es UNA carpeta de ``mods_dir``: ``read_enabled_mods`` valida la sintaxis de la línea, no que el nombre no se escape."""
+    if not nombre or nombre in (".", "..") or any(c in nombre for c in "/\\:\x00"):
+        raise GanadoresError(f"nombre de mod inválido: {nombre!r} (debe ser una sola carpeta de mods_dir)")
+
+
+def _exigir_prefijo(prefijo: str) -> tuple[str, ...]:
+    """Los componentes de un prefijo Data relativo y contenido en la capa (``textures``, ``textures/architecture``)."""
+    partes = tuple(prefijo.replace("\\", "/").split("/"))
+    if not prefijo or any(p in ("", ".", "..") for p in partes) or ":" in partes[0] or "\x00" in prefijo:
+        raise GanadoresError(f"prefijo inválido: {prefijo!r} (debe ser relativo y quedar dentro de la capa)")
+    return partes
+
+
 def _exigir_enabled(enabled: Sequence[str]) -> tuple[str, ...]:
     vistos: set[str] = set()
     for nombre in enabled:
+        _exigir_nombre_de_mod(nombre)
         if nombre.lower() in vistos:
             raise GanadoresError(
                 f"el modlist repite el mod {nombre!r}: la prioridad efectiva es ambigua y no se puede afirmar"
@@ -152,6 +167,10 @@ def indexar_ganadores(
         GanadoresError: mod habilitado sin carpeta, nombre repetido, tope inválido o superado, o árbol ilegible.
     """
     tope = _exigir_tope(maximo_de_archivos)
+    partes_del_prefijo = _exigir_prefijo(prefijo)
+    for etiqueta, raiz in (("mods_dir", mods_dir), ("data_root", data_root)):
+        if not raiz.is_dir():
+            raise GanadoresError(f"{etiqueta} no existe o no es una carpeta: {raiz}: no es la instancia que se cree")
     mods = _exigir_enabled(enabled)
     capas: list[tuple[str, pathlib.Path]] = []
     for nombre in mods:
@@ -167,7 +186,7 @@ def indexar_ganadores(
     visitados = 0
     try:
         for capa, raiz in capas:  # de menor a mayor prioridad: la capa siguiente pisa a la anterior
-            base = raiz / prefijo
+            base = raiz.joinpath(*partes_del_prefijo)
             for archivo, _identidad in iter_archivos_propios(base):
                 visitados += 1
                 if visitados > tope:
@@ -177,7 +196,7 @@ def indexar_ganadores(
                 partes = archivo.relative_to(base).parts
                 if any(parte.lower().endswith(_SUFIJO_OCULTO) for parte in partes):
                     continue  # un archivo o una carpeta ocultos: nada de lo que cuelga de ahí está en el overlay
-                relativa = "/".join((prefijo, *partes))
+                relativa = "/".join((*partes_del_prefijo, *partes))
                 ganadores[relativa.lower()] = GanadorDeRuta(ruta_virtual=relativa, capa=capa, archivo=archivo)
     except OSError as exc:
         raise GanadoresError(f"no se pudo recorrer el perfil: {exc}") from exc
