@@ -10,6 +10,7 @@ ADR 0012 §19c, §34.10, §36.7 son las fuentes normativas:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -177,6 +178,12 @@ def admitir_clone_root_path(
             raise RuntimeCloneAdmissionError("el root del clone está dentro de candidates/")
         if _contenida(ruta, state_dir(s_root)):
             raise RuntimeCloneAdmissionError("el root del clone está dentro de state/")
+        if _contenida(ruta, s_root):
+            raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) el storage root: '{ruta}'")
+        if _contenida(s_root, ruta):
+            raise RuntimeCloneAdmissionError(
+                f"el storage root está dentro del root del clone (ancestro no permitido): '{ruta}'"
+            )
 
     # Exclusión respecto de la Managed Source
     if managed_source_root is not None:
@@ -322,6 +329,18 @@ def registrar_runtime_clone_record(
     validar_generation_id(record.source_generation_id)
     if record.admitted_role != CANONICAL_ADMITTED_ROLE:
         raise RuntimeCloneAdmissionError(f"admitted_role inválido: '{record.admitted_role}'")
+
+    # Validar existencia de la Generation de origen en el storage
+    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
+    from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
+
+    try:
+        leer_generation_metadata(root, record.source_generation_id)
+    except (FrozenRuntimeError, OSError, ValueError, KeyError) as exc:
+        raise FrozenRuntimeStorageError(
+            f"metadata ausente para la generation '{record.source_generation_id}' "
+            f"declarada en clone '{record.clone_id}': {exc}"
+        ) from exc
 
     # Validación de admisión de la ruta del clone
     admitir_clone_root_path(record.root_path, storage_root=root)
@@ -547,6 +566,21 @@ def verificar_runtime_clone(
                 return GenerationVerificationResult(
                     state=GenerationVerificationState.INVALID,
                     message=f"tamaño de archivo crítico '{crit.rel_path}' difiere de la Generation",
+                    recorded=gen_meta,
+                    observed_identity=obs.runtime_identity,
+                )
+            hasher = hashlib.sha256()
+            with c_path.open("rb") as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            digest_calculado = hasher.hexdigest().lower()
+            if digest_calculado != crit.digest.lower():
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message=(
+                        f"digest de archivo crítico '{crit.rel_path}' difiere de la Generation: "
+                        f"{digest_calculado} != {crit.digest}"
+                    ),
                     recorded=gen_meta,
                     observed_identity=obs.runtime_identity,
                 )

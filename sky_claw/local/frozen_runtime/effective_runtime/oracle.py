@@ -225,14 +225,12 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
         RuntimeCloneLifecycle,
         admitir_clone_root_path,
         cargar_runtime_clone_record,
+        verificar_runtime_clone,
     )
+    from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
+    from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
 
-    try:
-        record = cargar_runtime_clone_record(pathlib.Path(root), clone_id)
-    except (FrozenRuntimeError, OSError, ValueError, KeyError):
-        # Corrupción / error en el registro: fail-closed, clone_root queda en None
-        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
-
+    record = cargar_runtime_clone_record(pathlib.Path(root), clone_id)
     if record is None:
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
@@ -243,6 +241,17 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
     if record.admitted_role != CANONICAL_ADMITTED_ROLE:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    # Validar que la Generation exista de verdad en el storage
+    try:
+        leer_generation_metadata(pathlib.Path(root), record.source_generation_id)
+    except (FrozenRuntimeError, OSError, ValueError, KeyError):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    # Validar físicamente el clone contra la Generation registrada
+    verif = verificar_runtime_clone(pathlib.Path(root), clone_id)
+    if verif.state is not GenerationVerificationState.VALID:
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
     try:

@@ -10,6 +10,7 @@ Contratos auditados:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -44,12 +45,14 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
 )
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeLockBusyError,
+    FrozenRuntimeStorageError,
     InvalidCloneIdError,
     RuntimeCloneAdmissionError,
     RuntimeCloneCollisionError,
     RuntimeCloneCorruptError,
     RuntimeCloneLifecycleError,
     RuntimeCloneSchemaError,
+    StateCorruptError,
     StateSchemaError,
 )
 from sky_claw.local.frozen_runtime.generations import registrar_generation_metadata
@@ -122,7 +125,9 @@ def _crear_generation_valida(
     gen_dir = root / "versions" / f"1.6.1170__{digest_prefix}"
     _crear_arbol_juego(gen_dir, version=version)
     full_digest = (digest_prefix * 6)[:64]
-    crit = FileIdentity(rel_path="SkyrimSE.exe", size=len(f"SkyrimSE-{version}".encode()), digest="d1")
+    exe_bytes = f"SkyrimSE-{version}".encode()
+    crit_digest = hashlib.sha256(exe_bytes).hexdigest()
+    crit = FileIdentity(rel_path="SkyrimSE.exe", size=len(exe_bytes), digest=crit_digest)
     evidencia = SourceSnapshotEvidence(
         observed_at_ns=1000,
         provider=ManagedSourceProvider.STEAM,
@@ -139,6 +144,23 @@ def _crear_generation_valida(
     )
     meta = registrar_generation_metadata(root, evidencia)
     return meta.generation_id
+
+
+@pytest.fixture(autouse=True)
+def _mock_pe_version_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_read(exe: pathlib.Path) -> str:
+        try:
+            content = exe.read_bytes()
+            if content.startswith(b"SkyrimSE-"):
+                return content.split(b"-")[1].decode("ascii", errors="ignore").strip()
+        except OSError:
+            pass
+        return "1.6.1170.0"
+
+    monkeypatch.setattr(
+        "sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version",
+        _mock_read,
+    )
 
 
 class TestFrozenRuntimeP5BDurableAuthority:
@@ -258,12 +280,13 @@ class TestFrozenRuntimeP5BDurableAuthority:
         """4. Un clone cuya Generation declarada no existe en el storage es huérfano."""
         root = tmp_path / "frozen"
         initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
         clone_root = _crear_arbol_juego(tmp_path / "clone_orphan")
 
         record = RuntimeCloneRecord(
             schema_version=1,
             clone_id="clone-orphan",
-            source_generation_id="1.6.1170__ffffffffffff",  # no existe en state/generations
+            source_generation_id=gen_id,
             lifecycle=RuntimeCloneLifecycle.PROVISIONED,
             intended_runtime_setup_id="setup-1",
             verified_runtime_setup_id="setup-1",
@@ -272,6 +295,9 @@ class TestFrozenRuntimeP5BDurableAuthority:
             created_at_ns=0,
         )
         registrar_runtime_clone_record(root, record)
+
+        # Simular huérfano eliminando la Generation de origen
+        (root / "state" / "generations" / f"{gen_id}.json").unlink()
 
         resultado = verificar_runtime_clone(root, "clone-orphan")
         assert resultado.state is GenerationVerificationState.INVALID
@@ -346,6 +372,7 @@ class TestFrozenRuntimeP5BDurableAuthority:
         """7. Exclusión interproceso real sobre el FrozenRuntimeRoot."""
         root = tmp_path / "frozen"
         initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
 
         ready_file = tmp_path / "child_ready.flag"
         release_file = tmp_path / "child_release.flag"
@@ -384,7 +411,7 @@ class TestFrozenRuntimeP5BDurableAuthority:
             rec = RuntimeCloneRecord(
                 schema_version=1,
                 clone_id="clone-concurrent",
-                source_generation_id="1.6.1170__a1b2c3d4e5f6",
+                source_generation_id=gen_id,
                 lifecycle=RuntimeCloneLifecycle.CREATED,
                 intended_runtime_setup_id="setup-1",
                 verified_runtime_setup_id=None,
@@ -459,10 +486,11 @@ class TestFrozenRuntimeP5BDurableAuthority:
         assert idem == rec1
 
         # Mismo id con datos distintos (source_generation_id distinto): RuntimeCloneCollisionError
+        gen_id2 = _crear_generation_valida(root, digest_prefix="b1b2b3b4b5b6")
         rec_distinto = RuntimeCloneRecord(
             schema_version=1,
             clone_id="clone-dup",
-            source_generation_id="1.6.1170__999999999999",
+            source_generation_id=gen_id2,
             lifecycle=RuntimeCloneLifecycle.CREATED,
             intended_runtime_setup_id="setup-1",
             verified_runtime_setup_id=None,
@@ -658,17 +686,167 @@ class TestFrozenRuntimeP5BDurableAuthority:
         with pytest.raises(StateSchemaError, match="ambos null o ambos no-null"):
             load_frozen_runtime_state(active_path)
 
-        # Solo desired_clone_id
-        active_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "desired_generation_id": None,
-                    "desired_clone_id": "clone-1",
-                    "updated_at_ns": 0,
-                }
+    def test_14_falsificacion_autoridad_clone_con_generation_inexistente_rechazada(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """14. Registro de clone con Generation inexistente debe rechazarse, y desired_runtime permanece fail-closed."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_fake")
+
+        gen_id_inexistente = "1.6.1170__999999999999"
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-fake",
+            source_generation_id=gen_id_inexistente,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+
+        # 1. registrar_runtime_clone_record debe rechazar un clone cuya Generation de origen no existe
+        with pytest.raises(FrozenRuntimeStorageError, match="metadata ausente para la generation"):
+            registrar_runtime_clone_record(root, rec)
+
+        # 2. Aun si el registro existiese en disco (bypass/manipulación directa),
+        # desired_runtime_from_storage debe permanecer fail-closed (clone_root is None)
+        # y el oráculo NUNCA debe emitir MATCH ni autorizar activación.
+        from sky_claw.local.frozen_runtime.clones import _payload_de_clone_record
+        from sky_claw.local.frozen_runtime.state import write_json_atomic
+
+        destino = clones_state_dir(root) / "clone-fake.json"
+        write_json_atomic(destino, _payload_de_clone_record(rec))
+
+        save_frozen_runtime_state(
+            active_state_path(root),
+            FrozenRuntimeState(
+                schema_version=2,
+                updated_at_ns=100,
+                desired_active_generation=gen_id_inexistente,
+                desired_clone_id="clone-fake",
             ),
+        )
+
+        deseado = desired_runtime_from_storage(root)
+        assert deseado.clone_root is None  # FAIL-CLOSED: no autoriza ruta sin generación válida
+
+        instancia = tmp_path / "mo2_inst"
+        instancia.mkdir()
+        (instancia / "modorganizer.ini").write_text(
+            f"[General]\ngamePath=@ByteArray({str(clone_root).replace(chr(92), chr(92) * 2)})\n",
+            encoding="utf-8",
+        )
+
+        res = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=deseado,
+            config_skyrim_path=str(clone_root),
+            probes=_probes_limpios(),
+        )
+        assert res.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert not res.authorizes_activation
+
+    def test_15_integridad_archivos_criticos_detecta_divergencia_sha256_mismo_tamano(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """15. verificar_runtime_clone detecta alteración de archivo crítico con mismo tamaño pero distinto digest."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        gen_id = _crear_generation_valida(root, version="1.6.1170.0")
+
+        # Crear clone root donde SkyrimSE.exe tiene exactamente el mismo tamaño pero bytes distintos
+        clone_root = tmp_path / "clone_tampered"
+        clone_root.mkdir()
+        original_bytes = b"SkyrimSE-1.6.1170.0"
+        tampered_bytes = b"X" * len(original_bytes)
+        assert len(tampered_bytes) == len(original_bytes)
+        assert hashlib.sha256(tampered_bytes).hexdigest() != hashlib.sha256(original_bytes).hexdigest()
+
+        (clone_root / "SkyrimSE.exe").write_bytes(tampered_bytes)
+        (clone_root / "skse64_loader.exe").write_bytes(b"loader")
+        (clone_root / "skse64_1_6_1170.dll").write_bytes(b"dll")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-tampered",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+        verif = verificar_runtime_clone(root, "clone-tampered")
+
+        assert verif.state is GenerationVerificationState.INVALID
+        assert "digest de archivo crítico" in verif.message or "difiere" in verif.message
+
+    def test_16_contencion_fisica_rechaza_storage_root_y_ancestros(self, tmp_path: pathlib.Path) -> None:
+        """16. admitir_clone_root_path rechaza storage_root, sus ancestros y solapamientos con managed_source."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        # Clone root == storage_root
+        with pytest.raises(RuntimeCloneAdmissionError, match="storage root"):
+            admitir_clone_root_path(root, storage_root=root)
+
+        # Clone root es ancestro de storage_root
+        with pytest.raises(RuntimeCloneAdmissionError, match="storage root"):
+            admitir_clone_root_path(tmp_path, storage_root=root)
+
+        # Solapamiento con Managed Source (managed_source dentro de clone_root o viceversa)
+        sources_dir = tmp_path / "OtherSources"
+        ms_root = sources_dir / "SkyrimGame"
+        ms_root.mkdir(parents=True)
+        with pytest.raises(RuntimeCloneAdmissionError, match="Managed Source"):
+            admitir_clone_root_path(ms_root, storage_root=root, managed_source_root=ms_root)
+
+        with pytest.raises(RuntimeCloneAdmissionError, match="Managed Source"):
+            admitir_clone_root_path(sources_dir, storage_root=root, managed_source_root=ms_root)
+
+    def test_17_corrupcion_active_json_y_clone_record_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """17. Corrupción en active.json o en clone record propaga excepción tipada y nunca se disfraza de ausencia."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        act_path = active_state_path(root)
+
+        # 1. active.json truncado -> StateCorruptError
+        act_path.write_text('{"schema_version": 2, "desired', encoding="utf-8")
+        with pytest.raises(StateCorruptError, match="JSON malformado o truncado"):
+            desired_runtime_from_storage(root)
+
+        # 2. active.json con schema desconocido -> StateSchemaError
+        act_path.write_text('{"schema_version": 999, "updated_at_ns": 1}', encoding="utf-8")
+        with pytest.raises(StateSchemaError, match="schema desconocido"):
+            desired_runtime_from_storage(root)
+
+        # 3. active.json con par incompleto -> StateSchemaError
+        act_path.write_text(
+            '{"schema_version": 2, "updated_at_ns": 1, "desired_generation_id": "1.6.1170__a1b2c3d4e5f6", "desired_clone_id": null}',
             encoding="utf-8",
         )
         with pytest.raises(StateSchemaError, match="ambos null o ambos no-null"):
-            load_frozen_runtime_state(active_path)
+            desired_runtime_from_storage(root)
+
+        # 4. active.json válido, pero state/clones/<clone_id>.json corrupto -> RuntimeCloneCorruptError
+        gen_id = _crear_generation_valida(root)
+        save_frozen_runtime_state(
+            act_path,
+            FrozenRuntimeState(
+                schema_version=2,
+                updated_at_ns=100,
+                desired_active_generation=gen_id,
+                desired_clone_id="clone-corrupto",
+            ),
+        )
+        clone_file = clones_state_dir(root) / "clone-corrupto.json"
+        clone_file.write_text('{"schema_version": 1, "clone_id', encoding="utf-8")
+
+        with pytest.raises(RuntimeCloneCorruptError, match="JSON malformado"):
+            desired_runtime_from_storage(root)

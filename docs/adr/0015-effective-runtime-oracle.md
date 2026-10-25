@@ -444,3 +444,34 @@ adaptador específico hacia `ObservacionEffective` (`generation_id`, `clone_id`,
 transición/promoción de candidatos (P4/P6) y no debe activar operaciones mutantes
 sin una auditoría completa de su contrato, dicho cableado se mantiene diferido
 y documentado para el slice de integración correspondiente.
+
+### 12.6 Hallazgos de la Auditoría Adversarial y Blindaje P5-B
+
+Tras una revisión adversarial independiente sobre la autoridad durable, se
+identificaron y corrigieron cuatro fronteras críticas:
+
+1. **Frontera de autoridad del clon (Anti-falsificación):**
+   - Ni `registrar_runtime_clone_record` ni `desired_runtime_from_storage`
+     aceptan identificadores de Generation inexistentes; se valida la presencia
+     auténtica de `state/generations/<generation_id>.json`.
+   - Una mera declaración `lifecycle: PROVISIONED` en JSON no confiere autoridad
+     por sí misma: `desired_runtime_from_storage` ejecuta `verificar_runtime_clone`
+     de forma física antes de resolver `clone_root`. Ante cualquier discrepancia,
+     opera en fail-closed (`clone_root=None`), previniendo un falso `MATCH`.
+
+2. **Integridad de contenido en archivos críticos:**
+   - La comprobación superficial de tamaño (`st_size`) era insuficiente para
+     detectar reemplazos maliciosos o binarios corrompidos con idéntico byte-count.
+   - `verificar_runtime_clone` realiza el cálculo del digest SHA-256 en bloques de
+     64 KiB para todos los `critical_files`, contrastando contra `crit.digest`.
+
+3. **Contención física estricta:**
+   - `admitir_clone_root_path` prohíbe que el clone root coincida con el
+     `storage_root`, sea su ancestro, o se solape en cualquier dirección con la
+     raíz administrada (`managed_source_root`).
+
+4. **Distinción inquebrantable entre corrupción y ausencia:**
+   - Errores de schema o corrupción de JSON (`active.json` o registros de clone)
+     propagan excepciones tipadas (`StateCorruptError`, `StateSchemaError`,
+     `RuntimeCloneCorruptError`, `RuntimeCloneSchemaError`) y nunca se
+     degradan a un estado ausente limpio (`NO_DESIRED_CLONE`).
