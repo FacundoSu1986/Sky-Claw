@@ -320,10 +320,10 @@ def test_un_mod_habilitado_sin_carpeta_es_un_error_de_uso(mundo: Mundo) -> None:
     assert "Fantasma" in texto
 
 
-def test_un_mods_o_data_root_inexistente_es_un_error_de_uso(mundo: Mundo, tmp_path: pathlib.Path) -> None:
+def test_un_mods_inexistente_es_un_error_de_uso_que_nombra_mods_dir(mundo: Mundo, tmp_path: pathlib.Path) -> None:
+    """El perfil sí se lee (el modlist existe): lo que falla es la validación de ``mods_dir`` del resolutor."""
     mundo.archivo(_MOD, _ENTRADA)
     mundo.modlist(f"+{_MOD}")
-    mundo.data.joinpath("profiles").rename(tmp_path / "profiles_aparte")
     salida = io.StringIO()
 
     codigo = main(
@@ -333,6 +333,24 @@ def test_un_mods_o_data_root_inexistente_es_un_error_de_uso(mundo: Mundo, tmp_pa
     )
 
     assert codigo == CODIGO_DE_USO
+    assert "mods_dir" in salida.getvalue()
+
+
+def test_un_data_root_inexistente_es_un_error_de_uso_porque_no_hay_modlist(
+    mundo: Mundo, tmp_path: pathlib.Path
+) -> None:
+    """El perfil se lee de ``--data-root``, así que un root inexistente falla ahí, antes de llegar al resolutor."""
+    mundo.archivo(_MOD, _ENTRADA)
+    salida = io.StringIO()
+
+    codigo = main(
+        ["perfil", "--mod", _MOD, "--mods", str(mundo.mods), "--data-root", str(tmp_path / "no_existe")],
+        entorno={},
+        salida=salida,
+    )
+
+    assert codigo == CODIGO_DE_USO
+    assert "modlist" in salida.getvalue()
 
 
 def test_un_mod_sin_texturas_es_un_error_de_uso_y_no_un_sin_problemas(mundo: Mundo) -> None:
