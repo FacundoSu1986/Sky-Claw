@@ -221,3 +221,16 @@ def test_un_escritor_importado_por_nombre_o_con_alias_se_detecta(modulo: str, no
 )
 def test_lo_que_no_es_un_escritor_importado_no_se_marca(fuente: str) -> None:
     assert revisar_fuente(fuente, "sintetico.py") == ()
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperadas"),
+    [
+        ('import os as o\no.write(fd, b"x")\n', [ReglaDeContrato.ESCRIBE_EN_DISCO]),
+        ("import os as o\no.open(ruta, o.O_RDWR)\n", [ReglaDeContrato.ESCRIBE_EN_DISCO]),
+        ("import os as o\no.open(ruta, o.O_RDONLY)\n", []),
+        ("import os, io as o\no.write(1)\n", []),  # `o` es io acá, no os: un buffer no es disco
+    ],
+)
+def test_el_modulo_os_importado_con_alias_se_reconoce(fuente: str, esperadas: list[ReglaDeContrato]) -> None:
+    assert [h.regla for h in revisar_fuente(fuente, "sintetico.py")] == esperadas

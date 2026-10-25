@@ -213,7 +213,21 @@ def _escritores_importados(arbol: ast.AST) -> frozenset[str]:
     return frozenset(nombres)
 
 
-def _revisar_llamada(nodo: ast.Call, escritores_importados: frozenset[str] = frozenset()) -> bool:
+def _alias_de_os(arbol: ast.AST) -> frozenset[str]:
+    """Nombres locales con que se ve el módulo ``os``: ``os`` y todo ``import os as <alias>``."""
+
+    nombres = {"os"}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            nombres.update(alias.asname for alias in nodo.names if alias.name == "os" and alias.asname)
+    return frozenset(nombres)
+
+
+def _revisar_llamada(
+    nodo: ast.Call,
+    escritores_importados: frozenset[str] = frozenset(),
+    alias_de_os: frozenset[str] = frozenset({"os"}),
+) -> bool:
     funcion = nodo.func
     if isinstance(funcion, ast.Name) and funcion.id == "open":
         return _modo_escribe(nodo, indices_posicionales=(1,))
@@ -228,9 +242,9 @@ def _revisar_llamada(nodo: ast.Call, escritores_importados: frozenset[str] = fro
             return True
         if funcion.attr == "write":
             # Solo ``os.write(fd, ...)`` es disco: ``.write`` de un buffer en memoria o de un manejador ya revisado no.
-            return isinstance(funcion.value, ast.Name) and funcion.value.id == "os"
+            return isinstance(funcion.value, ast.Name) and funcion.value.id in alias_de_os
         if funcion.attr == "open":
-            if isinstance(funcion.value, ast.Name) and funcion.value.id == "os":
+            if isinstance(funcion.value, ast.Name) and funcion.value.id in alias_de_os:
                 return _es_escritura_os_open(nodo)
             if isinstance(funcion.value, ast.Name) and funcion.value.id in ("io", "codecs", "builtins"):
                 return _modo_escribe(nodo, indices_posicionales=(1,))
@@ -249,6 +263,7 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
 
     paquete_origen = _paquete_de_archivo(archivo)
     escritores_importados = _escritores_importados(arbol)
+    alias_de_os = _alias_de_os(arbol)
     hallazgos: list[Hallazgo] = []
     for nodo in ast.walk(arbol):
         if isinstance(nodo, (ast.Import, ast.ImportFrom)):
@@ -256,7 +271,7 @@ def revisar_fuente(fuente: str, archivo: str = "<memoria>") -> tuple[Hallazgo, .
                 regla = _es_prohibido(nombre)
                 if regla is not None:
                     hallazgos.append(Hallazgo(archivo, linea, regla, f"importa {nombre!r}"))
-        elif isinstance(nodo, ast.Call) and _revisar_llamada(nodo, escritores_importados):
+        elif isinstance(nodo, ast.Call) and _revisar_llamada(nodo, escritores_importados, alias_de_os):
             nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else "open"
             hallazgos.append(Hallazgo(archivo, nodo.lineno, ReglaDeContrato.ESCRIBE_EN_DISCO, f"llama a {nombre}()"))
     return tuple(sorted(hallazgos, key=lambda h: (h.archivo, h.linea)))
