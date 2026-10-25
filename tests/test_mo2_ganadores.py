@@ -500,3 +500,49 @@ def test_un_prefijo_de_varios_componentes_es_valido(perfil: Perfil) -> None:
     perfil.mod("Base", "textures/architecture/a_n.dds")
 
     assert len(perfil.indexar("Base", prefijo="textures/architecture")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Segunda pasada de Qodo en #806
+# ---------------------------------------------------------------------------
+
+
+def test_un_mod_sin_la_carpeta_del_prefijo_no_rompe_el_indice(perfil: Perfil) -> None:
+    """Un perfil real tiene mods que solo traen meshes o scripts: no aportan texturas, y eso no es un error."""
+    perfil.mod("SoloMeshes", "meshes/arch/muro.nif")
+    perfil.mod("ConTexturas", _RUTA)
+
+    indice = perfil.indexar("SoloMeshes", "ConTexturas")
+
+    ganador = indice.ganador(_RUTA)
+    assert ganador is not None and ganador.capa == "ConTexturas"
+    assert len(indice) == 1
+
+
+@pytest.mark.parametrize("ruta", ["textures/C:/x_n.dds", "textures/x_n.dds:flujo", "textures/a:b/x_n.dds"])
+def test_una_ruta_virtual_con_dos_puntos_en_cualquier_componente_se_rechaza(perfil: Perfil, ruta: str) -> None:
+    """``:`` no es válido en un nombre de Windows y abre flujos alternativos de datos de NTFS."""
+    with pytest.raises(GanadoresError, match="ruta virtual"):
+        perfil.indexar().ganador(ruta)
+
+
+def test_un_sufijo_vacio_se_rechaza_en_vez_de_devolver_todo_el_indice(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+
+    with pytest.raises(GanadoresError, match="sufijo"):
+        perfil.indexar("Base").con_sufijo("")
+
+
+def test_el_modulo_no_lee_ni_pide_leer_el_modlist(perfil: Perfil) -> None:
+    """El anclaje cubre también la llamada a la función oficial: este módulo recibe `enabled`, no una ruta de modlist."""
+    import ast
+
+    from sky_claw.local.mo2 import ganadores
+
+    arbol = ast.parse(pathlib.Path(ganadores.__file__).read_text(encoding="utf-8"))
+    nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(arbol) if isinstance(n, ast.Attribute)
+    }
+    importados = {a.name for n in ast.walk(arbol) if isinstance(n, ast.ImportFrom) for a in n.names}
+
+    assert "read_enabled_mods" not in nombres | importados

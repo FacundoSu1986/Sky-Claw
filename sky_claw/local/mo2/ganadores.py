@@ -68,7 +68,12 @@ def _clave(ruta: str) -> tuple[str, str]:
     """``(clave sin mayúsculas, ruta normalizada)`` de una ruta virtual; rechaza lo que sale del árbol o está mal formado."""
     normalizada = ruta.replace("\\", "/")
     partes = normalizada.split("/")
-    if not normalizada or normalizada.startswith("/") or any(p in ("", ".", "..") for p in partes) or ":" in partes[0]:
+    if (
+        not normalizada
+        or normalizada.startswith("/")
+        or any(p in ("", ".", "..") for p in partes)
+        or ":" in normalizada
+    ):
         raise GanadoresError(f"ruta virtual inválida: {ruta!r}")
     return normalizada.lower(), normalizada
 
@@ -89,6 +94,8 @@ class GanadoresDelPerfil:
 
     def con_sufijo(self, sufijo: str) -> tuple[GanadorDeRuta, ...]:
         """Los ganadores cuya ruta termina en *sufijo* (sin distinguir mayúsculas), ordenados por ruta."""
+        if not sufijo:
+            raise GanadoresError("el sufijo no puede ser vacío: devolvería todo el índice")
         buscado = sufijo.lower()
         return tuple(self._ganadores[clave] for clave in sorted(self._ganadores) if clave.endswith(buscado))
 
@@ -108,7 +115,7 @@ def _exigir_nombre_de_mod(nombre: str) -> None:
 def _exigir_prefijo(prefijo: str) -> tuple[str, ...]:
     """Los componentes de un prefijo Data relativo y contenido en la capa (``textures``, ``textures/architecture``)."""
     partes = tuple(prefijo.replace("\\", "/").split("/"))
-    if not prefijo or any(p in ("", ".", "..") for p in partes) or ":" in partes[0] or "\x00" in prefijo:
+    if not prefijo or any(p in ("", ".", "..") for p in partes) or ":" in prefijo or "\x00" in prefijo:
         raise GanadoresError(f"prefijo inválido: {prefijo!r} (debe ser relativo y quedar dentro de la capa)")
     return partes
 
