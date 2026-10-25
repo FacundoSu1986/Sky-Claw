@@ -177,3 +177,10 @@ def test_escribir_en_un_buffer_en_memoria_no_es_escribir_en_disco() -> None:
     """``os.write`` es disco; ``.write`` de un buffer en memoria no: sin esta frontera el contrato sería ruido."""
 
     assert revisar_fuente('buffer = io.StringIO()\nbuffer.write("x")\n', "sintetico.py") == ()
+
+
+@pytest.mark.parametrize("fuente", ["f()()\n", "tabla[0](x)\n", "(lambda: 1)()\n"])
+def test_llamadas_cuyo_callee_no_es_nombre_ni_atributo_no_se_confunden_con_escrituras(fuente: str) -> None:
+    """El callee que no es ``Name`` ni ``Attribute`` (otra llamada, un subíndice) no puede lanzar ni contar como disco."""
+
+    assert revisar_fuente(fuente, "sintetico.py") == ()
