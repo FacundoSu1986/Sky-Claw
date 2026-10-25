@@ -1104,12 +1104,14 @@ def test_el_informe_json_queda_legible_ordenado_y_con_acentos(tmp_path: pathlib.
     destino = tmp_path / "carpeta nueva" / "anidada" / "informe.json"
     salida = io.StringIO()
 
-    cli._escribir_informe(_informe_de_muestra(), str(destino), salida)
+    cli._escribir_informe(_informe_de_muestra(), ["textures/x_n.dds: ilegible"], str(destino), salida)
 
     texto = destino.read_text(encoding="utf-8")
     assert texto.endswith("}\n") and not texto.endswith("\n\n")
     assert texto.startswith('{\n  "archivos": [\n    {\n      "amplitud": null,\n      "detalle": "listo"')  # ordenadas
     assert json.loads(texto)["otras_rutas"][0]["detalle"] == "caché vigente"
+    # El censo de lo omitido viaja en el informe: sin él, un lote con texturas afuera es indistinguible de uno completo.
+    assert json.loads(texto)["omitidas_al_enumerar"] == ["textures/x_n.dds: ilegible"]
     assert "caché vigente" in texto  # ensure_ascii=False: los acentos no se escapan
     assert salida.getvalue() == f"Informe: {destino.resolve()}\n"
 
@@ -1117,7 +1119,7 @@ def test_el_informe_json_queda_legible_ordenado_y_con_acentos(tmp_path: pathlib.
 def test_si_el_informe_no_se_puede_escribir_se_avisa_y_no_se_pierde_el_resultado(tmp_path: pathlib.Path) -> None:
     salida = io.StringIO()
 
-    cli._escribir_informe(_informe_de_muestra(), str(tmp_path), salida)  # un directorio, no un archivo
+    cli._escribir_informe(_informe_de_muestra(), [], str(tmp_path), salida)  # un directorio, no un archivo
 
     assert salida.getvalue().startswith(f"No se pudo escribir el informe en {tmp_path}:")
 

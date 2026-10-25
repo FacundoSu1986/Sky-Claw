@@ -79,6 +79,7 @@ def _informe(
     otras_rutas: list[dict[str, object]] | None = None,
     conteos: dict[str, int] | None = None,
     encoder: dict[str, str] | None = _ENCODER,
+    omitidas: list[str] | None = None,
 ) -> dict[str, object]:
     return {
         "version_del_lote": "np-a0a.v1",
@@ -87,6 +88,7 @@ def _informe(
         "conteos": _conteos(archivos) if conteos is None else conteos,
         "archivos": archivos,
         "otras_rutas": [] if otras_rutas is None else otras_rutas,
+        "omitidas_al_enumerar": [] if omitidas is None else omitidas,
     }
 
 
@@ -468,3 +470,47 @@ def test_los_motivos_no_se_repiten() -> None:
     decision = dictar(_informe(archivos))
 
     assert len(decision.motivos) == len(set(decision.motivos))
+
+
+# ---------------------------------------------------------------------------
+# Censo de lo omitido al enumerar: un lote que dejó texturas afuera no es PASS
+# ---------------------------------------------------------------------------
+
+
+def _archivo_escrito_ok() -> dict[str, object]:
+    return {
+        "ruta_de_salida": "textures/a_p.dds",
+        "estado": "ESCRITA",
+        "efecto": "PUBLICADA",
+        "veredicto": "AUTO_ACCEPT",
+    }
+
+
+def test_un_lote_con_texturas_omitidas_al_enumerar_es_review_y_no_pass() -> None:
+    """Sin el censo, 1 textura procesada de 12 daba el mismo PASS que el lote completo."""
+
+    decision = dictar(_informe([_archivo_escrito_ok()], omitidas=["textures/b_n.dds: no se pudo inspeccionar"]))
+
+    assert decision.veredicto is VeredictoDelLote.REVIEW
+    assert MotivoDelLote.RUTAS_OMITIDAS in decision.motivos
+    assert MotivoDelLote.RUTAS_OMITIDAS in MOTIVOS_DE_REVISION
+
+
+def test_un_informe_sin_censo_de_omitidas_es_inconsistente() -> None:
+    """Un informe del contrato viejo (sin el campo) no puede probar que no se omitió nada: falla cerrado."""
+
+    informe = _informe([_archivo_escrito_ok()])
+    del informe["omitidas_al_enumerar"]
+
+    decision = dictar(informe)
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
+
+
+@pytest.mark.parametrize("basura", [None, "x", 3, {"a": 1}, [1], [None], ["ok", 2]])
+def test_un_censo_de_omitidas_con_forma_invalida_es_inconsistente(basura: object) -> None:
+    informe = _informe([_archivo_escrito_ok()])
+    informe["omitidas_al_enumerar"] = basura
+
+    assert dictar(informe).veredicto is VeredictoDelLote.INCONSISTENTE
