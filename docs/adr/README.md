@@ -120,6 +120,7 @@
 - [0012 — Frozen Runtime: promoción aislada de versiones](0012-frozen-runtime.md)
 - [0013 — Clean-room del generador nativo de parallax](0013-clean-room-native-parallax.md)
 - [0014 — Generador nativo de parallax: design brief, layout de producto y dependencias](0014-native-parallax-producto-brief-y-dependencias.md)
+- [0015 — Oráculo de Effective Runtime de solo lectura (P5-A)](0015-effective-runtime-oracle.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
