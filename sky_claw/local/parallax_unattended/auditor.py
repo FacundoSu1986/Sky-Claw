@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from sky_claw.app.security.links import (
-    link_kind_and_identity_or_raise,
+    link_kind_and_identity_or_raise_with_retry,
     reject_unclassified_reparse_point,
 )
 
@@ -362,7 +362,7 @@ def _validar_sintaxis_relativa(relativa: str) -> list[str]:
 
 
 def _verificar_sin_enlaces(ruta: pathlib.Path) -> None:
-    tipo, identidad = link_kind_and_identity_or_raise(ruta)
+    tipo, identidad = link_kind_and_identity_or_raise_with_retry(ruta)
     if tipo is not None:
         raise _RutaRechazadaError(f"{ruta} es un enlace ({tipo})")
     if identidad is not None:

@@ -635,18 +635,85 @@ def test_enlace_dentro_de_la_raiz_se_rechaza_sin_atravesarlo(
     """M-2: un symlink o junction dentro de la salida se rechaza como ``RUTA_FUERA_DE_LA_SALIDA``."""
 
     _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
-    real = modulo_auditor.link_kind_and_identity_or_raise
+    real = modulo_auditor.link_kind_and_identity_or_raise_with_retry
 
     def simular_junction(ruta: pathlib.Path) -> tuple[str | None, object]:
         if ruta.name == "textures":
             return "junction", ruta.lstat()
         return real(ruta)
 
-    monkeypatch.setattr(modulo_auditor, "link_kind_and_identity_or_raise", simular_junction)
+    monkeypatch.setattr(modulo_auditor, "link_kind_and_identity_or_raise_with_retry", simular_junction)
 
     auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
 
     assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
+
+
+def test_un_symlink_real_dentro_de_la_raiz_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """El mock de junction no prueba el enlace de verdad: acá hay un symlink en disco (se omite si el SO no deja crearlo)."""
+
+    afuera = tmp_path / "afuera"
+    _escribir(afuera, "a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    salida = tmp_path / "salida"
+    salida.mkdir()
+    try:
+        (salida / "textures").symlink_to(afuera, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("este SO no permite crear symlinks sin privilegios")
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), salida)
+
+    assert codigos(auditoria.hallazgos) == (CodigoDeHallazgo.RUTA_FUERA_DE_LA_SALIDA,)
+
+
+def test_un_error_transitorio_al_inspeccionar_un_enlace_se_reintenta(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermano de ``output_writer``: un antivirus que suelta el archivo a los pocos ms no debe dar un falso NO_LEGIBLE."""
+
+    from sky_claw.app.security import links
+
+    _escribir(tmp_path, "textures/a_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    real = links.link_kind_and_identity_or_raise
+    fallos = {"pendientes": 1}
+
+    def inestable(ruta: pathlib.Path) -> tuple[str | None, object]:
+        if fallos["pendientes"] > 0:
+            fallos["pendientes"] -= 1
+            raise OSError("sharing violation transitoria")
+        return real(ruta)
+
+    monkeypatch.setattr(links, "link_kind_and_identity_or_raise", inestable)
+    monkeypatch.setattr(links.time, "sleep", lambda _s: None)
+
+    auditoria = auditar(_informe(["textures/a_p.dds"]), tmp_path)
+
+    assert auditoria.hallazgos == ()
+    assert fallos["pendientes"] == 0
+
+
+def test_el_auditor_solo_inspecciona_enlaces_con_la_variante_con_reintento() -> None:
+    """Ancla por AST: ninguna llamada ni importación de la variante SIN reintento (el hermano que se olvida)."""
+
+    import ast
+    import inspect
+
+    arbol = ast.parse(inspect.getsource(modulo_auditor))
+    usos = {
+        nodo.id
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Name) and nodo.id.startswith("link_kind_and_identity")
+    }
+    importados = {
+        alias.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names
+        if alias.name.startswith("link_kind_and_identity")
+    }
+
+    assert usos == {"link_kind_and_identity_or_raise_with_retry"}
+    assert importados == {"link_kind_and_identity_or_raise_with_retry"}
 
 
 def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(
