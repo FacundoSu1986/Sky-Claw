@@ -19,6 +19,8 @@ hallazgos desde archivos reales lo verifica ``test_parallax_unattended_auditor.p
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from sky_claw.local.parallax_unattended.auditor import (
@@ -28,13 +30,17 @@ from sky_claw.local.parallax_unattended.auditor import (
     CodigoDeHallazgo,
     Hallazgo,
     InformeDeAuditoria,
+    auditar,
 )
 from sky_claw.local.parallax_unattended.composicion import combinar
 from sky_claw.local.parallax_unattended.veredicto import (
+    EFECTOS_CONOCIDOS,
+    ESTADOS_CONOCIDOS,
     DecisionDelLote,
     MotivoDelLote,
     VeredictoDelLote,
     codigo_de_salida,
+    dictar,
 )
 
 _CONTEOS = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
@@ -213,3 +219,58 @@ def test_el_detalle_dice_que_se_miro() -> None:
     assert "1 artefactos verificados" in final.detalle
     assert "1 con hallazgo" in final.detalle
     assert "1 sin verificar" in final.detalle
+
+
+# ---------------------------------------------------------------------------
+# Ancla: ``dictar`` y ``auditar`` tienen que coincidir en la matriz (estado, efecto)
+# ---------------------------------------------------------------------------
+
+#: La matriz legal, congelada por igualdad literal. Cada módulo la valida por su cuenta (el informe puede llegar a
+#: cualquiera de los dos primero): si una mitad cambia sola, el desacuerdo hace pasar un informe que la otra rechazaría.
+_COMBINACIONES_LEGALES = frozenset(
+    {
+        ("EN_REVISION", None),
+        ("ESCRITA", "OMITIDA"),
+        ("ESCRITA", "PUBLICADA"),
+        ("ESCRITA", "REEMPLAZADA"),
+        ("NO_ESCRITA", None),
+        ("NO_ESCRITA", "CONFLICTO"),
+        ("NO_ESCRITA", "FALLIDA"),
+        ("NO_ESCRITA", "PRESERVADA"),
+        ("NO_ESCRITA", "RETIRADA"),
+        ("NO_ESCRITA", "SOLTADA"),
+        ("NO_PROCESADA", None),
+    }
+)
+
+
+def _informe_de_una_combinacion(estado: str, efecto: str | None) -> dict[str, object]:
+    veredicto = {"ESCRITA": "AUTO_ACCEPT", "EN_REVISION": "REVIEW"}.get(estado)
+    return {
+        "version_del_lote": "np-a0a.v1",
+        "parametros": {},
+        "encoder": {"texconv_version": "v", "texconv_sha256": "a" * 64},
+        "conteos": {e: int(e == estado) for e in sorted(ESTADOS_CONOCIDOS)},
+        "archivos": [
+            {"ruta_de_salida": "textures/a_p.dds", "estado": estado, "efecto": efecto, "veredicto": veredicto}
+        ],
+        "otras_rutas": [],
+        "omitidas_al_enumerar": [],
+    }
+
+
+@pytest.mark.parametrize("efecto", [None, *sorted(EFECTOS_CONOCIDOS)])
+@pytest.mark.parametrize("estado", sorted(ESTADOS_CONOCIDOS))
+def test_dictar_y_auditar_coinciden_en_la_matriz_estado_efecto(
+    estado: str, efecto: str | None, tmp_path: pathlib.Path
+) -> None:
+    informe = _informe_de_una_combinacion(estado, efecto)
+    legal = (estado, efecto) in _COMBINACIONES_LEGALES
+
+    forma_invalida_en_dictar = MotivoDelLote.FORMA_INVALIDA in dictar(informe).motivos
+    forma_invalida_en_auditar = any(
+        h.codigo is CodigoDeHallazgo.INFORME_INVALIDO for h in auditar(informe, tmp_path).hallazgos
+    )
+
+    assert forma_invalida_en_dictar is not legal
+    assert forma_invalida_en_auditar is not legal
