@@ -585,7 +585,7 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
             no_verificados=(),
         )
 
-    if not any(not obj.debe_estar_ausente for obj in objetivos):
+    if not objetivos:
         # Cero artefactos declarados NO es "todo bien": es una auditoría que no verificó nada, y
         # un `ok` acá sería exactamente el falso verde que esta capa existe para cerrar.
         return InformeDeAuditoria(
@@ -663,6 +663,16 @@ def auditar(informe: Mapping[str, object], raiz_de_salida: pathlib.Path) -> Info
             verificados.append(ruta)
         elif hallazgo is None:
             no_verificados.append(ruta)
+
+    if all(obj.debe_estar_ausente for obj in objetivos):
+        # Solo había rutas retiradas que comprobar: el chequeo de ausencia corrió, pero no hay nada que releer.
+        hallazgos.append(
+            Hallazgo(
+                "",
+                CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES,
+                "el informe no declara ningún artefacto escrito que se pueda releer",
+            )
+        )
 
     return InformeDeAuditoria(
         verificados=tuple(verificados),

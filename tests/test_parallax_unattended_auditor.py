@@ -594,6 +594,28 @@ def test_una_ruta_declarada_retirada_y_ausente_no_es_hallazgo(tmp_path: pathlib.
     assert auditoria.verificados == ("textures/nueva_p.dds",)
 
 
+def test_una_retirada_presente_se_audita_aunque_no_quede_ningun_artefacto_escrito(tmp_path: pathlib.Path) -> None:
+    """Todo en revisión + una salida anterior retirada que sigue en disco: el chequeo de ausencia no puede saltearse."""
+
+    _escribir(tmp_path, "textures/vieja_p.dds", _dds(16, 16, 1, _payload(16, 255, 0, [0, 1, 2, 3, 4, 5, 6, 7] * 2)))
+    informe = _informe(["textures/nueva_p.dds"], estado="EN_REVISION", efecto=None)
+    informe["archivos"][0]["veredicto"] = "REVIEW"  # type: ignore[index]
+    informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": "RETIRADA", "detalle": "x"}]
+
+    auditoria = auditar(informe, tmp_path)
+
+    assert CodigoDeHallazgo.RETIRADA_PRESENTE in codigos(auditoria.hallazgos)
+    assert CodigoDeHallazgo.SIN_ARTEFACTOS_AUDITABLES in codigos(auditoria.hallazgos)
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, dictar
+
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    assert combinar(dictar(informe), auditoria).veredicto is VeredictoDelLote.FAIL
+
+
 def test_una_retirada_que_sigue_en_disco_degrada_el_veredicto_final_a_fail(tmp_path: pathlib.Path) -> None:
     """De punta a punta: informe + disco → ``combinar`` → código de salida distinto de 0."""
 
