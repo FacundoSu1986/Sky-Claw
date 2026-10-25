@@ -94,6 +94,15 @@ def test_verificar_api_paquete_real_exporta_simbolos_completos() -> None:
         ('ruta.write_bytes(b"x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("ruta.unlink()", ReglaDeContrato.ESCRIBE_EN_DISCO),
         ("ruta.mkdir(parents=True)", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.mkdtemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.mkstemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.NamedTemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.TemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("tempfile.TemporaryDirectory()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("NamedTemporaryFile()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("mkdtemp()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ("TemporaryDirectory()", ReglaDeContrato.ESCRIBE_EN_DISCO),
+        ('os.write(fd, b"x")', ReglaDeContrato.ESCRIBE_EN_DISCO),
     ],
 )
 def test_revisar_fuente_violacion_sintetica_reporta_regla_esperada(fuente: str, regla: ReglaDeContrato) -> None:
@@ -162,3 +171,9 @@ def test_revisar_fuente_violaciones_multiples_reporta_lineas_y_reglas_exactas() 
         (2, ReglaDeContrato.IMPORTA_DEPENDENCIA_OPCIONAL),
         (5, ReglaDeContrato.ESCRIBE_EN_DISCO),
     ]
+
+
+def test_escribir_en_un_buffer_en_memoria_no_es_escribir_en_disco() -> None:
+    """``os.write`` es disco; ``.write`` de un buffer en memoria no: sin esta frontera el contrato sería ruido."""
+
+    assert revisar_fuente('buffer = io.StringIO()\nbuffer.write("x")\n', "sintetico.py") == ()

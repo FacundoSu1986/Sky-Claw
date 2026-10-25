@@ -58,6 +58,8 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "link_to",
         "makedirs",
         "mkdir",
+        "mkdtemp",
+        "mkstemp",
         "move",
         "remove",
         "removedirs",
@@ -73,6 +75,16 @@ METODOS_QUE_ESCRIBEN: Final[frozenset[str]] = frozenset(
         "utime",
         "write_bytes",
         "write_text",
+    }
+)
+
+#: Constructores de ``tempfile`` que crean un archivo o carpeta en disco (se invocan por nombre o como atributo).
+_CONSTRUCTORES_TEMPORALES: Final[frozenset[str]] = frozenset(
+    {
+        "NamedTemporaryFile",
+        "SpooledTemporaryFile",
+        "TemporaryDirectory",
+        "TemporaryFile",
     }
 )
 
@@ -183,7 +195,14 @@ def _revisar_llamada(nodo: ast.Call) -> bool:
     funcion = nodo.func
     if isinstance(funcion, ast.Name) and funcion.id == "open":
         return _modo_escribe(nodo, indices_posicionales=(1,))
+    if isinstance(funcion, ast.Name):
+        return funcion.id in _CONSTRUCTORES_TEMPORALES or funcion.id in ("mkdtemp", "mkstemp")
     if isinstance(funcion, ast.Attribute):
+        if funcion.attr in _CONSTRUCTORES_TEMPORALES:
+            return True
+        if funcion.attr == "write":
+            # Solo ``os.write(fd, ...)`` es disco: ``.write`` de un buffer en memoria o de un manejador ya revisado no.
+            return isinstance(funcion.value, ast.Name) and funcion.value.id == "os"
         if funcion.attr == "open":
             if isinstance(funcion.value, ast.Name) and funcion.value.id == "os":
                 return _es_escritura_os_open(nodo)
