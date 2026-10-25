@@ -362,6 +362,27 @@ def test_un_mod_sin_texturas_es_un_error_de_uso_y_no_un_sin_problemas(mundo: Mun
     assert codigo == CODIGO_DE_USO
 
 
+def test_un_mod_con_textures_pero_sin_ninguna_normal_es_un_error_de_uso_como_en_generar(mundo: Mundo) -> None:
+    """Hermano de ``generar``, que rechaza «ningún *_n.dds procesable»: revisar cero texturas no es «sin texturas tapadas»."""
+    mundo.mod_vacio(NOMBRE_DEL_MOD_DE_SALIDA)
+    mundo.archivo(_MOD, f"{_CARPETA}/muro01_d.dds")  # tiene textures/, pero ningún *_n.dds
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    codigo, texto = _perfil(mundo)
+
+    assert codigo == CODIGO_DE_USO
+    assert "_n.dds" in texto
+    assert "Sin texturas tapadas" not in texto
+
+
+def test_la_ayuda_del_subcomando_documenta_los_codigos_de_salida() -> None:
+    ayuda = _subcomandos()["perfil"].format_help()
+
+    for codigo in ("0", "2", "4"):
+        assert f"{codigo} " in ayuda
+    assert "tapad" in ayuda
+
+
 def test_el_perfil_se_elige_con_el_argumento_perfil(mundo: Mundo) -> None:
     mundo.archivo(_MOD, _ENTRADA)
     mundo.archivo(_CONTROL, _SALIDA)

@@ -380,6 +380,11 @@ def construir_parser() -> argparse.ArgumentParser:
     perfil = sub.add_parser(
         "perfil",
         help="diagnóstico de solo lectura: quién gana, en el perfil de MO2, las rutas de entrada y de salida de un mod",
+        description="Diagnóstico de solo lectura del overlay de un perfil de MO2: no genera nada y no necesita texconv.",
+        epilog=(
+            "Códigos de salida: 0 nada tapado; 2 uso o configuración incorrectos (lo que no se puede afirmar falla cerrado); "
+            "4 hay texturas tapadas, fuera del overlay o la salida no está habilitada."
+        ),
     )
     perfil.add_argument("--mod", required=True, help="nombre del mod (carpeta de <mods>) cuyas texturas se revisan")
     perfil.add_argument("--mods", required=True, help="carpeta 'mods' de MO2")
@@ -560,6 +565,10 @@ def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
         normales, _omitidas = descubrir_normales_de_carpeta(mods_dir / elegido, exigir_completa=True)
     except (VfsAttestationError, GanadoresError) as exc:
         raise UsoIncorrectoError(str(exc)) from exc
+    if not normales:  # el hermano de ``_generar``: revisar cero texturas no es «sin texturas tapadas»
+        raise UsoIncorrectoError(
+            f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {mods_dir / elegido}/textures"
+        )
     hallazgos = _hallazgos_del_perfil(indice, enabled, elegido, normales)
     plural = "textura" if len(normales) == 1 else "texturas"
     print(
