@@ -1,0 +1,318 @@
+"""NP-A0d: ¿qué archivo de textura gana de verdad en el overlay de un perfil de Mod Organizer 2?
+
+El generador nativo de parallax necesita saber, para cada ``textures/.../x_n.dds``, qué mod la provee en el perfil: medir sobre
+el archivo equivocado (el de un mod que otro tapa) produce un ``_p.dds`` para una textura que el juego ni va a ver. Y la misma
+pregunta, al revés, descubre un producto enmascarado: el mod de control que está POR ENCIMA de nuestra salida (#792 H12).
+
+Qué se verifica, con discos reales (``tmp_path``) y sin mocks:
+
+- la prioridad: gana el último de ``enabled`` (orden CRECIENTE, el de ``vfs_attestation.read_enabled_mods``, la única fuente de la
+  semántica del ``modlist.txt``) y ``overwrite`` gana a todos;
+- que el recorrido es el compartido (``links.iter_archivos_propios``): no entra a enlaces; los ``*.mohidden`` no están en el overlay;
+- fail-closed: un mod habilitado sin carpeta, un nombre repetido o un árbol que pasa el tope no se resuelven "a ojo";
+- las rutas virtuales se comparan sin distinguir mayúsculas (Windows) y se rechazan las que salen del árbol.
+
+Límite: es una vista ESTRUCTURAL del perfil. No prueba que USVFS mapee lo que acá se resuelve (eso es el canary del broker) ni
+considera el game data físico, que un mod siempre gana.
+"""
+
+from __future__ import annotations
+
+import pathlib
+
+import pytest
+
+from sky_claw.local.mo2.ganadores import (
+    TOPE_DE_ARCHIVOS_POR_DEFECTO,
+    GanadoresDelPerfil,
+    GanadoresError,
+    indexar_ganadores,
+)
+from sky_claw.local.mo2.vfs_attestation import read_enabled_mods
+
+_RUTA = "textures/architecture/whiterun/muro01_n.dds"
+
+
+def _archivo(raiz: pathlib.Path, mod: str, ruta: str, contenido: bytes = b"x") -> pathlib.Path:
+    destino = raiz / mod / pathlib.Path(*ruta.split("/"))
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_bytes(contenido)
+    return destino
+
+
+class Perfil:
+    """Una instalación de MO2 mínima: ``<raiz>/mods/<mod>/...`` y ``<raiz>/overwrite``."""
+
+    def __init__(self, raiz: pathlib.Path) -> None:
+        self.raiz = raiz
+        self.mods = raiz / "mods"
+        self.mods.mkdir()
+        self.overwrite = raiz / "overwrite"
+
+    def mod(self, nombre: str, *rutas: str) -> None:
+        (self.mods / nombre).mkdir(exist_ok=True)
+        for ruta in rutas:
+            _archivo(self.mods, nombre, ruta, nombre.encode())
+
+    def en_overwrite(self, ruta: str) -> None:
+        _archivo(self.raiz, "overwrite", ruta, b"overwrite")
+
+    def indexar(self, *enabled: str, **kwargs: object) -> GanadoresDelPerfil:
+        return indexar_ganadores(mods_dir=self.mods, data_root=self.raiz, enabled=enabled, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def perfil(tmp_path: pathlib.Path) -> Perfil:
+    return Perfil(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Prioridad
+# ---------------------------------------------------------------------------
+
+
+def test_gana_el_ultimo_mod_habilitado_que_provee_la_ruta(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Retextura", _RUTA)
+
+    ganador = perfil.indexar("Base", "Retextura").ganador(_RUTA)
+
+    assert ganador is not None and ganador.capa == "Retextura"
+    assert ganador.archivo.read_bytes() == b"Retextura"
+
+
+def test_un_mod_de_mayor_prioridad_que_no_provee_la_ruta_no_tapa_nada(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("OtraCosa", "textures/otra/cosa_n.dds")
+
+    ganador = perfil.indexar("Base", "OtraCosa").ganador(_RUTA)
+
+    assert ganador is not None and ganador.capa == "Base"
+
+
+def test_overwrite_gana_a_todos_los_mods(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Retextura", _RUTA)
+    perfil.en_overwrite(_RUTA)
+
+    ganador = perfil.indexar("Base", "Retextura").ganador(_RUTA)
+
+    assert ganador is not None and ganador.capa == "overwrite"
+    assert ganador.archivo.read_bytes() == b"overwrite"
+
+
+def test_una_ruta_que_nadie_provee_no_tiene_ganador(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+
+    assert perfil.indexar("Base").ganador("textures/no/existe_n.dds") is None
+
+
+def test_un_mod_que_no_esta_habilitado_no_participa(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Deshabilitado", _RUTA)  # existe en disco pero no figura en `enabled`
+
+    ganador = perfil.indexar("Base").ganador(_RUTA)
+
+    assert ganador is not None and ganador.capa == "Base"
+
+
+def test_el_modlist_real_con_el_control_por_encima_de_la_salida_tapa_la_salida(
+    perfil: Perfil, tmp_path: pathlib.Path
+) -> None:
+    """#792 H12: ``SkyClaw-Control-Visual`` (línea 3) está por ENCIMA de la salida real (línea 4) y gana la ruta."""
+    ruta_p = "textures/architecture/whiterun/muro01_p.dds"
+    perfil.mod("ParallaxGen Output")
+    perfil.mod("SkyClaw-Control-Visual", ruta_p)
+    perfil.mod("Sky-Claw - Native Parallax Output", ruta_p)
+    modlist = tmp_path / "modlist.txt"
+    modlist.write_text(
+        "# This file was automatically generated by Mod Organizer.\n"
+        "+ParallaxGen Output\n+SkyClaw-Control-Visual\n+Sky-Claw - Native Parallax Output\n",
+        encoding="utf-8",
+    )
+
+    ganador = perfil.indexar(*read_enabled_mods(modlist)).ganador(ruta_p)
+
+    assert ganador is not None and ganador.capa == "SkyClaw-Control-Visual"
+
+
+def test_si_se_invierte_el_orden_del_modlist_gana_la_salida(perfil: Perfil, tmp_path: pathlib.Path) -> None:
+    ruta_p = "textures/architecture/whiterun/muro01_p.dds"
+    perfil.mod("SkyClaw-Control-Visual", ruta_p)
+    perfil.mod("Sky-Claw - Native Parallax Output", ruta_p)
+    modlist = tmp_path / "modlist.txt"
+    modlist.write_text("+Sky-Claw - Native Parallax Output\n+SkyClaw-Control-Visual\n", encoding="utf-8")
+
+    ganador = perfil.indexar(*read_enabled_mods(modlist)).ganador(ruta_p)
+
+    assert ganador is not None and ganador.capa == "Sky-Claw - Native Parallax Output"
+
+
+# ---------------------------------------------------------------------------
+# Rutas virtuales
+# ---------------------------------------------------------------------------
+
+
+def test_las_rutas_se_comparan_sin_distinguir_mayusculas_ni_separadores(perfil: Perfil) -> None:
+    perfil.mod(
+        "Base", "textures/Architecture/Whiterun/Muro01_N.dds"
+    )  # solo el prefijo es minúscula: el FS de pruebas distingue
+
+    indice = perfil.indexar("Base")
+
+    for variante in (_RUTA, _RUTA.upper(), _RUTA.replace("/", "\\")):
+        ganador = indice.ganador(variante)
+        assert ganador is not None and ganador.capa == "Base"
+
+
+@pytest.mark.parametrize(
+    "ruta",
+    [
+        "",
+        "/textures/x_n.dds",
+        "textures/../../fuera.dds",
+        "C:/textures/x_n.dds",
+        "textures//x_n.dds",
+        "textures/./x_n.dds",
+    ],
+)
+def test_una_ruta_virtual_que_sale_del_arbol_o_esta_mal_formada_se_rechaza(perfil: Perfil, ruta: str) -> None:
+    with pytest.raises(GanadoresError, match="ruta virtual"):
+        perfil.indexar().ganador(ruta)
+
+
+def test_se_listan_los_ganadores_por_sufijo_ya_resueltos(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA, "textures/a/otro_p.dds", "textures/a/mas_n.dds")
+    perfil.mod("Retextura", _RUTA)
+
+    normales = perfil.indexar("Base", "Retextura").con_sufijo("_n.dds")
+
+    assert {(g.ruta_virtual, g.capa) for g in normales} == {(_RUTA, "Retextura"), ("textures/a/mas_n.dds", "Base")}
+
+
+# ---------------------------------------------------------------------------
+# Lo que NO está en el overlay
+# ---------------------------------------------------------------------------
+
+
+def test_un_archivo_ocultado_con_mohidden_deja_ver_al_de_menor_prioridad(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Retextura", _RUTA + ".mohidden")
+
+    indice = perfil.indexar("Base", "Retextura")
+
+    ganador = indice.ganador(_RUTA)
+    assert ganador is not None and ganador.capa == "Base"
+    assert indice.ganador(_RUTA + ".mohidden") is None  # el marcador mismo no es una ruta del overlay
+
+
+def test_un_symlink_dentro_de_un_mod_no_se_sigue(perfil: Perfil, tmp_path: pathlib.Path) -> None:
+    perfil.mod("Base")
+    afuera = tmp_path / "afuera"
+    _archivo(afuera, "carpeta", "x_n.dds")
+    try:
+        (perfil.mods / "Base" / "textures").symlink_to(afuera, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("este SO no permite crear symlinks sin privilegios")
+
+    assert perfil.indexar("Base").ganador("textures/carpeta/x_n.dds") is None
+
+
+def test_solo_se_indexa_el_prefijo_pedido(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA, "meshes/arch/muro.nif")
+
+    indice = perfil.indexar("Base")
+
+    assert indice.ganador("meshes/arch/muro.nif") is None
+    assert indice.ganador(_RUTA) is not None
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed
+# ---------------------------------------------------------------------------
+
+
+def test_un_mod_habilitado_sin_carpeta_es_un_perfil_corrupto_y_no_se_ignora(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+
+    with pytest.raises(GanadoresError, match="Fantasma"):
+        perfil.indexar("Base", "Fantasma")
+
+
+def test_un_mod_repetido_en_el_modlist_hace_la_prioridad_ambigua(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+    perfil.mod("Otro", _RUTA)
+
+    with pytest.raises(GanadoresError, match="repite"):
+        perfil.indexar("Base", "Otro", "base")  # MO2 no distingue mayúsculas en los nombres
+
+
+def test_un_arbol_que_pasa_el_tope_no_se_resuelve_a_medias(perfil: Perfil) -> None:
+    perfil.mod("Base", "textures/a_n.dds", "textures/b_n.dds", "textures/c_n.dds")
+
+    with pytest.raises(GanadoresError, match="tope"):
+        perfil.indexar("Base", maximo_de_archivos=2)
+
+
+def test_el_tope_exacto_alcanza(perfil: Perfil) -> None:
+    perfil.mod("Base", "textures/a_n.dds", "textures/b_n.dds")
+
+    assert len(perfil.indexar("Base", maximo_de_archivos=2)) == 2
+
+
+@pytest.mark.parametrize("valor", [0, -1, True, 1.5])
+def test_un_tope_invalido_se_rechaza(perfil: Perfil, valor: object) -> None:
+    with pytest.raises(GanadoresError, match="tope"):
+        perfil.indexar(maximo_de_archivos=valor)
+
+
+def test_el_tope_por_defecto_es_un_entero_positivo() -> None:
+    assert isinstance(TOPE_DE_ARCHIVOS_POR_DEFECTO, int) and TOPE_DE_ARCHIVOS_POR_DEFECTO > 0
+
+
+def test_un_perfil_sin_mods_ni_overwrite_es_un_indice_vacio(perfil: Perfil) -> None:
+    assert len(perfil.indexar()) == 0
+
+
+def test_un_tope_de_uno_alcanza_para_un_archivo(perfil: Perfil) -> None:
+    perfil.mod("Base", _RUTA)
+
+    assert len(perfil.indexar("Base", maximo_de_archivos=1)) == 1
+
+
+def test_un_error_de_lectura_del_arbol_es_un_error_tipado_del_modulo(
+    perfil: Perfil, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.mo2 import ganadores
+
+    perfil.mod("Base", _RUTA)
+
+    def fallar(_ruta: pathlib.Path) -> object:
+        raise PermissionError("acceso denegado")
+
+    monkeypatch.setattr(ganadores, "iter_archivos_propios", fallar)
+
+    with pytest.raises(GanadoresError, match="no se pudo recorrer"):
+        perfil.indexar("Base")
+
+
+def test_el_modulo_no_lee_el_modlist_por_su_cuenta() -> None:
+    """Ancla de la regla del hermano: la semántica del ``modlist.txt`` vive SOLO en ``read_enabled_mods`` (una fuente).
+
+    Este módulo recibe la tupla ya normalizada; si algún día abre un archivo de texto o define su propio lector, el censo de
+    ``test_mo2_modlist_priority`` ya no alcanza (el módulo seguiría "en la familia D") y este test lo ataja.
+    """
+    import ast
+
+    from sky_claw.local.mo2 import ganadores
+
+    arbol = ast.parse(pathlib.Path(ganadores.__file__).read_text(encoding="utf-8"))
+    llamadas = {
+        nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "")
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+    }
+    definidas = {nodo.name for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef)}
+
+    assert llamadas.isdisjoint({"read_text", "open", "readlines", "read_bytes"})
+    assert "read_enabled_mods" not in definidas

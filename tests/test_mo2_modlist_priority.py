@@ -377,6 +377,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/tools_installer.py",
         "sky_claw/local/local_config.py",
         "sky_claw/local/mo2/mod_effectivity.py",
+        "sky_claw/local/mo2/ganadores.py",  # recibe `enabled` ya normalizado por read_enabled_mods; solo lo nombra en el docstring
         "sky_claw/local/validators/preflight.py",
         "sky_claw/local/validators/preflight_sensors.py",
         "sky_claw/local/validators/vfs_visibility.py",
