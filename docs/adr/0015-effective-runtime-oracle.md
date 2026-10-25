@@ -378,3 +378,69 @@ La misma vara para el resto de la superficie: `decode_qt_scalar` (lectura de
 exporta y se prueba pero **tampoco tiene consumidor productivo** en este
 slice. Se declara acá en vez de presentarse como cableada; su consumidor
 natural es el mismo P5-B que el de `config_skyrim_path`.
+
+
+## 12. P5-B: Autoridad durable de RuntimeCloneRecord y resolución auténtica de Desired Runtime
+
+**Fecha:** 2026-10-25
+**Estado:** Implementado (P5-B, Tracker #672).
+
+### 12.1 Ubicación durable y schema versionado
+
+1. **Ubicación canónica:** Cada registro de clone reside de forma durable en
+   `<storage_root>/state/clones/<clone_id>.json`. No se crea automáticamente
+   ninguna carpeta raíz `clones/` en el storage root: las rutas físicas de
+   ejecución de los clones son externas (gestionadas por MO2 o por el operador) y
+   se validan estrictamente mediante admisión.
+2. **Modelo de datos:** `RuntimeCloneRecord` incluye `schema_version` (v1),
+   `clone_id`, `source_generation_id`, `lifecycle` (`RuntimeCloneLifecycle`),
+   `intended_runtime_setup_id`, `verified_runtime_setup_id`, `root_path`,
+   `admitted_role="runtime_clone"` y `created_at_ns`.
+3. **Persistencia atómica y no-clobber:** La escritura utiliza `write_json_atomic`
+   bajo el lock de exclusión cross-process (`participant_lock` sobre `FrozenRuntimeRoot`),
+   impidiendo colisiones y corrupción ante abortos o carreras. Un registro preexistente
+   con distinta identidad o procedencia se rechaza con `RuntimeCloneCollisionError`.
+4. **active.json v2:** Se extiende el schema de `state/active.json` a versión 2
+   incorporando el par canónico `desired_generation_id` y `desired_clone_id`.
+
+### 12.2 Admisión física e invariantes de seguridad (`admitir_clone_root_path`)
+
+- **Ruta absoluta:** Requiere rutas normalizadas y absolutas.
+- **Sin reparse points:** Rechaza terminantemente enlaces simbólicos, junctions y
+  reparse points NTFS en la raíz del clone.
+- **Aislamiento de Managed Source:** Rechaza cualquier ruta contenida dentro de
+  un árbol administrado por Steam (`steamapps/common`).
+- **Aislamiento de Storage Root:** Prohíbe que el clone se ubique dentro de
+  `versions/` (SFR-19: una Generation nunca es runtime ejecutable), `candidates/`
+  o `state/`.
+
+### 12.3 FSM de Lifecycle y verificación de setups
+
+- Máquina de estados estricta: `CREATED` → `PROVISIONING` → `PROVISIONED` → `INVALID`.
+- Invariante de setup: La transición o registro en `PROVISIONED` exige de forma
+  invariable que `verified_runtime_setup_id` no sea nulo y coincida con
+  `intended_runtime_setup_id`.
+
+### 12.4 Integración auténtica con el Oráculo
+
+`desired_runtime_from_storage(root)` resuelve de forma auténtica el `DesiredRuntime`:
+- Lee `state/active.json`. Si `desired_clone_id` está ausente o corrupto, devuelve
+  `clone_root=None`.
+- Si `desired_clone_id` está presente, carga `state/clones/<clone_id>.json`.
+- Valida que `source_generation_id` coincida con la Generation deseada, que el rol sea
+  `runtime_clone`, que el ciclo de vida sea exactamente `PROVISIONED`, y que
+  `admitir_clone_root_path` apruebe la raíz física.
+- Si cualquier verificación falla, opera en modo **fail-closed** (`clone_root=None`),
+  garantizando que el oráculo mantenga el veredicto `UNKNOWN` (`NO_DESIRED_CLONE`) y
+  deniegue la activación.
+- Si todas las pruebas son satisfactorias y coinciden con la evidencia observada del
+  juego y de MO2, el oráculo puede emitir un veredicto `MATCH` con autoridad auténtica.
+
+### 12.5 Desacoplamiento del consumidor del Journal
+
+El callback `observador_effective` de `journal.reconciliar_journal` requiere un
+adaptador específico hacia `ObservacionEffective` (`generation_id`, `clone_id`,
+`effective_path`). Dado que `reconciliar_journal` pertenece a la maquinaria de
+transición/promoción de candidatos (P4/P6) y no debe activar operaciones mutantes
+sin una auditoría completa de su contrato, dicho cableado se mantiene diferido
+y documentado para el slice de integración correspondiente.

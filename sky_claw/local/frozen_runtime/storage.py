@@ -74,6 +74,16 @@ def generations_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "generations"
 
 
+def clones_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store de RuntimeCloneRecord (``state/clones/``; ADR 0012 §19c, §34.10)."""
+    return state_dir(root) / "clones"
+
+
+def clone_record_path(root: pathlib.Path, clone_id: str) -> pathlib.Path:
+    """Ruta al registro JSON de un Runtime Clone (``state/clones/<clone-id>.json``)."""
+    return clones_state_dir(root) / f"{clone_id}.json"
+
+
 def transition_journal_path(root: pathlib.Path) -> pathlib.Path:
     """Journal vigente de transición (``state/transition.json``; ADR §34.4)."""
     return state_dir(root) / "transition.json"
@@ -328,6 +338,7 @@ def _initialize_frozen_runtime_storage_locked(
         candidates_dir(ruta),
         state_dir(ruta),
         generations_state_dir(ruta),
+        clones_state_dir(ruta),
         transitions_state_dir(ruta),
         finalization_seqs_state_dir(ruta),
         issuances_state_dir(ruta),

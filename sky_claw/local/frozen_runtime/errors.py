@@ -71,6 +71,43 @@ class GenerationCollisionError(FrozenRuntimeStorageError):
 
 
 # ============================================================================
+# Runtime Clones (P5-B)
+# ============================================================================
+
+
+class RuntimeCloneError(FrozenRuntimeError):
+    """Error base de la autoridad de Runtime Clone."""
+
+
+class InvalidCloneIdError(RuntimeCloneError, FrozenRuntimeStorageError):
+    """clone_id con caracteres, formato, traversal o forma reservada inválida."""
+
+
+class RuntimeCloneCorruptError(RuntimeCloneError, StateCorruptError):
+    """Registro de Runtime Clone corrupto, truncado o ilegible (fail-closed)."""
+
+
+class RuntimeCloneSchemaError(RuntimeCloneError, StateSchemaError):
+    """Registro de Runtime Clone con schema desconocido o campos requeridos ausentes."""
+
+
+class RuntimeCloneCollisionError(RuntimeCloneError, FrozenRuntimeStorageError):
+    """clone_id ya existe en storage con identidad distinta (no-clobber)."""
+
+
+class RuntimeCloneLifecycleError(RuntimeCloneError):
+    """Transición inválida en la máquina de estados de RuntimeCloneLifecycle."""
+
+
+class RuntimeCloneAdmissionError(RuntimeCloneError, FrozenRuntimeStorageError):
+    """Ruta o rol de Runtime Clone no admisible (reparse, Managed Source, rol inválido)."""
+
+
+class RuntimeCloneNotFoundError(RuntimeCloneError, FrozenRuntimeStorageError):
+    """El RuntimeCloneRecord solicitado no existe en el storage."""
+
+
+# ============================================================================
 # Candidates (P3)
 # ============================================================================
 

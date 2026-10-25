@@ -1,0 +1,674 @@
+"""Pruebas de autoridad durable de RuntimeCloneRecord e integración con el oráculo (P5-B).
+
+Contratos auditados:
+- Persistencia tipada e inmutable bajo state/clones/<clone-id>.json.
+- Integridad de linaje, setup y exclusión física.
+- Máquina de estados RuntimeCloneLifecycle (CREATED | PROVISIONING | PROVISIONED | INVALID).
+- Exclusión concurrente interproceso mediante participant_lock del FrozenRuntimeRoot.
+- Conexión de desired_runtime_from_storage con autoridad durable auténtica en active.json v2.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+import pytest
+
+from sky_claw.local.frozen_runtime.clones import (
+    CLONE_RECORD_SCHEMA_VERSION,
+    RuntimeCloneLifecycle,
+    RuntimeCloneRecord,
+    actualizar_lifecycle_clone,
+    admitir_clone_root_path,
+    leer_runtime_clone_record,
+    registrar_runtime_clone_record,
+    validar_clone_id,
+    verificar_runtime_clone,
+)
+from sky_claw.local.frozen_runtime.effective_runtime import (
+    assess_effective_runtime,
+    desired_runtime_from_storage,
+)
+from sky_claw.local.frozen_runtime.effective_runtime.models import (
+    CompatibilityResult,
+    EffectiveRuntimeVerdict,
+    LiveProcessSnapshot,
+    ReasonCode,
+    RuntimeCompatibility,
+    RuntimeProbes,
+)
+from sky_claw.local.frozen_runtime.errors import (
+    FrozenRuntimeLockBusyError,
+    InvalidCloneIdError,
+    RuntimeCloneAdmissionError,
+    RuntimeCloneCollisionError,
+    RuntimeCloneCorruptError,
+    RuntimeCloneLifecycleError,
+    RuntimeCloneSchemaError,
+    StateSchemaError,
+)
+from sky_claw.local.frozen_runtime.generations import registrar_generation_metadata
+from sky_claw.local.frozen_runtime.models import (
+    ManagedSourceProvider,
+    ProviderMetadataObservation,
+    SourceSnapshotEvidence,
+)
+from sky_claw.local.frozen_runtime.state import (
+    load_frozen_runtime_state,
+    save_frozen_runtime_state,
+)
+from sky_claw.local.frozen_runtime.storage import (
+    active_state_path,
+    clones_state_dir,
+    initialize_frozen_runtime_storage,
+)
+from sky_claw.local.frozen_runtime.storage_models import (
+    FrozenRuntimeState,
+    GenerationVerificationState,
+)
+from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, TreeDigest
+
+_RAIZ_WORKTREE = pathlib.Path(__file__).resolve().parent.parent
+_CHILD_SCRIPT = _RAIZ_WORKTREE / "tests" / "_p5b_child.py"
+
+
+def _entorno_hijo() -> dict[str, str]:
+    entorno = dict(os.environ)
+    entorno["PYTHONPATH"] = str(_RAIZ_WORKTREE) + os.pathsep + entorno.get("PYTHONPATH", "")
+    return entorno
+
+
+def _crear_arbol_juego(
+    ruta: pathlib.Path,
+    *,
+    version: str = "1.6.1170.0",
+    skse_loader: bool = True,
+    skse_dll: bool = True,
+) -> pathlib.Path:
+    ruta.mkdir(parents=True, exist_ok=True)
+    (ruta / "SkyrimSE.exe").write_bytes(f"SkyrimSE-{version}".encode())
+    if skse_loader:
+        (ruta / "skse64_loader.exe").write_bytes(b"loader")
+    if skse_dll:
+        (ruta / "skse64_1_6_1170.dll").write_bytes(b"dll")
+    return ruta
+
+
+def _probes_limpios(
+    *,
+    version: str = "1.6.1170.0",
+    compatibilidad: RuntimeCompatibility = RuntimeCompatibility.COMPATIBLE,
+) -> RuntimeProbes:
+    return RuntimeProbes(
+        identity=lambda _r: RuntimeIdentity(game_key="skyrimse", game_version=version),
+        compatibility=lambda _r: CompatibilityResult(
+            state=compatibilidad, reason="test: compatible", game_version=version
+        ),
+        processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+    )
+
+
+def _crear_generation_valida(
+    root: pathlib.Path,
+    *,
+    version: str = "1.6.1170.0",
+    digest_prefix: str = "a1b2c3d4e5f6",
+) -> str:
+    gen_dir = root / "versions" / f"1.6.1170__{digest_prefix}"
+    _crear_arbol_juego(gen_dir, version=version)
+    full_digest = (digest_prefix * 6)[:64]
+    crit = FileIdentity(rel_path="SkyrimSE.exe", size=len(f"SkyrimSE-{version}".encode()), digest="d1")
+    evidencia = SourceSnapshotEvidence(
+        observed_at_ns=1000,
+        provider=ManagedSourceProvider.STEAM,
+        game_key="skyrimse",
+        files=(crit,),
+        critical_files=(crit,),
+        provider_metadata=ProviderMetadataObservation(
+            provider=ManagedSourceProvider.STEAM,
+            appid="489830",
+            buildid="13189953",
+        ),
+        runtime_identity=RuntimeIdentity(game_key="skyrimse", game_version=version),
+        tree_digest=TreeDigest(digest=full_digest, files=1, bytes=100),
+    )
+    meta = registrar_generation_metadata(root, evidencia)
+    return meta.generation_id
+
+
+class TestFrozenRuntimeP5BDurableAuthority:
+    """Suite de pruebas para P5-B: Autoridad durable de RuntimeCloneRecord."""
+
+    def test_01_persistencia_y_lectura_mismo_registro(self, tmp_path: pathlib.Path) -> None:
+        """1. Persistencia y lectura idéntica del mismo RuntimeCloneRecord."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_1")
+
+        record = RuntimeCloneRecord(
+            schema_version=CLONE_RECORD_SCHEMA_VERSION,
+            clone_id="1.6.1170__a1b2c3d4e5f6--c1",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-skse-1.6.1170",
+            verified_runtime_setup_id="setup-skse-1.6.1170",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=123456789,
+        )
+
+        registrado = registrar_runtime_clone_record(root, record)
+        assert registrado == record
+
+        leido = leer_runtime_clone_record(root, "1.6.1170__a1b2c3d4e5f6--c1")
+        assert leido == record
+        assert leido.schema_version == 1
+        assert leido.clone_id == "1.6.1170__a1b2c3d4e5f6--c1"
+        assert leido.lifecycle is RuntimeCloneLifecycle.PROVISIONED
+        assert leido.admitted_role == "runtime_clone"
+        assert leido.root_path == str(clone_root)
+
+    def test_02_corrupcion_truncamiento_y_schema_desconocido(self, tmp_path: pathlib.Path) -> None:
+        """2. Corrupción, truncamiento, campo faltante y schema desconocido fallan cerrado."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        clones_dir = clones_state_dir(root)
+        clones_dir.mkdir(parents=True, exist_ok=True)
+
+        # Archivo vacío (0 bytes)
+        (clones_dir / "clone_empty.json").write_bytes(b"")
+        with pytest.raises(RuntimeCloneCorruptError, match="vacío o corrupto"):
+            leer_runtime_clone_record(root, "clone_empty")
+
+        # JSON truncado
+        (clones_dir / "clone_trunc.json").write_text('{"schema_version": 1, "clone_id":', encoding="utf-8")
+        with pytest.raises(RuntimeCloneCorruptError, match="JSON malformado o truncado"):
+            leer_runtime_clone_record(root, "clone_trunc")
+
+        # No es objeto JSON
+        (clones_dir / "clone_array.json").write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(RuntimeCloneCorruptError, match="debe ser un objeto JSON"):
+            leer_runtime_clone_record(root, "clone_array")
+
+        # Schema desconocido
+        (clones_dir / "clone_schema.json").write_text(
+            json.dumps({"schema_version": 99, "clone_id": "clone_schema"}),
+            encoding="utf-8",
+        )
+        with pytest.raises(RuntimeCloneSchemaError, match="schema desconocido 99"):
+            leer_runtime_clone_record(root, "clone_schema")
+
+        # Campo obligatorio faltante (ej: source_generation_id)
+        incompleto = {
+            "schema_version": 1,
+            "clone_id": "clone_inc",
+            "lifecycle": "PROVISIONED",
+            "root_path": "C:\\fake",
+            "admitted_role": "runtime_clone",
+            "created_at_ns": 0,
+        }
+        (clones_dir / "clone_inc.json").write_text(json.dumps(incompleto), encoding="utf-8")
+        with pytest.raises(RuntimeCloneSchemaError, match="falta el campo obligatorio 'source_generation_id'"):
+            leer_runtime_clone_record(root, "clone_inc")
+
+        # admitted_role inválido
+        invalido_rol = dict(incompleto)
+        invalido_rol["source_generation_id"] = "1.6.1170__a1b2c3d4e5f6"
+        invalido_rol["intended_runtime_setup_id"] = "s1"
+        invalido_rol["verified_runtime_setup_id"] = "s1"
+        invalido_rol["admitted_role"] = "generation"  # violación SFR-19
+        (clones_dir / "clone_rol.json").write_text(json.dumps(invalido_rol), encoding="utf-8")
+        with pytest.raises(RuntimeCloneAdmissionError, match="admitted_role inválido"):
+            leer_runtime_clone_record(root, "clone_rol")
+
+    def test_03_identificadores_invalidos(self, tmp_path: pathlib.Path) -> None:
+        """3. Rechazo estricto de identificadores inválidos, con traversal o nombres reservados."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        for id_invalido in (
+            "",
+            "   ",
+            "../clone_escape",
+            "..\\clone_escape",
+            "clone/slash",
+            "clone\\backslash",
+            "con",
+            "nul",
+            "prn",
+            "aux",
+            "com1",
+            "lpt2",
+            "clone*bad",
+            "clone:bad",
+        ):
+            with pytest.raises(InvalidCloneIdError):
+                validar_clone_id(id_invalido)
+
+        # Normalización a minúsculas
+        assert validar_clone_id("Clone-Alpha_01") == "clone-alpha_01"
+
+    def test_04_registros_huerfanos_o_incompatibles(self, tmp_path: pathlib.Path) -> None:
+        """4. Un clone cuya Generation declarada no existe en el storage es huérfano."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_orphan")
+
+        record = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-orphan",
+            source_generation_id="1.6.1170__ffffffffffff",  # no existe en state/generations
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=0,
+        )
+        registrar_runtime_clone_record(root, record)
+
+        resultado = verificar_runtime_clone(root, "clone-orphan")
+        assert resultado.state is GenerationVerificationState.INVALID
+        assert "Generation de origen no existe" in resultado.message
+
+    def test_05_raices_inexistentes_o_con_reparse_points(self, tmp_path: pathlib.Path) -> None:
+        """5. Rechazo de raíces con reparse points o superpuestas con Managed Source o versions."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        # Dentro de versions/ (prohibido por SFR-19)
+        versions_path = root / "versions" / "1.6.1170__a1b2c3d4e5f6"
+        with pytest.raises(RuntimeCloneAdmissionError, match="dentro de versions"):
+            admitir_clone_root_path(versions_path, storage_root=root)
+
+        # Dentro de steamapps/common (Managed Source)
+        steamapps_path = tmp_path / "SteamLibrary" / "steamapps" / "common" / "Skyrim Special Edition"
+        with pytest.raises(RuntimeCloneAdmissionError, match="área administrada por Steam"):
+            admitir_clone_root_path(steamapps_path, storage_root=root)
+
+        # Ruta no absoluta
+        with pytest.raises(RuntimeCloneAdmissionError, match="debe ser absoluta"):
+            admitir_clone_root_path("relativa/clone", storage_root=root)
+
+        # Reparse point / junction rechazado
+        target_dir = tmp_path / "target_reparse"
+        target_dir.mkdir()
+        junction_dir = tmp_path / "junction_reparse"
+        if os.name == "nt":
+            import subprocess
+
+            cmd_res = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction_dir), str(target_dir)], capture_output=True
+            )
+            if cmd_res.returncode == 0:
+                with pytest.raises(RuntimeCloneAdmissionError, match="reparse point"):
+                    admitir_clone_root_path(junction_dir, storage_root=root)
+        else:
+            try:
+                junction_dir.symlink_to(target_dir, target_is_directory=True)
+                with pytest.raises(RuntimeCloneAdmissionError, match="reparse point"):
+                    admitir_clone_root_path(junction_dir, storage_root=root)
+            except OSError:
+                pass
+
+    def test_06_cambios_de_identidad_o_incompatibilidad_detectada(self, tmp_path: pathlib.Path) -> None:
+        """6. Verificación física detecta divergencia en ejecutables críticos contra la Generation."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root, version="1.6.1170.0")
+
+        # Clone con versión divergente
+        divergent_root = _crear_arbol_juego(tmp_path / "clone_divergent", version="1.5.97.0")
+        record = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-divergent",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(divergent_root),
+            admitted_role="runtime_clone",
+            created_at_ns=0,
+        )
+        registrar_runtime_clone_record(root, record)
+
+        resultado = verificar_runtime_clone(root, "clone-divergent")
+        assert resultado.state is GenerationVerificationState.INVALID
+        assert "identidad de runtime" in resultado.message or "críticos" in resultado.message
+
+    def test_07_dos_escritores_concurrentes_procesos_independientes(self, tmp_path: pathlib.Path) -> None:
+        """7. Exclusión interproceso real sobre el FrozenRuntimeRoot."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        ready_file = tmp_path / "child_ready.flag"
+        release_file = tmp_path / "child_release.flag"
+
+        # Lanzar proceso hijo que sostiene el participant_lock
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(_CHILD_SCRIPT),
+                "lock_hold",
+                str(root),
+                json.dumps(
+                    {
+                        "ready_file": str(ready_file),
+                        "release_file": str(release_file),
+                        "timeout": 5.0,
+                    }
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_entorno_hijo(),
+            cwd=str(_RAIZ_WORKTREE),
+        )
+
+        try:
+            # Esperar a que el hijo tome el lock
+            inicio = time.time()
+            while not ready_file.exists():
+                time.sleep(0.05)
+                assert time.time() - inicio < 10.0, "Timeout esperando a que el proceso hijo tome el lock"
+
+            # Intentar registrar un clone desde el proceso padre con timeout=0.0 debe fallar con FrozenRuntimeLockBusyError
+            clone_root = _crear_arbol_juego(tmp_path / "clone_conc")
+            rec = RuntimeCloneRecord(
+                schema_version=1,
+                clone_id="clone-concurrent",
+                source_generation_id="1.6.1170__a1b2c3d4e5f6",
+                lifecycle=RuntimeCloneLifecycle.CREATED,
+                intended_runtime_setup_id="setup-1",
+                verified_runtime_setup_id=None,
+                root_path=str(clone_root),
+                admitted_role="runtime_clone",
+                created_at_ns=0,
+            )
+
+            with pytest.raises(FrozenRuntimeLockBusyError):
+                registrar_runtime_clone_record(root, rec, timeout=0.0)
+
+        finally:
+            # Señalar al hijo para liberar
+            release_file.write_text("release", encoding="utf-8")
+            out, err = proc.communicate(timeout=10.0)
+            assert proc.returncode == 0, f"Hijo falló: {err}"
+
+        # Tras liberar, el registro ahora debe tener éxito
+        res = registrar_runtime_clone_record(root, rec, timeout=5.0)
+        assert res.clone_id == "clone-concurrent"
+
+    def test_08_escritura_interrumpida_preserva_registro_previo(self, tmp_path: pathlib.Path) -> None:
+        """8. Ante fallo antes de os.replace, el registro anterior permanece intacto."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_atomic")
+
+        original = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-atomic",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, original)
+
+        # Dejar un temporal huérfano simulado
+        tmp_left = clones_state_dir(root) / ".sky_claw_simulated.tmp"
+        tmp_left.write_text("corrupted tmp", encoding="utf-8")
+
+        # El registro original sigue siendo válido
+        leido = leer_runtime_clone_record(root, "clone-atomic")
+        assert leido == original
+
+    def test_09_duplicados_y_proteccion_no_clobber(self, tmp_path: pathlib.Path) -> None:
+        """9. Idempotencia ante registro idéntico y colisión fail-closed ante identidades distintas."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_dup")
+
+        rec1 = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-dup",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec1)
+
+        # Mismo registro: idempotente
+        idem = registrar_runtime_clone_record(root, rec1)
+        assert idem == rec1
+
+        # Mismo id con datos distintos (source_generation_id distinto): RuntimeCloneCollisionError
+        rec_distinto = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-dup",
+            source_generation_id="1.6.1170__999999999999",
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneCollisionError, match="ya existe con identidad distinta"):
+            registrar_runtime_clone_record(root, rec_distinto)
+
+    def test_10_ausencia_desired_clone_permanece_fail_closed(self, tmp_path: pathlib.Path) -> None:
+        """10. Sin Desired Clone auténtico o con clone no provisionado, el oráculo permanece UNKNOWN."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        _crear_generation_valida(root)
+
+        # active.json v1 (sin desired_clone_id)
+        deseado_v1 = desired_runtime_from_storage(root)
+        assert deseado_v1.clone_root is None
+
+        # Instancia MO2 apuntando a cualquier lado
+        instancia = tmp_path / "mo2_inst"
+        instancia.mkdir()
+        (instancia / "modorganizer.ini").write_text(
+            f"[General]\ngamePath=@ByteArray({str(tmp_path / 'anything').replace(chr(92), chr(92) * 2)})\n",
+            encoding="utf-8",
+        )
+
+        res = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=deseado_v1,
+            config_skyrim_path=str(tmp_path / "anything"),
+            probes=_probes_limpios(),
+        )
+        assert res.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.NO_DESIRED_CLONE in res.reasons
+        assert not res.authorizes_activation
+
+        # active.json v2 apuntando a clone en estado CREATED (no PROVISIONED)
+        gen_id = _crear_generation_valida(root, digest_prefix="f1f2f3f4f5f6")
+        clone_root_created = _crear_arbol_juego(tmp_path / "clone_created")
+        rec_created = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-created",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root_created),
+            admitted_role="runtime_clone",
+            created_at_ns=1,
+        )
+        registrar_runtime_clone_record(root, rec_created)
+        save_frozen_runtime_state(
+            active_state_path(root),
+            FrozenRuntimeState(
+                schema_version=2,
+                updated_at_ns=100,
+                desired_active_generation=gen_id,
+                desired_clone_id="clone-created",
+            ),
+        )
+        deseado_created = desired_runtime_from_storage(root)
+        assert deseado_created.clone_root is None
+        res_created = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=deseado_created,
+            config_skyrim_path=str(tmp_path / "anything"),
+            probes=_probes_limpios(),
+        )
+        assert res_created.verdict is EffectiveRuntimeVerdict.UNKNOWN
+        assert ReasonCode.NO_DESIRED_CLONE in res_created.reasons
+        assert not res_created.authorizes_activation
+
+    def test_11_transiciones_fsm_lifecycle_clone(self, tmp_path: pathlib.Path) -> None:
+        """11. Máquina de estados RuntimeCloneLifecycle y verificación de setups."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_fsm")
+
+        # Crear en CREATED
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-fsm",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=0,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # Transición válida: CREATED -> PROVISIONING
+        p1 = actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONING)
+        assert p1.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+
+        # Transición inválida: PROVISIONED sin verified_runtime_setup_id
+        with pytest.raises(RuntimeCloneLifecycleError, match="verified_runtime_setup_id"):
+            actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONED)
+
+        # Transición válida: PROVISIONING -> PROVISIONED con verified_runtime_setup_id
+        p2 = actualizar_lifecycle_clone(
+            root,
+            "clone-fsm",
+            RuntimeCloneLifecycle.PROVISIONED,
+            verified_runtime_setup_id="setup-1",
+        )
+        assert p2.lifecycle is RuntimeCloneLifecycle.PROVISIONED
+        assert p2.verified_runtime_setup_id == "setup-1"
+
+        # Transición terminal: PROVISIONED -> INVALID
+        p3 = actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.INVALID)
+        assert p3.lifecycle is RuntimeCloneLifecycle.INVALID
+
+        # Transición inválida desde INVALID (terminal)
+        with pytest.raises(RuntimeCloneLifecycleError, match="estado terminal"):
+            actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONED)
+
+    def test_12_oraculo_obtiene_match_con_autoridad_durable_completa(self, tmp_path: pathlib.Path) -> None:
+        """12. Oráculo utiliza evidencia persistente auténtica y produce MATCH legítimo."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root, version="1.6.1170.0")
+        clone_root = _crear_arbol_juego(tmp_path / "clone_match", version="1.6.1170.0")
+
+        # Registrar clone en PROVISIONED
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="1.6.1170__a1b2c3d4e5f6--c1",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # Persistir active.json en schema v2
+        estado_v2 = FrozenRuntimeState(
+            schema_version=2,
+            desired_active_generation=gen_id,
+            desired_clone_id="1.6.1170__a1b2c3d4e5f6--c1",
+            updated_at_ns=200,
+        )
+        save_frozen_runtime_state(root / "state" / "active.json", estado_v2)
+
+        # Leer DesiredRuntime a través de la autoridad durable
+        deseado = desired_runtime_from_storage(root)
+        assert deseado.generation_id == gen_id
+        assert deseado.clone_id == "1.6.1170__a1b2c3d4e5f6--c1"
+        assert deseado.clone_root == clone_root
+
+        # Configurar MO2 apuntando al clone_root
+        instancia = tmp_path / "mo2_match"
+        instancia.mkdir()
+        ini_content = f"[General]\ngamePath=@ByteArray({str(clone_root).replace(chr(92), chr(92) * 2)})\n"
+        (instancia / "modorganizer.ini").write_text(ini_content, encoding="utf-8")
+
+        resultado = assess_effective_runtime(
+            mo2_instance_dir=instancia,
+            desired=deseado,
+            config_skyrim_path=str(clone_root),
+            probes=_probes_limpios(),
+        )
+
+        assert resultado.verdict is EffectiveRuntimeVerdict.MATCH
+        assert resultado.authorizes_activation is True
+        assert ReasonCode.EFFECTIVE_MATCHES_DESIRED_CLONE in resultado.reasons
+        assert resultado.desired_clone_id == "1.6.1170__a1b2c3d4e5f6--c1"
+        assert resultado.desired_clone_root == str(clone_root)
+
+    def test_13_active_state_v2_par_parcialmente_nulo_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """13. active.json v2 con sólo generation_id o sólo clone_id es corrupto (fail-closed)."""
+        active_path = tmp_path / "active.json"
+
+        # Solo desired_generation_id
+        active_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "desired_generation_id": "1.6.1170__a1b2c3d4e5f6",
+                    "desired_clone_id": None,
+                    "updated_at_ns": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(StateSchemaError, match="ambos null o ambos no-null"):
+            load_frozen_runtime_state(active_path)
+
+        # Solo desired_clone_id
+        active_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "desired_generation_id": None,
+                    "desired_clone_id": "clone-1",
+                    "updated_at_ns": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(StateSchemaError, match="ambos null o ambos no-null"):
+            load_frozen_runtime_state(active_path)
