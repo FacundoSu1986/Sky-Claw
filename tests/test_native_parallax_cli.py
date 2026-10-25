@@ -1420,3 +1420,52 @@ def test_la_salida_sin_codepage_es_un_flujo_de_texto_de_solo_escritura() -> None
     salida.write("a → b\n")
     salida.flush()
     assert crudo.getvalue() == b"a \\u2192 b\n"
+
+
+@pytest.mark.parametrize("escribir_revision", [False, True])
+def test_el_resumen_avisa_que_un_mapa_sin_contenido_no_se_escribe_ni_con_incluir_revision(
+    escribir_revision: bool,
+) -> None:
+    from sky_claw.local.native_parallax.gates import Veredicto
+    from sky_claw.local.native_parallax.lote import MOTIVO_SIN_CONTENIDO, ResultadoDeArchivo
+
+    plana = ResultadoDeArchivo(
+        "o1", "s1", EstadoDeArchivo.EN_REVISION, None, Veredicto.REVIEW, (MOTIVO_SIN_CONTENIDO,), None, "sin contenido"
+    )
+    informe = InformeDelLote(ParametrosDelLote(escribir_revision=escribir_revision), (plana,), (), None)
+    salida = io.StringIO()
+
+    cli._resumen(informe, [], salida)
+
+    texto = salida.getvalue()
+    assert "1 sin contenido" in texto and "ni con --incluir-revision" in texto
+
+
+def _informe_solo_de_revisiones(*motivos_por_archivo: tuple[str, ...]) -> InformeDelLote:
+    from sky_claw.local.native_parallax.gates import Veredicto
+    from sky_claw.local.native_parallax.lote import ResultadoDeArchivo
+
+    archivos = tuple(
+        ResultadoDeArchivo(f"o{i}", f"s{i}", EstadoDeArchivo.EN_REVISION, None, Veredicto.REVIEW, motivos, None, "")
+        for i, motivos in enumerate(motivos_por_archivo)
+    )
+    return InformeDelLote(ParametrosDelLote(), archivos, (), None)
+
+
+@pytest.mark.parametrize(
+    ("motivos_por_archivo", "se_sugiere_el_flag"),
+    [
+        ((("SIN_UMBRALES",),), True),
+        ((("SIN_UMBRALES", "SIN_CONTENIDO"),), False),  # solo hay mapas sin contenido: el flag no escribiría nada
+        ((("SIN_CONTENIDO",), ("SIN_UMBRALES",)), True),  # hay al menos una revisión que el flag sí escribiría
+        ((("SIN_CONTENIDO",), ("SIN_CONTENIDO",)), False),
+    ],
+)
+def test_el_resumen_solo_sugiere_incluir_revision_si_el_flag_escribiria_algo(
+    motivos_por_archivo: tuple[tuple[str, ...], ...], se_sugiere_el_flag: bool
+) -> None:
+    salida = io.StringIO()
+
+    cli._resumen(_informe_solo_de_revisiones(*motivos_por_archivo), [], salida)
+
+    assert ("Agregá --incluir-revision" in salida.getvalue()) is se_sugiere_el_flag

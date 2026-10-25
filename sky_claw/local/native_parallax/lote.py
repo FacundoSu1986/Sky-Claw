@@ -107,8 +107,10 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 __all__ = [
+    "DESVIACION_MINIMA_DE_ALTURA",
     "ERRORES_POR_ARCHIVO",
     "EXPORTADOR_ID",
+    "MOTIVO_SIN_CONTENIDO",
     "PERCENTILES_DE_LA_AMPLITUD",
     "VERSION_DEL_LOTE",
     "EstadoDeArchivo",
@@ -123,6 +125,7 @@ __all__ = [
     "ResultadoDeRuta",
     "ResultadoDelExportador",
     "procesar_lote",
+    "tiene_contenido",
 ]
 
 #: Versión de la DEFINICIÓN de la tubería: entra a los parámetros de procedencia, así que cambiarla invalida las cachés.
@@ -132,6 +135,14 @@ EXPORTADOR_ID: Final = "legacy_parallax_bc4_v1"
 #: Percentiles con que el informe DESCRIBE la amplitud de la altura exportada (NP-V0, decisión del TL: p2, p98 y la
 #: desviación). No son los de la normalización ni un umbral: no deciden nada y no entran a la procedencia.
 PERCENTILES_DE_LA_AMPLITUD: Final = (2.0, 98.0)
+#: Piso de CONTENIDO de la altura exportada: la desviación estándar (altura normalizada a [0, 1]) por debajo de la cual el
+#: mapa no desplaza nada y NO se publica jamás. No es un umbral de calidad ni aprueba nada: solo impide publicar un
+#: ``_p.dds`` válido en formato que el juego carga sin efecto. Origen: censo del rig real (#792 H1), 3 mapas con sd 0.7, 1.1
+#: y 1.3 (sobre 255) frente a 12 con sd entre 20.2 y 72.6; 8/255 cae en ese hueco. Es el mismo piso del auditor de la capa
+#: desatendida (``parallax_unattended.auditor.SD_MINIMA``; un test los ata). Es política: no entra a la procedencia.
+DESVIACION_MINIMA_DE_ALTURA: Final = 8.0 / 255.0
+#: Motivo con que el informe declara un mapa sin contenido (se suma a los del gate; el veredicto queda en ``REVIEW``).
+MOTIVO_SIN_CONTENIDO: Final = "SIN_CONTENIDO"
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +475,12 @@ def _medir(ruta: pathlib.Path, parametros: ParametrosDelLote, decisor: Decisor) 
     return _Medida(altura, integrada.algoritmo, antes, metricas, decisor(metricas), descripcion)
 
 
+def tiene_contenido(descripcion: Amplitud) -> bool:
+    """``True`` si la altura se mueve lo bastante para valer la pena publicarla. Fail-closed: un valor no finito no tiene."""
+    desviacion = descripcion.desviacion
+    return math.isfinite(desviacion) and desviacion >= DESVIACION_MINIMA_DE_ALTURA
+
+
 def _entorno() -> tuple[tuple[str, str], ...]:
     """Las versiones que condicionan los bytes (ordenadas por nombre, como exige la procedencia)."""
     try:
@@ -533,14 +550,24 @@ async def _fase_de_calculo(
             parciales.append(_Parcial(entrada, EstadoDeArchivo.NO_PROCESADA, f"{type(exc).__name__}: {exc}"))
             continue
         decision = medida.decision
+        sin_contenido = not tiene_contenido(medida.amplitud)
+        motivos = tuple(m.name for m in decision.motivos)
         parcial = _Parcial(
             entrada,
             EstadoDeArchivo.EN_REVISION,
-            veredicto=decision.veredicto,
-            motivos=tuple(m.name for m in decision.motivos),
+            # Un mapa sin contenido es REVIEW aunque el gate lo aceptara: nunca se publica (#792 NP-NO-EMPTY).
+            veredicto=Veredicto.REVIEW if sin_contenido else decision.veredicto,
+            motivos=(*motivos, MOTIVO_SIN_CONTENIDO) if sin_contenido else motivos,
             metricas=medida.metricas,
             amplitud=medida.amplitud,
         )
+        if sin_contenido:
+            parcial.detalle = (
+                "la altura no se mueve lo bastante (desviación bajo el piso de contenido): se mide y se informa, "
+                "pero no se escribe aunque se pidan las revisiones"
+            )
+            parciales.append(parcial)
+            continue
         if decision.veredicto is not Veredicto.AUTO_ACCEPT and not parametros.escribir_revision:
             parcial.detalle = "el gate la mandó a revisión y no se pidió escribir las salidas en revisión"
             parciales.append(parcial)
