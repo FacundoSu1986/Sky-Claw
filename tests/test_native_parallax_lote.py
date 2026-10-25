@@ -21,6 +21,7 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import pathlib
 import platform
@@ -317,6 +318,103 @@ async def test_un_auto_accept_se_escribe_sin_pedir_nada(escenario: Escenario) ->
 # ---------------------------------------------------------------------------
 # Un archivo que falla no frena al lote; cada estado del vocabulario tiene su caso
 # ---------------------------------------------------------------------------
+
+
+def _escribir_normal_casi_plana(ruta: pathlib.Path, *, n: int = 64) -> None:
+    """Plana salvo un píxel inclinado: la altura integrada es válida y su desviación es casi nula (sin ser constante)."""
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    normal = np.full((n, n, 3), (128, 128, 255), dtype=np.uint8)
+    normal[n // 2, n // 2] = (255, 128, 128)
+    imagen.fromarray(normal, mode="RGB").save(ruta, format="PNG")
+
+
+def _casi_plana(escenario: Escenario, nombre: str = "muro01") -> _Normal:
+    normal = escenario.normal(nombre)
+    _escribir_normal_casi_plana(normal.ruta_absoluta)
+    return normal
+
+
+@pytest.mark.parametrize("decisor", [None, "auto_accept"], ids=["revision", "auto_accept"])
+async def test_un_mapa_sin_contenido_no_se_publica_ni_pidiendo_escribir_revisiones(
+    escenario: Escenario, decisor: str | None
+) -> None:
+    """NP-NO-EMPTY (#792 H1/H3): 3 de 15 ``_p.dds`` del rig salieron válidos, con el peso correcto y sin desplazar un píxel."""
+    plana = _casi_plana(escenario)
+    kwargs: dict[str, Any] = {"parametros": ParametrosDelLote(escribir_revision=True)}
+    if decisor == "auto_accept":
+        kwargs["decisor"] = lambda _metricas: _AUTOACEPTAR
+
+    informe = await escenario.lote([plana], **kwargs)
+
+    (resultado,) = informe.archivos
+    assert resultado.estado is EstadoDeArchivo.EN_REVISION and resultado.efecto is None
+    assert resultado.veredicto is Veredicto.REVIEW  # ni un AUTO_ACCEPT futuro puede aprobar un mapa sin contenido
+    assert lote.MOTIVO_SIN_CONTENIDO in resultado.motivos
+    assert resultado.amplitud is not None and resultado.amplitud.desviacion < lote.DESVIACION_MINIMA_DE_ALTURA
+    assert escenario.exportador.alturas == []  # ni se exporta
+    assert not escenario.raiz.exists()  # ni se abre la salida
+
+
+async def test_un_mapa_sin_contenido_no_frena_a_los_que_si_lo_tienen(escenario: Escenario) -> None:
+    plana = _casi_plana(escenario, "muro01")
+    buena = escenario.normal("muro02")
+
+    informe = await escenario.lote([plana, buena], decisor=lambda _metricas: _AUTOACEPTAR)
+
+    assert _estados(informe) == {
+        plana.ruta_de_salida: EstadoDeArchivo.EN_REVISION,
+        buena.ruta_de_salida: EstadoDeArchivo.ESCRITA,
+    }
+    assert not escenario.disco(plana.ruta_de_salida).exists()
+
+
+async def test_un_mapa_sin_contenido_no_borra_la_salida_anterior_de_esa_textura(escenario: Escenario) -> None:
+    normal = escenario.normal("muro01")
+    await escenario.lote([normal])
+    anterior = escenario.disco(normal.ruta_de_salida).read_bytes()
+    _escribir_normal_casi_plana(normal.ruta_absoluta)
+
+    informe = await escenario.lote(
+        [normal], parametros=ParametrosDelLote(escribir_revision=True, retirar_no_incluidas=True)
+    )
+
+    assert informe.archivos[0].estado is EstadoDeArchivo.EN_REVISION
+    assert escenario.disco(normal.ruta_de_salida).read_bytes() == anterior  # una revision no retira lo vigente
+
+
+@pytest.mark.parametrize(
+    ("desviacion", "tiene_contenido"),
+    [
+        (0.0, False),
+        (lote.DESVIACION_MINIMA_DE_ALTURA / 2, False),
+        (math.nextafter(lote.DESVIACION_MINIMA_DE_ALTURA, 0.0), False),
+        (lote.DESVIACION_MINIMA_DE_ALTURA, True),
+        (0.3, True),
+        (math.nan, False),  # fail-closed: lo que no se puede medir no tiene contenido
+        (math.inf, False),
+        (-math.inf, False),
+    ],
+)
+def test_el_piso_de_contenido_es_cerrado_por_abajo_y_falla_cerrado_ante_no_finitos(
+    desviacion: float, tiene_contenido: bool
+) -> None:
+    descripcion = Amplitud(
+        percentil_bajo=2.0, valor_bajo=0.0, percentil_alto=98.0, valor_alto=1.0, desviacion=desviacion
+    )
+
+    assert lote.tiene_contenido(descripcion) is tiene_contenido
+
+
+def test_el_piso_de_contenido_coincide_con_el_del_auditor_de_la_capa_desatendida() -> None:
+    """Dos pisos distintos para la misma pregunta son dos verdades: el generador bloquea lo que el auditor mandaría a revisión."""
+    from sky_claw.local.parallax_unattended.auditor import SD_MINIMA
+
+    assert lote.DESVIACION_MINIMA_DE_ALTURA == SD_MINIMA
+
+
+def test_el_piso_de_contenido_no_entra_a_la_procedencia() -> None:
+    """Decide si se escribe, no qué bytes salen: tocarlo no puede invalidar las cachés."""
+    assert "desviacion" not in json.dumps(ParametrosDelLote().a_parametros_de_procedencia())
 
 
 async def test_un_archivo_ilegible_no_frena_a_los_demas(escenario: Escenario) -> None:

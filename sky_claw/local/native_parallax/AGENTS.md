@@ -141,6 +141,12 @@ La política clean-room, `docs/design/research/native-parallax/` y
   validaciones del dato están congeladas por igualdad en `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario
   rompe el test), y el módulo está en el censo de `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos.
   La CLI ya lo usa (`crear_exportador_texconv` diagnostica antes de exportar y `_resolver_texconv` delega en `ruta_configurada`: el nombre de la variable y la regla de la ruta viven SOLO en este módulo, con un ancla por AST); todavía NO lo usa el registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c" y "Cableado del diagnóstico a la CLI".
+- **Piso de contenido (NP-NO-EMPTY, #792 H1/H3).** `lote.tiene_contenido` / `DESVIACION_MINIMA_DE_ALTURA` (8/255, la misma de
+  `parallax_unattended.auditor.SD_MINIMA`; un test las ata): una altura cuya desviación queda bajo el piso (o no es finita) pasa a
+  `EN_REVISION` con el motivo `SIN_CONTENIDO` y veredicto `REVIEW`, **aunque el gate la aceptara y aunque se pida `--incluir-revision`**; no
+  se exporta ni se abre la salida, y no retira la salida vigente de esa textura. No es un umbral de calidad: no aprueba nada, solo impide
+  publicar un `_p.dds` válido en formato que el juego carga sin efecto. Es política: no entra a la procedencia (no invalida cachés). Límite: el
+  piso sale de un censo de tres mapas planos contra doce con contenido (hueco entre sd 1.3 y 20.2 sobre 255), no de un benchmark.
 
 ## Verificación segura
 

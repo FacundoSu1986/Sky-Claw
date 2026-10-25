@@ -1420,3 +1420,22 @@ def test_la_salida_sin_codepage_es_un_flujo_de_texto_de_solo_escritura() -> None
     salida.write("a → b\n")
     salida.flush()
     assert crudo.getvalue() == b"a \\u2192 b\n"
+
+
+@pytest.mark.parametrize("escribir_revision", [False, True])
+def test_el_resumen_avisa_que_un_mapa_sin_contenido_no_se_escribe_ni_con_incluir_revision(
+    escribir_revision: bool,
+) -> None:
+    from sky_claw.local.native_parallax.gates import Veredicto
+    from sky_claw.local.native_parallax.lote import MOTIVO_SIN_CONTENIDO, ResultadoDeArchivo
+
+    plana = ResultadoDeArchivo(
+        "o1", "s1", EstadoDeArchivo.EN_REVISION, None, Veredicto.REVIEW, (MOTIVO_SIN_CONTENIDO,), None, "sin contenido"
+    )
+    informe = InformeDelLote(ParametrosDelLote(escribir_revision=escribir_revision), (plana,), (), None)
+    salida = io.StringIO()
+
+    cli._resumen(informe, [], salida)
+
+    texto = salida.getvalue()
+    assert "1 sin contenido" in texto and "ni con --incluir-revision" in texto
