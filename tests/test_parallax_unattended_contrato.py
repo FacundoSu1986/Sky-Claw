@@ -184,3 +184,40 @@ def test_llamadas_cuyo_callee_no_es_nombre_ni_atributo_no_se_confunden_con_escri
     """El callee que no es ``Name`` ni ``Attribute`` (otra llamada, un subíndice) no puede lanzar ni contar como disco."""
 
     assert revisar_fuente(fuente, "sintetico.py") == ()
+
+
+_MODULOS_CON_ESCRITORES = ("os", "shutil", "tempfile")
+
+
+def _nombres_que_escriben() -> list[str]:
+    """Todo lo que el contrato ya trata como escritura por atributo, más ``write`` (solo ``os.write`` es disco)."""
+
+    from sky_claw.local.parallax_unattended import contrato
+
+    return sorted({*contrato.METODOS_QUE_ESCRIBEN, *contrato._CONSTRUCTORES_TEMPORALES, "write"})
+
+
+@pytest.mark.parametrize("nombre", _nombres_que_escriben())
+@pytest.mark.parametrize("modulo", _MODULOS_CON_ESCRITORES)
+def test_un_escritor_importado_por_nombre_o_con_alias_se_detecta(modulo: str, nombre: str) -> None:
+    """``from os import remove; remove(x)`` es la misma escritura que ``os.remove(x)``: se enumera la familia entera."""
+
+    directo = revisar_fuente(f"from {modulo} import {nombre}\n{nombre}(x)\n", "sintetico.py")
+    con_alias = revisar_fuente(f"from {modulo} import {nombre} as otro\notro(x)\n", "sintetico.py")
+
+    assert [h.regla for h in directo] == [ReglaDeContrato.ESCRIBE_EN_DISCO]
+    assert [h.regla for h in con_alias] == [ReglaDeContrato.ESCRIBE_EN_DISCO]
+
+
+@pytest.mark.parametrize(
+    "fuente",
+    [
+        "from os import getcwd\ngetcwd()\n",
+        "from os.path import join\njoin(a, b)\n",
+        "from shutil import which\nwhich(x)\n",
+        "write(x)\n",  # sin importarlo de os no es evidencia de disco
+        "def write(x): ...\nwrite(1)\n",
+    ],
+)
+def test_lo_que_no_es_un_escritor_importado_no_se_marca(fuente: str) -> None:
+    assert revisar_fuente(fuente, "sintetico.py") == ()

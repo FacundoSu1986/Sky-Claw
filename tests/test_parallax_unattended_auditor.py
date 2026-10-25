@@ -757,3 +757,23 @@ def test_un_error_de_resolucion_o_is_file_no_aborta_el_resto_del_lote(
 
     assert [h.codigo for h in auditoria.hallazgos] == [CodigoDeHallazgo.NO_LEGIBLE]
     assert auditoria.verificados == ("textures/sana_p.dds",)
+
+
+def test_un_informe_solo_con_retiradas_ausentes_no_se_vuelve_falla_por_no_tener_artefactos(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Qodo/#801: ``SIN_ARTEFACTOS`` no degrada a INCONSISTENTE ni a FAIL cuando el chequeo de ausencia *es* la verificación."""
+
+    from sky_claw.local.parallax_unattended.composicion import combinar
+    from sky_claw.local.parallax_unattended.veredicto import VeredictoDelLote, dictar
+
+    informe = _informe(["textures/nueva_p.dds"], estado="EN_REVISION", efecto=None)
+    informe["archivos"][0]["veredicto"] = "REVIEW"  # type: ignore[index]
+    informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": "RETIRADA", "detalle": "x"}]
+    informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
+    informe["omitidas_al_enumerar"] = []
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+
+    final = combinar(dictar(informe), auditar(informe, tmp_path))
+
+    assert final.veredicto is VeredictoDelLote.REVIEW
