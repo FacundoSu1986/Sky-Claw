@@ -380,6 +380,8 @@ def build_orchestration_composition(
         plugin_limit_guard=plugin_limit_guard,
         default_profile_getter=lambda: default_profile,
         preview_service_provider=preview_chain_service_provider,
+        # NP-A0h: las MISMAS raíces que arma AppContext para el MO2Controller del agente LLM (un solo resolver).
+        raices_mo2_provider=path_resolver.raices_de_instancia_mo2,
     )
 
     # ------------------------------------------------------------------

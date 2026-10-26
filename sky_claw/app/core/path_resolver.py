@@ -182,6 +182,19 @@ class MetadataInstanciaMO2:
     mod_directory_declarado: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class RaicesDeInstanciaMO2:
+    """Las tres raíces con las que se arma un ``MO2Controller``: instalación, datos de la instancia y mods.
+
+    Las deriva :meth:`PathResolutionService.raices_de_instancia_mo2`, y SOLO ella: ``AppContext`` (que alimenta al agente LLM) y el
+    composition root del dispatcher de la GUI la piden ahí, así que las dos superficies razonan sobre el mismo árbol.
+    """
+
+    install_root: pathlib.Path
+    data_root: pathlib.Path
+    mods_dir: pathlib.Path
+
+
 def parsear_metadata_instancia_mo2(
     contenido_ini: str,
     directorio_del_ini: pathlib.Path,
@@ -1186,6 +1199,24 @@ class PathResolutionService:
         if install_dir is not None and self._es_directorio_real(install_dir, "instance_data_legacy"):
             return install_dir
         return None
+
+    def raices_de_instancia_mo2(self, *, install_de_respaldo: pathlib.Path | None = None) -> RaicesDeInstanciaMO2:
+        """Instalación, datos y mods de la instancia MO2, con la semántica de ESCRITURA de ``AppContext`` (fail-closed).
+
+        Combina los tres getters estrictos en el orden en que lo hacía ``AppContext``: la instalación del resolver (o
+        ``install_de_respaldo`` si no conoce ninguna), los datos de la instancia (``get_mo2_instance_data_root_estricto``, que propaga
+        ``RuntimeError`` ante metadata corrupta; sin evidencia de instancia, la instalación) y el destino de mods
+        (``get_mo2_mods_path_para_destino``; sin metadata ni ``MO2_MODS_PATH``, ``<datos>/mods``).
+
+        Raises:
+            RuntimeError: sin instalación MO2 resoluble (ni el resolver ni ``install_de_respaldo``), o metadata inconsistente.
+        """
+        install_root = self.get_mo2_path() or install_de_respaldo
+        data_root = self.get_mo2_instance_data_root_estricto() or install_root
+        if install_root is None or data_root is None:
+            raise RuntimeError("No se pudo resolver la instalación de MO2: configurala o seleccioná una instalación.")
+        mods_dir = self.get_mo2_mods_path_para_destino() or (data_root / "mods")
+        return RaicesDeInstanciaMO2(install_root=install_root, data_root=data_root, mods_dir=mods_dir)
 
     # Accessors CRUDOS (sin resolver): el validate() de los getters de arriba
     # sigue los symlinks, borrando exactamente lo que el VfsHealthChecker del

@@ -34,6 +34,7 @@ _CAMPOS_DEPENDENCIAS = [
     "plugin_limit_guard",
     "default_profile_getter",
     "preview_service_provider",
+    "raices_mo2_provider",
 ]
 
 _TOOLS = [
@@ -51,6 +52,7 @@ _TOOLS = [
     "generate_bashed_patch",
     "validate_plugin_limit",
     "preview_chain",
+    "diagnosticar_parallax_perfil",
 ]
 
 
@@ -77,7 +79,7 @@ def test_modulos_de_la_frontera_no_conocen_supervisor_y_exponen_la_firma_nueva()
     ]
 
 
-def test_builder_registra_exactamente_las_catorce_tools() -> None:
+def test_builder_registra_exactamente_las_quince_tools() -> None:
     dispatcher = build_orchestration_dispatcher(crear_dependencias_dispatcher())
     assert dispatcher.registered_tools() == _TOOLS
 
@@ -124,6 +126,8 @@ def test_strategies_retienen_las_mismas_instancias_y_callables() -> None:
     assert dispatcher._strategies["generate_bashed_patch"].wrye_bash_pipeline is deps.wrye_bash_pipeline
     assert dispatcher._strategies["validate_plugin_limit"].plugin_limit_guard is deps.plugin_limit_guard
     assert dispatcher._strategies["preview_chain"]._service_provider is deps.preview_service_provider
+    assert dispatcher._strategies["diagnosticar_parallax_perfil"]._raices_provider is deps.raices_mo2_provider
+    assert dispatcher._strategies["diagnosticar_parallax_perfil"]._default_profile_getter is deps.default_profile_getter
 
 
 def test_construir_dispatcher_no_resuelve_providers_ni_binarios() -> None:

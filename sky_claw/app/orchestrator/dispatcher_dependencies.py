@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from sky_claw.app.core.event_bus import CoreEventBus
-    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.core.path_resolver import PathResolutionService, RaicesDeInstanciaMO2
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.locks import DistributedLockManager
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
@@ -58,6 +58,7 @@ class OrchestrationDispatcherDependencies:
     plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]]
     default_profile_getter: Callable[[], str]
     preview_service_provider: Callable[[], ChainPreviewService]
+    raices_mo2_provider: Callable[[], RaicesDeInstanciaMO2]
 
 
 def build_preview_chain_service_provider(

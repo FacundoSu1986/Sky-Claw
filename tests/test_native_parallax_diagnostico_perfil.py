@@ -19,7 +19,9 @@ import pytest
 
 from sky_claw.local.native_parallax import diagnostico_perfil, provider
 from sky_claw.local.native_parallax.diagnostico_perfil import (
+    ALCANCE_DEL_DIAGNOSTICO,
     MAXIMO_DE_ARCHIVOS_DE_ENTRADA,
+    MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO,
     TIPOS_QUE_IMPIDEN_MEDIR,
     Hallazgo,
     InformeDelPerfil,
@@ -27,6 +29,7 @@ from sky_claw.local.native_parallax.diagnostico_perfil import (
     cargar_perfil,
     descubrir_normales_del_mod,
     diagnosticar_perfil,
+    diagnostico_como_resultado,
     hallazgos_del_perfil,
     linea_de_hallazgo,
 )
@@ -323,6 +326,96 @@ def test_el_tope_por_defecto_es_el_de_la_herramienta_experimental() -> None:
 
 
 # ---------------------------------------------------------------------------
+# El resultado de tool (lo que ven la GUI y el agente LLM): success/message + campos estructurados, ACOTADO
+# ---------------------------------------------------------------------------
+
+
+def _resultado(mundo: Mundo, **kw: object) -> dict[str, object]:
+    return diagnostico_como_resultado(
+        mods_dir=mundo.mods, data_root=mundo.data, **{"perfil": "Default", "mod": _MOD, **kw}
+    )  # type: ignore[arg-type]
+
+
+def test_el_resultado_sin_tapados_es_exitoso_con_mensaje_vacio_y_dice_su_alcance(mundo: Mundo) -> None:
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    r = _resultado(mundo)
+
+    assert r == {
+        "success": True,
+        "message": "",
+        "perfil": "Default",
+        "mod": _MOD,
+        "n_habilitados": 2,
+        "n_texturas": 2,
+        "n_hallazgos": 0,
+        "hallazgos": [],
+        "truncado": False,
+        "impide_medir": False,
+        "alcance": ALCANCE_DEL_DIAGNOSTICO,
+    }
+    assert "estructural" in ALCANCE_DEL_DIAGNOSTICO.lower()
+
+
+def test_el_resultado_con_la_salida_tapada_lista_el_hallazgo_y_no_impide_medir(mundo: Mundo) -> None:
+    mundo.archivo(_CONTROL, _P1)
+    mundo.modlist(f"+{_CONTROL}", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    r = _resultado(mundo)
+
+    assert r["success"] is True and r["message"] == ""
+    assert r["n_hallazgos"] == 1 and r["impide_medir"] is False
+    assert [(h["tipo"], h["ruta"]) for h in r["hallazgos"]] == [("SALIDA TAPADA", _P1)]  # type: ignore[index, union-attr]
+
+
+def test_el_resultado_con_la_entrada_tapada_marca_que_impide_medir(mundo: Mundo) -> None:
+    mundo.archivo(_CONTROL, _N1)
+    mundo.modlist(f"+{_CONTROL}", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    r = _resultado(mundo)
+
+    assert r["impide_medir"] is True
+    assert {h["tipo"] for h in r["hallazgos"]} == {"ENTRADA TAPADA"}  # type: ignore[union-attr]
+
+
+def test_el_resultado_recorta_los_hallazgos_pero_cuenta_todos(mundo: Mundo) -> None:
+    """Una salida acotada: el agente LLM la lee en su contexto y la GUI la muestra; el total real no se pierde."""
+    for i in range(5):
+        mundo.archivo(_MOD, f"{_CARPETA}/extra{i}_n.dds")
+        mundo.archivo(_CONTROL, f"{_CARPETA}/extra{i}_p.dds")
+    mundo.modlist(f"+{_CONTROL}", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    r = _resultado(mundo, maximo_de_hallazgos=3)
+
+    assert r["n_hallazgos"] == 5 and len(r["hallazgos"]) == 3 and r["truncado"] is True  # type: ignore[arg-type]
+    assert MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO > 0
+
+
+def test_el_resultado_de_lo_que_no_se_puede_afirmar_es_un_fallo_con_mensaje_y_sin_traceback(mundo: Mundo) -> None:
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}")
+
+    r = _resultado(mundo)
+
+    assert r["success"] is False
+    assert isinstance(r["message"], str) and r["message"]
+    assert "hallazgos" not in r
+
+
+def test_el_resultado_no_se_traga_lo_que_no_es_un_error_del_perfil(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Solo ``PerfilError`` es un resultado: un bug (o un OSError inesperado) sube a la capa de errores de la superficie."""
+
+    def explota(**_: object) -> InformeDelPerfil:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(diagnostico_perfil, "diagnosticar_perfil", explota)
+
+    with pytest.raises(RuntimeError):
+        _resultado(mundo)
+
+
+# ---------------------------------------------------------------------------
 # Anclas que ENUMERAN: quién llama a qué
 # ---------------------------------------------------------------------------
 
@@ -352,9 +445,18 @@ def test_el_resolutor_de_ganadores_se_llama_solo_desde_el_diagnostico() -> None:
 
 def test_los_consumidores_del_diagnostico_estan_congelados() -> None:
     """Agregar una superficie rompe esto hasta que se la declare acá (y se cablee junto a las demás)."""
-    assert _llamadores_de("diagnosticar_perfil") == {_CLI}
+    assert _llamadores_de("diagnosticar_perfil") == {_CLI, _MODULO}  # el módulo, vía ``diagnostico_como_resultado``
     assert _llamadores_de("cargar_perfil") == {_MODULO, _CLI}
     assert _llamadores_de("hallazgos_del_perfil") == {_MODULO, _CLI}
+
+
+def test_las_dos_superficies_del_resultado_de_tool_estan_congeladas() -> None:
+    """NP-A0h: el resultado de tool lo sirven la GUI (dispatcher) y el agente LLM, y NINGUNA otra. Una tercera superficie rompe esto
+    hasta que se la declare acá junto a las otras dos (el hermano que dice AGENTS.md)."""
+    assert _llamadores_de("diagnostico_como_resultado") == {
+        "sky_claw/app/orchestrator/tool_strategies/diagnosticar_perfil_parallax.py",
+        "sky_claw/app/agent/tools/parallax_tools.py",
+    }
 
 
 def test_el_diagnostico_compone_las_mismas_piezas_que_usa_generar() -> None:

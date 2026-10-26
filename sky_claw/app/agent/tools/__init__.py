@@ -32,9 +32,11 @@ from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
 from .lod_tools import generate_lods, lods_status
 from .nexus_tools import download_mod, search_nexus
+from .parallax_tools import diagnosticar_parallax_perfil
 from .schemas import (
     AnalyzeConflictsParams,
     BodySlideBatchParams,
+    DiagnosticarParallaxParams,
     DownloadModParams,
     GenerateLodsParams,
     InstallFromArchiveParams,
@@ -667,6 +669,19 @@ class AsyncToolRegistry:
             params_model=None,
             fn=lambda: close_game(self._mo2),
         )
+        # NP-A0h: diagnóstico del perfil de MO2 para el generador nativo de parallax. READ-ONLY; el perfil es el de la sesión (el LLM solo
+        # manda `mod`) y es el hermano del dispatcher de la GUI: las dos contestan con `diagnostico_como_resultado`.
+        self._tools["diagnosticar_parallax_perfil"] = ToolDescriptor(
+            name="diagnosticar_parallax_perfil",
+            description=(
+                "Read-only. For a mod folder, report what the session's MO2 profile actually delivers for the native parallax "
+                "generator: whether another mod covers its *_n.dds inputs or the *_p.dds output (and which one), or hides them. "
+                "Uses the session profile; it never changes anything. Structural view of modlist.txt only: it does not prove "
+                "what is visible in game."
+            ),
+            params_model=DiagnosticarParallaxParams,
+            fn=lambda mod: diagnosticar_parallax_perfil(self._mo2, mod, profile=self._mo2_profile),
+        )
         # External Tools
         self._tools["setup_tools"] = ToolDescriptor(
             name="setup_tools",
@@ -689,6 +704,7 @@ __all__ = [
     "AnalyzeConflictsParams",
     "AsyncToolRegistry",
     "BodySlideBatchParams",
+    "DiagnosticarParallaxParams",
     "DownloadModParams",
     "InstallFromArchiveParams",
     "InstallModParams",
@@ -708,6 +724,7 @@ __all__ = [
     "check_load_order",
     "close_game",
     "detect_conflicts",
+    "diagnosticar_parallax_perfil",
     "download_mod",
     "generate_bashed_patch",
     "install_mod",
