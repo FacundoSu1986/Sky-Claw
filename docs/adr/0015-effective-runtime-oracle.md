@@ -491,3 +491,19 @@ identificaron y corrigieron cuatro fronteras críticas:
      negativo y consistencia de serialización) antes de adquirir locks o escribir en
      disco, asegurando que el escritor jamás publique un registro que su propio
      lector rechazaría.
+
+7. **Normalización canónica e idempotencia semántica del escritor:**
+   - `registrar_runtime_clone_record` normaliza canónicamente el registro (`casefold`
+     de `clone_id`, limpieza de espacios de borde en `intended_runtime_setup_id` y
+     `verified_runtime_setup_id`). El registro devuelto y persistido coincide
+     exactamente con la lectura posterior, garantizando idempotencia estricta en
+     llamadas consecutivas y evitando colisiones espurias en el namespace durable.
+
+8. **Validación de argumentos y blindaje de la FSM ante estados inválidos:**
+   - `actualizar_lifecycle_clone` valida de forma estricta `verified_runtime_setup_id`
+     con `validar_runtime_setup_id` en cualquier transición (incluyendo `-> INVALID`),
+     prohibiendo caracteres de escape o traversal (`..`, `/`, `\`). Asimismo,
+     rechaza explícitamente cualquier `verified_runtime_setup_id` no nulo en
+     transiciones hacia `PROVISIONING` o `CREATED`, e implementa validación
+     pre-escritura (`_clone_record_de_payload`) para garantizar que la FSM nunca
+     escriba un estado que el lector rechace.

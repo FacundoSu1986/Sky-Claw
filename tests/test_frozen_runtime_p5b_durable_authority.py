@@ -69,6 +69,7 @@ from sky_claw.local.frozen_runtime.state import (
 )
 from sky_claw.local.frozen_runtime.storage import (
     active_state_path,
+    clone_record_path,
     clones_state_dir,
     initialize_frozen_runtime_storage,
 )
@@ -925,6 +926,9 @@ class TestFrozenRuntimeP5BDurableAuthority:
             except OSError:
                 pass
 
+        if os.name == "nt":
+            assert creado is True, "En Windows debe haberse ejercitado un junction o symlink NTFS real"
+
         if creado:
             assert not link_path.exists()
             assert link_kind_or_raise(link_path) is not None
@@ -1010,3 +1014,100 @@ class TestFrozenRuntimeP5BDurableAuthority:
         )
         with pytest.raises(RuntimeCloneSchemaError, match="created_at_ns"):
             registrar_runtime_clone_record(root, rec_bad_created)
+
+    def test_21_escritor_roundtrip_normaliza_canonicamente_y_es_idempotente(self, tmp_path: pathlib.Path) -> None:
+        """21. registrar_runtime_clone_record normaliza clone_id y setup_id canónicamente y es idempotente."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_alpha")
+
+        # Registro con mayúsculas y espacios en setup_id
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="Clone-Alpha",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="  setup-1  ",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+
+        res = registrar_runtime_clone_record(root, rec)
+        assert res.clone_id == "clone-alpha"
+        assert res.intended_runtime_setup_id == "setup-1"
+
+        # Archivo físico persistido debe coincidir con el ID canónico
+        p = clone_record_path(root, "clone-alpha")
+        assert p.exists()
+
+        # Lectura inmediata recupera exactamente el mismo registro canónico
+        rec_leido = leer_runtime_clone_record(root, "clone-alpha")
+        assert rec_leido == res
+
+        # Idempotencia: segundo registro con el objeto original debe devolver el registro canónico sin colisión
+        res_idempotente = registrar_runtime_clone_record(root, rec)
+        assert res_idempotente == res
+
+    def test_22_fsm_actualizar_lifecycle_valida_argumentos_y_evita_estado_invalido(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """22. actualizar_lifecycle_clone valida verified_runtime_setup_id en todas las transiciones (CREATED/PROVISIONING/PROVISIONED -> INVALID)."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_fsm")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-fsm",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # 1. CREATED -> INVALID con path traversal en verified_runtime_setup_id debe fallar
+        with pytest.raises(RuntimeCloneSchemaError, match="traversal|separadores"):
+            actualizar_lifecycle_clone(
+                root, "clone-fsm", RuntimeCloneLifecycle.INVALID, verified_runtime_setup_id="../escape"
+            )
+
+        # 2. CREATED -> PROVISIONING pasando verified_runtime_setup_id debe ser rechazado
+        with pytest.raises(RuntimeCloneSchemaError, match="no admite verified_runtime_setup_id"):
+            actualizar_lifecycle_clone(
+                root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONING, verified_runtime_setup_id="setup-1"
+            )
+
+        # 3. Transición legítima CREATED -> PROVISIONING
+        actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONING)
+
+        # 4. PROVISIONING -> INVALID con caracteres inválidos
+        with pytest.raises(RuntimeCloneSchemaError, match="traversal|separadores"):
+            actualizar_lifecycle_clone(
+                root, "clone-fsm", RuntimeCloneLifecycle.INVALID, verified_runtime_setup_id="foo/bar"
+            )
+
+        # 5. Transición legítima PROVISIONING -> PROVISIONED
+        actualizar_lifecycle_clone(
+            root, "clone-fsm", RuntimeCloneLifecycle.PROVISIONED, verified_runtime_setup_id="setup-1"
+        )
+
+        # 6. PROVISIONED -> INVALID con traversal debe ser rechazado
+        with pytest.raises(RuntimeCloneSchemaError, match="traversal|separadores"):
+            actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.INVALID, verified_runtime_setup_id="..")
+
+        # 7. Transición legítima PROVISIONED -> INVALID preservando el setup existente
+        rec_inv = actualizar_lifecycle_clone(root, "clone-fsm", RuntimeCloneLifecycle.INVALID)
+        assert rec_inv.lifecycle is RuntimeCloneLifecycle.INVALID
+        assert rec_inv.verified_runtime_setup_id == "setup-1"
+
+        # Lectura posterior del registro persistido debe ser válida
+        rec_leido = leer_runtime_clone_record(root, "clone-fsm")
+        assert rec_leido == rec_inv
