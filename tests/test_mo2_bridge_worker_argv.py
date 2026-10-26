@@ -118,9 +118,9 @@ def _argv_para_el_parser(argv: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _preparar_rig(tmp_path: pathlib.Path, *, nombre_raiz: str = RUTA_DE_RIG_CON_ESPACIOS) -> dict[str, pathlib.Path]:
+def _preparar_rig(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
     """Arma la geometría real del rig: raíz, jobs y app bajo una carpeta con espacio."""
-    raiz = tmp_path / nombre_raiz
+    raiz = tmp_path / RUTA_DE_RIG_CON_ESPACIOS
     jobs = raiz / "home" / ".sky_claw" / "vfs_bridge" / "mo2-c7027ac56c8d4887" / "jobs"
     jobs.mkdir(parents=True)
     manifest = jobs / f"{JOB_ID_DE_REFERENCIA}.json"
@@ -297,16 +297,29 @@ def test_d1_03_el_worker_parsea_el_manifest_y_el_descriptor_reales(tmp_path: pat
 # ---------------------------------------------------------------------------
 
 
-def test_d1_04_los_paths_sin_espacios_no_cambian_de_representacion(tmp_path: pathlib.Path) -> None:
-    rig = _preparar_rig(tmp_path, nombre_raiz="rig")
-    organizer = _Organizer()
-    _lanzar(rig, organizer, _JobObject(), [])
+def test_d1_04_los_paths_sin_espacios_no_cambian_de_representacion() -> None:
+    """Sin espacios la serialización es la identidad: no se agrega ninguna cita.
 
-    _, fragmentos, *_ = organizer.calls[0]
-    esperado = _vector_semantico(rig)
+    Los valores son sintéticos a propósito. Tomarlos de ``tmp_path`` ataba el
+    caso a que la ruta temporal de la máquina no tuviera espacios —un usuario
+    ``John Doe`` la tiene—, y entonces dejaba de probar lo que su nombre afirma.
+    """
+    carpeta = r"C:\Rig\home\.sky_claw\vfs_bridge\mo2-c7027ac56c8d4887"
+    vector = [
+        "--vfs-worker",
+        "--manifest",
+        rf"{carpeta}\jobs\{JOB_ID_DE_REFERENCIA}.json",
+        "--descriptor",
+        rf"{carpeta}\mo2-c7027ac56c8d4887.json",
+        "--job-id",
+        JOB_ID_DE_REFERENCIA,
+    ]
 
-    assert fragmentos == esperado, "sin espacios no debe agregarse ninguna cita de transporte"
-    assert _argv_que_recibe_el_worker(organizer, rig["worker"]) == esperado
+    serializado = bridge.encode_mo2_arguments(vector)
+    assert serializado == vector, "sin espacios no debe agregarse ninguna cita de transporte"
+
+    linea = _linea_de_comandos_de_mo2(pathlib.Path(r"C:\Rig\app\SkyClawApp.exe"), serializado)
+    assert _argv_del_proceso(linea)[1:] == vector
 
 
 def test_d1_04_la_funcion_semantica_sigue_siendo_pura(tmp_path: pathlib.Path) -> None:
@@ -497,17 +510,25 @@ def _correr_como_mo2(tmp_path: pathlib.Path, vector: Sequence[str], *, serializa
     ``subprocess`` con una cadena en Windows pasa la cadena tal cual a
     ``CreateProcess``, igual que ``spawn::spawn``. No se usa shell.
 
-    El guion vive fuera de la carpeta con espacios a propósito: hace de
-    "ejecutable" del modelo (MO2 cita el binario) y así el único elemento que
-    puede fragmentarse es el vector del worker.
+    El guion es andamiaje: no existe en el escenario real, así que tiene que
+    sobrevivir siempre para que el hijo pueda registrar su argv. Por eso vive en
+    una carpeta con espacios y se cita **siempre**. La cita se hace con
+    ``subprocess.list2cmdline`` y no con la función bajo prueba: el arnés no
+    puede depender de la pieza que está midiendo. Así el único elemento que
+    puede fragmentarse es el vector del worker, que es lo que el test mide.
+
+    Dejarlo sin citar ataba el test a que ``tmp_path`` no tuviera espacios —es
+    decir, al nombre de usuario de la máquina—: con un ``pytest-of-John Doe`` el
+    guion se partía, el hijo moría y el test fallaba por la razón equivocada.
     """
-    guion = tmp_path / "registrar_argv.py"
+    carpeta_del_guion = tmp_path / "arnes con espacios"
+    carpeta_del_guion.mkdir()
+    guion = carpeta_del_guion / "registrar_argv.py"
     guion.write_text(_GUION_REGISTRADOR, encoding="utf-8")
     salida = tmp_path / "argv_observado.json"
 
-    fragmentos: Sequence[str] = [str(guion), *vector]
-    if serializar:
-        fragmentos = bridge.encode_mo2_arguments(fragmentos)
+    cuerpo: Sequence[str] = bridge.encode_mo2_arguments(vector) if serializar else vector
+    fragmentos: Sequence[str] = [subprocess.list2cmdline([str(guion)]), *cuerpo]
 
     linea = _linea_de_comandos_de_mo2(pathlib.Path(sys.executable), fragmentos)
     completado = subprocess.run(
