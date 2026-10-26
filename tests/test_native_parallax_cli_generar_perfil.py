@@ -393,16 +393,24 @@ def _alcanzables_desde(nombre_de_funcion: str) -> set[str]:
     return llamados
 
 
-@pytest.mark.parametrize("consumidor", ["_perfil", "_generar"])
-def test_los_dos_consumidores_del_perfil_usan_las_mismas_piezas_compartidas(consumidor: str) -> None:
-    """Un consumidor que resolviera el perfil o el veredicto por su cuenta contestaría distinto (el hermano)."""
-    llamadas = _alcanzables_desde(consumidor)
-
-    assert {"_cargar_perfil", "_hallazgos_del_perfil"} <= llamadas
+@pytest.mark.parametrize(
+    ("consumidor", "esperado"),
+    [
+        pytest.param("_perfil", {"diagnosticar_perfil"}, id="perfil"),
+        pytest.param("_generar", {"cargar_perfil", "hallazgos_del_perfil"}, id="generar"),
+    ],
+)
+def test_los_dos_consumidores_del_perfil_usan_las_piezas_de_diagnostico_perfil(
+    consumidor: str, esperado: set[str]
+) -> None:
+    """Un consumidor que resolviera el perfil o el veredicto por su cuenta contestaría distinto (el hermano). ``perfil`` usa el
+    diagnóstico completo y ``generar`` la resolución y el veredicto (la enumeración de su carpeta ya la hizo); las dos viven en
+    ``diagnostico_perfil.py``, donde el censo de ``tests/test_native_parallax_diagnostico_perfil.py`` congela quién las llama."""
+    assert esperado <= _alcanzables_desde(consumidor)
 
 
 def test_la_resolucion_del_perfil_no_esta_repetida_fuera_de_la_pieza_compartida() -> None:
-    """``read_enabled_mods`` e ``indexar_ganadores`` se llaman SOLO desde ``_cargar_perfil``."""
+    """``cli.py`` no llama a ``read_enabled_mods`` ni a ``indexar_ganadores``: eso es de ``diagnostico_perfil.cargar_perfil``."""
     for nombre, funcion in _funciones_de_cli().items():
         if nombre == "_cargar_perfil":
             continue

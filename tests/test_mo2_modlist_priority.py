@@ -346,9 +346,9 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs_attestation.py",
         "sky_claw/local/assets/asset_scanner.py",
         "sky_claw/local/mo2/brokered_dyndolod.py",
-        # NP-A0e: el subcomando `perfil` lee el modlist con `read_enabled_mods` e INTERPRETA la prioridad
-        # (qué capa queda por encima del mod de salida); es solo lectura.
-        "sky_claw/local/native_parallax/cli.py",
+        # NP-A0g: el diagnóstico del perfil (antes en `native_parallax/cli.py`) lee el modlist con `read_enabled_mods` e
+        # INTERPRETA la prioridad (qué capa queda por encima del mod de salida); es solo lectura.
+        "sky_claw/local/native_parallax/diagnostico_perfil.py",
     },
     # Family B: Writers (mutadores autorizados de modlist.txt)
     "FAMILY_B_WRITERS": {
@@ -381,6 +381,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/local_config.py",
         "sky_claw/local/mo2/mod_effectivity.py",
         "sky_claw/local/mo2/ganadores.py",  # recibe `enabled` ya normalizado por read_enabled_mods; solo lo nombra en el docstring
+        "sky_claw/local/native_parallax/cli.py",  # NP-A0g: solo nombra el modlist en docstrings y ayuda; lo lee diagnostico_perfil
         "sky_claw/local/validators/preflight.py",
         "sky_claw/local/validators/preflight_sensors.py",
         "sky_claw/local/validators/vfs_visibility.py",
