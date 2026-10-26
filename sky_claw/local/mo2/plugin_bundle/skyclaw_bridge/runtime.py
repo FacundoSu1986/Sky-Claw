@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import pathlib
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -79,6 +80,14 @@ class BridgeEventOutbox(queue.Queue[dict[str, object]]):
 
 
 class OrganizerApi(Protocol):
+    """API de MO2 que consume el bridge.
+
+    Ojo con ``startApplication``: el segundo parámetro **no** es un argv
+    semántico. MO2 lo une con espacios y lo pasa a ``CreateProcess`` sin citar,
+    así que cada elemento tiene que llegar ya serializado (ver
+    ``encode_mo2_arguments``).
+    """
+
     def startApplication(self, *args: object) -> int: ...  # noqa: N802 - API MO2
 
     def waitForApplication(  # noqa: N802 - API MO2
@@ -193,6 +202,31 @@ def build_worker_arguments(
     ]
 
 
+def quote_windows_argument(argument: str) -> str:
+    """Serializa un argumento con las reglas del CRT de Windows.
+
+    Es la inversa de ``CommandLineToArgvW``, que es el parser que aplica el
+    proceso hijo sobre su línea de comandos.
+    """
+    return subprocess.list2cmdline([argument])
+
+
+def encode_mo2_arguments(arguments: Sequence[str]) -> list[str]:
+    """Traduce argv semántico a los fragmentos que MO2 concatena con espacios.
+
+    MO2 2.5.2 no cita nada: ``ProcessRunner::setFromFileOrExecutable`` hace
+    ``setArguments(args.join(" "))`` y ``spawn::spawn`` compone
+    ``"<bin>" + " " + arguments`` y se lo pasa a ``CreateProcess``. Cada
+    elemento tiene que llegar ya serializado, o el parser CRT del worker parte
+    el valor en los espacios (E3-R2-D1: ``A209 F1`` → dos tokens).
+
+    La transformación vive sólo acá. ``build_worker_arguments`` sigue
+    devolviendo conceptos, no transporte: serializar dos veces dejaría comillas
+    literales dentro del valor.
+    """
+    return [quote_windows_argument(argument) for argument in arguments]
+
+
 def wait_for_process_handle(process_handle: int) -> tuple[bool, int]:
     """Espera y cierra el HANDLE nativo sin entrar al runner Qt de MO2."""
 
@@ -271,13 +305,15 @@ class BridgeLaunchController:
             request=request,
             descriptor_path=self._descriptor,
         )
+        # Frontera de transporte: MO2 une con espacios y no cita (spawn.cpp).
+        transport_arguments = encode_mo2_arguments(arguments)
         overwrite = "" if request.overwrite_mod is None else request.overwrite_mod
         job_object = self._job_factory()
         handle = 0
         try:
             handle = self._organizer.startApplication(
                 str(self._worker),
-                arguments,
+                transport_arguments,
                 str(self._worker.parent),
                 request.profile,
                 overwrite,
