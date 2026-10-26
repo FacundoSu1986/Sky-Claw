@@ -34,6 +34,7 @@ from sky_claw.app.security.links import (
 )
 
 __all__ = [
+    "CAPA_OVERWRITE",
     "TOPE_DE_ARCHIVOS_POR_DEFECTO",
     "GanadorDeRuta",
     "GanadoresDelPerfil",

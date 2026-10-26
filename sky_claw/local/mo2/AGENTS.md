@@ -21,6 +21,10 @@ raíz.
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y
   falla cerrado ante un mod habilitado sin carpeta, un nombre repetido o un árbol que pasa el tope. Es una vista ESTRUCTURAL:
   no prueba que USVFS mapee lo resuelto (eso es el canary del broker) ni considera el game data físico.
+  Su único consumidor es `native_parallax/diagnostico_perfil.py` (NP-A0e/A0g, solo lectura: avisa cuando otro mod, `overwrite` o un
+  mod de control tapa la entrada o la salida del generador); está clasificado en la Familia A del censo de
+  `tests/test_mo2_modlist_priority.py` porque interpreta la prioridad, y el censo de `tests/test_native_parallax_diagnostico_perfil.py` congela
+  que `indexar_ganadores` se llame solo desde ahí.
 
 ## Verificación segura
 

@@ -122,6 +122,21 @@ La política clean-room, `docs/design/research/native-parallax/` y
   entrada la enumera `provider.py` (`cli.descubrir_normales_de_carpeta` es un adaptador delgado); el exportador real se ata al `texconv` verificado con `crear_exportador_texconv` y
   `cli.py`/`lote.py` están en el censo de `tests/test_texconv_invariant.py` (nombran `texconv` como dato o como argumento; no lanzan procesos).
   Guía para probarlo en un rig real: `docs/operations/native_parallax_prueba_en_rig.md`. Ver ADR 0014, "Actualización de NP-A0a".
+  `cli.py perfil` (NP-A0e) es un diagnóstico de SOLO lectura sobre el `modlist.txt` de un perfil MO2 (usa `mo2/ganadores.py`): dice si
+  otro mod, `overwrite` o un mod de control tapa la entrada que se mediría o la salida que se publicaría (#792 H12). No pide `texconv`,
+  no coordina ni escribe, y no nombra `procesar_lote` ni `exportar_altura_bc4` (el censo de llamadores sigue siendo solo `cli.py`). Sale con
+  4 si hay algo tapado. Ancla: `tests/test_native_parallax_cli_perfil.py` (congela los subcomandos y cuáles piden `texconv`).
+  `cli.py generar --data-root … --mod … [--perfil …]` (NP-A0f) usa ese MISMO diagnóstico: no mide una `*_n.dds` que otro mod tapa o que el overlay
+  no entrega (la deja en `omitidas_al_enumerar` del informe) y AVISA antes de escribir si la salida va a quedar tapada o sin habilitar, pero no
+  bloquea (la primera corrida todavía no tiene el mod de salida ordenado en MO2). No se combina con `--retirar-no-incluidas` (lo omitido no es
+  «ausente»).
+- `diagnostico_perfil.py` (NP-A0g) es LA pieza que contesta «¿qué gana, en el perfil de MO2, la entrada y la salida de un mod?»: `cargar_perfil`
+  (lee el `modlist.txt` y resuelve quién gana cada ruta), `hallazgos_del_perfil` (qué de eso es un problema), `descubrir_normales_del_mod` (la
+  enumeración, con `exigir_completa`) y `diagnosticar_perfil` (las tres juntas, para las superficies). Es de **solo lectura**, falla cerrado con
+  `PerfilError` y NO importa `cli.py` (arrastraría el lote, el exportador y la CLI): la línea de comandos (`perfil` y `generar`) y toda superficie
+  que lo muestre lo importan. Si cada una resolviera el perfil por su cuenta contestarían distinto (el hermano de AGENTS.md). Ancla por AST en
+  `tests/test_native_parallax_diagnostico_perfil.py`: el resolutor `indexar_ganadores` se llama SOLO desde este módulo y los consumidores de
+  `diagnosticar_perfil` están congelados por igualdad literal (una superficie nueva rompe el ancla hasta que se la declare y se cablee junto a las demás).
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
