@@ -129,8 +129,14 @@ La política clean-room, `docs/design/research/native-parallax/` y
   `cli.py generar --data-root … --mod … [--perfil …]` (NP-A0f) usa ese MISMO diagnóstico: no mide una `*_n.dds` que otro mod tapa o que el overlay
   no entrega (la deja en `omitidas_al_enumerar` del informe) y AVISA antes de escribir si la salida va a quedar tapada o sin habilitar, pero no
   bloquea (la primera corrida todavía no tiene el mod de salida ordenado en MO2). No se combina con `--retirar-no-incluidas` (lo omitido no es
-  «ausente»). `perfil` y `generar` comparten `_cargar_perfil` y `_hallazgos_del_perfil`; ancla por AST en
-  `tests/test_native_parallax_cli_generar_perfil.py` (nadie más llama `read_enabled_mods`/`indexar_ganadores`).
+  «ausente»).
+- `diagnostico_perfil.py` (NP-A0g) es LA pieza que contesta «¿qué gana, en el perfil de MO2, la entrada y la salida de un mod?»: `cargar_perfil`
+  (lee el `modlist.txt` y resuelve quién gana cada ruta), `hallazgos_del_perfil` (qué de eso es un problema), `descubrir_normales_del_mod` (la
+  enumeración, con `exigir_completa`) y `diagnosticar_perfil` (las tres juntas, para las superficies). Es de **solo lectura**, falla cerrado con
+  `PerfilError` y NO importa `cli.py` (arrastraría el lote, el exportador y la CLI): la línea de comandos (`perfil` y `generar`) y toda superficie
+  que lo muestre lo importan. Si cada una resolviera el perfil por su cuenta contestarían distinto (el hermano de AGENTS.md). Ancla por AST en
+  `tests/test_native_parallax_diagnostico_perfil.py`: el resolutor `indexar_ganadores` se llama SOLO desde este módulo y los consumidores de
+  `diagnosticar_perfil` están congelados por igualdad literal (una superficie nueva rompe el ancla hasta que se la declare y se cablee junto a las demás).
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz

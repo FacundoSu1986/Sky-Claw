@@ -41,14 +41,25 @@ import struct
 import sys
 import tempfile
 import zlib
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, TextIO, cast
 
 from sky_claw.app.security.links import rmtree_link_aware
-from sky_claw.local.mo2.ganadores import CAPA_OVERWRITE, GanadoresDelPerfil, GanadoresError, indexar_ganadores
-from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.decode import ConvencionNormal, DependenciaNoDisponibleError
+from sky_claw.local.native_parallax.diagnostico_perfil import (
+    MAXIMO_DE_ARCHIVOS_DE_ENTRADA,
+    SUFIJO_DE_ENTRADA,
+    TIPOS_QUE_IMPIDEN_MEDIR,
+    Hallazgo,
+    PerfilError,
+    cargar_perfil,
+    descubrir_normales_del_mod,
+    diagnosticar_perfil,
+    hallazgos_del_perfil,
+    linea_de_hallazgo,
+    texto_de_omision,
+)
 from sky_claw.local.native_parallax.diagnostico_texconv import (
     ENTORNO_TEXCONV,
     EstadoDeTexconv,
@@ -79,12 +90,9 @@ from sky_claw.local.native_parallax.output_writer import (
     construir_coordinacion_de_salida,
 )
 from sky_claw.local.native_parallax.provider import (
-    MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO,
-    DemasiadosArchivosError,
     NormalDescubierta,
     RaizInvalidaError,
     carpeta_de_textures,
-    descubrir_normales,
 )
 
 if TYPE_CHECKING:
@@ -115,8 +123,8 @@ CODIGO_CON_TAPADOS: Final = 4
 CODIGO_INTERRUMPIDO: Final = 130
 
 INFORME_POR_DEFECTO: Final = "informe_parallax.json"
-_MAXIMO_DE_ARCHIVOS_DE_ENTRADA: Final = 10_000
-_SUFIJO_DE_ENTRADA: Final = "_n.dds"
+_MAXIMO_DE_ARCHIVOS_DE_ENTRADA: Final = MAXIMO_DE_ARCHIVOS_DE_ENTRADA
+_SUFIJO_DE_ENTRADA: Final = SUFIJO_DE_ENTRADA
 _LADO_DE_LA_AUTOPRUEBA: Final = 128
 
 FabricaDeExportador = Callable[[pathlib.Path], ExportadorDeAltura]
@@ -140,8 +148,13 @@ class NormalDeCarpeta:
     ruta_absoluta: pathlib.Path
 
 
-def _texto_de_omision(ruta: str, detalle: str) -> str:
-    return f"{ruta}: {detalle}"
+@contextlib.contextmanager
+def _perfil_error_como_uso() -> Iterator[None]:
+    """``PerfilError`` es el error de la pieza compartida; en la línea de comandos se muestra como error de uso, sin traceback."""
+    try:
+        yield
+    except PerfilError as exc:
+        raise UsoIncorrectoError(str(exc)) from exc
 
 
 def descubrir_normales_de_carpeta(
@@ -149,31 +162,18 @@ def descubrir_normales_de_carpeta(
 ) -> tuple[list[NormalDescubierta], list[str]]:
     """Los ``*_n.dds`` bajo ``<carpeta>/textures`` y los motivos por los que se omitió algo. Solo lee.
 
-    Adaptador delgado de ``provider.descubrir_normales``: traduce sus errores a ``UsoIncorrectoError`` (se muestran sin
-    traceback) y sus omisiones a una línea de texto cada una. La CLI pone su propio tope de entradas (más bajo que el del
-    proveedor: es una herramienta experimental para probar en un rig).
+    Adaptador delgado de ``diagnostico_perfil.descubrir_normales_del_mod`` (que a su vez envuelve a ``provider.descubrir_normales``):
+    traduce sus errores a ``UsoIncorrectoError`` (se muestran sin traceback). La CLI pone su propio tope de entradas (más bajo que el
+    del proveedor: es una herramienta experimental para probar en un rig).
 
     ``exigir_completa``: una carpeta que no se pudo leer o una entrada que no se pudo inspeccionar levanta
     ``UsoIncorrectoError`` en vez de omitirse. Lo pide quien actúa sobre lo que NO figura (retirar salidas): sin ver una
-    carpeta no se sabe qué hay en ella. Las omisiones deliberadas (enlaces, un ``*_p.dds`` autoral, rutas inadmisibles,
-    duplicados) no son errores de lectura y no la hacen fallar (``Descubrimiento.completo``).
+    carpeta no se sabe qué hay en ella.
     """
-    try:
-        descubrimiento = descubrir_normales(carpeta, maximo_de_archivos=_MAXIMO_DE_ARCHIVOS_DE_ENTRADA)
-    except (RaizInvalidaError, DemasiadosArchivosError) as exc:
-        raise UsoIncorrectoError(str(exc)) from exc
-    if exigir_completa and not descubrimiento.completo:
-        sin_ver = "; ".join(
-            _texto_de_omision(o.ruta_de_origen, o.detalle)
-            for o in descubrimiento.omitidas
-            if o.motivo in MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO
+    with _perfil_error_como_uso():
+        return descubrir_normales_del_mod(
+            carpeta, exigir_completa=exigir_completa, maximo_de_archivos=_MAXIMO_DE_ARCHIVOS_DE_ENTRADA
         )
-        raise UsoIncorrectoError(
-            f"la enumeración quedó incompleta (lo que no se pudo ver no se puede dar por ausente): {sin_ver}"
-        )
-    return list(descubrimiento.normales), [
-        _texto_de_omision(o.ruta_de_origen, o.detalle) for o in descubrimiento.omitidas
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -487,135 +487,33 @@ def _codigo(informe: InformeDelLote) -> int:
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(frozen=True)
-class _Hallazgo:
-    """Una ruta que el overlay del perfil no entrega como el generador supone."""
-
-    tipo: str
-    ruta: str
-    detalle: str
-
-
-def _prioridades(enabled: Sequence[str]) -> dict[str, int]:
-    """Prioridad creciente por nombre (sin mayúsculas, como el resto del repo); ``overwrite`` gana a todo mod."""
-    prioridades = {nombre.lower(): indice for indice, nombre in enumerate(enabled)}
-    prioridades[CAPA_OVERWRITE] = len(enabled)
-    return prioridades
-
-
-def _hallazgos_del_perfil(
-    indice: GanadoresDelPerfil, enabled: Sequence[str], mod: str, normales: Sequence[NormalDescubierta]
-) -> list[_Hallazgo]:
-    """Compara, por cada normal, lo que el generador mediría y publicaría con lo que el overlay entrega de verdad.
-
-    - Entrada: la ruta ``*_n.dds`` debe resolverse a ``mod``; si la gana otra capa (o ninguna: está oculta), medir ese archivo
-      produciría un mapa para una textura que el juego no va a ver.
-    - Salida: la ruta ``*_p.dds`` debe resolverse al mod de salida (o a nadie, si todavía no se publicó). Una capa de MAYOR
-      prioridad que el mod de salida la tapa (#792 H12); una de menor prioridad no, porque la salida la reemplazaría.
-    """
-    prioridades = _prioridades(enabled)
-    salida = NOMBRE_DEL_MOD_DE_SALIDA.lower()
-    hallazgos: list[_Hallazgo] = []
-    if salida not in prioridades:
-        hallazgos.append(
-            _Hallazgo(
-                "SALIDA NO HABILITADA",
-                NOMBRE_DEL_MOD_DE_SALIDA,
-                "el mod de salida no está habilitado en el perfil: lo que se publique ahí no se cargaría",
-            )
-        )
-    for normal in normales:
-        ganador_n = indice.ganador(normal.ruta_de_origen)
-        if ganador_n is None:
-            hallazgos.append(
-                _Hallazgo(
-                    "ENTRADA FUERA DEL OVERLAY",
-                    normal.ruta_de_origen,
-                    "ninguna capa la entrega (¿oculta con .mohidden?): el juego no la ve",
-                )
-            )
-        elif ganador_n.capa.lower() != mod.lower():
-            hallazgos.append(
-                _Hallazgo("ENTRADA TAPADA", normal.ruta_de_origen, f"la gana {ganador_n.capa!r}, no {mod!r}")
-            )
-        ganador_p = indice.ganador(normal.ruta_de_salida)
-        if ganador_p is None or ganador_p.capa.lower() == salida or salida not in prioridades:
-            continue
-        if prioridades[ganador_p.capa.lower()] > prioridades[salida]:
-            hallazgos.append(
-                _Hallazgo(
-                    "SALIDA TAPADA",
-                    normal.ruta_de_salida,
-                    f"la gana {ganador_p.capa!r}, que está por encima de {NOMBRE_DEL_MOD_DE_SALIDA!r}",
-                )
-            )
-    return hallazgos
-
-
-@dataclasses.dataclass(frozen=True)
-class _PerfilResuelto:
-    """El perfil de MO2 ya leído: los mods habilitados (prioridad creciente), el mod elegido y quién gana cada ruta."""
-
-    enabled: tuple[str, ...]
-    mod: str
-    carpeta_del_mod: pathlib.Path
-    indice: GanadoresDelPerfil
-
-
-def _cargar_perfil(*, mods_dir: pathlib.Path, data_root: pathlib.Path, perfil: str, mod: str) -> _PerfilResuelto:
-    """LA resolución del perfil que comparten ``perfil`` y ``generar``: si cada uno la hiciera por su cuenta contestarían
-    distinto (el hermano). Falla cerrado con ``UsoIncorrectoError`` ante cualquier cosa que no permita afirmar quién gana."""
-    try:
-        enabled = read_enabled_mods(data_root / "profiles" / perfil / "modlist.txt")
-        elegido = next((m for m in enabled if m.lower() == mod.lower()), None)
-        if elegido is None:
-            raise UsoIncorrectoError(f"el mod {mod!r} no está habilitado en el perfil {perfil!r}")
-        if elegido.lower() == NOMBRE_DEL_MOD_DE_SALIDA.lower():
-            raise UsoIncorrectoError(
-                f"{elegido!r} es el mod de salida del generador: indicá el mod de texturas que se quiere revisar"
-            )
-        indice = indexar_ganadores(mods_dir=mods_dir, data_root=data_root, enabled=enabled)
-    except (VfsAttestationError, GanadoresError) as exc:
-        raise UsoIncorrectoError(str(exc)) from exc
-    # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
-    return _PerfilResuelto(enabled=enabled, mod=elegido, carpeta_del_mod=mods_dir / elegido, indice=indice)
-
-
-def _linea_de_hallazgo(h: _Hallazgo) -> str:
-    return f"  [{h.tipo}] {h.ruta}: {h.detalle}"
-
-
 def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
     """Diagnóstico de SOLO lectura del perfil. No escribe, no coordina y no exporta (no pide ``texconv``)."""
-    mods_dir = pathlib.Path(args.mods)
-    resuelto = _cargar_perfil(
-        mods_dir=mods_dir, data_root=pathlib.Path(args.data_root), perfil=args.perfil, mod=args.mod
-    )
-    # Completa o nada: una textura que no se pudo leer no se puede dar por «no tapada» (#809).
-    normales, _omitidas = descubrir_normales_de_carpeta(resuelto.carpeta_del_mod, exigir_completa=True)
-    if not normales:  # el hermano de ``_generar``: revisar cero texturas no es «sin texturas tapadas»
-        raise UsoIncorrectoError(
-            f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {resuelto.carpeta_del_mod}/textures"
+    with _perfil_error_como_uso():
+        informe = diagnosticar_perfil(
+            mods_dir=pathlib.Path(args.mods),
+            data_root=pathlib.Path(args.data_root),
+            perfil=args.perfil,
+            mod=args.mod,
+            maximo_de_archivos=_MAXIMO_DE_ARCHIVOS_DE_ENTRADA,
         )
-    hallazgos = _hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
-    plural = "textura" if len(normales) == 1 else "texturas"
+    plural = "textura" if informe.n_texturas == 1 else "texturas"
     print(
-        f"Perfil {args.perfil!r}: {len(resuelto.enabled)} mods habilitados; {len(normales)} {plural} revisadas en "
-        f"{resuelto.mod!r}.",
+        f"Perfil {informe.perfil!r}: {informe.n_habilitados} mods habilitados; {informe.n_texturas} {plural} revisadas en "
+        f"{informe.mod!r}.",
         file=salida,
     )
-    for h in hallazgos:
-        print(_linea_de_hallazgo(h), file=salida)
-    if not hallazgos:
+    for h in informe.hallazgos:
+        print(linea_de_hallazgo(h), file=salida)
+    if not informe.hallazgos:
         print("Sin texturas tapadas: el overlay entrega lo que el generador mediría y publicaría.", file=salida)
         return CODIGO_OK
-    palabra = "hallazgo" if len(hallazgos) == 1 else "hallazgos"
-    print(f"{len(hallazgos)} {palabra}. Esta vista es estructural: no prueba lo que se ve en el juego.", file=salida)
+    palabra = "hallazgo" if len(informe.hallazgos) == 1 else "hallazgos"
+    print(
+        f"{len(informe.hallazgos)} {palabra}. Esta vista es estructural: no prueba lo que se ve en el juego.",
+        file=salida,
+    )
     return CODIGO_CON_TAPADOS
-
-
-#: Hallazgos de la ENTRADA: la textura no se mide (otro mod la tapa, o el overlay no la entrega).
-_TIPOS_QUE_IMPIDEN_MEDIR: Final = frozenset({"ENTRADA TAPADA", "ENTRADA FUERA DEL OVERLAY"})
 
 
 def _exigir_perfil_completo_o_ninguno(args: argparse.Namespace) -> bool:
@@ -638,27 +536,28 @@ def _aplicar_perfil(
     mods: pathlib.Path,
     normales: list[NormalDescubierta],
     omitidas: list[str],
-) -> tuple[list[NormalDescubierta], list[str], list[_Hallazgo]]:
+) -> tuple[list[NormalDescubierta], list[str], list[Hallazgo]]:
     """Quita de ``normales`` las que el overlay no entrega como el generador supone y devuelve los avisos de la salida."""
-    resuelto = _cargar_perfil(
-        mods_dir=mods, data_root=pathlib.Path(args.data_root), perfil=args.perfil or "Default", mod=args.mod
-    )
+    with _perfil_error_como_uso():
+        resuelto = cargar_perfil(
+            mods_dir=mods, data_root=pathlib.Path(args.data_root), perfil=args.perfil or "Default", mod=args.mod
+        )
     if _clave_fisica(pathlib.Path(args.carpeta)) != _clave_fisica(resuelto.carpeta_del_mod):
         raise UsoIncorrectoError(
             f"--carpeta ({args.carpeta}) no es la carpeta del mod {resuelto.mod!r} ({resuelto.carpeta_del_mod}): "
             "«lo gana otro mod» se compara contra esa carpeta y no tendría sentido"
         )
-    hallazgos = _hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
-    sin_medir = {h.ruta: h for h in hallazgos if h.tipo in _TIPOS_QUE_IMPIDEN_MEDIR}
+    hallazgos = hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
+    sin_medir = {h.ruta: h for h in hallazgos if h.tipo in TIPOS_QUE_IMPIDEN_MEDIR}
     restantes = [n for n in normales if n.ruta_de_origen not in sin_medir]
-    omitidas = [*omitidas, *(_texto_de_omision(r, f"{h.tipo}: {h.detalle}") for r, h in sorted(sin_medir.items()))]
+    omitidas = [*omitidas, *(texto_de_omision(r, f"{h.tipo}: {h.detalle}") for r, h in sorted(sin_medir.items()))]
     if not restantes:
-        detalle = "\n".join(_linea_de_hallazgo(h) for h in hallazgos)
+        detalle = "\n".join(linea_de_hallazgo(h) for h in hallazgos)
         raise UsoIncorrectoError(
             f"todas las texturas de {resuelto.mod!r} están tapadas o fuera del overlay: no hay nada que medir\n{detalle}"
         )
     # Primero lo que se deja sin medir y después lo de la salida: el operador lo ve ANTES de procesar y de escribir.
-    avisos = [*sin_medir.values(), *(h for h in hallazgos if h.tipo not in _TIPOS_QUE_IMPIDEN_MEDIR)]
+    avisos = [*sin_medir.values(), *(h for h in hallazgos if h.tipo not in TIPOS_QUE_IMPIDEN_MEDIR)]
     return restantes, omitidas, avisos
 
 
@@ -688,13 +587,13 @@ async def _generar(
     )
     if not normales:
         raise UsoIncorrectoError(f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {args.carpeta}/textures")
-    avisos: list[_Hallazgo] = []
+    avisos: list[Hallazgo] = []
     if con_perfil:
         normales, omitidas, avisos = _aplicar_perfil(args, mods, normales, omitidas)
     raiz_de_salida = (mods / NOMBRE_DEL_MOD_DE_SALIDA).absolute()
     _exigir_informe_fuera_de_la_salida(args.informe, raiz_de_salida, pathlib.Path(args.carpeta))
     for aviso in avisos:  # ANTES de procesar y de escribir: el operador ve si la salida va a quedar tapada
-        print(_linea_de_hallazgo(aviso), file=salida)
+        print(linea_de_hallazgo(aviso), file=salida)
     print(f"{len(normales)} texturas por procesar; salida: {mods / NOMBRE_DEL_MOD_DE_SALIDA}", file=salida)
     informe = await procesar_lote(
         normales,
