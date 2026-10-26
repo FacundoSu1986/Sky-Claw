@@ -20,12 +20,14 @@ import time
 
 import pytest
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.clones import (
     CLONE_RECORD_SCHEMA_VERSION,
     RuntimeCloneLifecycle,
     RuntimeCloneRecord,
     actualizar_lifecycle_clone,
     admitir_clone_root_path,
+    cargar_runtime_clone_record,
     leer_runtime_clone_record,
     registrar_runtime_clone_record,
     validar_clone_id,
@@ -850,3 +852,161 @@ class TestFrozenRuntimeP5BDurableAuthority:
 
         with pytest.raises(RuntimeCloneCorruptError, match="JSON malformado"):
             desired_runtime_from_storage(root)
+
+    def test_18_vinculacion_filename_y_clone_id_en_payload(self, tmp_path: pathlib.Path) -> None:
+        """18. Discrepancia entre filename y clone_id en payload se rechaza como corrupta (fail-closed)."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_a")
+
+        # Guardar en state/clones/clone-a.json un payload que declara clone_id="clone-b"
+        payload_falso = {
+            "schema_version": 1,
+            "clone_id": "clone-b",
+            "source_generation_id": gen_id,
+            "lifecycle": "PROVISIONED",
+            "intended_runtime_setup_id": "setup-1",
+            "verified_runtime_setup_id": "setup-1",
+            "root_path": str(clone_root),
+            "admitted_role": "runtime_clone",
+            "created_at_ns": 100,
+        }
+        archivo_a = clones_state_dir(root) / "clone-a.json"
+        archivo_a.write_text(json.dumps(payload_falso), encoding="utf-8")
+
+        # 1. leer_runtime_clone_record debe rechazar la discrepancia
+        with pytest.raises(RuntimeCloneCorruptError, match="no coincide con el namespace|difiere"):
+            leer_runtime_clone_record(root, "clone-a")
+
+        # 2. cargar_runtime_clone_record también debe fallar cerrado
+        with pytest.raises(RuntimeCloneCorruptError, match="no coincide con el namespace|difiere"):
+            cargar_runtime_clone_record(root, "clone-a")
+
+        # 3. desired_runtime_from_storage debe propagar la corrupción y no redefinir identidad
+        save_frozen_runtime_state(
+            active_state_path(root),
+            FrozenRuntimeState(
+                schema_version=2,
+                updated_at_ns=100,
+                desired_active_generation=gen_id,
+                desired_clone_id="clone-a",
+            ),
+        )
+        with pytest.raises(RuntimeCloneCorruptError):
+            desired_runtime_from_storage(root)
+
+    def test_19_reparse_point_colgante_falla_cerrado_no_ausencia(self, tmp_path: pathlib.Path) -> None:
+        """19. Symlink o junction colgante en state/clones/ lanza RuntimeCloneCorruptError, nunca None."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        _crear_generation_valida(root)
+
+        clones_dir = clones_state_dir(root)
+        target_inexistente = tmp_path / "inexistente_target.json"
+        link_path = clones_dir / "clone-dangling.json"
+
+        # Crear enlace colgante real si el SO lo permite (junction o symlink)
+        creado = False
+        if os.name == "nt":
+            try:
+                os.symlink(target_inexistente, link_path)
+                creado = True
+            except OSError:
+                target_dir = tmp_path / "target_dir"
+                target_dir.mkdir()
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(link_path), str(target_dir)], capture_output=True)
+                target_dir.rmdir()
+                creado = link_path.is_symlink() or link_kind_or_raise(link_path) is not None
+        else:
+            try:
+                link_path.symlink_to(target_inexistente)
+                creado = True
+            except OSError:
+                pass
+
+        if creado:
+            assert not link_path.exists()
+            assert link_kind_or_raise(link_path) is not None
+
+            with pytest.raises(RuntimeCloneCorruptError, match="enlace/reparse"):
+                cargar_runtime_clone_record(root, "clone-dangling")
+
+            with pytest.raises(RuntimeCloneCorruptError, match="enlace/reparse"):
+                leer_runtime_clone_record(root, "clone-dangling")
+        else:
+            import sky_claw.local.frozen_runtime.clones as clones_mod
+
+            link_fake = clones_dir / "clone-dangling.json"
+            assert not link_fake.exists()
+
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(clones_mod, "link_kind_or_raise", lambda p: "symlink" if p == link_fake else None)
+                with pytest.raises(RuntimeCloneCorruptError, match="enlace/reparse"):
+                    cargar_runtime_clone_record(root, "clone-dangling")
+
+    def test_20_coherencia_escritor_valida_completamente_objeto(self, tmp_path: pathlib.Path) -> None:
+        """20. registrar_runtime_clone_record valida completamente el objeto y no publica lo que el lector rechaza."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_coherence")
+
+        # 1. schema_version inválido
+        rec_bad_schema = RuntimeCloneRecord(
+            schema_version=99,
+            clone_id="clone-coherence",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneSchemaError, match="schema_version"):
+            registrar_runtime_clone_record(root, rec_bad_schema)
+
+        # 2. intended_runtime_setup_id vacío o con traversal
+        rec_empty_setup = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-coherence",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneSchemaError, match="runtime_setup_id"):
+            registrar_runtime_clone_record(root, rec_empty_setup)
+
+        rec_traversal_setup = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-coherence",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="../escape",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneSchemaError, match="traversal"):
+            registrar_runtime_clone_record(root, rec_traversal_setup)
+
+        # 3. created_at_ns negativo o inválido
+        rec_bad_created = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-coherence",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=-5,
+        )
+        with pytest.raises(RuntimeCloneSchemaError, match="created_at_ns"):
+            registrar_runtime_clone_record(root, rec_bad_created)

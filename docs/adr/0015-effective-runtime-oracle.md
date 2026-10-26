@@ -475,3 +475,19 @@ identificaron y corrigieron cuatro fronteras críticas:
      propagan excepciones tipadas (`StateCorruptError`, `StateSchemaError`,
      `RuntimeCloneCorruptError`, `RuntimeCloneSchemaError`) y nunca se
      degradan a un estado ausente limpio (`NO_DESIRED_CLONE`).
+
+5. **Vinculación estricta entre filename y clone_id:**
+   - Se prohíbe que el payload JSON redefina la identidad fijada por el namespace
+     durable. `_leer_record_de_ruta` valida obligatoriamente que
+     `record.clone_id == ruta.stem`; ante divergencia, lanza `RuntimeCloneCorruptError`.
+
+6. **Reparse points colgantes y coherencia del escritor:**
+   - `cargar_runtime_clone_record` elimina el guard ingenuo con `Path.exists()`, el
+     cual interpretaba symlinks o junctions colgantes como ausencia (`None`). La
+     inspección delega en `link_kind_or_raise` fallando cerrado con
+     `RuntimeCloneCorruptError` ante cualquier enlace roto o redirigido.
+   - `registrar_runtime_clone_record` valida exhaustivamente el contrato tipado
+     (`schema_version`, identificadores de setup sin traversal, `created_at_ns` no
+     negativo y consistencia de serialización) antes de adquirir locks o escribir en
+     disco, asegurando que el escritor jamás publique un registro que su propio
+     lector rechazaría.

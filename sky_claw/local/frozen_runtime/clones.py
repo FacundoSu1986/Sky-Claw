@@ -325,10 +325,49 @@ def registrar_runtime_clone_record(
     Falla con RuntimeCloneCollisionError si ya existe con datos distintos (no-clobber).
     Exclusión mediante participant_lock del FrozenRuntimeRoot.
     """
+    if (
+        not isinstance(record.schema_version, int)
+        or isinstance(record.schema_version, bool)
+        or record.schema_version != CLONE_RECORD_SCHEMA_VERSION
+    ):
+        raise RuntimeCloneSchemaError(
+            f"schema_version inválido {record.schema_version}; soportado: {CLONE_RECORD_SCHEMA_VERSION}"
+        )
+
     validar_clone_id(record.clone_id)
     validar_generation_id(record.source_generation_id)
+
+    if not isinstance(record.lifecycle, RuntimeCloneLifecycle):
+        raise RuntimeCloneSchemaError(f"lifecycle inválido: {record.lifecycle!r}")
+
+    validar_runtime_setup_id(record.intended_runtime_setup_id)
+    if record.verified_runtime_setup_id is not None:
+        if not isinstance(record.verified_runtime_setup_id, str):
+            raise RuntimeCloneSchemaError("verified_runtime_setup_id debe ser string o None")
+        validar_runtime_setup_id(record.verified_runtime_setup_id)
+
+    if not isinstance(record.created_at_ns, int) or isinstance(record.created_at_ns, bool) or record.created_at_ns < 0:
+        raise RuntimeCloneSchemaError("created_at_ns debe ser int >= 0")
+
     if record.admitted_role != CANONICAL_ADMITTED_ROLE:
         raise RuntimeCloneAdmissionError(f"admitted_role inválido: '{record.admitted_role}'")
+
+    # Invariante de setup vs lifecycle
+    if record.lifecycle is RuntimeCloneLifecycle.PROVISIONED:
+        if record.verified_runtime_setup_id is None:
+            raise RuntimeCloneSchemaError("PROVISIONED exige verified_runtime_setup_id no null")
+        if record.verified_runtime_setup_id != record.intended_runtime_setup_id:
+            raise RuntimeCloneSchemaError(
+                f"setup mismatch: intended '{record.intended_runtime_setup_id}' != verified '{record.verified_runtime_setup_id}'"
+            )
+    elif record.lifecycle in (RuntimeCloneLifecycle.CREATED, RuntimeCloneLifecycle.PROVISIONING):
+        if record.verified_runtime_setup_id is not None:
+            raise RuntimeCloneSchemaError(f"lifecycle {record.lifecycle.value} no admite verified_runtime_setup_id")
+
+    # Validación de admisión de la ruta del clone
+    if not isinstance(record.root_path, str) or not record.root_path.strip():
+        raise RuntimeCloneSchemaError("root_path debe ser string no vacío")
+    admitir_clone_root_path(record.root_path, storage_root=root)
 
     # Validar existencia de la Generation de origen en el storage
     from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
@@ -342,20 +381,9 @@ def registrar_runtime_clone_record(
             f"declarada en clone '{record.clone_id}': {exc}"
         ) from exc
 
-    # Validación de admisión de la ruta del clone
-    admitir_clone_root_path(record.root_path, storage_root=root)
-
-    # Invariante de setup vs lifecycle
-    if record.lifecycle is RuntimeCloneLifecycle.PROVISIONED:
-        if record.verified_runtime_setup_id is None:
-            raise RuntimeCloneSchemaError("PROVISIONED exige verified_runtime_setup_id no null")
-        if record.verified_runtime_setup_id != record.intended_runtime_setup_id:
-            raise RuntimeCloneSchemaError(
-                f"setup mismatch: intended '{record.intended_runtime_setup_id}' != verified '{record.verified_runtime_setup_id}'"
-            )
-    elif record.lifecycle in (RuntimeCloneLifecycle.CREATED, RuntimeCloneLifecycle.PROVISIONING):
-        if record.verified_runtime_setup_id is not None:
-            raise RuntimeCloneSchemaError(f"lifecycle {record.lifecycle.value} no admite verified_runtime_setup_id")
+    # Validar que la serialización round-trip sea consistente
+    payload = _payload_de_clone_record(record)
+    _clone_record_de_payload(payload, source_label=f"registro de clone '{record.clone_id}'")
 
     destino = clone_record_path(root, record.clone_id)
 
@@ -372,7 +400,7 @@ def registrar_runtime_clone_record(
                 f"clone_id '{record.clone_id}' ya existe con identidad distinta (no-clobber fail-closed)"
             )
 
-        write_json_atomic(destino, _payload_de_clone_record(record))
+        write_json_atomic(destino, payload)
         return record
 
 
@@ -465,7 +493,13 @@ def _leer_record_de_ruta(ruta: pathlib.Path) -> RuntimeCloneRecord:
     except json.JSONDecodeError as exc:
         raise RuntimeCloneCorruptError(f"{ruta}: JSON malformado o truncado: {exc}") from exc
 
-    return _clone_record_de_payload(data, source_label=str(ruta))
+    record = _clone_record_de_payload(data, source_label=str(ruta))
+    canonical_id = ruta.stem
+    if record.clone_id != canonical_id:
+        raise RuntimeCloneCorruptError(
+            f"{ruta}: clone_id en payload '{record.clone_id}' no coincide con el namespace canónico '{canonical_id}': fail-closed"
+        )
+    return record
 
 
 def leer_runtime_clone_record(root: pathlib.Path, clone_id: str) -> RuntimeCloneRecord:
@@ -479,9 +513,10 @@ def cargar_runtime_clone_record(root: pathlib.Path, clone_id: str) -> RuntimeClo
     """Carga de un RuntimeCloneRecord; devuelve None si no existe, lanza ante corrupción."""
     cid = validar_clone_id(clone_id)
     destino = clone_record_path(root, cid)
-    if not destino.exists():
+    try:
+        return _leer_record_de_ruta(destino)
+    except RuntimeCloneNotFoundError:
         return None
-    return _leer_record_de_ruta(destino)
 
 
 def verificar_runtime_clone(
