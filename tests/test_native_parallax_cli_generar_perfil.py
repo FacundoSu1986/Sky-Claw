@@ -115,7 +115,7 @@ def _exigir_aviso_antes_de_procesar(texto: str, aviso: str) -> None:
 
 def _escritas(mundo: Mundo) -> list[str]:
     carpeta = mundo.salida / _CARPETA
-    return sorted(p.name for p in carpeta.iterdir()) if carpeta.exists() else []
+    return sorted(p.name for p in carpeta.iterdir() if p.name.endswith("_p.dds")) if carpeta.exists() else []
 
 
 # ---------------------------------------------------------------------------
@@ -284,41 +284,55 @@ def test_la_carpeta_tiene_que_ser_la_del_mod_indicado(mundo: Mundo, tmp_path: pa
     assert _escritas(mundo) == []
 
 
-@pytest.mark.parametrize("estado", ["sin_modlist", "mod_no_habilitado", "mod_es_la_salida"])
-def test_un_perfil_que_no_se_puede_resolver_falla_cerrado_sin_escribir(mundo: Mundo, estado: str) -> None:
+def _generar_sobre(mundo: Mundo, carpeta: pathlib.Path, mod: str) -> tuple[int, str]:
+    """``generar`` con perfil sobre una ``carpeta`` y un ``--mod`` explícitos."""
+    salida = io.StringIO()
+    codigo = main(
+        [
+            "generar",
+            "--carpeta",
+            str(carpeta),
+            "--mods",
+            str(mundo.mods),
+            "--informe",
+            str(mundo.informe),
+            "--data-root",
+            str(mundo.data),
+            "--mod",
+            mod,
+        ],
+        entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
+        fabrica_de_exportador=_fabrica(),
+        base_de_estado=mundo.raiz / "estado",
+        salida=salida,
+    )
+    return codigo, salida.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("estado", "mensaje"),
+    [
+        pytest.param("sin_modlist", "modlist", id="sin_modlist"),
+        pytest.param("mod_no_habilitado", "no está habilitado", id="mod_no_habilitado"),
+        pytest.param("mod_es_la_salida", "mod de salida", id="mod_es_la_salida"),
+    ],
+)
+def test_un_perfil_que_no_se_puede_resolver_falla_cerrado_sin_escribir(mundo: Mundo, estado: str, mensaje: str) -> None:
+    """Cada caso llega a la guarda que dice probar: la carpeta tiene normales, así que el rechazo es del perfil y no de
+    «ninguna textura procesable»."""
+    carpeta, mod = mundo.mods / _MOD, _MOD
     if estado == "mod_no_habilitado":
         mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}")
         mundo.salida.mkdir(parents=True)
     elif estado == "mod_es_la_salida":
         mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
-        mundo.salida.mkdir(parents=True)
+        _escribir_normal(mundo.salida / _N1)  # para que ``generar`` llegue a rechazar el MOD, no la falta de texturas
+        carpeta, mod = mundo.salida, NOMBRE_DEL_MOD_DE_SALIDA
 
-    if estado == "mod_es_la_salida":
-        salida = io.StringIO()
-        codigo = main(
-            [
-                "generar",
-                "--carpeta",
-                str(mundo.salida),
-                "--mods",
-                str(mundo.mods),
-                "--informe",
-                str(mundo.informe),
-                "--data-root",
-                str(mundo.data),
-                "--mod",
-                NOMBRE_DEL_MOD_DE_SALIDA,
-            ],
-            entorno={ENTORNO_TEXCONV: "C:/texconv.exe"},
-            fabrica_de_exportador=_fabrica(),
-            base_de_estado=mundo.raiz / "estado",
-            salida=salida,
-        )
-        assert codigo == CODIGO_DE_USO
-    else:
-        codigo, _texto = _con_perfil(mundo)
-        assert codigo == CODIGO_DE_USO
+    codigo, texto = _generar_sobre(mundo, carpeta, mod)
 
+    assert codigo == CODIGO_DE_USO
+    assert mensaje in texto
     assert _escritas(mundo) == []
     assert not mundo.informe.exists()
 
