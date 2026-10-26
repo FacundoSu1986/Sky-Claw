@@ -4,19 +4,23 @@ Uso (desde la raíz del repo, con el entorno del extra instalado)::
 
     python -m sky_claw.local.native_parallax.cli autoprueba --texconv C:\\ruta\\texconv.exe
     python -m sky_claw.local.native_parallax.cli generar --carpeta D:\\entrada --mods D:\\MO2\\mods --texconv C:\\ruta\\texconv.exe
+    python -m sky_claw.local.native_parallax.cli perfil --mod "Mi mod de texturas" --mods D:\\MO2\\mods --data-root D:\\MO2
 
 - ``autoprueba`` corre la tubería COMPLETA sobre una textura sintética en un mod temporal: lee, integra, mide, exporta con
   el ``texconv`` real y escribe con el escritor sobre el disco de verdad. No toca nada tuyo. Es lo primero que hay que
   correr en una máquina nueva (en Windows ejerce, por primera vez fuera de la CI, el ``texconv`` y el escritor sobre NTFS).
 - ``generar`` procesa los ``*_n.dds`` bajo ``<carpeta>/textures`` y deja los ``*_p.dds`` en el mod de salida
   ``<mods>/<mod de salida gestionado>`` (el nombre lo fija ``output.NOMBRE_DEL_MOD_DE_SALIDA``). La carpeta de entrada solo se LEE.
+- ``perfil`` (NP-A0e) es un diagnóstico de SOLO lectura: con el ``modlist.txt`` de un perfil de MO2 dice, por cada textura de un
+  mod, quién gana la ruta de entrada y quién la de salida (``mo2/ganadores.py``). Avisa cuando otro mod, ``overwrite`` o un mod de
+  control (#792 H12) tapa lo que el generador mediría o publicaría. No genera nada y no necesita ``texconv``.
 
 Es un borde delgado sobre ``lote.procesar_lote``: parsea, valida, arma el exportador y muestra el informe. La carpeta de
 entrada la enumera ``provider.py`` (NP-A0b): no sigue enlaces, ignora lo que no es ``*_n.dds`` y omite (y dice) lo que ya
 tiene un ``*_p.dds`` autoral con la misma ruta de salida. Acá solo se traducen sus errores y sus omisiones a mensajes.
 
 Códigos de salida: 0 todo bien; 1 alguna textura falló; 2 uso o configuración incorrectos; 3 otra instancia está
-escribiendo esa salida; 130 interrumpido.
+escribiendo esa salida; 4 (solo ``perfil``) hay texturas tapadas o la salida no está habilitada; 130 interrumpido.
 
 No hay gate validado todavía (``gates.py`` es fail-closed): TODA salida queda en revisión y solo se escribe con
 ``--incluir-revision``. Los parámetros por defecto (DirectX, escalas 1, bordes periódicos, min-max) son los de la referencia
@@ -41,6 +45,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, TextIO, cast
 
 from sky_claw.app.security.links import rmtree_link_aware
+from sky_claw.local.mo2.ganadores import CAPA_OVERWRITE, GanadoresDelPerfil, GanadoresError, indexar_ganadores
+from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.native_parallax._extra import importar_numpy
 from sky_claw.local.native_parallax.decode import ConvencionNormal, DependenciaNoDisponibleError
 from sky_claw.local.native_parallax.diagnostico_texconv import (
@@ -90,6 +96,7 @@ __all__ = [
     "CODIGO_DE_USO",
     "CODIGO_INTERRUMPIDO",
     "CODIGO_OK",
+    "CODIGO_CON_TAPADOS",
     "CODIGO_SALIDA_OCUPADA",
     "ENTORNO_TEXCONV",
     "FabricaDeExportador",
@@ -104,6 +111,7 @@ CODIGO_OK: Final = 0
 CODIGO_CON_FALLOS: Final = 1
 CODIGO_DE_USO: Final = 2
 CODIGO_SALIDA_OCUPADA: Final = 3
+CODIGO_CON_TAPADOS: Final = 4
 CODIGO_INTERRUMPIDO: Final = 130
 
 INFORME_POR_DEFECTO: Final = "informe_parallax.json"
@@ -368,6 +376,24 @@ def construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="borra las salidas NUESTRAS de corridas anteriores cuyas texturas ya no están en la carpeta de entrada",
     )
+
+    perfil = sub.add_parser(
+        "perfil",
+        help="diagnóstico de solo lectura: quién gana, en el perfil de MO2, las rutas de entrada y de salida de un mod",
+        description="Diagnóstico de solo lectura del overlay de un perfil de MO2: no genera nada y no necesita texconv.",
+        epilog=(
+            "Códigos de salida: 0 nada tapado; 2 uso o configuración incorrectos (lo que no se puede afirmar falla cerrado); "
+            "4 hay texturas tapadas, fuera del overlay o la salida no está habilitada."
+        ),
+    )
+    perfil.add_argument("--mod", required=True, help="nombre del mod (carpeta de <mods>) cuyas texturas se revisan")
+    perfil.add_argument("--mods", required=True, help="carpeta 'mods' de MO2")
+    perfil.add_argument(
+        "--data-root", required=True, help="raíz de datos de MO2 (donde viven 'profiles' y 'overwrite')"
+    )
+    perfil.add_argument(
+        "--perfil", default="Default", help="perfil de MO2 cuyo modlist.txt se lee (por defecto Default)"
+    )
     return parser
 
 
@@ -448,6 +474,115 @@ def _progreso(salida: TextIO) -> Callable[[int, int, str], None]:
 
 def _codigo(informe: InformeDelLote) -> int:
     return CODIGO_OK if informe.completo else CODIGO_CON_FALLOS
+
+
+# ---------------------------------------------------------------------------
+# ``perfil``: quién gana las rutas de un mod en el perfil de MO2 (solo lectura)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _Hallazgo:
+    """Una ruta que el overlay del perfil no entrega como el generador supone."""
+
+    tipo: str
+    ruta: str
+    detalle: str
+
+
+def _prioridades(enabled: Sequence[str]) -> dict[str, int]:
+    """Prioridad creciente por nombre (sin mayúsculas, como el resto del repo); ``overwrite`` gana a todo mod."""
+    prioridades = {nombre.lower(): indice for indice, nombre in enumerate(enabled)}
+    prioridades[CAPA_OVERWRITE] = len(enabled)
+    return prioridades
+
+
+def _hallazgos_del_perfil(
+    indice: GanadoresDelPerfil, enabled: Sequence[str], mod: str, normales: Sequence[NormalDescubierta]
+) -> list[_Hallazgo]:
+    """Compara, por cada normal, lo que el generador mediría y publicaría con lo que el overlay entrega de verdad.
+
+    - Entrada: la ruta ``*_n.dds`` debe resolverse a ``mod``; si la gana otra capa (o ninguna: está oculta), medir ese archivo
+      produciría un mapa para una textura que el juego no va a ver.
+    - Salida: la ruta ``*_p.dds`` debe resolverse al mod de salida (o a nadie, si todavía no se publicó). Una capa de MAYOR
+      prioridad que el mod de salida la tapa (#792 H12); una de menor prioridad no, porque la salida la reemplazaría.
+    """
+    prioridades = _prioridades(enabled)
+    salida = NOMBRE_DEL_MOD_DE_SALIDA.lower()
+    hallazgos: list[_Hallazgo] = []
+    if salida not in prioridades:
+        hallazgos.append(
+            _Hallazgo(
+                "SALIDA NO HABILITADA",
+                NOMBRE_DEL_MOD_DE_SALIDA,
+                "el mod de salida no está habilitado en el perfil: lo que se publique ahí no se cargaría",
+            )
+        )
+    for normal in normales:
+        ganador_n = indice.ganador(normal.ruta_de_origen)
+        if ganador_n is None:
+            hallazgos.append(
+                _Hallazgo(
+                    "ENTRADA FUERA DEL OVERLAY",
+                    normal.ruta_de_origen,
+                    "ninguna capa la entrega (¿oculta con .mohidden?): el juego no la ve",
+                )
+            )
+        elif ganador_n.capa.lower() != mod.lower():
+            hallazgos.append(
+                _Hallazgo("ENTRADA TAPADA", normal.ruta_de_origen, f"la gana {ganador_n.capa!r}, no {mod!r}")
+            )
+        ganador_p = indice.ganador(normal.ruta_de_salida)
+        if ganador_p is None or ganador_p.capa.lower() == salida or salida not in prioridades:
+            continue
+        if prioridades[ganador_p.capa.lower()] > prioridades[salida]:
+            hallazgos.append(
+                _Hallazgo(
+                    "SALIDA TAPADA",
+                    normal.ruta_de_salida,
+                    f"la gana {ganador_p.capa!r}, que está por encima de {NOMBRE_DEL_MOD_DE_SALIDA!r}",
+                )
+            )
+    return hallazgos
+
+
+def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
+    """Diagnóstico de SOLO lectura del perfil. No escribe, no coordina y no exporta (no pide ``texconv``)."""
+    data_root = pathlib.Path(args.data_root)
+    mods_dir = pathlib.Path(args.mods)
+    try:
+        enabled = read_enabled_mods(data_root / "profiles" / args.perfil / "modlist.txt")
+        elegido = next((m for m in enabled if m.lower() == args.mod.lower()), None)
+        if elegido is None:
+            raise UsoIncorrectoError(f"el mod {args.mod!r} no está habilitado en el perfil {args.perfil!r}")
+        if elegido.lower() == NOMBRE_DEL_MOD_DE_SALIDA.lower():
+            raise UsoIncorrectoError(
+                f"{elegido!r} es el mod de salida del generador: indicá el mod de texturas que se quiere revisar"
+            )
+        indice = indexar_ganadores(mods_dir=mods_dir, data_root=data_root, enabled=enabled)
+        # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
+        # Completa o nada: una textura que no se pudo leer no se puede dar por «no tapada» (#809).
+        normales, _omitidas = descubrir_normales_de_carpeta(mods_dir / elegido, exigir_completa=True)
+    except (VfsAttestationError, GanadoresError) as exc:
+        raise UsoIncorrectoError(str(exc)) from exc
+    if not normales:  # el hermano de ``_generar``: revisar cero texturas no es «sin texturas tapadas»
+        raise UsoIncorrectoError(
+            f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {mods_dir / elegido}/textures"
+        )
+    hallazgos = _hallazgos_del_perfil(indice, enabled, elegido, normales)
+    plural = "textura" if len(normales) == 1 else "texturas"
+    print(
+        f"Perfil {args.perfil!r}: {len(enabled)} mods habilitados; {len(normales)} {plural} revisadas en {elegido!r}.",
+        file=salida,
+    )
+    for h in hallazgos:
+        print(f"  [{h.tipo}] {h.ruta}: {h.detalle}", file=salida)
+    if not hallazgos:
+        print("Sin texturas tapadas: el overlay entrega lo que el generador mediría y publicaría.", file=salida)
+        return CODIGO_OK
+    palabra = "hallazgo" if len(hallazgos) == 1 else "hallazgos"
+    print(f"{len(hallazgos)} {palabra}. Esta vista es estructural: no prueba lo que se ve en el juego.", file=salida)
+    return CODIGO_CON_TAPADOS
 
 
 async def _generar(
@@ -579,6 +714,8 @@ def main(
     fabrica = fabrica_de_exportador if fabrica_de_exportador is not None else crear_exportador_texconv
     args = construir_parser().parse_args(argv)
     try:
+        if args.comando == "perfil":  # diagnóstico de solo lectura: ni texconv ni coordinación de salida
+            return _perfil(args, destino)
         exportador = fabrica(_resolver_texconv(args.texconv, variables))
         coordinacion = construir_coordinacion_de_salida(base=base_de_estado)
         comando = _autoprueba if args.comando == "autoprueba" else _generar

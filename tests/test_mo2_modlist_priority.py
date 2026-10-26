@@ -346,6 +346,9 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs_attestation.py",
         "sky_claw/local/assets/asset_scanner.py",
         "sky_claw/local/mo2/brokered_dyndolod.py",
+        # NP-A0e: el subcomando `perfil` lee el modlist con `read_enabled_mods` e INTERPRETA la prioridad
+        # (qué capa queda por encima del mod de salida); es solo lectura.
+        "sky_claw/local/native_parallax/cli.py",
     },
     # Family B: Writers (mutadores autorizados de modlist.txt)
     "FAMILY_B_WRITERS": {
