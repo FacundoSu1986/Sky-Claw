@@ -376,6 +376,12 @@ def construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="borra las salidas NUESTRAS de corridas anteriores cuyas texturas ya no están en la carpeta de entrada",
     )
+    gen.add_argument(
+        "--data-root",
+        help="con --mod: raíz de datos de MO2; no mide lo que otro mod tapa y avisa si la salida quedaría tapada (ver 'perfil')",
+    )
+    gen.add_argument("--mod", help="con --data-root: nombre del mod de MO2 que es --carpeta (<mods>/<mod>)")
+    gen.add_argument("--perfil", help="perfil de MO2 cuyo modlist.txt se lee (por defecto Default)")
 
     perfil = sub.add_parser(
         "perfil",
@@ -546,43 +552,114 @@ def _hallazgos_del_perfil(
     return hallazgos
 
 
-def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
-    """Diagnóstico de SOLO lectura del perfil. No escribe, no coordina y no exporta (no pide ``texconv``)."""
-    data_root = pathlib.Path(args.data_root)
-    mods_dir = pathlib.Path(args.mods)
+@dataclasses.dataclass(frozen=True)
+class _PerfilResuelto:
+    """El perfil de MO2 ya leído: los mods habilitados (prioridad creciente), el mod elegido y quién gana cada ruta."""
+
+    enabled: tuple[str, ...]
+    mod: str
+    carpeta_del_mod: pathlib.Path
+    indice: GanadoresDelPerfil
+
+
+def _cargar_perfil(*, mods_dir: pathlib.Path, data_root: pathlib.Path, perfil: str, mod: str) -> _PerfilResuelto:
+    """LA resolución del perfil que comparten ``perfil`` y ``generar``: si cada uno la hiciera por su cuenta contestarían
+    distinto (el hermano). Falla cerrado con ``UsoIncorrectoError`` ante cualquier cosa que no permita afirmar quién gana."""
     try:
-        enabled = read_enabled_mods(data_root / "profiles" / args.perfil / "modlist.txt")
-        elegido = next((m for m in enabled if m.lower() == args.mod.lower()), None)
+        enabled = read_enabled_mods(data_root / "profiles" / perfil / "modlist.txt")
+        elegido = next((m for m in enabled if m.lower() == mod.lower()), None)
         if elegido is None:
-            raise UsoIncorrectoError(f"el mod {args.mod!r} no está habilitado en el perfil {args.perfil!r}")
+            raise UsoIncorrectoError(f"el mod {mod!r} no está habilitado en el perfil {perfil!r}")
         if elegido.lower() == NOMBRE_DEL_MOD_DE_SALIDA.lower():
             raise UsoIncorrectoError(
                 f"{elegido!r} es el mod de salida del generador: indicá el mod de texturas que se quiere revisar"
             )
         indice = indexar_ganadores(mods_dir=mods_dir, data_root=data_root, enabled=enabled)
-        # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
-        # Completa o nada: una textura que no se pudo leer no se puede dar por «no tapada» (#809).
-        normales, _omitidas = descubrir_normales_de_carpeta(mods_dir / elegido, exigir_completa=True)
     except (VfsAttestationError, GanadoresError) as exc:
         raise UsoIncorrectoError(str(exc)) from exc
+    # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
+    return _PerfilResuelto(enabled=enabled, mod=elegido, carpeta_del_mod=mods_dir / elegido, indice=indice)
+
+
+def _linea_de_hallazgo(h: _Hallazgo) -> str:
+    return f"  [{h.tipo}] {h.ruta}: {h.detalle}"
+
+
+def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
+    """Diagnóstico de SOLO lectura del perfil. No escribe, no coordina y no exporta (no pide ``texconv``)."""
+    mods_dir = pathlib.Path(args.mods)
+    resuelto = _cargar_perfil(
+        mods_dir=mods_dir, data_root=pathlib.Path(args.data_root), perfil=args.perfil, mod=args.mod
+    )
+    # Completa o nada: una textura que no se pudo leer no se puede dar por «no tapada» (#809).
+    normales, _omitidas = descubrir_normales_de_carpeta(resuelto.carpeta_del_mod, exigir_completa=True)
     if not normales:  # el hermano de ``_generar``: revisar cero texturas no es «sin texturas tapadas»
         raise UsoIncorrectoError(
-            f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {mods_dir / elegido}/textures"
+            f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {resuelto.carpeta_del_mod}/textures"
         )
-    hallazgos = _hallazgos_del_perfil(indice, enabled, elegido, normales)
+    hallazgos = _hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
     plural = "textura" if len(normales) == 1 else "texturas"
     print(
-        f"Perfil {args.perfil!r}: {len(enabled)} mods habilitados; {len(normales)} {plural} revisadas en {elegido!r}.",
+        f"Perfil {args.perfil!r}: {len(resuelto.enabled)} mods habilitados; {len(normales)} {plural} revisadas en "
+        f"{resuelto.mod!r}.",
         file=salida,
     )
     for h in hallazgos:
-        print(f"  [{h.tipo}] {h.ruta}: {h.detalle}", file=salida)
+        print(_linea_de_hallazgo(h), file=salida)
     if not hallazgos:
         print("Sin texturas tapadas: el overlay entrega lo que el generador mediría y publicaría.", file=salida)
         return CODIGO_OK
     palabra = "hallazgo" if len(hallazgos) == 1 else "hallazgos"
     print(f"{len(hallazgos)} {palabra}. Esta vista es estructural: no prueba lo que se ve en el juego.", file=salida)
     return CODIGO_CON_TAPADOS
+
+
+#: Hallazgos de la ENTRADA: la textura no se mide (otro mod la tapa, o el overlay no la entrega).
+_TIPOS_QUE_IMPIDEN_MEDIR: Final = frozenset({"ENTRADA TAPADA", "ENTRADA FUERA DEL OVERLAY"})
+
+
+def _exigir_perfil_completo_o_ninguno(args: argparse.Namespace) -> bool:
+    """``True`` si ``generar`` corre con perfil. ``--data-root`` y ``--mod`` van juntos; ``--perfil`` solo no alcanza."""
+    pedidos = {"--data-root": args.data_root, "--mod": args.mod, "--perfil": args.perfil}
+    if not any(pedidos.values()):
+        return False
+    if not (args.data_root and args.mod):
+        raise UsoIncorrectoError("el perfil de MO2 pide --data-root y --mod juntos (--perfil es opcional)")
+    if args.retirar_no_incluidas:
+        raise UsoIncorrectoError(
+            "no se combina --retirar-no-incluidas con el perfil de MO2: lo que se deja sin medir por estar tapado "
+            "no está ausente, y retirar su salida anterior sería borrarla por error"
+        )
+    return True
+
+
+def _aplicar_perfil(
+    args: argparse.Namespace,
+    mods: pathlib.Path,
+    normales: list[NormalDescubierta],
+    omitidas: list[str],
+) -> tuple[list[NormalDescubierta], list[str], list[_Hallazgo]]:
+    """Quita de ``normales`` las que el overlay no entrega como el generador supone y devuelve los avisos de la salida."""
+    resuelto = _cargar_perfil(
+        mods_dir=mods, data_root=pathlib.Path(args.data_root), perfil=args.perfil or "Default", mod=args.mod
+    )
+    if _clave_fisica(pathlib.Path(args.carpeta)) != _clave_fisica(resuelto.carpeta_del_mod):
+        raise UsoIncorrectoError(
+            f"--carpeta ({args.carpeta}) no es la carpeta del mod {resuelto.mod!r} ({resuelto.carpeta_del_mod}): "
+            "«lo gana otro mod» se compara contra esa carpeta y no tendría sentido"
+        )
+    hallazgos = _hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
+    sin_medir = {h.ruta: h for h in hallazgos if h.tipo in _TIPOS_QUE_IMPIDEN_MEDIR}
+    restantes = [n for n in normales if n.ruta_de_origen not in sin_medir]
+    omitidas = [*omitidas, *(_texto_de_omision(r, f"{h.tipo}: {h.detalle}") for r, h in sorted(sin_medir.items()))]
+    if not restantes:
+        detalle = "\n".join(_linea_de_hallazgo(h) for h in hallazgos)
+        raise UsoIncorrectoError(
+            f"todas las texturas de {resuelto.mod!r} están tapadas o fuera del overlay: no hay nada que medir\n{detalle}"
+        )
+    # Primero lo que se deja sin medir y después lo de la salida: el operador lo ve ANTES de procesar y de escribir.
+    avisos = [*sin_medir.values(), *(h for h in hallazgos if h.tipo not in _TIPOS_QUE_IMPIDEN_MEDIR)]
+    return restantes, omitidas, avisos
 
 
 async def _generar(
@@ -602,15 +679,22 @@ async def _generar(
         escribir_revision=args.incluir_revision,
         retirar_no_incluidas=args.retirar_no_incluidas,
     )
-    # Retirar actúa sobre lo que NO figura: con una enumeración incompleta, «no visto» se confundiría con «ausente».
+    mods = pathlib.Path(args.mods)
+    con_perfil = _exigir_perfil_completo_o_ninguno(args)
+    # Retirar actúa sobre lo que NO figura: con una enumeración incompleta, «no visto» se confundiría con «ausente». Con perfil,
+    # lo que se deja sin medir por estar tapado tampoco es «ausente»: no se combinan.
     normales, omitidas = descubrir_normales_de_carpeta(
-        pathlib.Path(args.carpeta), exigir_completa=args.retirar_no_incluidas
+        pathlib.Path(args.carpeta), exigir_completa=args.retirar_no_incluidas or con_perfil
     )
     if not normales:
         raise UsoIncorrectoError(f"no encontré ningún *{_SUFIJO_DE_ENTRADA} procesable bajo {args.carpeta}/textures")
-    mods = pathlib.Path(args.mods)
+    avisos: list[_Hallazgo] = []
+    if con_perfil:
+        normales, omitidas, avisos = _aplicar_perfil(args, mods, normales, omitidas)
     raiz_de_salida = (mods / NOMBRE_DEL_MOD_DE_SALIDA).absolute()
     _exigir_informe_fuera_de_la_salida(args.informe, raiz_de_salida, pathlib.Path(args.carpeta))
+    for aviso in avisos:  # ANTES de procesar y de escribir: el operador ve si la salida va a quedar tapada
+        print(_linea_de_hallazgo(aviso), file=salida)
     print(f"{len(normales)} texturas por procesar; salida: {mods / NOMBRE_DEL_MOD_DE_SALIDA}", file=salida)
     informe = await procesar_lote(
         normales,

@@ -73,6 +73,11 @@ Conviene variar: piedra, madera, tierra, algo con relieve fuerte y algo suave. P
 (`--mods` es la carpeta `mods` de tu MO2.) Muestra una línea por textura con sus métricas y el veredicto del gate, un
 resumen, y escribe `informe_parallax.json`. Los `*_p.dds` quedan en `D:\MO2\mods\Sky-Claw - Native Parallax Output\textures\...`.
 
+Si la carpeta de entrada es un mod de tu MO2, podés pedirle que mire el perfil (sin tocarlo) con `--data-root D:\MO2 --mod "Nombre del mod" [--perfil Default]`:
+no mide una textura que otro mod tapa, y **avisa antes de escribir** si otro mod, `overwrite` o un mod de control queda por encima de la salida (o si la salida no está
+habilitada). El aviso no frena la corrida: en la primera vez el mod de salida todavía no existe en tu lista. Para solo mirar, sin generar: `cli perfil --mod … --mods … --data-root …`
+(sale con 4 si hay algo tapado). Es una vista del `modlist.txt`: no reemplaza mirar la pestaña «Datos» ni probar en el juego.
+
 Volver a correr el mismo comando recalcula todo pero **no reescribe** lo que no cambió (el informe lo marca `OMITIDA`). Si cambiás un
 parámetro (abajo), esa salida se reemplaza sola.
 
