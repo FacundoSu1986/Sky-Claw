@@ -1111,3 +1111,127 @@ class TestFrozenRuntimeP5BDurableAuthority:
         # Lectura posterior del registro persistido debe ser válida
         rec_leido = leer_runtime_clone_record(root, "clone-fsm")
         assert rec_leido == rec_inv
+
+    def test_23_no_clobber_reparses_colgantes_y_reserva_exclusiva(self, tmp_path: pathlib.Path) -> None:
+        """23. registrar_runtime_clone_record respeta no-clobber, falla cerrado ante reparse colgante o fallo de inspección."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_noclobber")
+
+        clones_dir = clones_state_dir(root)
+        clones_dir.mkdir(parents=True, exist_ok=True)
+
+        rec1 = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-nc-1",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+
+        # 1. Registro legítimamente ausente: creación funciona
+        res1 = registrar_runtime_clone_record(root, rec1)
+        assert res1 == rec1
+        p1 = clone_record_path(root, "clone-nc-1")
+        assert p1.exists()
+
+        # 2. Registro existente idéntico: idempotencia
+        res1_idem = registrar_runtime_clone_record(root, rec1)
+        assert res1_idem == rec1
+
+        # 3. Registro existente diferente: RuntimeCloneCollisionError
+        rec1_diff = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-nc-1",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-different",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneCollisionError, match="no-clobber fail-closed"):
+            registrar_runtime_clone_record(root, rec1_diff)
+
+        # 4 & 5. Reparse point o enlace colgante en la ruta de registro
+        rec_dangling = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-dangling",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        destino_dangling = clone_record_path(root, "clone-dangling")
+        target_inexistente = tmp_path / "inexistente_target.json"
+
+        creado = False
+        if os.name == "nt":
+            try:
+                os.symlink(target_inexistente, destino_dangling)
+                creado = True
+            except OSError:
+                target_dir = tmp_path / "target_dir_dangling"
+                target_dir.mkdir()
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(destino_dangling), str(target_dir)], capture_output=True
+                )
+                target_dir.rmdir()
+                creado = True
+        else:
+            try:
+                destino_dangling.symlink_to(target_inexistente)
+                creado = True
+            except OSError:
+                pass
+
+        if os.name == "nt":
+            assert creado is True, "En Windows debe haberse ejercitado un junction o symlink NTFS real"
+
+        if creado:
+            assert not destino_dangling.exists()
+            assert link_kind_or_raise(destino_dangling) is not None
+
+            # Debe fallar cerrado con RuntimeCloneCorruptError y NUNCA clobber/sustituir el enlace
+            with pytest.raises(RuntimeCloneCorruptError, match="enlace/reparse"):
+                registrar_runtime_clone_record(root, rec_dangling)
+
+            assert link_kind_or_raise(destino_dangling) is not None, "El enlace colgante fue sustituido (clobber)"
+
+        # 6. Fallos de inspección: OSError nunca equivale a ausencia legítima
+        rec_insp = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-insp-fail",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        destino_insp = clone_record_path(root, "clone-insp-fail")
+        assert not destino_insp.exists()
+
+        import sky_claw.local.frozen_runtime.clones as clones_mod
+
+        def _raise_io(path: pathlib.Path) -> str | None:
+            if path == destino_insp:
+                raise OSError("Fallo simulado de E/S de bajo nivel")
+            return None
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(clones_mod, "link_kind_or_raise", _raise_io)
+            with pytest.raises(RuntimeCloneCorruptError, match="inspeccionar"):
+                registrar_runtime_clone_record(root, rec_insp)
+
+        assert not destino_insp.exists()

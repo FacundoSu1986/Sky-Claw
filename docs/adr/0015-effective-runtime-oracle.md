@@ -507,3 +507,12 @@ identificaron y corrigieron cuatro fronteras críticas:
      transiciones hacia `PROVISIONING` o `CREATED`, e implementa validación
      pre-escritura (`_clone_record_de_payload`) para garantizar que la FSM nunca
      escriba un estado que el lector rechace.
+
+9. **Reserva exclusiva no-clobber y protección ante reparse points colgantes:**
+   - `registrar_runtime_clone_record` reemplaza la comprobación ingenua con
+     `destino.exists()` por una inspección estricta fail-closed vía
+     `_leer_record_de_ruta`. Cualquier enlace colgante o reparse point es
+     detectado y rechazado con `RuntimeCloneCorruptError`, impidiendo que
+     `os.replace()` clobberee el enlace. En caso de ausencia legítima, la creación
+     utiliza `reservar_ruta_json_exclusiva` (`O_CREAT | O_EXCL`) para garantizar
+     un único ganador a nivel de filesystem antes de la escritura atómica.

@@ -399,20 +399,26 @@ def registrar_runtime_clone_record(
     destino = clone_record_path(root, cid)
 
     from sky_claw.local.frozen_runtime.root_lock import participant_lock
+    from sky_claw.local.frozen_runtime.state import reservar_ruta_json_exclusiva
 
     with participant_lock(root, timeout=timeout) as handle:
         handle.assert_owned()
 
-        if destino.exists():
+        try:
             existente = _leer_record_de_ruta(destino)
-            if existente == canonical_record:
-                return existente
-            raise RuntimeCloneCollisionError(
-                f"clone_id '{cid}' ya existe con identidad distinta (no-clobber fail-closed)"
-            )
+        except RuntimeCloneNotFoundError:
+            try:
+                reservar_ruta_json_exclusiva(destino)
+            except FileExistsError as exc:
+                raise RuntimeCloneCollisionError(
+                    f"clone_id '{cid}' ya existe (colisión en reserva exclusiva): {exc}"
+                ) from exc
+            write_json_atomic(destino, payload)
+            return canonical_record
 
-        write_json_atomic(destino, payload)
-        return canonical_record
+        if existente == canonical_record:
+            return existente
+        raise RuntimeCloneCollisionError(f"clone_id '{cid}' ya existe con identidad distinta (no-clobber fail-closed)")
 
 
 def actualizar_lifecycle_clone(
