@@ -108,6 +108,14 @@ async def test_un_payload_invalido_se_rechaza_sin_tocar_el_disco(payload: dict[s
     assert llamadas == []
 
 
+async def test_el_nombre_del_mod_admite_hasta_256_caracteres_y_rechaza_257(instancia: pathlib.Path) -> None:
+    estrategia = _estrategia(instancia)
+
+    assert "Falta 'mod'" not in (await estrategia.execute({"mod": "x" * 256}))["message"]  # llega al diagnóstico
+    rechazado = await estrategia.execute({"mod": "x" * 257})
+    assert rechazado["success"] is False and "Falta 'mod'" in rechazado["message"]
+
+
 async def test_sin_instalacion_de_mo2_es_un_resultado_con_motivo_y_no_una_excepcion() -> None:
     def sin_mo2() -> RaicesDeInstanciaMO2:
         raise RuntimeError("No se pudo resolver la instalación de MO2")

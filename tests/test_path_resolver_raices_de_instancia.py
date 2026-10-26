@@ -50,6 +50,17 @@ def test_sin_ninguna_instalacion_falla_cerrado_con_un_motivo(tmp_path: pathlib.P
         servicio.raices_de_instancia_mo2()
 
 
+def test_datos_sin_instalacion_tambien_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Hay metadata de datos pero ninguna instalación: el ``MO2Controller`` no se puede armar, así que no se devuelve una mitad."""
+    servicio = PathResolutionService(path_validator=PathValidator(roots=[tmp_path]))
+    with (
+        patch.object(PathResolutionService, "get_mo2_path", return_value=None),
+        patch.object(PathResolutionService, "get_mo2_instance_data_root_estricto", return_value=tmp_path),
+        pytest.raises(RuntimeError, match="MO2"),
+    ):
+        servicio.raices_de_instancia_mo2()
+
+
 def _llamadores_de(nombre: str) -> set[str]:
     """Módulos que USAN el método *nombre*: lo llaman o lo pasan como callable (la GUI se lo entrega al dispatcher sin llamarlo)."""
     encontrados: set[str] = set()

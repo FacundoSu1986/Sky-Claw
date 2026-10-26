@@ -391,6 +391,16 @@ def test_el_resultado_recorta_los_hallazgos_pero_cuenta_todos(mundo: Mundo) -> N
     assert MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO > 0
 
 
+@pytest.mark.parametrize("tope", [0, -5])
+def test_un_tope_de_cero_o_negativo_no_lista_hallazgos_pero_sigue_contandolos(mundo: Mundo, tope: int) -> None:
+    mundo.archivo(_CONTROL, _P1)
+    mundo.modlist(f"+{_CONTROL}", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    r = _resultado(mundo, maximo_de_hallazgos=tope)
+
+    assert r["hallazgos"] == [] and r["n_hallazgos"] == 1 and r["truncado"] is True
+
+
 def test_el_resultado_de_lo_que_no_se_puede_afirmar_es_un_fallo_con_mensaje_y_sin_traceback(mundo: Mundo) -> None:
     mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}")
 
@@ -434,6 +444,18 @@ def _llamadores_de(nombre: str) -> set[str]:
     return encontrados
 
 
+def _usuarios_de(nombre: str) -> set[str]:
+    """Módulos de ``sky_claw/`` que USAN *nombre*: lo llaman o lo pasan como callable (``asyncio.to_thread(nombre, …)``)."""
+    encontrados: set[str] = set()
+    for archivo in (_RAIZ_DEL_REPO / "sky_claw").rglob("*.py"):
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            if (isinstance(nodo, ast.Name) and nodo.id == nombre and isinstance(nodo.ctx, ast.Load)) or (
+                isinstance(nodo, ast.Attribute) and nodo.attr == nombre
+            ):
+                encontrados.add(archivo.relative_to(_RAIZ_DEL_REPO).as_posix())
+    return encontrados
+
+
 _MODULO = "sky_claw/local/native_parallax/diagnostico_perfil.py"
 _CLI = "sky_claw/local/native_parallax/cli.py"
 
@@ -453,7 +475,7 @@ def test_los_consumidores_del_diagnostico_estan_congelados() -> None:
 def test_las_dos_superficies_del_resultado_de_tool_estan_congeladas() -> None:
     """NP-A0h: el resultado de tool lo sirven la GUI (dispatcher) y el agente LLM, y NINGUNA otra. Una tercera superficie rompe esto
     hasta que se la declare acá junto a las otras dos (el hermano que dice AGENTS.md)."""
-    assert _llamadores_de("diagnostico_como_resultado") == {
+    assert _usuarios_de("diagnostico_como_resultado") == {
         "sky_claw/app/orchestrator/tool_strategies/diagnosticar_perfil_parallax.py",
         "sky_claw/app/agent/tools/parallax_tools.py",
     }

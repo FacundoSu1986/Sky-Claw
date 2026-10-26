@@ -372,6 +372,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
     },
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {
+        "sky_claw/app/agent/tools/__init__.py",  # NP-A0h: solo nombra el modlist en la descripción de diagnosticar_parallax_perfil; lo lee diagnostico_perfil
         "sky_claw/app/core/event_payloads.py",
         "sky_claw/app/orchestrator/active_plugins.py",
         "sky_claw/app/orchestrator/asset_conflict_scan.py",
