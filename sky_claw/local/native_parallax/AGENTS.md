@@ -126,6 +126,11 @@ La política clean-room, `docs/design/research/native-parallax/` y
   otro mod, `overwrite` o un mod de control tapa la entrada que se mediría o la salida que se publicaría (#792 H12). No pide `texconv`,
   no coordina ni escribe, y no nombra `procesar_lote` ni `exportar_altura_bc4` (el censo de llamadores sigue siendo solo `cli.py`). Sale con
   4 si hay algo tapado. Ancla: `tests/test_native_parallax_cli_perfil.py` (congela los subcomandos y cuáles piden `texconv`).
+  `cli.py generar --data-root … --mod … [--perfil …]` (NP-A0f) usa ese MISMO diagnóstico: no mide una `*_n.dds` que otro mod tapa o que el overlay
+  no entrega (la deja en `omitidas_al_enumerar` del informe) y AVISA antes de escribir si la salida va a quedar tapada o sin habilitar, pero no
+  bloquea (la primera corrida todavía no tiene el mod de salida ordenado en MO2). No se combina con `--retirar-no-incluidas` (lo omitido no es
+  «ausente»). `perfil` y `generar` comparten `_cargar_perfil` y `_hallazgos_del_perfil`; ancla por AST en
+  `tests/test_native_parallax_cli_generar_perfil.py` (nadie más llama `read_enabled_mods`/`indexar_ganadores`).
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
