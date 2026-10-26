@@ -105,6 +105,14 @@ def _informe(mundo: Mundo) -> dict[str, Any]:
     return json.loads(mundo.informe.read_text(encoding="utf-8"))
 
 
+def _exigir_aviso_antes_de_procesar(texto: str, aviso: str) -> None:
+    """El aviso sale ANTES de que el lote empiece: antes de su primera línea de progreso (``[1/N]``) y del informe, que son
+    lo primero que imprime ``procesar_lote`` al trabajar la primera textura y lo último que escribe la corrida."""
+    assert aviso in texto
+    assert texto.index(aviso) < texto.index("texturas por procesar") < texto.index("[1/")
+    assert texto.index(aviso) < texto.index("Informe:")
+
+
 def _escritas(mundo: Mundo) -> list[str]:
     carpeta = mundo.salida / _CARPETA
     return sorted(p.name for p in carpeta.iterdir()) if carpeta.exists() else []
@@ -196,7 +204,23 @@ def test_h12_si_el_control_tapa_la_salida_avisa_antes_de_escribir_y_aun_asi_escr
 
     assert codigo == CODIGO_OK  # el aviso no cambia el resultado del lote
     assert "SALIDA TAPADA" in texto and _CONTROL in texto
-    assert texto.index("SALIDA TAPADA") < texto.index("texturas por procesar")  # avisa ANTES de procesar y escribir
+    _exigir_aviso_antes_de_procesar(texto, "SALIDA TAPADA")
+    assert _escritas(mundo) == ["muro01_p.dds", "muro02_p.dds"]
+
+
+def test_overwrite_por_encima_de_la_salida_la_tapa_y_avisa_antes_de_escribir(mundo: Mundo) -> None:
+    """``overwrite`` gana a todo mod: aunque la salida sea la primera línea del modlist, ``overwrite`` la tapa."""
+    destino = mundo.data / "overwrite" / _P1
+    destino.parent.mkdir(parents=True)
+    destino.write_bytes(b"overwrite")
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+    mundo.salida.mkdir(parents=True)
+
+    codigo, texto = _con_perfil(mundo)
+
+    assert codigo == CODIGO_OK
+    assert "SALIDA TAPADA" in texto and "overwrite" in texto
+    _exigir_aviso_antes_de_procesar(texto, "SALIDA TAPADA")
     assert _escritas(mundo) == ["muro01_p.dds", "muro02_p.dds"]
 
 
@@ -207,8 +231,7 @@ def test_la_primera_corrida_con_el_mod_de_salida_sin_habilitar_avisa_y_no_bloque
     codigo, texto = _con_perfil(mundo)
 
     assert codigo == CODIGO_OK
-    assert "SALIDA NO HABILITADA" in texto
-    assert texto.index("SALIDA NO HABILITADA") < texto.index("texturas por procesar")
+    _exigir_aviso_antes_de_procesar(texto, "SALIDA NO HABILITADA")
     assert _escritas(mundo) == ["muro01_p.dds", "muro02_p.dds"]
 
 
