@@ -180,6 +180,29 @@ async def test_la_gui_y_el_agente_contestan_lo_mismo_sobre_la_misma_instancia(in
     assert desde_la_gui == desde_el_agente
 
 
+@pytest.mark.parametrize(
+    "mod",
+    ["", "   ", "a/b", "a\\b", "con:dos", "x" * 257, "NoExiste", "\x00", _MOD],
+)
+async def test_las_dos_superficies_coinciden_en_que_entradas_fallan(instancia: pathlib.Path, mod: str) -> None:
+    """La validación de entrada es distinta por superficie (patrón de pydantic en el agente, chequeos propios en la GUI), pero el
+    veredicto no puede serlo: para cada entrada, o las dos fallan o las dos devuelven lo mismo. El agente puede rechazar de entrada
+    (``ValidationError``) o más adentro (``success: false``); la GUI siempre devuelve un resultado. Enumerado, no muestreado."""
+    raices = RaicesDeInstanciaMO2(install_root=instancia, data_root=instancia, mods_dir=instancia / "mods")
+    gui = DiagnosticarPerfilParallaxStrategy(raices_provider=lambda: raices, default_profile_getter=lambda: "Default")
+
+    desde_la_gui = await gui.execute({"mod": mod})
+    try:
+        desde_el_agente: dict[str, Any] | None = await _ejecutar(_registro(instancia), mod=mod)
+    except pydantic.ValidationError:
+        desde_el_agente = None  # rechazo de entrada: equivale a un fallo
+
+    if desde_la_gui["success"]:
+        assert desde_el_agente == desde_la_gui
+    else:
+        assert desde_el_agente is None or desde_el_agente["success"] is False
+
+
 def test_las_dos_superficies_se_llaman_igual() -> None:
     """Un nombre distinto por superficie es el primer paso para que las dos diverjan sin que nadie lo note."""
     assert DiagnosticarPerfilParallaxStrategy.name == _NOMBRE
