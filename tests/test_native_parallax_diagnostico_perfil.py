@@ -214,6 +214,39 @@ def test_lo_que_no_se_puede_afirmar_falla_cerrado_con_perfil_error(mundo: Mundo,
         diagnosticar_perfil(mods_dir=mods_dir, data_root=mundo.data, perfil="Default", mod=mod)
 
 
+@pytest.mark.parametrize(
+    "perfil",
+    [
+        pytest.param("", id="vacio"),
+        pytest.param(".", id="punto"),
+        pytest.param("..", id="punto_punto"),
+        pytest.param("../Otro", id="sale_hacia_arriba"),
+        pytest.param("Default/../../Otro", id="sale_pasando_por_un_perfil"),
+        pytest.param("a/b", id="separador_posix"),
+        pytest.param("a\\b", id="separador_windows"),
+        pytest.param("Def\x00ault", id="nul"),
+    ],
+)
+def test_el_perfil_tiene_que_ser_una_sola_carpeta_de_profiles(mundo: Mundo, perfil: str) -> None:
+    """Un nombre que se sale de ``profiles`` leería el ``modlist.txt`` de OTRA carpeta y lo daría por el del perfil: falla cerrado.
+
+    Hay un modlist válido FUERA de ``profiles`` (en ``<data>/Otro``): sin la validación, ``../Otro`` lo lee y el diagnóstico «funciona».
+    """
+    afuera = mundo.data / "Otro"
+    afuera.mkdir(parents=True, exist_ok=True)
+    (afuera / "modlist.txt").write_text(f"+{NOMBRE_DEL_MOD_DE_SALIDA}\n+{_MOD}\n", encoding="utf-8")
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}")
+
+    with pytest.raises(PerfilError, match="perfil"):
+        mundo.diagnosticar(perfil=perfil)
+
+
+def test_un_nombre_de_perfil_con_puntos_o_espacios_adentro_es_valido(mundo: Mundo) -> None:
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MOD}", perfil="Mi perfil v1.2")
+
+    assert mundo.diagnosticar(perfil="Mi perfil v1.2").perfil == "Mi perfil v1.2"
+
+
 def test_una_textura_ilegible_falla_cerrado_en_vez_de_darse_por_no_tapada(
     mundo: Mundo, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -25,6 +25,7 @@ import pathlib
 from collections.abc import Sequence
 from typing import Final
 
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.ganadores import CAPA_OVERWRITE, GanadoresDelPerfil, GanadoresError, indexar_ganadores
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
@@ -194,7 +195,16 @@ def hallazgos_del_perfil(
 
 def cargar_perfil(*, mods_dir: pathlib.Path, data_root: pathlib.Path, perfil: str, mod: str) -> PerfilResuelto:
     """LA resolución del perfil que comparten todas las superficies: si cada una la hiciera por su cuenta contestarían distinto (el
-    hermano). Falla cerrado con ``PerfilError`` ante cualquier cosa que no permita afirmar quién gana."""
+    hermano). Falla cerrado con ``PerfilError`` ante cualquier cosa que no permita afirmar quién gana.
+
+    ``perfil`` tiene que ser UNA carpeta de ``<data>/profiles``: un nombre que se sale (``..``, un separador, un NUL) leería el
+    ``modlist.txt`` de otra carpeta y lo daría por el del perfil. El nombre llega de afuera (argumento de la CLI, parámetro de una
+    superficie), así que se valida acá y no en cada consumidor.
+    """
+    try:
+        assert_safe_component(perfil, field="perfil")
+    except PathViolationError as exc:
+        raise PerfilError(f"nombre de perfil inválido: {exc}") from exc
     try:
         enabled = read_enabled_mods(data_root / "profiles" / perfil / "modlist.txt")
         elegido = next((m for m in enabled if m.lower() == mod.lower()), None)
