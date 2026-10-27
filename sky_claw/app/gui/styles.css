@@ -422,6 +422,9 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-mod-version { font-family: var(--sky-font-mono); font-size: 0.7rem; color: var(--sky-text-muted); }
 .sky-mod-status-ok { color: var(--sky-green) !important; }
 .sky-mod-status-off { color: var(--sky-text-muted) !important; }
+/* NP-A0i (#817): botón «Diagnosticar parallax» de la fila — discreto hasta el hover, en el oro de la paleta. */
+.q-btn.sky-mod-diagnose { color: var(--sky-text-muted) !important; }
+.q-btn.sky-mod-diagnose:hover { color: var(--sky-gold) !important; }
 
 /* Toggle de mod → riel de oro. Quasar 2 marca el estado con
    .q-toggle__inner--truthy / --falsy: la regla anterior apuntaba a un

@@ -144,6 +144,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   resolver (`PathResolutionService.raices_de_instancia_mo2`, que `AppContext` también usa para el `MO2Controller`).
   Diferencia de momento, a propósito: la GUI consulta el resolver en cada llamada (como sus otras tools) y el agente usa las raíces que `AppContext` fijó al
   arrancar (como todas sus tools); si la instancia de MO2 se reconfigura con la app abierta, se reconcilian al reiniciar.
+  NP-A0i (#817): el botón «Diagnosticar parallax» de cada fila de la lista de mods de la GUI llega a la tool por el ÚNICO camino de la GUI al dispatcher
+  (`controllers/ritual_runner.py`, `run_diagnostico_parallax`) y publica el resultado en el slot de su pestaña del store (un slot por `tab_id`: lo de una pestaña no pisa lo de otra).
+  Anclas en `tests/test_parallax_diagnostico_gui.py`: `dispatch_tool` solo se llama desde `ritual_runner`, el slot se escribe desde un único lugar y la tool se llama igual en las tres superficies.
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
