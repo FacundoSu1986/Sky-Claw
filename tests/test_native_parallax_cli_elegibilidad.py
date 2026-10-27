@@ -199,3 +199,7 @@ def test_elegibilidad_la_ayuda_documenta_los_codigos_de_salida() -> None:
     for codigo in ("0 ", "2 "):
         assert codigo in ayuda
     assert "NO_VERIFICADO" in ayuda
+    # NO tiene cuatro causas y la ayuda las nombra todas (argparse parte las líneas: se compara sin saltos)
+    plano = " ".join(ayuda.split())
+    for causa in ("otra textura suelta", "tapa la normal de entrada", "no cargaría lo publicado"):
+        assert causa in plano

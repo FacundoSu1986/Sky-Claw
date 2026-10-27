@@ -43,6 +43,8 @@ __all__ = [
     "MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO",
     "SUFIJO_DE_ENTRADA",
     "TIPOS_QUE_IMPIDEN_MEDIR",
+    "TIPO_SALIDA_NO_HABILITADA",
+    "TIPO_SALIDA_TAPADA",
     "Hallazgo",
     "InformeDelPerfil",
     "PerfilError",
@@ -73,6 +75,11 @@ ALCANCE_DEL_DIAGNOSTICO: Final = (
 
 #: Hallazgos de la ENTRADA: la textura no se mide (otro mod la tapa, o el overlay no la entrega).
 TIPOS_QUE_IMPIDEN_MEDIR: Final = frozenset({"ENTRADA TAPADA", "ENTRADA FUERA DEL OVERLAY"})
+
+#: Hallazgos de la SALIDA: se publicaría, pero el juego no cargaría lo publicado (otra capa de mayor prioridad gana la ruta, o el mod de
+#: salida no está habilitado). Los dueños del texto son estas constantes, para que quien decide con ellos no dependa de un literal.
+TIPO_SALIDA_NO_HABILITADA: Final = "SALIDA NO HABILITADA"
+TIPO_SALIDA_TAPADA: Final = "SALIDA TAPADA"
 
 
 class PerfilError(Exception):
@@ -174,7 +181,7 @@ def hallazgos_del_perfil(
     if salida not in prioridades:
         hallazgos.append(
             Hallazgo(
-                "SALIDA NO HABILITADA",
+                TIPO_SALIDA_NO_HABILITADA,
                 NOMBRE_DEL_MOD_DE_SALIDA,
                 "el mod de salida no está habilitado en el perfil: lo que se publique ahí no se cargaría",
             )
@@ -199,7 +206,7 @@ def hallazgos_del_perfil(
         if prioridades[ganador_p.capa.lower()] > prioridades[salida]:
             hallazgos.append(
                 Hallazgo(
-                    "SALIDA TAPADA",
+                    TIPO_SALIDA_TAPADA,
                     normal.ruta_de_salida,
                     f"la gana {ganador_p.capa!r}, que está por encima de {NOMBRE_DEL_MOD_DE_SALIDA!r}",
                 )

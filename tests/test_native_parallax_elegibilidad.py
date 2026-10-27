@@ -619,3 +619,65 @@ def test_si_todas_las_entradas_estan_tapadas_no_hay_nada_que_evaluar(mundo: Mund
 
     with pytest.raises(PerfilError, match="tapadas"):
         mundo.evaluar()
+
+
+# --- la SALIDA que el juego no cargaría (hermano de la entrada tapada) ---------------------------------------------------
+
+
+def _con_salida_tapada(mundo: Mundo) -> None:
+    """``muro01_p`` del mod de control gana al mod de salida (mayor prioridad): lo que el generador publique ahí no se ve (#792 H12)."""
+    mundo.archivo("Control", _P1)
+    mundo.modlist("+Control", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+
+def test_una_salida_tapada_por_un_mod_de_mayor_prioridad_da_no_aunque_la_malla_sea_elegible(mundo: Mundo) -> None:
+    _con_salida_tapada(mundo)
+    mundo.malla(_nif())
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "SALIDA TAPADA" in textura.razon
+    assert "Control" in textura.razon
+    assert "no la cargaría" in textura.razon
+    assert textura.mallas == ()
+    assert textura.n_mallas == 0
+
+
+def test_una_salida_tapada_no_le_quita_el_si_a_otra_textura_sana(mundo: Mundo) -> None:
+    _con_salida_tapada(mundo)
+    mundo.archivo(_MOD, _N2)
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P2].efecto is EfectoPosible.SI
+    assert por_ruta[_P1].efecto is EfectoPosible.NO
+
+
+def test_una_salida_de_menor_prioridad_que_la_nuestra_no_la_tapa_y_sigue_dando_si(mundo: Mundo) -> None:
+    """Solo tapa una capa por ENCIMA del mod de salida: la nuestra reemplazaría a la de menor prioridad."""
+    mundo.archivo("Base", _P1)
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", "+Base", f"+{_MALLAS}", f"+{_MOD}")
+    mundo.malla(_nif())
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_un_mod_de_salida_no_habilitado_deja_toda_textura_en_no_aunque_la_malla_sea_elegible(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, _N2)
+    mundo.modlist(f"+{_MALLAS}", f"+{_MOD}")
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+    mundo.malla(_nif(), ruta="meshes/uno.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert set(por_ruta) == {_P1, _P2}
+    for textura in por_ruta.values():
+        assert textura.efecto is EfectoPosible.NO
+        assert "SALIDA NO HABILITADA" in textura.razon
+        assert "no la cargaría" in textura.razon
+        assert textura.mallas == ()
+        assert textura.n_mallas == 0

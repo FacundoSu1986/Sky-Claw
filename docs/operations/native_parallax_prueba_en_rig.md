@@ -114,7 +114,8 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    `C:\prueba_parallax\entrada`. Si probás con una carpeta suelta que no es un mod habilitado, salteá este diagnóstico (con un mod que no está habilitado devuelve un error de uso).
    Por cada textura del mod dice `SI` (hay una malla suelta del perfil donde el plugin de relieve automático usaría la salida, y cuál), `NO` (ninguna forma usaría esa salida: o todas
    las mallas que la referencian quedan fuera —relieve de fábrica que el plugin apaga, transparencia, sin colores de vértice…, con el desglose—, o el plugin elegiría antes otra
-   textura suelta; también si el generador no la publicaría porque otro mod tapa la normal de entrada) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la
+   textura suelta; también si el generador no la publicaría porque otro mod tapa la normal de entrada, o si el juego no cargaría lo publicado porque otro mod de mayor prioridad gana
+   la ruta de salida o el mod de salida no está habilitado en el perfil) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la
    búsqueda del plugin depende de un archivo que no se puede comprobar, una ruta es ambigua o alguna malla no se pudo leer). Elegí para mirar las que dicen `SI`. **Límites:** no lee
    mallas dentro de un `.bsa` (las del juego base lo están: esas salen `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni
    activadores) y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y

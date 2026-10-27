@@ -37,7 +37,10 @@ from sky_claw.local.mo2.ganadores import GanadoresError
 from sky_claw.local.native_parallax.diagnostico_perfil import (
     MAXIMO_DE_ARCHIVOS_DE_ENTRADA,
     SUFIJO_DE_ENTRADA,
+    TIPO_SALIDA_NO_HABILITADA,
+    TIPO_SALIDA_TAPADA,
     TIPOS_QUE_IMPIDEN_MEDIR,
+    Hallazgo,
     PerfilError,
     cargar_mallas_del_perfil,
     cargar_perfil,
@@ -232,12 +235,23 @@ def evaluar_elegibilidad(
     # la búsqueda del plugin ni contar como «presente». Es el mismo veredicto que usa ``generar`` (``hallazgos_del_perfil``).
     hallazgos = hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
     sin_medir = {h.ruta: h for h in hallazgos if h.tipo in TIPOS_QUE_IMPIDEN_MEDIR}
-    publicadas = [n for n in normales if n.ruta_de_origen not in sin_medir]
-    if not publicadas:
+    medidas = [n for n in normales if n.ruta_de_origen not in sin_medir]
+    if not medidas:
         detalle = "\n".join(linea_de_hallazgo(h) for h in hallazgos)
         raise PerfilError(
             f"todas las texturas de {resuelto.mod!r} están tapadas o fuera del overlay: no hay nada que evaluar\n{detalle}"
         )
+    # La otra mitad del mismo veredicto: se publicaría, pero el juego no cargaría lo publicado (una capa de mayor prioridad gana la ruta de
+    # salida, o el mod de salida no está habilitado). Tampoco cuenta como «presente» ni decide la búsqueda del plugin: la malla elegible
+    # usaría el archivo que SÍ gana, no el nuestro.
+    salida_no_habilitada = next((h for h in hallazgos if h.tipo == TIPO_SALIDA_NO_HABILITADA), None)
+    salidas_tapadas = {h.ruta: h for h in hallazgos if h.tipo == TIPO_SALIDA_TAPADA}
+    sin_carga: dict[str, Hallazgo] = {}
+    for n in medidas:
+        impide = salida_no_habilitada if salida_no_habilitada is not None else salidas_tapadas.get(n.ruta_de_salida)
+        if impide is not None:
+            sin_carga[n.ruta_de_salida] = impide
+    publicadas = [n for n in medidas if n.ruta_de_salida not in sin_carga]
     no_publicadas = tuple(
         ElegibilidadDeTextura(
             ruta_de_salida=n.ruta_de_salida,
@@ -245,12 +259,15 @@ def evaluar_elegibilidad(
             razon=(
                 f"el generador no la publicaría: {sin_medir[n.ruta_de_origen].tipo} "
                 f"({sin_medir[n.ruta_de_origen].detalle}); ver el subcomando perfil"
+                if n.ruta_de_origen in sin_medir
+                else f"el generador la publicaría, pero el juego no la cargaría: {sin_carga[n.ruta_de_salida].tipo} "
+                f"({sin_carga[n.ruta_de_salida].detalle}); ver el subcomando perfil"
             ),
             mallas=(),
             n_mallas=0,
         )
         for n in normales
-        if n.ruta_de_origen in sin_medir
+        if n.ruta_de_origen in sin_medir or n.ruta_de_salida in sin_carga
     )
     salidas = {_clave(n.ruta_de_salida): n.ruta_de_salida for n in publicadas}
     acumulados = {clave: _Acumulado() for clave in salidas}
@@ -268,7 +285,9 @@ def evaluar_elegibilidad(
 
     leidas = 0
     no_leidas: list[str] = []
-    for ganador in indice_de_mallas.con_sufijo(".nif"):
+    # Sin salidas evaluables no hay nada que una malla decida: no se leen para nada.
+    mallas_a_leer = indice_de_mallas.con_sufijo(".nif") if salidas else ()
+    for ganador in mallas_a_leer:
         etiqueta_de_malla = f"{ganador.ruta_virtual} [{ganador.capa}]"
         try:
             lectura = leer_materiales_de_archivo(ganador.archivo)
