@@ -1295,6 +1295,11 @@ async def run_diagnostico_parallax(
     reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
     if callable(reset_guardrail):
         reset_guardrail()
+    # Hoy esta tool no pide aprobación (el dispatcher la registra SIN gate HITL), pero este módulo trata a todo lanzador igual: la identidad
+    # de pestaña y el seguimiento de la aprobación pendiente se arman por task, así que si algún día se la gateara, la aprobación quedaría
+    # scoped a ESTA pestaña y su ``finally`` solo limpiaría la propia (P1-7; ancla en ``tests/test_hitl_client_scoping.py``).
+    cid_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
     try:
         resultado = await supervisor.dispatch_tool(NOMBRE_TOOL_DIAGNOSTICO_PARALLAX, {"mod": mod_name})
     except Exception as exc:  # noqa: BLE001 — task fire-and-forget: no puede tumbar el loop
@@ -1304,6 +1309,13 @@ async def run_diagnostico_parallax(
             {"text": f"El diagnóstico de «{mod_name}» falló: {type(exc).__name__}", "type": "negative"},
         )
         return
+    finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
+        _ritual_tab_id.reset(cid_token)
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
     if not isinstance(resultado, dict):
         store.set(
             STORE_KEY_RITUAL_FEEDBACK,

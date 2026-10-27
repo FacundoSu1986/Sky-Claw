@@ -230,6 +230,37 @@ async def test_sin_identidad_de_pestana_no_hay_slot_y_se_avisa_sin_perder_el_mot
     assert feedback["type"] == "warning" and "pestaña" in feedback["text"]
 
 
+async def test_la_identidad_de_pestana_no_se_filtra_al_contexto_del_llamador(store: ReactiveStore) -> None:
+    """El dueño se arma POR TASK y se restaura: un click no puede dejar la identidad armada para lo que corra después."""
+    antes = ritual_runner.ritual_tab_id()
+
+    await run_diagnostico_parallax("A", supervisor=_supervisor(), store=store, tab_id="t1")
+
+    assert ritual_runner.ritual_tab_id() == antes
+    assert ritual_runner._gui_pending_request_id.get() is None
+
+
+async def test_restaura_el_valor_previo_del_seguimiento_de_aprobacion(store: ReactiveStore) -> None:
+    """Restaurar es devolver lo que había, no dejarlo en el valor por defecto."""
+    token = ritual_runner._gui_pending_request_id.set("previa")
+    try:
+        await run_diagnostico_parallax("A", supervisor=_supervisor(), store=store, tab_id="t1")
+
+        assert ritual_runner._gui_pending_request_id.get() == "previa"
+    finally:
+        ritual_runner._gui_pending_request_id.reset(token)
+
+
+async def test_no_limpia_una_aprobacion_pendiente_que_no_parkeo(store: ReactiveStore) -> None:
+    """Esta tool no pide aprobación: lo que ya estaba pendiente (aun con el mismo dueño) no es suyo y no se toca."""
+    ajena = {"request_id": "req-x", ritual_runner.HITL_OWNER_TAB: "t1"}
+    store.set(ritual_runner.STORE_KEY_PENDING_HITL, dict(ajena))
+
+    await run_diagnostico_parallax("A", supervisor=_supervisor(), store=store, tab_id="t1")
+
+    assert store.get(ritual_runner.STORE_KEY_PENDING_HITL) == ajena
+
+
 def test_un_resultado_sin_n_texturas_dice_cero_textura() -> None:
     lineas = lineas_del_diagnostico_parallax({"success": True, "mod": "M", "perfil": "P", "n_hallazgos": 0})
 
