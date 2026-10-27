@@ -80,6 +80,22 @@ async def test_corre_fuera_del_event_loop(instancia: pathlib.Path, monkeypatch: 
     assert hilos and hilos[0] != threading.get_ident()
 
 
+async def test_el_provider_de_raices_tambien_corre_fuera_del_event_loop(instancia: pathlib.Path) -> None:
+    """El resolver hace E/S síncrona (``is_dir``, lectura de ``ModOrganizer.ini``, instancias globales): en una unidad lenta o de red
+    bloquearía el event loop de la GUI ANTES del hilo del diagnóstico. El hilo no es solo del diagnóstico."""
+    hilos: list[int] = []
+
+    def raices() -> RaicesDeInstanciaMO2:
+        hilos.append(threading.get_ident())
+        return RaicesDeInstanciaMO2(install_root=instancia, data_root=instancia, mods_dir=instancia / "mods")
+
+    estrategia = DiagnosticarPerfilParallaxStrategy(raices_provider=raices, default_profile_getter=lambda: "Default")
+
+    await estrategia.execute({"mod": _MOD})
+
+    assert hilos and hilos[0] != threading.get_ident()
+
+
 @pytest.mark.parametrize(
     "payload",
     [

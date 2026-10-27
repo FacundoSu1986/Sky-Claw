@@ -6,8 +6,10 @@ de la GUI de un recurso que el agente LLM también alcanza (``AsyncToolRegistry`
 (``PathResolutionService.raices_de_instancia_mo2``), así que no pueden contestar distinto.
 
 El perfil es el de la SESIÓN (``default_profile_getter``) y no se elige por payload, como en el agente: el perfil queda fijo durante la
-sesión. El único campo del payload es ``mod`` (la carpeta del mod cuyas normales se medirían). El escaneo recorre el overlay entero con
-I/O sincrónico, así que corre fuera del event loop (``asyncio.to_thread``).
+sesión. El único campo del payload es ``mod`` (la carpeta del mod cuyas normales se medirían). El resolver de raíces y el escaneo del
+overlay hacen I/O sincrónico, así que corren fuera del event loop (``asyncio.to_thread``). El resolver se consulta en CADA llamada (como el
+resto de las tools de la GUI); el agente usa las raíces que ``AppContext`` fijó al arrancar: si la instancia de MO2 se reconfigura con la app
+abierta, las dos superficies se reconcilian al reiniciar.
 """
 
 from __future__ import annotations
@@ -49,7 +51,8 @@ class DiagnosticarPerfilParallaxStrategy:
         if not isinstance(mod, str) or not mod.strip() or len(mod) > _MAXIMO_DEL_NOMBRE_DEL_MOD:
             return _rechazo("Falta 'mod': el nombre de la carpeta del mod (texto no vacío) cuyas normales se medirían.")
         try:
-            raices = self._raices_provider()
+            # El resolver hace E/S síncrona (is_dir, ModOrganizer.ini, instancias globales): también fuera del loop.
+            raices = await asyncio.to_thread(self._raices_provider)
         except RuntimeError as exc:
             return _rechazo(str(exc))
         return await asyncio.to_thread(
