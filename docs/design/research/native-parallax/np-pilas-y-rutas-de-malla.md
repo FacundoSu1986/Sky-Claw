@@ -8,18 +8,19 @@
 > wiki de PGPatcher, documentación de ENB, foros y guías de la comunidad). No se leyó ni se usó la salida de
 > ninguna herramienta cerrada (ver [CLEAN_ROOM.md](../../../../CLEAN_ROOM.md)).
 >
-> **Cómo leer las etiquetas:** `[repo]` = verificado leyendo este repositorio; `[público]` = dicho por una
-> fuente pública, no ejecutado acá; `[sin verificar]` = resumen de segunda mano o inferencia. Ninguna
-> afirmación de este documento fue probada dentro del juego.
+> **Cómo leer las etiquetas:** `[repo]` = verificado leyendo este repositorio. Para lo externo se usa la
+> taxonomía de `CLEAN_ROOM.md` (SUPPORTED, INFERRED, NO VERIFIED, HYPOTHESIS, REAL_RIG_REQUIRED), definida al
+> inicio de la sección 2; las fuentes con URL están en la sección 5. Ninguna afirmación de este documento fue
+> probada dentro del juego.
 
 ## 1. Qué se decidió
 
 1. **Una sola herramienta, dos perfiles de pila.** El archivo de relieve que genera el producto
    (`*_p.dds`, un canal, BC4, el `LegacyParallaxExporter` de la síntesis C) lo consumen tanto ENB como
-   Community Shaders `[público]`. Lo que cambia entre pilas es cómo se **activa** y cómo se **verifica**, no el
+   Community Shaders `[NO VERIFIED, ver 2.3]`. Lo que cambia entre pilas es cómo se **activa** y cómo se **verifica**, no el
    archivo. Por eso el selector de pila es un **perfil** dentro de la herramienta, no dos programas.
 2. **Primero Community Shaders.** Es la pila que usa el dueño del proyecto y la única que se puede probar en
-   su equipo. El perfil ENB se declara pero queda `[sin verificar]` en juego hasta que alguien con ENB lo pruebe.
+   su equipo. El perfil ENB se declara pero queda `[REAL_RIG_REQUIRED]` en juego hasta que alguien con ENB lo pruebe.
 3. **PGPatcher es opcional, no requisito.** El dueño no lo usa hoy. La herramienta debe funcionar sin él y
    recomendarlo solo cuando una malla lo necesite.
 4. **El chequeo de elegibilidad informa las dos rutas por separado** (ver §3), en vez de decidir con las
@@ -27,59 +28,76 @@
 
 ## 2. Hallazgos públicos que sostienen la decisión
 
-### 2.1 Auto Parallax (plugin SKSE de doodlum) — la ruta que modela hoy `evaluar_elegibilidad` `[público]`
+Cada hallazgo cita su fuente en la sección 5 (URL, fecha de consulta y estado epistémico, con la taxonomía de
+[CLEAN_ROOM.md](../../../../CLEAN_ROOM.md) «Trazabilidad»). Entre corchetes va el estado: **SUPPORTED** = leído
+en la fuente pública citada; **INFERRED** = deducción nuestra a partir de eso; **NO VERIFIED** = dicho por un
+resumen o por búsqueda, sin leer la fuente primaria; **REAL_RIG_REQUIRED** = solo se confirma en el juego.
 
-- Funciona como red de seguridad: apaga parallax en mallas cuyo `_p` falta.
-- Su activación automática es **experimental** y viene apagada (INI, sección `[Experimental]`,
-  `bAutoEnableParallax`, por defecto `false`).
-- Aun encendida, solo actúa sobre mallas con shader tipo *default*, con colores de vértice presentes, sin
-  `NiAlphaProperty` y con un conjunto de texturas presente. Excluye UV proyectado, mallas *skinned*, LOD de
-  objetos, animación de árbol e iluminación por vértice.
-- Busca el `_p` en este orden: ranura de altura, derivado del difuso, derivado de la normal.
+### 2.1 Auto Parallax (plugin SKSE de doodlum): la ruta que modela hoy `evaluar_elegibilidad`
 
-### 2.2 PGPatcher (hakasapl, GPL-3; antes ParallaxGen) — la ruta que hoy NO modelamos `[sin verificar]`
+Leído en el código fuente público (S1, S2):
 
-Resumen obtenido con una herramienta de fetch que resume (no es lectura directa de la wiki):
+- La activación automática la gobierna `bAutoEnableParallax`, sección `[Experimental]` del INI, cuyo valor
+  distribuido es `false` [SUPPORTED].
+- Solo actúa si el material es de tipo `kDefault`, si el shader **tiene** la bandera de colores de vértice,
+  si **no** tiene `kProjectedUV`, `kSkinned`, `kLODObjects`, `kTreeAnim` ni `kVertexLighting`, y si la geometría
+  **no** tiene propiedad alfa [SUPPORTED].
+- Orden de búsqueda del `_p`: textura de altura del set, luego difuso con el sufijo `_d` cambiado a `_p`, luego
+  normal con `_n` cambiado a `_p` [SUPPORTED].
+- Existe una rama de apagado para materiales de tipo parallax; no se leyó completa la condición que la dispara
+  [NO VERIFIED]. La descripción pública del mod la presenta como red de seguridad para mallas con altura
+  faltante (S3, resumen de búsqueda) [NO VERIFIED].
 
-- Requisitos del parche de parallax: el `_p` coincide con el prefijo del difuso o de la normal; no es hierba
-  (GRAS); no usa MATO de pasada única; no tiene datos de comportamiento Havok; no es *skinned*; no tiene
-  `NiAlphaProperty`; el shader es *default*, *parallax* o *environment mapping*; no es *decal*; no usa
-  iluminación *soft*, *rim*, *back* ni *anisotropic*.
-- Qué modifica: agrega el mapa de altura a la ranura de parallax, fija el tipo de shader a parallax, limpia
-  banderas de envmap/multilayer, fija la bandera de parallax y **habilita colores de vértice** en forma y shader.
-- Parche de Complex Material aparte; prioridad PBR > Complex Material > Parallax; produce un diff
-  (`ParallaxGen_Diff.json`).
+### 2.2 PGPatcher (hakasapl, GPL-3; antes ParallaxGen): la ruta que hoy NO modelamos
 
-**Consecuencia para el código `[repo]`:** el chequeo actual descarta mallas con `SIN_VERTEX_COLORS`. Para la
-ruta Auto Parallax eso es correcto; para la ruta PGPatcher es un **falso negativo**, porque PGPatcher
-habilita justamente los colores de vértice. Hoy el reporte puede decir `NO` sobre una malla que PGPatcher
-sí resolvería.
+Citas literales de la página de la wiki «Patchers» (S4), obtenidas con una herramienta de fetch que devolvió
+el texto entre comillas [SUPPORTED, con la salvedad de que no se leyó la página en un navegador]:
 
-> Antes de codificar la ruta PGPatcher hay que **leer la wiki línea por línea**; este resumen no alcanza como
-> especificación.
+- Requisitos del parche de parallax: mapa de parallax con prefijo que coincide con el difuso o la normal; la
+  malla no se usa como registro `GRAS`; sin `MATO` de pasada única; sin `BSBehaviorGraphExtraData`; forma no
+  *skinned*; sin `NiAlphaProperty`; shader de tipo `default`, `parallax` o `environment mapping` antes de
+  parchear; no *decal*; sin banderas `soft lighting`, `rim lighting`, `back lighting` ni `anisotropic lighting`.
+- Qué hace: agrega el mapa de altura a la ranura de parallax del set de texturas, fija el tipo de shader a
+  `parallax`, limpia `environment mapping`, `multi-layer parallax` y `unused01` si existen, fija la bandera
+  `parallax` y **«Enables vertex colors in both shape and shader»**.
+- Esa página **no** contiene un orden de prioridad entre parches; la afirmación «PBR > Complex Material >
+  Parallax» que figuraba en un borrador de este informe no tiene respaldo acá y se retira [NO VERIFIED].
 
-### 2.3 Pilas de render `[público]`
+**Consecuencia para el código** `[repo]`: el chequeo actual descarta mallas por `SIN_VERTEX_COLORS`. Para la
+ruta Auto Parallax es correcto (2.1 exige la bandera); para la ruta PGPatcher es un **falso negativo**, porque
+PGPatcher habilita justamente los colores de vértice [INFERRED de 2.1 + 2.2]. Hoy el reporte puede decir `NO`
+sobre una malla que PGPatcher sí parchearía.
 
-- ENB y Community Shaders son **mutuamente excluyentes**.
-- Community Shaders: *Extended Materials* es el antiguo Complex Parallax Materials, integrado al núcleo.
-  Recomienda un upscaler/TAA para la calidad alta; el parallax de terreno requiere que **todas** las texturas
-  del terreno tengan mapa de altura; se recomienda BC4 para ahorrar ancho de banda.
-- ENB: se habilita desde `enbseries.ini` (por ejemplo `EnableComplexParallax`).
-- Contratos de altura distintos según el material: parallax legado = canal rojo de `_p.dds` (BC4); Complex
-  Material = alfa del mapa de entorno (BC3/BC7); terreno = alfa del difuso (127 = neutro); TruePBR = `_p`
-  bajo `textures/pbr`. La síntesis C difiere Complex Material, terreno y TruePBR.
+### 2.3 Pilas de render
 
-### 2.4 Criterio de calidad de los mapas de altura `[público]`
+- ENB y Community Shaders no se usan a la vez [NO VERIFIED: afirmación de segunda mano, no leída en fuente
+  primaria en esta consulta].
+- Community Shaders: la página del mod (S5, resumen de búsqueda) dice que recomienda TAA o un upscaler con la
+  opción de Complex Material por artefactos, que el parallax de terreno requiere que **todas** las texturas del
+  terreno lo soporten y que conviene recomprimir a BC4 por ser un efecto limitado por ancho de banda
+  [NO VERIFIED]. El ADR 0014 y la investigación previa del repo citan además la documentación DeepWiki de
+  Extended Materials (S6), **no accesible desde el entorno de esta consulta**.
+- ENB: se habilita desde `enbseries.ini` [NO VERIFIED; la clave exacta no se confirmó ahora].
+- Contratos de altura según material (legado = canal rojo de `_p.dds` en BC4; Complex Material = alfa del mapa
+  de entorno; terreno = alfa del difuso; TruePBR = `_p` bajo `textures/pbr`) están en la síntesis C del repo
+  (`docs/design/research/2026-09-21-native-parallax-battle/50_sintesis_c.md`); esta consulta **no** los
+  re-verificó.
+- Que el mismo `_p.dds` legado sirva a ENB y a CS se toma de esa síntesis y de S6/S7 [NO VERIFIED hasta
+  probarlo]; la premisa de la decisión 1 es una hipótesis [REAL_RIG_REQUIRED para CS; sin rig para ENB].
 
-Gris medio = superficie en cero; conviene bajar el contraste de altura; BC4 a media resolución es
-suficiente para altura; con 8 bits hay riesgo de *banding*. **No existe fuente pública con valores exactos**:
-los umbrales del producto siguen saliendo de la calibración propia (#804), no de acá.
+### 2.4 Criterio de calidad de los mapas de altura
 
-### 2.5 Orden con DynDOLOD / TexGen `[sin verificar]`
+«Gris medio = superficie en cero», «bajar el contraste de altura», «BC4 a media resolución alcanza» y «riesgo
+de *banding* con 8 bits» son consejos de la comunidad sin fuente primaria citable [NO VERIFIED]. **No existe
+fuente pública con valores exactos**: los umbrales del producto salen de la calibración propia (#804), no de
+acá.
 
-El desarrollador de PGPatcher recomienda correrlo antes de DynDOLOD/TexGen; hay reportes de usuarios que
-contradicen. La recomendación provisional del proyecto es **congelar la salida de parallax antes de generar LOD**.
-Es una hipótesis operativa, no un hecho.
+### 2.5 Orden con DynDOLOD / TexGen
+
+Una búsqueda devolvió publicaciones donde el desarrollador de PGPatcher dice que DynDOLOD y TexGen se corren
+**después** de PGPatcher y que su salida va última salvo las de DynDOLOD/TexGen (S8, S9), y otra donde el mismo
+autor opinaba que el orden no importaba [NO VERIFIED: resumen de búsqueda, hilos no leídos]. La recomendación
+provisional del proyecto es congelar la salida de parallax antes de generar LOD [HYPOTHESIS].
 
 ## 3. Qué cambia en el producto (en orden, cada paso con su PR)
 
@@ -100,3 +118,21 @@ Es una hipótesis operativa, no un hecho.
   segunda mano.
 - El lector de mallas SSE (`BSTriShape`) sigue sin verificarse contra mallas reales.
 - El perfil ENB no puede validarse sin una instalación ENB.
+
+## 5. Fuentes (consultadas el 2026-10-27)
+
+| Id | Fuente | Qué respalda | Cómo se obtuvo |
+|---|---|---|---|
+| S1 | https://github.com/doodlum/skyrim-auto-parallax/blob/main/src/XSEPlugin.cpp | condiciones de activación, orden de búsqueda del `_p`, ajustes del INI | fetch con extracción de citas; rama `main`, **sin SHA fijado** |
+| S2 | https://github.com/doodlum/skyrim-auto-parallax/blob/main/package/SKSE/Plugins/AutoParallax.ini | `bAutoEnableParallax = false` | fetch del archivo crudo |
+| S3 | https://nexusmods.com/skyrimspecialedition/mods/79473 | descripción del mod como red de seguridad | solo vía resultado de búsqueda (Nexus no accesible) |
+| S4 | https://github.com/hakasapl/PGPatcher/wiki/Patchers | requisitos y efectos del parche de parallax | fetch con citas literales |
+| S5 | https://www.nexusmods.com/skyrimspecialedition/mods/95134 | notas de Community Shaders sobre parallax, terreno y BC4 | solo vía resultado de búsqueda |
+| S6 | https://deepwiki.com/doodlum/skyrim-community-shaders/5.1-extended-materials-and-parallax | Extended Materials en Community Shaders | citada por el ADR 0014; **inaccesible hoy** |
+| S7 | https://schaken-mods.com/forums/topic/81106-enb-complex-material-guide-for-creators/ | guía de Complex Material para ENB | citada por la investigación previa del repo; **no leída hoy** |
+| S8 | https://stepmodifications.org/forum/topic/21598-pgpatcher-by-hakasapl/ | orden respecto de DynDOLOD/TexGen | solo vía resultado de búsqueda |
+| S9 | https://nexusmods.com/skyrimspecialedition/mods/120946?tab=posts | orden de carga de la salida de PGPatcher | solo vía resultado de búsqueda |
+
+**Antes de codificar** la ruta PGPatcher o el perfil de pila hay que (a) fijar S1 y S4 a un SHA o a una copia
+fechada y (b) leer S6/S7 desde un entorno con acceso. Las filas «solo vía búsqueda» no alcanzan como
+especificación.
