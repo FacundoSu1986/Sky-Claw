@@ -475,3 +475,79 @@ def test_el_plazo_de_la_lectura_es_menor_que_el_de_cada_tool_del_router() -> Non
     from sky_claw.local.native_parallax.elegibilidad import PLAZO_DE_LAS_SUPERFICIES
 
     assert PLAZO_DE_LAS_SUPERFICIES < DEFAULT_TOOL_ROUND_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Fronteras de ``_para_el_modelo`` (mutación)
+# ---------------------------------------------------------------------------
+
+
+async def test_agente_un_fallo_se_devuelve_tal_cual_sin_inventar_la_lista_de_detalle(instancia: pathlib.Path) -> None:
+    """Un fallo no tiene ``texturas``: la respuesta es EXACTAMENTE el resultado compartido, sin una clave ``texturas: null`` inventada."""
+    compartido = elegibilidad_como_resultado(
+        mods_dir=instancia / "mods", data_root=instancia, perfil="Default", mod="NoExiste"
+    )
+    assert compartido["success"] is False
+
+    respuesta = await _ejecutar(_registro(instancia), mod="NoExiste")
+
+    assert respuesta == compartido
+    assert "texturas" not in respuesta
+
+
+async def test_agente_un_fallo_conserva_los_acentos_sin_escapar(instancia: pathlib.Path) -> None:
+    """Lo mismo que la respuesta de éxito: un ``\\u00ed`` por acento le gasta contexto al modelo, también en el mensaje de un fallo."""
+    crudo = await _registro(instancia).execute(_NOMBRE, {"mod": "NoExiste"})
+
+    assert "habilitado" in crudo and "\\u00" not in crudo
+
+
+def test_un_detalle_que_no_es_lista_se_conserva_en_su_sitio() -> None:
+    """La rama defensiva: si el resultado compartido cambiara de forma, no se pierde el campo en silencio."""
+    respuesta = json.loads(parallax_tools._para_el_modelo({"a": 1, "texturas": "raro"}, "texturas"))
+
+    assert respuesta == {"a": 1, "texturas": "raro"}
+
+
+def _resultado_que_mide(objetivo: int) -> dict[str, Any]:
+    """Un resultado cuya serialización completa mide EXACTAMENTE *objetivo* caracteres, con la lista ``texturas`` de entradas de 100.
+
+    Cada texto pasa por el sanitizador (tope de 256 por texto): la longitud se reparte en varias entradas y la última absorbe la
+    diferencia, que se comprueba que quepa en el tope.
+    """
+    entradas: list[dict[str, str]] = [{"r": ""}]
+    while (
+        len(json.dumps({"n": 1, "truncado": False, "texturas": [*entradas, {"r": ""}]}, ensure_ascii=False))
+        < objetivo - 250
+    ):
+        entradas.insert(0, {"r": "x" * 100})
+    falta = objetivo - len(json.dumps({"n": 1, "truncado": False, "texturas": entradas}, ensure_ascii=False))
+    assert 0 <= falta <= 250, "la diferencia no cabe en el tope por texto"
+    entradas[-1]["r"] = "x" * falta
+    resultado = {"n": 1, "texturas": entradas}
+    assert len(json.dumps({"n": 1, "truncado": False, "texturas": entradas}, ensure_ascii=False)) == objetivo
+    return resultado
+
+
+def test_una_respuesta_que_mide_exactamente_el_presupuesto_no_pierde_ninguna_entrada() -> None:
+    """La frontera: ``<=`` presupuesto cabe. Con ``<`` se descartaría una entrada de más y se marcaría ``truncado`` sin necesidad."""
+    presupuesto = parallax_tools.PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA
+    resultado = _resultado_que_mide(presupuesto)
+
+    crudo = parallax_tools._para_el_modelo(resultado, "texturas")
+
+    assert len(crudo) == presupuesto
+    respuesta = json.loads(crudo)
+    assert len(respuesta["texturas"]) == len(resultado["texturas"])
+    assert respuesta["truncado"] is False
+
+
+def test_un_caracter_mas_que_el_presupuesto_si_saca_una_entrada() -> None:
+    """La otra cara de la frontera, para que la anterior no pase por no recortar nunca."""
+    presupuesto = parallax_tools.PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA
+    resultado = _resultado_que_mide(presupuesto + 1)
+
+    respuesta = json.loads(parallax_tools._para_el_modelo(resultado, "texturas"))
+
+    assert len(respuesta["texturas"]) == len(resultado["texturas"]) - 1
+    assert respuesta["truncado"] is True

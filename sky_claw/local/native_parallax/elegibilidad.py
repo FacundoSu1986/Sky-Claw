@@ -231,9 +231,13 @@ def evaluar_elegibilidad(
 
     Síncrono y de solo lectura: lee todas las mallas ganadoras del overlay, así que quien lo llame desde código async lo corre en un hilo.
 
-    ``plazo`` (segundos, ``None`` = sin límite) acota la LECTURA de mallas, que es lo único que escala con el perfil: pasado el plazo se
-    falla cerrado, sin un veredicto parcial (las primeras mallas leídas no bastan para afirmar ``NO`` ni ``SI`` de nada). La enumeración
-    del overlay, previa a la lectura, no se interrumpe: ya está acotada por ``maximo_de_mallas``.
+    ``plazo`` (segundos, ``None`` = sin límite) acota la LECTURA de mallas, que es lo único que escala con el perfil: se comprueba ANTES
+    de empezar cada malla y, pasado el plazo, se falla cerrado, sin un veredicto parcial (las primeras mallas leídas no bastan para afirmar
+    ``NO`` ni ``SI`` de nada). Lo que NO promete: una lectura ya empezada no se interrumpe (la acota el tope de tamaño del lector, no el
+    tiempo: un disco o una unidad de red colgados la bloquean, y interrumpirla pediría aislarla en otro proceso), así que el hilo termina,
+    como mucho, una lectura después del plazo; y si la última malla se lee pasado el plazo, el resultado es completo y se devuelve (no se
+    descarta una evaluación entera y correcta). La enumeración del overlay, previa a la lectura, no se interrumpe: ya está acotada por
+    ``maximo_de_mallas``.
 
     Raises:
         PerfilError: el perfil no permite afirmar quién gana, el mod no tiene normales procesables, hay más archivos que el tope o se

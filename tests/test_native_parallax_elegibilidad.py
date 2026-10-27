@@ -898,3 +898,39 @@ def test_el_plazo_se_agota_justo_al_llegar_a_el_y_no_un_instante_antes(
 
     monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=4.999))
     assert mundo.evaluar(plazo=5.0).texturas[0].efecto is EfectoPosible.SI
+
+
+class _RelojPorLecturas:
+    """``time.monotonic`` que devuelve cada valor una vez y repite el último: permite que el plazo venza en un punto exacto del recorrido."""
+
+    def __init__(self, *valores: float) -> None:
+        self._valores = list(valores)
+
+    def monotonic(self) -> float:
+        return self._valores.pop(0) if len(self._valores) > 1 else self._valores[0]
+
+
+def test_si_el_plazo_vence_durante_la_ultima_malla_el_resultado_completo_se_devuelve(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El plazo se comprueba antes de empezar cada malla: una evaluación que ya leyó TODAS las mallas es completa y correcta aunque la
+    última lectura termine pasado el plazo. Fallarla descartaría una respuesta válida; lo que el plazo evita es seguir leyendo."""
+    mundo.malla(_nif())
+    # 1ª lectura = inicio; 2ª = el chequeo antes de la única malla (a tiempo); desde ahí, mucho después del plazo.
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    informe = mundo.evaluar(plazo=5.0)
+
+    assert informe.texturas[0].efecto is EfectoPosible.SI
+
+
+def test_si_el_plazo_ya_vencio_al_empezar_la_segunda_malla_no_se_afirma_nada(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La otra cara: con una malla más por leer, el chequeo previo a ella corta antes de dar un veredicto parcial."""
+    mundo.malla(_nif(), ruta="meshes/uno.nif")
+    mundo.malla(_nif(), ruta="meshes/dos.nif")
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)
