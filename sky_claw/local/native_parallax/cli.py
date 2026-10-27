@@ -414,10 +414,12 @@ def construir_parser() -> argparse.ArgumentParser:
             "plugin de relieve automático use el *_p.dds que el generador publicaría. No genera nada y no necesita texconv."
         ),
         epilog=(
-            "Resultados por textura: SI (una forma elegible la usaría), NO (todas las formas que la referencian quedan fuera, con su "
-            "razón) o NO_VERIFICADO (no se puede afirmar: sin mallas sueltas que la referencien, búsqueda que depende de archivos "
-            "que no se pueden comprobar o mallas que no se pudieron leer). Códigos de salida: 0 el informe se produjo (sea cual sea su "
-            "contenido); 2 uso o configuración incorrectos (lo que no se puede afirmar falla cerrado)."
+            "Resultados por textura: SI (una forma elegible la usaría), NO (ninguna forma usaría esta salida: todas las que la "
+            "referencian quedan fuera, con su razón, o el plugin elegiría antes otra textura suelta, o el generador no la "
+            "publicaría porque otro mod tapa la normal de entrada) o NO_VERIFICADO (no se puede afirmar: sin mallas sueltas que la "
+            "referencien, búsqueda que depende de archivos que no se pueden comprobar, rutas ambiguas o mallas que no se pudieron "
+            "leer). --mod tiene que ser un mod habilitado del perfil (una carpeta dentro de --mods). Códigos de salida: 0 el informe "
+            "se produjo (sea cual sea su contenido); 2 uso o configuración incorrectos (lo que no se puede afirmar falla cerrado)."
         ),
     )
     elegibilidad.add_argument(

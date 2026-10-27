@@ -98,7 +98,7 @@ def _elegibilidad(mundo: Mundo, *extra: str, mod: str = _MOD) -> tuple[int, str]
     return codigo, salida.getvalue()
 
 
-def test_una_textura_con_malla_elegible_sale_en_cero_y_se_marca_si_con_su_malla(mundo: Mundo) -> None:
+def test_elegibilidad_una_textura_con_malla_elegible_sale_en_cero_y_se_marca_si_con_su_malla(mundo: Mundo) -> None:
     mundo.archivo(_MALLAS, "meshes/muro.nif", _nif())
 
     codigo, texto = _elegibilidad(mundo)
@@ -109,7 +109,9 @@ def test_una_textura_con_malla_elegible_sale_en_cero_y_se_marca_si_con_su_malla(
     assert "1 SI, 0 NO, 0 NO_VERIFICADO" in texto
 
 
-def test_una_textura_sin_efecto_posible_tambien_sale_en_cero_porque_es_el_contenido_del_informe(mundo: Mundo) -> None:
+def test_elegibilidad_una_textura_sin_efecto_posible_tambien_sale_en_cero_porque_es_el_contenido_del_informe(
+    mundo: Mundo,
+) -> None:
     mundo.archivo(_MALLAS, "meshes/muro.nif", _nif(tipo_de_shader=3))
 
     codigo, texto = _elegibilidad(mundo)
@@ -120,7 +122,7 @@ def test_una_textura_sin_efecto_posible_tambien_sale_en_cero_porque_es_el_conten
     assert "0 SI, 1 NO, 0 NO_VERIFICADO" in texto
 
 
-def test_sin_mallas_la_textura_queda_no_verificada_y_se_dice_por_que(mundo: Mundo) -> None:
+def test_elegibilidad_sin_mallas_la_textura_queda_no_verificada_y_se_dice_por_que(mundo: Mundo) -> None:
     codigo, texto = _elegibilidad(mundo)
 
     assert codigo == CODIGO_OK
@@ -128,7 +130,7 @@ def test_sin_mallas_la_textura_queda_no_verificada_y_se_dice_por_que(mundo: Mund
     assert ".bsa" in texto
 
 
-def test_la_salida_resume_el_perfil_el_mod_y_cuantas_mallas_se_leyeron(mundo: Mundo) -> None:
+def test_elegibilidad_la_salida_resume_el_perfil_el_mod_y_cuantas_mallas_se_leyeron(mundo: Mundo) -> None:
     mundo.archivo(_MALLAS, "meshes/muro.nif", _nif())
 
     _codigo, texto = _elegibilidad(mundo)
@@ -138,7 +140,7 @@ def test_la_salida_resume_el_perfil_el_mod_y_cuantas_mallas_se_leyeron(mundo: Mu
     assert "1 malla leída" in texto
 
 
-def test_las_mallas_ilegibles_se_listan_acotadas(mundo: Mundo) -> None:
+def test_elegibilidad_las_mallas_ilegibles_se_listan_acotadas(mundo: Mundo) -> None:
     for i in range(8):
         mundo.archivo(_MALLAS, f"meshes/rota{i}.nif", b"no es un nif")
 
@@ -149,14 +151,14 @@ def test_las_mallas_ilegibles_se_listan_acotadas(mundo: Mundo) -> None:
     assert "y 3 más" in texto  # se listan 5 y el resto se cuenta
 
 
-def test_la_salida_termina_con_el_alcance_para_no_presentarse_como_prueba_in_game(mundo: Mundo) -> None:
+def test_elegibilidad_la_salida_termina_con_el_alcance_para_no_presentarse_como_prueba_in_game(mundo: Mundo) -> None:
     _codigo, texto = _elegibilidad(mundo)
 
     assert "bAutoEnableParallax" in texto
     assert "Static" in texto
 
 
-def test_un_mod_que_no_esta_habilitado_es_un_error_de_uso(mundo: Mundo) -> None:
+def test_elegibilidad_un_mod_que_no_esta_habilitado_es_un_error_de_uso(mundo: Mundo) -> None:
     codigo, texto = _elegibilidad(mundo, mod="Fantasma")
 
     assert codigo == CODIGO_DE_USO
@@ -164,7 +166,7 @@ def test_un_mod_que_no_esta_habilitado_es_un_error_de_uso(mundo: Mundo) -> None:
     assert "no está habilitado" in texto
 
 
-def test_el_perfil_se_elige_con_el_argumento_perfil(mundo: Mundo) -> None:
+def test_elegibilidad_el_perfil_se_elige_con_el_argumento_perfil(mundo: Mundo) -> None:
     mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}", perfil="Pruebas")
     mundo.archivo(_MALLAS, "meshes/muro.nif", _nif())
 
@@ -178,7 +180,7 @@ def _foto(raiz: pathlib.Path) -> dict[str, bytes | None]:
     return {str(p.relative_to(raiz)): (p.read_bytes() if p.is_file() else None) for p in sorted(raiz.rglob("*"))}
 
 
-def test_no_escribe_nada_ni_pide_texconv_ni_crea_la_base_de_estado(mundo: Mundo) -> None:
+def test_elegibilidad_no_escribe_nada_ni_pide_texconv_ni_crea_la_base_de_estado(mundo: Mundo) -> None:
     mundo.archivo(_MALLAS, "meshes/muro.nif", _nif())
     antes = _foto(mundo.raiz)
 
@@ -189,7 +191,7 @@ def test_no_escribe_nada_ni_pide_texconv_ni_crea_la_base_de_estado(mundo: Mundo)
     assert not (mundo.raiz / "estado").exists()
 
 
-def test_la_ayuda_documenta_los_codigos_de_salida() -> None:
+def test_elegibilidad_la_ayuda_documenta_los_codigos_de_salida() -> None:
     parser = construir_parser()
     acciones = [a for a in parser._actions if hasattr(a, "choices") and isinstance(a.choices, dict)]  # noqa: SLF001
     ayuda = acciones[0].choices["elegibilidad"].format_help()
