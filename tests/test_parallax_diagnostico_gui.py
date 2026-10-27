@@ -10,6 +10,7 @@ prueba acá: lo cubre el smoke de la vista.
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 from types import SimpleNamespace
 from typing import Any
@@ -395,6 +396,41 @@ async def test_de_punta_a_punta_un_mod_inexistente_es_un_resultado_con_motivo(
 
     entrada = diagnostico_parallax_de(store, "t1")
     assert entrada is not None and entrada["resultado"]["success"] is False and entrada["resultado"]["message"]
+
+
+@pytest.mark.parametrize("termina_primero", ["A", "B"])
+async def test_dos_pestanas_con_despachos_entrelazados_conservan_cada_una_su_slot(
+    store: ReactiveStore, termina_primero: str
+) -> None:
+    """Dos despachos en vuelo a la vez, terminando en cualquier orden: al final CADA pestaña conserva su resultado.
+
+    La lectura-modificación-escritura del store ocurre DESPUÉS del ``await`` del despacho y sin ningún ``await`` entre medio, así que la
+    que termina más tarde reescribe sobre el estado fresco (con el slot de la otra adentro). Una versión que tomara la foto del store
+    ANTES del ``await`` perdería el slot de la que terminó primero: este test lo detecta (el review de #818 lo pidió; ver la mutación
+    manual en el mensaje del commit).
+    """
+    liberar = {"A": asyncio.Event(), "B": asyncio.Event()}
+
+    class _Supervisor:
+        async def dispatch_tool(self, _nombre: str, payload: dict[str, Any]) -> dict[str, Any]:
+            await liberar[payload["mod"]].wait()  # cede el control: acá se entrelazan las dos corridas
+            return {**_OK_SIN_HALLAZGOS, "mod": payload["mod"]}
+
+    tarea_a = asyncio.create_task(run_diagnostico_parallax("A", supervisor=_Supervisor(), store=store, tab_id="t1"))
+    tarea_b = asyncio.create_task(run_diagnostico_parallax("B", supervisor=_Supervisor(), store=store, tab_id="t2"))
+    await asyncio.sleep(0)  # las dos quedan dentro del despacho
+
+    orden = [("A", tarea_a), ("B", tarea_b)] if termina_primero == "A" else [("B", tarea_b), ("A", tarea_a)]
+    for mod, tarea in orden:
+        liberar[mod].set()
+        await tarea
+
+    assert diagnostico_parallax_de(store, "t1")["mod"] == "A"  # type: ignore[index]
+    assert diagnostico_parallax_de(store, "t2")["mod"] == "B"  # type: ignore[index]
+
+    limpiar_diagnostico_parallax(store, "t1")  # y cerrar un panel no toca el de la otra
+    assert diagnostico_parallax_de(store, "t1") is None
+    assert diagnostico_parallax_de(store, "t2")["mod"] == "B"  # type: ignore[index]
 
 
 def test_el_boton_de_la_fila_tiene_nombre_accesible() -> None:
