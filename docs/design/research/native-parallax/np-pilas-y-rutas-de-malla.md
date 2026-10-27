@@ -23,8 +23,9 @@
    su equipo. El perfil ENB se declara pero queda `[REAL_RIG_REQUIRED]` en juego hasta que alguien con ENB lo pruebe.
 3. **PGPatcher es opcional, no requisito.** El dueño no lo usa hoy. La herramienta debe funcionar sin él y
    recomendarlo solo cuando una malla lo necesite.
-4. **El chequeo de elegibilidad informa las dos rutas por separado** (ver §3), en vez de decidir con las
-   reglas de una sola.
+4. **El chequeo de elegibilidad debe informar las dos rutas por separado** (ver §3), en vez de decidir con las
+   reglas de una sola. Es una **decisión de diseño pendiente**: hoy `evaluar_elegibilidad` devuelve un único
+   `EfectoPosible` por textura y modela solo la ruta Auto Parallax `[repo]`.
 
 ## 2. Hallazgos públicos que sostienen la decisión
 
@@ -44,6 +45,10 @@ Leído en el código fuente público (S1, S2):
   **no** tiene propiedad alfa [SUPPORTED].
 - Orden de búsqueda del `_p`: textura de altura del set, luego difuso con el sufijo `_d` cambiado a `_p`, luego
   normal con `_n` cambiado a `_p` [SUPPORTED].
+- Alcance por tipo de objeto: el módulo del repo `sky_claw/local/assets/auto_parallax_regla.py` documenta que el
+  plugin solo actúa sobre objetos base Static, Movable Static y Container, dato que **no está en el NIF** y que
+  debe declarar quien consuma la regla `[repo]`; **no se re-verificó hoy contra el código público** de S1
+  [NO VERIFIED]. Por eso la lista anterior describe reglas de forma de la malla, no el alcance completo.
 - Existe una rama de apagado para materiales de tipo parallax; no se leyó completa la condición que la dispara
   [NO VERIFIED]. La descripción pública del mod la presenta como red de seguridad para mallas con altura
   faltante (S3, resumen de búsqueda) [NO VERIFIED].
@@ -64,9 +69,9 @@ el texto entre comillas [SUPPORTED, con la salvedad de que no se leyó la págin
   Parallax» que figuraba en un borrador de este informe no tiene respaldo acá y se retira [NO VERIFIED].
 
 **Consecuencia para el código** `[repo]`: el chequeo actual descarta mallas por `SIN_VERTEX_COLORS`. Para la
-ruta Auto Parallax es correcto (2.1 exige la bandera); para la ruta PGPatcher es un **falso negativo**, porque
-PGPatcher habilita justamente los colores de vértice [INFERRED de 2.1 + 2.2]. Hoy el reporte puede decir `NO`
-sobre una malla que PGPatcher sí parchearía.
+ruta Auto Parallax es correcto (2.1 exige la bandera); para la ruta PGPatcher **podría ser** un falso negativo, porque
+PGPatcher habilita colores de vértice según su wiki [INFERRED de 2.1 + 2.2; REAL_RIG_REQUIRED]. Hoy el reporte
+puede emitir `NO` para una textura que PGPatcher sí resolvería; no se probó con PGPatcher real.
 
 ### 2.3 Pilas de render
 
