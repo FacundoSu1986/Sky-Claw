@@ -1478,7 +1478,11 @@ class TestAnclaConstructoresManualesDeMods:
         # H1 (#650: normalización de prioridad canónica en boundary de parser)
         # expandió `read_enabled_mods` y PR-586F agregó el gate de visibilidad
         # brokered, moviendo la construcción canónica de mods_dir a la línea 576.
-        "sky_claw/local/mo2/vfs_attestation.py": (576,),
+        # D2 (canario diferencial MO2/USVFS) agregó la modalidad diferencial y sus
+        # helpers arriba de `_raices_del_overlay` (misma función, sin duplicación
+        # ni cambio de semántica): la construcción canónica de `<base>/mods`
+        # sigue siendo una sola y corrió de la línea 576 a la 708 (+132).
+        "sky_claw/local/mo2/vfs_attestation.py": (708,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323, sus
         # follow-ups a la ~339, PR #695 / issue #623 a la ~581 por cuarentena,
