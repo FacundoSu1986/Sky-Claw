@@ -70,8 +70,11 @@ class Motivo(Enum):
 
 
 #: ``(registro de flags, bit)`` de cada flag que, si está presente, impide que el plugin encienda el relieve. Los nombres son los de
-#: ``SkyrimShaderPropertyFlags1/2`` de la especificación NifTools; el plugin usa los mismos nombres (``kProjectedUV``…). La
-#: correspondencia numérica con los valores internos de CommonLibSSE no se verificó: es por nombre.
+#: ``SkyrimShaderPropertyFlags1/2`` de la especificación NifTools; el plugin usa los mismos (``kProjectedUV``…). **Verificado** contra la cabecera
+#: pública de CommonLibSSE (``include/RE/B/BSShaderProperty.h``, rama ``master`` del 2026-10-27, SHA-256
+#: ``ba6b95d2346568f84f8d7eee7a181b1862f034841f719dd65f9cda6e05a54cf5``): ahí los flags son un ``uint64`` donde el registro 1 ocupa los bits 0-31 y
+#: el 2 los 32-63 (``kSkinned = 1<<1``, ``kProjectedUV = 1<<23``, ``kLODObjects = 1<<34``, ``kVertexLighting = 1<<42``, ``kTreeAnim = 1<<61``,
+#: ``kVertexColors = 1<<37``): coinciden con estas posiciones. Lo que sigue sin verificarse es la versión instalada del plugin y de CommonLibSSE.
 EXCLUSIONES_DE_LA_RAMA_QUE_ENCIENDE: Final[dict[Motivo, tuple[int, int]]] = {
     Motivo.PROJECTED_UV: (1, 23),
     Motivo.SKINNED: (1, 1),
