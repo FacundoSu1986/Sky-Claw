@@ -53,11 +53,30 @@ _FORMAS_NI: Final = frozenset({"NiTriShape", "NiTriStrips", "BSLODTriShape", "BS
 
 _SHADER_DE_ILUMINACION: Final = "BSLightingShaderProperty"
 _JUEGO_DE_TEXTURAS: Final = "BSShaderTextureSet"
+_PROPIEDAD_DE_ALFA: Final = "NiAlphaProperty"
 
-#: Tipos de geometría que el lector NO abre y que, si aparecen, hay que declarar (nunca ignorar en silencio).
+#: Geometría concreta que la especificación NifTools (``nif.xml``, SHA-256 ``b752c79786ceb217641fd7e94be4033898c97e9aa38025bf05f2cbee9cffbbf0d``)
+#: deriva de ``NiGeometry`` o ``BSTriShape`` y que el lector NO abre: se declara en ``formas_no_soportadas``, nunca se ignora. Junto con
+#: ``_FORMAS_BS`` y ``_FORMAS_NI`` cubre TODA la geometría concreta de la especificación (``tests/test_nif_materiales.py`` la enumera);
+#: incluye tipos de otras versiones del formato por si un archivo raro los trae.
+_GEOMETRIA_NO_SOPORTADA_DE_LA_ESPECIFICACION: Final = frozenset(
+    {
+        "BSMeshLODTriShape",
+        "BSStripParticleSystem",
+        "NiAutoNormalParticles",
+        "NiClod",
+        "NiLines",
+        "NiMeshParticleSystem",
+        "NiParticleMeshes",
+        "NiParticleSystem",
+        "NiParticles",
+        "NiRotatingParticles",
+        "NiScreenElements",
+    }
+)
+#: Red de seguridad para tipos que la especificación no lista (extensiones de terceros): por nombre.
 _PREFIJOS_DE_GEOMETRIA_NO_SOPORTADA: Final = ("NiParticle", "BSStripParticle")
 _SUFIJOS_DE_GEOMETRIA_NO_SOPORTADA: Final = ("TriShape", "TriStrips")
-_GEOMETRIA_NO_SOPORTADA_EXACTA: Final = frozenset({"NiLines", "NiParticles", "NiPoints"})
 
 
 class NifError(Exception):
@@ -252,7 +271,7 @@ def _es_geometria_no_soportada(tipo: str) -> bool:
     if tipo in _FORMAS_BS or tipo in _FORMAS_NI:
         return False
     return (
-        tipo in _GEOMETRIA_NO_SOPORTADA_EXACTA
+        tipo in _GEOMETRIA_NO_SOPORTADA_DE_LA_ESPECIFICACION
         or tipo.endswith(_SUFIJOS_DE_GEOMETRIA_NO_SOPORTADA)
         or tipo.startswith(_PREFIJOS_DE_GEOMETRIA_NO_SOPORTADA)
     )
@@ -297,6 +316,8 @@ def leer_materiales(datos: bytes) -> LecturaDeNif:
             continue
         referencia_de_shader = _referencia(shader, len(tipos))
         referencia_de_alfa = _referencia(alfa, len(tipos))
+        if referencia_de_alfa is not None and tipos[referencia_de_alfa] != _PROPIEDAD_DE_ALFA:
+            raise NifError(f"referencia: la propiedad de alfa apunta a un {tipos[referencia_de_alfa]}")
         propiedad, iluminacion = shader_de(referencia_de_shader)
         texturas: tuple[str, ...] | None = None
         tipo_de_shader = flags_1 = flags_2 = None

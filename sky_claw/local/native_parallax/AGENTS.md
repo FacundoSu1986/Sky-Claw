@@ -173,7 +173,8 @@ La política clean-room, `docs/design/research/native-parallax/` y
   distingue) o de una carpeta `textures` implícita se declara **ambigua** y nunca se adivina; el lector declara en `formas_no_soportadas` la geometría que
   no sabe abrir en vez de ignorarla; y los NIFs de los tests son sintéticos (`tests/_nif_sintetico.py`, escrito desde la especificación pública NifTools, sin
   importar nada del repo): prueban concordancia con la especificación, NO lectura de un archivo real. **Verificado ejecutando:** un NIF de Skyrim LE escrito
-  por una librería ajena (pyffi, con su propio `nif.xml`) se lee con el mismo shader, flags (posiciones de bit incluidas), alfa y texturas. **NO verificado:**
+  por una librería ajena (pyffi, con su propio `nif.xml`) se lee con el mismo shader, flags (posiciones de bit incluidas), alfa y texturas. **También verificado:**
+  las posiciones de bit de los flags coinciden con la cabecera pública de CommonLibSSE (registro 1 = bits 0-31, registro 2 = bits 32-63). **NO verificado:**
   el diseño de `BSTriShape` (Skyrim SE) contra un archivo real (solo contra la especificación; lo cruza la tabla que devuelve el rig), y que la versión del
   plugin instalada se comporte como la rama citada. Alcance que el NIF no muestra y que quien consuma esto debe decir: el plugin solo actúa sobre objetos
   base Static, Movable Static y Container, y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no). No lee mallas dentro de un

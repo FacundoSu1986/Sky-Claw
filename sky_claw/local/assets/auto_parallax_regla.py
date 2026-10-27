@@ -70,8 +70,11 @@ class Motivo(Enum):
 
 
 #: ``(registro de flags, bit)`` de cada flag que, si está presente, impide que el plugin encienda el relieve. Los nombres son los de
-#: ``SkyrimShaderPropertyFlags1/2`` de la especificación NifTools; el plugin usa los mismos nombres (``kProjectedUV``…). La
-#: correspondencia numérica con los valores internos de CommonLibSSE no se verificó: es por nombre.
+#: ``SkyrimShaderPropertyFlags1/2`` de la especificación NifTools; el plugin usa los mismos (``kProjectedUV``…). **Verificado** contra la cabecera
+#: pública de CommonLibSSE (``include/RE/B/BSShaderProperty.h``, rama ``master`` del 2026-10-27, SHA-256
+#: ``ba6b95d2346568f84f8d7eee7a181b1862f034841f719dd65f9cda6e05a54cf5``): ahí los flags son un ``uint64`` donde el registro 1 ocupa los bits 0-31 y
+#: el 2 los 32-63 (``kSkinned = 1<<1``, ``kProjectedUV = 1<<23``, ``kLODObjects = 1<<34``, ``kVertexLighting = 1<<42``, ``kTreeAnim = 1<<61``,
+#: ``kVertexColors = 1<<37``): coinciden con estas posiciones. Lo que sigue sin verificarse es la versión instalada del plugin y de CommonLibSSE.
 EXCLUSIONES_DE_LA_RAMA_QUE_ENCIENDE: Final[dict[Motivo, tuple[int, int]]] = {
     Motivo.PROJECTED_UV: (1, 23),
     Motivo.SKINNED: (1, 1),
@@ -139,7 +142,8 @@ class OrigenDelCandidato(Enum):
 @dataclass(frozen=True, slots=True)
 class CandidatoDeRelieve:
     origen: OrigenDelCandidato
-    ruta: str
+    ruta: str  #: Vacía si la ruta original es demasiado corta para razonar sobre ella (siempre con ``ambigua``).
+    ambigua: bool = False  #: Su ruta depende de cómo el motor trate mayúsculas o de una carpeta ``textures`` implícita.
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,14 +182,14 @@ def _empieza_por_textures(ruta: str) -> bool:
 
 
 def candidatos_de_relieve(texturas: tuple[str, ...]) -> Candidatos:
-    """Los ``_p`` que el plugin probaría para este juego de texturas, en su orden, y si alguno depende de lo que no se sabe."""
+    """Los ``_p`` que el plugin probaría para este juego de texturas, en su orden, cada uno con su propia ambigüedad."""
     candidatos: list[CandidatoDeRelieve] = []
-    ambiguo = False
 
     if len(texturas) > _RANURA_ALTURA and texturas[_RANURA_ALTURA]:
         altura = texturas[_RANURA_ALTURA]
-        ambiguo = ambiguo or not _empieza_por_textures(altura)
-        candidatos.append(CandidatoDeRelieve(OrigenDelCandidato.ALTURA, altura))
+        candidatos.append(
+            CandidatoDeRelieve(OrigenDelCandidato.ALTURA, altura, ambigua=not _empieza_por_textures(altura))
+        )
 
     for ranura, sufijo, origen in (
         (_RANURA_DIFUSA, "_d", OrigenDelCandidato.DIFUSO),
@@ -195,17 +199,16 @@ def candidatos_de_relieve(texturas: tuple[str, ...]) -> Candidatos:
             continue
         ruta = texturas[ranura]
         if len(ruta) < _LARGO_DE_SUFIJO_Y_EXTENSION:
-            ambiguo = True  # el original hace aritmética sin signo sobre el largo: no se razona sobre rutas tan cortas
+            # el original hace aritmética sin signo sobre el largo: no se razona sobre rutas tan cortas
+            candidatos.append(CandidatoDeRelieve(origen, "", ambigua=True))
             continue
         distingue = _derivar(ruta, sufijo, distinguir_mayusculas=True)
         no_distingue = _derivar(ruta, sufijo, distinguir_mayusculas=False)
-        if distingue != no_distingue:
-            ambiguo = True
         if no_distingue is None:
-            continue
-        ambiguo = ambiguo or not _empieza_por_textures(ruta)
-        candidatos.append(CandidatoDeRelieve(origen, no_distingue))
-    return Candidatos(candidatos=tuple(candidatos), ambiguo=ambiguo)
+            continue  # ni distinguiendo mayúsculas ni sin distinguirlas deriva nada: esta ranura no aporta candidato
+        ambigua = distingue != no_distingue or not _empieza_por_textures(ruta)
+        candidatos.append(CandidatoDeRelieve(origen, no_distingue, ambigua=ambigua))
+    return Candidatos(candidatos=tuple(candidatos), ambiguo=any(c.ambigua for c in candidatos))
 
 
 def buscar_el_relieve(texturas: tuple[str, ...], *, existe: Callable[[str], bool | None]) -> ResultadoDeLaBusqueda:
@@ -217,10 +220,11 @@ def buscar_el_relieve(texturas: tuple[str, ...], *, existe: Callable[[str], bool
             podría estar dentro de un ``.bsa`` que no se lee). Se le pasa la ruta como la derivó el plugin; comparar sin distinguir
             mayúsculas ni tipo de barra es cosa de quien la implementa.
     """
-    encontrados = candidatos_de_relieve(texturas)
-    if encontrados.ambiguo:
-        return ResultadoDeLaBusqueda(ruta=None, origen=None, estado=EstadoDeLaBusqueda.NO_VERIFICADO)
-    for candidato in encontrados.candidatos:
+    for candidato in candidatos_de_relieve(texturas).candidatos:
+        if candidato.ambigua:
+            # La búsqueda llegó a un candidato cuya ruta depende de lo que no se sabe: no se consulta ni se adivina. Uno anterior que
+            # existía ya cortó la búsqueda (el plugin devuelve en cuanto encuentra).
+            return ResultadoDeLaBusqueda(ruta=None, origen=None, estado=EstadoDeLaBusqueda.NO_VERIFICADO)
         presente = existe(candidato.ruta)
         if presente is None:
             return ResultadoDeLaBusqueda(ruta=None, origen=None, estado=EstadoDeLaBusqueda.NO_VERIFICADO)

@@ -277,13 +277,26 @@ def test_candidatos_una_altura_fuera_de_la_carpeta_textures_es_ambigua() -> None
 
 
 def test_candidatos_una_ruta_de_menos_de_seis_caracteres_no_se_razona_y_se_declara_ambigua() -> None:
-    assert candidatos_de_relieve(("a.dds", "", "", "")) == Candidatos(candidatos=(), ambiguo=True)
+    assert candidatos_de_relieve(("a.dds", "", "", "")) == Candidatos(
+        candidatos=(CandidatoDeRelieve(OrigenDelCandidato.DIFUSO, "", ambigua=True),), ambiguo=True
+    )
+
+
+def test_candidatos_de_relieve_marcan_la_ambiguedad_candidato_por_candidato() -> None:
+    resultado = candidatos_de_relieve(("", "textures\\a\\muro01_N.DDS", "", "textures\\a\\alto.dds"))
+
+    assert [(c.origen, c.ambigua) for c in resultado.candidatos] == [
+        (OrigenDelCandidato.ALTURA, False),
+        (OrigenDelCandidato.NORMAL, True),
+    ]
+    assert resultado.ambiguo is True
 
 
 def test_candidatos_una_ruta_de_exactamente_seis_caracteres_si_se_deriva() -> None:
     resultado = candidatos_de_relieve(("ab.dds",))
 
-    assert resultado.candidatos == (CandidatoDeRelieve(OrigenDelCandidato.DIFUSO, "ab_p.dds"),)
+    # se deriva (no es «demasiado corta»), pero no está bajo textures\\: queda ambigua por eso
+    assert resultado.candidatos == (CandidatoDeRelieve(OrigenDelCandidato.DIFUSO, "ab_p.dds", ambigua=True),)
 
 
 def test_candidatos_con_menos_de_cuatro_ranuras_no_tienen_altura() -> None:
@@ -392,3 +405,73 @@ def test_buscar_el_relieve_no_llama_a_existe_con_rutas_vacias() -> None:
     buscar_el_relieve(("", "", "", ""), existe=existe)
 
     assert mirados == []
+
+
+# --- La ambigüedad solo importa si la búsqueda llega hasta ella (P2 de Codex en #819) ---------------------------------------
+
+
+def test_buscar_el_relieve_una_altura_que_existe_corta_la_busqueda_antes_de_una_normal_ambigua() -> None:
+    mirados: list[str] = []
+
+    def existe(ruta: str) -> bool | None:
+        mirados.append(ruta)
+        return ruta == "textures\\a\\alto.dds"
+
+    resultado = buscar_el_relieve(("", "textures\\a\\muro01_N.DDS", "", "textures\\a\\alto.dds"), existe=existe)
+
+    assert resultado == ResultadoDeLaBusqueda(
+        ruta="textures\\a\\alto.dds", origen=OrigenDelCandidato.ALTURA, estado=EstadoDeLaBusqueda.ENCUENTRA
+    )
+    assert mirados == ["textures\\a\\alto.dds"]
+
+
+def test_buscar_el_relieve_si_la_altura_no_existe_y_la_siguiente_es_ambigua_no_se_afirma_nada() -> None:
+    mirados: list[str] = []
+
+    def existe(ruta: str) -> bool | None:
+        mirados.append(ruta)
+        return False
+
+    resultado = buscar_el_relieve(("", "textures\\a\\muro01_N.DDS", "", "textures\\a\\alto.dds"), existe=existe)
+
+    assert resultado.estado is EstadoDeLaBusqueda.NO_VERIFICADO
+    assert mirados == ["textures\\a\\alto.dds"]  # no se consulta la ruta ambigua: su derivación depende del motor
+
+
+def test_buscar_el_relieve_un_candidato_firme_anterior_a_uno_ambiguo_que_existe_decide() -> None:
+    resultado = buscar_el_relieve(
+        ("textures\\a\\muro01.dds", "textures\\a\\muro02_N.DDS", "", ""),
+        existe=_existe("textures\\a\\muro01_p.dds"),
+    )
+
+    assert resultado.estado is EstadoDeLaBusqueda.ENCUENTRA
+    assert resultado.origen is OrigenDelCandidato.DIFUSO
+
+
+def test_buscar_el_relieve_una_altura_ambigua_en_primer_lugar_frena_la_busqueda_en_vez_de_seguir_de_largo() -> None:
+    """No se sabe si una ruta de altura sin ``textures\\`` existe para el motor: si existiera, el plugin se detendría ahí y el difuso
+    no se usaría. Seguir de largo afirmaría algo que no se puede afirmar."""
+    mirados: list[str] = []
+
+    def existe(ruta: str) -> bool | None:
+        mirados.append(ruta)
+        return True
+
+    resultado = buscar_el_relieve(("textures\\a\\muro01.dds", "", "", "alto.dds"), existe=existe)
+
+    assert resultado.estado is EstadoDeLaBusqueda.NO_VERIFICADO
+    assert mirados == []
+
+
+def test_evaluar_forma_un_juego_de_texturas_vacio_no_es_lo_mismo_que_no_tener_juego_de_texturas() -> None:
+    con_juego_vacio = evaluar_forma(_forma(texturas=()))
+    sin_juego = evaluar_forma(_forma(texturas=None))
+
+    assert con_juego_vacio.veredicto is Veredicto.ELEGIBLE
+    assert sin_juego == Decision(Veredicto.EXCLUIDA, frozenset({Motivo.SIN_JUEGO_DE_TEXTURAS}))
+
+
+def test_buscar_el_relieve_con_un_juego_de_texturas_vacio_no_encuentra_nada() -> None:
+    resultado = buscar_el_relieve((), existe=_existe())
+
+    assert resultado == ResultadoDeLaBusqueda(ruta=None, origen=None, estado=EstadoDeLaBusqueda.NO_ENCUENTRA)

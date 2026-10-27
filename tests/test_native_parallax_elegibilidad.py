@@ -313,11 +313,20 @@ def test_un_difuso_con_otro_nombre_cuyo_p_no_esta_suelto_hace_no_verificable_la_
 
 
 def test_una_ruta_cuyo_resultado_depende_de_las_mayusculas_es_no_verificada(mundo: Mundo) -> None:
-    mundo.malla(_nif(difuso=_D1, normal="textures\\architecture\\whiterun\\muro01_N.dds"))
+    mundo.malla(_nif(difuso="", normal="textures\\architecture\\whiterun\\muro01_N.dds"))
 
     (textura,) = mundo.evaluar().texturas
 
     assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_la_ambiguedad_de_un_candidato_posterior_no_invalida_un_candidato_firme_que_ya_decide(mundo: Mundo) -> None:
+    """El difuso deriva a la salida de forma inequívoca y el plugin devuelve en cuanto encuentra: la normal ambigua que viene después no cuenta."""
+    mundo.malla(_nif(difuso=_D1, normal="textures\\architecture\\whiterun\\muro01_N.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
 
 
 def test_una_malla_ilegible_baja_un_no_a_no_verificado_y_se_nombra(mundo: Mundo) -> None:
