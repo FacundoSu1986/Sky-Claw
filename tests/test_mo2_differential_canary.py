@@ -16,8 +16,10 @@ import dataclasses
 import hashlib
 import pathlib
 import shutil
+import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,12 +28,16 @@ from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODSpawnStrategy
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
     VfsAttestationError,
+    build_attestation_challenge,
     build_attestation_challenge_for_source,
     verify_vfs_attestation,
 )
 from sky_claw.local.mo2.vfs_contracts import VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_worker import run_probe_child
+from sky_claw.local.tools.artifact_digest import digest_arbol
 from sky_claw.local.tools.texgen_handoff import (
+    HandoffDriftError,
+    TexGenHandoffApproval,
     TexGenHandoffRequest,
     TexGenHandoffResult,
 )
@@ -108,6 +114,7 @@ def _challenge_del_mod(esc: _Escenario) -> VfsAttestationChallenge:
         mods_dir=esc.mods_dir,
         profile=_PERFIL,
         physical_data_dir=esc.physical_data,
+        permitir_diferencial=True,
     )
 
 
@@ -215,16 +222,188 @@ def test_sin_candidatos_conserva_blocked_canary(tmp_path: pathlib.Path) -> None:
 
 
 def test_seleccion_restringida_al_mod_pedido(tmp_path: pathlib.Path) -> None:
+    # `_OTRO` va PRIMERO en el modlist: es el mod de mayor prioridad regular y
+    # tiene un candidato ausente más fuerte. La selección libre debe elegirlo a
+    # él; la restringida al mod pedido NO puede quedarse con el canario ajeno.
+    esc = _escenario(tmp_path, modlist=f"+{_OTRO}\n+{_MOD}\n")
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_fisico("a.dds", b"FISICO-A")
+    esc.escribir_mod(_OTRO, "b.dds", b"BYTES-DEL-OTRO")
+
+    libre = build_attestation_challenge(
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+    )
+    assert libre.source_mod == _OTRO
+    assert libre.relative_path.as_posix() == "textures/b.dds"
+
+    propio = _challenge_del_mod(esc)
+    assert propio.source_mod == _MOD
+    assert propio.relative_path.as_posix() == "textures/a.dds"
+
+
+def test_builder_libre_no_habilita_diferencial_para_consumidores_sin_revalidacion(
+    tmp_path: pathlib.Path,
+) -> None:
+    """LOOT/legacy/health usan el builder libre: el diferencial es opt-in del gate."""
     esc = _escenario(tmp_path)
     esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
-    esc.escribir_mod(_OTRO, "b.dds", b"BYTES-DEL-OTRO")
-    esc.escribir_fisico("a.dds", b"FISICO-A")
-    esc.escribir_fisico("b.dds", b"FISICO-B")
+    esc.escribir_fisico("a.dds", b"FISICO-DISTINTO")
 
-    challenge = _challenge_del_mod(esc)
+    with pytest.raises(VfsAttestationError, match="canary elegible"):
+        build_attestation_challenge(
+            data_root=esc.data_root,
+            mods_dir=esc.mods_dir,
+            profile=_PERFIL,
+            physical_data_dir=esc.physical_data,
+        )
 
-    assert challenge.source_mod == _MOD
-    assert challenge.relative_path.as_posix() == "textures/a.dds"
+    opt_in = build_attestation_challenge(
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+        permitir_diferencial=True,
+    )
+    assert opt_in.relative_path.as_posix() == "textures/a.dds"
+
+
+def test_reparse_de_archivo_falla_cerrado(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """La rama de reparse de ARCHIVO (no junction de directorio) también corta."""
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    destino = esc.physical_data / "textures" / "a.dds"
+    destino.parent.mkdir(parents=True)
+    destino.write_bytes(b"FISICO")
+
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    real_lstat = att.os.lstat
+
+    def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if pathlib.Path(str(path)).resolve() == destino.resolve():
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_file_attributes=0x400)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(att.os, "lstat", lstat_falso)
+
+    with pytest.raises(VfsAttestationError, match="enlace"):
+        _challenge_del_mod(esc)
+
+
+def test_archivo_fisico_con_oserror_falla_cerrado(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un fallo real de inspección (permiso/bloqueo) no se salta: corta.
+
+    Se ejercita la primitive directo: ``os.path.lexists`` (que usa la selección)
+    traduce cualquier ``OSError`` a ``False`` y no permite distinguir "ausente" de
+    "inaccesible"; la primitive que sí debe cortar es la inspección fail-closed.
+    """
+    esc = _escenario(tmp_path)
+    destino = esc.physical_data / "textures" / "a.dds"
+    destino.parent.mkdir(parents=True)
+    destino.write_bytes(b"FISICO")
+
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    real_lstat = att.os.lstat
+
+    def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if pathlib.Path(str(path)).resolve() == destino.resolve():
+            raise PermissionError("share violation simulado")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(att.os, "lstat", lstat_falso)
+
+    with pytest.raises(VfsAttestationError, match="inspeccionar"):
+        att._sha256_fisico_seguro(destino)
+
+
+@pytest.mark.asyncio
+async def test_preprobe_ancla_el_invariante_fisico(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si el invariante físico falla ANTES del probe, no se lanza ningún job."""
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_fisico("a.dds", b"FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+
+    class _BrokerQueNoDebeLlamarse:
+        probes = 0
+
+        async def submit(self, *args: object, **kwargs: object) -> VfsJobResult:  # pragma: no cover
+            self.probes += 1
+            raise AssertionError("no debe llegar al probe con el invariante roto")
+
+        async def open_session(self, *args: object, **kwargs: object) -> Any:  # pragma: no cover
+            raise AssertionError("no debe abrir sesión")
+
+    from sky_claw.local.mo2 import brokered_dyndolod as mod
+
+    def invariante_roto(**kwargs: object) -> None:
+        from sky_claw.local.mo2.vfs_attestation import VfsAttestationError as _Error
+
+        raise _Error("el Data físico ya entrega los bytes esperados")
+
+    monkeypatch.setattr(mod, "assert_canary_fisicamente_distinguible", invariante_roto)
+    broker = _BrokerQueNoDebeLlamarse()
+    resultado = await _gate(esc, broker)
+
+    assert resultado.verified is False
+    assert resultado.pending_action is None
+    assert broker.probes == 0
+
+
+@pytest.mark.asyncio
+async def test_revalidacion_de_spawn_ancla_el_invariante_fisico(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El boundary del spawn revalida el invariante físico, no sólo el rebuild."""
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_fisico("a.dds", b"FISICO-DISTINTO")
+
+    from sky_claw.local.mo2 import brokered_dyndolod as mod
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    challenge = att.build_attestation_challenge_for_source(
+        source_mod=_MOD,
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+        permitir_diferencial=True,
+    )
+    approval = TexGenHandoffApproval(
+        mod_name=_MOD,
+        artifact_root=esc.artifact_root,
+        artifact=digest_arbol(esc.artifact_root),
+        data_dir=esc.virtual_data,
+        profile=_PERFIL,
+        profile_fingerprint=challenge.profile_fingerprint,
+        canary_relative_path=challenge.relative_path,
+        canary_sha256=challenge.sha256,
+    )
+    monkeypatch.setattr(mod, "build_attestation_challenge_for_source", lambda **kwargs: challenge)
+
+    def invariante_roto(**kwargs: object) -> None:
+        raise att.VfsAttestationError("el Data físico ya entrega los bytes esperados")
+
+    monkeypatch.setattr(mod, "assert_canary_fisicamente_distinguible", invariante_roto)
+    estrategia = BrokeredDynDOLODSpawnStrategy(
+        broker=object(),
+        instance_id="portable-main",
+        profile=_PERFIL,
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        install_root=esc.data_root,
+        physical_data_dir=esc.physical_data,
+        virtual_data_dir=esc.virtual_data,
+        output_roots={},
+    )
+
+    with pytest.raises(HandoffDriftError, match="físico"):
+        await estrategia._revalidar_aprobacion(approval)
 
 
 def test_canario_ausente_tiene_prioridad_sobre_diferencial(tmp_path: pathlib.Path) -> None:

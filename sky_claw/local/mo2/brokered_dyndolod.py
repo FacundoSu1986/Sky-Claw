@@ -460,6 +460,7 @@ class BrokeredDynDOLODSpawnStrategy:
                 mods_dir=self._mods_dir,
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
+                permitir_diferencial=True,
             )
         except VfsAttestationError as e:
             raise HandoffDriftError(
@@ -661,6 +662,7 @@ class BrokeredDynDOLODSpawnStrategy:
                 mods_dir=self._mods_dir,
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
+                permitir_diferencial=True,
             )
         except VfsAttestationError as e:
             return TexGenHandoffResult.bloqueado(
@@ -730,7 +732,8 @@ class BrokeredDynDOLODSpawnStrategy:
             )
         # Revalidación temporal del estado físico DESPUÉS del probe: el
         # invariante debe seguir valiendo en el momento de aprobar, no sólo en el
-        # de construir el challenge (cierre de la ventana differential).
+        # de construir el challenge. Reduce la ventana entre medición y lectura;
+        # NO detecta un flip transitorio que sólo exista durante el probe.
         try:
             await asyncio.to_thread(
                 assert_canary_fisicamente_distinguible,

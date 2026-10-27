@@ -163,17 +163,21 @@ def _sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _sha256_fisico_seguro(path: pathlib.Path) -> str:
-    """SHA-256 de un archivo del ``Data`` físico que el caller ya sabe que existe.
+def _inspeccionar_fisico_seguro(path: pathlib.Path, *, ausente_ok: bool) -> os.stat_result | None:
+    """``lstat`` fail-closed de un path del ``Data`` físico.
 
-    El path físico se inspecciona con ``lstat`` **sin seguir enlaces**: un
-    symlink, junction u otro reparse point no es una fuente de bytes atribuible
-    y se rechaza fail-closed (no se ignora ni se sigue). Un path que existe pero
-    no es un archivo regular también se rechaza: no es "inaccesible y seguimos",
-    es "no hay evidencia que firmar".
+    Un symlink, junction u otro reparse point no es una fuente de bytes
+    atribuible; un path presente que no es archivo regular tampoco. Con
+    ``ausente_ok`` un path inexistente devuelve ``None``; cualquier otro
+    ``OSError`` (permiso, bloqueo, IO) se propaga como
+    :class:`VfsAttestationError` porque no hay evidencia que firmar.
     """
     try:
         identidad = os.lstat(path)
+    except FileNotFoundError:
+        if ausente_ok:
+            return None
+        raise VfsAttestationError(f"el archivo físico {path} no existe: no hay bytes que comparar") from None
     except OSError as exc:
         raise VfsAttestationError(f"no se pudo inspeccionar el archivo físico {path}: {exc}") from exc
     es_enlace = stat.S_ISLNK(identidad.st_mode) or bool(
@@ -185,6 +189,12 @@ def _sha256_fisico_seguro(path: pathlib.Path) -> str:
         )
     if not stat.S_ISREG(identidad.st_mode):
         raise VfsAttestationError(f"el archivo físico {path} no es un archivo regular: no hay bytes que comparar")
+    return identidad
+
+
+def _sha256_fisico_seguro(path: pathlib.Path) -> str:
+    """SHA-256 de un archivo del ``Data`` físico, con la inspección fail-closed."""
+    _inspeccionar_fisico_seguro(path, ausente_ok=False)
     return _sha256_file(path)
 
 
@@ -204,24 +214,16 @@ def assert_canary_fisicamente_distinguible(
 
     Falla cerrado ante un path físico que existe pero no se puede leer o no es
     un archivo regular propio (incluye symlinks, junctions y reparse points).
+
+    Limitación temporal: es un chequeo de estado en un instante. Un cambio
+    físico transitorio (los bytes esperados sólo durante el probe y revertido
+    antes del chequeo posterior) no es observable desde el host; los chequeos
+    pre/post/spawn reducen la ventana, no la eliminan.
     """
     relative = pathlib.Path(*challenge.relative_path.parts)
     fisico = physical_data_dir.resolve() / relative
-    try:
-        identidad = os.lstat(fisico)
-    except FileNotFoundError:
+    if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
         return
-    except OSError as exc:
-        raise VfsAttestationError(f"no se pudo inspeccionar el archivo físico {fisico}: {exc}") from exc
-    es_enlace = stat.S_ISLNK(identidad.st_mode) or bool(
-        getattr(identidad, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
-    )
-    if es_enlace:
-        raise VfsAttestationError(
-            f"el archivo físico {fisico} es un enlace/reparse point: sus bytes no se pueden atribuir al Data físico"
-        )
-    if not stat.S_ISREG(identidad.st_mode):
-        raise VfsAttestationError(f"el archivo físico {fisico} no es un archivo regular: no hay bytes que comparar")
     sha_fisico = _sha256_file(fisico)
     if sha_fisico == challenge.sha256:
         raise VfsAttestationError(
@@ -545,6 +547,7 @@ def _construir_challenge(
     data: pathlib.Path,
     always_active: frozenset[str],
     source_mod: str | None,
+    permitir_diferencial: bool,
 ) -> VfsAttestationChallenge:
     """Walk común de selección de canary (libre o restringido a un mod).
 
@@ -633,6 +636,18 @@ def _construir_challenge(
         if safe_source is None:
             higher_roots.append(mod_root)
 
+    if not permitir_diferencial:
+        if source_mod is not None:
+            raise VfsAttestationError(
+                f"no existe un canary elegible dentro de {source_mod!r}: no hay archivo ausente del Data "
+                "físico o queda eclipsado por overwrite/mods de mayor prioridad (modo diferencial no "
+                "habilitado para este call site)"
+            )
+        raise VfsAttestationError(
+            "no existe un canary elegible: no hay archivo de mod ausente del Data físico y el modo "
+            "diferencial no está habilitado para este call site"
+        )
+
     # Segunda pasada: canary DIFERENCIAL. El path existe en el Data físico pero
     # con bytes distintos de los del mod, así que una ejecución sin overlay lee
     # esos bytes físicos y NO supera el SHA esperado; con overlay lee los bytes
@@ -701,11 +716,15 @@ def build_attestation_challenge(
     mods_dir: pathlib.Path | None = None,
     profile: str,
     physical_data_dir: pathlib.Path,
+    permitir_diferencial: bool = False,
 ) -> VfsAttestationChallenge:
     """Elige un archivo efectivo de mod que el ``Data`` físico no entregue con los bytes esperados.
 
-    Prefiere un canary ausente del ``Data`` físico y, sólo si no existe ninguno,
-    acepta un canary diferencial (path presente con bytes distintos).
+    Prefiere un canary ausente del ``Data`` físico y, sólo si no existe ninguno y
+    ``permitir_diferencial`` está habilitado, acepta un canary diferencial (path
+    presente con bytes distintos). Por defecto es clásico: el diferencial es
+    opt-in de los call sites que además revalidan el estado físico (gate
+    brokered de handoff TexGen → DynDOLOD).
 
     El conjunto de plugins que el motor carga siempre (``primaryPlugins()``) se
     deriva del game root de ``physical_data_dir``; el worker deriva el mismo
@@ -723,6 +742,7 @@ def build_attestation_challenge(
         data=data,
         always_active=_always_active_plugins(data),
         source_mod=None,
+        permitir_diferencial=permitir_diferencial,
     )
 
 
@@ -734,6 +754,7 @@ def build_attestation_challenge_for_source(
     mods_dir: pathlib.Path | None = None,
     profile: str,
     physical_data_dir: pathlib.Path,
+    permitir_diferencial: bool = False,
 ) -> VfsAttestationChallenge:
     """Canary elegible perteneciente a UN mod concreto (p. ej. ``TexGen Output``).
 
@@ -745,7 +766,9 @@ def build_attestation_challenge_for_source(
     entregue sus bytes esperados: sirve un canary ausente del ``Data`` físico o,
     en su defecto, uno diferencial (path presente con bytes distintos). En ambos
     casos el probe runtime distingue la vista USVFS de la física; falla cerrado
-    si ese mod no aporta ningún canary elegible.
+    si ese mod no aporta ningún canary elegible. ``permitir_diferencial`` es
+    opt-in: el call site debe revalidar el estado físico antes y después del
+    probe (el gate brokered lo hace).
 
     El nombre del mod se valida como componente de path seguro; la firma NO
     acepta rutas.
@@ -762,6 +785,7 @@ def build_attestation_challenge_for_source(
         data=data,
         always_active=_always_active_plugins(data),
         source_mod=safe_mod,
+        permitir_diferencial=permitir_diferencial,
     )
 
 
