@@ -835,3 +835,38 @@ def test_el_resultado_de_tool_es_de_solo_lectura(mundo: Mundo) -> None:
     _resultado(mundo)
 
     assert sorted(p.relative_to(mundo.raiz).as_posix() for p in mundo.raiz.rglob("*")) == antes
+
+
+@pytest.mark.parametrize("tope", [0, -1, -50])
+def test_un_tope_de_texturas_cero_o_negativo_no_devuelve_ninguna_pero_cuenta_todas(mundo: Mundo, tope: int) -> None:
+    """El tope se acota en cero: uno negativo no se interpreta como «todas menos N» (un slice negativo) ni cero como «una»."""
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=tope)
+
+    assert resultado["texturas"] == []
+    assert resultado["n_texturas"] == 1
+    assert resultado["truncado"] is True
+
+
+@pytest.mark.parametrize("cuantas", [1, 3, 5])
+def test_hasta_el_tope_de_mallas_no_leidas_no_se_marcan_como_truncadas(mundo: Mundo, cuantas: int) -> None:
+    """Con exactamente el tope (5) no se recorta nada: el aviso de recorte no puede ser un falso positivo."""
+    for i in range(cuantas):
+        mundo.malla(b"no es un nif", ruta=f"meshes/rota{i}.nif")
+
+    resultado = _resultado(mundo)
+
+    assert resultado["n_mallas_no_leidas"] == cuantas
+    assert len(resultado["mallas_no_leidas"]) == cuantas  # type: ignore[arg-type]
+    assert resultado["mallas_no_leidas_truncado"] is False
+
+
+def test_sin_texturas_recortadas_el_resultado_no_se_marca_truncado(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=1)  # hay exactamente una textura: cabe entera
+
+    assert resultado["n_texturas"] == 1
+    assert len(resultado["texturas"]) == 1  # type: ignore[arg-type]
+    assert resultado["truncado"] is False
