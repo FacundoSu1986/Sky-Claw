@@ -1217,6 +1217,7 @@ _EXCEPCIONES_FUERA_DE_C2: dict[str, str] = {
     "_modo_local_panel:btn": "toggle Modo local: color/borde dinámicos según el estado on/off",
     "_ritual_feedback_panel:x": "botón icónico × de dismiss del panel de feedback",
     "_ritual_preflight_panel:x": "botón icónico × de dismiss del panel de preflight",
+    "_parallax_diagnostico_panel:x": "botón icónico × de dismiss del panel de diagnóstico de parallax (NP-A0i)",
     "_header:gear": "botón icónico de Ajustes 40×40 (gear, sin texto)",
     "_ritual_card:b": "acción de tarjeta de ritual: color/borde dinámicos por estado del tool",
     "_orden_carga:vb": "link subrayado «Ver Todo», sin caja de botón",

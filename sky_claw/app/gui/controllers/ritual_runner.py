@@ -1213,3 +1213,159 @@ async def run_ritual_install(
         STORE_KEY_RITUAL_FEEDBACK,
         {"text": f"«{tool_key}» instalado correctamente.", "type": "positive"},
     )
+
+
+# ── Diagnóstico del perfil de MO2 para el generador nativo de parallax (NP-A0i, #817) ──
+#
+# Es el botón de la lista de mods que cierra el hueco de #815: la tool ya estaba registrada en el dispatcher y en el registro del agente
+# LLM, pero ningún control la llamaba. SOLO LECTURA: no pide aprobación HITL ni usa el single-flight de los rituales (que serializa
+# operaciones destructivas). Llega al dispatcher por el MISMO camino que los rituales —este módulo es el único llamador de
+# ``dispatch_tool`` de la GUI— y no abre otro.
+#
+# El resultado se publica por PESTAÑA, igual que el de los rituales (PATCH 0010): la clave es UNA —los subscribers de ``ReactiveStore``
+# son por clave— y el valor es un contenedor con un slot por ``tab_id``, así que lo que pide una pestaña no pisa ni limpia lo de otra.
+STORE_KEY_DIAGNOSTICO_PARALLAX = "parallax_diagnostico"
+
+#: Nombre de la tool en el dispatcher. Se congela contra la estrategia y el registro del agente en
+#: ``tests/test_parallax_diagnostico_gui.py``: las tres superficies tienen que llamarla igual.
+NOMBRE_TOOL_DIAGNOSTICO_PARALLAX = "diagnosticar_parallax_perfil"
+
+#: Clave INTERNA del contenedor por pestaña. Nunca se toca desde la vista: todo read/write/delete pasa por los helpers de abajo.
+_DIAGNOSTICO_POR_PESTANA = "por_pestana"
+
+
+def _diagnosticos_por_pestana(store: ReactiveStore) -> dict[str, dict[str, Any]]:
+    raw = store.get(STORE_KEY_DIAGNOSTICO_PARALLAX)
+    if isinstance(raw, dict):
+        por_pestana = raw.get(_DIAGNOSTICO_POR_PESTANA)
+        if isinstance(por_pestana, dict):
+            return por_pestana
+    return {}
+
+
+def _escribir_diagnosticos(store: ReactiveStore, por_pestana: dict[str, dict[str, Any]]) -> None:
+    """ÚNICO punto de producción que escribe ``STORE_KEY_DIAGNOSTICO_PARALLAX`` (anclado por AST)."""
+    store.set(STORE_KEY_DIAGNOSTICO_PARALLAX, {_DIAGNOSTICO_POR_PESTANA: dict(por_pestana)} if por_pestana else None)
+
+
+def diagnostico_parallax_de(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
+    """El diagnóstico vigente de ESTA pestaña (``{"mod", "resultado"}``), o ``None``.
+
+    Una pestaña sin identidad (``tab_id`` ``None``, p. ej. antes del handshake) no ve nada: nunca se le muestra lo de otra.
+    """
+    if tab_id is None:
+        return None
+    return _diagnosticos_por_pestana(store).get(tab_id)
+
+
+def limpiar_diagnostico_parallax(store: ReactiveStore, tab_id: str | None) -> None:
+    """Quita el diagnóstico de ESTA pestaña sin tocar el de las demás."""
+    if tab_id is None:
+        return
+    por_pestana = dict(_diagnosticos_por_pestana(store))
+    if por_pestana.pop(tab_id, None) is not None:
+        _escribir_diagnosticos(store, por_pestana)
+
+
+async def run_diagnostico_parallax(
+    mod_name: Any,
+    *,
+    supervisor: Any,
+    store: ReactiveStore,
+    tab_id: str | None = None,
+) -> None:
+    """Pide el diagnóstico de ``mod_name`` al dispatcher y lo publica en el slot de la pestaña.
+
+    Nunca levanta: un click es una task fire-and-forget y no puede tumbar el loop. Los fallos (sin supervisor, nombre inválido, excepción
+    del dispatcher, resultado que no es un dict) salen como ``ritual_feedback``, el mismo canal de avisos de los rituales. Un
+    ``success: false`` del diagnóstico (p. ej. «mod no habilitado») NO es un fallo de esta función: es un resultado con motivo y se
+    publica para que el panel lo muestre.
+    """
+    if not isinstance(mod_name, str) or not mod_name.strip():
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": "Elegí un mod para diagnosticar.", "type": "warning"})
+        return
+    if supervisor is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
+        )
+        return
+    # Un click del operador ES intervención humana: rearmar el cortacircuitos cognitivo, para que repetir el mismo diagnóstico a mano
+    # no se confunda con un bucle del agente (mismo contrato que ``run_ritual``).
+    reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
+    if callable(reset_guardrail):
+        reset_guardrail()
+    # Hoy esta tool no pide aprobación (el dispatcher la registra SIN gate HITL), pero este módulo trata a todo lanzador igual: la identidad
+    # de pestaña y el seguimiento de la aprobación pendiente se arman por task, así que si algún día se la gateara, la aprobación quedaría
+    # scoped a ESTA pestaña y su ``finally`` solo limpiaría la propia (P1-7; ancla en ``tests/test_hitl_client_scoping.py``).
+    cid_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
+    try:
+        resultado = await supervisor.dispatch_tool(NOMBRE_TOOL_DIAGNOSTICO_PARALLAX, {"mod": mod_name})
+    except Exception as exc:  # noqa: BLE001 — task fire-and-forget: no puede tumbar el loop
+        logger.exception("Diagnóstico de parallax (%s) falló", mod_name)
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El diagnóstico de «{mod_name}» falló: {type(exc).__name__}", "type": "negative"},
+        )
+        return
+    finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
+        _ritual_tab_id.reset(cid_token)
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+    if not isinstance(resultado, dict):
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El diagnóstico de «{mod_name}» devolvió una respuesta inválida.", "type": "negative"},
+        )
+        return
+    if tab_id is None:
+        # Sin identidad de pestaña no hay slot al que publicar: se avisa en vez de dejar el resultado huérfano.
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "No pude identificar la pestaña: recargá la página y probá de nuevo.", "type": "warning"},
+        )
+        return
+    por_pestana = dict(_diagnosticos_por_pestana(store))
+    por_pestana[tab_id] = {"mod": mod_name, "resultado": resultado}
+    _escribir_diagnosticos(store, por_pestana)
+
+
+def lineas_del_diagnostico_parallax(resultado: Any) -> list[str]:
+    """Las líneas de texto que muestra el panel para un resultado del diagnóstico. Puro y tolerante a formas inesperadas.
+
+    El texto de los mods y rutas sale del disco y lo eligió un tercero: la vista lo dibuja como TEXTO (``ui.label`` escapa), nunca como
+    HTML. Acá no se sanea para prompts (eso es del agente): se devuelve tal cual.
+    """
+    if not isinstance(resultado, dict) or not resultado:
+        return ["No pude leer el resultado del diagnóstico."]
+    lineas: list[str] = []
+    alcance = str(resultado.get("alcance") or "")
+    # ``normalize_tool_result`` es la única pieza que conoce las shapes legacy (invariante de ``gui/AGENTS.md``): el dispatcher envuelve
+    # una excepción inesperada en ``{"status": "error", "reason", "details"}`` (ErrorWrappingMiddleware), que no trae ``success``/``message``.
+    normalizado = normalize_tool_result(resultado)
+    if not normalizado["success"]:
+        lineas.append(f"No se pudo diagnosticar: {normalizado['message'] or 'motivo desconocido'}")
+    else:
+        mod = resultado.get("mod", "?")
+        perfil = resultado.get("perfil", "?")
+        n_textura = resultado.get("n_texturas", 0)
+        n_total = int(resultado.get("n_hallazgos") or 0)
+        hallazgos = resultado.get("hallazgos") or []
+        lineas.append(f"Mod «{mod}» en el perfil «{perfil}»: {n_textura} textura(s) de entrada revisadas.")
+        if n_total == 0:
+            lineas.append("Sin hallazgos: nada tapa lo que el generador mediría ni lo que publicaría.")
+        else:
+            if resultado.get("impide_medir"):
+                lineas.append("Hay entradas tapadas o fuera del overlay: eso impide medir esas texturas.")
+            for h in hallazgos:
+                if isinstance(h, dict):
+                    lineas.append(f"[{h.get('tipo', '?')}] {h.get('ruta', '?')}: {h.get('detalle', '')}")
+            if resultado.get("truncado"):
+                lineas.append(f"Hay {n_total} hallazgos en total; se muestran {len(hallazgos)}.")
+    if alcance:
+        lineas.append(alcance)
+    return lineas

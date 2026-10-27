@@ -114,7 +114,8 @@ nombres comprobados son:
 `generate_grass_cache`, `preview_chain`, `execute_synthesis_pipeline` y
 `diagnosticar_parallax_perfil` (NP-A0h, solo lectura, sin gate HITL: qué gana en el perfil de
 MO2 para un mod del generador nativo de parallax; el perfil es el de la sesión y el payload
-solo lleva `mod`).
+solo lleva `mod`). La GUI lo invoca desde el botón de lupa de cada fila de la lista de mods
+(NP-A0i, `run_diagnostico_parallax` en `ritual_runner.py`).
 
 El dispatcher devuelve un dict. Una tool desconocida conserva
 `{"status": "error", "reason": "ToolNotFound"}`. El middleware cubre HITL,
