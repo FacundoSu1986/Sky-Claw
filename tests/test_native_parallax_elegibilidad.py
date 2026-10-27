@@ -444,3 +444,34 @@ def test_el_modulo_no_lee_ni_escribe_archivos_ni_arrastra_la_cli() -> None:
         "rglob",
     }
     assert not any(m.endswith((".cli", ".lote", ".export")) for m in importados)
+
+
+def _llamadores_de(nombre: str) -> set[str]:
+    """Módulos de ``sky_claw/`` que llaman (por nombre simple o atributo) a *nombre*."""
+    raiz = pathlib.Path(__file__).resolve().parent.parent
+    encontrados: set[str] = set()
+    for archivo in (raiz / "sky_claw").rglob("*.py"):
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            if isinstance(nodo, ast.Call):
+                f = nodo.func
+                llamado = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+                if llamado == nombre:
+                    encontrados.add(archivo.relative_to(raiz).as_posix())
+    return encontrados
+
+
+def test_los_consumidores_de_la_elegibilidad_estan_congelados() -> None:
+    """Hoy la sirve SOLO la línea de comandos. GUI y agente LLM se cablean juntos (AGENTS.md: dos superficies, un recurso): una
+    tercera superficie, o una sola de las dos, rompe esto hasta que se la declare acá junto a las demás."""
+    assert _llamadores_de("evaluar_elegibilidad") == {
+        "sky_claw/local/native_parallax/cli.py",
+    }
+
+
+def test_el_indice_de_mallas_lo_arma_solo_la_pieza_que_ya_es_dueña_del_resolutor() -> None:
+    assert _llamadores_de("cargar_mallas_del_perfil") == {"sky_claw/local/native_parallax/elegibilidad.py"}
+    assert _llamadores_de("indexar_ganadores") == {"sky_claw/local/native_parallax/diagnostico_perfil.py"}
+
+
+def test_la_lectura_de_archivos_de_nif_vive_solo_en_el_lector_y_la_usa_solo_la_elegibilidad() -> None:
+    assert _llamadores_de("leer_materiales_de_archivo") == {"sky_claw/local/native_parallax/elegibilidad.py"}

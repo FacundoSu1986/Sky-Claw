@@ -44,6 +44,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "decode.py",
         "diagnostico_perfil.py",
         "diagnostico_texconv.py",
+        "elegibilidad.py",
         "espectral.py",
         "experiments/__init__.py",
         "experiments/convencion.py",

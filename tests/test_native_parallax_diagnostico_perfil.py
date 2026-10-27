@@ -458,6 +458,7 @@ def _usuarios_de(nombre: str) -> set[str]:
 
 _MODULO = "sky_claw/local/native_parallax/diagnostico_perfil.py"
 _CLI = "sky_claw/local/native_parallax/cli.py"
+_ELEGIBILIDAD = "sky_claw/local/native_parallax/elegibilidad.py"
 
 
 def test_el_resolutor_de_ganadores_se_llama_solo_desde_el_diagnostico() -> None:
@@ -468,7 +469,8 @@ def test_el_resolutor_de_ganadores_se_llama_solo_desde_el_diagnostico() -> None:
 def test_los_consumidores_del_diagnostico_estan_congelados() -> None:
     """Agregar una superficie rompe esto hasta que se la declare acá (y se cablee junto a las demás)."""
     assert _llamadores_de("diagnosticar_perfil") == {_CLI, _MODULO}  # el módulo, vía ``diagnostico_como_resultado``
-    assert _llamadores_de("cargar_perfil") == {_MODULO, _CLI}
+    # NP-A0j: la elegibilidad resuelve el perfil con la MISMA pieza (cargar_perfil), no con la suya.
+    assert _llamadores_de("cargar_perfil") == {_MODULO, _CLI, _ELEGIBILIDAD}
     assert _llamadores_de("hallazgos_del_perfil") == {_MODULO, _CLI}
 
 
