@@ -12,6 +12,7 @@ una implementación ajena y la tabla que devuelve el rig).
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 import struct
 
 import pytest
@@ -23,6 +24,7 @@ from sky_claw.local.assets.nif_materiales import (
     NifError,
     _Lector,
     leer_materiales,
+    leer_materiales_de_archivo,
 )
 from tests._nif_sintetico import (
     Bloque,
@@ -596,6 +598,37 @@ def test_el_lector_rechaza_un_texto_por_encima_del_tope_aunque_haya_datos_de_sob
     assert len(_Lector(datos, 0, 5000, "prueba").texto(4096)) == 4096
     with pytest.raises(NifError, match="texto de longitud inválida"):
         _Lector(datos, 0, 5000, "prueba").texto(4097)
+
+
+# --- Lectura de un archivo ----------------------------------------------------------------------------------------------
+
+
+def test_leer_materiales_de_archivo_lee_lo_mismo_que_leer_materiales(tmp_path: pathlib.Path) -> None:
+    nif = _una_forma_bs(tipo_de_shader=3)
+    ruta = tmp_path / "forma.nif"
+    ruta.write_bytes(nif)
+
+    assert leer_materiales_de_archivo(ruta) == leer_materiales(nif)
+
+
+def test_leer_materiales_de_archivo_acepta_exactamente_el_tope_y_rechaza_un_byte_mas(tmp_path: pathlib.Path) -> None:
+    nif = _una_forma_bs()
+    ruta = tmp_path / "forma.nif"
+    ruta.write_bytes(nif)
+
+    assert len(leer_materiales_de_archivo(ruta, maximo_de_bytes=len(nif)).formas) == 1
+    with pytest.raises(NifError, match="tope"):
+        leer_materiales_de_archivo(ruta, maximo_de_bytes=len(nif) - 1)
+
+
+def test_leer_materiales_de_archivo_traduce_un_archivo_ausente_a_nif_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(NifError, match="no se pudo leer"):
+        leer_materiales_de_archivo(tmp_path / "no_existe.nif")
+
+
+def test_leer_materiales_de_archivo_traduce_una_carpeta_a_nif_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(NifError, match="no se pudo leer"):
+        leer_materiales_de_archivo(tmp_path)
 
 
 def test_leer_materiales_la_propiedad_de_alfa_debe_ser_una_propiedad_de_alfa() -> None:

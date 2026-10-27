@@ -20,20 +20,25 @@ actúa sobre algunos) y no prueba que el juego muestre algo: es una lectura estr
 
 from __future__ import annotations
 
+import pathlib
 import struct
 from dataclasses import dataclass
 from typing import Final
 
 __all__ = [
     "TOPE_DE_BLOQUES",
+    "TOPE_DE_BYTES_DE_NIF",
     "FormaDeNif",
     "LecturaDeNif",
     "NifError",
     "leer_materiales",
+    "leer_materiales_de_archivo",
 ]
 
 #: Un NIF de Skyrim real tiene decenas o cientos de bloques; esto es un techo de cordura, no un tamaño esperado.
 TOPE_DE_BLOQUES: Final[int] = 100_000
+#: Una malla de Skyrim real pesa de unos KB a unas decenas de MB; esto corta lo que ya no es una malla antes de leerlo entero.
+TOPE_DE_BYTES_DE_NIF: Final[int] = 64 * 1024 * 1024
 _TOPE_DE_RANURAS_DE_TEXTURAS: Final = 16
 _LONGITUD_MAXIMA_DE_TEXTO: Final = 4096
 
@@ -337,3 +342,22 @@ def leer_materiales(datos: bytes) -> LecturaDeNif:
         )
     no_soportadas = tuple(sorted({tipo for tipo in tipos if _es_geometria_no_soportada(tipo)}))
     return LecturaDeNif(version_bs=version_bs, formas=tuple(formas), formas_no_soportadas=no_soportadas)
+
+
+def leer_materiales_de_archivo(ruta: pathlib.Path, *, maximo_de_bytes: int = TOPE_DE_BYTES_DE_NIF) -> LecturaDeNif:
+    """``leer_materiales`` sobre un archivo, leyendo como mucho ``maximo_de_bytes`` (+1 para detectar el exceso).
+
+    El llamador es quien decide qué rutas abrir (por ejemplo las que resolvió el overlay de un perfil); acá no se sigue ningún enlace
+    ni se enumera nada.
+
+    Raises:
+        NifError: no se pudo leer, pasa el tope o no es un NIF 20.2.0.7 de Skyrim.
+    """
+    try:
+        with ruta.open("rb") as archivo:
+            datos = archivo.read(maximo_de_bytes + 1)
+    except OSError as exc:
+        raise NifError(f"no se pudo leer {ruta.name}: {exc}") from exc
+    if len(datos) > maximo_de_bytes:
+        raise NifError(f"{ruta.name} pesa más que el tope de {maximo_de_bytes} bytes")
+    return leer_materiales(datos)

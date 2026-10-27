@@ -43,10 +43,13 @@ __all__ = [
     "MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO",
     "SUFIJO_DE_ENTRADA",
     "TIPOS_QUE_IMPIDEN_MEDIR",
+    "TIPO_SALIDA_NO_HABILITADA",
+    "TIPO_SALIDA_TAPADA",
     "Hallazgo",
     "InformeDelPerfil",
     "PerfilError",
     "PerfilResuelto",
+    "cargar_mallas_del_perfil",
     "cargar_perfil",
     "descubrir_normales_del_mod",
     "diagnosticar_perfil",
@@ -72,6 +75,11 @@ ALCANCE_DEL_DIAGNOSTICO: Final = (
 
 #: Hallazgos de la ENTRADA: la textura no se mide (otro mod la tapa, o el overlay no la entrega).
 TIPOS_QUE_IMPIDEN_MEDIR: Final = frozenset({"ENTRADA TAPADA", "ENTRADA FUERA DEL OVERLAY"})
+
+#: Hallazgos de la SALIDA: se publicaría, pero el juego no cargaría lo publicado (otra capa de mayor prioridad gana la ruta, o el mod de
+#: salida no está habilitado). Los dueños del texto son estas constantes, para que quien decide con ellos no dependa de un literal.
+TIPO_SALIDA_NO_HABILITADA: Final = "SALIDA NO HABILITADA"
+TIPO_SALIDA_TAPADA: Final = "SALIDA TAPADA"
 
 
 class PerfilError(Exception):
@@ -173,7 +181,7 @@ def hallazgos_del_perfil(
     if salida not in prioridades:
         hallazgos.append(
             Hallazgo(
-                "SALIDA NO HABILITADA",
+                TIPO_SALIDA_NO_HABILITADA,
                 NOMBRE_DEL_MOD_DE_SALIDA,
                 "el mod de salida no está habilitado en el perfil: lo que se publique ahí no se cargaría",
             )
@@ -198,7 +206,7 @@ def hallazgos_del_perfil(
         if prioridades[ganador_p.capa.lower()] > prioridades[salida]:
             hallazgos.append(
                 Hallazgo(
-                    "SALIDA TAPADA",
+                    TIPO_SALIDA_TAPADA,
                     normal.ruta_de_salida,
                     f"la gana {ganador_p.capa!r}, que está por encima de {NOMBRE_DEL_MOD_DE_SALIDA!r}",
                 )
@@ -232,6 +240,27 @@ def cargar_perfil(*, mods_dir: pathlib.Path, data_root: pathlib.Path, perfil: st
         raise PerfilError(str(exc)) from exc
     # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
     return PerfilResuelto(enabled=enabled, mod=elegido, carpeta_del_mod=mods_dir / elegido, indice=indice)
+
+
+def cargar_mallas_del_perfil(
+    *, mods_dir: pathlib.Path, data_root: pathlib.Path, resuelto: PerfilResuelto, maximo_de_archivos: int
+) -> GanadoresDelPerfil:
+    """Quién gana cada archivo bajo ``meshes/`` del perfil ya resuelto (NP-A0j): el índice de las mallas que el juego de verdad carga.
+
+    Es el segundo uso del resolutor de ganadores y vive acá, junto al de las texturas, porque el resolutor se llama SOLO desde este
+    módulo (ancla por AST): quien lo llamara por su cuenta contestaría distinto. Falla cerrado con ``PerfilError``; pasarse del tope
+    no devuelve un índice a medias.
+    """
+    try:
+        return indexar_ganadores(
+            mods_dir=mods_dir,
+            data_root=data_root,
+            enabled=resuelto.enabled,
+            prefijo="meshes",
+            maximo_de_archivos=maximo_de_archivos,
+        )
+    except GanadoresError as exc:
+        raise PerfilError(f"no se pudo resolver las mallas del perfil (no se evalúan mallas a medias): {exc}") from exc
 
 
 def diagnosticar_perfil(
