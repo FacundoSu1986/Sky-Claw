@@ -12,6 +12,7 @@ MO2, USVFS real, TexGen ni DynDOLOD.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import hashlib
 import pathlib
@@ -683,3 +684,121 @@ async def test_aprobacion_diferencial_revalida_estado_fisico_en_spawn(tmp_path: 
 
     with pytest.raises(HandoffDriftError):
         await estrategia._revalidar_aprobacion(approval)
+
+
+# =============================================================================
+# Anclas de familia: el diferencial sólo lo habilita el gate brokered
+# =============================================================================
+
+_BUILDERS = frozenset({"_construir_challenge", "build_attestation_challenge", "build_attestation_challenge_for_source"})
+
+
+def _sitios_que_tocan_el_flag() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Enumera, por AST, todo call site que pasa ``permitir_diferencial``.
+
+    Devuelve ``(literales_true, propagaciones)``: los sitios que habilitan el
+    diferencial con un literal ``True`` y los que sólo propagan el parámetro
+    dentro de la capa de builders. Un call site nuevo con ``True`` rompe el ancla
+    hasta que se lo clasifique explícitamente.
+    """
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    literales: set[tuple[str, str]] = set()
+    propagaciones: set[tuple[str, str]] = set()
+
+    def visitar(nodo: ast.AST, funcion: str) -> None:
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            funcion = nodo.name
+        if isinstance(nodo, ast.Call):
+            for keyword in nodo.keywords:
+                if keyword.arg != "permitir_diferencial":
+                    continue
+                sitio = (str(archivo.relative_to(raiz).as_posix()), funcion)
+                valor = keyword.value
+                if isinstance(valor, ast.Constant) and valor.value is True:
+                    literales.add(sitio)
+                elif isinstance(valor, ast.Name):
+                    propagaciones.add(sitio)
+                elif isinstance(valor, ast.Constant) and valor.value is False:
+                    continue
+                else:
+                    literales.add((sitio[0], f"{sitio[1]}#no-literal"))
+        for hijo in ast.iter_child_nodes(nodo):
+            visitar(hijo, funcion)
+
+    for archivo in sorted(raiz.rglob("*.py")):
+        visitar(ast.parse(archivo.read_text(encoding="utf-8")), "<module>")
+    return literales, propagaciones
+
+
+def test_solo_el_gate_brokered_habilita_el_diferencial() -> None:
+    """Familia enumerada: ningún consumidor fuera del gate puede pasar True."""
+    literales, propagaciones = _sitios_que_tocan_el_flag()
+
+    assert literales == {
+        ("local/mo2/brokered_dyndolod.py", "_verificar_handoff_mo2"),
+        ("local/mo2/brokered_dyndolod.py", "_revalidar_aprobacion"),
+    }, "un call site nuevo habilitó el canario diferencial sin clasificarlo"
+    assert propagaciones == {
+        ("local/mo2/vfs_attestation.py", "build_attestation_challenge"),
+        ("local/mo2/vfs_attestation.py", "build_attestation_challenge_for_source"),
+    }, "el flag debe propagarse sólo desde los dos builders"
+
+
+@pytest.mark.asyncio
+async def test_spawn_revalida_diferencial_sin_flip(tmp_path: pathlib.Path) -> None:
+    """Camino feliz: el spawn revalida el MISMO canario diferencial aprobado."""
+
+    class _BrokerHonesto:
+        async def submit(
+            self,
+            job: VfsJob,
+            *,
+            challenge: VfsAttestationChallenge,
+            data_root=None,
+            mods_dir=None,
+            install_root=None,
+            virtual_data_dir,
+            overwrite_mod=None,
+        ) -> VfsJobResult:
+            proof = verify_vfs_attestation(
+                challenge=challenge,
+                data_root=data_root,
+                mods_dir=mods_dir,
+                profile=job.profile,
+                virtual_data_dir=virtual_data_dir,
+            )
+            atestacion = dict(proof.to_dict())
+            atestacion["grandchild_sha256"] = challenge.sha256
+            return VfsJobResult(
+                protocol_version=2,
+                job_id=job.job_id,
+                success=True,
+                message="",
+                exit_code=0,
+                stdout="",
+                stderr="",
+                outputs=(),
+                rollback_state="not_required",
+                attestation=atestacion,
+                tool_result={},
+            )
+
+        async def open_session(self, job: VfsJob, **kwargs: Any) -> Any:  # pragma: no cover
+            raise AssertionError("no debe abrir sesión")
+
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_fisico("a.dds", b"FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+    estrategia = _strategy(esc, _BrokerHonesto())
+
+    resultado = await estrategia.verify_texgen_handoff(_request(esc))
+    assert resultado.verified is True, resultado.reason
+    approval = resultado.approval
+    assert approval is not None
+
+    fresh = await estrategia._revalidar_aprobacion(approval)
+
+    assert fresh.relative_path == approval.canary_relative_path
+    assert fresh.sha256 == approval.canary_sha256
+    assert fresh.profile_fingerprint == approval.profile_fingerprint
