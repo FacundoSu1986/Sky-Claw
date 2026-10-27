@@ -22,10 +22,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from sky_claw.local.native_parallax import elegibilidad
+from sky_claw.local.native_parallax import elegibilidad, provider
 from sky_claw.local.native_parallax.diagnostico_perfil import PerfilError
 from sky_claw.local.native_parallax.elegibilidad import (
     ALCANCE_DE_LA_ELEGIBILIDAD,
+    MAXIMO_DE_MALLAS_POR_TEXTURA,
     EfectoPosible,
     ElegibilidadDeTextura,
     InformeDeElegibilidad,
@@ -182,6 +183,28 @@ def test_una_sola_forma_elegible_alcanza_aunque_otras_formas_de_otras_mallas_no_
     assert textura.mallas == (f"meshes/c.nif [{_MALLAS}]",)
 
 
+def test_el_si_concuerda_el_numero_de_mallas_en_singular_y_en_plural(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/a.nif")
+    (uno,) = mundo.evaluar().texturas
+    mundo.malla(_nif(), ruta="meshes/b.nif")
+    (dos,) = mundo.evaluar().texturas
+
+    assert uno.razon.startswith("1 malla donde")
+    assert uno.n_mallas == 1
+    assert dos.razon.startswith("2 mallas donde")
+    assert dos.n_mallas == 2
+
+
+def test_las_mallas_nombradas_estan_acotadas_pero_el_conteo_es_el_real(mundo: Mundo) -> None:
+    for i in range(MAXIMO_DE_MALLAS_POR_TEXTURA + 3):
+        mundo.malla(_nif(), ruta=f"meshes/m{i:02d}.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert len(textura.mallas) == MAXIMO_DE_MALLAS_POR_TEXTURA
+    assert textura.n_mallas == MAXIMO_DE_MALLAS_POR_TEXTURA + 3
+
+
 def test_dos_texturas_del_mismo_mod_se_evaluan_cada_una_por_su_cuenta(mundo: Mundo) -> None:
     mundo.archivo(_MOD, _N2)
     mundo.malla(_nif())  # solo muro01 tiene malla elegible
@@ -203,6 +226,9 @@ def test_una_malla_con_relieve_de_fabrica_da_no_y_lo_explica(mundo: Mundo) -> No
     assert textura.efecto is EfectoPosible.NO
     assert "relieve de fábrica" in textura.razon
     assert textura.mallas == ()
+    assert textura.n_mallas == 0
+    assert "otra textura" not in textura.razon
+    assert textura.razon.startswith("ninguna de las 1 forma que la referencian")
 
 
 @pytest.mark.parametrize(
@@ -243,6 +269,7 @@ def test_el_no_cuenta_cuantas_formas_hay_de_cada_motivo(mundo: Mundo) -> None:
 
     (textura,) = mundo.evaluar().texturas
 
+    assert textura.razon.startswith("ninguna de las 3 formas que la referencian")
     assert "relieve de fábrica (el plugin lo apaga): 2" in textura.razon
     assert "con transparencia (NiAlphaProperty): 1" in textura.razon
 
@@ -335,7 +362,7 @@ def test_si_la_ranura_de_altura_existe_suelta_el_plugin_usa_esa_y_no_la_nuestra(
     (textura,) = mundo.evaluar().texturas
 
     assert textura.efecto is EfectoPosible.NO
-    assert "otra textura" in textura.razon
+    assert "el plugin usaría otra textura antes que esta: 1" in textura.razon
 
 
 def test_si_el_p_derivado_del_difuso_existe_suelto_el_plugin_usa_ese(mundo: Mundo) -> None:
@@ -378,6 +405,33 @@ def test_el_reconocimiento_de_mallas_es_solo_de_archivos_nif(mundo: Mundo) -> No
 
 
 # --- Falla cerrado ---------------------------------------------------------------------------------------------------------------
+
+
+def test_una_ruta_de_textura_del_nif_que_se_sale_del_arbol_no_rompe_y_deja_la_busqueda_sin_verificar(
+    mundo: Mundo,
+) -> None:
+    mundo.malla(_nif(altura="textures\\..\\fuera.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_una_normal_del_mod_que_no_se_pudo_leer_hace_fallar_la_evaluacion_en_vez_de_omitirla(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lo que no se pudo leer no se puede dar por «sin efecto»: la enumeración incompleta falla cerrado, como en el diagnóstico."""
+    real = provider.huella_acotada
+
+    def huella(ruta: pathlib.Path, tamano: int) -> str:
+        if ruta.name == "muro01_n.dds":
+            raise PermissionError("bloqueado por el antivirus")
+        return real(ruta, tamano)
+
+    monkeypatch.setattr(provider, "huella_acotada", huella)
+
+    with pytest.raises(PerfilError, match="incompleta"):
+        mundo.evaluar()
 
 
 def test_el_mod_ausente_del_perfil_falla_con_perfil_error(mundo: Mundo) -> None:

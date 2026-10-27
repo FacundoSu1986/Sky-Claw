@@ -25,7 +25,6 @@ from typing import Final
 
 from sky_claw.local.assets.auto_parallax_regla import (
     Decision,
-    EstadoDeLaBusqueda,
     Motivo,
     Veredicto,
     buscar_el_relieve,
@@ -114,7 +113,7 @@ class InformeDeElegibilidad:
 @dataclass(slots=True)
 class _Acumulado:
     mallas_si: set[str] = field(default_factory=set)
-    pendientes: int = 0
+    hay_pendientes: bool = False
     otra_textura: int = 0
     referencias: int = 0
     motivos: Counter[str] = field(default_factory=Counter)
@@ -150,7 +149,7 @@ def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, 
             ordenadas[:MAXIMO_DE_MALLAS_POR_TEXTURA],
             len(ordenadas),
         )
-    if acum.pendientes:
+    if acum.hay_pendientes:
         return con(
             EfectoPosible.NO_VERIFICADO,
             "alguna forma elegible podría usarla, pero la búsqueda del plugin depende de un archivo del que no se puede comprobar si "
@@ -245,9 +244,9 @@ def evaluar_elegibilidad(
                     acumulados[clave].motivos[_etiqueta(decision)] += 1
                 continue
             busqueda = buscar_el_relieve(forma.texturas, existe=existe)
-            if busqueda.estado is not EstadoDeLaBusqueda.ENCUENTRA or busqueda.ruta is None:
+            if busqueda.ruta is None:  # NO_VERIFICADO (o, sin que debiera pasar, NO_ENCUENTRA): no se afirma nada
                 for clave in referidas:
-                    acumulados[clave].pendientes += 1
+                    acumulados[clave].hay_pendientes = True
                 continue
             usada = _clave(busqueda.ruta)
             if usada in salidas:
