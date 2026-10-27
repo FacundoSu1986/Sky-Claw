@@ -282,7 +282,7 @@ def test_candidatos_una_ruta_de_menos_de_seis_caracteres_no_se_razona_y_se_decla
     )
 
 
-def test_candidatos_marcan_la_ambiguedad_candidato_por_candidato() -> None:
+def test_candidatos_de_relieve_marcan_la_ambiguedad_candidato_por_candidato() -> None:
     resultado = candidatos_de_relieve(("", "textures\\a\\muro01_N.DDS", "", "textures\\a\\alto.dds"))
 
     assert [(c.origen, c.ambigua) for c in resultado.candidatos] == [

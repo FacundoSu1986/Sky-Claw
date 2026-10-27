@@ -48,6 +48,7 @@ _FORMAS_NI: Final = frozenset({"NiTriShape", "NiTriStrips", "BSLODTriShape", "BS
 
 _SHADER_DE_ILUMINACION: Final = "BSLightingShaderProperty"
 _JUEGO_DE_TEXTURAS: Final = "BSShaderTextureSet"
+_PROPIEDAD_DE_ALFA: Final = "NiAlphaProperty"
 
 #: Geometría concreta que la especificación NifTools (``nif.xml``, SHA-256 ``b752c79786ceb217641fd7e94be4033898c97e9aa38025bf05f2cbee9cffbbf0d``)
 #: deriva de ``NiGeometry`` o ``BSTriShape`` y que el lector NO abre: se declara en ``formas_no_soportadas``, nunca se ignora. Junto con
@@ -310,6 +311,8 @@ def leer_materiales(datos: bytes) -> LecturaDeNif:
             continue
         referencia_de_shader = _referencia(shader, len(tipos))
         referencia_de_alfa = _referencia(alfa, len(tipos))
+        if referencia_de_alfa is not None and tipos[referencia_de_alfa] != _PROPIEDAD_DE_ALFA:
+            raise NifError(f"referencia: la propiedad de alfa apunta a un {tipos[referencia_de_alfa]}")
         propiedad, iluminacion = shader_de(referencia_de_shader)
         texturas: tuple[str, ...] | None = None
         tipo_de_shader = flags_1 = flags_2 = None

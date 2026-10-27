@@ -596,3 +596,11 @@ def test_el_lector_rechaza_un_texto_por_encima_del_tope_aunque_haya_datos_de_sob
     assert len(_Lector(datos, 0, 5000, "prueba").texto(4096)) == 4096
     with pytest.raises(NifError, match="texto de longitud inválida"):
         _Lector(datos, 0, 5000, "prueba").texto(4097)
+
+
+def test_leer_materiales_la_propiedad_de_alfa_debe_ser_una_propiedad_de_alfa() -> None:
+    """``Alpha Property`` es ``Ref<NiAlphaProperty>``: una forma que apunta a otro tipo es un NIF inconsistente, no una forma con alfa."""
+    nif = construir_nif([bloque_forma_bs(shader=1, alfa=2), bloque_shader_de_iluminacion(), bloque_nodo()])
+
+    with pytest.raises(NifError, match="propiedad de alfa"):
+        leer_materiales(nif)
