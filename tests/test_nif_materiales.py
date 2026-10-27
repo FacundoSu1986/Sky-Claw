@@ -274,6 +274,50 @@ def test_leer_materiales_un_nif_sin_formas_devuelve_una_lectura_vacia() -> None:
     assert lectura.formas_no_soportadas == ()
 
 
+# Toda geometría concreta que la especificación NifTools (nif.xml, SHA-256 b752c79786ceb217641fd7e94be4033898c97e9aa38025bf05f2cbee9cffbbf0d)
+# deriva de NiGeometry o de BSTriShape: o el lector la abre, o la declara. Si una versión nueva de la especificación agrega una, este conjunto
+# se vuelve a generar y la decisión de abrirla o declararla se toma a propósito.
+_GEOMETRIA_ABIERTA = {
+    "BSDynamicTriShape",
+    "BSLODTriShape",
+    "BSSegmentedTriShape",
+    "BSSubIndexTriShape",
+    "BSTriShape",
+    "NiTriShape",
+    "NiTriStrips",
+}
+_GEOMETRIA_DECLARADA = {
+    "BSMeshLODTriShape",
+    "BSStripParticleSystem",
+    "NiAutoNormalParticles",
+    "NiClod",
+    "NiLines",
+    "NiMeshParticleSystem",
+    "NiParticleMeshes",
+    "NiParticleSystem",
+    "NiParticles",
+    "NiRotatingParticles",
+    "NiScreenElements",
+}
+
+
+@pytest.mark.parametrize("tipo", sorted(_GEOMETRIA_ABIERTA | _GEOMETRIA_DECLARADA))
+def test_leer_materiales_enumera_la_geometria_de_la_especificacion_la_abre_o_la_declara(tipo: str) -> None:
+    if tipo in _GEOMETRIA_DECLARADA:
+        lectura = leer_materiales(construir_nif([Bloque(tipo, b"\x00" * 80)]))
+        assert lectura.formas_no_soportadas == (tipo,)
+        assert lectura.formas == ()
+    else:
+        bloque = (
+            bloque_forma_bs(tipo=tipo)
+            if tipo.startswith(("BSTriShape", "BSSub", "BSDyn"))
+            else bloque_forma_ni(tipo=tipo)
+        )
+        lectura = leer_materiales(construir_nif([bloque], version_bs=100 if bloque.tipo.startswith("BS") else 83))
+        assert lectura.formas_no_soportadas == ()
+        assert [f.tipo_de_bloque for f in lectura.formas] == [tipo]
+
+
 def test_leer_materiales_declara_las_formas_que_no_sabe_leer_en_vez_de_ignorarlas() -> None:
     nif = construir_nif(
         [
