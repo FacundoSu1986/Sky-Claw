@@ -368,3 +368,110 @@ async def test_las_dos_superficies_coinciden_en_que_entradas_fallan(instancia: p
 def test_las_dos_superficies_se_llaman_igual() -> None:
     """Un nombre distinto por superficie es el primer paso para que las dos diverjan sin que nadie lo note."""
     assert EvaluarElegibilidadParallaxStrategy.name == _NOMBRE
+
+
+# ---------------------------------------------------------------------------
+# Revisión de Codex en #822: el presupuesto del router y su plazo
+# ---------------------------------------------------------------------------
+
+
+def _muchas_texturas(raiz: pathlib.Path, cuantas: int) -> None:
+    """Texturas sin ninguna malla que las referencie: cada una sale ``NO_VERIFICADO`` con su razón, así que el resultado crece."""
+    for i in range(cuantas):
+        _archivo(raiz, _MOD, f"{_CARPETA}/relleno{i:03d}_n.dds")
+
+
+def _literales_de_recorte_del_router() -> list[int]:
+    """Los topes con que ``LLMRouter`` recorta el resultado de una tool antes de dárselo al modelo (``len(resultado) > N``)."""
+    import ast
+
+    from sky_claw.app.agent import router
+
+    arbol = ast.parse(pathlib.Path(router.__file__).read_text(encoding="utf-8"))
+    topes: list[int] = []
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.Compare)
+            and isinstance(nodo.left, ast.Call)
+            and isinstance(nodo.left.func, ast.Name)
+            and nodo.left.func.id == "len"
+            and isinstance(nodo.ops[0], ast.Gt)
+            and isinstance(nodo.comparators[0], ast.Constant)
+            and isinstance(nodo.comparators[0].value, int)
+            and nodo.comparators[0].value >= 1000
+        ):
+            topes.append(nodo.comparators[0].value)
+    return topes
+
+
+def test_el_presupuesto_de_la_respuesta_cabe_en_el_recorte_del_router() -> None:
+    """El router recorta a mano lo que pasa de N caracteres: la respuesta se ajusta ANTES, por debajo de ese N."""
+    topes = _literales_de_recorte_del_router()
+
+    assert topes, "no encontré el recorte del router: este ancla ya no mira nada"
+    assert min(topes) >= parallax_tools.PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA
+
+
+async def test_agente_una_respuesta_grande_se_ajusta_al_presupuesto_y_conserva_la_leyenda(
+    instancia: pathlib.Path,
+) -> None:
+    """Con 40 texturas el resultado compartido pasa de los 4000 caracteres: recortado a mano por el router perdería la leyenda de
+    alcance (que va AL FINAL) y el modelo recibiría veredictos sin sus salvedades. Ajustada, llega entera y es JSON válido."""
+    _muchas_texturas(instancia, 40)
+    compartido = elegibilidad_como_resultado(
+        mods_dir=instancia / "mods", data_root=instancia, perfil="Default", mod=_MOD
+    )
+    assert len(json.dumps(compartido, ensure_ascii=False)) > 4000, (
+        "el caso no excede el presupuesto: el test sería vacuo"
+    )
+
+    crudo = await _registro(instancia).execute(_NOMBRE, {"mod": _MOD})
+
+    assert len(crudo) <= parallax_tools.PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA
+    respuesta = json.loads(crudo)  # entero y válido: nada cortado a la mitad
+    assert respuesta["alcance"] == compartido["alcance"]
+    assert "bAutoEnableParallax" in respuesta["alcance"]
+    assert respuesta["n_texturas"] == compartido["n_texturas"] == 41  # el total real viaja siempre
+    assert respuesta["truncado"] is True
+    assert 0 < len(respuesta["texturas"]) < 41
+    assert respuesta["conteo"] == compartido["conteo"]  # el resumen no se recorta
+
+
+async def test_agente_lo_que_se_conserva_de_una_respuesta_grande_es_lo_accionable(instancia: pathlib.Path) -> None:
+    """Los ``SI`` van primero: al ajustar se sacan de atrás, así que el único ``SI`` de la instancia sobrevive."""
+    _muchas_texturas(instancia, 40)
+
+    respuesta = await _ejecutar(_registro(instancia), mod=_MOD)
+
+    assert respuesta["texturas"][0]["efecto"] == "SI"
+    assert respuesta["texturas"][0]["ruta_de_salida"] == _P1
+
+
+async def test_agente_la_respuesta_pone_el_resumen_y_la_leyenda_antes_del_detalle(instancia: pathlib.Path) -> None:
+    """Si algo recortara el final de la respuesta, lo que se pierde es detalle: la leyenda y los conteos no van al final."""
+    _muchas_texturas(instancia, 3)
+
+    claves = list(json.loads(await _registro(instancia).execute(_NOMBRE, {"mod": _MOD})))
+
+    assert claves[-1] == "texturas"
+    assert claves.index("alcance") < claves.index("texturas")
+    assert claves.index("conteo") < claves.index("texturas")
+
+
+async def test_gui_el_resultado_grande_no_se_recorta_por_el_presupuesto_del_agente(instancia: pathlib.Path) -> None:
+    """El presupuesto es del router del agente: la GUI recibe el resultado compartido completo (ya acotado a 50 texturas)."""
+    _muchas_texturas(instancia, 40)
+
+    resultado = await _estrategia(instancia).execute({"mod": _MOD})
+
+    assert len(resultado["texturas"]) == 41
+    assert resultado["truncado"] is False
+
+
+def test_el_plazo_de_la_lectura_es_menor_que_el_de_cada_tool_del_router() -> None:
+    """Si el plazo fuera mayor, el router cancelaría su espera con el hilo todavía leyendo: el agente nunca vería ni el resultado ni el
+    fallo estructurado del plazo, y el hilo seguiría hasta agotarlo. Tiene que vencer ANTES de que el router se canse de esperar."""
+    from sky_claw.app.agent.router import DEFAULT_TOOL_ROUND_TIMEOUT
+    from sky_claw.local.native_parallax.elegibilidad import PLAZO_DE_LAS_SUPERFICIES
+
+    assert PLAZO_DE_LAS_SUPERFICIES < DEFAULT_TOOL_ROUND_TIMEOUT

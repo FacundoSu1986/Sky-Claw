@@ -132,3 +132,21 @@ def test_las_tools_de_lectura_de_parallax_se_declaran_de_solo_lectura_en_el_agen
 
     for nombre in TOOLS_DE_LECTURA_DE_PARALLAX:
         assert herramientas[nombre].description.startswith("Read-only"), nombre
+
+
+def test_ninguna_tool_de_parallax_del_agente_serializa_por_su_cuenta() -> None:
+    """El router recorta a mano por el final lo que pasa de 4000 caracteres: toda respuesta de estas tools pasa por ``_para_el_modelo``
+    (que la ajusta al presupuesto con la leyenda de alcance primero). Una tool nueva que hiciera su propio ``json.dumps`` volvería a
+    mandarle al modelo veredictos sin sus salvedades; este censo la rompe hasta que pase por el mismo camino."""
+    arbol = ast.parse((_RAIZ / _AGENTE / "parallax_tools.py").read_text(encoding="utf-8"))
+    funciones_con_dumps = {
+        funcion.name
+        for funcion in ast.walk(arbol)
+        if isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef)
+        for nodo in ast.walk(funcion)
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dumps"
+    }
+    tools = {funcion.name for funcion in ast.walk(arbol) if isinstance(funcion, ast.AsyncFunctionDef)}
+
+    assert funciones_con_dumps == {"_para_el_modelo"}
+    assert tools == {"diagnosticar_parallax_perfil", "evaluar_parallax_elegibilidad"}

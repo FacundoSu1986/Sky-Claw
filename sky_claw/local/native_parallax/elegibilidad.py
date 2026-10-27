@@ -73,8 +73,11 @@ MAXIMO_DE_TEXTURAS_EN_EL_RESULTADO: Final = 50
 #: Cuántas mallas no leídas se nombran en el resultado de tool (el total viaja en ``n_mallas_no_leidas``).
 _MAXIMO_DE_MALLAS_NO_LEIDAS_EN_EL_RESULTADO: Final = 5
 #: Plazo de la lectura de mallas para las superficies de tool (segundos). La lectura es lo único que escala con el perfil y corre en un
-#: hilo que quien cancela su espera no puede detener: acotarla evita un hilo huérfano leyendo decenas de miles de NIFs.
-PLAZO_DE_LAS_SUPERFICIES: Final = 300.0
+#: hilo que quien cancela su espera no puede detener: acotarla evita un hilo huérfano leyendo decenas de miles de NIFs. Tiene que vencer
+#: ANTES que el presupuesto por tool del router del agente (``DEFAULT_TOOL_ROUND_TIMEOUT``, 120 s): si no, el router cancela su espera con el
+#: hilo todavía leyendo y el agente nunca ve ni el resultado ni el fallo estructurado del plazo (lo ancla
+#: ``tests/test_evaluar_parallax_elegibilidad_superficies.py``). Un perfil que necesite más usa la línea de comandos, que no tiene plazo.
+PLAZO_DE_LAS_SUPERFICIES: Final = 100.0
 
 #: Lo que esta lectura prueba y lo que no: viaja en cada informe para que ninguna superficie lo presente como una prueba in-game.
 ALCANCE_DE_LA_ELEGIBILIDAD: Final = (
@@ -309,7 +312,7 @@ def evaluar_elegibilidad(
         if plazo is not None and time.monotonic() - inicio >= plazo:
             raise PerfilError(
                 f"la lectura de mallas superó el plazo de {plazo:g} s (con {leidas} leídas): no se afirma nada de un perfil que no se "
-                "leyó entero"
+                "leyó entero. Para un perfil así usá la línea de comandos (`cli elegibilidad`), que no tiene plazo."
             )
         etiqueta_de_malla = f"{ganador.ruta_virtual} [{ganador.capa}]"
         try:
