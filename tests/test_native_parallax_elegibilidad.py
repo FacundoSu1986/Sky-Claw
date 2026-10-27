@@ -596,6 +596,8 @@ def test_una_entrada_tapada_por_otro_mod_no_se_publicaria_y_se_dice(mundo: Mundo
 
     assert textura.efecto is EfectoPosible.NO
     assert "no la publicaría" in textura.razon
+    assert textura.mallas == ()
+    assert textura.n_mallas == 0
     assert "ENTRADA TAPADA" in textura.razon
 
 

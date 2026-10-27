@@ -142,7 +142,7 @@ def _salidas_que_nombra_sin_carpeta(candidatos: tuple[CandidatoDeRelieve, ...], 
     posibles: set[str] = set()
     for candidato in candidatos:
         clave = _clave(candidato.ruta)
-        if candidato.ruta and not clave.startswith("textures/"):
+        if not clave.startswith("textures/"):
             posible = f"textures/{clave}"
             if posible in salidas:
                 posibles.add(posible)
