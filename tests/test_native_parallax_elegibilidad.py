@@ -870,3 +870,31 @@ def test_sin_texturas_recortadas_el_resultado_no_se_marca_truncado(mundo: Mundo)
     assert resultado["n_texturas"] == 1
     assert len(resultado["texturas"]) == 1  # type: ignore[arg-type]
     assert resultado["truncado"] is False
+
+
+class _RelojControlado:
+    """``time.monotonic`` de a una lectura por llamada: la primera es el inicio y las siguientes devuelven ``inicio + transcurrido``."""
+
+    def __init__(self, transcurrido: float) -> None:
+        self._transcurrido = transcurrido
+        self._leyo_el_inicio = False
+
+    def monotonic(self) -> float:
+        if not self._leyo_el_inicio:
+            self._leyo_el_inicio = True
+            return 100.0
+        return 100.0 + self._transcurrido
+
+
+def test_el_plazo_se_agota_justo_al_llegar_a_el_y_no_un_instante_antes(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La frontera exacta, con un reloj controlado (con el real es inobservable): transcurrido == plazo ya es plazo agotado."""
+    mundo.malla(_nif())
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=5.0))
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=4.999))
+    assert mundo.evaluar(plazo=5.0).texturas[0].efecto is EfectoPosible.SI
