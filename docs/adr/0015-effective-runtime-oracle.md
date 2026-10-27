@@ -571,3 +571,12 @@ identificaron y corrigieron cuatro fronteras críticas:
       validando que el clone mantenga intacto su estado `PROVISIONED`, linaje y ruta física. Si otro participante invalida o
       modifica el clone concurrentemente durante el intervalo de evaluación, `desired_runtime_from_storage` descarta la autoridad
       y devuelve `clone_root=None`, impidiendo que el oráculo otorgue un `MATCH` espurio sobre un clone desacreditado.
+
+14. **Protección integral ante alias 8.3 de Windows y validación anticipada de Managed Source:**
+    - `admitir_clone_root_path` rechaza de inmediato cualquier componente léxico con patrón de alias corto de Windows 8.3 (`~\\d`).
+      Asimismo, en plataformas Windows resuelve el nombre largo canónico vía `GetLongPathNameW` / `os.path.realpath` y rechaza
+      fail-closed cualquier discrepancia entre la ruta léxica normalizada y el nombre largo canónico. La contención de Steamapps
+      y Storage se audita exhaustivamente sobre las rutas declaradas, resueltas y canónicas largas, impidiendo cualquier elusión
+      de contención basada en nombres cortos.
+    - `registrar_runtime_clone_record` acepta `managed_source_root` opcional y lo transfiere a `admitir_clone_root_path`,
+      proporcionando validación fail-fast al momento del registro.

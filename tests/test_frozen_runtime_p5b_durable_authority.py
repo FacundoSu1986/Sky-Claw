@@ -1764,3 +1764,17 @@ class TestFrozenRuntimeP5BDurableAuthority:
         vers_dir = root / "versions" / gen_id
         with pytest.raises(RuntimeCloneAdmissionError, match="versions/"):
             admitir_clone_root_path(vers_dir, storage_root=root)
+
+    def test_33_admision_rechaza_alias_83_y_expande_nombres_largos(self, tmp_path: pathlib.Path) -> None:
+        """33. Codex: admitir_clone_root_path rechaza alias 8.3 de Windows y evalúa nombres largos canónicos."""
+        # 1. Rechazo léxico de alias 8.3 con patrón ~[0-9]
+        with pytest.raises(RuntimeCloneAdmissionError, match="alias de nombre corto 8.3"):
+            admitir_clone_root_path(r"C:\Steam\STEAMA~1\common\Skyrim")
+
+        with pytest.raises(RuntimeCloneAdmissionError, match="alias de nombre corto 8.3"):
+            admitir_clone_root_path("/opt/games/PROGRA~1/Skyrim")
+
+        # 2. En Windows, alias 8.3 existente debe ser rechazado
+        if sys.platform == "win32" and pathlib.Path("C:/PROGRA~1").exists():
+            with pytest.raises(RuntimeCloneAdmissionError, match="alias"):
+                admitir_clone_root_path("C:/PROGRA~1")

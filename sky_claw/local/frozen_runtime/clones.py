@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import re
+import sys
 from typing import Any
 
 from sky_claw.app.security.links import link_kind_or_raise
@@ -137,6 +138,25 @@ def validar_runtime_setup_id(setup_id: str) -> str:
     return setup_id.strip()
 
 
+def _canonical_long_path_windows(p: pathlib.Path) -> pathlib.Path:
+    """Obtiene el nombre largo canónico en Windows expandiendo alias 8.3."""
+    if sys.platform != "win32":
+        return p
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(32768)
+        chars = ctypes.windll.kernel32.GetLongPathNameW(str(p), buf, 32768)
+        if 0 < chars < 32768:
+            return pathlib.Path(buf.value)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        pass
+    try:
+        return pathlib.Path(os.path.realpath(p))
+    except (OSError, RuntimeError):
+        return p
+
+
 def admitir_clone_root_path(
     root_path: pathlib.Path | str,
     *,
@@ -147,6 +167,7 @@ def admitir_clone_root_path(
 
     Reglas:
     - Ruta absoluta y normalizada, sin componentes relativos ('..' o '.').
+    - Sin alias de nombre corto 8.3 de Windows ni discrepancias con el nombre largo canónico.
     - Sin symlinks, junctions ni reparse points en la ruta ni sus ancestros.
     - Fuera de steamapps/common (Managed Source) y de cualquier directorio steamapps.
     - Fuera de versions/ del storage (SFR-19: una Generation nunca es runtime ejecutado).
@@ -158,6 +179,11 @@ def admitir_clone_root_path(
         raise RuntimeCloneAdmissionError(
             f"la ruta del clone contiene componentes relativos ('..' o '.'): '{root_path}'"
         )
+    for parte in partes_crudo:
+        if re.search(r"~\d", parte):
+            raise RuntimeCloneAdmissionError(
+                f"la ruta del clone contiene un alias de nombre corto 8.3 de Windows no permitido: '{parte}'"
+            )
 
     ruta = pathlib.Path(root_path)
     if not ruta.is_absolute():
@@ -183,26 +209,37 @@ def admitir_clone_root_path(
     if forma is not None:
         raise RuntimeCloneAdmissionError(f"nombre de ruta de clone reservado en Windows: {forma}")
 
-    # Exclusión de steamapps y steamapps/common sobre la ruta canónica y todos sus ancestros
-    for componente in (norm_ruta, *norm_ruta.parents):
-        if componente.name.casefold() == "common" and componente.parent.name.casefold() == "steamapps":
-            raise RuntimeCloneAdmissionError(
-                f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
-            )
-        if componente.name.casefold() == "steamapps":
-            raise RuntimeCloneAdmissionError(
-                f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
-            )
-
-    # Exclusión respecto del storage root
+    # Validación y expansión de nombres largos canónicos en Windows
     try:
         resolved_ruta = norm_ruta.resolve()
     except (OSError, RuntimeError):
         resolved_ruta = norm_ruta
 
+    long_ruta = _canonical_long_path_windows(norm_ruta)
+    if norm_ruta.exists() and sys.platform == "win32":
+        if os.path.normcase(str(norm_ruta)).rstrip("\\/") != os.path.normcase(str(long_ruta)).rstrip("\\/"):
+            raise RuntimeCloneAdmissionError(
+                f"la ruta del clone contiene un alias 8.3 de Windows no canónico: '{norm_ruta}' != '{long_ruta}'"
+            )
+
+    rutas_a_evaluar = {norm_ruta, long_ruta, resolved_ruta}
+
+    # Exclusión de steamapps y steamapps/common sobre la ruta canónica y todos sus ancestros
+    for r in rutas_a_evaluar:
+        for componente in (r, *r.parents):
+            if componente.name.casefold() == "common" and componente.parent.name.casefold() == "steamapps":
+                raise RuntimeCloneAdmissionError(
+                    f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
+                )
+            if componente.name.casefold() == "steamapps":
+                raise RuntimeCloneAdmissionError(
+                    f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
+                )
+
+    # Exclusión respecto del storage root
     if storage_root is not None:
         s_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(storage_root))))
-        for target in {norm_ruta, resolved_ruta}:
+        for target in rutas_a_evaluar:
             if _contenida(target, versions_dir(s_root)):
                 raise RuntimeCloneAdmissionError(
                     "el root del clone está dentro de versions/ (violación SFR-19: Generation nunca es runtime ejecutado)"
@@ -221,7 +258,7 @@ def admitir_clone_root_path(
     # Exclusión respecto de la Managed Source
     if managed_source_root is not None:
         ms_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(managed_source_root))))
-        for target in {norm_ruta, resolved_ruta}:
+        for target in rutas_a_evaluar:
             if _contenida(target, ms_root):
                 raise RuntimeCloneAdmissionError(
                     f"el root del clone está dentro de (o es) la Managed Source: '{target}'"
