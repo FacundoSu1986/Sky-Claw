@@ -183,6 +183,14 @@ def save_frozen_runtime_state(path: pathlib.Path, state: FrozenRuntimeState) -> 
 
 def _save_frozen_runtime_state_locked(ruta: pathlib.Path, state: FrozenRuntimeState) -> None:
     """Cuerpo de la escritura de estado, ya bajo el root lock (no re-adquiere)."""
+    if not isinstance(state.schema_version, int) or isinstance(state.schema_version, bool):
+        raise StateSchemaError(f"schema_version debe ser int: {state.schema_version!r}")
+    if state.schema_version not in SCHEMA_VERSIONS_SOPORTADOS:
+        raise StateSchemaError(
+            f"schema_version no soportado {state.schema_version}; soportados: {sorted(SCHEMA_VERSIONS_SOPORTADOS)} "
+            "(fail-closed, no se degrada silenciosamente)"
+        )
+
     if state.schema_version == 2:
         payload = {
             "schema_version": 2,

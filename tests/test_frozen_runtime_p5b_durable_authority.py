@@ -1235,3 +1235,302 @@ class TestFrozenRuntimeP5BDurableAuthority:
                 registrar_runtime_clone_record(root, rec_insp)
 
         assert not destino_insp.exists()
+
+    def test_24_admision_rechaza_rutas_con_puntos_relativos_y_evasion_steam(self, tmp_path: pathlib.Path) -> None:
+        """24. admitir_clone_root_path rechaza traversal (..) y evasión de Steam; canonicaliza persistencia."""
+        # 1. Evasión de steamapps mediante componentes relativos
+        steam_base = tmp_path / "steamapps"
+        steam_tmp = steam_base / "tmp"
+        steam_common_skyrim = steam_base / "common" / "Skyrim"
+        steam_common_skyrim.mkdir(parents=True, exist_ok=True)
+        steam_tmp.mkdir(parents=True, exist_ok=True)
+
+        evasion_path = steam_tmp / ".." / "common" / "Skyrim"
+        with pytest.raises(RuntimeCloneAdmissionError, match="área administrada por Steam|relativos|no normalizados"):
+            admitir_clone_root_path(evasion_path)
+
+        # 2. Rutas con '..' en cualquier posición
+        with pytest.raises(RuntimeCloneAdmissionError, match="relativos|no normalizados"):
+            admitir_clone_root_path(tmp_path / "foo" / ".." / "bar")
+
+        # 3. Rutas con '.' explícito en string o path
+        with pytest.raises(RuntimeCloneAdmissionError, match="relativos|no normalizados"):
+            admitir_clone_root_path(f"{tmp_path}/foo/./bar")
+
+        # 4. registrar_runtime_clone_record persiste la ruta canonicalizada
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_canonical")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-canon",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root).replace("/", "\\") if os.name == "nt" else str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        guardado = registrar_runtime_clone_record(root, rec)
+        leido = leer_runtime_clone_record(root, "clone-canon")
+        assert guardado.root_path == leido.root_path
+        # El archivo JSON en disco debe almacenar la ruta canónica normalizada
+        raw_json = json.loads((clones_state_dir(root) / "clone-canon.json").read_text(encoding="utf-8"))
+        assert raw_json["root_path"] == str(pathlib.Path(clone_root).resolve()) or raw_json[
+            "root_path"
+        ] == os.path.normpath(str(clone_root))
+
+    def test_25_admision_y_verificacion_rechazan_reparses_intermedios_e_internos(self, tmp_path: pathlib.Path) -> None:
+        """25. admitir_clone_root_path y verificar_runtime_clone rechazan reparse points intermedios e internos."""
+        # 1. Reparse point en componente ancestro intermedio
+        real_parent = tmp_path / "real_parent"
+        real_parent.mkdir()
+        junc_parent = tmp_path / "junc_parent"
+
+        creado_junc = False
+        if os.name == "nt":
+            res = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junc_parent), str(real_parent)],
+                capture_output=True,
+            )
+            if res.returncode == 0:
+                creado_junc = True
+        else:
+            try:
+                junc_parent.symlink_to(real_parent, target_is_directory=True)
+                creado_junc = True
+            except OSError:
+                pass
+
+        if creado_junc:
+            c_target = junc_parent / "clone1"
+            with pytest.raises(RuntimeCloneAdmissionError, match="reparse point/enlace"):
+                admitir_clone_root_path(c_target)
+
+        # 2. Reparse point insertado dentro del namespace interno del Clone
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_internal_reparse")
+
+        # Insertar un subdirectorio con symlink o junction
+        target_ext = tmp_path / "target_ext"
+        target_ext.mkdir()
+        internal_link = clone_root / "Data" / "internal_junc"
+
+        creado_int = False
+        if os.name == "nt":
+            res = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(internal_link), str(target_ext)],
+                capture_output=True,
+            )
+            if res.returncode == 0:
+                creado_int = True
+        else:
+            try:
+                internal_link.symlink_to(target_ext, target_is_directory=True)
+                creado_int = True
+            except OSError:
+                pass
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-int-rep",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        if creado_int:
+            verif = verificar_runtime_clone(root, "clone-int-rep")
+            assert verif.state is GenerationVerificationState.INVALID
+            assert (
+                "reparse" in verif.message.lower()
+                or "enlace" in verif.message.lower()
+                or "física" in verif.message.lower()
+            )
+
+    def test_26_aislamiento_fisico_rechaza_clone_con_hardlinks_y_objetos_compartidos(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """26. verificar_runtime_clone rechaza hardlinks (st_nlink > 1) y objetos compartidos (SFR-18, ADR 0012 §35.4)."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_hardlink")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-hl",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # 1. Hardlink en archivo crítico (SkyrimSE.exe hacia la Generation)
+        from sky_claw.local.frozen_runtime.storage import generation_dir
+
+        gen_exe = generation_dir(root, gen_id) / "SkyrimSE.exe"
+        clone_exe = clone_root / "SkyrimSE.exe"
+        clone_exe.unlink()
+
+        creado_hl = False
+        try:
+            os.link(gen_exe, clone_exe)
+            creado_hl = True
+        except OSError:
+            pass
+
+        if creado_hl:
+            assert clone_exe.stat().st_nlink > 1
+            verif = verificar_runtime_clone(root, "clone-hl")
+            # Un clon con hardlinks a la Generation JAMÁS puede ser VALID
+            assert verif.state is GenerationVerificationState.INVALID
+            assert (
+                "hardlink" in verif.message.lower()
+                or "compartido" in verif.message.lower()
+                or "física" in verif.message.lower()
+            )
+
+            # desired_runtime_from_storage debe resolver clone_root=None
+            active_state = FrozenRuntimeState(
+                schema_version=2,
+                desired_active_generation=gen_id,
+                desired_clone_id="clone-hl",
+                updated_at_ns=100,
+            )
+            save_frozen_runtime_state(active_state_path(root), active_state)
+            desired = desired_runtime_from_storage(root)
+            assert desired.clone_root is None
+
+        # 2. Hardlink en archivo auxiliar no crítico (Data/aux.txt hacia archivo externo)
+        clone_root_2 = _crear_arbol_juego(tmp_path / "clone_aux_hl")
+        rec2 = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-aux-hl",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root_2),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec2)
+
+        aux_orig = tmp_path / "aux_external.txt"
+        aux_orig.write_text("external content", encoding="utf-8")
+        aux_link = clone_root_2 / "Data" / "aux_linked.txt"
+        creado_aux = False
+        try:
+            os.link(aux_orig, aux_link)
+            creado_aux = True
+        except OSError:
+            pass
+
+        if creado_aux:
+            assert aux_link.stat().st_nlink > 1
+            verif2 = verificar_runtime_clone(root, "clone-aux-hl")
+            assert verif2.state is GenerationVerificationState.INVALID
+            assert "hardlink" in verif2.message.lower() or "física" in verif2.message.lower()
+
+    def test_27_lineage_binding_metadata_generation_incoherente_rechazada(self, tmp_path: pathlib.Path) -> None:
+        """27. leer_generation_metadata y verificar_runtime_clone exigen vinculación estricta de generation_id."""
+        from sky_claw.local.frozen_runtime.generations import (
+            generations_state_dir,
+            leer_generation_metadata,
+        )
+
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_lineage")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-lineage",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # Adulterar metadata de gen_id en disco para que declare "gen-fake"
+        meta_file = generations_state_dir(root) / f"{gen_id}.json"
+        data = json.loads(meta_file.read_text(encoding="utf-8"))
+        data["generation_id"] = "1.6.1170__000000000000"
+        meta_file.write_text(json.dumps(data), encoding="utf-8")
+
+        # 1. leer_generation_metadata debe fallar cerrado con StateCorruptError
+        with pytest.raises(StateCorruptError, match="coincide|namespace"):
+            leer_generation_metadata(root, gen_id)
+
+        # 2. verificar_runtime_clone debe retornar INVALID
+        verif = verificar_runtime_clone(root, "clone-lineage")
+        assert verif.state is GenerationVerificationState.INVALID
+
+        # 3. desired_runtime_from_storage resuelve clone_root=None
+        active_state = FrozenRuntimeState(
+            schema_version=2,
+            desired_active_generation=gen_id,
+            desired_clone_id="clone-lineage",
+            updated_at_ns=100,
+        )
+        save_frozen_runtime_state(active_state_path(root), active_state)
+        desired = desired_runtime_from_storage(root)
+        assert desired.clone_root is None
+
+    def test_28_state_schema_versioning_estricto_sin_downgrade_silencioso(self, tmp_path: pathlib.Path) -> None:
+        """28. _save_frozen_runtime_state_locked rechaza schemas no soportados y no degrada silenciosamente a v1."""
+        from sky_claw.local.frozen_runtime.state import (
+            load_frozen_runtime_state,
+            save_frozen_runtime_state,
+        )
+
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+
+        # Inicializar estado legítimo v2
+        active_v2 = FrozenRuntimeState(
+            schema_version=2,
+            desired_active_generation="1.6.1170__abcdef123456",
+            updated_at_ns=1000,
+            desired_clone_id="clone-v2",
+        )
+        save_frozen_runtime_state(active_state_path(root), active_v2)
+
+        # Intentar escribir estados con schema_version inválido o no soportado
+        for bad_schema in (99, True, -1, 0, 3, "2"):
+            bad_state = FrozenRuntimeState(
+                schema_version=bad_schema,  # type: ignore[arg-type]
+                desired_active_generation="1.6.1170__abcdef123456",
+                updated_at_ns=2000,
+                desired_clone_id="clone-v2",
+            )
+            with pytest.raises(StateSchemaError, match="schema_version"):
+                save_frozen_runtime_state(active_state_path(root), bad_state)
+
+        # Verificar que active.json v2 se mantiene intacto sin downgrade a v1
+        cargado = load_frozen_runtime_state(active_state_path(root))
+        assert cargado.state is not None
+        assert cargado.state.schema_version == 2
+        assert cargado.state.desired_generation_id == "1.6.1170__abcdef123456"
+        assert cargado.state.desired_clone_id == "clone-v2"
+        assert cargado.state.updated_at_ns == 1000

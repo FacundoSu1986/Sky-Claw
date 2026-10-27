@@ -29,7 +29,10 @@ from sky_claw.local.frozen_runtime.errors import (
     RuntimeCloneSchemaError,
 )
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
-from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
+from sky_claw.local.frozen_runtime.independence import (
+    descripcion_de_enlace,
+    verify_clone_physical_integrity,
+)
 from sky_claw.local.frozen_runtime.state import write_json_atomic
 from sky_claw.local.frozen_runtime.storage import (
     _RESERVADOS_WINDOWS,
@@ -37,12 +40,14 @@ from sky_claw.local.frozen_runtime.storage import (
     _forma_reservada_windows,
     candidates_dir,
     clone_record_path,
+    generation_dir,
     state_dir,
     versions_dir,
 )
 from sky_claw.local.frozen_runtime.storage_models import (
     GenerationVerificationResult,
     GenerationVerificationState,
+    IndependenceState,
     RuntimeCloneLifecycle,
     RuntimeCloneRecord,
 )
@@ -141,59 +146,81 @@ def admitir_clone_root_path(
     """Admisión fail-closed de la ruta operativa de un Runtime Clone.
 
     Reglas:
-    - Ruta absoluta y normalizada.
+    - Ruta absoluta y normalizada, sin componentes relativos ('..' o '.').
     - Sin symlinks, junctions ni reparse points en la ruta ni sus ancestros.
-    - Fuera de steamapps/common (Managed Source) y de la Managed Source explícita.
+    - Fuera de steamapps/common (Managed Source) y de cualquier directorio steamapps.
     - Fuera de versions/ del storage (SFR-19: una Generation nunca es runtime ejecutado).
     - Fuera de candidates/ y state/ del storage.
     """
+    raw_path_str = os.fspath(root_path)
+    partes_crudo = [p for p in re.split(r"[\\/]", raw_path_str) if p]
+    if ".." in partes_crudo or "." in partes_crudo:
+        raise RuntimeCloneAdmissionError(
+            f"la ruta del clone contiene componentes relativos ('..' o '.'): '{root_path}'"
+        )
+
     ruta = pathlib.Path(root_path)
     if not ruta.is_absolute():
         raise RuntimeCloneAdmissionError(f"la ruta del clone debe ser absoluta: '{root_path}'")
 
-    # Inspección de enlaces / reparse points
+    norm_str = os.path.normpath(os.path.abspath(raw_path_str))
+    norm_ruta = pathlib.Path(norm_str)
+
+    # Inspección de enlaces / reparse points sobre la ruta declarada y la canónica
     motivo = descripcion_de_enlace(ruta)
     if motivo is not None:
         raise RuntimeCloneAdmissionError(f"root de clone redirigido por reparse point/enlace: {motivo}")
+    if norm_ruta != ruta:
+        motivo_norm = descripcion_de_enlace(norm_ruta)
+        if motivo_norm is not None:
+            raise RuntimeCloneAdmissionError(
+                f"root de clone resuelto redirigido por reparse point/enlace: {motivo_norm}"
+            )
 
-    forma = _forma_reservada_windows(ruta.name)
+    forma = _forma_reservada_windows(norm_ruta.name)
     if forma is not None:
         raise RuntimeCloneAdmissionError(f"nombre de ruta de clone reservado en Windows: {forma}")
 
-    # Exclusión de steamapps/common
-    for componente in (ruta, *ruta.parents):
+    # Exclusión de steamapps y steamapps/common sobre la ruta canónica y todos sus ancestros
+    for componente in (norm_ruta, *norm_ruta.parents):
         if componente.name.casefold() == "common" and componente.parent.name.casefold() == "steamapps":
+            raise RuntimeCloneAdmissionError(
+                f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
+            )
+        if componente.name.casefold() == "steamapps":
             raise RuntimeCloneAdmissionError(
                 f"el root del clone está dentro de un área administrada por Steam: '{componente}'"
             )
 
     # Exclusión respecto del storage root
     if storage_root is not None:
-        s_root = pathlib.Path(storage_root)
-        if _contenida(ruta, versions_dir(s_root)):
+        s_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(storage_root))))
+        if _contenida(norm_ruta, versions_dir(s_root)):
             raise RuntimeCloneAdmissionError(
                 "el root del clone está dentro de versions/ (violación SFR-19: Generation nunca es runtime ejecutado)"
             )
-        if _contenida(ruta, candidates_dir(s_root)):
+        if _contenida(norm_ruta, candidates_dir(s_root)):
             raise RuntimeCloneAdmissionError("el root del clone está dentro de candidates/")
-        if _contenida(ruta, state_dir(s_root)):
+        if _contenida(norm_ruta, state_dir(s_root)):
             raise RuntimeCloneAdmissionError("el root del clone está dentro de state/")
-        if _contenida(ruta, s_root):
-            raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) el storage root: '{ruta}'")
-        if _contenida(s_root, ruta):
+        if _contenida(norm_ruta, s_root):
+            raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) el storage root: '{norm_ruta}'")
+        if _contenida(s_root, norm_ruta):
             raise RuntimeCloneAdmissionError(
-                f"el storage root está dentro del root del clone (ancestro no permitido): '{ruta}'"
+                f"el storage root está dentro del root del clone (ancestro no permitido): '{norm_ruta}'"
             )
 
     # Exclusión respecto de la Managed Source
     if managed_source_root is not None:
-        ms_root = pathlib.Path(managed_source_root)
-        if _contenida(ruta, ms_root):
-            raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) la Managed Source: '{ruta}'")
-        if _contenida(ms_root, ruta):
+        ms_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(managed_source_root))))
+        if _contenida(norm_ruta, ms_root):
+            raise RuntimeCloneAdmissionError(
+                f"el root del clone está dentro de (o es) la Managed Source: '{norm_ruta}'"
+            )
+        if _contenida(ms_root, norm_ruta):
             raise RuntimeCloneAdmissionError(f"la Managed Source está dentro del root del clone: '{ms_root}'")
 
-    return pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(ruta))))
+    return norm_ruta
 
 
 def _payload_de_clone_record(record: RuntimeCloneRecord) -> dict[str, Any]:
@@ -367,18 +394,20 @@ def registrar_runtime_clone_record(
     # Validación de admisión de la ruta del clone
     if not isinstance(record.root_path, str) or not record.root_path.strip():
         raise RuntimeCloneSchemaError("root_path debe ser string no vacío")
-    admitir_clone_root_path(record.root_path, storage_root=root)
+    admitted_root = admitir_clone_root_path(record.root_path, storage_root=root)
 
     # Validar existencia de la Generation de origen en el storage
     from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
     from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
 
     try:
-        leer_generation_metadata(root, gid)
-    except (FrozenRuntimeError, OSError, ValueError, KeyError) as exc:
+        gen_meta = leer_generation_metadata(root, gid)
+    except (FrozenRuntimeError, OSError) as exc:
         raise FrozenRuntimeStorageError(
             f"metadata ausente para la generation '{gid}' declarada en clone '{cid}': {exc}"
         ) from exc
+    if gen_meta.generation_id != gid:
+        raise FrozenRuntimeStorageError(f"generation_id en metadata '{gen_meta.generation_id}' no coincide con '{gid}'")
 
     canonical_record = RuntimeCloneRecord(
         schema_version=record.schema_version,
@@ -387,7 +416,7 @@ def registrar_runtime_clone_record(
         lifecycle=record.lifecycle,
         intended_runtime_setup_id=intended,
         verified_runtime_setup_id=verified,
-        root_path=record.root_path,
+        root_path=os.fspath(admitted_root),
         admitted_role=record.admitted_role,
         created_at_ns=record.created_at_ns,
     )
@@ -559,21 +588,30 @@ def verificar_runtime_clone(
     """Verifica físicamente el Runtime Clone contra su Generation registrada."""
     try:
         record = leer_runtime_clone_record(root, clone_id)
-    except (FrozenRuntimeError, OSError, ValueError, KeyError) as exc:
+    except (FrozenRuntimeError, OSError) as exc:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=f"no se pudo cargar el registro del clone '{clone_id}': {exc}",
         )
 
-    # 1. Verificar existencia de la Generation de origen
+    # 1. Verificar existencia y vinculación de la Generation de origen
     from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
 
     try:
         gen_meta = leer_generation_metadata(root, record.source_generation_id)
-    except (FrozenRuntimeError, OSError, ValueError, KeyError) as exc:
+    except (FrozenRuntimeError, OSError) as exc:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=f"Generation de origen no existe o es inválida ({record.source_generation_id}): {exc}",
+        )
+
+    if gen_meta.generation_id != record.source_generation_id:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INVALID,
+            message=(
+                f"Generation de origen con generation_id discordante "
+                f"('{gen_meta.generation_id}' != '{record.source_generation_id}')"
+            ),
         )
 
     # 2. Admisión de la ruta física
@@ -595,7 +633,27 @@ def verificar_runtime_clone(
             recorded=gen_meta,
         )
 
-    # 3. Observación de identidad fresca de runtime
+    # 3. Integridad física y aislamiento del Clone (SFR-18, ADR 0012 §35.4/§35.11)
+    gen_dir = generation_dir(root, record.source_generation_id)
+    integridad = verify_clone_physical_integrity(
+        clone_root,
+        generation_root=gen_dir if gen_dir.is_dir() else None,
+        managed_source_root=managed_source_root,
+    )
+    if integridad.state is IndependenceState.VIOLATED:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INVALID,
+            message=f"integridad física del clone violada: {integridad.message}",
+            recorded=gen_meta,
+        )
+    if integridad.state is IndependenceState.INDETERMINATE:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"integridad física del clone no demostrable: {integridad.message}",
+            recorded=gen_meta,
+        )
+
+    # 4. Observación de identidad fresca de runtime
     try:
         obs = observe_runtime_identity_from_root(clone_root, expected_game_key="skyrimse")
     except RuntimeObservationError as exc:

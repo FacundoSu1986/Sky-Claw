@@ -275,3 +275,104 @@ def verify_generation_physical_integrity(generation_root: pathlib.Path) -> Physi
         state=IndependenceState.INDEPENDENT,
         message=f"sin reparse y st_nlink==1 en {len(archivos)} archivo(s): integridad física de la Generation",
     )
+
+
+def verify_clone_physical_integrity(
+    clone_root: pathlib.Path,
+    *,
+    generation_root: pathlib.Path | None = None,
+    managed_source_root: pathlib.Path | None = None,
+) -> PhysicalIndependenceResult:
+    """SFR-18 y ADR 0012 §35.4/§35.11 para un Runtime Clone.
+
+    Exige:
+    - Sin symlinks/junctions/reparse points en root ni ancestros.
+    - Sin symlinks/junctions/reparse points dentro del namespace del Clone.
+    - Sin hardlinks: st_nlink == 1 en todo archivo regular del Clone.
+    - Sin objetos de archivo compartidos (st_dev, st_ino) con la Generation
+      ni con la Managed Source.
+    - Fail-closed: ante cualquier OSError o inobservabilidad física (st_dev/st_ino <= 0),
+      devuelve INDETERMINATE, nunca INDEPENDENT.
+    """
+    clone = pathlib.Path(clone_root)
+    motivo = descripcion_de_enlace(clone)
+    if motivo is not None:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED, message=f"root de Clone redirigido: {motivo}"
+        )
+    if not clone.is_dir():
+        return PhysicalIndependenceResult(
+            state=IndependenceState.INDETERMINATE, message=f"el Clone '{clone}' no existe o no es un directorio"
+        )
+    try:
+        archivos_clone = _archivos_fisicos(clone, etiqueta="clone")
+    except PhysicalReparseError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.VIOLATED, message=str(exc))
+    except FrozenRuntimeStorageError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+
+    # 1. Multi-link dentro del Clone (hardlinks)
+    multilink = _mencion_multilink(archivos_clone)
+    if multilink:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED,
+            message=(
+                f"archivo(s) multi-link (hardlink) dentro del Clone: {', '.join(multilink)} "
+                "(ADR 0012 §35.4: el Clone debe poseer objetos de archivo físicos independientes)"
+            ),
+        )
+
+    indice_clone = {(st.st_dev, st.st_ino): rel for rel, st in archivos_clone}
+
+    # 2. Sin objetos compartidos con la Generation
+    if generation_root is not None:
+        gen = pathlib.Path(generation_root)
+        if gen.is_dir():
+            try:
+                archivos_gen = _archivos_fisicos(gen, etiqueta="generation")
+                indice_gen = {(st.st_dev, st.st_ino): rel for rel, st in archivos_gen}
+                compartidos_gen: list[tuple[str, str]] = []
+                for clave, rel_clone in indice_clone.items():
+                    rel_gen = indice_gen.get(clave)
+                    if rel_gen is not None:
+                        compartidos_gen.append((rel_clone, rel_gen))
+                if compartidos_gen:
+                    detalles = [f"{rc} <-> {rg}" for rc, rg in compartidos_gen[:5]]
+                    return PhysicalIndependenceResult(
+                        state=IndependenceState.VIOLATED,
+                        message=(
+                            f"{len(compartidos_gen)} objeto(s) compartido(s) entre Clone y Generation (hardlink): "
+                            f"{', '.join(detalles)} (SFR-18)"
+                        ),
+                    )
+            except (PhysicalReparseError, FrozenRuntimeStorageError) as exc:
+                return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+
+    # 3. Sin objetos compartidos con la Managed Source
+    if managed_source_root is not None:
+        src = pathlib.Path(managed_source_root)
+        if src.is_dir():
+            try:
+                archivos_src = _archivos_fisicos(src, etiqueta="managed source")
+                indice_src = {(st.st_dev, st.st_ino): rel for rel, st in archivos_src}
+                compartidos_src: list[tuple[str, str]] = []
+                for clave, rel_clone in indice_clone.items():
+                    rel_src = indice_src.get(clave)
+                    if rel_src is not None:
+                        compartidos_src.append((rel_clone, rel_src))
+                if compartidos_src:
+                    detalles = [f"{rc} <-> {rs}" for rc, rs in compartidos_src[:5]]
+                    return PhysicalIndependenceResult(
+                        state=IndependenceState.VIOLATED,
+                        message=(
+                            f"{len(compartidos_src)} objeto(s) compartido(s) entre Clone y Managed Source (hardlink): "
+                            f"{', '.join(detalles)} (SFR-18)"
+                        ),
+                    )
+            except (PhysicalReparseError, FrozenRuntimeStorageError) as exc:
+                return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+
+    return PhysicalIndependenceResult(
+        state=IndependenceState.INDEPENDENT,
+        message=f"sin reparse y st_nlink==1 en {len(archivos_clone)} archivo(s): integridad física del Clone",
+    )

@@ -516,3 +516,30 @@ identificaron y corrigieron cuatro fronteras críticas:
      `os.replace()` clobberee el enlace. En caso de ausencia legítima, la creación
      utiliza `reservar_ruta_json_exclusiva` (`O_CREAT | O_EXCL`) para garantizar
      un único ganador a nivel de filesystem antes de la escritura atómica.
+
+10. **Aislamiento físico e inmunidad ante hardlinks / reparse points en clones (SFR-18, ADR 0012 §35.4/§35.11):**
+    - Se introduce `verify_clone_physical_integrity` en `independence.py` para auditar el namespace
+      completo del Runtime Clone antes de otorgar validez:
+      - Inspección de enlaces en la raíz y todos sus ancestros (`descripcion_de_enlace`).
+      - Recorrido recursivo fail-closed que prohíbe reparse points o symlinks dentro del árbol interno
+        del Clone (`PhysicalReparseError` -> veredicto `INVALID`).
+      - Exigencia estricta de `st_nlink == 1` en todo archivo regular: cualquier hardlink (sea en archivos
+        críticos como `SkyrimSE.exe` o auxiliares en subdirectorios) produce veredicto `INVALID`.
+      - Indexación `(st_dev, st_ino)` para asegurar que el Clone no comparta ningún objeto físico
+        con la Generation registrada ni con la Managed Source.
+      - Inobservabilidad física (volúmenes de red o sin reporte de inodo) degrada de forma segura
+        a `INDETERMINATE`, nunca a `VALID`.
+
+11. **Anti-evasión de contención Steam, canonicalización de ruta durable y linaje estricto:**
+    - `admitir_clone_root_path` rechaza componentes relativos (`..` y `.`) y evalúa la contención
+      de Steam (`steamapps`, `steamapps/common`) sobre la ruta física canónica y todos sus ancestros,
+      cerrando cualquier intento de evasión de contención por prefijos engañosos.
+    - `registrar_runtime_clone_record` persiste la ruta canónica admitida (`os.fspath(admitted_root)`),
+      eliminando cualquier disparidad entre el valor validado en memoria y el registro en disco.
+    - `leer_generation_metadata` valida que el `generation_id` dentro del payload coincida exactamente
+      con el identificador del namespace (`<id>.json`), lanzando `StateCorruptError` ante divergencia.
+      Asimismo, `verificar_runtime_clone` valida de forma explícita la simetría de linaje con la
+      Generation de origen antes de cualquier comprobación de identidad.
+    - `_save_frozen_runtime_state_locked` aplica validación estricta de schema (`schema_version in {1, 2}`
+      y tipo entero no booleano), fallando con `StateSchemaError` ante schemas no soportados y
+      garantizando que un estado v2 nunca sea degradado silenciosamente a v1 ante datos inválidos.
