@@ -18,10 +18,11 @@ mallas y la enumeración de las normales del mod): si resolviera el perfil por s
 from __future__ import annotations
 
 import pathlib
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Final
+from typing import Any, Final
 
 from sky_claw.local.assets.auto_parallax_regla import (
     CandidatoDeRelieve,
@@ -53,9 +54,12 @@ __all__ = [
     "ALCANCE_DE_LA_ELEGIBILIDAD",
     "MAXIMO_DE_ARCHIVOS_EN_MESHES",
     "MAXIMO_DE_MALLAS_POR_TEXTURA",
+    "MAXIMO_DE_TEXTURAS_EN_EL_RESULTADO",
+    "PLAZO_DE_LAS_SUPERFICIES",
     "EfectoPosible",
     "ElegibilidadDeTextura",
     "InformeDeElegibilidad",
+    "elegibilidad_como_resultado",
     "evaluar_elegibilidad",
 ]
 
@@ -64,6 +68,13 @@ __all__ = [
 MAXIMO_DE_ARCHIVOS_EN_MESHES: Final = 500_000
 #: Cuántas mallas se nombran por textura (el resto se cuenta pero no se lista).
 MAXIMO_DE_MALLAS_POR_TEXTURA: Final = 20
+#: Tope del resultado de tool: lo lee el contexto de un modelo o un panel de la GUI. El total real viaja siempre en ``n_texturas``.
+MAXIMO_DE_TEXTURAS_EN_EL_RESULTADO: Final = 50
+#: Cuántas mallas no leídas se nombran en el resultado de tool (el total viaja en ``n_mallas_no_leidas``).
+_MAXIMO_DE_MALLAS_NO_LEIDAS_EN_EL_RESULTADO: Final = 5
+#: Plazo de la lectura de mallas para las superficies de tool (segundos). La lectura es lo único que escala con el perfil y corre en un
+#: hilo que quien cancela su espera no puede detener: acotarla evita un hilo huérfano leyendo decenas de miles de NIFs.
+PLAZO_DE_LAS_SUPERFICIES: Final = 300.0
 
 #: Lo que esta lectura prueba y lo que no: viaja en cada informe para que ninguna superficie lo presente como una prueba in-game.
 ALCANCE_DE_LA_ELEGIBILIDAD: Final = (
@@ -211,14 +222,21 @@ def evaluar_elegibilidad(
     perfil: str,
     mod: str,
     maximo_de_mallas: int = MAXIMO_DE_ARCHIVOS_EN_MESHES,
+    plazo: float | None = None,
 ) -> InformeDeElegibilidad:
     """Para cada ``*_n.dds`` de *mod*, ¿alguna malla del perfil usaría el ``*_p.dds`` que el generador publicaría?
 
     Síncrono y de solo lectura: lee todas las mallas ganadoras del overlay, así que quien lo llame desde código async lo corre en un hilo.
 
+    ``plazo`` (segundos, ``None`` = sin límite) acota la LECTURA de mallas, que es lo único que escala con el perfil: pasado el plazo se
+    falla cerrado, sin un veredicto parcial (las primeras mallas leídas no bastan para afirmar ``NO`` ni ``SI`` de nada). La enumeración
+    del overlay, previa a la lectura, no se interrumpe: ya está acotada por ``maximo_de_mallas``.
+
     Raises:
-        PerfilError: el perfil no permite afirmar quién gana, el mod no tiene normales procesables o hay más archivos que el tope.
+        PerfilError: el perfil no permite afirmar quién gana, el mod no tiene normales procesables, hay más archivos que el tope o se
+            agotó el plazo.
     """
+    inicio = time.monotonic()
     resuelto = cargar_perfil(mods_dir=mods_dir, data_root=data_root, perfil=perfil, mod=mod)
     normales, _omitidas = descubrir_normales_del_mod(
         resuelto.carpeta_del_mod, exigir_completa=True, maximo_de_archivos=MAXIMO_DE_ARCHIVOS_DE_ENTRADA
@@ -288,6 +306,11 @@ def evaluar_elegibilidad(
     # Sin salidas evaluables no hay nada que una malla decida: no se leen para nada.
     mallas_a_leer = indice_de_mallas.con_sufijo(".nif") if salidas else ()
     for ganador in mallas_a_leer:
+        if plazo is not None and time.monotonic() - inicio >= plazo:
+            raise PerfilError(
+                f"la lectura de mallas superó el plazo de {plazo:g} s (con {leidas} leídas): no se afirma nada de un perfil que no se "
+                "leyó entero"
+            )
         etiqueta_de_malla = f"{ganador.ruta_virtual} [{ganador.capa}]"
         try:
             lectura = leer_materiales_de_archivo(ganador.archivo)
@@ -336,3 +359,76 @@ def evaluar_elegibilidad(
         texturas=texturas,
         alcance=ALCANCE_DE_LA_ELEGIBILIDAD,
     )
+
+
+#: Orden del resultado acotado: lo accionable primero. Con el recorte alfabético los ``SI`` podrían quedar fuera del resultado.
+_ORDEN_DE_EFECTOS: Final[dict[EfectoPosible, int]] = {
+    EfectoPosible.SI: 0,
+    EfectoPosible.NO_VERIFICADO: 1,
+    EfectoPosible.NO: 2,
+}
+
+
+def elegibilidad_como_resultado(
+    *,
+    mods_dir: pathlib.Path,
+    data_root: pathlib.Path,
+    perfil: str,
+    mod: str,
+    maximo_de_texturas: int = MAXIMO_DE_TEXTURAS_EN_EL_RESULTADO,
+    plazo: float | None = PLAZO_DE_LAS_SUPERFICIES,
+) -> dict[str, Any]:
+    """La elegibilidad como resultado de tool (``success`` + ``message`` canónico + campos estructurados), ACOTADA.
+
+    Es lo que devuelven la GUI (dispatcher) y el agente LLM: las dos superficies llaman a ESTA función con las mismas raíces y el mismo
+    perfil, así que no pueden contestar distinto (AGENTS.md: dos superficies, un recurso). Síncrona y bloqueante (lee las mallas del
+    perfil): quien la llame desde código async la corre en un hilo. El ``plazo`` por defecto es acotado a propósito: una superficie que
+    no lo pasa no deja, igual, un hilo sin límite.
+
+    Solo un ``PerfilError`` (incluido el plazo agotado) se vuelve resultado (``success: False`` con el motivo en ``message``): cualquier
+    otra excepción es un bug o un fallo inesperado y sube a la capa de errores de la superficie. ``success`` dice que la evaluación
+    CORRIÓ, no que haya texturas con efecto: eso va en ``conteo``.
+
+    ``texturas`` va ordenado con lo accionable primero (``SI``, luego ``NO_VERIFICADO``, luego ``NO``) y recortado a
+    ``maximo_de_texturas``: ``n_texturas`` y ``truncado`` dicen cuántas había. Los textos (rutas de mallas y de texturas, razones) salen
+    del disco y los elige un tercero: quien los muestre a un modelo o a un panel los sanea.
+    """
+    try:
+        informe = evaluar_elegibilidad(mods_dir=mods_dir, data_root=data_root, perfil=perfil, mod=mod, plazo=plazo)
+    except PerfilError as exc:
+        return {
+            "success": False,
+            "message": str(exc),
+            "perfil": perfil,
+            "mod": mod,
+            "alcance": ALCANCE_DE_LA_ELEGIBILIDAD,
+        }
+    ordenadas = sorted(informe.texturas, key=lambda t: (_ORDEN_DE_EFECTOS[t.efecto], _clave(t.ruta_de_salida)))
+    visibles = ordenadas[: max(0, maximo_de_texturas)]
+    conteo = Counter(t.efecto for t in informe.texturas)
+    visibles_no_leidas = informe.mallas_no_leidas[:_MAXIMO_DE_MALLAS_NO_LEIDAS_EN_EL_RESULTADO]
+    return {
+        "success": True,
+        "message": "",
+        "perfil": informe.perfil,
+        "mod": informe.mod,
+        "n_habilitados": informe.n_habilitados,
+        "n_mallas_leidas": informe.n_mallas_leidas,
+        "n_mallas_no_leidas": len(informe.mallas_no_leidas),
+        "mallas_no_leidas": list(visibles_no_leidas),
+        "mallas_no_leidas_truncado": len(visibles_no_leidas) < len(informe.mallas_no_leidas),
+        "n_texturas": len(informe.texturas),
+        "conteo": {efecto.value: conteo.get(efecto, 0) for efecto in EfectoPosible},
+        "texturas": [
+            {
+                "ruta_de_salida": t.ruta_de_salida,
+                "efecto": t.efecto.value,
+                "razon": t.razon,
+                "mallas": list(t.mallas),
+                "n_mallas": t.n_mallas,
+            }
+            for t in visibles
+        ],
+        "truncado": len(visibles) < len(informe.texturas),
+        "alcance": ALCANCE_DE_LA_ELEGIBILIDAD,
+    }

@@ -26,6 +26,7 @@ from sky_claw.app.orchestrator.tool_strategies.base import (
     ToolStrategy,
 )
 from sky_claw.app.orchestrator.tool_strategies.diagnosticar_perfil_parallax import DiagnosticarPerfilParallaxStrategy
+from sky_claw.app.orchestrator.tool_strategies.evaluar_elegibilidad_parallax import EvaluarElegibilidadParallaxStrategy
 from sky_claw.app.orchestrator.tool_strategies.execute_loot_sorting import (
     ExecuteLootSortingStrategy,
 )
@@ -399,6 +400,19 @@ def build_orchestration_dispatcher(
         middleware=[
             ErrorWrappingMiddleware("ParallaxProfileDiagnosticFailed"),
             DictResultGuardMiddleware("InvalidParallaxProfileDiagnosticResult"),
+        ],
+    )
+
+    # NP-A0k: elegibilidad del generador nativo de parallax. READ-ONLY (sin gate); superficie GUI del mismo recurso que expone el
+    # registro del agente LLM (`evaluar_parallax_elegibilidad`). Mismas raíces y mismo perfil de sesión que el diagnóstico del perfil.
+    dispatcher.register(
+        EvaluarElegibilidadParallaxStrategy(
+            raices_provider=dependencies.raices_mo2_provider,
+            default_profile_getter=dependencies.default_profile_getter,
+        ),
+        middleware=[
+            ErrorWrappingMiddleware("ParallaxEligibilityFailed"),
+            DictResultGuardMiddleware("InvalidParallaxEligibilityResult"),
         ],
     )
 
