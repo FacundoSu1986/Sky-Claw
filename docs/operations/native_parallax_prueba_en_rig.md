@@ -77,8 +77,9 @@ Si la carpeta de entrada es un mod de tu MO2, podés pedirle que mire el perfil 
 no mide una textura que otro mod tapa, y **avisa antes de escribir** si otro mod, `overwrite` o un mod de control queda por encima de la salida (o si la salida no está
 habilitada). El aviso no frena la corrida: en la primera vez el mod de salida todavía no existe en tu lista. Para solo mirar, sin generar: `cli perfil --mod … --mods … --data-root …`
 (sale con 4 si hay algo tapado). Es una vista del `modlist.txt`: no reemplaza mirar la pestaña «Datos» ni probar en el juego.
-El mismo diagnóstico está disponible como tool de solo lectura `diagnosticar_parallax_perfil` desde la GUI y desde el agente de Telegram / `/api/chat` (solo se le pasa el
-nombre del mod; usa el perfil de la sesión): las dos contestan con la misma función y sobre las mismas carpetas de MO2.
+El mismo diagnóstico está disponible como tool de solo lectura `diagnosticar_parallax_perfil` desde la GUI —el botón de lupa de cada fila de la pantalla «Mods»; el
+resultado aparece en un panel que se cierra con la ×— y desde el agente de Telegram / `/api/chat` (solo se le pasa el nombre del mod; usa el perfil de la sesión): las dos
+contestan con la misma función y sobre las mismas carpetas de MO2.
 
 Volver a correr el mismo comando recalcula todo pero **no reescribe** lo que no cambió (el informe lo marca `OMITIDA`). Si cambiás un
 parámetro (abajo), esa salida se reemplaza sola.
@@ -142,7 +143,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
-- No hay interfaz gráfica ni agente: solo esta línea de comandos. La integración con MO2 (habilitar el mod solo) viene después.
+- La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
   archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.
