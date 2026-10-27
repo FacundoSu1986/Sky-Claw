@@ -206,3 +206,33 @@ async def test_las_dos_superficies_coinciden_en_que_entradas_fallan(instancia: p
 def test_las_dos_superficies_se_llaman_igual() -> None:
     """Un nombre distinto por superficie es el primer paso para que las dos diverjan sin que nadie lo note."""
     assert DiagnosticarPerfilParallaxStrategy.name == _NOMBRE
+
+
+# ---------------------------------------------------------------------------
+# Revisión de Codex en #822: el presupuesto del router también vale para el hermano
+# ---------------------------------------------------------------------------
+
+
+async def test_una_respuesta_grande_se_ajusta_al_presupuesto_y_conserva_la_leyenda(instancia: pathlib.Path) -> None:
+    """El router recorta a mano lo que pasa de 4000 caracteres, por el final, y la leyenda de alcance iba al final: con 50 hallazgos
+    (~11000 caracteres) el modelo recibía el diagnóstico sin su salvedad («no prueba lo que se ve en el juego»). El hermano
+    ``evaluar_parallax_elegibilidad`` lo tenía igual: se arregla el par, no uno solo."""
+    for i in range(60):
+        _archivo(instancia, _MOD, f"{_CARPETA}/relleno{i:03d}_n.dds")
+        _archivo(instancia, _CONTROL, f"{_CARPETA}/relleno{i:03d}_p.dds")
+    compartido = diagnostico_como_resultado(
+        mods_dir=instancia / "mods", data_root=instancia, perfil="Default", mod=_MOD
+    )
+    assert len(json.dumps(compartido, ensure_ascii=False)) > 4000, (
+        "el caso no excede el presupuesto: el test sería vacuo"
+    )
+
+    crudo = await _registro(instancia).execute(_NOMBRE, {"mod": _MOD})
+
+    assert len(crudo) <= parallax_tools.PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA
+    respuesta = json.loads(crudo)  # entero y válido
+    assert respuesta["alcance"] == compartido["alcance"]
+    assert respuesta["n_hallazgos"] == compartido["n_hallazgos"] == 61  # el total real viaja siempre
+    assert respuesta["truncado"] is True
+    assert 0 < len(respuesta["hallazgos"]) < len(compartido["hallazgos"])
+    assert list(respuesta)[-1] == "hallazgos"  # el detalle va último: si algo se recorta, es detalle

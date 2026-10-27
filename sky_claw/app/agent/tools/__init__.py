@@ -32,12 +32,13 @@ from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
 from .lod_tools import generate_lods, lods_status
 from .nexus_tools import download_mod, search_nexus
-from .parallax_tools import diagnosticar_parallax_perfil
+from .parallax_tools import diagnosticar_parallax_perfil, evaluar_parallax_elegibilidad
 from .schemas import (
     AnalyzeConflictsParams,
     BodySlideBatchParams,
     DiagnosticarParallaxParams,
     DownloadModParams,
+    EvaluarElegibilidadParallaxParams,
     GenerateLodsParams,
     InstallFromArchiveParams,
     InstallModParams,
@@ -682,6 +683,20 @@ class AsyncToolRegistry:
             params_model=DiagnosticarParallaxParams,
             fn=lambda mod: diagnosticar_parallax_perfil(self._mo2, mod, profile=self._mo2_profile),
         )
+        # NP-A0k: elegibilidad del generador nativo de parallax (¿alguna malla del perfil haría usar al plugin la salida?). READ-ONLY y
+        # hermana de la estrategia del dispatcher de la GUI: las dos contestan con `elegibilidad_como_resultado`, con el perfil de la sesión.
+        self._tools["evaluar_parallax_elegibilidad"] = ToolDescriptor(
+            name="evaluar_parallax_elegibilidad",
+            description=(
+                "Read-only. For a mod folder, report whether any loose mesh in the session's MO2 profile would make the Auto "
+                "Parallax plugin use the *_p.dds that the native parallax generator would publish for each of its *_n.dds "
+                "textures: SI (an eligible shape would use it), NO (no shape would, with the reason) or NO_VERIFICADO (it cannot "
+                "be said, e.g. the meshes live in a .bsa). Uses the session profile; it never changes anything. Structural "
+                "reading of meshes only: it does not prove what is visible in game."
+            ),
+            params_model=EvaluarElegibilidadParallaxParams,
+            fn=lambda mod: evaluar_parallax_elegibilidad(self._mo2, mod, profile=self._mo2_profile),
+        )
         # External Tools
         self._tools["setup_tools"] = ToolDescriptor(
             name="setup_tools",
@@ -706,6 +721,7 @@ __all__ = [
     "BodySlideBatchParams",
     "DiagnosticarParallaxParams",
     "DownloadModParams",
+    "EvaluarElegibilidadParallaxParams",
     "InstallFromArchiveParams",
     "InstallModParams",
     "LOOTConfig",
@@ -726,6 +742,7 @@ __all__ = [
     "detect_conflicts",
     "diagnosticar_parallax_perfil",
     "download_mod",
+    "evaluar_parallax_elegibilidad",
     "generate_bashed_patch",
     "install_mod",
     "install_mod_from_archive",

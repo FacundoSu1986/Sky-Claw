@@ -27,9 +27,11 @@ from sky_claw.local.native_parallax.diagnostico_perfil import PerfilError
 from sky_claw.local.native_parallax.elegibilidad import (
     ALCANCE_DE_LA_ELEGIBILIDAD,
     MAXIMO_DE_MALLAS_POR_TEXTURA,
+    PLAZO_DE_LAS_SUPERFICIES,
     EfectoPosible,
     ElegibilidadDeTextura,
     InformeDeElegibilidad,
+    elegibilidad_como_resultado,
     evaluar_elegibilidad,
 )
 from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
@@ -524,10 +526,12 @@ def _llamadores_de(nombre: str) -> set[str]:
 
 
 def test_los_consumidores_de_la_elegibilidad_estan_congelados() -> None:
-    """Hoy la sirve SOLO la línea de comandos. GUI y agente LLM se cablean juntos (AGENTS.md: dos superficies, un recurso): una
-    tercera superficie, o una sola de las dos, rompe esto hasta que se la declare acá junto a las demás."""
+    """``evaluar_elegibilidad`` la llaman la línea de comandos y ``elegibilidad_como_resultado`` (la respuesta compartida de las dos
+    superficies de tool). Un llamador nuevo rompe esto hasta que se lo declare acá; las superficies de tool que usan la respuesta
+    compartida están congeladas en ``tests/test_parallax_superficies_invariant.py``."""
     assert _llamadores_de("evaluar_elegibilidad") == {
         "sky_claw/local/native_parallax/cli.py",
+        "sky_claw/local/native_parallax/elegibilidad.py",
     }
 
 
@@ -681,3 +685,252 @@ def test_un_mod_de_salida_no_habilitado_deja_toda_textura_en_no_aunque_la_malla_
         assert "no la cargaría" in textura.razon
         assert textura.mallas == ()
         assert textura.n_mallas == 0
+
+
+# --- El plazo de la lectura de mallas (NP-A0k) ---------------------------------------------------------------------------------
+
+
+def test_un_plazo_agotado_falla_cerrado_en_vez_de_devolver_un_veredicto_parcial(mundo: Mundo) -> None:
+    """La lectura de mallas es lo único que escala con el perfil. Una superficie que cancela su espera no puede dejar un hilo leyendo
+    decenas de miles de NIFs: pasado el plazo no se afirma NADA (ni un ``SI`` de las primeras mallas leídas)."""
+    mundo.malla(_nif())
+
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=0.0)
+
+
+def test_sin_plazo_o_con_plazo_de_sobra_el_resultado_es_el_mismo(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    sin_plazo = mundo.evaluar()
+    con_plazo = mundo.evaluar(plazo=600.0)
+
+    assert sin_plazo == con_plazo
+    assert sin_plazo.texturas[0].efecto is EfectoPosible.SI
+
+
+def test_el_plazo_sin_mallas_que_leer_no_falla(mundo: Mundo) -> None:
+    """Sin mallas no hay lectura que acotar: el plazo no inventa un fallo."""
+    informe = mundo.evaluar(plazo=0.0)
+
+    assert informe.texturas[0].efecto is EfectoPosible.NO_VERIFICADO
+
+
+# --- La respuesta compartida de las dos superficies de tool (NP-A0k) -----------------------------------------------------------
+
+
+def _resultado(mundo: Mundo, **kw: object) -> dict[str, object]:
+    return elegibilidad_como_resultado(  # type: ignore[arg-type]
+        mods_dir=mundo.mods, data_root=mundo.data, perfil="Default", mod=_MOD, **kw
+    )
+
+
+def test_el_resultado_de_tool_lleva_success_message_vacio_y_los_conteos(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo)
+
+    assert resultado["success"] is True
+    assert resultado["message"] == ""
+    assert resultado["perfil"] == "Default"
+    assert resultado["mod"] == _MOD
+    assert resultado["n_habilitados"] == 3
+    assert resultado["n_mallas_leidas"] == 1
+    assert resultado["n_texturas"] == 1
+    assert resultado["conteo"] == {"SI": 1, "NO": 0, "NO_VERIFICADO": 0}
+    assert resultado["truncado"] is False
+    assert resultado["alcance"] == ALCANCE_DE_LA_ELEGIBILIDAD
+    (textura,) = resultado["texturas"]  # type: ignore[misc]
+    assert textura == {
+        "ruta_de_salida": _P1,
+        "efecto": "SI",
+        "razon": "1 malla donde una forma elegible la usaría",
+        "mallas": [f"{_RUTA_MALLA} [{_MALLAS}]"],
+        "n_mallas": 1,
+    }
+
+
+def test_el_resultado_de_tool_es_serializable_a_json(mundo: Mundo) -> None:
+    import json
+
+    mundo.malla(_nif())
+
+    assert json.loads(json.dumps(_resultado(mundo)))["success"] is True
+
+
+def test_un_error_del_perfil_es_un_resultado_con_success_false_y_el_motivo(mundo: Mundo) -> None:
+    resultado = elegibilidad_como_resultado(mods_dir=mundo.mods, data_root=mundo.data, perfil="Default", mod="Fantasma")
+
+    assert resultado["success"] is False
+    assert "no está habilitado" in str(resultado["message"])
+    assert resultado["perfil"] == "Default"
+    assert resultado["mod"] == "Fantasma"
+    assert resultado["alcance"] == ALCANCE_DE_LA_ELEGIBILIDAD
+    assert "texturas" not in resultado
+
+
+def test_el_plazo_agotado_es_un_resultado_con_success_false_no_una_excepcion(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, plazo=0.0)
+
+    assert resultado["success"] is False
+    assert "plazo" in str(resultado["message"])
+
+
+def test_el_resultado_de_tool_trae_por_defecto_un_plazo_acotado() -> None:
+    """Las dos superficies llaman sin pasar plazo: que sea acotado por construcción, no por acordarse de pasarlo."""
+    import inspect
+
+    por_defecto = inspect.signature(elegibilidad_como_resultado).parameters["plazo"].default
+
+    assert por_defecto == PLAZO_DE_LAS_SUPERFICIES
+    assert 0 < PLAZO_DE_LAS_SUPERFICIES <= 600
+
+
+def test_otra_excepcion_que_no_es_del_perfil_sube_y_no_se_disfraza_de_resultado(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def roto(**_kw: object) -> InformeDeElegibilidad:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(elegibilidad, "evaluar_elegibilidad", roto)
+
+    with pytest.raises(RuntimeError, match="bug"):
+        _resultado(mundo)
+
+
+def test_el_resultado_acota_las_texturas_y_pone_primero_las_que_dan_si(mundo: Mundo) -> None:
+    """Un perfil real puede tener cientos de texturas y el resultado lo lee el contexto de un modelo o un panel: se recorta, y lo que
+    se conserva es lo accionable (los ``SI``), no lo que caiga primero por orden alfabético."""
+    mundo.archivo(_MOD, f"{_CARPETA}/aaa_n.dds")
+    mundo.archivo(_MOD, f"{_CARPETA}/bbb_n.dds")
+    mundo.malla(_nif(difuso=_D1, normal=_NN1))  # solo muro01 tiene una malla elegible; aaa y bbb quedan sin verificar
+
+    resultado = _resultado(mundo, maximo_de_texturas=1)
+
+    assert resultado["n_texturas"] == 3
+    assert resultado["truncado"] is True
+    assert resultado["conteo"] == {"SI": 1, "NO": 0, "NO_VERIFICADO": 2}
+    (visible,) = resultado["texturas"]  # type: ignore[misc]
+    assert visible["ruta_de_salida"] == _P1
+    assert visible["efecto"] == "SI"
+
+
+def test_el_resultado_acota_las_mallas_no_leidas_pero_cuenta_todas(mundo: Mundo) -> None:
+    for i in range(8):
+        mundo.malla(b"no es un nif", ruta=f"meshes/rota{i}.nif")
+
+    resultado = _resultado(mundo)
+
+    assert resultado["n_mallas_no_leidas"] == 8
+    assert len(resultado["mallas_no_leidas"]) == 5  # type: ignore[arg-type]
+    assert resultado["mallas_no_leidas_truncado"] is True
+
+
+def test_el_resultado_de_tool_es_de_solo_lectura(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+    antes = sorted(p.relative_to(mundo.raiz).as_posix() for p in mundo.raiz.rglob("*"))
+
+    _resultado(mundo)
+
+    assert sorted(p.relative_to(mundo.raiz).as_posix() for p in mundo.raiz.rglob("*")) == antes
+
+
+@pytest.mark.parametrize("tope", [0, -1, -50])
+def test_un_tope_de_texturas_cero_o_negativo_no_devuelve_ninguna_pero_cuenta_todas(mundo: Mundo, tope: int) -> None:
+    """El tope se acota en cero: uno negativo no se interpreta como «todas menos N» (un slice negativo) ni cero como «una»."""
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=tope)
+
+    assert resultado["texturas"] == []
+    assert resultado["n_texturas"] == 1
+    assert resultado["truncado"] is True
+
+
+@pytest.mark.parametrize("cuantas", [1, 3, 5])
+def test_hasta_el_tope_de_mallas_no_leidas_no_se_marcan_como_truncadas(mundo: Mundo, cuantas: int) -> None:
+    """Con exactamente el tope (5) no se recorta nada: el aviso de recorte no puede ser un falso positivo."""
+    for i in range(cuantas):
+        mundo.malla(b"no es un nif", ruta=f"meshes/rota{i}.nif")
+
+    resultado = _resultado(mundo)
+
+    assert resultado["n_mallas_no_leidas"] == cuantas
+    assert len(resultado["mallas_no_leidas"]) == cuantas  # type: ignore[arg-type]
+    assert resultado["mallas_no_leidas_truncado"] is False
+
+
+def test_sin_texturas_recortadas_el_resultado_no_se_marca_truncado(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=1)  # hay exactamente una textura: cabe entera
+
+    assert resultado["n_texturas"] == 1
+    assert len(resultado["texturas"]) == 1  # type: ignore[arg-type]
+    assert resultado["truncado"] is False
+
+
+class _RelojControlado:
+    """``time.monotonic`` de a una lectura por llamada: la primera es el inicio y las siguientes devuelven ``inicio + transcurrido``."""
+
+    def __init__(self, transcurrido: float) -> None:
+        self._transcurrido = transcurrido
+        self._leyo_el_inicio = False
+
+    def monotonic(self) -> float:
+        if not self._leyo_el_inicio:
+            self._leyo_el_inicio = True
+            return 100.0
+        return 100.0 + self._transcurrido
+
+
+def test_el_plazo_se_agota_justo_al_llegar_a_el_y_no_un_instante_antes(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La frontera exacta, con un reloj controlado (con el real es inobservable): transcurrido == plazo ya es plazo agotado."""
+    mundo.malla(_nif())
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=5.0))
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=4.999))
+    assert mundo.evaluar(plazo=5.0).texturas[0].efecto is EfectoPosible.SI
+
+
+class _RelojPorLecturas:
+    """``time.monotonic`` que devuelve cada valor una vez y repite el último: permite que el plazo venza en un punto exacto del recorrido."""
+
+    def __init__(self, *valores: float) -> None:
+        self._valores = list(valores)
+
+    def monotonic(self) -> float:
+        return self._valores.pop(0) if len(self._valores) > 1 else self._valores[0]
+
+
+def test_si_el_plazo_vence_durante_la_ultima_malla_el_resultado_completo_se_devuelve(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El plazo se comprueba antes de empezar cada malla: una evaluación que ya leyó TODAS las mallas es completa y correcta aunque la
+    última lectura termine pasado el plazo. Fallarla descartaría una respuesta válida; lo que el plazo evita es seguir leyendo."""
+    mundo.malla(_nif())
+    # 1ª lectura = inicio; 2ª = el chequeo antes de la única malla (a tiempo); desde ahí, mucho después del plazo.
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    informe = mundo.evaluar(plazo=5.0)
+
+    assert informe.texturas[0].efecto is EfectoPosible.SI
+
+
+def test_si_el_plazo_ya_vencio_al_empezar_la_segunda_malla_no_se_afirma_nada(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La otra cara: con una malla más por leer, el chequeo previo a ella corta antes de dar un veredicto parcial."""
+    mundo.malla(_nif(), ruta="meshes/uno.nif")
+    mundo.malla(_nif(), ruta="meshes/dos.nif")
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)

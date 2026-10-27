@@ -188,8 +188,22 @@ La política clean-room, `docs/design/research/native-parallax/` y
   encuentra otra textura suelta, es `NO`); `NO` solo si TODAS las formas que la referencian quedan fuera por una razón nombrada y nada de lo leído quedó incompleto (una malla
   ilegible, o con geometría que el lector no abre, baja el `NO` a `NO_VERIFICADO`); y lo que depende de un archivo que no se puede comprobar (¿dentro de un `.bsa`?) o de las
   mayúsculas de una ruta es `NO_VERIFICADO`, nunca `NO`. Cuenta la malla que GANA en el overlay (el índice de `meshes/` lo arma `diagnostico_perfil.cargar_mallas_del_perfil`: el
-  resolutor se sigue llamando SOLO desde ese módulo) y no abre archivos por su cuenta (la lectura acotada vive en `assets/nif_materiales.leer_materiales_de_archivo`). Hoy la sirve
-  SOLO la línea de comandos (`cli elegibilidad`); GUI y agente LLM se cablean juntos en el paso siguiente, con el censo de superficies congelado como en NP-A0h.
+  resolutor se sigue llamando SOLO desde ese módulo) y no abre archivos por su cuenta (la lectura acotada vive en `assets/nif_materiales.leer_materiales_de_archivo`). Una salida que
+  el generador publicaría pero el juego no cargaría (otra capa de mayor prioridad gana su ruta, o el mod de salida no está habilitado: #792 H12) es `NO` y NO cuenta como «presente»
+  en la búsqueda del plugin: la forma elegible usaría el archivo que SÍ gana, no el nuestro.
+  NP-A0k: la elegibilidad se sirve por TRES caminos y los tres contestan con la misma pieza: `cli elegibilidad` (texto), la estrategia `evaluar_parallax_elegibilidad` del dispatcher de
+  la GUI (`SupervisorAgent` → `tool_dispatcher`) y la tool del mismo nombre del agente LLM (`AsyncToolRegistry`); las dos últimas llaman a `elegibilidad_como_resultado`
+  (`success`/`message` canónico + texturas acotadas a 50, con los `SI` primero, + `conteo` + la leyenda de `alcance`), con las raíces y el perfil de la SESIÓN (ni el payload ni el
+  modelo eligen perfil ni plazo), solo lectura y sin gate HITL (política base lock-only, #217). El agente sanea todo texto con `sanitize_for_prompt`: rutas de mallas y de texturas
+  salen del disco y de dentro de NIFs descargados. La lectura de mallas es lo único que escala con el perfil y corre en un hilo que quien cancela su espera no puede detener:
+  `evaluar_elegibilidad(plazo=…)` falla cerrado (sin veredicto parcial) y `elegibilidad_como_resultado` trae un plazo acotado por defecto (`PLAZO_DE_LAS_SUPERFICIES`, 100 s), así que las
+  superficies no lo pasan; tiene que vencer ANTES que el presupuesto por tool del router (`DEFAULT_TOOL_ROUND_TIMEOUT`, 120 s) o el router cancelaría su espera con el hilo todavía
+  leyendo (un test los ata); un perfil que necesite más usa `cli elegibilidad`, que no tiene plazo. El plazo se comprueba ANTES de empezar cada malla: una lectura ya empezada no se interrumpe (la acota el tamaño, no el tiempo, y un disco o una unidad de red colgados la bloquean), así que el hilo termina como mucho una lectura después del plazo, y una evaluación que ya leyó todas las mallas se devuelve completa aunque la última pase del plazo. El router también recorta A MANO, por el final, todo resultado de tool de más de 4000
+  caracteres: las dos tools de parallax del agente (esta y el diagnóstico del perfil) pasan por `_para_el_modelo`, que pone el resumen y la leyenda de `alcance` primero y le saca
+  entradas del final al detalle hasta que cabe en `PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA` (atado por test al literal del router), marcando `truncado`; la GUI recibe el resultado
+  completo. Una tool de parallax nueva que serialice por su cuenta rompe el censo de `tests/test_parallax_superficies_invariant.py`. Anclas: `tests/test_parallax_superficies_invariant.py` ENUMERA —por AST, quién llama a cada función de resultado (una GUI y un agente cada una) y, por
+  introspección, qué tools de parallax hay en cada registro— y `tests/test_evaluar_parallax_elegibilidad_superficies.py` verifica que las dos superficies dan LA MISMA respuesta sobre
+  la misma instancia. Sin cablear todavía: el botón de la GUI que la invoque (como NP-A0i hizo con el diagnóstico del perfil).
 - **Piso de contenido (NP-NO-EMPTY, #792 H1/H3).** `lote.tiene_contenido` / `DESVIACION_MINIMA_DE_ALTURA` (8/255, la misma de
   `parallax_unattended.auditor.SD_MINIMA`; un test las ata): una altura cuya desviación queda bajo el piso (o no es finita) pasa a
   `EN_REVISION` con el motivo `SIN_CONTENIDO` y veredicto `REVIEW`, **aunque el gate la aceptara y aunque se pida `--incluir-revision`**; no
