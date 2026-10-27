@@ -9,7 +9,7 @@
 > ninguna herramienta cerrada (ver [CLEAN_ROOM.md](../../../../CLEAN_ROOM.md)).
 >
 > **Cómo leer las etiquetas:** `[repo]` = verificado leyendo este repositorio. Para lo externo se usa la
-> taxonomía de `CLEAN_ROOM.md` (SUPPORTED, INFERRED, NO VERIFIED, HYPOTHESIS, REAL_RIG_REQUIRED), definida al
+> taxonomía de `CLEAN_ROOM.md` (SUPPORTED_BY_UPSTREAM, INFERRED, NO VERIFIED, HYPOTHESIS, REAL_RIG_REQUIRED), definida al
 > inicio de la sección 2; las fuentes con URL están en la sección 5. Ninguna afirmación de este documento fue
 > probada dentro del juego.
 
@@ -30,7 +30,7 @@
 ## 2. Hallazgos públicos que sostienen la decisión
 
 Cada hallazgo cita su fuente en la sección 5 (URL, fecha de consulta y estado epistémico, con la taxonomía de
-[CLEAN_ROOM.md](../../../../CLEAN_ROOM.md) «Trazabilidad»). Entre corchetes va el estado: **SUPPORTED** = leído
+[CLEAN_ROOM.md](../../../../CLEAN_ROOM.md) «Trazabilidad»). Entre corchetes va el estado: **SUPPORTED_BY_UPSTREAM** = leído
 en la fuente pública citada; **INFERRED** = deducción nuestra a partir de eso; **NO VERIFIED** = dicho por un
 resumen o por búsqueda, sin leer la fuente primaria; **REAL_RIG_REQUIRED** = solo se confirma en el juego.
 
@@ -39,12 +39,12 @@ resumen o por búsqueda, sin leer la fuente primaria; **REAL_RIG_REQUIRED** = so
 Leído en el código fuente público (S1, S2):
 
 - La activación automática la gobierna `bAutoEnableParallax`, sección `[Experimental]` del INI, cuyo valor
-  distribuido es `false` [SUPPORTED].
+  distribuido es `false` [SUPPORTED_BY_UPSTREAM].
 - Solo actúa si el material es de tipo `kDefault`, si el shader **tiene** la bandera de colores de vértice,
   si **no** tiene `kProjectedUV`, `kSkinned`, `kLODObjects`, `kTreeAnim` ni `kVertexLighting`, y si la geometría
-  **no** tiene propiedad alfa [SUPPORTED].
+  **no** tiene propiedad alfa [SUPPORTED_BY_UPSTREAM].
 - Orden de búsqueda del `_p`: textura de altura del set, luego difuso con el sufijo `_d` cambiado a `_p`, luego
-  normal con `_n` cambiado a `_p` [SUPPORTED].
+  normal con `_n` cambiado a `_p` [SUPPORTED_BY_UPSTREAM].
 - Alcance por tipo de objeto: el módulo del repo `sky_claw/local/assets/auto_parallax_regla.py` documenta que el
   plugin solo actúa sobre objetos base Static, Movable Static y Container, dato que **no está en el NIF** y que
   debe declarar quien consuma la regla `[repo]`; **no se re-verificó hoy contra el código público** de S1
@@ -56,7 +56,7 @@ Leído en el código fuente público (S1, S2):
 ### 2.2 PGPatcher (hakasapl, GPL-3; antes ParallaxGen): la ruta que hoy NO modelamos
 
 Citas literales de la página de la wiki «Patchers» (S4), obtenidas con una herramienta de fetch que devolvió
-el texto entre comillas [SUPPORTED, con la salvedad de que no se leyó la página en un navegador]:
+el texto entre comillas [SUPPORTED_BY_UPSTREAM, con la salvedad de que no se leyó la página en un navegador]:
 
 - Requisitos del parche de parallax: mapa de parallax con prefijo que coincide con el difuso o la normal; la
   malla no se usa como registro `GRAS`; sin `MATO` de pasada única; sin `BSBehaviorGraphExtraData`; forma no
