@@ -561,3 +561,13 @@ identificaron y corrigieron cuatro fronteras críticas:
     - Se restringen las cláusulas `except` en el oráculo para atrapar únicamente excepciones tipadas del
       dominio (`FrozenRuntimeError`) y errores de filesystem (`OSError`), evitando el enmascaramiento de
       errores de programación.
+
+13. **Inmunidad ante invalidaciones concurrentes y obligatoriedad de ciclo de vida PROVISIONED (ADR 0012 §29.3, SFR-17):**
+    - `verificar_runtime_clone` exige como primer paso que `record.lifecycle` sea estrictamente `RuntimeCloneLifecycle.PROVISIONED`.
+      Si el clone se encuentra en cualquier otro estado (`INVALID`, `RETIRED`, `CREATING`), la verificación devuelve de inmediato
+      `GenerationVerificationState.INVALID` fail-closed.
+    - `desired_runtime_from_storage` implementa una doble barrera de lectura consistente (snapshot consistency): tras completar
+      la verificación física del clone, ejecuta una re-lectura fresca del registro durable en disco (`leer_runtime_clone_record`)
+      validando que el clone mantenga intacto su estado `PROVISIONED`, linaje y ruta física. Si otro participante invalida o
+      modifica el clone concurrentemente durante el intervalo de evaluación, `desired_runtime_from_storage` descarta la autoridad
+      y devuelve `clone_root=None`, impidiendo que el oráculo otorgue un `MATCH` espurio sobre un clone desacreditado.

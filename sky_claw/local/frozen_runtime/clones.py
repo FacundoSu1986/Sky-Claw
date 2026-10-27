@@ -601,6 +601,13 @@ def verificar_runtime_clone(
             message=f"no se pudo cargar el registro del clone '{clone_id}': {exc}",
         )
 
+    # 0. El clone debe estar en estado PROVISIONED (ADR 0012 §29.3, SFR-17)
+    if record.lifecycle is not RuntimeCloneLifecycle.PROVISIONED:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INVALID,
+            message=f"el lifecycle del clone '{clone_id}' no es PROVISIONED ({record.lifecycle.value}): fail-closed",
+        )
+
     # 1. Verificar existencia, vinculación e integridad de la Generation de origen (ADR 0012 §29.3, SFR-17)
     from sky_claw.local.frozen_runtime.generations import verificar_generation
 

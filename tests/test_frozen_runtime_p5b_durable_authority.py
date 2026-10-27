@@ -1665,3 +1665,71 @@ class TestFrozenRuntimeP5BDurableAuthority:
         )
         with pytest.raises(RuntimeCloneCorruptError, match="namespace de clones redirigido"):
             registrar_runtime_clone_record(root, rec_nuevo)
+
+    def test_31_verificacion_y_desired_rechazan_clone_con_lifecycle_invalido_o_transicion_concurrente(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """31. Codex: verificar_runtime_clone y desired_runtime rechazan clones no PROVISIONED o invalidados concurrentemente."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_live")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-lifecycle-check",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # Baseline: cuando el clone está PROVISIONED, la verificación es VALID
+        verif_ok = verificar_runtime_clone(root, "clone-lifecycle-check")
+        assert verif_ok.state is GenerationVerificationState.VALID
+
+        # Caso A: Transición a INVALID hace que verificar_runtime_clone sea INVALID (fail-closed)
+        actualizar_lifecycle_clone(root, "clone-lifecycle-check", RuntimeCloneLifecycle.INVALID)
+        verif_invalido = verificar_runtime_clone(root, "clone-lifecycle-check")
+        assert verif_invalido.state is GenerationVerificationState.INVALID
+        assert "no es PROVISIONED" in verif_invalido.message
+
+        # Caso B: Invalidación concurrente entre la lectura inicial de desired_runtime_from_storage y su verificación
+        rec2 = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-concurrente",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(_crear_arbol_juego(tmp_path / "clone_live2")),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec2)
+
+        active_state = FrozenRuntimeState(
+            schema_version=2,
+            desired_active_generation=gen_id,
+            desired_clone_id="clone-concurrente",
+            updated_at_ns=100,
+        )
+        save_frozen_runtime_state(active_state_path(root), active_state)
+
+        from sky_claw.local.frozen_runtime import generations
+
+        orig_leer_gen = generations.leer_generation_metadata
+
+        def _invalidar_concurrente(r: pathlib.Path, gid: str):
+            meta = orig_leer_gen(r, gid)
+            actualizar_lifecycle_clone(r, "clone-concurrente", RuntimeCloneLifecycle.INVALID)
+            return meta
+
+        monkeypatch.setattr(generations, "leer_generation_metadata", _invalidar_concurrente)
+
+        desired = desired_runtime_from_storage(root)
+        assert desired.clone_root is None

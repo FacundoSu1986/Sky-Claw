@@ -225,6 +225,7 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
         RuntimeCloneLifecycle,
         admitir_clone_root_path,
         cargar_runtime_clone_record,
+        leer_runtime_clone_record,
         verificar_runtime_clone,
     )
     from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
@@ -254,8 +255,22 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
     if verif.state is not GenerationVerificationState.VALID:
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
+    # Re-lectura consistente: garantizar que el record no fue invalidado o alterado concurrentemente
     try:
-        clone_root = admitir_clone_root_path(record.root_path, storage_root=pathlib.Path(root))
+        record_final = leer_runtime_clone_record(pathlib.Path(root), clone_id)
+    except (FrozenRuntimeError, OSError):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    if (
+        record_final.lifecycle is not RuntimeCloneLifecycle.PROVISIONED
+        or record_final.source_generation_id != gen_id
+        or record_final.admitted_role != CANONICAL_ADMITTED_ROLE
+        or record_final.root_path != record.root_path
+    ):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    try:
+        clone_root = admitir_clone_root_path(record_final.root_path, storage_root=pathlib.Path(root))
     except (FrozenRuntimeError, OSError):
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
