@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.core.path_resolver import RaicesDeInstanciaMO2
 from sky_claw.app.gui.controllers import ritual_runner
 from sky_claw.app.gui.controllers.ritual_runner import (
     NOMBRE_TOOL_DIAGNOSTICO_PARALLAX,
@@ -29,7 +30,10 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     run_diagnostico_parallax,
 )
 from sky_claw.app.gui.state.reactive_store import ReactiveStore
+from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.app.orchestrator.tool_strategies.diagnosticar_perfil_parallax import DiagnosticarPerfilParallaxStrategy
+from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 
 _RAIZ_DEL_REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -318,6 +322,79 @@ def test_un_hallazgo_que_no_es_un_dict_se_ignora_sin_romper_el_resto() -> None:
 
     assert any("[ENTRADA TAPADA] r: d" in linea for linea in lineas)
     assert not any("texto suelto" in linea for linea in lineas)
+
+
+# ---------------------------------------------------------------------------
+# De punta a punta: controlador -> dispatcher REAL -> estrategia REAL -> disco real
+# ---------------------------------------------------------------------------
+
+
+def _instancia_en_disco(raiz: pathlib.Path) -> RaicesDeInstanciaMO2:
+    """Una instancia MO2 mínima donde un mod de control tapa la salida del generador (el caso H12 de #792)."""
+    carpeta = "textures/architecture/whiterun"
+
+    def archivo(mod: str, ruta: str) -> None:
+        destino = raiz / "mods" / mod / ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(b"x" + mod.encode())
+
+    archivo("Texturas", f"{carpeta}/muro01_n.dds")
+    archivo(NOMBRE_DEL_MOD_DE_SALIDA, "textures/.vacio")
+    archivo("Control", f"{carpeta}/muro01_p.dds")
+    modlist = raiz / "profiles" / "Default" / "modlist.txt"
+    modlist.parent.mkdir(parents=True)
+    modlist.write_text(f"+Control\n+{NOMBRE_DEL_MOD_DE_SALIDA}\n+Texturas\n", encoding="utf-8")
+    return RaicesDeInstanciaMO2(install_root=raiz, data_root=raiz, mods_dir=raiz / "mods")
+
+
+def _supervisor_con_el_dispatcher_real(raices_provider: Any) -> SimpleNamespace:
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_dispatcher(raices_mo2_provider=raices_provider, default_profile_getter=lambda: "Default")
+    )
+    return SimpleNamespace(dispatch_tool=dispatcher.dispatch)
+
+
+async def test_de_punta_a_punta_el_boton_publica_lo_que_el_dispatcher_real_contesta(
+    store: ReactiveStore, tmp_path: pathlib.Path
+) -> None:
+    raices = _instancia_en_disco(tmp_path)
+    supervisor = _supervisor_con_el_dispatcher_real(lambda: raices)
+
+    await run_diagnostico_parallax("Texturas", supervisor=supervisor, store=store, tab_id="t1")
+
+    entrada = diagnostico_parallax_de(store, "t1")
+    assert entrada is not None and entrada["resultado"]["success"] is True
+    assert [(h["tipo"]) for h in entrada["resultado"]["hallazgos"]] == ["SALIDA TAPADA"]
+    lineas = lineas_del_diagnostico_parallax(entrada["resultado"])
+    assert any("SALIDA TAPADA" in linea and "Control" in linea for linea in lineas)
+
+
+async def test_de_punta_a_punta_un_fallo_inesperado_llega_al_panel_con_su_detalle(store: ReactiveStore) -> None:
+    """El ErrorWrappingMiddleware del dispatcher real convierte la excepción en ``{"status": "error", "details"}``: el panel la muestra."""
+
+    def raices_que_explota() -> RaicesDeInstanciaMO2:
+        raise OSError("disco no disponible")  # no es RuntimeError: la estrategia no la captura, el middleware sí
+
+    supervisor = _supervisor_con_el_dispatcher_real(raices_que_explota)
+
+    await run_diagnostico_parallax("Texturas", supervisor=supervisor, store=store, tab_id="t1")
+
+    entrada = diagnostico_parallax_de(store, "t1")
+    assert entrada is not None and entrada["resultado"]["status"] == "error"
+    lineas = lineas_del_diagnostico_parallax(entrada["resultado"])
+    assert any("disco no disponible" in linea for linea in lineas)
+
+
+async def test_de_punta_a_punta_un_mod_inexistente_es_un_resultado_con_motivo(
+    store: ReactiveStore, tmp_path: pathlib.Path
+) -> None:
+    raices = _instancia_en_disco(tmp_path)
+    supervisor = _supervisor_con_el_dispatcher_real(lambda: raices)
+
+    await run_diagnostico_parallax("NoExiste", supervisor=supervisor, store=store, tab_id="t1")
+
+    entrada = diagnostico_parallax_de(store, "t1")
+    assert entrada is not None and entrada["resultado"]["success"] is False and entrada["resultado"]["message"]
 
 
 def test_la_tool_se_llama_igual_en_las_tres_superficies() -> None:
