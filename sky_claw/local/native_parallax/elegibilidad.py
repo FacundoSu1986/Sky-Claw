@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Final
 
 from sky_claw.local.assets.auto_parallax_regla import (
+    CandidatoDeRelieve,
     Decision,
     Motivo,
     Veredicto,
@@ -36,10 +37,13 @@ from sky_claw.local.mo2.ganadores import GanadoresError
 from sky_claw.local.native_parallax.diagnostico_perfil import (
     MAXIMO_DE_ARCHIVOS_DE_ENTRADA,
     SUFIJO_DE_ENTRADA,
+    TIPOS_QUE_IMPIDEN_MEDIR,
     PerfilError,
     cargar_mallas_del_perfil,
     cargar_perfil,
     descubrir_normales_del_mod,
+    hallazgos_del_perfil,
+    linea_de_hallazgo,
 )
 
 __all__ = [
@@ -114,6 +118,9 @@ class InformeDeElegibilidad:
 class _Acumulado:
     mallas_si: set[str] = field(default_factory=set)
     hay_pendientes: bool = False
+    con_ruta_implicita: bool = (
+        False  #: Alguna forma nombra una ruta sin ``textures\\`` que el motor podría resolver a esta salida.
+    )
     otra_textura: int = 0
     referencias: int = 0
     motivos: Counter[str] = field(default_factory=Counter)
@@ -128,6 +135,18 @@ def _etiqueta(decision: Decision) -> str:
     if decision.veredicto is Veredicto.PARALLAX_DE_FABRICA:
         return _TEXTO_DE_FABRICA
     return " + ".join(sorted(_TEXTO_DEL_MOTIVO[m] for m in decision.motivos))
+
+
+def _salidas_que_nombra_sin_carpeta(candidatos: tuple[CandidatoDeRelieve, ...], salidas: dict[str, str]) -> set[str]:
+    """Salidas que un candidato SIN ``textures/`` podría estar nombrando si el motor antepusiera esa carpeta (no se confirma, se anota)."""
+    posibles: set[str] = set()
+    for candidato in candidatos:
+        clave = _clave(candidato.ruta)
+        if candidato.ruta and not clave.startswith("textures/"):
+            posible = f"textures/{clave}"
+            if posible in salidas:
+                posibles.add(posible)
+    return posibles
 
 
 def _mallas_en_texto(cantidad: int) -> str:
@@ -154,6 +173,12 @@ def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, 
             EfectoPosible.NO_VERIFICADO,
             "alguna forma elegible podría usarla, pero la búsqueda del plugin depende de un archivo del que no se puede comprobar si "
             f"existe (¿dentro de un .bsa?){aviso_de_lectura}",
+        )
+    if acum.con_ruta_implicita:
+        return con(
+            EfectoPosible.NO_VERIFICADO,
+            "una forma nombra una ruta sin la carpeta textures\\ que el motor podría resolver a esta salida, y no se puede saber si "
+            f"es así{aviso_de_lectura}",
         )
     if acum.referencias == 0:
         return con(
@@ -203,7 +228,31 @@ def evaluar_elegibilidad(
         mods_dir=mods_dir, data_root=data_root, resuelto=resuelto, maximo_de_archivos=maximo_de_mallas
     )
 
-    salidas = {_clave(n.ruta_de_salida): n.ruta_de_salida for n in normales}
+    # Lo que ``generar`` con perfil NO mide (otra capa gana su entrada o el overlay no la entrega) no se publica: su salida no puede decidir
+    # la búsqueda del plugin ni contar como «presente». Es el mismo veredicto que usa ``generar`` (``hallazgos_del_perfil``).
+    hallazgos = hallazgos_del_perfil(resuelto.indice, resuelto.enabled, resuelto.mod, normales)
+    sin_medir = {h.ruta: h for h in hallazgos if h.tipo in TIPOS_QUE_IMPIDEN_MEDIR}
+    publicadas = [n for n in normales if n.ruta_de_origen not in sin_medir]
+    if not publicadas:
+        detalle = "\n".join(linea_de_hallazgo(h) for h in hallazgos)
+        raise PerfilError(
+            f"todas las texturas de {resuelto.mod!r} están tapadas o fuera del overlay: no hay nada que evaluar\n{detalle}"
+        )
+    no_publicadas = tuple(
+        ElegibilidadDeTextura(
+            ruta_de_salida=n.ruta_de_salida,
+            efecto=EfectoPosible.NO,
+            razon=(
+                f"el generador no la publicaría: {sin_medir[n.ruta_de_origen].tipo} "
+                f"({sin_medir[n.ruta_de_origen].detalle}); ver el subcomando perfil"
+            ),
+            mallas=(),
+            n_mallas=0,
+        )
+        for n in normales
+        if n.ruta_de_origen in sin_medir
+    )
+    salidas = {_clave(n.ruta_de_salida): n.ruta_de_salida for n in publicadas}
     acumulados = {clave: _Acumulado() for clave in salidas}
 
     def existe(ruta: str) -> bool | None:
@@ -233,7 +282,9 @@ def evaluar_elegibilidad(
             if forma.texturas is None:
                 continue
             candidatos = candidatos_de_relieve(forma.texturas)
-            referidas = {_clave(c.ruta) for c in candidatos.candidatos} & salidas.keys()
+            for implicita in _salidas_que_nombra_sin_carpeta(candidatos.candidatos, salidas):
+                acumulados[implicita].con_ruta_implicita = True
+            referidas = {_clave(c.ruta) for c in candidatos.candidatos if c.ruta} & salidas.keys()
             if not referidas:
                 continue
             for clave in referidas:
@@ -255,7 +306,8 @@ def evaluar_elegibilidad(
                 acumulados[clave].otra_textura += 1
 
     sin_leer = tuple(no_leidas)
-    texturas = tuple(_veredicto_de_la_textura(salidas[clave], acumulados[clave], sin_leer) for clave in sorted(salidas))
+    evaluadas = (_veredicto_de_la_textura(salidas[clave], acumulados[clave], sin_leer) for clave in salidas)
+    texturas = tuple(sorted((*evaluadas, *no_publicadas), key=lambda t: _clave(t.ruta_de_salida)))
     return InformeDeElegibilidad(
         perfil=perfil,
         mod=resuelto.mod,

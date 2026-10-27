@@ -538,3 +538,82 @@ def test_el_indice_de_mallas_lo_arma_solo_la_pieza_que_ya_es_dueña_del_resoluto
 
 def test_la_lectura_de_archivos_de_nif_vive_solo_en_el_lector_y_la_usa_solo_la_elegibilidad() -> None:
     assert _llamadores_de("leer_materiales_de_archivo") == {"sky_claw/local/native_parallax/elegibilidad.py"}
+
+
+# --- Revisión de Codex en #820 -----------------------------------------------------------------------------------------------
+
+
+def test_una_referencia_sin_la_carpeta_textures_que_podria_ser_la_salida_deja_la_textura_sin_verificar(
+    mundo: Mundo,
+) -> None:
+    """Una forma elegible que nombra la textura SIN ``textures\\`` podría ser la misma para el motor: no se la descarta, y otra malla con
+    relieve de fábrica no alcanza para afirmar ``NO``."""
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/de_fabrica.nif")
+    mundo.malla(
+        _nif(difuso="architecture\\whiterun\\muro01.dds", normal="architecture\\whiterun\\muro01_n.dds"),
+        ruta="meshes/sin_carpeta.nif",
+    )
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert "sin la carpeta textures" in textura.razon
+
+
+def test_una_referencia_sin_carpeta_no_le_quita_un_si_a_otra_malla(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/firme.nif")
+    mundo.malla(
+        _nif(difuso="architecture\\whiterun\\muro01.dds", normal="architecture\\whiterun\\muro01_n.dds"),
+        ruta="meshes/sin_carpeta.nif",
+    )
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_una_referencia_sin_carpeta_a_otra_textura_no_afecta_a_esta(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/de_fabrica.nif")
+    mundo.malla(_nif(difuso="otra\\cosa.dds", normal="otra\\cosa_n.dds"), ruta="meshes/otra.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+
+
+def _con_entrada_tapada(mundo: Mundo) -> None:
+    """``muro01_n`` del mod la gana otro mod por encima: el generador con perfil NO la mide ni publica su salida."""
+    mundo.archivo(_MOD, _N2)
+    mundo.archivo("Retexture", _N1)
+    mundo.modlist("+Retexture", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+
+def test_una_entrada_tapada_por_otro_mod_no_se_publicaria_y_se_dice(mundo: Mundo) -> None:
+    _con_entrada_tapada(mundo)
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "no la publicaría" in textura.razon
+    assert "ENTRADA TAPADA" in textura.razon
+
+
+def test_la_salida_de_una_entrada_tapada_no_decide_la_busqueda_de_otra_textura(mundo: Mundo) -> None:
+    """El difuso apunta a ``muro01_p`` (cuya normal está tapada, así que no se publicaría) y la normal a ``muro02_p``: si se contara
+    como publicada, el plugin encontraría ``muro01_p`` primero y se afirmaría un ``NO`` para ``muro02_p`` que no se puede sostener."""
+    _con_entrada_tapada(mundo)
+    mundo.malla(_nif(difuso=_D1, normal=_NN2), ruta="meshes/mezcla.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P2].efecto is EfectoPosible.NO_VERIFICADO
+    assert por_ruta[_P1].efecto is EfectoPosible.NO
+
+
+def test_si_todas_las_entradas_estan_tapadas_no_hay_nada_que_evaluar(mundo: Mundo) -> None:
+    mundo.archivo("Retexture", _N1)
+    mundo.modlist("+Retexture", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+    with pytest.raises(PerfilError, match="tapadas"):
+        mundo.evaluar()

@@ -471,7 +471,7 @@ def test_los_consumidores_del_diagnostico_estan_congelados() -> None:
     assert _llamadores_de("diagnosticar_perfil") == {_CLI, _MODULO}  # el módulo, vía ``diagnostico_como_resultado``
     # NP-A0j: la elegibilidad resuelve el perfil con la MISMA pieza (cargar_perfil), no con la suya.
     assert _llamadores_de("cargar_perfil") == {_MODULO, _CLI, _ELEGIBILIDAD}
-    assert _llamadores_de("hallazgos_del_perfil") == {_MODULO, _CLI}
+    assert _llamadores_de("hallazgos_del_perfil") == {_MODULO, _CLI, _ELEGIBILIDAD}
 
 
 def test_las_dos_superficies_del_resultado_de_tool_estan_congeladas() -> None:
