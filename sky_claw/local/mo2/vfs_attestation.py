@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import stat
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
@@ -65,6 +66,11 @@ _CC_PLUGINS_FILENAME = "Skyrim.ccc"
 _ALWAYS_ACTIVE_PLUGINS = frozenset(name.lower() for name in OFFICIAL_MASTERS)
 
 _IGNORED_ROOT_FILES = frozenset({"meta.ini"})
+
+#: ``FILE_ATTRIBUTE_REPARSE_POINT`` de Windows: junctions y otros reparse points
+#: que no son symlinks Python (``is_symlink()`` es False sobre una junction). Un
+#: path físico con reparse no es una fuente de bytes que se pueda atribuir.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class VfsAttestationError(RuntimeError):
@@ -155,6 +161,73 @@ def _sha256_file(path: pathlib.Path) -> str:
     except OSError as exc:
         raise VfsAttestationError(f"no se pudo leer {path}: {exc}") from exc
     return digest.hexdigest()
+
+
+def _sha256_fisico_seguro(path: pathlib.Path) -> str:
+    """SHA-256 de un archivo del ``Data`` físico que el caller ya sabe que existe.
+
+    El path físico se inspecciona con ``lstat`` **sin seguir enlaces**: un
+    symlink, junction u otro reparse point no es una fuente de bytes atribuible
+    y se rechaza fail-closed (no se ignora ni se sigue). Un path que existe pero
+    no es un archivo regular también se rechaza: no es "inaccesible y seguimos",
+    es "no hay evidencia que firmar".
+    """
+    try:
+        identidad = os.lstat(path)
+    except OSError as exc:
+        raise VfsAttestationError(f"no se pudo inspeccionar el archivo físico {path}: {exc}") from exc
+    es_enlace = stat.S_ISLNK(identidad.st_mode) or bool(
+        getattr(identidad, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if es_enlace:
+        raise VfsAttestationError(
+            f"el archivo físico {path} es un enlace/reparse point: sus bytes no se pueden atribuir al Data físico"
+        )
+    if not stat.S_ISREG(identidad.st_mode):
+        raise VfsAttestationError(f"el archivo físico {path} no es un archivo regular: no hay bytes que comparar")
+    return _sha256_file(path)
+
+
+def assert_canary_fisicamente_distinguible(
+    *,
+    challenge: VfsAttestationChallenge,
+    physical_data_dir: pathlib.Path,
+) -> None:
+    """El ``Data`` físico no puede entregar los BYTES ESPERADOS del canary.
+
+    Es el invariante que hace segura la modalidad diferencial: el canary solo
+    prueba el mapping si su path, leído desde el ``Data`` físico, tiene bytes
+    distintos de los autorizados. Ausente cumple (la variante clásica, más
+    fuerte); presente con bytes distintos cumple; presente con bytes idénticos
+    NO: sin overlay la ejecución leería exactamente el SHA esperado y el canary
+    sería un falso PASS.
+
+    Falla cerrado ante un path físico que existe pero no se puede leer o no es
+    un archivo regular propio (incluye symlinks, junctions y reparse points).
+    """
+    relative = pathlib.Path(*challenge.relative_path.parts)
+    fisico = physical_data_dir.resolve() / relative
+    try:
+        identidad = os.lstat(fisico)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise VfsAttestationError(f"no se pudo inspeccionar el archivo físico {fisico}: {exc}") from exc
+    es_enlace = stat.S_ISLNK(identidad.st_mode) or bool(
+        getattr(identidad, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if es_enlace:
+        raise VfsAttestationError(
+            f"el archivo físico {fisico} es un enlace/reparse point: sus bytes no se pueden atribuir al Data físico"
+        )
+    if not stat.S_ISREG(identidad.st_mode):
+        raise VfsAttestationError(f"el archivo físico {fisico} no es un archivo regular: no hay bytes que comparar")
+    sha_fisico = _sha256_file(fisico)
+    if sha_fisico == challenge.sha256:
+        raise VfsAttestationError(
+            f"el Data físico ya entrega los bytes del canary '{challenge.relative_path.as_posix()}': "
+            "sin overlay no habría diferencia observable, así que la evidencia no probaría el mapping virtual"
+        )
 
 
 def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
@@ -475,12 +548,23 @@ def _construir_challenge(
 ) -> VfsAttestationChallenge:
     """Walk común de selección de canary (libre o restringido a un mod).
 
-    Un canary elegible es un archivo propio de un mod habilitado que (a) el
-    ``Data`` físico NO contiene —así la vista virtual es distinguible de la
-    física— y (b) ningún root de mayor prioridad (``overwrite`` o un mod más
-    alto en el ``modlist``) reemplaza. Con ``source_mod`` el walk se restringe a
-    ESE mod y los roots de mayor prioridad se calculan respecto de su posición;
-    sin él se recorren todos los mods habilitados como candidatos.
+    Un canary elegible es un archivo propio de un mod habilitado que ningún root
+    de mayor prioridad (``overwrite`` o un mod más alto en el ``modlist``)
+    reemplaza, y que el ``Data`` físico **no entrega con los bytes esperados**.
+    Se distinguen dos modalidades, en este orden determinista:
+
+    (a) **ausente** — el path no existe en el ``Data`` físico. Es el
+    comportamiento histórico y el más fuerte: sin overlay la lectura falla.
+    (b) **diferencial** — el path existe en el ``Data`` físico como archivo
+    regular propio, pero sus bytes difieren de los del mod. Sin overlay la
+    ejecución leería esos bytes y no superaría el SHA esperado; con overlay lee
+    los bytes autorizados. Un archivo físico con bytes idénticos NO es evidencia
+    (no habría diferencia observable) y un archivo físico ilegible o con
+    reparse point falla cerrado.
+
+    Con ``source_mod`` el walk se restringe a ESE mod y los roots de mayor
+    prioridad se calculan respecto de su posición; sin él se recorren todos los
+    mods habilitados como candidatos.
 
     Elegibilidad = "este archivo llega efectivo al namespace virtual", que es la
     mitad estructural de lo que el runtime prueba después. NO reemplaza al
@@ -515,6 +599,25 @@ def _construir_challenge(
         roots_eclipsantes = [data_resolved / "overwrite"]
 
     higher_roots: list[pathlib.Path] = list(roots_eclipsantes)
+
+    def _challenge(mod_name: str, relative: pathlib.PurePosixPath, sha256: str) -> VfsAttestationChallenge:
+        return VfsAttestationChallenge(
+            profile=profile_name,
+            source_mod=mod_name,
+            relative_path=relative,
+            sha256=sha256,
+            profile_fingerprint=_profile_fingerprint(
+                profile_dir=profile_dir,
+                profile=profile_name,
+                source_mod=mod_name,
+                relative_path=relative,
+                canary_sha256=sha256,
+                always_active=always_active,
+            ),
+        )
+
+    # Primera pasada: canary AUSENTE del Data físico (comportamiento histórico, más
+    # fuerte: sin overlay el archivo no existe y la lectura falla cerrada).
     for mod_name in candidatos:
         safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
         mod_root = mods_resolved / safe_mod
@@ -526,32 +629,46 @@ def _construir_challenge(
             if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
                 continue
             sha256 = _sha256_file(source)
-            relative_posix = pathlib.PurePosixPath(*relative.parts)
-            fingerprint = _profile_fingerprint(
-                profile_dir=profile_dir,
-                profile=profile_name,
-                source_mod=mod_name,
-                relative_path=relative_posix,
-                canary_sha256=sha256,
-                always_active=always_active,
-            )
-            return VfsAttestationChallenge(
-                profile=profile_name,
-                source_mod=mod_name,
-                relative_path=relative_posix,
-                sha256=sha256,
-                profile_fingerprint=fingerprint,
-            )
+            return _challenge(mod_name, pathlib.PurePosixPath(*relative.parts), sha256)
+        if safe_source is None:
+            higher_roots.append(mod_root)
+
+    # Segunda pasada: canary DIFERENCIAL. El path existe en el Data físico pero
+    # con bytes distintos de los del mod, así que una ejecución sin overlay lee
+    # esos bytes físicos y NO supera el SHA esperado; con overlay lee los bytes
+    # del mod. Sólo se acepta si el mod es el ganador del path (ningún root de
+    # mayor prioridad lo eclipsa) y el archivo físico es un regular propio
+    # legible (enlaces/reparse points fallan cerrado, no se saltan).
+    higher_roots = list(roots_eclipsantes)
+    for mod_name in candidatos:
+        safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
+        mod_root = mods_resolved / safe_mod
+        if not mod_root.is_dir():
+            raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
+        for relative, source in _iter_mod_files(mod_root):
+            fisico = data / relative
+            if not os.path.lexists(fisico):
+                continue
+            if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
+                continue
+            sha_fisico = _sha256_fisico_seguro(fisico)
+            sha256 = _sha256_file(source)
+            if sha_fisico == sha256:
+                # Bytes idénticos: no prueba diferenciación; no es evidencia.
+                continue
+            return _challenge(mod_name, pathlib.PurePosixPath(*relative.parts), sha256)
         if safe_source is None:
             higher_roots.append(mod_root)
 
     if source_mod is not None:
         raise VfsAttestationError(
-            f"no existe un canary elegible dentro de {source_mod!r}: todo su archivo está en el Data "
-            "físico o queda eclipsado por overwrite/mods de mayor prioridad"
+            f"no existe un canary elegible dentro de {source_mod!r}: no hay archivo ausente del Data "
+            "físico ni archivo propio con bytes distintos en el Data físico, o queda eclipsado por "
+            "overwrite/mods de mayor prioridad"
         )
     raise VfsAttestationError(
-        "no existe un canary elegible: todo archivo de mod también está en Data físico o queda sobrescrito"
+        "no existe un canary elegible: no hay archivo de mod ausente del Data físico ni con bytes "
+        "distintos en un archivo propio, o queda sobrescrito"
     )
 
 
@@ -585,7 +702,10 @@ def build_attestation_challenge(
     profile: str,
     physical_data_dir: pathlib.Path,
 ) -> VfsAttestationChallenge:
-    """Elige un archivo efectivo de mod que el ``Data`` físico no contiene.
+    """Elige un archivo efectivo de mod que el ``Data`` físico no entregue con los bytes esperados.
+
+    Prefiere un canary ausente del ``Data`` físico y, sólo si no existe ninguno,
+    acepta un canary diferencial (path presente con bytes distintos).
 
     El conjunto de plugins que el motor carga siempre (``primaryPlugins()``) se
     deriva del game root de ``physical_data_dir``; el worker deriva el mismo
@@ -620,9 +740,11 @@ def build_attestation_challenge_for_source(
     Es la primitive que el gate del handoff TexGen → DynDOLOD usa para elegir
     evidencia runtime que le pertenece al artifact: el ``source_mod`` del
     challenge devuelto es EXACTAMENTE el mod pedido, nunca un mod vecino que
-    resultara conveniente. Igual que la variante libre, exige que el archivo
-    esté ausente del ``Data`` físico y no eclipsado —sin esas dos condiciones el
-    probe runtime no distinguiría la vista USVFS de la física— y falla cerrado
+    resultara conveniente. Igual que la variante libre, exige que el archivo no
+    esté eclipsado por un root de mayor prioridad y que el ``Data`` físico no
+    entregue sus bytes esperados: sirve un canary ausente del ``Data`` físico o,
+    en su defecto, uno diferencial (path presente con bytes distintos). En ambos
+    casos el probe runtime distingue la vista USVFS de la física; falla cerrado
     si ese mod no aporta ningún canary elegible.
 
     El nombre del mod se valida como componente de path seguro; la firma NO
