@@ -107,6 +107,13 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    original** en la lista de prioridad (solo agrega archivos `_p.dds`, no pisa las normales).
 2. Para que el parallax **se vea**, la malla o el terreno tiene que usar parallax (depende de tu ENB / preset / Community
    Shaders). No verifiqué cuál es tu caso: contame qué usás.
+   **Antes de elegir qué mirar, preguntale a la herramienta** (solo lee, no genera nada y no necesita `texconv`):
+   `cli elegibilidad --mod "Nombre del mod" --mods D:\MO2\mods --data-root D:\MO2 [--perfil Default]`. Por cada textura del mod dice `SI` (hay una malla suelta del perfil
+   donde el plugin de relieve automático usaría la salida, y cuál), `NO` (todas las mallas que la usan quedan fuera: relieve de fábrica que el plugin apaga, transparencia, sin
+   colores de vértice…, con el desglose) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la búsqueda del plugin depende de un archivo que no se puede
+   comprobar, o alguna malla no se pudo leer). Elegí para mirar las que dicen `SI`. **Límites:** no lee mallas dentro de un `.bsa` (las del juego base lo están: esas salen
+   `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni activadores) y solo enciende relieve con `bAutoEnableParallax`
+   activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y la versión que tenés instalada puede diferir.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando

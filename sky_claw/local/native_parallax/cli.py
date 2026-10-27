@@ -5,6 +5,7 @@ Uso (desde la raíz del repo, con el entorno del extra instalado)::
     python -m sky_claw.local.native_parallax.cli autoprueba --texconv C:\\ruta\\texconv.exe
     python -m sky_claw.local.native_parallax.cli generar --carpeta D:\\entrada --mods D:\\MO2\\mods --texconv C:\\ruta\\texconv.exe
     python -m sky_claw.local.native_parallax.cli perfil --mod "Mi mod de texturas" --mods D:\\MO2\\mods --data-root D:\\MO2
+    python -m sky_claw.local.native_parallax.cli elegibilidad --mod "Mi mod de texturas" --mods D:\\MO2\\mods --data-root D:\\MO2
 
 - ``autoprueba`` corre la tubería COMPLETA sobre una textura sintética en un mod temporal: lee, integra, mide, exporta con
   el ``texconv`` real y escribe con el escritor sobre el disco de verdad. No toca nada tuyo. Es lo primero que hay que
@@ -14,13 +15,17 @@ Uso (desde la raíz del repo, con el entorno del extra instalado)::
 - ``perfil`` (NP-A0e) es un diagnóstico de SOLO lectura: con el ``modlist.txt`` de un perfil de MO2 dice, por cada textura de un
   mod, quién gana la ruta de entrada y quién la de salida (``mo2/ganadores.py``). Avisa cuando otro mod, ``overwrite`` o un mod de
   control (#792 H12) tapa lo que el generador mediría o publicaría. No genera nada y no necesita ``texconv``.
+- ``elegibilidad`` (NP-A0j, #816) es otro diagnóstico de SOLO lectura: por cada textura de un mod dice si alguna malla suelta del perfil
+  haría que el plugin de relieve automático use el ``*_p.dds`` que el generador publicaría (``SI``), si seguro no (``NO``) o si no se
+  puede afirmar (``NO_VERIFICADO``), y por qué. No genera nada y no necesita ``texconv``.
 
 Es un borde delgado sobre ``lote.procesar_lote``: parsea, valida, arma el exportador y muestra el informe. La carpeta de
 entrada la enumera ``provider.py`` (NP-A0b): no sigue enlaces, ignora lo que no es ``*_n.dds`` y omite (y dice) lo que ya
 tiene un ``*_p.dds`` autoral con la misma ruta de salida. Acá solo se traducen sus errores y sus omisiones a mensajes.
 
 Códigos de salida: 0 todo bien; 1 alguna textura falló; 2 uso o configuración incorrectos; 3 otra instancia está
-escribiendo esa salida; 4 (solo ``perfil``) hay texturas tapadas o la salida no está habilitada; 130 interrumpido.
+escribiendo esa salida; 4 (solo ``perfil``) hay texturas tapadas o la salida no está habilitada; 130 interrumpido. ``elegibilidad`` sale
+en 0 cuando el informe se produjo (sea cual sea su contenido) y en 2 si no se pudo afirmar nada del perfil.
 
 No hay gate validado todavía (``gates.py`` es fail-closed): TODA salida queda en revisión y solo se escribe con
 ``--incluir-revision``. Los parámetros por defecto (DirectX, escalas 1, bordes periódicos, min-max) son los de la referencia
@@ -66,6 +71,7 @@ from sky_claw.local.native_parallax.diagnostico_texconv import (
     diagnosticar_texconv,
     ruta_configurada,
 )
+from sky_claw.local.native_parallax.elegibilidad import EfectoPosible, evaluar_elegibilidad
 from sky_claw.local.native_parallax.export import (
     ExportError,
     inspeccionar_dds_bc4,
@@ -400,6 +406,30 @@ def construir_parser() -> argparse.ArgumentParser:
     perfil.add_argument(
         "--perfil", default="Default", help="perfil de MO2 cuyo modlist.txt se lee (por defecto Default)"
     )
+    elegibilidad = sub.add_parser(
+        "elegibilidad",
+        help="diagnóstico de solo lectura: por cada textura de un mod, ¿alguna malla del perfil haría que el plugin de relieve use la salida?",
+        description=(
+            "Diagnóstico de solo lectura: por cada *_n.dds de un mod, dice si alguna malla suelta del perfil de MO2 haría que el "
+            "plugin de relieve automático use el *_p.dds que el generador publicaría. No genera nada y no necesita texconv."
+        ),
+        epilog=(
+            "Resultados por textura: SI (una forma elegible la usaría), NO (todas las formas que la referencian quedan fuera, con su "
+            "razón) o NO_VERIFICADO (no se puede afirmar: sin mallas sueltas que la referencien, búsqueda que depende de archivos "
+            "que no se pueden comprobar o mallas que no se pudieron leer). Códigos de salida: 0 el informe se produjo (sea cual sea su "
+            "contenido); 2 uso o configuración incorrectos (lo que no se puede afirmar falla cerrado)."
+        ),
+    )
+    elegibilidad.add_argument(
+        "--mod", required=True, help="nombre del mod (carpeta de <mods>) cuyas texturas se revisan"
+    )
+    elegibilidad.add_argument("--mods", required=True, help="carpeta 'mods' de MO2")
+    elegibilidad.add_argument(
+        "--data-root", required=True, help="raíz de datos de MO2 (donde viven 'profiles' y 'overwrite')"
+    )
+    elegibilidad.add_argument(
+        "--perfil", default="Default", help="perfil de MO2 cuyo modlist.txt se lee (por defecto Default)"
+    )
     return parser
 
 
@@ -514,6 +544,53 @@ def _perfil(args: argparse.Namespace, salida: TextIO) -> int:
         file=salida,
     )
     return CODIGO_CON_TAPADOS
+
+
+# ---------------------------------------------------------------------------
+# ``elegibilidad``: ¿alguna malla del perfil usaría la salida? (solo lectura)
+# ---------------------------------------------------------------------------
+
+_MAXIMO_DE_MALLAS_NO_LEIDAS_LISTADAS: Final = 5
+
+
+def _elegibilidad(args: argparse.Namespace, salida: TextIO) -> int:
+    """Diagnóstico de SOLO lectura de la elegibilidad. No escribe, no coordina y no exporta (no pide ``texconv``)."""
+    with _perfil_error_como_uso():
+        informe = evaluar_elegibilidad(
+            mods_dir=pathlib.Path(args.mods),
+            data_root=pathlib.Path(args.data_root),
+            perfil=args.perfil,
+            mod=args.mod,
+        )
+    textura = "textura" if len(informe.texturas) == 1 else "texturas"
+    malla = "malla leída" if informe.n_mallas_leidas == 1 else "mallas leídas"
+    print(
+        f"Perfil {informe.perfil!r}: {informe.n_habilitados} mods habilitados; {len(informe.texturas)} {textura} de "
+        f"{informe.mod!r} evaluadas contra {informe.n_mallas_leidas} {malla}.",
+        file=salida,
+    )
+    for t in informe.texturas:
+        print(f"  [{t.efecto.value}] {t.ruta_de_salida}: {t.razon}", file=salida)
+        for ruta in t.mallas:
+            print(f"      {ruta}", file=salida)
+        if t.n_mallas > len(t.mallas):
+            print(f"      … y {t.n_mallas - len(t.mallas)} más", file=salida)
+    conteo = {e: sum(1 for t in informe.texturas if t.efecto is e) for e in EfectoPosible}
+    print(
+        f"Resumen: {conteo[EfectoPosible.SI]} SI, {conteo[EfectoPosible.NO]} NO, "
+        f"{conteo[EfectoPosible.NO_VERIFICADO]} NO_VERIFICADO.",
+        file=salida,
+    )
+    if informe.mallas_no_leidas:
+        listadas = informe.mallas_no_leidas[:_MAXIMO_DE_MALLAS_NO_LEIDAS_LISTADAS]
+        resto = len(informe.mallas_no_leidas) - len(listadas)
+        mas = f" y {resto} más" if resto else ""
+        print(
+            f"{len(informe.mallas_no_leidas)} mallas no se pudieron leer por completo: {'; '.join(listadas)}{mas}.",
+            file=salida,
+        )
+    print(f"Alcance: {informe.alcance}", file=salida)
+    return CODIGO_OK
 
 
 def _exigir_perfil_completo_o_ninguno(args: argparse.Namespace) -> bool:
@@ -699,6 +776,8 @@ def main(
     try:
         if args.comando == "perfil":  # diagnóstico de solo lectura: ni texconv ni coordinación de salida
             return _perfil(args, destino)
+        if args.comando == "elegibilidad":  # ídem: lee mallas y texturas del perfil, no escribe
+            return _elegibilidad(args, destino)
         exportador = fabrica(_resolver_texconv(args.texconv, variables))
         coordinacion = construir_coordinacion_de_salida(base=base_de_estado)
         comando = _autoprueba if args.comando == "autoprueba" else _generar

@@ -178,6 +178,14 @@ La política clean-room, `docs/design/research/native-parallax/` y
   plugin instalada se comporte como la rama citada. Alcance que el NIF no muestra y que quien consuma esto debe decir: el plugin solo actúa sobre objetos
   base Static, Movable Static y Container, y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no). No lee mallas dentro de un
   `.bsa`.
+  NP-A0j parte 2: `elegibilidad.py` (`evaluar_elegibilidad`) cruza esas dos piezas con el perfil de MO2 y contesta, por cada `*_p.dds` que el generador publicaría,
+  `EFECTO_POSIBLE = SI | NO | NO_VERIFICADO` (`EfectoPosible`, vocabulario cerrado). Tres propiedades, con su ancla en `tests/test_native_parallax_elegibilidad.py` y
+  `tests/test_native_parallax_cli_elegibilidad.py`: `SI` solo si una forma elegible terminaría USANDO esa salida siguiendo el orden de búsqueda del plugin (si antes
+  encuentra otra textura suelta, es `NO`); `NO` solo si TODAS las formas que la referencian quedan fuera por una razón nombrada y nada de lo leído quedó incompleto (una malla
+  ilegible, o con geometría que el lector no abre, baja el `NO` a `NO_VERIFICADO`); y lo que depende de un archivo que no se puede comprobar (¿dentro de un `.bsa`?) o de las
+  mayúsculas de una ruta es `NO_VERIFICADO`, nunca `NO`. Cuenta la malla que GANA en el overlay (el índice de `meshes/` lo arma `diagnostico_perfil.cargar_mallas_del_perfil`: el
+  resolutor se sigue llamando SOLO desde ese módulo) y no abre archivos por su cuenta (la lectura acotada vive en `assets/nif_materiales.leer_materiales_de_archivo`). Hoy la sirve
+  SOLO la línea de comandos (`cli elegibilidad`); GUI y agente LLM se cablean juntos en el paso siguiente, con el censo de superficies congelado como en NP-A0h.
 - **Piso de contenido (NP-NO-EMPTY, #792 H1/H3).** `lote.tiene_contenido` / `DESVIACION_MINIMA_DE_ALTURA` (8/255, la misma de
   `parallax_unattended.auditor.SD_MINIMA`; un test las ata): una altura cuya desviación queda bajo el piso (o no es finita) pasa a
   `EN_REVISION` con el motivo `SIN_CONTENIDO` y veredicto `REVIEW`, **aunque el gate la aceptara y aunque se pida `--incluir-revision`**; no

@@ -47,6 +47,7 @@ __all__ = [
     "InformeDelPerfil",
     "PerfilError",
     "PerfilResuelto",
+    "cargar_mallas_del_perfil",
     "cargar_perfil",
     "descubrir_normales_del_mod",
     "diagnosticar_perfil",
@@ -232,6 +233,27 @@ def cargar_perfil(*, mods_dir: pathlib.Path, data_root: pathlib.Path, perfil: st
         raise PerfilError(str(exc)) from exc
     # El nombre sale de ``enabled`` (ya validado como UNA carpeta por el resolutor): no se une lo que escribió el operador.
     return PerfilResuelto(enabled=enabled, mod=elegido, carpeta_del_mod=mods_dir / elegido, indice=indice)
+
+
+def cargar_mallas_del_perfil(
+    *, mods_dir: pathlib.Path, data_root: pathlib.Path, resuelto: PerfilResuelto, maximo_de_archivos: int
+) -> GanadoresDelPerfil:
+    """Quién gana cada archivo bajo ``meshes/`` del perfil ya resuelto (NP-A0j): el índice de las mallas que el juego de verdad carga.
+
+    Es el segundo uso del resolutor de ganadores y vive acá, junto al de las texturas, porque el resolutor se llama SOLO desde este
+    módulo (ancla por AST): quien lo llamara por su cuenta contestaría distinto. Falla cerrado con ``PerfilError``; pasarse del tope
+    no devuelve un índice a medias.
+    """
+    try:
+        return indexar_ganadores(
+            mods_dir=mods_dir,
+            data_root=data_root,
+            enabled=resuelto.enabled,
+            prefijo="meshes",
+            maximo_de_archivos=maximo_de_archivos,
+        )
+    except GanadoresError as exc:
+        raise PerfilError(f"no se pudo resolver las mallas del perfil (no se evalúan mallas a medias): {exc}") from exc
 
 
 def diagnosticar_perfil(
