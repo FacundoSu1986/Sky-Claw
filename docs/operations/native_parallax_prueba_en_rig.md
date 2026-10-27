@@ -143,7 +143,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
-- No hay interfaz gráfica ni agente: solo esta línea de comandos. La integración con MO2 (habilitar el mod solo) viene después.
+- La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
   archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.

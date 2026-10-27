@@ -397,6 +397,14 @@ async def test_de_punta_a_punta_un_mod_inexistente_es_un_resultado_con_motivo(
     assert entrada is not None and entrada["resultado"]["success"] is False and entrada["resultado"]["message"]
 
 
+def test_el_boton_de_la_fila_tiene_nombre_accesible() -> None:
+    """Es un botón solo-ícono: el tooltip no es un nombre accesible, así que lleva ``aria-label`` (lo pidió el review de #818)."""
+    fuente = (_RAIZ_DEL_REPO / "sky_claw" / "app" / "gui" / "views" / "mod_list.py").read_text(encoding="utf-8")
+    cadenas = [n.value for n in ast.walk(ast.parse(fuente)) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+    assert 'aria-label="Diagnosticar parallax"' in cadenas
+
+
 def test_la_tool_se_llama_igual_en_las_tres_superficies() -> None:
     """GUI (este módulo), dispatcher y agente LLM: un nombre distinto por superficie las desincroniza sin que nadie lo note."""
     assert DiagnosticarPerfilParallaxStrategy.name == NOMBRE_TOOL_DIAGNOSTICO_PARALLAX

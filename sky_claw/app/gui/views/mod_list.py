@@ -135,7 +135,10 @@ def _build_mod_row(
             ui.button(
                 icon="troubleshoot",
                 on_click=lambda _=None, name=mod_name: on_diagnose(name),
-            ).props("flat dense round size=sm color=sc-tema text-color=sc-tema").classes("sky-mod-diagnose").tooltip(
+            ).props("flat dense round size=sm color=sc-tema text-color=sc-tema").props(
+                # Botón solo-ícono: el tooltip no le da nombre accesible; el aria-label sí.
+                'aria-label="Diagnosticar parallax"'
+            ).classes("sky-mod-diagnose").tooltip(
                 "Diagnosticar parallax: ¿algún mod tapa lo que el generador mediría o publicaría?"
             )
 
