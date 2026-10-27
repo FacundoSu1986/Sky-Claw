@@ -163,6 +163,21 @@ La política clean-room, `docs/design/research/native-parallax/` y
   validaciones del dato están congeladas por igualdad en `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario
   rompe el test), y el módulo está en el censo de `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos.
   La CLI ya lo usa (`crear_exportador_texconv` diagnostica antes de exportar y `_resolver_texconv` delega en `ruta_configurada`: el nombre de la variable y la regla de la ruta viven SOLO en este módulo, con un ancla por AST); todavía NO lo usa el registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c" y "Cableado del diagnóstico a la CLI".
+- **Elegibilidad: ¿hay alguna malla donde el plugin de relieve use lo que publicamos? (NP-A0j, #816).** Dos piezas genéricas de SOLO lectura, fuera de
+  este paquete porque no saben del generador: `sky_claw/local/assets/nif_materiales.py` (`leer_materiales`: shader, flags, propiedad de alfa y
+  texturas de cada forma de un NIF de Skyrim LE/SE; se apoya en la tabla de tamaños de bloque, NO interpreta geometría y falla cerrado con `NifError`)
+  y `sky_claw/local/assets/auto_parallax_regla.py` (`evaluar_forma`, `candidatos_de_relieve`, `buscar_el_relieve`: la regla del plugin Auto Parallax,
+  transcripta de su código fuente público con el SHA-256 del archivo citado en el docstring). Cuatro propiedades, con su ancla en
+  `tests/test_auto_parallax_regla.py` y `tests/test_nif_materiales.py`: la regla enumera TODOS los tipos de shader (solo el 0 enciende, solo el 3 es de
+  fábrica) y congela por igualdad literal las exclusiones y el vocabulario de motivos; una ruta cuyo resultado depende de las mayúsculas del original (que
+  distingue) o de una carpeta `textures` implícita se declara **ambigua** y nunca se adivina; el lector declara en `formas_no_soportadas` la geometría que
+  no sabe abrir en vez de ignorarla; y los NIFs de los tests son sintéticos (`tests/_nif_sintetico.py`, escrito desde la especificación pública NifTools, sin
+  importar nada del repo): prueban concordancia con la especificación, NO lectura de un archivo real. **Verificado ejecutando:** un NIF de Skyrim LE escrito
+  por una librería ajena (pyffi, con su propio `nif.xml`) se lee con el mismo shader, flags (posiciones de bit incluidas), alfa y texturas. **NO verificado:**
+  el diseño de `BSTriShape` (Skyrim SE) contra un archivo real (solo contra la especificación; lo cruza la tabla que devuelve el rig), y que la versión del
+  plugin instalada se comporte como la rama citada. Alcance que el NIF no muestra y que quien consuma esto debe decir: el plugin solo actúa sobre objetos
+  base Static, Movable Static y Container, y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no). No lee mallas dentro de un
+  `.bsa`.
 - **Piso de contenido (NP-NO-EMPTY, #792 H1/H3).** `lote.tiene_contenido` / `DESVIACION_MINIMA_DE_ALTURA` (8/255, la misma de
   `parallax_unattended.auditor.SD_MINIMA`; un test las ata): una altura cuya desviación queda bajo el piso (o no es finita) pasa a
   `EN_REVISION` con el motivo `SIN_CONTENIDO` y veredicto `REVIEW`, **aunque el gate la aceptara y aunque se pida `--incluir-revision`**; no
