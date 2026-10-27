@@ -29,7 +29,9 @@ JSON Schema y ejecuta handlers async. Su inventario incorporado verificado es:
 `run_xedit_script`, `preview_mod_installer`, `install_mod_from_archive`,
 `resolve_fomod`, `analyze_esp_conflicts`, `run_pandora`, `run_bodyslide`,
 `generate_bashed_patch`, `uninstall_mod`, `toggle_mod`, `launch_game`,
-`close_game` y `setup_tools`.
+`close_game`, `setup_tools` y `diagnosticar_parallax_perfil` (NP-A0h: solo lectura; el LLM solo manda
+`mod`, el perfil es el de la sesión y lo que sale del disco se sanea antes de llegar al modelo; es el
+hermano de la tool homónima del dispatcher de la GUI).
 
 La allowlist de sesión filtra tanto la enumeración visible como la ejecución.
 
@@ -109,7 +111,10 @@ nombres comprobados son:
 `quick_auto_clean`, `execute_loot_sorting`, `generate_animations`,
 `generate_lods`, `generate_bashed_patch`, `validate_plugin_limit`,
 `resolve_conflict_with_patch`, `analyze_grass_prerequisites`,
-`generate_grass_cache`, `preview_chain` y `execute_synthesis_pipeline`.
+`generate_grass_cache`, `preview_chain`, `execute_synthesis_pipeline` y
+`diagnosticar_parallax_perfil` (NP-A0h, solo lectura, sin gate HITL: qué gana en el perfil de
+MO2 para un mod del generador nativo de parallax; el perfil es el de la sesión y el payload
+solo lleva `mod`).
 
 El dispatcher devuelve un dict. Una tool desconocida conserva
 `{"status": "error", "reason": "ToolNotFound"}`. El middleware cubre HITL,

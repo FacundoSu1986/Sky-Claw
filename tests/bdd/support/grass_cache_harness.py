@@ -29,6 +29,7 @@ SUPERFICIE_DISPATCHER_DEPENDENCIES = frozenset(
         "pandora_service",
         "plugin_limit_guard",
         "preview_service_provider",
+        "raices_mo2_provider",
         "real_journal_provider",
         "scan_asset_conflicts",
         "scan_asset_conflicts_json",

@@ -25,6 +25,7 @@ from sky_claw.app.orchestrator.tool_strategies.base import (
     ToolNotFoundError,
     ToolStrategy,
 )
+from sky_claw.app.orchestrator.tool_strategies.diagnosticar_perfil_parallax import DiagnosticarPerfilParallaxStrategy
 from sky_claw.app.orchestrator.tool_strategies.execute_loot_sorting import (
     ExecuteLootSortingStrategy,
 )
@@ -385,6 +386,19 @@ def build_orchestration_dispatcher(
         middleware=[
             ErrorWrappingMiddleware("ChainPreviewFailed"),
             DictResultGuardMiddleware("InvalidChainPreviewResult"),
+        ],
+    )
+
+    # NP-A0h: diagnóstico del perfil de MO2 para el generador nativo de parallax. READ-ONLY (sin gate); es la
+    # superficie GUI del mismo recurso que expone el registro del agente LLM (`diagnosticar_parallax_perfil`).
+    dispatcher.register(
+        DiagnosticarPerfilParallaxStrategy(
+            raices_provider=dependencies.raices_mo2_provider,
+            default_profile_getter=dependencies.default_profile_getter,
+        ),
+        middleware=[
+            ErrorWrappingMiddleware("ParallaxProfileDiagnosticFailed"),
+            DictResultGuardMiddleware("InvalidParallaxProfileDiagnosticResult"),
         ],
     )
 

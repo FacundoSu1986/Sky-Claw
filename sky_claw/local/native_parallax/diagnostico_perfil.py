@@ -23,7 +23,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 from collections.abc import Sequence
-from typing import Final
+from typing import Any, Final
 
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.ganadores import CAPA_OVERWRITE, GanadoresDelPerfil, GanadoresError, indexar_ganadores
@@ -38,7 +38,9 @@ from sky_claw.local.native_parallax.provider import (
 )
 
 __all__ = [
+    "ALCANCE_DEL_DIAGNOSTICO",
     "MAXIMO_DE_ARCHIVOS_DE_ENTRADA",
+    "MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO",
     "SUFIJO_DE_ENTRADA",
     "TIPOS_QUE_IMPIDEN_MEDIR",
     "Hallazgo",
@@ -48,6 +50,7 @@ __all__ = [
     "cargar_perfil",
     "descubrir_normales_del_mod",
     "diagnosticar_perfil",
+    "diagnostico_como_resultado",
     "hallazgos_del_perfil",
     "linea_de_hallazgo",
     "texto_de_omision",
@@ -56,6 +59,16 @@ __all__ = [
 #: Tope de archivos de entrada de la herramienta (más bajo que el del proveedor: es una herramienta experimental para un rig).
 MAXIMO_DE_ARCHIVOS_DE_ENTRADA: Final = 10_000
 SUFIJO_DE_ENTRADA: Final = "_n.dds"
+
+#: Tope de hallazgos que un resultado de tool lleva por dentro: el agente LLM lo lee en su contexto y la GUI lo muestra. El total real
+#: viaja siempre en ``n_hallazgos``.
+MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO: Final = 50
+
+#: Lo que el diagnóstico prueba y lo que no: viaja en cada resultado para que ninguna superficie lo presente como una prueba in-game.
+ALCANCE_DEL_DIAGNOSTICO: Final = (
+    "Vista estructural del modlist.txt del perfil (prioridad de MO2 + archivos de cada mod). No prueba que USVFS mapee lo resuelto "
+    "ni considera el game data físico, ni lo que se ve en el juego."
+)
 
 #: Hallazgos de la ENTRADA: la textura no se mide (otro mod la tapa, o el overlay no la entrega).
 TIPOS_QUE_IMPIDEN_MEDIR: Final = frozenset({"ENTRADA TAPADA", "ENTRADA FUERA DEL OVERLAY"})
@@ -251,3 +264,41 @@ def diagnosticar_perfil(
         n_texturas=len(normales),
         hallazgos=tuple(hallazgos),
     )
+
+
+def diagnostico_como_resultado(
+    *,
+    mods_dir: pathlib.Path,
+    data_root: pathlib.Path,
+    perfil: str,
+    mod: str,
+    maximo_de_hallazgos: int = MAXIMO_DE_HALLAZGOS_EN_EL_RESULTADO,
+) -> dict[str, Any]:
+    """El diagnóstico como resultado de tool (``success`` + ``message`` canónico + campos estructurados), ACOTADO.
+
+    Es lo que devuelven la GUI (dispatcher) y el agente LLM: las dos superficies llaman a ESTA función con las mismas raíces y el mismo
+    perfil, así que no pueden contestar distinto. Síncrona y bloqueante (recorre el overlay): quien la llame desde código async la corre
+    en un hilo. Solo un ``PerfilError`` se vuelve resultado (``success: False`` con el motivo en ``message``): cualquier otra excepción
+    es un bug o un fallo inesperado y sube a la capa de errores de la superficie.
+
+    ``success`` dice que el diagnóstico CORRIÓ, no que el perfil esté limpio: los tapados van en ``hallazgos`` (recortados a
+    ``maximo_de_hallazgos``; ``n_hallazgos`` y ``truncado`` dicen cuántos había). ``impide_medir`` es lo que bloquearía a ``generar``.
+    """
+    try:
+        informe = diagnosticar_perfil(mods_dir=mods_dir, data_root=data_root, perfil=perfil, mod=mod)
+    except PerfilError as exc:
+        return {"success": False, "message": str(exc), "perfil": perfil, "mod": mod, "alcance": ALCANCE_DEL_DIAGNOSTICO}
+    visibles = informe.hallazgos[: max(0, maximo_de_hallazgos)]
+    return {
+        "success": True,
+        "message": "",
+        "perfil": informe.perfil,
+        "mod": informe.mod,
+        "n_habilitados": informe.n_habilitados,
+        "n_texturas": informe.n_texturas,
+        "n_hallazgos": len(informe.hallazgos),
+        "hallazgos": [dataclasses.asdict(h) for h in visibles],
+        "truncado": len(visibles) < len(informe.hallazgos),
+        "impide_medir": any(h.tipo in TIPOS_QUE_IMPIDEN_MEDIR for h in informe.hallazgos),
+        "alcance": ALCANCE_DEL_DIAGNOSTICO,
+    }

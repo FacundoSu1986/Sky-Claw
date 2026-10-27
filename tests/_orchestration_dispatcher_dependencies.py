@@ -27,6 +27,7 @@ def crear_dependencias_dispatcher(
     plugin_limit_guard: Any | None = None,
     default_profile_getter: Any | None = None,
     preview_service_provider: Any | None = None,
+    raices_mo2_provider: Any | None = None,
 ) -> OrchestrationDispatcherDependencies:
     """Crea dependencias explícitas con dobles inocuos y overrides puntuales."""
     return OrchestrationDispatcherDependencies(
@@ -47,6 +48,7 @@ def crear_dependencias_dispatcher(
             default_profile_getter if default_profile_getter is not None else lambda: "TestProfile"
         ),
         preview_service_provider=(preview_service_provider if preview_service_provider is not None else MagicMock()),
+        raices_mo2_provider=(raices_mo2_provider if raices_mo2_provider is not None else MagicMock()),
     )
 
 

@@ -144,6 +144,8 @@ TOOLS_CON_LAMBDA_EN_EL_REGISTRY: set[str] = {
     "check_load_order",
     "close_game",
     "detect_conflicts",
+    # NP-A0h: diagnóstico del perfil de MO2 para el generador nativo de parallax (hermano del dispatcher de la GUI).
+    "diagnosticar_parallax_perfil",
     "download_mod",
     "generate_bashed_patch",
     # #661: etapa 9 desde la superficie remota (trabajo en segundo plano).

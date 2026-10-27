@@ -137,6 +137,13 @@ La política clean-room, `docs/design/research/native-parallax/` y
   que lo muestre lo importan. Si cada una resolviera el perfil por su cuenta contestarían distinto (el hermano de AGENTS.md). Ancla por AST en
   `tests/test_native_parallax_diagnostico_perfil.py`: el resolutor `indexar_ganadores` se llama SOLO desde este módulo y los consumidores de
   `diagnosticar_perfil` están congelados por igualdad literal (una superficie nueva rompe el ancla hasta que se la declare y se cablee junto a las demás).
+  NP-A0h: `diagnostico_como_resultado` lo convierte en resultado de tool (`success`/`message` + hallazgos acotados + `impide_medir` + la leyenda
+  `ALCANCE_DEL_DIAGNOSTICO`: vista estructural, no prueba nada in-game) y lo sirven DOS superficies, congeladas por AST: la tool `diagnosticar_parallax_perfil`
+  del dispatcher de la GUI (`app/orchestrator/tool_strategies/diagnosticar_perfil_parallax.py`) y la del agente LLM (`app/agent/tools/parallax_tools.py`,
+  que sanea lo que sale del disco). Las dos son de solo lectura, usan el perfil de la sesión (el payload solo lleva `mod`) y reciben las raíces del MISMO
+  resolver (`PathResolutionService.raices_de_instancia_mo2`, que `AppContext` también usa para el `MO2Controller`).
+  Diferencia de momento, a propósito: la GUI consulta el resolver en cada llamada (como sus otras tools) y el agente usa las raíces que `AppContext` fijó al
+  arrancar (como todas sus tools); si la instancia de MO2 se reconfigura con la app abierta, se reconcilian al reiniciar.
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
