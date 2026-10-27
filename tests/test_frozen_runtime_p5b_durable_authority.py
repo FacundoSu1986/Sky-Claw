@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -77,7 +78,9 @@ from sky_claw.local.frozen_runtime.storage_models import (
     FrozenRuntimeState,
     GenerationVerificationState,
 )
-from sky_claw.local.runtime_vault.models import FileIdentity, RuntimeIdentity, TreeDigest
+from sky_claw.local.runtime_vault.inventory import inventory_tree
+from sky_claw.local.runtime_vault.models import RuntimeIdentity
+from sky_claw.local.runtime_vault.verification import tree_digest_from_files
 
 _RAIZ_WORKTREE = pathlib.Path(__file__).resolve().parent.parent
 _CHILD_SCRIPT = _RAIZ_WORKTREE / "tests" / "_p5b_child.py"
@@ -125,17 +128,20 @@ def _crear_generation_valida(
     version: str = "1.6.1170.0",
     digest_prefix: str = "a1b2c3d4e5f6",
 ) -> str:
-    gen_dir = root / "versions" / f"1.6.1170__{digest_prefix}"
-    _crear_arbol_juego(gen_dir, version=version)
-    full_digest = (digest_prefix * 6)[:64]
-    exe_bytes = f"SkyrimSE-{version}".encode()
-    crit_digest = hashlib.sha256(exe_bytes).hexdigest()
-    crit = FileIdentity(rel_path="SkyrimSE.exe", size=len(exe_bytes), digest=crit_digest)
+    staging = root / f"_staging_gen_{digest_prefix}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    _crear_arbol_juego(staging, version=version)
+    if digest_prefix != "a1b2c3d4e5f6":
+        (staging / f"extra_{digest_prefix}.dat").write_bytes(digest_prefix.encode())
+    files = inventory_tree(staging)
+    tree_digest = tree_digest_from_files(files)
+    crit = next(f for f in files if f.rel_path == "SkyrimSE.exe")
     evidencia = SourceSnapshotEvidence(
         observed_at_ns=1000,
         provider=ManagedSourceProvider.STEAM,
         game_key="skyrimse",
-        files=(crit,),
+        files=files,
         critical_files=(crit,),
         provider_metadata=ProviderMetadataObservation(
             provider=ManagedSourceProvider.STEAM,
@@ -143,9 +149,14 @@ def _crear_generation_valida(
             buildid="13189953",
         ),
         runtime_identity=RuntimeIdentity(game_key="skyrimse", game_version=version),
-        tree_digest=TreeDigest(digest=full_digest, files=1, bytes=100),
+        tree_digest=tree_digest,
     )
     meta = registrar_generation_metadata(root, evidencia)
+    gen_dir = root / "versions" / meta.generation_id
+    if gen_dir.exists():
+        shutil.rmtree(gen_dir)
+    shutil.copytree(staging, gen_dir)
+    shutil.rmtree(staging)
     return meta.generation_id
 
 
@@ -1534,3 +1545,123 @@ class TestFrozenRuntimeP5BDurableAuthority:
         assert cargado.state.desired_generation_id == "1.6.1170__abcdef123456"
         assert cargado.state.desired_clone_id == "clone-v2"
         assert cargado.state.updated_at_ns == 1000
+
+    def test_29_verificar_runtime_clone_exige_source_generation_valida_sin_drift(self, tmp_path: pathlib.Path) -> None:
+        """29. Codex: verificar_runtime_clone exige Generation de origen VALID; INVALID si se borra o sufre drift."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_live")
+
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-drift-check",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # Baseline: cuando la Generation está intacta, el clone es VALID
+        verif_ok = verificar_runtime_clone(root, "clone-drift-check")
+        assert verif_ok.state is GenerationVerificationState.VALID
+
+        # Caso A: Se borra el directorio versions/<gen_id> dejando metadata huérfana
+        gen_dir = root / "versions" / gen_id
+        shutil.rmtree(gen_dir)
+        verif_missing = verificar_runtime_clone(root, "clone-drift-check")
+        assert verif_missing.state is GenerationVerificationState.INVALID
+        assert "no es VALID" in verif_missing.message or "no existe" in verif_missing.message
+
+        # Re-crear generation y causar drift (Caso B)
+        _crear_arbol_juego(gen_dir)
+        # Modificar un archivo crítico para forzar DRIFTED en la Generation
+        (gen_dir / "SkyrimSE.exe").write_bytes(b"SkyrimSE-mutated-content")
+        verif_drift = verificar_runtime_clone(root, "clone-drift-check")
+        assert verif_drift.state is GenerationVerificationState.INVALID
+        assert "no es VALID" in verif_drift.message
+
+        # desired_runtime_from_storage resuelve clone_root=None ante Generation en drift
+        active_state = FrozenRuntimeState(
+            schema_version=2,
+            desired_active_generation=gen_id,
+            desired_clone_id="clone-drift-check",
+            updated_at_ns=100,
+        )
+        save_frozen_runtime_state(active_state_path(root), active_state)
+        desired = desired_runtime_from_storage(root)
+        assert desired.clone_root is None
+
+    def test_30_admision_y_lectura_rechazan_reparse_en_ancestros_intermedios(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """30. Qodo: admitir_clone_root_path y _leer_record_de_ruta rechazan reparse points en ancestros intermedios."""
+        from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
+
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+
+        # Simular reparse point en un ancestro intermedio de la ruta del clone
+        intermedio = tmp_path / "ancestor_reparse"
+        clone_sub = intermedio / "sub" / "clone"
+        clone_sub.mkdir(parents=True)
+
+        original_desc = descripcion_de_enlace
+
+        def _mock_desc(path: pathlib.Path | os.PathLike[str]) -> str | None:
+            p = pathlib.Path(path)
+            if p == intermedio:
+                return "junction"
+            return original_desc(path)
+
+        monkeypatch.setattr("sky_claw.local.frozen_runtime.clones.descripcion_de_enlace", _mock_desc)
+
+        # admitir_clone_root_path debe rechazar la ruta del clone si un ancestro es un reparse point
+        with pytest.raises(RuntimeCloneAdmissionError, match="reparse point/enlace"):
+            admitir_clone_root_path(clone_sub, storage_root=root)
+
+        # Registrar un clone legítimo antes de simular redirección en state
+        rec = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-reparse-ancestro",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(_crear_arbol_juego(tmp_path / "clone_normal")),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec)
+
+        # _leer_record_de_ruta debe rechazar la lectura si un ancestro de state/clones/ es un reparse point
+        def _mock_desc_state(path: pathlib.Path | os.PathLike[str]) -> str | None:
+            p = pathlib.Path(path)
+            if p == root / "state":
+                return "junction"
+            return original_desc(path)
+
+        monkeypatch.setattr("sky_claw.local.frozen_runtime.clones.descripcion_de_enlace", _mock_desc_state)
+
+        with pytest.raises(RuntimeCloneCorruptError, match="namespace de clones redirigido"):
+            leer_runtime_clone_record(root, "clone-reparse-ancestro")
+
+        # Intentar registrar otro clone bajo state redirigido también debe fallar cerrado
+        rec_nuevo = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-segundo",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(_crear_arbol_juego(tmp_path / "clone_normal2")),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneCorruptError, match="namespace de clones redirigido"):
+            registrar_runtime_clone_record(root, rec_nuevo)

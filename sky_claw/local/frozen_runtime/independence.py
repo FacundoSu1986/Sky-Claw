@@ -322,20 +322,18 @@ def verify_clone_physical_integrity(
             ),
         )
 
-    indice_clone = {(st.st_dev, st.st_ino): rel for rel, st in archivos_clone}
-
-    # 2. Sin objetos compartidos con la Generation
+    # 2. Sin objetos compartidos con la Generation (evaluación O(N_clone) por ruta correspondiente)
     if generation_root is not None:
         gen = pathlib.Path(generation_root)
         if gen.is_dir():
             try:
-                archivos_gen = _archivos_fisicos(gen, etiqueta="generation")
-                indice_gen = {(st.st_dev, st.st_ino): rel for rel, st in archivos_gen}
                 compartidos_gen: list[tuple[str, str]] = []
-                for clave, rel_clone in indice_clone.items():
-                    rel_gen = indice_gen.get(clave)
-                    if rel_gen is not None:
-                        compartidos_gen.append((rel_clone, rel_gen))
+                for rel, st_clone in archivos_clone:
+                    candidato = gen / rel
+                    if candidato.is_file():
+                        st_gen = candidato.stat()
+                        if (st_clone.st_dev, st_clone.st_ino) == (st_gen.st_dev, st_gen.st_ino):
+                            compartidos_gen.append((rel, rel))
                 if compartidos_gen:
                     detalles = [f"{rc} <-> {rg}" for rc, rg in compartidos_gen[:5]]
                     return PhysicalIndependenceResult(
@@ -345,21 +343,21 @@ def verify_clone_physical_integrity(
                             f"{', '.join(detalles)} (SFR-18)"
                         ),
                     )
-            except (PhysicalReparseError, FrozenRuntimeStorageError) as exc:
+            except (OSError, FrozenRuntimeStorageError) as exc:
                 return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
 
-    # 3. Sin objetos compartidos con la Managed Source
+    # 3. Sin objetos compartidos con la Managed Source (evaluación O(N_clone), sin crawl recursivo de Steam)
     if managed_source_root is not None:
         src = pathlib.Path(managed_source_root)
         if src.is_dir():
             try:
-                archivos_src = _archivos_fisicos(src, etiqueta="managed source")
-                indice_src = {(st.st_dev, st.st_ino): rel for rel, st in archivos_src}
                 compartidos_src: list[tuple[str, str]] = []
-                for clave, rel_clone in indice_clone.items():
-                    rel_src = indice_src.get(clave)
-                    if rel_src is not None:
-                        compartidos_src.append((rel_clone, rel_src))
+                for rel, st_clone in archivos_clone:
+                    candidato = src / rel
+                    if candidato.is_file():
+                        st_src = candidato.stat()
+                        if (st_clone.st_dev, st_clone.st_ino) == (st_src.st_dev, st_src.st_ino):
+                            compartidos_src.append((rel, rel))
                 if compartidos_src:
                     detalles = [f"{rc} <-> {rs}" for rc, rs in compartidos_src[:5]]
                     return PhysicalIndependenceResult(
@@ -369,7 +367,7 @@ def verify_clone_physical_integrity(
                             f"{', '.join(detalles)} (SFR-18)"
                         ),
                     )
-            except (PhysicalReparseError, FrozenRuntimeStorageError) as exc:
+            except (OSError, FrozenRuntimeStorageError) as exc:
                 return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
 
     return PhysicalIndependenceResult(

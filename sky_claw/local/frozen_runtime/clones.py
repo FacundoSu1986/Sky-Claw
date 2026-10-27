@@ -166,15 +166,17 @@ def admitir_clone_root_path(
     norm_str = os.path.normpath(os.path.abspath(raw_path_str))
     norm_ruta = pathlib.Path(norm_str)
 
-    # Inspección de enlaces / reparse points sobre la ruta declarada y la canónica
+    # Inspección de enlaces / reparse points sobre la ruta declarada, la canónica y todos sus ancestros
     motivo = descripcion_de_enlace(ruta)
     if motivo is not None:
         raise RuntimeCloneAdmissionError(f"root de clone redirigido por reparse point/enlace: {motivo}")
-    if norm_ruta != ruta:
-        motivo_norm = descripcion_de_enlace(norm_ruta)
-        if motivo_norm is not None:
+    for ancestro in (norm_ruta, *norm_ruta.parents):
+        if not ancestro.exists():
+            continue
+        motivo_ancestro = descripcion_de_enlace(ancestro)
+        if motivo_ancestro is not None:
             raise RuntimeCloneAdmissionError(
-                f"root de clone resuelto redirigido por reparse point/enlace: {motivo_norm}"
+                f"root de clone redirigido por reparse point/enlace en '{ancestro}': {motivo_ancestro}"
             )
 
     forma = _forma_reservada_windows(norm_ruta.name)
@@ -531,9 +533,14 @@ def _leer_record_de_ruta(ruta: pathlib.Path) -> RuntimeCloneRecord:
     if kind is not None:
         raise RuntimeCloneCorruptError(f"{ruta}: el archivo de registro es un enlace/reparse ({kind}): fail-closed")
 
-    motivo_padre = descripcion_de_enlace(ruta.parent)
-    if motivo_padre is not None:
-        raise RuntimeCloneCorruptError(f"{ruta}: namespace de clones redirigido: {motivo_padre}")
+    for ancestro in (ruta.parent, *ruta.parent.parents):
+        if not ancestro.exists():
+            continue
+        motivo_ancestro = descripcion_de_enlace(ancestro)
+        if motivo_ancestro is not None:
+            raise RuntimeCloneCorruptError(
+                f"{ruta}: namespace de clones redirigido por reparse point/enlace en ancestro '{ancestro}': {motivo_ancestro}"
+            )
 
     if not ruta.exists():
         raise RuntimeCloneNotFoundError(f"registro de clone no encontrado: '{ruta}'")
@@ -594,24 +601,29 @@ def verificar_runtime_clone(
             message=f"no se pudo cargar el registro del clone '{clone_id}': {exc}",
         )
 
-    # 1. Verificar existencia y vinculación de la Generation de origen
-    from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
+    # 1. Verificar existencia, vinculación e integridad de la Generation de origen (ADR 0012 §29.3, SFR-17)
+    from sky_claw.local.frozen_runtime.generations import verificar_generation
 
-    try:
-        gen_meta = leer_generation_metadata(root, record.source_generation_id)
-    except (FrozenRuntimeError, OSError) as exc:
+    gen_verif = verificar_generation(root, record.source_generation_id)
+    if gen_verif.state is not GenerationVerificationState.VALID:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
-            message=f"Generation de origen no existe o es inválida ({record.source_generation_id}): {exc}",
+            message=(
+                f"Generation de origen no existe o no es VALID "
+                f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+            ),
+            recorded=gen_verif.recorded,
         )
 
-    if gen_meta.generation_id != record.source_generation_id:
+    gen_meta = gen_verif.recorded
+    if gen_meta is None or gen_meta.generation_id != record.source_generation_id:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=(
                 f"Generation de origen con generation_id discordante "
-                f"('{gen_meta.generation_id}' != '{record.source_generation_id}')"
+                f"('{getattr(gen_meta, 'generation_id', None)}' != '{record.source_generation_id}')"
             ),
+            recorded=gen_meta,
         )
 
     # 2. Admisión de la ruta física

@@ -543,3 +543,21 @@ identificaron y corrigieron cuatro fronteras críticas:
     - `_save_frozen_runtime_state_locked` aplica validación estricta de schema (`schema_version in {1, 2}`
       y tipo entero no booleano), fallando con `StateSchemaError` ante schemas no soportados y
       garantizando que un estado v2 nunca sea degradado silenciosamente a v1 ante datos inválidos.
+
+12. **Obligatoriedad de Generation VALID como prerrequisito de autoridad del Clone (ADR 0012 §29.3, SFR-17):**
+    - `verificar_runtime_clone` exige que la Generation de origen sea evaluada exhaustivamente mediante
+      `verificar_generation` y que su estado sea estrictamente `VALID` (no meramente que su metadata exista
+      en disco). Si el árbol físico de la Generation bajo `versions/<generation_id>` es eliminado o sufre
+      deriva (DRIFTED), `verificar_runtime_clone` clasifica el Clone como `INVALID`, impidiendo que
+      `desired_runtime_from_storage` devuelva un `clone_root` y evitando que el oráculo otorgue `MATCH`
+      sobre una autoridad cuyo origen se encuentra comprometido.
+    - `admitir_clone_root_path` y `_leer_record_de_ruta` auditan exhaustivamente todos los ancestros
+      intermedios existentes mediante `descripcion_de_enlace`, bloqueando cualquier bypass de contención
+      o secuestro de namespace perpetrado a través de symlinks o junctions intermedios en la jerarquía.
+    - `verify_clone_physical_integrity` optimiza la validación de objetos compartidos contra la Managed Source
+      y la Generation evaluando las rutas correspondientes a los archivos del Clone (`O(N_clone)`), evitando
+      un recorrido recursivo exhaustivo de instalaciones masivas de Steam y garantizando la latencia requerida
+      sin bloquear el event loop.
+    - Se restringen las cláusulas `except` en el oráculo para atrapar únicamente excepciones tipadas del
+      dominio (`FrozenRuntimeError`) y errores de filesystem (`OSError`), evitando el enmascaramiento de
+      errores de programación.

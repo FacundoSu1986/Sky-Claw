@@ -246,7 +246,7 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
     # Validar que la Generation exista de verdad en el storage
     try:
         leer_generation_metadata(pathlib.Path(root), record.source_generation_id)
-    except (FrozenRuntimeError, OSError, ValueError, KeyError):
+    except (FrozenRuntimeError, OSError):
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
     # Validar físicamente el clone contra la Generation registrada
@@ -256,7 +256,7 @@ def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
 
     try:
         clone_root = admitir_clone_root_path(record.root_path, storage_root=pathlib.Path(root))
-    except (FrozenRuntimeError, OSError, ValueError, KeyError):
+    except (FrozenRuntimeError, OSError):
         return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
 
     return DesiredRuntime(clone_id=clone_id, clone_root=clone_root, generation_id=gen_id)
