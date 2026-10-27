@@ -168,6 +168,23 @@ def test_las_lineas_de_un_fallo_muestran_el_motivo() -> None:
     assert any("mod no habilitado: X" in linea for linea in lineas)
 
 
+def test_las_lineas_de_un_error_del_dispatcher_muestran_el_detalle_y_no_motivo_desconocido() -> None:
+    """El dispatcher envuelve las excepciones inesperadas en ``{"status": "error", "reason", "details"}`` (ErrorWrappingMiddleware): el
+    formateador pasa por ``normalize_tool_result`` (invariante de ``gui/AGENTS.md``) en vez de leer solo ``message``."""
+    lineas = lineas_del_diagnostico_parallax(
+        {"status": "error", "reason": "ParallaxProfileDiagnosticFailed", "details": "OSError: disco no disponible"}
+    )
+
+    assert any("OSError: disco no disponible" in linea for linea in lineas)
+    assert not any("desconocido" in linea for linea in lineas)
+
+
+def test_las_lineas_de_un_error_del_dispatcher_sin_detalle_muestran_el_codigo_de_motivo() -> None:
+    lineas = lineas_del_diagnostico_parallax({"status": "error", "reason": "InvalidParallaxProfileDiagnosticResult"})
+
+    assert any("InvalidParallaxProfileDiagnosticResult" in linea for linea in lineas)
+
+
 @pytest.mark.parametrize("basura", [None, {}, [], "texto", {"success": True}])
 def test_las_lineas_de_una_forma_inesperada_no_levantan(basura: Any) -> None:
     assert isinstance(lineas_del_diagnostico_parallax(basura), list)

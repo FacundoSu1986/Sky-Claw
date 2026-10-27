@@ -1344,8 +1344,11 @@ def lineas_del_diagnostico_parallax(resultado: Any) -> list[str]:
         return ["No pude leer el resultado del diagnóstico."]
     lineas: list[str] = []
     alcance = str(resultado.get("alcance") or "")
-    if not resultado.get("success"):
-        lineas.append(f"No se pudo diagnosticar: {resultado.get('message') or 'motivo desconocido'}")
+    # ``normalize_tool_result`` es la única pieza que conoce las shapes legacy (invariante de ``gui/AGENTS.md``): el dispatcher envuelve
+    # una excepción inesperada en ``{"status": "error", "reason", "details"}`` (ErrorWrappingMiddleware), que no trae ``success``/``message``.
+    normalizado = normalize_tool_result(resultado)
+    if not normalizado["success"]:
+        lineas.append(f"No se pudo diagnosticar: {normalizado['message'] or 'motivo desconocido'}")
     else:
         mod = resultado.get("mod", "?")
         perfil = resultado.get("perfil", "?")
