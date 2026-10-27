@@ -195,18 +195,24 @@ def admitir_clone_root_path(
             )
 
     # Exclusión respecto del storage root
+    try:
+        resolved_ruta = norm_ruta.resolve()
+    except (OSError, RuntimeError):
+        resolved_ruta = norm_ruta
+
     if storage_root is not None:
         s_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(storage_root))))
-        if _contenida(norm_ruta, versions_dir(s_root)):
-            raise RuntimeCloneAdmissionError(
-                "el root del clone está dentro de versions/ (violación SFR-19: Generation nunca es runtime ejecutado)"
-            )
-        if _contenida(norm_ruta, candidates_dir(s_root)):
-            raise RuntimeCloneAdmissionError("el root del clone está dentro de candidates/")
-        if _contenida(norm_ruta, state_dir(s_root)):
-            raise RuntimeCloneAdmissionError("el root del clone está dentro de state/")
-        if _contenida(norm_ruta, s_root):
-            raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) el storage root: '{norm_ruta}'")
+        for target in {norm_ruta, resolved_ruta}:
+            if _contenida(target, versions_dir(s_root)):
+                raise RuntimeCloneAdmissionError(
+                    "el root del clone está dentro de versions/ (violación SFR-19: Generation nunca es runtime ejecutado)"
+                )
+            if _contenida(target, candidates_dir(s_root)):
+                raise RuntimeCloneAdmissionError("el root del clone está dentro de candidates/")
+            if _contenida(target, state_dir(s_root)):
+                raise RuntimeCloneAdmissionError("el root del clone está dentro de state/")
+            if _contenida(target, s_root):
+                raise RuntimeCloneAdmissionError(f"el root del clone está dentro de (o es) el storage root: '{target}'")
         if _contenida(s_root, norm_ruta):
             raise RuntimeCloneAdmissionError(
                 f"el storage root está dentro del root del clone (ancestro no permitido): '{norm_ruta}'"
@@ -215,10 +221,11 @@ def admitir_clone_root_path(
     # Exclusión respecto de la Managed Source
     if managed_source_root is not None:
         ms_root = pathlib.Path(os.path.normpath(os.path.abspath(os.fspath(managed_source_root))))
-        if _contenida(norm_ruta, ms_root):
-            raise RuntimeCloneAdmissionError(
-                f"el root del clone está dentro de (o es) la Managed Source: '{norm_ruta}'"
-            )
+        for target in {norm_ruta, resolved_ruta}:
+            if _contenida(target, ms_root):
+                raise RuntimeCloneAdmissionError(
+                    f"el root del clone está dentro de (o es) la Managed Source: '{target}'"
+                )
         if _contenida(ms_root, norm_ruta):
             raise RuntimeCloneAdmissionError(f"la Managed Source está dentro del root del clone: '{ms_root}'")
 
@@ -347,6 +354,7 @@ def registrar_runtime_clone_record(
     record: RuntimeCloneRecord,
     *,
     timeout: float = 0.0,
+    managed_source_root: pathlib.Path | None = None,
 ) -> RuntimeCloneRecord:
     """Registra un RuntimeCloneRecord bajo state/clones/<clone-id>.json.
 
@@ -396,7 +404,9 @@ def registrar_runtime_clone_record(
     # Validación de admisión de la ruta del clone
     if not isinstance(record.root_path, str) or not record.root_path.strip():
         raise RuntimeCloneSchemaError("root_path debe ser string no vacío")
-    admitted_root = admitir_clone_root_path(record.root_path, storage_root=root)
+    admitted_root = admitir_clone_root_path(
+        record.root_path, storage_root=root, managed_source_root=managed_source_root
+    )
 
     # Validar existencia de la Generation de origen en el storage
     from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError

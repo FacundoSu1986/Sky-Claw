@@ -1733,3 +1733,34 @@ class TestFrozenRuntimeP5BDurableAuthority:
 
         desired = desired_runtime_from_storage(root)
         assert desired.clone_root is None
+
+    def test_32_admision_resuelve_symlinks_y_registro_valida_managed_source(self, tmp_path: pathlib.Path) -> None:
+        """32. Qodo: admitir_clone_root_path evalúa rutas resueltas y registrar_runtime_clone_record valida managed_source_root."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+
+        ms_root = tmp_path / "steam_custom"
+        ms_root.mkdir()
+        clone_dentro_ms = ms_root / "clone"
+        clone_dentro_ms.mkdir()
+
+        # 1. registrar_runtime_clone_record con managed_source_root rechaza fail-fast
+        rec_invalido = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-en-ms",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-1",
+            verified_runtime_setup_id="setup-1",
+            root_path=str(clone_dentro_ms),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        with pytest.raises(RuntimeCloneAdmissionError, match="Managed Source"):
+            registrar_runtime_clone_record(root, rec_invalido, managed_source_root=ms_root)
+
+        # 2. admitir_clone_root_path rechaza si la ruta cae dentro de versions/
+        vers_dir = root / "versions" / gen_id
+        with pytest.raises(RuntimeCloneAdmissionError, match="versions/"):
+            admitir_clone_root_path(vers_dir, storage_root=root)
