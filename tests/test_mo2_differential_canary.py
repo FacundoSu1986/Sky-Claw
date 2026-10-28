@@ -279,16 +279,24 @@ def test_reparse_de_archivo_falla_cerrado(tmp_path: pathlib.Path, monkeypatch: p
     destino.parent.mkdir(parents=True)
     destino.write_bytes(b"FISICO")
 
+    import os
+
     from sky_claw.local.mo2 import vfs_attestation as att
 
     real_lstat = att.os.lstat
+    # Se calcula ANTES del monkeypatch: dentro del fake no se puede llamar a
+    # Path.resolve(), porque en POSIX vuelve a entrar a os.lstat (módulo
+    # compartido) y el fake se recursaría.
+    objetivo = os.path.normcase(os.path.abspath(os.fspath(destino.resolve())))
 
     def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
-        if pathlib.Path(str(path)).resolve() == destino.resolve():
+        if os.path.normcase(os.path.abspath(os.fspath(path))) == objetivo:
             return SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_file_attributes=0x400)
         return real_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(att.os, "lstat", lstat_falso)
+    # Los paths ajenos se delegan al lstat real (sin recursión ni resolución).
+    assert lstat_falso(esc.virtual_data) == real_lstat(esc.virtual_data)
 
     with pytest.raises(VfsAttestationError, match="enlace"):
         _challenge_del_mod(esc)
@@ -306,16 +314,23 @@ def test_archivo_fisico_con_oserror_falla_cerrado(tmp_path: pathlib.Path, monkey
     destino.parent.mkdir(parents=True)
     destino.write_bytes(b"FISICO")
 
+    import os
+
     from sky_claw.local.mo2 import vfs_attestation as att
 
     real_lstat = att.os.lstat
+    # Clave normalizada calculada ANTES del monkeypatch; dentro del fake se usa
+    # abspath/normcase/fspath, que no invocan os.lstat (sin recursión en POSIX).
+    objetivo = os.path.normcase(os.path.abspath(os.fspath(destino.resolve())))
 
     def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
-        if pathlib.Path(str(path)).resolve() == destino.resolve():
+        if os.path.normcase(os.path.abspath(os.fspath(path))) == objetivo:
             raise PermissionError("share violation simulado")
         return real_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(att.os, "lstat", lstat_falso)
+    # Los paths ajenos se delegan al lstat real (sin recursión ni resolución).
+    assert lstat_falso(esc.virtual_data) == real_lstat(esc.virtual_data)
 
     with pytest.raises(VfsAttestationError, match="inspeccionar"):
         att._sha256_fisico_seguro(destino)
