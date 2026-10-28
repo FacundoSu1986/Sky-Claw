@@ -662,7 +662,7 @@ def _construir_challenge(
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
             fisico = data / relative
-            if not os.path.lexists(fisico):
+            if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
                 continue
             if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
                 continue

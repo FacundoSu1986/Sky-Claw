@@ -161,6 +161,57 @@ def test_canario_fisico_distinto_es_elegible(tmp_path: pathlib.Path) -> None:
     assert challenge.sha256 == _sha(b"BYTES-DEL-MOD")
 
 
+def test_seleccion_diferencial_no_salta_lstat_indeterminado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un OSError de inspección en un candidato NO se salta: falla cerrado.
+
+    ``os.path.lexists`` absorbe el ``OSError`` y devuelve ``False``: sin este
+    test, un candidato indeterminado se saltearía y la selección podría usar un
+    candidato posterior. El contrato exige cortar, no elegir otro.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD-A")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-DEL-MOD-B")
+    esc.escribir_fisico("a.dds", b"FISICO-A")
+    esc.escribir_fisico("b.dds", b"FISICO-B")
+
+    import os
+
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    real_lstat = att.os.lstat
+    destino_a = esc.physical_data / "textures" / "a.dds"
+    # Clave calculada ANTES del monkeypatch: dentro del fake no se usa
+    # Path.resolve(), que en POSIX volvería a entrar a os.lstat.
+    objetivo = os.path.normcase(os.path.abspath(os.fspath(destino_a.resolve())))
+
+    def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if os.path.normcase(os.path.abspath(os.fspath(path))) == objetivo:
+            raise PermissionError("share violation simulado")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(att.os, "lstat", lstat_falso)
+
+    with pytest.raises(VfsAttestationError, match="inspeccionar"):
+        _challenge_del_mod(esc)
+
+
+def test_seleccion_diferencial_salta_ausencia_fisica_genuina(tmp_path: pathlib.Path) -> None:
+    """Una ausencia física REAL de un candidato eclipsado se salta; el siguiente gana."""
+    esc = _escenario(tmp_path, modlist=f"+{_OTRO}\n+{_MOD}\n")
+    esc.escribir_mod(_OTRO, "a.dds", b"ECLIPSA-A")
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD-A")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-DEL-MOD-B")
+    esc.escribir_fisico("b.dds", b"FISICO-B")
+    assert not (esc.physical_data / "textures" / "a.dds").exists()
+
+    challenge = _challenge_del_mod(esc)
+
+    assert challenge.relative_path.as_posix() == "textures/b.dds"
+    assert challenge.sha256 == _sha(b"BYTES-DEL-MOD-B")
+
+
 def test_canario_eclipsado_por_mod_superior_bloquea(tmp_path: pathlib.Path) -> None:
     # `modlist.txt` va de mayor a menor prioridad en disco: el PRIMER mod
     # habilitado es el de mayor prioridad regular, así que el eclipsante va
