@@ -234,7 +234,9 @@ class MO2Controller:
         highest priority without duplication.
 
         If *highest_priority* is False (default), the mod is appended to the
-        bottom of the modlist (lowest priority) and skipped if already present.
+        bottom of the modlist (lowest priority) if absent. If it is already
+        present but disabled (``-``), it is flipped to ``+`` in place,
+        preserving its position. An already-enabled entry is left unchanged.
 
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
@@ -272,9 +274,22 @@ class MO2Controller:
 
             if not is_highest:
                 if mod_name in existing_names:
-                    logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
-                    return
-                lines.append(f"+{mod_name}\n")
+                    # Si está deshabilitado, re-habilitar in-place (preservar orden).
+                    # Si ya está +, no-op.
+                    changed = False
+                    for i, raw_line in enumerate(lines):
+                        stripped = raw_line.strip()
+                        if stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
+                            if stripped[0] == "-":
+                                lines[i] = f"+{mod_name}\n"
+                                changed = True
+                            break
+                    if not changed:
+                        logger.info("Mod %r already enabled in modlist for profile %r", mod_name, profile)
+                        return
+                    logger.info("Re-enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                else:
+                    lines.append(f"+{mod_name}\n")
             else:
                 # Posición de inserción para máxima prioridad: inmediatamente después
                 # de comentarios iniciales ('#') o líneas en blanco de header.

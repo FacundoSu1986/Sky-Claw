@@ -355,6 +355,8 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs.py",
         "sky_claw/local/mo2/grass_profile.py",
         "sky_claw/app/agent/tools/system_tools.py",
+        # P0 CS: activa los mods recién instalados en el perfil de sesión.
+        "sky_claw/app/gui/controllers/ritual_runner.py",
     },
     # Family C: Non-Priority I/O (operaciones sobre modlist.txt sin interpretar jerarquía/orden)
     "FAMILY_C_NON_PRIORITY_IO": {
