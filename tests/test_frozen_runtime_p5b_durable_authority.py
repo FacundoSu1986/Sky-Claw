@@ -1720,16 +1720,20 @@ class TestFrozenRuntimeP5BDurableAuthority:
         )
         save_frozen_runtime_state(active_state_path(root), active_state)
 
-        from sky_claw.local.frozen_runtime import generations
+        from sky_claw.local.frozen_runtime import clones
 
-        orig_leer_gen = generations.leer_generation_metadata
+        orig_verificar_clone = clones.verificar_runtime_clone
 
-        def _invalidar_concurrente(r: pathlib.Path, gid: str):
-            meta = orig_leer_gen(r, gid)
-            actualizar_lifecycle_clone(r, "clone-concurrente", RuntimeCloneLifecycle.INVALID)
-            return meta
+        def _verificar_y_luego_invalidar(r: pathlib.Path, cid: str):
+            res = orig_verificar_clone(r, cid)
+            if cid == "clone-concurrente":
+                # Invalidación concurrente: ocurre DESPUÉS de que la verificación física
+                # retorna VALID y ANTES de que desired_runtime_from_storage ejecute
+                # la re-lectura consistente de seguridad (segunda barrera).
+                actualizar_lifecycle_clone(r, cid, RuntimeCloneLifecycle.INVALID)
+            return res
 
-        monkeypatch.setattr(generations, "leer_generation_metadata", _invalidar_concurrente)
+        monkeypatch.setattr(clones, "verificar_runtime_clone", _verificar_y_luego_invalidar)
 
         desired = desired_runtime_from_storage(root)
         assert desired.clone_root is None
@@ -1778,3 +1782,111 @@ class TestFrozenRuntimeP5BDurableAuthority:
         if sys.platform == "win32" and pathlib.Path("C:/PROGRA~1").exists():
             with pytest.raises(RuntimeCloneAdmissionError, match="alias"):
                 admitir_clone_root_path("C:/PROGRA~1")
+
+    def test_34_schema_v1_rechaza_desired_clone_id_sin_clobber_de_estado_previo(self, tmp_path: pathlib.Path) -> None:
+        """34. save_frozen_runtime_state con schema 1 y desired_clone_id no nulo falla cerrado sin clobber."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        active_path = active_state_path(root)
+
+        # 1. Guardar estado válido inicial
+        estado_previo = FrozenRuntimeState(
+            schema_version=1,
+            desired_active_generation=None,
+            desired_clone_id=None,
+            updated_at_ns=10,
+        )
+        save_frozen_runtime_state(active_path, estado_previo)
+        leido_previo = load_frozen_runtime_state(active_path)
+        assert leido_previo.found is True
+        assert leido_previo.state == estado_previo
+
+        # 2. Intentar guardar schema 1 con desired_clone_id no nulo debe fallar fail-closed
+        estado_invalido = FrozenRuntimeState(
+            schema_version=1,
+            desired_active_generation="1.6.1170__0123456789ab",
+            desired_clone_id="clone-perdido",
+            updated_at_ns=20,
+        )
+        with pytest.raises(StateSchemaError, match="schema_version 1 no admite desired_clone_id"):
+            save_frozen_runtime_state(active_path, estado_invalido)
+
+        # 3. El archivo previo debe permanecer intacto (sin clobber ni corrupción)
+        leido_despues = load_frozen_runtime_state(active_path)
+        assert leido_despues.found is True
+        assert leido_despues.state == estado_previo
+
+        # 4. Leer JSON con schema 1 y desired_clone_id presente también debe ser rechazado
+        raw_v1_con_clone = json.dumps(
+            {
+                "schema_version": 1,
+                "desired_active_generation": "1.6.1170__0123456789ab",
+                "desired_clone_id": "clone-invalido",
+                "updated_at_ns": 30,
+            }
+        )
+        active_path.write_text(raw_v1_con_clone, encoding="utf-8")
+        with pytest.raises(StateSchemaError, match="desired_clone_id"):
+            load_frozen_runtime_state(active_path)
+
+    def test_35_preservacion_forense_de_verified_setup_en_transicion_a_invalid(self, tmp_path: pathlib.Path) -> None:
+        """35. actualizar_lifecycle_clone preserva forensemente verified_runtime_setup_id al transicionar a INVALID."""
+        root = tmp_path / "frozen"
+        initialize_frozen_runtime_storage(root)
+        gen_id = _crear_generation_valida(root)
+        clone_root = _crear_arbol_juego(tmp_path / "clone_forense")
+
+        # 1. Clone en CREATED: no admite verified_runtime_setup_id al transicionar a INVALID
+        rec_created = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-created",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.CREATED,
+            intended_runtime_setup_id="setup-original",
+            verified_runtime_setup_id=None,
+            root_path=str(clone_root),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec_created)
+
+        with pytest.raises(RuntimeCloneLifecycleError, match="no admite verified_runtime_setup_id"):
+            actualizar_lifecycle_clone(
+                root, "clone-created", RuntimeCloneLifecycle.INVALID, verified_runtime_setup_id="setup-fabricado"
+            )
+
+        # Transición válida de CREATED a INVALID sin setup: queda None
+        inv_created = actualizar_lifecycle_clone(root, "clone-created", RuntimeCloneLifecycle.INVALID)
+        assert inv_created.verified_runtime_setup_id is None
+        assert leer_runtime_clone_record(root, "clone-created").verified_runtime_setup_id is None
+
+        # 2. Clone en PROVISIONED: debe preservar el setup verificado original
+        clone_root_prov = _crear_arbol_juego(tmp_path / "clone_prov")
+        rec_prov = RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-provisioned",
+            source_generation_id=gen_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-original",
+            verified_runtime_setup_id="setup-original",
+            root_path=str(clone_root_prov),
+            admitted_role="runtime_clone",
+            created_at_ns=100,
+        )
+        registrar_runtime_clone_record(root, rec_prov)
+
+        # Intento de adulterar o sustituir el setup verificado al invalidar debe fallar
+        with pytest.raises(RuntimeCloneLifecycleError, match="no admite sustituir verified_runtime_setup_id"):
+            actualizar_lifecycle_clone(
+                root, "clone-provisioned", RuntimeCloneLifecycle.INVALID, verified_runtime_setup_id="setup-adulterado"
+            )
+
+        # La evidencia en disco no fue alterada
+        assert leer_runtime_clone_record(root, "clone-provisioned").verified_runtime_setup_id == "setup-original"
+        assert leer_runtime_clone_record(root, "clone-provisioned").lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+        # Invalidación legítima preserva el setup original intacto
+        inv_prov = actualizar_lifecycle_clone(root, "clone-provisioned", RuntimeCloneLifecycle.INVALID)
+        assert inv_prov.lifecycle is RuntimeCloneLifecycle.INVALID
+        assert inv_prov.verified_runtime_setup_id == "setup-original"
+        assert leer_runtime_clone_record(root, "clone-provisioned").verified_runtime_setup_id == "setup-original"

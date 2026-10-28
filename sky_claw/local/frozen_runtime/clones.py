@@ -550,8 +550,23 @@ def actualizar_lifecycle_clone(
                     f"setup mismatch: intended '{existente.intended_runtime_setup_id}' != verified '{v_setup}'"
                 )
         else:
-            # INVALID conserva verified_runtime_setup_id si existía o usa el provisto (validado)
-            v_setup = v_setup_cand or existente.verified_runtime_setup_id
+            # nuevo_lifecycle is RuntimeCloneLifecycle.INVALID
+            # Preservación forense (§19c): si el clone ya estaba PROVISIONED con un setup verificado,
+            # no se admite sustituirlo ni alterarlo; se preserva de forma inmutable.
+            if existente.verified_runtime_setup_id is not None:
+                if v_setup_cand is not None and v_setup_cand != existente.verified_runtime_setup_id:
+                    raise RuntimeCloneLifecycleError(
+                        f"transición a INVALID no admite sustituir verified_runtime_setup_id previo "
+                        f"'{existente.verified_runtime_setup_id}' por '{v_setup_cand}' (preservación forense fail-closed)"
+                    )
+                v_setup = existente.verified_runtime_setup_id
+            else:
+                if v_setup_cand is not None:
+                    raise RuntimeCloneLifecycleError(
+                        f"transición a INVALID de clone no PROVISIONED ('{existente.lifecycle.value}') "
+                        f"no admite verified_runtime_setup_id (no existe verificación previa; fail-closed)"
+                    )
+                v_setup = None
 
         actualizado = RuntimeCloneRecord(
             schema_version=existente.schema_version,

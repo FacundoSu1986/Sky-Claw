@@ -72,6 +72,10 @@ def _parsear_estado(raw: str, *, source_label: str) -> FrozenRuntimeState:
         for campo in ("schema_version", "desired_active_generation", "updated_at_ns"):
             if campo not in data:
                 raise StateSchemaError(f"{source_label}: falta el campo obligatorio '{campo}'")
+        if "desired_clone_id" in data:
+            raise StateSchemaError(
+                f"{source_label}: 'desired_clone_id' queda fuera del schema v1 (use schema v2; fail-closed)"
+            )
         deseado = data.get("desired_active_generation")
         if deseado is not None:
             if not isinstance(deseado, str):
@@ -189,6 +193,12 @@ def _save_frozen_runtime_state_locked(ruta: pathlib.Path, state: FrozenRuntimeSt
         raise StateSchemaError(
             f"schema_version no soportado {state.schema_version}; soportados: {sorted(SCHEMA_VERSIONS_SOPORTADOS)} "
             "(fail-closed, no se degrada silenciosamente)"
+        )
+
+    if state.schema_version == 1 and state.desired_clone_id is not None:
+        raise StateSchemaError(
+            "schema_version 1 no admite desired_clone_id (use schema_version 2 para persistir la intención de clone; "
+            "fail-closed para evitar pérdida silenciosa de autoridad)"
         )
 
     if state.schema_version == 2:
