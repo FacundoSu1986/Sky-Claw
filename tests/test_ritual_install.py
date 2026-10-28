@@ -99,6 +99,16 @@ class _FakeInstaller:
         return self._cs_result
 
 
+class _FakeMO2:
+    """Doble mínimo de MO2Controller para activación en modlist."""
+
+    def __init__(self) -> None:
+        self.activated: list[tuple[str, str]] = []
+
+    async def add_mod_to_modlist(self, mod_name: str, profile: str = "Default") -> None:
+        self.activated.append((mod_name, profile))
+
+
 class _FakeAppContext:
     def __init__(
         self,
@@ -108,12 +118,16 @@ class _FakeAppContext:
         session: object = "sess",
         network: object = None,
         config_path: object = None,
+        mo2: object | None = None,
+        mo2_profile: str = "Default",
     ) -> None:
         self.tools_installer = installer
         self.install_dir = install_dir
         self.session = session
         self.network = network
         self.config_path = config_path
+        self.mo2 = mo2 if mo2 is not None else _FakeMO2()
+        self.mo2_profile = mo2_profile
 
 
 # ── Ritual → installer mapping ──────────────────────────────────────────────────
@@ -506,11 +520,12 @@ async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot(tmp_path: 
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "positive"
     assert "Community Shaders" in fb["text"]
+    assert "activado" in fb["text"]
     assert not store.get("ritual_in_flight")
 
 
 async def test_install_community_shaders_persiste_mods_en_config(tmp_path: pathlib.Path) -> None:
-    """La GUI persiste community_shaders_mods (contrato NGIO: el orquestador activa).
+    """La GUI persiste community_shaders_mods y activa en modlist.txt (contrato NGIO).
 
     El `config_path` es un TOML **real**, no un JSON de conveniencia:
     `AppContext.config_path` es `Config.DEFAULT_CONFIG_FILE`

@@ -1121,11 +1121,13 @@ async def run_ritual_install(
         os.environ[env_name] = str(exe_path)
 
     if tool_key == "community_shaders":
-        # Contrato NGIO: el orquestador activa en modlist.txt con estos nombres;
-        # se persisten igual que en la rama del agente (`community_shaders_mods`).
+        # Contrato NGIO: activar en modlist.txt del perfil de sesión y persistir
+        # los nombres. Sin `+Nombre` USVFS no monta los mods.
         mods = list(result) if result is not None else []
         nombres = [m.mod_name for m in mods]
         config_path = getattr(app_context, "config_path", None)
+        mo2 = getattr(app_context, "mo2", None)
+        profile = getattr(app_context, "mo2_profile", None)
         # Sin config_path (boot incompleto) la persistencia NO corre: la
         # operación también es parcial y se degrada igual que en el camino que
         # lanza — cubrir solo la excepción dejaba vivo el éxito visual que este
@@ -1133,42 +1135,47 @@ async def run_ritual_install(
         persistencia_ok = config_path is not None
         if config_path is not None:
             try:
-                # `persistir_campo_bloqueante` despacha por el formato REAL del
-                # archivo: `AppContext.config_path` es el TOML canónico
-                # (`Config.DEFAULT_CONFIG_FILE`), no el JSON legacy. Leerlo con
-                # el parser equivocado devolvía defaults y el guardado
-                # posterior reescribía el archivo entero — la config del
-                # usuario se perdía sin un solo error visible. La variante
-                # `_bloqueante` además serializa con `setup_tools` del agente
-                # (mismo config.toml, mismo proceso): sin eso, un ritual de GUI
-                # y un `setup_tools` concurrentes podían pisarse el campo que
-                # cada uno acababa de escribir (review PR #444).
                 from sky_claw.local.local_config import persistir_campo_bloqueante
 
                 await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
             except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
                 logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
                 persistencia_ok = False
-        if persistencia_ok:
+
+        activados: list[str] = []
+        activacion_ok = False
+        if mo2 is not None and profile:
+            try:
+                for m in mods:
+                    await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
+                    activados.append(m.mod_name)
+                activacion_ok = True
+            except Exception:  # noqa: BLE001 — degradar feedback, no perder el resultado en disco
+                logger.exception("Activación en modlist falló para Community Shaders (ritual)")
+
+        if persistencia_ok and activacion_ok:
             store.set(
                 STORE_KEY_RITUAL_FEEDBACK,
                 {
-                    "text": f"«{tool_key}» instalado correctamente: {', '.join(nombres) or 'sin componentes'}.",
+                    "text": (
+                        f"«{tool_key}» instalado y activado en el perfil «{profile}»: "
+                        f"{', '.join(nombres) or 'sin componentes'}."
+                    ),
                     "type": "positive",
                 },
             )
         else:
-            # El install en disco SÍ ocurrió, pero sin el campo persistido el
-            # orquestador no puede activar los mods en modlist.txt. Reportarlo
-            # como éxito total convierte una operación parcial en éxito visual
-            # (invariante GUI); el operador necesita saber que debe reintentar.
+            partes = []
+            if not persistencia_ok:
+                partes.append("no se pudo persistir la configuración")
+            if not activacion_ok:
+                partes.append("no se pudo activar en modlist.txt")
             store.set(
                 STORE_KEY_RITUAL_FEEDBACK,
                 {
                     "text": (
                         f"«{tool_key}» instalado en disco ({', '.join(nombres) or 'sin componentes'}), "
-                        "pero no se pudo persistir la configuración: el orquestador no podrá "
-                        "activar los mods hasta que se reintente la instalación."
+                        f"pero {'; '.join(partes)}. Reintentá o activá los mods a mano en MO2."
                     ),
                     "type": "warning",
                 },
