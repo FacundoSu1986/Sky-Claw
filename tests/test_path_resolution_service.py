@@ -1438,7 +1438,10 @@ class TestAnclaConstructoresManualesDeMods:
         # Instaladores NGIO/FOMOD del agente LLM: ahora aceptan mods_dir explícito
         # (Issue #557); las líneas 220 y 267 son el fallback legacy portable.
         # system_tools.py ya no construye <expr> / "mods" porque usa mo2.mods_dir.
-        "sky_claw/app/agent/tools/external_tools.py": (220, 267),
+        # PR #825 (activación de CS en modlist.txt) sumó los params `mo2`/`profile` a la
+        # firma de setup_tools y corrió ambos sitios (220, 267 → 222, 269); mismo
+        # fallback legacy, no una construcción nueva.
+        "sky_claw/app/agent/tools/external_tools.py": (222, 269),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
         # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
