@@ -1497,7 +1497,11 @@ class TestAnclaConstructoresManualesDeMods:
         # Es el mismo constructor de siempre: el sitio no cambió de concepto.
         # PR-586D (CTA de resume con handoff_action) la movió (1057 → 1077);
         # mismo constructor del default `<raíz>/mods`.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1077,),
+        # PR #825: la instancia de instalación de CS pasó a priorizar el controlador que
+        # activa en modlist.txt (`app_context.mo2`) sobre el snapshot; el comentario y la
+        # reordenación movieron la línea (1077 → 1084). Sigue siendo el fallback
+        # `<raíz>/mods` cuando ni el controlador ni el snapshot traen `mods_dir`.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1084,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con

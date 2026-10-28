@@ -575,6 +575,50 @@ async def test_install_community_shaders_persiste_mods_en_config(tmp_path: pathl
     assert persistido["llm_provider"] == "anthropic"
 
 
+async def test_install_community_shaders_instala_en_la_misma_instancia_que_activa(tmp_path: pathlib.Path) -> None:
+    """El payload va a la instancia del controlador que escribe el modlist.
+
+    El snapshot del scanner puede estar viejo (el usuario cambió ``mo2_root``
+    después del escaneo) y apuntar a la instancia B mientras ``app_context.mo2``
+    —el que activa en ``modlist.txt``— es la A. Instalar en B y activar en A
+    reportaría «instalado y activado» sobre un perfil sin el payload:
+    ``add_mod_to_modlist`` no verifica que el mod exista en su ``mods_dir``.
+    """
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.discovery.environment import MO2Info
+    from sky_claw.local.mo2.vfs import MO2Controller
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    mo2_root, _game, snap, key_env = _snapshot_cs(tmp_path)  # instancia B (snapshot viejo)
+    # El scanner real siempre puebla `mods_dir` (scanner.py: MO2Info(..., mods_dir=mods_dir)).
+    snap.mo2 = MO2Info(path=mo2_root, profiles=["Default"], mods_dir=mo2_root / "mods")
+    activa = tmp_path / "InstanciaA"
+    (activa / "profiles" / "Default").mkdir(parents=True)
+    mo2 = MO2Controller(activa, path_validator=PathValidator(roots=[tmp_path]))
+    assert mo2.mods_dir != mo2_root / "mods"
+
+    store = ReactiveStore()
+    store.set(key_env, snap)
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders",
+            mod_dir=mo2.mods_dir / "Community Shaders",
+            version="v1.8.3",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    ctx = _FakeAppContext(installer, config_path=config_path, mo2=mo2)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    assert installer.calls == [("ensure_community_shaders", mo2.mods_dir, "sess")]
+    modlist = activa / "profiles" / "Default" / "modlist.txt"
+    assert "+Community Shaders" in modlist.read_text(encoding="utf-8-sig")
+
+
 async def test_install_community_shaders_sin_mo2_devuelve_feedback_negativo() -> None:
     """Sin MO2 en el snapshot la rama corta antes de tocar el installer (misma
     fuente que la tarjeta: un sentinel sin mo2_root no se puede resolver)."""

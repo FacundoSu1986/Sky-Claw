@@ -1069,10 +1069,17 @@ async def run_ritual_install(
             return
         network = getattr(app_context, "network", None)
         downloader = getattr(network, "downloader", None) if network is not None else None
-        if mo2_mods is not None:
+        # El controlador que activa en modlist.txt (`app_context.mo2`) decide la
+        # instancia: el snapshot del scanner puede estar viejo, y instalar en una
+        # instancia distinta de la que se activa reportaría «instalado y activado»
+        # sobre un perfil sin el payload (`add_mod_to_modlist` no verifica que el mod
+        # exista en su mods_dir). El agente ya es coherente por construcción: instala
+        # en `self._mo2.mods_dir` y activa con ese mismo `self._mo2`.
+        ctl_mods = getattr(getattr(app_context, "mo2", None), "mods_dir", None)
+        if ctl_mods is not None:
+            install_dir = ctl_mods
+        elif mo2_mods is not None:
             install_dir = pathlib.Path(mo2_mods)
-        elif getattr(app_context, "mo2", None) is not None and getattr(app_context.mo2, "mods_dir", None) is not None:
-            install_dir = app_context.mo2.mods_dir
         else:
             install_dir = pathlib.Path(mo2_root) / "mods"
         cs_kwargs = {
