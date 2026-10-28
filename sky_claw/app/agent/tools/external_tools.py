@@ -305,16 +305,21 @@ async def setup_tools(
                     activados: list[str] = []
                     activacion = "no_disponible"
                     activacion_error: str | None = None
-                    if mo2 is not None and profile:
+                    if not mods:
+                        activacion = "vacio"
+                        activacion_error = "ensure_community_shaders no devolvió componentes"
+                    elif mo2 is not None and profile:
                         try:
                             for m in mods:
                                 await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
                                 activados.append(m.mod_name)
-                            activacion = "ok"
+                            activacion = "ok" if len(activados) == len(mods) else "parcial"
                         except Exception as exc:  # noqa: BLE001 — degradar a fallo parcial, no perder el resultado
                             logger.exception("Activación en modlist falló para Community Shaders")
                             activacion = "parcial" if activados else "fallo"
                             activacion_error = str(exc)
+                    else:
+                        activacion_error = "no hay MO2 o perfil en el contexto de esta sesión"
                     results["community_shaders"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,

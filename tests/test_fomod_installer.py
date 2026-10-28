@@ -543,6 +543,26 @@ class TestAddModToModlist:
         assert content.count("TargetMod") == 1
 
     @pytest.mark.asyncio
+    async def test_add_disabled_duplicate_normalizes_all(self, sandbox: pathlib.Path) -> None:
+        """`+X` seguido de `-X` no debe dejar el `-X` vivo (falso verde)."""
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        validator = PathValidator(roots=[sandbox])
+        mo2 = MO2Controller(sandbox, path_validator=validator)
+
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        modlist.write_text("+Community Shaders\n+Otra\n-Community Shaders\n", encoding="utf-8")
+
+        await mo2.add_mod_to_modlist("Community Shaders")
+
+        content = modlist.read_text(encoding="utf-8-sig")
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        assert lines == ["+Community Shaders", "+Otra", "+Community Shaders"]
+        assert "-Community Shaders" not in content
+
+    @pytest.mark.asyncio
     async def test_add_to_empty_modlist(self, sandbox: pathlib.Path) -> None:
         from sky_claw.local.mo2.vfs import MO2Controller
 

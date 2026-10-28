@@ -274,16 +274,21 @@ class MO2Controller:
 
             if not is_highest:
                 if mod_name in existing_names:
-                    # Si está deshabilitado, re-habilitar in-place (preservar orden).
-                    # Si ya está +, no-op.
+                    # Re-habilitar TODAS las ocurrencias `-` in-place (preservar orden).
+                    # Un `break` en la primera dejaría un `-X` posterior vivo si
+                    # existiera un `+X` antes (falso verde). Igual que
+                    # toggle_mod_in_modlist, que no corta en la primera.
                     changed = False
                     for i, raw_line in enumerate(lines):
                         stripped = raw_line.strip()
-                        if stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
-                            if stripped[0] == "-":
-                                lines[i] = f"+{mod_name}\n"
-                                changed = True
-                            break
+                        if (
+                            stripped
+                            and stripped[0] in ("+", "-")
+                            and stripped[1:].strip() == mod_name
+                            and stripped[0] == "-"
+                        ):
+                            lines[i] = f"+{mod_name}\n"
+                            changed = True
                     if not changed:
                         logger.info("Mod %r already enabled in modlist for profile %r", mod_name, profile)
                         return

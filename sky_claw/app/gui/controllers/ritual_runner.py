@@ -1144,23 +1144,28 @@ async def run_ritual_install(
 
         activados: list[str] = []
         activacion_ok = False
-        if mo2 is not None and profile:
+        motivo_activacion = ""
+        if not mods:
+            motivo_activacion = "el instalador no devolvió componentes"
+        elif mo2 is not None and profile:
             try:
                 for m in mods:
                     await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
                     activados.append(m.mod_name)
-                activacion_ok = True
+                activacion_ok = len(activados) == len(mods)
+                if not activacion_ok:
+                    motivo_activacion = "la activación quedó parcial"
             except Exception:  # noqa: BLE001 — degradar feedback, no perder el resultado en disco
                 logger.exception("Activación en modlist falló para Community Shaders (ritual)")
+                motivo_activacion = "falló la escritura en modlist.txt"
+        else:
+            motivo_activacion = "no hay MO2 o perfil en el contexto de esta sesión"
 
         if persistencia_ok and activacion_ok:
             store.set(
                 STORE_KEY_RITUAL_FEEDBACK,
                 {
-                    "text": (
-                        f"«{tool_key}» instalado y activado en el perfil «{profile}»: "
-                        f"{', '.join(nombres) or 'sin componentes'}."
-                    ),
+                    "text": (f"«{tool_key}» instalado y activado en el perfil «{profile}»: {', '.join(nombres)}."),
                     "type": "positive",
                 },
             )
@@ -1169,7 +1174,7 @@ async def run_ritual_install(
             if not persistencia_ok:
                 partes.append("no se pudo persistir la configuración")
             if not activacion_ok:
-                partes.append("no se pudo activar en modlist.txt")
+                partes.append(motivo_activacion or "no se pudo activar en modlist.txt")
             store.set(
                 STORE_KEY_RITUAL_FEEDBACK,
                 {
