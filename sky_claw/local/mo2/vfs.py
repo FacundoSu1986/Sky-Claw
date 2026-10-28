@@ -274,25 +274,29 @@ class MO2Controller:
 
             if not is_highest:
                 if mod_name in existing_names:
-                    # Re-habilitar TODAS las ocurrencias `-` in-place (preservar orden).
-                    # Un `break` en la primera dejaría un `-X` posterior vivo si
-                    # existiera un `+X` antes (falso verde). Igual que
-                    # toggle_mod_in_modlist, que no corta en la primera.
-                    changed = False
+                    # Entradas del mod, en orden físico. Un `modlist.txt` escrito por
+                    # MO2 trae una sola; más de una solo sale de un archivo editado a mano.
+                    habilitadas: list[int] = []
+                    deshabilitadas: list[int] = []
                     for i, raw_line in enumerate(lines):
                         stripped = raw_line.strip()
-                        if (
-                            stripped
-                            and stripped[0] in ("+", "-")
-                            and stripped[1:].strip() == mod_name
-                            and stripped[0] == "-"
-                        ):
-                            lines[i] = f"+{mod_name}\n"
-                            changed = True
-                    if not changed:
+                        if stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
+                            (habilitadas if stripped[0] == "+" else deshabilitadas).append(i)
+                    # Una `+X` existente manda: su posición ES la prioridad efectiva del
+                    # mod, así que se conserva y las `-X` se descartan. Flipear una `-X`
+                    # junto a una `+X` dejaría dos habilitadas y `ganadores._exigir_enabled`
+                    # falla cerrado ante un nombre repetido. Sin ninguna habilitada se
+                    # flipea la primera `-X` in-place (preservar orden) y se descartan
+                    # las demás: cortar en la primera dejaría un `-X` posterior vivo.
+                    flipear = deshabilitadas[0] if not habilitadas and deshabilitadas else None
+                    descartar = set(deshabilitadas) - {flipear}
+                    if flipear is None and not descartar:
                         logger.info("Mod %r already enabled in modlist for profile %r", mod_name, profile)
                         return
-                    logger.info("Re-enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                    if flipear is not None:
+                        lines[flipear] = f"+{mod_name}\n"
+                    lines = [ln for i, ln in enumerate(lines) if i not in descartar]
+                    logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
                 else:
                     lines.append(f"+{mod_name}\n")
             else:
