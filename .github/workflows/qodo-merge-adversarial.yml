@@ -60,9 +60,9 @@ jobs:
           # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          CONFIG.MODEL: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+          CONFIG.MODEL: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "200000"
-          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]'
+          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3.5-lightning:free"]'
           LITELLM.DROP_PARAMS: "true"
 
   comment-command:
@@ -171,7 +171,7 @@ jobs:
           # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          CONFIG.MODEL: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+          CONFIG.MODEL: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "200000"
-          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]'
+          CONFIG.FALLBACK_MODELS: '["openrouter/nvidia/nemotron-3.5-lightning:free"]'
           LITELLM.DROP_PARAMS: "true"
