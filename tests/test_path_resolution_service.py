@@ -1444,7 +1444,9 @@ class TestAnclaConstructoresManualesDeMods:
         # El helper `_activar_en_modlist` (activación compartida de NGIO y CS) se agregó
         # ARRIBA de setup_tools y los corrió (222, 269 → 266, 313); mismo fallback
         # legacy, ninguna construcción nueva de `<base>/mods`.
-        "sky_claw/app/agent/tools/external_tools.py": (266, 313),
+        # Unificar la activación con la GUI mudó ese helper a `sky_claw/local/mo2/activacion_modlist.py`
+        # (capa neutral) y los corrió otra vez (266, 313 → 225, 274); mismo fallback legacy.
+        "sky_claw/app/agent/tools/external_tools.py": (225, 274),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
         # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
@@ -1504,7 +1506,10 @@ class TestAnclaConstructoresManualesDeMods:
         # activa en modlist.txt (`app_context.mo2`) sobre el snapshot; el comentario y la
         # reordenación movieron la línea (1077 → 1084). Sigue siendo el fallback
         # `<raíz>/mods` cuando ni el controlador ni el snapshot traen `mods_dir`.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1084,),
+        # Unificar la activación con el agente sumó el import del helper compartido y la tabla de
+        # motivos de la GUI ARRIBA de `run_ritual_install` (1084 → 1099); mismo fallback, no una
+        # construcción nueva. El bloque inline que reemplazó vive DESPUÉS de este sitio.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1099,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con

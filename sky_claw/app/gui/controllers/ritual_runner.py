@@ -27,6 +27,7 @@ from sky_claw.local.discovery.registry import (
     build_ritual_installer_map,
     build_ritual_tool_map,
 )
+from sky_claw.local.mo2.activacion_modlist import activar_en_modlist
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
 
@@ -962,6 +963,20 @@ def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str
     }
 
 
+#: Motivo que el cartel de «instalado en disco, pero…» muestra por cada estado de la activación en
+#: ``modlist.txt`` que no es éxito. El veredicto lo decide :func:`activar_en_modlist` (compartido con el
+#: agente); acá solo se traduce a lo que lee el operador. Una clave por estado del vocabulario cerrado
+#: ``EstadoActivacion`` salvo ``ok`` (congelado por igualdad literal en ``tests/test_cs_activacion_modlist.py``:
+#: un estado nuevo sin cartel rompe el test, no el rig). ``parcial`` y ``fallo`` comparten texto: ambos son una
+#: escritura que lanzó; el agente sí los distingue porque su consumidor es el LLM.
+_MOTIVO_GUI_POR_ESTADO: dict[str, str] = {
+    "parcial": "falló la escritura en modlist.txt",
+    "fallo": "falló la escritura en modlist.txt",
+    "no_disponible": "no hay MO2 o perfil en el contexto de esta sesión",
+    "vacio": "el instalador no devolvió componentes",
+}
+
+
 async def run_ritual_install(
     tool_key: str,
     *,
@@ -1149,24 +1164,11 @@ async def run_ritual_install(
                 logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
                 persistencia_ok = False
 
-        activados: list[str] = []
-        activacion_ok = False
-        motivo_activacion = ""
-        if not mods:
-            motivo_activacion = "el instalador no devolvió componentes"
-        elif mo2 is not None and profile:
-            try:
-                for m in mods:
-                    await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
-                    activados.append(m.mod_name)
-                activacion_ok = len(activados) == len(mods)
-                if not activacion_ok:
-                    motivo_activacion = "la activación quedó parcial"
-            except Exception:  # noqa: BLE001 — degradar feedback, no perder el resultado en disco
-                logger.exception("Activación en modlist falló para Community Shaders (ritual)")
-                motivo_activacion = "falló la escritura en modlist.txt"
-        else:
-            motivo_activacion = "no hay MO2 o perfil en el contexto de esta sesión"
+        # El veredicto de la activación NO se decide acá: es el mismo helper que usa el agente
+        # (`setup_tools`), así que las dos superficies no pueden discrepar sobre qué es «activado».
+        activacion = await activar_en_modlist(nombres, mo2, profile, "Community Shaders (ritual)")
+        activacion_ok = activacion.exito
+        motivo_activacion = "" if activacion_ok else _MOTIVO_GUI_POR_ESTADO[activacion.estado]
 
         if persistencia_ok and activacion_ok:
             store.set(

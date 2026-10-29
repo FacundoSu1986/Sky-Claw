@@ -355,9 +355,12 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs.py",
         "sky_claw/local/mo2/grass_profile.py",
         "sky_claw/app/agent/tools/system_tools.py",
-        # P0 CS: activa los mods recién instalados en el perfil de sesión.
-        "sky_claw/app/gui/controllers/ritual_runner.py",
-        "sky_claw/app/agent/tools/external_tools.py",
+        # Activa los mods recién instalados (NGIO y CS) en el perfil de sesión. Es el ÚNICO bucle sobre
+        # `add_mod_to_modlist` para lotes: lo consumen `external_tools.setup_tools` (agente) y
+        # `ritual_runner.run_ritual_install` (GUI), que ya no escriben el modlist por su cuenta — por eso
+        # salieron de esta familia. Quién llama al mutador, y desde qué función, lo enumera
+        # `tests/test_cs_activacion_modlist.py` (`LLAMADORES_DE_ADD_MOD_TO_MODLIST`).
+        "sky_claw/local/mo2/activacion_modlist.py",
     },
     # Family C: Non-Priority I/O (operaciones sobre modlist.txt sin interpretar jerarquía/orden)
     "FAMILY_C_NON_PRIORITY_IO": {
@@ -376,6 +379,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {
         "sky_claw/app/agent/tools/__init__.py",  # NP-A0h: solo nombra el modlist en la descripción de diagnosticar_parallax_perfil; lo lee diagnostico_perfil
+        "sky_claw/app/gui/controllers/ritual_runner.py",  # solo nombra el modlist en el cartel de la activación de CS; el veredicto y la escritura son de activacion_modlist
         "sky_claw/app/core/event_payloads.py",
         "sky_claw/app/orchestrator/active_plugins.py",
         "sky_claw/app/orchestrator/asset_conflict_scan.py",

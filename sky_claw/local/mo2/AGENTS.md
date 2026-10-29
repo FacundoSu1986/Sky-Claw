@@ -25,6 +25,13 @@ raíz.
   mod de control tapa la entrada o la salida del generador); está clasificado en la Familia A del censo de
   `tests/test_mo2_modlist_priority.py` porque interpreta la prioridad, y el censo de `tests/test_native_parallax_diagnostico_perfil.py` congela
   que `indexar_ganadores` se llame solo desde ahí.
+- `activacion_modlist.py` contesta UNA vez «¿quedó activado en el `modlist.txt` del perfil el lote de mods recién instalado?»
+  (`activar_en_modlist`, vocabulario cerrado `EstadoActivacion`; `ok` es el único éxito). Lo consumen las dos superficies que
+  instalan bajo `mods/`: el agente (`setup_tools`, NGIO y CS) y la GUI (`run_ritual_install`, CS); ninguna importa a la otra y
+  ninguna reescribe el bucle. Es el único bucle de producción sobre `add_mod_to_modlist` para lotes: un llamador nuevo del
+  mutador, un bucle fuera del helper o un instalador de mods sin cablear rompen
+  `tests/test_cs_activacion_modlist.py` (enumera por AST, igualdad literal). El helper no cambia la política de posición
+  de `MO2Controller.add_mod_to_modlist` (sin `highest_priority`).
 
 ## Verificación segura
 

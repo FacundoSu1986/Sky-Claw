@@ -18,6 +18,7 @@ from typing import Any
 import aiohttp
 
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
+from sky_claw.local.mo2.activacion_modlist import activar_en_modlist
 
 logger = logging.getLogger(__name__)
 
@@ -64,48 +65,6 @@ _AVISO_PERSISTENCIA = (
 # `except Exception` desnudo; el gate no lo ataja porque `BLE001` está exento en
 # todo `sky_claw/app/**` (review #455).
 _FALLOS_DE_PERSISTENCIA = (OSError, ValueError, TypeError)
-
-
-async def _activar_en_modlist(
-    mods: list[Any], mo2: Any | None, profile: str | None, herramienta: str
-) -> dict[str, Any]:
-    """Activa ``mods`` en el ``modlist.txt`` del perfil y devuelve los campos del contrato.
-
-    Instalar en ``mods/`` no activa: sin ``+Nombre`` en el modlist USVFS no monta el mod.
-    Es el ÚNICO sitio que decide la activación de las ramas de ``setup_tools`` que instalan
-    bajo ``mods/`` (NGIO y Community Shaders): repartir el bloque en cada rama fue
-    exactamente el defecto que dejó a NGIO reportando éxito sin activar.
-
-    ``activacion`` ∈ ``ok|parcial|fallo|no_disponible|vacio``; ``success`` es exactamente
-    ``activacion == "ok"`` y ``message`` es vacío sólo en éxito. ``vacio`` impide que
-    ``0 == 0`` se lea como «todo activado» (ningún instalador actual devuelve ``[]``).
-    """
-    activados: list[str] = []
-    activacion = "no_disponible"
-    error: str | None = None
-    if not mods:
-        activacion = "vacio"
-        error = "el instalador no devolvió componentes"
-    elif mo2 is not None and profile:
-        try:
-            for m in mods:
-                await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
-                activados.append(m.mod_name)
-            activacion = "ok" if len(activados) == len(mods) else "parcial"
-        except Exception as exc:  # noqa: BLE001 — degradar a fallo parcial, no perder el resultado
-            logger.exception("Activación en modlist falló para %s", herramienta)
-            activacion = "parcial" if activados else "fallo"
-            error = str(exc)
-    else:
-        error = "no hay MO2 o perfil en el contexto de esta sesión"
-    return {
-        "activados": activados,
-        "activacion": activacion,
-        "success": activacion == "ok",
-        "message": ""
-        if activacion == "ok"
-        else (f"Instalado en disco pero no activado en el perfil ({activacion})" + (f": {error}" if error else "")),
-    }
 
 
 async def setup_tools(
@@ -291,14 +250,16 @@ async def setup_tools(
                     )
                     if local_cfg:
                         escribir_campo(local_cfg, "ngio_mods", [m.mod_name for m in mods])
-                    activacion_campos = await _activar_en_modlist(mods, mo2, profile, "NGIO")
+                    # La decisión «¿quedó activado?» es del helper compartido con la GUI
+                    # (`sky_claw.local.mo2.activacion_modlist`), no de esta rama.
+                    activacion = await activar_en_modlist([m.mod_name for m in mods], mo2, profile, "NGIO")
                     results["ngio"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
-                        **activacion_campos,
+                        **activacion.como_campos(),
                     }
                     requieren_persistencia.append("ngio")
                 elif tool_name_lower == "community_shaders":
@@ -345,7 +306,7 @@ async def setup_tools(
                         escribir_campo(local_cfg, "community_shaders_mods", [m.mod_name for m in mods])
                     # Sin `+Nombre` en modlist.txt, USVFS no monta los mods y el juego
                     # nunca ve CommunityShaders.dll: misma activación que NGIO.
-                    activacion_campos = await _activar_en_modlist(mods, mo2, profile, "Community Shaders")
+                    activacion = await activar_en_modlist([m.mod_name for m in mods], mo2, profile, "Community Shaders")
                     results["community_shaders"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
@@ -353,11 +314,11 @@ async def setup_tools(
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
-                        **activacion_campos,
+                        **activacion.como_campos(),
                     }
                     # El registro de persistencia es incondicional (ancla AST de
                     # test_setup_tools_persistencia): el campo se guarda siempre;
-                    # el éxito visual lo decide `activacion` (vía `activacion_campos`).
+                    # el éxito visual lo decide `activacion` (vía `como_campos()`).
                     requieren_persistencia.append("community_shaders")
                 else:
                     detail = (

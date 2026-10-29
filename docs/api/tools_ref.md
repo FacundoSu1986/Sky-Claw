@@ -89,8 +89,10 @@ porque sus prerrequisitos de host no los puede satisfacer Sky-Claw. Ver
 instalar no los activa: sin `+<Nombre>` en el `modlist.txt` del perfil el VFS no los
 monta. Por eso `setup_tools` recibe el `mo2` y el perfil de la sesión (los mismos que
 inyecta `AsyncToolRegistry`) y activa cada mod instalado con `add_mod_to_modlist`. Un
-único helper (`_activar_en_modlist`) resuelve esa activación para las dos ramas. Cada
-entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_disponible` o
+único helper (`activar_en_modlist`, en `sky_claw/local/mo2/activacion_modlist.py`)
+resuelve esa activación para las dos ramas y también para el ritual de instalación de la
+GUI (Community Shaders): ninguna de las dos superficies decide por su cuenta si el lote
+quedó activado. Cada entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_disponible` o
 `vacio`); al salir de la activación `success` vale exactamente `activacion == "ok"` y
 `message` sólo es vacío en éxito. Sin `mo2` o sin perfil la activación es `no_disponible`
 y `success` es `false`: el mod quedó en disco pero no se afirma que esté activo.
