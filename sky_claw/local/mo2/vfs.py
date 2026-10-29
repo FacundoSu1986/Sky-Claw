@@ -234,7 +234,9 @@ class MO2Controller:
         highest priority without duplication.
 
         If *highest_priority* is False (default), the mod is appended to the
-        bottom of the modlist (lowest priority) and skipped if already present.
+        bottom of the modlist (lowest priority) if absent. If it is already
+        present but disabled (``-``), it is flipped to ``+`` in place,
+        preserving its position. An already-enabled entry is left unchanged.
 
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
@@ -272,9 +274,31 @@ class MO2Controller:
 
             if not is_highest:
                 if mod_name in existing_names:
-                    logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
-                    return
-                lines.append(f"+{mod_name}\n")
+                    # Entradas del mod, en orden físico. Un `modlist.txt` escrito por
+                    # MO2 trae una sola; más de una solo sale de un archivo editado a mano.
+                    habilitadas: list[int] = []
+                    deshabilitadas: list[int] = []
+                    for i, raw_line in enumerate(lines):
+                        stripped = raw_line.strip()
+                        if stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
+                            (habilitadas if stripped[0] == "+" else deshabilitadas).append(i)
+                    # Una `+X` existente manda: su posición ES la prioridad efectiva del
+                    # mod, así que se conserva y las `-X` se descartan. Flipear una `-X`
+                    # junto a una `+X` dejaría dos habilitadas y `ganadores._exigir_enabled`
+                    # falla cerrado ante un nombre repetido. Sin ninguna habilitada se
+                    # flipea la primera `-X` in-place (preservar orden) y se descartan
+                    # las demás: cortar en la primera dejaría un `-X` posterior vivo.
+                    flipear = deshabilitadas[0] if not habilitadas and deshabilitadas else None
+                    descartar = set(deshabilitadas) - {flipear}
+                    if flipear is None and not descartar:
+                        logger.info("Mod %r already enabled in modlist for profile %r", mod_name, profile)
+                        return
+                    if flipear is not None:
+                        lines[flipear] = f"+{mod_name}\n"
+                    lines = [ln for i, ln in enumerate(lines) if i not in descartar]
+                    logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                else:
+                    lines.append(f"+{mod_name}\n")
             else:
                 # Posición de inserción para máxima prioridad: inmediatamente después
                 # de comentarios iniciales ('#') o líneas en blanco de header.
