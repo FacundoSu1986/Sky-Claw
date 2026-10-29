@@ -91,11 +91,21 @@ monta. Por eso `setup_tools` recibe el `mo2` y el perfil de la sesión (los mism
 inyecta `AsyncToolRegistry`) y activa cada mod instalado con `add_mod_to_modlist`. Un
 único helper (`_activar_en_modlist`) resuelve esa activación para las dos ramas. Cada
 entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_disponible` o
-`vacio`), `success` vale exactamente `activacion == "ok"` y `message` sólo es vacío en
-éxito. Sin `mo2` o sin perfil la activación es `no_disponible` y `success` es `false`:
-el mod quedó en disco pero no se afirma que esté activo. Si además falla el guardado de
-la configuración, el aviso de persistencia se **suma** al motivo de la activación en vez
-de reemplazarlo. La GUI activa sólo Community Shaders (NGIO no tiene ritual de GUI).
+`vacio`); al salir de la activación `success` vale exactamente `activacion == "ok"` y
+`message` sólo es vacío en éxito. Sin `mo2` o sin perfil la activación es `no_disponible`
+y `success` es `false`: el mod quedó en disco pero no se afirma que esté activo.
+
+El guardado de la configuración corre **después** y puede degradar el resultado, sin
+tocar `activacion`:
+
+| Activación | Guardado | `success` | `activacion` | `message` |
+|---|---|---|---|---|
+| `ok` | falla | `false` | `ok` (los mods sí quedaron activados) | sólo el aviso de persistencia |
+| distinta de `ok` | falla | `false` | la de la activación | el motivo de la activación **más** el aviso de persistencia |
+
+Por eso `success: false` con `activacion: "ok"` significa «activado, pero no se guardó el
+registro». El aviso se suma al motivo de la activación en vez de reemplazarlo. La GUI
+activa sólo Community Shaders (NGIO no tiene ritual de GUI).
 Anclas: `tests/test_cs_activacion_modlist.py` (mismos escenarios para ambas tools, con un
 `MO2Controller` real, y censo por AST de las ramas de `setup_tools` que instalan bajo
 `mods/`) y `tests/test_mo2_modlist_priority.py` (censo de los mutadores del modlist).
