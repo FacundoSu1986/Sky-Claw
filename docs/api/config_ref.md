@@ -32,12 +32,14 @@ keyring `sky_claw`; no vuelve a texto plano si falla el backend.
 baseline del objeto. Por eso una clave fuera de `_load_defaults()` se persiste cuando un
 instalador la escribe explícitamente en `_data`; no se serializa indiscriminadamente todo
 el estado en memoria. Los instaladores que producen mods sin ejecutable propio guardan
-así la lista de nombres que el orquestador necesita para activarlos:
+así el registro de los nombres instalados. Es un registro, no un disparador: la
+activación en `modlist.txt` la hace la propia operación de instalación sobre el perfil de
+la sesión y no lee estas claves (ver [configuración](../user/configuration.md)):
 
 | Clave | Escrita por |
 |---|---|
-| `ngio_mods` | `ensure_ngio` |
-| `community_shaders_mods` | `ensure_community_shaders`, desde ambas superficies |
+| `ngio_mods` | `setup_tools` registra el resultado de `ensure_ngio` (sólo desde el agente: NGIO no tiene ritual de GUI) |
+| `community_shaders_mods` | `setup_tools` (agente) y `run_ritual_install` (GUI) registran el resultado de `ensure_community_shaders` |
 
 No aparecen en la tabla de defaults porque no existen hasta que la operación termina. En
 `LocalConfig` sí son campos declarados de la dataclass, con la misma semántica.
