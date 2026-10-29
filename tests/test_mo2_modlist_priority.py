@@ -355,6 +355,9 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs.py",
         "sky_claw/local/mo2/grass_profile.py",
         "sky_claw/app/agent/tools/system_tools.py",
+        # P0 CS: activa los mods recién instalados en el perfil de sesión.
+        "sky_claw/app/gui/controllers/ritual_runner.py",
+        "sky_claw/app/agent/tools/external_tools.py",
     },
     # Family C: Non-Priority I/O (operaciones sobre modlist.txt sin interpretar jerarquía/orden)
     "FAMILY_C_NON_PRIORITY_IO": {
@@ -444,6 +447,14 @@ def test_h1_g_structural_family_and_census_anchor() -> None:
         has_modlist_constant = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and "modlist.txt" in node.value:
+                has_modlist_constant = True
+                break
+            # También writers por call site (no solo por literal de mensaje).
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_mod_to_modlist"
+            ):
                 has_modlist_constant = True
                 break
         if has_modlist_constant and rel_posix not in all_registered:

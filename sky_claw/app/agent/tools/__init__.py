@@ -711,6 +711,8 @@ class AsyncToolRegistry:
                 tools,
                 gateway=self._resolve_gateway(),
                 mods_dir=getattr(self._mo2, "mods_dir", None),
+                mo2=self._mo2,
+                profile=self._mo2_profile,
             ),
         )
 

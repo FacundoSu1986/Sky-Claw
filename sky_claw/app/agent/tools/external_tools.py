@@ -77,6 +77,8 @@ async def setup_tools(
     gateway: NetworkGateway | None = None,
     session: aiohttp.ClientSession | None = None,
     mods_dir: pathlib.Path | None = None,
+    mo2: Any | None = None,
+    profile: str | None = None,
 ) -> str:
     """Download and install tools (loot, xedit, pandora, bodyslide, ngio, community_shaders).
 
@@ -297,6 +299,27 @@ async def setup_tools(
                     )
                     if local_cfg:
                         escribir_campo(local_cfg, "community_shaders_mods", [m.mod_name for m in mods])
+                    # Activación en el perfil de sesión (contrato NGIO que hasta ahora
+                    # era aspiracional). Sin `+Nombre` en modlist.txt, USVFS no monta
+                    # los mods y el juego nunca ve CommunityShaders.dll.
+                    activados: list[str] = []
+                    activacion = "no_disponible"
+                    activacion_error: str | None = None
+                    if not mods:
+                        activacion = "vacio"
+                        activacion_error = "ensure_community_shaders no devolvió componentes"
+                    elif mo2 is not None and profile:
+                        try:
+                            for m in mods:
+                                await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
+                                activados.append(m.mod_name)
+                            activacion = "ok" if len(activados) == len(mods) else "parcial"
+                        except Exception as exc:  # noqa: BLE001 — degradar a fallo parcial, no perder el resultado
+                            logger.exception("Activación en modlist falló para Community Shaders")
+                            activacion = "parcial" if activados else "fallo"
+                            activacion_error = str(exc)
+                    else:
+                        activacion_error = "no hay MO2 o perfil en el contexto de esta sesión"
                     results["community_shaders"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
@@ -304,9 +327,19 @@ async def setup_tools(
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
-                        "success": True,
-                        "message": "",
+                        "activados": activados,
+                        "activacion": activacion,
+                        "success": activacion == "ok",
+                        "message": ""
+                        if activacion == "ok"
+                        else (
+                            f"Instalado en disco pero no activado en el perfil ({activacion})"
+                            + (f": {activacion_error}" if activacion_error else "")
+                        ),
                     }
+                    # El registro de persistencia es incondicional (ancla AST de
+                    # test_setup_tools_persistencia): el campo se guarda siempre;
+                    # el éxito visual lo decide `activacion`.
                     requieren_persistencia.append("community_shaders")
                 else:
                     detail = (
