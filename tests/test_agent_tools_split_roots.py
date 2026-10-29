@@ -154,6 +154,8 @@ async def test_setup_tools_ngio_y_cs_usan_mods_dir_explicito(split_topology: dic
 
         res = json.loads(res_raw)
         assert res["ngio"]["success"] is True
+        assert res["ngio"]["activacion"] == "ok"
+        assert res["ngio"]["activados"] == ["NGIOMod"]
         assert res["community_shaders"]["success"] is True
         assert res["community_shaders"]["activacion"] == "ok"
         assert res["community_shaders"]["activados"] == ["CSMod"]
@@ -161,7 +163,9 @@ async def test_setup_tools_ngio_y_cs_usan_mods_dir_explicito(split_topology: dic
         # La activación vive en el modlist de la INSTANCIA (data_root), no en
         # la carpeta de instalación.
         modlist = split_topology["data"] / "profiles" / "Test" / "modlist.txt"
-        assert "+CSMod" in modlist.read_text(encoding="utf-8-sig")
+        texto_modlist = modlist.read_text(encoding="utf-8-sig")
+        assert "+NGIOMod" in texto_modlist
+        assert "+CSMod" in texto_modlist
         assert not (split_topology["install"] / "profiles").exists()
 
         tools_installer.ensure_ngio.assert_called_once()

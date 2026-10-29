@@ -1442,9 +1442,9 @@ class TestAnclaConstructoresManualesDeMods:
         # firma de setup_tools y corrió ambos sitios (220, 267 → 222, 269); mismo
         # fallback legacy, no una construcción nueva.
         # El helper `_activar_en_modlist` (activación compartida de NGIO y CS) se agregó
-        # ARRIBA de setup_tools y los corrió (222, 269 → 264, 311); mismo fallback
+        # ARRIBA de setup_tools y los corrió (222, 269 → 266, 313); mismo fallback
         # legacy, ninguna construcción nueva de `<base>/mods`.
-        "sky_claw/app/agent/tools/external_tools.py": (264, 311),
+        "sky_claw/app/agent/tools/external_tools.py": (266, 313),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
         # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks

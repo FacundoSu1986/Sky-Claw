@@ -645,6 +645,9 @@ class TestSetupToolsNgio:
         assert resultado["status"] == "installed"
         assert resultado["edition"] == SkyrimEdition.SE.value
         assert resultado["mods"] == [NGIO_MOD_NAME, ADDRESS_LIBRARY_MOD_NAME]
+        # Sin `mo2`/`profile` no se puede activar: instalado en disco, pero no éxito.
+        assert resultado["activacion"] == "no_disponible"
+        assert resultado["success"] is False
         # ensure_ngio recibió el mods/ del MO2 configurado y la edición detectada.
         llamada = mock_installer.ensure_ngio.await_args
         assert llamada.args[0] == mo2_root / "mods"

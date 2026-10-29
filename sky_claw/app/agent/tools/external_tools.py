@@ -170,10 +170,12 @@ async def setup_tools(
     # Tools cuyo desenlace depende de que la config se persista: si el guardado
     # no ocurre, el path o el registro que acaban de escribir no sobreviven al
     # reinicio y la operación fue parcial, no exitosa. Se registra DESPUÉS de
-    # publicar el resultado de éxito (así la invariante "clave registrada ⟺ la
-    # entrada es el dict de éxito de esa iteración" se sostiene sola) y con
+    # publicar el resultado de la iteración (así la invariante "clave registrada ⟺
+    # la entrada es el dict de esa iteración" se sostiene sola) y con
     # independencia de que `local_cfg` exista: no tener dónde escribir es el
-    # mismo desenlace parcial que fallar al escribir.
+    # mismo desenlace parcial que fallar al escribir. La entrada puede nacer ya
+    # con `success: False` (ngio / community_shaders: activación fallida o no
+    # disponible) y aun así registrarse, porque escribió `*_mods` en la config.
     requieren_persistencia: list[str] = []
 
     # TASK-013 P1: Zero-Trust egress policy — a missing NetworkGateway means
