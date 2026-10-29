@@ -38,8 +38,8 @@ la sesión y no lee estas claves (ver [configuración](../user/configuration.md)
 
 | Clave | Escrita por |
 |---|---|
-| `ngio_mods` | `ensure_ngio`, sólo desde el agente (`setup_tools`): NGIO no tiene ritual de GUI |
-| `community_shaders_mods` | `ensure_community_shaders`, desde ambas superficies |
+| `ngio_mods` | `setup_tools` registra el resultado de `ensure_ngio` (sólo desde el agente: NGIO no tiene ritual de GUI) |
+| `community_shaders_mods` | `setup_tools` (agente) y `run_ritual_install` (GUI) registran el resultado de `ensure_community_shaders` |
 
 No aparecen en la tabla de defaults porque no existen hasta que la operación termina. En
 `LocalConfig` sí son campos declarados de la dataclass, con la misma semántica.

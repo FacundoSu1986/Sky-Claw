@@ -66,8 +66,9 @@ orden relativo.
 Sólo se informa éxito cuando **los tres** quedaron habilitados. Sin MO2 o sin perfil en
 el contexto de la sesión no hay dónde activar: la operación queda como instalada pero no
 activada, y se avisa. El agente lo devuelve con `success: false` y un campo `activacion`
-(`ok`, `parcial`, `fallo` o `no_disponible`) más la lista `activados`; la GUI lo muestra
-como advertencia.
+(`ok`, `parcial`, `fallo`, `no_disponible` o `vacio`; este último es un guard que hoy no
+ocurre con Community Shaders) más la lista `activados`; la GUI lo muestra como
+advertencia.
 
 ## Qué NO hace
 
@@ -150,7 +151,7 @@ reparación.
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia | Los mods están en disco y activados en el perfil (la activación no depende del guardado), pero `community_shaders_mods` no se pudo guardar. Si además falló la activación, el aviso se suma al motivo de la activación | Los mods son utilizables. Para regenerar el registro, repetir la instalación: es idempotente y no vuelve a descargar. No borrar nada |
+| Instalado con aviso de persistencia | Los mods están en disco, pero `community_shaders_mods` no se pudo guardar. La activación no depende del guardado: con `activacion: "ok"` los mods quedaron activados; si además la activación falló, el aviso se suma a su motivo | Con la activación correcta los mods son utilizables y sólo falta el registro. Si la activación falló, siguen en disco pero MO2 no los monta hasta habilitarlos (ver la fila «Instalado pero no activado»). Para regenerar el registro, repetir la instalación: es idempotente y no vuelve a descargar. No borrar nada |
 
 Las **dos** superficies avisan. La GUI lo muestra como notificación de advertencia; el
 agente LLM devuelve la operación como fallida, con el detalle de lo que sí quedó en disco,
