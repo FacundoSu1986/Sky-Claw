@@ -66,6 +66,48 @@ _AVISO_PERSISTENCIA = (
 _FALLOS_DE_PERSISTENCIA = (OSError, ValueError, TypeError)
 
 
+async def _activar_en_modlist(
+    mods: list[Any], mo2: Any | None, profile: str | None, herramienta: str
+) -> dict[str, Any]:
+    """Activa ``mods`` en el ``modlist.txt`` del perfil y devuelve los campos del contrato.
+
+    Instalar en ``mods/`` no activa: sin ``+Nombre`` en el modlist USVFS no monta el mod.
+    Es el ÚNICO sitio que decide la activación de las ramas de ``setup_tools`` que instalan
+    bajo ``mods/`` (NGIO y Community Shaders): repartir el bloque en cada rama fue
+    exactamente el defecto que dejó a NGIO reportando éxito sin activar.
+
+    ``activacion`` ∈ ``ok|parcial|fallo|no_disponible|vacio``; ``success`` es exactamente
+    ``activacion == "ok"`` y ``message`` es vacío sólo en éxito. ``vacio`` impide que
+    ``0 == 0`` se lea como «todo activado» (ningún instalador actual devuelve ``[]``).
+    """
+    activados: list[str] = []
+    activacion = "no_disponible"
+    error: str | None = None
+    if not mods:
+        activacion = "vacio"
+        error = "el instalador no devolvió componentes"
+    elif mo2 is not None and profile:
+        try:
+            for m in mods:
+                await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
+                activados.append(m.mod_name)
+            activacion = "ok" if len(activados) == len(mods) else "parcial"
+        except Exception as exc:  # noqa: BLE001 — degradar a fallo parcial, no perder el resultado
+            logger.exception("Activación en modlist falló para %s", herramienta)
+            activacion = "parcial" if activados else "fallo"
+            error = str(exc)
+    else:
+        error = "no hay MO2 o perfil en el contexto de esta sesión"
+    return {
+        "activados": activados,
+        "activacion": activacion,
+        "success": activacion == "ok",
+        "message": ""
+        if activacion == "ok"
+        else (f"Instalado en disco pero no activado en el perfil ({activacion})" + (f": {error}" if error else "")),
+    }
+
+
 async def setup_tools(
     tools_installer: Any,
     install_dir: pathlib.Path,
@@ -247,14 +289,14 @@ async def setup_tools(
                     )
                     if local_cfg:
                         escribir_campo(local_cfg, "ngio_mods", [m.mod_name for m in mods])
+                    activacion_campos = await _activar_en_modlist(mods, mo2, profile, "NGIO")
                     results["ngio"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
-                        "success": True,
-                        "message": "",
+                        **activacion_campos,
                     }
                     requieren_persistencia.append("ngio")
                 elif tool_name_lower == "community_shaders":
@@ -299,27 +341,9 @@ async def setup_tools(
                     )
                     if local_cfg:
                         escribir_campo(local_cfg, "community_shaders_mods", [m.mod_name for m in mods])
-                    # Activación en el perfil de sesión (contrato NGIO que hasta ahora
-                    # era aspiracional). Sin `+Nombre` en modlist.txt, USVFS no monta
-                    # los mods y el juego nunca ve CommunityShaders.dll.
-                    activados: list[str] = []
-                    activacion = "no_disponible"
-                    activacion_error: str | None = None
-                    if not mods:
-                        activacion = "vacio"
-                        activacion_error = "ensure_community_shaders no devolvió componentes"
-                    elif mo2 is not None and profile:
-                        try:
-                            for m in mods:
-                                await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
-                                activados.append(m.mod_name)
-                            activacion = "ok" if len(activados) == len(mods) else "parcial"
-                        except Exception as exc:  # noqa: BLE001 — degradar a fallo parcial, no perder el resultado
-                            logger.exception("Activación en modlist falló para Community Shaders")
-                            activacion = "parcial" if activados else "fallo"
-                            activacion_error = str(exc)
-                    else:
-                        activacion_error = "no hay MO2 o perfil en el contexto de esta sesión"
+                    # Sin `+Nombre` en modlist.txt, USVFS no monta los mods y el juego
+                    # nunca ve CommunityShaders.dll: misma activación que NGIO.
+                    activacion_campos = await _activar_en_modlist(mods, mo2, profile, "Community Shaders")
                     results["community_shaders"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
@@ -327,19 +351,11 @@ async def setup_tools(
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
-                        "activados": activados,
-                        "activacion": activacion,
-                        "success": activacion == "ok",
-                        "message": ""
-                        if activacion == "ok"
-                        else (
-                            f"Instalado en disco pero no activado en el perfil ({activacion})"
-                            + (f": {activacion_error}" if activacion_error else "")
-                        ),
+                        **activacion_campos,
                     }
                     # El registro de persistencia es incondicional (ancla AST de
                     # test_setup_tools_persistencia): el campo se guarda siempre;
-                    # el éxito visual lo decide `activacion`.
+                    # el éxito visual lo decide `activacion` (vía `activacion_campos`).
                     requieren_persistencia.append("community_shaders")
                 else:
                     detail = (
@@ -392,15 +408,22 @@ async def setup_tools(
         persistencia_ok = False
 
     if not persistencia_ok:
-        # Sólo se degrada lo que dependía del guardado, y sólo si sigue siendo el
-        # dict de éxito: `tools` es una lista sin dedupe y el bucle tampoco
-        # deduplica, así que una segunda vuelta pudo haber reemplazado la entrada
-        # por un error — pisarle encima este aviso perdería el motivo real.
+        # Sólo se degrada lo que dependía del guardado. Una entrada que sigue siendo el
+        # dict de éxito pasa a `success: False` con el aviso; una que YA estaba fallida
+        # (p. ej. activación en modlist fallida, o un error de una segunda vuelta del
+        # bucle: `tools` es una lista sin dedupe) conserva su `success` y su motivo y
+        # recibe el aviso ANEXADO — pisarlo perdería el motivo real, y no anexarlo
+        # ocultaba el segundo fallo (el guardado) detrás del primero.
         for clave in dict.fromkeys(requieren_persistencia):
             entrada = results.get(clave)
-            if isinstance(entrada, dict) and entrada.get("success") is True:
+            if not isinstance(entrada, dict):
+                continue
+            if entrada.get("success") is True:
                 entrada["success"] = False
                 entrada["message"] = _AVISO_PERSISTENCIA
+            elif _AVISO_PERSISTENCIA not in str(entrada.get("message", "")):
+                previo = str(entrada.get("message", ""))
+                entrada["message"] = f"{previo} | {_AVISO_PERSISTENCIA}" if previo else _AVISO_PERSISTENCIA
         # Si nadie se registró, el fallo queda sólo en el log: ninguna tool de
         # este resultado escribió un campo, así que no hay nada que degradar.
 
