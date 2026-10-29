@@ -94,6 +94,10 @@ entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_dispo
 `vacio`); al salir de la activación `success` vale exactamente `activacion == "ok"` y
 `message` sólo es vacío en éxito. Sin `mo2` o sin perfil la activación es `no_disponible`
 y `success` es `false`: el mod quedó en disco pero no se afirma que esté activo.
+`vacio` significa que el instalador no devolvió ningún componente (ni siquiera hay qué
+activar): se reporta como fallo para que una lista vacía no se lea como «todo activado».
+Hoy ningún instalador lo produce; existe como guard del helper y lo ejerce un test con
+Community Shaders.
 
 El guardado de la configuración corre **después** y puede degradar el resultado, sin
 tocar `activacion`:

@@ -59,6 +59,10 @@ fijado con `--profile` / `MO2_PROFILE`), por las dos superficies:
   su posición.
 - Si ya estaba habilitado, no se toca. No se reordena nada del resto del perfil.
 
+Los tres se procesan en el orden de instalación (Address Library, SSE Engine Fixes,
+Community Shaders), así que los que se agregan quedan al final del perfil en ese mismo
+orden relativo.
+
 Sólo se informa éxito cuando **los tres** quedaron habilitados. Sin MO2 o sin perfil en
 el contexto de la sesión no hay dónde activar: la operación queda como instalada pero no
 activada, y se avisa. El agente lo devuelve con `success: false` y un campo `activacion`
