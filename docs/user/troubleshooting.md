@@ -42,9 +42,9 @@ descarga. Un rechazo por tamaño o integridad corta antes de extraer y sólo des
 archivo de staging. En cambio, un fallo de extracción o verificación **sobre un mod que ya
 existía** escribe en ese directorio y no lo limpia: hay que revisarlo. Un fallo al guardar
 el registro conserva los mods ya instalados, y lo avisan las dos superficies —la GUI como
-advertencia, el agente devolviendo la operación como parcial—. Ninguno de estos impide
-usar Community Shaders, porque la activación en MO2 es manual de todos modos. El contexto
-completo está en [Community Shaders](community_shaders.md).
+advertencia, el agente devolviendo la operación como parcial—. Ninguno de estos
+deshace la activación en el perfil, que ocurre antes y no depende del guardado. El
+contexto completo está en [Community Shaders](community_shaders.md).
 
 | Síntoma | Evidencia | Acción reversible |
 |---|---|---|
@@ -52,7 +52,8 @@ completo está en [Community Shaders](community_shaders.md).
 | SKSE ausente | Raíz del juego sin loader de SKSE | Instalar SKSE primero desde su propia tarjeta del Panel y repetir el escaneo |
 | ENB detectado | `enbseries.ini` o el directorio `enbseries/` en la raíz del juego | Decidir entre ENB y Community Shaders; Sky-Claw no desinstala ENB |
 | Preloader de Engine Fixes ausente | Raíz del juego sin el DLL del preloader | Instalar ese archivo aparte en la raíz del juego y repetir |
-| Mods instalados con aviso de persistencia | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Los mods son utilizables: activarlos en MO2. No editar la clave a mano ni borrar los mods; para regenerar el registro, ver la fila siguiente |
+| Mods instalados pero no activados en el perfil | El campo `activacion` del resultado del agente (`parcial`, `fallo` o `no_disponible`) o la advertencia de la GUI, y `sky_claw.log` | Corregir la causa (perfil inexistente en disco, error de escritura, sesión sin MO2/perfil) y repetir la instalación: es idempotente y no vuelve a descargar. Mientras tanto, habilitar a mano en MO2 los mods que falten. No borrar los mods. Aplica igual a NGIO desde el agente |
+| Mods instalados con aviso de persistencia | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Los mods son utilizables y siguen activados en el perfil; sólo falta el registro. No editar la clave a mano ni borrar los mods; para regenerar el registro, ver la fila siguiente |
 | Falta `community_shaders_mods` con los mods ya instalados | La clave ausente en `~/.sky_claw/config.toml` y la tarjeta del Panel en `Instalado` | La tarjeta **no ofrece reinstalar** una vez detectado el mod. Pedirle al agente que ejecute la instalación de `community_shaders`: es idempotente y no vuelve a descargar. Si tampoco puede guardar, lo informa como operación parcial en vez de decir que salió bien: ahí el problema es la configuración, no la instalación. Mientras tanto no bloquea nada |
 | Descarga rechazada por integridad o tamaño | Mensaje del descargador y `sky_claw.log` | No repetir a ciegas: un desajuste de hash o un techo superado no se arregla reintentando. Preservar el log y verificar el origen |
 

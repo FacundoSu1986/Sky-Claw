@@ -85,6 +85,21 @@ Ancla enumerativa: `tests/test_perfil_sesion_invariante.py`.
 porque sus prerrequisitos de host no los puede satisfacer Sky-Claw. Ver
 [Community Shaders](../user/community_shaders.md).
 
+`ngio` y `community_shaders` instalan mods de MO2 bajo `mods/`, no ejecutables, y
+instalar no los activa: sin `+<Nombre>` en el `modlist.txt` del perfil el VFS no los
+monta. Por eso `setup_tools` recibe el `mo2` y el perfil de la sesión (los mismos que
+inyecta `AsyncToolRegistry`) y activa cada mod instalado con `add_mod_to_modlist`. Un
+único helper (`_activar_en_modlist`) resuelve esa activación para las dos ramas. Cada
+entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_disponible` o
+`vacio`), `success` vale exactamente `activacion == "ok"` y `message` sólo es vacío en
+éxito. Sin `mo2` o sin perfil la activación es `no_disponible` y `success` es `false`:
+el mod quedó en disco pero no se afirma que esté activo. Si además falla el guardado de
+la configuración, el aviso de persistencia se **suma** al motivo de la activación en vez
+de reemplazarlo. La GUI activa sólo Community Shaders (NGIO no tiene ritual de GUI).
+Anclas: `tests/test_cs_activacion_modlist.py` (mismos escenarios para ambas tools, con un
+`MO2Controller` real, y censo por AST de las ramas de `setup_tools` que instalan bajo
+`mods/`) y `tests/test_mo2_modlist_priority.py` (censo de los mutadores del modlist).
+
 `ensure_skse` **no** está en esta ruta: sólo se alcanza desde la GUI, porque escribe
 ejecutables en el directorio del juego y la aprobación debe ser la del operador. El
 recorte está congelado por igualdad literal en `tests/test_ritual_install.py`.
