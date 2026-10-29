@@ -162,15 +162,20 @@ class StorageInitResult:
 
 @dataclass(frozen=True, slots=True)
 class FrozenRuntimeState:
-    """Intención persistente de Sky-Claw (schema v1).
+    """Intención persistente de Sky-Claw (schema v1 y v2; ADR 0012 §19a).
 
-    ``desired_active_generation=None`` = arranque limpio (sin Generation
-    activa todavía). Es el Desired de SFR-16: NO registra Effective Runtime.
+    v1: ``desired_active_generation`` (Generation deseada).
+    v2: el par ``desired_generation_id`` y ``desired_clone_id``.
     """
 
     schema_version: int
     desired_active_generation: str | None
     updated_at_ns: int
+    desired_clone_id: str | None = None
+
+    @property
+    def desired_generation_id(self) -> str | None:
+        return self.desired_active_generation
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +190,35 @@ class FrozenRuntimeStateLoadResult:
     found: bool
     state: FrozenRuntimeState | None
     message: str = ""
+
+
+# ============================================================================
+# Runtime Clones (P5-B)
+# ============================================================================
+
+
+class RuntimeCloneLifecycle(StrEnum):
+    """Ciclo de vida de un Runtime Clone (ADR 0012 §19c, §36.7)."""
+
+    CREATED = "CREATED"
+    PROVISIONING = "PROVISIONING"
+    PROVISIONED = "PROVISIONED"
+    INVALID = "INVALID"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCloneRecord:
+    """Identidad lógica registrada de un Runtime Clone (ADR 0012 §19c, §34.10)."""
+
+    schema_version: int
+    clone_id: str
+    source_generation_id: str
+    lifecycle: RuntimeCloneLifecycle
+    intended_runtime_setup_id: str
+    verified_runtime_setup_id: str | None
+    root_path: str
+    admitted_role: str
+    created_at_ns: int
 
 
 # ============================================================================
