@@ -311,7 +311,7 @@ class WryeBashPipelineService:
         # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness,
         # patrón #252/#311) — un destino creado read-only entre corridas debe verse.
         def _permissions() -> Any:
-            return WritePermissionsChecker(targets=self._permission_targets()).check()
+            return WritePermissionsChecker(targets=self._permission_targets(dominio=dominio)).check()
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
@@ -350,18 +350,33 @@ class WryeBashPipelineService:
         self._preflight = preflight
         return preflight
 
-    def _permission_targets(self) -> list[pathlib.Path]:
-        """Directorio donde aterriza ``Bashed Patch, 0.esp``, resuelto por corrida.
+    def _permission_targets(self, *, dominio: str = DOMINIO_FISICO) -> list[pathlib.Path]:
+        """Directorio donde el ejecutor de *dominio* escribe ``Bashed Patch, 0.esp``.
 
-        Es el ``Data`` del juego y solo el ``Data``: ``bash.py`` corre con
-        ``cwd=game_path`` y sin ruta de salida en el comando, y el subproceso se
-        spawnea directo (no hereda la USVFS), así que la redirección al
+        **El dominio físico escribe en el ``Data`` del juego y solo ahí**: ``bash.py``
+        corre con ``cwd=game_path`` y sin ruta de salida en el comando, y el subproceso
+        se spawnea directo (no hereda la USVFS), así que la redirección al
         ``overwrite`` de MO2 —que este método sondeaba— **no puede ocurrir**. El
         invariante y su porqué viven en ``tools.output_targets`` (U-01 parte 2).
+
+        **El dominio USVFS escribe en el ``overwrite`` del perfil.** La VFS *redirige*
+        la escritura: no hereda los permisos del ``Data``. En una instalación de Steam
+        ese ``Data`` suele estar bajo ``Program Files`` y ser de sólo lectura —que es
+        justamente el escenario para el que existe MO2—, así que sondearlo acá da un
+        rojo crítico y ``preparar_etapa_asistida`` bloquea un perfil sano. Es el mismo
+        error que el sensor de visibilidad, en otro sensor: medir el namespace
+        equivocado no es conservador, es un falso negativo del operador.
 
         El ``WritePermissionsChecker`` se salta los inexistentes y se resuelve por
         corrida (freshness), así que devolver una ruta aún ausente es seguro.
         """
+        if dominio == DOMINIO_USVFS:
+            if self._path_resolver is None:
+                return []
+            mo2 = self._path_resolver.get_mo2_instance_data_root()
+            # ``overwrite`` es el destino canónico de la redirección USVFS para un
+            # archivo nuevo: ningún mod lo provee, así que la VFS lo deja ahí.
+            return [mo2 / "overwrite"] if isinstance(mo2, pathlib.Path) else []
         destino = self._bashed_patch_path()
         return [destino.parent] if destino is not None else []
 
@@ -422,12 +437,24 @@ class WryeBashPipelineService:
         game = self._path_resolver.get_skyrim_path()
         mo2 = self._path_resolver.get_mo2_instance_data_root()
         mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
-        return bashed_patch_en_overlay(
+        mods_habilitados = self._mods_habilitados(profile)
+        encontrado = bashed_patch_en_overlay(
             game=game if isinstance(game, pathlib.Path) else None,
             mo2=mo2 if isinstance(mo2, pathlib.Path) else None,
             mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
-            mods_habilitados=self._mods_habilitados(profile),
+            mods_habilitados=mods_habilitados,
         )
+        if encontrado is not None and not encontrado.cobertura_completa:
+            # Degradación con nombre: no se pudo enumerar alguna capa que podría estar
+            # tapando al ganador, así que el llamador decide con eso a la vista en vez
+            # de heredar un verde que nadie verificó (lección #250).
+            logger.warning(
+                "[FASE-6-asistida] cobertura parcial del overlay (mods=%s, mods_dir=%s): "
+                "no se puede afirmar dónde está el artefacto",
+                "ilegible" if mods_habilitados is None else len(mods_habilitados),
+                mods_dir,
+            )
+        return encontrado
 
     def _destino_desde_runner(self, runner: WryeBashRunner) -> pathlib.Path | None:
         """Ruta del Bashed Patch derivada del ``config`` del runner, o ``None``.

@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verificación, y `WryeBashPipelineService._ensure_preflight(dominio=…)` construye el
   preflight del dominio correspondiente: bajo USVFS se omite el sensor de visibilidad
   (U-01), que mide el `Data` físico y daba rojo sobre un perfil cuyos mods viven en
-  `mods/`. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
+  `mods/`, y el sensor de permisos sondea el `overwrite` del perfil en vez del `Data`
+  —la VFS redirige la escritura, no hereda sus permisos—. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
   imposible `{existia: True, sha256: None}`.
 
 ### Fixed

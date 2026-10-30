@@ -43,6 +43,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sky_claw.local.tools.output_targets import bashed_patch_en_overlay
 from sky_claw.local.tools.wrye_bash_asistida import (
     _MENSAJES,
     PASOS_ASISTIDOS,
@@ -1195,3 +1196,81 @@ async def test_un_modlist_que_no_se_puede_estatuiar_no_es_un_perfil_sin_mods(tmp
     resultado = await servicio.verificar_etapa_asistida(profile="Default")
 
     assert resultado["reason"] == "SinRutasResolubles"
+
+
+# --- Ronda 3b (PR-Agent sobre `6db53c4`): permisos y cobertura del overlay --------
+
+
+def test_los_permisos_se_miden_donde_escribe_cada_ejecutor(tmp_path: pathlib.Path) -> None:
+    """La VFS **redirige** la escritura: no hereda los permisos del destino físico.
+
+    En una instalación de Steam el ``Data`` del juego suele estar bajo ``Program Files``
+    y ser de sólo lectura —el escenario para el que existe MO2—. Sondearlo desde el
+    dominio USVFS da un rojo crítico y bloquea un perfil sano; el destino real de esa
+    escritura es el ``overwrite`` del perfil.
+    """
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver_real(game, mo2),
+    )
+
+    fisico = servicio._permission_targets(dominio=DOMINIO_FISICO)
+    asistido = servicio._permission_targets(dominio=DOMINIO_USVFS)
+
+    assert fisico == [game / "Data"]
+    assert asistido == [mo2 / "overwrite"]
+    assert game / "Data" not in asistido
+
+
+@pytest.mark.asyncio
+async def test_un_data_de_solo_lectura_no_bloquea_la_etapa_asistida(tmp_path: pathlib.Path) -> None:
+    """Conducta: el ``Data`` deniega escritura y el perfil se prepara igual.
+
+    El probe de permisos se sustituye por uno que deniega **sólo** las rutas bajo el
+    ``Data`` físico, que es lo que hace un ``Data`` read-only de verdad (el sandbox de
+    CI corre como root, así que un ``chmod`` no reproduciría el fallo).
+    """
+    from sky_claw.local.validators.write_permissions import WriteAccessIssue, WritePermissionsChecker
+
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    perfil = mo2 / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    perfil.joinpath("plugins.txt").write_text(f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    _escribir_modlist(perfil, ["SoloEnMods"])
+    (mo2 / "mods" / "SoloEnMods").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir(parents=True)
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver_real(game, mo2),
+    )
+
+    def _probe_denegado_en_data(target: pathlib.Path) -> WriteAccessIssue | None:
+        if pathlib.Path(target) == game / "Data":
+            return WriteAccessIssue(path=str(target), kind="denied", severity="critical", remediation="read-only")
+        return None
+
+    with patch.object(WritePermissionsChecker, "_probe_write", side_effect=_probe_denegado_en_data):
+        fisico = await servicio._ensure_preflight(dominio=DOMINIO_FISICO).run()
+        asistido = await servicio._ensure_preflight(dominio=DOMINIO_USVFS).run()
+
+    assert fisico.blocks_mutations is True, "el Data read-only sí bloquea al runner spawneado: escribe ahí de verdad"
+    assert asistido.blocks_mutations is False, "el operador escribe en el overwrite: el Data read-only no lo afecta"
+
+
+def test_un_acierto_en_overwrite_es_concluyente_ante_cobertura_parcial(tmp_path: pathlib.Path) -> None:
+    """Aunque no se puedan enumerar los mods, ``overwrite`` gana a todo: el ganador es único."""
+    game, mo2 = tmp_path / "game", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir(parents=True)
+    _parche(mo2 / "overwrite" / BASHED_PATCH_NAME, b"copia-de-overwrite")
+
+    encontrado = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=None, mods_habilitados=None)
+
+    assert encontrado is not None
+    assert encontrado.capa == "overwrite"
+    assert encontrado.cobertura_completa is True

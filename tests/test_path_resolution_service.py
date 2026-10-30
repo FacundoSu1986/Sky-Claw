@@ -1542,8 +1542,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
         # ADR 0016 (etapa 6 asistida): ``bashed_patch_en_overlay`` se insertó arriba de
         # ``synthesis_output_target`` y corrió su constructor del default `<raíz>/mods`
-        # (225 → 325). Sigue siendo el MISMO constructor, no un sitio nuevo.
-        "sky_claw/local/tools/output_targets.py": (325,),
+        # (225 → 333). Sigue siendo el MISMO constructor, no un sitio nuevo.
+        "sky_claw/local/tools/output_targets.py": (333,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
         "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
     }
@@ -2153,12 +2153,13 @@ class TestAnclaSemanticaDeRaicesMo2:
       detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
     - synthesis_service (2): output target y preflight.
-    - wrye_bash_service (3): preflight (overwrite + profile sources), la etapa 6
+    - wrye_bash_service (4): preflight (overwrite + profile sources), la etapa 6
       asistida (``profiles/<perfil>/plugins.txt``, ADR 0016: verificar que el
-      Bashed Patch esté ACTIVO en el perfil) y ``_artefacto_asistido``, que
-      resuelve el artefacto en la SUPERPOSICIÓN del perfil (``overwrite`` + mods +
-      ``Data``): el ejecutor de esa etapa es el operador dentro de MO2, no el
-      runner spawneado, y el patch puede estar en ``overwrite/``.
+      Bashed Patch esté ACTIVO en el perfil), ``_artefacto_asistido`` —que resuelve
+      el artefacto en la SUPERPOSICIÓN del perfil (``overwrite`` + mods + ``Data``),
+      porque el ejecutor de esa etapa es el operador dentro de MO2— y
+      ``_permission_targets(dominio='usvfs')``, que sondea el ``overwrite``: la VFS
+      redirige la escritura y NO hereda los permisos del ``Data`` físico.
 
     INSTANCE_DATA_ROOT_ESTRICTO (``get_mo2_instance_data_root_estricto``):
 
@@ -2207,7 +2208,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
-        "sky_claw/local/tools/wrye_bash_service.py": 3,
+        "sky_claw/local/tools/wrye_bash_service.py": 4,
     }
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.

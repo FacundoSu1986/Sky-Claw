@@ -283,7 +283,15 @@ def bashed_patch_en_overlay(
         # Un directorio también "existe": el veredicto lo dirá NO_REGULAR, que es más
         # informativo que un AUSENTE falso.
         if ruta.exists() or ruta.is_symlink():
-            return ArtefactoEnOverlay(ruta=ruta, capa=capa, cobertura_completa=completo)
+            # Un acierto en ``overwrite`` es concluyente AUNQUE no se hayan podido
+            # enumerar los mods: esa capa gana a todas, así que ninguna capa no leída
+            # puede taparla. La cobertura parcial sólo importa cuando el ganador está
+            # en una capa que otra podría estar tapando.
+            return ArtefactoEnOverlay(
+                ruta=ruta,
+                capa=capa,
+                cobertura_completa=completo or capa == CAPA_OVERWRITE,
+            )
     return ArtefactoEnOverlay(ruta=data_juego, capa=CAPA_DATA_JUEGO, cobertura_completa=completo)
 
 
