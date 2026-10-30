@@ -1818,6 +1818,57 @@ class TestFrozenRuntimeP5CBinderPreflight:
         assert evaluacion.is_ready is False
         assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
 
+    def test_environ_skyrim_path_con_alias_83_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """B.3: SKYRIM_PATH en environ con alias 8.3 bloquea con SHORT_NAME_ALIAS_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            environ={"SKYRIM_PATH": "C:\\PROGRA~1\\Skyrim"},
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED in evaluacion.reasons
+
+    def test_config_skyrim_path_con_alias_83_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """P1-A.alias: Config.skyrim_path con alias 8.3 bloquea con SHORT_NAME_ALIAS_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path="C:\\PROGRA~1\\Skyrim",
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED in evaluacion.reasons
+
     def test_steam_downloading_activo_rechaza_preflight(self, tmp_path: pathlib.Path) -> None:
         """C: Steam con archivos en steamapps/downloading/489830 produce MANAGED_SOURCE_INVALID por actividad en curso."""
         storage = tmp_path / "storage"

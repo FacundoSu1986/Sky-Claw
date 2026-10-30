@@ -226,7 +226,6 @@ def evaluar_binder_preflight(
 
     checks_map: dict[PreflightCheckCode, PreflightCheckResult] = {}
     reasons: list[PreflightReasonCode] = []
-    notas: list[str] = []
 
     storage = pathlib.Path(os.path.abspath(os.fspath(storage_root)))
     mo2_dir = pathlib.Path(os.path.abspath(os.fspath(mo2_instance_dir)))
@@ -505,7 +504,7 @@ def evaluar_binder_preflight(
                 mo2_instance_dir=mo2_dir,
                 observed_mo2_game_path=game_path_obs_str,
                 assessed_at_ns=sello,
-                notes=tuple(notas),
+                notes=(),
             )
         except StateSchemaError as exc:
             checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
@@ -524,7 +523,7 @@ def evaluar_binder_preflight(
                 mo2_instance_dir=mo2_dir,
                 observed_mo2_game_path=game_path_obs_str,
                 assessed_at_ns=sello,
-                notes=tuple(notas),
+                notes=(),
             )
         except (FrozenRuntimeStorageError, OSError) as exc:
             checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
@@ -543,7 +542,7 @@ def evaluar_binder_preflight(
                 mo2_instance_dir=mo2_dir,
                 observed_mo2_game_path=game_path_obs_str,
                 assessed_at_ns=sello,
-                notes=tuple(notas),
+                notes=(),
             )
 
     if not target_clone_id:
@@ -563,7 +562,7 @@ def evaluar_binder_preflight(
             mo2_instance_dir=mo2_dir,
             observed_mo2_game_path=game_path_obs_str,
             assessed_at_ns=sello,
-            notes=tuple(notas),
+            notes=(),
         )
 
     try:
@@ -586,7 +585,7 @@ def evaluar_binder_preflight(
             mo2_instance_dir=mo2_dir,
             observed_mo2_game_path=game_path_obs_str,
             assessed_at_ns=sello,
-            notes=tuple(notas),
+            notes=(),
         )
 
     record: RuntimeCloneRecord | None = None
@@ -641,7 +640,7 @@ def evaluar_binder_preflight(
             mo2_instance_dir=mo2_dir,
             observed_mo2_game_path=game_path_obs_str,
             assessed_at_ns=sello,
-            notes=tuple(notas),
+            notes=(),
         )
 
     # Validar admitted role
@@ -1048,7 +1047,7 @@ def evaluar_binder_preflight(
         mo2_instance_dir=mo2_dir,
         observed_mo2_game_path=game_path_obs_str,
         assessed_at_ns=sello,
-        notes=tuple(notas),
+        notes=(),
     )
 
 

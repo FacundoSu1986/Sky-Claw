@@ -795,7 +795,7 @@ contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
      y post-switch (`gamePath == Clone`).
    - Se rechaza fail-closed si `gamePath` o `Config.skyrim_path` apuntan a un tercer directorio.
    - Se añade el parámetro `exigir_config_skyrim_path: bool = False`, el cual cuando es `True`
-     falla con `CONFIG_SKYRIM_PATH_MISSING` si la configuración de Sky-Claw no está definida.
+     falla con `CONFIG_DIVERGENCE_DETECTED` si la configuración de Sky-Claw no está definida.
 
 2. **P1-B — Inspección de Ejecutables Personalizados de MO2 (`[customExecutables]`):**
    - El preflight invoca `leer_ejecutables_de_mo2` y analiza los binarios registrados mediante
