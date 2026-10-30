@@ -57,7 +57,7 @@ fijado con `--profile` / `MO2_PROFILE`), por las dos superficies:
 - Si el mod no estaba en el perfil, se agrega al final (menor prioridad).
 - Si ya estaba pero deshabilitado (`-<Nombre>`), se habilita **en su lugar**, sin mover
   su posición.
-- Si ya estaba habilitado, no se toca. No se reordena nada del resto del perfil.
+- Si ya estaba habilitado, no se toca. No se reordena nada del resto del perfil. Si el perfil ya traía el mismo mod habilitado más de una vez (solo pasa editando `modlist.txt` a mano), no se repara: se avisa en el log y hay que corregirlo en MO2.
 
 Los tres se procesan en el orden de instalación (Address Library, SSE Engine Fixes,
 Community Shaders), así que los que se agregan quedan al final del perfil en ese mismo

@@ -32,6 +32,10 @@
    `No module named sky_claw.local.native_parallax.cli`. Hacé `git fetch origin` y trabajá desde una copia de `origin/main` (lo más
    seguro es una carpeta aparte, por ejemplo `git worktree add .worktrees\rig -b rig/prueba origin/main`, para no mover tu copia de trabajo).
    Corré todos los comandos **desde la carpeta de esa copia**.
+   **Comprobá de qué copia importa el código.** Si usás un entorno virtual que vive en otra carpeta (por ejemplo el de tu copia principal),
+   puede importar `sky_claw` de **esa otra copia, más vieja**, y generarías con código viejo sin que nada lo avise (le pasó a la prueba del 30/10).
+   Antes de generar: `.venv\Scripts\python -c "import sky_claw; print(sky_claw.__file__)"` tiene que imprimir una ruta **dentro de la carpeta de tu copia
+   al día**. Si apunta a otra, fijalo en la misma ventana de consola: `set PYTHONPATH=C:\ruta\a\tu\copia`.
 2. El entorno: `uv sync --extra dev` (instala numpy y Pillow). Solo hace falta si faltan: si `.venv\Scripts\python -c "import numpy, PIL"`
    no da error, ya están.
 3. El `texconv.exe` oficial **fijado por el proyecto** (DirectXTex, versión `may2026`). Bajalo de
@@ -120,7 +124,11 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    mallas dentro de un `.bsa` (las del juego base lo están: esas salen `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni
    activadores) y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y
    la versión que tenés instalada puede diferir.
-3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas.
+3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
+   contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
+   Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya, **sin medir**): una **banda oscura** en el borde
+   de una puerta (hipótesis no verificada: la sombra de profundidad del parallax; se puede comprobar apagando las sombras de parallax de Community Shaders) y un **tinte** (musgo) que se nota menos en
+   un techo (hipótesis no verificada: el tinte está pintado sobre líneas rectas y el desplazamiento las deforma). Si ves algo parecido, probá primero eso antes de pensar que la salida está mal.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
    el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
@@ -151,8 +159,13 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 ## Límites conocidos
 
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
-- Lo que está probado en el juego (una persona, a ojo): un `*_p.dds` en BC4 lo usa el juego, y la salida real del generador sobre una textura (`wrcitywall01`, el aro de piedra del
-  pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- Lo que está probado en el juego (una persona, un equipo, **reportado**; ver `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`): un `*_p.dds` en BC4
+  lo usa el juego, y la salida del generador sobre **5 texturas** de una misma familia, en un interior con luz rasante y vista cercana, cambió lo que se ve frente a un mapa plano
+  (entre 87 y 573 veces el ruido; la regla era 3 veces). Es Community Shaders más Auto Parallax, con el post-proceso apagado.
+  **No** está probado en exteriores, con clima o a distancia normal, ni en otras familias de texturas ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no
+  que sea **bueno**. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
+  pendiente (ver el issue de la auditoría), no como funcionalidad.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
 - La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.
