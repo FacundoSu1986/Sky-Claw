@@ -112,6 +112,22 @@ def _crear_arbol_juego(
     return ruta
 
 
+def _enlace_directorio(destino: pathlib.Path, enlace: pathlib.Path) -> None:
+    """Enlace de directorio: junction en Windows, symlink en POSIX."""
+    if os.name == "nt":
+        creado = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(enlace), str(destino)],
+            capture_output=True,
+        )
+        if creado.returncode != 0:
+            pytest.skip("sin permiso para crear junctions en esta máquina")
+    else:
+        try:
+            enlace.symlink_to(destino, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks no disponibles en este entorno: {exc}")
+
+
 def _crear_managed_source_sintetica(
     raiz_steam: pathlib.Path,
     *,
@@ -664,12 +680,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
         clone_root = tmp_path / "clones" / "junction_clone"
         clone_root.parent.mkdir(parents=True, exist_ok=True)
 
-        creado = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(clone_root), str(real_target)],
-            capture_output=True,
-        )
-        if creado.returncode != 0:
-            pytest.skip("sin permiso para crear junctions en esta máquina")
+        _enlace_directorio(real_target, clone_root)
 
         record = _escribir_record_directo(
             storage,
@@ -714,12 +725,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
         _crear_mo2_instance_sintetica(real_mo2, game_path=str(ms_root))
         junction_mo2 = tmp_path / "mo2_junction"
 
-        creado = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(junction_mo2), str(real_mo2)],
-            capture_output=True,
-        )
-        if creado.returncode != 0:
-            pytest.skip("sin permiso para crear junctions en esta máquina")
+        _enlace_directorio(real_mo2, junction_mo2)
 
         evaluacion = evaluar_binder_preflight(
             storage_root=storage,
@@ -1962,3 +1968,83 @@ class TestFrozenRuntimeP5CBinderPreflight:
         assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
         assert evaluacion.is_ready is False
         assert PreflightReasonCode.COMPATIBILITY_UNKNOWN in evaluacion.reasons
+
+    def test_modorganizer_ini_error_de_filesystem_en_is_file_rechaza(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError / PermissionError al evaluar ini_path.is_file() produce rechazo con MO2_INI_UNREADABLE."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        mo2.mkdir(parents=True, exist_ok=True)
+        ini = mo2 / "modorganizer.ini"
+        escaped = str(ms_root).replace("\\", "\\\\")
+        ini.write_text(f"[General]\ngamePath=@ByteArray({escaped})\n", encoding="utf-8")
+
+        orig_is_file = pathlib.Path.is_file
+
+        def _is_file_falla(self_path: pathlib.Path) -> bool:
+            if self_path.name == "modorganizer.ini":
+                raise PermissionError("Acceso denegado por permisos de filesystem")
+            return orig_is_file(self_path)
+
+        monkeypatch.setattr(pathlib.Path, "is_file", _is_file_falla)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MO2_INI_UNREADABLE in evaluacion.reasons
+
+    def test_fallback_active_json_con_generacion_divergente_del_clone_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """Fallback sin clone_id: si active.json selecciona generation A pero el clone pertenece a B, rechaza."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        # Dos generations válidas distintas A y B
+        gen_a = _crear_generation_valida(storage, digest_prefix="gen_a")
+        gen_b = _crear_generation_valida(storage, digest_prefix="gen_b")
+        assert gen_a != gen_b
+
+        # Clone perteneciente físicamente a generation B
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_b, managed_source_root=ms_root)
+
+        # active.json asocia desired_generation_id=gen_a con desired_clone_id=clone_record.clone_id
+        save_frozen_runtime_state(
+            active_state_path(storage),
+            FrozenRuntimeState(
+                schema_version=2,
+                desired_active_generation=gen_a,
+                desired_clone_id=clone_record.clone_id,
+                updated_at_ns=1000,
+            ),
+        )
+
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        # clone_id se omite para activar el fallback desde active.json
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=None,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.GENERATION_INVALID in evaluacion.reasons

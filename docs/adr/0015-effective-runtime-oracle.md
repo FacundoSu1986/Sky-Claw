@@ -639,8 +639,12 @@ para el futuro switch productivo (P5-C1).
      `evaluate_provider_observation`: exige manifiesto legible, `buildid` presente y no vacío,
      ausencia de descargas en curso (`downloading/<appid>` y `temp/<appid>` vacíos/inexistentes)
      y estado estrictamente `ProviderObservationState.IDLE` (`StateFlags == "4"`).
-   - Se delimita que esta comprobación audita el reposo puntual de actividad en el preflight; la
-     estabilidad temporal durable a lo largo de la mutación queda garantizada bajo lock en P5-C1.
+   - Se delimita que esta comprobación audita el reposo puntual de actividad en el preflight mediante
+     evidencia observable en el momento de la consulta (`observe_provider_activity`). Ningún lock de Sky-Claw
+     controla el proceso ni la biblioteca de Steam, por lo que no puede impedir una descarga concurrente o
+     posterior iniciada por Steam. La inmunidad frente a mutaciones de Steam no proviene de un control del
+     proveedor, sino de la independencia física estricta del Runtime Clone (`CLONE_PHYSICAL_INTEGRITY`),
+     aislado en inodos propios y fuera de la biblioteca de Steam.
 
 3. **`CLONE_RECORD`:**
    - Resuelve el `clone_id` (explícito o desde `active.json` vía `load_frozen_runtime_state`).
@@ -722,16 +726,31 @@ estrictamente recuperable y atómica, estructurada en 6 fases:
    Invocación de `evaluar_binder_preflight`. Si `is_ready` no es `True`, la operación se
    aborta de inmediato sin tocar el disco.
 
-2. **Fase 2 (Exclusión Mutua Durable):**
-   Adquisición del `FrozenRuntimeRootLock` (`acquire_frozen_runtime_root_lock`) sobre el
-   `storage_root` y adquisición de un lock específico sobre la instancia de MO2
-   (`mo2_instance_dir / ".mo2_switch.lock"`). Esto previene colisiones entre agentes concurrentes
-   o entre la GUI y el backend.
+2. **Fase 2 (Exclusión Mutua entre Participantes de Sky-Claw):**
+   - Adquisición del `FrozenRuntimeRootLock` (`acquire_frozen_runtime_root_lock`) sobre el
+     `storage_root` (`frozen-runtime.lock`) para exclusión de mutaciones en el subsistema.
+   - Adquisición de lock de archivo sobre la instancia de MO2 (`mo2_instance_dir / ".mo2_switch.lock"`).
+     Se delimita con precisión técnica que este lock coordina exclusivamente entre procesos participantes
+     de Sky-Claw (CLI, agentes, background workers); **no** es un lock conocido ni respetado por el binario
+     `ModOrganizer.exe` ni por la GUI de MO2.
+   - Respecto a MO2 externo, la comprobación de `PROCESS_CONCURRENCY` en el preflight valida la ausencia
+     de `ModOrganizer.exe` en ejecución en el instante de la comprobación (`LIVE_MO2_RUNNING`). No obstante,
+     no existe un handshake cooperativo con la GUI de MO2. En P5-C1, la sección crítica debe re-verificar
+     inmediatamente antes de la mutación que MO2 permanezca detenido, documentando como requisito pendiente
+     de exclusión real la detección activa o bloqueo del arranque concurrente externo durante la ventana de sustitución atómica.
 
-3. **Fase 3 (Snapshot Durable de Respaldo):**
-   Antes de escribir un solo byte, se genera una copia de seguridad física de `modorganizer.ini`:
-   `modorganizer.ini.bak.<timestamp_ns>`.
-   Se verifica el tamaño y hash SHA-256 del snapshot contra el archivo original en memoria y disco.
+3. **Fase 3 (Snapshot Durable de Respaldo y Barreras de Persistencia):**
+   - Antes de modificar `modorganizer.ini`, se genera una copia de seguridad física en el mismo directorio:
+     `modorganizer.ini.bak.<timestamp_ns>`.
+   - Se asegura la durabilidad del snapshot antes de iniciar la mutación: escritura, `flush()` y
+     sincronización física del archivo (`os.fsync(fd)`).
+   - En POSIX, se ejecuta `os.fsync` sobre el descriptor del directorio padre para persistir la entrada de
+     directorio del snapshot. En Windows, las APIs de Win32 no soportan `fsync` sobre descriptores de directorio
+     (levantan `OSError`); en su lugar, la durabilidad de metadatos en NTFS descansa en el journaling
+     transaccional del sistema de archivos al cerrar el archivo.
+   - Se valida el tamaño y hash SHA-256 del snapshot contra el archivo original.
+   - Política de retención: El snapshot debe conservarse intacto en disco hasta que la Fase 5 (Readback) confirme
+     `MATCH` y `COMPATIBLE`. En caso de rollback, el snapshot se conserva para fines forenses y diagnósticos.
 
 4. **Fase 4 (Mutación Atómica Respetando la Semántica de Qt):**
    - No se utiliza reemplazo de texto ingenuo ni parsers estándar de Python `configparser`,
@@ -739,21 +758,37 @@ estrictamente recuperable y atómica, estructurada en 6 fases:
    - Se serializa el nuevo `gamePath` respetando las reglas de `iniEscapedString` de Qt 5.15
      (`qtbase/src/corelib/io/qsettings.cpp`): prefijo `@ByteArray(`, escape de caracteres no ASCII
      y delimitación exacta de barras diagonales inversas (`\\`).
-   - Se escribe en un archivo temporal en el mismo volumen (`modorganizer.ini.tmp.<pid>`) con `flush`
-     y `os.fsync`.
-   - Se ejecuta el reemplazo atómico mediante `os.replace`.
+   - Se escribe en un archivo temporal en el mismo volumen (`modorganizer.ini.tmp.<pid>`), ejecutando `flush()`
+     y `os.fsync(fd)` sobre el contenido antes de cualquier sustitución.
+   - Se ejecuta el reemplazo atómico mediante `os.replace`. En POSIX, se sincroniza el directorio padre
+     (`os.fsync(dir_fd)`) tras el reemplazo para asegurar la persistencia de la entrada de directorio.
+     En Windows, `os.replace` invoca internamente `ReplaceFileW` / `MoveFileExW` con garantías atómicas a nivel NTFS.
 
-5. **Fase 5 (Readback Inmediato y Validación de Oráculo):**
+5. **Fase 5 (Readback Inmediato y Validación Exhaustiva de Oráculo):**
    - Relectura inmediata de `modorganizer.ini` con `leer_game_path_de_mo2`.
-   - Consulta al oráculo de Effective Runtime (`assess_effective_runtime`).
-   - El nuevo estado configurado debe coincidir bit a bit con el `clone_root` validado.
+   - Obtención durable del `DesiredRuntime`: se deriva directamente del registro durable del Runtime Clone
+     (`clones/<clone_id>.json`) y/o `desired_runtime_from_storage(storage_root)`, garantizando que el
+     `desired_clone_id`, el `clone_root` y la `source_generation_id` provengan de la autoridad persistida.
+   - Consulta al oráculo de Effective Runtime invocando `assess_effective_runtime` con sus argumentos canónicos
+     completos y obligatorios:
+     - `desired`: instancia de `DesiredRuntime` con el Clone objetivo y su Generation.
+     - `config_skyrim_path`: ruta configurada en `Config` (actualizada coherentemente hacia el Clone).
+     - `mo2_instance_dir`: directorio de la instancia inspeccionada.
+     - `managed_source_root`: ruta resuelta de la Managed Source de Steam.
+     - `generation_roots`: mapeo de generaciones admitidas.
+     - `environ`: entorno del proceso (verificando coherencia de `SKYRIM_PATH`).
+     - `probes`: el mismo conjunto de sondas inyectadas (`RuntimeProbes`) empleado en el preflight.
+   - Exigencia de doble veredicto: Para autorizar el éxito del switch, se requiere simultáneamente:
+     1. `assessment.status is EffectiveRuntimeStatus.MATCH` (coincidencia unánime entre MO2, Config, Desired y entorno, sin divergencias ni terceros árboles).
+     2. `assessment.compatibility.state is RuntimeCompatibility.COMPATIBLE` (Skyrim y SKSE verificados y compatibles en el Clone efectivo).
+   - Si no se cumplen ambos requisitos de forma estricta, se dispara inmediatamente la Fase 6 de Rollback.
 
 6. **Fase 6 (Rollback Automático ante Discrepancias):**
-   - Si la relectura falla, si el oráculo no otorga `MATCH`, o si ocurre cualquier excepción
+   - Si la relectura falla, si el oráculo no otorga `MATCH` y `COMPATIBLE`, o si ocurre cualquier excepción
      durante las Fases 4 o 5:
-     - Se ejecuta `os.replace(snapshot_path, original_ini_path)` atómicamente.
-     - Se fuerza `os.fsync` sobre el directorio.
-     - Se confirma la restauración del `gamePath` original.
+     - Se ejecuta `os.replace(snapshot_path, original_ini_path)` para restaurar el contenido original de forma atómica.
+     - En POSIX, se ejecuta `os.fsync` sobre el directorio padre. En Windows, se confía en la atomicidad de `os.replace` sobre NTFS.
+     - Se confirma mediante relectura la restauración efectiva del `gamePath` original.
      - Se emite alerta tipada `Mo2SwitchRollbackExecutedError`.
 
 ### 13.4 Análisis de Ventanas de Fallo, TOCTOU y Retención en Memoria
@@ -845,8 +880,10 @@ contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
    - Se sustituye `read_steam_manifest_observation` por `observe_provider_activity(source)`.
    - Si existen archivos en `steamapps/downloading/<appid>` o `steamapps/temp/<appid>`, la observación
      detecta actividad en curso y bloquea el preflight con `MANAGED_SOURCE_INVALID` (`ProviderObservationState.ACTIVE`).
-   - Se delimita que esta observación mide reposo puntual en el preflight de lectura; la estabilidad durable
-     a lo largo de la mutación se garantiza en P5-C1 bajo lock y doble barrera PRE/POST.
+   - Se delimita que esta observación mide reposo puntual en el preflight de lectura mediante
+     `observe_provider_activity`; ningún lock de Sky-Claw controla los procesos de Steam, por lo
+     que la protección durable frente a parches o descargas descansa en el desacoplamiento físico
+     total del Runtime Clone (`CLONE_PHYSICAL_INTEGRITY`).
 
 4. **D — Errores Tipados en `RUNTIME_COMPATIBILITY`:**
    - Se reemplaza el `except Exception` por excepciones de dominio e I/O tipadas (`RuntimeObservationError`,

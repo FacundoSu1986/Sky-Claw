@@ -282,26 +282,39 @@ def evaluar_binder_preflight(
     # -------------------------------------------------------------------------
     game_path_obs_str: str | None = None
     ejecutables_mo2: tuple[Mo2Executable, ...] = ()
-    if not ini_path.is_file():
+    stat_pre = None
+    es_archivo = False
+    try:
+        es_archivo = ini_path.is_file()
+    except OSError as exc:
         checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
             check=PreflightCheckCode.MO2_CONFIGURATION,
             status=PreflightCheckStatus.FAIL,
-            reason=PreflightReasonCode.MO2_INI_MISSING,
-            detail=f"no se encontró modorganizer.ini en '{mo2_dir}'",
+            reason=PreflightReasonCode.MO2_INI_UNREADABLE,
+            detail=f"error al acceder a modorganizer.ini: {exc}",
         )
-        reasons.append(PreflightReasonCode.MO2_INI_MISSING)
-    else:
-        stat_pre = None
-        try:
-            stat_pre = ini_path.stat()
-        except OSError as exc:
+        reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
+
+    if PreflightCheckCode.MO2_CONFIGURATION not in checks_map:
+        if not es_archivo:
             checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
                 check=PreflightCheckCode.MO2_CONFIGURATION,
                 status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.MO2_INI_UNREADABLE,
-                detail=f"error al acceder a modorganizer.ini: {exc}",
+                reason=PreflightReasonCode.MO2_INI_MISSING,
+                detail=f"no se encontró modorganizer.ini en '{mo2_dir}'",
             )
-            reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
+            reasons.append(PreflightReasonCode.MO2_INI_MISSING)
+        else:
+            try:
+                stat_pre = ini_path.stat()
+            except OSError as exc:
+                checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+                    check=PreflightCheckCode.MO2_CONFIGURATION,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.MO2_INI_UNREADABLE,
+                    detail=f"error al acceder a modorganizer.ini: {exc}",
+                )
+                reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
 
         if stat_pre is not None:
             evidencia_gp = leer_game_path_de_mo2(ini_path)
@@ -482,11 +495,13 @@ def evaluar_binder_preflight(
     # 5. Resolución y carga del RuntimeCloneRecord (P2-D)
     # -------------------------------------------------------------------------
     target_clone_id = clone_id
+    persisted_desired_gen_id: str | None = None
     if target_clone_id is None:
         try:
             carga_active = load_frozen_runtime_state(active_state_path(storage))
             if carga_active.found and carga_active.state is not None:
                 target_clone_id = carga_active.state.desired_clone_id
+                persisted_desired_gen_id = carga_active.state.desired_active_generation
         except StateCorruptError as exc:
             checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
                 check=PreflightCheckCode.CLONE_RECORD,
@@ -756,18 +771,19 @@ def evaluar_binder_preflight(
                 except RuntimeCloneAdmissionError as exc:
                     msg = str(exc).lower()
                     if "8.3" in msg or "~" in msg:
-                        if PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED not in reasons:
-                            reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
-                    elif "steam" in msg or "storage" in msg or "versions" in msg or "common" in msg:
-                        if PreflightReasonCode.PATH_CONTAINMENT_VIOLATION not in reasons:
-                            reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
-                    elif PreflightReasonCode.CLONE_ADMISSION_REJECTED not in reasons:
-                        reasons.append(PreflightReasonCode.CLONE_ADMISSION_REJECTED)
+                        motivo_refinado = PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED
+                    elif any(k in msg for k in ("steam", "storage", "versions", "common")):
+                        motivo_refinado = PreflightReasonCode.PATH_CONTAINMENT_VIOLATION
+                    else:
+                        motivo_refinado = PreflightReasonCode.CLONE_ADMISSION_REJECTED
+
+                    if motivo_refinado not in reasons:
+                        reasons.append(motivo_refinado)
 
                     checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
                         check=PreflightCheckCode.PATH_SAFETY,
                         status=PreflightCheckStatus.FAIL,
-                        reason=PreflightReasonCode.CLONE_ADMISSION_REJECTED,
+                        reason=motivo_refinado,
                         detail=f"admitir_clone_root_path rechazó la ruta: {exc}",
                     )
 
@@ -776,17 +792,29 @@ def evaluar_binder_preflight(
     # -------------------------------------------------------------------------
     gen_id = record.source_generation_id
     gen_meta_ok = False
-    try:
-        leer_generation_metadata(storage, gen_id)
-        gen_meta_ok = True
-    except (FrozenRuntimeError, OSError) as exc:
+    if persisted_desired_gen_id is not None and gen_id != persisted_desired_gen_id:
         checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
             check=PreflightCheckCode.GENERATION_INTEGRITY,
             status=PreflightCheckStatus.FAIL,
-            reason=PreflightReasonCode.GENERATION_NOT_FOUND,
-            detail=f"metadata de generation '{gen_id}' no legible: {exc}",
+            reason=PreflightReasonCode.GENERATION_INVALID,
+            detail=(
+                f"linaje incoherente: la Generation de origen del clone '{gen_id}' "
+                f"difiere de la deseada en active.json ('{persisted_desired_gen_id}')"
+            ),
         )
-        reasons.append(PreflightReasonCode.GENERATION_NOT_FOUND)
+        reasons.append(PreflightReasonCode.GENERATION_INVALID)
+    else:
+        try:
+            leer_generation_metadata(storage, gen_id)
+            gen_meta_ok = True
+        except (FrozenRuntimeError, OSError) as exc:
+            checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                check=PreflightCheckCode.GENERATION_INTEGRITY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.GENERATION_NOT_FOUND,
+                detail=f"metadata de generation '{gen_id}' no legible: {exc}",
+            )
+            reasons.append(PreflightReasonCode.GENERATION_NOT_FOUND)
 
     if gen_meta_ok:
         try:
@@ -844,7 +872,7 @@ def evaluar_binder_preflight(
                 check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
                 status=PreflightCheckStatus.INDETERMINATE,
                 reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE,
-                detail="integridad física del clone indeterminada (filesystem no reporta inodos)",
+                detail=f"integridad física del clone indeterminada: {clone_verif.message}",
             )
             reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE)
         else:
@@ -852,7 +880,7 @@ def evaluar_binder_preflight(
                 check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
                 status=PreflightCheckStatus.FAIL,
                 reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID,
-                detail=f"verificar_runtime_clone retornó estado '{clone_verif.state}'",
+                detail=f"verificar_runtime_clone retornó '{clone_verif.state}': {clone_verif.message}",
             )
             reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID)
     except (FrozenRuntimeError, OSError) as exc:
