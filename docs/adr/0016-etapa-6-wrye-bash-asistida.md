@@ -195,12 +195,13 @@ tenía — y un ancla que miente es peor que un bug:
 | F7 | El test de `chmod 000` es un no-op como root y no corre en Windows (única plataforma de entrega). | Directorio en vez de `chmod`. |
 | F8 | Se citaba #835 (`modlist.txt`) para justificar la regla de duplicados en `plugins.txt`. | La regla se sostiene sola (semántica de activación del motor) y la cita se reemplazó por su fuente propia. |
 
-## 9. Revisión adversarial EXTERNA (2026-10-30, ronda 2)
+## 9. Revisión adversarial EXTERNA (2026-10-30, rondas 2 y 3)
 
-Segunda vuelta, esta vez sobre los comentarios de revisión del PR #839. Cada hallazgo se
-verificó **contra el código antes de aceptarlo**: un comentario de review es una
-afirmación, no un hecho. Seis se confirmaron por conducta y se corrigieron; uno se rechazó
-con evidencia y queda anclado por test para que el rechazo no se confunda con un olvido.
+Dos vueltas sobre los comentarios de revisión del PR #839 (rondas 2 y 3 contando la
+auto-revisión de §8). Cada hallazgo se verificó **contra el código antes de aceptarlo**: un
+comentario de review es una afirmación, no un hecho. En la ronda 2 se confirmaron seis por
+conducta y se rechazó uno; en la ronda 3 se aplicaron cinco y se rechazó otro. Los rechazos
+quedan anclados por test para que no se confundan con un olvido.
 
 **El patrón que los dos primeros comparten, y que esta etapa no había modelado:** la etapa 6
 tiene **dos ejecutores**. `execute_pipeline` spawnea `bash.py` por `run_capture` y ese
