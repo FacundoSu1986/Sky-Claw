@@ -24,7 +24,14 @@ from __future__ import annotations
 import pytest
 
 from sky_claw.local.native_parallax.gates import Veredicto as VeredictoDelGenerador
-from sky_claw.local.native_parallax.lote import VERSION_DEL_LOTE, EstadoDeArchivo
+from sky_claw.local.native_parallax.lote import (
+    VERSION_DEL_LOTE,
+    EstadoDeArchivo,
+    InformeDelLote,
+    ParametrosDelLote,
+    ResultadoDeArchivo,
+    ResultadoDeRuta,
+)
 from sky_claw.local.native_parallax.output_writer import EfectoDeSalida
 from sky_claw.local.parallax_unattended.veredicto import (
     CODIGOS_DE_SALIDA,
@@ -514,3 +521,38 @@ def test_un_censo_de_omitidas_con_forma_invalida_es_inconsistente(basura: object
     informe["omitidas_al_enumerar"] = basura
 
     assert dictar(informe).veredicto is VeredictoDelLote.INCONSISTENTE
+
+
+@pytest.mark.parametrize("efecto", list(EfectoDeSalida), ids=lambda e: e.name)
+def test_el_generador_y_el_validador_juzgan_igual_cada_efecto_de_otras_rutas(efecto: EfectoDeSalida) -> None:
+    """Paridad: ``InformeDelLote.completo`` (de donde sale el código de la CLI) y ``dictar`` no pueden discrepar.
+
+    Antes, un retiro ``FALLIDA`` daba 0 en la CLI y ``FAIL`` acá. Se enumera la familia entera de efectos del escritor: un efecto
+    nuevo rompe el test hasta que se decida de qué lado cae en los dos consumidores. ``PUBLICADA`` y ``REEMPLAZADA`` no son efectos
+    de una ruta ajena a la entrada (``dictar`` los marca inconsistentes), y esa excepción queda congelada por igualdad literal.
+    """
+
+    efectos_que_no_aplican_a_otras_rutas = {EfectoDeSalida.PUBLICADA, EfectoDeSalida.REEMPLAZADA}
+    archivo = ResultadoDeArchivo(
+        "textures/a_n.dds",
+        "textures/a_p.dds",
+        EstadoDeArchivo.ESCRITA,
+        EfectoDeSalida.PUBLICADA,
+        VeredictoDelGenerador.AUTO_ACCEPT,
+        (),
+        None,
+        "",
+    )
+    informe = InformeDelLote(
+        ParametrosDelLote(),
+        (archivo,),
+        (ResultadoDeRuta("textures/vieja_p.dds", efecto, "d"),),
+        ("may2026", _HUELLA),
+    )
+
+    decision = dictar({**informe.a_diccionario(), "omitidas_al_enumerar": []})
+
+    if efecto in efectos_que_no_aplican_a_otras_rutas:
+        assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+        return
+    assert informe.completo is (decision.veredicto in {VeredictoDelLote.PASS, VeredictoDelLote.REVIEW})
