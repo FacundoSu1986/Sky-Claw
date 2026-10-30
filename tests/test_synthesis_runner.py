@@ -16,6 +16,7 @@ hardcodean). En particular:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -35,15 +36,62 @@ ESP_VALIDO = b"TES4" + b"\x00" * 200
 
 
 def _runner(tmp_path: pathlib.Path) -> SynthesisRunner:
-    """Runner real con exe fake y output_path dedicado."""
-    (tmp_path / "Synthesis.exe").touch()
+    """Runner real con CLI settings V2, plugins.txt MO2 y output dedicado."""
+    game_path = tmp_path / "Skyrim"
+    data_folder = game_path / "Data"
+    data_folder.mkdir(parents=True)
+    mo2_path = tmp_path / "MO2"
+    profile_dir = mo2_path / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    load_order = profile_dir / "plugins.txt"
+    load_order.write_text("*Skyrim.esm\n", encoding="utf-8")
+    settings_path = tmp_path / "PipelineSettings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "ID": "profile-default",
+                        "TargetRelease": "SkyrimSE",
+                        "Groups": [
+                            {
+                                "On": True,
+                                "Name": "Synthesis",
+                                "Patchers": [
+                                    {
+                                        "$type": "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution",
+                                        "ID": "id-PatcherA",
+                                        "Nickname": "PatcherA",
+                                        "On": True,
+                                        "RemoteRepoPath": "https://example.invalid/PatcherA",
+                                    }
+                                ],
+                            }
+                        ],
+                        "SplitIfMaxMastersExceeded": True,
+                        "UpdateLoadOrderAfterRun": True,
+                    }
+                ],
+                "WorkingDirectory": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    synthesis_exe = tmp_path / "Synthesis.exe"
+    synthesis_exe.touch()
     return SynthesisRunner(
         SynthesisConfig(
-            game_path=tmp_path,
-            mo2_path=tmp_path,
+            game_path=game_path,
+            mo2_path=mo2_path,
             output_path=tmp_path / "out",
-            synthesis_exe=tmp_path / "Synthesis.exe",
+            synthesis_exe=synthesis_exe,
             timeout_seconds=5,
+            profile="Default",
+            pipeline_settings_path=settings_path,
+            data_folder_path=data_folder,
+            load_order_file_path=load_order,
         )
     )
 

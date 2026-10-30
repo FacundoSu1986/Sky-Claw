@@ -24,8 +24,10 @@ PREVENCIÓN:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
+import os
 import pathlib
 import time
 from typing import TYPE_CHECKING, Any
@@ -40,6 +42,7 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools.output_targets import synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.local.tools.synthesis_runner import (
@@ -54,7 +57,7 @@ if TYPE_CHECKING:
     from sky_claw.app.core.path_resolver import PathResolutionService
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-    from sky_claw.local.validators.preflight import PreflightReport, PreflightService
+    from sky_claw.local.validators.preflight import PreflightCheck, PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,8 @@ class SynthesisPipelineService:
         pipeline_config_path: pathlib.Path | None = None,
         output_path: pathlib.Path | None = None,
         preflight: PreflightService | None = None,
+        synthesis_settings_path: pathlib.Path | None = None,
+        synthesis_profile_identifier: str | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -121,6 +126,14 @@ class SynthesisPipelineService:
         # un run sandboxeado construye su propio servicio (patrón ad-hoc de
         # system_tools.run_pandora).
         self._output_path = output_path
+        # Settings V2 de Synthesis (no el JSON interno de PatcherPipeline).
+        # La ruta explícita/env gana; si falta, se alinea con el default GUI
+        # upstream: PipelineSettings.json en el directorio de trabajo actual.
+        self._synthesis_settings_path = synthesis_settings_path
+        # MO2 y Synthesis mantienen identificadores de perfil independientes.
+        # El alias del perfil MO2 solo se usa como convención por defecto; si
+        # difieren, se puede mapear explícitamente por parámetro o entorno.
+        self._synthesis_profile_identifier = synthesis_profile_identifier
 
         # Lazy init — paths may not be available at construction time
         self._synthesis_runner: SynthesisRunner | None = None
@@ -173,17 +186,45 @@ class SynthesisPipelineService:
         )
         assert output_path is not None  # mo2_path ya validado arriba
 
+        mo2_profile = self._path_resolver.get_active_profile()
+        if not isinstance(mo2_profile, str) or not mo2_profile.strip():
+            raise SynthesisExecutionError("Cannot initialize SynthesisRunner: the active MO2 profile is unresolved")
+        try:
+            mo2_profile = assert_safe_component(mo2_profile.strip(), field="active MO2 profile")
+        except PathViolationError as exc:
+            raise SynthesisExecutionError(f"Cannot resolve active MO2 profile safely: {exc}", stderr=str(exc)) from exc
+
+        if self._synthesis_profile_identifier is not None:
+            configured_profile = self._synthesis_profile_identifier
+        elif "SYNTHESIS_PROFILE_IDENTIFIER" in os.environ:
+            configured_profile = os.environ["SYNTHESIS_PROFILE_IDENTIFIER"]
+        else:
+            configured_profile = mo2_profile
+        if not isinstance(configured_profile, str) or not configured_profile.strip():
+            raise SynthesisExecutionError("SYNTHESIS_PROFILE_IDENTIFIER must be a non-empty Synthesis nickname or ID")
+        synthesis_profile = configured_profile.strip()
+
+        load_order_file = mo2_path / "profiles" / mo2_profile / "plugins.txt"
+        if load_order_file.is_symlink() or not load_order_file.is_file():
+            raise SynthesisExecutionError(
+                f"The active MO2 profile {mo2_profile!r} has no regular plugins.txt under {mo2_path / 'profiles'}"
+            )
+
+        configured_settings = self._synthesis_settings_path or os.environ.get("SYNTHESIS_PIPELINE_SETTINGS")
+        settings_path = (
+            pathlib.Path(configured_settings) if configured_settings else pathlib.Path.cwd() / "PipelineSettings.json"
+        )
         config = SynthesisConfig(
             game_path=game_path,
             mo2_path=mo2_path,
             output_path=output_path,
             synthesis_exe=synthesis_exe,
             timeout_seconds=300,
-            # Misma fuente que el resolver de fuentes de abajo
-            # (`build_mo2_profile_sources_resolver`): el CLI tenía "Default" fijo,
-            # así que generaba el patch contra un perfil distinto del que resolvía
-            # sus fuentes.
-            profile=self._path_resolver.get_active_profile(),
+            profile=synthesis_profile,
+            pipeline_settings_path=settings_path,
+            data_folder_path=game_path / "Data",
+            load_order_file_path=load_order_file,
+            mo2_profile=mo2_profile,
         )
 
         self._synthesis_runner = SynthesisRunner(config)
@@ -229,11 +270,10 @@ class SynthesisPipelineService:
         primitivas compartidas; no toca ``loot_service``. Sensores no resolubles →
         ``None`` (omitidos con ``omit_unconfigured``).
 
-        NOTA (follow-up, review Codex #306): ``plugin_limits`` mide slots
-        full/light del engine, NO el fan-in de masters del ``Synthesis.esp``
-        generado — el ``Max Masters Exceeded`` del SOP §0.7 depende de cuántos
-        plugins fuente lista el ESP de salida y de si el auto-split de Synthesis
-        está activo, señales que este gate todavía no computa.
+        ``plugin_limits`` mide slots full/light del engine, NO el fan-in de
+        masters del ESP generado. ``execute_pipeline`` agrega después un check
+        separado con la cota superior de plugins efectivos del perfil MO2 y el
+        bit ``SplitIfMaxMastersExceeded`` del perfil Synthesis V2.
         """
         if self._preflight is not None:
             return self._preflight
@@ -374,6 +414,173 @@ class SynthesisPipelineService:
             return None, None
         return build_modlist_sensors(resolver)
 
+    def _build_synthesis_visibility_check(self, runner: SynthesisRunner) -> PreflightCheck:
+        """Fail closed si el proceso standalone no vería todos los plugins activos.
+
+        ``SynthesisRunner`` usa ``run_capture`` y no hereda el overlay de MO2.
+        El sensor genérico acepta visibilidad parcial para otros rituales; acá no
+        alcanza: Synthesis procesa el modlist completo y una vista parcial puede
+        producir un patch incorrecto. Hasta que exista un backend brokered para
+        Synthesis, cada plugin de mod activo debe estar en el Data físico.
+        """
+        from sky_claw.local.validators.preflight import PreflightCheck as _PreflightCheck
+        from sky_claw.local.validators.preflight import PreflightStatus as _PreflightStatus
+        from sky_claw.local.validators.preflight_sensors import build_mo2_profile_sources_resolver
+        from sky_claw.local.validators.vfs_visibility import VfsVisibilityChecker
+
+        config = runner._config
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
+        sources_resolver = build_mo2_profile_sources_resolver(
+            game=config.game_path,
+            mo2=config.mo2_path,
+            profile=config.mo2_profile or config.profile,
+            mods_dir=mods_dir,
+        )
+        if sources_resolver is None:
+            return _PreflightCheck(
+                name="synthesis_vfs_visibility",
+                status=_PreflightStatus.RED,
+                summary="No se pudo resolver el perfil MO2 para probar la visibilidad de Synthesis.",
+            )
+
+        try:
+            sources = sources_resolver()
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _PreflightCheck(
+                name="synthesis_vfs_visibility",
+                status=_PreflightStatus.RED,
+                summary=f"No se pudo leer el load order del perfil MO2: {exc}",
+            )
+        if sources.activation_source_status == "unreadable":
+            return _PreflightCheck(
+                name="synthesis_vfs_visibility",
+                status=_PreflightStatus.RED,
+                summary="No se pudo probar la visibilidad: plugins.txt del perfil MO2 es ilegible.",
+            )
+
+        data_folder = config.data_folder_path
+        if data_folder is None or not data_folder.is_dir():
+            return _PreflightCheck(
+                name="synthesis_vfs_visibility",
+                status=_PreflightStatus.RED,
+                summary=f"No se pudo probar la visibilidad de Synthesis en Data: {data_folder}",
+            )
+        scan = VfsVisibilityChecker(
+            game_data_dir=data_folder,
+            enabled_plugins=sources.effective_enabled_plugins,
+        ).check()
+        missing = tuple(
+            name for name in scan.mod_plugins if name.casefold() not in {item.casefold() for item in scan.visible}
+        )
+        if missing:
+            sample = ", ".join(missing[:10])
+            return _PreflightCheck(
+                name="synthesis_vfs_visibility",
+                status=_PreflightStatus.RED,
+                summary=(
+                    f"Synthesis corre fuera de USVFS y {len(missing)}/{len(scan.mod_plugins)} "
+                    "plugin(s) activos de mods no están visibles en el Data físico."
+                ),
+                details=(sample,),
+            )
+        return _PreflightCheck(
+            name="synthesis_vfs_visibility",
+            status=_PreflightStatus.GREEN,
+            summary=f"Todos los {len(scan.mod_plugins)} plugin(s) activos de mods son visibles en el Data físico.",
+        )
+
+    def _build_master_overflow_check(self, runner: SynthesisRunner, patcher_ids: list[str]) -> PreflightCheck:
+        """Gatea el fan-in conservador del perfil y el auto-split del settings V2.
+
+        No existe un fan-in exacto antes de ejecutar: depende de qué records use
+        cada patcher. El número de plugins efectivos de MO2 es una cota superior.
+        Si esa cota rebasa 254 y el auto-split no está demostrado como activo, se
+        bloquea antes de abrir una transacción. Con auto-split habilitado, el
+        runner administra el conjunto ``Grupo.esp`` + ``Grupo_2.esp`` + ….
+        """
+        from sky_claw.local.validators.preflight import PreflightCheck as _PreflightCheck
+        from sky_claw.local.validators.preflight import PreflightStatus as _PreflightStatus
+        from sky_claw.local.validators.preflight_sensors import build_mo2_profile_sources_resolver
+
+        profile = runner.inspect_settings(patcher_ids)
+        config = runner._config
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
+        sources_resolver = build_mo2_profile_sources_resolver(
+            game=config.game_path,
+            mo2=config.mo2_path,
+            profile=config.mo2_profile or config.profile,
+            mods_dir=mods_dir,
+        )
+
+        fan_in_upper_bound: int | None = None
+        if sources_resolver is not None:
+            try:
+                sources = sources_resolver()
+                if sources.activation_source_status != "unreadable" and sources.plugin_dirs:
+                    fan_in_upper_bound = len(sources.effective_enabled_plugins)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("No se pudo estimar el fan-in de masters de Synthesis: %s", exc)
+
+        details = ["La cantidad de plugins efectivos es una cota superior, no el fan-in exacto del patcher."]
+        if fan_in_upper_bound is not None:
+            details.append(f"Cota superior del perfil MO2: {fan_in_upper_bound} plugin(s); límite: 254 masters.")
+        else:
+            details.append("No se pudo resolver una fuente de plugins efectiva del perfil MO2.")
+
+        split_enabled = profile.split_if_max_masters_exceeded
+        if fan_in_upper_bound is not None and fan_in_upper_bound <= 254:
+            status = _PreflightStatus.GREEN
+            summary = f"Cota de fan-in {fan_in_upper_bound}/254; no se prevé overflow de masters."
+        elif split_enabled is True:
+            status = _PreflightStatus.YELLOW
+            summary = "Fan-in de masters potencialmente superior a 254; auto-split de Synthesis habilitado."
+        else:
+            status = _PreflightStatus.RED
+            if split_enabled is False:
+                summary = "Fan-in potencialmente superior a 254 y SplitIfMaxMastersExceeded está deshabilitado."
+            else:
+                summary = "Fan-in no demostrable bajo el límite y SplitIfMaxMastersExceeded no está confirmado."
+
+        return _PreflightCheck(
+            name="synthesis_master_overflow",
+            status=status,
+            summary=summary,
+            details=tuple(details),
+        )
+
+    @staticmethod
+    def _append_preflight_check(report: PreflightReport | None, check: PreflightCheck) -> PreflightReport:
+        """Agrega el sensor Synthesis al semáforo sin mutar el reporte original."""
+        from sky_claw.local.validators.preflight import PreflightReport as _PreflightReport
+        from sky_claw.local.validators.preflight import PreflightStatus as _PreflightStatus
+
+        checks = (*report.checks, check) if report is not None else (check,)
+        ranks = {
+            _PreflightStatus.GREEN: 0,
+            _PreflightStatus.YELLOW: 1,
+            _PreflightStatus.RED: 2,
+        }
+        status = max((item.status for item in checks), key=ranks.__getitem__)
+        return _PreflightReport(status=status, checks=checks)
+
+    @staticmethod
+    def _cleanup_synthesis_outputs(runner: SynthesisRunner, group_names: tuple[str, ...]) -> bool:
+        """Retira salidas del perfil fijado para el run, incluso si cambió el JSON."""
+        try:
+            outputs = runner._discover_output_files_for_groups(group_names)
+        except (SynthesisExecutionError, SynthesisValidationError, OSError) as exc:
+            logger.critical("No se pudo descubrir el conjunto de salidas Synthesis para cleanup: %s", exc)
+            return False
+
+        completed = True
+        for output in outputs:
+            try:
+                output.unlink(missing_ok=True)
+            except OSError as exc:
+                completed = False
+                logger.critical("No se pudo retirar la salida parcial de Synthesis %s: %s", output, exc)
+        return completed
+
     # ------------------------------------------------------------------
     # Pipeline execution
     # ------------------------------------------------------------------
@@ -409,9 +616,44 @@ class SynthesisPipelineService:
             logger.info("Run sandboxeado: snapshot del servicio deshabilitado (el clon es el rollback).")
             create_snapshot = False
 
-        # Preflight brutal ANTES de tocar nada (T-16c·2, STAGE 7): un semáforo ROJO
-        # (p. ej. >254 masters, u output sin permisos) cancela Synthesis sin correr el
-        # pipeline ni abrir transacción. Amarillo/verde no bloquean; se surface al panel.
+        # Inicialización y resolución del contrato externo antes de abrir journal/lock.
+        # La CLI requiere settings V2 y load order del perfil MO2; nunca se deja
+        # que caiga silenciosamente al load order global del juego.
+        try:
+            runner = self._ensure_synthesis_runner()
+            pipeline = self._ensure_patcher_pipeline()
+        except (SynthesisExecutionError, RuntimeError) as exc:
+            logger.error("Error inicializando Synthesis (stage 7): %s", exc)
+            return self._error_dict(str(exc))
+
+        if patcher_ids is None:
+            enabled = pipeline.get_enabled_patchers()
+            patcher_ids = [p.patcher_id for p in enabled]
+            if not patcher_ids:
+                try:
+                    patcher_ids = list(runner.inspect_settings().patcher_ids)
+                except SynthesisExecutionError as exc:
+                    logger.error("No se pudo resolver el pipeline Synthesis configurado: %s", exc)
+                    return self._error_dict(str(exc))
+
+        if not patcher_ids:
+            logger.warning("No hay patchers para ejecutar")
+            return self._error_dict("No patchers configured or enabled")
+
+        try:
+            settings_fingerprint = runner.settings_fingerprint()
+            load_order_fingerprint = runner.load_order_fingerprint()
+            settings_profile = runner.inspect_settings(patcher_ids)
+            if runner.settings_fingerprint() != settings_fingerprint:
+                raise SynthesisExecutionError("Synthesis PipelineSettings.json changed while being validated")
+            if runner.load_order_fingerprint() != load_order_fingerprint:
+                raise SynthesisExecutionError("The active MO2 plugins.txt changed while being validated")
+        except SynthesisExecutionError as exc:
+            logger.error("Configuración Synthesis inválida (stage 7): %s", exc)
+            return self._error_dict(str(exc))
+
+        # Preflight brutal ANTES de tocar nada (T-16c·2, STAGE 7): un semáforo
+        # ROJO cancela Synthesis sin correr el pipeline ni abrir transacción.
         try:
             preflight = self._ensure_preflight()
         except RuntimeError as exc:
@@ -421,31 +663,45 @@ class SynthesisPipelineService:
         preflight_report = None
         if preflight is not None:
             preflight_report = await preflight.run()
-            if preflight_report.blocks_mutations:
-                red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-                logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)
-                blocked = self._error_dict(f"Preflight en rojo, Synthesis cancelado: {red}")
-                blocked["reason"] = "PreflightBlocked"
-                blocked["preflight"] = preflight_report.to_dict()
-                return blocked
-
-        # --- Early init ---
         try:
-            runner = self._ensure_synthesis_runner()
-            pipeline = self._ensure_patcher_pipeline()
-        except (SynthesisExecutionError, RuntimeError) as exc:
-            logger.error("Error inicializando Synthesis (stage 7): %s", exc)
+            overflow_check = await asyncio.to_thread(self._build_master_overflow_check, runner, patcher_ids)
+            visibility_check = await asyncio.to_thread(self._build_synthesis_visibility_check, runner)
+            if runner.settings_fingerprint() != settings_fingerprint:
+                raise SynthesisExecutionError("Synthesis PipelineSettings.json changed during preflight")
+            if runner.load_order_fingerprint() != load_order_fingerprint:
+                raise SynthesisExecutionError("The active MO2 plugins.txt changed during preflight")
+        except SynthesisExecutionError as exc:
+            logger.error("No se pudo validar el fan-in/visibilidad de Synthesis: %s", exc)
             return _attach_preflight(self._error_dict(str(exc)), preflight_report)
+        preflight_report = self._append_preflight_check(preflight_report, overflow_check)
+        preflight_report = self._append_preflight_check(preflight_report, visibility_check)
+        if preflight_report.blocks_mutations:
+            red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+            logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)
+            blocked = self._error_dict(f"Preflight en rojo, Synthesis cancelado: {red}")
+            blocked["reason"] = "PreflightBlocked"
+            blocked["preflight"] = preflight_report.to_dict()
+            return blocked
 
-        if patcher_ids is None:
-            enabled = pipeline.get_enabled_patchers()
-            patcher_ids = [p.patcher_id for p in enabled]
-
-        if not patcher_ids:
-            logger.warning("No hay patchers para ejecutar")
-            return _attach_preflight(self._error_dict("No patchers configured or enabled"), preflight_report)
-
-        target_esp = runner._config.output_path / "Synthesis.esp"
+        output_base_paths = tuple(runner._config.output_path / f"{name}.esp" for name in settings_profile.group_names)
+        if not output_base_paths:
+            return _attach_preflight(
+                self._error_dict("Synthesis profile has no managed output group"), preflight_report
+            )
+        target_esp = output_base_paths[0]
+        try:
+            output_files_before = runner._discover_output_files_for_groups(settings_profile.group_names)
+            if runner.settings_fingerprint() != settings_fingerprint:
+                raise SynthesisExecutionError("Synthesis PipelineSettings.json changed before transaction setup")
+            if runner.load_order_fingerprint() != load_order_fingerprint:
+                raise SynthesisExecutionError("The active MO2 plugins.txt changed before transaction setup")
+        except (SynthesisExecutionError, SynthesisValidationError) as exc:
+            return _attach_preflight(self._error_dict(str(exc)), preflight_report)
+        if output_files_before and not create_snapshot and self._output_path is None:
+            return _attach_preflight(
+                self._error_dict("Existing Synthesis outputs require a snapshot or an isolated sandbox before rerun"),
+                preflight_report,
+            )
 
         # --- Publish started event ---
         started_payload = SynthesisPipelineStartedPayload(
@@ -462,14 +718,16 @@ class SynthesisPipelineService:
         )
 
         # --- Transactional execution ---
-        # Order: lock → snapshot → begin_transaction → execute → commit/abort
-        target_files: list[pathlib.Path] = []
-        if create_snapshot and target_esp.exists():
-            target_files = [target_esp]
+        # Order: lock → snapshot → begin_transaction → execute → commit/abort.
+        # El runner puede generar un conjunto split (base + _2 + _3 …), así que
+        # el snapshot cubre todos los outputs existentes de los grupos elegidos.
+        target_files = list(output_files_before) if create_snapshot else []
 
         result: SynthesisResult
         rolled_back = False
         manifest_failed = False
+        mutation_started = False
+        outputs_cleanup_completed = False
         tx_id: int | None = None
         # M-7 (misma lección que #295 en xedit_service): bindear el lock para
         # reportar el resultado REAL del rollback (tx_lock.rollback_completed)
@@ -488,6 +746,20 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
             ) as tx_lock:
+                if runner.settings_fingerprint() != settings_fingerprint:
+                    raise SynthesisExecutionError(
+                        "Synthesis PipelineSettings.json changed while waiting for the transaction lock"
+                    )
+                if runner.load_order_fingerprint() != load_order_fingerprint:
+                    raise SynthesisExecutionError(
+                        "The active MO2 plugins.txt changed while waiting for the transaction lock"
+                    )
+                outputs_at_lock = runner._discover_output_files_for_groups(settings_profile.group_names)
+                if set(outputs_at_lock) != set(output_files_before):
+                    raise SynthesisExecutionError(
+                        "Managed Synthesis outputs changed while waiting for the transaction lock; refusing to mutate"
+                    )
+
                 # Begin journal transaction AFTER lock+snapshot acquired
                 tx_id = await self._journal.begin_transaction(
                     description="synthesis_pipeline",
@@ -498,44 +770,71 @@ class SynthesisPipelineService:
                 # (fail-closed). Si el manifiesto no se puede emitir, se lanza
                 # DENTRO del lock → __aexit__ restaura los snapshots y ningún
                 # patcher corre (espejo de xedit_service).
+                manifest_targets = list(dict.fromkeys([*output_base_paths, *output_files_before]))
                 await self._emit_action_manifest(
                     tx_id=tx_id,
-                    target_files=[target_esp],
+                    target_files=manifest_targets,
                     snapshots=tx_lock.snapshots,
-                    summary=f"Ejecutar {len(patcher_ids)} patcher(s) de Synthesis → {target_esp.name}.",
+                    summary=(
+                        f"Ejecutar {len(patcher_ids)} patcher(s) de Synthesis → "
+                        f"{', '.join(path.name for path in output_base_paths)}. "
+                        "El manifiesto pre-run enumera bases y splits existentes; los splits nuevos "
+                        "se descubren, validan y limpian dentro de la transacción."
+                    ),
                 )
 
-                # Idempotencia de reruns: Synthesis puede regenerar exactamente
-                # los mismos bytes que una corrida anterior. Retirar el esp
-                # previo hace que la mera existencia post-run demuestre
-                # producción de ESTA corrida (el runner exige pre-ABSENT o
-                # digest distinto). Solo cuando la restauración ante fallo está
-                # garantizada: el snapshot ya fue tomado (target_files no vacío)
-                # o el sandbox es el mecanismo de rollback (el clon se
-                # descarta). Sin ninguna de las dos, fail-closed: NO se retira
-                # y un rerun idéntico sin retirada no puede atribuirse.
-                if target_esp.exists() and (bool(target_files) or self._output_path is not None):
-                    target_esp.unlink()
-                    logger.info("Synthesis.esp previo retirado para atribución por existencia: %s", target_esp)
+                try:
+                    mutation_started = True
+                    # Una salida previa puede ser idéntica byte a byte tras el
+                    # rerun. Retirar el conjunto completo de cada grupo hace que
+                    # la atribución por presencia sea honesta y evita splits stale.
+                    # Solo se hace con snapshot o dentro del clon descartable.
+                    if output_files_before and (create_snapshot or self._output_path is not None):
+                        for output_file in output_files_before:
+                            output_file.unlink()
 
-                result = await runner.run_pipeline(patcher_ids)
-
-                # Validar ESP DENTRO del context manager para activar rollback
-                if result.success and result.output_esp:
-                    is_valid = await runner.validate_synthesis_esp(result.output_esp)
-                    if not is_valid:
-                        raise SynthesisValidationError(
-                            "ESP validation failed: corrupted or invalid",
-                            esp_path=result.output_esp,
-                        )
-
-                # Pipeline failure → raise para activar rollback
-                if not result.success:
-                    raise SynthesisExecutionError(
-                        "; ".join(result.errors) if result.errors else "Pipeline failed",
-                        return_code=result.return_code,
-                        stderr=result.stderr,
+                    result = await runner.run_pipeline(
+                        patcher_ids,
+                        expected_settings_fingerprint=settings_fingerprint,
+                        expected_load_order_fingerprint=load_order_fingerprint,
                     )
+                    if runner.settings_fingerprint() != settings_fingerprint:
+                        raise SynthesisExecutionError(
+                            "Synthesis PipelineSettings.json changed while Synthesis was running"
+                        )
+                    if runner.load_order_fingerprint() != load_order_fingerprint:
+                        raise SynthesisExecutionError("The active MO2 plugins.txt changed while Synthesis was running")
+
+                    # Validar todos los ESP producidos (base y splits) dentro del
+                    # lock; un solo miembro corrupto aborta el conjunto completo.
+                    result_outputs = result.output_esps or ((result.output_esp,) if result.output_esp else ())
+                    if result.success and not result_outputs:
+                        raise SynthesisValidationError("Synthesis returned success without an output ESP")
+                    if result.success:
+                        for output_file in result_outputs:
+                            if not await runner.validate_synthesis_esp(output_file):
+                                raise SynthesisValidationError(
+                                    "ESP validation failed: corrupted or invalid",
+                                    esp_path=output_file,
+                                )
+
+                    # Pipeline failure → raise para activar rollback.
+                    if not result.success:
+                        raise SynthesisExecutionError(
+                            "; ".join(result.errors) if result.errors else "Pipeline failed",
+                            return_code=result.return_code,
+                            stderr=result.stderr,
+                        )
+                except BaseException:
+                    # SnapshotTransactionLock cubre archivos que existían antes;
+                    # retirar también los nuevos _2/_3 es la mitad restante del
+                    # rollback transaccional. En sandbox se conserva evidencia:
+                    # el clon aún no se promueve y el operador puede inspeccionarla.
+                    if self._output_path is None:
+                        outputs_cleanup_completed = self._cleanup_synthesis_outputs(
+                            runner, settings_profile.group_names
+                        )
+                    raise
 
             # Commit journal. Un fallo del commit conserva el camino de "rollback
             # honesto" (#295): propaga a ``except Exception`` → resultado fallido
@@ -575,13 +874,18 @@ class SynthesisPipelineService:
             )
 
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
-            # __aexit__ intentó restaurar los snapshots. M-7: reportar el
-            # resultado REAL — rollback_completed es False si el restore falló
-            # (o si no había snapshots que restaurar).
-            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
-            if tx_id is not None and (rolled_back or not target_files):
-                # Sin target_files no había nada que restaurar: la TX se marca
-                # abortada como siempre. Con snapshots restaurados, ídem.
+            # El lock solo restaura los archivos que existían al entrar; la
+            # limpieza de outputs nuevos/split también debe haber sido probada.
+            snapshot_restored = bool(tx_lock and tx_lock.rollback_completed)
+            rolled_back = (snapshot_restored and outputs_cleanup_completed) or (
+                mutation_started and not target_files and outputs_cleanup_completed and self._output_path is None
+            )
+            journal_recovery_proven = (
+                not mutation_started
+                or self._output_path is not None  # el clon aislado aún no se promueve
+                or rolled_back
+            )
+            if tx_id is not None and journal_recovery_proven:
                 await self._journal.mark_transaction_rolled_back(tx_id)
             elif tx_id is not None:
                 logger.critical(
@@ -590,14 +894,21 @@ class SynthesisPipelineService:
                 )
             logger.error("Pipeline Synthesis falló: %s", exc)
             _rc = getattr(exc, "return_code", None)
+            partial_outputs: tuple[pathlib.Path, ...] = ()
+            if self._output_path is not None:
+                try:
+                    partial_outputs = tuple(runner._discover_output_files_for_groups(settings_profile.group_names))
+                except (SynthesisExecutionError, SynthesisValidationError):
+                    partial_outputs = ()
             result = SynthesisResult(
                 success=False,
-                output_esp=target_esp if target_esp.exists() else None,
+                output_esp=None,
                 return_code=_rc if _rc is not None else -1,
                 stdout="",
                 stderr=str(exc),
                 patchers_executed=[],
                 errors=[str(exc)],
+                output_esps=partial_outputs,
             )
 
         except LockAcquisitionError as exc:
@@ -622,8 +933,16 @@ class SynthesisPipelineService:
             # dentro de __aexit__ (rollback_failures no vacío).
             # Note: asyncio.CancelledError is BaseException, not Exception —
             # it intentionally propagates through here uncaught.
-            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
-            if tx_id is not None and (rolled_back or not target_files):
+            snapshot_restored = bool(tx_lock and tx_lock.rollback_completed)
+            rolled_back = (snapshot_restored and outputs_cleanup_completed) or (
+                mutation_started and not target_files and outputs_cleanup_completed and self._output_path is None
+            )
+            journal_recovery_proven = (
+                not mutation_started
+                or self._output_path is not None  # el clon aislado aún no se promueve
+                or rolled_back
+            )
+            if tx_id is not None and journal_recovery_proven:
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
                 except Exception as rollback_exc:
@@ -639,6 +958,12 @@ class SynthesisPipelineService:
                     tx_id,
                 )
             logger.error("Unexpected exception in synthesis pipeline: %s", exc, exc_info=True)
+            partial_outputs: tuple[pathlib.Path, ...] = ()
+            if self._output_path is not None:
+                try:
+                    partial_outputs = tuple(runner._discover_output_files_for_groups(settings_profile.group_names))
+                except (SynthesisExecutionError, SynthesisValidationError):
+                    partial_outputs = ()
             result = SynthesisResult(
                 success=False,
                 output_esp=None,
@@ -647,6 +972,7 @@ class SynthesisPipelineService:
                 stderr=str(exc),
                 patchers_executed=[],
                 errors=[f"Unexpected error: {exc}"],
+                output_esps=partial_outputs,
             )
 
         duration = time.monotonic() - t0
@@ -753,6 +1079,7 @@ class SynthesisPipelineService:
         # Path → str para serialización
         if raw.get("output_esp") is not None:
             raw["output_esp"] = str(raw["output_esp"])
+        raw["output_esps"] = [str(path) for path in raw.get("output_esps", ())]
         if raw.get("success"):
             raw["message"] = ""
         else:
