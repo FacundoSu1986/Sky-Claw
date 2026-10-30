@@ -95,9 +95,8 @@ que Auto Parallax carga igual en todas las sesiones).
 ## 7. Qué sigue
 
 1. ~~**Salida fresca** del generador actual sobre las mismas 5 estaciones; repetir P1.~~ **Hecho el 30/10 (tarde): P1 se sostiene; ver la sección 8.**
-2. Confirmar la lectura del operador sobre la puerta y el techo (sección 8). Una comprobación barata para la banda de la puerta:
-   apagar las sombras de parallax de Community Shaders (estaban activas en la prueba) y ver si la banda desaparece. Si no desaparece,
-   deja de ser una explicación suficiente.
+2. ~~Confirmar la lectura del operador sobre la puerta y el techo apagando las sombras de parallax.~~ **Hecho el 30/10 (noche): la explican en parte
+   (47 % de la banda) y no recuperan el tinte del techo; ver la sección 9.** Queda abierta la causa del resto.
 3. Aislar la zona gris del portón con una sesión corta sin Auto Parallax.
 4. P2, solo si aparece una salida de ParallaxR en el rig; comparación **a ciegas** y sin usar sus valores para ajustar umbrales.
 5. Pasar al chequeo automático las dos diferencias teóricas frente al plugin (la difusa `x_d.dds` → `x_p.dds` y derivar `x_p.dds` de una
@@ -152,4 +151,31 @@ familia. No dice nada sobre texturas donde #794 sí importa (normales con `nz < 
   detectó y comprueba la ruta importada antes de correr. Conviene dejarlo documentado.
 - Después de la restauración, alguien abrió MO2 con el perfil normal y lanzó el juego. Cambió solo el nombre localizado de 6 entradas del
   `modlist.txt`; lo habilitado y el orden son los mismos y `plugins.txt` y `loadorder.txt` son idénticos byte a byte.
+
+## 9. Adenda 2 (30/10, noche): sombras de parallax y tanda ampliada (Meta 1)
+
+> Misma procedencia: lo redactó la sesión que corrió la prueba (informe propio, sección 12) y lo resume quien **no** reprodujo las mediciones.
+> Los criterios de cada parte se fijaron antes de mirar.
+
+**1. Sombras de parallax apagadas.** Se apagaron desde el menú de Community Shaders, sin guardar (la huella de `SettingsUser.json` no cambió).
+- **Banda de la puerta:** apagarlas recupera el **47 %** de su oscuridad. Es **parcial**: la banda no desaparece y queda unos 29 niveles más oscura que con un mapa plano.
+- **Tinte del techo:** **no** se recupera (medido con una cromaticidad que no depende del brillo). La hipótesis de las líneas rectas deformadas quedó **sin probar**.
+- Lectura: la explicación del operador (sección 8) acierta **en parte** para la puerta y **no** queda respaldada para el techo. Causa del resto: **NO VERIFICADA**.
+- El control de una de las estaciones de esa prueba no se cumplió (1 píxel de corrimiento vertical); se anotó y no afecta la medida.
+
+**2. Tanda ampliada**, una sola generación con el código actual, sin variar parámetros.
+- **12 de 12 estaciones superan la regla de 3 veces el ruido** (de 22,5× a 162,6×, mediana 94,6×). Son 8 de objetos de exterior (4 ciudades) y 4 de interior, de 5 familias; el testigo sin relieve se cumple.
+- Todo se midió en la **celda interior de prueba con luz fija**: «exterior» describe de dónde viene el objeto, no la iluminación.
+- Los 12 recortes con el relieve quedan **más oscuros** que con el mapa plano, entre un 2,7 % y un 24 %. Es una observación, sin causa verificada.
+
+**3. Exclusiones y hallazgos.**
+- **Dos texturas quedaron `NO_PROCESADA`**: sus normales son DXT5, que el decoder rechaza **a propósito** (DXT5nm guarda X en el alfa; ver `decode.py`). Es un hallazgo para el generador, no un fallo de la prueba.
+- Una tercera textura no tenía ninguna vista válida (ninguna malla la muestra de forma utilizable).
+- **`rottingwood01` se ve mal a ojo** (los tablones pasan a una superficie grumosa) aunque su acuerdo p95 (5,0°) es el más bajo de la tanda. **La métrica del gate no lo avisa.** Es un ejemplo concreto para la calibración de umbrales (#804): el acuerdo de normales solo no alcanza para decidir calidad. Es una observación de la sesión; falta que el operador lo mire.
+
+**4. Límites.** Un observador, una máquina, normales de un solo mod, celda interior con luz fija (sin clima, sol ni distancia normal), pares a ciegas nuevos **no** hechos. El método de recortes de esta tanda es
+**nuevo** respecto de la sección 4: se calibró con la prueba anterior (la primera calibración falló porque incluía el piso y se rehízo contra la región que cambia, sin usar nada de la tanda nueva).
+
+**Qué sigue de esta adenda.** El operador debe mirar `rottingwood01`. El soporte de DXT5/DXT5nm es trabajo de código aparte (distinguir DXT5nm de una normal RGB en BC3 no tiene precedente en el decoder). La causa de la banda restante, del ruido de una de las estaciones
+y de la zona gris del portón (sección 5) siguen abiertas.
 

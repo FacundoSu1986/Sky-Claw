@@ -126,9 +126,10 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    la versión que tenés instalada puede diferir.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
    contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
-   Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya, **sin medir**): una **banda oscura** en el borde
-   de una puerta (hipótesis no verificada: la sombra de profundidad del parallax; se puede comprobar apagando las sombras de parallax de Community Shaders) y un **tinte** (musgo) que se nota menos en
-   un techo (hipótesis no verificada: el tinte está pintado sobre líneas rectas y el desplazamiento las deforma). Si ves algo parecido, probá primero eso antes de pensar que la salida está mal.
+   Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya): una **banda oscura** en el borde
+   de una puerta y un **tinte** (musgo) que se nota menos en un techo. La prueba que siguió (reportada) apagó las sombras de parallax de Community Shaders desde su menú, sin guardar:
+   **explican solo en parte** la banda (recuperan el 47 % de su oscuridad, y sigue más oscura que con un mapa plano), y **no** recuperan el tinte del techo. La idea de que el tinte está
+   pintado sobre líneas rectas que el desplazamiento deforma quedó **sin probar**. Si ves algo parecido, apagar esas sombras es una comprobación útil pero **no concluyente**.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
    el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
@@ -160,10 +161,15 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
 - Lo que está probado en el juego (una persona, un equipo, **reportado**; ver `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`): un `*_p.dds` en BC4
-  lo usa el juego, y la salida del generador sobre **5 texturas** de una misma familia, en un interior con luz rasante y vista cercana, cambió lo que se ve frente a un mapa plano
-  (entre 87 y 573 veces el ruido; la regla era 3 veces). Es Community Shaders más Auto Parallax, con el post-proceso apagado.
-  **No** está probado en exteriores, con clima o a distancia normal, ni en otras familias de texturas ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no
-  que sea **bueno**. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+  lo usa el juego, y la salida del generador cambió lo que se ve frente a un mapa plano en **5 texturas** de una misma familia (entre 87 y 573 veces el ruido; la regla era 3 veces) y, en una
+  tanda ampliada con el código actual, en **12 estaciones de 5 familias** (8 de objetos de exterior de 4 ciudades y 4 de interior; entre 22,5 y 162,6 veces el ruido, mediana 94,6).
+  Todo se midió en una celda interior de prueba con luz fija y vista cercana, con Community Shaders más Auto Parallax y el post-proceso apagado, y con normales de un solo mod.
+  **No** está probado con clima, sol o a distancia normal de juego, ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no que sea **bueno**. A ojo, la sesión vio que
+  una textura (`rottingwood01`) pasa de tablones a una superficie grumosa, aunque su acuerdo p95 (5,0°) es el más bajo de la tanda: **la métrica del generador no avisa de ese defecto**, así que
+  mirá cada salida antes de dejarla activa. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- **Formatos de normal aceptados:** PNG y DDS sin comprimir, DXT1 (BC1), BC5 y BC7. **DXT5 (BC3) se rechaza a propósito**: las normales «DXT5nm» guardan X en el canal alfa, y leerlas como RGB
+  daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
+  un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
   pendiente (ver el issue de la auditoría), no como funcionalidad.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
