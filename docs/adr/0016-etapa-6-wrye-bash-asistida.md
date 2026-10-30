@@ -49,14 +49,24 @@ DAG) y §2.6 (reglas de Wrye Bash), U-06 (contrato de veredicto), T-27 / F8 USVF
 4. **Fail-closed.** `plugins.txt` ilegible, artefacto ilegible o artefacto que es un enlace **no**
    producen verde. "No lo pude leer" nunca es "está" — el mismo criterio que ya usa
    `etapas_previas_lods`, que es el consumidor aguas abajo.
-5. **La frescura solo se PRUEBA con testigo.** Con `huella_previa` (el `sha256` de la fase 1), un
-   artefacto idéntico es `SIN_CAMBIO`. Sin testigo, el veredicto puede ser verde pero declara
-   `frescura_probada=False`. **No se deduce un cambio por `mtime`**: es la comparación que el
-   contrato de LOOT (PR-2) rechazó explícitamente a favor del estado observable.
-6. **La fase 1 no escribe caja negra.** No muta nada, así que no toma locks, no snapshotea y no abre
+5. **La frescura solo se PRUEBA con testigo, y el testigo distingue ausencia de ignorancia.**
+   La fase 1 emite un `TestigoPrevio(existia, sha256)`, no un `sha256 | None`: *"lo miré y no
+   estaba"* (`existia=False`) es una prueba, *"no traje testigo"* (`None`) no lo es. Con testigo,
+   un artefacto idéntico es `SIN_CAMBIO`; uno que **no existía** prueba frescura por su sola
+   aparición — que es el escenario normal de la primera corrida. Un testigo malformado se
+   descarta (fail-closed) en vez de adivinar. **No se deduce un cambio por `mtime`**: es la
+   comparación que el contrato de LOOT (PR-2) rechazó a favor del estado observable.
+6. **El `plugins.txt` se lee como lo lee el consumidor aguas abajo.** Decodificación
+   `utf-8-sig` (la de `etapas_previas_lods._plugins_habilitados`) y sintaxis delegada en
+   `loot.outcome.parse_load_order_bytes`. Con BOM y sin esa tolerancia, un lector de bytes
+   reporta `AUSENTE` sobre un perfil válido mientras el guard de DynDOLOD lo ve habilitado:
+   dos consumidores del mismo archivo dando respuestas opuestas es el defecto que el repo ya
+   pagó en F1 de DynDOLOD («dos enumeraciones del mismo hecho que no se hablan»). Un test
+   parametrizado ata las dos lecturas.
+7. **La fase 1 no escribe caja negra.** No muta nada, así que no toma locks, no snapshotea y no abre
    TX. Esto resuelve por sustitución la deuda del «cortocircuito antes del preflight»: el camino que
    podía dejar una TX por ritual imposible deja de ser el camino de producción.
-7. **La fase 2 es read-only.** No requiere HITL ni lock: solo lee. La lectura del artefacto
+8. **La fase 2 es read-only.** No requiere HITL ni lock: solo lee. La lectura del artefacto
    (huella completa por chunks de 1 MiB) va a un hilo para no bloquear el event loop del daemon.
 
 ## 3. Por qué asistida y no retiro del dispatcher
@@ -141,7 +151,12 @@ producción: `dispatcher_dependencies.build_wrye_bash_pipeline`, `SupervisorAgen
 y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de a una:
 
 - **PR A (este):** contrato + servicio + tests. **Sin wiring.** No cambia comportamiento de
-  producción; 33 tests nuevos y las 17 anclas verdes.
+  producción; 64 tests nuevos (63 + 1 skip de junction) y las 17 anclas verdes.
+
+  `pendiente=True` viaja marcado `pendiente_no_ratificado=True` a propósito: `ToolStateMachine`
+  solo conoce `PENDING → RUNNING → COMPLETED/FAILED` y no hay consumidor de ese campo (verificado
+  por grep), así que hoy una etapa *asistida* se vería como *fallida*. El mapeo se decide y se
+  congela junto con el cableado; hasta entonces ningún consumidor debe tratarlo como contrato.
 - **PR B:** cablear **las tres** superficies en el mismo PR, con un ancla por AST que **enumera**
   las superficies del cableado (una cuarta, o una que vuelva a `execute_pipeline`, rompe el test).
   Requiere `fase` en `_VALID_BASHED_PATCH_KEYS` de la estrategia.
@@ -151,7 +166,24 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
 - **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
   que la frescura no dependa de que el caller transporte el `sha256`.
 
-## 8. Registro de adjudicación
+## 8. Revisión adversarial del propio PR (2026-10-30)
+
+El PR se revisó contra sí mismo antes de abrirse. Hallazgos **corregidos en el mismo commit**
+(no diferidos), porque dos de ellos hacían que el ADR prometiera garantías que el código no
+tenía — y un ancla que miente es peor que un bug:
+
+| # | Hallazgo | Corrección |
+|---|---|---|
+| F1 | El ancla de «no spawnea» **no detectaba `create_subprocess_exec`** — la llamada que esta misma sección nombra — ni `spawnv`, `execv`, `create_subprocess_shell`. La propiedad que saca al módulo de `LANZADORES_ESPERADOS` no estaba verificada. | Se enumera la superficie completa de spawn **y se agrega un control positivo**: 8 snippets que sí spawnearon deben ser detectados. Sin control positivo, vaciar la lista dejaba el ancla en verde. |
+| F2 | Con BOM UTF-8, mi lector decía `AUSENTE` y el hermano de la etapa 9 decía habilitado (falso ROJO con diagnóstico equivocado). | Decodificación `utf-8-sig` + test parametrizado (5 formas) con el hermano como oráculo de igualdad. |
+| F3 | 3 de las 8 reglas (`ARTEFACTO_ILEGIBLE`, `ARTEFACTO_NO_REGULAR`, `PLUGINS_ILEGIBLE`) no tenían test que las disparara; y el test llamado `plugins_ilegible` probaba un archivo **inexistente** (`AUSENTE`). La rama que §2.4 declara central no estaba probada. | Se prueban las tres con directorios (portable, seguro como root, funciona en Windows) y `Path.open` parcheado para el `OSError` de lectura. El test mal nombrado se renombró a lo que hace. |
+| F4 | `_MENSAJES` no estaba atado a `REGLAS_DEL_VEREDICTO`: un motivo nuevo sin mensaje explotaba con `KeyError` en producción con toda la suite verde. | Mapa total sobre `MotivoAsistido`, atado por igualdad, y `veredicto_como_resultado` parametrizado sobre los 10 motivos. |
+| F5 | En la **primera** corrida la frescura nunca era demostrable (`huella_previa=None`), justo el caso más importante. | `TestigoPrevio(existia, sha256)` con ausencia probada. |
+| F6 | `pendiente=True` sin consumidor: una etapa asistida se vería como fallida. | Se documenta como **no ratificado** hasta PR B. |
+| F7 | El test de `chmod 000` es un no-op como root y no corre en Windows (única plataforma de entrega). | Directorio en vez de `chmod`. |
+| F8 | Se citaba #835 (`modlist.txt`) para justificar la regla de duplicados en `plugins.txt`. | La regla se sostiene sola (semántica de activación del motor) y la cita se reemplazó por su fuente propia. |
+
+## 9. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el
   artefacto de la etapa 6 deja de ser requerido por la etapa 9.

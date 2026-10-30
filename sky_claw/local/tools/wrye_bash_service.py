@@ -44,6 +44,7 @@ from sky_claw.app.db.locks import (
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.output_targets import bashed_patch_target
 from sky_claw.local.tools.wrye_bash_asistida import (
+    TestigoPrevio,
     preparacion_como_resultado,
     preparar_etapa_asistida,
     veredicto_como_resultado,
@@ -77,6 +78,21 @@ BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
 #: ``profiles/<perfil>/plugins.txt``, así que un separador o ``..`` saldría del árbol de
 #: la instancia (ADR 0016, fase 2).
 _SEPARADORES_DE_PERFIL = ("/", "\\", ":", "..")
+
+
+def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoPrevio | None:
+    """Reconstruye el ``TestigoPrevio`` que viajó por el tool-result, o ``None``.
+
+    Falla cerrado: una forma inesperada (falta una clave, tipo equivocado) devuelve
+    ``None`` — el veredicto sigue siendo válido pero declara la frescura no probada, en
+    vez de inventar un testigo que después daría un ``SIN_CAMBIO`` falso.
+    """
+    if not isinstance(testigo_previo, dict):
+        return None
+    existia, sha256 = testigo_previo.get("existia"), testigo_previo.get("sha256")
+    if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
+        return None
+    return TestigoPrevio(existia=existia, sha256=sha256)
 
 
 def _perfil_es_usable(profile: str) -> bool:
@@ -463,15 +479,24 @@ class WryeBashPipelineService:
             logger.error("[FASE-6-asistida] Error inesperado preparando la etapa: %s", exc, exc_info=True)
             return {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)}
 
-    async def verificar_etapa_asistida(self, *, profile: str, huella_previa: str | None = None) -> dict[str, Any]:
+    async def verificar_etapa_asistida(
+        self,
+        *,
+        profile: str,
+        testigo_previo: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
         """Fase 2: veredicto por evidencia en disco, sin spawnear y sin timeout.
 
         La lectura del artefacto (huella completa por chunks) va a un hilo: un Bashed
         Patch de decenas de MB no puede bloquear el event loop del daemon.
 
-        ``huella_previa`` es el ``sha256`` que devolvió :meth:`preparar_etapa_asistida`.
-        Sin él el veredicto puede ser verde pero declara ``frescura_probada=False``: no
-        se inventa un cambio por ``mtime``. Con él, un archivo idéntico es ``SIN_CAMBIO``.
+        ``testigo_previo`` es el campo homónimo que devolvió :meth:`preparar_etapa_asistida`.
+        Sin él el veredicto puede ser verde pero declara ``frescura_probada=False``: no se
+        inventa un cambio por ``mtime``. Con él, un archivo idéntico es ``SIN_CAMBIO`` y
+        uno que no existía en la fase 1 prueba frescura por su sola aparición.
+
+        Un diccionario malformado se descarta (``None``) en vez de adivinar: peor que no
+        tener testigo es tener uno inventado.
         """
         try:
             if not _perfil_es_usable(profile):
@@ -499,7 +524,7 @@ class WryeBashPipelineService:
                 veredicto_etapa_asistida,
                 artefacto=artefacto,
                 plugins_txt=plugins_txt,
-                huella_previa=huella_previa,
+                testigo=_testigo_desde_resultado(testigo_previo),
             )
             return veredicto_como_resultado(veredicto)
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable

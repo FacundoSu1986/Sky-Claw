@@ -39,15 +39,18 @@ from __future__ import annotations
 
 import ast
 import pathlib
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.local.tools.wrye_bash_asistida import (
+    _MENSAJES,
     PASOS_ASISTIDOS,
     PRECEDENCIA_DE_MOTIVOS,
+    REGLAS_DEL_VEREDICTO,
     EstadoEnPlugins,
     MotivoAsistido,
+    TestigoPrevio,
     estado_en_plugins_txt,
     huella_de_artefacto,
     preparacion_como_resultado,
@@ -57,6 +60,7 @@ from sky_claw.local.tools.wrye_bash_asistida import (
 )
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+from sky_claw.local.validators.etapas_previas_lods import _plugins_habilitados
 from tests._symlink_guard import crear_junction, puede_crear_symlinks
 
 _SIN_SYMLINKS = pytest.mark.skipif(
@@ -187,21 +191,48 @@ def test_una_entrada_activa_y_otra_inactiva_cuenta_como_habilitada(tmp_path: pat
     assert estado_en_plugins_txt(plugins, BASHED_PATCH_NAME) is EstadoEnPlugins.HABILITADO
 
 
+@pytest.mark.parametrize(
+    "crudo",
+    [
+        pytest.param(b"\xef\xbb\xbf*" + BASHED_PATCH_NAME.encode() + b"\n", id="bom-utf8"),
+        pytest.param(b"*" + BASHED_PATCH_NAME.encode() + b"\r\n", id="crlf"),
+        pytest.param(b"# comentario\n\n*" + BASHED_PATCH_NAME.encode() + b"\n", id="comentarios"),
+        pytest.param(b"Skyrim.esm\n*" + BASHED_PATCH_NAME.encode() + b"\n", id="tras-otro-master"),
+        pytest.param(b"\xef\xbb\xbf*" + BASHED_PATCH_NAME.encode() + b"\r\n", id="bom-mas-crlf"),
+    ],
+)
+def test_el_lector_concuerda_con_el_consumidor_de_la_etapa_9(tmp_path: pathlib.Path, crudo: bytes) -> None:
+    """Mismo archivo, misma pregunta, misma respuesta que `etapas_previas_lods`.
+
+    El hermano es el oráculo: es quien habilita DynDOLOD. Si mi lector dice AUSENTE
+    donde el suyo dice habilitado, el operador recibe un rojo con el diagnóstico
+    equivocado —y lo habilita sin que el mensaje cambie—. El BOM es el caso medido:
+    `utf-8-sig` lo descarta, un lector de bytes ingenuo deja el nombre pegado al BOM.
+    """
+    _, plugins = _perfil_con_plugins(tmp_path, "")
+    plugins.write_bytes(crudo)
+
+    mio = estado_en_plugins_txt(plugins, BASHED_PATCH_NAME) is EstadoEnPlugins.HABILITADO
+    hermano = BASHED_PATCH_NAME.lower() in (_plugins_habilitados(plugins) or set())
+
+    assert mio is True
+    assert mio is hermano
+
+
 def test_plugins_inexistente_es_ausente_y_no_ilegible(tmp_path: pathlib.Path) -> None:
     assert estado_en_plugins_txt(tmp_path / "no.txt", BASHED_PATCH_NAME) is EstadoEnPlugins.AUSENTE
 
 
-@pytest.mark.skipif(__import__("os").name == "nt", reason="chmod no niega lectura en Windows")
 def test_plugins_ilegible_no_se_confunde_con_ausente(tmp_path: pathlib.Path) -> None:
-    """'No lo pude leer' nunca es 'está': fail-closed (misma regla que `etapas_previas_lods`)."""
-    import os
+    """'No lo pude leer' nunca es 'está': fail-closed (misma regla que `etapas_previas_lods`).
 
-    _, plugins = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
-    os.chmod(plugins, 0o000)
-    try:
-        assert estado_en_plugins_txt(plugins, BASHED_PATCH_NAME) is EstadoEnPlugins.ILEGIBLE
-    finally:
-        os.chmod(plugins, 0o600)
+    Con un directorio en vez de ``chmod 000``: ese truco es un no-op como root y no
+    existe en Windows, que es la única plataforma de entrega.
+    """
+    plugins = tmp_path / "plugins.txt"
+    plugins.mkdir()
+
+    assert estado_en_plugins_txt(plugins, BASHED_PATCH_NAME) is EstadoEnPlugins.ILEGIBLE
 
 
 # ==============================================================================
@@ -250,16 +281,87 @@ def test_veredicto_exige_habilitado_en_plugins(tmp_path: pathlib.Path) -> None:
     assert veredicto.motivo is MotivoAsistido.NO_HABILITADO
 
 
-def test_veredicto_con_plugins_ilegible_falla_cerrado(tmp_path: pathlib.Path) -> None:
+def test_veredicto_con_plugins_ausente_no_esta_habilitado(tmp_path: pathlib.Path) -> None:
+    """Renombrado: sin ``plugins.txt`` el estado es AUSENTE, no ILEGIBLE. El ilegible
+    de verdad se prueba abajo con un directorio (ver ``test_veredicto_plugins_ilegible``)."""
     artefacto = _parche(tmp_path / BASHED_PATCH_NAME)
 
     veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=tmp_path / "no-existe.txt")
 
     assert veredicto.success is False
     assert veredicto.motivo is MotivoAsistido.NO_HABILITADO
+    assert veredicto.estado_plugins is EstadoEnPlugins.AUSENTE
 
 
-def test_sin_huella_previa_el_veredicto_declara_que_la_frescura_no_se_probo(
+def test_veredicto_plugins_ilegible(tmp_path: pathlib.Path) -> None:
+    """Un directorio con el nombre ``plugins.txt`` no se puede leer: ILEGIBLE, no AUSENTE.
+
+    Cross-platform y seguro como root (``read_bytes`` sobre un directorio lanza
+    ``IsADirectoryError``, subclase de ``OSError``): el truco del ``chmod 000`` no
+    sirve —es un no-op para root y no existe en Windows—.
+    """
+    artefacto = _parche(tmp_path / BASHED_PATCH_NAME)
+    plugins = tmp_path / "plugins.txt"
+    plugins.mkdir()
+
+    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins)
+
+    assert veredicto.success is False
+    assert veredicto.motivo is MotivoAsistido.PLUGINS_ILEGIBLE
+    assert veredicto.estado_plugins is EstadoEnPlugins.ILEGIBLE
+
+
+def test_veredicto_artefacto_no_regular(tmp_path: pathlib.Path) -> None:
+    """El artefacto existe pero es un directorio: NO_REGULAR, nunca OK."""
+    artefacto = tmp_path / BASHED_PATCH_NAME
+    artefacto.mkdir()
+    _, plugins = _perfil_con_plugins(tmp_path / "b", f"*{BASHED_PATCH_NAME}\n")
+
+    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins)
+
+    assert veredicto.success is False
+    assert veredicto.motivo is MotivoAsistido.ARTEFACTO_NO_REGULAR
+
+
+def test_veredicto_artefacto_ilegible(tmp_path: pathlib.Path) -> None:
+    """``lstat`` funciona, la LECTURA falla: ILEGIBLE con ``sha256=None`` (fail-closed).
+
+    Es la única rama que no se puede provocar de forma portable sin fabricar el
+    ``OSError`` (un ``chmod`` no niega lectura a root ni existe en Windows), así que se
+    parchea ``Path.open`` — se prueba el MAPEO del error, que es lo que decide el
+    veredicto, no el mecanismo del filesystem.
+    """
+    artefacto = _parche(tmp_path / BASHED_PATCH_NAME)
+    _, plugins = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+
+    with patch("pathlib.Path.open", side_effect=PermissionError("denegado")):
+        veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins)
+
+    assert veredicto.success is False
+    assert veredicto.motivo is MotivoAsistido.ARTEFACTO_ILEGIBLE
+    assert veredicto.huella.sha256 is None
+    assert veredicto.huella.ilegible is True
+
+
+def test_primer_parche_ausencia_previa_prueba_frescura(tmp_path: pathlib.Path) -> None:
+    """El caso que más importa: no existía en la fase 1 y aparece después.
+
+    Con un ``sha256 | None`` esto era indistinguible de "no traje testigo", así que la
+    creación desde cero —el escenario normal de la primera corrida— era el único donde
+    la frescura no se podía demostrar.
+    """
+    artefacto, plugins = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    testigo = TestigoPrevio.desde(huella_de_artefacto(artefacto))
+    assert testigo.existia is False
+
+    _parche(artefacto)
+    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins, testigo=testigo)
+
+    assert veredicto.success is True
+    assert veredicto.frescura_probada is True
+
+
+def test_sin_testigo_el_veredicto_declara_que_la_frescura_no_se_probo(
     tmp_path: pathlib.Path,
 ) -> None:
     """Sin testigo previo no se puede afirmar que ESTA corrida lo generó."""
@@ -272,24 +374,24 @@ def test_sin_huella_previa_el_veredicto_declara_que_la_frescura_no_se_probo(
     assert veredicto.frescura_probada is False
 
 
-def test_con_huella_previa_distinta_la_frescura_queda_probada(tmp_path: pathlib.Path) -> None:
+def test_con_testigo_y_huella_distinta_la_frescura_queda_probada(tmp_path: pathlib.Path) -> None:
     artefacto, plugins = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
     _parche(artefacto)
-    previa = "0" * 64
+    testigo = TestigoPrevio(existia=True, sha256="0" * 64)
 
-    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins, huella_previa=previa)
+    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins, testigo=testigo)
 
     assert veredicto.success is True
     assert veredicto.frescura_probada is True
 
 
-def test_con_huella_previa_identica_el_veredicto_es_sin_cambio(tmp_path: pathlib.Path) -> None:
+def test_con_testigo_identico_el_veredicto_es_sin_cambio(tmp_path: pathlib.Path) -> None:
     """El operador no reconstruyó nada: el archivo es el de antes → no hay éxito nuevo."""
     artefacto, plugins = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
     _parche(artefacto)
-    previa = huella_de_artefacto(artefacto).sha256
+    testigo = TestigoPrevio.desde(huella_de_artefacto(artefacto))
 
-    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins, huella_previa=previa)
+    veredicto = veredicto_etapa_asistida(artefacto=artefacto, plugins_txt=plugins, testigo=testigo)
 
     assert veredicto.success is False
     assert veredicto.motivo is MotivoAsistido.SIN_CAMBIO
@@ -323,6 +425,39 @@ def test_el_vocabulario_de_motivos_esta_congelado() -> None:
     }
 
 
+def test_cada_regla_tiene_mensaje_y_no_sobra_ninguno() -> None:
+    """El mapa de mensajes es TOTAL sobre las reglas: un motivo nuevo sin mensaje
+    explotaría con KeyError dentro de `veredicto_como_resultado`, en producción."""
+    reglas = {motivo for motivo, _ in REGLAS_DEL_VEREDICTO}
+
+    assert set(_MENSAJES) == set(MotivoAsistido)
+    assert reglas.issubset(set(_MENSAJES))
+
+
+@pytest.mark.parametrize("motivo", list(MotivoAsistido))
+def test_veredicto_como_resultado_no_explota_con_ningun_motivo(motivo: MotivoAsistido) -> None:
+    """Enumera los 10 motivos: la primera versión solo ejercitaba 8 y dos de las
+    ramas de fallo no tenían test que las disparara."""
+    from sky_claw.local.tools.wrye_bash_asistida import HuellaDeArtefacto, VeredictoAsistido
+
+    veredicto = VeredictoAsistido(
+        success=motivo is MotivoAsistido.OK,
+        motivo=motivo,
+        artefacto="x",
+        huella=HuellaDeArtefacto("x", False, False, False, False, 0, None),
+        estado_plugins=EstadoEnPlugins.AUSENTE,
+        frescura_probada=False,
+    )
+
+    resultado = veredicto_como_resultado(veredicto)
+
+    assert resultado["motivo"] == motivo.value
+    if motivo is MotivoAsistido.OK:
+        assert resultado["message"] == ""
+    else:
+        assert resultado["message"]
+
+
 def test_la_precedencia_de_motivos_esta_congelada() -> None:
     """La PRIMERA causa aplicable gana; el orden es contrato, no detalle de implementación."""
     assert PRECEDENCIA_DE_MOTIVOS == (
@@ -352,8 +487,8 @@ def test_la_precedencia_se_aplica_cuando_coexisten_dos_defectos(tmp_path: pathli
     # no-habilitado gana sobre sin-cambio
     artefacto3, plugins3 = _perfil_con_plugins(tmp_path / "c", f"{BASHED_PATCH_NAME}\n")
     _parche(artefacto3)
-    previa = huella_de_artefacto(artefacto3).sha256
-    veredicto3 = veredicto_etapa_asistida(artefacto=artefacto3, plugins_txt=plugins3, huella_previa=previa)
+    testigo = TestigoPrevio.desde(huella_de_artefacto(artefacto3))
+    veredicto3 = veredicto_etapa_asistida(artefacto=artefacto3, plugins_txt=plugins3, testigo=testigo)
     assert veredicto3.motivo is MotivoAsistido.NO_HABILITADO
 
 
@@ -403,30 +538,103 @@ def test_el_veredicto_fallido_nombra_la_causa_en_espanol(tmp_path: pathlib.Path)
 # ==============================================================================
 
 
+#: Superficie COMPLETA de spawn de CPython. No es una muestra: si alguien escribe
+#: ``asyncio.create_subprocess_exec`` —justo lo que el ADR nombra— y el set no la tiene,
+#: el ancla pasa en verde sobre código que sí spawnearía. Ese fue el defecto de la primera
+#: versión de este test (revisión adversarial 2026-10-30): el set no incluía
+#: ``create_subprocess_exec`` y el detector no veía la llamada que la prosa prometía.
+_SPAWN_PROHIBIDO = frozenset(
+    {
+        # asyncio
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+        # subprocess
+        "Popen",
+        "run",
+        "call",
+        "check_call",
+        "check_output",
+        # os
+        "system",
+        "popen",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "posix_spawn",
+        "posix_spawnp",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "startfile",
+    }
+)
+
+
+def _spawns_en_codigo(codigo: str) -> list[str]:
+    """Detector del ancla: nombres de spawn importados o invocados en *codigo*."""
+    hallados: list[str] = []
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.Import):
+            # ``import os`` es legítimo (el módulo lo usa para ``lstat``); lo que no se
+            # tolera es traer el MÓDULO de subprocesos.
+            hallados.extend(n.name for n in nodo.names if n.name.split(".")[0] == "subprocess")
+        elif isinstance(nodo, ast.ImportFrom):
+            origen = (nodo.module or "").split(".")[0]
+            if origen == "subprocess":
+                hallados.append(nodo.module or "")
+            elif origen == "os":
+                # ``from os import system, spawnv, execv...`` sí es spawn.
+                hallados.extend(n.name for n in nodo.names if n.name in _SPAWN_PROHIBIDO)
+        elif isinstance(nodo, ast.Call):
+            f = nodo.func
+            nombre = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+            if nombre in _SPAWN_PROHIBIDO:
+                hallados.append(nombre)
+    return hallados
+
+
 def test_el_modulo_asistido_no_spawnea_procesos() -> None:
     """La etapa asistida no ejecuta nada: por eso no entra al censo de lanzadores.
 
     Si este ancla se rompe, `LANZADORES_ESPERADOS` (test_contrato_argumentos_cli.py)
     queda incompleto y la etapa 6 reabre la ambigüedad headless que ADR 0016 cierra.
     """
-    arbol = ast.parse(_MODULO.read_text(encoding="utf-8"))
-    nombres_prohibidos = {"subprocess", "Popen", "run", "call", "check_call", "check_output", "system", "popen"}
-    importaciones_subprocess: list[str] = []
-    llamadas_sospechosas: list[str] = []
+    hallados = _spawns_en_codigo(_MODULO.read_text(encoding="utf-8"))
 
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, (ast.Import, ast.ImportFrom)):
-            modulos = [n.name for n in nodo.names] if isinstance(nodo, ast.Import) else [nodo.module or ""]
-            importaciones_subprocess.extend(m for m in modulos if m.split(".")[0] == "subprocess")
-        if isinstance(nodo, ast.Call):
-            f = nodo.func
-            if isinstance(f, ast.Attribute) and f.attr in nombres_prohibidos:
-                llamadas_sospechosas.append(f.attr)
-            elif isinstance(f, ast.Name) and f.id in nombres_prohibidos:
-                llamadas_sospechosas.append(f.id)
+    assert not hallados, f"el módulo asistido no puede spawnear ni importar subprocess: {hallados}"
 
-    assert not importaciones_subprocess, f"el módulo asistido no puede importar subprocess: {importaciones_subprocess}"
-    assert not llamadas_sospechosas, f"el módulo asistido no puede spawnear: {llamadas_sospechosas}"
+
+@pytest.mark.parametrize(
+    "codigo",
+    [
+        "import asyncio\nasync def f(e):\n    return await asyncio.create_subprocess_exec(e)",
+        "import asyncio\nasync def f(e):\n    return await asyncio.create_subprocess_shell(e)",
+        "import os\nos.system('wrye')",
+        "import os\nos.spawnv(0, 'wrye', [])",
+        "import os\nos.execv('wrye', [])",
+        "import subprocess\nsubprocess.Popen(['wrye'])",
+        "from subprocess import run\nrun(['wrye'])",
+        "import subprocess\nsubprocess.check_output(['wrye'])",
+    ],
+)
+def test_el_detector_del_ancla_ve_las_formas_reales_de_spawn(codigo: str) -> None:
+    """CONTROL POSITIVO: sin esto, vaciar ``_SPAWN_PROHIBIDO`` dejaría el ancla en verde.
+
+    Un ancla que solo se prueba sobre el código que debe pasar no distingue "no hay
+    spawn" de "no lo estoy mirando". Cada caso acá es una forma que el módulo podría
+    usar mañana; el detector tiene que verlas todas.
+    """
+    assert _spawns_en_codigo(codigo), f"el detector no vio el spawn en: {codigo!r}"
 
 
 def test_los_pasos_nombran_la_herramienta_el_artefacto_y_mo2() -> None:
@@ -476,7 +684,11 @@ async def test_preparar_devuelve_instrucciones_y_huella_previa(tmp_path: pathlib
 
     assert resultado["success"] is False
     assert resultado["pendiente"] is True
-    assert resultado["huella_previa"] == huella_de_artefacto(artefacto).sha256
+    assert resultado["testigo_previo"] == {
+        "existia": True,
+        "sha256": huella_de_artefacto(artefacto).sha256,
+    }
+    assert resultado["pendiente_no_ratificado"] is True
     assert resultado["instrucciones"] == list(PASOS_ASISTIDOS)
 
 
@@ -489,10 +701,42 @@ async def test_preparar_corrige_la_huella_y_verificar_la_usa(tmp_path: pathlib.P
 
     preparacion = await servicio.preparar_etapa_asistida(profile="Default")
     _parche(artefacto, b"parche-nuevo-de-la-corrida")
-    veredicto = await servicio.verificar_etapa_asistida(profile="Default", huella_previa=preparacion["huella_previa"])
+    veredicto = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=preparacion["testigo_previo"])
 
     assert veredicto["success"] is True
     assert veredicto["frescura_probada"] is True
+
+
+@pytest.mark.asyncio
+async def test_primera_corrida_via_servicio_prueba_frescura(tmp_path: pathlib.Path) -> None:
+    """Sin Bashed Patch previo: preparar deja constancia de la ausencia y la
+    aparición posterior prueba que esta corrida lo escribió."""
+    artefacto, _ = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    preparacion = await servicio.preparar_etapa_asistida(profile="Default")
+    assert preparacion["testigo_previo"] == {"existia": False, "sha256": None}
+
+    _parche(artefacto)
+    veredicto = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=preparacion["testigo_previo"])
+
+    assert veredicto["success"] is True
+    assert veredicto["frescura_probada"] is True
+
+
+@pytest.mark.asyncio
+async def test_un_testigo_previo_malformado_se_descarta(tmp_path: pathlib.Path) -> None:
+    """Fail-closed: un testigo inventado daría un SIN_CAMBIO falso; mejor sin testigo."""
+    artefacto, _ = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    _parche(artefacto)
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    veredicto = await servicio.verificar_etapa_asistida(
+        profile="Default", testigo_previo={"existia": "sí", "sha256": 42}
+    )
+
+    assert veredicto["success"] is True
+    assert veredicto["frescura_probada"] is False
 
 
 @pytest.mark.asyncio

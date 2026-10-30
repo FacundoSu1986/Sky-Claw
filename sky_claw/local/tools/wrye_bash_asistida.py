@@ -43,6 +43,19 @@ declarada como no probada.
 **Límite de la detección de enlaces.** Es local y por ``lstat``, como
 ``artifact_digest``: best-effort ante mutación concurrente del filesystem, sin garantía
 TOCTOU-fuerte entre la inspección y la apertura.
+
+**Por qué este lector y no el de LOOT, y qué toma de cada uno.** El ``plugins.txt`` de un
+perfil MO2 lo escribe MO2 y lo lee el hermano de la etapa 9
+(``etapas_previas_lods._plugins_habilitados``) con ``utf-8-sig``: **con BOM de por medio**,
+un lector sin esa tolerancia dice ``AUSENTE`` donde el guard de DynDOLOD dice habilitado, y
+el operador recibe un rojo con el diagnóstico equivocado. Por eso la decodificación es
+``utf-8-sig`` (la del consumidor aguas abajo) y la SINTAXIS de líneas se delega en
+``loot.outcome.parse_load_order_bytes``, cuya semántica de activación (``*`` activa, ``#``
+comenta, ``\\r\\n``/``\\n`` indistintos) está verificada contra libloadorder. Lo que NO se
+hereda de LOOT es la regla de duplicados: acá alcanza con que UNA línea active el plugin
+—es la semántica de activación del motor, no la del editor de load order— y el caso queda
+anclado por test propio: no se apoya en el contrato del censo de prioridad de mods (#835), que
+es otro archivo, con otro consumidor y otra semántica de duplicados.
 """
 
 from __future__ import annotations
@@ -70,6 +83,11 @@ _CHUNK = 1024 * 1024
 #: ceguera que hubo que cerrar en el borrado recursivo (#404, #405) y en el conteo de
 #: artefactos de BodySlide (#433).
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+#: BOM UTF-8. ``read_text(encoding="utf-8-sig")`` lo descarta al decodificar; acá se
+#: descarta sobre los bytes para no perder el ``OSError`` de lectura ni mezclar dos
+#: estrategias (bytes para el parser, texto para el nombre).
+_BOM_UTF8 = b"\xef\xbb\xbf"
 
 
 class EstadoEnPlugins(enum.StrEnum):
@@ -123,12 +141,39 @@ class HuellaDeArtefacto:
 
 
 @dataclass(frozen=True, slots=True)
+class TestigoPrevio:
+    """Lo que la fase 1 observó del artefacto, transportado a la fase 2.
+
+    ``existia`` distingue los dos casos que un ``sha256 | None`` confunde: *"lo miré y
+    no estaba"* (``existia=False``) contra *"no te traje testigo"* (``None`` donde se
+    espera un ``TestigoPrevio``). La diferencia es real: en la PRIMERA corrida el
+    artefacto no existe, y su sola aparición posterior prueba que esta corrida lo
+    escribió. Sin esta distinción, el caso más importante —crear el parche desde
+    cero— era el único donde la frescura no se podía demostrar.
+    """
+
+    #: Nombre que empieza con "Test": sin esto pytest intenta recolectar la clase.
+    __test__ = False
+
+    existia: bool
+    sha256: str | None
+
+    @classmethod
+    def desde(cls, huella: HuellaDeArtefacto) -> TestigoPrevio:
+        """Solo un archivo regular y legible cuenta como "existía" con identidad."""
+        if huella.es_regular and not huella.ilegible and huella.sha256 is not None:
+            return cls(existia=True, sha256=huella.sha256)
+        return cls(existia=False, sha256=None)
+
+
+@dataclass(frozen=True, slots=True)
 class PreparacionAsistida:
     """Fase 1: lo que el operador necesita para construir, más el testigo previo."""
 
     artefacto: str
     plugins_txt: str
     huella_previa: HuellaDeArtefacto
+    testigo_previo: TestigoPrevio
     estado_plugins: EstadoEnPlugins
     instrucciones: tuple[str, ...]
 
@@ -200,10 +245,12 @@ def huella_de_artefacto(ruta: pathlib.Path) -> HuellaDeArtefacto:
 def estado_en_plugins_txt(plugins_txt: pathlib.Path, nombre: str) -> EstadoEnPlugins:
     """Estado de *nombre* en el ``plugins.txt`` del perfil.
 
-    Reusa :func:`sky_claw.local.loot.outcome.parse_load_order_bytes` —el parser cuya
-    semántica está verificada contra libloadorder (``*`` activa, ``#`` comenta,
-    ``\\r\\n``/``\\n`` indistintos)— en vez de escribir un segundo lector que pudiera
-    divergir del que ya usa el contrato de LOOT.
+    Decodifica con ``utf-8-sig`` (la misma que el consumidor aguas abajo,
+    ``etapas_previas_lods._plugins_habilitados``: con BOM, un lector sin esa tolerancia
+    reporta ``AUSENTE`` sobre un perfil válido) y delega la SINTAXIS en
+    :func:`sky_claw.local.loot.outcome.parse_load_order_bytes`, cuya semántica está
+    verificada contra libloadorder (``*`` activa, ``#`` comenta, ``\\r\\n``/``\\n``
+    indistintos), en vez de escribir un segundo parser que pudiera divergir.
 
     Si el archivo aparece más de una vez (el caso ``+X``/``-X`` duplicado de #835) gana
     ``HABILITADO``: alcanza con que UNA línea lo active para que el motor lo cargue.
@@ -215,6 +262,9 @@ def estado_en_plugins_txt(plugins_txt: pathlib.Path, nombre: str) -> EstadoEnPlu
     except OSError:
         return EstadoEnPlugins.ILEGIBLE
 
+    # utf-8-sig, como el consumidor aguas abajo: sin esto, un BOM al inicio deja el
+    # nombre de la primera línea pegado a él y el plugin se reporta AUSENTE.
+    data = data.removeprefix(_BOM_UTF8)
     objetivo = nombre.casefold()
     encontrado = False
     for entrada, activo in parse_load_order_bytes(data):
@@ -232,10 +282,16 @@ class _Observacion:
 
     huella: HuellaDeArtefacto
     estado_plugins: EstadoEnPlugins
-    huella_previa: str | None
+    testigo: TestigoPrevio | None
 
     def sin_cambio(self) -> bool:
-        return self.huella_previa is not None and self.huella.sha256 == self.huella_previa
+        return self.testigo is not None and self.testigo.existia and self.testigo.sha256 == self.huella.sha256
+
+    def frescura_demostrable(self) -> bool:
+        """Con testigo, un cambio (o una ausencia previa) prueba que ESTA corrida escribió."""
+        if self.testigo is None:
+            return False
+        return not self.testigo.existia or self.testigo.sha256 != self.huella.sha256
 
 
 def _ausente(o: _Observacion) -> bool:
@@ -289,7 +345,14 @@ REGLAS_DEL_VEREDICTO: tuple[tuple[MotivoAsistido, Callable[[_Observacion], bool]
 #: no puedan divergir (agregar una regla sin su motivo, o al revés, lo rompe).
 PRECEDENCIA_DE_MOTIVOS: tuple[MotivoAsistido, ...] = tuple(motivo for motivo, _ in REGLAS_DEL_VEREDICTO)
 
+#: Mensaje por motivo. Es TOTAL sobre ``MotivoAsistido`` y un test lo ata por igualdad
+#: a ``REGLAS_DEL_VEREDICTO``: un motivo nuevo sin mensaje explotaría con ``KeyError``
+#: en producción (``veredicto_como_resultado``) sin que ningún test lo viera.
 _MENSAJES: dict[MotivoAsistido, str] = {
+    MotivoAsistido.OK: "",
+    MotivoAsistido.ESPERANDO_OPERADOR: (
+        f"La etapa 6 está esperando que construyas '{BASHED_PATCH_NAME}' en la GUI de Wrye Bash."
+    ),
     MotivoAsistido.ARTEFACTO_AUSENTE: (
         f"No existe '{BASHED_PATCH_NAME}' en el Data del juego: la etapa 6 no se construyó."
     ),
@@ -317,10 +380,12 @@ def preparar_etapa_asistida(*, artefacto: pathlib.Path, plugins_txt: pathlib.Pat
     No muta nada, no toma locks, no abre TX. La huella previa es lo que después
     permite **probar** frescura; sin ella, la fase 2 solo puede declarar existencia.
     """
+    huella = huella_de_artefacto(artefacto)
     return PreparacionAsistida(
         artefacto=str(artefacto),
         plugins_txt=str(plugins_txt),
-        huella_previa=huella_de_artefacto(artefacto),
+        huella_previa=huella,
+        testigo_previo=TestigoPrevio.desde(huella),
         estado_plugins=estado_en_plugins_txt(plugins_txt, BASHED_PATCH_NAME),
         instrucciones=PASOS_ASISTIDOS,
     )
@@ -330,18 +395,19 @@ def veredicto_etapa_asistida(
     *,
     artefacto: pathlib.Path,
     plugins_txt: pathlib.Path,
-    huella_previa: str | None = None,
+    testigo: TestigoPrevio | None = None,
 ) -> VeredictoAsistido:
     """Fase 2: veredicto por evidencia en disco, en el orden de ``REGLAS_DEL_VEREDICTO``.
 
-    ``huella_previa`` (el ``sha256`` que devolvió la fase 1) es opcional: sin ella el
-    veredicto puede ser ``OK`` pero declara ``frescura_probada=False``. Con ella, un
-    archivo idéntico al de la preparación es ``SIN_CAMBIO`` — el operador no reconstruyó.
+    ``testigo`` (lo que devolvió la fase 1) es opcional: sin él el veredicto puede ser
+    ``OK`` pero declara ``frescura_probada=False``. Con él, un archivo idéntico al de la
+    preparación es ``SIN_CAMBIO`` — el operador no reconstruyó— y uno que **no existía**
+    en la fase 1 prueba frescura por su sola aparición.
     """
     observacion = _Observacion(
         huella=huella_de_artefacto(artefacto),
         estado_plugins=estado_en_plugins_txt(plugins_txt, BASHED_PATCH_NAME),
-        huella_previa=huella_previa,
+        testigo=testigo,
     )
     for motivo, aplica in REGLAS_DEL_VEREDICTO:
         if aplica(observacion):
@@ -359,7 +425,7 @@ def veredicto_etapa_asistida(
         artefacto=str(artefacto),
         huella=observacion.huella,
         estado_plugins=observacion.estado_plugins,
-        frescura_probada=huella_previa is not None,
+        frescura_probada=observacion.frescura_demostrable(),
     )
 
 
@@ -367,12 +433,20 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
     """Contrato canónico de tool-result (``success`` + ``message``) para la fase 1.
 
     ``success`` es ``False`` a propósito: preparar **no** construye nada, así que
-    declarar éxito sería el falso verde que la etapa 6 entera existe para cerrar. El
-    campo ``pendiente`` es el que distingue "esperando al operador" de "falló".
+    declarar éxito sería el falso verde que la etapa 6 entera existe para cerrar.
+
+    **``pendiente`` NO es un contrato ratificado todavía.** El dispatcher y
+    ``ToolStateMachine`` solo conocen ``PENDING → RUNNING → COMPLETED/FAILED``, y no hay
+    ningún consumidor de este campo en ``sky_claw/app/`` (verificado por grep): tal como
+    está, una etapa *asistida* se va a ver como una etapa *fallida*. El mapeo se decide y
+    se congela en el PR B de ADR 0016 §7, junto con el cableado de las tres superficies;
+    hasta entonces el campo viaja marcado con ``pendiente_no_ratificado=True`` para que
+    nadie lo consuma creyendo que el contrato está cerrado.
     """
     return {
         "success": False,
         "pendiente": True,
+        "pendiente_no_ratificado": True,
         "motivo": MotivoAsistido.ESPERANDO_OPERADOR.value,
         "message": (
             f"Etapa 6 (Bashed Patch) requiere tu intervención: construí '{BASHED_PATCH_NAME}' en la GUI "
@@ -380,7 +454,10 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
         ),
         "artefacto": preparacion.artefacto,
         "plugins_txt": preparacion.plugins_txt,
-        "huella_previa": preparacion.huella_previa.sha256,
+        "testigo_previo": {
+            "existia": preparacion.testigo_previo.existia,
+            "sha256": preparacion.testigo_previo.sha256,
+        },
         "estado_en_plugins": preparacion.estado_plugins.value,
         "instrucciones": list(preparacion.instrucciones),
     }

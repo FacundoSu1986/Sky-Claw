@@ -16,7 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sky_claw/local/tools/wrye_bash_asistida.py` define el contrato nuevo: **preparar**
   (instrucciones para el operador + huella previa + estado en `plugins.txt`, sin locks y
   sin TX porque no muta) y **verificar** (veredicto por evidencia en disco: artefacto
-  existente, regular —ni symlink ni junction—, no vacío y habilitado en el perfil).
+  existente, regular —ni symlink ni junction—, no vacío y habilitado en el perfil). La
+  fase 1 emite un `TestigoPrevio(existia, sha256)`: distingue "lo miré y no estaba" de
+  "no traje testigo", así que la primera corrida —crear el parche desde cero— sí puede
+  demostrar frescura. El `plugins.txt` se decodifica `utf-8-sig`, igual que el consumidor
+  de la etapa 9, porque con BOM un lector de bytes reporta `AUSENTE` sobre un perfil
+  válido mientras el guard de DynDOLOD lo ve habilitado.
   El veredicto **no se deriva de ningún exit code** —no hay subproceso que consultar—,
   falla cerrado ante `plugins.txt` ilegible y solo prueba frescura cuando el llamador
   trae la `huella_previa` (nunca por `mtime`). El módulo no spawnea: se mantiene fuera
