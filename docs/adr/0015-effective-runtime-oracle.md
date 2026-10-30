@@ -585,3 +585,176 @@ identificaron y corrigieron cuatro fronteras críticas:
       de contención basada en nombres cortos.
     - `registrar_runtime_clone_record` acepta `managed_source_root` opcional y lo transfiere a `admitir_clone_root_path`,
       proporcionando validación fail-fast al momento del registro.
+
+
+## 13. Extensión P5-C0 — Preflight de Integración Read-Only y Modelo de Recuperación para el Binder de MO2
+
+**Fecha:** 2026-10-30  
+**Contexto de origen:** Tracker #672 (Slice P5-C0: Binder Preflight & Recovery Model).  
+**Propósito:** Definir e implementar el preflight de integración 100% de solo lectura que audita
+las precondiciones verificables para conmutar Mod Organizer 2 (MO2) hacia un Runtime Clone
+independiente de Steam, estableciendo a su vez el diseño y modelo de recuperación transaccional
+para el futuro switch productivo (P5-C1).
+
+### 13.1 Principios del Preflight P5-C0
+
+1. **Garantía Read-Only Inviolable:**
+   El módulo `sky_claw/local/frozen_runtime/binder_preflight.py` no ejecuta escrituras ni
+   modificaciones sobre ninguna superficie de disco o proceso. Está blindado por pruebas
+   estáticas de AST (`test_preflight_es_estrictamente_read_only_por_ast`), garantizando que
+   no existan llamadas a `open("w")`, `write_text`, `os.replace`, `shutil.*`, `unlink`, etc.
+
+2. **Reutilización Estricta de Verificadores (Cero duplicación de oráculos):**
+   El preflight no implementa heurísticas paralelas. Orquesta los verificadores autorizados:
+   - Proveedor y Source: `discover_managed_source` (`discovery.py`).
+   - Admisión y Autoridad del Clone: `cargar_runtime_clone_record`, `admitir_clone_root_path`,
+     `verificar_runtime_clone` (`clones.py`).
+   - Linaje e Integridad de Generación: `verificar_generation` (`generations.py`).
+   - Aislamiento Físico: `verify_clone_physical_integrity` (`independence.py`).
+   - Compatibilidad de Binarios: `assess_runtime_compatibility` (`compatibility.py`).
+   - Concurrencia de Procesos: `probe_live_processes` (`processes.py`).
+   - Configuración de MO2: `leer_game_path_de_mo2`, `leer_ejecutables_de_mo2` (`mo2_ini.py`).
+   - Inspección de Enlaces: `_primer_reparse`, `_normalizar`, `_es_igual_o_hijo` (`oracle.py`).
+
+3. **Fail-Closed Ante Incertidumbre (`INDETERMINATE != PASS`, `UNKNOWN != COMPATIBLE`):**
+   Cualquier evidencia ausente, ilegible o ambigua genera un veredicto `BLOCKED` con
+   estado `FAIL` o `INDETERMINATE`. Solo un conjunto unánime de checks en `PASS` habilita
+   el veredicto consolidado `READY` (`is_ready = True`).
+
+### 13.2 Especificación de las 10 Comprobaciones del Preflight
+
+`evaluar_binder_preflight` ejecuta y consolida 10 comprobaciones obligatorias:
+
+1. **`PATH_SAFETY`:**
+   - Audita `mo2_instance_dir` y `storage_root` mediante `_primer_reparse` y `_contiene_alias_83`.
+   - Rechaza la presencia de junctions, symlinks o reparse points en la raíz o ancestros intermedios.
+   - Rechaza la presencia de componentes con patrón de nombres cortos de Windows 8.3 (`~1`).
+
+2. **`MANAGED_SOURCE`:**
+   - Resuelve y audita la Managed Source vía `discover_managed_source`.
+   - Exige `DiscoveryState.MANAGED_SOURCE_DETECTED` y proveedor Steam (`ManagedSourceProvider.STEAM`).
+   - Requiere presencia del manifiesto `appmanifest_489830.acf` con buildid válido y flags de no-update.
+
+3. **`CLONE_RECORD`:**
+   - Resuelve el `clone_id` (explícito o desde `active.json` vía `load_frozen_runtime_state`).
+   - Valida el identificador sintáctico mediante `validar_clone_id`.
+   - Carga el registro con `cargar_runtime_clone_record`, rechazando corrupciones o desalineaciones
+     de schema con `CLONE_RECORD_CORRUPT` o `CLONE_RECORD_SCHEMA_INVALID`.
+
+4. **`CLONE_LIFECYCLE`:**
+   - Exige que `record.lifecycle` sea estrictamente `RuntimeCloneLifecycle.PROVISIONED`.
+   - Exige que `record.admitted_role` sea `CANONICAL_ADMITTED_ROLE` (`runtime_clone`).
+
+5. **`GENERATION_INTEGRITY`:**
+   - Comprueba la existencia física de la Generation de origen (`state/generations/<id>.json`).
+   - Ejecuta `verificar_generation`: exige integridad estricta de árbol y metadatos (`VALID`).
+   - Rechaza si la generación ha sufrido deriva (`GENERATION_DRIFTED`).
+
+6. **`CLONE_PHYSICAL_INTEGRITY`:**
+   - Ejecuta `admitir_clone_root_path`: valida no-colisión con Steam, almacenamiento o source.
+   - Ejecuta `verificar_runtime_clone`: audita hashes SHA-256 de binarios críticos.
+   - Evalúa `verify_clone_physical_integrity`: exige `st_nlink == 1` en todos los archivos,
+     ausencia de symlinks internos y aislamiento completo de inodos respecto de Steam y la Generation.
+
+7. **`RUNTIME_COMPATIBILITY`:**
+   - Ejecuta `assess_runtime_compatibility` sobre el `clone_root`.
+   - Requiere `RuntimeCompatibility.COMPATIBLE` entre `SkyrimSE.exe` y `skse64_loader.exe` / DLLs.
+   - Si la versión es desconocida o incompatible (`UNKNOWN` / `INCOMPATIBLE`), rechaza el preflight.
+
+8. **`PROCESS_CONCURRENCY`:**
+   - Consulta `probe_live_processes` a través de los observadores inyectados.
+   - Si la tabla de procesos es inaccesible, rechaza fail-closed con `PROCESS_TABLE_UNREADABLE`.
+   - Si detecta `SkyrimSE.exe` o `skse64_loader.exe` en ejecución, rechaza con `LIVE_GAME_RUNNING`.
+   - Si detecta `ModOrganizer.exe` en ejecución, rechaza con `LIVE_MO2_RUNNING`.
+
+9. **`MO2_CONFIGURATION`:**
+   - Valida la existencia física de `modorganizer.ini`.
+   - Lee e interpreta `[General] gamePath` decodificando fielmente la estructura `@ByteArray(...)`
+     de Qt conforme al estándar de `QSettings` (`iniUnescapedByteArray`).
+   - Rechaza si `gamePath` está ausente o si su contenido está dañado/ilegible.
+
+10. **`CONFIG_COHERENCE`:**
+    - Evalúa la concordancia entre la Managed Source, `Config.skyrim_path` de Sky-Claw y el
+      `gamePath` configurado en MO2.
+    - Rechaza cualquier divergencia no reconciliada que indique inconsistencia multi-superficie.
+
+### 13.3 Diseño del Modelo de Recuperación Transaccional para P5-C1
+
+La conmutación futura de MO2 hacia el Runtime Clone (P5-C1) se diseña como una operación
+estrictamente recuperable y atómica, estructurada en 6 fases:
+
+```
+[Fase 1: Preflight] ---> [Fase 2: Lock Exclusivo] ---> [Fase 3: Snapshot Durable]
+        |                            |                              |
+        v                            v                              v
+  (BLOCKED: Stop)            (Timeout/Busy: Stop)           (Error: Abort sin mutar)
+                                                                    |
+[Fase 6: Rollback] <--- [Fase 5: Readback Oracle] <--- [Fase 4: Mutación Atómica Qt]
+        |                            |
+  (Restaura Snap)             (MATCH: Success)
+```
+
+1. **Fase 1 (Preflight Obligatorio):**
+   Invocación de `evaluar_binder_preflight`. Si `is_ready` no es `True`, la operación se
+   aborta de inmediato sin tocar el disco.
+
+2. **Fase 2 (Exclusión Mutua Durable):**
+   Adquisición del `FrozenRuntimeRootLock` (`acquire_frozen_runtime_root_lock`) sobre el
+   `storage_root` y adquisición de un lock específico sobre la instancia de MO2
+   (`mo2_instance_dir / ".mo2_switch.lock"`). Esto previene colisiones entre agentes concurrentes
+   o entre la GUI y el backend.
+
+3. **Fase 3 (Snapshot Durable de Respaldo):**
+   Antes de escribir un solo byte, se genera una copia de seguridad física de `modorganizer.ini`:
+   `modorganizer.ini.bak.<timestamp_ns>`.
+   Se verifica el tamaño y hash SHA-256 del snapshot contra el archivo original en memoria y disco.
+
+4. **Fase 4 (Mutación Atómica Respetando la Semántica de Qt):**
+   - No se utiliza reemplazo de texto ingenuo ni parsers estándar de Python `configparser`,
+     los cuales destruyen el orden de secciones, comentarios y claves duplicadas de MO2.
+   - Se serializa el nuevo `gamePath` respetando las reglas de `iniEscapedString` de Qt 5.15
+     (`qtbase/src/corelib/io/qsettings.cpp`): prefijo `@ByteArray(`, escape de caracteres no ASCII
+     y delimitación exacta de barras diagonales inversas (`\\`).
+   - Se escribe en un archivo temporal en el mismo volumen (`modorganizer.ini.tmp.<pid>`) con `flush`
+     y `os.fsync`.
+   - Se ejecuta el reemplazo atómico mediante `os.replace`.
+
+5. **Fase 5 (Readback Inmediato y Validación de Oráculo):**
+   - Relectura inmediata de `modorganizer.ini` con `leer_game_path_de_mo2`.
+   - Consulta al oráculo de Effective Runtime (`assess_effective_runtime`).
+   - El nuevo estado configurado debe coincidir bit a bit con el `clone_root` validado.
+
+6. **Fase 6 (Rollback Automático ante Discrepancias):**
+   - Si la relectura falla, si el oráculo no otorga `MATCH`, o si ocurre cualquier excepción
+     durante las Fases 4 o 5:
+     - Se ejecuta `os.replace(snapshot_path, original_ini_path)` atómicamente.
+     - Se fuerza `os.fsync` sobre el directorio.
+     - Se confirma la restauración del `gamePath` original.
+     - Se emite alerta tipada `Mo2SwitchRollbackExecutedError`.
+
+### 13.4 Análisis de Ventanas de Fallo, TOCTOU y Retención en Memoria
+
+1. **Retención en Memoria de Qt (In-Memory Retention Risk):**
+   Si `ModOrganizer.exe` se encuentra en ejecución mientras se modifica `modorganizer.ini`,
+   la clase `QSettings` retiene la configuración en la memoria del proceso. Cuando el usuario
+   cierra MO2, el proceso vuelca su estado en memoria sobre el disco, sobreescribiendo de
+   manera catastrófica cualquier cambio realizado externamente.
+   *Mitigación:* Comprobación fail-closed estricta en el preflight (`LIVE_MO2_RUNNING`) y
+   re-comprobación obligatoria bajo lock inmediatamente antes de la fase de escritura.
+
+2. **Ventana TOCTOU (Time-of-Check to Time-of-Use):**
+   Existe una ventana temporal entre la evaluación del preflight y la adquisición de locks o
+   escritura física en disco, durante la cual un usuario o proceso externo podría:
+   - Iniciar Skyrim o MO2.
+   - Modificar `modorganizer.ini`.
+   - Alterar los permisos o inodos del Clone.
+   *Mitigación:* Modelo de doble verificación. El preflight es el filtro de admisión previo;
+   en P5-C1, la secuencia de ejecución bajo lock repite la comprobación de procesos y re-inspecciona
+   el inodo del ini antes y después de `os.replace`.
+
+3. **Inconsistencia Multi-Superficie:**
+   MO2 soporta perfiles con ejecutables personalizados (`customExecutables`). Si `gamePath`
+   apunta al Clone pero un ejecutable en `customExecutables` apunta directamente al `SkyrimSE.exe`
+   de Steam, el usuario ejecutará la Managed Source vulnerable a parches.
+   *Mitigación:* El preflight audita `leer_ejecutables_de_mo2` y advierte o bloquea ante
+   binarios desalineados entre `gamePath` y los lanzadores configurados.
