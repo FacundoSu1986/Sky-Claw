@@ -72,7 +72,7 @@ primera comparación con datos reales del lector de mallas y de la regla de eleg
 - **Solo mallas con shader por defecto**, la ruta de activación de Auto Parallax. En mallas con relieve de fábrica A y B son iguales
   por construcción.
 - **5 de los 8 `_p` utilizables** se probaron. Del mod de salida, 5 de 15 son casi planos y 2 no los puede mostrar ninguna malla.
-- **Salida del 23/10**, no una generada con el código actual.
+- **Salida del 23/10** en las secciones 3 y 4. La adenda (sección 8) repite P1 con una salida generada con el código actual, con sus propios límites.
 
 ## 5. La zona gris del portón de Whiterun
 
@@ -94,9 +94,52 @@ que Auto Parallax carga igual en todas las sesiones).
 
 ## 7. Qué sigue
 
-1. **Salida fresca** del generador actual sobre las mismas 5 estaciones; repetir P1.
+1. ~~**Salida fresca** del generador actual sobre las mismas 5 estaciones; repetir P1.~~ **Hecho el 30/10 (tarde): P1 se sostiene; ver la sección 8.**
 2. Medir las dos anomalías (puerta y techo) y decidir si son del mapa o del entorno.
 3. Aislar la zona gris del portón con una sesión corta sin Auto Parallax.
 4. P2, solo si aparece una salida de ParallaxR en el rig; comparación **a ciegas** y sin usar sus valores para ajustar umbrales.
 5. Pasar al chequeo automático las dos diferencias teóricas frente al plugin (la difusa `x_d.dds` → `x_p.dds` y derivar `x_p.dds` de una
    normal sin sufijo): **no se ejercitaron con datos reales** (0 discrepancias).
+
+## 8. Adenda (30/10, tarde): P1 repetida con la salida fresca del código actual
+
+> Misma procedencia que el resto: lo redactó la sesión que corrió la prueba y lo resume quien **no** reprodujo las mediciones.
+
+**Por qué.** Las secciones 3 y 4 usaron la salida del 23/10, hecha con código anterior a #794 (integración ponderada por `nz`), #797 y
+#805. Se generó una salida con `origin/main` `70c5c5c3` y se repitieron las 5 estaciones.
+
+**Cómo se generó (reportado).** Las mismas 5 normales de entrada (su SHA-256 coincide con el del manifiesto del 23/10), mismos parámetros
+(`directx`, bordes periódicos, `min_max`) y el mismo `texconv`. La salida se escribió **fuera de MO2**; el mod de salida del operador no se
+tocó. **Sin `--incluir-revision` el generador no escribió nada**: las 5 quedaron `EN_REVISION` con motivo `SIN_UMBRALES`, porque todavía no
+hay un registro de umbrales validado contra un corpus real. Eso es el comportamiento fail-closed esperado, y **esta prueba no valida el gate**.
+
+**Fresca contra la del 23/10 (offline).** 0 de 5 idénticas en bytes, porque cambió el algoritmo (de `normal_fft_periodic_v1` a
+`normal_wls_nz_periodic_v1`). Aun así los mapas son casi iguales: correlación 0,9995 a 0,9999 y diferencia media de 0,4 a 1,2 niveles sobre 255.
+
+**En el juego (sesión B2: perfil A más el mod fresco).** Misma vara que antes (efecto ≥ 3 × ruido):
+
+| Estación | Efecto ÷ ruido con la fresca | Con la del 23/10 |
+|---|---|---|
+| S1 pared | 159× | 198× |
+| S2 mesa | 87× | 87× |
+| S3 puerta | 572× | 573× |
+| S4 techo | 165× | 165× |
+| S5 piso | 100× | 101× |
+
+El testigo sin relieve no cambió (0,019). Fresca y vieja no se distinguen en pantalla (diferencia de 0,5 a 1,0 contra efectos de 8 a 19).
+La única anomalía, en S1, se explicó por un corrimiento de cámara de unos 3 píxeles.
+
+**Los dos artefactos persisten con la salida fresca** (banda oscura en el borde de la puerta; pérdida del tinte verde del techo). Causa
+**NO VERIFICADA**. **El operador no los notó por su cuenta** al mirar el juego (dato del propio operador, 30/10): los señaló la sesión al comparar
+las capturas. Eso es información útil sobre su visibilidad, no una prueba de que no existan.
+
+**Conclusión.** P1 se sostiene con el código actual: el cambio de algoritmo (#794) no altera el resultado en estas 5 texturas.
+**Límites:** un solo observador, una sola sesión B2 (sin ciego nuevo), salida sin umbrales de gate validados y 5 texturas de una misma
+familia. No dice nada sobre texturas donde #794 sí importa (normales con `nz < 0`) ni sobre P2.
+
+**Hallazgos operativos.**
+- El entorno virtual del operador importa `sky_claw` del **checkout principal** (más viejo) si no se fuerza la ruta al worktree. La sesión lo
+  detectó y comprueba la ruta importada antes de correr. Conviene dejarlo documentado.
+- Después de la restauración, alguien abrió MO2 con el perfil normal y lanzó el juego. Cambió solo el nombre localizado de 6 entradas del
+  `modlist.txt`; lo habilitado y el orden son los mismos y `plugins.txt` y `loadorder.txt` son idénticos byte a byte.
+
