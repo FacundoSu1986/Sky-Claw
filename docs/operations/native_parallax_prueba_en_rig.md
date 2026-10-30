@@ -126,9 +126,9 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    la versión que tenés instalada puede diferir.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
    contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
-   Dos cosas que la prueba del 30/10 vio y que **no son un defecto de la salida** según la lectura del operador (observación suya, **sin medir**): una **banda oscura** en el borde
-   de una puerta (la sombra de profundidad del parallax; se puede comprobar apagando las sombras de parallax de Community Shaders) y un **tinte** (musgo) que se nota menos en
-   un techo (el tinte está pintado sobre líneas rectas y el desplazamiento las deforma). Si ves algo parecido, probá primero eso antes de pensar que la salida está mal.
+   Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya, **sin medir**): una **banda oscura** en el borde
+   de una puerta (hipótesis no verificada: la sombra de profundidad del parallax; se puede comprobar apagando las sombras de parallax de Community Shaders) y un **tinte** (musgo) que se nota menos en
+   un techo (hipótesis no verificada: el tinte está pintado sobre líneas rectas y el desplazamiento las deforma). Si ves algo parecido, probá primero eso antes de pensar que la salida está mal.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
    el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
@@ -161,7 +161,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
 - Lo que está probado en el juego (una persona, un equipo, **reportado**; ver `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`): un `*_p.dds` en BC4
   lo usa el juego, y la salida del generador sobre **5 texturas** de una misma familia, en un interior con luz rasante y vista cercana, cambió lo que se ve frente a un mapa plano
-  (entre 87 y 573 veces el ruido; la regla era 3 veces), también con el código actual. Es Community Shaders más Auto Parallax, con el post-proceso apagado.
+  (entre 87 y 573 veces el ruido; la regla era 3 veces). Es Community Shaders más Auto Parallax, con el post-proceso apagado.
   **No** está probado en exteriores, con clima o a distancia normal, ni en otras familias de texturas ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no
   que sea **bueno**. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
