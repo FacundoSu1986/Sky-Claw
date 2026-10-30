@@ -378,3 +378,210 @@ La misma vara para el resto de la superficie: `decode_qt_scalar` (lectura de
 exporta y se prueba pero **tampoco tiene consumidor productivo** en este
 slice. Se declara acá en vez de presentarse como cableada; su consumidor
 natural es el mismo P5-B que el de `config_skyrim_path`.
+
+
+## 12. P5-B: Autoridad durable de RuntimeCloneRecord y resolución auténtica de Desired Runtime
+
+**Fecha:** 2026-10-25
+**Estado:** Implementado (P5-B, Tracker #672).
+
+### 12.1 Ubicación durable y schema versionado
+
+1. **Ubicación canónica:** Cada registro de clone reside de forma durable en
+   `<storage_root>/state/clones/<clone_id>.json`. No se crea automáticamente
+   ninguna carpeta raíz `clones/` en el storage root: las rutas físicas de
+   ejecución de los clones son externas (gestionadas por MO2 o por el operador) y
+   se validan estrictamente mediante admisión.
+2. **Modelo de datos:** `RuntimeCloneRecord` incluye `schema_version` (v1),
+   `clone_id`, `source_generation_id`, `lifecycle` (`RuntimeCloneLifecycle`),
+   `intended_runtime_setup_id`, `verified_runtime_setup_id`, `root_path`,
+   `admitted_role="runtime_clone"` y `created_at_ns`.
+3. **Persistencia atómica y no-clobber:** La escritura utiliza `write_json_atomic`
+   bajo el lock de exclusión cross-process (`participant_lock` sobre `FrozenRuntimeRoot`),
+   impidiendo colisiones y corrupción ante abortos o carreras. Un registro preexistente
+   con distinta identidad o procedencia se rechaza con `RuntimeCloneCollisionError`.
+4. **active.json v2:** Se extiende el schema de `state/active.json` a versión 2
+   incorporando el par canónico `desired_generation_id` y `desired_clone_id`.
+
+### 12.2 Admisión física e invariantes de seguridad (`admitir_clone_root_path`)
+
+- **Ruta absoluta:** Requiere rutas normalizadas y absolutas.
+- **Sin reparse points:** Rechaza terminantemente enlaces simbólicos, junctions y
+  reparse points NTFS en la raíz del clone.
+- **Aislamiento de Managed Source:** Rechaza cualquier ruta contenida dentro de
+  un árbol administrado por Steam (`steamapps/common`).
+- **Aislamiento de Storage Root:** Prohíbe que el clone se ubique dentro de
+  `versions/` (SFR-19: una Generation nunca es runtime ejecutable), `candidates/`
+  o `state/`.
+
+### 12.3 FSM de Lifecycle y verificación de setups
+
+- Máquina de estados estricta: `CREATED` → `PROVISIONING` → `PROVISIONED` → `INVALID`.
+- Invariante de setup: La transición o registro en `PROVISIONED` exige de forma
+  invariable que `verified_runtime_setup_id` no sea nulo y coincida con
+  `intended_runtime_setup_id`.
+
+### 12.4 Integración auténtica con el Oráculo
+
+`desired_runtime_from_storage(root)` resuelve de forma auténtica el `DesiredRuntime`:
+- Lee `state/active.json`. Si `desired_clone_id` está ausente o corrupto, devuelve
+  `clone_root=None`.
+- Si `desired_clone_id` está presente, carga `state/clones/<clone_id>.json`.
+- Valida que `source_generation_id` coincida con la Generation deseada, que el rol sea
+  `runtime_clone`, que el ciclo de vida sea exactamente `PROVISIONED`, y que
+  `admitir_clone_root_path` apruebe la raíz física.
+- Si cualquier verificación falla, opera en modo **fail-closed** (`clone_root=None`),
+  garantizando que el oráculo mantenga el veredicto `UNKNOWN` (`NO_DESIRED_CLONE`) y
+  deniegue la activación.
+- Si todas las pruebas son satisfactorias y coinciden con la evidencia observada del
+  juego y de MO2, el oráculo puede emitir un veredicto `MATCH` con autoridad auténtica.
+
+### 12.5 Desacoplamiento del consumidor del Journal
+
+El callback `observador_effective` de `journal.reconciliar_journal` requiere un
+adaptador específico hacia `ObservacionEffective` (`generation_id`, `clone_id`,
+`effective_path`). Dado que `reconciliar_journal` pertenece a la maquinaria de
+transición/promoción de candidatos (P4/P6) y no debe activar operaciones mutantes
+sin una auditoría completa de su contrato, dicho cableado se mantiene diferido
+y documentado para el slice de integración correspondiente.
+
+### 12.6 Hallazgos de la Auditoría Adversarial y Blindaje P5-B
+
+Tras una revisión adversarial independiente sobre la autoridad durable, se
+identificaron y corrigieron cuatro fronteras críticas:
+
+1. **Frontera de autoridad del clon (Anti-falsificación):**
+   - Ni `registrar_runtime_clone_record` ni `desired_runtime_from_storage`
+     aceptan identificadores de Generation inexistentes; se valida la presencia
+     auténtica de `state/generations/<generation_id>.json`.
+   - Una mera declaración `lifecycle: PROVISIONED` en JSON no confiere autoridad
+     por sí misma: `desired_runtime_from_storage` ejecuta `verificar_runtime_clone`
+     de forma física antes de resolver `clone_root`. Ante cualquier discrepancia,
+     opera en fail-closed (`clone_root=None`), previniendo un falso `MATCH`.
+
+2. **Integridad de contenido en archivos críticos:**
+   - La comprobación superficial de tamaño (`st_size`) era insuficiente para
+     detectar reemplazos maliciosos o binarios corrompidos con idéntico byte-count.
+   - `verificar_runtime_clone` realiza el cálculo del digest SHA-256 en bloques de
+     64 KiB para todos los `critical_files`, contrastando contra `crit.digest`.
+
+3. **Contención física estricta:**
+   - `admitir_clone_root_path` prohíbe que el clone root coincida con el
+     `storage_root`, sea su ancestro, o se solape en cualquier dirección con la
+     raíz administrada (`managed_source_root`).
+
+4. **Distinción inquebrantable entre corrupción y ausencia:**
+   - Errores de schema o corrupción de JSON (`active.json` o registros de clone)
+     propagan excepciones tipadas (`StateCorruptError`, `StateSchemaError`,
+     `RuntimeCloneCorruptError`, `RuntimeCloneSchemaError`) y nunca se
+     degradan a un estado ausente limpio (`NO_DESIRED_CLONE`).
+
+5. **Vinculación estricta entre filename y clone_id:**
+   - Se prohíbe que el payload JSON redefina la identidad fijada por el namespace
+     durable. `_leer_record_de_ruta` valida obligatoriamente que
+     `record.clone_id == ruta.stem`; ante divergencia, lanza `RuntimeCloneCorruptError`.
+
+6. **Reparse points colgantes y coherencia del escritor:**
+   - `cargar_runtime_clone_record` elimina el guard ingenuo con `Path.exists()`, el
+     cual interpretaba symlinks o junctions colgantes como ausencia (`None`). La
+     inspección delega en `link_kind_or_raise` fallando cerrado con
+     `RuntimeCloneCorruptError` ante cualquier enlace roto o redirigido.
+   - `registrar_runtime_clone_record` valida exhaustivamente el contrato tipado
+     (`schema_version`, identificadores de setup sin traversal, `created_at_ns` no
+     negativo y consistencia de serialización) antes de adquirir locks o escribir en
+     disco, asegurando que el escritor jamás publique un registro que su propio
+     lector rechazaría.
+
+7. **Normalización canónica e idempotencia semántica del escritor:**
+   - `registrar_runtime_clone_record` normaliza canónicamente el registro (`casefold`
+     de `clone_id`, limpieza de espacios de borde en `intended_runtime_setup_id` y
+     `verified_runtime_setup_id`). El registro devuelto y persistido coincide
+     exactamente con la lectura posterior, garantizando idempotencia estricta en
+     llamadas consecutivas y evitando colisiones espurias en el namespace durable.
+
+8. **Validación de argumentos y blindaje de la FSM ante estados inválidos:**
+   - `actualizar_lifecycle_clone` valida de forma estricta `verified_runtime_setup_id`
+     con `validar_runtime_setup_id` en cualquier transición (incluyendo `-> INVALID`),
+     prohibiendo caracteres de escape o traversal (`..`, `/`, `\`). Asimismo,
+     rechaza explícitamente cualquier `verified_runtime_setup_id` no nulo en
+     transiciones hacia `PROVISIONING` o `CREATED`, e implementa validación
+     pre-escritura (`_clone_record_de_payload`) para garantizar que la FSM nunca
+     escriba un estado que el lector rechace.
+
+9. **Reserva exclusiva no-clobber y protección ante reparse points colgantes:**
+   - `registrar_runtime_clone_record` reemplaza la comprobación ingenua con
+     `destino.exists()` por una inspección estricta fail-closed vía
+     `_leer_record_de_ruta`. Cualquier enlace colgante o reparse point es
+     detectado y rechazado con `RuntimeCloneCorruptError`, impidiendo que
+     `os.replace()` clobberee el enlace. En caso de ausencia legítima, la creación
+     utiliza `reservar_ruta_json_exclusiva` (`O_CREAT | O_EXCL`) para garantizar
+     un único ganador a nivel de filesystem antes de la escritura atómica.
+
+10. **Aislamiento físico e inmunidad ante hardlinks / reparse points en clones (SFR-18, ADR 0012 §35.4/§35.11):**
+    - Se introduce `verify_clone_physical_integrity` en `independence.py` para auditar el namespace
+      completo del Runtime Clone antes de otorgar validez:
+      - Inspección de enlaces en la raíz y todos sus ancestros (`descripcion_de_enlace`).
+      - Recorrido recursivo fail-closed que prohíbe reparse points o symlinks dentro del árbol interno
+        del Clone (`PhysicalReparseError` -> veredicto `INVALID`).
+      - Exigencia estricta de `st_nlink == 1` en todo archivo regular: cualquier hardlink (sea en archivos
+        críticos como `SkyrimSE.exe` o auxiliares en subdirectorios) produce veredicto `INVALID`.
+      - Indexación `(st_dev, st_ino)` para asegurar que el Clone no comparta ningún objeto físico
+        con la Generation registrada ni con la Managed Source.
+      - Inobservabilidad física (volúmenes de red o sin reporte de inodo) degrada de forma segura
+        a `INDETERMINATE`, nunca a `VALID`.
+
+11. **Anti-evasión de contención Steam, canonicalización de ruta durable y linaje estricto:**
+    - `admitir_clone_root_path` rechaza componentes relativos (`..` y `.`) y evalúa la contención
+      de Steam (`steamapps`, `steamapps/common`) sobre la ruta física canónica y todos sus ancestros,
+      cerrando cualquier intento de evasión de contención por prefijos engañosos.
+    - `registrar_runtime_clone_record` persiste la ruta canónica admitida (`os.fspath(admitted_root)`),
+      eliminando cualquier disparidad entre el valor validado en memoria y el registro en disco.
+    - `leer_generation_metadata` valida que el `generation_id` dentro del payload coincida exactamente
+      con el identificador del namespace (`<id>.json`), lanzando `StateCorruptError` ante divergencia.
+      Asimismo, `verificar_runtime_clone` valida de forma explícita la simetría de linaje con la
+      Generation de origen antes de cualquier comprobación de identidad.
+    - `_save_frozen_runtime_state_locked` aplica validación estricta de schema (`schema_version in {1, 2}`
+      y tipo entero no booleano), fallando con `StateSchemaError` ante schemas no soportados y
+      garantizando que un estado v2 nunca sea degradado silenciosamente a v1 ante datos inválidos.
+
+12. **Obligatoriedad de Generation VALID como prerrequisito de autoridad del Clone (ADR 0012 §29.3, SFR-17):**
+    - `verificar_runtime_clone` exige que la Generation de origen sea evaluada exhaustivamente mediante
+      `verificar_generation` y que su estado sea estrictamente `VALID` (no meramente que su metadata exista
+      en disco). Si el árbol físico de la Generation bajo `versions/<generation_id>` es eliminado o sufre
+      deriva (DRIFTED), `verificar_runtime_clone` clasifica el Clone como `INVALID`, impidiendo que
+      `desired_runtime_from_storage` devuelva un `clone_root` y evitando que el oráculo otorgue `MATCH`
+      sobre una autoridad cuyo origen se encuentra comprometido.
+    - `admitir_clone_root_path` y `_leer_record_de_ruta` auditan exhaustivamente todos los ancestros
+      intermedios existentes mediante `descripcion_de_enlace`, bloqueando cualquier bypass de contención
+      o secuestro de namespace perpetrado a través de symlinks o junctions intermedios en la jerarquía.
+    - `verify_clone_physical_integrity` optimiza la validación de objetos compartidos contra la Managed Source
+      y la Generation evaluando las rutas correspondientes a los archivos del Clone (`O(N_clone)`), evitando
+      un recorrido recursivo exhaustivo de instalaciones masivas de Steam y garantizando la latencia requerida
+      sin bloquear el event loop.
+    - Se restringen las cláusulas `except` en el oráculo para atrapar únicamente excepciones tipadas del
+      dominio (`FrozenRuntimeError`) y errores de filesystem (`OSError`), evitando el enmascaramiento de
+      errores de programación.
+
+13. **Detección de invalidaciones concurrentes durante la evaluación y obligatoriedad de ciclo de vida PROVISIONED (ADR 0012 §29.3, SFR-17):**
+    - `verificar_runtime_clone` exige como primer paso que `record.lifecycle` sea estrictamente `RuntimeCloneLifecycle.PROVISIONED`.
+      Si el clone se encuentra en cualquier otro estado (`INVALID`, `CREATED`, `PROVISIONING`), la verificación devuelve de inmediato
+      `GenerationVerificationState.INVALID` fail-closed.
+    - `desired_runtime_from_storage` implementa una doble barrera de lectura consistente (snapshot consistency): tras completar
+      la verificación física del clone, ejecuta una re-lectura fresca del registro durable en disco (`leer_runtime_clone_record`)
+      validando que el clone mantenga intacto su estado `PROVISIONED`, linaje y ruta física. Si otro participante invalida o
+      modifica el clone concurrentemente durante el intervalo de evaluación, `desired_runtime_from_storage` descarta la autoridad
+      y devuelve `clone_root=None`, impidiendo que el oráculo otorgue un `MATCH` espurio sobre un clone desacreditado.
+    - **Ventana TOCTOU residual tras el retorno:** La garantía de snapshot consistency cubre estrictamente el intervalo
+      interno de evaluación de `desired_runtime_from_storage`. Las mutaciones o invalidaciones concurrentes que ocurran
+      *después* de que la función retorne `DesiredRuntime` escapan al alcance del oráculo de lectura (TOCTOU intrínseco a
+      cualquier lectura no bloqueante); los consumidores que requieran exclusión durable frente a mutaciones concurrentes
+      durante operaciones subsiguientes deben sostener explícitamente el `participant_lock` del FrozenRuntimeRoot.
+
+14. **Protección integral ante alias 8.3 de Windows y validación anticipada de Managed Source:**
+    - `admitir_clone_root_path` rechaza de inmediato cualquier componente léxico con patrón de alias corto de Windows 8.3 (`~\\d`).
+      Asimismo, en plataformas Windows resuelve el nombre largo canónico vía `GetLongPathNameW` / `os.path.realpath` y rechaza
+      fail-closed cualquier discrepancia entre la ruta léxica normalizada y el nombre largo canónico. La contención de Steamapps
+      y Storage se audita exhaustivamente sobre las rutas declaradas, resueltas y canónicas largas, impidiendo cualquier elusión
+      de contención basada en nombres cortos.
+    - `registrar_runtime_clone_record` acepta `managed_source_root` opcional y lo transfiere a `admitir_clone_root_path`,
+      proporcionando validación fail-fast al momento del registro.

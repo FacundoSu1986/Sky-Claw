@@ -42,6 +42,7 @@ from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace, exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.storage_models import FrozenRuntimeState, FrozenRuntimeStateLoadResult
 
+SCHEMA_VERSIONS_SOPORTADOS = frozenset({1, 2})
 SCHEMA_VERSION = 1
 STATE_FILE_NAME = "active.json"
 
@@ -53,33 +54,77 @@ def _parsear_estado(raw: str, *, source_label: str) -> FrozenRuntimeState:
         raise StateCorruptError(f"{source_label}: JSON malformado o truncado: {exc}") from exc
     if not isinstance(data, dict):
         raise StateCorruptError(f"{source_label}: el estado debe ser un objeto JSON")
-    # Presencia EXIGIDA de cada campo: `dict.get()` no distingue "clave
-    # ausente" de "null explícito", y un estado incompleto no es un arranque
-    # limpio (ocultaría un split desired/effective tras un crash).
-    for campo in ("schema_version", "desired_active_generation", "updated_at_ns"):
-        if campo not in data:
-            raise StateSchemaError(f"{source_label}: falta el campo obligatorio '{campo}'")
+
     schema = data.get("schema_version")
     if not isinstance(schema, int) or isinstance(schema, bool):
         raise StateSchemaError(f"{source_label}: schema_version debe ser int")
-    if schema != SCHEMA_VERSION:
+    if schema not in SCHEMA_VERSIONS_SOPORTADOS:
         raise StateSchemaError(
-            f"{source_label}: schema desconocido {schema}; soportado: {SCHEMA_VERSION} (fail-closed, "
+            f"{source_label}: schema desconocido {schema}; soportados: {sorted(SCHEMA_VERSIONS_SOPORTADOS)} (fail-closed, "
             "no se reinterpreta silenciosamente)"
         )
-    deseado = data.get("desired_active_generation")
-    if deseado is not None:
-        if not isinstance(deseado, str):
-            raise StateSchemaError(f"{source_label}: desired_active_generation debe ser string o null")
-        # Se PERSISTE el valor normalizado (casefold): un id con mayúsculas
-        # aceptado por la validación no debe quedar crudo en el estado, o los
-        # consumers lo compararían contra directorios/metadata ya normalizados
-        # y en un filesystem case-sensitive no resolvería.
-        deseado = validar_generation_id(deseado)
+
     actualizado = data.get("updated_at_ns")
     if not isinstance(actualizado, int) or isinstance(actualizado, bool) or actualizado < 0:
         raise StateSchemaError(f"{source_label}: updated_at_ns debe ser un int >= 0")
-    return FrozenRuntimeState(schema_version=schema, desired_active_generation=deseado, updated_at_ns=actualizado)
+
+    if schema == 1:
+        for campo in ("schema_version", "desired_active_generation", "updated_at_ns"):
+            if campo not in data:
+                raise StateSchemaError(f"{source_label}: falta el campo obligatorio '{campo}'")
+        if "desired_clone_id" in data:
+            raise StateSchemaError(
+                f"{source_label}: 'desired_clone_id' queda fuera del schema v1 (use schema v2; fail-closed)"
+            )
+        deseado = data.get("desired_active_generation")
+        if deseado is not None:
+            if not isinstance(deseado, str):
+                raise StateSchemaError(f"{source_label}: desired_active_generation debe ser string o null")
+            deseado = validar_generation_id(deseado)
+        return FrozenRuntimeState(
+            schema_version=1,
+            desired_active_generation=deseado,
+            updated_at_ns=actualizado,
+            desired_clone_id=None,
+        )
+
+    # Schema v2 (ADR 0012 §19a): el par desired_generation_id + desired_clone_id
+    for campo in ("schema_version", "desired_generation_id", "desired_clone_id", "updated_at_ns"):
+        if campo not in data:
+            raise StateSchemaError(f"{source_label}: falta el campo obligatorio '{campo}'")
+
+    if "desired_active_generation" in data:
+        raise StateSchemaError(
+            f"{source_label}: 'desired_active_generation' queda fuera del schema v2 (use 'desired_generation_id' y 'desired_clone_id')"
+        )
+
+    gen_id_raw = data.get("desired_generation_id")
+    clone_id_raw = data.get("desired_clone_id")
+
+    if (gen_id_raw is None) != (clone_id_raw is None):
+        raise StateSchemaError(
+            f"{source_label}: desired_generation_id y desired_clone_id deben ser ambos null o ambos no-null (fail-closed)"
+        )
+
+    deseado_gen: str | None = None
+    deseado_clone: str | None = None
+    if gen_id_raw is not None:
+        if not isinstance(gen_id_raw, str):
+            raise StateSchemaError(f"{source_label}: desired_generation_id debe ser string o null")
+        deseado_gen = validar_generation_id(gen_id_raw)
+
+        if not isinstance(clone_id_raw, str):
+            raise StateSchemaError(f"{source_label}: desired_clone_id debe ser string o null")
+        from sky_claw.local.frozen_runtime.clones import validar_clone_id
+
+        deseado_clone = validar_clone_id(clone_id_raw)
+
+    return FrozenRuntimeState(
+        schema_version=2,
+        desired_active_generation=deseado_gen,
+        updated_at_ns=actualizado,
+        desired_clone_id=deseado_clone,
+    )
 
 
 def load_frozen_runtime_state(path: pathlib.Path) -> FrozenRuntimeStateLoadResult:
@@ -142,11 +187,33 @@ def save_frozen_runtime_state(path: pathlib.Path, state: FrozenRuntimeState) -> 
 
 def _save_frozen_runtime_state_locked(ruta: pathlib.Path, state: FrozenRuntimeState) -> None:
     """Cuerpo de la escritura de estado, ya bajo el root lock (no re-adquiere)."""
-    payload = {
-        "schema_version": state.schema_version,
-        "desired_active_generation": state.desired_active_generation,
-        "updated_at_ns": state.updated_at_ns,
-    }
+    if not isinstance(state.schema_version, int) or isinstance(state.schema_version, bool):
+        raise StateSchemaError(f"schema_version debe ser int: {state.schema_version!r}")
+    if state.schema_version not in SCHEMA_VERSIONS_SOPORTADOS:
+        raise StateSchemaError(
+            f"schema_version no soportado {state.schema_version}; soportados: {sorted(SCHEMA_VERSIONS_SOPORTADOS)} "
+            "(fail-closed, no se degrada silenciosamente)"
+        )
+
+    if state.schema_version == 1 and state.desired_clone_id is not None:
+        raise StateSchemaError(
+            "schema_version 1 no admite desired_clone_id (use schema_version 2 para persistir la intención de clone; "
+            "fail-closed para evitar pérdida silenciosa de autoridad)"
+        )
+
+    if state.schema_version == 2:
+        payload = {
+            "schema_version": 2,
+            "desired_generation_id": state.desired_generation_id,
+            "desired_clone_id": state.desired_clone_id,
+            "updated_at_ns": state.updated_at_ns,
+        }
+    else:
+        payload = {
+            "schema_version": 1,
+            "desired_active_generation": state.desired_active_generation,
+            "updated_at_ns": state.updated_at_ns,
+        }
     _parsear_estado(json.dumps(payload), source_label=str(ruta))  # valida antes de escribir
     # Re-admisión del namespace justo antes de escribir: si `state/` (o un
     # ancestro) fue reemplazado por un enlace DESPUÉS del init, mkstemp/
