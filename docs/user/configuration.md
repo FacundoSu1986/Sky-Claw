@@ -51,11 +51,13 @@ deducir qué instaló Sky-Claw, así que se deja constancia del nombre exacto de
 directorio bajo `mods/`.
 
 Son **un registro, no un disparador**. Se leen al cargar la configuración y se migran
-desde el formato legacy, pero ninguna ruta de producción las usa para activar mods: la
-activación en `modlist.txt` la sigue haciendo el operador desde MO2. Los comentarios del
-código las describen como insumo de una activación automática; eso es intención de
-diseño, no comportamiento vigente. Escribirlas a mano no activa nada, y que falten no
-impide activar los mods manualmente.
+desde el formato legacy, pero ninguna ruta de producción las usa para activar mods. La
+activación en `modlist.txt` la hace la propia operación de instalación, en el momento de
+instalar y con los nombres que acaba de devolver el instalador, sobre el perfil de la
+sesión (ver [Community Shaders](community_shaders.md) y la
+[referencia de tools](../api/tools_ref.md)). Escribir estas claves a mano no activa
+nada, y que falten no impide ni deshace una activación: si hace falta, el operador puede
+habilitar los mods a mano en MO2.
 
 ## Secretos
 

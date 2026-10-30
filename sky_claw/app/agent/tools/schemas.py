@@ -261,6 +261,41 @@ class AnalyzeConflictsParams(pydantic.BaseModel):
 # registraba. Se eliminó junto con el resto de la familia.
 
 
+class DiagnosticarParallaxParams(pydantic.BaseModel):
+    """Parámetros de ``diagnosticar_parallax_perfil`` (NP-A0h).
+
+    El perfil NO es un parámetro: queda fijo durante la sesión (spec del PR #454), igual que en el resto de los tools que tocan un
+    perfil. ``extra="forbid"`` hace que un ``profile`` mandado por el modelo se rechace en vez de ignorarse en silencio.
+    """
+
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
+
+    mod: str = pydantic.Field(
+        min_length=1,
+        max_length=256,
+        pattern=_EXISTING_MOD_NAME_PATTERN,
+        description="Nombre de la carpeta del mod cuyas texturas *_n.dds mediría el generador nativo de parallax.",
+    )
+
+
+class EvaluarElegibilidadParallaxParams(pydantic.BaseModel):
+    """Parámetros de ``evaluar_parallax_elegibilidad`` (NP-A0k).
+
+    Igual que ``DiagnosticarParallaxParams``: el perfil NO es un parámetro (queda fijo durante la sesión) y tampoco el plazo de la
+    lectura, que fija la función compartida. ``extra="forbid"`` hace que un campo de más mandado por el modelo se rechace en vez de
+    ignorarse en silencio.
+    """
+
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
+
+    mod: str = pydantic.Field(
+        min_length=1,
+        max_length=256,
+        pattern=_EXISTING_MOD_NAME_PATTERN,
+        description="Nombre de la carpeta del mod cuyas texturas *_n.dds se evaluarían contra las mallas del perfil.",
+    )
+
+
 class ToggleModParams(pydantic.BaseModel):
     """Parameters for toggling a mod.
 

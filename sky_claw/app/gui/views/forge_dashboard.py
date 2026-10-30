@@ -28,6 +28,9 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_ritual_result_owned,
+    diagnostico_parallax_de,
+    limpiar_diagnostico_parallax,
+    lineas_del_diagnostico_parallax,
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
 )
@@ -394,6 +397,7 @@ def render_forge_dashboard(
         _refrescar_hitl_al_conectar()
         _ritual_feedback_panel()
         _ritual_preflight_panel()
+        _parallax_diagnostico_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;"
@@ -904,6 +908,46 @@ def _ritual_preflight_panel() -> None:
         x.on(
             "click",
             lambda _=None: (get_store().set(STORE_KEY_RITUAL_PREFLIGHT, None), _ritual_preflight_panel.refresh()),
+        )
+        with x:
+            ui.html("&times;")
+
+
+@ui.refreshable
+def _parallax_diagnostico_panel() -> None:
+    """Resultado del diagnóstico de parallax de ESTA pestaña, como panel descartable (NP-A0i, #817).
+
+    Se muestra solo mientras la pestaña tenga un diagnóstico vigente en su slot del store; el botón ``×`` limpia SOLO ese slot. El texto
+    (nombres de mods y rutas que eligió un tercero) se dibuja con ``ui.label``, que lo escapa: nunca como HTML.
+    """
+    entrada = diagnostico_parallax_de(get_store(), current_tab_id())
+    if not entrada:
+        return
+    lineas = lineas_del_diagnostico_parallax(entrada.get("resultado"))
+    wrap = (
+        "position:fixed; right:22px; top:84px; z-index:1000; width:min(560px, calc(100vw - 44px));"
+        "max-height:70vh; display:flex; align-items:flex-start; gap:8px;"
+    )
+    card = (
+        "flex:1; min-width:0; max-height:70vh; overflow:auto; padding:14px 16px; border-radius:10px;"
+        "background:rgba(14,12,9,.96); border:1px solid rgba(200,168,106,.35);"
+    )
+    with ui.element("div").style(wrap):
+        with ui.element("div").style(card):
+            ui.label(f"Diagnóstico de parallax · {entrada.get('mod', '')}").style(
+                "font-family:'Cinzel',serif; font-weight:700; font-size:13px; letter-spacing:.12em; color:#e7d6ad; margin-bottom:8px;"
+            )
+            for linea in lineas:
+                ui.label(linea).style("font-size:12.5px; line-height:1.5; color:#cfc5ad; word-break:break-word;")
+        x = ui.element("button").style(
+            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
+        )
+        x.on(
+            "click",
+            lambda _=None: (
+                limpiar_diagnostico_parallax(get_store(), current_tab_id()),
+                _parallax_diagnostico_panel.refresh(),
+            ),
         )
         with x:
             ui.html("&times;")
@@ -1532,7 +1576,12 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
         }
         for m in mods
     ]
-    build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"), initial_query=search_query)
+    build_mod_list(
+        mods=adapted,
+        on_toggle=callbacks.get("on_mod_toggle"),
+        initial_query=search_query,
+        on_diagnose=callbacks.get("on_mod_diagnose"),
+    )
 
 
 def _conflicts_screen(

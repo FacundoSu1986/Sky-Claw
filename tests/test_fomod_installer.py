@@ -520,6 +520,91 @@ class TestAddModToModlist:
 
         content = modlist.read_text(encoding="utf-8")
         assert content.count("ExistingMod") == 1
+        assert "+ExistingMod" in content
+
+    @pytest.mark.asyncio
+    async def test_add_disabled_mod_enables_in_place(self, sandbox: pathlib.Path) -> None:
+        """Una entrada `-Mod` debe convertirse a `+Mod` sin cambiar de posición."""
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        validator = PathValidator(roots=[sandbox])
+        mo2 = MO2Controller(sandbox, path_validator=validator)
+
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        modlist.write_text("+First\n-TargetMod\n+Last\n", encoding="utf-8")
+
+        await mo2.add_mod_to_modlist("TargetMod")
+
+        content = modlist.read_text(encoding="utf-8-sig")
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        assert lines == ["+First", "+TargetMod", "+Last"]
+        assert content.count("TargetMod") == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("antes", "despues"),
+        [
+            # Habilitada ARRIBA + deshabilitada abajo: se conserva la habilitada.
+            (["+X", "+Otra", "-X"], ["+X", "+Otra"]),
+            # Deshabilitada ARRIBA + habilitada abajo: se conserva la habilitada
+            # en SU posición. Flipear la de arriba movería la prioridad efectiva
+            # de un mod que ya estaba habilitado.
+            (["-X", "+Otra", "+X"], ["+Otra", "+X"]),
+            # Sin ninguna habilitada: se flipea la primera y se descartan las demás.
+            (["-X", "+Otra", "-X"], ["+X", "+Otra"]),
+            (["+A", "-X", "+B", "-X"], ["+A", "+X", "+B"]),
+        ],
+    )
+    async def test_add_mod_to_modlist_con_duplicados_deja_una_sola_habilitada(
+        self, sandbox: pathlib.Path, antes: list[str], despues: list[str]
+    ) -> None:
+        """Un `modlist.txt` con `X` repetido termina con UNA sola entrada `+X`.
+
+        `read_enabled_mods` no deduplica y `ganadores._exigir_enabled` falla
+        cerrado ante un nombre repetido: dejar dos `+X` convertiría un archivo
+        legible en uno que el diagnóstico de overlay rechaza.
+        """
+        from sky_claw.local.mo2.vfs import MO2Controller
+        from sky_claw.local.mo2.vfs_attestation import read_enabled_mods
+
+        validator = PathValidator(roots=[sandbox])
+        mo2 = MO2Controller(sandbox, path_validator=validator)
+
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        modlist.write_text("\n".join(antes) + "\n", encoding="utf-8")
+
+        await mo2.add_mod_to_modlist("X")
+
+        content = modlist.read_text(encoding="utf-8-sig")
+        assert [ln.strip() for ln in content.splitlines() if ln.strip()] == despues
+        assert "-X" not in content
+        habilitados = read_enabled_mods(modlist)
+        assert habilitados.count("X") == 1
+        assert len(set(habilitados)) == len(habilitados)
+
+    @pytest.mark.asyncio
+    async def test_add_mod_to_modlist_ya_habilitada_no_reescribe_el_archivo(self, sandbox: pathlib.Path) -> None:
+        """Con una única `+X` el camino es no-op: ni siquiera se toca el archivo."""
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        validator = PathValidator(roots=[sandbox])
+        mo2 = MO2Controller(sandbox, path_validator=validator)
+
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        # CRLF sin BOM: cualquier reescritura (que normaliza a `\n` y agrega BOM)
+        # cambiaría los bytes.
+        original = b"+A\r\n+X\r\n-B\r\n"
+        modlist.write_bytes(original)
+
+        await mo2.add_mod_to_modlist("X")
+
+        assert modlist.read_bytes() == original
 
     @pytest.mark.asyncio
     async def test_add_to_empty_modlist(self, sandbox: pathlib.Path) -> None:

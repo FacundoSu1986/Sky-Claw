@@ -56,20 +56,22 @@ Queda terminantemente prohibido procesar o exponer a través de estos workflows:
 La siguiente sección auditable delimita los modelos exactos aprobados exclusivamente para datos públicos de Sky-Claw:
 
 <!-- approved-models:start -->
-* `openrouter/nvidia/nemotron-3-super-120b-a12b:free`
-  * Proveedor / Familia: NVIDIA (Nemotron-3 Super 120B) vía OpenRouter
-  * Fecha de revisión: 2026-08-29
-  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
-  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
-  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
-
 * `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`
   * Proveedor / Familia: NVIDIA (Nemotron-3 Ultra 550B) vía OpenRouter
   * Fecha de revisión: 2026-08-29
   * Alcance de aprobación: `PUBLIC_DATA_ONLY`
   * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
   * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
+
+* `openrouter/nvidia/nemotron-3.5-lightning:free`
+  * Proveedor / Familia: NVIDIA (Nemotron-3.5 Lightning) vía OpenRouter
+  * Fecha de revisión: 2026-10-29
+  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
+  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
+  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
 <!-- approved-models:end -->
+
+<!-- 2026-10-29: RETIRADO del allowlist el slug openrouter/nvidia/nemotron-3-super-120b-a12b:free. Dejó de existir en OpenRouter (404 "This model is unavailable for free"), por lo que causaba fallo permanente en el modelo primario antes de activar fallback. Tras el cambio ningún workflow lo referencia. Este comentario vive FUERA del bloque approved-models a propósito: el ancla test_modelos_configurados_coinciden_con_allowlist_de_politica parsea ese bloque con una regex, y citar el slug retirado adentro lo volvería a contar como aprobado. -->
 
 <!-- 2026-10-04: RETIRADO del allowlist el slug openrouter/minimax/minimax-m3:free. Dejo de existir en OpenRouter (404 "This model is unavailable for free"), por lo que quedaba como modelo muerto y como fallback invalido. Tras el cambio ningun workflow lo referencia. Este comentario vive FUERA del bloque approved-models a proposito: el ancla test_modelos_configurados_coinciden_con_allowlist_de_politica parsea ese bloque con una regex, y citar el slug retirado adentro lo volveria a contar como aprobado. -->
 

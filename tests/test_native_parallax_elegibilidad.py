@@ -1,0 +1,936 @@
+"""NP-A0j (parte 2): ``EFECTO_POSIBLE`` por textura — ¿hay alguna malla del perfil donde el plugin de relieve use lo que el generador publica?
+
+El generador publica ``x_p.dds`` para cada ``x_n.dds`` de un mod. En la prueba en el rig, 3 de 4 texturas estaban en mallas con relieve de
+fábrica, que Auto Parallax apaga: la salida existía y no se veía. Este módulo lo dice de antemano, con la misma resolución del perfil que
+el resto del diagnóstico (``cargar_perfil``: quién gana cada ruta) y la regla del plugin (``assets/auto_parallax_regla.py``).
+
+Qué se verifica, sobre un disco real (``tmp_path``) con NIFs sintéticos (``tests/_nif_sintetico.py``):
+
+- ``SI`` solo con una forma elegible que, siguiendo la búsqueda del plugin (altura → difuso → normal), terminaría usando esa salida;
+- ``NO`` solo si TODAS las formas que la referencian quedan fuera por una razón que se nombra, y nada de lo leído quedó incompleto;
+- ``NO_VERIFICADO`` en todo lo demás: ninguna malla suelta la referencia (podría estar en un ``.bsa``, que no se lee), la búsqueda depende de
+  un archivo que no se puede comprobar, o alguna malla no se pudo leer por completo. Lo no observado no se da por ausente;
+- que la malla que cuenta es la que GANA en el overlay (una de menor prioridad tapada por otro mod no existe para el juego).
+"""
+
+from __future__ import annotations
+
+import ast
+import dataclasses
+import pathlib
+from dataclasses import dataclass
+
+import pytest
+
+from sky_claw.local.native_parallax import elegibilidad, provider
+from sky_claw.local.native_parallax.diagnostico_perfil import PerfilError
+from sky_claw.local.native_parallax.elegibilidad import (
+    ALCANCE_DE_LA_ELEGIBILIDAD,
+    MAXIMO_DE_MALLAS_POR_TEXTURA,
+    PLAZO_DE_LAS_SUPERFICIES,
+    EfectoPosible,
+    ElegibilidadDeTextura,
+    InformeDeElegibilidad,
+    elegibilidad_como_resultado,
+    evaluar_elegibilidad,
+)
+from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
+from tests._nif_sintetico import (
+    Bloque,
+    bloque_alfa,
+    bloque_forma_bs,
+    bloque_juego_de_texturas,
+    bloque_nodo,
+    bloque_shader_de_efecto,
+    bloque_shader_de_iluminacion,
+    construir_nif,
+)
+
+_CARPETA = "textures/architecture/whiterun"
+_N1 = f"{_CARPETA}/muro01_n.dds"
+_P1 = f"{_CARPETA}/muro01_p.dds"
+_N2 = f"{_CARPETA}/muro02_n.dds"
+_P2 = f"{_CARPETA}/muro02_p.dds"
+_D1 = "textures\\architecture\\whiterun\\muro01.dds"
+_NN1 = "textures\\architecture\\whiterun\\muro01_n.dds"
+_D2 = "textures\\architecture\\whiterun\\muro02.dds"
+_NN2 = "textures\\architecture\\whiterun\\muro02_n.dds"
+_MOD = "Texturas"
+_MALLAS = "Mallas"
+_RUTA_MALLA = "meshes/architecture/whiterun/muro.nif"
+_VC = 1 << 5
+
+
+def _nif(
+    *,
+    difuso: str = _D1,
+    normal: str = _NN1,
+    altura: str = "",
+    tipo_de_shader: int = 0,
+    flags_1: int = 0,
+    flags_2: int = _VC,
+    alfa: bool = False,
+    efecto: bool = False,
+) -> bytes:
+    bloques = [bloque_nodo(hijos=(1,))]
+    if efecto:
+        bloques += [bloque_forma_bs(nombre=-1, shader=2), bloque_shader_de_efecto()]
+    else:
+        bloques += [
+            bloque_forma_bs(nombre=-1, shader=2, alfa=4 if alfa else -1),
+            bloque_shader_de_iluminacion(
+                tipo_de_shader=tipo_de_shader, flags_1=flags_1, flags_2=flags_2, juego_de_texturas=3
+            ),
+            bloque_juego_de_texturas((difuso, normal, "", altura)),
+        ]
+        if alfa:
+            bloques.append(bloque_alfa(flags=0, umbral=0))
+    return construir_nif(bloques)
+
+
+@dataclass
+class Mundo:
+    raiz: pathlib.Path
+
+    @property
+    def mods(self) -> pathlib.Path:
+        return self.raiz / "mods"
+
+    @property
+    def data(self) -> pathlib.Path:
+        return self.raiz / "data"
+
+    def archivo(self, mod: str, ruta: str, contenido: bytes = b"x") -> None:
+        destino = self.mods / mod / ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(contenido + mod.encode())
+
+    def malla(self, contenido: bytes, *, mod: str = _MALLAS, ruta: str = _RUTA_MALLA) -> None:
+        destino = self.mods / mod / ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(contenido)
+
+    def modlist(self, *lineas: str, perfil: str = "Default") -> None:
+        """``lineas`` en el orden de MO2: la primera es la de MAYOR prioridad."""
+        ruta = self.data / "profiles" / perfil / "modlist.txt"
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        ruta.write_text("# generado\n" + "\n".join(lineas) + "\n", encoding="utf-8")
+
+    def evaluar(self, **kw: object) -> InformeDeElegibilidad:
+        return evaluar_elegibilidad(mods_dir=self.mods, data_root=self.data, perfil="Default", mod=_MOD, **kw)  # type: ignore[arg-type]
+
+    def por_ruta(self, informe: InformeDeElegibilidad) -> dict[str, ElegibilidadDeTextura]:
+        return {t.ruta_de_salida: t for t in informe.texturas}
+
+
+@pytest.fixture
+def mundo(tmp_path: pathlib.Path) -> Mundo:
+    m = Mundo(tmp_path)
+    m.archivo(_MOD, _N1)
+    m.archivo(NOMBRE_DEL_MOD_DE_SALIDA, "textures/.vacio")
+    (m.mods / _MALLAS).mkdir(parents=True)  # el mod de mallas está habilitado aunque todavía no tenga ninguna
+    m.data.mkdir()
+    m.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+    return m
+
+
+# --- SI ------------------------------------------------------------------------------------------------------------------
+
+
+def test_una_forma_elegible_que_usaria_la_salida_da_si_y_nombra_la_malla(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    informe = mundo.evaluar()
+
+    (textura,) = informe.texturas
+    assert textura.ruta_de_salida == _P1
+    assert textura.efecto is EfectoPosible.SI
+    assert textura.mallas == (f"{_RUTA_MALLA} [{_MALLAS}]",)
+
+
+def test_el_informe_resume_el_perfil_el_mod_y_la_lectura(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    informe = mundo.evaluar()
+
+    assert informe.perfil == "Default"
+    assert informe.mod == _MOD
+    assert informe.n_habilitados == 3
+    assert informe.n_mallas_leidas == 1
+    assert informe.mallas_no_leidas == ()
+    assert informe.alcance == ALCANCE_DE_LA_ELEGIBILIDAD
+
+
+def test_las_mayusculas_y_las_barras_de_la_ruta_del_nif_no_cambian_el_resultado(mundo: Mundo) -> None:
+    mundo.malla(
+        _nif(
+            difuso="Textures\\Architecture\\Whiterun\\Muro01.dds",
+            normal="Textures\\Architecture\\Whiterun\\Muro01_n.dds",
+        )
+    )
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_una_sola_forma_elegible_alcanza_aunque_otras_formas_de_otras_mallas_no_lo_sean(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/a.nif")
+    mundo.malla(_nif(alfa=True), ruta="meshes/b.nif")
+    mundo.malla(_nif(), ruta="meshes/c.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+    assert textura.mallas == (f"meshes/c.nif [{_MALLAS}]",)
+
+
+def test_el_si_concuerda_el_numero_de_mallas_en_singular_y_en_plural(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/a.nif")
+    (uno,) = mundo.evaluar().texturas
+    mundo.malla(_nif(), ruta="meshes/b.nif")
+    (dos,) = mundo.evaluar().texturas
+
+    assert uno.razon.startswith("1 malla donde")
+    assert uno.n_mallas == 1
+    assert dos.razon.startswith("2 mallas donde")
+    assert dos.n_mallas == 2
+
+
+def test_las_mallas_nombradas_estan_acotadas_pero_el_conteo_es_el_real(mundo: Mundo) -> None:
+    for i in range(MAXIMO_DE_MALLAS_POR_TEXTURA + 3):
+        mundo.malla(_nif(), ruta=f"meshes/m{i:02d}.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert len(textura.mallas) == MAXIMO_DE_MALLAS_POR_TEXTURA
+    assert textura.n_mallas == MAXIMO_DE_MALLAS_POR_TEXTURA + 3
+
+
+def test_dos_texturas_del_mismo_mod_se_evaluan_cada_una_por_su_cuenta(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, _N2)
+    mundo.malla(_nif())  # solo muro01 tiene malla elegible
+    mundo.malla(_nif(difuso=_D2, normal=_NN2, tipo_de_shader=3), ruta="meshes/otra.nif")
+
+    efectos = {ruta: t.efecto for ruta, t in mundo.por_ruta(mundo.evaluar()).items()}
+
+    assert efectos == {_P1: EfectoPosible.SI, _P2: EfectoPosible.NO}
+
+
+# --- NO: todas las formas que la referencian quedan fuera ---------------------------------------------------------------
+
+
+def test_una_malla_con_relieve_de_fabrica_da_no_y_lo_explica(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "relieve de fábrica" in textura.razon
+    assert textura.mallas == ()
+    assert textura.n_mallas == 0
+    assert "otra textura" not in textura.razon
+    assert textura.razon.startswith("ninguna de las 1 forma que la referencian")
+
+
+@pytest.mark.parametrize(
+    ("kw", "texto"),
+    [
+        ({"alfa": True}, "transparencia"),
+        ({"flags_2": 0}, "colores de vértice"),
+        ({"flags_1": 1 << 23}, "Projected_UV"),
+        ({"flags_1": 1 << 1}, "Skinned"),
+        ({"flags_2": _VC | (1 << 2)}, "LOD_Objects"),
+        ({"flags_2": _VC | (1 << 29)}, "Tree_Anim"),
+        ({"flags_2": _VC | (1 << 10)}, "Vertex_Lighting"),
+        ({"tipo_de_shader": 1}, "otro tipo de shader"),
+    ],
+)
+def test_cada_exclusion_da_no_y_nombra_su_motivo(mundo: Mundo, kw: dict[str, object], texto: str) -> None:
+    mundo.malla(_nif(**kw))  # type: ignore[arg-type]
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+    assert texto in textura.razon
+
+
+def test_una_forma_con_shader_de_efecto_no_aporta_rutas_de_textura_y_no_cuenta_como_referencia(mundo: Mundo) -> None:
+    mundo.malla(_nif(efecto=True))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert ".bsa" in textura.razon
+
+
+def test_el_no_cuenta_cuantas_formas_hay_de_cada_motivo(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/a.nif")
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/b.nif")
+    mundo.malla(_nif(alfa=True), ruta="meshes/c.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.razon.startswith("ninguna de las 3 formas que la referencian")
+    assert "relieve de fábrica (el plugin lo apaga): 2" in textura.razon
+    assert "con transparencia (NiAlphaProperty): 1" in textura.razon
+
+
+# --- NO_VERIFICADO: lo que no se puede afirmar -----------------------------------------------------------------------------
+
+
+def test_sin_ninguna_malla_suelta_que_la_referencie_es_no_verificado_porque_podria_estar_en_un_bsa(
+    mundo: Mundo,
+) -> None:
+    mundo.malla(_nif(difuso="textures\\otra\\cosa.dds", normal="textures\\otra\\cosa_n.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert ".bsa" in textura.razon
+
+
+def test_sin_ninguna_malla_en_el_perfil_todo_es_no_verificado(mundo: Mundo) -> None:
+    informe = mundo.evaluar()
+
+    assert informe.n_mallas_leidas == 0
+    assert [t.efecto for t in informe.texturas] == [EfectoPosible.NO_VERIFICADO]
+
+
+def test_una_ranura_de_altura_que_no_esta_suelta_hace_no_verificable_la_busqueda(mundo: Mundo) -> None:
+    mundo.malla(_nif(altura="textures\\architecture\\whiterun\\alto.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert "no se puede comprobar" in textura.razon
+
+
+def test_un_difuso_con_otro_nombre_cuyo_p_no_esta_suelto_hace_no_verificable_la_busqueda(mundo: Mundo) -> None:
+    mundo.malla(_nif(difuso="textures\\architecture\\whiterun\\otro.dds", normal=_NN1))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_una_ruta_cuyo_resultado_depende_de_las_mayusculas_es_no_verificada(mundo: Mundo) -> None:
+    mundo.malla(_nif(difuso="", normal="textures\\architecture\\whiterun\\muro01_N.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_la_ambiguedad_de_un_candidato_posterior_no_invalida_un_candidato_firme_que_ya_decide(mundo: Mundo) -> None:
+    """El difuso deriva a la salida de forma inequívoca y el plugin devuelve en cuanto encuentra: la normal ambigua que viene después no cuenta."""
+    mundo.malla(_nif(difuso=_D1, normal="textures\\architecture\\whiterun\\muro01_N.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_una_malla_ilegible_baja_un_no_a_no_verificado_y_se_nombra(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/a.nif")
+    mundo.malla(b"esto no es un nif", ruta="meshes/rota.nif")
+
+    informe = mundo.evaluar()
+
+    (textura,) = informe.texturas
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert "no se pudieron leer" in textura.razon
+    assert informe.mallas_no_leidas == (f"meshes/rota.nif [{_MALLAS}]",)
+    assert informe.n_mallas_leidas == 1
+
+
+def test_una_malla_ilegible_no_cambia_un_si(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/a.nif")
+    mundo.malla(b"roto", ruta="meshes/rota.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_una_malla_con_geometria_que_el_lector_no_sabe_abrir_cuenta_como_no_leida_por_completo(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/a.nif")
+    mundo.malla(construir_nif([Bloque("NiParticleSystem", b"\x00" * 16)]), ruta="meshes/particulas.nif")
+
+    informe = mundo.evaluar()
+
+    assert informe.texturas[0].efecto is EfectoPosible.NO_VERIFICADO
+    assert informe.mallas_no_leidas == (f"meshes/particulas.nif [{_MALLAS}]",)
+
+
+# --- Precedencia de la búsqueda --------------------------------------------------------------------------------------------
+
+
+def test_si_la_ranura_de_altura_existe_suelta_el_plugin_usa_esa_y_no_la_nuestra(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, f"{_CARPETA}/alto.dds")
+    mundo.malla(_nif(altura="textures\\architecture\\whiterun\\alto.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "el plugin usaría otra textura antes que esta: 1" in textura.razon
+
+
+def test_si_el_p_derivado_del_difuso_existe_suelto_el_plugin_usa_ese(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, f"{_CARPETA}/otro_p.dds")
+    mundo.malla(_nif(difuso="textures\\architecture\\whiterun\\otro.dds", normal=_NN1))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "otra textura" in textura.razon
+
+
+# --- Qué malla cuenta --------------------------------------------------------------------------------------------------------
+
+
+def test_cuenta_la_malla_que_gana_en_el_overlay_y_no_la_que_otro_mod_tapa(mundo: Mundo) -> None:
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", "+Parche", f"+{_MALLAS}", f"+{_MOD}")
+    mundo.malla(_nif(), mod=_MALLAS)  # elegible, pero el parche la reemplaza por una con relieve de fábrica
+    mundo.malla(_nif(tipo_de_shader=3), mod="Parche")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+
+
+def test_una_malla_de_un_mod_deshabilitado_no_existe_para_el_juego(mundo: Mundo) -> None:
+    mundo.malla(_nif(), mod="Apagado")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_el_reconocimiento_de_mallas_es_solo_de_archivos_nif(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/a.txt")
+
+    informe = mundo.evaluar()
+
+    assert informe.n_mallas_leidas == 0
+
+
+# --- Falla cerrado ---------------------------------------------------------------------------------------------------------------
+
+
+def test_una_ruta_de_textura_del_nif_que_se_sale_del_arbol_no_rompe_y_deja_la_busqueda_sin_verificar(
+    mundo: Mundo,
+) -> None:
+    mundo.malla(_nif(altura="textures\\..\\fuera.dds"))
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_una_normal_del_mod_que_no_se_pudo_leer_hace_fallar_la_evaluacion_en_vez_de_omitirla(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lo que no se pudo leer no se puede dar por «sin efecto»: la enumeración incompleta falla cerrado, como en el diagnóstico."""
+    real = provider.huella_acotada
+
+    def huella(ruta: pathlib.Path, tamano: int) -> str:
+        if ruta.name == "muro01_n.dds":
+            raise PermissionError("bloqueado por el antivirus")
+        return real(ruta, tamano)
+
+    monkeypatch.setattr(provider, "huella_acotada", huella)
+
+    with pytest.raises(PerfilError, match="incompleta"):
+        mundo.evaluar()
+
+
+def test_el_mod_ausente_del_perfil_falla_con_perfil_error(mundo: Mundo) -> None:
+    with pytest.raises(PerfilError, match="no está habilitado"):
+        evaluar_elegibilidad(mods_dir=mundo.mods, data_root=mundo.data, perfil="Default", mod="Fantasma")
+
+
+def test_mas_mallas_que_el_tope_falla_en_vez_de_evaluar_a_medias(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/a.nif")
+    mundo.malla(_nif(), ruta="meshes/b.nif")
+
+    with pytest.raises(PerfilError, match="mallas"):
+        mundo.evaluar(maximo_de_mallas=1)
+
+
+def test_un_mod_sin_normales_falla_igual_que_el_diagnostico(mundo: Mundo) -> None:
+    (mundo.mods / _MOD / _N1).unlink()
+
+    with pytest.raises(PerfilError, match="ningún"):
+        mundo.evaluar()
+
+
+# --- Forma del informe y anclas --------------------------------------------------------------------------------------------------
+
+
+def test_el_informe_y_cada_textura_son_inmutables(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    informe = mundo.evaluar()
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        informe.mod = "otro"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        informe.texturas[0].efecto = EfectoPosible.NO  # type: ignore[misc]
+    assert isinstance(informe.texturas, tuple)
+
+
+def test_el_vocabulario_de_efectos_esta_cerrado() -> None:
+    assert {e.name: e.value for e in EfectoPosible} == {"SI": "SI", "NO": "NO", "NO_VERIFICADO": "NO_VERIFICADO"}
+
+
+def test_el_alcance_declara_lo_que_el_nif_no_muestra() -> None:
+    for frase in ("Static", "bAutoEnableParallax", ".bsa", "no prueba"):
+        assert frase in ALCANCE_DE_LA_ELEGIBILIDAD
+
+
+def test_el_modulo_no_lee_ni_escribe_archivos_ni_arrastra_la_cli() -> None:
+    texto = pathlib.Path(elegibilidad.__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(texto)
+    nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(arbol) if isinstance(n, ast.Attribute)
+    }
+    importados = {n.module or "" for n in ast.walk(arbol) if isinstance(n, ast.ImportFrom)}
+
+    assert not nombres & {
+        "open",
+        "write_bytes",
+        "write_text",
+        "read_bytes",
+        "scandir",
+        "iterdir",
+        "walk",
+        "glob",
+        "rglob",
+    }
+    assert not any(m.endswith((".cli", ".lote", ".export")) for m in importados)
+
+
+def _llamadores_de(nombre: str) -> set[str]:
+    """Módulos de ``sky_claw/`` que llaman (por nombre simple o atributo) a *nombre*."""
+    raiz = pathlib.Path(__file__).resolve().parent.parent
+    encontrados: set[str] = set()
+    for archivo in (raiz / "sky_claw").rglob("*.py"):
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            if isinstance(nodo, ast.Call):
+                f = nodo.func
+                llamado = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+                if llamado == nombre:
+                    encontrados.add(archivo.relative_to(raiz).as_posix())
+    return encontrados
+
+
+def test_los_consumidores_de_la_elegibilidad_estan_congelados() -> None:
+    """``evaluar_elegibilidad`` la llaman la línea de comandos y ``elegibilidad_como_resultado`` (la respuesta compartida de las dos
+    superficies de tool). Un llamador nuevo rompe esto hasta que se lo declare acá; las superficies de tool que usan la respuesta
+    compartida están congeladas en ``tests/test_parallax_superficies_invariant.py``."""
+    assert _llamadores_de("evaluar_elegibilidad") == {
+        "sky_claw/local/native_parallax/cli.py",
+        "sky_claw/local/native_parallax/elegibilidad.py",
+    }
+
+
+def test_el_indice_de_mallas_lo_arma_solo_la_pieza_que_ya_es_dueña_del_resolutor() -> None:
+    assert _llamadores_de("cargar_mallas_del_perfil") == {"sky_claw/local/native_parallax/elegibilidad.py"}
+    assert _llamadores_de("indexar_ganadores") == {"sky_claw/local/native_parallax/diagnostico_perfil.py"}
+
+
+def test_la_lectura_de_archivos_de_nif_vive_solo_en_el_lector_y_la_usa_solo_la_elegibilidad() -> None:
+    assert _llamadores_de("leer_materiales_de_archivo") == {"sky_claw/local/native_parallax/elegibilidad.py"}
+
+
+# --- Revisión de Codex en #820 -----------------------------------------------------------------------------------------------
+
+
+def test_una_referencia_sin_la_carpeta_textures_que_podria_ser_la_salida_deja_la_textura_sin_verificar(
+    mundo: Mundo,
+) -> None:
+    """Una forma elegible que nombra la textura SIN ``textures\\`` podría ser la misma para el motor: no se la descarta, y otra malla con
+    relieve de fábrica no alcanza para afirmar ``NO``."""
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/de_fabrica.nif")
+    mundo.malla(
+        _nif(difuso="architecture\\whiterun\\muro01.dds", normal="architecture\\whiterun\\muro01_n.dds"),
+        ruta="meshes/sin_carpeta.nif",
+    )
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO_VERIFICADO
+    assert "sin la carpeta textures" in textura.razon
+
+
+def test_una_referencia_sin_carpeta_no_le_quita_un_si_a_otra_malla(mundo: Mundo) -> None:
+    mundo.malla(_nif(), ruta="meshes/firme.nif")
+    mundo.malla(
+        _nif(difuso="architecture\\whiterun\\muro01.dds", normal="architecture\\whiterun\\muro01_n.dds"),
+        ruta="meshes/sin_carpeta.nif",
+    )
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_una_referencia_sin_carpeta_a_otra_textura_no_afecta_a_esta(mundo: Mundo) -> None:
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/de_fabrica.nif")
+    mundo.malla(_nif(difuso="otra\\cosa.dds", normal="otra\\cosa_n.dds"), ruta="meshes/otra.nif")
+
+    (textura,) = mundo.evaluar().texturas
+
+    assert textura.efecto is EfectoPosible.NO
+
+
+def _con_entrada_tapada(mundo: Mundo) -> None:
+    """``muro01_n`` del mod la gana otro mod por encima: el generador con perfil NO la mide ni publica su salida."""
+    mundo.archivo(_MOD, _N2)
+    mundo.archivo("Retexture", _N1)
+    mundo.modlist("+Retexture", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+
+def test_una_entrada_tapada_por_otro_mod_no_se_publicaria_y_se_dice(mundo: Mundo) -> None:
+    _con_entrada_tapada(mundo)
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "no la publicaría" in textura.razon
+    assert textura.mallas == ()
+    assert textura.n_mallas == 0
+    assert "ENTRADA TAPADA" in textura.razon
+
+
+def test_la_salida_de_una_entrada_tapada_no_decide_la_busqueda_de_otra_textura(mundo: Mundo) -> None:
+    """El difuso apunta a ``muro01_p`` (cuya normal está tapada, así que no se publicaría) y la normal a ``muro02_p``: si se contara
+    como publicada, el plugin encontraría ``muro01_p`` primero y se afirmaría un ``NO`` para ``muro02_p`` que no se puede sostener."""
+    _con_entrada_tapada(mundo)
+    mundo.malla(_nif(difuso=_D1, normal=_NN2), ruta="meshes/mezcla.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P2].efecto is EfectoPosible.NO_VERIFICADO
+    assert por_ruta[_P1].efecto is EfectoPosible.NO
+
+
+def test_si_todas_las_entradas_estan_tapadas_no_hay_nada_que_evaluar(mundo: Mundo) -> None:
+    mundo.archivo("Retexture", _N1)
+    mundo.modlist("+Retexture", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+    with pytest.raises(PerfilError, match="tapadas"):
+        mundo.evaluar()
+
+
+# --- la SALIDA que el juego no cargaría (hermano de la entrada tapada) ---------------------------------------------------
+
+
+def _con_salida_tapada(mundo: Mundo) -> None:
+    """``muro01_p`` del mod de control gana al mod de salida (mayor prioridad): lo que el generador publique ahí no se ve (#792 H12)."""
+    mundo.archivo("Control", _P1)
+    mundo.modlist("+Control", f"+{NOMBRE_DEL_MOD_DE_SALIDA}", f"+{_MALLAS}", f"+{_MOD}")
+
+
+def test_una_salida_tapada_por_un_mod_de_mayor_prioridad_da_no_aunque_la_malla_sea_elegible(mundo: Mundo) -> None:
+    _con_salida_tapada(mundo)
+    mundo.malla(_nif())
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.NO
+    assert "SALIDA TAPADA" in textura.razon
+    assert "Control" in textura.razon
+    assert "no la cargaría" in textura.razon
+    assert textura.mallas == ()
+    assert textura.n_mallas == 0
+
+
+def test_una_salida_tapada_no_le_quita_el_si_a_otra_textura_sana(mundo: Mundo) -> None:
+    _con_salida_tapada(mundo)
+    mundo.archivo(_MOD, _N2)
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P2].efecto is EfectoPosible.SI
+    assert por_ruta[_P1].efecto is EfectoPosible.NO
+
+
+def test_una_salida_de_menor_prioridad_que_la_nuestra_no_la_tapa_y_sigue_dando_si(mundo: Mundo) -> None:
+    """Solo tapa una capa por ENCIMA del mod de salida: la nuestra reemplazaría a la de menor prioridad."""
+    mundo.archivo("Base", _P1)
+    mundo.modlist(f"+{NOMBRE_DEL_MOD_DE_SALIDA}", "+Base", f"+{_MALLAS}", f"+{_MOD}")
+    mundo.malla(_nif())
+
+    textura = mundo.por_ruta(mundo.evaluar())[_P1]
+
+    assert textura.efecto is EfectoPosible.SI
+
+
+def test_un_mod_de_salida_no_habilitado_deja_toda_textura_en_no_aunque_la_malla_sea_elegible(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, _N2)
+    mundo.modlist(f"+{_MALLAS}", f"+{_MOD}")
+    mundo.malla(_nif(difuso=_D2, normal=_NN2), ruta="meshes/dos.nif")
+    mundo.malla(_nif(), ruta="meshes/uno.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert set(por_ruta) == {_P1, _P2}
+    for textura in por_ruta.values():
+        assert textura.efecto is EfectoPosible.NO
+        assert "SALIDA NO HABILITADA" in textura.razon
+        assert "no la cargaría" in textura.razon
+        assert textura.mallas == ()
+        assert textura.n_mallas == 0
+
+
+# --- El plazo de la lectura de mallas (NP-A0k) ---------------------------------------------------------------------------------
+
+
+def test_un_plazo_agotado_falla_cerrado_en_vez_de_devolver_un_veredicto_parcial(mundo: Mundo) -> None:
+    """La lectura de mallas es lo único que escala con el perfil. Una superficie que cancela su espera no puede dejar un hilo leyendo
+    decenas de miles de NIFs: pasado el plazo no se afirma NADA (ni un ``SI`` de las primeras mallas leídas)."""
+    mundo.malla(_nif())
+
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=0.0)
+
+
+def test_sin_plazo_o_con_plazo_de_sobra_el_resultado_es_el_mismo(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    sin_plazo = mundo.evaluar()
+    con_plazo = mundo.evaluar(plazo=600.0)
+
+    assert sin_plazo == con_plazo
+    assert sin_plazo.texturas[0].efecto is EfectoPosible.SI
+
+
+def test_el_plazo_sin_mallas_que_leer_no_falla(mundo: Mundo) -> None:
+    """Sin mallas no hay lectura que acotar: el plazo no inventa un fallo."""
+    informe = mundo.evaluar(plazo=0.0)
+
+    assert informe.texturas[0].efecto is EfectoPosible.NO_VERIFICADO
+
+
+# --- La respuesta compartida de las dos superficies de tool (NP-A0k) -----------------------------------------------------------
+
+
+def _resultado(mundo: Mundo, **kw: object) -> dict[str, object]:
+    return elegibilidad_como_resultado(  # type: ignore[arg-type]
+        mods_dir=mundo.mods, data_root=mundo.data, perfil="Default", mod=_MOD, **kw
+    )
+
+
+def test_el_resultado_de_tool_lleva_success_message_vacio_y_los_conteos(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo)
+
+    assert resultado["success"] is True
+    assert resultado["message"] == ""
+    assert resultado["perfil"] == "Default"
+    assert resultado["mod"] == _MOD
+    assert resultado["n_habilitados"] == 3
+    assert resultado["n_mallas_leidas"] == 1
+    assert resultado["n_texturas"] == 1
+    assert resultado["conteo"] == {"SI": 1, "NO": 0, "NO_VERIFICADO": 0}
+    assert resultado["truncado"] is False
+    assert resultado["alcance"] == ALCANCE_DE_LA_ELEGIBILIDAD
+    (textura,) = resultado["texturas"]  # type: ignore[misc]
+    assert textura == {
+        "ruta_de_salida": _P1,
+        "efecto": "SI",
+        "razon": "1 malla donde una forma elegible la usaría",
+        "mallas": [f"{_RUTA_MALLA} [{_MALLAS}]"],
+        "n_mallas": 1,
+    }
+
+
+def test_el_resultado_de_tool_es_serializable_a_json(mundo: Mundo) -> None:
+    import json
+
+    mundo.malla(_nif())
+
+    assert json.loads(json.dumps(_resultado(mundo)))["success"] is True
+
+
+def test_un_error_del_perfil_es_un_resultado_con_success_false_y_el_motivo(mundo: Mundo) -> None:
+    resultado = elegibilidad_como_resultado(mods_dir=mundo.mods, data_root=mundo.data, perfil="Default", mod="Fantasma")
+
+    assert resultado["success"] is False
+    assert "no está habilitado" in str(resultado["message"])
+    assert resultado["perfil"] == "Default"
+    assert resultado["mod"] == "Fantasma"
+    assert resultado["alcance"] == ALCANCE_DE_LA_ELEGIBILIDAD
+    assert "texturas" not in resultado
+
+
+def test_el_plazo_agotado_es_un_resultado_con_success_false_no_una_excepcion(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, plazo=0.0)
+
+    assert resultado["success"] is False
+    assert "plazo" in str(resultado["message"])
+
+
+def test_el_resultado_de_tool_trae_por_defecto_un_plazo_acotado() -> None:
+    """Las dos superficies llaman sin pasar plazo: que sea acotado por construcción, no por acordarse de pasarlo."""
+    import inspect
+
+    por_defecto = inspect.signature(elegibilidad_como_resultado).parameters["plazo"].default
+
+    assert por_defecto == PLAZO_DE_LAS_SUPERFICIES
+    assert 0 < PLAZO_DE_LAS_SUPERFICIES <= 600
+
+
+def test_otra_excepcion_que_no_es_del_perfil_sube_y_no_se_disfraza_de_resultado(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def roto(**_kw: object) -> InformeDeElegibilidad:
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(elegibilidad, "evaluar_elegibilidad", roto)
+
+    with pytest.raises(RuntimeError, match="bug"):
+        _resultado(mundo)
+
+
+def test_el_resultado_acota_las_texturas_y_pone_primero_las_que_dan_si(mundo: Mundo) -> None:
+    """Un perfil real puede tener cientos de texturas y el resultado lo lee el contexto de un modelo o un panel: se recorta, y lo que
+    se conserva es lo accionable (los ``SI``), no lo que caiga primero por orden alfabético."""
+    mundo.archivo(_MOD, f"{_CARPETA}/aaa_n.dds")
+    mundo.archivo(_MOD, f"{_CARPETA}/bbb_n.dds")
+    mundo.malla(_nif(difuso=_D1, normal=_NN1))  # solo muro01 tiene una malla elegible; aaa y bbb quedan sin verificar
+
+    resultado = _resultado(mundo, maximo_de_texturas=1)
+
+    assert resultado["n_texturas"] == 3
+    assert resultado["truncado"] is True
+    assert resultado["conteo"] == {"SI": 1, "NO": 0, "NO_VERIFICADO": 2}
+    (visible,) = resultado["texturas"]  # type: ignore[misc]
+    assert visible["ruta_de_salida"] == _P1
+    assert visible["efecto"] == "SI"
+
+
+def test_el_resultado_acota_las_mallas_no_leidas_pero_cuenta_todas(mundo: Mundo) -> None:
+    for i in range(8):
+        mundo.malla(b"no es un nif", ruta=f"meshes/rota{i}.nif")
+
+    resultado = _resultado(mundo)
+
+    assert resultado["n_mallas_no_leidas"] == 8
+    assert len(resultado["mallas_no_leidas"]) == 5  # type: ignore[arg-type]
+    assert resultado["mallas_no_leidas_truncado"] is True
+
+
+def test_el_resultado_de_tool_es_de_solo_lectura(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+    antes = sorted(p.relative_to(mundo.raiz).as_posix() for p in mundo.raiz.rglob("*"))
+
+    _resultado(mundo)
+
+    assert sorted(p.relative_to(mundo.raiz).as_posix() for p in mundo.raiz.rglob("*")) == antes
+
+
+@pytest.mark.parametrize("tope", [0, -1, -50])
+def test_un_tope_de_texturas_cero_o_negativo_no_devuelve_ninguna_pero_cuenta_todas(mundo: Mundo, tope: int) -> None:
+    """El tope se acota en cero: uno negativo no se interpreta como «todas menos N» (un slice negativo) ni cero como «una»."""
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=tope)
+
+    assert resultado["texturas"] == []
+    assert resultado["n_texturas"] == 1
+    assert resultado["truncado"] is True
+
+
+@pytest.mark.parametrize("cuantas", [1, 3, 5])
+def test_hasta_el_tope_de_mallas_no_leidas_no_se_marcan_como_truncadas(mundo: Mundo, cuantas: int) -> None:
+    """Con exactamente el tope (5) no se recorta nada: el aviso de recorte no puede ser un falso positivo."""
+    for i in range(cuantas):
+        mundo.malla(b"no es un nif", ruta=f"meshes/rota{i}.nif")
+
+    resultado = _resultado(mundo)
+
+    assert resultado["n_mallas_no_leidas"] == cuantas
+    assert len(resultado["mallas_no_leidas"]) == cuantas  # type: ignore[arg-type]
+    assert resultado["mallas_no_leidas_truncado"] is False
+
+
+def test_sin_texturas_recortadas_el_resultado_no_se_marca_truncado(mundo: Mundo) -> None:
+    mundo.malla(_nif())
+
+    resultado = _resultado(mundo, maximo_de_texturas=1)  # hay exactamente una textura: cabe entera
+
+    assert resultado["n_texturas"] == 1
+    assert len(resultado["texturas"]) == 1  # type: ignore[arg-type]
+    assert resultado["truncado"] is False
+
+
+class _RelojControlado:
+    """``time.monotonic`` de a una lectura por llamada: la primera es el inicio y las siguientes devuelven ``inicio + transcurrido``."""
+
+    def __init__(self, transcurrido: float) -> None:
+        self._transcurrido = transcurrido
+        self._leyo_el_inicio = False
+
+    def monotonic(self) -> float:
+        if not self._leyo_el_inicio:
+            self._leyo_el_inicio = True
+            return 100.0
+        return 100.0 + self._transcurrido
+
+
+def test_el_plazo_se_agota_justo_al_llegar_a_el_y_no_un_instante_antes(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La frontera exacta, con un reloj controlado (con el real es inobservable): transcurrido == plazo ya es plazo agotado."""
+    mundo.malla(_nif())
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=5.0))
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)
+
+    monkeypatch.setattr(elegibilidad, "time", _RelojControlado(transcurrido=4.999))
+    assert mundo.evaluar(plazo=5.0).texturas[0].efecto is EfectoPosible.SI
+
+
+class _RelojPorLecturas:
+    """``time.monotonic`` que devuelve cada valor una vez y repite el último: permite que el plazo venza en un punto exacto del recorrido."""
+
+    def __init__(self, *valores: float) -> None:
+        self._valores = list(valores)
+
+    def monotonic(self) -> float:
+        return self._valores.pop(0) if len(self._valores) > 1 else self._valores[0]
+
+
+def test_si_el_plazo_vence_durante_la_ultima_malla_el_resultado_completo_se_devuelve(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El plazo se comprueba antes de empezar cada malla: una evaluación que ya leyó TODAS las mallas es completa y correcta aunque la
+    última lectura termine pasado el plazo. Fallarla descartaría una respuesta válida; lo que el plazo evita es seguir leyendo."""
+    mundo.malla(_nif())
+    # 1ª lectura = inicio; 2ª = el chequeo antes de la única malla (a tiempo); desde ahí, mucho después del plazo.
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    informe = mundo.evaluar(plazo=5.0)
+
+    assert informe.texturas[0].efecto is EfectoPosible.SI
+
+
+def test_si_el_plazo_ya_vencio_al_empezar_la_segunda_malla_no_se_afirma_nada(
+    mundo: Mundo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La otra cara: con una malla más por leer, el chequeo previo a ella corta antes de dar un veredicto parcial."""
+    mundo.malla(_nif(), ruta="meshes/uno.nif")
+    mundo.malla(_nif(), ruta="meshes/dos.nif")
+    monkeypatch.setattr(elegibilidad, "time", _RelojPorLecturas(100.0, 100.0, 900.0))
+
+    with pytest.raises(PerfilError, match="plazo"):
+        mundo.evaluar(plazo=5.0)

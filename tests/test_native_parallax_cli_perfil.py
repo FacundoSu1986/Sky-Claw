@@ -436,11 +436,11 @@ def _subcomandos() -> dict[str, Any]:
 
 def test_los_subcomandos_estan_congelados_y_cada_uno_declara_si_pide_texconv() -> None:
     """Un subcomando nuevo rompe este test hasta que declare si necesita ``texconv``: ``main`` solo lo exige a los que
-    escriben o exportan. Si ``perfil`` (diagnóstico de solo lectura) empezara a escribir, tendría que moverse de grupo."""
+    escriben o exportan. Si ``perfil`` o ``elegibilidad`` (diagnósticos de solo lectura) empezaran a escribir, tendrían que moverse de grupo."""
     subcomandos = _subcomandos()
     pide_texconv = {nombre for nombre, p in subcomandos.items() if "--texconv" in p._option_string_actions}  # noqa: SLF001
 
-    assert set(subcomandos) == {"autoprueba", "generar", "perfil"}
+    assert set(subcomandos) == {"autoprueba", "elegibilidad", "generar", "perfil"}
     assert pide_texconv == {"autoprueba", "generar"}
 
 

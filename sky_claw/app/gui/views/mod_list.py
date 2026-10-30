@@ -39,6 +39,7 @@ def build_mod_list(
     on_toggle: Callable[[str, bool], Awaitable[None]] | None = None,
     on_search: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
     initial_query: str = "",
+    on_diagnose: Callable[[str], None] | None = None,
 ) -> None:
     """Build the mod list panel with toggles and search.
 
@@ -48,6 +49,9 @@ def build_mod_list(
         on_search: Callback(search_term) -> filtered mods.
         initial_query: Término de búsqueda inicial (p. ej. tecleado en el buscador
             del header, A1). Pre-rellena el input y pre-filtra la lista.
+        on_diagnose: Callback(mod_name) del botón «Diagnosticar parallax» de cada fila
+            (NP-A0i, #817). ``None`` ⇒ la fila no muestra el botón: nunca un control que
+            no hace nada.
     """
     # ── Header ────────────────────────────────────────────────────────
     with (
@@ -82,7 +86,7 @@ def build_mod_list(
                 return
 
             for mod in mod_list:
-                _build_mod_row(mod, on_toggle)
+                _build_mod_row(mod, on_toggle, on_diagnose)
 
     # Render inicial ya filtrado por el término que llega del header (A1).
     _render_mods(_filter_mods(mods, initial_query))
@@ -97,6 +101,7 @@ def build_mod_list(
 def _build_mod_row(
     mod: dict[str, Any],
     on_toggle: Callable[[str, bool], Awaitable[None]] | None,
+    on_diagnose: Callable[[str], None] | None = None,
 ) -> None:
     """Render a single mod row with a toggle switch."""
     mod_name = mod.get("name", "Mod desconocido")
@@ -122,6 +127,20 @@ def _build_mod_row(
             ui.label(mod_name).classes("sky-mod-name")
             if version:
                 ui.label(f"v{version}").classes("sky-mod-version")
+
+        # NP-A0i (#817): diagnóstico del perfil para el generador nativo de parallax. Solo lectura.
+        if on_diagnose is not None:
+            # sc-tema (contrato de tema, test_gui_theme_contracts): sin clase en Quasar, así .text-primary !important no pisa el color
+            # que le da styles.css.
+            ui.button(
+                icon="troubleshoot",
+                on_click=lambda _=None, name=mod_name: on_diagnose(name),
+            ).props("flat dense round size=sm color=sc-tema text-color=sc-tema").props(
+                # Botón solo-ícono: el tooltip no le da nombre accesible; el aria-label sí.
+                'aria-label="Diagnosticar parallax"'
+            ).classes("sky-mod-diagnose").tooltip(
+                "Diagnosticar parallax: ¿algún mod tapa lo que el generador mediría o publicaría?"
+            )
 
         # Status indicator
         if is_enabled:

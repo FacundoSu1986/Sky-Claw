@@ -371,6 +371,10 @@ module = [
     "sky_claw.local.tools.dyndolod_presets",
     "sky_claw.local.validators.etapas_previas_lods",
     "sky_claw.app.agent.tools.lod_tools",
+    # NP-A0k: las dos superficies de lectura de parallax nacen estrictas: `sky_claw.app.agent.*` y `sky_claw.app.orchestrator.*` están en
+    # la lista `ignore_errors` de arriba y `sky_claw/app/**` tiene BLE001 exento, así que sin este opt-in saldrían sin type-check.
+    "sky_claw.app.agent.tools.parallax_tools",
+    "sky_claw.app.orchestrator.tool_strategies.evaluar_elegibilidad_parallax",
     "sky_claw.app.orchestrator.dyndolod_desatendido_hitl",
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)

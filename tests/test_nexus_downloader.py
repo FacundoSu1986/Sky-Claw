@@ -1101,7 +1101,9 @@ class TestDownloadModSchema:
         # now backed by the M-02/M-03 runners.
         # search_nexus added (read-only NL Nexus discovery): 19 -> 20.
         # #661: generate_lods + lods_status (etapa 9 desde la superficie remota): 20 -> 22.
-        assert len(tool_registry.tools) == 22
+        # NP-A0h: diagnosticar_parallax_perfil (diagnóstico del perfil de MO2 para parallax nativo): 22 -> 23.
+        # NP-A0k: evaluar_parallax_elegibilidad (elegibilidad de las salidas del generador nativo de parallax): 23 -> 24.
+        assert len(tool_registry.tools) == 24
 
 
 # ---------------------------------------------------------------------------

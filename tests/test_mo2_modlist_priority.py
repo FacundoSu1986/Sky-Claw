@@ -346,15 +346,18 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/mo2/vfs_attestation.py",
         "sky_claw/local/assets/asset_scanner.py",
         "sky_claw/local/mo2/brokered_dyndolod.py",
-        # NP-A0e: el subcomando `perfil` lee el modlist con `read_enabled_mods` e INTERPRETA la prioridad
-        # (qué capa queda por encima del mod de salida); es solo lectura.
-        "sky_claw/local/native_parallax/cli.py",
+        # NP-A0g: el diagnóstico del perfil (antes en `native_parallax/cli.py`) lee el modlist con `read_enabled_mods` e
+        # INTERPRETA la prioridad (qué capa queda por encima del mod de salida); es solo lectura.
+        "sky_claw/local/native_parallax/diagnostico_perfil.py",
     },
     # Family B: Writers (mutadores autorizados de modlist.txt)
     "FAMILY_B_WRITERS": {
         "sky_claw/local/mo2/vfs.py",
         "sky_claw/local/mo2/grass_profile.py",
         "sky_claw/app/agent/tools/system_tools.py",
+        # P0 CS: activa los mods recién instalados en el perfil de sesión.
+        "sky_claw/app/gui/controllers/ritual_runner.py",
+        "sky_claw/app/agent/tools/external_tools.py",
     },
     # Family C: Non-Priority I/O (operaciones sobre modlist.txt sin interpretar jerarquía/orden)
     "FAMILY_C_NON_PRIORITY_IO": {
@@ -372,6 +375,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
     },
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {
+        "sky_claw/app/agent/tools/__init__.py",  # NP-A0h: solo nombra el modlist en la descripción de diagnosticar_parallax_perfil; lo lee diagnostico_perfil
         "sky_claw/app/core/event_payloads.py",
         "sky_claw/app/orchestrator/active_plugins.py",
         "sky_claw/app/orchestrator/asset_conflict_scan.py",
@@ -381,6 +385,7 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/local_config.py",
         "sky_claw/local/mo2/mod_effectivity.py",
         "sky_claw/local/mo2/ganadores.py",  # recibe `enabled` ya normalizado por read_enabled_mods; solo lo nombra en el docstring
+        "sky_claw/local/native_parallax/cli.py",  # NP-A0g: solo nombra el modlist en docstrings y ayuda; lo lee diagnostico_perfil
         "sky_claw/local/validators/preflight.py",
         "sky_claw/local/validators/preflight_sensors.py",
         "sky_claw/local/validators/vfs_visibility.py",
@@ -396,6 +401,47 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/tools/xedit_service.py",
     },
 }
+
+
+# Mutadores del modlist de `MO2Controller`: lo que el censo busca por call site. Se congelan
+# JUNTO con el resto de la API pública (ver `test_la_api_publica_de_mo2controller_esta_clasificada`):
+# un método público nuevo rompe el ancla hasta que se lo clasifique como mutador o no.
+MODLIST_MUTADORES = frozenset(
+    {
+        "add_mod_to_modlist",
+        "add_mod_to_modlist_highest_priority",
+        "remove_mod_from_modlist",
+        "toggle_mod_in_modlist",
+    }
+)
+MO2_API_PUBLICA_CLASIFICADA = {
+    "mutadores_del_modlist": MODLIST_MUTADORES,
+    "lectores_del_modlist": frozenset({"read_modlist"}),
+    "sin_modlist": frozenset({"delete_mod_files", "launch_game", "close_game"}),
+}
+
+
+def _metodos_publicos_de_mo2controller() -> set[str]:
+    """Métodos públicos (no propiedades) de ``MO2Controller``, por AST de ``vfs.py``."""
+    ruta = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "mo2" / "vfs.py"
+    clase = next(
+        n
+        for n in ast.parse(ruta.read_text(encoding="utf-8")).body
+        if isinstance(n, ast.ClassDef) and n.name == "MO2Controller"
+    )
+    return {
+        n.name
+        for n in clase.body
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        and not n.name.startswith("_")
+        and not any(isinstance(d, ast.Name) and d.id == "property" for d in n.decorator_list)
+    }
+
+
+def test_la_api_publica_de_mo2controller_esta_clasificada() -> None:
+    """Igualdad literal: un mutador nuevo no queda fuera del censo en silencio."""
+    clasificados = set().union(*MO2_API_PUBLICA_CLASIFICADA.values())
+    assert _metodos_publicos_de_mo2controller() == clasificados
 
 
 def test_h1_g_structural_family_and_census_anchor() -> None:
@@ -442,6 +488,16 @@ def test_h1_g_structural_family_and_census_anchor() -> None:
         has_modlist_constant = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and "modlist.txt" in node.value:
+                has_modlist_constant = True
+                break
+            # También writers por call site (no solo por literal de mensaje): CUALQUIER mutador
+            # de MO2Controller, no solo `add_mod_to_modlist` — un módulo que solo hace
+            # `toggle_mod_in_modlist` sin el literal escapaba al censo.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in MODLIST_MUTADORES
+            ):
                 has_modlist_constant = True
                 break
         if has_modlist_constant and rel_posix not in all_registered:

@@ -11,7 +11,7 @@
 > `sky_claw/app/gui/views/forge_dashboard.py`,
 > `sky_claw/local/discovery/scanner.py` y `sky_claw/local/local_config.py`.
 >
-> **Última verificación:** 2026-08-09 sobre `origin/main` `67eaeec5` más este cambio.
+> **Última verificación:** 2026-10-29 sobre `origin/main` `5aa7e35` más este cambio.
 
 ## Objetivo
 
@@ -47,11 +47,31 @@ extrae a la raíz del juego y en `mods/` quedaría inerte bajo el VFS de MO2. El
 que publica Nexus es un FOMOD con ramas SE y AE; Sky-Claw resuelve la rama de tu edición
 y descarta el resto.
 
+## Activación en el perfil
+
+Instalar en `mods/` no alcanza: sin una entrada `+<Nombre>` en el `modlist.txt` del
+perfil, MO2 no monta el mod y el juego nunca ve `CommunityShaders.dll`. Por eso, al
+terminar de instalar, Sky-Claw **activa los tres mods en el perfil de la sesión** (el
+fijado con `--profile` / `MO2_PROFILE`), por las dos superficies:
+
+- Si el mod no estaba en el perfil, se agrega al final (menor prioridad).
+- Si ya estaba pero deshabilitado (`-<Nombre>`), se habilita **en su lugar**, sin mover
+  su posición.
+- Si ya estaba habilitado, no se toca. No se reordena nada del resto del perfil.
+
+Los tres se procesan en el orden de instalación (Address Library, SSE Engine Fixes,
+Community Shaders), así que los que se agregan quedan al final del perfil en ese mismo
+orden relativo.
+
+Sólo se informa éxito cuando **los tres** quedaron habilitados. Sin MO2 o sin perfil en
+el contexto de la sesión no hay dónde activar: la operación queda como instalada pero no
+activada, y se avisa. El agente lo devuelve con `success: false` y un campo `activacion`
+(`ok`, `parcial`, `fallo`, `no_disponible` o `vacio`; este último es un guard que hoy no
+ocurre con Community Shaders) más la lista `activados`; la GUI lo muestra como
+advertencia.
+
 ## Qué NO hace
 
-- **No activa los mods.** No escribe `modlist.txt`. Sky-Claw deja constancia de los
-  nombres instalados, pero hoy ninguna ruta de producción los consume: **activar los
-  tres mods en MO2 es un paso manual tuyo**.
 - **No instala SKSE.** Community Shaders es un plugin de SKSE: SKSE tiene que estar antes.
   El panel de la GUI tiene su propio instalador de SKSE.
 - **No instala el preloader de SSE Engine Fixes.** Va en la raíz del juego y es un paso
@@ -126,16 +146,17 @@ reparación.
 
 | Desenlace | Qué significa | Qué hacer |
 |---|---|---|
-| Instalación completa | Los tres mods en `mods/` y los nombres registrados | Activarlos manualmente en MO2 |
+| Instalación completa | Los tres mods en `mods/`, activados en el perfil de la sesión y con los nombres registrados | Nada |
+| Instalado pero no activado | Los mods están en disco, pero la activación quedó `parcial`, `fallo` o `no_disponible` (perfil inexistente, error de escritura o sin MO2/perfil en la sesión). El agente lo informa como fallido; la GUI, como advertencia | Corregir la causa y repetir: la operación es idempotente y no vuelve a descargar. Mientras tanto, habilitar a mano en MO2 los mods que falten |
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro, repetir la instalación: es idempotente y no vuelve a descargar. No borrar nada |
+| Instalado con aviso de persistencia | Los mods están en disco, pero `community_shaders_mods` no se pudo guardar. La activación no depende del guardado: con `activacion: "ok"` los mods quedaron activados; si además la activación falló, el aviso se suma a su motivo | Con la activación correcta los mods son utilizables y sólo falta el registro. Si la activación falló, siguen en disco pero MO2 no los monta hasta habilitarlos (ver la fila «Instalado pero no activado»). Para regenerar el registro, repetir la instalación: es idempotente y no vuelve a descargar. No borrar nada |
 
 Las **dos** superficies avisan. La GUI lo muestra como notificación de advertencia; el
 agente LLM devuelve la operación como fallida, con el detalle de lo que sí quedó en disco,
 y nombra que el guardado no se aplicó. Ninguna informa éxito total cuando no hay dónde
-escribir. En todos los casos los mods ya están en disco y se pueden activar a mano.
+escribir. En todos los casos los mods ya están en disco y, si la activación falló, se pueden habilitar a mano.
 
 ## Integridad de las descargas
 
