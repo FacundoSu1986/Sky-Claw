@@ -229,6 +229,8 @@ class EstadoDeArchivo(Enum):
 
 
 _EFECTOS_QUE_DEJAN_LA_SALIDA = frozenset({EfectoDeSalida.PUBLICADA, EfectoDeSalida.REEMPLAZADA, EfectoDeSalida.OMITIDA})
+#: Efectos con los que el escritor reporta que una ruta NO se hizo. Espejo de ``veredicto.EFECTOS_FALLIDOS`` (ancla de paridad en los tests).
+_EFECTOS_QUE_FALLAN = frozenset({EfectoDeSalida.CONFLICTO, EfectoDeSalida.FALLIDA})
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,8 +337,15 @@ class InformeDelLote:
 
     @property
     def completo(self) -> bool:
-        """True si ninguna textura quedó sin procesar ni sin escribir. Una en revisión es una decisión, no un fallo."""
-        return not any(a.estado in (EstadoDeArchivo.NO_PROCESADA, EstadoDeArchivo.NO_ESCRITA) for a in self.archivos)
+        """True si ninguna textura quedó sin procesar ni sin escribir y ninguna salida anterior falló. Una en revisión es una decisión.
+
+        Una ruta ajena a la entrada que el escritor no pudo hacer (``CONFLICTO``, ``FALLIDA``: típicamente un retiro que falló) también
+        cuenta: el archivo que el operador quería fuera sigue activo en el juego. ``parallax_unattended.veredicto.dictar`` ya lo
+        cuenta como fallo; ``tests/test_parallax_unattended_veredicto.py`` ancla que los dos juzguen igual cada efecto.
+        """
+        if any(a.estado in (EstadoDeArchivo.NO_PROCESADA, EstadoDeArchivo.NO_ESCRITA) for a in self.archivos):
+            return False
+        return not any(r.efecto in _EFECTOS_QUE_FALLAN for r in self.otras_rutas)
 
     @property
     def conservadas(self) -> tuple[str, ...]:

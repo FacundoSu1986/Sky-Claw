@@ -949,6 +949,33 @@ def test_completo_conservadas_y_retiradas_se_derivan_de_los_estados_y_los_efecto
     }
 
 
+@pytest.mark.parametrize("efecto", list(EfectoDeSalida), ids=lambda e: e.name)
+def test_completo_cuenta_las_otras_rutas_que_el_escritor_no_pudo_hacer(efecto: EfectoDeSalida) -> None:
+    """Una salida anterior que el escritor no pudo retirar o dejar no es un lote completo.
+
+    El caso real: ``--retirar-no-incluidas`` falla al borrar un ``_p`` que el operador quería fuera. El archivo sigue activo en el
+    juego, y ``completo`` (que solo miraba ``archivos``) lo daba por bueno: la CLI salía con 0. Se enumeran TODOS los efectos
+    del escritor, no solo los dos que hoy fallan: un efecto nuevo obliga a decidir de qué lado cae.
+    """
+
+    informe = InformeDelLote(ParametrosDelLote(), (), (ResultadoDeRuta("textures/vieja_p.dds", efecto, "d"),), None)
+
+    assert informe.completo is (efecto not in {EfectoDeSalida.CONFLICTO, EfectoDeSalida.FALLIDA})
+
+
+def test_la_cli_sale_con_fallo_si_una_otra_ruta_fallo() -> None:
+    """El código de salida de la CLI sale de ``completo``: una ruta fallida no puede dar 0."""
+
+    from sky_claw.local.native_parallax.cli import CODIGO_CON_FALLOS, CODIGO_OK, _codigo
+
+    def informe(efecto: EfectoDeSalida) -> InformeDelLote:
+        return InformeDelLote(ParametrosDelLote(), (), (ResultadoDeRuta("textures/vieja_p.dds", efecto, "d"),), None)
+
+    assert _codigo(informe(EfectoDeSalida.RETIRADA)) == CODIGO_OK
+    assert _codigo(informe(EfectoDeSalida.FALLIDA)) == CODIGO_CON_FALLOS
+    assert _codigo(informe(EfectoDeSalida.CONFLICTO)) == CODIGO_CON_FALLOS
+
+
 # ---------------------------------------------------------------------------
 # El origen: huella acotada, antes y después de decodificar
 # ---------------------------------------------------------------------------
