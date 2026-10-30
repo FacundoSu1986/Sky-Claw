@@ -66,6 +66,12 @@ from sky_claw.local.native_parallax.metrics import (
 
 N = 128
 
+# El corpus completo es cómputo NumPy acotado, no un deadlock. El timeout global de 120 s puede
+# vencer durante el setup del fixture en runners con CPU limitada; este plazo cubre también las
+# recomputaciones deliberadas de determinismo y de otra grilla, sin cambiar la selección de tests.
+# Se mantiene el método global ``thread``: es el único soportado por la CI de Windows.
+pytestmark = pytest.mark.timeout(300)
+
 NOMBRES_DE_LOS_ESCENARIOS = (
     "limpio",
     "ruido_1_255",
