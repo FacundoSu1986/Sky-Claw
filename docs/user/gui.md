@@ -74,11 +74,12 @@ herramientas. La aprobación de descarga abre el modal de la pestaña que apret�
 `Instalar` y no se autoaprueba con «Modo local». Una instalación y un ritual nunca se
 solapan: comparten el mismo cerrojo.
 
-La tarjeta **«Renderizado Moderno»** instala Community Shaders y sus dependencias. Sus
-requisitos previos se comprueban antes de descargar, y un resultado con aviso significa
-que los mods quedaron en disco pero no se pudo guardar el registro de lo instalado. Los
-mods se activan a mano en MO2 igual, así que el aviso no bloquea nada. El detalle completo
-está en [Community Shaders](community_shaders.md).
+La tarjeta **«Renderizado Moderno»** instala Community Shaders y sus dependencias, y los
+activa en el perfil de la sesión. Sus requisitos previos se comprueban antes de descargar.
+Un resultado con aviso significa que los mods quedaron en disco pero algo faltó: o no se
+pudo guardar el registro de lo instalado (los mods siguen activados), o no se pudo activar
+en el perfil (hay que habilitarlos a mano en MO2 o repetir la instalación). El detalle
+completo está en [Community Shaders](community_shaders.md).
 
 ## Seguridad operativa
 

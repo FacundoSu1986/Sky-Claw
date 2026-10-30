@@ -126,6 +126,27 @@ La política clean-room, `docs/design/research/native-parallax/` y
   otro mod, `overwrite` o un mod de control tapa la entrada que se mediría o la salida que se publicaría (#792 H12). No pide `texconv`,
   no coordina ni escribe, y no nombra `procesar_lote` ni `exportar_altura_bc4` (el censo de llamadores sigue siendo solo `cli.py`). Sale con
   4 si hay algo tapado. Ancla: `tests/test_native_parallax_cli_perfil.py` (congela los subcomandos y cuáles piden `texconv`).
+  `cli.py generar --data-root … --mod … [--perfil …]` (NP-A0f) usa ese MISMO diagnóstico: no mide una `*_n.dds` que otro mod tapa o que el overlay
+  no entrega (la deja en `omitidas_al_enumerar` del informe) y AVISA antes de escribir si la salida va a quedar tapada o sin habilitar, pero no
+  bloquea (la primera corrida todavía no tiene el mod de salida ordenado en MO2). No se combina con `--retirar-no-incluidas` (lo omitido no es
+  «ausente»).
+- `diagnostico_perfil.py` (NP-A0g) es LA pieza que contesta «¿qué gana, en el perfil de MO2, la entrada y la salida de un mod?»: `cargar_perfil`
+  (lee el `modlist.txt` y resuelve quién gana cada ruta), `hallazgos_del_perfil` (qué de eso es un problema), `descubrir_normales_del_mod` (la
+  enumeración, con `exigir_completa`) y `diagnosticar_perfil` (las tres juntas, para las superficies). Es de **solo lectura**, falla cerrado con
+  `PerfilError` y NO importa `cli.py` (arrastraría el lote, el exportador y la CLI): la línea de comandos (`perfil` y `generar`) y toda superficie
+  que lo muestre lo importan. Si cada una resolviera el perfil por su cuenta contestarían distinto (el hermano de AGENTS.md). Ancla por AST en
+  `tests/test_native_parallax_diagnostico_perfil.py`: el resolutor `indexar_ganadores` se llama SOLO desde este módulo y los consumidores de
+  `diagnosticar_perfil` están congelados por igualdad literal (una superficie nueva rompe el ancla hasta que se la declare y se cablee junto a las demás).
+  NP-A0h: `diagnostico_como_resultado` lo convierte en resultado de tool (`success`/`message` + hallazgos acotados + `impide_medir` + la leyenda
+  `ALCANCE_DEL_DIAGNOSTICO`: vista estructural, no prueba nada in-game) y lo sirven DOS superficies, congeladas por AST: la tool `diagnosticar_parallax_perfil`
+  del dispatcher de la GUI (`app/orchestrator/tool_strategies/diagnosticar_perfil_parallax.py`) y la del agente LLM (`app/agent/tools/parallax_tools.py`,
+  que sanea lo que sale del disco). Las dos son de solo lectura, usan el perfil de la sesión (el payload solo lleva `mod`) y reciben las raíces del MISMO
+  resolver (`PathResolutionService.raices_de_instancia_mo2`, que `AppContext` también usa para el `MO2Controller`).
+  Diferencia de momento, a propósito: la GUI consulta el resolver en cada llamada (como sus otras tools) y el agente usa las raíces que `AppContext` fijó al
+  arrancar (como todas sus tools); si la instancia de MO2 se reconfigura con la app abierta, se reconcilian al reiniciar.
+  NP-A0i (#817): el botón «Diagnosticar parallax» de cada fila de la lista de mods de la GUI llega a la tool por el ÚNICO camino de la GUI al dispatcher
+  (`controllers/ritual_runner.py`, `run_diagnostico_parallax`) y publica el resultado en el slot de su pestaña del store (un slot por `tab_id`: lo de una pestaña no pisa lo de otra).
+  Anclas en `tests/test_parallax_diagnostico_gui.py`: `dispatch_tool` solo se llama desde `ritual_runner`, el slot se escribe desde un único lugar y la tool se llama igual en las tres superficies.
 - `provider.py` (NP-A0b) descubre los `*_n.dds` de una carpeta o de un mod y es **puro y de solo lectura**: sus imports (stdlib, `output.py` y
   `links.py`) y sus llamadas al disco están congelados por AST; no decodifica, no sabe del exportador, del gate, del escritor ni de MO2. Nueve
   propiedades con su test: nunca sigue enlaces (los ancestros de la raíz sí se aceptan: los elige el operador) y revalida cada carpeta, la raíz
@@ -145,6 +166,44 @@ La política clean-room, `docs/design/research/native-parallax/` y
   validaciones del dato están congeladas por igualdad en `tests/test_native_parallax_diagnostico_texconv.py` (un estado nuevo sin escenario
   rompe el test), y el módulo está en el censo de `tests/test_texconv_invariant.py` como módulo que nombra `texconv` sin lanzar procesos.
   La CLI ya lo usa (`crear_exportador_texconv` diagnostica antes de exportar y `_resolver_texconv` delega en `ruta_configurada`: el nombre de la variable y la regla de la ruta viven SOLO en este módulo, con un ancla por AST); todavía NO lo usa el registro de herramientas (NP-A0). Ver ADR 0014, "Actualización de NP-A0c" y "Cableado del diagnóstico a la CLI".
+- **Elegibilidad: ¿hay alguna malla donde el plugin de relieve use lo que publicamos? (NP-A0j, #816).** Dos piezas genéricas de SOLO lectura, fuera de
+  este paquete porque no saben del generador: `sky_claw/local/assets/nif_materiales.py` (`leer_materiales`: shader, flags, propiedad de alfa y
+  texturas de cada forma de un NIF de Skyrim LE/SE; se apoya en la tabla de tamaños de bloque, NO interpreta geometría y falla cerrado con `NifError`)
+  y `sky_claw/local/assets/auto_parallax_regla.py` (`evaluar_forma`, `candidatos_de_relieve`, `buscar_el_relieve`: la regla del plugin Auto Parallax,
+  transcripta de su código fuente público con el SHA-256 del archivo citado en el docstring). Cuatro propiedades, con su ancla en
+  `tests/test_auto_parallax_regla.py` y `tests/test_nif_materiales.py`: la regla enumera TODOS los tipos de shader (solo el 0 enciende, solo el 3 es de
+  fábrica) y congela por igualdad literal las exclusiones y el vocabulario de motivos; una ruta cuyo resultado depende de las mayúsculas del original (que
+  distingue) o de una carpeta `textures` implícita se declara **ambigua** y nunca se adivina; el lector declara en `formas_no_soportadas` la geometría que
+  no sabe abrir en vez de ignorarla; y los NIFs de los tests son sintéticos (`tests/_nif_sintetico.py`, escrito desde la especificación pública NifTools, sin
+  importar nada del repo): prueban concordancia con la especificación, NO lectura de un archivo real. **Verificado ejecutando:** un NIF de Skyrim LE escrito
+  por una librería ajena (pyffi, con su propio `nif.xml`) se lee con el mismo shader, flags (posiciones de bit incluidas), alfa y texturas. **También verificado:**
+  las posiciones de bit de los flags coinciden con la cabecera pública de CommonLibSSE (registro 1 = bits 0-31, registro 2 = bits 32-63). **NO verificado:**
+  el diseño de `BSTriShape` (Skyrim SE) contra un archivo real (solo contra la especificación; lo cruza la tabla que devuelve el rig), y que la versión del
+  plugin instalada se comporte como la rama citada. Alcance que el NIF no muestra y que quien consuma esto debe decir: el plugin solo actúa sobre objetos
+  base Static, Movable Static y Container, y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no). No lee mallas dentro de un
+  `.bsa`.
+  NP-A0j parte 2: `elegibilidad.py` (`evaluar_elegibilidad`) cruza esas dos piezas con el perfil de MO2 y contesta, por cada `*_p.dds` que el generador publicaría,
+  `EFECTO_POSIBLE = SI | NO | NO_VERIFICADO` (`EfectoPosible`, vocabulario cerrado). Tres propiedades, con su ancla en `tests/test_native_parallax_elegibilidad.py` y
+  `tests/test_native_parallax_cli_elegibilidad.py`: `SI` solo si una forma elegible terminaría USANDO esa salida siguiendo el orden de búsqueda del plugin (si antes
+  encuentra otra textura suelta, es `NO`); `NO` solo si TODAS las formas que la referencian quedan fuera por una razón nombrada y nada de lo leído quedó incompleto (una malla
+  ilegible, o con geometría que el lector no abre, baja el `NO` a `NO_VERIFICADO`); y lo que depende de un archivo que no se puede comprobar (¿dentro de un `.bsa`?) o de las
+  mayúsculas de una ruta es `NO_VERIFICADO`, nunca `NO`. Cuenta la malla que GANA en el overlay (el índice de `meshes/` lo arma `diagnostico_perfil.cargar_mallas_del_perfil`: el
+  resolutor se sigue llamando SOLO desde ese módulo) y no abre archivos por su cuenta (la lectura acotada vive en `assets/nif_materiales.leer_materiales_de_archivo`). Una salida que
+  el generador publicaría pero el juego no cargaría (otra capa de mayor prioridad gana su ruta, o el mod de salida no está habilitado: #792 H12) es `NO` y NO cuenta como «presente»
+  en la búsqueda del plugin: la forma elegible usaría el archivo que SÍ gana, no el nuestro.
+  NP-A0k: la elegibilidad se sirve por TRES caminos y los tres contestan con la misma pieza: `cli elegibilidad` (texto), la estrategia `evaluar_parallax_elegibilidad` del dispatcher de
+  la GUI (`SupervisorAgent` → `tool_dispatcher`) y la tool del mismo nombre del agente LLM (`AsyncToolRegistry`); las dos últimas llaman a `elegibilidad_como_resultado`
+  (`success`/`message` canónico + texturas acotadas a 50, con los `SI` primero, + `conteo` + la leyenda de `alcance`), con las raíces y el perfil de la SESIÓN (ni el payload ni el
+  modelo eligen perfil ni plazo), solo lectura y sin gate HITL (política base lock-only, #217). El agente sanea todo texto con `sanitize_for_prompt`: rutas de mallas y de texturas
+  salen del disco y de dentro de NIFs descargados. La lectura de mallas es lo único que escala con el perfil y corre en un hilo que quien cancela su espera no puede detener:
+  `evaluar_elegibilidad(plazo=…)` falla cerrado (sin veredicto parcial) y `elegibilidad_como_resultado` trae un plazo acotado por defecto (`PLAZO_DE_LAS_SUPERFICIES`, 100 s), así que las
+  superficies no lo pasan; tiene que vencer ANTES que el presupuesto por tool del router (`DEFAULT_TOOL_ROUND_TIMEOUT`, 120 s) o el router cancelaría su espera con el hilo todavía
+  leyendo (un test los ata); un perfil que necesite más usa `cli elegibilidad`, que no tiene plazo. El plazo se comprueba ANTES de empezar cada malla: una lectura ya empezada no se interrumpe (la acota el tamaño, no el tiempo, y un disco o una unidad de red colgados la bloquean), así que el hilo termina como mucho una lectura después del plazo, y una evaluación que ya leyó todas las mallas se devuelve completa aunque la última pase del plazo. El router también recorta A MANO, por el final, todo resultado de tool de más de 4000
+  caracteres: las dos tools de parallax del agente (esta y el diagnóstico del perfil) pasan por `_para_el_modelo`, que pone el resumen y la leyenda de `alcance` primero y le saca
+  entradas del final al detalle hasta que cabe en `PRESUPUESTO_DE_CARACTERES_DE_LA_RESPUESTA` (atado por test al literal del router), marcando `truncado`; la GUI recibe el resultado
+  completo. Una tool de parallax nueva que serialice por su cuenta rompe el censo de `tests/test_parallax_superficies_invariant.py`. Anclas: `tests/test_parallax_superficies_invariant.py` ENUMERA —por AST, quién llama a cada función de resultado (una GUI y un agente cada una) y, por
+  introspección, qué tools de parallax hay en cada registro— y `tests/test_evaluar_parallax_elegibilidad_superficies.py` verifica que las dos superficies dan LA MISMA respuesta sobre
+  la misma instancia. Sin cablear todavía: el botón de la GUI que la invoque (como NP-A0i hizo con el diagnóstico del perfil).
 - **Piso de contenido (NP-NO-EMPTY, #792 H1/H3).** `lote.tiene_contenido` / `DESVIACION_MINIMA_DE_ALTURA` (8/255, la misma de
   `parallax_unattended.auditor.SD_MINIMA`; un test las ata): una altura cuya desviación queda bajo el piso (o no es finita) pasa a
   `EN_REVISION` con el motivo `SIN_CONTENIDO` y veredicto `REVIEW`, **aunque el gate la aceptara y aunque se pida `--incluir-revision`**; no

@@ -292,7 +292,12 @@ def leer_generation_metadata(root: pathlib.Path, generation_id: str) -> Generati
     path = generations_state_dir(root) / f"{ident}.json"
     if not path.exists():
         raise FrozenRuntimeStorageError(f"metadata ausente para la generation '{ident}': '{path}'")
-    return _metadata_de_payload(_leer_json(path), source_label=str(path))
+    meta = _metadata_de_payload(_leer_json(path), source_label=str(path))
+    if meta.generation_id != ident:
+        raise StateCorruptError(
+            f"{path}: generation_id en metadata '{meta.generation_id}' no coincide con el namespace canónico '{ident}': fail-closed"
+        )
+    return meta
 
 
 def descubrir_generations(root: pathlib.Path) -> GenerationInventory:

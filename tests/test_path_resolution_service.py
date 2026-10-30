@@ -1429,11 +1429,22 @@ class TestAnclaConstructoresManualesDeMods:
         # (288) y en el paso legacy de get_mo2_mods_path (903). Cualquier
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
-        "sky_claw/app/core/path_resolver.py": (253, 314, 934),
+        # NP-A0h sumó `raices_de_instancia_mo2` (1218): el fallback `<datos>/mods` que
+        # ANTES construía AppContext a mano (su entrada de abajo desapareció) vive ahora
+        # en el resolver, un solo sitio para las dos superficies (agente y GUI). Mismo
+        # concepto, no una construcción nueva; las otras tres líneas corrieron por el
+        # método y la dataclass agregados arriba.
+        "sky_claw/app/core/path_resolver.py": (266, 327, 947, 1218),
         # Instaladores NGIO/FOMOD del agente LLM: ahora aceptan mods_dir explícito
         # (Issue #557); las líneas 220 y 267 son el fallback legacy portable.
         # system_tools.py ya no construye <expr> / "mods" porque usa mo2.mods_dir.
-        "sky_claw/app/agent/tools/external_tools.py": (220, 267),
+        # PR #825 (activación de CS en modlist.txt) sumó los params `mo2`/`profile` a la
+        # firma de setup_tools y corrió ambos sitios (220, 267 → 222, 269); mismo
+        # fallback legacy, no una construcción nueva.
+        # El helper `_activar_en_modlist` (activación compartida de NGIO y CS) se agregó
+        # ARRIBA de setup_tools y los corrió (222, 269 → 266, 313); mismo fallback
+        # legacy, ninguna construcción nueva de `<base>/mods`.
+        "sky_claw/app/agent/tools/external_tools.py": (266, 313),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
         # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
@@ -1489,7 +1500,11 @@ class TestAnclaConstructoresManualesDeMods:
         # Es el mismo constructor de siempre: el sitio no cambió de concepto.
         # PR-586D (CTA de resume con handoff_action) la movió (1057 → 1077);
         # mismo constructor del default `<raíz>/mods`.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1077,),
+        # PR #825: la instancia de instalación de CS pasó a priorizar el controlador que
+        # activa en modlist.txt (`app_context.mo2`) sobre el snapshot; el comentario y la
+        # reordenación movieron la línea (1077 → 1084). Sigue siendo el fallback
+        # `<raíz>/mods` cuando ni el controlador ni el snapshot traen `mods_dir`.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1084,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
@@ -1517,7 +1532,8 @@ class TestAnclaConstructoresManualesDeMods:
         # (1409 → 1426) y la declaración de `lod_jobs`/`servicio_de_etapa9` en el
         # constructor, para que `stop()` los lea sin arranque (1426 → 1431);
         # mismo constructor.
-        "sky_claw/app_context.py": (1431,),
+        # NP-A0h: AppContext ya no construye `<datos>/mods` a mano; pide las raíces a
+        # `PathResolutionService.raices_de_instancia_mo2` (ver la entrada del resolver).
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA; #665
         # (271 → 277) al extraer `_build_parser` y derivar el default de --mode.
@@ -2140,6 +2156,12 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     - app_context: bootstrap de MO2Controller para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+      Desde NP-A0h ya no llama a los getters: pide las raíces a
+      ``PathResolutionService.raices_de_instancia_mo2`` (que usa ``get_mo2_path`` +
+      ``get_mo2_instance_data_root_estricto`` + ``get_mo2_mods_path_para_destino``, en
+      ``path_resolver.py``, que este inventario no cuenta) y el dispatcher de la GUI le
+      pide lo mismo; esa dupla de consumidores la congela
+      ``tests/test_path_resolver_raices_de_instancia.py``.
     - dyndolod_service (runner, #593): identidad del perfil MO2 activo para
       construir el ``-p:`` productivo (``profiles/<perfil>/plugins.txt``). Falla
       cerrado con la metadata corrupta: el best-effort leería "sin raíz de datos"
@@ -2161,7 +2183,6 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: Módulo → n.º de llamadas a ``get_mo2_path()`` (INSTALL/CAPABILITY).
     _INSTALL_O_CAPABILITY: dict[str, int] = {
         "sky_claw/__main__.py": 1,
-        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
@@ -2184,7 +2205,6 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
     _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
-        "sky_claw/app_context.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 2,
         "sky_claw/local/tools/loot_service.py": 1,
     }
@@ -2219,7 +2239,6 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: resuelve — B de #555; contado como referencia enlazada/callable).
     _MODS_PARA_DESTINO: dict[str, int] = {
         "sky_claw/__main__.py": 1,
-        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
     }

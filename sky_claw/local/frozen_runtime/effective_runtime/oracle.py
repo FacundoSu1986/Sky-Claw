@@ -76,6 +76,7 @@ from sky_claw.local.frozen_runtime.effective_runtime.processes import (
     probe_live_processes,
     raiz_de_la_imagen,
 )
+from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
 from sky_claw.local.frozen_runtime.storage import active_state_path
 from sky_claw.local.runtime_vault.models import RuntimeIdentity
@@ -202,18 +203,78 @@ def _desired_ausente(desired: DesiredRuntime | None) -> bool:
 
 
 def desired_runtime_from_storage(root: pathlib.Path) -> DesiredRuntime:
-    """Desired leído de la autoridad durable disponible — hoy, sólo la Generation.
+    """Desired leído de la autoridad durable: active.json y RuntimeCloneRecord.
 
-    ``active.json`` v1 persiste ``desired_active_generation`` y **nada más**. No
-    existe store de ``RuntimeCloneRecord``, así que ``clone_root`` queda en
-    ``None`` por construcción y el oráculo devolverá ``UNKNOWN``: ésa es la
-    dependencia real que separa P4 de P5 (FASE D del brief), no un hueco de
-    implementación de este slice.
+    ``active.json`` v1 persiste sólo ``desired_active_generation`` (sin Clone
+    pretendido), por lo que devuelve ``clone_root=None`` (fail-closed).
+    ``active.json`` v2 persiste el par ``desired_generation_id`` y ``desired_clone_id``;
+    si el clone_id existe, está PROVISIONED, su linaje coincide y su ruta es
+    admisible, resuelve auténticamente el Desired Runtime.
     """
     carga = load_frozen_runtime_state(active_state_path(pathlib.Path(root)))
     if not carga.found or carga.state is None:
         return DesiredRuntime()
-    return DesiredRuntime(generation_id=carga.state.desired_active_generation)
+
+    gen_id = carga.state.desired_active_generation
+    clone_id = carga.state.desired_clone_id
+    if clone_id is None or gen_id is None:
+        return DesiredRuntime(generation_id=gen_id)
+
+    from sky_claw.local.frozen_runtime.clones import (
+        CANONICAL_ADMITTED_ROLE,
+        RuntimeCloneLifecycle,
+        admitir_clone_root_path,
+        cargar_runtime_clone_record,
+        leer_runtime_clone_record,
+        verificar_runtime_clone,
+    )
+    from sky_claw.local.frozen_runtime.generations import leer_generation_metadata
+    from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
+
+    record = cargar_runtime_clone_record(pathlib.Path(root), clone_id)
+    if record is None:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    if record.source_generation_id != gen_id:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    if record.lifecycle is not RuntimeCloneLifecycle.PROVISIONED:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    if record.admitted_role != CANONICAL_ADMITTED_ROLE:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    # Validar que la Generation exista de verdad en el storage
+    try:
+        leer_generation_metadata(pathlib.Path(root), record.source_generation_id)
+    except (FrozenRuntimeError, OSError):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    # Validar físicamente el clone contra la Generation registrada
+    verif = verificar_runtime_clone(pathlib.Path(root), clone_id)
+    if verif.state is not GenerationVerificationState.VALID:
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    # Re-lectura consistente: garantizar que el record no fue invalidado o alterado concurrentemente
+    try:
+        record_final = leer_runtime_clone_record(pathlib.Path(root), clone_id)
+    except (FrozenRuntimeError, OSError):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    if (
+        record_final.lifecycle is not RuntimeCloneLifecycle.PROVISIONED
+        or record_final.source_generation_id != gen_id
+        or record_final.admitted_role != CANONICAL_ADMITTED_ROLE
+        or record_final.root_path != record.root_path
+    ):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    try:
+        clone_root = admitir_clone_root_path(record_final.root_path, storage_root=pathlib.Path(root))
+    except (FrozenRuntimeError, OSError):
+        return DesiredRuntime(clone_id=clone_id, generation_id=gen_id)
+
+    return DesiredRuntime(clone_id=clone_id, clone_root=clone_root, generation_id=gen_id)
 
 
 def default_runtime_probes() -> RuntimeProbes:

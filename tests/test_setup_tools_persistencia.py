@@ -274,13 +274,13 @@ class TestDegradacionPorPersistencia:
 
 
 class TestQueNoSeDegrada:
-    async def test_una_tool_que_ya_habia_fallado_conserva_su_mensaje(
+    async def test_una_tool_que_ya_habia_fallado_conserva_su_motivo_y_suma_el_aviso(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``SetupToolsParams.tools`` es ``list[str]`` sin dedupe y el bucle tampoco
         deduplica: con ``["loot", "loot"]`` la segunda vuelta puede reemplazar la
         entrada por un error. Pisarle encima el aviso de persistencia perdería el
-        motivo real del fallo.
+        motivo real del fallo; no anexarlo ocultaba el segundo fallo (el guardado).
         """
         _romper_el_guardado(monkeypatch)
         inst = _instalador(side_effect=[_resultado_loot(), ToolInstallError("el hash no coincide")])
@@ -298,7 +298,9 @@ class TestQueNoSeDegrada:
 
         entrada = json.loads(salida)["loot"]
         assert entrada["success"] is False
-        assert entrada["message"] == "el hash no coincide"  # el motivo REAL, no el aviso
+        # El motivo REAL se conserva y el aviso se ANEXA (success no se toca).
+        assert entrada["message"].startswith("el hash no coincide")
+        assert external_tools._AVISO_PERSISTENCIA in entrada["message"]
 
     async def test_con_la_persistencia_sana_el_exito_sigue_siendo_exito(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path

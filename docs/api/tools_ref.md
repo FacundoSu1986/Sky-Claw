@@ -29,7 +29,9 @@ JSON Schema y ejecuta handlers async. Su inventario incorporado verificado es:
 `run_xedit_script`, `preview_mod_installer`, `install_mod_from_archive`,
 `resolve_fomod`, `analyze_esp_conflicts`, `run_pandora`, `run_bodyslide`,
 `generate_bashed_patch`, `uninstall_mod`, `toggle_mod`, `launch_game`,
-`close_game` y `setup_tools`.
+`close_game`, `setup_tools` y `diagnosticar_parallax_perfil` (NP-A0h: solo lectura; el LLM solo manda
+`mod`, el perfil es el de la sesión y lo que sale del disco se sanea antes de llegar al modelo; es el
+hermano de la tool homónima del dispatcher de la GUI).
 
 La allowlist de sesión filtra tanto la enumeración visible como la ejecución.
 
@@ -83,6 +85,35 @@ Ancla enumerativa: `tests/test_perfil_sesion_invariante.py`.
 porque sus prerrequisitos de host no los puede satisfacer Sky-Claw. Ver
 [Community Shaders](../user/community_shaders.md).
 
+`ngio` y `community_shaders` instalan mods de MO2 bajo `mods/`, no ejecutables, y
+instalar no los activa: sin `+<Nombre>` en el `modlist.txt` del perfil el VFS no los
+monta. Por eso `setup_tools` recibe el `mo2` y el perfil de la sesión (los mismos que
+inyecta `AsyncToolRegistry`) y activa cada mod instalado con `add_mod_to_modlist`. Un
+único helper (`_activar_en_modlist`) resuelve esa activación para las dos ramas. Cada
+entrada devuelve `activados` y `activacion` (`ok`, `parcial`, `fallo`, `no_disponible` o
+`vacio`); al salir de la activación `success` vale exactamente `activacion == "ok"` y
+`message` sólo es vacío en éxito. Sin `mo2` o sin perfil la activación es `no_disponible`
+y `success` es `false`: el mod quedó en disco pero no se afirma que esté activo.
+`vacio` significa que el instalador no devolvió ningún componente (ni siquiera hay qué
+activar): se reporta como fallo para que una lista vacía no se lea como «todo activado».
+Hoy ningún instalador lo produce; existe como guard del helper y lo ejerce un test con
+Community Shaders.
+
+El guardado de la configuración corre **después** y puede degradar el resultado, sin
+tocar `activacion`:
+
+| Activación | Guardado | `success` | `activacion` | `message` |
+|---|---|---|---|---|
+| `ok` | falla | `false` | `ok` (los mods sí quedaron activados) | sólo el aviso de persistencia |
+| distinta de `ok` | falla | `false` | la de la activación | el motivo de la activación **más** el aviso de persistencia |
+
+Por eso `success: false` con `activacion: "ok"` significa «activado, pero no se guardó el
+registro». El aviso se suma al motivo de la activación en vez de reemplazarlo. La GUI
+activa sólo Community Shaders (NGIO no tiene ritual de GUI).
+Anclas: `tests/test_cs_activacion_modlist.py` (mismos escenarios para ambas tools, con un
+`MO2Controller` real, y censo por AST de las ramas de `setup_tools` que instalan bajo
+`mods/`) y `tests/test_mo2_modlist_priority.py` (censo de los mutadores del modlist).
+
 `ensure_skse` **no** está en esta ruta: sólo se alcanza desde la GUI, porque escribe
 ejecutables en el directorio del juego y la aprobación debe ser la del operador. El
 recorte está congelado por igualdad literal en `tests/test_ritual_install.py`.
@@ -109,7 +140,11 @@ nombres comprobados son:
 `quick_auto_clean`, `execute_loot_sorting`, `generate_animations`,
 `generate_lods`, `generate_bashed_patch`, `validate_plugin_limit`,
 `resolve_conflict_with_patch`, `analyze_grass_prerequisites`,
-`generate_grass_cache`, `preview_chain` y `execute_synthesis_pipeline`.
+`generate_grass_cache`, `preview_chain`, `execute_synthesis_pipeline` y
+`diagnosticar_parallax_perfil` (NP-A0h, solo lectura, sin gate HITL: qué gana en el perfil de
+MO2 para un mod del generador nativo de parallax; el perfil es el de la sesión y el payload
+solo lleva `mod`). La GUI lo invoca desde el botón de lupa de cada fila de la lista de mods
+(NP-A0i, `run_diagnostico_parallax` en `ritual_runner.py`).
 
 El dispatcher devuelve un dict. Una tool desconocida conserva
 `{"status": "error", "reason": "ToolNotFound"}`. El middleware cubre HITL,

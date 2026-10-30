@@ -73,6 +73,14 @@ Conviene variar: piedra, madera, tierra, algo con relieve fuerte y algo suave. P
 (`--mods` es la carpeta `mods` de tu MO2.) Muestra una línea por textura con sus métricas y el veredicto del gate, un
 resumen, y escribe `informe_parallax.json`. Los `*_p.dds` quedan en `D:\MO2\mods\Sky-Claw - Native Parallax Output\textures\...`.
 
+Si la carpeta de entrada es un mod de tu MO2, podés pedirle que mire el perfil (sin tocarlo) con `--data-root D:\MO2 --mod "Nombre del mod" [--perfil Default]`:
+no mide una textura que otro mod tapa, y **avisa antes de escribir** si otro mod, `overwrite` o un mod de control queda por encima de la salida (o si la salida no está
+habilitada). El aviso no frena la corrida: en la primera vez el mod de salida todavía no existe en tu lista. Para solo mirar, sin generar: `cli perfil --mod … --mods … --data-root …`
+(sale con 4 si hay algo tapado). Es una vista del `modlist.txt`: no reemplaza mirar la pestaña «Datos» ni probar en el juego.
+El mismo diagnóstico está disponible como tool de solo lectura `diagnosticar_parallax_perfil` desde la GUI —el botón de lupa de cada fila de la pantalla «Mods»; el
+resultado aparece en un panel que se cierra con la ×— y desde el agente de Telegram / `/api/chat` (solo se le pasa el nombre del mod; usa el perfil de la sesión): las dos
+contestan con la misma función y sobre las mismas carpetas de MO2.
+
 Volver a correr el mismo comando recalcula todo pero **no reescribe** lo que no cambió (el informe lo marca `OMITIDA`). Si cambiás un
 parámetro (abajo), esa salida se reemplaza sola.
 
@@ -100,6 +108,18 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    original** en la lista de prioridad (solo agrega archivos `_p.dds`, no pisa las normales).
 2. Para que el parallax **se vea**, la malla o el terreno tiene que usar parallax (depende de tu ENB / preset / Community
    Shaders). No verifiqué cuál es tu caso: contame qué usás.
+   **Antes de elegir qué mirar, preguntale a la herramienta** (solo lee, no genera nada y no necesita `texconv`):
+   `.venv\Scripts\python -m sky_claw.local.native_parallax.cli elegibilidad --mod "Nombre del mod" --mods D:\MO2\mods --data-root D:\MO2 [--perfil Default]`.
+   **Requisito:** `--mod` tiene que ser un mod **habilitado** de tu perfil de MO2 (una carpeta dentro de `--mods`): evalúa las texturas de ese mod, no las que copiaste a
+   `C:\prueba_parallax\entrada`. Si probás con una carpeta suelta que no es un mod habilitado, salteá este diagnóstico (con un mod que no está habilitado devuelve un error de uso).
+   Por cada textura del mod dice `SI` (hay una malla suelta del perfil donde el plugin de relieve automático usaría la salida, y cuál), `NO` (ninguna forma usaría esa salida: o todas
+   las mallas que la referencian quedan fuera —relieve de fábrica que el plugin apaga, transparencia, sin colores de vértice…, con el desglose—, o el plugin elegiría antes otra
+   textura suelta; también si el generador no la publicaría porque otro mod tapa la normal de entrada, o si el juego no cargaría lo publicado porque otro mod de mayor prioridad gana
+   la ruta de salida o el mod de salida no está habilitado en el perfil) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la
+   búsqueda del plugin depende de un archivo que no se puede comprobar, una ruta es ambigua o alguna malla no se pudo leer). Elegí para mirar las que dicen `SI`. **Límites:** no lee
+   mallas dentro de un `.bsa` (las del juego base lo están: esas salen `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni
+   activadores) y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y
+   la versión que tenés instalada puede diferir.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
@@ -135,7 +155,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
-- No hay interfaz gráfica ni agente: solo esta línea de comandos. La integración con MO2 (habilitar el mod solo) viene después.
+- La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
   archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.

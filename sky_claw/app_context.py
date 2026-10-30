@@ -1425,15 +1425,13 @@ class AppContext:
                 profile_name=active_profile,
                 mo2_install_dir=mo2_root,
             )
-            resolved_install = path_service.get_mo2_path() or mo2_root
-            resolved_data = path_service.get_mo2_instance_data_root_estricto() or resolved_install
-            destino_mods = path_service.get_mo2_mods_path_para_destino()
-            resolved_mods = destino_mods if destino_mods is not None else (resolved_data / "mods")
+            # Las raíces las deriva el resolver (una sola vez): la GUI pide las mismas al armar su dispatcher.
+            raices_mo2 = path_service.raices_de_instancia_mo2(install_de_respaldo=mo2_root)
 
             mo2 = MO2Controller(
-                install_root=resolved_install,
-                data_root=resolved_data,
-                mods_dir=resolved_mods,
+                install_root=raices_mo2.install_root,
+                data_root=raices_mo2.data_root,
+                mods_dir=raices_mo2.mods_dir,
                 path_validator=validator,
             )
             self.mo2 = mo2

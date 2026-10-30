@@ -38,11 +38,13 @@ from sky_claw.app.gui.controllers import (
     NavigationController,
 )
 from sky_claw.app.gui.controllers.ritual_runner import (
+    STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
     resolve_pending_hitl_request,
     resolve_visible_pending_hitl,
+    run_diagnostico_parallax,
     run_ritual,
     run_ritual_install,
     run_ritual_resume,
@@ -62,6 +64,7 @@ from sky_claw.app.gui.views import render_dashboard
 from sky_claw.app.gui.views.forge_dashboard import (
     STORE_KEY_ENV,
     _hitl_modal_panel,
+    _parallax_diagnostico_panel,
     _ritual_feedback_panel,
     _ritual_preflight_panel,
     current_tab_id,
@@ -766,6 +769,19 @@ def main_page() -> None:
         name="gui-ritual-install",
     )
 
+    # NP-A0i (#817): el botón «Diagnosticar parallax» de cada fila de la lista de mods. SOLO LECTURA: no pide aprobación ni usa el
+    # single-flight de los rituales. Llega al dispatcher por el mismo camino que ellos (ritual_runner) y publica el resultado en el slot de
+    # ESTA pestaña, para que lo dibuje el panel descartable.
+    callbacks["on_mod_diagnose"] = lambda mod_name: create_tracked_task(
+        run_diagnostico_parallax(
+            mod_name,
+            supervisor=runtime.supervisor,
+            store=get_store(),
+            tab_id=current_tab_id(),
+        ),
+        name="gui-parallax-diagnostico",
+    )
+
     def _on_hitl_respond(request_id: str, approved: bool) -> None:
         _dispatch_hitl_response(
             request_id,
@@ -1108,6 +1124,8 @@ def setup_app() -> None:
     # T-16b: el semáforo de preflight que el dispatch adjunta se surface en su
     # propio @ui.refreshable, sin resetear el chat (mismo patrón que el toast).
     store.subscribe(STORE_KEY_RITUAL_PREFLIGHT, _ritual_preflight_panel.refresh)
+    # NP-A0i: el diagnóstico de parallax también va por su propio @ui.refreshable (no resetea el chat).
+    store.subscribe(STORE_KEY_DIAGNOSTICO_PARALLAX, _parallax_diagnostico_panel.refresh)
 
     # Descargas: la carga del historial se dispara al navegar a la sección (no
     # en el render — review Copilot #224), y todos los refresh de esta pantalla

@@ -282,7 +282,12 @@ async def test_un_dispatch_concurrente_no_hereda_el_cliente() -> None:
 #: ``run_ritual_resume`` (post-D2, F-001) es el tercer miembro: atraviesa el
 #: MISMO dispatcher HITL-gated de generate_lods con un payload resume, así que
 #: comparte exactamente la misma obligación de scoping que sus hermanos.
-LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install", "run_ritual_resume"})
+#: ``run_diagnostico_parallax`` (NP-A0i) es el cuarto miembro: hoy su tool es de SOLO LECTURA y el dispatcher la registra sin gate HITL, pero
+#: recibe ``store`` y ``tab_id`` como sus hermanos, así que se la trata igual en vez de excluirla con un párrafo: si algún día se la gateara,
+#: la aprobación quedaría scoped a su pestaña y su ``finally`` no desalojaría una ajena.
+LANZADORES_QUE_PARKEAN_APROBACION = frozenset(
+    {"run_ritual", "run_ritual_install", "run_ritual_resume", "run_diagnostico_parallax"}
+)
 
 
 def _lanzadores_detectados() -> frozenset[str]:
@@ -335,6 +340,18 @@ async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, e
     await run_ritual_resume("dyndolod", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
+async def _invocar_run_diagnostico_parallax(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:
+    """Misma receta que ``run_ritual``: el espía corre inline en la task del lanzador, donde correría un gate HITL."""
+    from sky_claw.app.gui.controllers.ritual_runner import run_diagnostico_parallax
+
+    class _Supervisor:
+        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+            await _ejecutar_espia(espia)
+            return {"success": True, "message": "", "alcance": "x"}
+
+    await run_diagnostico_parallax("Texturas", supervisor=_Supervisor(), store=store, tab_id=tab_id)
+
+
 async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:
     from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
@@ -356,6 +373,7 @@ RECETAS_DE_INVOCACION = {
     "run_ritual": _invocar_run_ritual,
     "run_ritual_install": _invocar_run_ritual_install,
     "run_ritual_resume": _invocar_run_ritual_resume,
+    "run_diagnostico_parallax": _invocar_run_diagnostico_parallax,
 }
 
 

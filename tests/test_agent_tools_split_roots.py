@@ -121,6 +121,16 @@ async def test_setup_tools_ngio_y_cs_usan_mods_dir_explicito(split_topology: dic
     gateway = MagicMock()
     session = MagicMock()
 
+    # Sin `mo2`/`profile` la activación degrada a `no_disponible` y `success`
+    # es False: el contrato de CS exige activar en el modlist del perfil.
+    validator = PathValidator(roots=[split_topology["install"], split_topology["data"], split_topology["mods"]])
+    mo2 = MO2Controller(
+        install_root=split_topology["install"],
+        data_root=split_topology["data"],
+        mods_dir=split_topology["mods"],
+        path_validator=validator,
+    )
+
     with (
         patch("sky_claw.local.discovery.scanner.detect_skyrim_edition") as mock_detect_ed,
         patch("sky_claw.local.discovery.scanner.read_skyrim_version") as mock_read_ver,
@@ -138,11 +148,25 @@ async def test_setup_tools_ngio_y_cs_usan_mods_dir_explicito(split_topology: dic
             gateway=gateway,
             session=session,
             mods_dir=split_topology["mods"],
+            mo2=mo2,
+            profile="Test",
         )
 
         res = json.loads(res_raw)
         assert res["ngio"]["success"] is True
+        assert res["ngio"]["activacion"] == "ok"
+        assert res["ngio"]["activados"] == ["NGIOMod"]
         assert res["community_shaders"]["success"] is True
+        assert res["community_shaders"]["activacion"] == "ok"
+        assert res["community_shaders"]["activados"] == ["CSMod"]
+
+        # La activación vive en el modlist de la INSTANCIA (data_root), no en
+        # la carpeta de instalación.
+        modlist = split_topology["data"] / "profiles" / "Test" / "modlist.txt"
+        texto_modlist = modlist.read_text(encoding="utf-8-sig")
+        assert "+NGIOMod" in texto_modlist
+        assert "+CSMod" in texto_modlist
+        assert not (split_topology["install"] / "profiles").exists()
 
         tools_installer.ensure_ngio.assert_called_once()
         ngio_target = tools_installer.ensure_ngio.call_args[0][0]
