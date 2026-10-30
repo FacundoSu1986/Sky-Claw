@@ -62,9 +62,9 @@ primera comparación con datos reales del lector de mallas y de la regla de eleg
 
 ## 4. Lo que NO se probó (límites)
 
-- **Que el mapa sea bueno.** Se midió que **se nota**. Dos efectos secundarios a ojo, **sin causa verificada**: una banda oscura en el
-  borde de una puerta y la pérdida del tinte verde de musgo en un techo (hipótesis no verificada: el desplazamiento cambia qué parte
-  de la difusa se muestrea).
+- **Que el mapa sea bueno.** Se midió que **se nota**. Dos efectos a ojo, **sin medir**: una banda oscura en el borde de una puerta y la
+  pérdida del tinte verde de musgo en un techo. La sesión los tomó por posibles artefactos; el operador los lee como comportamiento
+  esperado del parallax (ver la adenda, sección 8). Ninguna de las dos lecturas está medida.
 - **P2:** no hay comparación con ParallaxR.
 - **Un solo observador**, solo interior, con luz rasante y vista cercana; sin clima ni distancia normal de juego. **No verificado** que
   en exteriores el mapa se note igual.
@@ -95,7 +95,9 @@ que Auto Parallax carga igual en todas las sesiones).
 ## 7. Qué sigue
 
 1. ~~**Salida fresca** del generador actual sobre las mismas 5 estaciones; repetir P1.~~ **Hecho el 30/10 (tarde): P1 se sostiene; ver la sección 8.**
-2. Medir las dos anomalías (puerta y techo) y decidir si son del mapa o del entorno.
+2. Confirmar la lectura del operador sobre la puerta y el techo (sección 8). Una comprobación barata para la banda de la puerta:
+   apagar las sombras de parallax de Community Shaders (estaban activas en la prueba) y ver si la banda desaparece. Si no desaparece,
+   deja de ser una explicación suficiente.
 3. Aislar la zona gris del portón con una sesión corta sin Auto Parallax.
 4. P2, solo si aparece una salida de ParallaxR en el rig; comparación **a ciegas** y sin usar sus valores para ajustar umbrales.
 5. Pasar al chequeo automático las dos diferencias teóricas frente al plugin (la difusa `x_d.dds` → `x_p.dds` y derivar `x_p.dds` de una
@@ -129,9 +131,17 @@ hay un registro de umbrales validado contra un corpus real. Eso es el comportami
 El testigo sin relieve no cambió (0,019). Fresca y vieja no se distinguen en pantalla (diferencia de 0,5 a 1,0 contra efectos de 8 a 19).
 La única anomalía, en S1, se explicó por un corrimiento de cámara de unos 3 píxeles.
 
-**Los dos artefactos persisten con la salida fresca** (banda oscura en el borde de la puerta; pérdida del tinte verde del techo). Causa
-**NO VERIFICADA**. **El operador no los notó por su cuenta** al mirar el juego (dato del propio operador, 30/10): los señaló la sesión al comparar
-las capturas. Eso es información útil sobre su visibilidad, no una prueba de que no existan.
+**Los dos efectos persisten con la salida fresca**: una banda oscura en el borde de la puerta y la pérdida del tinte verde del techo. La
+sesión los marcó como posibles artefactos. **El operador no los notó por su cuenta** al mirar el juego y, al explicárselos, los lee como
+comportamiento esperado del parallax (observación del operador, 30/10):
+
+- **Puerta:** la banda oscura es la **sombra** que da la sensación de profundidad. Es consistente con que las sombras de parallax de
+  Community Shaders estaban activas en la prueba (`EnableShadows=1`).
+- **Techo:** el tinte de musgo está pintado sobre las **líneas rectas** de la textura; al deformarse por el parallax se nota menos. Es la
+  misma idea que la hipótesis previa de la sesión (el desplazamiento cambia qué parte de la difusa se muestra).
+
+Estado: **HYPOTHESIS** respaldada por la observación del operador; **no se midió** ni se aisló la causa (por ejemplo, apagando las sombras
+de parallax). Si se confirma, ninguno de los dos es un defecto del mapa que genera el proyecto; hasta entonces no se da por cerrado.
 
 **Conclusión.** P1 se sostiene con el código actual: el cambio de algoritmo (#794) no altera el resultado en estas 5 texturas.
 **Límites:** un solo observador, una sola sesión B2 (sin ciego nuevo), salida sin umbrales de gate validados y 5 texturas de una misma
