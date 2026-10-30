@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
+from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError
 from sky_claw.local.tools.synthesis_runner import SynthesisConfig, SynthesisExecutionError, SynthesisRunner
 
 
@@ -263,7 +263,15 @@ def test_group_base_name_that_collides_with_another_groups_split_is_rejected(tmp
         runner.inspect_settings()
 
 
-def test_selector_no_incluye_otro_patcher_cuyo_alias_coincide_con_id_canonico(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize(
+    ("selector", "ambiguous"),
+    [("requested", False), ("id-selected", True)],
+)
+def test_selector_no_incluye_otro_patcher_cuyo_alias_coincide_con_id_canonico(
+    tmp_path: pathlib.Path,
+    selector: str,
+    ambiguous: bool,
+) -> None:
     _, settings_path, _, _ = _runner(tmp_path)
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     patchers = payload["Profiles"][0]["Groups"][0]["Patchers"]
@@ -273,10 +281,15 @@ def test_selector_no_incluye_otro_patcher_cuyo_alias_coincide_con_id_canonico(tm
     patchers[1]["Nickname"] = "id-selected"
     settings_path.write_text(json.dumps(payload), encoding="utf-8")
 
+    if ambiguous:
+        with pytest.raises(PatcherPipelineError, match="ambiguous"):
+            PatcherPipeline.prepare_synthesis_cli_settings(settings_path, "Default", [selector])
+        return
+
     temporary_settings, profile = PatcherPipeline.prepare_synthesis_cli_settings(
         settings_path,
         "Default",
-        ["requested"],
+        [selector],
     )
     try:
         temporary_payload = json.loads(temporary_settings.read_text(encoding="utf-8"))
