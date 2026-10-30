@@ -2150,7 +2150,9 @@ class TestAnclaSemanticaDeRaicesMo2:
       detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
     - synthesis_service (2): output target y preflight.
-    - wrye_bash_service (preflight): overwrite + profile sources.
+    - wrye_bash_service (2): preflight (overwrite + profile sources) y la etapa 6
+      asistida (``profiles/<perfil>/plugins.txt``, ADR 0016: verificar que el
+      Bashed Patch esté ACTIVO en el perfil).
 
     INSTANCE_DATA_ROOT_ESTRICTO (``get_mo2_instance_data_root_estricto``):
 
@@ -2199,7 +2201,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
-        "sky_claw/local/tools/wrye_bash_service.py": 1,
+        "sky_claw/local/tools/wrye_bash_service.py": 2,
     }
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.

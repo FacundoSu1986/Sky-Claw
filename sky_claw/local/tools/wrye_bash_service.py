@@ -43,6 +43,12 @@ from sky_claw.app.db.locks import (
 )
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.output_targets import bashed_patch_target
+from sky_claw.local.tools.wrye_bash_asistida import (
+    preparacion_como_resultado,
+    preparar_etapa_asistida,
+    veredicto_como_resultado,
+    veredicto_etapa_asistida,
+)
 from sky_claw.local.tools.wrye_bash_runner import (
     BASHED_PATCH_NAME,
     WryeBashConfig,
@@ -66,6 +72,16 @@ logger = logging.getLogger(__name__)
 #: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
+
+#: Caracteres que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
+#: ``profiles/<perfil>/plugins.txt``, así que un separador o ``..`` saldría del árbol de
+#: la instancia (ADR 0016, fase 2).
+_SEPARADORES_DE_PERFIL = ("/", "\\", ":", "..")
+
+
+def _perfil_es_usable(profile: str) -> bool:
+    """True si *profile* puede unirse a ``profiles/<perfil>/`` sin escapar del árbol."""
+    return bool(profile) and not any(sep in profile for sep in _SEPARADORES_DE_PERFIL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +362,149 @@ class WryeBashPipelineService:
             wrye_bash_path,
         )
         return self._wrye_bash_runner
+
+    def _plugins_txt_path(self, profile: str) -> pathlib.Path | None:
+        """``<instancia MO2>/profiles/<perfil>/plugins.txt``, o ``None`` si no resuelve.
+
+        El perfil COMPONE una ruta, así que la validación ocurre ANTES de unirla
+        (:func:`_perfil_es_usable`): un separador o ``..`` la sacaría del árbol de la
+        instancia y la verificación leería el ``plugins.txt`` de otro perfil. Acá solo
+        queda la resolución; ``None`` significa "la instancia no resuelve", que es una
+        causa DISTINTA de "el nombre del perfil es inválido" y por eso no se confunden
+        en el ``reason`` que ve el operador.
+        """
+        if self._path_resolver is None:
+            return None
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
+        if not isinstance(mo2, pathlib.Path):
+            return None
+        return mo2 / "profiles" / profile / "plugins.txt"
+
+    # ------------------------------------------------------------------
+    # Etapa 6 ASISTIDA (ADR 0016) — preparar y verificar, sin spawnear
+    # ------------------------------------------------------------------
+
+    async def preparar_etapa_asistida(self, *, profile: str, validate_limit: bool = True) -> dict[str, Any]:
+        """Fase 1 de la etapa 6: instrucciones para el operador + testigo previo.
+
+        **No muta nada**: no toma locks, no snapshotea y no abre TX. Ese es el punto de
+        ADR 0016 — la caja negra se emite cuando algo puede mutar, y acá lo único que
+        se hace es leer y decirle al operador qué hacer. Una invocación que no puede
+        construir el parche no debe dejar una TX ``rolled_back`` por ritual.
+
+        El preflight SÍ corre y **bloquea** en rojo: mandar al operador a un paso manual
+        que ya sabemos que va a fallar (``Data`` sin permisos, master faltante, límite de
+        plugins excedido) es gastar su tiempo y dejar un parche a medias.
+
+        Siempre devuelve un ``dict`` serializable (contrato T11).
+        """
+        try:
+            if not _perfil_es_usable(profile):
+                return {
+                    "success": False,
+                    "reason": "PerfilInvalido",
+                    "message": (
+                        f"Nombre de perfil no usable para ubicar plugins.txt: {profile!r}. "
+                        "No puede estar vacío ni contener separadores de ruta."
+                    ),
+                }
+
+            preflight = self._ensure_preflight()
+            preflight_report: PreflightReport | None = None
+            if preflight is not None:
+                preflight_report = await preflight.run()
+                if preflight_report.blocks_mutations:
+                    red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                    logger.warning("Etapa 6 asistida no se ofrece: preflight en rojo (%s)", red)
+                    return _attach_preflight(
+                        {
+                            "success": False,
+                            "reason": "PreflightBlocked",
+                            "error": red,
+                            "message": f"Preflight en rojo: no se prepara la etapa 6 asistida. {red}",
+                        },
+                        preflight_report,
+                    )
+
+            if validate_limit and self._plugin_limit_guard is not None:
+                guard_result = await self._plugin_limit_guard(profile)
+                if not guard_result.get("valid", True):
+                    detalle = guard_result.get("error") or ""
+                    logger.error("[FASE-6-asistida] Abortando preparación: M-04 falló. %s", detalle)
+                    return _attach_preflight(
+                        {
+                            "success": False,
+                            "aborted_by": "plugin_limit_guard",
+                            "plugin_count": guard_result.get("plugin_count"),
+                            "error": detalle,
+                            "message": detalle,
+                        },
+                        preflight_report,
+                    )
+
+            plugins_txt = self._plugins_txt_path(profile)
+            artefacto = self._bashed_patch_path()
+            if plugins_txt is None or artefacto is None:
+                return _attach_preflight(
+                    {
+                        "success": False,
+                        "reason": "SinRutasResolubles",
+                        "message": (
+                            "No se pudo resolver el Data del juego: sin ruta del artefacto no hay "
+                            "preparación ni verificación posible."
+                        ),
+                    },
+                    preflight_report,
+                )
+
+            preparacion = await asyncio.to_thread(preparar_etapa_asistida, artefacto=artefacto, plugins_txt=plugins_txt)
+            return _attach_preflight(preparacion_como_resultado(preparacion), preflight_report)
+        except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
+            logger.error("[FASE-6-asistida] Error inesperado preparando la etapa: %s", exc, exc_info=True)
+            return {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)}
+
+    async def verificar_etapa_asistida(self, *, profile: str, huella_previa: str | None = None) -> dict[str, Any]:
+        """Fase 2: veredicto por evidencia en disco, sin spawnear y sin timeout.
+
+        La lectura del artefacto (huella completa por chunks) va a un hilo: un Bashed
+        Patch de decenas de MB no puede bloquear el event loop del daemon.
+
+        ``huella_previa`` es el ``sha256`` que devolvió :meth:`preparar_etapa_asistida`.
+        Sin él el veredicto puede ser verde pero declara ``frescura_probada=False``: no
+        se inventa un cambio por ``mtime``. Con él, un archivo idéntico es ``SIN_CAMBIO``.
+        """
+        try:
+            if not _perfil_es_usable(profile):
+                return {
+                    "success": False,
+                    "reason": "PerfilInvalido",
+                    "message": (
+                        f"Nombre de perfil no usable para ubicar plugins.txt: {profile!r}. "
+                        "No puede estar vacío ni contener separadores de ruta."
+                    ),
+                }
+
+            plugins_txt = self._plugins_txt_path(profile)
+            artefacto = self._bashed_patch_path()
+            if plugins_txt is None or artefacto is None:
+                return {
+                    "success": False,
+                    "reason": "SinRutasResolubles",
+                    "message": (
+                        "No se pudo resolver el Data del juego: sin ruta del artefacto no hay verificación posible."
+                    ),
+                }
+
+            veredicto = await asyncio.to_thread(
+                veredicto_etapa_asistida,
+                artefacto=artefacto,
+                plugins_txt=plugins_txt,
+                huella_previa=huella_previa,
+            )
+            return veredicto_como_resultado(veredicto)
+        except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
+            logger.error("[FASE-6-asistida] Error inesperado verificando la etapa: %s", exc, exc_info=True)
+            return {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)}
 
     # ------------------------------------------------------------------
     # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de loot_service
