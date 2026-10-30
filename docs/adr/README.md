@@ -6,6 +6,7 @@
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
 > **Fuentes canónicas:** ADR 0001–0014 en este directorio (el 0014 está en estado `Aceptada`, desde 2026-10-19).
+> El índice incorpora además el ADR 0016, aceptado el 2026-10-30.
 >
 > **Última verificación:** 2026-10-10; ADR 0012 (Frozen Runtime) **enmendado en P0.4 y
 > con el diseño de P4 congelado (P4-D0)**. **El estado vigente es §45**; el índice de
@@ -121,6 +122,7 @@
 - [0013 — Clean-room del generador nativo de parallax](0013-clean-room-native-parallax.md)
 - [0014 — Generador nativo de parallax: design brief, layout de producto y dependencias](0014-native-parallax-producto-brief-y-dependencias.md)
 - [0015 — Oráculo de Effective Runtime de solo lectura (P5-A)](0015-effective-runtime-oracle.md)
+- [0016 — Etapa 6 (Wrye Bash) como etapa ASISTIDA de dos fases](0016-etapa-6-wrye-bash-asistida.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.

@@ -43,6 +43,16 @@ Hermano del lado de la ENTRADA:
 ``LootSortingService._routes_through_physical_data`` (``loot_service.py``)
 responde la misma pregunta —¿este run lee el ``Data`` físico o corre bajo la
 USVFS?— para el único servicio donde la respuesta no es constante.
+
+**El caso (a) dejó de ser inalcanzable para Wrye Bash, y lo hizo por la puerta del
+operador, no por un runner.** La etapa 6 *asistida* (ADR 0016) no spawnea nada: el
+humano abre Wrye Bash **desde MO2**, así que ese proceso sí hereda la USVFS y su
+``Bashed Patch, 0.esp`` aterriza en ``overwrite/`` o en el mod de salida habilitado,
+no en el ``Data`` físico. ``bashed_patch_target`` sigue siendo correcto para la
+corrida spawneada —el único camino que este paquete lanza—; para *verificar* lo que
+construyó el operador el artefacto hay que buscarlo en la superposición del perfil,
+y eso es :func:`bashed_patch_en_overlay`. Las dos funciones conviven a propósito:
+son las dos caras del mismo invariante, "quién ejecuta decide dónde escribe".
 """
 
 from __future__ import annotations
@@ -55,7 +65,7 @@ from typing import TYPE_CHECKING
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 #: Subdirectorio administrado que Sky-Claw pasa a Pandora como ruta de salida
 #: explícita absoluta. Vive acá para que todos los consumidores compartan el
@@ -185,6 +195,104 @@ def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
     if game is None:
         return None
     return game / "Data" / BASHED_PATCH_NAME
+
+
+#: Nombre de la capa ``overwrite`` en :class:`ArtefactoEnOverlay`. Gana a todo mod.
+CAPA_OVERWRITE = "overwrite"
+
+#: Nombre de la capa del ``Data`` físico del juego. Es la de MENOR prioridad: en el
+#: overlay de MO2 un mod siempre la pisa.
+CAPA_DATA_JUEGO = "Data del juego"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ArtefactoEnOverlay:
+    """Dónde está (o debería estar) el artefacto dentro de la superposición del perfil.
+
+    Attributes:
+        ruta: la ruta física de la capa ganadora. Puede **no existir**: si ninguna
+            capa lo provee se devuelve la del ``Data`` del juego, que es donde el
+            veredicto ``ARTEFACTO_AUSENTE`` tiene sentido.
+        capa: nombre de la capa de la que sale *ruta* (``overwrite``, el mod que lo
+            provee, o ``Data del juego``).
+        cobertura_completa: ``False`` cuando no se pudieron enumerar todas las capas
+            (p. ej. el modlist del perfil no se pudo leer). Con ``False`` la AUSENCIA
+            **no está probada**: se miró en ``overwrite`` y en ``Data``, no en los mods.
+    """
+
+    ruta: pathlib.Path
+    capa: str
+    cobertura_completa: bool
+
+
+def bashed_patch_en_overlay(
+    *,
+    game: pathlib.Path | None,
+    mo2: pathlib.Path | None,
+    mods_dir: pathlib.Path | None,
+    mods_habilitados: Sequence[str] | None,
+) -> ArtefactoEnOverlay | None:
+    """Resolver del ``Bashed Patch`` para la etapa ASISTIDA: la capa que gana en el overlay.
+
+    La etapa 6 asistida verifica lo que construyó el operador **dentro de MO2**, donde la
+    USVFS está viva. Ahí el patch puede aterrizar en ``overwrite/`` o en un mod de salida
+    habilitado, y :func:`bashed_patch_target` —que modela la corrida spawneada, sin
+    VFS— devolvería el ``Data`` físico y el veredicto diría ``ARTEFACTO_AUSENTE`` sobre
+    un artefacto que el juego va a cargar. Este es el resolver de esa otra mitad.
+
+    Orden de capas, de mayor a menor prioridad — el mismo criterio que
+    ``mo2.ganadores`` y ``mod_effectivity``: ``overwrite`` gana a todo mod, los mods
+    habilitados van en orden de prioridad CRECIENTE (el último gana), y el ``Data``
+    físico es el fondo (un mod siempre lo pisa). Se devuelve la PRIMERA capa que tiene
+    el archivo, que es exactamente la copia que el perfil carga.
+
+    ``mods_habilitados`` es la tupla de ``vfs_attestation.read_enabled_mods``: este
+    módulo no parsea el perfil ni nombra su archivo. ``None`` = no se pudo enumerar, y
+    entonces la cobertura es parcial. La tupla vacía, en cambio, es una respuesta: no
+    hay mods habilitados, así que ``overwrite`` + ``Data`` **son** el overlay completo.
+
+    Falla cerrado sin lanzar: sin ``game`` no hay ni ``Data`` ni capa de fondo donde
+    buscar, así que devuelve ``None``. Una capa ilegible se saltea (best-effort, como
+    todo lo que corre alrededor del preflight); el efecto de saltearla es
+    ``cobertura_completa=False`` solo si la capa era la de los mods.
+    """
+    if not isinstance(game, pathlib.Path):
+        return None
+
+    data_juego = game / "Data" / BASHED_PATCH_NAME
+    capas: list[tuple[str, pathlib.Path]] = []
+    if isinstance(mo2, pathlib.Path):
+        capas.append((CAPA_OVERWRITE, mo2 / "overwrite" / BASHED_PATCH_NAME))
+    completo = True
+    if mods_habilitados is None:
+        completo = False
+    elif mods_habilitados:
+        if isinstance(mods_dir, pathlib.Path):
+            # ``read_enabled_mods`` devuelve prioridad CRECIENTE: se invierte para que
+            # la primera capa probada sea la que el juego carga.
+            capas.extend(
+                (nombre, mods_dir / nombre / BASHED_PATCH_NAME) for nombre in reversed(tuple(mods_habilitados))
+            )
+        else:
+            completo = False
+    capas.append((CAPA_DATA_JUEGO, data_juego))
+
+    for capa, ruta in capas:
+        # ``exists()`` traga el OSError y sigue enlaces; ``is_symlink()`` rescata el
+        # enlace roto, que existe para el veredicto (ENLACE) aunque no para ``exists``.
+        # Un directorio también "existe": el veredicto lo dirá NO_REGULAR, que es más
+        # informativo que un AUSENTE falso.
+        if ruta.exists() or ruta.is_symlink():
+            # Un acierto en ``overwrite`` es concluyente AUNQUE no se hayan podido
+            # enumerar los mods: esa capa gana a todas, así que ninguna capa no leída
+            # puede taparla. La cobertura parcial sólo importa cuando el ganador está
+            # en una capa que otra podría estar tapando.
+            return ArtefactoEnOverlay(
+                ruta=ruta,
+                capa=capa,
+                cobertura_completa=completo or capa == CAPA_OVERWRITE,
+            )
+    return ArtefactoEnOverlay(ruta=data_juego, capa=CAPA_DATA_JUEGO, cobertura_completa=completo)
 
 
 def synthesis_output_target(
