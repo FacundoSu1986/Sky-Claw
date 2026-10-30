@@ -560,7 +560,10 @@ class TestAddModToModlist:
     async def test_add_mod_to_modlist_con_duplicados_deja_una_sola_habilitada(
         self, sandbox: pathlib.Path, antes: list[str], despues: list[str]
     ) -> None:
-        """Un `modlist.txt` con `X` repetido termina con UNA sola entrada `+X`.
+        """Un `modlist.txt` con `X` repetido (como máximo UNA `+X` de entrada) termina con UNA `+X`.
+
+        Una `+X` ya repetida de entrada NO se repara: ver
+        `test_add_mod_to_modlist_con_mismo_habilitado_repetido_no_se_repara_y_avisa`.
 
         `read_enabled_mods` no deduplica y `ganadores._exigir_enabled` falla
         cerrado ante un nombre repetido: dejar dos `+X` convertiría un archivo
@@ -605,6 +608,81 @@ class TestAddModToModlist:
         await mo2.add_mod_to_modlist("X")
 
         assert modlist.read_bytes() == original
+
+    @pytest.mark.asyncio
+    async def test_add_mod_to_modlist_con_mismo_habilitado_repetido_no_se_repara_y_avisa(
+        self, sandbox: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`+X,+Otra,+X` (solo sale de editar a mano) es no-op: bytes idénticos y WARNING."""
+        import logging
+
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        mo2 = MO2Controller(sandbox, path_validator=PathValidator(roots=[sandbox]))
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        # CRLF sin BOM: cualquier reescritura cambiaría los bytes.
+        original = b"+X\r\n+Otra\r\n+X\r\n"
+        modlist.write_bytes(original)
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.local.mo2.vfs"):
+            await mo2.add_mod_to_modlist("X")
+
+        assert modlist.read_bytes() == original
+        avisos = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(avisos) == 1
+        mensaje = avisos[0].getMessage()
+        assert "'X'" in mensaje
+        assert "2 veces" in mensaje
+
+    @pytest.mark.asyncio
+    async def test_add_mod_to_modlist_con_habilitado_repetido_y_deshabilitada_solo_quita_la_deshabilitada(
+        self, sandbox: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`+X,+X,-X` queda `+X,+X` + WARNING: se quita la `-X`, NO se deduplica."""
+        import logging
+
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        mo2 = MO2Controller(sandbox, path_validator=PathValidator(roots=[sandbox]))
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        modlist = profile_dir / "modlist.txt"
+        modlist.write_text("+X\n+X\n-X\n", encoding="utf-8")
+
+        with caplog.at_level(logging.INFO, logger="sky_claw.local.mo2.vfs"):
+            await mo2.add_mod_to_modlist("X")
+
+        content = modlist.read_text(encoding="utf-8-sig")
+        assert [ln.strip() for ln in content.splitlines() if ln.strip()] == ["+X", "+X"]
+        avisos = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(avisos) == 1
+        assert "2 veces" in avisos[0].getMessage()
+        # El aviso no debe prometer que el archivo queda intacto: la `-X` sí se quita.
+        assert "como está" not in avisos[0].getMessage()
+        assert any("Discarded 1 disabled -X entries" in r.getMessage() for r in caplog.records)
+        # No se habilitó nada: el INFO no debe afirmar «Enabled ... in place».
+        assert not any("Enabled +X" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_add_mod_to_modlist_con_una_sola_habilitada_no_avisa(
+        self, sandbox: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Control: una única `+X` no emite WARNING."""
+        import logging
+
+        from sky_claw.local.mo2.vfs import MO2Controller
+
+        mo2 = MO2Controller(sandbox, path_validator=PathValidator(roots=[sandbox]))
+        profile_dir = sandbox / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "modlist.txt").write_bytes(b"+A\r\n+X\r\n")
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.local.mo2.vfs"):
+            await mo2.add_mod_to_modlist("X")
+
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_add_to_empty_modlist(self, sandbox: pathlib.Path) -> None:
