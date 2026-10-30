@@ -461,6 +461,10 @@ class BrokeredDynDOLODSpawnStrategy:
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
                 permitir_diferencial=True,
+                # MISMA restricción que el gate: reconstruir sin ella elegiría
+                # otro canario del mod (uno externo al artifact) y el drift
+                # bloquearía un spawn que el gate sí había aprobado.
+                subarbol_autorizado=handoff.artifact_root.name,
             )
         except VfsAttestationError as e:
             raise HandoffDriftError(
@@ -663,6 +667,12 @@ class BrokeredDynDOLODSpawnStrategy:
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
                 permitir_diferencial=True,
+                # La elegibilidad se restringe al ARTIFACT antes de seleccionar:
+                # el mod puede empaquetar más de lo autorizado (`meshes/…`) y un
+                # candidato externo consumiría el turno para después ser
+                # rechazado por la comprobación de pertenencia, bloqueando un
+                # handoff que sí tenía evidencia válida adentro.
+                subarbol_autorizado=request.staging.name,
             )
         except VfsAttestationError as e:
             return TexGenHandoffResult.bloqueado(

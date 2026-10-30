@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
 import stat
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
@@ -150,6 +151,75 @@ def _validated_profile(profile: str) -> str:
         return assert_safe_component(profile, field="profile")
     except PathViolationError as exc:
         raise VfsAttestationError(str(exc)) from exc
+
+
+#: Designador de unidad de Windows (`C:`) como componente: `mod_root / "C:"` es
+#: una ruta relativa a la unidad, no un nombre. Aunque la restricción sólo se usa
+#: para COMPARAR componentes ya enumerados, se rechaza en la puerta.
+_DRIVE_DESIGNATOR = re.compile(r"^[A-Za-z]:$")
+
+
+def _partes_del_subarbol_autorizado(raw: object) -> tuple[str, ...] | None:
+    """Normaliza la restricción al subárbol autorizado del artifact.
+
+    ``None`` significa "sin restricción": es el contrato histórico de los
+    consumidores que no atestiguan un artifact concreto (LOOT, health, legacy).
+    Un ``str`` se interpreta como ruta RELATIVA al mod en forma POSIX
+    (``textures``, ``textures/sub``) y se descompone en componentes seguros.
+
+    Se rechaza todo lo que podría escapar del artifact: rutas absolutas,
+    designadores de unidad, separadores de Windows, componentes ``.``/``..``,
+    componentes vacíos, NUL y caracteres de control. La restricción **nunca se
+    une a un path**: sólo compara componentes de rutas ya enumeradas por
+    :func:`_iter_mod_files`, así que un valor inválido no puede redirigir una
+    lectura; aun así falla cerrado en la puerta.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise VfsAttestationError(f"subárbol autorizado inválido: se esperaba str, llegó {type(raw).__name__}")
+    if not raw.strip():
+        raise VfsAttestationError("subárbol autorizado inválido: no puede estar vacío")
+    if "\\" in raw:
+        raise VfsAttestationError(
+            f"subárbol autorizado inválido: {raw!r} usa separador de Windows; se espera una ruta POSIX relativa al mod"
+        )
+    if raw.startswith("/"):
+        raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} es una ruta absoluta")
+    partes = tuple(raw.split("/"))
+    for parte in partes:
+        if not parte:
+            raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} tiene un componente vacío")
+        if _DRIVE_DESIGNATOR.match(parte):
+            raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} contiene un designador de unidad")
+        try:
+            assert_safe_component(parte, field="subarbol_autorizado")
+        except PathViolationError as exc:
+            raise VfsAttestationError(str(exc)) from exc
+    return partes
+
+
+def _en_subarbol(relative: pathlib.Path, subarbol: tuple[str, ...] | None) -> bool:
+    """¿El archivo enumerado vive DENTRO del subárbol autorizado del mod?
+
+    La comparación es exacta (sensible a mayúsculas) a propósito: es el mismo
+    criterio que la comprobación de pertenencia al staging del gate, que sigue
+    siendo la autoridad final. Una comparación laxa elegiría un candidato que la
+    comprobación posterior rechaza, reproduciendo el falso negativo que este
+    filtro elimina.
+
+    El archivo debe quedar estrictamente debajo del prefijo: el prefijo nombra
+    un directorio del artifact, nunca un archivo suelto.
+    """
+    if subarbol is None:
+        return True
+    partes = relative.parts
+    return len(partes) > len(subarbol) and partes[: len(subarbol)] == subarbol
+
+
+def _describir_subarbol(subarbol: tuple[str, ...] | None) -> str:
+    """Sufijo de diagnóstico para los errores de selección."""
+    return "" if subarbol is None else f" (subárbol autorizado {'/'.join(subarbol)})"
 
 
 def _sha256_file(path: pathlib.Path) -> str:
@@ -548,8 +618,9 @@ def _construir_challenge(
     always_active: frozenset[str],
     source_mod: str | None,
     permitir_diferencial: bool,
+    subarbol_autorizado: str | None = None,
 ) -> VfsAttestationChallenge:
-    """Walk común de selección de canary (libre o restringido a un mod).
+    """Walk común de selección de canary (libre, restringido a un mod o a un subárbol).
 
     Un canary elegible es un archivo propio de un mod habilitado que ningún root
     de mayor prioridad (``overwrite`` o un mod más alto en el ``modlist``)
@@ -569,10 +640,24 @@ def _construir_challenge(
     prioridad se calculan respecto de su posición; sin él se recorren todos los
     mods habilitados como candidatos.
 
+    Con ``subarbol_autorizado`` (ruta relativa al mod) la ELEGIBILIDAD se
+    restringe además a ese subárbol, en **ambas** pasadas y ANTES de tocar el
+    ``Data`` físico. Es la diferencia entre "un canario de este mod" y "un canario
+    del artifact autorizado": sin el filtro, un archivo externo al artifact
+    (p. ej. ``meshes/a.nif``) puede ganar por orden de recorrido y hacer que el
+    llamador —que después exige pertenencia al staging— bloquee un handoff que
+    sí tenía un candidato válido adentro. El filtro no reemplaza esa comprobación
+    posterior: la deja como defensa redundante.
+
     Elegibilidad = "este archivo llega efectivo al namespace virtual", que es la
     mitad estructural de lo que el runtime prueba después. NO reemplaza al
     digest del artifact completo: un canary es UN archivo representativo.
     """
+    subarbol = _partes_del_subarbol_autorizado(subarbol_autorizado)
+    if subarbol is not None and source_mod is None:
+        raise VfsAttestationError(
+            "el subárbol autorizado exige un mod fuente: sin mod no hay artifact cuyo subconjunto restringir"
+        )
     profile_modlist = profile_dir / "modlist.txt"
     enabled = read_enabled_mods(profile_modlist)
     if source_mod is not None:
@@ -627,6 +712,11 @@ def _construir_challenge(
         if not mod_root.is_dir():
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
+            if not _en_subarbol(relative, subarbol):
+                # Fuera del artifact autorizado: no es evidencia de nada que el
+                # llamador pueda usar, y su estado físico no debe influir en la
+                # selección (ni siquiera fallando cerrado).
+                continue
             if (data / relative).exists():
                 continue
             if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
@@ -639,9 +729,9 @@ def _construir_challenge(
     if not permitir_diferencial:
         if source_mod is not None:
             raise VfsAttestationError(
-                f"no existe un canary elegible dentro de {source_mod!r}: no hay archivo ausente del Data "
-                "físico o queda eclipsado por overwrite/mods de mayor prioridad (modo diferencial no "
-                "habilitado para este call site)"
+                f"no existe un canary elegible dentro de {source_mod!r}{_describir_subarbol(subarbol)}: no hay "
+                "archivo ausente del Data físico o queda eclipsado por overwrite/mods de mayor prioridad "
+                "(modo diferencial no habilitado para este call site)"
             )
         raise VfsAttestationError(
             "no existe un canary elegible: no hay archivo de mod ausente del Data físico y el modo "
@@ -661,6 +751,8 @@ def _construir_challenge(
         if not mod_root.is_dir():
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
+            if not _en_subarbol(relative, subarbol):
+                continue
             fisico = data / relative
             if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
                 continue
@@ -677,9 +769,9 @@ def _construir_challenge(
 
     if source_mod is not None:
         raise VfsAttestationError(
-            f"no existe un canary elegible dentro de {source_mod!r}: no hay archivo ausente del Data "
-            "físico ni archivo propio con bytes distintos en el Data físico, o queda eclipsado por "
-            "overwrite/mods de mayor prioridad"
+            f"no existe un canary elegible dentro de {source_mod!r}{_describir_subarbol(subarbol)}: no hay "
+            "archivo ausente del Data físico ni archivo propio con bytes distintos en el Data físico, o "
+            "queda eclipsado por overwrite/mods de mayor prioridad"
         )
     raise VfsAttestationError(
         "no existe un canary elegible: no hay archivo de mod ausente del Data físico ni con bytes "
@@ -755,6 +847,7 @@ def build_attestation_challenge_for_source(
     profile: str,
     physical_data_dir: pathlib.Path,
     permitir_diferencial: bool = False,
+    subarbol_autorizado: str | None = None,
 ) -> VfsAttestationChallenge:
     """Canary elegible perteneciente a UN mod concreto (p. ej. ``TexGen Output``).
 
@@ -770,8 +863,16 @@ def build_attestation_challenge_for_source(
     opt-in: el call site debe revalidar el estado físico antes y después del
     probe (el gate brokered lo hace).
 
+    ``subarbol_autorizado`` restringe la ELEGIBILIDAD a una ruta relativa al mod
+    (``textures``), es decir, al artifact autorizado cuando el mod empaqueta más
+    de lo que se autorizó. Se aplica antes de seleccionar y en las dos pasadas,
+    de modo que un candidato externo al artifact no puede consumir el turno ni
+    provocar que el llamador bloquee por no pertenecer al staging. Es opcional:
+    ``None`` conserva la selección histórica sobre el mod entero.
+
     El nombre del mod se valida como componente de path seguro; la firma NO
-    acepta rutas.
+    acepta rutas. El subárbol se valida como ruta relativa POSIX sin ``..``,
+    sin rutas absolutas y sin separadores de Windows.
     """
     safe_mod = _validated_profile(source_mod)
     profile_name = _validated_profile(profile)
@@ -786,6 +887,7 @@ def build_attestation_challenge_for_source(
         always_active=_always_active_plugins(data),
         source_mod=safe_mod,
         permitir_diferencial=permitir_diferencial,
+        subarbol_autorizado=subarbol_autorizado,
     )
 
 

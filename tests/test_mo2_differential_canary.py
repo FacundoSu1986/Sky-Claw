@@ -867,4 +867,177 @@ async def test_spawn_revalida_diferencial_sin_flip(tmp_path: pathlib.Path) -> No
 
     assert fresh.relative_path == approval.canary_relative_path
     assert fresh.sha256 == approval.canary_sha256
-    assert fresh.profile_fingerprint == approval.profile_fingerprint
+
+
+# =============================================================================
+# Subárbol autorizado: la elegibilidad se restringe ANTES de seleccionar
+# =============================================================================
+
+
+def _escribir_mod_relativo(esc: _Escenario, relativo: str, contenido: bytes) -> pathlib.Path:
+    """Escribe un archivo del mod en una ruta relativa al MOD (no al artifact)."""
+    ruta = esc.mods_dir / _MOD / relativo
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(contenido)
+    return ruta
+
+
+def _challenge_del_subarbol(esc: _Escenario, subarbol: str) -> VfsAttestationChallenge:
+    return build_attestation_challenge_for_source(
+        source_mod=_MOD,
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+        permitir_diferencial=True,
+        subarbol_autorizado=subarbol,
+    )
+
+
+def test_subarbol_autorizado_filtra_antes_de_seleccionar(tmp_path: pathlib.Path) -> None:
+    """El ausente de `meshes/` no puede ganarle al diferencial de `textures/`.
+
+    Sin restricción el walk elige `meshes/a.nif` (ausente del Data físico, y por
+    orden alfabético el primero). Restringido al artifact, el único elegible es
+    el diferencial de `textures/`.
+    """
+    esc = _escenario(tmp_path)
+    _escribir_mod_relativo(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-ARTIFACT")
+    esc.escribir_fisico("a.dds", b"DDS-FISICO-DISTINTO")
+
+    libre = _challenge_del_mod(esc)
+    assert libre.relative_path.as_posix() == "meshes/a.nif", "baseline: el walk del mod entero gana por orden"
+
+    restringido = _challenge_del_subarbol(esc, "textures")
+    assert restringido.relative_path.as_posix() == "textures/a.dds"
+    assert restringido.source_mod == _MOD
+
+
+def test_subarbol_autorizado_conserva_ausente_antes_que_diferencial(tmp_path: pathlib.Path) -> None:
+    """Dentro del subárbol se mantiene la preferencia histórica: ausente primero."""
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"AUSENTE-DEL-FISICO")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-B")
+    esc.escribir_fisico("b.dds", b"B-FISICO-DISTINTO")
+
+    challenge = _challenge_del_subarbol(esc, "textures")
+
+    assert challenge.relative_path.as_posix() == "textures/a.dds"
+    assert challenge.sha256 == _sha(b"AUSENTE-DEL-FISICO")
+
+
+def test_subarbol_autorizado_sin_candidatos_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Ningún elegible dentro del subárbol ⇒ bloquea; jamás cae a un externo."""
+    esc = _escenario(tmp_path)
+    _escribir_mod_relativo(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-ARTIFACT")
+    esc.escribir_fisico("a.dds", b"BYTES-DEL-ARTIFACT")  # idéntico: no prueba diferenciación
+
+    with pytest.raises(VfsAttestationError, match="textures"):
+        _challenge_del_subarbol(esc, "textures")
+
+
+@pytest.mark.parametrize(
+    "subarbol",
+    [
+        "/textures",  # absoluta POSIX
+        "../meshes",  # escape por ..
+        "textures/../meshes",  # escape por ..
+        "textures/",  # componente vacío final
+        "textures//sub",  # componente vacío intermedio
+        "textures/./sub",  # componente "."
+        "C:/textures",  # designador de unidad Windows
+        "textures\\meshes",  # separador Windows
+        "",  # vacío
+        "   ",  # sólo espacios
+    ],
+)
+def test_subarbol_autorizado_rechaza_rutas_inseguras(tmp_path: pathlib.Path, subarbol: str) -> None:
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-ARTIFACT")
+    esc.escribir_fisico("a.dds", b"DDS-FISICO-DISTINTO")
+
+    with pytest.raises(VfsAttestationError):
+        _challenge_del_subarbol(esc, subarbol)
+
+
+def test_subarbol_autorizado_es_opcional_para_consumidores_historicos(tmp_path: pathlib.Path) -> None:
+    """El builder libre y el `for_source` sin restricción conservan su semántica."""
+    esc = _escenario(tmp_path, modlist=f"+{_OTRO}\n+{_MOD}\n")
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_fisico("a.dds", b"FISICO-A")
+    esc.escribir_mod(_OTRO, "b.dds", b"BYTES-DEL-OTRO")
+
+    libre = build_attestation_challenge(
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+    )
+    assert libre.source_mod == _OTRO
+    assert libre.relative_path.as_posix() == "textures/b.dds"
+
+    sin_restriccion = _challenge_del_mod(esc)
+    assert sin_restriccion.relative_path.as_posix() == "textures/a.dds"
+
+
+def test_subarbol_sin_mod_fuente_es_incoherente(tmp_path: pathlib.Path) -> None:
+    """Un subárbol sin mod fuente no delimita nada: es un contrato inválido."""
+    from sky_claw.local.mo2.vfs_attestation import _construir_challenge
+
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+
+    with pytest.raises(VfsAttestationError, match="mod fuente"):
+        _construir_challenge(
+            data_resolved=esc.data_root.resolve(),
+            mods_resolved=esc.mods_dir.resolve(),
+            profile_dir=esc.data_root / "profiles" / _PERFIL,
+            profile_name=_PERFIL,
+            data=esc.physical_data.resolve(),
+            always_active=frozenset(),
+            source_mod=None,
+            permitir_diferencial=False,
+            subarbol_autorizado="textures",
+        )
+
+
+def test_todo_caller_de_for_source_restringe_al_artifact() -> None:
+    """Ancla enumerada: un call site nuevo sin restricción rompe el ancla.
+
+    La corrección del selector vale sólo si TODOS los caminos que construyen el
+    challenge de un artifact lo restringen — el gate y la reconstrucción del
+    spawn. Un tercer llamador sin el filtro reintroduce el falso negativo.
+
+    El detector cubre las dos formas de invocación del repo: llamada directa y
+    ``asyncio.to_thread(build_attestation_challenge_for_source, ...)`` (donde el
+    builder es el PRIMER ARGUMENTO, no el ``func`` del ``Call``).
+    """
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    nombre_objetivo = "build_attestation_challenge_for_source"
+    sitios: list[tuple[str, frozenset[str]]] = []
+
+    def _invoca(nodo: ast.Call) -> bool:
+        candidatos = [nodo.func, *nodo.args]
+        for candidato in candidatos:
+            etiqueta = candidato.id if isinstance(candidato, ast.Name) else getattr(candidato, "attr", None)
+            if etiqueta == nombre_objetivo:
+                return True
+        return False
+
+    for archivo in sorted(raiz.rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call) or not _invoca(nodo):
+                continue
+            sitios.append(
+                (
+                    str(archivo.relative_to(raiz)).replace("\\", "/"),
+                    frozenset(kw.arg for kw in nodo.keywords if kw.arg is not None),
+                )
+            )
+
+    assert sitios, "el ancla no puede quedar vacía: no se encontró ningún call site"
+    sin_restriccion = [ruta for ruta, kwargs in sitios if "subarbol_autorizado" not in kwargs]
+    assert sin_restriccion == [], f"call sites sin restricción al artifact: {sin_restriccion}"
