@@ -18,9 +18,11 @@ Contratos auditados:
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import shutil
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -114,6 +116,8 @@ def _crear_managed_source_sintetica(
     *,
     appid: str = "489830",
     version: str = "1.6.1170.0",
+    buildid: str = "13189953",
+    state_flags: str = "4",
 ) -> pathlib.Path:
     steamapps = raiz_steam / "steamapps"
     common = steamapps / "common" / "Skyrim Special Edition"
@@ -121,7 +125,7 @@ def _crear_managed_source_sintetica(
     _crear_arbol_juego(common, version=version)
     manifest = steamapps / f"appmanifest_{appid}.acf"
     manifest.write_text(
-        f'"AppState"\n{{\n\t"appid"\t\t"{appid}"\n\t"buildid"\t\t"13189953"\n}}\n',
+        f'"AppState"\n{{\n\t"appid"\t\t"{appid}"\n\t"buildid"\t\t"{buildid}"\n\t"StateFlags"\t\t"{state_flags}"\n}}\n',
         encoding="utf-8",
     )
     return common
@@ -131,14 +135,25 @@ def _crear_mo2_instance_sintetica(
     instance_dir: pathlib.Path,
     *,
     game_path: str,
+    custom_executables: list[tuple[str, str]] | None = None,
 ) -> pathlib.Path:
     instance_dir.mkdir(parents=True, exist_ok=True)
     ini = instance_dir / "modorganizer.ini"
     escaped = game_path.replace("\\", "\\\\")
-    ini.write_text(
-        f"[General]\ngamePath=@ByteArray({escaped})\ngameName=SkyrimSE\n\n[Settings]\n",
-        encoding="utf-8",
-    )
+    lineas = [
+        "[General]",
+        f"gamePath=@ByteArray({escaped})",
+        "gameName=SkyrimSE",
+        "",
+    ]
+    if custom_executables:
+        lineas.append("[customExecutables]")
+        for idx, (title, binary) in enumerate(custom_executables, start=1):
+            lineas.append(f"{idx}\\title={title}")
+            lineas.append(f"{idx}\\binary={binary}")
+        lineas.append("")
+    lineas.append("[Settings]")
+    ini.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     return instance_dir
 
 
@@ -985,6 +1000,507 @@ class TestFrozenRuntimeP5CBinderPreflight:
         assert evaluacion.is_ready is True
         assert evaluacion.target_clone_id == clone_record.clone_id
 
+    # -------------------------------------------------------------------------
+    # Hallazgos Auditoría P5-C0: P1-A, P1-B, P2-A, P2-B, P2-C, P2-D
+    # -------------------------------------------------------------------------
+
+    def test_p1a_gamepath_tercer_directorio_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P1-A: mo2 gamePath apuntando a un 3er directorio no admitido genera CONFIG_DIVERGENCE_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        tercer_path = tmp_path / "otro_skyrim_desconocido"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(tercer_path))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_p1a_config_skyrim_path_tercer_arbol_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P1-A: Config.skyrim_path apuntando a un 3er árbol produce CONFIG_DIVERGENCE_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        tercer_arbol = tmp_path / "arbol_externo"
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(tercer_arbol),
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_p1a_config_skyrim_path_omitida_cuando_es_obligatoria_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P1-A: Config de Sky-Claw omitida cuando exigir_config_skyrim_path=True produce CONFIG_DIVERGENCE_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=None,
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_p1a_situacion_legitima_pre_switch_con_mo2_en_managed_source_pasa(self, tmp_path: pathlib.Path) -> None:
+        """P1-A: Estado legítimo pre-switch: MO2 apuntando a Managed Source y Config coherente con Managed Source."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED in evaluacion.reasons
+
+    def test_p1a_situacion_legitima_post_switch_con_mo2_en_clone_pasa(self, tmp_path: pathlib.Path) -> None:
+        """P1-A: Estado legítimo post-switch (idempotente): MO2 apuntando al Clone y Config coherente con Clone."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(clone_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(clone_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED in evaluacion.reasons
+
+    def test_p1b_custom_executables_divergente_hacia_steam_o_tercero_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P1-B: customExecutables registrando lanzador de juego fuera de gamePath produce CONFIG_DIVERGENCE_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        # gamePath es clone_root, pero customExecutables registra skse64_loader apuntando a Steam
+        launcher_divergente = ms_root / "skse64_loader.exe"
+        _crear_mo2_instance_sintetica(
+            mo2,
+            game_path=str(clone_root),
+            custom_executables=[("SKSE", str(launcher_divergente))],
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_p1b_custom_executables_coherente_con_gamepath_pasa(self, tmp_path: pathlib.Path) -> None:
+        """P1-B: customExecutables con lanzador dentro de gamePath pasa el preflight."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        launcher_coherente = clone_root / "skse64_loader.exe"
+        _crear_mo2_instance_sintetica(
+            mo2,
+            game_path=str(clone_root),
+            custom_executables=[("SKSE", str(launcher_coherente))],
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+
+    def test_p2a_steam_manifest_corrupto_o_ilegible_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P2-A: appmanifest_489830.acf corrupto / malformado produce MANAGED_SOURCE_INVALID."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        manifest = steam / "steamapps" / "appmanifest_489830.acf"
+        manifest.write_text('"AppState" { corrupt vdf no closing brace', encoding="utf-8")
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_p2a_steam_manifest_sin_buildid_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P2-A: appmanifest_489830.acf sin buildid válido produce MANAGED_SOURCE_INVALID."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam, buildid="")
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_p2a_steam_manifest_con_descarga_activa_o_inestable_rechaza(self, tmp_path: pathlib.Path) -> None:
+        """P2-A: Steam con StateFlags!=4 (descarga o actualización en curso) produce MANAGED_SOURCE_INVALID."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam, state_flags="1026")
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_p2b_modorganizer_ini_es_reparse_point_rechaza(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-B: modorganizer.ini detectado como reparse point / symlink produce REPARSE_POINT_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        ini_path = mo2 / "modorganizer.ini"
+        import sky_claw.local.frozen_runtime.binder_preflight as bp_mod
+
+        real_primer_reparse = bp_mod._primer_reparse
+
+        def _mock_reparse(p: pathlib.Path) -> tuple[str, str | None]:
+            if p == ini_path:
+                return bp_mod._REPARSE_HAY, f"symlink_file en '{ini_path}'"
+            return real_primer_reparse(p)
+
+        monkeypatch.setattr(bp_mod, "_primer_reparse", _mock_reparse)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.REPARSE_POINT_DETECTED in evaluacion.reasons
+
+    def test_p2b_modorganizer_ini_inspeccion_indeterminada_rechaza(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-B: Inspección de reparse point en modorganizer.ini que falla con OSError produce REPARSE_INSPECTION_FAILED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        ini_path = mo2 / "modorganizer.ini"
+        import sky_claw.local.frozen_runtime.binder_preflight as bp_mod
+
+        real_primer_reparse = bp_mod._primer_reparse
+
+        def _mock_reparse(p: pathlib.Path) -> tuple[str, str | None]:
+            if p == ini_path:
+                return bp_mod._REPARSE_INDETERMINADO, "error de acceso al inspeccionar ini"
+            return real_primer_reparse(p)
+
+        monkeypatch.setattr(bp_mod, "_primer_reparse", _mock_reparse)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.REPARSE_INSPECTION_FAILED in evaluacion.reasons
+
+    def test_p2b_modorganizer_ini_mutado_concurrentemente_rechaza(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-B: modorganizer.ini modificado durante la observación (TOCTOU) produce MO2_INI_UNREADABLE."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        import sky_claw.local.frozen_runtime.binder_preflight as bp_mod
+
+        real_leer = bp_mod.leer_game_path_de_mo2
+
+        def _mutating_leer(p: pathlib.Path) -> Any:
+            res = real_leer(p)
+            st = p.stat()
+            os.utime(p, (st.st_atime, st.st_mtime + 10))
+            return res
+
+        monkeypatch.setattr(bp_mod, "leer_game_path_de_mo2", _mutating_leer)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MO2_INI_UNREADABLE in evaluacion.reasons
+
+    def test_p2c_is_ready_rechaza_lista_parcial_o_vacia(self) -> None:
+        """P2-C: is_ready es False ante checks vacíos o lista parcial, aunque verdict sea READY."""
+        check_pass = PreflightCheckResult(
+            check=PreflightCheckCode.PATH_SAFETY,
+            status=PreflightCheckStatus.PASS,
+            reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+        )
+
+        a_vacio = BinderPreflightAssessment(
+            verdict=BinderPreflightVerdict.READY,
+            reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
+            checks=(),
+        )
+        assert a_vacio.is_ready is False
+
+        a_parcial = BinderPreflightAssessment(
+            verdict=BinderPreflightVerdict.READY,
+            reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
+            checks=(check_pass,),
+        )
+        assert a_parcial.is_ready is False
+
+    def test_p2c_is_ready_rechaza_checks_duplicados(self) -> None:
+        """P2-C: is_ready es False si hay checks duplicados aunque la cantidad sea 10."""
+        checks_duplicados = [
+            PreflightCheckResult(
+                check=PreflightCheckCode.PATH_SAFETY,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            ),
+            PreflightCheckResult(
+                check=PreflightCheckCode.PATH_SAFETY,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            ),
+        ]
+        otros_codigos = [
+            c
+            for c in PreflightCheckCode
+            if c not in (PreflightCheckCode.PATH_SAFETY, PreflightCheckCode.CONFIG_COHERENCE)
+        ]
+        for cod in otros_codigos:
+            checks_duplicados.append(
+                PreflightCheckResult(
+                    check=cod, status=PreflightCheckStatus.PASS, reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED
+                )
+            )
+
+        assert len(checks_duplicados) == 10
+        a_dup = BinderPreflightAssessment(
+            verdict=BinderPreflightVerdict.READY,
+            reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
+            checks=tuple(checks_duplicados),
+        )
+        assert a_dup.is_ready is False
+
+    def test_p2c_is_ready_pasa_con_exactamente_los_diez_checks_obligatorios(self) -> None:
+        """P2-C: is_ready es True únicamente con los 10 checks obligatorios únicos y PASS."""
+        checks_completos = tuple(
+            PreflightCheckResult(
+                check=cod, status=PreflightCheckStatus.PASS, reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED
+            )
+            for cod in PreflightCheckCode
+        )
+        assert len(checks_completos) == 10
+        a_ok = BinderPreflightAssessment(
+            verdict=BinderPreflightVerdict.READY,
+            reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
+            checks=checks_completos,
+        )
+        assert a_ok.is_ready is True
+
+    def test_p2d_active_json_corrupto_rechaza_fail_closed(self, tmp_path: pathlib.Path) -> None:
+        """P2-D: active.json con JSON malformado / corrupto produce CLONE_RECORD_CORRUPT fail-closed."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        active_file = active_state_path(storage)
+        active_file.write_text("{ corrupt json not terminated", encoding="utf-8")
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=None,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CLONE_RECORD_CORRUPT in evaluacion.reasons
+
+    def test_p2d_active_json_schema_invalido_rechaza_fail_closed(self, tmp_path: pathlib.Path) -> None:
+        """P2-D: active.json con schema inválido produce CLONE_RECORD_SCHEMA_INVALID fail-closed."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        active_file = active_state_path(storage)
+        write_json_atomic(active_file, {"schema_version": 99, "updated_at_ns": 100})
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=None,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID in evaluacion.reasons
+
     def test_preflight_es_completamente_read_only_ancla_ast(self) -> None:
         """El preflight es de SOLO LECTURA: se congela por AST.
 
@@ -1107,11 +1623,19 @@ class TestFrozenRuntimeP5CBinderPreflight:
             reason=PreflightReasonCode.MANAGED_SOURCE_NOT_FOUND,
         )
 
-        # Caso 1: READY con checks PASS -> is_ready True
+        # Caso 1: READY con todos los 10 checks PASS -> is_ready True
+        checks_completos = tuple(
+            PreflightCheckResult(
+                check=cod,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            )
+            for cod in PreflightCheckCode
+        )
         a1 = BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.READY,
             reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
-            checks=(check_pass,),
+            checks=checks_completos,
         )
         assert a1.is_ready is True
 

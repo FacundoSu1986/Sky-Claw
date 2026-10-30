@@ -40,6 +40,8 @@ from sky_claw.local.frozen_runtime.clones import (
 )
 from sky_claw.local.frozen_runtime.discovery import discover_managed_source
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
+    Mo2Executable,
+    leer_ejecutables_de_mo2,
     leer_game_path_de_mo2,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
@@ -52,15 +54,18 @@ from sky_claw.local.frozen_runtime.effective_runtime.oracle import (
     _REPARSE_HAY,
     _REPARSE_INDETERMINADO,
     _es_igual_o_hijo,
+    _lanzadores_del_juego_fuera_de,
     _normalizar,
     _primer_reparse,
     default_runtime_probes,
 )
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeError,
+    FrozenRuntimeStorageError,
     InvalidCloneIdError,
     RuntimeCloneAdmissionError,
     RuntimeCloneCorruptError,
+    RuntimeCloneNotFoundError,
     RuntimeCloneSchemaError,
     StateCorruptError,
     StateSchemaError,
@@ -73,6 +78,11 @@ from sky_claw.local.frozen_runtime.models import (
     DiscoveryState,
     ManagedSourceDiscoveryResult,
     ManagedSourceProvider,
+    ProviderObservationState,
+)
+from sky_claw.local.frozen_runtime.provider_signals import (
+    evaluate_provider_observation,
+    read_steam_manifest_observation,
 )
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
 from sky_claw.local.frozen_runtime.storage import active_state_path
@@ -184,10 +194,13 @@ class BinderPreflightAssessment:
 
     @property
     def is_ready(self) -> bool:
-        """Invariante: True solo si el veredicto es READY y TODOS los checks son PASS."""
-        return self.verdict is BinderPreflightVerdict.READY and all(
-            c.status is PreflightCheckStatus.PASS for c in self.checks
-        )
+        """Invariante: True solo si el veredicto es READY, todos los 10 checks están presentes sin duplicados y todos son PASS."""
+        if self.verdict is not BinderPreflightVerdict.READY:
+            return False
+        codigos = [c.check for c in self.checks]
+        if len(codigos) != len(PreflightCheckCode) or set(codigos) != set(PreflightCheckCode):
+            return False
+        return all(c.status is PreflightCheckStatus.PASS for c in self.checks)
 
 
 def evaluar_binder_preflight(
@@ -198,6 +211,7 @@ def evaluar_binder_preflight(
     managed_source_root: pathlib.Path | None = None,
     steam_roots: tuple[str, ...] = STEAM_DEFAULT_PATHS,
     config_skyrim_path: str | None = None,
+    exigir_config_skyrim_path: bool = False,
     environ: Mapping[str, str] | None = None,
     probes: RuntimeProbes | None = None,
     assessed_at_ns: int | None = None,
@@ -209,111 +223,138 @@ def evaluar_binder_preflight(
     observadores = probes if probes is not None else default_runtime_probes()
     sello = assessed_at_ns if assessed_at_ns is not None else time.time_ns()
 
-    checks: list[PreflightCheckResult] = []
+    checks_map: dict[PreflightCheckCode, PreflightCheckResult] = {}
     reasons: list[PreflightReasonCode] = []
     notas: list[str] = []
 
     storage = pathlib.Path(os.path.abspath(os.fspath(storage_root)))
     mo2_dir = pathlib.Path(os.path.abspath(os.fspath(mo2_instance_dir)))
+    ini_path = mo2_dir / "modorganizer.ini"
 
     # -------------------------------------------------------------------------
-    # 1. Comprobación de seguridad en rutas base: mo2_instance_dir y storage_root
+    # 1. Comprobación de seguridad en rutas base: mo2_instance_dir, storage_root e ini
     # -------------------------------------------------------------------------
-    if _contiene_alias_83(storage) or _contiene_alias_83(mo2_dir):
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED,
-                detail="mo2_instance_dir o storage_root contienen componentes con alias 8.3",
-            )
+    if _contiene_alias_83(storage) or _contiene_alias_83(mo2_dir) or _contiene_alias_83(ini_path):
+        checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+            check=PreflightCheckCode.PATH_SAFETY,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED,
+            detail="mo2_instance_dir, storage_root o modorganizer.ini contienen componentes con alias 8.3",
         )
         reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
     else:
         clase_mo2, det_mo2 = _primer_reparse(mo2_dir)
         clase_storage, det_storage = _primer_reparse(storage)
+        clase_ini, det_ini = _primer_reparse(ini_path)
 
-        if clase_mo2 == _REPARSE_HAY or clase_storage == _REPARSE_HAY:
-            detalle = det_mo2 if clase_mo2 == _REPARSE_HAY else det_storage
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PATH_SAFETY,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.REPARSE_POINT_DETECTED,
-                    detail=detalle or "reparse point en mo2_instance_dir o storage_root",
-                )
+        if _REPARSE_HAY in (clase_mo2, clase_storage, clase_ini):
+            detalle = det_ini if clase_ini == _REPARSE_HAY else (det_mo2 if clase_mo2 == _REPARSE_HAY else det_storage)
+            checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                check=PreflightCheckCode.PATH_SAFETY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.REPARSE_POINT_DETECTED,
+                detail=detalle or "reparse point en mo2_instance_dir, storage_root o modorganizer.ini",
             )
             reasons.append(PreflightReasonCode.REPARSE_POINT_DETECTED)
-        elif clase_mo2 == _REPARSE_INDETERMINADO or clase_storage == _REPARSE_INDETERMINADO:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PATH_SAFETY,
-                    status=PreflightCheckStatus.INDETERMINATE,
-                    reason=PreflightReasonCode.REPARSE_INSPECTION_FAILED,
-                    detail="fallo al inspeccionar reparse points en rutas base",
-                )
+        elif _REPARSE_INDETERMINADO in (clase_mo2, clase_storage, clase_ini):
+            detalle = (
+                det_ini
+                if clase_ini == _REPARSE_INDETERMINADO
+                else (det_mo2 if clase_mo2 == _REPARSE_INDETERMINADO else det_storage)
+            )
+            checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                check=PreflightCheckCode.PATH_SAFETY,
+                status=PreflightCheckStatus.INDETERMINATE,
+                reason=PreflightReasonCode.REPARSE_INSPECTION_FAILED,
+                detail=detalle or "fallo al inspeccionar reparse points en rutas base o modorganizer.ini",
             )
             reasons.append(PreflightReasonCode.REPARSE_INSPECTION_FAILED)
         else:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PATH_SAFETY,
-                    status=PreflightCheckStatus.PASS,
-                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                    detail="rutas base libres de reparse points y alias",
-                )
+            checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                check=PreflightCheckCode.PATH_SAFETY,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                detail="rutas base y modorganizer.ini libres de reparse points y alias",
             )
 
     # -------------------------------------------------------------------------
-    # 2. Configuración de MO2 (modorganizer.ini legible y formato Qt)
+    # 2. Configuración de MO2 (modorganizer.ini legible, formato Qt y estabilidad)
     # -------------------------------------------------------------------------
-    ini_path = mo2_dir / "modorganizer.ini"
     game_path_obs_str: str | None = None
+    ejecutables_mo2: tuple[Mo2Executable, ...] = ()
     if not ini_path.is_file():
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.MO2_CONFIGURATION,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.MO2_INI_MISSING,
-                detail=f"no se encontró modorganizer.ini en '{mo2_dir}'",
-            )
+        checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+            check=PreflightCheckCode.MO2_CONFIGURATION,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.MO2_INI_MISSING,
+            detail=f"no se encontró modorganizer.ini en '{mo2_dir}'",
         )
         reasons.append(PreflightReasonCode.MO2_INI_MISSING)
     else:
-        evidencia_gp = leer_game_path_de_mo2(ini_path)
-        if evidencia_gp.state is not ObservationState.OBSERVED or evidencia_gp.path is None:
-            checks.append(
-                PreflightCheckResult(
+        stat_pre = None
+        try:
+            stat_pre = ini_path.stat()
+        except OSError as exc:
+            checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+                check=PreflightCheckCode.MO2_CONFIGURATION,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.MO2_INI_UNREADABLE,
+                detail=f"error al acceder a modorganizer.ini: {exc}",
+            )
+            reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
+
+        if stat_pre is not None:
+            evidencia_gp = leer_game_path_de_mo2(ini_path)
+            ejecutables_mo2 = leer_ejecutables_de_mo2(ini_path)
+            try:
+                stat_post = ini_path.stat()
+                if (stat_pre.st_ino, stat_pre.st_dev, stat_pre.st_mtime_ns) != (
+                    stat_post.st_ino,
+                    stat_post.st_dev,
+                    stat_post.st_mtime_ns,
+                ):
+                    checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+                        check=PreflightCheckCode.MO2_CONFIGURATION,
+                        status=PreflightCheckStatus.FAIL,
+                        reason=PreflightReasonCode.MO2_INI_UNREADABLE,
+                        detail="modorganizer.ini modificado concurrentemente durante la lectura",
+                    )
+                    reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
+                elif evidencia_gp.state is not ObservationState.OBSERVED or evidencia_gp.path is None:
+                    checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+                        check=PreflightCheckCode.MO2_CONFIGURATION,
+                        status=PreflightCheckStatus.FAIL,
+                        reason=PreflightReasonCode.MO2_INI_UNREADABLE,
+                        detail=evidencia_gp.detail or "gamePath no decodificable en [General]",
+                    )
+                    reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
+                else:
+                    game_path_obs_str = _normalizar(evidencia_gp.path)
+                    checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
+                        check=PreflightCheckCode.MO2_CONFIGURATION,
+                        status=PreflightCheckStatus.PASS,
+                        reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                        detail=f"gamePath decodificado correctamente: '{evidencia_gp.path}'",
+                    )
+            except OSError as exc:
+                checks_map[PreflightCheckCode.MO2_CONFIGURATION] = PreflightCheckResult(
                     check=PreflightCheckCode.MO2_CONFIGURATION,
                     status=PreflightCheckStatus.FAIL,
                     reason=PreflightReasonCode.MO2_INI_UNREADABLE,
-                    detail=evidencia_gp.detail or "gamePath no decodificable en [General]",
+                    detail=f"error al verificar modorganizer.ini: {exc}",
                 )
-            )
-            reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
-        else:
-            game_path_obs_str = _normalizar(evidencia_gp.path)
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.MO2_CONFIGURATION,
-                    status=PreflightCheckStatus.PASS,
-                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                    detail=f"gamePath decodificado correctamente: '{evidencia_gp.path}'",
-                )
-            )
+                reasons.append(PreflightReasonCode.MO2_INI_UNREADABLE)
 
     # -------------------------------------------------------------------------
     # 3. Concurrencia de procesos (sin Skyrim, sin SKSE, sin MO2)
     # -------------------------------------------------------------------------
     procesos_snap = observadores.processes()
     if procesos_snap.indeterminate:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PROCESS_CONCURRENCY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.PROCESS_TABLE_UNREADABLE,
-                detail=procesos_snap.detail or "tabla de procesos del sistema ilegible",
-            )
+        checks_map[PreflightCheckCode.PROCESS_CONCURRENCY] = PreflightCheckResult(
+            check=PreflightCheckCode.PROCESS_CONCURRENCY,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.PROCESS_TABLE_UNREADABLE,
+            detail=procesos_snap.detail or "tabla de procesos del sistema ilegible",
         )
         reasons.append(PreflightReasonCode.PROCESS_TABLE_UNREADABLE)
     else:
@@ -324,38 +365,32 @@ def evaluar_binder_preflight(
 
         if juegos_vivos:
             pids = ", ".join(str(p.pid) for p in juegos_vivos)
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PROCESS_CONCURRENCY,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.LIVE_GAME_RUNNING,
-                    detail=f"procesos de juego o loader activos (pids: {pids})",
-                )
+            checks_map[PreflightCheckCode.PROCESS_CONCURRENCY] = PreflightCheckResult(
+                check=PreflightCheckCode.PROCESS_CONCURRENCY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.LIVE_GAME_RUNNING,
+                detail=f"procesos de juego o loader activos (pids: {pids})",
             )
             reasons.append(PreflightReasonCode.LIVE_GAME_RUNNING)
         elif mo2_vivos:
             pids = ", ".join(str(p.pid) for p in mo2_vivos)
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PROCESS_CONCURRENCY,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.LIVE_MO2_RUNNING,
-                    detail=f"ModOrganizer.exe activo en memoria (pids: {pids})",
-                )
+            checks_map[PreflightCheckCode.PROCESS_CONCURRENCY] = PreflightCheckResult(
+                check=PreflightCheckCode.PROCESS_CONCURRENCY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.LIVE_MO2_RUNNING,
+                detail=f"ModOrganizer.exe activo en memoria (pids: {pids})",
             )
             reasons.append(PreflightReasonCode.LIVE_MO2_RUNNING)
         else:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.PROCESS_CONCURRENCY,
-                    status=PreflightCheckStatus.PASS,
-                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                    detail="sin procesos de Skyrim, SKSE ni MO2 en ejecución",
-                )
+            checks_map[PreflightCheckCode.PROCESS_CONCURRENCY] = PreflightCheckResult(
+                check=PreflightCheckCode.PROCESS_CONCURRENCY,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                detail="sin procesos de Skyrim, SKSE ni MO2 en ejecución",
             )
 
     # -------------------------------------------------------------------------
-    # 4. Managed Source discovery (evidencia confiable de Steam)
+    # 4. Managed Source discovery y verificación de señales del proveedor Steam
     # -------------------------------------------------------------------------
     ms_root_resolved: pathlib.Path | None = None
     try:
@@ -373,23 +408,19 @@ def evaluar_binder_preflight(
         )
 
     if ms_result.state is DiscoveryState.NOT_FOUND:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.MANAGED_SOURCE,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.MANAGED_SOURCE_NOT_FOUND,
-                detail=ms_result.message or "Managed Source no encontrada",
-            )
+        checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+            check=PreflightCheckCode.MANAGED_SOURCE,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.MANAGED_SOURCE_NOT_FOUND,
+            detail=ms_result.message or "Managed Source no encontrada",
         )
         reasons.append(PreflightReasonCode.MANAGED_SOURCE_NOT_FOUND)
     elif ms_result.state is DiscoveryState.AMBIGUOUS:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.MANAGED_SOURCE,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.MANAGED_SOURCE_AMBIGUOUS,
-                detail=ms_result.message or "Múltiples Managed Sources ambiguas",
-            )
+        checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+            check=PreflightCheckCode.MANAGED_SOURCE,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.MANAGED_SOURCE_AMBIGUOUS,
+            detail=ms_result.message or "Múltiples Managed Sources ambiguas",
         )
         reasons.append(PreflightReasonCode.MANAGED_SOURCE_AMBIGUOUS)
     elif ms_result.state is DiscoveryState.INVALID or ms_result.source is None:
@@ -397,49 +428,136 @@ def evaluar_binder_preflight(
         codigo_ms = (
             PreflightReasonCode.MANAGED_SOURCE_NOT_FOUND if es_ausente else PreflightReasonCode.MANAGED_SOURCE_INVALID
         )
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.MANAGED_SOURCE,
-                status=PreflightCheckStatus.FAIL,
-                reason=codigo_ms,
-                detail=ms_result.message or "Managed Source inválida o ausente",
-            )
+        checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+            check=PreflightCheckCode.MANAGED_SOURCE,
+            status=PreflightCheckStatus.FAIL,
+            reason=codigo_ms,
+            detail=ms_result.message or "Managed Source inválida o ausente",
         )
         reasons.append(codigo_ms)
     else:
         ms_root_resolved = ms_result.source.root
-        checks.append(
-            PreflightCheckResult(
+        # P2-A: Auditoría real de integridad y reposo en manifest del proveedor
+        obs_steam = read_steam_manifest_observation(ms_result.source)
+        if not obs_steam.manifest_readable:
+            checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
                 check=PreflightCheckCode.MANAGED_SOURCE,
-                status=PreflightCheckStatus.PASS,
-                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                detail=f"Managed Source verificada en '{ms_root_resolved}'",
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.MANAGED_SOURCE_INVALID,
+                detail=f"manifest de Steam ilegible o malformado: {obs_steam.manifest_parse_error}",
             )
-        )
+            reasons.append(PreflightReasonCode.MANAGED_SOURCE_INVALID)
+        elif not obs_steam.buildid or not obs_steam.buildid.strip():
+            checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+                check=PreflightCheckCode.MANAGED_SOURCE,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.MANAGED_SOURCE_INVALID,
+                detail="manifest de Steam sin buildid válido",
+            )
+            reasons.append(PreflightReasonCode.MANAGED_SOURCE_INVALID)
+        else:
+            estado_prov = evaluate_provider_observation(obs_steam)
+            if estado_prov is not ProviderObservationState.IDLE:
+                det_prov = (
+                    "Steam en estado activo (descarga o actualización en curso)"
+                    if estado_prov is ProviderObservationState.ACTIVE
+                    else "estado de Steam indeterminado"
+                )
+                checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+                    check=PreflightCheckCode.MANAGED_SOURCE,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.MANAGED_SOURCE_INVALID,
+                    detail=det_prov,
+                )
+                reasons.append(PreflightReasonCode.MANAGED_SOURCE_INVALID)
+            else:
+                checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
+                    check=PreflightCheckCode.MANAGED_SOURCE,
+                    status=PreflightCheckStatus.PASS,
+                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                    detail=f"Managed Source verificada en '{ms_root_resolved}' (buildid {obs_steam.buildid}, state_flags {obs_steam.state_flags})",
+                )
 
     # -------------------------------------------------------------------------
-    # 5. Resolución y carga del RuntimeCloneRecord
+    # 5. Resolución y carga del RuntimeCloneRecord (P2-D)
     # -------------------------------------------------------------------------
     target_clone_id = clone_id
     if target_clone_id is None:
-        carga_active = load_frozen_runtime_state(active_state_path(storage))
-        if carga_active.found and carga_active.state is not None:
-            target_clone_id = carga_active.state.desired_clone_id
-
-    if not target_clone_id:
-        checks.append(
-            PreflightCheckResult(
+        try:
+            carga_active = load_frozen_runtime_state(active_state_path(storage))
+            if carga_active.found and carga_active.state is not None:
+                target_clone_id = carga_active.state.desired_clone_id
+        except StateCorruptError as exc:
+            checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
                 check=PreflightCheckCode.CLONE_RECORD,
                 status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_ID_UNSPECIFIED,
-                detail="no se especificó clone_id ni existe desired_clone_id en active.json",
+                reason=PreflightReasonCode.CLONE_RECORD_CORRUPT,
+                detail=f"active.json corrupto o malformado: {exc}",
             )
+            reasons.append(PreflightReasonCode.CLONE_RECORD_CORRUPT)
+            checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
+            return BinderPreflightAssessment(
+                verdict=BinderPreflightVerdict.BLOCKED,
+                reasons=tuple(reasons),
+                checks=checks_ord,
+                managed_source_root=ms_root_resolved,
+                mo2_instance_dir=mo2_dir,
+                observed_mo2_game_path=game_path_obs_str,
+                assessed_at_ns=sello,
+                notes=tuple(notas),
+            )
+        except StateSchemaError as exc:
+            checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+                check=PreflightCheckCode.CLONE_RECORD,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID,
+                detail=f"active.json con schema inválido: {exc}",
+            )
+            reasons.append(PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID)
+            checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
+            return BinderPreflightAssessment(
+                verdict=BinderPreflightVerdict.BLOCKED,
+                reasons=tuple(reasons),
+                checks=checks_ord,
+                managed_source_root=ms_root_resolved,
+                mo2_instance_dir=mo2_dir,
+                observed_mo2_game_path=game_path_obs_str,
+                assessed_at_ns=sello,
+                notes=tuple(notas),
+            )
+        except (FrozenRuntimeStorageError, OSError) as exc:
+            checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+                check=PreflightCheckCode.CLONE_RECORD,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.CLONE_RECORD_CORRUPT,
+                detail=f"error al acceder a active.json: {exc}",
+            )
+            reasons.append(PreflightReasonCode.CLONE_RECORD_CORRUPT)
+            checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
+            return BinderPreflightAssessment(
+                verdict=BinderPreflightVerdict.BLOCKED,
+                reasons=tuple(reasons),
+                checks=checks_ord,
+                managed_source_root=ms_root_resolved,
+                mo2_instance_dir=mo2_dir,
+                observed_mo2_game_path=game_path_obs_str,
+                assessed_at_ns=sello,
+                notes=tuple(notas),
+            )
+
+    if not target_clone_id:
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_ID_UNSPECIFIED,
+            detail="no se especificó clone_id ni existe desired_clone_id en active.json",
         )
         reasons.append(PreflightReasonCode.CLONE_ID_UNSPECIFIED)
+        checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
         return BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.BLOCKED,
             reasons=tuple(reasons),
-            checks=tuple(checks),
+            checks=checks_ord,
             managed_source_root=ms_root_resolved,
             mo2_instance_dir=mo2_dir,
             observed_mo2_game_path=game_path_obs_str,
@@ -450,19 +568,18 @@ def evaluar_binder_preflight(
     try:
         validar_clone_id(target_clone_id)
     except InvalidCloneIdError as exc:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_ID_INVALID,
-                detail=str(exc),
-            )
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_ID_INVALID,
+            detail=str(exc),
         )
         reasons.append(PreflightReasonCode.CLONE_ID_INVALID)
+        checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
         return BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.BLOCKED,
             reasons=tuple(reasons),
-            checks=tuple(checks),
+            checks=checks_ord,
             target_clone_id=target_clone_id,
             managed_source_root=ms_root_resolved,
             mo2_instance_dir=mo2_dir,
@@ -475,52 +592,49 @@ def evaluar_binder_preflight(
     try:
         record = cargar_runtime_clone_record(storage, target_clone_id)
     except (RuntimeCloneCorruptError, StateCorruptError) as exc:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_RECORD_CORRUPT,
-                detail=str(exc),
-            )
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_RECORD_CORRUPT,
+            detail=str(exc),
         )
         reasons.append(PreflightReasonCode.CLONE_RECORD_CORRUPT)
     except (RuntimeCloneSchemaError, StateSchemaError) as exc:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID,
-                detail=str(exc),
-            )
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID,
+            detail=str(exc),
         )
         reasons.append(PreflightReasonCode.CLONE_RECORD_SCHEMA_INVALID)
-    except (FrozenRuntimeError, OSError) as exc:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_RECORD_CORRUPT,
-                detail=f"error de lectura de clone record: {exc}",
-            )
+    except (RuntimeCloneNotFoundError, FrozenRuntimeError, OSError) as exc:
+        reason_clone = (
+            PreflightReasonCode.CLONE_RECORD_MISSING
+            if isinstance(exc, RuntimeCloneNotFoundError)
+            else PreflightReasonCode.CLONE_RECORD_CORRUPT
         )
-        reasons.append(PreflightReasonCode.CLONE_RECORD_CORRUPT)
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=reason_clone,
+            detail=f"error de lectura de clone record: {exc}",
+        )
+        reasons.append(reason_clone)
 
-    if record is None and not any(c.check is PreflightCheckCode.CLONE_RECORD for c in checks):
-        checks.append(
-            PreflightCheckResult(
+    if record is None:
+        if PreflightCheckCode.CLONE_RECORD not in checks_map:
+            checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
                 check=PreflightCheckCode.CLONE_RECORD,
                 status=PreflightCheckStatus.FAIL,
                 reason=PreflightReasonCode.CLONE_RECORD_MISSING,
                 detail=f"no existe registro para clone_id '{target_clone_id}'",
             )
-        )
-        reasons.append(PreflightReasonCode.CLONE_RECORD_MISSING)
-
-    if record is None:
+            reasons.append(PreflightReasonCode.CLONE_RECORD_MISSING)
+        checks_ord = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
         return BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.BLOCKED,
             reasons=tuple(reasons),
-            checks=tuple(checks),
+            checks=checks_ord,
             target_clone_id=target_clone_id,
             managed_source_root=ms_root_resolved,
             mo2_instance_dir=mo2_dir,
@@ -531,157 +645,131 @@ def evaluar_binder_preflight(
 
     # Validar admitted role
     if record.admitted_role != CANONICAL_ADMITTED_ROLE:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_ROLE_INVALID,
-                detail=f"admitted_role '{record.admitted_role}' != '{CANONICAL_ADMITTED_ROLE}'",
-            )
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_ROLE_INVALID,
+            detail=f"admitted_role '{record.admitted_role}' != '{CANONICAL_ADMITTED_ROLE}'",
         )
         reasons.append(PreflightReasonCode.CLONE_ROLE_INVALID)
     else:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_RECORD,
-                status=PreflightCheckStatus.PASS,
-                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                detail=f"clone record cargado válidamente para '{target_clone_id}'",
-            )
+        checks_map[PreflightCheckCode.CLONE_RECORD] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_RECORD,
+            status=PreflightCheckStatus.PASS,
+            reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            detail=f"clone record cargado válidamente para '{target_clone_id}'",
         )
 
     # -------------------------------------------------------------------------
     # 6. Ciclo de vida del Clone (debe ser estrictamente PROVISIONED)
     # -------------------------------------------------------------------------
     if record.lifecycle is not RuntimeCloneLifecycle.PROVISIONED:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_LIFECYCLE,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_LIFECYCLE_NOT_PROVISIONED,
-                detail=f"lifecycle es '{record.lifecycle}' (exige PROVISIONED)",
-            )
+        checks_map[PreflightCheckCode.CLONE_LIFECYCLE] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_LIFECYCLE,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_LIFECYCLE_NOT_PROVISIONED,
+            detail=f"lifecycle es '{record.lifecycle}' (exige PROVISIONED)",
         )
         reasons.append(PreflightReasonCode.CLONE_LIFECYCLE_NOT_PROVISIONED)
     else:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CLONE_LIFECYCLE,
-                status=PreflightCheckStatus.PASS,
-                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                detail="clone en ciclo de vida PROVISIONED",
-            )
+        checks_map[PreflightCheckCode.CLONE_LIFECYCLE] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_LIFECYCLE,
+            status=PreflightCheckStatus.PASS,
+            reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            detail="clone en ciclo de vida PROVISIONED",
         )
 
     clone_root = pathlib.Path(os.path.abspath(os.fspath(record.root_path)))
 
     # -------------------------------------------------------------------------
-    # 7. Admisión física y contención de rutas del clone
+    # 7. Admisión física y contención de rutas del clone (actualiza PATH_SAFETY)
     # -------------------------------------------------------------------------
-    if _contiene_alias_83(clone_root):
-        reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
-        checks.append(
-            PreflightCheckResult(
+    path_safety_cur = checks_map[PreflightCheckCode.PATH_SAFETY]
+    if path_safety_cur.status is PreflightCheckStatus.PASS:
+        if _contiene_alias_83(clone_root):
+            reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
+            checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
                 check=PreflightCheckCode.PATH_SAFETY,
                 status=PreflightCheckStatus.FAIL,
                 reason=PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED,
                 detail=f"clone_root contiene alias 8.3: '{clone_root}'",
             )
-        )
-
-    clase_clone, det_clone = _primer_reparse(clone_root)
-    if clase_clone == _REPARSE_HAY:
-        reasons.append(PreflightReasonCode.REPARSE_POINT_DETECTED)
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.REPARSE_POINT_DETECTED,
-                detail=det_clone or "reparse point en clone_root",
-            )
-        )
-    elif clase_clone == _REPARSE_INDETERMINADO:
-        reasons.append(PreflightReasonCode.REPARSE_INSPECTION_FAILED)
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.INDETERMINATE,
-                reason=PreflightReasonCode.REPARSE_INSPECTION_FAILED,
-                detail=det_clone or "inspección de reparse en clone_root indeterminada",
-            )
-        )
-
-    # Colisiones de rutas
-    if ms_root_resolved is not None:
-        if _normalizar(clone_root) == _normalizar(ms_root_resolved):
-            reasons.append(PreflightReasonCode.PATHS_COLLIDE)
-            checks.append(
-                PreflightCheckResult(
+        else:
+            clase_clone, det_clone = _primer_reparse(clone_root)
+            if clase_clone == _REPARSE_HAY:
+                reasons.append(PreflightReasonCode.REPARSE_POINT_DETECTED)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                    check=PreflightCheckCode.PATH_SAFETY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.REPARSE_POINT_DETECTED,
+                    detail=det_clone or "reparse point en clone_root",
+                )
+            elif clase_clone == _REPARSE_INDETERMINADO:
+                reasons.append(PreflightReasonCode.REPARSE_INSPECTION_FAILED)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                    check=PreflightCheckCode.PATH_SAFETY,
+                    status=PreflightCheckStatus.INDETERMINATE,
+                    reason=PreflightReasonCode.REPARSE_INSPECTION_FAILED,
+                    detail=det_clone or "inspección de reparse en clone_root indeterminada",
+                )
+            elif ms_root_resolved is not None and _normalizar(clone_root) == _normalizar(ms_root_resolved):
+                reasons.append(PreflightReasonCode.PATHS_COLLIDE)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
                     check=PreflightCheckCode.PATH_SAFETY,
                     status=PreflightCheckStatus.FAIL,
                     reason=PreflightReasonCode.PATHS_COLLIDE,
                     detail="clone_root coincide con la Managed Source",
                 )
-            )
-        elif _es_igual_o_hijo(clone_root, ms_root_resolved) or _es_igual_o_hijo(ms_root_resolved, clone_root):
-            reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
-            checks.append(
-                PreflightCheckResult(
+            elif ms_root_resolved is not None and (
+                _es_igual_o_hijo(clone_root, ms_root_resolved) or _es_igual_o_hijo(ms_root_resolved, clone_root)
+            ):
+                reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
                     check=PreflightCheckCode.PATH_SAFETY,
                     status=PreflightCheckStatus.FAIL,
                     reason=PreflightReasonCode.PATH_CONTAINMENT_VIOLATION,
                     detail="clone_root se solapa o está contenido dentro de la Managed Source",
                 )
-            )
-
-    if _es_igual_o_hijo(clone_root, storage):
-        reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.PATH_CONTAINMENT_VIOLATION,
-                detail="clone_root está contenido dentro del Frozen Runtime Storage (versions/state)",
-            )
-        )
-
-    if _normalizar(clone_root) == _normalizar(mo2_dir) or _es_igual_o_hijo(clone_root, mo2_dir):
-        reasons.append(PreflightReasonCode.PATHS_COLLIDE)
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.PATHS_COLLIDE,
-                detail="clone_root coincide o está contenido dentro de mo2_instance_dir",
-            )
-        )
-
-    # Validar contra admitir_clone_root_path
-    try:
-        admitir_clone_root_path(
-            clone_root,
-            storage_root=storage,
-            managed_source_root=ms_root_resolved,
-        )
-    except RuntimeCloneAdmissionError as exc:
-        msg = str(exc).lower()
-        if "8.3" in msg or "~" in msg:
-            if PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED not in reasons:
-                reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
-        elif "steam" in msg or "storage" in msg or "versions" in msg or "common" in msg:
-            if PreflightReasonCode.PATH_CONTAINMENT_VIOLATION not in reasons:
+            elif _es_igual_o_hijo(clone_root, storage):
                 reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
-        elif PreflightReasonCode.CLONE_ADMISSION_REJECTED not in reasons:
-            reasons.append(PreflightReasonCode.CLONE_ADMISSION_REJECTED)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                    check=PreflightCheckCode.PATH_SAFETY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.PATH_CONTAINMENT_VIOLATION,
+                    detail="clone_root está contenido dentro del Frozen Runtime Storage (versions/state)",
+                )
+            elif _normalizar(clone_root) == _normalizar(mo2_dir) or _es_igual_o_hijo(clone_root, mo2_dir):
+                reasons.append(PreflightReasonCode.PATHS_COLLIDE)
+                checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                    check=PreflightCheckCode.PATH_SAFETY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.PATHS_COLLIDE,
+                    detail="clone_root coincide o está contenido dentro de mo2_instance_dir",
+                )
+            else:
+                try:
+                    admitir_clone_root_path(
+                        clone_root,
+                        storage_root=storage,
+                        managed_source_root=ms_root_resolved,
+                    )
+                except RuntimeCloneAdmissionError as exc:
+                    msg = str(exc).lower()
+                    if "8.3" in msg or "~" in msg:
+                        if PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED not in reasons:
+                            reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
+                    elif "steam" in msg or "storage" in msg or "versions" in msg or "common" in msg:
+                        if PreflightReasonCode.PATH_CONTAINMENT_VIOLATION not in reasons:
+                            reasons.append(PreflightReasonCode.PATH_CONTAINMENT_VIOLATION)
+                    elif PreflightReasonCode.CLONE_ADMISSION_REJECTED not in reasons:
+                        reasons.append(PreflightReasonCode.CLONE_ADMISSION_REJECTED)
 
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.PATH_SAFETY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.CLONE_ADMISSION_REJECTED,
-                detail=f"admitir_clone_root_path rechazó la ruta: {exc}",
-            )
-        )
+                    checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
+                        check=PreflightCheckCode.PATH_SAFETY,
+                        status=PreflightCheckStatus.FAIL,
+                        reason=PreflightReasonCode.CLONE_ADMISSION_REJECTED,
+                        detail=f"admitir_clone_root_path rechazó la ruta: {exc}",
+                    )
 
     # -------------------------------------------------------------------------
     # 8. Integridad de la Generation de origen (debe ser estrictamente VALID)
@@ -692,13 +780,11 @@ def evaluar_binder_preflight(
         leer_generation_metadata(storage, gen_id)
         gen_meta_ok = True
     except (FrozenRuntimeError, OSError) as exc:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.GENERATION_INTEGRITY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.GENERATION_NOT_FOUND,
-                detail=f"metadata de generation '{gen_id}' no legible: {exc}",
-            )
+        checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+            check=PreflightCheckCode.GENERATION_INTEGRITY,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.GENERATION_NOT_FOUND,
+            detail=f"metadata de generation '{gen_id}' no legible: {exc}",
         )
         reasons.append(PreflightReasonCode.GENERATION_NOT_FOUND)
 
@@ -706,42 +792,34 @@ def evaluar_binder_preflight(
         try:
             gen_verif = verificar_generation(storage, gen_id)
             if gen_verif.state is GenerationVerificationState.DRIFTED:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.GENERATION_INTEGRITY,
-                        status=PreflightCheckStatus.FAIL,
-                        reason=PreflightReasonCode.GENERATION_DRIFTED,
-                        detail=f"generation '{gen_id}' sufrió drift respecto a su digest registrado",
-                    )
+                checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                    check=PreflightCheckCode.GENERATION_INTEGRITY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.GENERATION_DRIFTED,
+                    detail=f"generation '{gen_id}' sufrió drift respecto a su digest registrado",
                 )
                 reasons.append(PreflightReasonCode.GENERATION_DRIFTED)
             elif gen_verif.state is not GenerationVerificationState.VALID:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.GENERATION_INTEGRITY,
-                        status=PreflightCheckStatus.FAIL,
-                        reason=PreflightReasonCode.GENERATION_INVALID,
-                        detail=f"generation '{gen_id}' no es válida (estado: {gen_verif.state})",
-                    )
-                )
-                reasons.append(PreflightReasonCode.GENERATION_INVALID)
-            else:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.GENERATION_INTEGRITY,
-                        status=PreflightCheckStatus.PASS,
-                        reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                        detail=f"generation '{gen_id}' verificada estrictamente como VALID",
-                    )
-                )
-        except (FrozenRuntimeError, OSError) as exc:
-            checks.append(
-                PreflightCheckResult(
+                checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
                     check=PreflightCheckCode.GENERATION_INTEGRITY,
                     status=PreflightCheckStatus.FAIL,
                     reason=PreflightReasonCode.GENERATION_INVALID,
-                    detail=f"error al verificar generation '{gen_id}': {exc}",
+                    detail=f"generation '{gen_id}' no es válida (estado: {gen_verif.state})",
                 )
+                reasons.append(PreflightReasonCode.GENERATION_INVALID)
+            else:
+                checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                    check=PreflightCheckCode.GENERATION_INTEGRITY,
+                    status=PreflightCheckStatus.PASS,
+                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                    detail=f"generation '{gen_id}' verificada estrictamente como VALID",
+                )
+        except (FrozenRuntimeError, OSError) as exc:
+            checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                check=PreflightCheckCode.GENERATION_INTEGRITY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.GENERATION_INVALID,
+                detail=f"error al verificar generation '{gen_id}': {exc}",
             )
             reasons.append(PreflightReasonCode.GENERATION_INVALID)
 
@@ -755,42 +833,34 @@ def evaluar_binder_preflight(
             managed_source_root=ms_root_resolved,
         )
         if clone_verif.state is GenerationVerificationState.VALID:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
-                    status=PreflightCheckStatus.PASS,
-                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                    detail="clone físicamente independiente, hashes críticos coincidentes y st_nlink==1",
-                )
+            checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
+                check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
+                status=PreflightCheckStatus.PASS,
+                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                detail="clone físicamente independiente, hashes críticos coincidentes y st_nlink==1",
             )
         elif clone_verif.state is GenerationVerificationState.INDETERMINATE:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
-                    status=PreflightCheckStatus.INDETERMINATE,
-                    reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE,
-                    detail="integridad física del clone indeterminada (filesystem no reporta inodos)",
-                )
+            checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
+                check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
+                status=PreflightCheckStatus.INDETERMINATE,
+                reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE,
+                detail="integridad física del clone indeterminada (filesystem no reporta inodos)",
             )
             reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE)
         else:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID,
-                    detail=f"verificar_runtime_clone retornó estado '{clone_verif.state}'",
-                )
-            )
-            reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID)
-    except (FrozenRuntimeError, OSError) as exc:
-        checks.append(
-            PreflightCheckResult(
+            checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
                 check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
                 status=PreflightCheckStatus.FAIL,
                 reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID,
-                detail=f"error al verificar integridad del clone: {exc}",
+                detail=f"verificar_runtime_clone retornó estado '{clone_verif.state}'",
             )
+            reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID)
+    except (FrozenRuntimeError, OSError) as exc:
+        checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
+            check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID,
+            detail=f"error al verificar integridad del clone: {exc}",
         )
         reasons.append(PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID)
 
@@ -800,95 +870,118 @@ def evaluar_binder_preflight(
     try:
         identidad = observadores.identity(clone_root)
         if not identidad.game_version:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.IDENTITY_UNREADABLE,
-                    detail="ejecutable SkyrimSE.exe en el clone no declara versión PE observable",
-                )
+            checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
+                check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
+                status=PreflightCheckStatus.FAIL,
+                reason=PreflightReasonCode.IDENTITY_UNREADABLE,
+                detail="ejecutable SkyrimSE.exe en el clone no declara versión PE observable",
             )
             reasons.append(PreflightReasonCode.IDENTITY_UNREADABLE)
         else:
             compat = observadores.compatibility(clone_root)
             if compat.state is RuntimeCompatibility.INCOMPATIBLE:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
-                        status=PreflightCheckStatus.FAIL,
-                        reason=PreflightReasonCode.SKSE_INCOMPATIBLE,
-                        detail=compat.reason or "SKSE incompatible con SkyrimSE.exe",
-                    )
+                checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
+                    check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.SKSE_INCOMPATIBLE,
+                    detail=compat.reason or "SKSE incompatible con SkyrimSE.exe",
                 )
                 reasons.append(PreflightReasonCode.SKSE_INCOMPATIBLE)
             elif compat.state is not RuntimeCompatibility.COMPATIBLE:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
-                        status=PreflightCheckStatus.FAIL,
-                        reason=PreflightReasonCode.COMPATIBILITY_UNKNOWN,
-                        detail=compat.reason or "compatibilidad SKSE desconocida (UNKNOWN != COMPATIBLE)",
-                    )
+                checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
+                    check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
+                    status=PreflightCheckStatus.FAIL,
+                    reason=PreflightReasonCode.COMPATIBILITY_UNKNOWN,
+                    detail=compat.reason or "compatibilidad SKSE desconocida (UNKNOWN != COMPATIBLE)",
                 )
                 reasons.append(PreflightReasonCode.COMPATIBILITY_UNKNOWN)
             else:
-                checks.append(
-                    PreflightCheckResult(
-                        check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
-                        status=PreflightCheckStatus.PASS,
-                        reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                        detail=f"runtime y SKSE compatibles ({compat.game_version})",
-                    )
+                checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
+                    check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
+                    status=PreflightCheckStatus.PASS,
+                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                    detail=f"runtime y SKSE compatibles ({compat.game_version})",
                 )
     except Exception as exc:  # noqa: BLE001
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
-                status=PreflightCheckStatus.FAIL,
-                reason=PreflightReasonCode.COMPATIBILITY_UNKNOWN,
-                detail=f"error al evaluar compatibilidad de runtime: {exc}",
-            )
+        checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
+            check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
+            status=PreflightCheckStatus.FAIL,
+            reason=PreflightReasonCode.COMPATIBILITY_UNKNOWN,
+            detail=f"error al evaluar compatibilidad de runtime: {exc}",
         )
         reasons.append(PreflightReasonCode.COMPATIBILITY_UNKNOWN)
 
     # -------------------------------------------------------------------------
-    # 11. Coherencia de configuración de Sky-Claw
+    # 11. Coherencia de configuración multi-superficie (P1-A, P1-B)
     # -------------------------------------------------------------------------
-    if config_skyrim_path:
+    ms_norm = _normalizar(ms_root_resolved) if ms_root_resolved is not None else None
+    clone_norm = _normalizar(clone_root) if clone_root is not None else None
+
+    coherencia_fail: PreflightReasonCode | None = None
+    coherencia_detail: str = ""
+
+    # 11.1 Config.skyrim_path
+    if exigir_config_skyrim_path and not config_skyrim_path:
+        coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+        coherencia_detail = "config_skyrim_path es obligatoria para el switch pero no fue provista"
+    elif config_skyrim_path:
         cfg_path = pathlib.Path(os.path.abspath(os.fspath(config_skyrim_path)))
         if _contiene_alias_83(cfg_path):
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.CONFIG_COHERENCE,
-                    status=PreflightCheckStatus.FAIL,
-                    reason=PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED,
-                    detail=f"config_skyrim_path contiene alias 8.3: '{config_skyrim_path}'",
-                )
-            )
-            reasons.append(PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED)
+            coherencia_fail = PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED
+            coherencia_detail = f"config_skyrim_path contiene alias 8.3: '{config_skyrim_path}'"
         else:
-            checks.append(
-                PreflightCheckResult(
-                    check=PreflightCheckCode.CONFIG_COHERENCE,
-                    status=PreflightCheckStatus.PASS,
-                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                    detail=f"config_skyrim_path evaluado: '{config_skyrim_path}'",
+            cfg_norm = _normalizar(config_skyrim_path)
+            # Debe coincidir o con la Managed Source (pre-switch) o con el Clone (post-switch)
+            if cfg_norm != ms_norm and cfg_norm != clone_norm:
+                coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                coherencia_detail = (
+                    f"config_skyrim_path ('{config_skyrim_path}') apunta a un tercer árbol "
+                    f"distinto de Managed Source ('{ms_root_resolved}') y Clone ('{clone_root}')"
                 )
+
+    # 11.2 MO2 gamePath (debe ser Managed Source en pre-switch o Clone en post-switch)
+    if coherencia_fail is None and game_path_obs_str is not None:
+        gp_norm = _normalizar(game_path_obs_str)
+        if gp_norm != ms_norm and gp_norm != clone_norm:
+            coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+            coherencia_detail = (
+                f"MO2 gamePath ('{game_path_obs_str}') apunta a un tercer directorio "
+                f"distinto de Managed Source ('{ms_root_resolved}') y Clone ('{clone_root}')"
             )
+
+    # 11.3 customExecutables de MO2 (P1-B)
+    if coherencia_fail is None and game_path_obs_str is not None and ejecutables_mo2:
+        lanzadores_fuera = _lanzadores_del_juego_fuera_de(game_path_obs_str, ejecutables_mo2)
+        if lanzadores_fuera:
+            coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+            coherencia_detail = (
+                f"lanzadores de juego en [customExecutables] registrados fuera de gamePath ('{game_path_obs_str}'): "
+                + "; ".join(lanzadores_fuera)
+            )
+
+    if coherencia_fail is not None:
+        checks_map[PreflightCheckCode.CONFIG_COHERENCE] = PreflightCheckResult(
+            check=PreflightCheckCode.CONFIG_COHERENCE,
+            status=PreflightCheckStatus.FAIL,
+            reason=coherencia_fail,
+            detail=coherencia_detail,
+        )
+        reasons.append(coherencia_fail)
     else:
-        checks.append(
-            PreflightCheckResult(
-                check=PreflightCheckCode.CONFIG_COHERENCE,
-                status=PreflightCheckStatus.PASS,
-                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                detail="config_skyrim_path no provisto (advisory)",
-            )
+        checks_map[PreflightCheckCode.CONFIG_COHERENCE] = PreflightCheckResult(
+            check=PreflightCheckCode.CONFIG_COHERENCE,
+            status=PreflightCheckStatus.PASS,
+            reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+            detail="configuración de Sky-Claw, MO2 y ejecutables coherente con el runtime admitido",
         )
 
     # -------------------------------------------------------------------------
     # Veredicto final
     # -------------------------------------------------------------------------
-    todos_pass = all(c.status is PreflightCheckStatus.PASS for c in checks)
+    checks_ordenados = tuple(checks_map[c] for c in PreflightCheckCode if c in checks_map)
+    todos_pass = len(checks_ordenados) == len(PreflightCheckCode) and all(
+        c.status is PreflightCheckStatus.PASS for c in checks_ordenados
+    )
     final_reasons: tuple[PreflightReasonCode, ...]
     if todos_pass and not reasons:
         verdict = BinderPreflightVerdict.READY
@@ -907,7 +1000,7 @@ def evaluar_binder_preflight(
     return BinderPreflightAssessment(
         verdict=verdict,
         reasons=final_reasons,
-        checks=tuple(checks),
+        checks=checks_ordenados,
         target_clone_id=target_clone_id,
         target_clone_root=clone_root,
         source_generation_id=gen_id,

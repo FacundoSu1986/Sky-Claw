@@ -626,17 +626,23 @@ para el futuro switch productivo (P5-C1).
 `evaluar_binder_preflight` ejecuta y consolida 10 comprobaciones obligatorias:
 
 1. **`PATH_SAFETY`:**
-   - Audita `mo2_instance_dir` y `storage_root` mediante `_primer_reparse` y `_contiene_alias_83`.
-   - Rechaza la presencia de junctions, symlinks o reparse points en la raíz o ancestros intermedios.
+   - Audita `mo2_instance_dir`, `storage_root` y la propia entrada de `modorganizer.ini` mediante
+     `_primer_reparse` y `_contiene_alias_83`.
+   - Rechaza la presencia de junctions, symlinks o reparse points en la raíz, ancestros intermedios
+     o en el propio archivo de configuración.
    - Rechaza la presencia de componentes con patrón de nombres cortos de Windows 8.3 (`~1`).
 
 2. **`MANAGED_SOURCE`:**
-   - Resuelve y audita la Managed Source vía `discover_managed_source`.
+   - Resuelve la Managed Source vía `discover_managed_source`.
    - Exige `DiscoveryState.MANAGED_SOURCE_DETECTED` y proveedor Steam (`ManagedSourceProvider.STEAM`).
-   - Requiere presencia del manifiesto `appmanifest_489830.acf` con buildid válido y flags de no-update.
+   - Verifica las señales reales del proveedor mediante `read_steam_manifest_observation` y
+     `evaluate_provider_observation`: exige manifiesto legible, `buildid` presente y no vacío,
+     y estado estrictamente `ProviderObservationState.IDLE` (`StateFlags == "4"`, sin descargas activas).
 
 3. **`CLONE_RECORD`:**
    - Resuelve el `clone_id` (explícito o desde `active.json` vía `load_frozen_runtime_state`).
+   - Captura de forma tipada `StateCorruptError`, `StateSchemaError`, `FrozenRuntimeStorageError` y
+     `OSError`, distinguiendo ausencia legítima de corrupción fail-closed.
    - Valida el identificador sintáctico mediante `validar_clone_id`.
    - Carga el registro con `cargar_runtime_clone_record`, rechazando corrupciones o desalineaciones
      de schema con `CLONE_RECORD_CORRUPT` o `CLONE_RECORD_SCHEMA_INVALID`.
@@ -668,15 +674,23 @@ para el futuro switch productivo (P5-C1).
    - Si detecta `ModOrganizer.exe` en ejecución, rechaza con `LIVE_MO2_RUNNING`.
 
 9. **`MO2_CONFIGURATION`:**
-   - Valida la existencia física de `modorganizer.ini`.
+   - Valida la existencia física y accesibilidad de `modorganizer.ini`.
+   - Comprueba estabilidad de archivo entre pre-lectura y post-lectura (`st_ino`, `st_dev`, `st_mtime_ns`)
+     para atajar mutaciones concurrentes en la ventana TOCTOU.
    - Lee e interpreta `[General] gamePath` decodificando fielmente la estructura `@ByteArray(...)`
      de Qt conforme al estándar de `QSettings` (`iniUnescapedByteArray`).
+   - Lee `[customExecutables]` mediante `leer_ejecutables_de_mo2`.
    - Rechaza si `gamePath` está ausente o si su contenido está dañado/ilegible.
 
 10. **`CONFIG_COHERENCE`:**
-    - Evalúa la concordancia entre la Managed Source, `Config.skyrim_path` de Sky-Claw y el
-      `gamePath` configurado en MO2.
-    - Rechaza cualquier divergencia no reconciliada que indique inconsistencia multi-superficie.
+    - Evalúa la concordancia entre Managed Source, Runtime Clone, `Config.skyrim_path` de Sky-Claw
+      (con soporte para parámetro `exigir_config_skyrim_path`) y el `gamePath` de MO2.
+    - Admite de forma explícita los dos estados operativos legítimos:
+      - Estado previo a la conmutación: `gamePath` apuntando a Managed Source.
+      - Estado posterior a la conmutación: `gamePath` apuntando a Runtime Clone.
+    - Rechaza fail-closed si `gamePath` o `Config.skyrim_path` apuntan a un tercer directorio.
+    - Audita los lanzadores registrados en `[customExecutables]` mediante `_lanzadores_del_juego_fuera_de`:
+      rechaza cualquier configuración donde los ejecutables apunten a Steam o a árboles externos.
 
 ### 13.3 Diseño del Modelo de Recuperación Transaccional para P5-C1
 
@@ -758,3 +772,46 @@ estrictamente recuperable y atómica, estructurada en 6 fases:
    de Steam, el usuario ejecutará la Managed Source vulnerable a parches.
    *Mitigación:* El preflight audita `leer_ejecutables_de_mo2` y advierte o bloquea ante
    binarios desalineados entre `gamePath` y los lanzadores configurados.
+
+### 13.5 Resoluciones de Auditoría Independiente P5-C0 (P1 y P2)
+
+Tras la auditoría independiente realizada sobre el slice P5-C0, se endurecieron los siguientes
+contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
+
+1. **P1-A — CONFIG_COHERENCE Multi-Superficie Exhaustivo:**
+   - Se reemplazó la mera comprobación léxica de alias 8.3 por una matriz estricta de coherencia
+     entre `Managed Source`, `Runtime Clone`, `Config.skyrim_path` y `gamePath` de MO2.
+   - Se admiten explícitamente los estados legítimos pre-switch (`gamePath == Managed Source`)
+     y post-switch (`gamePath == Clone`).
+   - Se rechaza fail-closed si `gamePath` o `Config.skyrim_path` apuntan a un tercer directorio.
+   - Se añade el parámetro `exigir_config_skyrim_path: bool = False`, el cual cuando es `True`
+     falla con `CONFIG_SKYRIM_PATH_MISSING` si la configuración de Sky-Claw no está definida.
+
+2. **P1-B — Inspección de Ejecutables Personalizados de MO2 (`[customExecutables]`):**
+   - El preflight invoca `leer_ejecutables_de_mo2` y analiza los binarios registrados mediante
+     `_lanzadores_del_juego_fuera_de`.
+   - Se rechaza cualquier divergencia donde los ejecutables configurados apunten a Steam o a árboles
+     externos cuando `gamePath` está asociado al Clone (`CONFIG_DIVERGENCE_DETECTED`).
+
+3. **P2-A — Verificación de Señales Reales del Proveedor Steam:**
+   - La comprobación de `MANAGED_SOURCE` no se conforma con la presencia de `appmanifest_489830.acf`.
+   - Invoca `read_steam_manifest_observation` y `evaluate_provider_observation` para asegurar que el
+     manifiesto sea legible, que `buildid` sea no vacío y que `StateFlags == 4` (`ProviderObservationState.IDLE`),
+     rechazando descargas activas o inestabilidades de Steam (`PROVIDER_SIGNALS_UNSTABLE`).
+
+4. **P2-B — Seguridad Integral y Detección de Mutación Concurrente en `modorganizer.ini`:**
+   - Se inspecciona el archivo `modorganizer.ini` directamente mediante `_primer_reparse(ini_path)`,
+     rechazando junctions, symlinks y reparse points en la propia entrada del archivo.
+   - Se mide la estabilidad del archivo entre pre-lectura y post-lectura (`st_ino`, `st_dev`, `st_mtime_ns`),
+     bloqueando con `MO2_INI_UNREADABLE` ante mutaciones concurrentes durante el análisis (TOCTOU).
+
+5. **P2-C — Completitud Estructural del Assessment (`is_ready`):**
+   - `BinderPreflightAssessment.is_ready` exige la presencia canónica, completa y sin duplicados
+     de exactamente los 10 `PreflightCheckCode`s obligatorios, todos con `status == PASS`, y veredicto `READY`.
+   - Listas parciales, vacías o con códigos repetidos devuelven `is_ready == False`.
+
+6. **P2-D — Manejo Fail-Closed de `active.json`:**
+   - Al resolver `clone_id=None` desde `active.json`, se atrapan de forma tipada `StateCorruptError`
+     (`CLONE_RECORD_CORRUPT`), `StateSchemaError` (`CLONE_RECORD_SCHEMA_INVALID`),
+     `FrozenRuntimeStorageError` y `OSError`, sin `except Exception` genérico, preservando la
+     distinción entre ausencia legítima y corrupción/invalidez estructural.
