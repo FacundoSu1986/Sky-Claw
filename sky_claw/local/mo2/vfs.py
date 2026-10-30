@@ -298,11 +298,14 @@ class MO2Controller:
                         # del usuario excede lo que pidió el caller. Solo se avisa.
                         logger.warning(
                             "Mod %r aparece habilitado %d veces en el modlist del perfil %r; "
-                            "el archivo se deja como está y read_enabled_mods/ganadores lo "
-                            "rechazarán hasta corregirlo en MO2",
+                            "las entradas +%s repetidas no se reparan (solo se descartan las -%s, "
+                            "si las hay) y read_enabled_mods/ganadores rechazarán el perfil "
+                            "hasta corregirlo en MO2",
                             mod_name,
                             len(habilitadas),
                             profile,
+                            mod_name,
+                            mod_name,
                         )
                     flipear = deshabilitadas[0] if not habilitadas and deshabilitadas else None
                     descartar = set(deshabilitadas) - {flipear}
@@ -315,7 +318,12 @@ class MO2Controller:
                     if flipear is not None:
                         logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
                     else:
-                        logger.info("Discarded disabled -%s duplicates in modlist for profile %r", mod_name, profile)
+                        logger.info(
+                            "Discarded %d disabled -%s entries in modlist for profile %r",
+                            len(descartar),
+                            mod_name,
+                            profile,
+                        )
                 else:
                     lines.append(f"+{mod_name}\n")
             else:

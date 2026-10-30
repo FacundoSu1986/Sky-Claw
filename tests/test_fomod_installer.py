@@ -659,6 +659,9 @@ class TestAddModToModlist:
         avisos = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(avisos) == 1
         assert "2 veces" in avisos[0].getMessage()
+        # El aviso no debe prometer que el archivo queda intacto: la `-X` sí se quita.
+        assert "como está" not in avisos[0].getMessage()
+        assert any("Discarded 1 disabled -X entries" in r.getMessage() for r in caplog.records)
         # No se habilitó nada: el INFO no debe afirmar «Enabled ... in place».
         assert not any("Enabled +X" in r.getMessage() for r in caplog.records)
 
