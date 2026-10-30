@@ -635,9 +635,12 @@ para el futuro switch productivo (P5-C1).
 2. **`MANAGED_SOURCE`:**
    - Resuelve la Managed Source vía `discover_managed_source`.
    - Exige `DiscoveryState.MANAGED_SOURCE_DETECTED` y proveedor Steam (`ManagedSourceProvider.STEAM`).
-   - Verifica las señales reales del proveedor mediante `read_steam_manifest_observation` y
+   - Verifica las señales reales del proveedor mediante `observe_provider_activity` y
      `evaluate_provider_observation`: exige manifiesto legible, `buildid` presente y no vacío,
-     y estado estrictamente `ProviderObservationState.IDLE` (`StateFlags == "4"`, sin descargas activas).
+     ausencia de descargas en curso (`downloading/<appid>` y `temp/<appid>` vacíos/inexistentes)
+     y estado estrictamente `ProviderObservationState.IDLE` (`StateFlags == "4"`).
+   - Se delimita que esta comprobación audita el reposo puntual de actividad en el preflight; la
+     estabilidad temporal durable a lo largo de la mutación queda garantizada bajo lock en P5-C1.
 
 3. **`CLONE_RECORD`:**
    - Resuelve el `clone_id` (explícito o desde `active.json` vía `load_frozen_runtime_state`).
@@ -666,6 +669,9 @@ para el futuro switch productivo (P5-C1).
    - Ejecuta `assess_runtime_compatibility` sobre el `clone_root`.
    - Requiere `RuntimeCompatibility.COMPATIBLE` entre `SkyrimSE.exe` y `skse64_loader.exe` / DLLs.
    - Si la versión es desconocida o incompatible (`UNKNOWN` / `INCOMPATIBLE`), rechaza el preflight.
+   - Manejo tipado de errores: captura exclusivamente excepciones tipadas de dominio y filesystem
+     (`RuntimeObservationError`, `FrozenRuntimeError`, `OSError`), evitando el enmascaramiento de
+     errores de programación bajo `COMPATIBILITY_UNKNOWN`.
 
 8. **`PROCESS_CONCURRENCY`:**
    - Consulta `probe_live_processes` a través de los observadores inyectados.
@@ -684,11 +690,15 @@ para el futuro switch productivo (P5-C1).
 
 10. **`CONFIG_COHERENCE`:**
     - Evalúa la concordancia entre Managed Source, Runtime Clone, `Config.skyrim_path` de Sky-Claw
-      (con soporte para parámetro `exigir_config_skyrim_path`) y el `gamePath` de MO2.
-    - Admite de forma explícita los dos estados operativos legítimos:
-      - Estado previo a la conmutación: `gamePath` apuntando a Managed Source.
-      - Estado posterior a la conmutación: `gamePath` apuntando a Runtime Clone.
-    - Rechaza fail-closed si `gamePath` o `Config.skyrim_path` apuntan a un tercer directorio.
+      (con soporte para parámetro `exigir_config_skyrim_path`), el `gamePath` de MO2 y la variable de entorno `SKYRIM_PATH`.
+    - Admite de forma explícita los dos estados operativos legítimos unánimes:
+      - Estado previo a la conmutación: `Config.skyrim_path` y `gamePath` apuntando ambos a Managed Source.
+      - Estado posterior a la conmutación: `Config.skyrim_path` y `gamePath` apuntando ambos a Runtime Clone.
+    - Exige coherencia cruzada: rechaza combinaciones divergentes (`Config.skyrim_path != MO2 gamePath`) con
+      `CONFIG_DIVERGENCE_DETECTED`.
+    - Audita `SKYRIM_PATH` del entorno (si está definida): rechaza alias 8.3, apuntamiento a un tercer árbol
+      o divergencias respecto de `gamePath` / `Config.skyrim_path`.
+    - Rechaza fail-closed si `gamePath`, `Config.skyrim_path` o `SKYRIM_PATH` apuntan a un tercer directorio.
     - Audita los lanzadores registrados en `[customExecutables]` mediante `_lanzadores_del_juego_fuera_de`:
       rechaza cualquier configuración donde los ejecutables apunten a Steam o a árboles externos.
 
@@ -815,3 +825,31 @@ contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
      (`CLONE_RECORD_CORRUPT`), `StateSchemaError` (`CLONE_RECORD_SCHEMA_INVALID`),
      `FrozenRuntimeStorageError` y `OSError`, sin `except Exception` genérico, preservando la
      distinción entre ausencia legítima y corrupción/invalidez estructural.
+
+### 13.6 Resoluciones del Final Coherence Gate (A, B, C, D)
+
+1. **A — Coherencia Cruzada Estricta:**
+   - Se elimina la posibilidad de estados intermedios inconsistentes: si `Config.skyrim_path` está provisto,
+     ambas superficies (`Config` y `MO2 gamePath`) deben coincidir en el mismo destino.
+   - `Config = Clone` y `MO2 = Managed Source` -> `BLOCKED` con `CONFIG_DIVERGENCE_DETECTED`.
+   - `Config = Managed Source` y `MO2 = Clone` -> `BLOCKED` con `CONFIG_DIVERGENCE_DETECTED`.
+   - Ambas en `Managed Source` -> `READY` (pre-switch legítimo).
+   - Ambas en `Clone` -> `READY` (post-switch legítimo).
+
+2. **B — Auditoría de Variable de Entorno `SKYRIM_PATH`:**
+   - Reutilización de la semántica de P5-A (`entorno = os.environ if environ is None else environ`).
+   - Si `SKYRIM_PATH` está definida en el entorno, se valida que esté libre de alias 8.3, que no apunte
+     a un tercer árbol y que no diverja de `gamePath` ni de `Config.skyrim_path` (`CONFIG_DIVERGENCE_DETECTED`).
+
+3. **C — Actividad de Steam y Ausencia de Descargas:**
+   - Se sustituye `read_steam_manifest_observation` por `observe_provider_activity(source)`.
+   - Si existen archivos en `steamapps/downloading/<appid>` o `steamapps/temp/<appid>`, la observación
+     detecta actividad en curso y bloquea el preflight con `MANAGED_SOURCE_INVALID` (`ProviderObservationState.ACTIVE`).
+   - Se delimita que esta observación mide reposo puntual en el preflight de lectura; la estabilidad durable
+     a lo largo de la mutación se garantiza en P5-C1 bajo lock y doble barrera PRE/POST.
+
+4. **D — Errores Tipados en `RUNTIME_COMPATIBILITY`:**
+   - Se reemplaza el `except Exception` por excepciones de dominio e I/O tipadas (`RuntimeObservationError`,
+     `FrozenRuntimeError`, `OSError`).
+   - Se preserva el comportamiento fail-closed ante PE corrupto o problemas de disco (`COMPATIBILITY_UNKNOWN`),
+     garantizando que errores de programación (p. ej. `TypeError`, `AttributeError`) no queden enmascarados.

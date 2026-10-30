@@ -82,13 +82,14 @@ from sky_claw.local.frozen_runtime.models import (
 )
 from sky_claw.local.frozen_runtime.provider_signals import (
     evaluate_provider_observation,
-    read_steam_manifest_observation,
+    observe_provider_activity,
 )
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
 from sky_claw.local.frozen_runtime.storage import active_state_path
 from sky_claw.local.frozen_runtime.storage_models import (
     GenerationVerificationState,
 )
+from sky_claw.local.runtime_vault.runtime_observation import RuntimeObservationError
 
 _RE_ALIAS_83 = re.compile(r"~[0-9]")
 
@@ -437,8 +438,8 @@ def evaluar_binder_preflight(
         reasons.append(codigo_ms)
     else:
         ms_root_resolved = ms_result.source.root
-        # P2-A: Auditoría real de integridad y reposo en manifest del proveedor
-        obs_steam = read_steam_manifest_observation(ms_result.source)
+        # P2-A & Final Coherence Gate C: Auditoría real de reposo y actividad en manifest y directorios
+        obs_steam = observe_provider_activity(ms_result.source)
         if not obs_steam.manifest_readable:
             checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
                 check=PreflightCheckCode.MANAGED_SOURCE,
@@ -902,7 +903,7 @@ def evaluar_binder_preflight(
                     reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
                     detail=f"runtime y SKSE compatibles ({compat.game_version})",
                 )
-    except Exception as exc:  # noqa: BLE001
+    except (RuntimeObservationError, FrozenRuntimeError, OSError) as exc:
         checks_map[PreflightCheckCode.RUNTIME_COMPATIBILITY] = PreflightCheckResult(
             check=PreflightCheckCode.RUNTIME_COMPATIBILITY,
             status=PreflightCheckStatus.FAIL,
@@ -912,7 +913,7 @@ def evaluar_binder_preflight(
         reasons.append(PreflightReasonCode.COMPATIBILITY_UNKNOWN)
 
     # -------------------------------------------------------------------------
-    # 11. Coherencia de configuración multi-superficie (P1-A, P1-B)
+    # 11. Coherencia de configuración multi-superficie (P1-A, P1-B, Final Coherence A & B)
     # -------------------------------------------------------------------------
     ms_norm = _normalizar(ms_root_resolved) if ms_root_resolved is not None else None
     clone_norm = _normalizar(clone_root) if clone_root is not None else None
@@ -920,6 +921,7 @@ def evaluar_binder_preflight(
     coherencia_fail: PreflightReasonCode | None = None
     coherencia_detail: str = ""
 
+    cfg_norm: str | None = None
     # 11.1 Config.skyrim_path
     if exigir_config_skyrim_path and not config_skyrim_path:
         coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
@@ -940,6 +942,7 @@ def evaluar_binder_preflight(
                 )
 
     # 11.2 MO2 gamePath (debe ser Managed Source en pre-switch o Clone en post-switch)
+    gp_norm: str | None = None
     if coherencia_fail is None and game_path_obs_str is not None:
         gp_norm = _normalizar(game_path_obs_str)
         if gp_norm != ms_norm and gp_norm != clone_norm:
@@ -949,7 +952,44 @@ def evaluar_binder_preflight(
                 f"distinto de Managed Source ('{ms_root_resolved}') y Clone ('{clone_root}')"
             )
 
-    # 11.3 customExecutables de MO2 (P1-B)
+    # 11.3 Coherencia cruzada entre Config.skyrim_path y MO2 gamePath (Gate A)
+    if coherencia_fail is None and cfg_norm is not None and gp_norm is not None and cfg_norm != gp_norm:
+        coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+        coherencia_detail = (
+            f"divergencia cruzada entre superficies: Config.skyrim_path ('{config_skyrim_path}') "
+            f"difiere de MO2 gamePath ('{game_path_obs_str}')"
+        )
+
+    # 11.4 Variable de entorno SKYRIM_PATH (Gate B, reutilizando reglas P5-A)
+    entorno = os.environ if environ is None else environ
+    env_skyrim_raw = (entorno.get("SKYRIM_PATH") or "").strip()
+    if coherencia_fail is None and env_skyrim_raw:
+        env_path = pathlib.Path(os.path.abspath(os.fspath(env_skyrim_raw)))
+        if _contiene_alias_83(env_path):
+            coherencia_fail = PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED
+            coherencia_detail = f"SKYRIM_PATH en el entorno contiene alias 8.3: '{env_skyrim_raw}'"
+        else:
+            env_norm = _normalizar(env_skyrim_raw)
+            if env_norm != ms_norm and env_norm != clone_norm:
+                coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                coherencia_detail = (
+                    f"variable de entorno SKYRIM_PATH ('{env_skyrim_raw}') apunta a un tercer árbol "
+                    f"distinto de Managed Source ('{ms_root_resolved}') y Clone ('{clone_root}')"
+                )
+            elif gp_norm is not None and env_norm != gp_norm:
+                coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                coherencia_detail = (
+                    f"variable de entorno SKYRIM_PATH ('{env_skyrim_raw}') difiere de "
+                    f"MO2 gamePath ('{game_path_obs_str}')"
+                )
+            elif cfg_norm is not None and env_norm != cfg_norm:
+                coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                coherencia_detail = (
+                    f"variable de entorno SKYRIM_PATH ('{env_skyrim_raw}') difiere de "
+                    f"Config.skyrim_path ('{config_skyrim_path}')"
+                )
+
+    # 11.5 customExecutables de MO2 (P1-B)
     if coherencia_fail is None and game_path_obs_str is not None and ejecutables_mo2:
         lanzadores_fuera = _lanzadores_del_juego_fuera_de(game_path_obs_str, ejecutables_mo2)
         if lanzadores_fuera:

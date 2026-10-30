@@ -69,6 +69,7 @@ from sky_claw.local.frozen_runtime.storage_models import (
 )
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.models import RuntimeIdentity
+from sky_claw.local.runtime_vault.runtime_observation import RuntimeObservationError
 from sky_claw.local.runtime_vault.verification import tree_digest_from_files
 
 _RAIZ_WORKTREE = pathlib.Path(__file__).resolve().parent.parent
@@ -1654,3 +1655,259 @@ class TestFrozenRuntimeP5CBinderPreflight:
             checks=(check_pass,),
         )
         assert a3.is_ready is False
+
+    # -------------------------------------------------------------------------
+    # Escenarios Final Coherence Gate (A, B, C, D)
+    # -------------------------------------------------------------------------
+
+    def test_coherencia_cruzada_config_clone_mo2_managed_source_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """A.1: Config.skyrim_path = Clone, MO2 gamePath = Managed Source diverge y bloquea."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(clone_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_coherencia_cruzada_config_managed_source_mo2_clone_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """A.2: Config.skyrim_path = Managed Source, MO2 gamePath = Clone diverge y bloquea."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(clone_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_coherencia_cruzada_ambas_en_managed_source_ready_pre_switch(self, tmp_path: pathlib.Path) -> None:
+        """A.3: Ambas superficies en Managed Source: READY para estado legítimo pre-switch."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED in evaluacion.reasons
+
+    def test_coherencia_cruzada_ambas_en_clone_ready_post_switch(self, tmp_path: pathlib.Path) -> None:
+        """A.4: Ambas superficies en Clone: READY para estado legítimo post-switch."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(clone_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(clone_root),
+            exigir_config_skyrim_path=True,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED in evaluacion.reasons
+
+    def test_environ_skyrim_path_tercer_arbol_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """B.1: SKYRIM_PATH en environ apuntando a un tercer árbol bloquea con CONFIG_DIVERGENCE_DETECTED."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+        tercer_arbol = tmp_path / "otro_skyrim"
+        tercer_arbol.mkdir(parents=True, exist_ok=True)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            environ={"SKYRIM_PATH": str(tercer_arbol)},
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_environ_skyrim_path_divergente_de_mo2_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """B.2: SKYRIM_PATH en environ apuntando al Clone mientras MO2 apunta a Managed Source diverge y bloquea."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            config_skyrim_path=str(ms_root),
+            environ={"SKYRIM_PATH": str(clone_root)},
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_steam_downloading_activo_rechaza_preflight(self, tmp_path: pathlib.Path) -> None:
+        """C: Steam con archivos en steamapps/downloading/489830 produce MANAGED_SOURCE_INVALID por actividad en curso."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam, state_flags="4")
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        # Crear archivos activos en downloading/489830
+        downloading_dir = steam / "steamapps" / "downloading" / "489830"
+        downloading_dir.mkdir(parents=True, exist_ok=True)
+        (downloading_dir / "patch.chunk").write_bytes(b"downloading payload")
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=_probes_limpios(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_runtime_compatibility_no_enmascara_errores_de_programacion(self, tmp_path: pathlib.Path) -> None:
+        """D.1: Errores de programación (TypeError) en compatibilidad no se capturan como COMPATIBILITY_UNKNOWN."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        def _falla_con_type_error(_r: pathlib.Path) -> CompatibilityResult:
+            raise TypeError("bug de programacion")
+
+        probes_bug = RuntimeProbes(
+            identity=lambda _r: RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
+            compatibility=_falla_con_type_error,
+            processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        )
+
+        with pytest.raises(TypeError, match="bug de programacion"):
+            evaluar_binder_preflight(
+                storage_root=storage,
+                mo2_instance_dir=mo2,
+                clone_id=clone_record.clone_id,
+                managed_source_root=ms_root,
+                probes=probes_bug,
+            )
+
+    def test_runtime_compatibility_falla_cerrado_ante_errores_de_observacion_tipados(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """D.2: Errores tipados de observación (RuntimeObservationError / OSError) fallan cerrado con COMPATIBILITY_UNKNOWN."""
+        storage = tmp_path / "storage"
+        initialize_frozen_runtime_storage(storage)
+        steam = tmp_path / "steam"
+        ms_root = _crear_managed_source_sintetica(steam)
+        gen_id = _crear_generation_valida(storage)
+        clone_root = tmp_path / "clones" / "c1"
+        clone_record = _crear_clone_sintetico_valido(storage, clone_root, gen_id, managed_source_root=ms_root)
+        mo2 = tmp_path / "mo2_instance"
+        _crear_mo2_instance_sintetica(mo2, game_path=str(ms_root))
+
+        def _falla_con_obs_error(_r: pathlib.Path) -> CompatibilityResult:
+            raise RuntimeObservationError("pe ilegible")
+
+        probes_obs_err = RuntimeProbes(
+            identity=lambda _r: RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
+            compatibility=_falla_con_obs_error,
+            processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2,
+            clone_id=clone_record.clone_id,
+            managed_source_root=ms_root,
+            probes=probes_obs_err,
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.COMPATIBILITY_UNKNOWN in evaluacion.reasons
