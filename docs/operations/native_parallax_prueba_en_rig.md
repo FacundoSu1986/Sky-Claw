@@ -167,7 +167,8 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   **No** está probado con clima, sol o a distancia normal de juego, ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no que sea **bueno**. A ojo, la sesión vio que
   una textura (`rottingwood01`) pasa de tablones a una superficie grumosa, aunque su acuerdo p95 (5,0°) es el más bajo de la tanda: **la métrica del generador no avisa de ese defecto**, así que
   mirá cada salida antes de dejarla activa. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
-- **Formatos de normal aceptados:** PNG y DDS sin comprimir, DXT1 (BC1), BC5 y BC7. **DXT5 (BC3) se rechaza a propósito**: las normales «DXT5nm» guardan X en el canal alfa, y leerlas como RGB
+- **Formatos que acepta el decodificador de normales (`NormalDecoder`; la línea de comandos solo descubre `*_n.dds`, así que un `*_n.png` no se procesa):** PNG y DDS sin comprimir, estos dos solo en
+  layouts RGB/RGBA verificados de 8 bits por canal; y DXT1 (BC1), BC5 y BC7. **DXT5 (BC3) se rechaza a propósito**: las normales «DXT5nm» guardan X en el canal alfa, y leerlas como RGB
   daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
   un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
