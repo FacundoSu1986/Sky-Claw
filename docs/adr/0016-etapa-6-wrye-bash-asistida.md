@@ -109,6 +109,18 @@ El retiro era la opción barata de *código* y la cara de *producto*.
   [`loot.outcome.parse_load_order_bytes`](../../sky_claw/local/loot/outcome.py), cuya semántica está
   verificada contra libloadorder (`*` activa, `#` comenta, `\r\n`/`\n` indistintos), en vez de
   escribir un segundo lector que pudiera divergir del que ya usa el contrato de LOOT.
+- **El testigo previo tiene TRES estados, no dos**: *no estaba* (`existia=False`), *estaba con
+  esta identidad* (`existia=True, sha256=…`) y *no sé* (`None`). La forma
+  `{existia: True, sha256: None}` es imposible y `TestigoPrevio.__post_init__` la rechaza: sin
+  identidad de contenido no hay frescura que demostrar. La distinción es la que hace
+  demostrable la primera corrida (F5) y la que impide declarar frescura sobre un artefacto que
+  nunca se pudo leer.
+- **Dónde se busca el artefacto depende de quién ejecuta** (§2, y `tools/output_targets`): la
+  corrida spawneada escribe en el `Data` físico (`bashed_patch_target`), el operador dentro de
+  MO2 escribe en la superposición del perfil (`bashed_patch_en_overlay`: `overwrite` → mods por
+  prioridad → `Data`). Los dos resolvers conviven porque describen a dos ejecutores distintos.
+- **El preflight se construye por dominio de datos** (`physical` / `usvfs`): el sensor de
+  visibilidad (U-01) mide el `Data` físico y bajo la USVFS del operador sería un rojo falso.
 
 ### Qué NO hace
 
@@ -183,7 +195,36 @@ tenía — y un ancla que miente es peor que un bug:
 | F7 | El test de `chmod 000` es un no-op como root y no corre en Windows (única plataforma de entrega). | Directorio en vez de `chmod`. |
 | F8 | Se citaba #835 (`modlist.txt`) para justificar la regla de duplicados en `plugins.txt`. | La regla se sostiene sola (semántica de activación del motor) y la cita se reemplazó por su fuente propia. |
 
-## 9. Registro de adjudicación
+## 9. Revisión adversarial EXTERNA (2026-10-30, ronda 2)
+
+Segunda vuelta, esta vez sobre los comentarios de revisión del PR #839. Cada hallazgo se
+verificó **contra el código antes de aceptarlo**: un comentario de review es una
+afirmación, no un hecho. Seis se confirmaron por conducta y se corrigieron; uno se rechazó
+con evidencia y queda anclado por test para que el rechazo no se confunda con un olvido.
+
+**El patrón que los dos primeros comparten, y que esta etapa no había modelado:** la etapa 6
+tiene **dos ejecutores**. `execute_pipeline` spawnea `bash.py` por `run_capture` y ese
+subproceso lee el ``Data`` **físico**; el operador abre Wrye Bash **desde MO2** y ese proceso
+lee el **overlay** del perfil bajo la USVFS. El contrato de §2 sólo describía al primero, así
+que el preflight y la resolución del artefacto se escribieron contra el namespace equivocado.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| C1 | `_ensure_preflight()` cablea `build_vfs_visibility_sensor`, que mide el ``Data`` físico; sobre un perfil cuyos mods viven en ``mods/`` la preparación devolvía `PreflightBlocked`. | **Confirmado por conducta**: con un perfil mods-only el preflight físico sale `red` («Ninguno de los 1 plugin(s) de mod del perfil es visible en Data») y el del dominio USVFS sale `yellow`. El propio docstring del sensor declara esa precondición (PR-586F). | `_ensure_preflight(dominio=…)` con dos cachés. El dominio USVFS omite ESE sensor y conserva los demás (permisos, junctions, masters, límites, overwrite), que miden hechos de disco válidos bajo la VFS. |
+| C2 | `_bashed_patch_path()` → `bashed_patch_target()` devuelve sólo el ``Data`` físico: un patch construido por el operador en ``overwrite/`` o en un mod de salida daba `ARTEFACTO_AUSENTE`. | **Confirmado por conducta**: con el patch en ``mods/SalidaBashed/`` el resolver viejo produce `ARTEFACTO_AUSENTE` y el nuevo `OK`. | `output_targets.bashed_patch_en_overlay()`: `overwrite` > mods en prioridad decreciente > ``Data``. `bashed_patch_target` **se conserva** porque describe al otro ejecutor. |
+| C3 | `TestigoPrevio.desde` mapeaba *ilegible* a `existia=False`, indistinguible de ausencia probada. | Un directorio produce `existe=True, sha256=None`; el testigo decía "no estaba". | `desde()` devuelve `None` (no sé) y `PreparacionAsistida.testigo_previo` pasa a `TestigoPrevio \| None`. |
+| C4 | El lector toleraba UTF-8 inválido con `errors="replace"` y respondía `HABILITADO` donde `_plugins_habilitados` devuelve `None`. | Confirmado: un byte inválido en un comentario ajeno al plugin no cambiaba el veredicto. | Validación **estricta del archivo entero** antes de parsear → `ILEGIBLE`. **No reintroduce F2**: `removeprefix(BOM)` + `utf-8` estricto equivale a `utf-8-sig` estricto, y hay test de que el BOM sigue aceptado. |
+| C5 | `_testigo_desde_resultado` aceptaba `{existia: True, sha256: None}`, que hacía `frescura_demostrable()==True` sin identidad. | Es también la forma que producía C3: los dos hallazgos eran el mismo agujero visto desde cada extremo. | Invariante en `TestigoPrevio.__post_init__` (rechaza ambos estados imposibles) + `_testigo_desde_resultado` traduce el rechazo a `None`. |
+| C6 | El `except Exception` de `preparar_etapa_asistida` devolvía un dict sin `_attach_preflight`. | Era el único retorno de la fase 1 sin el semáforo. | `preflight_report` se inicializa antes del `try` y el camino de excepción lo adjunta. |
+| C7 | *Especulativo*: reordenar `ARTEFACTO_ILEGIBLE` y `ARTEFACTO_NO_REGULAR` por "especificidad". | Las dos condiciones casi no se solapan: sólo cuando el `lstat` falla (`ilegible=True, es_regular=False`) no sabemos qué es la ruta. Ahí `NO_REGULAR` afirmaría una propiedad no observada. | **Rechazado**, con test que fija los dos casos (lstat fallido → `ILEGIBLE`; directorio → `NO_REGULAR`). |
+
+**Cambio de censo que estos fixes obligan.** `wrye_bash_service.py` pasó de `FAMILY_D`
+(*sólo nombra el modlist en un docstring*) a `FAMILY_A` (*lo lee e interpreta la prioridad*):
+`_mods_habilitados` usa `read_enabled_mods` y `bashed_patch_en_overlay` recorre esas capas de
+mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y es
+**más** estricta que la anterior, no menos.
+
+## 10. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el
   artefacto de la etapa 6 deja de ser requerido por la etapa 9.

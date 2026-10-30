@@ -41,8 +41,9 @@ from sky_claw.app.db.locks import (
     LockError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
-from sky_claw.local.tools.output_targets import bashed_patch_target
+from sky_claw.local.tools.output_targets import ArtefactoEnOverlay, bashed_patch_en_overlay, bashed_patch_target
 from sky_claw.local.tools.wrye_bash_asistida import (
     TestigoPrevio,
     preparacion_como_resultado,
@@ -74,10 +75,23 @@ logger = logging.getLogger(__name__)
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
 
+#: Dominios de visibilidad de datos (ADR 0016). El servicio tiene DOS ejecutores y
+#: cada uno lee un namespace distinto: el runner spawneado lee el ``Data`` FÍSICO; el
+#: operador que abre Wrye Bash desde MO2 lee el OVERLAY del perfil bajo la USVFS.
+#: El preflight se construye por dominio porque un sensor del namespace equivocado no
+#: es conservador: es un rojo falso que bloquea al operador sin causa.
+DOMINIO_FISICO = "physical"
+DOMINIO_USVFS = "usvfs"
+
 #: Caracteres que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
 #: ``profiles/<perfil>/plugins.txt``, así que un separador o ``..`` saldría del árbol de
 #: la instancia (ADR 0016, fase 2).
 _SEPARADORES_DE_PERFIL = ("/", "\\", ":", "..")
+
+#: Archivo de prioridad del perfil, hermano del ``plugins.txt``. Se nombra acá —y no se
+#: reconstruye a mano— porque es el contrato que ``vfs_attestation.read_enabled_mods``
+#: parsea; este servicio lo ubica, no lo interpreta.
+_NOMBRE_MODLIST = "modlist.txt"
 
 
 def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoPrevio | None:
@@ -86,13 +100,24 @@ def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> Testig
     Falla cerrado: una forma inesperada (falta una clave, tipo equivocado) devuelve
     ``None`` — el veredicto sigue siendo válido pero declara la frescura no probada, en
     vez de inventar un testigo que después daría un ``SIN_CAMBIO`` falso.
+
+    Eso incluye la combinación **imposible** ``{existia: True, sha256: None}``: "estaba,
+    pero no sé cuál". Los tipos por separado la aceptaban (``bool`` y ``None`` son
+    válidos cada uno) y el resultado era un testigo que hacía
+    ``frescura_demostrable() == True`` por la vía de ``sha256 != huella.sha256`` aunque
+    la fase 1 nunca hubiera podido identificar el archivo. El invariante vive en
+    ``TestigoPrevio.__post_init__``: acá se traduce su rechazo a ``None``.
     """
     if not isinstance(testigo_previo, dict):
         return None
     existia, sha256 = testigo_previo.get("existia"), testigo_previo.get("sha256")
     if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
         return None
-    return TestigoPrevio(existia=existia, sha256=sha256)
+    try:
+        return TestigoPrevio(existia=existia, sha256=sha256)
+    except ValueError:
+        logger.warning("[FASE-6-asistida] testigo_previo inconsistente descartado: %r", testigo_previo)
+        return None
 
 
 def _perfil_es_usable(profile: str) -> bool:
@@ -187,29 +212,64 @@ class WryeBashPipelineService:
         self._wrye_bash_runner = wrye_bash_runner
         self._plugin_limit_guard = plugin_limit_guard
         # Preflight inyectable (tests) o construido perezosamente en el primer uso.
+        # Inyectado = el llamador ya eligió los sensores: vale para AMBOS dominios. Se
+        # guarda aparte para no confundirlo con el caché del dominio físico, que este
+        # servicio sí construye y sí distingue.
+        self._preflight_inyectado = preflight
+        # ``_preflight`` es el caché del dominio FÍSICO (corrida spawneada).
         self._preflight = preflight
+        # Preflight del dominio USVFS (etapa asistida): mismo set MENOS el sensor de
+        # visibilidad, que mide el Data físico y ahí sería un rojo falso (ver
+        # ``_ensure_preflight`` y el docstring de ``build_vfs_visibility_sensor``).
+        self._preflight_usvfs: PreflightService | None = None
         # T-26/T-28 (ADR 0002, "PR C"): cuando el journal está cableado, la generación
         # del Bashed Patch emite la caja negra de vuelo. Se cablea en AMBOS paths de
         # producción vía app_context (GUI/dispatcher y agente), igual que loot_service.
         # Sin journal (callers legacy / tests) no se emite.
         self._journal = journal
 
-    def _ensure_preflight(self) -> PreflightService | None:
+    def _ensure_preflight(self, *, dominio: str = DOMINIO_FISICO) -> PreflightService | None:
         """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
 
-        Wrye Bash arma el Bashed Patch leyendo TODO el load order activo y escribe
-        ``Bashed Patch, 0.esp`` en el ``Data`` físico del juego. Sensores relevantes
-        — el mismo set que DynDOLOD/Synthesis, porque es un ritual plugin-based:
-        **permisos de escritura** sobre el destino del Bashed Patch (solo el ``Data``
-        del juego: ver ``_permission_targets`` y ``tools.output_targets``),
+        Wrye Bash arma el Bashed Patch leyendo TODO el load order activo. Sensores
+        relevantes — el mismo set que DynDOLOD/Synthesis, porque es un ritual
+        plugin-based: **permisos de escritura** sobre el destino del Bashed Patch,
         **símbolos/junctions** en las rutas crudas, **masters faltantes** y
         **límites full/light** del perfil MO2 activo, y **overwrite sucio** (uno
         sucio hace el diff inatribuible aunque el patch no aterrice ahí).
         NO cablea la versión de LOOT (irrelevante). Reusa las primitivas compartidas
         (T-16d). Sensores no resolubles → ``None`` (omitidos con ``omit_unconfigured``).
         Sin game/MO2 resoluble → ``None`` (sin gate, mismo criterio que sus hermanos).
+
+        **``dominio`` elige QUÉ namespace de datos se mide, y no es un detalle de
+        estilo.** La etapa 6 tiene dos ejecutores distintos:
+
+        * ``execute_pipeline`` **spawnea** ``bash.py`` con ``run_capture``: el
+          subproceso no hereda la USVFS, así que lee el ``Data`` FÍSICO. Ahí el sensor
+          de visibilidad (U-01) es exactamente lo que hay que medir, y sigue cableado.
+        * ``preparar_etapa_asistida`` / ``verificar_etapa_asistida`` **no spawnean
+          nada**: el humano abre Wrye Bash desde MO2 y ese proceso SÍ hereda la USVFS.
+          Medir el ``Data`` físico ahí da rojo sobre un perfil sano —un perfil que vive
+          entero en ``mods/`` no tiene ninguno de sus plugins en ``Data``— y la
+          preparación se bloqueaba con ``PreflightBlocked`` sin que hubiera nada que
+          arreglar. El propio contrato del sensor lo dice: *"sólo cablearlo cuando el
+          backend que ejecutará la corrida consume ese namespace (dominio
+          ``physical``); los backends brokered MO2/USVFS leen el overlay del perfil y
+          medir el Data físico ahí es un rojo falso"* (PR-586F).
+
+        Por eso el dominio USVFS omite ESE sensor nomás: los demás (permisos,
+        junctions, masters, límites, overwrite) miden hechos del disco que valen igual
+        bajo la VFS. La visibilidad real del overlay en ese dominio no se declara
+        verde: la aporta :meth:`_artefacto_asistido`, que busca el patch en las capas
+        del perfil y lo encuentra —o no— con evidencia.
         """
-        if self._preflight is not None:
+        if dominio not in (DOMINIO_FISICO, DOMINIO_USVFS):
+            raise ValueError(f"dominio de datos desconocido: {dominio!r}")
+        if self._preflight_inyectado is not None:
+            return self._preflight_inyectado
+        if dominio == DOMINIO_USVFS and self._preflight_usvfs is not None:
+            return self._preflight_usvfs
+        if dominio == DOMINIO_FISICO and self._preflight is not None:
             return self._preflight
         if self._path_resolver is None:
             return None
@@ -266,11 +326,15 @@ class WryeBashPipelineService:
         # LOOT (stage 5): un master que carga después de su dependiente es CTD.
         order_check = build_master_order_sensor(resolver) if resolver is not None else None
 
-        # U-01: el Bashed Patch se arma leyendo TODO el load order activo; sin la
-        # USVFS heredada saldría un patch del juego base, silenciosamente vacío.
-        visibility_check = build_vfs_visibility_sensor(game=game, sources_resolver=resolver)
+        # U-01 SOLO en el dominio físico: el Bashed Patch spawneado se arma leyendo
+        # TODO el load order activo sobre el Data físico; sin la USVFS heredada
+        # saldría un patch del juego base, silenciosamente vacío. Bajo la USVFS del
+        # operador ese mismo sensor mide un Data que nadie va a leer (rojo falso).
+        visibility_check = (
+            build_vfs_visibility_sensor(game=game, sources_resolver=resolver) if dominio == DOMINIO_FISICO else None
+        )
 
-        self._preflight = PreflightService(
+        preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
             overwrite_check=overwrite_check,
@@ -280,7 +344,11 @@ class WryeBashPipelineService:
             visibility_check=visibility_check,
             omit_unconfigured=True,
         )
-        return self._preflight
+        if dominio == DOMINIO_USVFS:
+            self._preflight_usvfs = preflight
+            return preflight
+        self._preflight = preflight
+        return preflight
 
     def _permission_targets(self) -> list[pathlib.Path]:
         """Directorio donde aterriza ``Bashed Patch, 0.esp``, resuelto por corrida.
@@ -301,6 +369,57 @@ class WryeBashPipelineService:
         """Ruta del Bashed Patch desde el resolver, o ``None`` si no resuelve."""
         game = self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None
         return bashed_patch_target(game if isinstance(game, pathlib.Path) else None)
+
+    def _mods_habilitados(self, profile: str) -> tuple[str, ...] | None:
+        """Mods del perfil en prioridad CRECIENTE, o ``None`` si no se pudieron enumerar.
+
+        Tres respuestas distintas, y la diferencia es el punto: la tupla vacía es una
+        observación (el perfil no habilita ningún mod, así que ``overwrite`` + ``Data``
+        son el overlay completo); ``None`` es un fracaso de lectura y **degrada la
+        cobertura** del veredicto, que entonces no puede afirmar ausencia.
+
+        Se lee con la primitiva canónica del repo (``read_enabled_mods``), no con un
+        parser propio: la prioridad del overlay ya está resuelta ahí, con su formato y
+        su normalización, y una segunda lectura sería la clase de divergencia que este
+        repo ya pagó (``modlist.txt`` es el único contrato de prioridad de MO2).
+        """
+        plugins_txt = self._plugins_txt_path(profile)
+        if plugins_txt is None:
+            return None
+        modlist = plugins_txt.parent / _NOMBRE_MODLIST
+        if not modlist.is_file():
+            # Un perfil sin mods no es un perfil ilegible: MO2 escribe el modlist al
+            # tocar la lista, y su ausencia significa lista vacía.
+            return ()
+        try:
+            return read_enabled_mods(modlist)
+        except VfsAttestationError as exc:
+            logger.warning("[FASE-6-asistida] modlist ilegible para %r: %s", profile, exc)
+            return None
+
+    def _artefacto_asistido(self, profile: str) -> ArtefactoEnOverlay | None:
+        """Dónde buscar el ``Bashed Patch`` en la etapa ASISTIDA: la capa que gana en el overlay.
+
+        La verificación asistida mira un artefacto que construyó **el operador dentro de
+        MO2**, con la USVFS viva: el patch puede estar en ``overwrite/`` o en un mod de
+        salida habilitado. ``_bashed_patch_path`` (y ``output_targets.bashed_patch_target``)
+        modelan la corrida SPAWNEADA, que escribe físicamente en ``Data``; usarlos acá
+        producía ``ARTEFACTO_AUSENTE`` sobre un artefacto que el juego sí carga.
+
+        Los dos resolvers se quedan, porque describen dos ejecutores distintos (ver el
+        docstring de ``tools.output_targets``). Este usa el que corresponde al operador.
+        """
+        if self._path_resolver is None:
+            return None
+        game = self._path_resolver.get_skyrim_path()
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
+        return bashed_patch_en_overlay(
+            game=game if isinstance(game, pathlib.Path) else None,
+            mo2=mo2 if isinstance(mo2, pathlib.Path) else None,
+            mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
+            mods_habilitados=self._mods_habilitados(profile),
+        )
 
     def _destino_desde_runner(self, runner: WryeBashRunner) -> pathlib.Path | None:
         """Ruta del Bashed Patch derivada del ``config`` del runner, o ``None``.
@@ -414,6 +533,9 @@ class WryeBashPipelineService:
 
         Siempre devuelve un ``dict`` serializable (contrato T11).
         """
+        # Se inicializa ANTES del ``try``: el camino de excepción adjunta el reporte, y
+        # una excepción anterior a ``preflight.run()`` tiene que poder pasar ``None``.
+        preflight_report: PreflightReport | None = None
         try:
             if not _perfil_es_usable(profile):
                 return {
@@ -425,8 +547,10 @@ class WryeBashPipelineService:
                     ),
                 }
 
-            preflight = self._ensure_preflight()
-            preflight_report: PreflightReport | None = None
+            # Dominio USVFS: el ejecutor de esta etapa es el OPERADOR dentro de MO2, no
+            # el runner spawneado. Medir el Data físico acá bloqueaba perfiles sanos
+            # (ver `_ensure_preflight`).
+            preflight = self._ensure_preflight(dominio=DOMINIO_USVFS)
             if preflight is not None:
                 preflight_report = await preflight.run()
                 if preflight_report.blocks_mutations:
@@ -459,25 +583,36 @@ class WryeBashPipelineService:
                     )
 
             plugins_txt = self._plugins_txt_path(profile)
-            artefacto = self._bashed_patch_path()
-            if plugins_txt is None or artefacto is None:
+            # El artefacto de la etapa asistida vive en la superposición del perfil
+            # (overwrite / mod de salida), no necesariamente en el Data físico: el
+            # ejecutor es el operador dentro de MO2, bajo la USVFS.
+            artefacto = self._artefacto_asistido(profile)
+            if plugins_txt is None or artefacto is None or not artefacto.cobertura_completa:
                 return _attach_preflight(
                     {
                         "success": False,
                         "reason": "SinRutasResolubles",
                         "message": (
-                            "No se pudo resolver el Data del juego: sin ruta del artefacto no hay "
-                            "preparación ni verificación posible."
+                            "No se pudo resolver la ruta del artefacto en el Data del juego ni en el "
+                            "overlay del perfil: sin esa ruta no hay preparación ni verificación posible."
                         ),
                     },
                     preflight_report,
                 )
 
-            preparacion = await asyncio.to_thread(preparar_etapa_asistida, artefacto=artefacto, plugins_txt=plugins_txt)
+            preparacion = await asyncio.to_thread(
+                preparar_etapa_asistida, artefacto=artefacto.ruta, plugins_txt=plugins_txt
+            )
             return _attach_preflight(preparacion_como_resultado(preparacion), preflight_report)
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             logger.error("[FASE-6-asistida] Error inesperado preparando la etapa: %s", exc, exc_info=True)
-            return {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)}
+            # Este camino también adjunta el preflight. Era el ÚNICO retorno de la fase 1
+            # sin ``_attach_preflight``: ante una excepción inesperada el panel perdía el
+            # semáforo justo cuando algo se había roto.
+            return _attach_preflight(
+                {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)},
+                preflight_report,
+            )
 
     async def verificar_etapa_asistida(
         self,
@@ -510,19 +645,22 @@ class WryeBashPipelineService:
                 }
 
             plugins_txt = self._plugins_txt_path(profile)
-            artefacto = self._bashed_patch_path()
-            if plugins_txt is None or artefacto is None:
+            # Mismo resolver que la fase 1: si las dos fases buscaran en lugares
+            # distintos, una ausencia previa y una aparición serían incomparables.
+            artefacto = self._artefacto_asistido(profile)
+            if plugins_txt is None or artefacto is None or not artefacto.cobertura_completa:
                 return {
                     "success": False,
                     "reason": "SinRutasResolubles",
                     "message": (
-                        "No se pudo resolver el Data del juego: sin ruta del artefacto no hay verificación posible."
+                        "No se pudo resolver la ruta del artefacto en el Data del juego ni en el "
+                        "overlay del perfil: sin esa ruta no hay verificación posible."
                     ),
                 }
 
             veredicto = await asyncio.to_thread(
                 veredicto_etapa_asistida,
-                artefacto=artefacto,
+                artefacto=artefacto.ruta,
                 plugins_txt=plugins_txt,
                 testigo=_testigo_desde_resultado(testigo_previo),
             )

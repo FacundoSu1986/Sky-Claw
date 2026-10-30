@@ -150,6 +150,20 @@ class TestigoPrevio:
     artefacto no existe, y su sola aparición posterior prueba que esta corrida lo
     escribió. Sin esta distinción, el caso más importante —crear el parche desde
     cero— era el único donde la frescura no se podía demostrar.
+
+    **``existia=True`` exige ``sha256``, y lo exige acá** (``__post_init__``). La forma
+    ``{existia: True, sha256: None}`` no significa nada —"estaba, pero no puedo decir
+    cuál"— y sin este invariante dos consumidores distintos la producían por caminos
+    distintos: :meth:`desde` la generaba al ver un artefacto *ilegible*, y
+    ``_testigo_desde_resultado`` la aceptaba de vuelta desde el tool-result. Con el
+    testigo así, :meth:`_Observacion.sin_cambio` no podía demostrar frescura y
+    ``frescura_demostrable`` sí — dos veredictos contradictorios sobre la misma
+    evidencia. Un artefacto presente pero sin identidad de contenido **no es un
+    testigo**: es ``None``.
+
+    Tres estados, no dos: *no estaba* (``existia=False``), *estaba con esta identidad*
+    (``existia=True, sha256=...``) y *no sé* (``None``), que es lo único honesto cuando
+    el archivo existía pero era un enlace, un directorio o no se pudo leer.
     """
 
     #: Nombre que empieza con "Test": sin esto pytest intenta recolectar la clase.
@@ -158,12 +172,28 @@ class TestigoPrevio:
     existia: bool
     sha256: str | None
 
+    def __post_init__(self) -> None:
+        if self.existia and self.sha256 is None:
+            raise ValueError("un testigo que afirma existencia necesita la identidad del contenido")
+        if not self.existia and self.sha256 is not None:
+            raise ValueError("un testigo que afirma ausencia no puede traer identidad de contenido")
+
     @classmethod
-    def desde(cls, huella: HuellaDeArtefacto) -> TestigoPrevio:
-        """Solo un archivo regular y legible cuenta como "existía" con identidad."""
-        if huella.es_regular and not huella.ilegible and huella.sha256 is not None:
-            return cls(existia=True, sha256=huella.sha256)
-        return cls(existia=False, sha256=None)
+    def desde(cls, huella: HuellaDeArtefacto) -> TestigoPrevio | None:
+        """El testigo que la huella permite afirmar, o ``None`` si no permite ninguno.
+
+        Ausencia probada (``existia=False``) es un testigo: la aparición posterior del
+        archivo demuestra por sí sola que esta corrida lo escribió. Un artefacto que
+        existe pero del que no se pudo tomar identidad —enlace, directorio, lectura
+        fallida— **no** es ausencia ni presencia: se devuelve ``None`` y la frescura
+        queda declarada no probada, en vez de fabricar un ``existia=False`` que
+        convertiría una aparición futura en "frescura demostrada" sin haber mirado.
+        """
+        if not huella.existe:
+            return cls(existia=False, sha256=None)
+        if huella.sha256 is None:
+            return None
+        return cls(existia=True, sha256=huella.sha256)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +203,10 @@ class PreparacionAsistida:
     artefacto: str
     plugins_txt: str
     huella_previa: HuellaDeArtefacto
-    testigo_previo: TestigoPrevio
+    #: ``None`` = la fase 1 no pudo tomar testigo (artefacto presente sin identidad
+    #: de contenido). Distinto de ``TestigoPrevio(existia=False)``, que sí es una
+    #: observación: "lo miré y no estaba".
+    testigo_previo: TestigoPrevio | None
     estado_plugins: EstadoEnPlugins
     instrucciones: tuple[str, ...]
 
@@ -254,6 +287,14 @@ def estado_en_plugins_txt(plugins_txt: pathlib.Path, nombre: str) -> EstadoEnPlu
 
     Si el archivo aparece más de una vez (el caso ``+X``/``-X`` duplicado de #835) gana
     ``HABILITADO``: alcanza con que UNA línea lo active para que el motor lo cargue.
+
+    **Un byte inválido en cualquier parte del archivo lo vuelve** ``ILEGIBLE``: se valida
+    el archivo ENTERO como UTF-8 estricto antes de parsear. El decodificado era por
+    entrada y con ``errors="replace"``, así que una línea corrupta —incluso una que no
+    fuera el plugin buscado— se sustituía por U+FFFD y el archivo seguía respondiendo
+    ``HABILITADO``. El consumidor aguas abajo (``_plugins_habilitados``, ``utf-8-sig``
+    ``strict``) devuelve ``None`` para ese mismo archivo: dos lectores del mismo perfil
+    afirmando cosas distintas, y el de esta etapa era el optimista.
     """
     try:
         data = plugins_txt.read_bytes()
@@ -265,10 +306,17 @@ def estado_en_plugins_txt(plugins_txt: pathlib.Path, nombre: str) -> EstadoEnPlu
     # utf-8-sig, como el consumidor aguas abajo: sin esto, un BOM al inicio deja el
     # nombre de la primera línea pegado a él y el plugin se reporta AUSENTE.
     data = data.removeprefix(_BOM_UTF8)
+    # Validación ESTRICTA del archivo completo — el mismo criterio que utf-8-sig
+    # ``strict``: "no pude leer el perfil" jamás colapsa en "el plugin no está".
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return EstadoEnPlugins.ILEGIBLE
+
     objetivo = nombre.casefold()
     encontrado = False
     for entrada, activo in parse_load_order_bytes(data):
-        if entrada.decode("utf-8", errors="replace").strip().casefold() != objetivo:
+        if entrada.decode("utf-8").strip().casefold() != objetivo:
             continue
         encontrado = True
         if activo:
@@ -454,10 +502,14 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
         ),
         "artefacto": preparacion.artefacto,
         "plugins_txt": preparacion.plugins_txt,
-        "testigo_previo": {
-            "existia": preparacion.testigo_previo.existia,
-            "sha256": preparacion.testigo_previo.sha256,
-        },
+        "testigo_previo": (
+            None
+            if preparacion.testigo_previo is None
+            else {
+                "existia": preparacion.testigo_previo.existia,
+                "sha256": preparacion.testigo_previo.sha256,
+            }
+        ),
         "estado_en_plugins": preparacion.estado_plugins.value,
         "instrucciones": list(preparacion.instrucciones),
     }

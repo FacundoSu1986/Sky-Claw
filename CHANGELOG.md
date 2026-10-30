@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **no están cableados** a las tres superficies de producción —eso es PR B de §7 del ADR,
   justamente para no arreglar una y dejar las hermanas—, así que el comportamiento de
   producción no cambia en este PR.
+- **La etapa 6 asistida distingue a sus DOS ejecutores: el runner y el operador.** La
+  corrida spawneada lee el `Data` físico; el operador abre Wrye Bash *desde MO2* y lee la
+  superposición del perfil bajo la USVFS. `tools/output_targets.bashed_patch_en_overlay`
+  resuelve el artefacto por prioridad de capas (`overwrite` → mods → `Data`) para la
+  verificación, y `WryeBashPipelineService._ensure_preflight(dominio=…)` construye el
+  preflight del dominio correspondiente: bajo USVFS se omite el sensor de visibilidad
+  (U-01), que mide el `Data` físico y daba rojo sobre un perfil cuyos mods viven en
+  `mods/`. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
+  imposible `{existia: True, sha256: None}`.
 
 ### Fixed
 - **Una corrida de TexGen que el operador autorizó continuar se revertía entera por

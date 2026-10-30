@@ -35,7 +35,10 @@ from sky_claw.local.tools.dyndolod_workspace import (
     WorkspaceResuelto,
 )
 from sky_claw.local.tools.output_targets import (
+    CAPA_DATA_JUEGO,
+    CAPA_OVERWRITE,
     HerramientaDynDOLOD,
+    bashed_patch_en_overlay,
     bashed_patch_target,
     bodyslide_output_target,
     derivar_layout_de_dyndolod,
@@ -145,6 +148,76 @@ def test_wrye_bash_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 
     assert mo2 / "overwrite" not in targets
     assert game / "Data" in targets
+
+
+def test_el_artefacto_del_operador_se_busca_en_la_superposicion(tmp_path: pathlib.Path) -> None:
+    """La etapa ASISTIDA es el caso (a) alcanzado por la puerta del operador.
+
+    ``bashed_patch_target`` modela la corrida spawneada (escribe físicamente en
+    ``Data``); cuando el humano construye el patch dentro de MO2, la USVFS lo desvía a
+    ``overwrite/`` o a un mod de salida. Sin este resolver el veredicto declaraba
+    ``ARTEFACTO_AUSENTE`` sobre un artefacto que el juego sí carga.
+    """
+    game, mo2, mods = tmp_path / "game", tmp_path / "mo2", tmp_path / "mo2" / "mods"
+    en_mod = mods / "Salida" / "Bashed Patch, 0.esp"
+    en_mod.parent.mkdir(parents=True)
+    en_mod.write_bytes(b"TES4" + b"\x00" * 60)
+
+    encontrado = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=mods, mods_habilitados=("Salida",))
+
+    assert encontrado is not None
+    assert encontrado.ruta == en_mod
+    assert encontrado.capa == "Salida"
+    assert encontrado.cobertura_completa is True
+
+    # Y la corrida spawneada sigue apuntando al Data físico: son dos ejecutores distintos.
+    assert bashed_patch_target(game) == game / "Data" / "Bashed Patch, 0.esp"
+
+
+def test_el_overwrite_gana_y_el_data_es_el_fondo(tmp_path: pathlib.Path) -> None:
+    """Prioridad del overlay: ``overwrite`` sobre los mods, los mods sobre el ``Data``."""
+    game, mo2, mods = tmp_path / "game", tmp_path / "mo2", tmp_path / "mo2" / "mods"
+    (game / "Data").mkdir(parents=True)
+    (mods / "Salida").mkdir(parents=True)
+    (mods / "Salida" / "Bashed Patch, 0.esp").write_bytes(b"mod")
+    (mo2 / "overwrite").mkdir(parents=True)
+    (mo2 / "overwrite" / "Bashed Patch, 0.esp").write_bytes(b"overwrite")
+
+    con_overwrite = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=mods, mods_habilitados=("Salida",))
+    assert con_overwrite is not None and con_overwrite.capa == CAPA_OVERWRITE
+
+    (mo2 / "overwrite" / "Bashed Patch, 0.esp").unlink()
+    sin_overwrite = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=mods, mods_habilitados=("Salida",))
+    assert sin_overwrite is not None and sin_overwrite.ruta.parent.parent == mods
+
+    (mods / "Salida" / "Bashed Patch, 0.esp").unlink()
+    sin_mods = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=mods, mods_habilitados=("Salida",))
+    assert sin_mods is not None
+    assert sin_mods.capa == CAPA_DATA_JUEGO
+    assert sin_mods.ruta == game / "Data" / "Bashed Patch, 0.esp"
+
+
+def test_sin_poder_enumerar_los_mods_la_ausencia_no_esta_probada(tmp_path: pathlib.Path) -> None:
+    """Cobertura parcial: se miró en ``overwrite`` y en ``Data``, no en los mods.
+
+    Con ``mods_habilitados=None`` el resolver no puede afirmar que el artefacto no
+    exista —solo que no lo encontró donde pudo mirar—, y eso viaja en el resultado en
+    vez de colapsar en un ``ARTEFACTO_AUSENTE`` optimista.
+    """
+    game, mo2 = tmp_path / "game", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+
+    parcial = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=None, mods_habilitados=None)
+
+    assert parcial is not None
+    assert parcial.cobertura_completa is False
+
+    # La tupla VACÍA no es un fracaso de lectura: es la observación "no hay mods".
+    vacio = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=None, mods_habilitados=())
+    assert vacio is not None and vacio.cobertura_completa is True
+
+    # Y sin juego no hay ni Data ni fondo donde buscar.
+    assert bashed_patch_en_overlay(game=None, mo2=mo2, mods_dir=None, mods_habilitados=()) is None
 
 
 # ---------------------------------------------------------------------------
