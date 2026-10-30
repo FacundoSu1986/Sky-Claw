@@ -240,8 +240,9 @@ class MO2Controller:
         file already carries the same ``+X`` more than once (only possible by
         hand-editing ``modlist.txt``) it is NOT repaired: a warning is logged and
         the repeated ``+X`` entries are kept as they are (any ``-X`` is still
-        discarded), so ``read_enabled_mods``/``ganadores`` will reject the profile
-        until the operator fixes it in MO2.
+        discarded). ``read_enabled_mods`` still returns both entries; it is
+        ``ganadores._exigir_enabled`` that rejects the repeated name, until the
+        operator fixes the profile in MO2.
 
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
@@ -299,7 +300,7 @@ class MO2Controller:
                         logger.warning(
                             "Mod %r aparece habilitado %d veces en el modlist del perfil %r; "
                             "las entradas +%s repetidas no se reparan (solo se descartan las -%s, "
-                            "si las hay) y read_enabled_mods/ganadores rechazarán el perfil "
+                            "si las hay); ganadores._exigir_enabled rechazará el perfil "
                             "hasta corregirlo en MO2",
                             mod_name,
                             len(habilitadas),
