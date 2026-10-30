@@ -402,7 +402,11 @@ _MENSAJES: dict[MotivoAsistido, str] = {
         f"La etapa 6 está esperando que construyas '{BASHED_PATCH_NAME}' en la GUI de Wrye Bash."
     ),
     MotivoAsistido.ARTEFACTO_AUSENTE: (
-        f"No existe '{BASHED_PATCH_NAME}' en el Data del juego: la etapa 6 no se construyó."
+        # Nombra las TRES capas: la etapa asistida resuelve el artefacto en la
+        # superposición del perfil (overwrite → mods → Data), así que decir sólo
+        # "en el Data del juego" mandaba al operador a mirar donde ya sabemos que no está.
+        f"No existe '{BASHED_PATCH_NAME}' en ninguna capa del perfil (overwrite, mods habilitados "
+        f"ni Data del juego): la etapa 6 no se construyó."
     ),
     MotivoAsistido.ARTEFACTO_ENLACE: (
         f"'{BASHED_PATCH_NAME}' es un enlace (symlink/junction): no se sigue, porque validaría "

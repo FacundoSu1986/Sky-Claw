@@ -387,10 +387,18 @@ class WryeBashPipelineService:
         if plugins_txt is None:
             return None
         modlist = plugins_txt.parent / _NOMBRE_MODLIST
-        if not modlist.is_file():
-            # Un perfil sin mods no es un perfil ilegible: MO2 escribe el modlist al
-            # tocar la lista, y su ausencia significa lista vacía.
+        # ``is_file()`` NO sirve para esta pregunta: devuelve ``False`` también cuando la
+        # ruta es un directorio o cuando ``stat`` falla (traga el ``OSError``), y las dos
+        # cosas significan lo contrario de "no hay mods". Sólo ``FileNotFoundError``
+        # prueba la ausencia —MO2 escribe el modlist al tocar la lista—; cualquier otro
+        # resultado lo decide el lector canónico, que falla cerrado.
+        try:
+            modlist.lstat()
+        except FileNotFoundError:
             return ()
+        except OSError as exc:
+            logger.warning("[FASE-6-asistida] modlist inaccesible para %r: %s", profile, exc)
+            return None
         try:
             return read_enabled_mods(modlist)
         except VfsAttestationError as exc:

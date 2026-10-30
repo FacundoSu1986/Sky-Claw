@@ -63,7 +63,7 @@ from sky_claw.local.tools.wrye_bash_asistida import (
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 from sky_claw.local.tools.wrye_bash_service import DOMINIO_FISICO, DOMINIO_USVFS, WryeBashPipelineService
 from sky_claw.local.validators.etapas_previas_lods import _plugins_habilitados
-from tests._symlink_guard import crear_junction, puede_crear_symlinks
+from tests._symlink_guard import crear_junction, junction_guard, puede_crear_symlinks
 
 _SIN_SYMLINKS = pytest.mark.skipif(
     not puede_crear_symlinks(), reason="crear symlinks exige privilegios/modo desarrollador"
@@ -138,14 +138,21 @@ def test_huella_de_un_symlink_no_se_sigue(tmp_path: pathlib.Path) -> None:
     assert huella.sha256 is None
 
 
+@junction_guard
 def test_huella_de_un_junction_no_se_sigue(tmp_path: pathlib.Path) -> None:
-    """``os.path.islink`` es False para un junction de Windows: se mira el reparse tag."""
+    """``os.path.islink`` es False para un junction de Windows: se mira el reparse tag.
+
+    ``junction_guard`` y no un ``skip`` ad-hoc: crear un junction en Windows no exige
+    privilegios, así que un fallo del helper significa "el helper se rompió", no "el
+    entorno no soporta la feature". Un skip silencioso hacía que perder la cobertura del
+    reparse point —justo en la única plataforma que puede ejercerla— se viera igual que
+    tenerla (contrato documentado en ``tests/_symlink_guard.crear_junction``).
+    """
     destino = tmp_path / "carpeta-ajena"
     destino.mkdir()
     enlace = tmp_path / BASHED_PATCH_NAME
     error = crear_junction(enlace, destino)
-    if error is not None:
-        pytest.skip(f"no se pudo crear el junction: {error}")
+    assert error is None, error
 
     huella = huella_de_artefacto(enlace)
 
@@ -1153,3 +1160,38 @@ def test_un_artefacto_que_no_se_pudo_inspeccionar_no_afirma_que_sea_no_regular(t
 
     assert _motivo(sin_inspeccion) is MotivoAsistido.ARTEFACTO_ILEGIBLE
     assert _motivo(observado_como_directorio) is MotivoAsistido.ARTEFACTO_NO_REGULAR
+
+
+# --- Ronda 3 (CodeRabbit sobre `6db53c4`) ----------------------------------------
+
+
+def test_el_mensaje_de_ausente_nombra_las_capas_que_se_miraron() -> None:
+    """Si el veredicto buscó en tres capas, el mensaje no puede nombrar sólo una.
+
+    Decir "no existe en el Data del juego" sobre una resolución que ya revisó
+    ``overwrite`` y los mods habilitados manda al operador a mirar donde el sistema ya
+    sabe que no está.
+    """
+    mensaje = _MENSAJES[MotivoAsistido.ARTEFACTO_AUSENTE]
+
+    assert "overwrite" in mensaje
+    assert "mods habilitados" in mensaje
+    assert "Data del juego" in mensaje
+
+
+@pytest.mark.asyncio
+async def test_un_modlist_que_no_se_puede_estatuiar_no_es_un_perfil_sin_mods(tmp_path: pathlib.Path) -> None:
+    """``is_file()`` también devuelve ``False`` para un directorio: no prueba ausencia.
+
+    Un ``modlist.txt`` que es un directorio (o cuyo ``stat`` falla) no significa "el
+    perfil no habilita mods": significa que no se pudo leer, y entonces el veredicto no
+    puede afirmar que el artefacto no esté en ninguna capa.
+    """
+    _perfil_con_plugins(tmp_path, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    (tmp_path / "profiles" / "Default" / "modlist.txt").mkdir()
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    assert servicio._mods_habilitados("Default") is None
+    resultado = await servicio.verificar_etapa_asistida(profile="Default")
+
+    assert resultado["reason"] == "SinRutasResolubles"
