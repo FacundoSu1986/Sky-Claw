@@ -29,6 +29,7 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 from sky_claw.local.mo2.ganadores import CAPA_OVERWRITE, GanadoresDelPerfil, GanadoresError, indexar_ganadores
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA
+from sky_claw.local.native_parallax.plugin_relieve import CARPETA_DE_PLUGINS_SKSE
 from sky_claw.local.native_parallax.provider import (
     MOTIVOS_QUE_DEJAN_LO_NO_OBSERVADO,
     DemasiadosArchivosError,
@@ -51,6 +52,7 @@ __all__ = [
     "PerfilResuelto",
     "cargar_mallas_del_perfil",
     "cargar_perfil",
+    "cargar_plugin_del_perfil",
     "descubrir_normales_del_mod",
     "diagnosticar_perfil",
     "diagnostico_como_resultado",
@@ -261,6 +263,26 @@ def cargar_mallas_del_perfil(
         )
     except GanadoresError as exc:
         raise PerfilError(f"no se pudo resolver las mallas del perfil (no se evalúan mallas a medias): {exc}") from exc
+
+
+def cargar_plugin_del_perfil(
+    *, mods_dir: pathlib.Path, data_root: pathlib.Path, resuelto: PerfilResuelto, maximo_de_archivos: int
+) -> GanadoresDelPerfil:
+    """Quién gana cada archivo bajo ``SKSE/Plugins`` del perfil ya resuelto (#834 ítem 3): de ahí salen el INI y la DLL del plugin de relieve.
+
+    Tercer uso del resolutor de ganadores y vive acá por la misma razón que los otros dos (ancla por AST: lo llama SOLO este módulo). Falla
+    cerrado con ``PerfilError``; quien lo consume decide qué hacer con lo que no pudo ver (la elegibilidad lo trata como «no determinado»).
+    """
+    try:
+        return indexar_ganadores(
+            mods_dir=mods_dir,
+            data_root=data_root,
+            enabled=resuelto.enabled,
+            prefijo=CARPETA_DE_PLUGINS_SKSE,
+            maximo_de_archivos=maximo_de_archivos,
+        )
+    except GanadoresError as exc:
+        raise PerfilError(f"no se pudo resolver SKSE/Plugins del perfil: {exc}") from exc
 
 
 def diagnosticar_perfil(

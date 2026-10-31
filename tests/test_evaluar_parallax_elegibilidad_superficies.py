@@ -370,6 +370,24 @@ def test_las_dos_superficies_se_llaman_igual() -> None:
     assert EvaluarElegibilidadParallaxStrategy.name == _NOMBRE
 
 
+_INI_APAGADO = b"[Experimental]\nbAutoEnableParallax = false\n"
+
+
+async def test_un_ini_apagado_baja_el_si_igual_en_las_dos_superficies(instancia: pathlib.Path) -> None:
+    """#834 ítem 3: el INI del plugin que gana en el overlay lo leen las DOS superficies (una sola función) y contestan lo mismo."""
+    assert (await _estrategia(instancia).execute({"mod": _MOD}))["conteo"][
+        "SI"
+    ] == 1  # el control: sin INI, la malla elegible da SI
+    _archivo(instancia, _MALLAS, "SKSE/Plugins/AutoParallax.ini", _INI_APAGADO)
+
+    desde_la_gui = await _estrategia(instancia).execute({"mod": _MOD})
+    desde_el_agente = await _ejecutar(_registro(instancia), mod=_MOD)
+
+    assert desde_el_agente == desde_la_gui
+    assert desde_la_gui["conteo"] == {"SI": 0, "NO": 1, "NO_VERIFICADO": 0}
+    assert desde_la_gui["plugin"]["ini"] == "APAGADO" and desde_la_gui["plugin"]["capa_del_ini"] == _MALLAS
+
+
 # ---------------------------------------------------------------------------
 # Revisión de Codex en #822: el presupuesto del router y su plazo
 # ---------------------------------------------------------------------------
