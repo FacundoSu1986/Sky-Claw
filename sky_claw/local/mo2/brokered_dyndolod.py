@@ -43,6 +43,7 @@ from sky_claw.local.mo2.mod_effectivity import ModEffectivityError, verificar_ar
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
     VfsAttestationError,
+    assert_canary_fisicamente_distinguible,
     build_attestation_challenge,
     build_attestation_challenge_for_source,
     read_enabled_mods,
@@ -459,6 +460,11 @@ class BrokeredDynDOLODSpawnStrategy:
                 mods_dir=self._mods_dir,
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
+                permitir_diferencial=True,
+                # MISMA restricción que el gate: reconstruir sin ella elegiría
+                # otro canario del mod (uno externo al artifact) y el drift
+                # bloquearía un spawn que el gate sí había aprobado.
+                subarbol_autorizado=handoff.artifact_root.name,
             )
         except VfsAttestationError as e:
             raise HandoffDriftError(
@@ -477,6 +483,21 @@ class BrokeredDynDOLODSpawnStrategy:
                 f"{fresh.profile_fingerprint[:12]}): la evidencia ya no corresponde al estado bajo "
                 "el que se lanzaría DynDOLOD"
             )
+        # Invariante físico del canary en el boundary del spawn: si el Data
+        # físico pasa a entregar los bytes esperados, la evidencia runtime del
+        # approval deja de probar el mapping (diferencial inválido o canary
+        # clásico que apareció físicamente con esos bytes).
+        try:
+            await asyncio.to_thread(
+                assert_canary_fisicamente_distinguible,
+                challenge=fresh,
+                physical_data_dir=self._physical_data_dir,
+            )
+        except VfsAttestationError as e:
+            raise HandoffDriftError(
+                "el estado físico del canary aprobado ya no permite distinguir la vista virtual de la "
+                f"física en el boundary del spawn: {e}"
+            ) from e
         # El `fresh` devuelto es IGUAL al approval en cada campo ligado (la
         # comparación estricta de arriba lo garantiza): la sesión se abre con
         # los valores APROBADOS, no con "lo que había ahora". El worker entonces
@@ -645,6 +666,13 @@ class BrokeredDynDOLODSpawnStrategy:
                 mods_dir=self._mods_dir,
                 profile=self._profile,
                 physical_data_dir=self._physical_data_dir,
+                permitir_diferencial=True,
+                # La elegibilidad se restringe al ARTIFACT antes de seleccionar:
+                # el mod puede empaquetar más de lo autorizado (`meshes/…`) y un
+                # candidato externo consumiría el turno para después ser
+                # rechazado por la comprobación de pertenencia, bloqueando un
+                # handoff que sí tenía evidencia válida adentro.
+                subarbol_autorizado=request.staging.name,
             )
         except VfsAttestationError as e:
             return TexGenHandoffResult.bloqueado(
@@ -668,6 +696,21 @@ class BrokeredDynDOLODSpawnStrategy:
             return TexGenHandoffResult.bloqueado(
                 f"el canario elegido '{challenge.relative_path.as_posix()}' no tiene los bytes del "
                 "staging autorizado: la evidencia runtime no atestiguaría el artifact correcto"
+            )
+        # Invariante del canario: el Data físico no puede entregar los bytes
+        # esperados (canary ausente, o diferencial con bytes distintos). Se mide
+        # antes del probe y se vuelve a medir después: si el Data físico cambia
+        # durante la ventana, la evidencia runtime deja de probar el mapping.
+        try:
+            await asyncio.to_thread(
+                assert_canary_fisicamente_distinguible,
+                challenge=challenge,
+                physical_data_dir=self._physical_data_dir,
+            )
+        except VfsAttestationError as e:
+            return TexGenHandoffResult.bloqueado(
+                f"el canario '{challenge.relative_path.as_posix()}' no es físicamente distinguible en el "
+                f"Data físico (UNKNOWN): {e}"
             )
 
         job = VfsJob.create(
@@ -696,6 +739,21 @@ class BrokeredDynDOLODSpawnStrategy:
             return TexGenHandoffResult.bloqueado(
                 f"el bridge MO2/USVFS no pudo atestiguar la visibilidad del '{request.mod_name}' "
                 f"({e!r}): se bloquea cerrado"
+            )
+        # Revalidación temporal del estado físico DESPUÉS del probe: el
+        # invariante debe seguir valiendo en el momento de aprobar, no sólo en el
+        # de construir el challenge. Reduce la ventana entre medición y lectura;
+        # NO detecta un flip transitorio que sólo exista durante el probe.
+        try:
+            await asyncio.to_thread(
+                assert_canary_fisicamente_distinguible,
+                challenge=challenge,
+                physical_data_dir=self._physical_data_dir,
+            )
+        except VfsAttestationError as e:
+            return TexGenHandoffResult.bloqueado(
+                f"el estado del Data físico cambió durante el probe del handoff y la evidencia runtime "
+                f"del canario '{challenge.relative_path.as_posix()}' ya no es válida: {e}"
             )
         # El approval liga el ESTADO aprobado al spawn (anti-TOCTOU): perfil +
         # fingerprint, identidad del artifact, mod fuente y canary. `spawn` lo
