@@ -252,6 +252,15 @@ mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y
 | M-4 | `SinRutasResolubles` confundía modlist ilegible con ausencia de rutas MO2. | Mensaje y diagnóstico engañosos. | `reason="CoberturaDeOverlayIncompleta"` devuelto ante cobertura incompleta. |
 | H-1 | Superficie de agente LLM (`system_tools`) sin `path_resolver` y con perfil no real. | Documentado como precondición de PR B. | Anotado en §7 y tabla de hermanos. |
 
+**Ronda 5 (auditoría adversarial pre-merge sobre HEAD `5090659c`).** Re-auditoría de cierre:
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| M-A | `CoberturaDeOverlayIncompleta` culpaba a la enumeración de mods cuando la capa fallida era `overwrite` (`output_targets.py:292`). CodeRabbit thread en línea 667. | Confirmado: cuando `os.lstat` sobre `overwrite` falla, los mods sí se enumeraron pero el mensaje decía "No se pudo enumerar los mods del perfil". | Mensaje neutro (`"No se pudo inspeccionar alguna capa del perfil (overwrite o mods): no se puede afirmar dónde está el artefacto."`) + tests dedicados en `test_output_targets.py` y `test_wrye_bash_asistida.py`. |
+| M-B | Envenenamiento de caché legacy en `_ensure_preflight`: llamadas con `profile="Pedido"` poblaban `_preflight_usvfs` afectando llamadas posteriores sin perfil (`profile=None`). | Reproducido: llamada con perfil contaminaba el atributo legacy usado por callers default. | Asignación a `_preflight` / `_preflight_usvfs` condicionada estrictamente a `if profile is None:`. Test de aislamiento de caché. |
+| M-C | Asimetría de alias de dominio en el mismo archivo: `_ensure_preflight` mapeaba `"virtual_usvfs"` a `DOMINIO_USVFS`, pero `_permission_targets` no lo hacía (caía a Data físico). | Confirmado: violación del principio de hermanos en el mismo archivo. | Extracción de `_normalizar_dominio` y uso simétrico en ambos métodos. Test de normalización. |
+| M-D | Métricas desactualizadas en cuerpo de PR (96 tests colectados vs 63/64 anteriores) y aclaración sobre `mypy` (`ignore_errors = true` en `local.tools.*` con auditoría manual de tipos). | Confirmado. | Actualización de documentación y descripción del PR. |
+
 ## 10. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el

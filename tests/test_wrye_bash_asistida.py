@@ -1389,3 +1389,72 @@ def test_bashed_patch_en_overlay_saltea_capa_con_permission_error(tmp_path: path
     assert resultado is not None
     assert resultado.capa == CAPA_DATA_JUEGO
     assert resultado.cobertura_completa is False, "capa bloqueada degrada la cobertura"
+
+
+# --- Ronda 5: diagnóstico neutro en overlay, aislamiento de caché y alias ---------
+
+
+@pytest.mark.asyncio
+async def test_el_mensaje_de_cobertura_incompleta_no_afirma_falsamente_falla_en_modlist(
+    tmp_path: pathlib.Path,
+) -> None:
+    """M-A: si una capa falla inspección (p. ej. overwrite), no se afirma que falló el modlist."""
+    _perfil_con_plugins(tmp_path, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    (tmp_path / "profiles" / "Default" / "modlist.txt").write_text("+ModValido\n", encoding="utf-8")
+    (tmp_path / "mo2" / "overwrite").mkdir(parents=True, exist_ok=True)
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path / "mo2")
+
+    real_lstat = os.lstat
+
+    def _lstat_con_fallo_overwrite(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if "overwrite" in str(path):
+            raise PermissionError("acceso denegado simulado a overwrite")
+        return real_lstat(path, *args, **kwargs)
+
+    with patch("os.lstat", side_effect=_lstat_con_fallo_overwrite):
+        prep = await servicio.preparar_etapa_asistida(profile="Default")
+        verif = await servicio.verificar_etapa_asistida(profile="Default")
+
+    for res in (prep, verif):
+        assert res["success"] is False
+        assert res["reason"] == "CoberturaDeOverlayIncompleta"
+        assert "enumerar los mods" not in res["message"]
+        assert "inspeccionar alguna capa" in res["message"]
+
+
+def test_ensure_preflight_con_perfil_no_contamina_legacy_sin_perfil(tmp_path: pathlib.Path) -> None:
+    """M-B: construir preflight con perfil no puebla _preflight_usvfs ni contamina llamadas sin perfil."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    (mo2 / "profiles" / "Default").mkdir(parents=True)
+    (mo2 / "profiles" / "Pedido").mkdir(parents=True)
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver_real(game, mo2),
+    )
+
+    pf_pedido = servicio._ensure_preflight(dominio=DOMINIO_USVFS, profile="Pedido")
+    assert pf_pedido is not None
+    assert servicio._preflight_usvfs is None, "un preflight con perfil no debe poblar el atributo legacy"
+
+    pf_sin_perfil = servicio._ensure_preflight(dominio=DOMINIO_USVFS)
+    assert pf_sin_perfil is not None
+    assert pf_sin_perfil is not pf_pedido, "llamada sin perfil debe tener su propio preflight"
+    assert servicio._preflight_usvfs is pf_sin_perfil, "llamada sin perfil sí alimenta el atributo legacy"
+
+
+def test_permission_targets_normaliza_alias_virtual_usvfs(tmp_path: pathlib.Path) -> None:
+    """M-C: _permission_targets normaliza 'virtual_usvfs' a DOMINIO_USVFS en vez de caer a Data."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir(parents=True)
+    servicio = _servicio(game, mo2)
+
+    targets_alias = servicio._permission_targets(dominio="virtual_usvfs")
+    targets_canonico = servicio._permission_targets(dominio=DOMINIO_USVFS)
+    targets_fisico = servicio._permission_targets(dominio=DOMINIO_FISICO)
+
+    assert targets_alias == targets_canonico
+    assert targets_alias != targets_fisico
+    assert targets_alias == [mo2 / "overwrite"]

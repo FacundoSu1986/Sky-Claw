@@ -22,6 +22,7 @@ invariante.
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,6 +219,28 @@ def test_sin_poder_enumerar_los_mods_la_ausencia_no_esta_probada(tmp_path: pathl
 
     # Y sin juego no hay ni Data ni fondo donde buscar.
     assert bashed_patch_en_overlay(game=None, mo2=mo2, mods_dir=None, mods_habilitados=()) is None
+
+
+def test_overwrite_inaccesible_degrada_la_cobertura(tmp_path: pathlib.Path) -> None:
+    """Si overwrite no se puede inspeccionar (p. ej. PermissionError), la cobertura se degrada."""
+    import os
+
+    game, mo2 = tmp_path / "game", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir(parents=True)
+    real_lstat = os.lstat
+
+    def _lstat_trucado(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if str(path).startswith(str(mo2 / "overwrite")):
+            raise PermissionError("acceso denegado a overwrite")
+        return real_lstat(path, *args, **kwargs)
+
+    with patch("os.lstat", side_effect=_lstat_trucado):
+        resultado = bashed_patch_en_overlay(game=game, mo2=mo2, mods_dir=None, mods_habilitados=())
+
+    assert resultado is not None
+    assert resultado.capa == CAPA_OVERWRITE
+    assert resultado.cobertura_completa is False
 
 
 # ---------------------------------------------------------------------------

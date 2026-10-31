@@ -126,6 +126,14 @@ def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> Testig
         return None
 
 
+def _normalizar_dominio(dominio: str | None, *, default: str = DOMINIO_FISICO) -> str:
+    """Normaliza el alias 'virtual_usvfs' al canónico DOMINIO_USVFS."""
+    dom = default if dominio is None else dominio
+    if dom == "virtual_usvfs":
+        return DOMINIO_USVFS
+    return dom
+
+
 def _perfil_es_usable(profile: str) -> bool:
     """True si *profile* puede unirse a ``profiles/<perfil>/`` sin escapar del árbol."""
     return bool(profile) and not any(sep in profile for sep in _SEPARADORES_DE_PERFIL)
@@ -272,9 +280,7 @@ class WryeBashPipelineService:
         verde: la aporta :meth:`_artefacto_asistido`, que busca el patch en las capas
         del perfil y lo encuentra —o no— con evidencia.
         """
-        dom = self._default_domain if dominio is None else dominio
-        if dom == "virtual_usvfs":
-            dom = DOMINIO_USVFS
+        dom = _normalizar_dominio(dominio, default=self._default_domain)
         if dom not in (DOMINIO_FISICO, DOMINIO_USVFS):
             raise ValueError(f"dominio de datos desconocido: {dom!r}")
         if self._preflight_inyectado is not None:
@@ -360,10 +366,11 @@ class WryeBashPipelineService:
             omit_unconfigured=True,
         )
         self._preflight_cache[cache_key] = preflight
-        if dom == DOMINIO_USVFS and self._preflight_usvfs is None:
-            self._preflight_usvfs = preflight
-        elif dom == DOMINIO_FISICO and self._preflight is None:
-            self._preflight = preflight
+        if profile is None:
+            if dom == DOMINIO_USVFS and self._preflight_usvfs is None:
+                self._preflight_usvfs = preflight
+            elif dom == DOMINIO_FISICO and self._preflight is None:
+                self._preflight = preflight
         return preflight
 
     def _permission_targets(self, *, dominio: str = DOMINIO_FISICO) -> list[pathlib.Path]:
@@ -386,7 +393,8 @@ class WryeBashPipelineService:
         El ``WritePermissionsChecker`` se salta los inexistentes y se resuelve por
         corrida (freshness), así que devolver una ruta aún ausente es seguro.
         """
-        if dominio == DOMINIO_USVFS:
+        dom = _normalizar_dominio(dominio, default=DOMINIO_FISICO)
+        if dom == DOMINIO_USVFS:
             if self._path_resolver is None:
                 return []
             mo2 = self._path_resolver.get_mo2_instance_data_root()
@@ -664,7 +672,8 @@ class WryeBashPipelineService:
                         "success": False,
                         "reason": "CoberturaDeOverlayIncompleta",
                         "message": (
-                            "No se pudo enumerar los mods del perfil: no se puede afirmar dónde está el artefacto."
+                            "No se pudo inspeccionar alguna capa del perfil (overwrite o mods): "
+                            "no se puede afirmar dónde está el artefacto."
                         ),
                     },
                     preflight_report,
@@ -737,7 +746,8 @@ class WryeBashPipelineService:
                     "success": False,
                     "reason": "CoberturaDeOverlayIncompleta",
                     "message": (
-                        "No se pudo enumerar los mods del perfil: no se puede afirmar dónde está el artefacto."
+                        "No se pudo inspeccionar alguna capa del perfil (overwrite o mods): "
+                        "no se puede afirmar dónde está el artefacto."
                     ),
                 }
 
