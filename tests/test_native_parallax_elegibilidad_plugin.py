@@ -114,6 +114,10 @@ _CASOS_DEL_INI = [
         AjusteDelIni.NO_DETERMINADO,
     ),  # sección repetida
     (b"[Experimental]\nbAutoEnableParallax = false\nMallas", AjusteDelIni.NO_DETERMINADO),  # línea sin «=»
+    # [DEFAULT] es un invento de configparser que el plugin no conoce: un valor heredado de ahí no cuenta como declarado en [Experimental].
+    (b"[DEFAULT]\nbAutoEnableParallax = false\n[Experimental]\nx = 1\n", AjusteDelIni.NO_DETERMINADO),
+    (b"[DEFAULT]\nbAutoEnableParallax = true\n[Experimental]\nx = 1\n", AjusteDelIni.NO_DETERMINADO),
+    (b"[DEFAULT]\nbAutoEnableParallax = false\n[Experimental]\nbAutoEnableParallax = true\n", AjusteDelIni.ACTIVO),
     (b"\xff\xfe\x00\x01", AjusteDelIni.NO_DETERMINADO),  # no es UTF-8
     (
         b"[Experimental]\nbAutoEnableParallax = false\n" + b"#" * MAXIMO_DEL_INI,

@@ -102,7 +102,11 @@ def interpretar_ini(datos: bytes) -> tuple[AjusteDelIni, str]:
         return AjusteDelIni.NO_DETERMINADO, "el INI no es texto UTF-8"
     # Estricto a propósito: una sección o una clave repetidas son ambiguas (cuál lee el plugin no está verificado) y no se adivina. Sin
     # comentarios en línea: «false ; x» no se reconoce como booleano en vez de suponer que el plugin lo recorta.
-    lector = configparser.ConfigParser(strict=True, interpolation=None, inline_comment_prefixes=None)
+    # ``default_section``: ``[DEFAULT]`` es una herencia propia de configparser que el plugin no conoce; con un nombre que ningún encabezado puede
+    # tener (el patrón de encabezado no cruza saltos de línea) ese valor deja de heredarse a ``[Experimental]`` y ya no cuenta como declarado ahí.
+    lector = configparser.ConfigParser(
+        strict=True, interpolation=None, inline_comment_prefixes=None, default_section="\n"
+    )
     try:
         lector.read_string(texto)
     except configparser.Error:
