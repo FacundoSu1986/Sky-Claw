@@ -122,8 +122,12 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    la ruta de salida o el mod de salida no está habilitado en el perfil) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la
    búsqueda del plugin depende de un archivo que no se puede comprobar, una ruta es ambigua o alguna malla no se pudo leer). Elegí para mirar las que dicen `SI`. **Límites:** no lee
    mallas dentro de un `.bsa` (las del juego base lo están: esas salen `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni
-   activadores) y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y
-   la versión que tenés instalada puede diferir.
+   activadores), y eso no se ve en la malla; la regla sale del código público del plugin y la versión que tenés instalada puede diferir.
+   **El INI del plugin sí se mira:** el plugin solo enciende relieve con `bAutoEnableParallax` activo en `SKSE/Plugins/AutoParallax.ini` (se distribuye apagado). La herramienta lee el
+   INI que **gana en tu perfil de MO2**: si está **apagado**, un `SI` pasa a `NO` (con el mod que entrega ese INI) y la salida imprime el aviso; si no hay INI en ningún mod del perfil,
+   o no se puede interpretar (valor que no es `true/false/1/0`, clave repetida, archivo ilegible), **no cambia ningún veredicto** y se avisa que no se pudo comprobar. Tampoco ve un INI que viva
+   solo en la carpeta del juego, fuera de MO2. La DLL (`AutoParallax.dll`) solo se comprueba por **presencia** suelta en el perfil (su ausencia avisa, no cambia nada: puede estar instalada
+   fuera de MO2); su versión y la combinación DLL × INI × tipo de objeto **no están verificadas** y necesitan el rig.
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
    contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
    Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya): una **banda oscura** en el borde

@@ -612,6 +612,8 @@ def _elegibilidad(args: argparse.Namespace, salida: TextIO) -> int:
             f"{len(informe.mallas_no_leidas)} mallas no se pudieron leer por completo: {'; '.join(listadas)}{mas}.",
             file=salida,
         )
+    for aviso in informe.plugin.avisos():
+        print(f"Aviso: {aviso}.", file=salida)
     print(f"Alcance: {informe.alcance}", file=salida)
     return CODIGO_OK
 
