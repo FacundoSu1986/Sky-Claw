@@ -3054,13 +3054,12 @@ _NOMBRE_DE_LA_CONSTANTE = "_ETAPA_DYNDOLOD"
 #: mal: `grass_cache_service.py` NO cumple —emite el campo en 1 de sus 10
 #: registros de fallo—. El único servicio completo del repo es `dyndolod`.
 _SERVICIOS_COMPLETOS = {"dyndolod_service.py"}
-_SERVICIOS_PARCIALES = {"grass_cache_service.py"}
+_SERVICIOS_PARCIALES = {"grass_cache_service.py", "wrye_bash_service.py"}
 _SERVICIOS_SIN_COBERTURA = {
     "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
     "pandora_service.py": "etapa 4; solo prosa (stage 4)",
     "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
     "vramr_service.py": "etapa SIN DETERMINAR; no marca la etapa de ninguna forma",
-    "wrye_bash_service.py": "etapa 6; solo prosa [FASE-6] / (fase 6)",
     "xedit_service.py": "etapa 1; solo prosa QuickAutoClean (stage 1)",
 }
 

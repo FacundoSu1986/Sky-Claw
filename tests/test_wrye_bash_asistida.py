@@ -38,12 +38,14 @@ cuando el llamador trae la ``huella_previa``; sin ella el veredicto es honesto
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.local.tools.output_targets import bashed_patch_en_overlay
+from sky_claw.local.tools.output_targets import CAPA_DATA_JUEGO, bashed_patch_en_overlay
 from sky_claw.local.tools.wrye_bash_asistida import (
     _MENSAJES,
     PASOS_ASISTIDOS,
@@ -74,9 +76,11 @@ _RAIZ = pathlib.Path(__file__).resolve().parents[1]
 _MODULO = _RAIZ / "sky_claw" / "local" / "tools" / "wrye_bash_asistida.py"
 
 
-def _perfil_con_plugins(tmp_path: pathlib.Path, contenido: str) -> tuple[pathlib.Path, pathlib.Path]:
-    """Crea ``<data>/profiles/Default/plugins.txt`` y el Data del juego."""
-    plugins = tmp_path / "profiles" / "Default" / "plugins.txt"
+def _perfil_con_plugins(
+    tmp_path: pathlib.Path, contenido: str, *, perfil: str = "Default"
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Crea ``<data>/profiles/<perfil>/plugins.txt`` y el Data del juego."""
+    plugins = tmp_path / "profiles" / perfil / "plugins.txt"
     plugins.parent.mkdir(parents=True)
     plugins.write_text(contenido, encoding="utf-8")
     game = tmp_path / "Skyrim"
@@ -672,7 +676,12 @@ def _preflight_verde() -> MagicMock:
     return preflight
 
 
-def _servicio(game: pathlib.Path, mo2: pathlib.Path) -> WryeBashPipelineService:
+def _servicio(
+    game: pathlib.Path,
+    mo2: pathlib.Path,
+    *,
+    guard: Any = None,
+) -> WryeBashPipelineService:
     resolver = MagicMock()
     resolver.get_skyrim_path.return_value = game
     resolver.get_mo2_instance_data_root.return_value = mo2
@@ -680,6 +689,7 @@ def _servicio(game: pathlib.Path, mo2: pathlib.Path) -> WryeBashPipelineService:
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),
         path_resolver=resolver,
+        plugin_limit_guard=guard,
         preflight=_preflight_verde(),
     )
 
@@ -807,13 +817,14 @@ async def test_preparar_sin_data_resoluble_falla_cerrado(tmp_path: pathlib.Path)
     assert resultado["reason"] == "SinRutasResolubles"
 
 
-@pytest.mark.asyncio
-async def test_preparar_rechaza_un_perfil_con_separadores(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("fase", ["preparar", "verificar"])
+async def test_las_dos_fases_rechazan_un_perfil_con_separadores(fase: str, tmp_path: pathlib.Path) -> None:
     """El perfil compone una ruta: ``..`` o separadores no pueden escapar del perfil."""
     _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
     servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+    metodo = getattr(servicio, f"{fase}_etapa_asistida")
 
-    resultado = await servicio.preparar_etapa_asistida(profile="../otro")
+    resultado = await metodo(profile="../otro")
 
     assert resultado["success"] is False
     assert resultado["reason"] == "PerfilInvalido"
@@ -1006,7 +1017,7 @@ async def test_un_modlist_ilegible_no_afirma_ausencia(tmp_path: pathlib.Path) ->
     resultado = await servicio.verificar_etapa_asistida(profile="Default")
 
     assert resultado["success"] is False
-    assert resultado["reason"] == "SinRutasResolubles", resultado
+    assert resultado["reason"] == "CoberturaDeOverlayIncompleta", resultado
     assert "motivo" not in resultado or resultado["motivo"] != MotivoAsistido.ARTEFACTO_AUSENTE.value
 
 
@@ -1195,7 +1206,7 @@ async def test_un_modlist_que_no_se_puede_estatuiar_no_es_un_perfil_sin_mods(tmp
     assert servicio._mods_habilitados("Default") is None
     resultado = await servicio.verificar_etapa_asistida(profile="Default")
 
-    assert resultado["reason"] == "SinRutasResolubles"
+    assert resultado["reason"] == "CoberturaDeOverlayIncompleta"
 
 
 # --- Ronda 3b (PR-Agent sobre `6db53c4`): permisos y cobertura del overlay --------
@@ -1274,3 +1285,107 @@ def test_un_acierto_en_overwrite_es_concluyente_ante_cobertura_parcial(tmp_path:
     assert encontrado is not None
     assert encontrado.capa == "overwrite"
     assert encontrado.cobertura_completa is True
+
+
+# ==============================================================================
+# 10. Revisión adversarial del PR (ronda 4) — asincronía, perfiles y mutantes
+# ==============================================================================
+
+
+async def test_preflight_se_construye_con_el_perfil_pedido(tmp_path: pathlib.Path) -> None:
+    """A-2: el preflight debe evaluar el perfil solicitado por el llamador, no el activo."""
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    mo2.mkdir(parents=True)
+    _perfil_con_plugins(mo2, f"*{BASHED_PATCH_NAME}\n", perfil="Pedido")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_skyrim_path_raw.return_value = str(game)
+    resolver.get_mo2_instance_data_root.return_value = mo2
+    resolver.get_mo2_mods_path_best_effort.return_value = mo2 / "mods"
+    resolver.get_active_profile.return_value = "Activo"
+
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=resolver,
+    )
+
+    with patch("sky_claw.local.validators.preflight_sensors.build_mo2_profile_sources_resolver") as mock_sources:
+        mock_sources.return_value = None
+        await servicio.preparar_etapa_asistida(profile="Pedido")
+        assert mock_sources.call_count == 1
+        _, kwargs = mock_sources.call_args
+        assert kwargs["profile"] == "Pedido", "debe usar el perfil pedido, no el activo ('Activo')"
+
+
+async def test_un_modlist_con_permission_error_no_es_un_perfil_sin_mods(tmp_path: pathlib.Path) -> None:
+    """A-3: si lstat eleva PermissionError/OSError, _mods_habilitados devuelve None, no ()."""
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+    with patch.object(pathlib.Path, "lstat", side_effect=PermissionError(13, "denegado")):
+        assert servicio._mods_habilitados("Default") is None
+
+
+async def test_la_fase_1_aborta_si_el_guard_m04_falla(tmp_path: pathlib.Path) -> None:
+    """A-3: si plugin_limit_guard indica que el límite de plugins falló, aborta preparación."""
+    guard_mock = AsyncMock(return_value={"valid": False, "error": "M-04 límite excedido", "plugin_count": 256})
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path, guard=guard_mock)
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+    assert resultado["success"] is False
+    assert resultado["aborted_by"] == "plugin_limit_guard"
+    assert resultado["plugin_count"] == 256
+    assert "M-04" in resultado["error"]
+
+
+def test_testigo_previo_rechaza_sha256_sintacticamente_invalido() -> None:
+    """A-4: TestigoPrevio rechaza digests que no sean hex de 64 caracteres."""
+    with pytest.raises(ValueError, match="digest hexadecimal"):
+        TestigoPrevio(existia=True, sha256="no-es-un-digest")
+    with pytest.raises(ValueError, match="digest hexadecimal"):
+        TestigoPrevio(existia=True, sha256="abc")
+
+
+async def test_testigo_fabricado_no_prueba_frescura(tmp_path: pathlib.Path) -> None:
+    """A-4: un testigo fabricado con digest no hex es descartado y declara frescura no probada."""
+    _perfil_con_plugins(tmp_path, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    _parche(tmp_path / "overwrite" / BASHED_PATCH_NAME, b"contenido-nuevo")
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    veredicto = await servicio.verificar_etapa_asistida(
+        profile="Default",
+        testigo_previo={"existia": True, "sha256": "no-es-un-digest"},
+    )
+    assert veredicto["success"] is True
+    assert veredicto["motivo"] == MotivoAsistido.OK.value
+    assert veredicto["frescura_probada"] is False, "testigo inválido no debe probar frescura"
+
+
+def test_bashed_patch_en_overlay_saltea_capa_con_permission_error(tmp_path: pathlib.Path) -> None:
+    """M-1: una capa donde lstat falla con PermissionError no eleva excepción; degrada cobertura."""
+    game, mo2 = tmp_path / "game", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    _parche(game / "Data" / BASHED_PATCH_NAME, b"en-data")
+    mods = mo2 / "mods"
+    (mods / "ModBloqueado").mkdir(parents=True)
+    _parche(mods / "ModBloqueado" / BASHED_PATCH_NAME, b"en-mod")
+
+    original_lstat = os.lstat
+
+    def _failing_lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if "ModBloqueado" in str(path):
+            raise PermissionError(13, "denegado")
+        return original_lstat(path, *args, **kwargs)
+
+    with patch("os.lstat", side_effect=_failing_lstat):
+        resultado = bashed_patch_en_overlay(
+            game=game,
+            mo2=mo2,
+            mods_dir=mods,
+            mods_habilitados=("ModBloqueado",),
+        )
+
+    assert resultado is not None
+    assert resultado.capa == CAPA_DATA_JUEGO
+    assert resultado.cobertura_completa is False, "capa bloqueada degrada la cobertura"

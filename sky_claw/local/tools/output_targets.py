@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import os
 import pathlib
 from typing import TYPE_CHECKING
 
@@ -278,20 +279,27 @@ def bashed_patch_en_overlay(
     capas.append((CAPA_DATA_JUEGO, data_juego))
 
     for capa, ruta in capas:
-        # ``exists()`` traga el OSError y sigue enlaces; ``is_symlink()`` rescata el
-        # enlace roto, que existe para el veredicto (ENLACE) aunque no para ``exists``.
-        # Un directorio también "existe": el veredicto lo dirá NO_REGULAR, que es más
-        # informativo que un AUSENTE falso.
-        if ruta.exists() or ruta.is_symlink():
-            # Un acierto en ``overwrite`` es concluyente AUNQUE no se hayan podido
-            # enumerar los mods: esa capa gana a todas, así que ninguna capa no leída
-            # puede taparla. La cobertura parcial sólo importa cuando el ganador está
-            # en una capa que otra podría estar tapando.
-            return ArtefactoEnOverlay(
-                ruta=ruta,
-                capa=capa,
-                cobertura_completa=completo or capa == CAPA_OVERWRITE,
-            )
+        # ``os.lstat`` no sigue enlaces; un enlace roto igual "existe" para el veredicto.
+        # Captura ``FileNotFoundError`` (ausencia probada) y degrada ``completo = False``
+        # si otro ``OSError`` (p. ej. PermissionError) impide la inspección.
+        try:
+            os.lstat(ruta)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            completo = False
+            if capa == CAPA_OVERWRITE:
+                return ArtefactoEnOverlay(ruta=ruta, capa=capa, cobertura_completa=False)
+            continue
+        # Un acierto en ``overwrite`` es concluyente AUNQUE no se hayan podido
+        # enumerar los mods: esa capa gana a todas, así que ninguna capa no leída
+        # puede taparla. La cobertura parcial sólo importa cuando el ganador está
+        # en una capa que otra podría estar tapando.
+        return ArtefactoEnOverlay(
+            ruta=ruta,
+            capa=capa,
+            cobertura_completa=completo or capa == CAPA_OVERWRITE,
+        )
     return ArtefactoEnOverlay(ruta=data_juego, capa=CAPA_DATA_JUEGO, cobertura_completa=completo)
 
 

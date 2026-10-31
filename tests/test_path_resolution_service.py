@@ -1542,8 +1542,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
         # ADR 0016 (etapa 6 asistida): ``bashed_patch_en_overlay`` se insertó arriba de
         # ``synthesis_output_target`` y corrió su constructor del default `<raíz>/mods`
-        # (225 → 333). Sigue siendo el MISMO constructor, no un sitio nuevo.
-        "sky_claw/local/tools/output_targets.py": (333,),
+        # (225 → 333 → 341). Sigue siendo el MISMO constructor, no un sitio nuevo.
+        "sky_claw/local/tools/output_targets.py": (341,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
         "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
     }

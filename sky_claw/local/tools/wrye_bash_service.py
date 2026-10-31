@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -68,6 +69,9 @@ if TYPE_CHECKING:
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
+
+#: Número canónico de la etapa de Wrye Bash en el pipeline (AGENTS.md §5.5).
+_ETAPA_WRYE_BASH = 6
 
 #: Lock resource id (externo) para la generación del Bashed Patch. Espeja a Synthesis
 #: (``Synthesis.esp``): serializa sobre el artefacto de salida contra otra corrida de
@@ -112,6 +116,8 @@ def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> Testig
         return None
     existia, sha256 = testigo_previo.get("existia"), testigo_previo.get("sha256")
     if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
+        return None
+    if sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
         return None
     try:
         return TestigoPrevio(existia=existia, sha256=sha256)
@@ -205,6 +211,7 @@ class WryeBashPipelineService:
         plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         preflight: PreflightService | None = None,
         journal: OperationJournal | None = None,
+        default_domain: str = DOMINIO_FISICO,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -222,13 +229,15 @@ class WryeBashPipelineService:
         # visibilidad, que mide el Data físico y ahí sería un rojo falso (ver
         # ``_ensure_preflight`` y el docstring de ``build_vfs_visibility_sensor``).
         self._preflight_usvfs: PreflightService | None = None
+        self._preflight_cache: dict[tuple[str, str | None], PreflightService] = {}
+        self._default_domain = default_domain
         # T-26/T-28 (ADR 0002, "PR C"): cuando el journal está cableado, la generación
         # del Bashed Patch emite la caja negra de vuelo. Se cablea en AMBOS paths de
         # producción vía app_context (GUI/dispatcher y agente), igual que loot_service.
         # Sin journal (callers legacy / tests) no se emite.
         self._journal = journal
 
-    def _ensure_preflight(self, *, dominio: str = DOMINIO_FISICO) -> PreflightService | None:
+    def _ensure_preflight(self, *, dominio: str | None = None, profile: str | None = None) -> PreflightService | None:
         """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
 
         Wrye Bash arma el Bashed Patch leyendo TODO el load order activo. Sensores
@@ -263,14 +272,20 @@ class WryeBashPipelineService:
         verde: la aporta :meth:`_artefacto_asistido`, que busca el patch en las capas
         del perfil y lo encuentra —o no— con evidencia.
         """
-        if dominio not in (DOMINIO_FISICO, DOMINIO_USVFS):
-            raise ValueError(f"dominio de datos desconocido: {dominio!r}")
+        dom = self._default_domain if dominio is None else dominio
+        if dom == "virtual_usvfs":
+            dom = DOMINIO_USVFS
+        if dom not in (DOMINIO_FISICO, DOMINIO_USVFS):
+            raise ValueError(f"dominio de datos desconocido: {dom!r}")
         if self._preflight_inyectado is not None:
             return self._preflight_inyectado
-        if dominio == DOMINIO_USVFS and self._preflight_usvfs is not None:
+        if dom == DOMINIO_USVFS and profile is None and self._preflight_usvfs is not None:
             return self._preflight_usvfs
-        if dominio == DOMINIO_FISICO and self._preflight is not None:
+        if dom == DOMINIO_FISICO and profile is None and self._preflight is not None:
             return self._preflight
+        cache_key = (dom, profile)
+        if cache_key in self._preflight_cache:
+            return self._preflight_cache[cache_key]
         if self._path_resolver is None:
             return None
 
@@ -311,14 +326,14 @@ class WryeBashPipelineService:
         # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness,
         # patrón #252/#311) — un destino creado read-only entre corridas debe verse.
         def _permissions() -> Any:
-            return WritePermissionsChecker(targets=self._permission_targets(dominio=dominio)).check()
+            return WritePermissionsChecker(targets=self._permission_targets(dominio=dom)).check()
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
         resolver = build_mo2_profile_sources_resolver(
             game=game,
             mo2=mo2,
-            profile=self._path_resolver.get_active_profile(),
+            profile=profile or self._path_resolver.get_active_profile(),
             mods_dir=mods_dir,
         )
         masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
@@ -331,7 +346,7 @@ class WryeBashPipelineService:
         # saldría un patch del juego base, silenciosamente vacío. Bajo la USVFS del
         # operador ese mismo sensor mide un Data que nadie va a leer (rojo falso).
         visibility_check = (
-            build_vfs_visibility_sensor(game=game, sources_resolver=resolver) if dominio == DOMINIO_FISICO else None
+            build_vfs_visibility_sensor(game=game, sources_resolver=resolver) if dom == DOMINIO_FISICO else None
         )
 
         preflight = PreflightService(
@@ -344,10 +359,11 @@ class WryeBashPipelineService:
             visibility_check=visibility_check,
             omit_unconfigured=True,
         )
-        if dominio == DOMINIO_USVFS:
+        self._preflight_cache[cache_key] = preflight
+        if dom == DOMINIO_USVFS and self._preflight_usvfs is None:
             self._preflight_usvfs = preflight
-            return preflight
-        self._preflight = preflight
+        elif dom == DOMINIO_FISICO and self._preflight is None:
+            self._preflight = preflight
         return preflight
 
     def _permission_targets(self, *, dominio: str = DOMINIO_FISICO) -> list[pathlib.Path]:
@@ -585,12 +601,16 @@ class WryeBashPipelineService:
             # Dominio USVFS: el ejecutor de esta etapa es el OPERADOR dentro de MO2, no
             # el runner spawneado. Medir el Data físico acá bloqueaba perfiles sanos
             # (ver `_ensure_preflight`).
-            preflight = self._ensure_preflight(dominio=DOMINIO_USVFS)
+            preflight = self._ensure_preflight(dominio=DOMINIO_USVFS, profile=profile)
             if preflight is not None:
                 preflight_report = await preflight.run()
                 if preflight_report.blocks_mutations:
                     red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-                    logger.warning("Etapa 6 asistida no se ofrece: preflight en rojo (%s)", red)
+                    logger.warning(
+                        "Etapa 6 asistida no se ofrece: preflight en rojo (%s)",
+                        red,
+                        extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+                    )
                     return _attach_preflight(
                         {
                             "success": False,
@@ -605,7 +625,11 @@ class WryeBashPipelineService:
                 guard_result = await self._plugin_limit_guard(profile)
                 if not guard_result.get("valid", True):
                     detalle = guard_result.get("error") or ""
-                    logger.error("[FASE-6-asistida] Abortando preparación: M-04 falló. %s", detalle)
+                    logger.error(
+                        "[FASE-6-asistida] Abortando preparación: M-04 falló. %s",
+                        detalle,
+                        extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+                    )
                     return _attach_preflight(
                         {
                             "success": False,
@@ -621,8 +645,8 @@ class WryeBashPipelineService:
             # El artefacto de la etapa asistida vive en la superposición del perfil
             # (overwrite / mod de salida), no necesariamente en el Data físico: el
             # ejecutor es el operador dentro de MO2, bajo la USVFS.
-            artefacto = self._artefacto_asistido(profile)
-            if plugins_txt is None or artefacto is None or not artefacto.cobertura_completa:
+            artefacto = await asyncio.to_thread(self._artefacto_asistido, profile)
+            if plugins_txt is None or artefacto is None:
                 return _attach_preflight(
                     {
                         "success": False,
@@ -634,13 +658,29 @@ class WryeBashPipelineService:
                     },
                     preflight_report,
                 )
+            if not artefacto.cobertura_completa:
+                return _attach_preflight(
+                    {
+                        "success": False,
+                        "reason": "CoberturaDeOverlayIncompleta",
+                        "message": (
+                            "No se pudo enumerar los mods del perfil: no se puede afirmar dónde está el artefacto."
+                        ),
+                    },
+                    preflight_report,
+                )
 
             preparacion = await asyncio.to_thread(
                 preparar_etapa_asistida, artefacto=artefacto.ruta, plugins_txt=plugins_txt
             )
             return _attach_preflight(preparacion_como_resultado(preparacion), preflight_report)
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
-            logger.error("[FASE-6-asistida] Error inesperado preparando la etapa: %s", exc, exc_info=True)
+            logger.error(
+                "[FASE-6-asistida] Error inesperado preparando la etapa: %s",
+                exc,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
             # Este camino también adjunta el preflight. Era el ÚNICO retorno de la fase 1
             # sin ``_attach_preflight``: ante una excepción inesperada el panel perdía el
             # semáforo justo cuando algo se había roto.
@@ -682,14 +722,22 @@ class WryeBashPipelineService:
             plugins_txt = self._plugins_txt_path(profile)
             # Mismo resolver que la fase 1: si las dos fases buscaran en lugares
             # distintos, una ausencia previa y una aparición serían incomparables.
-            artefacto = self._artefacto_asistido(profile)
-            if plugins_txt is None or artefacto is None or not artefacto.cobertura_completa:
+            artefacto = await asyncio.to_thread(self._artefacto_asistido, profile)
+            if plugins_txt is None or artefacto is None:
                 return {
                     "success": False,
                     "reason": "SinRutasResolubles",
                     "message": (
                         "No se pudo resolver la ruta del artefacto en el Data del juego ni en el "
                         "overlay del perfil: sin esa ruta no hay verificación posible."
+                    ),
+                }
+            if not artefacto.cobertura_completa:
+                return {
+                    "success": False,
+                    "reason": "CoberturaDeOverlayIncompleta",
+                    "message": (
+                        "No se pudo enumerar los mods del perfil: no se puede afirmar dónde está el artefacto."
                     ),
                 }
 
@@ -701,7 +749,12 @@ class WryeBashPipelineService:
             )
             return veredicto_como_resultado(veredicto)
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
-            logger.error("[FASE-6-asistida] Error inesperado verificando la etapa: %s", exc, exc_info=True)
+            logger.error(
+                "[FASE-6-asistida] Error inesperado verificando la etapa: %s",
+                exc,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
             return {"success": False, "reason": "ErrorInesperado", "error": str(exc), "message": str(exc)}
 
     # ------------------------------------------------------------------

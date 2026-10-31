@@ -64,6 +64,7 @@ import enum
 import hashlib
 import os
 import pathlib
+import re
 import stat
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -177,6 +178,8 @@ class TestigoPrevio:
             raise ValueError("un testigo que afirma existencia necesita la identidad del contenido")
         if not self.existia and self.sha256 is not None:
             raise ValueError("un testigo que afirma ausencia no puede traer identidad de contenido")
+        if self.sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None:
+            raise ValueError(f"sha256 debe ser un digest hexadecimal de 64 caracteres: {self.sha256!r}")
 
     @classmethod
     def desde(cls, huella: HuellaDeArtefacto) -> TestigoPrevio | None:

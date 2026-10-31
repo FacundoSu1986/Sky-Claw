@@ -138,8 +138,8 @@ El retiro era la opción barata de *código* y la cara de *producto*.
 
 - **Positivas:** el DAG cierra con un artefacto verificable; U-06 gana su post-check de Wrye Bash
   (artefacto + `plugins.txt`) como primitiva; el veredicto es auditable sin logs de terceros; no
-  cambia el censo de lanzadores ni el contrato de argumentos CLI; los 40 tests del pipeline
-  existente siguen intactos.
+  cambia el censo de lanzadores ni el contrato de argumentos CLI; los 45 tests del pipeline
+  existente (36 en servicio + 9 de lock) siguen intactos.
 - **Negativas / deuda:** la etapa 6 deja de ser desatendida por completo (requiere un humano), lo
   cual es una propiedad del binario, no del diseño. Y hay dos superficies más que cablear (§7).
 - **Riesgo residual:** un `plugins.txt` que MO2 reserialice durante la fase humana (visto en el
@@ -163,7 +163,7 @@ producción: `dispatcher_dependencies.build_wrye_bash_pipeline`, `SupervisorAgen
 y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de a una:
 
 - **PR A (este):** contrato + servicio + tests. **Sin wiring.** No cambia comportamiento de
-  producción; 64 tests nuevos (63 + 1 skip de junction) y las 17 anclas verdes.
+  producción; 93 tests nuevos (91 passed + 2 skips en Windows) y las 17 anclas verdes.
 
   `pendiente=True` viaja marcado `pendiente_no_ratificado=True` a propósito: `ToolStateMachine`
   solo conoce `PENDING → RUNNING → COMPLETED/FAILED` y no hay consumidor de ese campo (verificado
@@ -171,8 +171,8 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   congela junto con el cableado; hasta entonces ningún consumidor debe tratarlo como contrato.
 - **PR B:** cablear **las tres** superficies en el mismo PR, con un ancla por AST que **enumera**
   las superficies del cableado (una cuarta, o una que vuelva a `execute_pipeline`, rompe el test).
-  Requiere `fase` en `_VALID_BASHED_PATCH_KEYS` de la estrategia.
-- **PR C:** retirar `execute_pipeline` (el camino headless) y sus 40 tests, o declararlo compat
+  Requiere `fase` en `_VALID_BASHED_PATCH_KEYS` de la estrategia. Además, la tool del agente LLM (`system_tools`) hoy se construye sin `path_resolver` y llama con `profile="agent-tool"`; cablear esa superficie exige inyectar `path_resolver` y pasar el perfil activo de MO2 (H-1).
+- **PR C:** retirar `execute_pipeline` (el camino headless) y sus 45 tests (36 en servicio + 9 de lock), o declararlo compat
   documentada. Decidir con la evidencia de PR B; hoy es la superficie que conserva la deuda
   "TX por ritual imposible" para callers directos.
 - **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
@@ -236,6 +236,21 @@ PR-Agent; el mismo criterio: verificar antes de aceptar.
 `_mods_habilitados` usa `read_enabled_mods` y `bashed_patch_en_overlay` recorre esas capas de
 mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y es
 **más** estricta que la anterior, no menos.
+
+
+**Ronda 4 (auditoría adversarial pre-merge).** Auditoría sobre HEAD `14224e98`:
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| A-1 | `self._artefacto_asistido(profile)` se llamaba de forma sincrónica en el loop del daemon antes de `asyncio.to_thread`. En perfiles con miles de mods realiza miles de syscalls bloqueantes. | Reproducido: demora de cientos de ms en el event loop. | `await asyncio.to_thread(self._artefacto_asistido, profile)` en ambas fases. |
+| A-2 | Preflight evaluaba el perfil ACTIVO de MO2 (`get_active_profile()`), no el solicitado por el llamador. | Confirmado: mismatch genera rojo o verde falso si el perfil pedido difiere del activo. | `_ensure_preflight(..., profile=profile)` propaga el perfil a `build_mo2_profile_sources_resolver` y cachea por `(dominio, profile)`. |
+| A-3 | Mutantes supervivientes: guard de perfil en fase 2 sin test; `_mods_habilitados` ante `OSError` sin test; aborto M-04 en fase 1 sin test. | Confirmado: mutaciones sobre las ramas vivas no rompían tests. | Parametrización de rechazo de separadores en ambas fases; tests para `lstat -> PermissionError` y fallo de M-04. |
+| A-4 | Testigo fabricado con digest no-sha256 demostraba frescura errónea (fail-open). | Confirmado: digest arbitrario producía `sha256 != huella` y `frescura_probada=True`. | Validación regex `[0-9a-f]{64}` en `TestigoPrevio.__post_init__` y `_testigo_desde_resultado`. |
+| M-1 | `bashed_patch_en_overlay`: `Path.exists()` no traga `PermissionError`, rompiendo contrato de "capa ilegible se saltea". | Confirmado en Python 3.11: `PermissionError` escalaba a `ErrorInesperado`. | Sondeo con `os.lstat` capturando `FileNotFoundError` y degradando `cobertura_completa=False` ante `OSError`. |
+| M-2 | `SENSOR_FISICO_POR_DOMINIO` no declaraba `"wrye_bash_service": {"virtual_usvfs": False}`. | Confirmado: inventario incompleto. | Censo y harness actualizados en `tests/test_vfs_visibility_wiring.py`. |
+| M-3 | Logs de fallo sin `pipeline_stage`. | Exigido por `AGENTS.md` §5.5. | `_ETAPA_WRYE_BASH = 6` incorporado en `extra={"pipeline_stage": 6, "tx_id": None}` y promoción en `tests/test_dyndolod_service.py`. |
+| M-4 | `SinRutasResolubles` confundía modlist ilegible con ausencia de rutas MO2. | Mensaje y diagnóstico engañosos. | `reason="CoberturaDeOverlayIncompleta"` devuelto ante cobertura incompleta. |
+| H-1 | Superficie de agente LLM (`system_tools`) sin `path_resolver` y con perfil no real. | Documentado como precondición de PR B. | Anotado en §7 y tabla de hermanos. |
 
 ## 10. Registro de adjudicación
 
