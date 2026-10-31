@@ -349,6 +349,47 @@ async def test_outputs_que_aparecen_antes_del_lock_no_se_borran_sin_snapshot(
     run_pipeline.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_mutacion_in_place_de_output_durante_espera_de_lock_aborta_ejecucion(
+    synthesis_service: SynthesisPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """H2: modificación de bytes in-place de un ESP existente mientras se espera el lock debe abortar."""
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.parent.mkdir(parents=True, exist_ok=True)
+    initial_bytes = b"initial content before lock"
+    output_esp.write_bytes(initial_bytes)
+    modified_bytes = b"modified concurrent content during lock wait"
+
+    class _InPlaceMutationLock:
+        snapshots: list[object] = []
+        rollback_completed = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _InPlaceMutationLock:
+            output_esp.write_bytes(modified_bytes)
+            return self
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
+    run_pipeline = AsyncMock(return_value=_make_failure_result())
+    with (
+        patch("sky_claw.local.tools.synthesis_service.SnapshotTransactionLock", _InPlaceMutationLock),
+        patch.object(SynthesisRunner, "run_pipeline", run_pipeline),
+    ):
+        result = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert result["success"] is False
+    assert "changed while waiting for the transaction lock" in result["message"]
+    assert output_esp.read_bytes() == modified_bytes
+    mock_journal.begin_transaction.assert_not_awaited()
+    run_pipeline.assert_not_awaited()
+
+
 # =============================================================================
 # T3: ESP validation fails — rollback triggered
 # =============================================================================

@@ -151,7 +151,7 @@ def test_synthesis_acepta_plugins_de_mod_si_todos_estan_visibles_en_data(tmp_pat
     data = runner._config.data_folder_path
     assert data is not None
     for index in range(2):
-        (data / f"Plugin{index:03}.esp").write_bytes(b"TES4" + b"\\x00" * 128)
+        (data / f"Plugin{index:03}.esp").write_bytes(b"TES4" + b"\x00" * 128)
 
     check = service._build_synthesis_visibility_check(runner)
 

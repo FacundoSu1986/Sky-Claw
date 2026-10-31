@@ -399,7 +399,7 @@ def test_descubrir_plugins_de_synthesis_con_settings_y_splits(tmp_path: pathlib.
                     {
                         "Nickname": "Default",
                         "Groups": [
-                            {"Name": "Combat Patch", "On": True},
+                            {"Name": "Combat Patch", "On": True, "Patchers": [{"ID": "p1", "On": True}]},
                             {"Name": "Inactive Group", "On": False},
                         ],
                     }
@@ -516,8 +516,41 @@ def test_descubrir_plugins_falla_cerrado_si_perfil_solicitado_no_existe(tmp_path
         settings_path=settings,
         profile_identifier="NonExistentProfile",
     )
-    # Debe fallar cerrado al fallback histórico, no inventar o adivinar Profile1
-    assert plugins == (PLUGIN_DE_SYNTHESIS,)
+    # H1: Si el perfil solicitado no existe, debe fallar cerrado a () para no validar con un Synthesis.esp ajeno
+    assert plugins == ()
+
+
+def test_descubrir_plugins_falla_cerrado_si_settings_corruptos(tmp_path: pathlib.Path):
+    """H1: PipelineSettings.json corrupto o inválido debe fallar cerrado devolviendo ()."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text("{ corrupt json: [", encoding="utf-8")
+    plugins = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="Default",
+    )
+    assert plugins == ()
+
+
+def test_verificar_etapas_previas_rechaza_settings_invalidos_con_synthesis_historico(tmp_path: pathlib.Path):
+    """H1: settings inválidos no deben dar verde por la presencia de un Synthesis.esp histórico."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text("{ corrupt json: [", encoding="utf-8")
+    rutas = _perfil(
+        tmp_path,
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*Synthesis.esp"],
+        grass_en_overwrite=True,
+    )
+    plugins_synthesis = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="Default",
+        carpetas_de_salida=[tmp_path / "overwrite"],
+    )
+    evidencia = verificar_etapas_previas_de_lods(
+        **rutas,
+        plugins_de_synthesis=plugins_synthesis,
+    )
+    assert not evidencia.completas()
+    assert any("no verificable" in f for f in evidencia.faltantes)
 
 
 def test_verificar_etapas_previas_detecta_splits_no_contiguos(tmp_path: pathlib.Path):

@@ -550,9 +550,9 @@ class SynthesisRunner:
                     errors=[str(exc)],
                 )
 
-            if self.settings_fingerprint() != settings_fingerprint:
+            if await asyncio.to_thread(self.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed while Synthesis was running")
-            if self.load_order_fingerprint() != load_order_fingerprint:
+            if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while Synthesis was running")
 
             _, patchers_executed, errors = self.parse_output(stdout, stderr)

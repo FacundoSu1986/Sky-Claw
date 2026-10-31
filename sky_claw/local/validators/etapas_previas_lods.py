@@ -35,9 +35,9 @@ import pathlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
+from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +106,10 @@ def descubrir_plugins_de_synthesis(
     Si además se generaron splits ``_2.._N`` (Mutagen MultiModFileSplitter) en
     alguna de las carpetas de salida (p. ej. overwrite/ o mods/Synthesis Output),
     también deben estar habilitados.
-    Si no hay settings o no se pueden resolver, retorna (PLUGIN_DE_SYNTHESIS,).
+    Si no hay settings en el sistema, retorna (PLUGIN_DE_SYNTHESIS,).
+    Si hay settings pero son inválidos o no se puede verificar el perfil, retorna ()
+    para que el guard falle cerrado y no valide con un ESP ajeno.
     """
-    group_names: list[str] = []
     ruta_settings = settings_path
     if ruta_settings is None:
         env_settings = os.environ.get("SYNTHESIS_PIPELINE_SETTINGS")
@@ -119,57 +120,47 @@ def descubrir_plugins_de_synthesis(
             if default_path.is_file():
                 ruta_settings = default_path
 
+    # Si NO existe archivo de settings (entorno legacy/standalone sin V2),
+    # se conserva el default histórico estricto de un único Synthesis.esp.
+    if ruta_settings is None or not ruta_settings.is_file():
+        return (PLUGIN_DE_SYNTHESIS,)
+
     # Precedencia idéntica a SynthesisPipelineService._ensure_synthesis_runner:
     # SYNTHESIS_PROFILE_IDENTIFIER tiene prioridad sobre el perfil MO2.
     synthesis_profile_id = os.environ.get("SYNTHESIS_PROFILE_IDENTIFIER") or (
         profile_identifier.strip() if isinstance(profile_identifier, str) and profile_identifier.strip() else None
     )
 
-    if ruta_settings is not None and ruta_settings.is_file():
+    resolved_profile_id = synthesis_profile_id
+    if resolved_profile_id is None:
         try:
-            data = json.loads(ruta_settings.read_text(encoding="utf-8-sig"))
-            if isinstance(data, dict):
-                profiles = data.get("Profiles")
-                if isinstance(profiles, list):
-                    target_profile: dict[str, Any] | None = None
-                    if synthesis_profile_id:
-                        pid_folded = synthesis_profile_id.casefold()
-                        for p in profiles:
-                            if isinstance(p, dict):
-                                nick = p.get("Nickname")
-                                p_id = p.get("ID")
-                                if (isinstance(nick, str) and nick.casefold() == pid_folded) or (
-                                    isinstance(p_id, str) and p_id.casefold() == pid_folded
-                                ):
-                                    target_profile = p
-                                    break
-                    elif profiles:
-                        for p in profiles:
-                            if isinstance(p, dict) and p.get("Nickname") == "Default":
-                                target_profile = p
-                                break
-                        if target_profile is None and len(profiles) == 1 and isinstance(profiles[0], dict):
-                            target_profile = profiles[0]
-
-                    if target_profile is not None:
-                        groups = target_profile.get("Groups")
-                        if isinstance(groups, list):
-                            for g in groups:
-                                if isinstance(g, dict) and g.get("On") is True:
-                                    raw_patchers = g.get("Patchers")
-                                    # N1 / H-03: un grupo sin patchers habilitados no genera output
-                                    if raw_patchers is not None and not any(
-                                        isinstance(p, dict) and p.get("On") is True for p in raw_patchers
-                                    ):
-                                        continue
-                                    name = g.get("Name")
-                                    if isinstance(name, str) and name.strip():
-                                        group_names.append(name.strip())
+            raw = json.loads(ruta_settings.read_text(encoding="utf-8-sig"))
+            profiles = raw.get("Profiles", []) if isinstance(raw, dict) else []
+            for p in profiles:
+                if isinstance(p, dict) and p.get("Nickname") == "Default":
+                    resolved_profile_id = "Default"
+                    break
+            if resolved_profile_id is None and len(profiles) == 1 and isinstance(profiles[0], dict):
+                nick = profiles[0].get("Nickname")
+                p_id = profiles[0].get("ID")
+                resolved_profile_id = nick or p_id
         except (OSError, UnicodeError, json.JSONDecodeError):
-            pass
+            return ()
+
+    if not resolved_profile_id:
+        return ()
+
+    try:
+        settings_profile = PatcherPipeline.inspect_synthesis_settings(
+            settings_path=ruta_settings,
+            profile_identifier=resolved_profile_id,
+        )
+        group_names = list(settings_profile.group_names)
+    except PatcherPipelineError:
+        return ()
 
     if not group_names:
-        group_names = [pathlib.Path(PLUGIN_DE_SYNTHESIS).stem]
+        return ()
 
     # Conservar orden de definición de grupos y orden numérico de splits
     plugins_ordenados: list[str] = []
@@ -223,8 +214,20 @@ def verificar_etapas_previas_de_lods(
         if PLUGIN_DE_WRYE_BASH.casefold() not in habilitados_set:
             faltantes.append(f"etapa 6 (Wrye Bash): '{PLUGIN_DE_WRYE_BASH}' no está habilitado en el perfil")
 
-        esperados_synthesis = tuple(plugins_de_synthesis or (PLUGIN_DE_SYNTHESIS,))
-        ausentes_synthesis = [p for p in esperados_synthesis if p.casefold() not in habilitados_set]
+        esperados_synthesis: tuple[str, ...]
+        if plugins_de_synthesis is None:
+            esperados_synthesis = (PLUGIN_DE_SYNTHESIS,)
+            ausentes_synthesis = [p for p in esperados_synthesis if p.casefold() not in habilitados_set]
+        elif not plugins_de_synthesis:
+            # H1: Configuración V2 no verificable o perfil no encontrado
+            faltantes.append(
+                "etapa 7 (Synthesis): configuración V2 no verificable o perfil no encontrado en PipelineSettings.json"
+            )
+            esperados_synthesis = ()
+            ausentes_synthesis = []
+        else:
+            esperados_synthesis = tuple(plugins_de_synthesis)
+            ausentes_synthesis = [p for p in esperados_synthesis if p.casefold() not in habilitados_set]
 
         if ausentes_synthesis:
             if len(ausentes_synthesis) == 1 and plugins_de_synthesis is None:
@@ -233,7 +236,7 @@ def verificar_etapas_previas_de_lods(
                 faltantes.append(
                     f"etapa 7 (Synthesis): no está(n) habilitado(s) en el perfil: {', '.join(ausentes_synthesis)}"
                 )
-        elif plugins_de_synthesis is not None and lista_habilitados:
+        elif esperados_synthesis and lista_habilitados:
             # H-02: Validar contigüidad de splits y orden de grupos en plugins.txt
             posiciones_por_plugin = {p.casefold(): idx for idx, p in enumerate(lista_habilitados)}
             mapa_grupos: dict[str, list[str]] = {}

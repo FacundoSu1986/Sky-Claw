@@ -632,7 +632,8 @@ class SynthesisPipelineService:
             # decisión explícita y debe seguir devolviendo "no patchers".
             if not patcher_ids and len(pipeline) == 0:
                 try:
-                    patcher_ids = list(runner.inspect_settings().patcher_ids)
+                    inspected_profile = await asyncio.to_thread(runner.inspect_settings)
+                    patcher_ids = list(inspected_profile.patcher_ids)
                 except SynthesisExecutionError as exc:
                     logger.error("No se pudo resolver el pipeline Synthesis configurado: %s", exc)
                     return self._error_dict(str(exc))
@@ -642,12 +643,12 @@ class SynthesisPipelineService:
             return self._error_dict("No patchers configured or enabled")
 
         try:
-            settings_fingerprint = runner.settings_fingerprint()
-            load_order_fingerprint = runner.load_order_fingerprint()
-            settings_profile = runner.inspect_settings(patcher_ids)
-            if runner.settings_fingerprint() != settings_fingerprint:
+            settings_fingerprint = await asyncio.to_thread(runner.settings_fingerprint)
+            load_order_fingerprint = await asyncio.to_thread(runner.load_order_fingerprint)
+            settings_profile = await asyncio.to_thread(runner.inspect_settings, patcher_ids)
+            if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed while being validated")
-            if runner.load_order_fingerprint() != load_order_fingerprint:
+            if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while being validated")
         except SynthesisExecutionError as exc:
             logger.error("Configuración Synthesis inválida (stage 7): %s", exc)
@@ -667,9 +668,9 @@ class SynthesisPipelineService:
         try:
             overflow_check = await asyncio.to_thread(self._build_master_overflow_check, runner, patcher_ids)
             visibility_check = await asyncio.to_thread(self._build_synthesis_visibility_check, runner)
-            if runner.settings_fingerprint() != settings_fingerprint:
+            if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed during preflight")
-            if runner.load_order_fingerprint() != load_order_fingerprint:
+            if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed during preflight")
         except SynthesisExecutionError as exc:
             logger.error("No se pudo validar el fan-in/visibilidad de Synthesis: %s", exc)
@@ -691,10 +692,13 @@ class SynthesisPipelineService:
             )
         target_esp = output_base_paths[0]
         try:
-            output_files_before = runner._discover_output_files_for_groups(settings_profile.group_names)
-            if runner.settings_fingerprint() != settings_fingerprint:
+            output_files_before = await asyncio.to_thread(
+                runner._discover_output_files_for_groups, settings_profile.group_names
+            )
+            outputs_fingerprint_before = await runner._probe_output_files(settings_profile.group_names)
+            if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed before transaction setup")
-            if runner.load_order_fingerprint() != load_order_fingerprint:
+            if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed before transaction setup")
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
             return _attach_preflight(self._error_dict(str(exc)), preflight_report)
@@ -747,16 +751,16 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
             ) as tx_lock:
-                if runner.settings_fingerprint() != settings_fingerprint:
+                if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                     raise SynthesisExecutionError(
                         "Synthesis PipelineSettings.json changed while waiting for the transaction lock"
                     )
-                if runner.load_order_fingerprint() != load_order_fingerprint:
+                if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
                     raise SynthesisExecutionError(
                         "The active MO2 plugins.txt changed while waiting for the transaction lock"
                     )
-                outputs_at_lock = runner._discover_output_files_for_groups(settings_profile.group_names)
-                if set(outputs_at_lock) != set(output_files_before):
+                outputs_fingerprint_at_lock = await runner._probe_output_files(settings_profile.group_names)
+                if outputs_fingerprint_at_lock != outputs_fingerprint_before:
                     raise SynthesisExecutionError(
                         "Managed Synthesis outputs changed while waiting for the transaction lock; refusing to mutate"
                     )
@@ -799,11 +803,11 @@ class SynthesisPipelineService:
                         expected_settings_fingerprint=settings_fingerprint,
                         expected_load_order_fingerprint=load_order_fingerprint,
                     )
-                    if runner.settings_fingerprint() != settings_fingerprint:
+                    if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                         raise SynthesisExecutionError(
                             "Synthesis PipelineSettings.json changed while Synthesis was running"
                         )
-                    if runner.load_order_fingerprint() != load_order_fingerprint:
+                    if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
                         raise SynthesisExecutionError("The active MO2 plugins.txt changed while Synthesis was running")
 
                     # Validar todos los ESP producidos (base y splits) dentro del
