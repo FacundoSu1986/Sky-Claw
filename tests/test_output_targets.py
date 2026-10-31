@@ -111,6 +111,7 @@ def _resolver(*, game: pathlib.Path | None = None, mo2: pathlib.Path | None = No
     # ``mo2`` es la raíz de DATOS para los consumers migrados (layout portable
     # en estos tests: install == data).
     resolver.get_mo2_instance_data_root.return_value = mo2
+    resolver.get_active_profile.return_value = "Default"
     resolver.get_skyrim_path_raw.return_value = str(game) if game is not None else None
     resolver.get_mo2_path_raw.return_value = str(mo2) if mo2 is not None else None
     return resolver
@@ -528,6 +529,11 @@ def _synthesis(mo2: pathlib.Path, game: pathlib.Path) -> SynthesisPipelineServic
     resolver = _resolver(game=game, mo2=mo2)
     # Layout portable: mods/ cuelga de la raíz de datos.
     resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    perfil = mo2 / "profiles" / "Default"
+    perfil.mkdir(parents=True, exist_ok=True)
+    plugins_file = perfil / "plugins.txt"
+    if not plugins_file.exists():
+        plugins_file.write_text("*Skyrim.esm\n", encoding="utf-8")
     return SynthesisPipelineService(
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),

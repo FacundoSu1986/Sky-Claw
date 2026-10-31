@@ -8,6 +8,7 @@ integration, and proper journal lifecycle.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,16 +84,51 @@ def mock_journal() -> AsyncMock:
 def mock_path_resolver(tmp_path: pathlib.Path) -> MagicMock:
     resolver = MagicMock()
     game_path = tmp_path / "Skyrim"
-    game_path.mkdir()
+    data_dir = game_path / "Data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "Skyrim.esm").write_bytes(b"TES4" + b"\x00" * 128)
     mo2_path = tmp_path / "MO2"
-    mo2_path.mkdir()
     overwrite = mo2_path / "overwrite"
-    overwrite.mkdir()
+    overwrite.mkdir(parents=True)
+    profile_dir = mo2_path / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "loadorder.txt").write_text("Skyrim.esm\n", encoding="utf-8")
+    (profile_dir / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
     synthesis_exe = tmp_path / "Synthesis.exe"
     synthesis_exe.touch()
+    patchers = [
+        {
+            "$type": "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution",
+            "ID": f"id-{name}",
+            "Nickname": name,
+            "On": True,
+            "RemoteRepoPath": f"https://example.invalid/{name}",
+        }
+        for name in ("patcher_a", "patcher_b")
+    ]
+    (tmp_path / "PipelineSettings.json").write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "ID": "profile-default",
+                        "TargetRelease": "SkyrimSE",
+                        "Groups": [{"On": True, "Name": "Synthesis", "Patchers": patchers}],
+                        "SplitIfMaxMastersExceeded": True,
+                        "UpdateLoadOrderAfterRun": True,
+                    }
+                ],
+                "WorkingDirectory": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
 
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
     resolver.get_mo2_path = MagicMock(return_value=mo2_path)
+    resolver.get_active_profile = MagicMock(return_value="Default")
     # Raíz de datos para los consumers migrados (layout portable en tests:
     # install == data) y mods/ consistente con el output esperado.
     resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2_path)
@@ -125,6 +161,7 @@ def synthesis_service(
         path_resolver=mock_path_resolver,
         event_bus=event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
 
@@ -244,6 +281,74 @@ async def test_pipeline_failure_triggers_rollback(
     mock_journal.commit_transaction.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_settings_cambiados_durante_ejecucion_limpian_con_grupos_fijados(
+    synthesis_service: SynthesisPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    settings_path = tmp_path / "PipelineSettings.json"
+
+    async def _mutating_pipeline(
+        self: SynthesisRunner,
+        patcher_ids: list[str],
+        *,
+        expected_settings_fingerprint: str | None = None,
+        expected_load_order_fingerprint: str | None = None,
+    ) -> SynthesisResult:
+        output_esp.write_bytes(b"PARTIAL")
+        payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        payload["Profiles"][0]["Groups"][0]["Name"] = "RenamedDuringRun"
+        settings_path.write_text(json.dumps(payload), encoding="utf-8")
+        return _make_failure_result()
+
+    with patch.object(SynthesisRunner, "run_pipeline", _mutating_pipeline):
+        result = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert result["success"] is False
+    assert "changed while Synthesis was running" in result["message"]
+    assert not output_esp.exists()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_outputs_que_aparecen_antes_del_lock_no_se_borran_sin_snapshot(
+    synthesis_service: SynthesisPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"created by another transaction"
+
+    class _ConcurrentOutputLock:
+        snapshots: list[object] = []
+        rollback_completed = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _ConcurrentOutputLock:
+            output_esp.write_bytes(original)
+            return self
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
+    run_pipeline = AsyncMock(return_value=_make_failure_result())
+    with (
+        patch("sky_claw.local.tools.synthesis_service.SnapshotTransactionLock", _ConcurrentOutputLock),
+        patch.object(SynthesisRunner, "run_pipeline", run_pipeline),
+    ):
+        result = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert result["success"] is False
+    assert "changed while waiting for the transaction lock" in result["message"]
+    assert output_esp.read_bytes() == original
+    mock_journal.begin_transaction.assert_not_awaited()
+    run_pipeline.assert_not_awaited()
+
+
 # =============================================================================
 # T3: ESP validation fails — rollback triggered
 # =============================================================================
@@ -320,6 +425,39 @@ async def test_no_patchers_early_return(
 
     assert out["success"] is False
     assert "No patchers" in out["errors"][0]
+    mock_journal.begin_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_configurado_con_todos_los_patchers_deshabilitados_no_ejecuta_v2(
+    synthesis_service: SynthesisPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si synthesis_pipeline.json existe pero todos los patchers están deshabilitados,
+    NO debe hacer fallback a los patchers del V2; debe devolver 'No patchers configured or enabled'."""
+    from sky_claw.local.tools.patcher_pipeline import PatcherDefinition, PatcherPipeline
+
+    pipeline_path = tmp_path / "custom_pipeline.json"
+    pipeline = PatcherPipeline(pipeline_path)
+    pipeline.add_patcher(PatcherDefinition(patcher_id="P1", enabled=False))
+    pipeline.to_json(pipeline_path)
+
+    synthesis_service._pipeline_config_path = pipeline_path
+    synthesis_service._patcher_pipeline = pipeline
+
+    with patch.dict(
+        "os.environ",
+        {
+            "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+            "MO2_PATH": str(tmp_path / "MO2"),
+            "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+        },
+    ):
+        out = await synthesis_service.execute_pipeline(patcher_ids=None)
+
+    assert out["success"] is False
+    assert "No patchers configured or enabled" in out["errors"][0]
     mock_journal.begin_transaction.assert_not_awaited()
 
 
@@ -428,24 +566,17 @@ async def test_execute_pipeline_runner_init_runtime_error_con_preflight_existent
 
 
 @pytest.mark.asyncio
-async def test_create_snapshot_false_no_rollback(
+async def test_create_snapshot_false_con_outputs_exist_falla_cerrado(
     synthesis_service: SynthesisPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """With create_snapshot=False, lock is acquired but no file restoration on failure."""
+    """Un output previo no se muta si el caller desactiva snapshot y no hay sandbox."""
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.write_bytes(b"original")
 
-    fail_result = _make_failure_result()
-
     with (
-        patch.object(
-            SynthesisRunner,
-            "run_pipeline",
-            new_callable=AsyncMock,
-            return_value=fail_result,
-        ),
+        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock) as run_mock,
         patch.dict(
             "os.environ",
             {
@@ -455,15 +586,13 @@ async def test_create_snapshot_false_no_rollback(
             },
         ),
     ):
-        out = await synthesis_service.execute_pipeline(
-            patcher_ids=["patcher_a"],
-            create_snapshot=False,
-        )
+        out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"], create_snapshot=False)
 
     assert out["success"] is False
-    # File NOT restored because snapshot was disabled
-    # (content may have been modified by pipeline — we just check the test doesn't crash)
-    mock_journal.mark_transaction_rolled_back.assert_awaited_once()
+    assert "require a snapshot" in out["message"]
+    assert output_esp.read_bytes() == b"original"
+    mock_journal.begin_transaction.assert_not_awaited()
+    run_mock.assert_not_awaited()
 
 
 # =============================================================================
@@ -817,7 +946,7 @@ async def test_run_sandboxeado_no_toca_el_overwrite_real(
 
     mo2 = tmp_path / "MO2"
     profile = mo2 / "profiles" / "Default"
-    profile.mkdir(parents=True)
+    profile.mkdir(parents=True, exist_ok=True)
     (profile / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n")
 
     sandbox = ProfileSandbox(mo2_root=mo2, sandbox_root=tmp_path / "sandbox")
@@ -831,11 +960,18 @@ async def test_run_sandboxeado_no_toca_el_overwrite_real(
         event_bus=event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
         output_path=clone.overwrite_copy,
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
     output_esp = clone.overwrite_copy / "Synthesis.esp"
 
-    async def _run_pipeline(self: SynthesisRunner, patcher_ids: list[str]) -> SynthesisResult:
+    async def _run_pipeline(
+        self: SynthesisRunner,
+        patcher_ids: list[str],
+        *,
+        expected_settings_fingerprint: str | None = None,
+        expected_load_order_fingerprint: str | None = None,
+    ) -> SynthesisResult:
         # El runner escribe donde su config le dice — que debe ser el clon.
         (self._config.output_path / "Synthesis.esp").write_bytes(b"TES4")
         return _make_success_result(self._config.output_path / "Synthesis.esp")
@@ -872,7 +1008,7 @@ async def test_fallo_sandboxeado_preserva_la_evidencia(
 
     mo2 = tmp_path / "MO2"
     profile = mo2 / "profiles" / "Default"
-    profile.mkdir(parents=True)
+    profile.mkdir(parents=True, exist_ok=True)
     (profile / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n")
     # Un Synthesis.esp previo en el overwrite real → se clona al sandbox y el
     # servicio lo snapshotearia (create_snapshot=True default) si no fuera
@@ -890,9 +1026,16 @@ async def test_fallo_sandboxeado_preserva_la_evidencia(
         event_bus=event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
         output_path=clone.overwrite_copy,
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
-    async def _run_pipeline(self: SynthesisRunner, patcher_ids: list[str]) -> SynthesisResult:
+    async def _run_pipeline(
+        self: SynthesisRunner,
+        patcher_ids: list[str],
+        *,
+        expected_settings_fingerprint: str | None = None,
+        expected_load_order_fingerprint: str | None = None,
+    ) -> SynthesisResult:
         # El pipeline escribe salida parcial y después falla.
         (self._config.output_path / "Synthesis.esp").write_bytes(b"PARCIAL")
         return _make_failure_result()
@@ -953,6 +1096,7 @@ def _svc_with_preflight(
         event_bus=event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
         preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
 
@@ -1177,6 +1321,7 @@ def _svc_real_journal(
         path_resolver=mock_path_resolver,
         event_bus=event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
 

@@ -538,7 +538,10 @@ class DynDOLODPipelineService:
         y la misma raíz de datos que usa el ritual de grass para ``overwrite/``.
         Nunca lanza: una metadata ilegible es una etapa faltante (fail-closed).
         """
-        from sky_claw.local.validators.etapas_previas_lods import verificar_etapas_previas_de_lods
+        from sky_claw.local.validators.etapas_previas_lods import (
+            descubrir_plugins_de_synthesis,
+            verificar_etapas_previas_de_lods,
+        )
 
         try:
             plugins_txt = self._plugins_txt_del_perfil_activo()
@@ -552,11 +555,31 @@ class DynDOLODPipelineService:
             mods_dir: pathlib.Path | None = self._path_resolver.get_mo2_mods_path()
         except (RuntimeError, OSError, ValueError):
             mods_dir = None
+
+        carpetas_salida: list[pathlib.Path] = []
+        if isinstance(data_root, pathlib.Path):
+            carpetas_salida.append(data_root / "overwrite")
+        if isinstance(mods_dir, pathlib.Path):
+            carpetas_salida.append(mods_dir / "Synthesis Output")
+
+        try:
+            profile_name = self._mo2_profile or (
+                self._path_resolver.get_active_profile() if self._path_resolver else None
+            )
+        except (RuntimeError, OSError, ValueError):
+            profile_name = None
+
+        plugins_synthesis = descubrir_plugins_de_synthesis(
+            profile_identifier=profile_name if isinstance(profile_name, str) else None,
+            carpetas_de_salida=carpetas_salida,
+        )
+
         return verificar_etapas_previas_de_lods(
             plugins_txt=plugins_txt,
             modlist_txt=plugins_txt.parent / "modlist.txt" if plugins_txt is not None else None,
             mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
             overwrite_dir=data_root / "overwrite" if isinstance(data_root, pathlib.Path) else None,
+            plugins_de_synthesis=plugins_synthesis,
         )
 
     def _plugins_txt_del_perfil_activo(self) -> pathlib.Path | None:

@@ -2230,7 +2230,10 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
         "sky_claw/local/tools/pandora_service.py": 1,
-        "sky_claw/local/tools/synthesis_service.py": 1,
+        # #841: los tres usos alimentan sensores read-only (sensor VFS, gate de
+        # visibilidad y cota de fan-in). No son destinos de escritura; si el
+        # MODS_DIR es irresoluble el veredicto es RED, nunca verde.
+        "sky_claw/local/tools/synthesis_service.py": 3,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
     }
 
@@ -2574,6 +2577,7 @@ class TestRaizDeDatosDeInstanciaSeparada:
         data = tmp_path / "data"
         (data / "profiles" / "Default").mkdir(parents=True)
         (data / "profiles" / "Default" / "modlist.txt").write_text("a", encoding="utf-8")
+        (data / "profiles" / "Default" / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
         if con_overwrite:
             (data / "overwrite").mkdir(parents=True)
         mods = mod_directory if mod_directory is not None else data / "mods"
