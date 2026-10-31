@@ -43,7 +43,7 @@ from sky_claw.local.parallax_unattended.veredicto import (
     dictar,
 )
 
-_CONTEOS = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+_CONTEOS = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
 
 
 def _decision(veredicto: VeredictoDelLote, *motivos: MotivoDelLote, rutas: tuple[str, ...] = ()) -> DecisionDelLote:
@@ -165,7 +165,7 @@ def test_lote_en_revision_sin_escritas_no_se_degrada_a_fail_por_cero_artefactos(
         veredicto=VeredictoDelLote.REVIEW,
         motivos=(MotivoDelLote.ARCHIVO_EN_REVISION,),
         rutas=("textures/t0_p.dds",),
-        conteos={"EN_REVISION": 8, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0},
+        conteos={"EN_REVISION": 8, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0},
     )
     auditoria_sin_artefactos = InformeDeAuditoria(
         verificados=(),
@@ -240,6 +240,7 @@ _COMBINACIONES_LEGALES = frozenset(
         ("NO_ESCRITA", "RETIRADA"),
         ("NO_ESCRITA", "SOLTADA"),
         ("NO_PROCESADA", None),
+        ("SIN_CONFIRMAR", None),
     }
 )
 
@@ -256,6 +257,7 @@ def _informe_de_una_combinacion(estado: str, efecto: str | None) -> dict[str, ob
         ],
         "otras_rutas": [],
         "omitidas_al_enumerar": [],
+        "interrupcion": "LockLeaseLostError: lease perdida" if estado == "SIN_CONFIRMAR" else None,
     }
 
 

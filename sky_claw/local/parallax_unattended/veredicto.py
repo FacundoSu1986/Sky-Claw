@@ -8,7 +8,7 @@ no son intercambiables:
 ===============  ==========================================  ==============================
 eje              pregunta que contesta                      valores
 ===============  ==========================================  ==============================
-``estado``       ¿dónde terminó el archivo?                  ESCRITA / EN_REVISION / NO_*
+``estado``       ¿dónde terminó el archivo?                  ESCRITA / EN_REVISION / NO_* / SIN_CONFIRMAR
 ``veredicto``    ¿el resultado sirve?                        AUTO_ACCEPT / REVIEW
 ===============  ==========================================  ==============================
 
@@ -28,7 +28,8 @@ Reglas, en orden de precedencia (la primera que aplica gana)
    cuadran con ``archivos``, archivo escrito sin veredicto, o artefacto publicado sin
    registro del codificador. Un informe que se contradice no certifica nada, ni siquiera
    un fallo: por eso va por encima de ``FAIL``.
-2. ``FAIL`` — hay trabajo perdido: ``NO_PROCESADA``, ``NO_ESCRITA``, o lote vacío.
+2. ``FAIL`` — hay trabajo perdido o en duda: ``NO_PROCESADA``, ``NO_ESCRITA``, ``SIN_CONFIRMAR`` (la escritura se cortó y no
+   se sabe si quedó en el mod), una ``interrupcion`` declarada, o lote vacío.
 3. ``REVIEW`` — todo se escribió, pero algo quedó en revisión. **Aunque esté en disco.**
 4. ``PASS`` — sólo si ningún archivo quedó en revisión.
 
@@ -76,6 +77,8 @@ class MotivoDelLote(enum.StrEnum):
     ARTEFACTO_NO_CONFIABLE = "artefacto_no_confiable"
     ARCHIVO_NO_PROCESADO = "archivo_no_procesado"
     ARCHIVO_NO_ESCRITO = "archivo_no_escrito"
+    ARCHIVO_SIN_CONFIRMAR = "archivo_sin_confirmar"
+    LOTE_INTERRUMPIDO = "lote_interrumpido"
     ARCHIVO_EN_REVISION = "archivo_en_revision"
     RUTAS_OMITIDAS = "rutas_omitidas"
 
@@ -97,6 +100,8 @@ MOTIVOS_DE_FALLA: Final[frozenset[MotivoDelLote]] = frozenset(
         MotivoDelLote.LOTE_VACIO,
         MotivoDelLote.ARCHIVO_NO_PROCESADO,
         MotivoDelLote.ARCHIVO_NO_ESCRITO,
+        MotivoDelLote.ARCHIVO_SIN_CONFIRMAR,
+        MotivoDelLote.LOTE_INTERRUMPIDO,
         MotivoDelLote.ARTEFACTO_INVALIDO,
     }
 )
@@ -117,7 +122,9 @@ MOTIVOS_DE_REVISION: Final[frozenset[MotivoDelLote]] = frozenset(
 VERSIONES_DEL_LOTE_CONOCIDAS: Final[frozenset[str]] = frozenset({"np-a0a.v1"})
 
 #: Estados que declara el generador. Vocabulario cerrado (``lote.EstadoDeArchivo``).
-ESTADOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA"})
+ESTADOS_CONOCIDOS: Final[frozenset[str]] = frozenset(
+    {"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA", "SIN_CONFIRMAR"}
+)
 
 #: Veredictos que declara el generador. Vocabulario cerrado (``gates.Veredicto``).
 VEREDICTOS_CONOCIDOS: Final[frozenset[str]] = frozenset({"AUTO_ACCEPT", "REVIEW"})
@@ -283,6 +290,14 @@ def _leer_omitidas(informe: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(crudo)
 
 
+def _leer_interrupcion(informe: Mapping[str, object]) -> str | None:
+    """Por qué se cortó la escritura, o ``None``. Obligatorio como ``omitidas_al_enumerar``: sin la clave no se prueba que no hubo corte."""
+
+    if "interrupcion" not in informe:
+        raise InformeInvalidoError("falta 'interrupcion' (null si el lote llegó hasta el final)")
+    return _opcional(informe.get("interrupcion"), "interrupcion")
+
+
 def _leer_conteos(informe: Mapping[str, object]) -> Mapping[str, int]:
     crudo = informe.get("conteos")
     if not isinstance(crudo, Mapping):
@@ -349,6 +364,7 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
         otras_rutas = _leer_otras_rutas(informe, vistas)
         declarados = _leer_conteos(informe)
         omitidas = _leer_omitidas(informe)
+        interrupcion = _leer_interrupcion(informe)
     except InformeInvalidoError as exc:
         return DecisionDelLote(
             veredicto=VeredictoDelLote.INCONSISTENTE,
@@ -384,6 +400,12 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
                 _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
             _agregar(motivos, MotivoDelLote.ARCHIVO_NO_ESCRITO)
             _agregar_ruta(rutas, archivo.ruta)
+        elif archivo.estado == "SIN_CONFIRMAR":
+            if archivo.efecto is not None or interrupcion is None:
+                # Sin confirmar no tiene efecto del escritor (no se sabe qué hizo) y solo existe dentro de una interrupción declarada.
+                _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
+            _agregar(motivos, MotivoDelLote.ARCHIVO_SIN_CONFIRMAR)
+            _agregar_ruta(rutas, archivo.ruta)
         elif archivo.estado == "EN_REVISION":
             if archivo.efecto is not None:
                 _agregar(motivos, MotivoDelLote.FORMA_INVALIDA)
@@ -406,6 +428,9 @@ def dictar(informe: Mapping[str, object]) -> DecisionDelLote:
                 # EL CASO QUE EL CÓDIGO DE SALIDA DEL GENERADOR NO VE: escrito y en revisión.
                 _agregar(motivos, MotivoDelLote.ARCHIVO_EN_REVISION)
                 _agregar_ruta(rutas, archivo.ruta)
+
+    if interrupcion is not None:
+        _agregar(motivos, MotivoDelLote.LOTE_INTERRUMPIDO)
 
     if omitidas:
         _agregar(motivos, MotivoDelLote.RUTAS_OMITIDAS)
