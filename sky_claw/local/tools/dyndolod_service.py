@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import os
 import pathlib
 import time
 from typing import TYPE_CHECKING, Any
@@ -569,8 +570,12 @@ class DynDOLODPipelineService:
         except (RuntimeError, OSError, ValueError):
             profile_name = None
 
+        synthesis_profile_id = os.environ.get("SYNTHESIS_PROFILE_IDENTIFIER") or (
+            profile_name if isinstance(profile_name, str) and profile_name.strip() else None
+        )
+
         plugins_synthesis = descubrir_plugins_de_synthesis(
-            profile_identifier=profile_name if isinstance(profile_name, str) else None,
+            profile_identifier=synthesis_profile_id,
             carpetas_de_salida=carpetas_salida,
         )
 

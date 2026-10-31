@@ -58,12 +58,19 @@ class EvidenciaDeEtapasPrevias:
         return not self.faltantes
 
 
-def _plugins_habilitados(plugins_txt: pathlib.Path) -> set[str] | None:
+def _plugins_habilitados_ordenados(plugins_txt: pathlib.Path) -> list[str] | None:
     try:
         lineas = plugins_txt.read_text(encoding="utf-8-sig", errors="strict").splitlines()
     except (OSError, UnicodeError):
         return None
-    return {linea[1:].strip().lower() for linea in lineas if linea.startswith("*")}
+    return [linea[1:].strip() for linea in lineas if linea.startswith("*")]
+
+
+def _plugins_habilitados(plugins_txt: pathlib.Path) -> set[str] | None:
+    ordenados = _plugins_habilitados_ordenados(plugins_txt)
+    if ordenados is None:
+        return None
+    return {p.lower() for p in ordenados}
 
 
 def _tiene_cgid(carpeta: pathlib.Path) -> bool:
@@ -112,6 +119,12 @@ def descubrir_plugins_de_synthesis(
             if default_path.is_file():
                 ruta_settings = default_path
 
+    # Precedencia idéntica a SynthesisPipelineService._ensure_synthesis_runner:
+    # SYNTHESIS_PROFILE_IDENTIFIER tiene prioridad sobre el perfil MO2.
+    synthesis_profile_id = os.environ.get("SYNTHESIS_PROFILE_IDENTIFIER") or (
+        profile_identifier.strip() if isinstance(profile_identifier, str) and profile_identifier.strip() else None
+    )
+
     if ruta_settings is not None and ruta_settings.is_file():
         try:
             data = json.loads(ruta_settings.read_text(encoding="utf-8-sig"))
@@ -119,8 +132,8 @@ def descubrir_plugins_de_synthesis(
                 profiles = data.get("Profiles")
                 if isinstance(profiles, list):
                     target_profile: dict[str, Any] | None = None
-                    if profile_identifier:
-                        pid_folded = profile_identifier.casefold()
+                    if synthesis_profile_id:
+                        pid_folded = synthesis_profile_id.casefold()
                         for p in profiles:
                             if isinstance(p, dict):
                                 nick = p.get("Nickname")
@@ -130,12 +143,12 @@ def descubrir_plugins_de_synthesis(
                                 ):
                                     target_profile = p
                                     break
-                    if target_profile is None and profiles:
+                    elif profiles:
                         for p in profiles:
                             if isinstance(p, dict) and p.get("Nickname") == "Default":
                                 target_profile = p
                                 break
-                        if target_profile is None and isinstance(profiles[0], dict):
+                        if target_profile is None and len(profiles) == 1 and isinstance(profiles[0], dict):
                             target_profile = profiles[0]
 
                     if target_profile is not None:
@@ -143,6 +156,12 @@ def descubrir_plugins_de_synthesis(
                         if isinstance(groups, list):
                             for g in groups:
                                 if isinstance(g, dict) and g.get("On") is True:
+                                    raw_patchers = g.get("Patchers")
+                                    # N1 / H-03: un grupo sin patchers habilitados no genera output
+                                    if raw_patchers is not None and not any(
+                                        isinstance(p, dict) and p.get("On") is True for p in raw_patchers
+                                    ):
+                                        continue
                                     name = g.get("Name")
                                     if isinstance(name, str) and name.strip():
                                         group_names.append(name.strip())
@@ -152,27 +171,35 @@ def descubrir_plugins_de_synthesis(
     if not group_names:
         group_names = [pathlib.Path(PLUGIN_DE_SYNTHESIS).stem]
 
-    plugins: set[str] = {f"{name}.esp" for name in group_names}
-
-    for carpeta in carpetas_de_salida:
-        if not carpeta.is_dir():
-            continue
-        try:
-            with os.scandir(carpeta) as entradas:
-                for entrada in entradas:
-                    if not entrada.is_file(follow_symlinks=False):
-                        continue
-                    fname = entrada.name
-                    if not fname.lower().endswith(".esp"):
-                        continue
-                    for gname in group_names:
+    # Conservar orden de definición de grupos y orden numérico de splits
+    plugins_ordenados: list[str] = []
+    for gname in group_names:
+        plugins_ordenados.append(f"{gname}.esp")
+        splits_del_grupo: list[tuple[int, str]] = []
+        for carpeta in carpetas_de_salida:
+            if not carpeta.is_dir():
+                continue
+            try:
+                with os.scandir(carpeta) as entradas:
+                    for entrada in entradas:
+                        if not entrada.is_file(follow_symlinks=False):
+                            continue
+                        fname = entrada.name
+                        if not fname.lower().endswith(".esp"):
+                            continue
                         patron = re.compile(rf"^{re.escape(gname)}_(?:[2-9]|[1-9][0-9]+)\.esp$", re.IGNORECASE)
                         if patron.fullmatch(fname):
-                            plugins.add(fname)
-        except OSError:
-            continue
+                            split_num = int(fname[len(gname) + 1 : -4])
+                            splits_del_grupo.append((split_num, fname))
+            except OSError:
+                continue
+        splits_vistos: set[int] = set()
+        for split_num, fname in sorted(splits_del_grupo, key=lambda s: s[0]):
+            if split_num not in splits_vistos:
+                splits_vistos.add(split_num)
+                plugins_ordenados.append(fname)
 
-    return tuple(sorted(plugins, key=lambda s: s.casefold()))
+    return tuple(plugins_ordenados)
 
 
 def verificar_etapas_previas_de_lods(
@@ -185,17 +212,20 @@ def verificar_etapas_previas_de_lods(
 ) -> EvidenciaDeEtapasPrevias:
     """Verifica los artefactos de las etapas 6, 7 y 8 en el perfil activo."""
     faltantes: list[str] = []
-    habilitados = _plugins_habilitados(plugins_txt) if plugins_txt is not None else None
-    if habilitados is None:
+    lista_habilitados = _plugins_habilitados_ordenados(plugins_txt) if plugins_txt is not None else None
+    if lista_habilitados is None:
         faltantes.append(
             "no se pudo leer el plugins.txt del perfil MO2 activo: sin load order no hay forma de probar "
             "las etapas 6 (Wrye Bash) y 7 (Synthesis)"
         )
     else:
-        if PLUGIN_DE_WRYE_BASH.lower() not in habilitados:
+        habilitados_set = {p.casefold() for p in lista_habilitados}
+        if PLUGIN_DE_WRYE_BASH.casefold() not in habilitados_set:
             faltantes.append(f"etapa 6 (Wrye Bash): '{PLUGIN_DE_WRYE_BASH}' no está habilitado en el perfil")
+
         esperados_synthesis = tuple(plugins_de_synthesis or (PLUGIN_DE_SYNTHESIS,))
-        ausentes_synthesis = [p for p in esperados_synthesis if p.lower() not in habilitados]
+        ausentes_synthesis = [p for p in esperados_synthesis if p.casefold() not in habilitados_set]
+
         if ausentes_synthesis:
             if len(ausentes_synthesis) == 1 and plugins_de_synthesis is None:
                 faltantes.append(f"etapa 7 (Synthesis): '{PLUGIN_DE_SYNTHESIS}' no está habilitado en el perfil")
@@ -203,6 +233,50 @@ def verificar_etapas_previas_de_lods(
                 faltantes.append(
                     f"etapa 7 (Synthesis): no está(n) habilitado(s) en el perfil: {', '.join(ausentes_synthesis)}"
                 )
+        elif plugins_de_synthesis is not None and lista_habilitados:
+            # H-02: Validar contigüidad de splits y orden de grupos en plugins.txt
+            posiciones_por_plugin = {p.casefold(): idx for idx, p in enumerate(lista_habilitados)}
+            mapa_grupos: dict[str, list[str]] = {}
+            for p in esperados_synthesis:
+                stem = pathlib.Path(p).stem
+                partes = stem.rsplit("_", 1)
+                g_base = partes[0] if len(partes) == 2 and partes[1].isdigit() and int(partes[1]) >= 2 else stem
+                mapa_grupos.setdefault(g_base, []).append(p)
+
+            ultimas_posiciones_grupos: list[tuple[str, int, int]] = []
+
+            for g_base, g_plugins in mapa_grupos.items():
+                activos_del_grupo = [p for p in g_plugins if p.casefold() in posiciones_por_plugin]
+                if not activos_del_grupo:
+                    continue
+                posiciones = [posiciones_por_plugin[p.casefold()] for p in activos_del_grupo]
+
+                min_p = min(posiciones)
+                max_p = max(posiciones)
+                if max_p - min_p + 1 != len(posiciones):
+                    faltantes.append(f"etapa 7 (Synthesis): los splits de '{g_base}' no son contiguos en plugins.txt")
+
+                pos_prev = -1
+                for p in activos_del_grupo:
+                    pos = posiciones_por_plugin[p.casefold()]
+                    if pos < pos_prev:
+                        faltantes.append(
+                            f"etapa 7 (Synthesis): los splits de '{g_base}' no están ordenados ascendentemente en plugins.txt"
+                        )
+                        break
+                    pos_prev = pos
+
+                ultimas_posiciones_grupos.append((g_base, min_p, max_p))
+
+            for i in range(len(ultimas_posiciones_grupos)):
+                for j in range(i + 1, len(ultimas_posiciones_grupos)):
+                    g_i, _, max_i = ultimas_posiciones_grupos[i]
+                    g_j, min_j, _ = ultimas_posiciones_grupos[j]
+                    if min_j < max_i:
+                        faltantes.append(
+                            f"etapa 7 (Synthesis): orden de grupos invertido en plugins.txt: "
+                            f"'{g_j}' aparece antes que '{g_i}'"
+                        )
 
     grass = overwrite_dir is not None and _tiene_cgid(overwrite_dir / "Grass")
     if not grass and modlist_txt is not None and mods_dir is not None:

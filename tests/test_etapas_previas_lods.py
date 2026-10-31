@@ -419,3 +419,174 @@ def test_descubrir_plugins_de_synthesis_con_settings_y_splits(tmp_path: pathlib.
         carpetas_de_salida=[overwrite],
     )
     assert plugins == ("Combat Patch.esp", "Combat Patch_2.esp")
+
+
+def test_descubrir_plugins_ignora_grupo_on_sin_patchers_habilitados(tmp_path: pathlib.Path):
+    """N1 / H-03: un grupo On sin patchers habilitados no genera output y no debe exigirse."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "Groups": [
+                            {
+                                "Name": "Active Group",
+                                "On": True,
+                                "Patchers": [{"ID": "p1", "On": True}],
+                            },
+                            {
+                                "Name": "Empty Group",
+                                "On": True,
+                                "Patchers": [{"ID": "p2", "On": False}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plugins = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="Default",
+    )
+    assert plugins == ("Active Group.esp",)
+
+
+def test_descubrir_plugins_respeta_synthesis_profile_identifier_env(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+    """N2: SYNTHESIS_PROFILE_IDENTIFIER tiene precedencia sobre el perfil MO2."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "Groups": [
+                            {"Name": "Default Group", "On": True, "Patchers": [{"ID": "p1", "On": True}]},
+                        ],
+                    },
+                    {
+                        "Nickname": "Requiem",
+                        "Groups": [
+                            {"Name": "Requiem Patch", "On": True, "Patchers": [{"ID": "p2", "On": True}]},
+                        ],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SYNTHESIS_PROFILE_IDENTIFIER", "Requiem")
+    plugins = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="Default",  # Perfil MO2
+    )
+    assert plugins == ("Requiem Patch.esp",)
+
+
+def test_descubrir_plugins_falla_cerrado_si_perfil_solicitado_no_existe(tmp_path: pathlib.Path):
+    """N2: si se solicita un perfil inexistente habiendo varios, no debe adivinar Profiles[0]."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Profile1",
+                        "Groups": [{"Name": "P1 Group", "On": True, "Patchers": [{"ID": "p1", "On": True}]}],
+                    },
+                    {
+                        "Nickname": "Profile2",
+                        "Groups": [{"Name": "P2 Group", "On": True, "Patchers": [{"ID": "p2", "On": True}]}],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plugins = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="NonExistentProfile",
+    )
+    # Debe fallar cerrado al fallback histórico, no inventar o adivinar Profile1
+    assert plugins == (PLUGIN_DE_SYNTHESIS,)
+
+
+def test_verificar_etapas_previas_detecta_splits_no_contiguos(tmp_path: pathlib.Path):
+    """H-02: splits habilitados de un mismo grupo deben ser adyacentes (contiguos) en plugins.txt."""
+    # Synthesis.esp y Synthesis_2.esp separados por OtroMod.esp -> debe fallar
+    rutas = _perfil(
+        tmp_path,
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*Synthesis.esp", "*OtroMod.esp", "*Synthesis_2.esp"],
+        grass_en_overwrite=True,
+    )
+    evidencia = verificar_etapas_previas_de_lods(
+        **rutas,
+        plugins_de_synthesis=["Synthesis.esp", "Synthesis_2.esp"],
+    )
+    assert not evidencia.completas()
+    assert any("contiguos" in f or "orden" in f for f in evidencia.faltantes)
+
+
+def test_verificar_etapas_previas_detecta_grupos_invertidos(tmp_path: pathlib.Path):
+    """H-02: el orden relativo de los grupos en plugins.txt debe coincidir con el pipeline."""
+    # GrupoB antes de GrupoA en plugins.txt cuando la secuencia esperada es [GrupoA, GrupoB]
+    rutas = _perfil(
+        tmp_path,
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*GroupB.esp", "*GroupA.esp"],
+        grass_en_overwrite=True,
+    )
+    evidencia = verificar_etapas_previas_de_lods(
+        **rutas,
+        plugins_de_synthesis=["GroupA.esp", "GroupB.esp"],
+    )
+    assert not evidencia.completas()
+    assert any("orden" in f or "invertido" in f for f in evidencia.faltantes)
+
+
+def test_verificar_etapas_previas_acepta_orden_y_contiguidad_correctos(tmp_path: pathlib.Path):
+    """H-02: grupos y splits correctamente ordenados y contiguos pasan la validación."""
+    rutas = _perfil(
+        tmp_path,
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*GroupA.esp", "*GroupA_2.esp", "*OtroMod.esp", "*GroupB.esp"],
+        grass_en_overwrite=True,
+    )
+    evidencia = verificar_etapas_previas_de_lods(
+        **rutas,
+        plugins_de_synthesis=["GroupA.esp", "GroupA_2.esp", "GroupB.esp"],
+    )
+    assert evidencia.completas()
+
+
+def test_el_servicio_usa_los_grupos_del_settings_en_el_guard(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch):
+    """N3: el guard de DynDOLODPipelineService debe usar los grupos de SYNTHESIS_PIPELINE_SETTINGS."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "Groups": [
+                            {"Name": "Requiem Patch", "On": True, "Patchers": [{"ID": "p1", "On": True}]},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SYNTHESIS_PIPELINE_SETTINGS", str(settings))
+    _perfil(tmp_path, plugins=[f"*{PLUGIN_DE_WRYE_BASH}"], grass_en_overwrite=True)
+    evidencia = _servicio(_resolver(tmp_path)).verificar_etapas_previas()
+    assert not evidencia.completas()
+    assert any("Requiem Patch.esp" in f for f in evidencia.faltantes)

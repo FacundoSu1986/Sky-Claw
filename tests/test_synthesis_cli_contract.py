@@ -401,3 +401,71 @@ def test_profile_identifier_resolution_is_case_insensitive(tmp_path: pathlib.Pat
     profile = case_runner.inspect_settings(["patcher-light"])
     assert profile.profile_identifier == "default"
     assert "Synthesis" in profile.group_names
+
+
+@pytest.mark.parametrize(
+    "nombre_reservado",
+    [
+        "CON",
+        "con",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "com5",
+        "COM9",
+        "LPT1",
+        "lpt8",
+        "LPT9",
+        "COM¹",
+        "LPT²",
+        "CON.esp",
+        "aux.patch",
+        "nul.esp",
+    ],
+)
+def test_synthesis_group_name_rechaza_nombres_reservados_windows(tmp_path: pathlib.Path, nombre_reservado: str) -> None:
+    """H-04: los nombres reservados de dispositivos Win32 deben rechazarse para grupos de salida."""
+    settings = tmp_path / "PipelineSettings.json"
+    data = {
+        "Version": 2,
+        "Profiles": [
+            {
+                "Nickname": "Default",
+                "Groups": [
+                    {
+                        "Name": nombre_reservado,
+                        "On": True,
+                        "Patchers": [{"ID": "p1", "On": True}],
+                    }
+                ],
+            }
+        ],
+    }
+    settings.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match="Reserved Windows output group name"):
+        PatcherPipeline.inspect_synthesis_settings(settings, "Default")
+
+
+@pytest.mark.parametrize("nombre_valido", ["CombatPatch", "Synthesis", "Requiem_Patch", "MyMod-1", "Patch2"])
+def test_synthesis_group_name_admite_nombres_ordinarios(tmp_path: pathlib.Path, nombre_valido: str) -> None:
+    """H-04: nombres comunes no reservados son perfectamente válidos."""
+    settings = tmp_path / "PipelineSettings.json"
+    data = {
+        "Version": 2,
+        "Profiles": [
+            {
+                "Nickname": "Default",
+                "Groups": [
+                    {
+                        "Name": nombre_valido,
+                        "On": True,
+                        "Patchers": [{"ID": "p1", "On": True}],
+                    }
+                ],
+            }
+        ],
+    }
+    settings.write_text(json.dumps(data), encoding="utf-8")
+    profile = PatcherPipeline.inspect_synthesis_settings(settings, "Default")
+    assert profile.group_names == (nombre_valido,)

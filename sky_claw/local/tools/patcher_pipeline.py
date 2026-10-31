@@ -40,6 +40,15 @@ class PatcherPipelineError(Exception):
     pass
 
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+    | {f"COM{s}" for s in "¹²³"}
+    | {f"LPT{s}" for s in "¹²³"}
+)
+
+
 def _is_split_output_name(group_name: str, candidate: str) -> bool:
     """Si ``candidate`` colisiona con el espacio ``<grupo>_N`` de splits."""
     prefix = f"{group_name.casefold()}_"
@@ -297,6 +306,9 @@ class PatcherPipeline:
                 or any(ord(char) < 32 for char in name)
             ):
                 raise PatcherPipelineError(f"Unsafe Synthesis output group name: {name!r}")
+            base_name = name.split(".", 1)[0].upper()
+            if base_name in _WINDOWS_RESERVED_NAMES:
+                raise PatcherPipelineError(f"Reserved Windows output group name: {name!r}")
             folded_name = name.casefold()
             if folded_name in seen_group_names:
                 raise PatcherPipelineError(f"Duplicate Synthesis output group name: {name!r}")
@@ -490,7 +502,8 @@ class PatcherPipeline:
                     temporary_path.unlink(missing_ok=True)
             raise PatcherPipelineError(f"Cannot prepare temporary Synthesis settings: {exc}") from exc
 
-        assert temporary_path is not None
+        if temporary_path is None:
+            raise PatcherPipelineError("Failed to initialize temporary Synthesis settings path")
         return temporary_path, profile_info
 
     def _load_from_path(self, path: pathlib.Path) -> None:
