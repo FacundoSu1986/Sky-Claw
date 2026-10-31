@@ -224,6 +224,50 @@ def _escribe_active_json(nodo: ast.Call) -> bool:
     return any(_menciona(arg, _ANCLA_ACTIVE) for arg in nodo.args)
 
 
+#: Mutadores que operan sobre una ruta que la función NO nombra: la recibe.
+_MUTADORES_SOBRE_RUTA = frozenset(
+    {"mkstemp", "replace", "unlink", "write_json_atomic", "fdopen", "write", "_escribir_bytes_atomico"}
+)
+
+
+def _escribe_active_json_por_ancla_local(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Escritura del estado cuando la ruta se enlaza a una variable antes de usarla.
+
+    ``p = active_state_path(root); write_json_atomic(p, ...)`` escribe
+    ``active.json`` y el argumento de la llamada es un ``Name``, no la expresión
+    ancla. La regla anterior sólo miraba los argumentos, así que ese patrón
+    —ordinario— escapaba al censo. Ahora se exige que la función MENCIONE el
+    ancla y contenga un mutador; el conjunto congelado absorbe el posible falso
+    positivo, que en un censo es preferible a un falso negativo.
+    """
+    if not any(_menciona(nodo, _ANCLA_ACTIVE) for nodo in ast.walk(funcion)):
+        return False
+    return any(
+        isinstance(nodo, ast.Call) and _nombre_de_llamada(nodo) in _MUTADORES_SOBRE_RUTA for nodo in ast.walk(funcion)
+    )
+
+
+def _restaura_superficies_genericas(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Restaurador GENÉRICO: escribe la superficie que le diga ``SuperficieCapturada``.
+
+    ``_restaurar_persistida`` no repite ``active_state_path`` ni el literal del
+    archivo: recibe la ruta dentro de la superficie y escribe. Es un escritor de
+    las TRES superficies persistidas, con el ``kind`` decidido en runtime, y el
+    censo tiene que enumerarlo en las tres o el ancla declara cobertura que no
+    tiene (Codex sobre #843).
+    """
+    menciona_superficie = any(
+        (isinstance(nodo, ast.Name) and nodo.id == "SuperficieCapturada")
+        or (isinstance(nodo, ast.Attribute) and nodo.attr == "SuperficieCapturada")
+        for nodo in ast.walk(funcion)
+    )
+    if not menciona_superficie:
+        return False
+    return any(
+        isinstance(nodo, ast.Call) and _nombre_de_llamada(nodo) in _MUTADORES_SOBRE_RUTA for nodo in ast.walk(funcion)
+    )
+
+
 def _escribe_active_json_por_nombre(funcion: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Escritura del estado por NOMBRE de archivo, no por la primitiva.
 
@@ -295,8 +339,11 @@ def descubrir_escritores_de_superficies(
             for superficie, regla in _REGLAS_ESCRITURA.items():
                 if any(isinstance(nodo, ast.Call) and regla(nodo) for nodo in ast.walk(funcion)):
                     encontrados[superficie].add(f"{relativo}::{funcion.name}")
-            if _escribe_active_json_por_nombre(funcion):
+            if _escribe_active_json_por_nombre(funcion) or _escribe_active_json_por_ancla_local(funcion):
                 encontrados["active_json"].add(f"{relativo}::{funcion.name}")
+            if _restaura_superficies_genericas(funcion):
+                for superficie in ("mo2_ini", "config", "active_json"):
+                    encontrados[superficie].add(f"{relativo}::{funcion.name}")
             if any(_escribe_environ(nodo) for nodo in ast.walk(funcion) if isinstance(nodo, ast.stmt)):
                 encontrados["environ"].add(f"{relativo}::{funcion.name}")
     return {clave: frozenset(valor) for clave, valor in encontrados.items()}
@@ -322,11 +369,24 @@ def descubrir_escritores_de_superficies(
 #:   restaurar. Es el hermano de escritura que el censo encontró solo: el binder
 #:   lo escribe al bindear y el rollback al volver atrás.
 ESCRITORES_DECLARADOS: dict[str, frozenset[str]] = {
-    "mo2_ini": frozenset({"local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder"}),
-    "config": frozenset({"local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder"}),
+    "mo2_ini": frozenset(
+        {
+            "local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder",
+            # Restaurador genérico: escribe la superficie que le indique el
+            # `kind` de la SuperficieCapturada. Ver `_restaura_superficies_genericas`.
+            "local/frozen_runtime/binder_recovery.py::_restaurar_persistida",
+        }
+    ),
+    "config": frozenset(
+        {
+            "local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder",
+            "local/frozen_runtime/binder_recovery.py::_restaurar_persistida",
+        }
+    ),
     "active_json": frozenset(
         {
             "local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder",
+            "local/frozen_runtime/binder_recovery.py::_restaurar_persistida",
             "local/frozen_runtime/state.py::_save_frozen_runtime_state_locked",
             "local/frozen_runtime/state.py::escribir_estado_activo_cas",
             "local/frozen_runtime/storage.py::_initialize_frozen_runtime_storage_locked",

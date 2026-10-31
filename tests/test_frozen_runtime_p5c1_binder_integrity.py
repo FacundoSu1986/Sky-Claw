@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from unittest.mock import patch
 
 import pytest
@@ -53,6 +54,7 @@ from sky_claw.local.frozen_runtime.clones import (
     RuntimeCloneRecord,
     registrar_runtime_clone_record,
 )
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
     LiveProcessEvidence,
@@ -162,7 +164,15 @@ def _crear_generation_valida(storage_root: pathlib.Path) -> str:
     return meta.generation_id
 
 
-def _crear_clone(storage_root: pathlib.Path, clone_root: pathlib.Path, generation_id: str, clone_id: str) -> None:
+def _crear_clone(
+    storage_root: pathlib.Path,
+    clone_root: pathlib.Path,
+    generation_id: str,
+    clone_id: str,
+    *,
+    setup_verificado: str = "setup-skse-clean",
+    setup_intencionado: str | None = None,
+) -> None:
     gen_dir = storage_root / "versions" / generation_id
     if clone_root.exists():
         shutil.rmtree(clone_root)
@@ -173,10 +183,10 @@ def _crear_clone(storage_root: pathlib.Path, clone_root: pathlib.Path, generatio
             schema_version=1,
             clone_id=clone_id,
             source_generation_id=generation_id,
-            intended_runtime_setup_id="setup-skse-clean",
+            intended_runtime_setup_id=setup_intencionado or setup_verificado,
             root_path=str(clone_root),
             lifecycle=RuntimeCloneLifecycle.PROVISIONED,
-            verified_runtime_setup_id="setup-skse-clean",
+            verified_runtime_setup_id=setup_verificado,
             admitted_role="runtime_clone",
             created_at_ns=1000,
         ),
@@ -279,13 +289,15 @@ class _Rig:
         return active_state_path(self.storage).read_bytes()
 
 
-def _montar_rig(tmp_path: pathlib.Path, *, emitir_aprobacion: bool = True) -> _Rig:
+def _montar_rig(
+    tmp_path: pathlib.Path, *, emitir_aprobacion: bool = True, setup_clone: str = "setup-skse-clean"
+) -> _Rig:
     managed_src = _crear_managed_source_sintetica(tmp_path / "Steam")
     storage = tmp_path / "Storage"
     assert initialize_frozen_runtime_storage(storage).success
     gen_id = _crear_generation_valida(storage)
     clone_root = tmp_path / "Clones" / "Clone1"
-    _crear_clone(storage, clone_root, gen_id, "clone-1")
+    _crear_clone(storage, clone_root, gen_id, "clone-1", setup_verificado=setup_clone, setup_intencionado=setup_clone)
     mo2_dir = tmp_path / "MO2"
     _crear_mo2_instance_sintetica(mo2_dir, game_path=str(managed_src))
     config = _crear_config(tmp_path / "config.toml", skyrim_path=str(managed_src))
@@ -993,3 +1005,183 @@ def test_recuperacion_sin_registro_es_no_op(tmp_path: pathlib.Path) -> None:
     resultado = recovery.recuperar_transicion_interrumpida(rig.storage)
     assert resultado.estado is recovery.EstadoRecuperacion.SIN_REGISTRO
     assert resultado.requiere_dueno is False
+
+
+# ---------------------------------------------------------------------------
+# Ronda 2 — hallazgos de Codex/CodeRabbit
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_no_pisa_una_escritura_ajena_en_config(tmp_path: pathlib.Path) -> None:
+    """Si un tercero cambia OTRA clave del config, el rollback no lo borra.
+
+    ``Config.save()`` tiene su propio lock por path, que no es el root lock del
+    binder: puede guardar otro campo después del snapshot. Restaurar los bytes
+    viejos eliminaría ese cambio. El discriminador es la FORMA del cambio propio:
+    ``skyrim_path`` en el valor escrito y el resto de las claves idénticas.
+    """
+    rig = _montar_rig(tmp_path)
+    real_persistir = binder.persistir_campo
+
+    def _persistir_y_que_otro_escriba(path, campo, valor):  # type: ignore[no-untyped-def]
+        real_persistir(path, campo, valor)
+        # Un tercero cambia otra clave DESPUÉS de nuestro snapshot.
+        path.write_text(
+            path.read_text(encoding="utf-8").replace('language = "es"', 'language = "en"'),
+            encoding="utf-8",
+        )
+
+    with (
+        patch.object(binder, "persistir_campo", side_effect=_persistir_y_que_otro_escriba),
+        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError),
+    ):
+        _ejecutar(rig)
+
+    persistido = tomllib.loads(rig.config.read_text(encoding="utf-8"))
+    assert persistido["language"] == "en", "el rollback borró la escritura del tercero"
+    # Y no se revirtió skyrim_path: tampoco se pisó con los bytes viejos.
+    assert persistido["skyrim_path"] == str(rig.clone_root)
+
+
+def test_rollback_no_pisa_una_escritura_ajena_en_ini(tmp_path: pathlib.Path) -> None:
+    """Si un tercero agrega una línea al INI, el rollback no la borra."""
+    rig = _montar_rig(tmp_path)
+    real_ini = binder.actualizar_game_path_en_ini
+
+    def _ini_y_que_otro_escriba(path, valor):  # type: ignore[no-untyped-def]
+        real_ini(path, valor)
+        path.write_bytes(path.read_bytes() + b"; agregado por un tercero\r\n")
+
+    with (
+        patch.object(binder, "actualizar_game_path_en_ini", side_effect=_ini_y_que_otro_escriba),
+        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError),
+    ):
+        _ejecutar(rig)
+
+    assert b"; agregado por un tercero" in rig.ini.read_bytes(), "el rollback pisó la escritura del tercero"
+
+
+def test_rollback_si_restaura_cuando_el_ini_es_nuestro(tmp_path: pathlib.Path) -> None:
+    """El guard no es «nunca restaurar»: sin tercero, el INI vuelve a su estado previo.
+
+    Es el control positivo del test anterior. Sin él, un guard que siempre dijera
+    «escritura ajena» pasaría los dos negativos y rompería el rollback.
+    """
+    rig = _montar_rig(tmp_path)
+    ini_antes = rig.ini_bytes()
+
+    with (
+        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError),
+    ):
+        _ejecutar(rig)
+
+    assert rig.ini_bytes() == ini_antes
+
+
+def test_recuperacion_no_borra_un_active_ajeno_creado_tras_snapshot_ausente(tmp_path: pathlib.Path) -> None:
+    """Con ``active.json`` ausente en el snapshot, un Desired ajeno NO se borra.
+
+    Antes, el guard sólo miraba superficies que EXISTÍAN en el snapshot: con
+    ausencia, la restauración borraba cualquier archivo aparecido después,
+    incluido el de un tercero (Codex sobre #843).
+    """
+    from sky_claw.local.frozen_runtime.state import write_json_atomic
+
+    rig = _montar_rig(tmp_path)
+    active = active_state_path(rig.storage)
+    active.unlink()
+
+    with participant_lock(rig.storage, timeout=10.0) as handle:
+        handle.assert_owned()
+        registro = recovery.capturar_registro(
+            storage_root=rig.storage,
+            transition_id="66666666-6666-4666-8666-666666666666",
+            journal_revision=0,
+            operation="PROMOTION",
+            target_clone_id=rig.clone_id,
+            target_generation_id=rig.gen_id,
+            expected_effective_path=str(rig.clone_root),
+            mo2_ini_path=rig.ini,
+            config_path=rig.config,
+            environ_skyrim_path=None,
+        )
+        # Un tercero crea un Desired que NO es el de esta transición.
+        write_json_atomic(
+            active,
+            {
+                "schema_version": 2,
+                "desired_generation_id": None,
+                "desired_clone_id": None,
+                "updated_at_ns": 99,
+            },
+        )
+        verificaciones = recovery.restaurar_registro_locked(
+            handle,
+            rig.storage,
+            registro,
+            {},
+            solo_superficies=frozenset({recovery.SUPERFICIE_ACTIVE}),
+        )
+
+    activa = next(v for v in verificaciones if v.kind == recovery.SUPERFICIE_ACTIVE)
+    assert activa.escritura_ajena is True
+    assert active.exists(), "la recuperación borró un active.json que escribió un tercero"
+
+
+def test_fallo_al_retirar_el_registro_no_revierte_la_transicion(tmp_path: pathlib.Path) -> None:
+    """Si el borrado del registro falla DESPUÉS de finalizar, NO hay rollback.
+
+    El journal ya publicó el registro inmutable: revertir las superficies dejaría
+    un historial que afirma que el nuevo runtime se activó con las superficies
+    apuntando al anterior (Codex sobre #843).
+    """
+    rig = _montar_rig(tmp_path)
+
+    with patch.object(recovery, "eliminar_registro_locked", side_effect=PermissionError("archivo abierto")):
+        resultado = _ejecutar(rig)
+
+    assert resultado.success is True
+    assert leer_game_path_de_mo2(rig.ini).path == str(rig.clone_root)
+    assert tomllib.loads(rig.config.read_text(encoding="utf-8"))["skyrim_path"] == str(rig.clone_root)
+    # El registro quedó: es evidencia obsoleta que la recuperación retira sin restaurar.
+    assert len(recovery.listar_registros(rig.storage)) == 1
+
+
+def test_root_sin_store_de_recuperacion_no_quema_la_aprobacion(tmp_path: pathlib.Path) -> None:
+    """Un root sin ``state/recovery/`` falla ANTES de consumir la aprobación.
+
+    Sin la comprobación previa, el burn ocurría y el fallo aparecía al persistir
+    el snapshot: el dueño quedaba sin aprobación y con el journal en PENDING
+    (CodeRabbit sobre #843).
+    """
+    rig = _montar_rig(tmp_path)
+    shutil.rmtree(recovery.recovery_state_dir(rig.storage))
+
+    with pytest.raises(binder.BinderError, match="store de recuperación"):
+        _ejecutar(rig)
+
+    from sky_claw.local.frozen_runtime.approval import cargar_ledger_aprobacion
+
+    ledger = cargar_ledger_aprobacion(rig.storage)
+    assert ledger.ledger is not None
+    assert ledger.ledger.consumed_by_transition_id is None, "la aprobación se quemó igual"
+    # El journal no llegó a escribirse: el fallo es ANTES del PENDING.
+    assert cargar_journal_transicion(rig.storage).disposition is not JournalDisposition.PENDING_PROMOTION
+
+
+def test_aprobacion_con_setup_distinto_al_verificado_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """El setup aprobado tiene que ser el que el Clone tiene VERIFICADO.
+
+    Una aprobación podía nombrar el clone y la Generation correctos y un setup
+    distinto del provisionado: el preflight valida la integridad del setup del
+    Clone, no la identidad del que el propietario aprobó (Codex sobre #843).
+    """
+    # El clone se provisiona con "setup-otro"; la fixture de aprobación sigue
+    # diciendo "setup-skse-clean".
+    rig = _montar_rig(tmp_path, setup_clone="setup-otro")
+
+    with pytest.raises(binder.BinderApprovalError, match="setup"):
+        _ejecutar(rig)

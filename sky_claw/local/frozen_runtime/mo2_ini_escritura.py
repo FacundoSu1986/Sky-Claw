@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import os
 import pathlib
 import tempfile
@@ -57,6 +58,7 @@ __all__ = [
     "Mo2IniEscrituraError",
     "actualizar_game_path_en_ini",
     "admitir_formato_ini",
+    "prever_bytes",
     "codificar_qt_byte_array",
 ]
 
@@ -277,9 +279,11 @@ def _construir_lineas(texto: str, valor: str, formato: FormatoIni) -> tuple[list
         salida.append(linea)
 
     if not seccion_general_vista:
-        # No había [General]: se agrega al principio, conservando el resto.
+        # No había [General]: se agrega al principio, conservando el resto. La
+        # línea `gamePath` lleva el terminador del archivo: sin él, el `"\n".join`
+        # dejaría un LF suelto en un INI CRLF (CodeRabbit sobre #843).
         salida.insert(0, "[General]" + ("\r" if formato.crlf else ""))
-        salida.insert(1, f"gamePath={valor}")
+        salida.insert(1, _con_terminador(f"gamePath={valor}", formato))
         tocadas = [0, 1]
     elif en_general and not tocadas:
         # [General] era la última sección: se agrega al final de ella.
@@ -314,6 +318,13 @@ def _verificar_preservacion(
     if len(despues) == len(antes):
         # REEMPLAZO en el lugar: sólo pueden diferir las líneas declaradas, y
         # tanto la versión previa como la nueva tienen que ser gamePath.
+        #
+        # ``despues == antes`` es un NO-OP legítimo: el valor ya era el pedido.
+        # Antes se rechazaba, así que llamar dos veces al escritor con la misma
+        # ruta fallaba en la segunda (Codex sobre #843) y la rama de idempotencia
+        # de ``actualizar_game_path_en_ini`` era inalcanzable.
+        if despues == antes:
+            return
         distintas = [indice for indice, (a, d) in enumerate(zip(antes, despues, strict=True)) if a != d]
         if distintas != list(tocadas):
             raise EscrituraIniNoVerificadaError(
@@ -342,6 +353,35 @@ def _verificar_preservacion(
         )
 
 
+def prever_bytes(contenido: bytes, nuevo_game_path: str | pathlib.Path) -> bytes:
+    """Bytes que ``actualizar_game_path_en_ini`` escribiría sobre *contenido*.
+
+    Es una función PURA sobre el contenido previo y no toca el disco. Existe por
+    dos razones, y las dos son de corrección:
+
+    1. El escritor y la previsión no pueden divergir: ``actualizar_game_path_en_ini``
+       la usa para construir lo que escribe.
+    2. La restauración tras un reinicio necesita distinguir «estos bytes los
+       escribió la transición» de «los escribió un tercero» sin tener el proceso
+       vivo. Con la previsión se compara contra lo que la transición HABRÍA
+       escrito, que es exactamente el discriminador que le falta a un rollback
+       que sólo tiene el snapshot.
+
+    Raises:
+        FormatoIniNoAdmitidoError: el formato no se admite.
+        EscrituraIniNoVerificadaError: la edición no se limitó a ``gamePath``.
+    """
+    formato = admitir_formato_ini(contenido)
+    cuerpo = contenido[len(_BOM_UTF8) :] if formato.tiene_bom else contenido
+    texto = cuerpo.decode("utf-8", "surrogateescape")
+    valor = codificar_qt_byte_array(nuevo_game_path)
+    lineas_antes = texto.split("\n")
+    lineas_despues, tocadas = _construir_lineas(texto, valor, formato)
+    _verificar_preservacion(lineas_antes, lineas_despues, tocadas=tocadas)
+    nuevo_cuerpo = "\n".join(lineas_despues).encode("utf-8", "surrogateescape")
+    return (_BOM_UTF8 if formato.tiene_bom else b"") + nuevo_cuerpo
+
+
 def actualizar_game_path_en_ini(
     ini_path: pathlib.Path,
     nuevo_game_path: str | pathlib.Path,
@@ -352,9 +392,11 @@ def actualizar_game_path_en_ini(
 
     1. **Admisión de formato** (antes de cualquier escritura): un formato no
        admitido no muta el archivo.
-    2. **Edición quirúrgica**: sólo cambia la línea ``gamePath``.
-    3. **Verificación estructural**: la lista de líneas difiere en exactamente
-       un elemento.
+    2. **Edición quirúrgica + verificación estructural** (``prever_bytes``).
+    3. **Re-lectura inmediatamente antes del reemplazo**: si el archivo cambió
+       desde la lectura, se falla cerrado. ``os.replace`` es atómico para la
+       ESCRITURA; no comprueba que el destino siga siendo el que se leyó, y esa
+       ventana es la que MO2 puede llenar (CodeRabbit sobre #843).
     4. **Escritura atómica**: temporal en el MISMO directorio, ``fsync``,
        ``os.replace``.
     5. **Readback con el lector de MO2**: si no devuelve la ruta pedida, se
@@ -363,7 +405,7 @@ def actualizar_game_path_en_ini(
 
     Raises:
         FormatoIniNoAdmitidoError: el archivo no existe o su formato no se admite.
-        EscrituraIniNoVerificadaError: la preservación o el readback fallaron.
+        EscrituraIniNoVerificadaError: la preservación, la re-lectura o el readback fallaron.
     """
     ruta = pathlib.Path(os.path.abspath(os.fspath(ini_path)))
     try:
@@ -373,25 +415,26 @@ def actualizar_game_path_en_ini(
     except OSError as exc:
         raise FormatoIniNoAdmitidoError(f"modorganizer.ini no se pudo leer ({ruta}): {exc}") from exc
 
-    formato = admitir_formato_ini(contenido)
-    cuerpo = contenido[len(_BOM_UTF8) :] if formato.tiene_bom else contenido
-    texto = cuerpo.decode("utf-8", "surrogateescape")
+    bytes_finales = prever_bytes(contenido, nuevo_game_path)
 
-    valor = codificar_qt_byte_array(nuevo_game_path)
-    lineas_antes = texto.split("\n")
-    lineas_despues, tocadas = _construir_lineas(texto, valor, formato)
-    _verificar_preservacion(lineas_antes, lineas_despues, tocadas=tocadas)
-
-    nuevo_cuerpo = "\n".join(lineas_despues).encode("utf-8", "surrogateescape")
-    bytes_finales = (_BOM_UTF8 if formato.tiene_bom else b"") + nuevo_cuerpo
-
-    if bytes_finales == contenido:
-        # Idempotencia real: si el valor ya era ése, no se toca el archivo (ni
-        # siquiera se reemplaza el inodo). Reemplazarlo cambiaría mtime y
-        # dispararía la detección de estabilidad del preflight sin motivo.
-        pass
-    else:
+    if bytes_finales != contenido:
+        # Cierre de la ventana lectura→reemplazo DENTRO del escritor. El binder
+        # ya compara la identidad del INI bajo su lock, pero el lock no cubre a
+        # MO2 ni a otro escritor externo.
+        try:
+            actuales = ruta.read_bytes()
+        except OSError as exc:
+            raise EscrituraIniNoVerificadaError(f"no se pudo releer {ruta} antes del reemplazo: {exc}") from exc
+        if actuales != contenido:
+            raise EscrituraIniNoVerificadaError(
+                f"{ruta}: el archivo cambió entre la lectura y el reemplazo "
+                f"(sha256 {hashlib.sha256(actuales).hexdigest()} != {hashlib.sha256(contenido).hexdigest()}): "
+                "no se sobrescribe una escritura ajena"
+            )
         _escribir_atomico(ruta, bytes_finales)
+    # Si ``bytes_finales == contenido`` el valor ya era el pedido: no se toca el
+    # archivo (ni se reemplaza el inodo). Reemplazarlo cambiaría el mtime y
+    # dispararía la detección de estabilidad del preflight sin motivo.
 
     evidencia = leer_game_path_de_mo2(ruta)
     esperado = os.fspath(nuevo_game_path)

@@ -107,6 +107,7 @@ from sky_claw.local.frozen_runtime.journal import (
     proyectar_propuesta,
 )
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
+    Mo2IniEscrituraError,
     actualizar_game_path_en_ini,
     codificar_qt_byte_array,
 )
@@ -138,6 +139,7 @@ __all__ = [
     "BinderApprovalError",
     "BinderCasError",
     "BinderError",
+    "BinderEscrituraIniError",
     "BinderLockUnavailableError",
     "BinderPreflightFailedError",
     "BinderQuiescenceError",
@@ -174,6 +176,15 @@ class BinderApprovalError(BinderError):
 
 class BinderVerificationError(BinderError):
     """Fallo en la verificación física de superficies (readback del INI o POST verify)."""
+
+
+class BinderEscrituraIniError(BinderError):
+    """Fallo al escribir ``modorganizer.ini`` (formato no admitido, I/O, TOCTOU).
+
+    Envuelve ``Mo2IniEscrituraError`` para que el llamador del binder vea UNA
+    familia de errores: una escritura que falla es un fallo de la transición, no
+    un detalle de un submódulo. La causa original queda encadenada.
+    """
 
 
 class BinderRollbackError(BinderError):
@@ -526,6 +537,7 @@ def _verificar_destino_de_la_aprobacion(
     target_clone_id: str,
     target_generation_id: str,
     target_clone_root: pathlib.Path,
+    runtime_setup_verificado: str | None,
 ) -> None:
     """La aprobación tiene que ser para el destino que el preflight va a bindear."""
     if propuesta.operation is not JournalOperation.PROMOTION:
@@ -544,6 +556,17 @@ def _verificar_destino_de_la_aprobacion(
         raise BinderApprovalError(
             f"la aprobación declara un destino efectivo {propuesta.expected_effective_path!r} distinto de la raíz "
             f"del clone {str(target_clone_root)!r}"
+        )
+    # El SETUP también es parte de lo aprobado. Sin este cruce, una aprobación
+    # podía nombrar el clone y la Generation correctos y un setup distinto del
+    # que el Clone tiene VERIFICADO: el preflight valida la integridad del setup
+    # provisionado, no el que el propietario aprobó, y el journal sólo compara la
+    # propuesta contra el scope (Codex sobre #843).
+    if runtime_setup_verificado is not None and propuesta.target_runtime_setup_id != runtime_setup_verificado:
+        raise BinderApprovalError(
+            f"la aprobación es para el setup {propuesta.target_runtime_setup_id!r} y el Runtime Clone "
+            f"{target_clone_id!r} tiene verificado {runtime_setup_verificado!r}: el propietario aprobó un "
+            "runtime que no es el que se va a activar"
         )
 
 
@@ -662,6 +685,10 @@ def ejecutar_transicion_binder(
     target_clone_root = preflight.target_clone_root
     target_generation_id = preflight.source_generation_id
     previous_path = preflight.observed_mo2_game_path or ""
+    # Setup que el Clone tiene VERIFICADO. Es lo que el propietario tiene que
+    # haber aprobado: el preflight valida la integridad del setup provisionado,
+    # no su identidad contra el scope.
+    setup_verificado = clone_rec_candidato.verified_runtime_setup_id if clone_rec_candidato is not None else None
     previo = _ObservacionPrevia(
         clone_root=target_clone_root,
         generation_id=target_generation_id,
@@ -699,6 +726,7 @@ def ejecutar_transicion_binder(
             target_clone_id=target_clone_id,
             target_generation_id=target_generation_id,
             target_clone_root=target_clone_root,
+            runtime_setup_verificado=setup_verificado,
         )
         _verificar_aprobacion_consumida_durable(
             storage_path,
@@ -735,12 +763,26 @@ def ejecutar_transicion_binder(
             target_clone_id=target_clone_id,
             target_generation_id=target_generation_id,
             target_clone_root=target_clone_root,
+            runtime_setup_verificado=setup_verificado,
         )
 
     # -------------------------------------------------------------------------
     # FASE 3 — Sonda del lock ANTES de quemar la aprobación
     # -------------------------------------------------------------------------
     if not ya_consumida:
+        # El store de recuperación tiene que existir ANTES de quemar. Un root
+        # inicializado por una versión anterior no lo tiene, y descubrirlo
+        # después del burn deja al dueño sin aprobación y con el journal en
+        # PENDING (CodeRabbit sobre #843).
+        try:
+            recovery.exigir_store_inicializado(storage_path)
+        except recovery.RecuperacionError as exc:
+            raise BinderError(
+                f"el store de recuperación no está inicializado en {storage_path}: NO se consume la aprobación "
+                f"para una transición que no podría dejar snapshot durable. Reejecutá "
+                f"initialize_frozen_runtime_storage y reintentá. Detalle: {exc}"
+            ) from exc
+
         inspeccion = inspect_frozen_runtime_root_lock(storage_path)
         if inspeccion.disposition is not LockDisposition.FREE:
             raise BinderLockUnavailableError(
@@ -849,7 +891,10 @@ def ejecutar_transicion_binder(
                 handle, storage_path, transition_id=t_id, fase=recovery.FaseRecuperacion.INI_ESCRITO
             )
             mutadas.add(recovery.SUPERFICIE_MO2_INI)
-            actualizar_game_path_en_ini(ini_path, target_clone_root)
+            try:
+                actualizar_game_path_en_ini(ini_path, target_clone_root)
+            except Mo2IniEscrituraError as exc:
+                raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
 
             if config_path is not None and config_path.exists():
                 recovery.marcar_fase_locked(
@@ -998,11 +1043,7 @@ def ejecutar_transicion_binder(
 
             record_final = _finalizar_locked(handle, storage_path, post_evidence)
 
-            # El registro se retira SÓLO después de que el journal finalizó: la
-            # validación precede al tombstone.
-            recovery.eliminar_registro_locked(handle, storage_path, t_id)
-
-            return BinderResult(
+            resultado = BinderResult(
                 success=True,
                 message="Transición a Runtime Clone ejecutada y finalizada con éxito",
                 transition_id=t_id,
@@ -1024,6 +1065,34 @@ def ejecutar_transicion_binder(
             )
             _rollback(handle, storage_path, registro, env_actual if environ is not None else None, mutadas, t_id)
             raise
+
+        # FUERA de la transacción, a propósito. El journal ya finalizó y el
+        # registro inmutable está publicado: revertir las superficies acá
+        # dejaría un historial que afirma que el nuevo runtime se activó con las
+        # superficies apuntando al anterior (Codex sobre #843). Si el borrado
+        # falla, el registro queda obsoleto y `recuperar_transicion_interrumpida`
+        # lo retira sin restaurar nada.
+        _retirar_registro_finalizado(handle, storage_path, t_id)
+        return resultado
+
+
+def _retirar_registro_finalizado(handle: object, storage_path: pathlib.Path, transition_id: str) -> None:
+    """Retira el registro DESPUÉS de que el journal finalizó. Best-effort declarado.
+
+    No forma parte de la transacción: si falla (permisos, un handle abierto en
+    Windows), la transición YA está publicada y revertirla sería peor que dejar
+    el registro. Queda como obsoleto y la recuperación lo detecta por el
+    historial FINALIZED y lo retira sin restaurar.
+    """
+    try:
+        recovery.eliminar_registro_locked(handle, storage_path, transition_id)
+    except OSError as exc:
+        logger.warning(
+            "no se pudo retirar el registro de recuperación %s tras finalizar la transición: %s. "
+            "Queda como obsoleto: recuperar_transicion_interrumpida lo retira sin restaurar.",
+            transition_id,
+            exc,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -174,10 +174,23 @@ _VERIFICACIONES = {
     "mo2_ini": lambda rig: _verificar_ini(rig),
     "config": lambda rig: _verificar_config(rig),
     "active_json": lambda rig: _verificar_active(rig),
-    "environ": lambda rig: censo._verificar_environ({"SKYRIM_PATH": "x"}, "x"),
+    "environ": lambda rig: _verificar_environ_con_negativo(),
     "journal": lambda rig: _verificar_journal(rig),
     "recuperacion": lambda rig: _verificar_recuperacion(rig),
 }
+
+
+def _verificar_environ_con_negativo() -> bool:
+    """El verificador de la superficie DERIVADA distingue el valor correcto del roto.
+
+    La versión anterior del test sólo llamaba al caso positivo: un verificador
+    que siempre devolviera ``True`` pasaba (CodeRabbit sobre #843).
+    """
+    correcto = censo._verificar_environ({"SKYRIM_PATH": "x"}, "x")
+    distinto = censo._verificar_environ({"SKYRIM_PATH": "otro"}, "x")
+    ausente = censo._verificar_environ({}, "x")
+    ausencia_ok = censo._verificar_environ({}, None)
+    return correcto and not distinto and not ausente and ausencia_ok
 
 
 def _verificar_ini(rig) -> bool:  # type: ignore[no-untyped-def]
@@ -297,3 +310,65 @@ def test_las_tres_clases_quedan_coherentes_tras_la_transicion(tmp_path: pathlib.
     # Y las tres clases coinciden entre sí: el valor de la derivada es el de la
     # persistida de la que se deriva.
     assert entorno["SKYRIM_PATH"] == str(desired.clone_root)
+
+
+# ---------------------------------------------------------------------------
+# Ronda 2 — el censo tiene que ver los dos patrones que se le escapaban
+# ---------------------------------------------------------------------------
+
+
+def test_el_descubridor_ve_al_escritor_que_enlaza_la_ruta(tmp_path: pathlib.Path) -> None:
+    """FALSIFICACIÓN: ``p = active_state_path(root); write_json_atomic(p, ...)``.
+
+    Es el patrón ordinario cuando la ruta se reutiliza, y la regla anterior sólo
+    miraba los ARGUMENTOS de la llamada: con un ``Name`` no veía nada. El
+    escritor de recuperación usa exactamente esa forma (Codex sobre #843).
+    """
+    paquete = tmp_path / "paquete"
+    paquete.mkdir()
+    (paquete / "intruso.py").write_text(
+        textwrap.dedent(
+            """
+            from sky_claw.local.frozen_runtime.state import write_json_atomic
+            from sky_claw.local.frozen_runtime.storage import active_state_path
+
+
+            def escritor_con_variable(root):
+                destino = active_state_path(root)
+                write_json_atomic(destino, {"schema_version": 2})
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    descubiertos = censo.descubrir_escritores_de_superficies(paquete)
+
+    assert descubiertos["active_json"] == frozenset({"intruso.py::escritor_con_variable"})
+
+
+def test_el_descubridor_ve_al_restaurador_generico(tmp_path: pathlib.Path) -> None:
+    """FALSIFICACIÓN: un restaurador que escribe la superficie que le pasan.
+
+    No repite ``active_state_path`` ni el literal del archivo: recibe la ruta
+    dentro de una ``SuperficieCapturada``. Es escritor de las TRES superficies
+    persistidas, con el ``kind`` decidido en runtime.
+    """
+    paquete = tmp_path / "paquete"
+    paquete.mkdir()
+    (paquete / "intruso.py").write_text(
+        textwrap.dedent(
+            """
+            from sky_claw.local.frozen_runtime.binder_recovery import SuperficieCapturada, _escribir_bytes_atomico
+
+
+            def restaurador(superficie: SuperficieCapturada) -> None:
+                _escribir_bytes_atomico(superficie.path, b"x")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    descubiertos = censo.descubrir_escritores_de_superficies(paquete)
+
+    for superficie in ("mo2_ini", "config", "active_json"):
+        assert descubiertos[superficie] == frozenset({"intruso.py::restaurador"})

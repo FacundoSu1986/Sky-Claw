@@ -438,6 +438,9 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         # binder y recibe el handle ya adquirido; no vuelve a adquirir (el lock
         # no es reentrante). Declararla la somete al ancla de call site.
         ("runtime_clone_binder.py", "_rollback"),
+        # P5-C1 ronda 2: el retiro del registro corre FUERA de la transacción,
+        # con el handle ya adquirido por el binder.
+        ("runtime_clone_binder.py", "_retirar_registro_finalizado"),
         # P5-C1: el cuerpo del CAS sobre `active.json`. Su hermano público
         # `escribir_estado_activo_cas` adquiere el lock; éste recibe la sección
         # crítica ya tomada por el binder o por el público.

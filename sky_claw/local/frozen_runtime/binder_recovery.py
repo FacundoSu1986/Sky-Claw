@@ -61,6 +61,7 @@ import os
 import pathlib
 import tempfile
 import time
+import tomllib
 from collections.abc import Mapping, MutableMapping
 from enum import StrEnum
 
@@ -447,6 +448,18 @@ def _ruta_registro(root: pathlib.Path, transition_id: str) -> pathlib.Path:
 # ---------------------------------------------------------------------------
 
 
+def exigir_store_inicializado(root: pathlib.Path) -> pathlib.Path:
+    """Puerta PÚBLICA: el store de recuperación tiene que existir ANTES de mutar.
+
+    El binder la invoca antes de quemar la aprobación. Sin ella, un root
+    inicializado por una versión anterior (sin ``state/recovery/``) quemaba la
+    aprobación, escribía el PENDING y recién ahí fallaba al persistir el
+    snapshot: el dueño quedaba sin aprobación y con un journal bloqueado
+    (CodeRabbit sobre #843).
+    """
+    return _exigir_store(root)
+
+
 def _exigir_store(root: pathlib.Path) -> pathlib.Path:
     directorio = recovery_state_dir(root)
     if not directorio.exists():
@@ -578,15 +591,9 @@ def huella(datos: bytes) -> str:
     return _sha256(datos)
 
 
-def _identidad_activa(superficie: SuperficieCapturada) -> tuple[str | None, str | None]:
-    """(generation, clone) que declara un ``active.json``, sin lanzar."""
-    if not superficie.existed:
-        return (None, None)
-    crudo = superficie.bytes_previos()
-    if crudo is None:
-        return (None, None)
+def _identidad_de_bytes(crudos: bytes) -> tuple[str | None, str | None]:
     try:
-        payload = json.loads(crudo.decode("utf-8", "surrogateescape"))
+        payload = json.loads(crudos.decode("utf-8", "surrogateescape"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return (None, None)
     if not isinstance(payload, dict):
@@ -596,37 +603,103 @@ def _identidad_activa(superficie: SuperficieCapturada) -> tuple[str | None, str 
     return (generacion if isinstance(generacion, str) else None, clon if isinstance(clon, str) else None)
 
 
-def _activa_escrita_por_tercero(registro: RegistroRecuperacion, superficie: SuperficieCapturada) -> bool:
-    """¿El ``active.json`` actual lo escribió alguien que NO es esta transición?
+def _config_difiere_solo_en_skyrim_path(previos: bytes, actuales: bytes, esperado: str) -> bool:
+    """¿El config actual es el previo con SÓLO ``skyrim_path`` cambiado al objetivo?
 
-    Tres casos posibles cuando la fase dice ``DESEADO_ACTUALIZADO``:
-
-    - el contenido actual es el capturado → nada que restaurar (nadie escribió);
-    - el contenido actual declara el Desired que ESTA transición iba a escribir
-      → lo escribimos nosotros, restaurar es correcto;
-    - cualquier otra cosa → ganó la carrera del CAS un tercero. Restaurar
-      pisaría su escritura, que es exactamente lo que FIX 2 prohíbe.
+    Es el discriminador para ``config.toml``. ``persistir_campo`` reescribe el
+    TOML entero con merge-on-save, así que no hay bytes deterministas que
+    predecir; lo que sí se puede afirmar es la FORMA del cambio propio: el resto
+    de las claves, idénticas, y ``skyrim_path`` en el valor que la transición
+    escribió. Si además cambió otra clave, la escribió un tercero y no se toca.
     """
-    if not superficie.existed:
+    try:
+        previo = tomllib.loads(previos.decode("utf-8", "surrogateescape"))
+        actual = tomllib.loads(actuales.decode("utf-8", "surrogateescape"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
         return False
-    ruta = pathlib.Path(superficie.path) if superficie.path else None
-    if ruta is None or not ruta.exists():
+    if not isinstance(previo, dict) or not isinstance(actual, dict):
         return False
+    if actual.get("skyrim_path") != esperado:
+        return False
+    sin_path_previo = {k: v for k, v in previo.items() if k != "skyrim_path"}
+    sin_path_actual = {k: v for k, v in actual.items() if k != "skyrim_path"}
+    return sin_path_previo == sin_path_actual
+
+
+def _coincide_con_lo_escrito(
+    superficie: SuperficieCapturada,
+    registro: RegistroRecuperacion,
+    actuales: bytes,
+) -> bool:
+    """¿Estos bytes son los que ESTA transición escribió?
+
+    Cada superficie tiene su discriminador, y el del INI es el más fuerte: el
+    escritor es determinista, así que se recalcula lo que habría escrito con
+    ``prever_bytes`` sobre los bytes previos. Un byte distinto ⇒ no es nuestro.
+    """
+    esperado = registro.expected_effective_path
+    if superficie.kind == _KIND_ACTIVE:
+        return _identidad_de_bytes(actuales) == (
+            registro.desired_previsto_generation,
+            registro.desired_previsto_clone,
+        )
+    if superficie.kind == _KIND_CONFIG:
+        previos = superficie.bytes_previos()
+        if previos is None:
+            return False
+        return _config_difiere_solo_en_skyrim_path(previos, actuales, esperado)
+    if superficie.kind == _KIND_MO2_INI:
+        previos = superficie.bytes_previos()
+        if previos is None:
+            return False
+        from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
+            FormatoIniNoAdmitidoError,
+            prever_bytes,
+        )
+
+        try:
+            return prever_bytes(previos, esperado) == actuales
+        except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
+            return False
+    return False
+
+
+def _escrita_por_tercero(
+    superficie: SuperficieCapturada,
+    registro: RegistroRecuperacion,
+) -> tuple[bool, str]:
+    r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
+
+    Devuelve ``(es_ajena, motivo)``. Restaurar sobre una escritura ajena es
+    exactamente lo que un rollback NO debe hacer: el snapshot es viejo por
+    definición, y el lock de Sky-Claw no cubre a MO2 ni a \`\`Config.save()\`\`
+    desde otra ruta.
+    """
+    if superficie.path is None:
+        return (False, "")
+    ruta = pathlib.Path(superficie.path)
+    try:
+        existe = ruta.exists()
+    except OSError:
+        return (False, "")
+    if not existe:
+        if superficie.existed:
+            return (True, f"{ruta}: existía en el snapshot y ahora no existe (lo borró un tercero)")
+        return (False, "")
     try:
         actuales = ruta.read_bytes()
     except OSError:
-        return False
-    if _sha256(actuales) == superficie.sha256:
-        return False
-    try:
-        payload = json.loads(actuales.decode("utf-8", "surrogateescape"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return True
-    if not isinstance(payload, dict):
-        return True
-    generacion = payload.get("desired_generation_id", payload.get("desired_active_generation"))
-    clon = payload.get("desired_clone_id")
-    return (generacion, clon) != (registro.desired_previsto_generation, registro.desired_previsto_clone)
+        return (False, "")
+    if superficie.existed and _sha256(actuales) == superficie.sha256:
+        # Sigue exactamente como en el snapshot: no hay nada que restaurar.
+        return (False, "")
+    if _coincide_con_lo_escrito(superficie, registro, actuales):
+        return (False, "")
+    return (
+        True,
+        f"{ruta}: el contenido actual no es el snapshot ni lo que esta transición escribió "
+        "(escritura ajena): NO se sobrescribe",
+    )
 
 
 def _restaurar_persistida(
@@ -639,16 +712,9 @@ def _restaurar_persistida(
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
 
-    if superficie.kind == _KIND_ACTIVE and _activa_escrita_por_tercero(registro, superficie):
-        return VerificacionSuperficie(
-            kind=superficie.kind,
-            ok=True,
-            detail=(
-                f"{ruta}: el Desired actual NO es el que esta transición iba a escribir —una escritura ajena "
-                "ganó la carrera del CAS— así que NO se sobrescribe (FIX 2)"
-            ),
-            escritura_ajena=True,
-        )
+    ajena, motivo = _escrita_por_tercero(superficie, registro)
+    if ajena:
+        return VerificacionSuperficie(kind=superficie.kind, ok=True, detail=motivo, escritura_ajena=True)
 
     try:
         if previos is None:

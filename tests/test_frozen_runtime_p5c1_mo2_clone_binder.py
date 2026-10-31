@@ -740,15 +740,27 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    # Interceptar os.replace sobre modorganizer.ini
+    # Interceptar os.replace sobre modorganizer.ini, UNA sola vez.
+    #
+    # Antes fallaba en TODAS las llamadas cuyo destino contuviera
+    # "modorganizer.ini", incluido el temporal del ROLLBACK: el test pasaba
+    # porque el rollback también fallaba, no porque restaurara (CodeRabbit sobre
+    # #843). Ahora el fallo es único y el rollback tiene que poder completarse.
     real_replace = os.replace
+    fallos = {"restantes": 1}
 
-    def _failing_replace(src: str, dst: str) -> None:
-        if "modorganizer.ini" in dst and not src.endswith(".bak"):
+    def _failing_replace(src: object, dst: object) -> None:
+        # ``os.replace`` recibe Path y str: comparar con ``in`` sobre un Path
+        # levanta TypeError y el binder lo envuelve como fallo de aprobación,
+        # que es lo que hacía pasar este test por la razón equivocada.
+        destino = os.fspath(dst)  # type: ignore[arg-type]
+        origen = os.fspath(src)  # type: ignore[arg-type]
+        if "modorganizer.ini" in destino and not origen.endswith(".bak") and fallos["restantes"] > 0:
+            fallos["restantes"] -= 1
             raise PermissionError("EACCES simulado en replace")
         real_replace(src, dst)
 
-    with patch("os.replace", side_effect=_failing_replace), pytest.raises(BinderError):
+    with patch("os.replace", side_effect=_failing_replace), pytest.raises(BinderError) as excinfo:
         ejecutar_transicion_binder(
             storage_root=storage_root,
             mo2_instance_dir=mo2_dir,
@@ -760,6 +772,10 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
             probes=_probes_quiescentes(),
         )
 
+    # El rollback SE EJECUTÓ y restauró los bytes previos: el INI no quedó a medias.
+    assert fallos["restantes"] == 0, (
+        f"el fallo inyectado nunca se ejerció; la excepción fue {type(excinfo.value).__name__}: {excinfo.value}"
+    )
     assert ini_path.read_bytes() == ini_bytes_antes
 
 

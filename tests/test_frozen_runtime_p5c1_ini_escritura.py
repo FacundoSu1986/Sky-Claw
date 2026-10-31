@@ -327,3 +327,68 @@ def test_ini_sin_game_path_lo_inserta_en_general(tmp_path: pathlib.Path) -> None
     assert b"gameName=SkyrimSE" in despues
     assert despues.index(b"gamePath=") < despues.index(b"[Settings]")
     assert leer_game_path_de_mo2(ini).path == r"C:\Modding\Clone P5C1"
+
+
+# ---------------------------------------------------------------------------
+# Ronda 2 — hallazgos de Codex/CodeRabbit sobre el escritor
+# ---------------------------------------------------------------------------
+
+
+def test_dos_llamadas_con_la_misma_ruta_son_idempotentes(tmp_path: pathlib.Path) -> None:
+    """Llamar dos veces con la MISMA ruta no falla en la segunda.
+
+    La verificación estructural declaraba la línea como tocada y después exigía
+    que hubiera una diferencia: con el valor ya presente, ``distintas`` quedaba
+    vacío y levantaba. La rama de idempotencia era inalcanzable (Codex sobre #843).
+    """
+    ini = _escribir_ini(tmp_path / "MO2" / "modorganizer.ini", _INI_CRLF)
+
+    actualizar_game_path_en_ini(ini, r"C:/Modding/Clone P5C1")
+    despues_de_la_primera = ini.read_bytes()
+    actualizar_game_path_en_ini(ini, r"C:/Modding/Clone P5C1")
+
+    assert ini.read_bytes() == despues_de_la_primera
+    assert leer_game_path_de_mo2(ini).path == r"C:/Modding/Clone P5C1"
+
+
+def test_la_linea_insertada_lleva_el_terminador_crlf(tmp_path: pathlib.Path) -> None:
+    """Al crear ``[General]`` en un archivo CRLF, la línea nueva NO queda con LF suelto.
+
+    ``[General]\\r`` se insertaba con terminador y ``gamePath=...`` sin él: el
+    ``"\\n".join`` dejaba un LF suelto en medio de un INI CRLF (CodeRabbit sobre #843).
+    """
+    contenido = b"[Settings]\r\nLanguage=en_US\r\n"
+    ini = _escribir_ini(tmp_path / "MO2" / "modorganizer.ini", contenido)
+
+    actualizar_game_path_en_ini(ini, r"C:/Modding/Clone P5C1")
+
+    despues = ini.read_bytes()
+    assert b"gamePath=" in despues
+    # Ningún LF que no venga precedido de CR: el archivo sigue siendo CRLF puro.
+    assert despues.replace(b"\r\n", b"").count(b"\n") == 0
+    assert leer_game_path_de_mo2(ini).path == r"C:/Modding/Clone P5C1"
+
+
+def test_relectura_antes_del_reemplazo_falla_cerrado(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si el archivo cambia entre la lectura y el ``os.replace``, NO se sobrescribe.
+
+    ``os.replace`` es atómico para la escritura, no para la decisión: no
+    comprueba que el destino siga siendo el que se leyó. La ventana se simula
+    haciendo que un tercero escriba justo después de calcular los bytes finales.
+    """
+    from sky_claw.local.frozen_runtime import mo2_ini_escritura as modulo
+
+    ini = _escribir_ini(tmp_path / "MO2" / "modorganizer.ini", _INI_CRLF)
+    real_prever = modulo.prever_bytes
+
+    def _prever_y_competir(contenido: bytes, valor: object) -> bytes:
+        resultado = real_prever(contenido, valor)  # type: ignore[arg-type]
+        ini.write_bytes(contenido + b"; escrito por un tercero\r\n")
+        return resultado
+
+    monkeypatch.setattr(modulo, "prever_bytes", _prever_y_competir)
+
+    with pytest.raises(EscrituraIniNoVerificadaError, match="cambió entre la lectura y el reemplazo"):
+        actualizar_game_path_en_ini(ini, r"C:/Modding/Clone P5C1")
+
+    assert b"; escrito por un tercero" in ini.read_bytes(), "se pisó la escritura del tercero"

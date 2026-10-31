@@ -348,10 +348,14 @@ def escribir_estado_activo_cas(
     participante cambiaba el Desired entre el preflight y el CAS UPDATE, el
     binder lo pisaba en silencio.
 
-    Dos barreras, no una: el root lock serializa a los participantes de Sky-Claw,
-    y el CAS cubre a un escritor que NO participa del lock (o a un handle que lo
-    perdió). El lock no reemplaza al CAS porque el lock sólo obliga a quien lo
-    toma.
+    Alcance EXACTO de la barrera (declarado, no insinuado): el CAS **detecta
+    cualquier cambio ocurrido hasta el instante de la comparación**. La ventana
+    entre esa comparación y el ``os.replace`` que publica el payload NO está
+    cubierta: un escritor que no toma el root lock y cae justo ahí se pierde.
+    Cerrarla requiere exclusión a nivel de archivo del sistema operativo (o un
+    protocolo con el otro escritor), que es el mismo blocker que la exclusión con
+    MO2 — no se afirma tenerla. Lo que sí se elimina es el pisado SISTEMÁTICO de
+    un cambio ya visible, que era el defecto real.
 
     Orden: validar forma → comparar contra el esperado → escribir → releer.
 
