@@ -47,6 +47,7 @@ from sky_claw.local.frozen_runtime.approval import (
     PropuestaAprobacion,
     proponer_aprobacion,
 )
+from sky_claw.local.frozen_runtime.binder_recovery import RecuperacionError
 from sky_claw.local.frozen_runtime.clones import (
     RuntimeCloneLifecycle,
     RuntimeCloneRecord,
@@ -661,11 +662,12 @@ def test_09_fallo_de_snapshot_no_muta(tmp_path: pathlib.Path) -> None:
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    # Inyectar fallo al capturar snapshot
+    # Inyectar fallo al capturar el snapshot durable (P5-C1 FIX 3: el snapshot
+    # dejó de vivir en RAM; la captura es la que puede fallar por I/O).
     with (
         patch(
-            "sky_claw.local.frozen_runtime.runtime_clone_binder._capturar_snapshot_superficies",
-            side_effect=OSError("Permiso denegado al leer snapshot"),
+            "sky_claw.local.frozen_runtime.binder_recovery.capturar_registro",
+            side_effect=RecuperacionError("Permiso denegado al leer snapshot"),
         ),
         pytest.raises(BinderError, match="snapshot"),
     ):
@@ -1044,20 +1046,25 @@ def test_18_ninguna_entrada_corrupta_consigue_success(tmp_path: pathlib.Path) ->
 
 
 def test_19_censo_enumerativo_escritores_game_dir() -> None:
-    """Caso 19: Congelar por igualdad literal el censo de escritores en el game dir (§29.4)."""
-    assert (
-        frozenset(
-            {
-                "ensure_skse",
-                "grass_cache",
-                "pandora",
-                "bodyslide",
-                "wrye_bash",
-                "dyndolod_legacy",
-            }
-        )
-        == CENSO_ESCRITORES_GAME_DIR
-    )
+    """Caso 19: el censo de escritores del game dir se DERIVA del AST (§29.4).
+
+    Antes este test comparaba un ``frozenset`` literal contra la constante que
+    ese mismo literal definía: pasaba siempre y el censo estaba desactualizado
+    (``grass_cache`` y ``wrye_bash`` no existen; ``pandora``, ``bodyslide`` y
+    ``dyndolod_legacy`` no son los nombres reales). FIX 7 reemplaza el espejo por
+    descubrimiento: lo que se compara ahora es el resultado del AST contra el
+    conjunto congelado, y agregar un adaptador nuevo rompe el ancla.
+
+    El detalle de las tres clases de superficie y de la coherencia entre ellas
+    vive en ``tests/test_frozen_runtime_p5c1_superficies.py``.
+    """
+    from sky_claw.local.frozen_runtime import surface_census
+
+    assert surface_census.descubrir_adaptadores_destino_en_game_dir() == surface_census.ADAPTADORES_DESTINO_EN_GAME_DIR
+    assert surface_census.CENSO_ESCRITORES_GAME_DIR == CENSO_ESCRITORES_GAME_DIR
+    # Y ningún nombre del censo es inventado.
+    assert "grass_cache" not in CENSO_ESCRITORES_GAME_DIR
+    assert "wrye_bash" not in CENSO_ESCRITORES_GAME_DIR
 
 
 def test_20_codificacion_qt_reciproca() -> None:

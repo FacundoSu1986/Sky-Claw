@@ -1373,12 +1373,29 @@ def test_ningun_modulo_de_produccion_consume_aprobaciones() -> None:
     sólo puede dejar un token ``ISSUED`` sin salida operativa. El día que alguien
     la cablee, este test lo obliga a adjudicarlo en el mismo cambio (y a revisar
     ``EMISION_PRODUCTIVA_HABILITADA``).
+
+    **P5-C1 — adjudicación.** El binder transaccional ES el consumidor: consume
+    la aprobación antes de mutar nada (burn-first), y FIX 5 le exige verificarla
+    contra el witness y el tombstone durables. Se agrega al censo, y el censo
+    queda acompañado de la condición que lo hace inocuo: la EMISIÓN sigue
+    cerrada, así que en producción no existe ninguna aprobación ``ISSUED`` que
+    consumir. Las dos afirmaciones se verifican juntas o no se verifican.
     """
+    from sky_claw.local.frozen_runtime import approval as modulo_approval
+
     llamadores: set[str] = set()
     for ruta in _modulos_bajo(RAIZ_REPO / "sky_claw"):
         if "consumir_aprobacion(" in ruta.read_text(encoding="utf-8"):
             llamadores.add(ruta.relative_to(RAIZ_REPO).as_posix())
-    assert llamadores == {"sky_claw/local/frozen_runtime/approval.py"}
+    assert llamadores == {
+        "sky_claw/local/frozen_runtime/approval.py",
+        "sky_claw/local/frozen_runtime/runtime_clone_binder.py",
+    }
+    # El consumidor nuevo sólo es inocuo mientras no haya emisión productiva.
+    assert modulo_approval.EMISION_PRODUCTIVA_HABILITADA is False, (
+        "hay un consumidor productivo cableado: habilitar la emisión sin la integración HITL completa "
+        "convertiría el binder en una vía de aprobación sin propietario"
+    )
 
 
 def test_emitir_aprobacion_sin_binding_de_propietario_falla_cerrado(tmp_path: pathlib.Path) -> None:

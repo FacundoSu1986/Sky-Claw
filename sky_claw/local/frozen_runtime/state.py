@@ -27,6 +27,8 @@ durabilidad ante corte de energía (no hay WAL ni GP2).
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import hashlib
 import json
 import os
 import pathlib
@@ -35,6 +37,7 @@ import tempfile
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
     FrozenRuntimeStorageError,
+    StateCasError,
     StateCorruptError,
     StateSchemaError,
 )
@@ -284,3 +287,123 @@ def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+# ---------------------------------------------------------------------------
+# CAS sobre ``state/active.json`` (P5-C1, FIX 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EstadoPrevioObservado:
+    """Identidad y contenido del ``active.json`` que un mutador observó.
+
+    Es el token del CAS. ``sha256`` es el valor esperado del CONTENIDO;
+    ``generation_id``/``clone_id`` son la identidad SEMÁNTICA del mismo estado.
+
+    Se llevan los dos a propósito: el digest detecta cualquier cambio
+    concurrente —incluido un ``updated_at_ns`` distinto con la misma intención—
+    y la identidad hace que el error diga QUÉ cambió, en vez de sólo «el digest
+    no coincide». Un CAS que sólo compara identidad deja pasar una escritura
+    intermedia que vuelve al mismo par (ABA); uno que sólo compara bytes no
+    puede explicarse.
+    """
+
+    ausente: bool
+    sha256: str | None
+    generation_id: str | None
+    clone_id: str | None
+
+
+def observar_estado_previo(path: pathlib.Path) -> EstadoPrevioObservado:
+    """Lee el estado y devuelve su token de CAS. Ausente NO es corrupción."""
+    ruta = pathlib.Path(path)
+    try:
+        crudo = ruta.read_bytes()
+    except FileNotFoundError:
+        return EstadoPrevioObservado(ausente=True, sha256=None, generation_id=None, clone_id=None)
+    except OSError as exc:
+        raise FrozenRuntimeStorageError(f"{ruta}: no se pudo leer el estado para el CAS: {exc}") from exc
+    carga = load_frozen_runtime_state(ruta)
+    estado = carga.state
+    return EstadoPrevioObservado(
+        ausente=False,
+        sha256=hashlib.sha256(crudo).hexdigest(),
+        generation_id=None if estado is None else estado.desired_active_generation,
+        clone_id=None if estado is None else estado.desired_clone_id,
+    )
+
+
+def escribir_estado_activo_cas(
+    path: pathlib.Path,
+    payload: dict[str, object],
+    *,
+    esperado: EstadoPrevioObservado,
+) -> EstadoPrevioObservado:
+    """Escribe ``active.json`` sólo si el estado previo sigue siendo el observado.
+
+    **Participante público**: adquiere el root lock por su cuenta. Es la PUERTA,
+    no una convención del llamador. Hasta P5-C1 el binder hacía
+    ``write_json_atomic(active_state_path(...), payload)`` directo: si otro
+    participante cambiaba el Desired entre el preflight y el CAS UPDATE, el
+    binder lo pisaba en silencio.
+
+    Dos barreras, no una: el root lock serializa a los participantes de Sky-Claw,
+    y el CAS cubre a un escritor que NO participa del lock (o a un handle que lo
+    perdió). El lock no reemplaza al CAS porque el lock sólo obliga a quien lo
+    toma.
+
+    Orden: validar forma → comparar contra el esperado → escribir → releer.
+
+    Raises:
+        StateCasError: el estado cambió desde que se observó (no se escribe).
+        StateSchemaError: el payload no parsea como estado válido.
+    """
+    ruta = pathlib.Path(path)
+    root = ruta.parent.parent
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    with participant_lock(root, timeout=0.0) as handle:
+        handle.assert_owned()
+        return _escribir_estado_activo_cas_locked(ruta, payload, esperado=esperado)
+
+
+def _escribir_estado_activo_cas_locked(
+    path: pathlib.Path,
+    payload: dict[str, object],
+    *,
+    esperado: EstadoPrevioObservado,
+) -> EstadoPrevioObservado:
+    """Cuerpo del CAS, ya bajo el root lock (no re-adquiere)."""
+    ruta = pathlib.Path(path)
+    # La forma se valida ANTES de tocar el disco: un payload inválido no puede
+    # dejar el estado a medio camino ni consumir el CAS.
+    _parsear_estado(json.dumps(payload), source_label=f"{ruta} (CAS)")
+    actual = observar_estado_previo(ruta)
+    if actual.ausente != esperado.ausente:
+        raise StateCasError(
+            f"{ruta}: CAS fallido — se esperaba {'ausente' if esperado.ausente else 'presente'} y está "
+            f"{'ausente' if actual.ausente else 'presente'}"
+        )
+    if actual.sha256 != esperado.sha256:
+        raise StateCasError(
+            f"{ruta}: CAS fallido — el contenido cambió desde que se observó "
+            f"(esperado sha256={esperado.sha256}, actual sha256={actual.sha256})"
+        )
+    if (actual.generation_id, actual.clone_id) != (esperado.generation_id, esperado.clone_id):
+        raise StateCasError(
+            f"{ruta}: CAS fallido — la identidad cambió: se esperaba "
+            f"(generation={esperado.generation_id!r}, clone={esperado.clone_id!r}) y hay "
+            f"(generation={actual.generation_id!r}, clone={actual.clone_id!r})"
+        )
+    write_json_atomic(ruta, payload)
+    despues = observar_estado_previo(ruta)
+    generacion_nueva = payload.get("desired_generation_id", payload.get("desired_active_generation"))
+    clone_nuevo = payload.get("desired_clone_id")
+    if (despues.generation_id, despues.clone_id) != (generacion_nueva, clone_nuevo):
+        raise FrozenRuntimeStorageError(
+            f"{ruta}: el readback del CAS no coincide con lo escrito: se escribió "
+            f"(generation={generacion_nueva!r}, clone={clone_nuevo!r}) y se leyó "
+            f"(generation={despues.generation_id!r}, clone={despues.clone_id!r})"
+        )
+    return despues
