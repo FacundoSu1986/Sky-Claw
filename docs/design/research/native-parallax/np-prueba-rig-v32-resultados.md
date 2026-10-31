@@ -171,11 +171,39 @@ familia. No dice nada sobre texturas donde #794 sí importa (normales con `nz < 
 **3. Exclusiones y hallazgos.**
 - **Dos texturas quedaron `NO_PROCESADA`**: sus normales son DXT5, que el decoder rechaza **a propósito** (DXT5nm guarda X en el alfa; ver `decode.py`). Es un hallazgo para el generador, no un fallo de la prueba.
 - Una tercera textura no tenía ninguna vista válida (ninguna malla la muestra de forma utilizable).
-- **`rottingwood01` se ve mal a ojo** (los tablones pasan a una superficie grumosa) aunque su acuerdo p95 (5,0°) es el más bajo de la tanda. **La métrica del gate no lo avisa.** Es un ejemplo concreto para la calibración de umbrales (#804): el acuerdo de normales solo no alcanza para decidir calidad. Es una observación de la sesión; falta que el operador lo mire.
+- **`rottingwood01` se ve mal a ojo** (los tablones pasan a una superficie grumosa) aunque su acuerdo p95 (5,0°) es el más bajo de la tanda. **La métrica del gate no lo avisa.** Es un ejemplo concreto para la calibración de umbrales (#804): el acuerdo de normales solo no alcanza para decidir calidad. Era una observación de la sesión; **el operador lo miró y la confirmó («grumoso», 30/10): ver la sección 10.**
 
 **4. Límites.** Un observador, una máquina, normales de un solo mod, celda interior con luz fija (sin clima, sol ni distancia normal), pares a ciegas nuevos **no** hechos. El método de recortes de esta tanda es
 **nuevo** respecto de la sección 4: se calibró con la prueba anterior (la primera calibración falló porque incluía el piso y se rehízo contra la región que cambia, sin usar nada de la tanda nueva).
 
-**Qué sigue de esta adenda.** El operador debe mirar `rottingwood01`. El soporte de DXT5/DXT5nm es trabajo de código aparte (distinguir DXT5nm de una normal RGB en BC3 no tiene precedente en el decoder). La causa de la banda restante, del ruido de una de las estaciones
+**Qué sigue de esta adenda.** ~~El operador debe mirar `rottingwood01`.~~ **Hecho (sección 10).** El soporte de DXT5/DXT5nm es trabajo de código aparte (distinguir DXT5nm de una normal RGB en BC3 no tiene precedente en el decoder; el operador dijo que por ahora no es prioridad, sección 10). La causa de la banda restante, del ruido de una de las estaciones
 y de la zona gris del portón (sección 5) siguen abiertas.
+
+## 10. Adenda 3 (30/10): veredicto sobre `rottingwood01` y cierre de la Meta 1
+
+> Misma procedencia: lo redactó la sesión que corrió la prueba (informe propio, sección 12.8) y lo resume quien **no** reprodujo las mediciones.
+> No hubo más sesiones ni regeneraciones: el rig no cambió desde la última restauración.
+
+**1. Veredicto del operador.** Miró dos capturas de `rottingwood01` (mapa plano contra salida del generador, misma cámara y misma luz) y eligió
+**«grumoso»**. Es un ejemplo concreto, juzgado por una persona, de que la métrica del gate **no ve** el defecto: esa textura tiene el mejor acuerdo p95 de las 12 (5,0°).
+Sirve de dato para la calibración de umbrales (#804). Un observador; **REAL_RIG_REQUIRED** (reportado, no reproducido).
+
+**2. Dónde se juzgó.** En la **celda de prueba**, no en el juego real: el mod de salida del 23/10 no trae `rottingwood01_p`, así que la preparación pensada para el juego
+real no cerraba (habría hecho falta un mod de prueba aparte).
+
+**3. Dónde está esa textura.** En la tanda era un objeto estático propio con la malla `NorTowerRuinsIntTopFloor03.nif`, que sale del BSA del mod «Unofficial Skyrim Special Edition
+Patch». La normal es de «Skyland AIO». En `Skyrim.esm` hay 4 referencias; con `player.moveto` se llega a `000BB48F`, `000978D5` y `00022100`.
+
+**4. Percentiles: no se probó, por decisión del operador.** Lectura de la sesión, **sin verificar en el juego** (**HYPOTHESIS**): `--normalizacion percentiles` estiraría el rango
+central unas 1,6 veces y daría **más** pendiente, no menos. Tampoco hay un control de altura, porque `min_max` reescala la amplitud.
+
+**5. Exploratorio (HYPOTHESIS, un solo ejemplo juzgado).** `rottingwood01` es la de mayor pendiente media de las 12 (0,0148 contra 0,0133 de la que sigue) y queda a media tabla
+en coherencia direccional y en energía de escala fina. **Ninguna de esas medidas está probada como detector.**
+
+**6. Cierre de la Meta 1.** Queda cerrada **en su alcance**: uso asistido (el operador genera con la línea de comandos y decide a ojo con `--incluir-revision`), sin validar contra
+otras herramientas y sin umbrales validados. Lo que dice y lo que **no**: se midió que el relieve **se nota** (12 de 12 estaciones) y se vio un caso que **se ve mal**
+que la métrica no avisa; por eso la métrica del gate **no alcanza para juzgar calidad** y cada salida se mira antes de dejarla activa.
+
+**7. DXT5 (Solitude u otro mod con normales DXT5).** El operador respondió que por ahora no le importa. Se deja como límite conocido, **sin trabajo de código**: dos texturas de un
+mod quedaron `NO_PROCESADA` y siguen sin un camino soportado.
 
