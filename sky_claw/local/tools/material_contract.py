@@ -15,6 +15,14 @@ Decisiones congeladas acá:
   no hay etapa nueva ni renumeración.
 - First cut = PGPatcher only (P0 §18). VRAMr/ParallaxR/BENDr quedan declarados
   como BLOCKED con sus blockers (B3 / B6-L); no se implementan en P1a.
+- Ningún nodo es obligatorio. ``readiness`` (qué se implementa primero) y
+  ``optional`` (si un plan puede omitirlo) son ejes distintos: PGPatcher es el
+  primer corte y a la vez OPCIONAL, porque la herramienta funciona sin él por la
+  ruta de Auto Parallax (``docs/design/research/native-parallax/np-pilas-y-rutas-de-malla.md``
+  §1.3, decisión del 27/10). ``POST_PG_RECONCILE`` solo existe con PGPatcher en el
+  plan (``requires_present``), así que tampoco es obligatorio: omitir los dos
+  deja un plan válido. ``_validate_graph`` rechaza al importar un nodo obligatorio
+  que exija la presencia de uno opcional (esa contradicción es la que había).
 - Política conservadora B10 (P0 §8.5): un rerun de Stage 5/6/7 deja el output
   de ``PGPATCHER`` STALE y arrastra a ``POST_PG_RECONCILE``. El estado de VRAMr
   depende de la política de orden PG↔VRAMr y NO se congela acá.
@@ -185,7 +193,7 @@ def _build_pipeline() -> Mapping[MaterialStepId, MaterialNodeSpec]:
         MaterialNodeSpec(
             step_id=MaterialStepId.PGPATCHER,
             readiness=MaterialReadiness.FIRST_CUT,
-            optional=False,
+            optional=True,  # primer corte a implementar, pero un plan puede omitirlo (ruta Auto Parallax, np-pilas §1.3)
             ordered_after=(MaterialStepId.PARALLAXR, MaterialStepId.BENDR),
             requires_capabilities=frozenset({MaterialCapability.VFS_LAUNCH}),
             produces_capabilities=frozenset(
@@ -209,7 +217,7 @@ def _build_pipeline() -> Mapping[MaterialStepId, MaterialNodeSpec]:
         MaterialNodeSpec(
             step_id=MaterialStepId.POST_PG_RECONCILE,
             readiness=MaterialReadiness.FIRST_CUT,
-            optional=False,
+            optional=True,  # solo existe si PGPatcher está en el plan (requires_present): sin él no hay nada que reconciliar
             ordered_after=(MaterialStepId.PGPATCHER, MaterialStepId.VRAMR),
             requires_present=(MaterialStepId.PGPATCHER,),
             requires_capabilities=frozenset({MaterialCapability.PLUGIN_OUTPUT}),
@@ -231,6 +239,12 @@ def _validate_graph(pipeline: Mapping[MaterialStepId, MaterialNodeSpec]) -> None
             if index[dependency] >= index[spec.step_id]:
                 raise MaterialContractError(
                     f"orden canónico inconsistente: {dependency.value} debe preceder a {spec.step_id.value}"
+                )
+        for dependency in spec.requires_present:
+            if not spec.optional and pipeline[dependency].optional:
+                raise MaterialContractError(
+                    f"{spec.step_id.value} es obligatorio pero exige la presencia de {dependency.value}, que es opcional: "
+                    "un plan que omitiera el opcional quedaría inválido por construcción"
                 )
 
 
@@ -297,7 +311,9 @@ def invalidated_material_steps(rerun_stages: Iterable[int]) -> frozenset[Materia
 
     Un rerun de Stage 5/6/7 deja el output de PGPatcher STALE; la invalidación
     se propaga hacia adelante por las aristas declaradas: ``POST_PG_RECONCILE``
-    (requiere PGPatcher) también queda STALE. ``VRAMR`` NO se invalida en el
+    (requiere PGPatcher) también queda STALE. El resultado es del GRAFO entero, no
+    del plan: como ningún nodo es obligatorio, el planner lo intersecta con los
+    pasos que de verdad corre (un plan sin PGPatcher no tiene nada que invalidar). ``VRAMR`` NO se invalida en el
     contrato: su staleness depende de la política de orden PG↔VRAMr (B9) y la
     resolverá el planner. La recuperación es
     ``PGPatcher -> POST_PG_RECONCILE -> convergencia`` (usar ``resolve_material_order``).
