@@ -780,20 +780,22 @@ def ejecutar_transicion_binder(
     # -------------------------------------------------------------------------
     # FASE 3 — Sonda del lock ANTES de quemar la aprobación
     # -------------------------------------------------------------------------
-    if not ya_consumida:
-        # El store de recuperación tiene que existir ANTES de quemar. Un root
-        # inicializado por una versión anterior no lo tiene, y descubrirlo
-        # después del burn deja al dueño sin aprobación y con el journal en
-        # PENDING (CodeRabbit sobre #843).
-        try:
-            recovery.exigir_store_inicializado(storage_path)
-        except recovery.RecuperacionError as exc:
-            raise BinderError(
-                f"el store de recuperación no está inicializado en {storage_path}: NO se consume la aprobación "
-                f"para una transición que no podría dejar snapshot durable. Reejecutá "
-                f"initialize_frozen_runtime_storage y reintentá. Detalle: {exc}"
-            ) from exc
+    # El store de recuperación tiene que existir en TODAS las ramas de
+    # aprobación, también en la de ya consumida: un root inicializado por una
+    # versión anterior sin store descubre el fallo recién al persistir el
+    # snapshot, DESPUÉS de escribir el journal PENDING — un estado que sólo
+    # puede resolver el dueño (CodeRabbit sobre #843). La comprobación no tiene
+    # efectos y no depende de la rama.
+    try:
+        recovery.exigir_store_inicializado(storage_path)
+    except recovery.RecuperacionError as exc:
+        raise BinderError(
+            f"el store de recuperación no está inicializado en {storage_path}: NO se consume la aprobación "
+            f"para una transición que no podría dejar snapshot durable. Reejecutá "
+            f"initialize_frozen_runtime_storage y reintentá. Detalle: {exc}"
+        ) from exc
 
+    if not ya_consumida:
         inspeccion = inspect_frozen_runtime_root_lock(storage_path)
         if inspeccion.disposition is not LockDisposition.FREE:
             raise BinderLockUnavailableError(
@@ -1072,6 +1074,24 @@ def ejecutar_transicion_binder(
             )
 
         except BaseException as exc:
+            if _finalizacion_publicada(storage_path, t_id):
+                # El registro inmutable ya está publicado (crash/fallo entre la
+                # F1b y la F2 de FINALIZE): la transición terminó de forma
+                # durable y NO es reversible. Revertir las superficies dejaría
+                # un historial que afirma que el runtime se activó con las
+                # superficies apuntando al anterior (Codex sobre #843).
+                logger.warning(
+                    "Fallo %s DESPUÉS de publicar la finalización de la transición %s: no se revierte. "
+                    "La reconciliación del journal corresponde a su dueño",
+                    type(exc).__name__,
+                    t_id,
+                )
+                raise BinderError(
+                    f"la transición {t_id} ya tiene su registro FINALIZED publicado: el fallo es POSTERIOR a "
+                    "la finalización durable y NO se revierte (la evidencia no se deshace). Las superficies "
+                    "quedan en el estado verificado por POST y la reconciliación del journal corresponde a "
+                    "su dueño"
+                ) from exc
             logger.warning(
                 "Fallo durante la transición del binder (transition_id=%s): iniciando rollback desde el "
                 "registro durable. Error: %s",
@@ -1089,6 +1109,18 @@ def ejecutar_transicion_binder(
         # lo retira sin restaurar nada.
         _retirar_registro_finalizado(handle, storage_path, t_id)
         return resultado
+
+
+def _finalizacion_publicada(storage_path: pathlib.Path, transition_id: str) -> bool:
+    """¿Ya existe el registro inmutable de ESTA transición en el historial?
+
+    Es la autoridad durable que distingue «fallo reversible» de «fallo posterior
+    a la finalización»: a partir de la F1b de ``_finalizar_locked`` el registro
+    está publicado y la transición ya no se revierte.
+    """
+    return any(
+        registro.transition_id == transition_id for registro in derivar_historial_finalizados(storage_path).registros
+    )
 
 
 def _exigir_finalizacion_durable(

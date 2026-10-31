@@ -87,6 +87,7 @@ from sky_claw.local.frozen_runtime.runtime_clone_binder import (
     CENSO_ESCRITORES_GAME_DIR,
     BinderApprovalError,
     BinderError,
+    BinderEscrituraIniError,
     BinderPreflightFailedError,
     BinderQuiescenceError,
     BinderVerificationError,
@@ -687,7 +688,15 @@ def test_09_fallo_de_snapshot_no_muta(tmp_path: pathlib.Path) -> None:
 
 
 def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path) -> None:
-    """Caso 10: Fallo de I/O al escribir archivo temporal: el destino original no se corrompe."""
+    """Caso 10: Fallo de I/O al escribir archivo temporal: el destino original no se corrompe.
+
+    El fallo se inyecta SÓLO en el ``mkstemp`` del escritor del INI (prefijo
+    ``.modorganizer.ini.``). Un parche GLOBAL de ``tempfile.mkstemp`` también
+    reventaba el burn de la aprobación (``_escribir_ledger_cas`` →
+    ``write_json_atomic`` → ``mkstemp``), el binder fallaba como
+    ``BinderApprovalError`` ANTES de tocar el INI y el test pasaba por la razón
+    equivocada (CodeRabbit sobre #843).
+    """
     steam_root = tmp_path / "Steam"
     managed_src = _crear_managed_source_sintetica(steam_root)
     storage_root = tmp_path / "Storage"
@@ -705,8 +714,21 @@ def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    # Simular fallo en la escritura de modorganizer.ini
-    with patch("tempfile.mkstemp", side_effect=OSError("ENOSPC")), pytest.raises(BinderError):
+    import tempfile
+
+    real_mkstemp = tempfile.mkstemp
+
+    def _mkstemp_solo_escritor_ini(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        prefijo = kwargs.get("prefix", args[1] if len(args) > 1 else None)
+        if prefijo == ".modorganizer.ini.":
+            raise OSError("ENOSPC simulado para el escritor del INI")
+        return real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+
+    # Simular fallo SÓLO en la escritura temporal de modorganizer.ini
+    with (
+        patch("tempfile.mkstemp", side_effect=_mkstemp_solo_escritor_ini),
+        pytest.raises(BinderEscrituraIniError) as excinfo,
+    ):
         ejecutar_transicion_binder(
             storage_root=storage_root,
             mo2_instance_dir=mo2_dir,
@@ -718,7 +740,13 @@ def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path
             probes=_probes_quiescentes(),
         )
 
+    assert "ENOSPC" in str(excinfo.value), (
+        f"el fallo inyectado nunca llegó al escritor del INI; la excepción fue "
+        f"{type(excinfo.value).__name__}: {excinfo.value}"
+    )
     assert ini_path.read_bytes() == ini_bytes_antes
+    # El PENDING ya se escribió: la transición quedó a medias para su dueño.
+    assert cargar_journal_transicion(storage_root).disposition is JournalDisposition.PENDING_PROMOTION
 
 
 def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None:

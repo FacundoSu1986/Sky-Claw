@@ -1295,3 +1295,143 @@ def test_el_discriminador_de_config_entiende_json_legacy(tmp_path: pathlib.Path)
 
     assert recovery._config_difiere_solo_en_skyrim_path(previo, propio, "C:/Clone") is True
     assert recovery._config_difiere_solo_en_skyrim_path(previo, ajeno, "C:/Clone") is False
+
+
+# ---------------------------------------------------------------------------
+# Ronda 4 — reconciliación final de los hilos abiertos del PR
+# ---------------------------------------------------------------------------
+
+
+def test_la_recuperacion_preserva_una_escritura_ajena_en_config_y_no_declara_restauracion_integral(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un tercero modifica el config después del snapshot: se preserva, se bloquea
+    la restauración integral y se pide intervención del propietario.
+
+    El proceso muere después de escribir el config (con una escritura ajena
+    encima: ``Config.save()`` guardó otra clave) y sin rollback en proceso. La
+    recuperación tras reinicio NO pisa la escritura ajena, NO se presenta como
+    una restauración completa y deja la clasificación al dueño.
+    """
+    rig = _montar_rig(tmp_path)
+    ini_antes = rig.ini_bytes()
+    real_persistir = binder.persistir_campo
+
+    def _persistir_y_tercero_escribe(path, campo, valor):  # type: ignore[no-untyped-def]
+        real_persistir(path, campo, valor)
+        path.write_text(
+            path.read_text(encoding="utf-8").replace('language = "es"', 'language = "en"'),
+            encoding="utf-8",
+        )
+
+    with (
+        patch.object(binder, "persistir_campo", side_effect=_persistir_y_tercero_escribe),
+        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        # El crash se llevó el proceso: el rollback en proceso no corrió.
+        patch.object(binder, "_rollback"),
+        pytest.raises(RuntimeError),
+    ):
+        _ejecutar(rig)
+
+    assert 'language = "en"' in rig.config.read_text(encoding="utf-8"), (
+        "la escritura del tercero se perdió antes de la recuperación"
+    )
+
+    recuperacion = recovery.recuperar_transicion_interrumpida(rig.storage)
+
+    # 1. La escritura ajena se PRESERVA.
+    texto = rig.config.read_text(encoding="utf-8")
+    assert 'language = "en"' in texto, "la recuperación pisó la escritura ajena"
+    # 2. La restauración NO se declara integral: estado explícito + flag.
+    assert recuperacion.estado is recovery.EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
+    verificacion_config = next(v for v in recuperacion.verificaciones if v.kind == recovery.SUPERFICIE_CONFIG)
+    assert verificacion_config.escritura_ajena is True
+    assert recuperacion.requiere_dueno is True
+    # 3. Control positivo: el INI, cuya escritura es nuestra, SÍ se restauró.
+    assert rig.ini_bytes() == ini_antes
+    # 4. El journal sigue PENDING: la clasificación es del dueño.
+    assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.PENDING_PROMOTION
+
+
+def test_rollback_con_superficie_ya_en_estado_previo_no_reporta_critico(tmp_path: pathlib.Path) -> None:
+    """Si la superficie nunca cambió, el rollback NO la reescribe.
+
+    ``mutadas`` se carga antes de mutar: si la mutación falló (una violación de
+    compartición de MO2, por ejemplo), el contenido sigue siendo el del snapshot.
+    Reescribir esos bytes idénticos puede fallar de nuevo por el mismo bloqueo y
+    reportar un ``BinderRollbackFailedError`` CRÍTICO por una superficie que
+    nunca llegó a mutarse (CodeRabbit sobre #843).
+    """
+    rig = _montar_rig(tmp_path)
+    ini_antes = rig.ini_bytes()
+
+    with (
+        patch.object(binder, "actualizar_game_path_en_ini", side_effect=OSError("compartición simulada")),
+        patch.object(recovery, "_escribir_bytes_atomico", side_effect=PermissionError("bloqueado")),
+        pytest.raises(OSError, match="compartición") as excinfo,
+    ):
+        _ejecutar(rig)
+
+    assert not isinstance(excinfo.value, binder.BinderRollbackFailedError), (
+        f"el rollback reportó CRÍTICO por una superficie que nunca cambió: {excinfo.value}"
+    )
+    assert rig.ini_bytes() == ini_antes
+
+
+def test_fallo_en_rotacion_tras_registro_publicado_no_revierte_la_transicion(tmp_path: pathlib.Path) -> None:
+    """Un fallo DESPUÉS de publicar el registro inmutable NO dispara rollback.
+
+    ``_finalizar_locked`` reserva → publica el registro → rota. Si la rotación
+    falla, el registro YA está publicado: revertir las superficies dejaría un
+    historial que afirma que el runtime se activó con las superficies apuntando
+    al anterior. Los fallos posteriores a la finalización durable son
+    reconciliación pendiente, no una transición reversible (Codex sobre #843).
+    """
+    from sky_claw.local.frozen_runtime import journal as journal_module
+
+    rig = _montar_rig(tmp_path)
+
+    with (
+        patch.object(journal_module, "_rotar_journal_locked", side_effect=OSError("rotación interrumpida")),
+        pytest.raises(binder.BinderError, match="NO se revierte") as excinfo,
+    ):
+        _ejecutar(rig)
+
+    # Las superficies siguen apuntando al clone: la transición quedó publicada.
+    assert leer_game_path_de_mo2(rig.ini).path == str(rig.clone_root)
+    assert tomllib.loads(rig.config.read_text(encoding="utf-8"))["skyrim_path"] == str(rig.clone_root)
+    historial = derivar_historial_finalizados(rig.storage)
+    assert historial.latest is not None, "el registro inmutable debía seguir publicado"
+    assert historial.latest.target_clone_id == rig.clone_id
+    # El fallo declarado es el de finalización publicada, no el rollback.
+    assert "FINALIZED" in str(excinfo.value)
+
+
+def test_store_faltante_falla_tambien_en_el_camino_de_aprobacion_ya_consumida(tmp_path: pathlib.Path) -> None:
+    """Un root sin ``state/recovery/`` falla ANTES del PENDING también al reintento.
+
+    La comprobación del store vivía sólo en la rama de aprobación por consumir:
+    el reintento con ``aprobacion_consumida`` entraba a la sección crítica,
+    escribía el journal PENDING y recién ahí descubría el store faltante
+    (CodeRabbit sobre #843).
+    """
+    rig = _montar_rig(tmp_path)
+    t_id = "55555555-5555-4555-8555-555555555555"
+    evidencia = _consumir_para(rig, t_id)
+    shutil.rmtree(recovery.recovery_state_dir(rig.storage))
+
+    with pytest.raises(binder.BinderError, match="store de recuperación"):
+        binder.ejecutar_transicion_binder(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_dir,
+            target_clone_id=rig.clone_id,
+            aprobacion_consumida=evidencia,  # type: ignore[arg-type]
+            transition_id=t_id,
+            managed_source_root=rig.managed_src,
+            config_path=rig.config,
+            environ={"SKYRIM_PATH": str(rig.managed_src)},
+            probes=_probes_quiescentes(),
+        )
+
+    # El journal no llegó a escribirse: el fallo es ANTES del PENDING.
+    assert cargar_journal_transicion(rig.storage).disposition is not JournalDisposition.PENDING_PROMOTION

@@ -160,6 +160,10 @@ class EstadoRecuperacion(StrEnum):
     REGISTRO_NO_LIGADO = "REGISTRO_NO_LIGADO"
     #: Se restauró, pero el journal sigue PENDING: decide el dueño.
     RESTAURADO_REQUIERE_DUENO = "RESTAURADO_REQUIERE_DUENO"
+    #: Se restauró lo propio, pero AL MENOS una superficie conserva una escritura
+    #: ajena que NO se sobrescribe: la recuperación NO fue integral y la decisión
+    #: es del dueño.
+    RESTAURACION_INCOMPLETA_REQUIERE_DUENO = "RESTAURACION_INCOMPLETA_REQUIERE_DUENO"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -734,6 +738,24 @@ def _restaurar_persistida(
     if ajena:
         return VerificacionSuperficie(kind=superficie.kind, ok=True, detail=motivo, escritura_ajena=True)
 
+    # Saltar lo que ya está en su estado previo: si la mutación original nunca
+    # llegó a aplicarse (una violación de compartición, por ejemplo), reescribir
+    # los bytes idénticos puede fallar de nuevo por el mismo bloqueo y reportar
+    # un fallo CRÍTICO por una superficie que nunca cambió (CodeRabbit sobre
+    # #843).
+    if previos is not None:
+        try:
+            if _sha256(ruta.read_bytes()) == superficie.sha256:
+                return VerificacionSuperficie(
+                    kind=superficie.kind,
+                    ok=True,
+                    detail=f"{ruta}: ya está en su estado previo: no se reescribe",
+                )
+        except OSError as exc:
+            return VerificacionSuperficie(
+                kind=superficie.kind, ok=False, detail=f"{ruta}: no se pudo leer antes de restaurar: {exc}"
+            )
+
     try:
         if previos is None:
             if ruta.exists():
@@ -964,17 +986,35 @@ def recuperar_transicion_interrumpida(
 
         verificaciones = restaurar_registro_locked(handle, ruta, registro, environ)
         exigir_restauracion_completa(verificaciones)
+        # «Escritura ajena» no es un fallo (no se pisa), pero TAMPOCO es una
+        # restauración completa: una superficie quedó con contenido que esta
+        # transición no escribió y que no se restauró. Presentarlo como
+        # RESTAURADO a secas sería afirmar una integralidad que no hubo.
+        ajenas = [v.kind for v in verificaciones if v.escritura_ajena]
+        estado = (
+            EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
+            if ajenas
+            else EstadoRecuperacion.RESTAURADO_REQUIERE_DUENO
+        )
+        if ajenas:
+            motivo = (
+                f"superficies restauradas desde la fase {registro.fase.value}, PERO {ajenas} conserva una "
+                f"escritura ajena que NO se sobrescribe: la recuperación no fue integral y la decisión es del "
+                f"dueño (el journal sigue {journal.state.value})"
+            )
+        else:
+            motivo = (
+                f"superficies restauradas desde la fase {registro.fase.value}; el journal sigue "
+                f"{journal.state.value} y su clasificación corresponde a journal.reconciliar_journal"
+            )
         return ResultadoRecuperacion(
-            estado=EstadoRecuperacion.RESTAURADO_REQUIERE_DUENO,
+            estado=estado,
             transition_id=registro.transition_id,
             fase=registro.fase,
             verificaciones=verificaciones,
             journal_state=journal.state,
             requiere_dueno=True,
-            motivo=(
-                f"superficies restauradas desde la fase {registro.fase.value}; el journal sigue "
-                f"{journal.state.value} y su clasificación corresponde a journal.reconciliar_journal"
-            ),
+            motivo=motivo,
         )
 
 
