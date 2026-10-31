@@ -92,6 +92,7 @@ from sky_claw.local.frozen_runtime.errors import (
 from sky_claw.local.frozen_runtime.journal import (
     EvidenceDigests,
     FinalizedTransitionRecord,
+    JournalDisposition,
     JournalOperation,
     PostVerifyEvidence,
     PostVerifyResultado,
@@ -655,6 +656,16 @@ def ejecutar_transicion_binder(
                 probes=observadores,
             )
             if post_eval_existente.authorizes_activation:
+                # El estado físico coincide, pero eso NO prueba que la
+                # transición haya terminado: un crash entre BIND y FINALIZE deja
+                # exactamente estas cuatro superficies y el journal en PENDING.
+                # Declarar éxito ahí convertiría un `PENDING` en un `SUCCESS`
+                # sin evidencia durable (Codex sobre #843).
+                _exigir_finalizacion_durable(
+                    storage_path,
+                    target_clone_id,
+                    clone_rec_candidato.source_generation_id,
+                )
                 return BinderResult(
                     success=True,
                     message="El runtime ya se encuentra activado y consistente en el Runtime Clone objetivo",
@@ -941,6 +952,11 @@ def ejecutar_transicion_binder(
                 "desired_clone_id": target_clone_id,
                 "updated_at_ns": time.time_ns(),
             }
+            # Se marca ANTES de escribir: si el CAS publica y el READBACK falla,
+            # la superficie YA se mutó y el rollback tiene que restaurarla. Marcarla
+            # después dejaba `active.json` fuera del conjunto y el rollback lo
+            # excluía pese a haberlo escrito (Codex sobre #843).
+            mutadas.add(recovery.SUPERFICIE_ACTIVE)
             try:
                 _escribir_estado_activo_cas_locked(
                     active_state_path(storage_path),
@@ -956,7 +972,6 @@ def ejecutar_transicion_binder(
                     f"CAS UPDATE DESIRED rechazado: el estado durable cambió entre el snapshot y la escritura. "
                     f"No se sobrescribió. Detalle: {exc}"
                 ) from exc
-            mutadas.add(recovery.SUPERFICIE_ACTIVE)
 
             # -----------------------------------------------------------------
             # 5.7 — POST VERIFY (oráculo sobre datos REALES, FIX 4)
@@ -1074,6 +1089,39 @@ def ejecutar_transicion_binder(
         # lo retira sin restaurar nada.
         _retirar_registro_finalizado(handle, storage_path, t_id)
         return resultado
+
+
+def _exigir_finalizacion_durable(
+    storage_path: pathlib.Path,
+    target_clone_id: str,
+    target_generation_id: str,
+) -> None:
+    """El no-op idempotente sólo es legítimo si la transición TERMINÓ de verdad.
+
+    ``Desired == Effective`` con las cuatro superficies apuntando al Clone es
+    también el estado que deja un crash entre ``BIND`` y ``FINALIZE``. La única
+    evidencia que distingue «terminó» de «quedó a medias» es durable: journal sin
+    ``PENDING`` y un registro FINALIZED que nombre ese Clone y esa Generation.
+    """
+    snapshot = cargar_journal_transicion(storage_path)
+    if snapshot.disposition is not JournalDisposition.NONE:
+        raise BinderVerificationError(
+            "el runtime ya coincide con el Clone, pero el journal está en "
+            f"{snapshot.disposition.value}: la transición NO terminó (crash entre BIND y FINALIZE). "
+            "No se declara éxito sobre un estado que sólo la recuperación puede clasificar"
+        )
+    historial = derivar_historial_finalizados(storage_path)
+    ultimo = historial.latest
+    if (
+        ultimo is None
+        or ultimo.target_clone_id != target_clone_id
+        or ultimo.target_generation_id != target_generation_id
+    ):
+        raise BinderVerificationError(
+            "el runtime ya coincide con el Clone, pero no hay un registro FINALIZED que lo respalde "
+            f"(último: {None if ultimo is None else (ultimo.target_clone_id, ultimo.target_generation_id)}). "
+            "Sin evidencia durable no se declara éxito"
+        )
 
 
 def _retirar_registro_finalizado(handle: object, storage_path: pathlib.Path, transition_id: str) -> None:

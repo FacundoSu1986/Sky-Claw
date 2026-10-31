@@ -372,3 +372,27 @@ def test_el_descubridor_ve_al_restaurador_generico(tmp_path: pathlib.Path) -> No
 
     for superficie in ("mo2_ini", "config", "active_json"):
         assert descubiertos[superficie] == frozenset({"intruso.py::restaurador"})
+
+
+def test_el_descubridor_ve_write_text_directo(tmp_path: pathlib.Path) -> None:
+    """FALSIFICACIÓN: ``(raiz / "active.json").write_text(...)`` sin primitiva.
+
+    Es la forma más directa de escribir la superficie y no estaba entre los
+    mutadores: el descubridor devolvía todos los conjuntos vacíos para un módulo
+    así (Codex sobre #843).
+    """
+    paquete = tmp_path / "paquete"
+    paquete.mkdir()
+    (paquete / "intruso.py").write_text(
+        textwrap.dedent(
+            """
+            def escribir(raiz):
+                (raiz / "active.json").write_text("{}", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    descubiertos = censo.descubrir_escritores_de_superficies(paquete)
+
+    assert descubiertos["active_json"] == frozenset({"intruso.py::escribir"})

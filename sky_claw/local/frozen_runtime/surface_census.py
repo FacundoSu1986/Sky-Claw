@@ -226,7 +226,21 @@ def _escribe_active_json(nodo: ast.Call) -> bool:
 
 #: Mutadores que operan sobre una ruta que la función NO nombra: la recibe.
 _MUTADORES_SOBRE_RUTA = frozenset(
-    {"mkstemp", "replace", "unlink", "write_json_atomic", "fdopen", "write", "_escribir_bytes_atomico"}
+    {
+        "mkstemp",
+        "replace",
+        "unlink",
+        "write_json_atomic",
+        "fdopen",
+        "write",
+        "_escribir_bytes_atomico",
+        # `Path.write_text` / `Path.write_bytes` son la forma MÁS DIRECTA de
+        # escribir una superficie, y no estaban: un intruso con
+        # `(raiz / "active.json").write_text("{...}")` devolvía todos los
+        # conjuntos vacíos (Codex sobre #843).
+        "write_text",
+        "write_bytes",
+    }
 )
 
 
@@ -283,7 +297,7 @@ def _escribe_active_json_por_nombre(funcion: ast.FunctionDef | ast.AsyncFunction
     )
     if not menciona_archivo:
         return False
-    mutadores = {"mkstemp", "replace", "unlink", "write_json_atomic", "fdopen"}
+    mutadores = {"mkstemp", "replace", "unlink", "write_json_atomic", "fdopen", "write_text", "write_bytes"}
     return any(isinstance(nodo, ast.Call) and _nombre_de_llamada(nodo) in mutadores for nodo in ast.walk(funcion))
 
 

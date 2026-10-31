@@ -1185,3 +1185,113 @@ def test_aprobacion_con_setup_distinto_al_verificado_se_rechaza(tmp_path: pathli
 
     with pytest.raises(binder.BinderApprovalError, match="setup"):
         _ejecutar(rig)
+
+
+# ---------------------------------------------------------------------------
+# Ronda 3 — hallazgos nuevos de Codex sobre 809e9383
+# ---------------------------------------------------------------------------
+
+
+def test_el_no_op_idempotente_exige_finalizacion_durable(tmp_path: pathlib.Path) -> None:
+    """Un crash entre BIND y FINALIZE deja el mismo estado físico: NO es un éxito.
+
+    Si el proceso muere después de mutar las superficies y antes de FINALIZE, el
+    reintento encuentra Desired, INI, config y entorno ya apuntando al Clone. Sin
+    mirar el journal, eso se declaraba ``success=True``: un PENDING convertido en
+    SUCCESS sin evidencia durable (Codex sobre #843).
+
+    El estado se construye con las MISMAS primitivas que usa el binder (journal
+    PENDING + las cuatro superficies escritas), porque un ``except`` en el mismo
+    proceso dispara el rollback y deshace justo lo que hay que reproducir.
+    """
+    from sky_claw.local.frozen_runtime.journal import _crear_pendiente_locked
+    from sky_claw.local.frozen_runtime.state import _escribir_estado_activo_cas_locked
+
+    rig = _montar_rig(tmp_path)
+    t_id = "77777777-7777-4777-8777-777777777777"
+    evidencia = _consumir_para(rig, t_id)
+    propuesta = binder._propuesta_desde_witness(
+        next(
+            w
+            for w in binder.derivar_autoridad_aprobacion(rig.storage).witnesses
+            if w.approval_seq == evidencia.approval_seq  # type: ignore[attr-defined]
+        ),
+        transition_id=t_id,
+        expected_effective_path=str(rig.clone_root),
+        created_at_ns=time.time_ns(),
+    )
+
+    with participant_lock(rig.storage, timeout=10.0) as handle:
+        handle.assert_owned()
+        _crear_pendiente_locked(handle, rig.storage, propuesta, evidencia)  # type: ignore[arg-type]
+        # BIND hecho, FINALIZE no: las cuatro superficies apuntan al Clone.
+        binder.actualizar_game_path_en_ini(rig.ini, rig.clone_root)
+        binder.persistir_campo(rig.config, "skyrim_path", str(rig.clone_root))
+        _escribir_estado_activo_cas_locked(
+            active_state_path(rig.storage),
+            {
+                "schema_version": 2,
+                "desired_generation_id": rig.gen_id,
+                "desired_clone_id": rig.clone_id,
+                "updated_at_ns": time.time_ns(),
+            },
+            esperado=observar_estado_previo(active_state_path(rig.storage)),
+        )
+
+    assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.PENDING_PROMOTION
+    assert leer_game_path_de_mo2(rig.ini).path == str(rig.clone_root)
+
+    with pytest.raises(binder.BinderVerificationError, match="NO terminó"):
+        _ejecutar(rig, environ={"SKYRIM_PATH": str(rig.clone_root)})
+
+
+def test_el_no_op_idempotente_si_pasa_cuando_hay_registro_finalizado(tmp_path: pathlib.Path) -> None:
+    """Control positivo: tras una transición completa, el reintento es un no-op exitoso."""
+    rig = _montar_rig(tmp_path)
+    assert _ejecutar(rig).success is True
+
+    # El entorno quedó apuntando al clone: es parte del estado consistente.
+    segundo = _ejecutar(rig, environ={"SKYRIM_PATH": str(rig.clone_root)})
+
+    assert segundo.success is True
+    assert segundo.transition_id == "idempotent-noop"
+    assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.NONE
+
+
+def test_el_cas_marca_active_antes_del_readback(tmp_path: pathlib.Path) -> None:
+    """Si el CAS publica y el READBACK falla, el rollback restaura ``active.json``.
+
+    Marcarla DESPUÉS del readback dejaba la superficie fuera del conjunto de
+    mutadas: el rollback la excluía aunque ya estaba escrita, y el Desired
+    quedaba apuntando al Clone con el journal en PENDING (Codex sobre #843).
+    """
+    rig = _montar_rig(tmp_path)
+    active_antes = rig.active_bytes()
+    real_cas = binder._escribir_estado_activo_cas_locked
+
+    def _cas_que_falla_al_releer(path, payload, *, esperado):  # type: ignore[no-untyped-def]
+        real_cas(path, payload, esperado=esperado)
+        raise OSError("readback transitorio")
+
+    with (
+        patch.object(binder, "_escribir_estado_activo_cas_locked", side_effect=_cas_que_falla_al_releer),
+        pytest.raises(OSError, match="readback"),
+    ):
+        _ejecutar(rig)
+
+    assert rig.active_bytes() == active_antes, "el rollback no restauró active.json, que SÍ se había escrito"
+
+
+def test_el_discriminador_de_config_entiende_json_legacy(tmp_path: pathlib.Path) -> None:
+    """Un config JSON legacy no se clasifica como «escritura ajena» para siempre.
+
+    ``abrir_config_para_persistir`` soporta TOML y JSON; un discriminador sólo
+    TOML hacía que el rollback nunca restaurara un ``sky_claw_config.json``
+    (Codex sobre #843).
+    """
+    previo = b'{"skyrim_path": "C:/Steam", "language": "es"}'
+    propio = b'{"skyrim_path": "C:/Clone", "language": "es"}'
+    ajeno = b'{"skyrim_path": "C:/Clone", "language": "en"}'
+
+    assert recovery._config_difiere_solo_en_skyrim_path(previo, propio, "C:/Clone") is True
+    assert recovery._config_difiere_solo_en_skyrim_path(previo, ajeno, "C:/Clone") is False

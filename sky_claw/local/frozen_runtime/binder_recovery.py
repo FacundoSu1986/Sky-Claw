@@ -612,18 +612,36 @@ def _config_difiere_solo_en_skyrim_path(previos: bytes, actuales: bytes, esperad
     de las claves, idénticas, y ``skyrim_path`` en el valor que la transición
     escribió. Si además cambió otra clave, la escribió un tercero y no se toca.
     """
-    try:
-        previo = tomllib.loads(previos.decode("utf-8", "surrogateescape"))
-        actual = tomllib.loads(actuales.decode("utf-8", "surrogateescape"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-        return False
-    if not isinstance(previo, dict) or not isinstance(actual, dict):
+    previo = _parsear_config(previos)
+    actual = _parsear_config(actuales)
+    if previo is None or actual is None:
         return False
     if actual.get("skyrim_path") != esperado:
         return False
     sin_path_previo = {k: v for k, v in previo.items() if k != "skyrim_path"}
     sin_path_actual = {k: v for k, v in actual.items() if k != "skyrim_path"}
     return sin_path_previo == sin_path_actual
+
+
+def _parsear_config(crudos: bytes) -> dict[str, object] | None:
+    """Config como diccionario, en TOML o en el JSON legacy.
+
+    ``abrir_config_para_persistir`` soporta los dos formatos (elige por sufijo),
+    así que un discriminador que sólo entienda TOML clasifica SIEMPRE como
+    escritura ajena un ``sky_claw_config.json`` y el rollback nunca lo restaura
+    (Codex sobre #843).
+    """
+    texto = crudos.decode("utf-8", "surrogateescape")
+    try:
+        datos = tomllib.loads(texto)
+        return datos if isinstance(datos, dict) else None
+    except tomllib.TOMLDecodeError:
+        pass
+    try:
+        datos = json.loads(texto)
+    except json.JSONDecodeError:
+        return None
+    return datos if isinstance(datos, dict) else None
 
 
 def _coincide_con_lo_escrito(
