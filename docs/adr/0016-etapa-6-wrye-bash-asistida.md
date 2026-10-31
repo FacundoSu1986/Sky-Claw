@@ -261,6 +261,13 @@ mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y
 | M-C | Asimetría de alias de dominio en el mismo archivo: `_ensure_preflight` mapeaba `"virtual_usvfs"` a `DOMINIO_USVFS`, pero `_permission_targets` no lo hacía (caía a Data físico). | Confirmado: violación del principio de hermanos en el mismo archivo. | Extracción de `_normalizar_dominio` y uso simétrico en ambos métodos. Test de normalización. |
 | M-D | Métricas desactualizadas en cuerpo de PR (96 tests colectados vs 63/64 anteriores) y aclaración sobre `mypy` (`ignore_errors = true` en `local.tools.*` con auditoría manual de tipos). | Confirmado. | Actualización de documentación y descripción del PR. |
 
+**Ronda 6 (auditoría adversarial pre-merge sobre HEAD `d1f0eac8`).** Re-auditoría de cierre:
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| F1 | `preparar_etapa_asistida` llamaba a `self._ensure_preflight` en el hilo del event loop; la construcción inicial de modlist/masters/vfs ejecuta I/O de disco síncrono antes de `preflight.run()`. | Confirmado por traza estática: `build_modlist_sensors` y `build_master_order_sensor` ejecutan `sources_resolver()` inmediatamente. | `preflight = await asyncio.to_thread(self._ensure_preflight, ...)` + `_preflight_lock = threading.Lock()` para sincronizar construcciones concurrentes. Tests de ejecución en worker thread y concurrencia. |
+| F2 | `os.lstat(ruta)` sobre el archivo no detectaba si la carpeta antecesora (p. ej. `mo2/overwrite` o la carpeta de un mod) era un symlink o junction NTFS apuntando a un directorio externo. Además, modlist con traversal (`../`) podía escapar de `mods/`. | Reproducido en Linux y Windows: `lstat` sobre el archivo hijo no reporta enlace si el padre es un symlink/junction. | `huella_de_artefacto` verifica enlace en `ruta.parent` con `_es_reparse_point` / `S_ISLNK`, marcando `es_enlace=True`. `bashed_patch_en_overlay` filtra carpetas padre enlazadas y nombres con traversal (`..`, `/`, `\`, `:`). Tests con symlinks y junctions NTFS. |
+
 ## 10. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el

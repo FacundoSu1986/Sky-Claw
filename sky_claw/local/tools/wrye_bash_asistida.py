@@ -261,6 +261,14 @@ def huella_de_artefacto(ruta: pathlib.Path) -> HuellaDeArtefacto:
         return HuellaDeArtefacto(str(ruta), True, False, False, True, 0, None)
 
     es_enlace = stat.S_ISLNK(st.st_mode) or _es_reparse_point(st)
+    if not es_enlace:
+        try:
+            st_padre = os.lstat(ruta.parent)
+            if stat.S_ISLNK(st_padre.st_mode) or _es_reparse_point(st_padre):
+                es_enlace = True
+        except OSError:
+            return HuellaDeArtefacto(str(ruta), True, False, False, True, 0, None)
+
     es_regular = stat.S_ISREG(st.st_mode) and not es_enlace
     if not es_regular:
         return HuellaDeArtefacto(str(ruta), True, es_enlace, False, False, 0, None)

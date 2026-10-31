@@ -38,8 +38,10 @@ cuando el llamador trae la ``huella_previa``; sin ella el veredicto es honesto
 from __future__ import annotations
 
 import ast
+import asyncio
 import os
 import pathlib
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -81,10 +83,10 @@ def _perfil_con_plugins(
 ) -> tuple[pathlib.Path, pathlib.Path]:
     """Crea ``<data>/profiles/<perfil>/plugins.txt`` y el Data del juego."""
     plugins = tmp_path / "profiles" / perfil / "plugins.txt"
-    plugins.parent.mkdir(parents=True)
+    plugins.parent.mkdir(parents=True, exist_ok=True)
     plugins.write_text(contenido, encoding="utf-8")
     game = tmp_path / "Skyrim"
-    (game / "Data").mkdir(parents=True)
+    (game / "Data").mkdir(parents=True, exist_ok=True)
     return game / "Data" / BASHED_PATCH_NAME, plugins
 
 
@@ -1458,3 +1460,155 @@ def test_permission_targets_normaliza_alias_virtual_usvfs(tmp_path: pathlib.Path
     assert targets_alias == targets_canonico
     assert targets_alias != targets_fisico
     assert targets_alias == [mo2 / "overwrite"]
+
+
+# --- Ronda 6: preflight asíncrono en hilo y rechazo de enlaces antecesores --------
+
+
+@pytest.mark.asyncio
+async def test_ensure_preflight_se_ejecuta_fuera_del_hilo_del_event_loop(tmp_path: pathlib.Path) -> None:
+    """F1: la construcción del preflight realiza I/O síncrono y debe correr en worker thread."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True, exist_ok=True)
+    _parche(game / "Data" / "Skyrim.esm")
+    _parche(game / "Data" / BASHED_PATCH_NAME)
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver_real(game, mo2),
+    )
+
+    hilo_loop = threading.current_thread()
+    hilos_ejecucion: list[threading.Thread] = []
+
+    real_ensure = servicio._ensure_preflight
+
+    def _spy_ensure(*args: Any, **kwargs: Any) -> Any:
+        hilos_ejecucion.append(threading.current_thread())
+        return real_ensure(*args, **kwargs)
+
+    servicio._ensure_preflight = _spy_ensure  # type: ignore[method-assign]
+
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    assert resultado["pendiente"] is True
+    assert len(hilos_ejecucion) >= 1
+    for hilo in hilos_ejecucion:
+        assert hilo != hilo_loop, "la construcción del preflight no debe bloquear el hilo del loop"
+
+
+@pytest.mark.asyncio
+async def test_preparaciones_concurrentes_no_corrompen_cache_preflight(tmp_path: pathlib.Path) -> None:
+    """F1: preparaciones concurrentes sincronizan sobre _preflight_lock sin condiciones de carrera."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True, exist_ok=True)
+    _parche(game / "Data" / "Skyrim.esm")
+    _parche(game / "Data" / BASHED_PATCH_NAME)
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n", perfil="P1")
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n", perfil="P2")
+    servicio = WryeBashPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver_real(game, mo2),
+    )
+
+    r1, r2 = await asyncio.gather(
+        servicio.preparar_etapa_asistida(profile="P1"),
+        servicio.preparar_etapa_asistida(profile="P2"),
+    )
+
+    assert r1["pendiente"] is True
+    assert r2["pendiente"] is True
+    assert (DOMINIO_USVFS, "P1") in servicio._preflight_cache
+    assert (DOMINIO_USVFS, "P2") in servicio._preflight_cache
+
+
+@_SIN_SYMLINKS
+@pytest.mark.asyncio
+async def test_overwrite_como_symlink_no_valida_parche_externo(tmp_path: pathlib.Path) -> None:
+    """F2: si overwrite es un symlink a un directorio ajeno, la huella y el veredicto lo rechazan."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+
+    externo = tmp_path / "externo"
+    externo.mkdir(parents=True)
+    _parche(externo / BASHED_PATCH_NAME, b"parche-ajeno")
+
+    (mo2 / "overwrite").symlink_to(externo, target_is_directory=True)
+
+    huella = huella_de_artefacto(mo2 / "overwrite" / BASHED_PATCH_NAME)
+    assert huella.es_enlace is True, "un artefacto bajo un overwrite enlazado debe marcarse como enlace"
+    assert huella.es_regular is False
+
+    servicio = _servicio(game, mo2)
+    veredicto = await servicio.verificar_etapa_asistida(profile="Default")
+    assert veredicto["success"] is False
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_overwrite_como_junction_no_valida_parche_externo(tmp_path: pathlib.Path) -> None:
+    """F2: si overwrite es un junction NTFS a un directorio ajeno, se rechaza."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+
+    externo = tmp_path / "externo_junc"
+    externo.mkdir(parents=True)
+    _parche(externo / BASHED_PATCH_NAME, b"parche-ajeno-junc")
+
+    error = crear_junction(mo2 / "overwrite", externo)
+    assert error is None, error
+
+    huella = huella_de_artefacto(mo2 / "overwrite" / BASHED_PATCH_NAME)
+    assert huella.es_enlace is True, "junction en overwrite debe detectarse como enlace"
+    assert huella.es_regular is False
+
+    servicio = _servicio(game, mo2)
+    veredicto = await servicio.verificar_etapa_asistida(profile="Default")
+    assert veredicto["success"] is False
+
+
+@_SIN_SYMLINKS
+@pytest.mark.asyncio
+async def test_mod_como_symlink_no_valida_parche_externo(tmp_path: pathlib.Path) -> None:
+    """F2: si la carpeta del mod es un symlink a un directorio ajeno, se rechaza."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
+    (mo2 / "profiles" / "Default" / "modlist.txt").write_text("+ModExterno\n", encoding="utf-8")
+
+    externo = tmp_path / "externo_mod"
+    externo.mkdir(parents=True)
+    _parche(externo / BASHED_PATCH_NAME, b"parche-ajeno-mod")
+
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+    (mods / "ModExterno").symlink_to(externo, target_is_directory=True)
+
+    huella = huella_de_artefacto(mods / "ModExterno" / BASHED_PATCH_NAME)
+    assert huella.es_enlace is True
+    assert huella.es_regular is False
+
+    servicio = _servicio(game, mo2)
+    veredicto = await servicio.verificar_etapa_asistida(profile="Default")
+    assert veredicto["success"] is False
+
+
+def test_mod_con_nombre_traversal_es_ignorado_en_overlay(tmp_path: pathlib.Path) -> None:
+    """F2: modlist con '../' o separadores no escapa de mods_dir y degrada cobertura."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+
+    resultado = bashed_patch_en_overlay(
+        game=game,
+        mo2=mo2,
+        mods_dir=mods,
+        mods_habilitados=("../../externo", "ModValido"),
+    )
+    assert resultado is not None
+    assert resultado.cobertura_completa is False, "nombre con traversal debe degradar cobertura"

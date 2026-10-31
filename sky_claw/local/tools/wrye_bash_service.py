@@ -32,6 +32,7 @@ import asyncio
 import logging
 import pathlib
 import re
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -238,6 +239,7 @@ class WryeBashPipelineService:
         # ``_ensure_preflight`` y el docstring de ``build_vfs_visibility_sensor``).
         self._preflight_usvfs: PreflightService | None = None
         self._preflight_cache: dict[tuple[str, str | None], PreflightService] = {}
+        self._preflight_lock = threading.Lock()
         self._default_domain = default_domain
         # T-26/T-28 (ADR 0002, "PR C"): cuando el journal está cableado, la generación
         # del Bashed Patch emite la caja negra de vuelo. Se cablea en AMBOS paths de
@@ -283,95 +285,96 @@ class WryeBashPipelineService:
         dom = _normalizar_dominio(dominio, default=self._default_domain)
         if dom not in (DOMINIO_FISICO, DOMINIO_USVFS):
             raise ValueError(f"dominio de datos desconocido: {dom!r}")
-        if self._preflight_inyectado is not None:
-            return self._preflight_inyectado
-        if dom == DOMINIO_USVFS and profile is None and self._preflight_usvfs is not None:
-            return self._preflight_usvfs
-        if dom == DOMINIO_FISICO and profile is None and self._preflight is not None:
-            return self._preflight
-        cache_key = (dom, profile)
-        if cache_key in self._preflight_cache:
-            return self._preflight_cache[cache_key]
-        if self._path_resolver is None:
-            return None
+        with self._preflight_lock:
+            if self._preflight_inyectado is not None:
+                return self._preflight_inyectado
+            if dom == DOMINIO_USVFS and profile is None and self._preflight_usvfs is not None:
+                return self._preflight_usvfs
+            if dom == DOMINIO_FISICO and profile is None and self._preflight is not None:
+                return self._preflight
+            cache_key = (dom, profile)
+            if cache_key in self._preflight_cache:
+                return self._preflight_cache[cache_key]
+            if self._path_resolver is None:
+                return None
 
-        game = self._path_resolver.get_skyrim_path()
-        # Raíz de DATOS (no instalación): overwrite, perfil y fuentes cuelgan
-        # de la instancia. El raw usa el mismo árbol (no existe representación
-        # cruda sin resolver de la metadata; ver get_mo2_instance_data_root).
-        mo2 = self._path_resolver.get_mo2_instance_data_root()
-        if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
-            return None
+            game = self._path_resolver.get_skyrim_path()
+            # Raíz de DATOS (no instalación): overwrite, perfil y fuentes cuelgan
+            # de la instancia. El raw usa el mismo árbol (no existe representación
+            # cruda sin resolver de la metadata; ver get_mo2_instance_data_root).
+            mo2 = self._path_resolver.get_mo2_instance_data_root()
+            if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
+                return None
 
-        # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
-        from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.preflight_sensors import (
-            build_master_order_sensor,
-            build_mo2_profile_sources_resolver,
-            build_modlist_sensors,
-            build_overwrite_sensor,
-            build_vfs_sensor,
-            build_vfs_visibility_sensor,
-        )
-        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+            # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+            from sky_claw.local.validators.preflight import PreflightService
+            from sky_claw.local.validators.preflight_sensors import (
+                build_master_order_sensor,
+                build_mo2_profile_sources_resolver,
+                build_modlist_sensors,
+                build_overwrite_sensor,
+                build_vfs_sensor,
+                build_vfs_visibility_sensor,
+            )
+            from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # vfs sobre el árbol de DATOS (el que los sensores leen).
-        # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
-        # exige un Path de datos), así que enumerar mods/ es seguro
-        # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
-        # mods_dir: el MODS_DIR DECLARADO (``mod_directory`` puede vivir fuera
-        # de <datos>/mods; reconstruirlo a mano sería un scan ciego).
-        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
-        vfs_checker = build_vfs_sensor(
-            raw_game=self._path_resolver.get_skyrim_path_raw(),
-            raw_mo2=mo2,
-            scan_mods_dir=True,
-            mods_dir=mods_dir,
-        )
+            # vfs sobre el árbol de DATOS (el que los sensores leen).
+            # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
+            # exige un Path de datos), así que enumerar mods/ es seguro
+            # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
+            # mods_dir: el MODS_DIR DECLARADO (``mod_directory`` puede vivir fuera
+            # de <datos>/mods; reconstruirlo a mano sería un scan ciego).
+            mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
+            vfs_checker = build_vfs_sensor(
+                raw_game=self._path_resolver.get_skyrim_path_raw(),
+                raw_mo2=mo2,
+                scan_mods_dir=True,
+                mods_dir=mods_dir,
+            )
 
-        # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness,
-        # patrón #252/#311) — un destino creado read-only entre corridas debe verse.
-        def _permissions() -> Any:
-            return WritePermissionsChecker(targets=self._permission_targets(dominio=dom)).check()
+            # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness,
+            # patrón #252/#311) — un destino creado read-only entre corridas debe verse.
+            def _permissions() -> Any:
+                return WritePermissionsChecker(targets=self._permission_targets(dominio=dom)).check()
 
-        overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
+            overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
-        resolver = build_mo2_profile_sources_resolver(
-            game=game,
-            mo2=mo2,
-            profile=profile or self._path_resolver.get_active_profile(),
-            mods_dir=mods_dir,
-        )
-        masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
-        # El merge de Leveled Lists consume el load order ya estabilizado por
-        # LOOT (stage 5): un master que carga después de su dependiente es CTD.
-        order_check = build_master_order_sensor(resolver) if resolver is not None else None
+            resolver = build_mo2_profile_sources_resolver(
+                game=game,
+                mo2=mo2,
+                profile=profile or self._path_resolver.get_active_profile(),
+                mods_dir=mods_dir,
+            )
+            masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
+            # El merge de Leveled Lists consume el load order ya estabilizado por
+            # LOOT (stage 5): un master que carga después de su dependiente es CTD.
+            order_check = build_master_order_sensor(resolver) if resolver is not None else None
 
-        # U-01 SOLO en el dominio físico: el Bashed Patch spawneado se arma leyendo
-        # TODO el load order activo sobre el Data físico; sin la USVFS heredada
-        # saldría un patch del juego base, silenciosamente vacío. Bajo la USVFS del
-        # operador ese mismo sensor mide un Data que nadie va a leer (rojo falso).
-        visibility_check = (
-            build_vfs_visibility_sensor(game=game, sources_resolver=resolver) if dom == DOMINIO_FISICO else None
-        )
+            # U-01 SOLO en el dominio físico: el Bashed Patch spawneado se arma leyendo
+            # TODO el load order activo sobre el Data físico; sin la USVFS heredada
+            # saldría un patch del juego base, silenciosamente vacío. Bajo la USVFS del
+            # operador ese mismo sensor mide un Data que nadie va a leer (rojo falso).
+            visibility_check = (
+                build_vfs_visibility_sensor(game=game, sources_resolver=resolver) if dom == DOMINIO_FISICO else None
+            )
 
-        preflight = PreflightService(
-            vfs_checker=vfs_checker,
-            permissions_check=_permissions,
-            overwrite_check=overwrite_check,
-            masters_check=masters_check,
-            limits_check=limits_check,
-            order_check=order_check,
-            visibility_check=visibility_check,
-            omit_unconfigured=True,
-        )
-        self._preflight_cache[cache_key] = preflight
-        if profile is None:
-            if dom == DOMINIO_USVFS and self._preflight_usvfs is None:
-                self._preflight_usvfs = preflight
-            elif dom == DOMINIO_FISICO and self._preflight is None:
-                self._preflight = preflight
-        return preflight
+            preflight = PreflightService(
+                vfs_checker=vfs_checker,
+                permissions_check=_permissions,
+                overwrite_check=overwrite_check,
+                masters_check=masters_check,
+                limits_check=limits_check,
+                order_check=order_check,
+                visibility_check=visibility_check,
+                omit_unconfigured=True,
+            )
+            self._preflight_cache[cache_key] = preflight
+            if profile is None:
+                if dom == DOMINIO_USVFS and self._preflight_usvfs is None:
+                    self._preflight_usvfs = preflight
+                elif dom == DOMINIO_FISICO and self._preflight is None:
+                    self._preflight = preflight
+            return preflight
 
     def _permission_targets(self, *, dominio: str = DOMINIO_FISICO) -> list[pathlib.Path]:
         """Directorio donde el ejecutor de *dominio* escribe ``Bashed Patch, 0.esp``.
@@ -609,7 +612,11 @@ class WryeBashPipelineService:
             # Dominio USVFS: el ejecutor de esta etapa es el OPERADOR dentro de MO2, no
             # el runner spawneado. Medir el Data físico acá bloqueaba perfiles sanos
             # (ver `_ensure_preflight`).
-            preflight = self._ensure_preflight(dominio=DOMINIO_USVFS, profile=profile)
+            preflight = await asyncio.to_thread(
+                self._ensure_preflight,
+                dominio=DOMINIO_USVFS,
+                profile=profile,
+            )
             if preflight is not None:
                 preflight_report = await preflight.run()
                 if preflight_report.blocks_mutations:

@@ -61,6 +61,7 @@ import dataclasses
 import enum
 import os
 import pathlib
+import stat
 from typing import TYPE_CHECKING
 
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
@@ -271,9 +272,11 @@ def bashed_patch_en_overlay(
         if isinstance(mods_dir, pathlib.Path):
             # ``read_enabled_mods`` devuelve prioridad CRECIENTE: se invierte para que
             # la primera capa probada sea la que el juego carga.
-            capas.extend(
-                (nombre, mods_dir / nombre / BASHED_PATCH_NAME) for nombre in reversed(tuple(mods_habilitados))
-            )
+            for nombre in reversed(tuple(mods_habilitados)):
+                if not nombre or any(sep in nombre for sep in ("/", "\\", ":", "..")):
+                    completo = False
+                    continue
+                capas.append((nombre, mods_dir / nombre / BASHED_PATCH_NAME))
         else:
             completo = False
     capas.append((CAPA_DATA_JUEGO, data_juego))
@@ -281,9 +284,16 @@ def bashed_patch_en_overlay(
     for capa, ruta in capas:
         # ``os.lstat`` no sigue enlaces; un enlace roto igual "existe" para el veredicto.
         # Captura ``FileNotFoundError`` (ausencia probada) y degrada ``completo = False``
-        # si otro ``OSError`` (p. ej. PermissionError) impide la inspección.
+        # si otro ``OSError`` (p. ej. PermissionError) o un enlace en la carpeta de la capa
+        # impide la inspección confiable.
         try:
             os.lstat(ruta)
+            st_padre = os.lstat(ruta.parent)
+            if stat.S_ISLNK(st_padre.st_mode) or (getattr(st_padre, "st_file_attributes", 0) & 0x400):
+                completo = False
+                if capa == CAPA_OVERWRITE:
+                    return ArtefactoEnOverlay(ruta=ruta, capa=capa, cobertura_completa=False)
+                continue
         except FileNotFoundError:
             continue
         except OSError:
