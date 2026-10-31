@@ -5,7 +5,10 @@ Tests puros: sin subprocess, sin filesystem, sin MO2/VFS, sin red.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
+from itertools import combinations
+from types import MappingProxyType
 
 import pytest
 
@@ -17,12 +20,15 @@ from sky_claw.local.tools.material_contract import (
     PRE_LOD_MATERIALS_CAPABILITY,
     MaterialBlocker,
     MaterialCapability,
+    MaterialContractError,
+    MaterialNodeSpec,
     MaterialNodeState,
     MaterialPlanError,
     MaterialReadiness,
     MaterialStepId,
     PgPatcherCapability,
     ToolVersionContract,
+    _validate_graph,
     invalidated_material_steps,
     resolve_material_order,
     resolve_pgpatcher_contract,
@@ -79,12 +85,82 @@ def test_los_nodos_bloqueados_declaran_sus_blockers() -> None:
     assert MATERIAL_PIPELINE[MaterialStepId.POST_PG_RECONCILE].blockers == frozenset()
 
 
-def test_la_r_suite_es_opcional_y_pgpatcher_no() -> None:
-    assert MATERIAL_PIPELINE[MaterialStepId.PARALLAXR].optional is True
-    assert MATERIAL_PIPELINE[MaterialStepId.BENDR].optional is True
-    assert MATERIAL_PIPELINE[MaterialStepId.VRAMR].optional is True
-    assert MATERIAL_PIPELINE[MaterialStepId.PGPATCHER].optional is False
-    assert MATERIAL_PIPELINE[MaterialStepId.POST_PG_RECONCILE].optional is False
+def test_ningun_paso_material_es_obligatorio() -> None:
+    """Decisión del 27/10 (``np-pilas-y-rutas-de-malla.md`` §1.3): PGPatcher es opcional, no requisito; la herramienta funciona sin él.
+
+    El reconcile solo existe cuando PGPatcher está en el plan (``requires_present``), así que tampoco puede ser obligatorio. Se enumera el
+    grafo entero por igualdad literal: un paso nuevo obliga a decidir si es obligatorio. ``readiness`` (qué se implementa primero) y
+    ``optional`` (si un plan puede omitirlo) son ejes distintos: PGPatcher sigue siendo ``FIRST_CUT``.
+    """
+    assert {paso: spec.optional for paso, spec in MATERIAL_PIPELINE.items()} == {
+        MaterialStepId.PARALLAXR: True,
+        MaterialStepId.BENDR: True,
+        MaterialStepId.PGPATCHER: True,
+        MaterialStepId.VRAMR: True,
+        MaterialStepId.POST_PG_RECONCILE: True,
+    }
+
+
+def _subconjuntos_de_pasos() -> Iterator[frozenset[MaterialStepId]]:
+    for tamano in range(len(MaterialStepId) + 1):
+        for combinacion in combinations(MaterialStepId, tamano):
+            yield frozenset(combinacion)
+
+
+@pytest.mark.parametrize(
+    "plan", list(_subconjuntos_de_pasos()), ids=lambda p: "+".join(sorted(x.value for x in p)) or "vacio"
+)
+def test_un_plan_es_valido_si_y_solo_si_trae_las_dependencias_duras_de_cada_paso(
+    plan: frozenset[MaterialStepId],
+) -> None:
+    """Los 2^5 planes posibles, uno por uno: la validez la decide ``requires_present`` y nada más (ni ``optional``, ni ``readiness``)."""
+    dependencias_cumplidas = all(set(MATERIAL_PIPELINE[paso].requires_present) <= plan for paso in plan)
+
+    if dependencias_cumplidas:
+        assert resolve_material_order(plan) == tuple(paso for paso in MATERIAL_STEP_ORDER if paso in plan)
+        validate_material_order(resolve_material_order(plan))
+    else:
+        with pytest.raises(MaterialPlanError):
+            resolve_material_order(plan)
+
+
+def test_la_herramienta_funciona_sin_pgpatcher_en_todos_los_planes_posibles() -> None:
+    """La propiedad que importa del lado del producto: omitir PGPatcher (y con él su reconcile) nunca invalida un plan."""
+    sin_pgpatcher = [
+        plan
+        for plan in _subconjuntos_de_pasos()
+        if MaterialStepId.PGPATCHER not in plan and MaterialStepId.POST_PG_RECONCILE not in plan
+    ]
+    assert len(sin_pgpatcher) == 2 ** (len(MaterialStepId) - 2)  # los 8 planes de la R-suite: ninguno puede fallar
+    for plan in sin_pgpatcher:
+        assert resolve_material_order(plan) == tuple(paso for paso in MATERIAL_STEP_ORDER if paso in plan)
+
+
+def test_un_rerun_upstream_sin_pgpatcher_en_el_plan_no_invalida_nada_del_plan() -> None:
+    """``invalidated_material_steps`` es del grafo entero, no del plan: el planner la intersecta con sus pasos."""
+    plan = frozenset({MaterialStepId.VRAMR, MaterialStepId.BENDR})
+
+    assert invalidated_material_steps({5, 6, 7}) & plan == frozenset()
+
+
+def test_el_grafo_real_no_tiene_un_paso_obligatorio_que_exija_uno_opcional() -> None:
+    for spec in MATERIAL_PIPELINE.values():
+        for dependencia in spec.requires_present:
+            assert spec.optional or not MATERIAL_PIPELINE[dependencia].optional, (spec.step_id, dependencia)
+
+
+def test_un_paso_obligatorio_que_exige_la_presencia_de_uno_opcional_se_rechaza_al_validar_el_grafo() -> None:
+    """La contradicción de #834/np-pilas: el reconcile era obligatorio y exigía un PGPatcher que la decisión del 27/10 volvió opcional."""
+    opcional = MaterialNodeSpec(MaterialStepId.PGPATCHER, MaterialReadiness.FIRST_CUT, optional=True)
+    obligatorio = MaterialNodeSpec(
+        MaterialStepId.POST_PG_RECONCILE,
+        MaterialReadiness.FIRST_CUT,
+        optional=False,
+        requires_present=(MaterialStepId.PGPATCHER,),
+    )
+
+    with pytest.raises(MaterialContractError, match="obligatorio.*opcional"):
+        _validate_graph(MappingProxyType({spec.step_id: spec for spec in (opcional, obligatorio)}))
 
 
 def test_pgpatcher_requiere_vfs_y_produce_plugins() -> None:
