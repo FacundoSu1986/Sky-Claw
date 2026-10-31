@@ -87,6 +87,7 @@ def _informe(
     conteos: dict[str, int] | None = None,
     encoder: dict[str, str] | None = _ENCODER,
     omitidas: list[str] | None = None,
+    interrupcion: str | None = None,
 ) -> dict[str, object]:
     return {
         "version_del_lote": "np-a0a.v1",
@@ -96,6 +97,7 @@ def _informe(
         "archivos": archivos,
         "otras_rutas": [] if otras_rutas is None else otras_rutas,
         "omitidas_al_enumerar": [] if omitidas is None else omitidas,
+        "interrupcion": interrupcion,
     }
 
 
@@ -140,7 +142,7 @@ def test_lote_limpio_es_pass() -> None:
 
 def test_conteos_que_no_cuadran_son_inconsistentes() -> None:
     archivos = [_archivo("textures/a_p.dds")]
-    mentira = {"EN_REVISION": 0, "ESCRITA": 7, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    mentira = {"EN_REVISION": 0, "ESCRITA": 7, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
     decision = dictar(_informe(archivos, conteos=mentira))
 
     assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
@@ -150,7 +152,14 @@ def test_conteos_que_no_cuadran_son_inconsistentes() -> None:
 
 def test_un_estado_nuevo_en_el_informe_rompe_el_conteo() -> None:
     archivos = [_archivo("textures/a_p.dds")]
-    con_estado_extra = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "ARCHIVADA": 3}
+    con_estado_extra = {
+        "EN_REVISION": 0,
+        "ESCRITA": 1,
+        "NO_ESCRITA": 0,
+        "NO_PROCESADA": 0,
+        "SIN_CONFIRMAR": 0,
+        "ARCHIVADA": 3,
+    }
     decision = dictar(_informe(archivos, conteos=con_estado_extra))
 
     assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
@@ -166,7 +175,7 @@ def test_inconsistente_gana_sobre_falla() -> None:
     """Si el informe se contradice, ni siquiera el fallo es certificable."""
 
     archivos = [_archivo("textures/a_p.dds", estado="NO_ESCRITA", efecto=None, veredicto=None)]
-    mentira = {"EN_REVISION": 0, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    mentira = {"EN_REVISION": 0, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
     decision = dictar(_informe(archivos, conteos=mentira))
 
     assert MotivoDelLote.ARCHIVO_NO_ESCRITO in decision.motivos
@@ -436,8 +445,8 @@ def test_todo_motivo_pertenece_a_exactamente_un_grupo() -> None:
         assert grupos == 1, f"{motivo} está en {grupos} grupos"
 
 
-def test_los_estados_conocidos_son_los_cuatro_del_generador() -> None:
-    assert {"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA"} == ESTADOS_CONOCIDOS
+def test_los_estados_conocidos_son_los_cinco_del_generador() -> None:
+    assert {"ESCRITA", "EN_REVISION", "NO_PROCESADA", "NO_ESCRITA", "SIN_CONFIRMAR"} == ESTADOS_CONOCIDOS
     assert {e.name for e in EstadoDeArchivo} == ESTADOS_CONOCIDOS
 
 
@@ -555,4 +564,100 @@ def test_el_generador_y_el_validador_juzgan_igual_cada_efecto_de_otras_rutas(efe
     if efecto in efectos_que_no_aplican_a_otras_rutas:
         assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
         return
+    assert informe.completo is (decision.veredicto in {VeredictoDelLote.PASS, VeredictoDelLote.REVIEW})
+
+
+# ---------------------------------------------------------------------------
+# #834 ítem 2: escritura interrumpida (SIN_CONFIRMAR e ``interrupcion``)
+# ---------------------------------------------------------------------------
+
+_INTERRUPCION = "LockLeaseLostError: lease perdida"
+
+
+def test_una_textura_sin_confirmar_es_falla_y_no_pass() -> None:
+    archivos = [
+        _archivo("textures/a_p.dds"),
+        _archivo("textures/b_p.dds", estado="SIN_CONFIRMAR", efecto=None, veredicto=None),
+    ]
+
+    decision = dictar(_informe(archivos, interrupcion=_INTERRUPCION))
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert (
+        MotivoDelLote.ARCHIVO_SIN_CONFIRMAR in decision.motivos and MotivoDelLote.LOTE_INTERRUMPIDO in decision.motivos
+    )
+    assert decision.rutas == ("textures/b_p.dds",)
+    assert codigo_de_salida(decision) != 0
+
+
+def test_una_interrupcion_sin_ninguna_textura_en_duda_tambien_es_falla() -> None:
+    """Un lote que solo retiraba salidas anteriores no tiene textura propia que lo delate: la interrupción sola alcanza."""
+
+    decision = dictar(_informe([_archivo("textures/a_p.dds")], interrupcion=_INTERRUPCION))
+
+    assert decision.veredicto is VeredictoDelLote.FAIL
+    assert decision.motivos == (MotivoDelLote.LOTE_INTERRUMPIDO,)
+
+
+def test_sin_confirmar_sin_interrupcion_o_con_efecto_es_inconsistente() -> None:
+    """Sin confirmar solo existe dentro de una interrupción declarada y no tiene efecto del escritor (no se sabe qué hizo)."""
+
+    sin_interrupcion = [_archivo("textures/a_p.dds", estado="SIN_CONFIRMAR", efecto=None, veredicto=None)]
+    con_efecto = [_archivo("textures/a_p.dds", estado="SIN_CONFIRMAR", efecto="PUBLICADA", veredicto=None)]
+
+    assert dictar(_informe(sin_interrupcion)).veredicto is VeredictoDelLote.INCONSISTENTE
+    assert dictar(_informe(con_efecto, interrupcion=_INTERRUPCION)).veredicto is VeredictoDelLote.INCONSISTENTE
+
+
+def test_un_informe_sin_el_campo_interrupcion_es_inconsistente() -> None:
+    """Como el censo de omitidas: sin la clave no se puede probar que la escritura no se cortó."""
+
+    informe = _informe([_archivo_escrito_ok()])
+    del informe["interrupcion"]
+
+    decision = dictar(informe)
+
+    assert decision.veredicto is VeredictoDelLote.INCONSISTENTE
+    assert MotivoDelLote.FORMA_INVALIDA in decision.motivos
+
+
+@pytest.mark.parametrize("basura", ["", 3, True, ["x"], {"a": 1}])
+def test_una_interrupcion_con_forma_invalida_es_inconsistente(basura: object) -> None:
+    informe = _informe([_archivo_escrito_ok()])
+    informe["interrupcion"] = basura
+
+    assert dictar(informe).veredicto is VeredictoDelLote.INCONSISTENTE
+
+
+@pytest.mark.parametrize("estado", list(EstadoDeArchivo), ids=lambda e: e.name)
+@pytest.mark.parametrize("interrumpido", [False, True], ids=["entero", "interrumpido"])
+def test_el_generador_y_el_validador_juzgan_igual_cada_estado_y_la_interrupcion(
+    estado: EstadoDeArchivo, interrumpido: bool
+) -> None:
+    """Paridad: ``completo`` (de donde sale el código de la CLI) y ``dictar`` no discrepan en ningún estado del vocabulario.
+
+    Se enumera la familia ``EstadoDeArchivo`` completa por su cruce con la interrupción: un estado nuevo rompe el test hasta que se
+    decida de qué lado cae en los dos consumidores (el mismo defecto que ya hubo con ``otras_rutas``, #832).
+    """
+
+    efecto = EfectoDeSalida.PUBLICADA if estado is EstadoDeArchivo.ESCRITA else None
+    veredicto = (
+        None
+        if estado in {EstadoDeArchivo.NO_PROCESADA, EstadoDeArchivo.SIN_CONFIRMAR}
+        else VeredictoDelGenerador.AUTO_ACCEPT
+    )
+    if estado is EstadoDeArchivo.EN_REVISION:
+        veredicto = VeredictoDelGenerador.REVIEW
+    archivo = ResultadoDeArchivo("textures/a_n.dds", "textures/a_p.dds", estado, efecto, veredicto, (), None, "")
+    informe = InformeDelLote(
+        ParametrosDelLote(),
+        (archivo,),
+        (),
+        ("may2026", _HUELLA),
+        interrupcion=_INTERRUPCION if interrumpido or estado is EstadoDeArchivo.SIN_CONFIRMAR else None,
+    )
+
+    decision = dictar({**informe.a_diccionario(), "omitidas_al_enumerar": []})
+
+    assert decision.veredicto is not VeredictoDelLote.INCONSISTENTE, decision.detalle or decision.motivos
     assert informe.completo is (decision.veredicto in {VeredictoDelLote.PASS, VeredictoDelLote.REVIEW})

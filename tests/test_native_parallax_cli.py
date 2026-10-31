@@ -1079,7 +1079,10 @@ def test_el_resumen_lista_todo_cuenta_y_sugiere_incluir_la_revision_solo_si_corr
     assert texto.startswith("\n  [ESCRITA → PUBLICADA] s1")
     assert "  [OMITIDA] anterior_p.dds (corrida anterior) caché vigente\n" in texto
     assert "  [OMITIDA] textures/x: es un enlace\n" in texto
-    assert "\nResumen: 2 escrita, 1 en_revision, 1 no_procesada, 0 no_escrita, 1 omitidas al enumerar.\n" in texto
+    assert (
+        "\nResumen: 2 escrita, 1 en_revision, 1 no_procesada, 0 no_escrita, 0 sin_confirmar, 1 omitidas al enumerar.\n"
+        in texto
+    )
     assert "--incluir-revision" in texto
 
     pedida = io.StringIO()

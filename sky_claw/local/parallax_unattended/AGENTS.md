@@ -42,6 +42,9 @@ también mira el primero. Medido en el rig real: con `--incluir-revision`, ocho 
   inválida es `INCONSISTENTE`, y un censo no vacío es `REVIEW` (`RUTAS_OMITIDAS`). Lo escribe
   `native_parallax/cli.py`; no se subió `VERSION_DEL_LOTE` porque entra a la procedencia e
   invalidaría todas las cachés.
+- `interrupcion` (texto no vacío o `null`): por qué se cortó la escritura del lote (candado perdido, disco). **Obligatorio**, como el censo anterior: sin la clave no se
+  prueba que no hubo corte. Un texto es `FAIL` (`LOTE_INTERRUMPIDO`) aunque ninguna textura figure en duda; el estado `SIN_CONFIRMAR` (no se sabe si quedó en el mod) es `FAIL`
+  y solo es legal dentro de una interrupción declarada y sin `efecto`. Tampoco se subió `VERSION_DEL_LOTE` por esto.
 - `otras_rutas` con efecto `RETIRADA`: el auditor exige **ausencia** en disco
   (`RETIRADA_PRESENTE` es falla dura). Una `_p.dds` obsoleta que el juego sigue cargando con el
   log en verde es exactamente el falso verde de esta capa.
