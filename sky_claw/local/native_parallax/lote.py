@@ -694,6 +694,7 @@ def _marcar_sin_confirmar(parciales: list[_Parcial], interrupcion: str) -> None:
         if parcial.fuente is None:
             continue
         parcial.estado = EstadoDeArchivo.SIN_CONFIRMAR
+        parcial.efecto = None  # sin confirmar no tiene efecto del escritor (``dictar`` lo exige): no se sabe qué hizo
         parcial.detalle = (
             f"la escritura se interrumpió ({interrupcion}): no se sabe si esta salida quedó en el mod; "
             "volvé a correr el lote (al abrir la sesión se recupera lo que haya quedado a medias)"

@@ -100,9 +100,15 @@ def test_un_informe_escrito_reemplaza_al_anterior_y_no_deja_temporales(tmp_path:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["informe.json"]
 
 
-def _sin_poder_escribir_el_informe(monkeypatch: pytest.MonkeyPatch) -> None:
-    def falla(*_args: Any, **_kwargs: Any) -> None:
-        raise PermissionError("no se puede escribir el informe (simulado)")
+def _sin_poder_escribir_el_informe(monkeypatch: pytest.MonkeyPatch, informe: pathlib.Path) -> None:
+    """Hace fallar SOLO el reemplazo atómico del informe. ``cli.os`` es el módulo ``os`` entero: parchear ``replace`` sin discriminar
+    también rompería las escrituras atómicas del escritor de la salida y el lote saldría con 1 por la razón equivocada."""
+    real = cli.os.replace
+
+    def falla(origen: Any, destino: Any, *args: Any, **kwargs: Any) -> None:
+        if pathlib.Path(destino) == informe:
+            raise PermissionError("no se puede escribir el informe (simulado)")
+        real(origen, destino, *args, **kwargs)
 
     monkeypatch.setattr(cli.os, "replace", falla)
 
@@ -112,11 +118,13 @@ def test_generar_no_sale_con_cero_si_el_informe_no_se_pudo_escribir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert _generar(mundo, "--incluir-revision")[0] == CODIGO_OK  # el control: sin el fallo, este mismo lote sale con 0
-    _sin_poder_escribir_el_informe(monkeypatch)
+    _sin_poder_escribir_el_informe(monkeypatch, mundo / "informe.json")
 
     codigo, texto = _generar(mundo, "--incluir-revision")
 
     assert codigo == CODIGO_CON_FALLOS and "No se pudo escribir el informe" in texto
+    # El lote en sí salió bien: la causa del 1 es SOLO el informe (no una escritura rota ni una interrupción).
+    assert "ESCRITURA INTERRUMPIDA" not in texto and "2 escrita" in texto
 
 
 def test_la_autoprueba_no_sale_con_cero_si_el_informe_no_se_pudo_escribir(
@@ -134,11 +142,14 @@ def test_la_autoprueba_no_sale_con_cero_si_el_informe_no_se_pudo_escribir(
         return codigo, salida.getvalue()
 
     assert correr()[0] == CODIGO_OK
-    _sin_poder_escribir_el_informe(monkeypatch)
+    _sin_poder_escribir_el_informe(monkeypatch, tmp_path / "i.json")
 
     codigo, texto = correr()
 
     assert codigo == CODIGO_CON_FALLOS and "el informe no se pudo escribir" in texto
+    assert (
+        "AUTOPRUEBA FALLÓ" in texto and "la textura sintética no quedó escrita" not in texto
+    )  # el lote en sí estuvo bien
 
 
 def test_ningun_comando_descarta_si_el_informe_quedo_escrito() -> None:
