@@ -165,12 +165,12 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   tanda ampliada con el código actual, en **12 estaciones de 5 familias** (8 de objetos de exterior de 4 ciudades y 4 de interior; entre 22,5 y 162,6 veces el ruido, mediana 94,6).
   Todo se midió en una celda interior de prueba con luz fija y vista cercana, con Community Shaders más Auto Parallax y el post-proceso apagado, y con normales de un solo mod.
   **No** está probado con clima, sol o a distancia normal de juego, ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no que sea **bueno**. A ojo, la sesión vio que
-  una textura (`rottingwood01`) pasa de tablones a una superficie grumosa, aunque su acuerdo p95 (5,0°) es el más bajo de la tanda: **la métrica del generador no avisa de ese defecto**, así que
+  una textura (`rottingwood01`) pasa de tablones a una superficie grumosa, y el operador lo confirmó («grumoso», 30/10, en la celda de prueba), aunque su acuerdo p95 (5,0°) es el más bajo de la tanda: **la métrica del generador no avisa de ese defecto**, así que
   mirá cada salida antes de dejarla activa. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
 - **Formatos que acepta el decodificador de normales (`NormalDecoder`; la línea de comandos solo descubre `*_n.dds`, así que un `*_n.png` no se procesa):** PNG y DDS sin comprimir, estos dos solo en
   layouts RGB/RGBA verificados de 8 bits por canal; y DXT1 (BC1), BC5 y BC7. **DXT5 (BC3) se rechaza a propósito**: las normales «DXT5nm» guardan X en el canal alfa, y leerlas como RGB
   daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
-  un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte.
+  un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte y, por decisión del operador (30/10), **no es prioridad por ahora**.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
   pendiente (ver el issue de la auditoría), no como funcionalidad.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
