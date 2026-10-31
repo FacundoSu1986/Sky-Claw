@@ -18,6 +18,8 @@ operador. Consume dos artefactos:
    su decodificador. El generador es otro dueño y puede cambiar por dentro; si esta capa
    dependiera de sus objetos, un refactor suyo redefiniría en silencio qué significa "listo".
    El contrato es el JSON, con su `version_del_lote` ([ADR 0014](../../../docs/adr/0014-native-parallax-producto-brief-y-dependencias.md)).
+   Lo que el auditor y el generador deben decidir IGUAL pese a no compartir código (hoy: qué cabecera DDS es una textura 2-D simple) se ancla con un
+   test que compara las dos copias sobre toda la matriz de cabeceras: `tests/test_dds_2d_simple_paridad.py`.
 3. **No escribir nada.** Ni archivos, ni logs, ni caché. Sólo lectura y un valor de retorno.
 4. **No agregar dependencias.** Nada de numpy ni Pillow: la decodificación BC4 de `auditor.py`
    es Python puro a propósito, para que el chequeo corra donde corre el runner y no donde hay

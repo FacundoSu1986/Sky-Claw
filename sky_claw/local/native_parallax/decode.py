@@ -19,7 +19,8 @@ Contenedores y formatos (todo lo demás se RECHAZA con ``FormatoNoSoportadoError
   ejecutando con un bloque armado a mano, NP-C0), así que Z se reconstruye como
   ``sqrt(1 − x² − y²)``. Los píxeles con ``x² + y² > 1`` quedan con Z = 0, se renormalizan y se
   cuentan en ``clamped_pixels``.
-- **Lista cerrada de DDS de bloques**: ``DXT1``, ``BC5`` y ``BC7``, que son los que tienen prueba. Se rechazan
+- **Lista cerrada de DDS de bloques**: ``DXT1`` (``BC1`` con cabecera DX10, el mismo formato con otro nombre: Pillow lo rotula ``BC1``), ``BC5``
+  y ``BC7``, que son los que tienen prueba. Se rechazan
   BC5 con signo, BC6H (HDR), y DXT3/DXT5: DXT5nm guarda X en el alfa, así que leerlo como RGB daría
   normales incorrectas sin ningún error.
 
@@ -147,8 +148,9 @@ _CONTENEDORES_ADMITIDOS = ("PNG", "DDS")
 # ``bcn`` para los de bloques, con pixel_format. Cualquier otro se rechaza: no está verificado.
 _CODECS_DDS_SIN_COMPRIMIR = frozenset({"dds_rgb", "raw"})
 _CODEC_DDS_BLOQUES = "bcn"
-# Formatos de bloques con prueba en tests/test_native_parallax_decode.py (bloques sintéticos armados a mano).
-_FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC5", "BC7"})
+# Formatos de bloques con prueba en tests/test_native_parallax_decode.py (bloques sintéticos armados a mano). ``BC1`` es ``DXT1`` con
+# cabecera DX10 (DXGI 70/71): mismo códec de bloques, y el test lo compara contra el FourCC clásico píxel a píxel.
+_FORMATOS_DDS_DE_BLOQUES_VERIFICADOS = frozenset({"DXT1", "BC1", "BC5", "BC7"})
 
 
 # Layouts de 8 bits por canal que Pillow entrega como RGB/RGBA (verificado ejecutando, Pillow 12.3.0 y 13.0.0): el
