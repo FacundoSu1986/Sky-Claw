@@ -62,7 +62,7 @@ def _runner(tmp_path: pathlib.Path) -> tuple[SynthesisRunner, pathlib.Path, path
     # LoadOrderFilePath in Synthesis 0.36.6 overrides Mutagen's plugin-listings
     # path provider, so the MO2 input must retain the '*' activation markers.
     load_order = profile_dir / "plugins.txt"
-    load_order.write_text("*Skyrim.esm\n", encoding="utf-8")
+    load_order.write_bytes(b"*Skyrim.esm\n")
     settings_path = tmp_path / "PipelineSettings.json"
     _write_settings(settings_path)
     synthesis_exe = tmp_path / "Synthesis.CLI.exe"
@@ -355,3 +355,49 @@ def test_default_pipeline_settings_path_is_current_working_directory(
     )
 
     assert config.pipeline_settings_path == tmp_path / "PipelineSettings.json"
+
+
+@pytest.mark.parametrize(
+    "tampered_arg",
+    [
+        "--PipelineSettingsPath=/tampered.json",
+        "--OutputDirectory=/evil",
+        "--DataFolderPath=/evil",
+        "--LoadOrderFilePath=/evil",
+        "--ProfileIdentifier=Other",
+        "-s",
+        "-s=/tampered.json",
+        "-s/tampered.json",
+        "-o",
+        "-o=/evil",
+        "-o/evil",
+        "-d",
+        "-d=/evil",
+        "-d/evil",
+        "-p",
+        "-p=Other",
+        "-pOther",
+        "-l",
+        "-l=/evil",
+        "-l/evil",
+    ],
+)
+def test_extra_args_no_puede_sobreescribir_opciones_gestionadas_con_alias_cortos(
+    tmp_path: pathlib.Path,
+    tampered_arg: str,
+) -> None:
+    runner, _, _, _ = _runner(tmp_path)
+    with pytest.raises(SynthesisExecutionError, match="cannot override managed"):
+        runner._build_cli_args(["id-heavy"], [tampered_arg])
+
+
+def test_profile_identifier_resolution_is_case_insensitive(tmp_path: pathlib.Path) -> None:
+    from dataclasses import replace
+
+    runner, settings_path, _, _ = _runner(tmp_path)
+    # Nickname en settings es "Default", pasamos "default"
+    config = replace(runner._config, profile="default")
+    case_runner = SynthesisRunner(config)
+    profile = case_runner.inspect_settings(["patcher-light"])
+    assert profile.profile_identifier == "default"
+    assert "Synthesis" in profile.group_names

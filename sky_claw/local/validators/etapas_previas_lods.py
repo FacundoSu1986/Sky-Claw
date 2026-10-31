@@ -28,17 +28,22 @@ nunca es "está".
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import pathlib
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 
 logger = logging.getLogger(__name__)
 
-#: Plugin que produce la etapa 6 (SOP §2.6) y el de la etapa 7 (SOP §2.7).
+#: Base histórica. El nombre real es el del GRUPO de Synthesis (V2) y puede
+#: tener splits ``_2.._N`` (Mutagen `KeyForIndex`), así que el caller pasa la
+#: lista efectiva; esta constante queda sólo como default retrocompatible.
 PLUGIN_DE_WRYE_BASH = "Bashed Patch, 0.esp"
 PLUGIN_DE_SYNTHESIS = "Synthesis.esp"
 
@@ -82,12 +87,101 @@ def _tiene_cgid(carpeta: pathlib.Path) -> bool:
         return False
 
 
+def descubrir_plugins_de_synthesis(
+    *,
+    settings_path: pathlib.Path | None = None,
+    profile_identifier: str | None = None,
+    carpetas_de_salida: Sequence[pathlib.Path] = (),
+) -> tuple[str, ...]:
+    """Descubre los plugins ESP esperados de Synthesis según PipelineSettings.json y splits en disco.
+
+    SOP §2.7: cada grupo habilitado en el perfil activo genera ``<Grupo>.esp``.
+    Si además se generaron splits ``_2.._N`` (Mutagen MultiModFileSplitter) en
+    alguna de las carpetas de salida (p. ej. overwrite/ o mods/Synthesis Output),
+    también deben estar habilitados.
+    Si no hay settings o no se pueden resolver, retorna (PLUGIN_DE_SYNTHESIS,).
+    """
+    group_names: list[str] = []
+    ruta_settings = settings_path
+    if ruta_settings is None:
+        env_settings = os.environ.get("SYNTHESIS_PIPELINE_SETTINGS")
+        if env_settings:
+            ruta_settings = pathlib.Path(env_settings)
+        else:
+            default_path = pathlib.Path.cwd() / "PipelineSettings.json"
+            if default_path.is_file():
+                ruta_settings = default_path
+
+    if ruta_settings is not None and ruta_settings.is_file():
+        try:
+            data = json.loads(ruta_settings.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                profiles = data.get("Profiles")
+                if isinstance(profiles, list):
+                    target_profile: dict[str, Any] | None = None
+                    if profile_identifier:
+                        pid_folded = profile_identifier.casefold()
+                        for p in profiles:
+                            if isinstance(p, dict):
+                                nick = p.get("Nickname")
+                                p_id = p.get("ID")
+                                if (isinstance(nick, str) and nick.casefold() == pid_folded) or (
+                                    isinstance(p_id, str) and p_id.casefold() == pid_folded
+                                ):
+                                    target_profile = p
+                                    break
+                    if target_profile is None and profiles:
+                        for p in profiles:
+                            if isinstance(p, dict) and p.get("Nickname") == "Default":
+                                target_profile = p
+                                break
+                        if target_profile is None and isinstance(profiles[0], dict):
+                            target_profile = profiles[0]
+
+                    if target_profile is not None:
+                        groups = target_profile.get("Groups")
+                        if isinstance(groups, list):
+                            for g in groups:
+                                if isinstance(g, dict) and g.get("On") is True:
+                                    name = g.get("Name")
+                                    if isinstance(name, str) and name.strip():
+                                        group_names.append(name.strip())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            pass
+
+    if not group_names:
+        group_names = [pathlib.Path(PLUGIN_DE_SYNTHESIS).stem]
+
+    plugins: set[str] = {f"{name}.esp" for name in group_names}
+
+    for carpeta in carpetas_de_salida:
+        if not carpeta.is_dir():
+            continue
+        try:
+            with os.scandir(carpeta) as entradas:
+                for entrada in entradas:
+                    if not entrada.is_file(follow_symlinks=False):
+                        continue
+                    fname = entrada.name
+                    if not fname.lower().endswith(".esp"):
+                        continue
+                    for gname in group_names:
+                        patron = re.compile(rf"^{re.escape(gname)}_(?:[2-9]|[1-9][0-9]+)\.esp$", re.IGNORECASE)
+                        if patron.fullmatch(fname):
+                            plugins.add(fname)
+        except OSError:
+            continue
+
+    return tuple(sorted(plugins, key=lambda s: s.casefold()))
+
+
 def verificar_etapas_previas_de_lods(
     *,
     plugins_txt: pathlib.Path | None,
     modlist_txt: pathlib.Path | None,
     mods_dir: pathlib.Path | None,
     overwrite_dir: pathlib.Path | None,
+    plugins_de_synthesis: Sequence[str] | None = None,
 ) -> EvidenciaDeEtapasPrevias:
     """Verifica los artefactos de las etapas 6, 7 y 8 en el perfil activo."""
     faltantes: list[str] = []
@@ -100,8 +194,15 @@ def verificar_etapas_previas_de_lods(
     else:
         if PLUGIN_DE_WRYE_BASH.lower() not in habilitados:
             faltantes.append(f"etapa 6 (Wrye Bash): '{PLUGIN_DE_WRYE_BASH}' no está habilitado en el perfil")
-        if PLUGIN_DE_SYNTHESIS.lower() not in habilitados:
-            faltantes.append(f"etapa 7 (Synthesis): '{PLUGIN_DE_SYNTHESIS}' no está habilitado en el perfil")
+        esperados_synthesis = tuple(plugins_de_synthesis or (PLUGIN_DE_SYNTHESIS,))
+        ausentes_synthesis = [p for p in esperados_synthesis if p.lower() not in habilitados]
+        if ausentes_synthesis:
+            if len(ausentes_synthesis) == 1 and plugins_de_synthesis is None:
+                faltantes.append(f"etapa 7 (Synthesis): '{PLUGIN_DE_SYNTHESIS}' no está habilitado en el perfil")
+            else:
+                faltantes.append(
+                    f"etapa 7 (Synthesis): no está(n) habilitado(s) en el perfil: {', '.join(ausentes_synthesis)}"
+                )
 
     grass = overwrite_dir is not None and _tiene_cgid(overwrite_dir / "Grass")
     if not grass and modlist_txt is not None and mods_dir is not None:

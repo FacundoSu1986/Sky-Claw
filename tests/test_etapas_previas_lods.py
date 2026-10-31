@@ -10,6 +10,7 @@ habilitado / mod deshabilitado), con el perfil MO2 montado en ``tmp_path``.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -19,6 +20,7 @@ import pytest
 from sky_claw.local.validators.etapas_previas_lods import (
     PLUGIN_DE_SYNTHESIS,
     PLUGIN_DE_WRYE_BASH,
+    descubrir_plugins_de_synthesis,
     verificar_etapas_previas_de_lods,
 )
 
@@ -337,3 +339,83 @@ def test_toda_superficie_que_reenvia_el_modo_pasa_por_el_guard_de_etapas_previas
         arbol = ast.parse((RAIZ / relativa).read_text(encoding="utf-8"))
         nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)}
         assert "etapas_previas_faltantes" in nombres, f"{relativa} reenvía el modo sin el guard de etapas previas"
+
+
+def test_verificar_etapas_previas_con_grupo_custom_synthesis(tmp_path: pathlib.Path):
+    """SOP §2.7: si el grupo activo se llama 'Requiem Patch', se espera 'Requiem Patch.esp'."""
+    rutas = _perfil(tmp_path, plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*Requiem Patch.esp"], grass_en_overwrite=True)
+    evidencia = verificar_etapas_previas_de_lods(
+        **rutas,
+        plugins_de_synthesis=["Requiem Patch.esp"],
+    )
+    assert evidencia.completas()
+
+    # Si falta el plugin del grupo, falla la etapa 7 nombrando el plugin correcto
+    rutas_incompletas = _perfil(tmp_path / "inc", plugins=[f"*{PLUGIN_DE_WRYE_BASH}"], grass_en_overwrite=True)
+    evidencia_incompleta = verificar_etapas_previas_de_lods(
+        **rutas_incompletas,
+        plugins_de_synthesis=["Requiem Patch.esp"],
+    )
+    assert not evidencia_incompleta.completas()
+    assert any("Requiem Patch.esp" in f for f in evidencia_incompleta.faltantes)
+
+
+def test_verificar_etapas_previas_con_splits_detecta_split_faltante(tmp_path: pathlib.Path):
+    """Si Synthesis generó splits (_2.._N), TODOS deben estar habilitados (evita falso verde)."""
+    # Ambos habilitados: completa
+    rutas_ok = _perfil(
+        tmp_path / "ok",
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*Synthesis.esp", "*Synthesis_2.esp"],
+        grass_en_overwrite=True,
+    )
+    evidencia_ok = verificar_etapas_previas_de_lods(
+        **rutas_ok,
+        plugins_de_synthesis=["Synthesis.esp", "Synthesis_2.esp"],
+    )
+    assert evidencia_ok.completas()
+
+    # Solo la base habilitada: falta Synthesis_2.esp
+    rutas_split_falta = _perfil(
+        tmp_path / "falta",
+        plugins=[f"*{PLUGIN_DE_WRYE_BASH}", "*Synthesis.esp"],
+        grass_en_overwrite=True,
+    )
+    evidencia_split = verificar_etapas_previas_de_lods(
+        **rutas_split_falta,
+        plugins_de_synthesis=["Synthesis.esp", "Synthesis_2.esp"],
+    )
+    assert not evidencia_split.completas()
+    assert any("Synthesis_2.esp" in f for f in evidencia_split.faltantes)
+
+
+def test_descubrir_plugins_de_synthesis_con_settings_y_splits(tmp_path: pathlib.Path):
+    """descubrir_plugins_de_synthesis extrae los grupos de settings y los splits en disco."""
+    settings = tmp_path / "PipelineSettings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "Groups": [
+                            {"Name": "Combat Patch", "On": True},
+                            {"Name": "Inactive Group", "On": False},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir()
+    (overwrite / "Combat Patch_2.esp").write_bytes(b"")
+    (overwrite / "Combat Patch_1.esp").write_bytes(b"")  # _1 no es split de Mutagen, debe ignorarse
+
+    plugins = descubrir_plugins_de_synthesis(
+        settings_path=settings,
+        profile_identifier="Default",
+        carpetas_de_salida=[overwrite],
+    )
+    assert plugins == ("Combat Patch.esp", "Combat Patch_2.esp")

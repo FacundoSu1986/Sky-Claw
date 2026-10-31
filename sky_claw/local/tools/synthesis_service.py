@@ -359,7 +359,7 @@ class SynthesisPipelineService:
         self,
         game: pathlib.Path,
         mo2: pathlib.Path,
-        mods_dir: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | object | None = None,
     ) -> Any:
         """Closure del sensor de orden de masters del **perfil MO2 activo**.
 
@@ -387,7 +387,7 @@ class SynthesisPipelineService:
         self,
         game: pathlib.Path,
         mo2: pathlib.Path,
-        mods_dir: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | object | None = None,
     ) -> tuple[Any, Any]:
         """Closures de masters/límites del **perfil MO2 activo**.
 
@@ -469,9 +469,8 @@ class SynthesisPipelineService:
             game_data_dir=data_folder,
             enabled_plugins=sources.effective_enabled_plugins,
         ).check()
-        missing = tuple(
-            name for name in scan.mod_plugins if name.casefold() not in {item.casefold() for item in scan.visible}
-        )
+        visible_casefolded = {item.casefold() for item in scan.visible}
+        missing = tuple(name for name in scan.mod_plugins if name.casefold() not in visible_casefolded)
         if missing:
             sample = ", ".join(missing[:10])
             return _PreflightCheck(
@@ -629,7 +628,9 @@ class SynthesisPipelineService:
         if patcher_ids is None:
             enabled = pipeline.get_enabled_patchers()
             patcher_ids = [p.patcher_id for p in enabled]
-            if not patcher_ids:
+            # Sólo si NO hay pipeline interno configurado: "todos deshabilitados" es una
+            # decisión explícita y debe seguir devolviendo "no patchers".
+            if not patcher_ids and len(pipeline) == 0:
                 try:
                     patcher_ids = list(runner.inspect_settings().patcher_ids)
                 except SynthesisExecutionError as exc:
@@ -958,7 +959,7 @@ class SynthesisPipelineService:
                     tx_id,
                 )
             logger.error("Unexpected exception in synthesis pipeline: %s", exc, exc_info=True)
-            partial_outputs: tuple[pathlib.Path, ...] = ()
+            partial_outputs = ()
             if self._output_path is not None:
                 try:
                     partial_outputs = tuple(runner._discover_output_files_for_groups(settings_profile.group_names))

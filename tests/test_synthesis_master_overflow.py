@@ -97,7 +97,7 @@ def _service_case(
         path_resolver=resolver,
         event_bus=AsyncMock(),
         pipeline_config_path=tmp_path / "no-internal-pipeline.json",
-        preflight=preflight,  # type: ignore[arg-type]
+        preflight=preflight,  # type: ignore[arg-type]  # Fake duck-typed en arnés de test
         synthesis_settings_path=settings_path,
     )
     return service, runner
@@ -189,7 +189,7 @@ async def test_settings_v2_cambiados_durante_preflight_fallan_antes_de_transacci
             settings_path.write_text(json.dumps(payload), encoding="utf-8")
             return PreflightReport(status=PreflightStatus.GREEN, checks=())
 
-    service._preflight = _ChangingPreflight()  # type: ignore[assignment]
+    service._preflight = _ChangingPreflight()  # type: ignore[assignment]  # Stub duck-typed para simular mutación concurrente
     journal = service._journal
 
     with patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock) as run_mock:
@@ -212,7 +212,7 @@ async def test_plugins_txt_cambiado_durante_preflight_bloquea_la_transaccion(tmp
             plugins_file.write_text(plugins_file.read_text(encoding="utf-8") + "*NewPlugin.esp\n", encoding="utf-8")
             return PreflightReport(status=PreflightStatus.GREEN, checks=())
 
-    service._preflight = _ChangingPluginsPreflight()  # type: ignore[assignment]
+    service._preflight = _ChangingPluginsPreflight()  # type: ignore[assignment]  # Stub duck-typed para simular mutación concurrente
     journal = service._journal
 
     with patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock) as run_mock:

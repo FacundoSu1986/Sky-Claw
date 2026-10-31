@@ -484,21 +484,23 @@ class SynthesisRunner:
         )
 
         settings_fingerprint = (
-            expected_settings_fingerprint if expected_settings_fingerprint is not None else self.settings_fingerprint()
+            expected_settings_fingerprint
+            if expected_settings_fingerprint is not None
+            else await asyncio.to_thread(self.settings_fingerprint)
         )
         load_order_fingerprint = (
             expected_load_order_fingerprint
             if expected_load_order_fingerprint is not None
-            else self.load_order_fingerprint()
+            else await asyncio.to_thread(self.load_order_fingerprint)
         )
-        if self.settings_fingerprint() != settings_fingerprint:
+        if await asyncio.to_thread(self.settings_fingerprint) != settings_fingerprint:
             raise SynthesisExecutionError("Synthesis PipelineSettings.json changed after preflight; refusing to run")
-        if self.load_order_fingerprint() != load_order_fingerprint:
+        if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
             raise SynthesisExecutionError("The active MO2 plugins.txt changed after preflight; refusing to run")
-        profile = self.inspect_settings(patcher_ids)
-        if self.settings_fingerprint() != settings_fingerprint:
+        profile = await asyncio.to_thread(self.inspect_settings, patcher_ids)
+        if await asyncio.to_thread(self.settings_fingerprint) != settings_fingerprint:
             raise SynthesisExecutionError("Synthesis PipelineSettings.json changed while it was being validated")
-        if self.load_order_fingerprint() != load_order_fingerprint:
+        if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
             raise SynthesisExecutionError("The active MO2 plugins.txt changed while it was being validated")
         settings_path = self._config.pipeline_settings_path
         assert settings_path is not None
@@ -507,21 +509,22 @@ class SynthesisRunner:
         process_error: BaseException | None = None
         try:
             try:
-                temporary_settings, profile = PatcherPipeline.prepare_synthesis_cli_settings(
+                temporary_settings, profile = await asyncio.to_thread(
+                    PatcherPipeline.prepare_synthesis_cli_settings,
                     settings_path,
                     self._config.profile,
                     patcher_ids,
                 )
             except PatcherPipelineError as exc:
                 raise SynthesisExecutionError(f"Invalid Synthesis pipeline settings: {exc}", stderr=str(exc)) from exc
-            if self.settings_fingerprint() != settings_fingerprint:
+            if await asyncio.to_thread(self.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError(
                     "Synthesis PipelineSettings.json changed while preparing the CLI settings"
                 )
-            if self.load_order_fingerprint() != load_order_fingerprint:
+            if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while preparing the CLI settings")
-            temporary_load_order = self._snapshot_load_order(load_order_fingerprint)
-            if self.load_order_fingerprint() != load_order_fingerprint:
+            temporary_load_order = await asyncio.to_thread(self._snapshot_load_order, load_order_fingerprint)
+            if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while creating its CLI snapshot")
 
             args = self._build_cli_args(
@@ -664,10 +667,11 @@ class SynthesisRunner:
                     cleanup_errors.append(f"{temporary_path}: {cleanup_error}")
             if cleanup_errors:
                 message = "Could not remove temporary Synthesis input(s): " + "; ".join(cleanup_errors)
-                logger.critical(message)
-                if process_error is None:
-                    raise SynthesisExecutionError(message, stderr=message)
-                process_error.add_note(message)
+                # Best-effort: los temporales viven en %TEMP%; no degradan el
+                # veredicto de un run que ya terminó exitosamente.
+                logger.warning(message)
+                if process_error is not None:
+                    process_error.add_note(message)
 
     @staticmethod
     def _output_belongs_to_group(filename: str, group_name: str) -> bool:
@@ -716,9 +720,12 @@ class SynthesisRunner:
                 "--profile",
                 "--profileidentifier",
             }
+            # Alias cortos de CommandLineParser (`-o`, `-s`, `-d`, `-p`, `-l`);
+            # también en forma pegada (`-svalue`).
+            protected_short = ("-o", "-s", "-d", "-p", "-l")
             for argument in extra_args:
                 option = argument.partition("=")[0].casefold()
-                if option in protected_flags:
+                if option in protected_flags or option.startswith(protected_short):
                     raise SynthesisExecutionError(f"extra_args cannot override managed Synthesis option {argument!r}")
             args.extend(extra_args)
 

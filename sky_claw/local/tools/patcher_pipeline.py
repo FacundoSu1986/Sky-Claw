@@ -231,7 +231,14 @@ class PatcherPipeline:
         dict[str, Any],
         list[tuple[int, dict[str, Any], str, list[tuple[int, dict[str, Any], str, tuple[str, ...]]]]],
     ]:
-        """Lee y valida la vista V2 que ``run-pipeline`` realmente consume."""
+        """Lee y valida la vista V2 que ``run-pipeline`` realmente consume.
+
+        El esquema de settings sigue la convención canónica PascalCase de Synthesis
+        0.36.6 (``Profiles``, ``Nickname``, ``ID``, ``Groups``, ``Name``, ``Patchers``).
+        La resolución de ``profile_identifier`` contra ``Nickname`` o ``ID`` es
+        insensible a mayúsculas (fail-closed ante ambigüedades), mientras que las claves
+        JSON siguen el contrato upstream.
+        """
         if not isinstance(profile_identifier, str) or not profile_identifier.strip():
             raise PatcherPipelineError("Synthesis profile identifier must be a non-empty string")
 
@@ -354,7 +361,7 @@ class PatcherPipeline:
         else:
             if not patcher_ids:
                 raise PatcherPipelineError("At least one Synthesis patcher must be selected")
-            selected_entry_indices: set[int] = set()
+            selected_entry_indices = set()
             requested: set[str] = set()
             for patcher_id in patcher_ids:
                 if not isinstance(patcher_id, str) or not patcher_id.strip():

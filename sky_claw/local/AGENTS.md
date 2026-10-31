@@ -81,7 +81,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 | 8 No Grass In Objects | 5 (LOOT) | 9 |
 | 9 TexGen + DynDOLOD | 6 + 7 + 8 ALL complete | — |
 
-**Partial runtime enforcement: unattended runs only (#661).** Every path that can launch stage 9 UNATTENDED — the remote agent tool (`generate_lods` → `GestorDeTrabajosDeLods`) and the dispatcher (`GenerateLodsStrategy`) with `interaction_mode="desatendido"` — checks the ARTIFACTS of 6, 7 and 8 before launching: `Bashed Patch, 0.esp` and `Synthesis.esp` enabled in the active profile's `plugins.txt`, a regular non-empty `*.cgid` (not a link, not a directory) under `overwrite/Grass` or an enabled mod's `Grass/` (`sky_claw/local/validators/etapas_previas_lods.py`, read through `DynDOLODPipelineService.verificar_etapas_previas`, the same profile that feeds `-p:`). It proves the artifacts exist and are active, NOT that they were regenerated after the last load-order change (no per-stage run record exists). The assisted GUI run still enforces nothing — §5 rule 2.
+**Partial runtime enforcement: unattended runs only (#661).** Every path that can launch stage 9 UNATTENDED — the remote agent tool (`generate_lods` → `GestorDeTrabajosDeLods`) and the dispatcher (`GenerateLodsStrategy`) with `interaction_mode="desatendido"` — checks the ARTIFACTS of 6, 7 and 8 before launching: `Bashed Patch, 0.esp` and the active Synthesis group plugin(s) (historically `Synthesis.esp`, or `<Group>.esp` and any `_2.._N` splits when auto-split triggered) enabled in the active profile's `plugins.txt`, a regular non-empty `*.cgid` (not a link, not a directory) under `overwrite/Grass` or an enabled mod's `Grass/` (`sky_claw/local/validators/etapas_previas_lods.py`, read through `DynDOLODPipelineService.verificar_etapas_previas`, the same profile that feeds `-p:`). It proves the artifacts exist and are active, NOT that they were regenerated after the last load-order change (no per-stage run record exists). The assisted GUI run still enforces nothing — §5 rule 2.
 
 ---
 
@@ -233,11 +233,11 @@ rig confirmation.
 2. Launch and configure patches from GitHub repositories (pre-cache phase, OUTSIDE MO2).
 3. For the final render of the compiled output, invoke Synthesis THROUGH the MO2 environment so the output `.esp` is deposited correctly.
 
-**Outputs:** A single consolidated plugin `Synthesis.esp`.
+**Outputs:** Consolidated plugin(s) per active group (`<Group>.esp`, defaulting historically to `Synthesis.esp`), plus any split files (`<Group>_2.esp`..`<Group>_N.esp`) if auto-split is triggered. Note: with `UpdateLoadOrderAfterRun=False`, generated plugins must be explicitly enabled in the MO2 active profile.
 
 **Exceptions:**
 - **Error "DotNet SDK Not Detected":** Windows environment collision with x86 (32-bit) dotnet vestiges. Solution: use the official .NET uninstall tool (`dotnet-core-uninstall`) or "Apps & Features" to remove the x86 runtime, then install the **x64 channel SDK** (not the runtime alone — see §0 directive #10). Do NOT hand-delete `C:\Program Files (x86)\dotnet`; that path is owned by Windows Installer and direct removal can break MSI-revert.
-- **Failure "Max Masters Exceeded":** Skyrim rejects any `.esp` requiring more than 254 masters. In loads exceeding ~1000 mods, Synthesis will fail here. ENABLE the directive **`Split Files if Max Masters Exceeded`** (Auto-Split) to fragment the output.
+- **Failure "Max Masters Exceeded":** Skyrim rejects any `.esp` requiring more than 254 masters. In loads exceeding ~1000 mods, Synthesis will fail here. ENABLE the directive **`Split Files if Max Masters Exceeded`** (Auto-Split) to fragment the output into `_2.._N` files.
 
 ---
 

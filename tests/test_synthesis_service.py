@@ -428,6 +428,39 @@ async def test_no_patchers_early_return(
     mock_journal.begin_transaction.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_pipeline_configurado_con_todos_los_patchers_deshabilitados_no_ejecuta_v2(
+    synthesis_service: SynthesisPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si synthesis_pipeline.json existe pero todos los patchers están deshabilitados,
+    NO debe hacer fallback a los patchers del V2; debe devolver 'No patchers configured or enabled'."""
+    from sky_claw.local.tools.patcher_pipeline import PatcherDefinition, PatcherPipeline
+
+    pipeline_path = tmp_path / "custom_pipeline.json"
+    pipeline = PatcherPipeline(pipeline_path)
+    pipeline.add_patcher(PatcherDefinition(patcher_id="P1", enabled=False))
+    pipeline.to_json(pipeline_path)
+
+    synthesis_service._pipeline_config_path = pipeline_path
+    synthesis_service._patcher_pipeline = pipeline
+
+    with patch.dict(
+        "os.environ",
+        {
+            "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+            "MO2_PATH": str(tmp_path / "MO2"),
+            "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+        },
+    ):
+        out = await synthesis_service.execute_pipeline(patcher_ids=None)
+
+    assert out["success"] is False
+    assert "No patchers configured or enabled" in out["errors"][0]
+    mock_journal.begin_transaction.assert_not_awaited()
+
+
 # =============================================================================
 # T5: Runner init failure
 # =============================================================================
