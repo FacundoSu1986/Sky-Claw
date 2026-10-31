@@ -653,6 +653,108 @@ def test_el_detector_del_ancla_ve_las_formas_reales_de_spawn(codigo: str) -> Non
     assert _spawns_en_codigo(codigo), f"el detector no vio el spawn en: {codigo!r}"
 
 
+#: Los dos métodos públicos de la etapa asistida en ``WryeBashPipelineService``.
+_METODOS_ASISTIDOS = frozenset({"preparar_etapa_asistida", "verificar_etapa_asistida"})
+
+#: Archivos que IMPLEMENTAN la etapa asistida: definen y se llaman entre sí, y no son
+#: "superficies". El censo mira todo lo demás bajo ``sky_claw/`` y ``scripts/``.
+_IMPLEMENTACION_ASISTIDA = frozenset(
+    {
+        "sky_claw/local/tools/wrye_bash_asistida.py",
+        "sky_claw/local/tools/wrye_bash_service.py",
+    }
+)
+
+#: Referencias de producción a los métodos asistidos, congeladas por igualdad literal como
+#: pares ``(archivo, nombre)``. ADR 0016 §7: PR A es contrato + servicio SIN cableado, así
+#: que el conjunto es VACÍO a propósito. PR B lo reemplaza por las TRES superficies
+#: (``dispatcher_dependencies``, ``SupervisorAgent``, tool del agente LLM) y este test pasa
+#: a exigirlas a todas: cablear una sola lo rompe, que es la clase de defecto ("arreglar un
+#: hermano y no al otro") que justifica haber partido el trabajo en PRs.
+_REFERENCIAS_DE_PRODUCCION: frozenset[tuple[str, str]] = frozenset()
+
+
+def _referencias_a_metodos_asistidos(codigo: str) -> set[str]:
+    """Detector del censo: nombres de ``_METODOS_ASISTIDOS`` que *codigo* usa.
+
+    Cuenta uso, no definición: un ``def`` con ese nombre no es una superficie. Cubre las
+    formas por las que un llamador alcanza un método —llamada o referencia (``Name`` y
+    ``Attribute``), ``from x import …`` y el nombre como string exacto (``getattr``, mapas
+    de herramientas)—. Un docstring no cuenta: no es igual al nombre.
+    """
+    hallados: set[str] = set()
+    for nodo in ast.walk(ast.parse(codigo)):
+        if isinstance(nodo, ast.Name) and nodo.id in _METODOS_ASISTIDOS:
+            hallados.add(nodo.id)
+        elif isinstance(nodo, ast.Attribute) and nodo.attr in _METODOS_ASISTIDOS:
+            hallados.add(nodo.attr)
+        elif isinstance(nodo, ast.ImportFrom):
+            hallados.update(n.name for n in nodo.names if n.name in _METODOS_ASISTIDOS)
+        elif isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and nodo.value in _METODOS_ASISTIDOS:
+            hallados.add(nodo.value)
+    return hallados
+
+
+def test_los_metodos_asistidos_no_tienen_llamadores_de_produccion_fuera_del_pr_b() -> None:
+    """Ancla de la familia de superficies (ADR 0016 §7): el cableado va completo o no va.
+
+    El PR declara que excluye a propósito las tres superficies de producción para no
+    cablear una sola; sin este test esa decisión es prosa. Enumera TODOS los ``.py`` de
+    producción (no una muestra): si un cuarto camino —un script, un controlador— toca los
+    métodos, también rompe el ancla.
+    """
+    hallados: set[tuple[str, str]] = set()
+    for carpeta in ("sky_claw", "scripts"):
+        for archivo in sorted((_RAIZ / carpeta).rglob("*.py")):
+            relativo = archivo.relative_to(_RAIZ).as_posix()
+            if relativo in _IMPLEMENTACION_ASISTIDA:
+                continue
+            hallados.update(
+                (relativo, n) for n in _referencias_a_metodos_asistidos(archivo.read_text(encoding="utf-8"))
+            )
+
+    assert hallados == _REFERENCIAS_DE_PRODUCCION, (
+        "cambió el conjunto de superficies que alcanzan los métodos asistidos; el cableado "
+        "de la etapa 6 es todo-o-nada (ADR 0016 §7). Nuevas/ausentes: "
+        f"{sorted(hallados ^ _REFERENCIAS_DE_PRODUCCION)}"
+    )
+
+
+def test_la_implementacion_asistida_existe_donde_el_censo_la_excluye() -> None:
+    """Si se renombra un archivo de ``_IMPLEMENTACION_ASISTIDA`` el censo dejaría de excluirlo."""
+    for relativo in _IMPLEMENTACION_ASISTIDA:
+        assert (_RAIZ / relativo).is_file(), f"{relativo} no existe: actualizar _IMPLEMENTACION_ASISTIDA"
+
+
+@pytest.mark.parametrize(
+    "codigo",
+    [
+        "async def f(svc, p):\n    return await svc.verificar_etapa_asistida(profile=p)",
+        "async def f(svc, p):\n    return await svc.preparar_etapa_asistida(profile=p)",
+        "from sky_claw.local.tools.wrye_bash_service import preparar_etapa_asistida",
+        "def f(svc):\n    return getattr(svc, 'verificar_etapa_asistida')",
+        "HERRAMIENTAS = {'wrye_bash': 'preparar_etapa_asistida'}",
+        "def f(svc):\n    return svc.verificar_etapa_asistida",
+    ],
+)
+def test_el_detector_del_censo_ve_las_formas_reales_de_llamada(codigo: str) -> None:
+    """CONTROL POSITIVO: sin esto, vaciar ``_METODOS_ASISTIDOS`` dejaría el censo en verde."""
+    assert _referencias_a_metodos_asistidos(codigo), f"el detector no vio el uso en: {codigo!r}"
+
+
+@pytest.mark.parametrize(
+    "codigo",
+    [
+        "class S:\n    async def verificar_etapa_asistida(self):\n        '''Fase 2: verificar_etapa_asistida, sin cablear.'''\n",
+        "def f():\n    '''Llama a preparar_etapa_asistida en el PR B.'''",
+        "def veredicto_etapa_asistida():\n    return 1",
+    ],
+)
+def test_el_detector_del_censo_no_cuenta_definiciones_ni_prosa(codigo: str) -> None:
+    """Una definición, un docstring o un nombre parecido no son una superficie."""
+    assert not _referencias_a_metodos_asistidos(codigo)
+
+
 def test_los_pasos_nombran_la_herramienta_el_artefacto_y_mo2() -> None:
     """Las instrucciones son para un operador: tienen que decir QUÉ abrir y DÓNDE."""
     texto = " ".join(PASOS_ASISTIDOS)
