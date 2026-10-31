@@ -1076,7 +1076,7 @@ def ejecutar_transicion_binder(
         except BaseException as exc:
             try:
                 publicada = _finalizacion_publicada(storage_path, t_id)
-            except Exception as lectura_exc:
+            except Exception as lectura_exc:  # noqa: BLE001 — la lectura rota NO revierte: ver comentario
                 # La autoridad de finalización NO se pudo leer: la publicación no
                 # se puede descartar, y revertir una transición durablente
                 # finalizada es peor que dejar las superficies mutadas con su
@@ -1089,7 +1089,12 @@ def ejecutar_transicion_binder(
                     t_id,
                     lectura_exc,
                 )
-                raise exc from lectura_exc
+                # Sin ``from``: el error original puede tener su propio
+                # ``__cause__`` (BinderEscrituraIniError desde Mo2IniEscrituraError,
+                # BinderCasError desde StateCasError) y un re-raise encadenado lo
+                # pisaría. La lectura rota queda como ``__context__`` implícito y
+                # el logger.error la registra (CodeRabbit sobre 7d9859eb).
+                raise exc  # noqa: B904 — deliberado: re-raise SIN from preserva el __cause__ original
             if publicada:
                 # El registro inmutable ya está publicado (crash/fallo entre la
                 # F1b y la F2 de FINALIZE): la transición terminó de forma

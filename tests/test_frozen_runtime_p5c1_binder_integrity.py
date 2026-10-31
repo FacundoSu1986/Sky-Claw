@@ -1426,7 +1426,8 @@ def test_si_el_historial_se_vuelve_ilegible_no_se_revierte_y_se_levanta_el_error
     def _rotar_que_falla(handle, root, *, registro, revision_previa):  # type: ignore[no-untyped-def]
         estado["rotacion_fallo"] = True
         estado["t_id"] = registro.transition_id
-        raise OSError("rotación interrumpida")
+        # Con causa raíz propia: el re-raise NO tiene que pisarla.
+        raise OSError("rotación interrumpida") from ValueError("causa raíz sintética")
 
     def _derivar_inestable(root):  # type: ignore[no-untyped-def]
         historial = real_derivar(root)
@@ -1450,6 +1451,13 @@ def test_si_el_historial_se_vuelve_ilegible_no_se_revierte_y_se_levanta_el_error
 
     # El error original sobrevive: no quedó enmascarado por la lectura rota.
     assert "historial ilegible" not in str(excinfo.value)
+    # Y su cadena de causa raíz intacta: el re-raise no pisa el __cause__
+    # original (con ``from lectura_exc`` el ValueError sintético desaparecía).
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "causa raíz sintética" in str(excinfo.value.__cause__)
+    # La lectura rota queda como contexto implícito, no como causa.
+    assert excinfo.value.__context__ is not None
+    assert "historial ilegible" in str(excinfo.value.__context__)
     # Y las superficies NO se revierten: la publicación no se pudo descartar.
     assert leer_game_path_de_mo2(rig.ini).path == str(rig.clone_root)
     assert len(recovery.listar_registros(rig.storage)) == 1, "el registro de recuperación debía preservarse"
