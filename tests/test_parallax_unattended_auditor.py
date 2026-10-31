@@ -612,7 +612,8 @@ def test_una_retirada_presente_se_audita_aunque_no_quede_ningun_artefacto_escrit
 
     informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
     informe["omitidas_al_enumerar"] = []
-    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    informe["interrupcion"] = None
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
     assert combinar(dictar(informe), auditoria).veredicto is VeredictoDelLote.FAIL
 
 
@@ -627,7 +628,8 @@ def test_una_retirada_que_sigue_en_disco_degrada_el_veredicto_final_a_fail(tmp_p
     informe = _informe_con_retirada("textures/vieja_p.dds")
     informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
     informe["omitidas_al_enumerar"] = []
-    informe["conteos"] = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    informe["interrupcion"] = None
+    informe["conteos"] = {"EN_REVISION": 0, "ESCRITA": 1, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
 
     final = combinar(dictar(informe), auditar(informe, tmp_path))
 
@@ -776,7 +778,8 @@ def test_un_informe_solo_con_retiradas_ausentes_no_se_vuelve_falla_por_no_tener_
     informe["otras_rutas"] = [{"ruta": "textures/vieja_p.dds", "efecto": "RETIRADA", "detalle": "x"}]
     informe["encoder"] = {"texconv_version": "may2026", "texconv_sha256": "a" * 64}
     informe["omitidas_al_enumerar"] = []
-    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0}
+    informe["interrupcion"] = None
+    informe["conteos"] = {"EN_REVISION": 1, "ESCRITA": 0, "NO_ESCRITA": 0, "NO_PROCESADA": 0, "SIN_CONFIRMAR": 0}
 
     final = combinar(dictar(informe), auditar(informe, tmp_path))
 

@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
+from sky_claw.app.db.locks import LockError
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.native_parallax.decode import ConvencionNormal, NormalDecodeError, NormalDecoder
 from sky_claw.local.native_parallax.export import ExportError
@@ -108,6 +109,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DESVIACION_MINIMA_DE_ALTURA",
+    "ERRORES_DE_LA_ESCRITURA",
     "ERRORES_POR_ARCHIVO",
     "EXPORTADOR_ID",
     "MOTIVO_SIN_CONTENIDO",
@@ -180,6 +182,12 @@ ERRORES_POR_ARCHIVO: Final[tuple[type[BaseException], ...]] = (
     OSError,
 )
 
+#: Lo que corta la FASE DE ESCRITURA del lote entero (no una ruta): el candado perdido o que falla (``LockError``, incluido
+#: ``LockLeaseLostError``) y un fallo del disco que el escritor no absorbe (``OSError``). El lote lo declara (``SIN_CONFIRMAR`` +
+#: ``InformeDelLote.interrupcion``) en vez de dejarlo escapar sin informe. ``SalidaOcupadaError`` y ``SalidaNoEscribibleError`` NO
+#: están: son errores de uso que el escritor levanta sin haber tocado nada, y siguen subiendo.
+ERRORES_DE_LA_ESCRITURA: Final[tuple[type[BaseException], ...]] = (LockError, OSError)
+
 
 # ---------------------------------------------------------------------------
 # Contratos
@@ -226,8 +234,14 @@ class EstadoDeArchivo(Enum):
     EN_REVISION = "en_revision"  # el gate la mandó a revisión y no se pidió escribirla
     NO_PROCESADA = "no_procesada"  # falló antes de tener algo que escribir
     NO_ESCRITA = "no_escrita"  # el escritor no la dejó en la salida (preservada, conflicto o fallida)
+    # La escritura se cortó (candado perdido o fallo del disco) con esta textura en juego: no se sabe si quedó en la salida.
+    SIN_CONFIRMAR = "sin_confirmar"
 
 
+#: Estados que impiden que el lote sea ``completo``. ``EN_REVISION`` y ``ESCRITA`` no: una revisión es una decisión.
+_ESTADOS_QUE_NO_COMPLETAN = frozenset(
+    {EstadoDeArchivo.NO_PROCESADA, EstadoDeArchivo.NO_ESCRITA, EstadoDeArchivo.SIN_CONFIRMAR}
+)
 _EFECTOS_QUE_DEJAN_LA_SALIDA = frozenset({EfectoDeSalida.PUBLICADA, EfectoDeSalida.REEMPLAZADA, EfectoDeSalida.OMITIDA})
 #: Efectos con los que el escritor reporta que una ruta NO se hizo. Espejo de ``veredicto.EFECTOS_FALLIDOS`` (ancla de paridad en los tests).
 _EFECTOS_QUE_FALLAN = frozenset({EfectoDeSalida.CONFLICTO, EfectoDeSalida.FALLIDA})
@@ -334,16 +348,23 @@ class InformeDelLote:
     archivos: tuple[ResultadoDeArchivo, ...]
     otras_rutas: tuple[ResultadoDeRuta, ...]
     encoder: tuple[str, str] | None  # (versión, huella) del texconv que corrió, si corrió
+    # Por qué se cortó la escritura (``Tipo: mensaje``); ``None`` si el lote llegó hasta el final. Con un valor, ``otras_rutas``
+    # está vacía porque no se sabe qué hizo el escritor con ellas (un retiro pudo quedar a medias).
+    interrupcion: str | None = None
 
     @property
     def completo(self) -> bool:
-        """True si ninguna textura quedó sin procesar ni sin escribir y ninguna salida anterior falló. Una en revisión es una decisión.
+        """True si ninguna textura quedó sin procesar, sin escribir ni sin confirmar y ninguna salida anterior falló. Una en revisión es una decisión.
 
         Una ruta ajena a la entrada que el escritor no pudo hacer (``CONFLICTO``, ``FALLIDA``: típicamente un retiro que falló) también
         cuenta: el archivo que el operador quería fuera sigue activo en el juego. ``parallax_unattended.veredicto.dictar`` ya lo
-        cuenta como fallo; ``tests/test_parallax_unattended_veredicto.py`` ancla que los dos juzguen igual cada efecto.
+        cuenta como fallo; ``tests/test_parallax_unattended_veredicto.py`` ancla que los dos juzguen igual cada efecto. Una escritura
+        interrumpida (``interrupcion``) tampoco es completa aunque ninguna textura figure como ``SIN_CONFIRMAR``: un lote que solo
+        retiraba salidas anteriores no tiene textura propia que lo delate.
         """
-        if any(a.estado in (EstadoDeArchivo.NO_PROCESADA, EstadoDeArchivo.NO_ESCRITA) for a in self.archivos):
+        if self.interrupcion is not None:
+            return False
+        if any(a.estado in _ESTADOS_QUE_NO_COMPLETAN for a in self.archivos):
             return False
         return not any(r.efecto in _EFECTOS_QUE_FALLAN for r in self.otras_rutas)
 
@@ -404,6 +425,7 @@ class InformeDelLote:
                 for a in self.archivos
             ],
             "otras_rutas": [{"ruta": r.ruta, "efecto": r.efecto.name, "detalle": r.detalle} for r in self.otras_rutas],
+            "interrupcion": self.interrupcion,
         }
 
 
@@ -662,6 +684,22 @@ async def _fase_de_escritura(
     return tuple(sorted(otras, key=lambda r: clave_de_ruta(r.ruta)))
 
 
+def _marcar_sin_confirmar(parciales: list[_Parcial], interrupcion: str) -> None:
+    """Toda textura que se le entregó al escritor queda ``SIN_CONFIRMAR``: no se sabe si llegó a la salida.
+
+    Las demás (en revisión, sin procesar) no estaban en juego y conservan su estado. La próxima corrida recupera sola lo que
+    haya quedado a medias al abrir la sesión.
+    """
+    for parcial in parciales:
+        if parcial.fuente is None:
+            continue
+        parcial.estado = EstadoDeArchivo.SIN_CONFIRMAR
+        parcial.detalle = (
+            f"la escritura se interrumpió ({interrupcion}): no se sabe si esta salida quedó en el mod; "
+            "volvé a correr el lote (al abrir la sesión se recupera lo que haya quedado a medias)"
+        )
+
+
 def _borrar_trabajo(trabajo: pathlib.Path) -> None:
     """Borra el directorio de trabajo propio sin atravesar enlaces y SIN lanzar: corre en un ``finally``.
 
@@ -693,6 +731,10 @@ async def procesar_lote(
     los produjo. ``decisor``: el gate (por defecto el vigente; los tests y NP-X0 inyectan otro). ``directorio_de_trabajo``:
     dónde crear el espacio privado de las salidas intermedias (por defecto el temporal del sistema); se borra siempre.
 
+    Si la FASE DE ESCRITURA se corta por ``ERRORES_DE_LA_ESCRITURA`` (candado perdido, disco), no se lanza: el informe vuelve con
+    ``interrupcion`` y cada textura entregada al escritor como ``SIN_CONFIRMAR``, para que el operador tenga el censo de lo que
+    quedó en duda en vez de un traceback.
+
     Raises:
         LoteInvalidoError: dos entradas apuntan a la misma ruta de salida (no se tocó nada).
         SalidaNoEscribibleError: la raíz de salida no es admisible (se comprueba ANTES de procesar ninguna textura; el escritor
@@ -704,9 +746,15 @@ async def procesar_lote(
     validar_raiz_de_salida(raiz_de_salida)  # una configuración mala se dice antes de gastar minutos y GiB por textura
     efectivos = parametros if parametros is not None else ParametrosDelLote()
     trabajo = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw-parallax-", dir=directorio_de_trabajo))
+    interrupcion: str | None = None
     try:
         parciales, encoder = await _fase_de_calculo(lista, efectivos, exportador, decisor, trabajo, progreso)
-        otras = await _fase_de_escritura(parciales, lista, efectivos, raiz_de_salida, coordinacion)
+        try:
+            otras = await _fase_de_escritura(parciales, lista, efectivos, raiz_de_salida, coordinacion)
+        except ERRORES_DE_LA_ESCRITURA as exc:
+            interrupcion = f"{type(exc).__name__}: {exc}"
+            otras = ()  # no se sabe qué hizo el escritor con las rutas ajenas a la entrada (un retiro pudo quedar a medias)
+            _marcar_sin_confirmar(parciales, interrupcion)
     finally:
         _borrar_trabajo(trabajo)
     archivos = tuple(
@@ -723,4 +771,6 @@ async def procesar_lote(
         )
         for p in parciales
     )
-    return InformeDelLote(parametros=efectivos, archivos=archivos, otras_rutas=otras, encoder=encoder)
+    return InformeDelLote(
+        parametros=efectivos, archivos=archivos, otras_rutas=otras, encoder=encoder, interrupcion=interrupcion
+    )

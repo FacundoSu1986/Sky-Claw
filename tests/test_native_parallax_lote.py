@@ -33,6 +33,7 @@ from typing import Any
 
 import pytest
 
+from sky_claw.app.db.locks import LockAcquisitionError, LockError, LockLeaseLostError
 from sky_claw.local.native_parallax import lote, provider
 from sky_claw.local.native_parallax.decode import ArchivoNormalInvalidoError, ConvencionNormal, NormalDecoder
 from sky_claw.local.native_parallax.export import ExportError, generar_mips
@@ -60,6 +61,8 @@ from sky_claw.local.native_parallax.output_writer import (
     CoordinacionDeSalida,
     EfectoDeSalida,
     SalidaNoEscribibleError,
+    SalidaOcupadaError,
+    SesionDeSalida,
     construir_coordinacion_de_salida,
 )
 
@@ -498,8 +501,126 @@ def test_cada_estado_del_vocabulario_cerrado_tiene_un_caso_en_este_archivo() -> 
         EstadoDeArchivo.EN_REVISION,  # test_sin_umbrales_todo_es_revision_y_no_se_escribe_nada_sin_pedirlo
         EstadoDeArchivo.NO_PROCESADA,  # test_un_archivo_ilegible_no_frena_a_los_demas
         EstadoDeArchivo.NO_ESCRITA,  # test_un_archivo_ajeno_en_la_ruta_de_salida_no_se_pisa
+        EstadoDeArchivo.SIN_CONFIRMAR,  # test_un_corte_de_la_escritura_nunca_escapa_del_lote_y_deja_el_censo_de_lo_dudoso
     }
     assert set(EstadoDeArchivo) == cubiertos
+
+
+# ---------------------------------------------------------------------------
+# La frontera de la escritura (#834 ítem 2): un corte no escapa del lote
+# ---------------------------------------------------------------------------
+
+
+def _cortar_la_escritura(monkeypatch: pytest.MonkeyPatch, excepcion: BaseException, *, en_la_llamada: int) -> None:
+    """Hace que ``SesionDeSalida._asegurar_lock`` lance *excepcion* a partir de su llamada número *en_la_llamada* (desde 1)."""
+    real = SesionDeSalida._asegurar_lock
+    llamadas = {"n": 0}
+
+    async def cortada(self: Any) -> None:
+        llamadas["n"] += 1
+        if llamadas["n"] >= en_la_llamada:
+            raise excepcion
+        await real(self)
+
+    monkeypatch.setattr(SesionDeSalida, "_asegurar_lock", cortada)
+
+
+#: Llamadas a ``_asegurar_lock`` que se ejercen. ``test_los_puntos_de_corte_cubren_todas_las_llamadas_de_una_escritura_normal`` obliga a
+#: ampliarlo si el escritor agrega una: un punto de corte sin caso sería un hermano sin cubrir.
+_PUNTOS_DE_CORTE = range(1, 11)
+
+
+async def test_los_puntos_de_corte_cubren_todas_las_llamadas_de_una_escritura_normal(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = SesionDeSalida._asegurar_lock
+    llamadas = {"n": 0}
+
+    async def contada(self: Any) -> None:
+        llamadas["n"] += 1
+        await real(self)
+
+    monkeypatch.setattr(SesionDeSalida, "_asegurar_lock", contada)
+
+    informe = await escenario.lote([escenario.normal("muro01"), escenario.normal("muro02", fase=1.0)])
+
+    assert informe.completo
+    assert 0 < llamadas["n"] < max(_PUNTOS_DE_CORTE), (
+        f"la escritura llama {llamadas['n']} veces a _asegurar_lock y los puntos de corte llegan a {max(_PUNTOS_DE_CORTE)}: ampliá el rango"
+    )
+
+
+def test_los_errores_de_la_escritura_son_exactamente_el_candado_y_el_disco() -> None:
+    """Congela la familia por igualdad literal: ampliarla o recortarla es una decisión, no un descuido."""
+    assert (LockError, OSError) == lote.ERRORES_DE_LA_ESCRITURA
+    assert "ERRORES_DE_LA_ESCRITURA" in lote.__all__
+    # Lo que el escritor levanta SIN haber tocado nada sigue siendo un error de uso: no se disfraza de «sin confirmar».
+    for uso in (SalidaOcupadaError, SalidaNoEscribibleError, LoteInvalidoError):
+        assert not issubclass(uso, lote.ERRORES_DE_LA_ESCRITURA), uso
+    assert issubclass(LockLeaseLostError, LockError) and issubclass(LockAcquisitionError, LockError)
+
+
+@pytest.mark.parametrize(
+    "excepcion",
+    [LockLeaseLostError("lease perdida (simulada)"), LockError("candado (simulado)"), OSError("disco (simulado)")],
+    ids=lambda e: type(e).__name__,
+)
+@pytest.mark.parametrize("llamada", _PUNTOS_DE_CORTE)
+async def test_un_corte_de_la_escritura_nunca_escapa_del_lote_y_deja_el_censo_de_lo_dudoso(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, excepcion: BaseException, llamada: int
+) -> None:
+    """Se corta en CADA punto donde la sesión vuelve a pedir el lock (entrada, intención, una por acción, compromiso, limpieza)
+    y con cada tipo de la familia. En todos: ni excepción ni informe a medias, y la corrida siguiente lo recupera."""
+    a, b = escenario.normal("muro01"), escenario.normal("muro02", fase=1.0)
+    _cortar_la_escritura(monkeypatch, excepcion, en_la_llamada=llamada)
+
+    informe = await escenario.lote([a, b])
+
+    if informe.interrupcion is None:  # el corte cayó después de la última llamada: el lote terminó entero
+        assert informe.completo and all(x.estado is EstadoDeArchivo.ESCRITA for x in informe.archivos)
+    else:
+        assert informe.interrupcion.startswith(f"{type(excepcion).__name__}: ")
+        assert not informe.completo
+        assert {x.estado for x in informe.archivos} == {EstadoDeArchivo.SIN_CONFIRMAR}
+        assert all(x.efecto is None and "volvé a correr" in x.detalle for x in informe.archivos)
+        assert informe.otras_rutas == ()
+        assert informe.a_diccionario()["interrupcion"] == informe.interrupcion
+    if llamada == 1:
+        assert informe.interrupcion is not None
+
+    monkeypatch.undo()
+    siguiente = await escenario.lote([a, b])  # la sesión nueva recupera lo que haya quedado a medias
+    assert siguiente.completo and siguiente.interrupcion is None
+    assert all(x.estado is EstadoDeArchivo.ESCRITA for x in siguiente.archivos)
+    assert escenario.disco(a.ruta_de_salida).is_file() and escenario.disco(b.ruta_de_salida).is_file()
+
+
+async def test_un_corte_en_un_lote_que_solo_retira_no_es_completo_aunque_ninguna_textura_quede_sin_confirmar(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vieja, nueva = escenario.normal("muro01"), escenario.normal("muro02", fase=1.0)
+    await escenario.lote([vieja])
+    _cortar_la_escritura(monkeypatch, LockLeaseLostError("lease perdida (simulada)"), en_la_llamada=1)
+
+    # ``escribir_revision=False``: la textura nueva queda en revisión y no se le entrega nada al escritor, pero retirar abre la sesión.
+    informe = await escenario.lote([nueva], parametros=ParametrosDelLote(retirar_no_incluidas=True))
+
+    assert [x.estado for x in informe.archivos] == [EstadoDeArchivo.EN_REVISION]
+    assert informe.interrupcion is not None and not informe.completo
+
+
+@pytest.mark.parametrize(
+    "uso",
+    [SalidaNoEscribibleError("no admisible"), SalidaOcupadaError("otra instancia")],
+    ids=lambda e: type(e).__name__,
+)
+async def test_un_error_de_uso_del_escritor_sigue_subiendo(
+    escenario: Escenario, monkeypatch: pytest.MonkeyPatch, uso: BaseException
+) -> None:
+    _cortar_la_escritura(monkeypatch, uso, en_la_llamada=1)
+
+    with pytest.raises(type(uso)):
+        await escenario.lote([escenario.normal("muro01")])
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +841,13 @@ async def test_el_informe_es_json_estable_y_no_filtra_rutas_absolutas(escenario:
     assert json.loads(texto) == informe.a_diccionario()
     assert str(escenario.base) not in texto
     cargado = json.loads(texto)
-    assert cargado["conteos"] == {"ESCRITA": 2, "EN_REVISION": 0, "NO_PROCESADA": 0, "NO_ESCRITA": 0}
+    assert cargado["conteos"] == {
+        "ESCRITA": 2,
+        "EN_REVISION": 0,
+        "NO_PROCESADA": 0,
+        "NO_ESCRITA": 0,
+        "SIN_CONFIRMAR": 0,
+    }
     assert cargado["archivos"][0]["metricas"]["acuerdo_p95_grados"] >= 0.0
     assert cargado["parametros"]["bordes"] == "periodicos"
 
@@ -855,7 +982,7 @@ def test_el_informe_en_json_esta_congelado_por_igualdad_literal() -> None:
             "retirar_no_incluidas": False,
         },
         "encoder": {"texconv_version": "may2026", "texconv_sha256": _H_TEXCONV},
-        "conteos": {"ESCRITA": 1, "EN_REVISION": 0, "NO_PROCESADA": 1, "NO_ESCRITA": 0},
+        "conteos": {"ESCRITA": 1, "EN_REVISION": 0, "NO_PROCESADA": 1, "NO_ESCRITA": 0, "SIN_CONFIRMAR": 0},
         "archivos": [
             {
                 "ruta_de_origen": "textures/a/x_n.dds",
@@ -896,6 +1023,7 @@ def test_el_informe_en_json_esta_congelado_por_igualdad_literal() -> None:
             {"ruta": "textures/a/z_p.dds", "efecto": "OMITIDA", "detalle": ""},
             {"ruta": "textures/a/w_p.dds", "efecto": "RETIRADA", "detalle": "se retiró"},
         ],
+        "interrupcion": None,
     }
 
 
@@ -933,6 +1061,9 @@ def test_completo_conservadas_y_retiradas_se_derivan_de_los_estados_y_los_efecto
     assert informe(EstadoDeArchivo.ESCRITA, EstadoDeArchivo.EN_REVISION).completo
     assert not informe(EstadoDeArchivo.NO_PROCESADA).completo
     assert not informe(EstadoDeArchivo.ESCRITA, EstadoDeArchivo.NO_ESCRITA).completo
+    assert not informe(EstadoDeArchivo.ESCRITA, EstadoDeArchivo.SIN_CONFIRMAR).completo
+    # Una interrupción declarada no es un lote completo aunque ninguna textura figure como sin confirmar (un lote que solo retiraba).
+    assert not InformeDelLote(ParametrosDelLote(), (), (), None, interrupcion="LockLeaseLostError: x").completo
     otras = (
         ResultadoDeRuta("b", EfectoDeSalida.OMITIDA, ""),
         ResultadoDeRuta("a", EfectoDeSalida.OMITIDA, ""),
@@ -946,6 +1077,7 @@ def test_completo_conservadas_y_retiradas_se_derivan_de_los_estados_y_los_efecto
         EstadoDeArchivo.EN_REVISION: 0,
         EstadoDeArchivo.NO_PROCESADA: 0,
         EstadoDeArchivo.NO_ESCRITA: 0,
+        EstadoDeArchivo.SIN_CONFIRMAR: 0,
     }
 
 
@@ -971,9 +1103,11 @@ def test_la_cli_sale_con_fallo_si_una_otra_ruta_fallo() -> None:
     def informe(efecto: EfectoDeSalida) -> InformeDelLote:
         return InformeDelLote(ParametrosDelLote(), (), (ResultadoDeRuta("textures/vieja_p.dds", efecto, "d"),), None)
 
-    assert _codigo(informe(EfectoDeSalida.RETIRADA)) == CODIGO_OK
-    assert _codigo(informe(EfectoDeSalida.FALLIDA)) == CODIGO_CON_FALLOS
-    assert _codigo(informe(EfectoDeSalida.CONFLICTO)) == CODIGO_CON_FALLOS
+    assert _codigo(informe(EfectoDeSalida.RETIRADA), informe_escrito=True) == CODIGO_OK
+    assert _codigo(informe(EfectoDeSalida.FALLIDA), informe_escrito=True) == CODIGO_CON_FALLOS
+    assert _codigo(informe(EfectoDeSalida.CONFLICTO), informe_escrito=True) == CODIGO_CON_FALLOS
+    # Un lote perfecto sin su informe tampoco sale con 0: el resultado no se puede auditar.
+    assert _codigo(informe(EfectoDeSalida.RETIRADA), informe_escrito=False) == CODIGO_CON_FALLOS
 
 
 # ---------------------------------------------------------------------------

@@ -98,7 +98,7 @@ El informe describe cada textura con tres campos que se confunden fácil. Son co
 | Campo | Qué dice |
 |---|---|
 | `veredicto` | lo que decidió el gate con las métricas: `REVIEW` mientras no haya umbrales validados |
-| `estado` | qué pasó con el archivo: `ESCRITA` (quedó en la salida: publicada, reemplazada **o con la caché vigente**), `EN_REVISION` (el gate la mandó a revisión y no pediste escribirla), `NO_PROCESADA` (falló antes de tener algo que escribir) o `NO_ESCRITA` |
+| `estado` | qué pasó con el archivo: `ESCRITA` (quedó en la salida: publicada, reemplazada **o con la caché vigente**), `EN_REVISION` (el gate la mandó a revisión y no pediste escribirla), `NO_PROCESADA` (falló antes de tener algo que escribir), `NO_ESCRITA` o `SIN_CONFIRMAR` (la escritura se cortó —candado perdido o fallo del disco— y **no se sabe** si quedó en el mod: ver `interrupcion` en el informe) |
 | `efecto` | qué hizo el escritor con esa ruta: `PUBLICADA`, `REEMPLAZADA`, `OMITIDA` (la caché estaba vigente), `PRESERVADA`, `CONFLICTO`, `FALLIDA`… |
 
 Por eso una textura puede tener `veredicto: REVIEW`, `estado: ESCRITA` y `efecto: OMITIDA` sin que nada se contradiga, y `conteos` se calcula de la misma lista de archivos.
@@ -179,5 +179,8 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
   archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.
-- Códigos de salida: `0` bien, `1` alguna textura falló, `2` mala configuración (falta el `texconv`, carpeta inválida…),
+- Códigos de salida: `0` bien, `1` alguna textura falló **o el informe no se pudo escribir**, `2` mala configuración (falta el `texconv`, carpeta inválida…),
   `3` otra instancia está escribiendo esa misma salida, `130` interrumpido.
+- Si la escritura se corta a mitad (otro proceso toma el candado, falla el disco), el generador **no** termina con un error sin informe: escribe el informe con
+  `interrupcion` (el motivo) y las texturas en duda como `SIN_CONFIRMAR`, y sale con `1`. Volvé a correr el mismo lote: al abrir la salida se recupera lo que haya quedado a medias.
+  El informe se escribe de forma atómica (archivo temporal + reemplazo): un corte no deja un JSON truncado.
