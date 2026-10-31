@@ -8,6 +8,7 @@ del lock (``tx_lock.rollback_completed``), igual que ``xedit_service``.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -57,14 +58,53 @@ def mock_journal() -> AsyncMock:
 def mock_path_resolver(tmp_path: pathlib.Path) -> MagicMock:
     resolver = MagicMock()
     game_path = tmp_path / "Skyrim"
-    game_path.mkdir()
+    data_dir = game_path / "Data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "Skyrim.esm").write_bytes(b"TES4" + b"\x00" * 128)
     mo2_path = tmp_path / "MO2"
-    mo2_path.mkdir()
-    (mo2_path / "overwrite").mkdir()
+    (mo2_path / "overwrite").mkdir(parents=True)
+    profile_dir = mo2_path / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "loadorder.txt").write_text("Skyrim.esm\n", encoding="utf-8")
+    (profile_dir / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
     synthesis_exe = tmp_path / "Synthesis.exe"
     synthesis_exe.touch()
+    (tmp_path / "PipelineSettings.json").write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "ID": "profile-default",
+                        "TargetRelease": "SkyrimSE",
+                        "Groups": [
+                            {
+                                "On": True,
+                                "Name": "Synthesis",
+                                "Patchers": [
+                                    {
+                                        "$type": "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution",
+                                        "ID": "id-patcher_a",
+                                        "Nickname": "patcher_a",
+                                        "On": True,
+                                        "RemoteRepoPath": "https://example.invalid/patcher_a",
+                                    }
+                                ],
+                            }
+                        ],
+                        "SplitIfMaxMastersExceeded": True,
+                        "UpdateLoadOrderAfterRun": True,
+                    }
+                ],
+                "WorkingDirectory": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
     resolver.get_mo2_path = MagicMock(return_value=mo2_path)
+    resolver.get_active_profile = MagicMock(return_value="Default")
     # Raíz de datos para runner/preflight (portable: install == data).
     resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2_path)
     resolver.get_mo2_mods_path = MagicMock(return_value=mo2_path / "mods")
@@ -104,6 +144,7 @@ def servicio(
         path_resolver=mock_path_resolver,
         event_bus=mock_event_bus,
         pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+        synthesis_settings_path=tmp_path / "PipelineSettings.json",
     )
 
 
@@ -123,6 +164,7 @@ class _LockRestauracionFallida:
     """Lock de frontera: el cuerpo falla y la restauración NO se completa."""
 
     rollback_completed = False
+    snapshots: dict[str, object] = {}
 
     async def __aenter__(self) -> _LockRestauracionFallida:
         return self
