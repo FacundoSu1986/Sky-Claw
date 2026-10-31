@@ -268,6 +268,12 @@ mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y
 | F1 | `preparar_etapa_asistida` llamaba a `self._ensure_preflight` en el hilo del event loop; la construcción inicial de modlist/masters/vfs ejecuta I/O de disco síncrono antes de `preflight.run()`. | Confirmado por traza estática: `build_modlist_sensors` y `build_master_order_sensor` ejecutan `sources_resolver()` inmediatamente. | `preflight = await asyncio.to_thread(self._ensure_preflight, ...)` + `_preflight_lock = threading.Lock()` para sincronizar construcciones concurrentes. Tests de ejecución en worker thread y concurrencia. |
 | F2 | `os.lstat(ruta)` sobre el archivo no detectaba si la carpeta antecesora (p. ej. `mo2/overwrite` o la carpeta de un mod) era un symlink o junction NTFS apuntando a un directorio externo. Además, modlist con traversal (`../`) podía escapar de `mods/`. | Reproducido en Linux y Windows: `lstat` sobre el archivo hijo no reporta enlace si el padre es un symlink/junction. | `huella_de_artefacto` verifica enlace en `ruta.parent` con `_es_reparse_point` / `S_ISLNK`, marcando `es_enlace=True`. `bashed_patch_en_overlay` filtra carpetas padre enlazadas y nombres con traversal (`..`, `/`, `\`, `:`). Tests con symlinks y junctions NTFS. |
 
+**Ronda 7 (auditoría adversarial pre-merge sobre HEAD `1db9e1ce`).** Re-auditoría de cierre:
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| CR-1 | Validación de nombres de mods en `output_targets.py:276` y perfiles en `wrye_bash_service.py:138-140` usaba subcadena `".." in nombre`. Esto rechazaba nombres legítimos con puntos internos (ej. `Foo... Bar`, `Mod..v2`), bloqueando ambas fases con `CoberturaDeOverlayIncompleta` o `PerfilInvalido`. Tampoco rechazaba explícitamente el nombre exacto `"."` en `output_targets.py`. | Confirmado: subcadena `".." in nombre` causa falso positivo en nombres con elipsis o puntos suspensivos sin traversal, mientras que `.` pasaba como nombre válido resolviendo a `mods_dir`. | Alinear al patrón canónico del repo (`ganadores.py:112` y `output_targets.py:390`): `if not nombre or nombre in (".", "..") or any(sep in nombre for sep in ("/", "\\", ":")):` en `bashed_patch_en_overlay`, y simétricamente en `_perfil_es_usable` de `wrye_bash_service.py`. Tests dedicados para nombres válidos con puntos internos y rechazo estricto de `.`, `..` y separadores. |
+
 ## 10. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el

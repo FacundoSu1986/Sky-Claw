@@ -243,6 +243,47 @@ def test_overwrite_inaccesible_degrada_la_cobertura(tmp_path: pathlib.Path) -> N
     assert resultado.cobertura_completa is False
 
 
+def test_bashed_patch_en_overlay_admite_puntos_internos_en_nombres_de_mods(tmp_path: pathlib.Path) -> None:
+    """Nombres legítimos con puntos como 'Foo... Bar' o 'Mod..v2' no son traversal y se inspeccionan."""
+    game, mo2, mods = tmp_path / "game", tmp_path / "mo2", tmp_path / "mo2" / "mods"
+    (game / "Data").mkdir(parents=True)
+    mod_dir = mods / "Foo... Bar"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "Bashed Patch, 0.esp").write_bytes(b"TES4" + b"\x00" * 60)
+
+    resultado = bashed_patch_en_overlay(
+        game=game,
+        mo2=mo2,
+        mods_dir=mods,
+        mods_habilitados=("Foo... Bar",),
+    )
+
+    assert resultado is not None
+    assert resultado.cobertura_completa is True
+    assert resultado.capa == "Foo... Bar"
+    assert resultado.ruta == mod_dir / "Bashed Patch, 0.esp"
+
+
+@pytest.mark.parametrize("nombre_invalido", [".", "..", "a/b", "a\\b", "c:d", ""])
+def test_bashed_patch_en_overlay_saltea_mods_invalidos_y_degrada_cobertura(
+    nombre_invalido: str, tmp_path: pathlib.Path
+) -> None:
+    """Componentes '.' o '..' exactos, vacíos o con separadores degradan cobertura y se saltean."""
+    game, mo2, mods = tmp_path / "game", tmp_path / "mo2", tmp_path / "mo2" / "mods"
+    (game / "Data").mkdir(parents=True)
+    (mods / "Valido").mkdir(parents=True)
+
+    resultado = bashed_patch_en_overlay(
+        game=game,
+        mo2=mo2,
+        mods_dir=mods,
+        mods_habilitados=(nombre_invalido, "Valido"),
+    )
+
+    assert resultado is not None
+    assert resultado.cobertura_completa is False
+
+
 # ---------------------------------------------------------------------------
 # Pandora — un único destino administrado
 # ---------------------------------------------------------------------------

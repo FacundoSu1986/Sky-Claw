@@ -88,10 +88,10 @@ BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
 DOMINIO_FISICO = "physical"
 DOMINIO_USVFS = "usvfs"
 
-#: Caracteres que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
-#: ``profiles/<perfil>/plugins.txt``, así que un separador o ``..`` saldría del árbol de
-#: la instancia (ADR 0016, fase 2).
-_SEPARADORES_DE_PERFIL = ("/", "\\", ":", "..")
+#: Separadores de ruta que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
+#: ``profiles/<perfil>/plugins.txt``, así que un separador o un componente ``.`` / ``..`` saldría del
+#: árbol de la instancia (ADR 0016, fase 2).
+_SEPARADORES_DE_PERFIL = ("/", "\\", ":")
 
 #: Archivo de prioridad del perfil, hermano del ``plugins.txt``. Se nombra acá —y no se
 #: reconstruye a mano— porque es el contrato que ``vfs_attestation.read_enabled_mods``
@@ -137,7 +137,7 @@ def _normalizar_dominio(dominio: str | None, *, default: str = DOMINIO_FISICO) -
 
 def _perfil_es_usable(profile: str) -> bool:
     """True si *profile* puede unirse a ``profiles/<perfil>/`` sin escapar del árbol."""
-    return bool(profile) and not any(sep in profile for sep in _SEPARADORES_DE_PERFIL)
+    return bool(profile) and profile not in (".", "..") and not any(sep in profile for sep in _SEPARADORES_DE_PERFIL)
 
 
 @dataclass(frozen=True, slots=True)

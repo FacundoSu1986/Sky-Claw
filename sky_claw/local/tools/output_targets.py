@@ -273,7 +273,7 @@ def bashed_patch_en_overlay(
             # ``read_enabled_mods`` devuelve prioridad CRECIENTE: se invierte para que
             # la primera capa probada sea la que el juego carga.
             for nombre in reversed(tuple(mods_habilitados)):
-                if not nombre or any(sep in nombre for sep in ("/", "\\", ":", "..")):
+                if not nombre or nombre in (".", "..") or any(sep in nombre for sep in ("/", "\\", ":")):
                     completo = False
                     continue
                 capas.append((nombre, mods_dir / nombre / BASHED_PATCH_NAME))

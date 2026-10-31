@@ -820,16 +820,67 @@ async def test_preparar_sin_data_resoluble_falla_cerrado(tmp_path: pathlib.Path)
 
 
 @pytest.mark.parametrize("fase", ["preparar", "verificar"])
-async def test_las_dos_fases_rechazan_un_perfil_con_separadores(fase: str, tmp_path: pathlib.Path) -> None:
-    """El perfil compone una ruta: ``..`` o separadores no pueden escapar del perfil."""
+@pytest.mark.parametrize("perfil_invalido", [".", "..", "../otro", "perfil/sub", "perfil\\sub", "perfil:sub", ""])
+async def test_las_dos_fases_rechazan_un_perfil_con_separadores(
+    fase: str, perfil_invalido: str, tmp_path: pathlib.Path
+) -> None:
+    """El perfil compone una ruta: ``.``, ``..``, vacíos o separadores no pueden escapar del perfil."""
     _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
     servicio = _servicio(tmp_path / "Skyrim", tmp_path)
     metodo = getattr(servicio, f"{fase}_etapa_asistida")
 
-    resultado = await metodo(profile="../otro")
+    resultado = await metodo(profile=perfil_invalido)
 
     assert resultado["success"] is False
     assert resultado["reason"] == "PerfilInvalido"
+
+
+async def test_preparar_acepta_un_perfil_con_puntos_internos(tmp_path: pathlib.Path) -> None:
+    """Puntos internos (ej. ``Foo... Bar`` o ``Mi.Perfil...v2``) no escapan del directorio y son válidos."""
+    perfil = "Mi.Perfil...v2"
+    _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n", perfil=perfil)
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    resultado = await servicio.preparar_etapa_asistida(profile=perfil)
+
+    assert resultado["pendiente"] is True
+    assert resultado["motivo"] == "ESPERANDO_OPERADOR"
+    assert resultado.get("reason") != "PerfilInvalido"
+
+
+async def test_verificar_acepta_un_perfil_con_puntos_internos(tmp_path: pathlib.Path) -> None:
+    """Verificar encuentra el artefacto y plugins.txt de un perfil con puntos internos."""
+    perfil = "Mi.Perfil...v2"
+    artefacto, _ = _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n", perfil=perfil)
+    _parche(artefacto)
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)
+
+    resultado = await servicio.verificar_etapa_asistida(profile=perfil)
+
+    assert resultado["success"] is True
+    assert resultado["motivo"] == "OK"
+
+
+def test_perfil_es_usable_valida_componentes() -> None:
+    """_perfil_es_usable rechaza componentes traversal y separadores pero acepta puntos internos."""
+    from sky_claw.local.tools.wrye_bash_service import _perfil_es_usable
+
+    # Válidos: nombres regulares o con puntos/elipsis internas
+    assert _perfil_es_usable("Default") is True
+    assert _perfil_es_usable("Foo... Bar") is True
+    assert _perfil_es_usable("Mi.Perfil...v2") is True
+    assert _perfil_es_usable("Perfil..v2") is True
+
+    # Inválidos: vacíos o exactos . / ..
+    assert _perfil_es_usable("") is False
+    assert _perfil_es_usable(".") is False
+    assert _perfil_es_usable("..") is False
+
+    # Inválidos: separadores de ruta
+    assert _perfil_es_usable("../otro") is False
+    assert _perfil_es_usable("a/b") is False
+    assert _perfil_es_usable("a\\b") is False
+    assert _perfil_es_usable("c:d") is False
 
 
 # ==============================================================================
@@ -1612,3 +1663,24 @@ def test_mod_con_nombre_traversal_es_ignorado_en_overlay(tmp_path: pathlib.Path)
     )
     assert resultado is not None
     assert resultado.cobertura_completa is False, "nombre con traversal debe degradar cobertura"
+
+
+def test_mod_con_puntos_internos_es_aceptado_en_overlay(tmp_path: pathlib.Path) -> None:
+    """CR-1: nombres de mods con puntos como 'Foo... Bar' no son traversal y se inspeccionan."""
+    game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
+    (game / "Data").mkdir(parents=True)
+    mods = mo2 / "mods"
+    mod_dir = mods / "Foo... Bar"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / BASHED_PATCH_NAME).write_bytes(b"TES4" + b"\x00" * 60)
+
+    resultado = bashed_patch_en_overlay(
+        game=game,
+        mo2=mo2,
+        mods_dir=mods,
+        mods_habilitados=("Foo... Bar",),
+    )
+    assert resultado is not None
+    assert resultado.cobertura_completa is True
+    assert resultado.capa == "Foo... Bar"
+    assert resultado.ruta == mod_dir / BASHED_PATCH_NAME
