@@ -210,7 +210,9 @@ def test_attestation_falla_cerrado_sin_canary_elegible(tmp_path: pathlib.Path) -
     mo2_root, _profile, physical_data = _crear_perfil(tmp_path)
     physical_canary = physical_data / "SKSE" / "Plugins" / "skyclaw-canary.txt"
     physical_canary.parent.mkdir(parents=True)
-    physical_canary.write_bytes(b"vanilla-copy")
+    # Mismos bytes que el mod: no sirve ni como canary ausente (el path existe)
+    # ni como canary diferencial (no habría diferencia observable sin overlay).
+    physical_canary.write_bytes(b"canary-v1")
 
     with pytest.raises(VfsAttestationError, match="canary elegible"):
         build_attestation_challenge(
