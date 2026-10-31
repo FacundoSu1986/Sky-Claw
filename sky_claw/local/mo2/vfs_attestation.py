@@ -636,6 +636,12 @@ def _construir_challenge(
     (no habría diferencia observable) y un archivo físico ilegible o con
     reparse point falla cerrado.
 
+    "Ausente" lo decide :func:`_inspeccionar_fisico_seguro` en **ambas** pasadas:
+    sólo un ``lstat`` con ``ENOENT`` es ausencia. Un enlace (aunque cuelgue), un
+    reparse point, un path que no es archivo regular o un error de inspección
+    fallan cerrado en las dos — un enlace colgante NO es "el path no existe", y
+    un ``EACCES`` no es una ausencia.
+
     Con ``source_mod`` el walk se restringe a ESE mod y los roots de mayor
     prioridad se calculan respecto de su posición; sin él se recorren todos los
     mods habilitados como candidatos.
@@ -717,7 +723,14 @@ def _construir_challenge(
                 # llamador pueda usar, y su estado físico no debe influir en la
                 # selección (ni siquiera fallando cerrado).
                 continue
-            if (data / relative).exists():
+            # La ausencia se decide con la MISMA primitiva que la segunda pasada.
+            # `Path.exists()` sigue el enlace y sólo absorbe ENOENT/ENOTDIR/EBADF/
+            # ELOOP: un enlace colgante se lee como "ausente" (el canario MÁS
+            # fuerte de la escala) y un EACCES escapa como `PermissionError` crudo.
+            # `_inspeccionar_fisico_seguro` distingue los tres estados y corta en
+            # el que no es atribuible.
+            fisico = data / relative
+            if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is not None:
                 continue
             if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
                 continue

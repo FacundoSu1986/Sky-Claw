@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import hashlib
+import os
 import pathlib
 import shutil
 import stat
@@ -195,6 +196,217 @@ def test_seleccion_diferencial_no_salta_lstat_indeterminado(
 
     with pytest.raises(VfsAttestationError, match="inspeccionar"):
         _challenge_del_mod(esc)
+
+
+# =============================================================================
+# Primera pasada: `Path.exists()` no es una inspección
+#
+# `Path.exists()` sigue el enlace y absorbe cualquier `OSError` devolviendo
+# False. Para el selector eso significa "ausente del Data físico" ⇒ un enlace
+# roto, un reparse point colgante o un path ilegible se convertían en el canario
+# MÁS FUERTE de la escala. `_inspeccionar_fisico_seguro` distingue los tres
+# estados (ausente / regular / no atribuible) y corta en el tercero.
+# =============================================================================
+
+
+def _crear_enlace(enlace: pathlib.Path, objetivo: pathlib.Path, *, directorio: bool) -> bool:
+    """Crea un enlace REAL en *enlace*. Devuelve False si la plataforma no lo permite.
+
+    En Windows sin privilegios (``WinError 1314``) se cae a una junction, que es
+    un reparse point y sirve para directorios: reproduce el mismo caso que un
+    symlink (``Path.exists()`` sigue el target; ``os.lstat`` ve el enlace).
+
+    Ojo: un ``CreateSymbolicLink`` rechazado por privilegio deja un DIRECTORIO
+    vacío en la ruta del enlace; hay que retirarlo antes de crear la junction.
+    """
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(objetivo, enlace, target_is_directory=directorio)
+        return True
+    except (OSError, NotImplementedError):
+        try:
+            if os.path.lexists(enlace) and not os.path.islink(enlace):
+                os.rmdir(enlace)
+        except OSError:
+            return False
+    if sys.platform != "win32" or not directorio:
+        return False
+    creado = subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(objetivo)], capture_output=True)
+    return creado.returncode == 0 and os.path.lexists(enlace)
+
+
+def test_enlace_roto_no_es_ausencia_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Un enlace colgante EXISTE como enlace: no puede clasificarse como ausente.
+
+    Arrange: el mod aporta `textures/a.dds`; el Data físico tiene ese path como
+    enlace cuyo target no existe (`Path.exists()` → False).
+    Act: seleccionar canario restringido al mod.
+    Assert: falla cerrado por enlace/reparse, no devuelve un challenge "ausente".
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    enlace = esc.physical_data / "textures" / "a.dds"
+    if not _crear_enlace(enlace, esc.physical_data / "textures" / "no-existe.bin", directorio=True):
+        pytest.skip("la plataforma no permite crear un enlace colgante")
+    assert not enlace.exists(), "el enlace debe colgar para reproducir el caso"
+
+    with pytest.raises(VfsAttestationError, match="enlace|reparse"):
+        _challenge_del_mod(esc)
+
+
+def test_enlace_valido_no_es_un_archivo_regular_atribuible(tmp_path: pathlib.Path) -> None:
+    """Un symlink válido tampoco es fuente de bytes atribuible.
+
+    Arrange: el mod aporta `a.dds` y `b.dds`; el Data físico tiene `a.dds` como
+    symlink a un archivo real y no tiene `b.dds`.
+    Act: seleccionar canario restringido al mod.
+    Assert: corta en `a.dds`; NO lo saltea para quedarse con `b.dds`.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-B")
+    objetivo = tmp_path / "real.bin"
+    objetivo.write_bytes(b"X")
+    enlace = esc.physical_data / "textures" / "a.dds"
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(objetivo, enlace)
+    except (OSError, NotImplementedError):
+        pytest.skip("la plataforma no permite crear symlinks de archivo")
+    assert enlace.exists()
+
+    with pytest.raises(VfsAttestationError, match="enlace|reparse"):
+        _challenge_del_mod(esc)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reparse points son de Windows")
+def test_reparse_point_en_la_primera_pasada_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """La junction es el reparse point nativo: `exists()` la ve, `lstat` la delata.
+
+    Arrange: `a.dds` como junction a un directorio real y `b.dds` ausente del
+    Data físico (candidato clásico disponible).
+    Act: seleccionar canario restringido al mod.
+    Assert: corta en la junction; NO cae a `b.dds`.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-B")
+    destino = tmp_path / "dir-real"
+    destino.mkdir()
+    enlace = esc.physical_data / "textures" / "a.dds"
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    creado = subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(destino)], capture_output=True)
+    if creado.returncode != 0 or not enlace.exists():
+        pytest.skip("no se pudo crear la junction")
+    assert os.lstat(enlace).st_file_attributes & 0x400, "debe llevar FILE_ATTRIBUTE_REPARSE_POINT"
+
+    with pytest.raises(VfsAttestationError, match="enlace|reparse"):
+        _challenge_del_mod(esc)
+
+
+def test_error_de_acceso_no_es_ausencia_falla_cerrado(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un error de inspección debe salir como error del DOMINIO, no crudo.
+
+    `Path.exists()` sólo absorbe ENOENT/ENOTDIR/EBADF/ELOOP; un EACCES se propaga
+    tal cual y el builder lo deja escapar como `PermissionError`, que ningún
+    llamador atrapa (el contrato es `VfsAttestationError`). La primitiva
+    compartida lo convierte en fallo cerrado del dominio.
+
+    Arrange: `textures/a.dds` existe en el Data físico como archivo regular, pero
+    `stat`/`lstat` fallan con permiso denegado (path indeterminado).
+    Act: seleccionar canario restringido al mod.
+    Assert: `VfsAttestationError` por inspección, no un `PermissionError` crudo.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD")
+    fisico = esc.escribir_fisico("a.dds", b"FISICO-DISTINTO")
+    objetivo = os.path.normcase(os.path.abspath(os.fspath(fisico)))
+    stat_real = os.stat
+    lstat_real = os.lstat
+
+    def _es_el_objetivo(path: object) -> bool:
+        try:
+            return os.path.normcase(os.path.abspath(os.fspath(path))) == objetivo
+        except TypeError:
+            return False
+
+    def stat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if _es_el_objetivo(path):
+            raise PermissionError(13, "acceso denegado simulado", str(path))
+        return stat_real(path, *args, **kwargs)
+
+    def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if _es_el_objetivo(path):
+            raise PermissionError(13, "acceso denegado simulado", str(path))
+        return lstat_real(path, *args, **kwargs)
+
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    monkeypatch.setattr(att.os, "stat", stat_falso)
+    monkeypatch.setattr(att.os, "lstat", lstat_falso)
+
+    with pytest.raises(VfsAttestationError, match="inspeccionar"):
+        _challenge_del_mod(esc)
+
+
+def test_error_de_acceso_no_se_salta_al_siguiente_candidato(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un candidato indeterminado corta la selección: no se elige otro en su lugar.
+
+    Arrange: `a.dds` con inspección fallida y `b.dds` ausente del Data físico.
+    Act: seleccionar canario restringido al mod.
+    Assert: corta con error del dominio; NO devuelve un challenge de `b.dds`.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-DEL-MOD-A")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-DEL-MOD-B")
+    fisico = esc.escribir_fisico("a.dds", b"FISICO-A")
+    objetivo = os.path.normcase(os.path.abspath(os.fspath(fisico)))
+    stat_real = os.stat
+    lstat_real = os.lstat
+
+    def _es_el_objetivo(path: object) -> bool:
+        try:
+            return os.path.normcase(os.path.abspath(os.fspath(path))) == objetivo
+        except TypeError:
+            return False
+
+    def stat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if _es_el_objetivo(path):
+            raise PermissionError(13, "acceso denegado simulado", str(path))
+        return stat_real(path, *args, **kwargs)
+
+    def lstat_falso(path: object, *args: object, **kwargs: object) -> Any:
+        if _es_el_objetivo(path):
+            raise PermissionError(13, "acceso denegado simulado", str(path))
+        return lstat_real(path, *args, **kwargs)
+
+    from sky_claw.local.mo2 import vfs_attestation as att
+
+    monkeypatch.setattr(att.os, "stat", stat_falso)
+    monkeypatch.setattr(att.os, "lstat", lstat_falso)
+
+    with pytest.raises(VfsAttestationError, match="inspeccionar"):
+        _challenge_del_mod(esc)
+
+
+def test_archivo_regular_no_bloquea_la_primera_pasada(tmp_path: pathlib.Path) -> None:
+    """Guard de no-debilitamiento inverso: un regular NO es un objeto inseguro.
+
+    Arrange: `a.dds` presente como regular con bytes distintos y `b.dds` ausente.
+    Act: seleccionar canario restringido al mod.
+    Assert: la preferencia histórica se mantiene (ausente primero) ⇒ `b.dds`.
+    """
+    esc = _escenario(tmp_path)
+    esc.escribir_mod(_MOD, "a.dds", b"BYTES-A")
+    esc.escribir_mod(_MOD, "b.dds", b"BYTES-B")
+    esc.escribir_fisico("a.dds", b"FISICO-A")
+
+    challenge = _challenge_del_mod(esc)
+
+    assert challenge.relative_path.as_posix() == "textures/b.dds"
+    assert challenge.sha256 == _sha(b"BYTES-B")
 
 
 def test_seleccion_diferencial_salta_ausencia_fisica_genuina(tmp_path: pathlib.Path) -> None:

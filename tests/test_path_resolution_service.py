@@ -1491,7 +1491,10 @@ class TestAnclaConstructoresManualesDeMods:
         # D2-H2 (subárbol autorizado en la selección de canarios) agregó la
         # validación del prefijo y el filtro de elegibilidad, también arriba de
         # `_raices_del_overlay`: misma función única, ahora en la línea 800 (+92).
-        "sky_claw/local/mo2/vfs_attestation.py": (800,),
+        # D2-H3 (inspección física de la primera pasada con la primitiva
+        # compartida) agregó el comentario del criterio de ausencia, otra vez
+        # arriba de `_raices_del_overlay`: misma función única, línea 813 (+13).
+        "sky_claw/local/mo2/vfs_attestation.py": (813,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323, sus
         # follow-ups a la ~339, PR #695 / issue #623 a la ~581 por cuarentena,

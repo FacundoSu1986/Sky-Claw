@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import os
 import pathlib
 import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -1146,3 +1149,42 @@ async def test_b18_la_comprobacion_de_pertenencia_al_staging_sigue_viva(
     assert resultado.verified is False
     assert "no pertenece al árbol autorizado" in resultado.reason
     assert bridge.probes == 0, "un canario fuera del artifact no puede llegar al probe"
+
+
+@pytest.mark.asyncio
+async def test_b19_el_gate_atribuye_el_enlace_roto_a_la_seleccion(tmp_path: pathlib.Path) -> None:
+    """Un enlace colgante en el Data físico se detecta al SELECCIONAR, no después.
+
+    Antes, `Path.exists()` lo daba por ausente, el canario se elegía y el fallo
+    recién aparecía en el invariante físico: el diagnóstico culpaba al invariante
+    en vez de a la inspección. El contrato es que la elegibilidad ya lo rechace.
+    """
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    enlace = esc.physical_data / "textures" / "a.dds"
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    objetivo = esc.physical_data / "textures" / "no-existe.bin"
+    try:
+        os.symlink(objetivo, enlace, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        # Un CreateSymbolicLink rechazado por privilegio deja un directorio vacío
+        # en la ruta del enlace: hay que retirarlo para poder crear la junction.
+        try:
+            if os.path.lexists(enlace) and not os.path.islink(enlace):
+                os.rmdir(enlace)
+        except OSError:
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+        if sys.platform != "win32":
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+        creado = subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(objetivo)], capture_output=True)
+        if creado.returncode != 0 or not os.path.lexists(enlace):
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+    assert not enlace.exists(), "el enlace debe colgar para reproducir el caso"
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is False
+    assert "no hay canary USVFS elegible" in resultado.reason, resultado.reason
+    assert bridge.probes == 0
