@@ -315,6 +315,13 @@ def _resumen(informe: InformeDelLote, omitidas: Sequence[str], salida: TextIO) -
         + f", {len(omitidas)} omitidas al enumerar.",
         file=salida,
     )
+    if informe.interrupcion is not None:
+        print(
+            f"ESCRITURA INTERRUMPIDA: {informe.interrupcion}\n"
+            "Lo marcado SIN_CONFIRMAR puede o no estar en el mod, y lo que se retiraba pudo quedar a medias: volvé a correr el lote "
+            "(al abrir la salida se recupera lo que haya quedado a medias).",
+            file=salida,
+        )
     sin_contenido = sum(1 for archivo in informe.archivos if MOTIVO_SIN_CONTENIDO in archivo.motivos)
     if sin_contenido:
         print(
@@ -474,34 +481,46 @@ def _exigir_informe_fuera_de_la_salida(informe: str, raiz: pathlib.Path, carpeta
         )
 
 
-def _escribir_informe(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> None:
+def _escribir_informe(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> bool:
+    """Escribe el informe de forma ATÓMICA y dice si quedó: ``True`` si el archivo final es el nuevo.
+
+    Temporal en la misma carpeta + ``os.replace``: un corte a mitad de la escritura no deja un JSON truncado que el consumidor
+    desatendido leería como informe. Un fallo se avisa a la consola y se devuelve ``False``; quien llama NO puede salir con 0,
+    porque sin el informe el resultado de la corrida no es auditable.
+    """
     ruta = pathlib.Path(destino)
+    contenido = (
+        json.dumps(
+            {**informe.a_diccionario(), "omitidas_al_enumerar": list(omitidas)},
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    temporal = ruta.with_name(f".{ruta.name}.{os.getpid()}.tmp")
     try:
         ruta.parent.mkdir(parents=True, exist_ok=True)
-        ruta.write_text(
-            json.dumps(
-                {**informe.a_diccionario(), "omitidas_al_enumerar": list(omitidas)},
-                indent=2,
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        temporal.write_text(contenido, encoding="utf-8")
+        os.replace(temporal, ruta)
     except OSError as exc:
+        with contextlib.suppress(OSError):
+            temporal.unlink(missing_ok=True)
         print(f"No se pudo escribir el informe en {ruta}: {exc}", file=salida)
-        return
+        return False
     print(f"Informe: {ruta.resolve()}", file=salida)
+    return True
 
 
-def _informar(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> None:
+def _informar(informe: InformeDelLote, omitidas: Sequence[str], destino: str, salida: TextIO) -> bool:
     """El informe primero y el resumen después: mostrar es lo último que puede fallar y no se lleva la evidencia.
 
     Es la ÚNICA salida de los dos comandos (``generar`` y ``autoprueba``): antes cada uno mostraba el resumen y recién
-    después escribía el informe, y un fallo de la consola lo perdía (rig 2026-10-24).
+    después escribía el informe, y un fallo de la consola lo perdía (rig 2026-10-24). Devuelve si el informe quedó escrito.
     """
-    _escribir_informe(informe, omitidas, destino, salida)
+    escrito = _escribir_informe(informe, omitidas, destino, salida)
     _resumen(informe, omitidas, salida)
+    return escrito
 
 
 def _progreso(salida: TextIO) -> Callable[[int, int, str], None]:
@@ -511,8 +530,9 @@ def _progreso(salida: TextIO) -> Callable[[int, int, str], None]:
     return mostrar
 
 
-def _codigo(informe: InformeDelLote) -> int:
-    return CODIGO_OK if informe.completo else CODIGO_CON_FALLOS
+def _codigo(informe: InformeDelLote, *, informe_escrito: bool) -> int:
+    """0 solo si el lote está completo Y su informe quedó escrito: sin informe el resultado no se puede auditar."""
+    return CODIGO_OK if informe.completo and informe_escrito else CODIGO_CON_FALLOS
 
 
 # ---------------------------------------------------------------------------
@@ -683,8 +703,8 @@ async def _generar(
         parametros=parametros,
         progreso=_progreso(salida),
     )
-    _informar(informe, omitidas, args.informe, salida)
-    return _codigo(informe)
+    escrito = _informar(informe, omitidas, args.informe, salida)
+    return _codigo(informe, informe_escrito=escrito)
 
 
 def _borrar_temporal(carpeta: pathlib.Path, salida: TextIO) -> None:
@@ -725,8 +745,10 @@ async def _autoprueba(
             parametros=ParametrosDelLote(escribir_revision=True),
             progreso=_progreso(salida),
         )
-        _informar(informe, [], args.informe, salida)
+        escrito = _informar(informe, [], args.informe, salida)
         fallos = _verificar_autoprueba(raiz, ruta_de_salida, informe)
+        if not escrito:
+            fallos.append("el informe no se pudo escribir (ver arriba)")
     finally:
         _borrar_temporal(base, salida)
     if fallos:
