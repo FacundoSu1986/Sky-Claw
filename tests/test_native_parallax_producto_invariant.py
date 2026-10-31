@@ -57,6 +57,7 @@ MODULOS_DE_PRODUCTO_ESPERADOS = frozenset(
         "metrics.py",
         "output.py",
         "output_writer.py",
+        "plugin_relieve.py",
         "provider.py",
     }
 )

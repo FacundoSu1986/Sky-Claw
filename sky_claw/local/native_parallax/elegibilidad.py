@@ -43,12 +43,15 @@ from sky_claw.local.native_parallax.diagnostico_perfil import (
     TIPOS_QUE_IMPIDEN_MEDIR,
     Hallazgo,
     PerfilError,
+    PerfilResuelto,
     cargar_mallas_del_perfil,
     cargar_perfil,
+    cargar_plugin_del_perfil,
     descubrir_normales_del_mod,
     hallazgos_del_perfil,
     linea_de_hallazgo,
 )
+from sky_claw.local.native_parallax.plugin_relieve import AjusteDelIni, EstadoDelPlugin, leer_estado_del_plugin
 
 __all__ = [
     "ALCANCE_DE_LA_ELEGIBILIDAD",
@@ -79,10 +82,14 @@ _MAXIMO_DE_MALLAS_NO_LEIDAS_EN_EL_RESULTADO: Final = 5
 #: ``tests/test_evaluar_parallax_elegibilidad_superficies.py``). Un perfil que necesite más usa la línea de comandos, que no tiene plazo.
 PLAZO_DE_LAS_SUPERFICIES: Final = 100.0
 
+#: Tope de archivos visitados bajo ``SKSE/Plugins`` entre todas las capas (el INI y la DLL del plugin): una carpeta de plugins pesa decenas.
+_MAXIMO_DE_ARCHIVOS_EN_PLUGINS: Final = 5_000
+
 #: Lo que esta lectura prueba y lo que no: viaja en cada informe para que ninguna superficie lo presente como una prueba in-game.
 ALCANCE_DE_LA_ELEGIBILIDAD: Final = (
     "Lectura estructural de las mallas sueltas del perfil. El plugin solo actúa sobre objetos base Static, Movable Static y Container "
-    "y solo enciende relieve si bAutoEnableParallax está activo en su INI (por defecto no): ninguna de las dos cosas se ve en la malla. "
+    "(eso no se ve en la malla) y solo enciende relieve si bAutoEnableParallax está activo en su INI (por defecto no): ese INI se lee del "
+    "overlay del perfil y, si está apagado, ninguna salida es SI; si no se puede ver, se avisa y el veredicto no cambia. "
     "No lee mallas dentro de un .bsa. SI quiere decir que una forma elegible terminaría usando la salida, no que se vea bien: no prueba "
     "lo que se ve en el juego, y la versión instalada del plugin puede diferir de la que se leyó."
 )
@@ -126,9 +133,12 @@ class InformeDeElegibilidad:
     mod: str
     n_habilitados: int
     n_mallas_leidas: int
-    mallas_no_leidas: tuple[str, ...]  #: Ilegibles o con geometría que el lector no sabe abrir: lo no observado.
+    mallas_no_leidas: tuple[
+        str, ...
+    ]  #: Ilegibles o con geometría que el lector no sabe abrir: lo no observado. Una ilegible vuelve ``NO_VERIFICADO`` a todo ``NO``; una con geometría sin abrir, solo a las texturas que nombra un juego de su archivo.
     texturas: tuple[ElegibilidadDeTextura, ...]
     alcance: str
+    plugin: EstadoDelPlugin
 
 
 @dataclass(slots=True)
@@ -140,6 +150,9 @@ class _Acumulado:
     )
     otra_textura: int = 0
     referencias: int = 0
+    sin_abrir: set[str] = field(
+        default_factory=set
+    )  #: Mallas con geometría que el lector no abre cuyo archivo trae un juego de texturas que nombra esta salida.
     motivos: Counter[str] = field(default_factory=Counter)
 
 
@@ -166,17 +179,26 @@ def _salidas_que_nombra_sin_carpeta(candidatos: tuple[CandidatoDeRelieve, ...], 
     return posibles
 
 
+def _salidas_que_nombra(texturas: tuple[str, ...], salidas: dict[str, str]) -> tuple[set[str], set[str]]:
+    """``(salidas que un juego de texturas refiere, salidas que nombra sin la carpeta textures/)``: lo mismo para una forma abierta que
+    para los juegos de una malla que el lector no abre."""
+    candidatos = candidatos_de_relieve(texturas)
+    referidas = {_clave(c.ruta) for c in candidatos.candidatos if c.ruta} & salidas.keys()
+    return referidas, _salidas_que_nombra_sin_carpeta(candidatos.candidatos, salidas)
+
+
 def _mallas_en_texto(cantidad: int) -> str:
     return "1 malla" if cantidad == 1 else f"{cantidad} mallas"
 
 
-def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, ...]) -> ElegibilidadDeTextura:
+def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, ilegibles: tuple[str, ...]) -> ElegibilidadDeTextura:
+    """``ilegibles`` contagia a toda textura (sin cabecera legible no se sabe qué nombra); ``acum.sin_abrir`` solo a esta."""
+
     def con(efecto: EfectoPosible, razon: str, mallas: tuple[str, ...] = (), n: int = 0) -> ElegibilidadDeTextura:
         return ElegibilidadDeTextura(ruta_de_salida=ruta, efecto=efecto, razon=razon, mallas=mallas, n_mallas=n)
 
-    aviso_de_lectura = (
-        f"; además {_mallas_en_texto(len(no_leidas))} no se pudieron leer por completo" if no_leidas else ""
-    )
+    sin_leer = len(ilegibles) + len(acum.sin_abrir)
+    aviso_de_lectura = f"; además {_mallas_en_texto(sin_leer)} no se pudieron leer por completo" if sin_leer else ""
     if acum.mallas_si:
         ordenadas = tuple(sorted(acum.mallas_si))
         return con(
@@ -203,10 +225,10 @@ def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, 
             "ninguna malla suelta del perfil la referencia: podría usarla una malla dentro de un .bsa (no se leen)"
             f"{aviso_de_lectura}",
         )
-    if no_leidas:
+    if sin_leer:
         return con(
             EfectoPosible.NO_VERIFICADO,
-            f"{_mallas_en_texto(len(no_leidas))} no se pudieron leer por completo y no se descarta que alguna la use",
+            f"{_mallas_en_texto(sin_leer)} no se pudieron leer por completo y no se descarta que alguna la use",
         )
     partes = [f"{etiqueta}: {cantidad}" for etiqueta, cantidad in sorted(acum.motivos.items())]
     if acum.otra_textura:
@@ -216,6 +238,35 @@ def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, 
         EfectoPosible.NO,
         f"ninguna de las {acum.referencias} {forma} que la referencian puede usarla ({'; '.join(partes)})",
     )
+
+
+def _con_el_ini_apagado(textura: ElegibilidadDeTextura, plugin: EstadoDelPlugin) -> ElegibilidadDeTextura:
+    """Un ``SI`` con el INI apagado es ``NO``: el plugin no enciende relieve en ninguna forma. Lo demás no cambia (``NO`` ya lo es y
+    ``NO_VERIFICADO`` no pasa a ``NO`` por esto: sigue sin saberse si alguna malla la usaría)."""
+    if textura.efecto is not EfectoPosible.SI:
+        return textura
+    return ElegibilidadDeTextura(
+        ruta_de_salida=textura.ruta_de_salida,
+        efecto=EfectoPosible.NO,
+        razon=(
+            f"el INI del plugin (mod {plugin.capa_del_ini!r}) tiene bAutoEnableParallax apagado: el plugin no enciende relieve en ninguna "
+            f"forma, aunque {_mallas_en_texto(textura.n_mallas)} sea elegible"
+        ),
+        mallas=(),
+        n_mallas=0,
+    )
+
+
+def _estado_del_plugin(*, mods_dir: pathlib.Path, data_root: pathlib.Path, resuelto: PerfilResuelto) -> EstadoDelPlugin:
+    """El INI y la DLL del plugin según el overlay. Si ``SKSE/Plugins`` no se puede resolver el ajuste queda sin determinar: no es motivo para
+    perder la evaluación entera, pero tampoco se da por activo ni por apagado."""
+    try:
+        indice = cargar_plugin_del_perfil(
+            mods_dir=mods_dir, data_root=data_root, resuelto=resuelto, maximo_de_archivos=_MAXIMO_DE_ARCHIVOS_EN_PLUGINS
+        )
+    except PerfilError as exc:
+        return EstadoDelPlugin(AjusteDelIni.NO_DETERMINADO, None, False, str(exc))
+    return leer_estado_del_plugin(indice)
 
 
 def evaluar_elegibilidad(
@@ -309,7 +360,10 @@ def evaluar_elegibilidad(
         return True if ganador is not None else None
 
     leidas = 0
-    no_leidas: list[str] = []
+    no_leidas: list[str] = []  #: Lo que se informa como no observado por completo.
+    ilegibles: list[
+        str
+    ] = []  #: El subconjunto que contagia a TODA textura (el resto contagia solo a las que su archivo nombra).
     # Sin salidas evaluables no hay nada que una malla decida: no se leen para nada.
     mallas_a_leer = indice_de_mallas.con_sufijo(".nif") if salidas else ()
     for ganador in mallas_a_leer:
@@ -323,17 +377,25 @@ def evaluar_elegibilidad(
             lectura = leer_materiales_de_archivo(ganador.archivo)
         except NifError:
             no_leidas.append(etiqueta_de_malla)
+            ilegibles.append(etiqueta_de_malla)
             continue
         leidas += 1
         if lectura.formas_no_soportadas:
             no_leidas.append(etiqueta_de_malla)
+            juegos = lectura.juegos_de_las_formas_no_soportadas
+            if juegos is None:  # no se sabe qué nombran sus juegos de texturas: no se descarta nada
+                ilegibles.append(etiqueta_de_malla)
+            else:  # una forma sin abrir solo puede usar un juego de este archivo: contagia a las salidas que ellos nombran
+                for juego in juegos:
+                    nombradas, implicitas = _salidas_que_nombra(juego, salidas)
+                    for clave in nombradas | implicitas:
+                        acumulados[clave].sin_abrir.add(etiqueta_de_malla)
         for forma in lectura.formas:
             if forma.texturas is None:
                 continue
-            candidatos = candidatos_de_relieve(forma.texturas)
-            for implicita in _salidas_que_nombra_sin_carpeta(candidatos.candidatos, salidas):
+            referidas, implicitas = _salidas_que_nombra(forma.texturas, salidas)
+            for implicita in implicitas:
                 acumulados[implicita].con_ruta_implicita = True
-            referidas = {_clave(c.ruta) for c in candidatos.candidatos if c.ruta} & salidas.keys()
             if not referidas:
                 continue
             for clave in referidas:
@@ -355,7 +417,10 @@ def evaluar_elegibilidad(
                 acumulados[clave].otra_textura += 1
 
     sin_leer = tuple(no_leidas)
-    evaluadas = (_veredicto_de_la_textura(salidas[clave], acumulados[clave], sin_leer) for clave in salidas)
+    plugin = _estado_del_plugin(mods_dir=mods_dir, data_root=data_root, resuelto=resuelto)
+    evaluadas = (_veredicto_de_la_textura(salidas[clave], acumulados[clave], tuple(ilegibles)) for clave in salidas)
+    if plugin.apaga_el_relieve:
+        evaluadas = (_con_el_ini_apagado(t, plugin) for t in evaluadas)
     texturas = tuple(sorted((*evaluadas, *no_publicadas), key=lambda t: _clave(t.ruta_de_salida)))
     return InformeDeElegibilidad(
         perfil=perfil,
@@ -365,6 +430,7 @@ def evaluar_elegibilidad(
         mallas_no_leidas=sin_leer,
         texturas=texturas,
         alcance=ALCANCE_DE_LA_ELEGIBILIDAD,
+        plugin=plugin,
     )
 
 
@@ -437,5 +503,11 @@ def elegibilidad_como_resultado(
             for t in visibles
         ],
         "truncado": len(visibles) < len(informe.texturas),
+        "plugin": {
+            "ini": informe.plugin.ini.value,
+            "capa_del_ini": informe.plugin.capa_del_ini,
+            "dll_presente": informe.plugin.dll_presente,
+            "avisos": list(informe.plugin.avisos()),
+        },
         "alcance": ALCANCE_DE_LA_ELEGIBILIDAD,
     }

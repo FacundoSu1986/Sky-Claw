@@ -37,6 +37,7 @@ from sky_claw.local.native_parallax.decode import (
     ConvencionNormal,
     DependenciaNoDisponibleError,
     FormatoNoSoportadoError,
+    NormalDecodeError,
     NormalDecoder,
 )
 from sky_claw.local.native_parallax.research.authored_dataset import decode_normal_image
@@ -491,6 +492,55 @@ def test_dds_sin_comprimir_con_cabecera_dx10_se_acepta(tmp_path: Path) -> None:
     np.testing.assert_allclose(resultado.normal[2, 1], _vector((200, 64, 230)), rtol=0, atol=1e-12)
     assert resultado.dds_pixel_format is None
     assert resultado.z_reconstructed is False
+
+
+# BC1 con cabecera DX10 (DXGI_FORMAT_BC1_UNORM = 71; 70 es la variante TYPELESS): Pillow lo entrega por el mismo códec de bloques que
+# el FourCC ``DXT1`` pero lo rotula ``BC1``. Es el mismo formato con otro nombre y otra cabecera: no hay motivo para rechazarlo.
+_BLOQUE_BC1 = struct.pack("<HHI", (16 << 11) | (32 << 5) | 31, 0, 0)
+
+
+@pytest.mark.parametrize("dxgi", [70, 71], ids=["bc1-typeless", "bc1-unorm"])
+def test_bc1_con_cabecera_dx10_decodifica_igual_que_dxt1(tmp_path: Path, dxgi: int) -> None:
+    clasico = NormalDecoder().decode(_escribir(tmp_path, "a.dds", _dds(4, 4, _BLOQUE_BC1, fourcc=b"DXT1")))
+
+    con_dx10 = NormalDecoder().decode(_escribir(tmp_path, "b.dds", _dds(4, 4, _BLOQUE_BC1, fourcc=b"DX10", dxgi=dxgi)))
+
+    np.testing.assert_array_equal(con_dx10.normal, clasico.normal)
+    np.testing.assert_array_equal(con_dx10.confidence, clasico.confidence)
+    assert con_dx10.dds_pixel_format == "BC1"
+    assert con_dx10.z_reconstructed is False
+
+
+# La lista cerrada contra la tabla DXGI entera de Pillow: lo que se acepta es un subconjunto de lo que se decidió aceptar, y todo lo
+# demás sale como error TIPADO (nunca una excepción cruda de Pillow ni una decodificación en silencio). Es un subconjunto y no una
+# igualdad a propósito: que una versión de Pillow no implemente alguno de estos formatos no es un defecto de este módulo.
+_DXGI_ACEPTADOS: dict[int, str | None] = {
+    27: None,  # R8G8B8A8_TYPELESS  (sin comprimir: códec ``raw``)
+    28: None,  # R8G8B8A8_UNORM
+    29: None,  # R8G8B8A8_UNORM_SRGB
+    70: "BC1",  # BC1_TYPELESS
+    71: "BC1",  # BC1_UNORM
+    82: "BC5",  # BC5_TYPELESS
+    83: "BC5",  # BC5_UNORM
+    97: "BC7",  # BC7_TYPELESS
+    98: "BC7",  # BC7_UNORM
+    99: "BC7",  # BC7_UNORM_SRGB
+}
+
+
+def test_toda_la_tabla_dxgi_se_acepta_dentro_de_la_lista_cerrada_o_sale_como_error_tipado(tmp_path: Path) -> None:
+    aceptados: dict[int, str | None] = {}
+    for dxgi in range(200):
+        ruta = _escribir(tmp_path, "n.dds", _dds(4, 4, b"\x40" * 256, fourcc=b"DX10", dxgi=dxgi))
+        try:
+            resultado = NormalDecoder().decode(ruta)
+        except NormalDecodeError:
+            continue  # error tipado: lo esperado para todo lo que no está en la lista
+        aceptados[dxgi] = resultado.dds_pixel_format
+
+    assert aceptados.items() <= _DXGI_ACEPTADOS.items()
+    # Los que tienen prueba propia en este archivo no pueden desaparecer sin que se note.
+    assert {28: None, 71: "BC1", 83: "BC5", 98: "BC7"}.items() <= aceptados.items()
 
 
 @pytest.mark.parametrize("tope", [10, 7], ids=["entre-1x-y-2x", "mas-de-2x"])

@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 _ETAPA_WRYE_BASH = 6
 
 #: Lock resource id (externo) para la generación del Bashed Patch. Espeja a Synthesis
-#: (``Synthesis.esp``): serializa sobre el artefacto de salida contra otra corrida de
+#: (id lógico estable de etapa): serializa la corrida de etapa 6 contra otra instancia de
 #: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"

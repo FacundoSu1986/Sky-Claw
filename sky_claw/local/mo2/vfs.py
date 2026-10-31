@@ -236,7 +236,13 @@ class MO2Controller:
         If *highest_priority* is False (default), the mod is appended to the
         bottom of the modlist (lowest priority) if absent. If it is already
         present but disabled (``-``), it is flipped to ``+`` in place,
-        preserving its position. An already-enabled entry is left unchanged.
+        preserving its position. An already-enabled entry is left unchanged; if the
+        file already carries the same ``+X`` more than once (only possible by
+        hand-editing ``modlist.txt``) it is NOT repaired: a warning is logged and
+        the repeated ``+X`` entries are kept as they are (any ``-X`` is still
+        discarded). ``read_enabled_mods`` still returns both entries; it is
+        ``ganadores._exigir_enabled`` that rejects the repeated name, until the
+        operator fixes the profile in MO2.
 
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
@@ -288,6 +294,20 @@ class MO2Controller:
                     # falla cerrado ante un nombre repetido. Sin ninguna habilitada se
                     # flipea la primera `-X` in-place (preservar orden) y se descartan
                     # las demás: cortar en la primera dejaría un `-X` posterior vivo.
+                    if len(habilitadas) > 1:
+                        # No se repara: MO2 no define cuál `+X` gana y borrar una línea
+                        # del usuario excede lo que pidió el caller. Solo se avisa.
+                        logger.warning(
+                            "Mod %r aparece habilitado %d veces en el modlist del perfil %r; "
+                            "las entradas +%s repetidas no se reparan (solo se descartan las -%s, "
+                            "si las hay); ganadores._exigir_enabled rechazará el perfil "
+                            "hasta corregirlo en MO2",
+                            mod_name,
+                            len(habilitadas),
+                            profile,
+                            mod_name,
+                            mod_name,
+                        )
                     flipear = deshabilitadas[0] if not habilitadas and deshabilitadas else None
                     descartar = set(deshabilitadas) - {flipear}
                     if flipear is None and not descartar:
@@ -296,7 +316,15 @@ class MO2Controller:
                     if flipear is not None:
                         lines[flipear] = f"+{mod_name}\n"
                     lines = [ln for i, ln in enumerate(lines) if i not in descartar]
-                    logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                    if flipear is not None:
+                        logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                    else:
+                        logger.info(
+                            "Discarded %d disabled -%s entries in modlist for profile %r",
+                            len(descartar),
+                            mod_name,
+                            profile,
+                        )
                 else:
                     lines.append(f"+{mod_name}\n")
             else:

@@ -20,14 +20,18 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import os
 import pathlib
 import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from sky_claw.local.mo2 import brokered_dyndolod
 from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODSpawnStrategy
 from sky_claw.local.mo2.mod_effectivity import ModEffectivityError, verificar_artifact_efectivo
 from sky_claw.local.mo2.vfs_attestation import (
@@ -955,3 +959,232 @@ async def test_autoridad_durable_con_digest_distinto_bloquea_sin_llegar_al_backe
 
     assert veredicto.verified is False
     assert estrategia.verificadas == 0
+
+
+# =============================================================================
+# D2 — el canario debe elegirse DENTRO del artifact autorizado (B13–B17)
+#
+# El escenario del hallazgo: `TexGen Output` contiene `meshes/a.nif` (fuera del
+# staging) y `textures/a.dds` (dentro). El selector recorre el mod entero y, por
+# orden alfabético de `os.walk`, `meshes/` gana. El gate rechaza ese canario en
+# la comprobación de pertenencia y NO reintenta con el que sí pertenece: un
+# falso negativo operativo, no un falso PASS.
+# =============================================================================
+
+
+def _escribir_en_mod(esc: _Escenario, relativo: str, contenido: bytes) -> pathlib.Path:
+    """Escribe un archivo del mod en una ruta RELATIVA AL MOD (no al artifact)."""
+    ruta = esc.mods_dir / _MOD / relativo
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(contenido)
+    return ruta
+
+
+def _escribir_fisico(esc: _Escenario, relativo: str, contenido: bytes) -> pathlib.Path:
+    ruta = esc.physical_data / relativo
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(contenido)
+    return ruta
+
+
+def _escenario_artifact_minimo(tmp_path: pathlib.Path) -> _Escenario:
+    """Artifact autorizado `textures/` con un único archivo (`a.dds`).
+
+    `_escenario` siembra también `textures/sub/b.dds`; se retira para que el
+    único candidato elegible DENTRO del artifact sea el diferencial y el test
+    discrimine la pasada diferencial, no la pasada ausente.
+    """
+    esc = _escenario(tmp_path)
+    shutil.rmtree(esc.artifact_root / "sub")
+    return esc
+
+
+@pytest.mark.asyncio
+async def test_b13_canario_ausente_fuera_del_artifact_no_tapa_el_diferencial_dentro(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un ausente fuera del staging no puede impedir el diferencial que sí está dentro."""
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")  # fuera del artifact, ausente del Data
+    _escribir_fisico(esc, "textures/a.dds", b"DDS-FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is True, resultado.reason
+    assert bridge.challenges[0].relative_path.as_posix() == "textures/a.dds"
+    assert bridge.challenges[0].source_mod == _MOD
+
+
+@pytest.mark.asyncio
+async def test_b14_dos_candidatos_diferenciales_elige_el_del_staging(tmp_path: pathlib.Path) -> None:
+    """Dos diferenciales elegibles: gana el que pertenece al artifact, no el primero del walk."""
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    _escribir_fisico(esc, "meshes/a.nif", b"NIF-FISICO-DISTINTO")
+    _escribir_fisico(esc, "textures/a.dds", b"DDS-FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is True, resultado.reason
+    assert bridge.challenges[0].relative_path.as_posix() == "textures/a.dds"
+
+
+@pytest.mark.asyncio
+async def test_b15_candidato_eclipsado_dentro_del_staging_se_salta_al_siguiente(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Eclipsado dentro del artifact ⇒ se omite; NO se cae a un candidato externo."""
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    esc.escribir_en_mod("b.dds", b"BYTES-B")
+    # `ModAlto` eclipsa `textures/a.dds` con bytes IDÉNTICOS: la efectividad
+    # byte-exact pasa, pero el path ya no es atribuible a `TexGen Output`.
+    alto = esc.mods_dir / "ModAlto" / "textures"
+    alto.mkdir(parents=True)
+    (alto / "a.dds").write_bytes(b"BYTES-DEL-ARTIFACT")
+    esc.modlist(f"+ModAlto\n+{_MOD}\n+OtroMod\n")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    _escribir_fisico(esc, "textures/a.dds", b"A-FISICO")
+    _escribir_fisico(esc, "textures/b.dds", b"B-FISICO")
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is True, resultado.reason
+    assert bridge.challenges[0].relative_path.as_posix() == "textures/b.dds"
+
+
+@pytest.mark.asyncio
+async def test_b16_sin_candidato_dentro_del_artifact_bloquea_sin_fallback(tmp_path: pathlib.Path) -> None:
+    """Ningún elegible dentro del artifact ⇒ BLOQUEA. Prohibido el canario externo."""
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")  # elegible, pero FUERA del artifact
+    _escribir_fisico(esc, "textures/a.dds", b"BYTES-DEL-ARTIFACT")  # idéntico ⇒ no es evidencia
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is False
+    assert resultado.pending_action is None
+    assert "meshes/a.nif" not in resultado.reason, "el selector no debe proponer un canario fuera del artifact"
+    assert bridge.probes == 0, "sin canario autorizado no se ejecuta el probe"
+
+
+@pytest.mark.asyncio
+async def test_b17_el_spawn_reconstruye_el_canario_con_el_mismo_artifact(tmp_path: pathlib.Path) -> None:
+    """Gate y spawn aplican el MISMO criterio: el approval aprobado se sostiene."""
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    _escribir_fisico(esc, "textures/a.dds", b"DDS-FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+    estrategia = _strategy(esc, _BridgeFalso(esc))
+
+    resultado = await estrategia.verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is True, resultado.reason
+    approval = resultado.approval
+    assert approval is not None
+    assert approval.canary_relative_path is not None
+    assert approval.canary_relative_path.as_posix() == "textures/a.dds"
+
+    revalidado = await estrategia._revalidar_aprobacion(approval)
+
+    assert revalidado.relative_path == approval.canary_relative_path
+    assert revalidado.sha256 == approval.canary_sha256
+    assert revalidado.profile_fingerprint == approval.profile_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_b18_la_comprobacion_de_pertenencia_al_staging_sigue_viva(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El filtro NO reemplaza la comprobación posterior: sigue siendo fail-closed.
+
+    Un llamador que reconstruya el challenge sin restringir el subárbol (el
+    escenario exacto del defecto) debe seguir bloqueando. El escenario está
+    armado para que la comprobación de pertenencia sea la ÚNICA barrera: el
+    staging tiene un archivo homónimo con los MISMOS bytes que el canario
+    externo, así que si esa comprobación desaparece el gate compara el hash
+    contra el archivo equivocado, lo da por bueno y abre un falso PASS.
+    """
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    _escribir_en_mod(esc, "meshes/a.nif", b"NIF-DEL-MOD")
+    # Homónimo dentro del artifact: mismos bytes ⇒ el hash "cuadra" aunque el
+    # canario sea de OTRO subárbol.
+    _escribir_en_mod(esc, "textures/a.nif", b"NIF-DEL-MOD")
+    _escribir_fisico(esc, "meshes/a.nif", b"NIF-FISICO-DISTINTO")
+    _escribir_fisico(esc, "textures/a.nif", b"TEXTURES-NIF-FISICO")
+    _escribir_fisico(esc, "textures/a.dds", b"DDS-FISICO-DISTINTO")
+    esc.montar_vista_virtual()
+    # USVFS expone el mod completo, no sólo el artifact: el canario externo ES
+    # visible en la vista virtual (si no, el probe fallaría por otra razón).
+    visible = esc.virtual_data / "meshes" / "a.nif"
+    visible.parent.mkdir(parents=True, exist_ok=True)
+    visible.write_bytes(b"NIF-DEL-MOD")
+    ajeno = build_attestation_challenge_for_source(
+        source_mod=_MOD,
+        data_root=esc.data_root,
+        mods_dir=esc.mods_dir,
+        profile=_PERFIL,
+        physical_data_dir=esc.physical_data,
+        permitir_diferencial=True,
+    )
+    assert ajeno.relative_path.as_posix() == "meshes/a.nif", "el selector histórico sigue eligiendo el externo"
+    monkeypatch.setattr(brokered_dyndolod, "build_attestation_challenge_for_source", lambda **_: ajeno)
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is False
+    assert "no pertenece al árbol autorizado" in resultado.reason
+    assert bridge.probes == 0, "un canario fuera del artifact no puede llegar al probe"
+
+
+@pytest.mark.asyncio
+async def test_b19_el_gate_atribuye_el_enlace_roto_a_la_seleccion(tmp_path: pathlib.Path) -> None:
+    """Un enlace colgante en el Data físico se detecta al SELECCIONAR, no después.
+
+    Antes, `Path.exists()` lo daba por ausente, el canario se elegía y el fallo
+    recién aparecía en el invariante físico: el diagnóstico culpaba al invariante
+    en vez de a la inspección. El contrato es que la elegibilidad ya lo rechace.
+    """
+    esc = _escenario_artifact_minimo(tmp_path)
+    esc.escribir_en_mod("a.dds", b"BYTES-DEL-ARTIFACT")
+    enlace = esc.physical_data / "textures" / "a.dds"
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    objetivo = esc.physical_data / "textures" / "no-existe.bin"
+    try:
+        os.symlink(objetivo, enlace, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        # Un CreateSymbolicLink rechazado por privilegio deja un directorio vacío
+        # en la ruta del enlace: hay que retirarlo para poder crear la junction.
+        try:
+            if os.path.lexists(enlace) and not os.path.islink(enlace):
+                os.rmdir(enlace)
+        except OSError:
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+        if sys.platform != "win32":
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+        creado = subprocess.run(["cmd", "/c", "mklink", "/J", str(enlace), str(objetivo)], capture_output=True)
+        if creado.returncode != 0 or not os.path.lexists(enlace):
+            pytest.skip("la plataforma no permite crear un enlace colgante")
+    assert not enlace.exists(), "el enlace debe colgar para reproducir el caso"
+    esc.montar_vista_virtual()
+    bridge = _BridgeFalso(esc)
+
+    resultado = await _strategy(esc, bridge).verify_texgen_handoff(_request(esc))
+
+    assert resultado.verified is False
+    assert "no hay canary USVFS elegible" in resultado.reason, resultado.reason
+    assert bridge.probes == 0

@@ -11,16 +11,17 @@ Reference:
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import os
+import pathlib
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import pathlib
-
     from sky_claw.app.security.path_validator import PathValidator
 
 from sky_claw.app.security.path_validator import PathViolationError
@@ -39,6 +40,29 @@ class PatcherPipelineError(Exception):
     pass
 
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+    | {f"COM{s}" for s in "¹²³"}
+    | {f"LPT{s}" for s in "¹²³"}
+)
+
+
+def _is_split_output_name(group_name: str, candidate: str) -> bool:
+    """Si ``candidate`` colisiona con el espacio ``<grupo>_N`` de splits."""
+    prefix = f"{group_name.casefold()}_"
+    candidate_folded = candidate.casefold()
+    if not candidate_folded.startswith(prefix):
+        return False
+    suffix = candidate_folded[len(prefix) :]
+    if not suffix.isascii() or not suffix.isdigit():
+        return False
+    # Match the runner's ``_2``, ``_3``, … ``_10`` pattern without converting
+    # an unbounded settings string to int (Python caps decimal conversions).
+    return (len(suffix) == 1 and suffix in "23456789") or (len(suffix) > 1 and suffix[0] in "123456789")
+
+
 class PatcherNotFoundError(PatcherPipelineError):
     """Error cuando un patcher no se encuentra en el pipeline."""
 
@@ -54,6 +78,24 @@ class PatcherConfigError(PatcherPipelineError):
         super().__init__(f"Invalid config for patcher '{patcher_id}': {reason}")
         self.patcher_id = patcher_id
         self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class SynthesisSettingsProfile:
+    """Vista validada del perfil V2 que consume ``Synthesis.CLI``.
+
+    ``patcher_ids`` incluye solo patchers habilitados en grupos habilitados y
+    ``group_names`` solo grupos que efectivamente ejecutarán al menos uno. El
+    conteo de masters del load order no equivale al fan-in real de un patcher;
+    ``split_if_max_masters_exceeded`` conserva el bit efectivo del perfil. Si
+    falta, se aplica el default upstream 0.36.6 (``True``); solo un valor
+    presente pero no booleano queda como desconocido (``None``) y fail-closed.
+    """
+
+    profile_identifier: str
+    patcher_ids: tuple[str, ...]
+    group_names: tuple[str, ...]
+    split_if_max_masters_exceeded: bool | None
 
 
 # =============================================================================
@@ -188,6 +230,281 @@ class PatcherPipeline:
                     pipeline_config_path,
                     e,
                 )
+
+    @staticmethod
+    def _read_synthesis_profile(
+        settings_path: pathlib.Path,
+        profile_identifier: str,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        list[tuple[int, dict[str, Any], str, list[tuple[int, dict[str, Any], str, tuple[str, ...]]]]],
+    ]:
+        """Lee y valida la vista V2 que ``run-pipeline`` realmente consume.
+
+        El esquema de settings sigue la convención canónica PascalCase de Synthesis
+        0.36.6 (``Profiles``, ``Nickname``, ``ID``, ``Groups``, ``Name``, ``Patchers``).
+        La resolución de ``profile_identifier`` contra ``Nickname`` o ``ID`` es
+        insensible a mayúsculas (fail-closed ante ambigüedades), mientras que las claves
+        JSON siguen el contrato upstream.
+        """
+        if not isinstance(profile_identifier, str) or not profile_identifier.strip():
+            raise PatcherPipelineError("Synthesis profile identifier must be a non-empty string")
+
+        try:
+            raw_settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise PatcherPipelineError(f"Cannot read Synthesis pipeline settings at {settings_path}: {exc}") from exc
+
+        if not isinstance(raw_settings, dict):
+            raise PatcherPipelineError("Synthesis pipeline settings must be a JSON object")
+        version = raw_settings.get("Version", 2)
+        if version != 2:
+            raise PatcherPipelineError(f"Synthesis CLI settings version 2 is required (found {version!r})")
+
+        raw_profiles = raw_settings.get("Profiles")
+        if not isinstance(raw_profiles, list):
+            raise PatcherPipelineError("Synthesis pipeline settings must contain a Profiles array")
+
+        identifier = profile_identifier.casefold()
+        matches: list[dict[str, Any]] = []
+        for candidate in raw_profiles:
+            if not isinstance(candidate, dict):
+                raise PatcherPipelineError("Every Synthesis profile must be a JSON object")
+            aliases = (candidate.get("Nickname"), candidate.get("ID"))
+            if any(isinstance(alias, str) and alias.casefold() == identifier for alias in aliases):
+                matches.append(candidate)
+        if len(matches) != 1:
+            reason = "not found" if not matches else "ambiguous"
+            raise PatcherPipelineError(f"Synthesis profile {profile_identifier!r} is {reason} in {settings_path}")
+        profile = matches[0]
+        if profile.get("ExportAsMasterFiles") is True:
+            raise PatcherPipelineError("Synthesis ExportAsMasterFiles is unsupported; Sky-Claw manages ESP outputs")
+
+        raw_groups = profile.get("Groups")
+        if not isinstance(raw_groups, list):
+            raise PatcherPipelineError("Synthesis profile must contain a V2 Groups array")
+
+        # (group index, group, output base name, [(patcher index, patcher, canonical id, aliases)])
+        active_groups: list[
+            tuple[int, dict[str, Any], str, list[tuple[int, dict[str, Any], str, tuple[str, ...]]]]
+        ] = []
+        seen_group_names: set[str] = set()
+        for group_index, group in enumerate(raw_groups):
+            if not isinstance(group, dict):
+                raise PatcherPipelineError("Every Synthesis patcher group must be a JSON object")
+            if group.get("On") is not True:
+                continue
+            name = group.get("Name")
+            if not isinstance(name, str) or not name.strip():
+                raise PatcherPipelineError("An enabled Synthesis group has no valid output name")
+            if (
+                name != name.strip()
+                or name in {".", ".."}
+                or name.endswith((".", " "))
+                or any(char in name for char in '<>:\\"/\\\\|?*')
+                or any(ord(char) < 32 for char in name)
+            ):
+                raise PatcherPipelineError(f"Unsafe Synthesis output group name: {name!r}")
+            base_name = name.split(".", 1)[0].upper()
+            if base_name in _WINDOWS_RESERVED_NAMES:
+                raise PatcherPipelineError(f"Reserved Windows output group name: {name!r}")
+            folded_name = name.casefold()
+            if folded_name in seen_group_names:
+                raise PatcherPipelineError(f"Duplicate Synthesis output group name: {name!r}")
+            seen_group_names.add(folded_name)
+
+            raw_patchers = group.get("Patchers")
+            if not isinstance(raw_patchers, list):
+                raise PatcherPipelineError(f"Enabled Synthesis group {name!r} must contain a Patchers array")
+            enabled_patchers: list[tuple[int, dict[str, Any], str, tuple[str, ...]]] = []
+            for patcher_index, patcher in enumerate(raw_patchers):
+                if not isinstance(patcher, dict):
+                    raise PatcherPipelineError(f"A patcher in Synthesis group {name!r} is not a JSON object")
+                if patcher.get("On") is not True:
+                    continue
+                id_value = patcher.get("ID")
+                nickname = patcher.get("Nickname")
+                aliases_list: list[str] = []
+                seen_aliases: set[str] = set()
+                for value in (id_value, nickname):
+                    if isinstance(value, str) and value.strip():
+                        alias = value.strip()
+                        if alias.casefold() not in seen_aliases:
+                            aliases_list.append(alias)
+                            seen_aliases.add(alias.casefold())
+                aliases = tuple(aliases_list)
+                if not aliases:
+                    raise PatcherPipelineError(f"An enabled patcher in group {name!r} has neither ID nor Nickname")
+                canonical_id = id_value.strip() if isinstance(id_value, str) and id_value.strip() else aliases[0]
+                enabled_patchers.append((patcher_index, patcher, canonical_id, aliases))
+
+            if enabled_patchers:
+                active_groups.append((group_index, group, name, enabled_patchers))
+
+        if not active_groups:
+            raise PatcherPipelineError(f"Synthesis profile {profile_identifier!r} has no enabled patchers")
+        group_names = [name for _, _, name, _ in active_groups]
+        for index, group_name in enumerate(group_names):
+            for other_name in group_names[index + 1 :]:
+                if _is_split_output_name(group_name, other_name) or _is_split_output_name(other_name, group_name):
+                    raise PatcherPipelineError(
+                        f"Synthesis group names {group_name!r} and {other_name!r} overlap split output filenames"
+                    )
+        return raw_settings, profile, active_groups
+
+    @staticmethod
+    def _select_synthesis_entries(
+        active_groups: list[tuple[int, dict[str, Any], str, list[tuple[int, dict[str, Any], str, tuple[str, ...]]]]],
+        patcher_ids: list[str] | None,
+    ) -> list[tuple[int, int, str, tuple[str, ...]]]:
+        """Resuelve selectores conservando la identidad de cada entrada V2."""
+        entries: list[tuple[int, int, str, tuple[str, ...]]] = []
+        alias_to_entry: dict[str, list[int]] = {}
+        for group_index, _, _, patchers in active_groups:
+            for patcher_index, _, canonical_id, aliases in patchers:
+                entry_index = len(entries)
+                entries.append((group_index, patcher_index, canonical_id, aliases))
+                for alias in aliases:
+                    alias_to_entry.setdefault(alias.casefold(), []).append(entry_index)
+
+        if patcher_ids is None:
+            selected_entry_indices = set(range(len(entries)))
+        else:
+            if not patcher_ids:
+                raise PatcherPipelineError("At least one Synthesis patcher must be selected")
+            selected_entry_indices = set()
+            requested: set[str] = set()
+            for patcher_id in patcher_ids:
+                if not isinstance(patcher_id, str) or not patcher_id.strip():
+                    raise PatcherPipelineError("Synthesis patcher IDs must be non-empty strings")
+                folded_id = patcher_id.strip().casefold()
+                if folded_id in requested:
+                    raise PatcherPipelineError(f"Duplicate Synthesis patcher selection: {patcher_id!r}")
+                requested.add(folded_id)
+                matches = alias_to_entry.get(folded_id, [])
+                if not matches:
+                    raise PatcherPipelineError(
+                        f"Selected patcher {patcher_id!r} is not enabled in the Synthesis profile"
+                    )
+                if len(matches) != 1:
+                    raise PatcherPipelineError(f"Selected patcher {patcher_id!r} is ambiguous in the Synthesis profile")
+                entry_index = matches[0]
+                if entry_index in selected_entry_indices:
+                    raise PatcherPipelineError(f"Multiple selectors refer to the same patcher: {patcher_id!r}")
+                selected_entry_indices.add(entry_index)
+
+        return [entry for index, entry in enumerate(entries) if index in selected_entry_indices]
+
+    @classmethod
+    def inspect_synthesis_settings(
+        cls,
+        settings_path: pathlib.Path,
+        profile_identifier: str,
+        patcher_ids: list[str] | None = None,
+    ) -> SynthesisSettingsProfile:
+        """Valida perfil/patchers y devuelve solo las unidades que se ejecutarían.
+
+        ``patcher_ids`` acepta el ID o el nickname de cada patcher. Cuando es
+        ``None``, se seleccionan todos los patchers actualmente habilitados en
+        los grupos habilitados. Una selección desconocida o ambigua falla antes
+        de lanzar el proceso externo.
+        """
+        _, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
+        selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
+        selected_group_indices = {entry[0] for entry in selected_entries}
+        group_names = tuple(name for index, _, name, _ in active_groups if index in selected_group_indices)
+        selected_patcher_ids = tuple(entry[2] for entry in selected_entries)
+        # Synthesis 0.36.6 model default: SplitIfMaxMastersExceeded = true.
+        # Preserve fail-closed behavior for a malformed, explicitly present value.
+        split_value = profile.get("SplitIfMaxMastersExceeded", True)
+        split_enabled = split_value if type(split_value) is bool else None
+        return SynthesisSettingsProfile(
+            profile_identifier=profile_identifier,
+            patcher_ids=selected_patcher_ids,
+            group_names=group_names,
+            split_if_max_masters_exceeded=split_enabled,
+        )
+
+    @classmethod
+    def prepare_synthesis_cli_settings(
+        cls,
+        settings_path: pathlib.Path,
+        profile_identifier: str,
+        patcher_ids: list[str] | None = None,
+    ) -> tuple[pathlib.Path, SynthesisSettingsProfile]:
+        """Materializa un settings temporal V2 sin mutar el archivo del usuario.
+
+        El CLI recibe solo el perfil/patchers seleccionados. Además se desactiva
+        ``UpdateLoadOrderAfterRun`` en la copia de ejecución: Sky-Claw no delega
+        al proceso externo una escritura no transaccional sobre el perfil MO2.
+        El caller es dueño de borrar el archivo temporal que devuelve.
+        """
+        raw_settings, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
+        selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
+        selected_entry_keys = {(group_index, patcher_index) for group_index, patcher_index, _, _ in selected_entries}
+        selected_group_indices = {group_index for group_index, _, _, _ in selected_entries}
+        profile_info = SynthesisSettingsProfile(
+            profile_identifier=profile_identifier,
+            patcher_ids=tuple(entry[2] for entry in selected_entries),
+            group_names=tuple(name for index, _, name, _ in active_groups if index in selected_group_indices),
+            split_if_max_masters_exceeded=(
+                profile.get("SplitIfMaxMastersExceeded", True)
+                if type(profile.get("SplitIfMaxMastersExceeded", True)) is bool
+                else None
+            ),
+        )
+
+        selected_groups: list[dict[str, Any]] = []
+        for group_index, group, group_name, patchers in active_groups:
+            chosen_patchers = [
+                copy.deepcopy(patcher)
+                for patcher_index, patcher, _, _ in patchers
+                if (group_index, patcher_index) in selected_entry_keys
+            ]
+            if not chosen_patchers:
+                continue
+            group_copy = copy.deepcopy(group)
+            group_copy["Name"] = group_name
+            group_copy["On"] = True
+            group_copy["Patchers"] = chosen_patchers
+            selected_groups.append(group_copy)
+
+        if not selected_groups:
+            raise PatcherPipelineError("Selected Synthesis patchers do not map to an enabled output group")
+
+        run_profile = copy.deepcopy(profile)
+        run_profile["Groups"] = selected_groups
+        # This side effect is not part of the output plugin transaction and
+        # would bypass the caller's MO2-profile rollback/USVFS boundary.
+        run_profile["UpdateLoadOrderAfterRun"] = False
+        run_settings = copy.deepcopy(raw_settings)
+        run_settings["Version"] = 2
+        run_settings["Profiles"] = [run_profile]
+
+        temporary_path: pathlib.Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="skyclaw-synthesis-",
+                suffix=".json",
+                delete=False,
+            ) as settings_file:
+                temporary_path = pathlib.Path(settings_file.name)
+                json.dump(run_settings, settings_file, indent=2, ensure_ascii=False)
+                settings_file.write("\n")
+                settings_file.flush()
+                os.fsync(settings_file.fileno())
+        except OSError as exc:
+            if temporary_path is not None:
+                with contextlib.suppress(OSError):
+                    temporary_path.unlink(missing_ok=True)
+            raise PatcherPipelineError(f"Cannot prepare temporary Synthesis settings: {exc}") from exc
+
+        if temporary_path is None:
+            raise PatcherPipelineError("Failed to initialize temporary Synthesis settings path")
+        return temporary_path, profile_info
 
     def _load_from_path(self, path: pathlib.Path) -> None:
         """

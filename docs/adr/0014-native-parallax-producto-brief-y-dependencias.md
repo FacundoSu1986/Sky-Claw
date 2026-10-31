@@ -1100,7 +1100,7 @@ el exportador y el escritor. No es NP-A0 completo: ver «Qué falta».
 - **Errores tipados.** `ERRORES_POR_ARCHIVO` enumera lo que hace fallar UNA ruta (los de decodificación, integración, gate, exportación, procedencia,
   origen y `OSError`); un test por AST prohíbe cualquier `except` desnudo o de `Exception`. Lo demás es un bug y sube. Una entrada que viola el
   contrato (dos rutas de salida iguales sin distinguir mayúsculas) se rechaza entera antes de tocar nada (`LoteInvalidoError`).
-- **Vocabulario cerrado de estados** (`EstadoDeArchivo`: `ESCRITA`, `EN_REVISION`, `NO_PROCESADA`, `NO_ESCRITA`): un test falla si se agrega uno sin caso.
+- **Vocabulario cerrado de estados** (`EstadoDeArchivo`: `ESCRITA`, `EN_REVISION`, `NO_PROCESADA`, `NO_ESCRITA`, `SIN_CONFIRMAR`): un test falla si se agrega uno sin caso. `SIN_CONFIRMAR` y el campo `interrupcion` del informe (#834) declaran una escritura cortada por el candado o el disco; se agregaron SIN subir `VERSION_DEL_LOTE` (entra a la procedencia e invalidaría las cachés) y la capa desatendida los trata como falla.
 - **La línea de comandos es un borde delgado.** Los códigos de salida están anclados (0 bien, 1 alguna textura falló, 2 uso o configuración, 3 salida
   ocupada por otra instancia, 130 interrumpido). El test del 3 **encontró un defecto real** al escribirlo: `SalidaOcupadaError` es subclase de
   `SalidaNoEscribibleError` y su `except` estaba detrás, así que una salida ocupada salía como error de configuración (código 2). Orden corregido.

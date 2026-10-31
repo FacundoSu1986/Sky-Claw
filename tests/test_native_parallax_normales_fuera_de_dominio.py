@@ -120,13 +120,19 @@ def _dds_dx10_rgba(ruta: pathlib.Path) -> None:
     ruta.write_bytes(_dds(_LADO, _LADO, rgba.tobytes(), fourcc=b"DX10", dxgi=28))
 
 
-def _dds_dxt1(ruta: pathlib.Path) -> None:
-    def bloque(rgb: tuple[int, ...]) -> bytes:
-        r, g, b = rgb
-        color = ((r * 31 + 127) // 255) << 11 | ((g * 63 + 127) // 255) << 5 | ((b * 31 + 127) // 255)
-        return struct.pack("<HHI", color, color, 0)
+def _bloque_bc1(rgb: tuple[int, ...]) -> bytes:
+    r, g, b = rgb
+    color = ((r * 31 + 127) // 255) << 11 | ((g * 63 + 127) // 255) << 5 | ((b * 31 + 127) // 255)
+    return struct.pack("<HHI", color, color, 0)
 
-    ruta.write_bytes(_dds(_LADO, _LADO, _bloques(_rgb_por_bloque(), bloque), fourcc=b"DXT1"))
+
+def _dds_dxt1(ruta: pathlib.Path) -> None:
+    ruta.write_bytes(_dds(_LADO, _LADO, _bloques(_rgb_por_bloque(), _bloque_bc1), fourcc=b"DXT1"))
+
+
+def _dds_bc1(ruta: pathlib.Path) -> None:
+    """El mismo formato que DXT1 con cabecera DX10 (DXGI_FORMAT_BC1_UNORM = 71): Pillow lo rotula ``BC1``."""
+    ruta.write_bytes(_dds(_LADO, _LADO, _bloques(_rgb_por_bloque(), _bloque_bc1), fourcc=b"DX10", dxgi=71))
 
 
 def _dds_bc5(ruta: pathlib.Path) -> None:
@@ -142,7 +148,12 @@ def _dds_bc7(ruta: pathlib.Path) -> None:
 
 
 # Formatos de bloques: uno por cada elemento de ``decode._FORMATOS_DDS_DE_BLOQUES_VERIFICADOS``.
-_RECETAS_DE_BLOQUES: dict[str, Callable[[pathlib.Path], None]] = {"DXT1": _dds_dxt1, "BC5": _dds_bc5, "BC7": _dds_bc7}
+_RECETAS_DE_BLOQUES: dict[str, Callable[[pathlib.Path], None]] = {
+    "DXT1": _dds_dxt1,
+    "BC1": _dds_bc1,
+    "BC5": _dds_bc5,
+    "BC7": _dds_bc7,
+}
 # DDS sin comprimir: uno por cada códec de ``decode._CODECS_DDS_SIN_COMPRIMIR``.
 _RECETAS_SIN_COMPRIMIR: dict[str, Callable[[pathlib.Path], None]] = {
     "dds_rgb": _dds_clasico_rgba,

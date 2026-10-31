@@ -16,6 +16,7 @@ hardcodean). En particular:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -35,15 +36,62 @@ ESP_VALIDO = b"TES4" + b"\x00" * 200
 
 
 def _runner(tmp_path: pathlib.Path) -> SynthesisRunner:
-    """Runner real con exe fake y output_path dedicado."""
-    (tmp_path / "Synthesis.exe").touch()
+    """Runner real con CLI settings V2, plugins.txt MO2 y output dedicado."""
+    game_path = tmp_path / "Skyrim"
+    data_folder = game_path / "Data"
+    data_folder.mkdir(parents=True)
+    mo2_path = tmp_path / "MO2"
+    profile_dir = mo2_path / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    load_order = profile_dir / "plugins.txt"
+    load_order.write_bytes(b"*Skyrim.esm\n")
+    settings_path = tmp_path / "PipelineSettings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "Version": 2,
+                "Profiles": [
+                    {
+                        "Nickname": "Default",
+                        "ID": "profile-default",
+                        "TargetRelease": "SkyrimSE",
+                        "Groups": [
+                            {
+                                "On": True,
+                                "Name": "Synthesis",
+                                "Patchers": [
+                                    {
+                                        "$type": "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution",
+                                        "ID": "id-PatcherA",
+                                        "Nickname": "PatcherA",
+                                        "On": True,
+                                        "RemoteRepoPath": "https://example.invalid/PatcherA",
+                                    }
+                                ],
+                            }
+                        ],
+                        "SplitIfMaxMastersExceeded": True,
+                        "UpdateLoadOrderAfterRun": True,
+                    }
+                ],
+                "WorkingDirectory": str(tmp_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    synthesis_exe = tmp_path / "Synthesis.exe"
+    synthesis_exe.touch()
     return SynthesisRunner(
         SynthesisConfig(
-            game_path=tmp_path,
-            mo2_path=tmp_path,
+            game_path=game_path,
+            mo2_path=mo2_path,
             output_path=tmp_path / "out",
-            synthesis_exe=tmp_path / "Synthesis.exe",
+            synthesis_exe=synthesis_exe,
             timeout_seconds=5,
+            profile="Default",
+            pipeline_settings_path=settings_path,
+            data_folder_path=data_folder,
+            load_order_file_path=load_order,
         )
     )
 
@@ -324,6 +372,74 @@ async def test_success_textual_en_stderr_cuenta_como_senal(tmp_path: pathlib.Pat
         return b"", STDOUT_EXITO.encode(), 0
 
     with patch("sky_claw.local.tools.synthesis_runner.run_capture", _escribe_con_success_en_stderr):
+        result = await runner.run_pipeline(["PatcherA"])
+
+    assert result.success is True
+    assert result.output_esp == esp
+
+
+async def test_cleanup_failure_degrada_log_pero_conserva_exito_del_run(tmp_path: pathlib.Path) -> None:
+    """H5: Si unlink() falla en temporales (%TEMP% bloqueado por AV/indexador),
+    la corrida no se degrada a excepción si Synthesis terminó con éxito."""
+    (tmp_path / "out").mkdir()
+    esp = tmp_path / "out" / "Synthesis.esp"
+    runner = _runner(tmp_path)
+
+    async def _cli_exitoso(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        esp.write_bytes(ESP_VALIDO)
+        return STDOUT_EXITO.encode(), b"", 0
+
+    original_unlink = pathlib.Path.unlink
+
+    def _failing_unlink(self, *args, **kwargs):
+        if "skyclaw-synthesis" in self.name:
+            raise OSError(32, "The process cannot access the file because it is being used by another process")
+        return original_unlink(self, *args, **kwargs)
+
+    with (
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _cli_exitoso),
+        patch.object(pathlib.Path, "unlink", _failing_unlink),
+    ):
+        result = await runner.run_pipeline(["PatcherA"])
+
+    assert result.success is True
+    assert result.output_esp == esp
+
+
+def test_splits_no_validos_x1_x0_no_se_atribuyen(tmp_path: pathlib.Path) -> None:
+    """H8: Mutagen nunca produce _1 ni _0 (arranca en _2). Archivos con esos
+    sufijos son ajenos y no deben atribuirse a la corrida."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "Synthesis_1.esp").write_bytes(ESP_VALIDO)
+    (out_dir / "Synthesis_0.esp").write_bytes(ESP_VALIDO)
+    (out_dir / "Synthesis_02.esp").write_bytes(ESP_VALIDO)
+    (out_dir / "Synthesis_2.esp").write_bytes(ESP_VALIDO)
+    (out_dir / "Synthesis.esp").write_bytes(ESP_VALIDO)
+
+    runner = _runner(tmp_path)
+    discovered = runner._discover_output_files_for_groups(("Synthesis",))
+    nombres = [p.name for p in discovered]
+
+    assert "Synthesis.esp" in nombres
+    assert "Synthesis_2.esp" in nombres
+    assert "Synthesis_1.esp" not in nombres
+    assert "Synthesis_0.esp" not in nombres
+    assert "Synthesis_02.esp" not in nombres
+
+
+async def test_stdout_vacio_con_retorno_cero_y_salida_valida(tmp_path: pathlib.Path) -> None:
+    """H8: Si stdout está vacío pero el proceso termina con return code 0 y
+    la salida está presente y es válida, el veredicto es éxito."""
+    (tmp_path / "out").mkdir()
+    esp = tmp_path / "out" / "Synthesis.esp"
+    runner = _runner(tmp_path)
+
+    async def _cli_sin_stdout(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        esp.write_bytes(ESP_VALIDO)
+        return b"", b"", 0
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _cli_sin_stdout):
         result = await runner.run_pipeline(["PatcherA"])
 
     assert result.success is True

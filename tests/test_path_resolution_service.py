@@ -1484,7 +1484,17 @@ class TestAnclaConstructoresManualesDeMods:
         # H1 (#650: normalización de prioridad canónica en boundary de parser)
         # expandió `read_enabled_mods` y PR-586F agregó el gate de visibilidad
         # brokered, moviendo la construcción canónica de mods_dir a la línea 576.
-        "sky_claw/local/mo2/vfs_attestation.py": (576,),
+        # D2 (canario diferencial MO2/USVFS) agregó la modalidad diferencial y sus
+        # helpers arriba de `_raices_del_overlay` (misma función, sin duplicación
+        # ni cambio de semántica): la construcción canónica de `<base>/mods`
+        # sigue siendo una sola y corrió de la línea 576 a la 708 (+132).
+        # D2-H2 (subárbol autorizado en la selección de canarios) agregó la
+        # validación del prefijo y el filtro de elegibilidad, también arriba de
+        # `_raices_del_overlay`: misma función única, ahora en la línea 800 (+92).
+        # D2-H3 (inspección física de la primera pasada con la primitiva
+        # compartida) agregó el comentario del criterio de ausencia, otra vez
+        # arriba de `_raices_del_overlay`: misma función única, línea 813 (+13).
+        "sky_claw/local/mo2/vfs_attestation.py": (813,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323, sus
         # follow-ups a la ~339, PR #695 / issue #623 a la ~581 por cuarentena,
@@ -2239,7 +2249,12 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
         "sky_claw/local/tools/pandora_service.py": 1,
-        "sky_claw/local/tools/synthesis_service.py": 1,
+        # #841: los tres usos alimentan sensores read-only (sensor VFS, gate de
+        # visibilidad y cota de fan-in). No son destinos de escritura; si el
+        # MODS_DIR es irresoluble el veredicto es RED, nunca verde.
+        "sky_claw/local/tools/synthesis_service.py": 3,
+        # ADR 0016 (etapa 6 asistida): ``_ensure_preflight`` (sensor VFS del preflight) y
+        # ``_artefacto_asistido`` (capas del overlay). Ambos son read-only.
         "sky_claw/local/tools/wrye_bash_service.py": 2,
     }
 
@@ -2583,6 +2598,7 @@ class TestRaizDeDatosDeInstanciaSeparada:
         data = tmp_path / "data"
         (data / "profiles" / "Default").mkdir(parents=True)
         (data / "profiles" / "Default" / "modlist.txt").write_text("a", encoding="utf-8")
+        (data / "profiles" / "Default" / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
         if con_overwrite:
             (data / "overwrite").mkdir(parents=True)
         mods = mod_directory if mod_directory is not None else data / "mods"

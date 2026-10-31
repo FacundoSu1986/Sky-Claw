@@ -180,13 +180,17 @@ La política clean-room, `docs/design/research/native-parallax/` y
   las posiciones de bit de los flags coinciden con la cabecera pública de CommonLibSSE (registro 1 = bits 0-31, registro 2 = bits 32-63). **NO verificado:**
   el diseño de `BSTriShape` (Skyrim SE) contra un archivo real (solo contra la especificación; lo cruza la tabla que devuelve el rig), y que la versión del
   plugin instalada se comporte como la rama citada. Alcance que el NIF no muestra y que quien consuma esto debe decir: el plugin solo actúa sobre objetos
-  base Static, Movable Static y Container, y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no). No lee mallas dentro de un
-  `.bsa`.
+  base Static, Movable Static y Container (eso no se ve en el NIF). No lee mallas dentro de un `.bsa`. **El INI sí se lee** (#834 ítem 3, `plugin_relieve.py`): el que GANA en el
+  overlay (`SKSE/Plugins/AutoParallax.ini`, resuelto por `diagnostico_perfil.cargar_plugin_del_perfil`, el tercer uso del resolutor de ganadores). Solo un INI legible con
+  `bAutoEnableParallax` apagado baja un `SI` a `NO`; ausente o sin determinar (valor no booleano, clave o sección repetidas, ilegible, mayor que `MAXIMO_DEL_INI`) avisa y no cambia el
+  veredicto. La DLL se comprueba por presencia (solo aviso). Ancla: `tests/test_native_parallax_elegibilidad_plugin.py` (enumera los estados de `AjusteDelIni` y su decisión sobre un
+  `SI`). **NO verificado:** que la versión instalada lea el INI con estas reglas, la versión de la DLL y la matriz DLL × INI × tipo de objeto (rig).
   NP-A0j parte 2: `elegibilidad.py` (`evaluar_elegibilidad`) cruza esas dos piezas con el perfil de MO2 y contesta, por cada `*_p.dds` que el generador publicaría,
   `EFECTO_POSIBLE = SI | NO | NO_VERIFICADO` (`EfectoPosible`, vocabulario cerrado). Tres propiedades, con su ancla en `tests/test_native_parallax_elegibilidad.py` y
   `tests/test_native_parallax_cli_elegibilidad.py`: `SI` solo si una forma elegible terminaría USANDO esa salida siguiendo el orden de búsqueda del plugin (si antes
   encuentra otra textura suelta, es `NO`); `NO` solo si TODAS las formas que la referencian quedan fuera por una razón nombrada y nada de lo leído quedó incompleto (una malla
-  ilegible, o con geometría que el lector no abre, baja el `NO` a `NO_VERIFICADO`); y lo que depende de un archivo que no se puede comprobar (¿dentro de un `.bsa`?) o de las
+  ilegible baja TODO `NO` a `NO_VERIFICADO`; una con geometría que el lector no abre, solo los de las texturas que nombra un `BSShaderTextureSet` de su
+  mismo archivo: `juegos_de_las_formas_no_soportadas`, y si esos juegos no se pueden leer, contagia a todas: #834 ítem 4); y lo que depende de un archivo que no se puede comprobar (¿dentro de un `.bsa`?) o de las
   mayúsculas de una ruta es `NO_VERIFICADO`, nunca `NO`. Cuenta la malla que GANA en el overlay (el índice de `meshes/` lo arma `diagnostico_perfil.cargar_mallas_del_perfil`: el
   resolutor se sigue llamando SOLO desde ese módulo) y no abre archivos por su cuenta (la lectura acotada vive en `assets/nif_materiales.leer_materiales_de_archivo`). Una salida que
   el generador publicaría pero el juego no cargaría (otra capa de mayor prioridad gana su ruta, o el mod de salida no está habilitado: #792 H12) es `NO` y NO cuenta como «presente»

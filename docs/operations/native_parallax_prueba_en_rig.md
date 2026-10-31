@@ -32,6 +32,10 @@
    `No module named sky_claw.local.native_parallax.cli`. Hacé `git fetch origin` y trabajá desde una copia de `origin/main` (lo más
    seguro es una carpeta aparte, por ejemplo `git worktree add .worktrees\rig -b rig/prueba origin/main`, para no mover tu copia de trabajo).
    Corré todos los comandos **desde la carpeta de esa copia**.
+   **Comprobá de qué copia importa el código.** Si usás un entorno virtual que vive en otra carpeta (por ejemplo el de tu copia principal),
+   puede importar `sky_claw` de **esa otra copia, más vieja**, y generarías con código viejo sin que nada lo avise (le pasó a la prueba del 30/10).
+   Antes de generar: `.venv\Scripts\python -c "import sky_claw; print(sky_claw.__file__)"` tiene que imprimir una ruta **dentro de la carpeta de tu copia
+   al día**. Si apunta a otra, fijalo en la misma ventana de consola: `set PYTHONPATH=C:\ruta\a\tu\copia`.
 2. El entorno: `uv sync --extra dev` (instala numpy y Pillow). Solo hace falta si faltan: si `.venv\Scripts\python -c "import numpy, PIL"`
    no da error, ya están.
 3. El `texconv.exe` oficial **fijado por el proyecto** (DirectXTex, versión `may2026`). Bajalo de
@@ -94,7 +98,7 @@ El informe describe cada textura con tres campos que se confunden fácil. Son co
 | Campo | Qué dice |
 |---|---|
 | `veredicto` | lo que decidió el gate con las métricas: `REVIEW` mientras no haya umbrales validados |
-| `estado` | qué pasó con el archivo: `ESCRITA` (quedó en la salida: publicada, reemplazada **o con la caché vigente**), `EN_REVISION` (el gate la mandó a revisión y no pediste escribirla), `NO_PROCESADA` (falló antes de tener algo que escribir) o `NO_ESCRITA` |
+| `estado` | qué pasó con el archivo: `ESCRITA` (quedó en la salida: publicada, reemplazada **o con la caché vigente**), `EN_REVISION` (el gate la mandó a revisión y no pediste escribirla), `NO_PROCESADA` (falló antes de tener algo que escribir), `NO_ESCRITA` (el escritor no dejó la salida: ruta preservada, en conflicto o fallida; `interrupcion` es `null`) o `SIN_CONFIRMAR` (la escritura se cortó —candado perdido o fallo del disco— y **no se sabe** si quedó en el mod: solo acá aplica `interrupcion`) |
 | `efecto` | qué hizo el escritor con esa ruta: `PUBLICADA`, `REEMPLAZADA`, `OMITIDA` (la caché estaba vigente), `PRESERVADA`, `CONFLICTO`, `FALLIDA`… |
 
 Por eso una textura puede tener `veredicto: REVIEW`, `estado: ESCRITA` y `efecto: OMITIDA` sin que nada se contradiga, y `conteos` se calcula de la misma lista de archivos.
@@ -118,9 +122,18 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    la ruta de salida o el mod de salida no está habilitado en el perfil) o `NO_VERIFICADO` (no se puede afirmar: ninguna malla suelta la referencia, la
    búsqueda del plugin depende de un archivo que no se puede comprobar, una ruta es ambigua o alguna malla no se pudo leer). Elegí para mirar las que dicen `SI`. **Límites:** no lee
    mallas dentro de un `.bsa` (las del juego base lo están: esas salen `NO_VERIFICADO`); el plugin solo actúa sobre objetos base Static, Movable Static y Container (no puertas ni
-   activadores) y solo enciende relieve con `bAutoEnableParallax` activo en su INI (por defecto no), y nada de eso se ve en la malla; la regla sale del código público del plugin y
-   la versión que tenés instalada puede diferir.
-3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas.
+   activadores), y eso no se ve en la malla; la regla sale del código público del plugin y la versión que tenés instalada puede diferir.
+   **El INI del plugin sí se mira:** el plugin solo enciende relieve con `bAutoEnableParallax` activo en `SKSE/Plugins/AutoParallax.ini` (se distribuye apagado). La herramienta lee el
+   INI que **gana en tu perfil de MO2**: si está **apagado**, un `SI` pasa a `NO` (con el mod que entrega ese INI) y la salida imprime el aviso; si no hay INI en ningún mod del perfil,
+   o no se puede interpretar (valor que no es `true/false/1/0`, clave repetida, archivo ilegible), **no cambia ningún veredicto** y se avisa que no se pudo comprobar. Tampoco ve un INI que viva
+   solo en la carpeta del juego, fuera de MO2. La DLL (`AutoParallax.dll`) solo se comprueba por **presencia** suelta en el perfil (su ausencia avisa, no cambia nada: puede estar instalada
+   fuera de MO2); su versión y la combinación DLL × INI × tipo de objeto **no están verificadas** y necesitan el rig.
+3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
+   contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
+   Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya): una **banda oscura** en el borde
+   de una puerta y un **tinte** (musgo) que se nota menos en un techo. La prueba que siguió (reportada) apagó las sombras de parallax de Community Shaders desde su menú, sin guardar:
+   **explican solo en parte** la banda (recuperan el 47 % de su oscuridad, y sigue más oscura que con un mapa plano), y **no** recuperan el tinte del techo. La idea de que el tinte está
+   pintado sobre líneas rectas que el desplazamiento deforma quedó **sin probar**. Si ves algo parecido, apagar esas sombras es una comprobación útil pero **no concluyente**.
 4. **Antes de cada prueba, confirmá en la pestaña «Datos» de MO2 que la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output»**. Un mod que esté por
    encima (incluido un mod de control o de pruebas) tapa la salida; y un cambio de prioridad hecho desde la ventana de MO2 puede no aplicarse: si «Datos» sigue mostrando
    el mod anterior, cerrá MO2 y revisá `modlist.txt` antes de lanzar el juego, o esa corrida no prueba lo que creés.
@@ -151,13 +164,28 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
 ## Límites conocidos
 
 - Hoy no hay umbrales validados: el gate manda todo a revisión. Por eso `--incluir-revision` es obligatorio para escribir.
-- Lo que está probado en el juego (una persona, a ojo): un `*_p.dds` en BC4 lo usa el juego, y la salida real del generador sobre una textura (`wrcitywall01`, el aro de piedra del
-  pozo de Whiterun) se vio con relieve. **No** está probado en otras texturas ni en otras máquinas; las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- Lo que está probado en el juego (una persona, un equipo, **reportado**; ver `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`): un `*_p.dds` en BC4
+  lo usa el juego, y la salida del generador cambió lo que se ve frente a un mapa plano en **5 texturas** de una misma familia (entre 87 y 573 veces el ruido; la regla era 3 veces) y, en una
+  tanda ampliada con el código actual, en **12 estaciones de 5 familias** (8 de objetos de exterior de 4 ciudades y 4 de interior; entre 22,5 y 162,6 veces el ruido, mediana 94,6).
+  Todo se midió en una celda interior de prueba con luz fija y vista cercana, con Community Shaders más Auto Parallax y el post-proceso apagado, y con normales de un solo mod.
+  **No** está probado con clima, sol o a distancia normal de juego, ni en otras máquinas, **ni contra otras herramientas**; se midió que **se nota**, no que sea **bueno**. A ojo, la sesión vio que
+  una textura (`rottingwood01`) pasa de tablones a una superficie grumosa, y el operador lo confirmó («grumoso», 30/10, en la celda de prueba), aunque su acuerdo p95 (5,0°) es el más bajo de la tanda: **la métrica del generador no avisa de ese defecto**, así que
+  mirá cada salida antes de dejarla activa. Las que salen con un acuerdo alto (más de ~20°) no se sabe todavía si se ven bien o mal.
+- **Formatos que acepta el decodificador de normales (`NormalDecoder`; la línea de comandos solo descubre `*_n.dds`, así que un `*_n.png` no se procesa):** PNG y DDS sin comprimir, estos dos solo en
+  layouts RGB/RGBA verificados de 8 bits por canal; y DXT1 (BC1), BC5 y BC7. **DXT5 (BC3) se rechaza a propósito**: las normales «DXT5nm» guardan X en el canal alfa, y leerlas como RGB
+  daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
+  un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte y, por decisión del operador (30/10), **no es prioridad por ahora**.
+- No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
+  pendiente (ver el issue de la auditoría), no como funcionalidad.
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
 - La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.
 - La carpeta se enumera con el proveedor endurecido: solo `*_n.dds` bajo `textures\`, sin seguir enlaces. Una textura que ya tiene un `*_p.dds` con la misma
   ruta de salida en la carpeta de entrada (en cualquier subcarpeta) se omite a propósito. Los `*_p.dds` de **otros mods** (los que MO2 ve por su sistema virtual de
   archivos) no se consultan: la herramienta lee solo la carpeta que le indicás.
-- Códigos de salida: `0` bien, `1` alguna textura falló, `2` mala configuración (falta el `texconv`, carpeta inválida…),
+- Códigos de salida: `0` bien, `1` el lote no quedó completo (una textura falló o no se pudo escribir, una salida anterior no se pudo retirar, o la escritura se interrumpió) **o el informe no se pudo escribir**, `2` mala configuración (falta el `texconv`, carpeta inválida…),
   `3` otra instancia está escribiendo esa misma salida, `130` interrumpido.
+- Si la escritura se corta a mitad (otro proceso toma el candado, falla el disco), el generador **intenta** escribir el informe con
+  `interrupcion` (el motivo) y las texturas en duda como `SIN_CONFIRMAR`, y sale con `1`; no termina con un error sin informe. Si además falla la escritura del informe
+  (el mismo disco), el informe puede no existir: la consola lo avisa y el código sigue siendo `1`. Volvé a correr el mismo lote: al abrir la salida se recupera lo que haya quedado a medias.
+  El informe se escribe de forma atómica (archivo temporal + reemplazo): un corte no deja un JSON truncado.

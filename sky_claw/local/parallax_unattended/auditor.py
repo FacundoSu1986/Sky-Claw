@@ -444,7 +444,7 @@ def _objetivos_declarados(informe: Mapping[str, object]) -> tuple[_ObjetivoDeAud
             if efecto not in EFECTOS_QUE_DEJAN_ARCHIVO:
                 raise _RutaRechazadaError(f"archivos[{posicion}] declara ESCRITA con efecto {efecto!r}")
             objetivos.append(_ObjetivoDeAuditoria(ruta=ruta, desviacion_declarada=desviacion))
-        elif estado in ("EN_REVISION", "NO_PROCESADA"):
+        elif estado in ("EN_REVISION", "NO_PROCESADA", "SIN_CONFIRMAR"):
             if efecto is not None:
                 raise _RutaRechazadaError(f"archivos[{posicion}] declara {estado} con efecto {efecto!r}")
         elif estado == "NO_ESCRITA" and efecto in EFECTOS_QUE_DEJAN_ARCHIVO:

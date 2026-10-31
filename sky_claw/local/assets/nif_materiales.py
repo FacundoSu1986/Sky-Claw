@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pathlib
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -106,6 +107,9 @@ class LecturaDeNif:
     formas_no_soportadas: tuple[
         str, ...
     ]  #: Tipos de geometría presentes que este lector no sabe abrir (ordenados, sin repetir).
+    juegos_de_las_formas_no_soportadas: (
+        tuple[tuple[str, ...], ...] | None
+    )  #: Con formas sin abrir: TODO ``BSShaderTextureSet`` del archivo (una forma sin abrir solo puede usar uno de ellos), en orden de bloque; ``()`` sin formas sin abrir; ``None`` si no se pudieron leer (no se sabe qué nombran).
 
 
 class _Lector:
@@ -277,6 +281,23 @@ def _es_geometria_no_soportada(tipo: str) -> bool:
     )
 
 
+def _juegos_de_texturas_del_archivo(
+    tipos: list[str], lector_de: Callable[[int], _Lector]
+) -> tuple[tuple[str, ...], ...] | None:
+    """Todos los ``BSShaderTextureSet`` del archivo, o ``None`` si alguno no se puede leer.
+
+    Una forma que el lector no abre no se sabe a qué shader apunta, pero su juego de texturas vive en este mismo archivo: enumerarlos por
+    tipo de bloque (sin seguir ninguna referencia) acota qué texturas puede usar. Un juego ilegible no se omite: sin saber qué nombra, el
+    llamador no puede descartar nada.
+    """
+    try:
+        return tuple(
+            _leer_juego_de_texturas(lector_de(i)) for i, tipo in enumerate(tipos) if tipo == _JUEGO_DE_TEXTURAS
+        )
+    except NifError:
+        return None
+
+
 def leer_materiales(datos: bytes) -> LecturaDeNif:
     """Lee las formas de un NIF de Skyrim con su shader, flags, propiedad de alfa y texturas.
 
@@ -341,7 +362,12 @@ def leer_materiales(datos: bytes) -> LecturaDeNif:
             )
         )
     no_soportadas = tuple(sorted({tipo for tipo in tipos if _es_geometria_no_soportada(tipo)}))
-    return LecturaDeNif(version_bs=version_bs, formas=tuple(formas), formas_no_soportadas=no_soportadas)
+    return LecturaDeNif(
+        version_bs=version_bs,
+        formas=tuple(formas),
+        formas_no_soportadas=no_soportadas,
+        juegos_de_las_formas_no_soportadas=_juegos_de_texturas_del_archivo(tipos, lector_de) if no_soportadas else (),
+    )
 
 
 def leer_materiales_de_archivo(ruta: pathlib.Path, *, maximo_de_bytes: int = TOPE_DE_BYTES_DE_NIF) -> LecturaDeNif:

@@ -18,6 +18,8 @@ operador. Consume dos artefactos:
    su decodificador. El generador es otro dueño y puede cambiar por dentro; si esta capa
    dependiera de sus objetos, un refactor suyo redefiniría en silencio qué significa "listo".
    El contrato es el JSON, con su `version_del_lote` ([ADR 0014](../../../docs/adr/0014-native-parallax-producto-brief-y-dependencias.md)).
+   Lo que el auditor y el generador deben decidir IGUAL pese a no compartir código (hoy: qué cabecera DDS es una textura 2-D simple) se ancla con un
+   test que compara las dos copias sobre toda la matriz de cabeceras: `tests/test_dds_2d_simple_paridad.py`.
 3. **No escribir nada.** Ni archivos, ni logs, ni caché. Sólo lectura y un valor de retorno.
 4. **No agregar dependencias.** Nada de numpy ni Pillow: la decodificación BC4 de `auditor.py`
    es Python puro a propósito, para que el chequeo corra donde corre el runner y no donde hay
@@ -42,6 +44,9 @@ también mira el primero. Medido en el rig real: con `--incluir-revision`, ocho 
   inválida es `INCONSISTENTE`, y un censo no vacío es `REVIEW` (`RUTAS_OMITIDAS`). Lo escribe
   `native_parallax/cli.py`; no se subió `VERSION_DEL_LOTE` porque entra a la procedencia e
   invalidaría todas las cachés.
+- `interrupcion` (texto no vacío o `null`): por qué se cortó la escritura del lote (candado perdido, disco). **Obligatorio**, como el censo anterior: sin la clave no se
+  prueba que no hubo corte. Un texto es `FAIL` (`LOTE_INTERRUMPIDO`) aunque ninguna textura figure en duda; el estado `SIN_CONFIRMAR` (no se sabe si quedó en el mod) es `FAIL`
+  y solo es legal dentro de una interrupción declarada y sin `efecto`. Tampoco se subió `VERSION_DEL_LOTE` por esto.
 - `otras_rutas` con efecto `RETIRADA`: el auditor exige **ausencia** en disco
   (`RETIRADA_PRESENTE` es falla dura). Una `_p.dds` obsoleta que el juego sigue cargando con el
   log en verde es exactamente el falso verde de esta capa.

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
+import stat
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
@@ -65,6 +67,11 @@ _CC_PLUGINS_FILENAME = "Skyrim.ccc"
 _ALWAYS_ACTIVE_PLUGINS = frozenset(name.lower() for name in OFFICIAL_MASTERS)
 
 _IGNORED_ROOT_FILES = frozenset({"meta.ini"})
+
+#: ``FILE_ATTRIBUTE_REPARSE_POINT`` de Windows: junctions y otros reparse points
+#: que no son symlinks Python (``is_symlink()`` es False sobre una junction). Un
+#: path físico con reparse no es una fuente de bytes que se pueda atribuir.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
 class VfsAttestationError(RuntimeError):
@@ -146,6 +153,75 @@ def _validated_profile(profile: str) -> str:
         raise VfsAttestationError(str(exc)) from exc
 
 
+#: Designador de unidad de Windows (`C:`) como componente: `mod_root / "C:"` es
+#: una ruta relativa a la unidad, no un nombre. Aunque la restricción sólo se usa
+#: para COMPARAR componentes ya enumerados, se rechaza en la puerta.
+_DRIVE_DESIGNATOR = re.compile(r"^[A-Za-z]:$")
+
+
+def _partes_del_subarbol_autorizado(raw: object) -> tuple[str, ...] | None:
+    """Normaliza la restricción al subárbol autorizado del artifact.
+
+    ``None`` significa "sin restricción": es el contrato histórico de los
+    consumidores que no atestiguan un artifact concreto (LOOT, health, legacy).
+    Un ``str`` se interpreta como ruta RELATIVA al mod en forma POSIX
+    (``textures``, ``textures/sub``) y se descompone en componentes seguros.
+
+    Se rechaza todo lo que podría escapar del artifact: rutas absolutas,
+    designadores de unidad, separadores de Windows, componentes ``.``/``..``,
+    componentes vacíos, NUL y caracteres de control. La restricción **nunca se
+    une a un path**: sólo compara componentes de rutas ya enumeradas por
+    :func:`_iter_mod_files`, así que un valor inválido no puede redirigir una
+    lectura; aun así falla cerrado en la puerta.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise VfsAttestationError(f"subárbol autorizado inválido: se esperaba str, llegó {type(raw).__name__}")
+    if not raw.strip():
+        raise VfsAttestationError("subárbol autorizado inválido: no puede estar vacío")
+    if "\\" in raw:
+        raise VfsAttestationError(
+            f"subárbol autorizado inválido: {raw!r} usa separador de Windows; se espera una ruta POSIX relativa al mod"
+        )
+    if raw.startswith("/"):
+        raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} es una ruta absoluta")
+    partes = tuple(raw.split("/"))
+    for parte in partes:
+        if not parte:
+            raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} tiene un componente vacío")
+        if _DRIVE_DESIGNATOR.match(parte):
+            raise VfsAttestationError(f"subárbol autorizado inválido: {raw!r} contiene un designador de unidad")
+        try:
+            assert_safe_component(parte, field="subarbol_autorizado")
+        except PathViolationError as exc:
+            raise VfsAttestationError(str(exc)) from exc
+    return partes
+
+
+def _en_subarbol(relative: pathlib.Path, subarbol: tuple[str, ...] | None) -> bool:
+    """¿El archivo enumerado vive DENTRO del subárbol autorizado del mod?
+
+    La comparación es exacta (sensible a mayúsculas) a propósito: es el mismo
+    criterio que la comprobación de pertenencia al staging del gate, que sigue
+    siendo la autoridad final. Una comparación laxa elegiría un candidato que la
+    comprobación posterior rechaza, reproduciendo el falso negativo que este
+    filtro elimina.
+
+    El archivo debe quedar estrictamente debajo del prefijo: el prefijo nombra
+    un directorio del artifact, nunca un archivo suelto.
+    """
+    if subarbol is None:
+        return True
+    partes = relative.parts
+    return len(partes) > len(subarbol) and partes[: len(subarbol)] == subarbol
+
+
+def _describir_subarbol(subarbol: tuple[str, ...] | None) -> str:
+    """Sufijo de diagnóstico para los errores de selección."""
+    return "" if subarbol is None else f" (subárbol autorizado {'/'.join(subarbol)})"
+
+
 def _sha256_file(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -155,6 +231,75 @@ def _sha256_file(path: pathlib.Path) -> str:
     except OSError as exc:
         raise VfsAttestationError(f"no se pudo leer {path}: {exc}") from exc
     return digest.hexdigest()
+
+
+def _inspeccionar_fisico_seguro(path: pathlib.Path, *, ausente_ok: bool) -> os.stat_result | None:
+    """``lstat`` fail-closed de un path del ``Data`` físico.
+
+    Un symlink, junction u otro reparse point no es una fuente de bytes
+    atribuible; un path presente que no es archivo regular tampoco. Con
+    ``ausente_ok`` un path inexistente devuelve ``None``; cualquier otro
+    ``OSError`` (permiso, bloqueo, IO) se propaga como
+    :class:`VfsAttestationError` porque no hay evidencia que firmar.
+    """
+    try:
+        identidad = os.lstat(path)
+    except FileNotFoundError:
+        if ausente_ok:
+            return None
+        raise VfsAttestationError(f"el archivo físico {path} no existe: no hay bytes que comparar") from None
+    except OSError as exc:
+        raise VfsAttestationError(f"no se pudo inspeccionar el archivo físico {path}: {exc}") from exc
+    es_enlace = stat.S_ISLNK(identidad.st_mode) or bool(
+        getattr(identidad, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+    )
+    if es_enlace:
+        raise VfsAttestationError(
+            f"el archivo físico {path} es un enlace/reparse point: sus bytes no se pueden atribuir al Data físico"
+        )
+    if not stat.S_ISREG(identidad.st_mode):
+        raise VfsAttestationError(f"el archivo físico {path} no es un archivo regular: no hay bytes que comparar")
+    return identidad
+
+
+def _sha256_fisico_seguro(path: pathlib.Path) -> str:
+    """SHA-256 de un archivo del ``Data`` físico, con la inspección fail-closed."""
+    _inspeccionar_fisico_seguro(path, ausente_ok=False)
+    return _sha256_file(path)
+
+
+def assert_canary_fisicamente_distinguible(
+    *,
+    challenge: VfsAttestationChallenge,
+    physical_data_dir: pathlib.Path,
+) -> None:
+    """El ``Data`` físico no puede entregar los BYTES ESPERADOS del canary.
+
+    Es el invariante que hace segura la modalidad diferencial: el canary solo
+    prueba el mapping si su path, leído desde el ``Data`` físico, tiene bytes
+    distintos de los autorizados. Ausente cumple (la variante clásica, más
+    fuerte); presente con bytes distintos cumple; presente con bytes idénticos
+    NO: sin overlay la ejecución leería exactamente el SHA esperado y el canary
+    sería un falso PASS.
+
+    Falla cerrado ante un path físico que existe pero no se puede leer o no es
+    un archivo regular propio (incluye symlinks, junctions y reparse points).
+
+    Limitación temporal: es un chequeo de estado en un instante. Un cambio
+    físico transitorio (los bytes esperados sólo durante el probe y revertido
+    antes del chequeo posterior) no es observable desde el host; los chequeos
+    pre/post/spawn reducen la ventana, no la eliminan.
+    """
+    relative = pathlib.Path(*challenge.relative_path.parts)
+    fisico = physical_data_dir.resolve() / relative
+    if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
+        return
+    sha_fisico = _sha256_file(fisico)
+    if sha_fisico == challenge.sha256:
+        raise VfsAttestationError(
+            f"el Data físico ya entrega los bytes del canary '{challenge.relative_path.as_posix()}': "
+            "sin overlay no habría diferencia observable, así que la evidencia no probaría el mapping virtual"
+        )
 
 
 def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
@@ -472,20 +617,53 @@ def _construir_challenge(
     data: pathlib.Path,
     always_active: frozenset[str],
     source_mod: str | None,
+    permitir_diferencial: bool,
+    subarbol_autorizado: str | None = None,
 ) -> VfsAttestationChallenge:
-    """Walk común de selección de canary (libre o restringido a un mod).
+    """Walk común de selección de canary (libre, restringido a un mod o a un subárbol).
 
-    Un canary elegible es un archivo propio de un mod habilitado que (a) el
-    ``Data`` físico NO contiene —así la vista virtual es distinguible de la
-    física— y (b) ningún root de mayor prioridad (``overwrite`` o un mod más
-    alto en el ``modlist``) reemplaza. Con ``source_mod`` el walk se restringe a
-    ESE mod y los roots de mayor prioridad se calculan respecto de su posición;
-    sin él se recorren todos los mods habilitados como candidatos.
+    Un canary elegible es un archivo propio de un mod habilitado que ningún root
+    de mayor prioridad (``overwrite`` o un mod más alto en el ``modlist``)
+    reemplaza, y que el ``Data`` físico **no entrega con los bytes esperados**.
+    Se distinguen dos modalidades, en este orden determinista:
+
+    (a) **ausente** — el path no existe en el ``Data`` físico. Es el
+    comportamiento histórico y el más fuerte: sin overlay la lectura falla.
+    (b) **diferencial** — el path existe en el ``Data`` físico como archivo
+    regular propio, pero sus bytes difieren de los del mod. Sin overlay la
+    ejecución leería esos bytes y no superaría el SHA esperado; con overlay lee
+    los bytes autorizados. Un archivo físico con bytes idénticos NO es evidencia
+    (no habría diferencia observable) y un archivo físico ilegible o con
+    reparse point falla cerrado.
+
+    "Ausente" lo decide :func:`_inspeccionar_fisico_seguro` en **ambas** pasadas:
+    sólo un ``lstat`` con ``ENOENT`` es ausencia. Un enlace (aunque cuelgue), un
+    reparse point, un path que no es archivo regular o un error de inspección
+    fallan cerrado en las dos — un enlace colgante NO es "el path no existe", y
+    un ``EACCES`` no es una ausencia.
+
+    Con ``source_mod`` el walk se restringe a ESE mod y los roots de mayor
+    prioridad se calculan respecto de su posición; sin él se recorren todos los
+    mods habilitados como candidatos.
+
+    Con ``subarbol_autorizado`` (ruta relativa al mod) la ELEGIBILIDAD se
+    restringe además a ese subárbol, en **ambas** pasadas y ANTES de tocar el
+    ``Data`` físico. Es la diferencia entre "un canario de este mod" y "un canario
+    del artifact autorizado": sin el filtro, un archivo externo al artifact
+    (p. ej. ``meshes/a.nif``) puede ganar por orden de recorrido y hacer que el
+    llamador —que después exige pertenencia al staging— bloquee un handoff que
+    sí tenía un candidato válido adentro. El filtro no reemplaza esa comprobación
+    posterior: la deja como defensa redundante.
 
     Elegibilidad = "este archivo llega efectivo al namespace virtual", que es la
     mitad estructural de lo que el runtime prueba después. NO reemplaza al
     digest del artifact completo: un canary es UN archivo representativo.
     """
+    subarbol = _partes_del_subarbol_autorizado(subarbol_autorizado)
+    if subarbol is not None and source_mod is None:
+        raise VfsAttestationError(
+            "el subárbol autorizado exige un mod fuente: sin mod no hay artifact cuyo subconjunto restringir"
+        )
     profile_modlist = profile_dir / "modlist.txt"
     enabled = read_enabled_mods(profile_modlist)
     if source_mod is not None:
@@ -515,43 +693,102 @@ def _construir_challenge(
         roots_eclipsantes = [data_resolved / "overwrite"]
 
     higher_roots: list[pathlib.Path] = list(roots_eclipsantes)
+
+    def _challenge(mod_name: str, relative: pathlib.PurePosixPath, sha256: str) -> VfsAttestationChallenge:
+        return VfsAttestationChallenge(
+            profile=profile_name,
+            source_mod=mod_name,
+            relative_path=relative,
+            sha256=sha256,
+            profile_fingerprint=_profile_fingerprint(
+                profile_dir=profile_dir,
+                profile=profile_name,
+                source_mod=mod_name,
+                relative_path=relative,
+                canary_sha256=sha256,
+                always_active=always_active,
+            ),
+        )
+
+    # Primera pasada: canary AUSENTE del Data físico (comportamiento histórico, más
+    # fuerte: sin overlay el archivo no existe y la lectura falla cerrada).
     for mod_name in candidatos:
         safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
         mod_root = mods_resolved / safe_mod
         if not mod_root.is_dir():
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
-            if (data / relative).exists():
+            if not _en_subarbol(relative, subarbol):
+                # Fuera del artifact autorizado: no es evidencia de nada que el
+                # llamador pueda usar, y su estado físico no debe influir en la
+                # selección (ni siquiera fallando cerrado).
+                continue
+            # La ausencia se decide con la MISMA primitiva que la segunda pasada.
+            # `Path.exists()` sigue el enlace y sólo absorbe ENOENT/ENOTDIR/EBADF/
+            # ELOOP: un enlace colgante se lee como "ausente" (el canario MÁS
+            # fuerte de la escala) y un EACCES escapa como `PermissionError` crudo.
+            # `_inspeccionar_fisico_seguro` distingue los tres estados y corta en
+            # el que no es atribuible.
+            fisico = data / relative
+            if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is not None:
                 continue
             if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
                 continue
             sha256 = _sha256_file(source)
-            relative_posix = pathlib.PurePosixPath(*relative.parts)
-            fingerprint = _profile_fingerprint(
-                profile_dir=profile_dir,
-                profile=profile_name,
-                source_mod=mod_name,
-                relative_path=relative_posix,
-                canary_sha256=sha256,
-                always_active=always_active,
+            return _challenge(mod_name, pathlib.PurePosixPath(*relative.parts), sha256)
+        if safe_source is None:
+            higher_roots.append(mod_root)
+
+    if not permitir_diferencial:
+        if source_mod is not None:
+            raise VfsAttestationError(
+                f"no existe un canary elegible dentro de {source_mod!r}{_describir_subarbol(subarbol)}: no hay "
+                "archivo ausente del Data físico o queda eclipsado por overwrite/mods de mayor prioridad "
+                "(modo diferencial no habilitado para este call site)"
             )
-            return VfsAttestationChallenge(
-                profile=profile_name,
-                source_mod=mod_name,
-                relative_path=relative_posix,
-                sha256=sha256,
-                profile_fingerprint=fingerprint,
-            )
+        raise VfsAttestationError(
+            "no existe un canary elegible: no hay archivo de mod ausente del Data físico y el modo "
+            "diferencial no está habilitado para este call site"
+        )
+
+    # Segunda pasada: canary DIFERENCIAL. El path existe en el Data físico pero
+    # con bytes distintos de los del mod, así que una ejecución sin overlay lee
+    # esos bytes físicos y NO supera el SHA esperado; con overlay lee los bytes
+    # del mod. Sólo se acepta si el mod es el ganador del path (ningún root de
+    # mayor prioridad lo eclipsa) y el archivo físico es un regular propio
+    # legible (enlaces/reparse points fallan cerrado, no se saltan).
+    higher_roots = list(roots_eclipsantes)
+    for mod_name in candidatos:
+        safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
+        mod_root = mods_resolved / safe_mod
+        if not mod_root.is_dir():
+            raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
+        for relative, source in _iter_mod_files(mod_root):
+            if not _en_subarbol(relative, subarbol):
+                continue
+            fisico = data / relative
+            if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
+                continue
+            if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
+                continue
+            sha_fisico = _sha256_fisico_seguro(fisico)
+            sha256 = _sha256_file(source)
+            if sha_fisico == sha256:
+                # Bytes idénticos: no prueba diferenciación; no es evidencia.
+                continue
+            return _challenge(mod_name, pathlib.PurePosixPath(*relative.parts), sha256)
         if safe_source is None:
             higher_roots.append(mod_root)
 
     if source_mod is not None:
         raise VfsAttestationError(
-            f"no existe un canary elegible dentro de {source_mod!r}: todo su archivo está en el Data "
-            "físico o queda eclipsado por overwrite/mods de mayor prioridad"
+            f"no existe un canary elegible dentro de {source_mod!r}{_describir_subarbol(subarbol)}: no hay "
+            "archivo ausente del Data físico ni archivo propio con bytes distintos en el Data físico, o "
+            "queda eclipsado por overwrite/mods de mayor prioridad"
         )
     raise VfsAttestationError(
-        "no existe un canary elegible: todo archivo de mod también está en Data físico o queda sobrescrito"
+        "no existe un canary elegible: no hay archivo de mod ausente del Data físico ni con bytes "
+        "distintos en un archivo propio, o queda sobrescrito"
     )
 
 
@@ -584,8 +821,15 @@ def build_attestation_challenge(
     mods_dir: pathlib.Path | None = None,
     profile: str,
     physical_data_dir: pathlib.Path,
+    permitir_diferencial: bool = False,
 ) -> VfsAttestationChallenge:
-    """Elige un archivo efectivo de mod que el ``Data`` físico no contiene.
+    """Elige un archivo efectivo de mod que el ``Data`` físico no entregue con los bytes esperados.
+
+    Prefiere un canary ausente del ``Data`` físico y, sólo si no existe ninguno y
+    ``permitir_diferencial`` está habilitado, acepta un canary diferencial (path
+    presente con bytes distintos). Por defecto es clásico: el diferencial es
+    opt-in de los call sites que además revalidan el estado físico (gate
+    brokered de handoff TexGen → DynDOLOD).
 
     El conjunto de plugins que el motor carga siempre (``primaryPlugins()``) se
     deriva del game root de ``physical_data_dir``; el worker deriva el mismo
@@ -603,6 +847,7 @@ def build_attestation_challenge(
         data=data,
         always_active=_always_active_plugins(data),
         source_mod=None,
+        permitir_diferencial=permitir_diferencial,
     )
 
 
@@ -614,19 +859,33 @@ def build_attestation_challenge_for_source(
     mods_dir: pathlib.Path | None = None,
     profile: str,
     physical_data_dir: pathlib.Path,
+    permitir_diferencial: bool = False,
+    subarbol_autorizado: str | None = None,
 ) -> VfsAttestationChallenge:
     """Canary elegible perteneciente a UN mod concreto (p. ej. ``TexGen Output``).
 
     Es la primitive que el gate del handoff TexGen → DynDOLOD usa para elegir
     evidencia runtime que le pertenece al artifact: el ``source_mod`` del
     challenge devuelto es EXACTAMENTE el mod pedido, nunca un mod vecino que
-    resultara conveniente. Igual que la variante libre, exige que el archivo
-    esté ausente del ``Data`` físico y no eclipsado —sin esas dos condiciones el
-    probe runtime no distinguiría la vista USVFS de la física— y falla cerrado
-    si ese mod no aporta ningún canary elegible.
+    resultara conveniente. Igual que la variante libre, exige que el archivo no
+    esté eclipsado por un root de mayor prioridad y que el ``Data`` físico no
+    entregue sus bytes esperados: sirve un canary ausente del ``Data`` físico o,
+    en su defecto, uno diferencial (path presente con bytes distintos). En ambos
+    casos el probe runtime distingue la vista USVFS de la física; falla cerrado
+    si ese mod no aporta ningún canary elegible. ``permitir_diferencial`` es
+    opt-in: el call site debe revalidar el estado físico antes y después del
+    probe (el gate brokered lo hace).
+
+    ``subarbol_autorizado`` restringe la ELEGIBILIDAD a una ruta relativa al mod
+    (``textures``), es decir, al artifact autorizado cuando el mod empaqueta más
+    de lo que se autorizó. Se aplica antes de seleccionar y en las dos pasadas,
+    de modo que un candidato externo al artifact no puede consumir el turno ni
+    provocar que el llamador bloquee por no pertenecer al staging. Es opcional:
+    ``None`` conserva la selección histórica sobre el mod entero.
 
     El nombre del mod se valida como componente de path seguro; la firma NO
-    acepta rutas.
+    acepta rutas. El subárbol se valida como ruta relativa POSIX sin ``..``,
+    sin rutas absolutas y sin separadores de Windows.
     """
     safe_mod = _validated_profile(source_mod)
     profile_name = _validated_profile(profile)
@@ -640,6 +899,8 @@ def build_attestation_challenge_for_source(
         data=data,
         always_active=_always_active_plugins(data),
         source_mod=safe_mod,
+        permitir_diferencial=permitir_diferencial,
+        subarbol_autorizado=subarbol_autorizado,
     )
 
 

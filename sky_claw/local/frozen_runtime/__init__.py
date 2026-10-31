@@ -48,6 +48,15 @@ from sky_claw.local.frozen_runtime.approval import (
     validar_scope,
     verificar_consumo_aprobacion,
 )
+from sky_claw.local.frozen_runtime.binder_preflight import (
+    BinderPreflightAssessment,
+    BinderPreflightVerdict,
+    PreflightCheckCode,
+    PreflightCheckResult,
+    PreflightCheckStatus,
+    PreflightReasonCode,
+    evaluar_binder_preflight,
+)
 from sky_claw.local.frozen_runtime.candidate_id import (
     default_candidate_id_factory,
     nuevo_candidate_id,
@@ -326,6 +335,13 @@ __all__ = [
     "revocar_aprobacion",
     "validar_scope",
     "verificar_consumo_aprobacion",
+    "BinderPreflightAssessment",
+    "BinderPreflightVerdict",
+    "PreflightCheckCode",
+    "PreflightCheckResult",
+    "PreflightCheckStatus",
+    "PreflightReasonCode",
+    "evaluar_binder_preflight",
     "AmbiguousManagedSourceError",
     "CANDIDATE_SCHEMA_VERSION",
     "CandidateCopyError",
