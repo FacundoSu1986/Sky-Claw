@@ -133,7 +133,9 @@ class InformeDeElegibilidad:
     mod: str
     n_habilitados: int
     n_mallas_leidas: int
-    mallas_no_leidas: tuple[str, ...]  #: Ilegibles o con geometría que el lector no sabe abrir: lo no observado.
+    mallas_no_leidas: tuple[
+        str, ...
+    ]  #: Ilegibles o con geometría que el lector no sabe abrir: lo no observado. Una ilegible vuelve ``NO_VERIFICADO`` a todo ``NO``; una con geometría sin abrir, solo a las texturas que nombra un juego de su archivo.
     texturas: tuple[ElegibilidadDeTextura, ...]
     alcance: str
     plugin: EstadoDelPlugin
@@ -148,6 +150,9 @@ class _Acumulado:
     )
     otra_textura: int = 0
     referencias: int = 0
+    sin_abrir: set[str] = field(
+        default_factory=set
+    )  #: Mallas con geometría que el lector no abre cuyo archivo trae un juego de texturas que nombra esta salida.
     motivos: Counter[str] = field(default_factory=Counter)
 
 
@@ -174,17 +179,26 @@ def _salidas_que_nombra_sin_carpeta(candidatos: tuple[CandidatoDeRelieve, ...], 
     return posibles
 
 
+def _salidas_que_nombra(texturas: tuple[str, ...], salidas: dict[str, str]) -> tuple[set[str], set[str]]:
+    """``(salidas que un juego de texturas refiere, salidas que nombra sin la carpeta textures/)``: lo mismo para una forma abierta que
+    para los juegos de una malla que el lector no abre."""
+    candidatos = candidatos_de_relieve(texturas)
+    referidas = {_clave(c.ruta) for c in candidatos.candidatos if c.ruta} & salidas.keys()
+    return referidas, _salidas_que_nombra_sin_carpeta(candidatos.candidatos, salidas)
+
+
 def _mallas_en_texto(cantidad: int) -> str:
     return "1 malla" if cantidad == 1 else f"{cantidad} mallas"
 
 
-def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, ...]) -> ElegibilidadDeTextura:
+def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, ilegibles: tuple[str, ...]) -> ElegibilidadDeTextura:
+    """``ilegibles`` contagia a toda textura (sin cabecera legible no se sabe qué nombra); ``acum.sin_abrir`` solo a esta."""
+
     def con(efecto: EfectoPosible, razon: str, mallas: tuple[str, ...] = (), n: int = 0) -> ElegibilidadDeTextura:
         return ElegibilidadDeTextura(ruta_de_salida=ruta, efecto=efecto, razon=razon, mallas=mallas, n_mallas=n)
 
-    aviso_de_lectura = (
-        f"; además {_mallas_en_texto(len(no_leidas))} no se pudieron leer por completo" if no_leidas else ""
-    )
+    sin_leer = len(ilegibles) + len(acum.sin_abrir)
+    aviso_de_lectura = f"; además {_mallas_en_texto(sin_leer)} no se pudieron leer por completo" if sin_leer else ""
     if acum.mallas_si:
         ordenadas = tuple(sorted(acum.mallas_si))
         return con(
@@ -211,10 +225,10 @@ def _veredicto_de_la_textura(ruta: str, acum: _Acumulado, no_leidas: tuple[str, 
             "ninguna malla suelta del perfil la referencia: podría usarla una malla dentro de un .bsa (no se leen)"
             f"{aviso_de_lectura}",
         )
-    if no_leidas:
+    if sin_leer:
         return con(
             EfectoPosible.NO_VERIFICADO,
-            f"{_mallas_en_texto(len(no_leidas))} no se pudieron leer por completo y no se descarta que alguna la use",
+            f"{_mallas_en_texto(sin_leer)} no se pudieron leer por completo y no se descarta que alguna la use",
         )
     partes = [f"{etiqueta}: {cantidad}" for etiqueta, cantidad in sorted(acum.motivos.items())]
     if acum.otra_textura:
@@ -346,7 +360,10 @@ def evaluar_elegibilidad(
         return True if ganador is not None else None
 
     leidas = 0
-    no_leidas: list[str] = []
+    no_leidas: list[str] = []  #: Lo que se informa como no observado por completo.
+    ilegibles: list[
+        str
+    ] = []  #: El subconjunto que contagia a TODA textura (el resto contagia solo a las que su archivo nombra).
     # Sin salidas evaluables no hay nada que una malla decida: no se leen para nada.
     mallas_a_leer = indice_de_mallas.con_sufijo(".nif") if salidas else ()
     for ganador in mallas_a_leer:
@@ -360,17 +377,25 @@ def evaluar_elegibilidad(
             lectura = leer_materiales_de_archivo(ganador.archivo)
         except NifError:
             no_leidas.append(etiqueta_de_malla)
+            ilegibles.append(etiqueta_de_malla)
             continue
         leidas += 1
         if lectura.formas_no_soportadas:
             no_leidas.append(etiqueta_de_malla)
+            juegos = lectura.juegos_de_las_formas_no_soportadas
+            if juegos is None:  # no se sabe qué nombran sus juegos de texturas: no se descarta nada
+                ilegibles.append(etiqueta_de_malla)
+            else:  # una forma sin abrir solo puede usar un juego de este archivo: contagia a las salidas que ellos nombran
+                for juego in juegos:
+                    nombradas, implicitas = _salidas_que_nombra(juego, salidas)
+                    for clave in nombradas | implicitas:
+                        acumulados[clave].sin_abrir.add(etiqueta_de_malla)
         for forma in lectura.formas:
             if forma.texturas is None:
                 continue
-            candidatos = candidatos_de_relieve(forma.texturas)
-            for implicita in _salidas_que_nombra_sin_carpeta(candidatos.candidatos, salidas):
+            referidas, implicitas = _salidas_que_nombra(forma.texturas, salidas)
+            for implicita in implicitas:
                 acumulados[implicita].con_ruta_implicita = True
-            referidas = {_clave(c.ruta) for c in candidatos.candidatos if c.ruta} & salidas.keys()
             if not referidas:
                 continue
             for clave in referidas:
@@ -393,7 +418,7 @@ def evaluar_elegibilidad(
 
     sin_leer = tuple(no_leidas)
     plugin = _estado_del_plugin(mods_dir=mods_dir, data_root=data_root, resuelto=resuelto)
-    evaluadas = (_veredicto_de_la_textura(salidas[clave], acumulados[clave], sin_leer) for clave in salidas)
+    evaluadas = (_veredicto_de_la_textura(salidas[clave], acumulados[clave], tuple(ilegibles)) for clave in salidas)
     if plugin.apaga_el_relieve:
         evaluadas = (_con_el_ini_apagado(t, plugin) for t in evaluadas)
     texturas = tuple(sorted((*evaluadas, *no_publicadas), key=lambda t: _clave(t.ruta_de_salida)))

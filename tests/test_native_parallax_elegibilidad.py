@@ -18,10 +18,12 @@ from __future__ import annotations
 import ast
 import dataclasses
 import pathlib
+import struct
 from dataclasses import dataclass
 
 import pytest
 
+from sky_claw.local.assets.nif_materiales import _GEOMETRIA_NO_SOPORTADA_DE_LA_ESPECIFICACION
 from sky_claw.local.native_parallax import elegibilidad, provider
 from sky_claw.local.native_parallax.diagnostico_perfil import PerfilError
 from sky_claw.local.native_parallax.elegibilidad import (
@@ -359,8 +361,98 @@ def test_una_malla_con_geometria_que_el_lector_no_sabe_abrir_cuenta_como_no_leid
 
     informe = mundo.evaluar()
 
-    assert informe.texturas[0].efecto is EfectoPosible.NO_VERIFICADO
+    assert informe.texturas[0].efecto is EfectoPosible.NO
     assert informe.mallas_no_leidas == (f"meshes/particulas.nif [{_MALLAS}]",)
+
+
+# --- El contagio de lo no leído es por textura, no por archivo (#834 ítem 4) -----------------------------------------------
+
+
+def _nif_con_geometria_sin_abrir(*juegos: tuple[str, ...], tipo: str = "BSMeshLODTriShape") -> bytes:
+    """Una malla con una forma que el lector no abre y, opcionalmente, juegos de texturas (el de la forma sin abrir sería uno de ellos)."""
+    bloques = [bloque_nodo(hijos=(1,)), Bloque(tipo, b"\x00" * 80)]
+    bloques += [bloque_juego_de_texturas(rutas) for rutas in juegos]
+    return construir_nif(bloques)
+
+
+def _con_dos_texturas_que_darian_no(mundo: Mundo) -> None:
+    mundo.archivo(_MOD, _N2)
+    mundo.malla(_nif(tipo_de_shader=3), ruta="meshes/a.nif")
+    mundo.malla(_nif(difuso=_D2, normal=_NN2, tipo_de_shader=3), ruta="meshes/b.nif")
+
+
+def test_una_malla_sin_abrir_que_no_tiene_juegos_de_texturas_no_contagia_a_ninguna_textura(mundo: Mundo) -> None:
+    """Una partícula (o un LOD sin shader de iluminación) no puede usar un relieve: no hay ningún juego de texturas que nombrar."""
+    _con_dos_texturas_que_darian_no(mundo)
+    mundo.malla(_nif_con_geometria_sin_abrir(), ruta="meshes/lod.nif")
+
+    informe = mundo.evaluar()
+
+    assert {t.efecto for t in informe.texturas} == {EfectoPosible.NO}
+    assert informe.mallas_no_leidas == (f"meshes/lod.nif [{_MALLAS}]",)  # sigue a la vista, aunque no contagie
+
+
+def test_una_malla_sin_abrir_solo_contagia_a_las_texturas_que_nombra_un_juego_de_su_archivo(mundo: Mundo) -> None:
+    _con_dos_texturas_que_darian_no(mundo)
+    mundo.malla(_nif_con_geometria_sin_abrir((_D1, _NN1)), ruta="meshes/lod.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P1].efecto is EfectoPosible.NO_VERIFICADO
+    assert "no se pudieron leer" in por_ruta[_P1].razon
+    assert por_ruta[_P2].efecto is EfectoPosible.NO
+
+
+def test_el_juego_de_texturas_de_una_malla_sin_abrir_cuenta_aunque_nombre_la_textura_sin_carpeta(mundo: Mundo) -> None:
+    """La misma resolución que una forma abierta: una ruta sin ``textures\\`` podría resolverse a la salida."""
+    _con_dos_texturas_que_darian_no(mundo)
+    mundo.malla(_nif_con_geometria_sin_abrir(("architecture\\whiterun\\muro01.dds",)), ruta="meshes/lod.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P1].efecto is EfectoPosible.NO_VERIFICADO
+    assert por_ruta[_P2].efecto is EfectoPosible.NO
+
+
+# Toda la geometría declarada por la especificación + una por cada regla de respaldo (sufijo y prefijo): la familia entera, no una muestra.
+_GEOMETRIA_SIN_ABRIR = sorted({*_GEOMETRIA_NO_SOPORTADA_DE_LA_ESPECIFICACION, "BSFutureTriShape", "NiParticleFutura"})
+
+
+@pytest.mark.parametrize("tipo", _GEOMETRIA_SIN_ABRIR)
+def test_el_contagio_por_textura_vale_para_toda_la_geometria_que_el_lector_declara_sin_abrir(
+    mundo: Mundo, tipo: str
+) -> None:
+    _con_dos_texturas_que_darian_no(mundo)
+    mundo.malla(_nif_con_geometria_sin_abrir((_D2, _NN2), tipo=tipo), ruta="meshes/x.nif")
+
+    por_ruta = mundo.por_ruta(mundo.evaluar())
+
+    assert por_ruta[_P1].efecto is EfectoPosible.NO
+    assert por_ruta[_P2].efecto is EfectoPosible.NO_VERIFICADO
+
+
+def test_una_malla_ilegible_sigue_contagiando_a_todas_las_texturas(mundo: Mundo) -> None:
+    """Sin cabecera legible no se puede saber qué nombra: lo no observado no se da por ausente (el contagio global se queda)."""
+    _con_dos_texturas_que_darian_no(mundo)
+    mundo.malla(b"roto", ruta="meshes/rota.nif")
+
+    informe = mundo.evaluar()
+
+    assert {t.efecto for t in informe.texturas} == {EfectoPosible.NO_VERIFICADO}
+
+
+def test_un_juego_de_texturas_que_no_se_puede_enumerar_en_una_malla_sin_abrir_contagia_a_todas(mundo: Mundo) -> None:
+    """Si el archivo trae formas sin abrir y SUS juegos de texturas no se pueden leer, no se afirma qué nombran."""
+    _con_dos_texturas_que_darian_no(mundo)
+    absurdo = Bloque("BSShaderTextureSet", struct.pack("<I", 99))  # más ranuras que el tope del lector
+    mundo.malla(
+        construir_nif([bloque_nodo(hijos=(1,)), Bloque("BSMeshLODTriShape", b"\x00" * 80), absurdo]),
+        ruta="meshes/lod.nif",
+    )
+
+    informe = mundo.evaluar()
+
+    assert {t.efecto for t in informe.texturas} == {EfectoPosible.NO_VERIFICADO}
 
 
 # --- Precedencia de la búsqueda --------------------------------------------------------------------------------------------

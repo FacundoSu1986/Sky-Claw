@@ -334,6 +334,54 @@ def test_leer_materiales_declara_las_formas_que_no_sabe_leer_en_vez_de_ignorarla
     assert leer_materiales(nif).formas_no_soportadas == ("BSFutureTriShape", "NiLines", "NiParticleSystem")
 
 
+def _con_geometria_sin_abrir(*juegos: tuple[str, ...], tipo: str = "NiParticleSystem") -> bytes:
+    return construir_nif([Bloque(tipo, b"\x00" * 16), *(bloque_juego_de_texturas(j) for j in juegos)])
+
+
+def test_sin_geometria_sin_abrir_no_se_enumeran_los_juegos_de_texturas_del_archivo() -> None:
+    nif = construir_nif([bloque_nodo(), bloque_juego_de_texturas(("a.dds", "b_n.dds"))])
+
+    assert leer_materiales(nif).juegos_de_las_formas_no_soportadas == ()
+
+
+def test_con_geometria_sin_abrir_se_enumeran_todos_los_juegos_de_texturas_del_archivo_en_orden() -> None:
+    nif = _con_geometria_sin_abrir(("a.dds", "a_n.dds"), (), ("b.dds",))
+
+    assert leer_materiales(nif).juegos_de_las_formas_no_soportadas == (("a.dds", "a_n.dds"), (), ("b.dds",))
+
+
+def test_con_geometria_sin_abrir_y_sin_juegos_de_texturas_la_enumeracion_es_vacia_y_no_desconocida() -> None:
+    lectura = leer_materiales(_con_geometria_sin_abrir())
+
+    assert lectura.formas_no_soportadas == ("NiParticleSystem",)
+    assert lectura.juegos_de_las_formas_no_soportadas == ()  # () = ninguno; None = no se pudo saber
+
+
+def test_un_juego_de_texturas_ilegible_junto_a_geometria_sin_abrir_no_tumba_la_lectura_pero_queda_desconocido() -> None:
+    absurdo = Bloque("BSShaderTextureSet", struct.pack("<I", 99))
+    lectura = leer_materiales(construir_nif([Bloque("NiParticleSystem", b"\x00" * 16), absurdo]))
+
+    assert lectura.formas_no_soportadas == ("NiParticleSystem",)
+    assert lectura.juegos_de_las_formas_no_soportadas is None
+
+
+def test_un_juego_de_texturas_ilegible_sin_geometria_sin_abrir_no_cambia_lo_que_ya_se_leia() -> None:
+    """No se enumera nada si no hace falta: un juego huérfano roto no vuelve ilegible un archivo que antes se leía."""
+    absurdo = Bloque("BSShaderTextureSet", struct.pack("<I", 99))
+    lectura = leer_materiales(construir_nif([bloque_nodo(), absurdo]))
+
+    assert lectura.formas_no_soportadas == ()
+    assert lectura.juegos_de_las_formas_no_soportadas == ()
+
+
+@pytest.mark.parametrize("tipo", sorted(_GEOMETRIA_DECLARADA))
+def test_toda_la_geometria_declarada_sin_abrir_enumera_los_juegos_de_su_archivo(tipo: str) -> None:
+    lectura = leer_materiales(_con_geometria_sin_abrir(("x.dds",), tipo=tipo))
+
+    assert lectura.formas_no_soportadas == (tipo,)
+    assert lectura.juegos_de_las_formas_no_soportadas == (("x.dds",),)
+
+
 def test_la_lectura_y_la_forma_son_inmutables() -> None:
     lectura = leer_materiales(_una_forma_bs())
 
