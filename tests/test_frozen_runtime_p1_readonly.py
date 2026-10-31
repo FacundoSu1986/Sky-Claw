@@ -75,6 +75,17 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     # (el layout es del storage), ni `replace`/`unlink`: un store inmutable no se
     # reemplaza ni se borra (§38.2: `TOMBSTONE_STORE_IS_APPEND_ONLY_AND_IMMUTABLE`).
     "approval.py": frozenset({"flush", "fsync", "write"}),
+    # P5-C1 FIX 3: el registro durable de recuperación escribe
+    # `state/recovery/<transition_id>.json` con el escritor atómico del paquete,
+    # y al restaurar superficies reescribe los BYTES previos de cada una con
+    # temporal + fsync + replace. `mkdir` es para el directorio padre de una
+    # superficie que el rollback tiene que recrear (el store lo crea el storage).
+    "binder_recovery.py": frozenset({"fdopen", "flush", "fsync", "mkdir", "mkstemp", "replace", "unlink", "write"}),
+    # P5-C1 FIX 8: la escritura quirúrgica de modorganizer.ini. Mismo patrón
+    # atómico (temporal en el mismo directorio + fsync + replace) y `unlink` del
+    # temporal ante fallo. NO usa `open()` en modo escritura: escribe por el
+    # descriptor de `mkstemp` con `os.fdopen`.
+    "mo2_ini_escritura.py": frozenset({"fdopen", "flush", "fsync", "mkstemp", "replace", "unlink", "write"}),
 }
 
 

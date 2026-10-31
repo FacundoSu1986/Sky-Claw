@@ -419,6 +419,32 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("approval.py", "_crear_witness"),
         ("approval.py", "_crear_tombstone"),
         ("approval.py", "_reconciliar_hacia_adelante"),
+        # P5-C1 (`binder_recovery.py`): el registro durable y la restauración
+        # reciben el handle ya adquirido por el binder o por
+        # `recuperar_transicion_interrumpida`, que sí es un participante público.
+        # Ninguna adquiere por su cuenta: declararlas acá las somete al ancla de
+        # call site.
+        ("binder_recovery.py", "escribir_registro_locked"),
+        ("binder_recovery.py", "marcar_fase_locked"),
+        ("binder_recovery.py", "eliminar_registro_locked"),
+        ("binder_recovery.py", "restaurar_registro_locked"),
+        ("binder_recovery.py", "_restaurar_persistida"),
+        ("binder_recovery.py", "_escribir_bytes_atomico"),
+        # P5-C1 (`mo2_ini_escritura.py`): la escritura del INI es la mutación más
+        # sensible del slice. Corre SIEMPRE bajo el participant lock del binder.
+        ("mo2_ini_escritura.py", "actualizar_game_path_en_ini"),
+        ("mo2_ini_escritura.py", "_escribir_atomico"),
+        # P5-C1: `_rollback` corre dentro del `with participant_lock(...)` del
+        # binder y recibe el handle ya adquirido; no vuelve a adquirir (el lock
+        # no es reentrante). Declararla la somete al ancla de call site.
+        ("runtime_clone_binder.py", "_rollback"),
+        # P5-C1 ronda 2: el retiro del registro corre FUERA de la transacción,
+        # con el handle ya adquirido por el binder.
+        ("runtime_clone_binder.py", "_retirar_registro_finalizado"),
+        # P5-C1: el cuerpo del CAS sobre `active.json`. Su hermano público
+        # `escribir_estado_activo_cas` adquiere el lock; éste recibe la sección
+        # crítica ya tomada por el binder o por el público.
+        ("state.py", "_escribir_estado_activo_cas_locked"),
     }
 )
 
@@ -992,7 +1018,10 @@ def test_s2_cada_modulo_escritor_declara_su_adquisicion_si_muta_el_root() -> Non
     delegadores (`generations.py` escribe via `state.write_json_atomic`) quedan
     cubiertos por su entrypoint publico en el censo anterior.
     """
-    delegados = {"copying.py", "root_lock.py"}
+    # `mo2_ini_escritura.py` es una PRIMITIVA de escritura, igual que
+    # `copying.py`: no adquiere el lock porque su contrato es correr dentro de
+    # la sección crítica del binder. El ancla de call site de abajo la obliga.
+    delegados = {"copying.py", "root_lock.py", "mo2_ini_escritura.py"}
     for modulo in sorted(_escritores_reales_del_paquete() - delegados):
         arbol = _arbol_de(_paquete() / modulo)
         adquirentes = _funciones_que_adquieren_lock(arbol)
