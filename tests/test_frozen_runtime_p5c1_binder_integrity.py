@@ -1407,6 +1407,54 @@ def test_fallo_en_rotacion_tras_registro_publicado_no_revierte_la_transicion(tmp
     assert "FINALIZED" in str(excinfo.value)
 
 
+def test_si_el_historial_se_vuelve_ilegible_no_se_revierte_y_se_levanta_el_error_original(
+    tmp_path: pathlib.Path,
+) -> None:
+    """No se puede leer la autoridad de finalización ⇒ NO se revierte NADA.
+
+    Si el historial se vuelve ilegible justo en el ``except``, la publicación no
+    se puede descartar: revertir podría destruir una transición durablente
+    finalizada. Se preserva el registro de recuperación y se re-levanta el error
+    ORIGINAL (el de la rotación), no el de la lectura (CodeRabbit sobre d2a17829).
+    """
+    from sky_claw.local.frozen_runtime import journal as journal_module
+
+    rig = _montar_rig(tmp_path)
+    real_derivar = binder.derivar_historial_finalizados
+    estado = {"rotacion_fallo": False, "t_id": None}
+
+    def _rotar_que_falla(handle, root, *, registro, revision_previa):  # type: ignore[no-untyped-def]
+        estado["rotacion_fallo"] = True
+        estado["t_id"] = registro.transition_id
+        raise OSError("rotación interrumpida")
+
+    def _derivar_inestable(root):  # type: ignore[no-untyped-def]
+        historial = real_derivar(root)
+        # Publicada la transición (el registro está en el historial) y fallada la
+        # rotación, el historial se rompe: es la lectura que hace
+        # `_finalizacion_publicada` desde el except del binder.
+        if (
+            estado["rotacion_fallo"]
+            and estado["t_id"] is not None
+            and any(r.transition_id == estado["t_id"] for r in historial.registros)
+        ):
+            raise OSError("historial ilegible")
+        return historial
+
+    with (
+        patch.object(journal_module, "_rotar_journal_locked", side_effect=_rotar_que_falla),
+        patch.object(binder, "derivar_historial_finalizados", side_effect=_derivar_inestable),
+        pytest.raises(OSError, match="rotación interrumpida") as excinfo,
+    ):
+        _ejecutar(rig)
+
+    # El error original sobrevive: no quedó enmascarado por la lectura rota.
+    assert "historial ilegible" not in str(excinfo.value)
+    # Y las superficies NO se revierten: la publicación no se pudo descartar.
+    assert leer_game_path_de_mo2(rig.ini).path == str(rig.clone_root)
+    assert len(recovery.listar_registros(rig.storage)) == 1, "el registro de recuperación debía preservarse"
+
+
 def test_store_faltante_falla_tambien_en_el_camino_de_aprobacion_ya_consumida(tmp_path: pathlib.Path) -> None:
     """Un root sin ``state/recovery/`` falla ANTES del PENDING también al reintento.
 

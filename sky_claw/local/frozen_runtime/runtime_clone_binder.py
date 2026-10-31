@@ -1074,7 +1074,23 @@ def ejecutar_transicion_binder(
             )
 
         except BaseException as exc:
-            if _finalizacion_publicada(storage_path, t_id):
+            try:
+                publicada = _finalizacion_publicada(storage_path, t_id)
+            except Exception as lectura_exc:
+                # La autoridad de finalización NO se pudo leer: la publicación no
+                # se puede descartar, y revertir una transición durablente
+                # finalizada es peor que dejar las superficies mutadas con su
+                # registro de recuperación intacto. Se re-levanta el error
+                # ORIGINAL, sin enmascararlo con el de la lectura (CodeRabbit
+                # sobre d2a17829).
+                logger.error(
+                    "No se pudo leer el historial de finalizaciones de la transición %s: no se revierte porque "
+                    "la publicación no se puede descartar; el registro de recuperación se conserva. Error: %s",
+                    t_id,
+                    lectura_exc,
+                )
+                raise exc from lectura_exc
+            if publicada:
                 # El registro inmutable ya está publicado (crash/fallo entre la
                 # F1b y la F2 de FINALIZE): la transición terminó de forma
                 # durable y NO es reversible. Revertir las superficies dejaría
