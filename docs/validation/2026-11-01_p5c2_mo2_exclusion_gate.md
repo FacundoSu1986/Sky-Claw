@@ -11,7 +11,9 @@
 
 | Elemento | Valor |
 |---|---|
+| PR | [#851](https://github.com/FacundoSu1986/Sky-Claw/pull/851) (Draft) |
 | Rama | `feat/frozen-runtime-mo2-exclusion-gate` |
+| Commit | `e6c58cd06c756234a17da25ff9f79cedcd51385a` |
 | Worktree | `E:\Skyclaw_Main_Sync\.worktrees\frozen-runtime-mo2-exclusion-gate` |
 | Base | `origin/main` `9fbf0b2fef177e143ff0be68e058ae875d501c6f` |
 | P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` (ancestro de `origin/main`, verificado con `merge-base --is-ancestor`) |
@@ -143,6 +145,12 @@ Ruff y Mypy limpios sobre los archivos tocados. `mypy` **sí** cubre el módulo
 nuevo: `sky_claw.local.frozen_runtime.*` está en la lista de opt-in estricto, no
 en la de `ignore_errors`.
 
+**CI del PR #851 sobre el commit de código `e6c58cd0`** (run `41306633742`):
+15 jobs `pass`, 0 `fail`. Incluye Lint Ruff py3.11/3.12, Mypy py3.11/3.12,
+Security Scan, CodeQL, **POSIX Core py3.11** (el módulo importa y sus tests no
+dependientes de Win32 corren fuera de Windows) y **Tests / windows-latest
+py3.11 y py3.12**, que son los que ejercitan la exclusión real.
+
 **Nota metodológica, porque afectó la lectura de los resultados.** En esta máquina
 hay un hook de borrado que impide eliminar el directorio de `--basetemp`. Cuando
 dos corridas comparten `--basetemp`, la segunda no puede recrearlo y **cientos de
@@ -188,6 +196,9 @@ material de P7, no como el mecanismo.
    Fail-closed, pero es una negativa, no un éxito.
 3. **La escritura no es atómica.** La recuperación depende de `binder_recovery`;
    si el registro durable se corrompe, un INI a medio escribir no tiene vuelta.
+   Además, el predicado de escritura rasgada cubre las dos ventanas de crash
+   realistas pero no una escritura parcial que hubiera extendido el archivo
+   dejando cola sin inicializar (ADR 0017 §5.1, «límite conocido»).
 4. **Reparse points**: `INDETERMINATE` por falta de privilegio para crear el caso.
 5. **`POWER_LOSS_GUARANTEE` sigue en `NOT_CLAIMED`.** `FlushFileBuffers` vuelca el
    archivo; no hay `fsync` de directorio ni WAL.

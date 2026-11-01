@@ -189,6 +189,15 @@ No debilita la protección: para caer ahí, un tercero tendría que escribir
 exactamente un prefijo del contenido que esta transición iba a escribir, y en ese
 caso restaurar también es correcto.
 
+**Límite conocido del predicado.** Cubre las dos ventanas de crash realistas de
+una escritura de ~150 B: entre `WriteFile` y `SetEndOfFile`, y una escritura
+parcial que no truncó. No cubre una escritura parcial que además hubiera
+extendido el archivo dejando cola sin inicializar: ese estado se clasificaría
+como ajeno y no se restauraría. Se deja declarado en lugar de ampliar el
+predicado con una heurística de «cola en ceros», porque una heurística así
+clasificaría como propia una escritura ajena de ceros. Es un riesgo aceptado y
+medible, no una garantía.
+
 ### 5.2 Mientras dura la transición, el INI no es legible por el código que lo lee por ruta
 
 `open()` del CRT pide `FILE_SHARE_READ|FILE_SHARE_WRITE` y no concede `DELETE`,
