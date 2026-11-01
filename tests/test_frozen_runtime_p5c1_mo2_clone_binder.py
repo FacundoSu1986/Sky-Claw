@@ -32,7 +32,6 @@ Casos mínimos requeridos:
 from __future__ import annotations
 
 import dataclasses
-import os
 import pathlib
 import shutil
 import time
@@ -41,6 +40,7 @@ from unittest.mock import patch
 import pytest
 
 from sky_claw.local.frozen_runtime import approval as approval_module
+from sky_claw.local.frozen_runtime import mo2_ini_exclusion
 from sky_claw.local.frozen_runtime.approval import (
     ApprovalOperation,
     ConsentimientoAprobacion,
@@ -77,6 +77,7 @@ from sky_claw.local.frozen_runtime.journal import (
     cargar_journal_transicion,
     derivar_historial_finalizados,
 )
+from sky_claw.local.frozen_runtime.mo2_ini_exclusion import Mo2IniExclusionError
 from sky_claw.local.frozen_runtime.models import (
     ManagedSourceProvider,
     ProviderMetadataObservation,
@@ -688,14 +689,20 @@ def test_09_fallo_de_snapshot_no_muta(tmp_path: pathlib.Path) -> None:
 
 
 def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path) -> None:
-    """Caso 10: Fallo de I/O al escribir archivo temporal: el destino original no se corrompe.
+    """Caso 10: Fallo de I/O al escribir el INI: el destino original no se corrompe.
 
-    El fallo se inyecta SÓLO en el ``mkstemp`` del escritor del INI (prefijo
-    ``.modorganizer.ini.``). Un parche GLOBAL de ``tempfile.mkstemp`` también
-    reventaba el burn de la aprobación (``_escribir_ledger_cas`` →
-    ``write_json_atomic`` → ``mkstemp``), el binder fallaba como
-    ``BinderApprovalError`` ANTES de tocar el INI y el test pasaba por la razón
-    equivocada (CodeRabbit sobre #843).
+    El punto de inyección cambió con P5-C2 y el cambio es de fondo, no cosmético:
+    el binder ya no escribe un temporal + ``os.replace`` —con la exclusión de
+    mutación tomada, el reemplazo por ruta es imposible porque el propio handle
+    se bloquea a sí mismo— sino que escribe por el handle retenido. Por eso el
+    fallo se inyecta en la escritura por handle, que es el único punto donde
+    ahora puede fallar.
+
+    Un parche GLOBAL de ``tempfile.mkstemp`` (lo que hacía antes este test)
+    también reventaba el burn de la aprobación, y el binder fallaba como
+    ``BinderApprovalError`` ANTES de tocar el INI: el test pasaba por la razón
+    equivocada (CodeRabbit sobre #843). El punto nuevo tiene el mismo cuidado:
+    es el ``_escribir_handle`` del gate, no una escritura cualquiera.
     """
     steam_root = tmp_path / "Steam"
     managed_src = _crear_managed_source_sintetica(steam_root)
@@ -714,19 +721,11 @@ def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    import tempfile
+    def _escribir_que_falla(handle: int, datos: bytes) -> None:
+        raise Mo2IniExclusionError(f"ENOSPC simulado en la escritura por handle ({len(datos)} B)")
 
-    real_mkstemp = tempfile.mkstemp
-
-    def _mkstemp_solo_escritor_ini(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        prefijo = kwargs.get("prefix", args[1] if len(args) > 1 else None)
-        if prefijo == ".modorganizer.ini.":
-            raise OSError("ENOSPC simulado para el escritor del INI")
-        return real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
-
-    # Simular fallo SÓLO en la escritura temporal de modorganizer.ini
     with (
-        patch("tempfile.mkstemp", side_effect=_mkstemp_solo_escritor_ini),
+        patch("sky_claw.local.frozen_runtime.mo2_ini_exclusion._escribir_handle", side_effect=_escribir_que_falla),
         pytest.raises(BinderEscrituraIniError) as excinfo,
     ):
         ejecutar_transicion_binder(
@@ -750,7 +749,18 @@ def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path
 
 
 def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None:
-    """Caso 11: Fallo durante os.replace al bindiar: rollback y restauración fiel."""
+    """Caso 11: Escritura PARCIAL del INI (muerte a mitad): rollback restaura los bytes.
+
+    Este es el caso que la arquitectura de P5-C2 hace posible y que la anterior
+    no podía producir: escribir por handle no es atómico, así que un fallo a
+    mitad deja el archivo con bytes mezclados. La garantía que se exige —y que
+    este test ancla— es que el registro durable ya tiene los bytes previos y el
+    rollback los repone.
+
+    Se escribe de verdad la primera mitad por el handle real y recién entonces se
+    levanta el error: si el rollback no corriera, el INI quedaría truncado y el
+    assert de bytes lo vería.
+    """
     steam_root = tmp_path / "Steam"
     managed_src = _crear_managed_source_sintetica(steam_root)
     storage_root = tmp_path / "Storage"
@@ -768,27 +778,23 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    # Interceptar os.replace sobre modorganizer.ini, UNA sola vez.
-    #
-    # Antes fallaba en TODAS las llamadas cuyo destino contuviera
-    # "modorganizer.ini", incluido el temporal del ROLLBACK: el test pasaba
-    # porque el rollback también fallaba, no porque restaurara (CodeRabbit sobre
-    # #843). Ahora el fallo es único y el rollback tiene que poder completarse.
-    real_replace = os.replace
-    fallos = {"restantes": 1}
+    real_escribir = mo2_ini_exclusion._escribir_handle
+    parciales = {"escritas": 0}
 
-    def _failing_replace(src: object, dst: object) -> None:
-        # ``os.replace`` recibe Path y str: comparar con ``in`` sobre un Path
-        # levanta TypeError y el binder lo envuelve como fallo de aprobación,
-        # que es lo que hacía pasar este test por la razón equivocada.
-        destino = os.fspath(dst)  # type: ignore[arg-type]
-        origen = os.fspath(src)  # type: ignore[arg-type]
-        if "modorganizer.ini" in destino and not origen.endswith(".bak") and fallos["restantes"] > 0:
-            fallos["restantes"] -= 1
-            raise PermissionError("EACCES simulado en replace")
-        real_replace(src, dst)
+    def _escribir_a_medias(handle: int, datos: bytes) -> None:
+        # Sólo la PRIMERA escritura (la del contenido nuevo) se corta; las que
+        # hace el rollback después tienen que poder completarse, si no el test
+        # pasaría porque el rollback también falla.
+        if parciales["escritas"] == 0 and len(datos) > 4:
+            parciales["escritas"] += 1
+            real_escribir(handle, datos[: len(datos) // 2])
+            raise Mo2IniExclusionError("EIO simulado tras escritura parcial del INI")
+        real_escribir(handle, datos)
 
-    with patch("os.replace", side_effect=_failing_replace), pytest.raises(BinderError) as excinfo:
+    with (
+        patch("sky_claw.local.frozen_runtime.mo2_ini_exclusion._escribir_handle", side_effect=_escribir_a_medias),
+        pytest.raises(BinderError) as excinfo,
+    ):
         ejecutar_transicion_binder(
             storage_root=storage_root,
             mo2_instance_dir=mo2_dir,
@@ -800,10 +806,10 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
             probes=_probes_quiescentes(),
         )
 
-    # El rollback SE EJECUTÓ y restauró los bytes previos: el INI no quedó a medias.
-    assert fallos["restantes"] == 0, (
+    assert parciales["escritas"] == 1, (
         f"el fallo inyectado nunca se ejerció; la excepción fue {type(excinfo.value).__name__}: {excinfo.value}"
     )
+    # El rollback SE EJECUTÓ y restauró los bytes previos: el INI no quedó a medias.
     assert ini_path.read_bytes() == ini_bytes_antes
 
 
@@ -940,7 +946,14 @@ def test_14_ejecucion_repetida_idempotencia(tmp_path: pathlib.Path) -> None:
 
 
 def test_15_cancelacion_no_deja_transicion_exitosa(tmp_path: pathlib.Path) -> None:
-    """Caso 15: Interrupción por BaseException (KeyboardInterrupt): no se declara SUCCESS."""
+    """Caso 15: Interrupción por BaseException (KeyboardInterrupt): no se declara SUCCESS.
+
+    El punto de inyección es el escritor por HANDLE desde P5-C2: el binder ya no
+    llama a ``actualizar_game_path_en_ini`` (ver el docstring del módulo
+    ``mo2_ini_exclusion``). Parchear el nombre viejo dejaba el test sin ejercer
+    nada —la excepción nunca se lanzaba y el ``pytest.raises`` fallaba—, que es
+    como se detectó.
+    """
     steam_root = tmp_path / "Steam"
     managed_src = _crear_managed_source_sintetica(steam_root)
     storage_root = tmp_path / "Storage"
@@ -958,7 +971,7 @@ def test_15_cancelacion_no_deja_transicion_exitosa(tmp_path: pathlib.Path) -> No
 
     with (
         patch(
-            "sky_claw.local.frozen_runtime.runtime_clone_binder.actualizar_game_path_en_ini",
+            "sky_claw.local.frozen_runtime.runtime_clone_binder.actualizar_game_path_por_handle",
             side_effect=KeyboardInterrupt("Cancelación forzada"),
         ),
         pytest.raises(KeyboardInterrupt),

@@ -846,13 +846,13 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
         (rig_dir / "antes.json").write_text(json.dumps(manifiesto), encoding="utf-8")
 
         if frontera == "ini":
-            real_ini = binder.actualizar_game_path_en_ini
+            real_ini = binder.actualizar_game_path_por_handle
 
-            def _ini_y_morir(path, valor):  # type: ignore[no-untyped-def]
-                real_ini(path, valor)
+            def _ini_y_morir(retenido, valor):  # type: ignore[no-untyped-def]
+                real_ini(retenido, valor)
                 os._exit(9)
 
-            parche = _patch.object(binder, "actualizar_game_path_en_ini", side_effect=_ini_y_morir)
+            parche = _patch.object(binder, "actualizar_game_path_por_handle", side_effect=_ini_y_morir)
         elif frontera == "config":
             real_cfg = binder.persistir_campo
 
@@ -1045,17 +1045,23 @@ def test_rollback_no_pisa_una_escritura_ajena_en_config(tmp_path: pathlib.Path) 
 
 
 def test_rollback_no_pisa_una_escritura_ajena_en_ini(tmp_path: pathlib.Path) -> None:
-    """Si un tercero agrega una línea al INI, el rollback no la borra."""
-    rig = _montar_rig(tmp_path)
-    real_ini = binder.actualizar_game_path_en_ini
+    """Si un tercero agrega una línea al INI, el rollback no la borra.
 
-    def _ini_y_que_otro_escriba(path, valor):  # type: ignore[no-untyped-def]
-        real_ini(path, valor)
-        path.write_bytes(path.read_bytes() + b"; agregado por un tercero\r\n")
+    La escritura del tercero se inyecta en ``assess_effective_runtime`` y ya no
+    en el escritor del INI. El cambio no es cosmético: desde P5-C2 el INI está
+    EXCLUIDO mientras el binder lo escribe, así que un tercero **no puede**
+    escribir en ese instante —ésa es justamente la garantía que se agregó—. La
+    ventana real de una escritura ajena es DESPUÉS de liberar el handle y ANTES
+    de que el rollback corra, y es donde este test la pone ahora.
+    """
+    rig = _montar_rig(tmp_path)
+
+    def _tercero_escribe_y_falla(**_: object) -> None:
+        rig.ini.write_bytes(rig.ini.read_bytes() + b"; agregado por un tercero\r\n")
+        raise RuntimeError("boom")
 
     with (
-        patch.object(binder, "actualizar_game_path_en_ini", side_effect=_ini_y_que_otro_escriba),
-        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        patch.object(binder, "assess_effective_runtime", side_effect=_tercero_escribe_y_falla),
         pytest.raises(RuntimeError),
     ):
         _ejecutar(rig)
@@ -1366,7 +1372,7 @@ def test_rollback_con_superficie_ya_en_estado_previo_no_reporta_critico(tmp_path
     ini_antes = rig.ini_bytes()
 
     with (
-        patch.object(binder, "actualizar_game_path_en_ini", side_effect=OSError("compartición simulada")),
+        patch.object(binder, "actualizar_game_path_por_handle", side_effect=OSError("compartición simulada")),
         patch.object(recovery, "_escribir_bytes_atomico", side_effect=PermissionError("bloqueado")),
         pytest.raises(OSError, match="compartición") as excinfo,
     ):

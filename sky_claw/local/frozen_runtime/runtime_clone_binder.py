@@ -110,7 +110,13 @@ from sky_claw.local.frozen_runtime.journal import (
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
     Mo2IniEscrituraError,
     actualizar_game_path_en_ini,
+    actualizar_game_path_por_handle,
     codificar_qt_byte_array,
+)
+from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
+    DiagnosticoExclusion,
+    Mo2IniExclusionError,
+    adquirir_exclusion_ini,
 )
 from sky_claw.local.frozen_runtime.root_lock import (
     LockDisposition,
@@ -141,6 +147,7 @@ __all__ = [
     "BinderCasError",
     "BinderError",
     "BinderEscrituraIniError",
+    "BinderExclusionError",
     "BinderLockUnavailableError",
     "BinderPreflightFailedError",
     "BinderQuiescenceError",
@@ -217,6 +224,17 @@ class BinderLockUnavailableError(BinderError):
     """
 
 
+class BinderExclusionError(BinderError):
+    """No se pudo establecer la exclusión de mutación sobre ``modorganizer.ini``.
+
+    Es la ventana TOCTOU que P5-C1 dejó abierta: sin exclusión, otro proceso
+    puede escribir el INI entre la revalidación y el reemplazo. La transición se
+    detiene ANTES de mutar cualquier superficie. El diagnóstico viaja en el
+    mensaje con el estado medido, para que el operador distinga «MO2 tiene el
+    archivo abierto» de «no se pudo determinar».
+    """
+
+
 # ---------------------------------------------------------------------------
 # Modelos y Estructuras de Datos
 # ---------------------------------------------------------------------------
@@ -236,6 +254,9 @@ class BinderResult:
     new_effective_path: str
     post_verify_evidence: PostVerifyEvidence | None = None
     finalized_record: FinalizedTransitionRecord | None = None
+    #: Diagnóstico de la exclusión de mutación (P5-C2). ``None`` sólo en los
+    #: caminos que no mutan el INI (por ejemplo el no-op idempotente).
+    exclusion: DiagnosticoExclusion | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -896,6 +917,7 @@ def ejecutar_transicion_binder(
         recovery.escribir_registro_locked(handle, storage_path, registro)
 
         mutadas: set[str] = set()
+        diagnostico_exclusion: DiagnosticoExclusion | None = None
         try:
             # -----------------------------------------------------------------
             # 5.4 — BIND EFFECTIVE (mutación de superficies)
@@ -904,10 +926,37 @@ def ejecutar_transicion_binder(
                 handle, storage_path, transition_id=t_id, fase=recovery.FaseRecuperacion.INI_ESCRITO
             )
             mutadas.add(recovery.SUPERFICIE_MO2_INI)
+            # P5-C2: la exclusión de mutación se toma ACÁ, después del snapshot
+            # (que lee por ruta) y antes de la primera escritura. Con el handle
+            # retenido, ningún otro proceso puede escribir, borrar ni renombrar
+            # el INI; la comparación de huella y la escritura usan ESE handle, así
+            # que no queda ventana entre comprobar y mutar.
+            exclusion = adquirir_exclusion_ini(ini_path)
+            diagnostico_exclusion = exclusion.diagnostico
             try:
-                actualizar_game_path_en_ini(ini_path, target_clone_root)
-            except Mo2IniEscrituraError as exc:
-                raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
+                if not exclusion.autoriza:
+                    raise BinderExclusionError(
+                        "no se pudo establecer la exclusión de mutación sobre modorganizer.ini: "
+                        f"estado={exclusion.estado.value} motivo={exclusion.diagnostico.motivo} "
+                        f"intentos={exclusion.diagnostico.intentos}"
+                    )
+                # La huella contra la que se compara es la del SNAPSHOT durable:
+                # es el estado al que el rollback volvería. Si el INI cambió
+                # entre el snapshot y la exclusión, no hay nada que autorice
+                # mutarlo y se falla ANTES de escribir.
+                try:
+                    exclusion.verificar_huella(superficie_ini.sha256)
+                except Mo2IniExclusionError as exc:
+                    raise BinderVerificationError(
+                        "modorganizer.ini cambió entre el snapshot durable y la exclusión: "
+                        f"no se muta una superficie cuya identidad no liga ({exc})"
+                    ) from exc
+                try:
+                    actualizar_game_path_por_handle(exclusion, target_clone_root)
+                except Mo2IniEscrituraError as exc:
+                    raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
+            finally:
+                exclusion.cerrar()
 
             if config_path is not None and config_path.exists():
                 recovery.marcar_fase_locked(
@@ -1071,6 +1120,7 @@ def ejecutar_transicion_binder(
                 new_effective_path=str(target_clone_root),
                 post_verify_evidence=post_evidence,
                 finalized_record=record_final,
+                exclusion=diagnostico_exclusion,
             )
 
         except BaseException as exc:

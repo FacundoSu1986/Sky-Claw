@@ -648,6 +648,42 @@ def _parsear_config(crudos: bytes) -> dict[str, object] | None:
     return datos if isinstance(datos, dict) else None
 
 
+def _es_prefijo_rasgado(previos: bytes, nuevo: bytes, actuales: bytes) -> bool:
+    """¿``actuales`` es un estado INTERMEDIO de escribir ``nuevo`` sobre ``previos``?
+
+    La escritura por handle que introduce P5-C2 (``mo2_ini_escritura.
+    actualizar_game_path_por_handle``) no es atómica: ``WriteFile`` avanza desde
+    el byte 0 y ``SetEndOfFile`` trunca después. Una muerte entre ambos deja dos
+    formas posibles, y sólo esas dos:
+
+    1. ``nuevo[:n]`` con ``n < len(nuevo)`` — el truncado sí ocurrió;
+    2. ``nuevo[:n] + previos[n:]`` con ``len(actuales) == len(previos)`` — el
+       truncado no ocurrió y sobrevive la cola vieja.
+
+    Reconocerlas es lo que impide que el rollback confunda una escritura PROPIA a
+    medias con una escritura ajena y se niegue a restaurar. Sin esto, el
+    discriminador de ``_coincide_con_lo_escrito`` —calibrado para un reemplazo
+    atómico, donde el archivo es o el viejo o el nuevo— clasifica el estado
+    intermedio como ajeno y deja el INI truncado.
+
+    No debilita la protección contra terceros: para caer acá, un tercero tendría
+    que escribir exactamente un prefijo del contenido que esta transición iba a
+    escribir, y en ese caso restaurar es correcto igual.
+    """
+    if not nuevo or not actuales:
+        return False
+    if len(actuales) < len(nuevo) and actuales == nuevo[: len(actuales)]:
+        return True
+    if len(actuales) == len(previos):
+        coincidentes = 0
+        limite = min(len(actuales), len(nuevo))
+        while coincidentes < limite and actuales[coincidentes] == nuevo[coincidentes]:
+            coincidentes += 1
+        if 0 < coincidentes < len(nuevo) and actuales[coincidentes:] == previos[coincidentes:]:
+            return True
+    return False
+
+
 def _coincide_con_lo_escrito(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
@@ -658,6 +694,11 @@ def _coincide_con_lo_escrito(
     Cada superficie tiene su discriminador, y el del INI es el más fuerte: el
     escritor es determinista, así que se recalcula lo que habría escrito con
     ``prever_bytes`` sobre los bytes previos. Un byte distinto ⇒ no es nuestro.
+
+    Para el INI se acepta además un PREFIJO rasgado de esa misma previsión: la
+    escritura por handle no es atómica, y una muerte a mitad deja un estado que
+    no es ni el snapshot ni la previsión completa pero SÍ es de esta transición.
+    Ver :func:`_es_prefijo_rasgado`.
     """
     esperado = registro.expected_effective_path
     if superficie.kind == _KIND_ACTIVE:
@@ -680,9 +721,12 @@ def _coincide_con_lo_escrito(
         )
 
         try:
-            return prever_bytes(previos, esperado) == actuales
+            previsto = prever_bytes(previos, esperado)
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
+        if previsto == actuales:
+            return True
+        return _es_prefijo_rasgado(previos, previsto, actuales)
     return False
 
 
