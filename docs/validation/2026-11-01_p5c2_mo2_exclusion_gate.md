@@ -216,7 +216,12 @@ mientras la transición lo retiene, venga el intento de donde venga.
    autoriza.
 5. **`POWER_LOSS_GUARANTEE = NOT_CLAIMED`.** `FlushFileBuffers` vuelca el
    archivo; no hay `fsync` de directorio ni WAL.
-6. **El hook de borrado del entorno** envenena cualquier medición que comparta
+6. **La evidencia de recuperación se acumula.** Cada transición con escritura
+   no atribuible deja `<storage>/recovery_evidence/<transition_id>/`. No hay
+   política de retención todavía: es deliberado —borrar evidencia automáticamente
+   derrotaría el propósito— pero conviene definirla antes de que el directorio
+   crezca sin control en un rig de larga vida.
+7. **El hook de borrado del entorno** envenena cualquier medición que comparta
    `--basetemp`.
 
 ## 9. Requisitos para la sesión P7
