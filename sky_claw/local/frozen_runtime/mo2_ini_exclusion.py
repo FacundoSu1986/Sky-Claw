@@ -27,7 +27,7 @@ Medido en un rig Windows 10 19045 con procesos externos reales
 
 ===================================  ==========================================
 ``dwDesiredAccess``                  ``GENERIC_READ | GENERIC_WRITE | DELETE``
-``dwShareMode``                      ``FILE_SHARE_READ``
+``dwShareMode``                      ``0`` (``FILE_SHARE_NONE``)
 ===================================  ==========================================
 
 Con esa combinación, y medido sonda por sonda:
@@ -38,6 +38,7 @@ Con esa combinación, y medido sonda por sonda:
 - ``ReplaceFileW`` externo: ``ERROR_SHARING_VIOLATION`` (32);
 - ``DeleteFile`` externo: ``ERROR_SHARING_VIOLATION`` (32);
 - apertura con sólo ``DELETE``: ``ERROR_SHARING_VIOLATION`` (32);
+- lectura, tanto CRT como **compatible**: ``ERROR_SHARING_VIOLATION`` (32).
 - escritura por un alias hardlink del mismo archivo: bloqueada también, porque
   la exclusión es sobre el OBJETO de archivo, no sobre el nombre.
 
@@ -46,8 +47,14 @@ Las alternativas se midieron y se descartaron por evidencia, no por gusto:
 - ``FILE_SHARE_READ|FILE_SHARE_DELETE`` deja pasar ``ReplaceFileW`` y
   ``DeleteFile`` externos: no excluye nada útil.
 - ``FILE_SHARE_READ|FILE_SHARE_WRITE`` deja pasar la escritura externa.
-- ``dwShareMode = 0`` excluye todo, pero también bloquea la lectura y deja el
-  sistema sin forma de leer el INI mientras dura la transición.
+- ``FILE_SHARE_READ`` —la primera versión de este módulo— bloquea a los
+  escritores pero **no** a los lectores compatibles, que observan la escritura a
+  medias. Ver más abajo, «Lectores».
+
+Que ``dwShareMode = 0`` también impida leer el INI durante la transición **no es
+un costo que se acepta a regañadientes: es la garantía**. El INI no tiene por qué
+ser legible mientras se lo está reescribiendo, y permitirlo fue justamente lo que
+abrió la ventana de lectura rasgada.
 
 Por qué la escritura es in-place y no ``os.replace``
 ----------------------------------------------------

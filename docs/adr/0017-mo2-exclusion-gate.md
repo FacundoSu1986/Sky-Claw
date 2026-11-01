@@ -282,9 +282,12 @@ con diagnóstico.
 
 ## 6. Alternativas descartadas, con el motivo medido
 
+`dwShareMode = 0` **es la configuración adoptada** (§3.5). La versión anterior la
+descartaba «porque también bloquea la lectura»; bloquear la lectura es la
+garantía, no el costo.
+
 | Alternativa | Por qué no |
 |---|---|
-| `dwShareMode = 0` | Excluye todo, pero también la lectura: deja el INI inaccesible durante la transición sin ganar nada sobre §3.5. |
 | `FILE_SHARE_READ\|FILE_SHARE_DELETE` | Habilita `ReplaceFileW` y `DeleteFile` externos. No excluye. |
 | `FILE_SHARE_READ\|FILE_SHARE_WRITE` | Habilita la escritura externa. No excluye. |
 | Rename-away + install | 40/40 victorias del agresor, 27/40 transiciones rotas. |
