@@ -918,6 +918,13 @@ def ejecutar_transicion_binder(
 
         mutadas: set[str] = set()
         diagnostico_exclusion: DiagnosticoExclusion | None = None
+        # ``mutadas`` marca la superficie ANTES de escribirla (para que el
+        # rollback la cubra si el proceso muere en el medio). Eso no dice si la
+        # escritura llegó a intentarse: entre la marca y el escritor están la
+        # adquisición de la exclusión y la verificación de huella, que pueden
+        # abortar sin tocar el archivo. Este flag es la verdad de proceso y es lo
+        # que impide atribuir a la transición un cambio de un tercero.
+        ini_escritura_intentada = False
         try:
             # -----------------------------------------------------------------
             # 5.4 — BIND EFFECTIVE (mutación de superficies)
@@ -951,6 +958,7 @@ def ejecutar_transicion_binder(
                         "modorganizer.ini cambió entre el snapshot durable y la exclusión: "
                         f"no se muta una superficie cuya identidad no liga ({exc})"
                     ) from exc
+                ini_escritura_intentada = True
                 try:
                     actualizar_game_path_por_handle(exclusion, target_clone_root)
                 except Mo2IniEscrituraError as exc:
@@ -1169,7 +1177,15 @@ def ejecutar_transicion_binder(
                 t_id,
                 exc,
             )
-            _rollback(handle, storage_path, registro, env_actual if environ is not None else None, mutadas, t_id)
+            _rollback(
+                handle,
+                storage_path,
+                registro,
+                env_actual if environ is not None else None,
+                mutadas,
+                t_id,
+                ini_escritura_intentada=ini_escritura_intentada,
+            )
             raise
 
         # FUERA de la transacción, a propósito. El journal ya finalizó y el
@@ -1258,6 +1274,8 @@ def _rollback(
     environ: MutableMapping[str, str] | None,
     mutadas: set[str],
     transition_id: str,
+    *,
+    ini_escritura_intentada: bool = False,
 ) -> None:
     """Restaura las superficies REALMENTE mutadas y verifica cada una.
 
@@ -1273,6 +1291,10 @@ def _rollback(
             registro,
             environ,
             solo_superficies=frozenset(mutadas),
+            # Sólo el INI tiene estado intermedio atribuible: el binder sabe si
+            # llegó a llamar al escritor. Si no lo llamó, un contenido que
+            # "parece" un prefijo nuestro es de un tercero y no se toca.
+            escritura_intentada=ini_escritura_intentada,
         )
         recovery.exigir_restauracion_completa(verificaciones)
     except Exception as rollback_exc:

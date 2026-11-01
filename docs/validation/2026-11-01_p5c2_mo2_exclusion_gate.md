@@ -37,6 +37,29 @@ midiendo, no razonando:
    —stderr nunca falla— así que se quitaron: un assert que no puede fallar no es
    un ancla.
 
+## 0.1 Hallazgos de la revisión adversarial, reconciliados
+
+Codex revisó `efdc7d55` y dejó **7 findings**; CodeRabbit 1; Qodo 1. Todos se
+verificaron contra el árbol y **todos eran reales**. Ninguno se cerró porque los
+tests estuvieran verdes.
+
+| # | Finding | Veredicto | Corrección |
+|---|---|---|---|
+| 1 | **P1** · El predicado podía atribuir a la transición un cambio de un tercero anterior a su escritura | CONFIRMADO | Discriminador de PROCESO: `escritura_intentada`. Si el binder no llegó a llamar al escritor, el estado es ajeno |
+| 2 | **P1** · No reconocía la escritura completa pendiente de truncado (`antes_seteof`) | CONFIRMADO | El corte ahora admite `k == len(nuevo)`; era uno de los tres estados que el propio rig había medido |
+| 3 | **P1** · `JournalDisposition` se comparaba con `startswith("pending")` y nunca matcheaba | CONFIRMADO | Comparación contra los miembros del enum (`PENDING_PROMOTION`/`PENDING_ROLLBACK`) |
+| 4 | **P2** · Las raíces protegidas no se resolvían: un junction en `--storage-root` habilitaba escribir dentro | CONFIRMADO | `_canonico` resuelve enlaces también en las raíces |
+| 5 | **P2** · `listo_para_p7` comparaba contra el veredicto local, no el consolidado: siempre `False` | CONFIRMADO | Compara contra `VEREDICTO_LISTO` |
+| 6 | **P2** · El glob de registros de recuperación no encontraba ninguno (`state/recovery/<id>.json`) | CONFIRMADO | Usa `recovery_state_dir` |
+| 7 | **P2** · Los `hallazgos[].detalle` publicaban rutas completas sin redactar | CONFIRMADO | Redacción de texto libre sobre los detalles |
+| 8 | **P2** · La Managed Source descubierta por el preflight no se usaba para buscar dependencias | CONFIRMADO | Se usa `evaluacion.managed_source_root` |
+| 9 | **Minor** (CodeRabbit) · La garantía decía «ningún lector» y el acceso a metadatos sí funciona | CONFIRMADO | Se acota a «lector de **contenido**» y el acceso a metadatos queda como riesgo residual explícito |
+| 10 | **Qodo** · `actualizar_game_path_en_ini` sigue exportado: un llamador nuevo saltearía el gate | CONFIRMADO como riesgo latente | Ancla enumerativa por AST: ningún módulo productivo puede llamarlo |
+
+El finding 2 es el más incómodo: el rig había medido ese estado y el ADR lo
+documentaba, pero el predicado lo rechazaba. Medir y después escribir un
+predicado que contradice la medición no es medir.
+
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |

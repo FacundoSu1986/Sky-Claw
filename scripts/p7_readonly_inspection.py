@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -113,6 +114,29 @@ def _redactor(mostrar: bool) -> Any:
         return f"<…{pathlib.Path(texto).name} · sha256:{pista}>"
 
     return _ruta
+
+
+#: Rutas absolutas de Windows dentro de un texto libre. Los detalles del
+#: preflight las incorporan y no pasan por ``_redactor``.
+_RE_RUTA_ABSOLUTA = re.compile(r"[A-Za-z]:[\\/][^\s\"'\),;]*")
+
+
+def _redactar_texto(texto: str, ruta: Any, conocidas: list[Any]) -> str:
+    """Redacta rutas dentro de un detalle de texto libre.
+
+    Los campos de primer nivel del informe se redactan con ``_redactor``, pero
+    los ``detalle`` vienen de ``binder_preflight`` y traen rutas completas
+    embebidas. Publicarlos sin redactar incumple la protección por defecto del
+    inspector (Codex sobre #851).
+    """
+    resultado = texto
+    # Primero las raíces conocidas, de la más larga a la más corta: si no, una
+    # raíz prefijo de otra se come el texto y deja la parte final sin redactar.
+    for raiz in sorted((c for c in conocidas if c), key=lambda c: len(os.fspath(c)), reverse=True):
+        literal = os.fspath(raiz)
+        if literal and literal in resultado:
+            resultado = resultado.replace(literal, str(ruta(literal)))
+    return _RE_RUTA_ABSOLUTA.sub(lambda m: str(ruta(m.group(0))), resultado)
 
 
 def _leer_skyrim_path_persistido(config_path: pathlib.Path | None) -> str | None:
@@ -196,7 +220,12 @@ def _estado_del_journal(storage_root: pathlib.Path) -> Hallazgo:
         return Hallazgo("journal", HALLAZGO_INDETERMINADO, f"el journal no se pudo leer: {exc}")
     disposicion = getattr(cargado, "disposition", None)
     valor = getattr(disposicion, "value", str(disposicion))
-    if valor.startswith("pending"):
+    # ``JournalDisposition`` usa MAYÚSCULAS: ``PENDING_PROMOTION`` y
+    # ``PENDING_ROLLBACK``. Comparar con ``startswith("pending")`` no matchea
+    # nunca y el chequeo reportaba OK sobre una transición interrumpida (Codex
+    # sobre #851). Se compara contra los miembros del enum, no contra su texto.
+    pendientes = {"PENDING_PROMOTION", "PENDING_ROLLBACK"}
+    if valor in pendientes:
         return Hallazgo(
             "journal",
             HALLAZGO_BLOQUEADO,
@@ -207,9 +236,15 @@ def _estado_del_journal(storage_root: pathlib.Path) -> Hallazgo:
 
 def _estado_de_recuperacion(storage_root: pathlib.Path) -> Hallazgo:
     """¿Quedó un registro de recuperación sin resolver de una transición anterior?"""
+    # Los registros productivos se guardan en ``state/recovery/<id>.json``
+    # (``binder_recovery._ruta_registro``). Un glob por ``binder_recovery*`` no
+    # encuentra NINGUNO y el chequeo afirmaba «no hay registros» siempre (Codex
+    # sobre #851).
     try:
-        registros = sorted(storage_root.glob("**/binder_recovery*.json"))
-    except OSError as exc:
+        from sky_claw.local.frozen_runtime.storage import recovery_state_dir
+
+        registros = sorted(recovery_state_dir(storage_root).glob("*.json"))
+    except Exception as exc:  # noqa: BLE001 - el informe no debe caerse por el layout
         return Hallazgo("recovery", HALLAZGO_INDETERMINADO, f"no se pudo listar el storage: {exc}")
     if not registros:
         return Hallazgo("recovery", HALLAZGO_OK, "no hay registros de recuperación pendientes")
@@ -353,7 +388,11 @@ def construir_informe(
 
     # --- 9. Dependencias que siguen apuntando afuera -----------------------
     if clone_root is not None and clone_root.is_dir():
-        agujas = tuple(a for a in (str(managed_source_root) if managed_source_root else None,) if a)
+        # Si no se pasó ``--managed-source``, el preflight pudo DESCUBRIRLA y
+        # devolverla. Usar sólo el argumento dejaba ``agujas`` vacío y el chequeo
+        # de dependencias era vacuo por omisión (Codex sobre #851).
+        origen = managed_source_root or evaluacion.managed_source_root
+        agujas = tuple(a for a in (str(origen) if origen else None,) if a)
         sospechosas = _dependencias_en_arbol(clone_root, agujas)
         if sospechosas:
             hallazgos.append(Hallazgo("dependencias", HALLAZGO_BLOQUEADO, "; ".join(sospechosas)))
@@ -361,6 +400,11 @@ def construir_informe(
             hallazgos.append(
                 Hallazgo("dependencias", HALLAZGO_OK, "ningún archivo de configuración nombra la Managed Source")
             )
+
+    # --- Redacción de los detalles -----------------------------------------
+    if not mostrar_rutas:
+        conocidas = [storage_root, mo2_instance_dir, managed_source_root, clone_root]
+        hallazgos = [dataclasses.replace(h, detalle=_redactar_texto(h.detalle, ruta, conocidas)) for h in hallazgos]
 
     # --- Veredicto consolidado ---------------------------------------------
     if any(h.veredicto == VEREDICTO_BLOQUEADO for h in hallazgos):
@@ -372,7 +416,7 @@ def construir_informe(
 
     return {
         "veredicto": veredicto,
-        "listo_para_p7": veredicto == HALLAZGO_OK,
+        "listo_para_p7": veredicto == VEREDICTO_LISTO,
         "rutas_completas": mostrar_rutas,
         "storage_root": ruta(storage_root),
         "mo2_instance": ruta(mo2_instance_dir),
@@ -423,8 +467,14 @@ class SalidaNoPermitidaError(Exception):
 
 
 def _canonico(ruta: str | os.PathLike[str]) -> str:
-    """Ruta absoluta normalizada en caja, sin resolver enlaces."""
-    return os.path.normcase(os.path.abspath(os.fspath(ruta)))
+    """Ruta absoluta, normalizada en caja y con los enlaces RESUELTOS.
+
+    Resolver acá y no sólo en el destino es lo que cierra el bypass: si
+    ``--storage-root`` llega por un junction, la raíz protegida queda con el
+    alias mientras el destino se resuelve a la ruta física, y la comparación de
+    prefijos no las ve como el mismo árbol (Codex sobre #851).
+    """
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(ruta))))
 
 
 def _es_igual_o_hijo(candidato: str, contenedor: str) -> bool:

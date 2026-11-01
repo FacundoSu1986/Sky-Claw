@@ -257,11 +257,16 @@ pierden.
 
 ### 5.2 Mientras dura la transición, el INI no es legible por NADIE
 
-Con `dwShareMode = 0` ningún proceso externo abre el archivo para leer contenido:
-ni `open()` del CRT, ni un lector que conceda `READ|WRITE|DELETE`. La única
-apertura que Windows sigue permitiendo es la de **atributos**
-(`FILE_READ_ATTRIBUTES`), y medido: sobre ese handle `ReadFile` falla con
-`ACCESS_DENIED` (5) y devuelve 0 bytes.
+Con `dwShareMode = 0` ningún proceso externo abre el archivo **para leer
+contenido**: ni `open()` del CRT, ni un lector que conceda `READ|WRITE|DELETE`.
+
+**Riesgo residual explícito**: el acceso a **metadatos** sí sigue funcionando. Un
+proceso puede abrir con `FILE_READ_ATTRIBUTES` —medido: `ReadFile` sobre ese
+handle falla con `ACCESS_DENIED` (5) y devuelve 0 bytes— y `os.stat` por ruta
+también funciona, porque usa `GetFileAttributesExW` y no abre handle. Es decir:
+tamaño, timestamps y atributos son observables durante la transición. Eso no
+filtra el contenido ni permite mutarlo, pero conviene decirlo en vez de afirmar
+«ningún lector» a secas.
 
 La garantía se enuncia sobre el **contenido**, no sobre la apertura. Decir «ningún
 proceso puede abrir el archivo» sería falso por ese caso, y una afirmación que el

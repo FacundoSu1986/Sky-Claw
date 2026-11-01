@@ -698,9 +698,18 @@ def _es_escritura_propia_interrumpida(previos: bytes, nuevo: bytes, actuales: by
     while coincidentes < tope and actuales[coincidentes] == nuevo[coincidentes]:
         coincidentes += 1
 
-    # El corte tiene que caer DESPUÉS de la divergencia y ANTES del final: si
-    # coincide con todo ``nuevo`` no es interrumpida, es completa.
-    if not (divergencia < coincidentes < len(nuevo)):
+    # El corte tiene que caer DESPUÉS de la divergencia. El límite superior es
+    # ``len(nuevo)`` INCLUSIVE: cuando el contenido nuevo es más corto, morir
+    # entre ``WriteFile`` y ``SetEndOfFile`` deja ``nuevo + previos[len(nuevo):]``
+    # —medido en ``exp9_death_points`` como ``antes_seteof``— y eso es un estado
+    # intermedio de esta transición, no una escritura ajena. Excluirlo dejaba el
+    # INI con cola vieja y sin restaurar (Codex sobre #851).
+    if not (divergencia < coincidentes <= len(nuevo)):
+        return False
+    if coincidentes == len(nuevo) and len(actuales) <= len(nuevo):
+        # Coincide con todo ``nuevo`` y no sobra nada: es la escritura COMPLETA,
+        # no una interrumpida. Se descarta explícitamente para no revertir una
+        # transición que terminó.
         return False
     return actuales[coincidentes:] == previos[coincidentes:]
 
@@ -709,6 +718,8 @@ def _coincide_con_lo_escrito(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
     actuales: bytes,
+    *,
+    escritura_intentada: bool = True,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
@@ -747,6 +758,12 @@ def _coincide_con_lo_escrito(
             return False
         if previsto == actuales:
             return True
+        if not escritura_intentada:
+            # El binder NO llegó a escribir el INI. Un estado intermedio sólo
+            # puede serlo si hubo escritura: sin eso, atribuirlo sería apropiarse
+            # de un cambio de un tercero que casualmente comparte el prefijo
+            # (Codex sobre #851). Se deja como ajeno: evidencia y propietario.
+            return False
         return _es_escritura_propia_interrumpida(previos, previsto, actuales)
     return False
 
@@ -754,6 +771,8 @@ def _coincide_con_lo_escrito(
 def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
+    *,
+    escritura_intentada: bool = True,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
 
@@ -780,7 +799,7 @@ def _escrita_por_tercero(
     if superficie.existed and _sha256(actuales) == superficie.sha256:
         # Sigue exactamente como en el snapshot: no hay nada que restaurar.
         return (False, "")
-    if _coincide_con_lo_escrito(superficie, registro, actuales):
+    if _coincide_con_lo_escrito(superficie, registro, actuales, escritura_intentada=escritura_intentada):
         return (False, "")
     return (
         True,
@@ -834,6 +853,7 @@ def _restaurar_persistida(
     registro: RegistroRecuperacion,
     *,
     raiz_evidencia: pathlib.Path | None = None,
+    escritura_intentada: bool = True,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
     if superficie.path is None:
@@ -841,7 +861,7 @@ def _restaurar_persistida(
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
 
-    ajena, motivo = _escrita_por_tercero(superficie, registro)
+    ajena, motivo = _escrita_por_tercero(superficie, registro, escritura_intentada=escritura_intentada)
     if ajena:
         # La autoría no se pudo establecer: NO se restaura (pisaría una escritura
         # legítima de otro), pero tampoco se descarta. Se guarda una copia de los
@@ -930,6 +950,7 @@ def restaurar_registro_locked(
     environ: MutableMapping[str, str] | None,
     *,
     solo_superficies: frozenset[str] | None = None,
+    escritura_intentada: bool = True,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 
@@ -964,7 +985,9 @@ def restaurar_registro_locked(
         if superficie.kind == _KIND_ENVIRON:
             verificaciones.append(_restaurar_environ(superficie, environ))
             continue
-        verificaciones.append(_restaurar_persistida(superficie, registro, raiz_evidencia=root))
+        verificaciones.append(
+            _restaurar_persistida(superficie, registro, raiz_evidencia=root, escritura_intentada=escritura_intentada)
+        )
     return tuple(verificaciones)
 
 

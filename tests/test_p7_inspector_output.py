@@ -282,3 +282,102 @@ def test_la_cli_rechaza_el_destino_invalido_tambien_con_cp1252(tmp_path: pathlib
     proc = _correr_cli(arboles, ini, ioencoding="cp1252")
     assert proc.returncode == 2, f"se esperaba 2, se obtuvo {proc.returncode}: {proc.stderr[-400:]}"
     assert ini.read_bytes() == antes
+
+
+def test_el_journal_pendiente_bloquea_con_su_valor_real(tmp_path: pathlib.Path) -> None:
+    """``JournalDisposition`` usa MAYÚSCULAS: ``PENDING_PROMOTION``.
+
+    El chequeo comparaba con ``startswith("pending")``, que no matchea nunca, así
+    que una transición interrumpida se reportaba OK y el informe podía declarar
+    ``READY_FOR_P7`` sobre un PENDING (Codex sobre #851).
+    """
+    from sky_claw.local.frozen_runtime import journal as journal_module
+
+    for disposicion in (
+        journal_module.JournalDisposition.PENDING_PROMOTION,
+        journal_module.JournalDisposition.PENDING_ROLLBACK,
+    ):
+        cargado = type("Cargado", (), {"disposition": disposicion})()
+        original = inspector.cargar_journal_transicion
+        inspector.cargar_journal_transicion = lambda _root, _c=cargado: _c
+        try:
+            hallazgo = inspector._estado_del_journal(tmp_path)
+        finally:
+            inspector.cargar_journal_transicion = original
+        assert hallazgo.veredicto == inspector.HALLAZGO_BLOQUEADO, (
+            f"{disposicion.value} se reportó como {hallazgo.veredicto}"
+        )
+
+
+def test_los_registros_de_recuperacion_se_buscan_donde_viven(tmp_path: pathlib.Path) -> None:
+    """Viven en ``state/recovery/<id>.json``, no con prefijo ``binder_recovery``."""
+    from sky_claw.local.frozen_runtime.storage import recovery_state_dir
+
+    carpeta = recovery_state_dir(tmp_path)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    (carpeta / "t-123.json").write_text("{}", encoding="utf-8")
+    hallazgo = inspector._estado_de_recuperacion(tmp_path)
+    assert hallazgo.veredicto == inspector.HALLAZGO_BLOQUEADO, (
+        f"un registro de recuperación pendiente se reportó como {hallazgo.veredicto}: {hallazgo.detalle}"
+    )
+
+
+def test_listo_para_p7_concuerda_con_el_veredicto(tmp_path: pathlib.Path) -> None:
+    """El booleano y el código de salida no pueden contradecir al veredicto."""
+    arboles = Arboles(tmp_path)
+    destino = arboles.permitido / "informe-veredicto.json"
+    _correr_cli(arboles, destino, ioencoding="utf-8")
+    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    assert contenido["listo_para_p7"] is (contenido["veredicto"] == "READY_FOR_P7"), (
+        f"listo_para_p7={contenido['listo_para_p7']} con veredicto={contenido['veredicto']}"
+    )
+
+
+def test_los_detalles_de_los_hallazgos_no_publican_rutas(tmp_path: pathlib.Path) -> None:
+    """Los ``detalle`` vienen del preflight con rutas completas embebidas.
+
+    Redactar sólo los campos de primer nivel dejaba el árbol privado en
+    ``hallazgos[].detalle`` (Codex sobre #851).
+    """
+    arboles = Arboles(tmp_path)
+    # Sin INI: el preflight emite un detalle con la ruta de la instancia MO2.
+    (arboles.mo2 / "modorganizer.ini").unlink()
+    destino = arboles.permitido / "informe-detalles.json"
+    _correr_cli(arboles, destino, ioencoding="utf-8")
+    texto = destino.read_text(encoding="utf-8")
+    assert str(tmp_path) not in texto, "una ruta privada completa apareció en el informe"
+    contenido = json.loads(texto)
+    assert contenido["rutas_completas"] is False
+
+
+def test_una_raiz_protegida_por_junction_no_habilita_la_escritura(tmp_path: pathlib.Path) -> None:
+    """Si ``--storage-root`` llega por un junction, el destino físico es el mismo árbol.
+
+    Comparar la raíz sin resolver la dejaba con el alias mientras el destino se
+    resolvía a la ruta física: el prefijo no coincidía y la escritura pasaba
+    (Codex sobre #851).
+    """
+    real = tmp_path / "storage-real"
+    real.mkdir()
+    alias = tmp_path / "storage-alias"
+    creacion = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(real)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if creacion.returncode != 0 or not alias.exists():
+        pytest.skip(f"no se pudo crear el junction: {creacion.stderr[-200:]}")
+    try:
+        permitido = tmp_path / "informes"
+        permitido.mkdir()
+        protegidos = inspector._arboles_protegidos(
+            storage_root=alias,
+            mo2_instance_dir=tmp_path / "MO2",
+            clone_roots=[],
+            managed_source_root=None,
+        )
+        with pytest.raises(inspector.SalidaNoPermitidaError):
+            inspector.validar_destino_informe(real / "informe.json", arboles_protegidos=protegidos)
+    finally:
+        os.rmdir(alias)

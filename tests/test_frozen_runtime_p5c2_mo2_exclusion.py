@@ -459,7 +459,7 @@ def test_la_comparticion_propia_es_ninguna() -> None:
 
 @SOLO_WINDOWS
 def test_una_escritura_a_medias_no_es_observable(tmp_path: pathlib.Path) -> None:
-    """El estado intermedio existe, pero ningún lector puede verlo.
+    """El estado intermedio existe, pero ningún lector de CONTENIDO puede verlo.
 
     Se escribe de verdad una parte del contenido nuevo SIN ``SetEndOfFile`` —el
     estado exacto entre ``WriteFile`` y el truncado— y se comprueba que ningún
@@ -804,7 +804,6 @@ _ESCRITURAS_PROHIBIDAS = frozenset(
         "mkdir",
         "touch",
         "rename",
-        "replace",
         "chmod",
         "symlink_to",
         "hardlink_to",
@@ -859,6 +858,15 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
         if isinstance(funcional, ast.Attribute):
             if funcional.attr in _ESCRITURAS_PROHIBIDAS:
                 ofensas.append(f"{funcional.attr} (línea {nodo.lineno})")
+            # ``replace``/``rename`` como nombre suelto marcan ``str.replace`` y
+            # ``dataclasses.replace``, que no tocan el disco. El que importa es el
+            # de ``os``, y se chequea por receptor.
+            if (
+                funcional.attr in {"replace", "rename"}
+                and isinstance(funcional.value, ast.Name)
+                and funcional.value.id == "os"
+            ):
+                ofensas.append(f"os.{funcional.attr} (línea {nodo.lineno})")
             if funcional.attr == "open" and isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
                 aperturas_exclusivas.append(nodo)
         elif isinstance(funcional, ast.Name) and funcional.id == "open":
@@ -910,4 +918,101 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
     ]
     assert funciones_con_apertura == ["escribir_informe_exclusivo"], (
         f"la apertura de escritura vive fuera del escritor validado: {funciones_con_apertura}"
+    )
+
+
+def test_atribuye_la_escritura_completa_pendiente_de_truncado() -> None:
+    """``nuevo + previos[len(nuevo):]`` es el estado de ``antes_seteof``.
+
+    Con el contenido nuevo MÁS CORTO, morir entre ``WriteFile`` y
+    ``SetEndOfFile`` deja exactamente eso. El predicado lo rechazaba porque
+    exigía un corte estrictamente menor que ``len(nuevo)``, así que el INI
+    quedaba con cola vieja y sin restaurar (Codex sobre #851). Es uno de los tres
+    desenlaces que el propio ``exp9_death_points`` había medido.
+    """
+    assert len(_NUEVO) < len(_PREVIOS)
+    estado = _NUEVO + _PREVIOS[len(_NUEVO) :]
+    assert len(estado) == len(_PREVIOS)
+    assert estado != _PREVIOS and estado != _NUEVO
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, estado) is True
+
+
+def test_no_atribuye_un_cambio_ajeno_que_comparte_el_prefijo() -> None:
+    """Un tercero que cambia el valor dejando la misma cola NO es nuestro.
+
+    Es el caso de Codex: el destino autorizado es ``D:/Games/Other`` y un tercero
+    escribe ``D:/Games/Skyrim``. Por contenido es indistinguible de un corte
+    nuestro, así que el discriminador es PROCESO: si el binder no llegó a llamar
+    al escritor, el estado no puede ser suyo.
+    """
+    previos = b"[General]\r\ngamePath=@ByteArray(C:/Games/Skyrim)\r\n"
+    nuevo = b"[General]\r\ngamePath=@ByteArray(D:/Games/Other)\r\n"
+    ajeno = b"[General]\r\ngamePath=@ByteArray(D:/Games/Skyrim)\r\n"
+    # Por contenido, el predicado no puede distinguirlo: por eso existe el flag.
+    assert _es_escritura_propia_interrumpida(previos, nuevo, ajeno) is True
+
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    superficie = recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path="x",
+        existed=True,
+        sha256=recovery._sha256(previos),
+        contenido_b64=__import__("base64").b64encode(previos).decode("ascii"),
+    )
+    registro = recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id="t-ajeno",
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="c1",
+        target_generation_id="g1",
+        expected_effective_path="D:/Games/Other",
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+    # El binder NO llegó a escribir: el contenido es de un tercero.
+    coincide_sin_intento = recovery._coincide_con_lo_escrito(superficie, registro, ajeno, escritura_intentada=False)
+    assert coincide_sin_intento is False
+    # Y si SÍ llegó a escribir, el mismo contenido es atribuible.
+    coincide_con_intento = recovery._coincide_con_lo_escrito(superficie, registro, ajeno, escritura_intentada=True)
+    assert coincide_con_intento is True
+
+
+def test_ningun_modulo_productivo_escribe_el_ini_por_ruta() -> None:
+    """Ancla enumerativa: el escritor SIN exclusión no puede tener llamadores.
+
+    ``actualizar_game_path_en_ini`` sigue existiendo (lo usa la previsión y lo
+    cubre su propio test), pero muta el INI con ``os.replace`` y **sin** la
+    exclusión de P5-C2. Un llamador nuevo en cualquier módulo productivo abriría
+    un segundo camino que saltea el gate —exactamente la clase de defecto que
+    ``AGENTS.md`` documenta— y este ancla lo rompe antes de que aterrice.
+
+    Se enumeran los módulos, no se muestrea un caso: el escaneo es por AST sobre
+    todo el paquete.
+    """
+    import ast
+
+    raiz = RAIZ_REPO / "sky_claw"
+    permitido = {"mo2_ini_escritura.py"}  # la definición y su uso interno
+    ofensas: list[str] = []
+    for modulo in sorted(raiz.rglob("*.py")):
+        if modulo.name in permitido:
+            continue
+        try:
+            arbol = ast.parse(modulo.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        for nodo in ast.walk(arbol):
+            if (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Name)
+                and nodo.func.id == "actualizar_game_path_en_ini"
+            ):
+                ofensas.append(f"{modulo.relative_to(raiz).as_posix()}:{nodo.lineno}")
+    assert not ofensas, (
+        "hay llamadores del escritor del INI SIN exclusión: "
+        f"{ofensas}. Usá actualizar_game_path_por_handle dentro del gate"
     )
