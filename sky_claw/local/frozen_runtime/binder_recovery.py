@@ -658,17 +658,24 @@ def _es_escritura_propia_interrumpida(previos: bytes, nuevo: bytes, actuales: by
     ==========================  ==========================================
     muerte antes de WriteFile   el archivo queda igual al snapshot
     muerte durante WriteFile    ``nuevo[:k] + previos[k:]``, mismo tamaño
+    muerte durante WriteFile    ``nuevo[:k]`` con ``k > len(previos)`` (extiende)
+    (extensión)                 medido en rig real por Codex cuarta ronda #851
     muerte tras SetEndOfFile    el archivo queda completo (``nuevo``)
     ==========================  ==========================================
 
     ``FlushFileBuffers`` no cambia lo observable: sólo la durabilidad, que sigue
     en ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``.
 
-    Por eso este predicado acepta UN solo estado intermedio, y le exige dos cosas
-    que lo hacen atribuible:
+    Por eso este predicado acepta DOS estados intermedios, y le exige a cada uno
+    cosas que lo hacen atribuible:
 
-    1. **Mismo tamaño que el snapshot.** El truncado no ocurrió.
-    2. **Cruza la divergencia.** ``k`` es estrictamente mayor que el primer byte
+    1. **Mismo tamaño que el snapshot.** El truncado no ocurrió; la cola después
+       del corte coincide con el snapshot.
+    2. **Extensión parcial pura.** ``WriteFile`` en Windows extiende el archivo
+       si escribe más allá del EOF. El estado es ``nuevo[:k]`` con
+       ``len(previos) < k < len(nuevo)``. Se atribuye sólo si es un prefijo puro
+       de ``nuevo`` (sin cola del snapshot, porque esa cola no existe).
+    3. **Cruza la divergencia.** ``k`` es estrictamente mayor que el primer byte
        donde ``nuevo`` y ``previos`` difieren. Un corte anterior a la divergencia
        no cambia ningún byte y el archivo seguiría siendo el snapshot; un estado
        que coincide sólo en el prefijo común es **indistinguible de un truncado
@@ -683,8 +690,6 @@ def _es_escritura_propia_interrumpida(previos: bytes, nuevo: bytes, actuales: by
     """
     if not nuevo or not actuales or not previos:
         return False
-    if len(actuales) != len(previos):
-        return False
     if actuales == previos:
         return False
 
@@ -698,19 +703,28 @@ def _es_escritura_propia_interrumpida(previos: bytes, nuevo: bytes, actuales: by
     while coincidentes < tope and actuales[coincidentes] == nuevo[coincidentes]:
         coincidentes += 1
 
-    # El corte tiene que caer DESPUÉS de la divergencia. El límite superior es
-    # ``len(nuevo)`` INCLUSIVE: cuando el contenido nuevo es más corto, morir
-    # entre ``WriteFile`` y ``SetEndOfFile`` deja ``nuevo + previos[len(nuevo):]``
-    # —medido en ``exp9_death_points`` como ``antes_seteof``— y eso es un estado
-    # intermedio de esta transición, no una escritura ajena. Excluirlo dejaba el
-    # INI con cola vieja y sin restaurar (Codex sobre #851).
+    # El corte tiene que caer DESPUÉS de la divergencia.
     if not (divergencia < coincidentes <= len(nuevo)):
         return False
+
     if coincidentes == len(nuevo) and len(actuales) <= len(nuevo):
         # Coincide con todo ``nuevo`` y no sobra nada: es la escritura COMPLETA,
         # no una interrumpida. Se descarta explícitamente para no revertir una
         # transición que terminó.
         return False
+
+    if len(actuales) > len(previos):
+        # Cuarta muerte medida (Codex cuarta ronda #851): ``WriteFile`` en
+        # Windows extiende el archivo si escribe más allá del EOF. El estado
+        # intermedio es ``nuevo[:k]`` con ``len(previos) < k < len(nuevo)``.
+        # Se atribuye SÓLO si es un prefijo puro de ``nuevo`` (sin cola del
+        # snapshot mezclada, porque esa cola no existe: el archivo se extendió).
+        return coincidentes == len(actuales) and len(actuales) < len(nuevo)
+
+    # ``len(actuales) == len(previos)``: el estado intermedio medido en
+    # ``exp9_death_points`` es ``nuevo[:k] + previos[k:]`` (mismo tamaño).
+    # También ``len(actuales) < len(previos)`` (truncado parcial antes de
+    # ``SetEndOfFile``): ``nuevo + previos[len(nuevo):]``.
     return actuales[coincidentes:] == previos[coincidentes:]
 
 

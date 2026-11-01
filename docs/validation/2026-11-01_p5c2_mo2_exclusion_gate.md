@@ -80,6 +80,19 @@ autoría, y entre el crash y la recuperación puede pasar cualquier cosa.
 `"wb"` en una copia y el ancla anterior **pasó**. Después de la corrección, el
 mismo mutante muere con `open('wb') (línea 155)`.
 
+### 0.4 Cuarta ronda de revisión (sobre ``9e3e3bad``)
+
+Codex revisó de nuevo y dejó **1 finding P1**.
+
+| # | Finding | Veredicto | Corrección |
+|---|---|---|---|
+| 20 | **P1** · Escrituras parciales que extienden más allá del EOF no se contemplaban: un estado ``nuevo[:k]`` con ``len(previos) < k < len(nuevo)`` se rechazaba, dejando el INI corrupto | CONFIRMADO | ``_es_escritura_propia_interrumpida`` ahora acepta el cuarto desenlace medido; test con controles positivo y negativo |
+
+**Este finding es el más valioso de las cuatro rondas**: describe un estado
+alcanzable que el rig ``exp9_death_points`` no midió, y que habría dejado el
+INI corrupto tras un rollback. La corrección mantiene el tratamiento
+conservador cuando la autoría es desconocida.
+
 ### 0.3 Tercera ronda de revisión (sobre ``5565b28c``)
 
 Codex volvió a revisar y dejó **3 findings más**; CodeRabbit dejó **2** (Major y
@@ -150,6 +163,7 @@ límite del plan. Queda registrado como tal.
 | Worktree | `E:\Skyclaw_Main_Sync\.worktrees\frozen-runtime-mo2-exclusion-gate` |
 | Base | `origin/main` `9fbf0b2fef177e143ff0be68e058ae875d501c6f` |
 | HEAD auditado (revisión 1) | `eff1ea6369311d55335d3e42aea62f1382167e10` |
+| HEAD final (post-adversarial) | `3e62d399` |
 | P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` |
 | Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo) |
 
@@ -278,8 +292,8 @@ Cada archivo con un directorio temporal propio y recién creado.
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
 | `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
-| `p5c2_mo2_exclusion` | — | 33 passed, 1 skipped |
-| `p7_inspector_output` (nuevo) | — | 9 passed |
+| `p5c2_mo2_exclusion` | — | 64 passed, 1 skipped |
+| `p7_inspector_output` (nuevo) | — | 20 passed |
 
 Los 2 fallos de `p4_root_lock` (`test_rl05`, `test_rl17`) **fallan igual en
 `origin/main`**: preexistentes, ajenos a este trabajo.
@@ -356,7 +370,7 @@ mientras la transición lo retiene, venga el intento de donde venga.
 ## 10. Dictamen
 
 ```text
-P5C2_SYNTHETIC_READY_FOR_MERGE_REVIEW
+P5C2_READY_FOR_FINAL_AUDIT
 ```
 
 La exclusión de mutación y la no observabilidad del contenido se establecen,

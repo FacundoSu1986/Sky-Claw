@@ -1245,3 +1245,28 @@ def test_una_escritura_completa_no_se_atribuye_sin_evidencia_de_intento(tmp_path
             assert list((tmp_path / "recovery_evidence").rglob("*.bin"))
         else:
             assert objetivo.read_bytes() == _PREVIOS, f"flag={flag!r}: no se restauró cuando debía"
+
+
+def test_atribuye_la_extension_parcial_mas_alla_del_eof() -> None:
+    """WriteFile en Windows extiende el archivo; el corte puede superar el EOF.
+
+    Codex cuarta ronda (#851): si la ruta nueva alarga el INI y una escritura
+    parcial supera el EOF anterior, el archivo queda como ``nuevo[:k]`` con
+    ``len(previos) < k < len(nuevo)``. Es un estado alcanzable que antes se
+    rechazaba, dejando el INI corrupto sin restaurar.
+    """
+    # Caso sintético: previos cortos, nuevo largo, corte en el medio extendido.
+    previos = b"A" * 10 + b"B" * 10 + b"C" * 10  # 30 bytes
+    nuevo = b"A" * 10 + b"X" * 50 + b"Y" * 50  # 110 bytes, diverge en 10
+    k = 48  # > len(previos)=30, < len(nuevo)=110
+    actuales = nuevo[:k]
+    assert _es_escritura_propia_interrumpida(previos, nuevo, actuales) is True
+
+    # Control: si la extensión no es un prefijo puro de ``nuevo``, no atribuye.
+    mezclado = nuevo[:k] + b"Z"
+    assert _es_escritura_propia_interrumpida(previos, nuevo, mezclado) is False
+
+    # Control: si el corte no supera el EOF anterior, es el caso original.
+    k2 = 20  # < len(previos)=30
+    actuales2 = nuevo[:k2] + previos[k2:]
+    assert _es_escritura_propia_interrumpida(previos, nuevo, actuales2) is True
