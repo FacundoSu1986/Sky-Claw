@@ -1550,7 +1550,10 @@ class TestAnclaConstructoresManualesDeMods:
         # #661 (despacho del helper del driver UIA desatendido) la movió (277 → 287).
         "sky_claw/__main__.py": (287,),
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
-        "sky_claw/local/tools/output_targets.py": (225,),
+        # ADR 0016 (etapa 6 asistida): ``bashed_patch_en_overlay`` se insertó arriba de
+        # ``synthesis_output_target`` y corrió su constructor del default `<raíz>/mods`
+        # (225 → 333 → 341 → 351). Sigue siendo el MISMO constructor, no un sitio nuevo.
+        "sky_claw/local/tools/output_targets.py": (351,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
         "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
     }
@@ -2160,7 +2163,13 @@ class TestAnclaSemanticaDeRaicesMo2:
       detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
     - synthesis_service (2): output target y preflight.
-    - wrye_bash_service (preflight): overwrite + profile sources.
+    - wrye_bash_service (4): preflight (overwrite + profile sources), la etapa 6
+      asistida (``profiles/<perfil>/plugins.txt``, ADR 0016: verificar que el
+      Bashed Patch esté ACTIVO en el perfil), ``_artefacto_asistido`` —que resuelve
+      el artefacto en la SUPERPOSICIÓN del perfil (``overwrite`` + mods + ``Data``),
+      porque el ejecutor de esa etapa es el operador dentro de MO2— y
+      ``_permission_targets(dominio='usvfs')``, que sondea el ``overwrite``: la VFS
+      redirige la escritura y NO hereda los permisos del ``Data`` físico.
 
     INSTANCE_DATA_ROOT_ESTRICTO (``get_mo2_instance_data_root_estricto``):
 
@@ -2209,7 +2218,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
-        "sky_claw/local/tools/wrye_bash_service.py": 1,
+        "sky_claw/local/tools/wrye_bash_service.py": 4,
     }
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
@@ -2244,7 +2253,9 @@ class TestAnclaSemanticaDeRaicesMo2:
         # visibilidad y cota de fan-in). No son destinos de escritura; si el
         # MODS_DIR es irresoluble el veredicto es RED, nunca verde.
         "sky_claw/local/tools/synthesis_service.py": 3,
-        "sky_claw/local/tools/wrye_bash_service.py": 1,
+        # ADR 0016 (etapa 6 asistida): ``_ensure_preflight`` (sensor VFS del preflight) y
+        # ``_artefacto_asistido`` (capas del overlay). Ambos son read-only.
+        "sky_claw/local/tools/wrye_bash_service.py": 2,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path_para_destino()`` (destino

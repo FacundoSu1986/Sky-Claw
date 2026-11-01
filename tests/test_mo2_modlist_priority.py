@@ -349,6 +349,10 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         # NP-A0g: el diagnóstico del perfil (antes en `native_parallax/cli.py`) lee el modlist con `read_enabled_mods` e
         # INTERPRETA la prioridad (qué capa queda por encima del mod de salida); es solo lectura.
         "sky_claw/local/native_parallax/diagnostico_perfil.py",
+        # ADR 0016 (etapa 6 asistida): `_mods_habilitados` lee el perfil con la primitive canónica y
+        # `output_targets.bashed_patch_en_overlay` recorre esas capas de MAYOR a MENOR prioridad para resolver
+        # qué copia del `Bashed Patch, 0.esp` carga el juego. Interpreta la prioridad ⇒ Family A; es solo lectura.
+        "sky_claw/local/tools/wrye_bash_service.py",
     },
     # Family B: Writers (mutadores autorizados de modlist.txt)
     "FAMILY_B_WRITERS": {
@@ -397,7 +401,6 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/local/tools/patcher_pipeline.py",
         "sky_claw/local/tools/synthesis_service.py",
         "sky_claw/local/tools/texgen_handoff.py",
-        "sky_claw/local/tools/wrye_bash_service.py",
         "sky_claw/local/tools/xedit_service.py",
     },
 }

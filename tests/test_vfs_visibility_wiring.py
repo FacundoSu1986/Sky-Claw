@@ -56,7 +56,7 @@ SENSOR_FISICO_POR_DOMINIO: dict[str, dict[str, bool]] = {
     "dyndolod_service": {"physical": True, "virtual_usvfs": False},
     "synthesis_service": {"physical": True},
     "pandora_service": {"physical": True},
-    "wrye_bash_service": {"physical": True},
+    "wrye_bash_service": {"physical": True, "virtual_usvfs": False},
 }
 
 #: Servicios cuyo preflight DEBE cablear el sensor de visibilidad (U-01) en
@@ -261,9 +261,10 @@ def _construir(nombre: str, *, resolver: MagicMock, mo2: pathlib.Path, dominio: 
 
         return PandoraPipelineService(**comunes)
     if nombre == "wrye_bash_service":
-        from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+        from sky_claw.local.tools.wrye_bash_service import DOMINIO_FISICO, DOMINIO_USVFS, WryeBashPipelineService
 
-        return WryeBashPipelineService(**comunes)
+        dom = DOMINIO_USVFS if dominio == "virtual_usvfs" else DOMINIO_FISICO
+        return WryeBashPipelineService(**comunes, default_domain=dom)
     raise AssertionError(f"servicio no contemplado en el factory: {nombre}")
 
 
